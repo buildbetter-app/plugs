@@ -24,7 +24,7 @@ try {
   ws = new WebSocket(target.webSocketDebuggerUrl);
   await once(ws, "open");
   let sequence = 0;
-  const pending = new Map(), frameSessions = new Map();
+  const pending = new Map(), frameSessions = new Map(), bridgeResponses = [];
   const send = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
     const id = ++sequence; pending.set(id, { resolve, reject }); ws.send(JSON.stringify({ id, method, params, sessionId }));
   });
@@ -33,6 +33,8 @@ try {
     if (event.id) {
       const promise = pending.get(event.id); pending.delete(event.id);
       if (promise) event.error ? promise.reject(new Error(JSON.stringify(event.error))) : promise.resolve(event.result);
+    } else if (event.method === "Runtime.bindingCalled" && event.params.name === "__i7ObserveBridgeReply") {
+      bridgeResponses.push(JSON.parse(event.params.payload));
     } else if (event.method === "Target.attachedToTarget" && event.params.targetInfo.type === "iframe") {
       frameSessions.set(event.params.targetInfo.targetId, event.params.sessionId);
     }
@@ -187,13 +189,28 @@ try {
     console.log("PASS configured_bridge_rate_bound_20_actual_RPC_4_refusals");
 
     await delay(1100);
+    // Observe where app.js sends actual responses: the trusted wrapper's
+    // message receiver. CDP retains these real envelopes outside documents,
+    // and installs the same observer before scripts in a reloaded wrapper.
+    await send("Runtime.addBinding", { name: "__i7ObserveBridgeReply" });
+    await send("Page.addScriptToEvaluateOnNewDocument", {
+      runImmediately: true,
+      source: `(() => {
+        if (parent === window || location.href !== ${JSON.stringify(base + "/ui/frame-hosts/probe/index.html")}) return;
+        addEventListener("message", (event) => {
+          if (event.source === parent && event.origin === location.origin && event.data?.jsonrpc === "2.0" &&
+              (Object.hasOwn(event.data, "result") || Object.hasOwn(event.data, "error"))) {
+            globalThis.__i7ObserveBridgeReply(JSON.stringify(event.data));
+          }
+        });
+      })()`,
+    });
+    const receiveControl = await call(probe, "receive-control", "bead.get", {id:configured.ref});
+    assert.equal(receiveControl.result?.bead?.fields?.title, configured.title, JSON.stringify(receiveControl));
+    await until(() => bridgeResponses.some((reply) => reply.id === "receive-control"), "real response reaches wrapper observer");
+    assert.deepEqual(bridgeResponses.filter((reply) => reply.id === "receive-control"), [receiveControl]);
+    console.log("PASS configured_wrapper_receive_observer_sees_actual_source_record_control");
     assert.equal((await fetch(base + "/fixture/hold", {method:"POST"})).ok, true);
-    await evaluate(`(() => {
-      globalThis.heldReplies = [];
-      addEventListener("message", (event) => {
-        if (event.data?.id === "held" && (Object.hasOwn(event.data, "result") || Object.hasOwn(event.data, "error"))) heldReplies.push(event.data);
-      });
-    })()`);
     await evaluate(`parent.postMessage({jsonrpc:"2.0",id:"held",method:"bead.get",params:{id:${JSON.stringify(configured.ref)}}}, "*")`, probe);
     await until(async () => (await stats()).heldReads === 1, "real configured read response held");
     // The held bridge read already ran with the canary present. Ordinary
@@ -208,10 +225,17 @@ try {
     const afterRevoke = await stats();
     assert.deepEqual(await call(probe, "revoked", "bead.get", {id:configured.ref}), {timeout:true});
     assert.deepEqual(await stats(), afterRevoke, "reloaded wrapper must not regain the revoked grant");
-    assert.deepEqual(await evaluate("heldReplies"), [], "late response must not be transferred after revocation");
+    assert.deepEqual(bridgeResponses.filter((reply) => reply.id === "held"), [], "late response must not be transferred after revocation");
     console.log("PASS configured_wrapper_reload_aborts_HTTP_and_stale_bridge_stays_closed");
     await send("Network.clearBrowserCookies");
+    const oldLoader = (await send("Page.getFrameTree")).frameTree.frame.loaderId;
+    assert(oldLoader);
     await send("Page.reload");
+    // Page.reload acknowledges before navigation commits. Wait for the real
+    // new host document before attaching, so an old child target cannot be
+    // mistaken for the new frame and then destroyed underneath the probe.
+    await until(async () => (await send("Page.getFrameTree")).frameTree.frame.loaderId !== oldLoader &&
+      await evaluate("document.readyState === 'complete' && document.querySelector('iframe') !== null"), "new host document after reload");
     probe = await frameSession("probe");
     await until(() => evaluate("globalThis.safetyLoaded === true", probe), "new host creates fresh bound frame");
     const recovered = await call(probe, "fresh-host", "bead.get", {id:configured.ref});
