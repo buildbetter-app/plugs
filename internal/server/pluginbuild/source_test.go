@@ -731,6 +731,7 @@ func TestWASIArtifactAdmissionCancellationAndOwnerClose(t *testing.T) {
 	// with pluginhost.New in flight.
 	hostDone := make(chan error, 1)
 	initializerEntered := make(chan struct{}, 1)
+	initializerContextDone := make(chan error, 1)
 	initializerRelease := make(chan struct{})
 	initializerReleased := false
 	releaseInitializer := func() {
@@ -740,10 +741,15 @@ func TestWASIArtifactAdmissionCancellationAndOwnerClose(t *testing.T) {
 		}
 	}
 	defer releaseInitializer()
-	admissionCtx := pluginhost.WithWASMInitializerObserver(context.Background(), func() {
+	admissionCtx := pluginhost.WithWASMInitializerContextObserver(context.Background(), func(initCtx context.Context) {
 		select {
 		case initializerEntered <- struct{}{}:
 		default:
+		}
+		select {
+		case initializerContextDone <- initCtx.Err():
+		case <-initializerRelease:
+			return
 		}
 		<-initializerRelease
 	})
@@ -780,9 +786,27 @@ func TestWASIArtifactAdmissionCancellationAndOwnerClose(t *testing.T) {
 		default:
 		}
 	}
-	releaseInitializer()
 	retirementDeadline := time.NewTimer(3 * time.Second)
 	defer retirementDeadline.Stop()
+	var initializerErr error
+	select {
+	case initializerErr = <-initializerContextDone:
+		if !errors.Is(initializerErr, context.Canceled) {
+			t.Fatalf("owner cancellation did not reach the held initializer: %v", initializerErr)
+		}
+	case closeErr = <-closeDone:
+		closeDoneOK = true
+		t.Fatal("Artifact.Close returned before source WASI initializer cancellation was observed")
+	case <-retirementDeadline.C:
+		t.Fatal("owner cancellation did not reach the held source WASI initializer")
+	}
+	select {
+	case closeErr = <-closeDone:
+		closeDoneOK = true
+		t.Fatal("Artifact.Close returned before source WASI initializer was released")
+	default:
+	}
+	releaseInitializer()
 	for !hostDoneOK || !closeDoneOK {
 		select {
 		case hostErr = <-hostDone:
