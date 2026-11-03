@@ -174,26 +174,67 @@ func (s *GuardedService) Ready(ctx context.Context, by model.PrincipalRef, req s
 	if s == nil || s.delegate == nil || s.checker == nil {
 		return service.BeadPage{}, &model.Error{Message: "authorization service is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
 	}
-	// Ask the real service for a complete bounded candidate page, then apply
-	// the compiled fixed filter before pagination. A truncated candidate set is
-	// refused; it never becomes a short page or an uncounted hidden tail.
+	readyFilter, compiled, err := s.compiledReadyFilter(ctx, by)
+	if err != nil {
+		return service.BeadPage{}, err
+	}
+	// Compiled finite permissions are pushed through the domain service's
+	// snapshot-aware filter before pageResult. The 20,000 candidate cap remains
+	// only for genuinely check-only predicates that require post-filtering.
 	full := req
 	full.Limit = 1000
 	full.Cursor = ""
 	full.Position = nil
-	page, err := s.delegate.Ready(ctx, by, full)
+	var page service.BeadPage
+	filteredDelegate, supportsFiltered := s.delegate.(interface {
+		ReadyWithFilter(context.Context, model.PrincipalRef, service.ReadyRequest, service.ReadyAuthorizer) (service.BeadPage, error)
+	})
+	if compiled {
+		if supportsFiltered {
+			page, err = filteredDelegate.ReadyWithFilter(ctx, by, full, readyFilter)
+		} else {
+			// Test doubles may only implement the RPC port. They are permitted to
+			// carry workflow-only rows, which filterPage still authorizes, but a
+			// core row must never bypass the pre-pagination capability.
+			page, err = s.delegate.Ready(ctx, by, full)
+			if err == nil {
+				for _, item := range page.Items {
+					if item.Kind != "workflow.item" {
+						return service.BeadPage{}, &model.Error{Message: "compiled ready filter is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
+					}
+				}
+			}
+		}
+	} else {
+		page, err = s.delegate.Ready(ctx, by, full)
+	}
 	if err != nil {
 		return service.BeadPage{}, err
 	}
 	items := append([]service.Bead(nil), page.Items...)
 	workflowSnapshot := page.WorkflowSnapshot
 	for page.Next != nil {
-		if len(items) >= listPostfilterCap {
+		if !compiled && len(items) >= listPostfilterCap {
 			return service.BeadPage{}, postfilterCap()
 		}
 		position := *page.Next
 		full.Position = &position
-		page, err = s.delegate.Ready(ctx, by, full)
+		if compiled {
+			if supportsFiltered {
+				page, err = filteredDelegate.ReadyWithFilter(ctx, by, full, readyFilter)
+			} else {
+				page, err = s.delegate.Ready(ctx, by, full)
+				if err == nil {
+					for _, item := range page.Items {
+						if item.Kind != "workflow.item" {
+							return service.BeadPage{}, &model.Error{Message: "compiled ready filter is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
+						}
+					}
+				}
+			}
+		} else {
+			page, err = s.delegate.Ready(ctx, by, full)
+		}
 		if err != nil {
 			return service.BeadPage{}, err
 		}
@@ -203,13 +244,55 @@ func (s *GuardedService) Ready(ctx context.Context, by model.PrincipalRef, req s
 		workflowSnapshot = page.WorkflowSnapshot
 		items = append(items, page.Items...)
 	}
-	if len(items) > listPostfilterCap {
+	if !compiled && len(items) > listPostfilterCap {
 		return service.BeadPage{}, postfilterCap()
 	}
 	page.Items = items
 	page.Next = nil
 	page.WorkflowSnapshot = workflowSnapshot
 	return s.filterPage(ctx, by, "bead.ready", req.Project, req.Limit, req.Position, page, false)
+}
+
+func (s *GuardedService) compiledReadyFilter(ctx context.Context, by model.PrincipalRef) (service.ReadyAuthorizer, bool, error) {
+	caller, err := s.checker.callerFor(ctx, by)
+	if err != nil {
+		return nil, false, authzError(err)
+	}
+	template, err := s.checker.chain.Compile(authz.ListRequest{Caller: caller, Action: authz.Read, ResourceKind: authz.Bead, Method: "bead.ready"})
+	if err != nil {
+		if errors.Is(err, authz.ErrCheckOnly) {
+			return nil, false, nil
+		}
+		return nil, false, authzError(err)
+	}
+	var authorizationRevision model.Revision
+	var authorizationBound bool
+	var boundIncarnation, boundRevision string
+	var facts *slice
+	return func(ctx context.Context, reader driver.Reader, bead service.Bead) (bool, error) {
+		view := reader.Snapshot()
+		revision := "0"
+		if view.At != nil {
+			revision = view.At.String()
+		}
+		if facts == nil || boundIncarnation != view.Incarnation || boundRevision != revision {
+			loaded, err := s.checker.load(ctx, reader, caller)
+			if err != nil {
+				return false, &model.Error{Message: "authorization facts unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
+			}
+			if authorizationBound && authorizationRevision.String() != loaded.authorizationRevision.String() {
+				return false, &model.Error{Message: "authorization facts changed while collecting ready candidates", Data: model.ErrorData{Code: "cursor_invalid"}}
+			}
+			authorizationRevision = loaded.authorizationRevision
+			authorizationBound = true
+			boundIncarnation, boundRevision, facts = view.Incarnation, revision, loaded
+		}
+		allowed, err := template.Match(ctx, facts, authz.Resource{Kind: authz.Bead, Ref: model.RefByID(bead.ID, model.Natural64(0))})
+		if err != nil {
+			return false, authzError(err)
+		}
+		return allowed, nil
+	}, true, nil
 }
 
 func (s *GuardedService) History(ctx context.Context, by model.PrincipalRef, req service.HistoryRequest) (service.BeadPage, error) {

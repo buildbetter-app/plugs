@@ -199,6 +199,15 @@ func (s *Service) readyItems(ctx context.Context, req ReadyRequest, r driver.Rea
 			return nil, nil, err
 		}
 		bead.CreatedAt = keys[id].CreatedAt
+		if req.authorizationFilter != nil {
+			allowed, err := req.authorizationFilter(ctx, r, bead)
+			if err != nil {
+				return nil, nil, err
+			}
+			if !allowed {
+				continue
+			}
+		}
 		items = append(items, bead)
 	}
 	return items, keys, nil
@@ -281,6 +290,15 @@ func spreadClaimNextItems(items []Bead, seed string, order ...map[string]readyOr
 
 func (s *Service) Ready(ctx context.Context, by model.PrincipalRef, req ReadyRequest) (BeadPage, error) {
 	return s.readyCombined(ctx, by, req, false)
+}
+
+// ReadyWithFilter is the composition-root entry point for a compiled finite
+// authorization predicate. Keeping this capability separate from the public
+// ReadyRequest prevents a transport caller from supplying an arbitrary
+// predicate while allowing the guarded adapter to filter before pageResult.
+func (s *Service) ReadyWithFilter(ctx context.Context, by model.PrincipalRef, req ReadyRequest, filter ReadyAuthorizer) (BeadPage, error) {
+	req.authorizationFilter = filter
+	return s.Ready(ctx, by, req)
 }
 
 func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req ReadyRequest, restartOnRevision bool) (BeadPage, error) {

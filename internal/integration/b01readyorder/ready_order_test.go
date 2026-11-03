@@ -264,6 +264,19 @@ func TestB01PublicCursorBindingsAndLiveRevisionContract(t *testing.T) {
 		if second.Items[0].ID != "pl-b" || second.Items[0].Revision.String() != "2" || second.AsOf.Revision.String() != "2" || first.AsOf.Revision.String() != "1" {
 			t.Fatalf("ready cursor became a historical or invalid revision page: first %+v second %+v", first, second)
 		}
+		// Reordering the complete authorized sequence must invalidate the old
+		// offset. This is the concrete witness that the ordered-sequence digest
+		// already binds the hybrid order; no fresh clock field is needed.
+		a := document("pl-a", at, 4)
+		if _, err := conformance.Seed(f.ctx, f.store, f.lease, driver.ChangesetHeader{Time: f.clock.Now()}, []conformance.FixtureChange{{Ref: model.Ref{ID: "pl-a"}, Kind: "bead", Op: model.OpPatch, Body: jsonBytes(t, a), ChangedPaths: []string{"/fields/priority"}}}); err != nil {
+			t.Fatal(err)
+		}
+		f.unchanged(t, func() {
+			response := f.call(t, "bead.ready", map[string]any{"limit": 1, "cursor": *first.NextCursor})
+			if response.Error == nil || response.Error.Data.Code != "cursor_invalid" {
+				t.Fatalf("ordered ready membership change accepted old cursor: %+v", response)
+			}
+		})
 	})
 }
 
@@ -308,6 +321,26 @@ func TestB01CreationClockSeamFeedsOrderWithoutChangingCreationOnUpdate(t *testin
 			t.Fatal(err)
 		}
 		f.unchanged(t, func() { f.pages(t, nil, "pl-recent-p4", id.ID) })
+	})
+}
+
+func TestB01ReadyCursorInvalidatesWhenCutoffReordersWithoutWrites(t *testing.T) {
+	eachStore(t, func(t *testing.T, f *fixture) {
+		old := f.clock.Now().Add(-47 * time.Hour)
+		f.seed(t, document("pl-old", old, 0), document("pl-new", f.clock.Now(), 4))
+		first := decodePage(t, f.call(t, "bead.ready", map[string]any{"limit": 1}))
+		if len(first.Items) != 1 || first.Items[0].ID != "pl-old" || first.NextCursor == nil {
+			t.Fatalf("initial cutoff page: %+v", first)
+		}
+		// No write changes the rows or revisions. Crossing the 48-hour boundary
+		// moves the old row to the backlog bucket and reverses the full order.
+		f.advance(t, 2*time.Hour)
+		f.unchanged(t, func() {
+			response := f.call(t, "bead.ready", map[string]any{"limit": 1, "cursor": *first.NextCursor})
+			if response.Error == nil || response.Error.Data.Code != "cursor_invalid" {
+				t.Fatalf("cutoff reorder accepted old cursor: %+v", response)
+			}
+		})
 	})
 }
 
