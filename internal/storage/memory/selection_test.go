@@ -19,7 +19,8 @@ func TestSelectionRefsCanonicalAndRequestLocal(t *testing.T) {
 	s := New()
 	defer s.Close()
 	lease := sourceLease(t, s)
-	refs := []model.Ref{sourceRef("opaque/a:b"), sourceRef("opaque:a/b"), sourceRef("opaque:a:b")}
+	// Colons are opaque ID bytes in the bead/closure domain; slashes are not.
+	refs := []model.Ref{sourceRef("opaque-a:b"), sourceRef("opaque:a-b"), sourceRef("opaque:a:b")}
 	tx, header := beginSourceTest(t, s, lease, refs...)
 	for _, ref := range refs {
 		if err := tx.PutGraphRecord(ctx, driver.Record{Ref: ref, Kind: "bead", Body: []byte(`{}`)}, nil, nil); err != nil {

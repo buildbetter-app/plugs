@@ -76,11 +76,12 @@ func (r *w9ObservedReader) Select(ctx context.Context, p driver.SelectionPlan) (
 }
 
 type w9Fixture struct {
-	store *w9ObservedStore
-	lease driver.ActiveLease
-	app   *Composition
-	facts *MutableFacts
-	base  authzfixed.Facts
+	store   *w9ObservedStore
+	lease   driver.ActiveLease
+	app     *Composition
+	facts   *MutableFacts
+	base    authzfixed.Facts
+	started time.Time
 }
 
 func w9Ref(id string) model.Ref { return model.RefByID(id, model.Natural64(0)) }
@@ -90,7 +91,7 @@ var w9Reader = model.PrincipalRef{Kind: "user", ID: "user:w9-reader"}
 func newW9Fixture(t *testing.T, store driver.Store) *w9Fixture {
 	t.Helper()
 	ctx := context.Background()
-	f := &w9Fixture{store: &w9ObservedStore{Store: store}}
+	f := &w9Fixture{store: &w9ObservedStore{Store: store}, started: time.Now()}
 	t.Cleanup(func() { _ = store.Close() })
 	var err error
 	f.lease, err = store.Lease(ctx, "w9-view-selection", driver.LeaseTTL)
@@ -167,24 +168,39 @@ func (f *w9Fixture) views(t *testing.T, cfg viewops.Config) *viewops.Service {
 func (f *w9Fixture) seed(t *testing.T, records []driver.Record) model.Revision {
 	t.Helper()
 	var revision model.Revision
+	total, completed, batch := len(records), 0, 0
 	for len(records) != 0 {
 		n := len(records)
 		if n > 1000 {
 			n = 1000
 		}
-		revision = f.seedBatch(t, records[:n])
+		batch++
+		revision = f.seedBatch(t, records[:n], batch, completed, total)
+		completed += n
 		records = records[n:]
 	}
 	return revision
 }
 
-func (f *w9Fixture) seedBatch(t *testing.T, records []driver.Record) model.Revision {
+func (f *w9Fixture) seedBatch(t *testing.T, records []driver.Record, batch, completed, total int) model.Revision {
 	t.Helper()
 	ctx := context.Background()
+	started, stageStarted := time.Now(), time.Now()
+	stage, recordIndex, committed := "prepare", -1, false
+	mark := func(name string, index int) {
+		stage, recordIndex, stageStarted = name, index, time.Now()
+	}
+	defer func() {
+		if !committed {
+			// Keep the original fatal error and add the operation it came from.
+			t.Logf("W9 seed batch=%d size=%d completed_batches=%d completed_records=%d total_records=%d stage=%s record_index=%d elapsed=%s batch_elapsed=%s stage_elapsed=%s", batch, len(records), batch-1, completed, total, stage, recordIndex, time.Since(f.started), time.Since(started), time.Since(stageStarted))
+		}
+	}()
 	plans := make([]*pipeline.SourceProjectionPlan, len(records))
 	keys := map[string]driver.LockKey{}
 	bumps := map[driver.Sentinel]bool{}
 	for i, record := range records {
+		mark("PrepareSource", i)
 		var p *pipeline.SourceProjectionPlan
 		var err error
 		if record.Body == nil {
@@ -197,6 +213,7 @@ func (f *w9Fixture) seedBatch(t *testing.T, records []driver.Record) model.Revis
 		}
 		plans[i] = p
 		for _, key := range p.LockKeys() {
+			mark("EncodeLockKey", i)
 			id, err := driver.EncodeLockKey(key)
 			if err != nil {
 				t.Fatal(err)
@@ -218,11 +235,13 @@ func (f *w9Fixture) seedBatch(t *testing.T, records []driver.Record) model.Revis
 		requests[i] = driver.LockRequest{Key: keys[id], Mode: driver.LockUpdate}
 		lockKeys[i] = keys[id]
 	}
+	mark("Write", -1)
 	tx, err := f.store.Write(ctx, f.lease)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Close()
+	mark("Lock", -1)
 	states, err := tx.Lock(ctx, requests)
 	if err != nil {
 		t.Fatal(err)
@@ -233,6 +252,7 @@ func (f *w9Fixture) seedBatch(t *testing.T, records []driver.Record) model.Revis
 			previous[state.Key.Ref.ID] = state
 		}
 	}
+	mark("Head", -1)
 	if _, err := tx.Head(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -246,11 +266,13 @@ func (f *w9Fixture) seedBatch(t *testing.T, records []driver.Record) model.Revis
 	for i, p := range plans {
 		record := records[i]
 		before := previous[record.Ref.ID]
+		mark("SourceSelectionRows", i)
 		rowKeys, err := pipeline.SourceSelectionRows(record.Ref)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if record.Body == nil {
+			mark("Delete", i)
 			if err := tx.Delete(ctx, record.Ref); err != nil {
 				t.Fatal(err)
 			}
@@ -259,6 +281,7 @@ func (f *w9Fixture) seedBatch(t *testing.T, records []driver.Record) model.Revis
 			}
 		} else {
 			var doc pipeline.Document
+			mark("DecodeSource", i)
 			if err := json.Unmarshal(record.Body, &doc); err != nil {
 				t.Fatal(err)
 			}
@@ -266,9 +289,11 @@ func (f *w9Fixture) seedBatch(t *testing.T, records []driver.Record) model.Revis
 			for i, link := range doc.Links {
 				links[i] = driver.SourceLink{Kind: link.Kind, To: link.To}
 			}
+			mark("PutGraphRecord", i)
 			if err := writer.PutGraphRecord(ctx, record, doc.Parent, links); err != nil {
 				t.Fatal(err)
 			}
+			mark("SelectionRows", i)
 			rows, err := p.SelectionRows(tx.Snapshot().Incarnation, before.Revision)
 			if err != nil || len(rows) != len(rowKeys) {
 				t.Fatalf("actual producer rows=%d keys=%d err=%v", len(rows), len(rowKeys), err)
@@ -288,6 +313,7 @@ func (f *w9Fixture) seedBatch(t *testing.T, records []driver.Record) model.Revis
 	}
 	for _, table := range []driver.DerivedTable{driver.DerivedSortKey, driver.DerivedAttribute, driver.DerivedReferenceIndex} {
 		if len(remove[table])+len(add[table]) != 0 {
+			mark("PutSelectionDerived/"+string(table), -1)
 			if err := pipeline.PutSelectionDerived(ctx, tx, table, remove[table], add[table]); err != nil {
 				t.Fatal(err)
 			}
@@ -297,13 +323,16 @@ func (f *w9Fixture) seedBatch(t *testing.T, records []driver.Record) model.Revis
 	for sentinel := range bumps {
 		sentinels = append(sentinels, sentinel)
 	}
+	mark("BumpSentinels", -1)
 	if err := tx.BumpSentinels(ctx, sentinels); err != nil {
 		t.Fatal(err)
 	}
+	mark("Commit", -1)
 	cs, err := tx.Commit(ctx, header)
 	if err != nil {
 		t.Fatal(err)
 	}
+	committed = true
 	return cs.Revision
 }
 func w9Record(id, typ, project, title, status string, labels ...string) driver.Record {
@@ -591,6 +620,16 @@ func TestW9OrdinaryAuthorizedCapVersusExplicit100kSummaryAcrossEngines(t *testin
 		// engine work. Component budgets and test deadlines stay unchanged.
 		stop := make(chan struct{})
 		done := make(chan struct{})
+		lostDone := make(chan struct{})
+		renewCtx, cancelRenew := context.WithCancel(context.Background())
+		go func() {
+			defer close(lostDone)
+			select {
+			case <-f.lease.Lost():
+				t.Logf("W9 lease Lost observed elapsed=%s", time.Since(f.started))
+			case <-stop:
+			}
+		}()
 		go func() {
 			defer close(done)
 			timer := time.NewTicker(driver.LeaseTTL / 3)
@@ -600,13 +639,23 @@ func TestW9OrdinaryAuthorizedCapVersusExplicit100kSummaryAcrossEngines(t *testin
 				case <-stop:
 					return
 				case <-timer.C:
-					if err := f.lease.Renew(context.Background()); err != nil {
+					started := time.Now()
+					t.Logf("W9 lease renewal start elapsed=%s", time.Since(f.started))
+					err := f.lease.Renew(renewCtx)
+					t.Logf("W9 lease renewal end elapsed=%s duration=%s error_type=%T error_value=%#v error=%v", time.Since(f.started), time.Since(started), err, err, err)
+					if err != nil {
 						return
 					}
 				}
 			}
 		}()
-		defer func() { close(stop); <-done }()
+		defer func() {
+			t.Logf("W9 lease renewal cleanup elapsed=%s", time.Since(f.started))
+			close(stop)
+			cancelRenew()
+			<-done
+			<-lostDone
+		}()
 		records := make([]driver.Record, 100000)
 		for i := range records {
 			records[i] = w9Record(fmt.Sprintf("w9-%06d", i), fmt.Sprintf("kind-%02d", i%100), "visible-name", "cap", "todo")
