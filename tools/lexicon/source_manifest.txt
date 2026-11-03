@@ -990,6 +990,7 @@ spec/s1-b01-b04/fixture_test.go
 spec/s1-b01-b04/manifest.json
 spec/s1-b01-b04/record_reference.py
 spec/s1-b01-b04/recorded_integrity_test.go
+spec/s1-b01-b04/reference_recording_test.go
 spec/s1-b01-b04/replay_support_test.go
 spec/s1-b01-b04/replay_test.go
 spec/s1-b01-b04/run-1.json
