@@ -99,9 +99,16 @@ class NativeAdmission(NamedTuple):
     artifact_size: int
 
 
-# Producer delivery alone does not admit this privileged helper.
-# Native admission is separately reviewed trusted source; this gate stays closed.
-NATIVE_ADMISSION: NativeAdmission | None = None
+# Trusted admission for the independently reviewed official R41610284344 bytes.
+# Descriptor/profile adoption and real consumer qualification remain separate.
+NATIVE_ADMISSION: NativeAdmission | None = NativeAdmission(
+    descriptor="41610284344:13218208758:4aa497bb1dfb70bf85371daa9e388b5b0ae84130f83f45a49816559d4698c0db",
+    workflow_sha="5b1546459abe9c21fc6045380ad2bb25df8cbf99",
+    workflow_branch="codex/b1c-native-producer-d70c-20261102",
+    label="b1c-native-d70c-20261102",
+    artifact_digest="sha256:c6e9bf1b87a115be24eb17a0e80964ab92032b2c29573c0ccc78503a41fb3e92",
+    artifact_size=111644381,
+)
 
 
 def bundle_profile(schema: str) -> BundleProfile:
