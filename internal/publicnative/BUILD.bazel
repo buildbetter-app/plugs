@@ -8,7 +8,7 @@ go_library(
 )
 
 # Consumer tests must declare this input and pass
-# PLUG_PINNED_DOLT_BINARY=$(rlocationpath @dolt_native_linux_amd64//:dolt).
+# PLUG_PINNED_DOLT_BINARY=$(rlocationpath //internal/publicnative:dolt_runtime).
 # StartDolt hashes the extracted member again before executing it.
 filegroup(
     name = "dolt_runtime",

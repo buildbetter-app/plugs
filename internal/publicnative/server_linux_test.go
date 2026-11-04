@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -32,25 +34,75 @@ func TestListenerOwnershipRejectsOtherProcess(t *testing.T) {
 	if err != nil || !present || !owned {
 		t.Fatalf("our listener: owned=%t present=%t error=%v", owned, present, err)
 	}
-	// PID 1 is not this test process. Seeing its listener would fail closed.
-	if os.Getpid() != 1 {
-		owned, present, err = ownedLoopbackListener(1, port)
-		if err != nil || !present || owned {
-			t.Fatalf("unrelated PID listener: owned=%t present=%t error=%v", owned, present, err)
-		}
+	// A same-UID child has a readable fd table but owns no listener.
+	child := exec.Command("/bin/sleep", "5")
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = child.Process.Kill(); _ = child.Wait() })
+	owned, present, err = ownedLoopbackListener(child.Process.Pid, port)
+	if err != nil || !present || owned {
+		t.Fatalf("unrelated child listener: owned=%t present=%t error=%v", owned, present, err)
 	}
 }
 
 func TestChildEnvBindsPhysicalRoot(t *testing.T) {
-	s := &Server{DataRoot: "/owned/data"}
-	got := s.ChildEnv([]string{"PATH=/usr/bin", "BEADS_DOLT_DATA_DIR=/foreign", "DOLT_ROOT_PATH=/foreign", "BEADS_DOLT_AUTO_START=1"})
+	s := &Server{Port: 4301, DataRoot: "/owned/data", doltRoot: "/owned/config"}
+	got := s.ChildEnv([]string{"PATH=/usr/bin", "HOME=/owned/home", "BEADS_DIR=/owned/workspace/.beads",
+		"BEADS_ACTOR=public-recorder", "BEADS_NO_DAEMON=1", "GIT_AUTHOR_NAME=Public recorder",
+		"UNRELATED=must-not-leak",
+		"BEADS_DOLT_DATA_DIR=/foreign", "DOLT_ROOT_PATH=/foreign",
+		"BEADS_DOLT_AUTO_START=1", "BEADS_DOLT_SERVER_HOST=foreign", "BEADS_DOLT_SERVER_PORT=1234",
+		"BEADS_DOLT_SERVER_SOCKET=/foreign/socket", "BEADS_DOLT_SERVER_DATABASE=foreign", "BEADS_DOLT_SERVER_PASSWORD=secret"})
 	joined := fmt.Sprint(got)
-	for _, want := range []string{"BEADS_DOLT_DATA_DIR=/owned/data", "DOLT_ROOT_PATH=/owned/data", "BEADS_DOLT_AUTO_START=0"} {
+	for _, want := range []string{"HOME=/owned/home", "BEADS_DIR=/owned/workspace/.beads",
+		"BEADS_ACTOR=public-recorder", "BEADS_NO_DAEMON=1", "GIT_AUTHOR_NAME=Public recorder",
+		"BEADS_DOLT_DATA_DIR=/owned/data", "DOLT_ROOT_PATH=/owned/config", "BEADS_DOLT_AUTO_START=0",
+		"BEADS_DOLT_SERVER_HOST=127.0.0.1", "BEADS_DOLT_SERVER_PORT=4301", "BEADS_DOLT_PORT=4301"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing %s in %s", want, joined)
 		}
 	}
-	if strings.Contains(joined, "/foreign") {
+	if strings.Contains(joined, "foreign") || strings.Contains(joined, "1234") || strings.Contains(joined, "secret") || strings.Contains(joined, "must-not-leak") {
 		t.Fatalf("foreign root retained: %s", joined)
+	}
+}
+
+func TestRetainStartupFailureEvidence(t *testing.T) {
+	evidence := t.TempDir()
+	root := filepath.Join(evidence, "public-native-dolt-failure")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{Root: root, evidence: evidence, receipt: filepath.Join(root, "server.jsonl"),
+		logPath: filepath.Join(root, "dolt.log"), configPath: filepath.Join(root, "dolt-root", ".dolt", "config_global.json")}
+	want := []byte("version failed after output was recorded\n")
+	if err := os.WriteFile(s.receipt, want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(s.configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(s.configPath, []byte("private settings\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(s.logPath, []byte("startup log\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.retainFiles(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(s.receipt)
+	if err != nil || string(got) != string(want) {
+		t.Fatalf("retained startup receipt=%q, error=%v", got, err)
+	}
+	for path, want := range map[string]string{s.logPath: "startup log\n", s.configPath: "private settings\n"} {
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != want {
+			t.Fatalf("retained startup artifact %s=%q, error=%v", path, got, err)
+		}
 	}
 }

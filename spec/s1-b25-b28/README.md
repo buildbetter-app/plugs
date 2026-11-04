@@ -117,12 +117,18 @@ for it. The existing remote workflow retains undeclared outputs and original
 output archives, but actual new recording bytes and receipts are still required.
 
 The consumer composes the producer-owned `internal/publicnative` helper from
-source `4daecb4457c92e9d2f6b08629bbd4073c6c01b22` without modifying its bytes.
-`StartDolt` returns the owned loopback port, PID and real data root in process;
-`ChildEnv` binds every Beads child to that root, and `RequireDatabaseDir`
-checks the actual database directory created by init. The target declares the
-pinned Dolt runfile, and the helper retains its startup and cleanup receipts.
-There is no outer endpoint argument or stand-in database directory.
+source `43c0f2410ccb24062b8bd1bd073aeb29ef21288f` without modifying its bytes.
+`StartDolt` returns the owned loopback port, PID and real data root in process.
+Every Beads child consumes returned `ChildEnv` unchanged: `BEADS_DOLT_DATA_DIR`
+is the physical data root, while `DOLT_ROOT_PATH` is the separate private
+configuration root. `RequireDatabaseDir` checks the actual database directory
+created by init. The target declares and expands the same direct pinned Dolt
+runfile label. The helper retains startup, version, config and cleanup evidence,
+including early startup failures; its ordinary unit tests provide no native
+execution credit. There is no outer endpoint argument or stand-in database
+directory. The earlier e949 composition of producer4da and both ba387 source
+blockers remain immutable historical findings; child dependency bytes and gates
+cannot upgrade them.
 
 Native recording remains **BLOCKED** pending independent helper review and
 actual lifecycle proof, trusted preparer/admission/control adoption, actual
