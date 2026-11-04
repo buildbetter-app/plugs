@@ -262,6 +262,7 @@ internal/core/pipeline/claim_recovery.go
 internal/core/pipeline/dependency.go
 internal/core/pipeline/document.go
 internal/core/pipeline/gate.go
+internal/core/pipeline/graph_validation.go
 internal/core/pipeline/guard_test.go
 internal/core/pipeline/hierarchy.go
 internal/core/pipeline/hierarchy_indexed.go
@@ -1062,6 +1063,7 @@ internal/storage/sqlite/locks_other.go
 internal/storage/sqlite/locks_unix.go
 internal/storage/sqlite/metadata.go
 internal/storage/sqlite/metadata_outcome_test.go
+internal/storage/sqlite/native_restore_detach_test.go
 internal/storage/sqlite/offline_history.go
 internal/storage/sqlite/offline_restore.go
 internal/storage/sqlite/parent_counter.go
