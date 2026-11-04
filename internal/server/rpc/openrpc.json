@@ -635,6 +635,9 @@
           "metadata": {
             "$ref": "#/components/schemas/LinkMetadata",
             "description": "Only valid for a waits-for link. Omission preserves existing metadata on re-add; explicit {} selects all-children without also_blocks."
+          },
+          "targetKind": {
+            "$ref": "#/components/schemas/LinkTargetKind"
           }
         },
         "required": [
@@ -1308,6 +1311,9 @@
           "reason": {
             "type": "string",
             "maxLength": 128
+          },
+          "targetKind": {
+            "$ref": "#/components/schemas/LinkTargetKind"
           }
         },
         "required": [
@@ -4444,6 +4450,14 @@
           "item"
         ],
         "additionalProperties": false
+      },
+      "LinkTargetKind": {
+        "type": "string",
+        "enum": [
+          "local",
+          "external"
+        ],
+        "description": "Omission is local. Explicit external targets retain an exact nonempty branch-zero ID and are never resolved against local beads."
       }
     },
     "errors": {

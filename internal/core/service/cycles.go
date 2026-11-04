@@ -166,7 +166,7 @@ func readCycleGraph(ctx context.Context, rows map[string]cycleRow, req CyclesReq
 	}
 	for id, row := range rows {
 		for _, edge := range row.links {
-			if !edge.To.IsID() || !edge.To.Branch.IsZero() || edge.To.ID == "" {
+			if edge.TargetKind == model.LinkTargetExternal || !edge.To.IsID() || !edge.To.Branch.IsZero() || edge.To.ID == "" {
 				continue
 			}
 			if edge.Kind == "blocks" || edge.Kind == "conditional-blocks" {

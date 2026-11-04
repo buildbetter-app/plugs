@@ -208,6 +208,7 @@ internal/core/model/encodings_test.go
 internal/core/model/events.go
 internal/core/model/history.go
 internal/core/model/json.go
+internal/core/model/link_target_test.go
 internal/core/model/natural.go
 internal/core/model/natural_test.go
 internal/core/model/precondition.go
@@ -269,6 +270,7 @@ internal/core/pipeline/dependency.go
 internal/core/pipeline/document.go
 internal/core/pipeline/gate.go
 internal/core/pipeline/graph_validation.go
+internal/core/pipeline/graph_validation_test.go
 internal/core/pipeline/guard_test.go
 internal/core/pipeline/hierarchy.go
 internal/core/pipeline/hierarchy_indexed.go
@@ -310,6 +312,7 @@ internal/core/restore/BUILD.bazel
 internal/core/restore/archive.go
 internal/core/restore/b17_connected_query_test.go
 internal/core/restore/b17_data_test.go
+internal/core/restore/external_target_test.go
 internal/core/restore/fixture_test.go
 internal/core/restore/native_ancestor_restore_test.go
 internal/core/restore/native_hierarchy.go
@@ -337,6 +340,7 @@ internal/core/service/cycles.go
 internal/core/service/cycles_test.go
 internal/core/service/direct_blockers.go
 internal/core/service/direct_blockers_test.go
+internal/core/service/external_target_test.go
 internal/core/service/gate.go
 internal/core/service/graph.go
 internal/core/service/heartbeat.go
@@ -367,6 +371,7 @@ internal/core/service/workflow_refs.go
 internal/core/viewops/BUILD.bazel
 internal/core/viewops/after_expiry_test.go
 internal/core/viewops/epic_progress.go
+internal/core/viewops/external_target_test.go
 internal/core/viewops/label_predicate.go
 internal/core/viewops/mapping_test.go
 internal/core/viewops/parent_projection.go
@@ -471,6 +476,7 @@ internal/integration/collabwatch/BUILD.bazel
 internal/integration/collabwatch/integration_test.go
 internal/integration/collabwatch/reconnect_acceptance_test.go
 internal/integration/converterroundtrip/BUILD.bazel
+internal/integration/converterroundtrip/external_target_test.go
 internal/integration/converterroundtrip/hierarchy_import_test.go
 internal/integration/converterroundtrip/history.go
 internal/integration/converterroundtrip/identity_counters_test.go
@@ -521,9 +527,11 @@ internal/integration/gatecontract/authorization_test.go
 internal/integration/gatecontract/consumer_host_test.go
 internal/integration/gatecontract/consumer_test.go
 internal/integration/gatecontract/engine_test.go
+internal/integration/gatecontract/external_target_test.go
 internal/integration/gatecontract/fanout_test.go
 internal/integration/gatecontract/fixture_test.go
 internal/integration/gatecontract/metadata_test.go
+internal/integration/gatecontract/public_dump_restore_test.go
 internal/integration/graphacceptance/BUILD.bazel
 internal/integration/graphacceptance/README.md
 internal/integration/graphacceptance/fixture_test.go
@@ -1292,6 +1300,8 @@ spec/s1-b05-b08/cycle_admission_test.go
 spec/s1-b05-b08/cycle_fence_test.go
 spec/s1-b05-b08/cycle_oracle_test.go
 spec/s1-b05-b08/cycle_rpc_test.go
+spec/s1-b05-b08/edge_contract_oracle_test.go
+spec/s1-b05-b08/edge_contract_test.go
 spec/s1-b05-b08/engines_test.go
 spec/s1-b05-b08/ephemeral_cycle_oracle_test.go
 spec/s1-b05-b08/ephemeral_cycle_test.go

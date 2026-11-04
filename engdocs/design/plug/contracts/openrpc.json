@@ -1600,6 +1600,13 @@
           "required": true
         },
         {
+          "name": "targetKind",
+          "required": false,
+          "schema": {
+            "$ref": "#/components/schemas/LinkTargetKind"
+          }
+        },
+        {
           "name": "metadata",
           "required": false,
           "schema": {
@@ -1708,6 +1715,13 @@
             "type": "string"
           },
           "required": true
+        },
+        {
+          "name": "targetKind",
+          "required": false,
+          "schema": {
+            "$ref": "#/components/schemas/LinkTargetKind"
+          }
         },
         {
           "name": "expect",
@@ -7463,6 +7477,9 @@
           "metadata": {
             "$ref": "#/components/schemas/LinkMetadata",
             "description": "Only valid for a waits-for link. Omission preserves existing metadata on re-add; explicit {} selects all-children without also_blocks."
+          },
+          "targetKind": {
+            "$ref": "#/components/schemas/LinkTargetKind"
           }
         },
         "required": [
@@ -8120,6 +8137,9 @@
           "reason": {
             "type": "string",
             "maxLength": 128
+          },
+          "targetKind": {
+            "$ref": "#/components/schemas/LinkTargetKind"
           }
         },
         "required": [
@@ -11256,6 +11276,14 @@
           "item"
         ],
         "additionalProperties": false
+      },
+      "LinkTargetKind": {
+        "type": "string",
+        "enum": [
+          "local",
+          "external"
+        ],
+        "description": "Omission is local. Explicit external targets retain an exact nonempty branch-zero ID and are never resolved against local beads."
       }
     },
     "errors": {
@@ -13893,7 +13921,7 @@
     "methodCount": 85,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
     "nameSha256": "e4cc1165f352268dd7412a50f2ec6ded5daa8a22c6f2ad3f4205ef382c423907",
-    "descriptorSha256": "b54710ceca844685f4959d9742caeb4f9ecd53011d4d1471c80a05de4f4e1061",
+    "descriptorSha256": "2c3df724c4935e0d6f6934f46e3fbed779ef33eadad93954eab51a8d11bea32f",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -14916,6 +14944,13 @@
             "required": true
           },
           {
+            "name": "targetKind",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/LinkTargetKind"
+            }
+          },
+          {
             "name": "metadata",
             "required": false,
             "schema": {
@@ -14986,6 +15021,13 @@
               "type": "string"
             },
             "required": true
+          },
+          {
+            "name": "targetKind",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/LinkTargetKind"
+            }
           },
           {
             "name": "expect",
