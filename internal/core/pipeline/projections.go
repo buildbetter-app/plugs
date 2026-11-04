@@ -23,7 +23,6 @@ type SourceProjectionPlan struct {
 	presence projectionPresence
 	links    []driver.SourceLink
 	keys     []driver.DerivedRowKey
-	queue    *driver.QueueFacts
 }
 
 // SourceSelectionRows are stable opaque identities. Changing a sort value does
@@ -161,30 +160,8 @@ func PrepareSourceRecord(record driver.Record) (*SourceProjectionPlan, error) {
 		return nil, err
 	}
 	p.doc, p.presence, p.links = &doc, presence, links
-	p.queue = canonicalQueueFacts(record.Body, doc)
 	p.keys, err = SourceSelectionRows(record.Ref)
 	return p, err
-}
-
-// canonicalQueueFacts attests only the exact bytes encoded from this document.
-// The Writer can supply its original typed image before opaque principal
-// caveats become generic maps on decode and acquire a different key order.
-// Raw source preparation retains the stricter decoded-image comparison.
-func canonicalQueueFacts(body []byte, doc Document) *driver.QueueFacts {
-	canonical, err := json.Marshal(doc)
-	if err != nil || !bytes.Equal(canonical, body) {
-		return nil
-	}
-	queue := &driver.QueueFacts{Version: driver.QueueFactsVersion, LeasePresent: doc.Lease != nil}
-	for _, link := range doc.Links {
-		value := driver.QueueLink{Kind: link.Kind, To: link.To}
-		if link.Metadata != nil {
-			metadata := *link.Metadata
-			value.Metadata = &metadata
-		}
-		queue.Links = append(queue.Links, value)
-	}
-	return queue
 }
 
 func PrepareSourceDelete(ref model.Ref, kind string) (*SourceProjectionPlan, error) {
@@ -375,7 +352,19 @@ func (p *SourceProjectionPlan) SelectionRows(incarnation string, revision model.
 				// aliases, duplicate/miscased lease properties, nulls, unknown
 				// members or noncanonical envelopes keep Queue nil. Ordinary
 				// projections and their logical Values remain unchanged.
-				index.Queue = p.queue
+				canonical, err := json.Marshal(doc)
+				if err == nil && bytes.Equal(canonical, p.record.Body) {
+					queue := &driver.QueueFacts{Version: driver.QueueFactsVersion, LeasePresent: doc.Lease != nil}
+					for _, link := range doc.Links {
+						value := driver.QueueLink{Kind: link.Kind, To: link.To}
+						if link.Metadata != nil {
+							metadata := *link.Metadata
+							value.Metadata = &metadata
+						}
+						queue.Links = append(queue.Links, value)
+					}
+					index.Queue = queue
+				}
 				row.Index = index
 			}
 		case 1:
@@ -439,9 +428,6 @@ func (p *prepared) prepareProjections(ctx context.Context) error {
 				return e
 			}
 			plan, err = PrepareSourceRecord(driver.Record{Ref: pending.ref, Kind: pending.kind, Body: body})
-			if err == nil && plan.doc != nil {
-				plan.queue = canonicalQueueFacts(body, pending.doc)
-			}
 		}
 		if err != nil {
 			return err

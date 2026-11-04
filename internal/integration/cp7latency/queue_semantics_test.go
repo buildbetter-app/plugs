@@ -233,6 +233,7 @@ func TestQueueProjectionPublicClaimAndLegacyFallback(t *testing.T) {
 			if err != nil || empty == nil || !empty.NullResult || empty.Commit.Revision.IsZero() || len(empty.Commit.Results) != 0 {
 				t.Fatalf("public terminal empty receipt: %+v %v", empty, err)
 			}
+			t.Logf("W8_QUEUE_TERMINAL full_guarded_path=true api=%+v work=%+v validation=%+v", counts.value(), counts.work(), counts.validation.work())
 			if counts.value().Queries != 0 || counts.work().SelectorKeys < 3*int64(f.n) {
 				t.Fatalf("terminal empty skipped fresh complete census: %+v %+v", counts.value(), counts.work())
 			}

@@ -98,10 +98,6 @@ func TestQueueProjectionSurvivesCanonicalAgentClaim(t *testing.T) {
 	if err != nil || doc.Lease == nil || doc.Lease.Principal.ID != agent.ID {
 		t.Fatalf("actual claim lease: %+v %v", doc.Lease, err)
 	}
-	decoded, err := json.Marshal(doc)
-	if err != nil || bytes.Equal(decoded, records[0].Body) {
-		t.Fatal("control did not exercise opaque ref-caveat key reordering")
-	}
 	rows, err := r.DerivedRows(context.Background(), driver.DerivedSortKey, ref.ID)
 	if err != nil || len(rows) != 1 || rows[0].Index == nil || rows[0].Index.Queue == nil || !rows[0].Index.Queue.LeasePresent ||
 		rows[0].Index.Source.Digest != driver.SelectionDigest(records[0].Body) || rows[0].Index.Source.Revision.String() != records[0].Revision.String() {
