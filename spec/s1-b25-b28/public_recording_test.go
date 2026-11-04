@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -931,7 +932,11 @@ func replayPublicArchive(t *testing.T, output, storeRoot, label string, archive 
 				}
 				compare("-reopen")
 			}
-			recordPublicSubscriber(t, ctx, store, filepath.Join(output, label+"-plug-"+engine+"-subscriber.json"), []string{"pub-root", publicChildID, "pub-dependency"}, profile)
+			sqlitePath := ""
+			if engine == "sqlite" {
+				sqlitePath = path
+			}
+			verifyFault := recordPublicSubscriber(t, ctx, store, filepath.Join(output, label+"-plug-"+engine+"-subscriber.json"), []string{"pub-root", publicChildID, "pub-dependency"}, profile, sqlitePath)
 			complete := nativePlugImage(t, ctx, store, profile)
 			writeRecordingValue(t, filepath.Join(output, label+"-plug-"+engine+"-post-write-state.json"), complete)
 			if sqlDriver != nil {
@@ -946,6 +951,9 @@ func replayPublicArchive(t *testing.T, output, storeRoot, label string, archive 
 				}
 				reopened := nativePlugImage(t, ctx, store, profile)
 				writeRecordingValue(t, filepath.Join(output, label+"-plug-"+engine+"-post-write-reopen-state.json"), reopened)
+				if verifyFault != nil {
+					verifyFault(store)
+				}
 				if !equalJSON(complete, reopened) {
 					t.Fatal("SQL reopen changed native-origin source, history, derived state or durable receipts")
 				}
@@ -1061,7 +1069,7 @@ func nativePlugImage(t *testing.T, ctx context.Context, store driver.Store, prof
 		t.Fatal(err)
 	}
 	receipts := map[string]any{}
-	keys := []string{"s1-native-public-0", "s1-native-public-1", "s1-native-public-2", "s1-native-public-3", "s1-native-public-equal-labels", "s1-native-public-refused-aux"}
+	keys := []string{"s1-native-public-0", "s1-native-public-1", "s1-native-public-2", "s1-native-public-3", "s1-native-public-equal-labels", "s1-native-public-refused-aux", "s1-native-public-sqlite-write-fault"}
 	for _, key := range keys {
 		method := "bead.update"
 		if strings.HasSuffix(key, "refused-aux") {
@@ -1181,7 +1189,7 @@ func nativePlugImageRows(t *testing.T, image map[string]any) map[string]driver.R
 			}
 		}
 	}
-	receiptKeys := []string{"s1-native-public-0", "s1-native-public-1", "s1-native-public-2", "s1-native-public-3", "s1-native-public-equal-labels", "s1-native-public-refused-aux"}
+	receiptKeys := []string{"s1-native-public-0", "s1-native-public-1", "s1-native-public-2", "s1-native-public-3", "s1-native-public-equal-labels", "s1-native-public-refused-aux", "s1-native-public-sqlite-write-fault"}
 	receipts := image["receipts"].(map[string]any)
 	if len(receipts) != len(receiptKeys) {
 		t.Fatal("native-origin declared receipt census changed")
@@ -1379,7 +1387,7 @@ func assertNativePlugWriteDelta(t *testing.T, before, after map[string]any, req 
 // These are real public service writes on the just-imported native rows. The
 // offline import itself makes no subscriber claim. Evidence is flushed before
 // every assertion, including a refused or unexpectedly published operation.
-func recordPublicSubscriber(t *testing.T, ctx context.Context, store driver.Store, path string, ids []string, profile driver.RestoreImportProfile) {
+func recordPublicSubscriber(t *testing.T, ctx context.Context, store driver.Store, path string, ids []string, profile driver.RestoreImportProfile, sqlitePath string) func(driver.Store) {
 	t.Helper()
 	if len(ids) != 3 {
 		t.Fatal("public subscriber recording requires exact root, child and dependency IDs")
@@ -1575,7 +1583,269 @@ func recordPublicSubscriber(t *testing.T, ctx context.Context, store driver.Stor
 	if typed == nil || typed.Data.Code != "ontology_guard_failed" || refused.Replayed || refused.NullResult || !refused.Commit.Revision.IsZero() || refused.Commit.Results != nil || refused.Commit.Warnings != nil || !equalJSON(complete, afterRefusal) || postCount() != len(requests) {
 		t.Fatalf("native-origin auxiliary refusal changed a source/history/receipt/subscriber plane: %v", refusalErr)
 	}
+	var verifyFault func(driver.Store)
+	if sqlitePath != "" {
+		verifyFault = recordNativeSQLiteWriteFault(t, ctx, store, domain, observer, sqlitePath, path+".sqlite-write-fault", requests[0].ID, profile)
+	}
 	t.Logf("PUBLIC_SUBSCRIBER_RECORDING path=%s posts=%d scalar=3 replacement=1 replay=4 noop=1 refusal=1", path, postCount())
+	return verifyFault
+}
+
+type nativeSQLiteObject struct {
+	Type, Name, Table string
+	SQL               any
+}
+
+type nativeSQLiteTable struct {
+	Name    string
+	Columns []string
+	Rows    [][]any
+}
+
+type nativeSQLiteState struct {
+	Schema []nativeSQLiteObject
+	Tables []nativeSQLiteTable
+}
+
+// Enumerate every persisted SQLite table and schema object in one read
+// transaction. SQL values retain their Go/SQL types and bytes; only row order
+// is canonicalized, without dropping duplicates or omitting a table family.
+func nativeSQLiteImage(t *testing.T, ctx context.Context, path string) nativeSQLiteState {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, "SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	image := nativeSQLiteState{Schema: []nativeSQLiteObject{}, Tables: []nativeSQLiteTable{}}
+	for rows.Next() {
+		var object nativeSQLiteObject
+		if err := rows.Scan(&object.Type, &object.Name, &object.Table, &object.SQL); err != nil {
+			t.Fatal(err)
+		}
+		image.Schema = append(image.Schema, object)
+		if object.Type == "table" {
+			image.Tables = append(image.Tables, nativeSQLiteTable{Name: object.Name})
+		}
+	}
+	rowsErr, closeErr := rows.Err(), rows.Close()
+	if rowsErr != nil || closeErr != nil || len(image.Tables) == 0 {
+		t.Fatalf("complete SQLite schema census: %v / %v", rowsErr, closeErr)
+	}
+	for i := range image.Tables {
+		table := &image.Tables[i]
+		rows, err := tx.QueryContext(ctx, `SELECT * FROM "`+strings.ReplaceAll(table.Name, `"`, `""`)+`"`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		table.Columns, err = rows.Columns()
+		if err != nil {
+			t.Fatal(err)
+		}
+		type orderedRow struct {
+			key    string
+			values []any
+		}
+		ordered := []orderedRow{}
+		for rows.Next() {
+			values := make([]any, len(table.Columns))
+			pointers := make([]any, len(values))
+			for j := range values {
+				pointers[j] = &values[j]
+			}
+			if err := rows.Scan(pointers...); err != nil {
+				t.Fatal(err)
+			}
+			for j, value := range values {
+				if data, ok := value.([]byte); ok {
+					values[j] = bytes.Clone(data)
+				}
+			}
+			key, err := json.Marshal(rawRecordingFields(reflect.ValueOf(values)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			ordered = append(ordered, orderedRow{string(key), values})
+		}
+		rowsErr, closeErr := rows.Err(), rows.Close()
+		if rowsErr != nil || closeErr != nil {
+			t.Fatalf("complete SQLite table %s: %v / %v", table.Name, rowsErr, closeErr)
+		}
+		sort.Slice(ordered, func(i, j int) bool { return ordered[i].key < ordered[j].key })
+		table.Rows = make([][]any, len(ordered))
+		for j, row := range ordered {
+			table.Rows[j] = row.values
+		}
+	}
+	return image
+}
+
+// A real SQLite changeset INSERT fails only after the attempted target record
+// and version are present inside that SQL transaction. The actual error code
+// and trigger message distinguish this from prevalidation or a mocked failure.
+// Return the assertion closure so the caller first releases its normal lease,
+// closes/reopens the real driver and captures complete reopened evidence.
+func recordNativeSQLiteWriteFault(t *testing.T, ctx context.Context, store driver.Store, domain *service.Service, observer *publicPostRecorder, dbPath, path string, target model.Ref, profile driver.RestoreImportProfile) func(driver.Store) {
+	t.Helper()
+	const receiptKey = "s1-native-public-sqlite-write-fault"
+	const triggerName = "s1_native_reject_changeset"
+	const cause = "s1_native_sqlite_changeset_write_fault"
+	actor := model.PrincipalRef{Kind: "user", ID: "public-recorder"}
+	before := nativePlugImage(t, ctx, store, profile)
+	writeRecordingValue(t, path+".before.json", before)
+	rows := nativePlugImageRows(t, before)
+	targetRow, found := rows[target.ID]
+	if !found {
+		t.Fatal("SQLite fault target is absent from the native-origin preimage")
+	}
+	doc, err := pipeline.DecodeDocument(targetRow.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, err := before["meta"].(driver.Meta).Head.Uint64()
+	if err != nil || head == ^uint64(0) {
+		t.Fatal("SQLite fault preimage cannot advance")
+	}
+	key, err := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "''") + "'" }
+	request := service.UpdateRequest{ID: target, Fields: map[string]any{"title": "SQLite fault must roll back", "labels": []string{"sqlite-fault-must-not-land"}}}
+	meta := model.WriteMeta{Project: doc.Project, IdempotencyKey: hashBytes([]byte(receiptKey))}
+	trigger := fmt.Sprintf(`CREATE TRIGGER %s BEFORE INSERT ON changesets
+WHEN json_extract(CAST(NEW.data AS TEXT),'$.idempotencyKey')=%s
+BEGIN
+SELECT CASE WHEN NEW.rev<>%s
+ OR NOT EXISTS (SELECT 1 FROM records WHERE key=%s AND json_extract(CAST(data AS TEXT),'$.Revision')=%d)
+ OR NOT EXISTS (SELECT 1 FROM versions WHERE key=%s AND rev=NEW.rev)
+ THEN RAISE(ABORT,'s1_native_sqlite_record_version_not_staged') END;
+SELECT RAISE(ABORT,'%s'); END;`, triggerName, quote(meta.IdempotencyKey), quote(fmt.Sprintf("%020d", head+1)), quote(key), head+1, quote(key), cause)
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	execSQL := func(label, statement string) error {
+		started := time.Now().UTC()
+		result, err := db.ExecContext(ctx, statement)
+		receipt := map[string]any{"statement": statement, "started_at": started, "finished_at": time.Now().UTC(), "result_present": result != nil, "error_type": fmt.Sprintf("%T", err), "error": err}
+		if result != nil {
+			// sql.Result wraps a live connection mutex. Record its public
+			// returned values, never traverse that unrelated cyclic handle.
+			affected, affectedErr := result.RowsAffected()
+			insertID, insertErr := result.LastInsertId()
+			receipt["rows_affected"], receipt["rows_affected_error"] = affected, affectedErr
+			receipt["last_insert_id"], receipt["last_insert_id_error"] = insertID, insertErr
+		}
+		writeRawRecordingValue(t, path+"."+label+".raw-fields.json", receipt)
+		return err
+	}
+	if err := execSQL("install-trigger", trigger); err != nil {
+		t.Fatalf("SQLite fault trigger setup: %v", err)
+	}
+	beforeSQL := nativeSQLiteImage(t, ctx, dbPath)
+	writeRecordingValue(t, path+".before-sql.json", beforeSQL)
+	posts := func() []publicPostObservation {
+		observer.mu.Lock()
+		defer observer.mu.Unlock()
+		return append([]publicPostObservation(nil), observer.Observations...)
+	}
+	beforePosts := posts()
+	writeRecordingValue(t, path+".before-posts.json", beforePosts)
+	outcome, writeErr := domain.UpdateWithOutcome(ctx, actor, request, meta)
+	var typed *model.Error
+	errors.As(writeErr, &typed)
+	var sqliteError interface{ Code() int }
+	hasSQLiteError := errors.As(writeErr, &sqliteError)
+	code := 0
+	if hasSQLiteError {
+		code = sqliteError.Code()
+	}
+	writeRawRecordingValue(t, path+".return.raw-fields.json", map[string]any{"outcome": outcome, "error_type": fmt.Sprintf("%T", writeErr), "error": writeErr, "typed_error": typed, "sqlite_error_present": hasSQLiteError, "sqlite_code": code})
+	after := nativePlugImage(t, ctx, store, profile)
+	writeRecordingValue(t, path+".after.json", after)
+	afterSQL := nativeSQLiteImage(t, ctx, dbPath)
+	writeRecordingValue(t, path+".after-sql.json", afterSQL)
+	afterPosts := posts()
+	writeRecordingValue(t, path+".after-posts.json", afterPosts)
+	type rawCommit model.Commit
+	writeRecordingValue(t, path+".operation.json", map[string]any{"surface": "service.UpdateWithOutcome", "request": request, "meta": meta, "commit": rawCommit(outcome.Commit), "replayed": outcome.Replayed, "null_result": outcome.NullResult, "error": fmt.Sprint(writeErr), "typed_error": typed, "sqlite_error_present": hasSQLiteError, "sqlite_code": code, "encoding": "raw-failure-fields-not-public-commit"})
+	dropErr := execSQL("remove-trigger", "DROP TRIGGER "+triggerName)
+	afterCleanupSQL := nativeSQLiteImage(t, ctx, dbPath)
+	writeRecordingValue(t, path+".after-trigger-cleanup-sql.json", afterCleanupSQL)
+	return func(reopened driver.Store) {
+		t.Helper()
+		reopenedImage := nativePlugImage(t, ctx, reopened, profile)
+		writeRecordingValue(t, path+".reopened.json", reopenedImage)
+		reopenedSQL := nativeSQLiteImage(t, ctx, dbPath)
+		writeRecordingValue(t, path+".reopened-sql.json", reopenedSQL)
+		// All actual returned fields, typed errors, receipt lookups, full reader
+		// and SQL images, and subscriber bodies are saved before these checks.
+		if reopened == store || dropErr != nil || writeErr == nil || !hasSQLiteError || code != 1811 || typed != nil || !strings.Contains(writeErr.Error(), cause) || !reflect.DeepEqual(outcome, port.WriteOutcome{}) {
+			t.Fatalf("real SQLite staged-publication fault/cleanup/reopen was not proved: write=%v drop=%v", writeErr, dropErr)
+		}
+		for _, image := range []map[string]any{before, after, reopenedImage} {
+			nativePlugImageRows(t, image)
+			if image["receipts"].(map[string]any)[receiptKey] != nil {
+				t.Fatal("failed SQLite publication stored its idempotency receipt")
+			}
+		}
+		if !reflect.DeepEqual(before, after) || !reflect.DeepEqual(before, reopenedImage) || !reflect.DeepEqual(beforeSQL, afterSQL) || !reflect.DeepEqual(beforePosts, afterPosts) {
+			t.Fatal("SQLite write fault changed a row/history/derived/archive/receipt/SQL/subscriber plane")
+		}
+		// Cleanup removes exactly our captured trigger. No table, schema or
+		// lease difference is hidden behind a family-wide exclusion.
+		clean := beforeSQL
+		clean.Schema = []nativeSQLiteObject{}
+		removed := 0
+		for _, object := range beforeSQL.Schema {
+			if object.Type == "trigger" && object.Name == triggerName {
+				if object.Table != "changesets" || object.SQL != strings.TrimSuffix(trigger, ";") {
+					t.Fatal("installed SQLite fault trigger does not match its exact authored SQL")
+				}
+				removed++
+				continue
+			}
+			clean.Schema = append(clean.Schema, object)
+		}
+		if removed != 1 || !reflect.DeepEqual(clean, afterCleanupSQL) {
+			t.Fatal("SQLite trigger cleanup changed unrelated schema or table contents")
+		}
+		// The caller's ordinary deferred Release clears only these three
+		// columns. Preserve singleton/epoch and every other table exactly.
+		clean.Tables = append([]nativeSQLiteTable(nil), clean.Tables...)
+		leaseTables := 0
+		for i := range clean.Tables {
+			table := &clean.Tables[i]
+			if table.Name != "active_lease" {
+				continue
+			}
+			leaseTables++
+			if !reflect.DeepEqual(table.Columns, []string{"singleton", "epoch", "token", "holder", "expires"}) || len(table.Rows) != 1 || table.Rows[0][0] != int64(1) || table.Rows[0][3] != "s1-native-public-subscriber" {
+				t.Fatal("SQLite fault does not have the exact owned active-lease row")
+			}
+			values := append([]any(nil), table.Rows[0]...)
+			if token, ok := values[2].(string); !ok || token == "" {
+				t.Fatal("SQLite fault has no captured live lease token")
+			}
+			values[2], values[3], values[4] = "", "", int64(0)
+			table.Rows = [][]any{values}
+		}
+		if leaseTables != 1 || !reflect.DeepEqual(clean, reopenedSQL) {
+			t.Fatal("SQLite reopen changed more than the exact normal lease release")
+		}
+		t.Logf("PUBLIC_SQLITE_WRITE_FAULT path=%s code=%d cause=%s receipt=absent reopen=conserved", path, code, cause)
+	}
 }
 
 // This control derives a declared hash-allocator variant of the explicitly
@@ -1680,11 +1950,13 @@ func TestPublicProjectionAuthoredImportPublicSubscriberAcrossDrivers(t *testing.
 			defer cancel()
 			var store driver.Store
 			var err error
+			sqlitePath := ""
 			switch engine {
 			case "memory":
 				store = memory.New()
 			case "sqlite":
-				store, err = (sqlite.Driver{}).Open(ctx, driver.Config{DSN: filepath.Join(t.TempDir(), "control.sqlite")})
+				sqlitePath = filepath.Join(t.TempDir(), "control.sqlite")
+				store, err = (sqlite.Driver{}).Open(ctx, driver.Config{DSN: sqlitePath})
 			case "postgres":
 				store, err = (postgres.Driver{}).Open(ctx, driver.Config{DSN: testclock.PostgresDSN(t)})
 			}
@@ -1692,8 +1964,10 @@ func TestPublicProjectionAuthoredImportPublicSubscriberAcrossDrivers(t *testing.
 				t.Fatal(err)
 			}
 			t.Cleanup(func() {
-				if err := store.Close(); err != nil {
-					t.Error(err)
+				if store != nil {
+					if err := store.Close(); err != nil {
+						t.Error(err)
+					}
 				}
 			})
 			inspection, err := converterroundtrip.InspectImport(ctx, bytes.NewReader(data))
@@ -1711,7 +1985,17 @@ func TestPublicProjectionAuthoredImportPublicSubscriberAcrossDrivers(t *testing.
 			if output == "" {
 				output = t.TempDir()
 			}
-			recordPublicSubscriber(t, ctx, store, filepath.Join(output, "authored-subscriber-control-"+engine+".json"), []string{"demo-7", "demo-7.4", "demo-8"}, profile)
+			verifyFault := recordPublicSubscriber(t, ctx, store, filepath.Join(output, "authored-subscriber-control-"+engine+".json"), []string{"demo-7", "demo-7.4", "demo-8"}, profile, sqlitePath)
+			if verifyFault != nil {
+				if err := store.Close(); err != nil {
+					t.Fatal(err)
+				}
+				store, err = (sqlite.Driver{}).Open(ctx, driver.Config{DSN: sqlitePath})
+				if err != nil {
+					t.Fatal(err)
+				}
+				verifyFault(store)
+			}
 		})
 	}
 }

@@ -451,3 +451,35 @@ SQL-write fault rollback, native delete history/Plug parity, full interchange
 fields and precedence/types/collision/live-lease edges, HTTP, recording2 and
 pair qualification remain open. No additional runtime authority follows from
 this source continuation; NativeAdmission remains None and FullS1 remains 0/28.
+
+The next private source adds a bounded **Plug SQLite late-publication fault**
+after the existing native-origin writes/replays/no-op/ontology refusal. A real
+SQLite trigger rejects the changeset INSERT for one exact idempotency key. Its
+SQL guard first requires the actual attempted target record revision and new
+version to be present inside that transaction; a missing-stage error cannot
+satisfy the expected trigger cause. The production service/Writer/SQL driver
+remain unchanged. The required result is the real SQLite trigger constraint
+code 1811 and named cause, with the actual zero/nil returned outcome, no typed
+ontology refusal, no durable failed-operation receipt and no additional posts.
+
+The recorder saves complete typed raw/public reader preimages and after-images,
+raw return/error fields, operation metadata and whole subscriber bodies. A
+separate SQL reader enumerates every schema object and persisted table, retains
+all column values with their actual types and bytes, and preserves duplicate
+rows. Both armed SQL snapshots must be identical. The assertion closure waits
+until the caller has released its ordinary lease, closed/reopened the real
+SQLite driver and saved full reader/SQL reopen images. Cleanup may remove only
+the exact authored trigger; lease release may clear only token/holder/expires
+on its one owned row, preserving singleton/epoch and all other schema/table
+contents. No family-wide physical exclusions, clock changes or lease-renewal
+changes are introduced. Acquisition or encoding failures still leave any
+unsaved image unproved.
+
+This fault source is **AUTHORED_NOT_RUN**. The existing synthetic measurement
+target exercises the same SQLite path when separately run, without native
+credit. Memory and PostgreSQL receive no SQLite fault credit. The accepted
+Beads producer's native auxiliary SQL-write-fault obligation remains
+`NOT_PROVEN`; this new case concerns the real Plug SQLite transaction after
+native snapshot import. Reviewed `4a9761043` remains available as its own exact
+recording1 candidate, and r10 PASS remains bound only to `15d385c0`. No runtime,
+recording2, pair, HTTP or full-card qualification follows from this source.
