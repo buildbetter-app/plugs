@@ -11,7 +11,21 @@ func (r *reader) SelectReadyOrder(ctx context.Context, p driver.ReadyOrderPlan) 
 	if r.owner != nil {
 		return driver.ReadyOrderResult{}, fmt.Errorf("%w: Ready transaction overlay is not certified", driver.ErrUnsupported)
 	}
+	certified, err := r.readyOrderSnapshotCertified(ctx, p)
+	if err != nil {
+		return driver.ReadyOrderResult{}, err
+	}
+	if !certified {
+		return driver.ReadyOrderResult{}, fmt.Errorf("%w: Ready snapshot physical source coverage is unavailable", driver.ErrUnsupported)
+	}
 	return readyindex.Select(ctx, r, p)
+}
+
+// Through==Head alone does not certify source mutations made outside the
+// maintained transaction. Enabling this requires a complete physical source,
+// Ready-root and authority proof bound to this exact reader snapshot.
+func (r *reader) readyOrderSnapshotCertified(ctx context.Context, _ driver.ReadyOrderPlan) (bool, error) {
+	return false, ctx.Err()
 }
 
 var _ driver.ReadyOrderReader = (*reader)(nil)
