@@ -334,6 +334,49 @@ func TestConvertPreservesEveryOpaqueIssueFieldByteForByte(t *testing.T) {
 	}
 }
 
+func TestConvertPreservesSQLTextMetadataNumbersWithoutChangingSource(t *testing.T) {
+	const raw = " {\"large\":9007199254740993,\"literal\":1.0,\"null\":null,\"nested\":{\"value\":[1,null]}} \n"
+	dump := cloneDump(fixtureDump())
+	dump.Records["bead"][0].Body["metadata"] = raw
+	dump.Records["bead"][0].Source.Fields["metadata"] = raw
+	before := cloneDump(dump)
+	result, err := Convert(dump)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range bytes.Split(bytes.TrimSpace(result.JSONL), []byte{'\n'}) {
+		var issue struct {
+			ID       string                     `json:"id"`
+			Metadata map[string]json.RawMessage `json:"metadata"`
+		}
+		if json.Unmarshal(line, &issue) != nil || issue.ID != dump.Records["bead"][0].ID {
+			continue
+		}
+		for key, want := range map[string]string{"large": "9007199254740993", "literal": "1.0", "null": "null", "nested": `{"value":[1,null]}`} {
+			if string(issue.Metadata[key]) != want {
+				t.Fatalf("SQL metadata %s=%s want %s", key, issue.Metadata[key], want)
+			}
+		}
+		if !reflect.DeepEqual(dump, before) {
+			t.Fatal("JSONL conversion changed the retained SQL metadata text")
+		}
+		return
+	}
+	t.Fatal("SQL metadata issue was not emitted")
+}
+
+func TestConvertRefusesMalformedSQLTextMetadataWithoutOutput(t *testing.T) {
+	for _, raw := range []string{"null", "[]", "1", `{"nested":{"x":1,"x":2}}`, "{} {}", `{"x":"\ud800"}`} {
+		dump := cloneDump(fixtureDump())
+		dump.Records["bead"][0].Body["metadata"] = raw
+		dump.Records["bead"][0].Source.Fields["metadata"] = raw
+		result, err := Convert(dump)
+		if err == nil || len(result.JSONL) != 0 {
+			t.Fatalf("malformed SQL metadata emitted a partial result: %q %v", raw, err)
+		}
+	}
+}
+
 func TestConvertRefusesAwaitIDTypeOrMetadataConflict(t *testing.T) {
 	tests := []struct {
 		name  string

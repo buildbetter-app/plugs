@@ -587,12 +587,12 @@ func convertBead(record Record, report *Report, directives *typeDirectives) (*wo
 	if createdAt == "" || updatedAt == "" {
 		reasons = append(reasons, fmt.Sprintf("bead %q lacks RFC3339 created_at/updated_at", record.ID))
 	}
-	metadata, metadataOK := body["metadata"].(map[string]any)
-	if body["metadata"] != nil && !metadataOK {
-		reasons = append(reasons, fmt.Sprintf("bead %q metadata is not an object", record.ID))
+	metadata, metadataErr := dumpformat.SourceMetadataObject(body["metadata"])
+	if metadataErr != nil {
+		reasons = append(reasons, fmt.Sprintf("bead %q metadata is not an object: %v", record.ID, metadataErr))
 	}
 	if body["metadata"] != nil {
-		if _, err := canonicalJSON(body["metadata"]); err != nil {
+		if _, err := canonicalJSON(metadata); err != nil {
 			reasons = append(reasons, fmt.Sprintf("bead %q metadata: %v", record.ID, err))
 		}
 	}

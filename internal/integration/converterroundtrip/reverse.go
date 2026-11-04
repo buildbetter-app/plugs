@@ -313,7 +313,19 @@ func projectLiveBead(source reverseconverter.Record, row driver.Record, dump rev
 	for _, field := range []string{"title", "description", "priority"} {
 		source.Body[field], source.Source.Fields[field] = doc.Fields[field], doc.Fields[field]
 	}
-	source.Body["metadata"], source.Source.Fields["metadata"] = metadata, metadata
+	originalMetadata, err := dumpformat.SourceMetadataObject(source.Body["metadata"])
+	if err != nil {
+		return reverseconverter.Record{}, ReverseRefusal{"invalid_source_metadata"}
+	}
+	// An empty live key map cannot distinguish an original SQL NULL from {}.
+	// Retain the validated original representation unless a key actually changed.
+	// In particular, unchanged SQL JSON text must remain exact source evidence.
+	if originalMetadata == nil {
+		originalMetadata = map[string]any{}
+	}
+	if !sameReverseJSON(originalMetadata, metadata) {
+		source.Body["metadata"], source.Source.Fields["metadata"] = metadata, metadata
+	}
 	labels := []any{}
 	for _, label := range doc.Labels {
 		labels = append(labels, label)
