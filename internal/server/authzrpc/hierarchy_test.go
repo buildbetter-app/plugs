@@ -1002,7 +1002,11 @@ func (r *parentBatchRecorder) Check(ctx context.Context, source authz.Slice, req
 	r.mu.Lock()
 	r.batches = append(r.batches, ids)
 	r.mu.Unlock()
-	return make([]authz.Step, len(requests)), nil
+	steps := make([]authz.Step, len(requests))
+	for i := range steps {
+		steps[i].Effect = authz.NoDecision
+	}
+	return steps, nil
 }
 
 func (*parentBatchRecorder) Filter(authz.ListRequest) (authz.FilterExpr, error) {
