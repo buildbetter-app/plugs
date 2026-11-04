@@ -109,15 +109,22 @@ func TestB01PublicPersistedHierarchyParentProjectionAcrossDrivers(t *testing.T) 
 				// These literal rows have this fixed fixture creation instant;
 				// ready ordering must not infer it from their later patch/history.
 				original := []byte(`{"id":"pl-persisted-child","project":"b01-child-project","type":"issue","createdAt":"2026-11-03T00:00:00Z","fields":{"title":"then","status":"todo","priority":0}` + tc.members + `}`)
+				parent := b01Ref("pl-persisted-parent")
+				graph := &conformance.FixtureGraphSource{Parent: &parent}
+				if tc.name != "canonical-only" {
+					graph.Links = []driver.SourceLink{{Kind: "parent-child", To: parent}}
+				}
+				// The public create above certified source coverage. Supply the
+				// exact typed facts without normalizing these literal test bytes.
 				created, err := conformance.Seed(f.ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{
-					{Ref: b01Ref("pl-persisted-parent"), Kind: "bead", Op: model.OpCreate, Body: []byte(`{"id":"pl-persisted-parent","project":"b01-epic-project","type":"issue","createdAt":"2026-11-03T00:00:00Z","fields":{"title":"parent","status":"todo"}}`)},
-					{Ref: b01Ref("pl-persisted-child"), Kind: "bead", Op: model.OpCreate, Body: original},
+					{Ref: parent, Kind: "bead", Op: model.OpCreate, Body: []byte(`{"id":"pl-persisted-parent","project":"b01-epic-project","type":"issue","createdAt":"2026-11-03T00:00:00Z","fields":{"title":"parent","status":"todo"}}`), Graph: &conformance.FixtureGraphSource{}},
+					{Ref: b01Ref("pl-persisted-child"), Kind: "bead", Op: model.OpCreate, Body: original, Graph: graph},
 				})
 				if err != nil {
 					t.Fatal(err)
 				}
 				current := bytes.Replace(original, []byte(`"title":"then"`), []byte(`"title":"now"`), 1)
-				if _, err := conformance.Seed(f.ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: b01Ref("pl-persisted-child"), Kind: "bead", Op: model.OpPatch, Body: current, ChangedPaths: []string{"/fields/title"}}}); err != nil {
+				if _, err := conformance.Seed(f.ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: b01Ref("pl-persisted-child"), Kind: "bead", Op: model.OpPatch, Body: current, ChangedPaths: []string{"/fields/title"}, Graph: graph}}); err != nil {
 					t.Fatal(err)
 				}
 				before := b01PersistedReadSnapshot(t, h, probe, key)
@@ -208,9 +215,14 @@ func TestB01PublicPersistedHierarchyRefusalsAcrossDrivers(t *testing.T) {
 				h, probe, key := b01PersistedReadFixture(t, engine)
 				f := h.f
 				body := []byte(`{"id":"pl-persisted-child","project":"b01-child-project","type":"issue","fields":{"title":"must refuse","status":"todo"}` + tc.members + `}`)
+				// These are deliberately invalid persisted documents, not product
+				// writes. Declare a trusted root/no-links fixture solely to keep
+				// certified source publication complete. The unchanged malformed
+				// Body remains the public decoder's refusal subject; no hierarchy
+				// from it is blessed or exposed, and every read must still fail.
 				seeded, err := conformance.Seed(f.ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{
-					{Ref: b01Ref("pl-persisted-parent"), Kind: "bead", Op: model.OpCreate, Body: []byte(`{"id":"pl-persisted-parent","project":"b01-epic-project","type":"issue","fields":{"title":"parent","status":"todo"}}`)},
-					{Ref: b01Ref("pl-persisted-child"), Kind: "bead", Op: model.OpCreate, Body: body},
+					{Ref: b01Ref("pl-persisted-parent"), Kind: "bead", Op: model.OpCreate, Body: []byte(`{"id":"pl-persisted-parent","project":"b01-epic-project","type":"issue","fields":{"title":"parent","status":"todo"}}`), Graph: &conformance.FixtureGraphSource{}},
+					{Ref: b01Ref("pl-persisted-child"), Kind: "bead", Op: model.OpCreate, Body: body, Graph: &conformance.FixtureGraphSource{}},
 				})
 				if err != nil {
 					t.Fatal(err)

@@ -311,7 +311,7 @@ func TestB01CreationClockSeamFeedsOrderWithoutChangingCreationOnUpdate(t *testin
 	})
 }
 
-func TestB01ReadyCursorInvalidatesWhenCutoffReordersWithoutWrites(t *testing.T) {
+func TestB01PublicCutoffOrderRemainsLiveAcrossCursorContinuation(t *testing.T) {
 	eachStore(t, func(t *testing.T, f *fixture) {
 		old := f.clock.Now().Add(-47 * time.Hour)
 		f.seed(t, document("pl-old", old, 0), document("pl-new", f.clock.Now(), 4))
@@ -319,13 +319,19 @@ func TestB01ReadyCursorInvalidatesWhenCutoffReordersWithoutWrites(t *testing.T) 
 		if len(first.Items) != 1 || first.Items[0].ID != "pl-old" || first.NextCursor == nil {
 			t.Fatalf("initial cutoff page: %+v", first)
 		}
-		// No write changes the rows or revisions. Crossing the 48-hour boundary
-		// moves the old row to the backlog bucket and reverses the full order.
+		// This fixture binds the unguarded core service: its cursor is a live
+		// offset, rather than the guarded authorized-set fingerprint. With a
+		// stable signing key, both continuations expose that actual contract.
+		stable := decodePage(t, f.call(t, "bead.ready", map[string]any{"limit": 1, "cursor": *first.NextCursor}))
+		if len(stable.Items) != 1 || stable.Items[0].ID != "pl-new" {
+			t.Fatalf("unchanged live continuation: %+v", stable)
+		}
 		f.advance(t, 2*time.Hour)
 		f.unchanged(t, func() {
-			response := f.call(t, "bead.ready", map[string]any{"limit": 1, "cursor": *first.NextCursor})
-			if response.Error == nil || response.Error.Data.Code != "cursor_invalid" {
-				t.Fatalf("cutoff reorder accepted old cursor: %+v", response)
+			f.pages(t, nil, "pl-new", "pl-old")
+			live := decodePage(t, f.call(t, "bead.ready", map[string]any{"limit": 1, "cursor": *first.NextCursor}))
+			if len(live.Items) != 1 || live.Items[0].ID != "pl-old" || live.AsOf.Revision.String() != first.AsOf.Revision.String() {
+				t.Fatalf("plain core cursor did not retain its live offset at the unchanged revision: %+v", live)
 			}
 		})
 	})

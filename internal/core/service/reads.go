@@ -183,6 +183,22 @@ func (s *Service) readyItems(ctx context.Context, req ReadyRequest, r driver.Rea
 		if !unblocked {
 			continue
 		}
+		// Only the authorized membership needs ordering inputs. In particular,
+		// a denied legacy row with unknown creation time must not prevent an
+		// otherwise valid authorized set from being read.
+		if req.authorizationFilter != nil {
+			bead, err := beadValue(row)
+			if err != nil {
+				return nil, nil, err
+			}
+			allowed, err := req.authorizationFilter(ctx, r, bead)
+			if err != nil {
+				return nil, nil, err
+			}
+			if !allowed {
+				continue
+			}
+		}
 		eligible[id] = row
 	}
 	keys, err := readyOrderKeys(ctx, r, eligible, now)
@@ -199,15 +215,6 @@ func (s *Service) readyItems(ctx context.Context, req ReadyRequest, r driver.Rea
 			return nil, nil, err
 		}
 		bead.CreatedAt = keys[id].CreatedAt
-		if req.authorizationFilter != nil {
-			allowed, err := req.authorizationFilter(ctx, r, bead)
-			if err != nil {
-				return nil, nil, err
-			}
-			if !allowed {
-				continue
-			}
-		}
 		items = append(items, bead)
 	}
 	return items, keys, nil

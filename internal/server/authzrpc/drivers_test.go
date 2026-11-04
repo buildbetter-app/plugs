@@ -20,6 +20,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/plugins/authzfixed"
+	"github.com/buildbetter-app/plugs/internal/server/authzrpc"
 	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
@@ -53,6 +54,7 @@ func TestFixedPermissionsAcrossDrivers(t *testing.T) {
 			t.Run("immutable_registry", func(t *testing.T) { immutableRegistry(t, open) })
 			t.Run("compiled_lists_equal_point_reads", func(t *testing.T) { listMembership(t, open) })
 			t.Run("ready_order_cursor", func(t *testing.T) { readyMembershipCursorInvalidation(t, open) })
+			t.Run("ready_unknown_creation_authorization", func(t *testing.T) { readyUnknownCreationAuthorization(t, open) })
 			t.Run("history_uses_current_permissions", func(t *testing.T) { currentHistory(t, open) })
 			t.Run("post_image", func(t *testing.T) { postImage(t, open) })
 			t.Run("authorization_races", func(t *testing.T) { authorizationRaces(t, open) })
@@ -219,6 +221,253 @@ func readyMembershipCursorInvalidation(t *testing.T, open storeFactory) {
 	if refused.Error == nil || refused.Error.Data.Code != "cursor_invalid" || len(refused.Result) != 0 {
 		t.Fatalf("ordered ready membership change was not an atomic cursor refusal: %+v", refused)
 	}
+}
+
+func readyUnknownCreationAuthorization(t *testing.T, open storeFactory) {
+	f := newFixtureOn(t, open(t), nil)
+	known := []byte(fmt.Sprintf(`{"id":%q,"type":"issue","project":"project","createdAt":"2026-11-03T00:00:00Z","fields":{"title":"known","status":"todo","priority":0}}`, fixtureRef(8).ID))
+	unknown := []byte(fmt.Sprintf(`{"id":%q,"type":"issue","project":"project","fields":{"title":"unknown legacy creation","status":"todo","priority":1}}`, fixtureRef(9).ID))
+	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{
+		{Ref: fixtureRef(8), Kind: "bead", Op: model.OpCreate, Body: known, Graph: &conformance.FixtureGraphSource{}},
+		{Ref: fixtureRef(9), Kind: "bead", Op: model.OpCreate, Body: unknown, Graph: &conformance.FixtureGraphSource{}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := f.reader(t).Snapshot().At.String()
+	t.Run("denied_unknown_does_not_refuse_known_set", func(t *testing.T) {
+		by := model.PrincipalRef{Kind: "user", ID: "user:known-only", Caveats: map[string]any{"refs": []model.Ref{fixtureRef(8)}}}
+		got := page(t, f.call(t, by, "bead.ready", map[string]any{"limit": 1}, 7020))
+		if len(got.Items) != 1 || got.Items[0].ID != fixtureRef(8).ID || got.NextCursor != "" {
+			t.Fatalf("denied unknown creation changed the full authorized set: %+v", got)
+		}
+	})
+	t.Run("authorized_unknown_still_refuses_atomically", func(t *testing.T) {
+		by := model.PrincipalRef{Kind: "user", ID: "user:unknown-reader", Caveats: map[string]any{"refs": []model.Ref{fixtureRef(8), fixtureRef(9)}}}
+		got := f.call(t, by, "bead.ready", map[string]any{"limit": 1}, 7021)
+		if got.Error == nil || got.Error.Data.Code != "internal_error" || got.Error.Data.Details["reason"] != "ready_creation_time_unavailable" || len(got.Result) != 0 {
+			t.Fatalf("authorized unknown creation lost its typed atomic refusal: %+v", got)
+		}
+	})
+	if after := f.reader(t).Snapshot().At.String(); after != before {
+		t.Fatal("known/unknown creation reads published a changeset")
+	}
+}
+
+func TestB01GuardedReadyCutoffCursorAcrossDrivers(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			var dsn func(*testing.T) string
+			if engine == "postgres" {
+				dsn = postgresDSNFactory(t)
+			}
+			f := newQuietFixture(t, engine, dsn)
+			var changes []conformance.FixtureChange
+			for i, n := range []int{8, 9} {
+				at, priority := f.clock.Now(), 4
+				if i == 0 {
+					at, priority = at.Add(-48*time.Hour), 0
+				}
+				body, err := json.Marshal(map[string]any{"id": fixtureRef(n).ID, "type": "issue", "project": "project", "createdAt": at, "fields": map[string]any{"title": "cutoff", "status": "todo", "priority": priority}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				changes = append(changes, conformance.FixtureChange{Ref: fixtureRef(n), Kind: "bead", Op: model.OpCreate, Body: body, Graph: &conformance.FixtureGraphSource{}})
+			}
+			if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, changes); err != nil {
+				t.Fatal(err)
+			}
+			by := model.PrincipalRef{Kind: "user", ID: "user:cutoff-reader", Caveats: map[string]any{"refs": []model.Ref{fixtureRef(8), fixtureRef(9)}}}
+			first := page(t, f.call(t, by, "bead.ready", map[string]any{"limit": 1}, 7030))
+			if len(first.Items) != 1 || first.Items[0].ID != fixtureRef(8).ID || first.NextCursor == "" {
+				t.Fatalf("exactly-48h row did not lead the recent bucket: %+v", first)
+			}
+			params := map[string]any{"limit": 1, "cursor": first.NextCursor}
+			stable := page(t, f.call(t, by, "bead.ready", params, 7031))
+			if len(stable.Items) != 1 || stable.Items[0].ID != fixtureRef(9).ID || stable.NextCursor != "" {
+				t.Fatalf("unchanged guarded order rejected or changed continuation: %+v", stable)
+			}
+			before := f.reader(t).Snapshot().At.String()
+			// Keep the same handler, signing key, authority, incarnation and
+			// unexpired storage lease. One SQL-representable microsecond crosses
+			// the cutoff without a write or a constructor/lease reacquisition.
+			f.clock.Advance(t, time.Microsecond)
+			got := f.call(t, by, "bead.ready", params, 7032)
+			if got.Error == nil || got.Error.Data.Code != "cursor_invalid" || len(got.Result) != 0 {
+				t.Fatalf("no-write guarded cutoff reorder accepted an old offset: %+v", got)
+			}
+			fresh := page(t, f.call(t, by, "bead.ready", map[string]any{"limit": 1}, 7033))
+			if len(fresh.Items) != 1 || fresh.Items[0].ID != fixtureRef(9).ID || fresh.AsOf.Revision.String() != first.AsOf.Revision.String() || fresh.AsOf.Incarnation != first.AsOf.Incarnation {
+				t.Fatalf("cutoff did not reverse the authorized order at the same source: %+v", fresh)
+			}
+			if after := f.reader(t).Snapshot().At.String(); after != before {
+				t.Fatal("cutoff witness changed durable source or authorization")
+			}
+		})
+	}
+}
+
+type readyCheckOnlyRules struct{ deniedID string }
+
+func (r readyCheckOnlyRules) Eval(_ context.Context, _ authz.Slice, requests []authz.CheckRequest) ([]authz.Decision, error) {
+	decisions := make([]authz.Decision, len(requests))
+	for i, request := range requests {
+		decisions[i].Effect = authz.NoDecision
+		if request.Resource.Ref.ID == r.deniedID {
+			decisions[i].Effect = authz.Deny
+		}
+	}
+	return decisions, nil
+}
+
+func (readyCheckOnlyRules) Compile(authz.ListRequest) (authz.FilterTemplate, error) {
+	return authz.FilterTemplate{}, authz.ErrCheckOnly
+}
+
+func TestB01CheckOnlyReadyOrderingAcrossDrivers(t *testing.T) {
+	countDrivers(t, func(t *testing.T, open storeFactory) {
+		f := newFixtureOn(t, open(t), nil)
+		createdAt := time.Now().UTC()
+		body := func(n, priority int) []byte {
+			raw, err := json.Marshal(map[string]any{"id": fixtureRef(n).ID, "type": "issue", "project": "project", "createdAt": createdAt, "fields": map[string]any{"title": "check-only-order", "status": "todo", "priority": priority}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return raw
+		}
+		var changes []conformance.FixtureChange
+		for i, n := range []int{8, 9, 10} {
+			changes = append(changes, conformance.FixtureChange{Ref: fixtureRef(n), Kind: "bead", Op: model.OpCreate, Body: body(n, i), Graph: &conformance.FixtureGraphSource{}})
+		}
+		if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, changes); err != nil {
+			t.Fatal(err)
+		}
+		authzrpc.AddRuleForTest(f.server, readyCheckOnlyRules{deniedID: fixtureRef(8).ID})
+		by := model.PrincipalRef{Kind: "user", ID: "user:bounded-ready", Caveats: map[string]any{"refs": []model.Ref{fixtureRef(8), fixtureRef(9), fixtureRef(10)}}}
+		first := page(t, f.call(t, by, "bead.ready", map[string]any{"limit": 1}, 7080))
+		if len(first.Items) != 1 || first.Items[0].ID != fixtureRef(9).ID || first.NextCursor == "" {
+			t.Fatalf("check-only denial consumed the first authorized page: %+v", first)
+		}
+		params := map[string]any{"limit": 1, "cursor": first.NextCursor}
+		assertTail := func(key int) {
+			t.Helper()
+			got := page(t, f.call(t, by, "bead.ready", params, key))
+			if len(got.Items) != 1 || got.Items[0].ID != fixtureRef(10).ID || got.NextCursor != "" {
+				t.Fatalf("check-only continuation lost authorized order or leaked denial: %+v", got)
+			}
+		}
+		assertTail(7081)
+		if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: fixtureRef(8), Kind: "bead", Op: model.OpPatch, Body: body(8, 4), Graph: &conformance.FixtureGraphSource{}}}); err != nil {
+			t.Fatal(err)
+		}
+		// A denied row's reorder and revision must not change the fingerprint
+		// or expose its existence through an otherwise stable continuation.
+		assertTail(7082)
+	})
+}
+
+func TestB01CompiledReadyFilterCapBoundaryAcrossDrivers(t *testing.T) {
+	countDrivers(t, func(t *testing.T, open storeFactory) {
+		f := newFixtureOn(t, open(t), nil)
+		renewCountFixtureLease(t, f.lease)
+		const denied, allowed = 20001, 3
+		createdAt := time.Now().UTC()
+		body := func(n, priority int) []byte {
+			raw, err := json.Marshal(map[string]any{"id": fixtureRef(n).ID, "type": "issue", "project": "project", "createdAt": createdAt, "fields": map[string]any{"title": "finite-ready-cap", "status": "todo", "priority": priority}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return raw
+		}
+		for start := 0; start < denied+allowed; start += 1000 {
+			var changes []conformance.FixtureChange
+			for i := start; i < min(start+1000, denied+allowed); i++ {
+				changes = append(changes, conformance.FixtureChange{Ref: fixtureRef(100 + i), Kind: "bead", Op: model.OpCreate, Body: body(100+i, 1), Graph: &conformance.FixtureGraphSource{}})
+			}
+			if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, changes); err != nil {
+				t.Fatal(err)
+			}
+		}
+		t.Run("denied_prefix_does_not_consume_cap_or_pages", func(t *testing.T) {
+			refs := []model.Ref{fixtureRef(100 + denied), fixtureRef(101 + denied), fixtureRef(102 + denied)}
+			by := model.PrincipalRef{Kind: "user", ID: "user:finite-ready-reader", Caveats: map[string]any{"refs": refs}}
+			params := map[string]any{"limit": 1}
+			for i, ref := range refs {
+				got := page(t, f.call(t, by, "bead.ready", params, 7040+i))
+				if len(got.Items) != 1 || got.Items[0].ID != ref.ID || (i == len(refs)-1) != (got.NextCursor == "") {
+					t.Fatalf("finite filter lost an authorized tail after %d denied rows: page=%d %+v", denied, i, got)
+				}
+				params["cursor"] = got.NextCursor
+			}
+		})
+		t.Run("full_authorized_set_exceeds_cap_and_binds_tail", func(t *testing.T) {
+			by := model.PrincipalRef{Kind: "user", ID: "user:all-ready-reader"}
+			first := page(t, f.call(t, by, "bead.ready", map[string]any{"limit": 1}, 7050))
+			if len(first.Items) != 1 || first.Items[0].ID != fixtureRef(100).ID || first.NextCursor == "" {
+				t.Fatalf("complete compiled set above 20,000 was capped or reordered: %+v", first)
+			}
+			last := 100 + denied + allowed - 1
+			if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: fixtureRef(last), Kind: "bead", Op: model.OpPatch, Body: body(last, 0), Graph: &conformance.FixtureGraphSource{}}}); err != nil {
+				t.Fatal(err)
+			}
+			got := f.call(t, by, "bead.ready", map[string]any{"limit": 1, "cursor": first.NextCursor}, 7051)
+			if got.Error == nil || got.Error.Data.Code != "cursor_invalid" || len(got.Result) != 0 {
+				t.Fatalf("authorized tail beyond 20,000 was missing from full fingerprint: %+v", got)
+			}
+			fresh := page(t, f.call(t, by, "bead.ready", map[string]any{"limit": 1}, 7052))
+			if len(fresh.Items) != 1 || fresh.Items[0].ID != fixtureRef(last).ID {
+				t.Fatalf("authorized tail was discarded rather than reordered: %+v", fresh)
+			}
+		})
+		t.Run("genuine_check_only_still_refuses_without_partial_result", func(t *testing.T) {
+			before := f.reader(t).Snapshot().At.String()
+			authzrpc.AddRuleForTest(f.server, readyCheckOnlyRules{})
+			got := f.call(t, model.PrincipalRef{Kind: "user", ID: "user:check-only-ready"}, "bead.ready", map[string]any{"limit": 1}, 7060)
+			if got.Error == nil || got.Error.Data.Code != "authz_postfilter_cap" || len(got.Result) != 0 {
+				t.Fatalf("check-only candidate cap returned a partial or unbounded result: %+v", got)
+			}
+			if after := f.reader(t).Snapshot().At.String(); after != before {
+				t.Fatal("check-only refusal changed durable source")
+			}
+		})
+	})
+}
+
+func TestB01ReadySnapshotDependencyRefusalsAcrossDrivers(t *testing.T) {
+	countDrivers(t, func(t *testing.T, open storeFactory) {
+		store := &countAuthorityStore{Store: open(t)}
+		f := newFixtureOn(t, store, nil)
+		for _, dep := range []authz.Dependency{
+			authz.ContextDependency(f.server.Namespace), authz.ACLDependency(f.server.Namespace),
+			{Kind: "sentinel", Key: "plugins"}, {Kind: "sentinel", Key: "ontology"},
+		} {
+			t.Run(dep.Kind+"_"+dep.Key, func(t *testing.T) {
+				var key driver.LockKey
+				if dep.Kind == "read_fact" {
+					fact, err := driver.NewReadFact(dep.Key)
+					if err != nil {
+						t.Fatal(err)
+					}
+					key = driver.LockKey{Kind: driver.LockReadFact, Fact: fact}
+				} else {
+					sentinel, err := driver.NewSentinel(dep.Key)
+					if err != nil {
+						t.Fatal(err)
+					}
+					key = driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel}
+				}
+				encoded, err := driver.EncodeLockKey(key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				store.failKey = encoded
+				defer func() { store.failKey = "" }()
+				got := f.call(t, model.PrincipalRef{Kind: "user", ID: "user:ready-dependency"}, "bead.ready", map[string]any{"limit": 1}, 7070)
+				if got.Error == nil || got.Error.Data.Code != "authz_unavailable" || len(got.Result) != 0 {
+					t.Fatalf("Ready ignored an unavailable real snapshot dependency: %+v", got)
+				}
+			})
+		}
+	})
 }
 
 func currentHistory(t *testing.T, open storeFactory) {

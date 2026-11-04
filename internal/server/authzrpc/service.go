@@ -170,6 +170,25 @@ func (s *countReadSlice) Record(ctx context.Context, dep authz.Dependency) error
 	return s.slice.Record(ctx, dep)
 }
 
+// readySnapshotFacts uses the existing batch dependency adapter only within
+// this immutable read snapshot. Register every common dependency against the
+// real reader first; per-item Match and the final fresh authority fence still
+// run. No effective grant, decision or cross-request state is retained.
+func readySnapshotFacts(ctx context.Context, authority *slice) (*countReadSlice, error) {
+	facts := &countReadSlice{slice: authority, dependencies: [4]authz.Dependency{
+		authz.ContextDependency(authority.Namespace()),
+		authz.ACLDependency(authority.Namespace()),
+		{Kind: "sentinel", Key: "plugins"},
+		{Kind: "sentinel", Key: "ontology"},
+	}}
+	for _, dep := range facts.dependencies {
+		if err := authority.Record(ctx, dep); err != nil {
+			return nil, &model.Error{Message: "authorization dependency unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
+		}
+	}
+	return facts, nil
+}
+
 func (s *GuardedService) Ready(ctx context.Context, by model.PrincipalRef, req service.ReadyRequest) (service.BeadPage, error) {
 	if s == nil || s.delegate == nil || s.checker == nil {
 		return service.BeadPage{}, &model.Error{Message: "authorization service is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
@@ -268,7 +287,7 @@ func (s *GuardedService) compiledReadyFilter(ctx context.Context, by model.Princ
 	var authorizationRevision model.Revision
 	var authorizationBound bool
 	var boundIncarnation, boundRevision string
-	var facts *slice
+	var facts *countReadSlice
 	return func(ctx context.Context, reader driver.Reader, bead service.Bead) (bool, error) {
 		view := reader.Snapshot()
 		revision := "0"
@@ -285,7 +304,11 @@ func (s *GuardedService) compiledReadyFilter(ctx context.Context, by model.Princ
 			}
 			authorizationRevision = loaded.authorizationRevision
 			authorizationBound = true
-			boundIncarnation, boundRevision, facts = view.Incarnation, revision, loaded
+			facts, err = readySnapshotFacts(ctx, loaded)
+			if err != nil {
+				return false, err
+			}
+			boundIncarnation, boundRevision = view.Incarnation, revision
 		}
 		allowed, err := template.Match(ctx, facts, authz.Resource{Kind: authz.Bead, Ref: model.RefByID(bead.ID, model.Natural64(0))})
 		if err != nil {
@@ -698,7 +721,13 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 	if position != nil && (!position.AuthorizationBound || !authorization.authorizationBound || position.AuthorizationRevision.String() != authorization.authorizationRevision.String()) {
 		return service.BeadPage{}, &model.Error{Message: "authorization facts changed since cursor issuance", Data: model.ErrorData{Code: "cursor_invalid"}}
 	}
-	facts := authorization
+	var facts authz.Slice = authorization
+	if method == "bead.ready" {
+		facts, err = readySnapshotFacts(ctx, authorization)
+		if err != nil {
+			return service.BeadPage{}, err
+		}
+	}
 	// History visibility is current bead read authorization; fixed CP7's
 	// history resource does not create a second permission vocabulary.
 	resourceKind := authz.Bead
@@ -707,7 +736,8 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 		compiledMethod = "bead.get"
 	}
 	template, err := s.checker.chain.Compile(authz.ListRequest{Caller: caller, Action: authz.Read, ResourceKind: resourceKind, Method: compiledMethod})
-	if err != nil {
+	checkOnly := method == "bead.ready" && errors.Is(err, authz.ErrCheckOnly)
+	if err != nil && !checkOnly {
 		return service.BeadPage{}, authzError(err)
 	}
 	filtered := make([]service.Bead, 0, len(page.Items))
@@ -729,7 +759,21 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 			}
 			continue
 		}
-		ok, err := template.Match(ctx, facts, authz.Resource{Kind: authz.Bead, Ref: model.RefByID(bead.ID, model.Natural64(0))})
+		resource := authz.Resource{Kind: authz.Bead, Ref: model.RefByID(bead.ID, model.Natural64(0))}
+		var ok bool
+		if checkOnly {
+			// Ready already refused an over-cap unfiltered set atomically. A
+			// genuine under-cap check-only predicate must now run the complete
+			// installed chain rather than attempt the unavailable compiler again.
+			decisions, checkErr := s.checker.chain.Check(ctx, facts, []authz.CheckRequest{{Caller: caller, Action: authz.Read, Resource: resource, Method: compiledMethod}})
+			err = checkErr
+			if err == nil && len(decisions) != 1 {
+				return service.BeadPage{}, &model.Error{Message: "invalid authorization result cardinality", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
+			}
+			ok = err == nil && decisions[0].Effect == authz.Allow
+		} else {
+			ok, err = template.Match(ctx, facts, resource)
+		}
 		if err != nil {
 			return service.BeadPage{}, authzError(err)
 		}

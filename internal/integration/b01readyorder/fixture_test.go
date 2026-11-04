@@ -125,7 +125,9 @@ func (f *fixture) acquire(t *testing.T) {
 		t.Fatal(err)
 	}
 	meta := f.meta(t)
-	f.server, err = rpc.New(registry, rpc.Config{DefaultProject: project, Incarnation: meta.Incarnation})
+	// Reacquiring a lease after a controlled clock advance must not rotate the
+	// signing key and turn a live-order assertion into an HMAC refusal test.
+	f.server, err = rpc.New(registry, rpc.Config{DefaultProject: project, Incarnation: meta.Incarnation, CursorKey: []byte("b01readyorder-disposable-stable-key")})
 	if err != nil {
 		t.Fatal(err)
 	}
