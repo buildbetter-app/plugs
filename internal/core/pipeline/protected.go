@@ -113,12 +113,16 @@ func (w *Writer) ApplyProtected(ctx context.Context, by model.PrincipalRef, req 
 		return port.WriteOutcome{}, failure("invalid_params", err.Error())
 	}
 	if meta.DryRun {
-		commit, err := w.dryRunProtected(ctx, req, meta)
+		commit, err := w.dryRunProtected(ctx, by, req, meta)
 		return port.WriteOutcome{Commit: commit}, err
 	}
 	for attempt := 0; attempt <= 3; attempt++ {
 		reader, err := w.reader(ctx)
 		if err != nil {
+			return port.WriteOutcome{}, err
+		}
+		if _, err := w.authorizeProtected(ctx, port.AuthorizeReplay, by, req, meta, reader); err != nil {
+			_ = reader.Close()
 			return port.WriteOutcome{}, err
 		}
 		result, found, replayErr := protectedReplay(ctx, reader, principal, meta, hash)
@@ -138,6 +142,10 @@ func (w *Writer) ApplyProtected(ctx context.Context, by model.PrincipalRef, req 
 		if errors.As(err, &indeterminate) {
 			fresh, readErr := w.reader(ctx)
 			if readErr == nil {
+				if _, authErr := w.authorizeProtected(ctx, port.AuthorizeReplay, by, req, meta, fresh); authErr != nil {
+					_ = fresh.Close()
+					return port.WriteOutcome{}, authErr
+				}
 				result, found, replayErr := protectedReplay(ctx, fresh, principal, meta, hash)
 				_ = fresh.Close()
 				if found || replayErr != nil {
@@ -150,12 +158,15 @@ func (w *Writer) ApplyProtected(ctx context.Context, by model.PrincipalRef, req 
 	return port.WriteOutcome{}, failure("write_conflict", "protected plan became stale during all four commit attempts")
 }
 
-func (w *Writer) dryRunProtected(ctx context.Context, req ProtectedApplyRequest, meta model.WriteMeta) (model.Commit, error) {
+func (w *Writer) dryRunProtected(ctx context.Context, by model.PrincipalRef, req ProtectedApplyRequest, meta model.WriteMeta) (model.Commit, error) {
 	reader, err := w.reader(ctx)
 	if err != nil {
 		return model.Commit{}, err
 	}
 	defer reader.Close()
+	if _, err := w.authorizeProtected(ctx, port.AuthorizeBefore, by, req, meta, reader); err != nil {
+		return model.Commit{}, err
+	}
 	if reader.Snapshot().At == nil || reader.Snapshot().At.String() != req.BaseRevision.String() {
 		return model.Commit{}, failure("ontology_plan_stale", "protected plan base revision changed")
 	}
@@ -206,6 +217,9 @@ func (w *Writer) dryRunProtected(ctx context.Context, req ProtectedApplyRequest,
 			result.Record = append([]byte(nil), change.After...)
 		}
 		response.Results = append(response.Results, result)
+	}
+	if _, err := w.authorizeProtected(ctx, port.AuthorizeAfter, by, req, meta, reader); err != nil {
+		return model.Commit{}, err
 	}
 	return response, nil
 }
@@ -291,11 +305,19 @@ func (w *Writer) applyProtectedOnce(ctx context.Context, by model.PrincipalRef, 
 		return model.Commit{}, err
 	}
 	defer reader.Close()
+	tracked := &snapshotReader{reader: reader, reads: &readSet{states: map[string]driver.LockState{}}}
+	authority, err := w.authorizeProtected(ctx, port.AuthorizeBefore, by, req, meta, tracked)
+	if err != nil {
+		return model.Commit{}, err
+	}
 	if reader.Snapshot().At == nil || reader.Snapshot().At.String() != req.BaseRevision.String() {
 		return model.Commit{}, failure("ontology_plan_stale", "protected plan base revision changed")
 	}
 	recordChanges := protectedRecordChanges(req)
-	locks := protectedLocks(req)
+	locks, err := tracked.locks(nil, nil, lockKeys(protectedLocks(req))...)
+	if err != nil {
+		return model.Commit{}, err
+	}
 	changes := protectedChangeRecords(recordChanges)
 	tx, err := w.store.Write(ctx, w.lease)
 	if err != nil {
@@ -309,6 +331,9 @@ func (w *Writer) applyProtectedOnce(ctx context.Context, by model.PrincipalRef, 
 	}
 	if len(states) != len(locks) {
 		return model.Commit{}, fmt.Errorf("driver failed to acquire the complete protected lock set")
+	}
+	if err := tracked.check(states); err != nil {
+		return model.Commit{}, err
 	}
 	for _, change := range append([]ProtectedRecordChange{req.Source}, req.Rows...) {
 		index := recordStateIndex(locks, change.Ref)
@@ -332,6 +357,12 @@ func (w *Writer) applyProtectedOnce(ctx context.Context, by model.PrincipalRef, 
 	} else if prior != nil {
 		return model.Commit{}, errStale
 	}
+	// The current policy/source decision is guarded by every recorded lock,
+	// including ACL/context generations and absence. Recheck the live login
+	// before staging publication, without inverting the host source's lock order.
+	if err := w.revalidateProtectedContext(ctx, by); err != nil {
+		return model.Commit{}, err
+	}
 	if len(changes) == 0 {
 		noop, ok := tx.(driver.NoopCommitter)
 		if !ok {
@@ -339,7 +370,7 @@ func (w *Writer) applyProtectedOnce(ctx context.Context, by model.PrincipalRef, 
 		}
 		response := model.Commit{Revision: head, Results: []model.OpResult{}, Warnings: []model.Warning{}}
 		keys := lockKeys(locks)
-		return noop.CommitNoop(ctx, driver.ChangesetHeader{Incarnation: reader.Snapshot().Incarnation, Kind: model.ChangesetMigration, Time: w.cfg.now().UTC(), Principal: by, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: response, LockKeys: keys})
+		return noop.CommitNoop(ctx, driver.ChangesetHeader{Incarnation: reader.Snapshot().Incarnation, Kind: model.ChangesetMigration, Time: w.cfg.now().UTC(), Principal: by, Chain: authority.Chain, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: response, LockKeys: keys})
 	}
 	n, err := head.Uint64()
 	if err != nil || n == math.MaxUint64 {
@@ -349,6 +380,13 @@ func (w *Writer) applyProtectedOnce(ctx context.Context, by model.PrincipalRef, 
 	events, err := protectedEvents(revision, recordChanges, changes, meta)
 	if err != nil {
 		return model.Commit{}, err
+	}
+	for i := range events {
+		events[i].Provenance.Chain = append([]string{}, authority.Chain...)
+		events[i].Provenance.Cause = authority.Cause
+	}
+	if err := (model.Changeset{Revision: revision, Changes: changes, Chain: authority.Chain, Events: events}).ValidateEvents(); err != nil {
+		return model.Commit{}, failure("invalid_params", "invalid protected authorization provenance: "+err.Error())
 	}
 	response := model.Commit{Revision: revision, Results: []model.OpResult{}, Warnings: []model.Warning{}}
 	for _, change := range recordChanges {
@@ -365,7 +403,7 @@ func (w *Writer) applyProtectedOnce(ctx context.Context, by model.PrincipalRef, 
 	if err := tx.BumpSentinels(ctx, sentinels); err != nil {
 		return model.Commit{}, err
 	}
-	entry, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: reader.Snapshot().Incarnation, Kind: model.ChangesetMigration, Time: w.cfg.now().UTC(), Principal: by, Chain: []string{}, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: response, Changes: changes, Events: events, LockKeys: lockKeys(locks)})
+	entry, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: reader.Snapshot().Incarnation, Kind: model.ChangesetMigration, Time: w.cfg.now().UTC(), Principal: by, Chain: append([]string{}, authority.Chain...), IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: response, Changes: changes, Events: events, LockKeys: lockKeys(locks)})
 	if err != nil {
 		return model.Commit{}, err
 	}

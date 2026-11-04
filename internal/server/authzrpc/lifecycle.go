@@ -164,7 +164,9 @@ func (c *Checker) closeContext(ctx context.Context, reader Snapshot, ref model.R
 	return authz.TransitionContext{Project: doc.Project, Type: doc.Type, FromStatus: from, ToStatus: target}, nil
 }
 
-func (c *Checker) observeTransitionPermission(ctx context.Context, q service.TransitionPermissionRequest, reader port.SnapshotReader) (service.TransitionPermissionObservation, error) {
+// ObserveTransitionPermission obtains an exact target-status decision from the
+// installed chain using the caller's tracked Writer reader.
+func (c *Checker) ObserveTransitionPermission(ctx context.Context, q service.TransitionPermissionRequest, reader port.SnapshotReader) (service.TransitionPermissionObservation, error) {
 	observation := service.TransitionPermissionObservation{AuthzInstalled: true}
 	if q.Action != string(authz.Transition) || q.Resource.Kind != "bead" || reader == nil {
 		return observation, forbidden("invalid transition observation")

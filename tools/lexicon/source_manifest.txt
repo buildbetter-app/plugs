@@ -160,6 +160,7 @@ internal/core/authz/identity.go
 internal/core/authz/identity_test.go
 internal/core/authz/mutation.go
 internal/core/authz/mutation_test.go
+internal/core/authz/ontology.go
 internal/core/authz/types.go
 internal/core/dumpformat/BUILD.bazel
 internal/core/dumpformat/README.md
@@ -287,6 +288,7 @@ internal/core/pipeline/post.go
 internal/core/pipeline/precondition_test.go
 internal/core/pipeline/prepare.go
 internal/core/pipeline/protected.go
+internal/core/pipeline/protected_authority.go
 internal/core/pipeline/ready_sort.go
 internal/core/pipeline/ready_sort_test.go
 internal/core/pipeline/response.go
@@ -323,6 +325,7 @@ internal/core/service/BUILD.bazel
 internal/core/service/audit.go
 internal/core/service/audit_test.go
 internal/core/service/canonical_claim_slot_audit_test.go
+internal/core/service/claim_eligibility.go
 internal/core/service/claim_recovery.go
 internal/core/service/claim_recovery_integration_test.go
 internal/core/service/claim_recovery_test.go
@@ -690,6 +693,8 @@ internal/plugins/authnoidc/token.go
 internal/plugins/authzfixed/BUILD.bazel
 internal/plugins/authzfixed/facts.go
 internal/plugins/authzfixed/facts_test.go
+internal/plugins/authzfixed/ontology.go
+internal/plugins/authzfixed/ontology_test.go
 internal/plugins/authzfixed/rules.go
 internal/plugins/authzfixed/rules_test.go
 internal/publicnative/BUILD.bazel
@@ -705,12 +710,14 @@ internal/server/authn/session_test.go
 internal/server/authzrpc/BUILD.bazel
 internal/server/authzrpc/README.md
 internal/server/authzrpc/atomic_close_test.go
+internal/server/authzrpc/authority.go
 internal/server/authzrpc/authzrpc.go
 internal/server/authzrpc/authzrpc_test.go
 internal/server/authzrpc/b04_error_bounds_test.go
 internal/server/authzrpc/b15_comments_page_test.go
 internal/server/authzrpc/checker.go
 internal/server/authzrpc/claim.go
+internal/server/authzrpc/claim_eligibility_test.go
 internal/server/authzrpc/claim_test.go
 internal/server/authzrpc/cycles.go
 internal/server/authzrpc/drivers_test.go
@@ -724,6 +731,7 @@ internal/server/authzrpc/hierarchy_read.go
 internal/server/authzrpc/hierarchy_test.go
 internal/server/authzrpc/history_authority_test.go
 internal/server/authzrpc/lifecycle.go
+internal/server/authzrpc/ontology.go
 internal/server/authzrpc/predicate_count_test.go
 internal/server/authzrpc/service.go
 internal/server/authzrpc/slice.go
@@ -750,6 +758,7 @@ internal/server/collab/rpc.go
 internal/server/collab/types.go
 internal/server/composition/BUILD.bazel
 internal/server/composition/artifact.go
+internal/server/composition/authority.go
 internal/server/composition/b03_runtime_test.go
 internal/server/composition/composition_test.go
 internal/server/composition/config.go
@@ -1287,8 +1296,13 @@ spec/s1-b05-b08/fixture_test.go
 spec/s1-b05-b08/force_contract_test.go
 spec/s1-b05-b08/heartbeat_repair_test.go
 spec/s1-b05-b08/installed_lifecycle_test.go
+spec/s1-b05-b08/native_inputs_b06_b08.json
+spec/s1-b05-b08/native_io_test.go
+spec/s1-b05-b08/native_protocol_b06_b08.py
+spec/s1-b05-b08/native_recording_b06_b08_test.go
 spec/s1-b05-b08/opaque_kinds_test.go
 spec/s1-b05-b08/prepared_reference_test.py
+spec/s1-b05-b08/production_lifecycle_test.go
 spec/s1-b05-b08/project_reference.py
 spec/s1-b05-b08/projection_test.go
 spec/s1-b05-b08/provenance_test.go

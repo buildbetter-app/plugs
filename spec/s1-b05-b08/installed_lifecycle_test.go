@@ -28,6 +28,14 @@ type b08InstalledLifecycle struct {
 }
 
 func newB08InstalledLifecycle(t *testing.T, f *b08CloseFixture) *b08InstalledLifecycle {
+	p := seedB08Lifecycle(t, f)
+	p.compose(t)
+	return p
+}
+
+// seedB08Lifecycle supplies administrative policy data without constructing a
+// service. Production composition tests install only the Runtime's real chain.
+func seedB08Lifecycle(t *testing.T, f *b08CloseFixture) *b08InstalledLifecycle {
 	t.Helper()
 	meta, err := f.store.Meta(f.ctx)
 	if err != nil {
@@ -57,7 +65,6 @@ func newB08InstalledLifecycle(t *testing.T, f *b08CloseFixture) *b08InstalledLif
 		p.policy.Grants = append(p.policy.Grants, authzrpc.LifecycleGrant{Principal: p.by, Project: model.RefByID("b08-native-project", model.Natural64(0)), Type: "issue", FromStatus: from, ToStatus: "done", Actions: []authz.Action{authz.Modify, authz.Transition, authz.OverrideGuard}, Effect: authz.Allow})
 	}
 	p.writePolicy(t)
-	p.compose(t)
 	return p
 }
 

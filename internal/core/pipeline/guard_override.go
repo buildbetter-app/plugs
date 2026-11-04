@@ -7,6 +7,10 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/port"
 )
 
+type closeReplayOntology interface {
+	ValidateCloseReplay(context.Context, port.ProposedChange, port.SnapshotReader) error
+}
+
 type forcedCloseReplayOntology interface {
 	ValidateForcedCloseReplay(context.Context, port.ProposedChange, port.SnapshotReader) error
 }

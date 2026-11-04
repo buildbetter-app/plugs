@@ -44,6 +44,12 @@ type TransitionPermissionObservation struct {
 	Permission     *bool
 }
 
+// TransitionPermissionSource is the distinct capability of an installed
+// write authority. Generic modify authorization cannot supply this decision.
+type TransitionPermissionSource interface {
+	ObserveTransitionPermission(context.Context, TransitionPermissionRequest, port.SnapshotReader) (TransitionPermissionObservation, error)
+}
+
 type TransitionPermissionObserver func(context.Context, TransitionPermissionRequest, port.SnapshotReader) (TransitionPermissionObservation, error)
 
 type OntologyOption func(*Ontology)

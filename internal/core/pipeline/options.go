@@ -38,6 +38,7 @@ type config struct {
 	auditSet            bool
 	eventContext        port.EventContextSource
 	authorizer          port.Authorizer
+	protectedAuthorizer ProtectedAuthorizer
 	mutators            []MutatorBinding
 	validators          []ValidatorBinding
 	posts               []PostBinding
@@ -68,6 +69,12 @@ func WithEventContext(s port.EventContextSource) Option {
 	return func(c *config) { c.eventContext = s }
 }
 func WithAuthorizer(a port.Authorizer) Option { return func(c *config) { c.authorizer = a } }
+
+// WithProtectedAuthorizer supplies the distinct installed-policy capability
+// for ontology.apply. An ordinary write permit cannot grant this operation.
+func WithProtectedAuthorizer(a ProtectedAuthorizer) Option {
+	return func(c *config) { c.protectedAuthorizer = a }
+}
 func WithMutators(b ...MutatorBinding) Option {
 	return func(c *config) { c.mutators = append(c.mutators, b...) }
 }
