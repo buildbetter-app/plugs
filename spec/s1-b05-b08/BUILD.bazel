@@ -70,6 +70,40 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+# One private B07 recorder. No legacy all-card or B05 recorder is compiled.
+# The fixed native control supplies the accepted bundle's four preparation values.
+go_test(
+    name = "native_b07",
+    srcs = [
+        "engines_test.go",
+        "native_import_b07_test.go",
+        "native_io_b07_test.go",
+        "native_recording_b07_test.go",
+    ],
+    embedsrcs = [
+        "native_inputs_b07.json",
+        "native_protocol_b07.json",
+    ],
+    data = ["//internal/publicnative:dolt_runtime"],
+    env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
+    tags = ["manual", "local", "requires-network"],
+    timeout = "long",
+    args = ["-test.v"],
+    deps = [
+        "//internal/core/events",
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/restore",
+        "//internal/integration/converterroundtrip",
+        "//internal/publicnative",
+        "//internal/server/composition",
+        "//internal/server/transport/httpjson",
+        "//internal/server/watch",
+        "//internal/storage/driver",
+        "//internal/storage/postgres",
+    ],
+)
+
 go_test(
     name = "reference_admission",
     srcs = ["reference_admission_test.go"],

@@ -1299,6 +1299,7 @@ spec/s1-b01-b04/replay_test.go
 spec/s1-b01-b04/run-1.json
 spec/s1-b01-b04/run-2.json
 spec/s1-b05-b08/BUILD.bazel
+spec/s1-b05-b08/NATIVE-B07.md
 spec/s1-b05-b08/README.md
 spec/s1-b05-b08/blocking_hierarchy_test.go
 spec/s1-b05-b08/checkpoint_guards_test.go
@@ -1319,10 +1320,15 @@ spec/s1-b05-b08/fixture_test.go
 spec/s1-b05-b08/force_contract_test.go
 spec/s1-b05-b08/heartbeat_repair_test.go
 spec/s1-b05-b08/installed_lifecycle_test.go
+spec/s1-b05-b08/native_import_b07_test.go
 spec/s1-b05-b08/native_inputs_b06_b08.json
+spec/s1-b05-b08/native_inputs_b07.json
+spec/s1-b05-b08/native_io_b07_test.go
 spec/s1-b05-b08/native_io_test.go
 spec/s1-b05-b08/native_protocol_b06_b08.py
+spec/s1-b05-b08/native_protocol_b07.json
 spec/s1-b05-b08/native_recording_b06_b08_test.go
+spec/s1-b05-b08/native_recording_b07_test.go
 spec/s1-b05-b08/opaque_kinds_test.go
 spec/s1-b05-b08/prepared_reference_test.py
 spec/s1-b05-b08/production_lifecycle_test.go

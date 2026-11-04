@@ -1,0 +1,119 @@
+{
+  "schema": "plug.s1.b07.native-protocol.v1",
+  "card": "B07",
+  "cases": [
+    {
+      "kind": "blocks",
+      "from": "b07-000100",
+      "to": "b07-000101"
+    },
+    {
+      "kind": "parent-child",
+      "from": "b07-000103",
+      "to": "b07-000104"
+    },
+    {
+      "kind": "conditional-blocks",
+      "from": "b07-000106",
+      "to": "b07-000107"
+    },
+    {
+      "kind": "waits-for",
+      "from": "b07-000109",
+      "to": "b07-00010a"
+    },
+    {
+      "kind": "related",
+      "from": "b07-00010c",
+      "to": "b07-00010d"
+    },
+    {
+      "kind": "discovered-from",
+      "from": "b07-00010f",
+      "to": "b07-000110"
+    },
+    {
+      "kind": "replies-to",
+      "from": "b07-000112",
+      "to": "b07-000113"
+    },
+    {
+      "kind": "relates-to",
+      "from": "b07-000115",
+      "to": "b07-000116"
+    },
+    {
+      "kind": "duplicates",
+      "from": "b07-000118",
+      "to": "b07-000119"
+    },
+    {
+      "kind": "supersedes",
+      "from": "b07-00011b",
+      "to": "b07-00011c"
+    },
+    {
+      "kind": "authored-by",
+      "from": "b07-00011e",
+      "to": "b07-00011f"
+    },
+    {
+      "kind": "assigned-to",
+      "from": "b07-000121",
+      "to": "b07-000122"
+    },
+    {
+      "kind": "approved-by",
+      "from": "b07-000124",
+      "to": "b07-000125"
+    },
+    {
+      "kind": "attests",
+      "from": "b07-000127",
+      "to": "b07-000128"
+    },
+    {
+      "kind": "tracks",
+      "from": "b07-00012a",
+      "to": "b07-00012b"
+    },
+    {
+      "kind": "until",
+      "from": "b07-00012d",
+      "to": "b07-00012e"
+    },
+    {
+      "kind": "caused-by",
+      "from": "b07-000130",
+      "to": "b07-000131"
+    },
+    {
+      "kind": "validates",
+      "from": "b07-000133",
+      "to": "b07-000134"
+    },
+    {
+      "kind": "delegated-from",
+      "from": "b07-000136",
+      "to": "b07-000137"
+    },
+    {
+      "kind": "custom kind",
+      "from": "b07-000139",
+      "to": "b07-00013a"
+    }
+  ],
+  "external": {
+    "from": "b07-00ee01",
+    "to": "external:tracker:ticket-1",
+    "kind": "related"
+  },
+  "requirements": [
+    "19 well-known kinds and an opaque custom kind remain in one intact native store",
+    "same-type duplicate and different-type refusal retain whole public SQL state",
+    "actual source rows, raw ready membership, physical server and all command streams retained",
+    "unchanged native inventory/dump goes to existing converter and SQL service",
+    "no native failure is replaced by generated or filtered input"
+  ],
+  "opaqueKindPublicCommand": "dep add refuses unknown kinds at accepted c8eb; retain the actual refusal and full SQL conservation. A genuine producer-owned opaque stored control remains required; do not generate an import fixture."
+}
