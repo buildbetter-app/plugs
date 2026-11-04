@@ -1967,10 +1967,12 @@ func copyPinned(t *testing.T, source, destination, expected string, expectedSize
 	}
 }
 
+// Resolve the fresh workspace from each command CWD. The accepted CLI skips
+// local metadata creation for explicit BEADS_DIR with an external data root.
 func recordingEnv(dataRoot string) func(string) []string {
 	return func(dir string) []string {
 		home := filepath.Join(dir, "home")
-		return []string{"PATH=/usr/bin:/bin", "HOME=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config"), "BEADS_DIR=" + filepath.Join(dir, ".beads"), "BEADS_DOLT_DATA_DIR=" + dataRoot, "LANG=C.UTF-8", "TZ=UTC", "CI=true", "DO_NOT_TRACK=1", "BEADS_NO_DAEMON=1", "BEADS_ACTOR=public-recorder", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=Public recorder", "GIT_AUTHOR_EMAIL=public@example.invalid", "GIT_COMMITTER_NAME=Public recorder", "GIT_COMMITTER_EMAIL=public@example.invalid"}
+		return []string{"PATH=/usr/bin:/bin", "HOME=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config"), "BEADS_DOLT_DATA_DIR=" + dataRoot, "LANG=C.UTF-8", "TZ=UTC", "CI=true", "DO_NOT_TRACK=1", "BEADS_NO_DAEMON=1", "BEADS_ACTOR=public-recorder", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=Public recorder", "GIT_AUTHOR_EMAIL=public@example.invalid", "GIT_COMMITTER_NAME=Public recorder", "GIT_COMMITTER_EMAIL=public@example.invalid"}
 	}
 }
 
