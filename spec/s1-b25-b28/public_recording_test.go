@@ -49,8 +49,8 @@ const (
 	requestedProductHead   = "2d2164ba3d8e456c9aba15fbeb8cae4edc755997"
 	requestedProductTree   = "ae226eed2e9a85d4da19958db7a3520ebfe9cf05"
 	requestedProductParent = "70230ccd92597a96000f90223c5d89b103e25426"
-	productSourceCommit    = "1ee8b4f49234df609d777b52df3d47e640e92c1c"
-	productSourceTree      = "d6be641f94e1b8016e4af7f5a3e7c8c57a8f1983"
+	productSourceCommit    = "24a0b24acffc50f3d89cd10a711190676e914928"
+	productSourceTree      = "b747244386662a033401496ea2e8487459f22c52"
 	productSourceParent    = requestedProductHead
 )
 
