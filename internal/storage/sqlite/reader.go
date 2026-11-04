@@ -300,6 +300,25 @@ func (r *reader) Observe(ctx context.Context, keys []driver.LockKey) ([]driver.L
 }
 func (r *reader) observe(ctx context.Context, key driver.LockKey) (driver.LockState, error) {
 	state := driver.LockState{Key: copyKey(key), Revision: model.Natural64(0)}
+	if key.Kind == driver.LockRecord && r.owner != nil {
+		id := keyID(key)
+		if observed, cached := r.owner.recordStates[id]; cached {
+			if staged, present := r.owner.records[id]; present {
+				// The lock-time revision is immutable while this transaction holds
+				// the complete update lock. Reuse it after staging while exposing
+				// the final in-memory record image to projection builders.
+				state = observed
+				state.Key = copyKey(key)
+				state.Record = nil
+				state.Present = staged != nil
+				if staged != nil {
+					value := copyRecord(*staged)
+					state.Record = &value
+				}
+				return state, nil
+			}
+		}
+	}
 	var data []byte
 	err := r.tx.QueryRowContext(ctx, `SELECT data FROM key_history WHERE key=? AND rev<=? ORDER BY rev DESC LIMIT 1`, keyID(key), revKey(r.at)).Scan(&data)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
