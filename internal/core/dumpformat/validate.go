@@ -125,7 +125,20 @@ func Read(reader io.Reader) (*Archive, error) {
 	if err := decodeJSON(members["manifest.json"], &manifest); err != nil {
 		return nil, fmt.Errorf("invalid manifest: %w", err)
 	}
+	// Presence is significant: an explicitly empty contract is not omission.
+	// The complete manifest was strictly decoded above; inspect only presence
+	// here without changing its retained bytes or numeric representation.
+	var manifestFields map[string]json.RawMessage
+	if err := json.Unmarshal(members["manifest.json"], &manifestFields); err != nil {
+		return nil, err
+	}
+	if _, present := manifestFields["source_fields_contract"]; present && manifest.SourceFieldsContract != IssueSourceFieldsContract {
+		return nil, fmt.Errorf("unsupported source fields contract")
+	}
 	if manifest.Scope == "plug-native-store" {
+		if manifest.SourceFieldsContract != "" {
+			return nil, fmt.Errorf("Beads source fields contract requires offline source scope")
+		}
 		if err := validateNativeArchive(manifest, members, paths); err != nil {
 			return nil, err
 		}
@@ -334,6 +347,9 @@ func validateNativeLines(data []byte, want int, label string) error {
 }
 
 func validateManifest(manifest Manifest, members map[string][]byte) error {
+	if manifest.SourceFieldsContract != "" && manifest.SourceFieldsContract != IssueSourceFieldsContract {
+		return fmt.Errorf("unsupported source fields contract")
+	}
 	if manifest.Format != Format || manifest.Schema != 1 || manifest.Reference != BeadsReference ||
 		manifest.MainVersion != 72 || manifest.IgnoredVersion != 28 || manifest.StoreID == "" ||
 		manifest.Machine == "" || manifest.Scope != Scope {

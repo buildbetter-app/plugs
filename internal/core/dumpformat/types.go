@@ -18,6 +18,9 @@ const (
 	// EdgeVersionTypedDependencies is the explicit successor producer contract.
 	// Format/schema/reference alone never enable local waits or conditional edges.
 	EdgeVersionTypedDependencies = 2
+	// IssueSourceFieldsContract binds the producer's complete physical issue
+	// row image. Recognition is separate from native SQL import capability.
+	IssueSourceFieldsContract = "beads-issues-source-fields/1"
 )
 
 // Row retains source JSON values, including explicit nulls and lossless
@@ -53,22 +56,23 @@ type Disposition struct {
 }
 
 type Manifest struct {
-	Format         string              `json:"format"`
-	Schema         int                 `json:"schema"`
-	Reference      string              `json:"beads_reference"`
-	StoreID        string              `json:"store_id"`
-	Machine        string              `json:"machine"`
-	MainVersion    int                 `json:"main_version"`
-	IgnoredVersion int                 `json:"ignored_version"`
-	Scope          string              `json:"scope"`
-	History        string              `json:"history"`
-	Projects       []Project           `json:"projects"`
-	Ontology       []OntologyDirective `json:"ontology,omitempty"`
-	Kinds          []Kind              `json:"kind_registry"`
-	Files          map[string]File     `json:"files"`
-	Sources        []Disposition       `json:"sources"`
-	Warnings       []string            `json:"warnings"`
-	Verification   map[string]string   `json:"verification"`
+	Format               string              `json:"format"`
+	Schema               int                 `json:"schema"`
+	Reference            string              `json:"beads_reference"`
+	StoreID              string              `json:"store_id"`
+	Machine              string              `json:"machine"`
+	MainVersion          int                 `json:"main_version"`
+	IgnoredVersion       int                 `json:"ignored_version"`
+	Scope                string              `json:"scope"`
+	History              string              `json:"history"`
+	Projects             []Project           `json:"projects"`
+	Ontology             []OntologyDirective `json:"ontology,omitempty"`
+	Kinds                []Kind              `json:"kind_registry"`
+	Files                map[string]File     `json:"files"`
+	Sources              []Disposition       `json:"sources"`
+	Warnings             []string            `json:"warnings"`
+	Verification         map[string]string   `json:"verification"`
+	SourceFieldsContract string              `json:"source_fields_contract,omitempty"`
 	// Native store fields are present only for archives produced by Plug's
 	// engine-neutral admin.dump path. The offline Beads exporter leaves these
 	// fields absent and continues to use the source census above.
