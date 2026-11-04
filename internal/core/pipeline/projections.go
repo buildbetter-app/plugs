@@ -379,6 +379,51 @@ type projectionDelta struct {
 	remove, add []driver.DerivedRow
 }
 
+// Read the exact union once instead of making an optional closure read for
+// every changed bead. AncestorPrefix ends in a separator outside its encoded
+// alphabet, so these descendant ranges cannot overlap or select other sources.
+// A missing capability or failed union keeps the established per-source path:
+// optional coverage must not turn a supported ordinary write into a refusal.
+func (p *prepared) projectionAncestorRows(ctx context.Context, ids []string) map[string][]driver.DerivedRow {
+	reader, ok := p.snapshot.reader.(driver.DerivedPrefixReader)
+	if !ok {
+		return nil
+	}
+	prefixes := make([]string, 0, len(ids))
+	byPrefix := make(map[string]string, len(ids))
+	groups := make(map[string][]driver.DerivedRow, len(ids))
+	for _, id := range ids {
+		if p.writes[id].kind != "bead" {
+			continue
+		}
+		prefix, err := AncestorPrefix(id)
+		if err != nil {
+			return nil // Preserve validation at the original per-source boundary.
+		}
+		prefixes = append(prefixes, prefix)
+		byPrefix[prefix], groups[id] = id, nil
+	}
+	if len(prefixes) < 2 {
+		return nil
+	}
+	sort.Strings(prefixes)
+	rows, err := reader.DerivedRowsForPrefixes(ctx, driver.DerivedAncestorClosure, prefixes)
+	if err != nil {
+		return nil
+	}
+	previous := ""
+	for i, row := range rows {
+		encoded, _, separated := strings.Cut(row.Key, ".")
+		id, selected := byPrefix[encoded+"."]
+		if !separated || !selected || i > 0 && row.Key <= previous {
+			return nil // An invalid optional union cannot certify a refresh.
+		}
+		previous = row.Key
+		groups[id] = append(groups[id], row)
+	}
+	return groups
+}
+
 // prepareProjections observes old rows AND new misses before the complete lock
 // census is acquired. Every changed source refreshes all source-bound rows,
 // even if only comment/metadata/lease bytes changed and logical sort did not.
@@ -399,6 +444,7 @@ func (p *prepared) prepareProjections(ctx context.Context) error {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
+	ancestorRows := p.projectionAncestorRows(ctx, ids)
 	for _, id := range ids {
 		pending := p.writes[id]
 		var plan *SourceProjectionPlan
@@ -431,7 +477,14 @@ func (p *prepared) prepareProjections(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		rows, err := p.snapshot.reader.DerivedRows(ctx, driver.DerivedAncestorClosure, prefix)
+		rows, batched := ancestorRows[id]
+		if batched {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		} else {
+			rows, err = p.snapshot.reader.DerivedRows(ctx, driver.DerivedAncestorClosure, prefix)
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()

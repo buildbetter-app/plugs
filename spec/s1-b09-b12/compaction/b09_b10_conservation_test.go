@@ -2,7 +2,9 @@ package compaction_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -190,6 +192,62 @@ func b09B10Equal(t *testing.T, label string, want, got any) {
 		b, _ := json.Marshal(got)
 		t.Fatalf("%s changed:\nwant %s\n got %s", label, a, b)
 	}
+}
+
+// Compaction conserves every logical derived byte. Its changed source still
+// requires fresh provenance on exactly the five existing selected-child rows.
+// Build the complete expected inventory from the before image, changing only
+// those two source-binding fields; absent or altered annotations still fail.
+func b09B10CompactedDerived(t *testing.T, before, after b09B10Image, selected string) map[driver.DerivedTable][]driver.DerivedRow {
+	t.Helper()
+	selectedRecord := func(image b09B10Image) driver.Record {
+		var found []driver.Record
+		for _, record := range image.Records {
+			if record.Ref.ID == selected {
+				found = append(found, record)
+			}
+		}
+		if len(found) != 1 || found[0].Kind != "bead" {
+			t.Fatalf("selected source inventory is incomplete: %+v", found)
+		}
+		return found[0]
+	}
+	oldSource, source := selectedRecord(before), selectedRecord(after)
+	if after.View.At == nil || source.Revision.String() != after.View.At.String() || source.Ref != oldSource.Ref || string(source.Body) == string(oldSource.Body) {
+		t.Fatal("compaction did not publish the selected changed source at its committed revision")
+	}
+	digest := func(body []byte) string {
+		sum := sha256.Sum256(body)
+		return hex.EncodeToString(sum[:])
+	}
+	want := make(map[driver.DerivedTable][]driver.DerivedRow, len(before.Derived))
+	refreshed := map[driver.DerivedTable]int{}
+	for table, rows := range before.Derived {
+		if rows == nil {
+			want[table] = nil
+			continue
+		}
+		want[table] = make([]driver.DerivedRow, len(rows))
+		for i, row := range rows {
+			row = row.Clone()
+			index := row.Index
+			if index != nil && index.Source.Key.Kind == driver.LockRecord && index.Source.Key.Ref != nil && index.Source.Key.Ref.ID == selected {
+				if index.Validate(table, row) != nil || *index.Source.Key.Ref != oldSource.Ref || !index.Source.Present || index.Source.Revision.String() != oldSource.Revision.String() || index.Source.Digest != digest(oldSource.Body) {
+					t.Fatalf("baseline selected annotation does not bind its exact source: table=%s key=%s", table, row.Key)
+				}
+				index.Source.Revision, index.Source.Digest = source.Revision, digest(source.Body)
+				refreshed[table]++
+			}
+			want[table][i] = row
+		}
+	}
+	b09B10Equal(t, "complete selected annotation census", map[driver.DerivedTable]int{
+		driver.DerivedAncestorClosure: 2,
+		driver.DerivedAttribute:       1,
+		driver.DerivedReferenceIndex:  1,
+		driver.DerivedSortKey:         1,
+	}, refreshed)
+	return want
 }
 
 // SQL is an independent connection to the real disposable database. Include
