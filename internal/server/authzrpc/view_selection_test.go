@@ -76,12 +76,13 @@ func (r *w9ObservedReader) Select(ctx context.Context, p driver.SelectionPlan) (
 }
 
 type w9Fixture struct {
-	store   *w9ObservedStore
-	lease   driver.ActiveLease
-	app     *Composition
-	facts   *MutableFacts
-	base    authzfixed.Facts
-	started time.Time
+	store              *w9ObservedStore
+	lease              driver.ActiveLease
+	app                *Composition
+	facts              *MutableFacts
+	base               authzfixed.Facts
+	started            time.Time
+	traceSQLiteCommits bool
 }
 
 func w9Ref(id string) model.Ref { return model.RefByID(id, model.Natural64(0)) }
@@ -327,10 +328,25 @@ func (f *w9Fixture) seedBatch(t *testing.T, records []driver.Record, batch, comp
 	if err := tx.BumpSentinels(ctx, sentinels); err != nil {
 		t.Fatal(err)
 	}
+	commitCtx := ctx
+	var trace *sqlite.CommitTrace
+	if f.traceSQLiteCommits {
+		trace = &sqlite.CommitTrace{}
+		commitCtx = sqlite.WithCommitTrace(ctx, trace)
+	}
 	mark("Commit", -1)
 	t.Logf("W9 seed Commit start batch=%d size=%d completed_records=%d elapsed=%s", batch, len(records), completed, time.Since(f.started))
-	cs, err := tx.Commit(ctx, header)
+	cs, err := tx.Commit(commitCtx, header)
 	t.Logf("W9 seed Commit end batch=%d elapsed=%s duration=%s error_type=%T error_value=%#v error=%v", batch, time.Since(f.started), time.Since(stageStarted), err, err, err)
+	if trace != nil {
+		// Staged counts describe inputs; nested phase durations overlap.
+		samples := trace.Snapshot()
+		encoded, encodeErr := json.Marshal(samples)
+		if encodeErr != nil {
+			t.Errorf("SQLite Commit trace encoding: %v", encodeErr)
+		}
+		t.Logf("W9_SQLITE_COMMIT_PHASES batch=%d size=%d completed_records=%d sample_count=%d samples=%s", batch, len(records), completed, len(samples), encoded)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -618,6 +634,7 @@ func TestW9HistoricalContentCurrentAuthorityContinuationAndFinalFenceAcrossEngin
 func TestW9OrdinaryAuthorizedCapVersusExplicit100kSummaryAcrossEngines(t *testing.T) {
 	w9Engines(t, func(t *testing.T, store driver.Store) {
 		f := newW9Fixture(t, store)
+		_, f.traceSQLiteCommits = store.(*sqlite.Store)
 		// Keep the existing lease alive during the genuine 100k producer and
 		// engine work. Component budgets and test deadlines stay unchanged.
 		stop := make(chan struct{})
