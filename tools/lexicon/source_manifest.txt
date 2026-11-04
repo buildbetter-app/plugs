@@ -16,6 +16,7 @@
 .github/workflows/BUILD.bazel
 .github/workflows/plug-bazel.yml
 .github/workflows/plug-beads-bazel.yml
+.github/workflows/plug-cp7-latency.yml
 .github/workflows/plug-nightly-restore-diffs.yml
 .github/workflows/plug-public-bundle.yml
 .github/workflows/plug-remote-bazel.yml
@@ -150,6 +151,7 @@ internal/client/client_test.go
 internal/client/http.go
 internal/client/http_test.go
 internal/core/authz/BUILD.bazel
+internal/core/authz/binding_test.go
 internal/core/authz/chain.go
 internal/core/authz/chain_test.go
 internal/core/authz/doc.go
@@ -160,6 +162,9 @@ internal/core/authz/identity.go
 internal/core/authz/identity_test.go
 internal/core/authz/mutation.go
 internal/core/authz/mutation_test.go
+internal/core/authz/prepared.go
+internal/core/authz/prepared_differential_test.go
+internal/core/authz/prepared_legacy_test.go
 internal/core/authz/types.go
 internal/core/dumpformat/BUILD.bazel
 internal/core/dumpformat/README.md
@@ -453,6 +458,17 @@ internal/integration/converterroundtrip/testdata/public-complete-root-990eb800.t
 internal/integration/converterroundtrip/testdata/public-partial-990eb800.tar
 internal/integration/converterroundtrip/testdata/public-source-990eb800.md
 internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar
+internal/integration/cp7latency/BUILD.bazel
+internal/integration/cp7latency/README.md
+internal/integration/cp7latency/correctness_test.go
+internal/integration/cp7latency/dense_summary_test.go
+internal/integration/cp7latency/fixture_test.go
+internal/integration/cp7latency/latency_test.go
+internal/integration/cp7latency/measurement_test.go
+internal/integration/cp7latency/semantics_test.go
+internal/integration/cp7latency/work_accounting_test.go
+internal/integration/cp7latency/work_counters_test.go
+internal/integration/cp7latency/workload.json
 internal/integration/cursorhttp/BUILD.bazel
 internal/integration/cursorhttp/cursor_test.go
 internal/integration/cursorhttp/fixture_test.go
@@ -661,6 +677,8 @@ internal/plugins/authnoidc/token.go
 internal/plugins/authzfixed/BUILD.bazel
 internal/plugins/authzfixed/facts.go
 internal/plugins/authzfixed/facts_test.go
+internal/plugins/authzfixed/prepared_differential_test.go
+internal/plugins/authzfixed/prepared_legacy_test.go
 internal/plugins/authzfixed/rules.go
 internal/plugins/authzfixed/rules_test.go
 internal/publicnative/BUILD.bazel
@@ -680,6 +698,7 @@ internal/server/authzrpc/authzrpc.go
 internal/server/authzrpc/authzrpc_test.go
 internal/server/authzrpc/b04_error_bounds_test.go
 internal/server/authzrpc/b15_comments_page_test.go
+internal/server/authzrpc/binding_test.go
 internal/server/authzrpc/checker.go
 internal/server/authzrpc/claim.go
 internal/server/authzrpc/claim_test.go
@@ -694,6 +713,7 @@ internal/server/authzrpc/hierarchy_read.go
 internal/server/authzrpc/hierarchy_test.go
 internal/server/authzrpc/history_authority_test.go
 internal/server/authzrpc/predicate_count_test.go
+internal/server/authzrpc/prepared_test.go
 internal/server/authzrpc/service.go
 internal/server/authzrpc/slice.go
 internal/server/authzrpc/workflow_boundary_test.go
@@ -972,6 +992,7 @@ internal/storage/driver/offline_history_test.go
 internal/storage/driver/offline_restore.go
 internal/storage/driver/parent_counter.go
 internal/storage/driver/parent_counter_test.go
+internal/storage/driver/read_work.go
 internal/storage/driver/receipt_contract_test.go
 internal/storage/driver/restore.go
 internal/storage/driver/restore_test.go
