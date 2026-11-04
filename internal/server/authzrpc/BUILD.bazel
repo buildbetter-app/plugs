@@ -112,6 +112,20 @@ go_test(
     ],
 )
 
+go_test(
+    name = "ready_project_filter_test",
+    size = "large",
+    srcs = ["ready_project_filter_test.go"],
+    embed = [":authzrpc"],
+    deps = [
+        "//internal/core/authz",
+        "//internal/core/model",
+        "//internal/core/service",
+        "//internal/plugins/authzfixed",
+        "//internal/testfixture/readyalternative",
+    ],
+)
+
 filegroup(
     name = "lexicon_files",
     srcs = glob(["**"]),
