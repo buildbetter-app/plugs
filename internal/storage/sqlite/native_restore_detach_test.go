@@ -6,9 +6,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,8 +33,7 @@ func TestNativeRestoreReopenDetachUsesCertifiedHierarchyCoverage(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	path := filepath.Join(t.TempDir(), "native-detach.db")
-	s := openStore(t, ctx, path)
-	lease := getLease(t, ctx, s, driver.LeaseTTL)
+	s, lease, closeTarget := openRenewingTarget(t, ctx, path)
 
 	records, closure, direct := nativeDetachCorpus(t, 20000)
 	profile := driver.NativeRestoreProfile{
@@ -45,12 +46,7 @@ func TestNativeRestoreReopenDetachUsesCertifiedHierarchyCoverage(t *testing.T) {
 	if err := publishNativeDetachCorpus(ctx, t, s, lease, profile, records, closure); err != nil {
 		t.Fatal(err)
 	}
-	if err := lease.Release(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Close(); err != nil {
-		t.Fatal(err)
-	}
+	closeTarget()
 
 	value, err := (Driver{}).Open(ctx, driver.Config{DSN: path})
 	if err != nil {
@@ -62,7 +58,8 @@ func TestNativeRestoreReopenDetachUsesCertifiedHierarchyCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopenedLease.Release(context.Background())
+	closeReopenedLease := renewLease(t, "native-detach reopened", reopenedLease)
+	defer closeReopenedLease()
 	meta, err := reopened.Meta(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -97,6 +94,65 @@ func TestNativeRestoreReopenDetachUsesCertifiedHierarchyCoverage(t *testing.T) {
 		t.Fatalf("restored detach did not use the hierarchy source index: queries=%d parent_reads=%d inverse_reads=%d", observed.queries, observed.parentReads, observed.inverseReads)
 	}
 	t.Logf("native 20000-record restore, physical reopen, and detach used indexed hierarchy: queries=%d parent_reads=%d inverse_reads=%d", observed.queries, observed.parentReads, observed.inverseReads)
+}
+
+func openRenewingTarget(t *testing.T, ctx context.Context, path string) (*Store, driver.ActiveLease, func()) {
+	t.Helper()
+	s := openStore(t, ctx, path)
+	lease := getLease(t, ctx, s, driver.LeaseTTL)
+	closeLease := renewLease(t, "native-detach target", lease)
+	var once sync.Once
+	closeTarget := func() {
+		once.Do(func() {
+			closeLease()
+			if err := s.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	t.Cleanup(closeTarget)
+	return s, lease, closeTarget
+}
+
+func renewLease(t *testing.T, label string, lease driver.ActiveLease) func() {
+	t.Helper()
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	var renewalErr error
+	renewals := 0
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := lease.Renew(ctx); err != nil {
+					if ctx.Err() == nil || !errors.Is(err, context.Canceled) {
+						renewalErr = err
+					}
+					return
+				}
+				renewals++
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			stop()
+			<-done
+			if renewalErr != nil {
+				t.Errorf("%s lease renewal: %v", label, renewalErr)
+			}
+			t.Logf("%s lease renewals=%d error=%v", label, renewals, renewalErr)
+			if err := lease.Release(context.Background()); err != nil {
+				t.Error(err)
+			}
+		})
+	}
 }
 
 func nativeDetachCorpus(t *testing.T, count int) ([]driver.Record, []driver.DerivedRow, []model.Ref) {
@@ -157,7 +213,8 @@ func publishNativeDetachCorpus(ctx context.Context, t *testing.T, s *Store, leas
 	if err != nil {
 		return err
 	}
-	defer sourceLease.Release(context.Background())
+	closeSourceLease := renewLease(t, "native-detach source", sourceLease)
+	defer closeSourceLease()
 	changes := make([]conformance.FixtureChange, len(records))
 	for i, record := range records {
 		changes[i] = conformance.FixtureChange{Ref: record.Ref, Kind: record.Kind, Op: model.OpCreate, Body: record.Body}
