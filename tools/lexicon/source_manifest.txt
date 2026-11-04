@@ -986,6 +986,9 @@ plugins/workflow/native.go
 plugins/workflow/workflow.go
 plugins/workflow/workflow_test.go
 scripts/ci/BUILD.bazel
+scripts/ci/bazel-testlogs/BUILD.bazel
+scripts/ci/bazel-testlogs/archive.py
+scripts/ci/bazel-testlogs/archive_test.py
 scripts/ci/plug-bazel-config-test.sh
 scripts/ci/plug-bazel-delivery-test.sh
 scripts/ci/plug-bazel-delivery.py
