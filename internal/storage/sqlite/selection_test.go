@@ -758,3 +758,39 @@ func TestSelectionOldEnvelopePlanUsesCurrentRowIndex(t *testing.T) {
 		t.Fatalf("old envelope lookup fell back to a source/family census: %s", joined)
 	}
 }
+
+// Touched-source accounting must visit only that source's active physical
+// envelopes, including every depth row of a canonical ancestor closure.
+func TestSelectionTouchedSourceRowsUseSourceIndex(t *testing.T) {
+	ctx := context.Background()
+	s := selectionStore(t).(*Store)
+	t.Cleanup(func() { _ = s.Close() })
+	meta, err := s.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := s.db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+selectionSourceFactRowsSQL,
+		meta.Incarnation, revKey(0), string(driver.DerivedAncestorClosure),
+		string(driver.SelectionAncestorFact), "0:selection-touched-source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer plan.Close()
+	var details []string
+	for plan.Next() {
+		var node, parent, unused int
+		var detail string
+		if err := plan.Scan(&node, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		details = append(details, detail)
+	}
+	if err := plan.Err(); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(details, "\n")
+	if !strings.Contains(joined, "SEARCH selection_fact_sets USING INDEX selection_fact_sets_source") ||
+		!strings.Contains(joined, "source_key=?") {
+		t.Fatalf("touched-source fact rows lost source-bounded plan: %s", joined)
+	}
+}
