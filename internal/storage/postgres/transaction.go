@@ -51,6 +51,7 @@ type transaction struct {
 	sourceCoverageValid       bool
 	selectionVirgin           bool
 	selectionProofCarry       bool
+	selectionProofFamilies    uint8
 	selectionProofSeed        bool
 	selectionProofRoots       [][]byte
 	selectionProofOld         [][]byte

@@ -258,6 +258,9 @@ CREATE TABLE IF NOT EXISTS plug_postgres.selection_mutation_fence (
  certified_generation numeric, incarnation text, head numeric(20,0), format integer,
  untracked boolean NOT NULL DEFAULT false
 );
+-- Legacy certified tokens could only prove all four families. A NULL or
+-- mismatched certified generation still grants no bits on upgraded stores.
+ALTER TABLE plug_postgres.selection_mutation_fence ADD COLUMN IF NOT EXISTS proven_families integer NOT NULL DEFAULT 15 CHECK (proven_families BETWEEN 0 AND 15);
 INSERT INTO plug_postgres.selection_mutation_fence(singleton) VALUES(true) ON CONFLICT DO NOTHING;
 CREATE TABLE IF NOT EXISTS plug_postgres.selection_mutation_keys (key bytea PRIMARY KEY);
 CREATE OR REPLACE FUNCTION plug_postgres.selection_mutated() RETURNS trigger

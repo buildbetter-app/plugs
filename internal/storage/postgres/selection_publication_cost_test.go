@@ -370,13 +370,13 @@ func (c *selectionCommitTiming) observeInside(point selectionCommitLeasePoint) {
 func selectionCommitQueryPhase(query string) int {
 	query = strings.TrimSpace(query)
 	switch {
-	case strings.HasPrefix(query, "SELECT epoch::text,owner,expires FROM plug_postgres.lease"):
+	case strings.HasPrefix(query, "SELECT epoch::text,owner,") && strings.Contains(query, "FROM plug_postgres.lease"):
 		return 0
 	case query == "SELECT clock_timestamp()":
 		return 1
 	case strings.HasPrefix(query, "WITH roots AS MATERIALIZED"):
 		return 3
-	case strings.HasPrefix(query, "WITH proof_rows AS"):
+	case strings.HasPrefix(query, "WITH proof_rows AS"), strings.HasPrefix(query, "SELECT * FROM (WITH proof_rows AS"):
 		return 4
 	case strings.Contains(query, "plug_postgres.selection_mutation_keys") && strings.HasPrefix(query, "DELETE"),
 		strings.HasPrefix(query, "UPDATE plug_postgres.selection_mutation_fence"):

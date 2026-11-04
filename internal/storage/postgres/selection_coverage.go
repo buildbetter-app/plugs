@@ -11,6 +11,8 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
+const selectionAllFamilies uint8 = 15
+
 func selectionFamilies() []driver.SelectionProjectionFamily {
 	return []driver.SelectionProjectionFamily{
 		{Table: driver.DerivedSortKey, Version: driver.SelectionIndexVersion},
@@ -64,10 +66,32 @@ func (r *reader) compileSelectionFamilyValidity(ctx context.Context, at uint64, 
 	return r.compileSelectionValidityForSources(ctx, at, overlay, nil, "")
 }
 
-// A non-nil source domain is permitted only with an enforced prior complete
-// certificate and complete impacted closure. Nil retains the full audit path.
+// This complete-four-family entry point requires the complete predecessor
+// certificate and impacted closure. Nil retains the full audit path.
 func (r *reader) compileSelectionValidityForSources(ctx context.Context, at uint64, overlay bool, sources [][]byte, generation string) (string, []any, error) {
-	c := &selectionCompiler{reader: r, planes: map[string]selectionPlane{}, refs: map[string]string{}}
+	return r.compileSelectionValiditySubset(ctx, at, overlay, sources, generation, selectionAllFamilies, selectionAllFamilies, nil)
+}
+
+// A partial predecessor supplies only its explicitly proven families. Every
+// other family is still audited over the complete current relation in the
+// same statement. A positive ancestor proof also requires the bead proof.
+func (r *reader) compileSelectionCarriedValidity(ctx context.Context, at uint64, overlay bool, sources [][]byte, generation string, proven uint8) (string, []any, error) {
+	if proven == 0 {
+		return r.compileSelectionFamilyValidity(ctx, at, overlay)
+	}
+	query, args, err := r.compileSelectionValiditySubset(ctx, at, overlay, sources, generation, proven, proven, nil)
+	if err != nil || proven == selectionAllFamilies {
+		return query, args, err
+	}
+	fallback, args, err := r.compileSelectionValiditySubset(ctx, at, overlay, nil, generation, selectionAllFamilies&^proven, proven, args)
+	if err != nil {
+		return "", nil, err
+	}
+	return "SELECT * FROM (" + query + ") carried UNION ALL SELECT * FROM (" + fallback + ") audited", args, nil
+}
+
+func (r *reader) compileSelectionValiditySubset(ctx context.Context, at uint64, overlay bool, sources [][]byte, generation string, families, certified uint8, initialArgs []any) (string, []any, error) {
+	c := &selectionCompiler{reader: r, planes: map[string]selectionPlane{}, refs: map[string]string{}, args: initialArgs}
 	if err := c.relationForSources(r, "proof", at, overlay, sources); err != nil {
 		return "", nil, err
 	}
@@ -170,7 +194,13 @@ func (r *reader) compileSelectionValidityForSources(ctx context.Context, at uint
 	// count as zero. Orphan groups already fail the independent freshness proof
 	// below; retaining them here prevents reduction back to a left join. All
 	// untouched rows and freshness/identity/parent-chain proofs remain.
-	c.ctes = append(c.ctes, `proof_census AS MATERIALIZED (SELECT r.source_key,r.family_table,coalesce(r.fact_kind,'') fact_kind,count(*) n FROM proof_rows r`+headerJoin("r.source_key")+` WHERE (h.kind='bead' OR h.key IS NULL AND r.source_present) AND r.source_kind='record' GROUP BY r.source_key,r.family_table,coalesce(r.fact_kind,''))`)
+	censusFamilies := []string{}
+	for i, family := range selectionFamilies() {
+		if families&(1<<i) != 0 {
+			censusFamilies = append(censusFamilies, `(r.family_table=`+c.bind(string(family.Table))+` AND coalesce(r.fact_kind,'')=`+c.bind(string(family.Kind))+`)`)
+		}
+	}
+	c.ctes = append(c.ctes, `proof_census AS MATERIALIZED (SELECT r.source_key,r.family_table,coalesce(r.fact_kind,'') fact_kind,count(*) n FROM proof_rows r`+headerJoin("r.source_key")+` WHERE (h.kind='bead' OR h.key IS NULL AND r.source_present) AND r.source_kind='record' AND (`+strings.Join(censusFamilies, ` OR `)+`) GROUP BY r.source_key,r.family_table,coalesce(r.fact_kind,''))`)
 	chain := selectionParentChainSQL
 	if sources != nil {
 		// Impacted chains still compare every target with its current parent,
@@ -185,7 +215,10 @@ func (r *reader) compileSelectionValidityForSources(ctx context.Context, at uint
 		chain = strings.ReplaceAll(chain, `SELECT bead_key,parent_key FROM proof_beads)`, `SELECT bead_key,parent_key FROM proof_target_beads)`)
 	}
 	branches := []string{}
-	for _, family := range selectionFamilies() {
+	for i, family := range selectionFamilies() {
+		if families&(1<<i) == 0 {
+			continue
+		}
 		table, kind := c.bind(string(family.Table)), c.bind(string(family.Kind))
 		rows := `SELECT r.* FROM proof_rows r` + headerJoin("r.source_key") + ` WHERE (h.kind='bead' OR h.key IS NULL AND r.source_present) AND source_kind='record' AND family_table=` + table + ` AND coalesce(fact_kind,'')=` + kind
 		countCheck := `coalesce(census.n,0)=0`
@@ -199,11 +232,18 @@ func (r *reader) compileSelectionValidityForSources(ctx context.Context, at uint
 		if family.Table == driver.DerivedAncestorClosure {
 			valid += ` AND (` + chain + `)`
 		}
+		if families != selectionAllFamilies && sources == nil {
+			// An entirely unbuilt family cannot cover a nonempty live domain.
+			// Refuse it with indexed existence probes before constructing the
+			// complete census. If any envelopes exist, retain the exact full
+			// fallback: ordinary repairs can still make this family valid.
+			valid = `CASE WHEN NOT EXISTS(SELECT 1 FROM (` + rows + `) any_row) AND EXISTS(SELECT 1 FROM proof_live) THEN false ELSE (` + valid + `) END`
+		}
 		if generation != "" {
 			// Writers before Head use READ COMMITTED. Recheck the certificate
 			// inside THIS statement, so a concurrent raw mutation cannot turn a
 			// prior token observation into permission to skip untouched rows.
-			valid = `(` + selectionCertificateSQL(c, r.meta.Head) + ` AND EXISTS(SELECT 1 FROM plug_postgres.selection_mutation_fence WHERE singleton AND generation=` + c.bind(generation) + `::numeric)) AND (` + valid + `)`
+			valid = `(` + selectionFamilyCertificateSQL(c, r.meta.Head, certified) + ` AND EXISTS(SELECT 1 FROM plug_postgres.selection_mutation_fence WHERE singleton AND generation=` + c.bind(generation) + `::numeric)) AND (` + valid + `)`
 		}
 		branches = append(branches, `SELECT `+table+`::text,`+kind+`::text,(`+valid+`)`)
 	}
@@ -274,7 +314,19 @@ const selectionParentChainSQL = `
  NOT EXISTS(SELECT target_key,next_target_key FROM proof_chain EXCEPT SELECT bead_key,parent_key FROM proof_beads)`
 
 func selectionCertificateSQL(c *selectionCompiler, head model.Revision) string {
-	return `EXISTS(SELECT 1 FROM plug_postgres.selection_mutation_fence WHERE singleton AND NOT untracked AND certified_generation=generation AND incarnation=` + c.bind(c.reader.meta.Incarnation) + ` AND head=` + c.bind(head.String()) + `::numeric AND format=` + c.bind(driver.SelectionIndexVersion) + `) AND NOT EXISTS(SELECT 1 FROM plug_postgres.selection_mutation_keys)`
+	return selectionFamilyCertificateSQL(c, head, selectionAllFamilies)
+}
+
+func selectionFamilyCertificateSQL(c *selectionCompiler, head model.Revision, families uint8) string {
+	return `EXISTS(SELECT 1 FROM plug_postgres.selection_mutation_fence WHERE singleton AND NOT untracked AND certified_generation=generation AND incarnation=` + c.bind(c.reader.meta.Incarnation) + ` AND head=` + c.bind(head.String()) + `::numeric AND format=` + c.bind(driver.SelectionIndexVersion) + ` AND (proven_families & ` + c.bind(int(families)) + `::integer)=` + c.bind(int(families)) + `::integer) AND NOT EXISTS(SELECT 1 FROM plug_postgres.selection_mutation_keys)`
+}
+
+func (r *reader) selectionFamilyCertificate(ctx context.Context) (uint8, string, error) {
+	c := &selectionCompiler{reader: r}
+	var families uint8
+	var generation string
+	err := r.sql.QueryRowContext(ctx, `SELECT CASE WHEN `+selectionFamilyCertificateSQL(c, r.meta.Head, 0)+` THEN proven_families ELSE 0 END,generation::text FROM plug_postgres.selection_mutation_fence WHERE singleton`, c.args...).Scan(&families, &generation)
+	return families, generation, err
 }
 
 func (r *reader) selectionCertificateClean(ctx context.Context) (bool, error) {
@@ -446,46 +498,56 @@ func (r *reader) selectionImpacted(ctx context.Context, at uint64, overlay bool,
 }
 
 func (t *transaction) prepareSelectionProof(ctx context.Context) error {
-	var clean, virginGeneration bool
+	var virginGeneration bool
 	// The ordinary Head/lease fences precede this lock. BEFORE STATEMENT
 	// mutation triggers serialize raw writers with it until commit/rollback.
-	err := t.sql.QueryRowContext(ctx, `SELECT generation=0,coalesce(NOT untracked AND certified_generation=generation AND incarnation=$1 AND head=$2 AND format=$3,false) AND NOT EXISTS(SELECT 1 FROM plug_postgres.selection_mutation_keys) FROM plug_postgres.selection_mutation_fence WHERE singleton FOR UPDATE`, t.meta.Incarnation, t.meta.Head.String(), driver.SelectionIndexVersion).Scan(&virginGeneration, &clean)
+	err := t.sql.QueryRowContext(ctx, `SELECT generation=0,CASE WHEN coalesce(NOT untracked AND certified_generation=generation AND incarnation=$1 AND head=$2 AND format=$3,false) AND NOT EXISTS(SELECT 1 FROM plug_postgres.selection_mutation_keys) THEN proven_families ELSE 0 END FROM plug_postgres.selection_mutation_fence WHERE singleton FOR UPDATE`, t.meta.Incarnation, t.meta.Head.String(), driver.SelectionIndexVersion).Scan(&virginGeneration, &t.selectionProofFamilies)
 	if err != nil {
 		return err
 	}
-	t.selectionProofCarry = clean && t.restore == nil
+	t.selectionProofCarry = t.selectionProofFamilies != 0 && t.restore == nil
 	t.selectionProofSeed = virginGeneration && t.selectionVirgin && t.meta.Head.IsZero() && t.restore == nil
 	if !t.selectionProofCarry && !t.selectionProofSeed {
 		return nil // legacy, raw mutation, restore: original complete proof
 	}
 	t.selectionProofRoots, err = t.selectionMutationRoots(ctx)
 	if err == nil && t.selectionProofCarry {
-		t.selectionProofOld, err = t.reader.selectionImpacted(ctx, t.at, false, t.selectionProofRoots)
+		t.selectionProofOld, err = t.reader.selectionFamilyImpacted(ctx, t.at, false, t.selectionProofRoots, t.selectionProofFamilies)
 	}
 	return err
 }
 
+// Only a positively proven ancestor family may supply reverse closure.
+// The other families bind their own changed physical owners and do not depend
+// on unrelated descendants. Unknown ancestry is always audited in full.
+func (r *reader) selectionFamilyImpacted(ctx context.Context, at uint64, overlay bool, roots [][]byte, families uint8) ([][]byte, error) {
+	if families&8 == 0 {
+		return selectionSourceUnion(roots), nil
+	}
+	return r.selectionImpacted(ctx, at, overlay, roots)
+}
+
 func (r *reader) selectionAdmissionValidity(ctx context.Context, at uint64) (map[driver.SelectionProjectionFamily]bool, error) {
-	clean, generation, err := r.selectionCertificate(ctx)
+	families, generation, err := r.selectionFamilyCertificate(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if !clean || r.writer == nil || at != r.at || r.writer.restore != nil {
+	if families == 0 || r.writer == nil || at != r.at || r.writer.restore != nil {
 		return r.selectionFamilyValidity(ctx, at, true)
 	}
 	roots, err := r.writer.selectionMutationRoots(ctx)
 	if err != nil {
 		return nil, err
 	}
-	old, err := r.selectionImpacted(ctx, at, false, roots)
+	old, err := r.selectionFamilyImpacted(ctx, at, false, roots, families)
 	if err != nil {
 		return nil, err
 	}
-	next, err := r.selectionImpacted(ctx, at, true, roots)
+	next, err := r.selectionFamilyImpacted(ctx, at, true, roots, families)
 	if err != nil {
 		return nil, err
 	}
-	query, args, err := r.compileSelectionValidityForSources(ctx, at, true, selectionSourceUnion(old, next), generation)
+	query, args, err := r.compileSelectionCarriedValidity(ctx, at, true, selectionSourceUnion(old, next), generation, families)
 	return r.readSelectionValidity(ctx, query, args, err)
 }
 
@@ -494,19 +556,24 @@ func (r *reader) selectionAdmissionValidity(ctx context.Context, at uint64) (map
 // proofs after an out-of-band mutation never launder an invalid token.
 func (r *reader) certifySelectionProof(ctx context.Context, valid map[driver.SelectionProjectionFamily]bool) error {
 	c := &selectionCompiler{reader: r}
-	checks := []string{}
-	for _, family := range selectionFamilies() {
-		if !valid[family] {
-			return nil
+	eligible := []string{}
+	for i, family := range selectionFamilies() {
+		if valid[family] {
+			coverage := c.familyCoverageSQL(family, c.bind(r.meta.Incarnation), mustRevision(r.meta.Head))
+			eligible = append(eligible, `(CASE WHEN `+coverage+` THEN `+decimal(uint64(1<<i))+` ELSE 0 END)`)
 		}
-		checks = append(checks, c.familyCoverageSQL(family, c.bind(r.meta.Incarnation), mustRevision(r.meta.Head)))
 	}
-	// Deleting only after every ready-range check is essential: a partial
-	// family build must not erase out-of-band mutations of other families.
-	if _, err := r.sql.ExecContext(ctx, `DELETE FROM plug_postgres.selection_mutation_keys WHERE `+strings.Join(checks, ` AND `), c.args...); err != nil {
+	if len(eligible) == 0 {
+		return nil
+	}
+	// Each positive bit binds a complete proof of that family and its current
+	// ready range. Clearing the journal grants nothing to unproven families:
+	// their next admission/publication still uses a complete physical audit.
+	mask := `(` + strings.Join(eligible, ` + `) + `)`
+	if _, err := r.sql.ExecContext(ctx, `DELETE FROM plug_postgres.selection_mutation_keys WHERE `+mask+`<>0`, c.args...); err != nil {
 		return err
 	}
-	_, err := r.sql.ExecContext(ctx, `UPDATE plug_postgres.selection_mutation_fence SET certified_generation=generation,untracked=false,incarnation=`+c.bind(r.meta.Incarnation)+`,head=`+c.bind(r.meta.Head.String())+`::numeric,format=`+c.bind(driver.SelectionIndexVersion)+` WHERE singleton AND `+strings.Join(checks, ` AND `), c.args...)
+	_, err := r.sql.ExecContext(ctx, `UPDATE plug_postgres.selection_mutation_fence SET certified_generation=generation,proven_families=`+mask+`,untracked=false,incarnation=`+c.bind(r.meta.Incarnation)+`,head=`+c.bind(r.meta.Head.String())+`::numeric,format=`+c.bind(driver.SelectionIndexVersion)+` WHERE singleton AND `+mask+`<>0`, c.args...)
 	return err
 }
 
@@ -528,11 +595,11 @@ func (t *transaction) writeSelectionCoverage(ctx context.Context, revision model
 	}
 	if t.selectionProofCarry && tracked {
 		var next [][]byte
-		next, err = view.selectionImpacted(ctx, view.at, false, t.selectionProofRoots)
+		next, err = view.selectionFamilyImpacted(ctx, view.at, false, t.selectionProofRoots, t.selectionProofFamilies)
 		if err == nil {
 			var query string
 			var args []any
-			query, args, err = view.compileSelectionValidityForSources(ctx, view.at, false, selectionSourceUnion(t.selectionProofOld, next), "")
+			query, args, err = view.compileSelectionCarriedValidity(ctx, view.at, false, selectionSourceUnion(t.selectionProofOld, next), "", t.selectionProofFamilies)
 			valid, err = view.readSelectionValidity(ctx, query, args, err)
 		}
 	} else {
@@ -573,7 +640,10 @@ func (t *transaction) writeSelectionCoverage(ctx context.Context, revision model
 		if err != nil {
 			return err
 		}
-		if n == 0 && affected && t.selectionVirgin {
+		// A trusted first publication can contain only non-bead authority
+		// facts. Its complete empty-domain proof needs a ready range before
+		// Head advances, so later bead batches can carry those proven bits.
+		if n == 0 && (affected || t.selectionProofSeed) && t.selectionVirgin {
 			_, err = t.sql.ExecContext(ctx, `INSERT INTO plug_postgres.selection_coverage(incarnation,branch,family_table,fact_kind,format,start_revision,built_from,certified_through,ready) SELECT $1,0,$2,$3,$4,$5,$5,$5,true WHERE NOT EXISTS(SELECT 1 FROM plug_postgres.selection_coverage WHERE incarnation=$1 AND branch=0 AND family_table=$2 AND fact_kind=$3 AND format=$4)`, incarnation, string(family.Table), string(family.Kind), family.Version, revision.String())
 			statements++
 			if err != nil {
