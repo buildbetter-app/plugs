@@ -216,7 +216,7 @@ func TestSelectionParentScopeFinalOverlayAndLifetimes(t *testing.T) {
 }
 
 func TestSelectionParentScopeCommitStructuralAndRefusalControls(t *testing.T) {
-	for _, mode := range []string{"title", "derived-only", "own-chain-corrupt", "ancestor-corrupt", "move-stale-descendant", "mixed-stale-descendant", "move-complete", "cycle", "delete-leaf", "delete-parent", "insert"} {
+	for _, mode := range []string{"title", "title-untouched-descendant", "derived-only", "own-chain-corrupt", "ancestor-corrupt", "move-stale-descendant", "mixed-stale-descendant", "move-complete", "cycle", "delete-leaf", "delete-parent", "insert"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx := context.Background()
 			s, lease, refs, parents := parentScopeStore(t)
@@ -267,6 +267,18 @@ func TestSelectionParentScopeCommitStructuralAndRefusalControls(t *testing.T) {
 				}
 			}
 			tx, h := beginSourceTestWithLocks(t, s, lease, locks, true, changed...)
+			if mode == "title-untouched-descendant" {
+				// A test-only SQL perturbation distinguishes which proof the
+				// real Commit executes. This unrelated descendant was already
+				// certified and is not part of the title-only delta. A broad
+				// root-seeded proof would see it and invalidate coverage; the
+				// required local proof must not visit it. The full-expansion
+				// negative control below still has to find this exact defect.
+				leafKey := keyID(driver.LockKey{Kind: driver.LockRecord, Ref: &refs[2]})
+				if _, err := s.db.ExecContext(ctx, `UPDATE selection_bead_history SET parent_key=NULL WHERE record_key=? AND end_revision IS NULL`, leafKey); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if mode == "ancestor-corrupt" {
 				// Corrupt an upward dependency while keeping canonical Parent
 				// unchanged. Own-chain scoping must still inspect this ancestor.
@@ -326,9 +338,17 @@ func TestSelectionParentScopeCommitStructuralAndRefusalControls(t *testing.T) {
 			}
 			entry := commitSourceTest(t, tx, h)
 			ready, err = selectionFamilyReady(ctx, s.db, meta.Incarnation, family, revKey(mustUint(entry.Revision)))
-			wantReady := mode == "title" || mode == "derived-only" || mode == "move-complete" || mode == "delete-leaf" || mode == "insert"
+			wantReady := mode == "title" || mode == "title-untouched-descendant" || mode == "derived-only" || mode == "move-complete" || mode == "delete-leaf" || mode == "insert"
 			if err != nil || ready != wantReady {
 				t.Fatalf("%s final ancestor readiness=%t want=%t err=%v", mode, ready, wantReady, err)
+			}
+			if mode == "title-untouched-descendant" {
+				rootKey := keyID(driver.LockKey{Kind: driver.LockRecord, Ref: &refs[0]})
+				valid, err := verifySQLiteSelectionParentChainsAffected(ctx, s.db, meta.Incarnation, revKey(mustUint(entry.Revision)), []string{rootKey})
+				if err != nil || valid {
+					t.Fatalf("full-descendant negative control missed untouched defect: valid=%t err=%v", valid, err)
+				}
+				t.Log("real title-only Commit retained local-chain proof; full-descendant SQL control refused the untouched descendant")
 			}
 			// A new invalid overlay must not erase the old certified snapshot.
 			oldReady, err := selectionFamilyReady(ctx, s.db, meta.Incarnation, family, revKey(mustUint(meta.Head)))
