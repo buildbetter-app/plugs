@@ -95,7 +95,7 @@ func projectedDerivedSource(ctx context.Context, q queryer, incarnation, id stri
 		return driver.LockState{Revision: model.Natural64(0)}, "", nil
 	}
 	if err != nil || !found || revision != revKey(mustUint(legacy.Revision)) {
-		return driver.LockState{}, "", fmt.Errorf("%w: SQLite retained derived source witness missing or changed", driver.ErrSelectionUnavailable)
+		return driver.LockState{}, "", fmt.Errorf("%w: SQLite retained derived source observation missing or changed", driver.ErrSelectionUnavailable)
 	}
 	return legacy, legacyDigest, nil
 }

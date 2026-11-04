@@ -248,7 +248,7 @@ func TestDemandSelectionSourceHistoryMissingAndMalformedRefuseAtomically(t *test
 	r := sourceReader(t, s, nil)
 	want := driver.SelectionSource{Key: demandSourceLock(missing), Revision: revision, Present: true, Digest: driver.SelectionDigest([]byte("expected"))}
 	if _, err := r.Select(ctx, demandAPIPlan(t, r, want)); !errors.Is(err, driver.ErrSelectionUnavailable) {
-		t.Fatalf("missing present witness=%v", err)
+		t.Fatalf("missing present observation=%v", err)
 	}
 }
 
@@ -746,7 +746,7 @@ func demandPublicationImages(t *testing.T, s *Store) [][][]any {
 
 // A selector never reads the opaque data envelope, while ordinary admission
 // still observes it and retains its existing native/JSON error precedence.
-func TestDemandSelectionColdWitnessErrorsPrecedePublication(t *testing.T) {
+func TestDemandSelectionColdObservationErrorsPrecedePublication(t *testing.T) {
 	for _, name := range []string{"malformed_json", "native_table_error", "cancelled"} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
@@ -814,7 +814,7 @@ func TestDemandSelectionColdWitnessErrorsPrecedePublication(t *testing.T) {
 	}
 }
 
-func TestDemandSelectionLegacyWitnessMustMatchMutation(t *testing.T) {
+func TestDemandSelectionLegacyObservationMustMatchMutation(t *testing.T) {
 	for _, name := range []string{"missing_interval", "wrong_token", "no_key_row", "other_incarnation", "other_branch"} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
@@ -843,7 +843,7 @@ func TestDemandSelectionLegacyWitnessMustMatchMutation(t *testing.T) {
 			before := demandPublicationImages(t, s)
 			_, _, err := projectedDerivedSource(ctx, s.db, meta.Incarnation, id, 1)
 			if !errors.Is(err, driver.ErrSelectionUnavailable) {
-				t.Fatalf("inconsistent retained witness became miss/current: %v", err)
+				t.Fatalf("inconsistent retained observation became miss/current: %v", err)
 			}
 			if !reflect.DeepEqual(before, demandPublicationImages(t, s)) {
 				t.Fatal("legacy refusal changed rows")
