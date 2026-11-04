@@ -5,10 +5,46 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+// Keep each invalidation below SQLite's older 999-variable limit. All source
+// closures share one fenced SQL transaction, so a batch boundary cannot expose
+// a partial fact-set image.
+const selectionFactInvalidationBatch = 128
+
+func selectionFactInvalidationSQL(count int) string {
+	return `UPDATE selection_fact_sets INDEXED BY selection_fact_sets_source SET end_revision=?
+		WHERE incarnation=? AND branch=? AND end_revision IS NULL AND source_key IN (` +
+		strings.TrimSuffix(strings.Repeat("?,", count), ",") + `)`
+}
+
+func invalidateSelectionFactSets(ctx context.Context, c *sql.Conn, incarnation, next string, changedSources map[string]bool) error {
+	if len(changedSources) == 0 {
+		return nil
+	}
+	sources := make([]string, 0, len(changedSources))
+	for source := range changedSources {
+		sources = append(sources, source)
+	}
+	sort.Strings(sources)
+	for start := 0; start < len(sources); start += selectionFactInvalidationBatch {
+		end := min(start+selectionFactInvalidationBatch, len(sources))
+		args := make([]any, 0, 3+end-start)
+		args = append(args, next, incarnation, revKey(0))
+		for _, source := range sources[start:end] {
+			args = append(args, source)
+		}
+		if _, err := c.ExecContext(ctx, selectionFactInvalidationSQL(end-start), args...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // reboundSelectionSources returns the commit-local annotation overlay.  It is
 // deliberately detached from t.derived: the SQL transaction may fail after
@@ -168,53 +204,8 @@ func (t *transaction) publishSelection(ctx context.Context, c *sql.Conn, current
 		changedSources[id] = true
 	}
 	phase.next(CommitPhaseSelectionSources, len(changedSources))
-	for id := range changedSources {
-		// An annotated fact set sourced from a changed record/row/guard is
-		// invalid until its complete replacement is published in this commit.
-		if _, err = c.ExecContext(ctx, `UPDATE selection_fact_sets SET end_revision=?
-		 WHERE incarnation=? AND branch=? AND source_key=? AND end_revision IS NULL`, next, incarnation, revKey(0), id); err != nil {
-			return err
-		}
-	}
-	// Persist the source observation used by every typed fact envelope. This is
-	// deliberately a thin digest/revision row: selectors must not reconstruct
-	// source bodies merely to prove that a fact envelope is still bound.
-	for id, record := range t.records {
-		if _, err = c.ExecContext(ctx, `UPDATE selection_source_history SET end_revision=?
-			WHERE incarnation=? AND branch=? AND source_key=? AND end_revision IS NULL`, next, incarnation, revKey(0), id); err != nil {
-			return err
-		}
-		digest := ""
-		present := 0
-		if record != nil {
-			present = 1
-			digest = driver.SelectionDigest(record.Body)
-		}
-		if _, err = c.ExecContext(ctx, `INSERT INTO selection_source_history(
-			incarnation,branch,source_key,start_revision,source_revision,source_present,source_digest)
-			VALUES(?,?,?,?,?,?,?)`, incarnation, revKey(0), id, next, next, present, digest); err != nil {
-			return err
-		}
-	}
-	for id, state := range t.derived {
-		if state.Key.Derived == nil {
-			continue
-		}
-		if _, err = c.ExecContext(ctx, `UPDATE selection_source_history SET end_revision=?
-			WHERE incarnation=? AND branch=? AND source_key=? AND end_revision IS NULL`, next, incarnation, revKey(0), id); err != nil {
-			return err
-		}
-		digest := ""
-		present := 0
-		if state.Present && state.Derived != nil {
-			present = 1
-			digest = driver.SelectionDigest(state.Derived.Value)
-		}
-		if _, err = c.ExecContext(ctx, `INSERT INTO selection_source_history(
-			incarnation,branch,source_key,start_revision,source_revision,source_present,source_digest)
-			VALUES(?,?,?,?,?,?,?)`, incarnation, revKey(0), id, next, next, present, digest); err != nil {
-			return err
-		}
+	if err = t.publishSelectionSources(ctx, c, incarnation, next, changedSources); err != nil {
+		return err
 	}
 	// Close every changed logical row before inserting any new physical image.
 	// This handles swaps and prevents a stale typed row surviving an untyped
@@ -316,4 +307,56 @@ func (t *transaction) publishSelection(ctx context.Context, c *sql.Conn, current
 	// prove a complete delta, and new typed-first readiness starts only here.
 	phase.next(CommitPhaseSelectionCoverage, len(familyDecisions))
 	return publishSelectionFamilyCoverage(ctx, c, incarnation, revKey(mustUint(current.Head)), next, familyDecisions, t.selectionParentProofSeeds(derived))
+}
+
+func (t *transaction) publishSelectionSources(ctx context.Context, c *sql.Conn, incarnation, next string, changedSources map[string]bool) (err error) {
+	phase := commitPhaseTracker{trace: commitTraceFromContext(ctx)}
+	phase.next(CommitPhaseSelectionInvalidate, len(changedSources))
+	defer func() { phase.finish(err) }()
+	// An annotated fact set sourced from a changed record/row/guard is invalid
+	// until its complete replacement is published in this fenced transaction.
+	if err = invalidateSelectionFactSets(ctx, c, incarnation, next, changedSources); err != nil {
+		return err
+	}
+	phase.next(CommitPhaseSelectionHistory, len(t.records)+len(t.derived))
+	// Persist thin source observations for typed fact envelopes without forcing
+	// selectors to reconstruct record bodies or complete derived rows.
+	for id, record := range t.records {
+		if _, err = c.ExecContext(ctx, `UPDATE selection_source_history SET end_revision=?
+			WHERE incarnation=? AND branch=? AND source_key=? AND end_revision IS NULL`, next, incarnation, revKey(0), id); err != nil {
+			return err
+		}
+		digest := ""
+		present := 0
+		if record != nil {
+			present = 1
+			digest = driver.SelectionDigest(record.Body)
+		}
+		if _, err = c.ExecContext(ctx, `INSERT INTO selection_source_history(
+			incarnation,branch,source_key,start_revision,source_revision,source_present,source_digest)
+			VALUES(?,?,?,?,?,?,?)`, incarnation, revKey(0), id, next, next, present, digest); err != nil {
+			return err
+		}
+	}
+	for id, state := range t.derived {
+		if state.Key.Derived == nil {
+			continue
+		}
+		if _, err = c.ExecContext(ctx, `UPDATE selection_source_history SET end_revision=?
+			WHERE incarnation=? AND branch=? AND source_key=? AND end_revision IS NULL`, next, incarnation, revKey(0), id); err != nil {
+			return err
+		}
+		digest := ""
+		present := 0
+		if state.Present && state.Derived != nil {
+			present = 1
+			digest = driver.SelectionDigest(state.Derived.Value)
+		}
+		if _, err = c.ExecContext(ctx, `INSERT INTO selection_source_history(
+			incarnation,branch,source_key,start_revision,source_revision,source_present,source_digest)
+			VALUES(?,?,?,?,?,?,?)`, incarnation, revKey(0), id, next, next, present, digest); err != nil {
+			return err
+		}
+	}
+	return nil
 }

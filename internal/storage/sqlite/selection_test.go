@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -793,4 +794,101 @@ func TestSelectionTouchedSourceRowsUseSourceIndex(t *testing.T) {
 		!strings.Contains(joined, "source_key=?") {
 		t.Fatalf("touched-source fact rows lost source-bounded plan: %s", joined)
 	}
+}
+
+// A changed source closes every current physical envelope, even when the
+// invalidation crosses a SQL batch boundary. An aborted publication must
+// restore all intervals; a source outside the changed set stays current.
+func TestSelectionSourceInvalidationBatchesAndRollsBack(t *testing.T) {
+	ctx := context.Background()
+	s := selectionStore(t).(*Store)
+	t.Cleanup(func() { _ = s.Close() })
+	meta, err := s.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch, next := revKey(0), revKey(2)
+	changed := make(map[string]bool, selectionFactInvalidationBatch+1)
+	sources := make([]string, 0, selectionFactInvalidationBatch+1)
+	insert := func(row, source string, end any) {
+		t.Helper()
+		_, err := s.db.ExecContext(ctx, `INSERT INTO selection_fact_sets(
+			incarnation,branch,row_key,row_table,kind,start_revision,end_revision,
+			source_key,source_revision,source_present,source_digest)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?)`, meta.Incarnation, branch, row,
+			string(driver.DerivedAncestorClosure), string(driver.SelectionAncestorFact),
+			revKey(0), end, source, revKey(0), 1, "test-digest")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i <= selectionFactInvalidationBatch; i++ {
+		source := fmt.Sprintf("0:invalidation-source-%03d", i)
+		sources = append(sources, source)
+		changed[source] = true
+		insert(fmt.Sprintf("3:invalidation-row-%03d", i), source, nil)
+	}
+	insert("3:invalidation-extra", sources[0], nil)
+	insert("3:invalidation-untouched", "0:untouched-source", nil)
+	insert("3:invalidation-old", sources[0], revKey(1))
+
+	// Check the exact UPDATE the publication helper executes, including its
+	// partial-index predicate and the largest bound parameter list.
+	args := []any{next, meta.Incarnation, branch}
+	for _, source := range sources[:selectionFactInvalidationBatch] {
+		args = append(args, source)
+	}
+	plan, err := s.db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+selectionFactInvalidationSQL(selectionFactInvalidationBatch), args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var details []string
+	for plan.Next() {
+		var node, parent, unused int
+		var detail string
+		if err := plan.Scan(&node, &parent, &unused, &detail); err != nil {
+			_ = plan.Close()
+			t.Fatal(err)
+		}
+		details = append(details, detail)
+	}
+	if err := plan.Err(); err != nil {
+		_ = plan.Close()
+		t.Fatal(err)
+	}
+	_ = plan.Close()
+	joined := strings.Join(details, "\n")
+	if !strings.Contains(joined, "SEARCH selection_fact_sets USING INDEX selection_fact_sets_source") ||
+		!strings.Contains(joined, "source_key=?") || strings.Contains(joined, "SCAN selection_fact_sets") {
+		t.Fatalf("source invalidation lost source-key lookup: %s", joined)
+	}
+
+	check := func(wantActive, wantClosed int) {
+		t.Helper()
+		var active, closed, old int
+		err := s.db.QueryRowContext(ctx, `SELECT SUM(end_revision IS NULL),
+			SUM(end_revision=?),SUM(end_revision=?) FROM selection_fact_sets
+			WHERE incarnation=? AND branch=?`, next, revKey(1), meta.Incarnation, branch).Scan(&active, &closed, &old)
+		if err != nil || active != wantActive || closed != wantClosed || old != 1 {
+			t.Fatalf("fact intervals active=%d closed=%d old=%d err=%v, want %d/%d/1", active, closed, old, err, wantActive, wantClosed)
+		}
+	}
+	check(selectionFactInvalidationBatch+3, 0)
+	abort := errors.New("abort after both invalidation batches")
+	err = s.immediate(ctx, nil, func(c *sql.Conn) error {
+		if err := invalidateSelectionFactSets(ctx, c, meta.Incarnation, next, changed); err != nil {
+			return err
+		}
+		return abort
+	})
+	if !errors.Is(err, abort) {
+		t.Fatalf("invalidation abort: %v", err)
+	}
+	check(selectionFactInvalidationBatch+3, 0)
+	if err := s.immediate(ctx, nil, func(c *sql.Conn) error {
+		return invalidateSelectionFactSets(ctx, c, meta.Incarnation, next, changed)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	check(1, selectionFactInvalidationBatch+2)
 }
