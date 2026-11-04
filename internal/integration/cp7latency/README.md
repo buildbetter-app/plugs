@@ -109,3 +109,27 @@ Full S1 remains 0/28 and E3 is 5/5 bounded. This baseline does not qualify produ
 authorization races, terminal claims, the 200-agent runtime or a durable SLO.
 D productization requires a later independently reviewed PR against this
 harness. The reviewed D fixture and rejected split-lock variants are unchanged.
+# W11 qualification
+
+`cp7_qualification_test` adds complete compiled grouped-page membership,
+payload, parent, total and suffix checks, final-authority publication races,
+real heartbeat replay, and a committed candidate before terminal Head. Its
+small semantic fixtures supply no 100k latency evidence.
+
+The manual `cp7_summary_latency_sqlite_test` and
+`cp7_summary_latency_postgres_test` execute the separately declared
+`summary-workload.json`: six additional explicit `fields=[]` compiled type
+summaries, each with the original 100,000 bodies, one cold call, three warmups,
+20 measured calls and a 30-second request deadline. `CP7_SUMMARY_SAMPLE` and
+`CP7_SUMMARY_CASE` are distinct from the original 18-case records. A successful
+p95 requires all 20 calls to succeed; refusals, deadlines and SLO misses remain
+RED. The original workload, ordinary dense refusal and untimed semantic tests
+retain their existing meaning.
+
+Selection instrumentation counts attempted API calls, final result statements
+and decoded aggregate control rows on the real reader/transaction. Statement
+counts exclude preflight and coverage queries. Result totals do not measure
+SQL aggregate input visits, executor rows, loops, buffers, WAL or contention;
+those remain unmeasured until separately captured. These source regressions,
+successful builds and ordinary gates do not qualify the complete integrated
+latency matrix, production, hosted delivery or the 200-agent boundary.

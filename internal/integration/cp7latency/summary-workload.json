@@ -1,0 +1,26 @@
+{
+  "schema": "plug-real-cp7-type-summary/v1",
+  "original_workload_sha256": "bac34d24657ee49bc1ec3659706a4870bcc9e87f574c1ebb9d7e95b4e1337116",
+  "engines": [
+    "sqlite",
+    "postgres"
+  ],
+  "fractions": [
+    1,
+    100,
+    1000
+  ],
+  "beads": 100000,
+  "operation": "Q6TypeSummary",
+  "fields": [],
+  "group_by": [
+    "type"
+  ],
+  "cold_first_requests": 1,
+  "warmups": 3,
+  "samples": 20,
+  "request_deadline_ms": 30000,
+  "target_ms": 250,
+  "scope": "six additional compiled type-summary cases; original eighteen cases and dense ordinary refusals unchanged",
+  "sql_executor_work": "UNMEASURED"
+}

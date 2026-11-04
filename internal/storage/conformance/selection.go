@@ -29,6 +29,7 @@ func RunSelection(t *testing.T, factory Factory) {
 	t.Run("staged_final_overlay_digest_and_rollback", func(t *testing.T) { selectionStaging(t, factory) })
 	t.Run("complete_absence_unavailable_and_owned_versions", func(t *testing.T) { selectionCoverage(t, factory) })
 	t.Run("summary_and_group_cap_boundaries", func(t *testing.T) { selectionSummaryCaps(t, factory) })
+	t.Run("executed_selection_work_on_concrete_readers_and_transactions", func(t *testing.T) { selectionExecutedWork(t, factory) })
 }
 
 type selectionImage struct {

@@ -418,6 +418,7 @@ func (r *reader) selectionFactCoverage(ctx context.Context, e driver.SelectionEx
 }
 
 func (r *reader) Select(ctx context.Context, p driver.SelectionPlan) (driver.SelectionResult, error) {
+	driver.ReportReadWork(ctx, driver.ReadSelectionCalls, 1)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	zero := driver.SelectionResult{}
@@ -621,6 +622,7 @@ type selectionKeyJSON struct {
 func selectionUnhex(s string) string { b, _ := hex.DecodeString(s); return string(b) }
 func (r *reader) runSelection(ctx context.Context, p driver.SelectionPlan, query string, args []any) (driver.SelectionResult, error) {
 	zero := driver.SelectionResult{}
+	driver.ReportReadWork(ctx, driver.ReadSelectionStatements, 1)
 	rows, err := r.sql.QueryContext(ctx, query, args...)
 	if err != nil {
 		return zero, err
@@ -644,6 +646,7 @@ func (r *reader) runSelection(ctx context.Context, p driver.SelectionPlan, query
 				return zero, err
 			}
 			haveControl = true
+			driver.ReportReadWork(ctx, driver.ReadSelectionControls, 1)
 			result.Total = control.Total
 		case 1:
 			var g struct {

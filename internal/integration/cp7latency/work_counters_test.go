@@ -14,11 +14,12 @@ type counters struct {
 }
 
 type readWorkCounters struct {
-	queries, returned, gets                       atomic.Int64
-	payloads, payloadBytes, selectorKeys          atomic.Int64
-	prefixStates, prefixBytes                     atomic.Int64
-	aggregateInputs, aggregateGroups, projections atomic.Int64
-	sourceHeaders, sourceImages, sourceQueries    atomic.Int64
+	queries, returned, gets                                      atomic.Int64
+	payloads, payloadBytes, selectorKeys                         atomic.Int64
+	prefixStates, prefixBytes                                    atomic.Int64
+	aggregateInputs, aggregateGroups, projections                atomic.Int64
+	sourceHeaders, sourceImages, sourceQueries                   atomic.Int64
+	selections, freshSelections, selectionSQL, selectionControls atomic.Int64
 }
 
 type readCounts struct {
@@ -31,17 +32,21 @@ type readCounts struct {
 }
 
 type executedReadWork struct {
-	Payloads        int64 `json:"payload_records_materialized"`
-	PayloadBytes    int64 `json:"payload_body_bytes_materialized"`
-	SelectorKeys    int64 `json:"selector_keys_scanned"`
-	PrefixStates    int64 `json:"prefix_metadata_states_decoded"`
-	PrefixBytes     int64 `json:"prefix_metadata_state_bytes_decoded"`
-	AggregateInputs int64 `json:"aggregate_input_visits"`
-	AggregateGroups int64 `json:"aggregate_groups_constructed"`
-	Projections     int64 `json:"item_projections_constructed"`
-	SourceHeaders   int64 `json:"source_headers_returned"`
-	SourceImages    int64 `json:"source_images_reconstructed"`
-	SourceQueries   int64 `json:"source_index_fetch_queries"`
+	Payloads          int64 `json:"payload_records_materialized"`
+	PayloadBytes      int64 `json:"payload_body_bytes_materialized"`
+	SelectorKeys      int64 `json:"selector_keys_scanned"`
+	PrefixStates      int64 `json:"prefix_metadata_states_decoded"`
+	PrefixBytes       int64 `json:"prefix_metadata_state_bytes_decoded"`
+	AggregateInputs   int64 `json:"aggregate_input_visits"`
+	AggregateGroups   int64 `json:"aggregate_groups_constructed"`
+	Projections       int64 `json:"item_projections_constructed"`
+	SourceHeaders     int64 `json:"source_headers_returned"`
+	SourceImages      int64 `json:"source_images_reconstructed"`
+	SourceQueries     int64 `json:"source_index_fetch_queries"`
+	Selections        int64 `json:"selection_calls"`
+	FreshSelections   int64 `json:"fresh_selection_exists_calls"`
+	SelectionSQL      int64 `json:"selection_result_statements"`
+	SelectionControls int64 `json:"selection_control_rows_decoded"`
 }
 
 func (c *counters) ObserveReadWork(kind driver.ReadWorkKind, amount int64) {
@@ -88,6 +93,14 @@ func (c *readWorkCounters) observe(kind driver.ReadWorkKind, amount int64) {
 		counter = &c.sourceImages
 	case driver.ReadSourceQueries:
 		counter = &c.sourceQueries
+	case driver.ReadSelectionCalls:
+		counter = &c.selections
+	case driver.ReadFreshSelectionCalls:
+		counter = &c.freshSelections
+	case driver.ReadSelectionStatements:
+		counter = &c.selectionSQL
+	case driver.ReadSelectionControls:
+		counter = &c.selectionControls
 	default:
 		panic("unrecognized read-work observation")
 	}
@@ -103,7 +116,8 @@ func (c *readWorkCounters) reset() {
 	for _, counter := range []*atomic.Int64{&c.queries, &c.returned, &c.gets,
 		&c.payloads, &c.payloadBytes, &c.selectorKeys, &c.prefixStates, &c.prefixBytes,
 		&c.aggregateInputs, &c.aggregateGroups, &c.projections,
-		&c.sourceHeaders, &c.sourceImages, &c.sourceQueries} {
+		&c.sourceHeaders, &c.sourceImages, &c.sourceQueries,
+		&c.selections, &c.freshSelections, &c.selectionSQL, &c.selectionControls} {
 		counter.Store(0)
 	}
 }
@@ -122,5 +136,7 @@ func (c *readWorkCounters) work() executedReadWork {
 	return executedReadWork{Payloads: c.payloads.Load(), PayloadBytes: c.payloadBytes.Load(),
 		SelectorKeys: c.selectorKeys.Load(), PrefixStates: c.prefixStates.Load(), PrefixBytes: c.prefixBytes.Load(),
 		AggregateInputs: c.aggregateInputs.Load(), AggregateGroups: c.aggregateGroups.Load(), Projections: c.projections.Load(),
-		SourceHeaders: c.sourceHeaders.Load(), SourceImages: c.sourceImages.Load(), SourceQueries: c.sourceQueries.Load()}
+		SourceHeaders: c.sourceHeaders.Load(), SourceImages: c.sourceImages.Load(), SourceQueries: c.sourceQueries.Load(),
+		Selections: c.selections.Load(), FreshSelections: c.freshSelections.Load(),
+		SelectionSQL: c.selectionSQL.Load(), SelectionControls: c.selectionControls.Load()}
 }

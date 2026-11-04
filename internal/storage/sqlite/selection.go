@@ -231,6 +231,7 @@ func (r *reader) validateSelectionOverlay(ctx context.Context) error {
 // cap, aggregate and page. It returns thin keys; source bodies are never read
 // by the selection query, including the cap probe and page lookahead.
 func (r *reader) Select(ctx context.Context, p driver.SelectionPlan) (driver.SelectionResult, error) {
+	driver.ReportReadWork(ctx, driver.ReadSelectionCalls, 1)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := r.check(ctx); err != nil {
@@ -256,6 +257,7 @@ func (r *reader) selectPlan(ctx context.Context, p driver.SelectionPlan) (driver
 	if len(b.args) > 32000 {
 		return zero, fmt.Errorf("%w: SQLite selection binding budget exceeded", driver.ErrUnsupported)
 	}
+	driver.ReportReadWork(ctx, driver.ReadSelectionStatements, 1)
 	rows, err := r.tx.QueryContext(ctx, query, b.args...)
 	if err != nil {
 		return zero, err
@@ -278,6 +280,7 @@ func (r *reader) selectPlan(ctx context.Context, p driver.SelectionPlan) (driver
 				return zero, fmt.Errorf("%w: SQLite selection malformed aggregate", driver.ErrUnsupported)
 			}
 			haveMeta = true
+			driver.ReportReadWork(ctx, driver.ReadSelectionControls, 1)
 			total = uint64(n.Int64)
 			if p.Page != nil {
 				if !ordinal.Valid || ordinal.Int64 < 0 {
@@ -426,6 +429,7 @@ var _ driver.SelectionReader = (*reader)(nil)
 var _ driver.SelectionReader = (*transaction)(nil)
 
 func (t *transaction) FreshSelectionExists(ctx context.Context, p driver.SelectionPlan) (bool, error) {
+	driver.ReportReadWork(ctx, driver.ReadFreshSelectionCalls, 1)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if err := t.check(ctx); err != nil {
@@ -454,9 +458,11 @@ func (t *transaction) FreshSelectionExists(ctx context.Context, p driver.Selecti
 		return false, fmt.Errorf("%w: SQLite selection binding budget exceeded", driver.ErrUnsupported)
 	}
 	var yes int
+	driver.ReportReadWork(ctx, driver.ReadSelectionStatements, 1)
 	if err := t.tx.QueryRowContext(ctx, query, b.args...).Scan(&yes); err != nil {
 		return false, err
 	}
+	driver.ReportReadWork(ctx, driver.ReadSelectionControls, 1)
 	return yes != 0, nil
 }
 

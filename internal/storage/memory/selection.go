@@ -752,6 +752,7 @@ func (v selectionView) evaluate(ctx context.Context, p driver.SelectionPlan, exi
 }
 
 func (r *reader) Select(ctx context.Context, p driver.SelectionPlan) (driver.SelectionResult, error) {
+	driver.ReportReadWork(ctx, driver.ReadSelectionCalls, 1)
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if err := r.check(ctx); err != nil {
@@ -764,6 +765,7 @@ func (t *transaction) selectionView() selectionView {
 	return selectionView{state: t.base, at: at, records: t.records, derived: t.derived, bumps: t.bumps, declarations: t.sourceDeclarations}
 }
 func (t *transaction) Select(ctx context.Context, p driver.SelectionPlan) (driver.SelectionResult, error) {
+	driver.ReportReadWork(ctx, driver.ReadSelectionCalls, 1)
 	s := t.store
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -783,6 +785,7 @@ func (t *transaction) PutSelectionDerived(ctx context.Context, table driver.Deri
 var _ driver.SelectionIndexWriter = (*transaction)(nil)
 
 func (t *transaction) FreshSelectionExists(ctx context.Context, p driver.SelectionPlan) (bool, error) {
+	driver.ReportReadWork(ctx, driver.ReadFreshSelectionCalls, 1)
 	s := t.store
 	s.mu.Lock()
 	defer s.mu.Unlock()

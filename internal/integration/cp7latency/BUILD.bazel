@@ -1,6 +1,6 @@
 load("@rules_go//go:def.bzl", "go_test")
 
-_COMMON = ["fixture_test.go", "measurement_test.go", "work_counters_test.go"]
+_COMMON = ["fixture_test.go", "measurement_test.go", "work_counters_test.go", "qualification_support_test.go"]
 _DEPS = [
     "//internal/core/authz",
     "//internal/core/model",
@@ -16,6 +16,14 @@ _DEPS = [
     "//internal/storage/postgres",
     "//internal/storage/sqlite",
 ]
+
+go_test(
+    name = "cp7_qualification_test",
+    srcs = _COMMON + ["qualification_test.go", "interference_test.go"],
+    data = ["workload.json"],
+    embedsrcs = ["workload.json"],
+    deps = _DEPS,
+)
 
 go_test(
     name = "cp7_correctness_test",
@@ -56,6 +64,24 @@ go_test(
         args = ["-test.timeout=150m"],
         data = ["workload.json"],
         embedsrcs = ["workload.json"],
+        env = {"CP7_LATENCY_ENGINE": engine},
+        size = "enormous",
+        tags = ["manual"],
+        timeout = "eternal",
+        deps = _DEPS,
+    )
+    for engine in ["sqlite", "postgres"]
+]
+
+# Six additional compiled fields=[] cases. This never replaces the original
+# eighteen cases or the ordinary dense refusal and untimed semantic controls.
+[
+    go_test(
+        name = "cp7_summary_latency_" + engine + "_test",
+        srcs = _COMMON + ["summary_latency_test.go"],
+        args = ["-test.timeout=150m"],
+        data = ["workload.json", "summary-workload.json"],
+        embedsrcs = ["workload.json", "summary-workload.json"],
         env = {"CP7_LATENCY_ENGINE": engine},
         size = "enormous",
         tags = ["manual"],

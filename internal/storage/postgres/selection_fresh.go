@@ -13,6 +13,7 @@ import (
 // preflight. Meta, complete-domain coverage, every control/fact source and the
 // uncapped committed EXISTS share ONE fresh READ COMMITTED statement snapshot.
 func (t *transaction) FreshSelectionExists(ctx context.Context, p driver.SelectionPlan) (bool, error) {
+	driver.ReportReadWork(ctx, driver.ReadFreshSelectionCalls, 1)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if err := t.check(ctx); err != nil {
@@ -39,9 +40,11 @@ func (t *transaction) FreshSelectionExists(ctx context.Context, p driver.Selecti
 	}
 	var incarnation, head, floor string
 	var controls, coverage, facts, exists bool
+	driver.ReportReadWork(ctx, driver.ReadSelectionStatements, 1)
 	if err := t.sql.QueryRowContext(ctx, query, args...).Scan(&incarnation, &head, &floor, &controls, &coverage, &facts, &exists); err != nil {
 		return false, err
 	}
+	driver.ReportReadWork(ctx, driver.ReadSelectionControls, 1)
 	if incarnation != p.Incarnation {
 		return false, driver.ErrIncarnationChanged{From: p.Incarnation, To: incarnation}
 	}

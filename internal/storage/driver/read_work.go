@@ -25,6 +25,14 @@ const (
 	// not include metadata rechecks, coverage probes or SQLite/PG executor
 	// visits; those remain separately unmeasured by this observer.
 	ReadSourceQueries ReadWorkKind = "source_index_fetch_queries"
+	// Selection calls include attempts rejected by validation. Statements count
+	// only the final selection/EXISTS statement, excluding preflight and coverage
+	// queries. Control rows count successfully decoded SQL result metadata;
+	// neither they nor result totals measure executor input visits.
+	ReadSelectionCalls      ReadWorkKind = "selection_calls"
+	ReadFreshSelectionCalls ReadWorkKind = "fresh_selection_exists_calls"
+	ReadSelectionStatements ReadWorkKind = "selection_result_statements"
+	ReadSelectionControls   ReadWorkKind = "selection_control_rows_decoded"
 )
 
 // ReadWorkObserver is optional request-local instrumentation. Implementations
