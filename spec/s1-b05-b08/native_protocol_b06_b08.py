@@ -152,7 +152,7 @@ def record_b06(binary, root, commands, env, ids, probe_start):
     report("acyclic-control", ["--json"], [])
 
     prefix = "b06"
-    pure = [f"{prefix}-pure-a", f"{prefix}-pure-z"]
+    pure = [f"{prefix}-purea", f"{prefix}-purez"]
     rings = [[f"{prefix}-alpha", f"{prefix}-middle", f"{prefix}-zulu"],
              [f"{prefix}-beta", f"{prefix}-november", f"{prefix}-yankee"]]
 
@@ -210,7 +210,7 @@ def record_b08(binary, root, commands, env):
     def state(label):
         # Public read-only SQL retains full rows/history/head; no fixture SQL or writes.
         values={}
-        for table,order in [("issues","id"),("dependencies","issue_id,depends_on_id,type"),("events","id"),("dolt_log","commit_hash")]:
+        for table,order in [("issues","id"),("dependencies","issue_id,depends_on_issue_id,type"),("events","id"),("dolt_log","commit_hash")]:
             values[table]=json.loads(call(["--readonly","sql",f"SELECT * FROM {table} ORDER BY {order}","--json"]))
         for identifier in ids: values[identifier]=json.loads(call(["show",identifier,"--json"]))
         (OUTPUT / (label+"-full-state.json")).write_text(json.dumps(values,sort_keys=True,indent=2)+"\n")

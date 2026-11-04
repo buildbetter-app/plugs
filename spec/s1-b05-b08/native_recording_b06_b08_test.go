@@ -182,6 +182,83 @@ func TestB06NativePublicCyclesTwinsAndThreeDriverReplay(t *testing.T) {
 	for i, capture := range captures {
 		for _, engine := range testEngines {
 			t.Run(fmt.Sprintf("replay-%d/%s", i, engine), func(t *testing.T) { b068ReplayCycles(t, engine, capture) })
+			t.Run(fmt.Sprintf("import-%d/%s", i, engine), func(t *testing.T) { b068ReplayImportedCycles(t, engine, capture) })
+		}
+	}
+}
+
+func b068ReplayImportedCycles(t *testing.T, engine string, capture b068Capture) {
+	t.Helper()
+	p := b068ImportArchive(t, engine, capture, "readback.tar", "b06-source")
+	var observed struct {
+		CycleProbes []struct {
+			Case  string     `json:"case"`
+			Paths [][]string `json:"paths"`
+		} `json:"cycleProbes"`
+	}
+	nativeDecode(t, capture.Observations, &observed)
+	var wantIDs []string
+	for _, command := range capture.Commands {
+		if len(command.Argv) == 0 || command.Argv[0] != "create" {
+			continue
+		}
+		for i, arg := range command.Argv {
+			if arg == "--id" {
+				wantIDs = append(wantIDs, command.Argv[i+1])
+			}
+		}
+	}
+	before := p.f.conservation(t)
+	var gotIDs []string
+	for _, row := range before.Rows {
+		if row.Kind == "bead" {
+			gotIDs = append(gotIDs, row.Ref.ID)
+		}
+	}
+	slices.Sort(gotIDs)
+	slices.Sort(wantIDs)
+	if len(wantIDs) == 0 || !reflect.DeepEqual(gotIDs, wantIDs) {
+		t.Fatalf("full native B06 role corpus differs: got=%v want=%v", gotIDs, wantIDs)
+	}
+	nativeJSON(t, filepath.Join(p.output, "initial-full-state.json"), before)
+	for _, stage := range []string{"imported", "sql-reopened"} {
+		if stage == "sql-reopened" {
+			p.reopen(t)
+			b08SameConservation(t, before, p.f.conservation(t))
+		}
+		seen := 0
+		for _, probe := range observed.CycleProbes {
+			if probe.Case != "default-excludes-tracks" && probe.Case != "tracks-expanded" {
+				continue
+			}
+			seen++
+			reply := p.call(t, "bead.cycles", "native-imported-"+stage+"-"+probe.Case, map[string]any{"includeTracks": probe.Case == "tracks-expanded", "limit": 100})
+			var actual service.CyclesResult
+			if reply.Error != nil || json.Unmarshal(reply.Result, &actual) != nil {
+				t.Fatalf("actual imported native cycle report failed: %+v", reply)
+			}
+			paths := [][]string{}
+			for _, cycle := range actual.Items {
+				path := []string{}
+				if cycle.Partial || !cycle.UnreadableCount.IsZero() {
+					t.Fatal("unexpected unreadable native imported role")
+				}
+				for _, member := range cycle.Path {
+					if member.Ref == nil {
+						t.Fatal("imported native member missing")
+					}
+					path = append(path, member.Ref.ID)
+				}
+				paths = append(paths, path)
+			}
+			nativeJSON(t, filepath.Join(p.output, stage+"-"+probe.Case+".json"), map[string]any{"native": probe.Paths, "plug": actual, "paths": paths})
+			if actual.Truncated || actual.CycleCount.String() != strconv.Itoa(len(probe.Paths)) || !reflect.DeepEqual(paths, probe.Paths) {
+				t.Fatalf("actual full imported native cycle parity differs: native=%v Plug=%v", probe.Paths, paths)
+			}
+			b08SameConservation(t, before, p.f.conservation(t))
+		}
+		if seen != 2 {
+			t.Fatal("native default and tracks-expanded observations are mandatory")
 		}
 	}
 }
@@ -315,7 +392,7 @@ func b068ReplaySettlement(t *testing.T, engine string, capture b068Capture) {
 	if observed.ForcedStatus != "closed" || observed.ChildStatus != "open" || observed.ForeignHolder != "another-actor" || len(observed.FinalRows) != 7 {
 		t.Fatal("native seven-role vector is incomplete")
 	}
-	p := b068ImportInitial(t, engine, capture)
+	p := b068ImportArchive(t, engine, capture, "initial-readback.tar", "b08-parent")
 	f := p.f
 	ref := func(id string) model.Ref { return model.RefByID(id, model.Natural64(0)) }
 	parent, child := ref("b08-parent"), ref("b08-child")
