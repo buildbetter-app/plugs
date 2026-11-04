@@ -98,7 +98,7 @@ func DecodeDocument(body []byte) (Document, error) {
 		return d, err
 	}
 	if err := validateParent(d.Parent); err != nil {
-		return d, err
+		return d, failure("invalid_params", err.Error())
 	}
 	parent, err := HierarchyParent(d)
 	if err != nil {
