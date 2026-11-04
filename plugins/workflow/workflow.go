@@ -911,20 +911,11 @@ func itemBlocked(value persisted, item itemState) bool {
 			return true
 		}
 	}
-	// A mixed-plane source is indexed on the workflow item's inbound list. A
-	// workflow source can be evaluated from this checkpoint; an ordinary source
-	// is conservatively blocked until the service's core reader has a typed
-	// bridge for its terminal status. This prevents a missing bridge from
-	// producing a false-ready item.
-	for _, link := range item.Inbound {
-		if !relationBlocks(link.Kind, link.Metadata) {
-			continue
-		}
-		source, ok := value.Items[link.From]
-		if !ok || source.Status != "closed" {
-			return true
-		}
-	}
+	// Inbound edges identify this item as the blocker endpoint. A blocks edge
+	// is directed from its dependent to its blocker, so an inbound blocks edge
+	// must not make the blocker itself unavailable. Mixed-plane source status is
+	// evaluated only when the workflow item is the dependent (the outbound edge
+	// above); no core lease, version, or status row is synthesized here.
 	return false
 }
 
