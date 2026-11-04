@@ -2,7 +2,9 @@
 """Synthetic refusal controls; these fixtures provide no native evidence."""
 
 import copy
+import base64
 import importlib.util
+import json
 from pathlib import Path
 import unittest
 
@@ -47,7 +49,7 @@ def fixture(index):
         image = [{"body": comment["text"], "principal": {"kind": "user", "id": comment["author"]},
                   "sourceAuthor": comment["author"], "sourceTime": stamp, "origin": "import", "time": stamp}]
         for engine in pair.ENGINES:
-            unit["subscriber_comments"][store + "-" + engine] = [copy.deepcopy(image) for _ in range(20)]
+            unit["subscriber_comments"][store + "-" + engine] = [copy.deepcopy(image) for _ in range(16)]
     return unit
 
 
@@ -121,8 +123,32 @@ class PairComparisonTest(unittest.TestCase):
         for field in ("body", "sourceAuthor", "sourceTime"):
             with self.subTest(field=field):
                 self.setUp()
-                self.units[0]["subscriber_comments"]["source-memory"][19][0][field] = "changed"
+                self.units[0]["subscriber_comments"]["source-memory"][15][0][field] = "changed"
                 self.refuses()
+
+    def test_real_receipt_shape_has_three_before_seven_after_and_six_root_post_images(self):
+        document = {"comments": self.units[0]["subscriber_comments"]["source-memory"][0]}
+        snapshot = {pair.CONTENT[0]: document}
+        operations = [{"after": copy.deepcopy(snapshot)} for _ in range(7)]
+        for index in (0, 2, 4):
+            operations[index]["before"] = copy.deepcopy(snapshot)
+        posts = []
+        for identity in (pair.CONTENT[0], "pub-root.1", pair.CONTENT[0]):
+            posts.append({"change": {"Changes": [{"Resource": {"ref": {"id": identity}},
+                                                   "Before": document, "After": document}]},
+                          "rows": [{"Body": base64.b64encode(json.dumps(document).encode()).decode()}]})
+        sub = {"operations": operations, "posts": posts}
+        images = pair.subscriber_comment_images(sub)
+        self.assertEqual(images, [document["comments"]] * 16)
+        for index in (0, 2, 4):
+            changed = copy.deepcopy(sub)
+            del changed["operations"][index]["before"]
+            with self.assertRaisesRegex(ValueError, "before snapshot shape"):
+                pair.subscriber_comment_images(changed)
+        changed = copy.deepcopy(sub)
+        changed["operations"][1]["before"] = snapshot
+        with self.assertRaisesRegex(ValueError, "before snapshot shape"):
+            pair.subscriber_comment_images(changed)
 
     def test_issue_edge_and_user_memory_differences_refuse(self):
         for field in ("issues", "edges", "memories"):
