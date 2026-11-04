@@ -43,9 +43,15 @@ import (
 )
 
 const (
-	publicBeadsCommit = "c8eb3ba7d4177e111a6f5c8aebe06b5d0b1d5724"
-	publicBeadsTree   = "930405e863284a3955cbd35e73a6097b606b91a5"
-	publicChildID     = "pub-root.1"
+	publicBeadsCommit      = "c8eb3ba7d4177e111a6f5c8aebe06b5d0b1d5724"
+	publicBeadsTree        = "930405e863284a3955cbd35e73a6097b606b91a5"
+	publicChildID          = "pub-root.1"
+	requestedProductHead   = "2d2164ba3d8e456c9aba15fbeb8cae4edc755997"
+	requestedProductTree   = "ae226eed2e9a85d4da19958db7a3520ebfe9cf05"
+	requestedProductParent = "70230ccd92597a96000f90223c5d89b103e25426"
+	productSourceCommit    = "60ce25a0e85b55ac9aa6abd816d67239ec07dcab"
+	productSourceTree      = "96e0cbbecc753edb835adb3c89952e316d4da83e"
+	productSourceParent    = requestedProductHead
 )
 
 var requirePublicRecording = flag.Bool("public-recording", false, "Require the independently delivered public Beads recording artifact")
@@ -89,6 +95,9 @@ type nativeProductSourceBinding struct {
 	RequestedHead              string   `json:"requested_head"`
 	RequestedTree              string   `json:"requested_tree"`
 	OrderedParents             []string `json:"ordered_parents"`
+	ProductCommit              string   `json:"product_commit"`
+	ProductTree                string   `json:"product_tree"`
+	ProductParents             []string `json:"product_ordered_parents"`
 	AcceptedControlRef         string   `json:"accepted_control_ref"`
 	AcceptedControlSHA         string   `json:"accepted_control_sha"`
 	AcceptedProducerWorkflow   string   `json:"accepted_producer_workflow_sha"`
@@ -191,7 +200,7 @@ func TestPublicNativeRecording(t *testing.T) {
 	profile := readRecordingProfile(t)
 	fixture := readRecordingFixture(t)
 	product := readNativeProductSourceBinding(t)
-	if product.RequestedHead != "2d2164ba3d8e456c9aba15fbeb8cae4edc755997" || product.RequestedTree != "ae226eed2e9a85d4da19958db7a3520ebfe9cf05" || len(product.OrderedParents) != 1 || product.OrderedParents[0] != "70230ccd92597a96000f90223c5d89b103e25426" || product.AcceptedControlSHA != product.RequestedHead {
+	if product.RequestedHead != requestedProductHead || product.RequestedTree != requestedProductTree || len(product.OrderedParents) != 1 || product.OrderedParents[0] != requestedProductParent || product.ProductCommit != productSourceCommit || product.ProductTree != productSourceTree || len(product.ProductParents) != 1 || product.ProductParents[0] != productSourceParent || product.AcceptedControlSHA != product.RequestedHead {
 		t.Fatalf("native product source binding is not the requested PR384 identity: %+v", product)
 	}
 	if fixture.SourceCommit != publicBeadsCommit || fixture.SourceTree != publicBeadsTree || fixture.Schema == "" || len(fixture.Commands) == 0 || len(fixture.ProjectionFields) == 0 {
@@ -291,7 +300,7 @@ func readNativeProductSourceBinding(t *testing.T) nativeProductSourceBinding {
 	t.Helper()
 	var binding nativeProductSourceBinding
 	data := recordingRunfile(t, "testdata/native-product-source-binding.json")
-	if err := json.Unmarshal(data, &binding); err != nil || binding.Schema != "plug-s1-native-product-source/1" || binding.Repository != "buildbetter-app/plugs" || binding.PullRequest != 384 || binding.AcceptedControlRef != "refs/heads/swarm/native-preparer-c8eb-rebind-20261104" || binding.AcceptedProducerWorkflow == "" || binding.AcceptedProducerDescriptor == "" {
+	if err := json.Unmarshal(data, &binding); err != nil || binding.Schema != "plug-s1-native-product-source/1" || binding.Repository != "buildbetter-app/plugs" || binding.PullRequest != 384 || binding.AcceptedControlRef != "refs/heads/swarm/native-preparer-c8eb-rebind-20261104" || binding.ProductCommit == "" || binding.ProductTree == "" || binding.AcceptedProducerWorkflow == "" || binding.AcceptedProducerDescriptor == "" {
 		t.Fatalf("native product source binding is invalid: %v %+v", err, binding)
 	}
 	return binding
@@ -1242,7 +1251,7 @@ func recordNativeB27Probes(t *testing.T, output, storeRoot, pinned string, serve
 	command := func(label string, argv []string, stdin []byte) []byte {
 		return runCommand(t, root, &receipts, label, "b27-probe", workspace, env, append([]string{pinned}, argv...), stdin)
 	}
-	command("b27-probe-git-init", []string{"git", "-c", "init.defaultBranch=main", "init", "--quiet"}, nil)
+	runCommand(t, root, &receipts, "b27-probe-git-init", "b27-probe", workspace, env, []string{"git", "-c", "init.defaultBranch=main", "init", "--quiet"}, nil)
 	command("b27-probe-init", nativeInitArgs(workspace, server.Port), nil)
 	missing := []byte(`{"_type":"issue","id":"b27-missing","title":"Missing target import","description":"native skipped dependency","issue_type":"task","priority":1,"status":"open","dependencies":[{"depends_on_id":"b27-no-such-target","type":"blocks"}]}\n`)
 	missingPath := filepath.Join(root, "missing-target.jsonl")
@@ -1255,7 +1264,7 @@ func recordNativeB27Probes(t *testing.T, output, storeRoot, pinned string, serve
 	if !nativeHasNonEmptyField(importResult, "skipped_dependencies") {
 		t.Fatalf("native importer omitted skipped dependency report: %s", imported)
 	}
-	command("b27-status-config-set", []string{"--json", "config", "set", "status.custom", "reviewing"}, nil)
+	command("b27-status-config-set", []string{"--json", "config", "set", "status.custom", "reviewing:active"}, nil)
 	statusList := command("b27-status-config-list", []string{"--json", "config", "list"}, nil)
 	if !bytes.Contains(statusList, []byte("status.custom")) {
 		t.Fatalf("native status registry did not expose stored custom status: %s", statusList)

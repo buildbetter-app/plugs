@@ -7,6 +7,11 @@
   "ordered_parents": [
     "70230ccd92597a96000f90223c5d89b103e25426"
   ],
+  "product_commit": "60ce25a0e85b55ac9aa6abd816d67239ec07dcab",
+  "product_tree": "96e0cbbecc753edb835adb3c89952e316d4da83e",
+  "product_ordered_parents": [
+    "2d2164ba3d8e456c9aba15fbeb8cae4edc755997"
+  ],
   "accepted_control_ref": "refs/heads/swarm/native-preparer-c8eb-rebind-20261104",
   "accepted_control_sha": "2d2164ba3d8e456c9aba15fbeb8cae4edc755997",
   "accepted_producer_workflow_sha": "d758fdf42a426e9e2a4b707dbcebb22ec68b264e",

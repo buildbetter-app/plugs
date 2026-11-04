@@ -197,6 +197,19 @@ metadata entry needs an independent admitted observation and fails otherwise.
 The synthetic controls explicitly enumerate a structured secret reference to
 check its canonical string and source identity; no secret is resolved.
 
+The changed PR384 consumer source also records card-owned native operations in
+the same fresh run. B25 retains full `show --include-comments` bodies while
+updating title, priority, description, assignee, notes, a child, and a closed
+dependency; it captures a refused self-dependency, the real `pub-root.2`
+counter allocation, default dry-run delete, forced orphan delete, cascade
+delete, survivor readback, and missing-row refusals. B27 separately captures a
+missing-target import with the producer's `skipped_dependencies` result and a
+stored `status.custom=reviewing:active` catalog/create/show probe. These
+operation packets retain raw stdout/stderr and expected nonzero receipts beside
+the canonical source and target packets. The native product binding records the
+frozen PR384 request identity and the changed consumer source identity
+separately; the runtime wrapper records the exact dispatched consumer commit.
+
 The `TestPublicProjection` controls include same-count substitutions, missing
 or extra config, duplicate archive IDs/memory keys, reserved collisions,
 classification/source/value changes, missing config source with unchanged
