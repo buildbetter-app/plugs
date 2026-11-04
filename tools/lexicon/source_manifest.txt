@@ -265,6 +265,7 @@ internal/core/pipeline/dependency.go
 internal/core/pipeline/document.go
 internal/core/pipeline/gate.go
 internal/core/pipeline/graph_validation.go
+internal/core/pipeline/graph_validation_test.go
 internal/core/pipeline/guard_test.go
 internal/core/pipeline/hierarchy.go
 internal/core/pipeline/hierarchy_indexed.go
