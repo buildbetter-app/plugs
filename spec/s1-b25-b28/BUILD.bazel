@@ -41,7 +41,7 @@ go_test(
     name = "public_recording_test",
     size = "large",
     srcs = ["public_recording_test.go"],
-    args = ["-test.v", "-public-recording", "-test.run=^TestPublicNativeRecording$"],
+    args = ["-test.v", "-public-recording", "-test.run=^TestPublicNativeRecording$$"],
     data = [
         "testdata/native-public-profile.json",
         "testdata/native-public-recording-fixture.json",
