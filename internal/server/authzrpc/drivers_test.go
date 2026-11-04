@@ -69,10 +69,10 @@ func TestFixedPermissionsAcrossDrivers(t *testing.T) {
 }
 
 func readyFactsCarryForward(t *testing.T, open storeFactory) {
-	for _, mode := range []string{"maintained", "unmaintained", "corrupt"} {
+	for _, mode := range []string{"maintained", "unmaintained", "corrupt", "drift"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx := context.Background()
-			store := open(t)
+			store := &authorizationRaceStore{Store: open(t)}
 			t.Cleanup(func() { _ = store.Close() })
 			lease, err := store.Lease(ctx, "ready-facts", driver.LeaseTTL)
 			if err != nil {
@@ -114,7 +114,7 @@ func readyFactsCarryForward(t *testing.T, open storeFactory) {
 				t.Fatal("initial Ready marker is not bound to the fact publication")
 			}
 			want := []driver.DerivedRow{rows[0].Clone()}
-			if mode != "maintained" {
+			if mode == "unmaintained" || mode == "corrupt" {
 				tx, err := store.Write(ctx, lease)
 				if err != nil {
 					t.Fatal(err)
@@ -162,6 +162,32 @@ func readyFactsCarryForward(t *testing.T, open storeFactory) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			var competing model.Revision
+			var competingRef model.Ref
+			var calls int
+			if mode == "drift" {
+				// The fact publisher has already pinned its Ready observations
+				// when Store.Write runs. Commit a real maintained source mutation
+				// before its lock census, without changing the ACL/source guards.
+				hook := func() error {
+					calls++
+					o := service.NewOntology(nil)
+					w := pipeline.New(store.Store, lease, pipeline.WithOntology(o))
+					svc := service.New(store.Store, lease, w, service.WithOntology(o))
+					commit, err := svc.MemorySave(ctx, model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}, service.MemorySaveRequest{Key: "ready-fact-drift", Content: "competing maintained source"}, model.WriteMeta{Project: "local", Agent: "ready-test", AgentLabel: "ready-test", IdempotencyKey: fmt.Sprintf("%064x", 1)})
+					if err != nil {
+						return err
+					}
+					if len(commit.Results) != 1 {
+						return errors.New("competing source did not return its record")
+					}
+					competingRef = commit.Results[0].Ref
+					current, err := store.Store.Meta(ctx)
+					competing = current.Head
+					return err
+				}
+				store.beforeWrite.Store(&hook)
+			}
 			if err := facts.Replace(base); err != nil {
 				t.Fatalf("optional Ready state refused an ordinary fact publication: %v", err)
 			}
@@ -171,6 +197,21 @@ func readyFactsCarryForward(t *testing.T, open storeFactory) {
 			}
 			defer after.Close()
 			n, _ := before.Head.Uint64()
+			if mode == "drift" {
+				if calls != 1 || competing.String() != model.Natural64(n+1).String() {
+					t.Fatalf("competing source did not commit exactly once: calls=%d head=%s before=%s", calls, competing, before.Head)
+				}
+				n++
+				records, err := after.Get(ctx, []model.Ref{competingRef})
+				if err != nil || len(records) != 1 || records[0].Revision.String() != competing.String() || !strings.Contains(string(records[0].Body), "competing maintained source") {
+					t.Fatalf("competing source was lost or restamped: %+v/%v", records, err)
+				}
+				marker.Through = competing
+				want[0].Value, err = json.Marshal(marker)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 			if after.Snapshot().At.String() != model.Natural64(n+1).String() {
 				t.Fatal("fact publication did not retain one durable H+1 commit")
 			}

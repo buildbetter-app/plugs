@@ -680,9 +680,7 @@ func publishFacts(ctx context.Context, store driver.Store, lease driver.ActiveLe
 			observed = state.Revision
 		}
 	}
-	if ready.Available() && !readySnapshot.matches(states) {
-		ready = nil
-	}
+	maintainReady := ready.Available() && readySnapshot.matches(states)
 	head, err := tx.Head(ctx)
 	if err != nil {
 		return model.Natural64(0), "", err
@@ -716,12 +714,20 @@ func publishFacts(ctx context.Context, store driver.Store, lease driver.ActiveLe
 		return model.Natural64(0), "", err
 	}
 	if ready.Available() {
-		n, err := head.Uint64()
-		if err != nil || n == ^uint64(0) {
-			return model.Natural64(0), "", errors.New("authorization publication revision space is exhausted")
-		}
-		if _, err := ready.Publish(ctx, tx, model.Natural64(n+1)); err != nil {
-			return model.Natural64(0), "", err
+		if !maintainReady {
+			// Optional metadata may drift after preparation. Keep the declared
+			// predicate bumps, but never stage stale Ready nodes or coverage.
+			if err := ready.Skip(ctx, tx); err != nil {
+				return model.Natural64(0), "", err
+			}
+		} else {
+			n, err := head.Uint64()
+			if err != nil || n == ^uint64(0) {
+				return model.Natural64(0), "", errors.New("authorization publication revision space is exhausted")
+			}
+			if _, err := ready.Publish(ctx, tx, model.Natural64(n+1)); err != nil {
+				return model.Natural64(0), "", err
+			}
 		}
 	}
 	entry, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: after.Namespace.Incarnation, Kind: model.ChangesetDerived, Time: time.Now().UTC(), Principal: model.PrincipalRef{Kind: "system", ID: "authzrpc"}, LockKeys: lockKeys})
