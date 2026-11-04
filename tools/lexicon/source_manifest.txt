@@ -290,6 +290,7 @@ internal/core/pipeline/projection_publication.go
 internal/core/pipeline/projections.go
 internal/core/pipeline/projections_test.go
 internal/core/pipeline/protected.go
+internal/core/pipeline/ready_projection.go
 internal/core/pipeline/response.go
 internal/core/pipeline/response_test.go
 internal/core/pipeline/selection_indexes.go
@@ -355,6 +356,7 @@ internal/core/service/memories.go
 internal/core/service/ontology.go
 internal/core/service/ordered_close.go
 internal/core/service/reads.go
+internal/core/service/ready_projection.go
 internal/core/service/rpc_reads.go
 internal/core/service/service.go
 internal/core/service/service_test.go
@@ -979,6 +981,7 @@ internal/storage/driver/offline_restore.go
 internal/storage/driver/parent_counter.go
 internal/storage/driver/parent_counter_test.go
 internal/storage/driver/read_work.go
+internal/storage/driver/ready_order.go
 internal/storage/driver/receipt_contract_test.go
 internal/storage/driver/restore.go
 internal/storage/driver/restore_test.go
@@ -1014,6 +1017,7 @@ internal/storage/memory/offline_history.go
 internal/storage/memory/offline_restore.go
 internal/storage/memory/parent_counter.go
 internal/storage/memory/reader.go
+internal/storage/memory/ready_order.go
 internal/storage/memory/selection.go
 internal/storage/memory/selection_backfill.go
 internal/storage/memory/selection_backfill_test.go
@@ -1066,6 +1070,7 @@ internal/storage/postgres/persistence_test.go
 internal/storage/postgres/query.go
 internal/storage/postgres/reader.go
 internal/storage/postgres/reader_batch_test.go
+internal/storage/postgres/ready_order.go
 internal/storage/postgres/schema.go
 internal/storage/postgres/selection.go
 internal/storage/postgres/selection_backfill.go
@@ -1086,6 +1091,11 @@ internal/storage/postgres/source_index.go
 internal/storage/postgres/source_link_schema_test.go
 internal/storage/postgres/store.go
 internal/storage/postgres/transaction.go
+internal/storage/readyindex/BUILD.bazel
+internal/storage/readyindex/dense_test.go
+internal/storage/readyindex/ready_order_test.go
+internal/storage/readyindex/select.go
+internal/storage/readyindex/tree.go
 internal/storage/sourceindex/BUILD.bazel
 internal/storage/sourceindex/backfill.go
 internal/storage/sourceindex/publication.go
@@ -1129,6 +1139,7 @@ internal/storage/sqlite/publication_lease_race_test.go
 internal/storage/sqlite/publication_lease_test.go
 internal/storage/sqlite/query_cursor_test.go
 internal/storage/sqlite/reader.go
+internal/storage/sqlite/ready_order.go
 internal/storage/sqlite/recordref_test.go
 internal/storage/sqlite/schema.go
 internal/storage/sqlite/selection.go

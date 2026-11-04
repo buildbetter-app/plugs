@@ -19,6 +19,7 @@ go_library(
         "selection.go",
         "selection_boundary.go",
         "selection_source.go",
+        "ready_order.go",
     ],
     importpath = "github.com/buildbetter-app/plugs/internal/storage/driver",
     visibility = ["//:__subpackages__"],
