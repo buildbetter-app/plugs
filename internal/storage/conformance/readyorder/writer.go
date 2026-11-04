@@ -189,6 +189,9 @@ func runWriter(t *testing.T, factory func(*testing.T) driver.Store, metadataOnly
 	if _, err = selectAt(nil); !errors.Is(err, driver.ErrUnsupported) {
 		t.Fatal("nonlocal waits-for gate used local-only tree", err)
 	}
+	// The unlink identity names the edge. Metadata is legal only when adding
+	// a waits-for link, so do not carry its creation predicate into removal.
+	relation.Metadata = nil
 	if _, err = svc.Unlink(ctx, by, relation, meta()); err != nil {
 		t.Fatal(err)
 	}
