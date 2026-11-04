@@ -180,10 +180,15 @@ func (r *snapshotReader) locks(writes map[string]*pending, sentinels []driver.Se
 		byKey[encoded] = driver.LockRequest{Key: key, Mode: mode}
 		return nil
 	}
-	for _, state := range r.reads.states {
-		if err := add(state.Key, driver.LockShare); err != nil {
-			return nil, err
+	// readSet.observe has already validated each state key and stored the exact
+	// encoded identity. Reuse that identity here instead of re-encoding every
+	// read during a large write's lock-plan construction. Update requests below
+	// still replace a share entry through the same add() path.
+	for encoded, state := range r.reads.states {
+		if prior, ok := byKey[encoded]; ok && prior.Mode == driver.LockUpdate {
+			continue
 		}
+		byKey[encoded] = driver.LockRequest{Key: state.Key, Mode: driver.LockShare}
 	}
 	for _, p := range writes {
 		ref := p.ref
