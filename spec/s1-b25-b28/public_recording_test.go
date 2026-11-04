@@ -1100,10 +1100,16 @@ func recordPublicSubscriber(t *testing.T, ctx context.Context, store driver.Stor
 	}}
 	refusalMeta := model.WriteMeta{Project: before[ids[2]].Project, IdempotencyKey: hashBytes([]byte("s1-native-public-refused-aux"))}
 	refused, refusalErr := domain.ApplyWithOutcome(ctx, actor, bad, refusalMeta)
-	appendReceipt(map[string]any{"method": "tx.apply", "request": bad, "outcome": refused, "error": fmt.Sprint(refusalErr), "before": complete, "after": nativePlugImage(t, ctx, store, profile)})
-	flush()
 	var typed *model.Error
-	if !errors.As(refusalErr, &typed) || typed.Data.Code != "ontology_guard_failed" || !equalJSON(complete, nativePlugImage(t, ctx, store, profile)) || postCount() != len(requests) {
+	isTyped := errors.As(refusalErr, &typed)
+	// A refused operation has no valid public Commit response. Retain its
+	// actual zero/nil fields without Commit.MarshalJSON's success validation;
+	// never replace nil results/warnings with invented successful arrays.
+	type rawCommitFields model.Commit
+	rawOutcome := map[string]any{"Commit": rawCommitFields(refused.Commit), "Replayed": refused.Replayed, "NullResult": refused.NullResult}
+	appendReceipt(map[string]any{"method": "tx.apply", "request": bad, "outcome": rawOutcome, "outcome_encoding": "raw-failure-fields-not-public-commit", "error": fmt.Sprint(refusalErr), "typed_error": typed, "before": complete, "after": nativePlugImage(t, ctx, store, profile)})
+	flush()
+	if !isTyped || typed.Data.Code != "ontology_guard_failed" || refused.Replayed || refused.NullResult || !refused.Commit.Revision.IsZero() || refused.Commit.Results != nil || refused.Commit.Warnings != nil || !equalJSON(complete, nativePlugImage(t, ctx, store, profile)) || postCount() != len(requests) {
 		t.Fatalf("native-origin auxiliary refusal changed a source/history/receipt/subscriber plane: %v", refusalErr)
 	}
 	t.Logf("PUBLIC_SUBSCRIBER_RECORDING path=%s posts=%d scalar=3 replacement=1 replay=4 noop=1 refusal=1", path, postCount())

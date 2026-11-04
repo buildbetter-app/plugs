@@ -367,9 +367,10 @@ independent review. `compare_native_pair.py` keeps its historical pins unchanged
 
 The next child requires exact JSON types for runtime identity/outcomes and the
 fixed fourteen-key `REQUIRED_CHECKS` census. Empty checks, missing/extra keys,
-truthy nonbooleans, and bool/int/float aliases refuse. Its five Python rejection
-controls run as a recorded prerequisite inside the remote native target; they
-do not stand in for native behavior. The scalar oracle requires a changed,
+truthy nonbooleans, and bool/int/float aliases refuse. Its five Python test
+methods (one positive and four negative groups) run as a recorded prerequisite
+inside the remote native target; they do not stand in for native behavior.
+The scalar oracle requires a changed,
 nonzero int64 `row_lock` only on the updated issue, as accepted c8 specifies.
 The orphan delete requires its one declared survivor's `is_blocked` transition
 from 1 to 0 and conserves every other survivor column. Historical REDs, complete
@@ -382,3 +383,10 @@ incarnation-bound floor cursor, and retains the exact authenticated import
 receipt carrying the floor changeset. Each image also reads and hashes the
 original stored archive bytes. This corrects r7's nil-cursor reader failure;
 r7 remains RED and supplies no replay/reopen or pair qualification.
+
+Failure receipts retain raw outcome fields and the typed error separately from
+the valid public Commit response schema. The refused operation must return a
+zero revision, nil result/warning slices and no replay/null-result flag; no
+empty success arrays are manufactured to make its evidence serializable.
+This is a recorder correction for r8, which remains RED with its refusal
+receipt and later branches unproved.
