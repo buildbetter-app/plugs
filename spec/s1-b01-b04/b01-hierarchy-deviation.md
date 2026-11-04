@@ -1,4 +1,4 @@
-# B01 hierarchy: adopted reference deviation and legacy input
+# B01 hierarchy: adopted reference deviations and legacy input
 
 Binding decision: orchestrator `b0d8be0f-3bde-4dbc-b4c7-51cb125c7511`,
 2026-11-03, `/tmp/plug-swarm/escalations.md:598-603`.
@@ -37,6 +37,33 @@ The historical raw packets, twins, recorder/manifest pins, hardcoded historical
 `raw-capture-unqualified` / `hierarchy-gap-unqualified` labels are not upgraded.
 The two definitions in `b01-hierarchy-vectors.json` are future inputs with distinct
 IDs, not new reference executions or a replacement for those packets.
+
+## Timed grandchild membership is separately adopted
+
+Binding extension: orchestrator `62a71f53`, direct disposition
+`273e90f1-19bf-4ddb-84a3-1a49a957a547`, 2026-11-04 06:50Z, section
+"Orchestrator decision: B01 timed-defer readiness difference" in
+`/tmp/plug-swarm/escalations.md`. The received file snapshot SHA256 is
+`217f002e230057806426948ea69165e49103e28a118b40938803329401d2a26c`.
+This extends the indefinite decision explicitly.
+
+Both genuine timed native captures in first physical e6 run `41784159876`
+report `b01-timedgrandchild` and `b01-timedfree` ready after the parent is
+deferred to the declared future date. Plug's canonical transitive ancestor
+suppression requires only its mapped free ref. Record those exact memberships
+side by side as an **adopted timed transitive-ancestor reference difference**.
+The separate indefinite native set remains child/grandchild/free. Neither
+comparison claims parity, a native or product defect, or a scheduling cause
+beyond the recorded disposition.
+
+Plug has no timed defer. A deferred ancestor suppresses readiness for every
+descendant until an explicit reopen. The recorder keeps both native twins,
+the exact Plug memberships and all source/read/revision/byte/cursor/reopen
+controls. The e6 first physical RED remains immutable; source556 fixed only
+the per-operation defer results and was not dispatched. The revised exact
+recorder must earn its own source review and changed-head runtime proof.
+Native clock injection, expiry, wake, B05 and full-card qualification remain
+outside this bounded comparison.
 
 ## One relation at the Writer boundary
 

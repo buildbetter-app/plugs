@@ -397,25 +397,35 @@ func replayNativeVector(t *testing.T, capture nativeCapture, backend, dsn, decis
 	if err != nil {
 		t.Fatal(err)
 	}
-	classification := "timed category suppression; no expiry/wake claim"
-	if capture.Vector.Mode == "indefinite" {
-		classification = "adopted indefinite membership deviation " + decision
+	var expectedNativeAfter []string
+	classification := ""
+	switch capture.Vector.Mode {
+	case "timed":
+		expectedNativeAfter = []string{"grandchild", "free"}
+		decision = "273e90f1-19bf-4ddb-84a3-1a49a957a547"
+		classification = "adopted timed transitive-ancestor reference membership difference"
+	case "indefinite":
+		expectedNativeAfter = []string{"child", "grandchild", "free"}
+		classification = "adopted indefinite reference membership deviation"
+	default:
+		t.Fatalf("unknown actual native vector mode %q", capture.Vector.Mode)
+	}
+	if decision == "" {
+		t.Fatal("native comparison is missing its recorded disposition")
 	}
 	nativeJSON(t, filepath.Join(output, "comparison.json"), map[string]any{
 		"actualNativeBeforeRoles": observedBefore, "actualNativeAfterRoles": observedAfter,
 		"assertedPlugBeforeRoles": nativeRoles, "assertedPlugAfterRoles": []string{"free"},
-		"classification": classification, "nativeAfter": capture.After,
+		"classification": classification, "decision": decision, "nativeAfter": capture.After,
+		"membershipParity": reflect.DeepEqual(observedAfter, []string{"free"}), "expectedNativeAfterRoles": expectedNativeAfter,
 		"clockScope": "Plug fixture clock controls Plug only; native Go/SQL clocks remain uncontrolled",
 		"publicPath": "inprocess RPC registry -> core service -> real Writer and selected driver",
 	})
 	if !reflect.DeepEqual(observedBefore, nativeRoles) {
 		t.Fatalf("actual open-parent reference control differs: %v", observedBefore)
 	}
-	if capture.Vector.Mode == "timed" && !reflect.DeepEqual(observedAfter, []string{"free"}) {
-		t.Fatalf("actual timed reference differs from category suppression: %v; retained as an observation", observedAfter)
-	}
-	if capture.Vector.Mode == "indefinite" && !reflect.DeepEqual(observedAfter, []string{"child", "grandchild", "free"}) {
-		t.Fatalf("actual indefinite reference differs from the declared deviation: %v; retained as an observation", observedAfter)
+	if !reflect.DeepEqual(observedAfter, expectedNativeAfter) {
+		t.Fatalf("actual %s reference differs from its declared membership: %v want=%v; originals retained", capture.Vector.Mode, observedAfter, expectedNativeAfter)
 	}
 	t.Logf("B01_NATIVE_REPLAY vector=%s run=%s engine=%s referenceAfter=%s plugAfter=free decision=%s", capture.Vector.ID, capture.Run.ID, backend, strings.Join(observedAfter, ","), decision)
 }

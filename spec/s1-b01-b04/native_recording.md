@@ -81,11 +81,15 @@ reopen prints a unique leaf/stage marker and retains its original identity and
 state digest.
 
 Native after-membership stays distinct from the independent Plug expectation.
-Timed replay expects only free, with no expiry/wake claim. Indefinite replay
-asserts Plug's suppression of child and grandchild while checking the actual
-reference against the declared child/grandchild/free deviation under decision
-`b0d8be0f-3bde-4dbc-b4c7-51cb125c7511`. Mismatches remain actual observations
-and fail the proposed comparison. Native Go time.Now and SQL UTC_TIMESTAMP
+Both replay modes assert Plug's exact free-only result. Timed native replay
+separately requires the observed grandchild/free result under orchestrator
+disposition `273e90f1-19bf-4ddb-84a3-1a49a957a547`, labeled as an adopted timed
+transitive-ancestor reference difference. Indefinite native replay requires
+child/grandchild/free under decision
+`b0d8be0f-3bde-4dbc-b4c7-51cb125c7511`. Each comparison retains its actual
+native roles, independently asserted Plug roles, exact native expectation,
+recorded decision and actual membership-parity boolean. Mismatches remain
+actual observations and fail the comparison. Native Go time.Now and SQL UTC_TIMESTAMP
 remain uncontrolled; UTC command windows and future readback do not establish
 native clock injection, expiry parity, B05, full B01 or FullS1 qualification.
 
@@ -129,3 +133,16 @@ record/metadata. Create and link still require exactly one result. All existing
 byte/revision conservation, real SQL reopen, read-receipt and workload checks
 remain unchanged. The original e6 physical RED and earlier ordinary PASS stay
 separate; the corrected source needs its own gates and physical proof.
+
+The timed correction follows the binding orchestrator decision of
+2026-11-04 06:50Z, section "Orchestrator decision: B01 timed-defer readiness
+difference" in `/tmp/plug-swarm/escalations.md`. Its received snapshot has
+SHA256 `217f002e230057806426948ea69165e49103e28a118b40938803329401d2a26c`.
+Both original e6 timed ready-after outputs retained grandchild/free; the old
+native free-only comparison was incorrect. The authored556 result-count
+correction remains a separate, undispatched historical source snapshot. This
+causal successor preserves that correction and explicitly compares the two
+adopted reference differences. It adds no timer to Plug: deferred ancestry
+continues to suppress descendants until explicit reopen. The actual e6 RED,
+all original outputs and earlier ordinary evidence remain unchanged; the
+successor needs its own source, ordinary and physical proof.
