@@ -22,18 +22,23 @@ import (
 
 type transaction struct {
 	*reader
-	lease              *activeLease
-	locked, hasHead    bool
-	restore            *driver.Meta
-	offlineHistory     *driver.PreparedOfflineHistory
-	nativeRestore      *driver.NativeRestoreProfile
-	nativeAllocators   bool
-	importRestore      *driver.RestoreImportProfile
-	acquired           driver.LockSet
-	files              []*os.File
-	guards             []guardHandle
-	done               chan struct{}
-	records            map[string]*driver.Record
+	lease            *activeLease
+	locked, hasHead  bool
+	restore          *driver.Meta
+	offlineHistory   *driver.PreparedOfflineHistory
+	nativeRestore    *driver.NativeRestoreProfile
+	nativeAllocators bool
+	importRestore    *driver.RestoreImportProfile
+	acquired         driver.LockSet
+	files            []*os.File
+	guards           []guardHandle
+	done             chan struct{}
+	records          map[string]*driver.Record
+	// recordStates retains the first lock observation for each staged record.
+	// A present=false, revision-zero observation proves that no version history
+	// exists for a first lifetime, so Commit can avoid re-counting that row.
+	// Existing and tombstoned rows keep the scalar COUNT(*) path.
+	recordStates       map[string]driver.LockState
 	derived            map[string]driver.LockState
 	blobs              map[driver.Hash][]byte
 	bumps              map[string]driver.LockKey
@@ -65,7 +70,7 @@ func (s *Store) Write(ctx context.Context, l driver.ActiveLease) (driver.WriteTx
 	if err != nil {
 		return nil, err
 	}
-	t := &transaction{reader: &reader{store: s}, lease: lease, done: make(chan struct{}), records: make(map[string]*driver.Record), derived: make(map[string]driver.LockState), blobs: make(map[driver.Hash][]byte), bumps: make(map[string]driver.LockKey), allocators: make(map[string]driver.OfflineAllocator)}
+	t := &transaction{reader: &reader{store: s}, lease: lease, done: make(chan struct{}), records: make(map[string]*driver.Record), recordStates: make(map[string]driver.LockState), derived: make(map[string]driver.LockState), blobs: make(map[driver.Hash][]byte), bumps: make(map[string]driver.LockKey), allocators: make(map[string]driver.OfflineAllocator)}
 	t.reader.owner = t
 	if err = t.pin(ctx, driver.View{Incarnation: m.Incarnation}); err != nil {
 		return nil, err
@@ -100,6 +105,7 @@ func (t *transaction) finish() {
 	t.files = nil
 	t.clearSourceOverlay()
 	t.records = nil
+	t.recordStates = nil
 	t.derived = nil
 	t.blobs = nil
 	t.bumps = nil
@@ -601,15 +607,25 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 			ref := t.recordRef(id)
 			v := driver.Version{Ref: ref, Revision: revision, CreatedAt: when, Principal: h.Principal, Deleted: record == nil}
 			var count uint64
+			firstLifetime := false
+			if record != nil {
+				if initial, known := t.recordStates[id]; known {
+					firstLifetime = !initial.Present && initial.Revision.IsZero()
+				}
+			}
 			countVersions, prepareErr := statements.countVersions(ctx, c)
 			if prepareErr != nil {
 				return prepareErr
 			}
-			if err = countVersions.QueryRowContext(ctx, id).Scan(&count); err != nil {
-				return err
+			// Keep the statement preparation at the original first-use boundary;
+			// only the result lookup is unnecessary for a proven first lifetime.
+			if !firstLifetime {
+				if err = countVersions.QueryRowContext(ctx, id).Scan(&count); err != nil {
+					return err
+				}
 			}
 			// A tombstone is also a complete base when its cadence is due.
-			v.Base = count%driver.VersionBaseEvery == 0
+			v.Base = firstLifetime || count%driver.VersionBaseEvery == 0
 			// A scheduled base is complete regardless of whether this row already
 			// exists. Avoid the existence probe in that arm; it cannot change the
 			// result and new records are the common boundary-batch case. Retain the

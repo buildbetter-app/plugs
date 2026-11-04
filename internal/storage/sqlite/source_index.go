@@ -90,6 +90,12 @@ func (t *transaction) putSourceRecord(ctx context.Context, record driver.Record,
 	if err != nil {
 		return err
 	}
+	if t.recordStates == nil {
+		t.recordStates = make(map[string]driver.LockState)
+	}
+	if _, seen := t.recordStates[id]; !seen {
+		t.recordStates[id] = state
+	}
 	if record.Kind == "bead" {
 		coverage, err := t.currentSourceCoverage(ctx)
 		if err != nil {
