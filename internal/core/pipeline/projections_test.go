@@ -18,6 +18,223 @@ import (
 
 var errProjectionCommit = errors.New("injected failure after projection staging")
 
+// Count the real snapshot boundary without replacing its data or write path.
+// The hidden control exposes only Reader, retaining the individual-read path.
+type projectionRefreshStore struct {
+	driver.Store
+	mode                          string
+	cancel                        context.CancelFunc
+	singles, batches, rows, scans int
+	prefixes                      []string
+	failedPrefix                  string
+}
+
+func (s *projectionRefreshStore) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
+	r, err := s.Store.Read(ctx, view)
+	if err != nil {
+		return nil, err
+	}
+	base := &projectionRefreshReader{Reader: r, store: s}
+	if s.mode == "hidden" {
+		return base, nil
+	}
+	return &projectionRefreshPrefixReader{base}, nil
+}
+
+type projectionRefreshReader struct {
+	driver.Reader
+	store *projectionRefreshStore
+}
+
+func (r *projectionRefreshReader) DerivedRows(ctx context.Context, table driver.DerivedTable, prefix string) ([]driver.DerivedRow, error) {
+	r.store.singles++
+	if prefix == r.store.failedPrefix {
+		return nil, errors.New("optional individual closure read unavailable")
+	}
+	rows, err := r.Reader.DerivedRows(ctx, table, prefix)
+	r.store.rows += len(rows)
+	return rows, err
+}
+
+func (r *projectionRefreshReader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.Record], error) {
+	r.store.scans++
+	return r.Reader.Query(ctx, q)
+}
+
+type projectionRefreshPrefixReader struct{ *projectionRefreshReader }
+
+func (r *projectionRefreshPrefixReader) DerivedRowsForPrefixes(ctx context.Context, table driver.DerivedTable, prefixes []string) ([]driver.DerivedRow, error) {
+	r.store.batches++
+	r.store.prefixes = append([]string(nil), prefixes...)
+	switch r.store.mode {
+	case "unsupported":
+		return nil, driver.ErrUnsupported
+	case "failure", "individual_failure":
+		return nil, errors.New("optional union closure read unavailable")
+	}
+	reader, ok := r.Reader.(driver.DerivedPrefixReader)
+	if !ok {
+		return nil, driver.ErrUnsupported
+	}
+	rows, err := reader.DerivedRowsForPrefixes(ctx, table, prefixes)
+	r.store.rows += len(rows)
+	if err == nil {
+		switch r.store.mode {
+		case "foreign":
+			row, _ := AncestorRow("unrequested", "unrequested", 0)
+			rows = append(rows, row)
+		case "duplicate":
+			rows = append(rows, rows[0])
+		case "cancel":
+			r.store.cancel()
+		}
+	}
+	return rows, err
+}
+
+func TestSourceProjectionRefreshBatchesChangedSources(t *testing.T) {
+	for _, mode := range []string{"union", "hidden"} {
+		t.Run(mode, func(t *testing.T) {
+			h := setup(t)
+			w, guarded := projectionWriter(t, h)
+			ops := make([]model.Op, 100)
+			for i := range ops {
+				ops[i] = create("")
+			}
+			seed := apply(t, w, model.ChangeSet{Ops: ops}, meta(1))
+			original := h.read(t)
+			before := make([]driver.Record, len(seed.Results))
+			closures := make([][]driver.DerivedRow, len(seed.Results))
+			prefixes := make([]string, len(seed.Results))
+			for i, result := range seed.Results {
+				before[i] = projectionSource(t, original, result.Ref)
+				closures[i] = projectionClosure(t, original, result.Ref)
+				prefixes[i], _ = AncestorPrefix(result.Ref.ID)
+			}
+			sort.Strings(prefixes)
+			for sample := 0; sample < 2; sample++ {
+				// Grow unrelated population, retaining the same 100 affected roots.
+				w.store = guarded
+				untouched := apply(t, w, model.ChangeSet{Ops: ops}, meta(2+sample*2)).Results[0].Ref
+				old := h.read(t)
+				untouchedSource := projectionSource(t, old, untouched)
+				untouchedRows := projectionClosure(t, old, untouched)
+				counted := &projectionRefreshStore{Store: guarded, mode: mode}
+				w.store = counted
+				patches := make([]model.Op, len(seed.Results))
+				for i, result := range seed.Results {
+					patches[i] = patch(result.Ref, map[string]any{"title": fmt.Sprintf("refresh-%d", sample)})
+				}
+				apply(t, w, model.ChangeSet{Ops: patches}, meta(3+sample*2))
+				wantSingles, wantBatches := 0, 1
+				if mode == "hidden" {
+					wantSingles, wantBatches = 100, 0
+				}
+				if counted.singles != wantSingles || counted.batches != wantBatches || counted.rows != 100 || counted.scans != 0 {
+					t.Fatalf("population=%d boundary singles/batches/rows/scans=%d/%d/%d/%d, want%d/%d/100/0", 200+100*sample, counted.singles, counted.batches, counted.rows, counted.scans, wantSingles, wantBatches)
+				}
+				if mode == "union" && !reflect.DeepEqual(counted.prefixes, prefixes) {
+					t.Fatal("refresh selected a range outside the exact changed-source union")
+				}
+				after := h.read(t)
+				for i, result := range seed.Results {
+					source := projectionSource(t, after, result.Ref)
+					rows := projectionClosure(t, after, result.Ref)
+					if bytes.Equal(source.Body, before[i].Body) || len(rows) != len(closures[i]) {
+						t.Fatal("ordinary update lost its source or logical closure")
+					}
+					for j, row := range rows {
+						if row.Key != closures[i][j].Key || !bytes.Equal(row.Value, closures[i][j].Value) || !canRefreshAncestorProjection(row, source, after.Snapshot()) {
+							t.Fatal("union refresh changed membership or lost exact final source provenance")
+						}
+					}
+					if !reflect.DeepEqual(before[i], projectionSource(t, original, result.Ref)) || !reflect.DeepEqual(closures[i], projectionClosure(t, original, result.Ref)) {
+						t.Fatal("refresh changed an earlier pinned source or closure")
+					}
+				}
+				if !reflect.DeepEqual(untouchedSource, projectionSource(t, after, untouched)) || !reflect.DeepEqual(untouchedRows, projectionClosure(t, after, untouched)) {
+					t.Fatal("refresh published an unrelated source or closure")
+				}
+				t.Logf("actual Writer population=%d affected100: individual%d union%d returned100 Query0; exact durable bindings and pinned history preserved", 200+100*sample, counted.singles, counted.batches)
+			}
+		})
+	}
+}
+
+func TestSourceProjectionBatchReadFallbackAndCancellation(t *testing.T) {
+	for _, mode := range []string{"unsupported", "failure", "foreign", "duplicate", "individual_failure", "cancel", "stale", "rollback"} {
+		t.Run(mode, func(t *testing.T) {
+			h := setup(t)
+			w, guarded := projectionWriter(t, h)
+			seed := apply(t, w, model.ChangeSet{Ops: []model.Op{create(""), create("")}}, meta(1))
+			refs := []model.Ref{seed.Results[0].Ref, seed.Results[1].Ref}
+			if mode == "stale" {
+				source := projectionSource(t, h.read(t), refs[0])
+				doc, _ := DecodeDocument(source.Body)
+				doc.Fields["title"] = "graph-only source rewrite"
+				body, _ := json.Marshal(doc)
+				rewriteGraphOnly(t, h, source, body)
+			}
+			old := h.read(t)
+			before := []driver.Record{projectionSource(t, old, refs[0]), projectionSource(t, old, refs[1])}
+			closures := [][]driver.DerivedRow{projectionClosure(t, old, refs[0]), projectionClosure(t, old, refs[1])}
+			beforeMeta, err := h.store.Meta(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			counted := &projectionRefreshStore{Store: guarded, mode: mode, cancel: cancel}
+			if mode == "individual_failure" {
+				counted.failedPrefix, _ = AncestorPrefix(refs[0].ID)
+			}
+			w.store, guarded.fail = counted, mode == "rollback"
+			_, err = w.Apply(ctx, by, model.ChangeSet{Ops: []model.Op{patch(refs[0], map[string]any{"title": "updated-0"}), patch(refs[1], map[string]any{"title": "updated-1"})}}, meta(3))
+			failed := mode == "cancel" || mode == "rollback"
+			if mode == "cancel" && !errors.Is(err, context.Canceled) || mode == "rollback" && !errors.Is(err, errProjectionCommit) || !failed && err != nil {
+				t.Fatalf("mode=%s error=%v", mode, err)
+			}
+			wantSingles := 2
+			if mode == "cancel" || mode == "stale" || mode == "rollback" {
+				wantSingles = 0
+			}
+			if counted.batches != 1 || counted.singles != wantSingles {
+				t.Fatalf("boundary union/individual=%d/%d want1/%d", counted.batches, counted.singles, wantSingles)
+			}
+			after := h.read(t)
+			for i, ref := range refs {
+				source, rows := projectionSource(t, after, ref), projectionClosure(t, after, ref)
+				if failed {
+					if !reflect.DeepEqual(source, before[i]) || !reflect.DeepEqual(rows, closures[i]) {
+						t.Fatal("failed union-backed write published a source or projection")
+					}
+					continue
+				}
+				unavailable := i == 0 && (mode == "individual_failure" || mode == "stale")
+				if bytes.Equal(source.Body, before[i].Body) || len(rows) != len(closures[i]) {
+					t.Fatal("optional coverage failure refused or lost an ordinary source update")
+				}
+				for j, row := range rows {
+					if row.Key != closures[i][j].Key || !bytes.Equal(row.Value, closures[i][j].Value) || canRefreshAncestorProjection(row, source, after.Snapshot()) == unavailable {
+						t.Fatal("fallback changed logical membership or recertified unavailable coverage")
+					}
+					if unavailable && !reflect.DeepEqual(row.Index, closures[i][j].Index) {
+						t.Fatal("unavailable annotation was silently repaired")
+					}
+				}
+			}
+			if failed {
+				afterMeta, err := h.store.Meta(context.Background())
+				principal, _ := driver.PrincipalKey(by)
+				receipt, receiptErr := after.IdempotencyByKey(context.Background(), principal, "", "tx.apply", meta(3).IdempotencyKey)
+				if err != nil || !reflect.DeepEqual(beforeMeta, afterMeta) || receiptErr != nil || receipt != nil {
+					t.Fatal("failed refresh advanced Head or published a receipt")
+				}
+			}
+		})
+	}
+}
+
 // This wrapper preserves the real driver's optional capabilities. It never
 // manufactures annotations or succeeds when the underlying writer lacks them.
 type projectionTestStore struct {
