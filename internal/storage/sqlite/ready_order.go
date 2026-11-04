@@ -16,3 +16,8 @@ func (r *reader) SelectReadyOrder(ctx context.Context, p driver.ReadyOrderPlan) 
 
 var _ driver.ReadyOrderReader = (*reader)(nil)
 var _ driver.ReadyOrderReader = (*transaction)(nil)
+
+// This opt-in seam is consumed only by a fresh adapter which evaluates the
+// predicate with current meta (alias m), Ready rows and authority in one SQL
+// statement. The current source lacks the coupled physical certificate.
+func (r *reader) readyOrderPhysicalCertificateSQL() string { return "" }

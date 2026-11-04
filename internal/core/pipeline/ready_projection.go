@@ -85,6 +85,15 @@ func (p *ReadyProjectionPlan) LockKeys() []driver.LockKey {
 	}
 	return p.delta.Locks()
 }
+
+// Skip drops optional maintenance after the lock census while completing its
+// declared predicate updates. It writes no nodes and does not advance coverage.
+func (p *ReadyProjectionPlan) Skip(ctx context.Context, tx driver.WriteTx) error {
+	if p == nil || p.delta == nil {
+		return nil
+	}
+	return p.delta.BumpPredicates(ctx, tx)
+}
 func (p *ReadyProjectionPlan) Publish(ctx context.Context, tx driver.WriteTx, revision model.Revision) (driver.ReadyOrderWork, error) {
 	if p == nil || p.delta == nil {
 		return driver.ReadyOrderWork{}, nil
@@ -94,7 +103,7 @@ func (p *ReadyProjectionPlan) Publish(ctx context.Context, tx driver.WriteTx, re
 	// ordinary source transaction still commits and the old marker stays stale.
 	view := tx.Snapshot()
 	if view.At == nil || p.delta.BaseRevision().String() != view.At.String() {
-		return driver.ReadyOrderWork{}, p.delta.BumpPredicates(ctx, tx)
+		return driver.ReadyOrderWork{}, p.Skip(ctx, tx)
 	}
 	return p.delta.Publish(ctx, tx, revision)
 }
