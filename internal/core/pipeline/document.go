@@ -27,6 +27,11 @@ type Document struct {
 	Links       []Link                     `json:"links,omitempty"`
 	Attachments []model.Attachment         `json:"attachments,omitempty"`
 	Lease       *ClaimLease                `json:"lease,omitempty"`
+	// Core timestamps are outside ontology fields and cannot be patched by a
+	// request or subscriber. Missing values preserve legacy unknown instants.
+	CreatedAt *time.Time `json:"createdAt,omitempty"`
+	StartedAt *time.Time `json:"startedAt,omitempty"`
+	ClosedAt  *time.Time `json:"closedAt,omitempty"`
 }
 
 // MemoryDocument is the canonical body for a core memory record. Memories
@@ -84,6 +89,12 @@ func DecodeDocument(body []byte) (Document, error) {
 	}
 	if d.ID == "" || d.Type == "" || d.Fields == nil {
 		return d, fmt.Errorf("invalid bead document")
+	}
+	if err := d.validateLifecycleTimes(); err != nil {
+		return d, err
+	}
+	if err := validateLifecycleTimeMembers(body); err != nil {
+		return d, err
 	}
 	if err := validateParent(d.Parent); err != nil {
 		return d, err

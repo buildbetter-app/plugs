@@ -1,0 +1,160 @@
+{
+  "derivedFromSourcePin": "9d03323f423cf28d202b328ed7c116e45db8406f",
+  "fixtureKind": "authored-current-contract-expectation; not a historical capture or native producer proof",
+  "fixedCoreClock": "2026-10-29T12:00:00Z",
+  "example": "TestDisposableCLIAndRPCTrace/anonymous",
+  "rpcRequest": {
+    "jsonrpc": "2.0",
+    "id": "guide-create",
+    "method": "bead.create",
+    "params": {
+      "type": "issue",
+      "fields": {
+        "title": "Original"
+      },
+      "_meta": {
+        "project": "docs",
+        "agent": "docs-guide",
+        "idempotencyKey": "675ba243-c607-4944-a94c-cb41e32163f1"
+      }
+    }
+  },
+  "rpcResponse": {
+    "jsonrpc": "2.0",
+    "id": "guide-create",
+    "result": {
+      "results": [
+        {
+          "ref": {
+            "id": "pl-guide-1"
+          },
+          "revision": 1,
+          "record": {
+            "id": "pl-guide-1",
+            "type": "issue",
+            "project": "docs",
+            "fields": {
+              "priority": 2,
+              "status": "todo",
+              "template": false,
+              "title": "Original"
+            },
+            "createdAt": "2026-10-29T12:00:00Z"
+          },
+          "setBy": {
+            "fields.priority": "request",
+            "fields.status": "request",
+            "fields.template": "request",
+            "fields.title": "request",
+            "createdAt": "core"
+          }
+        }
+      ],
+      "revision": 1,
+      "warnings": []
+    }
+  },
+  "rpcReplayResponse": {
+    "jsonrpc": "2.0",
+    "id": "guide-create",
+    "result": {
+      "results": [
+        {
+          "ref": {
+            "id": "pl-guide-1"
+          },
+          "revision": 1,
+          "record": {
+            "id": "pl-guide-1",
+            "type": "issue",
+            "project": "docs",
+            "fields": {
+              "priority": 2,
+              "status": "todo",
+              "template": false,
+              "title": "Original"
+            },
+            "createdAt": "2026-10-29T12:00:00Z"
+          },
+          "setBy": {
+            "fields.priority": "request",
+            "fields.status": "request",
+            "fields.template": "request",
+            "fields.title": "request",
+            "createdAt": "core"
+          }
+        }
+      ],
+      "revision": 1,
+      "warnings": []
+    },
+    "_meta": {
+      "replayed": true
+    }
+  },
+  "cliCommands": [
+    [
+      "update",
+      "pl-guide-1",
+      "--title",
+      "Updated",
+      "--expect",
+      "1",
+      "--idempotency-key",
+      "775ba243-c607-4944-a94c-cb41e32163f1"
+    ],
+    [
+      "get",
+      "pl-guide-1",
+      "--as-of",
+      "1"
+    ]
+  ],
+  "cliResults": [
+    {
+      "results": [
+        {
+          "record": {
+            "fields": {
+              "priority": 2,
+              "status": "todo",
+              "template": false,
+              "title": "Updated"
+            },
+            "id": "pl-guide-1",
+            "project": "docs",
+            "type": "issue",
+            "createdAt": "2026-10-29T12:00:00Z"
+          },
+          "ref": {
+            "id": "pl-guide-1"
+          },
+          "revision": 2,
+          "setBy": {
+            "fields.title": "request"
+          }
+        }
+      ],
+      "revision": 2,
+      "warnings": []
+    },
+    {
+      "attachments": [],
+      "bead": {
+        "fields": {
+          "priority": 2,
+          "status": "todo",
+          "template": false,
+          "title": "Original"
+        },
+        "id": "pl-guide-1",
+        "metadata": {},
+        "project": "docs",
+        "revision": 1,
+        "status": "todo",
+        "type": "issue",
+        "createdAt": "2026-10-29T12:00:00Z"
+      }
+    }
+  ]
+}

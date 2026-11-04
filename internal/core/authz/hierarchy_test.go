@@ -86,3 +86,26 @@ func TestHierarchyCreateAndMalformedImages(t *testing.T) {
 		}
 	}
 }
+
+func TestHierarchyCreateAcceptsOnlyCanonicalCoreCreationInstant(t *testing.T) {
+	caller := Caller{Principal: model.PrincipalRef{Kind: "agent", ID: "worker", Sponsor: &model.PrincipalRef{Kind: "user", ID: "operator"}}}
+	after := hierarchyBead("child", "child-project", nil)
+	after.Body["createdAt"] = "2026-10-29T12:00:00.123456789Z"
+	if _, err := ValidateHierarchyWrite(model.OpCreate, nil, after, caller.Principal, caller); err != nil {
+		t.Fatalf("trusted core timestamp refused: %v", err)
+	}
+	for _, invalid := range []any{nil, true, 1, "", "not-an-instant", "0001-01-01T00:00:00Z", "2026-10-29T12:00:00+00:00", "2026-10-29T13:00:00+01:00"} {
+		after.Body["createdAt"] = invalid
+		if _, err := ValidateHierarchyWrite(model.OpCreate, nil, after, caller.Principal, caller); err == nil {
+			t.Fatalf("invalid core timestamp accepted: %#v", invalid)
+		}
+	}
+	for _, unsupported := range []string{"startedAt", "closedAt", "owner", "assignee", "labels", "restricted", "unknown"} {
+		after := hierarchyBead("child", "child-project", nil)
+		after.Body["createdAt"] = "2026-10-29T12:00:00Z"
+		after.Body[unsupported] = "2026-10-29T12:00:00Z"
+		if _, err := ValidateHierarchyWrite(model.OpCreate, nil, after, caller.Principal, caller); err == nil {
+			t.Fatalf("core timestamp broadened unsupported assignment %q", unsupported)
+		}
+	}
+}
