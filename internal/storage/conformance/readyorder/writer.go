@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -18,6 +19,7 @@ import (
 
 func RunWriter(t *testing.T, factory func(*testing.T) driver.Store) {
 	t.Helper()
+	t.Run("same_document_plugin_refresh", func(t *testing.T) { runPluginRefresh(t, factory) })
 	ctx := context.Background()
 	s := factory(t)
 	lease, err := s.Lease(ctx, "ready-writer-regression", driver.LeaseTTL)
@@ -111,6 +113,54 @@ func RunWriter(t *testing.T, factory func(*testing.T) driver.Store) {
 			t.Fatal(e)
 		}
 		refs = append(refs, commit.Results[0].Ref)
+	}
+	check(nil)
+	// Exercise real unsupported producers rather than toggling a fixture's
+	// Local bit: a claim and quiet heartbeat, backlog state and a waits-for
+	// gate relation can affect membership outside this source's local fields.
+	if _, err = svc.Claim(ctx, by, service.ClaimRequest{ID: refs[1]}, meta()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = selectAt(nil); !errors.Is(err, driver.ErrUnsupported) {
+		t.Fatal("real lease used local-only tree", err)
+	}
+	heartbeatHead, e := s.Meta(ctx)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, err = svc.HeartbeatWithOutcome(ctx, by, service.HeartbeatRequest{ID: refs[1]}, meta()); err != nil {
+		t.Fatal(err)
+	}
+	afterHeartbeat, e := s.Meta(ctx)
+	if e != nil || afterHeartbeat.Head.String() != heartbeatHead.Head.String() {
+		t.Fatal("quiet heartbeat changed source Head", e)
+	}
+	if _, err = selectAt(nil); !errors.Is(err, driver.ErrUnsupported) {
+		t.Fatal("quiet heartbeat restored unsupported coverage", err)
+	}
+	if _, err = svc.ReleaseWithOutcome(ctx, by, service.ReleaseRequest{ID: refs[1], Reason: "finished heartbeat regression"}, meta()); err != nil {
+		t.Fatal(err)
+	}
+	check(nil)
+	if _, err = svc.Defer(ctx, by, service.DeferRequest{ID: refs[2], Reason: "deferred source"}, meta()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = selectAt(nil); !errors.Is(err, driver.ErrUnsupported) {
+		t.Fatal("backlog nonlocal domain used local-only tree", err)
+	}
+	if _, err = svc.Reopen(ctx, by, service.ReopenRequest{ID: refs[2], Reason: "restore source"}, meta()); err != nil {
+		t.Fatal(err)
+	}
+	check(nil)
+	relation := service.LinkRequest{From: refs[3], To: refs[4], Kind: "waits-for", Metadata: &model.LinkMetadata{Gate: "any-children"}}
+	if _, err = svc.Link(ctx, by, relation, meta()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = selectAt(nil); !errors.Is(err, driver.ErrUnsupported) {
+		t.Fatal("nonlocal waits-for gate used local-only tree", err)
+	}
+	if _, err = svc.Unlink(ctx, by, relation, meta()); err != nil {
+		t.Fatal(err)
 	}
 	check(nil)
 	authorized := []model.Ref{refs[0], refs[8], refs[23]}
@@ -240,5 +290,84 @@ func RunWriter(t *testing.T, factory func(*testing.T) driver.Store) {
 	}
 	if _, err = selectAt(nil); !errors.Is(err, driver.ErrUnsupported) {
 		t.Fatalf("malformed metadata accelerated: %v", err)
+	}
+}
+
+func runPluginRefresh(t *testing.T, factory func(*testing.T) driver.Store) {
+	ctx := context.Background()
+	s := factory(t)
+	lease, e := s.Lease(ctx, "ready-plugin-refresh", driver.LeaseTTL)
+	if e != nil {
+		t.Fatal(e)
+	}
+	t.Cleanup(func() { _ = lease.Release(ctx) })
+	doc := ontology.DefaultDocument()
+	doc.Types["issue"].Fields["plugin_field"] = ontology.Field{Type: "string", Owner: "ready-owner"}
+	available, problems := ontology.Compile(doc, nil, ontology.PluginCatalog{"ready-owner": true})
+	if len(problems) != 0 {
+		t.Fatal(problems)
+	}
+	missing, problems := ontology.Compile(doc, nil, ontology.PluginCatalog{"ready-owner": false})
+	if len(problems) != 0 {
+		t.Fatal(problems)
+	}
+	a, _ := json.Marshal(available.Effective("local").Document())
+	b, _ := json.Marshal(missing.Effective("local").Document())
+	if string(a) != string(b) || available.Digest() == missing.Digest() {
+		t.Fatal("fixture must change only compiled availability")
+	}
+	o := service.NewOntology(available.Effective)
+	w := pipeline.New(s, lease, pipeline.WithOntology(o))
+	svc := service.New(s, lease, w, service.WithOntology(o))
+	by := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+	_, e = svc.Create(ctx, by, service.CreateRequest{Type: "issue", Fields: map[string]any{"title": "same-document plugin regression"}}, model.WriteMeta{Project: "local", Agent: "refresh", AgentLabel: "refresh", IdempotencyKey: fmt.Sprintf("%064x", 1)})
+	if e != nil {
+		t.Fatal(e)
+	}
+	meta, e := s.Meta(ctx)
+	if e != nil {
+		t.Fatal(e)
+	}
+	read := func() (driver.ReadyOrderResult, error) {
+		r, e := s.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+		if e != nil {
+			return driver.ReadyOrderResult{}, e
+		}
+		defer r.Close()
+		binding, e := o.ReadyProjectionBinding("local")
+		if e != nil {
+			return driver.ReadyOrderResult{}, e
+		}
+		project := "local"
+		return r.(driver.ReadyOrderReader).SelectReadyOrder(ctx, driver.ReadyOrderPlan{Incarnation: meta.Incarnation, ContentRevision: meta.Head, AuthorityRevision: meta.Head, Scope: driver.ReadyOrderScope{Project: &project}, Eligibility: binding, UniformAuthorization: true, Limit: 1})
+	}
+	before, e := read()
+	if e != nil || before.Total != 1 {
+		t.Fatalf("initial live member: %+v %v", before, e)
+	}
+	beforeBinding, e := o.ReadyProjectionBinding("local")
+	if e != nil {
+		t.Fatal(e)
+	}
+	o.Refresh(missing)
+	afterBinding, e := o.ReadyProjectionBinding("local")
+	if e != nil || beforeBinding == afterBinding {
+		t.Fatal("compiled degradation not bound", e)
+	}
+	if _, e = read(); !errors.Is(e, driver.ErrUnsupported) {
+		t.Fatalf("degraded type used old Ready root: %v", e)
+	}
+	page, e := svc.Ready(ctx, by, service.ReadyRequest{Project: "local", Limit: 1})
+	if e != nil || len(page.Items) != 0 {
+		t.Fatalf("current oracle must omit degraded type: %+v %v", page, e)
+	}
+	afterMeta, e := s.Meta(ctx)
+	if e != nil || afterMeta.Head.String() != meta.Head.String() {
+		t.Fatal("Refresh must be revision stable", e)
+	}
+	o.Refresh(available)
+	after, e := read()
+	if e != nil || after.Commitment != before.Commitment {
+		t.Fatalf("equivalent compiled eligibility did not restore exact membership: %+v %v", after, e)
 	}
 }
