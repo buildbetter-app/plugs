@@ -50,14 +50,14 @@ MAX_ARTIFACT_BYTES = 3 * MAX_FILE_BYTES
 
 
 NATIVE_PROFILE = "plug-public-native/1"
-NATIVE_BEADS_COMMIT = "305fec3afac83224f46c54f982959fd99db136fa"
+NATIVE_BEADS_COMMIT = "c8eb3ba7d4177e111a6f5c8aebe06b5d0b1d5724"
 NATIVE_SOURCES = {
-    "beads": (NATIVE_BEADS_COMMIT, "48e3545b7c5c6a5cdc0119e34dfa379354456a6e",
-              "6c2e549b54b472790d57a27370821d69159d4d6dc817e5bf38dbc56c856c8420"),
+    "beads": (NATIVE_BEADS_COMMIT, "930405e863284a3955cbd35e73a6097b606b91a5",
+              "e01a584042b4a2c32ea3cbcbdd55069f7c23bc2b853f8734857c5082e828f15d"),
 }
 NATIVE_SOURCE_ENTRIES = 5141
 NATIVE_SOURCE_REFS = {
-    "beads": "refs/remotes/origin/codex/b1c-native-source-35b-305fec3afac8-20261102",
+    "beads": "refs/remotes/origin/swarm/native-producer-census-dedup-20261104",
 }
 NATIVE_TARGETS = {"beads_exporter": {"label": "//cmd/bd:bd", "binary": "bin/bd-export"}}
 NATIVE_BINARIES = {"bin/bd-export"}
@@ -99,15 +99,15 @@ class NativeAdmission(NamedTuple):
     artifact_size: int
 
 
-# Trusted admission for the independently reviewed official R41610284344 bytes.
+# Trusted admission for the independently reviewed official R41800330346 bytes.
 # Descriptor/profile adoption and real consumer qualification remain separate.
 NATIVE_ADMISSION: NativeAdmission | None = NativeAdmission(
-    descriptor="41610284344:13218208758:4aa497bb1dfb70bf85371daa9e388b5b0ae84130f83f45a49816559d4698c0db",
-    workflow_sha="5b1546459abe9c21fc6045380ad2bb25df8cbf99",
-    workflow_branch="codex/b1c-native-producer-d70c-20261102",
-    label="b1c-native-d70c-20261102",
-    artifact_digest="sha256:c6e9bf1b87a115be24eb17a0e80964ab92032b2c29573c0ccc78503a41fb3e92",
-    artifact_size=111644381,
+    descriptor="41800330346:13307042737:ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a",
+    workflow_sha="d758fdf42a426e9e2a4b707dbcebb22ec68b264e",
+    workflow_branch="swarm/native-producer-census-control-c8eb-20261104",
+    label="native-census-c8eb-20261104",
+    artifact_digest="sha256:28609d7c072c281a748cb53a361d9a3ffada826d6f2e8866a3b1e62b23d5ffc4",
+    artifact_size=111646601,
 )
 
 
