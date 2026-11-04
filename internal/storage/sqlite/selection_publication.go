@@ -165,66 +165,16 @@ func (t *transaction) publishSelection(ctx context.Context, c *sql.Conn, current
 	for id := range t.bumps {
 		changedSources[id] = true
 	}
-	for id := range changedSources {
-		// An annotated fact set sourced from a changed record/row/guard is
-		// invalid until its complete replacement is published in this commit.
-		if _, err = c.ExecContext(ctx, `UPDATE selection_fact_sets SET end_revision=?
-		 WHERE incarnation=? AND branch=? AND source_key=? AND end_revision IS NULL`, next, incarnation, revKey(0), id); err != nil {
-			return err
-		}
+	if err = invalidateSelectionFactSets(ctx, c, incarnation, next, changedSources); err != nil {
+		return err
 	}
-	// Persist the source observation used by every typed fact envelope. This is
-	// deliberately a thin digest/revision row: selectors must not reconstruct
-	// source bodies merely to prove that a fact envelope is still bound.
-	for id, record := range t.records {
-		if _, err = c.ExecContext(ctx, `UPDATE selection_source_history SET end_revision=?
-			WHERE incarnation=? AND branch=? AND source_key=? AND end_revision IS NULL`, next, incarnation, revKey(0), id); err != nil {
-			return err
-		}
-		digest := ""
-		present := 0
-		if record != nil {
-			present = 1
-			digest = driver.SelectionDigest(record.Body)
-		}
-		if _, err = c.ExecContext(ctx, `INSERT INTO selection_source_history(
-			incarnation,branch,source_key,start_revision,source_revision,source_present,source_digest)
-			VALUES(?,?,?,?,?,?,?)`, incarnation, revKey(0), id, next, next, present, digest); err != nil {
-			return err
-		}
+	// Publish the same thin record/derived observations in bounded batches.
+	if err = t.publishSelectionSourceHistory(ctx, c, incarnation, next); err != nil {
+		return err
 	}
-	for id, state := range t.derived {
-		if state.Key.Derived == nil {
-			continue
-		}
-		if _, err = c.ExecContext(ctx, `UPDATE selection_source_history SET end_revision=?
-			WHERE incarnation=? AND branch=? AND source_key=? AND end_revision IS NULL`, next, incarnation, revKey(0), id); err != nil {
-			return err
-		}
-		digest := ""
-		present := 0
-		if state.Present && state.Derived != nil {
-			present = 1
-			digest = driver.SelectionDigest(state.Derived.Value)
-		}
-		if _, err = c.ExecContext(ctx, `INSERT INTO selection_source_history(
-			incarnation,branch,source_key,start_revision,source_revision,source_present,source_digest)
-			VALUES(?,?,?,?,?,?,?)`, incarnation, revKey(0), id, next, next, present, digest); err != nil {
-			return err
-		}
-	}
-	// Close every changed logical row before inserting any new physical image.
-	// This handles swaps and prevents a stale typed row surviving an untyped
-	// replacement or delete. The key_history and these intervals share Commit.
-	for id := range t.derived {
-		if _, err = c.ExecContext(ctx, `UPDATE selection_bead_history SET end_revision=?
-		 WHERE incarnation=? AND branch=? AND derived_key=? AND end_revision IS NULL`, next, incarnation, revKey(0), id); err != nil {
-			return err
-		}
-		if _, err = c.ExecContext(ctx, `UPDATE selection_fact_sets SET end_revision=?
-		 WHERE incarnation=? AND branch=? AND row_key=? AND end_revision IS NULL`, next, incarnation, revKey(0), id); err != nil {
-			return err
-		}
+	// Close both physical arms before inserting any replacement image.
+	if err = closeSelectionDerived(ctx, c, incarnation, next, t.derived); err != nil {
+		return err
 	}
 	for id, state := range derived {
 		if !state.Present || state.Derived == nil || state.Derived.Index == nil {
