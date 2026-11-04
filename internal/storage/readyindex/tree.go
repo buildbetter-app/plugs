@@ -19,6 +19,10 @@ import (
 const prefix = "plug.ready.v2/"
 const markerKey = prefix + "coverage"
 
+// This valid-shaped hash exists only in the private node cache. materialize
+// replaces it by sealing every surviving dirty node, children before parents.
+const unpublishedNodeHash = "0000000000000000000000000000000000000000000000000000000000000000"
+
 type Observer interface {
 	Snapshot() driver.View
 	Observe(context.Context, []driver.LockKey) ([]driver.LockState, error)
@@ -165,15 +169,16 @@ func (t *tree) node(scope, p string) (*driver.ReadyOrderNode, error) {
 }
 func (t *tree) save(scope string, n *driver.ReadyOrderNode) error {
 	sort.Slice(n.Children, func(i, j int) bool { return n.Children[i].Prefix < n.Children[j].Prefix })
-	if err := driver.SealReadyOrderNode(n); err != nil {
+	count, err := driver.ValidateReadyOrderNode(n)
+	if err != nil {
 		return err
 	}
-	t.work.DigestBytes += n.DigestBytes()
+	n.Commitment = driver.ReadyCommitment{Count: count, Hash: unpublishedNodeHash}
 	key := nodeKey(scope, n.Prefix)
 	t.nodes[key] = n
-	// Every intermediate commitment is still sealed and every before-image
-	// observed. Only materialize serializes nodes for publication, after exact
-	// source revisions and all final child commitments have been installed.
+	// Every intermediate image is validated and every before-image observed.
+	// Only materialize seals and serializes dirty nodes for publication, after
+	// exact source revisions and all final child commitments are installed.
 	if _, known := t.rows[key]; !known {
 		var ignored json.RawMessage
 		if _, err := t.read(key, &ignored); err != nil {

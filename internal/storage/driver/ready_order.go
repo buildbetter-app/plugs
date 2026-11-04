@@ -136,38 +136,9 @@ func ValidReadyHash(s string) bool {
 // SealReadyOrderNode binds exact cardinality, all child commitments, the sort
 // prefix and the complete original item digest. Empty child subtrees are absent.
 func SealReadyOrderNode(n *ReadyOrderNode) error {
-	// Persistence omits empty child slices. Normalize before hashing so the
-	// commitment is identical before/after reload and after deleting a tail.
-	if len(n.Children) == 0 {
-		n.Children = nil
-	}
-	if len(n.Prefix)%2 != 0 {
-		return fmt.Errorf("%w: odd Ready prefix", ErrUnsupported)
-	}
-	if _, err := hex.DecodeString(n.Prefix); err != nil {
+	count, err := readyOrderNodeCount(n)
+	if err != nil {
 		return err
-	}
-	count := uint64(0)
-	if n.Leaf != nil {
-		l := n.Leaf
-		if ValidateHierarchyRef(l.Key.Ref) != nil || l.Key.Revision.Validate() != nil || !ValidReadyHash(l.Digest) || l.Key.MembershipLeaf != l.Digest || ReadyOrderKey(l.Priority, l.Key.Ref.ID) != n.Prefix {
-			return fmt.Errorf("%w: invalid Ready leaf", ErrUnsupported)
-		}
-		count = 1
-	}
-	previous := ""
-	for i, c := range n.Children {
-		if len(c.Prefix) <= len(n.Prefix) || !strings.HasPrefix(c.Prefix, n.Prefix) || len(c.Prefix)%2 != 0 || !ValidReadyHash(c.Commitment.Hash) || c.Commitment.Count == 0 || i > 0 && (c.Prefix <= previous || c.Prefix[:len(n.Prefix)+2] == previous[:len(n.Prefix)+2]) {
-			return fmt.Errorf("%w: invalid Ready children", ErrUnsupported)
-		}
-		if _, err := hex.DecodeString(c.Prefix); err != nil {
-			return err
-		}
-		previous = c.Prefix
-		if ^uint64(0)-count < c.Commitment.Count {
-			return fmt.Errorf("Ready count overflow")
-		}
-		count += c.Commitment.Count
 	}
 	b, err := readyOrderNodePreimage(n)
 	if err != nil {
@@ -176,6 +147,60 @@ func SealReadyOrderNode(n *ReadyOrderNode) error {
 	n.Commitment = ReadyCommitment{Count: count, Hash: SelectionDigest(b)}
 	n.digestBytes = uint64(len(b))
 	return nil
+}
+
+// ValidateReadyOrderNode performs every structural, cardinality and leaf-JSON
+// check made by Seal without computing a commitment. Private mutable trees may
+// use its count while preparing a batch, but must Seal every final dirty node
+// before serializing it or exposing a publication.
+func ValidateReadyOrderNode(n *ReadyOrderNode) (uint64, error) {
+	count, err := readyOrderNodeCount(n)
+	if err != nil {
+		return 0, err
+	}
+	if n.Leaf != nil {
+		if _, err := json.Marshal(n.Leaf); err != nil {
+			return 0, err
+		}
+	}
+	return count, nil
+}
+
+func readyOrderNodeCount(n *ReadyOrderNode) (uint64, error) {
+	// Persistence omits empty child slices. Normalize before hashing so the
+	// commitment is identical before/after reload and after deleting a tail.
+	if len(n.Children) == 0 {
+		n.Children = nil
+	}
+	if len(n.Prefix)%2 != 0 {
+		return 0, fmt.Errorf("%w: odd Ready prefix", ErrUnsupported)
+	}
+	if _, err := hex.DecodeString(n.Prefix); err != nil {
+		return 0, err
+	}
+	count := uint64(0)
+	if n.Leaf != nil {
+		l := n.Leaf
+		if ValidateHierarchyRef(l.Key.Ref) != nil || l.Key.Revision.Validate() != nil || !ValidReadyHash(l.Digest) || l.Key.MembershipLeaf != l.Digest || ReadyOrderKey(l.Priority, l.Key.Ref.ID) != n.Prefix {
+			return 0, fmt.Errorf("%w: invalid Ready leaf", ErrUnsupported)
+		}
+		count = 1
+	}
+	previous := ""
+	for i, c := range n.Children {
+		if len(c.Prefix) <= len(n.Prefix) || !strings.HasPrefix(c.Prefix, n.Prefix) || len(c.Prefix)%2 != 0 || !ValidReadyHash(c.Commitment.Hash) || c.Commitment.Count == 0 || i > 0 && (c.Prefix <= previous || c.Prefix[:len(n.Prefix)+2] == previous[:len(n.Prefix)+2]) {
+			return 0, fmt.Errorf("%w: invalid Ready children", ErrUnsupported)
+		}
+		if _, err := hex.DecodeString(c.Prefix); err != nil {
+			return 0, err
+		}
+		previous = c.Prefix
+		if ^uint64(0)-count < c.Commitment.Count {
+			return 0, fmt.Errorf("Ready count overflow")
+		}
+		count += c.Commitment.Count
+	}
+	return count, nil
 }
 
 // Seal has validated every prefix as hexadecimal and every child hash as

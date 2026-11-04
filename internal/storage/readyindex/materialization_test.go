@@ -78,6 +78,15 @@ func TestReadyOrderMaterializedNodesMatchIndependentCanonicalBuild(t *testing.T)
 		if err != nil || !delta.Available() {
 			t.Fatalf("batch%d prepare: %v", batch, err)
 		}
+		for key := range delta.t.dirty {
+			if !strings.HasPrefix(key, prefix+"node/") || delta.t.rows[key] == nil {
+				continue
+			}
+			node := delta.t.nodes[key]
+			if node == nil || node.Commitment.Hash != unpublishedNodeHash || len(delta.t.rows[key].Value) != 0 {
+				t.Fatalf("batch%d intermediate node escaped private preparation: %s", batch, key)
+			}
+		}
 		revision := model.Natural64(uint64(batch + 1))
 		removed, added, err := delta.materialize(revision)
 		if err != nil {

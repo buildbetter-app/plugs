@@ -14,6 +14,11 @@ import (
 func TestReadyOrderNodePreimageMatchesCanonicalJSON(t *testing.T) {
 	check := func(t *testing.T, n ReadyOrderNode, count uint64) {
 		t.Helper()
+		commitment, digestBytes := n.Commitment, n.DigestBytes()
+		validatedCount, err := ValidateReadyOrderNode(&n)
+		if err != nil || validatedCount != count || n.Commitment != commitment || n.DigestBytes() != digestBytes {
+			t.Fatalf("validation changed commitment or cardinality: count=%d err=%v", validatedCount, err)
+		}
 		if err := SealReadyOrderNode(&n); err != nil {
 			t.Fatal(err)
 		}
@@ -80,6 +85,9 @@ func TestReadyOrderCanonicalHashRefusal(t *testing.T) {
 			t.Fatalf("noncanonical hash accepted: %q", hash)
 		}
 		n := ReadyOrderNode{Children: []ReadyOrderChild{{Prefix: "00", Commitment: ReadyCommitment{Count: 1, Hash: hash}}}}
+		if _, err := ValidateReadyOrderNode(&n); err == nil {
+			t.Fatalf("noncanonical child commitment validated: %q", hash)
+		}
 		if err := SealReadyOrderNode(&n); err == nil {
 			t.Fatalf("noncanonical child commitment sealed: %q", hash)
 		}
@@ -90,8 +98,42 @@ func TestReadyOrderCanonicalHashRefusal(t *testing.T) {
 		{Children: []ReadyOrderChild{{Prefix: "00", Commitment: ReadyCommitment{Count: 0, Hash: strings.Repeat("0", 64)}}}},
 		{Children: []ReadyOrderChild{{Prefix: "00", Commitment: ReadyCommitment{Count: ^uint64(0), Hash: strings.Repeat("0", 64)}}, {Prefix: "01", Commitment: ReadyCommitment{Count: 1, Hash: strings.Repeat("0", 64)}}}},
 	} {
+		if _, err := ValidateReadyOrderNode(&n); err == nil {
+			t.Fatalf("malformed structure or overflowing count validated: %+v", n)
+		}
 		if err := SealReadyOrderNode(&n); err == nil {
 			t.Fatalf("malformed structure or overflowing count sealed: %+v", n)
 		}
+	}
+}
+
+func TestReadyOrderIntermediateValidationPreservesLeafRefusal(t *testing.T) {
+	leaf, err := ReadyOrderLeafFor(ReadyMembershipItem{ID: "validation-leaf", Revision: model.Natural64(3)}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name   string
+		change func(*ReadyOrderLeaf)
+	}{
+		{"identity", func(l *ReadyOrderLeaf) { l.Key.Ref = model.Ref{} }},
+		{"revision", func(l *ReadyOrderLeaf) { l.Key.Revision = model.Natural("-1") }},
+		{"digest", func(l *ReadyOrderLeaf) { l.Digest = "invalid" }},
+		{"membership", func(l *ReadyOrderLeaf) { l.Key.MembershipLeaf = strings.Repeat("0", 64) }},
+		{"sort_key", func(l *ReadyOrderLeaf) { l.Priority++ }},
+		// The outer leaf identity is valid. Only its nested order reference
+		// fails standard JSON encoding, so validation must retain that check.
+		{"nested_json", func(l *ReadyOrderLeaf) { l.Key.Order = []SelectionValue{SelectionRef(model.Ref{})} }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changed := leaf
+			test.change(&changed)
+			n := ReadyOrderNode{Prefix: ReadyOrderKey(leaf.Priority, leaf.Key.Ref.ID), Leaf: &changed}
+			_, validationErr := ValidateReadyOrderNode(&n)
+			sealErr := SealReadyOrderNode(&n)
+			if validationErr == nil || sealErr == nil || validationErr.Error() != sealErr.Error() {
+				t.Fatalf("intermediate/final refusal differs: validation=%v seal=%v", validationErr, sealErr)
+			}
+		})
 	}
 }
