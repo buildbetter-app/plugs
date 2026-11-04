@@ -151,6 +151,9 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 			p, err = w.prepareMemory(preCtx, reader, by, cs, meta)
 		} else {
 			p, err = w.prepare(preCtx, reader, by, cs, meta, release)
+			if err == nil {
+				err = p.preserveWorkflowComments(preCtx)
+			}
 		}
 		w.observePhaseSince(preCtx, PhasePrepare, phaseStarted, err)
 		if memoryMethod(meta.Method) {
@@ -480,6 +483,18 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	}
 	if err := p.snapshot.check(states); err != nil {
 		return model.Commit{}, err
+	}
+	if mutation, ok := ctx.Value(checkpointMutationKey{}).(driver.CheckpointMutation); ok {
+		if mutation.Incarnation != p.snapshot.Snapshot().Incarnation {
+			return model.Commit{}, driver.ErrConflict
+		}
+		staged, ok := tx.(driver.CheckpointWriteTx)
+		if !ok {
+			return model.Commit{}, driver.ErrUnsupported
+		}
+		if err := staged.StageCheckpoint(ctx, mutation.Key, mutation.Expected, mutation.Payload); err != nil {
+			return model.Commit{}, err
+		}
 	}
 	head, err := tx.Head(ctx)
 	if err != nil {

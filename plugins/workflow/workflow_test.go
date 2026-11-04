@@ -939,7 +939,7 @@ func TestB26AuxiliaryFieldsBlockersMixedRelationsAndAtomicRollback(t *testing.T)
 	}
 	// Both mixed-plane directions remain typed in the workflow checkpoint. A
 	// durable endpoint has no plugin body, so it never creates a core version or
-	// lease row and is conservatively blocking until a core status bridge exists.
+	// lease row. A dependency blocks its source, never its target.
 	durable := model.RefByID("durable-source", model.Natural64(0))
 	if _, err := provider.Link(ctx, by, LinkRequest{From: dependent, To: durable, Kind: "relates-to"}, meta("bead.link", "9")); err != nil {
 		t.Fatal(err)
@@ -951,8 +951,12 @@ func TestB26AuxiliaryFieldsBlockersMixedRelationsAndAtomicRollback(t *testing.T)
 	if err != nil || len(got.Links) != 3 {
 		t.Fatalf("mixed-plane relation read lost an edge: %+v err=%v", got, err)
 	}
-	if ready, err := provider.Ready(ctx, by, "project", nil, meta("bead.ready", "c")); err != nil || len(ready) != 0 {
-		t.Fatalf("mixed-plane blocker was reported ready: %+v err=%v", ready, err)
+	if ready, err := provider.Ready(ctx, by, "project", nil, meta("bead.ready", "c")); err != nil || len(ready) != 1 || ready[0].ID != dependent.ID {
+		t.Fatalf("incoming dependency incorrectly blocked its target: %+v err=%v", ready, err)
+	}
+	blocked, err := provider.OrdinaryBlocked(ctx, by, []string{durable.ID}, meta("bead.ready", "c"))
+	if err != nil || !blocked[durable.ID] {
+		t.Fatalf("durable dependent lost its workflow blocker: %+v %v", blocked, err)
 	}
 	if _, err := provider.Unlink(ctx, by, LinkRequest{From: durable, To: dependent, Kind: "blocks"}, meta("bead.unlink", "d")); err != nil {
 		t.Fatal(err)
@@ -1017,7 +1021,7 @@ func TestB26PromotionMovesRelationsAndPreservesChildCounter(t *testing.T) {
 		t.Fatalf("promotion lost auxiliary state: %+v", promoted)
 	}
 	parentAfter, err := provider.Get(ctx, by, parent, meta("bead.get", "9"))
-	if err != nil || parentAfter.ChildCounter != 0 || len(parentAfter.Links) != 0 {
+	if err != nil || parentAfter.ChildCounter != 0 || len(parentAfter.Links) != 1 || parentAfter.Links[0].From != target.ID {
 		t.Fatalf("promotion did not reconcile parent/index state: %+v err=%v", parentAfter, err)
 	}
 	grandchildView, err := provider.Get(ctx, by, grandchild, meta("bead.get", "a"))
@@ -1031,5 +1035,76 @@ func TestB26PromotionMovesRelationsAndPreservesChildCounter(t *testing.T) {
 	_, err = provider.Promote(ctx, by, PromoteRequest{Item: grandchild, Target: parent}, meta("x.workflow.run.promote", "c"))
 	if err == nil || !bytes.Equal(before, state.value) {
 		t.Fatalf("active workflow collision changed state: err=%v stateChanged=%v", err, !bytes.Equal(before, state.value))
+	}
+}
+
+func TestB26CompletionClearsCrossRunParentAndMissingParentIsAtomic(t *testing.T) {
+	ctx := context.Background()
+	state := &testDurableState{}
+	p, err := New(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+	meta := func(method, key string) model.WriteMeta {
+		return model.WriteMeta{Method: method, Project: "project", Agent: "owner", AgentLabel: "owner", IdempotencyKey: key}
+	}
+	invoke := func(key string, parent *model.Ref) (InvokeResult, error) {
+		return p.Invoke(ctx, by, InvokeRequest{Template: key, Project: "project", Mode: "ephemeral", Checklist: []ChecklistItem{{Label: "item", Title: key, Parent: parent}}}, meta("x.workflow.invoke", key))
+	}
+	parentRun, err := invoke("parent", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := model.RefByID(parentRun.Items[0].ID, model.Natural64(0))
+	childRun, err := invoke("child", &parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := model.RefByID(childRun.Items[0].ID, model.Natural64(0))
+	before := append([]byte(nil), state.value...)
+	missing := model.RefByID(ItemPrefix+strings.Repeat("e", 32), model.Natural64(0))
+	if _, err := invoke("missing-parent", &missing); err == nil || !bytes.Equal(before, state.value) {
+		t.Fatalf("missing parent published: %v", err)
+	}
+	if _, err := p.Close(ctx, by, parent, "done", meta("bead.close", "finish")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Get(ctx, by, child, meta("bead.get", "read"))
+	if err != nil || got.Parent != nil {
+		t.Fatalf("completion left dangling parent: %+v %v", got, err)
+	}
+}
+
+func TestB26RelationsRetainDistinctMetadata(t *testing.T) {
+	ctx := context.Background()
+	p, err := New(&testDurableState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+	meta := func(method, key string) model.WriteMeta {
+		return model.WriteMeta{Method: method, Project: "project", Agent: "owner", AgentLabel: "owner", IdempotencyKey: key}
+	}
+	run, err := p.Invoke(ctx, by, InvokeRequest{Template: "metadata", Project: "project", Mode: "ephemeral", Checklist: []ChecklistItem{{Label: "from", Title: "from"}, {Label: "to", Title: "to"}}}, meta("x.workflow.invoke", "invoke"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	from, to := model.RefByID(run.Items[0].ID, model.Natural64(0)), model.RefByID(run.Items[1].ID, model.Natural64(0))
+	for _, gate := range []string{"all-children", "any-children"} {
+		if _, err := p.Link(ctx, by, LinkRequest{From: from, To: to, Kind: "waits-for", Metadata: &model.LinkMetadata{Gate: gate, AlsoBlocks: true}}, meta("bead.link", gate)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := p.Get(ctx, by, from, meta("bead.get", "read"))
+	if err != nil || len(got.Links) != 2 {
+		t.Fatalf("metadata collapsed: %+v %v", got, err)
+	}
+	if _, err := p.Unlink(ctx, by, LinkRequest{From: from, To: to, Kind: "waits-for", Metadata: &model.LinkMetadata{Gate: "all-children", AlsoBlocks: true}}, meta("bead.unlink", "remove-one")); err != nil {
+		t.Fatal(err)
+	}
+	got, err = p.Get(ctx, by, from, meta("bead.get", "read-again"))
+	if err != nil || len(got.Links) != 1 || got.Links[0].Metadata.Gate != "any-children" {
+		t.Fatalf("metadata unlink removed sibling: %+v %v", got, err)
 	}
 }

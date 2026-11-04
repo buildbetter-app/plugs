@@ -73,11 +73,27 @@ project, filter, store incarnation, and authorization generation. Mixed-plane
 dependency reads are represented as typed references on the workflow
 checkpoint. A workflow source may link to an ordinary target and an ordinary
 source may link to a workflow target; the bridge never writes a core version
-or lease row for the ephemeral endpoint. Promotion rewrites inbound workflow
-edges to the ordinary target in one provider CAS and returns remaining
-auxiliary edges for the ordinary writer. Demotion creates the ephemeral copy
-before the ordinary source is removed. An active workflow ID wins over a
-colliding durable row in point reads and ready membership.
+or lease row for the ephemeral endpoint.
+
+Promotion/demotion are coordinated by the trusted service. The host prepares a
+bound namespace image, without publishing it or exposing a SQL/transaction
+handle. The ordinary Writer stages that data through an optional
+`CheckpointWriteTx` participant. SQLite and PostgreSQL check namespace generation
+and publish the checkpoint inside the same fenced SQL transaction as ordinary
+body/auxiliary writes, unlinks or deletion. Receipt-only no-op publication uses
+the same checkpoint guard after a replay miss, without consuming a Head or
+allocator revision. A replay never reapplies the prepared namespace CAS. SQL or
+authorization failure rolls back both planes; a separate provider CAS followed
+by a core write is not an atomic move.
+
+The ordinary source/target is read and authorized by the service/Writer; caller
+parameters cannot supply a replacement demotion projection. Original comment
+principal/time fields are included in the proposed ordinary image before
+authorization. Claimed endpoints refuse before a move. Unsupported attachment,
+imported-comment and mixed-hierarchy variants are typed refusals before any
+publication, as documented in workflow-contract.md. An active workflow ID wins
+over a colliding durable row only while live and included; ordinary point reads
+fall back after active deletion.
 
 GC is provider-owned. Completion performs the deletion and terminal-receipt
 sanitization in one state CAS, and repeated completion/replay is idempotent.

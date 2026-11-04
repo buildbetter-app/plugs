@@ -20,6 +20,7 @@ type NativeInvoker func(context.Context, *Provider, InvokeRequest) (InvokeResult
 // authenticated principal and write metadata for lifecycle moves.
 type NativeLifecycleAdapter struct {
 	Principal func(context.Context) model.PrincipalRef
+	WriteMeta func(context.Context) model.WriteMeta
 	Invoke    NativeInvoker
 	Promote   func(context.Context, *Provider, model.PrincipalRef, PromoteRequest, model.WriteMeta) (PromoteResult, error)
 	Demote    func(context.Context, *Provider, model.PrincipalRef, DemoteRequest, model.WriteMeta) (DemoteResult, error)
@@ -95,10 +96,10 @@ func NativeWithLifecycle(adapter NativeLifecycleAdapter) sdk.Native {
 				if err := json.Unmarshal(params, &req); err != nil {
 					return nil, err
 				}
-				if adapter.Principal == nil {
+				if adapter.Principal == nil || adapter.WriteMeta == nil {
 					return nil, fail("unauthenticated", "workflow promotion requires a trusted caller adapter")
 				}
-				result, err := adapter.Promote(ctx, provider, adapter.Principal(ctx), req, model.WriteMeta{Method: "x.workflow.run.promote"})
+				result, err := adapter.Promote(ctx, provider, adapter.Principal(ctx), req, nativeWriteMeta(adapter, ctx, "x.workflow.run.promote"))
 				if err != nil {
 					return nil, err
 				}
@@ -119,10 +120,10 @@ func NativeWithLifecycle(adapter NativeLifecycleAdapter) sdk.Native {
 				if err := json.Unmarshal(params, &req); err != nil {
 					return nil, err
 				}
-				if adapter.Principal == nil {
+				if adapter.Principal == nil || adapter.WriteMeta == nil {
 					return nil, fail("unauthenticated", "workflow demotion requires a trusted caller adapter")
 				}
-				result, err := adapter.Demote(ctx, provider, adapter.Principal(ctx), req, model.WriteMeta{Method: "x.workflow.run.demote"})
+				result, err := adapter.Demote(ctx, provider, adapter.Principal(ctx), req, nativeWriteMeta(adapter, ctx, "x.workflow.run.demote"))
 				if err != nil {
 					return nil, err
 				}
@@ -154,4 +155,12 @@ func resourceFromParams(params any, field string) []pluginapi.Ref {
 		return nil
 	}
 	return []pluginapi.Ref{ref}
+}
+
+// nativeWriteMeta preserves trusted admission metadata, including the project,
+// caller agent and idempotency scope; the wire cannot invent any of them.
+func nativeWriteMeta(adapter NativeLifecycleAdapter, ctx context.Context, method string) model.WriteMeta {
+	meta := adapter.WriteMeta(ctx)
+	meta.Method = method
+	return meta
 }

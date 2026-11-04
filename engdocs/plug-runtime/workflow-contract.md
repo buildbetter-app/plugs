@@ -10,7 +10,8 @@ memory row, or collaboration session.
 `x.workflow.invoke` accepts a template reference, a project, a checklist, and
 an explicit `mode` of `permanent` or `ephemeral`. Omitting `mode` is refused;
 callers must choose the plane at the invocation boundary. A checklist item has
-an opaque client label, title, and optional type. The transport authenticates
+an opaque client label, title, optional type and fields, labels, metadata,
+parent, typed auxiliary links and an explicit blocked flag. The transport authenticates
 the current principal; `_meta` carries the project, anonymous-agent label, and
 required idempotency key. Caller identity is never accepted from parameters.
 The manifest grammar is the existing `manifest_version: 1` form with a
@@ -32,7 +33,8 @@ has no workflow-state row.
 Ephemeral invocation allocates an opaque typed run identity and one typed item
 identity per checklist item. Workflow references are valid only as
 `workflow:item/<opaque-id>` branch-zero ID references; they cannot be supplied
-as keys, parents, links, history refs, or ordinary bead IDs. The run and items
+as keys or permanent history refs. Parents and links may use typed workflow
+IDs while live; mixed-plane links are owned by the workflow checkpoint. The run and items
 are stored in the workflow plugin's durable state capability. Their bodies,
 comments, claims, and receipts never enter the core record/version/history
 tables. The result carries `plane: "ephemeral"`, `kind: "workflow.run"` or
@@ -45,8 +47,12 @@ An active ephemeral item is visible in `bead.ready` for its project and is
 eligible for `bead.claimNext`. The same current principal/project checks used
 by ordinary service methods apply to `bead.get`, `bead.comment`, `bead.close`,
 and claim operations. An item reference is routed by its typed workflow prefix;
-it is never looked up in the durable bead record table. A claim is a workflow
-lease in plugin state, not a core bead lease.
+the active workflow item takes precedence over a colliding durable row.
+After the active item is deleted, point reads fall back to the ordinary row.
+A claim is operational state in the plugin checkpoint, surfaced by the standard
+get/claim response, without a core durable lease or version row. Explicit
+`filter.includeEphemeral=false` excludes workflow rows from ready and claimNext,
+including terminal fallback, and leaves colliding durable rows visible.
 
 Comments and claim state are durable in the plugin plane and survive process
 restart when the selected store is SQLite or PostgreSQL (or another
@@ -79,18 +85,35 @@ receipt scope and typed run/item IDs but never titles, fields, comments, claims,
 or body; they are operational provenance and do not make an ephemeral item
 part of permanent bead history.
 Promotion and demotion are typed plugin operations under
-`x.workflow.run.promote` and `x.workflow.run.demote`. Promotion accepts a
-live workflow item and a caller-owned ordinary target, atomically removes the
-workflow payload, rewrites inbound workflow edges to that target, and returns
-the permitted outbound/inbound auxiliary relationships for the ordinary
-writer. Demotion accepts a complete ordinary-item projection and creates a new
-restart-durable ephemeral item; removal of the ordinary source remains an
-ordinary writer operation. Neither operation creates a workflow lease,
-version, event body, or permanent-history row. A mixed-plane `bead.link` or
-`bead.unlink` stores the workflow side in the plugin checkpoint and exposes
-the ordinary side as a typed reference, with duplicate edges collapsed and a
-failed target validation published nowhere. An active workflow ID wins over a
-colliding durable row in point reads and ready membership.
+`x.workflow.run.promote` and `x.workflow.run.demote`. Promotion accepts a live
+workflow item and an existing ordinary target with the same project and type.
+The service reads the source and target, authorizes the complete ordinary
+proposal, and materializes fields, labels, metadata, original comments and
+permitted relationships. The source removal, inbound/outbound relationship
+rewrites, core target write and checkpoint CAS share one lease-fenced storage
+transaction. An invalid target or auxiliary SQL failure publishes neither plane.
+Demotion accepts only a source reference, template and label. The service reads
+the canonical source itself; unlinks, ordinary source deletion, and the new
+workflow checkpoint image commit together. Public caller projections cannot
+replace the stored source body. Neither move transfers an active claim; claimed
+endpoints return `busy`. Ephemeral identities never receive core versions or
+leases; the ordinary target write/source deletion retains ordinary history.
+
+Current permitted moves exclude attachments, imported comment provenance,
+demoting a durable parent with durable children, and promoting a workflow-parented
+item. These variants return typed `unsupported` before publication. This explicit
+boundary remains unqualified for any card obligation requiring those variants.
+Workflow children of a promoted item keep its new ordinary parent identity;
+inbound edges are rewritten once, metadata participates in relation identity,
+and workflow child counters remain in the same atomic checkpoint image.
+
+Mixed-plane `bead.link` and `bead.unlink` validate ordinary endpoint existence
+and project before the provider CAS. Both workflow endpoints are owner-checked.
+The checkpoint owns mixed edges, and ordinary reads append them to ordinary
+links. Ready and direct claim resolve ordinary blocker status using the canonical
+ontology; durable ready consults the active workflow blockers. A closed ordinary
+blocker releases its workflow dependent. Completing a run removes its mixed
+edges and clears other-run workflow parents that referred to deleted items.
 
 ## Restart, expiry, and fencing
 

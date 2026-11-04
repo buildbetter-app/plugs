@@ -324,3 +324,58 @@ func (d *durableAccess) List(ctx context.Context, prefix string, limit int) ([]p
 }
 
 var _ pluginapi.DurableState = (*durableAccess)(nil)
+
+// PrepareCheckpoint is a host-only data preparation seam for coordinated core
+// lifecycle writes. It is intentionally absent from pluginapi.DurableState.
+// Preparation publishes nothing; the ordinary writer owns fencing and commit.
+func (d *durableAccess) PrepareCheckpoint(ctx context.Context, key string, value any, expect pluginapi.Revision) (driver.CheckpointMutation, error) {
+	if err := driver.ValidateCheckpointKey(key); err != nil {
+		return driver.CheckpointMutation{}, err
+	}
+	expected, err := expect.Uint64()
+	if err != nil {
+		return driver.CheckpointMutation{}, err
+	}
+	checkpoint, namespace, err := d.load(ctx)
+	if err != nil {
+		return driver.CheckpointMutation{}, err
+	}
+	current := namespace.Values[key]
+	if current.Revision != expected {
+		return driver.CheckpointMutation{}, driver.ErrCheckpointConflict
+	}
+	if current.Revision == ^uint64(0) {
+		return driver.CheckpointMutation{}, fmt.Errorf("durable key generation exhausted")
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return driver.CheckpointMutation{}, err
+	}
+	namespace.Values[key] = durableValue{Revision: expected + 1, Value: data}
+	payload, err := json.Marshal(namespace)
+	if err != nil {
+		return driver.CheckpointMutation{}, err
+	}
+	metadata, ok := d.store.(interface {
+		Meta(context.Context) (driver.Meta, error)
+	})
+	if !ok {
+		return driver.CheckpointMutation{}, driver.ErrUnsupported
+	}
+	meta, err := metadata.Meta(ctx)
+	if err != nil {
+		return driver.CheckpointMutation{}, err
+	}
+	return driver.CheckpointMutation{StoreID: meta.StoreID, Incarnation: meta.Incarnation, Key: d.key, Expected: checkpoint.Generation, Payload: payload}, nil
+}
+
+// PrepareCheckpoint retains live invocation/cancellation validation for native
+// lifecycle callbacks; it still exposes only data to the trusted writer.
+func (d *durableStateAccess) PrepareCheckpoint(ctx context.Context, key string, value any, expect pluginapi.Revision) (driver.CheckpointMutation, error) {
+	ctx, cancel, err := d.context(ctx, true)
+	if err != nil {
+		return driver.CheckpointMutation{}, err
+	}
+	defer cancel()
+	return d.instance.durable.PrepareCheckpoint(ctx, key, value, expect)
+}

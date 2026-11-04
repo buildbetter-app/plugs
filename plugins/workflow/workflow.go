@@ -36,6 +36,7 @@ type ChecklistItem struct {
 	Label    string         `json:"label"`
 	Title    string         `json:"title"`
 	Type     string         `json:"type,omitempty"`
+	Fields   map[string]any `json:"fields,omitempty"`
 	Labels   []string       `json:"labels,omitempty"`
 	Metadata map[string]any `json:"metadata,omitempty"`
 	Parent   *model.Ref     `json:"parent,omitempty"`
@@ -85,20 +86,26 @@ type PromoteResult struct {
 	Generation model.Revision `json:"generation"`
 }
 
-// DemoteRequest carries the durable item's public projection. The service
-// removes the ordinary row only after the provider has accepted this complete
-// image; the provider then owns the live ephemeral copy.
+// DemoteRequest names the durable source and the new run's template and label.
+// Projection fields are host-only, read from the authoritative ordinary source
+// by Service and published together with its deletion through DemoteAtomic.
 type DemoteRequest struct {
-	Source   model.Ref      `json:"source"`
-	Template string         `json:"template"`
-	Project  string         `json:"project"`
-	Label    string         `json:"label"`
-	Title    string         `json:"title"`
-	Type     string         `json:"type,omitempty"`
-	Labels   []string       `json:"labels,omitempty"`
-	Metadata map[string]any `json:"metadata,omitempty"`
-	Parent   *model.Ref     `json:"parent,omitempty"`
-	Links    []RelationSpec `json:"links,omitempty"`
+	Source       model.Ref      `json:"source"`
+	Template     string         `json:"template"`
+	Project      string         `json:"-"`
+	Label        string         `json:"label"`
+	Title        string         `json:"-"`
+	Type         string         `json:"-"`
+	Fields       map[string]any `json:"-"`
+	Labels       []string       `json:"-"`
+	Metadata     map[string]any `json:"-"`
+	Parent       *model.Ref     `json:"-"`
+	Links        []RelationSpec `json:"-"`
+	Status       string         `json:"-"`
+	Blocked      bool           `json:"-"`
+	Comments     []CommentView  `json:"-"`
+	Inbound      []RelationView `json:"-"`
+	ChildCounter uint64         `json:"-"`
 }
 
 type DemoteResult struct {
@@ -135,6 +142,7 @@ type ItemView struct {
 	Kind         string         `json:"kind"`
 	Plugin       string         `json:"plugin"`
 	Revision     model.Revision `json:"revision"`
+	Fields       map[string]any `json:"fields,omitempty"`
 	Labels       []string       `json:"labels,omitempty"`
 	Metadata     map[string]any `json:"metadata,omitempty"`
 	Parent       *model.Ref     `json:"parent,omitempty"`
@@ -180,6 +188,20 @@ type Provider struct {
 	instance    string
 	incarnation string
 	mu          sync.Mutex
+}
+
+// BlockerResolver bridges a workflow dependency to the canonical core
+// ontology. The workflow provider owns the active endpoint and invokes this
+// resolver only for an ordinary durable target; it never creates a core row.
+type BlockerResolver interface {
+	IsBlocked(context.Context, model.PrincipalRef, model.WriteMeta, model.Ref, string, *model.LinkMetadata) (bool, error)
+}
+
+// BlockerResolverFunc adapts a trusted service closure to BlockerResolver.
+type BlockerResolverFunc func(context.Context, model.PrincipalRef, model.WriteMeta, model.Ref, string, *model.LinkMetadata) (bool, error)
+
+func (f BlockerResolverFunc) IsBlocked(ctx context.Context, by model.PrincipalRef, meta model.WriteMeta, ref model.Ref, kind string, metadata *model.LinkMetadata) (bool, error) {
+	return f(ctx, by, meta, ref, kind, metadata)
 }
 
 // ValidateInvokeRequest checks request shape before capability admission. A
@@ -313,10 +335,11 @@ func relationSpecValues(value any) ([]RelationSpec, error) {
 
 func relationKey(link relationState) string {
 	data, _ := json.Marshal(struct {
-		From string    `json:"from"`
-		To   model.Ref `json:"to"`
-		Kind string    `json:"kind"`
-	}{link.From, link.To, link.Kind})
+		From     string              `json:"from"`
+		To       model.Ref           `json:"to"`
+		Kind     string              `json:"kind"`
+		Metadata *model.LinkMetadata `json:"metadata,omitempty"`
+	}{link.From, link.To, link.Kind, link.Metadata})
 	return string(data)
 }
 
@@ -464,6 +487,7 @@ type itemState struct {
 	Project      string          `json:"project"`
 	Owner        ownerState      `json:"owner"`
 	Status       string          `json:"status"`
+	Fields       map[string]any  `json:"fields,omitempty"`
 	Labels       []string        `json:"labels,omitempty"`
 	Metadata     map[string]any  `json:"metadata,omitempty"`
 	Parent       *model.Ref      `json:"parent,omitempty"`
@@ -776,6 +800,15 @@ func (p *Provider) Invoke(ctx context.Context, by model.PrincipalRef, req Invoke
 		if itemType == "" {
 			itemType = "task"
 		}
+		if input.Parent != nil && workflowTarget(*input.Parent) {
+			parent, ok := value.Items[input.Parent.ID]
+			if !ok {
+				return InvokeResult{}, fail("not_found", "workflow parent was not found")
+			}
+			if parent.Owner != run.Owner {
+				return InvokeResult{}, fail("forbidden", "workflow parent is outside the owner scope")
+			}
+		}
 		links := make([]relationState, 0, len(input.Links))
 		for _, link := range input.Links {
 			metadata := link.Metadata
@@ -787,7 +820,7 @@ func (p *Provider) Invoke(ctx context.Context, by model.PrincipalRef, req Invoke
 		}
 		item := itemState{
 			ID: itemID, RunID: runID, Label: input.Label, Title: input.Title, Type: itemType,
-			Project: req.Project, Owner: run.Owner, Status: "open", Labels: normalizeLabels(input.Labels),
+			Project: req.Project, Owner: run.Owner, Status: "open", Fields: cloneMetadata(input.Fields), Labels: normalizeLabels(input.Labels),
 			Metadata: cloneMetadata(input.Metadata), Parent: cloneRef(input.Parent), Links: links, Blocked: input.Blocked,
 		}
 		value.Items[itemID] = item
@@ -801,6 +834,9 @@ func (p *Provider) Invoke(ctx context.Context, by model.PrincipalRef, req Invoke
 		item := value.Items[id]
 		for _, link := range item.Links {
 			if target, ok := value.Items[link.To.ID]; ok {
+				if target.Owner != item.Owner {
+					return InvokeResult{}, fail("forbidden", "workflow target is outside the owner scope")
+				}
 				target.Inbound = append(target.Inbound, cloneRelation(link))
 				value.Items[target.ID] = target
 			} else if strings.HasPrefix(link.To.ID, ItemPrefix) {
@@ -847,7 +883,7 @@ func itemViewAt(item itemState, now time.Time) ItemView {
 	view := ItemView{
 		ID: item.ID, RunID: item.RunID, Label: item.Label, Title: item.Title, Type: item.Type,
 		Project: item.Project, Status: item.Status, Plane: "ephemeral", Kind: "workflow.item",
-		Plugin: Alias, Revision: model.Natural64(item.Generation), Labels: append([]string(nil), item.Labels...),
+		Plugin: Alias, Revision: model.Natural64(item.Generation), Fields: cloneMetadata(item.Fields), Labels: append([]string(nil), item.Labels...),
 		Metadata: cloneMetadata(item.Metadata), Parent: cloneRef(item.Parent), Blocked: item.Blocked, ChildCounter: item.ChildCounter,
 	}
 	for _, link := range append(append([]relationState(nil), item.Links...), item.Inbound...) {
@@ -895,20 +931,36 @@ func relationBlocks(kind string, metadata *model.LinkMetadata) bool {
 }
 
 func itemBlocked(value persisted, item itemState) bool {
+	blocked, _ := itemBlockedWithResolver(context.Background(), value, item, model.PrincipalRef{}, model.WriteMeta{}, nil)
+	return blocked
+}
+
+func itemBlockedWithResolver(ctx context.Context, value persisted, item itemState, by model.PrincipalRef, meta model.WriteMeta, resolver BlockerResolver) (bool, error) {
 	if item.Blocked {
-		return true
+		return true, nil
 	}
 	for _, link := range item.Links {
 		if !relationBlocks(link.Kind, link.Metadata) {
 			continue
 		}
-		target, ok := value.Items[link.To.ID]
-		// A typed workflow target must be present and closed before the edge is
-		// satisfied. Durable targets are resolved by the core reader; the
-		// provider keeps them conservatively blocked until that bridge reports
-		// completion, avoiding a false-ready result.
-		if !ok || target.Status != "closed" {
-			return true
+		if workflowTarget(link.To) {
+			target, ok := value.Items[link.To.ID]
+			if !ok || target.Status != "closed" {
+				return true, nil
+			}
+			continue
+		}
+		// Durable endpoints are resolved by the canonical core ontology. A
+		// missing resolver remains fail-closed for direct provider callers.
+		if resolver == nil {
+			return true, nil
+		}
+		blocked, err := resolver.IsBlocked(ctx, by, meta, link.To, link.Kind, link.Metadata)
+		if err != nil {
+			return false, err
+		}
+		if blocked {
+			return true, nil
 		}
 	}
 	// Inbound edges identify this item as the blocker endpoint. A blocks edge
@@ -916,20 +968,29 @@ func itemBlocked(value persisted, item itemState) bool {
 	// must not make the blocker itself unavailable. Mixed-plane source status is
 	// evaluated only when the workflow item is the dependent (the outbound edge
 	// above); no core lease, version, or status row is synthesized here.
-	return false
+	return false, nil
 }
 
 func itemReady(value persisted, item itemState, now time.Time) bool {
-	if itemBlocked(value, item) {
-		return false
-	}
-	if item.Status == "open" {
-		return item.Claim == nil || !now.Before(item.Claim.ExpiresAt)
-	}
-	return item.Status == "claimed" && item.Claim != nil && !now.Before(item.Claim.ExpiresAt)
+	ready, _ := itemReadyWithResolver(context.Background(), value, item, now, model.PrincipalRef{}, model.WriteMeta{}, nil)
+	return ready
 }
 
-func (p *Provider) readySnapshot(value persisted, revision pluginapi.Revision, by model.PrincipalRef, project string, types []string, meta model.WriteMeta, now time.Time, includeEphemeral bool) (ReadySnapshot, error) {
+func itemReadyWithResolver(ctx context.Context, value persisted, item itemState, now time.Time, by model.PrincipalRef, meta model.WriteMeta, resolver BlockerResolver) (bool, error) {
+	blocked, err := itemBlockedWithResolver(ctx, value, item, by, meta, resolver)
+	if err != nil {
+		return false, err
+	}
+	if blocked {
+		return false, nil
+	}
+	if item.Status == "open" {
+		return item.Claim == nil || !now.Before(item.Claim.ExpiresAt), nil
+	}
+	return item.Status == "claimed" && item.Claim != nil && !now.Before(item.Claim.ExpiresAt), nil
+}
+
+func (p *Provider) readySnapshot(ctx context.Context, value persisted, revision pluginapi.Revision, by model.PrincipalRef, project string, types []string, meta model.WriteMeta, now time.Time, includeEphemeral bool, resolver BlockerResolver) (ReadySnapshot, error) {
 	principal, _, err := principalScope(by, effectiveAgent(by, meta))
 	if err != nil {
 		return ReadySnapshot{}, fail("invalid_params", "invalid principal")
@@ -942,9 +1003,16 @@ func (p *Provider) readySnapshot(value persisted, revision pluginapi.Revision, b
 		if item.Project != project || !matchesType(item.Type, types) || item.Owner.Principal != principal || item.Owner.Agent != effectiveAgent(by, meta) {
 			continue
 		}
-		if itemReady(value, item, now) {
+		ready, err := itemReadyWithResolver(ctx, value, item, now, by, meta, resolver)
+		if err != nil {
+			return ReadySnapshot{}, err
+		}
+		if ready {
 			view := itemViewAt(item, now)
-			view.Blocked = itemBlocked(value, item)
+			view.Blocked, err = itemBlockedWithResolver(ctx, value, item, by, meta, resolver)
+			if err != nil {
+				return ReadySnapshot{}, err
+			}
 			snapshot.Items = append(snapshot.Items, view)
 		} else if (item.Status == "open" || item.Status == "claimed") && item.Claim != nil && now.Before(item.Claim.ExpiresAt) {
 			if snapshot.ValidUntil == nil || item.Claim.ExpiresAt.Before(*snapshot.ValidUntil) {
@@ -995,7 +1063,50 @@ func (p *Provider) ReadySnapshot(ctx context.Context, by model.PrincipalRef, pro
 	if len(include) != 0 {
 		includeEphemeral = include[0]
 	}
-	return p.readySnapshot(value, revision, by, project, types, meta, p.now(), includeEphemeral)
+	return p.readySnapshot(ctx, value, revision, by, project, types, meta, p.now(), includeEphemeral, nil)
+}
+
+// ReadySnapshotWithResolver is the service-facing ready seam. Durable
+// blockers are resolved through the core ontology while workflow-owned
+// blockers remain evaluated against this checkpoint image.
+func (p *Provider) ReadySnapshotWithResolver(ctx context.Context, by model.PrincipalRef, project string, types []string, meta model.WriteMeta, includeEphemeral bool, resolver BlockerResolver) (ReadySnapshot, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	value, revision, err := p.load(ctx)
+	if err != nil {
+		return ReadySnapshot{}, err
+	}
+	return p.readySnapshot(ctx, value, revision, by, project, types, meta, p.now(), includeEphemeral, resolver)
+}
+
+// OrdinaryBlocked reports ordinary dependents whose active workflow blocker
+// is visible to the caller. The service uses this before emitting core ready
+// rows; completed workflow items are satisfied and are never reported.
+func (p *Provider) OrdinaryBlocked(ctx context.Context, by model.PrincipalRef, ids []string, meta model.WriteMeta) (map[string]bool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	value, _, err := p.load(ctx)
+	if err != nil {
+		return nil, err
+	}
+	wanted := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		wanted[id] = struct{}{}
+	}
+	blocked := make(map[string]bool)
+	for _, item := range value.Items {
+		if item.Status == "closed" || meta.Project != "" && item.Project != meta.Project {
+			continue
+		}
+		for _, relation := range item.Inbound {
+			if relationBlocks(relation.Kind, relation.Metadata) {
+				if _, ok := wanted[relation.From]; ok {
+					blocked[relation.From] = true
+				}
+			}
+		}
+	}
+	return blocked, nil
 }
 
 // ActiveIDs returns the provider's live item namespace. The service uses it to
@@ -1022,7 +1133,7 @@ func (p *Provider) ActiveIDs(ctx context.Context) (map[string]struct{}, error) {
 // current principal, so an ordinary point read cannot disclose another
 // owner's workflow ID.
 func (p *Provider) Relations(ctx context.Context, by model.PrincipalRef, id model.Ref, meta model.WriteMeta) ([]RelationView, error) {
-	if err := validateRef(id); err != nil || workflowTarget(id) {
+	if err := validateRef(id); err != nil {
 		return nil, fail("invalid_params", "mixed-plane relation reads require an ordinary endpoint")
 	}
 	p.mu.Lock()
@@ -1103,6 +1214,12 @@ func parseUpdateFields(item itemState, fields map[string]any) (itemState, error)
 	next := item
 	for key, value := range fields {
 		switch key {
+		case "fields":
+			metadata, err := metadataValue(value)
+			if err != nil {
+				return itemState{}, fail("invalid_params", "workflow fields must be an object")
+			}
+			next.Fields = metadata
 		case "title":
 			title, ok := value.(string)
 			if !ok || strings.TrimSpace(title) == "" {
@@ -1176,8 +1293,12 @@ func (p *Provider) applyAuxiliary(value *persisted, old, next itemState) error {
 		if next.Parent.ID == next.ID {
 			return fail("invalid_params", "workflow item cannot parent itself")
 		}
-		if _, ok := value.Items[next.Parent.ID]; !ok {
+		parent, ok := value.Items[next.Parent.ID]
+		if !ok {
 			return fail("not_found", "workflow parent was not found")
+		}
+		if parent.Owner != next.Owner {
+			return fail("forbidden", "workflow parent is outside the owner scope")
 		}
 	}
 	for _, relation := range next.Links {
@@ -1185,8 +1306,12 @@ func (p *Provider) applyAuxiliary(value *persisted, old, next itemState) error {
 			if relation.To.ID == next.ID {
 				return fail("invalid_params", "workflow item cannot relate to itself")
 			}
-			if _, ok := value.Items[relation.To.ID]; !ok {
+			target, ok := value.Items[relation.To.ID]
+			if !ok {
 				return fail("not_found", "workflow relation target was not found")
+			}
+			if target.Owner != next.Owner {
+				return fail("forbidden", "workflow target is outside the owner scope")
 			}
 		}
 	}
@@ -1362,6 +1487,9 @@ func (p *Provider) relationMutation(ctx context.Context, by model.PrincipalRef, 
 			if !ok {
 				return model.Commit{}, fail("not_found", "workflow relation target was not found")
 			}
+			if err := p.authorized(target, by, meta); err != nil {
+				return model.Commit{}, err
+			}
 			if unlink {
 				target.Inbound = removeRelation(target.Inbound, relation)
 			} else {
@@ -1493,8 +1621,8 @@ func (p *Provider) Promote(ctx context.Context, by model.PrincipalRef, req Promo
 		other.Inbound = other.Inbound[:0]
 		for _, relation := range inbound {
 			if relation.From == item.ID {
+				relation.From = req.Target.ID
 				changed = true
-				continue
 			}
 			other.Inbound = append(other.Inbound, relation)
 		}
@@ -1593,7 +1721,49 @@ func (p *Provider) Demote(ctx context.Context, by model.PrincipalRef, req Demote
 	for _, relation := range req.Links {
 		links = append(links, relationSpecState(itemID, relation))
 	}
-	item := itemState{ID: itemID, RunID: runID, Label: req.Label, Title: req.Title, Type: req.Type, Project: req.Project, Owner: run.Owner, Status: "open", Labels: normalizeLabels(req.Labels), Metadata: cloneMetadata(req.Metadata), Parent: cloneRef(req.Parent), Links: links}
+	item := itemState{ID: itemID, RunID: runID, Label: req.Label, Title: req.Title, Type: req.Type, Project: req.Project, Owner: run.Owner, Status: "open", Fields: cloneMetadata(req.Fields), Labels: normalizeLabels(req.Labels), Metadata: cloneMetadata(req.Metadata), Parent: cloneRef(req.Parent), Links: links}
+	if req.Status != "" {
+		item.Status = req.Status
+	}
+	item.Blocked, item.ChildCounter = req.Blocked, req.ChildCounter
+	for _, comment := range req.Comments {
+		item.Comments = append(item.Comments, commentState{Body: comment.Body, Principal: comment.Principal, Time: comment.Time})
+	}
+	for _, link := range req.Inbound {
+		item.Inbound = append(item.Inbound, relationState{From: link.From, To: model.RefByID(itemID, model.Natural64(0)), Kind: link.Kind, Metadata: link.Metadata})
+	}
+	value.Items[itemID] = item
+	// The source may already have mixed edges indexed on workflow targets.
+	// Replace those source references with the new item in this same
+	// checkpoint, so demotion cannot leave a stale ordinary endpoint behind.
+	for id, target := range value.Items {
+		if id == itemID {
+			continue
+		}
+		for index, relation := range target.Links {
+			if relation.To.ID == req.Source.ID {
+				relation.To = model.RefByID(itemID, model.Natural64(0))
+				target.Links[index] = relation
+				item.Inbound = append(item.Inbound, cloneRelation(relation))
+			}
+		}
+		if target.Parent != nil && target.Parent.ID == req.Source.ID {
+			ref := model.RefByID(itemID, model.Natural64(0))
+			target.Parent = &ref
+		}
+		filtered := target.Inbound[:0]
+		for _, relation := range target.Inbound {
+			if relation.From != req.Source.ID {
+				filtered = append(filtered, relation)
+			} else {
+				moved := cloneRelation(relation)
+				moved.From = itemID
+				item.Links = append(item.Links, moved)
+			}
+		}
+		target.Inbound = filtered
+		value.Items[id] = target
+	}
 	value.Items[itemID] = item
 	if err := p.applyAuxiliary(&value, itemState{ID: itemID}, item); err != nil {
 		delete(value.Items, itemID)
@@ -1656,14 +1826,20 @@ func claimNextRequest(project string, types, resources []string, meta model.Writ
 // ClaimNext returns (item, found, replayed). A replayed empty result is a
 // durable terminal null for this selector and must not probe a later item.
 func (p *Provider) ClaimNext(ctx context.Context, by model.PrincipalRef, project string, types []string, meta model.WriteMeta) (ItemView, bool, bool, error) {
-	return p.claimNext(ctx, by, project, types, nil, meta, nil)
+	return p.claimNext(ctx, by, project, types, nil, meta, nil, nil)
 }
 
 // ClaimNextWithResources intersects the selector's optional resource IDs before
 // atomically choosing a candidate. The service supplies its full selector in
 // ClaimNextIdentity; direct calls without it bind resources in their digest.
 func (p *Provider) ClaimNextWithResources(ctx context.Context, by model.PrincipalRef, project string, types, resources []string, meta model.WriteMeta) (ItemView, bool, bool, error) {
-	return p.claimNext(ctx, by, project, types, resources, meta, nil)
+	return p.claimNext(ctx, by, project, types, resources, meta, nil, nil)
+}
+
+// ClaimNextWithResourcesWithResolver is the service-facing queue seam. It
+// evaluates durable blockers through the core ontology before claiming.
+func (p *Provider) ClaimNextWithResourcesWithResolver(ctx context.Context, by model.PrincipalRef, project string, types, resources []string, meta model.WriteMeta, resolver BlockerResolver) (ItemView, bool, bool, error) {
+	return p.claimNext(ctx, by, project, types, resources, meta, nil, resolver)
 }
 
 // ClaimNextSelected commits the candidate chosen and authorized by the ordinary
@@ -1673,10 +1849,17 @@ func (p *Provider) ClaimNextSelected(ctx context.Context, by model.PrincipalRef,
 	if ref.Validate() != nil || !ref.IsID() || !strings.HasPrefix(ref.ID, ItemPrefix) || ref.Branch.String() != "0" {
 		return ItemView{}, false, false, fail("invalid_params", "workflow claimNext requires a branch-zero item reference")
 	}
-	return p.claimNext(ctx, by, project, types, nil, meta, &ref)
+	return p.claimNext(ctx, by, project, types, nil, meta, &ref, nil)
 }
 
-func (p *Provider) claimNext(ctx context.Context, by model.PrincipalRef, project string, types, resources []string, meta model.WriteMeta, selectedRef *model.Ref) (ItemView, bool, bool, error) {
+func (p *Provider) ClaimNextSelectedWithResolver(ctx context.Context, by model.PrincipalRef, ref model.Ref, project string, types []string, meta model.WriteMeta, resolver BlockerResolver) (ItemView, bool, bool, error) {
+	if ref.Validate() != nil || !ref.IsID() || !strings.HasPrefix(ref.ID, ItemPrefix) || ref.Branch.String() != "0" {
+		return ItemView{}, false, false, fail("invalid_params", "workflow claimNext requires a branch-zero item reference")
+	}
+	return p.claimNext(ctx, by, project, types, nil, meta, &ref, resolver)
+}
+
+func (p *Provider) claimNext(ctx context.Context, by model.PrincipalRef, project string, types, resources []string, meta model.WriteMeta, selectedRef *model.Ref, resolver BlockerResolver) (ItemView, bool, bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	meta.Project = project
@@ -1708,7 +1891,11 @@ func (p *Provider) claimNext(ctx context.Context, by model.PrincipalRef, project
 		if len(resources) != 0 && !slices.Contains(resources, item.ID) {
 			continue
 		}
-		if item.Project == project && itemReady(value, item, p.now()) && matchesType(item.Type, types) && item.Owner.Principal == principal && item.Owner.Agent == effectiveAgent(by, meta) {
+		ready, err := itemReadyWithResolver(ctx, value, item, p.now(), by, meta, resolver)
+		if err != nil {
+			return ItemView{}, false, false, err
+		}
+		if item.Project == project && ready && matchesType(item.Type, types) && item.Owner.Principal == principal && item.Owner.Agent == effectiveAgent(by, meta) {
 			if selected == nil || item.ID < selected.ID {
 				copy := item
 				selected = &copy
@@ -1734,6 +1921,12 @@ func (p *Provider) claimNext(ctx context.Context, by model.PrincipalRef, project
 	selected.Claim = &claimState{Principal: by, Agent: effectiveAgent(by, meta), ExpiresAt: p.now().UTC().Add(claimTTL), Generation: selected.Generation}
 	value.Items[selected.ID] = *selected
 	item := p.itemViewIn(value, *selected)
+	if resolver != nil {
+		item.Blocked, err = itemBlockedWithResolver(ctx, value, *selected, by, meta, resolver)
+		if err != nil {
+			return ItemView{}, false, false, err
+		}
+	}
 	replay = claimNextResult{Found: true, Item: item}
 	receipt, err := p.storeReceipt(value, by, meta, request, replay, selected.RunID, selected.ID)
 	if err != nil {
@@ -1765,6 +1958,16 @@ func (p *Provider) ReplayClaimNext(ctx context.Context, by model.PrincipalRef, p
 }
 
 func (p *Provider) Claim(ctx context.Context, by model.PrincipalRef, req model.Ref, meta model.WriteMeta) (ItemView, error) {
+	return p.claimWithResolver(ctx, by, req, meta, nil)
+}
+
+// ClaimWithResolver applies the same durable blocker bridge as ready and
+// claimNext. Direct callers without a bridge remain fail-closed.
+func (p *Provider) ClaimWithResolver(ctx context.Context, by model.PrincipalRef, req model.Ref, meta model.WriteMeta, resolver BlockerResolver) (ItemView, error) {
+	return p.claimWithResolver(ctx, by, req, meta, resolver)
+}
+
+func (p *Provider) claimWithResolver(ctx context.Context, by model.PrincipalRef, req model.Ref, meta model.WriteMeta, resolver BlockerResolver) (ItemView, error) {
 	if meta.Method == "bead.claimNext" {
 		return ItemView{}, fail("invalid_params", "claimNext requires its selector and wrapped result")
 	}
@@ -1787,7 +1990,11 @@ func (p *Provider) Claim(ctx context.Context, by model.PrincipalRef, req model.R
 	if err := p.authorized(item, by, meta); err != nil {
 		return ItemView{}, err
 	}
-	if !itemReady(value, item, p.now()) {
+	ready, err := itemReadyWithResolver(ctx, value, item, p.now(), by, meta, resolver)
+	if err != nil {
+		return ItemView{}, err
+	}
+	if !ready {
 		return ItemView{}, fail("busy", "workflow item already has a live claim")
 	}
 	item.Status = "claimed"
@@ -1919,6 +2126,12 @@ func (p *Provider) Close(ctx context.Context, by model.PrincipalRef, req model.R
 				continue
 			}
 			changed := false
+			if other.Parent != nil {
+				if _, parentEnded := ended[other.Parent.ID]; parentEnded {
+					other.Parent = nil
+					changed = true
+				}
+			}
 			links := make([]relationState, 0, len(other.Links))
 			for _, relation := range append([]relationState(nil), other.Links...) {
 				if _, targetEnded := ended[relation.To.ID]; !targetEnded {
@@ -2029,4 +2242,40 @@ func (p *Provider) GC(ctx context.Context) error {
 	defer p.mu.Unlock()
 	_, _, err := p.load(ctx)
 	return err
+}
+
+// GetWithResolver reports current durable blocker satisfaction through the same
+// typed bridge used by ready and claimNext.
+func (p *Provider) GetWithResolver(ctx context.Context, by model.PrincipalRef, id model.Ref, meta model.WriteMeta, resolver BlockerResolver) (ItemView, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	value, _, err := p.load(ctx)
+	if err != nil {
+		return ItemView{}, err
+	}
+	item, ok := value.Items[id.ID]
+	if !ok {
+		return ItemView{}, fail("not_found", "workflow item was not found")
+	}
+	if err := p.authorized(item, by, meta); err != nil {
+		return ItemView{}, err
+	}
+	view := itemViewAt(item, p.now())
+	view.Blocked, err = itemBlockedWithResolver(ctx, value, item, by, meta, resolver)
+	return view, err
+}
+func (p *Provider) ActiveIDsFor(ctx context.Context, by model.PrincipalRef, meta model.WriteMeta) (map[string]struct{}, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	value, _, err := p.load(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids := map[string]struct{}{}
+	for id, item := range value.Items {
+		if p.authorized(item, by, meta) == nil {
+			ids[id] = struct{}{}
+		}
+	}
+	return ids, nil
 }

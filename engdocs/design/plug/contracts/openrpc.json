@@ -3170,7 +3170,7 @@
     {
       "name": "x.workflow.run.promote",
       "summary": "Promote a live workflow item to a caller-owned durable bead.",
-      "description": "Move a live ephemeral item out of plugin state and return the permitted inbound/outbound auxiliary relationships for the ordinary target; the provider never creates a durable lease or version row.",
+      "description": "Read the live workflow item and authorize an existing same-project, same-type ordinary target. Materialize its body, labels, metadata, comments and permitted relations while removing the workflow source in one fenced core/checkpoint transaction. No core lease or version row is created for the ephemeral identity. Claimed endpoints and unsupported hierarchy variants refuse before publication.",
       "tags": [
         {
           "name": "plugin"
@@ -3240,6 +3240,9 @@
         },
         {
           "$ref": "#/components/errors/PluginDurableStateUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/Unsupported"
         }
       ],
       "x-effect": "write",
@@ -3251,8 +3254,8 @@
     },
     {
       "name": "x.workflow.run.demote",
-      "summary": "Copy a durable bead into a live ephemeral workflow item.",
-      "description": "Create a restart-durable ephemeral copy from a caller-supplied durable projection; the ordinary writer owns removal of the source row.",
+      "summary": "Move a durable bead into a live ephemeral workflow item.",
+      "description": "Read and authorize the actual ordinary source, preserve its body and permitted auxiliary relationships, and atomically delete it while publishing a restart-durable workflow checkpoint. Caller parameters provide only source identity, template and label. Claimed sources, attachments, imported-comment provenance and durable children currently refuse with a typed error before mutation.",
       "tags": [
         {
           "name": "plugin"
@@ -3275,63 +3278,11 @@
           "required": true
         },
         {
-          "name": "project",
-          "schema": {
-            "type": "string"
-          },
-          "required": true
-        },
-        {
           "name": "label",
           "schema": {
             "type": "string"
           },
           "required": true
-        },
-        {
-          "name": "title",
-          "schema": {
-            "type": "string"
-          },
-          "required": true
-        },
-        {
-          "name": "type",
-          "schema": {
-            "type": "string"
-          }
-        },
-        {
-          "name": "labels",
-          "schema": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "uniqueItems": true
-          }
-        },
-        {
-          "name": "metadata",
-          "schema": {
-            "type": "object",
-            "additionalProperties": true
-          }
-        },
-        {
-          "name": "parent",
-          "schema": {
-            "$ref": "#/components/schemas/Ref"
-          }
-        },
-        {
-          "name": "links",
-          "schema": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/WorkflowRelationSpec"
-            }
-          }
         },
         {
           "name": "_meta",
@@ -3381,6 +3332,9 @@
         },
         {
           "$ref": "#/components/errors/PluginDurableStateUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/Unsupported"
         }
       ],
       "x-effect": "write",
@@ -10750,6 +10704,10 @@
           },
           "blocked": {
             "type": "boolean"
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": true
           }
         },
         "required": [
@@ -10878,6 +10836,10 @@
           "childCounter": {
             "type": "integer",
             "minimum": 0
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": true
           }
         },
         "required": [
@@ -15977,7 +15939,8 @@
           "#/components/errors/IdempotencyKeyReused",
           "#/components/errors/LeaseNotHeld",
           "#/components/errors/LeaseExpired",
-          "#/components/errors/PluginDurableStateUnavailable"
+          "#/components/errors/PluginDurableStateUnavailable",
+          "#/components/errors/Unsupported"
         ]
       },
       {
@@ -16003,63 +15966,11 @@
             "required": true
           },
           {
-            "name": "project",
-            "schema": {
-              "type": "string"
-            },
-            "required": true
-          },
-          {
             "name": "label",
             "schema": {
               "type": "string"
             },
             "required": true
-          },
-          {
-            "name": "title",
-            "schema": {
-              "type": "string"
-            },
-            "required": true
-          },
-          {
-            "name": "type",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "labels",
-            "schema": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "uniqueItems": true
-            }
-          },
-          {
-            "name": "metadata",
-            "schema": {
-              "type": "object",
-              "additionalProperties": true
-            }
-          },
-          {
-            "name": "parent",
-            "schema": {
-              "$ref": "#/components/schemas/Ref"
-            }
-          },
-          {
-            "name": "links",
-            "schema": {
-              "type": "array",
-              "items": {
-                "$ref": "#/components/schemas/WorkflowRelationSpec"
-              }
-            }
           },
           {
             "name": "_meta",
@@ -16083,7 +15994,8 @@
           "#/components/errors/IdempotencyKeyReused",
           "#/components/errors/LeaseNotHeld",
           "#/components/errors/LeaseExpired",
-          "#/components/errors/PluginDurableStateUnavailable"
+          "#/components/errors/PluginDurableStateUnavailable",
+          "#/components/errors/Unsupported"
         ]
       },
       {

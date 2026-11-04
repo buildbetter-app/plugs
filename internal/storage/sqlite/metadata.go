@@ -93,6 +93,14 @@ func (t *transaction) CommitNoop(ctx context.Context, h driver.ChangesetHeader) 
 			result = previous.Commit
 			return nil
 		}
+		// A replay never reapplies the namespace CAS. On a miss, guard and
+		// publish the staged checkpoint in this same fenced SQL transaction.
+		if err := t.checkCheckpointGuards(ctx, c); err != nil {
+			return err
+		}
+		if err := t.publishCheckpoints(ctx, c); err != nil {
+			return err
+		}
 		m, err := readMeta(ctx, c)
 		if err != nil {
 			return err
