@@ -228,6 +228,9 @@ CREATE TABLE IF NOT EXISTS selection_bead_history (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS selection_bead_current_record
  ON selection_bead_history(incarnation,branch,record_key) WHERE end_revision IS NULL;
+-- Closing a changed logical row must not revisit its retained versions.
+CREATE INDEX IF NOT EXISTS selection_bead_current_derived
+ ON selection_bead_history(incarnation,branch,derived_key) WHERE end_revision IS NULL;
 CREATE INDEX IF NOT EXISTS selection_bead_current_scope
  ON selection_bead_history(incarnation,branch,project,bead_type,bead_id)
  WHERE end_revision IS NULL;

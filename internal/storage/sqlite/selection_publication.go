@@ -22,6 +22,50 @@ const selectionFactInvalidationBatch = 128
 // fenced transaction.
 const selectionSourceHistoryBatch = 128
 
+// Close both physical projection arms before inserting any replacement. The
+// bounded list stays below SQLite's older variable limit; current-only indexes
+// keep a touched logical row independent of its retained historical versions.
+const selectionDerivedCloseBatch = 128
+
+type selectionCloseExecutor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func selectionBeadCloseSQL(count int) string {
+	return `UPDATE selection_bead_history INDEXED BY selection_bead_current_derived SET end_revision=?
+		WHERE incarnation=? AND branch=? AND end_revision IS NULL AND derived_key IN (` +
+		strings.TrimSuffix(strings.Repeat("?,", count), ",") + `)`
+}
+
+func selectionFactCloseSQL(count int) string {
+	return `UPDATE selection_fact_sets INDEXED BY selection_fact_sets_current_row SET end_revision=?
+		WHERE incarnation=? AND branch=? AND end_revision IS NULL AND row_key IN (` +
+		strings.TrimSuffix(strings.Repeat("?,", count), ",") + `)`
+}
+
+func closeSelectionDerived(ctx context.Context, c selectionCloseExecutor, incarnation, next string, derived map[string]driver.LockState) error {
+	keys := make([]string, 0, len(derived))
+	for id := range derived {
+		keys = append(keys, id)
+	}
+	sort.Strings(keys)
+	for start := 0; start < len(keys); start += selectionDerivedCloseBatch {
+		end := min(start+selectionDerivedCloseBatch, len(keys))
+		args := make([]any, 0, 3+end-start)
+		args = append(args, next, incarnation, revKey(0))
+		for _, id := range keys[start:end] {
+			args = append(args, id)
+		}
+		if _, err := c.ExecContext(ctx, selectionBeadCloseSQL(end-start), args...); err != nil {
+			return err
+		}
+		if _, err := c.ExecContext(ctx, selectionFactCloseSQL(end-start), args...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func selectionFactInvalidationSQL(count int) string {
 	return `UPDATE selection_fact_sets INDEXED BY selection_fact_sets_source SET end_revision=?
 		WHERE incarnation=? AND branch=? AND end_revision IS NULL AND source_key IN (` +
@@ -216,15 +260,8 @@ func (t *transaction) publishSelection(ctx context.Context, c *sql.Conn, current
 	// This handles swaps and prevents a stale typed row surviving an untyped
 	// replacement or delete. The key_history and these intervals share Commit.
 	phase.next(CommitPhaseSelectionClose, len(t.derived))
-	for id := range t.derived {
-		if _, err = c.ExecContext(ctx, `UPDATE selection_bead_history SET end_revision=?
-		 WHERE incarnation=? AND branch=? AND derived_key=? AND end_revision IS NULL`, next, incarnation, revKey(0), id); err != nil {
-			return err
-		}
-		if _, err = c.ExecContext(ctx, `UPDATE selection_fact_sets SET end_revision=?
-		 WHERE incarnation=? AND branch=? AND row_key=? AND end_revision IS NULL`, next, incarnation, revKey(0), id); err != nil {
-			return err
-		}
+	if err = closeSelectionDerived(ctx, c, incarnation, next, t.derived); err != nil {
+		return err
 	}
 	phase.next(CommitPhaseSelectionInsert, len(derived))
 	for id, state := range derived {
