@@ -21,6 +21,25 @@ func edgeLinkOp(from, to model.Ref, kind string) model.Op {
 	return model.Op{Kind: model.OpLink, Link: &model.LinkOp{From: from, To: to, LinkKind: kind}}
 }
 
+func edgeTypedLinkOp(op model.OpKind, from, to model.Ref, kind string, targetKind model.LinkTargetKind) model.Op {
+	return model.Op{Kind: op, Link: &model.LinkOp{From: from, To: to, LinkKind: kind, TargetKind: targetKind}}
+}
+
+func edgeTypedLinkParams(producer string, op model.OpKind, from, to model.Ref, kind string, targetKind model.LinkTargetKind) map[string]any {
+	if producer == "tx.apply" {
+		return map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{edgeTypedLinkOp(op, from, to, kind, targetKind)}}}
+	}
+	params := map[string]any{"from": from, "to": to, "kind": kind}
+	if targetKind != "" {
+		params["targetKind"] = targetKind
+	}
+	return params
+}
+
+func edgeExternalLinkValue(to model.Ref, kind string) map[string]any {
+	return map[string]any{"to": to, "kind": kind, "targetKind": "external"}
+}
+
 func edgePatchOp(ref model.Ref, title string) model.Op {
 	return model.Op{Kind: model.OpPatch, Patch: &model.PatchOp{Target: ref, Fields: map[string]any{"title": title}}}
 }
@@ -397,17 +416,22 @@ func TestB07UnresolvedExternalTargetsRetainIdentityAcrossBothProducers(t *testin
 			}{
 				{name: "blocking-cross-prefix", kind: "blocks", ready: false},
 				{name: "association-external", kind: "relates-to", ready: true},
+				{name: "opaque-external", kind: "custom External/Edge@1", ready: true},
 			} {
 				t.Run(engine+"/"+producer+"/"+tc.name, func(t *testing.T) {
 					e := newEdgeContractFixture(t, engine)
 					from := e.create(t, "unresolved-"+tc.name)
-					to := model.RefByID("foreign-prefix-404", model.Natural64(0))
+					toID := "foreign-prefix-404"
+					if tc.name == "opaque-external" {
+						toID = "external:tracker/1"
+					}
+					to := model.RefByID(toID, model.Natural64(0))
 					p := e.probe(producer, "unresolved-"+producer+"-"+tc.name)
 					params := map[string]any{}
 					if producer == "bead.link" {
-						params = map[string]any{"from": from, "to": to, "kind": tc.kind}
+						params = map[string]any{"from": from, "to": to, "kind": tc.kind, "targetKind": "external"}
 					} else {
-						params = map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{edgeLinkOp(from, to, tc.kind)}}}
+						params = map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{edgeTypedLinkOp(model.OpLink, from, to, tc.kind, model.LinkTargetExternal)}}}
 					}
 					before := e.snapshot(t)
 					linked := e.call(t, p, params)
@@ -415,7 +439,7 @@ func TestB07UnresolvedExternalTargetsRetainIdentityAcrossBothProducers(t *testin
 					after := e.snapshot(t)
 					commit := edgeRequireReceipt(t, after, p, linked.Result, false)
 					edgeRequireSingleCommit(t, before, after, commit, from)
-					edgeRequireLinks(t, after, from, edgeLinkValue(to, tc.kind))
+					edgeRequireLinks(t, after, from, edgeExternalLinkValue(to, tc.kind))
 					if _, exists := after.Records[edgeRecordKey(to)]; exists {
 						t.Fatal("unresolved target unexpectedly acquired a durable record")
 					}
@@ -433,9 +457,9 @@ func TestB07UnresolvedExternalTargetsRetainIdentityAcrossBothProducers(t *testin
 					remove := e.probe(removeMethod, "unresolved-remove-"+producer+"-"+tc.name)
 					removeParams := map[string]any{}
 					if producer == "bead.link" {
-						removeParams = map[string]any{"from": from, "to": to, "kind": tc.kind}
+						removeParams = map[string]any{"from": from, "to": to, "kind": tc.kind, "targetKind": "external"}
 					} else {
-						removeParams = map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{{Kind: model.OpUnlink, Link: &model.LinkOp{From: from, To: to, LinkKind: tc.kind}}}}}
+						removeParams = map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{{Kind: model.OpUnlink, Link: &model.LinkOp{From: from, To: to, LinkKind: tc.kind, TargetKind: model.LinkTargetExternal}}}}}
 					}
 					beforeRemove := e.snapshot(t)
 					removed := e.call(t, remove, removeParams)
@@ -446,6 +470,181 @@ func TestB07UnresolvedExternalTargetsRetainIdentityAcrossBothProducers(t *testin
 					edgeRequireLinks(t, afterRemove, from)
 				})
 			}
+		}
+	}
+}
+
+func TestB07TypedEndpointIdentityAndRefusalsAcrossBothProducers(t *testing.T) {
+	for _, engine := range testEngines {
+		for _, producer := range []string{"bead.link", "tx.apply"} {
+			t.Run(engine+"/"+producer, func(t *testing.T) {
+				e := newEdgeContractFixture(t, engine)
+				from, to, other := e.create(t, "typed-source"), e.create(t, "typed-target"), e.create(t, "typed-neighbor")
+				local := e.probe(producer, "typed-local")
+				external := e.probe(producer, "typed-external")
+				duplicate := e.probe(producer, "typed-external-duplicate")
+				retype := e.probe(producer, "typed-external-retype")
+				localDefault := e.probe(producer, "typed-explicit-local")
+				removeMethod := "bead.unlink"
+				if producer == "tx.apply" {
+					removeMethod = producer
+				}
+				wrongRemove := e.probe(removeMethod, "typed-external-wrong-unlink")
+				remove := e.probe(removeMethod, "typed-external-unlink")
+				localParams := edgeTypedLinkParams(producer, model.OpLink, from, to, "relates-to", "")
+				externalParams := edgeTypedLinkParams(producer, model.OpLink, from, to, "blocks", model.LinkTargetExternal)
+				edgeRequireSuccess(t, e.call(t, local, localParams))
+				before := e.snapshot(t)
+				first := e.call(t, external, externalParams)
+				edgeRequireSuccess(t, first)
+				after := e.snapshot(t)
+				edgeRequireSingleCommit(t, before, after, edgeRequireReceipt(t, after, external, first.Result, false), from)
+				edgeRequireLinks(t, after, from, edgeLinkValue(to, "relates-to"), edgeExternalLinkValue(to, "blocks"))
+				edgeReadyContains(t, e, from.ID, false)
+
+				dup := e.call(t, duplicate, externalParams)
+				edgeRequireSuccess(t, dup)
+				afterDup := e.snapshot(t)
+				edgeRequireReceipt(t, afterDup, duplicate, dup.Result, true)
+				edgeRequireOnlyReceipt(t, after, afterDup, duplicate)
+				beforeRetype := e.snapshot(t)
+				retypeParams := edgeTypedLinkParams(producer, model.OpLink, from, to, "tracks", model.LinkTargetExternal)
+				if producer == "tx.apply" {
+					retypeParams = map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{
+						edgePatchOp(other, "must roll back"), edgeTypedLinkOp(model.OpLink, from, to, "tracks", model.LinkTargetExternal),
+					}}}
+				}
+				edgeRequireRefusal(t, e.call(t, retype, retypeParams), "ontology_guard_failed")
+				edgeRequireStateEqual(t, beforeRetype, e.snapshot(t))
+				edgeRequireRefusal(t, e.call(t, wrongRemove, edgeTypedLinkParams(producer, model.OpUnlink, from, to, "tracks", model.LinkTargetExternal)), "not_found")
+				edgeRequireStateEqual(t, beforeRetype, e.snapshot(t))
+				// Reusing a receipt for another target identity domain must not
+				// replay the external write as a local operation.
+				edgeRequireRefusal(t, e.call(t, external, edgeTypedLinkParams(producer, model.OpLink, from, to, "blocks", model.LinkTargetLocal)), "idempotency_key_reused")
+				edgeRequireStateEqual(t, beforeRetype, e.snapshot(t))
+
+				beforeLocalDefault := e.snapshot(t)
+				localNoop := e.call(t, localDefault, edgeTypedLinkParams(producer, model.OpLink, from, to, "relates-to", model.LinkTargetLocal))
+				edgeRequireSuccess(t, localNoop)
+				afterLocalDefault := e.snapshot(t)
+				edgeRequireReceipt(t, afterLocalDefault, localDefault, localNoop.Result, true)
+				edgeRequireOnlyReceipt(t, beforeLocalDefault, afterLocalDefault, localDefault)
+				e.f.reopen(t)
+				edgeRequireStateEqual(t, afterLocalDefault, e.snapshot(t))
+				replay := e.call(t, external, externalParams)
+				if replay.Error != nil || replay.Meta["replayed"] != true || string(replay.Result) != string(first.Result) {
+					t.Fatalf("external identity receipt did not replay after reopen: %+v", replay)
+				}
+				edgeRequireStateEqual(t, afterLocalDefault, e.snapshot(t))
+				removed := e.call(t, remove, edgeTypedLinkParams(producer, model.OpUnlink, from, to, "blocks", model.LinkTargetExternal))
+				edgeRequireSuccess(t, removed)
+				final := e.snapshot(t)
+				edgeRequireSingleCommit(t, afterLocalDefault, final, edgeRequireReceipt(t, final, remove, removed.Result, false), from)
+				edgeRequireLinks(t, final, from, edgeLinkValue(to, "relates-to"))
+				edgeReadyContains(t, e, from.ID, true)
+			})
+		}
+	}
+}
+
+func TestB07ExternalSchedulingNeverBindsTerminalLocalNames(t *testing.T) {
+	for _, engine := range testEngines {
+		for _, producer := range []string{"bead.link", "tx.apply"} {
+			for _, kind := range []string{"blocks", "parent-child", "conditional-blocks", "waits-for"} {
+				t.Run(engine+"/"+producer+"/"+kind, func(t *testing.T) {
+					e := newEdgeContractFixture(t, engine)
+					from, to := e.create(t, "external-scheduling-source"), e.create(t, "external-terminal-local")
+					closeTarget := e.probe("bead.close", "external-close-local")
+					edgeRequireSuccess(t, e.call(t, closeTarget, map[string]any{"id": to}))
+					p := e.probe(producer, "external-scheduling-link")
+					before := e.snapshot(t)
+					linked := e.call(t, p, edgeTypedLinkParams(producer, model.OpLink, from, to, kind, model.LinkTargetExternal))
+					edgeRequireSuccess(t, linked)
+					after := e.snapshot(t)
+					edgeRequireSingleCommit(t, before, after, edgeRequireReceipt(t, after, p, linked.Result, false), from)
+					edgeRequireLinks(t, after, from, edgeExternalLinkValue(to, kind))
+					edgeReadyContains(t, e, from.ID, false)
+					e.f.reopen(t)
+					edgeRequireStateEqual(t, after, e.snapshot(t))
+					edgeReadyContains(t, e, from.ID, false)
+					closeSource := e.probe("bead.close", "external-close-source")
+					beforeClose := e.snapshot(t)
+					closed := e.call(t, closeSource, map[string]any{"id": from})
+					if kind == "parent-child" {
+						edgeRequireSuccess(t, closed)
+					} else {
+						edgeRequireRefusal(t, closed, "ontology_guard_failed")
+						edgeRequireStateEqual(t, beforeClose, e.snapshot(t))
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestB07ExternalIdentitySurvivesLocalSelfSpellingAndDeletion(t *testing.T) {
+	for _, engine := range testEngines {
+		for _, producer := range []string{"bead.link", "tx.apply"} {
+			t.Run(engine+"/"+producer, func(t *testing.T) {
+				e := newEdgeContractFixture(t, engine)
+				from, local := e.create(t, "external-self-source"), e.create(t, "external-deleted-local")
+				self := e.probe(producer, "external-self")
+				sameName := e.probe(producer, "external-deleted-target")
+				edgeRequireSuccess(t, e.call(t, self, edgeTypedLinkParams(producer, model.OpLink, from, from, "blocks", model.LinkTargetExternal)))
+				edgeRequireSuccess(t, e.call(t, sameName, edgeTypedLinkParams(producer, model.OpLink, from, local, "parent-child", model.LinkTargetExternal)))
+				remove := e.probe("tx.apply", "external-delete-local")
+				before := e.snapshot(t)
+				deleted := e.call(t, remove, map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{{Kind: model.OpDelete, Delete: &model.DeleteOp{Target: local}}}}})
+				edgeRequireSuccess(t, deleted)
+				after := e.snapshot(t)
+				if _, exists := after.Records[edgeRecordKey(local)]; exists {
+					t.Fatal("same-spelled local target was not deleted")
+				}
+				if !reflect.DeepEqual(before.Records[edgeRecordKey(from)], after.Records[edgeRecordKey(from)]) || !reflect.DeepEqual(before.Versions[edgeRecordKey(from)], after.Versions[edgeRecordKey(from)]) {
+					t.Fatal("local deletion rewrote external source identity/history")
+				}
+				edgeRequireLinks(t, after, from, edgeExternalLinkValue(from, "blocks"), edgeExternalLinkValue(local, "parent-child"))
+				edgeReadyContains(t, e, from.ID, false)
+				cycles := e.f.call(t, e.f.ctx, "bead.cycles", map[string]any{"project": project}, "", actor)
+				edgeRequireSuccess(t, cycles)
+				var report struct {
+					CycleCount model.Natural `json:"cycleCount"`
+				}
+				if err := json.Unmarshal(cycles.Result, &report); err != nil || !report.CycleCount.IsZero() {
+					t.Fatalf("external self spelling entered local cycle report: %s error=%v", cycles.Result, err)
+				}
+				e.f.reopen(t)
+				edgeRequireStateEqual(t, after, e.snapshot(t))
+			})
+		}
+	}
+}
+
+func TestB07ExternalParentChildDoesNotJoinLocalWaitsForMembership(t *testing.T) {
+	for _, engine := range testEngines {
+		for _, producer := range []string{"bead.link", "tx.apply"} {
+			t.Run(engine+"/"+producer, func(t *testing.T) {
+				e := newEdgeContractFixture(t, engine)
+				from, spawner, externalChild := e.create(t, "external-membership-source"), e.create(t, "external-membership-spawner"), e.create(t, "external-membership-child")
+				p := e.probe(producer, "external-membership-parent")
+				edgeRequireSuccess(t, e.call(t, p, edgeTypedLinkParams(producer, model.OpLink, externalChild, spawner, "parent-child", model.LinkTargetExternal)))
+				wait := e.probe(producer, "external-membership-waits")
+				params := map[string]any{"from": from, "to": spawner, "kind": "waits-for", "metadata": map[string]any{"gate": "all-children"}}
+				if producer == "tx.apply" {
+					params = map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{{Kind: model.OpLink, Link: &model.LinkOp{From: from, To: spawner, LinkKind: "waits-for", Metadata: &model.LinkMetadata{Gate: "all-children"}}}}}}
+				}
+				edgeRequireSuccess(t, e.call(t, wait, params))
+				edgeReadyContains(t, e, from.ID, true)
+				// The opaque external child edge cannot make these local beads
+				// relatives or complete a local scheduling cycle.
+				block := e.probe(producer, "external-membership-local-block")
+				edgeRequireSuccess(t, e.call(t, block, edgeTypedLinkParams(producer, model.OpLink, spawner, externalChild, "blocks", "")))
+				edgeReadyContains(t, e, from.ID, true)
+				final := e.snapshot(t)
+				e.f.reopen(t)
+				edgeRequireStateEqual(t, final, e.snapshot(t))
+				edgeReadyContains(t, e, from.ID, true)
+			})
 		}
 	}
 }

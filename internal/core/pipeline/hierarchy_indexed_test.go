@@ -495,10 +495,7 @@ func TestIndexedGraphRestoredUnrelatedInvalidComponentStillRefuses(t *testing.T)
 				u.Links = []Link{{Kind: "blocks", To: model.Ref{ID: "v"}}}
 				v.Links = []Link{{Kind: "blocks", To: model.Ref{ID: "u"}}}
 			} else {
-				// A valid unresolved external target is a retained edge. Keep
-				// this malformed component refusal focused on an ID outside the
-				// canonical sentinel domain.
-				u.Links = []Link{{Kind: "custom-link", To: model.Ref{ID: "bad/target"}}}
+				u.Links = []Link{{Kind: "custom-link", To: model.Ref{ID: "missing"}}}
 			}
 			for id, doc := range map[string]Document{"u": u, "v": v} {
 				row := r.records[id]

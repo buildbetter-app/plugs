@@ -112,9 +112,11 @@ func TestUnresolvedExternalEdgeIsRetainedButDeletedLocalTargetIsRefused(t *testi
 	seed := apply(t, w, model.ChangeSet{Ops: []model.Op{create("source"), create("local-target")}}, meta(31))
 	source, localTarget := seed.Results[0].Ref, seed.Results[1].Ref
 	external := model.RefByID("foreign-prefix-404", model.Natural64(0))
-	linked := apply(t, w, model.ChangeSet{Ops: []model.Op{link(source, external, "blocks")}}, meta(32))
+	externalOp := link(source, external, "blocks")
+	externalOp.Link.TargetKind = model.LinkTargetExternal
+	linked := apply(t, w, model.ChangeSet{Ops: []model.Op{externalOp}}, meta(32))
 	doc, err := DecodeDocument(linked.Results[0].Record)
-	if err != nil || len(doc.Links) != 1 || doc.Links[0].To.ID != external.ID || doc.Links[0].Kind != "blocks" {
+	if err != nil || len(doc.Links) != 1 || doc.Links[0].To.ID != external.ID || doc.Links[0].Kind != "blocks" || doc.Links[0].TargetKind != model.LinkTargetExternal {
 		t.Fatalf("unresolved external edge was not retained: links=%+v err=%v", doc.Links, err)
 	}
 	// A source edge to a local target cannot be hidden by deleting the target
