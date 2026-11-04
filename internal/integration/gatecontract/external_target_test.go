@@ -62,7 +62,7 @@ func TestB14ExternalTargetShapeRefusalsAcrossBothProducers(t *testing.T) {
 	eachStore(t, func(t *testing.T, f *fixture) {
 		source, _ := f.create(map[string]any{"title": "external waiter"}, "")
 		for _, producer := range []string{"bead.link", "tx.apply"} {
-			for _, marker := range []any{"", nil, "wisp", "future", 1} {
+			for _, marker := range []any{"", nil, "workflow", "future", 1} {
 				method, params := targetWrite(producer, map[string]any{"from": ref(source), "to": ref("missing-spawner"), "targetKind": marker, "kind": "blocks"})
 				f.refuse(method, params, "invalid_params")
 			}
