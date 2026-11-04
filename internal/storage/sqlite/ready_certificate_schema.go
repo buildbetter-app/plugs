@@ -14,6 +14,12 @@ CREATE TABLE IF NOT EXISTS ready_order_fence (
  root_hash TEXT, root_count TEXT, eligibility_digest TEXT, publication_digest TEXT
 );
 CREATE TABLE IF NOT EXISTS ready_order_changes (domain TEXT NOT NULL,key TEXT NOT NULL,PRIMARY KEY(domain,key));
+-- Quiet heartbeat checkpoints cannot introduce a durable claim. EffectiveLease
+-- ignores them when the source Lease is nil; a source Lease makes Ready Unsafe.
+-- Removing a claim is a maintained source mutation and may restore coverage.
+DROP TRIGGER IF EXISTS ready_order_checkpoints_insert;
+DROP TRIGGER IF EXISTS ready_order_checkpoints_update;
+DROP TRIGGER IF EXISTS ready_order_checkpoints_delete;
 INSERT OR IGNORE INTO ready_order_fence(singleton,generation,dirty,ever_source) VALUES(1,'unproved',1,0);
 CREATE TRIGGER IF NOT EXISTS ready_order_records_insert BEFORE INSERT ON records BEGIN
  INSERT OR IGNORE INTO ready_order_changes(domain,key) VALUES('source',NEW.key); UPDATE ready_order_fence SET ever_source=1 WHERE singleton=1 AND ever_source=0; UPDATE ready_order_fence SET generation=lower(hex(randomblob(32))),dirty=1 WHERE singleton=1 AND dirty=0;
@@ -50,15 +56,6 @@ CREATE TRIGGER IF NOT EXISTS ready_order_objects_update BEFORE UPDATE ON objects
 END;
 CREATE TRIGGER IF NOT EXISTS ready_order_objects_delete BEFORE DELETE ON objects BEGIN
  UPDATE ready_order_fence SET ever_source=1 WHERE singleton=1 AND ever_source=0; UPDATE ready_order_fence SET generation=lower(hex(randomblob(32))),dirty=1 WHERE singleton=1 AND dirty=0;
-END;
-CREATE TRIGGER IF NOT EXISTS ready_order_checkpoints_insert BEFORE INSERT ON checkpoints BEGIN
- UPDATE ready_order_fence SET generation=lower(hex(randomblob(32))),dirty=1 WHERE singleton=1 AND dirty=0;
-END;
-CREATE TRIGGER IF NOT EXISTS ready_order_checkpoints_update BEFORE UPDATE ON checkpoints BEGIN
- UPDATE ready_order_fence SET generation=lower(hex(randomblob(32))),dirty=1 WHERE singleton=1 AND dirty=0;
-END;
-CREATE TRIGGER IF NOT EXISTS ready_order_checkpoints_delete BEFORE DELETE ON checkpoints BEGIN
- UPDATE ready_order_fence SET generation=lower(hex(randomblob(32))),dirty=1 WHERE singleton=1 AND dirty=0;
 END;
 CREATE TRIGGER IF NOT EXISTS ready_order_core_sessions_insert BEFORE INSERT ON core_sessions BEGIN
  UPDATE ready_order_fence SET generation=lower(hex(randomblob(32))),dirty=1 WHERE singleton=1 AND dirty=0;

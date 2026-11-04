@@ -12,6 +12,9 @@ CREATE TABLE IF NOT EXISTS plug_postgres.ready_order_fence (
  root_hash text,root_count numeric(20,0),eligibility_digest text,publication_digest text
 );
 CREATE TABLE IF NOT EXISTS plug_postgres.ready_order_changes (domain text NOT NULL,key bytea NOT NULL,PRIMARY KEY(domain,key));
+-- Checkpoint overlays only extend a durable source Lease. That source already
+-- makes the complete Ready domain Unsafe; an absent Lease ignores the overlay.
+DROP TRIGGER IF EXISTS a_ready_order_mutated ON plug_postgres.checkpoints;
 INSERT INTO plug_postgres.ready_order_fence(singleton) VALUES(true) ON CONFLICT DO NOTHING;
 CREATE OR REPLACE FUNCTION plug_postgres.ready_order_mutated() RETURNS trigger LANGUAGE plpgsql AS $ready$
 BEGIN
@@ -43,7 +46,7 @@ $ready$;
 DO $ready$
 DECLARE watched text;
 BEGIN
- FOREACH watched IN ARRAY ARRAY['records','versions','states','checkpoints','core_sessions','hierarchy_index_coverage','hierarchy_source_current','hierarchy_source_history','graph_link_index_coverage','graph_link_source_current','graph_link_current','graph_link_source_history','graph_link_history','selection_coverage','selection_sources','selection_rows','selection_facts'] LOOP
+ FOREACH watched IN ARRAY ARRAY['records','versions','states','core_sessions','hierarchy_index_coverage','hierarchy_source_current','hierarchy_source_history','graph_link_index_coverage','graph_link_source_current','graph_link_current','graph_link_source_history','graph_link_history','selection_coverage','selection_sources','selection_rows','selection_facts'] LOOP
   IF NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid=('plug_postgres.'||watched)::regclass AND tgname='a_ready_order_mutated' AND NOT tgisinternal) THEN
    EXECUTE format('CREATE TRIGGER a_ready_order_mutated BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON plug_postgres.%I FOR EACH STATEMENT EXECUTE FUNCTION plug_postgres.ready_order_mutated()',watched);
   END IF;

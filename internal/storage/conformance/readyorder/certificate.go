@@ -87,6 +87,61 @@ func (f *CertificateFixture) Update(t *testing.T) {
 	}
 }
 
+// PublishEmptyCertificate exercises the real empty control publication. It
+// returns the public selector result, allowing an upgrade fixture to require
+// refusal without treating metadata publication itself as a failed write.
+func PublishEmptyCertificate(t *testing.T, s driver.Store) (driver.ReadyOrderResult, error) {
+	t.Helper()
+	ctx := context.Background()
+	m, err := s.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := s.Lease(ctx, "ready-empty-proof", driver.LeaseTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release(ctx)
+	r, err := s.Read(ctx, driver.View{Incarnation: m.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := pipeline.PrepareReadyProjection(ctx, r, nil, nil, nil)
+	if err != nil || !plan.Available() {
+		t.Fatal("empty prepare", err)
+	}
+	_ = r.Close()
+	keys := plan.LockKeys()
+	requests := make(driver.LockSet, len(keys))
+	for i, key := range keys {
+		requests[i] = driver.LockRequest{Key: key, Mode: driver.LockUpdate}
+	}
+	tx, err := s.Write(ctx, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Close()
+	if _, err = tx.Lock(ctx, requests); err != nil {
+		t.Fatal(err)
+	}
+	head, err := tx.Head(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, _ := head.Uint64()
+	if _, err = plan.Publish(ctx, tx, model.Natural64(n+1)); err != nil {
+		t.Fatal(err)
+	}
+	if err = plan.Finalize(ctx, tx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Commit(ctx, driver.ChangesetHeader{Incarnation: m.Incarnation, Kind: model.ChangesetDerived, Principal: model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}, LockKeys: keys}); err != nil {
+		t.Fatal(err)
+	}
+	f := CertificateFixture{Store: s, Ontology: service.NewOntology(nil)}
+	return f.Select(ctx)
+}
+
 // RunCertificateOverlay retains the last-stage guard and tests failed staging
 // without weakening write admission or transaction overlay refusal.
 func RunCertificateOverlay(t *testing.T, factory func(*testing.T) driver.Store) {

@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"errors"
 	"github.com/buildbetter-app/plugs/internal/storage/conformance/readyorder"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"path/filepath"
@@ -56,5 +57,67 @@ func TestReadyOrderPhysicalRawMutation(t *testing.T) {
 func TestReadyOrderPhysicalOverlay(t *testing.T) {
 	readyorder.RunCertificateOverlay(t, func(t *testing.T) driver.Store {
 		return openStore(t, context.Background(), filepath.Join(t.TempDir(), "proof.db"))
+	})
+}
+
+func TestReadyOrderPhysicalHiddenSource(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t, context.Background(), filepath.Join(t.TempDir(), "proof.db"))
+	f := readyorder.NewCertificateFixture(t, s)
+	if _, err := s.db.ExecContext(ctx, `CREATE TRIGGER ready_test_hidden_source AFTER UPDATE ON records BEGIN INSERT OR REPLACE INTO records(key,data) VALUES('raw-intruder',NEW.data); END;`); err != nil {
+		t.Fatal(err)
+	}
+	f.Update(t)
+	f.RequireUnavailable(t)
+}
+
+func TestReadyOrderPhysicalEmptyBootstrap(t *testing.T) {
+	t.Run("empty", func(t *testing.T) {
+		s := openStore(t, context.Background(), filepath.Join(t.TempDir(), "proof.db"))
+		result, err := readyorder.PublishEmptyCertificate(t, s)
+		if err != nil || result.Total != 0 {
+			t.Fatalf("empty startup did not certify: %+v %v", result, err)
+		}
+	})
+	t.Run("preexisting_source_image", func(t *testing.T) {
+		ctx := context.Background()
+		path := filepath.Join(t.TempDir(), "legacy.db")
+		value, err := (Driver{}).Open(ctx, driver.Config{DSN: path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		old := value.(*Store)
+		m, err := old.Meta(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Reproduce an additive upgrade: physical source images predate installation
+		// of Ready's fence. Coverage metadata alone is allowed; populated images are not.
+		if _, err = old.db.ExecContext(ctx, `DROP TRIGGER ready_order_selection_source_history_insert`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = old.db.ExecContext(ctx, `INSERT INTO selection_source_history(incarnation,branch,source_key,start_revision,source_revision,source_present,source_digest) VALUES(?,?,?,?,?,1,'unproved')`, m.Incarnation, revKey(0), "phantom", revKey(0), revKey(0)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = old.db.ExecContext(ctx, `DELETE FROM ready_order_fence`); err != nil {
+			t.Fatal(err)
+		}
+		if err = old.Close(); err != nil {
+			t.Fatal(err)
+		}
+		value, err = (Driver{}).Open(ctx, driver.Config{DSN: path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := value.(*Store)
+		defer s.Close()
+		var virgin bool
+		if err = s.db.QueryRowContext(ctx, `SELECT ever_source=0 FROM ready_order_fence`).Scan(&virgin); err != nil || !virgin {
+			t.Fatal("fixture must exercise fresh unproved lifetime", virgin, err)
+		}
+		result, err := readyorder.PublishEmptyCertificate(t, s)
+		if !errors.Is(err, driver.ErrUnsupported) {
+			t.Fatalf("populated upgrade certified an empty tree: %+v %v", result, err)
+		}
 	})
 }
