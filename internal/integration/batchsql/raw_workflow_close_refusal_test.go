@@ -401,6 +401,18 @@ func (h *rawWorkflowHTTP) requireGCBait(t *testing.T, state rawWorkflowState, ac
 	t.Fatal("fixture has no expired terminal receipt without an active run; accidental provider-load GC would be unobservable")
 }
 
+// These positive controls create ordinary priority-two issues at the fixed
+// fixture clock. B01 republishes their exact rank image on every body mutation,
+// including close; this expectation does not call the production classifier.
+func rawWorkflowExpectedRank(t *testing.T, id string, revision model.Revision, at time.Time) driver.DerivedRow {
+	t.Helper()
+	value, err := json.Marshal(pipeline.ReadySortKey{Bucket: 0, Rank: 2, CreatedAt: at, RankedAt: at, Revision: revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return driver.DerivedRow{Key: "ready/" + id, Value: value}
+}
+
 func TestRawWorkflowCloseRefusalPreservesBothPlanesAcrossStores(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
@@ -459,6 +471,11 @@ func TestRawWorkflowCloseRefusalPreservesBothPlanesAcrossStores(t *testing.T) {
 				if err != nil || descendant != ancestor || depth != 0 || descendant != first.ID && descendant != other.ID {
 					t.Fatalf("root-create derived control: row=%+v err=%v", row, err)
 				}
+			}
+			wantInitialRanks := []driver.DerivedRow{rawWorkflowExpectedRank(t, first.ID, created.Revision, f.now()), rawWorkflowExpectedRank(t, other.ID, created.Revision, f.now())}
+			sort.Slice(wantInitialRanks, func(i, j int) bool { return wantInitialRanks[i].Key < wantInitialRanks[j].Key })
+			if !reflect.DeepEqual(control.Derived[driver.DerivedSortKey], wantInitialRanks) {
+				t.Fatal("root-create must publish exactly both fixed-clock priority-two ranks")
 			}
 			if engine != "memory" {
 				h.requireGCBait(t, h.state(t, refusedKey), operational, secondOperational)
@@ -540,8 +557,24 @@ func TestRawWorkflowCloseRefusalPreservesBothPlanesAcrossStores(t *testing.T) {
 			if reply.Meta.Replayed || newHead != oldHead+1 || commit.Revision.String() != after.Meta.Head.String() || len(commit.Results) != 1 || commit.Results[0].Ref.ID != first.ID || len(after.Log) != len(before.Log)+1 || after.Receipt == nil {
 				t.Fatal("corrected durable prefix did not commit exactly once under the refused key")
 			}
-			if len(after.Versions[first.ID]) != len(before.Versions[first.ID])+1 || !reflect.DeepEqual(before.Versions[other.ID], after.Versions[other.ID]) || !reflect.DeepEqual(before.Checkpoint, after.Checkpoint) || len(after.Log[len(after.Log)-1].Events) == 0 || !reflect.DeepEqual(before.Derived, after.Derived) {
-				t.Fatal("positive close must change its version/event state and conserve derived rows, the control bead and workflow checkpoint")
+			wantClosedDerived := make(map[driver.DerivedTable][]driver.DerivedRow, len(before.Derived))
+			for table, rows := range before.Derived {
+				wantClosedDerived[table] = rows
+			}
+			wantClosedDerived[driver.DerivedSortKey] = append([]driver.DerivedRow(nil), before.Derived[driver.DerivedSortKey]...)
+			closedRank := rawWorkflowExpectedRank(t, first.ID, commit.Revision, f.now())
+			replacedRank := 0
+			for i, row := range wantClosedDerived[driver.DerivedSortKey] {
+				if row.Key == closedRank.Key {
+					if !reflect.DeepEqual(row, rawWorkflowExpectedRank(t, first.ID, created.Revision, f.now())) {
+						t.Fatal("refusals changed the original durable rank")
+					}
+					wantClosedDerived[driver.DerivedSortKey][i] = closedRank
+					replacedRank++
+				}
+			}
+			if replacedRank != 1 || len(after.Versions[first.ID]) != len(before.Versions[first.ID])+1 || !reflect.DeepEqual(before.Versions[other.ID], after.Versions[other.ID]) || !reflect.DeepEqual(before.Checkpoint, after.Checkpoint) || len(after.Log[len(after.Log)-1].Events) == 0 || !reflect.DeepEqual(wantClosedDerived, after.Derived) {
+				t.Fatal("positive close must change its version/event state and exact rank revision while conserving every other derived row, the control bead and workflow checkpoint")
 			}
 			row := rawWorkflowRow(t, after, first.ID)
 			doc := decodeDocument(t, row)
@@ -597,8 +630,16 @@ func TestRawWorkflowCloseRefusalPreservesBothPlanesAcrossStores(t *testing.T) {
 				}
 				retainedDerived[driver.DerivedAncestorClosure] = append(retainedDerived[driver.DerivedAncestorClosure], row)
 			}
-			if foundDerived != 1 || !reflect.DeepEqual(aliasBefore.Derived, retainedDerived) {
-				t.Fatal("resolved-alias create must add exactly its self-row and preserve every other derived row/table")
+			wantAliasDerived := make(map[driver.DerivedTable][]driver.DerivedRow, len(aliasBefore.Derived))
+			for table, rows := range aliasBefore.Derived {
+				wantAliasDerived[table] = rows
+			}
+			wantAliasDerived[driver.DerivedSortKey] = append(append([]driver.DerivedRow(nil), aliasBefore.Derived[driver.DerivedSortKey]...), rawWorkflowExpectedRank(t, aliasRow.Ref.ID, aliasCommit.Revision, f.now()))
+			sort.Slice(wantAliasDerived[driver.DerivedSortKey], func(i, j int) bool {
+				return wantAliasDerived[driver.DerivedSortKey][i].Key < wantAliasDerived[driver.DerivedSortKey][j].Key
+			})
+			if foundDerived != 1 || !reflect.DeepEqual(wantAliasDerived, retainedDerived) {
+				t.Fatal("resolved-alias create must add exactly its self-row and fixed-clock priority-two rank and preserve every other derived row/table")
 			}
 			if aliasDoc.Fields["status"] != "done" || len(aliasDoc.Comments) != 1 || aliasDoc.Comments[0].Body != "completed once" || aliasRow.Revision.String() != aliasCommit.Revision.String() || len(aliasAfter.Versions[aliasRow.Ref.ID]) != 1 {
 				t.Fatalf("resolved ordinary alias close did not commit its terminal image once: %+v", aliasDoc)

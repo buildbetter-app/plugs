@@ -130,12 +130,14 @@ func workflowCursorIDs(items []workflowplugin.ItemView) []string {
 func workflowCursorCore(t *testing.T, f *workflowClaimNextFixture) []string {
 	t.Helper()
 	ids := []string{"00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"}
+	// These core items are created at the fixture's declared clock.
+	createdAt := f.now.UTC()
 	changes := make([]conformance.FixtureChange, len(ids))
 	for i, id := range ids {
 		changes[i] = conformance.FixtureChange{Ref: model.RefByID(id, model.Natural64(0)), Kind: "bead", Op: model.OpCreate,
-			Body: []byte(fmt.Sprintf(`{"id":%q,"type":"issue","project":"project","fields":{"title":"core item","status":"todo","priority":0}}`, id))}
+			Body: []byte(fmt.Sprintf(`{"id":%q,"type":"issue","project":"project","createdAt":%q,"fields":{"title":"core item","status":"todo","priority":0}}`, id, createdAt.Format(time.RFC3339Nano)))}
 	}
-	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, changes); err != nil {
+	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{Time: createdAt}, changes); err != nil {
 		t.Fatal(err)
 	}
 	return ids
@@ -352,9 +354,10 @@ func TestWorkflowReadyGuardedRetainsBindingAcrossProviderPages(t *testing.T) {
 func TestWorkflowGuardedCursorRefusesCoreMembershipChange(t *testing.T) {
 	f := newWorkflowCursorFixture(t)
 	coreID := "00000000-0000-4000-8000-000000000009"
-	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{
+	createdAt := f.now.UTC()
+	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{Time: createdAt}, []conformance.FixtureChange{{
 		Ref: model.RefByID(coreID, model.Natural64(0)), Kind: "bead", Op: model.OpCreate,
-		Body: []byte(fmt.Sprintf(`{"id":%q,"type":"issue","project":"project","fields":{"title":"core item","status":"todo","priority":0}}`, coreID)),
+		Body: []byte(fmt.Sprintf(`{"id":%q,"type":"issue","project":"project","createdAt":%q,"fields":{"title":"core item","status":"todo","priority":0}}`, coreID, createdAt.Format(time.RFC3339Nano))),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -365,9 +368,9 @@ func TestWorkflowGuardedCursorRefusesCoreMembershipChange(t *testing.T) {
 	}
 	// Change only fixture content. This is a read-pagination regression;
 	// the read-only caller and fixed CP7 policy do not permit bead.close.
-	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{
+	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{Time: createdAt}, []conformance.FixtureChange{{
 		Ref: model.RefByID(coreID, model.Natural64(0)), Kind: "bead", Op: model.OpPatch,
-		Body: []byte(fmt.Sprintf(`{"id":%q,"type":"issue","project":"project","fields":{"title":"core item","status":"done","priority":0}}`, coreID)),
+		Body: []byte(fmt.Sprintf(`{"id":%q,"type":"issue","project":"project","createdAt":%q,"fields":{"title":"core item","status":"done","priority":0}}`, coreID, createdAt.Format(time.RFC3339Nano))),
 	}}); err != nil {
 		t.Fatal(err)
 	}

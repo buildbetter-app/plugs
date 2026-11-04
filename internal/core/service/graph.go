@@ -48,6 +48,11 @@ func decodeDocument(raw []byte) (pipeline.Document, error) {
 			return doc, failure("invalid_params", "invalid stored parent")
 		}
 	}
+	parent, err := pipeline.HierarchyParent(doc)
+	if err != nil {
+		return doc, err
+	}
+	doc.Parent = parent
 	// Preserve member presence before Go zero values erase null/empty provenance.
 	var envelope struct {
 		Comments  json.RawMessage `json:"comments"`
@@ -255,19 +260,6 @@ func (o *Ontology) readyDependencies(doc pipeline.Document, graph map[string]sto
 	if err != nil || !ready {
 		return ready, err
 	}
-	terminal := func(target storedBead) bool {
-		effective := o.effective(target.doc.Project)
-		return effective.SatisfiesBlocks(state(target.doc).Status)
-	}
-	for _, link := range doc.Links {
-		if link.Kind != "parent-child" {
-			continue
-		}
-		target, exists := graph[link.To.ID]
-		if !exists || !link.To.IsID() || !link.To.Branch.IsZero() || !terminal(target) {
-			return false, nil
-		}
-	}
 	return o.readyAncestors(doc, graph)
 }
 
@@ -275,8 +267,14 @@ func (o *Ontology) readyDependencies(doc pipeline.Document, graph map[string]sto
 // It deliberately leaves close and settlement's direct blocker guard unchanged.
 func (o *Ontology) readyAncestors(doc pipeline.Document, graph map[string]storedBead) (bool, error) {
 	seen := map[string]bool{doc.ID: true}
-	for doc.Parent != nil {
-		parent := doc.Parent
+	for {
+		parent, err := pipeline.HierarchyParent(doc)
+		if err != nil {
+			return false, err
+		}
+		if parent == nil {
+			return true, nil
+		}
 		row, exists := graph[parent.ID]
 		if !exists || !parent.IsID() || !parent.Branch.IsZero() || seen[parent.ID] {
 			return false, nil
@@ -295,7 +293,6 @@ func (o *Ontology) readyAncestors(doc pipeline.Document, graph map[string]stored
 		seen[parent.ID] = true
 		doc = row.doc
 	}
-	return true, nil
 }
 
 func beadValue(row storedBead) (Bead, error) {

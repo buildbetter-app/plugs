@@ -1,0 +1,70 @@
+{
+  "format": "plug.s1.b01.native-inputs.v1",
+  "consumer": "686704bda3e9dd3f7ba945555a2c6f087dbd2ce3",
+  "consumerTree": "3c585962fd6590fe7e1c47a2280e9c3d944009bd",
+  "helperSource": "43c0f2410ccb24062b8bd1bd073aeb29ef21288f",
+  "helperTree": "05153e1c051b1887fa875b53739adc036ae8cf16",
+  "source": "305fec3afac83224f46c54f982959fd99db136fa",
+  "sourceTree": "48e3545b7c5c6a5cdc0119e34dfa379354456a6e",
+  "sourceManifest": "6c2e549b54b472790d57a27370821d69159d4d6dc817e5bf38dbc56c856c8420",
+  "sourceEntries": 5141,
+  "binarySHA256": "86f3d846b437daefd892db8ddf62d9b725e4bb0424900b0a45f7f25c0e79a3a6",
+  "binaryBytes": 161298184,
+  "buildRun": "41610284344",
+  "profile": "plug-public-native/1",
+  "manifestSHA256": "4aa497bb1dfb70bf85371daa9e388b5b0ae84130f83f45a49816559d4698c0db",
+  "workflowSHA": "5b1546459abe9c21fc6045380ad2bb25df8cbf99",
+  "descriptor": "41610284344:13218208758:4aa497bb1dfb70bf85371daa9e388b5b0ae84130f83f45a49816559d4698c0db",
+  "adoptedIndefiniteDecision": "b0d8be0f-3bde-4dbc-b4c7-51cb125c7511",
+  "vectors": [
+    {
+      "id": "B01-parent-timed",
+      "mode": "timed",
+      "sourceIds": {
+        "parent": "b01-timedparent",
+        "child": "b01-timedchild",
+        "grandchild": "b01-timedgrandchild",
+        "free": "b01-timedfree"
+      },
+      "until": "2099-01-01",
+      "runs": [
+        {
+          "id": "run-a",
+          "database": "b01_timed_a"
+        },
+        {
+          "id": "run-b",
+          "database": "b01_timed_b"
+        }
+      ]
+    },
+    {
+      "id": "B01-parent-indefinite",
+      "mode": "indefinite",
+      "sourceIds": {
+        "parent": "b01-indefiniteparent",
+        "child": "b01-indefinitechild",
+        "grandchild": "b01-indefinitegrandchild",
+        "free": "b01-indefinitefree"
+      },
+      "until": null,
+      "runs": [
+        {
+          "id": "run-a",
+          "database": "b01_indefinite_a"
+        },
+        {
+          "id": "run-b",
+          "database": "b01_indefinite_b"
+        }
+      ]
+    }
+  ],
+  "argvDeltaFromV3": "One actual public dolt commit command after readback and before the quiesced inventory per fresh store. Source305 CommitAll includes config and tolerates clean no-op; native capture requires a clean working set. 24 CLI commands per store,96 total. V3 proposed92 stays immutable.",
+  "clockScope": "Raw wall-clock command windows only; native Go time.Now and SQL UTC_TIMESTAMP are uncontrolled. No expiry/wake/48h/B05/full-card claim.",
+  "qualification": "AUTHORED_NOT_RUN; manual target requires actual reviewed prepared admission and applicable helper originals.",
+  "workflowBranch": "codex/b1c-native-producer-d70c-20261102",
+  "label": "b1c-native-d70c-20261102",
+  "artifactDigest": "sha256:c6e9bf1b87a115be24eb17a0e80964ab92032b2c29573c0ccc78503a41fb3e92",
+  "artifactSize": 111644381
+}
