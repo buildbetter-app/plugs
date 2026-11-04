@@ -384,6 +384,12 @@ internal/integration/auditsql/audit_sql_test.go
 internal/integration/auditsql/engine_test.go
 internal/integration/auditsql/faults_test.go
 internal/integration/auditsql/fixture_test.go
+internal/integration/b02publicnotices/BUILD.bazel
+internal/integration/b02publicnotices/README.md
+internal/integration/b02publicnotices/authority_concurrency_test.go
+internal/integration/b02publicnotices/categories_test.go
+internal/integration/b02publicnotices/engine_test.go
+internal/integration/b02publicnotices/fixture_test.go
 internal/integration/b03catalog/BUILD.bazel
 internal/integration/b03catalog/README.md
 internal/integration/b03catalog/archival_test.go
@@ -419,6 +425,8 @@ internal/integration/batchsql/allocator_archive_test.go
 internal/integration/batchsql/allocator_snapshot_test.go
 internal/integration/batchsql/b01_close_ancestry_test.go
 internal/integration/batchsql/b01_public_hierarchy_test.go
+internal/integration/batchsql/b02_public_dependency_helpers_test.go
+internal/integration/batchsql/b02_public_dependency_refusal_test.go
 internal/integration/batchsql/b02_public_graph_test.go
 internal/integration/batchsql/batch_test.go
 internal/integration/batchsql/child_allocator_test.go
