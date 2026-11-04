@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -36,7 +37,7 @@ func PrepareReadyProjection(ctx context.Context, r interface {
 	Snapshot() driver.View
 	Observe(context.Context, []driver.LockKey) ([]driver.LockState, error)
 }, sources []driver.Record, deleted []driver.Record, evaluator ReadyProjectionEvaluator) (*ReadyProjectionPlan, error) {
-	if evaluator == nil {
+	if evaluator == nil && (len(sources) != 0 || len(deleted) != 0) {
 		return &ReadyProjectionPlan{}, nil
 	}
 	mutations := make([]readyindex.Mutation, 0, len(sources)+len(deleted))
@@ -67,9 +68,16 @@ func PrepareReadyProjection(ctx context.Context, r interface {
 	}
 	delta, err := readyindex.Prepare(ctx, r, mutations)
 	if err != nil {
+		if errors.Is(err, driver.ErrUnsupported) {
+			return &ReadyProjectionPlan{}, nil
+		}
 		return nil, err
 	}
 	return &ReadyProjectionPlan{delta: delta}, nil
+}
+
+func (p *ReadyProjectionPlan) Available() bool {
+	return p != nil && p.delta != nil && p.delta.Available()
 }
 func (p *ReadyProjectionPlan) LockKeys() []driver.LockKey {
 	if p == nil || p.delta == nil {
@@ -80,6 +88,13 @@ func (p *ReadyProjectionPlan) LockKeys() []driver.LockKey {
 func (p *ReadyProjectionPlan) Publish(ctx context.Context, tx driver.WriteTx, revision model.Revision) (driver.ReadyOrderWork, error) {
 	if p == nil || p.delta == nil {
 		return driver.ReadyOrderWork{}, nil
+	}
+	// An intervening unmaintained publication may advance Head without
+	// changing optional metadata. Refuse that coverage before staging; the
+	// ordinary source transaction still commits and the old marker stays stale.
+	view := tx.Snapshot()
+	if view.At == nil || p.delta.BaseRevision().String() != view.At.String() {
+		return driver.ReadyOrderWork{}, p.delta.BumpPredicates(ctx, tx)
 	}
 	return p.delta.Publish(ctx, tx, revision)
 }
@@ -110,5 +125,30 @@ func (p *prepared) prepareReadyProjection(ctx context.Context, o any) (*ReadyPro
 		record.Body = body
 		sources = append(sources, record)
 	}
-	return PrepareReadyProjection(ctx, p.snapshot, sources, deleted, evaluator)
+	// Optional metadata has its own optimistic read set. Keep actual work in
+	// the existing budget, but merge observations only when maintaining a
+	// complete projection. Corrupt/unavailable optional state cannot add stale
+	// read conflicts or become a new ordinary-write refusal.
+	isolated := &snapshotReader{reader: p.snapshot.reader, reads: &readSet{states: map[string]driver.LockState{}}}
+	reader := readyProjectionReader{parent: p.snapshot, isolated: isolated}
+	plan, err := PrepareReadyProjection(ctx, reader, sources, deleted, evaluator)
+	if err != nil || !plan.Available() {
+		return plan, err
+	}
+	p.snapshot.reads.mu.Lock()
+	for key, state := range isolated.reads.states {
+		p.snapshot.reads.states[key] = state
+	}
+	p.snapshot.reads.mu.Unlock()
+	return plan, nil
+}
+
+type readyProjectionReader struct{ parent, isolated *snapshotReader }
+
+func (r readyProjectionReader) Snapshot() driver.View { return r.parent.Snapshot() }
+func (r readyProjectionReader) Observe(ctx context.Context, keys []driver.LockKey) ([]driver.LockState, error) {
+	if err := r.parent.budget(len(keys), 0); err != nil {
+		return nil, err
+	}
+	return r.isolated.observe(ctx, keys)
 }
