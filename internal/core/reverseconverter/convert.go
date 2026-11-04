@@ -436,6 +436,9 @@ func manifestEdgeVersion(manifest Manifest) int {
 
 func validateDumpShape(dump Dump, report *Report) error {
 	m := dump.Manifest
+	if m.SourceFieldsContract != "" && m.SourceFieldsContract != dumpformat.IssueSourceFieldsContract {
+		return refusal("unsupported physical source fields contract")
+	}
 	if m.Format != PlugDumpFormat || m.Schema != 1 || m.Reference != BeadsReference || m.MainVersion != 72 || m.IgnoredVersion != 28 || m.StoreID == "" || m.Machine == "" || m.Scope != "offline-head-and-source-archives" {
 		return refusal("unsupported plug-dump manifest")
 	}

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1056,6 +1057,94 @@ func canonicalFixtureBytes(t *testing.T) []byte {
 		t.Fatalf("read canonical fixture %s: %v", path, err)
 	}
 	return data
+}
+
+// This rewrites a detached contract control, never a native producer capture.
+func TestReverseArchiveRetainsSeparatePhysicalSourceContract(t *testing.T) {
+	original := canonicalFixtureBytes(t)
+	baseline, err := ConvertArchive(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name   string
+		marker any
+		valid  bool
+	}{
+		{"known", dumpformat.IssueSourceFieldsContract, true},
+		{"unknown", "beads-issues-source-fields/2", false},
+		{"empty", "", false},
+		{"null", nil, false},
+		{"number", json.Number("1"), false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			reader, writer := tar.NewReader(bytes.NewReader(original)), tar.NewWriter(&output)
+			for {
+				header, err := reader.Next()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				member, err := io.ReadAll(reader)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if header.Name == "manifest.json" {
+					var manifest map[string]any
+					decoder := json.NewDecoder(bytes.NewReader(member))
+					decoder.UseNumber()
+					if err := decoder.Decode(&manifest); err != nil {
+						t.Fatal(err)
+					}
+					manifest["source_fields_contract"] = test.marker
+					member, err = json.Marshal(manifest)
+					if err != nil {
+						t.Fatal(err)
+					}
+					member = append(member, '\n')
+					header.Size = int64(len(member))
+				}
+				if err := writer.WriteHeader(header); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := writer.Write(member); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			dump, err := ReadBytes(output.Bytes())
+			if !test.valid {
+				if err == nil {
+					t.Fatal("invalid source contract admitted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if dump.Manifest.SourceFieldsContract != dumpformat.IssueSourceFieldsContract || manifestEdgeVersion(dump.Manifest) != 1 {
+				t.Fatal("source-field contract lost or conflated with edge version")
+			}
+			result, err := Convert(dump)
+			if err != nil || !bytes.Equal(result.JSONL, baseline.JSONL) {
+				t.Fatalf("marker alone changed ordinary JSONL projection: %v", err)
+			}
+		})
+	}
+}
+
+func TestReverseDetachedUnknownPhysicalSourceContractRefuses(t *testing.T) {
+	dump := fixtureDump()
+	dump.Manifest.SourceFieldsContract = "beads-issues-source-fields/2"
+	result, err := Convert(dump)
+	if err == nil || len(result.JSONL) != 0 {
+		t.Fatal("unknown detached physical contract returned output")
+	}
 }
 
 func makeArchive(t *testing.T, records []byte, mode int64, typeflag byte, kind string) []byte {

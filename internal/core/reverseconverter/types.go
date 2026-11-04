@@ -44,21 +44,22 @@ type File struct {
 }
 
 type Manifest struct {
-	Format         string            `json:"format"`
-	Schema         int               `json:"schema"`
-	Reference      string            `json:"beads_reference"`
-	StoreID        string            `json:"store_id"`
-	Machine        string            `json:"machine"`
-	MainVersion    int               `json:"main_version"`
-	IgnoredVersion int               `json:"ignored_version"`
-	Scope          string            `json:"scope"`
-	History        string            `json:"history"`
-	Projects       []Project         `json:"projects"`
-	Kinds          []Kind            `json:"kind_registry"`
-	Files          map[string]File   `json:"files"`
-	Sources        []json.RawMessage `json:"sources"`
-	Warnings       []string          `json:"warnings"`
-	Verification   map[string]string `json:"verification"`
+	Format               string            `json:"format"`
+	Schema               int               `json:"schema"`
+	Reference            string            `json:"beads_reference"`
+	StoreID              string            `json:"store_id"`
+	Machine              string            `json:"machine"`
+	MainVersion          int               `json:"main_version"`
+	IgnoredVersion       int               `json:"ignored_version"`
+	Scope                string            `json:"scope"`
+	History              string            `json:"history"`
+	Projects             []Project         `json:"projects"`
+	Kinds                []Kind            `json:"kind_registry"`
+	Files                map[string]File   `json:"files"`
+	Sources              []json.RawMessage `json:"sources"`
+	Warnings             []string          `json:"warnings"`
+	Verification         map[string]string `json:"verification"`
+	SourceFieldsContract string            `json:"source_fields_contract,omitempty"`
 }
 
 type Provenance struct {
