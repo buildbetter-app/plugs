@@ -110,7 +110,7 @@ func selectionSourceHistoryInsertSQL(count int) string {
 		VALUES ` + strings.TrimSuffix(strings.Repeat("(?,?,?,?,?,?,?),", count), ",")
 }
 
-func (t *transaction) publishSelectionSourceHistory(ctx context.Context, c selectionPublicationExecutor, incarnation, next string) error {
+func (t *transaction) publishSelectionSourceHistory(ctx context.Context, c selectionPublicationExecutor, incarnation, next string) (err error) {
 	observations := make([]selectionSourceObservation, 0, len(t.records)+len(t.derived))
 	for id, record := range t.records {
 		observation := selectionSourceObservation{key: id}
@@ -131,6 +131,9 @@ func (t *transaction) publishSelectionSourceHistory(ctx context.Context, c selec
 		}
 		observations = append(observations, observation)
 	}
+	// Prepare at each arm's first execution on the held connection. Full
+	// batches reuse their handles; exact-arity tails retain separate cleanup.
+	var closeStatement, insertStatement keyPublicationStatement
 	for start := 0; start < len(observations); start += selectionSourceHistoryBatch {
 		end := min(start+selectionSourceHistoryBatch, len(observations))
 		batch := observations[start:end]
@@ -142,10 +145,24 @@ func (t *transaction) publishSelectionSourceHistory(ctx context.Context, c selec
 			insertArgs = append(insertArgs, incarnation, revKey(0), observation.key,
 				next, next, observation.present, observation.digest)
 		}
-		if _, err := c.ExecContext(ctx, selectionSourceHistoryCloseSQL(len(batch)), closeArgs...); err != nil {
+		if closeStatement == nil || len(batch) != selectionSourceHistoryBatch {
+			closeStatement, err = prepareKeyPublication(ctx, c, selectionSourceHistoryCloseSQL(len(batch)))
+			if err != nil {
+				return err
+			}
+			defer closeKeyPublicationStatement(closeStatement, &err)
+		}
+		if _, err := closeStatement.ExecContext(ctx, closeArgs...); err != nil {
 			return err
 		}
-		if _, err := c.ExecContext(ctx, selectionSourceHistoryInsertSQL(len(batch)), insertArgs...); err != nil {
+		if insertStatement == nil || len(batch) != selectionSourceHistoryBatch {
+			insertStatement, err = prepareKeyPublication(ctx, c, selectionSourceHistoryInsertSQL(len(batch)))
+			if err != nil {
+				return err
+			}
+			defer closeKeyPublicationStatement(insertStatement, &err)
+		}
+		if _, err := insertStatement.ExecContext(ctx, insertArgs...); err != nil {
 			return err
 		}
 	}
