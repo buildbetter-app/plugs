@@ -10,6 +10,16 @@ import (
 const Format = "plug-dump/1"
 const BeadsReference = "9d6fff760b7a314b476539198504d77ce0959656"
 
+const (
+	// EdgeVersionTypedDependencies is the explicit successor producer
+	// contract. Format/schema/reference alone never enable local waits-for or
+	// conditional-blocks semantics.
+	EdgeVersionTypedDependencies = 2
+	// IssueSourceFieldsContract binds the producer's complete physical issue
+	// row image. Recognition is separate from native SQL import capability.
+	IssueSourceFieldsContract = "beads-issues-source-fields/1"
+)
+
 // Row retains every source column, including SQL NULL and lossless numbers.
 type Row map[string]any
 
@@ -114,22 +124,23 @@ type Disposition struct {
 }
 
 type Manifest struct {
-	Format         string              `json:"format"`
-	Schema         int                 `json:"schema"`
-	Reference      string              `json:"beads_reference"`
-	StoreID        string              `json:"store_id"`
-	Machine        string              `json:"machine"`
-	MainVersion    int                 `json:"main_version"`
-	IgnoredVersion int                 `json:"ignored_version"`
-	Scope          string              `json:"scope"`
-	History        string              `json:"history"`
-	Projects       []Project           `json:"projects"`
-	Ontology       []OntologyDirective `json:"ontology,omitempty"`
-	Kinds          []Kind              `json:"kind_registry"`
-	Files          map[string]File     `json:"files"`
-	Sources        []Disposition       `json:"sources"`
-	Warnings       []string            `json:"warnings"`
-	Verification   map[string]string   `json:"verification"`
+	Format               string              `json:"format"`
+	Schema               int                 `json:"schema"`
+	Reference            string              `json:"beads_reference"`
+	StoreID              string              `json:"store_id"`
+	Machine              string              `json:"machine"`
+	MainVersion          int                 `json:"main_version"`
+	IgnoredVersion       int                 `json:"ignored_version"`
+	Scope                string              `json:"scope"`
+	History              string              `json:"history"`
+	Projects             []Project           `json:"projects"`
+	Ontology             []OntologyDirective `json:"ontology,omitempty"`
+	Kinds                []Kind              `json:"kind_registry"`
+	Files                map[string]File     `json:"files"`
+	Sources              []Disposition       `json:"sources"`
+	Warnings             []string            `json:"warnings"`
+	Verification         map[string]string   `json:"verification"`
+	SourceFieldsContract string              `json:"source_fields_contract,omitempty"`
 }
 
 func marshal(value any) ([]byte, error) {

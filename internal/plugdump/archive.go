@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
@@ -40,7 +41,11 @@ func encode(manifest Manifest, records map[string][]Record, files map[string][]b
 		}
 		path := "records/" + kind + ".ndjson"
 		files[path] = data
-		manifest.Kinds = append(manifest.Kinds, Kind{kind, 1, path, len(rows)})
+		version := 1
+		if kind == "edge" {
+			version = EdgeVersionTypedDependencies
+		}
+		manifest.Kinds = append(manifest.Kinds, Kind{kind, version, path, len(rows)})
 	}
 	sort.Slice(manifest.Kinds, func(i, j int) bool { return manifest.Kinds[i].Name < manifest.Kinds[j].Name })
 	sort.Slice(manifest.Sources, func(i, j int) bool {
@@ -139,6 +144,16 @@ func Validate(reader io.Reader) (Manifest, error) {
 	if err := decodeJSON(members["manifest.json"], &manifest); err != nil {
 		return Manifest{}, fmt.Errorf("invalid manifest: %w", err)
 	}
+	// Presence is significant: an explicitly empty or unknown contract is not
+	// legacy omission. The successor exporter emits this marker alongside the
+	// edge registry version; old archives remain valid when it is absent.
+	var manifestFields map[string]json.RawMessage
+	if err := json.Unmarshal(members["manifest.json"], &manifestFields); err != nil {
+		return Manifest{}, fmt.Errorf("invalid manifest: %w", err)
+	}
+	if _, present := manifestFields["source_fields_contract"]; present && manifest.SourceFieldsContract != IssueSourceFieldsContract {
+		return Manifest{}, fmt.Errorf("unsupported source fields contract")
+	}
 	if manifest.Format != Format || manifest.Schema != 1 || manifest.Reference != BeadsReference || manifest.MainVersion != 72 || manifest.IgnoredVersion != 28 || manifest.StoreID == "" || manifest.Machine == "" || manifest.Scope != "offline-head-and-source-archives" {
 		return Manifest{}, fmt.Errorf("unsupported manifest schema, source or scope")
 	}
@@ -184,7 +199,8 @@ func Validate(reader io.Reader) (Manifest, error) {
 	var beadRecords []Record
 	lastKind := ""
 	for _, kind := range manifest.Kinds {
-		if !knownKinds[kind.Name] || kind.Version != 1 || kind.Name <= lastKind || kind.File != "records/"+kind.Name+".ndjson" || kind.Count < 1 {
+		versionOK := kind.Version == 1 || kind.Name == "edge" && kind.Version == EdgeVersionTypedDependencies
+		if !knownKinds[kind.Name] || !versionOK || kind.Name <= lastKind || kind.File != "records/"+kind.Name+".ndjson" || kind.Count < 1 {
 			return Manifest{}, fmt.Errorf("unknown, duplicate or unordered kind registry entry")
 		}
 		lastKind = kind.Name
@@ -203,7 +219,7 @@ func Validate(reader io.Reader) (Manifest, error) {
 			if err := decodeJSON(line, &record); err != nil || record.Kind != kind.Name || record.ID == "" || record.Source.Table == "" || record.Source.Fields == nil || record.Body == nil || recordKey(record) <= last {
 				return Manifest{}, fmt.Errorf("invalid, duplicate or unordered typed record")
 			}
-			if err := validateRecord(record, manifest.Projects, counts); err != nil {
+			if err := validateRecordVersioned(record, manifest.Projects, counts, kind.Version); err != nil {
 				return Manifest{}, err
 			}
 			if record.Kind == "bead" {
@@ -265,6 +281,24 @@ func validateOntologyRecords(directives []OntologyDirective, projects []Project,
 }
 
 func validateRecord(record Record, projects []Project, counts map[string]int) error {
+	return validateRecordVersioned(record, projects, counts, 1)
+}
+
+func validateRecordVersioned(record Record, projects []Project, counts map[string]int, edgeVersion int) error {
+	if record.Kind == "edge" {
+		kind, _ := record.Body["type"].(string)
+		switch kind {
+		case "blocks", "parent-child", "related", "discovered-from":
+			// These kinds are valid in both the legacy and successor edge
+			// contracts.
+		case "waits-for", "conditional-blocks":
+			if edgeVersion != EdgeVersionTypedDependencies {
+				return fmt.Errorf("dependency %s requires edge registry version %d", kind, EdgeVersionTypedDependencies)
+			}
+		default:
+			return fmt.Errorf("unsupported dependency type")
+		}
+	}
 	table := record.Source.Table
 	if _, ok := tableColumns[table]; !ok {
 		return fmt.Errorf("unknown record source table")

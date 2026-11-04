@@ -102,7 +102,8 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 	manifest := Manifest{
 		Format: Format, Schema: 1, Reference: BeadsReference, StoreID: inventory.StoreID, Machine: inventory.Machine,
 		MainVersion: 72, IgnoredVersion: 28, Scope: "offline-head-and-source-archives", History: inventory.History,
-		Projects: mapper.projects, Ontology: ontology, Sources: dispositions,
+		SourceFieldsContract: IssueSourceFieldsContract,
+		Projects:             mapper.projects, Ontology: ontology, Sources: dispositions,
 		Warnings:     []string{"not a complete store migration or Plug restore certificate", "source history and attribution are unverified; no Plug versions, changesets or live leases invented"},
 		Verification: verificationLimits(),
 	}

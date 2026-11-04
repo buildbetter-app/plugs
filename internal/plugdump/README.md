@@ -34,7 +34,7 @@ Validation never extracts the tar or opens a target store.
 
 | Member | Contents |
 | --- | --- |
-| `manifest.json` | `format: plug-dump/1`, `schema: 1`, pinned reference, store/machine identity, paired schema cursors, allocator projects, optional ontology directives, kind registry, file checksums/sizes, source counts/dispositions, history and verification limits |
+| `manifest.json` | `format: plug-dump/1`, `schema: 1`, pinned reference, store/machine identity, paired schema cursors, allocator projects, optional ontology directives, successor edge registry, optional `source_fields_contract`, file checksums/sizes, source counts/dispositions, history and verification limits |
 | `records/<kind>.ndjson` | Sorted typed records for every present supported kind; an absent kind has no registry entry or member |
 | `config/sources.json` | Every declared external input, path, precedence, absence or normalized JSON config; secrets are references |
 
@@ -42,16 +42,23 @@ Each file except the manifest has a SHA-256 and byte size in `files`. The
 manifest does not checksum itself. Integrity is not authentication: a checksum
 cannot prove that an operator's capture declarations are true.
 
-Registry entries are `{name,version:1,file,count}`. Records are
-`{kind,id,project,body,source:{table,fields}}`. Kinds are `bead`, `edge`,
-`comment`, `memory`, `config` and `beads-archive`. `source.fields` retains all
-unmapped source columns, including SQL NULL, revision/compaction metadata,
-attribution and text. `issues.row_lock` and `issues.is_blocked` are excluded
-with explicit rebuild dispositions. There are no fabricated Plug revisions,
-versions, changesets, derived digests, leases, plugin locks or verification
-successes. Available source versions, snapshots and event evidence live in
-redactable read-only archive records, preserving their bytes and attribution
-status; they are not represented as verified A6 history.
+Registry entries are `{name,version,file,count}`. Legacy archives use version
+`1`; a successor archive uses edge version `2` for the typed `waits-for` and
+`conditional-blocks` contract while all other kinds remain version `1`.
+Records are `{kind,id,project,body,source:{table,fields}}`. A successor archive
+also carries the optional manifest field `source_fields_contract:
+"beads-issues-source-fields/1"`. Its absence is the legacy profile; an explicit
+empty or unknown value refuses. When present, every issue source field is
+retained with its exact SQL NULL, scalar, object, array and lossless-number
+representation; this marker does not itself authorize native SQL application.
+`source.fields` retains all unmapped source columns, including SQL NULL,
+revision/compaction metadata, attribution and text. `issues.row_lock` and
+`issues.is_blocked` are excluded with explicit rebuild dispositions. There are
+no fabricated Plug revisions, versions, changesets, derived digests, leases,
+plugin locks or verification successes. Available source versions, snapshots
+and event evidence live in redactable read-only archive records, preserving
+their bytes and attribution status; they are not represented as verified A6
+history.
 
 | Source status | Category | Result |
 | --- | --- | --- |

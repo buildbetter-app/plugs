@@ -131,6 +131,27 @@ func TestDumpDeterministicPreservation(t *testing.T) {
 	}
 }
 
+func TestDumpSuccessorManifestContracts(t *testing.T) {
+	source, inventory := fixture(t)
+	data := buildFixture(t, source, inventory)
+	manifest, err := Validate(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.SourceFieldsContract != IssueSourceFieldsContract {
+		t.Fatalf("source fields contract=%q", manifest.SourceFieldsContract)
+	}
+	for _, kind := range manifest.Kinds {
+		want := 1
+		if kind.Name == "edge" {
+			want = EdgeVersionTypedDependencies
+		}
+		if kind.Version != want {
+			t.Fatalf("kind %s version=%d want %d", kind.Name, kind.Version, want)
+		}
+	}
+}
+
 func TestDumpPreservesOpaqueIssueFields(t *testing.T) {
 	source, inventory := fixture(t)
 	row := source["issues"].Rows[0]
@@ -582,6 +603,12 @@ func TestDumpInvalidArchive(t *testing.T) {
 		"unknown member": func(m map[string][]byte) { m["unknown"] = []byte("unaccounted") },
 		"manifest schema": func(m map[string][]byte) {
 			m["manifest.json"] = bytes.Replace(m["manifest.json"], []byte(`"schema":1`), []byte(`"schema":2`), 1)
+		},
+		"empty source fields contract": func(m map[string][]byte) {
+			m["manifest.json"] = bytes.Replace(m["manifest.json"], []byte(IssueSourceFieldsContract), []byte(``), 1)
+		},
+		"unknown source fields contract": func(m map[string][]byte) {
+			m["manifest.json"] = bytes.Replace(m["manifest.json"], []byte(IssueSourceFieldsContract), []byte("unknown-contract"), 1)
 		},
 		"registry version": func(m map[string][]byte) {
 			m["manifest.json"] = bytes.Replace(m["manifest.json"], []byte(`"version":1`), []byte(`"version":2`), 1)
