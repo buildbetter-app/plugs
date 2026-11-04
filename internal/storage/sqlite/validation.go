@@ -83,11 +83,11 @@ func (t *transaction) validateChanges(ctx context.Context, changes []model.Chang
 		if err = change.FromRevision.Validate(); err != nil {
 			return err
 		}
-		previous, err := t.observe(ctx, driver.LockKey{Kind: driver.LockRecord, Ref: &change.Ref})
+		previous, err := t.recordRevision(ctx, id)
 		if err != nil {
 			return err
 		}
-		if change.FromRevision.String() != previous.Revision.String() {
+		if change.FromRevision.String() != previous.String() {
 			return driver.ErrConflict
 		}
 	}

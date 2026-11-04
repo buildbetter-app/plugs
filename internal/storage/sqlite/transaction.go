@@ -42,6 +42,9 @@ type transaction struct {
 	// recordKindStmt preserves the scalar kind validation in source staging
 	// while avoiding database/sql prepare/finalize work for every record.
 	recordKindStmt *sql.Stmt
+	// validationHistoryStmt keeps validateChanges scalar and ordered while
+	// avoiding repeated prepare/finalize work for its revision-only lookup.
+	validationHistoryStmt *sql.Stmt
 	// Lock batches retain only unambiguous first-lifetime observations. The
 	// cache is used for ordinary record-only writes; selection producers keep
 	// their scalar observation count and ordering.
@@ -107,6 +110,10 @@ func (t *transaction) finish() {
 		_ = t.recordKindStmt.Close()
 		t.recordKindStmt = nil
 	}
+	if t.validationHistoryStmt != nil {
+		_ = t.validationHistoryStmt.Close()
+		t.validationHistoryStmt = nil
+	}
 	_ = t.tx.Rollback()
 	t.tx = nil
 	releaseGuards(t.guards)
@@ -145,6 +152,29 @@ func (t *transaction) recordKind(ctx context.Context, id string) (string, error)
 	var kind string
 	err := t.recordKindStmt.QueryRowContext(ctx, id).Scan(&kind)
 	return kind, err
+}
+
+func (t *transaction) recordRevision(ctx context.Context, id string) (model.Revision, error) {
+	if t.validationHistoryStmt == nil {
+		statement, err := t.tx.PrepareContext(ctx, `SELECT data FROM key_history WHERE key=? AND rev<=? ORDER BY rev DESC LIMIT 1`)
+		if err != nil {
+			return "", err
+		}
+		t.validationHistoryStmt = statement
+	}
+	var data []byte
+	err := t.validationHistoryStmt.QueryRowContext(ctx, id, revKey(t.at)).Scan(&data)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.Natural64(0), nil
+	}
+	if err != nil {
+		return "", err
+	}
+	var state driver.LockState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return "", err
+	}
+	return state.Revision, nil
 }
 func (t *transaction) Close() error { return t.Rollback(context.Background()) }
 func (t *transaction) Rollback(context.Context) error {
