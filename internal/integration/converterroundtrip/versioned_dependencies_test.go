@@ -223,8 +223,8 @@ func TestVersionedDependencyStagingFailureConservesAllSQLAndReopens(t *testing.T
 			if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), target, lease, profile); !errors.Is(err, failure) || !hit {
 				t.Fatalf("v2 staging fault not reached: %v", err)
 			}
-			if !reflect.DeepEqual(before, dependencySQLCensus(t, db, engine, false)) {
-				t.Fatal("v2 rollback changed complete SQL census")
+			if got := dependencySQLCensus(t, db, engine, false); !reflect.DeepEqual(before, got) {
+				t.Fatalf("v2 rollback changed complete SQL census: %s", dependencySQLDifference(before, got))
 			}
 			stable := dependencySQLCensus(t, db, engine, true)
 			store, lease = reopen()

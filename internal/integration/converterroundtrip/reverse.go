@@ -313,7 +313,19 @@ func projectLiveBead(source reverseconverter.Record, row driver.Record, dump rev
 	for _, field := range []string{"title", "description", "priority"} {
 		source.Body[field], source.Source.Fields[field] = doc.Fields[field], doc.Fields[field]
 	}
-	source.Body["metadata"], source.Source.Fields["metadata"] = metadata, metadata
+	originalMetadata, err := dumpformat.SourceMetadataObject(source.Body["metadata"])
+	if err != nil {
+		return reverseconverter.Record{}, ReverseRefusal{"invalid_source_metadata"}
+	}
+	// An empty live key map cannot distinguish an original SQL NULL from {}.
+	// Retain the validated original representation unless a key actually changed.
+	// In particular, unchanged SQL JSON text must remain exact source evidence.
+	if originalMetadata == nil {
+		originalMetadata = map[string]any{}
+	}
+	if !sameReverseJSON(originalMetadata, metadata) {
+		source.Body["metadata"], source.Source.Fields["metadata"] = metadata, metadata
+	}
 	labels := []any{}
 	for _, label := range doc.Labels {
 		labels = append(labels, label)
@@ -357,12 +369,26 @@ func projectLiveBead(source reverseconverter.Record, row driver.Record, dump rev
 func checkLiveRelationsAndComments(id string, doc pipeline.Document, dump reverseconverter.Dump) error {
 	links := []pipeline.Link{}
 	var parent *model.Ref
+	edgeVersion := 1
+	for _, entry := range dump.Manifest.Kinds {
+		if entry.Name == "edge" {
+			edgeVersion = entry.Version
+		}
+	}
 	for _, edge := range dump.Records["edge"] {
 		if edge.Body["from"] != id {
 			continue
 		}
 		kind := stringValue(edge.Body["type"])
-		if kind == "parent-child" {
+		var targetKind model.LinkTargetKind
+		switch stringValue(edge.Body["target_kind"]) {
+		case "depends_on_issue_id":
+		case "depends_on_external":
+			targetKind = model.LinkTargetExternal
+		default:
+			return ReverseRefusal{"changed_source_relationships"}
+		}
+		if kind == "parent-child" && targetKind != model.LinkTargetExternal {
 			if parent != nil {
 				return ReverseRefusal{"changed_source_relationships"}
 			}
@@ -373,13 +399,17 @@ func checkLiveRelationsAndComments(id string, doc pipeline.Document, dump revers
 		if kind == "related" {
 			kind = "relates-to"
 		}
-		links = append(links, pipeline.Link{To: model.RefByID(stringValue(edge.Body["to"]), model.Natural64(0)), Kind: kind})
+		link, err := importedVersionedSourceLink(dumpformat.Record{ID: edge.ID, Body: edge.Body}, kind, targetKind, edgeVersion)
+		if err != nil {
+			return ReverseRefusal{"changed_source_relationships"}
+		}
+		links = append(links, link)
 	}
 	if !reflect.DeepEqual(parent, doc.Parent) {
 		return ReverseRefusal{"changed_source_relationships"}
 	}
 	key := func(link pipeline.Link) string {
-		return fmt.Sprintf("%s/%s/%s", link.Kind, link.To.Branch.String(), link.To.ID)
+		return fmt.Sprintf("%s/%s/%s/%s", link.Kind, link.TargetKind, link.To.Branch.String(), link.To.ID)
 	}
 	sort.Slice(links, func(i, j int) bool { return key(links[i]) < key(links[j]) })
 	current := append([]pipeline.Link{}, doc.Links...)

@@ -135,13 +135,26 @@ func requireImportedOntology(t *testing.T, store driver.Store, archive *dumpform
 	if !ok || len(migration.Declarations()) != 4 {
 		t.Fatal("independent archive lacks the four authored native declarations")
 	}
+	// The source contract is canonical JSON. Document() initializes optional
+	// empty maps while omitempty omits them on the wire; compare the complete
+	// independently derived bytes instead of Go's nil-versus-empty map identity.
+	expectedSource, err := json.Marshal(struct {
+		Base ontology.Document `json:"base"`
+	}{Base: migration.Document()})
+	if err != nil || !bytes.Equal(row.Body, expectedSource) {
+		t.Fatalf("stored source bytes differ from the complete validated union: %v", err)
+	}
 	source, err := service.DecodeOntologySource(row.Body)
-	if err != nil || !reflect.DeepEqual(source.Base, migration.Document()) || len(source.Overlays) != 0 || len(source.Plugins) != 0 {
+	if err != nil || len(source.Overlays) != 0 || len(source.Plugins) != 0 {
 		t.Fatalf("stored source differs from validated union: %v", err)
 	}
 	compiled, problems := ontology.Compile(source.Base, source.Overlays, source.Plugins)
 	if len(problems) != 0 {
 		t.Fatal(problems)
+	}
+	expectedCompiled, problems := ontology.Compile(migration.Document(), nil, nil)
+	if len(problems) != 0 || compiled.Digest() != expectedCompiled.Digest() {
+		t.Fatalf("stored source semantics differ from the independently validated union: %v", problems)
 	}
 	for name, category := range map[string]ontology.Category{"queued": ontology.Unstarted, "working": ontology.Started, "shelved": ontology.Backlog, "finished": ontology.Completed} {
 		if source.Base.Statuses[name].Category != category {

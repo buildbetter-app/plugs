@@ -58,7 +58,7 @@ func TestRestoreSourceSQLMetadataAndOntologyConserveAllSQLTables(t *testing.T) {
 				t.Fatalf("actual staging fault not reached: hit=%v err=%v", hit, err)
 			}
 			if got := dependencySQLCensus(t, db, engine, false); !reflect.DeepEqual(before, got) {
-				t.Fatal("refused import changed application SQL tables, including versions, blobs, states, counters, receipts or leases")
+				t.Fatalf("refused import changed application SQL tables, including versions, blobs, states, counters, receipts or leases: %s", dependencySQLDifference(before, got))
 			}
 			stable := dependencySQLCensus(t, db, engine, true)
 			store, lease = reopen()
@@ -88,6 +88,24 @@ func TestRestoreSourceSQLMetadataAndOntologyConserveAllSQLTables(t *testing.T) {
 			t.Logf("SOURCE_SQL_METADATA engine=%s all_application_tables=%d physical_reopens=2 staging_rollback=true raw_metadata_preserved=true native_recording=false", engine, len(before))
 		})
 	}
+}
+
+// Preserve the complete comparison and expose every changed table on failure.
+// Coordination rows remain in the census; diagnostics never waive a delta.
+func dependencySQLDifference(before, after map[string][]string) string {
+	changed := map[string]map[string][]string{}
+	for table, rows := range before {
+		if other, present := after[table]; !present || !reflect.DeepEqual(rows, other) {
+			changed[table] = map[string][]string{"before": rows, "after": other}
+		}
+	}
+	for table, rows := range after {
+		if _, present := before[table]; !present {
+			changed[table] = map[string][]string{"before": nil, "after": rows}
+		}
+	}
+	data, _ := json.Marshal(changed)
+	return string(data)
 }
 
 func assertSourceSQLMetadata(t *testing.T, store driver.Store, archive *dumpformat.Archive, raw string) {
