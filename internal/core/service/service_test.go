@@ -1035,31 +1035,65 @@ func TestClaimNextSelectionUsesLiteralSeededGroupRotations(t *testing.T) {
 	if err != nil || identityA != identityB {
 		t.Fatalf("selector set normalization changed identity: A=%q B=%q err=%v", identityA, identityB, err)
 	}
-	if identityA != `{"viewId":"queue-v1","filter":{"query":"","resources":["a","b"],"types":["issue","task"],"events":["bead.created","bead.updated"],"viewId":""}}` {
+	if identityA != `{"viewId":"queue-v1","filter":{"query":"","resources":["a","b"],"types":["issue","task"],"events":["bead.created","bead.updated"],"viewId":"","includeEphemeral":true}}` {
 		t.Fatalf("unexpected canonical selector identity: %s", identityA)
+	}
+
+	// Ephemeral inclusion is part of the selector: the adopted default and
+	// explicit inclusion are equivalent, while explicit exclusion is distinct.
+	included, excluded := true, false
+	explicit := selectorB
+	explicitFilter := *selectorB.Filter
+	explicitFilter.IncludeEphemeral = &included
+	explicit.Filter = &explicitFilter
+	if got, err := ClaimNextRequestIdentity(explicit); err != nil || got != identityA {
+		t.Fatalf("explicit inclusion differs from the default: %q %v", got, err)
+	}
+	explicitFilter.IncludeEphemeral = &excluded
+	excludedIdentity, err := ClaimNextRequestIdentity(explicit)
+	if err != nil || excludedIdentity != `{"viewId":"queue-v1","filter":{"query":"","resources":["a","b"],"types":["issue","task"],"events":["bead.created","bead.updated"],"viewId":"","includeEphemeral":false}}` {
+		t.Fatalf("unexpected exclusion selector identity: %q %v", excludedIdentity, err)
+	}
+	if excludedIdentity == identityA {
+		t.Fatal("ephemeral inclusion and exclusion share a selector identity")
+	}
+	for _, filter := range []*Filter{nil, {}, {IncludeEphemeral: &included}} {
+		got, err := ClaimNextRequestIdentity(ClaimNextRequest{Filter: filter})
+		if err != nil || got != `{"viewId":"","filter":{"query":"","resources":null,"types":null,"events":null,"viewId":"","includeEphemeral":true}}` {
+			t.Fatalf("nil, empty and explicit inclusion defaults differ: %q %v", got, err)
+		}
 	}
 
 	original := append([]Bead(nil), items...)
 	cases := []struct {
-		name, key, seed string
-		want            []string
+		name, key, seed, identity string
+		want                      []string
 	}{
 		{
-			name: "first-key",
-			key:  "claim-key-a",
-			seed: "a9fcd4df551dc1b04c46ca714b48c5d6b078325d2d0a7876f739a31f56973850",
-			want: []string{"p0-d", "p0-a", "p0-b", "p0-c", "p1-c", "p1-a", "p1-b", "p2-a", "p2-b"},
+			name:     "first-key",
+			identity: identityA,
+			key:      "claim-key-a",
+			seed:     "4511711ea73303056ddcb44df1c817971f821457a6754a3df7a056a4bfe2f3c1",
+			want:     []string{"p0-a", "p0-b", "p0-c", "p0-d", "p1-a", "p1-b", "p1-c", "p2-a", "p2-b"},
 		},
 		{
-			name: "second-key",
-			key:  "claim-key-b",
-			seed: "013848b830a591eceee74c9e0c79eb40f0c53aedf1191548875c11a0b83629de",
-			want: []string{"p0-b", "p0-c", "p0-d", "p0-a", "p1-b", "p1-c", "p1-a", "p2-a", "p2-b"},
+			name:     "second-key",
+			identity: identityA,
+			key:      "claim-key-b",
+			seed:     "5a8ebe422eafa62254588a67ecffbbed17a9103af885717bbfa8d2a896d59ee7",
+			want:     []string{"p0-a", "p0-b", "p0-c", "p0-d", "p1-c", "p1-a", "p1-b", "p2-b", "p2-a"},
+		},
+		{
+			name:     "excluded-first-key",
+			identity: excludedIdentity,
+			key:      "claim-key-a",
+			seed:     "843e73462f8aaabf57a9c36259886700dfa7e0e1fe1139c216b23195ac31af77",
+			want:     []string{"p0-b", "p0-c", "p0-d", "p0-a", "p1-b", "p1-c", "p1-a", "p2-a", "p2-b"},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ClaimNextSelectionSeed(identityA, tc.key); got != tc.seed {
+			if got := ClaimNextSelectionSeed(tc.identity, tc.key); got != tc.seed {
 				t.Fatalf("seed changed: got=%s want=%s", got, tc.seed)
 			}
 			got, err := spreadClaimNextItems(items, tc.seed)
