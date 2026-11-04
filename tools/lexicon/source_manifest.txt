@@ -1207,6 +1207,8 @@ spec/s1-b05-b08/cycle_admission_test.go
 spec/s1-b05-b08/cycle_fence_test.go
 spec/s1-b05-b08/cycle_oracle_test.go
 spec/s1-b05-b08/cycle_rpc_test.go
+spec/s1-b05-b08/edge_contract_oracle_test.go
+spec/s1-b05-b08/edge_contract_test.go
 spec/s1-b05-b08/engines_test.go
 spec/s1-b05-b08/ephemeral_cycle_oracle_test.go
 spec/s1-b05-b08/ephemeral_cycle_test.go
