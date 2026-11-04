@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"slices"
 	"sort"
 	"strconv"
@@ -214,6 +215,15 @@ func (s *Service) readyPage(ctx context.Context, by model.PrincipalRef, req Read
 		return BeadPage{}, err
 	}
 	defer r.Close()
+	if page, err := s.compiledReadyPage(ctx, req, r, restartOnRevision); !errors.Is(err, driver.ErrUnsupported) {
+		if err != nil {
+			return BeadPage{}, err
+		}
+		if err := s.admit(ctx, by); err != nil {
+			return BeadPage{}, err
+		}
+		return page, nil
+	}
 	items, err := s.readyItems(ctx, req, r)
 	if err != nil {
 		return BeadPage{}, err

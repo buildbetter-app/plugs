@@ -17,6 +17,7 @@ go_library(
         "source_links.go",
         "selection.go",
         "ready_order.go",
+		"ready_fresh.go",
     ],
     importpath = "github.com/buildbetter-app/plugs/internal/storage/driver",
     visibility = ["//:__subpackages__"],

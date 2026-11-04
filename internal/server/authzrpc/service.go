@@ -174,6 +174,9 @@ func (s *GuardedService) Ready(ctx context.Context, by model.PrincipalRef, req s
 	if s == nil || s.delegate == nil || s.checker == nil {
 		return service.BeadPage{}, &model.Error{Message: "authorization service is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
 	}
+	if page, err := s.compiledReady(ctx, by, req); !readyAccelerationUnavailable(err) {
+		return page, err
+	}
 	// Ask the real service for a complete bounded candidate page, then apply
 	// the compiled fixed filter before pagination. A truncated candidate set is
 	// refused; it never becomes a short page or an uncounted hidden tail.
@@ -362,7 +365,7 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 	repeatedConflictThisPass := false
 	conflictRestarts := 0
 	for {
-		page, err := s.claimPage(ctx, by, service.ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position, ClaimNextSeed: selectionSeed})
+		page, authorized, err := s.claimPage(ctx, by, service.ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position, ClaimNextSeed: selectionSeed})
 		if err != nil {
 			return nil, err
 		}
@@ -380,17 +383,19 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 				}
 				continue
 			}
-			_, snapshot, closeReader, err := s.current(ctx, &service.AsOf{Revision: page.AsOf.Revision, Incarnation: page.AsOf.Incarnation})
-			if err != nil {
-				return nil, err
-			}
-			allowed, decisionErr := s.checker.modifyDecision(ctx, snapshot, by, "bead.claimNext", ref)
-			closeReader()
-			if decisionErr != nil {
-				return nil, decisionErr
-			}
-			if !allowed {
-				continue
+			if !authorized {
+				_, snapshot, closeReader, err := s.current(ctx, &service.AsOf{Revision: page.AsOf.Revision, Incarnation: page.AsOf.Incarnation})
+				if err != nil {
+					return nil, err
+				}
+				allowed, decisionErr := s.checker.modifyDecision(ctx, snapshot, by, "bead.claimNext", ref)
+				closeReader()
+				if decisionErr != nil {
+					return nil, decisionErr
+				}
+				if !allowed {
+					continue
+				}
 			}
 			candidateMeta := meta
 			candidateMeta.Method = "bead.claimNext"
@@ -460,11 +465,19 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 	}
 }
 
-func (s *GuardedService) claimPage(ctx context.Context, by model.PrincipalRef, req service.ReadyRequest) (service.BeadPage, error) {
-	if s.claimNextPage != nil {
-		return s.claimNextPage(ctx, by, req)
+func (s *GuardedService) claimPage(ctx context.Context, by model.PrincipalRef, req service.ReadyRequest) (service.BeadPage, bool, error) {
+	if page, err := s.compiledClaimPage(ctx, by, req); !readyAccelerationUnavailable(err) {
+		return page, true, err
 	}
-	return s.delegate.Ready(ctx, by, req)
+	if req.Position != nil && req.Position.ClaimNextAuthorized {
+		req.Position = nil
+	}
+	if s.claimNextPage != nil {
+		page, err := s.claimNextPage(ctx, by, req)
+		return page, false, err
+	}
+	page, err := s.delegate.Ready(ctx, by, req)
+	return page, false, err
 }
 
 // claimNextReadyProbe applies the same per-candidate modify permit as the live
@@ -473,6 +486,9 @@ func (s *GuardedService) claimPage(ctx context.Context, by model.PrincipalRef, r
 // from publishing its terminal null receipt.
 func (s *GuardedService) claimNextReadyProbe(by model.PrincipalRef, req service.ClaimNextRequest) port.ClaimNextReadyProbe {
 	return func(ctx context.Context, reader driver.Reader) (bool, error) {
+		if found, err := s.compiledFreshReady(ctx, by, req, reader); !readyAccelerationUnavailable(err) {
+			return found, err
+		}
 		if s.readyCandidates == nil {
 			return false, &model.Error{Message: "authorization service is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
 		}
@@ -656,7 +672,14 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 	}
 	membership := ""
 	if method == "bead.ready" {
-		membership = readyMembershipDigest(filtered)
+		if position != nil && !strings.HasPrefix(position.ReadyMembership, "v2:") {
+			membership = readyMembershipDigest(filtered)
+		} else {
+			membership, err = readyMembershipV2(filtered)
+			if err != nil {
+				return service.BeadPage{}, err
+			}
+		}
 	}
 	if method == "bead.ready" && position != nil && position.ReadyMembership != membership {
 		return service.BeadPage{}, &model.Error{Message: "ready membership changed since cursor issuance; restart paging", Data: model.ErrorData{Code: "cursor_invalid"}}

@@ -539,6 +539,17 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 // transaction can release and restart if a candidate appeared in between.
 func (s *Service) claimNextReadyProbe(req ClaimNextRequest) port.ClaimNextReadyProbe {
 	return func(ctx context.Context, reader driver.Reader) (bool, error) {
+		if fresh, ok := reader.(driver.FreshReadyOrderExistsReader); ok {
+			plan, err := s.ReadyOrderPlan(ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter, Limit: 1}, reader, true, nil)
+			if err == nil {
+				found, err := fresh.FreshReadyOrderExists(ctx, plan)
+				if !errors.Is(err, driver.ErrUnsupported) {
+					return found, err
+				}
+			} else if !errors.Is(err, driver.ErrUnsupported) {
+				return false, err
+			}
+		}
 		items, err := s.ReadyCandidates(ctx, ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter}, reader)
 		return len(items) != 0, err
 	}

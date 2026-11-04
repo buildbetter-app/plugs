@@ -119,6 +119,10 @@ type PagePosition struct {
 	// ReadyMembership binds guarded aggregate paging to the complete
 	// post-authorization order, including ordinary core rows.
 	ReadyMembership string
+	// ClaimNextAuthorized identifies an internal live offset in the authorized
+	// queue. It is never serialized into a public cursor. Switching between
+	// exact fallback and compiled selection restarts rather than mixing offsets.
+	ClaimNextAuthorized bool
 }
 
 // WorkflowPageSnapshot identifies one atomic provider ready observation. Its

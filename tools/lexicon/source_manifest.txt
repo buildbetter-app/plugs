@@ -331,6 +331,7 @@ internal/core/service/claim_recovery_test.go
 internal/core/service/comments.go
 internal/core/service/comments_test.go
 internal/core/service/compact.go
+internal/core/service/compiled_ready.go
 internal/core/service/cycles.go
 internal/core/service/cycles_test.go
 internal/core/service/direct_blockers.go
@@ -688,6 +689,7 @@ internal/server/authzrpc/b04_error_bounds_test.go
 internal/server/authzrpc/b15_comments_page_test.go
 internal/server/authzrpc/checker.go
 internal/server/authzrpc/claim.go
+internal/server/authzrpc/claim_compiled.go
 internal/server/authzrpc/claim_test.go
 internal/server/authzrpc/cycles.go
 internal/server/authzrpc/drivers_test.go
@@ -701,6 +703,8 @@ internal/server/authzrpc/hierarchy_test.go
 internal/server/authzrpc/history_authority_test.go
 internal/server/authzrpc/parent_batch.go
 internal/server/authzrpc/predicate_count_test.go
+internal/server/authzrpc/ready_compiled.go
+internal/server/authzrpc/ready_compiled_test.go
 internal/server/authzrpc/ready_project_filter_test.go
 internal/server/authzrpc/service.go
 internal/server/authzrpc/slice.go
@@ -982,6 +986,7 @@ internal/storage/driver/offline_history_test.go
 internal/storage/driver/offline_restore.go
 internal/storage/driver/parent_counter.go
 internal/storage/driver/parent_counter_test.go
+internal/storage/driver/ready_fresh.go
 internal/storage/driver/ready_order.go
 internal/storage/driver/receipt_contract_test.go
 internal/storage/driver/restore.go
@@ -1059,6 +1064,8 @@ internal/storage/postgres/persistence_test.go
 internal/storage/postgres/query.go
 internal/storage/postgres/reader.go
 internal/storage/postgres/reader_batch_test.go
+internal/storage/postgres/ready_fresh.go
+internal/storage/postgres/ready_fresh_test.go
 internal/storage/postgres/ready_order.go
 internal/storage/postgres/ready_order_test.go
 internal/storage/postgres/schema.go
@@ -1073,6 +1080,7 @@ internal/storage/postgres/store.go
 internal/storage/postgres/transaction.go
 internal/storage/readyindex/BUILD.bazel
 internal/storage/readyindex/dense_test.go
+internal/storage/readyindex/fresh.go
 internal/storage/readyindex/ready_order_test.go
 internal/storage/readyindex/select.go
 internal/storage/readyindex/tree.go
@@ -1117,6 +1125,7 @@ internal/storage/sqlite/publication_lease_race_test.go
 internal/storage/sqlite/publication_lease_test.go
 internal/storage/sqlite/query_cursor_test.go
 internal/storage/sqlite/reader.go
+internal/storage/sqlite/ready_fresh.go
 internal/storage/sqlite/ready_order.go
 internal/storage/sqlite/recordref_test.go
 internal/storage/sqlite/schema.go
