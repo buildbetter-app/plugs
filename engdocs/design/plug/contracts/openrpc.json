@@ -5899,7 +5899,7 @@
     {
       "name": "view.run",
       "summary": "Run a saved or inline budgeted view.",
-      "description": "With countOnly=true, return the exact ordinary authorized predicate total, including zero, as {items:[],asOf,count}, plus existing projection metadata. No page, groups, elisions or nextCursor is returned; cursor/groupBy combinations refuse invalid_params. Valid fields/sort/budget cannot change or truncate membership. Historical content uses current authorization; more than 20,000 authorized candidates refuses scope_too_large. Absent/false keeps existing behavior and saved definitions unchanged. Run a saved or inline budgeted view. A trusted host may enable count-only parent-aware epic progress using definition={filter:{query:\"parent=<bare bead ID>\"},fields:[],groupBy:[\"epic-progress\"]} and _meta.project equal to the authorized parent project. One pinned content/ontology snapshot and fenced current authority select direct children only; each child keeps its own project permissions. The complete result has items=[], asOf, total and status:<canonical status ID> groups with empty items. total.count is visible children; only total.elided may report hidden children, as count plus reason=\"authorization\" and continueWith=view.run with the same request minus cursor/asOf. That is fresh reauthorization/refresh, never hidden-row pagination. There is no nextCursor; a supplied cursor refuses cursor_invalid. Hidden identities/statuses are absent. Disabled capability refuses invalid_params with details.capability=\"epic-progress\", details.available=false. Epic progress adds no separate RPC, filter, cursor or result member.",
+      "description": "With countOnly=true, return the exact ordinary authorized predicate total, including zero, as {items:[],asOf,count}, plus existing projection metadata. No page, groups, elisions or nextCursor is returned; cursor/groupBy combinations refuse invalid_params. Valid fields/sort/budget cannot change or truncate membership. Historical content uses current authorization; more than 20,000 authorized candidates refuses scope_too_large. Absent/false keeps existing behavior and saved definitions unchanged. Run a saved or inline budgeted view. A trusted host may enable count-only parent-aware epic progress using definition={filter:{query:\"parent=<bare bead ID>\"},fields:[],groupBy:[\"epic-progress\"]} and _meta.project equal to the authorized parent project. One pinned content/ontology snapshot and fenced current authority select direct children only; each child keeps its own project permissions. The complete result has items=[], asOf, total and status:<canonical status ID> groups with empty items. total.count is visible children; only total.elided may report hidden children, as count plus reason=\"authorization\" and continueWith=view.run with the same request minus cursor/asOf. That is fresh reauthorization/refresh, never hidden-row pagination. There is no nextCursor; a supplied cursor refuses cursor_invalid. Hidden identities/statuses are absent. Disabled capability refuses invalid_params with details.capability=\"epic-progress\", details.available=false. Epic progress adds no separate RPC, filter, cursor or result member. Read-only age/status selection for view.run. days is a positive UTC day count; the latest persisted version time must be strictly before one cutoff bound to the signed cursor for all pages. Omitted status selects the current ontology Unstarted/Started categories; an explicit exact status replaces that default and intersects with ordinary query predicates. No saved definition, ready, claimNext, watch or explain semantics change.",
       "tags": [
         {
           "name": "view"
@@ -5938,6 +5938,27 @@
             "default": false
           },
           "description": "Optional execution flag, default false; saved definitions are unchanged. True returns the complete authorized ordinary predicate count with items=[] and asOf, without groups, elisions or nextCursor. Any supplied cursor or nonempty groupBy refuses invalid_params. Valid fields, sort and budget remain validated but do not change membership or truncate the count. Current permissions apply to historical asOf content; the ordinary 20,000 cap is exact-or-refused."
+        },
+        {
+          "name": "stale",
+          "schema": {
+            "type": "object",
+            "required": [
+              "days"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "days": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 106751
+              },
+              "status": {
+                "type": "string"
+              }
+            }
+          },
+          "description": "Read-only age/status selection for view.run. days is a positive UTC day count; the latest persisted version time must be strictly before one cutoff bound to the signed cursor for all pages. Omitted status selects the current ontology Unstarted/Started categories; an explicit exact status replaces that default and intersects with ordinary query predicates. No saved definition, ready, claimNext, watch or explain semantics change."
         },
         {
           "name": "_meta",
@@ -13872,7 +13893,7 @@
     "methodCount": 85,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
     "nameSha256": "e4cc1165f352268dd7412a50f2ec6ded5daa8a22c6f2ad3f4205ef382c423907",
-    "descriptorSha256": "c7fffcd47f6323d2b50f84c9c33756e1d675cb9f966f9424a30136e8aa8123b0",
+    "descriptorSha256": "b54710ceca844685f4959d9742caeb4f9ecd53011d4d1471c80a05de4f4e1061",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -17701,6 +17722,27 @@
               "default": false
             },
             "description": "Optional execution flag, default false; saved definitions are unchanged. True returns the complete authorized ordinary predicate count with items=[] and asOf, without groups, elisions or nextCursor. Any supplied cursor or nonempty groupBy refuses invalid_params. Valid fields, sort and budget remain validated but do not change membership or truncate the count. Current permissions apply to historical asOf content; the ordinary 20,000 cap is exact-or-refused."
+          },
+          {
+            "name": "stale",
+            "required": false,
+            "schema": {
+              "type": "object",
+              "required": [
+                "days"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "days": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 106751
+                },
+                "status": {
+                  "type": "string"
+                }
+              }
+            }
           },
           {
             "name": "_meta",

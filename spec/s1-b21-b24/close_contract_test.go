@@ -51,7 +51,7 @@ func closeRefusal(t *testing.T, f *fixture, label string, params map[string]any,
 }
 
 func TestS1B21AtomicCloseCreatePatchReasonAndReopen(t *testing.T) {
-	for _, engine := range engines() {
+	for _, engine := range transactionEngines() {
 		t.Run(engine, func(t *testing.T) {
 			f := newFixture(t, engine)
 			anchor, _ := f.create(t, "close-anchor", "anchor")
@@ -122,7 +122,7 @@ func TestS1B21AtomicCloseCreatePatchReasonAndReopen(t *testing.T) {
 }
 
 func TestS1B21CloseGuardsUseOperationPrefix(t *testing.T) {
-	for _, engine := range engines() {
+	for _, engine := range transactionEngines() {
 		for _, order := range []string{"close-before-unlink", "unlink-before-close", "close-blocker-first"} {
 			t.Run(engine+"/"+order, func(t *testing.T) {
 				f := newFixture(t, engine)
@@ -151,7 +151,7 @@ func TestS1B21CloseGuardsUseOperationPrefix(t *testing.T) {
 }
 
 func TestS1B21CloseLateRefusalsLeaveNoHistoryOrReceipt(t *testing.T) {
-	for _, engine := range engines() {
+	for _, engine := range transactionEngines() {
 		for _, kind := range []string{"template", "hash", "revision-after-write", "status-patch", "forward-alias", "unknown-force"} {
 			t.Run(engine+"/"+kind, func(t *testing.T) {
 				f := newFixture(t, engine)
@@ -184,7 +184,7 @@ func TestS1B21CloseLateRefusalsLeaveNoHistoryOrReceipt(t *testing.T) {
 }
 
 func TestS1B21RepeatedCloseNoopAndLeaseSettlement(t *testing.T) {
-	for _, engine := range engines() {
+	for _, engine := range transactionEngines() {
 		t.Run(engine, func(t *testing.T) {
 			f := newFixture(t, engine)
 			target, _ := f.create(t, "claim-target", "target")
@@ -199,13 +199,23 @@ func TestS1B21RepeatedCloseNoopAndLeaseSettlement(t *testing.T) {
 			if noop.Revision.String() != "3" || len(noop.Results) != 2 {
 				t.Fatalf("repeat close is not a no-op: %+v", noop)
 			}
-			sameState(t, before, f.state(t))
+			afterNoop := f.state(t)
+			sameMutationState(t, before, afterNoop)
+			receipt := afterNoop.Receipts["tx.apply/"+key("close-noop")]
+			if receipt == nil || receipt.ResponsePending || receipt.Changeset.Kind != "" || receipt.Commit.Revision.String() != "3" || len(receipt.Commit.Results) != 2 {
+				t.Fatalf("repeat close did not persist a final head receipt: %+v", receipt)
+			}
+			for i, result := range receipt.Commit.Results {
+				if result.Revision.String() != "3" {
+					t.Fatalf("repeat close result %d revision=%s want=3", i, result.Revision)
+				}
+			}
 			f.reopen(t)
 			replay := f.call("tx.apply", "close-noop", batchParams(closeOp(target, ""), closeOp(target, "")))
 			if replay.Error != nil || !replay.Meta.Replayed || !bytes.Equal(first.Result, replay.Result) {
 				t.Fatalf("no-op close receipt changed on reopen: %+v", replay)
 			}
-			sameState(t, before, f.state(t))
+			sameState(t, afterNoop, f.state(t))
 		})
 	}
 }
@@ -223,7 +233,7 @@ func (f closeMutator) Mutate(ctx context.Context, p port.ProposedChange, r port.
 }
 
 func TestS1B21CloseRevalidatesFinalGraphAndMutatedImage(t *testing.T) {
-	for _, engine := range engines() {
+	for _, engine := range transactionEngines() {
 		t.Run(engine+"/later-blocker", func(t *testing.T) {
 			f := newFixture(t, engine)
 			target, _ := f.create(t, "final-target", "target")
@@ -244,7 +254,7 @@ func TestS1B21CloseRevalidatesFinalGraphAndMutatedImage(t *testing.T) {
 }
 
 func TestS1B21CloseExpectationsAuthorizeBeforeDisclosureAndCurrentReplay(t *testing.T) {
-	for _, engine := range engines() {
+	for _, engine := range transactionEngines() {
 		t.Run(engine, func(t *testing.T) {
 			var hidden atomic.Bool
 			var mutators, beforeCalls, replayCalls atomic.Int32
