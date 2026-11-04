@@ -25,9 +25,9 @@ actual private child environment and database roots. Each case/run owns a
 fresh server and database, records physical identity, and stops its server.
 
 The producer capability boundary is part of this input contract. The accepted
-c8eb exporter refuses every nonempty `wisps`, `wisp_labels`,
-`wisp_dependencies`, `wisp_events`, `wisp_comments` and `wisp_child_counters`
-family; an `ephemeral` field retained on a durable issue is opaque source data,
+c8eb exporter refuses every nonempty ephemeral-plane family (labels,
+dependencies, events, comments and child counters); an `ephemeral` field
+retained on a durable issue is opaque source data,
 not live workflow semantics. Its dependency allowlist is only `blocks`,
 `parent-child`, `related` and `discovered-from`, so `waits-for`/gate metadata
 and `conditional-blocks` have no accepted native archive route. The waits-for

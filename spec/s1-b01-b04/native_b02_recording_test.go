@@ -56,7 +56,7 @@ func validateB02Inputs(t *testing.T, inputs nativeInputs) {
 			Scope:                 "Fixed reviewed control only. Each consumer invocation must supply its own preparation and four matching exports. publicnative helper43 attribution remains separate.",
 		},
 		CapabilityBoundary: map[string]string{
-			"activeWisp":        "c8eb exporter refuses every nonempty wisps/wisp_labels/wisp_dependencies/wisp_events/wisp_comments/wisp_child_counters family; ephemeral fields on durable issue rows remain opaque source fields and do not gain live workflow semantics",
+			"activeEphemeral":   "c8eb exporter refuses every nonempty ephemeral-plane family (labels, dependencies, events, comments and child counters); ephemeral fields on durable issue rows remain opaque source fields and do not gain live workflow semantics",
 			"waitsFor":          "c8eb dependency exporter accepts only blocks,parent-child,related,discovered-from; waits-for and its gate metadata have no accepted native archive path",
 			"conditionalBlocks": "c8eb dependency exporter accepts no conditional-blocks edge; B02 conditional outcomes remain native-only and public replay is separately labeled",
 			"customStatuses":    "c8eb exporter refuses nonempty custom_statuses/custom_types; category-outcomes retains the real native command and expected dump refusal",
