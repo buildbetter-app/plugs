@@ -324,6 +324,70 @@ func TestB07WaitsForMetadataValuesNoopOmissionAndReplacement(t *testing.T) {
 	}
 }
 
+func TestB07MissingLocalEndpointsRefuseAtomicallyAcrossBothProducers(t *testing.T) {
+	for _, engine := range testEngines {
+		t.Run(engine, func(t *testing.T) {
+			for _, producer := range []string{"bead.link", "tx.apply"} {
+				for _, scenario := range []string{"missing-source", "missing-target", "foreign-looking-local-target"} {
+					t.Run(producer+"/"+scenario, func(t *testing.T) {
+						e := newEdgeContractFixture(t, engine)
+						from, to, other := e.create(t, "local-source"), e.create(t, "local-target"), e.create(t, "local-neighbor")
+						requestFrom, requestTo := from, to
+						switch scenario {
+						case "missing-source":
+							requestFrom = model.RefByID("missing-local-source", model.Natural64(0))
+						case "missing-target":
+							requestTo = model.RefByID(from.ID+"-missing", model.Natural64(0))
+						case "foreign-looking-local-target":
+							// Opaque ID spelling never opts a local reference into
+							// external-target semantics (binding B07/B14 decision).
+							requestTo = model.RefByID("foreign-prefix-404", model.Natural64(0))
+						}
+						p := e.probe(producer, "local-endpoint-"+scenario)
+						params := map[string]any{"from": requestFrom, "to": requestTo, "kind": "blocks"}
+						if producer == "tx.apply" {
+							params = map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{
+								edgePatchOp(other, "must roll back"), edgeLinkOp(requestFrom, requestTo, "blocks"),
+							}}}
+						}
+						before := e.snapshot(t)
+						edgeRequireRefusal(t, e.call(t, p, params), "not_found")
+						after := e.snapshot(t)
+						edgeRequireStateEqual(t, before, after)
+						if after.Receipts[p] != nil {
+							t.Fatal("missing local endpoint minted a receipt")
+						}
+						edgeRequirePublicReady(t, e, from.ID, to.ID, other.ID)
+						e.f.reopen(t)
+						edgeRequireStateEqual(t, before, e.snapshot(t))
+
+						// A refused local reference neither reserves the key nor
+						// prevents a corrected request from publishing once.
+						good := map[string]any{"from": from, "to": to, "kind": "blocks"}
+						changed := []model.Ref{from}
+						var otherFields map[string]any
+						if producer == "tx.apply" {
+							good = map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{
+								edgePatchOp(other, "corrected local request"), edgeLinkOp(from, to, "blocks"),
+							}}}
+							changed = append(changed, other)
+							otherFields = map[string]any{"title": "corrected local request"}
+						}
+						fixed := e.call(t, p, good)
+						edgeRequireSuccess(t, fixed)
+						final := e.snapshot(t)
+						edgeRequireSingleCommit(t, before, final, edgeRequireReceipt(t, final, p, fixed.Result, false), changed...)
+						edgeRequireLinks(t, final, from, edgeLinkValue(to, "blocks"))
+						edgeRequireOnlyEdgeAndFields(t, before, final, from, nil)
+						edgeRequireOnlyEdgeAndFields(t, before, final, other, otherFields)
+						edgeRequirePublicReady(t, e, to.ID, other.ID)
+					})
+				}
+			}
+		})
+	}
+}
+
 func TestB07UnresolvedExternalTargetsRetainIdentityAcrossBothProducers(t *testing.T) {
 	for _, engine := range testEngines {
 		for _, producer := range []string{"bead.link", "tx.apply"} {
