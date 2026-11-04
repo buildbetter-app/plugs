@@ -1394,7 +1394,9 @@ func writerPublishesKernelBooleanAndSourceOnlyRestamps(t *testing.T, open storeF
 			}
 			want.Derived = &row
 			if !reflect.DeepEqual(state, want) {
-				t.Fatalf("source-only restamp changed fields outside exact provenance and semantic leaf: key=%+v want=%+v got=%+v", want.Key, want, state)
+				wantJSON, _ := json.Marshal(want)
+				gotJSON, _ := json.Marshal(state)
+				t.Fatalf("source-only restamp changed fields outside exact provenance and semantic leaf: key=%+v want=%s got=%s expected_source_ref=%#v actual_source_ref=%#v", *want.Key.Derived, wantJSON, gotJSON, want.Derived.Index.Source.Key.Ref, state.Derived.Index.Source.Key.Ref)
 			}
 		}
 		if !reflect.DeepEqual(selectionFamilyInventory(t, afterReader), wantInventory) {
