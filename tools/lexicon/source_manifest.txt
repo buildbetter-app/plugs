@@ -1163,6 +1163,7 @@ internal/storage/sqlite/selection_backfill_test.go
 internal/storage/sqlite/selection_family.go
 internal/storage/sqlite/selection_family_publication.go
 internal/storage/sqlite/selection_family_verify.go
+internal/storage/sqlite/selection_predicate_work_test.go
 internal/storage/sqlite/selection_publication.go
 internal/storage/sqlite/selection_query.go
 internal/storage/sqlite/selection_stage_work_test.go
