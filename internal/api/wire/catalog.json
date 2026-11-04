@@ -298,7 +298,7 @@
     {
       "name": "bead.get",
       "summary": "Read a bead and its evidence attachments.",
-      "description": "Read a bead and its evidence attachments.",
+      "description": "Read a bead and its evidence attachments. Optional commentPage selects a bounded (time, stored ordinal) keyset page in the same authorized bead.get read; omitted selection retains the existing comments response.",
       "tags": [
         {
           "name": "core"
@@ -318,6 +318,13 @@
           "schema": {
             "$ref": "#/components/schemas/AsOf"
           }
+        },
+        {
+          "name": "commentPage",
+          "schema": {
+            "$ref": "#/components/schemas/CommentPageSelection"
+          },
+          "description": "Optional comment page selection; omitted keeps the existing bead.get response."
         },
         {
           "name": "_meta",
@@ -349,6 +356,12 @@
         },
         {
           "$ref": "#/components/errors/CursorExpired"
+        },
+        {
+          "$ref": "#/components/errors/CursorInvalid"
+        },
+        {
+          "$ref": "#/components/errors/IncarnationChanged"
         }
       ],
       "x-effect": "read",
@@ -7407,6 +7420,9 @@
               "$ref": "#/components/schemas/Comment"
             },
             "description": "Optional imported or legacy comments. Existing bead.get authorization and as-of semantics apply."
+          },
+          "commentPage": {
+            "$ref": "#/components/schemas/CommentPage"
           }
         },
         "required": [
@@ -10077,6 +10093,62 @@
           }
         ],
         "description": "Stored comment. Legacy comments retain body, principal and time. Imported comments add a verified restoring principal, fixed import origin, restore commit time and separate source provenance."
+      },
+      "PagedComment": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Stable one-based position in the append-only stored thread."
+          },
+          "comment": {
+            "$ref": "#/components/schemas/Comment"
+          }
+        },
+        "required": [
+          "id",
+          "comment"
+        ],
+        "additionalProperties": false
+      },
+      "CommentPageSelection": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "cursor": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Select one comment page. The default limit is 100 and the maximum is 500; a cursor resumes the pinned thread."
+      },
+      "CommentPage": {
+        "type": "object",
+        "properties": {
+          "comments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PagedComment"
+            }
+          },
+          "asOf": {
+            "$ref": "#/components/schemas/AsOf"
+          },
+          "nextCursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "comments",
+          "asOf"
+        ],
+        "additionalProperties": false,
+        "description": "One pinned comment thread page in (time, stored ordinal) order. An absent nextCursor marks the end."
       },
       "LegacyComment": {
         "type": "object",
@@ -13483,7 +13555,7 @@
     "methodCount": 83,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
     "nameSha256": "0ce6a0ee3927753ec8622351c1337c1de3922a1662eae667196e447fd9c170ef",
-    "descriptorSha256": "ec91cb342987cefd6444981ef37523cc9238da2a0af168b13a4999c7964f3ba2",
+    "descriptorSha256": "02b96a5cd7556b2e602078b7e236d25bddd296b4f7a2e110ae83dca47ad455ad",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -13744,6 +13816,13 @@
             }
           },
           {
+            "name": "commentPage",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/CommentPageSelection"
+            }
+          },
+          {
             "name": "_meta",
             "required": false,
             "schema": {
@@ -13759,7 +13838,9 @@
           "#/components/errors/Forbidden",
           "#/components/errors/RateLimited",
           "#/components/errors/Busy",
-          "#/components/errors/CursorExpired"
+          "#/components/errors/CursorExpired",
+          "#/components/errors/CursorInvalid",
+          "#/components/errors/IncarnationChanged"
         ]
       },
       {
@@ -18146,9 +18227,9 @@
       "compatibility": "Legacy comments decode unchanged. Imported comments require origin import and sourceTime."
     },
     "resultSurface": {
-      "beadGet": "bead.get may include an optional typed comments array on BeadGetResult; preserve existing bead.get authorization and as-of semantics.",
+      "beadGet": "bead.get retains its optional typed comments array when commentPage is omitted. When commentPage is selected, the result carries a pinned typed page instead of the unbounded array, with the same read authorization and as-of semantics.",
       "noNewRPC": true,
-      "consumerLimit": "This schema does not claim that a current service or browser already reads or renders comments."
+      "consumerLimit": "The comment page is a service/RPC projection; browser rendering and full B15 qualification require separate evidence."
     },
     "ordinaryInputs": {
       "commentOp": "closed to kind, target and body",

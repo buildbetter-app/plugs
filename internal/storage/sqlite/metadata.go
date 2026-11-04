@@ -212,6 +212,13 @@ func (s *Store) saveCheckpoint(ctx context.Context, value driver.ActiveLease, ke
 		return err
 	})
 	if err != nil {
+		var uncertain commitError
+		if errors.As(err, &uncertain) {
+			// Native COMMIT can publish before its execution reports cancellation.
+			// The caller must resolve this through LoadCheckpoint, not treat the
+			// underlying error as a rejection or the staged result as confirmed.
+			return driver.Checkpoint{}, driver.ErrIndeterminate{}
+		}
 		return driver.Checkpoint{}, err
 	}
 	result.Payload = bytes.Clone(result.Payload)
@@ -235,7 +242,7 @@ func (s *Store) FinalizeResponse(ctx context.Context, value driver.ActiveLease, 
 	if err != nil {
 		return err
 	}
-	return s.immediate(ctx, l, func(c *sql.Conn) error {
+	err = s.immediate(ctx, l, func(c *sql.Conn) error {
 		scope := scopeKey(principal, agent, method, key)
 		previous, err := s.readReplay(ctx, c, scope)
 		if err != nil {
@@ -265,6 +272,13 @@ func (s *Store) FinalizeResponse(ctx context.Context, value driver.ActiveLease, 
 		_, err = c.ExecContext(ctx, `UPDATE replays SET response=?,pending=0,finalized=1,post=? WHERE scope=?`, data, post, scope)
 		return err
 	})
+	var uncertain commitError
+	if errors.As(err, &uncertain) {
+		// Resolve a possibly finalized receipt through a fresh reader. Never
+		// expose native COMMIT's cancellation as a no-publication guarantee.
+		return driver.ErrIndeterminate{IdempotencyKey: key}
+	}
+	return err
 }
 
 func (s *Store) PutCoreSession(ctx context.Context, value driver.CoreSessionRecord, now time.Time, max int) error {

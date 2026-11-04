@@ -235,18 +235,20 @@ func (s *Service) readyPage(ctx context.Context, by model.PrincipalRef, req Read
 // Priority groups stay contiguous, so the queue still drains every lower
 // priority before considering a higher one; only ID ties are spread between
 // concurrent request keys. The ordinary bead.ready path never calls this.
-func spreadClaimNextItems(items []Bead, seed string) ([]Bead, error) {
+func spreadClaimNextItems(items []Bead, seed string, work ...context.Context) ([]Bead, error) {
 	if len(items) < 2 || seed == "" {
 		return items, nil
 	}
 	ordered := append([]Bead(nil), items...)
 	for start := 0; start < len(ordered); {
+		readinessVisit(work)
 		groupPriority, err := beadPriority(ordered[start])
 		if err != nil {
 			return nil, err
 		}
 		end := start + 1
 		for end < len(ordered) {
+			readinessVisit(work)
 			priority, err := beadPriority(ordered[end])
 			if err != nil {
 				return nil, err
@@ -263,6 +265,9 @@ func spreadClaimNextItems(items []Bead, seed string) ([]Bead, error) {
 				rotated := append([]Bead(nil), ordered[start+offset:end]...)
 				rotated = append(rotated, ordered[start:start+offset]...)
 				copy(ordered[start:end], rotated)
+				if len(work) != 0 {
+					driver.ReportReadWork(work[0], driver.ReadSelectorKeys, int64(2*(end-start)))
+				}
 			}
 		}
 		start = end
@@ -282,11 +287,15 @@ func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req 
 	if err := validatePosition(req.Position); err != nil {
 		return BeadPage{}, err
 	}
+	corePage := s.readyPage
+	if restartOnRevision {
+		corePage = s.queueReadyPage
+	}
 	if s.workflow == nil {
 		if req.Position != nil && (req.Position.Workflow || req.Position.WorkflowSnapshot != nil) {
 			return BeadPage{}, failure("cursor_invalid", "workflow provider is unavailable; restart paging")
 		}
-		return s.readyPage(ctx, by, req, restartOnRevision)
+		return corePage(ctx, by, req, restartOnRevision)
 	}
 	workflowPhase := req.Position != nil && req.Position.Workflow
 	coreReq := req
@@ -296,7 +305,7 @@ func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req 
 		coreReq.Position = nil
 		coreReq.Limit = 1
 	}
-	page, err := s.readyPage(ctx, by, coreReq, restartOnRevision)
+	page, err := corePage(ctx, by, coreReq, restartOnRevision)
 	if err != nil {
 		return BeadPage{}, err
 	}
@@ -390,6 +399,13 @@ func (s *Service) ReadyCandidates(ctx context.Context, req ReadyRequest, reader 
 	}
 	if reader == nil {
 		return nil, failure("internal_error", "ready probe reader is unavailable")
+	}
+	items, projection, err := s.queueReadyItems(ctx, req, reader)
+	if err != nil {
+		return nil, err
+	}
+	if projection != nil {
+		return items, nil
 	}
 	return s.readyItems(ctx, req, reader)
 }

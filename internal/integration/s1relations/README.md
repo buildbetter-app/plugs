@@ -33,6 +33,23 @@ unverified-history refusal and populated-target refusal on all three stores.
 The populated case contains the same labels, parent, metadata, comments,
 close provenance, history and final receipt exercised by the other cases.
 
+B27's independent consumer cases also seed nonempty issue snapshots,
+compaction snapshots, provenance events, and events. The dumpformat target
+checks each family's exact rows and source counts through read and merge,
+including large numbers, nulls, Unicode, and opaque JSON text; false source
+counts refuse. The converterroundtrip target checks the same four nonempty
+families as retained source rows, complete archive/member blobs, and retained
+reverse input before and after SQL reopen on all three stores. These detached
+fixtures prove consumer retention only. They do not supply a native producer
+recording, verified source history/attribution, or a public capture receipt.
+
+Cross-plane routing is an explicit boundary disposition. Durable B25 cases
+prove the owned plane's inbound and outbound preservation and delete policy;
+ephemeral demotion/promotion (inbound links surviving demotion and outbound
+links moving exactly once) belongs to the B26 workflow producer and remains
+**BLOCKED/unqualified** until that author supplies an admitted producer and
+atomic three-store evidence. No B25 result is transferred to that B26 seam.
+
 SQL engine time remains the driver's real time. The reference projection is
 non-temporal and makes no clock, lease-expiry, or performance claim. Existing
 PR #245 assertions, reference data, and attribution remain unchanged. B26

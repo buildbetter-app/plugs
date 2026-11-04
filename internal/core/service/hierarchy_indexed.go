@@ -18,6 +18,15 @@ const indexedHierarchyLimit = 5000
 // outside the inverse selector's closed domain. Unavailable or exhausted
 // membership also returns to that scan; it is never treated as absence.
 func indexedGuardGraph(ctx context.Context, proposal port.ProposedChange, reader port.SnapshotReader) (map[string]storedBead, bool, error) {
+	// A terminal claimNext receipt has no bead transition to guard. This
+	// certifies only that empty transition domain; its independent fresh
+	// post-Head ready probe and Writer authorization still run before commit.
+	if proposal.Meta.Method == "bead.claimNext" && len(proposal.Changes) == 0 {
+		if err := ctx.Err(); err != nil {
+			return nil, false, err
+		}
+		return map[string]storedBead{}, true, nil
+	}
 	indexed, ok := reader.(port.HierarchySnapshotReader)
 	if !ok || len(proposal.Changes) == 0 || len(proposal.Changes) > driver.SourceLinkMaxExcluded {
 		return nil, false, nil
