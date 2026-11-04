@@ -466,15 +466,15 @@ func TestB08CloseAndReopenSettleActualPublicTransitiveReadiness(t *testing.T) {
 	}
 }
 
-func TestB08CloseTemplatesCASAndUnadmittedForceAreStrict(t *testing.T) {
+func TestB08CloseTemplatesCASAndUnknownOverrideAreStrict(t *testing.T) {
 	for _, engine := range testEngines {
 		t.Run(engine, func(t *testing.T) {
 			f := newB08CloseFixture(t, engine, b08ContractOntology())
 			template := f.createB08(t, "immutable-template-guard", "issue", map[string]any{"template": true}, nil)
 			f.refuseB08(t, "bead.close", "template-plain", map[string]any{"id": template}, "ontology_guard_failed", ontology.NotTemplate)
-			for _, unknown := range []string{"force", "override_guard"} {
-				// There is no adopted wire field for policy override at this base.
-				// Refusing it proves strict admission only, not positive force parity.
+			for _, unknown := range []string{"override_guard"} {
+				// An action name is not an accepted request field. The typed force
+				// request has separate policy, authorization and invariant controls.
 				f.refuseB08(t, "bead.close", "template-"+unknown, map[string]any{"id": template, unknown: true}, "invalid_params", "")
 				f.refuseB08(t, "tx.apply", "template-op-"+unknown, map[string]any{"changeSet": map[string]any{"ops": []any{
 					map[string]any{"kind": "close", "target": template, unknown: true},

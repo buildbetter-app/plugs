@@ -37,7 +37,8 @@ def verify_b06(vector):
     observations = vector.get("observations", {})
     coverage = observations.get("cycleProbeCoverage", {})
     if (coverage.get("status") != "partial"
-            or coverage.get("supported") != ["nonempty-tracks-report", "lowest-id-rotation", "report-order", "pure-tracks-exclusion",
+            or coverage.get("supported") != ["self-blocks-refusal", "self-tracks-refusal", "ancestor-blocker-refusal", "descendant-blocker-refusal",
+                                              "public-refusal-conservation", "nonempty-tracks-report", "lowest-id-rotation", "report-order", "pure-tracks-exclusion",
                                               "unchanged-report-bytes", "same-type-readd", "native-json-uncapped", "native-human-limit"]
             or coverage.get("blocked") != ["blocking-only-cycle-public-fixture", "parallel-rows-public-fixture", "unreadable-cycle-public-fixture"]):
         raise RuntimeError("B06 must retain the supported probe scope and unresolved public fixture dependencies")
@@ -64,11 +65,10 @@ def verify_b06(vector):
         (["version"], 0),
         (["create", "--id", "b06-source", "--type", "task", "--title", "Source"], 0),
         (["create", "--id", "b06-target", "--type", "task", "--title", "Target"], 0),
-        (["dep", "add", "b06-source", "b06-target", "--type", "blocks"], 0),
-        (["dep", "add", "b06-target", "b06-source", "--type", "blocks"], 1),
     ]
     expected_indices = []
     expected_ids = ["b06-source", "b06-target"]
+    expected_refusals = []
 
     def append_probe(number):
         expected_indices.append(len(transcript))
@@ -78,6 +78,38 @@ def verify_b06(vector):
         expected_ids.append(identifier)
         transcript.append((["create", "--id", identifier, "--type", "task", "--title", identifier], 0))
 
+    def append_refusal(label, source, target, kind, members, reason):
+        before = []
+        for identifier, _ in members:
+            before.append(len(transcript))
+            transcript.append((["show", identifier, "--json"], 0))
+        index = len(transcript)
+        transcript.append((["dep", "add", source, target, "--type", kind], 1))
+        after = []
+        for identifier, _ in members:
+            after.append(len(transcript))
+            transcript.append((["show", identifier, "--json"], 0))
+        expected_refusals.append((
+            {"case": label, "commandIndex": index, "beforeIndices": before, "afterIndices": after}, members, reason))
+
+    for kind in ("blocks", "tracks"):
+        append_refusal("self-" + kind, "b06-source", "b06-source", kind,
+                       [("b06-source", None)], rb"self|itself")
+    for identifier in ("b06-ancestor", "b06-child", "b06-descendant"):
+        append_create(identifier)
+    transcript.extend([
+        (["dep", "add", "b06-child", "b06-ancestor", "--type", "parent-child"], 0),
+        (["dep", "add", "b06-descendant", "b06-child", "--type", "parent-child"], 0),
+    ])
+    members = [("b06-ancestor", None), ("b06-child", "b06-ancestor"), ("b06-descendant", "b06-child")]
+    for label, source, target in (("ancestor-blocker", "b06-ancestor", "b06-descendant"),
+                                  ("descendant-blocker", "b06-descendant", "b06-ancestor")):
+        append_refusal(label, source, target, "blocks", members, rb"ancestor|descendant|hierarch|parent|child")
+    scheduling_start = len(transcript)
+    transcript.extend([
+        (["dep", "add", "b06-source", "b06-target", "--type", "blocks"], 0),
+        (["dep", "add", "b06-target", "b06-source", "--type", "blocks"], 1),
+    ])
     append_probe(0)
     for identifier in ("b06-pure-a", "b06-pure-z"):
         append_create(identifier)
@@ -105,7 +137,27 @@ def verify_b06(vector):
         if (command.get("argv") != arguments or type(command.get("exitCode")) is not int
                 or command.get("exitCode") != exit_code):
             raise RuntimeError("B06 fixture must retain every ordinary guarded command and its exit")
-    refusal = commands[5]
+    if observations.get("guardRefusals") != [item[0] for item in expected_refusals]:
+        raise RuntimeError("B06 self and hierarchy refusals lost their exact public command bindings")
+    for refusal, members, reason in expected_refusals:
+        command = commands[refusal["commandIndex"]]
+        diagnostic = (base64.b64decode(command["stdoutBase64"], validate=True)
+                      + base64.b64decode(command["stderrBase64"], validate=True)).lower()
+        if (not re.search(reason, diagnostic)
+                or re.search(rb"unknown command|unknown flag|usage:|unrecognized", diagnostic)):
+            raise RuntimeError("B06 self or hierarchy refusal did not identify its guard")
+        for before, after, (identifier, parent) in zip(refusal["beforeIndices"], refusal["afterIndices"], members):
+            raw = base64.b64decode(commands[before]["stdoutBase64"], validate=True)
+            if raw != base64.b64decode(commands[after]["stdoutBase64"], validate=True):
+                raise RuntimeError("B06 refused edge changed a retained public member")
+            rows = json.loads(raw)
+            if not isinstance(rows, list) or len(rows) != 1 or rows[0].get("id") != identifier:
+                raise RuntimeError("B06 refusal conservation lost its public member")
+            edges = rows[0].get("dependencies") or []
+            expected = [] if parent is None else [(parent, "parent-child")]
+            if not isinstance(edges, list) or [(edge.get("id"), edge.get("dependency_type")) for edge in edges] != expected:
+                raise RuntimeError("B06 refusal baseline lost its exact parent-child fixture")
+    refusal = commands[scheduling_start + 1]
     if b"cycle" not in (base64.b64decode(refusal["stdoutBase64"], validate=True)
                         + base64.b64decode(refusal["stderrBase64"], validate=True)).lower():
         raise RuntimeError("B06 reverse-edge refusal did not identify a cycle")
@@ -160,14 +212,8 @@ def verify_b06(vector):
                 raise RuntimeError("B06 native human limit changed the whole total or member projection")
     if indices != expected_indices:
         raise RuntimeError("B06 probes must bind their exact commands in recorded order")
-    start = indices[0] - 2
-    if start < 0 or observations.get("probeResults") != commands[start:]:
+    if observations.get("probeResults") != commands[4:]:
         raise RuntimeError("B06 probe observations are not the retained command suffix")
-    if (commands[start].get("argv") != ["dep", "add", "b06-source", "b06-target", "--type", "blocks"]
-            or commands[start].get("exitCode") != 0
-            or commands[start + 1].get("argv") != ["dep", "add", "b06-target", "b06-source", "--type", "blocks"]
-            or commands[start + 1].get("exitCode") != 1):
-        raise RuntimeError("B06 lost its successful edge and reverse-edge refusal control")
 
 
 def verify_recordings(value):

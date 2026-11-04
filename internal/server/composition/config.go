@@ -33,6 +33,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/integration/converterroundtrip"
 	"github.com/buildbetter-app/plugs/internal/plugins/authnoidc"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
+	"github.com/buildbetter-app/plugs/internal/server/authzrpc"
 	"github.com/buildbetter-app/plugs/internal/server/collab"
 	servertsevents "github.com/buildbetter-app/plugs/internal/server/events"
 	"github.com/buildbetter-app/plugs/internal/server/ontologyrpc"
@@ -111,6 +112,9 @@ type Config struct {
 	UI       bool
 	AuthMode string
 	Auth     authn.Config
+	// Authority installs the actual checker on this runtime's store, lease,
+	// shared ontology, Writer and guarded public service.
+	Authority *authzrpc.AuthorityConfig
 	// OIDC enables the existing OIDC provider. Its SessionStore is owned by
 	// composition and is replaced with the selected SQLite/PostgreSQL store;
 	// the typed config is not parsed from .plug/config.yaml yet.
@@ -187,6 +191,7 @@ type Runtime struct {
 	RPC              *rpc.Server
 	Metrics          *pipeline.Collector
 	Authenticator    *authn.Authenticator
+	Authority        *authzrpc.Checker
 	OIDC             *authnoidc.Provider
 	NativeHost       *pluginhost.Host
 	HTTPHandler      *httpjson.Handler
@@ -477,6 +482,9 @@ func (r *Runtime) bind(config Config) error {
 		return err
 	}
 	r.OIDC = oidc
+	if config.Authority != nil {
+		authConfig.AuthorizationInstalled = func() bool { return true }
+	}
 	if config.EpicProgress != nil && config.EpicProgress.AnonymousOnly &&
 		(config.AuthMode == "authenticated" || authConfig.Provider != nil || authConfig.CoreSessions != nil ||
 			(authConfig.AuthorizationInstalled != nil && authConfig.AuthorizationInstalled())) {
@@ -487,12 +495,26 @@ func (r *Runtime) bind(config Config) error {
 	var ontologyReadAuthorize ontologyops.AuthorizeRead
 	var ontologyApplyEnabled bool
 	if config.Ontology != nil {
+		ontologyLocator, ontologySnapshot, err = loadConfiguredOntology(r.ctx, r.Store, meta, config.Project, config.Ontology)
+		if err != nil {
+			return err
+		}
+	}
+	ontology, authority, err := bindRuntimeAuthority(r.ctx, config, authConfig, r.Store, r.Lease, ontologySnapshot)
+	if err != nil {
+		return err
+	}
+	r.Authority = authority
+	if config.Ontology != nil {
 		readAuthorize := config.Ontology.AuthorizeRead
+		if readAuthorize == nil && authority != nil && config.Authority.OntologyManagement {
+			readAuthorize = authority.AuthorizeOntologyRead
+		}
 		if readAuthorize == nil && config.AuthorizeRead != nil {
 			readAuthorize = ontologyops.AuthorizeRead(config.AuthorizeRead)
 		}
 		installed := func() bool {
-			return config.Ontology.Authorizer != nil ||
+			return authority != nil || config.Ontology.Authorizer != nil ||
 				(authConfig.AuthorizationInstalled != nil && authConfig.AuthorizationInstalled())
 		}
 		if readAuthorize == nil && (installed() || config.AuthorizeReadBatch != nil || config.EventAuthorization != nil) {
@@ -512,26 +534,22 @@ func (r *Runtime) bind(config Config) error {
 				return nil
 			}
 		}
-		// ApplyProtected has no installed-authorizer revalidation capability.
-		// Ordinary Writer authorization cannot grant this distinct operation.
-		// A declared dynamic chain also keeps apply unavailable from startup.
-		ontologyApplyEnabled = authConfig.AuthorizationInstalled == nil &&
-			config.Ontology.Authorizer == nil && readAuthorize == nil && config.AuthorizeReadBatch == nil && config.EventAuthorization == nil
-		ontologyLocator, ontologySnapshot, err = loadConfiguredOntology(r.ctx, r.Store, meta, config.Project, config.Ontology)
-		if err != nil {
-			return err
-		}
+		// Installed protected apply requires the separately opted-in exact
+		// management capability of this same runtime-owned checker. Generic
+		// Writer modify permission never enables ontology replacement.
+		ontologyApplyEnabled = (authConfig.AuthorizationInstalled == nil &&
+			config.Ontology.Authorizer == nil && readAuthorize == nil && config.AuthorizeReadBatch == nil && config.EventAuthorization == nil) ||
+			(authority != nil && config.Authority.OntologyManagement)
 	}
-	var ontologyRuntime *service.Ontology
-	if config.Ontology == nil {
-		ontologyRuntime = service.NewOntology(nil)
-	} else {
-		ontologyRuntime = service.NewOntology(ontologySnapshot.Effective)
-	}
-	ontology := ontologyRuntime
 	eventProvider := &runtimeEventProvider{}
 	nativeValidatorCount := 0
 	writerOptions := []pipeline.Option{pipeline.WithOntology(ontology)}
+	if authority != nil {
+		writerOptions = append(writerOptions, pipeline.WithAuthorizer(authority), pipeline.WithEventContext(authority))
+		if config.Authority.OntologyManagement {
+			writerOptions = append(writerOptions, pipeline.WithProtectedAuthorizer(authority))
+		}
+	}
 	if config.Ontology != nil {
 		writerOptions = append(writerOptions, pipeline.WithOntologyAudit(service.NewOntologyAudit(ontologyLocator)))
 		if config.Ontology.Authorizer != nil {
@@ -570,6 +588,12 @@ func (r *Runtime) bind(config Config) error {
 		required: func() bool { return eventAuthorizationRequired(config, authConfig) },
 	}
 	serviceOptions := []service.Option{service.WithOntology(ontology)}
+	if authConfig.AuthorizationInstalled != nil || (config.Ontology != nil && config.Ontology.Authorizer != nil) {
+		serviceOptions = append(serviceOptions, service.WithAuthorizationInstalled(func() bool {
+			return authority != nil || (config.Ontology != nil && config.Ontology.Authorizer != nil) ||
+				(authConfig.AuthorizationInstalled != nil && authConfig.AuthorizationInstalled())
+		}))
+	}
 	if config.EventAuthorization != nil || !eventAuthorization.required() {
 		serviceOptions = append(serviceOptions, service.WithEventProvider(eventProvider))
 	}
@@ -610,7 +634,11 @@ func (r *Runtime) bind(config Config) error {
 	if err != nil {
 		return fmt.Errorf("composition: create RPC registry: %w", err)
 	}
-	if err := rpc.BindService(registry, r.Service); err != nil {
+	var publicService rpc.Service = r.Service
+	if authority != nil {
+		publicService = authority.GuardService(r.Service)
+	}
+	if err := rpc.BindService(registry, publicService); err != nil {
 		return fmt.Errorf("composition: bind service: %w", err)
 	}
 	if ontologyService != nil {
@@ -761,14 +789,18 @@ func (r *Runtime) bind(config Config) error {
 	if err != nil {
 		return fmt.Errorf("composition: create authenticator: %w", err)
 	}
-	r.RPC, err = rpc.New(registry, rpc.Config{
+	rpcConfig := rpc.Config{
 		Incarnation: meta.Incarnation, DefaultProject: config.Project,
 		AuthMode: config.AuthMode, OntologyRevision: model.Natural64(1), CursorKey: key,
 		CurrentIncarnation: func(ctx context.Context) (string, error) {
 			current, err := r.Store.Meta(ctx)
 			return current.Incarnation, err
 		},
-	})
+	}
+	if authority != nil {
+		rpcConfig.Visible = authority.Visible
+	}
+	r.RPC, err = rpc.New(registry, rpcConfig)
 	if err != nil {
 		return fmt.Errorf("composition: create RPC server: %w", err)
 	}

@@ -54,6 +54,18 @@ class ReferenceAdmissionTests(unittest.TestCase):
             code = 0
             if args[:2] == ["dep", "cycles"]:
                 output = json.dumps(next(reports)).encode() if "--json" in args else renderings[args[-1]]
+            elif args[0] == "show":
+                identifier = args[1]
+                parents = {"b06-child": "b06-ancestor", "b06-descendant": "b06-child"}
+                dependencies = [] if identifier not in parents else [
+                    {"id": parents[identifier], "dependency_type": "parent-child"}]
+                output = json.dumps([{"id": identifier, "dependencies": dependencies}]).encode()
+            elif args in (["dep", "add", "b06-source", "b06-source", "--type", "blocks"],
+                          ["dep", "add", "b06-source", "b06-source", "--type", "tracks"]):
+                output, stderr, code = b"", b"unit fixture: cannot depend on itself\n", 1
+            elif args in (["dep", "add", "b06-ancestor", "b06-descendant", "--type", "blocks"],
+                          ["dep", "add", "b06-descendant", "b06-ancestor", "--type", "blocks"]):
+                output, stderr, code = b"", b"unit fixture: blocking ancestor/descendant refused\n", 1
             elif args == ["dep", "add", "b06-target", "b06-source", "--type", "blocks"]:
                 output, stderr, code = b"", b"unit fixture: dependency cycle refused\n", 1
             else:
@@ -80,10 +92,12 @@ class ReferenceAdmissionTests(unittest.TestCase):
         self.assertEqual(coverage["status"], "partial")
         self.assertEqual(coverage["blocked"], ["blocking-only-cycle-public-fixture", "parallel-rows-public-fixture", "unreadable-cycle-public-fixture"])
         for command in vector["commands"]:
-            self.assertIn(command["argv"][0], ["init", "version", "create", "dep"])
+            self.assertIn(command["argv"][0], ["init", "version", "create", "dep", "show"])
             self.assertFalse(set(command["argv"]) & {"import", "sql", "--no-cycle-check", "--force", "--allow-stale"})
-        self.assertEqual(len(vector["ids"]), 10)
+        self.assertEqual(len(vector["ids"]), 13)
         self.assertEqual(len(vector["observations"]["cycleProbes"]), 9)
+        self.assertEqual([probe["case"] for probe in vector["observations"]["guardRefusals"]],
+                         ["self-blocks", "self-tracks", "ancestor-blocker", "descendant-blocker"])
 
     def test_b06_rejects_empty_unrotated_duplicate_partial_or_incomplete_reports(self):
         good = self.b06_vector()
@@ -118,7 +132,14 @@ class ReferenceAdmissionTests(unittest.TestCase):
                 self.b06_vector(human={"1": output})
 
     def test_independent_b06_rejects_rehashed_missing_or_forged_coverage(self):
-        for variant in ("no-probes", "complete-claim", "lost-dependency", "bypass", "lost-create", "wrong-edge", "failed-edge", "wrong-command", "empty-report", "forged-path"):
+        def stream(command, name, raw):
+            command[name + "Base64"] = base64.b64encode(raw).decode()
+            command[name + "Sha256"] = sha(raw)
+            if name == "stdout" and "stdout" in command:
+                command["stdout"] = json.loads(raw)
+
+        for variant in ("no-probes", "complete-claim", "lost-dependency", "bypass", "lost-create", "wrong-edge", "failed-edge", "wrong-command", "empty-report", "forged-path",
+                        "no-guards", "self-diagnostic", "hierarchy-diagnostic", "refused-mutation", "wrong-parent", "successful-refusal", "guard-index"):
             with self.subTest(variant=variant):
                 vector = self.b06_vector()
                 observations = vector["observations"]
@@ -131,11 +152,17 @@ class ReferenceAdmissionTests(unittest.TestCase):
                 elif variant == "bypass":
                     vector["commands"][observations["cycleProbes"][0]["commandIndex"] - 2]["argv"].append("--no-cycle-check")
                 elif variant == "lost-create":
-                    vector["commands"].pop(7)
+                    index = next(i for i, command in enumerate(vector["commands"])
+                                 if command["argv"][:3] == ["create", "--id", "b06-pure-a"])
+                    vector["commands"].pop(index)
                 elif variant == "wrong-edge":
-                    vector["commands"][9]["argv"][-1] = "blocks"
+                    command = next(command for command in vector["commands"]
+                                   if command["argv"] == ["dep", "add", "b06-pure-a", "b06-pure-z", "--type", "tracks"])
+                    command["argv"][-1] = "blocks"
                 elif variant == "failed-edge":
-                    vector["commands"][9]["exitCode"] = 1
+                    command = next(command for command in vector["commands"]
+                                   if command["argv"] == ["dep", "add", "b06-pure-a", "b06-pure-z", "--type", "tracks"])
+                    command["exitCode"] = 1
                 elif variant == "wrong-command":
                     index = observations["cycleProbes"][3]["commandIndex"]
                     vector["commands"][index]["argv"] = ["dep", "cycles", "--json"]
@@ -144,8 +171,30 @@ class ReferenceAdmissionTests(unittest.TestCase):
                     command = vector["commands"][probe["commandIndex"]]
                     command.update(stdout=[], stdoutBase64="W10=", stdoutSha256=sha(b"[]"))
                     probe["paths"] = []
-                else:
+                elif variant == "forged-path":
                     observations["cycleProbes"][3]["paths"] = [["forged-member"]]
+                elif variant == "no-guards":
+                    observations["guardRefusals"] = []
+                elif variant in ("self-diagnostic", "hierarchy-diagnostic"):
+                    probe = observations["guardRefusals"][0 if variant == "self-diagnostic" else 2]
+                    stream(vector["commands"][probe["commandIndex"]], "stderr", b"unknown flag: self ancestor\n")
+                elif variant == "refused-mutation":
+                    probe = observations["guardRefusals"][2]
+                    index = probe["afterIndices"][0]
+                    changed = copy.deepcopy(vector["commands"][index]["stdout"])
+                    changed[0]["title"] = "changed by refused edge"
+                    stream(vector["commands"][index], "stdout", json.dumps(changed).encode())
+                elif variant == "wrong-parent":
+                    probe = observations["guardRefusals"][2]
+                    for index in (probe["beforeIndices"][1], probe["afterIndices"][1]):
+                        changed = copy.deepcopy(vector["commands"][index]["stdout"])
+                        changed[0]["dependencies"][0]["dependency_type"] = "relates-to"
+                        stream(vector["commands"][index], "stdout", json.dumps(changed).encode())
+                elif variant == "successful-refusal":
+                    index = observations["guardRefusals"][0]["commandIndex"]
+                    vector["commands"][index]["exitCode"] = 0
+                else:
+                    observations["guardRefusals"][0]["afterIndices"] = observations["guardRefusals"][0]["beforeIndices"]
                 # Valid fresh hashes must not turn missing semantics into a
                 # successful independent projection. These bytes are unit
                 # fixtures and are never written into the reference manifest.

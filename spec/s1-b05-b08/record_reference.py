@@ -193,12 +193,58 @@ def record_b06(binary, root, commands, env, ids, probe_start):
     coverage, with the remaining native fixture dependencies stated explicitly.
     """
     probes = []
+    refusals = []
+
+    def create(identifier):
+        run(binary, root, commands, ["create", "--id", identifier, "--type", "task", "--title", identifier], env=env)
+        ids.append(identifier)
+
+    def refuse(label, arguments, members, reason):
+        before_indices = []
+        before = []
+        for identifier, parent in members:
+            before_indices.append(len(commands))
+            output = run(binary, root, commands, ["show", identifier, "--json"], env=env)
+            row = json.loads(output)[0]
+            if row.get("id") != identifier:
+                raise RuntimeError("B06 refusal baseline differs from its public member")
+            if parent is not None and dependency_projection(output, identifier, parent) != [
+                    {"from": identifier, "to": parent, "kind": "parent-child"}]:
+                raise RuntimeError("B06 refusal fixture lost its public parent-child edge")
+            before.append(output)
+        index = len(commands)
+        output = run(binary, root, commands, arguments, expected=1, env=env)
+        diagnostic = (output + base64.b64decode(commands[-1]["stderrBase64"])).lower()
+        if (not re.search(reason, diagnostic)
+                or re.search(rb"unknown command|unknown flag|usage:|unrecognized", diagnostic)):
+            raise RuntimeError(f"B06 {label} did not identify its guard refusal")
+        after_indices = []
+        for (identifier, _), original in zip(members, before):
+            after_indices.append(len(commands))
+            if run(binary, root, commands, ["show", identifier, "--json"], env=env) != original:
+                raise RuntimeError(f"B06 {label} changed a public member after refusal")
+        refusals.append({"case": label, "commandIndex": index,
+                         "beforeIndices": before_indices, "afterIndices": after_indices})
 
     def report(label, arguments, expected):
         index = len(commands)
         output = run(binary, root, commands, ["dep", "cycles", *arguments], env=env)
         probes.append({"case": label, "commandIndex": index, "paths": b06_paths(output, expected, label)})
         return output
+
+    for kind in ("blocks", "tracks"):
+        refuse("self-" + kind, ["dep", "add", ids[0], ids[0], "--type", kind],
+               [(ids[0], None)], rb"self|itself")
+    ancestor, child, descendant = ("b06-ancestor", "b06-child", "b06-descendant")
+    for identifier in (ancestor, child, descendant):
+        create(identifier)
+    for source, target in ((child, ancestor), (descendant, child)):
+        run(binary, root, commands, ["dep", "add", source, target, "--type", "parent-child"], env=env)
+    members = [(ancestor, None), (child, ancestor), (descendant, child)]
+    for label, source, target in (("ancestor-blocker", ancestor, descendant),
+                                  ("descendant-blocker", descendant, ancestor)):
+        refuse(label, ["dep", "add", source, target, "--type", "blocks"], members,
+               rb"ancestor|descendant|hierarch|parent|child")
 
     run(binary, root, commands, ["dep", "add", ids[0], ids[1], "--type", "blocks"], env=env)
     refusal = run(binary, root, commands, ["dep", "add", ids[1], ids[0], "--type", "blocks"], expected=1, env=env)
@@ -210,10 +256,6 @@ def record_b06(binary, root, commands, env, ids, probe_start):
     pure = [f"{prefix}-pure-a", f"{prefix}-pure-z"]
     rings = [[f"{prefix}-alpha", f"{prefix}-middle", f"{prefix}-zulu"],
              [f"{prefix}-beta", f"{prefix}-november", f"{prefix}-yankee"]]
-
-    def create(identifier):
-        run(binary, root, commands, ["create", "--id", identifier, "--type", "task", "--title", identifier], env=env)
-        ids.append(identifier)
 
     for identifier in pure:
         create(identifier)
@@ -246,10 +288,12 @@ def record_b06(binary, root, commands, env, ids, probe_start):
         probes.append({"case": label, "commandIndex": index, **b06_rendered(output, rings, shown)})
     return {
         "probeResults": commands[probe_start:],
+        "guardRefusals": refusals,
         "cycleProbes": probes,
         "cycleProbeCoverage": {
             "status": "partial",
-            "supported": ["nonempty-tracks-report", "lowest-id-rotation", "report-order", "pure-tracks-exclusion",
+            "supported": ["self-blocks-refusal", "self-tracks-refusal", "ancestor-blocker-refusal", "descendant-blocker-refusal",
+                          "public-refusal-conservation", "nonempty-tracks-report", "lowest-id-rotation", "report-order", "pure-tracks-exclusion",
                           "unchanged-report-bytes", "same-type-readd", "native-json-uncapped", "native-human-limit"],
             "blocked": ["blocking-only-cycle-public-fixture", "parallel-rows-public-fixture", "unreadable-cycle-public-fixture"],
         },

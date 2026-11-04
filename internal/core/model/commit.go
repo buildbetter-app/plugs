@@ -65,6 +65,9 @@ type Writer interface {
 type WriteMeta struct {
 	// Method is the named operation that produced this write.
 	Method string
+	// ForceClose is close-only lowering context. It requests the separate
+	// override_guard action; it is never an authorization observation.
+	ForceClose bool
 	// GateAction and GateState/Details are trusted lowering context for the
 	// canonical gate service. They are carried through the existing Writer
 	// pipeline so idempotency lookup happens before the gate is evaluated.

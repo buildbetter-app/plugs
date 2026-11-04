@@ -88,6 +88,7 @@ type serviceParams struct {
 	Body         string                         `json:"body"`
 	CommentPage  *commentPageSelection          `json:"commentPage"`
 	Reason       string                         `json:"reason"`
+	Force        bool                           `json:"force"`
 	Key          string                         `json:"key"`
 	Content      string                         `json:"content"`
 	Metadata     map[string]any                 `json:"metadata"`
@@ -409,7 +410,7 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 		if err != nil {
 			return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
 		}
-		v, err := svc.CloseWithOutcome(ctx, c.Principal, service.CloseRequest{ID: id, Reason: p.Reason, Expect: p.Expect}, meta)
+		v, err := svc.CloseWithOutcome(ctx, c.Principal, service.CloseRequest{ID: id, Reason: p.Reason, Expect: p.Expect, Force: p.Force}, meta)
 		return writeOutcome(v), err
 	case "bead.reopen":
 		id, err := p.refID()

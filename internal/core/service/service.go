@@ -777,6 +777,9 @@ func (s *Service) Close(ctx context.Context, by model.PrincipalRef, req CloseReq
 
 func (s *Service) CloseWithOutcome(ctx context.Context, by model.PrincipalRef, req CloseRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
 	if workflowRef(req.ID) {
+		if req.Force {
+			return port.WriteOutcome{}, failure("unsupported", "workflow force close is not supported")
+		}
 		if err := validateWorkflowWrite(req.ID, req.Expect, meta); err != nil {
 			return port.WriteOutcome{}, err
 		}
@@ -800,6 +803,7 @@ func workflowClaimCommit(item workflowplugin.ItemView) model.Commit {
 }
 
 func (s *Service) close(ctx context.Context, by model.PrincipalRef, req CloseRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
+	meta.ForceClose = req.Force
 	return s.lifecycle(ctx, by, "bead.close", req.ID, req.Reason, req.Expect, meta, outcomeRequired)
 }
 

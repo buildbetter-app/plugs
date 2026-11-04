@@ -55,7 +55,15 @@ Association links remain legal. These tests do not certify the missing public
 cycle-report producer or B14's waits-for metadata/fanout behavior.
 
 The separate B06 recorder follow-up uses ordinary public `create` and `dep add`
-operations to build two disjoint blocks-plus-tracks rings, with the higher ring
+operations to attempt self-edge refusal for both blocks and tracks, then builds
+a three-level parent-child hierarchy and attempts blocking edges between its
+ancestor and descendant in both directions. Each refusal must identify its
+guard, and every affected public `show --json` stream must remain byte-identical.
+The projector independently binds those commands, verifies the hierarchy edges,
+and rejects changed or rehashed missing refusal observations. This authored
+route has not been executed by the pinned native producer.
+
+The recorder also builds two disjoint blocks-plus-tracks rings, with the higher ring
 written first and each blocking edge starting at its highest member. Actual
 `dep cycles --include-tracks --json` output must contain both complete paths in
 sorted order, each starting at its lowest ID. A pure-tracks loop is checked
@@ -145,3 +153,25 @@ Run the focused target through the swarm wrapper:
 ```sh
 /tmp/plug-swarm/bin/remote-bazel "$PWD" HEAD s1-b05-b08-focused -- test //spec/s1-b05-b08:acceptance --test_output=all
 ```
+
+The B08 force-close successor adds a close-only boolean `force` to `bead.close`
+and each typed `tx.apply` close member. It requests the separate
+`override_guard` chain action and skips only `fields_required`,
+`evidence_required`, `no_open_children`, `no_open_blockers` and
+`gates_resolved`. Templates (even without a declared guard), schema, CAS,
+leases, ordinary write authorization and transition permission still apply.
+Authenticated callers must be users. The fixed authorization component has no
+override permit; missing capability or decision refuses rather than reusing
+modify grants. Force receipt replay rechecks current authorization and the
+current transition observation without rerunning subscribers.
+
+`force_contract_test.go` exercises both public forms on all three real stores,
+including strict types, flag-bound request identity, late batch rollback,
+first-reason/no-op preservation, installed-missing transition refusal, and real
+HTTP authentication without an authorization plugin. Scoped agent issuance
+retains its P58 refusal; an unscoped service credential reaches the public
+force handler and must receive P63's user-only refusal. These controls are not
+installed-positive AZ9 evidence. Native force parity and positive mixed-plane
+settlement remain separate unproven obligations. Native execution of the B06
+self-edge/ancestor-refusal route remains unproven, alongside its
+blocking-only/parallel-row/unreadable fixture dependencies.

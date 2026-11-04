@@ -19,9 +19,10 @@ import (
 type Ontology struct {
 	mu                   sync.RWMutex
 	resolve              func(string) ontology.Effective
-	defaultOnly          bool
 	permissionObserver   TransitionPermissionObserver
 	permissionConfigured bool
+	// Configured resolvers are never advertised as immutable no-plugin sources.
+	defaultOnly bool
 }
 
 // TransitionPermissionRequest carries the existing A3 permission guard's
@@ -41,6 +42,12 @@ type TransitionPermissionRequest struct {
 type TransitionPermissionObservation struct {
 	AuthzInstalled bool
 	Permission     *bool
+}
+
+// TransitionPermissionSource is the distinct capability of an installed
+// write authority. Generic modify authorization cannot supply this decision.
+type TransitionPermissionSource interface {
+	ObserveTransitionPermission(context.Context, TransitionPermissionRequest, port.SnapshotReader) (TransitionPermissionObservation, error)
 }
 
 type TransitionPermissionObserver func(context.Context, TransitionPermissionRequest, port.SnapshotReader) (TransitionPermissionObservation, error)
@@ -435,7 +442,7 @@ func (o *Ontology) validate(ctx context.Context, proposal port.ProposedChange, r
 			v := state(old)
 			before = &v
 		}
-		facts := ontology.GuardFacts{SetBy: change.SetBy}
+		facts := ontology.GuardFacts{SetBy: change.SetBy, OverridePolicy: proposal.ForcesClose(change)}
 		for path := range change.SetBy {
 			facts.Touched = append(facts.Touched, path)
 		}
