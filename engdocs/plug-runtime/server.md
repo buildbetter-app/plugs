@@ -62,6 +62,14 @@ source; its initial publication belongs to an explicit authorized write/init
 lifecycle. Hosts with plugin validators must provide their actual validating-pre
 inventory through `composition.Config`; YAML does not register plugins.
 
+With a configured authorization chain, installed ontology reads require the
+current read adapter and protected `ontology.apply` remains unavailable until
+its separate policy revalidation capability exists. Ordinary Writer authority
+does not grant protected apply. Hosts exposing event reads under policy must
+supply `composition.Config.EventAuthorization`, covering ordinary images and
+all condition-notice resources. Missing capability with configured policy
+keeps `event.list` unadvertised.
+
 For example, a persistent SQLite server can use:
 
 ```yaml

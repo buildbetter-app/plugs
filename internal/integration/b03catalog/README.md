@@ -63,7 +63,15 @@ close the store and fail closed. `TestServerCommandConfiguredOntologyUsesInstall
 separately starts the standalone CLI command from `.plug/config.yaml` on real
 SQLite and verifies the installed custom catalog and ordinary create over HTTP. A
 source-corruption fixture is explicitly fault injection, not producer
-acceptance. The SQL publication fault does not replace the Writer.
+acceptance. The SQL publication fault does not replace the Writer. A configured authorization
+chain must supply current ontology read authority; unsupported protected write
+authorization keeps `ontology.apply` unadvertised. Event delivery requires the
+trusted `EventAuthorization` port for both ordinary images and every condition
+resource whenever policy is configured. The anonymous/no-policy fallback is
+rechecked on each read; installing policy cannot retain `AllowAll`. Composition
+regressions prove ordinary event denial, condition-resource denial, missing
+capability refusal and installed/later-installed ontology authority refusal.
+These trusted fixtures do not establish positive native/AZ9 authorization.
 
 Refusal snapshots require complete bounded record/version/log inventories,
 all derived tables, known record/predicate/allocator observations, allocator

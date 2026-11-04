@@ -79,7 +79,9 @@ type OIDCFactory func(authnoidc.Config) (*authnoidc.Provider, error)
 // authorization decision or validating-pre result over RPC.
 //
 // A non-nil configuration enables the canonical ontology RPC surface,
-// including protected ontology.apply through the Runtime-owned Writer. A nil
+// with protected ontology.apply through the Runtime-owned Writer only when no
+// authorization policy is configured. Installed policy requires a current read
+// adapter and keeps unsupported protected write authorization unavailable. A nil
 // ValidatingPre is converted to ontologyops.NoValidatingPre only when the
 // actual host inventory contains no validating-pre bindings.
 type OntologyConfig struct {
@@ -88,6 +90,14 @@ type OntologyConfig struct {
 	ValidatingPre ontologymigration.ValidatingPre
 	Authorizer    port.Authorizer
 	EventContext  port.EventContextSource
+}
+
+// EventAuthorization is the trusted current-read capability for both ordinary
+// event images and every resource referenced by a condition notice. It cannot
+// be supplied by RPC or inferred from an ordinary read callback.
+type EventAuthorization interface {
+	coreevents.Authorization
+	coreevents.ResourceAuthorization
 }
 
 // Config describes one server composition. Driver and DSN are intentionally
@@ -139,6 +149,9 @@ type Config struct {
 	Readiness          viewops.ReadinessReader
 	AuthorizeRead      viewops.AuthorizeRead
 	AuthorizeReadBatch viewops.AuthorizeReadBatch
+	// EventAuthorization evaluates current policy for list/watch/dispatch.
+	// A configured policy without this capability does not expose event.list.
+	EventAuthorization EventAuthorization
 	// EpicProgress opts into the separately authorized, count-only parent view.
 	// Nil keeps the capability unavailable; no hierarchy write is enabled here.
 	EpicProgress *viewops.EpicProgressConfig
@@ -263,6 +276,40 @@ func (p *runtimeEventProvider) List(ctx context.Context, req service.EventProvid
 		return service.EventPage{}, err
 	}
 	return service.EventPage{Events: page.Events, Cursor: page.Cursor}, nil
+}
+
+// runtimeEventAuthorization permits the no-policy fallback only while the
+// host has no configured or installed authority. The callback is checked on
+// every read so installing a chain cannot retain an earlier AllowAll decision.
+type runtimeEventAuthorization struct {
+	trusted  EventAuthorization
+	required func() bool
+}
+
+func (a runtimeEventAuthorization) Read(ctx context.Context, by model.PrincipalRef, event model.DurableEvent) (coreevents.Visibility, error) {
+	if a.trusted != nil {
+		return a.trusted.Read(ctx, by, event)
+	}
+	if a.required() {
+		return coreevents.Visibility{}, coreevents.ErrResourceAuthorization
+	}
+	return (coreevents.AllowAll{}).Read(ctx, by, event)
+}
+
+func (a runtimeEventAuthorization) ReadResource(ctx context.Context, by model.PrincipalRef, resource model.AuditResource) (coreevents.ResourceVisibility, error) {
+	if a.trusted != nil {
+		return a.trusted.ReadResource(ctx, by, resource)
+	}
+	if a.required() {
+		return coreevents.ResourceVisibility{}, coreevents.ErrResourceAuthorization
+	}
+	return (coreevents.AllowAll{}).ReadResource(ctx, by, resource)
+}
+
+func eventAuthorizationRequired(config Config, authConfig authn.Config) bool {
+	return config.AuthorizeRead != nil || config.AuthorizeReadBatch != nil ||
+		(authConfig.AuthorizationInstalled != nil && authConfig.AuthorizationInstalled()) ||
+		(config.Ontology != nil && (config.Ontology.AuthorizeRead != nil || config.Ontology.Authorizer != nil))
 }
 
 // loadConfiguredOntology proves the configured source before any service,
@@ -433,7 +480,34 @@ func (r *Runtime) bind(config Config) error {
 	}
 	var ontologyLocator service.OntologySourceLocator
 	var ontologySnapshot ontology.Snapshot
+	var ontologyReadAuthorize ontologyops.AuthorizeRead
+	var ontologyApplyEnabled bool
 	if config.Ontology != nil {
+		readAuthorize := config.Ontology.AuthorizeRead
+		if readAuthorize == nil && config.AuthorizeRead != nil {
+			readAuthorize = ontologyops.AuthorizeRead(config.AuthorizeRead)
+		}
+		installed := func() bool {
+			return config.Ontology.Authorizer != nil ||
+				(authConfig.AuthorizationInstalled != nil && authConfig.AuthorizationInstalled())
+		}
+		if readAuthorize == nil && (installed() || config.AuthorizeReadBatch != nil || config.EventAuthorization != nil) {
+			return errors.New("composition: installed ontology with configured authorization requires a current read authorizer")
+		}
+		ontologyReadAuthorize = func(ctx context.Context, by model.PrincipalRef, resource model.ResourceRef, project string) error {
+			if readAuthorize != nil {
+				return readAuthorize(ctx, by, resource, project)
+			}
+			if installed() {
+				return &model.Error{Data: model.ErrorData{Code: "permission_denied", Hint: "current ontology read authorization is unavailable"}}
+			}
+			return nil
+		}
+		// ApplyProtected has no installed-authorizer revalidation capability.
+		// Ordinary Writer authorization cannot grant this distinct operation.
+		// A declared dynamic chain also keeps apply unavailable from startup.
+		ontologyApplyEnabled = authConfig.AuthorizationInstalled == nil &&
+			config.Ontology.Authorizer == nil && readAuthorize == nil && config.AuthorizeReadBatch == nil && config.EventAuthorization == nil
 		ontologyLocator, ontologySnapshot, err = loadConfiguredOntology(r.ctx, r.Store, meta, config.Project, config.Ontology)
 		if err != nil {
 			return err
@@ -482,7 +556,14 @@ func (r *Runtime) bind(config Config) error {
 	}
 	writer, metrics := newPipelineWriter(r.Store, r.Lease, writerOptions...)
 	r.Metrics = metrics
-	serviceOptions := []service.Option{service.WithOntology(ontology), service.WithEventProvider(eventProvider)}
+	eventAuthorization := runtimeEventAuthorization{
+		trusted:  config.EventAuthorization,
+		required: func() bool { return eventAuthorizationRequired(config, authConfig) },
+	}
+	serviceOptions := []service.Option{service.WithOntology(ontology)}
+	if config.EventAuthorization != nil || !eventAuthorization.required() {
+		serviceOptions = append(serviceOptions, service.WithEventProvider(eventProvider))
+	}
 	if checkpoints, ok := r.Store.(driver.PersistentCheckpointStore); ok && checkpoints.Persistent() {
 		state := pluginhost.NewDurableStateWithPersistence(checkpoints, r.Lease, workflowplugin.Alias, "default", config.Driver != "memory")
 		workflow, workflowErr := workflowplugin.New(state)
@@ -504,13 +585,13 @@ func (r *Runtime) bind(config Config) error {
 			}
 			pre = ontologyops.NoValidatingPre()
 		}
-		readAuthorize := config.Ontology.AuthorizeRead
-		if readAuthorize == nil && config.AuthorizeRead != nil {
-			readAuthorize = ontologyops.AuthorizeRead(config.AuthorizeRead)
+		var protectedApplier pipeline.ProtectedApplier
+		if ontologyApplyEnabled {
+			protectedApplier = writer
 		}
 		ontologyService, err = ontologyops.New(r.Store, r.Lease, ontologyops.Config{
-			Source: ontologyLocator, AuthorizeRead: readAuthorize, ValidatingPre: pre,
-			ProtectedApplier: writer, OntologyRefresher: ontology,
+			Source: ontologyLocator, AuthorizeRead: ontologyReadAuthorize, ValidatingPre: pre,
+			ProtectedApplier: protectedApplier, OntologyRefresher: ontology,
 		})
 		if err != nil {
 			return fmt.Errorf("composition: create ontology service: %w", err)
@@ -568,7 +649,7 @@ func (r *Runtime) bind(config Config) error {
 	eventReader := &coreevents.Reader{
 		Log:           servertsevents.Log{Store: r.Store},
 		Materializer:  servertsevents.HistoryMaterializer{Store: r.Store},
-		Authorization: coreevents.AllowAll{},
+		Authorization: eventAuthorization,
 	}
 	eventService := &servertsevents.Service{Reader: eventReader, Cursors: cursors}
 	eventProvider.events = eventService
