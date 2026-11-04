@@ -49,7 +49,7 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 			}
 		}
 		for _, link := range docs[id].Links {
-			if link.Kind == "blocks" {
+			if link.TargetKind != model.LinkTargetExternal && link.Kind == "blocks" {
 				if err := walk(link.To.ID); err != nil {
 					return err
 				}
@@ -86,7 +86,7 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 	}
 	for id, doc := range docs {
 		for _, link := range doc.Links {
-			if link.Kind == "blocks" && (ancestors[id][link.To.ID] > 0 || ancestors[link.To.ID][id] > 0) {
+			if link.TargetKind != model.LinkTargetExternal && link.Kind == "blocks" && (ancestors[id][link.To.ID] > 0 || ancestors[link.To.ID][id] > 0) {
 				return fmt.Errorf("restore blocking link cannot join an ancestor and descendant")
 			}
 		}
@@ -110,8 +110,13 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 	for _, id := range ids {
 		doc := docs[id]
 		effective := snapshot.Effective(doc.Project)
-		blocked := false
+		blocked, unresolvedScheduling := false, false
 		for _, link := range doc.Links {
+			if link.TargetKind == model.LinkTargetExternal {
+				blocked = blocked || link.Kind == "blocks" || link.Kind == "conditional-blocks" || link.Kind == "waits-for"
+				unresolvedScheduling = unresolvedScheduling || link.Kind == "parent-child"
+				continue
+			}
 			if blocker := docs[link.To.ID]; link.Kind == "blocks" && !snapshot.Effective(blocker.Project).SatisfiesBlocks(stringValue(blocker.Fields["status"])) {
 				blocked = true
 			}
@@ -125,13 +130,16 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 			if links[i].Kind != links[j].Kind {
 				return links[i].Kind < links[j].Kind
 			}
+			if links[i].TargetKind != links[j].TargetKind {
+				return links[i].TargetKind < links[j].TargetKind
+			}
 			return links[i].To.ID < links[j].To.ID
 		})
 		for _, row := range []struct {
 			table driver.DerivedTable
 			value any
 		}{
-			{driver.DerivedReadyState, map[string]bool{"blocked": blocked, "ready": effective.ReadyEligible(doc.Type, stringValue(doc.Fields["status"])) && !blocked}},
+			{driver.DerivedReadyState, map[string]bool{"blocked": blocked, "ready": effective.ReadyEligible(doc.Type, stringValue(doc.Fields["status"])) && !blocked && !unresolvedScheduling}},
 			{driver.DerivedCutClosure, []string{}},
 			{driver.DerivedAttribute, map[string]any{}},
 			{driver.DerivedSortKey, map[string]any{"priority": priority, "id": id}},

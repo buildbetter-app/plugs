@@ -177,15 +177,6 @@ func TestRestoreRefusesUnsupportedSemanticsBeforeWrite(t *testing.T) {
 				changeRecord(t, m, "edge", func(r map[string]any) { source(r)["type"] = "parent-child"; body(r)["type"] = "parent-child" })
 			})
 		}, "relation type parent-child"},
-		{"external target even when ID matches a bead", func(t *testing.T) []byte {
-			return supportedBytes(t, func(m map[string][]byte) {
-				changeRecord(t, m, "edge", func(r map[string]any) {
-					source(r)["depends_on_issue_id"] = nil
-					source(r)["depends_on_external"] = idA
-					body(r)["target_kind"] = "depends_on_external"
-				})
-			})
-		}, "external relation"},
 		{"sequential allocator", func(t *testing.T) []byte {
 			return supportedBytes(t, func(m map[string][]byte) {
 				for name, data := range m {
