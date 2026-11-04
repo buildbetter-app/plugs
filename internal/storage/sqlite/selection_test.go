@@ -1061,3 +1061,136 @@ func TestSelectionSourceHistoryBatchesAndRollsBack(t *testing.T) {
 	}
 	check(true)
 }
+
+func TestSelectionPredicateFamilyIndexWorkAndCommit(t *testing.T) {
+	ready, err := driver.NewReadySentinel("project", "task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closure, err := driver.NewClosureSentinel("root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := driver.NewGrantSentinel("scope")
+	if err != nil {
+		t.Fatal(err)
+	}
+	makeDerived := func(table driver.DerivedTable, name string) driver.LockState {
+		key := driver.DerivedRowKey{Table: table, Key: name}
+		return driver.LockState{Key: driver.LockKey{Kind: driver.LockDerived, Derived: &key}}
+	}
+	staged := &transaction{derived: make(map[string]driver.LockState), bumps: make(map[string]driver.LockKey)}
+	for i := 0; i < 257; i++ {
+		state := makeDerived(driver.DerivedReadyState, fmt.Sprintf("ready-%03d", i))
+		staged.derived[keyID(state.Key)] = state
+	}
+	for _, table := range []driver.DerivedTable{
+		driver.DerivedAncestorClosure, driver.DerivedCutClosure, driver.DerivedAttribute,
+		driver.DerivedGrant, driver.DerivedOntology, driver.DerivedPlugins, driver.DerivedSortKey,
+	} {
+		state := makeDerived(table, "other")
+		staged.derived[keyID(state.Key)] = state
+	}
+	for i := 0; i < 129; i++ {
+		sentinel, err := driver.NewReadySentinel("project", fmt.Sprintf("task-%03d", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel}
+		staged.bumps[keyID(key)] = key
+	}
+	for _, sentinel := range []driver.Sentinel{closure, grant, driver.SentinelOntology, driver.SentinelPlugins} {
+		key := driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel}
+		staged.bumps[keyID(key)] = key
+	}
+	readFact := driver.LockKey{Kind: driver.LockReadFact, Fact: driver.ReadFact(ready)}
+	staged.bumps[keyID(readFact)] = readFact
+	work, err := staged.validateDerivedPredicates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if work.BumpsVisited != len(staged.bumps) || work.DerivedVisited != len(staged.derived) ||
+		work.FamilyChecks != len(staged.derived)-1 {
+		t.Fatalf("predicate work %+v for %d bumps and %d staged rows", work, len(staged.bumps), len(staged.derived))
+	}
+	grantKey := driver.LockKey{Kind: driver.LockSentinel, Sentinel: grant}
+	delete(staged.bumps, keyID(grantKey))
+	if _, err := staged.validateDerivedPredicates(); err == nil ||
+		!strings.Contains(err.Error(), "derived table grant requires grant/ predicate bump") {
+		t.Fatalf("missing grant family accepted: %v", err)
+	}
+	wrongKind := &transaction{
+		derived: map[string]driver.LockState{"ready": makeDerived(driver.DerivedReadyState, "ready")},
+		bumps:   map[string]driver.LockKey{keyID(readFact): readFact},
+	}
+	if _, err := wrongKind.validateDerivedPredicates(); err == nil ||
+		!strings.Contains(err.Error(), "requires ready/ predicate bump") {
+		t.Fatalf("read-fact text counted as a ready sentinel: %v", err)
+	}
+	wrongKind.bumps = map[string]driver.LockKey{"invalid-ontology": {
+		Kind: driver.LockSentinel, Sentinel: "ontology/extra"}}
+	wrongKind.derived = map[string]driver.LockState{"ontology": makeDerived(driver.DerivedOntology, "ontology")}
+	if _, err := wrongKind.validateDerivedPredicates(); err == nil ||
+		!strings.Contains(err.Error(), "requires ontology predicate bump") {
+		t.Fatalf("ontology prefix counted as exact sentinel: %v", err)
+	}
+
+	ctx := context.Background()
+	s := selectionStore(t).(*Store)
+	t.Cleanup(func() { _ = s.Close() })
+	lease := getLease(t, ctx, s, driver.LeaseTTL)
+	var extra []driver.LockKey
+	var rows []driver.DerivedRow
+	var sentinels []driver.Sentinel
+	for i := 0; i < 257; i++ {
+		row := driver.DerivedRowKey{Table: driver.DerivedReadyState, Key: fmt.Sprintf("committed-%03d", i)}
+		extra = append(extra, driver.LockKey{Kind: driver.LockDerived, Derived: &row})
+		rows = append(rows, driver.DerivedRow{Key: row.Key, Value: []byte(`{"ready":true}`)})
+	}
+	for i := 0; i < 129; i++ {
+		sentinel, err := driver.NewReadySentinel("committed", fmt.Sprintf("task-%03d", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		extra = append(extra, driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel})
+		sentinels = append(sentinels, sentinel)
+	}
+	positive, header := beginSourceTestWithLocks(t, s, lease, extra, true)
+	if err := positive.PutDerived(ctx, driver.DerivedReadyState, nil, rows); err != nil {
+		t.Fatal(err)
+	}
+	if err := positive.BumpSentinels(ctx, sentinels); err != nil {
+		t.Fatal(err)
+	}
+	committedWork, err := positive.validateDerivedPredicates()
+	if err != nil || committedWork.BumpsVisited != len(positive.bumps) ||
+		committedWork.DerivedVisited != len(rows) || committedWork.FamilyChecks != len(rows) {
+		t.Fatalf("real staged predicate work %+v err=%v", committedWork, err)
+	}
+	entry, err := positive.Commit(ctx, header)
+	if err != nil || entry.Revision.String() != "1" {
+		t.Fatalf("ready-family Commit: %+v %v", entry, err)
+	}
+	commitOne := func(name string, family driver.Sentinel) (model.Changeset, error) {
+		t.Helper()
+		row := driver.DerivedRowKey{Table: driver.DerivedReadyState, Key: name}
+		rowKey := driver.LockKey{Kind: driver.LockDerived, Derived: &row}
+		familyKey := driver.LockKey{Kind: driver.LockSentinel, Sentinel: family}
+		tx, header := beginSourceTestWithLocks(t, s, lease, []driver.LockKey{rowKey, familyKey}, true)
+		if err := tx.PutDerived(ctx, row.Table, nil, []driver.DerivedRow{{Key: row.Key, Value: []byte(`{"ready":true}`)}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.BumpSentinels(ctx, []driver.Sentinel{family}); err != nil {
+			t.Fatal(err)
+		}
+		return tx.Commit(ctx, header)
+	}
+	_, err = commitOne("refused", grant)
+	if err == nil || !strings.Contains(err.Error(), "derived table ready_state requires ready/ predicate bump") {
+		t.Fatalf("wrong-family Commit: %v", err)
+	}
+	meta, err := s.Meta(ctx)
+	if err != nil || meta.Head.String() != "1" {
+		t.Fatalf("refused Commit changed Head: %+v %v", meta, err)
+	}
+}
