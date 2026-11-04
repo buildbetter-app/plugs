@@ -228,8 +228,9 @@ func explainSelectionPublicationCensus(t *testing.T, r *reader, population int) 
 	}
 	producer, scans, visits := 0, 0, float64(0)
 	headerScans, headerVisits := 0, float64(0)
-	var inspect func(any)
-	inspect = func(value any) {
+	liveScans, liveVisits := 0, float64(0)
+	var inspect func(any) bool
+	inspect = func(value any) bool {
 		switch node := value.(type) {
 		case map[string]any:
 			if name, _ := node["Subplan Name"].(string); name == "CTE proof_census" {
@@ -254,14 +255,34 @@ func explainSelectionPublicationCensus(t *testing.T, r *reader, population int) 
 				removed, _ := node["Rows Removed by Filter"].(float64)
 				headerVisits += loops * (rows + removed)
 			}
+			liveInput := false
 			for _, child := range node {
-				inspect(child)
+				if inspect(child) {
+					liveInput = true
+				}
 			}
+			live := cte == "proof_live" || relation == "records"
+			nodeType, _ := node["Node Type"].(string)
+			// Include executor caches above live input, so an inlined records
+			// scan cannot hide repeated full-domain reads in Materialize.
+			if live || liveInput && (nodeType == "Materialize" || nodeType == "Memoize") {
+				liveScans++
+				rows, _ := node["Actual Rows"].(float64)
+				loops, _ := node["Actual Loops"].(float64)
+				removed, _ := node["Rows Removed by Filter"].(float64)
+				liveVisits += loops * (rows + removed)
+			}
+			return live || liveInput
 		case []any:
+			live := false
 			for _, child := range node {
-				inspect(child)
+				if inspect(child) {
+					live = true
+				}
 			}
+			return live
 		}
+		return false
 	}
 	for _, root := range plan {
 		inspect(root)
@@ -277,6 +298,12 @@ func explainSelectionPublicationCensus(t *testing.T, r *reader, population int) 
 	if headerScans == 0 || headerVisits > float64(128*population) {
 		t.Fatalf("publication header scans=%d visits=%v population=%d: %s", headerScans, headerVisits, population, raw)
 	}
+	// Count complete live-domain scans and per-key freshness lookups across
+	// all four families; reject a full live-domain rescan per projection row.
+	if liveScans == 0 || liveVisits > float64(32*population) {
+		t.Fatalf("publication live scans=%d visits=%v population=%d: %s", liveScans, liveVisits, population, raw)
+	}
+	t.Logf("W6_LIVE_PROOF_WORK phase=publication_family_proof fixture_beads=%d live_record_scans=%d live_record_row_visits=%v bound=%d qualification=FINITE_CONTROL", population, liveScans, liveVisits, 32*population)
 	t.Logf("W6_HEADER_PROOF_WORK phase=publication_family_proof fixture_beads=%d source_header_scans=%d source_header_row_visits=%v bound=%d qualification=FINITE_CONTROL", population, headerScans, headerVisits, 128*population)
 	t.Logf("W6_EXPLAIN_ANALYZE phase=publication_family_proof fixture_beads=%d census_producer=%d census_scans=%d census_row_visits=%v qualification=FINITE_CONTROL actual_plan=%s", population, producer, scans, visits, raw)
 }

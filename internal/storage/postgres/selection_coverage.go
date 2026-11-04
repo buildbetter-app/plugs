@@ -130,7 +130,9 @@ func (r *reader) compileSelectionFamilyValidity(ctx context.Context, at uint64, 
 	// selection_sources primary key. Materializing all headers makes nested
 	// joins repeatedly scan the complete domain, including unrelated sources.
 	// The interval and staged-header union remain the same statement snapshot.
-	c.ctes = append(c.ctes, `proof_headers AS NOT MATERIALIZED (`+hs+`)`, `proof_live AS MATERIALIZED (`+ls+`)`)
+	// Live-source freshness joins likewise need the records primary key rather
+	// than a full materialized live-domain rescan for every projection row.
+	c.ctes = append(c.ctes, `proof_headers AS NOT MATERIALIZED (`+hs+`)`, `proof_live AS NOT MATERIALIZED (`+ls+`)`)
 	// The relation includes ALL current closure rows, including untouched rows
 	// after an ancestor move. CutClosure and derived-source domains are separate.
 	c.ctes = append(c.ctes, `proof_beads AS MATERIALIZED (SELECT bead_key,parent_key,source_key FROM proof_rows WHERE family_table='sort_key' AND source_kind='record' AND bead_key IS NOT NULL)`,
