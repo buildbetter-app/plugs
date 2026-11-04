@@ -657,6 +657,9 @@ internal/plugins/authzfixed/facts.go
 internal/plugins/authzfixed/facts_test.go
 internal/plugins/authzfixed/rules.go
 internal/plugins/authzfixed/rules_test.go
+internal/publicnative/BUILD.bazel
+internal/publicnative/server_linux.go
+internal/publicnative/server_linux_test.go
 internal/server/authn/BUILD.bazel
 internal/server/authn/authn.go
 internal/server/authn/authn_test.go
@@ -1206,6 +1209,14 @@ spec/s1-b01-b04/extract_reference_packet.py
 spec/s1-b01-b04/fixture_test.go
 spec/s1-b01-b04/manifest.json
 spec/s1-b01-b04/manifest_test.go
+spec/s1-b01-b04/native_contract_test.go
+spec/s1-b01-b04/native_inputs.json
+spec/s1-b01-b04/native_io_test.go
+spec/s1-b01-b04/native_projection_test.go
+spec/s1-b01-b04/native_recording.md
+spec/s1-b01-b04/native_recording_test.go
+spec/s1-b01-b04/native_replay_test.go
+spec/s1-b01-b04/native_source_bindings.json
 spec/s1-b01-b04/record_reference.py
 spec/s1-b01-b04/recorded_integrity_test.go
 spec/s1-b01-b04/reference_recording_test.go

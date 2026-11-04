@@ -1,0 +1,58 @@
+{
+  "format": "plug.s1.b01.native-source-binding.v1",
+  "consumerBase": "686704bda3e9dd3f7ba945555a2c6f087dbd2ce3",
+  "consumerBaseTree": "3c585962fd6590fe7e1c47a2280e9c3d944009bd",
+  "donor": "ba387072f554fa11975706e8cde0abe4a5628b96",
+  "donorTree": "34e19e2dd78b3700da2f64a3bd3dbd0cbe27468d",
+  "donorSourceDisposition": "BLOCK_EARLY_FAILURE_RETENTION; independent49 report edbe7b36. Corrected owner successor required before applicable physical launch. Byte equality carries attribution only.",
+  "files": [
+    {
+      "path": "MODULE.bazel",
+      "commit": "ba387072f554fa11975706e8cde0abe4a5628b96",
+      "gitBlob": "515329beee2d1ac476ec33217bb600b1063647fb",
+      "bytes": 1564,
+      "sha256": "c035f8edfa436e38ee021b132975e0757a80be4e242ea53b99463ce6431fca12"
+    },
+    {
+      "path": "internal/publicnative/BUILD.bazel",
+      "commit": "ba387072f554fa11975706e8cde0abe4a5628b96",
+      "gitBlob": "18eba83a9dcfbcea82f81b89d17c3d871a65bac2",
+      "bytes": 687,
+      "sha256": "bb6c6ead2ec0d0ffb57506413c393fc571f6c6d14d541e2421c9c4963f17226a"
+    },
+    {
+      "path": "internal/publicnative/server_linux.go",
+      "commit": "ba387072f554fa11975706e8cde0abe4a5628b96",
+      "gitBlob": "a2cb0f739390fb8dd52f98f32a95f77d792e448e",
+      "bytes": 14910,
+      "sha256": "fb028bfa2e86be83b04ffc039031f89e12d81e18c9e1bc679f100be97f502ed1"
+    },
+    {
+      "path": "internal/publicnative/server_linux_test.go",
+      "commit": "ba387072f554fa11975706e8cde0abe4a5628b96",
+      "gitBlob": "3fb9ff63d9d0054308aeebf52a1b2ea7b7ff6a19",
+      "bytes": 2440,
+      "sha256": "9022c8bcd704dfeaef23d0d2aba28379297f7c98b1e25359f37266f1e1c7c22c"
+    }
+  ],
+  "retainedOriginals": {
+    "fourDae": "SOURCE_BLOCK/focus RED R41769814157/build analysis RED R41769847378; own whole original remains owner-held",
+    "ba387": "SOURCE_BLOCK; no terminal consumed by this consumer",
+    "V2": "N1/N2 BLOCK immutable",
+    "V3": "PASS_BOUNDED_SOURCE_PREPARATION_ONLY report26e120b3, AUTHORED_NOT_RUN;92 proposed argv immutable",
+    "consumer686": "independent source/focus/whole PASS; no runtime transfer to this child"
+  },
+  "nativeStatus": {
+    "actualPreparedInput": "NOT_DELIVERED",
+    "timed": "NOT_DELIVERED",
+    "indefinite": "NOT_DELIVERED",
+    "ownedRuntimeOriginals": "WAIT",
+    "threeDriverReplay": "AUTHORED_NOT_RUN",
+    "NativeAdmission": null,
+    "fullB01": "UNQUALIFIED",
+    "FullS1": "0/28",
+    "B05": "paused"
+  },
+  "historicalOriginal41556960235": "NOT_DELIVERED; secondary S1 status and separate PR250/B09 same-capability originals remain distinct; no CGO RED transfer to accepted305",
+  "sourceOnlyDelta": "separate manual recorder+actual three-driver public replay; public commit adds4 proposed commands to immutableV3 (96 total); direct declared runfile label; no existing product/recorder changes"
+}
