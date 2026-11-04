@@ -3,6 +3,7 @@ package b03catalog_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -48,6 +49,35 @@ func composedRuntimeCall(t *testing.T, transport *inprocess.Transport, method st
 		t.Fatalf("%s refused: %s (%s; hint=%s)", method, envelope.Error.Data.Code, envelope.Error.Message, envelope.Error.Data.Hint)
 	}
 	return envelope.Result
+}
+
+func composedEventListContains(t *testing.T, transport *inprocess.Transport, project, eventType, resource string) bool {
+	t.Helper()
+	var cursor string
+	for i := 0; i < 8; i++ {
+		params := map[string]any{"filter": map[string]any{"events": []string{eventType}}, "limit": 100}
+		if cursor != "" {
+			params["after"] = cursor
+		}
+		raw := composedRuntimeCall(t, transport, "event.list", params, project, fmt.Sprintf("%032x", 0x70+i))
+		var page struct {
+			Events []json.RawMessage `json:"events"`
+			Cursor string            `json:"cursor"`
+		}
+		if err := json.Unmarshal(raw, &page); err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range page.Events {
+			if strings.Contains(string(event), eventType) && strings.Contains(string(event), resource) {
+				return true
+			}
+		}
+		if page.Cursor == "" || page.Cursor == cursor {
+			return false
+		}
+		cursor = page.Cursor
+	}
+	return false
 }
 
 func composedRuntimeStore(t *testing.T, e engine, source model.Ref, body []byte) driver.Store {
@@ -198,9 +228,6 @@ func TestConfiguredRuntimeLoadsCatalogAndAuditsOnEveryEngine(t *testing.T) {
 		}
 		var pinned bool
 		for _, event := range last.Events {
-			if event.Details != nil {
-				t.Logf("%s event ontology pin=%+v", e.name, event.Details.Ontology)
-			}
 			if event.Details == nil || event.Details.Ontology.Ref.ID != sourceRef.ID || event.Details.Ontology.Ref.Branch.String() != sourceRef.Branch.String() {
 				continue
 			}
@@ -211,9 +238,8 @@ func TestConfiguredRuntimeLoadsCatalogAndAuditsOnEveryEngine(t *testing.T) {
 		if !pinned {
 			t.Fatalf("%s configured lifecycle lost ontology pin: %+v want ref=%s revision=2 digest=%s", e.name, last.Events, sourceRef.ID, updatedCompiled.Digest())
 		}
-		events := composedRuntimeCall(t, transport, "event.list", map[string]any{"filter": map[string]any{"events": []string{"dependency.conditionUnmet"}}, "limit": 100}, "b03-composition", "00000000000000000000000000000007")
-		if !strings.Contains(string(events), sourceRef.ID) || !strings.Contains(string(events), string(model.EventDependencyConditionUnmet)) {
-			t.Fatalf("%s event.list omitted persisted installed ontology audit: %s", e.name, events)
+		if !composedEventListContains(t, transport, "b03-composition", string(model.EventDependencyConditionUnmet), sourceRef.ID) {
+			t.Fatalf("%s event.list omitted persisted installed ontology audit", e.name)
 		}
 	})
 }

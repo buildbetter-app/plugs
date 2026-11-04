@@ -3,6 +3,7 @@ package composition
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -96,6 +97,35 @@ func runtimeJSONCall(t *testing.T, transport *inprocess.Transport, method string
 		t.Fatalf("%s refused: %s (%s; hint=%s)", method, envelope.Error.Data.Code, envelope.Error.Message, envelope.Error.Data.Hint)
 	}
 	return envelope.Result
+}
+
+func runtimeEventListContains(t *testing.T, transport *inprocess.Transport, project, eventType, resource string) bool {
+	t.Helper()
+	var cursor string
+	for i := 0; i < 8; i++ {
+		params := map[string]any{"filter": map[string]any{"events": []string{eventType}}, "limit": 100}
+		if cursor != "" {
+			params["after"] = cursor
+		}
+		raw := runtimeJSONCall(t, transport, "event.list", params, project, fmt.Sprintf("%032x", 0x70+i))
+		var page struct {
+			Events []json.RawMessage `json:"events"`
+			Cursor string            `json:"cursor"`
+		}
+		if err := json.Unmarshal(raw, &page); err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range page.Events {
+			if strings.Contains(string(event), eventType) && strings.Contains(string(event), resource) {
+				return true
+			}
+		}
+		if page.Cursor == "" || page.Cursor == cursor {
+			return false
+		}
+		cursor = page.Cursor
+	}
+	return false
 }
 
 func TestConfiguredOntologyRuntimeLoadsCatalogAndAuditsLifecycle(t *testing.T) {
@@ -197,9 +227,6 @@ func TestConfiguredOntologyRuntimeLoadsCatalogAndAuditsLifecycle(t *testing.T) {
 		t.Fatalf("runtime source did not compile in test: %+v", problems)
 	}
 	for _, event := range last.Events {
-		if event.Details != nil {
-			t.Logf("event ontology pin=%+v", event.Details.Ontology)
-		}
 		if event.Type != model.EventDependencyConditionUnmet || event.Details == nil {
 			continue
 		}
@@ -212,9 +239,8 @@ func TestConfiguredOntologyRuntimeLoadsCatalogAndAuditsLifecycle(t *testing.T) {
 		t.Fatalf("conditional lifecycle event lost installed ontology pin: %+v", last.Events)
 	}
 
-	events := runtimeJSONCall(t, transport, "event.list", map[string]any{"filter": map[string]any{"events": []string{"dependency.conditionUnmet"}}, "limit": 100}, config.Project, "00000000000000000000000000000007")
-	if !strings.Contains(string(events), string(model.EventDependencyConditionUnmet)) || !strings.Contains(string(events), configuredOntologyRef.ID) {
-		t.Fatalf("event.list omitted the persisted pinned audit event: %s", events)
+	if !runtimeEventListContains(t, transport, config.Project, string(model.EventDependencyConditionUnmet), configuredOntologyRef.ID) {
+		t.Fatalf("event.list omitted the persisted pinned audit event")
 	}
 }
 
