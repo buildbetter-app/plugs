@@ -55,6 +55,7 @@ go_test(
     data = [
         "testdata/native-public-profile.json",
         "testdata/native-public-recording-fixture.json",
+        "testdata/native-product-source-binding.json",
         "//internal/publicnative:dolt_runtime",
     ],
     env = {

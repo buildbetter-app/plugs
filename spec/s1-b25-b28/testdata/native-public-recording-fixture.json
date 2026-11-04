@@ -47,7 +47,7 @@
     "spec_id",
     "close_reason"
   ],
-  "ids": ["pub-root", "pub-root.1", "pub-dependency", "pub-keep"],
+  "ids": ["pub-root", "pub-root.1", "pub-root.2", "pub-dependency", "pub-keep"],
   "memory_key": "public-memory",
   "config_key": "custom.public_recording",
   "reverse_archived_fields": [
