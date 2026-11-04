@@ -358,8 +358,10 @@ internal/core/service/waits_for_consumer_test.go
 internal/core/service/workflow_permanent_test.go
 internal/core/service/workflow_refs.go
 internal/core/viewops/BUILD.bazel
+internal/core/viewops/after_expiry_test.go
 internal/core/viewops/epic_progress.go
 internal/core/viewops/label_predicate.go
+internal/core/viewops/mapping_test.go
 internal/core/viewops/parent_projection.go
 internal/core/viewops/revision_order.go
 internal/core/viewops/revision_order_test.go
