@@ -610,7 +610,12 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 			}
 			// A tombstone is also a complete base when its cadence is due.
 			v.Base = count%driver.VersionBaseEvery == 0
-			if record != nil {
+			// A scheduled base is complete regardless of whether this row already
+			// exists. Avoid the existence probe in that arm; it cannot change the
+			// result and new records are the common boundary-batch case. Retain the
+			// probe for non-base updates, where a missing live row starts a lifetime
+			// and must force a full image.
+			if record != nil && !v.Base {
 				var wasLive bool
 				existsRecord, prepareErr := statements.existsRecord(ctx, c)
 				if prepareErr != nil {
