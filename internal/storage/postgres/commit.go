@@ -261,6 +261,9 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 	if err = t.checkCheckpointGuards(ctx); err != nil {
 		return zero, err
 	}
+	if err = t.publishCheckpoints(ctx); err != nil {
+		return zero, err
+	}
 	if err = t.validateChanges(ctx, h.Changes); err != nil {
 		return zero, err
 	}
@@ -545,6 +548,7 @@ func (t *transaction) CommitNoop(ctx context.Context, h driver.ChangesetHeader) 
 	if err = t.fence(ctx); err != nil {
 		return zero, err
 	}
+	replayed := false
 	if scope != nil {
 		previous, err := lookupReceipt(ctx, t.sql, scope, t.at)
 		if err != nil {
@@ -556,11 +560,20 @@ func (t *transaction) CommitNoop(ctx context.Context, h driver.ChangesetHeader) 
 				return zero, driver.ErrConflict
 			}
 			response = previous.Commit
+			replayed = true
 		} else {
 			if err = t.saveReceipt(ctx, scope, h, response, model.Changeset{}); err != nil {
 				_ = t.finish()
 				return zero, err
 			}
+		}
+	}
+	if !replayed {
+		if err = t.checkCheckpointGuards(ctx); err != nil {
+			return zero, err
+		}
+		if err = t.publishCheckpoints(ctx); err != nil {
+			return zero, err
 		}
 	}
 	if err = t.publish(ctx, h.IdempotencyKey); err != nil {

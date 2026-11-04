@@ -70,7 +70,8 @@ func TestWorkflowItemReferenceBoundary(t *testing.T) {
 	}
 	_, err = f.domain.Get(context.Background(), f.by, service.GetRequest{ID: ref, AsOf: &service.AsOf{Revision: current.Head, Incarnation: current.Incarnation}})
 	workflowBoundaryError(t, err, "invalid_params")
-	_, err = f.domain.UpdateWithOutcome(context.Background(), f.by, service.UpdateRequest{ID: ref, Fields: map[string]any{"title": "ordinary overwrite"}}, workflowClaimNextMeta("bead.update", 302))
+	version := model.Natural64(1)
+	_, err = f.domain.UpdateWithOutcome(context.Background(), f.by, service.UpdateRequest{ID: ref, Fields: map[string]any{"title": "versioned overwrite"}, Expect: []model.Precondition{{Ref: ref, Revision: &version}}}, workflowClaimNextMeta("bead.update", 302))
 	workflowBoundaryError(t, err, "invalid_params")
 	unknown := model.RefByID(workflowplugin.ItemPrefix+strings.Repeat("0", 32), model.Natural64(0))
 	workflowBoundaryError(t, workflowBoundaryCall(f, "bead.get", unknown, nil, workflowClaimNextMeta("bead.get", 303)), "not_found")
