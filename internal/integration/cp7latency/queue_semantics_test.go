@@ -203,6 +203,27 @@ func TestQueueProjectionPublicClaimAndLegacyFallback(t *testing.T) {
 			}
 			f.checkClaim(t, p, out, meta, 2)
 			t.Logf("W8_QUEUE_PUBLIC full_guarded_path=true selected_page=1000 corpus=%d winner=%d api=%+v work=%+v thin_work=O(N) SQL_executor=UNMEASURED SLO=UNQUALIFIED", f.n, winner, api, work)
+			t.Run("PostClaimQueueProjectionReadback", func(t *testing.T) {
+				r := f.reader(t, nil)
+				defer r.Close()
+				projection, err := r.(driver.QueueProjectionReader).QueueProjection(context.Background())
+				if err != nil {
+					t.Errorf("canonical public claim lost complete committed queue source: %v", err)
+					return
+				}
+				if projection.View.At == nil || projection.View.At.String() != out.Commit.Revision.String() || len(projection.Beads) != f.n {
+					t.Errorf("post-claim queue source has incomplete domain or wrong snapshot: %+v beads=%d", projection.View, len(projection.Beads))
+				}
+				for _, bead := range projection.Beads {
+					if bead.Bead.Ref.ID == beadRef(winner).ID {
+						if !bead.Facts.LeasePresent || bead.Source.Revision.String() != out.Commit.Revision.String() {
+							t.Errorf("actual claimed image lacks queue lease/revision binding: %+v", bead)
+						}
+						return
+					}
+				}
+				t.Error("complete post-claim queue source omitted the claimed bead")
+			})
 			// Empty membership must still execute the fresh post-Head committed
 			// census, rather than treating a missing accelerator as no work.
 			counts.reset()

@@ -82,7 +82,7 @@ func TestQueueProjectionSurvivesCanonicalAgentClaim(t *testing.T) {
 	created := apply(t, w, model.ChangeSet{Ops: []model.Op{create("")}}, meta(1))
 	ref := created.Results[0].Ref
 	agent := model.PrincipalRef{Kind: "agent", ID: "queue-agent", Sponsor: &by,
-		Caveats: map[string]any{"refs": []model.Ref{ref}}}
+		Caveats: map[string]any{"refs": []model.Ref{model.RefByID(ref.ID, model.Natural64(0))}}}
 	m := meta(2)
 	m.Method = "bead.claim"
 	claimed, err := w.Apply(context.Background(), agent, model.ChangeSet{Ops: []model.Op{patch(ref, map[string]any{})}}, m)
