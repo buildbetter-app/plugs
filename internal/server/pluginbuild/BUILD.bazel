@@ -30,6 +30,7 @@ go_library(
 
 go_test(
     name = "pluginbuild_test",
+    tags = ["exclusive"],
     srcs = [
         "configured_browser_test.go",
         "containment_linux_amd64_test.go",

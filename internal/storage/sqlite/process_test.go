@@ -134,6 +134,28 @@ func runProcessChild(t *testing.T, mode, path string) {
 	ctx := testContext(t)
 	s := openStore(t, ctx, path)
 	switch mode {
+	case "publication-takeover":
+		if err := os.WriteFile(path+".opened", []byte("opened"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := waitMarker(ctx, path+".acquire"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path+".attempting", []byte("attempting"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		l := getLease(t, ctx, s, driver.LeaseTTL)
+		cp, err := s.SaveCheckpoint(ctx, l, "process-publication", 1, []byte("child"))
+		if err != nil || l.Epoch() != 2 || cp.Generation != 2 {
+			t.Fatalf("child epoch=%d checkpoint=%+v err=%v", l.Epoch(), cp, err)
+		}
+		if err := os.WriteFile(path+".ready", []byte("ready"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := waitMarker(ctx, path+".finish"); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("child acquired epoch %d and checkpoint generation %d after renewed parent really expired", l.Epoch(), cp.Generation)
 	case "takeover", "takeover-check":
 		l := getLease(t, ctx, s, driver.LeaseTTL)
 		entry := seedRecord(t, ctx, s, l, "pl-process", `{"owner":"child"}`)

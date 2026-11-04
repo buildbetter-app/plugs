@@ -9,6 +9,26 @@ import (
 	"strings"
 )
 
+// UnresolvedDependencyError identifies a source dependency whose endpoint is
+// not admitted by the archive or restore plan.  Callers can use errors.As to
+// distinguish a typed, state-preserving refusal from malformed source data.
+// The source and target values are retained exactly as they appeared in the
+// source edge; no endpoint is guessed or substituted.
+type UnresolvedDependencyError struct {
+	EdgeID     string `json:"edge_id"`
+	Project    string `json:"project"`
+	Source     string `json:"source"`
+	Target     string `json:"target"`
+	TargetKind string `json:"target_kind"`
+}
+
+func (e *UnresolvedDependencyError) Error() string {
+	if e == nil {
+		return "unresolved dependency target"
+	}
+	return fmt.Sprintf("unresolved dependency target: edge %s project %s source %s target %s kind %s", e.EdgeID, e.Project, e.Source, e.Target, e.TargetKind)
+}
+
 var hashPattern = regexp.MustCompile(`^[a-zA-Z0-9]+$`)
 
 func validateRecord(record Record, projects []Project, counts map[string]int) error {
@@ -151,6 +171,11 @@ func validateMigratedRecord(record Record, projects []Project, counts map[string
 			}
 		}
 		if target == "" || targetKind == "depends_on_wisp_id" {
+			if target != "" && targetKind == "depends_on_wisp_id" {
+				return fmt.Errorf("unsupported or missing edge target: %w", &UnresolvedDependencyError{
+					EdgeID: record.ID, Project: record.Project, Source: stringValue(fields["issue_id"]), Target: target, TargetKind: targetKind,
+				})
+			}
 			return fmt.Errorf("unsupported or missing edge target")
 		}
 		switch stringValue(fields["type"]) {
@@ -288,7 +313,9 @@ func validateRelations(projects []Project, records map[string][]Record) error {
 			}
 			seen[record.ID] = true
 			if kind == "edge" && record.Body["target_kind"] == "depends_on_issue_id" && beads[stringValue(record.Body["to"])] == "" {
-				return fmt.Errorf("dangling typed edge target")
+				return fmt.Errorf("dangling typed edge target: %w", &UnresolvedDependencyError{
+					EdgeID: record.ID, Project: record.Project, Source: stringValue(record.Body["from"]), Target: stringValue(record.Body["to"]), TargetKind: stringValue(record.Body["target_kind"]),
+				})
 			}
 		}
 	}
