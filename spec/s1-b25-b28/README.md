@@ -405,3 +405,35 @@ real corpus intact. Its exact native error, full 33-table after-image and
 source config bytes are retained before refusal/conservation assertions.
 R9 remains RED at the earlier invalid-ID inventory step; its later custom-
 status dump refusal/conservation and pair remain NOT_RUN.
+
+The source continuation from `15d385c07cc4a464787a6e5c87ff35863ee77361`
+adds an actual complete reader baseline before the first Plug write and a
+separate full preimage before each of the four declared successful writes.
+Each is saved with its typed raw companion before mutation. The baseline must
+be at the imported HistoryFloor, with the real import receipt/archive, one
+exact base version per row and no recorder-operation receipts. Every subsequent
+preimage must equal the preceding saved replay image.
+
+The successful-write oracle checks every captured row and version, including
+untouched counter-child, survivor and memory rows. Only requested target fields
+(plus the declared labels mirror), one head/version/changeset and that request's
+finalized receipt may change. Non-base versions must contain the exact stored
+replacement patch; prior versions and public history remain ordered and intact.
+The new changeset pins its full identity, principal, paths, prior revision and
+legacy event/mutator fields, while its actual UTC timestamp also binds the new
+version. The receipt must match the returned commit, changeset and independently
+computed named-request hash. All nine captured derived tables, their complete
+rows and selection indexes, snapshot identity/floor/cursor, import receipt and
+original archive bytes are conserved. Duplicate row/history/derived identities
+or missing census keys fail; JSON body comparisons preserve number types and
+reject duplicate members.
+
+This child is **AUTHORED_NOT_RUN**. Formatting and static source checks do not
+validate these runtime assertions. The independent r10 result remains bounded
+recording1 PASS on its own parent source; r1-r9 remain RED. Complete conservation
+here means the enumerated reader image and declared receipt scopes, not every
+physical Plug lock/read-fact table or unenumerated receipt. Genuine auxiliary
+SQL-write fault rollback, native delete history/Plug parity, full interchange
+fields and precedence/types/collision/live-lease edges, HTTP, recording2 and
+pair qualification remain open. No additional runtime authority follows from
+this source continuation; NativeAdmission remains None and FullS1 remains 0/28.

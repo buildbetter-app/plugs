@@ -1076,6 +1076,275 @@ func nativePlugImage(t *testing.T, ctx context.Context, store driver.Store, prof
 	return map[string]any{"meta": meta, "snapshot": r.Snapshot(), "rows": rows.Items, "versions": versions, "changesets": changes, "changeset_cursor": cursor, "import_receipt": importReceipt, "source_archive": archive, "derived": derived, "receipts": receipts}
 }
 
+// Check the complete captured reader image before indexing it. A map must not
+// silently collapse duplicate rows/versions or turn a missing table into an
+// empty-table allowance. Physical lock/read-fact tables and unenumerated receipt
+// scopes are outside this reader API; this oracle makes no claim about them.
+func nativePlugImageRows(t *testing.T, image map[string]any) map[string]driver.Record {
+	t.Helper()
+	keys := []string{"meta", "snapshot", "rows", "versions", "changesets", "changeset_cursor", "import_receipt", "source_archive", "derived", "receipts"}
+	if len(image) != len(keys) {
+		t.Fatal("native-origin image plane census changed")
+	}
+	for _, key := range keys {
+		if _, ok := image[key]; !ok {
+			t.Fatalf("native-origin image is missing %s", key)
+		}
+	}
+	meta := image["meta"].(driver.Meta)
+	head, headErr := meta.Head.Uint64()
+	floor, floorErr := meta.HistoryFloor.Uint64()
+	if headErr != nil || floorErr != nil || floor == 0 || head < floor {
+		t.Fatal("native-origin image requires its actual nonzero snapshot floor")
+	}
+	if !reflect.DeepEqual(image["snapshot"], driver.View{Branch: model.Natural64(0), At: &meta.Head, Incarnation: meta.Incarnation}) {
+		t.Fatal("native-origin image snapshot is not bound to its complete head")
+	}
+	index := map[string]driver.Record{}
+	versions := image["versions"].(map[string][]driver.Version)
+	for _, row := range image["rows"].([]driver.Record) {
+		if _, duplicate := index[row.Ref.ID]; duplicate || row.Ref.Validate() != nil || !row.Ref.IsID() || row.Ref.ID == "" || !row.Ref.Branch.IsZero() {
+			t.Fatal("native-origin full-reader row identity is duplicate or invalid")
+		}
+		index[row.Ref.ID] = row
+		history, ok := versions[row.Ref.ID]
+		if !ok || len(history) == 0 || history[len(history)-1].Revision != row.Revision {
+			t.Fatalf("native-origin row/history census differs for %s", row.Ref.ID)
+		}
+		var previous uint64
+		for _, version := range history {
+			revision, err := version.Revision.Uint64()
+			if err != nil || revision < floor || revision <= previous || revision > head || !reflect.DeepEqual(version.Ref, row.Ref) {
+				t.Fatalf("native-origin duplicate, unordered or misbound version for %s", row.Ref.ID)
+			}
+			previous = revision
+		}
+	}
+	if len(index) == 0 || len(versions) != len(index) {
+		t.Fatal("native-origin image lost its complete row/version owner census")
+	}
+	changes := image["changesets"].([]model.Changeset)
+	if uint64(len(changes)) != head-floor {
+		t.Fatal("native-origin public history is incomplete above its retained import floor")
+	}
+	for i, entry := range changes {
+		if entry.Revision != model.Natural64(floor+uint64(i)+1) || entry.Incarnation != meta.Incarnation || entry.Branch != model.Natural64(0) {
+			t.Fatal("native-origin public history has a duplicate, gap or wrong snapshot binding")
+		}
+	}
+	tables := []driver.DerivedTable{driver.DerivedReadyState, driver.DerivedAncestorClosure, driver.DerivedCutClosure, driver.DerivedAttribute, driver.DerivedSortKey, driver.DerivedReferenceIndex, driver.DerivedGrant, driver.DerivedOntology, driver.DerivedPlugins}
+	derived := image["derived"].(map[driver.DerivedTable][]driver.DerivedRow)
+	if len(derived) != len(tables) {
+		t.Fatal("native-origin nine-table derived census changed")
+	}
+	for _, table := range tables {
+		rows, ok := derived[table]
+		if !ok {
+			t.Fatalf("native-origin derived table missing: %s", table)
+		}
+		seen := map[string]bool{}
+		for _, row := range rows {
+			if seen[row.Key] {
+				t.Fatalf("native-origin duplicate derived row: %s/%s", table, row.Key)
+			}
+			seen[row.Key] = true
+		}
+	}
+	receiptKeys := []string{"s1-native-public-0", "s1-native-public-1", "s1-native-public-2", "s1-native-public-3", "s1-native-public-equal-labels", "s1-native-public-refused-aux"}
+	receipts := image["receipts"].(map[string]any)
+	if len(receipts) != len(receiptKeys) {
+		t.Fatal("native-origin declared receipt census changed")
+	}
+	for _, key := range receiptKeys {
+		if _, ok := receipts[key]; !ok {
+			t.Fatalf("native-origin declared receipt missing: %s", key)
+		}
+	}
+	return index
+}
+
+func assertNativePlugBaseline(t *testing.T, image map[string]any) {
+	t.Helper()
+	rows := nativePlugImageRows(t, image)
+	meta := image["meta"].(driver.Meta)
+	if meta.Head != meta.HistoryFloor || len(image["changesets"].([]model.Changeset)) != 0 {
+		t.Fatal("native-origin first preimage is not the actual snapshot-import baseline")
+	}
+	imported := image["import_receipt"].(*driver.IdempotencyRecord)
+	versions := image["versions"].(map[string][]driver.Version)
+	for id, row := range rows {
+		want := driver.Version{Ref: row.Ref, Revision: meta.HistoryFloor, Base: true, Body: row.Body, CreatedAt: imported.Changeset.Time, Principal: imported.Changeset.Principal}
+		if row.Revision != meta.HistoryFloor || len(versions[id]) != 1 || !reflect.DeepEqual(versions[id][0], want) {
+			t.Fatalf("native-origin baseline is missing its exact imported base for %s", id)
+		}
+	}
+	for key, receipt := range image["receipts"].(map[string]any) {
+		if receipt != nil {
+			t.Fatalf("native-origin operation receipt predates its recording: %s", key)
+		}
+	}
+}
+
+// The four declared scalar/label updates have no hierarchy edits or mutators.
+// Conserve every captured plane, permitting only the requested target body,
+// one revision/version/legacy changeset and that operation's finalized receipt.
+// Derivation rows (including Index values) have no permitted delta here.
+func assertNativePlugWriteDelta(t *testing.T, before, after map[string]any, req service.UpdateRequest, meta model.WriteMeta, actor model.PrincipalRef, commit model.Commit, receiptKey string) {
+	t.Helper()
+	oldRows, newRows := nativePlugImageRows(t, before), nativePlugImageRows(t, after)
+	oldMeta, newMeta := before["meta"].(driver.Meta), after["meta"].(driver.Meta)
+	head, err := oldMeta.Head.Uint64()
+	if err != nil || head == ^uint64(0) {
+		t.Fatal("native-origin preimage head cannot advance")
+	}
+	revision := model.Natural64(head + 1)
+	wantMeta := oldMeta
+	wantMeta.Head = revision
+	wantView := before["snapshot"].(driver.View)
+	wantView.At = &revision
+	if !reflect.DeepEqual(newMeta, wantMeta) || !reflect.DeepEqual(after["snapshot"], wantView) || commit.Revision != revision {
+		t.Fatal("native-origin successful write changed identity/floor or advanced by other than one revision")
+	}
+	for _, key := range []string{"changeset_cursor", "import_receipt", "source_archive", "derived"} {
+		if !reflect.DeepEqual(before[key], after[key]) {
+			t.Fatalf("native-origin successful write changed conserved %s", key)
+		}
+	}
+	old, found := oldRows[req.ID.ID]
+	actual, present := newRows[req.ID.ID]
+	if !found || !present || len(oldRows) != len(newRows) || !reflect.DeepEqual(old.Ref, req.ID) || len(req.Fields) == 0 {
+		t.Fatal("native-origin scalar target or complete row census changed")
+	}
+	for id, row := range oldRows {
+		if id != req.ID.ID && !reflect.DeepEqual(row, newRows[id]) {
+			t.Fatalf("native-origin successful write changed non-target row %s", id)
+		}
+	}
+	// The existing strict decoder preserves number spelling/types and rejects
+	// duplicate members. Never round unpatched metadata/scalars through float64.
+	decode := func(data []byte) any {
+		value, err := readNativeJSON(data)
+		if err != nil {
+			t.Fatalf("native-origin successful-write JSON: %v", err)
+		}
+		return value
+	}
+	expected, ok := decode(old.Body).(map[string]any)
+	if !ok {
+		t.Fatal("native-origin scalar target is not an object")
+	}
+	fields, ok := expected["fields"].(map[string]any)
+	if !ok {
+		t.Fatal("native-origin scalar target lacks fields")
+	}
+	setBy := map[string]string{}
+	paths := []string{}
+	for field, value := range req.Fields {
+		// This is the fixed recorder workload, not a permissive general patch
+		// emulator: reject an expanded request until its delta is declared.
+		switch field {
+		case "title", "priority", "description":
+		case "labels":
+			if !reflect.DeepEqual(value, []string{"native-reviewed"}) {
+				t.Fatal("native-origin undeclared label replacement")
+			}
+			setBy["labels"] = "request"
+			paths = append(paths, "/labels")
+		default:
+			t.Fatalf("native-origin undeclared successful field delta %s", field)
+		}
+		data, err := json.Marshal(value)
+		if err != nil || value == nil {
+			t.Fatalf("native-origin undeclared scalar value: %v", err)
+		}
+		fields[field] = decode(data)
+		if field == "labels" {
+			expected["labels"] = fields[field]
+		}
+		setBy["fields."+field] = "request"
+		paths = append(paths, "/fields/"+field)
+	}
+	sort.Strings(paths)
+	if !reflect.DeepEqual(expected, decode(actual.Body)) || !reflect.DeepEqual(old.Ref, actual.Ref) || old.Kind != actual.Kind || actual.Revision != revision {
+		t.Fatal("native-origin target body/envelope has an undeclared successful-write delta")
+	}
+	wantCommit := model.Commit{Revision: revision, Results: []model.OpResult{{Ref: old.Ref, Revision: revision, Record: json.RawMessage(actual.Body), SetBy: setBy}}, Warnings: []model.Warning{}}
+	if !reflect.DeepEqual(commit, wantCommit) {
+		t.Fatal("native-origin returned commit does not describe exactly the declared target delta")
+	}
+	oldChanges, newChanges := before["changesets"].([]model.Changeset), after["changesets"].([]model.Changeset)
+	if len(newChanges) != len(oldChanges)+1 {
+		t.Fatal("native-origin successful write did not append exactly one changeset")
+	}
+	for i, previous := range oldChanges {
+		if !reflect.DeepEqual(previous, newChanges[i]) {
+			t.Fatal("native-origin successful write rewrote prior public history")
+		}
+	}
+	entry := newChanges[len(oldChanges)]
+	_, offset := entry.Time.Zone()
+	if entry.Time.IsZero() || offset != 0 || meta.IdempotencyKey != hashBytes([]byte(receiptKey)) {
+		t.Fatal("native-origin changeset lacks its actual UTC time or request key")
+	}
+	wantEntry := model.Changeset{Revision: revision, Branch: model.Natural64(0), Incarnation: oldMeta.Incarnation, Kind: model.ChangesetWrite, Time: entry.Time, Principal: actor, IdempotencyKey: meta.IdempotencyKey, Changes: []model.ChangeRecord{{Ref: old.Ref, Op: model.OpPatch, FromRevision: old.Revision, ChangedPaths: paths}}}
+	if !reflect.DeepEqual(entry, wantEntry) {
+		t.Fatal("native-origin new changeset has an undeclared identity/path/event/mutator delta")
+	}
+	oldVersions, newVersions := before["versions"].(map[string][]driver.Version), after["versions"].(map[string][]driver.Version)
+	for id, history := range oldVersions {
+		if id != req.ID.ID {
+			if !reflect.DeepEqual(history, newVersions[id]) {
+				t.Fatalf("native-origin successful write changed non-target history %s", id)
+			}
+			continue
+		}
+		next := newVersions[id]
+		if len(next) != len(history)+1 || !reflect.DeepEqual(history, next[:len(history)]) {
+			t.Fatal("native-origin successful write rewrote target history")
+		}
+		version := driver.Version{Ref: old.Ref, Revision: revision, CreatedAt: entry.Time, Principal: actor, Base: len(history)%driver.VersionBaseEvery == 0 || history[len(history)-1].Deleted}
+		if version.Base {
+			version.Body = actual.Body
+		} else {
+			version.Patch, err = json.Marshal([]map[string]any{{"op": "replace", "path": "", "value": json.RawMessage(actual.Body)}})
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		if !reflect.DeepEqual(next[len(history)], version) {
+			t.Fatal("native-origin appended version differs from the exact committed replacement/base")
+		}
+	}
+	// Independently lower the named request and its default full-return mode
+	// into the pre-gate request-hash contract; do not learn a hash from storage.
+	if meta.Return != "" || meta.Method != "" || meta.GateAction != "" || meta.ClaimNextIdentity != "" || meta.DryRun {
+		t.Fatal("native-origin successful-write request exceeded its declared metadata scope")
+	}
+	requestBytes, err := json.Marshal(struct {
+		ChangeSet               model.ChangeSet
+		Method, Project, Return string
+		ClaimNextIdentity       string `json:",omitempty"`
+		DryRun                  bool
+	}{model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: req.ID, Fields: req.Fields}}}, Expect: req.Expect}, "bead.update", meta.Project, "full", "", false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldReceipts, newReceipts := before["receipts"].(map[string]any), after["receipts"].(map[string]any)
+	if _, ok := oldReceipts[receiptKey]; !ok || oldReceipts[receiptKey] != nil {
+		t.Fatal("native-origin successful-write receipt was not absent in its preimage")
+	}
+	for key, previous := range oldReceipts {
+		if key == receiptKey {
+			want := map[string]any{"request_hash": hashBytes(requestBytes), "commit": commit, "response_pending": false, "changeset": entry}
+			if !reflect.DeepEqual(newReceipts[key], want) {
+				t.Fatal("native-origin successful write did not finalize its one exact durable receipt")
+			}
+		} else if !reflect.DeepEqual(previous, newReceipts[key]) {
+			t.Fatalf("native-origin successful write changed unrelated receipt %s", key)
+		}
+	}
+}
+
 // These are real public service writes on the just-imported native rows. The
 // offline import itself makes no subscriber claim. Evidence is flushed before
 // every assertion, including a refused or unexpectedly published operation.
@@ -1194,21 +1463,33 @@ func recordPublicSubscriber(t *testing.T, ctx context.Context, store driver.Stor
 		{ID: model.RefByID(ids[2], model.Natural64(0)), Fields: map[string]any{"title": "Closed dependency after Plug scalar update"}},
 		{ID: model.RefByID(ids[0], model.Natural64(0)), Fields: map[string]any{"labels": []string{"native-reviewed"}}},
 	}
+	baseline := nativePlugImage(t, ctx, store, profile)
+	writeRecordingValue(t, path+".baseline.json", baseline)
+	assertNativePlugBaseline(t, baseline)
+	previousImage := baseline
 	var last port.WriteOutcome
 	for i, req := range requests {
+		preimage := nativePlugImage(t, ctx, store, profile)
+		preimagePath := path + fmt.Sprintf(".before-write-%d.json", i)
+		writeRecordingValue(t, preimagePath, preimage)
+		if !reflect.DeepEqual(previousImage, preimage) {
+			t.Fatal("native-origin complete preimage changed between recorded operations")
+		}
 		before := read()
-		meta := model.WriteMeta{Project: before[req.ID.ID].Project, IdempotencyKey: hashBytes([]byte(fmt.Sprintf("s1-native-public-%d", i)))}
+		receiptKey := fmt.Sprintf("s1-native-public-%d", i)
+		meta := model.WriteMeta{Project: before[req.ID.ID].Project, IdempotencyKey: hashBytes([]byte(receiptKey))}
 		outcome, err := domain.UpdateWithOutcome(ctx, actor, req, meta)
 		typed := retainReturn(fmt.Sprintf("write-%d", i), outcome, err)
 		complete := nativePlugImage(t, ctx, store, profile)
 		writeRecordingValue(t, path+fmt.Sprintf(".write-%d.json", i), complete)
 		after := read()
-		appendReceipt(map[string]any{"method": "bead.update", "request": req, "meta": meta, "outcome": rawOutcome(outcome), "error": fmt.Sprint(err), "typed_error": typed, "before": before, "after": after})
+		appendReceipt(map[string]any{"method": "bead.update", "request": req, "meta": meta, "outcome": rawOutcome(outcome), "error": fmt.Sprint(err), "typed_error": typed, "before": before, "after": after, "complete_preimage": preimagePath})
 		flush()
 		validateSuccessfulOutcome(outcome, err)
 		if err != nil || outcome.Replayed || len(outcome.Commit.Warnings) != 0 || postCount() != i+1 {
 			t.Fatalf("native public update/subscriber: %+v err=%v", outcome, err)
 		}
+		assertNativePlugWriteDelta(t, preimage, complete, req, meta, actor, outcome.Commit, receiptKey)
 		expected := before[req.ID.ID]
 		for field, value := range req.Fields {
 			expected.Fields[field] = value
@@ -1230,6 +1511,7 @@ func recordPublicSubscriber(t *testing.T, ctx context.Context, store driver.Stor
 		if replayErr != nil || !replayed.Replayed || !equalJSON(outcome.Commit, replayed.Commit) || postCount() != i+1 || !equalJSON(after, read()) || !equalJSON(complete, replayImage) {
 			t.Fatal("native public replay changed state, receipt or subscriber count")
 		}
+		previousImage = replayImage
 		last = outcome
 	}
 	before := read()
