@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -802,14 +803,19 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 	}
 
 	for _, source := range archive.Records("edge") {
-		if stringValue(source.Body["target_kind"]) != "depends_on_issue_id" {
-			return restorePlan{}, fmt.Errorf("%w: external relation %s: %w", ErrRestoreUnavailable, source.ID, &dumpformat.UnresolvedDependencyError{
+		var targetKind model.LinkTargetKind
+		switch stringValue(source.Body["target_kind"]) {
+		case "depends_on_issue_id":
+		case "depends_on_external":
+			targetKind = model.LinkTargetExternal
+		default:
+			return restorePlan{}, fmt.Errorf("%w: unsupported typed relation %s: %w", ErrRestoreUnavailable, source.ID, &dumpformat.UnresolvedDependencyError{
 				EdgeID: source.ID, Project: source.Project, Source: stringValue(source.Body["from"]), Target: stringValue(source.Body["to"]), TargetKind: stringValue(source.Body["target_kind"]),
 			})
 		}
 		from, to := stringValue(source.Body["from"]), stringValue(source.Body["to"])
 		doc, ok := docs[from]
-		if _, targetExists := docs[to]; !ok || !targetExists {
+		if _, targetExists := docs[to]; !ok || targetKind != model.LinkTargetExternal && !targetExists {
 			return restorePlan{}, fmt.Errorf("%w: edge %s has no restored endpoint: %w", ErrRestoreUnavailable, source.ID, &dumpformat.UnresolvedDependencyError{
 				EdgeID: source.ID, Project: source.Project, Source: from, Target: to, TargetKind: stringValue(source.Body["target_kind"]),
 			})
@@ -820,6 +826,9 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		case "related":
 			kind = "relates-to"
 		case "parent-child":
+			if targetKind == model.LinkTargetExternal {
+				break
+			}
 			// The source edge points from child to parent. A Plug parent is
 			// core-owned hierarchy, not a second generic link. Keep the source
 			// edge mirror below for exact reverse provenance.
@@ -834,9 +843,15 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 			docs[from] = doc
 			continue
 		default:
-			return restorePlan{}, fmt.Errorf("%w: relation type %s", ErrRestoreUnavailable, kind)
+			if targetKind != model.LinkTargetExternal || kind == "" || len(kind) > 32 || !utf8.ValidString(kind) {
+				return restorePlan{}, fmt.Errorf("%w: relation type %s", ErrRestoreUnavailable, kind)
+			}
 		}
-		doc.Links = append(doc.Links, pipeline.Link{To: model.RefByID(to, model.Natural64(0)), Kind: kind})
+		link, err := importedSourceLink(source.Body, kind, targetKind)
+		if err != nil {
+			return restorePlan{}, fmt.Errorf("%w: relation %s: %v", ErrRestoreUnavailable, source.ID, err)
+		}
+		doc.Links = append(doc.Links, link)
 		docs[from] = doc
 	}
 
@@ -1061,4 +1076,23 @@ func cloneValue(value any) any {
 	default:
 		return value
 	}
+}
+
+// importedSourceLink preserves the typed endpoint before any local lookup.
+func importedSourceLink(body map[string]any, kind string, targetKind model.LinkTargetKind) (pipeline.Link, error) {
+	link := pipeline.Link{To: model.RefByID(stringValue(body["to"]), model.Natural64(0)), Kind: kind, TargetKind: targetKind}
+	if err := model.ValidateLinkTarget(targetKind, link.To); err != nil {
+		return pipeline.Link{}, err
+	}
+	if kind == "waits-for" && body["metadata"] != nil {
+		raw, err := json.Marshal(body["metadata"])
+		if err != nil {
+			return pipeline.Link{}, err
+		}
+		link.Metadata = new(model.LinkMetadata)
+		if err := json.Unmarshal(raw, link.Metadata); err != nil {
+			return pipeline.Link{}, err
+		}
+	}
+	return link, nil
 }

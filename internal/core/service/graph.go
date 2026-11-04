@@ -8,9 +8,11 @@ import (
 	"sort"
 	"time"
 
+	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
 type queryReader interface {
@@ -47,6 +49,13 @@ func decodeDocument(raw []byte) (pipeline.Document, error) {
 		if _, err := driver.NewClosureSentinel(doc.Parent.ID); err != nil {
 			return doc, failure("invalid_params", "invalid stored parent")
 		}
+	}
+	for i, link := range doc.Links {
+		kind, err := link.TargetKind.Normalized()
+		if err != nil || model.ValidateLinkTarget(kind, link.To) != nil {
+			return doc, failure("invalid_params", "invalid stored link target")
+		}
+		doc.Links[i].TargetKind = kind
 	}
 	// Preserve member presence before Go zero values erase null/empty provenance.
 	var envelope struct {
@@ -176,6 +185,9 @@ func state(doc pipeline.Document) ontology.BeadState {
 }
 
 func (o *Ontology) noOpenBlockers(doc pipeline.Document, graph map[string]storedBead) (bool, error) {
+	if blocked, _ := doc.Fields["blocked"].(bool); blocked {
+		return false, nil
+	}
 	terminal := func(target storedBead) bool {
 		effective := o.effective(target.doc.Project)
 		return effective.SatisfiesBlocks(state(target.doc).Status)
@@ -185,8 +197,16 @@ func (o *Ontology) noOpenBlockers(doc pipeline.Document, graph map[string]stored
 		case "relates-to", "related", "discovered-from", "replies-to", "duplicates", "supersedes", "authored-by", "assigned-to", "approved-by", "attests", "tracks", "until", "caused-by", "validates", "delegated-from":
 			continue
 		case "blocks", "conditional-blocks", "waits-for":
+			if link.TargetKind == model.LinkTargetExternal {
+				// External blockers remain unknown, even if their exact ID
+				// happens to name a terminal bead in the local graph.
+				return false, nil
+			}
 			blocker, exists := graph[link.To.ID]
 			if !exists || !link.To.IsID() || !link.To.Branch.IsZero() {
+				// Keep the unresolved edge in the source image, but do not
+				// infer that an external blocker is terminal. Readiness is
+				// deliberately fail-closed until the target can be read.
 				return false, nil
 			}
 			s := state(blocker.doc)
@@ -230,7 +250,7 @@ func (o *Ontology) waitsForSatisfied(link pipeline.Link, spawner storedBead, gra
 		member := child.doc.Parent != nil && child.doc.Parent.ID == spawner.doc.ID
 		if !member {
 			for _, edge := range child.doc.Links {
-				if edge.Kind == "parent-child" && edge.To.ID == spawner.doc.ID {
+				if edge.TargetKind != model.LinkTargetExternal && edge.Kind == "parent-child" && edge.To.ID == spawner.doc.ID {
 					member = true
 					break
 				}
@@ -262,6 +282,9 @@ func (o *Ontology) readyDependencies(doc pipeline.Document, graph map[string]sto
 	for _, link := range doc.Links {
 		if link.Kind != "parent-child" {
 			continue
+		}
+		if link.TargetKind == model.LinkTargetExternal {
+			return false, nil
 		}
 		target, exists := graph[link.To.ID]
 		if !exists || !link.To.IsID() || !link.To.Branch.IsZero() || !terminal(target) {
@@ -315,7 +338,11 @@ func beadValue(row storedBead) (Bead, error) {
 		parent = doc.Parent.ID
 	}
 	createdAt, _ := doc.CreationTime()
-	return Bead{ID: doc.ID, Type: doc.Type, Project: doc.Project, Revision: row.record.Revision, Status: state(doc).Status, Fields: doc.Fields, Metadata: metadata, Labels: append([]string(nil), doc.Labels...), Parent: parent, CreatedAt: createdAt}, nil
+	bead := Bead{ID: doc.ID, Type: doc.Type, Project: doc.Project, Revision: row.record.Revision, Status: state(doc).Status, Fields: doc.Fields, Metadata: metadata, Labels: append([]string(nil), doc.Labels...), Parent: parent, CreatedAt: createdAt, Blocked: doc.Fields["blocked"] == true}
+	for _, link := range doc.Links {
+		bead.Links = append(bead.Links, workflowplugin.RelationView{From: doc.ID, To: link.To, Kind: link.Kind, Metadata: link.Metadata, TargetKind: link.TargetKind})
+	}
+	return bead, nil
 }
 
 func beadPriority(bead Bead) (int, error) {

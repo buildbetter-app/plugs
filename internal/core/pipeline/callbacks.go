@@ -103,6 +103,9 @@ func (w *Writer) pre(ctx context.Context, p *prepared) error {
 	if p.refusal != nil {
 		return p.refusal
 	}
+	if err := w.checkWorkflowGuard(ctx, p); err != nil {
+		return err
+	}
 	if w.cfg.ontology == nil {
 		return failure("invalid_params", "pipeline requires an ontology hook for bead writes")
 	}

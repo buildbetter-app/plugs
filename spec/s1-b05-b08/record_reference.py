@@ -11,6 +11,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -141,6 +142,120 @@ def dependency_projection(stdout, source, target):
         raise RuntimeError("B07 show output did not contain a decodable dependency projection") from exc
 
 
+def b06_paths(stdout, expected, label):
+    """Check the actual native report without repairing its path or order."""
+    try:
+        report = json.loads(stdout.decode("utf-8"))
+        if not isinstance(report, list):
+            raise ValueError("report must be an array")
+        paths = []
+        for cycle in report:
+            if cycle["partial"] is not False or not cycle["members"]:
+                raise ValueError("these public fixtures have complete members")
+            path = []
+            for member in cycle["members"]:
+                identifier = member["id"]
+                if not isinstance(identifier, str) or not identifier or member["issue"]["id"] != identifier:
+                    raise ValueError("member hydration differs from its edge ID")
+                path.append(identifier)
+            if len(set(path)) != len(path) or path[0] != min(path):
+                raise ValueError("path must be distinct and start at its lowest ID")
+            paths.append(path)
+        if paths != expected:
+            raise ValueError(f"paths {paths!r} differ from {expected!r}")
+        return paths
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError) as exc:
+        raise RuntimeError(f"B06 {label} report failed: {exc}") from exc
+
+
+def b06_rendered(stdout, expected_paths, shown):
+    # Keep the original streams; remove terminal decoration only for assertions.
+    rendered = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", stdout.decode("utf-8"))
+    total = len(expected_paths)
+    headings = re.findall(r"^\d+\. Cycle involving:\s*$", rendered, re.MULTILINE)
+    members = re.findall(r"^   - ([^:]+):", rendered, re.MULTILINE)
+    expected_members = [identifier for path in expected_paths[:shown] for identifier in path]
+    omitted = f"... and {total - shown} more not shown."
+    if (f"Found {total} dependency cycles:" not in rendered or len(headings) != shown
+            or members != expected_members or (omitted in rendered) != (shown < total)
+            or (shown == total and "more not shown" in rendered)):
+        raise RuntimeError("B06 native human limit changed the total, order, or rendered members")
+    return {"total": total, "shown": shown}
+
+
+def record_b06(binary, root, commands, env, ids, probe_start):
+    """Use ordinary guarded CLI operations, never legacy-row or SQL injection.
+
+    A blocks-only cycle cannot be made through the traced add/import routes:
+    even bulk --no-cycle-check retains a final graph gate, and import records
+    skipped cycle edges. Tracks can legitimately close a diagnostic path while
+    leaving the scheduling graph acyclic. That supported case is useful real
+    coverage, with the remaining native fixture dependencies stated explicitly.
+    """
+    probes = []
+
+    def report(label, arguments, expected):
+        index = len(commands)
+        output = run(binary, root, commands, ["dep", "cycles", *arguments], env=env)
+        probes.append({"case": label, "commandIndex": index, "paths": b06_paths(output, expected, label)})
+        return output
+
+    run(binary, root, commands, ["dep", "add", ids[0], ids[1], "--type", "blocks"], env=env)
+    refusal = run(binary, root, commands, ["dep", "add", ids[1], ids[0], "--type", "blocks"], expected=1, env=env)
+    if b"cycle" not in (refusal + base64.b64decode(commands[-1]["stderrBase64"])).lower():
+        raise RuntimeError("B06 reverse-edge refusal did not identify a cycle")
+    report("acyclic-control", ["--json"], [])
+
+    prefix = "b06"
+    pure = [f"{prefix}-pure-a", f"{prefix}-pure-z"]
+    rings = [[f"{prefix}-alpha", f"{prefix}-middle", f"{prefix}-zulu"],
+             [f"{prefix}-beta", f"{prefix}-november", f"{prefix}-yankee"]]
+
+    def create(identifier):
+        run(binary, root, commands, ["create", "--id", identifier, "--type", "task", "--title", identifier], env=env)
+        ids.append(identifier)
+
+    for identifier in pure:
+        create(identifier)
+    for source, target in (pure, list(reversed(pure))):
+        run(binary, root, commands, ["dep", "add", source, target, "--type", "tracks"], env=env)
+    report("pure-tracks-control", ["--include-tracks", "--json"], [])
+
+    # Write the higher ring first, and each scheduling edge from its highest
+    # member, so a correct answer must order and rotate the actual report.
+    for low, middle, high in reversed(rings):
+        for identifier in (low, middle, high):
+            create(identifier)
+        for source, target, kind in ((high, low, "blocks"), (low, middle, "tracks"), (middle, high, "tracks")):
+            run(binary, root, commands, ["dep", "add", source, target, "--type", kind], env=env)
+    report("default-excludes-tracks", ["--json"], [])
+    expanded = report("tracks-expanded", ["--include-tracks", "--json"], rings)
+    repeated = report("unchanged-repeat", ["--include-tracks", "--json"], rings)
+    if repeated != expanded:
+        raise RuntimeError("B06 unchanged native cycle report bytes differ")
+    run(binary, root, commands, ["dep", "add", rings[0][2], rings[0][0], "--type", "blocks"], env=env)
+    if report("same-edge-readd", ["--include-tracks", "--json"], rings) != expanded:
+        raise RuntimeError("B06 same-type re-add changed the native report")
+    # Native JSON returns before the renderer's cap; Plug's result envelope
+    # has its own explicit count/truncated/items projection instead.
+    if report("json-limit-uncapped", ["--include-tracks", "--limit", "1", "--json"], rings) != expanded:
+        raise RuntimeError("B06 native JSON limit truncated or changed the report")
+    for label, limit, shown in (("human-limit", "1", 1), ("human-unlimited", "0", 2)):
+        index = len(commands)
+        output = run(binary, root, commands, ["dep", "cycles", "--include-tracks", "--limit", limit], env=env)
+        probes.append({"case": label, "commandIndex": index, **b06_rendered(output, rings, shown)})
+    return {
+        "probeResults": commands[probe_start:],
+        "cycleProbes": probes,
+        "cycleProbeCoverage": {
+            "status": "partial",
+            "supported": ["nonempty-tracks-report", "lowest-id-rotation", "report-order", "pure-tracks-exclusion",
+                          "unchanged-report-bytes", "same-type-readd", "native-json-uncapped", "native-human-limit"],
+            "blocked": ["blocking-only-cycle-public-fixture", "parallel-rows-public-fixture", "unreadable-cycle-public-fixture"],
+        },
+    }
+
+
 def record(card, binary, root, binary_digest, clock_proof_digest):
     prefix = card.lower()
     ids = [f"{prefix}-source", f"{prefix}-target"]
@@ -185,10 +300,7 @@ def record(card, binary, root, binary_digest, clock_proof_digest):
         run(binary, root, commands, ["show", ids[0], "--json"], env=env)
         observations = {"probeResults": commands[probe_start:]}
     elif card == "B06":
-        run(binary, root, commands, ["dep", "add", ids[0], ids[1], "--type", "blocks"], env=env)
-        run(binary, root, commands, ["dep", "add", ids[1], ids[0], "--type", "blocks"], expected=1, env=env)
-        run(binary, root, commands, ["dep", "cycles", "--json"], env=env)
-        observations = {"probeResults": commands[probe_start:]}
+        observations = record_b06(binary, root, commands, env, ids, probe_start)
     elif card == "B07":
         before = run(binary, root, commands, ["show", ids[0], "--json"], env=env)
         before_edges = dependency_projection(before, ids[0], ids[1])

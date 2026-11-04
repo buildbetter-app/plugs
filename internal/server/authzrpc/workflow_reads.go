@@ -63,6 +63,11 @@ func (s *GuardedService) getWorkflow(ctx context.Context, by model.PrincipalRef,
 	if result.Bead.Project != req.Project {
 		return service.GetResult{}, notFound()
 	}
+	projected := []service.Bead{result.Bead}
+	if err := s.projectLinkTargets(ctx, by, projected); err != nil {
+		return service.GetResult{}, err
+	}
+	result.Bead = projected[0]
 	if err := s.checker.ValidateReadAuthorityBinding(ctx, by, binding); err != nil {
 		return service.GetResult{}, err
 	}

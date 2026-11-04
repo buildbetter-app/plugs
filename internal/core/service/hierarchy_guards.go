@@ -95,7 +95,7 @@ func (o *Ontology) noOpenChildren(parent pipeline.Document, graph map[string]sto
 		}
 		if !linked {
 			for _, edge := range child.doc.Links {
-				if edge.Kind == "parent-child" && edge.To.ID == parent.ID {
+				if edge.TargetKind != model.LinkTargetExternal && edge.Kind == "parent-child" && edge.To.ID == parent.ID {
 					linked = true
 					break
 				}

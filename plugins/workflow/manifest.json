@@ -11,7 +11,9 @@
       "kind": "methods",
       "prefix": "x.workflow",
       "methods": {
-        "invoke": {"permission": "write", "resource": "params.project"}
+        "invoke": {"permission": "write", "resource": "params.project"},
+        "run.promote": {"permission": "write", "resource": "params.target"},
+        "run.demote": {"permission": "write", "resource": "params.source"}
       }
     }]
   }]

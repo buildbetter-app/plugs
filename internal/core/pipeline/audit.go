@@ -105,7 +105,7 @@ func (w *Writer) prepareAudit(ctx context.Context, p *prepared) error {
 	for id, row := range graph {
 		seen := map[string]bool{}
 		for _, link := range row.doc.Links {
-			if link.Kind != "conditional-blocks" || !blockers[link.To.ID] {
+			if link.TargetKind == model.LinkTargetExternal || link.Kind != "conditional-blocks" || !blockers[link.To.ID] {
 				continue
 			}
 			if !link.To.IsID() || !link.To.Branch.IsZero() || seen[link.To.ID] || id == link.To.ID {
@@ -320,7 +320,7 @@ func (p *prepared) ordinaryEvent(pending *pending, op model.OpKind) (model.Durab
 		}
 		return "", fmt.Errorf("unsupported memory event operation %q", op)
 	}
-	event, ok := map[model.OpKind]model.DurableEventType{model.OpCreate: model.EventBeadCreated, model.OpPatch: model.EventBeadUpdated, model.OpSetMeta: model.EventBeadUpdated, model.OpReparent: model.EventBeadReparented, model.OpComment: model.EventBeadCommented, model.OpLink: model.EventBeadLinked, model.OpUnlink: model.EventBeadUnlinked, model.OpDelete: model.EventBeadDeleted, model.OpClose: model.EventBeadCommented}[op]
+	event, ok := map[model.OpKind]model.DurableEventType{model.OpCreate: model.EventBeadCreated, model.OpPatch: model.EventBeadUpdated, model.OpSetMeta: model.EventBeadUpdated, model.OpReparent: model.EventBeadReparented, model.OpComment: model.EventBeadCommented, model.OpAttach: model.EventBeadAttached, model.OpLink: model.EventBeadLinked, model.OpUnlink: model.EventBeadUnlinked, model.OpDelete: model.EventBeadDeleted, model.OpClose: model.EventBeadCommented}[op]
 	if !ok {
 		return "", fmt.Errorf("unsupported ordinary event operation %q", op)
 	}
