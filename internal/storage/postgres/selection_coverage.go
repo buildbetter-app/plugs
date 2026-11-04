@@ -643,7 +643,8 @@ func (t *transaction) writeSelectionCoverage(ctx context.Context, revision model
 		// A trusted first publication can contain only non-bead authority
 		// facts. Its complete empty-domain proof needs a ready range before
 		// Head advances, so later bead batches can carry those proven bits.
-		if n == 0 && (affected || t.selectionProofSeed) && t.selectionVirgin {
+		// A source-free no-op retains the explicit startup availability floor.
+		if n == 0 && (affected || t.selectionProofSeed && len(t.selectionProofRoots) != 0) && t.selectionVirgin {
 			_, err = t.sql.ExecContext(ctx, `INSERT INTO plug_postgres.selection_coverage(incarnation,branch,family_table,fact_kind,format,start_revision,built_from,certified_through,ready) SELECT $1,0,$2,$3,$4,$5,$5,$5,true WHERE NOT EXISTS(SELECT 1 FROM plug_postgres.selection_coverage WHERE incarnation=$1 AND branch=0 AND family_table=$2 AND fact_kind=$3 AND format=$4)`, incarnation, string(family.Table), string(family.Kind), family.Version, revision.String())
 			statements++
 			if err != nil {
