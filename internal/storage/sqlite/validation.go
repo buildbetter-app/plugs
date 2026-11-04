@@ -83,9 +83,18 @@ func (t *transaction) validateChanges(ctx context.Context, changes []model.Chang
 		if err = change.FromRevision.Validate(); err != nil {
 			return err
 		}
-		previous, err := t.recordRevision(ctx, id)
-		if err != nil {
-			return err
+		previous := model.Natural64(0)
+		if state, cached := t.recordStates[id]; cached {
+			// Lock already observed this exact record before staging. The
+			// transaction holds the complete update lock, so its revision cannot
+			// change; reuse that observation instead of rereading key_history.
+			previous = state.Revision
+		} else {
+			var err error
+			previous, err = t.recordRevision(ctx, id)
+			if err != nil {
+				return err
+			}
 		}
 		if change.FromRevision.String() != previous.String() {
 			return driver.ErrConflict
