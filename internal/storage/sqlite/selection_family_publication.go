@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
@@ -206,11 +207,73 @@ func (t *transaction) selectionFamilyCompleteForCommit(ctx context.Context, c qu
 	return true, nil
 }
 
-// selectionParentProofSeeds returns the source identities whose committed
-// parent/ancestor component can change in this transaction.  The recursive
-// SQL proof expands each seed through the current Parent index, so an ancestor
-// move also checks every existing descendant whose chain depends on it.  A
-// source-only update remains local to its own chain.
+// Every touched source still needs its own final chain proved. Only a change
+// to canonical Parent or source presence can invalidate unchanged descendants.
+type selectionParentProofScope struct {
+	chains   []string
+	subtrees []string
+}
+
+// Capture the old canonical Parent before sourcePlan.Publish replaces it. The
+// complete, final declaration overlay is authoritative even if a source was
+// staged several times. Missing prior coverage/rows, raw writes, restores and
+// lifetime changes conservatively retain the full descendant proof.
+func (t *transaction) prepareSelectionParentProof(ctx context.Context, c queryer, current driver.Meta, parentReady bool) (selectionParentProofScope, error) {
+	scope := selectionParentProofScope{chains: t.selectionParentProofSeeds(t.derived)}
+	subtrees := make(map[string]bool)
+	var comparable []string
+	for id, record := range t.records {
+		identity, known := t.sourceIdentities[id]
+		if !(known && identity.Kind == "bead") && !(record != nil && record.Kind == "bead") {
+			continue
+		}
+		subtrees[id] = true
+		if t.restore != nil || !parentReady || record == nil || record.Kind != "bead" {
+			continue
+		}
+		if _, typed := t.sourceOverlay.Declarations[id]; typed {
+			comparable = append(comparable, id)
+		}
+	}
+	sort.Strings(comparable)
+	for start := 0; start < len(comparable); start += selectionSourceHistoryBatch {
+		end := min(start+selectionSourceHistoryBatch, len(comparable))
+		args := make([]any, 0, 2+end-start)
+		args = append(args, current.Incarnation, revKey(0))
+		for _, id := range comparable[start:end] {
+			args = append(args, id)
+		}
+		rows, err := c.QueryContext(ctx, `SELECT child_key,parent_key FROM hierarchy_source_current
+			WHERE incarnation=? AND branch=? AND kind='bead' AND child_key IN (`+strings.TrimSuffix(strings.Repeat("?,", end-start), ",")+`)`, args...)
+		if err != nil {
+			return selectionParentProofScope{}, err
+		}
+		for rows.Next() {
+			var id string
+			var parent sql.NullString
+			if err := rows.Scan(&id, &parent); err != nil {
+				_ = rows.Close()
+				return selectionParentProofScope{}, err
+			}
+			if parent.String == t.sourceOverlay.Declarations[id].ParentKey {
+				delete(subtrees, id)
+			}
+		}
+		err = rows.Err()
+		_ = rows.Close()
+		if err != nil {
+			return selectionParentProofScope{}, err
+		}
+	}
+	for id := range subtrees {
+		scope.subtrees = append(scope.subtrees, id)
+	}
+	sort.Strings(scope.subtrees)
+	return scope, nil
+}
+
+// Include changed bead sources and typed record-backed sources even when
+// their Parent is unchanged; their own projection/closure may have changed.
 func (t *transaction) selectionParentProofSeeds(derived map[string]driver.LockState) []string {
 	seen := make(map[string]struct{}, len(t.records)+len(derived))
 	for id, record := range t.records {
@@ -317,11 +380,11 @@ func (t *transaction) prepareSelectionFamilyCoverage(ctx context.Context, c *sql
 	return decisions, nil
 }
 
-func publishSelectionFamilyCoverage(ctx context.Context, c *sql.Conn, incarnation, previous, next string, decisions []selectionFamilyDecision, parentSeeds []string) error {
+func publishSelectionFamilyCoverage(ctx context.Context, c *sql.Conn, incarnation, previous, next string, decisions []selectionFamilyDecision, parentScope selectionParentProofScope) error {
 	for _, decision := range decisions {
 		family, interval, priorReady, complete, firstTyped := decision.family, decision.interval, decision.priorReady, decision.complete, decision.firstTyped
 		if complete && family.Kind == driver.SelectionAncestorFact {
-			valid, err := verifySQLiteSelectionParentChainsAffected(ctx, c, incarnation, next, parentSeeds)
+			valid, err := verifySQLiteSelectionParentChainsScoped(ctx, c, incarnation, next, parentScope)
 			if err != nil {
 				return err
 			}

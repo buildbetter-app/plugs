@@ -165,13 +165,27 @@ func verifySQLiteSelectionParentChains(ctx context.Context, q queryer, incarnati
 // parent move.  The checks inside each affected component are the same closed
 // typed proof as verifySQLiteSelectionParentChains.
 func verifySQLiteSelectionParentChainsAffected(ctx context.Context, q queryer, incarnation, at string, seeds []string) (bool, error) {
-	if len(seeds) == 0 {
+	return verifySQLiteSelectionParentChainsScoped(ctx, q, incarnation, at, selectionParentProofScope{chains: seeds, subtrees: seeds})
+}
+
+// Commit may keep an unchanged-Parent source local to its own chain. Its
+// ancestors are still checked, while true topology changes expand downward
+// first so unchanged descendants cannot carry stale closures across a move.
+func verifySQLiteSelectionParentChainsScoped(ctx context.Context, q queryer, incarnation, at string, scope selectionParentProofScope) (bool, error) {
+	if len(scope.chains) == 0 {
 		return true, nil
 	}
-	values := make([]string, len(seeds))
-	args := make([]any, 0, len(seeds)+40)
-	for i, seed := range seeds {
-		values[i] = "(?)"
+	expand := make(map[string]bool, len(scope.subtrees))
+	for _, seed := range scope.subtrees {
+		expand[seed] = true
+	}
+	values := make([]string, len(scope.chains))
+	args := make([]any, 0, len(scope.chains)+40)
+	for i, seed := range scope.chains {
+		values[i] = "(?,0)"
+		if expand[seed] {
+			values[i] = "(?,1)"
+		}
 		args = append(args, seed)
 	}
 	// Keep the scope values as ordinary predicates instead of a correlated
@@ -187,15 +201,17 @@ func verifySQLiteSelectionParentChainsAffected(ctx context.Context, q queryer, i
 		incarnation, revKey(0), at, at)
 	var bad int
 	err := q.QueryRowContext(ctx, `WITH RECURSIVE
-		seed(record_key) AS (VALUES `+strings.Join(values, ",")+`),
+		seed(record_key,expand) AS (VALUES `+strings.Join(values, ",")+`),
 		descendants(record_key) AS MATERIALIZED (
-			SELECT record_key FROM seed
+			SELECT record_key FROM seed WHERE expand=1
 			UNION
 			SELECT h.child_key FROM hierarchy_source_current h
 			JOIN descendants d ON d.record_key=h.parent_key
 			WHERE h.incarnation=? AND h.branch=?
 		),
 		ancestors(record_key) AS MATERIALIZED (
+			SELECT record_key FROM seed
+			UNION
 			SELECT record_key FROM descendants
 			UNION
 			SELECT h.parent_key FROM hierarchy_source_current h

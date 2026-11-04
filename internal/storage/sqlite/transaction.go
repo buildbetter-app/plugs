@@ -578,6 +578,10 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		if err != nil {
 			return err
 		}
+		parentScope, err := t.prepareSelectionParentProof(ctx, c, meta, sourcePlan.ParentActive && sourcePlan.Parent.Ready)
+		if err != nil {
+			return err
+		}
 		target := meta
 		target.Head = revision
 		if t.restore != nil {
@@ -662,7 +666,7 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 			}
 		}
 		phase.next(CommitPhaseSelection, len(derived))
-		if err = t.publishSelection(ctx, c, meta, revision, derived); err != nil {
+		if err = t.publishSelection(ctx, c, meta, revision, derived, parentScope); err != nil {
 			return err
 		}
 		phase.next(CommitPhaseTail, len(t.bumps)+len(t.allocators)+len(t.parentCounters)+len(t.blobs))

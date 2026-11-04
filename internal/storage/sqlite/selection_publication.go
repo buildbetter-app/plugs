@@ -210,7 +210,7 @@ func (t *transaction) selectionCompleteForCommit(ctx context.Context, c queryer,
 	return true, nil
 }
 
-func (t *transaction) publishSelection(ctx context.Context, c *sql.Conn, current driver.Meta, revision model.Revision, derived map[string]driver.LockState) (err error) {
+func (t *transaction) publishSelection(ctx context.Context, c *sql.Conn, current driver.Meta, revision model.Revision, derived map[string]driver.LockState, parentScope selectionParentProofScope) (err error) {
 	phase := commitPhaseTracker{trace: commitTraceFromContext(ctx)}
 	phase.next(CommitPhaseSelectionPrepare, len(derived))
 	defer func() { phase.finish(err) }()
@@ -348,7 +348,7 @@ func (t *transaction) publishSelection(ctx context.Context, c *sql.Conn, current
 	// Each family retains its prior historical interval if this commit cannot
 	// prove a complete delta, and new typed-first readiness starts only here.
 	phase.next(CommitPhaseSelectionCoverage, len(familyDecisions))
-	return publishSelectionFamilyCoverage(ctx, c, incarnation, revKey(mustUint(current.Head)), next, familyDecisions, t.selectionParentProofSeeds(derived))
+	return publishSelectionFamilyCoverage(ctx, c, incarnation, revKey(mustUint(current.Head)), next, familyDecisions, parentScope)
 }
 
 func (t *transaction) publishSelectionSources(ctx context.Context, c *sql.Conn, incarnation, next string, changedSources map[string]bool) (err error) {
