@@ -231,7 +231,7 @@ func TestDerivedPrefixReaderPreservesOpaqueKeysAndStagedDeletion(t *testing.T) {
 	got, err := r.(driver.DerivedPrefixReader).DerivedRowsForPrefixes(ctx, driver.DerivedAncestorClosure, []string{"raw/\xff/", "raw/\xfe/", "raw/\ufffd/"})
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Key < rows[j].Key })
 	if err != nil || !reflect.DeepEqual(got, rows) {
-		t.Fatalf("opaque rows=%#v err=%v", got, err)
+		t.Fatalf("opaque rows=%+v err=%v", got, err)
 	}
 	tx, _ = beginDerivedPrefixTest(t, s, lease, rows)
 	if err = tx.PutDerived(ctx, driver.DerivedAncestorClosure, rows[:1], nil); err != nil {
@@ -239,7 +239,7 @@ func TestDerivedPrefixReaderPreservesOpaqueKeysAndStagedDeletion(t *testing.T) {
 	}
 	got, err = tx.DerivedRowsForPrefixes(ctx, driver.DerivedAncestorClosure, []string{"raw/"})
 	if err != nil || !reflect.DeepEqual(got, rows[1:]) {
-		t.Fatalf("staged opaque rows=%#v err=%v", got, err)
+		t.Fatalf("staged opaque rows=%+v err=%v", got, err)
 	}
 	if err = tx.Rollback(ctx); err != nil {
 		t.Fatal(err)

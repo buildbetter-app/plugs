@@ -104,6 +104,9 @@ type Config struct {
 	// Mutators optionally installs trusted host bindings on the same Writer as
 	// the fixed checker and event context. Callback resources remain caller-owned.
 	Mutators []pipeline.MutatorBinding
+	// WriterObserver receives the same bounded, non-durable phase telemetry as
+	// pipeline.WithObserver. It must be concurrency-safe and return without I/O.
+	WriterObserver pipeline.Observer
 	// Hierarchy opts into the bounded EP2 create/reparent authorization adapter.
 	// It does not implement hierarchy storage/RPC or relax ordinary #18 writes.
 	// Keep false until the host installs the separately reviewed hierarchy Writer.
@@ -175,6 +178,9 @@ func newWithClock(ctx context.Context, config Config, now func() time.Time) (*Co
 	}
 	ontology := service.NewOntology(nil)
 	options := []pipeline.Option{pipeline.WithOntology(ontology), pipeline.WithAuthorizer(checker), pipeline.WithEventContext(checker), pipeline.WithClock(now)}
+	if config.WriterObserver != nil {
+		options = append(options, pipeline.WithObserver(config.WriterObserver))
+	}
 	if config.Audit != nil {
 		options = append(options, pipeline.WithOntologyAudit(config.Audit))
 	}

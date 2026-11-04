@@ -326,10 +326,15 @@ func requireReadOnlyRestoredFacts(t *testing.T, f *fixture, refs []model.Ref) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		states, err := r.Observe(ctx, []driver.LockKey{{Kind: driver.LockDerived, Derived: &keys.Source}, {Kind: driver.LockReadFact, Fact: acl}})
-		if err != nil || len(states) != 2 {
-			t.Fatal("restored source/control observation:", err)
+		states, err := r.Observe(ctx, []driver.LockKey{{Kind: driver.LockDerived, Derived: &keys.Source}})
+		if err != nil || len(states) != 1 {
+			t.Fatal("restored source observation:", err)
 		}
+		controls, err := r.Observe(ctx, []driver.LockKey{{Kind: driver.LockReadFact, Fact: acl}})
+		if err != nil || len(controls) != 1 {
+			t.Fatal("restored ACL observation:", err)
+		}
+		states = append(states, controls...)
 		sources := make([]driver.SelectionSource, len(states))
 		for i, state := range states {
 			sources[i] = driver.SelectionSource{Key: state.Key, Revision: state.Revision, Present: state.Present}

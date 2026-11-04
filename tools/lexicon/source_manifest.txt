@@ -340,6 +340,8 @@ internal/core/service/heartbeat.go
 internal/core/service/hierarchy-index-consumer-design.md
 internal/core/service/hierarchy_guards.go
 internal/core/service/hierarchy_indexed.go
+internal/core/service/hierarchy_indexed_integration_test.go
+internal/core/service/hierarchy_indexed_overlay_test.go
 internal/core/service/hierarchy_indexed_test.go
 internal/core/service/history.go
 internal/core/service/history_reads_test.go
@@ -1248,6 +1250,7 @@ spec/s1-b01-b04/claim_acceptance_test.go
 spec/s1-b01-b04/clock_boundary_test.go
 spec/s1-b01-b04/fixture_test.go
 spec/s1-b01-b04/manifest.json
+spec/s1-b01-b04/manifest_test.go
 spec/s1-b01-b04/record_reference.py
 spec/s1-b01-b04/recorded_integrity_test.go
 spec/s1-b01-b04/replay_support_test.go
@@ -1330,9 +1333,10 @@ spec/s1-b13-b16/BUILD.bazel
 spec/s1-b13-b16/README.md
 spec/s1-b13-b16/capture_regressions_test.go
 spec/s1-b13-b16/capture_regressions_test.py
+spec/s1-b13-b16/cmd/referencecapture/BUILD.bazel
+spec/s1-b13-b16/cmd/referencecapture/reference_capture_main.go
 spec/s1-b13-b16/record_reference.py
 spec/s1-b13-b16/reference_capture.py
-spec/s1-b13-b16/reference_capture_main.go
 spec/s1-b13-b16/slice_test.go
 spec/s1-b17-b20/BUILD.bazel
 spec/s1-b17-b20/README.md
