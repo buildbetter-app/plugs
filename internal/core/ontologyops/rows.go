@@ -226,7 +226,7 @@ func (r rowSource) Observe(ctx context.Context, inventory ontologymigration.Inve
 		case "blocks", "conditional-blocks":
 			blocker, exists := graph.docs[link.To.ID]
 			satisfied := false
-			if exists && link.To.IsID() && link.To.Branch.IsZero() {
+			if link.TargetKind != model.LinkTargetExternal && exists && link.To.IsID() && link.To.Branch.IsZero() {
 				e := r.candidate.Effective(blocker.Project)
 				status, _ := blocker.Fields["status"].(string)
 				satisfied = e.SatisfiesBlocks(status)
