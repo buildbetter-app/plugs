@@ -34,7 +34,7 @@ func parentID(parent *model.Ref) string {
 
 // HierarchyParent resolves Parent and a single legacy parent-child link without
 // rewriting stored bytes. Both forms may be present when they name the same
-// validated canonical parent.
+// validated canonical parent. Explicit external edges never enter hierarchy.
 func HierarchyParent(doc Document) (*model.Ref, error) {
 	parent := doc.Parent
 	if err := validateParent(parent); err != nil {
@@ -43,6 +43,13 @@ func HierarchyParent(doc Document) (*model.Ref, error) {
 	legacyParentSeen := false
 	for _, link := range doc.Links {
 		if link.Kind != "parent-child" {
+			continue
+		}
+		targetKind, err := link.TargetKind.Normalized()
+		if err != nil {
+			return nil, failure("invalid_params", err.Error())
+		}
+		if targetKind == model.LinkTargetExternal {
 			continue
 		}
 		if err := validateParent(&link.To); err != nil {
@@ -76,7 +83,7 @@ func (p *prepared) resolveParent(ctx context.Context, parent *model.Ref, aliases
 				return nil, err
 			}
 			for _, link := range node.doc.Links {
-				if link.Kind == "parent-child" {
+				if link.Kind == "parent-child" && (link.TargetKind == "" || link.TargetKind == model.LinkTargetLocal) {
 					return nil, failure("invalid_params", "detach conflicts with retained legacy parent")
 				}
 			}
