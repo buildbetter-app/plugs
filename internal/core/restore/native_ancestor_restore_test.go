@@ -602,3 +602,74 @@ func TestNativeRestoreRejectsUnrelatedInvalidGraphBeforeWrite(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeRestoreOnlyCertifiesTypedNonemptySourceGraphs(t *testing.T) {
+	ctx := context.Background()
+	for _, mode := range []string{"empty", "ontology-only", "typed-bead", "untyped-bead"} {
+		t.Run(mode, func(t *testing.T) {
+			source := memory.New()
+			defer source.Close()
+			if mode == "ontology-only" {
+				ref, body := nativeOntologySource(t, false)
+				seedNativeOntology(t, source, conformance.FixtureChange{Ref: ref, Kind: "ontology", Op: model.OpCreate, Body: body})
+			} else if mode != "empty" {
+				seedNativeOntology(t, source, conformance.FixtureChange{Ref: model.Ref{ID: "pl-source"}, Kind: "bead", Op: model.OpCreate, Body: []byte(`{"id":"pl-source","type":"issue","fields":{}}`)})
+			}
+			data, _, err := restore.Dump(ctx, source, "head")
+			if err != nil {
+				t.Fatal(err)
+			}
+			archive, err := dumpformat.Read(bytes.NewReader(data))
+			if err != nil {
+				t.Fatal(err)
+			}
+			manifest, hash := manifestForRestore(t, archive)
+			base := memory.New()
+			defer base.Close()
+			var target driver.Store = base
+			if mode == "untyped-bead" {
+				// This supported legacy restore wrapper deliberately exposes no
+				// GraphSourceWriter, so core falls back to untyped publication.
+				target = &nativeRestoreFaultStore{Store: base}
+			}
+			lease, err := target.Lease(ctx, "certificate-restore", driver.LeaseTTL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer lease.Release(ctx)
+			manager := restore.NewManager(target, lease, trustedPresenceVerifier())
+			status, err := manager.Begin(ctx, manifest, "head", restore.Presence(presence))
+			if err != nil {
+				t.Fatal(err)
+			}
+			uploadManagerArchive(t, ctx, manager, status.RestoreID, data, restore.Presence(presence))
+			status, err = manager.Finish(ctx, status.RestoreID, hash, model.PrincipalRef{Kind: "user", ID: "operator"}, model.WriteMeta{Method: "admin.restore.finish", IdempotencyKey: "certificate-" + mode}, restore.Presence(presence))
+			if err != nil || status.State != "complete" {
+				t.Fatalf("restore=%+v err=%v", status, err)
+			}
+			assertCertificate := func() {
+				t.Helper()
+				r, err := base.Read(ctx, driver.View{Incarnation: status.Incarnation})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer r.Close()
+				states, err := r.Observe(ctx, []driver.LockKey{pipeline.GraphValidityLockKey(), driver.GraphBlockingSentinelLock})
+				if err != nil || len(states) != 2 {
+					t.Fatalf("certificate observations=%+v err=%v", states, err)
+				}
+				want := mode == "typed-bead"
+				if states[0].Present != want || want && (!states[1].Present || states[0].Revision.String() != states[1].Revision.String()) {
+					t.Fatalf("mode=%s semantic certificate=%+v", mode, states)
+				}
+			}
+			assertCertificate()
+			if mode != "typed-bead" {
+				if err := pipeline.BuildSourceIndexes(ctx, base, lease); err != nil {
+					t.Fatal(err)
+				}
+				assertCertificate()
+			}
+		})
+	}
+}

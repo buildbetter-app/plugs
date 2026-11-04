@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/conformance"
@@ -152,4 +153,40 @@ func TestGraphValidityCertificateMaintainedByValidatedWrites(t *testing.T) {
 	apply(t, w, model.ChangeSet{Ops: []model.Op{patch(child, map[string]any{"title": "unvalidated"})}}, meta(206))
 	assertCertificate(false)
 
+}
+
+// Field-only writes preserve any valid graph, not just the pre-read graph.
+// An unrelated committed root create between preparation and Lock must not
+// consume a stale-snapshot retry or unnecessarily invalidate the certificate.
+func TestGraphCertificatePreservationUsesSerializedGraph(t *testing.T) {
+	h := setup(t)
+	other := h.writer()
+	created := apply(t, other, model.ChangeSet{Ops: []model.Op{create("parent"), create("child")}}, meta(300))
+	parent, child := created.Results[0].Ref, created.Results[1].Ref
+	apply(t, other, model.ChangeSet{Ops: []model.Op{{Kind: model.OpReparent, Reparent: &model.ReparentOp{Target: child, Parent: &parent}}}}, meta(301))
+	store := &certificateInterferenceStore{Store: h.store}
+	store.interfere = func() {
+		apply(t, other, model.ChangeSet{Ops: []model.Op{create("unrelated")}}, meta(310+store.writes))
+	}
+	writer := New(store, h.lease, WithOntology(testOntology{}), WithClock(func() time.Time { return h.now }))
+	apply(t, writer, model.ChangeSet{Ops: []model.Op{patch(parent, map[string]any{"title": "serialized"})}}, meta(302))
+	if store.writes != 1 {
+		t.Fatalf("source-preserving write retried on an unrelated graph change: attempts=%d", store.writes)
+	}
+	states, err := h.read(t).Observe(context.Background(), []driver.LockKey{GraphValidityLockKey(), driver.GraphBlockingSentinelLock})
+	if err != nil || len(states) != 2 || !currentGraphCertificate(states) {
+		t.Fatalf("serialized write lost the current semantic certificate: %+v err=%v", states, err)
+	}
+}
+
+type certificateInterferenceStore struct {
+	driver.Store
+	interfere func()
+	writes    int
+}
+
+func (s *certificateInterferenceStore) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
+	s.writes++
+	s.interfere()
+	return s.Store.Write(ctx, lease)
 }

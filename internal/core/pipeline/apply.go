@@ -458,7 +458,7 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	if p.hierarchyDelta != nil {
 		allocatorKeys = append(allocatorKeys, p.hierarchyDelta.locks...)
 	}
-	if p.graphValidated && len(writes) != 0 {
+	if (p.graphValidated || p.graphPreserved) && len(writes) != 0 {
 		allocatorKeys = append(allocatorKeys, GraphValidityLockKey())
 	}
 	locks, err := p.snapshot.locks(writes, sentinels, allocatorKeys...)
@@ -621,7 +621,8 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	if err := tx.BumpSentinels(ctx, sentinels); err != nil {
 		return model.Commit{}, err
 	}
-	if p.graphValidated && len(writes) != 0 {
+	graphValidated := p.graphValidated || p.graphPreserved && currentGraphCertificate(states)
+	if graphValidated && len(writes) != 0 {
 		if err := tx.BumpReadFacts(ctx, []driver.ReadFact{GraphValidityReadFact}); err != nil {
 			return model.Commit{}, err
 		}

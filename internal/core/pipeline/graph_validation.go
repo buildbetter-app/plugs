@@ -25,7 +25,24 @@ func (p *prepared) graphIsCertified(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return states[0].Present && states[1].Present && !states[1].Revision.IsZero() && states[0].Revision.String() == states[1].Revision.String(), nil
+	return currentGraphCertificate(states), nil
+}
+
+// This accepts either the pinned two-key observation or the complete acquired
+// lock set. On the preserving path both keys are update-locked, so their state
+// at Lock remains authoritative through Head and publication without another
+// reader overlay or a dependency on the older pre-read graph revision.
+func currentGraphCertificate(states []driver.LockState) bool {
+	var certificate, graph driver.LockState
+	for _, state := range states {
+		if state.Key.Kind == driver.LockReadFact && state.Key.Fact == GraphValidityReadFact {
+			certificate = state
+		}
+		if state.Key.Kind == driver.LockSentinel && state.Key.Sentinel == driver.SentinelGraphBlocking {
+			graph = state
+		}
+	}
+	return certificate.Present && graph.Present && !graph.Revision.IsZero() && certificate.Revision.String() == graph.Revision.String()
 }
 
 // A certificate also needs the active typed-write fence. Otherwise a legacy

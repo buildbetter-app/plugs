@@ -81,6 +81,7 @@ type prepared struct {
 	hierarchyDelta    *hierarchyDelta
 	hierarchySources  *hierarchySources
 	graphValidated    bool
+	graphPreserved    bool
 	checkpointReads   map[string]uint64
 }
 
@@ -1372,10 +1373,11 @@ func (p *prepared) graph(ctx context.Context) error {
 		}
 	}
 	if !need {
-		// Source-preserving writes and isolated root creates can maintain an
-		// existing certificate, but never establish global validity themselves.
-		p.graphValidated, err = p.graphIsCertified(ctx)
-		return err
+		// These operations preserve any valid graph, including one advanced by
+		// unrelated writers. Consult its certificate only after acquiring the
+		// publication locks, not as an unnecessary whole-graph pre-read fact.
+		p.graphPreserved = true
+		return nil
 	}
 	if docs == nil {
 		indexed, err := p.observeIndexedGraphIncoming(ctx)
