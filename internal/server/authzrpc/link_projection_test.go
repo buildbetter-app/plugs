@@ -22,7 +22,7 @@ func TestOrdinaryLinkProjectionUsesCurrentTargetAuthority(t *testing.T) {
 		}
 		var changes []conformance.FixtureChange
 		for _, ref := range []model.Ref{source, hidden, visible} {
-			body := map[string]any{"id": ref.ID, "type": "issue", "project": "project", "fields": map[string]any{"title": "link projection", "status": "todo", "priority": 0}}
+			body := map[string]any{"id": ref.ID, "type": "issue", "project": "project", "createdAt": "2026-11-03T00:00:00Z", "fields": map[string]any{"title": "link projection", "status": "todo", "priority": 0}}
 			if ref.ID == source.ID {
 				body["links"] = links
 			}
