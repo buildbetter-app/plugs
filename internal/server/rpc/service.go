@@ -62,6 +62,7 @@ type MemoryService interface {
 }
 
 type serviceParams struct {
+	TargetKind   model.LinkTargetKind           `json:"targetKind"`
 	ID           json.RawMessage                `json:"id"`
 	Ref          model.Ref                      `json:"ref"`
 	AsOf         *asOf                          `json:"asOf"`
@@ -427,10 +428,10 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 				return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
 			}
 		}
-		v, err := svc.LinkWithOutcome(ctx, c.Principal, service.LinkRequest{From: p.From, To: p.To, Kind: p.Kind, Metadata: metadata, Expect: p.Expect}, meta)
+		v, err := svc.LinkWithOutcome(ctx, c.Principal, service.LinkRequest{From: p.From, To: p.To, TargetKind: p.TargetKind, Kind: p.Kind, Metadata: metadata, Expect: p.Expect}, meta)
 		return writeOutcome(v), err
 	case "bead.unlink":
-		v, err := svc.UnlinkWithOutcome(ctx, c.Principal, service.LinkRequest{From: p.From, To: p.To, Kind: p.Kind, Expect: p.Expect}, meta)
+		v, err := svc.UnlinkWithOutcome(ctx, c.Principal, service.LinkRequest{From: p.From, To: p.To, TargetKind: p.TargetKind, Kind: p.Kind, Expect: p.Expect}, meta)
 		return writeOutcome(v), err
 	case "tx.apply":
 		v, err := svc.ApplyWithOutcome(ctx, c.Principal, p.ChangeSet, meta)
