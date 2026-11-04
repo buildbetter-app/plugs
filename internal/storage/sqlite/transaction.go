@@ -39,6 +39,9 @@ type transaction struct {
 	// exists for a first lifetime, so Commit can avoid re-counting that row.
 	// Existing and tombstoned rows keep the scalar COUNT(*) path.
 	recordStates map[string]driver.LockState
+	// recordKindStmt preserves the scalar kind validation in source staging
+	// while avoiding database/sql prepare/finalize work for every record.
+	recordKindStmt *sql.Stmt
 	// Lock batches retain only unambiguous first-lifetime observations. The
 	// cache is used for ordinary record-only writes; selection producers keep
 	// their scalar observation count and ordering.
@@ -100,6 +103,10 @@ func (t *transaction) finish() {
 		return
 	}
 	t.closed = true
+	if t.recordKindStmt != nil {
+		_ = t.recordKindStmt.Close()
+		t.recordKindStmt = nil
+	}
 	_ = t.tx.Rollback()
 	t.tx = nil
 	releaseGuards(t.guards)
@@ -125,6 +132,19 @@ func (t *transaction) finish() {
 	t.invalidateReadyOrderPublication()
 	t.store.untrack(t)
 	close(t.done)
+}
+
+func (t *transaction) recordKind(ctx context.Context, id string) (string, error) {
+	if t.recordKindStmt == nil {
+		statement, err := t.tx.PrepareContext(ctx, `SELECT kind FROM objects WHERE key=?`)
+		if err != nil {
+			return "", err
+		}
+		t.recordKindStmt = statement
+	}
+	var kind string
+	err := t.recordKindStmt.QueryRowContext(ctx, id).Scan(&kind)
+	return kind, err
 }
 func (t *transaction) Close() error { return t.Rollback(context.Background()) }
 func (t *transaction) Rollback(context.Context) error {

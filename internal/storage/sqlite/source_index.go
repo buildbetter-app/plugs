@@ -75,8 +75,7 @@ func (t *transaction) putSourceRecord(ctx context.Context, record driver.Record,
 	if record.Kind == "" || !json.Valid(record.Body) {
 		return fmt.Errorf("sqlite: kind and valid JSON body required")
 	}
-	var kind string
-	err = t.tx.QueryRowContext(ctx, `SELECT kind FROM objects WHERE key=?`, id).Scan(&kind)
+	kind, err := t.recordKind(ctx, id)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
