@@ -419,6 +419,95 @@ func TestStrictConfigUnionNativeObservationEnvelope(t *testing.T) {
 	}
 }
 
+func TestStrictConfigUnionNativeCommentOnlyYAML(t *testing.T) {
+	for _, control := range []string{
+		"comments", "empty", "whitespace", "yml", "substantive", "scalar", "document marker",
+		"JSON", "NUL", "invalid UTF8", "control character", "hash", "size", "bytes",
+		"duplicate path", "null parsed values", "non-object parsed values",
+		"CR comments", "CRLF comments", "CR substantive", "CRLF substantive",
+		"Unicode next line", "Unicode line separator", "Unicode paragraph separator",
+	} {
+		t.Run(control, func(t *testing.T) {
+			f := strictUnionFixture(t, "", nil)
+			raw, configPath := []byte("# Native defaults\n  # issue-prefix: example\n\n"), "/synthetic/.beads/config.yaml"
+			wantOK := control == "comments" || control == "empty" || control == "whitespace" || control == "yml" || control == "CR comments" || control == "CRLF comments"
+			switch control {
+			case "empty":
+				raw = nil
+			case "whitespace":
+				raw = []byte(" \t\r\n \n")
+			case "yml":
+				configPath = "/synthetic/.beads/config.yml"
+			case "substantive":
+				raw = []byte("# defaults\nstatus:\n  custom: [queued:active]\n")
+			case "scalar":
+				raw = []byte("null\n")
+			case "document marker":
+				raw = []byte("---\n# defaults\n")
+			case "JSON":
+				configPath, raw = "/synthetic/.beads/config.json", []byte("{}\n")
+			case "NUL":
+				raw = []byte("# defaults\x00\n")
+			case "invalid UTF8":
+				raw = []byte{'#', ' ', 0xff, '\n'}
+			case "control character":
+				raw = []byte("# defaults\x01\n")
+			case "CR comments":
+				raw = []byte("# defaults\r  # issue-prefix: example\r \t\r")
+			case "CRLF comments":
+				raw = []byte("# defaults\r\n  # issue-prefix: example\r\n")
+			case "CR substantive":
+				raw = []byte("# defaults\rstatus:\r  custom: [queued:active]\r")
+			case "CRLF substantive":
+				raw = []byte("# defaults\r\nstatus:\r\n  custom: [queued:active]\r\n")
+			case "Unicode next line":
+				raw = []byte("# defaults\u0085status: active\n")
+			case "Unicode line separator":
+				raw = []byte("# defaults\u2028status: active\n")
+			case "Unicode paragraph separator":
+				raw = []byte("# defaults\u2029status: active\n")
+			}
+			observation := map[string]any{
+				"path": configPath, "state": "file", "sha256": digest(raw), "size": len(raw),
+				"bytes": map[string]any{"$bytes": base64.StdEncoding.EncodeToString(raw)},
+			}
+			switch control {
+			case "hash":
+				observation["sha256"] = strings.Repeat("0", 64)
+			case "size":
+				observation["size"] = len(raw) + 1
+			case "bytes":
+				observation["bytes"] = map[string]any{"$bytes": "bad!"}
+			case "null parsed values":
+				observation["values"] = nil
+			case "non-object parsed values":
+				observation["values"] = false
+			}
+			observations := []any{observation}
+			if control == "duplicate path" {
+				observations = append(observations, observation)
+			}
+			setUnionYAML(f, map[string]any{"observations": observations})
+			a, err := Read(bytes.NewReader(strictUnionBytes(t, f, nil)))
+			if !wantOK {
+				var refused *MigrationRefusal
+				if a != nil || !errors.As(err, &refused) || refused.Code != "malformed-declaration" {
+					t.Fatalf("unparsed configuration/envelope admitted: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			migration, _ := a.ImportMigration()
+			retained, _ := a.Member("config/sources.json")
+			if len(migration.Declarations()) != 0 || !bytes.Contains(retained, []byte(base64.StdEncoding.EncodeToString(raw))) {
+				t.Fatal("empty configuration invented declarations or lost captured bytes")
+			}
+		})
+	}
+}
+
 func TestStrictConfigUnionOpaqueDirectoryProvenance(t *testing.T) {
 	for _, control := range []string{
 		"config file", "empty YAML object", "empty JSON object",

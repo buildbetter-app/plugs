@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"path"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Native capture retains both parsed source values and the exact byte envelope.
@@ -88,6 +90,12 @@ func declarationsFromSource(values map[string]any, family, origin string) ([]Con
 			if !present && ext != ".yaml" && ext != ".yml" && ext != ".json" {
 				return nil
 			}
+			// The native initializer writes a comments-only YAML template. Its
+			// capture has no parsed map; verify the retained, byte-bound content
+			// contains no configuration before admitting that exact empty case.
+			if !present && (ext == ".yaml" || ext == ".yml") && commentOnlyYAML(data) {
+				return nil
+			}
 			object, ok := parsed.(map[string]any)
 			if !ok {
 				return migrationRefusal("malformed-declaration", name, entry, "missing parsed configuration")
@@ -108,4 +116,27 @@ func declarationsFromSource(values map[string]any, family, origin string) ([]Con
 		}
 	}
 	return result, nil
+}
+
+func commentOnlyYAML(data []byte) bool {
+	if !utf8.Valid(data) {
+		return false
+	}
+	for _, r := range string(data) {
+		// Refuse Unicode YAML line separators rather than treating content
+		// following one as part of a comment.
+		if r == '\u0085' || r == '\u2028' || r == '\u2029' {
+			return false
+		}
+		if unicode.IsControl(r) && r != '\t' && r != '\r' && r != '\n' {
+			return false
+		}
+	}
+	for _, line := range strings.FieldsFunc(string(data), func(r rune) bool { return r == '\r' || r == '\n' }) {
+		line = strings.Trim(line, " \t")
+		if line != "" && !strings.HasPrefix(line, "#") {
+			return false
+		}
+	}
+	return true
 }

@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 )
 
 var publicBeadsRuntime = flag.Bool("public-beads-runtime", false, "Require the independently delivered public Beads artifact")
@@ -60,6 +62,12 @@ func TestPublicBeadsArtifactReimportThreeEngines(t *testing.T) {
 				}
 				t.Logf("PUBLIC_BEADS_REIMPORT_OUTCOME %s", encoded)
 				commands := logPublicBeadsCommands(t, output)
+				if got.Reason == "beads_raw_readback_invalid" {
+					// Retain the actual reader refusal before the owned workspace
+					// is removed, without exposing it through the public CLI.
+					_, readErr := dumpformat.ReadFile(filepath.Join(output, "beads-raw-readback.tar"))
+					t.Logf("PUBLIC_BEADS_RAW_READBACK_REFUSAL %v", readErr)
+				}
 				if got.Status != "PASS" || got.Stage != "public_snapshot_roundtrip_complete" || got.Reason != "" || got.BeadsReimport != "PASS" || got.BeadsReadback != "PASS" || got.BeadsReadbackSHA256 == "" {
 					t.Fatalf("actual import and native readback: %+v", got)
 				}
