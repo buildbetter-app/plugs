@@ -1,0 +1,463 @@
+package s1b01b04
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"path/filepath"
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/ontology"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+)
+
+// Each category mapping is declared independently of either observed result.
+// Native custom active maps to Plug unstarted; wip maps to started, done to
+// completed, and frozen/pinned to backlog. This does not inject a native clock.
+type nativeMembershipStep struct {
+	Name, Method, Role, NativeStatus, PlugStatus, Refusal string
+	Ready                                                 []string
+}
+
+func nativeMembershipSteps() []nativeMembershipStep {
+	withoutFree := []string{"parent", "child", "grandchild"}
+	return []nativeMembershipStep{
+		{"status-pinned", "status", "free", "pinned", "backlog", "", withoutFree},
+		{"status-started", "status", "free", "in_progress", "in_progress", "", withoutFree},
+		{"status-active", "status", "free", "b01active", "b01active", "", nativeRoles},
+		{"status-wip", "status", "free", "b01wip", "b01wip", "", withoutFree},
+		{"status-done", "status", "free", "b01done", "b01done", "", withoutFree},
+		{"status-frozen", "status", "free", "b01frozen", "b01frozen", "", withoutFree},
+		{"status-closed", "close", "free", "closed", "done", "", withoutFree},
+		{"status-open", "reopen", "free", "open", "todo", "", nativeRoles},
+		{"status-deferred", "defer", "free", "deferred", "backlog", "", withoutFree},
+		{"status-resumed", "resume", "free", "open", "todo", "", nativeRoles},
+		{"close-parent-refused", "close", "parent", "open", "todo", "open child issue(s); close children first", nativeRoles},
+		{"direct-leaf-blocked", "link", "grandchild", "open", "todo", "", []string{"parent", "child", "free"}},
+		{"close-blocked-leaf-refused", "close", "grandchild", "open", "todo", "cannot close blocked issue", []string{"parent", "child", "free"}},
+		{"direct-leaf-unblocked", "unlink", "grandchild", "open", "todo", "", nativeRoles},
+		{"ancestor-blocked", "link", "parent", "open", "todo", "", []string{"free"}},
+		{"close-under-blocked-ancestor", "close", "grandchild", "closed", "done", "", []string{"free"}},
+		{"repeat-close-under-blocked-ancestor", "close", "grandchild", "closed", "done", "", []string{"free"}},
+		{"reopen-under-blocked-ancestor", "reopen", "grandchild", "open", "todo", "", []string{"free"}},
+		{"ancestor-unblocked", "unlink", "parent", "open", "todo", "", nativeRoles},
+	}
+}
+
+type nativeMembershipNode struct {
+	ID, Title, Status string
+	Priority          int
+	Parent            string
+}
+
+type nativeMembershipPhase struct {
+	Nodes        map[string]nativeMembershipNode
+	Ready        []string
+	TypeAll      []string
+	TypeEmpty    []string
+	ExplainReady []nativeExplained
+	TotalReady   int
+	TotalBlocked int
+}
+
+func recordNativeMembership(t *testing.T, c *nativeCommand, vector nativeVector) map[string]nativeMembershipPhase {
+	t.Helper()
+	c.run("membership-config", "config", "set", "status.custom", "b01active:active,b01wip:wip,b01done:done,b01frozen:frozen")
+	phases := map[string]nativeMembershipPhase{}
+	for _, step := range nativeMembershipSteps() {
+		if !t.Run("membership/"+step.Name, func(t *testing.T) {
+			c.t = t
+			before := nativeMembershipShows(t, c, vector, step.Name+"-before")
+			id := vector.SourceIDs[step.Role]
+			var args []string
+			switch step.Method {
+			case "status":
+				args = []string{"update", id, "--status", step.NativeStatus, "--json"}
+			case "resume":
+				args = []string{"update", id, "--status", "open", "--defer", "", "--json"}
+			case "link":
+				args = []string{"dep", "add", id, vector.SourceIDs["free"], "--type", "blocks", "--json"}
+			case "unlink":
+				args = []string{"dep", "remove", id, vector.SourceIDs["free"], "--json"}
+			case "defer":
+				args = []string{"defer", id, "--reason", "native category control", "--json"}
+			default:
+				args = []string{step.Method, id, "--json"}
+			}
+			if step.Refusal != "" {
+				c.refuse("membership-"+step.Name, step.Refusal, args...)
+			} else {
+				c.run("membership-"+step.Name, args...)
+			}
+			phase := nativeMembershipPhase{Nodes: map[string]nativeMembershipNode{}}
+			after := nativeMembershipShows(t, c, vector, step.Name+"-after")
+			for _, role := range nativeRoles {
+				var issues []struct {
+					ID, Title, Status string
+					Priority          int
+					Parent            *string
+				}
+				nativeDecode(t, after[role], &issues)
+				if len(issues) != 1 || issues[0].ID != vector.SourceIDs[role] {
+					t.Fatal("category show lost exact native identity")
+				}
+				v := issues[0]
+				parent := ""
+				if v.Parent != nil {
+					parent = *v.Parent
+				}
+				phase.Nodes[role] = nativeMembershipNode{v.ID, v.Title, v.Status, v.Priority, parent}
+				if role != step.Role {
+					var prior []struct {
+						ID, Title, Status string
+						Priority          int
+						Parent            *string
+					}
+					nativeDecode(t, before[role], &prior)
+					if len(prior) != 1 || prior[0].ID != v.ID || prior[0].Title != v.Title || prior[0].Status != v.Status || prior[0].Priority != v.Priority || !reflect.DeepEqual(prior[0].Parent, v.Parent) {
+						t.Fatal("native write changed unrelated identity/title/status/priority/parent")
+					}
+				}
+				if (step.Refusal != "" || step.Name == "repeat-close-under-blocked-ancestor") && !bytes.Equal(before[role], after[role]) {
+					t.Fatalf("%s changed refused/settled native %s show bytes", step.Name, role)
+				}
+			}
+			if phase.Nodes[step.Role].Status != step.NativeStatus {
+				t.Fatalf("native status=%s want=%s", phase.Nodes[step.Role].Status, step.NativeStatus)
+			}
+			phase.Ready = nativeMembershipReady(t, c, "membership-"+step.Name)
+			phase.TypeAll = nativeMembershipReady(t, c, "membership-"+step.Name+"-type-task", "--type", "task")
+			phase.TypeEmpty = nativeMembershipReady(t, c, "membership-"+step.Name+"-type-bug", "--type", "bug")
+			want := make([]string, 0, len(step.Ready))
+			for _, role := range step.Ready {
+				want = append(want, vector.SourceIDs[role])
+			}
+			if !reflect.DeepEqual(phase.Ready, want) || !reflect.DeepEqual(phase.TypeAll, want) || len(phase.TypeEmpty) != 0 {
+				t.Fatalf("actual category/type membership differs: %+v want=%v", phase, want)
+			}
+			var explanation struct {
+				Ready   []nativeExplained
+				Blocked []nativeBlocked
+				Summary struct {
+					Ready   *int `json:"total_ready"`
+					Blocked *int `json:"total_blocked"`
+				}
+			}
+			data := c.run("membership-"+step.Name+"-explain", "ready", "--json", "--sort", "hybrid", "--explain", "--limit", "0")
+			nativeDecode(t, data, &explanation)
+			if explanation.Summary.Ready == nil || explanation.Summary.Blocked == nil || *explanation.Summary.Ready != len(explanation.Ready) || *explanation.Summary.Blocked != len(explanation.Blocked) {
+				t.Fatal("category explain totals disagree with original arrays")
+			}
+			var explained []string
+			for _, v := range explanation.Ready {
+				if v.Reason == "" {
+					t.Fatal("category explain omitted its reason")
+				}
+				explained = append(explained, v.ID)
+			}
+			if !reflect.DeepEqual(explained, want) {
+				t.Fatal("category explain differs from unbounded actual membership")
+			}
+			phase.ExplainReady, phase.TotalReady, phase.TotalBlocked = explanation.Ready, *explanation.Summary.Ready, *explanation.Summary.Blocked
+			phases[step.Name] = phase
+			nativeJSON(t, filepath.Join(c.output, "membership-"+step.Name+"-projection.json"), phase)
+			t.Logf("B01_NATIVE_MEMBERSHIP phase=%s vector=%s ready=%v", step.Name, vector.ID, phase.Ready)
+		}) {
+			c.t = t
+			t.Fatalf("native membership %s failed; originals retained", step.Name)
+		}
+		c.t = t
+	}
+	return phases
+}
+
+func nativeMembershipShows(t *testing.T, c *nativeCommand, vector nativeVector, label string) map[string][]byte {
+	t.Helper()
+	rows := map[string][]byte{}
+	for _, role := range nativeRoles {
+		rows[role] = c.run("membership-"+label+"-show-"+role, "show", vector.SourceIDs[role], "--json")
+	}
+	return rows
+}
+
+func nativeMembershipReady(t *testing.T, c *nativeCommand, label string, filters ...string) []string {
+	t.Helper()
+	args := append([]string{"ready", "--json", "--sort", "hybrid", "--limit", "0"}, filters...)
+	var rows []struct{ ID string }
+	nativeDecode(t, c.run(label, args...), &rows)
+	ids := []string{}
+	seen := map[string]bool{}
+	for _, row := range rows {
+		if row.ID == "" || seen[row.ID] {
+			t.Fatal("native membership has an empty or duplicate identity")
+		}
+		seen[row.ID] = true
+		ids = append(ids, row.ID)
+	}
+	return ids
+}
+
+func (r *nativeReplay) replayMembershipContinuations(capture nativeCapture) {
+	base := ontology.DefaultDocument()
+	workflow := base.Workflows["issue"]
+	for name, status := range map[string]ontology.Status{
+		"b01active": {Name: "B01 active", Category: ontology.Unstarted},
+		"b01wip":    {Name: "B01 work in progress", Category: ontology.Started},
+		"b01done":   {Name: "B01 completed", Category: ontology.Completed, Outcome: ontology.Success},
+		"b01frozen": {Name: "B01 frozen", Category: ontology.Backlog},
+	} {
+		base.Statuses[name] = status
+		workflow.Statuses = append(workflow.Statuses, name)
+	}
+	base.Workflows["issue"] = workflow
+	compiled, problems := ontology.Compile(base, nil, nil)
+	if len(problems) != 0 {
+		r.f.t.Fatalf("explicit category ontology: %+v", problems)
+	}
+	r.f.ontology.Refresh(compiled)
+	parent := r.f.t
+	for _, step := range nativeMembershipSteps() {
+		if !parent.Run("membership/"+step.Name, func(t *testing.T) {
+			r.f.t = t
+			defer func() { r.f.t = parent }()
+			observed, ok := capture.Membership[step.Name]
+			if !ok || len(observed.Nodes) != len(nativeRoles) {
+				t.Fatal("missing genuine native membership phase")
+			}
+			before := r.snapshot()
+			beforeDocs := map[string]json.RawMessage{}
+			for _, role := range nativeRoles {
+				beforeDocs[role] = nativeDocumentBytes(t, r.rawHierarchyDocument("membership-"+step.Name+"-before", role))
+			}
+			method := "bead." + step.Method
+			params := map[string]any{"id": r.refs[step.Role]}
+			switch step.Method {
+			case "status":
+				method, params = "bead.update", map[string]any{"id": r.refs[step.Role], "fields": map[string]any{"status": step.PlugStatus}}
+			case "resume":
+				method = "bead.reopen"
+			case "link", "unlink":
+				params = map[string]any{"from": r.refs[step.Role], "to": r.refs["free"], "kind": "blocks"}
+			case "defer":
+				params["reason"] = "native category control"
+			}
+			if step.Refusal != "" {
+				r.refuseMembership("membership-"+step.Name, method, params, "ontology_guard_failed")
+				if !bytes.Equal(before, r.snapshot()) {
+					t.Fatal("refused close changed complete source/derived/history/receipt state")
+				}
+			} else {
+				commit := r.write("membership-"+step.Name, method, params)
+				if step.Name == "repeat-close-under-blocked-ancestor" {
+					r.assertMembershipSettlement(before, commit)
+				} else {
+					r.assertHierarchyWrite("membership-"+step.Name, step.Role, before, commit)
+				}
+			}
+			for _, role := range nativeRoles {
+				after := r.rawHierarchyDocument("membership-"+step.Name+"-after", role)
+				if role != step.Role || step.Refusal != "" || step.Name == "repeat-close-under-blocked-ancestor" {
+					if !bytes.Equal(beforeDocs[role], nativeDocumentBytes(t, after)) {
+						t.Fatal("category write changed unrelated/refused/settled document")
+					}
+				} else {
+					var prior map[string]any
+					nativeDecode(t, beforeDocs[role], &prior)
+					current := map[string]any{}
+					nativeDecode(t, nativeDocumentBytes(t, after), &current)
+					// The operation may only change its status/lifecycle fields,
+					// defer reason comment, or its explicit blocks edge.
+					if step.Method == "link" || step.Method == "unlink" {
+						delete(prior, "links")
+						delete(current, "links")
+					} else {
+						delete(prior["fields"].(map[string]any), "status")
+						delete(current["fields"].(map[string]any), "status")
+						if step.Method == "defer" {
+							delete(prior, "comments")
+							delete(current, "comments")
+						}
+						for _, key := range []string{"startedAt", "closedAt"} {
+							delete(prior, key)
+							delete(current, key)
+						}
+					}
+					if !reflect.DeepEqual(prior, current) {
+						t.Fatalf("%s changed non-target fields/project/type/identity", step.Name)
+					}
+				}
+			}
+			for _, suffix := range []string{"", "-reopened"} {
+				if suffix != "" {
+					if r.f.backend == "memory" {
+						break
+					}
+					first := r.call("membership-"+step.Name+"-reopen-first", "bead.ready", map[string]any{"limit": 1}, false)
+					if len(step.Ready) > 1 {
+						if cursor, _ := first["nextCursor"].(string); cursor == "" {
+							t.Fatal("membership multirow result lacks its real signed cursor")
+						}
+					}
+					r.reopen("membership-" + step.Name)
+					if !reflect.DeepEqual(r.drain("membership-"+step.Name+"-across-reopen", first), r.wantIDs(step.Ready)) {
+						t.Fatal("membership signed cursor changed across physical SQL reopen")
+					}
+				}
+				r.observeMembership(capture, step, observed, "membership-"+step.Name+suffix)
+			}
+			t.Logf("B01_NATIVE_MEMBERSHIP_REPLAY phase=%s engine=%s roles=%v", step.Name, r.f.backend, step.Ready)
+		}) {
+			parent.Fatalf("membership replay %s failed; originals retained", step.Name)
+		}
+	}
+}
+
+func nativeDocumentBytes(t *testing.T, doc any) []byte {
+	t.Helper()
+	b, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func (r *nativeReplay) observeMembership(capture nativeCapture, step nativeMembershipStep, observed nativeMembershipPhase, label string) {
+	before, epoch := r.snapshot(), r.f.lease.Epoch()
+	nativeWrite(r.f.t, filepath.Join(r.output, label+"-state-before.json"), before)
+	for _, role := range nativeRoles {
+		value := r.call(label+"-get-"+role, "bead.get", map[string]any{"id": r.refs[role]}, false)
+		bead, ok := value["bead"].(map[string]any)
+		actual := observed.Nodes[role]
+		wantStatus := map[string]string{"open": "todo", "in_progress": "in_progress", "closed": "done", "deferred": "backlog", "pinned": "backlog", "b01active": "b01active", "b01wip": "b01wip", "b01done": "b01done", "b01frozen": "b01frozen"}[actual.Status]
+		if !ok || wantStatus == "" || bead["id"] != r.refs[role].ID || bead["status"] != wantStatus || bead["project"] != project || bead["type"] != "issue" || bead["fields"].(map[string]any)["title"] != actual.Title {
+			r.f.t.Fatalf("%s category/public identity differs for %s: %+v", label, role, bead)
+		}
+	}
+	queries := []struct {
+		Name   string
+		Filter map[string]any
+		Want   []string
+	}{
+		{"all", nil, step.Ready},
+		{"type-positive", map[string]any{"types": []string{"issue"}}, step.Ready},
+		{"type-empty", map[string]any{"types": []string{"absent-type"}}, []string{}},
+		{"resource-negative-prefix", map[string]any{"resources": []string{r.refs["parent"].ID, r.refs["free"].ID}}, nil},
+		{"intersection-empty", map[string]any{"types": []string{"absent-type"}, "resources": []string{r.refs["free"].ID}}, []string{}},
+	}
+	for _, role := range step.Ready {
+		if role == "parent" || role == "free" {
+			queries[3].Want = append(queries[3].Want, role)
+		}
+	}
+	if queries[3].Want == nil {
+		queries[3].Want = []string{}
+	}
+	actualQueries := map[string][]string{}
+	for _, query := range queries {
+		params := map[string]any{"limit": 1000}
+		if query.Filter != nil {
+			params["filter"] = query.Filter
+		}
+		full := r.call(label+"-"+query.Name+"-full", "bead.ready", params, false)
+		params["limit"] = 1
+		first := r.call(label+"-"+query.Name+"-one", "bead.ready", params, false)
+		actualQueries[query.Name] = r.ids(full)
+		if !reflect.DeepEqual(r.ids(full), r.wantIDs(query.Want)) || !reflect.DeepEqual(r.drain(label+"-"+query.Name, first, query.Filter), r.wantIDs(query.Want)) {
+			r.f.t.Fatalf("%s/%s filters or page cut changed membership", label, query.Name)
+		}
+	}
+	after := r.snapshot()
+	nativeWrite(r.f.t, filepath.Join(r.output, label+"-state-after.json"), after)
+	if !bytes.Equal(before, after) || epoch != r.f.lease.Epoch() {
+		r.f.t.Fatal("category/filter reads changed complete source/derived/history/receipts/authority")
+	}
+	select {
+	case <-r.f.lease.Lost():
+		r.f.t.Fatal("category/filter reads lost authority")
+	default:
+	}
+	nativeJSON(r.f.t, filepath.Join(r.output, label+"-membership-comparison.json"), map[string]any{
+		"actualNative": observed, "expectedRoles": step.Ready, "actualPlugQueryIDs": actualQueries,
+		"membershipParity": true, "nativeType": "task", "plugType": "issue", "categoryMapping": "explicit declared category mapping",
+		"filterScope":  "Native task/bug type filters; Plug issue/absent type and additional resource/intersection filters; no native resource API equivalence claim",
+		"nativeVector": capture.Vector.ID, "nativeRun": capture.Run.ID,
+	})
+}
+
+func (r *nativeReplay) refuseMembership(label, method string, params map[string]any, code string) {
+	key := r.f.key(label, method, owner)
+	params["_meta"] = map[string]any{"project": project, "agent": owner, "idempotencyKey": key}
+	request := nativeDocumentBytes(r.f.t, map[string]any{"jsonrpc": "2.0", "id": len(r.calls) + 1, "method": method, "params": params})
+	stem := filepath.Join(r.output, fmt.Sprintf("%03d-%s", len(r.calls)+1, label))
+	nativeWrite(r.f.t, stem+".request.json", request)
+	started := time.Now().UTC()
+	response, err := r.f.transport.RoundTrip(r.f.ctx, request)
+	nativeWrite(r.f.t, stem+".response.json", response)
+	errorText := ""
+	if err != nil {
+		errorText = err.Error()
+	}
+	nativeJSON(r.f.t, stem+".receipt.json", map[string]any{
+		"method": method, "requestSHA256": sha256Hex(request), "requestBytes": len(request),
+		"responseSHA256": sha256Hex(response), "responseBytes": len(response),
+		"startedUTC": started, "endedUTC": time.Now().UTC(), "transportError": errorText, "expectedErrorCode": code,
+	})
+	r.calls = append(r.calls, nativeRPCScope{Method: method, Key: key})
+	var envelope struct {
+		ID    int `json:"id"`
+		Error *struct {
+			Data struct {
+				Code string `json:"code"`
+			} `json:"data"`
+		} `json:"error"`
+		Result json.RawMessage `json:"result"`
+	}
+	nativeDecode(r.f.t, response, &envelope)
+	if err != nil || envelope.ID != len(r.calls) || envelope.Error == nil || envelope.Error.Data.Code != code || len(envelope.Result) != 0 {
+		r.f.t.Fatalf("exact typed refusal %s: %v %s", label, err, response)
+	}
+}
+
+func (r *nativeReplay) assertMembershipSettlement(before []byte, commit model.Commit) {
+	var old, after struct {
+		Meta     map[string]any             `json:"meta"`
+		Versions map[string]json.RawMessage `json:"versions"`
+		Source   string                     `json:"sourceAndChangesetSHA256"`
+		Derived  map[string]json.RawMessage `json:"allNineDerivedTables"`
+		Facts    json.RawMessage            `json:"graphValidityFact"`
+	}
+	nativeDecode(r.f.t, before, &old)
+	nativeDecode(r.f.t, r.snapshot(), &after)
+	if !reflect.DeepEqual(old, after) || fmt.Sprint(old.Meta["Head"]) != commit.Revision.String() {
+		r.f.t.Fatal("repeated close changed source/history/derived facts/head instead of settling quietly")
+	}
+}
+
+// Local hierarchy writes may change Parent/Links, and lifecycle operations may
+// change their status and core timestamps. Every remaining source field stays
+// exact, including the changed child's project/type/title/createdAt/metadata.
+func (r *nativeReplay) assertHierarchyNonTargetFields(label, method string, before, after pipeline.Document) {
+	prior, current := map[string]any{}, map[string]any{}
+	nativeDecode(r.f.t, nativeDocumentBytes(r.f.t, before), &prior)
+	nativeDecode(r.f.t, nativeDocumentBytes(r.f.t, after), &current)
+	if method == "bead.link" || method == "bead.unlink" || method == "tx.apply" {
+		for _, key := range []string{"parent", "links"} {
+			delete(prior, key)
+			delete(current, key)
+		}
+	} else {
+		delete(prior["fields"].(map[string]any), "status")
+		delete(current["fields"].(map[string]any), "status")
+		for _, key := range []string{"startedAt", "closedAt"} {
+			delete(prior, key)
+			delete(current, key)
+		}
+	}
+	if !reflect.DeepEqual(prior, current) {
+		r.f.t.Fatalf("%s changed non-target source fields", label)
+	}
+	nativeJSON(r.f.t, filepath.Join(r.output, label+"-non-target-fields.json"), map[string]any{"method": method, "before": before, "after": after, "conservedProjection": prior})
+}

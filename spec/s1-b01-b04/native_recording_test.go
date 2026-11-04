@@ -19,6 +19,7 @@ type nativeCapture struct {
 	Before      nativePhase
 	After       nativePhase
 	Transitions map[string]nativePhase
+	Membership  map[string]nativeMembershipPhase
 	Output      string
 }
 
@@ -89,7 +90,7 @@ func TestB01NativeTimedAndIndefinitePair(t *testing.T) {
 		}
 		// Only the explicitly projected semantic fields are compared. All raw
 		// wall-clock timestamps, revisions and streams remain separate originals.
-		equal := reflect.DeepEqual(twins[0].Before, twins[1].Before) && reflect.DeepEqual(twins[0].After, twins[1].After) && reflect.DeepEqual(twins[0].Transitions, twins[1].Transitions)
+		equal := reflect.DeepEqual(twins[0].Before, twins[1].Before) && reflect.DeepEqual(twins[0].After, twins[1].After) && reflect.DeepEqual(twins[0].Transitions, twins[1].Transitions) && reflect.DeepEqual(twins[0].Membership, twins[1].Membership)
 		nativeJSON(t, filepath.Join(root, vector.ID+"-twin-comparison.json"), map[string]any{
 			"equal": equal, "runA": twins[0], "runB": twins[1],
 			"projection": "role IDs, titles, statuses, priorities, parent edges, persisted until, ordered ready IDs and explain reasons/counts; raw bytes are not asserted identical",
@@ -285,10 +286,30 @@ func recordNativeVector(t *testing.T, binary, output string, inputs nativeInputs
 	if err != nil || dumpBytes == 0 || c.count != 24+7*len(steps) {
 		t.Fatalf("public dump bytes=%d, commands=%d: %v", dumpBytes, c.count, err)
 	}
+	// Preserve the original successful hierarchy export before adding custom
+	// status tables. The accepted converter explicitly refuses nonempty custom
+	// status families; retain that new original refusal beside the old dump.
+	membershipStart := c.count
+	membership := recordNativeMembership(t, c, vector)
+	if c.count-membershipStart != 1+13*len(nativeMembershipSteps()) {
+		t.Fatal("native membership must execute every write/show/query/explain command")
+	}
+	c.run("membership-quiesce", "dolt", "commit", "-m", "B01 category capture "+run.ID)
+	categoryInventory := filepath.Join(output, "membership-inventory.json")
+	c.run("membership-inventory", "--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "-o", categoryInventory)
+	c.refuse("membership-dump-refused", "unsupported nonempty family custom_statuses", "--readonly", "export", "--format", "plug-dump/1", "--plug-inventory", categoryInventory, "-o", filepath.Join(output, "membership-refused-dump.tar"))
+	nativeJSON(t, filepath.Join(output, "membership-export-states.json"), map[string]any{
+		"inventory": nativeOutputState(categoryInventory), "sources": nativeOutputState(categoryInventory + ".sources"),
+		"refusedDump": nativeOutputState(filepath.Join(output, "membership-refused-dump.tar")),
+		"scope":       "Original hierarchy dump success is retained; custom-status native capture has a genuine explicitly unsupported export, no native import/restore proof",
+	})
+	if c.count != 24+7*len(steps)+1+13*len(nativeMembershipSteps())+3 {
+		t.Fatal("native category/export command set is incomplete")
+	}
 	if err := server.Stop(); err != nil {
 		t.Fatalf("owned server shutdown: %v", err)
 	}
-	capture := nativeCapture{Vector: vector, Run: run, Before: before, After: after, Transitions: transitions, Output: output}
+	capture := nativeCapture{Vector: vector, Run: run, Before: before, After: after, Transitions: transitions, Membership: membership, Output: output}
 	nativeJSON(t, filepath.Join(output, "observed-projection.json"), capture)
 	t.Logf("B01_NATIVE_CAPTURE vector=%s run=%s commands=%d actualPort=%d output=%s", vector.ID, run.ID, c.count, server.Port, output)
 	return capture

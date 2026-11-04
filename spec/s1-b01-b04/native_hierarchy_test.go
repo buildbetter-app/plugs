@@ -62,10 +62,13 @@ func (r *nativeReplay) replayHierarchyContinuations(capture nativeCapture) {
 			if !exists || !expected {
 				t.Fatal("missing actual native phase or independent expected membership")
 			}
+			beforeDoc := r.rawHierarchyDocument("hierarchy-"+step.phase+"-before-fields", step.changedRole)
 			before := r.sourceImages()
 			beforeState := r.snapshot()
 			commit := r.write("hierarchy-"+step.phase, step.method, step.params)
 			r.assertHierarchyWrite(step.phase, step.changedRole, beforeState, commit)
+			afterDoc := r.rawHierarchyDocument("hierarchy-"+step.phase+"-after-fields", step.changedRole)
+			r.assertHierarchyNonTargetFields(step.phase, step.method, beforeDoc, afterDoc)
 			after := r.sourceImages()
 			if before[step.changedRole] == after[step.changedRole] {
 				t.Fatalf("%s did not publish its actual changed source image/revision", step.phase)

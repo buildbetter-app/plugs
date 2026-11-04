@@ -454,4 +454,5 @@ func replayNativeVector(t *testing.T, capture nativeCapture, backend, dsn, decis
 	}
 	t.Logf("B01_NATIVE_REPLAY vector=%s run=%s engine=%s referenceAfter=%s plugAfter=free decision=%s", capture.Vector.ID, capture.Run.ID, backend, strings.Join(observedAfter, ","), decision)
 	r.replayHierarchyContinuations(capture)
+	r.replayMembershipContinuations(capture)
 }

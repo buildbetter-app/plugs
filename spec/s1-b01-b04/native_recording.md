@@ -238,3 +238,42 @@ hierarchy coverage; it does not retry the unchanged006 product failure or
 supply controlled native Go/SQL clock, full category/plane/refusal corpus,
 full B01, native admission, or full S1 proof. All new controls remain
 AUTHORED_NOT_RUN until reached by their own named actual execution.
+
+The category and close-guard continuation after the fe6 subtree unit retains
+all original successful exports before adding native custom status tables.
+It then captures nineteen genuine native phases for both vectors and both
+fresh stores: pinned, started, configured active/work-in-progress/completed/
+frozen categories, closed/open/deferred/resumed states, live-child and direct
+blocker refusals, and leaf close/quiet repeated close/reopen under a blocked
+ancestor. Every original command stream and before/after show survives. Native
+show relation projections may change when an edge changes; only actual refused
+and settled commands assert entire show-byte equality.
+
+Each actual phase is replayed on memory, SQLite and PostgreSQL through public
+RPC. Category mappings are explicit: native active means Plug unstarted,
+work-in-progress means started, completed means completed, and pinned/frozen
+mean backlog. Full and one-row type filters run on both sides; Plug additionally
+checks resource/intersection filters without claiming a native resource API.
+Qualifying free rows must survive earlier excluded parent/child prefixes.
+Refusals retain their exact RPC error envelopes and conserve all source,
+history, versions, nine derived tables, graph facts and receipt absence.
+Quiet repeated close preserves those same product facts while retaining its
+new idempotency receipt. Real SQL handles and signed continuations cross every
+phase's reopen. Changed hierarchy and category records now explicitly conserve
+all non-target source fields, including project/type/title/created time.
+
+Accepted producer c8eb refuses nonempty custom status export families. The
+new corpus retains a separate final native inventory/sidecar tree and the
+literal expected converter refusal; it never deletes the configuration or
+relabels this as successful native import/restore. The original hierarchy dump
+still succeeds on the unchanged pre-category state. Both outputs and their
+phase boundaries are retained. No accepted producer/helper/control is changed.
+
+Done = the new category/close/refusal and filter/reopen controls execute against
+the actual accepted native source and all three public replay engines, proven
+by this child's fresh preparation/lifecycle/streams/named raw RUN/PASS/XML and
+independent review; authored controls or the preceding fe6 PASS do not count.
+Scope = the nineteen category/guard phases, exact source/read/refusal/settlement
+conservation and supported type/resource filters. Controlled native clocks,
+complete infrastructure/template/plane/error and persisted legacy/conflicting
+parent corpora still need their own executable units; full B01 is unqualified.
