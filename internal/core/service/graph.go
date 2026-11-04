@@ -7,6 +7,7 @@ import (
 	"io"
 	"sort"
 
+	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -41,6 +42,13 @@ func decodeDocument(raw []byte) (pipeline.Document, error) {
 		if _, err := driver.NewClosureSentinel(doc.Parent.ID); err != nil {
 			return doc, failure("invalid_params", "invalid stored parent")
 		}
+	}
+	for i, link := range doc.Links {
+		kind, err := link.TargetKind.Normalized()
+		if err != nil || model.ValidateLinkTarget(kind, link.To) != nil {
+			return doc, failure("invalid_params", "invalid stored link target")
+		}
+		doc.Links[i].TargetKind = kind
 	}
 	// Preserve member presence before Go zero values erase null/empty provenance.
 	var envelope struct {
@@ -171,6 +179,11 @@ func (o *Ontology) noOpenBlockers(doc pipeline.Document, graph map[string]stored
 		case "relates-to", "related", "discovered-from", "replies-to", "duplicates", "supersedes", "authored-by", "assigned-to", "approved-by", "attests", "tracks", "until", "caused-by", "validates", "delegated-from":
 			continue
 		case "blocks", "conditional-blocks", "waits-for":
+			if link.TargetKind == model.LinkTargetExternal {
+				// External blockers remain unknown, even if their exact ID
+				// happens to name a terminal bead in the local graph.
+				return false, nil
+			}
 			blocker, exists := graph[link.To.ID]
 			if !exists || !link.To.IsID() || !link.To.Branch.IsZero() {
 				// Keep the unresolved edge in the source image, but do not
@@ -219,7 +232,7 @@ func (o *Ontology) waitsForSatisfied(link pipeline.Link, spawner storedBead, gra
 		member := child.doc.Parent != nil && child.doc.Parent.ID == spawner.doc.ID
 		if !member {
 			for _, edge := range child.doc.Links {
-				if edge.Kind == "parent-child" && edge.To.ID == spawner.doc.ID {
+				if edge.TargetKind != model.LinkTargetExternal && edge.Kind == "parent-child" && edge.To.ID == spawner.doc.ID {
 					member = true
 					break
 				}
@@ -251,6 +264,9 @@ func (o *Ontology) readyDependencies(doc pipeline.Document, graph map[string]sto
 	for _, link := range doc.Links {
 		if link.Kind != "parent-child" {
 			continue
+		}
+		if link.TargetKind == model.LinkTargetExternal {
+			return false, nil
 		}
 		target, exists := graph[link.To.ID]
 		if !exists || !link.To.IsID() || !link.To.Branch.IsZero() || !terminal(target) {

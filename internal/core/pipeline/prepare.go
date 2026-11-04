@@ -404,21 +404,36 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				if !validDependencyKind(kind) {
 					return nil, failure("invalid_params", "unsupported link kind")
 				}
-				to, e := p.resolve(op.Link.To, aliases)
+				targetKind, e := op.Link.TargetKind.Normalized()
 				if e != nil {
-					return nil, e
+					return nil, failure("invalid_params", e.Error())
 				}
-				if to.ID == target.ID {
+				to := op.Link.To
+				if targetKind != model.LinkTargetExternal {
+					to, e = p.resolve(to, aliases)
+					if e != nil {
+						return nil, e
+					}
+				}
+				if e := model.ValidateLinkTarget(targetKind, to); e != nil {
+					return nil, failure("invalid_params", e.Error())
+				}
+				op.Link.TargetKind = targetKind
+				if targetKind != model.LinkTargetExternal && to.ID == target.ID {
 					return nil, failure("ontology_guard_failed", "self-links are refused")
 				}
-				if e := p.loadLinkTarget(ctx, to); e != nil {
+				if e := p.loadLinkTarget(ctx, to, targetKind); e != nil {
 					return nil, e
 				}
 				// The endpoint is read, not written, unless another op targets it.
 				found := -1
 				conflictingKind := ""
 				for i, link := range current.doc.Links {
-					if link.To.ID != to.ID {
+					storedTargetKind, e := link.TargetKind.Normalized()
+					if e != nil {
+						return nil, failure("ontology_guard_failed", "invalid stored link target kind")
+					}
+					if storedTargetKind != targetKind || link.To.ID != to.ID {
 						continue
 					}
 					if link.Kind == kind {
@@ -426,7 +441,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 						continue
 					}
 					conflictingKind = link.Kind
-					// All dependency kinds share one endpoint identity (B07/B11).
+					// All dependency kinds share one typed endpoint identity (B07/B11).
 					// A type change requires an explicit unlink before the link;
 					// nonblocking kinds still retain their independent graph effects.
 					if op.Kind == model.OpLink {
@@ -449,7 +464,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				}
 				if op.Kind == model.OpLink {
 					if found < 0 {
-						current.doc.Links = append(current.doc.Links, Link{To: to, Kind: kind, Metadata: metadata})
+						current.doc.Links = append(current.doc.Links, Link{To: to, Kind: kind, Metadata: metadata, TargetKind: targetKind})
 					} else if metadata != nil {
 						// Omission preserves the stored predicate. An explicit
 						// replacement participates in ordinary final-image CAS,
@@ -562,13 +577,14 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 	return p, nil
 }
 
-// loadLinkTarget keeps the source endpoint guarded while allowing a valid
-// external/cross-prefix target to remain an unresolved edge. A target which
-// was present and is deleted earlier in this batch is still refused: callers
-// must unlink the stored edge before deleting its local endpoint. Workflow
-// references belong to the separate workflow plane and never become durable
-// graph edges through this writer.
-func (p *prepared) loadLinkTarget(ctx context.Context, ref model.Ref) error {
+// loadLinkTarget reads only local endpoints. An explicitly external target
+// never aliases a same-spelled local bead or a local deletion in this batch.
+// Missing local targets remain not_found; workflow references retain their
+// separate typed admission boundary.
+func (p *prepared) loadLinkTarget(ctx context.Context, ref model.Ref, kind model.LinkTargetKind) error {
+	if kind == model.LinkTargetExternal {
+		return nil
+	}
 	if prior, ok := p.writes[ref.ID]; ok && prior.deleted {
 		return failure("not_found", "record was deleted in this batch")
 	}
@@ -582,12 +598,7 @@ func (p *prepared) loadLinkTarget(ctx context.Context, ref model.Ref) error {
 		if strings.HasPrefix(ref.ID, "workflow:") {
 			return failure("invalid_params", "workflow references require a supported workflow item operation")
 		}
-		if validateErr := driver.ValidateHierarchyRef(ref); validateErr != nil {
-			return failure("invalid_params", "link target must be a canonical branch-zero ID")
-		}
-		// p.load observed the absent record lock. The lock is retained in the
-		// snapshot read set, so a concurrent creation makes this write stale.
-		return nil
+		return err
 	}
 }
 
@@ -1437,25 +1448,22 @@ func (p *prepared) graph(ctx context.Context) error {
 			docs[id] = pending.doc
 		}
 	}
-	deleted := make(map[string]bool)
-	for id, pending := range p.writes {
-		if pending.deleted {
-			deleted[id] = true
-		}
-	}
 	for _, doc := range docs {
 		for _, link := range doc.Links {
+			targetKind, err := link.TargetKind.Normalized()
+			if err != nil || model.ValidateLinkTarget(targetKind, link.To) != nil {
+				return failure("ontology_guard_failed", "invalid stored link target")
+			}
+			if targetKind == model.LinkTargetExternal {
+				// External identity is disjoint from the local graph even when
+				// its exact opaque ID matches a live or deleted local bead.
+				continue
+			}
 			if err := driver.ValidateHierarchyRef(link.To); err != nil {
 				return failure("ontology_guard_failed", "link target is not a canonical branch-zero ID")
 			}
 			if _, ok := docs[link.To.ID]; !ok {
-				if deleted[link.To.ID] {
-					return failure("ontology_guard_failed", "unlink all incoming and outgoing edges before deletion")
-				}
-				// A valid target outside this store is an intentionally retained
-				// external/cross-prefix edge. It has no local graph node to walk,
-				// but remains in the source image and keeps blocking effects
-				// fail-closed until a readable target exists.
+				return failure("ontology_guard_failed", "unlink all incoming and outgoing edges before deletion")
 			}
 		}
 	}
@@ -1482,7 +1490,7 @@ func (p *prepared) graph(ctx context.Context) error {
 			}
 		}
 		for _, link := range docs[id].Links {
-			if dependencyIsScheduling(link.Kind) {
+			if link.TargetKind != model.LinkTargetExternal && dependencyIsScheduling(link.Kind) {
 				if _, exists := docs[link.To.ID]; !exists {
 					continue
 				}
