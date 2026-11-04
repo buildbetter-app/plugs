@@ -290,6 +290,7 @@ internal/core/pipeline/projection_publication.go
 internal/core/pipeline/projections.go
 internal/core/pipeline/projections_test.go
 internal/core/pipeline/protected.go
+internal/core/pipeline/ready_membership.go
 internal/core/pipeline/ready_projection.go
 internal/core/pipeline/response.go
 internal/core/pipeline/response_test.go

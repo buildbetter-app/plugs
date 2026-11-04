@@ -63,6 +63,135 @@ func TestFixedPermissionsAcrossDrivers(t *testing.T) {
 			t.Run("source_publication_failure", func(t *testing.T) { sourcePublicationFailure(t, open) })
 			t.Run("initial_source_publication", func(t *testing.T) { initialSourcePublication(t, open) })
 			t.Run("writer_boolean_presence_and_restamping", func(t *testing.T) { writerPublishesKernelBooleanAndSourceOnlyRestamps(t, open) })
+			t.Run("ready_facts_carry_forward", func(t *testing.T) { readyFactsCarryForward(t, open) })
+		})
+	}
+}
+
+func readyFactsCarryForward(t *testing.T, open storeFactory) {
+	for _, mode := range []string{"maintained", "unmaintained", "corrupt"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := context.Background()
+			store := open(t)
+			t.Cleanup(func() { _ = store.Close() })
+			lease, err := store.Lease(ctx, "ready-facts", driver.LeaseTTL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = lease.Release(ctx) })
+			meta, err := store.Meta(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			base := authzfixed.Facts{Namespace: authz.Namespace{StoreID: string(meta.StoreID), Incarnation: meta.Incarnation, InstallationID: "fixed", Authority: model.RefByID("authority", model.Natural64(0))}}
+			facts, err := authzrpc.NewMutableFacts(base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			keys := authnapikey.New(authnapikey.Config{AuthorizationInstalled: func() bool { return true }})
+			if _, err := authzrpc.New(ctx, authzrpc.Config{Store: store, Lease: lease, Provider: keys, Facts: facts, Namespace: base.Namespace}); err != nil {
+				t.Fatal(err)
+			}
+			if err := facts.Replace(base); err != nil {
+				t.Fatal(err)
+			}
+			old, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer old.Close()
+			rows, err := old.DerivedRows(ctx, driver.DerivedReadyState, "")
+			if err != nil || len(rows) != 1 || rows[0].Key != "plug.ready.v2/coverage" {
+				t.Fatalf("empty initial publication lacks its exact Ready marker: %+v/%v", rows, err)
+			}
+			var marker struct {
+				Version     int
+				Incarnation string
+				Through     model.Revision
+				Unsafe      uint64
+			}
+			if err := json.Unmarshal(rows[0].Value, &marker); err != nil || marker.Version != 2 || marker.Incarnation != meta.Incarnation || marker.Through.String() != old.Snapshot().At.String() {
+				t.Fatal("initial Ready marker is not bound to the fact publication")
+			}
+			want := []driver.DerivedRow{rows[0].Clone()}
+			if mode != "maintained" {
+				tx, err := store.Write(ctx, lease)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Close()
+				var locks driver.LockSet
+				var sentinel driver.Sentinel
+				if mode == "corrupt" {
+					sentinel, err = driver.NewReadySentinel("*", "*")
+					if err != nil {
+						t.Fatal(err)
+					}
+					rowKey := driver.DerivedRowKey{Table: driver.DerivedReadyState, Key: rows[0].Key}
+					locks = driver.LockSet{{Key: driver.LockKey{Kind: driver.LockDerived, Derived: &rowKey}, Mode: driver.LockUpdate}, {Key: driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel}, Mode: driver.LockUpdate}}
+					sort.Slice(locks, func(i, j int) bool {
+						a, _ := driver.EncodeLockKey(locks[i].Key)
+						b, _ := driver.EncodeLockKey(locks[j].Key)
+						return a < b
+					})
+				}
+				if _, err := tx.Lock(ctx, locks); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.Head(ctx); err != nil {
+					t.Fatal(err)
+				}
+				if mode == "corrupt" {
+					want[0].Value = []byte("malformed optional Ready metadata")
+					if err := tx.PutDerived(ctx, driver.DerivedReadyState, nil, want); err != nil {
+						t.Fatal(err)
+					}
+					if err := tx.BumpSentinels(ctx, []driver.Sentinel{sentinel}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				lockKeys := make([]driver.LockKey, len(locks))
+				for i, lock := range locks {
+					lockKeys[i] = lock.Key
+				}
+				if _, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: meta.Incarnation, Kind: model.ChangesetDerived, Principal: model.PrincipalRef{Kind: "system", ID: "ready-gap"}, LockKeys: lockKeys}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := store.Meta(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := facts.Replace(base); err != nil {
+				t.Fatalf("optional Ready state refused an ordinary fact publication: %v", err)
+			}
+			after, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer after.Close()
+			n, _ := before.Head.Uint64()
+			if after.Snapshot().At.String() != model.Natural64(n+1).String() {
+				t.Fatal("fact publication did not retain one durable H+1 commit")
+			}
+			if mode == "maintained" {
+				marker.Through = *after.Snapshot().At
+				want[0].Value, err = json.Marshal(marker)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := after.DerivedRows(ctx, driver.DerivedReadyState, "")
+			if err != nil || !reflect.DeepEqual(want, got) {
+				t.Fatalf("Ready carry-forward or fallback changed the wrong bytes: want%+v got%+v/%v", want, got, err)
+			}
+			pinned, err := old.DerivedRows(ctx, driver.DerivedReadyState, "")
+			if err != nil || !reflect.DeepEqual(rows, pinned) {
+				t.Fatal("fact maintenance rewrote a pinned Ready marker")
+			}
+			if _, err := facts.Load(ctx, after); err != nil {
+				t.Fatal("Ready maintenance lost durable fact/source/ACL binding", err)
+			}
 		})
 	}
 }

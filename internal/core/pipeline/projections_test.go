@@ -18,6 +18,76 @@ import (
 
 var errProjectionCommit = errors.New("injected failure after projection staging")
 
+// Derive the original Ready item's JSON from the persisted source, rather
+// than calling either producer helper or using a projection's claimed leaf.
+func projectionReadyDigest(t *testing.T, source driver.Record) string {
+	t.Helper()
+	var doc struct {
+		ID, Type, Project string
+		Fields            map[string]any
+	}
+	decoder := json.NewDecoder(bytes.NewReader(source.Body))
+	decoder.UseNumber()
+	if err := decoder.Decode(&doc); err != nil {
+		t.Fatal(err)
+	}
+	status, _ := doc.Fields["status"].(string)
+	item := struct {
+		ID       string         `json:"id"`
+		Type     string         `json:"type"`
+		Project  string         `json:"project"`
+		Status   string         `json:"status"`
+		Revision model.Revision `json:"revision"`
+		Fields   map[string]any `json:"fields,omitempty"`
+	}{doc.ID, doc.Type, doc.Project, status, source.Revision, doc.Fields}
+	body, err := json.Marshal(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return driver.SelectionDigest(body)
+}
+
+func TestSourceSelectionReadyLeafUsesCommittedSourceRevision(t *testing.T) {
+	h := setup(t)
+	w, _ := projectionWriter(t, h)
+	created := apply(t, w, model.ChangeSet{Ops: []model.Op{create("")}}, meta(1))
+	ref := created.Results[0].Ref
+	old := h.read(t)
+	check := func(r driver.Reader) string {
+		source := projectionSource(t, r, ref)
+		rows, err := r.DerivedRows(context.Background(), driver.DerivedSortKey, ref.ID)
+		if err != nil || len(rows) != 1 || rows[0].Index == nil || rows[0].Index.Bead == nil {
+			t.Fatalf("missing committed counting row: %v/%v", rows, err)
+		}
+		row, leaf := rows[0], projectionReadyDigest(t, source)
+		var logical driver.SelectionBead
+		if err := json.Unmarshal(row.Value, &logical); err != nil || logical.MembershipLeaf != leaf || row.Index.Bead.MembershipLeaf != leaf || row.Index.Validate(driver.DerivedSortKey, row) != nil || row.Index.Source.Revision.String() != source.Revision.String() || row.Index.Source.Digest != driver.SelectionDigest(source.Body) {
+			t.Fatal("Ready leaf or annotation does not bind the exact committed source")
+		}
+		return leaf
+	}
+	oldLeaf := check(old)
+	apply(t, w, model.ChangeSet{Ops: []model.Op{patch(ref, map[string]any{"description": "changes full semantic membership"})}}, meta(2))
+	after := h.read(t)
+	if check(after) == oldLeaf || check(old) != oldLeaf {
+		t.Fatal("source revision/body change lost membership invalidation or pinned history")
+	}
+	// Startup/backfill supplies the source revision directly, independently
+	// of any derived-row or most-recent store revision.
+	source := projectionSource(t, after, ref)
+	plan, err := PrepareSourceRecord(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, revision := range []uint64{7, 19} {
+		source.Revision = model.Natural64(revision)
+		rows, err := plan.SelectionRows("startup", source.Revision)
+		if err != nil || rows[0].Index.Bead.MembershipLeaf != projectionReadyDigest(t, source) || rows[0].Index.Source.Revision != source.Revision {
+			t.Fatalf("startup source revision %d was not bound: %v", revision, err)
+		}
+	}
+}
+
 // Count the real snapshot boundary without replacing its data or write path.
 // The hidden control exposes only Reader, retaining the individual-read path.
 type projectionRefreshStore struct {

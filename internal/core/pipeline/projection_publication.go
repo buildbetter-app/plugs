@@ -37,6 +37,13 @@ func publishSourceProjections(ctx context.Context, tx driver.WriteTx, plans []*S
 	for i, state := range states {
 		revisions[keys[i].Ref.ID] = state.Revision
 	}
+	var revision model.Revision
+	if len(keys) != 0 {
+		revision, err = sourcePublicationRevision(tx)
+		if err != nil {
+			return err
+		}
+	}
 	remove, add := map[driver.DerivedTable][]driver.DerivedRow{}, map[driver.DerivedTable][]driver.DerivedRow{}
 	for _, p := range plans {
 		switch {
@@ -59,6 +66,9 @@ func publishSourceProjections(ctx context.Context, tx driver.WriteTx, plans []*S
 			if err != nil {
 				return err
 			}
+			if err := BindReadySelectionRows(*p.doc, revision, rows); err != nil {
+				return err
+			}
 			for i, row := range rows {
 				add[p.keys[i].Table] = append(add[p.keys[i].Table], row)
 			}
@@ -72,4 +82,19 @@ func publishSourceProjections(ctx context.Context, tx driver.WriteTx, plans []*S
 		}
 	}
 	return nil
+}
+
+// Head has already rebound the transaction snapshot under the complete lock
+// census. Keep source-observation revisions unchanged until driver Commit,
+// while semantic Ready leaves name the actual revision being published.
+func sourcePublicationRevision(tx driver.WriteTx) (model.Revision, error) {
+	view := tx.Snapshot()
+	if view.At == nil {
+		return "", fmt.Errorf("source publication requires a bound transaction head")
+	}
+	n, err := view.At.Uint64()
+	if err != nil || n == ^uint64(0) {
+		return "", fmt.Errorf("source publication revision space is exhausted")
+	}
+	return model.Natural64(n + 1), nil
 }
