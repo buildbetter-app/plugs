@@ -1,0 +1,13 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "readyalternative",
+    testonly = True,
+    srcs = ["fixture.go"],
+    importpath = "github.com/buildbetter-app/plugs/internal/testfixture/readyalternative",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/core/model",
+        "//internal/core/pipeline",
+    ],
+)
