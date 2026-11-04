@@ -388,6 +388,11 @@ internal/integration/b03catalog/catalog_test.go
 internal/integration/b03catalog/composition_runtime_test.go
 internal/integration/b03catalog/engine_test.go
 internal/integration/b03catalog/fixture_test.go
+internal/integration/b04claimidentity/BUILD.bazel
+internal/integration/b04claimidentity/README.md
+internal/integration/b04claimidentity/claim_identity_test.go
+internal/integration/b04claimidentity/engine_test.go
+internal/integration/b04claimidentity/fixture_test.go
 internal/integration/b13memory/BUILD.bazel
 internal/integration/b13memory/README.md
 internal/integration/b13memory/fixture_test.go

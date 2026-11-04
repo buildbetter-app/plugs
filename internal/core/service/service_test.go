@@ -1007,6 +1007,90 @@ func TestClaimNextSelectionSpreadsStablePriorityTies(t *testing.T) {
 	}
 }
 
+func TestClaimNextSelectionUsesLiteralSeededGroupRotations(t *testing.T) {
+	items := []Bead{
+		{ID: "p0-a", Type: "issue", Project: "local", Fields: map[string]any{"priority": 0}},
+		{ID: "p0-b", Type: "issue", Project: "local", Fields: map[string]any{"priority": 0}},
+		{ID: "p0-c", Type: "issue", Project: "local", Fields: map[string]any{"priority": 0}},
+		{ID: "p0-d", Type: "issue", Project: "local", Fields: map[string]any{"priority": 0}},
+		{ID: "p1-a", Type: "issue", Project: "local", Fields: map[string]any{"priority": 1}},
+		{ID: "p1-b", Type: "issue", Project: "local", Fields: map[string]any{"priority": 1}},
+		{ID: "p1-c", Type: "issue", Project: "local", Fields: map[string]any{"priority": 1}},
+		{ID: "p2-a", Type: "issue", Project: "local", Fields: map[string]any{"priority": 2}},
+		{ID: "p2-b", Type: "issue", Project: "local", Fields: map[string]any{"priority": 2}},
+	}
+	selectorA := ClaimNextRequest{
+		ViewID: "queue-v1",
+		Filter: &Filter{Resources: []string{"b", "a", "a"}, Types: []string{"task", "issue", "task"}, Events: []string{"bead.updated", "bead.created", "bead.updated"}},
+	}
+	selectorB := ClaimNextRequest{
+		ViewID: "queue-v1",
+		Filter: &Filter{Resources: []string{"a", "b"}, Types: []string{"issue", "task"}, Events: []string{"bead.created", "bead.updated"}},
+	}
+	identityA, err := ClaimNextRequestIdentity(selectorA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identityB, err := ClaimNextRequestIdentity(selectorB)
+	if err != nil || identityA != identityB {
+		t.Fatalf("selector set normalization changed identity: A=%q B=%q err=%v", identityA, identityB, err)
+	}
+	if identityA != `{"viewId":"queue-v1","filter":{"query":"","resources":["a","b"],"types":["issue","task"],"events":["bead.created","bead.updated"],"viewId":""}}` {
+		t.Fatalf("unexpected canonical selector identity: %s", identityA)
+	}
+
+	original := append([]Bead(nil), items...)
+	cases := []struct {
+		name, key, seed string
+		want            []string
+	}{
+		{
+			name: "first-key",
+			key:  "claim-key-a",
+			seed: "a9fcd4df551dc1b04c46ca714b48c5d6b078325d2d0a7876f739a31f56973850",
+			want: []string{"p0-d", "p0-a", "p0-b", "p0-c", "p1-c", "p1-a", "p1-b", "p2-a", "p2-b"},
+		},
+		{
+			name: "second-key",
+			key:  "claim-key-b",
+			seed: "013848b830a591eceee74c9e0c79eb40f0c53aedf1191548875c11a0b83629de",
+			want: []string{"p0-b", "p0-c", "p0-d", "p0-a", "p1-b", "p1-c", "p1-a", "p2-a", "p2-b"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ClaimNextSelectionSeed(identityA, tc.key); got != tc.seed {
+				t.Fatalf("seed changed: got=%s want=%s", got, tc.seed)
+			}
+			got, err := spreadClaimNextItems(items, tc.seed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ids := make([]string, len(got))
+			for i, row := range got {
+				ids[i] = row.ID
+			}
+			if !slices.Equal(ids, tc.want) {
+				t.Fatalf("literal seeded rotation changed: got=%v want=%v", ids, tc.want)
+			}
+			if !slices.Equal(idsOfBeads(items), idsOfBeads(original)) {
+				t.Fatal("seeded rotation mutated its input slice")
+			}
+			if got[0].Fields["priority"] != 0 || got[4].Fields["priority"] != 1 || got[7].Fields["priority"] != 2 {
+				t.Fatalf("priority groups crossed: %v", ids)
+			}
+		})
+	}
+}
+
+func idsOfBeads(items []Bead) []string {
+	ids := make([]string, len(items))
+	for i, item := range items {
+		ids[i] = item.ID
+	}
+	return ids
+}
+
 func TestReadyContinuationReadsLiveRowsWhileHistoryStaysPinned(t *testing.T) {
 	for _, action := range []string{"close", "claim", "update"} {
 		t.Run(action, func(t *testing.T) {
