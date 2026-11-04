@@ -134,6 +134,7 @@ func (t *tree) leaves(refs map[string]bool, scope driver.ReadyOrderScope) ([]dri
 		if err = driver.SealReadyOrderNode(&n); err != nil {
 			return nil, err
 		}
+		t.work.DigestBytes += n.DigestBytes()
 		out = append(out, *s.Leaf)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -265,12 +266,15 @@ func selectFinite(t *tree, p driver.ReadyOrderPlan, scope string, root *driver.R
 			return result, err
 		}
 	}
-	commitment, err := driver.ReadyCommitmentFromLeaves(authorized)
+	nodes, err := driver.BuildReadyOrderNodes(authorized)
 	if err != nil {
 		return result, err
 	}
+	for _, node := range nodes {
+		t.work.DigestBytes += node.DigestBytes()
+	}
 	result.Total = uint64(len(authorized))
-	result.Commitment = commitment
+	result.Commitment = nodes[""].Commitment
 	if p.Offset > result.Total {
 		return result, unavailable("offset outside finite membership")
 	}
