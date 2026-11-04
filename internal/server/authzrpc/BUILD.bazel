@@ -26,7 +26,7 @@ go_library(
 go_test(
     name = "view_selection_test",
     size = "large",
-    srcs = ["view_selection_test.go"],
+    srcs = ["view_selection_test.go", "view_refs_test.go"],
     embed = [":authzrpc"],
     tags = ["exclusive"],
     deps = [
