@@ -15,6 +15,9 @@ const (
 	// continuation state.
 	NativeAllocatorMember  = "allocator/snapshot.json"
 	NativeAllocatorVersion = "plug-native-allocator/1"
+	// EdgeVersionTypedDependencies is the explicit successor producer contract.
+	// Format/schema/reference alone never enable local waits or conditional edges.
+	EdgeVersionTypedDependencies = 2
 )
 
 // Row retains source JSON values, including explicit nulls and lossless
@@ -78,6 +81,17 @@ type Manifest struct {
 	RecordCount            int    `json:"record_count,omitempty"`
 	VersionCount           int    `json:"version_count,omitempty"`
 	ChangesetCount         int    `json:"changeset_count,omitempty"`
+}
+
+// EdgeVersion returns the declared edge contract. An absent registry entry
+// cannot opt historical images into successor semantics; it stays legacy v1.
+func (m Manifest) EdgeVersion() int {
+	for _, kind := range m.Kinds {
+		if kind.Name == "edge" {
+			return kind.Version
+		}
+	}
+	return 1
 }
 
 type Provenance struct {

@@ -6,6 +6,7 @@ go_library(
     importpath = "github.com/buildbetter-app/plugs/internal/core/dumpformat",
     visibility = ["//:__subpackages__"],
     deps = [
+        "//internal/core/model",
         "//internal/core/ontology",
         "//internal/storage/driver",
     ],

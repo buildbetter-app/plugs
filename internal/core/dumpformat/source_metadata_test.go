@@ -42,3 +42,25 @@ func TestSourceMetadataObjectRejectsAmbiguousOrMalformedValues(t *testing.T) {
 		}
 	}
 }
+
+func TestSourceWaitsForMetadataDistinguishesAbsenceFromExplicitDefault(t *testing.T) {
+	none, err := SourceWaitsForMetadata(nil)
+	if err != nil || none != nil {
+		t.Fatal("absent metadata lost legacy waits semantics")
+	}
+	for _, raw := range []any{`{}`, map[string]any{}, `{"gate":"all-children","also_blocks":false}`} {
+		got, err := SourceWaitsForMetadata(raw)
+		if err != nil || got == nil || got.Gate != "all-children" || got.AlsoBlocks {
+			t.Fatalf("explicit default changed: %+v %v", got, err)
+		}
+	}
+	got, err := SourceWaitsForMetadata(` {"gate":"any-children","also_blocks":true} `)
+	if err != nil || got == nil || got.Gate != "any-children" || !got.AlsoBlocks {
+		t.Fatalf("SQL-text waits predicate changed: %+v %v", got, err)
+	}
+	for _, raw := range []string{`{"gate":null}`, `{"also_blocks":null}`, `{"gate":""}`, `{"gate":"any"}`, `{"also_blocks":"true"}`, `{"also_blocks":1}`, `{"Gate":"any-children"}`, `{"other":true}`, `{"gate":"all-children","gate":"any-children"}`, `null`, `"{}"`, `[]`} {
+		if value, err := SourceWaitsForMetadata(raw); err == nil {
+			t.Fatalf("malformed waits predicate admitted: %s => %+v", raw, value)
+		}
+	}
+}

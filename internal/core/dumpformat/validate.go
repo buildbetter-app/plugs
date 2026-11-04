@@ -417,7 +417,8 @@ func validateRecords(manifest Manifest, members map[string][]byte) (map[string][
 	counts := map[string]int{}
 	lastKind := ""
 	for _, kind := range manifest.Kinds {
-		if !knownKinds[kind.Name] || kind.Version != 1 || kind.Name <= lastKind || kind.File != "records/"+kind.Name+".ndjson" || kind.Count < 1 {
+		versionOK := kind.Version == 1 || kind.Name == "edge" && kind.Version == EdgeVersionTypedDependencies
+		if !knownKinds[kind.Name] || !versionOK || kind.Name <= lastKind || kind.File != "records/"+kind.Name+".ndjson" || kind.Count < 1 {
 			return nil, nil, fmt.Errorf("unknown, duplicate or unordered kind registry entry")
 		}
 		lastKind = kind.Name
@@ -460,7 +461,7 @@ func validateRecords(manifest Manifest, members map[string][]byte) (map[string][
 	}
 	for _, kind := range manifest.Kinds {
 		for _, record := range byKind[kind.Name] {
-			if err := validateMigratedRecord(record, manifest.Projects, counts, migration); err != nil {
+			if err := validateVersionedRecord(record, manifest.Projects, counts, migration, manifest.EdgeVersion()); err != nil {
 				return nil, nil, err
 			}
 		}

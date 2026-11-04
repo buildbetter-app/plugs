@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/buildbetter-app/plugs/internal/core/model"
 )
 
 // UnresolvedDependencyError identifies a source dependency whose endpoint is
@@ -58,11 +60,45 @@ func SourceMetadataObject(value any) (map[string]any, error) {
 	return object, nil
 }
 
+// SourceWaitsForMetadata projects only the canonical waits predicate. The
+// original JSON value remains in Body and Source.Fields. Absence selects the
+// legacy predicate; explicit {} selects all-children without also_blocks.
+func SourceWaitsForMetadata(value any) (*model.LinkMetadata, error) {
+	object, err := SourceMetadataObject(value)
+	if err != nil || object == nil {
+		return nil, err
+	}
+	metadata := model.LinkMetadata{Gate: "all-children"}
+	for key, raw := range object {
+		switch key {
+		case "gate":
+			gate, ok := raw.(string)
+			if !ok || gate != "all-children" && gate != "any-children" {
+				return nil, fmt.Errorf("waits-for gate must be all-children or any-children")
+			}
+			metadata.Gate = gate
+		case "also_blocks":
+			alsoBlocks, ok := raw.(bool)
+			if !ok {
+				return nil, fmt.Errorf("waits-for also_blocks must be boolean")
+			}
+			metadata.AlsoBlocks = alsoBlocks
+		default:
+			return nil, fmt.Errorf("unsupported waits-for metadata member %q", key)
+		}
+	}
+	return &metadata, nil
+}
+
 func validateRecord(record Record, projects []Project, counts map[string]int) error {
 	return validateMigratedRecord(record, projects, counts, nil)
 }
 
 func validateMigratedRecord(record Record, projects []Project, counts map[string]int, migration *ImportMigration) error {
+	return validateVersionedRecord(record, projects, counts, migration, 1)
+}
+
+func validateVersionedRecord(record Record, projects []Project, counts map[string]int, migration *ImportMigration, edgeVersion int) error {
 	table, fields := record.Source.Table, record.Source.Fields
 	columns, ok := tableColumns[table]
 	if !ok {
@@ -190,6 +226,11 @@ func validateMigratedRecord(record Record, projects []Project, counts map[string
 	case "edge":
 		target, targetKind := "", ""
 		for _, key := range []string{"depends_on_issue_id", "depends_on_wisp_id", "depends_on_external"} {
+			if edgeVersion == EdgeVersionTypedDependencies && fields[key] != nil {
+				if _, ok := fields[key].(string); !ok {
+					return fmt.Errorf("typed edge target %s must be text or null", key)
+				}
+			}
 			if value := stringValue(fields[key]); value != "" {
 				if target != "" {
 					return fmt.Errorf("multiple typed edge targets")
@@ -208,7 +249,15 @@ func validateMigratedRecord(record Record, projects []Project, counts map[string
 		switch stringValue(fields["type"]) {
 		case "blocks", "parent-child", "related", "discovered-from":
 		default:
-			return fmt.Errorf("unsupported dependency type")
+			kind := stringValue(fields["type"])
+			if edgeVersion != EdgeVersionTypedDependencies || (kind != "waits-for" && kind != "conditional-blocks") {
+				return fmt.Errorf("unsupported dependency type")
+			}
+		}
+		if edgeVersion == EdgeVersionTypedDependencies {
+			if _, err := SourceEdgeMetadata(edgeVersion, record.ID, stringValue(fields["type"]), fields["metadata"]); err != nil {
+				return fmt.Errorf("edge %s metadata: %w", record.ID, err)
+			}
 		}
 		body = Row{"from": fields["issue_id"], "to": target, "target_kind": targetKind, "type": fields["type"], "metadata": fields["metadata"], "thread_id": fields["thread_id"]}
 	case "comment":
