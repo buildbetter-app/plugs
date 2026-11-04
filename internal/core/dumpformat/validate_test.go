@@ -10,6 +10,52 @@ import (
 	"testing"
 )
 
+func TestExternalDependencyArchiveKeepsTypedVocabulary(t *testing.T) {
+	for _, test := range []struct {
+		name, targetKind, kind string
+		admitted               bool
+	}{
+		{"local-blocks", "depends_on_issue_id", "blocks", true},
+		{"local-waits-for-stays-unsupported", "depends_on_issue_id", "waits-for", false},
+		{"external-waits-for", "depends_on_external", "waits-for", true},
+		{"external-conditional", "depends_on_external", "conditional-blocks", true},
+		{"external-opaque-kind", "depends_on_external", strings.Repeat("x", 32), true},
+		{"external-empty-kind", "depends_on_external", "", false},
+		{"external-overlong-kind", "depends_on_external", strings.Repeat("x", 33), false},
+		{"external-overlong-utf8-kind", "depends_on_external", strings.Repeat("é", 17), false},
+		{"workflow-stays-unsupported", "depends_on_wisp_id", "blocks", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newMergeFixture(t, "pl")
+			edge := &fixture.records["edge"][0]
+			for _, arm := range []string{"depends_on_issue_id", "depends_on_wisp_id", "depends_on_external"} {
+				edge.Source.Fields[arm] = nil
+			}
+			target := "pl-2"
+			if test.targetKind == "depends_on_external" {
+				target = " external:tracker/1 "
+			}
+			edge.Source.Fields[test.targetKind] = target
+			edge.Source.Fields["type"] = test.kind
+			edge.Body["target_kind"], edge.Body["to"], edge.Body["type"] = test.targetKind, target, test.kind
+			archive, err := Read(bytes.NewReader(fixture.bytes(t, nil)))
+			if !test.admitted {
+				if err == nil {
+					t.Fatal("unsupported typed dependency admitted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := archive.Records("edge")[0]
+			if got.Body["target_kind"] != test.targetKind || got.Body["to"] != target || got.Body["type"] != test.kind {
+				t.Fatalf("typed external identity changed: %+v", got.Body)
+			}
+		})
+	}
+}
+
 func TestIssueAwaitIDIsOpaqueTextOnly(t *testing.T) {
 	fixture := newMergeFixture(t, "pl")
 	fixture.records["bead"][0].Source.Fields["await_id"] = "opaque-await/v1\x00"
