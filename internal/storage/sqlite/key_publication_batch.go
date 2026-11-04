@@ -2,7 +2,9 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -14,8 +16,40 @@ import (
 // all batches run on Commit's same fenced immediate connection.
 const keyPublicationBatchSize = 128
 
+type keyPublicationStatement interface {
+	ExecContext(context.Context, ...any) (sql.Result, error)
+	Close() error
+}
+
+type keyPublicationPreparer interface {
+	prepareKeyPublication(context.Context, string) (keyPublicationStatement, error)
+}
+
+func prepareKeyPublication(ctx context.Context, c selectionPublicationExecutor, query string) (keyPublicationStatement, error) {
+	if preparer, ok := c.(keyPublicationPreparer); ok {
+		return preparer.prepareKeyPublication(ctx, query)
+	}
+	if conn, ok := c.(*sql.Conn); ok {
+		return conn.PrepareContext(ctx, query)
+	}
+	return nil, errors.New("sqlite: key publication requires the held prepared connection")
+}
+
 type keyPublicationBatch struct {
 	args []any
+	full keyPublicationStatement
+}
+
+func closeKeyPublicationStatement(statement keyPublicationStatement, prior *error) {
+	if err := statement.Close(); err != nil && *prior == nil {
+		*prior = err
+	}
+}
+
+func (b *keyPublicationBatch) close(prior *error) {
+	if b.full != nil {
+		closeKeyPublicationStatement(b.full, prior)
+	}
 }
 
 func (b *keyPublicationBatch) add(ctx context.Context, c selectionPublicationExecutor, state driver.LockState) error {
@@ -30,21 +64,38 @@ func (b *keyPublicationBatch) add(ctx context.Context, c selectionPublicationExe
 	return nil
 }
 
-func (b *keyPublicationBatch) flush(ctx context.Context, c selectionPublicationExecutor) error {
+func (b *keyPublicationBatch) flush(ctx context.Context, c selectionPublicationExecutor) (err error) {
 	if len(b.args) == 0 {
 		return nil
 	}
-	query := `INSERT INTO key_history(key,rev,data) VALUES ` +
-		strings.TrimSuffix(strings.Repeat("(?,?,?),", len(b.args)/3), ",")
-	if _, err := c.ExecContext(ctx, query, b.args...); err != nil {
+	full := len(b.args) == 3*keyPublicationBatchSize
+	statement := b.full
+	if statement == nil || !full {
+		query := `INSERT INTO key_history(key,rev,data) VALUES ` +
+			strings.TrimSuffix(strings.Repeat("(?,?,?),", len(b.args)/3), ",")
+		statement, err = prepareKeyPublication(ctx, c, query)
+		if err != nil {
+			return err
+		}
+		if full {
+			b.full = statement
+		} else {
+			defer closeKeyPublicationStatement(statement, &err)
+		}
+	}
+	if _, err = statement.ExecContext(ctx, b.args...); err != nil {
 		return err
 	}
 	b.args = b.args[:0]
 	return nil
 }
 
-func publishDerivedKeys(ctx context.Context, c selectionPublicationExecutor, revision model.Revision, derived map[string]driver.LockState) error {
+// Reuse the full-batch statement only within this publication on Commit's held
+// immediate connection. Full and tail handles close before the helper returns;
+// a cleanup error cannot hide an earlier prepare, execution or cancellation error.
+func publishDerivedKeys(ctx context.Context, c selectionPublicationExecutor, revision model.Revision, derived map[string]driver.LockState) (err error) {
 	var batch keyPublicationBatch
+	defer batch.close(&err)
 	for _, state := range derived {
 		state.Revision = revision
 		if err := batch.add(ctx, c, state); err != nil {
@@ -54,8 +105,9 @@ func publishDerivedKeys(ctx context.Context, c selectionPublicationExecutor, rev
 	return batch.flush(ctx, c)
 }
 
-func publishBumpKeys(ctx context.Context, c selectionPublicationExecutor, revision model.Revision, bumps map[string]driver.LockKey) error {
+func publishBumpKeys(ctx context.Context, c selectionPublicationExecutor, revision model.Revision, bumps map[string]driver.LockKey) (err error) {
 	var batch keyPublicationBatch
+	defer batch.close(&err)
 	for _, key := range bumps {
 		state := driver.LockState{Key: key, Revision: revision, Present: true}
 		if err := batch.add(ctx, c, state); err != nil {
