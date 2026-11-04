@@ -12,7 +12,6 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
-	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 // Each category mapping is declared independently of either observed result.

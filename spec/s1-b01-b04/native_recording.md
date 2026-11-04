@@ -308,3 +308,19 @@ complete zero value. This test-only encoding avoids the product wire marshaler
 that correctly refuses an empty changeset kind. The settlement oracle still
 conserves every prior receipt, permits exactly the completed current method/key
 addition, and checks the returned commit and all other persisted state.
+
+Parent storage compatibility is a separate Plug extension after the existing
+actual native and public replay. Its real driver fixtures retain captured role
+IDs, titles and priorities while exercising canonical-only, legacy-only and
+matching parent forms. It compares raw source, public projection, complete
+ancestor closure, full and one-row membership, exact write/refusal/quiet-receipt
+boundaries and actual SQL reopen with signed continuations. Refusal inputs
+cover conflicting/two/missing/self/branched/cyclic parents, staged-prefix
+rollback and retained-link reparent/detach/retype. The external target is the
+ID of the real local grandchild: it stays an opaque typed arm even where a
+local interpretation would form a cycle. External detach is a quiet no-op;
+the unresolved direct subject stays excluded from ready. Seven malformed
+stored forms retain their exact bytes and refuse reads across SQL reopen.
+All compatibility proof outputs mark membershipParity=null and do not claim a
+native storage representation or product import. Source fixtures use the
+existing conformance Seed seam; they do not edit or replace driver behavior.
