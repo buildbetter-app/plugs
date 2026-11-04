@@ -1,7 +1,9 @@
 package s1b17b20
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -9,6 +11,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 func instantAt(at time.Time) map[string]any {
@@ -169,6 +172,90 @@ func TestB18InstantHistoryCursorPinsOriginalResolution(t *testing.T) {
 				if reply.Error == nil || reply.Error.Data.Code != "cursor_invalid" || len(reply.Result) != 0 {
 					t.Fatalf("cursor admitted a changed original selector: %+v", reply)
 				}
+			}
+		})
+	}
+}
+
+// These wrappers keep the real driver snapshot and committed rows. Only the
+// page size and explicit read faults are injected; this is resolver fault
+// evidence, not a claim that production storage suffered or repaired a hole.
+type instantLogStore struct {
+	driver.Store
+	mode  string
+	pages int
+}
+
+func (s *instantLogStore) Read(ctx context.Context, v driver.View) (driver.Reader, error) {
+	r, err := s.Store.Read(ctx, v)
+	if err != nil {
+		return nil, err
+	}
+	return &instantLogReader{Reader: r, owner: s}, nil
+}
+
+type instantLogReader struct {
+	driver.Reader
+	owner *instantLogStore
+}
+
+func (r *instantLogReader) Changesets(ctx context.Context, after *driver.Cursor, limit int) ([]model.Changeset, error) {
+	r.owner.pages++
+	switch r.owner.mode {
+	case "truncated":
+		return nil, driver.ErrTruncated{Floor: model.Natural64(1)}
+	case "empty":
+		return nil, nil
+	case "hole":
+		rows, err := r.Reader.Changesets(ctx, after, 2)
+		if len(rows) > 1 {
+			return rows[1:], err
+		}
+		return rows, err
+	default:
+		return r.Reader.Changesets(ctx, after, 1)
+	}
+}
+func TestB18InstantResolverPagesAndFailsClosedOnLogFaults(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			p := newPairedStore(t, engine)
+			rpc := p.rpc(t)
+			created := success[model.Commit](t, "create", rpc.call(t, "", "bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": "one"}}, true))
+			ref := created.Results[0].Ref
+			p.advance(t)
+			at := p.now
+			middle := success[model.Commit](t, "update", rpc.call(t, "", "bead.update", map[string]any{"id": ref, "fields": map[string]any{"title": "two"}}, true))
+			p.advance(t)
+			success[model.Commit](t, "update", rpc.call(t, "", "bead.update", map[string]any{"id": ref, "fields": map[string]any{"title": "three"}}, true))
+			before := b17StateOf(t, p.b17Harness, ref)
+			for _, tc := range []struct{ mode, code string }{{"one-row-pages", ""}, {"truncated", "history_gone"}, {"empty", "internal_error"}, {"hole", "internal_error"}} {
+				t.Run(tc.mode, func(t *testing.T) {
+					wrapped := &instantLogStore{Store: p.store, mode: tc.mode}
+					r, err := service.ReadAsOf(p.ctx, wrapped, &service.AsOf{Instant: &at})
+					if tc.code != "" {
+						var typed *model.Error
+						if r != nil || !errors.As(err, &typed) || typed.Data.Code != tc.code {
+							t.Fatalf("log fault substituted state: reader=%v err=%v", r, err)
+						}
+						if tc.code == "history_gone" && typed.Data.Details["floor"].(model.Revision).String() != "1" {
+							t.Fatal("truncation omitted retained floor")
+						}
+						return
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer r.Close()
+					rows, err := r.Get(p.ctx, []model.Ref{ref})
+					if err != nil || len(rows) != 1 || rows[0].Revision.String() != middle.Revision.String() || r.Snapshot().At.String() != middle.Revision.String() || wrapped.pages != 3 {
+						t.Fatalf("resolver did not exhaust pinned pages: rows=%+v err=%v pages=%d", rows, err, wrapped.pages)
+					}
+				})
+			}
+			after := b17StateOf(t, p.b17Harness, ref)
+			if string(before.Body) != string(after.Body) || len(before.Log) != len(after.Log) || len(before.Versions) != len(after.Versions) || before.Meta.Head.String() != after.Meta.Head.String() {
+				t.Fatal("read fault changed durable history")
 			}
 		})
 	}

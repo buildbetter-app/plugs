@@ -316,7 +316,7 @@
         {
           "name": "asOf",
           "schema": {
-            "$ref": "#/components/schemas/AsOf"
+            "$ref": "#/components/schemas/AsOfSelector"
           }
         },
         {
@@ -4052,7 +4052,7 @@
         {
           "name": "asOf",
           "schema": {
-            "$ref": "#/components/schemas/AsOf"
+            "$ref": "#/components/schemas/AsOfSelector"
           },
           "required": true
         },
@@ -4105,7 +4105,7 @@
         {
           "name": "asOf",
           "schema": {
-            "$ref": "#/components/schemas/AsOf"
+            "$ref": "#/components/schemas/AsOfSelector"
           },
           "required": true
         },
@@ -10902,6 +10902,31 @@
           "asOf"
         ],
         "additionalProperties": false
+      },
+      "AsOfSelector": {
+        "description": "Input selector: exactly one revision address or RFC3339 instant. An instant resolves to the highest committed revision at or before it in one complete pinned changeset snapshot; returned addresses remain concrete revisions. Incomplete retained history refuses history_gone. Current read permission applies.",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/AsOf"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "instant": {
+                "type": "string",
+                "format": "date-time",
+                "description": "RFC3339 instant, with optional nanosecond precision and offset."
+              },
+              "incarnation": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "instant"
+            ],
+            "additionalProperties": false
+          }
+        ]
       }
     },
     "errors": {
@@ -13539,7 +13564,7 @@
     "methodCount": 83,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
     "nameSha256": "0ce6a0ee3927753ec8622351c1337c1de3922a1662eae667196e447fd9c170ef",
-    "descriptorSha256": "02b96a5cd7556b2e602078b7e236d25bddd296b4f7a2e110ae83dca47ad455ad",
+    "descriptorSha256": "9f9d52651cf37214ef68f94065bd7cd533e293cdea69f7b242ee55d955e23c36",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -13796,7 +13821,7 @@
             "name": "asOf",
             "required": false,
             "schema": {
-              "$ref": "#/components/schemas/AsOf"
+              "$ref": "#/components/schemas/AsOfSelector"
             }
           },
           {
@@ -16210,7 +16235,7 @@
             "name": "asOf",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/AsOf"
+              "$ref": "#/components/schemas/AsOfSelector"
             }
           },
           {
@@ -16243,7 +16268,7 @@
             "name": "asOf",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/AsOf"
+              "$ref": "#/components/schemas/AsOfSelector"
             }
           },
           {

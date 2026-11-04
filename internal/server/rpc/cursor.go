@@ -78,23 +78,27 @@ func (c *pageCodec) binding(call Call, p serviceParams) (string, string, error) 
 	if queryFilter == nil {
 		queryFilter = &filter{}
 	}
-	var at *asOf
+	var at *asOfSelector
 	if call.Method == "history.query" {
 		if p.AsOf == nil {
 			return "", "", fmt.Errorf("history requires asOf")
 		}
 		copy := *p.AsOf
+		if copy.Instant != nil {
+			instant := copy.Instant.UTC()
+			copy.Instant = &instant
+		}
 		if copy.Incarnation == "" {
 			copy.Incarnation = c.incarnation
 		}
 		at = &copy
 	}
 	scope, err := hashJSON(struct {
-		Project string  `json:"project"`
-		ViewID  string  `json:"viewId,omitempty"`
-		Filter  *filter `json:"filter"`
-		Query   string  `json:"query,omitempty"`
-		AsOf    *asOf   `json:"asOf,omitempty"`
+		Project string        `json:"project"`
+		ViewID  string        `json:"viewId,omitempty"`
+		Filter  *filter       `json:"filter"`
+		Query   string        `json:"query,omitempty"`
+		AsOf    *asOfSelector `json:"asOf,omitempty"`
 	}{call.Meta.Project, p.ViewID, queryFilter, p.Query, at})
 	return principal, scope, err
 }

@@ -1310,6 +1310,7 @@ spec/s1-b13-b16/slice_test.go
 spec/s1-b17-b20/BUILD.bazel
 spec/s1-b17-b20/README.md
 spec/s1-b17-b20/b17_test.go
+spec/s1-b17-b20/b18_guarded_test.go
 spec/s1-b17-b20/b18_instant_test.go
 spec/s1-b17-b20/b18_test.go
 spec/s1-b17-b20/b19_archive_test.go
@@ -1333,6 +1334,7 @@ spec/s1-b17-b20/reference/b20/beads-run-a.json
 spec/s1-b17-b20/reference/b20/beads-run-b.json
 spec/s1-b17-b20/reference/b20/provenance.json
 spec/s1-b17-b20/reference/b20/record_reference.py
+spec/s1-b17-b20/source_compile.sh
 spec/s1-b17-b20/testdata/recording-1/export.jsonl
 spec/s1-b17-b20/testdata/recording-1/imported.json
 spec/s1-b17-b20/testdata/recording-2/export.jsonl

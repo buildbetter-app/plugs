@@ -47,3 +47,17 @@ deviations. They do not supply new Beads captures, controlled reference-clock
 proof, ephemeral-plane parity, the complete event vocabulary/pruning census,
 production redaction, full native history restore, or canonical native Beads
 inventory/reimport/readback. Those remain separate full-card/I6 requirements.
+
+The fresh B18 selector slice adds input-only `asOf.instant` to `bead.get`,
+`history.get`, and `history.query`. It resolves an RFC3339 instant against one
+complete pinned changeset snapshot, returns a concrete revision address, and
+keeps that address on continuation after an intervening write. Real guarded
+point and query paths retain current authorization. Equal commit instants use
+revision order; an instant before the first commit resolves to the empty
+revision-zero snapshot. A retained-history floor prevents full-log resolution
+and returns `history_gone`; an interior hole or missing terminal page refuses.
+Resolver fault injection is labeled separately from real-store production
+faults. The remote `source_compile` target runs actual Go build/vet and gives
+no test-case credit. This slice does not establish B18 JCS/numeric or complete
+mutator qualification, a genuine public native producer, full history replay,
+or B20 vocabulary/prune/concurrent-writer completeness.
