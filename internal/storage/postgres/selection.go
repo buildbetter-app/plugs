@@ -35,6 +35,14 @@ func (c *selectionCompiler) interval(alias string, at uint64) string {
 	return alias + `.start_revision<=` + p + ` AND (` + alias + `.end_revision IS NULL OR ` + alias + `.end_revision>` + p + `)`
 }
 func (c *selectionCompiler) relation(r *reader, name string, at uint64, overlay bool) error {
+	return c.relationForSources(r, name, at, overlay, nil)
+}
+
+func (c *selectionCompiler) relationForSources(r *reader, name string, at uint64, overlay bool, sources [][]byte) error {
+	sourceSet := map[string]bool{}
+	for _, key := range sources {
+		sourceSet[string(key)] = true
+	}
 	c.planes[name] = selectionPlane{at: at, overlay: overlay}
 	scope := c.bind(r.meta.Incarnation)
 	interval := c.interval("s", at)
@@ -51,6 +59,9 @@ func (c *selectionCompiler) relation(r *reader, name string, at uint64, overlay 
 			if err != nil {
 				return err
 			}
+			if sources != nil && !sourceSet[selectionUnhex(row.SourceKey)] {
+				continue
+			}
 			staged = append(staged, row)
 			if s.Derived.Index.Facts != nil {
 				facts = append(facts, selectionFactsRows(id, s.Derived.Index.Facts)...)
@@ -58,14 +69,25 @@ func (c *selectionCompiler) relation(r *reader, name string, at uint64, overlay 
 		}
 	}
 	exclude := ""
+	if sources != nil {
+		exclude = ` AND s.source_key=ANY(` + c.bind(sources) + `::bytea[])`
+	}
 	if len(shadow) > 0 {
-		exclude = ` AND NOT(s.row_key=ANY(` + c.bind(shadow) + `::bytea[]))`
+		exclude += ` AND NOT(s.row_key=ANY(` + c.bind(shadow) + `::bytea[]))`
 	}
 	base := `SELECT ` + selectionColumns + ` FROM plug_postgres.selection_rows s WHERE s.incarnation=` + scope + ` AND s.layout=2 AND ` + interval + exclude
 	if len(staged) > 0 {
 		base += ` UNION ALL SELECT ` + selectionJSONColumns + ` FROM jsonb_to_recordset(` + c.bind(selectionJSON(staged)) + `::jsonb) AS p(` + selectionJSONLayout + `)`
 	}
-	c.ctes = append(c.ctes, name+`_rows AS NOT MATERIALIZED (`+base+`)`)
+	rowMaterialization := "NOT MATERIALIZED"
+	if sources != nil {
+		// Fence only the already restricted owner domain. Inlining lets a
+		// family predicate choose its population-wide index and apply the
+		// source restriction afterwards, revisiting unrelated rows in every
+		// proof branch. Full-domain selectors retain their original relation.
+		rowMaterialization = "MATERIALIZED"
+	}
+	c.ctes = append(c.ctes, name+`_rows AS `+rowMaterialization+` (`+base+`)`)
 	f := `SELECT ` + prefixSelectionFactColumns("f") + ` FROM plug_postgres.selection_facts f JOIN plug_postgres.selection_rows s ON s.incarnation=f.incarnation AND s.row_key=f.row_key AND s.start_revision=f.start_revision WHERE s.incarnation=` + scope + ` AND s.layout=2 AND ` + interval + exclude
 	if len(facts) > 0 {
 		f += ` UNION ALL SELECT ` + selectionFactJSONColumns + ` FROM jsonb_to_recordset(` + c.bind(selectionJSON(facts)) + `::jsonb) AS p(` + selectionFactJSONLayout + `)`
@@ -358,7 +380,7 @@ func (r *reader) selectionFactCoverage(ctx context.Context, e driver.SelectionEx
 				if overlay && r.writer != nil && at == r.at {
 					if stagedValidity == nil {
 						var err error
-						stagedValidity, err = r.selectionFamilyValidity(ctx, at, true)
+						stagedValidity, err = r.selectionAdmissionValidity(ctx, at)
 						if err != nil {
 							return err
 						}

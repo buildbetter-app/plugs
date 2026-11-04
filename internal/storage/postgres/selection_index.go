@@ -202,10 +202,10 @@ func (t *transaction) selectionSourceChanged(k driver.LockKey) bool {
 	return a || b || c
 }
 
-// Staged admission validates the full thin relation, including hidden and
-// untouched rows. No staged body is reconstructed by this census.
+// Staged admission either carries a mutation-fenced complete proof over the
+// full impacted closure, or executes the original full thin census.
 func (t *transaction) selectionOverlayCovered(ctx context.Context) (bool, error) {
-	valid, err := t.reader.selectionFamilyValidity(ctx, t.at, true)
+	valid, err := t.reader.selectionAdmissionValidity(ctx, t.at)
 	if err != nil {
 		return false, err
 	}

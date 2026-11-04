@@ -3,7 +3,9 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -390,4 +392,454 @@ func explainSelectionPublicationCensus(t *testing.T, r *reader, population int) 
 	t.Logf("W6_LIVE_PROOF_WORK phase=publication_family_proof fixture_beads=%d live_record_scans=%d live_record_row_visits=%v bound=%d qualification=FINITE_CONTROL", population, liveScans, liveVisits, 32*population)
 	t.Logf("W6_HEADER_PROOF_WORK phase=publication_family_proof fixture_beads=%d source_header_scans=%d source_header_row_visits=%v bound=%d qualification=FINITE_CONTROL", population, headerScans, headerVisits, 128*population)
 	t.Logf("W6_EXPLAIN_ANALYZE phase=publication_family_proof fixture_beads=%d census_producer=%d census_scans=%d census_row_visits=%v qualification=FINITE_CONTROL actual_plan=%s", population, producer, scans, visits, raw)
+}
+
+// Mutation tracking is exercised through real statements, including empty
+// statements and TRUNCATE. Each probe rolls back its SQL transaction; neither
+// the old certificate nor the retained read snapshot can absorb its writes.
+func TestSelectionPublicationMutationCertificate(t *testing.T) {
+	ctx := context.Background()
+	s, lease := openCommitQueryTest(t)
+	publishSelectionCensusBatch(t, s, lease, 0)
+	first := pgStartupRead(t, s)
+	requireSelectionCertificate(t, first, true)
+	t.Run("affected_work_1000", func(t *testing.T) { explainSelectionAffectedWork(t, first, 1000) })
+	publishSelectionCensusBatch(t, s, lease, 1000)
+	current := pgStartupRead(t, s)
+	requireSelectionCertificate(t, current, true)
+	t.Run("affected_work_2000", func(t *testing.T) { explainSelectionAffectedWork(t, current, 2000) })
+	for _, watched := range []struct{ table, column string }{
+		{"records", "key"}, {"versions", "key"}, {"states", "key"},
+		{"selection_sources", "key"}, {"selection_rows", "row_key"},
+		{"selection_facts", "row_key"}, {"selection_coverage", "ready"},
+		{"hierarchy_index_coverage", "incarnation"}, {"hierarchy_source_current", "child_key"},
+		{"hierarchy_source_history", "child_key"}, {"graph_link_index_coverage", "incarnation"},
+		{"graph_link_source_current", "source_key"}, {"graph_link_current", "source_key"},
+		{"graph_link_source_history", "source_key"}, {"graph_link_history", "source_key"},
+	} {
+		t.Run(watched.table, func(t *testing.T) {
+			table := "plug_postgres." + watched.table
+			for _, query := range []string{
+				`INSERT INTO ` + table + ` SELECT * FROM ` + table + ` WHERE false`,
+				`UPDATE ` + table + ` SET ` + watched.column + `=` + watched.column + ` WHERE false`,
+				`DELETE FROM ` + table + ` WHERE false`,
+			} {
+				func() {
+					tx, err := s.db.BeginTx(ctx, nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer tx.Rollback()
+					view := &reader{sql: tx, meta: current.meta, at: current.at}
+					requireSelectionCertificate(t, view, true)
+					if _, err = tx.ExecContext(ctx, query); err != nil {
+						t.Fatal(err)
+					}
+					requireSelectionCertificate(t, view, false)
+				}()
+				requireSelectionCertificate(t, pgStartupRead(t, s), true)
+			}
+		})
+	}
+	t.Run("hidden_raw_mutation_forces_full_proof", func(t *testing.T) {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		hidden := selectionRefKey(testRef("pl-census-1999"))
+		if _, err := tx.ExecContext(ctx, `DELETE FROM plug_postgres.selection_rows WHERE family_table='sort_key' AND source_key=$1`, []byte(hidden)); err != nil {
+			t.Fatal(err)
+		}
+		view := &reader{sql: tx, meta: current.meta, at: current.at}
+		view.writer = &transaction{reader: view}
+		requireSelectionCertificate(t, view, false)
+		valid, err := view.selectionAdmissionValidity(ctx, view.at)
+		if err != nil || valid[selectionBeadFamily()] || valid[selectionFamilies()[3]] {
+			t.Fatalf("untouched hidden corruption skipped: %v %v", valid, err)
+		}
+	})
+	t.Run("stale_generation_refused_in_proof_statement", func(t *testing.T) {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		view := &reader{sql: tx, meta: current.meta, at: current.at}
+		_, generation, err := view.selectionCertificate(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM plug_postgres.selection_facts WHERE false`); err != nil {
+			t.Fatal(err)
+		}
+		query, args, err := view.compileSelectionValidityForSources(ctx, view.at, false, [][]byte{}, generation)
+		valid, err := view.readSelectionValidity(ctx, query, args, err)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, yes := range valid {
+			if yes {
+				t.Fatal("old token admitted an empty/false affected domain")
+			}
+		}
+	})
+	t.Run("deleted_envelope_retains_old_source_owner", func(t *testing.T) {
+		ref := testRef("pl-census-0000")
+		key := driver.DerivedRowKey{Table: driver.DerivedAttribute, Key: ref.ID}
+		envelopes := pgStartupRead(t, s)
+		old, err := envelopes.DerivedRows(ctx, key.Table, key.Key)
+		if closeErr := envelopes.Close(); closeErr != nil {
+			t.Fatal(closeErr)
+		}
+		if err != nil || len(old) != 1 {
+			t.Fatalf("old empty envelope=%v %v", old, err)
+		}
+		sentinel, _ := driver.NewClosureSentinel(ref.ID)
+		w, _ := beginTest(t, s, lease, testLock(ref), driver.LockKey{Kind: driver.LockDerived, Derived: &key}, driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel})
+		tx := w.(*transaction)
+		defer tx.Close()
+		if err := tx.PutDerived(ctx, key.Table, old, nil); err != nil {
+			t.Fatal(err)
+		}
+		roots, err := tx.selectionMutationRoots(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, root := range roots {
+			found = found || string(root) == selectionRefKey(ref)
+		}
+		valid, err := tx.reader.selectionAdmissionValidity(ctx, tx.at)
+		if !found || err != nil || valid[selectionFamilies()[1]] {
+			t.Fatalf("removed envelope lost its old owner: roots=%x validity=%v %v", roots, valid, err)
+		}
+	})
+	t.Run("unexpected_in_transaction_source_is_not_carried", func(t *testing.T) {
+		hidden := selectionHex(selectionRefKey(testRef("pl-census-1999")))
+		query := `CREATE FUNCTION plug_postgres.w6_unexpected_source() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN UPDATE plug_postgres.records SET revision=revision WHERE key=decode('` + hidden + `','hex'); RETURN NULL; END; $$;
+CREATE TRIGGER w6_unexpected_source AFTER INSERT ON plug_postgres.states FOR EACH STATEMENT EXECUTE FUNCTION plug_postgres.w6_unexpected_source()`
+		if _, err := s.db.ExecContext(ctx, query); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if _, err := s.db.ExecContext(ctx, `DROP TRIGGER w6_unexpected_source ON plug_postgres.states; DROP FUNCTION plug_postgres.w6_unexpected_source()`); err != nil {
+				t.Error(err)
+			}
+		}()
+		sentinel, _ := driver.NewBeadSentinel("w6-mutation-journal")
+		w, h := beginTest(t, s, lease, driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel})
+		defer w.Close()
+		if err := w.BumpSentinels(ctx, []driver.Sentinel{sentinel}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Commit(ctx, h); err != nil {
+			t.Fatal(err)
+		}
+		if !w.(*transaction).selectionProofCarry {
+			t.Fatal("probe never entered the actual certified-predecessor path")
+		}
+		requireSelectionCertificate(t, pgStartupRead(t, s), false)
+		// The injected statement changes no bytes. Canonical full startup can
+		// therefore rebuild the proof without repairing or hiding corruption.
+		if err := pipeline.BuildSourceIndexes(ctx, s, lease); err != nil {
+			t.Fatal(err)
+		}
+		requireSelectionCertificate(t, pgStartupRead(t, s), true)
+	})
+	t.Run("ordinary_full_proof_cannot_launder_raw_generation", func(t *testing.T) {
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM plug_postgres.selection_facts WHERE false`); err != nil {
+			t.Fatal(err)
+		}
+		tx, h := beginTest(t, s, lease)
+		if _, err := tx.Commit(ctx, h); err != nil {
+			t.Fatal(err)
+		}
+		requireSelectionCertificate(t, pgStartupRead(t, s), false)
+		if err := pipeline.BuildSourceIndexes(ctx, s, lease); err != nil {
+			t.Fatal(err)
+		}
+		requireSelectionCertificate(t, pgStartupRead(t, s), true)
+	})
+	t.Run("post_proof_mutation_rolls_back", func(t *testing.T) {
+		hidden := selectionHex(selectionRefKey(testRef("pl-census-1999")))
+		if _, err := s.db.ExecContext(ctx, `CREATE FUNCTION plug_postgres.w6_late_mutation() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN UPDATE plug_postgres.records SET revision=revision WHERE key=decode('`+hidden+`','hex'); RETURN NULL; END; $$;
+CREATE TRIGGER w6_late_mutation AFTER UPDATE ON plug_postgres.selection_coverage FOR EACH STATEMENT EXECUTE FUNCTION plug_postgres.w6_late_mutation()`); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if _, err := s.db.ExecContext(ctx, `DROP TRIGGER w6_late_mutation ON plug_postgres.selection_coverage; DROP FUNCTION plug_postgres.w6_late_mutation()`); err != nil {
+				t.Error(err)
+			}
+		}()
+		prior, err := s.Meta(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w, h := beginTest(t, s, lease)
+		defer w.Close()
+		if _, err := w.Commit(ctx, h); !errors.Is(err, driver.ErrSelectionUnavailable) {
+			t.Fatalf("mutation after proof was published: %v", err)
+		}
+		after, err := s.Meta(ctx)
+		if err != nil || after.Head.String() != prior.Head.String() {
+			t.Fatalf("late mutation advanced Head: %+v %v", after, err)
+		}
+		requireSelectionCertificate(t, pgStartupRead(t, s), true)
+	})
+	if result, err := first.Select(ctx, pgStartupCountPlan(first)); err != nil || result.Total != 1000 {
+		t.Fatalf("later publication/rebuild changed retained history: %+v %v", result, err)
+	}
+	// TRUNCATE requires AccessExclusive. Release the two snapshots which read
+	// these tables before probing it; generation-only readers hold no such
+	// table locks. Otherwise the control would manufacture a lock wait.
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := current.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("truncate_rolls_back", func(t *testing.T) {
+		meta, err := s.Meta(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		view := &reader{sql: tx, meta: meta, at: mustRevision(meta.Head)}
+		requireSelectionCertificate(t, view, true)
+		if _, err := tx.ExecContext(ctx, `TRUNCATE plug_postgres.records,plug_postgres.versions,plug_postgres.states,plug_postgres.selection_sources,plug_postgres.selection_rows,plug_postgres.selection_facts,plug_postgres.selection_coverage,plug_postgres.hierarchy_index_coverage,plug_postgres.hierarchy_source_current,plug_postgres.hierarchy_source_history,plug_postgres.graph_link_index_coverage,plug_postgres.graph_link_source_current,plug_postgres.graph_link_current,plug_postgres.graph_link_source_history,plug_postgres.graph_link_history`); err != nil {
+			t.Fatal(err)
+		}
+		requireSelectionCertificate(t, view, false)
+		if err := tx.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+		requireSelectionCertificate(t, pgStartupRead(t, s), true)
+	})
+}
+
+func requireSelectionCertificate(t *testing.T, r *reader, want bool) {
+	t.Helper()
+	got, err := r.selectionCertificateClean(context.Background())
+	if err != nil || got != want {
+		t.Fatalf("mutation certificate clean=%t want=%t: %v", got, want, err)
+	}
+}
+
+// Count actual leaf inputs and cache replays for BOTH reverse discovery and
+// restricted family proof. This finite one-source oracle catches a hidden
+// full scan at either population; it does not qualify arbitrary selector plans
+// or arbitrary hierarchy widths. Existing population guards remain separate.
+func explainSelectionAffectedWork(t *testing.T, r *reader, population int) {
+	t.Helper()
+	ctx := context.Background()
+	roots := [][]byte{[]byte(selectionRefKey(testRef("pl-census-0000")))}
+	impacted, err := r.selectionImpacted(ctx, r.at, false, roots)
+	if err != nil || len(impacted) != 1 || string(impacted[0]) != string(roots[0]) {
+		t.Fatalf("one-source closure=%x err=%v", impacted, err)
+	}
+	q1, a1, err := r.compileSelectionImpacted(r.at, false, roots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q2, a2, err := r.compileSelectionValidityForSources(ctx, r.at, false, impacted, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid, err := r.readSelectionValidity(ctx, q2, a2, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, yes := range valid {
+		if !yes {
+			t.Fatal("restricted proof rejected complete independent root")
+		}
+	}
+	visits := float64(0)
+	for phase, query := range []string{q1, q2} {
+		args := [][]any{a1, a2}[phase]
+		var raw []byte
+		if err := r.sql.QueryRowContext(ctx, "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+query, args...).Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		var plan any
+		if err := json.Unmarshal(raw, &plan); err != nil {
+			t.Fatal(err)
+		}
+		var walk func(any)
+		walk = func(value any) {
+			switch node := value.(type) {
+			case map[string]any:
+				relation, _ := node["Relation Name"].(string)
+				kind, _ := node["Node Type"].(string)
+				physical := relation == "records" || relation == "selection_sources" || relation == "selection_rows" || relation == "selection_facts"
+				if physical || kind == "Materialize" || kind == "Memoize" || kind == "CTE Scan" {
+					rows, _ := node["Actual Rows"].(float64)
+					loops, _ := node["Actual Loops"].(float64)
+					removed, _ := node["Rows Removed by Filter"].(float64)
+					rechecked, _ := node["Rows Removed by Index Recheck"].(float64)
+					visits += loops * (rows + removed + rechecked)
+					if physical && strings.Contains(kind, "Seq Scan") && loops > 0 {
+						t.Fatalf("affected source hid a population scan: %s", raw)
+					}
+				}
+				if removed, _ := node["Rows Removed by Join Filter"].(float64); removed > 0 {
+					loops, _ := node["Actual Loops"].(float64)
+					visits += loops * removed
+				}
+				for _, child := range node {
+					walk(child)
+				}
+			case []any:
+				for _, child := range node {
+					walk(child)
+				}
+			}
+		}
+		walk(plan)
+		t.Logf("W6_AFFECTED_EXPLAIN population=%d affected_sources=1 phase=%d actual_plan=%s", population, phase, raw)
+	}
+	if visits > 256 {
+		t.Fatalf("one-source discovery+proof visits=%v exceeds fixed affected bound256", visits)
+	}
+	t.Logf("W6_AFFECTED_PROOF_WORK population=%d affected_sources=1 physical_and_cache_visits=%v bound=256 qualification=FINITE_ONE_SOURCE_CONTROL", population, visits)
+}
+
+func TestSelectionPublicationCertificateKeepsHiddenDescendant(t *testing.T) {
+	ctx := context.Background()
+	s, lease := openCommitQueryTest(t)
+	refs := pgStartupLegacyChain(t, s, lease, 4) // A <- B <- C, plus D
+	if err := pipeline.BuildSourceIndexes(ctx, s, lease); err != nil {
+		t.Fatal(err)
+	}
+	before := pgStartupRead(t, s)
+	requireSelectionCertificate(t, before, true)
+	initial, err := before.selectionImpacted(ctx, before.at, false, [][]byte{[]byte(selectionRefKey(refs[1]))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	query, args, err := before.compileSelectionValidityForSources(ctx, before.at, false, initial, "")
+	initialValidity, err := before.readSelectionValidity(ctx, query, args, err)
+	if err != nil || !initialValidity[selectionFamilies()[3]] {
+		t.Fatalf("valid chain crossing to an untouched ancestor refused: %v %v", initialValidity, err)
+	}
+	old, err := before.Get(ctx, []model.Ref{refs[1]})
+	if err != nil || len(old) != 1 {
+		t.Fatalf("middle source=%v %v", old, err)
+	}
+	record := old[0]
+	record.Body, err = json.Marshal(pipeline.Document{ID: refs[1].ID, Type: "issue", Fields: map[string]any{}, Parent: &refs[3]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := pipeline.PrepareSourceRecord(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldClosure, err := before.DerivedRows(ctx, driver.DerivedAncestorClosure, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	remove := []driver.DerivedRow{}
+	add := []driver.DerivedRow{}
+	keys := append([]driver.LockKey{}, plan.LockKeys()...)
+	sentinel, _ := driver.NewClosureSentinel(refs[1].ID)
+	keys = append(keys, driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel})
+	for _, row := range oldClosure {
+		if driver.SelectionSameRef(*row.Index.Source.Key.Ref, refs[1]) {
+			remove = append(remove, row)
+		}
+	}
+	for depth, target := range []model.Ref{refs[1], refs[3]} {
+		row, err := pipeline.AncestorRow(refs[1].ID, target.ID, uint64(depth))
+		if err != nil {
+			t.Fatal(err)
+		}
+		add = append(add, row)
+	}
+	for _, row := range append(append([]driver.DerivedRow{}, remove...), add...) {
+		key := driver.DerivedRowKey{Table: driver.DerivedAncestorClosure, Key: row.Key}
+		keys = append(keys, driver.LockKey{Kind: driver.LockDerived, Derived: &key})
+	}
+	// The source helper adds its record, graph and bead locks itself.
+	bead, _ := driver.NewBeadSentinel(refs[1].ID)
+	automatic := map[string]bool{}
+	for _, key := range []driver.LockKey{testLock(refs[1]), driver.GraphBlockingSentinelLock, {Kind: driver.LockSentinel, Sentinel: bead}} {
+		id, _ := keyID(key)
+		automatic[id] = true
+	}
+	unique := map[string]driver.LockKey{}
+	for _, key := range keys {
+		id, _ := keyID(key)
+		if !automatic[id] {
+			unique[id] = key
+		}
+	}
+	keys = nil
+	for _, key := range unique {
+		keys = append(keys, key)
+	}
+	tx, h := beginSourceTestWithLocks(t, s, lease, keys, true, refs[1])
+	if err := tx.PutGraphRecord(ctx, record, &refs[3], nil); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := plan.SelectionRows(h.Incarnation, record.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if err := pipeline.PutSelectionDerived(ctx, tx, row.Index.Row.Table, nil, []driver.DerivedRow{row}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := range add {
+		ref, target := refs[1], []model.Ref{refs[1], refs[3]}[i]
+		add[i].Index = &driver.SelectionIndex{Version: driver.SelectionIndexVersion, Row: driver.DerivedRowKey{Table: driver.DerivedAncestorClosure, Key: add[i].Key}, Incarnation: h.Incarnation, Branch: model.Natural64(0), ValueDigest: driver.SelectionDigest(add[i].Value), Source: rows[0].Index.Source, Facts: &driver.SelectionFacts{Kind: driver.SelectionAncestorFact, Rows: []driver.SelectionFact{{Kind: driver.SelectionAncestorFact, Ref: &ref, Target: &target, Depth: uint64(i)}}}}
+	}
+	if err := pipeline.PutSelectionDerived(ctx, tx, driver.DerivedAncestorClosure, remove, add); err != nil {
+		t.Fatal(err)
+	}
+	roots, err := tx.selectionMutationRoots(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldImpact, err := tx.reader.selectionImpacted(ctx, tx.at, false, roots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newImpact, err := tx.reader.selectionImpacted(ctx, tx.at, true, roots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasHidden := func(keys [][]byte) bool {
+		for _, key := range keys {
+			if string(key) == selectionRefKey(refs[2]) {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasHidden(oldImpact) || !hasHidden(newImpact) {
+		t.Fatal("old/new closure omitted untouched descendant C")
+	}
+	valid, err := tx.reader.selectionAdmissionValidity(ctx, tx.at)
+	if err != nil || !valid[selectionBeadFamily()] || valid[selectionFamilies()[3]] {
+		t.Fatalf("staged hidden C stale chain admitted: %v %v", valid, err)
+	}
+	commitSourceTest(t, tx, h)
+	after := pgStartupRead(t, s)
+	requirePGFamily(t, after, selectionFamilies()[3], after.at, false)
+	requireSelectionCertificate(t, after, false)
+	var buildErr error
+	if err := pipeline.BuildSourceIndexes(ctx, pgStartupCaptureStore{Store: s, err: &buildErr}, lease); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(buildErr, driver.ErrSelectionUnavailable) {
+		t.Fatalf("canonical rebuild accepted hidden stale C: %v", buildErr)
+	}
+	requireSelectionCertificate(t, before, true)
 }

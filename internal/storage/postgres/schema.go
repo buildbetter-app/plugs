@@ -243,6 +243,71 @@ CREATE INDEX IF NOT EXISTS selection_facts_scoped_grant
 CREATE INDEX IF NOT EXISTS selection_facts_name
  ON plug_postgres.selection_facts(incarnation,row_key,name,start_revision);
 
+-- A prior thin proof may be carried only while every physical mutation is
+-- accounted for. BEFORE STATEMENT also fences empty DML and TRUNCATE, and
+-- takes the same row lock before a raw writer can change any watched row.
+-- This counter is transactional: failed writes and rollback restore it.
+CREATE TABLE IF NOT EXISTS plug_postgres.selection_mutation_fence (
+ singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+ generation numeric NOT NULL DEFAULT 0 CHECK (generation>=0),
+ certified_generation numeric, incarnation text, head numeric(20,0), format integer,
+ untracked boolean NOT NULL DEFAULT false
+);
+INSERT INTO plug_postgres.selection_mutation_fence(singleton) VALUES(true) ON CONFLICT DO NOTHING;
+CREATE TABLE IF NOT EXISTS plug_postgres.selection_mutation_keys (key bytea PRIMARY KEY);
+CREATE OR REPLACE FUNCTION plug_postgres.selection_mutated() RETURNS trigger
+ LANGUAGE plpgsql AS $selection_mutated$
+ BEGIN
+  UPDATE plug_postgres.selection_mutation_fence SET generation=generation+1,untracked=untracked OR TG_OP='TRUNCATE' WHERE singleton;
+  IF NOT FOUND THEN RAISE EXCEPTION 'selection mutation fence missing'; END IF;
+  RETURN NULL;
+ END;
+ $selection_mutated$;
+-- Journal only opaque identities, without converting/copying a document or
+-- logical-state payload. OLD and NEW owners both survive replacement/deletion.
+CREATE OR REPLACE FUNCTION plug_postgres.selection_mutated_key() RETURNS trigger
+ LANGUAGE plpgsql AS $selection_mutated_key$
+ DECLARE old_key bytea; new_key bytea;
+ BEGIN
+  IF TG_TABLE_NAME IN ('records','versions','states','selection_sources') THEN
+   IF TG_OP<>'INSERT' THEN old_key:=OLD.key; END IF;
+   IF TG_OP<>'DELETE' THEN new_key:=NEW.key; END IF;
+  ELSIF TG_TABLE_NAME IN ('hierarchy_source_current','hierarchy_source_history') THEN
+   IF TG_OP<>'INSERT' THEN old_key:=OLD.child_key; END IF;
+   IF TG_OP<>'DELETE' THEN new_key:=NEW.child_key; END IF;
+  ELSIF TG_TABLE_NAME='selection_facts' THEN
+   IF TG_OP<>'INSERT' THEN
+    SELECT source_key INTO STRICT old_key FROM plug_postgres.selection_rows WHERE incarnation=OLD.incarnation AND row_key=OLD.row_key AND start_revision=OLD.start_revision;
+   END IF;
+   IF TG_OP<>'DELETE' THEN
+    SELECT source_key INTO STRICT new_key FROM plug_postgres.selection_rows WHERE incarnation=NEW.incarnation AND row_key=NEW.row_key AND start_revision=NEW.start_revision;
+   END IF;
+  ELSE
+   IF TG_OP<>'INSERT' THEN old_key:=OLD.source_key; END IF;
+   IF TG_OP<>'DELETE' THEN new_key:=NEW.source_key; END IF;
+  END IF;
+  INSERT INTO plug_postgres.selection_mutation_keys(key) SELECT old_key WHERE old_key IS NOT NULL UNION SELECT new_key WHERE new_key IS NOT NULL ON CONFLICT DO NOTHING;
+  IF TG_OP='DELETE' THEN RETURN OLD; END IF;
+  RETURN NEW;
+ END;
+ $selection_mutated_key$;
+DO $selection_triggers$
+DECLARE watched text;
+BEGIN
+ FOREACH watched IN ARRAY ARRAY['records','versions','states','selection_sources','selection_rows','selection_facts','selection_coverage','hierarchy_index_coverage','hierarchy_source_current','hierarchy_source_history','graph_link_index_coverage','graph_link_source_current','graph_link_current','graph_link_source_history','graph_link_history'] LOOP
+  EXECUTE format('CREATE OR REPLACE TRIGGER selection_mutated BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON plug_postgres.%I FOR EACH STATEMENT EXECUTE FUNCTION plug_postgres.selection_mutated()',watched);
+  EXECUTE format('ALTER TABLE plug_postgres.%I ENABLE ALWAYS TRIGGER selection_mutated',watched);
+  IF watched NOT IN ('selection_coverage','hierarchy_index_coverage','graph_link_index_coverage') THEN
+   EXECUTE format('CREATE OR REPLACE TRIGGER selection_mutated_key BEFORE INSERT OR UPDATE OR DELETE ON plug_postgres.%I FOR EACH ROW EXECUTE FUNCTION plug_postgres.selection_mutated_key()',watched);
+   EXECUTE format('ALTER TABLE plug_postgres.%I ENABLE ALWAYS TRIGGER selection_mutated_key',watched);
+  END IF;
+ END LOOP;
+END;
+$selection_triggers$;
+-- Reverse closure probes must drive by target, not by every owner's row key.
+CREATE INDEX IF NOT EXISTS selection_facts_affected_target
+ ON plug_postgres.selection_facts(incarnation,target_key,row_key,start_revision);
+
 `
 
 // allocator_states is intentionally additive to schema version 1. initialize

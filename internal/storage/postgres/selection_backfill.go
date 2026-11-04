@@ -21,6 +21,10 @@ type selectionBackfill struct {
 func (t *transaction) prepareSelectionBackfill(ctx context.Context, projects []driver.GraphSourceProjection) (*selectionBackfill, error) {
 	b := &selectionBackfill{tx: t, projects: projects, families: map[driver.SelectionProjectionFamily]bool{}, expected: map[string]bool{}, sources: map[string]bool{}}
 	building := false
+	clean, err := t.selectionCertificateClean(ctx)
+	if err != nil {
+		return nil, err
+	}
 	for _, p := range projects {
 		if err := p.Validate(); err != nil {
 			return nil, err
@@ -33,8 +37,8 @@ func (t *transaction) prepareSelectionBackfill(ctx context.Context, projects []d
 			if err != nil && !isSelectionUnavailable(err) {
 				return nil, err
 			}
-			b.families[f] = err != nil
-			building = building || err != nil
+			b.families[f] = err != nil || !clean
+			building = building || b.families[f]
 		}
 	}
 	if !building {
@@ -283,11 +287,31 @@ func (b *selectionBackfill) activate(ctx context.Context, q sourceindex.SQL) err
 	if err = b.requireNoOrphans(ctx, q); err != nil {
 		return err
 	}
+	generation, err := b.tx.reader.selectionProofGeneration(ctx)
+	if err != nil {
+		return err
+	}
+	statements := 0
 	for family, building := range b.families {
 		if !building {
 			continue
 		}
-		if _, err = q.ExecContext(ctx, `INSERT INTO plug_postgres.selection_coverage(incarnation,branch,family_table,fact_kind,format,start_revision,built_from,certified_through,ready) VALUES($1,0,$2,$3,$4,$5,$5,$5,true)`, meta.Incarnation, string(family.Table), string(family.Kind), family.Version, meta.Head.String()); err != nil {
+		if _, err = q.ExecContext(ctx, `INSERT INTO plug_postgres.selection_coverage(incarnation,branch,family_table,fact_kind,format,start_revision,built_from,certified_through,ready) VALUES($1,0,$2,$3,$4,$5,$5,$5,true) ON CONFLICT(incarnation,branch,family_table,fact_kind,format,start_revision) DO UPDATE SET built_from=excluded.built_from,certified_through=excluded.certified_through,ready=true`, meta.Incarnation, string(family.Table), string(family.Kind), family.Version, meta.Head.String()); err != nil {
+			return err
+		}
+		// PostgreSQL fires both INSERT and UPDATE statement triggers for
+		// ON CONFLICT DO UPDATE, including when no row conflicts.
+		statements += 2
+	}
+	if err = b.tx.reader.requireSelectionProofGeneration(ctx, generation, statements); err != nil {
+		return err
+	}
+	complete := true
+	for _, family := range selectionFamilies() {
+		complete = complete && b.families[family]
+	}
+	if complete {
+		if err = b.tx.reader.certifySelectionProof(ctx, valid); err != nil {
 			return err
 		}
 	}

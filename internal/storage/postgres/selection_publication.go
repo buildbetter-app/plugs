@@ -14,7 +14,10 @@ func (t *transaction) prepareSelectionPublication(ctx context.Context) error {
 	if err := t.validateSelectionWrites(ctx, t.derived); err != nil {
 		return err
 	}
-	return t.sql.QueryRowContext(ctx, `SELECT selection_virgin FROM plug_postgres.meta WHERE singleton`).Scan(&t.selectionVirgin)
+	if err := t.sql.QueryRowContext(ctx, `SELECT selection_virgin FROM plug_postgres.meta WHERE singleton`).Scan(&t.selectionVirgin); err != nil {
+		return err
+	}
+	return t.prepareSelectionProof(ctx)
 }
 func (t *transaction) committedSelectionState(state driver.LockState, revision model.Revision) driver.LockState {
 	if state.Derived != nil {
