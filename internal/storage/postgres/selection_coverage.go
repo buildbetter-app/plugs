@@ -120,9 +120,6 @@ func (r *reader) compileSelectionValidityForSources(ctx context.Context, at uint
 		headerShadow = append(headerShadow, []byte(selectionUnhex(h.Key)))
 	}
 	hs := `SELECT key,revision,present,digest,kind FROM plug_postgres.selection_sources h WHERE h.incarnation=` + inc + ` AND ` + c.interval("h", at)
-	if sources != nil {
-		hs += ` AND h.key=ANY(` + c.bind(sources) + `::bytea[])`
-	}
 	if len(headerShadow) > 0 {
 		hs += ` AND NOT(h.key=ANY(` + c.bind(headerShadow) + `::bytea[]))`
 	}
@@ -130,21 +127,11 @@ func (r *reader) compileSelectionValidityForSources(ctx context.Context, at uint
 		hs += ` UNION ALL SELECT decode(key,'hex'),revision::numeric,present,decode(digest,'hex'),kind FROM jsonb_to_recordset(` + c.bind(selectionJSON(headers)) + `::jsonb) AS h(key text,revision text,present boolean,digest text,kind text)`
 	}
 	ls := `SELECT key,revision FROM plug_postgres.records WHERE kind='bead' AND NOT deleted`
-	if sources != nil {
-		ls += ` AND key=ANY(` + c.bind(sources) + `::bytea[])`
-	}
 	if len(shadow) > 0 {
 		ls += ` AND NOT(key=ANY(` + c.bind(shadow) + `::bytea[]))`
 	}
 	if len(live) > 0 {
 		ls += ` UNION ALL SELECT decode(key,'hex'),revision::numeric FROM jsonb_to_recordset(` + c.bind(selectionJSON(live)) + `::jsonb) AS h(key text,revision text)`
-	}
-	// Staged sources were enumerated before restriction; restrict their UNION
-	// arms too. This cannot make a missing envelope outside the scope valid:
-	// every changed old/new owner and its descendants is in sources.
-	if sources != nil {
-		hs = `SELECT * FROM (` + hs + `) scoped_headers WHERE key=ANY(` + c.bind(sources) + `::bytea[])`
-		ls = `SELECT * FROM (` + ls + `) scoped_live WHERE key=ANY(` + c.bind(sources) + `::bytea[])`
 	}
 	// Inline the header relation so each source-key equality can use the
 	// selection_sources primary key. Materializing all headers makes nested
@@ -153,10 +140,28 @@ func (r *reader) compileSelectionValidityForSources(ctx context.Context, at uint
 	// Live-source freshness joins likewise need the records primary key rather
 	// than a full materialized live-domain rescan for every projection row.
 	c.ctes = append(c.ctes, `proof_headers AS NOT MATERIALIZED (`+hs+`)`, `proof_live AS NOT MATERIALIZED (`+ls+`)`)
+	censusLive := "proof_live"
+	if sources != nil {
+		// Only the complete live-source census needs a domain restriction.
+		// Freshness/header lookups are already anchored to restricted proof_rows
+		// by source-key equality. Repeating ANY(sources) inside their primary-key
+		// probes makes PostgreSQL preprocess the whole array on every rescan.
+		// Scope the live census, including its staged UNION arm, separately;
+		// missing envelopes still fail for every affected old/new live source.
+		c.ctes = append(c.ctes, `proof_scoped_live AS NOT MATERIALIZED (SELECT * FROM proof_live WHERE key=ANY(`+c.bind(sources)+`::bytea[]))`)
+		censusLive = "proof_scoped_live"
+	}
+	// Mixed table statistics can otherwise turn the equality into a join
+	// filter and materialize every header inside a nested loop. Keep the key
+	// restriction inside a lateral lookup boundary, including for full audits.
+	// OFFSET 0 preserves all matching historical/staged headers and duplicates.
+	headerJoin := func(key string) string {
+		return ` LEFT JOIN LATERAL (SELECT * FROM proof_headers WHERE key=` + key + ` OFFSET 0) h ON true`
+	}
 	// The relation includes ALL current closure rows, including untouched rows
 	// after an ancestor move. CutClosure and derived-source domains are separate.
 	c.ctes = append(c.ctes, `proof_beads AS MATERIALIZED (SELECT bead_key,parent_key,source_key FROM proof_rows WHERE family_table='sort_key' AND source_kind='record' AND bead_key IS NOT NULL)`,
-		`proof_ancestors AS MATERIALIZED (SELECT r.source_key,f.ref_key,f.target_key,f.depth FROM proof_rows r JOIN proof_facts f ON f.row_key=r.row_key LEFT JOIN proof_headers h ON h.key=r.source_key WHERE (h.kind='bead' OR h.key IS NULL AND r.source_present) AND r.family_table='ancestor_closure' AND r.source_kind='record' AND r.fact_kind='ancestor')`,
+		`proof_ancestors AS MATERIALIZED (SELECT r.source_key,f.ref_key,f.target_key,f.depth FROM proof_rows r JOIN proof_facts f ON f.row_key=r.row_key`+headerJoin("r.source_key")+` WHERE (h.kind='bead' OR h.key IS NULL AND r.source_present) AND r.family_table='ancestor_closure' AND r.source_kind='record' AND r.fact_kind='ancestor')`,
 		selectionParentChainRelationSQL)
 	// Count the complete relation once, rather than running an aggregate for
 	// each live source in every family while publication holds the lease fence.
@@ -165,7 +170,7 @@ func (r *reader) compileSelectionValidityForSources(ctx context.Context, at uint
 	// count as zero. Orphan groups already fail the independent freshness proof
 	// below; retaining them here prevents reduction back to a left join. All
 	// untouched rows and freshness/identity/parent-chain proofs remain.
-	c.ctes = append(c.ctes, `proof_census AS MATERIALIZED (SELECT r.source_key,r.family_table,coalesce(r.fact_kind,'') fact_kind,count(*) n FROM proof_rows r LEFT JOIN proof_headers h ON h.key=r.source_key WHERE (h.kind='bead' OR h.key IS NULL AND r.source_present) AND r.source_kind='record' GROUP BY r.source_key,r.family_table,coalesce(r.fact_kind,''))`)
+	c.ctes = append(c.ctes, `proof_census AS MATERIALIZED (SELECT r.source_key,r.family_table,coalesce(r.fact_kind,'') fact_kind,count(*) n FROM proof_rows r`+headerJoin("r.source_key")+` WHERE (h.kind='bead' OR h.key IS NULL AND r.source_present) AND r.source_kind='record' GROUP BY r.source_key,r.family_table,coalesce(r.fact_kind,''))`)
 	chain := selectionParentChainSQL
 	if sources != nil {
 		// Impacted chains still compare every target with its current parent,
@@ -182,12 +187,12 @@ func (r *reader) compileSelectionValidityForSources(ctx context.Context, at uint
 	branches := []string{}
 	for _, family := range selectionFamilies() {
 		table, kind := c.bind(string(family.Table)), c.bind(string(family.Kind))
-		rows := `SELECT r.* FROM proof_rows r LEFT JOIN proof_headers h ON h.key=r.source_key WHERE (h.kind='bead' OR h.key IS NULL AND r.source_present) AND source_kind='record' AND family_table=` + table + ` AND coalesce(fact_kind,'')=` + kind
+		rows := `SELECT r.* FROM proof_rows r` + headerJoin("r.source_key") + ` WHERE (h.kind='bead' OR h.key IS NULL AND r.source_present) AND source_kind='record' AND family_table=` + table + ` AND coalesce(fact_kind,'')=` + kind
 		countCheck := `coalesce(census.n,0)=0`
 		if family.Kind == "" {
 			countCheck = `coalesce(census.n,0)<>1`
 		}
-		valid := `NOT EXISTS(SELECT 1 FROM proof_live l FULL JOIN (SELECT source_key,n FROM proof_census WHERE family_table=` + table + ` AND fact_kind=` + kind + `) census ON census.source_key=l.key WHERE l.key IS NULL OR ` + countCheck + `) AND NOT EXISTS(SELECT 1 FROM (` + rows + `) x LEFT JOIN proof_live l ON l.key=x.source_key LEFT JOIN proof_headers h ON h.key=x.source_key WHERE l.key IS NULL OR h.key IS NULL OR h.kind<>'bead' OR NOT h.present OR NOT x.source_present OR h.revision IS DISTINCT FROM x.source_revision OR l.revision IS DISTINCT FROM x.source_revision OR h.digest IS DISTINCT FROM x.source_digest)`
+		valid := `NOT EXISTS(SELECT 1 FROM ` + censusLive + ` l FULL JOIN (SELECT source_key,n FROM proof_census WHERE family_table=` + table + ` AND fact_kind=` + kind + `) census ON census.source_key=l.key WHERE l.key IS NULL OR ` + countCheck + `) AND NOT EXISTS(SELECT 1 FROM (` + rows + `) x LEFT JOIN proof_live l ON l.key=x.source_key` + headerJoin("x.source_key") + ` WHERE l.key IS NULL OR h.key IS NULL OR h.kind<>'bead' OR NOT h.present OR NOT x.source_present OR h.revision IS DISTINCT FROM x.source_revision OR l.revision IS DISTINCT FROM x.source_revision OR h.digest IS DISTINCT FROM x.source_digest)`
 		if family.Kind == "" {
 			valid += ` AND NOT EXISTS(SELECT 1 FROM (` + rows + `) x WHERE x.bead_key IS DISTINCT FROM x.source_key)`
 		}
