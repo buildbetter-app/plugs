@@ -53,9 +53,7 @@ func TestEdgeV2ReaderRetainsTypedRefusalsAndSourceEquality(t *testing.T) {
 	}{
 		{"local-custom", func(r *Record) { r.Body["type"], r.Source.Fields["type"] = "custom", "custom" }},
 		{"workflow-target", func(r *Record) {
-			r.Source.Fields["depends_on_issue_id"] = nil
-			r.Source.Fields["depends_on_wisp_id"] = "pl-2"
-			r.Body["target_kind"] = "depends_on_wisp_id"
+			setFixtureWorkflowTarget(r, "pl-2")
 		}},
 		{"dangling", func(r *Record) { r.Source.Fields["depends_on_issue_id"], r.Body["to"] = "pl-absent", "pl-absent" }},
 		{"multiple-arms", func(r *Record) { r.Source.Fields["depends_on_external"] = "external:1" }},
