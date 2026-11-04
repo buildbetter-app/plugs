@@ -28,7 +28,7 @@ type GuardedService struct {
 	lease           driver.ActiveLease
 	commitEmpty     func(context.Context, model.PrincipalRef, service.ClaimNextRequest, model.WriteMeta, port.ClaimNextReadyProbe) (port.WriteOutcome, error)
 	claimNextPage   func(context.Context, model.PrincipalRef, service.ReadyRequest) (service.BeadPage, error)
-	readyCandidates func(context.Context, service.ReadyRequest, driver.Reader) ([]service.Bead, error)
+	readyCandidates func(context.Context, model.PrincipalRef, service.ReadyRequest, driver.Reader) ([]service.Bead, error)
 }
 
 var _ rpc.Service = (*GuardedService)(nil)
@@ -357,15 +357,58 @@ func (s *GuardedService) CreateWithOutcome(ctx context.Context, by model.Princip
 	return s.delegate.CreateWithOutcome(ctx, by, req, meta)
 }
 func (s *GuardedService) UpdateWithOutcome(ctx context.Context, by model.PrincipalRef, req service.UpdateRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	if workflowItemRef(req.ID) {
+		return s.workflowWrite(ctx, by, meta.Project, func() (port.WriteOutcome, error) {
+			return s.delegate.UpdateWithOutcome(ctx, by, req, meta)
+		})
+	}
 	return s.delegate.UpdateWithOutcome(ctx, by, req, meta)
 }
 func (s *GuardedService) ApplyWithOutcome(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) (port.WriteOutcome, error) {
 	return s.delegate.ApplyWithOutcome(ctx, by, cs, meta)
 }
 func (s *GuardedService) LinkWithOutcome(ctx context.Context, by model.PrincipalRef, req service.LinkRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	if workflowItemRef(req.From) || workflowItemRef(req.To) {
+		return s.workflowWrite(ctx, by, meta.Project, func() (port.WriteOutcome, error) {
+			if !workflowItemRef(req.From) {
+				if allowed, err := s.checkRead(ctx, by, "bead.get", req.From); err != nil {
+					return port.WriteOutcome{}, err
+				} else if !allowed {
+					return port.WriteOutcome{}, &model.Error{Data: model.ErrorData{Code: "forbidden"}}
+				}
+			}
+			if !workflowItemRef(req.To) {
+				if allowed, err := s.checkRead(ctx, by, "bead.get", req.To); err != nil {
+					return port.WriteOutcome{}, err
+				} else if !allowed {
+					return port.WriteOutcome{}, &model.Error{Data: model.ErrorData{Code: "forbidden"}}
+				}
+			}
+			return s.delegate.LinkWithOutcome(ctx, by, req, meta)
+		})
+	}
 	return s.delegate.LinkWithOutcome(ctx, by, req, meta)
 }
 func (s *GuardedService) UnlinkWithOutcome(ctx context.Context, by model.PrincipalRef, req service.LinkRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	if workflowItemRef(req.From) || workflowItemRef(req.To) {
+		return s.workflowWrite(ctx, by, meta.Project, func() (port.WriteOutcome, error) {
+			if !workflowItemRef(req.From) {
+				if allowed, err := s.checkRead(ctx, by, "bead.get", req.From); err != nil {
+					return port.WriteOutcome{}, err
+				} else if !allowed {
+					return port.WriteOutcome{}, &model.Error{Data: model.ErrorData{Code: "forbidden"}}
+				}
+			}
+			if !workflowItemRef(req.To) {
+				if allowed, err := s.checkRead(ctx, by, "bead.get", req.To); err != nil {
+					return port.WriteOutcome{}, err
+				} else if !allowed {
+					return port.WriteOutcome{}, &model.Error{Data: model.ErrorData{Code: "forbidden"}}
+				}
+			}
+			return s.delegate.UnlinkWithOutcome(ctx, by, req, meta)
+		})
+	}
 	return s.delegate.UnlinkWithOutcome(ctx, by, req, meta)
 }
 func (s *GuardedService) ClaimWithOutcome(ctx context.Context, by model.PrincipalRef, req service.ClaimRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
@@ -584,7 +627,7 @@ func (s *GuardedService) claimNextReadyProbe(by model.PrincipalRef, req service.
 		if s.readyCandidates == nil {
 			return false, &model.Error{Message: "authorization service is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
 		}
-		items, err := s.readyCandidates(ctx, service.ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter}, reader)
+		items, err := s.readyCandidates(ctx, by, service.ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter}, reader)
 		if err != nil {
 			return false, err
 		}
