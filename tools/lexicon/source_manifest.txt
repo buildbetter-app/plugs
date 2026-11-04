@@ -613,6 +613,7 @@ internal/integration/postgresacceptance/b15_comments_test.go
 internal/integration/postgresacceptance/b15_page_test.go
 internal/integration/postgresacceptance/b16_labels_test.go
 internal/integration/postgresacceptance/b26_lifecycle_test.go
+internal/integration/postgresacceptance/b26_move_body_test.go
 internal/integration/postgresacceptance/engine_test.go
 internal/integration/postgresacceptance/fixture_test.go
 internal/integration/postgresacceptance/history_test.go
@@ -1179,6 +1180,7 @@ plugins/workflow/BUILD.bazel
 plugins/workflow/atomic.go
 plugins/workflow/manifest.json
 plugins/workflow/native.go
+plugins/workflow/scheduling.go
 plugins/workflow/workflow.go
 plugins/workflow/workflow_test.go
 scripts/ci/BUILD.bazel

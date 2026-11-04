@@ -1016,6 +1016,10 @@ func itemReadyWithResolver(ctx context.Context, value persisted, item itemState,
 	if blocked {
 		return false, nil
 	}
+	ancestorsReady, err := itemAncestorsReady(ctx, value, item, by, meta, resolver)
+	if err != nil || !ancestorsReady {
+		return false, err
+	}
 	if item.Status == "open" {
 		return item.Claim == nil || !now.Before(item.Claim.ExpiresAt), nil
 	}
@@ -1151,6 +1155,39 @@ func (p *Provider) OrdinaryBlockerSnapshot(ctx context.Context, by model.Princip
 		return nil, driver.CheckpointExpectation{}, err
 	}
 	return ordinaryBlocked(value, ids, meta), expectation, nil
+}
+
+// OrdinaryParentSnapshot projects the already-admitted typed mixed parents
+// and their readiness from one checkpoint read. It never performs cleanup or
+// publication. Ordinary claims join its expectation to the existing Writer
+// fence; read callers supply their already-pinned complete ordinary graph.
+func (p *Provider) OrdinaryParentSnapshot(ctx context.Context, by model.PrincipalRef, ids []string, meta model.WriteMeta, resolver BlockerResolver) (map[string]OrdinaryParentFact, driver.CheckpointExpectation, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	facts := make(map[string]OrdinaryParentFact, len(ids))
+	if !p.persistent {
+		return facts, driver.CheckpointExpectation{}, nil
+	}
+	value, revision, err := p.readState(ctx)
+	if err != nil {
+		return nil, driver.CheckpointExpectation{}, err
+	}
+	r := parentReadiness{ctx: ctx, value: value, by: by, meta: meta, resolver: resolver, visiting: map[string]bool{}, done: map[string]bool{}}
+	for _, id := range ids {
+		fact, err := r.ordinary(id)
+		if err != nil {
+			return nil, driver.CheckpointExpectation{}, err
+		}
+		facts[id] = fact
+	}
+	host, ok := p.state.(interface {
+		PrepareCheckpointExpectation(context.Context, string, pluginapi.Revision) (driver.CheckpointExpectation, error)
+	})
+	if !ok {
+		return nil, driver.CheckpointExpectation{}, driver.ErrUnsupported
+	}
+	expectation, err := host.PrepareCheckpointExpectation(ctx, stateKey, revision)
+	return facts, expectation, err
 }
 
 // Workflow children are the typed Parent and legacy parent-child edges in

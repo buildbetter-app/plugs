@@ -231,11 +231,19 @@ func (s *Service) readyItems(ctx context.Context, by model.PrincipalRef, req Rea
 	graphIDs := sortedIDs(graph)
 	workflowBlocked := map[string]bool{}
 	if s.workflow != nil {
-		blocked, err := s.workflow.OrdinaryBlocked(ctx, by, graphIDs, workflowMeta(by, "bead.ready", req.Project, req.Agent))
+		resolver := &workflowCoreResolver{service: s, principal: by, graph: graph}
+		facts, _, err := s.workflow.OrdinaryParentSnapshot(ctx, by, graphIDs, workflowMeta(by, "bead.ready", req.Project, req.Agent), resolver)
 		if err != nil {
 			return nil, nil, err
 		}
-		workflowBlocked = blocked
+		lookup := func(id string) (workflowplugin.OrdinaryParentFact, error) { return facts[id], nil }
+		for _, id := range graphIDs {
+			blocked, err := resolver.mixedParentBlocked(ctx, model.RefByID(id, model.Natural64(0)), lookup)
+			if err != nil {
+				return nil, nil, err
+			}
+			workflowBlocked[id] = blocked
+		}
 	}
 	// Membership is always evaluated against the complete current graph. P74
 	// applies only to the order of this exact set, before any page is cut.
