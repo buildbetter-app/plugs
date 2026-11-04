@@ -774,7 +774,16 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		if len(labels) != 0 {
 			fields["labels"] = append([]string(nil), labels...)
 		}
-		docs[source.ID] = pipeline.Document{Labels: labels, ID: source.ID, Type: targetType, Project: source.Project, Fields: fields, Metadata: metadata}
+		doc := pipeline.Document{Labels: labels, ID: source.ID, Type: targetType, Project: source.Project, Fields: fields, Metadata: metadata}
+		// The admitted source row is the creation authority. Its exact value
+		// remains in reserved source metadata above; absence stays unknown.
+		// Restore time, version time and incomplete history cannot fill it in.
+		createdAt, err := sourceCreationTime(source)
+		if err != nil {
+			return restorePlan{}, err
+		}
+		doc.CreatedAt = createdAt
+		docs[source.ID] = doc
 	}
 
 	if profile != nil {
@@ -1076,6 +1085,22 @@ func cloneValue(value any) any {
 	default:
 		return value
 	}
+}
+
+// sourceCreationTime accepts only the admitted row's own creation field.
+// It has no clock or history input and never substitutes the canonical mirror.
+func sourceCreationTime(source dumpformat.Record) (*time.Time, error) {
+	raw := source.Source.Fields["created_at"]
+	if raw == nil {
+		return nil, nil
+	}
+	stamp, ok := raw.(string)
+	createdAt, err := time.Parse(time.RFC3339Nano, stamp)
+	if !ok || err != nil || createdAt.IsZero() {
+		return nil, fmt.Errorf("bead %s has invalid source creation instant", source.ID)
+	}
+	createdAt = createdAt.UTC()
+	return &createdAt, nil
 }
 
 // importedSourceLink preserves the typed endpoint before any local lookup.

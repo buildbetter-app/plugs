@@ -120,6 +120,9 @@ type PagePosition struct {
 	// ReadyMembership binds guarded aggregate paging to the complete
 	// post-authorization order, including ordinary core rows.
 	ReadyMembership string
+	// A trusted internal Ready drain may reuse decoded source bytes. The
+	// guarded public position is built separately and never carries this state.
+	readyGraph *readyGraphSelection
 }
 
 // WorkflowPageSnapshot identifies one atomic provider ready observation. Its
@@ -257,7 +260,21 @@ type ReadyRequest struct {
 	// from the wire; claimNext derives it from the selector and request key so
 	// equal-priority candidates can spread without changing bead.ready order.
 	ClaimNextSeed string
+	// authorizationFilter is a composition-root capability used by the guarded
+	// RPC adapter. The core service applies it to each complete ready candidate
+	// before cutting a page; it is never populated from wire input.
+	authorizationFilter ReadyAuthorizer
+	// Only the trusted guarded capability requests complete internal order metadata.
+	readySourceBinding bool
+	readyGraph         *readyGraphSelection
 }
+
+// ReadyAuthorizer is the narrow host-to-core read seam for a compiled finite
+// authorization predicate. The reader is the exact snapshot used to build
+// the ready graph, so an adapter can join its fact reads to that snapshot.
+// Check-only authorization deliberately leaves this nil and uses the guarded
+// post-filter cap instead.
+type ReadyAuthorizer func(context.Context, driver.Reader, Bead) (bool, error)
 
 type CreateRequest struct {
 	Type   string

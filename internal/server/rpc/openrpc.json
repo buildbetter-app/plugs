@@ -4357,14 +4357,6 @@
         ],
         "additionalProperties": false
       },
-      "LinkTargetKind": {
-        "type": "string",
-        "enum": [
-          "local",
-          "external"
-        ],
-        "description": "Omission is local. Explicit external targets retain an exact nonempty branch-zero ID and are never resolved against local beads."
-      },
       "WorkflowRelationSpec": {
         "type": "object",
         "properties": {
@@ -4465,6 +4457,14 @@
           "item"
         ],
         "additionalProperties": false
+      },
+      "LinkTargetKind": {
+        "type": "string",
+        "enum": [
+          "local",
+          "external"
+        ],
+        "description": "Omission is local. Explicit external targets retain an exact nonempty branch-zero ID and are never resolved against local beads."
       }
     },
     "errors": {

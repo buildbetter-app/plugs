@@ -83,6 +83,7 @@ type prepared struct {
 	graphValidated    bool
 	graphPreserved    bool
 	checkpointReads   map[string]uint64
+	readySort         readySortPlan
 }
 
 func failure(code model.ErrorCode, message string) error {
@@ -362,6 +363,11 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				if e != nil {
 					return nil, e
 				}
+				next := current.doc
+				next.Parent = parent
+				if _, e := HierarchyParent(next); e != nil {
+					return nil, e
+				}
 				op.Reparent.Target, op.Reparent.Parent = target, parent
 				current.doc.Parent = parent
 				current.setBy["parent"] = "request"
@@ -428,6 +434,16 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				if e := p.loadLinkTarget(ctx, to, targetKind); e != nil {
 					return nil, e
 				}
+				localParentChild := kind == "parent-child" && targetKind != model.LinkTargetExternal
+				if localParentChild && op.Kind == model.OpLink {
+					parent, e := HierarchyParent(current.doc)
+					if e != nil {
+						return nil, e
+					}
+					if parent != nil && parent.ID != to.ID {
+						return nil, failure("invalid_params", "conflicting parent representations")
+					}
+				}
 				// The endpoint is read, not written, unless another op targets it.
 				found := -1
 				conflictingKind := ""
@@ -476,7 +492,35 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 					}
 				}
 				if op.Kind == model.OpUnlink && found >= 0 {
-					current.doc.Links = append(current.doc.Links[:found], current.doc.Links[found+1:]...)
+					if localParentChild {
+						// Remove every matching legacy copy before detaching Parent.
+						links := current.doc.Links[:0]
+						for _, link := range current.doc.Links {
+							storedTargetKind, e := link.TargetKind.Normalized()
+							if e != nil {
+								return nil, failure("ontology_guard_failed", "invalid stored link target kind")
+							}
+							if storedTargetKind != targetKind || link.Kind != kind || link.To.ID != to.ID {
+								links = append(links, link)
+							}
+						}
+						current.doc.Links = links
+					} else {
+						current.doc.Links = append(current.doc.Links[:found], current.doc.Links[found+1:]...)
+					}
+				}
+				if localParentChild {
+					if op.Kind == model.OpLink {
+						parent, e := p.resolveParent(ctx, &to, aliases, target.ID)
+						if e != nil {
+							return nil, e
+						}
+						current.doc.Parent = parent
+					} else if parentID(current.doc.Parent) == to.ID {
+						current.doc.Parent = nil
+					}
+					current.setBy["parent"] = "request"
+					p.hierarchyEdits = append(p.hierarchyEdits, hierarchyEdit{id: target.ID, parent: parentID(current.doc.Parent)})
 				}
 				current.setBy["links"] = "request"
 			case model.OpDelete:

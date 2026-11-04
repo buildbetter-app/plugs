@@ -242,9 +242,13 @@ func TestB07KnownDependencyKindsHaveOnlyAdoptedReadyAndCloseEffects(t *testing.T
 					after := e.snapshot(t)
 					edgeRequireSingleCommit(t, before, after, edgeRequireReceipt(t, after, p, first.Result, false), from)
 					edgeRequireLinks(t, after, from, edgeLinkValue(to, kind))
-					edgeRequireOnlyEdgeAndFields(t, before, after, from, nil)
+					if kind == "parent-child" {
+						edgeRequireOnlyLocalParentChildEdit(t, before, after, from, &to)
+					} else {
+						edgeRequireOnlyEdgeAndFields(t, before, after, from, nil)
+					}
 					want := []string{to.ID}
-					scheduling := kind == "blocks" || kind == "parent-child" || kind == "conditional-blocks" || kind == "waits-for"
+					scheduling := kind == "blocks" || kind == "conditional-blocks" || kind == "waits-for"
 					if !scheduling {
 						want = append(want, from.ID)
 					}
@@ -277,6 +281,120 @@ func TestB07KnownDependencyKindsHaveOnlyAdoptedReadyAndCloseEffects(t *testing.T
 				})
 			}
 		})
+	}
+}
+
+// Pair this local parent-child oracle with an exact edge-value assertion. The
+// canonical parent transition is supplied by the request, while every other
+// source member remains strict. Other dependency kinds use the unchanged oracle.
+func edgeRequireOnlyLocalParentChildEdit(t *testing.T, before, after edgeContractState, ref model.Ref, parent *model.Ref) {
+	t.Helper()
+	want := edgeJSONObject(t, before.Records[edgeRecordKey(ref)].Body)
+	got := edgeJSONObject(t, after.Records[edgeRecordKey(ref)].Body)
+	if links, exists := got["links"]; exists {
+		want["links"] = links
+	} else {
+		delete(want, "links")
+	}
+	if parent == nil {
+		delete(want, "parent")
+	} else {
+		raw, err := json.Marshal(parent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want["parent"] = edgeJSONObject(t, raw)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("local parent-child edit changed unrelated source members: got=%+v want=%+v", got, want)
+	}
+}
+
+func TestB07LocalParentChildSchedulingRefusalAndTypedDetach(t *testing.T) {
+	// Binding ruling a87e3cfa: open parents do not suppress ready children;
+	// blocked ancestors do. Local legacy edges also persist canonical Parent.
+	for _, engine := range testEngines {
+		for _, producer := range []string{"bead.link", "tx.apply"} {
+			t.Run(engine+"/"+producer, func(t *testing.T) {
+				e := newEdgeContractFixture(t, engine)
+				child, parent, blocker := e.create(t, "local-hierarchy-child"), e.create(t, "local-hierarchy-parent"), e.create(t, "local-hierarchy-blocker")
+				link := e.probe(producer, "local-hierarchy-link")
+				before := e.snapshot(t)
+				linked := e.call(t, link, edgeTypedLinkParams(producer, model.OpLink, child, parent, "parent-child", model.LinkTargetLocal))
+				edgeRequireSuccess(t, linked)
+				after := e.snapshot(t)
+				edgeRequireSingleCommit(t, before, after, edgeRequireReceipt(t, after, link, linked.Result, false), child)
+				edgeRequireLinks(t, after, child, edgeLinkValue(parent, "parent-child"))
+				edgeRequireOnlyLocalParentChildEdit(t, before, after, child, &parent)
+				edgeRequirePublicReady(t, e, child.ID, parent.ID, blocker.ID)
+
+				block := e.probe(producer, "local-hierarchy-block-parent")
+				beforeBlock := e.snapshot(t)
+				blocked := e.call(t, block, edgeTypedLinkParams(producer, model.OpLink, parent, blocker, "blocks", model.LinkTargetLocal))
+				edgeRequireSuccess(t, blocked)
+				afterBlock := e.snapshot(t)
+				edgeRequireSingleCommit(t, beforeBlock, afterBlock, edgeRequireReceipt(t, afterBlock, block, blocked.Result, false), parent)
+				edgeRequireLinks(t, afterBlock, parent, edgeLinkValue(blocker, "blocks"))
+				edgeRequireOnlyEdgeAndFields(t, beforeBlock, afterBlock, parent, nil)
+				edgeRequirePublicReady(t, e, blocker.ID)
+
+				conflict := e.probe(producer, "local-hierarchy-conflicting-parent")
+				beforeConflict := e.snapshot(t)
+				refused := e.call(t, conflict, edgeTypedLinkParams(producer, model.OpLink, child, blocker, "parent-child", model.LinkTargetLocal))
+				edgeRequireRefusal(t, refused, "invalid_params")
+				edgeRequireStateEqual(t, beforeConflict, e.snapshot(t))
+				e.f.reopen(t)
+				edgeRequireStateEqual(t, beforeConflict, e.snapshot(t))
+				edgeRequirePublicReady(t, e, blocker.ID)
+
+				closeBlocker := e.probe("bead.close", "local-hierarchy-close-blocker")
+				beforeClose := e.snapshot(t)
+				closed := e.call(t, closeBlocker, map[string]any{"id": blocker})
+				edgeRequireSuccess(t, closed)
+				afterClose := e.snapshot(t)
+				edgeRequireSingleCommit(t, beforeClose, afterClose, edgeRequireReceipt(t, afterClose, closeBlocker, closed.Result, false), blocker)
+				edgeRequireOnlyEdgeAndFields(t, beforeClose, afterClose, blocker, map[string]any{"status": "done"}, &e.f.now)
+				edgeRequirePublicReady(t, e, child.ID, parent.ID)
+
+				// Same-spelled external identity never changes Parent. A local
+				// unlink removes only the local arm and detaches its Parent.
+				external := e.probe(producer, "local-hierarchy-external-sibling")
+				beforeExternal := e.snapshot(t)
+				opaque := e.call(t, external, edgeTypedLinkParams(producer, model.OpLink, child, parent, "parent-child", model.LinkTargetExternal))
+				edgeRequireSuccess(t, opaque)
+				afterExternal := e.snapshot(t)
+				edgeRequireSingleCommit(t, beforeExternal, afterExternal, edgeRequireReceipt(t, afterExternal, external, opaque.Result, false), child)
+				edgeRequireLinks(t, afterExternal, child, edgeLinkValue(parent, "parent-child"), edgeExternalLinkValue(parent, "parent-child"))
+				edgeRequireOnlyEdgeAndFields(t, beforeExternal, afterExternal, child, nil)
+				edgeRequirePublicReady(t, e, parent.ID)
+
+				unlinkMethod := "bead.unlink"
+				if producer == "tx.apply" {
+					unlinkMethod = producer
+				}
+				unlink := e.probe(unlinkMethod, "local-hierarchy-unlink-local")
+				beforeUnlink := e.snapshot(t)
+				unlinked := e.call(t, unlink, edgeTypedLinkParams(producer, model.OpUnlink, child, parent, "parent-child", model.LinkTargetLocal))
+				edgeRequireSuccess(t, unlinked)
+				afterUnlink := e.snapshot(t)
+				edgeRequireSingleCommit(t, beforeUnlink, afterUnlink, edgeRequireReceipt(t, afterUnlink, unlink, unlinked.Result, false), child)
+				edgeRequireLinks(t, afterUnlink, child, edgeExternalLinkValue(parent, "parent-child"))
+				edgeRequireOnlyLocalParentChildEdit(t, beforeUnlink, afterUnlink, child, nil)
+
+				// Retaining an external parent-child edge cannot activate the
+				// local legacy detach guard, even for an already detached child.
+				detach := e.probe("tx.apply", "local-hierarchy-detach-with-external")
+				beforeDetach := e.snapshot(t)
+				detached := e.call(t, detach, map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{{Kind: model.OpReparent, Reparent: &model.ReparentOp{Target: child}}}}})
+				edgeRequireSuccess(t, detached)
+				afterDetach := e.snapshot(t)
+				edgeRequireReceipt(t, afterDetach, detach, detached.Result, true)
+				edgeRequireOnlyReceipt(t, beforeDetach, afterDetach, detach)
+				e.f.reopen(t)
+				edgeRequireStateEqual(t, afterDetach, e.snapshot(t))
+				edgeRequirePublicReady(t, e, parent.ID)
+			})
+		}
 	}
 }
 

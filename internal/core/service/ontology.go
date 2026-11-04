@@ -19,6 +19,7 @@ import (
 type Ontology struct {
 	mu                   sync.RWMutex
 	resolve              func(string) ontology.Effective
+	defaultOnly          bool
 	permissionObserver   TransitionPermissionObserver
 	permissionConfigured bool
 }
@@ -58,11 +59,12 @@ func WithTransitionPermissionObserver(observer TransitionPermissionObserver) Ont
 }
 
 func NewOntology(resolve func(string) ontology.Effective, options ...OntologyOption) *Ontology {
+	defaultOnly := resolve == nil
 	if resolve == nil {
 		base := ontology.Default()
 		resolve = func(string) ontology.Effective { return base }
 	}
-	o := &Ontology{resolve: resolve}
+	o := &Ontology{resolve: resolve, defaultOnly: defaultOnly}
 	for _, option := range options {
 		if option != nil {
 			option(o)
@@ -78,7 +80,24 @@ func NewOntology(resolve func(string) ontology.Effective, options ...OntologyOpt
 func (o *Ontology) Refresh(snapshot ontology.Snapshot) {
 	o.mu.Lock()
 	o.resolve = snapshot.Effective
+	o.defaultOnly = false
 	o.mu.Unlock()
+}
+
+// ImmutableDefault returns the same built-in ontology used by this instance's
+// writer and service while it remains in no-plugin mode. A view continuation
+// must refuse after Refresh instead of applying new category membership to its
+// earlier content snapshot.
+func (o *Ontology) ImmutableDefault() (ontology.Effective, bool) {
+	if o == nil {
+		return ontology.Effective{}, false
+	}
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	if !o.defaultOnly {
+		return ontology.Effective{}, false
+	}
+	return o.resolve(""), true
 }
 
 func (o *Ontology) effective(project string) ontology.Effective {

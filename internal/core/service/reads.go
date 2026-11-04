@@ -4,9 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -189,32 +189,59 @@ func validatePosition(position *PagePosition) error {
 	return nil
 }
 
-func (s *Service) readyItems(ctx context.Context, by model.PrincipalRef, req ReadyRequest, r queryReader) ([]Bead, error) {
-	graph, err := scanBeads(ctx, r)
-	if err != nil {
-		return nil, err
+// Only a trusted ReadyWithFilter traversal carries this detached graph between
+// internal pages. Readers, authorization facts and membership decisions are
+// never retained here. Every page validates the source and reevaluates its live
+// clock, leases, policy and ordering on that page's own reader.
+type readyGraphSelection struct {
+	owner *Service
+	asOf  AsOf
+	graph map[string]storedBead
+}
+
+func (s *Service) readyItems(ctx context.Context, by model.PrincipalRef, req ReadyRequest, r driver.Reader) ([]Bead, map[string]readyOrderKey, error) {
+	var graph map[string]storedBead
+	if req.readySourceBinding && req.readyGraph != nil {
+		selection := req.readyGraph
+		view := r.Snapshot()
+		if selection.owner != s || view.At == nil {
+			return nil, nil, failure("cursor_invalid", "invalid guarded ready source")
+		}
+		if selection.graph != nil {
+			if selection.asOf.Incarnation != view.Incarnation || selection.asOf.Revision.String() != view.At.String() {
+				return nil, nil, failure("cursor_invalid", "durable ready source changed while collecting candidates; restart paging")
+			}
+			graph = selection.graph
+		} else {
+			var err error
+			graph, err = scanBeads(ctx, r)
+			if err != nil {
+				return nil, nil, err
+			}
+			selection.graph = graph
+			selection.asOf = AsOf{Revision: *view.At, Incarnation: view.Incarnation}
+		}
+	} else {
+		var err error
+		graph, err = scanBeads(ctx, r)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
-	items := []Bead{}
-	ids := sortedIDs(graph)
+	graphIDs := sortedIDs(graph)
 	workflowBlocked := map[string]bool{}
 	if s.workflow != nil {
-		blocked, err := s.workflow.OrdinaryBlocked(ctx, by, ids, workflowMeta(by, "bead.ready", req.Project, req.Agent))
+		blocked, err := s.workflow.OrdinaryBlocked(ctx, by, graphIDs, workflowMeta(by, "bead.ready", req.Project, req.Agent))
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		workflowBlocked = blocked
 	}
-	now := s.now()
-	priorities := map[string]int{}
-	for _, id := range ids {
-		p, err := priority(graph[id].doc)
-		if err != nil {
-			return nil, err
-		}
-		priorities[id] = p
-	}
-	sort.SliceStable(ids, func(i, j int) bool { return priorities[ids[i]] < priorities[ids[j]] })
-	for _, id := range ids {
+	// Membership is always evaluated against the complete current graph. P74
+	// applies only to the order of this exact set, before any page is cut.
+	now := s.now().UTC()
+	eligible := map[string]storedBead{}
+	for _, id := range graphIDs {
 		row := graph[id]
 		st := state(row.doc)
 		if !matchesFilter(row, req.Project, req.Filter) || st.Template || !s.ontology.effective(st.Project).ReadyEligible(st.Type, st.Status) {
@@ -226,7 +253,7 @@ func (s *Service) readyItems(ctx context.Context, by model.PrincipalRef, req Rea
 		if row.doc.Lease != nil {
 			lease, err := s.effectiveLease(ctx, row.doc.ID, row.doc.Lease)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			if now.Before(lease.ExpiresAt) {
 				continue
@@ -234,18 +261,46 @@ func (s *Service) readyItems(ctx context.Context, by model.PrincipalRef, req Rea
 		}
 		unblocked, err := s.ontology.readyDependencies(row.doc, graph)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if !unblocked {
 			continue
 		}
+		// Only the authorized membership needs ordering inputs. In particular,
+		// a denied legacy row with unknown creation time must not prevent an
+		// otherwise valid authorized set from being read.
+		if req.authorizationFilter != nil {
+			bead, err := beadValue(row)
+			if err != nil {
+				return nil, nil, err
+			}
+			allowed, err := req.authorizationFilter(ctx, r, bead)
+			if err != nil {
+				return nil, nil, err
+			}
+			if !allowed {
+				continue
+			}
+		}
+		eligible[id] = row
+	}
+	keys, err := readyOrderKeys(ctx, r, eligible, now)
+	if err != nil {
+		return nil, nil, err
+	}
+	ids := sortedIDs(eligible)
+	sortReadyIDs(ids, keys)
+	items := make([]Bead, 0, len(ids))
+	for _, id := range ids {
+		row := eligible[id]
 		bead, err := beadValue(row)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		bead.CreatedAt = keys[id].CreatedAt
 		items = append(items, bead)
 	}
-	return items, nil
+	return items, keys, nil
 }
 
 func (s *Service) readyPage(ctx context.Context, by model.PrincipalRef, req ReadyRequest, restartOnRevision bool) (BeadPage, error) {
@@ -261,7 +316,7 @@ func (s *Service) readyPage(ctx context.Context, by model.PrincipalRef, req Read
 		return BeadPage{}, err
 	}
 	defer r.Close()
-	items, err := s.readyItems(ctx, by, req, r)
+	items, keys, err := s.readyItems(ctx, by, req, r)
 	if err != nil {
 		return BeadPage{}, err
 	}
@@ -284,7 +339,7 @@ func (s *Service) readyPage(ctx context.Context, by model.PrincipalRef, req Read
 		items = filtered
 	}
 	if restartOnRevision && req.ClaimNextSeed != "" {
-		items, err = spreadClaimNextItems(items, req.ClaimNextSeed)
+		items, err = spreadClaimNextItems(items, req.ClaimNextSeed, keys)
 		if err != nil {
 			return BeadPage{}, err
 		}
@@ -293,14 +348,33 @@ func (s *Service) readyPage(ctx context.Context, by model.PrincipalRef, req Read
 		return BeadPage{}, err
 	}
 	view := r.Snapshot()
-	return pageResult(items, limit, req.Position, AsOf{Revision: *view.At, Incarnation: view.Incarnation}, false, restartOnRevision)
+	membership := ""
+	if req.readySourceBinding {
+		// Internal guarded collection binds the entire core order before any
+		// slice, including a cutoff change without a durable revision. The
+		// guard replaces this internal value with its authorized public digest.
+		h := sha256.New()
+		var length [8]byte
+		for _, item := range items {
+			binary.BigEndian.PutUint64(length[:], uint64(len(item.ID)))
+			_, _ = h.Write(length[:])
+			_, _ = h.Write([]byte(item.ID))
+		}
+		membership = hex.EncodeToString(h.Sum(nil))
+	}
+	page, err := pageResult(items, limit, req.Position, AsOf{Revision: *view.At, Incarnation: view.Incarnation}, false, restartOnRevision)
+	if err == nil {
+		page.ReadyMembership = membership
+	}
+	return page, err
 }
 
-// spreadClaimNextItems rotates each equal-priority group by a stable offset.
-// Priority groups stay contiguous, so the queue still drains every lower
-// priority before considering a higher one; only ID ties are spread between
-// concurrent request keys. The ordinary bead.ready path never calls this.
-func spreadClaimNextItems(items []Bead, seed string) ([]Bead, error) {
+// spreadClaimNextItems rotates equal hybrid-key groups by a stable offset.
+// It never crosses a bucket, rank or creation-time boundary. The optional
+// projection preserves the existing helper's priority-only test callers;
+// the live queue always supplies the complete keys from its pinned snapshot.
+// The ordinary bead.ready path never calls this.
+func spreadClaimNextItems(items []Bead, seed string, order ...map[string]readyOrderKey) ([]Bead, error) {
 	if len(items) < 2 || seed == "" {
 		return items, nil
 	}
@@ -316,7 +390,12 @@ func spreadClaimNextItems(items []Bead, seed string) ([]Bead, error) {
 			if err != nil {
 				return nil, err
 			}
-			if priority != groupPriority {
+			same := priority == groupPriority
+			if len(order) != 0 {
+				a, b := order[0][ordered[start].ID], order[0][ordered[end].ID]
+				same = a.Bucket == b.Bucket && a.Rank == b.Rank && a.CreatedAt.Equal(b.CreatedAt)
+			}
+			if !same {
 				break
 			}
 			end++
@@ -337,6 +416,24 @@ func spreadClaimNextItems(items []Bead, seed string) ([]Bead, error) {
 
 func (s *Service) Ready(ctx context.Context, by model.PrincipalRef, req ReadyRequest) (BeadPage, error) {
 	return s.readyCombined(ctx, by, req, false)
+}
+
+// ReadyWithFilter is the composition-root entry point for a compiled finite
+// authorization predicate. Keeping this capability separate from the public
+// ReadyRequest prevents a transport caller from supplying an arbitrary
+// predicate while allowing the guarded adapter to filter before pageResult.
+func (s *Service) ReadyWithFilter(ctx context.Context, by model.PrincipalRef, req ReadyRequest, filter ReadyAuthorizer) (BeadPage, error) {
+	req.authorizationFilter = filter
+	req.readySourceBinding = true
+	req.readyGraph = &readyGraphSelection{owner: s}
+	if req.Position != nil && req.Position.readyGraph != nil {
+		req.readyGraph = req.Position.readyGraph
+	}
+	page, err := s.Ready(ctx, by, req)
+	if err == nil && page.Next != nil {
+		page.Next.readyGraph = req.readyGraph
+	}
+	return page, err
 }
 
 func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req ReadyRequest, restartOnRevision bool) (BeadPage, error) {
@@ -480,7 +577,8 @@ func (s *Service) ReadyCandidates(ctx context.Context, by model.PrincipalRef, re
 	if reader == nil {
 		return nil, failure("internal_error", "ready probe reader is unavailable")
 	}
-	return s.readyItems(ctx, by, req, reader)
+	items, _, err := s.readyItems(ctx, by, req, reader)
+	return items, err
 }
 
 func (s *Service) History(ctx context.Context, by model.PrincipalRef, req HistoryRequest) (BeadPage, error) {

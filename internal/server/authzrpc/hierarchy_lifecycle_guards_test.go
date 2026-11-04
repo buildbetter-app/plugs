@@ -255,6 +255,67 @@ func TestHierarchyLifecycleFinalImagesRemainBoundToHierarchyChecks(t *testing.T)
 	}
 }
 
+func TestHierarchyLifecycleCreateCloseInstantRequiresMatchingTypedClose(t *testing.T) {
+	f := newHFixture(t, true)
+	f.app.Checker.chain.Rules = []authz.RuleSet{&hierarchyLifecycleRules{}}
+	create := hCreate("fresh", "fresh", "child-project", nil, "")
+	var body map[string]any
+	if err := json.Unmarshal(create.After, &body); err != nil {
+		t.Fatal(err)
+	}
+	body["fields"].(map[string]any)["status"] = "done"
+	body["closedAt"] = "2026-11-03T00:01:00Z"
+	final, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	create.After = final
+	close := port.Change{Resource: create.Resource, Op: model.Op{Kind: model.OpClose, Close: &model.CloseOp{Kind: model.OpClose, Target: model.RefByKey("fresh")}}, After: final}
+	for _, stage := range []port.AuthorizationStage{port.AuthorizeBefore, port.AuthorizeAfter} {
+		t.Run(string(stage), func(t *testing.T) {
+			proposal := hProposal(hAgent(), "tx.apply", create, close)
+			if err := f.app.Checker.Authorize(context.Background(), stage, proposal, f.snapshot(t)); err != nil {
+				t.Fatalf("valid same-target core close instant refused: %v", err)
+			}
+			t.Run("different-close-target", func(t *testing.T) {
+				other := port.Change{Resource: model.ResourceRef{Kind: "bead", Ref: hRef("child")},
+					Op:     model.Op{Kind: model.OpClose, Close: &model.CloseOp{Kind: model.OpClose, Target: hRef("child")}},
+					Before: hBody("child", "child-project", "old", "todo"), After: hBody("child", "child-project", "old", "done")}
+				requireHCode(t, f.app.Checker.Authorize(context.Background(), stage, hProposal(hAgent(), "tx.apply", create, other), f.snapshot(t)), "forbidden")
+			})
+			for _, tc := range []struct {
+				name, member string
+				value        any
+			}{
+				{"null-instant", "closedAt", nil},
+				{"numeric-instant", "closedAt", 1},
+				{"malformed-instant", "closedAt", "not-an-instant"},
+				{"zero-instant", "closedAt", "0001-01-01T00:00:00Z"},
+				{"unknown-member", "unexpected", true},
+				{"unaccounted-start", "startedAt", "2026-11-03T00:00:30Z"},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					var changed map[string]any
+					if err := json.Unmarshal(final, &changed); err != nil {
+						t.Fatal(err)
+					}
+					changed[tc.member] = tc.value
+					bad, err := json.Marshal(changed)
+					if err != nil {
+						t.Fatal(err)
+					}
+					proposal := hProposal(hAgent(), "tx.apply", create, close)
+					proposal.Changes[0].After, proposal.Changes[1].After = bad, bad
+					requireHCode(t, f.app.Checker.Authorize(context.Background(), stage, proposal, f.snapshot(t)), "forbidden")
+				})
+			}
+			if !bytes.Equal(create.After, final) || !bytes.Equal(close.After, final) {
+				t.Fatal("authorization changed the complete original final images")
+			}
+		})
+	}
+}
+
 // The older authorization fixture deliberately seeds only source records.
 // Real parented Writer operations also require a complete derived closure;
 // installing those fixture rows does not change any product validation.

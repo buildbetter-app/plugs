@@ -76,7 +76,11 @@ func ValidateGraphDocuments(ctx context.Context, docs map[string]Document) error
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := checkParentGraph(parentGraph(docs)); err != nil {
+	parents, err := parentGraph(docs)
+	if err != nil {
+		return err
+	}
+	if err := checkParentGraph(parents); err != nil {
 		return err
 	}
 	for _, doc := range docs {
