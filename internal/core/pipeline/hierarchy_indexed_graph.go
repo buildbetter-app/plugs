@@ -17,10 +17,9 @@ var hierarchyIncomingKinds = []driver.IncomingLinkKind{
 
 // observeIndexedGraphIncoming retains the selected inverse-link facts in the
 // same pinned read set as canonical children. A true result means the changed
-// hierarchy sources have no scheduling or legacy parent-child links, so the
-// unchanged dependency graph needs no whole-store revalidation. Native restore
-// and ordinary typed publication both validate each graph-changing write before
-// this bounded consumer can rely on that invariant.
+// hierarchy sources have no scheduling or legacy parent-child links, so this
+// hierarchy-only write cannot change the unchanged dependency graph outside
+// the selected sources and needs no whole-store revalidation.
 func (p *prepared) observeIndexedGraphIncoming(ctx context.Context) (bool, error) {
 	s := p.hierarchySources
 	if s == nil || len(p.hierarchyEdits) == 0 {
