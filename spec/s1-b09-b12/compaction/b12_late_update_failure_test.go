@@ -2,8 +2,10 @@ package compaction_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -120,7 +122,7 @@ func TestB12LateUpdateFailureConservesTextAndPermanentAudit(t *testing.T) {
 					predicates := b09B10PredicateKeys(t, decodedRef(t, ref), decodedRef(t, other))
 					before := b09B10FreshImage(t, f, key, predicates)
 					meta := f.meta()
-					sqlBefore := b09B10SQLImage(t, f)
+					sqlBefore := b12LateUpdateSQLImage(t, f)
 					publicBefore := f.call("bead.get", "late-before", map[string]any{"id": ref}, "")
 					auditBefore := f.call("history.get", "late-original-audit", map[string]any{"ref": ref, "asOf": map[string]any{"revision": closed["revision"]}}, "")
 					wantVersions := tier + 1 // create, close, and existing tier one
@@ -170,7 +172,7 @@ func TestB12LateUpdateFailureConservesTextAndPermanentAudit(t *testing.T) {
 						}
 						b09B10Equal(t, "fresh reader during late failure", before, b09B10FreshImage(t, f, key, predicates))
 						b09B10Equal(t, "pinned reader during late failure", before, b09B10ReadImage(t, pinned, meta.HistoryFloor, key, predicates))
-						b09B10Equal(t, "independent SQL during late failure", sqlBefore, b09B10SQLImage(t, f))
+						b09B10Equal(t, "independent SQL during late failure", sqlBefore, b12LateUpdateSQLImage(t, f))
 					}
 					f.store = fault
 					f.bind()
@@ -182,7 +184,7 @@ func TestB12LateUpdateFailureConservesTextAndPermanentAudit(t *testing.T) {
 						f.assertSameHead(meta)
 						f.assertNoReceipt("admin.compact", key)
 						b09B10Equal(t, label+" complete committed image", before, b09B10FreshImage(t, f, key, predicates))
-						b09B10Equal(t, label+" all durable SQL tables", sqlBefore, b09B10SQLImage(t, f))
+						b09B10Equal(t, label+" all durable SQL tables", sqlBefore, b12LateUpdateSQLImage(t, f))
 						b09B10Equal(t, label+" public text and metadata", publicBefore, f.call("bead.get", "late-conserved-"+label, map[string]any{"id": ref}, ""))
 						b09B10Equal(t, label+" original full public audit", auditBefore, f.call("history.get", "late-audit-"+label, map[string]any{"ref": ref, "asOf": map[string]any{"revision": closed["revision"]}}, ""))
 						assertHistoricalText(t, f, ref, closed["revision"], original["description"].(string))
@@ -236,4 +238,106 @@ func TestB12LateUpdateFailureConservesTextAndPermanentAudit(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Keep the accepted generic SQL oracle, then add the typed source tables that
+// PutGraphRecord also publishes. The live schema inventory must match exactly:
+// a future durable table cannot silently escape the conservation comparison.
+func b12LateUpdateSQLImage(t *testing.T, f *fixture) map[string][]string {
+	t.Helper()
+	image := b09B10SQLImage(t, f)
+	if f.engine == "memory" {
+		return image
+	}
+	name, schema := "sqlite", ""
+	inventoryQuery := "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*' ORDER BY name"
+	// Lease ownership and lock bookkeeping may change across physical reopen;
+	// they are the only application tables excluded from data conservation.
+	excluded := []string{"active_lease"}
+	if f.engine == "postgres" {
+		name, schema = "pgx", "plug_postgres."
+		inventoryQuery = "SELECT table_name FROM information_schema.tables WHERE table_schema='plug_postgres' AND table_type='BASE TABLE' ORDER BY table_name"
+		excluded = []string{"lease", "locks"}
+	}
+	typed := []string{
+		"hierarchy_index_coverage", "hierarchy_source_current", "hierarchy_source_history",
+		"graph_link_index_coverage", "graph_link_source_current", "graph_link_current",
+		"graph_link_source_history", "graph_link_history",
+	}
+	expected := append([]string{}, excluded...)
+	for table := range image {
+		expected = append(expected, table)
+	}
+	expected = append(expected, typed...)
+	sort.Strings(expected)
+	db, err := sql.Open(name, f.dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	rows, err := db.QueryContext(ctx, inventoryQuery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actual []string
+	for rows.Next() {
+		var table string
+		if err := rows.Scan(&table); err != nil {
+			_ = rows.Close()
+			t.Fatal(err)
+		}
+		actual = append(actual, table)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		t.Fatal(err)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	b09B10Equal(t, "actual application SQL table inventory including explicit lease/lock exclusions", expected, actual)
+	for _, table := range typed {
+		// Table names are the fixed source inventory above, never RPC input.
+		rows, err := db.QueryContext(ctx, "SELECT * FROM "+schema+table)
+		if err != nil {
+			t.Fatal(err)
+		}
+		columns, err := rows.Columns()
+		if err != nil {
+			_ = rows.Close()
+			t.Fatal(err)
+		}
+		image[table] = []string{}
+		for rows.Next() {
+			values, pointers := make([]any, len(columns)), make([]any, len(columns))
+			for i := range values {
+				pointers[i] = &values[i]
+			}
+			if err := rows.Scan(pointers...); err != nil {
+				_ = rows.Close()
+				t.Fatal(err)
+			}
+			row := make([]string, len(values))
+			for i, value := range values {
+				row[i] = fmt.Sprintf("%T:%v", value, value)
+			}
+			raw, err := json.Marshal(row)
+			if err != nil {
+				_ = rows.Close()
+				t.Fatal(err)
+			}
+			image[table] = append(image[table], string(raw))
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			t.Fatal(err)
+		}
+		if err := rows.Close(); err != nil {
+			t.Fatal(err)
+		}
+		sort.Strings(image[table])
+	}
+	return image
 }
