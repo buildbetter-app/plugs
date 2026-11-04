@@ -3,7 +3,7 @@
 
   // A supplied credential is deliberately held only in this page closure.
   // Never persist it, expose it to plugin frames, or send it with static assets.
-  let accessToken = "";
+  let accessToken = "", credentialGeneration = 0;
   const authenticatedSeen = new Map();
   const state = { config: null, hello: null, methods: new Set(), activeView: "home", work: null, live: null, sequence: 0, home: null, next: null, blocked: null, bridges: [] };
   const $ = (id) => document.getElementById(id);
@@ -16,8 +16,8 @@
     constructor(message, code) { super(message); this.name = "RPCError"; this.code = code || "unavailable"; }
   }
   function failure(error) { return error && error.code ? error.code + ": " + error.message : (error && error.message || "The server could not complete this read."); }
-  function authenticationFailure(error) {
-    if (!error || !["unauthenticated", "token_expired"].includes(error.code)) return false;
+  function authenticationFailure(error, generation = credentialGeneration) {
+    if (generation !== credentialGeneration || !error || !["unauthenticated", "token_expired"].includes(error.code)) return false;
     forgetIdentity();
     watchStatus("Live changes stopped · sign-in required.");
     setConnection("error", "Sign-in required");
@@ -55,15 +55,22 @@
     }
     return { revision, incarnation: at.incarnation };
   }
-  async function rpc(method, params, signal, requestedProject, session) {
+  function authenticationContext() {
+    return { token: accessToken, generation: credentialGeneration, rpcPath: state.config.rpcPath, project: state.config.project };
+  }
+  async function rpc(method, params, signal, requestedProject, session, authentication = authenticationContext()) {
+    const cleanup = method === "event.unsubscribe" || method === "session.close";
+    // A retired identity may finish only its own same-origin allocation cleanup.
+    // Never use its captured key to open another watch or perform a fresh read.
+    if (authentication.generation !== credentialGeneration && !cleanup) throw new DOMException("Read cancelled", "AbortError");
     const input = Object.assign({}, params || {});
-    const project = typeof requestedProject === "string" && requestedProject ? requestedProject : state.config.project;
+    const project = typeof requestedProject === "string" && requestedProject ? requestedProject : authentication.project;
     if (method !== "server.hello") input._meta = { project };
     const id = "web-ui-" + (++state.sequence);
-    const response = await fetch(state.config.rpcPath, {
+    const response = await fetch(authentication.rpcPath, {
       method: "POST", mode: "same-origin", credentials: "omit", redirect: "error", cache: "no-store", signal,
-      keepalive: method === "event.unsubscribe" || method === "session.close",
-      headers: Object.assign({ "Accept": "application/json", "Content-Type": "application/json", "Plug-RPC": "1" }, accessToken ? { "Authorization": "Bearer " + accessToken } : {}, session ? { "Plug-Session": session } : {}),
+      keepalive: cleanup,
+      headers: Object.assign({ "Accept": "application/json", "Content-Type": "application/json", "Plug-RPC": "1" }, authentication.token ? { "Authorization": "Bearer " + authentication.token } : {}, session ? { "Plug-Session": session } : {}),
       body: JSON.stringify({ jsonrpc: "2.0", id, method, params: input }),
     });
     const raw = await response.text();
@@ -336,17 +343,20 @@
     markSeen(snapshot.items, seen, snapshot.asOf);
   }
   function watchStatus(label) { text($("watch-state"), label); $("stop-watch").hidden = !state.live; }
-  async function releaseWatch(live) {
+  async function releaseWatch(live, closeSession = true) {
     // Opening calls retain their short timeout even after navigation, so a
-    // late server allocation is read and released instead of losing its ID.
+    // late server allocation is read and released using its originating key.
     const subscription = live.subscription, session = live.session;
-    live.subscription = null; live.session = null;
+    live.subscription = null; if (closeSession) live.session = null;
     // Dispatch both keepalive requests before awaiting either, including on
     // pagehide where this document may disappear before a promise resumes.
-    await Promise.allSettled([
-      ...(subscription ? [rpc("event.unsubscribe", { subscriptionId: subscription }, AbortSignal.timeout(3000), null, session)] : []),
-      ...(session ? [rpc("session.close", { sessionId: session }, AbortSignal.timeout(3000), null, session)] : []),
+    const results = await Promise.allSettled([
+      ...(subscription ? [rpc("event.unsubscribe", { subscriptionId: subscription }, AbortSignal.timeout(3000), null, session, live.authentication)] : []),
+      ...(closeSession && session ? [rpc("session.close", { sessionId: session }, AbortSignal.timeout(3000), null, session, live.authentication)] : []),
     ]);
+    for (const result of results) {
+      if (result.status === "rejected" && authenticationFailure(result.reason, live.authentication.generation)) break;
+    }
   }
   function stopWatch() {
     const live = state.live;
@@ -369,7 +379,7 @@
     if (!state.config.homeViewId || !state.config.watchPath || !["view.watch", "event.unsubscribe", "session.open", "session.close"].every((method) => state.methods.has(method))) {
       watchStatus("Live changes unavailable on this server."); return;
     }
-    const live = { controller: new AbortController(), session: null, subscription: null, cursor: null, dirty: false, busy: false };
+    const live = { controller: new AbortController(), authentication: authenticationContext(), watchPath: state.config.watchPath, session: null, subscription: null, cursor: null, dirty: false, busy: false };
     state.live = live; watchStatus("Opening live changes…");
     let cancelled;
     const aborted = new Promise((_, reject) => {
@@ -377,7 +387,7 @@
       signal.addEventListener("abort", cancelled, { once: true });
     });
     const opening = (async () => { try {
-      const session = await rpc("session.open", {}, AbortSignal.timeout(15000));
+      const session = await rpc("session.open", {}, AbortSignal.timeout(15000), null, null, live.authentication);
       if (!session || typeof session.sessionId !== "string" || !session.sessionId) throw new RPCError("No collaboration lifetime was returned.", "invalid_response");
       live.session = session.sessionId;
       if (state.live !== live) { await releaseWatch(live); signal.throwIfAborted(); return; }
@@ -388,7 +398,7 @@
       for (let attempt = 0; attempt < 2; attempt++) {
         const params = { viewId: state.config.homeViewId };
         if (from) params.from = from;
-        const opened = await rpc("view.watch", params, AbortSignal.timeout(15000), null, live.session);
+        const opened = await rpc("view.watch", params, AbortSignal.timeout(15000), null, live.session, live.authentication);
         if (!opened || typeof opened.subscriptionId !== "string" || !opened.subscriptionId || typeof opened.cursor !== "string" || !opened.cursor) throw new RPCError("The watch checkpoint is unreadable.", "invalid_response");
         live.subscription = opened.subscriptionId; live.cursor = opened.cursor;
         if (state.live !== live) { await releaseWatch(live); signal.throwIfAborted(); return; }
@@ -399,11 +409,10 @@
         void streaming.catch((error) => { refused(error); liveFailure(live, error); });
         const bootstrap = await firstFrame;
         if (!bootstrap) break;
-        // Await reader cancellation before releasing only the old subscription.
-        // releaseWatch would also close the session required by the reopen.
+        // Await reader cancellation and release only the old subscription,
+        // checking auth failures while retaining the session for the reopen.
         await streaming;
-        const subscription = live.subscription; live.subscription = null;
-        await Promise.allSettled([rpc("event.unsubscribe", { subscriptionId: subscription }, AbortSignal.timeout(3000), null, live.session)]);
+        await releaseWatch(live, false);
         if (state.live !== live) { signal.throwIfAborted(); return; }
         from = bootstrap;
       }
@@ -439,9 +448,10 @@
     return event && event.type === "watch.reset" && event.cursor === frame.cursor && details && details.reason === "ontology_changed" && details.subscriptionId === live.subscription && details.snapshotCursor === frame.cursor ? frame.cursor : null;
   }
   async function streamWatch(live, received, allowBootstrap) {
-    const response = await fetch(state.config.watchPath, {
+    if (state.live !== live || live.authentication.generation !== credentialGeneration) throw new DOMException("Read cancelled", "AbortError");
+    const response = await fetch(live.watchPath, {
       method: "POST", mode: "same-origin", credentials: "omit", redirect: "error", cache: "no-store", signal: live.controller.signal,
-      headers: Object.assign({ "Content-Type": "application/json", "Accept": "application/x-ndjson", "Plug-RPC": "1", "Plug-Session": live.session }, accessToken ? { "Authorization": "Bearer " + accessToken } : {}),
+      headers: Object.assign({ "Content-Type": "application/json", "Accept": "application/x-ndjson", "Plug-RPC": "1", "Plug-Session": live.session }, live.authentication.token ? { "Authorization": "Bearer " + live.authentication.token } : {}),
       body: JSON.stringify({ subscriptionId: live.subscription }),
     });
     if (response.status === 401) throw new RPCError("Sign in with a current key for this server.", "unauthenticated");
@@ -715,6 +725,7 @@
     }
   }
   function forgetIdentity(abort = true) {
+    ++credentialGeneration;
     if (abort && state.work) { state.work.controller.abort(); state.work = null; }
     stopWatch();
     state.bridges.forEach((revoke) => revoke()); state.bridges = [];
