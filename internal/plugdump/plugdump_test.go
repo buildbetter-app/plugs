@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -268,6 +269,105 @@ func TestDumpOntologyDirectiveRefusals(t *testing.T) {
 	}
 }
 
+func TestDumpDependencyKindsPreserveTypedEdges(t *testing.T) {
+	source, inventory := fixture(t)
+	base := source["dependencies"].Rows[0]
+	cases := []struct {
+		id         string
+		kind       string
+		targetKey  string
+		target     string
+		metadata   any
+		targetKind string
+	}{
+		{id: "edge-blocks", kind: "blocks", targetKey: "depends_on_issue_id", target: "demo-7", metadata: map[string]any{"reason": "ordinary"}, targetKind: "depends_on_issue_id"},
+		{id: "edge-related", kind: "related", targetKey: "depends_on_issue_id", target: "demo-8", metadata: map[string]any{"topic": "context"}, targetKind: "depends_on_issue_id"},
+		{id: "edge-discovered", kind: "discovered-from", targetKey: "depends_on_external", target: "external:tracker:source", metadata: map[string]any{"source": "opaque"}, targetKind: "depends_on_external"},
+		{id: "edge-waits", kind: "waits-for", targetKey: "depends_on_issue_id", target: "demo-7", metadata: map[string]any{"gate": "any-children", "also_blocks": true, "spawner_id": "demo-7"}, targetKind: "depends_on_issue_id"},
+		{id: "edge-conditional", kind: "conditional-blocks", targetKey: "depends_on_external", target: "external:tracker:condition", metadata: map[string]any{"branch": "failure", "predicate": "terminal-error"}, targetKind: "depends_on_external"},
+	}
+	for _, test := range cases {
+		row := cloneRow(base)
+		row["id"] = test.id
+		row["type"] = test.kind
+		row["metadata"] = test.metadata
+		row["depends_on_issue_id"], row["depends_on_wisp_id"], row["depends_on_external"] = nil, nil, nil
+		row[test.targetKey] = test.target
+		table := source["dependencies"]
+		table.Rows = append(table.Rows, row)
+		source["dependencies"] = table
+	}
+	data := buildFixture(t, source, inventory)
+	if _, err := Validate(bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	records := map[string]Record{}
+	for _, line := range bytes.Split(bytes.TrimSpace(archiveMembers(t, data)["records/edge.ndjson"]), []byte{'\n'}) {
+		var record Record
+		if err := decodeJSON(line, &record); err != nil {
+			t.Fatal(err)
+		}
+		records[record.ID] = record
+	}
+	for _, test := range cases {
+		record, ok := records[test.id]
+		if !ok {
+			t.Fatalf("missing %s edge", test.id)
+		}
+		if record.Body["type"] != test.kind || record.Body["to"] != test.target || record.Body["target_kind"] != test.targetKind {
+			t.Fatalf("typed edge %s changed: body=%+v", test.id, record.Body)
+		}
+		if !reflect.DeepEqual(record.Body["metadata"], test.metadata) || !reflect.DeepEqual(record.Source.Fields["metadata"], test.metadata) {
+			t.Fatalf("metadata for %s changed: body=%#v source=%#v want=%#v", test.id, record.Body["metadata"], record.Source.Fields["metadata"], test.metadata)
+		}
+		for _, field := range []string{"created_at", "created_by", "thread_id", "issue_id", "type"} {
+			if record.Source.Fields[field] != rowFieldForDependencyTest(base, field, test.kind, test.id) {
+				t.Fatalf("source field %s for %s changed: got=%#v", field, test.id, record.Source.Fields[field])
+			}
+		}
+	}
+}
+
+func rowFieldForDependencyTest(base Row, field, kind, id string) any {
+	if field == "type" {
+		return kind
+	}
+	if field == "id" {
+		return id
+	}
+	return base[field]
+}
+
+func TestDumpDependencyMetadataRefusals(t *testing.T) {
+	tests := []struct {
+		name     string
+		kind     string
+		metadata any
+		want     string
+	}{
+		{name: "invalid JSON", kind: "related", metadata: "{", want: "metadata is not valid JSON"},
+		{name: "waits-for non-object", kind: "waits-for", metadata: []any{"not-an-object"}, want: "waits-for metadata must be a JSON object"},
+		{name: "unknown gate", kind: "waits-for", metadata: map[string]any{"gate": "never"}, want: "waits-for gate must be all-children or any-children"},
+		{name: "non-boolean also_blocks", kind: "waits-for", metadata: map[string]any{"gate": "all-children", "also_blocks": "true"}, want: "waits-for also_blocks must be boolean"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			source, inventory := fixture(t)
+			row := cloneRow(source["dependencies"].Rows[0])
+			row["id"] = "edge-invalid-metadata"
+			row["type"] = test.kind
+			row["metadata"] = test.metadata
+			table := source["dependencies"]
+			table.Rows = append(table.Rows, row)
+			source["dependencies"] = table
+			data, err := Build(context.Background(), source, inventory)
+			if err == nil || len(data) != 0 || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("invalid dependency metadata accepted: data=%d err=%v", len(data), err)
+			}
+		})
+	}
+}
+
 func TestDumpRefusals(t *testing.T) {
 	tests := map[string]func(fixtureSource, *Inventory){
 		"unknown main":    func(s fixtureSource, _ *Inventory) { s["schema_migrations"].Rows[0]["version"] = 73 },
@@ -303,6 +403,10 @@ func TestDumpRefusals(t *testing.T) {
 		"missing title":               func(s fixtureSource, _ *Inventory) { s["issues"].Rows[0]["title"] = "" },
 		"invalid child path":          func(s fixtureSource, _ *Inventory) { s["issues"].Rows[0]["id"] = "demo-7.invalid.4" },
 		"dangling edge":               func(s fixtureSource, _ *Inventory) { s["dependencies"].Rows[0]["depends_on_issue_id"] = "demo-999" },
+		"wisp target": func(s fixtureSource, _ *Inventory) {
+			s["dependencies"].Rows[0]["depends_on_issue_id"] = nil
+			s["dependencies"].Rows[0]["depends_on_wisp_id"] = "wisp-1"
+		},
 		"typed targets": func(s fixtureSource, _ *Inventory) {
 			s["dependencies"].Rows[0]["depends_on_external"] = "external:project:capability"
 		},

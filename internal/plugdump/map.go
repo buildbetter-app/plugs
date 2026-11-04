@@ -1,6 +1,7 @@
 package plugdump
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -260,10 +261,14 @@ func (m *mapping) row(table string, row Row) error {
 		if target == "" || targetKind == "depends_on_wisp_id" || (targetKind == "depends_on_issue_id" && m.beads[target] == "") {
 			return fmt.Errorf("missing, wisp or dangling edge target")
 		}
-		switch text(row, "type") {
-		case "blocks", "parent-child", "related", "discovered-from":
+		kind := text(row, "type")
+		switch kind {
+		case "blocks", "parent-child", "related", "discovered-from", "waits-for", "conditional-blocks":
 		default:
 			return fmt.Errorf("unsupported dependency type")
+		}
+		if err := validateDependencyMetadata(kind, row["metadata"]); err != nil {
+			return fmt.Errorf("dependency %s metadata: %w", kind, err)
 		}
 		m.add("edge", id, m.beads[from], table, map[string]any{"from": from, "to": target, "target_kind": targetKind, "type": row["type"], "metadata": row["metadata"], "thread_id": row["thread_id"]}, row)
 	case "comments":
@@ -299,6 +304,79 @@ func (m *mapping) row(table string, row Row) error {
 		m.add("beads-archive", table+"/"+digest(data), "", table, map[string]any{"read_only": true, "redactable": true, "history_verified": false, "attribution_verified": false}, row)
 	}
 	return nil
+}
+
+// validateDependencyMetadata checks the source JSON without rewriting it. The
+// exporter keeps the original metadata in both the typed body and provenance;
+// this guard only prevents an invalid JSON cell, or a waits-for object with
+// malformed gate members, from becoming an archive that cannot be read back.
+func validateDependencyMetadata(kind string, value any) error {
+	data, err := dependencyMetadataJSON(value)
+	if err != nil {
+		return err
+	}
+	if len(data) == 0 || kind != "waits-for" {
+		return nil
+	}
+	var object map[string]any
+	if err := decodeJSON(data, &object); err != nil || object == nil {
+		return fmt.Errorf("waits-for metadata must be a JSON object")
+	}
+	if gate, ok := object["gate"]; ok {
+		value, ok := gate.(string)
+		if !ok || value != "" && value != "all-children" && value != "any-children" {
+			return fmt.Errorf("waits-for gate must be all-children or any-children")
+		}
+	}
+	if alsoBlocks, ok := object["also_blocks"]; ok {
+		if _, ok := alsoBlocks.(bool); !ok {
+			return fmt.Errorf("waits-for also_blocks must be boolean")
+		}
+	}
+	if spawner, ok := object["spawner_id"]; ok {
+		if _, ok := spawner.(string); !ok {
+			return fmt.Errorf("waits-for spawner_id must be text")
+		}
+	}
+	return nil
+}
+
+func dependencyMetadataJSON(value any) ([]byte, error) {
+	switch value := value.(type) {
+	case nil:
+		return nil, nil
+	case json.RawMessage:
+		if len(strings.TrimSpace(string(value))) == 0 {
+			return nil, nil
+		}
+		if !json.Valid(value) {
+			return nil, fmt.Errorf("metadata is not valid JSON")
+		}
+		return append([]byte(nil), value...), nil
+	case string:
+		if strings.TrimSpace(value) == "" {
+			return nil, nil
+		}
+		data := []byte(value)
+		if !json.Valid(data) {
+			return nil, fmt.Errorf("metadata is not valid JSON")
+		}
+		return data, nil
+	case []byte:
+		if len(strings.TrimSpace(string(value))) == 0 {
+			return nil, nil
+		}
+		if !json.Valid(value) {
+			return nil, fmt.Errorf("metadata is not valid JSON")
+		}
+		return append([]byte(nil), value...), nil
+	default:
+		data, err := json.Marshal(value)
+		if err != nil || !json.Valid(data) {
+			return nil, fmt.Errorf("metadata is not valid JSON")
+		}
+		return data, nil
+	}
 }
 
 func (m *mapping) labels(rows []Row) error {

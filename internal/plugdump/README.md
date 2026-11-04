@@ -69,9 +69,14 @@ mirrors Plug's ontology migration shape (`id`, `kind`, `target`, `from`, and
 `to`), is recorded in the manifest, and never rewrites `source_type` or drops
 a row. Directives that are malformed, unused, overlap, target a built-in type,
 or target an unaccounted project refuse before archive publication.
-Supported edge types are `blocks`, `parent-child`, `related` and
-`discovered-from`. Targets retain their typed issue/external discriminator;
-wisp targets and dangling issue targets refuse. Labels sort without loss;
+Supported edge types are `blocks`, `parent-child`, `related`,
+`discovered-from`, `waits-for` and `conditional-blocks`. Targets retain their
+typed issue/external discriminator; wisp targets and dangling issue targets
+refuse. Dependency metadata is retained verbatim in the typed body and source
+provenance. It must be valid JSON; waits-for metadata must be an object whose
+known `gate`, `also_blocks` and `spawner_id` members use their canonical types,
+while unknown metadata members remain opaque. The exporter never rewrites a
+gate to `blocks` or drops conditional semantics. Labels sort without loss;
 comments keep IDs, authors, text and timestamps. Only the `kv.memory.` prefix
 is stripped from persistent-memory keys.
 
