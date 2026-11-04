@@ -202,31 +202,32 @@ func nativeMembershipReady(t *testing.T, c *nativeCommand, label string, filters
 }
 
 func (r *nativeReplay) replayMembershipContinuations(capture nativeCapture) {
-	base := ontology.DefaultDocument()
-	workflow := base.Workflows["issue"]
-	for name, status := range map[string]ontology.Status{
-		"b01active": {Name: "B01 active", Category: ontology.Unstarted},
-		"b01wip":    {Name: "B01 work in progress", Category: ontology.Started},
-		"b01done":   {Name: "B01 completed", Category: ontology.Completed, Outcome: ontology.Success},
-		"b01frozen": {Name: "B01 frozen", Category: ontology.Backlog},
-	} {
-		base.Statuses[name] = status
-		workflow.Statuses = append(workflow.Statuses, name)
-	}
-	base.Workflows["issue"] = workflow
-	compiled, problems := ontology.Compile(base, nil, nil)
-	if len(problems) != 0 {
-		r.f.t.Fatalf("explicit category ontology: %+v", problems)
-	}
-	r.f.ontology.Refresh(compiled)
 	parent := r.f.t
 	for _, step := range nativeMembershipSteps() {
 		if !parent.Run("membership/"+step.Name, func(t *testing.T) {
 			r.f.t = t
 			defer func() { r.f.t = parent }()
+			r.configureMembershipSlots(step)
 			observed, ok := capture.Membership[step.Name]
 			if !ok || len(observed.Nodes) != len(nativeRoles) {
 				t.Fatal("missing genuine native membership phase")
+			}
+			if step.Method == "status" {
+				before := r.snapshot()
+				r.refuseMembership("membership-"+step.Name+"-direct-status-refused", "bead.update", map[string]any{
+					"id": r.refs[step.Role], "fields": map[string]any{"status": step.PlugStatus},
+				}, "ontology_use_slot_verb")
+				after := r.snapshot()
+				if !bytes.Equal(before, after) {
+					t.Fatal("direct status refusal changed complete source/derived/history/receipt state")
+				}
+				nativeWrite(t, filepath.Join(r.output, "membership-"+step.Name+"-status-refusal-before.json"), before)
+				nativeWrite(t, filepath.Join(r.output, "membership-"+step.Name+"-status-refusal-after.json"), after)
+			}
+			// Claim only accepts an unstarted source. Restore the deferred
+			// pinned mapping through its real reopen slot before claiming it.
+			if step.Name == "status-started" {
+				r.membershipReopenBeforeClaim(step)
 			}
 			before := r.snapshot()
 			beforeDocs := map[string]json.RawMessage{}
@@ -237,7 +238,20 @@ func (r *nativeReplay) replayMembershipContinuations(capture nativeCapture) {
 			params := map[string]any{"id": r.refs[step.Role]}
 			switch step.Method {
 			case "status":
-				method, params = "bead.update", map[string]any{"id": r.refs[step.Role], "fields": map[string]any{"status": step.PlugStatus}}
+				// Status keys are selected by the configured canonical slots,
+				// never by an ordinary caller-supplied status patch.
+				switch step.Name {
+				case "status-pinned", "status-frozen":
+					method, params["reason"] = "bead.defer", "native category control"
+				case "status-started", "status-wip":
+					method = "bead.claim"
+				case "status-active":
+					method = "bead.reopen"
+				case "status-done":
+					method = "bead.close"
+				default:
+					t.Fatal("category phase lacks its explicit lifecycle route")
+				}
 			case "resume":
 				method = "bead.reopen"
 			case "link", "unlink":
@@ -265,30 +279,9 @@ func (r *nativeReplay) replayMembershipContinuations(capture nativeCapture) {
 						t.Fatal("category write changed unrelated/refused/settled document")
 					}
 				} else {
-					var prior map[string]any
+					var prior pipeline.Document
 					nativeDecode(t, beforeDocs[role], &prior)
-					current := map[string]any{}
-					nativeDecode(t, nativeDocumentBytes(t, after), &current)
-					// The operation may only change its status/lifecycle fields,
-					// defer reason comment, or its explicit blocks edge.
-					if step.Method == "link" || step.Method == "unlink" {
-						delete(prior, "links")
-						delete(current, "links")
-					} else {
-						delete(prior["fields"].(map[string]any), "status")
-						delete(current["fields"].(map[string]any), "status")
-						if step.Method == "defer" {
-							delete(prior, "comments")
-							delete(current, "comments")
-						}
-						for _, key := range []string{"startedAt", "closedAt"} {
-							delete(prior, key)
-							delete(current, key)
-						}
-					}
-					if !reflect.DeepEqual(prior, current) {
-						t.Fatalf("%s changed non-target fields/project/type/identity", step.Name)
-					}
+					r.assertMembershipNonTargetFields(step.Name, method, params, prior, after)
 				}
 			}
 			for _, suffix := range []string{"", "-reopened"} {
@@ -314,6 +307,126 @@ func (r *nativeReplay) replayMembershipContinuations(capture nativeCapture) {
 			parent.Fatalf("membership replay %s failed; originals retained", step.Name)
 		}
 	}
+}
+
+// Custom categories use real workflow slot configuration. Each custom target
+// retains the corresponding built-in slot's guards; claim retains its explicit
+// unstarted source restriction. No production validation is bypassed.
+func (r *nativeReplay) configureMembershipSlots(step nativeMembershipStep) {
+	base := ontology.DefaultDocument()
+	workflow := base.Workflows["issue"]
+	for _, entry := range []struct {
+		name   string
+		status ontology.Status
+	}{
+		{"b01active", ontology.Status{Name: "B01 active", Category: ontology.Unstarted}},
+		{"b01wip", ontology.Status{Name: "B01 work in progress", Category: ontology.Started}},
+		{"b01done", ontology.Status{Name: "B01 completed", Category: ontology.Completed, Outcome: ontology.Success}},
+		{"b01frozen", ontology.Status{Name: "B01 frozen", Category: ontology.Backlog}},
+	} {
+		base.Statuses[entry.name] = entry.status
+		workflow.Statuses = append(workflow.Statuses, entry.name)
+	}
+	for _, binding := range []struct {
+		from, to string
+		slot     ontology.Slot
+	}{
+		{"todo", "b01active", ontology.Reopen},
+		{"in_progress", "b01wip", ontology.Claim},
+		{"done", "b01done", ontology.Close},
+		{"backlog", "b01frozen", ontology.Defer},
+	} {
+		for _, original := range ontology.DefaultDocument().Workflows["issue"].Transitions {
+			if original.To != binding.from {
+				continue
+			}
+			custom := original
+			custom.To = binding.to
+			if binding.slot == ontology.Claim {
+				custom.From = []string{"b01active"}
+			}
+			workflow.Transitions = append(workflow.Transitions, custom)
+		}
+		switch step.Name {
+		case "status-active", "status-wip", "status-done", "status-frozen":
+			workflow.Slots[binding.slot] = binding.to
+		}
+	}
+	base.Workflows["issue"] = workflow
+	compiled, problems := ontology.Compile(base, nil, nil)
+	if len(problems) != 0 {
+		r.f.t.Fatalf("explicit category ontology: %+v", problems)
+	}
+	r.f.ontology.Refresh(compiled)
+	nativeJSON(r.f.t, filepath.Join(r.output, "membership-"+step.Name+"-ontology-slots.json"), base)
+}
+
+func (r *nativeReplay) membershipReopenBeforeClaim(step nativeMembershipStep) {
+	before := r.snapshot()
+	beforeImages := r.sourceImages()
+	prior := r.rawHierarchyDocument("membership-"+step.Name+"-prepare-before", step.Role)
+	params := map[string]any{"id": r.refs[step.Role]}
+	commit := r.write("membership-"+step.Name+"-prepare-reopen", "bead.reopen", params)
+	r.assertHierarchyWrite("membership-"+step.Name+"-prepare-reopen", step.Role, before, commit)
+	after := r.rawHierarchyDocument("membership-"+step.Name+"-prepare-after", step.Role)
+	if after.Fields["status"] != "todo" || after.Lease != nil {
+		r.f.t.Fatal("claim preparation did not enter its genuine unstarted reopen slot")
+	}
+	r.assertMembershipNonTargetFields(step.Name+"-prepare-reopen", "bead.reopen", params, prior, after)
+	afterImages := r.sourceImages()
+	for role, image := range beforeImages {
+		if role != step.Role && image != afterImages[role] {
+			r.f.t.Fatal("claim preparation changed an unrelated source image")
+		}
+	}
+}
+
+func (r *nativeReplay) assertMembershipNonTargetFields(label, method string, params map[string]any, before, after pipeline.Document) {
+	prior, current := map[string]any{}, map[string]any{}
+	nativeDecode(r.f.t, nativeDocumentBytes(r.f.t, before), &prior)
+	nativeDecode(r.f.t, nativeDocumentBytes(r.f.t, after), &current)
+	if method == "bead.link" || method == "bead.unlink" {
+		delete(prior, "links")
+		delete(current, "links")
+	} else {
+		delete(prior["fields"].(map[string]any), "status")
+		delete(current["fields"].(map[string]any), "status")
+		if reason, _ := params["reason"].(string); reason != "" {
+			if len(after.Comments) != len(before.Comments)+1 ||
+				after.Comments[len(before.Comments)].Body != reason {
+				r.f.t.Fatal("category reason did not append exactly its one unchanged-prefix comment")
+			}
+			for i, comment := range before.Comments {
+				if !reflect.DeepEqual(comment, after.Comments[i]) {
+					r.f.t.Fatal("category reason changed an existing comment")
+				}
+			}
+			delete(prior, "comments")
+			delete(current, "comments")
+		}
+		if method == "bead.claim" {
+			if before.Lease != nil || after.Lease == nil || after.Lease.Agent != owner ||
+				!reflect.DeepEqual(after.Lease.Principal, model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}) ||
+				!after.Lease.ExpiresAt.Equal(r.f.clock.Now().Add(5*time.Minute)) ||
+				after.Lease.TtlMs != model.Natural64(300000) || after.Lease.Epoch != model.Natural64(r.f.lease.Epoch()) {
+				r.f.t.Fatal("membership claim lacks its exact ordinary durable lease binding")
+			}
+		} else if after.Lease != nil {
+			r.f.t.Fatal("non-claim membership lifecycle retained a lease")
+		}
+		delete(prior, "lease")
+		delete(current, "lease")
+		for _, key := range []string{"startedAt", "closedAt"} {
+			delete(prior, key)
+			delete(current, key)
+		}
+	}
+	if !reflect.DeepEqual(prior, current) {
+		r.f.t.Fatalf("%s changed non-target fields/project/type/identity", label)
+	}
+	nativeJSON(r.f.t, filepath.Join(r.output, "membership-"+label+"-non-target-fields.json"), map[string]any{
+		"method": method, "before": before, "after": after, "conservedProjection": prior,
+	})
 }
 
 func nativeDocumentBytes(t *testing.T, doc any) []byte {

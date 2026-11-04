@@ -277,3 +277,26 @@ Scope = the nineteen category/guard phases, exact source/read/refusal/settlement
 conservation and supported type/resource filters. Controlled native clocks,
 complete infrastructure/template/plane/error and persisted legacy/conflicting
 parent corpora still need their own executable units; full B01 is unqualified.
+
+
+The causal successor to the category source retains exact06f's native RED: all
+twelve public replays first refused the ordinary status patch with
+`ontology_use_slot_verb`. Public replay now enters each category through its
+named lifecycle slot. Built-in targets use default slots; the four custom
+targets use declared workflow slots with the corresponding unchanged default
+guards and explicit custom unstarted claim source. The first started phase
+reopens the deferred pinned mapping before its genuine claim. The fixture
+retains each exact ontology document. Six direct status patches still execute
+as typed refusals with complete unchanged snapshots. Native vectors, CLI
+commands, before/after observations and all category membership expectations
+are retained. This is category replay, with no native claim parity claim.
+
+Ordinary claim results must contain the expected owner, agent, five-minute TTL,
+expiry and current epoch. Other lifecycle verbs clear the claim lease. Changed
+records retain all other source fields; a reason appends exactly one comment
+with the prior comments unchanged. Quiet repeated close conserves every prior
+receipt byte string and adds only its exact current method/key's completed
+no-op receipt bound to the returned commit. Both full settlement snapshots and
+the response binding are retained. These executable controls remain
+AUTHORED_NOT_RUN until this exact source reaches them; all prior REDs and
+independent bounded results retain their original heads.
