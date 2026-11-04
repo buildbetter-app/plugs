@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/api/wire"
@@ -45,7 +46,7 @@ func TestB14PublicPlugDumpRestoreExternalWaitsForAcrossEngines(t *testing.T) {
 		var ops []model.Op
 		for _, to := range []model.Ref{refs[3], opaque} {
 			b14DumpCall(t, source, "bead.link", map[string]any{"from": refs[0], "to": to, "kind": "waits-for", "targetKind": "external", "metadata": all})
-			ops = append(ops, model.Op{Kind: model.OpLink, Link: &model.LinkOp{From: refs[1], To: to, Kind: "waits-for", TargetKind: model.LinkTargetExternal, Metadata: anyAlso}})
+			ops = append(ops, model.Op{Kind: model.OpLink, Link: &model.LinkOp{Kind: model.OpLink, From: refs[1], To: to, LinkKind: "waits-for", TargetKind: model.LinkTargetExternal, Metadata: anyAlso}})
 		}
 		b14DumpCall(t, source, "tx.apply", map[string]any{"changeSet": model.ChangeSet{Ops: ops}})
 		b14DumpCall(t, source, "bead.link", map[string]any{"from": refs[2], "to": refs[3], "kind": "waits-for", "metadata": all})
@@ -144,7 +145,11 @@ func assertB14DumpHost(t *testing.T, host b14DumpHost, refs []model.Ref, want ma
 			t.Fatal(err)
 		}
 		wantJSON, err := json.Marshal(links)
-		if err != nil || !bytes.Equal(gotJSON, wantJSON) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantValue, err := wire.DecodeJSON(wantJSON)
+		if err != nil || !reflect.DeepEqual(bead["links"], wantValue) {
 			t.Fatalf("public links %s: got %s want %s err=%v", id, gotJSON, wantJSON, err)
 		}
 	}
