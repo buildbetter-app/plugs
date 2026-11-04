@@ -434,7 +434,7 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 			t.Fatal(err)
 		}
 	}
-	pinned := filepath.Join(run.Root, "bd-pinned")
+	pinned := filepath.Join(run.Root, "native-companion-pinned")
 	copyPinned(t, artifact.Binary, pinned, artifact.SHA256, artifact.Size)
 	env := recordingEnv(source)
 	commandGit := func(label, store string, dir string, argv []string) []byte {
