@@ -300,6 +300,7 @@ internal/core/restore/BUILD.bazel
 internal/core/restore/archive.go
 internal/core/restore/b17_connected_query_test.go
 internal/core/restore/b17_data_test.go
+internal/core/restore/external_target_test.go
 internal/core/restore/fixture_test.go
 internal/core/restore/native_ancestor_restore_test.go
 internal/core/restore/native_hierarchy.go
