@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
@@ -57,6 +58,7 @@ func runWriter(t *testing.T, factory func(*testing.T) driver.Store, metadataOnly
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = lease.Release(ctx) })
+	renewWriterLease(t, lease)
 	o := service.NewOntology(nil)
 	next := 0
 	w := pipeline.New(s, lease, pipeline.WithOntology(o), pipeline.WithIDGenerator(func() (string, error) { next++; return fmt.Sprintf("pl-ready-%03d", next), nil }))
@@ -326,6 +328,48 @@ func runWriter(t *testing.T, factory func(*testing.T) driver.Store, metadataOnly
 	}
 }
 
+// The real Writer oracle spans many separate source transactions. Maintain its
+// store lease at the ordinary cadence without changing TTLs or the source
+// Claim/Heartbeat/Release refusal cases exercised by the oracle itself.
+func renewWriterLease(t *testing.T, lease driver.ActiveLease) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	type result struct {
+		err      error
+		renewals int
+	}
+	done := make(chan result, 1)
+	go func() {
+		ticker := time.NewTicker(driver.LeaseRenewEvery)
+		defer ticker.Stop()
+		r := result{}
+		defer func() { done <- r }()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := lease.Renew(ctx); err != nil {
+					if !errors.Is(err, context.Canceled) || ctx.Err() == nil {
+						r.err = err
+					}
+					return
+				}
+				r.renewals++
+			}
+		}
+	}()
+	// Cleanup runs before the previously registered Release and Store.Close.
+	t.Cleanup(func() {
+		cancel()
+		r := <-done
+		if r.err != nil {
+			t.Error("real Writer store lease renewal", r.err)
+		}
+		t.Logf("READY_WRITER active_lease_renewals=%d cadence_ns=%d", r.renewals, driver.LeaseRenewEvery.Nanoseconds())
+	})
+}
+
 func runPluginRefresh(t *testing.T, factory func(*testing.T) driver.Store, metadataOnly bool) {
 	ctx := context.Background()
 	s := factory(t)
@@ -334,6 +378,7 @@ func runPluginRefresh(t *testing.T, factory func(*testing.T) driver.Store, metad
 		t.Fatal(e)
 	}
 	t.Cleanup(func() { _ = lease.Release(ctx) })
+	renewWriterLease(t, lease)
 	doc := ontology.DefaultDocument()
 	doc.Types["issue"].Fields["plugin_field"] = ontology.Field{Type: "string", Owner: "ready-owner"}
 	available, problems := ontology.Compile(doc, nil, ontology.PluginCatalog{"ready-owner": true})

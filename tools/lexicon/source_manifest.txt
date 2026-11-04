@@ -1104,6 +1104,7 @@ internal/storage/postgres/store.go
 internal/storage/postgres/transaction.go
 internal/storage/readyindex/BUILD.bazel
 internal/storage/readyindex/dense_test.go
+internal/storage/readyindex/materialization_test.go
 internal/storage/readyindex/publication.go
 internal/storage/readyindex/ready_order_test.go
 internal/storage/readyindex/select.go

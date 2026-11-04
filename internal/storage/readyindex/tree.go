@@ -171,7 +171,18 @@ func (t *tree) save(scope string, n *driver.ReadyOrderNode) error {
 	t.work.DigestBytes += n.DigestBytes()
 	key := nodeKey(scope, n.Prefix)
 	t.nodes[key] = n
-	return t.write(key, n)
+	// Every intermediate commitment is still sealed and every before-image
+	// observed. Only materialize serializes nodes for publication, after exact
+	// source revisions and all final child commitments have been installed.
+	if _, known := t.rows[key]; !known {
+		var ignored json.RawMessage
+		if _, err := t.read(key, &ignored); err != nil {
+			return err
+		}
+	}
+	t.rows[key] = &driver.DerivedRow{Key: key}
+	t.dirty[key] = true
+	return nil
 }
 func edge(n *driver.ReadyOrderNode) driver.ReadyOrderChild {
 	return driver.ReadyOrderChild{Prefix: n.Prefix, Commitment: n.Commitment}
