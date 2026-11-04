@@ -31,16 +31,17 @@ import (
 // bound test presence verifier supplies no protected source, user, grant or
 // hardware-key evidence. Anonymous/no-policy execution cannot earn AZ9 credit.
 type b07NativeSQLHost struct {
-	t       *testing.T
-	ctx     context.Context
-	runtime *composition.Runtime
-	server  *httpjson.Server
-	done    chan error
-	config  composition.Config
-	url     string
-	output  string
-	count   int
-	scopes  map[string][2]string
+	t            *testing.T
+	ctx          context.Context
+	runtime      *composition.Runtime
+	server       *httpjson.Server
+	done         chan error
+	config       composition.Config
+	url          string
+	output       string
+	count        int
+	observations int
+	scopes       map[string][2]string
 }
 
 type b07NativeReply struct {
@@ -108,12 +109,20 @@ func b07NativeImportAndExercise(t *testing.T, engine, root, twin string, capture
 	if edge.Kind != "blocks" {
 		t.Fatal("B07 mutation control must be a genuine native blocks edge")
 	}
+	for _, id := range capture.Ready {
+		if id == edge.From {
+			t.Fatal("the genuine native blocks control is unexpectedly ready")
+		}
+	}
+	unblocked := append(append([]string(nil), capture.Ready...), edge.From)
+	sort.Strings(unblocked)
 	sub := h.subscribe(edge.From)
 	defer sub.Close()
 	params := map[string]any{"from": from, "to": to, "kind": "blocks"}
 	first := h.call("bead.unlink", "native-unlink", params)
 	commit := h.commit(first)
 	h.delivered(sub, commit.Revision, model.EventBeadUnlinked)
+	h.assertReady(unblocked)
 	after := h.snapshot()
 	replay := h.call("bead.unlink", "native-unlink", params)
 	if replay.Meta["replayed"] != true || !bytes.Equal(first.Result, replay.Result) {
@@ -126,16 +135,19 @@ func b07NativeImportAndExercise(t *testing.T, engine, root, twin string, capture
 	}
 	h.reopen()
 	h.same(after)
+	h.assertReady(unblocked)
+	sub = h.subscribe(edge.From)
+	defer sub.Close()
 	replay = h.call("bead.unlink", "native-unlink", params)
 	if replay.Meta["replayed"] != true || !bytes.Equal(first.Result, replay.Result) {
 		t.Fatal("physical SQL reopen lost exact unlink replay")
 	}
 	h.same(after)
-	sub = h.subscribe(edge.From)
-	defer sub.Close()
+	h.quiet(sub)
 	relinked := h.call("bead.link", "native-relink", params)
 	commit = h.commit(relinked)
 	h.delivered(sub, commit.Revision, model.EventBeadLinked)
+	h.assertReady(capture.Ready)
 	beforeRefusal := h.snapshot()
 	batch := func(kind string) map[string]any {
 		return map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{
@@ -149,6 +161,7 @@ func b07NativeImportAndExercise(t *testing.T, engine, root, twin string, capture
 	}
 	h.same(beforeRefusal)
 	h.quiet(sub)
+	h.assertReady(capture.Ready)
 	corrected := h.call("tx.apply", "native-late-retype", batch("blocks"))
 	h.commit(corrected)
 	if corrected.Meta["replayed"] == true {
@@ -160,11 +173,15 @@ func b07NativeImportAndExercise(t *testing.T, engine, root, twin string, capture
 	}
 	h.reopen()
 	h.same(afterCorrection)
+	h.assertReady(capture.Ready)
+	sub = h.subscribe(edge.From)
+	defer sub.Close()
 	correctedReplay := h.call("tx.apply", "native-late-retype", batch("blocks"))
 	if correctedReplay.Meta["replayed"] != true || !bytes.Equal(corrected.Result, correctedReplay.Result) {
 		t.Fatal("corrected imported-edge batch receipt did not survive physical SQL reopen")
 	}
 	h.same(afterCorrection)
+	h.quiet(sub)
 	b07NativeJSON(t, filepath.Join(output, "consumer-terminal.json"), map[string]any{
 		"engine": engine, "archiveSHA256": b07NativeSHA(capture.Archive), "rows": len(afterCorrection.Rows),
 		"head": afterCorrection.Meta.Head, "scope": "actual anonymous no-policy native import/HTTP/SQL/reopen/watch; no installed-positive AZ9",
@@ -295,6 +312,11 @@ func (h *b07NativeSQLHost) assertImported(capture b07NativeCapture) {
 			h.t.Fatalf("native typed edge not retained: edge=%+v doc=%+v", edge, doc)
 		}
 	}
+	h.assertReady(capture.Ready)
+}
+
+func (h *b07NativeSQLHost) assertReady(want []string) {
+	h.t.Helper()
 	reply := h.call("bead.ready", "import-ready", map[string]any{"limit": 1000})
 	if reply.Error != nil {
 		h.t.Fatalf("imported public ready refused: %+v", reply)
@@ -309,8 +331,8 @@ func (h *b07NativeSQLHost) assertImported(capture b07NativeCapture) {
 		ids = append(ids, item.ID)
 	}
 	sort.Strings(ids)
-	if page.NextCursor != "" || !reflect.DeepEqual(ids, capture.Ready) {
-		h.t.Fatalf("complete native/Plug ready membership differs: native=%v Plug=%v next=%q", capture.Ready, ids, page.NextCursor)
+	if page.NextCursor != "" || !reflect.DeepEqual(ids, want) {
+		h.t.Fatalf("complete native/Plug ready membership differs: expected=%v Plug=%v next=%q", want, ids, page.NextCursor)
 	}
 }
 
@@ -373,6 +395,9 @@ func (h *b07NativeSQLHost) snapshot() b07NativeConservation {
 		h.t.Fatal(err)
 	}
 	defer r.Close()
+	if view := r.Snapshot(); view.At == nil || view.At.String() != meta.Head.String() || view.Incarnation != meta.Incarnation {
+		h.t.Fatalf("native consumer observation is not pinned: %+v", view)
+	}
 	s := b07NativeConservation{Meta: meta, Versions: map[string][]driver.Version{}, Derived: map[driver.DerivedTable][]driver.DerivedRow{}, Receipts: map[string]driver.IdempotencyRecord{}}
 	var cursor *driver.Cursor
 	for {
@@ -439,6 +464,8 @@ func (h *b07NativeSQLHost) snapshot() b07NativeConservation {
 			s.Receipts[name] = *receipt
 		}
 	}
+	h.observations++
+	b07NativeJSON(h.t, filepath.Join(h.output, fmt.Sprintf("conservation-%03d.json", h.observations)), s)
 	return s
 }
 
