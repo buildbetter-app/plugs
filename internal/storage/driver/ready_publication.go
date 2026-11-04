@@ -41,6 +41,11 @@ type ReadyOrderPublicationData struct {
 // detached copy, so a caller cannot alter a registered proof through aliases.
 type ReadyOrderPublication struct{ encoded []byte }
 
+// IsZero reports an absent optional publication without decoding its immutable
+// image. Nonzero values come from NewReadyOrderPublication; engines must still
+// decode and independently replay Data under their physical publication fence.
+func (p ReadyOrderPublication) IsZero() bool { return len(p.encoded) == 0 }
+
 func NewReadyOrderPublication(data ReadyOrderPublicationData) (ReadyOrderPublication, error) {
 	base, err := data.Base.Uint64()
 	next, nextErr := data.Revision.Uint64()

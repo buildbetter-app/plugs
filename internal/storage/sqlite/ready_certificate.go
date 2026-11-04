@@ -37,7 +37,7 @@ func (t *transaction) StageReadyOrderPublication(ctx context.Context, p driver.R
 	if !t.hasHead {
 		return driver.ErrUnsupported
 	}
-	if _, err := p.Data(); err != nil {
+	if p.IsZero() {
 		return driver.ErrUnsupported
 	}
 	signature, err := t.readyOrderOverlaySignature()

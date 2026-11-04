@@ -548,7 +548,7 @@ func (d *Delta) FinalizePublication(ctx context.Context, tx driver.WriteTx) erro
 	if d == nil || !d.published {
 		return nil
 	}
-	if _, err := d.registration.Data(); err != nil {
+	if d.registration.IsZero() {
 		return nil
 	}
 	if writer, ok := tx.(driver.ReadyOrderPublicationWriter); ok {

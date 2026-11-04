@@ -988,6 +988,7 @@ internal/storage/driver/parent_counter_test.go
 internal/storage/driver/read_work.go
 internal/storage/driver/ready_order.go
 internal/storage/driver/ready_publication.go
+internal/storage/driver/ready_publication_test.go
 internal/storage/driver/receipt_contract_test.go
 internal/storage/driver/restore.go
 internal/storage/driver/restore_test.go
