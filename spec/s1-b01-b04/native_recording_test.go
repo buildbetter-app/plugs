@@ -20,6 +20,7 @@ type nativeCapture struct {
 	After       nativePhase
 	Transitions map[string]nativePhase
 	Membership  map[string]nativeMembershipPhase
+	Exclusions  map[string]nativeExclusionPhase
 	Output      string
 }
 
@@ -90,7 +91,7 @@ func TestB01NativeTimedAndIndefinitePair(t *testing.T) {
 		}
 		// Only the explicitly projected semantic fields are compared. All raw
 		// wall-clock timestamps, revisions and streams remain separate originals.
-		equal := reflect.DeepEqual(twins[0].Before, twins[1].Before) && reflect.DeepEqual(twins[0].After, twins[1].After) && reflect.DeepEqual(twins[0].Transitions, twins[1].Transitions) && reflect.DeepEqual(twins[0].Membership, twins[1].Membership)
+		equal := reflect.DeepEqual(twins[0].Before, twins[1].Before) && reflect.DeepEqual(twins[0].After, twins[1].After) && reflect.DeepEqual(twins[0].Transitions, twins[1].Transitions) && reflect.DeepEqual(twins[0].Membership, twins[1].Membership) && reflect.DeepEqual(twins[0].Exclusions, twins[1].Exclusions)
 		nativeJSON(t, filepath.Join(root, vector.ID+"-twin-comparison.json"), map[string]any{
 			"equal": equal, "runA": twins[0], "runB": twins[1],
 			"projection": "role IDs, titles, statuses, priorities, parent edges, persisted until, ordered ready IDs and explain reasons/counts; raw bytes are not asserted identical",
@@ -110,6 +111,7 @@ func TestB01NativeTimedAndIndefinitePair(t *testing.T) {
 					dsn = h.dsn(t)
 				}
 				replayNativeVector(t, capture, backend, dsn, inputs.AdoptedIndefiniteDecision)
+				replayNativeExclusionVector(t, capture, backend, h)
 			})
 		}
 	}
@@ -306,10 +308,21 @@ func recordNativeVector(t *testing.T, binary, output string, inputs nativeInputs
 	if c.count != 24+7*len(steps)+1+13*len(nativeMembershipSteps())+3 {
 		t.Fatal("native category/export command set is incomplete")
 	}
+	exclusionStart := c.count
+	exclusions := recordNativeExclusions(t, c, vector)
+	if c.count-exclusionStart != 1+9*len(nativeExclusionTypes()) {
+		t.Fatal("native exclusion command set is incomplete")
+	}
+	c.run("exclusions-quiesce", "dolt", "commit", "-m", "B01 hidden type capture "+run.ID)
+	c.run("exclusions-inventory", "--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "-o", filepath.Join(output, "exclusions-inventory.json"))
+	checkNativeExclusionInventory(t, filepath.Join(output, "exclusions-inventory.json"), output)
+	if c.count != 422 {
+		t.Fatal("complete native hierarchy/category/type command set differs")
+	}
 	if err := server.Stop(); err != nil {
 		t.Fatalf("owned server shutdown: %v", err)
 	}
-	capture := nativeCapture{Vector: vector, Run: run, Before: before, After: after, Transitions: transitions, Membership: membership, Output: output}
+	capture := nativeCapture{Vector: vector, Run: run, Before: before, After: after, Transitions: transitions, Membership: membership, Exclusions: exclusions, Output: output}
 	nativeJSON(t, filepath.Join(output, "observed-projection.json"), capture)
 	t.Logf("B01_NATIVE_CAPTURE vector=%s run=%s commands=%d actualPort=%d output=%s", vector.ID, run.ID, c.count, server.Port, output)
 	return capture

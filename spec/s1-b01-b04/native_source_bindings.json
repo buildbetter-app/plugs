@@ -61,7 +61,7 @@
     "sha256": "4eb2fcc5937668a29077c634ce361872e4b2a43152443da31ce65c800309beb4"
   },
   "sourceComposition": "Exact attributed producer43 MODULE/helper blobs; existing B01 recorder, V3 inputs,96 argv and three-driver replay unchanged except helper source/tree attribution. Returned ChildEnv stays unchanged; private config root remains separate from physical DataRoot.",
-  "currentConsumerScope": "Child of1f1cd73879adb7ead25049d98b02447e84fd05e7: test-only complete-JSON receipt Commit comparison and pre-assert complete settlement observations in both helpers. All777 authored names, prior receipt byte conservation, sole fresh method/key, zero Changeset, source/head/history/versions/all nine derived/facts, native commands/input/preparation/helper/control and other assertions retained. Parent1f repeated-close response-binding RED remains exact; its unrecorded after-receipt prevents direct measurement of the failed subcondition. Product source and broader clock/plane/query-error qualification unchanged. Own fresh gates AUTHORED_NOT_RUN.",
+  "currentConsumerScope": "Child of8b9173ceb2e26b57278f0807dafa17096c3d50f9: retains all777 hierarchy/category/compatibility names and complete-JSON quiet receipt oracle, appends nine genuine native type phases per capture and fresh public-created type/filter/template-extension fixtures in all three backends. 933 source-derived planned names,422 CLI per physical store/1688 total. Native explicit type override remains visible beside Plug ReadyEligible=false mandatory behavior; typed/template parity=null where applicable. Full source/receipt/history/version/all9derived/facts, signed pages and physical SQL reopen remain asserted. All own runtime AUTHORED_NOT_RUN; common Go+SQL clock, planes and optional errors still unqualified.",
   "trustedPreparation": {
     "control": "2d2164ba3d8e456c9aba15fbeb8cae4edc755997",
     "controlTree": "ae226eed2e9a85d4da19958db7a3520ebfe9cf05",
@@ -97,5 +97,31 @@
     "evidence": "Before/after snapshots, complete added receipt, returned Commit and byte/value equality diagnostics survive a failing binding assertion; final settlement output requires all checks",
     "parent": "1f1cd73879adb7ead25049d98b02447e84fd05e7",
     "parentDisposition": "NATIVE_TEST_RED_TEST_EXECUTION_INCOMPLETE; exact failed compound subcondition UNMEASURED"
+  },
+  "nativeTypeBoundary": {
+    "source": "c8eb3ba7d4177e111a6f5c8aebe06b5d0b1d5724",
+    "paths": [
+      "internal/storage/sqlbuild/ready.go",
+      "internal/storage/domain/infra_types.go",
+      "internal/storage/issueops/ready_work.go",
+      "cmd/bd/update.go",
+      "internal/storage/issueops/config_helpers.go"
+    ],
+    "defaultHidden": [
+      "merge-request",
+      "gate",
+      "molecule",
+      "rig",
+      "agent",
+      "role",
+      "message"
+    ],
+    "ordinaryControls": [
+      "bug",
+      "task"
+    ],
+    "explicitNativeTypeFilter": "Bypasses the default excluded-type list; its actual output is preserved with typedFilterParity=null",
+    "plugMapping": "Actual public-created type definitions with explicit ReadyEligible=false for seven hidden types; task/bug eligible",
+    "nativeTemplate": "NOT_SUPPLIED; public template patch is a separately labelled Plug extension"
   }
 }

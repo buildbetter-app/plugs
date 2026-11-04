@@ -137,6 +137,7 @@ go_test(
         "native_hierarchy_test.go",
         "native_membership_test.go",
         "native_parent_compatibility_test.go",
+        "native_exclusion_test.go",
     ],
     embedsrcs = [
         "manifest.json",

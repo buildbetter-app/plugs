@@ -348,3 +348,45 @@ output follows all assertions. New execution remains AUTHORED_NOT_RUN until
 its own changed-source terminal; historical REDs and incomplete leaves remain
 literal. This test-only repair supplies no native input or product change,
 common clock, broader planes/query-error proof, fullB01 or admission.
+
+
+The hidden-type continuation retains the preceding hierarchy/category/quiet
+receipt/parent-compatibility corpus and appends nine genuine native parent
+type mutations in each physical capture: merge-request, gate, molecule, rig,
+agent, role, message, bug and restored task. The accepted source declares the
+first seven hidden by default. Each mutation retains actual four-role shows
+and full, limit-one, explicit-type and task-type ready queries. The hidden
+highest-priority parent must disappear before the limit while its open local
+children remain ready. Explicit native --type bypasses the default type list;
+that actual answer is retained separately from Plug's mandatory type-level
+ReadyEligible=false rule, with typed-filter parity=null. No native clock is
+injected or controlled by this corpus.
+
+The original338 CLI commands per store remain unchanged;84 genuine additional
+commands bring the source plan to422 per store/1688 overall. Final quiesced
+inventory version/clean state and regular sidecar originals are checked after
+restoring task. The previous successful preconfiguration public dump and
+genuine custom-status dump refusal remain separate originals. The new final
+inventory is not a successful dump/import proof. Semantic twins include the
+new actual type projections without discarding old projection fields.
+
+For every type and memory/SQLite/Postgres backend, replay creates four actual
+public records with captured source identity/title/priority bindings in a fresh
+store. Explicit ontology mappings represent hidden types as ReadyEligible=false
+and bug/task as ordinary eligible types. No immutable public type is changed
+through a storage fixture. Canonical local Parent, full ancestor closure,
+default/mapped/ordinary type and resource/intersection queries are checked with
+full and signed one-row enumeration, complete source/receipt/history/version/
+all-nine-derived/fact conservation and actual SQL handle reopen. Every SQL
+case crosses a real signed continuation over reopen. The restored task case
+also applies a real public template patch as a separately labelled Plug
+extension, conserving exact non-target fields including prior template
+value/presence. Native template construction is not claimed.
+
+These156 added planned names join the retained777 for933 source-derived names.
+Every new case remains AUTHORED_NOT_RUN until reached on this exact source.
+Controlled native Go+SQL48h/P74 clocks, both native row/dependency planes,
+optional-table absence versus unrelated query errors, and other full-card
+obligations remain explicitly incomplete. Existing accepted preparation and
+fixed helper/control are unchanged; no borrowed head/gate credit, FullB01,
+NativeAdmission or FullS1 promotion follows from this source.
