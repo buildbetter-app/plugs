@@ -149,10 +149,10 @@ jobs:
         if: ${{ steps.public_runtime_selection.outputs.selected == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          # Native adoption requires a separately admitted helper commit/hash
-          # and actual official descriptor; PR-local edits cannot certify this pin.
-          TRUSTED_PREPARER_SHA: cdc2948fb60572b9bc694269ac8a5fdff6720de3
-          TRUSTED_PREPARER_SHA256: a4ad328f11d59bb41cdf814a47b647e4b419a67675e35c111b8c41f878f12280
+          # Reviewed helper supports the separately admitted native descriptor.
+          # Ordinary CI retains its existing companion descriptor below.
+          TRUSTED_PREPARER_SHA: 42eaa5b467d6016e73738e37252659c25179f7c7
+          TRUSTED_PREPARER_SHA256: a6d574a2b52642f9628f8460b177a46ebf0f50919bd5b7cb7e94b2995a5ea876
           PUBLIC_BUNDLE_DESCRIPTOR: 41398730774:13120521766:66de7c070d365bbd7fc2bd39ed822e5bf72c21efabe0add9a5e26d07bf170a62
         run: |
           set -euo pipefail
