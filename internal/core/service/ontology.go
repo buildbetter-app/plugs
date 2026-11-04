@@ -564,7 +564,7 @@ func (o *Ontology) resolvedGateFacts(change port.Change, required map[string]boo
 		return facts
 	}
 	for _, link := range doc.Links {
-		if link.Kind != "blocks" || !link.To.IsID() || !link.To.Branch.IsZero() {
+		if link.TargetKind == model.LinkTargetExternal || link.Kind != "blocks" || !link.To.IsID() || !link.To.Branch.IsZero() {
 			continue
 		}
 		row, present := graph[link.To.ID]
