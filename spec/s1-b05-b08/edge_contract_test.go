@@ -271,7 +271,7 @@ func TestB07KnownDependencyKindsHaveOnlyAdoptedReadyAndCloseEffects(t *testing.T
 						final := e.snapshot(t)
 						edgeRequireSingleCommit(t, beforeClose, final, edgeRequireReceipt(t, final, closeProbe, closed.Result, false), from)
 						edgeRequireLinks(t, final, from, edgeLinkValue(to, kind))
-						edgeRequireOnlyEdgeAndFields(t, beforeClose, final, from, map[string]any{"status": "done"})
+						edgeRequireOnlyEdgeAndFields(t, beforeClose, final, from, map[string]any{"status": "done"}, &e.f.now)
 					}
 				})
 			}
@@ -776,7 +776,11 @@ func TestB07ConditionalEdgeUsesAdoptedFailureOutcomeAcrossReopen(t *testing.T) {
 				edgeRequireSuccess(t, got)
 				after := e.snapshot(t)
 				edgeRequireSingleCommit(t, before, after, edgeRequireReceipt(t, after, p, got.Result, false), to)
-				edgeRequireOnlyEdgeAndFields(t, before, after, to, map[string]any{"status": step.status})
+				closedAt := &e.f.now
+				if step.method == "bead.reopen" {
+					closedAt = nil
+				}
+				edgeRequireOnlyEdgeAndFields(t, before, after, to, map[string]any{"status": step.status}, closedAt)
 				edgeRequireLinks(t, after, from, edgeLinkValue(to, "conditional-blocks"))
 				edgeRequirePublicReady(t, e, step.ready...)
 				e.f.reopen(t)

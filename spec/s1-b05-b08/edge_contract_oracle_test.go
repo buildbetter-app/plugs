@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -437,9 +438,10 @@ func edgeRequireLinks(t *testing.T, s edgeContractState, ref model.Ref, want ...
 
 // Pair this with the exact link-value assertion: every other member of the
 // source body must remain byte-value equivalent, except the explicitly named
-// field edits. Association or metadata writes cannot quietly change status,
+// field edits and an explicitly expected closedAt transition. Association or
+// metadata writes cannot quietly change lifecycle times, status,
 // parent, comments, leases, labels or plugin metadata.
-func edgeRequireOnlyEdgeAndFields(t *testing.T, before, after edgeContractState, ref model.Ref, fields map[string]any) {
+func edgeRequireOnlyEdgeAndFields(t *testing.T, before, after edgeContractState, ref model.Ref, fields map[string]any, closedAt ...*time.Time) {
 	t.Helper()
 	want := edgeJSONObject(t, before.Records[edgeRecordKey(ref)].Body)
 	got := edgeJSONObject(t, after.Records[edgeRecordKey(ref)].Body)
@@ -450,6 +452,16 @@ func edgeRequireOnlyEdgeAndFields(t *testing.T, before, after edgeContractState,
 	}
 	for name, value := range fields {
 		want["fields"].(map[string]any)[name] = value
+	}
+	if len(closedAt) > 1 {
+		t.Fatal("multiple expected closedAt edits")
+	}
+	if len(closedAt) == 1 {
+		if closedAt[0] == nil {
+			delete(want, "closedAt")
+		} else {
+			want["closedAt"] = closedAt[0].UTC().Format(time.RFC3339Nano)
+		}
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("source %s changed outside its edge/field edit: got=%+v want=%+v", ref.ID, got, want)
