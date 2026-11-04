@@ -85,6 +85,27 @@ func (s *Service) Get(ctx context.Context, by model.PrincipalRef, req GetRequest
 			return GetResult{}, err
 		}
 		result.Bead.Links = append(result.Bead.Links, links...)
+		// These visible relations come from the actual checkpoint index. The
+		// ordinary row remains in its own graph without a shadow parent row.
+		for _, relation := range links {
+			if relation.From != req.ID.ID || relation.Kind != "parent-child" {
+				continue
+			}
+			targetKind, err := relation.TargetKind.Normalized()
+			if err != nil {
+				return GetResult{}, failure("internal_error", "invalid persisted mixed hierarchy target kind")
+			}
+			if targetKind == model.LinkTargetExternal {
+				continue
+			}
+			if err := validateWorkflowRef(relation.To); err != nil {
+				return GetResult{}, failure("internal_error", "invalid persisted mixed hierarchy parent")
+			}
+			if result.Bead.Parent != "" && result.Bead.Parent != relation.To.ID {
+				return GetResult{}, failure("internal_error", "conflicting persisted mixed hierarchy parents")
+			}
+			result.Bead.Parent = relation.To.ID
+		}
 		blocked, err := s.workflow.OrdinaryBlocked(ctx, by, []string{req.ID.ID}, workflowMeta(by, "bead.get", doc.Project, req.Agent))
 		if err != nil {
 			return GetResult{}, err
