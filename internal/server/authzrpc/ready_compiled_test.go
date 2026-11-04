@@ -124,6 +124,9 @@ func newReadyRequestFixture(t *testing.T, count int) *readyRequestFixture {
 	}
 	ns := authz.Namespace{StoreID: string(meta.StoreID), Incarnation: meta.Incarnation, InstallationID: "fixed", Authority: model.RefByID("authority", model.Natural64(0))}
 	project := model.RefByID("local", model.Natural64(0))
+	// Fixed user reads are otherwise unrestricted. The existing project caveat
+	// makes the shared secret-project parent unreadable without adding policy.
+	f.by.Caveats = map[string]any{"projects": []model.Ref{project}}
 	facts := authzfixed.Facts{Namespace: ns, Projects: []authzfixed.Project{{Ref: project, Name: "local", InstallationID: "fixed", Active: true}}, Grants: []authz.Grant{{Subject: authz.SubjectRef{Kind: "user", ID: f.by.ID}, Scope: authz.Scope{Kind: authz.ProjectScope, Ref: project}, Role: "involved"}}}
 	f.app, err = New(ctx, Config{Store: s, Lease: lease, Provider: authnapikey.New(authnapikey.Config{AuthorizationInstalled: func() bool { return true }}), Facts: StaticFacts{Facts: facts}, Namespace: ns, DefaultProject: "local"})
 	if err != nil {
