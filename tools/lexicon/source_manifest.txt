@@ -663,6 +663,9 @@ internal/plugins/authzfixed/facts.go
 internal/plugins/authzfixed/facts_test.go
 internal/plugins/authzfixed/rules.go
 internal/plugins/authzfixed/rules_test.go
+internal/publicnative/BUILD.bazel
+internal/publicnative/server_linux.go
+internal/publicnative/server_linux_test.go
 internal/server/authn/BUILD.bazel
 internal/server/authn/authn.go
 internal/server/authn/authn_test.go
@@ -1356,6 +1359,8 @@ spec/s1-b25-b28/relations_test.go
 spec/s1-b25-b28/subscribers_test.go
 spec/s1-b25-b28/testdata/existing-target.jsonl
 spec/s1-b25-b28/testdata/inputs.jsonl
+spec/s1-b25-b28/testdata/native-public-profile.json
+spec/s1-b25-b28/testdata/native-public-recording-fixture.json
 spec/s1-b25-b28/testdata/projection.json
 spec/s1-b25-b28/testdata/provenance.json
 spec/s1-b25-b28/testdata/public-companion-profile.json
