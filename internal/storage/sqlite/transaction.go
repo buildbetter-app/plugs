@@ -514,7 +514,13 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		return model.Changeset{}, err
 	}
 	var result model.Changeset
-	err := t.store.immediate(ctx, t.lease, func(c *sql.Conn) error {
+	err := t.store.immediate(ctx, t.lease, func(c *sql.Conn) (err error) {
+		// The record/history publication loop deliberately keeps one scalar
+		// execution per logical row. Reusing the connection-bound statements
+		// removes database/sql's implicit prepare/finalize work without changing
+		// row order, trigger boundaries, or the first-error position.
+		var statements recordPublicationStatements
+		defer statements.close(&err)
 		if t.restore != nil {
 			if err := restoreEmpty(ctx, c); err != nil {
 				return err
@@ -595,20 +601,32 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 			ref := t.recordRef(id)
 			v := driver.Version{Ref: ref, Revision: revision, CreatedAt: when, Principal: h.Principal, Deleted: record == nil}
 			var count uint64
-			if err = c.QueryRowContext(ctx, `SELECT COUNT(*) FROM versions WHERE key=?`, id).Scan(&count); err != nil {
+			countVersions, prepareErr := statements.countVersions(ctx, c)
+			if prepareErr != nil {
+				return prepareErr
+			}
+			if err = countVersions.QueryRowContext(ctx, id).Scan(&count); err != nil {
 				return err
 			}
 			// A tombstone is also a complete base when its cadence is due.
 			v.Base = count%driver.VersionBaseEvery == 0
 			if record != nil {
 				var wasLive bool
-				if err = c.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM records WHERE key=?)`, id).Scan(&wasLive); err != nil {
+				existsRecord, prepareErr := statements.existsRecord(ctx, c)
+				if prepareErr != nil {
+					return prepareErr
+				}
+				if err = existsRecord.QueryRowContext(ctx, id).Scan(&wasLive); err != nil {
 					return err
 				}
 				v.Base = v.Base || !wasLive
 			}
 			if record == nil {
-				if _, err = c.ExecContext(ctx, `DELETE FROM records WHERE key=?`, id); err != nil {
+				deleteRecord, prepareErr := statements.deleteRecord(ctx, c)
+				if prepareErr != nil {
+					return prepareErr
+				}
+				if _, err = deleteRecord.ExecContext(ctx, id); err != nil {
 					return err
 				}
 			} else {
@@ -618,10 +636,18 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 				if err != nil {
 					return err
 				}
-				if _, err = c.ExecContext(ctx, `INSERT INTO records(key,data) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET data=excluded.data`, id, recordData); err != nil {
+				upsertRecord, prepareErr := statements.upsertRecord(ctx, c)
+				if prepareErr != nil {
+					return prepareErr
+				}
+				if _, err = upsertRecord.ExecContext(ctx, id, recordData); err != nil {
 					return err
 				}
-				if _, err = c.ExecContext(ctx, `INSERT OR IGNORE INTO objects(key,kind) VALUES(?,?)`, id, value.Kind); err != nil {
+				insertObject, prepareErr := statements.insertObject(ctx, c)
+				if prepareErr != nil {
+					return prepareErr
+				}
+				if _, err = insertObject.ExecContext(ctx, id, value.Kind); err != nil {
 					return err
 				}
 				// Each recreated lifetime starts with a full base, in addition to
@@ -639,11 +665,15 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 			if err != nil {
 				return err
 			}
-			if _, err = c.ExecContext(ctx, `INSERT INTO versions(key,rev,base,data) VALUES(?,?,?,?)`, id, revKey(head+1), v.Base, versionData); err != nil {
+			insertVersion, prepareErr := statements.insertVersion(ctx, c)
+			if prepareErr != nil {
+				return prepareErr
+			}
+			if _, err = insertVersion.ExecContext(ctx, id, revKey(head+1), v.Base, versionData); err != nil {
 				return err
 			}
 			state := driver.LockState{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &ref}, Revision: revision, Present: record != nil}
-			if err = publishKey(ctx, c, state); err != nil {
+			if err = statements.publishRecordKey(ctx, c, state); err != nil {
 				return err
 			}
 		}
@@ -729,6 +759,95 @@ func publishKey(ctx context.Context, c *sql.Conn, v driver.LockState) error {
 	}
 	_, err = c.ExecContext(ctx, `INSERT INTO key_history(key,rev,data) VALUES(?,?,?)`, keyID(v.Key), revKey(mustUint(v.Revision)), data)
 	return err
+}
+
+// recordPublicationStatements keeps the record/history publication scalar.
+// Each statement is prepared at its original first-use position and then
+// reused for later rows on Commit's held connection. Lazy preparation retains
+// the old native error precedence: a prepare failure occurs at the same
+// logical arm, after the same earlier rows have been published in the SQL
+// transaction. Closing an already-used statement is cleanup only and cannot
+// hide an earlier prepare, execution, cancellation, or commit error.
+type recordPublicationStatements struct {
+	countVersionsStmt *sql.Stmt
+	existsRecordStmt  *sql.Stmt
+	deleteRecordStmt  *sql.Stmt
+	upsertRecordStmt  *sql.Stmt
+	insertObjectStmt  *sql.Stmt
+	insertVersionStmt *sql.Stmt
+	insertKeyStmt     *sql.Stmt
+}
+
+func prepareRecordPublicationStatement(ctx context.Context, c *sql.Conn, slot **sql.Stmt, query string) (*sql.Stmt, error) {
+	if *slot != nil {
+		return *slot, nil
+	}
+	statement, err := c.PrepareContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	*slot = statement
+	return statement, nil
+}
+
+func (s *recordPublicationStatements) countVersions(ctx context.Context, c *sql.Conn) (*sql.Stmt, error) {
+	return prepareRecordPublicationStatement(ctx, c, &s.countVersionsStmt, `SELECT COUNT(*) FROM versions WHERE key=?`)
+}
+
+func (s *recordPublicationStatements) existsRecord(ctx context.Context, c *sql.Conn) (*sql.Stmt, error) {
+	return prepareRecordPublicationStatement(ctx, c, &s.existsRecordStmt, `SELECT EXISTS(SELECT 1 FROM records WHERE key=?)`)
+}
+
+func (s *recordPublicationStatements) deleteRecord(ctx context.Context, c *sql.Conn) (*sql.Stmt, error) {
+	return prepareRecordPublicationStatement(ctx, c, &s.deleteRecordStmt, `DELETE FROM records WHERE key=?`)
+}
+
+func (s *recordPublicationStatements) upsertRecord(ctx context.Context, c *sql.Conn) (*sql.Stmt, error) {
+	return prepareRecordPublicationStatement(ctx, c, &s.upsertRecordStmt, `INSERT INTO records(key,data) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET data=excluded.data`)
+}
+
+func (s *recordPublicationStatements) insertObject(ctx context.Context, c *sql.Conn) (*sql.Stmt, error) {
+	return prepareRecordPublicationStatement(ctx, c, &s.insertObjectStmt, `INSERT OR IGNORE INTO objects(key,kind) VALUES(?,?)`)
+}
+
+func (s *recordPublicationStatements) insertVersion(ctx context.Context, c *sql.Conn) (*sql.Stmt, error) {
+	return prepareRecordPublicationStatement(ctx, c, &s.insertVersionStmt, `INSERT INTO versions(key,rev,base,data) VALUES(?,?,?,?)`)
+}
+
+func (s *recordPublicationStatements) insertKey(ctx context.Context, c *sql.Conn) (*sql.Stmt, error) {
+	return prepareRecordPublicationStatement(ctx, c, &s.insertKeyStmt, `INSERT INTO key_history(key,rev,data) VALUES(?,?,?)`)
+}
+
+func (s *recordPublicationStatements) publishRecordKey(ctx context.Context, c *sql.Conn, v driver.LockState) error {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	statement, err := s.insertKey(ctx, c)
+	if err != nil {
+		return err
+	}
+	_, err = statement.ExecContext(ctx, keyID(v.Key), revKey(mustUint(v.Revision)), data)
+	return err
+}
+
+func (s *recordPublicationStatements) close(prior *error) {
+	for _, statement := range []*sql.Stmt{
+		s.countVersionsStmt,
+		s.existsRecordStmt,
+		s.deleteRecordStmt,
+		s.upsertRecordStmt,
+		s.insertObjectStmt,
+		s.insertVersionStmt,
+		s.insertKeyStmt,
+	} {
+		if statement == nil {
+			continue
+		}
+		if err := statement.Close(); err != nil && *prior == nil {
+			*prior = err
+		}
+	}
 }
 
 var _ driver.WriteTx = (*transaction)(nil)
