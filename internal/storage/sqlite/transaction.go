@@ -39,6 +39,10 @@ type transaction struct {
 	// exists for a first lifetime, so Commit can avoid re-counting that row.
 	// Existing and tombstoned rows keep the scalar COUNT(*) path.
 	recordStates map[string]driver.LockState
+	// recordKinds carries the lock-time objects.kind observation, including a
+	// present=false marker, so staging can retain kind validation without a
+	// second query for every record.
+	recordKinds map[string]recordKindObservation
 	// recordKindStmt preserves the scalar kind validation in source staging
 	// while avoiding database/sql prepare/finalize work for every record.
 	recordKindStmt *sql.Stmt
@@ -72,6 +76,11 @@ type transaction struct {
 	sourceCoverageValid       bool
 }
 
+type recordKindObservation struct {
+	kind    string
+	present bool
+}
+
 func (s *Store) Write(ctx context.Context, l driver.ActiveLease) (driver.WriteTx, error) {
 	lease, err := s.leaseFor(ctx, l)
 	if err != nil {
@@ -81,7 +90,7 @@ func (s *Store) Write(ctx context.Context, l driver.ActiveLease) (driver.WriteTx
 	if err != nil {
 		return nil, err
 	}
-	t := &transaction{reader: &reader{store: s}, lease: lease, done: make(chan struct{}), records: make(map[string]*driver.Record), recordStates: make(map[string]driver.LockState), derived: make(map[string]driver.LockState), blobs: make(map[driver.Hash][]byte), bumps: make(map[string]driver.LockKey), allocators: make(map[string]driver.OfflineAllocator)}
+	t := &transaction{reader: &reader{store: s}, lease: lease, done: make(chan struct{}), records: make(map[string]*driver.Record), recordStates: make(map[string]driver.LockState), recordKinds: make(map[string]recordKindObservation), derived: make(map[string]driver.LockState), blobs: make(map[driver.Hash][]byte), bumps: make(map[string]driver.LockKey), allocators: make(map[string]driver.OfflineAllocator)}
 	t.reader.owner = t
 	if err = t.pin(ctx, driver.View{Incarnation: m.Incarnation}); err != nil {
 		return nil, err
@@ -125,6 +134,7 @@ func (t *transaction) finish() {
 	t.clearSourceOverlay()
 	t.records = nil
 	t.recordStates = nil
+	t.recordKinds = nil
 	t.firstLifetimeState = nil
 	t.reuseFirstLifetime = false
 	t.derived = nil
@@ -304,7 +314,8 @@ func (t *transaction) observeLockSet(ctx context.Context, requests driver.LockSe
 		}
 		query.WriteString(`) SELECT requested.ordinal,
 			(SELECT data FROM key_history WHERE key=requested.key AND rev<=? ORDER BY rev DESC LIMIT 1),
-			(SELECT data FROM records WHERE key=requested.key)
+			(SELECT data FROM records WHERE key=requested.key),
+			(SELECT kind FROM objects WHERE key=requested.key)
 			FROM requested`)
 		args = append(args, revKey(t.at))
 		err := func() error {
@@ -316,10 +327,17 @@ func (t *transaction) observeLockSet(ctx context.Context, requests driver.LockSe
 			for rows.Next() {
 				var i int
 				var history, record []byte
-				if err := rows.Scan(&i, &history, &record); err != nil {
+				var objectKind sql.NullString
+				if err := rows.Scan(&i, &history, &record, &objectKind); err != nil {
 					return err
 				}
 				key := requests[i].Key
+				if key.Kind == driver.LockRecord {
+					if t.recordKinds == nil {
+						t.recordKinds = make(map[string]recordKindObservation)
+					}
+					t.recordKinds[keys[i]] = recordKindObservation{kind: objectKind.String, present: objectKind.Valid}
+				}
 				state := driver.LockState{Key: copyKey(key), Revision: model.Natural64(0)}
 				if history != nil {
 					if err := json.Unmarshal(history, &state); err != nil {

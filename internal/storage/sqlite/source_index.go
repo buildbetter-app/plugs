@@ -75,11 +75,17 @@ func (t *transaction) putSourceRecord(ctx context.Context, record driver.Record,
 	if record.Kind == "" || !json.Valid(record.Body) {
 		return fmt.Errorf("sqlite: kind and valid JSON body required")
 	}
-	kind, err := t.recordKind(ctx, id)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
+	kindObservation, foundKind := t.recordKinds[id]
+	kind := kindObservation.kind
+	knownKind := kindObservation.present
+	if !foundKind {
+		kind, err = t.recordKind(ctx, id)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		knownKind = err == nil
 	}
-	if err == nil && kind != record.Kind {
+	if knownKind && kind != record.Kind {
 		return fmt.Errorf("%w: changing record kind", driver.ErrUnsupported)
 	}
 	if old, ok := t.records[id]; ok && old != nil && old.Kind != record.Kind {
