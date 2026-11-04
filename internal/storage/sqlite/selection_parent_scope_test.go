@@ -251,7 +251,14 @@ func TestSelectionParentScopeCommitStructuralAndRefusalControls(t *testing.T) {
 			// the full encoded-key-sorted set before Head through the ordinary
 			// writer helper, including tombstone and replacement arms.
 			var locks []driver.LockKey
+			var closures []driver.Sentinel
 			for _, ref := range changed {
+				closure, err := driver.NewClosureSentinel(ref.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				locks = append(locks, driver.LockKey{Kind: driver.LockSentinel, Sentinel: closure})
+				closures = append(closures, closure)
 				record := driver.Record{Ref: ref, Kind: "bead", Body: []byte(`{}`)}
 				metadata, err := decode(record)
 				if err != nil {
@@ -267,6 +274,9 @@ func TestSelectionParentScopeCommitStructuralAndRefusalControls(t *testing.T) {
 				}
 			}
 			tx, h := beginSourceTestWithLocks(t, s, lease, locks, true, changed...)
+			if err := tx.BumpSentinels(ctx, closures); err != nil {
+				t.Fatal(err)
+			}
 			if mode == "title-untouched-descendant" {
 				// A test-only SQL perturbation distinguishes which proof the
 				// real Commit executes. This unrelated descendant was already
