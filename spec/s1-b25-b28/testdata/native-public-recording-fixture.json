@@ -50,6 +50,10 @@
   "ids": ["pub-root", "pub-root.1", "pub-dependency", "pub-keep"],
   "memory_key": "public-memory",
   "config_key": "custom.public_recording",
+  "reverse_archived_fields": [
+    "actor", "compaction_level", "content_hash", "current_revision",
+    "no_history", "rig", "sender", "source_repo"
+  ],
   "external_families": [
     "user-legacy-config",
     "user-xdg-config",

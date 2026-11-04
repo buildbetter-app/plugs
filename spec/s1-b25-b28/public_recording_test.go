@@ -69,16 +69,17 @@ type recordingProfile struct {
 }
 
 type recordingFixture struct {
-	Schema           string            `json:"schema"`
-	SourceCommit     string            `json:"source_commit"`
-	SourceTree       string            `json:"source_tree"`
-	Commands         []string          `json:"commands"`
-	ProjectionFields []string          `json:"projection_fields"`
-	IDs              []string          `json:"ids"`
-	MemoryKey        string            `json:"memory_key"`
-	ConfigKey        string            `json:"config_key"`
-	ExternalFamilies []string          `json:"external_families"`
-	StatusCategories map[string]string `json:"status_categories"`
+	Schema                string            `json:"schema"`
+	SourceCommit          string            `json:"source_commit"`
+	SourceTree            string            `json:"source_tree"`
+	Commands              []string          `json:"commands"`
+	ProjectionFields      []string          `json:"projection_fields"`
+	IDs                   []string          `json:"ids"`
+	MemoryKey             string            `json:"memory_key"`
+	ConfigKey             string            `json:"config_key"`
+	ExternalFamilies      []string          `json:"external_families"`
+	StatusCategories      map[string]string `json:"status_categories"`
+	ReverseArchivedFields []string          `json:"reverse_archived_fields"`
 }
 
 type publicArtifact struct {
@@ -660,6 +661,14 @@ func recordNativeDatabaseBinding(t *testing.T, output, label, store string, serv
 // head-state slice under P5c/P44/P22/P46; this does not qualify source history.
 func replayPublicArchive(t *testing.T, output, storeRoot, label string, archive *dumpformat.Archive, expected []byte, config publicConfigExpectation, fixture recordingFixture) map[string]string {
 	t.Helper()
+	// Reverse explicitly retains source provenance as issue metadata. Compute
+	// its expected values from the validated INPUT before any engine runs;
+	// never learn an allowance from the reverse result or discard a prefix.
+	expected, err := projectPublicReverseExpectation(expected, archive.Records("bead"), fixture.ReverseArchivedFields)
+	if err != nil {
+		t.Fatalf("%s reverse input expectation: %v", label, err)
+	}
+	writeRecordingBytes(t, filepath.Join(output, label+"-reverse-expected-projection.json"), expected)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	data := archive.TarBytes()
@@ -1438,6 +1447,98 @@ func comparePublicConfigSources(config, memories []dumpformat.Record, policy map
 	return nil
 }
 
+// This is the declared reverse mapping of validated input provenance, separate
+// from independently observed configuration and from the unchanged ordinary
+// JSONL/archive comparison. The explicit fixture names the nonnil source
+// archive fields for this vector; the protocol catalog names opaque columns.
+// Every generated key/value and all original user metadata remain exact.
+func projectPublicReverseExpectation(ordinary []byte, records []dumpformat.Record, archivedFields []string) ([]byte, error) {
+	projection, err := decodePublicProjection(ordinary)
+	if err != nil {
+		return nil, err
+	}
+	declared := map[string]bool{}
+	for _, field := range archivedFields {
+		if field == "" || declared[field] {
+			return nil, fmt.Errorf("invalid or duplicate reverse archive field %q", field)
+		}
+		declared[field] = true
+	}
+	if len(declared) == 0 {
+		return nil, errors.New("reverse archive field profile is empty")
+	}
+	seen := map[string]bool{}
+	for _, record := range records {
+		issue, exists := projection.Issues[record.ID]
+		if record.Kind != "bead" || record.Source.Table != "issues" || !exists || seen[record.ID] {
+			return nil, fmt.Errorf("reverse input issue census differs at %q", record.ID)
+		}
+		seen[record.ID] = true
+		metadata, ok := issue["metadata"].(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("ordinary issue %q metadata is not an object", record.ID)
+		}
+		add := func(key string, value any) error {
+			if _, collision := metadata[key]; collision {
+				return fmt.Errorf("ordinary issue %q metadata collides with declared reverse key %q", record.ID, key)
+			}
+			metadata[key] = value
+			return nil
+		}
+		for _, field := range dumpformat.OpaqueIssueFields() {
+			value, present := record.Source.Fields[field]
+			if !present || declared[field] {
+				return nil, fmt.Errorf("issue %q missing or overlapping opaque source field %q", record.ID, field)
+			}
+			if err := add("beads."+field, value); err != nil {
+				return nil, err
+			}
+		}
+		archived := map[string]any{}
+		for _, field := range archivedFields {
+			value, present := record.Source.Fields[field]
+			if !present || value == nil {
+				return nil, fmt.Errorf("issue %q missing declared nonnull archive field %q", record.ID, field)
+			}
+			archived[field] = value
+		}
+		// The accepted reverse contract also preserves a textual pinned value
+		// inside the source archive while mapping its public boolean value.
+		if value, textual := record.Source.Fields["pinned"].(string); textual {
+			archived["pinned"] = value
+		}
+		encoded, err := json.Marshal(archived)
+		if err != nil {
+			return nil, err
+		}
+		if err := add("_plug_source_fields", string(encoded)); err != nil {
+			return nil, err
+		}
+		if status, _ := record.Source.Fields["status"].(string); status == "" {
+			category, ok := record.Body["status_category"].(string)
+			if !ok || category == "" {
+				return nil, fmt.Errorf("issue %q lacks source status and category", record.ID)
+			}
+			if err := add("_plug_status_category", category); err != nil {
+				return nil, err
+			}
+		}
+		if outcome, present := record.Body["result"]; present && outcome != nil {
+			value, ok := outcome.(string)
+			if !ok || value == "" {
+				return nil, fmt.Errorf("issue %q has invalid result", record.ID)
+			}
+			if err := add("_plug_status_outcome", value); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if len(seen) != len(projection.Issues) {
+		return nil, errors.New("reverse input issue census is incomplete")
+	}
+	return json.Marshal(projection)
+}
+
 // Ordinary import retains exactly its original user memories. Reverse adds an
 // explicitly enumerated config-memory set; no prefix is discarded or treated
 // as effective source configuration. Report checks are independent of JSONL.
@@ -2018,6 +2119,120 @@ func TestPublicProjectionConfigSettingsReadback(t *testing.T) {
 		if _, err := readPublicConfigSettings([]byte(data)); err == nil {
 			t.Fatal("invalid/duplicate/non-setting readback admitted")
 		}
+	}
+}
+
+func TestPublicProjectionReverseProvenance(t *testing.T) {
+	ordinary := []byte(`{"issues":{"sample":{"title":"Original","metadata":{"user":true,"beads.user":"owned"}}},"edges":[],"comments":[],"memories":{}}`)
+	fields := dumpformat.Row{"actor": "observer", "current_revision": json.Number("9007199254740993"), "status": "closed"}
+	for _, field := range dumpformat.OpaqueIssueFields() {
+		fields[field] = nil
+	}
+	fields["agent_state"] = "idle"
+	record := dumpformat.Record{Kind: "bead", ID: "sample", Body: dumpformat.Row{"status_category": "completed", "result": "success"}, Source: dumpformat.Provenance{Table: "issues", Fields: fields}}
+	profile := []string{"actor", "current_revision"}
+	expected, err := projectPublicReverseExpectation(ordinary, []dumpformat.Record{record}, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := decodePublicProjection(ordinary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := want.Issues["sample"]["metadata"].(map[string]any)
+	for _, field := range dumpformat.OpaqueIssueFields() {
+		metadata["beads."+field] = nil
+	}
+	metadata["beads.agent_state"] = "idle"
+	metadata["_plug_source_fields"] = `{"actor":"observer","current_revision":9007199254740993}`
+	metadata["_plug_status_outcome"] = "success"
+	wantBytes, err := json.Marshal(want)
+	if err != nil || !bytes.Equal(wantBytes, expected) {
+		t.Fatalf("reverse input mapping differs: got=%s want=%s err=%v", expected, wantBytes, err)
+	}
+	config := publicConfigExpectation{Memories: map[string]any{}}
+	for _, tc := range []struct {
+		name string
+		edit func(map[string]any)
+	}{
+		{"unchanged", func(map[string]any) {}},
+		{"changed_user_value", func(m map[string]any) { m["user"] = false }},
+		{"dropped_user_prefix", func(m map[string]any) { delete(m, "beads.user") }},
+		{"missing_opaque", func(m map[string]any) { delete(m, "beads.agent_state") }},
+		{"changed_opaque", func(m map[string]any) { m["beads.agent_state"] = "changed" }},
+		{"extra_opaque_prefix", func(m map[string]any) { m["beads.unknown"] = nil }},
+		{"changed_source_archive", func(m map[string]any) { m["_plug_source_fields"] = `{"actor":"changed"}` }},
+		{"missing_source_archive", func(m map[string]any) { delete(m, "_plug_source_fields") }},
+		{"missing_outcome", func(m map[string]any) { delete(m, "_plug_status_outcome") }},
+		{"extra_reserved_prefix", func(m map[string]any) { m["_plug_unknown"] = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			actual, err := decodePublicProjection(wantBytes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.edit(actual.Issues["sample"]["metadata"].(map[string]any))
+			data, err := json.Marshal(actual)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = comparePublicReverse(expected, data, config, nil, 0)
+			if (err == nil) != (tc.name == "unchanged") {
+				t.Fatalf("unexpected reverse comparison: %v", err)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name string
+		edit func(*dumpformat.Record, *recordingFixture)
+	}{
+		{"missing_opaque_input", func(r *dumpformat.Record, _ *recordingFixture) { delete(r.Source.Fields, "agent_state") }},
+		{"missing_archived_input", func(r *dumpformat.Record, _ *recordingFixture) { delete(r.Source.Fields, "actor") }},
+		{"null_archived_input", func(r *dumpformat.Record, _ *recordingFixture) { r.Source.Fields["actor"] = nil }},
+		{"extra_issue", func(r *dumpformat.Record, _ *recordingFixture) { r.ID = "unobserved" }},
+		{"wrong_table", func(r *dumpformat.Record, _ *recordingFixture) { r.Source.Table = "other" }},
+		{"duplicate_field_profile", func(_ *dumpformat.Record, f *recordingFixture) { f.ReverseArchivedFields = []string{"actor", "actor"} }},
+		{"overlapping_field_profile", func(_ *dumpformat.Record, f *recordingFixture) { f.ReverseArchivedFields = []string{"agent_state"} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := json.Marshal(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var input dumpformat.Record
+			decoder := json.NewDecoder(bytes.NewReader(data))
+			decoder.UseNumber()
+			if err := decoder.Decode(&input); err != nil {
+				t.Fatal(err)
+			}
+			fixture := recordingFixture{ReverseArchivedFields: append([]string(nil), profile...)}
+			tc.edit(&input, &fixture)
+			if _, err := projectPublicReverseExpectation(ordinary, []dumpformat.Record{input}, fixture.ReverseArchivedFields); err == nil {
+				t.Fatal("invalid reverse input was accepted")
+			}
+		})
+	}
+	for _, key := range []string{"beads.agent_state", "_plug_source_fields", "_plug_status_outcome"} {
+		t.Run("collision_"+key, func(t *testing.T) {
+			input, err := decodePublicProjection(ordinary)
+			if err != nil {
+				t.Fatal(err)
+			}
+			input.Issues["sample"]["metadata"].(map[string]any)[key] = "original-user-value"
+			data, err := json.Marshal(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := projectPublicReverseExpectation(data, []dumpformat.Record{record}, profile); err == nil {
+				t.Fatal("original metadata collision was overwritten")
+			}
+		})
+	}
+	if _, err := projectPublicReverseExpectation(ordinary, []dumpformat.Record{record, record}, profile); err == nil {
+		t.Fatal("duplicate input issue was accepted")
+	}
+	if _, err := projectPublicReverseExpectation(ordinary, nil, profile); err == nil {
+		t.Fatal("missing input issue was accepted")
 	}
 }
 
