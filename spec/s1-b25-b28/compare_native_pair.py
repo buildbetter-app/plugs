@@ -138,7 +138,7 @@ def verify_unit(unit):
     require(set(unit["subscriber_comments"]) == {s + "-" + e for s in STORES for e in ENGINES},
             "subscriber store/engine census")
     for key, images in unit["subscriber_comments"].items():
-        require(len(images) == 20, "subscriber before/after/post image census: " + key)
+        require(len(images) == 16, "subscriber before/after/post image census: " + key)
         first = images[0]
         require(len(first) == 1 and set(first[0]) == {
             "body", "principal", "time", "origin", "sourceAuthor", "sourceTime",
@@ -186,6 +186,26 @@ def compare_pair(units):
             "literal_differences": differences, "strict57e_pair": "BLOCK_UNCHANGED",
             "scope": "Additive offline comparison only; explicit nested57e vector. Recordings did not execute this child.",
             "NativeAdmission": "None", "FullS1": "0/28", "B26": "SEPARATE", "B05": "PAUSED"}
+
+
+def subscriber_comment_images(sub):
+    require(len(sub["operations"]) == 7 and len(sub["posts"]) == 3, "subscriber workload census")
+    images = []
+    for index, operation in enumerate(sub["operations"]):
+        # Only the three new writes have before snapshots. Request replays and
+        # the equal replacement retain after snapshots without a new write.
+        require(("before" in operation) == (index in (0, 2, 4)), "subscriber before snapshot shape")
+        if index in (0, 2, 4):
+            images.append(operation["before"][CONTENT[0]]["comments"])
+        images.append(operation["after"][CONTENT[0]]["comments"])
+    for post in sub["posts"]:
+        patches = post["change"]["Changes"]
+        require(len(patches) == 1, "subscriber patch census")
+        patch = patches[0]
+        if patch["Resource"]["ref"]["id"] == CONTENT[0]:
+            images.extend([patch["Before"]["comments"], patch["After"]["comments"]])
+            images.append(decode(base64.b64decode(post["rows"][0]["Body"], validate=True))["comments"])
+    return images
 
 
 def load_unit(binding, index):
@@ -260,18 +280,7 @@ def load_unit(binding, index):
             unit["native_comments"][store] = [decode(line) for line in archive.extractfile("records/comment.ndjson").read().splitlines()]
         for engine in ENGINES:
             sub = obj(store + "-plug-" + engine + "-subscriber.json")
-            require(len(sub["operations"]) == 7 and len(sub["posts"]) == 3, "subscriber workload census")
-            images = [operation[side][CONTENT[0]]["comments"] for operation in sub["operations"] for side in ("before", "after")]
-            for post in sub["posts"]:
-                patches = post["change"]["Changes"]
-                require(len(patches) == 1, "subscriber patch census")
-                # Child updates carry no root document in the post; their root
-                # is still checked in both complete operation snapshots above.
-                patch = patches[0]
-                if patch["Resource"]["ref"]["id"] == CONTENT[0]:
-                    images.extend([patch["Before"]["comments"], patch["After"]["comments"]])
-                    images.append(decode(base64.b64decode(post["rows"][0]["Body"], validate=True))["comments"])
-            unit["subscriber_comments"][store + "-" + engine] = images
+            unit["subscriber_comments"][store + "-" + engine] = subscriber_comment_images(sub)
     require(used == set(assets), "extra unconsumed asset")
     return unit
 
