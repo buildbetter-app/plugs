@@ -24,6 +24,28 @@ type nativeRPCScope struct {
 	Write       bool
 }
 
+// A driver no-op receipt has a real zero Changeset, which is not a valid
+// product wire changeset. Preserve that exact state explicitly in test
+// evidence; nonzero changesets retain their full ordinary wire encoding.
+type nativeReceiptEvidence struct {
+	RequestHash     string
+	Commit          model.Commit
+	Changeset       *model.Changeset
+	ResponsePending bool
+	ZeroChangeset   bool
+}
+
+func nativeReceiptState(receipt *driver.IdempotencyRecord) nativeReceiptEvidence {
+	state := nativeReceiptEvidence{RequestHash: receipt.RequestHash, Commit: receipt.Commit, ResponsePending: receipt.ResponsePending}
+	if reflect.DeepEqual(receipt.Changeset, model.Changeset{}) {
+		state.ZeroChangeset = true
+	} else {
+		changeset := receipt.Changeset
+		state.Changeset = &changeset
+	}
+	return state
+}
+
 type nativeReplay struct {
 	f      *fixture
 	output string
@@ -165,14 +187,14 @@ func (r *nativeReplay) snapshot() []byte {
 		}
 		versions[role] = page.Items
 	}
-	receipts := map[string]*driver.IdempotencyRecord{}
+	receipts := map[string]nativeReceiptEvidence{}
 	for _, call := range r.calls {
 		receipt, err := reader.IdempotencyByKey(r.f.ctx, "anonymous:anonymous", owner, call.Method, call.Key)
 		if err != nil || (call.Write && (receipt == nil || receipt.ResponsePending)) || (!call.Write && receipt != nil) {
 			r.f.t.Fatalf("receipt scope %s/write=%v: %v, %+v", call.Method, call.Write, err, receipt)
 		}
 		if call.Write {
-			receipts[call.Method+"/"+call.Key] = receipt
+			receipts[call.Method+"/"+call.Key] = nativeReceiptState(receipt)
 		}
 	}
 	data, err := json.Marshal(map[string]any{

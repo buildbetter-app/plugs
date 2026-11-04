@@ -568,11 +568,11 @@ func (r *nativeReplay) assertMembershipSettlement(before []byte, commit model.Co
 			r.f.t.Fatalf("quiet settlement changed prior receipt %s", priorKey)
 		}
 	}
-	var receipt driver.IdempotencyRecord
+	var receipt nativeReceiptEvidence
 	nativeDecode(r.f.t, added, &receipt)
 	if receipt.ResponsePending || len(receipt.RequestHash) != 64 ||
 		!bytes.Equal(nativeDocumentBytes(r.f.t, receipt.Commit), nativeDocumentBytes(r.f.t, commit)) ||
-		!reflect.DeepEqual(receipt.Changeset, model.Changeset{}) {
+		!receipt.ZeroChangeset || receipt.Changeset != nil {
 		r.f.t.Fatal("quiet settlement receipt is not a completed no-op bound to the returned commit")
 	}
 	// Conserve every prior receipt above and allow only the new scoped receipt;

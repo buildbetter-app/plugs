@@ -300,3 +300,11 @@ no-op receipt bound to the returned commit. Both full settlement snapshots and
 the response binding are retained. These executable controls remain
 AUTHORED_NOT_RUN until this exact source reaches them; all prior REDs and
 independent bounded results retain their original heads.
+
+No-op receipt evidence keeps RequestHash, Commit, ResponsePending and the full
+Changeset when nonzero. An actual internal zero Changeset is recorded as
+Changeset:null plus ZeroChangeset:true only after exact typed equality to the
+complete zero value. This test-only encoding avoids the product wire marshaler
+that correctly refuses an empty changeset kind. The settlement oracle still
+conserves every prior receipt, permits exactly the completed current method/key
+addition, and checks the returned commit and all other persisted state.
