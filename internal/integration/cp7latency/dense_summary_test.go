@@ -2,6 +2,8 @@ package cp7latency_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +11,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/core/viewops"
 	"github.com/buildbetter-app/plugs/internal/server/authzrpc"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -87,6 +90,73 @@ func TestDenseOrdinaryQ6RefusalAndSeparateDecision20TypeSummary(t *testing.T) {
 			if err != nil || before.Head.String() != after.Head.String() {
 				t.Fatalf("dense read changed head: %v", err)
 			}
+			// Reuse the already certified full fixture, after both original
+			// dense read controls. This is qualification, not another timed
+			// sample or a change to the cold/3/20 latency matrix.
+			t.Run("CertifiedIndexedGuardClaimWork", func(t *testing.T) { checkCertifiedIndexedClaimWork(t, f) })
 		})
 	}
+}
+
+func checkCertifiedIndexedClaimWork(t *testing.T, f *fixture) {
+	t.Helper()
+	if f.n != corpusSize {
+		t.Fatal("indexed claim qualification requires the original full 100k corpus")
+	}
+	f.verifySourceCoverage(t, "w8_before_claim")
+	req := service.ClaimNextRequest{Project: projectName}
+	identity, err := service.ClaimNextRequestIdentity(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var key string
+	winner := 0
+	// Preserve the raw seeded rotation. Choose a distinguishing root with
+	// a real child, so validation must return/materialize source membership
+	// and freshly Observe it, rather than pass with an empty index result.
+	for i := 0; i < 128; i++ {
+		key = requestKey("w8-indexed-claim", 1, "qualification", i)
+		seed := sha256.Sum256([]byte(identity + "\x00" + key))
+		group := sha256.Sum256([]byte(fmt.Sprintf("%x", seed) + "\x000"))
+		candidate := int(binary.BigEndian.Uint64(group[:8])%uint64(f.n)) + 1
+		if (candidate-1)%11 == 0 && candidate < f.n {
+			winner = candidate
+			break
+		}
+	}
+	if winner == 0 {
+		t.Fatal("no raw pivot selecting a root with a child")
+	}
+	f.store.counts.reset()
+	deadline, cancel := context.WithTimeout(context.Background(), requestDeadline)
+	defer cancel()
+	ctx := driver.WithReadWorkObserver(deadline, &f.store.counts)
+	p := f.agent(1, false)
+	meta := model.WriteMeta{Project: projectName, Return: "full", IdempotencyKey: key}
+	out, err := f.app.Service.ClaimNextWithOutcome(ctx, p, req, meta)
+	if err != nil || out == nil || out.Replayed || len(out.Commit.Results) != 1 || out.Commit.Results[0].Ref.ID != beadRef(winner).ID {
+		t.Fatalf("full corpus supported raw-pivot claim: expected=%s outcome=%+v err=%v", beadRef(winner).ID, out, err)
+	}
+	globalAPI, globalWork := f.store.counts.value(), f.store.counts.work()
+	validationAPI, validationWork := f.store.counts.validation.value(), f.store.counts.validation.work()
+	if validationAPI.Queries != 0 || validationAPI.Returned != 0 || validationWork.SourceQueries == 0 || validationWork.SourceHeaders == 0 || validationWork.SourceImages == 0 {
+		t.Fatalf("full corpus claim did not execute certified indexed-only validation: api=%+v work=%+v", validationAPI, validationWork)
+	}
+	// Stored source Scan + returned body clone + fresh source Observe/Get
+	// are repeated physical materializations of the same membership image.
+	// This lower bound is deliberately independent of unique graph IDs.
+	if validationWork.Payloads < 3*validationWork.SourceImages || validationWork.PayloadBytes < 3*int64(len(body(t, winner+1))) {
+		t.Fatalf("indexed membership copies/fresh observations escaped accounting: %+v", validationWork)
+	}
+	if globalAPI.Queries == 0 || globalAPI.Queries < validationAPI.Queries || globalWork.Payloads < validationWork.Payloads || globalWork.SourceImages < validationWork.SourceImages {
+		t.Fatalf("raw claim selection/global work was hidden: global=%+v/%+v validation=%+v/%+v", globalAPI, globalWork, validationAPI, validationWork)
+	}
+	if globalAPI.Observed != nil || validationAPI.Observed != nil {
+		t.Fatal("unmeasured observed-key count was invented")
+	}
+	f.checkClaim(t, p, out, meta, 1)
+	t.Logf("CP7_W8_INDEXED_CLAIM beads=%d expected_raw_winner=%s global_api=%+v global_work=%+v validation_api=%+v validation_work=%+v payload_basis=instrumented_driver_sourceindex_materializations source_images_basis=reconstructed_membership_images core_snapshot_output_clones=UNMEASURED unhooked_metadata_coverage_lock_commit_work=UNMEASURED sql_executor_work=UNMEASURED performance=UNMEASURED", f.n, beadRef(winner).ID, globalAPI, globalWork, validationAPI, validationWork)
+	f.resetClaim(t, out.Commit.Results[0].Ref)
+	f.verifySourceCoverage(t, "w8_after_claim_reset")
+	f.verifyCorpus(t)
 }
