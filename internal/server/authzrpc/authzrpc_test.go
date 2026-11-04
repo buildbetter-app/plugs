@@ -39,6 +39,61 @@ type leaseLossSnapshotStore struct {
 	metaReads atomic.Int64
 }
 
+type constructorFactsStore struct {
+	driver.Store
+	metaReads int
+}
+
+func (s *constructorFactsStore) Meta(ctx context.Context) (driver.Meta, error) {
+	s.metaReads++
+	return s.Store.Meta(ctx)
+}
+
+func TestNewRejectsTypedNilFactsBeforeStorage(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	t.Cleanup(func() { _ = store.Close() })
+	lease, err := store.Lease(ctx, "constructor-facts", driver.LeaseTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lease.Release(ctx) })
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns := authz.Namespace{StoreID: string(meta.StoreID), Incarnation: meta.Incarnation, InstallationID: "fixed", Authority: model.RefByID("authority", model.Natural64(0))}
+	provider := authnapikey.New(authnapikey.Config{AuthorizationInstalled: func() bool { return true }})
+	for _, tc := range []struct {
+		name  string
+		facts authzrpc.FactsSource
+	}{
+		{"nil_interface", nil},
+		{"nil_static_pointer", (*authzrpc.StaticFacts)(nil)},
+		{"nil_mutable_pointer", (*authzrpc.MutableFacts)(nil)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			observed := &constructorFactsStore{Store: store}
+			got, err := authzrpc.New(ctx, authzrpc.Config{Store: observed, Lease: lease, Provider: provider, Facts: tc.facts, Namespace: ns})
+			if got != nil || err == nil || err.Error() != "authzrpc: store, lease, provider and facts are required" {
+				t.Fatalf("missing facts accepted or misclassified: composition=%v err=%v", got, err)
+			}
+			if observed.metaReads != 0 {
+				t.Fatalf("invalid facts accessed storage %d times", observed.metaReads)
+			}
+		})
+	}
+	// Both ordinary source forms remain valid. Reject the nil value inside
+	// the interface without rejecting a concrete pointer or value source.
+	facts := authzrpc.StaticFacts{Facts: authzfixed.Facts{Namespace: ns}}
+	for _, source := range []authzrpc.FactsSource{facts, &facts} {
+		got, err := authzrpc.New(ctx, authzrpc.Config{Store: store, Lease: lease, Provider: provider, Facts: source, Namespace: ns})
+		if err != nil || got == nil {
+			t.Fatalf("valid facts source %T refused: %v", source, err)
+		}
+	}
+}
+
 func (s *leaseLossSnapshotStore) Meta(ctx context.Context) (driver.Meta, error) {
 	if s.lost.Load() {
 		s.metaReads.Add(1)
