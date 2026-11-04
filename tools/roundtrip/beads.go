@@ -46,6 +46,40 @@ type commandEvidence struct {
 
 func hash(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
 
+func beadsChildEnv(workspace, childHome string) []string {
+	return []string{"PATH=/usr/bin:/bin", "HOME=" + childHome, "XDG_CONFIG_HOME=" + filepath.Join(childHome, ".config"), "BEADS_DIR=" + filepath.Join(workspace, ".beads"), "DO_NOT_TRACK=1", "GIT_CONFIG_NOSYSTEM=1", "GIT_AUTHOR_NAME=Public roundtrip", "GIT_AUTHOR_EMAIL=public@example.invalid", "GIT_COMMITTER_NAME=Public roundtrip", "GIT_COMMITTER_EMAIL=public@example.invalid"}
+}
+
+// Native inventory resolves the actual Git hooks directory. Initialize an
+// empty repository in the owned target, without ambient templates or config.
+func initializeBeadsGitWorkspace(ctx context.Context, output, workspace, childHome string) error {
+	args := []string{"git", "init", "--quiet", "--template="}
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	cmd.Dir = workspace
+	cmd.Env = beadsChildEnv(workspace, childHome)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	runErr := cmd.Run()
+	exit := 0
+	if runErr != nil {
+		exit = -1
+		if cmd.ProcessState != nil {
+			exit = cmd.ProcessState.ExitCode()
+		}
+	}
+	evidence := commandEvidence{Args: args, Exit: exit, StdoutSHA256: hash(stdout.Bytes()), StderrSHA256: hash(stderr.Bytes())}
+	data, err := json.Marshal(evidence)
+	if err != nil {
+		return err
+	}
+	for name, raw := range map[string][]byte{"json": data, "stdout": stdout.Bytes(), "stderr": stderr.Bytes()} {
+		if err := writePrivate(output, "beads-workspace-init."+name, raw); err != nil {
+			return err
+		}
+	}
+	return runErr
+}
+
 // captureAutoInventory asks the verified Beads executable to census the target
 // it just initialized and imported. The producer writes sidecars next to its
 // inventory; those paths remain valid while the output directory is retained
@@ -141,7 +175,7 @@ func runBeads(ctx context.Context, options beadsOptions, output string, source *
 		cmd := exec.CommandContext(ctx, binary, args...)
 		cmd.Dir = workspace
 		// Do not inherit a user's workspace, credentials, config or plugins.
-		cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + childHome, "XDG_CONFIG_HOME=" + filepath.Join(childHome, ".config"), "BEADS_DIR=" + filepath.Join(workspace, ".beads"), "DO_NOT_TRACK=1", "GIT_CONFIG_NOSYSTEM=1", "GIT_AUTHOR_NAME=Public roundtrip", "GIT_AUTHOR_EMAIL=public@example.invalid", "GIT_COMMITTER_NAME=Public roundtrip", "GIT_COMMITTER_EMAIL=public@example.invalid"}
+		cmd.Env = beadsChildEnv(workspace, childHome)
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &stdout, &stderr
 		err := cmd.Run()
@@ -174,6 +208,11 @@ func runBeads(ctx context.Context, options beadsOptions, output string, source *
 	}
 	if err != nil || json.Unmarshal(version, &identity) != nil || identity.Commit != beadsCommit {
 		result.Status, result.Reason = "BLOCK", "beads_executable_pin_mismatch"
+		return
+	}
+	result.Stage = "beads_workspace"
+	if err := initializeBeadsGitWorkspace(ctx, output, workspace, childHome); err != nil {
+		result.Status, result.Reason = "BLOCK", "beads_workspace_init_refused"
 		return
 	}
 	result.Stage = "beads_init"

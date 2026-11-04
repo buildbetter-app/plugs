@@ -18,6 +18,62 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/reverseconverter"
 )
 
+func TestBeadsGitWorkspaceIsRealAndIgnoresAmbientRedirection(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "target")
+	childHome := filepath.Join(workspace, "home")
+	if err := os.MkdirAll(childHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ambient := filepath.Join(root, "ambient.git")
+	t.Setenv("GIT_DIR", ambient)
+	t.Setenv("GIT_WORK_TREE", root)
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(root, "unavailable-global-config"))
+	t.Setenv("GIT_TEMPLATE_DIR", filepath.Join(root, "unavailable-template"))
+	if err := initializeBeadsGitWorkspace(context.Background(), root, workspace, childHome); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	cmd.Dir = workspace
+	cmd.Env = beadsChildEnv(workspace, childHome)
+	resolved, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data, err := cmd.Output(); err != nil || strings.TrimSpace(string(data)) != resolved {
+		t.Fatalf("actual Git root=%q err=%v", data, err)
+	}
+	if _, err := os.Stat(ambient); !os.IsNotExist(err) {
+		t.Fatalf("ambient Git redirection affected initialization: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "beads-workspace-init.json"))
+	var got commandEvidence
+	if err != nil || json.Unmarshal(data, &got) != nil || got.Exit != 0 {
+		t.Fatalf("actual Git initialization receipt=%s err=%v", data, err)
+	}
+	for stream, digest := range map[string]string{"stdout": got.StdoutSHA256, "stderr": got.StderrSHA256} {
+		raw, err := os.ReadFile(filepath.Join(root, "beads-workspace-init."+stream))
+		if err != nil || hash(raw) != digest {
+			t.Fatalf("actual Git %s receipt is incomplete: %v", stream, err)
+		}
+	}
+}
+
+func TestBeadsGitWorkspaceFailureRetainsActualReceipt(t *testing.T) {
+	root := t.TempDir()
+	if err := initializeBeadsGitWorkspace(context.Background(), root, filepath.Join(root, "missing-target"), root); err == nil {
+		t.Fatal("missing target was accepted as a Git repository")
+	}
+	data, err := os.ReadFile(filepath.Join(root, "beads-workspace-init.json"))
+	var got commandEvidence
+	if err != nil || json.Unmarshal(data, &got) != nil || got.Exit == 0 {
+		t.Fatalf("actual initialization failure was lost: %s %v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "missing-target")); !os.IsNotExist(err) {
+		t.Fatalf("failed initialization created a target: %v", err)
+	}
+}
+
 func TestAutoInventoryUsesRealProducerCommandAndPrivateCopy(t *testing.T) {
 	root := t.TempDir()
 	want := []byte(`{"version":"beads-inventory/1","external":[]}`)

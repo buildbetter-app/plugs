@@ -225,6 +225,22 @@ func logPublicBeadsCommands(t *testing.T, output string) []commandEvidence {
 			t.Logf("PUBLIC_BEADS_RAW command=%d stream=%s bytes=%q", i+1, stream, data)
 		}
 	}
+	data, err = os.ReadFile(filepath.Join(output, "beads-workspace-init.json"))
+	var initialized commandEvidence
+	if err != nil || json.Unmarshal(data, &initialized) != nil || initialized.Exit != 0 || strings.Join(initialized.Args, " ") != "git init --quiet --template=" {
+		t.Fatalf("actual isolated Git workspace evidence is incomplete: %v %s", err, data)
+	}
+	t.Logf("PUBLIC_BEADS_WORKSPACE_INIT %s", data)
+	for stream, digest := range map[string]string{"stdout": initialized.StdoutSHA256, "stderr": initialized.StderrSHA256} {
+		raw, err := os.ReadFile(filepath.Join(output, "beads-workspace-init."+stream))
+		if err != nil || hash(raw) != digest {
+			t.Fatal("actual Git workspace initialization output is incomplete")
+		}
+		t.Logf("PUBLIC_BEADS_WORKSPACE_RAW stream=%s bytes=%q", stream, raw)
+	}
+	if info, err := os.Lstat(filepath.Join(output, "beads-target", ".git")); err != nil || !info.IsDir() {
+		t.Fatal("actual owned Git repository is missing")
+	}
 	return commands
 }
 

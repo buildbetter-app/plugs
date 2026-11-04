@@ -47,6 +47,14 @@ actual binary hash must match. The archive's `beads_reference` is the schema
 reference, not executable provenance. No build, download, workflow dispatch,
 retry or PATH-selected `bd` is performed.
 
+After the verified executable reports its expected version, the harness runs
+`git init --quiet --template=` in the owned target with its private home and
+the same sanitized environment used by Beads. Native inventory therefore
+resolves a real Git hooks directory without inheriting user templates or Git
+configuration. The initialization command, exit and raw stream hashes are
+retained separately from the five Beads command receipts; failure blocks the
+roundtrip before Beads initialization.
+
 The real executable runs `version --json`, then `init --prefix ... --skip-hooks
 --skip-agents --non-interactive --quiet` in a fresh isolated Beads workspace,
 then `import reverse-live.jsonl --json`. With `--beads-inventory auto`, a
