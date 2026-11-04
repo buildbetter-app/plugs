@@ -590,19 +590,27 @@ func TestB07DurableEdgesRefuseActualEphemeralWorkflowItemsAtomically(t *testing.
 				t.Fatalf("durable routing source result=%s error=%v", created.Result, err)
 			}
 			durable := commit.Results[0].Ref
-			beforeDurable := durableFixture.snapshot(t)
-			beforeWorkflow := workflowFixture.state(t)
 			attempts := []struct {
 				method string
 				params map[string]any
+				probe  edgeReceiptProbe
 			}{
 				{method: "bead.link", params: map[string]any{"from": durable, "to": workflow, "kind": "blocks"}},
 				{method: "bead.link", params: map[string]any{"from": workflow, "to": durable, "kind": "blocks"}},
 				{method: "tx.apply", params: map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{edgeLinkOp(durable, workflow, "blocks")}}}},
 				{method: "tx.apply", params: map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{edgeLinkOp(workflow, durable, "blocks")}}}},
 			}
-			for i, attempt := range attempts {
-				probe := durableFixture.probe(attempt.method, "b07-routing-refusal-"+model.Natural64(uint64(i)).String())
+			// Register every refusal probe before taking the baseline. The observer
+			// records the complete receipt key set, including absent receipts; adding
+			// a probe between snapshots would make an atomic refusal look like a
+			// database mutation on persistent stores.
+			for i := range attempts {
+				attempts[i].probe = durableFixture.probe(attempts[i].method, "b07-routing-refusal-"+model.Natural64(uint64(i)).String())
+			}
+			beforeDurable := durableFixture.snapshot(t)
+			beforeWorkflow := workflowFixture.state(t)
+			for _, attempt := range attempts {
+				probe := attempt.probe
 				got := durableFixture.call(t, probe, attempt.params)
 				if got.Error == nil || got.Error.Data.Code != "invalid_params" || len(got.Result) != 0 {
 					t.Fatalf("%s mixed-plane refusal=%+v result=%s", attempt.method, got.Error, got.Result)
