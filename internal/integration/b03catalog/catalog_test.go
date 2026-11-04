@@ -332,3 +332,73 @@ func TestCatalogApplySQLPublicationRollbackAndRetry(t *testing.T) {
 		equal(t, "successful exact retry remains durable", before, f.snapshot(t))
 	})
 }
+
+// This is a public dry-run/commit boundary, not a helper-only descriptor test.
+// The source counts toward the same complete atomic event cap as migrated rows.
+func TestPublicCatalogApplyDryRunEventLimitParity(t *testing.T) {
+	eachEngine(t, allEngines, func(t *testing.T, e engine) {
+		f := newFixture(t, e)
+		remaining := model.MaxChangesetEvents - 1
+		for batch := 0; remaining > 0; batch++ {
+			count := remaining
+			if count > 200 {
+				count = 200
+			}
+			ops := make([]model.Op, 0, count)
+			for i := 0; i < count; i++ {
+				ops = append(ops, model.Op{Kind: model.OpCreate, Create: &model.CreateOp{
+					Key: fmt.Sprintf("limit-%d-%d", batch, i), Type: "issue", Fields: map[string]any{"title": "actual migration row"},
+				}})
+			}
+			var created model.Commit
+			f.result(t, "tx.apply", f.params("tx.apply", "base-project", map[string]any{"changeSet": model.ChangeSet{Ops: ops}}), &created)
+			if len(created.Results) != count {
+				t.Fatalf("public batch created %d rows, want %d", len(created.Results), count)
+			}
+			remaining -= count
+		}
+
+		document := ontology.DefaultDocument()
+		issue := document.Types["issue"]
+		issue.Fields["limit_stamp"] = ontology.Field{Type: "boolean", Default: false}
+		document.Types["issue"] = issue
+		plan := f.plan(t, "", document)
+		params := f.applyParams(plan)
+		meta := params["_meta"].(map[string]any)
+		meta["dryRun"], meta["return"] = true, "minimal"
+		before := f.snapshot(t)
+		var preview model.Commit
+		f.result(t, "ontology.apply", params, &preview)
+		if !preview.WouldCommit || len(preview.Results) != model.MaxChangesetEvents {
+			t.Fatalf("public boundary dry-run=%+v", preview)
+		}
+		equal(t, "successful dry-run publishes no events/revision/receipt or row changes", before, f.snapshot(t))
+		delete(meta, "dryRun")
+		f.apply(t, plan, params)
+		after := f.snapshot(t)
+		last := after.Log[len(after.Log)-1]
+		if len(last.Events) != model.MaxChangesetEvents || last.ValidateEvents() != nil {
+			t.Fatalf("boundary real apply lacks exact complete event plan: %+v", last)
+		}
+
+		noOp := f.applyParams(f.plan(t, "", document))
+		noOp["_meta"].(map[string]any)["dryRun"] = true
+		before = f.snapshot(t)
+		preview = model.Commit{}
+		f.result(t, "ontology.apply", noOp, &preview)
+		if preview.WouldCommit || len(preview.Results) != 0 || preview.Revision != before.Meta.Head {
+			t.Fatalf("no-op dry-run=%+v", preview)
+		}
+		equal(t, "no-op dry-run publishes no events/revision/receipt or row changes", before, f.snapshot(t))
+
+		f.create(t, "base-project", "issue")
+		issue.Fields["overflow_stamp"] = ontology.Field{Type: "boolean", Default: false}
+		document.Types["issue"] = issue
+		overflow := f.applyParams(f.plan(t, "", document))
+		overflowMeta := overflow["_meta"].(map[string]any)
+		overflowMeta["dryRun"], overflowMeta["return"] = true, "minimal"
+		f.refuse(t, "ontology.apply", overflow, "scope_too_large")
+		delete(overflowMeta, "dryRun")
+		f.refuse(t, "ontology.apply", overflow, "scope_too_large")
+	})
+}

@@ -195,6 +195,9 @@ func (w *Writer) dryRunProtected(ctx context.Context, req ProtectedApplyRequest,
 			return model.Commit{}, failure("write_conflict", "driver revision space is exhausted")
 		}
 		revision = model.Natural64(n + 1)
+		if _, err := protectedEvents(revision, changes, protectedChangeRecords(changes), meta); err != nil {
+			return model.Commit{}, err
+		}
 	}
 	response := model.Commit{Revision: revision, Results: []model.OpResult{}, Warnings: []model.Warning{}, WouldCommit: len(changes) != 0}
 	for _, change := range changes {

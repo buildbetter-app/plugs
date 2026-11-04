@@ -15,6 +15,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/api/wire"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
+	"github.com/buildbetter-app/plugs/internal/core/ontologymigration"
 	"github.com/buildbetter-app/plugs/internal/core/ontologyops"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
@@ -441,10 +442,29 @@ func (f *fixture) snapshot(t *testing.T) durableState {
 	}
 	defer r.Close()
 	page, err := r.Query(f.ctx, driver.Query{Limit: 1000})
-	if err != nil || page.NextCursor != nil || page.AsOf != at {
+	if err != nil || page.AsOf != at {
 		t.Fatalf("incomplete record inventory: %+v %v", page, err)
 	}
-	s := durableState{Meta: meta, Records: page.Items, Versions: map[string][]driver.Version{}, Derived: map[driver.DerivedTable][]driver.DerivedRow{},
+	inventory := append([]driver.Record(nil), page.Items...)
+	for page.NextCursor != nil {
+		page, err = r.Query(f.ctx, driver.Query{Limit: 1000, Cursor: page.NextCursor})
+		if err != nil || page.AsOf != at || len(page.Items) == 0 {
+			t.Fatalf("record inventory did not advance at pinned head: %+v %v", page, err)
+		}
+		inventory = append(inventory, page.Items...)
+		if len(inventory) > ontologymigration.MaxAffectedRows+1 {
+			t.Fatal("record inventory exceeds bounded migration rows plus source")
+		}
+	}
+	seen := map[string]bool{}
+	for _, row := range inventory {
+		key, err := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &row.Ref})
+		if err != nil || seen[key] {
+			t.Fatalf("duplicate or invalid record in complete inventory: %+v %v", row.Ref, err)
+		}
+		seen[key] = true
+	}
+	s := durableState{Meta: meta, Records: inventory, Versions: map[string][]driver.Version{}, Derived: map[driver.DerivedTable][]driver.DerivedRow{},
 		Allocators: map[string]*driver.OfflineAllocator{}, Ready: map[string]service.BeadPage{}, Views: map[string]service.GetResult{},
 		Receipts: map[string]*driver.IdempotencyRecord{}, ByKey: map[string]*model.Changeset{}}
 	keys := map[string]driver.LockKey{}
