@@ -3,6 +3,7 @@ package lexicon
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -201,6 +202,143 @@ func TestExternalProtocolStringConfigurationRejectsBroadening(t *testing.T) {
 				t.Fatal("broadened or malformed external protocol allowance was accepted")
 			}
 		})
+	}
+}
+
+func checkedInPhysicalProtocolConfig(t *testing.T) (Config, string) {
+	t.Helper()
+	cfg, path := checkedInExternalProtocolConfig(t)
+	want := map[string]bool{
+		"39d6e7ef1121f5ac563d8c278431a6a19f9d420534e9cbe38d2f9f41d9912502": true,
+		"93602e05a1bff1bd127187c713caaeab338848eb4a6cba051123440a912cdf26": true,
+		"91f880d51578af7df6289315f0b8e9e7e5c44e86b33f48900c26f031a0cc6f75": true,
+		"7853d42458d77d5bd188bd1a1bba51e87257cbe5ec12826168bc639f95bb0a72": true,
+	}
+	if len(cfg.ExternalProtocolString.PhysicalValues) != len(want) {
+		t.Fatal("checked-in physical protocol literal set is incomplete")
+	}
+	for _, value := range cfg.ExternalProtocolString.PhysicalValues {
+		digest := sha256.Sum256([]byte(value))
+		key := hex.EncodeToString(digest[:])
+		if !want[key] {
+			t.Fatal("checked-in physical protocol literal changed or repeated")
+		}
+		delete(want, key)
+	}
+	return cfg, path
+}
+
+func escapedProtocolString(value string) string {
+	var escaped strings.Builder
+	escaped.WriteByte('"')
+	for i := range value {
+		fmt.Fprintf(&escaped, "\\x%02x", value[i])
+	}
+	escaped.WriteByte('"')
+	return escaped.String()
+}
+
+func TestPhysicalProtocolStringsAllowOnlyExactDecodedLiterals(t *testing.T) {
+	cfg, _ := checkedInPhysicalProtocolConfig(t)
+	for i, value := range cfg.ExternalProtocolString.PhysicalValues {
+		for name, literal := range map[string]string{
+			"quoted": strconv.Quote(value), "raw": "`" + value + "`", "escaped": escapedProtocolString(value),
+		} {
+			t.Run(fmt.Sprintf("literal%d/%s", i, name), func(t *testing.T) {
+				source := "package recorder\nvar externalAssignment = " + literal + "\n"
+				findings, err := CheckFiles(map[string][]byte{externalProtocolSource: []byte(source)}, cfg)
+				if err != nil || len(findings) != 0 {
+					t.Fatalf("exact decoded physical literal refused: %#v, %v", findings, err)
+				}
+			})
+		}
+	}
+}
+
+func TestPhysicalProtocolStringsKeepOtherRefusals(t *testing.T) {
+	cfg, _ := checkedInPhysicalProtocolConfig(t)
+	productTerm := cfg.Terms[2].Matches[0]
+	identifier := strings.SplitN(cfg.ExternalProtocolString.Value, "=", 2)[0]
+	for i, value := range cfg.ExternalProtocolString.PhysicalValues {
+		assignment := "var externalAssignment = " + strconv.Quote(value)
+		for _, test := range []struct{ name, path, source string }{
+			{"neighbor_path", "spec/s1-b25-b28/public_recording_other_test.go", "package recorder\n" + assignment},
+			{"wildcard_path", "spec/s1-b25-b28/*.go", "package recorder\n" + assignment},
+			{"wrong_path_escaped", "other/recorder.go", "package recorder\nvar externalAssignment = " + escapedProtocolString(value)},
+			{"changed_case", externalProtocolSource, "package recorder\nvar externalAssignment = " + strconv.Quote(strings.ToUpper(value))},
+			{"prefix", externalProtocolSource, "package recorder\nvar externalAssignment = " + strconv.Quote("other_"+value)},
+			{"suffix", externalProtocolSource, "package recorder\nvar externalAssignment = " + strconv.Quote(value+"_other")},
+			{"space", externalProtocolSource, "package recorder\nvar externalAssignment = " + strconv.Quote(value+" ")},
+			{"changed_escaped", externalProtocolSource, "package recorder\nvar externalAssignment = " + escapedProtocolString(value+"_other")},
+			{"extra_term", externalProtocolSource, "package recorder\nvar externalAssignment = " + strconv.Quote(value+" "+productTerm)},
+			{"other_literal", externalProtocolSource, "package recorder\n" + assignment + "\nvar other = " + strconv.Quote(productTerm)},
+			{"comment", externalProtocolSource, "package recorder\n// " + productTerm + "\n" + assignment},
+			{"identifier", externalProtocolSource, "package recorder\nvar " + identifier + " = 1\n" + assignment},
+			{"import", externalProtocolSource, "package recorder\nimport " + strconv.Quote(value) + "\n" + assignment},
+			{"import_escaped", externalProtocolSource, "package recorder\nimport " + escapedProtocolString(value) + "\n" + assignment},
+		} {
+			t.Run(fmt.Sprintf("literal%d/%s", i, test.name), func(t *testing.T) {
+				findings, err := CheckFiles(map[string][]byte{test.path: []byte(test.source)}, cfg)
+				if err != nil || !hasFindingClass(findings, "identifier") && !hasFindingClass(findings, "product-term") {
+					t.Fatalf("physical literal allowance lost ordinary refusal: %#v, %v", findings, err)
+				}
+			})
+		}
+		without := cfg
+		without.ExternalProtocolString.PhysicalValues = nil
+		findings, err := CheckFiles(map[string][]byte{externalProtocolSource: []byte("package recorder\n" + assignment)}, without)
+		if err != nil || len(findings) == 0 {
+			t.Fatalf("missing physical literal declaration passed: %#v, %v", findings, err)
+		}
+	}
+}
+
+func TestPhysicalProtocolConfigurationRejectsBroadening(t *testing.T) {
+	cfg, path := checkedInPhysicalProtocolConfig(t)
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := cfg.ExternalProtocolString.PhysicalValues
+	line := func(values []string) string {
+		var quoted []string
+		for _, value := range values {
+			quoted = append(quoted, strconv.Quote(value))
+		}
+		return "physical_values = [" + strings.Join(quoted, ", ") + "]"
+	}
+	complete := line(values)
+	if !strings.Contains(string(original), complete) {
+		t.Fatal("configuration literal set was not bound")
+	}
+	for _, test := range []struct{ name, replacement string }{
+		{"empty", line(nil)},
+		{"missing", line(values[:len(values)-1])},
+		{"duplicate", line([]string{values[0], values[1], values[2], values[2]})},
+		{"additional", line(append(append([]string{}, values...), "other"))},
+		{"mutated", line([]string{values[0] + "_other", values[1], values[2], values[3]})},
+		{"pattern", line([]string{"*" + values[0] + "*", values[1], values[2], values[3]})},
+		{"wrong_type", "physical_values = " + strconv.Quote(values[0])},
+		{"unknown_key", strings.Replace(complete, "physical_values", "physical_prefix", 1)},
+		{"repeated_key", complete + "\n" + complete},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "lexicon.toml")
+			if err := os.WriteFile(file, []byte(strings.Replace(string(original), complete, test.replacement, 1)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadConfig(file); err == nil {
+				t.Fatal("malformed or broadened physical allowance passed")
+			}
+		})
+	}
+	file := filepath.Join(t.TempDir(), "lexicon.toml")
+	changedEnvironment := strings.Replace(string(original), "value = "+strconv.Quote(cfg.ExternalProtocolString.Value), "value = "+strconv.Quote(cfg.ExternalProtocolString.Value+"_other"), 1)
+	if err := os.WriteFile(file, []byte(changedEnvironment), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(file); err == nil {
+		t.Fatal("environment allowance stopped binding its exact existing literal")
 	}
 }
 
