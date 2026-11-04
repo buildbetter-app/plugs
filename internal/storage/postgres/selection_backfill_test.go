@@ -880,7 +880,9 @@ func TestSelectionFreshFalseStillConsumesFamilyCoverage(t *testing.T) {
 	if exists, err := tx.(driver.FreshSelectionExistsReader).FreshSelectionExists(ctx, p); err != nil || exists {
 		t.Fatalf("healthy empty false=%t/%v", exists, err)
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM plug_postgres.selection_coverage WHERE family_table='sort_key'`); err != nil {
+	// Head owns meta. Mutate through that transaction so the raw guard can
+	// reuse its lock while the next fresh statement still consumes coverage.
+	if _, err := tx.(*transaction).sql.ExecContext(ctx, `DELETE FROM plug_postgres.selection_coverage WHERE family_table='sort_key'`); err != nil {
 		t.Fatal(err)
 	}
 	if exists, err := tx.(driver.FreshSelectionExistsReader).FreshSelectionExists(ctx, p); !errors.Is(err, driver.ErrSelectionUnavailable) || exists {
@@ -943,7 +945,9 @@ func TestSelectionFreshHiddenRecordFactRequiresItsOwnFamily(t *testing.T) {
 	if err != nil || exists {
 		t.Fatalf("healthy hidden branch=%t/%v", exists, err)
 	}
-	if _, err = s.db.ExecContext(ctx, `DELETE FROM plug_postgres.selection_coverage WHERE family_table='derived_attribute' AND fact_kind='label'`); err != nil {
+	// Keep this same-writer false-branch check after Head without asking a
+	// second raw writer to wait for the meta lock held by this transaction.
+	if _, err = tx.(*transaction).sql.ExecContext(ctx, `DELETE FROM plug_postgres.selection_coverage WHERE family_table='derived_attribute' AND fact_kind='label'`); err != nil {
 		t.Fatal(err)
 	}
 	exists, err = tx.(driver.FreshSelectionExistsReader).FreshSelectionExists(ctx, plan)
