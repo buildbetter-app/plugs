@@ -623,7 +623,15 @@ func PutAncestorProjectionsInIncarnation(ctx context.Context, tx driver.WriteTx,
 		keys[encoded] = key
 	}
 	ordered := sortedKeys(keys)
-	states, err := tx.Observe(ctx, ordered)
+	var states []driver.LockState
+	var err error
+	if observer, ok := tx.(interface {
+		ObserveRecordStates(context.Context, []driver.LockKey) ([]driver.LockState, error)
+	}); ok {
+		states, err = observer.ObserveRecordStates(ctx, ordered)
+	} else {
+		states, err = tx.Observe(ctx, ordered)
+	}
 	if err != nil {
 		return err
 	}

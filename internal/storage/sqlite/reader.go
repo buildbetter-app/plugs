@@ -332,6 +332,48 @@ func (r *reader) observe(ctx context.Context, key driver.LockKey) (driver.LockSt
 	}
 	return state, nil
 }
+
+// ObserveRecordStates is the narrow post-staging observation seam used by
+// ancestor projection publication. Ordinary Observe keeps its scalar SQL path;
+// this method reuses only lock-time record revisions already captured for the
+// staged source rows and still falls back to that scalar path when uncached.
+func (t *transaction) ObserveRecordStates(ctx context.Context, keys []driver.LockKey) ([]driver.LockState, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err := t.check(ctx); err != nil {
+		return nil, err
+	}
+	if err := driver.ValidateLockKeys(keys); err != nil {
+		return nil, err
+	}
+	states := make([]driver.LockState, 0, len(keys))
+	for _, key := range keys {
+		if key.Kind != driver.LockRecord {
+			return nil, fmt.Errorf("sqlite: record observation requires record keys")
+		}
+		id := keyID(key)
+		if observed, cached := t.recordStates[id]; cached {
+			if staged, present := t.records[id]; present {
+				state := observed
+				state.Key = copyKey(key)
+				state.Record = nil
+				state.Present = staged != nil
+				if staged != nil {
+					value := copyRecord(*staged)
+					state.Record = &value
+				}
+				states = append(states, state)
+				continue
+			}
+		}
+		state, err := t.reader.observe(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		states = append(states, state)
+	}
+	return states, nil
+}
 func pageLimit(n int) (int, error) {
 	if n < 0 || n > 10000 {
 		return 0, fmt.Errorf("sqlite: limit must be in [0,10000]")
