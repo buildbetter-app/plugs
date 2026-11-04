@@ -195,6 +195,9 @@ func (w *Writer) dryRunProtected(ctx context.Context, req ProtectedApplyRequest,
 			return model.Commit{}, failure("write_conflict", "driver revision space is exhausted")
 		}
 		revision = model.Natural64(n + 1)
+		if _, err := protectedEvents(revision, changes, protectedChangeRecords(changes), meta); err != nil {
+			return model.Commit{}, err
+		}
 	}
 	response := model.Commit{Revision: revision, Results: []model.OpResult{}, Warnings: []model.Warning{}, WouldCommit: len(changes) != 0}
 	for _, change := range changes {
@@ -407,6 +410,10 @@ func (w *Writer) applyProtectedOnce(ctx context.Context, by model.PrincipalRef, 
 		return model.Commit{}, failure("write_conflict", "driver revision space is exhausted")
 	}
 	revision := model.Natural64(n + 1)
+	events, err := protectedEvents(revision, recordChanges, changes, meta)
+	if err != nil {
+		return model.Commit{}, err
+	}
 	response := model.Commit{Revision: revision, Results: []model.OpResult{}, Warnings: []model.Warning{}}
 	for i, change := range recordChanges {
 		if err := plans[i].Publish(ctx, tx); err != nil {
@@ -431,7 +438,7 @@ func (w *Writer) applyProtectedOnce(ctx context.Context, by model.PrincipalRef, 
 	if err := tx.BumpSentinels(ctx, sentinels); err != nil {
 		return model.Commit{}, err
 	}
-	entry, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: reader.Snapshot().Incarnation, Kind: model.ChangesetMigration, Time: w.cfg.now().UTC(), Principal: by, Chain: []string{}, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: response, Changes: changes, LockKeys: lockKeys(locks)})
+	entry, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: reader.Snapshot().Incarnation, Kind: model.ChangesetMigration, Time: w.cfg.now().UTC(), Principal: by, Chain: []string{}, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: response, Changes: changes, Events: events, LockKeys: lockKeys(locks)})
 	if err != nil {
 		return model.Commit{}, err
 	}
@@ -439,6 +446,39 @@ func (w *Writer) applyProtectedOnce(ctx context.Context, by model.PrincipalRef, 
 		return model.Commit{}, driver.ErrIndeterminate{IdempotencyKey: meta.IdempotencyKey}
 	}
 	return response, nil
+}
+
+// A protected migration has actual source/row images and an admitted method,
+// so its complete event plan belongs in the same atomic commit. A reader must
+// never infer slot provenance from broad /fields patches in a legacy log row.
+func protectedEvents(revision model.Revision, records []ProtectedRecordChange, changes []model.ChangeRecord, meta model.WriteMeta) ([]model.EventDescriptor, error) {
+	if len(records) > model.MaxChangesetEvents {
+		return nil, failure("scope_too_large", "complete atomic event plan exceeds 1000 descriptors")
+	}
+	events := make([]model.EventDescriptor, 0, len(records))
+	for index, record := range records {
+		kind := model.EventBeadUpdated
+		if record.Kind == "ontology" {
+			kind = model.EventOntologyApplied
+		}
+		owners := map[string]string{}
+		for _, path := range record.ChangedPaths {
+			owners[path] = "core"
+		}
+		events = append(events, model.EventDescriptor{
+			Index: model.Natural64(uint64(index)), ChangeIndex: model.Natural64(uint64(index)),
+			Type: kind, Resource: model.AuditResource{Kind: record.Kind, Ref: record.Ref},
+			Provenance: model.EventProvenance{
+				Method: meta.Method, SetBy: owners, Chain: []string{},
+				Cause: model.EventCause{Root: meta.IdempotencyKey, Depth: model.Natural64(0), Chain: []string{}},
+			},
+		})
+	}
+	entry := model.Changeset{Revision: revision, Changes: changes, Chain: []string{}, Events: events}
+	if err := entry.ValidateEvents(); err != nil {
+		return nil, failure("invalid_params", "invalid protected event plan: "+err.Error())
+	}
+	return events, nil
 }
 
 func protectedRecordChanges(req ProtectedApplyRequest) []ProtectedRecordChange {

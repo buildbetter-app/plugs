@@ -81,6 +81,8 @@ type prepared struct {
 	hierarchyDelta    *hierarchyDelta
 	hierarchySources  *hierarchySources
 	projections       *projectionDelta
+	graphValidated    bool
+	graphPreserved    bool
 	checkpointReads   map[string]uint64
 }
 
@@ -269,7 +271,8 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			if snapshot.reads.states[key].Present {
 				return nil, errStale
 			}
-			current = &pending{ref: target, kind: "bead", doc: Document{ID: id, Type: c.Type, Project: project, Parent: parent, Fields: map[string]any{}}, setBy: map[string]string{}, allocatorPrefix: allocatorPrefix, allocatorExpected: allocatorExpected, allocatorChild: allocatorChild, allocatorHash: allocatorHash}
+			createdAt := w.cfg.now().UTC()
+			current = &pending{ref: target, kind: "bead", doc: Document{ID: id, Type: c.Type, Project: project, Parent: parent, Fields: map[string]any{}, CreatedAt: &createdAt}, setBy: map[string]string{"createdAt": "core"}, allocatorPrefix: allocatorPrefix, allocatorExpected: allocatorExpected, allocatorChild: allocatorChild, allocatorHash: allocatorHash}
 			p.writes[id] = current
 			if parent != nil {
 				current.setBy["parent"] = "request"
@@ -1265,10 +1268,14 @@ func (w *Writer) checkLease(ctx context.Context, doc Document, by model.Principa
 }
 
 func (w *Writer) claims(p *prepared, by model.PrincipalRef, meta model.WriteMeta) error {
+	stamp := w.cfg.now().UTC()
+	if err := p.lifecycleTimes(stamp); err != nil {
+		return err
+	}
 	if isClaim(meta.Method) && !p.proposal.SameClaim {
 		ttl := model.Natural64(uint64(w.cfg.claimTTL / time.Millisecond))
 		for _, pending := range p.writes {
-			pending.doc.Lease = &ClaimLease{Principal: by, Agent: meta.AgentLabel, ExpiresAt: w.cfg.now().UTC().Add(w.cfg.claimTTL), TtlMs: ttl, Epoch: model.Natural64(w.lease.Epoch())}
+			pending.doc.Lease = &ClaimLease{Principal: by, Agent: meta.AgentLabel, ExpiresAt: stamp.Add(w.cfg.claimTTL), TtlMs: ttl, Epoch: model.Natural64(w.lease.Epoch())}
 			pending.setBy["lease"] = "request"
 		}
 	} else {
@@ -1377,11 +1384,26 @@ func (p *prepared) graph(ctx context.Context) error {
 		}
 	}
 	if !need {
+		// These operations preserve any valid graph, including one advanced by
+		// unrelated writers. Consult its certificate only after acquiring the
+		// publication locks, not as an unnecessary whole-graph pre-read fact.
+		p.graphPreserved = true
 		return nil
 	}
 	if docs == nil {
-		if err := p.observeIndexedGraphIncoming(ctx); err != nil {
+		indexed, err := p.observeIndexedGraphIncoming(ctx)
+		if err != nil {
 			return err
+		}
+		if indexed {
+			certified, err := p.graphIsCertified(ctx)
+			if err != nil {
+				return err
+			}
+			if certified {
+				p.graphValidated = true
+				return nil
+			}
 		}
 	}
 	if docs == nil {
@@ -1397,13 +1419,7 @@ func (p *prepared) graph(ctx context.Context) error {
 			docs[id] = pending.doc
 		}
 	}
-	for _, doc := range docs {
-		for _, link := range doc.Links {
-			if _, ok := docs[link.To.ID]; !ok {
-				return failure("ontology_guard_failed", "unlink all incoming and outgoing edges before deletion")
-			}
-		}
-	}
+
 	// A deleted bead's outgoing edges would disappear silently; require explicit
 	// unlink operations first so the change log represents each removed edge.
 	for _, pending := range p.writes {
@@ -1411,36 +1427,9 @@ func (p *prepared) graph(ctx context.Context) error {
 			return failure("ontology_guard_failed", "unlink outgoing edges before deletion")
 		}
 	}
-	visiting, done := map[string]bool{}, map[string]bool{}
-	var walk func(string) error
-	walk = func(id string) error {
-		if visiting[id] {
-			return failure("ontology_guard_failed", "blocking link would form a cycle")
-		}
-		if done[id] {
-			return nil
-		}
-		visiting[id] = true
-		if parent := docs[id].Parent; parent != nil {
-			if err := walk(parent.ID); err != nil {
-				return err
-			}
-		}
-		for _, link := range docs[id].Links {
-			if dependencyIsScheduling(link.Kind) {
-				if err := walk(link.To.ID); err != nil {
-					return err
-				}
-			}
-		}
-		delete(visiting, id)
-		done[id] = true
-		return nil
+	if err := ValidateGraphDocuments(ctx, docs); err != nil {
+		return err
 	}
-	for id := range docs {
-		if err := walk(id); err != nil {
-			return err
-		}
-	}
-	return checkBlockingHierarchy(docs)
+	p.graphValidated, err = p.graphCoverageActive(ctx)
+	return err
 }
