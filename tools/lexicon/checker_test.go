@@ -264,7 +264,7 @@ func TestPhysicalProtocolStringsKeepOtherRefusals(t *testing.T) {
 		for _, test := range []struct{ name, path, source string }{
 			{"neighbor_path", "spec/s1-b25-b28/public_recording_other_test.go", "package recorder\n" + assignment},
 			{"wildcard_path", "spec/s1-b25-b28/*.go", "package recorder\n" + assignment},
-			{"wrong_path_escaped", "other/recorder.go", "package recorder\nvar externalAssignment = " + escapedProtocolString(value)},
+			{"wrong_path_raw", "other/recorder.go", "package recorder\nvar externalAssignment = `" + value + "`"},
 			{"changed_case", externalProtocolSource, "package recorder\nvar externalAssignment = " + strconv.Quote(strings.ToUpper(value))},
 			{"prefix", externalProtocolSource, "package recorder\nvar externalAssignment = " + strconv.Quote("other_"+value)},
 			{"suffix", externalProtocolSource, "package recorder\nvar externalAssignment = " + strconv.Quote(value+"_other")},
@@ -346,11 +346,15 @@ func TestPhysicalProtocolAllowancePreservesUnrelatedEscapedLiterals(t *testing.T
 	cfg, _ := checkedInPhysicalProtocolConfig(t)
 	baseline := cfg
 	baseline.ExternalProtocolString.PhysicalValues = nil
-	for name, literal := range map[string]string{
+	literals := map[string]string{
 		"identifier": escapedProtocolString(cfg.ExternalProtocolString.Value),
 		"product":    escapedProtocolString(cfg.Terms[2].Matches[0]),
 		"unicode":    `"\U0001f600"`,
-	} {
+	}
+	for i, value := range cfg.ExternalProtocolString.PhysicalValues {
+		literals[fmt.Sprintf("physical%d", i)] = escapedProtocolString(value)
+	}
+	for name, literal := range literals {
 		t.Run(name, func(t *testing.T) {
 			files := map[string][]byte{"other/existing.go": []byte("package existing\nvar retained = " + literal)}
 			before, beforeErr := CheckFiles(files, baseline)

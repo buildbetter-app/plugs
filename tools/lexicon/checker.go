@@ -353,12 +353,9 @@ func isProvenance(path string, zones []string) bool {
 func scanFile(path string, content []byte, cfg Config, provenance bool) []Finding {
 	text := string(content)
 	var literals []goStringLiteral
-	if filepath.Ext(path) == ".go" && len(cfg.ExternalProtocolString.PhysicalValues) != 0 {
+	if path == externalProtocolSource && len(cfg.ExternalProtocolString.PhysicalValues) != 0 {
 		masked := append([]byte(nil), content...)
 		for _, literal := range goStringLiterals(path, content) {
-			if path != externalProtocolSource && !physicalProtocolDigests[protocolLiteralDigest(literal.value)] {
-				continue // Preserve the established scan for unrelated source literals.
-			}
 			if !literal.imported && allowsPhysicalProtocolString(path, literal.value, cfg.ExternalProtocolString) {
 				for i := literal.start; i < literal.end; i++ {
 					if masked[i] != '\n' && masked[i] != '\r' {
@@ -425,8 +422,8 @@ func scanFile(path string, content []byte, cfg Config, provenance bool) []Findin
 			if at := phraseIndex(text, match); at >= 0 {
 				findings = append(findings, Finding{Path: path, Line: lineAt(text, at), Class: term.Class, Term: match})
 			}
-			// Decode non-admitted protocol strings too: altered values here,
-			// imports and the exact literals at neighboring paths still refuse.
+			// Decode non-admitted strings at this exact recorder path too;
+			// retain the established scan at every other source path.
 			for _, literal := range literals {
 				if phraseIndex(literal.value, match) >= 0 {
 					appendDecoded(literal, term, match)
@@ -496,7 +493,7 @@ func scanGoIdentifiers(path string, content []byte, term Term, allowance GoStrin
 					findings = append(findings, Finding{Path: path, Line: fset.Position(node.Pos()).Line, Class: "invalid-go", Term: "string"})
 					return true
 				}
-				if path == externalProtocolSource || len(allowance.PhysicalValues) != 0 && physicalProtocolDigests[protocolLiteralDigest(decoded)] {
+				if path == externalProtocolSource {
 					if !imports[n.Pos()] && path == externalProtocolSource && allowance.Path == path && (decoded == allowance.Value && protocolLiteralDigest(decoded) == externalEnvironmentDigest || allowsPhysicalProtocolString(path, decoded, allowance)) {
 						return true
 					}
