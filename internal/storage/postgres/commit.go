@@ -314,6 +314,10 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 	if err != nil {
 		return zero, err
 	}
+	readyProof, err := t.prepareReadyOrderCommit(ctx, t.sql, t.meta, revision)
+	if err != nil {
+		return zero, err
+	}
 	target := t.meta
 	target.Head = revision
 	if t.restore != nil {
@@ -368,6 +372,10 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		return zero, err
 	}
 	if _, err = t.sql.ExecContext(ctx, `INSERT INTO plug_postgres.changesets VALUES ($1,$2)`, revision.String(), raw); err != nil {
+		_ = t.finish()
+		return zero, err
+	}
+	if err = t.finishReadyOrderCommit(ctx, t.sql, readyProof, target); err != nil {
 		_ = t.finish()
 		return zero, err
 	}

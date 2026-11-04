@@ -243,7 +243,7 @@ CREATE INDEX IF NOT EXISTS selection_facts_scoped_grant
 CREATE INDEX IF NOT EXISTS selection_facts_name
  ON plug_postgres.selection_facts(incarnation,row_key,name,start_revision);
 
-`
+` + readyOrderSchema
 
 // allocator_states is intentionally additive to schema version 1. initialize
 // executes schemaDDL for every open, so an existing version-1 database gains

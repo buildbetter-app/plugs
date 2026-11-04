@@ -112,6 +112,7 @@ func (r *reader) finish() error {
 	}
 	r.store.untrack(r)
 	if r.writer != nil {
+		r.writer.invalidateReadyOrderPublication()
 		r.writer.clearSourceOverlay()
 		r.writer.records = nil
 		r.writer.identities = nil

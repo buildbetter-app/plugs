@@ -50,6 +50,7 @@ type transaction struct {
 	sourceCoverageIncarnation string
 	sourceCoverageValid       bool
 	selectionVirgin           bool
+	readyPublication          *readyOrderPublicationState
 }
 
 func (s *Store) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
@@ -262,6 +263,10 @@ func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) (
 				}
 			}
 			i = end
+		}
+		if err == nil {
+			err = t.lockReadyOrderPhysical(ctx, requests)
+			busy = sqlState(err) == "55P03"
 		}
 		if err != nil {
 			// NOWAIT avoids holding a prefix while another member is unavailable.

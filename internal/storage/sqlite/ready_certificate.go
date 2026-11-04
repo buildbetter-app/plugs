@@ -98,7 +98,7 @@ func (t *transaction) prepareReadyOrderCommit(ctx context.Context, c *sql.Conn, 
 		return nil, nil
 	}
 	var predecessor, virgin bool
-	if err = c.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM ready_order_fence WHERE singleton=1 AND dirty=0 AND certified_generation=generation AND incarnation=? AND head=? AND authority_head=head AND format=2),EXISTS(SELECT 1 FROM ready_order_fence WHERE singleton=1 AND ever_source=0)`, meta.Incarnation, revKey(mustUint(meta.Head))).Scan(&predecessor, &virgin); err != nil {
+	if err = c.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM ready_order_fence WHERE singleton=1 AND dirty=0 AND certified_generation=generation AND incarnation=? AND head=? AND authority_head=head AND format=2 AND NOT EXISTS(SELECT 1 FROM ready_order_changes)),EXISTS(SELECT 1 FROM ready_order_fence WHERE singleton=1 AND ever_source=0)`, meta.Incarnation, revKey(mustUint(meta.Head))).Scan(&predecessor, &virgin); err != nil {
 		return nil, err
 	}
 	if !predecessor {
@@ -106,7 +106,7 @@ func (t *transaction) prepareReadyOrderCommit(ctx context.Context, c *sql.Conn, 
 			return nil, nil
 		}
 		var occupied bool
-		if err = c.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM records) OR EXISTS(SELECT 1 FROM versions) OR EXISTS(SELECT 1 FROM key_history)`).Scan(&occupied); err != nil {
+		if err = c.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM records) OR EXISTS(SELECT 1 FROM versions) OR EXISTS(SELECT 1 FROM key_history) OR EXISTS(SELECT 1 FROM hierarchy_source_current) OR EXISTS(SELECT 1 FROM hierarchy_source_history) OR EXISTS(SELECT 1 FROM graph_link_source_current) OR EXISTS(SELECT 1 FROM graph_link_current) OR EXISTS(SELECT 1 FROM graph_link_source_history) OR EXISTS(SELECT 1 FROM graph_link_history) OR EXISTS(SELECT 1 FROM objects) OR EXISTS(SELECT 1 FROM selection_source_history) OR EXISTS(SELECT 1 FROM selection_bead_history) OR EXISTS(SELECT 1 FROM selection_fact_sets) OR EXISTS(SELECT 1 FROM selection_facts)`).Scan(&occupied); err != nil {
 			return nil, err
 		}
 		if occupied {
@@ -151,6 +151,61 @@ func (t *transaction) finishReadyOrderCommit(ctx context.Context, c *sql.Conn, p
 	if target.Incarnation != p.Data.Incarnation || target.Head != p.Data.Revision {
 		return nil
 	}
+	rows, err := c.QueryContext(ctx, `SELECT domain,key FROM ready_order_changes`)
+	if err != nil {
+		return err
+	}
+	unknown := false
+	for rows.Next() {
+		var domain string
+		var key string
+		if err = rows.Scan(&domain, &key); err != nil {
+			break
+		}
+		_, record := t.records[key]
+		_, derived := t.derived[key]
+		_, bump := t.bumps[key]
+		if domain == "source" && !record || domain == "state" && !record && !derived && !bump || domain != "source" && domain != "state" {
+			unknown = true
+		}
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	closeErr := rows.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if unknown {
+		return nil
+	}
+	for _, mutation := range p.Data.Mutations {
+		id, _ := recordKey(mutation.Ref)
+		var data []byte
+		err = c.QueryRowContext(ctx, `SELECT data FROM records WHERE key=?`, id).Scan(&data)
+		if mutation.Item == nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			return nil
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		var record driver.Record
+		if json.Unmarshal(data, &record) != nil || record.Kind != "bead" || record.Revision != target.Head || driver.SelectionDigest(record.Body) != mutation.SourceDigest {
+			return nil
+		}
+	}
 	for _, want := range p.FinalImages() {
 		actual, err := readyOrderReadState(ctx, c, want.Key)
 		if errors.Is(err, driver.ErrUnsupported) {
@@ -163,13 +218,16 @@ func (t *transaction) finishReadyOrderCommit(ctx context.Context, c *sql.Conn, p
 			return nil
 		}
 	}
-	_, err := c.ExecContext(ctx, `UPDATE ready_order_fence SET certified_generation=generation,dirty=0,format=2,incarnation=?,head=?,authority_head=?,root_hash=?,root_count=?,eligibility_digest=?,publication_digest=? WHERE singleton=1`, target.Incarnation, revKey(mustUint(target.Head)), revKey(mustUint(target.Head)), p.Root.Hash, revKey(p.Root.Count), p.EligibilityDigest, p.Digest)
+	if _, err = c.ExecContext(ctx, `DELETE FROM ready_order_changes`); err != nil {
+		return err
+	}
+	_, err = c.ExecContext(ctx, `UPDATE ready_order_fence SET certified_generation=generation,dirty=0,format=2,incarnation=?,head=?,authority_head=?,root_hash=?,root_count=?,eligibility_digest=?,publication_digest=? WHERE singleton=1`, target.Incarnation, revKey(mustUint(target.Head)), revKey(mustUint(target.Head)), p.Root.Hash, revKey(p.Root.Count), p.EligibilityDigest, p.Digest)
 	return err
 }
 
 // The predicate is evaluated against the same pinned snapshot, or W10's one
 // current meta/Ready/authority statement. Core eligibility is additionally
 // checked by readyindex against this request's effective ontology binding.
-const readyOrderPhysicalPredicate = `EXISTS(SELECT 1 FROM ready_order_fence rc WHERE rc.singleton=1 AND rc.dirty=0 AND rc.certified_generation=rc.generation AND rc.format=2 AND rc.incarnation=m.incarnation AND rc.head=m.head AND rc.authority_head=m.head AND rc.root_hash IS NOT NULL AND rc.eligibility_digest IS NOT NULL AND rc.publication_digest IS NOT NULL)`
+const readyOrderPhysicalPredicate = `EXISTS(SELECT 1 FROM ready_order_fence rc WHERE rc.singleton=1 AND rc.dirty=0 AND rc.certified_generation=rc.generation AND rc.format=2 AND rc.incarnation=m.incarnation AND rc.head=m.head AND rc.authority_head=m.head AND rc.root_hash IS NOT NULL AND rc.eligibility_digest IS NOT NULL AND rc.publication_digest IS NOT NULL AND NOT EXISTS(SELECT 1 FROM ready_order_changes))`
 
 var _ driver.ReadyOrderPublicationWriter = (*transaction)(nil)
