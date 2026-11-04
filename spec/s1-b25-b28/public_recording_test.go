@@ -1508,7 +1508,20 @@ func projectJSONL(data []byte, fields []string, categories map[string]string) ([
 			case "source_type":
 				item[field] = row["issue_type"]
 			default:
-				item[field] = row[field]
+				value, present := row[field]
+				// The pinned CLI omits these typed empty values from JSONL.
+				// Normalize only absent keys; explicit null stays observable.
+				if !present {
+					switch field {
+					case "labels":
+						value = []any{}
+					case "metadata":
+						value = map[string]any{}
+					case "spec_id", "close_reason":
+						value = ""
+					}
+				}
+				item[field] = value
 			}
 		}
 		projection.Issues[id] = item
@@ -2005,6 +2018,39 @@ func TestPublicProjectionConfigSettingsReadback(t *testing.T) {
 		if _, err := readPublicConfigSettings([]byte(data)); err == nil {
 			t.Fatal("invalid/duplicate/non-setting readback admitted")
 		}
+	}
+}
+
+func TestPublicProjectionOmittedTypedDefaults(t *testing.T) {
+	fields := []string{"labels", "metadata", "spec_id", "close_reason"}
+	project := func(raw string) map[string]any {
+		t.Helper()
+		data, err := projectJSONL([]byte(raw), fields, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		projection, err := decodePublicProjection(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return projection.Issues["sample"]
+	}
+	omitted := project(`{"_type":"issue","id":"sample"}`)
+	if !equalJSON(omitted, map[string]any{"labels": []any{}, "metadata": map[string]any{}, "spec_id": "", "close_reason": ""}) {
+		t.Fatalf("omitted CLI defaults differ: %+v", omitted)
+	}
+	explicitNull := project(`{"_type":"issue","id":"sample","labels":null,"metadata":null,"spec_id":null,"close_reason":null}`)
+	for _, field := range fields {
+		if explicitNull[field] != nil {
+			t.Fatalf("explicit null %s was replaced with a default", field)
+		}
+	}
+	if equalJSON(omitted, explicitNull) {
+		t.Fatal("explicit null and omitted typed defaults became equal")
+	}
+	populated := project(`{"_type":"issue","id":"sample","labels":["kept"],"metadata":{"kept":true},"spec_id":"kept-spec","close_reason":"real reason"}`)
+	if !equalJSON(populated, map[string]any{"labels": []any{"kept"}, "metadata": map[string]any{"kept": true}, "spec_id": "kept-spec", "close_reason": "real reason"}) {
+		t.Fatal("populated optional fields changed")
 	}
 }
 
