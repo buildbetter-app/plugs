@@ -34,12 +34,12 @@ PUBLIC_RUNTIME_TARGETS = frozenset({
     "//tools/roundtrip:public_beads_runtime_test",
     "//spec/s1-b25-b28:public_recording_test",
 })
-# Native adoption replaces this and the descriptor only after official-byte
-# review and trusted-helper admission. Keep the current companion delivery.
-PUBLIC_BUNDLE_PROFILE = "plug-public-companion/1"
+# Ordinary CI binds the accepted native delivery after official-byte review
+# and trusted-helper admission; caller input cannot change these expectations.
+PUBLIC_BUNDLE_PROFILE = "plug-public-native/1"
 PUBLIC_BUNDLE_DESCRIPTOR = (
-    "41398730774:13120521766:"
-    "66de7c070d365bbd7fc2bd39ed822e5bf72c21efabe0add9a5e26d07bf170a62"
+    "41800330346:13307042737:"
+    "ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a"
 )
 PUBLIC_ENV_NAMES = (
     "PLUG_PUBLIC_BEADS_BINARY",
