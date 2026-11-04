@@ -17,6 +17,7 @@ go_test(
         "record_reference.py",
         "provenance.py",
         "b26-deviation.json",
+        "b26-positive-producer.json",
         "//internal/integration/converterroundtrip:testdata/synthetic-plug-dump-1.tar",
     ],
     deps = [

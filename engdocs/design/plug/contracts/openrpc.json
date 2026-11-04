@@ -3168,6 +3168,183 @@
       "x-resource": "params.project"
     },
     {
+      "name": "x.workflow.run.promote",
+      "summary": "Promote a live workflow item to a caller-owned durable bead.",
+      "description": "Read the live workflow item and authorize an existing same-project, same-type ordinary target. Materialize its body, labels, metadata, comments and permitted relations while removing the workflow source in one fenced core/checkpoint transaction. No core lease or version row is created for the ephemeral identity. Claimed endpoints and unsupported hierarchy variants refuse before publication.",
+      "tags": [
+        {
+          "name": "plugin"
+        }
+      ],
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "item",
+          "schema": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "required": true
+        },
+        {
+          "name": "target",
+          "schema": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "required": true
+        },
+        {
+          "name": "_meta",
+          "schema": {
+            "$ref": "#/components/schemas/Meta"
+          },
+          "description": "Transport metadata; not an application actor field."
+        }
+      ],
+      "result": {
+        "name": "result",
+        "description": "Promotion result.",
+        "schema": {
+          "$ref": "#/components/schemas/WorkflowPromoteResult"
+        }
+      },
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/Forbidden"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/WriteConflict"
+        },
+        {
+          "$ref": "#/components/errors/Busy"
+        },
+        {
+          "$ref": "#/components/errors/RateLimited"
+        },
+        {
+          "$ref": "#/components/errors/ProjectRequired"
+        },
+        {
+          "$ref": "#/components/errors/IdempotencyKeyReused"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
+        },
+        {
+          "$ref": "#/components/errors/PluginDurableStateUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/Unsupported"
+        }
+      ],
+      "x-effect": "write",
+      "x-idempotency": "required",
+      "x-permission": "write",
+      "x-agent-core": false,
+      "x-stability": "v1",
+      "x-resource": "params.target"
+    },
+    {
+      "name": "x.workflow.run.demote",
+      "summary": "Move a durable bead into a live ephemeral workflow item.",
+      "description": "Read and authorize the actual ordinary source, preserve its body and permitted auxiliary relationships, and atomically delete it while publishing a restart-durable workflow checkpoint. Caller parameters provide only source identity, template and label. Claimed sources, attachments, imported-comment provenance and durable children currently refuse with a typed error before mutation.",
+      "tags": [
+        {
+          "name": "plugin"
+        }
+      ],
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "source",
+          "schema": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "required": true
+        },
+        {
+          "name": "template",
+          "schema": {
+            "type": "string"
+          },
+          "required": true
+        },
+        {
+          "name": "label",
+          "schema": {
+            "type": "string"
+          },
+          "required": true
+        },
+        {
+          "name": "_meta",
+          "schema": {
+            "$ref": "#/components/schemas/Meta"
+          },
+          "description": "Transport metadata; not an application actor field."
+        }
+      ],
+      "result": {
+        "name": "result",
+        "description": "Demotion result.",
+        "schema": {
+          "$ref": "#/components/schemas/WorkflowDemoteResult"
+        }
+      },
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/Forbidden"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/WriteConflict"
+        },
+        {
+          "$ref": "#/components/errors/Busy"
+        },
+        {
+          "$ref": "#/components/errors/RateLimited"
+        },
+        {
+          "$ref": "#/components/errors/ProjectRequired"
+        },
+        {
+          "$ref": "#/components/errors/IdempotencyKeyReused"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
+        },
+        {
+          "$ref": "#/components/errors/PluginDurableStateUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/Unsupported"
+        }
+      ],
+      "x-effect": "write",
+      "x-idempotency": "required",
+      "x-permission": "write",
+      "x-agent-core": false,
+      "x-stability": "v1",
+      "x-resource": "params.source"
+    },
+    {
       "name": "gate.approve",
       "summary": "Record a compare-and-set manual gate approval.",
       "description": "Record a compare-and-set manual gate approval.",
@@ -6568,7 +6745,7 @@
     {
       "name": "bead.cycles",
       "summary": "Report deterministic current durable-plane dependency cycles.",
-      "description": "Default follows blocks and conditional-blocks only. Optional tracks retains the default report and adds a shortest-return cycle per blocking edge. Parent-child and waits-for are excluded. A visible project member anchors each item; hidden members retain placeholders. includeEphemeral=true returns plugin_durable_state_unavailable without persistent workflow state; the current persistent workflow plane has no graph relationships and retains invalid_params refusal.",
+      "description": "Default follows blocks and conditional-blocks only. Optional tracks retains the default report and adds a shortest-return cycle per blocking edge. Parent-child and waits-for are excluded. A visible project member anchors each item; hidden members retain placeholders. includeEphemeral=true requires the durable workflow capability; memory returns plugin_durable_state_unavailable, while SQLite/PostgreSQL expose live workflow items through the standard ready/read tools. Workflow auxiliary edges are read through the typed workflow item and mixed-plane bridge.",
       "tags": [
         {
           "name": "core"
@@ -6588,7 +6765,7 @@
           "schema": {
             "type": "boolean"
           },
-          "description": "True returns plugin_durable_state_unavailable without persistent workflow state. The current persistent workflow plane has no graph relationships and retains invalid_params refusal."
+          "description": "True includes live workflow items only when a durable workflow capability is installed; memory returns plugin_durable_state_unavailable. SQLite and PostgreSQL expose their typed workflow relations through the workflow read bridge."
         },
         {
           "name": "limit",
@@ -6802,6 +6979,10 @@
           "viewId": {
             "type": "string",
             "description": "View membership for subscriptions and watches."
+          },
+          "includeEphemeral": {
+            "type": "boolean",
+            "description": "Include live ephemeral workflow items; defaults to true for backward-compatible ready reads."
           }
         },
         "additionalProperties": false
@@ -10521,6 +10702,33 @@
           },
           "type": {
             "type": "string"
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "parent": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowRelationSpec"
+            }
+          },
+          "blocked": {
+            "type": "boolean"
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": true
           }
         },
         "required": [
@@ -10622,6 +10830,37 @@
               "type": "object",
               "additionalProperties": true
             }
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "parent": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowRelationView"
+            }
+          },
+          "blocked": {
+            "type": "boolean"
+          },
+          "childCounter": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": true
           }
         },
         "required": [
@@ -10921,6 +11160,100 @@
           "cycleCount",
           "truncated",
           "asOf"
+        ],
+        "additionalProperties": false
+      },
+      "WorkflowRelationSpec": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "to",
+          "kind"
+        ],
+        "additionalProperties": false
+      },
+      "WorkflowRelationView": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "minLength": 1
+          },
+          "to": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "kind"
+        ],
+        "additionalProperties": false
+      },
+      "WorkflowPromoteResult": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "target": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "relations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowRelationView"
+            }
+          },
+          "childCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "source",
+          "target",
+          "generation"
+        ],
+        "additionalProperties": false
+      },
+      "WorkflowDemoteResult": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "$ref": "#/components/schemas/WorkflowRun"
+          },
+          "item": {
+            "$ref": "#/components/schemas/WorkflowItem"
+          }
+        },
+        "required": [
+          "run",
+          "item"
         ],
         "additionalProperties": false
       }
@@ -13557,10 +13890,10 @@
     "format": "plug-method-registry/1",
     "status": "bounded-contract-artifact",
     "purpose": "Human-maintained bounded contract artifact, read independently of methods at validation time; validates the closed method inventory, descriptor fields and wire inventories before an implementation generator exists.",
-    "methodCount": 83,
+    "methodCount": 85,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
-    "nameSha256": "0ce6a0ee3927753ec8622351c1337c1de3922a1662eae667196e447fd9c170ef",
-    "descriptorSha256": "2d18672c631f492cb63d7e5e7e31a0fcdf9d67867103e6cded560b917446acc6",
+    "nameSha256": "e4cc1165f352268dd7412a50f2ec6ded5daa8a22c6f2ad3f4205ef382c423907",
+    "descriptorSha256": "b54710ceca844685f4959d9742caeb4f9ecd53011d4d1471c80a05de4f4e1061",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -13596,14 +13929,12 @@
         "params": [
           {
             "name": "clientVersion",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "protocolVersion",
-            "required": false,
             "schema": {
               "type": "string"
             }
@@ -13663,10 +13994,10 @@
         "params": [
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -13703,17 +14034,16 @@
         "params": [
           {
             "name": "method",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -13736,10 +14066,10 @@
         "params": [
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -13780,14 +14110,13 @@
         "params": [
           {
             "name": "reason",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "requestId",
-            "required": false,
             "schema": {
               "type": "string"
             }
@@ -13808,14 +14137,13 @@
         "params": [
           {
             "name": "id",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/Ref"
-            }
+            },
+            "required": true
           },
           {
             "name": "asOf",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/AsOf"
             }
@@ -13829,10 +14157,10 @@
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -13858,21 +14186,18 @@
         "params": [
           {
             "name": "viewId",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "filter",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Filter"
             }
           },
           {
             "name": "limit",
-            "required": false,
             "schema": {
               "type": "integer",
               "minimum": 1,
@@ -13881,17 +14206,16 @@
           },
           {
             "name": "cursor",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -13919,32 +14243,31 @@
         "params": [
           {
             "name": "type",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "fields",
-            "required": true,
             "schema": {
               "type": "object",
               "additionalProperties": true
-            }
+            },
+            "required": true
           },
           {
             "name": "parent",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Ref"
             }
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -13976,22 +14299,21 @@
         "params": [
           {
             "name": "id",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/Ref"
-            }
+            },
+            "required": true
           },
           {
             "name": "fields",
-            "required": true,
             "schema": {
               "type": "object",
               "additionalProperties": true
-            }
+            },
+            "required": true
           },
           {
             "name": "expect",
-            "required": false,
             "schema": {
               "type": "array",
               "items": {
@@ -14001,10 +14323,10 @@
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -14037,14 +14359,13 @@
         "params": [
           {
             "name": "id",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/Ref"
-            }
+            },
+            "required": true
           },
           {
             "name": "expect",
-            "required": false,
             "schema": {
               "type": "array",
               "items": {
@@ -14054,10 +14375,10 @@
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -14089,24 +14410,22 @@
         "params": [
           {
             "name": "viewId",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "filter",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Filter"
             }
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -14145,17 +14464,17 @@
         "params": [
           {
             "name": "id",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/Ref"
-            }
+            },
+            "required": true
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -14181,24 +14500,23 @@
         "params": [
           {
             "name": "id",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/Ref"
-            }
+            },
+            "required": true
           },
           {
             "name": "reason",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -14230,21 +14548,19 @@
         "params": [
           {
             "name": "id",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/Ref"
-            }
+            },
+            "required": true
           },
           {
             "name": "reason",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "expect",
-            "required": false,
             "schema": {
               "type": "array",
               "items": {
@@ -14254,10 +14570,10 @@
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -14290,21 +14606,19 @@
         "params": [
           {
             "name": "id",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/Ref"
-            }
+            },
+            "required": true
           },
           {
             "name": "reason",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "expect",
-            "required": false,
             "schema": {
               "type": "array",
               "items": {
@@ -14314,10 +14628,10 @@
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -14350,21 +14664,19 @@
         "params": [
           {
             "name": "id",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/Ref"
-            }
+            },
+            "required": true
           },
           {
             "name": "reason",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "expect",
-            "required": false,
             "schema": {
               "type": "array",
               "items": {
@@ -14374,10 +14686,10 @@
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -14410,21 +14722,19 @@
         "params": [
           {
             "name": "id",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/Ref"
-            }
+            },
+            "required": true
           },
           {
             "name": "reason",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "expect",
-            "required": false,
             "schema": {
               "type": "array",
               "items": {
@@ -14434,10 +14744,10 @@
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -14470,21 +14780,19 @@
         "params": [
           {
             "name": "id",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/Ref"
-            }
+            },
+            "required": true
           },
           {
             "name": "reason",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "expect",
-            "required": false,
             "schema": {
               "type": "array",
               "items": {
@@ -14494,10 +14802,10 @@
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -14530,21 +14838,20 @@
         "params": [
           {
             "name": "id",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/Ref"
-            }
+            },
+            "required": true
           },
           {
             "name": "body",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "expect",
-            "required": false,
             "schema": {
               "type": "array",
               "items": {
@@ -14554,10 +14861,10 @@
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -14589,24 +14896,24 @@
         "params": [
           {
             "name": "from",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/Ref"
-            }
+            },
+            "required": true
           },
           {
             "name": "to",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/Ref"
-            }
+            },
+            "required": true
           },
           {
             "name": "kind",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "metadata",
@@ -14617,7 +14924,6 @@
           },
           {
             "name": "expect",
-            "required": false,
             "schema": {
               "type": "array",
               "items": {
@@ -14627,10 +14933,10 @@
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -14662,28 +14968,27 @@
         "params": [
           {
             "name": "from",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/Ref"
-            }
+            },
+            "required": true
           },
           {
             "name": "to",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/Ref"
-            }
+            },
+            "required": true
           },
           {
             "name": "kind",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "expect",
-            "required": false,
             "schema": {
               "type": "array",
               "items": {
@@ -14693,10 +14998,10 @@
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -14728,14 +15033,13 @@
         "params": [
           {
             "name": "id",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/Ref"
-            }
+            },
+            "required": true
           },
           {
             "name": "kind",
-            "required": true,
             "schema": {
               "type": "string",
               "enum": [
@@ -14744,39 +15048,37 @@
                 "blob",
                 "log"
               ]
-            }
+            },
+            "required": true
           },
           {
             "name": "uri",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "contentRef",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "mediaType",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "summary",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "expect",
-            "required": false,
             "schema": {
               "type": "array",
               "items": {
@@ -14786,10 +15088,10 @@
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -14821,46 +15123,44 @@
         "params": [
           {
             "name": "uploadId",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "chunk",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "offset",
-            "required": true,
             "schema": {
               "type": "integer",
               "minimum": 0
-            }
+            },
+            "required": true
           },
           {
             "name": "final",
-            "required": true,
             "schema": {
               "type": "boolean"
-            }
+            },
+            "required": true
           },
           {
             "name": "sha256",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -14886,17 +15186,17 @@
         "params": [
           {
             "name": "id",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/Ref"
-            }
+            },
+            "required": true
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -14919,17 +15219,17 @@
         "params": [
           {
             "name": "changeSet",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/ChangeSet"
-            }
+            },
+            "required": true
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -14964,10 +15264,10 @@
         "params": [
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -14989,14 +15289,12 @@
         "params": [
           {
             "name": "project",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "budgetTokens",
-            "required": false,
             "schema": {
               "type": "integer",
               "minimum": 0
@@ -15004,10 +15302,10 @@
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -15031,33 +15329,32 @@
         "params": [
           {
             "name": "filter",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/Filter"
-            }
+            },
+            "required": true
           },
           {
             "name": "after",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "limit",
-            "required": true,
             "schema": {
               "type": "integer",
               "minimum": 1,
               "maximum": 1000
-            }
+            },
+            "required": true
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -15084,31 +15381,29 @@
         "params": [
           {
             "name": "filter",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/Filter"
-            }
+            },
+            "required": true
           },
           {
             "name": "from",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "viewId",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -15135,17 +15430,17 @@
         "params": [
           {
             "name": "subscriptionId",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -15175,10 +15470,10 @@
         "params": [
           {
             "name": "notification",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/EventNotify"
-            }
+            },
+            "required": true
           }
         ],
         "resultSchema": {
@@ -15196,14 +15491,12 @@
         "params": [
           {
             "name": "cursor",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "revision",
-            "required": false,
             "schema": {
               "type": "integer",
               "minimum": 0
@@ -15211,10 +15504,10 @@
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -15238,38 +15531,39 @@
         "params": [
           {
             "name": "subscriptionId",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "cursor",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "reason",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "humanPresence",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/HumanPresence"
-            }
+            },
+            "description": "Required D32 proof. The challenge is bound to this method and its sensitive digest/archive action.",
+            "required": true
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -15298,15 +15592,14 @@
         "params": [
           {
             "name": "manifest",
-            "required": true,
             "schema": {
               "type": "object",
               "additionalProperties": true
-            }
+            },
+            "required": true
           },
           {
             "name": "expect",
-            "required": false,
             "schema": {
               "type": "array",
               "items": {
@@ -15316,10 +15609,10 @@
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -15349,34 +15642,35 @@
         "params": [
           {
             "name": "planDigest",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "expect",
-            "required": true,
             "schema": {
               "type": "array",
               "items": {
                 "$ref": "#/components/schemas/Expect"
               }
-            }
+            },
+            "required": true
           },
           {
             "name": "humanPresence",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/HumanPresence"
-            }
+            },
+            "required": true,
+            "description": "Required D32 proof. The challenge is bound to this method and its sensitive digest/archive action."
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -15407,24 +15701,23 @@
         "params": [
           {
             "name": "credential",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "kind",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -15447,24 +15740,22 @@
         "params": [
           {
             "name": "scope",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "repair",
-            "required": false,
             "schema": {
               "type": "boolean"
             }
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -15507,14 +15798,13 @@
         "params": [
           {
             "name": "token",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "scope",
-            "required": false,
             "schema": {
               "type": "object",
               "additionalProperties": true
@@ -15522,10 +15812,10 @@
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -15627,6 +15917,109 @@
         ]
       },
       {
+        "name": "x.workflow.run.promote",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "write",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "item",
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            },
+            "required": true
+          },
+          {
+            "name": "target",
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            },
+            "required": true
+          },
+          {
+            "name": "_meta",
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            },
+            "description": "Transport metadata; not an application actor field."
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/WorkflowPromoteResult"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/InvalidParams",
+          "#/components/errors/WriteConflict",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired",
+          "#/components/errors/PluginDurableStateUnavailable",
+          "#/components/errors/Unsupported"
+        ]
+      },
+      {
+        "name": "x.workflow.run.demote",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "write",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "source",
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            },
+            "required": true
+          },
+          {
+            "name": "template",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "name": "label",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "name": "_meta",
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            },
+            "description": "Transport metadata; not an application actor field."
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/WorkflowDemoteResult"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/InvalidParams",
+          "#/components/errors/WriteConflict",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired",
+          "#/components/errors/PluginDurableStateUnavailable",
+          "#/components/errors/Unsupported"
+        ]
+      },
+      {
         "name": "gate.approve",
         "effect": "write",
         "idempotency": "required",
@@ -15636,14 +16029,13 @@
         "params": [
           {
             "name": "id",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/Ref"
-            }
+            },
+            "required": true
           },
           {
             "name": "expect",
-            "required": false,
             "schema": {
               "type": "array",
               "items": {
@@ -15653,10 +16045,10 @@
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -15688,21 +16080,20 @@
         "params": [
           {
             "name": "id",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/Ref"
-            }
+            },
+            "required": true
           },
           {
             "name": "state",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "details",
-            "required": false,
             "schema": {
               "type": "object",
               "additionalProperties": true
@@ -15710,7 +16101,6 @@
           },
           {
             "name": "expect",
-            "required": false,
             "schema": {
               "type": "array",
               "items": {
@@ -15720,10 +16110,10 @@
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -15755,17 +16145,16 @@
         "params": [
           {
             "name": "project",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -15787,24 +16176,22 @@
         "params": [
           {
             "name": "project",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "type",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -15826,31 +16213,30 @@
         "params": [
           {
             "name": "project",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "type",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "status",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -15874,21 +16260,19 @@
         "params": [
           {
             "name": "document",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/OntologyDocument"
-            }
+            },
+            "required": true
           },
           {
             "name": "project",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "expect",
-            "required": false,
             "schema": {
               "type": "array",
               "items": {
@@ -15898,10 +16282,10 @@
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -15928,34 +16312,35 @@
         "params": [
           {
             "name": "planDigest",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "expect",
-            "required": true,
             "schema": {
               "type": "array",
               "items": {
                 "$ref": "#/components/schemas/Expect"
               }
-            }
+            },
+            "required": true
           },
           {
             "name": "humanPresence",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/HumanPresence"
-            }
+            },
+            "description": "Required D32 proof. The challenge is bound to this method and its sensitive digest/archive action.",
+            "required": true
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -15987,14 +16372,12 @@
         "params": [
           {
             "name": "project",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "after",
-            "required": false,
             "schema": {
               "type": "integer",
               "minimum": 0
@@ -16002,7 +16385,6 @@
           },
           {
             "name": "limit",
-            "required": false,
             "schema": {
               "type": "integer",
               "minimum": 1,
@@ -16011,10 +16393,10 @@
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -16053,33 +16435,32 @@
         "params": [
           {
             "name": "fromRevision",
-            "required": true,
             "schema": {
               "type": "integer",
               "minimum": 0
-            }
+            },
+            "required": true
           },
           {
             "name": "toRevision",
-            "required": true,
             "schema": {
               "type": "integer",
               "minimum": 0
-            }
+            },
+            "required": true
           },
           {
             "name": "project",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -16102,17 +16483,16 @@
         "params": [
           {
             "name": "project",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -16154,14 +16534,13 @@
         "params": [
           {
             "name": "ref",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/Ref"
-            }
+            },
+            "required": true
           },
           {
             "name": "page",
-            "required": false,
             "schema": {
               "type": "object",
               "properties": {
@@ -16179,10 +16558,10 @@
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -16222,24 +16601,24 @@
         "params": [
           {
             "name": "ref",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/Ref"
-            }
+            },
+            "required": true
           },
           {
             "name": "asOf",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/AsOf"
-            }
+            },
+            "required": true
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -16262,28 +16641,25 @@
         "params": [
           {
             "name": "asOf",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/AsOf"
-            }
+            },
+            "required": true
           },
           {
             "name": "filter",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Filter"
             }
           },
           {
             "name": "cursor",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "limit",
-            "required": false,
             "schema": {
               "type": "integer",
               "minimum": 1,
@@ -16292,10 +16668,10 @@
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -16321,33 +16697,33 @@
         "params": [
           {
             "name": "ref",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/Ref"
-            }
+            },
+            "required": true
           },
           {
             "name": "fromRevision",
-            "required": true,
             "schema": {
               "type": "integer",
               "minimum": 0
-            }
+            },
+            "required": true
           },
           {
             "name": "toRevision",
-            "required": true,
             "schema": {
               "type": "integer",
               "minimum": 0
-            }
+            },
+            "required": true
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -16390,42 +16766,43 @@
         "params": [
           {
             "name": "ref",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/Ref"
-            }
+            },
+            "required": true
           },
           {
             "name": "baseRevision",
-            "required": true,
             "schema": {
               "type": "integer",
               "minimum": 0
-            }
+            },
+            "required": true
           },
           {
             "name": "expect",
-            "required": true,
             "schema": {
               "type": "array",
               "items": {
                 "$ref": "#/components/schemas/Expect"
               }
-            }
+            },
+            "required": true
           },
           {
             "name": "humanPresence",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/HumanPresence"
-            }
+            },
+            "description": "Required D32 proof. Protected history reverts require an interactive authenticated session or an anonymous presence check bound to the revert digest.",
+            "required": true
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -16455,32 +16832,30 @@
         "params": [
           {
             "name": "ref",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/Ref"
-            }
+            },
+            "required": true
           },
           {
             "name": "paths",
-            "required": true,
             "schema": {
               "type": "array",
               "items": {
                 "type": "string"
               },
               "minItems": 1
-            }
+            },
+            "required": true
           },
           {
             "name": "reason",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "expect",
-            "required": false,
             "schema": {
               "type": "array",
               "items": {
@@ -16490,17 +16865,18 @@
           },
           {
             "name": "humanPresence",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/HumanPresence"
-            }
+            },
+            "description": "Required D32 proof. The challenge is bound to this method and its sensitive digest/archive action.",
+            "required": true
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -16530,10 +16906,10 @@
         "params": [
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -16554,7 +16930,6 @@
         "params": [
           {
             "name": "history",
-            "required": false,
             "schema": {
               "type": "string",
               "enum": [
@@ -16565,14 +16940,12 @@
           },
           {
             "name": "cursor",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "pageSize",
-            "required": false,
             "schema": {
               "type": "integer",
               "minimum": 1,
@@ -16581,24 +16954,25 @@
           },
           {
             "name": "humanPresence",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/HumanPresence"
-            }
+            },
+            "description": "Required D32 proof. The challenge is bound to this method and its sensitive digest/archive action.",
+            "required": true
           },
           {
             "name": "includeCiphertext",
-            "required": false,
             "schema": {
               "type": "boolean"
-            }
+            },
+            "description": "Include ciphertext only with the required D32 proof; secret references remain the default."
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -16623,15 +16997,14 @@
         "params": [
           {
             "name": "manifest",
-            "required": true,
             "schema": {
               "type": "object",
               "additionalProperties": true
-            }
+            },
+            "required": true
           },
           {
             "name": "history",
-            "required": false,
             "schema": {
               "type": "string",
               "enum": [
@@ -16644,17 +17017,18 @@
           },
           {
             "name": "humanPresence",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/HumanPresence"
-            }
+            },
+            "description": "Required D32 proof. The challenge is bound to this method and its sensitive digest/archive action.",
+            "required": true
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -16681,46 +17055,47 @@
         "params": [
           {
             "name": "restoreId",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "page",
-            "required": true,
             "schema": {
               "type": "integer",
               "minimum": 0
-            }
+            },
+            "required": true
           },
           {
             "name": "data",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "sha256",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "humanPresence",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/HumanPresence"
-            }
+            },
+            "description": "Required D32 proof. The challenge is bound to this method and its sensitive digest/archive action.",
+            "required": true
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -16749,31 +17124,32 @@
         "params": [
           {
             "name": "restoreId",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "manifestSha256",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "humanPresence",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/HumanPresence"
-            }
+            },
+            "description": "Required D32 proof. The challenge is bound to this method and its sensitive digest/archive action.",
+            "required": true
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -16803,42 +17179,43 @@
         "params": [
           {
             "name": "binding",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "mode",
-            "required": true,
             "schema": {
               "type": "string",
               "enum": [
                 "reject",
                 "bypass"
               ]
-            }
+            },
+            "required": true
           },
           {
             "name": "reason",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "humanPresence",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/HumanPresence"
-            }
+            },
+            "description": "Required D32 proof. The challenge is bound to this method and its sensitive digest/archive action.",
+            "required": true
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -16866,7 +17243,6 @@
         "params": [
           {
             "name": "beforeRevision",
-            "required": false,
             "schema": {
               "type": "integer",
               "minimum": 0,
@@ -16875,17 +17251,16 @@
           },
           {
             "name": "dryRun",
-            "required": false,
             "schema": {
               "type": "boolean"
             }
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -16911,7 +17286,6 @@
         "params": [
           {
             "name": "onBehalfOf",
-            "required": false,
             "schema": {
               "type": "string"
             }
@@ -16921,14 +17295,15 @@
             "required": false,
             "schema": {
               "$ref": "#/components/schemas/DisplayNameInput"
-            }
+            },
+            "description": "Optional caller-asserted, untrusted display-only label. Trim leading and trailing Unicode White_Space; reject Unicode control (Cc) and format (Cf) characters with typed invalid_params. Allow at most 64 Unicode scalar values after trimming, not bytes or grapheme clusters; empty after trimming means absent. The raw input schema intentionally has no maxLength because padding is removed before applying the bound. Normalization and category rejection require the later consumer; schema validation alone does not perform them. Never use displayName for authorization, attribution, audit actor, idempotency, leases or dedup. Render it next to the authenticated principal (user name, API key name, or anonymous), never instead of or as that principal."
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -16951,17 +17326,17 @@
         "params": [
           {
             "name": "sessionId",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -16992,21 +17367,19 @@
         "params": [
           {
             "name": "sessionId",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "focus",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "workingOn",
-            "required": false,
             "schema": {
               "type": "array",
               "items": {
@@ -17016,17 +17389,16 @@
           },
           {
             "name": "onBehalfOf",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -17049,17 +17421,16 @@
         "params": [
           {
             "name": "project",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -17093,24 +17464,23 @@
         "params": [
           {
             "name": "sessionId",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "from",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -17135,21 +17505,19 @@
         "params": [
           {
             "name": "definition",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/ViewDefinition"
-            }
+            },
+            "required": true
           },
           {
             "name": "viewId",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "expect",
-            "required": false,
             "schema": {
               "type": "array",
               "items": {
@@ -17159,10 +17527,10 @@
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -17191,17 +17559,17 @@
         "params": [
           {
             "name": "viewId",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -17223,14 +17591,12 @@
         "params": [
           {
             "name": "cursor",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "limit",
-            "required": false,
             "schema": {
               "type": "integer",
               "minimum": 1,
@@ -17239,10 +17605,10 @@
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -17281,14 +17647,13 @@
         "params": [
           {
             "name": "viewId",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "expect",
-            "required": false,
             "schema": {
               "type": "array",
               "items": {
@@ -17298,10 +17663,10 @@
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -17328,39 +17693,35 @@
         "params": [
           {
             "name": "viewId",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "definition",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/ViewDefinition"
             }
           },
           {
             "name": "cursor",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "asOf",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/AsOf"
             }
           },
           {
             "name": "countOnly",
-            "required": false,
             "schema": {
               "type": "boolean",
               "default": false
-            }
+            },
+            "description": "Optional execution flag, default false; saved definitions are unchanged. True returns the complete authorized ordinary predicate count with items=[] and asOf, without groups, elisions or nextCursor. Any supplied cursor or nonempty groupBy refuses invalid_params. Valid fields, sort and budget remain validated but do not change membership or truncate the count. Current permissions apply to historical asOf content; the ordinary 20,000 cap is exact-or-refused."
           },
           {
             "name": "stale",
@@ -17385,10 +17746,10 @@
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -17418,24 +17779,24 @@
         "params": [
           {
             "name": "viewId",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "itemId",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -17459,24 +17820,23 @@
         "params": [
           {
             "name": "viewId",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "from",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -17502,24 +17862,23 @@
         "params": [
           {
             "name": "id",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/Ref"
-            }
+            },
+            "required": true
           },
           {
             "name": "from",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -17544,17 +17903,16 @@
         "params": [
           {
             "name": "destination",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -17586,14 +17944,13 @@
         "params": [
           {
             "name": "destination",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "limit",
-            "required": false,
             "schema": {
               "type": "integer",
               "minimum": 1,
@@ -17602,10 +17959,10 @@
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -17631,21 +17988,19 @@
         "params": [
           {
             "name": "destination",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "cursor",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "limit",
-            "required": false,
             "schema": {
               "type": "integer",
               "minimum": 1,
@@ -17654,24 +18009,24 @@
           },
           {
             "name": "project",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "humanPresence",
-            "required": true,
             "schema": {
               "$ref": "#/components/schemas/HumanPresence"
-            }
+            },
+            "description": "Required D32 proof. The challenge is bound to this method and its sensitive digest/archive action.",
+            "required": true
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -17700,17 +18055,17 @@
         "params": [
           {
             "name": "id",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -17732,14 +18087,12 @@
         "params": [
           {
             "name": "cursor",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "limit",
-            "required": false,
             "schema": {
               "type": "integer",
               "minimum": 1,
@@ -17748,17 +18101,16 @@
           },
           {
             "name": "query",
-            "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -17783,21 +18135,20 @@
         "params": [
           {
             "name": "key",
-            "required": false,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": false
           },
           {
             "name": "content",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "metadata",
-            "required": false,
             "schema": {
               "type": "object",
               "additionalProperties": true
@@ -17805,7 +18156,6 @@
           },
           {
             "name": "expect",
-            "required": false,
             "schema": {
               "type": "array",
               "items": {
@@ -17815,10 +18165,10 @@
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -17845,14 +18195,13 @@
         "params": [
           {
             "name": "id",
-            "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "required": true
           },
           {
             "name": "expect",
-            "required": false,
             "schema": {
               "type": "array",
               "items": {
@@ -17862,10 +18211,10 @@
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport metadata; not an application actor field."
           }
         ],
         "resultSchema": {
@@ -17892,33 +18241,33 @@
         "params": [
           {
             "name": "includeTracks",
-            "required": false,
             "schema": {
               "type": "boolean"
-            }
+            },
+            "description": "Add the canonical mixed report; pure tracks loops are excluded."
           },
           {
             "name": "includeEphemeral",
-            "required": false,
             "schema": {
               "type": "boolean"
-            }
+            },
+            "description": "True includes live workflow items only when a durable workflow capability is installed; memory returns plugin_durable_state_unavailable. SQLite and PostgreSQL expose their typed workflow relations through the workflow read bridge."
           },
           {
             "name": "limit",
-            "required": false,
             "schema": {
               "type": "integer",
               "minimum": 1,
               "maximum": 1000
-            }
+            },
+            "description": "Maximum returned items, default100; cycleCount remains the complete visible-project count."
           },
           {
             "name": "_meta",
-            "required": false,
             "schema": {
               "$ref": "#/components/schemas/Meta"
-            }
+            },
+            "description": "Transport project scope and deadlines; no application actor field."
           }
         ],
         "resultSchema": {

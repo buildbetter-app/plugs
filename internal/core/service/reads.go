@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,24 +15,47 @@ import (
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
+func coreReadRef(ref model.Ref) error {
+	if err := ref.Validate(); err != nil || !ref.IsID() || ref.ID == "" || !ref.Branch.IsZero() {
+		return failure("invalid_params", "point reads require a nonempty ID on the main branch")
+	}
+	if strings.HasPrefix(ref.ID, "workflow:") {
+		return validateWorkflowRef(ref)
+	}
+	return nil
+}
+
+func cloneMap(value map[string]any) map[string]any {
+	if value == nil {
+		return nil
+	}
+	copy := make(map[string]any, len(value))
+	for key, item := range value {
+		copy[key] = item
+	}
+	return copy
+}
+
 func (s *Service) Get(ctx context.Context, by model.PrincipalRef, req GetRequest) (GetResult, error) {
 	if workflowRef(req.ID) {
 		if err := validateWorkflowRef(req.ID); err != nil {
 			return GetResult{}, err
 		}
-		if req.AsOf != nil {
-			return GetResult{}, failure("invalid_params", "workflow items have no historical asOf view")
+		if s.workflow != nil {
+			item, err := s.workflow.GetWithResolver(ctx, by, req.ID, workflowMeta(by, "bead.get", req.Project, req.Agent), s.workflowBlockerResolver(ctx, by, workflowMeta(by, "bead.get", req.Project, req.Agent)))
+			if err == nil {
+				if req.AsOf != nil {
+					return GetResult{}, failure("invalid_params", "workflow items have no historical asOf view")
+				}
+				return workflowGetResult(item), nil
+			}
+			var typed *model.Error
+			if !errors.As(err, &typed) || typed.Data.Code != "not_found" {
+				return GetResult{}, err
+			}
 		}
-		if s.workflow == nil {
-			return GetResult{}, failure("not_found", "workflow item was not found")
-		}
-		item, err := s.workflow.Get(ctx, by, req.ID, workflowMeta(by, "bead.get", req.Project, req.Agent))
-		if err != nil {
-			return GetResult{}, err
-		}
-		return workflowGetResult(item), nil
 	}
-	if err := namedRef(req.ID); err != nil {
+	if err := coreReadRef(req.ID); err != nil {
 		return GetResult{}, err
 	}
 	r, err := s.reader(ctx, by, req.AsOf)
@@ -55,6 +79,18 @@ func (s *Service) Get(ctx context.Context, by model.PrincipalRef, req GetRequest
 		return GetResult{}, err
 	}
 	result := GetResult{Bead: bead, Attachments: doc.Attachments}
+	if s.workflow != nil && req.AsOf == nil {
+		links, err := s.workflow.Relations(ctx, by, req.ID, workflowMeta(by, "bead.get", req.Project, req.Agent))
+		if err != nil {
+			return GetResult{}, err
+		}
+		result.Bead.Links = append(result.Bead.Links, links...)
+		blocked, err := s.workflow.OrdinaryBlocked(ctx, by, []string{req.ID.ID}, workflowMeta(by, "bead.get", doc.Project, req.Agent))
+		if err != nil {
+			return GetResult{}, err
+		}
+		result.Bead.Blocked = result.Bead.Blocked || blocked[req.ID.ID]
+	}
 	if len(doc.Comments) != 0 {
 		result.Comments = make([]Comment, len(doc.Comments))
 		for i, comment := range doc.Comments {
@@ -163,7 +199,7 @@ type readyGraphSelection struct {
 	graph map[string]storedBead
 }
 
-func (s *Service) readyItems(ctx context.Context, req ReadyRequest, r driver.Reader) ([]Bead, map[string]readyOrderKey, error) {
+func (s *Service) readyItems(ctx context.Context, by model.PrincipalRef, req ReadyRequest, r driver.Reader) ([]Bead, map[string]readyOrderKey, error) {
 	var graph map[string]storedBead
 	if req.readySourceBinding && req.readyGraph != nil {
 		selection := req.readyGraph
@@ -192,14 +228,26 @@ func (s *Service) readyItems(ctx context.Context, req ReadyRequest, r driver.Rea
 			return nil, nil, err
 		}
 	}
+	graphIDs := sortedIDs(graph)
+	workflowBlocked := map[string]bool{}
+	if s.workflow != nil {
+		blocked, err := s.workflow.OrdinaryBlocked(ctx, by, graphIDs, workflowMeta(by, "bead.ready", req.Project, req.Agent))
+		if err != nil {
+			return nil, nil, err
+		}
+		workflowBlocked = blocked
+	}
 	// Membership is always evaluated against the complete current graph. P74
 	// applies only to the order of this exact set, before any page is cut.
 	now := s.now().UTC()
 	eligible := map[string]storedBead{}
-	for _, id := range sortedIDs(graph) {
+	for _, id := range graphIDs {
 		row := graph[id]
 		st := state(row.doc)
 		if !matchesFilter(row, req.Project, req.Filter) || st.Template || !s.ontology.effective(st.Project).ReadyEligible(st.Type, st.Status) {
+			continue
+		}
+		if workflowBlocked[row.doc.ID] || row.doc.Fields["blocked"] == true {
 			continue
 		}
 		if row.doc.Lease != nil {
@@ -268,9 +316,27 @@ func (s *Service) readyPage(ctx context.Context, by model.PrincipalRef, req Read
 		return BeadPage{}, err
 	}
 	defer r.Close()
-	items, keys, err := s.readyItems(ctx, req, r)
+	items, keys, err := s.readyItems(ctx, by, req, r)
 	if err != nil {
 		return BeadPage{}, err
+	}
+	includeEphemeral := true
+	if req.Filter != nil && req.Filter.IncludeEphemeral != nil {
+		includeEphemeral = *req.Filter.IncludeEphemeral
+	}
+	if s.workflow != nil && includeEphemeral {
+		active, err := s.workflow.ActiveIDsFor(ctx, by, workflowMeta(by, "bead.ready", req.Project, req.Agent))
+		if err != nil {
+			return BeadPage{}, err
+		}
+		filtered := items[:0]
+		for _, item := range items {
+			if _, collides := active[item.ID]; collides {
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		items = filtered
 	}
 	if restartOnRevision && req.ClaimNextSeed != "" {
 		items, err = spreadClaimNextItems(items, req.ClaimNextSeed, keys)
@@ -408,7 +474,11 @@ func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req 
 	if req.Filter != nil {
 		types = req.Filter.Types
 	}
-	snapshot, err := s.workflow.ReadySnapshot(ctx, by, req.Project, types, workflowMeta(by, "bead.ready", req.Project, req.Agent))
+	includeEphemeral := true
+	if req.Filter != nil && req.Filter.IncludeEphemeral != nil {
+		includeEphemeral = *req.Filter.IncludeEphemeral
+	}
+	snapshot, err := s.workflow.ReadySnapshotWithResolver(ctx, by, req.Project, types, workflowMeta(by, "bead.ready", req.Project, req.Agent), includeEphemeral, s.workflowBlockerResolver(ctx, by, workflowMeta(by, "bead.ready", req.Project, req.Agent)))
 	if err != nil {
 		return BeadPage{}, err
 	}
@@ -459,12 +529,32 @@ func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req 
 }
 
 func workflowBead(item workflowplugin.ItemView) Bead {
-	fields := map[string]any{"title": item.Title}
-	return Bead{ID: item.ID, Type: item.Type, Project: item.Project, Revision: item.Revision, Status: item.Status, Fields: fields, Plane: item.Plane, Kind: item.Kind, Plugin: item.Plugin, WorkflowRunID: item.RunID}
+	fields := cloneMap(item.Fields)
+	if fields == nil {
+		fields = map[string]any{}
+	}
+	fields["title"] = item.Title
+	bead := Bead{ID: item.ID, Type: item.Type, Project: item.Project, Revision: item.Revision, Status: item.Status,
+		Fields: fields, Metadata: item.Metadata, Parent: refID(item.Parent), Labels: append([]string(nil), item.Labels...), Links: append([]workflowplugin.RelationView(nil), item.Links...),
+		Blocked: item.Blocked, ChildCounter: item.ChildCounter, Plane: item.Plane, Kind: item.Kind, Plugin: item.Plugin, WorkflowRunID: item.RunID}
+	if item.Claim != nil {
+		bead.Assignee = item.Claim.Agent
+	}
+	return bead
+}
+
+func refID(ref *model.Ref) string {
+	if ref == nil {
+		return ""
+	}
+	return ref.ID
 }
 
 func workflowGetResult(item workflowplugin.ItemView) GetResult {
 	result := GetResult{Bead: workflowBead(item), Comments: []Comment{}}
+	if item.Claim != nil {
+		result.Lease = &Lease{Principal: item.Claim.Principal, Agent: item.Claim.Agent, ExpiresAt: item.Claim.ExpiresAt, TTL: workflowplugin.ClaimTTL, Epoch: item.Claim.Generation}
+	}
 	for _, comment := range item.Comments {
 		result.Comments = append(result.Comments, Comment{Body: comment.Body, Principal: comment.Principal, Time: comment.Time})
 	}
@@ -480,14 +570,14 @@ func (s *Service) ClaimNextReadyPage(ctx context.Context, by model.PrincipalRef,
 // ReadyCandidates evaluates the complete ready set on a supplied snapshot.
 // ClaimNext's terminal transaction probe uses this to inspect the same fresh
 // write snapshot after head acquisition without opening a second reader.
-func (s *Service) ReadyCandidates(ctx context.Context, req ReadyRequest, reader driver.Reader) ([]Bead, error) {
+func (s *Service) ReadyCandidates(ctx context.Context, by model.PrincipalRef, req ReadyRequest, reader driver.Reader) ([]Bead, error) {
 	if _, err := pageOptions(req.Project, req.ViewID, req.Cursor, req.Filter, 1000); err != nil {
 		return nil, err
 	}
 	if reader == nil {
 		return nil, failure("internal_error", "ready probe reader is unavailable")
 	}
-	items, _, err := s.readyItems(ctx, req, reader)
+	items, _, err := s.readyItems(ctx, by, req, reader)
 	return items, err
 }
 

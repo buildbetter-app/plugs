@@ -43,8 +43,14 @@ func (s *Store) LoadCheckpoint(ctx context.Context, key string) (driver.Checkpoi
 	return driver.Checkpoint{Generation: n, Payload: payload}, err
 }
 func (s *Store) SaveCheckpoint(ctx context.Context, lease driver.ActiveLease, key string, expected uint64, payload []byte) (driver.Checkpoint, error) {
-	return s.saveCheckpoint(ctx, lease, key, expected, payload, nil)
+	return s.saveCheckpoint(ctx, lease, key, expected, payload, nil, nil)
 }
+
+func (s *Store) SaveCheckpointAtHead(ctx context.Context, lease driver.ActiveLease, key string, expected uint64, payload []byte, head driver.CoreSnapshotExpectation) (driver.Checkpoint, error) {
+	return s.saveCheckpoint(ctx, lease, key, expected, payload, nil, &head)
+}
+
+var _ driver.HeadGuardedCheckpointStore = (*Store)(nil)
 
 func (s *Store) SaveCheckpointIfRecord(ctx context.Context, lease driver.ActiveLease, key string, expected uint64, payload []byte, ref driver.Ref, revision model.Revision, incarnation string) (driver.Checkpoint, error) {
 	id, err := recordKey(ref)
@@ -75,10 +81,10 @@ func (s *Store) SaveCheckpointIfRecord(ctx context.Context, lease driver.ActiveL
 			return driver.ErrConflict
 		}
 		return nil
-	})
+	}, nil)
 }
 
-func (s *Store) saveCheckpoint(ctx context.Context, lease driver.ActiveLease, key string, expected uint64, payload []byte, guard func(*sql.Tx) error) (driver.Checkpoint, error) {
+func (s *Store) saveCheckpoint(ctx context.Context, lease driver.ActiveLease, key string, expected uint64, payload []byte, guard func(*sql.Tx) error, head *driver.CoreSnapshotExpectation) (driver.Checkpoint, error) {
 	zero := driver.Checkpoint{}
 	if err := s.check(ctx); err != nil {
 		return zero, err
@@ -97,6 +103,17 @@ func (s *Store) saveCheckpoint(ctx context.Context, lease driver.ActiveLease, ke
 	defer tx.Rollback()
 	if _, err = s.checkLease(ctx, tx, lease, true); err != nil {
 		return zero, err
+	}
+	if head != nil {
+		// Match ordinary Head -> checkpoint lock ordering. FOR SHARE pins the
+		// full graph through publication, including absent/predicate child reads.
+		meta, err := readMeta(ctx, tx, " FOR SHARE")
+		if err != nil {
+			return zero, err
+		}
+		if err := head.Check(meta); err != nil {
+			return zero, err
+		}
 	}
 	if err = lockCheckpoint(ctx, tx, key); err != nil {
 		return zero, err

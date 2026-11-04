@@ -259,6 +259,7 @@ internal/core/pipeline/audit_test.go
 internal/core/pipeline/blocking_hierarchy.go
 internal/core/pipeline/callbacks.go
 internal/core/pipeline/callbacks_test.go
+internal/core/pipeline/checkpoint_mutation.go
 internal/core/pipeline/claim_recovery.go
 internal/core/pipeline/dependency.go
 internal/core/pipeline/document.go
@@ -355,6 +356,8 @@ internal/core/service/service.go
 internal/core/service/service_test.go
 internal/core/service/types.go
 internal/core/service/waits_for_consumer_test.go
+internal/core/service/workflow_bridge.go
+internal/core/service/workflow_moves.go
 internal/core/service/workflow_permanent_test.go
 internal/core/service/workflow_refs.go
 internal/core/viewops/BUILD.bazel
@@ -597,6 +600,7 @@ internal/integration/postgresacceptance/atomic_test.go
 internal/integration/postgresacceptance/b15_comments_test.go
 internal/integration/postgresacceptance/b15_page_test.go
 internal/integration/postgresacceptance/b16_labels_test.go
+internal/integration/postgresacceptance/b26_lifecycle_test.go
 internal/integration/postgresacceptance/engine_test.go
 internal/integration/postgresacceptance/fixture_test.go
 internal/integration/postgresacceptance/history_test.go
@@ -730,6 +734,7 @@ internal/server/authzrpc/workflow_claimnext.go
 internal/server/authzrpc/workflow_claimnext_auth_test.go
 internal/server/authzrpc/workflow_claimnext_test.go
 internal/server/authzrpc/workflow_cursor_test.go
+internal/server/authzrpc/workflow_lifecycle.go
 internal/server/authzrpc/workflow_reads.go
 internal/server/authzrpc/workflow_reads_test.go
 internal/server/authzrpc/workflow_writes_test.go
@@ -989,6 +994,7 @@ internal/storage/driver/allocator_journal.go
 internal/storage/driver/allocator_snapshot.go
 internal/storage/driver/allocator_snapshot_test.go
 internal/storage/driver/audit_contract_test.go
+internal/storage/driver/checkpoint_mutation.go
 internal/storage/driver/driver.go
 internal/storage/driver/errors.go
 internal/storage/driver/errors_test.go
@@ -1054,6 +1060,7 @@ internal/storage/postgres/b05_expired_renew_test.go
 internal/storage/postgres/b05_persisted_clock_test.go
 internal/storage/postgres/boundaries_test.go
 internal/storage/postgres/checkpoint_guard.go
+internal/storage/postgres/checkpoint_mutation.go
 internal/storage/postgres/clock_test.go
 internal/storage/postgres/commit.go
 internal/storage/postgres/commit_batch_test.go
@@ -1098,6 +1105,7 @@ internal/storage/sqlite/allocator_snapshot.go
 internal/storage/sqlite/b05_persisted_clock_test.go
 internal/storage/sqlite/boundaries_test.go
 internal/storage/sqlite/checkpoint_guard.go
+internal/storage/sqlite/checkpoint_mutation.go
 internal/storage/sqlite/clock.go
 internal/storage/sqlite/clock_test.go
 internal/storage/sqlite/derived_prefix_test.go
@@ -1152,6 +1160,7 @@ pluginapi/types.go
 pluginapi/types_test.go
 plugins/plug/SKILL.md
 plugins/workflow/BUILD.bazel
+plugins/workflow/atomic.go
 plugins/workflow/manifest.json
 plugins/workflow/native.go
 plugins/workflow/workflow.go
@@ -1407,6 +1416,7 @@ spec/s1-b25-b28/BUILD.bazel
 spec/s1-b25-b28/README.md
 spec/s1-b25-b28/acceptance_test.go
 spec/s1-b25-b28/b26-deviation.json
+spec/s1-b25-b28/b26-positive-producer.json
 spec/s1-b25-b28/config_union_test.go
 spec/s1-b25-b28/converter_test.go
 spec/s1-b25-b28/provenance.py

@@ -11,6 +11,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
 type queryReader interface {
@@ -181,6 +182,9 @@ func state(doc pipeline.Document) ontology.BeadState {
 }
 
 func (o *Ontology) noOpenBlockers(doc pipeline.Document, graph map[string]storedBead) (bool, error) {
+	if blocked, _ := doc.Fields["blocked"].(bool); blocked {
+		return false, nil
+	}
 	terminal := func(target storedBead) bool {
 		effective := o.effective(target.doc.Project)
 		return effective.SatisfiesBlocks(state(target.doc).Status)
@@ -312,7 +316,11 @@ func beadValue(row storedBead) (Bead, error) {
 		parent = doc.Parent.ID
 	}
 	createdAt, _ := doc.CreationTime()
-	return Bead{ID: doc.ID, Type: doc.Type, Project: doc.Project, Revision: row.record.Revision, Status: state(doc).Status, Fields: doc.Fields, Metadata: metadata, Labels: append([]string(nil), doc.Labels...), Parent: parent, CreatedAt: createdAt}, nil
+	bead := Bead{ID: doc.ID, Type: doc.Type, Project: doc.Project, Revision: row.record.Revision, Status: state(doc).Status, Fields: doc.Fields, Metadata: metadata, Labels: append([]string(nil), doc.Labels...), Parent: parent, Blocked: doc.Fields["blocked"] == true, CreatedAt: createdAt}
+	for _, link := range doc.Links {
+		bead.Links = append(bead.Links, workflowplugin.RelationView{From: doc.ID, To: link.To, Kind: link.Kind, Metadata: link.Metadata})
+	}
+	return bead, nil
 }
 
 func beadPriority(bead Bead) (int, error) {
