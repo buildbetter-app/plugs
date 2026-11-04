@@ -62,6 +62,17 @@ func (tx *b09B10PublicationTx) PutGraphRecord(ctx context.Context, record driver
 	return nil
 }
 
+// Retain the real driver's typed projection capability through the fault
+// wrapper. Otherwise an ordinary fallback drops the source-bound annotations
+// before the injected commit boundary instead of exercising their publication.
+func (tx *b09B10PublicationTx) PutSelectionDerived(ctx context.Context, table driver.DerivedTable, del, add []driver.DerivedRow) error {
+	writer, ok := tx.WriteTx.(driver.SelectionIndexWriter)
+	if !ok {
+		return driver.ErrUnsupported
+	}
+	return writer.PutSelectionDerived(ctx, table, del, add)
+}
+
 func (tx *b09B10PublicationTx) BumpSentinels(ctx context.Context, keys []driver.Sentinel) error {
 	if err := tx.WriteTx.BumpSentinels(ctx, keys); err != nil {
 		return err
@@ -219,7 +230,7 @@ func TestB09B10CompactionPublicationVisibilityRefusalAndReplay(t *testing.T) {
 			}
 			b09B10Equal(t, "selected/graph publication and unselected predicate conservation", wantPredicates, after.Predicates)
 			b09B10Equal(t, "live allocator inventory after compaction", before.Allocator.Inventory, after.Allocator.Inventory)
-			b09B10Equal(t, "derived rows after compaction", before.Derived, after.Derived)
+			b09B10Equal(t, "derived rows after compaction", b09B10CompactedDerived(t, before, after, children[0]["id"].(string)), after.Derived)
 			for _, record := range before.Records {
 				wantVersions := len(before.Versions[record.Ref.ID])
 				if record.Ref.ID == children[0]["id"] {
