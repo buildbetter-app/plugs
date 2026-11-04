@@ -657,6 +657,7 @@ internal/server/authzrpc/README.md
 internal/server/authzrpc/atomic_close_test.go
 internal/server/authzrpc/authzrpc.go
 internal/server/authzrpc/authzrpc_test.go
+internal/server/authzrpc/b04_error_bounds_test.go
 internal/server/authzrpc/b15_comments_page_test.go
 internal/server/authzrpc/checker.go
 internal/server/authzrpc/claim.go
