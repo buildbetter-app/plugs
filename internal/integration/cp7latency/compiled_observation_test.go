@@ -43,7 +43,7 @@ func (r *compiledObservationReader) Select(ctx context.Context, plan driver.Sele
 func TestCompiledSelectionObservationBoundary(t *testing.T) {
 	const childEnv = "PLUG_CP7_COMPILED_OBSERVATION_BOUNDARY"
 	if name := os.Getenv(childEnv); name != "" {
-		f := newFixture(t, "sqlite", 11)
+		f := newQualificationFixture(t, "sqlite", 11)
 		var fault *compiledObservationReader
 		f.views = qualificationViews(t, f, nil, func(cfg *viewops.Config) {
 			bind := cfg.Selection.Bind

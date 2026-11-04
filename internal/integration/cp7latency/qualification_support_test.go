@@ -9,6 +9,21 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
+func newQualificationFixture(t *testing.T, engine string, n int) *fixture {
+	t.Helper()
+	f := newFixture(t, engine, n)
+	// Composition intentionally never writes host facts. This separately named
+	// qualification setup publishes the exact existing permissions through
+	// their real producer before any measured call; original fixtures stay
+	// unchanged. An absent durable authority source cannot be compiled.
+	if err := f.facts.Replace(f.base); err != nil {
+		t.Fatal(err)
+	}
+	f.compose(t)
+	f.verifySourceCoverage(t, "qualification_authority_published")
+	return f
+}
+
 // This is the installed host's complete fixed-chain adapter. The original
 // opaque-callback fixture and its historical measurements stay unchanged.
 func qualificationViews(t *testing.T, f *fixture, beforeFence func(), configure ...func(*viewops.Config)) *viewops.Service {

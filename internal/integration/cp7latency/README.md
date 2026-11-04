@@ -121,6 +121,12 @@ also exercises real Select execution followed by injected errors at the
 unchanged request deadline, retaining strict classification and no partial
 outputs. These small semantic fixtures supply no 100k latency evidence.
 
+The separately named qualification setup publishes the unchanged host facts
+through `MutableFacts.Replace` before composition and timing. Ordinary fixture
+setup stays read-only. The heartbeat control explicitly restores a Ready-eligible
+status while preserving its real claim lease and TTL, so only the actual public
+heartbeat checkpoint can exclude it after the durable lease expires.
+
 The manual `cp7_summary_latency_sqlite_test` and
 `cp7_summary_latency_postgres_test` execute the separately declared
 `summary-workload.json`: six additional explicit `fields=[]` compiled type

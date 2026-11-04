@@ -111,7 +111,7 @@ func TestRealProductCP7SeparateTimedTypeSummary100K(t *testing.T) {
 	if engine != "sqlite" && engine != "postgres" {
 		t.Fatalf("undeclared engine %q", engine)
 	}
-	f := newFixture(t, engine, corpusSize)
+	f := newQualificationFixture(t, engine, corpusSize)
 	for _, divisor := range []int{1, 100, 1000} {
 		t.Run(fmt.Sprintf("divisor%d", divisor), func(t *testing.T) {
 			f.compose(t)

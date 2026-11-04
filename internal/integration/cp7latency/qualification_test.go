@@ -27,7 +27,7 @@ func (fn qualificationReadiness) Pending(ctx context.Context, r driver.Reader, r
 func TestCompiledPendingProducerPinsContentAndFencesMixedPublication(t *testing.T) {
 	for _, engine := range []string{"sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
-			f := newFixture(t, engine, 33)
+			f := newQualificationFixture(t, engine, 33)
 			before, err := f.store.Meta(context.Background())
 			if err != nil {
 				t.Fatal(err)
@@ -108,7 +108,7 @@ func TestRefusedViewCountIsPartialOutputIncludingZero(t *testing.T) {
 func TestCompiledGroupedEveryPageMatchesIndependentCorpus(t *testing.T) {
 	for _, engine := range []string{"sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
-			f := newFixture(t, engine, 1000)
+			f := newQualificationFixture(t, engine, 1000)
 			views := qualificationViews(t, f, nil)
 			for _, divisor := range []int{1, 100, 1000} {
 				t.Run(fmt.Sprintf("divisor%d", divisor), func(t *testing.T) {
@@ -186,7 +186,7 @@ func TestCompiledNoPayloadResultsFenceRevocationAfterSelection(t *testing.T) {
 	for _, engine := range []string{"sqlite", "postgres"} {
 		for _, mode := range []string{"summary", "count", "empty_count"} {
 			t.Run(engine+"/"+mode, func(t *testing.T) {
-				f := newFixture(t, engine, 33)
+				f := newQualificationFixture(t, engine, 33)
 				req := summaryRequest()
 				if mode != "summary" {
 					req.CountOnly, req.Definition.GroupBy = true, nil

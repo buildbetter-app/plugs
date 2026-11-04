@@ -195,6 +195,25 @@ func TestPublicHeartbeatKeepsGraphReceiptAndQueueEligibilitySeparate(t *testing.
 			if err != nil || original.Lease == nil {
 				t.Fatalf("durable claim lease: %v", err)
 			}
+			// A default claim also changes status out of Ready eligibility.
+			// Isolate the lease predicate with a declared typed fixture mutation:
+			// restore todo while retaining the exact real claim lease and TTL.
+			original.Fields["status"] = "todo"
+			eligible, err := json.Marshal(original)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.patchSource(t, "heartbeat_ready_lease_control", ref, eligible, []string{"/fields/status"})
+			before, err = f.store.Meta(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r = f.reader(t, nil)
+			prior, err = r.Get(ctx, []model.Ref{ref})
+			r.Close()
+			if err != nil || len(prior) != 1 {
+				t.Fatalf("ready-eligible lease source: %v", err)
+			}
 			beatMeta := model.WriteMeta{Project: projectName, IdempotencyKey: requestKey("heartbeat-control", 1, "beat", 0)}
 			beat, err := f.app.Service.HeartbeatWithOutcome(ctx, p, service.HeartbeatRequest{ID: ref}, beatMeta)
 			if err != nil || beat.Replayed || beat.LeaseExpiresAt.IsZero() {
