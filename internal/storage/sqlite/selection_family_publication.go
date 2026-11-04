@@ -55,6 +55,16 @@ func selectionFamilyOldRowPresentSQL(count int) string {
 		strings.TrimSuffix(strings.Repeat("?,", count), ",") + `) LIMIT 1`
 }
 
+// Sort-key coverage has two independently checked current-row identities:
+// record_key while establishing a source image and derived_key while checking
+// replacements/removals. A miss across a bounded batch is enough to skip the
+// old scalar lookup; any hit keeps that lookup for every row in the batch.
+func selectionBeadOldRowPresentSQL(count int, column string) string {
+	return `SELECT 1 FROM selection_bead_history INDEXED BY selection_bead_current_` +
+		strings.TrimSuffix(column, "_key") + ` WHERE incarnation=? AND branch=? AND end_revision IS NULL AND ` + column + ` IN (` +
+		strings.TrimSuffix(strings.Repeat("?,", count), ",") + `) LIMIT 1`
+}
+
 // Complete typed rows must accompany every changed live bead. Existing fact
 // identities may be replaced, but an untyped/deleted row for a still-live
 // source or a changed source with no complete replacement invalidates only

@@ -34,14 +34,64 @@ func (t *transaction) reboundSelectionSources(revision model.Revision) map[strin
 // virgin first typed publication establishes one. Every later bead mutation
 // must carry a typed sort-key delta in the same transaction. An untyped write
 // invalidates coverage rather than certifying a partial index.
-func (t *transaction) selectionCompleteForCommit(ctx context.Context, c queryer, incarnation string, derived map[string]driver.LockState) (bool, error) {
+func (t *transaction) selectionCompleteForCommit(ctx context.Context, c queryer, incarnation string, derived map[string]driver.LockState) (complete bool, err error) {
 	if t.restore != nil && incarnation != t.restore.Incarnation {
 		return false, nil
 	}
 	bySource := make(map[string]driver.LockState)
-	for _, state := range derived {
+	// A first typed publication has no current sort rows. Probe those row
+	// identities in bounded batches, then retain the scalar lookup whenever a
+	// batch contains a hit. This mirrors the fact-family miss proof below while
+	// preserving the old per-row lookup and error order for existing images.
+	keys := make([]string, 0, len(derived))
+	for id, state := range derived {
 		if state.Key.Derived == nil || state.Key.Derived.Table != driver.DerivedSortKey || !state.Present || state.Derived == nil || state.Derived.Index == nil || state.Derived.Index.Bead == nil {
 			continue
+		}
+		keys = append(keys, id)
+	}
+	conn, _ := c.(*sql.Conn)
+	var recordStatements [2]*sql.Stmt
+	defer func() {
+		for _, statement := range recordStatements {
+			if statement != nil {
+				if closeErr := statement.Close(); closeErr != nil && err == nil {
+					complete, err = false, closeErr
+				}
+			}
+		}
+	}()
+	absent := false
+	for position, id := range keys {
+		state := derived[id]
+		if conn != nil && position%selectionFamilyOldRowBatch == 0 {
+			absent = false
+			end := min(position+selectionFamilyOldRowBatch, len(keys))
+			count := end - position
+			if count > 1 {
+				arm := 0
+				if count != selectionFamilyOldRowBatch {
+					arm = 1
+				}
+				if recordStatements[arm] == nil {
+					recordStatements[arm], err = conn.PrepareContext(ctx, selectionBeadOldRowPresentSQL(count, "record_key"))
+					if err != nil {
+						return false, err
+					}
+				}
+				args := make([]any, 0, 2+count)
+				args = append(args, incarnation, revKey(0))
+				for _, key := range keys[position:end] {
+					state := derived[key]
+					args = append(args, keyID(state.Derived.Index.Source.Key))
+				}
+				var present int
+				lookupErr := recordStatements[arm].QueryRowContext(ctx, args...).Scan(&present)
+				if lookupErr != nil && !errors.Is(lookupErr, sql.ErrNoRows) {
+					return false, lookupErr
+				}
+				absent = errors.Is(lookupErr, sql.ErrNoRows)
+			}
 		}
 		key := keyID(state.Derived.Index.Source.Key)
 		if _, duplicate := bySource[key]; duplicate {
@@ -51,12 +101,19 @@ func (t *transaction) selectionCompleteForCommit(ctx context.Context, c queryer,
 		// projection for the same bead. That old row is removed from the
 		// same-token overlay only when its own logical key is also staged.
 		var previous string
-		err := c.QueryRowContext(ctx, `SELECT derived_key FROM selection_bead_history
-		 WHERE incarnation=? AND branch=? AND record_key=? AND end_revision IS NULL`, incarnation, revKey(0), key).Scan(&previous)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return false, err
+		var lookupErr error
+		if absent {
+			if lookupErr = ctx.Err(); lookupErr != nil {
+				return false, lookupErr
+			}
+		} else {
+			lookupErr = c.QueryRowContext(ctx, `SELECT derived_key FROM selection_bead_history
+				 WHERE incarnation=? AND branch=? AND record_key=? AND end_revision IS NULL`, incarnation, revKey(0), key).Scan(&previous)
+			if lookupErr != nil && !errors.Is(lookupErr, sql.ErrNoRows) {
+				return false, lookupErr
+			}
 		}
-		if err == nil && previous != keyID(state.Key) {
+		if !absent && lookupErr == nil && previous != keyID(state.Key) {
 			if _, replaced := derived[previous]; !replaced {
 				return false, nil
 			}
@@ -100,17 +157,76 @@ func (t *transaction) selectionCompleteForCommit(ctx context.Context, c queryer,
 			return false, nil
 		}
 	}
+	derivedKeys := make([]string, 0, len(derived))
 	for id, state := range derived {
 		if state.Key.Derived == nil || state.Key.Derived.Table != driver.DerivedSortKey {
 			continue
 		}
-		var previous string
-		err := c.QueryRowContext(ctx, `SELECT record_key FROM selection_bead_history
-		 WHERE incarnation=? AND branch=? AND derived_key=? AND end_revision IS NULL`, incarnation, revKey(0), id).Scan(&previous)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return false, err
+		derivedKeys = append(derivedKeys, id)
+	}
+	var derivedStatements [2]*sql.Stmt
+	defer func() {
+		for _, statement := range derivedStatements {
+			if statement != nil {
+				if closeErr := statement.Close(); closeErr != nil && err == nil {
+					complete, err = false, closeErr
+				}
+			}
 		}
-		if err == nil {
+	}()
+	absent = false
+	for position, id := range derivedKeys {
+		state := derived[id]
+		if conn != nil && position%selectionFamilyOldRowBatch == 0 {
+			absent = false
+			end := min(position+selectionFamilyOldRowBatch, len(derivedKeys))
+			count := end - position
+			if count > 1 {
+				arm := 0
+				if count != selectionFamilyOldRowBatch {
+					arm = 1
+				}
+				if derivedStatements[arm] == nil {
+					derivedStatements[arm], err = conn.PrepareContext(ctx, selectionBeadOldRowPresentSQL(count, "derived_key"))
+					if err != nil {
+						return false, err
+					}
+				}
+				args := make([]any, 0, 2+count)
+				args = append(args, incarnation, revKey(0))
+				for _, key := range derivedKeys[position:end] {
+					args = append(args, key)
+				}
+				var present int
+				lookupErr := derivedStatements[arm].QueryRowContext(ctx, args...).Scan(&present)
+				if lookupErr != nil && !errors.Is(lookupErr, sql.ErrNoRows) {
+					return false, lookupErr
+				}
+				absent = errors.Is(lookupErr, sql.ErrNoRows)
+			}
+		}
+		var previous string
+		var lookupErr error
+		if absent {
+			if lookupErr = ctx.Err(); lookupErr != nil {
+				return false, lookupErr
+			}
+		} else {
+			lookupErr = c.QueryRowContext(ctx, `SELECT record_key FROM selection_bead_history
+				 WHERE incarnation=? AND branch=? AND derived_key=? AND end_revision IS NULL`, incarnation, revKey(0), id).Scan(&previous)
+			if lookupErr != nil && !errors.Is(lookupErr, sql.ErrNoRows) {
+				return false, lookupErr
+			}
+		}
+		if absent {
+			if state.Present && (state.Derived == nil || state.Derived.Index == nil) {
+				// The miss proof only replaces the old-row lookup. It does not
+				// certify an untyped present row.
+				return false, nil
+			}
+			continue
+		}
+		if lookupErr == nil {
 			if state.Present && state.Derived != nil && state.Derived.Index != nil && state.Derived.Index.Bead != nil && keyID(state.Derived.Index.Source.Key) == previous {
 				continue
 			}
