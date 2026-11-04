@@ -45,9 +45,9 @@ jobs:
       # failed; these explicit source pins do not change the importer profile.
       BEADS_COMPANION_COMMIT: 682ca798dab448803ea9b74f7da3715c21d8c3ae
       BEADS_COMPANION_TREE: 9d026de307ee915953b247cf42758d0c53303574
-      BEADS_NATIVE_COMMIT: 305fec3afac83224f46c54f982959fd99db136fa
-      BEADS_NATIVE_TREE: 48e3545b7c5c6a5cdc0119e34dfa379354456a6e
-      BEADS_NATIVE_REF: codex/b1c-native-source-35b-305fec3afac8-20261102
+      BEADS_NATIVE_COMMIT: c8eb3ba7d4177e111a6f5c8aebe06b5d0b1d5724
+      BEADS_NATIVE_TREE: 930405e863284a3955cbd35e73a6097b606b91a5
+      BEADS_NATIVE_REF: swarm/native-producer-census-dedup-20261104
       PLUG_COMPANION_COMMIT: 83fe6cd8efdbbc6a06194d3fc8b675a4b713baa1
       PLUG_COMPANION_TREE: 79bff38788a8470d1bee30043884ca37c095307b
       PLUG_COMPANION_REF: codex/b1c-roundtrip-source-83fe6cd8-20261102
@@ -100,7 +100,7 @@ jobs:
               BEADS_COMMIT="$BEADS_NATIVE_COMMIT"
               export BEADS_COMMIT
               printf '%s\n' "BEADS_COMMIT=$BEADS_COMMIT" >> "$GITHUB_ENV"
-              test "$BEADS_COMMIT" = 305fec3afac83224f46c54f982959fd99db136fa
+              test "$BEADS_COMMIT" = c8eb3ba7d4177e111a6f5c8aebe06b5d0b1d5724
               ;;
             *)
               echo "unsupported bundle profile" >&2
@@ -174,7 +174,7 @@ jobs:
             entries="$(wc -l < "$RUNNER_TEMP/beads-source-manifest")"
             digest="$(sha256sum "$RUNNER_TEMP/beads-source-manifest" | awk '{print $1}')"
             test "$entries" -eq 5141
-            test "$digest" = 6c2e549b54b472790d57a27370821d69159d4d6dc817e5bf38dbc56c856c8420
+            test "$digest" = e01a584042b4a2c32ea3cbcbdd55069f7c23bc2b853f8734857c5082e828f15d
             printf '%s\n' \
               "BEADS_TREE=$beads_tree" \
               "BEADS_SOURCE_REF=$beads_source_ref" \

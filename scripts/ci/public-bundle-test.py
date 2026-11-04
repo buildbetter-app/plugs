@@ -119,10 +119,10 @@ def main() -> None:
         assert (companion_output / "source/plug.manifest").read_bytes() == (root / "plug.manifest").read_bytes()
 
         assert helper.NATIVE_BEADS_SOURCE_REF == (
-            "refs/remotes/origin/codex/b1c-native-source-35b-305fec3afac8-20261102"
+            "refs/remotes/origin/swarm/native-producer-census-dedup-20261104"
         )
         assert helper.NATIVE_BEADS_MANIFEST_ENTRIES == 5141
-        assert helper.NATIVE_BEADS_MANIFEST_SHA256 == "6c2e549b54b472790d57a27370821d69159d4d6dc817e5bf38dbc56c856c8420"
+        assert helper.NATIVE_BEADS_MANIFEST_SHA256 == "e01a584042b4a2c32ea3cbcbdd55069f7c23bc2b853f8734857c5082e828f15d"
         native_fixture = "".join(
             f"100644 blob {index:040x}\tpath/{index}\n"
             for index in range(helper.NATIVE_BEADS_MANIFEST_ENTRIES)
@@ -258,7 +258,7 @@ def main() -> None:
         expect_refusal(lambda: helper.verify(native_pinned), "native source manifest mutation was accepted")
         native_source_manifest.write_bytes(native_manifest_path.read_bytes())
         helper.verify(native_pinned)
-        helper.NATIVE_BEADS_MANIFEST_SHA256 = "6c2e549b54b472790d57a27370821d69159d4d6dc817e5bf38dbc56c856c8420"
+        helper.NATIVE_BEADS_MANIFEST_SHA256 = "e01a584042b4a2c32ea3cbcbdd55069f7c23bc2b853f8734857c5082e828f15d"
 
         expected = {
             field: copy.deepcopy(companion_manifest[field])
