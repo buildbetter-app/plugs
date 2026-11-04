@@ -342,6 +342,26 @@ func TestPhysicalProtocolConfigurationRejectsBroadening(t *testing.T) {
 	}
 }
 
+func TestPhysicalProtocolAllowancePreservesUnrelatedEscapedLiterals(t *testing.T) {
+	cfg, _ := checkedInPhysicalProtocolConfig(t)
+	baseline := cfg
+	baseline.ExternalProtocolString.PhysicalValues = nil
+	for name, literal := range map[string]string{
+		"identifier": escapedProtocolString(cfg.ExternalProtocolString.Value),
+		"product":    escapedProtocolString(cfg.Terms[2].Matches[0]),
+		"unicode":    `"\U0001f600"`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			files := map[string][]byte{"other/existing.go": []byte("package existing\nvar retained = " + literal)}
+			before, beforeErr := CheckFiles(files, baseline)
+			after, afterErr := CheckFiles(files, cfg)
+			if beforeErr != nil || afterErr != nil || !reflect.DeepEqual(before, after) {
+				t.Fatalf("physical protocol allowance changed unrelated scan: before=%#v/%v after=%#v/%v", before, beforeErr, after, afterErr)
+			}
+		})
+	}
+}
+
 func TestCheckFilesBlocksTermsAndImports(t *testing.T) {
 	cfg := testConfig()
 	files := map[string][]byte{
