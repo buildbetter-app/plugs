@@ -1255,7 +1255,7 @@ func recordNativeB27Probes(t *testing.T, output, storeRoot, pinned string, serve
 	}
 	runCommand(t, root, &receipts, "b27-probe-git-init", "b27-probe", workspace, env, []string{"git", "-c", "init.defaultBranch=main", "init", "--quiet"}, nil)
 	command("b27-probe-init", nativeInitArgs(workspace, server.Port), nil)
-	missing := []byte(`{"_type":"issue","id":"b27-missing","title":"Missing target import","description":"native skipped dependency","issue_type":"task","priority":1,"status":"open","dependencies":[{"depends_on_id":"b27-no-such-target","type":"blocks"}]}\n`)
+	missing := []byte(`{"_type":"issue","id":"b27-missing","title":"Missing target import","description":"native skipped dependency","issue_type":"task","priority":1,"status":"open","dependencies":[{"depends_on_id":"b27-no-such-target","type":"blocks"}]}` + "\n")
 	missingPath := filepath.Join(root, "missing-target.jsonl")
 	writeRecordingBytes(t, missingPath, missing)
 	imported := command("b27-missing-target-import", []string{"--json", "import", missingPath}, nil)
