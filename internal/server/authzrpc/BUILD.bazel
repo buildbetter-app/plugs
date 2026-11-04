@@ -29,6 +29,7 @@ go_test(
     embed = [":authzrpc"],
     tags = ["exclusive"],
     deps = [
+        "//internal/api/wire",
         "//internal/core/authz",
         "//internal/core/model",
         "//internal/core/pipeline",
