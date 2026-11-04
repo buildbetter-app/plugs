@@ -49,13 +49,18 @@ level. The supported settings are:
 | `listen`/`address` or `server.listen`/`server.address` | A literal host and port. The default is `127.0.0.1:0`, which selects an ephemeral loopback port. |
 | `project` or `server.project` | The default project for requests; the default is `default`. |
 | `ui` or `server.ui` | `true` or `false`; the default is `true`. Set `false` to omit the embedded UI route. |
+| `ontology.source` | An existing protected branch-zero ontology ID such as `ontology/workspace`. Startup validates the installed source before admitting RPCs. |
 | `auth.mode` | `anonymous` by default. The standalone CLI has no provider configuration for `authenticated` mode, so it refuses that mode rather than starting without authentication. |
 
-The standalone YAML parser intentionally has no ontology or plugin-source key.
-`Config.Ontology` remains nil for `LoadConfigFile`/`ParseConfig`; installing a
-trusted protected ontology source is a programmatic composition responsibility.
-The server refuses a configured source that is missing, malformed, the wrong
-kind, or does not compile before it admits RPCs.
+An administrator can select an existing installed ontology with
+`ontology.source: ontology/<id>` (or a nested `ontology` / `source` map).
+This is a protected branch-zero identity, not a document, executable binding
+or permission grant. Startup loads its current durable revision and refuses
+missing, malformed, wrong-kind or uncompilable sources before admitting RPCs.
+Omitting the key retains the default ontology. The file cannot install a
+source; its initial publication belongs to an explicit authorized write/init
+lifecycle. Hosts with plugin validators must provide their actual validating-pre
+inventory through `composition.Config`; YAML does not register plugins.
 
 For example, a persistent SQLite server can use:
 

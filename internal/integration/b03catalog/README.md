@@ -13,10 +13,14 @@ qualification.
 
 Scope = B03's installed catalog boundary, configured startup/source selection,
 catalog RPC wiring and the routed key-continuity guard in
-`internal/core/ontologyops/plan.go`. Lifecycle timestamp representation remains
-a separate owner boundary.
+`internal/core/ontologyops/plan.go`, plus the direct lifecycle timestamp
+implementation adopted from `2db4afa54b6166385954871877ed7c7371a957b7`.
+Creation is immutable, claim stamps the started entry, terminal slots stamp
+the closed entry, repeated close preserves that first close, and reopen clears
+the terminal entry while retaining the started entry. These are core-owned
+application-clock instants, separate from driver-generated commit times.
 
-Evidence status: **SOURCE_COMPLETE; qualification remains receipt-bound**.
+Evidence status: **AUTHORED; qualification remains exact-source and receipt-bound**.
 Focused, whole, hosted, native and full-card claims remain separate; no native
 producer or full-card qualification is claimed by this file.
 
@@ -41,19 +45,23 @@ Active definition replacement and free-text display-name edits remain valid.
 | Test | Observable assertions |
 | --- | --- |
 | `TestInstalledCatalogPlanApplyLifecycleAndDurableReopen` | A public catalog containing more than 50 custom statuses is accepted; complete existing rows migrate with source in one attributed revision; historical serialized bytes remain exact; ordinary create/ready/claim/close/reopen/defer/fail/cancel use installed slots; source history and diff reflect accepted definitions; actual SQLite/PostgreSQL close/open preserves rows, versions, receipts and ready membership. |
+| `TestInstalledCatalogLifecycleTimestampsPreserveStatusSpecificEntries` | Public custom-slot create/claim/close/repeated-close/reopen on all three engines preserves the immutable creation and last started entries, retains the first close instant for repeated settlement, and clears the closed entry on reopen. |
 | `TestSameKeyProjectOverlaysReplaceWholeDefinitionsAndOlderReplay` | The same key is completed/failure in base, unstarted in west and backlog in east. Omitted outcomes are cleared by whole replacement. Public creates, readiness and claim refusal follow each project's category. Older accepted apply replay refreshes from current durable source. Overlay behavior persists after SQL close/open. |
 | `TestInstalledBaseKeysArchiveWithoutDeletionRenameOrResurrection` | Public plans refuse deletion of an active unused key; accepted archival retains status category/outcome; old plans cannot apply over the new source; all four definition kinds refuse deletion or resurrection; key rename refuses; archived display-name edits remain accepted; permanence survives SQL reopen. |
 | `TestProjectArchivedKeysCannotBeReactivatedByOverlayRemovalOrReplacement` | Minimal tombstones preserve base definitions whole, without changing other projects. Removing or replacing tombstones cannot reactivate any definition kind. Unknown-base archival refuses. Removing an unused project-local key also refuses. Tombstones survive SQL reopen. |
 | `TestMalformedCatalogAndMixedBatchRefuseAtomically` | Unknown categories/members, duplicate definitions, null configuration and unsupported directives refuse. A valid update/create/comment batch prefix cannot survive an invalid status suffix. A malformed protected source refuses reads, plan, retained apply and connected reload without replacing durable bytes or the prior runtime. |
 | `TestCatalogApplySQLPublicationRollbackAndRetry` | Database-side publication faults exercise actual SQLite/PostgreSQL transactions. Failed public apply preserves source, rows, versions, log/head, derived rows, observations, allocators and every receipt. The same key succeeds after fault removal and remains durable after close/open. |
-| `TestConfiguredRuntimeLoadsCatalogAndAuditsOnEveryEngine` | Real `composition.Open` and public byte RPC on memory, SQLite and PostgreSQL load the installed source, bind catalog methods, refresh the shared ontology after `ontology.apply`, apply the new workflow to an ordinary create, and pin the refreshed revision and digest in the durable audit/event stream. |
+| `TestConfiguredRuntimeLoadsCatalogAndAuditsOnEveryEngine` | Real `LoadConfigFile` -> `composition.Open` and public byte RPC on memory, SQLite and PostgreSQL load the installed source (SQL uses production `openStore`; preseeded memory uses StoreFactory), bind catalog methods, refresh the shared ontology after `ontology.apply`, apply the new workflow to an ordinary create, and pin the refreshed revision and digest in the durable audit/event stream. |
 
 The bootstrap inserts only the built-in ontology. Custom catalogs, project
 overlays, archival and ordinary bead writes all use real byte RPC with canonical
 result validation, the canonical protected Writer and the shared
 `OntologyRefresher`. Configured startup loads the protected source from the
 store head before admitting Service, Writer or RPCs; missing, wrong-kind,
-malformed and unprotected sources close the store and fail closed. A
+decoder-malformed, validly decoded but uncompilable, and unprotected sources
+close the store and fail closed. `TestServerCommandConfiguredOntologyUsesInstalledCatalogOverHTTP`
+separately starts the standalone CLI command from `.plug/config.yaml` on real
+SQLite and verifies the installed custom catalog and ordinary create over HTTP. A
 source-corruption fixture is explicitly fault injection, not producer
 acceptance. The SQL publication fault does not replace the Writer.
 
@@ -64,28 +72,21 @@ views. Missing inventory or engine capabilities fail the test. PostgreSQL is an
 owned disposable pinned image; unavailable Docker/PostgreSQL fails the target.
 The target's `exclusive` tag isolates this engine-owning proof only.
 
-## Exact-head gate proposal
+## Exact-source verification
 
-S1 owns routing and execution. On the frozen candidate, record full SHA/tree,
-parent/base, command, receipt identity, exit code and completed evidence status.
-Proposed ordinary remote-Bazel focus:
+After committing and sealing build/vet evidence, start one focused gate and one
+literal `//...` gate on the same commit through `/tmp/plug-swarm/bin/remote-bazel`.
+The wrapper receives the worktree, commit and label before `-- test`. Preserve
+`--cache_test_results=no --flaky_test_attempts=1 --test_env=GO_TEST_WRAP_TESTV=1
+--test_output=all --test_timeout=900,900,900,9000 --jobs=2
+--local_resources=memory=8192` in both commands. Focus covers ontologyops,
+ontologyrpc, pipeline, claimsql, composition, CLI and this target. Source review
+runs independently and is not a dispatch hold.
 
-```sh
-/tmp/plug-swarm/bin/remote-bazel test \
-  //internal/core/ontologyops:ontologyops_test \
-  //internal/server/ontologyrpc:ontologyrpc_test \
-  //internal/integration/b03catalog:b03catalog_test \
-  --test_output=errors
-```
-
-Only after the exact focus succeeds, and only after S1 routes the whole run:
-
-```sh
-/tmp/plug-swarm/bin/remote-bazel test //... --test_output=errors
-```
-
-Preserve every original failure and historical candidate. A focused runtime
-PASS remains bounded to the explicit connected host composition. The configured
-path is now implemented and tested, while full B03/S1 qualification still
-requires its exact routed evidence. No native Beads producer, native admission,
-timestamp proof, merge or release is claimed here.
+Preserve every original failure and historical candidate. Preserve the complete
+nonpoll terminal output before parsing it, excluding `poll.log` by name before
+metadata, reads, hashes or copies. Raw named cases, XML, output inventory and
+source/dispatch/artifact identities must be recorded separately from target
+summaries. A focused PASS does not qualify whole-tree, hosted, native or full
+B03/S1 behavior. Native/public producer evidence and full-card qualification
+remain unclaimed until their required real receipts exist.

@@ -246,17 +246,27 @@ func TestConfiguredOntologyRuntimeLoadsCatalogAndAuditsLifecycle(t *testing.T) {
 
 func TestConfiguredOntologyStartupRefusesInvalidSourceAndClosesStore(t *testing.T) {
 	cases := []struct {
-		name string
-		kind string
-		body []byte
+		name      string
+		kind      string
+		body      []byte
+		wantError string
 	}{
-		{name: "missing"},
-		{name: "wrong-kind", kind: "config", body: configuredSourceBody(t)},
-		{name: "malformed", kind: "ontology", body: []byte(`{"base":{},"unsupported":true}`)},
-		{name: "valid-json-uncompilable", kind: "ontology", body: uncompilableSourceBody(t)},
+		{name: "missing", wantError: "source is absent"},
+		{name: "wrong-kind", kind: "config", body: configuredSourceBody(t), wantError: "wrong kind"},
+		{name: "malformed", kind: "ontology", body: []byte(`{"base":{},"unsupported":true}`), wantError: "decode installed ontology source"},
+		{name: "valid-json-uncompilable", kind: "ontology", body: uncompilableSourceBody(t), wantError: "compile installed ontology source"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.name == "valid-json-uncompilable" {
+				source, err := service.DecodeOntologySource(tc.body)
+				if err != nil {
+					t.Fatalf("semantic refusal fixture failed decoding: %v", err)
+				}
+				if _, problems := ontology.Compile(source.Base, source.Overlays, source.Plugins); len(problems) == 0 {
+					t.Fatal("semantic refusal fixture unexpectedly compiled")
+				}
+			}
 			store := seedConfiguredStore(t, tc.kind, tc.body)
 			_, err := Open(context.Background(), Config{
 				Driver: "memory", Project: "b03-runtime", Address: DefaultAddress,
@@ -266,6 +276,9 @@ func TestConfiguredOntologyStartupRefusesInvalidSourceAndClosesStore(t *testing.
 			if err == nil {
 				_ = store.Close()
 				t.Fatal("invalid configured ontology source admitted startup")
+			}
+			if !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("startup refused through the wrong boundary: %v; want %s", err, tc.wantError)
 			}
 			if _, metaErr := store.Meta(context.Background()); metaErr == nil {
 				t.Fatalf("startup refusal did not close store for %s: %v", tc.name, err)

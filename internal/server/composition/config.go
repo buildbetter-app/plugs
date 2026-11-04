@@ -80,8 +80,8 @@ type OIDCFactory func(authnoidc.Config) (*authnoidc.Provider, error)
 //
 // A non-nil configuration enables the canonical ontology RPC surface,
 // including protected ontology.apply through the Runtime-owned Writer. A nil
-// ValidatingPre explicitly means this host has no plugin pre-bindings and is
-// converted to ontologyops.NoValidatingPre during composition.
+// ValidatingPre is converted to ontologyops.NoValidatingPre only when the
+// actual host inventory contains no validating-pre bindings.
 type OntologyConfig struct {
 	Source        service.OntologySourceLocator
 	AuthorizeRead ontologyops.AuthorizeRead
@@ -277,8 +277,8 @@ func loadConfiguredOntology(ctx context.Context, store driver.Store, meta driver
 	if err != nil {
 		return nil, ontology.Snapshot{}, fmt.Errorf("composition: select installed ontology source: %w", err)
 	}
-	if err := ref.Validate(); err != nil || !ref.IsID() || !ref.Branch.IsZero() || (ref.ID != "ontology" && !strings.HasPrefix(ref.ID, "ontology/")) {
-		return nil, ontology.Snapshot{}, errors.New("composition: ontology source locator must select a protected branch-zero ontology ID")
+	if err := validateOntologySourceRef(ref); err != nil {
+		return nil, ontology.Snapshot{}, err
 	}
 	at := meta.Head
 	reader, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation, At: &at})
@@ -309,6 +309,18 @@ func loadConfiguredOntology(ctx context.Context, store driver.Store, meta driver
 	// detached value and therefore cannot expose a partially compiled map.
 	_ = compiled.Effective(project).Document()
 	return config.Source, compiled, nil
+}
+
+// Configuration selects a protected identity, never an ontology document or
+// authorization decision. Runtime startup independently verifies its durable
+// kind, revision, decoder and compiler before admitting requests.
+func validateOntologySourceRef(ref model.Ref) error {
+	if err := ref.Validate(); err != nil || !ref.IsID() || !ref.Branch.IsZero() ||
+		strings.ContainsAny(ref.ID, " \t\r\n\x00") ||
+		(ref.ID != "ontology" && !strings.HasPrefix(ref.ID, "ontology/")) {
+		return errors.New("composition: ontology source locator must select a protected branch-zero ontology ID")
+	}
+	return nil
 }
 
 func normalizeConfig(config Config) (Config, error) {

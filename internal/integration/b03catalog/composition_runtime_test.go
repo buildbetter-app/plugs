@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -127,12 +129,14 @@ func TestConfiguredRuntimeLoadsCatalogAndAuditsOnEveryEngine(t *testing.T) {
 			t.Fatal(err)
 		}
 		store := composedRuntimeStore(t, e, sourceRef, body)
-		config := composition.Config{
-			Driver:   e.name,
-			DSN:      e.dsn,
-			Project:  "b03-composition",
-			Address:  composition.DefaultAddress,
-			Ontology: &composition.OntologyConfig{Source: service.StaticOntologySource(sourceRef)},
+		configPath := filepath.Join(t.TempDir(), "config.yaml")
+		configBody := fmt.Sprintf("driver: %s\ndsn: %q\nproject: b03-composition\naddress: 127.0.0.1:0\nui: false\nontology:\n  source: %s\n", e.name, e.dsn, sourceRef.ID)
+		if err := os.WriteFile(configPath, []byte(configBody), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		config, err := composition.LoadConfigFile(configPath)
+		if err != nil {
+			t.Fatalf("load configured %s ontology source: %v", e.name, err)
 		}
 		if store != nil {
 			config.StoreFactory = func(context.Context, string, driver.Config) (driver.Store, error) {
