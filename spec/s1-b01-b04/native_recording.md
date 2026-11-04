@@ -146,3 +146,65 @@ adopted reference differences. It adds no timer to Plug: deferred ancestry
 continues to suppress descendants until explicit reopen. The actual e6 RED,
 all original outputs and earlier ordinary evidence remain unchanged; the
 successor needs its own source, ordinary and physical proof.
+
+
+The current native acceptance continuation is anchored to frozen train
+`9346ab3f384d9994dda3f447ec3ffa6148803919`, tree
+`127947f6bd096c1ff2af22bbd191b4dbe864913e`. This supersedes historical consumer
+pins only for this new execution unit. The independently passed e9 six-path
+hierarchy carrier and final9346 binding are named and hashed in
+`native_source_bindings.json`; no three-path resolution or product/driver/helper
+source is changed here. The accepted executable remains actual c8eb/R418, with
+trusted helper702 and fixed control2d. Every invocation requires its own fresh
+same-run preparation, four exact returned exports, unique claim and complete
+owned physical lifecycle; no earlier VM path or runtime credit transfers.
+
+Done = B01's required native behavior, replay and persistence obligations execute
+on the actual changed source, proven by fresh canonical named native results,
+raw/XML equality and independently reviewed source/preparation/control/output
+closure; ordinary merges, static inventories and a bounded hierarchy result do
+not count as full B01 acceptance.
+Scope = this child executes the remaining explicit lifecycle reopen and direct
+blocker hierarchy slice, native external refusal, and separately labelled Plug
+typed external extension. Full-card clocks, categories, workflow/wisp planes,
+optional-query errors, canonical/legacy refusal and reparent variants remain
+explicit obligations for subsequent executable work.
+
+After each unchanged before/defer/after vector, the actual native producer
+executes five writes: clear defer and return parent to open; add parent->free
+blocks; close free; reopen free; remove that blocks edge. Each write is followed
+by all four original public shows plus full hybrid ready and explain. Expected
+sets are respectively all four, free, parent/child/grandchild, free, all four.
+Every phase is a named subtest and participates in both fresh semantic twins.
+The two original adopted timed/indefinite differences remain unchanged.
+
+Accepted c8eb `internal/storage/issueops/dependencies.go:224-225` explicitly
+refuses external parent-child. The sixth native phase actually attempts that
+edge and requires a nonzero process exit containing its exact source diagnostic,
+without timeout/setup failure. Both original streams and literal exit survive.
+Four raw public show byte strings and the complete ready/explain projection
+must equal the prior restored state. No native typed edge or expected-success
+observation is fabricated. The proposed commands total66 per store,264 overall,
+including all original24/store controls. Quiesced inventory/dump now captures
+the final restored state; all intermediate original streams remain retained.
+
+Each memory/SQLite/Postgres replay invokes five equivalent public writes and
+conserves every unrelated source image/revision. Seven named replay phases
+include the two additional Plug typed external add/remove cases. Those two are
+extension proof: the genuine native control is the refused-edge state and
+`membershipParity` is null. Plug excludes the unresolved external direct subject
+from ready while retaining its opaque typed edge and no canonical Parent;
+removal restores that subject. All other local canonical Parent plus retained
+legacy links are checked against the actual captured hierarchy. No typed arm is
+mapped to local lookup, hierarchy or closure by this recorder.
+
+Every replay phase checks full and one-row signed ready enumeration and a
+resource filter applied before the page. Complete source/history/versions,
+head/incarnation, known write receipts, absent read receipts and active authority
+are identical before/after reads. Every SQLite/Postgres phase physically closes
+and reopens its actual store, acquires a greater authority epoch and reobserves
+the state. An actual signed cursor crosses every new multirow phase reopen;
+single-row states require exact terminal enumeration. All controls are
+AUTHORED_NOT_RUN until their own named runtime result is reached. Native Go and
+SQL clocks remain uncontrolled, broader native B01 remains unqualified,
+NativeAdmission=None, FullS1=0/28 and protected B05 stays paused.

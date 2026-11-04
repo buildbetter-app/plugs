@@ -185,7 +185,7 @@ func (r *nativeReplay) ids(page map[string]any) []string {
 	return ids
 }
 
-func (r *nativeReplay) drain(label string, first map[string]any) []string {
+func (r *nativeReplay) drain(label string, first map[string]any, filters ...map[string]any) []string {
 	r.f.t.Helper()
 	page := first
 	asOf, err := json.Marshal(page["asOf"])
@@ -217,7 +217,11 @@ func (r *nativeReplay) drain(label string, first map[string]any) []string {
 			r.f.t.Fatal("actual cursor loop or empty nonterminal page")
 		}
 		seenCursors[cursor] = true
-		page = r.call(fmt.Sprintf("%s-page-%d", label, count+1), "bead.ready", map[string]any{"limit": 1, "cursor": cursor}, false)
+		params := map[string]any{"limit": 1, "cursor": cursor}
+		if len(filters) != 0 {
+			params["filter"] = filters[0]
+		}
+		page = r.call(fmt.Sprintf("%s-page-%d", label, count+1), "bead.ready", params, false)
 	}
 	r.f.t.Fatal("actual ready pagination did not terminate within the four-node corpus")
 	return nil
@@ -428,4 +432,5 @@ func replayNativeVector(t *testing.T, capture nativeCapture, backend, dsn, decis
 		t.Fatalf("actual %s reference differs from its declared membership: %v want=%v; originals retained", capture.Vector.Mode, observedAfter, expectedNativeAfter)
 	}
 	t.Logf("B01_NATIVE_REPLAY vector=%s run=%s engine=%s referenceAfter=%s plugAfter=free decision=%s", capture.Vector.ID, capture.Run.ID, backend, strings.Join(observedAfter, ","), decision)
+	r.replayHierarchyContinuations(capture)
 }

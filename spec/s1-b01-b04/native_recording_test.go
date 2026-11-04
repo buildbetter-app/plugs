@@ -14,11 +14,12 @@ import (
 )
 
 type nativeCapture struct {
-	Vector nativeVector
-	Run    nativeRun
-	Before nativePhase
-	After  nativePhase
-	Output string
+	Vector      nativeVector
+	Run         nativeRun
+	Before      nativePhase
+	After       nativePhase
+	Transitions map[string]nativePhase
+	Output      string
 }
 
 // This manual target is a physical recorder, never part of ordinary //...
@@ -88,7 +89,7 @@ func TestB01NativeTimedAndIndefinitePair(t *testing.T) {
 		}
 		// Only the explicitly projected semantic fields are compared. All raw
 		// wall-clock timestamps, revisions and streams remain separate originals.
-		equal := reflect.DeepEqual(twins[0].Before, twins[1].Before) && reflect.DeepEqual(twins[0].After, twins[1].After)
+		equal := reflect.DeepEqual(twins[0].Before, twins[1].Before) && reflect.DeepEqual(twins[0].After, twins[1].After) && reflect.DeepEqual(twins[0].Transitions, twins[1].Transitions)
 		nativeJSON(t, filepath.Join(root, vector.ID+"-twin-comparison.json"), map[string]any{
 			"equal": equal, "runA": twins[0], "runB": twins[1],
 			"projection": "role IDs, titles, statuses, priorities, parent edges, persisted until, ordered ready IDs and explain reasons/counts; raw bytes are not asserted identical",
@@ -163,6 +164,55 @@ func recordNativeVector(t *testing.T, binary, output string, inputs nativeInputs
 	deferArgs = append(deferArgs, "--reason", "distinct "+vector.Mode+" hierarchy vector", "--json")
 	c.run("defer-parent", deferArgs...)
 	after := recordNativePhase(t, c, vector, "after")
+	// These actual writes close the f9 lifecycle/membership gap. The original
+	// before/defer/after observations remain separate and retain both adopted
+	// differences. No continuation is reconstructed from a Plug expectation.
+	steps := []struct {
+		phase string
+		argv  []string
+	}{
+		{"resumed", []string{"update", vector.SourceIDs["parent"], "--status", "open", "--defer", "", "--json"}},
+		{"blocked-parent", []string{"dep", "add", vector.SourceIDs["parent"], vector.SourceIDs["free"], "--type", "blocks", "--json"}},
+		{"blocker-closed", []string{"close", vector.SourceIDs["free"], "--json"}},
+		{"blocker-reopened", []string{"reopen", vector.SourceIDs["free"], "--json"}},
+		{"restored", []string{"dep", "remove", vector.SourceIDs["parent"], vector.SourceIDs["free"], "--json"}},
+		{"external-refused", []string{"dep", "add", vector.SourceIDs["free"], inputs.ExternalHierarchyTarget, "--type", "parent-child", "--json"}},
+	}
+	if len(inputs.HierarchyPhases) != len(steps) || inputs.ExternalHierarchyTarget == "" {
+		t.Fatal("the finite continuation phase inputs are incomplete")
+	}
+	transitions := make(map[string]nativePhase, len(steps))
+	for _, step := range steps {
+		ok := t.Run(step.phase, func(t *testing.T) {
+			c.t = t
+			if step.phase == "external-refused" {
+				c.refuse(step.phase+"-write", inputs.ExternalHierarchyRefusal, step.argv...)
+			} else {
+				c.run(step.phase+"-write", step.argv...)
+			}
+			transitions[step.phase] = recordNativePhase(t, c, vector, step.phase)
+			if step.phase == "external-refused" {
+				if !reflect.DeepEqual(transitions["restored"], transitions[step.phase]) {
+					t.Fatal("native refused edge changed actual ready/explain/source projection")
+				}
+				for _, role := range nativeRoles {
+					before, err := os.ReadFile(filepath.Join(output, "restored-show-"+role+".json"))
+					if err != nil {
+						t.Fatal(err)
+					}
+					after, err := os.ReadFile(filepath.Join(output, step.phase+"-show-"+role+".json"))
+					if err != nil || string(before) != string(after) {
+						t.Fatalf("native refused edge changed raw public show bytes for %s: %v", role, err)
+					}
+				}
+			}
+			t.Logf("B01_NATIVE_HIERARCHY_PHASE phase=%s vector=%s run=%s actualReady=%v", step.phase, vector.ID, run.ID, transitions[step.phase].Ready)
+		})
+		c.t = t
+		if !ok {
+			t.Fatalf("native hierarchy continuation %s failed; original command/phase bytes retained", step.phase)
+		}
+	}
 	// Actual CommitAll includes config; inventory requires a clean native
 	// working set. This one new command/store is declared in native_inputs.
 	c.run("quiesce-commit", "dolt", "commit", "-m", "B01 "+vector.Mode+" public capture "+run.ID)
@@ -229,13 +279,13 @@ func recordNativeVector(t *testing.T, binary, output string, inputs nativeInputs
 		t.Fatalf("public dump changed original sidecar closure: %v", err)
 	}
 	_, dumpBytes, err := nativeDigestFile(filepath.Join(output, "readback.tar"))
-	if err != nil || dumpBytes == 0 || c.count != 24 {
+	if err != nil || dumpBytes == 0 || c.count != 24+7*len(steps) {
 		t.Fatalf("public dump bytes=%d, commands=%d: %v", dumpBytes, c.count, err)
 	}
 	if err := server.Stop(); err != nil {
 		t.Fatalf("owned server shutdown: %v", err)
 	}
-	capture := nativeCapture{Vector: vector, Run: run, Before: before, After: after, Output: output}
+	capture := nativeCapture{Vector: vector, Run: run, Before: before, After: after, Transitions: transitions, Output: output}
 	nativeJSON(t, filepath.Join(output, "observed-projection.json"), capture)
 	t.Logf("B01_NATIVE_CAPTURE vector=%s run=%s commands=%d actualPort=%d output=%s", vector.ID, run.ID, c.count, server.Port, output)
 	return capture

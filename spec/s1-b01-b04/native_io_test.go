@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -33,6 +34,9 @@ type nativeInputs struct {
 	Descriptor, AdoptedIndefiniteDecision            string
 	ClockScope                                       string
 	Vectors                                          []nativeVector
+	ExternalHierarchyTarget                          string
+	ExternalHierarchyRefusal                         string
+	HierarchyPhases                                  map[string][]string
 }
 
 type nativeVector struct {
@@ -160,6 +164,21 @@ type nativeCommand struct {
 // asserting success. The environment is newly constructed and contains no
 // inherited credential or database locator.
 func (c *nativeCommand) run(label string, args ...string) []byte {
+	return c.runExpected(label, "", args...)
+}
+
+// The accepted native implementation refuses external parent-child edges.
+// Exercise that real refusal without converting an execution/setup failure
+// into a semantic result. Both original streams and the literal exit survive.
+func (c *nativeCommand) refuse(label, message string, args ...string) {
+	c.t.Helper()
+	if message == "" {
+		c.t.Fatal("native refusal requires its exact source-defined diagnostic")
+	}
+	c.runExpected(label, message, args...)
+}
+
+func (c *nativeCommand) runExpected(label, refusal string, args ...string) []byte {
 	c.t.Helper()
 	c.count++
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -192,10 +211,17 @@ func (c *nativeCommand) run(label string, args ...string) []byte {
 		"startedUTC": started, "endedUTC": ended, "exit": exit, "error": errorText,
 		"timedOut": ctx.Err() != nil, "stdoutBytes": stdout.Len(), "stderrBytes": stderr.Len(),
 		"stdoutSHA256": sha256Hex(stdout.Bytes()), "stderrSHA256": sha256Hex(stderr.Bytes()),
+		"expectedRefusal": refusal,
 	}
 	nativeJSON(c.t, filepath.Join(c.output, name+".receipt.json"), receipt)
 	c.t.Logf("B01_NATIVE_CLI label=%s argv0=%s exit=%d start=%s end=%s", label, c.binary, exit, started.Format(time.RFC3339Nano), ended.Format(time.RFC3339Nano))
-	if err != nil || ctx.Err() != nil {
+	if refusal != "" {
+		var failure *exec.ExitError
+		if !errors.As(err, &failure) || exit <= 0 || ctx.Err() != nil ||
+			!strings.Contains(stdout.String()+stderr.String(), refusal) {
+			c.t.Fatalf("native command %s lacks the exact semantic refusal %q: exit=%d error=%s context=%v; originals retained", label, refusal, exit, errorText, ctx.Err())
+		}
+	} else if err != nil || ctx.Err() != nil {
 		c.t.Fatalf("native command %s failed: %s, context %v; original streams retained", label, errorText, ctx.Err())
 	}
 	return append([]byte(nil), stdout.Bytes()...)

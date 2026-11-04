@@ -134,6 +134,7 @@ go_test(
         "native_projection_test.go",
         "native_recording_test.go",
         "native_replay_test.go",
+        "native_hierarchy_test.go",
     ],
     embedsrcs = [
         "manifest.json",
