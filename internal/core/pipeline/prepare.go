@@ -80,6 +80,7 @@ type prepared struct {
 	hierarchyEdits    []hierarchyEdit
 	hierarchyDelta    *hierarchyDelta
 	hierarchySources  *hierarchySources
+	graphValidated    bool
 	checkpointReads   map[string]uint64
 }
 
@@ -1371,7 +1372,10 @@ func (p *prepared) graph(ctx context.Context) error {
 		}
 	}
 	if !need {
-		return nil
+		// Source-preserving writes and isolated root creates can maintain an
+		// existing certificate, but never establish global validity themselves.
+		p.graphValidated, err = p.graphIsCertified(ctx)
+		return err
 	}
 	if docs == nil {
 		indexed, err := p.observeIndexedGraphIncoming(ctx)
@@ -1379,7 +1383,14 @@ func (p *prepared) graph(ctx context.Context) error {
 			return err
 		}
 		if indexed {
-			return nil
+			certified, err := p.graphIsCertified(ctx)
+			if err != nil {
+				return err
+			}
+			if certified {
+				p.graphValidated = true
+				return nil
+			}
 		}
 	}
 	if docs == nil {
@@ -1395,13 +1406,7 @@ func (p *prepared) graph(ctx context.Context) error {
 			docs[id] = pending.doc
 		}
 	}
-	for _, doc := range docs {
-		for _, link := range doc.Links {
-			if _, ok := docs[link.To.ID]; !ok {
-				return failure("ontology_guard_failed", "unlink all incoming and outgoing edges before deletion")
-			}
-		}
-	}
+
 	// A deleted bead's outgoing edges would disappear silently; require explicit
 	// unlink operations first so the change log represents each removed edge.
 	for _, pending := range p.writes {
@@ -1409,36 +1414,9 @@ func (p *prepared) graph(ctx context.Context) error {
 			return failure("ontology_guard_failed", "unlink outgoing edges before deletion")
 		}
 	}
-	visiting, done := map[string]bool{}, map[string]bool{}
-	var walk func(string) error
-	walk = func(id string) error {
-		if visiting[id] {
-			return failure("ontology_guard_failed", "blocking link would form a cycle")
-		}
-		if done[id] {
-			return nil
-		}
-		visiting[id] = true
-		if parent := docs[id].Parent; parent != nil {
-			if err := walk(parent.ID); err != nil {
-				return err
-			}
-		}
-		for _, link := range docs[id].Links {
-			if dependencyIsScheduling(link.Kind) {
-				if err := walk(link.To.ID); err != nil {
-					return err
-				}
-			}
-		}
-		delete(visiting, id)
-		done[id] = true
-		return nil
+	if err := ValidateGraphDocuments(ctx, docs); err != nil {
+		return err
 	}
-	for id := range docs {
-		if err := walk(id); err != nil {
-			return err
-		}
-	}
-	return checkBlockingHierarchy(docs)
+	p.graphValidated = true
+	return nil
 }

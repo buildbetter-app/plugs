@@ -18,8 +18,9 @@ var hierarchyIncomingKinds = []driver.IncomingLinkKind{
 // observeIndexedGraphIncoming retains the selected inverse-link facts in the
 // same pinned read set as canonical children. A true result means the changed
 // hierarchy sources have no scheduling or legacy parent-child links, so this
-// hierarchy-only write cannot change the unchanged dependency graph outside
-// the selected sources and needs no whole-store revalidation.
+// hierarchy-only write preserves the dependency graph outside the selected
+// sources. This local observation is NOT proof of global validity: skipping
+// complete revalidation also requires a separate, current semantic certificate.
 func (p *prepared) observeIndexedGraphIncoming(ctx context.Context) (bool, error) {
 	s := p.hierarchySources
 	if s == nil || len(p.hierarchyEdits) == 0 {

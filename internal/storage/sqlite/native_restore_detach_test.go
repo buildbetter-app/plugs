@@ -1,7 +1,10 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -9,16 +12,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/restore"
 	"github.com/buildbetter-app/plugs/internal/core/service"
+	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/buildbetter-app/plugs/internal/storage/memory"
 	"github.com/buildbetter-app/plugs/internal/storage/sourceindex"
 )
 
 // TestNativeRestoreReopenDetachUsesCertifiedHierarchyCoverage is the causal
 // reproduction for the large restored-detach failure. The target is restored
-// through the native transaction, physically reopened, and then moved through
+// through the product native archive manager, physically reopened, and moved through
 // the real Writer while its complete-graph Query path is counted.
 func TestNativeRestoreReopenDetachUsesCertifiedHierarchyCoverage(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -136,87 +143,92 @@ func nativeDetachCorpus(t *testing.T, count int) ([]driver.Record, []driver.Deri
 	return records, closure, direct
 }
 
+// Use the product restore path: typed driver publication alone certifies only
+// membership, not semantic graph validity. This helper creates input bytes; it
+// does not backfill either source indexes or the semantic certificate.
 func publishNativeDetachCorpus(ctx context.Context, t *testing.T, s *Store, lease driver.ActiveLease, profile driver.NativeRestoreProfile, records []driver.Record, closure []driver.DerivedRow) error {
 	t.Helper()
-	snapshot, err := driver.NewAllocatorSnapshot(driver.Meta{StoreID: profile.StoreID, Incarnation: "native-detach-source"}, model.Natural64(1), model.Natural64(0), driver.AllocatorInventory{})
+	source, err := memory.NewWithOptions(memory.Options{StoreID: profile.StoreID})
 	if err != nil {
 		return err
 	}
-	profile.AllocatorBinding, err = snapshot.Binding()
+	defer source.Close()
+	sourceLease, err := source.Lease(ctx, "native-detach-source", driver.LeaseTTL)
 	if err != nil {
 		return err
 	}
-	fence, err := driver.NativeAllocatorRestoreLock()
-	if err != nil {
-		return err
-	}
-	keys := []driver.LockKey{fence, driver.GraphBlockingSentinelLock}
-	sentinels := []driver.Sentinel{driver.SentinelGraphBlocking}
-	for _, record := range records {
-		ref := record.Ref
-		keys = append(keys, driver.LockKey{Kind: driver.LockRecord, Ref: &ref})
-		bead, err := driver.NewBeadSentinel(ref.ID)
-		if err != nil {
-			return err
-		}
-		keys = append(keys, driver.LockKey{Kind: driver.LockSentinel, Sentinel: bead})
-		sentinels = append(sentinels, bead)
-		closureSentinel, err := driver.NewClosureSentinel(ref.ID)
-		if err != nil {
-			return err
-		}
-		keys = append(keys, driver.LockKey{Kind: driver.LockSentinel, Sentinel: closureSentinel})
-		sentinels = append(sentinels, closureSentinel)
-	}
-	for _, row := range closure {
-		key := driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAncestorClosure, Key: row.Key}}
-		keys = append(keys, key)
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		a, _ := driver.EncodeLockKey(keys[i])
-		b, _ := driver.EncodeLockKey(keys[j])
-		return a < b
-	})
-	locks := make([]driver.LockRequest, len(keys))
-	for i, key := range keys {
-		locks[i] = driver.LockRequest{Key: key, Mode: driver.LockUpdate}
-	}
-	txValue, err := s.Write(ctx, lease)
-	if err != nil {
-		return err
-	}
-	tx := txValue.(*transaction)
-	defer tx.Close()
-	if _, err = tx.Lock(ctx, locks); err != nil {
-		return err
-	}
-	if _, err = tx.Head(ctx); err != nil {
-		return err
-	}
-	meta, err := tx.PrepareNativeRestore(ctx, profile)
-	if err != nil {
-		return err
-	}
-	if err = tx.RestoreNativeAllocators(ctx, snapshot); err != nil {
-		return err
-	}
-	for _, record := range records {
-		if err = pipeline.PutSourceRecord(ctx, tx, record); err != nil {
-			return err
-		}
-	}
-	if err = tx.PutDerived(ctx, driver.DerivedAncestorClosure, nil, closure); err != nil {
-		return err
-	}
-	if err = tx.BumpSentinels(ctx, sentinels); err != nil {
-		return err
-	}
-	changes := make([]model.ChangeRecord, len(records))
+	defer sourceLease.Release(context.Background())
+	changes := make([]conformance.FixtureChange, len(records))
 	for i, record := range records {
-		changes[i] = model.ChangeRecord{Ref: record.Ref, Op: model.OpCreate, FromRevision: model.Natural64(0)}
+		changes[i] = conformance.FixtureChange{Ref: record.Ref, Kind: record.Kind, Op: model.OpCreate, Body: record.Body}
 	}
-	_, err = tx.Commit(ctx, driver.ChangesetHeader{Incarnation: meta.Incarnation, Kind: model.ChangesetRestore, Principal: profile.Principal, Method: profile.Method, IdempotencyKey: profile.IdempotencyKey, RequestHash: profile.RequestHash, LockKeys: keys, Changes: changes})
-	return err
+	if _, err := conformance.Seed(ctx, source, sourceLease, driver.ChangesetHeader{}, changes); err != nil {
+		return err
+	}
+	data, _, err := restore.Dump(ctx, source, "head")
+	if err != nil {
+		return err
+	}
+	archive, err := dumpformat.Read(bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	manifestBytes, _ := archive.Member("manifest.json")
+	var manifest map[string]any
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		return err
+	}
+	canonical, err := json.Marshal(archive.Manifest())
+	if err != nil {
+		return err
+	}
+	digest := func(data []byte) string {
+		sum := sha256.Sum256(data)
+		return hex.EncodeToString(sum[:])
+	}
+	presence := restore.Presence{"mode": "presence_check", "challenge": "native-detach", "proof": "native-detach"}
+	manager := restore.NewManager(s, lease, restore.PresenceVerifierFunc(func(context.Context, string, string, restore.Presence) error { return nil }))
+	status, err := manager.Begin(ctx, manifest, "head", presence)
+	if err != nil {
+		return err
+	}
+	for page, offset := uint64(0), 0; offset < len(data); page++ {
+		end := min(offset+(4<<20), len(data))
+		chunk := data[offset:end]
+		if _, err := manager.Chunk(ctx, status.RestoreID, page, chunk, digest(chunk), presence); err != nil {
+			return err
+		}
+		offset = end
+	}
+	status, err = manager.Finish(ctx, status.RestoreID, digest(canonical), profile.Principal, model.WriteMeta{Method: profile.Method, IdempotencyKey: profile.IdempotencyKey}, presence)
+	if err != nil {
+		return err
+	}
+	if status.State != "complete" {
+		return fmt.Errorf("native detach restore state = %s", status.State)
+	}
+	meta, err := s.Meta(ctx)
+	if err != nil {
+		return err
+	}
+	r, err := s.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	got, err := r.DerivedRows(ctx, driver.DerivedAncestorClosure, "")
+	if err != nil {
+		return err
+	}
+	if len(got) != len(closure) {
+		return fmt.Errorf("restored closure rows = %d, want %d", len(got), len(closure))
+	}
+	for i, row := range got {
+		if row.Key != closure[i].Key || !bytes.Equal(row.Value, closure[i].Value) {
+			return fmt.Errorf("restored closure row %d differs from canonical corpus", i)
+		}
+	}
+	return nil
 }
 
 type restoreObservedStore struct {
