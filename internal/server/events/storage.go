@@ -63,7 +63,41 @@ func (l Log) Scan(ctx context.Context, after core.Position, limit int) ([]model.
 		}
 	}
 	sets, err := reader.Changesets(ctx, cursor, limit)
-	return sets, boundaryError(ctx, l.Store, after.Incarnation, err)
+	if err != nil {
+		// A failing source must never expose an apparently usable prefix.
+		return nil, boundaryError(ctx, l.Store, after.Incarnation, err)
+	}
+	// A driver's ordered scan alone does not prove continuity. Validate the
+	// complete page before delivery can stop at its visible-event limit or
+	// hide a missing revision behind an authorization/resource filter.
+	snapshot := reader.Snapshot()
+	if snapshot.At == nil || snapshot.Incarnation != after.Incarnation {
+		return nil, fmt.Errorf("invalid committed changeset snapshot")
+	}
+	head, err := snapshot.At.Uint64()
+	if err != nil {
+		return nil, fmt.Errorf("invalid committed changeset snapshot: %w", err)
+	}
+	var previous uint64
+	if cursor != nil {
+		previous, err = cursor.Revision.Uint64()
+		if err != nil {
+			return nil, err
+		}
+	}
+	for _, set := range sets {
+		revision, err := set.Revision.Uint64()
+		if err != nil || set.Incarnation != snapshot.Incarnation || revision == 0 || revision > head || revision-1 != previous {
+			return nil, fmt.Errorf("invalid committed changeset continuity")
+		}
+		previous = revision
+	}
+	// A full limited page may end before the snapshot head. A short page
+	// must reach that pinned head, even if a concurrent append moved Meta.
+	if len(sets) < limit && previous < head {
+		return nil, fmt.Errorf("incomplete committed changeset page")
+	}
+	return sets, nil
 }
 
 func boundaryError(ctx context.Context, store ReadStore, from string, err error) error {

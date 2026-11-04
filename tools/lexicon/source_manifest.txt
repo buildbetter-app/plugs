@@ -1305,6 +1305,9 @@ spec/s1-b17-b20/b18_test.go
 spec/s1-b17-b20/b19_archive_test.go
 spec/s1-b17-b20/b19_fixture_test.go
 spec/s1-b17-b20/b19_snapshot_test.go
+spec/s1-b17-b20/b20_journal_engine_test.go
+spec/s1-b17-b20/b20_journal_log_test.go
+spec/s1-b17-b20/b20_source_compile.sh
 spec/s1-b17-b20/b20_test.go
 spec/s1-b17-b20/i6_test.go
 spec/s1-b17-b20/reference/b18/record.py
