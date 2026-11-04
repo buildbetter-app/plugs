@@ -286,6 +286,8 @@ internal/core/pipeline/post.go
 internal/core/pipeline/precondition_test.go
 internal/core/pipeline/prepare.go
 internal/core/pipeline/protected.go
+internal/core/pipeline/ready_membership.go
+internal/core/pipeline/ready_membership_test.go
 internal/core/pipeline/ready_projection.go
 internal/core/pipeline/response.go
 internal/core/pipeline/response_test.go
@@ -943,6 +945,8 @@ internal/storage/conformance/leases.go
 internal/storage/conformance/lifetimes.go
 internal/storage/conformance/locks.go
 internal/storage/conformance/noops.go
+internal/storage/conformance/readyorder/BUILD.bazel
+internal/storage/conformance/readyorder/writer.go
 internal/storage/conformance/responses.go
 internal/storage/conformance/selection.go
 internal/storage/conformance/sourceactivation/BUILD.bazel
@@ -1052,6 +1056,7 @@ internal/storage/postgres/query.go
 internal/storage/postgres/reader.go
 internal/storage/postgres/reader_batch_test.go
 internal/storage/postgres/ready_order.go
+internal/storage/postgres/ready_order_test.go
 internal/storage/postgres/schema.go
 internal/storage/postgres/selection.go
 internal/storage/postgres/selection_test.go

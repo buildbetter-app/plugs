@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/storage/conformance/readyorder"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
 	"github.com/buildbetter-app/plugs/internal/storage/readyindex"
@@ -429,4 +430,24 @@ func TestReadyOrderDeletionCanonicalPersistence(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestReadyOrderRealWriter(t *testing.T) {
+	t.Run("memory", func(t *testing.T) {
+		readyorder.RunWriter(t, func(t *testing.T) driver.Store {
+			s := memory.New()
+			t.Cleanup(func() { _ = s.Close() })
+			return s
+		})
+	})
+	t.Run("sqlite", func(t *testing.T) {
+		readyorder.RunWriter(t, func(t *testing.T) driver.Store {
+			s, err := (sqlite.Driver{}).Open(context.Background(), driver.Config{DSN: filepath.Join(t.TempDir(), "writer.db")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = s.Close() })
+			return s
+		})
+	})
 }
