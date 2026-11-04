@@ -904,7 +904,7 @@ func TestSelectionSourceHistoryBatchesAndRollsBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	branch, previous, next := revKey(0), revKey(1), revKey(2)
+	branch, previous, next := revKey(0), revKey(100), revKey(101)
 	tx := &transaction{records: make(map[string]*driver.Record), derived: make(map[string]driver.LockState)}
 	want := make(map[string]selectionSourceObservation)
 	for i := 0; i <= selectionSourceHistoryBatch; i++ {
@@ -947,13 +947,16 @@ func TestSelectionSourceHistoryBatchesAndRollsBack(t *testing.T) {
 		insertOld(id)
 	}
 	insertOld(untouched)
-	// An already-closed interval is historical, even for a changed source.
+	// A deep closed history for one touched source must stay historical. The
+	// current-row index lets the close statement ignore these older versions.
 	historicalID := "0:history-source-000"
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO selection_source_history(
-		incarnation,branch,source_key,start_revision,end_revision,source_revision,source_present,source_digest)
-		VALUES(?,?,?,?,?,?,?,?)`, meta.Incarnation, branch, historicalID,
-		revKey(0), previous, revKey(0), 1, "historical-digest"); err != nil {
-		t.Fatal(err)
+	for revision := uint64(0); revision < 100; revision++ {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO selection_source_history(
+			incarnation,branch,source_key,start_revision,end_revision,source_revision,source_present,source_digest)
+			VALUES(?,?,?,?,?,?,?,?)`, meta.Incarnation, branch, historicalID,
+			revKey(revision), revKey(revision+1), revKey(revision), 1, "historical-digest"); err != nil {
+			t.Fatal(err)
+		}
 	}
 	// This is the production UPDATE, with its largest batch of source keys.
 	args := []any{next, meta.Incarnation, branch}
@@ -983,7 +986,7 @@ func TestSelectionSourceHistoryBatchesAndRollsBack(t *testing.T) {
 	}
 	_ = plan.Close()
 	joined := strings.Join(details, "\n")
-	if !strings.Contains(joined, "SEARCH selection_source_history USING INDEX selection_source_history_lookup") ||
+	if !strings.Contains(joined, "SEARCH selection_source_history USING INDEX selection_source_history_current") ||
 		!strings.Contains(joined, "source_key=?") || strings.Contains(joined, "SCAN selection_source_history") {
 		t.Fatalf("source history close lost source-key lookup: %s", joined)
 	}
@@ -1021,12 +1024,22 @@ func TestSelectionSourceHistoryBatchesAndRollsBack(t *testing.T) {
 			meta.Incarnation, branch, untouched, previous).Scan(&end); err != nil || end.Valid {
 			t.Fatalf("untouched source interval end=%+v err=%v", end, err)
 		}
-		var historicalEnd, historicalDigest string
-		if err := s.db.QueryRowContext(ctx, `SELECT end_revision,source_digest FROM selection_source_history
-			WHERE incarnation=? AND branch=? AND source_key=? AND start_revision=?`,
-			meta.Incarnation, branch, historicalID, revKey(0)).Scan(&historicalEnd, &historicalDigest); err != nil ||
-			historicalEnd != previous || historicalDigest != "historical-digest" {
-			t.Fatalf("historical source interval end=%q digest=%q err=%v", historicalEnd, historicalDigest, err)
+		var historicalCount int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM selection_source_history
+			WHERE incarnation=? AND branch=? AND source_key=? AND start_revision<?
+			AND end_revision IS NOT NULL AND source_digest=?`,
+			meta.Incarnation, branch, historicalID, previous, "historical-digest").Scan(&historicalCount); err != nil ||
+			historicalCount != 100 {
+			t.Fatalf("historical source interval count=%d err=%v", historicalCount, err)
+		}
+		for revision := uint64(0); revision < 100; revision++ {
+			var historicalEnd string
+			if err := s.db.QueryRowContext(ctx, `SELECT end_revision FROM selection_source_history
+				WHERE incarnation=? AND branch=? AND source_key=? AND start_revision=?`,
+				meta.Incarnation, branch, historicalID, revKey(revision)).Scan(&historicalEnd); err != nil ||
+				historicalEnd != revKey(revision+1) {
+				t.Fatalf("historical source revision %d end=%q err=%v", revision, historicalEnd, err)
+			}
 		}
 	}
 	check(false)
