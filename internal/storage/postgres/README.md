@@ -23,8 +23,11 @@ data lock set; successful publication alone advances it. One SQL transaction
 publishes records, tombstones, versions, blobs, derived rows, predicate bumps,
 the complete changeset and any replay receipt.
 
-Every publication holds the lease row FOR SHARE until SQL COMMIT. Acquisition,
-renewal and release serialize on that same row. Graph writes, no-op receipts,
+Every publication holds the lease ownership key FOR KEY SHARE until SQL COMMIT.
+The unique ownership index makes acquisition and release conflict with this
+fence, while expiry-only renewal uses its reserved connection independently.
+Contenders use NOWAIT so their stronger lock cannot queue ahead of renewal.
+Graph writes, no-op receipts,
 checkpoint CAS and response finalization all check epoch/owner/expiry under the
 publication lock. Expiry closes Lost; stale or foreign handles cannot publish
 or renew. Close rolls back unfinished work, releases snapshots and leases, and

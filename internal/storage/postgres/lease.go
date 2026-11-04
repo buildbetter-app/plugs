@@ -77,7 +77,18 @@ func (s *Store) Lease(ctx context.Context, holder string, ttl time.Duration) (dr
 		}
 		var epoch string
 		var available bool
-		e = tx.QueryRowContext(ctx, `SELECT epoch::text,owner='' OR expires<=clock_timestamp() FROM plug_postgres.lease WHERE singleton FOR UPDATE`).Scan(&epoch, &available)
+		// A contender must not queue a stronger tuple lock ahead of the current
+		// holder's compatible expiry update while publication protects ownership.
+		e = tx.QueryRowContext(ctx, `SELECT epoch::text,owner='' OR expires<=clock_timestamp() FROM plug_postgres.lease WHERE singleton FOR UPDATE NOWAIT`).Scan(&epoch, &available)
+		if sqlState(e) == "55P03" {
+			_ = tx.Rollback()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(5 * time.Millisecond):
+				continue
+			}
+		}
 		if e != nil {
 			_ = tx.Rollback()
 			return nil, e
@@ -130,16 +141,24 @@ func (s *Store) Lease(ctx context.Context, holder string, ttl time.Duration) (dr
 	}
 }
 
-// checkLease locks the epoch row for publications. The row lock remains held
-// through SQL COMMIT, so Release, Renew and takeover cannot interleave with it.
+// checkLease protects ownership through SQL COMMIT. The lease_ownership unique
+// index makes owner/epoch changes conflict with KEY SHARE, while expiry-only
+// renewal remains independent on its reserved connection. A final fresh check
+// still rejects local loss, expired SQL time, Release, or a replaced epoch.
 func (s *Store) checkLease(ctx context.Context, q querier, lease driver.ActiveLease, lock bool) (*activeLease, error) {
+	var expected uint64
+	if lease != nil {
+		expected = lease.Epoch()
+	}
+	l, ok := lease.(*activeLease)
+	checkExpiry := ok && l.store == s && !l.ended()
 	var epoch, owner string
-	var expires time.Time
+	var live bool
 	suffix := ""
 	if lock {
-		suffix = " FOR SHARE"
+		suffix = " FOR KEY SHARE"
 	}
-	err := q.QueryRowContext(ctx, `SELECT epoch::text,owner,expires FROM plug_postgres.lease WHERE singleton`+suffix).Scan(&epoch, &owner, &expires)
+	err := q.QueryRowContext(ctx, `SELECT epoch::text,owner,CASE WHEN $1::boolean THEN expires>clock_timestamp() ELSE false END FROM plug_postgres.lease WHERE singleton`+suffix, checkExpiry).Scan(&epoch, &owner, &live)
 	if err != nil {
 		return nil, err
 	}
@@ -147,20 +166,15 @@ func (s *Store) checkLease(ctx context.Context, q querier, lease driver.ActiveLe
 	if err != nil {
 		return nil, err
 	}
-	var expected uint64
-	if lease != nil {
-		expected = lease.Epoch()
-	}
-	l, ok := lease.(*activeLease)
 	fenced := driver.ErrFenced{ExpectedEpoch: expected, ObservedEpoch: observed}
 	if !ok || l.store != s || l.owner != owner || l.epoch != observed || l.ended() {
 		return nil, fenced
 	}
-	var now time.Time
-	if err = q.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
-		return nil, err
-	}
-	if !now.Before(expires) {
+	// Observe SQL expiry with its row version in the same statement, only for
+	// a locally live holder. Terminal holders never consult the SQL clock. A
+	// compatible heartbeat can refresh expiry between round trips; comparing
+	// a cached expiry to a later clock would falsely terminate that holder.
+	if !live {
 		l.mu.Lock()
 		l.signal()
 		l.mu.Unlock()
