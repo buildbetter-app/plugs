@@ -20,7 +20,7 @@ func TestBoundedCatalogParity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := len(c.Descriptors()); got != 83 {
+	if got := len(c.Descriptors()); got != 85 {
 		t.Fatalf("method inventory = %d", got)
 	}
 	if _, ok := c.Descriptor("bead.comments"); ok {
@@ -35,8 +35,8 @@ func TestBoundedCatalogParity(t *testing.T) {
 	// These changes affect one of two independent descriptor representations.
 	for _, change := range []struct{ before, after string }{
 		{`"x-agent-core": true`, `"x-agent-core": false`},
-		{`"methodCount": 83`, `"methodCount": 82`},
-		{`"nameSha256": "0ce6a0ee`, `"nameSha256": "1ce6a0ee`},
+		{`"methodCount": 85`, `"methodCount": 84`},
+		{`"nameSha256": "e4cc1165`, `"nameSha256": "f4cc1165`},
 		{`"stability": "v1"`, `"stability": ""`},
 		{`"#/components/errors/RateLimited"`, `"#/components/errors/NotARealError"`},
 	} {
@@ -65,7 +65,7 @@ func TestBoundedCatalogParity(t *testing.T) {
 	if err = json.Unmarshal(generated, &document); err != nil {
 		t.Fatal(err)
 	}
-	if len(document.Methods) != 83 {
+	if len(document.Methods) != 85 {
 		t.Fatal("generator dropped inventory methods")
 	}
 	for _, method := range document.Methods {

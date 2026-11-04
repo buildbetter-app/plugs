@@ -57,7 +57,9 @@ func b26Host(t *testing.T, store driver.Store) *b26HTTP {
 		}
 		options = append(options, service.WithWorkflow(provider.WithIdentity("workflow", "default", metadata.Incarnation)))
 	}
-	writer := pipeline.New(store, lease)
+	ontology := service.NewOntology(nil)
+	options = append(options, service.WithOntology(ontology))
+	writer := pipeline.New(store, lease, pipeline.WithOntology(ontology))
 	domain := service.New(store, lease, writer, options...)
 	registry, err := rpc.NewRegistry()
 	if err != nil {
@@ -124,7 +126,7 @@ func (h *b26HTTP) call(t *testing.T, method string, params map[string]any, label
 func b26OK(t *testing.T, r reply) json.RawMessage {
 	t.Helper()
 	if r.Error != nil {
-		t.Fatalf("public call refused: %+v", r.Error)
+		t.Fatalf("public call refused: %+v; data=%+v", r.Error, r.Error.Data)
 	}
 	return r.Result
 }
@@ -228,6 +230,11 @@ func b26Lifecycle(t *testing.T, h *b26HTTP, db *sql.DB, engine string) {
 	invoked := decode[workflowplugin.InvokeResult](t, b26OK(t, h.call(t, "x.workflow.invoke", map[string]any{"template": "b26", "project": project, "mode": "ephemeral", "checklist": []map[string]any{{"label": "moving", "title": "ephemeral body", "type": "issue", "fields": map[string]any{"description": "preserve me"}, "labels": []string{"alpha"}, "metadata": map[string]any{"user.note": "value"}}, {"label": "keeper", "title": "keeper", "type": "issue"}}}, "b26-invoke")))
 	item, keeper := invoked.Items[0].ID, invoked.Items[1].ID
 	b26NoVersion(t, h.store, item)
+	b26OK(t, h.call(t, "bead.update", map[string]any{"id": ref(item), "fields": map[string]any{"labels": []string{"alpha", "", "alpha"}}}, "ephemeral-labels"))
+	labels := h.get(t, item)["bead"].(map[string]any)["labels"]
+	if !reflect.DeepEqual(labels, []any{"alpha"}) {
+		t.Fatalf("public ephemeral label replacement was not normalized: %v", labels)
+	}
 	if h.ready(t, false)[item] || !h.ready(t, true)[item] {
 		t.Fatal("explicit ephemeral inclusion did not control ready membership")
 	}
@@ -238,19 +245,19 @@ func b26Lifecycle(t *testing.T, h *b26HTTP, db *sql.DB, engine string) {
 	if _, ok := h.get(t, item)["lease"]; ok {
 		t.Fatal("excluded claimNext created an operational claim")
 	}
-	b26OK(t, h.call(t, "bead.link", map[string]any{"from": ref(item), "to": ref(blocker), "kind": "blocks"}, "wisp-durable-block"))
+	b26OK(t, h.call(t, "bead.link", map[string]any{"from": ref(item), "to": ref(blocker), "kind": "blocks"}, "ephemeral-durable-block"))
 	if h.ready(t, true)[item] {
-		t.Fatal("open durable blocker did not block wisp")
+		t.Fatal("open durable blocker did not block workflow item")
 	}
 	b26OK(t, h.call(t, "bead.close", map[string]any{"id": ref(blocker), "reason": "done"}, "close-durable-blocker"))
 	if !h.ready(t, true)[item] || h.get(t, item)["bead"].(map[string]any)["blocked"] == true {
-		t.Fatal("closed durable blocker did not release wisp")
+		t.Fatal("closed durable blocker did not release workflow item")
 	}
-	b26OK(t, h.call(t, "bead.link", map[string]any{"from": ref(dependent), "to": ref(item), "kind": "blocks"}, "durable-wisp-block"))
+	b26OK(t, h.call(t, "bead.link", map[string]any{"from": ref(dependent), "to": ref(item), "kind": "blocks"}, "durable-ephemeral-block"))
 	if h.ready(t, true)[dependent] {
 		t.Fatal("active workflow blocker did not block durable dependent")
 	}
-	b26OK(t, h.call(t, "bead.comment", map[string]any{"id": ref(item), "body": "preserve original comment"}, "wisp-comment"))
+	b26OK(t, h.call(t, "bead.comment", map[string]any{"id": ref(item), "body": "preserve original comment"}, "ephemeral-comment"))
 	beforeItem := h.get(t, item)
 	checkpoint := workflowCheckpoint(t, h.store.(driver.CheckpointStore)).Checkpoint
 	head, err := h.store.Meta(ctx)
@@ -350,9 +357,10 @@ func TestB26NativeLifecycleRegistrationAndTrustedMetadataSQLite(t *testing.T) {
 	type trustedKey struct{}
 	type trusted struct{ meta model.WriteMeta }
 	metaFrom := func(ctx context.Context) model.WriteMeta { v, _ := ctx.Value(trustedKey{}).(trusted); return v.meta }
-	writer := pipeline.New(store, h.lease)
+	ontology := service.NewOntology(nil)
+	writer := pipeline.New(store, h.lease, pipeline.WithOntology(ontology))
 	domain := func(provider *workflowplugin.Provider) *service.Service {
-		return service.New(store, h.lease, writer, service.WithWorkflow(provider.WithIdentity("workflow", "default", metadata.Incarnation)))
+		return service.New(store, h.lease, writer, service.WithOntology(ontology), service.WithWorkflow(provider.WithIdentity("workflow", "default", metadata.Incarnation)))
 	}
 	native := workflowplugin.NativeWithLifecycle(workflowplugin.NativeLifecycleAdapter{
 		Principal: func(context.Context) model.PrincipalRef { return by }, WriteMeta: metaFrom,

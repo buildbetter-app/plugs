@@ -19,6 +19,9 @@ func coreReadRef(ref model.Ref) error {
 	if err := ref.Validate(); err != nil || !ref.IsID() || ref.ID == "" || !ref.Branch.IsZero() {
 		return failure("invalid_params", "point reads require a nonempty ID on the main branch")
 	}
+	if strings.HasPrefix(ref.ID, "workflow:") {
+		return validateWorkflowRef(ref)
+	}
 	return nil
 }
 

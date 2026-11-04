@@ -1110,7 +1110,7 @@ func (p *Provider) OrdinaryBlocked(ctx context.Context, by model.PrincipalRef, i
 }
 
 // ActiveIDs returns the provider's live item namespace. The service uses it to
-// suppress a colliding durable row from aggregate ready results: an active wisp
+// suppress a colliding durable row from aggregate ready results: an active workflow item
 // owns the reserved workflow:item/<id> name until completion.
 func (p *Provider) ActiveIDs(ctx context.Context) (map[string]struct{}, error) {
 	p.mu.Lock()
