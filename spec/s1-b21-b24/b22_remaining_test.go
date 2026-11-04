@@ -961,6 +961,8 @@ type b22ClaimReadFault struct {
 	scans    atomic.Int32
 	hydrates atomic.Int32
 	writes   atomic.Int32
+	hydrated *driver.Record
+	view     *driver.View
 }
 
 type b22ClaimFaultReader struct {
@@ -996,19 +998,25 @@ func (r *b22ClaimFaultReader) Query(ctx context.Context, query driver.Query) (dr
 	return page, err
 }
 
-func (r *b22ClaimFaultReader) Get(ctx context.Context, refs []model.Ref) ([]driver.Record, error) {
-	rows, err := r.Reader.Get(ctx, refs)
+func (r *b22ClaimFaultReader) Observe(ctx context.Context, keys []driver.LockKey) ([]driver.LockState, error) {
+	states, err := r.Reader.Observe(ctx, keys)
 	if err == nil {
-		for _, ref := range refs {
-			if ref.ID == r.fault.target.ID {
+		for _, state := range states {
+			// snapshotReader.Get hydrates directly from Observe's complete
+			// live Record on all three drivers; Reader.Get is only a fallback.
+			if state.Key.Kind == driver.LockRecord && state.Key.Ref != nil && reflect.DeepEqual(*state.Key.Ref, r.fault.target) && state.Present && state.Record != nil {
 				r.fault.hydrates.Add(1)
 				if r.fault.enabled.Load() && r.fault.phase == "candidate-hydration" {
+					row := *state.Record
+					row.Body = bytes.Clone(row.Body)
+					view := r.Snapshot()
+					r.fault.hydrated, r.fault.view = &row, &view
 					return nil, r.fault.cause
 				}
 			}
 		}
 	}
-	return rows, err
+	return states, err
 }
 
 func TestS1B22ClaimSelectionAndHydrationFailurePublishNothing(t *testing.T) {
@@ -1030,10 +1038,21 @@ func TestS1B22ClaimSelectionAndHydrationFailurePublishNothing(t *testing.T) {
 				if out != nil || !errors.Is(err, fault.cause) || fault.scans.Load() == 0 || phase == "candidate-hydration" && fault.hydrates.Load() == 0 || fault.writes.Load() != 0 || post.count() != 0 {
 					t.Fatalf("B22 real claim read failure did not stop before publication: %+v / %v scans=%d hydrates=%d writes=%d posts=%d", out, err, fault.scans.Load(), fault.hydrates.Load(), fault.writes.Load(), post.count())
 				}
+				if phase == "candidate-hydration" {
+					var selected *driver.Record
+					for i := range before.Records {
+						if reflect.DeepEqual(before.Records[i].Ref, target) {
+							selected = &before.Records[i]
+						}
+					}
+					if selected == nil || !reflect.DeepEqual(fault.hydrated, selected) || fault.view == nil || fault.view.At == nil || *fault.view.At != before.Meta.Head || fault.view.Incarnation != before.Meta.Incarnation {
+						t.Fatal("B22 hydration fault did not bind the actual selected row and pinned snapshot")
+					}
+				}
 				// Plug enumerates ready membership instead of issuing the old
 				// backend Count, then hydrates before admitting a writer. Both
 				// actual failures must leave the entire claim state untouched.
-				b22Evidence(t, "read-refusal", map[string]any{"error": err.Error(), "phase": phase, "scans": fault.scans.Load(), "hydrates": fault.hydrates.Load(), "writes": fault.writes.Load(), "posts": post.count()})
+				b22Evidence(t, "read-refusal", map[string]any{"error": err.Error(), "phase": phase, "scans": fault.scans.Load(), "hydrates": fault.hydrates.Load(), "writes": fault.writes.Load(), "posts": post.count(), "hydrated": fault.hydrated, "view": fault.view})
 				sameState(t, before, f.state(t))
 				b22SamePhysical(t, physical, b22Physical(t, f, "refused"), false)
 				if f.casReceipt(t, "bead.claimNext", "b22-claim-read") != nil {
