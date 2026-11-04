@@ -431,29 +431,65 @@ func (r *b02Replay) observe(capture b02Capture, label string, want []string, dev
 	})
 }
 
-func (r *b02Replay) assertConditionNotice(label string, commit model.Commit, want bool) {
+func (r *b02Replay) assertTerminalEvents(label, method string, commit model.Commit) {
 	t := r.f.t
 	state := r.snapshot()
-	count := 0
-	for _, changeset := range state.History {
-		if changeset.Revision != commit.Revision {
-			continue
-		}
-		if err := changeset.ValidateEvents(); err != nil {
-			t.Fatalf("complete durable event plan: %v", err)
-		}
-		for _, event := range changeset.Events {
-			if event.Type != model.EventDependencyConditionUnmet {
-				continue
+	want, exists := map[string]struct {
+		Event   model.DurableEventType
+		Slot    string
+		Notices int
+	}{
+		"bead.close":  {model.EventBeadClosed, "close", 1},
+		"bead.fail":   {model.EventBeadFailed, "fail", 0},
+		"bead.cancel": {model.EventBeadCanceled, "cancel", 1},
+	}[method]
+	if !exists {
+		t.Fatalf("%s lacks an explicit terminal event expectation for %s", label, method)
+	}
+	blocker, dependent := r.refs["blocker"], r.refs["conditional"]
+	current := map[model.Ref]model.Revision{}
+	for _, record := range state.Records {
+		current[record.Ref] = record.Revision
+	}
+	if current[blocker] != commit.Revision || state.Meta.Head != commit.Revision {
+		t.Fatalf("%s terminal commit is not the actual changed blocker revision", label)
+	}
+	var changeset *model.Changeset
+	for index := range state.History {
+		if state.History[index].Revision == commit.Revision {
+			if changeset != nil {
+				t.Fatalf("%s has duplicate history entries for the terminal revision", label)
 			}
-			count++
-			if event.Resource.Ref != r.refs["conditional"] || event.Details == nil || event.Details.Dependent.Ref != r.refs["conditional"] || event.Details.BlockerAfter.Ref != r.refs["blocker"] || event.Details.BlockerAfter.Revision != commit.Revision {
-				t.Fatalf("%s notice is not anchored to the actual dependent/blocker revision", label)
-			}
+			changeset = &state.History[index]
 		}
 	}
-	if (want && count != 1) || (!want && count != 0) {
-		t.Fatalf("%s condition notice count=%d wantNotice=%t", label, count, want)
+	if changeset == nil || changeset.Incarnation != state.Meta.Incarnation || changeset.Kind != model.ChangesetWrite || len(changeset.Changes) != 1 || changeset.Changes[0].Ref != blocker || changeset.Changes[0].Op != model.OpPatch || changeset.Changes[0].FromRevision == commit.Revision {
+		t.Fatalf("%s lacks the single actual blocker change at its terminal revision", label)
+	}
+	// ValidateEvents accepts a nil legacy plan, so require the complete explicit
+	// plan before validation. Failure MUST retain bead.failed, even with no notice.
+	if changeset.Events == nil || len(changeset.Events) != 1+want.Notices {
+		t.Fatalf("%s event plan must contain one %s and %d condition notices", label, want.Event, want.Notices)
+	}
+	if err := changeset.ValidateEvents(); err != nil {
+		t.Fatalf("complete durable event plan: %v", err)
+	}
+	ordinary := changeset.Events[0]
+	if ordinary.Type != want.Event || ordinary.Resource.Kind != "bead" || ordinary.Resource.Ref != blocker || ordinary.ChangeIndex.String() != "0" || ordinary.Provenance.Method != method || ordinary.Provenance.Slot != want.Slot {
+		t.Fatalf("%s lacks the exact ordinary lifecycle event on the actual blocker change", label)
+	}
+	count := 0
+	for _, event := range changeset.Events {
+		if event.Type != model.EventDependencyConditionUnmet {
+			continue
+		}
+		count++
+		if event.Resource.Ref != dependent || event.Details == nil || event.Details.Dependent.Ref != dependent || event.Details.Dependent.Revision != current[dependent] || event.Details.BlockerBefore.Ref != blocker || event.Details.BlockerBefore.Revision != changeset.Changes[0].FromRevision || event.Details.BlockerAfter.Ref != blocker || event.Details.BlockerAfter.Revision != commit.Revision {
+			t.Fatalf("%s notice is not anchored to the actual dependent/blocker revisions", label)
+		}
+	}
+	if count != want.Notices {
+		t.Fatalf("%s condition notice count=%d want=%d", label, count, want.Notices)
 	}
 }
 
@@ -532,7 +568,7 @@ func b02ReplayCapture(t *testing.T, capture b02Capture, engine, dsn string) {
 					r.statuses[step.Role] = status
 				}
 				if capture.Plan.Name == "category-outcomes" && (method == "bead.close" || method == "bead.fail" || method == "bead.cancel") {
-					r.assertConditionNotice(step.Name, commit, method != "bead.fail")
+					r.assertTerminalEvents(step.Name, method, commit)
 				}
 			}
 			r.observe(capture, step.Name, step.PlugReady, step.Deviation)

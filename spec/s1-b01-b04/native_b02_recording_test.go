@@ -137,13 +137,83 @@ func b02Plans() []b02Plan {
 	}
 }
 
+// These are independently authored subject/reason sets for every answering
+// phase, not the complement of ready or a projection of returned blocked rows.
+// The accepted producer reports active direct targets first, then immediate
+// parent fallback; custom category names do not replace closed/pinned here.
+func b02ExpectedBlocked(t *testing.T, plan, label string) map[string][]string {
+	t.Helper()
+	expectations := map[string]map[string]map[string][]string{
+		"diamond-chain": {
+			"initial":               {"left": {"root"}, "right": {"root"}, "join": {"left", "right"}, "tail": {"join"}},
+			"blocked-close-refused": {"left": {"root"}, "right": {"root"}, "join": {"left", "right"}, "tail": {"join"}},
+			"self-link-refused":     {"left": {"root"}, "right": {"root"}, "join": {"left", "right"}, "tail": {"join"}},
+			"root-closed":           {"join": {"left", "right"}, "tail": {"join"}},
+			"left-closed":           {"join": {"right"}, "tail": {"join"}},
+			"right-closed":          {"tail": {"join"}},
+			"join-closed":           {},
+			"root-reopened":         {},
+			"tail-unlinked":         {},
+		},
+		"parent-reasons": {
+			"initial":                        {"parent": {"blocker"}, "child": {"parent"}, "grandchild": {"child"}, "direct": {"blocker"}},
+			"blocker-closed":                 {},
+			"blocker-reopened":               {"parent": {"blocker"}, "child": {"parent"}, "grandchild": {"child"}, "direct": {"blocker"}},
+			"direct-unlinked-still-inherits": {"parent": {"blocker"}, "child": {"parent"}, "grandchild": {"child"}, "direct": {"parent"}},
+			"parent-unlinked":                {},
+		},
+		"waits-gates": {
+			"initial":                 {"all": {"spawner"}, "any": {"spawner"}},
+			"one-closed":              {"all": {"spawner"}},
+			"two-closed":              {},
+			"also-blocks-stored-seam": {"all": {"spawner"}},
+			"spawner-closed":          {},
+		},
+		"category-outcomes": {
+			"initial":            {"ordinary": {"blocker"}, "conditional": {"blocker"}},
+			"pinned-backlog":     {},
+			"open-again":         {"ordinary": {"blocker"}, "conditional": {"blocker"}},
+			"custom-active":      {"ordinary": {"blocker"}, "conditional": {"blocker"}},
+			"custom-done":        {"ordinary": {"blocker"}, "conditional": {"blocker"}},
+			"custom-frozen":      {"ordinary": {"blocker"}, "conditional": {"blocker"}},
+			"closed-success":     {},
+			"reopen-for-failure": {"ordinary": {"blocker"}, "conditional": {"blocker"}},
+			"closed-failure":     {},
+			"reopen-for-cancel":  {"ordinary": {"blocker"}, "conditional": {"blocker"}},
+			"closed-canceled":    {},
+		},
+		"terminal-subjects": {
+			"initial":                 {"terminal": {"blocker"}, "pinned": {"blocker"}},
+			"pinned-subject":          {"terminal": {"blocker"}},
+			"forced-terminal-subject": {},
+		},
+		"mixed-chain": {
+			"initial":       {"middle": {"root"}, "tail": {"middle"}, "last": {"tail"}},
+			"root-closed":   {"tail": {"middle"}, "last": {"tail"}},
+			"middle-closed": {"last": {"tail"}},
+			"tail-closed":   {},
+		},
+		"stale-projection": {
+			"initial":                       {"dependent": {"blocker"}},
+			"stale-false-recomputed":        {"dependent": {"blocker"}},
+			"stale-false-recomputed-second": {"dependent": {"blocker"}},
+		},
+	}
+	want, exists := expectations[plan][label]
+	if !exists || want == nil {
+		t.Fatalf("missing explicit native blocked expectation for %s/%s", plan, label)
+	}
+	return want
+}
+
 type b02NodeObservation struct{ ID, Title, Status, Parent string }
 
 type b02Phase struct {
-	Nodes        map[string]b02NodeObservation
-	Ready        []string
-	BlockedBy    map[string][]string
-	ExplainReady map[string]string
+	Nodes            map[string]b02NodeObservation
+	Ready            []string
+	BlockedBy        map[string][]string
+	ExplainReady     map[string]string
+	ExplainBlockedBy map[string][]string
 }
 
 type b02Capture struct {
@@ -441,7 +511,7 @@ func b02OwnerRow(t *testing.T, image b02DatabaseImage, id string) (string, map[s
 func b02Observe(t *testing.T, c *nativeCommand, plan b02Plan, label string, statuses map[string]string, want []string) b02Phase {
 	t.Helper()
 	b02Census(t, c, label+"-before-reads")
-	phase := b02Phase{Nodes: map[string]b02NodeObservation{}, BlockedBy: map[string][]string{}, ExplainReady: map[string]string{}}
+	phase := b02Phase{Nodes: map[string]b02NodeObservation{}, BlockedBy: map[string][]string{}, ExplainReady: map[string]string{}, ExplainBlockedBy: map[string][]string{}}
 	roles := map[string]string{}
 	for _, node := range plan.Nodes {
 		roles[b02ID(plan, node.Role)] = node.Role
@@ -478,31 +548,45 @@ func b02Observe(t *testing.T, c *nativeCommand, plan b02Plan, label string, stat
 	if !reflect.DeepEqual(phase.Ready, b02Sorted(want)) {
 		t.Fatalf("native %s ready=%v want=%v; original streams retained", label, phase.Ready, want)
 	}
+	wantBlocked := b02ExpectedBlocked(t, plan.Name, label)
+	bindBlocked := func(id string, reasons []string, count *int, projection map[string][]string) {
+		role := roles[id]
+		if role == "" || projection[role] != nil || seen[role] || statuses[role] == "closed" || statuses[role] == "pinned" {
+			t.Fatal("native blocked includes a foreign, duplicate, terminal or ready subject")
+		}
+		if count == nil || *count != len(reasons) || len(reasons) == 0 {
+			t.Fatal("native blocked subject lacks its complete nonempty reason count")
+		}
+		by := []string{}
+		reasonSeen := map[string]bool{}
+		for _, reason := range reasons {
+			if roles[reason] == "" || reasonSeen[reason] {
+				t.Fatal("native blocked reason names a foreign or duplicate row")
+			}
+			reasonSeen[reason] = true
+			by = append(by, roles[reason])
+		}
+		projection[role] = b02Sorted(by)
+	}
 	var blocked []struct {
-		ID        string
-		BlockedBy []string `json:"blocked_by"`
+		ID             string
+		BlockedBy      []string `json:"blocked_by"`
+		BlockedByCount *int     `json:"blocked_by_count"`
 	}
 	nativeDecode(t, c.run(label+"-blocked", "blocked", "--json"), &blocked)
 	for _, item := range blocked {
-		role := roles[item.ID]
-		if role == "" || phase.BlockedBy[role] != nil || seen[role] || statuses[role] == "closed" || statuses[role] == "pinned" {
-			t.Fatal("native blocked includes a foreign, duplicate, terminal or ready subject")
-		}
-		by := []string{}
-		for _, id := range item.BlockedBy {
-			if roles[id] == "" {
-				t.Fatal("native blocked reason names a foreign row")
-			}
-			by = append(by, roles[id])
-		}
-		if len(by) == 0 {
-			t.Fatal("native blocked subject lacks a live reason")
-		}
-		phase.BlockedBy[role] = b02Sorted(by)
+		bindBlocked(item.ID, item.BlockedBy, item.BlockedByCount, phase.BlockedBy)
+	}
+	if !reflect.DeepEqual(phase.BlockedBy, wantBlocked) {
+		t.Fatalf("native %s blocked=%v want=%v; original streams retained", label, phase.BlockedBy, wantBlocked)
 	}
 	var explanation struct {
 		Ready   []struct{ ID, Reason string }
-		Blocked []json.RawMessage
+		Blocked []struct {
+			ID             string
+			BlockedBy      []struct{ ID string } `json:"blocked_by"`
+			BlockedByCount *int                  `json:"blocked_by_count"`
+		}
 		Summary struct {
 			Ready   *int `json:"total_ready"`
 			Blocked *int `json:"total_blocked"`
@@ -518,12 +602,19 @@ func b02Observe(t *testing.T, c *nativeCommand, plan b02Plan, label string, stat
 		}
 		phase.ExplainReady[roles[item.ID]] = item.Reason
 	}
+	for _, item := range explanation.Blocked {
+		ids := []string{}
+		for _, reason := range item.BlockedBy {
+			ids = append(ids, reason.ID)
+		}
+		bindBlocked(item.ID, ids, item.BlockedByCount, phase.ExplainBlockedBy)
+	}
 	// --explain's accepted implementation ignores include-ephemeral; its raw
 	// arrays remain evidence, never a replacement for the explicit mixed query.
-	if plan.Name == "parent-reasons" && (label == "initial" || label == "blocker-reopened") {
-		if !reflect.DeepEqual(phase.BlockedBy["child"], []string{"parent"}) || !reflect.DeepEqual(phase.BlockedBy["direct"], []string{"blocker"}) {
-			t.Fatal("native parent fallback and direct blocker reasons were not distinguished")
-		}
+	// Its blocked branch uses an empty filter and includes BOTH native planes,
+	// so it has the same independently authored blocked projection, not ready's.
+	if !reflect.DeepEqual(phase.ExplainBlockedBy, wantBlocked) {
+		t.Fatalf("native %s explain blocked=%v want=%v; original streams retained", label, phase.ExplainBlockedBy, wantBlocked)
 	}
 	after := b02Census(t, c, label+"-after-reads")
 	ownerTables := map[bool]string{}
