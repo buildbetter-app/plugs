@@ -48,7 +48,7 @@ func (commitQueryTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data 
 		return ctx
 	}
 	sql := strings.Join(strings.Fields(data.SQL), " ")
-	if !strings.HasPrefix(sql, "SELECT ") || (!strings.Contains(sql, "FROM plug_postgres.records") && !strings.Contains(sql, "FROM plug_postgres.versions")) {
+	if (!strings.HasPrefix(sql, "SELECT ") && !strings.HasPrefix(sql, "WITH ")) || (!strings.Contains(sql, "FROM plug_postgres.records") && !strings.Contains(sql, "FROM plug_postgres.versions")) {
 		return ctx
 	}
 	event := &commitQueryEvent{sql: sql, keys: -1}
