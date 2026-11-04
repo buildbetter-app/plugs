@@ -951,7 +951,8 @@ func (s *Service) LinkWithOutcome(ctx context.Context, by model.PrincipalRef, re
 		if err := validateWorkflowWrite(req.To, req.Expect, meta); err != nil && workflowRef(req.To) {
 			return port.WriteOutcome{}, err
 		}
-		if err := s.validateWorkflowEndpoints(ctx, by, meta.Project, req.From, req.To); err != nil {
+		workflowReq.CoreHead, err = s.workflowEndpointHead(ctx, by, meta.Project, req.From, req.To)
+		if err != nil {
 			return port.WriteOutcome{}, err
 		}
 		commit, err := s.workflow.Link(ctx, by, workflowReq, meta)
@@ -996,7 +997,8 @@ func (s *Service) UnlinkWithOutcome(ctx context.Context, by model.PrincipalRef, 
 		if err := validateWorkflowWrite(req.To, req.Expect, meta); err != nil && workflowRef(req.To) {
 			return port.WriteOutcome{}, err
 		}
-		if err := s.validateWorkflowEndpoints(ctx, by, meta.Project, req.From, req.To); err != nil {
+		workflowReq.CoreHead, err = s.workflowEndpointHead(ctx, by, meta.Project, req.From, req.To)
+		if err != nil {
 			return port.WriteOutcome{}, err
 		}
 		commit, err := s.workflow.Unlink(ctx, by, workflowReq, meta)

@@ -1,6 +1,7 @@
 package s1b05b08
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -13,6 +14,96 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
+
+// The barrier runs immediately before the real SQL checkpoint transaction.
+// Both publication paths retain their real persistence/lease/CAS behavior, so
+// removing the service fence makes the refused operation publish and fail.
+type b07EndpointFenceStore struct {
+	driver.Store
+	driver.PersistentCheckpointStore
+	driver.HeadGuardedCheckpointStore
+	beforeSave   func()
+	fencedWrites int
+}
+
+func (s *b07EndpointFenceStore) barrier() {
+	if fn := s.beforeSave; fn != nil {
+		s.beforeSave = nil
+		fn()
+	}
+}
+
+func (s *b07EndpointFenceStore) SaveCheckpoint(ctx context.Context, lease driver.ActiveLease, key string, expected uint64, payload []byte) (driver.Checkpoint, error) {
+	s.barrier()
+	return s.PersistentCheckpointStore.SaveCheckpoint(ctx, lease, key, expected, payload)
+}
+
+func (s *b07EndpointFenceStore) SaveCheckpointAtHead(ctx context.Context, lease driver.ActiveLease, key string, expected uint64, payload []byte, head driver.CoreSnapshotExpectation) (driver.Checkpoint, error) {
+	s.fencedWrites++
+	s.barrier()
+	return s.HeadGuardedCheckpointStore.SaveCheckpointAtHead(ctx, lease, key, expected, payload, head)
+}
+
+func TestB07SQLWorkflowRelationsFenceOrdinaryEndpointsAtPublication(t *testing.T) {
+	for _, engine := range []string{"sqlite", "postgres"} {
+		for _, direction := range []string{"ordinary-source", "ordinary-target"} {
+			for _, method := range []string{"bead.link", "bead.unlink"} {
+				t.Run(engine+"/"+direction+"/"+method, func(t *testing.T) {
+					f := newB07SQLPlaneFixture(t, engine)
+					ordinary := f.createB08(t, "endpoint", "issue", nil, nil)
+					item := b07InvokeSQLWorkflow(t, f, 1)[0]
+					from, to := ordinary, item
+					if direction == "ordinary-target" {
+						from, to = item, ordinary
+					}
+					params := map[string]any{"from": from, "to": to, "kind": "related"}
+					beforeKind := ""
+					if method == "bead.unlink" {
+						b08Commit(t, f.callB08(t, "bead.link", "seed-relation", params))
+						beforeKind = "related"
+					}
+					base := f.store
+					barrier := &b07EndpointFenceStore{
+						Store:                      base,
+						PersistentCheckpointStore:  base.(driver.PersistentCheckpointStore),
+						HeadGuardedCheckpointStore: base.(driver.HeadGuardedCheckpointStore),
+					}
+					f.store = barrier
+					f.install(t)
+					before := f.conservation(t)
+					var afterRace b08Conservation
+					barrier.beforeSave = func() {
+						// This is a real public ordinary mutation after validation,
+						// before checkpoint publication, on the same store/lease.
+						b08Commit(t, f.callB08(t, "bead.update", "advance-endpoint", map[string]any{"id": ordinary, "fields": map[string]any{"title": "changed before relation publication"}}))
+						afterRace = f.conservation(t)
+					}
+					got := f.callB08(t, method, "fenced-relation", params)
+					if got.Error == nil || got.Error.Data.Code != "write_conflict" || barrier.beforeSave != nil || barrier.fencedWrites != 1 {
+						t.Fatalf("stale ordinary endpoint published: error=%+v fencedWrites=%d result=%s", got.Error, barrier.fencedWrites, got.Result)
+					}
+					if before.Meta.Head.String() == afterRace.Meta.Head.String() || !reflect.DeepEqual(before.Checkpoints, afterRace.Checkpoints) {
+						t.Fatal("barrier did not isolate one real core mutation from workflow publication")
+					}
+					b08SameConservation(t, afterRace, f.conservation(t))
+					f.reopenB08(t)
+					b08SameConservation(t, afterRace, f.conservation(t))
+					b07SQLRequireRelation(t, f, from, to, beforeKind, nil, false)
+					// Refusal published no receipt: the exact request/key can
+					// succeed against fresh observations and replay after reopen.
+					retried := f.callB08(t, method, "fenced-relation", params)
+					b08Commit(t, retried)
+					afterKind := "related"
+					if method == "bead.unlink" {
+						afterKind = ""
+					}
+					b07SQLRequireRelation(t, f, from, to, afterKind, nil, false)
+					b07SQLReplay(t, f, method, "fenced-relation", params, retried)
+				})
+			}
+		}
+	}
+}
 
 // These are Plug RPC assertions, not native reference observations. Each SQL
 // fixture has one store, lease, Writer and service for both ordinary beads and

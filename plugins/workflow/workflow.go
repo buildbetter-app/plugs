@@ -70,6 +70,9 @@ type LinkRequest struct {
 	To       model.Ref           `json:"to"`
 	Kind     string              `json:"kind"`
 	Metadata *model.LinkMetadata `json:"metadata,omitempty"`
+	// CoreHead is supplied only by the trusted service after validating an
+	// ordinary endpoint. It is neither wire input nor part of replay identity.
+	CoreHead *driver.CoreSnapshotExpectation `json:"-"`
 }
 
 // PromoteRequest names the active workflow item and the ordinary bead that the
@@ -655,13 +658,20 @@ func (p *Provider) saveWithResolver(ctx context.Context, value persisted, revisi
 	if !observed {
 		return p.save(ctx, value, revision)
 	}
+	return p.saveAtHead(ctx, value, revision, &head)
+}
+
+func (p *Provider) saveAtHead(ctx context.Context, value persisted, revision pluginapi.Revision, head *driver.CoreSnapshotExpectation) error {
+	if head == nil {
+		return p.save(ctx, value, revision)
+	}
 	guarded, ok := p.state.(interface {
 		PutAtHead(context.Context, string, any, pluginapi.Revision, driver.CoreSnapshotExpectation) (pluginapi.Revision, error)
 	})
 	if !ok {
 		return fail("unsupported", "durable state cannot atomically fence core blocker observations")
 	}
-	_, err := guarded.PutAtHead(ctx, stateKey, value, revision, head)
+	_, err := guarded.PutAtHead(ctx, stateKey, value, revision, *head)
 	return err
 }
 
@@ -1658,7 +1668,7 @@ func (p *Provider) relationMutation(ctx context.Context, by model.PrincipalRef, 
 		return model.Commit{}, err
 	}
 	p.appendAudit(&value, "workflow.relation", receipt)
-	if err := p.mapSaveError(p.save(ctx, value, revision)); err != nil {
+	if err := p.mapSaveError(p.saveAtHead(ctx, value, revision, req.CoreHead)); err != nil {
 		return model.Commit{}, err
 	}
 	return commit, nil
