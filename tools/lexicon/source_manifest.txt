@@ -1435,6 +1435,10 @@ spec/s1-b25-b28/README.md
 spec/s1-b25-b28/acceptance_test.go
 spec/s1-b25-b28/b26-deviation.json
 spec/s1-b25-b28/b26-positive-producer.json
+spec/s1-b25-b28/compare_native_pair.py
+spec/s1-b25-b28/compare_native_pair_test.py
+spec/s1-b25-b28/compare_r418_pair.py
+spec/s1-b25-b28/compare_r418_pair_test.py
 spec/s1-b25-b28/config_union_test.go
 spec/s1-b25-b28/converter_test.go
 spec/s1-b25-b28/provenance.py
@@ -1445,6 +1449,7 @@ spec/s1-b25-b28/relations_test.go
 spec/s1-b25-b28/subscribers_test.go
 spec/s1-b25-b28/testdata/existing-target.jsonl
 spec/s1-b25-b28/testdata/inputs.jsonl
+spec/s1-b25-b28/testdata/native-product-source-binding.json
 spec/s1-b25-b28/testdata/native-public-profile.json
 spec/s1-b25-b28/testdata/native-public-recording-fixture.json
 spec/s1-b25-b28/testdata/projection.json
