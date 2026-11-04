@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
@@ -42,11 +43,23 @@ func (t *transaction) selectionNeverSourcedBefore(ctx context.Context, c queryer
 	return false, nil
 }
 
+// A miss certifies only these physical row identities on the held current image.
+// Any hit keeps the original scalar lookup, including its first-row behavior.
+const selectionFamilyOldRowBatch = 128
+
+func selectionFamilyOldRowPresentSQL(count int) string {
+	return `SELECT 1 FROM selection_fact_sets f INDEXED BY selection_fact_sets_current_row
+		JOIN objects o ON o.key=f.source_key AND o.kind='bead'
+		WHERE f.incarnation=? AND f.branch=? AND f.row_table=? AND f.end_revision IS NULL
+		AND f.source_key>='0:' AND f.source_key<'0;' AND f.row_key IN (` +
+		strings.TrimSuffix(strings.Repeat("?,", count), ",") + `) LIMIT 1`
+}
+
 // Complete typed rows must accompany every changed live bead. Existing fact
 // identities may be replaced, but an untyped/deleted row for a still-live
 // source or a changed source with no complete replacement invalidates only
 // that family's coverage. The final Ancestor chain is checked separately.
-func (t *transaction) selectionFamilyCompleteForCommit(ctx context.Context, c queryer, incarnation string, family driver.SelectionProjectionFamily, derived map[string]driver.LockState) (bool, error) {
+func (t *transaction) selectionFamilyCompleteForCommit(ctx context.Context, c queryer, incarnation string, family driver.SelectionProjectionFamily, derived map[string]driver.LockState) (complete bool, err error) {
 	if family.Kind == "" {
 		return t.selectionCompleteForCommit(ctx, c, incarnation, derived)
 	}
@@ -60,7 +73,27 @@ func (t *transaction) selectionFamilyCompleteForCommit(ctx context.Context, c qu
 	bySource := map[string]map[string]struct{}{}
 	removedBySource := map[string]map[string]struct{}{}
 	touchedSources := map[string]struct{}{}
+	// Capture one map traversal, without sorting or evaluating later proofs.
+	keys := make([]string, 0, len(derived))
 	for id, state := range derived {
+		if state.Key.Derived != nil && state.Key.Derived.Table == family.Table {
+			keys = append(keys, id)
+		}
+	}
+	conn, _ := c.(*sql.Conn)    // staged readers keep their original scalar path
+	var statements [2]*sql.Stmt // full batches and the exact-arity tail
+	defer func() {
+		for _, statement := range statements {
+			if statement != nil {
+				if closeErr := statement.Close(); closeErr != nil && err == nil {
+					complete, err = false, closeErr
+				}
+			}
+		}
+	}()
+	absent := false
+	for position, id := range keys {
+		state := derived[id]
 		if state.Key.Derived == nil {
 			continue
 		}
@@ -70,14 +103,49 @@ func (t *transaction) selectionFamilyCompleteForCommit(ctx context.Context, c qu
 		if state.Key.Derived.Table != family.Table {
 			continue
 		}
+		if conn != nil && position%selectionFamilyOldRowBatch == 0 {
+			absent = false
+			end := min(position+selectionFamilyOldRowBatch, len(keys))
+			count := end - position
+			if count > 1 {
+				arm := 0
+				if count != selectionFamilyOldRowBatch {
+					arm = 1
+				}
+				if statements[arm] == nil {
+					statements[arm], err = conn.PrepareContext(ctx, selectionFamilyOldRowPresentSQL(count))
+					if err != nil {
+						return false, err
+					}
+				}
+				args := make([]any, 0, 3+count)
+				args = append(args, incarnation, revKey(0), string(family.Table))
+				for _, key := range keys[position:end] {
+					args = append(args, key)
+				}
+				var present int
+				lookupErr := statements[arm].QueryRowContext(ctx, args...).Scan(&present)
+				if lookupErr != nil && !errors.Is(lookupErr, sql.ErrNoRows) {
+					return false, lookupErr // never retry or hide a native source error
+				}
+				absent = errors.Is(lookupErr, sql.ErrNoRows)
+			}
+		}
 		var oldSource, oldKind string
-		err := c.QueryRowContext(ctx, `SELECT f.source_key,f.kind FROM selection_fact_sets f
+		var err error
+		if absent {
+			if err = ctx.Err(); err != nil {
+				return false, err
+			}
+		} else {
+			err = c.QueryRowContext(ctx, `SELECT f.source_key,f.kind FROM selection_fact_sets f
 			JOIN objects o ON o.key=f.source_key AND o.kind='bead'
 			WHERE f.incarnation=? AND f.branch=? AND f.row_key=? AND f.row_table=? AND f.end_revision IS NULL
 			AND f.source_key>='0:' AND f.source_key<'0;'`,
-			incarnation, revKey(0), id, string(family.Table)).Scan(&oldSource, &oldKind)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return false, err
+				incarnation, revKey(0), id, string(family.Table)).Scan(&oldSource, &oldKind)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return false, err
+			}
 		}
 		if oldKind == string(family.Kind) && oldSource != "" {
 			touchedSources[oldSource] = struct{}{}

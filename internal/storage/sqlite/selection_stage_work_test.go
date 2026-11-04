@@ -43,6 +43,13 @@ type selectionStageConnector struct {
 	batchCanceled  atomic.Int64
 	batchCancel    context.CancelFunc
 	batchCloseErr  error
+	family         selectionFamilyNativeWork
+}
+
+type selectionFamilyNativeWork struct {
+	prepares, attempts, queries, scalar, rows, closes, maxKeys, canceled atomic.Int64
+	cancel                                                               context.CancelFunc // connector.mu
+	closeErr                                                             error              // connector.mu
 }
 
 func (c *selectionStageConnector) Driver() sqldriver.Driver { return c.driver }
@@ -71,11 +78,72 @@ func (c *selectionStageConn) PrepareContext(ctx context.Context, query string) (
 	} else {
 		statement, err = c.Conn.Prepare(query)
 	}
+	if err == nil && strings.HasPrefix(query, "SELECT 1 FROM selection_fact_sets f INDEXED BY selection_fact_sets_current_row") {
+		c.counts.family.prepares.Add(1)
+		return &selectionFamilyOldRowStatement{Stmt: statement, counts: c.counts}, nil
+	}
 	if err != nil || !strings.HasPrefix(query, "WITH requested(ordinal,key) AS (VALUES ") {
 		return statement, err
 	}
 	c.counts.batchPrepares.Add(1)
 	return &selectionStageBatchStatement{Stmt: statement, counts: c.counts}, nil
+}
+
+type selectionFamilyOldRowStatement struct {
+	sqldriver.Stmt
+	counts *selectionStageConnector
+}
+
+func (s *selectionFamilyOldRowStatement) QueryContext(ctx context.Context, args []sqldriver.NamedValue) (sqldriver.Rows, error) {
+	w := &s.counts.family
+	w.attempts.Add(1)
+	keys := int64(len(args) - 3)
+	for old := w.maxKeys.Load(); old < keys; old = w.maxKeys.Load() {
+		if w.maxKeys.CompareAndSwap(old, keys) {
+			break
+		}
+	}
+	s.counts.mu.Lock()
+	cancel := w.cancel
+	w.cancel = nil
+	s.counts.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	rows, err := s.Stmt.(sqldriver.StmtQueryContext).QueryContext(ctx, args)
+	if errors.Is(err, context.Canceled) {
+		w.canceled.Add(1)
+	}
+	if err != nil {
+		return rows, err
+	}
+	w.queries.Add(1)
+	return &selectionFamilyOldRowRows{Rows: rows, work: w}, nil
+}
+
+func (s *selectionFamilyOldRowStatement) Close() error {
+	err := s.Stmt.Close()
+	s.counts.family.closes.Add(1)
+	s.counts.mu.Lock()
+	closeErr := s.counts.family.closeErr
+	s.counts.mu.Unlock()
+	if err == nil {
+		err = closeErr
+	}
+	return err
+}
+
+type selectionFamilyOldRowRows struct {
+	sqldriver.Rows
+	work *selectionFamilyNativeWork
+}
+
+func (r *selectionFamilyOldRowRows) Next(values []sqldriver.Value) error {
+	err := r.Rows.Next(values)
+	if err == nil {
+		r.work.rows.Add(1)
+	}
+	return err
 }
 
 type selectionStageBatchStatement struct {
@@ -158,6 +226,9 @@ func (c *selectionStageConn) QueryContext(ctx context.Context, query string, arg
 	rows, err := c.Conn.(sqldriver.QueryerContext).QueryContext(ctx, query, args)
 	if err == nil && sourceQuery {
 		c.counts.queries.Add(1)
+	}
+	if err == nil && strings.HasPrefix(query, "SELECT f.source_key,f.kind FROM selection_fact_sets f") {
+		c.counts.family.scalar.Add(1)
 	}
 	if cancel != nil && errors.Is(err, context.Canceled) {
 		c.counts.canceledNative.Add(1)
@@ -262,6 +333,11 @@ func TestSelectionStageValidationExecutedWork(t *testing.T) {
 				counts.batchPrepares.Load() != 2 || counts.batchCloses.Load() != 2 || counts.batchMaxKeys.Load() != 128 {
 				t.Fatalf("Commit native history queries=%d rows=%d prepares=%d closes=%d max_keys=%d; want %d/%d/2/2/128",
 					counts.batchQueries.Load(), counts.batchRows.Load(), counts.batchPrepares.Load(), counts.batchCloses.Load(), counts.batchMaxKeys.Load(), wantBatches, population)
+			}
+			if counts.family.queries.Load() != 3*wantBatches || counts.family.scalar.Load() != 0 || counts.family.rows.Load() != 0 ||
+				counts.family.prepares.Load() != 6 || counts.family.closes.Load() != 6 || counts.family.maxKeys.Load() != 128 {
+				t.Fatalf("Commit family all-miss work: queries=%d scalar=%d rows=%d prepares=%d closes=%d max=%d; want %d/0/0/6/6/128",
+					counts.family.queries.Load(), counts.family.scalar.Load(), counts.family.rows.Load(), counts.family.prepares.Load(), counts.family.closes.Load(), counts.family.maxKeys.Load(), 3*wantBatches)
 			}
 			var durable int
 			if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM selection_bead_history WHERE end_revision IS NULL`).Scan(&durable); err != nil || durable != population {
@@ -649,6 +725,206 @@ func TestSelectionValidationCommitCleanupRollsBackAndRecovers(t *testing.T) {
 	}
 	if counts.batchPrepares.Load() != 2 || counts.batchCloses.Load() != 2 || counts.batchQueries.Load() != 2 {
 		t.Fatalf("Commit cleanup lifecycle: prepares=%d closes=%d queries=%d", counts.batchPrepares.Load(), counts.batchCloses.Load(), counts.batchQueries.Load())
+	}
+}
+
+func selectionFamilyOldRowRequests(count int) map[string]driver.LockState {
+	rows := make(map[string]driver.LockState, count)
+	for i := 0; i < count; i++ {
+		key := driver.DerivedRowKey{Table: driver.DerivedAttribute, Key: fmt.Sprintf("family-old-row/%04d", i)}
+		if i == 0 {
+			key.Key += string([]byte{0xff})
+		}
+		lock := driver.LockKey{Kind: driver.LockDerived, Derived: &key}
+		rows[keyID(lock)] = driver.LockState{Key: lock, Present: true, Derived: &driver.DerivedRow{Key: key.Key, Value: []byte(`{}`)}}
+	}
+	return rows
+}
+
+func TestSelectionFamilyOldRowMissBatches(t *testing.T) {
+	for _, population := range []int{0, 1, 128, 129, 258, 1000} {
+		t.Run(fmt.Sprint(population), func(t *testing.T) {
+			ctx := testContext(t)
+			s, counts := selectionStageStore(t, ctx)
+			meta := getMeta(t, ctx, s)
+			family := sqliteSelectionFamilies()[1]
+			owner := &transaction{records: map[string]*driver.Record{}}
+			rows := selectionFamilyOldRowRequests(population)
+			err := s.immediate(ctx, nil, func(c *sql.Conn) error {
+				// The wrapper deliberately retains the scalar path on the same
+				// connection/image; it supplies no fabricated observation result.
+				scalar := &selectionCountingQueryer{conn: c}
+				want, err := owner.selectionFamilyCompleteForCommit(ctx, scalar, meta.Incarnation, family, rows)
+				if err != nil || !want || scalar.rowQueries != population {
+					return fmt.Errorf("scalar fixture: complete=%t queries=%d err=%v", want, scalar.rowQueries, err)
+				}
+				counts.family.scalar.Store(0)
+				got, err := owner.selectionFamilyCompleteForCommit(ctx, c, meta.Incarnation, family, rows)
+				if err != nil || got != want {
+					return fmt.Errorf("native batch parity: complete=%t want=%t err=%v", got, want, err)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			queries, scalar, prepares := int64((population+127)/128), int64(0), int64(0)
+			if population >= 128 {
+				prepares++
+			}
+			if population%128 > 1 {
+				prepares++
+			}
+			if population%128 == 1 {
+				scalar = 1 // the final single key retains its original scalar call
+			}
+			if counts.family.queries.Load()+counts.family.scalar.Load() != queries || counts.family.scalar.Load() != scalar ||
+				counts.family.prepares.Load() != prepares || counts.family.closes.Load() != prepares || counts.family.rows.Load() != 0 || counts.family.maxKeys.Load() > 128 {
+				t.Fatalf("native miss work queries=%d scalar=%d prepares=%d closes=%d rows=%d max=%d; want total=%d scalar=%d prepares=%d",
+					counts.family.queries.Load(), counts.family.scalar.Load(), counts.family.prepares.Load(), counts.family.closes.Load(), counts.family.rows.Load(), counts.family.maxKeys.Load(), queries, scalar, prepares)
+			}
+		})
+	}
+	t.Run("pinned_sql_tx_keeps_scalar_path", func(t *testing.T) {
+		ctx := testContext(t)
+		s, counts := selectionStageStore(t, ctx)
+		meta := getMeta(t, ctx, s)
+		readTx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer readTx.Rollback()
+		owner := &transaction{records: map[string]*driver.Record{}}
+		complete, err := owner.selectionFamilyCompleteForCommit(ctx, readTx, meta.Incarnation, sqliteSelectionFamilies()[1], selectionFamilyOldRowRequests(129))
+		if err != nil || !complete || counts.family.scalar.Load() != 129 || counts.family.prepares.Load() != 0 {
+			t.Fatalf("staged-reader path changed: complete=%t scalar=%d prepares=%d err=%v", complete, counts.family.scalar.Load(), counts.family.prepares.Load(), err)
+		}
+	})
+}
+
+func TestSelectionFamilyOldRowPredicateAndPositiveHitParity(t *testing.T) {
+	for _, fixture := range []string{"incarnation", "branch", "row_table", "row_key", "closed", "nonbead", "missing_object", "source_range", "wrong_kind", "duplicate_active"} {
+		t.Run(fixture, func(t *testing.T) {
+			ctx := testContext(t)
+			s, counts := selectionStageStore(t, ctx)
+			meta := getMeta(t, ctx, s)
+			family := sqliteSelectionFamilies()[1]
+			rows := selectionFamilyOldRowRequests(2)
+			var rowKey string
+			for id := range rows {
+				rowKey = id
+				break
+			}
+			incarnation, branch, table := meta.Incarnation, revKey(0), string(family.Table)
+			kind, objectKind, source := string(family.Kind), "bead", "0:family-source-a"
+			var end any
+			switch fixture {
+			case "incarnation":
+				incarnation = "other-incarnation"
+			case "branch":
+				branch = revKey(1)
+			case "row_table":
+				table = string(driver.DerivedReferenceIndex)
+			case "row_key":
+				rowKey = "3:attribute:not-requested"
+			case "closed":
+				end = revKey(2)
+			case "nonbead":
+				objectKind = "memory"
+			case "source_range":
+				source = "1:outside-record-domain"
+			case "wrong_kind":
+				kind = string(driver.SelectionLinkFact)
+			}
+			if fixture != "missing_object" {
+				selectionValidationExec(t, ctx, s, `INSERT INTO objects(key,kind) VALUES(?,?)`, source, objectKind)
+			}
+			insert := `INSERT INTO selection_fact_sets(incarnation,branch,row_key,row_table,kind,start_revision,end_revision,source_key,source_revision,source_present,source_digest)
+				VALUES(?,?,?,?,?,?,?,?,?,?,?)`
+			selectionValidationExec(t, ctx, s, insert, incarnation, branch, rowKey, table, kind, revKey(1), end, source, revKey(1), 1, "source-digest")
+			if fixture == "duplicate_active" {
+				selectionValidationExec(t, ctx, s, `INSERT INTO objects(key,kind) VALUES(?,?)`, "0:family-source-b", "bead")
+				selectionValidationExec(t, ctx, s, insert, incarnation, branch, rowKey, table, string(driver.SelectionLinkFact), revKey(2), nil, "0:family-source-b", revKey(2), 1, "other-digest")
+			}
+			conn, err := s.db.Conn(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			owner := &transaction{records: map[string]*driver.Record{}}
+			scalar := &selectionCountingQueryer{conn: conn}
+			want, wantErr := owner.selectionFamilyCompleteForCommit(ctx, scalar, meta.Incarnation, family, rows)
+			counts.family.scalar.Store(0)
+			got, err := owner.selectionFamilyCompleteForCommit(ctx, conn, meta.Incarnation, family, rows)
+			if err != nil || wantErr != nil || got != want {
+				t.Fatalf("positive/scalar first-match parity: got=%t err=%v want=%t err=%v", got, err, want, wantErr)
+			}
+			hit := fixture == "wrong_kind" || fixture == "duplicate_active"
+			if hit && (counts.family.rows.Load() != 1 || counts.family.scalar.Load() == 0) ||
+				!hit && (counts.family.rows.Load() != 0 || counts.family.scalar.Load() != 0 || !got) ||
+				counts.family.queries.Load() != 1 || counts.family.prepares.Load() != 1 || counts.family.closes.Load() != 1 || counts.family.maxKeys.Load() != 2 {
+				t.Fatalf("predicate/hit dispatch: fixture=%s hit=%t rows=%d scalar=%d queries=%d prepares=%d closes=%d max=%d", fixture, hit, counts.family.rows.Load(), counts.family.scalar.Load(), counts.family.queries.Load(), counts.family.prepares.Load(), counts.family.closes.Load(), counts.family.maxKeys.Load())
+			}
+		})
+	}
+}
+
+func TestSelectionFamilyOldRowNativeFailureRollback(t *testing.T) {
+	for _, failure := range []string{"query_cancel", "missing_index", "cleanup"} {
+		t.Run(failure, func(t *testing.T) {
+			ctx := testContext(t)
+			s, counts := selectionStageStore(t, ctx)
+			meta := getMeta(t, ctx, s)
+			call, cancel := context.WithCancel(ctx)
+			defer cancel()
+			counts.mu.Lock()
+			counts.family.closeErr = io.ErrClosedPipe
+			if failure == "query_cancel" {
+				counts.family.cancel = cancel
+			}
+			counts.mu.Unlock()
+			owner := &transaction{records: map[string]*driver.Record{}}
+			rows := selectionFamilyOldRowRequests(258)
+			err := s.immediate(call, nil, func(c *sql.Conn) error {
+				if _, err := c.ExecContext(call, `INSERT INTO records(key,data) VALUES('family-rollback-marker',X'7b7d')`); err != nil {
+					return err
+				}
+				if failure == "missing_index" {
+					if _, err := c.ExecContext(call, `DROP INDEX selection_fact_sets_current_row`); err != nil {
+						return err
+					}
+				}
+				complete, err := owner.selectionFamilyCompleteForCommit(call, c, meta.Incarnation, sqliteSelectionFamilies()[1], rows)
+				if complete {
+					return fmt.Errorf("failed family observation returned complete")
+				}
+				return err
+			})
+			if failure == "query_cancel" && (!errors.Is(err, context.Canceled) || counts.family.canceled.Load() != 1) ||
+				failure == "missing_index" && (err == nil || !strings.Contains(err.Error(), "no such index")) ||
+				failure == "cleanup" && !errors.Is(err, io.ErrClosedPipe) {
+				t.Fatalf("original failure precedence: mode=%s err=%v native_canceled=%d", failure, err, counts.family.canceled.Load())
+			}
+			if counts.family.scalar.Load() != 0 || counts.family.closes.Load() != counts.family.prepares.Load() {
+				t.Fatal("native error retried scalar SQL or leaked a prepared handle")
+			}
+			var durable int
+			if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM records`).Scan(&durable); err != nil || durable != 0 || !getMeta(t, ctx, s).Head.IsZero() {
+				t.Fatalf("failed family observation published partial state: rows=%d err=%v", durable, err)
+			}
+			counts.mu.Lock()
+			counts.family.closeErr = nil
+			counts.mu.Unlock()
+			if err := s.immediate(ctx, nil, func(c *sql.Conn) error {
+				complete, err := owner.selectionFamilyCompleteForCommit(ctx, c, meta.Incarnation, sqliteSelectionFamilies()[1], rows)
+				if err == nil && !complete {
+					return fmt.Errorf("family observation did not recover")
+				}
+				return err
+			}); err != nil {
+				t.Fatalf("native rollback/schema/connection recovery: %v", err)
+			}
+		})
 	}
 }
 
