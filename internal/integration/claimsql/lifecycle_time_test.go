@@ -277,11 +277,11 @@ func TestSQLTypedClosePersistsTimesOnlyForItsOwnTargets(t *testing.T) {
 		f := newFixture(t, e)
 		createdAt := f.now()
 		created := mustResult(t, dispatch(f.rpc, f.ctx, anonymous, "tx.apply", params(map[string]any{
-			"ops": []model.Op{
+			"changeSet": model.ChangeSet{Ops: []model.Op{
 				{Kind: model.OpCreate, Create: &model.CreateOp{Key: "fresh", Type: "issue", Fields: map[string]any{"title": "created then closed"}}},
 				{Kind: model.OpClose, Close: &model.CloseOp{Target: model.Ref{Key: "fresh"}, Reason: "same atomic batch"}},
 				{Kind: model.OpCreate, Create: &model.CreateOp{Key: "open", Type: "issue", Fields: map[string]any{"title": "unrelated open"}}},
-			},
+			}},
 		}, writeKey(9201), "alice")))
 		results := created["results"].([]any)
 		closed := f.refFromResult(t, map[string]any{"results": results[:1]})
@@ -291,10 +291,10 @@ func TestSQLTypedClosePersistsTimesOnlyForItsOwnTargets(t *testing.T) {
 		requireLifecycleTimes(t, sqlLifecycleBody(t, f, open), &createdAt, nil, nil)
 		f.advance(time.Second)
 		mustResult(t, dispatch(f.rpc, f.ctx, anonymous, "tx.apply", params(map[string]any{
-			"ops": []model.Op{
+			"changeSet": model.ChangeSet{Ops: []model.Op{
 				{Kind: model.OpPatch, Patch: &model.PatchOp{Target: open, Fields: map[string]any{"title": "unrelated patch"}}},
 				{Kind: model.OpClose, Close: &model.CloseOp{Target: closed, Reason: "settlement"}},
-			},
+			}},
 		}, writeKey(9202), "alice")))
 		requireLifecycleTimes(t, sqlLifecycleBody(t, f, closed), &createdAt, nil, &createdAt)
 		requireLifecycleTimes(t, sqlLifecycleBody(t, f, open), &createdAt, nil, nil)
