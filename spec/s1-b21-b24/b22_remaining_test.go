@@ -622,7 +622,7 @@ func TestS1B22LateSQLPublicationFailureConservesEveryTableAndReopens(t *testing.
 	for _, engine := range []string{"sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			post := &b22Post{}
-			f := newFixture(t, engine, pipeline.WithPostSubscribers(pipeline.PostBinding{ID: "b22-late-sql", Subscriber: post}))
+			f := newFixture(t, engine, pipeline.WithOntologyAudit(service.NewOntologyAudit(nil)), pipeline.WithPostSubscribers(pipeline.PostBinding{ID: "b22-late-sql", Subscriber: post}))
 			target, seed := f.create(t, "b22-sql-target", "original")
 			other, _ := f.create(t, "b22-sql-other", "unrelated")
 			const label = "b22-late-sql-recovery"
@@ -669,7 +669,8 @@ func TestS1B22LateSQLPublicationFailureConservesEveryTableAndReopens(t *testing.
  SELECT RAISE(ABORT,'B22_LATE_STATE_NOT_STAGED')
  WHERE NOT EXISTS(SELECT 1 FROM records r JOIN versions v ON v.key=r.key AND v.rev=NEW.rev
  WHERE r.key='%s' AND hex(r.data)<>'%X')
- OR NOT EXISTS(SELECT 1 FROM key_history WHERE rev=NEW.rev AND key='%s');
+ OR NOT EXISTS(SELECT 1 FROM key_history WHERE rev=NEW.rev AND key='%s')
+ OR COALESCE(json_array_length(CAST(NEW.data AS TEXT),'$.events'),0)<>1;
  SELECT RAISE(ABORT,'B22_LATE_SQL_REFUSAL'); END;`, strings.ReplaceAll(recordKey, "'", "''"), original, strings.ReplaceAll(derivedKey, "'", "''"))
 			}
 			remove := `DROP TRIGGER b22_reject_changeset`
@@ -681,6 +682,7 @@ BEGIN
  IF NOT EXISTS(SELECT 1 FROM plug_postgres.records r JOIN plug_postgres.versions v
  ON r.key=v.key AND r.revision=v.revision WHERE r.revision=NEW.revision AND r.key=decode('%x','hex'))
  OR NOT EXISTS(SELECT 1 FROM plug_postgres.states WHERE revision=NEW.revision AND key=decode('%x','hex'))
+ OR COALESCE(jsonb_array_length(convert_from(NEW.value,'UTF8')::jsonb->'events'),0)<>1
  THEN RAISE EXCEPTION 'B22_LATE_STATE_NOT_STAGED'; END IF;
  PERFORM nextval('public.b22_late_sql_hit');
  RAISE EXCEPTION 'B22_LATE_SQL_REFUSAL';
@@ -754,6 +756,11 @@ FOR EACH ROW EXECUTE FUNCTION public.b22_reject_changeset();`, []byte(recordKey)
 			if doc.Fields["title"] != "committed after recovery" || len(doc.Comments) != 1 || doc.Comments[0].Body != "one recovery comment" || len(doc.Links) != 1 || doc.Links[0].To.ID != other.ID || string(doc.Metadata["plugin.b22"]) != `{"atomic":true}` || len(after.Versions[target.ID]) != 2 || len(after.Versions[other.ID]) != 1 || len(after.Changesets) != 3 || len(after.Changesets[2].Changes) != 1 {
 				t.Fatalf("B22 recovered transaction is not one complete relational mutation: %+v", doc)
 			}
+			events := after.Changesets[2].Events
+			if len(events) != 1 || events[0].Resource.Ref.ID != target.ID || events[0].Type != model.EventBeadLinked || events[0].Provenance.Method != "tx.apply" || events[0].Provenance.Cause.Root != key(label) || events[0].ChangeIndex != model.Natural64(0) {
+				t.Fatalf("B22 recovered staged event does not bind the actual relational transaction: %+v", events)
+			}
+			b22Evidence(t, "recovered-event", events)
 			physical = b22Physical(t, f, "recovered")
 			f.reopen(t)
 			replay := f.dispatch(request)
@@ -831,6 +838,7 @@ func TestS1B22RefusalIdentifiesGuardAddressOutsideMutation(t *testing.T) {
 // acknowledgment after the native driver has committed its durable receipt.
 type b22TransactionFaultStore struct {
 	driver.Store
+	driver.CheckpointStore
 	mode    string
 	commits atomic.Int32
 	staged  atomic.Int32
@@ -883,7 +891,7 @@ func TestS1B22SerializationRetryExhaustionAndLostCommitAck(t *testing.T) {
 			t.Run(engine+"/"+mode, func(t *testing.T) {
 				f := newFixture(t, engine)
 				target, _ := f.create(t, "b22-transaction-fault-target", "original")
-				fault := &b22TransactionFaultStore{Store: f.store, mode: mode}
+				fault := &b22TransactionFaultStore{Store: f.store, CheckpointStore: f.store.(driver.CheckpointStore), mode: mode}
 				post := &b22Post{}
 				var validations atomic.Int32
 				options := []pipeline.Option{pipeline.WithOntology(f.ontology), pipeline.WithClock(f.clock.Now), pipeline.WithValidators(pipeline.ValidatorBinding{ID: "b22-retry-validate", Validator: b22Validator(func(context.Context, port.ProposedChange, port.SnapshotReader) (port.Verdict, error) {
@@ -901,7 +909,11 @@ func TestS1B22SerializationRetryExhaustionAndLostCommitAck(t *testing.T) {
 				before := f.state(t)
 				physical := b22Physical(t, f, "before")
 				out, err := writer.ApplyWithOutcome(f.ctx, anonymous, cs, meta)
-				b22Evidence(t, "outcome", map[string]any{"commit": out.Commit, "replayed": out.Replayed, "error": fmt.Sprint(err), "attempts": fault.commits.Load(), "staged": fault.staged.Load(), "durable": fault.durable.Load(), "validations": validations.Load(), "posts": post.count()})
+				observed := map[string]any{"revision": out.Commit.Revision, "result_count": len(out.Commit.Results), "replayed": out.Replayed, "error": fmt.Sprint(err), "attempts": fault.commits.Load(), "staged": fault.staged.Load(), "durable": fault.durable.Load(), "validations": validations.Load(), "posts": post.count()}
+				if err == nil {
+					observed["commit"] = out.Commit
+				}
+				b22Evidence(t, "outcome", observed)
 				if mode == "retry-exhausted" {
 					var typed *model.Error
 					if !errors.As(err, &typed) || typed.Data.Code != "write_conflict" || !typed.Data.Retryable || !out.Commit.Revision.IsZero() || out.Replayed || fault.commits.Load() != 4 || fault.staged.Load() != 4 || validations.Load() != 4 || fault.durable.Load() != 0 || post.count() != 0 {
@@ -922,7 +934,8 @@ func TestS1B22SerializationRetryExhaustionAndLostCommitAck(t *testing.T) {
 					t.Fatalf("B22 retry/indeterminate resolution did not produce one durable outcome: %+v / %v", out, err)
 				}
 				after := f.state(t)
-				if len(after.Changesets) != 2 || len(after.Versions[target.ID]) != 2 || len(after.Receipts) != 2 {
+				receipt := f.casReceipt(t, "tx.apply", "b22-transaction-fault")
+				if len(after.Changesets) != 2 || len(after.Versions[target.ID]) != 2 || receipt == nil || receipt.ResponsePending || !reflect.DeepEqual(receipt.Commit, out.Commit) {
 					t.Fatal("B22 retry/indeterminate recovery published duplicate history/receipts")
 				}
 				physical = b22Physical(t, f, "final")
@@ -940,6 +953,7 @@ func TestS1B22SerializationRetryExhaustionAndLostCommitAck(t *testing.T) {
 
 type b22ClaimReadFault struct {
 	driver.Store
+	driver.CheckpointStore
 	target   model.Ref
 	phase    string
 	cause    error
@@ -1003,7 +1017,7 @@ func TestS1B22ClaimSelectionAndHydrationFailurePublishNothing(t *testing.T) {
 			t.Run(engine+"/"+phase, func(t *testing.T) {
 				f := newFixture(t, engine)
 				target, _ := f.create(t, "b22-claim-read-target", "must remain unclaimed")
-				fault := &b22ClaimReadFault{Store: f.store, target: target, phase: phase, cause: errors.New("B22_REAL_CLAIM_READ_REFUSAL")}
+				fault := &b22ClaimReadFault{Store: f.store, CheckpointStore: f.store.(driver.CheckpointStore), target: target, phase: phase, cause: errors.New("B22_REAL_CLAIM_READ_REFUSAL")}
 				fault.enabled.Store(true)
 				post := &b22Post{}
 				writer := pipeline.New(fault, f.lease, pipeline.WithOntology(f.ontology), pipeline.WithClock(f.clock.Now), pipeline.WithPostSubscribers(pipeline.PostBinding{ID: "b22-read-post", Subscriber: post}))
@@ -1031,7 +1045,8 @@ func TestS1B22ClaimSelectionAndHydrationFailurePublishNothing(t *testing.T) {
 					t.Fatalf("B22 failed claim key was not reusable after read recovery: %+v / %v", out, err)
 				}
 				after := f.state(t)
-				if len(after.Versions[target.ID]) != 2 || len(after.Changesets) != 2 || len(after.Receipts) != 2 || closeDocument(t, after, target).Lease == nil {
+				receipt := f.casReceipt(t, "bead.claimNext", "b22-claim-read")
+				if len(after.Versions[target.ID]) != 2 || len(after.Changesets) != 2 || receipt == nil || receipt.ResponsePending || !reflect.DeepEqual(receipt.Commit, out.Commit) || closeDocument(t, after, target).Lease == nil {
 					t.Fatal("B22 read recovery did not publish one complete claim")
 				}
 				physical = b22Physical(t, f, "recovered")
