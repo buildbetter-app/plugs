@@ -336,7 +336,7 @@ type selectionSourceObservation struct {
 }
 
 func selectionSourceHistoryCloseSQL(count int) string {
-	return `UPDATE selection_source_history INDEXED BY selection_source_history_lookup SET end_revision=?
+	return `UPDATE selection_source_history INDEXED BY selection_source_history_current SET end_revision=?
 		WHERE incarnation=? AND branch=? AND end_revision IS NULL AND source_key IN (` +
 		strings.TrimSuffix(strings.Repeat("?,", count), ",") + `)`
 }
