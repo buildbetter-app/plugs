@@ -811,8 +811,8 @@ func replayPublicArchive(t *testing.T, output, storeRoot, label string, archive 
 				}
 				compare("-reopen")
 			}
-			recordPublicSubscriber(t, ctx, store, filepath.Join(output, label+"-plug-"+engine+"-subscriber.json"), []string{"pub-root", publicChildID, "pub-dependency"})
-			complete := nativePlugImage(t, ctx, store)
+			recordPublicSubscriber(t, ctx, store, filepath.Join(output, label+"-plug-"+engine+"-subscriber.json"), []string{"pub-root", publicChildID, "pub-dependency"}, profile)
+			complete := nativePlugImage(t, ctx, store, profile)
 			writeRecordingBytes(t, filepath.Join(output, label+"-plug-"+engine+"-post-write-state.json"), []byte(canonical(complete)+"\n"))
 			if sqlDriver != nil {
 				err := store.Close()
@@ -824,7 +824,7 @@ func replayPublicArchive(t *testing.T, output, storeRoot, label string, archive 
 				if err != nil {
 					t.Fatal(err)
 				}
-				reopened := nativePlugImage(t, ctx, store)
+				reopened := nativePlugImage(t, ctx, store, profile)
 				writeRecordingBytes(t, filepath.Join(output, label+"-plug-"+engine+"-post-write-reopen-state.json"), []byte(canonical(reopened)+"\n"))
 				if !equalJSON(complete, reopened) {
 					t.Fatal("SQL reopen changed native-origin source, history, derived state or durable receipts")
@@ -870,7 +870,7 @@ func (p *publicPostRecorder) After(ctx context.Context, change port.CommittedCha
 // Retain every reader-visible row, version, changeset, derived table and each
 // declared operation's durable receipt. This is an observed store image, not
 // a counter or an assertion based solely on a subscriber callback.
-func nativePlugImage(t *testing.T, ctx context.Context, store driver.Store) map[string]any {
+func nativePlugImage(t *testing.T, ctx context.Context, store driver.Store, profile driver.RestoreImportProfile) map[string]any {
 	t.Helper()
 	meta, err := store.Meta(ctx)
 	if err != nil {
@@ -893,7 +893,19 @@ func nativePlugImage(t *testing.T, ctx context.Context, store driver.Store) map[
 		}
 		versions[row.Ref.ID] = page.Items
 	}
-	changes, err := r.Changesets(ctx, nil, 1000)
+	// Snapshot restore deliberately begins public changesets strictly after
+	// HistoryFloor. Preserve its floor changeset in the bound import receipt;
+	// never pretend nil-cursor truncation is a complete empty history.
+	var cursor *driver.Cursor
+	if !meta.HistoryFloor.IsZero() {
+		_, belowErr := r.Changesets(ctx, nil, 1000)
+		var truncated driver.ErrTruncated
+		if !errors.As(belowErr, &truncated) || truncated.Floor != meta.HistoryFloor {
+			t.Fatalf("snapshot history-floor refusal changed: %v", belowErr)
+		}
+		cursor = &driver.Cursor{Incarnation: meta.Incarnation, Revision: meta.HistoryFloor}
+	}
+	changes, err := r.Changesets(ctx, cursor, 1000)
 	if err != nil || len(changes) >= 1000 {
 		t.Fatalf("complete native-origin changesets: %v", err)
 	}
@@ -928,13 +940,26 @@ func nativePlugImage(t *testing.T, ctx context.Context, store driver.Store) map[
 			receipts[key] = value
 		}
 	}
-	return map[string]any{"meta": meta, "snapshot": r.Snapshot(), "rows": rows.Items, "versions": versions, "changesets": changes, "derived": derived, "receipts": receipts}
+	importPrincipal, err := driver.PrincipalKey(profile.Admission.Actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	importReceipt, err := r.IdempotencyByKey(ctx, importPrincipal, profile.AgentLabel(), profile.Method, profile.IdempotencyKey)
+	requestHash, hashErr := profile.RequestHash()
+	if err != nil || hashErr != nil || importReceipt == nil || importReceipt.ResponsePending || importReceipt.RequestHash != requestHash || importReceipt.Changeset.Kind != model.ChangesetRestore || importReceipt.Changeset.Incarnation != meta.Incarnation || importReceipt.Changeset.Revision != meta.HistoryFloor || importReceipt.Commit.Revision != meta.HistoryFloor {
+		t.Fatalf("snapshot floor import receipt lost its exact binding: %v / %v", err, hashErr)
+	}
+	archive, err := r.Blob(ctx, driver.Hash(profile.ArchiveDigest))
+	if err != nil || hashBytes(archive) != profile.ArchiveDigest {
+		t.Fatalf("snapshot retained source archive changed: %v", err)
+	}
+	return map[string]any{"meta": meta, "snapshot": r.Snapshot(), "rows": rows.Items, "versions": versions, "changesets": changes, "changeset_cursor": cursor, "import_receipt": importReceipt, "source_archive": archive, "derived": derived, "receipts": receipts}
 }
 
 // These are real public service writes on the just-imported native rows. The
 // offline import itself makes no subscriber claim. Evidence is flushed before
 // every assertion, including a refused or unexpectedly published operation.
-func recordPublicSubscriber(t *testing.T, ctx context.Context, store driver.Store, path string, ids []string) {
+func recordPublicSubscriber(t *testing.T, ctx context.Context, store driver.Store, path string, ids []string, profile driver.RestoreImportProfile) {
 	t.Helper()
 	if len(ids) != 3 {
 		t.Fatal("public subscriber recording requires exact root, child and dependency IDs")
@@ -1049,12 +1074,12 @@ func recordPublicSubscriber(t *testing.T, ctx context.Context, store driver.Stor
 		if !equalJSON(before, after) {
 			t.Fatal("native public update changed unpatched fields, metadata, parent, links, comments or close provenance")
 		}
-		complete := nativePlugImage(t, ctx, store)
+		complete := nativePlugImage(t, ctx, store, profile)
 		writeRecordingBytes(t, path+fmt.Sprintf(".write-%d.json", i), []byte(canonical(complete)+"\n"))
 		replayed, replayErr := domain.UpdateWithOutcome(ctx, actor, req, meta)
 		appendReceipt(map[string]any{"method": "bead.update", "request": req, "meta": meta, "outcome": replayed, "error": fmt.Sprint(replayErr), "after": read()})
 		flush()
-		if replayErr != nil || !replayed.Replayed || !equalJSON(outcome.Commit, replayed.Commit) || postCount() != i+1 || !equalJSON(after, read()) || !equalJSON(complete, nativePlugImage(t, ctx, store)) {
+		if replayErr != nil || !replayed.Replayed || !equalJSON(outcome.Commit, replayed.Commit) || postCount() != i+1 || !equalJSON(after, read()) || !equalJSON(complete, nativePlugImage(t, ctx, store, profile)) {
 			t.Fatal("native public replay changed state, receipt or subscriber count")
 		}
 		last = outcome
@@ -1067,7 +1092,7 @@ func recordPublicSubscriber(t *testing.T, ctx context.Context, store driver.Stor
 	if err != nil || noop.Replayed || noop.Commit.Revision.String() != last.Commit.Revision.String() || postCount() != len(requests) || !equalJSON(before, read()) {
 		t.Fatal("native public equal replacement created a revision, subscriber call or changed state")
 	}
-	complete := nativePlugImage(t, ctx, store)
+	complete := nativePlugImage(t, ctx, store, profile)
 	closed := model.RefByID(ids[2], model.Natural64(0))
 	bad := model.ChangeSet{Ops: []model.Op{
 		{Kind: model.OpPatch, Patch: &model.PatchOp{Target: closed, Fields: map[string]any{"title": "must not land", "labels": []string{"must-not-land"}}}},
@@ -1075,10 +1100,10 @@ func recordPublicSubscriber(t *testing.T, ctx context.Context, store driver.Stor
 	}}
 	refusalMeta := model.WriteMeta{Project: before[ids[2]].Project, IdempotencyKey: hashBytes([]byte("s1-native-public-refused-aux"))}
 	refused, refusalErr := domain.ApplyWithOutcome(ctx, actor, bad, refusalMeta)
-	appendReceipt(map[string]any{"method": "tx.apply", "request": bad, "outcome": refused, "error": fmt.Sprint(refusalErr), "before": complete, "after": nativePlugImage(t, ctx, store)})
+	appendReceipt(map[string]any{"method": "tx.apply", "request": bad, "outcome": refused, "error": fmt.Sprint(refusalErr), "before": complete, "after": nativePlugImage(t, ctx, store, profile)})
 	flush()
 	var typed *model.Error
-	if !errors.As(refusalErr, &typed) || typed.Data.Code != "ontology_guard_failed" || !equalJSON(complete, nativePlugImage(t, ctx, store)) || postCount() != len(requests) {
+	if !errors.As(refusalErr, &typed) || typed.Data.Code != "ontology_guard_failed" || !equalJSON(complete, nativePlugImage(t, ctx, store, profile)) || postCount() != len(requests) {
 		t.Fatalf("native-origin auxiliary refusal changed a source/history/receipt/subscriber plane: %v", refusalErr)
 	}
 	t.Logf("PUBLIC_SUBSCRIBER_RECORDING path=%s posts=%d scalar=3 replacement=1 replay=4 noop=1 refusal=1", path, postCount())
@@ -1217,7 +1242,7 @@ func TestPublicProjectionAuthoredImportPublicSubscriberAcrossDrivers(t *testing.
 			if output == "" {
 				output = t.TempDir()
 			}
-			recordPublicSubscriber(t, ctx, store, filepath.Join(output, "authored-subscriber-control-"+engine+".json"), []string{"demo-7", "demo-7.4", "demo-8"})
+			recordPublicSubscriber(t, ctx, store, filepath.Join(output, "authored-subscriber-control-"+engine+".json"), []string{"demo-7", "demo-7.4", "demo-8"}, profile)
 		})
 	}
 }

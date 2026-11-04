@@ -375,3 +375,10 @@ The orphan delete requires its one declared survivor's `is_blocked` transition
 from 1 to 0 and conserves every other survivor column. Historical REDs, complete
 successful-write global-delta coverage, delete/history/parity, precedence/type,
 collision/lease, and HTTP gaps are not waived by these repairs.
+
+The history-image reader respects the snapshot import's actual HistoryFloor.
+It verifies typed truncation below that floor, reads public changesets with an
+incarnation-bound floor cursor, and retains the exact authenticated import
+receipt carrying the floor changeset. Each image also reads and hashes the
+original stored archive bytes. This corrects r7's nil-cursor reader failure;
+r7 remains RED and supplies no replay/reopen or pair qualification.
