@@ -79,7 +79,8 @@ type ClaimLease struct {
 	Epoch     model.Natural      `json:"epoch"`
 }
 
-// DecodeDocument preserves JSON numbers instead of rounding fields to float64.
+// DecodeDocument preserves JSON numbers and resolves hierarchy in memory without
+// rewriting the stored body.
 func DecodeDocument(body []byte) (Document, error) {
 	var d Document
 	dec := json.NewDecoder(bytes.NewReader(body))
@@ -97,8 +98,13 @@ func DecodeDocument(body []byte) (Document, error) {
 		return d, err
 	}
 	if err := validateParent(d.Parent); err != nil {
+		return d, failure("invalid_params", err.Error())
+	}
+	parent, err := HierarchyParent(d)
+	if err != nil {
 		return d, err
 	}
+	d.Parent = parent
 	for _, comment := range d.Comments {
 		if err := comment.Validate(); err != nil {
 			return d, err

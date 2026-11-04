@@ -41,11 +41,13 @@ func TestAuditedPublicLifecycleMethodsKeepCanonicalSlots(t *testing.T) {
 				t.Fatal(err)
 			}
 			id := model.Ref{ID: "pl-canonical-claim-slot"}
-			bead, err := json.Marshal(pipeline.Document{ID: id.ID, Project: "local", Type: "issue", Fields: map[string]any{"title": "canonical claim slot", "status": tc.before}})
+			// This happy-path fixture is created at the declared fixture clock;
+			// an unknown legacy creation instant remains a ready refusal.
+			bead, err := json.Marshal(pipeline.Document{ID: id.ID, Project: "local", Type: "issue", CreatedAt: &f.now, Fields: map[string]any{"title": "canonical claim slot", "status": tc.before}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{
+			if _, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{Time: f.now}, []conformance.FixtureChange{
 				{Ref: sourceRef, Kind: "ontology", Op: model.OpCreate, Body: body},
 				{Ref: id, Kind: "bead", Op: model.OpCreate, Body: bead},
 			}); err != nil {

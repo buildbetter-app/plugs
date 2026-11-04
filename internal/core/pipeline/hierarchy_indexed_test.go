@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -571,6 +572,148 @@ func TestCompleteGraphValidationDoesNotCertifyUnbuiltSourceCoverage(t *testing.T
 			if p.graphValidated || r.queryReads == 0 {
 				t.Fatalf("unbuilt %s coverage received a reusable certificate: validated=%t queries=%d", domain, p.graphValidated, r.queryReads)
 			}
+		})
+	}
+}
+
+// Seed an opaque stored image through the actual driver's publication boundary.
+// Typed Parent metadata certifies the index; an ordinary Put leaves it unbuilt.
+// Storage intentionally does not interpret the duplicate legacy declaration.
+func seedIndexedMalformedStoredParent(t *testing.T, h *harness, certified bool) {
+	t.Helper()
+	ctx := context.Background()
+	refs := []model.Ref{{ID: "parent"}, {ID: "child"}, {ID: "grandchild"}}
+	keys := []driver.LockKey{driver.GraphBlockingSentinelLock}
+	sentinels := []driver.Sentinel{driver.GraphBlockingSentinelLock.Sentinel}
+	for _, ref := range refs {
+		ref := ref
+		bead, err := driver.NewBeadSentinel(ref.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, driver.LockKey{Kind: driver.LockRecord, Ref: &ref}, driver.LockKey{Kind: driver.LockSentinel, Sentinel: bead})
+		sentinels = append(sentinels, bead)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		a, _ := driver.EncodeLockKey(keys[i])
+		b, _ := driver.EncodeLockKey(keys[j])
+		return a < b
+	})
+	requests := make([]driver.LockRequest, len(keys))
+	for i, key := range keys {
+		requests[i] = driver.LockRequest{Key: key, Mode: driver.LockUpdate}
+	}
+	tx, err := h.store.Write(ctx, h.lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Close()
+	if _, err := tx.Lock(ctx, requests); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Head(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.BumpSentinels(ctx, sentinels); err != nil {
+		t.Fatal(err)
+	}
+	changes := make([]model.ChangeRecord, 0, len(refs))
+	for i, ref := range refs {
+		doc := Document{ID: ref.ID, Type: "issue", Fields: map[string]any{"status": "todo", "title": "stored"}}
+		if i > 0 {
+			parent := refs[i-1]
+			doc.Parent = &parent
+		}
+		if i == 2 {
+			doc.Links = []Link{{Kind: "parent-child", To: refs[1]}, {Kind: "parent-child", To: refs[1]}}
+		}
+		body, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		record := driver.Record{Ref: ref, Kind: "bead", Body: body}
+		if certified {
+			err = tx.(driver.HierarchySourceWriter).PutHierarchyRecord(ctx, record, doc.Parent)
+		} else {
+			err = tx.Put(ctx, record)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		changes = append(changes, model.ChangeRecord{Ref: ref, Op: model.OpCreate, FromRevision: model.Natural64(0)})
+	}
+	m, err := h.store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: m.Incarnation, Kind: model.ChangesetWrite, Time: h.now, Principal: by, LockKeys: keys, Changes: changes}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIndexedHierarchyStoredParentRefusalParity(t *testing.T) {
+	var first *model.ErrorData
+	for _, certified := range []bool{true, false} {
+		name := "unbuilt"
+		wantMessage := "invalid stored hierarchy document"
+		if certified {
+			name = "certified"
+			wantMessage = "hierarchy index differs from canonical Parent"
+		}
+		t.Run(name, func(t *testing.T) {
+			h := setup(t)
+			seedIndexedMalformedStoredParent(t, h, certified)
+			ctx := context.Background()
+			r := h.read(t)
+			records, more, err := r.(driver.HierarchyChildrenReader).HierarchyChildren(ctx, []model.Ref{{ID: "child"}}, 10)
+			if certified {
+				if err != nil || more || len(records) != 1 || records[0].Ref.ID != "grandchild" {
+					t.Fatalf("certified source coverage: records=%v more=%t err=%v", records, more, err)
+				}
+			} else if !errors.Is(err, driver.ErrUnsupported) || more || len(records) != 0 {
+				t.Fatalf("unbuilt source coverage: records=%v more=%t err=%v", records, more, err)
+			}
+			closure, err := r.DerivedRows(ctx, driver.DerivedAncestorClosure, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.Close()
+			before := metadataGraph(t, h)
+			posts := 0
+			w := h.writer(WithPostSubscribers(PostBinding{ID: "malformed-parent-refusal", Subscriber: postFunc(func(context.Context, port.CommittedChange, port.SnapshotReader) error {
+				posts++
+				return nil
+			})}))
+			m := meta(1)
+			// Stage a field update before a hierarchy edit. Both planners must
+			// discover the malformed descendant before publishing either op.
+			out, err := w.ApplyWithOutcome(ctx, by, model.ChangeSet{Ops: []model.Op{
+				patch(model.Ref{ID: "child"}, map[string]any{"title": "must not publish"}),
+				{Kind: model.OpReparent, Reparent: &model.ReparentOp{Target: model.Ref{ID: "child"}}},
+			}}, m)
+			var refusal *model.Error
+			if !errors.As(err, &refusal) || refusal.Data.Code != "ontology_guard_failed" || refusal.Data.Retryable || refusal.Data.TraceID != "" || refusal.Message != wantMessage || errors.Is(err, driver.ErrUnsupported) {
+				t.Fatalf("malformed stored parent refusal=%+v", err)
+			}
+			// Distinct validation boundaries retain their exact diagnostic text;
+			// the complete typed refusal data must agree across both planners.
+			if first == nil {
+				first = &refusal.Data
+			} else if !reflect.DeepEqual(first, &refusal.Data) {
+				t.Fatalf("indexed/fallback typed refusal differs: indexed=%+v fallback=%+v", first, &refusal.Data)
+			}
+			if !reflect.DeepEqual(out, port.WriteOutcome{}) {
+				t.Fatalf("refusal returned an outcome: %+v", out)
+			}
+			if !reflect.DeepEqual(before, metadataGraph(t, h)) || metadataReceipt(t, h, m) != nil || posts != 0 {
+				t.Fatal("refusal changed stored images, versions, history/events, head, predicates, allocator, receipt or publication")
+			}
+			r = h.read(t)
+			afterClosure, err := r.DerivedRows(ctx, driver.DerivedAncestorClosure, "")
+			if err != nil || !reflect.DeepEqual(closure, afterClosure) {
+				t.Fatalf("refusal changed closure: before=%v after=%v err=%v", closure, afterClosure, err)
+			}
+			t.Logf("%s coverage: actual Writer rejected malformed stored legacy parent; identical typed refusal, zero outcome/receipt/publication and unchanged durable state/closure", name)
 		})
 	}
 }

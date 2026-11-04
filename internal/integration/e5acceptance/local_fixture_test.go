@@ -288,7 +288,7 @@ func newLocalFixture(t *testing.T) *localFixture {
 	})
 	var seed []conformance.FixtureChange
 	for _, row := range []struct{ id, title string }{{targetID, "seed"}, {watchedID, "observed"}} {
-		body, _ := json.Marshal(map[string]any{"id": row.id, "type": "issue", "project": "project", "fields": map[string]any{
+		body, _ := json.Marshal(map[string]any{"id": row.id, "type": "issue", "project": "project", "createdAt": "2026-10-01T00:00:00Z", "fields": map[string]any{
 			"title": row.title, "description": "hidden", "status": "todo", "priority": 0,
 		}})
 		seed = append(seed, conformance.FixtureChange{Ref: model.RefByID(row.id, model.Natural64(0)), Kind: "bead", Op: model.OpCreate, Body: body})
