@@ -10,8 +10,13 @@ import (
 
 func engines() []string { return []string{"memory", "sqlite"} }
 
+// Transaction contracts are exercised against every real writer. View-only
+// cases keep the narrower memory/SQLite matrix where their PostgreSQL seam is
+// intentionally covered by the dedicated stale/cursor tests.
+func transactionEngines() []string { return []string{"memory", "sqlite", "postgres"} }
+
 func TestS1B21BatchOrderRollbackAndReplayAcrossStores(t *testing.T) {
-	for _, engine := range engines() {
+	for _, engine := range transactionEngines() {
 		t.Run(engine, func(t *testing.T) {
 			f := newFixture(t, engine)
 			anchor, created := f.create(t, "b21-anchor", "anchor")
@@ -74,7 +79,7 @@ func TestS1B21BatchOrderRollbackAndReplayAcrossStores(t *testing.T) {
 }
 
 func TestS1B21LateRefusalRollsBackEveryDurablePlane(t *testing.T) {
-	for _, engine := range engines() {
+	for _, engine := range transactionEngines() {
 		t.Run(engine, func(t *testing.T) {
 			f := newFixture(t, engine)
 			anchor, _ := f.create(t, "b21-refusal-anchor", "anchor")
@@ -98,7 +103,7 @@ func TestS1B21LateRefusalRollsBackEveryDurablePlane(t *testing.T) {
 }
 
 func TestS1B22RevisionCASHasOneWinnerAndReportsCurrentRevision(t *testing.T) {
-	for _, engine := range engines() {
+	for _, engine := range transactionEngines() {
 		t.Run(engine, func(t *testing.T) {
 			f := newFixture(t, engine)
 			anchor, created := f.create(t, "b22-anchor", "original")

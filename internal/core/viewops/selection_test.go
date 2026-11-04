@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -243,11 +244,11 @@ func TestW9ContinuationRequiresSameCurrentAuthority(t *testing.T) {
 	svc := w9SyntheticService(t, nil, cfg)
 	def := Definition{Filter: &Filter{}}
 	by := model.PrincipalRef{Kind: "user", ID: "reader"}
-	identity, err := svc.effectiveDigest(def, "", "")
+	identity, err := svc.effectiveDigest(def, "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cursor := svc.nextCursor(by, "", "", identity, AsOf{Revision: model.Natural64(1), Incarnation: "inc"}, 1)
+	cursor := svc.nextCursor(by, "", "", identity, AsOf{Revision: model.Natural64(1), Incarnation: "inc"}, 1, nil, "")
 	cursor.AuthorityBinding = "old-binding"
 	got, err := svc.Run(context.Background(), by, RunRequest{Definition: &def, Cursor: cursor})
 	w9WantCode(t, err, "cursor_invalid")
@@ -330,5 +331,89 @@ func TestW9OrdinaryGroupsKeepExistingBoundAndAnonymousEpicRejectsSelection(t *te
 	cfg.Selection = nil
 	if _, err := New(store, &testLease{lost: make(chan struct{})}, cfg); err != nil {
 		t.Fatalf("valid anonymous epic configuration refused: %v", err)
+	}
+}
+
+func TestW3SelectionFallbackPreservesNaturalRevisionOrder(t *testing.T) {
+	rows := []driver.Record{}
+	for _, item := range []struct{ id, revision string }{{"b", "10"}, {"z", "2"}, {"a", "10.0"}} {
+		rows = append(rows, driver.Record{Ref: model.RefByID(item.id, model.Natural64(0)), Kind: "bead", Revision: model.Revision(item.revision), Body: explainDocument(t, item.id, "p")})
+	}
+	for _, tc := range []struct {
+		name, order string
+		want        []string
+	}{
+		{"ascending", "revision", []string{"z", "a", "b"}},
+		{"descending", "-revision", []string{"a", "b", "z"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			selects, fences := 0, 0
+			selection := w9SelectionConfig(t, func(context.Context, driver.SelectionPlan) (driver.SelectionResult, error) {
+				selects++
+				return driver.SelectionResult{}, errors.New("lexical revision selector must not run")
+			}, func(context.Context) error { fences++; return nil })
+			svc := w9SyntheticService(t, rows, Config{Selection: selection})
+			got, err := svc.Run(context.Background(), model.PrincipalRef{Kind: "user", ID: "reader"}, RunRequest{Definition: &Definition{Filter: &Filter{}, Fields: []string{"id", "revision"}, Sort: []string{tc.order}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var ids []string
+			for _, item := range got.Items {
+				ids = append(ids, item.ID)
+			}
+			if !reflect.DeepEqual(ids, tc.want) || selects != 0 || fences != 1 {
+				t.Fatalf("items=%v want=%v selects=%d fences=%d", ids, tc.want, selects, fences)
+			}
+		})
+	}
+}
+
+func TestW3StaleFallbackKeepsBoundAuthorityBeforeProtectedReads(t *testing.T) {
+	for _, failedFence := range []bool{false, true} {
+		t.Run(fmt.Sprintf("failed_fence_%t", failedFence), func(t *testing.T) {
+			selects, checks, fences, protectedReads := 0, 0, 0, 0
+			selection := w9SelectionConfig(t, func(context.Context, driver.SelectionPlan) (driver.SelectionResult, error) {
+				selects++
+				return driver.SelectionResult{}, errors.New("selector cannot represent stale")
+			}, func(context.Context) error {
+				fences++
+				if failedFence {
+					return driver.ErrSelectionUnavailable
+				}
+				return nil
+			})
+			bind := selection.Bind
+			selection.Bind = func(ctx context.Context, by model.PrincipalRef, definition string) (*SelectionAuthority, error) {
+				authority, err := bind(ctx, by, definition)
+				if err != nil {
+					return nil, err
+				}
+				authority.Check = func(_ context.Context, refs []model.Ref) ([]bool, error) {
+					checks++
+					return make([]bool, len(refs)), nil
+				}
+				return authority, nil
+			}
+			row := driver.Record{Ref: model.RefByID("denied", model.Natural64(0)), Kind: "bead", Revision: model.Natural64(1), Body: explainDocument(t, "denied", "private")}
+			svc := w9SyntheticService(t, []driver.Record{row}, Config{
+				Selection: selection,
+				Now:       func() time.Time { return time.Date(2026, 11, 4, 0, 0, 0, 0, time.UTC) },
+				StaleOntologySource: func(string) (model.Ref, error) {
+					protectedReads++
+					return model.Ref{}, errors.New("denied row must not read protected ontology")
+				},
+			})
+			got, err := svc.Run(context.Background(), model.PrincipalRef{Kind: "user", ID: "reader"}, RunRequest{Definition: &Definition{Filter: &Filter{}}, CountOnly: true, Stale: &StaleFilter{Days: 1}})
+			if selects != 0 || checks != 1 || fences != 1 || protectedReads != 0 {
+				t.Fatalf("selects=%d checks=%d fences=%d protected_reads=%d", selects, checks, fences, protectedReads)
+			}
+			if failedFence {
+				if err == nil || !reflect.DeepEqual(got, Result{}) {
+					t.Fatalf("failed fence returned output: %+v err=%v", got, err)
+				}
+			} else if err != nil || got.Count == nil || *got.Count != 0 || len(got.Items) != 0 || got.NextCursor != nil {
+				t.Fatalf("denied stale count=%+v err=%v", got, err)
+			}
+		})
 	}
 }
