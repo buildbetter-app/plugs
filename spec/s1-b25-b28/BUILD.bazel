@@ -1,4 +1,13 @@
 load("@rules_go//go:def.bzl", "go_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+# Offline comparison controls only; no public executable or preparation.
+sh_test(
+    name = "native_pair_comparison_test",
+    srcs = ["compare_native_pair_test.py"],
+    data = ["compare_native_pair.py"],
+    size = "small",
+)
 
 go_test(
     name = "acceptance_test",

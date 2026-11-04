@@ -66,6 +66,59 @@ assertions and does not invoke Beads or qualify a behavior card. This control
 target is now registered in ordinary `//...` and includes real three-engine
 restore/service/subscriber measurement using an explicitly synthetic archive.
 
+### Additive generated-comment comparison of the frozen nested vector
+
+Done = the two genuine exact57e recordings satisfy a declared semantic pair
+comparison with verified generated-comment identity correspondence and exact
+within-run preservation, proven by retained265's source and cached-evidence
+review; a causal explanation or two individually passing runs does not count.
+
+Scope = the explicit nested workspace with `export.auto=false`, source
+`57e9e7f85d03e6dac807a69909bfaae08c4b3401`, tree
+`af13af10c7e0aee9d346d1b8e81ede4e2c18fe01`, runs `41798347942` and
+`41799011690`, attempt 1, control `fcd03ab3fee9abe0911f651bc258c884e73a7767`,
+evidence artifacts `13306336629` and `13306836780`. The strict57e pair
+comparison above remains BLOCK because its projected comment IDs differ. This
+successor performs a separately attributed offline comparison of retained
+copies; those native recordings did not execute this comparison child.
+
+`compare_native_pair.py` requires a SHA-256-bound input manifest with each
+original source/tree/run/attempt/control/artifact identity and every consumed
+cached asset's path, byte length and digest. It never executes a public binary.
+The frozen accepted305 `comments.go`, `derivedid.go` and `rowid.go` authorities
+are pinned in the comparer. Each original command return must have the exact
+workload owner, author and text, one comment, and a canonical UTC whole-second
+timestamp. The comparer independently derives its original ID using the
+accepted length-prefix SHA-256 digest and table/ordinal UUIDv5 algorithm. The
+one-to-one correspondence retains both full original IDs and times. Neither
+value is stripped or replaced by a made-up common identifier.
+
+Each original identity and full content must match both native dumps and all
+16 source/target JSONL, archive, reverse, replay and SQL-reopen projections.
+All three-engine public-write operation snapshots and post images must retain
+their own complete comment content, principal and source timestamp. Model
+comments have no native-ID field; exact native-ID preservation is checked in
+the dumps and reverse projections, while the unchanged recorder checks whole
+subscriber images and replay/no-op invariants. All recorder guards remain
+unchanged. Every other declared issue/edge/user-memory projection must match
+across runs. Full config source/body/classification, key census, policy and
+reverse memories must equal their own independent pre-capture readbacks. The
+only permitted cross-run config value differences are the explicitly listed
+fresh `_project_id`, `clone_id`, `last_import_time` and `repo_id` metadata;
+every actual difference and its two original values is reported. This is no
+general timestamp exemption or reserved-prefix discard.
+
+`native_pair_comparison_test` checks generated-ID golden vectors and refusals
+for wrong IDs/times, changed owner/author/text, missing/extra/duplicate or
+ambiguous comments, per-stage substitutions, native source/body changes,
+subscriber substitutions, issue/edge/memory differences, missing observations,
+wrong policy/stage/run identity and duplicate JSON keys. These ordinary controls
+are synthetic and provide no native runtime credit. The actual cached-input
+comparison is a separate receipt bound to the comparison child and both57e
+runs. Canonical root-layout capture still needs a corrected accepted producer
+and its own preparation/recordings; B26, full-card admission and FullS1 remain
+unqualified, with FullS1 `0/28` and B05 paused.
+
 When native capture is available, each actual archive is replayed through the
 real Plug restore and reverse layers in fresh memory, SQLite and PostgreSQL
 stores, including both SQL reopens. PostgreSQL is an owned disposable loopback
