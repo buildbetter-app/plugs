@@ -68,6 +68,11 @@ func TestPublicBeadsArtifactReimportThreeEngines(t *testing.T) {
 					_, readErr := dumpformat.ReadFile(filepath.Join(output, "beads-raw-readback.tar"))
 					t.Logf("PUBLIC_BEADS_RAW_READBACK_REFUSAL %v", readErr)
 				}
+				if got.BeadsReadbackSHA256 != "" {
+					// Inspect the actual readable archive before a generic outcome
+					// refusal hides the differing field and deletes the workspace.
+					assertPublicNativeCaptureReadback(t, options, output, got)
+				}
 				if got.Status != "PASS" || got.Stage != "public_snapshot_roundtrip_complete" || got.Reason != "" || got.BeadsReimport != "PASS" || got.BeadsReadback != "PASS" || got.BeadsReadbackSHA256 == "" {
 					t.Fatalf("actual import and native readback: %+v", got)
 				}
@@ -82,7 +87,6 @@ func TestPublicBeadsArtifactReimportThreeEngines(t *testing.T) {
 						t.Fatal("a required real Beads command failed")
 					}
 				}
-				assertPublicNativeCaptureReadback(t, options, output, got)
 				inventoryData, err := os.ReadFile(filepath.Join(output, "beads-inventory.json"))
 				var inventory struct {
 					Version  string `json:"version"`

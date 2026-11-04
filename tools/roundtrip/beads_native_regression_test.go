@@ -192,12 +192,12 @@ func assertPublicNativeCaptureReadback(t *testing.T, options beadsOptions, outpu
 			t.Fatalf("raw target has an extra or duplicate issue %s", row.ID)
 		}
 		delete(expected, row.ID)
-		for _, field := range []string{"id", "title", "description", "status", "priority", "issue_type", "metadata"} {
+		for _, field := range []string{"id", "title", "description", "design", "acceptance_criteria", "notes", "spec_id", "status", "priority", "issue_type", "assignee", "owner", "created_by", "external_ref", "source_system", "close_reason", "closed_by_session", "metadata"} {
 			if value, present := want[field]; present {
 				a, errA := json.Marshal(value)
 				b, errB := json.Marshal(row.Source.Fields[field])
 				if errA != nil || errB != nil || !bytes.Equal(a, b) {
-					t.Fatalf("independent raw target %s field %s differs from submitted bytes", row.ID, field)
+					t.Fatalf("independent raw target %s field %s differs from submitted bytes: expected_type=%T expected_sha256=%s expected=%q actual_type=%T actual_sha256=%s actual=%q marshal_errors=%v/%v", row.ID, field, value, hash(a), a, row.Source.Fields[field], hash(b), b, errA, errB)
 				}
 			}
 		}
