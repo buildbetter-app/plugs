@@ -232,8 +232,16 @@ func b09B10CompactedDerived(t *testing.T, before, after b09B10Image, selected st
 			row = row.Clone()
 			index := row.Index
 			if index != nil && index.Source.Key.Kind == driver.LockRecord && index.Source.Key.Ref != nil && index.Source.Key.Ref.ID == selected {
-				if index.Validate(table, row) != nil || *index.Source.Key.Ref != oldSource.Ref || !index.Source.Present || index.Source.Revision.String() != oldSource.Revision.String() || index.Source.Digest != digest(oldSource.Body) {
-					t.Fatalf("baseline selected annotation does not bind its exact source: table=%s key=%s", table, row.Key)
+				// PostgreSQL stores annotations with gob, which omits Ref's
+				// private JSON-arm discriminator. The complete canonical lock
+				// identity still includes the reference arm, ID and branch.
+				sameRef := driver.SelectionSameRef(*index.Source.Key.Ref, oldSource.Ref)
+				validationErr := index.Validate(table, row)
+				if validationErr != nil || !sameRef || !index.Source.Present || index.Source.Revision.String() != oldSource.Revision.String() || index.Source.Digest != digest(oldSource.Body) {
+					t.Fatalf("baseline selected annotation does not bind its exact source: table=%s key=%s validation=%v canonical_ref=%t present=%t revision=%s/%s digest=%s/%s", table, row.Key, validationErr, sameRef, index.Source.Present, index.Source.Revision.String(), oldSource.Revision.String(), index.Source.Digest, digest(oldSource.Body))
+				}
+				if *index.Source.Key.Ref != oldSource.Ref && table == driver.DerivedSortKey {
+					t.Logf("selected source has exact canonical identity despite private reference metadata: annotation=%#v record=%#v", *index.Source.Key.Ref, oldSource.Ref)
 				}
 				index.Source.Revision, index.Source.Digest = source.Revision, digest(source.Body)
 				refreshed[table]++
