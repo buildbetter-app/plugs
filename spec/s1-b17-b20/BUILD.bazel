@@ -1,4 +1,5 @@
 load("@rules_go//go:def.bzl", "go_test")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 
 go_test(
     name = "s1_b17_b20_i6_test",
@@ -16,6 +17,7 @@ go_test(
         "//spec/recorded:lexicon_files",
     ] + glob(["reference/b18/*.json"]),
     args = ["-test.v"],
+    tags = ["local", "requires-network"],
     deps = [
         "//internal/api/wire",
         "//internal/cli",
@@ -34,6 +36,7 @@ go_test(
         "//internal/server/watchhttp",
         "//internal/storage/driver",
         "//internal/storage/memory",
+        "//internal/storage/postgres",
         "//internal/storage/sqlite",
     ],
 )
@@ -42,4 +45,11 @@ filegroup(
     name = "lexicon_files",
     srcs = glob(["**"]),
     visibility = ["//visibility:public"],
+)
+
+# RunsOn source compile/vet only; no test cases execute through this route.
+sh_binary(
+    name = "b20_source_compile",
+    srcs = ["b20_source_compile.sh"],
+    tags = ["manual"],
 )

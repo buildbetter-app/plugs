@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_test")
 go_test(
     name = "examples_test",
     srcs = ["trace_test.go"],
-    embedsrcs = ["cli-rpc-trace.json"],
+    embedsrcs = ["cli-rpc-lifecycle-trace.json"],
     args = ["-test.v"],
     data = ["//cmd/plug:plug"],
     env = {"PLUG_BINARY": "$(rootpath //cmd/plug:plug)"},

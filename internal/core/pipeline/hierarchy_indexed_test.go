@@ -33,6 +33,7 @@ type indexedHierarchyReader struct {
 	inverseReads  int
 	queryReads    int
 	allowQuery    bool
+	certificate   *model.Revision
 }
 
 func hierarchyOracle(t *testing.T, parents map[string]string) map[string]driver.DerivedRow {
@@ -157,6 +158,10 @@ func (r *indexedHierarchyReader) Observe(_ context.Context, keys []driver.LockKe
 			}
 		case driver.LockSentinel:
 			state.Present = true
+		case driver.LockReadFact:
+			if key.Fact == GraphValidityReadFact && r.certificate != nil {
+				state.Present, state.Revision = true, *r.certificate
+			}
 		}
 		encoded, _ := driver.EncodeLockKey(key)
 		r.observed[encoded], states[i] = state, state
@@ -511,6 +516,60 @@ func TestIndexedGraphRestoredUnrelatedInvalidComponentStillRefuses(t *testing.T)
 			code(t, p.graph(context.Background()), "ontology_guard_failed")
 			if r.inverseReads == 0 || r.queryReads == 0 || !bytes.Equal(before, r.records["u"].Body) {
 				t.Fatalf("globally invalid restored graph escaped: inverse=%d query=%d", r.inverseReads, r.queryReads)
+			}
+		})
+	}
+}
+
+func TestIndexedGraphRequiresCurrentGlobalValidityCertificate(t *testing.T) {
+	for _, state := range []string{"absent", "stale", "current"} {
+		t.Run(state, func(t *testing.T) {
+			r := indexedHierarchyFixture(t, map[string]string{"c": "", "p": ""})
+			if state != "absent" {
+				revision := model.Natural64(0)
+				if state == "current" {
+					revision = model.Natural64(1)
+				}
+				r.certificate = &revision
+			}
+			r.allowQuery = state != "current"
+			c, _ := DecodeDocument(r.records["c"].Body)
+			c.Parent = &model.Ref{ID: "p"}
+			p := indexedPrepared(r, hierarchyEdit{id: "c", parent: "p"})
+			p.writes["c"] = &pending{ref: model.Ref{ID: "c"}, kind: "bead", doc: c, before: r.records["c"].Body}
+			if err := p.graph(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if !p.graphValidated || r.inverseReads == 0 || (r.queryReads == 0) != (state == "current") {
+				t.Fatalf("certificate=%s validated=%t inverse=%d complete_queries=%d", state, p.graphValidated, r.inverseReads, r.queryReads)
+			}
+			key, _ := driver.EncodeLockKey(GraphValidityLockKey())
+			if _, ok := p.snapshot.reads.states[key]; !ok {
+				t.Fatal("semantic certificate was not retained in the pinned read set")
+			}
+		})
+	}
+}
+
+func TestCompleteGraphValidationDoesNotCertifyUnbuiltSourceCoverage(t *testing.T) {
+	for _, domain := range []string{"parent", "links"} {
+		t.Run(domain, func(t *testing.T) {
+			r := indexedHierarchyFixture(t, map[string]string{"c": "", "p": ""})
+			if domain == "parent" {
+				r.err = driver.ErrUnsupported
+			} else {
+				r.inverseErr = driver.ErrUnsupported
+			}
+			r.allowQuery = true
+			c, _ := DecodeDocument(r.records["c"].Body)
+			c.Parent = &model.Ref{ID: "p"}
+			p := indexedPrepared(r, hierarchyEdit{id: "c", parent: "p"})
+			p.writes["c"] = &pending{ref: model.Ref{ID: "c"}, kind: "bead", doc: c, before: r.records["c"].Body}
+			if err := p.graph(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if p.graphValidated || r.queryReads == 0 {
+				t.Fatalf("unbuilt %s coverage received a reusable certificate: validated=%t queries=%d", domain, p.graphValidated, r.queryReads)
 			}
 		})
 	}

@@ -27,8 +27,12 @@ PLUG_TOKEN="$TOKEN" \
 
 The [living example](trace_test.go) uses a disposable loopback HTTP server and
 feeds JSON command arrays to the actual executable. The
-[captured request and responses](cli-rpc-trace.json) retain the full create,
-replay, CLI update, and historical-get bodies. Its raw HTTP replay marks
+[current contract expectations](cli-rpc-lifecycle-trace.json) retain the full
+create, replay, CLI update, and historical-get bodies using an explicit UTC
+core clock. Creation images include `createdAt`, attributed to `core`; historical
+readback retains that same instant. The [historical capture](cli-rpc-trace.json)
+remains unchanged. These executable fixtures do not establish native producer
+admission. The raw HTTP replay marks
 `_meta.replayed` beside the result; CLI JSON prints the stored result itself.
 Run the example to see the complete JSON bodies:
 
