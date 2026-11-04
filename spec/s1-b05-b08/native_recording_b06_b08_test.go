@@ -69,13 +69,14 @@ func b068Record(t *testing.T, card, twin, root string) b068Capture {
 	if err := os.Mkdir(home, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	env := server.ChildEnv([]string{"PATH=/usr/bin:/bin", "HOME=" + home, "USERPROFILE=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config"), "USER=public-native-b06-b08", "TZ=UTC", "LC_ALL=C", "CI=true", "NO_COLOR=1", "GIT_CONFIG_NOSYSTEM=1", "BEADS_ACTOR=b06-b08-native"})
+	baseEnv := []string{"PATH=/usr/bin:/bin", "HOME=" + home, "USERPROFILE=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config"), "USER=public-native-b06-b08", "TZ=UTC", "LC_ALL=C", "CI=true", "NO_COLOR=1", "GIT_CONFIG_NOSYSTEM=1", "BEADS_ACTOR=b06-b08-native"}
 	preparation := map[string]string{}
 	for _, name := range []string{"PLUG_PUBLIC_BEADS_BINARY", "PLUG_PUBLIC_BEADS_SHA256", "PLUG_PUBLIC_BEADS_BUILD_RUN", "PLUG_PUBLIC_BEADS_MANIFEST"} {
 		preparation[name] = nativeEnv(t, name)
-		env = append(env, name+"="+preparation[name])
+		baseEnv = append(baseEnv, name+"="+preparation[name])
 	}
-	nativeJSON(t, filepath.Join(output, "four-exports-childenv.json"), map[string]any{"preparation": preparation, "childEnv": env, "count": len(preparation), "routing": "publicnative.ChildEnv returned routing unchanged; exactly four preparation values appended unchanged"})
+	env := server.ChildEnv(baseEnv)
+	nativeJSON(t, filepath.Join(output, "four-exports-childenv.json"), map[string]any{"preparation": preparation, "baseEnv": baseEnv, "childEnv": env, "count": len(preparation), "routing": "Exactly four unchanged preparation values supplied before publicnative.ChildEnv; returned slice used unchanged for every actual child and receipt"})
 	c := &nativeCommand{t: t, binary: binary, workspace: workspace, output: output, env: env}
 	var version struct{ Commit, Build string }
 	nativeDecode(t, c.run("linked-version", "version", "--json"), &version)

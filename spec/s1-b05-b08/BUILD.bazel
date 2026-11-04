@@ -138,7 +138,7 @@ go_test(
         "record_reference.py",
         "reference/provenance.json",
     ],
-    args = ["-test.v", "-test.run=^(TestB06NativePublicCyclesTwinsAndThreeDriverReplay|TestB08NativePublicSettlementTwinsAndThreeDriverReplay)$"],
+    args = ["-test.v", "-test.run=^(TestB06NativePublicCyclesTwinsAndThreeDriverReplay|TestB08NativePublicSettlementTwinsAndThreeDriverReplay)$$"],
     deps = [
         "//internal/publicnative",
         "//internal/core/authz",
