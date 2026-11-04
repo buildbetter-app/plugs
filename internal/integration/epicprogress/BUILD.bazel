@@ -4,6 +4,7 @@ go_test(
     name = "epicprogress_test",
     size = "large",
     timeout = "long",
+    shard_count = 4,
     srcs = glob(["*_test.go"]),
     args = ["-test.v"],
     tags = ["exclusive"],
