@@ -15,6 +15,14 @@ import (
 // queueReadyItems evaluates the complete thin graph before priority spreading.
 // It is never a raw rotated superset or an authorized/capped Select result.
 // Memory/legacy/uncertified readers retain the exact existing interpreter.
+// readinessVisit adds work only for the queue interpreter; existing guard and
+// ordinary Ready callers supply no context and retain their accounting.
+func readinessVisit(work []context.Context) {
+	if len(work) != 0 && work[0] != nil {
+		driver.ReportReadWork(work[0], driver.ReadSelectorKeys, 1)
+	}
+}
+
 func (s *Service) queueReadyItems(ctx context.Context, req ReadyRequest, reader driver.Reader) ([]Bead, *driver.QueueProjection, error) {
 	queue, ok := reader.(driver.QueueProjectionReader)
 	if !ok {
@@ -34,6 +42,7 @@ func (s *Service) queueReadyItems(ctx context.Context, req ReadyRequest, reader 
 		b := source.Bead
 		fields := map[string]any{"status": b.Status, "title": b.Title, "template": b.Template, "priority": json.Number(strconv.FormatInt(b.Priority, 10))}
 		for _, absent := range b.Absent {
+			driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
 			delete(fields, string(absent))
 		}
 		doc := pipeline.Document{ID: b.Ref.ID, Type: b.Type, Fields: fields, Parent: b.Parent}
@@ -41,6 +50,7 @@ func (s *Service) queueReadyItems(ctx context.Context, req ReadyRequest, reader 
 			doc.Project = *b.Project
 		}
 		for _, link := range source.Facts.Links {
+			driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
 			doc.Links = append(doc.Links, pipeline.Link{Kind: link.Kind, To: link.To, Metadata: link.Metadata})
 		}
 		graph[doc.ID] = storedBead{record: driver.Record{Ref: b.Ref, Kind: "bead", Revision: source.Source.Revision}, doc: doc}
@@ -49,7 +59,15 @@ func (s *Service) queueReadyItems(ctx context.Context, req ReadyRequest, reader 
 	// Reuse the existing readiness/dependency interpreter over the full graph.
 	// Only eligible lease-bearing images need actual checkpoint/clock evaluation.
 	// Every such Get is counted, even if it later excludes the bead.
-	ids := sortedIDs(graph)
+	ids := make([]string, 0, len(graph))
+	for id := range graph {
+		driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
+		return ids[i] < ids[j]
+	})
 	priorities := map[string]int{}
 	for _, id := range ids {
 		driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
@@ -60,7 +78,10 @@ func (s *Service) queueReadyItems(ctx context.Context, req ReadyRequest, reader 
 		priorities[id] = p
 	}
 	// The old interpreter orders by numeric priority then bytewise ID.
-	sort.SliceStable(ids, func(i, j int) bool { return priorities[ids[i]] < priorities[ids[j]] })
+	sort.SliceStable(ids, func(i, j int) bool {
+		driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
+		return priorities[ids[i]] < priorities[ids[j]]
+	})
 	items := []Bead{}
 	now := s.now()
 	for _, id := range ids {
@@ -88,7 +109,7 @@ func (s *Service) queueReadyItems(ctx context.Context, req ReadyRequest, reader 
 				continue
 			}
 		}
-		ready, err := s.ontology.readyDependencies(row.doc, graph)
+		ready, err := s.ontology.readyDependencies(row.doc, graph, ctx)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -107,6 +128,7 @@ func (s *Service) queueReadyItems(ctx context.Context, req ReadyRequest, reader 
 func queueImages(ctx context.Context, reader driver.QueueProjectionReader, projection *driver.QueueProjection, sources []driver.QueueBead) ([]storedBead, error) {
 	refs := make([]model.Ref, len(sources))
 	for i, source := range sources {
+		driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
 		refs[i] = source.Bead.Ref
 	}
 	records, err := reader.QueueProjectionImages(ctx, projection.View, refs)
@@ -118,6 +140,7 @@ func queueImages(ctx context.Context, reader driver.QueueProjectionReader, proje
 	}
 	result := make([]storedBead, len(records))
 	for i, record := range records {
+		driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
 		source := sources[i]
 		if !driver.SelectionSameRef(record.Ref, source.Bead.Ref) || record.Kind != "bead" || record.Revision.String() != source.Source.Revision.String() || driver.SelectionDigest(record.Body) != source.Source.Digest {
 			return nil, mapped(driver.QueueUnavailable("selected source image changed"))
@@ -158,7 +181,7 @@ func (s *Service) queueReadyPage(ctx context.Context, by model.PrincipalRef, req
 		}
 	}
 	if req.ClaimNextSeed != "" {
-		items, err = spreadClaimNextItems(items, req.ClaimNextSeed)
+		items, err = spreadClaimNextItems(items, req.ClaimNextSeed, ctx)
 		if err != nil {
 			return BeadPage{}, err
 		}
@@ -171,10 +194,12 @@ func (s *Service) queueReadyPage(ctx context.Context, by model.PrincipalRef, req
 	if projection != nil {
 		byID := map[string]driver.QueueBead{}
 		for _, source := range projection.Beads {
+			driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
 			byID[source.Bead.Ref.ID] = source
 		}
 		sources := make([]driver.QueueBead, len(page.Items))
 		for i, bead := range page.Items {
+			driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
 			sources[i] = byID[bead.ID]
 		}
 		if len(sources) != 0 {

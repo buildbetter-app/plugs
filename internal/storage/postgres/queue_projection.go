@@ -115,6 +115,7 @@ func (r *reader) QueueProjection(ctx context.Context) (driver.QueueProjection, e
 	}
 	inputs := make([]driver.DerivedSelectionRow, 0, len(logical))
 	for id, row := range logical {
+		driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
 		row.Row.Index = indexes[id]
 		delete(indexes, id)
 		inputs = append(inputs, row)

@@ -162,6 +162,7 @@ func CompleteQueueProjection(ctx context.Context, view View, ready bool, headers
 			return zero, QueueUnavailable("queue links differ from complete envelope")
 		}
 		for i, fact := range facts {
+			ReportReadWork(ctx, ReadSelectorKeys, 1)
 			link := index.Queue.Links[i]
 			if fact.Ref == nil || !SelectionSameRef(*fact.Ref, index.Bead.Ref) || fact.Link == nil || fact.Link.Kind != link.Kind || !SelectionSameRef(fact.Link.To, link.To) {
 				return zero, QueueUnavailable("queue link source or target mismatch")
@@ -170,6 +171,9 @@ func CompleteQueueProjection(ctx context.Context, view View, ready bool, headers
 		copy := (DerivedRow{Index: index}).Clone().Index
 		result.Beads = append(result.Beads, QueueBead{Bead: *copy.Bead, Source: copy.Source, Facts: *copy.Queue})
 	}
-	sort.Slice(result.Beads, func(i, j int) bool { return result.Beads[i].Bead.Ref.ID < result.Beads[j].Bead.Ref.ID })
+	sort.Slice(result.Beads, func(i, j int) bool {
+		ReportReadWork(ctx, ReadSelectorKeys, 1)
+		return result.Beads[i].Bead.Ref.ID < result.Beads[j].Bead.Ref.ID
+	})
 	return result, ctx.Err()
 }

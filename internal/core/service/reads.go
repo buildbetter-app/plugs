@@ -235,18 +235,20 @@ func (s *Service) readyPage(ctx context.Context, by model.PrincipalRef, req Read
 // Priority groups stay contiguous, so the queue still drains every lower
 // priority before considering a higher one; only ID ties are spread between
 // concurrent request keys. The ordinary bead.ready path never calls this.
-func spreadClaimNextItems(items []Bead, seed string) ([]Bead, error) {
+func spreadClaimNextItems(items []Bead, seed string, work ...context.Context) ([]Bead, error) {
 	if len(items) < 2 || seed == "" {
 		return items, nil
 	}
 	ordered := append([]Bead(nil), items...)
 	for start := 0; start < len(ordered); {
+		readinessVisit(work)
 		groupPriority, err := beadPriority(ordered[start])
 		if err != nil {
 			return nil, err
 		}
 		end := start + 1
 		for end < len(ordered) {
+			readinessVisit(work)
 			priority, err := beadPriority(ordered[end])
 			if err != nil {
 				return nil, err
@@ -263,6 +265,9 @@ func spreadClaimNextItems(items []Bead, seed string) ([]Bead, error) {
 				rotated := append([]Bead(nil), ordered[start+offset:end]...)
 				rotated = append(rotated, ordered[start:start+offset]...)
 				copy(ordered[start:end], rotated)
+				if len(work) != 0 {
+					driver.ReportReadWork(work[0], driver.ReadSelectorKeys, int64(2*(end-start)))
+				}
 			}
 		}
 		start = end
