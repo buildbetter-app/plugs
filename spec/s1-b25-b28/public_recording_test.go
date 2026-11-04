@@ -1322,10 +1322,43 @@ func nativePreservationImage(issue map[string]any) map[string]any {
 	image := map[string]any{}
 	for _, key := range []string{"labels", "dependencies", "dependents", "metadata", "comments", "parent", "comment_count", "close_reason", "status"} {
 		if value, ok := issue[key]; ok {
+			if key == "dependencies" || key == "dependents" {
+				value = nativeRelationEdges(value)
+			}
 			image[key] = value
 		}
 	}
 	return image
+}
+
+// Beads show embeds the complete endpoint issue in dependency arrays. Scalar
+// updates therefore change the embedded endpoint image even when the edge is
+// untouched. Preserve the native raw rows in operations.json, but compare the
+// stable edge endpoint and kind here.
+func nativeRelationEdges(value any) []map[string]any {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	result := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		object, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		edge := map[string]any{}
+		for _, key := range []string{"id", "issue_id", "depends_on_id", "depends_on_external", "dependency_type", "type"} {
+			if field, present := object[key]; present {
+				edge[key] = field
+			}
+		}
+		if len(edge) == 0 {
+			edge = object
+		}
+		result = append(result, edge)
+	}
+	sort.SliceStable(result, func(i, j int) bool { return canonical(result[i]) < canonical(result[j]) })
+	return result
 }
 
 func assertNativeScalarPreservation(t *testing.T, before, after map[string]any, expected map[string]any) {
@@ -1333,8 +1366,12 @@ func assertNativeScalarPreservation(t *testing.T, before, after map[string]any, 
 	if len(nativeComments(before)) != len(nativeComments(after)) {
 		t.Fatalf("native scalar readback changed comment multiplicity: before=%d after=%d", len(nativeComments(before)), len(nativeComments(after)))
 	}
-	for _, key := range []string{"labels", "dependencies", "dependents", "metadata", "comments", "parent", "comment_count"} {
-		if !equalJSON(before[key], after[key]) {
+	for _, key := range []string{"labels", "dependencies", "dependents", "metadata", "comments", "parent", "comment_count", "close_reason", "status"} {
+		beforeValue, afterValue := before[key], after[key]
+		if key == "dependencies" || key == "dependents" {
+			beforeValue, afterValue = nativeRelationEdges(beforeValue), nativeRelationEdges(afterValue)
+		}
+		if !equalJSON(beforeValue, afterValue) {
 			t.Fatalf("native scalar update changed %s: before=%s after=%s", key, canonical(before[key]), canonical(after[key]))
 		}
 	}
