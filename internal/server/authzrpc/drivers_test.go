@@ -599,6 +599,7 @@ func TestB01GuardedReadyInternalCutoffAcrossDrivers(t *testing.T) {
 				dsn = postgresDSNFactory(t)
 			}
 			f := newQuietFixture(t, engine, dsn)
+			renewCountFixtureLease(t, f.lease)
 			// Publish the setup baseline's complete typed root post-image in
 			// backlog, retaining its identity, creation time and other fields.
 			baseline := []byte(`{"id":"` + beadID + `","type":"issue","project":"project","createdAt":"2026-10-01T00:00:00Z","fields":{"title":"seed","status":"backlog","priority":0}}`)
