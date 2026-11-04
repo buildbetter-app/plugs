@@ -51,6 +51,79 @@ RunsOn receipts for that bounded count behavior; they do not turn the
 older grouped summary into ordinary-count proof or certify all of B23/S1.
 Full S1 remains 0/28 and E3 remains 4/5 until their separate proof exists.
 
+The paired B23 ordinary-count reference route uses the pinned public
+`9d6fff760b7a314b476539198504d77ce0959656` Go-built CGO0 executable through
+managed-proxied Dolt 2.2.0. The recorder authenticates the same-run public
+bundle and Dolt archive before extracting executable members, writes the
+private `.dolt/config_global.json` with modes 0700/0600, probes
+`versioncheck.disabled` before the exact version, and binds `HOME`,
+`DOLT_ROOT_PATH` and `DOLT_DISABLE_EVENT_FLUSH=1` per fresh workspace. Every
+command retains exact stdout/stderr bytes, SHA-256 digests, exit/outcome and
+argv. The owned `bd dolt stop --json` result must report `stopped:true` and
+`verified:true` before cleanup; failed shutdown keeps the workspace.
+
+`record_ordinary_count.py` emits one framed packet containing two independent
+recordings. The selected vector is open=4, open title `needle`=3, closed=1,
+absent=0, grouped open total=4, then open `needle`=2 and changed title=1.
+`extract_ordinary_count_packet.py` validates framing, source/profile/runtime
+identity, raw stream digests, command sequence and equal projections without
+importing or executing the recorder. This external profile is not claimed
+binary-equivalent to `reference-a.json`/`reference-b.json`, and it does not
+promote the untimed B24 deviation. The capture target is manual; ordinary
+count acceptance embeds the genuine twins extracted from the separate capture
+described below. Source review and fixture policy results are not runtime proof.
+
+Done = two fresh ordinary-count recordings pass the declared vector under this
+explicit public profile, proven by the original RunsOn log/archive, matching
+candidate/source/runtime identities, lossless inner and outer stream frames,
+and independent offline extraction, followed by exact-head memory, SQLite and
+PostgreSQL acceptance; source checks and another card's runtime result do not
+count. `ordinary_count_test.go` is registered in `acceptance` with
+`count-reference-first.json` and `count-reference-repeat.json`. It maps
+reference task/open/closed to Plug issue/todo/done and
+checks current, historical and SQLite-reopened counts through the existing RPC
+fixture. The existing authenticated HTTP count tests remain a separate required
+part of the eventual focused gate. No Query or authorization implementation is
+changed by this route.
+
+The genuine count twins were captured at source
+`22f09c9b6bff090e080f1a6addbb50b8f8a436fc` (tree
+`6f738eee9acdff22ac2285996280ea6c791d5baa`) in RunsOn run `41572443347`.
+The reviewed strict offline extractor accepted the original archived frames
+and independently derived all seven count values from each fresh workspace.
+Both public shutdown replies were verified; raw stream equality was false,
+while normalized transcript and projection equality were true. The first twin
+SHA-256 is `cc392e04165b2a23498020550af9d67c5fe94a3fdde575d3c6a4e272e60bd4fa`;
+the repeat is `bf86ed9979b723141e232ca74f67e717a261d0f0eb14b09984762d6758c15d20`.
+These files retain the exact extractor output bytes. This capture proves the
+selected public count vector. Plug acceptance and authenticated HTTP count
+qualification require separate exact-head gates on the child that registers
+these twins. The older reference files and B24 deviation remain unchanged.
+
+Source attribution: archive provisioning and private runtime setup were adapted
+from B01 `7bdeea0c` and B09 `cb40cab68` source atoms. The B23 profile, commands,
+count projection and extractor require their own review and execution. Successful
+normalization is not assumed: both raw-stream and normalized-transcript equality
+are reported as observed; the exact projected counts must agree.
+
+After exact-source review, the manual capture command is:
+
+```sh
+/tmp/plug-swarm/bin/remote-bazel "$PWD" <reviewed-source-sha> b23-count-capture -- test //spec/s1-b21-b24:ordinary_count_capture_test --cache_test_results=no --flaky_test_attempts=1 --test_output=all --test_env=GO_TEST_WRAP_TESTV=1 --test_env=PLUG_PUBLIC_REFERENCE=41399124974:13121145530:8c3d155f3940d21bd270fb14fe0292de0db1b3f377214756db59edf53eec5fa2
+```
+
+Before capture, the fixture-only focused command selects
+`//spec/s1-b21-b24:ordinary_count_capture_policy_test` and
+`//tools/lexicon:lexicon_gate`. The Python fixtures mock child execution and
+verify timeout bytes, failed shutdown retention, forged counts, changed argv,
+private environment and exact framing; they execute no source engine. The real
+capture preserves setup Git output and every command's original stdout/stderr,
+length, digest, exit, timeout and argv in the archived test log. The Go launcher
+also frames its complete Python stdout/stderr, including failures. A failed
+capture stops before a second workspace is attempted. Public shutdown failure
+retains the owned workspace and runtime until the disposable runner is removed.
+`--retain-block` on the extractor is diagnostic only and cannot emit twins.
+
 The B22 hash-CAS regressions exercise field, metadata and memory mismatches,
 absent expectation targets, corrected-key reuse and committed-response replay.
 Authorized refusals report `details.reason` as `hash` or `revision`; absent
