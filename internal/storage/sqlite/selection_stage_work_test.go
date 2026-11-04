@@ -23,11 +23,13 @@ import (
 // Count actual successful native source-observation query executions, including
 // misses. This measures SQL dispatch, not executor row visits or cache hits.
 type selectionStageConnector struct {
-	driver  sqldriver.Driver
-	dsn     string
-	queries atomic.Int64
-	mu      sync.Mutex
-	cancel  context.CancelFunc
+	driver         sqldriver.Driver
+	dsn            string
+	queries        atomic.Int64
+	cancelAttempts atomic.Int64
+	canceledNative atomic.Int64
+	mu             sync.Mutex
+	cancel         context.CancelFunc
 }
 
 func (c *selectionStageConnector) Driver() sqldriver.Driver { return c.driver }
@@ -52,16 +54,28 @@ func (c *selectionStageConn) ExecContext(ctx context.Context, query string, args
 	return c.Conn.(sqldriver.ExecerContext).ExecContext(ctx, query, args)
 }
 func (c *selectionStageConn) QueryContext(ctx context.Context, query string, args []sqldriver.NamedValue) (sqldriver.Rows, error) {
-	rows, err := c.Conn.(sqldriver.QueryerContext).QueryContext(ctx, query, args)
-	if err == nil && strings.Contains(query, "FROM key_history WHERE key=? AND rev<=?") {
-		c.counts.queries.Add(1)
+	sourceQuery := strings.Contains(query, "FROM key_history WHERE key=? AND rev<=?")
+	var cancel context.CancelFunc
+	if sourceQuery {
 		c.counts.mu.Lock()
-		cancel := c.counts.cancel
+		cancel = c.counts.cancel
 		c.counts.cancel = nil
 		c.counts.mu.Unlock()
-		if cancel != nil {
-			cancel()
-		}
+	}
+	// Cancel only after validation reaches the native query boundary. A
+	// cancellation after QueryContext returned could race a completed miss.
+	// The actual driver still executes its context handling and supplies the
+	// error; this observer neither fabricates nor replaces that error.
+	if cancel != nil {
+		c.counts.cancelAttempts.Add(1)
+		cancel()
+	}
+	rows, err := c.Conn.(sqldriver.QueryerContext).QueryContext(ctx, query, args)
+	if err == nil && sourceQuery {
+		c.counts.queries.Add(1)
+	}
+	if cancel != nil && errors.Is(err, context.Canceled) {
+		c.counts.canceledNative.Add(1)
 	}
 	return rows, err
 }
@@ -272,6 +286,9 @@ func TestSelectionStageValidationDerivedDependenciesAndCancellation(t *testing.T
 	if err := tx.PutSelectionDerived(call, extra.Table, nil, []driver.DerivedRow{fact(extra, a)}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("native observation cancellation not propagated: %v", err)
 	}
+	if attempts, canceled := counts.cancelAttempts.Load(), counts.canceledNative.Load(); attempts != 1 || canceled != 1 {
+		t.Fatalf("native query entry cancellation attempts=%d context_canceled=%d; want one actual native cancellation", attempts, canceled)
+	}
 	if len(tx.derived) != 2 || string(tx.derived[sourceID].Derived.Value) != string(a) {
 		t.Fatal("canceled proposed batch leaked staged state")
 	}
@@ -290,6 +307,7 @@ func TestSelectionStageValidationDerivedDependenciesAndCancellation(t *testing.T
 	if err := tx.PutDerived(ctx, source.Table, []driver.DerivedRow{{Key: source.Key}, {Key: dependent.Key}, {Key: extra.Key}}, nil); err != nil {
 		t.Fatalf("complete dependent/source deletion failed: %v", err)
 	}
+	t.Logf("native_query_entry_cancel_attempts=%d native_context_canceled=%d rollback_and_dependency_recovery=PASS", counts.cancelAttempts.Load(), counts.canceledNative.Load())
 }
 
 func TestSelectionStageValidationNonDataSourceBumps(t *testing.T) {
