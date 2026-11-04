@@ -399,7 +399,7 @@ func TestB01CompiledReadyFilterCapBoundaryAcrossDrivers(t *testing.T) {
 			// subsequent page still owns a fresh reader and policy evaluation.
 			const records = denied + allowed + 1 // includes the original seed
 			if pages, rows := store.pages.Load(), store.rows.Load(); pages != (records+999)/1000 || rows != records {
-				t.Fatalf("ready reread or truncated the full source: pages=%d rows=%d", pages, rows)
+				t.Fatalf("ready reread or truncated the full source: pages=%d rows=%d error=%+v result=%s", pages, rows, got.Error, got.Result)
 			}
 			return got
 		}
@@ -439,7 +439,7 @@ func TestB01CompiledReadyFilterCapBoundaryAcrossDrivers(t *testing.T) {
 			authzrpc.AddRuleForTest(f.server, readyCheckOnlyRules{})
 			got := callReady(model.PrincipalRef{Kind: "user", ID: "user:check-only-ready"}, map[string]any{"limit": 1}, 7060)
 			if got.Error == nil || got.Error.Data.Code != "authz_postfilter_cap" || len(got.Result) != 0 {
-				t.Fatalf("check-only candidate cap returned a partial or unbounded result: %+v", got)
+				t.Fatalf("check-only candidate cap returned a partial or unbounded result: error=%+v result=%s", got.Error, got.Result)
 			}
 			if after := f.reader(t).Snapshot().At.String(); after != before {
 				t.Fatal("check-only refusal changed durable source")
