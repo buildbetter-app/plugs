@@ -128,10 +128,10 @@ jobs:
         id: public_bundle
         if: ${{ contains(inputs.args, 'PLUG_PUBLIC_BUNDLE') }}
         env:
-          # Match ordinary CI's already admitted companion helper exactly.
-          # A future native helper commit/hash needs separate trusted admission.
-          TRUSTED_PREPARER_SHA: cdc2948fb60572b9bc694269ac8a5fdff6720de3
-          TRUSTED_PREPARER_SHA256: a4ad328f11d59bb41cdf814a47b647e4b419a67675e35c111b8c41f878f12280
+          # Use the same independently reviewed helper as ordinary CI.
+          # Only trusted-source admission selects a native descriptor/profile.
+          TRUSTED_PREPARER_SHA: 42eaa5b467d6016e73738e37252659c25179f7c7
+          TRUSTED_PREPARER_SHA256: a6d574a2b52642f9628f8460b177a46ebf0f50919bd5b7cb7e94b2995a5ea876
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
