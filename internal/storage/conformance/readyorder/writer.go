@@ -15,11 +15,41 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/buildbetter-app/plugs/internal/storage/readyindex"
 )
 
 func RunWriter(t *testing.T, factory func(*testing.T) driver.Store) {
+	runWriter(t, factory, false)
+}
+
+// RunWriterMetadata checks the unchanged exact metadata oracle produced by real
+// SQL Writer transactions. It additionally requires the public reader to refuse
+// acceleration while the complete physical source certificate is unavailable.
+// Passing these checks does not qualify public SQL Ready selection.
+func RunWriterMetadata(t *testing.T, factory func(*testing.T) driver.Store) {
+	runWriter(t, factory, true)
+}
+
+func selectWriterOrder(ctx context.Context, t *testing.T, r driver.Reader, p driver.ReadyOrderPlan, metadataOnly bool) (driver.ReadyOrderResult, error) {
 	t.Helper()
-	t.Run("same_document_plugin_refresh", func(t *testing.T) { runPluginRefresh(t, factory) })
+	result, err := r.(driver.ReadyOrderReader).SelectReadyOrder(ctx, p)
+	if !metadataOnly {
+		return result, err
+	}
+	if !errors.Is(err, driver.ErrUnsupported) {
+		t.Fatalf("uncertified SQL snapshot accelerated: %+v %v", result, err)
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, canceledErr := r.(driver.ReadyOrderReader).SelectReadyOrder(canceled, p); !errors.Is(canceledErr, context.Canceled) {
+		t.Fatalf("SQL certification refusal lost cancellation: %v", canceledErr)
+	}
+	return readyindex.Select(ctx, r, p)
+}
+
+func runWriter(t *testing.T, factory func(*testing.T) driver.Store, metadataOnly bool) {
+	t.Helper()
+	t.Run("same_document_plugin_refresh", func(t *testing.T) { runPluginRefresh(t, factory, metadataOnly) })
 	ctx := context.Background()
 	s := factory(t)
 	lease, err := s.Lease(ctx, "ready-writer-regression", driver.LeaseTTL)
@@ -52,7 +82,7 @@ func RunWriter(t *testing.T, factory func(*testing.T) driver.Store) {
 			return driver.ReadyOrderResult{}, e
 		}
 		project := "local"
-		return r.(driver.ReadyOrderReader).SelectReadyOrder(ctx, driver.ReadyOrderPlan{Incarnation: m.Incarnation, ContentRevision: m.Head, AuthorityRevision: m.Head, Scope: driver.ReadyOrderScope{Project: &project}, Eligibility: binding, UniformAuthorization: refs == nil, AuthorizedRefs: refs, RawRefs: raw, Seed: seed, Limit: 1000})
+		return selectWriterOrder(ctx, t, r, driver.ReadyOrderPlan{Incarnation: m.Incarnation, ContentRevision: m.Head, AuthorityRevision: m.Head, Scope: driver.ReadyOrderScope{Project: &project}, Eligibility: binding, UniformAuthorization: refs == nil, AuthorizedRefs: refs, RawRefs: raw, Seed: seed, Limit: 1000}, metadataOnly)
 	}
 	selectAt := func(refs []model.Ref) (driver.ReadyOrderResult, error) { return selectPlan(refs, nil, "") }
 	// Compare every thin key and full semantic leaf against public Ready and
@@ -293,7 +323,7 @@ func RunWriter(t *testing.T, factory func(*testing.T) driver.Store) {
 	}
 }
 
-func runPluginRefresh(t *testing.T, factory func(*testing.T) driver.Store) {
+func runPluginRefresh(t *testing.T, factory func(*testing.T) driver.Store, metadataOnly bool) {
 	ctx := context.Background()
 	s := factory(t)
 	lease, e := s.Lease(ctx, "ready-plugin-refresh", driver.LeaseTTL)
@@ -339,7 +369,7 @@ func runPluginRefresh(t *testing.T, factory func(*testing.T) driver.Store) {
 			return driver.ReadyOrderResult{}, e
 		}
 		project := "local"
-		return r.(driver.ReadyOrderReader).SelectReadyOrder(ctx, driver.ReadyOrderPlan{Incarnation: meta.Incarnation, ContentRevision: meta.Head, AuthorityRevision: meta.Head, Scope: driver.ReadyOrderScope{Project: &project}, Eligibility: binding, UniformAuthorization: true, Limit: 1})
+		return selectWriterOrder(ctx, t, r, driver.ReadyOrderPlan{Incarnation: meta.Incarnation, ContentRevision: meta.Head, AuthorityRevision: meta.Head, Scope: driver.ReadyOrderScope{Project: &project}, Eligibility: binding, UniformAuthorization: true, Limit: 1}, metadataOnly)
 	}
 	before, e := read()
 	if e != nil || before.Total != 1 {

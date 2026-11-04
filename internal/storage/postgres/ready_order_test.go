@@ -5,4 +5,4 @@ import (
 	"testing"
 )
 
-func TestReadyOrderRealWriter(t *testing.T) { readyorder.RunWriter(t, factory) }
+func TestReadyOrderRealWriterMetadata(t *testing.T) { readyorder.RunWriterMetadata(t, factory) }
