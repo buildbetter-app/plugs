@@ -141,8 +141,8 @@ func TestCollectorCardinalityStaysBoundedForHighCardinalityInputs(t *testing.T) 
 	if got := metricSeries(t, after); !reflect.DeepEqual(got, initial) {
 		t.Fatal("requests changed the exposed metric names/labels")
 	}
-	if len(initial) != collector.SeriesCount() || len(initial) != 327 {
-		t.Fatalf("actual series=%d reported=%d want 327", len(initial), collector.SeriesCount())
+	if len(initial) != collector.SeriesCount() || len(initial) != 615 {
+		t.Fatalf("actual series=%d reported=%d want 615", len(initial), collector.SeriesCount())
 	}
 	for _, private := range []string{"project-", "request-key-", "payload-", "nikhil", "00000000000000000000000000000064"} {
 		if strings.Contains(after, private) {
@@ -311,7 +311,7 @@ func TestCollectorCountsConcurrentSameKeyWritesOncePerCall(t *testing.T) {
 	}
 	wg.Wait()
 	snapshot := collector.Snapshot()
-	if snapshot.Outcomes[ResultCommit] != 1 || snapshot.Outcomes[ResultReplay] != 12 || snapshot.LaneCount[PhaseCommit][ResultSuccess] != 1 || snapshot.LaneCount[PhaseReplay][ResultSuccess] != 13 {
+	if snapshot.Outcomes[ResultCommit] != 1 || snapshot.Outcomes[ResultReplay] != 12 || snapshot.LaneCount[PhaseCommit][ResultSuccess] != 1 || snapshot.LaneCount[PhaseCommitDriver][ResultSuccess] != 1 || snapshot.LaneCount[PhaseReplay][ResultSuccess] != 13 {
 		t.Fatalf("concurrent observations=%+v", snapshot)
 	}
 	assertSingleGraphWrite(t, h, first)
@@ -347,7 +347,7 @@ func TestCollectorObservesDriverConflictExhaustion(t *testing.T) {
 	_, err := w.Apply(context.Background(), by, model.ChangeSet{Ops: []model.Op{create("new")}}, meta(1))
 	code(t, err, "write_conflict")
 	snapshot := collector.Snapshot()
-	if snapshot.Conflicts[ConflictDriver] != 4 || snapshot.Outcomes[ResultConflict] != 1 || snapshot.LaneCount[PhaseCommit][ResultRetry] != 4 {
+	if snapshot.Conflicts[ConflictDriver] != 4 || snapshot.Outcomes[ResultConflict] != 1 || snapshot.LaneCount[PhaseCommit][ResultRetry] != 4 || snapshot.LaneCount[PhaseCommitWrite][ResultRetry] != 4 || snapshot.LaneCount[PhaseCommitDriver][ResultSuccess] != 0 {
 		t.Fatalf("exhausted observations=%+v", snapshot)
 	}
 	assertEmpty(t, h)
@@ -420,4 +420,186 @@ func TestCollectorKeepsCommittedPostFailureSeparateFromCancellation(t *testing.T
 			}
 		})
 	}
+}
+
+// These exercise real Writer transactions, including cleanup on a failed stage.
+// No timing threshold is needed to prove phase attribution or observer lifetime.
+func TestCollectorBuffersCommitSubphasesUntilTransactionClose(t *testing.T) {
+	stages := []Phase{PhaseCommitProjections, PhaseCommitLockPlan, PhaseCommitWrite,
+		PhaseCommitLock, PhaseCommitHead, PhaseCommitGuards, PhaseCommitPrepareRows,
+		PhaseCommitSources, PhaseCommitAncestors, PhaseCommitEvents, PhaseCommitDriver}
+	for _, tc := range []struct {
+		name   string
+		failAt Phase
+		cancel bool
+	}{
+		{name: "success"},
+		{name: "lock_error", failAt: PhaseCommitLock},
+		{name: "driver_error", failAt: PhaseCommitDriver},
+		{name: "driver_cancellation", failAt: PhaseCommitDriver, cancel: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := setup(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			state := &timedTransactionState{failAt: tc.failAt, failure: errors.New("injected stage error")}
+			if tc.cancel {
+				state.cancel = cancel
+				state.failure = context.Canceled
+			}
+			collector := NewCollector()
+			w := h.writer(WithObserver(transactionLifetimeObserver{Collector: collector, t: t, state: state}))
+			w.store = timedTransactionStore{Store: h.store, state: state}
+			commit, err := w.Apply(ctx, by, model.ChangeSet{Ops: []model.Op{create("new")}}, meta(1))
+			if tc.failAt == "" {
+				if err != nil || commit.Revision.String() != "1" {
+					t.Fatalf("commit=%+v err=%v", commit, err)
+				}
+				assertSingleGraphWrite(t, h, commit)
+			} else {
+				if !errors.Is(err, state.failure) {
+					t.Fatalf("error=%v want original %v", err, state.failure)
+				}
+				assertEmpty(t, h)
+			}
+			if state.open.Load() != 0 || state.closes.Load() != 1 || state.rollbacks.Load() != 1 {
+				t.Fatalf("cleanup open=%d closes=%d rollbacks=%d", state.open.Load(), state.closes.Load(), state.rollbacks.Load())
+			}
+			snapshot := collector.Snapshot()
+			reached := true
+			for _, phase := range stages {
+				want := uint64(0)
+				result := ResultSuccess
+				if reached {
+					want = 1
+				}
+				if phase == tc.failAt {
+					result = ResultError
+					if tc.cancel {
+						result = ResultCanceled
+					}
+					reached = false
+				}
+				if got := snapshot.LaneCount[phase][result]; got != want {
+					t.Errorf("phase=%s result=%s count=%d want %d", phase, result, got, want)
+				}
+				var total uint64
+				for _, count := range snapshot.LaneCount[phase] {
+					total += count
+				}
+				if total != want {
+					t.Errorf("phase=%s total=%d want %d", phase, total, want)
+				}
+			}
+			if snapshot.LaneCount[PhaseCommitNoop][ResultSuccess] != 0 {
+				t.Fatal("ordinary write reported a no-op driver call")
+			}
+		})
+	}
+}
+
+func TestCollectorSeparatesNoopCommitSubphaseAndReplay(t *testing.T) {
+	h := setup(t)
+	first := apply(t, h.writer(), model.ChangeSet{Ops: []model.Op{create("new")}}, meta(1))
+	state := &timedTransactionState{}
+	collector := NewCollector()
+	w := h.writer(WithObserver(transactionLifetimeObserver{Collector: collector, t: t, state: state}))
+	w.store = timedTransactionStore{Store: h.store, state: state}
+	cs := model.ChangeSet{Ops: []model.Op{patch(first.Results[0].Ref, map[string]any{"title": "initial"})}}
+	fresh, err := w.ApplyWithOutcome(context.Background(), by, cs, meta(2))
+	if err != nil || fresh.Replayed || fresh.Commit.Revision.String() != "1" {
+		t.Fatalf("fresh no-op=%+v err=%v", fresh, err)
+	}
+	replay, err := w.ApplyWithOutcome(context.Background(), by, cs, meta(2))
+	if err != nil || !replay.Replayed || !reflect.DeepEqual(replay.Commit, fresh.Commit) {
+		t.Fatalf("no-op replay=%+v err=%v", replay, err)
+	}
+	snapshot := collector.Snapshot()
+	if snapshot.LaneCount[PhaseCommitNoop][ResultSuccess] != 1 || snapshot.LaneCount[PhaseCommitDriver][ResultSuccess] != 0 || state.closes.Load() != 1 {
+		t.Fatalf("no-op observations=%+v closes=%d", snapshot, state.closes.Load())
+	}
+	for _, phase := range []Phase{PhaseCommitSources, PhaseCommitAncestors, PhaseCommitEvents} {
+		for result, count := range snapshot.LaneCount[phase] {
+			if count != 0 {
+				t.Errorf("no-op reached phase=%s result=%s count=%d", phase, result, count)
+			}
+		}
+	}
+	assertSingleGraphWrite(t, h, first)
+}
+
+type timedTransactionState struct {
+	open, closes, rollbacks atomic.Int32
+	failAt                  Phase
+	failure                 error
+	cancel                  context.CancelFunc
+}
+
+type transactionLifetimeObserver struct {
+	*Collector
+	t     *testing.T
+	state *timedTransactionState
+}
+
+func (o transactionLifetimeObserver) ObservePhase(phase Phase, duration time.Duration, result Result) {
+	if o.state.open.Load() != 0 {
+		o.t.Errorf("observer phase=%s ran inside a write transaction", phase)
+	}
+	if strings.HasPrefix(string(phase), "commit_") && o.state.closes.Load() == 0 {
+		o.t.Errorf("subphase=%s arrived before transaction Close", phase)
+	}
+	o.Collector.ObservePhase(phase, duration, result)
+}
+
+type timedTransactionStore struct {
+	driver.Store
+	state *timedTransactionState
+}
+
+type timedTransactionTx struct {
+	driver.WriteTx
+	state *timedTransactionState
+}
+
+func (s timedTransactionStore) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
+	tx, err := s.Store.Write(ctx, lease)
+	if err != nil {
+		return nil, err
+	}
+	s.state.open.Add(1)
+	return timedTransactionTx{WriteTx: tx, state: s.state}, nil
+}
+
+func (tx timedTransactionTx) Lock(ctx context.Context, locks []driver.LockRequest) ([]driver.LockState, error) {
+	if tx.state.failAt == PhaseCommitLock {
+		return nil, tx.state.failure
+	}
+	return tx.WriteTx.Lock(ctx, locks)
+}
+
+func (tx timedTransactionTx) Commit(ctx context.Context, header driver.ChangesetHeader) (model.Changeset, error) {
+	if tx.state.failAt == PhaseCommitDriver {
+		if tx.state.cancel != nil {
+			tx.state.cancel()
+		}
+		return model.Changeset{}, tx.state.failure
+	}
+	return tx.WriteTx.Commit(ctx, header)
+}
+
+func (tx timedTransactionTx) CommitNoop(ctx context.Context, header driver.ChangesetHeader) (model.Commit, error) {
+	return tx.WriteTx.(driver.NoopCommitter).CommitNoop(ctx, header)
+}
+
+func (tx timedTransactionTx) Rollback(ctx context.Context) error {
+	err := tx.WriteTx.Rollback(ctx)
+	tx.state.rollbacks.Add(1)
+	return err
+}
+
+func (tx timedTransactionTx) Close() error {
+	err := tx.WriteTx.Close()
+	tx.state.open.Add(-1)
+	tx.state.closes.Add(1)
+	return err
 }

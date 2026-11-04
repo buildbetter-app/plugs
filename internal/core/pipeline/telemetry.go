@@ -31,9 +31,24 @@ const (
 	PhaseChanges   Phase = "changes"
 	PhaseAudit     Phase = "audit"
 	PhaseCommit    Phase = "commit"
-	PhasePost      Phase = "post"
-	PhaseResponse  Phase = "response"
-	phaseOther     Phase = "other"
+
+	// Commit subphases partition transact before transaction cleanup. The
+	// existing PhaseCommit still measures the complete transact call.
+	PhaseCommitProjections Phase = "commit_projections"
+	PhaseCommitLockPlan    Phase = "commit_lock_plan"
+	PhaseCommitWrite       Phase = "commit_write"
+	PhaseCommitLock        Phase = "commit_lock"
+	PhaseCommitHead        Phase = "commit_head"
+	PhaseCommitGuards      Phase = "commit_guards"
+	PhaseCommitPrepareRows Phase = "commit_prepare_rows"
+	PhaseCommitSources     Phase = "commit_sources"
+	PhaseCommitAncestors   Phase = "commit_ancestors"
+	PhaseCommitEvents      Phase = "commit_events"
+	PhaseCommitDriver      Phase = "commit_driver"
+	PhaseCommitNoop        Phase = "commit_noop"
+	PhasePost              Phase = "post"
+	PhaseResponse          Phase = "response"
+	phaseOther             Phase = "other"
 )
 
 var phases = [...]Phase{
@@ -47,6 +62,18 @@ var phases = [...]Phase{
 	PhaseChanges,
 	PhaseAudit,
 	PhaseCommit,
+	PhaseCommitProjections,
+	PhaseCommitLockPlan,
+	PhaseCommitWrite,
+	PhaseCommitLock,
+	PhaseCommitHead,
+	PhaseCommitGuards,
+	PhaseCommitPrepareRows,
+	PhaseCommitSources,
+	PhaseCommitAncestors,
+	PhaseCommitEvents,
+	PhaseCommitDriver,
+	PhaseCommitNoop,
 	PhasePost,
 	PhaseResponse,
 	phaseOther,
@@ -374,6 +401,53 @@ func classifyOutcome(ctx context.Context, outcome port.WriteOutcome, err error, 
 		return ResultConflict
 	}
 	return result
+}
+
+// deferredPhaseTimings records only fixed, straight-line transaction stages.
+// No observer runs from next or finish: transact flushes after its rollback and
+// close defers. Each reached stage is recorded once; unreached stages stay zero.
+// The closed phase vocabulary bounds both this buffer and exported labels.
+type deferredPhaseTimings struct {
+	enabled bool
+	phase   Phase
+	started time.Time
+	samples [len(phases)]struct {
+		phase    Phase
+		duration time.Duration
+		result   Result
+	}
+	count int
+}
+
+func (d *deferredPhaseTimings) next(phase Phase) {
+	if !d.enabled {
+		return
+	}
+	now := time.Now()
+	d.record(now, ResultSuccess)
+	d.phase, d.started = phase, now
+}
+
+func (d *deferredPhaseTimings) record(ended time.Time, result Result) {
+	if d.phase == "" {
+		return
+	}
+	sample := &d.samples[d.count]
+	sample.phase, sample.duration, sample.result = d.phase, ended.Sub(d.started), result
+	d.count++
+	d.phase = ""
+}
+
+func (d *deferredPhaseTimings) finish(ctx context.Context, err error) {
+	if d.enabled && d.phase != "" {
+		d.record(time.Now(), classifyPhaseResult(ctx, err))
+	}
+}
+
+func (d *deferredPhaseTimings) flush(w *Writer) {
+	for _, sample := range d.samples[:d.count] {
+		w.observePhaseResult(sample.phase, sample.duration, sample.result)
+	}
 }
 
 func (w *Writer) observePhaseSince(ctx context.Context, phase Phase, started time.Time, err error) {
