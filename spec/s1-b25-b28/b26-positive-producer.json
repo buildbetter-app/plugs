@@ -89,9 +89,10 @@
       "methods": [
         "bead.claim",
         "bead.claimNext",
+        "bead.claimNext.empty",
         "bead.close"
       ],
-      "durable_mutation": "real public reopen after all resolver reads and before actual SQL checkpoint/head CAS",
+      "durable_mutation": "real public reopen or still-blocked update after all resolver reads and before actual SQL checkpoint/head CAS",
       "relations": [
         "blocks",
         "waits-for/nil",
@@ -99,13 +100,19 @@
         "waits-for/all-children",
         "waits-for/any-children"
       ],
-      "boundary": "AUTHORED_NOT_RUN on this successor; rejected CAS cannot publish state/receipt, safe queue restart may record a freshly fenced terminal null"
+      "boundary": "AUTHORED_NOT_RUN on this successor; exact write_conflict and byte-identical complete checkpoint for every rejected publication; separately fresh empty-queue terminal null and replay without checkpoint mutation; canonical retry policy unchanged"
     },
     "explicit_blocker_vectors": [
       "promoted direct claim refusal",
       "promoted direct close refusal",
       "promoted tx.apply close refusal",
       "clear then success, reassert then exact receipt replay without publication"
-    ]
+    ],
+    "ordinary_guard": "AUTHORED_NOT_RUN: read-only state snapshot without receipt GC, no workflow facts/zero expectation on nonpersistent stores; existing raw workflow Close acceptance unchanged",
+    "derived_image": {
+      "case": "TestB26BuiltinDerivedGoldenRetainsLegacyAndAddsOnlyBlocked",
+      "status": "authored-not-run",
+      "expected": "independent fixed 20-row/nine-table images retain legacy digest and add only blocked:boolean to the ontology row; archive bytes unchanged"
+    }
   }
 }

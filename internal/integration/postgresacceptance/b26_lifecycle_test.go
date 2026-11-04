@@ -781,9 +781,14 @@ func (s *b26HeadRaceStore) SaveCheckpointAtHead(ctx context.Context, lease drive
 }
 
 func b26ReverseGuardRace(t *testing.T, open func(*testing.T) driver.Store) {
-	for _, method := range []string{"bead.claim", "bead.claimNext", "bead.close"} {
+	for _, method := range []string{"bead.claim", "bead.claimNext", "bead.claimNext.empty", "bead.close"} {
 		for _, relation := range []string{"blocks", "waits-for/nil", "waits-for/default", "waits-for/all-children", "waits-for/any-children"} {
 			t.Run(method+"/"+relation, func(t *testing.T) {
+				empty := method == "bead.claimNext.empty"
+				rpcMethod := method
+				if empty {
+					rpcMethod = "bead.claimNext"
+				}
 				base := open(t)
 				store := &b26HeadRaceStore{Store: base, PersistentCheckpointStore: base.(driver.PersistentCheckpointStore), guard: base.(driver.HeadGuardedCheckpointStore)}
 				h := b26Host(t, store)
@@ -803,10 +808,12 @@ func b26ReverseGuardRace(t *testing.T, open func(*testing.T) driver.Store) {
 						link["metadata"] = metadata
 					}
 				}
-				b26OK(t, h.call(t, "bead.close", map[string]any{"id": ref(reopen)}, "reverse-race-initial-close"))
+				if !empty {
+					b26OK(t, h.call(t, "bead.close", map[string]any{"id": ref(reopen)}, "reverse-race-initial-close"))
+				}
 				b26OK(t, h.call(t, "bead.link", link, "reverse-race-link"))
-				if !h.ready(t, true)[item] {
-					t.Fatal("fixture's satisfied dependency is not ready")
+				if h.ready(t, true)[item] == empty {
+					t.Fatal("fixture's ready state does not match its dependency")
 				}
 				before := workflowCheckpoint(t, store)
 				originalMeta, err := store.Meta(context.Background())
@@ -821,7 +828,11 @@ func b26ReverseGuardRace(t *testing.T, open func(*testing.T) driver.Store) {
 					}
 					// Reopen after every durable resolver read, immediately before
 					// the real driver's atomic core-head/checkpoint CAS boundary.
-					b26OK(t, h.call(t, "bead.reopen", map[string]any{"id": ref(reopen), "reason": "deterministic reverse race"}, "reverse-race-reopen"))
+					if empty {
+						b26OK(t, h.call(t, "bead.update", map[string]any{"id": ref(reopen), "fields": map[string]any{"description": "after empty-queue blocker snapshot"}}, "reverse-race-update"))
+					} else {
+						b26OK(t, h.call(t, "bead.reopen", map[string]any{"id": ref(reopen), "reason": "deterministic reverse race"}, "reverse-race-reopen"))
+					}
 					reopenedMeta, err = store.Meta(context.Background())
 					if err != nil {
 						t.Fatal(err)
@@ -832,33 +843,21 @@ func b26ReverseGuardRace(t *testing.T, open func(*testing.T) driver.Store) {
 				}
 				store.mu.Unlock()
 				params := map[string]any{"id": ref(item)}
-				if method == "bead.claimNext" {
+				if rpcMethod == "bead.claimNext" {
 					params = map[string]any{"filter": map[string]any{"includeEphemeral": true, "resources": []string{item}}}
 				}
-				result := h.call(t, method, params, "reverse-race-write")
+				result := h.call(t, rpcMethod, params, "reverse-race-write")
 				store.mu.Lock()
 				rejected, pending := store.rejected, store.before != nil
 				store.mu.Unlock()
 				if rejected != 1 || pending {
 					t.Fatalf("race did not reach/reject the atomic publication: rejected=%d", rejected)
 				}
-				if method == "bead.claimNext" {
-					// The public queue may restart selection after the conflict;
-					// its newly fenced terminal null is safe and has no live claim.
-					if string(b26OK(t, result)) != "null" {
-						t.Fatal("racing queue claimed a stale ready item")
-					}
-					after := workflowCheckpoint(t, store)
-					if !reflect.DeepEqual(before.Items, after.Items) || !reflect.DeepEqual(before.Runs, after.Runs) {
-						t.Fatal("queue retry changed live workflow state")
-					}
-				} else {
-					if result.Error == nil || result.Error.Data.Code != "write_conflict" {
-						t.Fatalf("racing mutation was not refused: %+v", result.Error)
-					}
-					if !reflect.DeepEqual(before, workflowCheckpoint(t, store)) {
-						t.Fatal("failed head fence published a receipt, claim or close")
-					}
+				if result.Error == nil || result.Error.Data.Code != "write_conflict" {
+					t.Fatalf("racing mutation was not refused: %+v", result.Error)
+				}
+				if !reflect.DeepEqual(before, workflowCheckpoint(t, store)) {
+					t.Fatal("failed head fence published a receipt, claim or close")
 				}
 				afterMeta, err := store.Meta(context.Background())
 				if err != nil || afterMeta != reopenedMeta {
@@ -868,12 +867,28 @@ func b26ReverseGuardRace(t *testing.T, open func(*testing.T) driver.Store) {
 					t.Fatal("stale blocker observation became a live workflow claim or close")
 				}
 				b26NoVersion(t, store, item)
+				if empty {
+					// A fresh decision may publish the terminal null only after
+					// the new core snapshot passes the real SQL fence.
+					if string(b26OK(t, h.call(t, rpcMethod, params, "reverse-race-empty-terminal"))) != "null" {
+						t.Fatal("fresh blocked queue did not return terminal null")
+					}
+					terminal := workflowCheckpoint(t, store)
+					if !reflect.DeepEqual(before.Items, terminal.Items) || !reflect.DeepEqual(before.Runs, terminal.Runs) || terminal.Checkpoint.Generation <= before.Checkpoint.Generation {
+						t.Fatal("fresh terminal receipt changed live workflow state or was not persisted")
+					}
+					b26OK(t, h.call(t, "bead.update", map[string]any{"id": ref(reopen), "fields": map[string]any{"description": "after fenced empty receipt"}}, "reverse-race-after-empty"))
+					if string(b26OK(t, h.call(t, rpcMethod, params, "reverse-race-empty-terminal"))) != "null" || !reflect.DeepEqual(terminal, workflowCheckpoint(t, store)) {
+						t.Fatal("terminal null replay changed checkpoint after a later core write")
+					}
+					b26NoVersion(t, store, item)
+				}
 				b26OK(t, h.call(t, "bead.close", map[string]any{"id": ref(reopen)}, "reverse-race-satisfy-again"))
-				b26OK(t, h.call(t, method, params, "reverse-race-success"))
+				b26OK(t, h.call(t, rpcMethod, params, "reverse-race-success"))
 				// Receipt replay precedes a later durable blocker observation.
 				b26OK(t, h.call(t, "bead.reopen", map[string]any{"id": ref(reopen), "reason": "after successful workflow write"}, "reverse-race-reopen-again"))
 				replayState := workflowCheckpoint(t, store)
-				b26OK(t, h.call(t, method, params, "reverse-race-success"))
+				b26OK(t, h.call(t, rpcMethod, params, "reverse-race-success"))
 				if !reflect.DeepEqual(replayState, workflowCheckpoint(t, store)) {
 					t.Fatal("workflow receipt replay republished checkpoint")
 				}

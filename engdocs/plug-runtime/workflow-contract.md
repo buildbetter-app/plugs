@@ -146,11 +146,17 @@ remove expired receipts only when their run is already ended (or the receipt
 does not reference a run), and never deletes an unfinished run. The workflow
 provider's `workflow/state` document is the single checkpoint-CAS unit for
 these maps and its identity-only audit ledger.
-Ordinary workflow state access performs eligible receipt GC and records the
+Workflow state access outside ordinary-write guards performs eligible receipt GC and records the
 identity-only deletion audit in the same lease-fenced CAS. An idle store may
 retain expired identity-only receipts until its next workflow access; expiry
 does not depend on physical cleanup to stop replay. A cleanup conflict fails
 that access with `write_conflict` without publishing a partial map.
+Ordinary-write blocker guards read without GC or checkpoint publication. On a
+nonpersistent store they contribute no workflow facts and leave ordinary tools
+available; ephemeral invocation still returns its typed capability refusal.
+A workflow/global `write_conflict` from `bead.claimNext` is returned to the
+caller. A fresh call may publish a newly fenced terminal null for an empty queue;
+receipt replay returns that null without publishing again.
 
 `bead.ready` uses a stable ID-ascending workflow phase after the core ready
 phase. Its signed continuation cursor binds method, the complete effective

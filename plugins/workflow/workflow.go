@@ -589,7 +589,7 @@ func (p *Provider) WithIdentity(plugin, instance, incarnation string) *Provider 
 	return p
 }
 
-func (p *Provider) load(ctx context.Context) (persisted, pluginapi.Revision, error) {
+func (p *Provider) readState(ctx context.Context) (persisted, pluginapi.Revision, error) {
 	var value persisted
 	found, revision, err := p.state.Read(ctx, stateKey, &value)
 	if err != nil {
@@ -606,6 +606,14 @@ func (p *Provider) load(ctx context.Context) (persisted, pluginapi.Revision, err
 	}
 	if value.Receipts == nil {
 		value.Receipts = map[string]receiptState{}
+	}
+	return value, revision, nil
+}
+
+func (p *Provider) load(ctx context.Context) (persisted, pluginapi.Revision, error) {
+	value, revision, err := p.readState(ctx)
+	if err != nil {
+		return persisted{}, "", err
 	}
 	// Ordinary workflow access also performs eligible receipt cleanup. Publish
 	// it with the revision read alongside this complete map, then carry the new
@@ -1121,7 +1129,14 @@ func (p *Provider) OrdinaryBlocked(ctx context.Context, by model.PrincipalRef, i
 func (p *Provider) OrdinaryBlockerSnapshot(ctx context.Context, by model.PrincipalRef, ids []string, meta model.WriteMeta) (map[string]bool, driver.CheckpointExpectation, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	value, revision, err := p.load(ctx)
+	// No persistent capability means no active workflow facts can exist. This
+	// is not a memory checkpoint substitute; ephemeral invocation still refuses.
+	if !p.persistent {
+		return map[string]bool{}, driver.CheckpointExpectation{}, nil
+	}
+	// An ordinary pre-publication guard must never garbage collect or publish
+	// metadata on its own, including when the core write is later refused.
+	value, revision, err := p.readState(ctx)
 	if err != nil {
 		return nil, driver.CheckpointExpectation{}, err
 	}
