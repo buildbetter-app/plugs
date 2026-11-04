@@ -764,7 +764,12 @@ type ReparentOp struct {
 	Parent  *Ref   `json:"parent,omitempty"`
 	Project string `json:"project,omitempty"`
 }
+// LinkTargetKind is local (the omitted default) or external. External IDs are
+// exact, nonempty branch-zero ID references and never resolve to local beads.
+type LinkTargetKind string
+
 type LinkOp struct {
+	TargetKind LinkTargetKind `json:"targetKind,omitempty"`
 	Kind     OpKind `json:"kind"`
 	From     Ref    `json:"from"`
 	To       Ref    `json:"to"`

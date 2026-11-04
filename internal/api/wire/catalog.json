@@ -1587,6 +1587,13 @@
           "required": true
         },
         {
+          "name": "targetKind",
+          "required": false,
+          "schema": {
+            "$ref": "#/components/schemas/LinkTargetKind"
+          }
+        },
+        {
           "name": "metadata",
           "required": false,
           "schema": {
@@ -1695,6 +1702,13 @@
             "type": "string"
           },
           "required": true
+        },
+        {
+          "name": "targetKind",
+          "required": false,
+          "schema": {
+            "$ref": "#/components/schemas/LinkTargetKind"
+          }
         },
         {
           "name": "expect",
@@ -7248,6 +7262,9 @@
           "metadata": {
             "$ref": "#/components/schemas/LinkMetadata",
             "description": "Only valid for a waits-for link. Omission preserves existing metadata on re-add; explicit {} selects all-children without also_blocks."
+          },
+          "targetKind": {
+            "$ref": "#/components/schemas/LinkTargetKind"
           }
         },
         "required": [
@@ -10846,6 +10863,14 @@
           "asOf"
         ],
         "additionalProperties": false
+      },
+      "LinkTargetKind": {
+        "type": "string",
+        "enum": [
+          "local",
+          "external"
+        ],
+        "description": "Omission is local. Explicit external targets retain an exact nonempty branch-zero ID and are never resolved against local beads."
       }
     },
     "errors": {
@@ -13483,7 +13508,7 @@
     "methodCount": 83,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
     "nameSha256": "0ce6a0ee3927753ec8622351c1337c1de3922a1662eae667196e447fd9c170ef",
-    "descriptorSha256": "ec91cb342987cefd6444981ef37523cc9238da2a0af168b13a4999c7964f3ba2",
+    "descriptorSha256": "1e0f9e3f9edbb8e716f5aab3ffbf8fcb2dc26b11b71e26de6db4ac58c9b306a1",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -14523,6 +14548,13 @@
             }
           },
           {
+            "name": "targetKind",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/LinkTargetKind"
+            }
+          },
+          {
             "name": "metadata",
             "required": false,
             "schema": {
@@ -14593,6 +14625,13 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "targetKind",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/LinkTargetKind"
             }
           },
           {
