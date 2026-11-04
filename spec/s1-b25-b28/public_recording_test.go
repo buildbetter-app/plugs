@@ -210,6 +210,7 @@ func TestPublicNativeRecording(t *testing.T) {
 	artifact := verifyPublicArtifact(t, profile)
 	root := makeRecordingRoot(t)
 	actualProduct := recordNativeProductIdentity(t, root)
+	recordR418ComparatorControls(t, root)
 	t.Logf("PUBLIC_RECORDING_OUTPUT %s", root)
 	storeRoot := makeRecordingDirectory(t, "/tmp/plug-swarm/work", "s1-b25-b28-public-stores-")
 	t.Cleanup(func() {
@@ -327,6 +328,21 @@ func recordingRunfile(t *testing.T, name string) []byte {
 	}
 	t.Fatalf("recording runfile %q is unavailable", name)
 	return nil
+}
+
+func recordR418ComparatorControls(t *testing.T, output string) {
+	t.Helper()
+	root := filepath.Join(output, "r418-comparer-controls")
+	if err := os.MkdirAll(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"compare_r418_pair.py", "compare_r418_pair_test.py"} {
+		writeRecordingBytes(t, filepath.Join(root, name), recordingRunfile(t, name))
+	}
+	var receipts []commandReceipt
+	runCommand(t, root, &receipts, "typed-audit-negative-controls", "analysis-only", root,
+		[]string{"PATH=/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE=1"},
+		[]string{"python3", filepath.Join(root, "compare_r418_pair_test.py"), "-v"}, nil)
 }
 
 func verifyPublicArtifact(t *testing.T, profile recordingProfile) publicArtifact {
@@ -1277,12 +1293,27 @@ func recordNativeScalarOperations(t *testing.T, output, storeRoot, source, pinne
 	if !equalJSON(refusalPhysical, typeRefusal) {
 		t.Fatal("native scalar/type refusal wrote a partial patch")
 	}
-	// The accepted schema declares labels.label VARCHAR(255). A 256-byte
-	// auxiliary insert fails inside the same Update transaction as the scalar.
-	expected("b25-auxiliary-sql-fault", []string{"--json", "update", "pub-root", "--title", "must roll back", "--add-label", strings.Repeat("x", 256)}, 1)
-	faultAfter := recordNativePhysicalImage(t, root, "auxiliary-fault-after", command)
+	// Accepted c8 labels.go rejects this before INSERT; it is a length
+	// validation refusal, not evidence of an auxiliary SQL write fault.
+	expected("b25-label-length-refusal", []string{"--json", "update", "pub-root", "--title", "must roll back", "--add-label", strings.Repeat("x", 256)}, 1)
+	labelError, err := os.ReadFile(receipts[len(receipts)-1].StderrPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := bytes.Split(bytes.TrimSpace(labelError), []byte("\n"))
+	var failure struct {
+		Error  string `json:"error"`
+		Failed []struct {
+			ID    string `json:"id"`
+			Error string `json:"error"`
+		} `json:"failed"`
+	}
+	if err := json.Unmarshal(lines[len(lines)-1], &failure); err != nil || failure.Error != "1 of 1 issues failed to update" || len(failure.Failed) != 1 || failure.Failed[0].ID != "pub-root" || !strings.HasPrefix(failure.Failed[0].Error, "updating issue: ") || !strings.HasSuffix(failure.Failed[0].Error, "field exceeds maximum length: label is 256 characters (max 255)") {
+		t.Fatalf("native label length refusal had another cause: %s", labelError)
+	}
+	faultAfter := recordNativePhysicalImage(t, root, "label-length-refusal-after", command)
 	if !equalJSON(typeRefusal, faultAfter) {
-		t.Fatal("native auxiliary SQL fault failed full source/history rollback")
+		t.Fatal("native label length refusal changed physical source/history state")
 	}
 	// Exercise the real child counter on the accepted native store. This row is
 	// retained in the source archive and its generated identity is checked here,
@@ -1298,7 +1329,8 @@ func recordNativeScalarOperations(t *testing.T, output, storeRoot, source, pinne
 		"child_after": childAfter, "closed_before": closedBefore, "closed_after": closedAfter, "refusal_before": refusalBefore,
 		"refusal_after": refusalAfter, "counter_child": counterRow,
 		"full_comment_bodies": nativeComments(after),
-		"physical_before":     physicalBefore, "physical_after": physicalAfter, "refusal_physical": refusalPhysical, "type_refusal_physical": typeRefusal, "fault_after": faultAfter,
+		"physical_before":     physicalBefore, "physical_after": physicalAfter, "refusal_physical": refusalPhysical, "type_refusal_physical": typeRefusal, "label_length_refusal_after": faultAfter,
+		"auxiliary_sql_write_fault": "NOT_PROVEN",
 	}, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -1352,7 +1384,7 @@ func recordNativeDeleteOperations(t *testing.T, output, storeRoot, source, pinne
 		t.Fatal("native orphan delete left a dangling dependency")
 	}
 	orphanAfter := recordNativePhysicalImage(t, root, "orphan-after", command)
-	assertNativeDeletePhysical(t, orphanBefore, orphanAfter, []string{"pub-delete-owner"})
+	assertNativeDeletePhysical(t, orphanBefore, orphanAfter, []string{"pub-delete-owner"}, []string{"pub-delete-survivor"})
 	command("b25-cascade-create-owner", []string{"--json", "create", "--id", "pub-cascade-owner", "--type", "task", "--title", "Native cascade owner", "--description", "cascade owner"})
 	command("b25-cascade-create-child", []string{"--json", "create", "--id", "pub-cascade-child", "--type", "task", "--title", "Native cascade child", "--description", "cascade child"})
 	command("b25-cascade-link", []string{"--json", "dep", "add", "pub-cascade-child", "pub-cascade-owner"})
@@ -1364,7 +1396,7 @@ func recordNativeDeleteOperations(t *testing.T, output, storeRoot, source, pinne
 	expected("b25-cascade-owner-missing", []string{"--json", "show", "--include-comments", "pub-cascade-owner"}, 1)
 	expected("b25-cascade-child-missing", []string{"--json", "show", "--include-comments", "pub-cascade-child"}, 1)
 	cascadePhysicalAfter := recordNativePhysicalImage(t, root, "cascade-after", command)
-	assertNativeDeletePhysical(t, cascadePhysicalBefore, cascadePhysicalAfter, []string{"pub-cascade-owner", "pub-cascade-child"})
+	assertNativeDeletePhysical(t, cascadePhysicalBefore, cascadePhysicalAfter, []string{"pub-cascade-owner", "pub-cascade-child"}, nil)
 	expected("b25-delete-missing-row", []string{"--json", "delete", "pub-never-created", "--force"}, 1)
 	data, err := json.MarshalIndent(map[string]any{
 		"schema": "plug-s1-b25-native-delete/1", "source": source, "server": server,
@@ -1868,6 +1900,19 @@ func assertNativeIssuePatch(t *testing.T, before, after nativePhysicalImage, id,
 					}
 					continue
 				}
+				if column == "row_lock" {
+					// Accepted c8 update.go:491-497 remints this optimistic token
+					// on every update; it is not an unpatched business scalar.
+					number, ok := actual[column].(json.Number)
+					if !ok {
+						t.Fatal("native row_lock lost its integer representation")
+					}
+					n, err := number.Int64()
+					if err != nil || n == 0 || equalJSON(old, number) {
+						t.Fatal("native update did not remint a nonzero row_lock")
+					}
+					continue
+				}
 				if column == "updated_at" || column == "content_hash" || column == "current_revision" {
 					continue
 				}
@@ -1879,12 +1924,20 @@ func assertNativeIssuePatch(t *testing.T, before, after nativePhysicalImage, id,
 	}
 }
 
-func assertNativeDeletePhysical(t *testing.T, before, after nativePhysicalImage, removed []string) {
+func assertNativeDeletePhysical(t *testing.T, before, after nativePhysicalImage, removed, unblocked []string) {
 	t.Helper()
 	deleted := map[string]bool{}
 	for _, id := range removed {
 		deleted[id] = true
 	}
+	// Accepted c8 DeleteResolvedSetInTx recomputes the derived marker after
+	// removing inbound blocking edges. This fixture has exactly one such
+	// survivor; its token, timestamps and every other column must survive.
+	unblock := map[string]bool{}
+	for _, id := range unblocked {
+		unblock[id] = true
+	}
+	seenUnblocked := map[string]bool{}
 	for _, table := range nativePhysicalTables {
 		// Retain these complete raw histories/cursors; their deletion-specific
 		// version/address transition is not asserted to equal scalar history.
@@ -1902,6 +1955,18 @@ func assertNativeDeletePhysical(t *testing.T, before, after nativePhysicalImage,
 			switch table {
 			case "issues":
 				owned = deleted[fmt.Sprint(row["id"])]
+				if id := fmt.Sprint(row["id"]); unblock[id] {
+					if owned || !equalJSON(row["is_blocked"], json.Number("1")) {
+						t.Fatal("declared native orphan survivor was not blocked")
+					}
+					copy := map[string]any{}
+					for key, value := range row {
+						copy[key] = value
+					}
+					copy["is_blocked"] = json.Number("0")
+					raw = copy
+					seenUnblocked[id] = true
+				}
 			case "child_counters":
 				owned = deleted[fmt.Sprint(row["parent_id"])]
 			case "dependencies":
@@ -1915,9 +1980,13 @@ func assertNativeDeletePhysical(t *testing.T, before, after nativePhysicalImage,
 				want = append(want, raw)
 			}
 		}
+		sort.SliceStable(want, func(i, j int) bool { return canonical(want[i]) < canonical(want[j]) })
 		if !equalJSON(want, after[table]) {
 			t.Fatalf("native delete did not conserve survivors and remove only owned rows in %s", table)
 		}
+	}
+	if !equalJSON(unblock, seenUnblocked) {
+		t.Fatal("declared native unblocked survivor was absent")
 	}
 }
 

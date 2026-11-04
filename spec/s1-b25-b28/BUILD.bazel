@@ -53,6 +53,8 @@ go_test(
     srcs = ["public_recording_test.go"],
     args = ["-test.v", "-public-recording", "-test.run=^TestPublicNativeRecording$$"],
     data = [
+        "compare_r418_pair.py",
+        "compare_r418_pair_test.py",
         "testdata/native-public-profile.json",
         "testdata/native-public-recording-fixture.json",
         "testdata/native-product-source-binding.json",
@@ -124,4 +126,4 @@ filegroup(
 )
 
 # Offline byte-bound analysis of the fresh R418 recording pair.
-exports_files(["compare_r418_pair.py"])
+exports_files(["compare_r418_pair.py", "compare_r418_pair_test.py"])

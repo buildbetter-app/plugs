@@ -347,8 +347,10 @@ review require S1's separate candidate binding and release.
 The current private recorder captures all 33 accepted native physical tables
 before and after each scalar operation, including all unchanged scalar columns,
 complete relation rows, prior history rows and close timestamps. It records a
-real oversized-label auxiliary SQL failure alongside a scalar patch and requires
-complete physical rollback. Native delete snapshots retain the version/journal/
+real oversized-label validation refusal alongside a scalar patch and requires
+complete physical conservation plus the source-defined length error. Accepted
+c8 rejects this before the label INSERT; auxiliary SQL write-fault rollback
+remains unproved. Native delete snapshots retain the version/journal/
 address transitions without pretending those histories equal scalar history.
 The Plug replay adds closed-row updates, typed auxiliary refusal, all reader
 rows/versions/changesets/derived tables and operation receipts, including a
@@ -362,3 +364,14 @@ two distinct runs, the existing full comment correspondence rule, default native
 config/SQL readback correspondence, all replay projections and post-write SQL
 reopen images. Its output is bounded and cannot promote full B25/B27 or supply
 independent review. `compare_native_pair.py` keeps its historical pins unchanged.
+
+The next child requires exact JSON types for runtime identity/outcomes and the
+fixed fourteen-key `REQUIRED_CHECKS` census. Empty checks, missing/extra keys,
+truthy nonbooleans, and bool/int/float aliases refuse. Its five Python rejection
+controls run as a recorded prerequisite inside the remote native target; they
+do not stand in for native behavior. The scalar oracle requires a changed,
+nonzero int64 `row_lock` only on the updated issue, as accepted c8 specifies.
+The orphan delete requires its one declared survivor's `is_blocked` transition
+from 1 to 0 and conserves every other survivor column. Historical REDs, complete
+successful-write global-delta coverage, delete/history/parity, precedence/type,
+collision/lease, and HTTP gaps are not waived by these repairs.

@@ -12,6 +12,7 @@ import datetime
 import hashlib
 import io
 import json
+import re
 from pathlib import Path
 import tarfile
 import uuid
@@ -21,6 +22,13 @@ PRODUCER = "c8eb3ba7d4177e111a6f5c8aebe06b5d0b1d5724"
 NATIVE_TREE = "930405e863284a3955cbd35e73a6097b606b91a5"
 CONTROL = "2d2164ba3d8e456c9aba15fbeb8cae4edc755997"
 DESCRIPTOR = "41800330346:13307042737:ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a"
+REQUIRED_CHECKS = frozenset({
+    "workflow_fixed_ref", "exact_product_identity", "native_descriptor",
+    "same_run_preparation", "preparation_helper", "four_equal_exports",
+    "unchanged_child_env", "required_bazel_flags", "fixed_ref_guard",
+    "exclusive_claim", "current_wrapper_binding", "complete_native_artifacts",
+    "official_artifact_zip", "owned_dolt_cleanup",
+})
 # Frozen producer authorities: comments.go, derivedid.go, rowid.go respectively.
 AUTHORITIES = (
     "298d0aaa0c66e5ddf2e1fefeaf4b15d8c99ad008b5828691243d063ef28d7a35",
@@ -81,6 +89,39 @@ def equal(first, second):
     if isinstance(first, list):
         return len(first) == len(second) and all(equal(a, b) for a, b in zip(first, second))
     return first == second
+
+
+def validate_binding(binding):
+    require(type(binding) is dict, "binding object")
+    require(equal(binding["control"], CONTROL) and equal(binding["attempt"], 1),
+            "immutable control identity")
+    for key in ("run", "artifact"):
+        require(type(binding[key]) is str and re.fullmatch(r"[1-9][0-9]*", binding[key]) is not None,
+                "decimal string identity: " + key)
+    product = binding["product"]
+    require(type(product) is dict and set(product) == {"commit", "tree", "ordered_parents", "raw_commit_sha256"},
+            "complete product identity shape")
+    for key, width in (("commit", 40), ("tree", 40), ("raw_commit_sha256", 64)):
+        require(type(product[key]) is str and re.fullmatch("[0-9a-f]{" + str(width) + "}", product[key]) is not None,
+                "product hash: " + key)
+    parents = product["ordered_parents"]
+    require(type(parents) is list and len(parents) > 0
+            and all(type(p) is str and re.fullmatch(r"[0-9a-f]{40}", p) is not None for p in parents)
+            and len(parents) == len(set(parents)), "ordered product parents")
+
+
+def validate_runtime_summary(summary, binding):
+    validate_binding(binding)
+    require(type(summary) is dict, "runtime summary object")
+    require(equal(summary["product"], binding["product"]) and equal(summary["workflow_head"], CONTROL)
+            and equal(summary["run"], binding["run"]) and equal(summary["attempt"], 1)
+            and equal(summary["artifact_id"], binding["artifact"]), "separate runtime identity")
+    require(equal(summary["literal_exit"], 0) and equal(summary["evidence_status"], "ok")
+            and equal(summary["xml_outcomes"], {"PASS": 7}) and summary["raw_xml_match"] is True,
+            "separate runtime outcome")
+    checks = summary["required_checks"]
+    require(type(checks) is dict and set(checks) == REQUIRED_CHECKS
+            and all(value is True for value in checks.values()), "exact required-check census and booleans")
 
 
 def generated_identity(comment):
@@ -223,13 +264,15 @@ def subscriber_comment_images(sub):
 
 
 def load_unit(binding, index):
-    require(binding["control"] == CONTROL and binding["attempt"] == 1, "immutable control identity")
+    validate_binding(binding)
     assets = binding["assets"]
     used = set()
 
     def read(name):
         require(name in assets, "missing bound asset: " + name)
         row = assets[name]
+        require(type(row["path"]) is str and type(row["bytes"]) is int and row["bytes"] >= 0,
+                "asset path and exact integer size")
         path = Path(row["path"])
         require("poll.log" not in path.parts, "excluded collector log")
         data = path.read_bytes()
@@ -241,19 +284,14 @@ def load_unit(binding, index):
         return decode(read(name))
 
     summary = obj("runtime-summary.json")
-    require(summary["product"] == binding["product"] and summary["workflow_head"] == CONTROL
-            and summary["run"] == binding["run"] and summary["attempt"] == 1
-            and summary["artifact_id"] == binding["artifact"], "separate runtime identity")
-    require(summary["literal_exit"] == 0 and summary["evidence_status"] == "ok"
-            and summary["xml_outcomes"] == {"PASS": 7} and summary["raw_xml_match"]
-            and all(summary["required_checks"].values()), "separate runtime outcome")
+    validate_runtime_summary(summary, binding)
     provenance = obj("provenance.json")
-    require(provenance["product_source"] == binding["product"]
+    require(equal(provenance["product_source"], binding["product"])
             and provenance["source_commit"] == PRODUCER and provenance["source_tree"] == NATIVE_TREE
             and provenance["recording_id"] == "recording" + str(index + 1), "actual product/native provenance")
     commands = obj("commands.json")
     comment_receipt = [row for row in commands if row["label"] == "source-comment"]
-    require(len(comment_receipt) == 1 and comment_receipt[0]["exit"] == 0, "original source comment receipt")
+    require(len(comment_receipt) == 1 and equal(comment_receipt[0]["exit"], 0), "original source comment receipt")
     raw = read("source-comment.stdout")
     require(digest(raw) == comment_receipt[0]["stdout_sha256"], "original command return hash")
     unit = {"comment": decode(raw), "stages": {name: obj(name + ".json") for name in STAGES},
@@ -269,7 +307,7 @@ def load_unit(binding, index):
         for table, suffix in (("config", "config-sql-readback"), ("metadata", "metadata-readback")):
             raw = read(store + "-" + suffix + ".stdout")
             receipt = [row for row in commands if row["label"] == store + "-" + suffix]
-            require(len(receipt) == 1 and receipt[0]["exit"] == 0 and digest(raw) == receipt[0]["stdout_sha256"],
+            require(len(receipt) == 1 and equal(receipt[0]["exit"], 0) and digest(raw) == receipt[0]["stdout_sha256"],
                     "independent readback receipt")
             parsed = decode(raw)
             require(isinstance(parsed, list), "default native SQL array")
@@ -286,7 +324,7 @@ def load_unit(binding, index):
                                       "body": {"key": identity, "value": value, "classification": "public"},
                                       "source": {"table": table, "fields": {"key": key, "value": value}}}
         list_receipt = [row for row in commands if row["label"] == store + "-config-readback"]
-        require(len(list_receipt) == 1 and list_receipt[0]["exit"] == 0
+        require(len(list_receipt) == 1 and equal(list_receipt[0]["exit"], 0)
                 and digest(read(store + "-config-readback.stdout")) == list_receipt[0]["stdout_sha256"], "config list receipt")
         require(equal(raw_list, expected_list), "config list/SQL correspondence including schema collision")
         unit["observations"][store] = observed
@@ -298,7 +336,7 @@ def load_unit(binding, index):
             require({m.name for m in members} == set(manifest["files"]) | {"manifest.json"}, "dump manifest census")
             for name, row in manifest["files"].items():
                 data = archive.extractfile(name).read()
-                require(len(data) == row["size"] and digest(data) == row["sha256"], "dump member hash")
+                require(equal(len(data), row["size"]) and digest(data) == row["sha256"], "dump member hash")
             unit["native_comments"][store] = [decode(line) for line in archive.extractfile("records/comment.ndjson").read().splitlines()]
         for engine in ENGINES:
             sub = obj(store + "-plug-" + engine + "-subscriber.json")
@@ -321,7 +359,9 @@ def main():
     require(binding["producer"] == PRODUCER and binding["authority_sha256"] == list(AUTHORITIES), "frozen producer authority")
     require(len(binding["recordings"]) == 2, "two own recording units")
     first, second = binding["recordings"]
-    require(first["product"] == second["product"] and first["run"] != second["run"]
+    validate_binding(first)
+    validate_binding(second)
+    require(equal(first["product"], second["product"]) and first["run"] != second["run"]
             and first["artifact"] != second["artifact"], "same product and distinct runs/artifacts")
     units = [load_unit(row, index) for index, row in enumerate(binding["recordings"])]
     report = compare_pair(units)
