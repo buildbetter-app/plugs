@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -644,6 +645,52 @@ func TestB07ExternalParentChildDoesNotJoinLocalWaitsForMembership(t *testing.T) 
 				e.f.reopen(t)
 				edgeRequireStateEqual(t, final, e.snapshot(t))
 				edgeReadyContains(t, e, from.ID, true)
+			})
+		}
+	}
+}
+
+// B06/B08 author authorized reuse of its public fixture without editing the
+// close suites. Only GatesResolved guards this issue claim, so an unrelated
+// ordinary blocker refusal cannot conceal target-domain fact conflation.
+func TestB07ExternalIdentityCannotSupplyResolvedGateFacts(t *testing.T) {
+	for _, engine := range testEngines {
+		for _, producer := range []string{"bead.link", "tx.apply"} {
+			t.Run(engine+"/"+producer, func(t *testing.T) {
+				doc := b08ContractOntology()
+				workflow := doc.Workflows["issue"]
+				workflow.Transitions = append([]ontology.Rule(nil), workflow.Transitions...)
+				replaced := 0
+				for i := range workflow.Transitions {
+					if workflow.Transitions[i].To == workflow.Slots[ontology.Claim] {
+						workflow.Transitions[i].Guards = []ontology.Guard{{Kind: ontology.GatesResolved, Kinds: []string{"review"}}}
+						replaced++
+					}
+				}
+				if replaced != 1 {
+					t.Fatalf("claim guard fixture replaced %d rules, want exactly one", replaced)
+				}
+				doc.Workflows["issue"] = workflow
+				f := newB08CloseFixture(t, engine, doc)
+				externalTarget := f.createB08(t, "external-review-target", "issue", nil, nil)
+				localTarget := f.createB08(t, "local-review-control", "issue", nil, nil)
+				gate := f.createB08(t, "real-local-review-gate", "gate", map[string]any{"gate_kind": "review"}, nil)
+				approved := f.callB08(t, "gate.approve", "external-review-approve", map[string]any{"id": gate})
+				if approved.Error != nil || f.document(t, gate).Fields["gate_state"] != "resolved" {
+					t.Fatalf("public local gate did not resolve: %+v", approved)
+				}
+				b08Commit(t, f.callB08(t, producer, "external-review-link", edgeTypedLinkParams(producer, model.OpLink, externalTarget, gate, "blocks", model.LinkTargetExternal)))
+				b08Commit(t, f.callB08(t, producer, "local-review-link", edgeTypedLinkParams(producer, model.OpLink, localTarget, gate, "blocks", "")))
+				f.refuseB08(t, "bead.claim", "external-review-claim", map[string]any{"id": externalTarget}, "ontology_guard_failed", ontology.GatesResolved)
+				b08Commit(t, f.callB08(t, "bead.claim", "local-review-claim", map[string]any{"id": localTarget}))
+				if f.document(t, localTarget).Fields["status"] != b08Started || f.document(t, externalTarget).Fields["status"] != b08Unstarted {
+					t.Fatal("external identity supplied a local gate fact or local success control failed")
+				}
+				final := f.conservation(t)
+				f.reopenB08(t)
+				b08SameConservation(t, final, f.conservation(t))
+				f.refuseB08(t, "bead.claim", "external-review-claim", map[string]any{"id": externalTarget}, "ontology_guard_failed", ontology.GatesResolved)
+				b08SameConservation(t, final, f.conservation(t))
 			})
 		}
 	}
