@@ -22,7 +22,8 @@ func TestCommitTraceSeparatesPublicationAndFailureWithoutChangingHead(t *testing
 	}
 	samples := trace.Snapshot()
 	for _, phase := range []CommitPhase{CommitPhaseTxLock, CommitPhasePublicationLock, CommitPhaseBegin,
-		CommitPhaseRecords, CommitPhaseSelection, CommitPhaseSQLiteCommit, CommitPhaseFinish} {
+		CommitPhaseRecords, CommitPhaseSelection, CommitPhaseSelectionSources,
+		CommitPhaseSelectionInvalidate, CommitPhaseSelectionHistory, CommitPhaseSQLiteCommit, CommitPhaseFinish} {
 		sample, ok := commitTraceSample(samples, phase)
 		if !ok || sample.Failed || sample.Duration < 0 {
 			t.Fatalf("successful Commit phase %s missing or failed: %+v", phase, samples)
@@ -30,6 +31,9 @@ func TestCommitTraceSeparatesPublicationAndFailureWithoutChangingHead(t *testing
 	}
 	if sample, _ := commitTraceSample(samples, CommitPhaseRecords); sample.Staged != 1 {
 		t.Fatalf("record phase staged count = %d, want 1", sample.Staged)
+	}
+	if len(samples) > len(trace.samples) {
+		t.Fatalf("successful Commit trace exceeded fixed capacity: %d", len(samples))
 	}
 	// Snapshot must detach the request-local data from later callers.
 	samples[0].Phase = "tampered"
