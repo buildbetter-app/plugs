@@ -25,6 +25,15 @@ type SourceProjectionPlan struct {
 	keys     []driver.DerivedRowKey
 }
 
+// ancestorSelectionStateWriter is an internal SQLite optimization seam. The
+// ancestor publisher has already observed every source while holding its
+// complete lock set; a driver may use those exact states for the subsequent
+// typed staging validation. Ordinary SelectionIndexWriter callers retain the
+// scalar observation path.
+type ancestorSelectionStateWriter interface {
+	PutSelectionDerivedWithSourceStates(context.Context, driver.DerivedTable, []driver.DerivedRow, []driver.DerivedRow, []driver.LockState) error
+}
+
 // SourceSelectionRows are stable opaque identities. Changing a sort value does
 // not change its row identity; both empty fact sets are explicitly represented.
 func SourceSelectionRows(ref model.Ref) ([]driver.DerivedRowKey, error) {
@@ -659,6 +668,9 @@ func PutAncestorProjectionsInIncarnation(ctx context.Context, tx driver.WriteTx,
 			return err
 		}
 		rows[i] = copy
+	}
+	if writer, ok := tx.(ancestorSelectionStateWriter); ok {
+		return writer.PutSelectionDerivedWithSourceStates(ctx, driver.DerivedAncestorClosure, remove, rows, states)
 	}
 	return PutSelectionDerived(ctx, tx, driver.DerivedAncestorClosure, remove, rows)
 }

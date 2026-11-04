@@ -242,6 +242,10 @@ func (t *transaction) selectionSourceStaged(source string) {
 // staged derived sources, but does not copy or recheck unrelated accepted rows.
 // A failed call restores every arm and leaves dependency bookkeeping unchanged.
 func (t *transaction) stageSelectionDelta(ctx context.Context, delta map[string]driver.LockState, annotated bool) error {
+	return t.stageSelectionDeltaObserved(ctx, delta, annotated, t.observe)
+}
+
+func (t *transaction) stageSelectionDeltaObserved(ctx context.Context, delta map[string]driver.LockState, annotated bool, observe func(context.Context, driver.LockKey) (driver.LockState, error)) error {
 	type priorState struct {
 		state driver.LockState
 		found bool
@@ -275,7 +279,7 @@ func (t *transaction) stageSelectionDelta(ctx context.Context, delta map[string]
 				check[dependent] = t.derived[dependent]
 			}
 		}
-		if err := t.validateSelectionRows(ctx, check); err != nil {
+		if err := t.validateSelectionRowsObserved(ctx, check, observe); err != nil {
 			return err
 		}
 	}

@@ -500,6 +500,26 @@ func (t *transaction) PutSelectionDerived(ctx context.Context, table driver.Deri
 }
 
 func (t *transaction) putDerived(ctx context.Context, table driver.DerivedTable, del, add []driver.DerivedRow, indexed bool) error {
+	return t.putDerivedWithSourceStates(ctx, table, del, add, indexed, nil)
+}
+
+// PutSelectionDerivedWithSourceStates is used only by the ancestor projection
+// publisher after it has observed the complete source lock set. It preserves
+// the normal typed staging and validation rules while avoiding a second scalar
+// history read for each annotation. A missing supplied state falls back to the
+// ordinary observer, so this seam cannot broaden admission.
+func (t *transaction) PutSelectionDerivedWithSourceStates(ctx context.Context, table driver.DerivedTable, del, add []driver.DerivedRow, sources []driver.LockState) error {
+	observed := make(map[string]driver.LockState, len(sources))
+	for _, state := range sources {
+		if state.Key.Kind != driver.LockRecord || state.Key.Ref == nil {
+			return fmt.Errorf("sqlite: ancestor source observation requires record keys")
+		}
+		observed[keyID(state.Key)] = state
+	}
+	return t.putDerivedWithSourceStates(ctx, table, del, add, true, observed)
+}
+
+func (t *transaction) putDerivedWithSourceStates(ctx context.Context, table driver.DerivedTable, del, add []driver.DerivedRow, indexed bool, sourceStates map[string]driver.LockState) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if err := t.check(ctx); err != nil {
@@ -537,7 +557,21 @@ func (t *transaction) putDerived(ctx context.Context, table driver.DerivedTable,
 		proposed[keyID(key)] = driver.LockState{Key: key, Derived: &copy, Present: true, Revision: model.Natural64(0)}
 		annotated = annotated || copy.Index != nil
 	}
-	if err := t.stageSelectionDelta(ctx, proposed, annotated); err != nil {
+	observe := t.observe
+	if len(sourceStates) != 0 {
+		observe = func(_ context.Context, key driver.LockKey) (driver.LockState, error) {
+			if state, ok := sourceStates[keyID(key)]; ok {
+				state.Key = copyKey(key)
+				if state.Record != nil {
+					value := copyRecord(*state.Record)
+					state.Record = &value
+				}
+				return state, nil
+			}
+			return t.observe(ctx, key)
+		}
+	}
+	if err := t.stageSelectionDeltaObserved(ctx, proposed, annotated, observe); err != nil {
 		return err
 	}
 	t.selectionAnnotated = annotated
