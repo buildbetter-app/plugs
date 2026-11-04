@@ -730,6 +730,11 @@ func publishFacts(ctx context.Context, store driver.Store, lease driver.ActiveLe
 			}
 		}
 	}
+	if maintainReady {
+		if err := ready.Finalize(ctx, tx); err != nil {
+			return model.Natural64(0), "", err
+		}
+	}
 	entry, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: after.Namespace.Incarnation, Kind: model.ChangesetDerived, Time: time.Now().UTC(), Principal: model.PrincipalRef{Kind: "system", ID: "authzrpc"}, LockKeys: lockKeys})
 	if err != nil {
 		return model.Natural64(0), "", err
