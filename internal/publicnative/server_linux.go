@@ -42,13 +42,16 @@ type Server struct {
 	DoltBinary string
 	doltRoot   string
 
-	cmd      *exec.Cmd
-	done     chan struct{}
-	waitErr  error
-	receipt  string
-	evidence string
-	stopOnce sync.Once
-	stopErr  error
+	cmd        *exec.Cmd
+	done       chan struct{}
+	waitErr    error
+	logErr     error
+	receipt    string
+	evidence   string
+	logPath    string
+	configPath string
+	stopOnce   sync.Once
+	stopErr    error
 }
 
 // StartDolt starts exactly one pinned Dolt 2.2.0 process in a fresh 0700
@@ -71,7 +74,7 @@ func StartDolt(t testing.TB, evidenceDir string) *Server {
 	return s
 }
 
-func startDolt(evidenceDir string) (*Server, error) {
+func startDolt(evidenceDir string) (_ *Server, retErr error) {
 	info, err := os.Lstat(evidenceDir)
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("evidence directory must be a real directory: %q: %v", evidenceDir, err)
@@ -95,9 +98,27 @@ func startDolt(evidenceDir string) (*Server, error) {
 		return nil, err
 	}
 	started := false
+	s := &Server{Root: root, receipt: filepath.Join(root, "server.jsonl"),
+		logPath:    filepath.Join(root, "dolt.log"),
+		configPath: filepath.Join(root, "dolt-root", ".dolt", "config_global.json"), evidence: evidenceDir}
 	defer func() {
 		if !started {
-			_ = os.RemoveAll(root)
+			if err := s.record("startup_failed", map[string]any{"error": fmt.Sprint(retErr), "root": root}); err != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("recording Dolt startup failure; private root retained at %s: %w", root, err))
+				return
+			}
+			if err := s.retainFiles(); err != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("retaining Dolt startup evidence; private root retained at %s: %w", root, err))
+				_ = s.record("retention_failed", map[string]any{"error": err.Error(), "root": root})
+				return // Preserve the private root when evidence could not be retained.
+			}
+			removeErr := os.RemoveAll(root)
+			if err := s.record("cleanup", map[string]any{"root": root,
+				"root_removed": removeErr == nil, "started": false,
+				"retained_log": s.logPath, "retained_config": s.configPath}); err != nil {
+				retErr = errors.Join(retErr, err)
+			}
+			retErr = errors.Join(retErr, fmt.Errorf("Dolt startup evidence: %s", s.receipt), removeErr)
 		}
 	}()
 	dataRoot := filepath.Join(root, "data")
@@ -108,11 +129,10 @@ func startDolt(evidenceDir string) (*Server, error) {
 			return nil, err
 		}
 	}
-	configPath := filepath.Join(doltRoot, ".dolt", "config_global.json")
-	if err := os.WriteFile(configPath, []byte(`{"user.email":"test@beads.local","user.name":"beads-test","metrics.disabled":"true","versioncheck.disabled":"true"}`+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(s.configPath, []byte(`{"user.email":"test@beads.local","user.name":"beads-test","metrics.disabled":"true","versioncheck.disabled":"true"}`+"\n"), 0o600); err != nil {
 		return nil, err
 	}
-	s := &Server{DataRoot: dataRoot, Root: root, DoltBinary: path, doltRoot: doltRoot, receipt: filepath.Join(root, "server.jsonl"), evidence: evidenceDir}
+	s.DataRoot, s.DoltBinary, s.doltRoot = dataRoot, path, doltRoot
 	serverEnv := []string{
 		"PATH=" + filepath.Dir(path) + ":/usr/bin:/bin",
 		"HOME=" + home,
@@ -126,6 +146,7 @@ func startDolt(evidenceDir string) (*Server, error) {
 	versionCtx, cancelVersion := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelVersion()
 	version := exec.CommandContext(versionCtx, path, "version")
+	version.WaitDelay = time.Second
 	version.Dir, version.Env = dataRoot, serverEnv
 	versionStarted := time.Now().UTC()
 	versionOutput, err := version.CombinedOutput()
@@ -140,13 +161,13 @@ func startDolt(evidenceDir string) (*Server, error) {
 	if recordErr := s.record("binary_version", map[string]any{"path": path, "sha256": doltBinarySHA256,
 		"argv": []string{"dolt", "version"}, "stdout_stderr": string(versionOutput), "exit": versionExit,
 		"started_utc": versionStarted.Format(time.RFC3339Nano), "ended_utc": time.Now().UTC().Format(time.RFC3339Nano),
-		"config_path": configPath}); recordErr != nil {
+		"config_path": s.configPath}); recordErr != nil {
 		return nil, recordErr
 	}
 	if err != nil || versionCtx.Err() != nil || strings.TrimSpace(string(versionOutput)) != "dolt version "+doltVersion {
 		return nil, fmt.Errorf("pinned Dolt version: output %q, exit %d, error %v, context %v", versionOutput, versionExit, err, versionCtx.Err())
 	}
-	if err := s.record("config", map[string]any{"path": configPath, "metrics_disabled": true, "versioncheck_disabled": true,
+	if err := s.record("config", map[string]any{"path": s.configPath, "metrics_disabled": true, "versioncheck_disabled": true,
 		"event_flush_disabled": true}); err != nil {
 		return nil, err
 	}
@@ -159,7 +180,7 @@ func startDolt(evidenceDir string) (*Server, error) {
 		return nil, err
 	}
 	args := []string{"sql-server", "-H", "127.0.0.1", "-P", strconv.Itoa(s.Port), "--loglevel=warning"}
-	log, err := os.OpenFile(filepath.Join(root, "dolt.log"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	log, err := os.OpenFile(s.logPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -174,24 +195,22 @@ func startDolt(evidenceDir string) (*Server, error) {
 	s.PID = s.cmd.Process.Pid
 	s.done = make(chan struct{})
 	started = true
-	go func() { s.waitErr = s.cmd.Wait(); close(s.done); _ = log.Close() }()
+	go func() { s.waitErr = s.cmd.Wait(); s.logErr = log.Close(); close(s.done) }()
 	if err := s.record("start", map[string]any{"argv": append([]string{"dolt"}, args...), "pid": s.PID, "port": s.Port, "data_root": dataRoot}); err != nil {
-		_ = s.Stop()
-		return nil, err
+		return nil, errors.Join(err, s.Stop())
 	}
 	if err := s.awaitReady(); err != nil {
-		_ = s.record("readiness_failed", map[string]any{"error": err.Error()})
-		_ = s.Stop()
-		return nil, fmt.Errorf("owned pid %d on port %d: %w; receipt %s", s.PID, s.Port, err, s.receipt)
+		recordErr := s.record("readiness_failed", map[string]any{"error": err.Error()})
+		stopErr := s.Stop()
+		return nil, errors.Join(fmt.Errorf("owned pid %d on port %d: %w; receipt %s", s.PID, s.Port, err, s.receipt), recordErr, stopErr)
 	}
 	actualCWD, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(s.PID), "cwd"))
 	if err != nil || actualCWD != dataRoot {
-		_ = s.Stop()
-		return nil, fmt.Errorf("owned Dolt cwd=%q, want real data root %q: %v", actualCWD, dataRoot, err)
+		stopErr := s.Stop()
+		return nil, errors.Join(fmt.Errorf("owned Dolt cwd=%q, want real data root %q: %v", actualCWD, dataRoot, err), stopErr)
 	}
 	if err := s.record("ready", map[string]any{"pid": s.PID, "port": s.Port, "data_root": dataRoot, "listener": "owned_proc_inode_and_mysql_handshake"}); err != nil {
-		_ = s.Stop()
-		return nil, err
+		return nil, errors.Join(err, s.Stop())
 	}
 	return s, nil
 }
@@ -328,22 +347,34 @@ func mysqlHandshake(port int) bool {
 	return err == nil && header[3] == 0 && header[4] == 10
 }
 
-// ChildEnv replaces any ambient root/port/autostart settings with the owned
-// physical root. Apply it to every accepted-Beads child, including exports.
+// ChildEnv carries ordinary process and caller-owned workspace settings from
+// base. All Dolt routing and credential settings are replaced with the owned
+// server values. Apply it to every accepted-Beads child, including exports.
 func (s *Server) ChildEnv(base []string) []string {
-	out := make([]string, 0, len(base)+8)
+	out := make([]string, 0, 32)
 	path := "/usr/bin:/bin"
+	allowed := make(map[string]string)
 	for _, entry := range base {
-		key, _, _ := strings.Cut(entry, "=")
-		if key == "PATH" {
-			_, path, _ = strings.Cut(entry, "=")
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
 		}
-		// Accepted source reads BEADS_DOLT_* values before saved metadata.
-		// Remove every ambient server host/port/socket/database/credential and
-		// all Dolt runtime controls, then add only this owned server's values.
-		if key != "PATH" && key != "BEADS_DIR" && key != "BD_DIR" &&
-			!strings.HasPrefix(key, "BEADS_DOLT_") && !strings.HasPrefix(key, "DOLT_") {
-			out = append(out, entry)
+		switch key {
+		case "PATH":
+			path = value
+		case "HOME", "USERPROFILE", "XDG_CONFIG_HOME", "USER", "LANG", "LC_ALL", "TZ", "NO_COLOR",
+			"CI", "DO_NOT_TRACK", "TMPDIR", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL",
+			"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+			"BEADS_DIR", "BEADS_NO_DAEMON", "BEADS_ACTOR":
+			allowed[key] = value
+		}
+	}
+	for _, key := range []string{"HOME", "USERPROFILE", "XDG_CONFIG_HOME", "USER", "LANG", "LC_ALL", "TZ", "NO_COLOR",
+		"CI", "DO_NOT_TRACK", "TMPDIR", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL",
+		"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+		"BEADS_DIR", "BEADS_NO_DAEMON", "BEADS_ACTOR"} {
+		if value, ok := allowed[key]; ok {
+			out = append(out, key+"="+value)
 		}
 	}
 	if s.DoltBinary != "" {
@@ -386,6 +417,42 @@ func (s *Server) record(event string, fields map[string]any) error {
 	return errors.Join(writeErr, f.Sync(), f.Close())
 }
 
+// retainFiles moves original startup evidence out of the disposable private
+// root before removing it. On a move failure callers keep the root intact.
+func (s *Server) retainFiles() error {
+	name := filepath.Base(s.Root)
+	files := []struct {
+		path   *string
+		suffix string
+	}{
+		{&s.receipt, "-server.jsonl"},
+		{&s.logPath, "-dolt.log"},
+		{&s.configPath, "-config_global.json"},
+	}
+	for _, file := range files {
+		info, err := os.Lstat(*file.path)
+		if errors.Is(err, os.ErrNotExist) {
+			if file.path == &s.receipt {
+				return fmt.Errorf("missing Dolt lifecycle receipt: %s", *file.path)
+			}
+			*file.path = ""
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("startup evidence is not a regular file: %s", *file.path)
+		}
+		retained := filepath.Join(s.evidence, name+file.suffix)
+		if err := os.Rename(*file.path, retained); err != nil {
+			return fmt.Errorf("moving startup evidence %s to %s: %w", *file.path, retained, err)
+		}
+		*file.path = retained
+	}
+	return nil
+}
+
 // Stop terminates and reaps the owned process group. It is idempotent so a
 // consumer may stop explicitly and still retain the registered test cleanup.
 func (s *Server) Stop() error {
@@ -415,28 +482,27 @@ func (s *Server) Stop() error {
 		if reaped {
 			waitResult = fmt.Sprint(s.waitErr)
 		}
-		if err := s.record("stop", map[string]any{"pid": s.PID, "port": s.Port, "wait_error": waitResult, "reaped": reaped}); err != nil {
+		logResult := "unreaped"
+		if reaped {
+			logResult = fmt.Sprint(s.logErr)
+		}
+		if err := s.record("stop", map[string]any{"pid": s.PID, "port": s.Port, "wait_error": waitResult,
+			"log_close_error": logResult, "reaped": reaped}); err != nil {
 			s.stopErr = errors.Join(s.stopErr, err)
 		}
 		if s.stopErr != nil {
 			return // Preserve the data root if the owned process was not reaped.
 		}
-		name := filepath.Base(s.Root)
-		retainedReceipt := filepath.Join(s.evidence, name+"-server.jsonl")
-		retainedLog := filepath.Join(s.evidence, name+"-dolt.log")
-		if err := os.Rename(s.receipt, retainedReceipt); err != nil {
-			s.stopErr = fmt.Errorf("retaining Dolt lifecycle receipt: %w", err)
-			return
-		}
-		s.receipt = retainedReceipt
-		if err := os.Rename(filepath.Join(s.Root, "dolt.log"), retainedLog); err != nil {
-			s.stopErr = fmt.Errorf("retaining Dolt process log: %w", err)
+		if err := s.retainFiles(); err != nil {
+			s.stopErr = fmt.Errorf("retaining Dolt lifecycle evidence; private root retained at %s: %w", s.Root, err)
+			_ = s.record("retention_failed", map[string]any{"error": s.stopErr.Error(), "root": s.Root})
 			return
 		}
 		removeErr := os.RemoveAll(s.Root)
 		recordErr := s.record("cleanup", map[string]any{"pid": s.PID, "port": s.Port,
-			"root": s.Root, "root_removed": removeErr == nil, "retained_log": retainedLog})
-		s.stopErr = errors.Join(removeErr, recordErr)
+			"root": s.Root, "root_removed": removeErr == nil,
+			"retained_log": s.logPath, "retained_config": s.configPath})
+		s.stopErr = errors.Join(removeErr, recordErr, s.logErr)
 	})
 	return s.stopErr
 }

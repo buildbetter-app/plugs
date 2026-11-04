@@ -94,6 +94,24 @@ and sidecar/empty/absent/poll inventory boundaries without launching either
 native executable. Its PASS, ordinary whole PASS and manual-target build
 success never substitute for actual recordings or three-driver replay.
 
+The causal helper integration after d1f7 uses exact owner source
+`43c0f2410ccb24062b8bd1bd073aeb29ef21288f`, tree
+`05153e1c051b1887fa875b53739adc036ae8cf16`. Only its four declared
+MODULE/helper blobs are attributed; the recorder and replay paths are
+unchanged. Producer43 retains startup failure evidence before cleanup and
+uses an explicit child environment allowlist. Its author-reported ordinary
+gates and pending independent source review are separate from this child's
+own compile/focused/whole evidence and from physical qualification. The prior
+d1f7 build-only PASS, focused lexicon RED and source BLOCK remain immutable.
+
+Done = the new child contains the exact attributed helper bytes and has its
+own source review plus compile/focused/whole dispositions; producer gates and
+ordinary PASS do not count as actual native recording or paired replay.
+Scope = the B01 manual recorder integration and ordinary checks. Physical
+capture requires the actual reviewed prepared input and applicable owned
+runtime originals; product queue integration and protected B05 stay outside
+this child.
+
 Current disposition: AUTHORED_NOT_RUN. Actual prepared admission, accepted305
 embedded measurement, applicable owned-helper originals, both recordings and
 new real-driver replay remain WAIT/NOT_RUN. NativeAdmission is None at this
