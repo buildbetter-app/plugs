@@ -1,11 +1,14 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	sqldriver "database/sql/driver"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"path/filepath"
 	"reflect"
@@ -31,6 +34,15 @@ type selectionStageConnector struct {
 	canceledNative atomic.Int64
 	mu             sync.Mutex
 	cancel         context.CancelFunc
+	batchPrepares  atomic.Int64
+	batchAttempts  atomic.Int64
+	batchQueries   atomic.Int64
+	batchRows      atomic.Int64
+	batchCloses    atomic.Int64
+	batchMaxKeys   atomic.Int64
+	batchCanceled  atomic.Int64
+	batchCancel    context.CancelFunc
+	batchCloseErr  error
 }
 
 func (c *selectionStageConnector) Driver() sqldriver.Driver { return c.driver }
@@ -49,6 +61,77 @@ type selectionStageConn struct {
 
 func (c *selectionStageConn) BeginTx(ctx context.Context, options sqldriver.TxOptions) (sqldriver.Tx, error) {
 	return c.Conn.(sqldriver.ConnBeginTx).BeginTx(ctx, options)
+}
+
+func (c *selectionStageConn) PrepareContext(ctx context.Context, query string) (sqldriver.Stmt, error) {
+	var statement sqldriver.Stmt
+	var err error
+	if conn, ok := c.Conn.(sqldriver.ConnPrepareContext); ok {
+		statement, err = conn.PrepareContext(ctx, query)
+	} else {
+		statement, err = c.Conn.Prepare(query)
+	}
+	if err != nil || !strings.HasPrefix(query, "WITH requested(ordinal,key) AS (VALUES ") {
+		return statement, err
+	}
+	c.counts.batchPrepares.Add(1)
+	return &selectionStageBatchStatement{Stmt: statement, counts: c.counts}, nil
+}
+
+type selectionStageBatchStatement struct {
+	sqldriver.Stmt
+	counts *selectionStageConnector
+}
+
+func (s *selectionStageBatchStatement) QueryContext(ctx context.Context, args []sqldriver.NamedValue) (sqldriver.Rows, error) {
+	s.counts.batchAttempts.Add(1)
+	keys := int64(len(args) - 1)
+	for old := s.counts.batchMaxKeys.Load(); old < keys; old = s.counts.batchMaxKeys.Load() {
+		if s.counts.batchMaxKeys.CompareAndSwap(old, keys) {
+			break
+		}
+	}
+	s.counts.mu.Lock()
+	cancel := s.counts.batchCancel
+	s.counts.batchCancel = nil
+	s.counts.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	rows, err := s.Stmt.(sqldriver.StmtQueryContext).QueryContext(ctx, args)
+	if errors.Is(err, context.Canceled) {
+		s.counts.batchCanceled.Add(1)
+	}
+	if err != nil {
+		return rows, err
+	}
+	s.counts.batchQueries.Add(1)
+	return &selectionStageBatchRows{Rows: rows, counts: s.counts}, nil
+}
+
+func (s *selectionStageBatchStatement) Close() error {
+	err := s.Stmt.Close()
+	s.counts.batchCloses.Add(1)
+	s.counts.mu.Lock()
+	closeErr := s.counts.batchCloseErr
+	s.counts.mu.Unlock()
+	if err == nil {
+		err = closeErr
+	}
+	return err
+}
+
+type selectionStageBatchRows struct {
+	sqldriver.Rows
+	counts *selectionStageConnector
+}
+
+func (r *selectionStageBatchRows) Next(values []sqldriver.Value) error {
+	err := r.Rows.Next(values)
+	if err == nil {
+		r.counts.batchRows.Add(1)
+	}
+	return err
 }
 
 func (c *selectionStageConn) ExecContext(ctx context.Context, query string, args []sqldriver.NamedValue) (sqldriver.Result, error) {
@@ -174,12 +257,398 @@ func TestSelectionStageValidationExecutedWork(t *testing.T) {
 			if _, err := tx.Commit(ctx, header); err != nil {
 				t.Fatal(err)
 			}
+			wantBatches := int64((population + 127) / 128)
+			if counts.batchQueries.Load() != wantBatches || counts.batchRows.Load() != int64(population) ||
+				counts.batchPrepares.Load() != 2 || counts.batchCloses.Load() != 2 || counts.batchMaxKeys.Load() != 128 {
+				t.Fatalf("Commit native history queries=%d rows=%d prepares=%d closes=%d max_keys=%d; want %d/%d/2/2/128",
+					counts.batchQueries.Load(), counts.batchRows.Load(), counts.batchPrepares.Load(), counts.batchCloses.Load(), counts.batchMaxKeys.Load(), wantBatches, population)
+			}
 			var durable int
 			if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM selection_bead_history WHERE end_revision IS NULL`).Scan(&durable); err != nil || durable != population {
 				t.Fatalf("durable typed population=%d want=%d: %v", durable, population, err)
 			}
 			t.Logf("population=%d interleaved_product_sources=%d successful_native_source_queries=%d stage_elapsed_ns=%d one_replacement_queries=1 durable_current_rows=%d executor_row_visits=UNMEASURED", population, population, queries, elapsed.Nanoseconds(), durable)
 		})
+	}
+}
+
+// These fixtures seed real temporal rows, then compare the new observer with
+// the existing scalar reader on the same pinned SQLite transaction. They do
+// not use acquired-lock images as observation answers.
+func selectionValidationReader(t *testing.T, ctx context.Context, s *Store, at uint64) *transaction {
+	t.Helper()
+	meta := getMeta(t, ctx, s)
+	readTx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = readTx.Rollback() })
+	// Pin the real read view before any observations or caller-side mutations.
+	var head string
+	if err := readTx.QueryRowContext(ctx, `SELECT head FROM meta WHERE singleton=1`).Scan(&head); err != nil {
+		t.Fatal(err)
+	}
+	tx := &transaction{reader: &reader{store: s, tx: readTx, meta: meta, at: at},
+		records: make(map[string]*driver.Record), derived: make(map[string]driver.LockState), bumps: make(map[string]driver.LockKey)}
+	tx.reader.owner = tx
+	return tx
+}
+
+func selectionValidationExec(t *testing.T, ctx context.Context, s *Store, query string, args ...any) {
+	t.Helper()
+	if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func selectionValidationJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func selectionValidationRequests(keys []driver.LockKey) map[string]driver.LockState {
+	rows := make(map[string]driver.LockState, len(keys))
+	for i, key := range keys {
+		rows[fmt.Sprint(i)] = driver.LockState{Present: true, Derived: &driver.DerivedRow{
+			Index: &driver.SelectionIndex{Source: driver.SelectionSource{Key: key}}}}
+	}
+	return rows
+}
+
+func TestSelectionValidationScalarParityAndPinnedHistory(t *testing.T) {
+	for _, at := range []uint64{5, 10} {
+		t.Run(fmt.Sprintf("at_%d", at), func(t *testing.T) {
+			ctx := testContext(t)
+			s, counts := selectionStageStore(t, ctx)
+			selectionValidationExec(t, ctx, s, `UPDATE meta SET head=? WHERE singleton=1`, revKey(10))
+			keys := make([]driver.LockKey, 260)
+			for i := range keys {
+				ref := testRef(fmt.Sprintf("validation-%03d", i))
+				key := driver.LockKey{Kind: driver.LockRecord, Ref: &ref}
+				if i%6 >= 3 {
+					row := driver.DerivedRowKey{Table: driver.DerivedAttribute, Key: fmt.Sprintf("opaque/%03d;:", i)}
+					if i == 3 {
+						row.Key += string([]byte{0xff, 0xfe})
+					}
+					key = driver.LockKey{Kind: driver.LockDerived, Derived: &row}
+				}
+				if i%6 == 5 {
+					key = driver.GraphBlockingSentinelLock
+					key.Sentinel = driver.Sentinel(fmt.Sprintf("validation/sentinel/%03d", i))
+				}
+				if _, err := driver.EncodeLockKey(key); err != nil {
+					t.Fatal(err)
+				}
+				keys[i] = key
+				if i%6 == 2 { // no history or record: absence remains revision zero
+					continue
+				}
+				old := driver.LockState{Key: key, Revision: model.Natural64(2), Present: i%6 != 4}
+				if key.Kind == driver.LockRecord {
+					body := []byte(fmt.Sprintf(`{"version":2,"id":%q}`, ref.ID))
+					old.Record = &driver.Record{Ref: ref, Kind: "bead", Body: body, Revision: old.Revision}
+					selectionValidationExec(t, ctx, s, `INSERT INTO objects(key,kind) VALUES(?,?)`, keyID(key), "bead")
+					v := driver.Version{Ref: ref, Revision: old.Revision, Base: true, Body: body}
+					selectionValidationExec(t, ctx, s, `INSERT INTO versions(key,rev,base,data) VALUES(?,?,1,?)`, keyID(key), revKey(2), selectionValidationJSON(t, v))
+				} else if old.Present && key.Kind == driver.LockDerived {
+					old.Derived = &driver.DerivedRow{Key: key.Derived.Key, Value: []byte(`{"version":2}`)}
+				}
+				selectionValidationExec(t, ctx, s, `INSERT INTO key_history(key,rev,data) VALUES(?,?,?)`, keyID(key), revKey(2), selectionValidationJSON(t, old))
+				newer := old
+				newer.Revision = model.Natural64(7)
+				if key.Kind == driver.LockRecord {
+					v := driver.Version{Ref: ref, Revision: newer.Revision, Base: true, Body: []byte(`{"version":7}`)}
+					if i%6 == 1 {
+						v.Deleted, newer.Present, newer.Record = true, false, nil
+					} else {
+						newer.Record = &driver.Record{Ref: ref, Kind: "bead", Body: v.Body, Revision: newer.Revision}
+						selectionValidationExec(t, ctx, s, `INSERT INTO records(key,data) VALUES(?,?)`, keyID(key), selectionValidationJSON(t, newer.Record))
+					}
+					selectionValidationExec(t, ctx, s, `INSERT INTO versions(key,rev,base,data) VALUES(?,?,1,?)`, keyID(key), revKey(7), selectionValidationJSON(t, v))
+				}
+				selectionValidationExec(t, ctx, s, `INSERT INTO key_history(key,rev,data) VALUES(?,?,?)`, keyID(key), revKey(7), selectionValidationJSON(t, newer))
+			}
+			tx := selectionValidationReader(t, ctx, s, at)
+			for i, key := range keys {
+				id := keyID(key)
+				switch i % 12 {
+				case 0:
+					tx.records[id] = &driver.Record{Ref: *key.Ref, Kind: "bead", Body: []byte(`{"staged":true}`)}
+				case 1:
+					tx.records[id] = nil
+				case 3:
+					row := selectionStageBead("clone-incarnation", testRef("clone-source"), []byte(`{}`))
+					row.Key = key.Derived.Key
+					tx.derived[id] = driver.LockState{Key: key, Present: true, Derived: &row}
+				case 4:
+					tx.derived[id] = driver.LockState{Key: key}
+				case 5:
+					tx.bumps[id] = key // scalar observe intentionally retains history revision
+				}
+			}
+			// A later durable history mutation must not replace this pinned view,
+			// even if a source has not yet been requested by the observer.
+			changed := driver.LockState{Key: keys[8], Revision: model.Natural64(4), Present: true}
+			selectionValidationExec(t, ctx, s, `INSERT INTO key_history(key,rev,data) VALUES(?,?,?)`, keyID(keys[8]), revKey(4), selectionValidationJSON(t, changed))
+			history := newSelectionValidationHistory(tx, selectionValidationRequests(keys))
+			for _, key := range keys {
+				want, err := tx.observe(ctx, key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, err := history.observe(ctx, key)
+				if err != nil || !reflect.DeepEqual(got, want) {
+					t.Fatalf("scalar parity for %q at %d: got=%#v want=%#v err=%v", keyID(key), at, got, want, err)
+				}
+				if got.Derived != nil && got.Derived.Index != nil {
+					got.Derived.Value[0] = '!'
+					got.Derived.Index.Bead.Type = "mutated"
+					got.Derived.Index.Source.Key.Ref.ID = "mutated"
+					again, err := history.observe(ctx, key)
+					if err != nil || !reflect.DeepEqual(again, want) {
+						t.Fatalf("cached observation aliases derived overlay: %v", err)
+					}
+				}
+			}
+			var err error
+			history.close(&err)
+			if err != nil || counts.batchQueries.Load() != 3 || counts.batchRows.Load() != 260 || counts.batchPrepares.Load() != 2 || counts.batchCloses.Load() != 2 || counts.batchMaxKeys.Load() != 128 {
+				t.Fatalf("native parity work: queries=%d rows=%d prepares=%d closes=%d max=%d err=%v", counts.batchQueries.Load(), counts.batchRows.Load(), counts.batchPrepares.Load(), counts.batchCloses.Load(), counts.batchMaxKeys.Load(), err)
+			}
+			cancelled, cancel := context.WithCancel(ctx)
+			cancel()
+			if _, err := history.observe(cancelled, keys[0]); !errors.Is(err, context.Canceled) || counts.batchQueries.Load() != 3 {
+				t.Fatalf("cached history bypassed cancellation or queried again: %v", err)
+			}
+		})
+	}
+}
+
+func TestSelectionValidationMissingAndMalformedHistory(t *testing.T) {
+	for _, payload := range [][]byte{nil, {}, []byte(`{"broken":`)} {
+		name := fmt.Sprintf("bytes_%d", len(payload))
+		if payload == nil {
+			name = "missing"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := testContext(t)
+			s, counts := selectionStageStore(t, ctx)
+			goodRow := driver.DerivedRowKey{Table: driver.DerivedAttribute, Key: "good-first"}
+			badRow := driver.DerivedRowKey{Table: driver.DerivedAttribute, Key: "bad-later"}
+			good := driver.LockKey{Kind: driver.LockDerived, Derived: &goodRow}
+			bad := driver.LockKey{Kind: driver.LockDerived, Derived: &badRow}
+			if payload != nil {
+				selectionValidationExec(t, ctx, s, `INSERT INTO key_history(key,rev,data) VALUES(?,?,?)`, keyID(bad), revKey(0), payload)
+			}
+			tx := selectionValidationReader(t, ctx, s, 0)
+			history := newSelectionValidationHistory(tx, selectionValidationRequests([]driver.LockKey{good, bad}))
+			if state, err := history.observe(ctx, good); err != nil || state.Present || !state.Revision.IsZero() {
+				t.Fatalf("later malformed history evaluated before requested source: %#v %v", state, err)
+			}
+			want, scalarErr := tx.observe(ctx, bad)
+			got, err := history.observe(ctx, bad)
+			if !reflect.DeepEqual(got, want) || reflect.TypeOf(err) != reflect.TypeOf(scalarErr) || fmt.Sprint(err) != fmt.Sprint(scalarErr) {
+				t.Fatalf("scalar error parity: got=%#v err=%v want=%#v err=%v", got, err, want, scalarErr)
+			}
+			if payload != nil && err == nil {
+				t.Fatal("stored empty/malformed history was treated as absence")
+			}
+			prior := err
+			counts.mu.Lock()
+			counts.batchCloseErr = io.ErrClosedPipe
+			counts.mu.Unlock()
+			history.close(&err)
+			if prior != nil && err != prior || prior == nil && !errors.Is(err, io.ErrClosedPipe) || counts.batchQueries.Load() != 1 || counts.batchCloses.Load() != 1 {
+				t.Fatalf("history/cleanup precedence: prior=%v final=%v queries=%d closes=%d", prior, err, counts.batchQueries.Load(), counts.batchCloses.Load())
+			}
+		})
+	}
+}
+
+func TestSelectionValidationGuardsAndScalarStage(t *testing.T) {
+	ctx := testContext(t)
+	s, counts := selectionStageStore(t, ctx)
+	lease := getLease(t, ctx, s, driver.LeaseTTL)
+	ref := testRef("validation-guards")
+	key := driver.DerivedRowKey{Table: driver.DerivedSortKey, Key: ref.ID}
+	lock := driver.LockKey{Kind: driver.LockDerived, Derived: &key}
+	tx, header := beginSourceTestWithLocks(t, s, lease, []driver.LockKey{lock}, true, ref)
+	body := []byte(`{"id":"validation-guards","type":"task"}`)
+	if err := tx.PutGraphRecord(ctx, driver.Record{Ref: ref, Kind: "bead", Body: body}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	row := selectionStageBead(header.Incarnation, ref, body)
+	state := driver.LockState{Key: lock, Present: true, Derived: &row}
+	rows := map[string]driver.LockState{keyID(lock): state}
+	counts.queries.Store(0)
+	if err := tx.validateSelectionRows(ctx, rows); err != nil || counts.queries.Load() != 1 || counts.batchPrepares.Load() != 0 {
+		t.Fatalf("staging stopped using scalar observation: %v scalar_queries=%d prepares=%d", err, counts.queries.Load(), counts.batchPrepares.Load())
+	}
+	previous := tx.derived
+	for _, name := range []string{"valid", "incarnation", "lock_census", "revision", "present", "digest", "bead_kind"} {
+		t.Run(name, func(t *testing.T) {
+			candidate := row.Clone()
+			before := counts.batchQueries.Load()
+			want := ""
+			switch name {
+			case "incarnation":
+				candidate.Index.Incarnation, want = "other-incarnation", "incarnation mismatch"
+			case "lock_census":
+				other := testRef("not-acquired")
+				candidate.Index.Source.Key.Ref, want = &other, "absent from lock census"
+			case "revision":
+				candidate.Index.Source.Revision, want = model.Natural64(1), "observation changed"
+			case "present":
+				candidate.Index.Source.Present, want = false, "observation changed"
+			case "digest":
+				candidate.Index.Source.Digest, want = "stale-digest", "digest changed"
+			case "bead_kind":
+				tx.records[keyID(candidate.Index.Source.Key)].Kind, want = "memory", "bead source kind"
+				defer func() { tx.records[keyID(candidate.Index.Source.Key)].Kind = "bead" }()
+			}
+			proposed := map[string]driver.LockState{keyID(lock): {Key: lock, Present: true, Derived: &candidate}}
+			err := tx.validateSelectionWrites(ctx, proposed)
+			if want == "" && err != nil || want != "" && (!errors.Is(err, driver.ErrUnsupported) || !strings.Contains(err.Error(), want)) {
+				t.Fatalf("%s guard: got %v want %q", name, err, want)
+			}
+			if name == "incarnation" || name == "lock_census" {
+				if counts.batchQueries.Load() != before {
+					t.Fatal("source query ran before the original guard")
+				}
+			} else if counts.batchQueries.Load() != before+1 {
+				t.Fatal("final validation bypassed the pinned history query")
+			}
+			if !reflect.DeepEqual(tx.derived, previous) {
+				t.Fatal("validation replaced the original overlay")
+			}
+		})
+	}
+	before := counts.batchPrepares.Load()
+	if err := tx.validateSelectionWrites(ctx, nil); err != nil || counts.batchPrepares.Load() != before {
+		t.Fatalf("empty overlay prepared or failed: %v", err)
+	}
+}
+
+func TestSelectionValidationNativeCancellationAndErrors(t *testing.T) {
+	t.Run("cancel_at_prepared_query_then_recover", func(t *testing.T) {
+		ctx := testContext(t)
+		s, counts := selectionStageStore(t, ctx)
+		key := driver.GraphBlockingSentinelLock
+		tx := selectionValidationReader(t, ctx, s, 0)
+		history := newSelectionValidationHistory(tx, selectionValidationRequests([]driver.LockKey{key}))
+		call, cancel := context.WithCancel(ctx)
+		defer cancel()
+		counts.mu.Lock()
+		counts.batchCancel, counts.batchCloseErr = cancel, io.ErrClosedPipe
+		counts.mu.Unlock()
+		_, err := history.observe(call, key)
+		if !errors.Is(err, context.Canceled) || counts.batchAttempts.Load() != 1 || counts.batchQueries.Load() != 0 || counts.batchCanceled.Load() != 1 {
+			t.Fatalf("native prepared-query cancellation attempts=%d successes=%d canceled=%d err=%v", counts.batchAttempts.Load(), counts.batchQueries.Load(), counts.batchCanceled.Load(), err)
+		}
+		history.close(&err)
+		if !errors.Is(err, context.Canceled) || counts.batchCloses.Load() != 1 {
+			t.Fatalf("cleanup masked native cancellation: %v", err)
+		}
+		counts.mu.Lock()
+		counts.batchCloseErr = nil
+		counts.mu.Unlock()
+		recovered := newSelectionValidationHistory(tx, selectionValidationRequests([]driver.LockKey{key}))
+		if _, err := recovered.observe(ctx, key); err != nil {
+			t.Fatalf("canceled observation damaged the pinned reader: %v", err)
+		}
+		var cleanup error
+		recovered.close(&cleanup)
+		if cleanup != nil || counts.batchPrepares.Load() != 2 || counts.batchCloses.Load() != 2 || counts.batchQueries.Load() != 1 {
+			t.Fatalf("recovery lifecycle: prepares=%d closes=%d queries=%d err=%v", counts.batchPrepares.Load(), counts.batchCloses.Load(), counts.batchQueries.Load(), cleanup)
+		}
+	})
+	t.Run("native_missing_table_error_without_scalar_retry", func(t *testing.T) {
+		ctx := testContext(t)
+		s, counts := selectionStageStore(t, ctx)
+		selectionValidationExec(t, ctx, s, `DROP TABLE key_history`)
+		key := driver.GraphBlockingSentinelLock
+		tx := selectionValidationReader(t, ctx, s, 0)
+		history := newSelectionValidationHistory(tx, selectionValidationRequests([]driver.LockKey{key}))
+		counts.mu.Lock()
+		counts.batchCloseErr = io.ErrClosedPipe
+		counts.mu.Unlock()
+		_, err := history.observe(ctx, key)
+		if err == nil || !strings.Contains(err.Error(), "no such table") {
+			t.Fatalf("native SQL error became a miss: %v", err)
+		}
+		prior := err
+		history.close(&err)
+		if err != prior || counts.queries.Load() != 0 || counts.batchQueries.Load() != 0 || counts.batchCloses.Load() != counts.batchPrepares.Load() {
+			t.Fatalf("native error was replaced/retried or leaked a handle: %v", err)
+		}
+	})
+}
+
+func TestSelectionValidationCommitCleanupRollsBackAndRecovers(t *testing.T) {
+	ctx := testContext(t)
+	s, counts := selectionStageStore(t, ctx)
+	lease := getLease(t, ctx, s, driver.LeaseTTL)
+	ref := testRef("validation-cleanup")
+	body := []byte(`{"id":"validation-cleanup","type":"task","fields":{"status":"todo"}}`)
+	plan, err := pipeline.PrepareSourceRecord(driver.Record{Ref: ref, Kind: "bead", Body: body})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var extra []driver.LockKey
+	for _, key := range plan.LockKeys() {
+		if key.Kind == driver.LockDerived {
+			extra = append(extra, key)
+		}
+	}
+	closure, err := driver.NewClosureSentinel(ref.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extra = append(extra, driver.LockKey{Kind: driver.LockSentinel, Sentinel: closure})
+	tx, header := beginSourceTestWithLocks(t, s, lease, extra, true, ref)
+	header.Changes = []model.ChangeRecord{{Ref: ref, Op: model.OpCreate, FromRevision: model.Natural64(0)}}
+	if err := plan.Publish(ctx, tx); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.BumpSentinels(ctx, plan.Sentinels()); err != nil {
+		t.Fatal(err)
+	}
+	counts.mu.Lock()
+	counts.batchCloseErr = io.ErrClosedPipe
+	counts.mu.Unlock()
+	if _, err := tx.Commit(ctx, header); !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("final validation ignored prepared-statement close error: %v", err)
+	}
+	if !getMeta(t, ctx, s).Head.IsZero() {
+		t.Fatal("failed validation advanced Head")
+	}
+	for _, table := range []string{"records", "versions", "key_history", "selection_bead_history", "selection_fact_sets", "changesets"} {
+		var count int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("failed validation published %s rows=%d: %v", table, count, err)
+		}
+	}
+	counts.mu.Lock()
+	counts.batchCloseErr = nil
+	counts.mu.Unlock()
+	if _, err := tx.Commit(ctx, header); err != nil {
+		t.Fatalf("rolled-back validation did not recover: %v", err)
+	}
+	read, err := s.Read(ctx, driver.View{Incarnation: header.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer read.Close()
+	got, err := read.Get(ctx, []model.Ref{ref})
+	if err != nil || len(got) != 1 || !bytes.Equal(got[0].Body, body) || getMeta(t, ctx, s).Head.String() != "1" {
+		t.Fatalf("recovery failed durable image parity: %#v %v", got, err)
+	}
+	if counts.batchPrepares.Load() != 2 || counts.batchCloses.Load() != 2 || counts.batchQueries.Load() != 2 {
+		t.Fatalf("Commit cleanup lifecycle: prepares=%d closes=%d queries=%d", counts.batchPrepares.Load(), counts.batchCloses.Load(), counts.batchQueries.Load())
 	}
 }
 

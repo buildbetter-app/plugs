@@ -3,10 +3,12 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -15,16 +17,22 @@ import (
 // validateSelectionWrites checks the complete proposed overlay before any
 // annotated row is staged. The trusted projection must bind a source already
 // in the transaction's complete lock census and its exact observed image.
-func (t *transaction) validateSelectionWrites(ctx context.Context, proposed map[string]driver.LockState) error {
+func (t *transaction) validateSelectionWrites(ctx context.Context, proposed map[string]driver.LockState) (err error) {
 	previous := t.derived
 	t.derived = proposed
 	defer func() { t.derived = previous }()
-	return t.validateSelectionRows(ctx, proposed)
+	observations := newSelectionValidationHistory(t, proposed)
+	defer observations.close(&err)
+	return t.validateSelectionRowsObserved(ctx, proposed, observations.observe)
 }
 
 // rows may be only the changed annotations and their affected dependents;
 // observations always use the complete proposed t.derived overlay.
 func (t *transaction) validateSelectionRows(ctx context.Context, rows map[string]driver.LockState) error {
+	return t.validateSelectionRowsObserved(ctx, rows, t.observe)
+}
+
+func (t *transaction) validateSelectionRowsObserved(ctx context.Context, rows map[string]driver.LockState, observe func(context.Context, driver.LockKey) (driver.LockState, error)) error {
 	for _, state := range rows {
 		if !state.Present || state.Derived == nil || state.Derived.Index == nil {
 			continue
@@ -42,7 +50,7 @@ func (t *transaction) validateSelectionRows(ctx context.Context, rows map[string
 		if i == len(t.acquired) || keyID(t.acquired[i].Key) != id {
 			return fmt.Errorf("%w: SQLite selection source absent from lock census", driver.ErrUnsupported)
 		}
-		source, err := t.observe(ctx, index.Source.Key)
+		source, err := observe(ctx, index.Source.Key)
 		if err != nil {
 			return err
 		}
@@ -72,6 +80,152 @@ func (t *transaction) validateSelectionRows(ctx context.Context, rows map[string
 		}
 	}
 	return nil
+}
+
+// Commit holds t.mu and the pinned read transaction while validating the final
+// overlay. Cache only that call's history bytes; reconstruct each observation
+// with the scalar reader's revision, recordAt and derived-overlay semantics.
+// Staging keeps its scalar reader and its existing per-call error boundary.
+const selectionValidationBatch = 128
+
+type selectionValidationHistory struct {
+	t          *transaction
+	keys       []string
+	positions  map[string]int
+	history    map[string]sql.NullString
+	statements map[int]*sql.Stmt
+	opened     []*sql.Stmt
+}
+
+func newSelectionValidationHistory(t *transaction, rows map[string]driver.LockState) *selectionValidationHistory {
+	h := &selectionValidationHistory{t: t, positions: make(map[string]int), history: make(map[string]sql.NullString), statements: make(map[int]*sql.Stmt)}
+	for _, state := range rows {
+		if !state.Present || state.Derived == nil || state.Derived.Index == nil {
+			continue
+		}
+		id := keyID(state.Derived.Index.Source.Key)
+		if _, found := h.positions[id]; !found {
+			h.positions[id] = len(h.keys)
+			h.keys = append(h.keys, id)
+		}
+	}
+	return h
+}
+
+func selectionValidationHistorySQL(count int) string {
+	var query strings.Builder
+	query.WriteString("WITH requested(ordinal,key) AS (VALUES ")
+	for i := 0; i < count; i++ {
+		if i != 0 {
+			query.WriteByte(',')
+		}
+		fmt.Fprintf(&query, "(%d,?)", i)
+	}
+	query.WriteString(`) SELECT requested.ordinal,
+		(SELECT data FROM key_history WHERE key=requested.key AND rev<=? ORDER BY rev DESC LIMIT 1)
+		FROM requested ORDER BY requested.ordinal`)
+	return query.String()
+}
+
+func (h *selectionValidationHistory) load(ctx context.Context, start int) (err error) {
+	end := min(start+selectionValidationBatch, len(h.keys))
+	count := end - start
+	statement := h.statements[count]
+	if statement == nil {
+		statement, err = h.t.tx.PrepareContext(ctx, selectionValidationHistorySQL(count))
+		if err != nil {
+			return err
+		}
+		h.statements[count] = statement
+		h.opened = append(h.opened, statement)
+	}
+	args := make([]any, 0, count+1)
+	for _, id := range h.keys[start:end] {
+		args = append(args, id) // raw bindings retain opaque key bytes
+	}
+	args = append(args, revKey(h.t.at))
+	rows, err := statement.QueryContext(ctx, args...)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := rows.Close(); err == nil {
+			err = closeErr
+		}
+	}()
+	seen := 0
+	for rows.Next() {
+		var ordinal int
+		// key_history.data is NOT NULL: SQL NULL means a missing history,
+		// whereas an empty stored blob must still fail JSON decoding.
+		var history sql.NullString
+		if err := rows.Scan(&ordinal, &history); err != nil {
+			return err
+		}
+		if ordinal != seen || seen >= count {
+			return fmt.Errorf("sqlite: invalid selection observation batch ordinal")
+		}
+		h.history[h.keys[start+ordinal]] = history
+		seen++
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if seen != count {
+		return fmt.Errorf("sqlite: incomplete selection observation batch")
+	}
+	return nil
+}
+
+func (h *selectionValidationHistory) observe(ctx context.Context, key driver.LockKey) (driver.LockState, error) {
+	state := driver.LockState{Key: copyKey(key), Revision: model.Natural64(0)}
+	id := keyID(key)
+	data, loaded := h.history[id]
+	if !loaded {
+		position, found := h.positions[id]
+		if !found {
+			return state, fmt.Errorf("sqlite: selection source absent from observation batch")
+		}
+		if err := h.load(ctx, position/selectionValidationBatch*selectionValidationBatch); err != nil {
+			return state, err
+		}
+		data = h.history[id]
+	}
+	if err := ctx.Err(); err != nil {
+		return state, err
+	}
+	if data.Valid {
+		if err := json.Unmarshal([]byte(data.String), &state); err != nil {
+			return state, err
+		}
+	}
+	if key.Kind == driver.LockRecord {
+		v, found, err := h.t.recordAt(ctx, id)
+		if err != nil {
+			return state, err
+		}
+		state.Present = found
+		if found {
+			state.Record = &v
+		}
+	}
+	if v, ok := h.t.derived[id]; ok {
+		state.Present = v.Present
+		state.Derived = nil
+		if v.Derived != nil {
+			value := v.Derived.Clone()
+			state.Derived = &value
+		}
+	}
+	return state, nil
+}
+
+func (h *selectionValidationHistory) close(prior *error) {
+	for _, statement := range h.opened {
+		if err := statement.Close(); err != nil && *prior == nil {
+			*prior = err
+		}
+	}
 }
 
 func (t *transaction) selectionSourceStaged(source string) {
