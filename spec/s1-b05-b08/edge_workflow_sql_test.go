@@ -199,7 +199,8 @@ func TestB07PublicLinkReadsKeepTargetDomainsAcrossCollisionAndReopen(t *testing.
 							}
 							seen[kind] = true
 						}
-						if len(links) != 2 || !seen[model.LinkTargetLocal] || !seen[model.LinkTargetExternal] {
+						// The local arm normalizes to omission on the wire.
+						if len(links) != 2 || !seen[""] || !seen[model.LinkTargetExternal] {
 							t.Fatalf("public links lost local/external distinction: %+v", links)
 						}
 					}
@@ -272,7 +273,15 @@ func TestB07SQLDemotionKeepsExternalIdentityOutsideLocalIncidence(t *testing.T) 
 					t.Fatalf("external collision entered demotion incidence: error=%+v result=%s", got.Error, got.Result)
 				}
 				b07PublicExternalEdge(t, f, from, to, "relates-to")
-				b07SQLReplay(t, f, "x.workflow.run.demote", "demote-external", request, got)
+				before := f.conservation(t)
+				f.reopenB08(t)
+				b08SameConservation(t, before, f.conservation(t))
+				replay := f.callB08(t, "x.workflow.run.demote", "demote-external", request)
+				var replayed workflowplugin.DemoteResult
+				if replay.Error != nil || json.Unmarshal(replay.Result, &replayed) != nil || replayed.Item.ID != moved.Item.ID || !reflect.DeepEqual(got.Result, replay.Result) {
+					t.Fatalf("demotion result was not replayed exactly after SQL reopen: error=%+v first=%s replay=%s", replay.Error, got.Result, replay.Result)
+				}
+				b08SameConservation(t, before, f.conservation(t))
 				b07PublicExternalEdge(t, f, from, to, "relates-to")
 			})
 		}
