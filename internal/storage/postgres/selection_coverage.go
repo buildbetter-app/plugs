@@ -397,10 +397,12 @@ func (r *reader) compileSelectionImpacted(at uint64, overlay bool, roots [][]byt
 	if len(shadow) > 0 {
 		exclude = ` AND NOT(s.row_key=ANY(` + c.bind(shadow) + `::bytea[]))`
 	}
-	// Keep both probes parameterized: target -> matching facts -> exact row
-	// identity. A target-only lateral boundary still lets the inner join scan
-	// the entire ancestor family until it finds that fact's owning row.
-	query := `WITH roots AS MATERIALIZED (SELECT unnest(` + domain + `::bytea[]) key) SELECT DISTINCT source_key FROM (SELECT hit.source_key FROM roots changed JOIN LATERAL (SELECT owned.source_key FROM plug_postgres.selection_facts f JOIN LATERAL (SELECT s.source_key FROM plug_postgres.selection_rows s WHERE s.incarnation=f.incarnation AND s.row_key=f.row_key AND s.start_revision=f.start_revision AND s.layout=2 AND s.family_table='ancestor_closure' AND s.source_kind='record' AND s.fact_kind='ancestor' AND ` + interval + exclude + ` OFFSET 0) owned ON true WHERE f.incarnation=` + inc + ` AND f.target_key=changed.key OFFSET 0) hit ON true`
+	// Resolve each fact's complete physical owner identity before testing its
+	// family, interval or staged shadow. Those predicates inside the lookup
+	// let a family index scan unrelated rows and apply row_key as a filter.
+	// OFFSET 0 keeps them outside the primary-key-only lookup boundary.
+	owner := `SELECT p.source_key,p.row_key,p.start_revision,p.end_revision,p.layout,p.family_table,p.source_kind,p.fact_kind FROM plug_postgres.selection_rows p WHERE p.incarnation=f.incarnation AND p.row_key=f.row_key AND p.start_revision=f.start_revision OFFSET 0`
+	query := `WITH roots AS MATERIALIZED (SELECT unnest(` + domain + `::bytea[]) key) SELECT DISTINCT source_key FROM (SELECT hit.source_key FROM roots changed JOIN LATERAL (SELECT s.source_key FROM plug_postgres.selection_facts f JOIN LATERAL (` + owner + `) s ON true WHERE f.incarnation=` + inc + ` AND f.target_key=changed.key AND s.layout=2 AND s.family_table='ancestor_closure' AND s.source_kind='record' AND s.fact_kind='ancestor' AND ` + interval + exclude + ` OFFSET 0) hit ON true`
 	if len(staged) > 0 {
 		query += ` UNION ALL SELECT decode(p."Source",'hex') FROM jsonb_to_recordset(` + c.bind(selectionJSON(staged)) + `::jsonb) AS p("Source" text,"Target" text) JOIN roots changed ON changed.key=decode(p."Target",'hex')`
 	}
