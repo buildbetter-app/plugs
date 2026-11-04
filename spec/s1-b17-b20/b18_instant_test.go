@@ -229,7 +229,10 @@ func TestB18InstantResolverPagesAndFailsClosedOnLogFaults(t *testing.T) {
 			p.advance(t)
 			success[model.Commit](t, "update", rpc.call(t, "", "bead.update", map[string]any{"id": ref, "fields": map[string]any{"title": "three"}}, true))
 			before := b17StateOf(t, p.b17Harness, ref)
-			for _, tc := range []struct{ mode, code string }{{"one-row-pages", ""}, {"truncated", "history_gone"}, {"empty", "internal_error"}, {"hole", "internal_error"}} {
+			for _, tc := range []struct {
+				mode string
+				code model.ErrorCode
+			}{{"one-row-pages", ""}, {"truncated", "history_gone"}, {"empty", "internal_error"}, {"hole", "internal_error"}} {
 				t.Run(tc.mode, func(t *testing.T) {
 					wrapped := &instantLogStore{Store: p.store, mode: tc.mode}
 					r, err := service.ReadAsOf(p.ctx, wrapped, &service.AsOf{Instant: &at})

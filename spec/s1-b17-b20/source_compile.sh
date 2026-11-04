@@ -6,7 +6,7 @@ set -euo pipefail
 cd "${BUILD_WORKSPACE_DIRECTORY:?missing remote workspace}"
 source_sha=$(git rev-parse HEAD)
 source_tree=$(git rev-parse HEAD^{tree})
-source_parents=$(git show -s --format=%P HEAD)
+source_parents=$(git cat-file -p HEAD | sed -n 's/^parent //p')
 source_status=$(git status --porcelain=v1)
 printf 'SOURCE_PRE sha=%s tree=%s parents=%s\n' "$source_sha" "$source_tree" "$source_parents"
 printf 'SOURCE_PRE_STATUS_BEGIN\n%s\nSOURCE_PRE_STATUS_END\n' "$source_status"

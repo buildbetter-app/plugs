@@ -121,6 +121,10 @@ func TestB18GuardedHistoryInstantContinuationKeepsResolvedSnapshot(t *testing.T)
 			if natural(t, page["asOf"].(map[string]any)["revision"]).String() != created.Revision.String() || len(page["items"].([]any)) != 2 {
 				t.Fatalf("guarded continuation re-resolved instant: %+v", page)
 			}
+			firstIncarnation, ok := first["asOf"].(map[string]any)["incarnation"].(string)
+			if !ok || firstIncarnation == "" || page["asOf"].(map[string]any)["incarnation"] != firstIncarnation {
+				t.Fatalf("guarded continuation changed resolved incarnation: first=%+v next=%+v", first, page)
+			}
 			for _, item := range page["items"].([]any) {
 				if item.(map[string]any)["fields"].(map[string]any)["title"] == "later" {
 					t.Fatal("concurrent append contaminated guarded page")
