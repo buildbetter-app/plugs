@@ -301,7 +301,7 @@ func TestB01GuardedReadyCutoffCursorAcrossDrivers(t *testing.T) {
 				t.Fatalf("cutoff did not reverse the authorized order at the same source: %+v", fresh)
 			}
 			if after := f.reader(t).Snapshot().At.String(); after != before {
-				t.Fatal("cutoff witness changed durable source or authorization")
+				t.Fatal("cutoff check changed durable source or authorization")
 			}
 		})
 	}
@@ -368,7 +368,8 @@ func TestB01CheckOnlyReadyOrderingAcrossDrivers(t *testing.T) {
 
 func TestB01CompiledReadyFilterCapBoundaryAcrossDrivers(t *testing.T) {
 	countDrivers(t, func(t *testing.T, open storeFactory) {
-		f := newFixtureOn(t, open(t), nil)
+		store := &readyQueryStore{Store: open(t)}
+		f := newFixtureOn(t, store, nil)
 		renewCountFixtureLease(t, f.lease)
 		const denied, allowed = 20001, 3
 		createdAt := time.Now().UTC()
@@ -388,12 +389,26 @@ func TestB01CompiledReadyFilterCapBoundaryAcrossDrivers(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+		callReady := func(by model.PrincipalRef, params map[string]any, key int) reply {
+			t.Helper()
+			store.pages.Store(0)
+			store.rows.Store(0)
+			got := f.call(t, by, "bead.ready", params, key)
+			// The complete real source is read once, even when the trusted
+			// guard traverses more than20 internal1000-row ready pages. Each
+			// subsequent page still owns a fresh reader and policy evaluation.
+			const records = denied + allowed + 1 // includes the original seed
+			if pages, rows := store.pages.Load(), store.rows.Load(); pages != (records+999)/1000 || rows != records {
+				t.Fatalf("ready reread or truncated the full source: pages=%d rows=%d", pages, rows)
+			}
+			return got
+		}
 		t.Run("denied_prefix_does_not_consume_cap_or_pages", func(t *testing.T) {
 			refs := []model.Ref{fixtureRef(100 + denied), fixtureRef(101 + denied), fixtureRef(102 + denied)}
 			by := model.PrincipalRef{Kind: "user", ID: "user:finite-ready-reader", Caveats: map[string]any{"refs": refs}}
 			params := map[string]any{"limit": 1}
 			for i, ref := range refs {
-				got := page(t, f.call(t, by, "bead.ready", params, 7040+i))
+				got := page(t, callReady(by, params, 7040+i))
 				if len(got.Items) != 1 || got.Items[0].ID != ref.ID || (i == len(refs)-1) != (got.NextCursor == "") {
 					t.Fatalf("finite filter lost an authorized tail after %d denied rows: page=%d %+v", denied, i, got)
 				}
@@ -402,7 +417,7 @@ func TestB01CompiledReadyFilterCapBoundaryAcrossDrivers(t *testing.T) {
 		})
 		t.Run("full_authorized_set_exceeds_cap_and_binds_tail", func(t *testing.T) {
 			by := model.PrincipalRef{Kind: "user", ID: "user:all-ready-reader"}
-			first := page(t, f.call(t, by, "bead.ready", map[string]any{"limit": 1}, 7050))
+			first := page(t, callReady(by, map[string]any{"limit": 1}, 7050))
 			if len(first.Items) != 1 || first.Items[0].ID != fixtureRef(100).ID || first.NextCursor == "" {
 				t.Fatalf("complete compiled set above 20,000 was capped or reordered: %+v", first)
 			}
@@ -410,11 +425,11 @@ func TestB01CompiledReadyFilterCapBoundaryAcrossDrivers(t *testing.T) {
 			if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: fixtureRef(last), Kind: "bead", Op: model.OpPatch, Body: body(last, 0), Graph: &conformance.FixtureGraphSource{}}}); err != nil {
 				t.Fatal(err)
 			}
-			got := f.call(t, by, "bead.ready", map[string]any{"limit": 1, "cursor": first.NextCursor}, 7051)
+			got := callReady(by, map[string]any{"limit": 1, "cursor": first.NextCursor}, 7051)
 			if got.Error == nil || got.Error.Data.Code != "cursor_invalid" || len(got.Result) != 0 {
 				t.Fatalf("authorized tail beyond 20,000 was missing from full fingerprint: %+v", got)
 			}
-			fresh := page(t, f.call(t, by, "bead.ready", map[string]any{"limit": 1}, 7052))
+			fresh := page(t, callReady(by, map[string]any{"limit": 1}, 7052))
 			if len(fresh.Items) != 1 || fresh.Items[0].ID != fixtureRef(last).ID {
 				t.Fatalf("authorized tail was discarded rather than reordered: %+v", fresh)
 			}
@@ -422,7 +437,7 @@ func TestB01CompiledReadyFilterCapBoundaryAcrossDrivers(t *testing.T) {
 		t.Run("genuine_check_only_still_refuses_without_partial_result", func(t *testing.T) {
 			before := f.reader(t).Snapshot().At.String()
 			authzrpc.AddRuleForTest(f.server, readyCheckOnlyRules{})
-			got := f.call(t, model.PrincipalRef{Kind: "user", ID: "user:check-only-ready"}, "bead.ready", map[string]any{"limit": 1}, 7060)
+			got := callReady(model.PrincipalRef{Kind: "user", ID: "user:check-only-ready"}, map[string]any{"limit": 1}, 7060)
 			if got.Error == nil || got.Error.Data.Code != "authz_postfilter_cap" || len(got.Result) != 0 {
 				t.Fatalf("check-only candidate cap returned a partial or unbounded result: %+v", got)
 			}
@@ -431,6 +446,34 @@ func TestB01CompiledReadyFilterCapBoundaryAcrossDrivers(t *testing.T) {
 			}
 		})
 	})
+}
+
+type readyQueryStore struct {
+	driver.Store
+	pages atomic.Int64
+	rows  atomic.Int64
+}
+
+func (s *readyQueryStore) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
+	r, err := s.Store.Read(ctx, view)
+	if err != nil {
+		return nil, err
+	}
+	return &readyQueryReader{Reader: r, store: s}, nil
+}
+
+type readyQueryReader struct {
+	driver.Reader
+	store *readyQueryStore
+}
+
+func (r *readyQueryReader) Query(ctx context.Context, query driver.Query) (driver.Page[driver.Record], error) {
+	page, err := r.Reader.Query(ctx, query)
+	if query.Filter["kind"] == "bead" {
+		r.store.pages.Add(1)
+		r.store.rows.Add(int64(len(page.Items)))
+	}
+	return page, err
 }
 
 func TestB01ReadySnapshotDependencyRefusalsAcrossDrivers(t *testing.T) {
@@ -556,7 +599,7 @@ func TestB01GuardedReadyInternalCutoffAcrossDrivers(t *testing.T) {
 				dsn = postgresDSNFactory(t)
 			}
 			f := newQuietFixture(t, engine, dsn)
-			// Exclude the ordinary seeded baseline before the witness begins.
+			// Exclude the ordinary seeded baseline before the cutoff check.
 			success(t, f.call(t, worker("user:operator"), "bead.close", map[string]any{"id": model.RefByID(beadID, model.Natural64(0))}, 7100))
 			for start := 0; start < 1002; start += 1000 {
 				var changes []conformance.FixtureChange
@@ -615,7 +658,7 @@ func TestB01GuardedReadyInternalCutoffAcrossDrivers(t *testing.T) {
 			}
 			afterHead, afterACL := publicationState(t, f.store, f.server.Namespace)
 			if afterHead.String() != beforeHead.String() || !reflect.DeepEqual(beforeACL, afterACL) || fresh.AsOf.Revision.String() != control.AsOf.Revision.String() || fresh.AsOf.Incarnation != control.AsOf.Incarnation {
-				t.Fatal("internal cutoff witness changed durable source, incarnation or authority")
+				t.Fatal("internal cutoff check changed durable source, incarnation or authority")
 			}
 		})
 	}

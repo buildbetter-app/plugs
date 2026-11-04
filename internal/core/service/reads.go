@@ -153,10 +153,44 @@ func validatePosition(position *PagePosition) error {
 	return nil
 }
 
+// Only a trusted ReadyWithFilter traversal carries this detached graph between
+// internal pages. Readers, authorization facts and membership decisions are
+// never retained here. Every page validates the source and reevaluates its live
+// clock, leases, policy and ordering on that page's own reader.
+type readyGraphSelection struct {
+	owner *Service
+	asOf  AsOf
+	graph map[string]storedBead
+}
+
 func (s *Service) readyItems(ctx context.Context, req ReadyRequest, r driver.Reader) ([]Bead, map[string]readyOrderKey, error) {
-	graph, err := scanBeads(ctx, r)
-	if err != nil {
-		return nil, nil, err
+	var graph map[string]storedBead
+	if req.readySourceBinding && req.readyGraph != nil {
+		selection := req.readyGraph
+		view := r.Snapshot()
+		if selection.owner != s || view.At == nil {
+			return nil, nil, failure("cursor_invalid", "invalid guarded ready source")
+		}
+		if selection.graph != nil {
+			if selection.asOf.Incarnation != view.Incarnation || selection.asOf.Revision.String() != view.At.String() {
+				return nil, nil, failure("cursor_invalid", "durable ready source changed while collecting candidates; restart paging")
+			}
+			graph = selection.graph
+		} else {
+			var err error
+			graph, err = scanBeads(ctx, r)
+			if err != nil {
+				return nil, nil, err
+			}
+			selection.graph = graph
+			selection.asOf = AsOf{Revision: *view.At, Incarnation: view.Incarnation}
+		}
+	} else {
+		var err error
+		graph, err = scanBeads(ctx, r)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 	// Membership is always evaluated against the complete current graph. P74
 	// applies only to the order of this exact set, before any page is cut.
@@ -325,7 +359,15 @@ func (s *Service) Ready(ctx context.Context, by model.PrincipalRef, req ReadyReq
 func (s *Service) ReadyWithFilter(ctx context.Context, by model.PrincipalRef, req ReadyRequest, filter ReadyAuthorizer) (BeadPage, error) {
 	req.authorizationFilter = filter
 	req.readySourceBinding = true
-	return s.Ready(ctx, by, req)
+	req.readyGraph = &readyGraphSelection{owner: s}
+	if req.Position != nil && req.Position.readyGraph != nil {
+		req.readyGraph = req.Position.readyGraph
+	}
+	page, err := s.Ready(ctx, by, req)
+	if err == nil && page.Next != nil {
+		page.Next.readyGraph = req.readyGraph
+	}
+	return page, err
 }
 
 func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req ReadyRequest, restartOnRevision bool) (BeadPage, error) {

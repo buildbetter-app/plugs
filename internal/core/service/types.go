@@ -119,6 +119,9 @@ type PagePosition struct {
 	// ReadyMembership binds guarded aggregate paging to the complete
 	// post-authorization order, including ordinary core rows.
 	ReadyMembership string
+	// A trusted internal Ready drain may reuse decoded source bytes. The
+	// guarded public position is built separately and never carries this state.
+	readyGraph *readyGraphSelection
 }
 
 // WorkflowPageSnapshot identifies one atomic provider ready observation. Its
@@ -261,6 +264,7 @@ type ReadyRequest struct {
 	authorizationFilter ReadyAuthorizer
 	// Only the trusted guarded capability requests complete internal order metadata.
 	readySourceBinding bool
+	readyGraph         *readyGraphSelection
 }
 
 // ReadyAuthorizer is the narrow host-to-core read seam for a compiled finite
