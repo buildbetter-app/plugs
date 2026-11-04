@@ -1080,6 +1080,7 @@ internal/storage/postgres/reader_batch_test.go
 internal/storage/postgres/ready_certificate.go
 internal/storage/postgres/ready_certificate_schema.go
 internal/storage/postgres/ready_certificate_test.go
+internal/storage/postgres/ready_fence_work_test.go
 internal/storage/postgres/ready_order.go
 internal/storage/postgres/ready_order_test.go
 internal/storage/postgres/schema.go

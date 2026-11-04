@@ -418,18 +418,26 @@ func (d *Delta) Locks() []driver.LockKey {
 	if !d.Available() {
 		return nil
 	}
-	keys := make([]driver.LockKey, 0, len(d.t.rows))
+	type encodedLock struct {
+		key driver.LockKey
+		id  string
+	}
+	ordered := make([]encodedLock, 0, len(d.t.rows)+len(d.sentinels))
+	appendKey := func(key driver.LockKey) {
+		id, _ := driver.EncodeLockKey(key)
+		ordered = append(ordered, encodedLock{key: key, id: id})
+	}
 	for key := range d.t.rows {
-		keys = append(keys, lock(key))
+		appendKey(lock(key))
 	}
 	for sentinel := range d.sentinels {
-		keys = append(keys, driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel})
+		appendKey(driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel})
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		a, _ := driver.EncodeLockKey(keys[i])
-		b, _ := driver.EncodeLockKey(keys[j])
-		return a < b
-	})
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].id < ordered[j].id })
+	keys := make([]driver.LockKey, len(ordered))
+	for i, entry := range ordered {
+		keys[i] = entry.key
+	}
 	return keys
 }
 

@@ -19,10 +19,11 @@ INSERT INTO plug_postgres.ready_order_fence(singleton) VALUES(true) ON CONFLICT 
 CREATE OR REPLACE FUNCTION plug_postgres.ready_order_mutated() RETURNS trigger LANGUAGE plpgsql AS $ready$
 BEGIN
  PERFORM singleton FROM plug_postgres.meta WHERE singleton FOR UPDATE;
+ -- Retain that lock even when an already-dirty fence needs no new tuple.
  UPDATE plug_postgres.ready_order_fence SET
   generation=generation+CASE WHEN dirty THEN 0 ELSE 1 END,dirty=true,
   ever_source=ever_source OR TG_TABLE_NAME IN ('records','versions','states')
- WHERE singleton;
+ WHERE singleton AND (NOT dirty OR (NOT ever_source AND TG_TABLE_NAME IN ('records','versions','states')));
  RETURN NULL;
 END;
 $ready$;
