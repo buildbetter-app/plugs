@@ -113,7 +113,15 @@ func TestB22CASNoopAndReplayRetainOriginalRevision(t *testing.T) {
 	before = graph(t, h.store)
 	fieldMiss := h.call(t, "bead.update", fieldCAS, key("field-stale"))
 	refused(t, fieldMiss, "precondition_failed")
-	if !reflect.DeepEqual(fieldMiss.Error.Data.Details, map[string]any{"reason": "hash", "ref": map[string]any{"id": "pl-a", "branch": json.Number("0")}}) {
+	expectedRef, err := json.Marshal(ref("pl-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var expectedWireRef map[string]any
+	if err := json.Unmarshal(expectedRef, &expectedWireRef); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(fieldMiss.Error.Data.Details, map[string]any{"reason": "hash", "ref": expectedWireRef}) {
 		t.Fatalf("B22 PostgreSQL field CAS must identify exactly its hash reason and resolved target: %+v", fieldMiss.Error.Data.Details)
 	}
 	unchanged(t, before, graph(t, h.store))
@@ -337,7 +345,15 @@ func TestB17MetadataCASRealPostgresReceiptsAndReopen(t *testing.T) {
 		params := map[string]any{"id": target, "fields": map[string]any{"title": "must not publish"}, "expect": []model.Precondition{model.PreconditionByHash(target, miss.field, metadataSHA(miss.canonical))}}
 		r := h.call(t, "bead.update", params, requestKey)
 		refused(t, r, "precondition_failed")
-		if !reflect.DeepEqual(r.Error.Data.Details, map[string]any{"reason": "hash", "ref": map[string]any{"id": target.ID, "branch": json.Number(target.Branch.String())}}) {
+		expectedRef, err := json.Marshal(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var expectedWireRef map[string]any
+		if err := json.Unmarshal(expectedRef, &expectedWireRef); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(r.Error.Data.Details, map[string]any{"reason": "hash", "ref": expectedWireRef}) {
 			t.Fatalf("PostgreSQL metadata CAS must identify exactly its hash reason and resolved target: %+v", r.Error.Data.Details)
 		}
 		if r.Error.Data.Retryable || receipt(t, other, "bead.update", requestKey, agent) != nil || post.calls.Load() != posts || !reflect.DeepEqual(sqlBefore, metadataSQLState(t, db)) {
