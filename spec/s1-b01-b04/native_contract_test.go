@@ -11,7 +11,8 @@ import (
 func TestNativeFutureIdentityInputs(t *testing.T) {
 	var inputs nativeInputs
 	nativeDecode(t, nativeInputsBytes, &inputs)
-	if len(inputs.Vectors) != 2 || inputs.Consumer != "6dba1a9532200437fd528bfaeed55ef3ce925166" ||
+	if len(inputs.Vectors) != 2 || inputs.Consumer != "7a43c3c625a5c08d3a4364a321cd47d6357ef30" ||
+		inputs.ConsumerTree != "be93a595dc4c44ef4d94d2333060788fd344dca0" ||
 		inputs.AdoptedIndefiniteDecision != "b0d8be0f-3bde-4dbc-b4c7-51cb125c7511" {
 		t.Fatal("future inputs lost the exact consumer or deviation binding")
 	}
@@ -41,6 +42,10 @@ func TestNativeFutureIdentityInputs(t *testing.T) {
 	}
 	if !modes["timed"] || !modes["indefinite"] {
 		t.Fatal("both native deferral modes are mandatory")
+	}
+	if inputs.ExternalHierarchyTarget != "external:b01-other:unresolved" ||
+		inputs.ExternalHierarchyRefusal != "external capability dependencies cannot use parent-child edges" || len(inputs.HierarchyPhases) != 9 {
+		t.Fatal("hierarchy continuation requires its exact external identity, refusal and nine native phases")
 	}
 	for _, refused := range []string{"b01-timed-parent", "b01-indefinite-child", "b01-", "other-parent", "b01-a.b"} {
 		if nativeSafeSuffix(refused) {

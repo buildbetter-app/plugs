@@ -1,8 +1,8 @@
 # B01 native pair recorder source
 
 This is a causal source child of consumer
-`686704bda3e9dd3f7ba945555a2c6f087dbd2ce3`, tree
-`3c585962fd6590fe7e1c47a2280e9c3d944009bd`. It adds a separate manual
+`7a43c3c625a5c08d3a4364a321cd47d6357ef30`, tree
+`be93a595dc4c44ef4d94d2333060788fd344dca0`. It adds a separate manual
 `//spec/s1-b01-b04:native_recording` target. The historical recorder, inputs,
 captures, source/focused/whole receipts and all parent REDs remain immutable.
 The embedded legacy manifest and run file in this target supply the existing
@@ -19,7 +19,7 @@ each need their own exact child binding. None establishes a physical recording.
 Physical execution remains WAIT until the reviewed actual prepared input and
 applicable producer route have been delivered directly. The four preparer
 values retain their existing meanings. The exact six-field trusted admission,
-accepted source305/tree48e and executable86f3d846 are recorded in
+accepted c8eb source/tree and prepared executable digest/size are recorded in
 `native_inputs.json`. No outer port argument or additional preparer field is
 introduced. Published preparer source/gate PASS is separate from delivery of
 an actual `public-bundle.json` and helper-binding receipt.
@@ -146,3 +146,262 @@ adopted reference differences. It adds no timer to Plug: deferred ancestry
 continues to suppress descendants until explicit reopen. The actual e6 RED,
 all original outputs and earlier ordinary evidence remain unchanged; the
 successor needs its own source, ordinary and physical proof.
+
+
+The current native acceptance continuation is anchored to pinned main
+`7a43c3c625a5c08d3a4364a321cd47d6357ef30`, tree
+`be93a595dc4c44ef4d94d2333060788fd344dca0`. This supersedes historical consumer
+pins only for this new execution unit. The independently passed e9 six-path
+hierarchy carrier and prior9346 binding are named and hashed in
+`native_source_bindings.json`; no three-path resolution or product/driver/helper
+source is changed here. The accepted executable remains actual c8eb/R418, with
+trusted helper702 and fixed control2d. Every invocation requires its own fresh
+same-run preparation, four exact returned exports, unique claim and complete
+owned physical lifecycle; no earlier VM path or runtime credit transfers.
+
+Done = B01's required native behavior, replay and persistence obligations execute
+on the actual changed source, proven by fresh canonical named native results,
+raw/XML equality and independently reviewed source/preparation/control/output
+closure; ordinary merges, static inventories and a bounded hierarchy result do
+not count as full B01 acceptance.
+Scope = this child executes the remaining explicit lifecycle reopen and direct
+blocker hierarchy slice, native external refusal, and separately labelled Plug
+typed external extension. Full-card clocks, categories, workflow and ephemeral planes,
+optional-query errors, canonical/legacy refusal and reparent variants remain
+explicit obligations for subsequent executable work.
+
+After each unchanged before/defer/after vector, the actual native producer
+executes five writes: clear defer and return parent to open; add parent->free
+blocks; close free; reopen free; remove that blocks edge. Each write is followed
+by all four original public shows plus full hybrid ready and explain. Expected
+sets are respectively all four, free, parent/child/grandchild, free, all four.
+Every phase is a named subtest and participates in both fresh semantic twins.
+The two original adopted timed/indefinite differences remain unchanged.
+
+Accepted c8eb `internal/storage/issueops/dependencies.go:224-225` explicitly
+refuses external parent-child. The sixth native phase actually attempts that
+edge and requires a nonzero process exit containing its exact source diagnostic,
+without timeout/setup failure. Both original streams and literal exit survive.
+Four raw public show byte strings and the complete ready/explain projection
+must equal the prior restored state. No native typed edge or expected-success
+observation is fabricated. The proposed commands total66 per store,264 overall,
+including all original24/store controls. Quiesced inventory/dump now captures
+the final restored state; all intermediate original streams remain retained.
+
+Each memory/SQLite/Postgres replay invokes five equivalent public writes and
+conserves every unrelated source image/revision. Seven named replay phases
+include the two additional Plug typed external add/remove cases. Those two are
+extension proof: the genuine native control is the refused-edge state and
+`membershipParity` is null. Plug excludes the unresolved external direct subject
+from ready while retaining its opaque typed edge and no canonical Parent;
+removal restores that subject. All other local canonical Parent plus retained
+legacy links are checked against the actual captured hierarchy. No typed arm is
+mapped to local lookup, hierarchy or closure by this recorder.
+
+Every replay phase checks full and one-row signed ready enumeration and a
+resource filter applied before the page. Complete source/history/versions,
+head/incarnation, known write receipts, absent read receipts and active authority
+are identical before/after reads. Every SQLite/Postgres phase physically closes
+and reopens its actual store, acquires a greater authority epoch and reobserves
+the state. An actual signed cursor crosses every new multirow phase reopen;
+single-row states require exact terminal enumeration. All controls are
+AUTHORED_NOT_RUN until their own named runtime result is reached. Native Go and
+SQL clocks remain uncontrolled, broader native B01 remains unqualified,
+The accepted NativeAdmission descriptor is recorded above; FullS1=0/28 and
+protected B05 stays paused.
+
+The H03/H04 child writes `native-replay-manifest.json` and requires a unique
+named `root` plus the full existing lifecycle continuation (`resumed`,
+`blocked-parent`, `detached-from-blocked`, `reparented-to-open`,
+`reattached-to-blocked`, blocker close/reopen, `restored`) and corresponding
+membership phases for each of the four vector/run pairs on memory, SQLite, and
+PostgreSQL. The root is a real seed/link and before/after conservation
+subtest. Memory makes no SQL-reopen claim; SQLite and PostgreSQL each carry a
+signed multirow cursor across a physical close and reopen, acquire a new handle
+and greater lease epoch, drain the cursor, and retain the full read-key/state
+checks. A filtered selector that omits any required root or phase fails closed
+before the native unit can be treated as a complete all-store result. The
+existing `external-refused` phase remains a separate E01/H05-H08 control and
+is not counted in this H03/H04 manifest.
+
+
+The next causal descendant of exact006 adds three actual native writes while
+the parent remains blocked: detach the child subtree, attach it to the open
+free node, and attach it back to the blocked parent. The four shows, ready and
+explain after each write must respectively retain child/grandchild/free,
+child/grandchild/free, and free. All prior native observations
+(including before/after) and external refusal controls remain. There are now
+nine continuation phases, 87 commands per physical store and 348 commands
+across both vectors and both fresh twins. The actual accepted producer and
+trusted preparation/control pins remain unchanged.
+
+Ten public replay phases include unlink, new local parent link, and an atomic
+unlink+link reattachment; every phase advances the actual store head exactly
+once and appends one version for the changed record at that revision. No
+unrelated source byte or version may change. Exact ancestor-closure rows for
+all four identities are reconstructed from captured native Parent topology,
+including self/depth rows, after each transition and physical reopen. Public
+reads and store reopen now conserve all nine derived-table byte sets and the
+graph-validity fact as well as source/head/history/versions/known receipts.
+Typed external edges never contribute an ancestor row. These authored controls
+need their own changed-source native/focused/whole proof; the separate006
+native PASS and ordinary lexicon RED remain literal and immutable.
+
+This descendant also fixes the precise documentation term rejected by the006
+focused lexicon gate. This is a source correction and additional executable
+hierarchy coverage; it does not retry the unchanged006 product failure or
+supply controlled native Go/SQL clock, full category/plane/refusal corpus,
+full B01, native admission, or full S1 proof. All new controls remain
+AUTHORED_NOT_RUN until reached by their own named actual execution.
+
+The category and close-guard continuation after the fe6 subtree unit retains
+all original successful exports before adding native custom status tables.
+It then captures nineteen genuine native phases for both vectors and both
+fresh stores: pinned, started, configured active/work-in-progress/completed/
+frozen categories, closed/open/deferred/resumed states, live-child and direct
+blocker refusals, and leaf close/quiet repeated close/reopen under a blocked
+ancestor. Every original command stream and before/after show survives. Native
+show relation projections may change when an edge changes; only actual refused
+and settled commands assert entire show-byte equality.
+
+Each actual phase is replayed on memory, SQLite and PostgreSQL through public
+RPC. Category mappings are explicit: native active means Plug unstarted,
+work-in-progress means started, completed means completed, and pinned/frozen
+mean backlog. Full and one-row type filters run on both sides; Plug additionally
+checks resource/intersection filters without claiming a native resource API.
+Qualifying free rows must survive earlier excluded parent/child prefixes.
+Refusals retain their exact RPC error envelopes and conserve all source,
+history, versions, nine derived tables, graph facts and receipt absence.
+Quiet repeated close preserves those same product facts while retaining its
+new idempotency receipt. Real SQL handles and signed continuations cross every
+phase's reopen. Changed hierarchy and category records now explicitly conserve
+all non-target source fields, including project/type/title/created time.
+
+Accepted producer c8eb refuses nonempty custom status export families. The
+new corpus retains a separate final native inventory/sidecar tree and the
+literal expected converter refusal; it never deletes the configuration or
+relabels this as successful native import/restore. The original hierarchy dump
+still succeeds on the unchanged pre-category state. Both outputs and their
+phase boundaries are retained. No accepted producer/helper/control is changed.
+
+Done = the new category/close/refusal and filter/reopen controls execute against
+the actual accepted native source and all three public replay engines, proven
+by this child's fresh preparation/lifecycle/streams/named raw RUN/PASS/XML and
+independent review; authored controls or the preceding fe6 PASS do not count.
+Scope = the nineteen category/guard phases, exact source/read/refusal/settlement
+conservation and supported type/resource filters. Controlled native clocks,
+complete infrastructure/template/plane/error and persisted legacy/conflicting
+parent corpora still need their own executable units; full B01 is unqualified.
+
+
+The causal successor to the category source retains exact06f's native RED: all
+twelve public replays first refused the ordinary status patch with
+`ontology_use_slot_verb`. Public replay now enters each category through its
+named lifecycle slot. Built-in targets use default slots; the four custom
+targets use declared workflow slots with the corresponding unchanged default
+guards and explicit custom unstarted claim source. The first started phase
+reopens the deferred pinned mapping before its genuine claim. The fixture
+retains each exact ontology document. Six direct status patches still execute
+as typed refusals with complete unchanged snapshots. Native vectors, CLI
+commands, before/after observations and all category membership expectations
+are retained. This is category replay, with no native claim parity claim.
+
+Ordinary claim results must contain the expected owner, agent, five-minute TTL,
+expiry and current epoch. Other lifecycle verbs clear the claim lease. Changed
+records retain all other source fields; a reason appends exactly one comment
+with the prior comments unchanged. Quiet repeated close conserves every prior
+receipt byte string and adds only its exact current method/key's completed
+no-op receipt bound to the returned commit. Both full settlement snapshots and
+the response binding are retained. These executable controls remain
+AUTHORED_NOT_RUN until this exact source reaches them; all prior REDs and
+independent bounded results retain their original heads.
+
+No-op receipt evidence keeps RequestHash, Commit, ResponsePending and the full
+Changeset when nonzero. An actual internal zero Changeset is recorded as
+Changeset:null plus ZeroChangeset:true only after exact typed equality to the
+complete zero value. This test-only encoding avoids the product wire marshaler
+that correctly refuses an empty changeset kind. The settlement oracle still
+conserves every prior receipt, permits exactly the completed current method/key
+addition, and checks the returned commit and all other persisted state.
+
+Parent storage compatibility is a separate Plug extension after the existing
+actual native and public replay. Its real driver fixtures retain captured role
+IDs, titles and priorities while exercising canonical-only, legacy-only and
+matching parent forms. It compares raw source, public projection, complete
+ancestor closure, full and one-row membership, exact write/refusal/quiet-receipt
+boundaries and actual SQL reopen with signed continuations. Refusal inputs
+cover conflicting/two/missing/self/branched/cyclic parents, staged-prefix
+rollback and retained-link reparent/detach/retype. The external target is the
+ID of the real local grandchild: it stays an opaque typed arm even where a
+local interpretation would form a cycle. External detach is a quiet no-op;
+the unresolved direct subject stays excluded from ready. Seven malformed
+stored forms retain their exact bytes and refuse reads across SQL reopen.
+All compatibility proof outputs mark membershipParity=null and do not claim a
+native storage representation or product import. Source fixtures use the
+existing conformance Seed seam; they do not edit or replace driver behavior.
+
+
+The settlement continuation after exact1f retains all777 authored names and
+every native command/input/helper/control. Its parent reached all twelve actual
+repeated-close calls but failed the receipt binding assertion; no completed
+settlement or later compatibility proof follows from that RED. The parent did
+not preserve the newly added receipt after its failing assertion, so the exact
+failed subcondition is unmeasured. Earlier completed receipts independently
+expose differing object-key order between stored raw records and RPC records
+that passed through the replay's result map.
+
+The new oracle compares both complete Commit JSON values with the existing
+UseNumber decoder and reflect.DeepEqual. It ignores only object-key order and
+JSON whitespace; number tokens, every member, array order and null versus empty
+remain significant. Prior receipt bytes, the sole fresh method/key addition,
+completed/nonpending request hash, complete zero Changeset, response revision,
+source/history/versions/all nine derived tables and graph facts remain required.
+Both settlement helpers preserve complete before/after snapshots, the added
+receipt, returned Commit and independent byte/value comparison diagnostics
+before the response-binding assertion. Only the final separate settlement
+output follows all assertions. New execution remains AUTHORED_NOT_RUN until
+its own changed-source terminal; historical REDs and incomplete leaves remain
+literal. This test-only repair supplies no native input or product change,
+common clock, broader planes/query-error proof, fullB01 or admission.
+
+
+The hidden-type continuation retains the preceding hierarchy/category/quiet
+receipt/parent-compatibility corpus and appends nine genuine native parent
+type mutations in each physical capture: merge-request, gate, molecule, rig,
+agent, role, message, bug and restored task. The accepted source declares the
+first seven hidden by default. Each mutation retains actual four-role shows
+and full, limit-one, explicit-type and task-type ready queries. The hidden
+highest-priority parent must disappear before the limit while its open local
+children remain ready. Explicit native --type bypasses the default type list;
+that actual answer is retained separately from Plug's mandatory type-level
+ReadyEligible=false rule, with typed-filter parity=null. No native clock is
+injected or controlled by this corpus.
+
+The original338 CLI commands per store remain unchanged;84 genuine additional
+commands bring the source plan to422 per store/1688 overall. Final quiesced
+inventory version/clean state and regular sidecar originals are checked after
+restoring task. The previous successful preconfiguration public dump and
+genuine custom-status dump refusal remain separate originals. The new final
+inventory is not a successful dump/import proof. Semantic twins include the
+new actual type projections without discarding old projection fields.
+
+For every type and memory/SQLite/Postgres backend, replay creates four actual
+public records with captured source identity/title/priority bindings in a fresh
+store. Explicit ontology mappings represent hidden types as ReadyEligible=false
+and bug/task as ordinary eligible types. No immutable public type is changed
+through a storage fixture. Canonical local Parent, full ancestor closure,
+default/mapped/ordinary type and resource/intersection queries are checked with
+full and signed one-row enumeration, complete source/receipt/history/version/
+all-nine-derived/fact conservation and actual SQL handle reopen. Every SQL
+case crosses a real signed continuation over reopen. The restored task case
+also applies a real public template patch as a separately labelled Plug
+extension, conserving exact non-target fields including prior template
+value/presence. Native template construction is not claimed.
+
+These156 added planned names join the retained777 for933 source-derived names.
+Every new case remains AUTHORED_NOT_RUN until reached on this exact source.
+Controlled native Go+SQL48h/P74 clocks, both native row/dependency planes,
+optional-table absence versus unrelated query errors, and other full-card
+obligations remain explicitly incomplete. Existing accepted preparation and
+fixed helper/control are unchanged; no borrowed head/gate credit, FullB01,
+NativeAdmission or FullS1 promotion follows from this source.
