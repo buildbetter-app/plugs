@@ -329,7 +329,7 @@ func TestB17MetadataCASRealPostgresReceiptsAndReopen(t *testing.T) {
 	var refusedKeys []string
 	for i, miss := range []struct{ field, canonical string }{
 		{"metadata." + literal, `null`}, {"metadata." + literal, `{"a":1,"b":3}`},
-		{"metadata.number", `"1"`}, {"metadata.large", `9007199254740992`},
+		{"metadata.number", `1`}, {"metadata.number", `"1"`}, {"metadata.large", `9007199254740992`},
 		{"metadata.array", `[2,1]`}, {"metadata.string", `1`}, {"metadata.missing", `null`},
 	} {
 		requestKey := key(fmt.Sprint("metadata-refused-", i))
@@ -346,7 +346,7 @@ func TestB17MetadataCASRealPostgresReceiptsAndReopen(t *testing.T) {
 		unchanged(t, before, graph(t, other))
 	}
 	committed(t, h.call(t, "bead.update", map[string]any{"id": target, "fields": map[string]any{"description": "object matched"}, "expect": []model.Precondition{model.PreconditionByHash(target, "metadata."+literal, "43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777")}}, key("metadata-object-match")), 4)
-	committed(t, h.call(t, "bead.update", map[string]any{"id": target, "fields": map[string]any{"title": "number matched"}, "expect": []model.Precondition{model.PreconditionByHash(target, "metadata.number", "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b")}}, key("metadata-number-match")), 5)
+	committed(t, h.call(t, "bead.update", map[string]any{"id": target, "fields": map[string]any{"title": "number matched"}, "expect": []model.Precondition{model.PreconditionByHash(target, "metadata.number", "d0ff5974b6aa52cf562bea5921840c032a860a91a3512f7fe8f768f6bbe005f6")}}, key("metadata-number-match")), 5)
 	before = graph(t, other)
 	swap := model.ChangeSet{Ops: []model.Op{metadataSet(target, literal, `{"next":true}`)}, Expect: []model.Precondition{model.PreconditionByHash(target, "metadata."+literal, metadataSHA(`{"a":1,"b":2}`))}}
 	if _, err := h.writer.ApplyWithOutcome(h.ctx, actor, swap, metadataMeta("metadata-swap")); err != nil {
