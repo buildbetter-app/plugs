@@ -19,7 +19,13 @@ func (t *transaction) validateSelectionWrites(ctx context.Context, proposed map[
 	previous := t.derived
 	t.derived = proposed
 	defer func() { t.derived = previous }()
-	for _, state := range proposed {
+	return t.validateSelectionRows(ctx, proposed)
+}
+
+// rows may be only the changed annotations and their affected dependents;
+// observations always use the complete proposed t.derived overlay.
+func (t *transaction) validateSelectionRows(ctx context.Context, rows map[string]driver.LockState) error {
+	for _, state := range rows {
 		if !state.Present || state.Derived == nil || state.Derived.Index == nil {
 			continue
 		}
@@ -65,6 +71,82 @@ func (t *transaction) validateSelectionWrites(ctx context.Context, proposed map[
 			return fmt.Errorf("%w: SQLite selection bead source kind", driver.ErrUnsupported)
 		}
 	}
+	return nil
+}
+
+func (t *transaction) selectionSourceStaged(source string) {
+	for row := range t.selectionDependents[source] {
+		if t.selectionRecheck == nil {
+			t.selectionRecheck = make(map[string]bool)
+		}
+		t.selectionRecheck[row] = true
+	}
+}
+
+// Apply only this call's final delta temporarily, retaining an undo entry for
+// every touched identity. Validation sees the full overlay, including earlier
+// staged derived sources, but does not copy or recheck unrelated accepted rows.
+// A failed call restores every arm and leaves dependency bookkeeping unchanged.
+func (t *transaction) stageSelectionDelta(ctx context.Context, delta map[string]driver.LockState, annotated bool) error {
+	type priorState struct {
+		state driver.LockState
+		found bool
+	}
+	prior := make(map[string]priorState, len(delta))
+	accepted := false
+	defer func() {
+		if !accepted {
+			for id, old := range prior {
+				if old.found {
+					t.derived[id] = old.state
+				} else {
+					delete(t.derived, id)
+				}
+			}
+		}
+	}()
+	for id, state := range delta {
+		old, found := t.derived[id]
+		prior[id] = priorState{old, found}
+		t.derived[id] = state
+	}
+	if annotated {
+		check := make(map[string]driver.LockState, len(delta)+len(t.selectionRecheck))
+		for id := range t.selectionRecheck {
+			check[id] = t.derived[id]
+		}
+		for id, state := range delta {
+			check[id] = state
+			for dependent := range t.selectionDependents[id] {
+				check[dependent] = t.derived[dependent]
+			}
+		}
+		if err := t.validateSelectionRows(ctx, check); err != nil {
+			return err
+		}
+	}
+	for id, state := range delta {
+		old := prior[id].state
+		if old.Present && old.Derived != nil && old.Derived.Index != nil {
+			source := keyID(old.Derived.Index.Source.Key)
+			delete(t.selectionDependents[source], id)
+			if len(t.selectionDependents[source]) == 0 {
+				delete(t.selectionDependents, source)
+			}
+		}
+		if state.Present && state.Derived != nil && state.Derived.Index != nil {
+			source := keyID(state.Derived.Index.Source.Key)
+			if t.selectionDependents == nil {
+				t.selectionDependents = make(map[string]map[string]bool)
+			}
+			if t.selectionDependents[source] == nil {
+				t.selectionDependents[source] = make(map[string]bool)
+			}
+			t.selectionDependents[source][id] = true
+		}
+	}
+	t.selectionRecheck = nil
+	accepted = true
 	return nil
 }
 
