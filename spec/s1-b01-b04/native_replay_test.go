@@ -80,6 +80,30 @@ func (r *nativeReplay) write(label, method string, params map[string]any) model.
 	return commit
 }
 
+func (r *nativeReplay) sourceImages() map[string]string {
+	r.f.t.Helper()
+	reader, err := r.f.store.Read(r.f.ctx, driver.View{Incarnation: r.f.metaSnapshot().Incarnation})
+	if err != nil {
+		r.f.t.Fatal(err)
+	}
+	defer reader.Close()
+	images := map[string]string{}
+	for role, ref := range r.refs {
+		rows, err := reader.Get(r.f.ctx, []driver.Ref{ref})
+		if err != nil || len(rows) != 1 || rows[0].Ref.ID != ref.ID {
+			r.f.t.Fatalf("actual source image %s: %d rows: %v", role, len(rows), err)
+		}
+		// Record includes exact Body bytes, identity, kind and revision. This
+		// catches an extra descendant version or byte rewrite at defer time.
+		data, err := json.Marshal(rows[0])
+		if err != nil {
+			r.f.t.Fatal(err)
+		}
+		images[role] = sha256Hex(data)
+	}
+	return images
+}
+
 // Includes source images, complete short fixture history, every version of
 // all four actual refs, and every known write receipt. Every observed read
 // key is checked absent; read keys are not added to the state digest.
@@ -331,19 +355,12 @@ func replayNativeVector(t *testing.T, capture nativeCapture, backend, dsn, decis
 		}
 		r.observe("before-reopened", false)
 	}
-	unchanged := map[string]string{}
-	for _, role := range []string{"child", "grandchild", "free"} {
-		data, err := json.Marshal(f.document(r.refs[role].ID))
-		if err != nil {
-			t.Fatal(err)
-		}
-		unchanged[role] = sha256Hex(data)
-	}
+	unchanged := r.sourceImages()
 	r.write("defer-parent", "bead.defer", map[string]any{"id": r.refs["parent"], "reason": "distinct " + capture.Vector.Mode + " hierarchy vector"})
-	for role, before := range unchanged {
-		data, err := json.Marshal(f.document(r.refs[role].ID))
-		if err != nil || sha256Hex(data) != before {
-			t.Fatalf("defer changed descendant/free source %s: %v", role, err)
+	afterImages := r.sourceImages()
+	for _, role := range []string{"child", "grandchild", "free"} {
+		if afterImages[role] != unchanged[role] {
+			t.Fatalf("defer changed descendant/free source bytes or revision for %s", role)
 		}
 	}
 	r.observe("after", true)
