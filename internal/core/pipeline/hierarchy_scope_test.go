@@ -21,10 +21,10 @@ type prefixRowsReader interface {
 
 type closureScopeStore struct {
 	*sqlite.Store
-	hide          bool
-	mu            sync.Mutex
-	rows, batches int
-	observed      map[string]driver.LockState
+	hide                   bool
+	mu                     sync.Mutex
+	rows, batches, singles int
+	observed               map[string]driver.LockState
 }
 
 func (s *closureScopeStore) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
@@ -70,6 +70,7 @@ func (r *closureScopeReader) Observe(ctx context.Context, keys []driver.LockKey)
 func (r *closureScopeReader) DerivedRows(ctx context.Context, table driver.DerivedTable, prefix string) ([]driver.DerivedRow, error) {
 	rows, err := r.Reader.DerivedRows(ctx, table, prefix)
 	r.store.mu.Lock()
+	r.store.singles++
 	r.store.rows += len(rows)
 	r.store.mu.Unlock()
 	return rows, err
@@ -128,7 +129,7 @@ func TestSQLiteRootClosureReadsStayWithinConsumedPrefixes(t *testing.T) {
 			}
 			apply(t, w, model.ChangeSet{Ops: ops}, meta(1))
 			s.mu.Lock()
-			s.rows, s.batches, s.observed = 0, 0, map[string]driver.LockState{}
+			s.rows, s.batches, s.singles, s.observed = 0, 0, 0, map[string]driver.LockState{}
 			s.mu.Unlock()
 			commit := apply(t, w, model.ChangeSet{Ops: ops}, meta(2))
 			if len(commit.Results) != 100 {
@@ -154,16 +155,16 @@ func TestSQLiteRootClosureReadsStayWithinConsumedPrefixes(t *testing.T) {
 					}
 				}
 			}
-			rows, batches := s.rows, s.batches
+			rows, batches, singles := s.rows, s.batches, s.singles
 			s.mu.Unlock()
 			if misses != 100 || sentinels != 100 || derived != 100 {
 				t.Fatalf("guarded source/closure/derived misses=%d/%d/%d, want100/100/100", misses, sentinels, derived)
 			}
-			if !fallback && (rows != 0 || batches != 1) {
-				t.Fatalf("100 new roots enumerated %d unrelated closure rows in %d prefix batches; want0rows/1batch", rows, batches)
+			if !fallback && (rows != 0 || batches != 2 || singles != 0) {
+				t.Fatalf("100 new roots enumerated %d unrelated closure rows in %d prefix batches/%d single calls; want0rows/2batches/0singles", rows, batches, singles)
 			}
-			if fallback && (rows != 100 || batches != 0) {
-				t.Fatalf("fallback control rows/batches=%d/%d, want100/0", rows, batches)
+			if fallback && (rows != 100 || batches != 0 || singles != 101) {
+				t.Fatalf("fallback control rows/batches/singles=%d/%d/%d, want100/0/101", rows, batches, singles)
 			}
 			m, err := s.Meta(ctx)
 			if err != nil {
@@ -184,7 +185,7 @@ func TestSQLiteRootClosureReadsStayWithinConsumedPrefixes(t *testing.T) {
 					t.Fatalf("durable root closure=%+v err=%v", row, err)
 				}
 			}
-			t.Logf("100-operation real SQLite root commit: %d enumerated rows, %d prefix batches, 100 guarded source/closure/derived misses; durable200selfrows; fallback=%t", rows, batches, fallback)
+			t.Logf("100-operation real SQLite root commit: %d enumerated rows, %d prefix batches, %d single calls, 100 guarded source/closure/derived misses; durable200selfrows; fallback=%t", rows, batches, singles, fallback)
 		})
 	}
 }
