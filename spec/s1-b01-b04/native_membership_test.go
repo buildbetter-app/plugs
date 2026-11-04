@@ -12,6 +12,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 // Each category mapping is declared independently of either observed result.
@@ -422,18 +423,56 @@ func (r *nativeReplay) refuseMembership(label, method string, params map[string]
 }
 
 func (r *nativeReplay) assertMembershipSettlement(before []byte, commit model.Commit) {
+	r.f.t.Helper()
 	var old, after struct {
 		Meta     map[string]any             `json:"meta"`
 		Versions map[string]json.RawMessage `json:"versions"`
 		Source   string                     `json:"sourceAndChangesetSHA256"`
 		Derived  map[string]json.RawMessage `json:"allNineDerivedTables"`
 		Facts    json.RawMessage            `json:"graphValidityFact"`
+		Receipts map[string]json.RawMessage `json:"writeReceipts"`
 	}
 	nativeDecode(r.f.t, before, &old)
-	nativeDecode(r.f.t, r.snapshot(), &after)
+	afterSnapshot := r.snapshot()
+	nativeDecode(r.f.t, afterSnapshot, &after)
+	if len(r.calls) == 0 {
+		r.f.t.Fatal("quiet settlement lacks its actual RPC scope")
+	}
+	call := r.calls[len(r.calls)-1]
+	key := call.Method + "/" + call.Key
+	if !call.Write || call.Method != "bead.close" || call.Key == "" || old.Receipts == nil || after.Receipts == nil {
+		r.f.t.Fatal("quiet settlement lacks its exact close method/key or receipt maps")
+	}
+	if _, exists := old.Receipts[key]; exists {
+		r.f.t.Fatal("quiet settlement key already had a receipt before this call")
+	}
+	added, exists := after.Receipts[key]
+	if !exists || len(after.Receipts) != len(old.Receipts)+1 {
+		r.f.t.Fatal("quiet settlement must add precisely its one method/key receipt")
+	}
+	for priorKey, prior := range old.Receipts {
+		if !bytes.Equal(prior, after.Receipts[priorKey]) {
+			r.f.t.Fatalf("quiet settlement changed prior receipt %s", priorKey)
+		}
+	}
+	var receipt driver.IdempotencyRecord
+	nativeDecode(r.f.t, added, &receipt)
+	if receipt.ResponsePending || len(receipt.RequestHash) != 64 ||
+		!bytes.Equal(nativeDocumentBytes(r.f.t, receipt.Commit), nativeDocumentBytes(r.f.t, commit)) ||
+		!reflect.DeepEqual(receipt.Changeset, model.Changeset{}) {
+		r.f.t.Fatal("quiet settlement receipt is not a completed no-op bound to the returned commit")
+	}
+	// Conserve every prior receipt above and allow only the new scoped receipt;
+	// the remaining snapshot must stay byte-equivalent in every source plane.
+	old.Receipts, after.Receipts = nil, nil
 	if !reflect.DeepEqual(old, after) || fmt.Sprint(old.Meta["Head"]) != commit.Revision.String() {
 		r.f.t.Fatal("repeated close changed source/history/derived facts/head instead of settling quietly")
 	}
+	nativeJSON(r.f.t, filepath.Join(r.output, "membership-repeat-close-under-blocked-ancestor-settlement.json"), map[string]any{
+		"before": json.RawMessage(before), "after": json.RawMessage(afterSnapshot),
+		"method": call.Method, "idempotencyKey": call.Key, "receiptKey": key,
+		"completedReceipt": receipt, "returnedCommit": commit,
+	})
 }
 
 // Local hierarchy writes may change Parent/Links, and lifecycle operations may
