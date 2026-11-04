@@ -26,7 +26,8 @@ type selectionStageConnector struct {
 	driver         sqldriver.Driver
 	dsn            string
 	queries        atomic.Int64
-	cancelAttempts atomic.Int64
+	cancelTriggers atomic.Int64
+	nativeAttempts atomic.Int64
 	canceledNative atomic.Int64
 	mu             sync.Mutex
 	cancel         context.CancelFunc
@@ -67,8 +68,9 @@ func (c *selectionStageConn) QueryContext(ctx context.Context, query string, arg
 	// The actual driver still executes its context handling and supplies the
 	// error; this observer neither fabricates nor replaces that error.
 	if cancel != nil {
-		c.counts.cancelAttempts.Add(1)
+		c.counts.cancelTriggers.Add(1)
 		cancel()
+		c.counts.nativeAttempts.Add(1)
 	}
 	rows, err := c.Conn.(sqldriver.QueryerContext).QueryContext(ctx, query, args)
 	if err == nil && sourceQuery {
@@ -286,8 +288,8 @@ func TestSelectionStageValidationDerivedDependenciesAndCancellation(t *testing.T
 	if err := tx.PutSelectionDerived(call, extra.Table, nil, []driver.DerivedRow{fact(extra, a)}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("native observation cancellation not propagated: %v", err)
 	}
-	if attempts, canceled := counts.cancelAttempts.Load(), counts.canceledNative.Load(); attempts != 1 || canceled != 1 {
-		t.Fatalf("native query entry cancellation attempts=%d context_canceled=%d; want one actual native cancellation", attempts, canceled)
+	if triggers, attempts, canceled := counts.cancelTriggers.Load(), counts.nativeAttempts.Load(), counts.canceledNative.Load(); triggers != 1 || attempts != 1 || canceled != 1 {
+		t.Fatalf("native query entry cancellation triggers=%d native_attempts=%d context_canceled=%d; want exactly one of each", triggers, attempts, canceled)
 	}
 	if len(tx.derived) != 2 || string(tx.derived[sourceID].Derived.Value) != string(a) {
 		t.Fatal("canceled proposed batch leaked staged state")
@@ -307,7 +309,7 @@ func TestSelectionStageValidationDerivedDependenciesAndCancellation(t *testing.T
 	if err := tx.PutDerived(ctx, source.Table, []driver.DerivedRow{{Key: source.Key}, {Key: dependent.Key}, {Key: extra.Key}}, nil); err != nil {
 		t.Fatalf("complete dependent/source deletion failed: %v", err)
 	}
-	t.Logf("native_query_entry_cancel_attempts=%d native_context_canceled=%d rollback_and_dependency_recovery=PASS", counts.cancelAttempts.Load(), counts.canceledNative.Load())
+	t.Logf("native_query_entry_cancel_triggers=%d native_query_attempts=%d native_context_canceled=%d rollback_and_dependency_recovery=PASS", counts.cancelTriggers.Load(), counts.nativeAttempts.Load(), counts.canceledNative.Load())
 }
 
 func TestSelectionStageValidationNonDataSourceBumps(t *testing.T) {
