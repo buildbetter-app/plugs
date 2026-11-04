@@ -510,6 +510,8 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 	}
 	commandReference("source-init", "source", source, nativeInitArgs(source, server.Port), nil)
 	recordNativeDatabaseBinding(t, run.Root, "source", source, server)
+	// Record the existing disabled auto-export default as real parsed YAML.
+	commandReference("source-export-config", "source", source, []string{"--json", "config", "set", "export.auto", "false"}, nil)
 	commandReference("source-config", "source", source, []string{"--json", "config", "set", fixture.ConfigKey, "paired-public"}, nil)
 	configOutput := commandConfigList("source-config-list", "source", source)
 	settings, err := readPublicConfigSettings(configOutput)
@@ -560,6 +562,7 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 	commandReference("target-version", "target", target, []string{"version", "--json"}, nil)
 	commandReference("target-init", "target", target, nativeInitArgs(target, server.Port), nil)
 	recordNativeDatabaseBinding(t, run.Root, "target", target, server)
+	commandReference("target-export-config", "target", target, []string{"--json", "config", "set", "export.auto", "false"}, nil)
 	commandReference("target-create-keep", "target", target, []string{"--json", "create", "--id", "pub-keep", "--type", "task", "--title", "Keep target row", "--description", "must survive import"}, nil)
 	commandReference("target-import", "target", target, []string{"--json", "import", run.SourceExportPath}, nil)
 	commandReference("target-commit", "target", target, []string{"dolt", "commit"}, nil)
