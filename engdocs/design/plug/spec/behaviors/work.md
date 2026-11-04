@@ -126,6 +126,12 @@ foreign holders receive a typed conflict; pool aliases can claim only their
 pool work; wisps are never leased. Validation rejects actor-missing,
 limit/offset/brief claim-next requests before SQL.
 
+Public claim and claim-next refusals use the canonical error catalog's
+`retryable` value and transport-generated non-empty `traceId`. Domain errors
+may carry an empty trace ID before transport encoding; the public HTTP
+boundary must validate the closed error schema and add the trace ID without
+replaying or publishing a claim.
+
 **Plug disposition.** **Keep** semantic claim behavior, expose `bead.claimNext`
 and a 300,000 ms default lease, and add the A4 lazy walk/skip-locked behavior
 and 200-agent contention benchmark. Anonymous agent labels are unverified
