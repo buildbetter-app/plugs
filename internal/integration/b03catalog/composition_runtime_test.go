@@ -136,7 +136,7 @@ func TestConfiguredRuntimeLoadsCatalogAndAuditsOnEveryEngine(t *testing.T) {
 		if len(problems) != 0 {
 			t.Fatalf("%s updated ontology compile: %+v", e.name, problems)
 		}
-		planned := composedRuntimeCall(t, transport, "ontology.plan", map[string]any{"document": updated}, "b03-composition", "00000000000000000000000000000002a")
+		planned := composedRuntimeCall(t, transport, "ontology.plan", map[string]any{"document": updated}, "b03-composition", "0000000000000000000000000000002a")
 		var plan ontologyops.PlanResult
 		if err := json.Unmarshal(planned, &plan); err != nil || !plan.Changes.Ready || plan.PlanDigest == "" {
 			t.Fatalf("%s configured ontology.plan=%s err=%v", e.name, planned, err)
@@ -147,8 +147,8 @@ func TestConfiguredRuntimeLoadsCatalogAndAuditsOnEveryEngine(t *testing.T) {
 			"humanPresence": map[string]any{
 				"mode": "presence_check", "challenge": plan.PlanDigest, "proof": plan.PlanDigest,
 			},
-		}, "b03-composition", "00000000000000000000000000000002b")
-		refreshed := composedRuntimeCall(t, transport, "ontology.get", nil, "b03-composition", "00000000000000000000000000000002c")
+		}, "b03-composition", "0000000000000000000000000000002b")
+		refreshed := composedRuntimeCall(t, transport, "ontology.get", nil, "b03-composition", "0000000000000000000000000000002c")
 		var refreshedResult ontologyops.Result
 		if err := json.Unmarshal(refreshed, &refreshedResult); err != nil || refreshedResult.Revision != "2" || refreshedResult.Document == nil || refreshedResult.Document.Types["issue"].Fields["reviewed"].Default != false {
 			t.Fatalf("%s ontology.apply did not refresh configured runtime: %s err=%v", e.name, refreshed, err)
@@ -196,6 +196,9 @@ func TestConfiguredRuntimeLoadsCatalogAndAuditsOnEveryEngine(t *testing.T) {
 		}
 		var pinned bool
 		for _, event := range last.Events {
+			if event.Details != nil {
+				t.Logf("%s event ontology pin=%+v", e.name, event.Details.Ontology)
+			}
 			if event.Details == nil || event.Details.Ontology.Ref != sourceRef {
 				continue
 			}

@@ -197,6 +197,9 @@ func TestConfiguredOntologyRuntimeLoadsCatalogAndAuditsLifecycle(t *testing.T) {
 		t.Fatalf("runtime source did not compile in test: %+v", problems)
 	}
 	for _, event := range last.Events {
+		if event.Details != nil {
+			t.Logf("event ontology pin=%+v", event.Details.Ontology)
+		}
 		if event.Type != model.EventDependencyConditionUnmet || event.Details == nil {
 			continue
 		}
