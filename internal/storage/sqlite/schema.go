@@ -254,6 +254,12 @@ CREATE INDEX IF NOT EXISTS selection_fact_sets_interval
 CREATE INDEX IF NOT EXISTS selection_fact_sets_source
  ON selection_fact_sets(incarnation,branch,source_key)
  WHERE end_revision IS NULL;
+-- Commit-local replacement checks address one physical row at a time. Keep
+-- the row identity first so the lookup cannot fall back to scanning every
+-- live bead source merely because it also carries a source-kind range.
+CREATE INDEX IF NOT EXISTS selection_fact_sets_current_row
+ ON selection_fact_sets(incarnation,branch,row_key,row_table,source_key,kind)
+ WHERE end_revision IS NULL;
 CREATE INDEX IF NOT EXISTS selection_fact_sets_family
  ON selection_fact_sets(incarnation,branch,row_table,kind,start_revision,end_revision,source_key);
 -- Affected ancestor proofs join the temporal family image by source. Keep the

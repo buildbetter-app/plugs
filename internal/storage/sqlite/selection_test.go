@@ -713,3 +713,48 @@ func TestSelectionAffectedFamilyPlanUsesSourceTemporalIndex(t *testing.T) {
 		t.Fatalf("affected family proof fell back to the broad interval index: %s", joined)
 	}
 }
+
+// The per-row old-envelope check has an exact row_key predicate. The source
+// range is only a bead-owner discriminator and must not make SQLite walk every
+// live source before applying that exact row identity.
+func TestSelectionOldEnvelopePlanUsesCurrentRowIndex(t *testing.T) {
+	ctx := context.Background()
+	s := selectionStore(t).(*Store)
+	t.Cleanup(func() { _ = s.Close() })
+	meta, err := s.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := `EXPLAIN QUERY PLAN SELECT f.source_key,f.kind
+		FROM selection_fact_sets f
+		JOIN objects o ON o.key=f.source_key AND o.kind='bead'
+		WHERE f.incarnation=? AND f.branch=? AND f.row_key=? AND f.row_table=?
+		AND f.end_revision IS NULL AND f.source_key>='0:' AND f.source_key<'0;'`
+	plan, err := s.db.QueryContext(ctx, query,
+		meta.Incarnation, revKey(0), "3:selection-plan-row", string(driver.DerivedAncestorClosure))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer plan.Close()
+	var details []string
+	for plan.Next() {
+		var node, parent, unused int
+		var detail string
+		if err := plan.Scan(&node, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		details = append(details, detail)
+	}
+	if err := plan.Err(); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(details, "\n")
+	if !strings.Contains(joined, "SEARCH f USING INDEX selection_fact_sets_current_row") ||
+		!strings.Contains(joined, "row_key=?") {
+		t.Fatalf("old envelope lookup lost row-bounded current plan: %s", joined)
+	}
+	if strings.Contains(joined, "selection_fact_sets_source") ||
+		strings.Contains(joined, "selection_fact_sets_family ") {
+		t.Fatalf("old envelope lookup fell back to a source/family census: %s", joined)
+	}
+}
