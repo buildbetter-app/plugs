@@ -120,8 +120,12 @@ func (r *nativeReplay) assertHierarchyWrite(label, changedRole string, before []
 	if err := json.Unmarshal(after, &current); err != nil {
 		r.f.t.Fatal(err)
 	}
-	if commit.Revision != old.Meta.Head+1 || current.Meta.Head != commit.Revision {
-		r.f.t.Fatalf("%s must publish exact H+1: before=%d commit=%d after=%d", label, old.Meta.Head, commit.Revision, current.Meta.Head)
+	head, err := old.Meta.Head.Uint64()
+	if err != nil || head == ^uint64(0) {
+		r.f.t.Fatalf("%s fixture head cannot advance: %s (%v)", label, old.Meta.Head, err)
+	}
+	if commit.Revision != model.Natural64(head+1) || current.Meta.Head != commit.Revision {
+		r.f.t.Fatalf("%s must publish exact H+1: before=%s commit=%s after=%s", label, old.Meta.Head, commit.Revision, current.Meta.Head)
 	}
 	wantMeta := old.Meta
 	wantMeta.Head = current.Meta.Head
