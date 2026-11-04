@@ -42,7 +42,7 @@ func selectsCommentPage(params json.RawMessage) bool {
 
 // A comment cursor binds the selected bead as well as the authenticated
 // principal. Ordinary list cursors do not select an individual bead.
-func commentBinding(c Call, id model.Ref, requested *asOf) (string, string, error) {
+func commentBinding(c Call, id model.Ref, requested *asOfSelector) (string, string, error) {
 	agent := ""
 	if c.Principal.Kind == "anonymous" {
 		agent = c.Meta.Agent
@@ -54,10 +54,16 @@ func commentBinding(c Call, id model.Ref, requested *asOf) (string, string, erro
 	if err != nil {
 		return "", "", err
 	}
+	if requested != nil && requested.Instant != nil {
+		copy := *requested
+		instant := copy.Instant.UTC()
+		copy.Instant = &instant
+		requested = &copy
+	}
 	scope, err := hashJSON(struct {
-		ID      model.Ref `json:"id"`
-		Project string    `json:"project"`
-		AsOf    *asOf     `json:"asOf,omitempty"`
+		ID      model.Ref     `json:"id"`
+		Project string        `json:"project"`
+		AsOf    *asOfSelector `json:"asOf,omitempty"`
 	}{id, c.Meta.Project, requested})
 	return principal, scope, err
 }
@@ -144,7 +150,10 @@ func dispatchCommentPage(ctx context.Context, svc Service, c Call, p servicePara
 	if err != nil {
 		return nil, err
 	}
-	if selected == nil {
+	if selected == nil || selected.Instant != nil {
+		// Comments are stored in this bead version. Pin that exact returned
+		// version, as for a current read, rather than resolving the input
+		// instant again after a concurrent eligible append.
 		selected = &service.AsOf{Revision: thread.Bead.Revision, Incarnation: c.paging.incarnation}
 	}
 	if selected.Incarnation == "" {

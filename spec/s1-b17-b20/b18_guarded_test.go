@@ -146,3 +146,70 @@ func TestB18GuardedHistoryInstantContinuationKeepsResolvedSnapshot(t *testing.T)
 		})
 	}
 }
+
+// The current-main comment projection shares bead.get's input selector, while
+// its cursor pins the returned bead version rather than re-resolving an instant.
+func TestB18GuardedInstantCommentCursorPinsReturnedBeadRevision(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			p := newPairedStore(t, engine)
+			writes := p.rpc(t)
+			created := success[model.Commit](t, "create", writes.call(t, "", "bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": "comment anchor"}}, true))
+			ref := created.Results[0].Ref
+			var pinned model.Revision
+			for _, body := range []string{"first", "second", "third"} {
+				p.advance(t)
+				commit := success[model.Commit](t, "comment", writes.call(t, "", "bead.comment", map[string]any{"id": ref, "body": body}, true))
+				pinned = commit.Revision
+			}
+			reads := guardedInstantRuntime(t, p)
+			instant := p.now.Add(time.Hour)
+			request := func(at any, cursor string, limit int) map[string]any {
+				selection := map[string]any{"limit": limit}
+				if cursor != "" {
+					selection["cursor"] = cursor
+				}
+				return map[string]any{"id": ref, "asOf": at, "commentPage": selection}
+			}
+			firstResult := success[map[string]any](t, "instant comments first", reads.call(t, "", "bead.get", request(instantAt(instant), "", 1), false))
+			first := firstResult["commentPage"].(map[string]any)
+			at := first["asOf"].(map[string]any)
+			if natural(t, at["revision"]).String() != pinned.String() || at["incarnation"] == "" {
+				t.Fatalf("instant comment cursor lacks concrete returned bead version: %+v", first)
+			}
+			token, ok := first["nextCursor"].(string)
+			if !ok || token == "" {
+				t.Fatalf("instant comments did not issue a cursor: %+v", first)
+			}
+			p.advance(t)
+			appended := success[model.Commit](t, "eligible later comment", writes.call(t, "", "bead.comment", map[string]any{"id": ref, "body": "later"}, true))
+			p.reopen(t)
+			reads = guardedInstantRuntime(t, p)
+			// Equivalent time-zone spellings bind to the same instant scope.
+			offset := instant.In(time.FixedZone("offset", 2*60*60))
+			nextResult := success[map[string]any](t, "instant comments continuation", reads.call(t, "", "bead.get", request(map[string]any{"instant": offset.Format(time.RFC3339Nano)}, token, 2), false))
+			next := nextResult["commentPage"].(map[string]any)
+			if natural(t, next["asOf"].(map[string]any)["revision"]).String() != pinned.String() || next["asOf"].(map[string]any)["incarnation"] != at["incarnation"] || next["nextCursor"] != nil {
+				t.Fatalf("comment continuation changed pinned version: first=%+v next=%+v", first, next)
+			}
+			items := next["comments"].([]any)
+			if len(items) != 2 || items[0].(map[string]any)["comment"].(map[string]any)["body"] != "second" || items[1].(map[string]any)["comment"].(map[string]any)["body"] != "third" {
+				t.Fatalf("eligible append contaminated comment continuation: %+v", next)
+			}
+			freshResult := success[map[string]any](t, "fresh instant comments", reads.call(t, "", "bead.get", request(instantAt(instant), "", 500), false))
+			fresh := freshResult["commentPage"].(map[string]any)
+			if len(fresh["comments"].([]any)) != 4 || natural(t, fresh["asOf"].(map[string]any)["revision"]).String() != appended.Revision.String() {
+				t.Fatalf("fresh instant failed to see eligible comment append: %+v", fresh)
+			}
+			changed := reads.call(t, "", "bead.get", request(instantAt(instant.Add(time.Hour)), token, 2), false)
+			if changed.Error == nil || changed.Error.Data.Code != "cursor_invalid" || len(changed.Result) != 0 {
+				t.Fatalf("comment cursor accepted a changed instant: %+v", changed)
+			}
+			reads.principal.Caveats = map[string]any{"projects": []model.Ref{model.RefByID("other", model.Natural64(0))}}
+			denied := reads.call(t, "", "bead.get", request(instantAt(instant), "", 2), false)
+			if denied.Error == nil || denied.Error.Data.Code != "not_found" || len(denied.Result) != 0 {
+				t.Fatalf("historical comment cursor bypassed current authority: %+v", denied)
+			}
+		})
+	}
+}
