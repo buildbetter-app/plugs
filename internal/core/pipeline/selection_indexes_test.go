@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,6 +69,107 @@ func startupSelectionPlan(t *testing.T, r driver.Reader) driver.SelectionPlan {
 		t.Fatal(err)
 	}
 	return p
+}
+
+// Leave selection coverage unavailable without leaving stale logical values.
+// A source-only revision advance also changes its semantic MembershipLeaf;
+// startup may add annotations, but must never repair those logical bytes.
+func rewriteUnindexedSelectionSource(t *testing.T, h *harness, before driver.Record) {
+	t.Helper()
+	ctx := context.Background()
+	plan, err := PrepareSourceRecord(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := h.store.Write(ctx, h.lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Close()
+	keys := plan.LockKeys()
+	locks := make(driver.LockSet, len(keys))
+	for i, key := range keys {
+		locks[i] = driver.LockRequest{Key: key, Mode: driver.LockUpdate}
+	}
+	if _, err := tx.Lock(ctx, locks); err != nil {
+		t.Fatal(err)
+	}
+	head, err := tx.Head(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := head.Uint64()
+	if err != nil || n == ^uint64(0) {
+		t.Fatal("invalid fixture source revision", err)
+	}
+	if err := PutSourceRecord(ctx, tx, before); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := plan.SelectionRows("pipeline-test", model.Natural64(n+1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, row := range rows {
+		row.Index = nil
+		if err := tx.PutDerived(ctx, plan.keys[i].Table, nil, []driver.DerivedRow{row}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.BumpSentinels(ctx, plan.Sentinels()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: "pipeline-test", Kind: model.ChangesetWrite, Principal: by, LockKeys: keys, Changes: []model.ChangeRecord{{Ref: before.Ref, Op: model.OpPatch, FromRevision: before.Revision}}}); err != nil {
+		t.Fatal(err)
+	}
+	r := h.read(t)
+	source := projectionSource(t, r, before.Ref)
+	if source.Revision.String() != model.Natural64(n+1).String() || !bytes.Equal(source.Body, before.Body) {
+		t.Fatal("unindexed fixture did not publish the exact source at H+1")
+	}
+	for i, key := range plan.keys {
+		states, err := r.Observe(ctx, []driver.LockKey{{Kind: driver.LockDerived, Derived: &key}})
+		if err != nil || len(states) != 1 || !states[0].Present || states[0].Derived == nil || states[0].Derived.Index != nil || !bytes.Equal(states[0].Derived.Value, rows[i].Value) {
+			t.Fatal("unindexed fixture changed logical rows or certified selection", err)
+		}
+	}
+	if result, err := r.(driver.SelectionReader).Select(ctx, startupSelectionPlan(t, r)); !errors.Is(err, driver.ErrSelectionUnavailable) || !reflect.DeepEqual(result, driver.SelectionResult{}) {
+		t.Fatal("raw fixture did not leave selection unavailable", err)
+	}
+}
+
+func TestSelectionStartupRejectsRevisionStaleMembershipLeaf(t *testing.T) {
+	h := setup(t)
+	ref := apply(t, h.writer(), model.ChangeSet{Ops: []model.Op{create("")}}, meta(1)).Results[0].Ref
+	old := h.read(t)
+	original := projectionSource(t, old, ref)
+	oldRows := projectionStates(t, old, ref)
+	rewriteGraphOnly(t, h, original, original.Body)
+	before := h.read(t)
+	source := projectionSource(t, before, ref)
+	rows := projectionStates(t, before, ref)
+	if source.Revision.String() == original.Revision.String() || !bytes.Equal(source.Body, original.Body) {
+		t.Fatal("graph-only control did not advance just the source revision")
+	}
+	counting := 0
+	for _, state := range rows {
+		if state.Key.Derived.Table == driver.DerivedSortKey {
+			counting++
+			if state.Derived == nil || state.Derived.Index == nil || state.Derived.Index.Bead == nil || state.Derived.Index.Bead.MembershipLeaf != projectionReadyDigest(t, original) || state.Derived.Index.Bead.MembershipLeaf == projectionReadyDigest(t, source) {
+				t.Fatal("graph-only control did not retain the old semantic leaf")
+			}
+		}
+	}
+	if counting != 1 {
+		t.Fatal("incomplete counting-row control")
+	}
+	decode, projection := sourceSelectionDecoder("pipeline-test")
+	if err := h.store.BuildGraphSourceIndexes(context.Background(), h.lease, decode, projection); !errors.Is(err, driver.ErrSelectionUnavailable) || !strings.Contains(err.Error(), "startup cannot rewrite logical selection values") {
+		t.Fatalf("startup repaired a stale logical semantic leaf: %v", err)
+	}
+	after := h.read(t)
+	if after.Snapshot().At.String() != before.Snapshot().At.String() || !reflect.DeepEqual(projectionSource(t, after, ref), source) || !reflect.DeepEqual(projectionStates(t, after, ref), rows) || !reflect.DeepEqual(projectionStates(t, old, ref), oldRows) || !reflect.DeepEqual(projectionSource(t, old, ref), original) {
+		t.Fatal("refused startup changed source, logical rows, annotations or pinned history")
+	}
 }
 
 // Publish real legacy sources and logical closures, without any selection
@@ -646,10 +748,10 @@ func TestSelectionStartupReconcilesOrdinarySavesBetweenPages(t *testing.T) {
 	if len(oldClosure) != 3 {
 		t.Fatal("positive chain must have three depths")
 	}
-	// This actually accepted graph-only save creates a selection gap, while
-	// graph coverage stays ready. The selection phase must still run.
+	// This accepted raw publication leaves exact logical values and a
+	// selection gap, while graph coverage stays ready.
 	source := projectionSource(t, before, refs[0])
-	rewriteGraphOnly(t, h, source, source.Body)
+	rewriteUnindexedSelectionSource(t, h, source)
 	unbuilt := h.read(t)
 	prebuild := *unbuilt.Snapshot().At
 	if _, err := unbuilt.(driver.SelectionReader).Select(context.Background(), startupSelectionPlan(t, unbuilt)); !errors.Is(err, driver.ErrSelectionUnavailable) {
@@ -839,7 +941,7 @@ func TestSelectionStartupRejectsIncompleteInterpageDeltas(t *testing.T) {
 			childOp.Create.Parent = &roots[0].Ref
 			child := apply(t, w, model.ChangeSet{Ops: []model.Op{childOp}}, meta(2)).Results[0].Ref
 			original := projectionSource(t, h.read(t), roots[0].Ref)
-			rewriteGraphOnly(t, h, original, original.Body)
+			rewriteUnindexedSelectionSource(t, h, original)
 			fired := false
 			store := selectionStartupStore{Store: h.store, onDecode: func(n int) {
 				if n == driver.SelectionBackfillPageSize+1 && !fired {
@@ -874,7 +976,7 @@ func TestSelectionStartupInterruptionAndLeaseRenewal(t *testing.T) {
 			ref := apply(t, h.writer(), model.ChangeSet{Ops: ops}, meta(1)).Results[0].Ref
 			r := h.read(t)
 			source := projectionSource(t, r, ref)
-			rewriteGraphOnly(t, h, source, source.Body)
+			rewriteUnindexedSelectionSource(t, h, source)
 			before := h.read(t)
 			states := projectionStates(t, before, ref)
 			ctx, cancel := context.WithCancel(context.Background())
