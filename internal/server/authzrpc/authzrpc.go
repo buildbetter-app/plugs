@@ -264,6 +264,7 @@ type MutableFacts struct {
 	factRevision   model.Revision
 	sourceRevision model.Revision
 	sourceDigest   string
+	sourcePresent  bool
 	bound          bool
 }
 
@@ -281,7 +282,7 @@ func (s *MutableFacts) Load(ctx context.Context, snapshot Snapshot) (authzfixed.
 	s.mu.RLock()
 	facts, err := cloneFacts(s.facts)
 	expected, bound, namespace := s.factRevision, s.bound, s.namespace
-	sourceRevision, sourceDigest := s.sourceRevision, s.sourceDigest
+	sourceRevision, sourceDigest, sourcePresent := s.sourceRevision, s.sourceDigest, s.sourcePresent
 	s.mu.RUnlock()
 	if err != nil {
 		return authzfixed.Facts{}, err
@@ -301,7 +302,7 @@ func (s *MutableFacts) Load(ctx context.Context, snapshot Snapshot) (authzfixed.
 		if err != nil {
 			return authzfixed.Facts{}, err
 		}
-		if !source.Present || source.Derived == nil || source.Revision.String() != sourceRevision.String() || driver.SelectionDigest(source.Derived.Value) != sourceDigest {
+		if source.Present != sourcePresent || source.Revision.String() != sourceRevision.String() || sourcePresent && (source.Derived == nil || driver.SelectionDigest(source.Derived.Value) != sourceDigest) {
 			return authzfixed.Facts{}, errors.New("authorization source binding changed after the pinned snapshot")
 		}
 	}
@@ -324,7 +325,7 @@ func (s *MutableFacts) Replace(facts authzfixed.Facts) error {
 	if err := authzfixed.ValidateRegistryUpdate(s.facts, copy); err != nil {
 		return err
 	}
-	revision, digest, err := publishFacts(context.Background(), s.store, s.lease, s.facts, copy, false)
+	revision, digest, err := publishFacts(context.Background(), s.store, s.lease, s.facts, copy, !s.sourcePresent)
 	if err != nil {
 		return err
 	}
@@ -332,6 +333,7 @@ func (s *MutableFacts) Replace(facts authzfixed.Facts) error {
 	// acknowledgement leaves the old binding, which Load refuses against the
 	// genuinely advanced durable source/ACL until a legitimate Replace.
 	s.factRevision, s.sourceRevision, s.sourceDigest = revision, revision, digest
+	s.sourcePresent = true
 	s.facts = copy
 	return nil
 }
@@ -380,16 +382,14 @@ func (s *MutableFacts) bind(ctx context.Context, store driver.Store, lease drive
 			return errors.New("installed authorization source does not match durable source binding")
 		}
 	} else {
-		// Initial installation is a real atomic publication, not certification
-		// of authorization state inferred from an ACL generation or bead scan.
-		revision, digest, err = publishFacts(ctx, store, lease, s.facts, s.facts, true)
-		if err != nil {
-			return err
-		}
-		sourceRevision = revision
+		// Construction binds the ordinary host facts without writing. Absent
+		// durable authority cannot certify optional selection; only an explicit
+		// Replace may atomically establish its source, domains and ACL generation.
+		digest = ""
 	}
 	s.store, s.lease, s.namespace, s.factRevision, s.bound = store, lease, namespace, revision, true
 	s.sourceRevision, s.sourceDigest = sourceRevision, digest
+	s.sourcePresent = source.Present
 	return nil
 }
 
