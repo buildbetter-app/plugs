@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -37,24 +38,19 @@ type source struct {
 
 // Mutation is a trusted, final core source image. A nil Item denotes deletion;
 // an ineligible source still needs a descriptor to account for coverage.
-type Mutation struct {
-	Ref                    model.Ref
-	Item                   *driver.ReadyMembershipItem
-	Priority               int64
-	Project, Type, Binding string
-	Eligible, Local        bool
-}
+type Mutation = driver.ReadyOrderMutation
 type tree struct {
-	ctx   context.Context
-	r     Observer
-	rows  map[string]*driver.DerivedRow
-	nodes map[string]*driver.ReadyOrderNode
-	dirty map[string]bool
-	work  driver.ReadyOrderWork
+	ctx    context.Context
+	r      Observer
+	rows   map[string]*driver.DerivedRow
+	before map[string]driver.LockState
+	nodes  map[string]*driver.ReadyOrderNode
+	dirty  map[string]bool
+	work   driver.ReadyOrderWork
 }
 
 func newTree(ctx context.Context, r Observer) *tree {
-	return &tree{ctx: ctx, r: r, rows: map[string]*driver.DerivedRow{}, nodes: map[string]*driver.ReadyOrderNode{}, dirty: map[string]bool{}}
+	return &tree{ctx: ctx, r: r, rows: map[string]*driver.DerivedRow{}, before: map[string]driver.LockState{}, nodes: map[string]*driver.ReadyOrderNode{}, dirty: map[string]bool{}}
 }
 func lock(key string) driver.LockKey {
 	return driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedReadyState, Key: key}}
@@ -85,6 +81,12 @@ func (t *tree) read(key string, out any) (bool, error) {
 		if len(states) != 1 {
 			return false, unavailable("incomplete point observation")
 		}
+		original := states[0]
+		if original.Derived != nil {
+			copy := original.Derived.Clone()
+			original.Derived = &copy
+		}
+		t.before[key] = original
 		if states[0].Present {
 			if states[0].Derived == nil || states[0].Derived.Key != key {
 				return false, unavailable("missing node bytes")
@@ -283,6 +285,16 @@ func Prepare(ctx context.Context, r Observer, mutations []Mutation) (*Delta, err
 		return nil, err
 	}
 	d.sentinels[global] = true
+	// Control publications carry the same semantic root and eligibility
+	// census. Observe these paths before Head even when no bead is changing.
+	globalScope := scopeID(driver.ReadyOrderScope{})
+	if _, err = t.node(globalScope, ""); err != nil {
+		return nil, err
+	}
+	var globalHeader scopeHeader
+	if _, err = t.read(headerKey(globalScope), &globalHeader); err != nil {
+		return nil, err
+	}
 	for _, m := range mutations {
 		if driver.ValidateHierarchyRef(m.Ref) != nil || m.Priority < 0 || m.Priority > 4 {
 			return nil, unavailable("mutation identity or priority")
@@ -412,18 +424,18 @@ func (d *Delta) Locks() []driver.LockKey {
 // Publish allocates no locks and reads no new nodes. It stamps exact H+1 source
 // revisions, reseals the already declared ancestor paths, then stages all rows
 // in the source transaction. Rollback therefore removes the entire change.
-func (d *Delta) Publish(ctx context.Context, tx driver.WriteTx, revision model.Revision) (driver.ReadyOrderWork, error) {
+func (d *Delta) materialize(revision model.Revision) ([]driver.DerivedRow, []driver.DerivedRow, error) {
 	if !d.Available() {
-		return driver.ReadyOrderWork{}, nil
+		return nil, nil, nil
 	}
 	if d.published {
-		return d.t.work, fmt.Errorf("Ready projection already published")
+		return nil, nil, fmt.Errorf("Ready projection already published")
 	}
 	d.published = true
 	next, e := d.coverage.Through.Uint64()
 	actual, e2 := revision.Uint64()
 	if e != nil || e2 != nil || next == ^uint64(0) || actual != next+1 {
-		return d.t.work, unavailable("publication revision")
+		return nil, nil, unavailable("publication revision")
 	}
 	for id, m := range d.mutations {
 		if m.Item == nil || !m.Eligible {
@@ -433,21 +445,21 @@ func (d *Delta) Publish(ctx context.Context, tx driver.WriteTx, revision model.R
 		item.Revision = revision
 		leaf, err := driver.ReadyOrderLeafFor(item, m.Priority)
 		if err != nil {
-			return d.t.work, err
+			return nil, nil, err
 		}
 		var s source
 		if _, err = d.t.read(sourceKey(id), &s); err != nil {
-			return d.t.work, err
+			return nil, nil, err
 		}
 		s.Leaf = &leaf
 		if err = d.t.write(sourceKey(id), s); err != nil {
-			return d.t.work, err
+			return nil, nil, err
 		}
 		for _, scope := range scopes(s) {
 			key := nodeKey(scope, driver.ReadyOrderKey(m.Priority, id))
 			n := d.t.nodes[key]
 			if n == nil || n.Leaf == nil {
-				return d.t.work, unavailable("undeclared revision leaf")
+				return nil, nil, unavailable("undeclared revision leaf")
 			}
 			n.Leaf = &leaf
 		}
@@ -468,18 +480,18 @@ func (d *Delta) Publish(ctx context.Context, tx driver.WriteTx, revision model.R
 			}
 		}
 		if err := driver.SealReadyOrderNode(n); err != nil {
-			return d.t.work, err
+			return nil, nil, err
 		}
 		d.t.work.DigestBytes += n.DigestBytes()
 		b, err := json.Marshal(n)
 		if err != nil {
-			return d.t.work, err
+			return nil, nil, err
 		}
 		d.t.rows[key] = &driver.DerivedRow{Key: key, Value: b}
 	}
 	d.coverage.Through = revision
 	if err := d.t.write(markerKey, d.coverage); err != nil {
-		return d.t.work, err
+		return nil, nil, err
 	}
 	keys = keys[:0]
 	for k := range d.t.dirty {
@@ -496,11 +508,31 @@ func (d *Delta) Publish(ctx context.Context, tx driver.WriteTx, revision model.R
 		}
 		d.t.work.WrittenNodes++
 	}
-	if err := tx.PutDerived(ctx, driver.DerivedReadyState, removed, added); err != nil {
+	return removed, added, nil
+}
+
+func (d *Delta) Publish(ctx context.Context, tx driver.WriteTx, revision model.Revision) (driver.ReadyOrderWork, error) {
+	if !d.Available() {
+		return driver.ReadyOrderWork{}, nil
+	}
+	removed, added, err := d.materialize(revision)
+	if err != nil {
 		return d.t.work, err
 	}
-	if err := d.BumpPredicates(ctx, tx); err != nil {
+	publication, proofErr := d.publication(revision, removed, added)
+	if proofErr != nil && !errors.Is(proofErr, driver.ErrUnsupported) {
+		return d.t.work, proofErr
+	}
+	if err = tx.PutDerived(ctx, driver.DerivedReadyState, removed, added); err != nil {
 		return d.t.work, err
+	}
+	if err = d.BumpPredicates(ctx, tx); err != nil {
+		return d.t.work, err
+	}
+	if writer, ok := tx.(driver.ReadyOrderPublicationWriter); ok && proofErr == nil {
+		if err = writer.StageReadyOrderPublication(ctx, publication); err != nil && !errors.Is(err, driver.ErrUnsupported) {
+			return d.t.work, err
+		}
 	}
 	return d.t.work, nil
 }

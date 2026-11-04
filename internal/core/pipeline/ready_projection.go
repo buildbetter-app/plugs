@@ -59,7 +59,7 @@ func PrepareReadyProjection(ctx context.Context, r interface {
 			return nil, fmt.Errorf("invalid Ready priority")
 		}
 		item := driver.ReadyMembershipItem{ID: doc.ID, Type: doc.Type, Project: doc.Project, Status: status, Revision: model.Natural64(0), Fields: doc.Fields}
-		mutations = append(mutations, readyindex.Mutation{Ref: record.Ref, Item: &item, Priority: int64(priority), Project: doc.Project, Type: doc.Type, Binding: st.Binding, Eligible: st.Eligible, Local: st.Local})
+		mutations = append(mutations, readyindex.Mutation{Ref: record.Ref, Item: &item, Priority: int64(priority), Project: doc.Project, Type: doc.Type, Binding: st.Binding, Eligible: st.Eligible, Local: st.Local, SourceDigest: driver.SelectionDigest(record.Body)})
 	}
 	for _, record := range deleted {
 		if record.Kind == "bead" {
