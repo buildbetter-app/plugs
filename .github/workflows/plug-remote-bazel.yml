@@ -281,12 +281,25 @@ jobs:
             echo "Bazel exited $rc; evidence will still be uploaded" >&2
           fi
 
+      # Checkout paths must be inside the workspace. Defer the helper checkout
+      # until after Bazel so it cannot change the candidate's build inputs.
+      - name: Checkout trusted CI helpers
+        if: always()
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+          sparse-checkout: |
+            scripts/ci/bazel-testlogs
+          path: trusted-ci
+
       - name: Archive Bazel test logs
         if: always()
         run: |
           set -euo pipefail
           archive="$REMOTE_BAZEL_EVIDENCE_DIR/bazel-testlogs.tgz"
-          python3 scripts/ci/bazel-testlogs/archive.py \
+          python3 "$GITHUB_WORKSPACE/trusted-ci/scripts/ci/bazel-testlogs/archive.py" \
             --testlogs bazel-testlogs --output "$archive"
 
       - name: Upload remote Bazel evidence
