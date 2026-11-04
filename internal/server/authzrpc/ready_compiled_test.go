@@ -22,11 +22,16 @@ import (
 // source hydration and raw queries at the complete guarded request boundary.
 type readyRequestStore struct {
 	driver.Store
-	enabled     bool
-	gets        map[string]int
-	queries     int
-	plans       []driver.ReadyOrderPlan
-	afterSelect func()
+	enabled                                 bool
+	gets                                    map[string]int
+	queries                                 int
+	plans                                   []driver.ReadyOrderPlan
+	afterSelect                             func()
+	freshEnabled                            bool
+	beforeWrite                             func()
+	freshError                              error
+	afterFresh                              func()
+	freshCalls, foundFresh, terminalCommits int
 }
 
 func (s *readyRequestStore) Read(ctx context.Context, view driver.View) (driver.Reader, error) {

@@ -115,7 +115,7 @@ go_test(
 go_test(
     name = "ready_compiled_test",
     size = "large",
-    srcs = ["ready_compiled_test.go"],
+    srcs = ["ready_compiled_test.go", "ready_terminal_test.go"],
     embed = [":authzrpc"],
     deps = [
         "//internal/core/authz",
@@ -126,6 +126,7 @@ go_test(
         "//internal/plugins/authzfixed",
         "//internal/storage/driver",
         "//internal/storage/memory",
+        "//internal/storage/readyindex",
     ],
 )
 
