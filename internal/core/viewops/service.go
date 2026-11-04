@@ -81,32 +81,33 @@ func mapped(err error) error {
 	return err
 }
 
-// cancellationCause accepts ordinary wrapping and joins of the same context
-// cause. A mixed join is not one canceled operation, even when errors.Is finds
-// a deadline in part of it.
+// cancellationCause retains a linear wrapper's context classification, which
+// can normalize its underlying network timeout. Every branch of a joined error
+// must independently carry that same cause; wrapping cannot hide another error.
 func cancellationCause(err error) error {
-	if joined, ok := err.(interface{ Unwrap() []error }); ok {
-		var kind error
-		for _, cause := range joined.Unwrap() {
-			next := cancellationCause(cause)
-			if next == nil || kind != nil && next != kind {
+	canceled, deadline := errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded)
+	if canceled == deadline {
+		return nil
+	}
+	kind := context.DeadlineExceeded
+	if canceled {
+		kind = context.Canceled
+	}
+	for cause := err; cause != nil; cause = errors.Unwrap(cause) {
+		if joined, ok := cause.(interface{ Unwrap() []error }); ok {
+			branches := joined.Unwrap()
+			if len(branches) == 0 {
 				return nil
 			}
-			kind = next
+			for _, branch := range branches {
+				if cancellationCause(branch) != kind {
+					return nil
+				}
+			}
+			return kind
 		}
-		return kind
 	}
-	if cause := errors.Unwrap(err); cause != nil {
-		return cancellationCause(cause)
-	}
-	canceled, deadline := errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded)
-	if canceled && !deadline {
-		return context.Canceled
-	}
-	if deadline && !canceled {
-		return context.DeadlineExceeded
-	}
-	return nil
+	return kind
 }
 
 func (s *Service) admit(ctx context.Context, by model.PrincipalRef) error {
