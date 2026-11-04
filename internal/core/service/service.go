@@ -897,6 +897,24 @@ func linkChangeSet(req LinkRequest, kind model.OpKind) (model.ChangeSet, error) 
 }
 
 func workflowLinkRequest(req LinkRequest) (workflowplugin.LinkRequest, bool, error) {
+	targetKind, err := req.TargetKind.Normalized()
+	if err != nil {
+		return workflowplugin.LinkRequest{}, false, failure("invalid_params", err.Error())
+	}
+	if err := model.ValidateLinkTarget(targetKind, req.To); err != nil {
+		return workflowplugin.LinkRequest{}, false, failure("invalid_params", err.Error())
+	}
+	// The target domain is authoritative before any local workflow routing.
+	// Opaque external IDs may spell a live workflow item without binding to it.
+	if targetKind == model.LinkTargetExternal {
+		if workflowRef(req.From) {
+			if err := validateWorkflowRef(req.From); err != nil {
+				return workflowplugin.LinkRequest{}, false, err
+			}
+			return workflowplugin.LinkRequest{}, false, failure("unsupported", "workflow external targets require a typed workflow storage contract")
+		}
+		return workflowplugin.LinkRequest{}, false, nil
+	}
 	fromWorkflow := workflowRef(req.From)
 	toWorkflow := workflowRef(req.To)
 	if !fromWorkflow && !toWorkflow {
@@ -925,7 +943,7 @@ func (s *Service) LinkWithOutcome(ctx context.Context, by model.PrincipalRef, re
 	}
 	if mixed {
 		if s.workflow == nil {
-			return port.WriteOutcome{}, failure("not_found", "workflow provider is unavailable")
+			return port.WriteOutcome{}, failure("invalid_params", "workflow references require a supported workflow item operation")
 		}
 		if err := validateWorkflowWrite(req.From, req.Expect, meta); err != nil && workflowRef(req.From) {
 			return port.WriteOutcome{}, err
@@ -947,7 +965,11 @@ func (s *Service) LinkWithOutcome(ctx context.Context, by model.PrincipalRef, re
 }
 
 func (s *Service) Link(ctx context.Context, by model.PrincipalRef, req LinkRequest, meta model.WriteMeta) (model.Commit, error) {
-	if workflowRef(req.From) || workflowRef(req.To) {
+	_, mixed, err := workflowLinkRequest(req)
+	if err != nil {
+		return model.Commit{}, err
+	}
+	if mixed {
 		v, err := s.LinkWithOutcome(ctx, by, req, meta)
 		return v.Commit, err
 	}
@@ -966,7 +988,7 @@ func (s *Service) UnlinkWithOutcome(ctx context.Context, by model.PrincipalRef, 
 	}
 	if mixed {
 		if s.workflow == nil {
-			return port.WriteOutcome{}, failure("not_found", "workflow provider is unavailable")
+			return port.WriteOutcome{}, failure("invalid_params", "workflow references require a supported workflow item operation")
 		}
 		if err := validateWorkflowWrite(req.From, req.Expect, meta); err != nil && workflowRef(req.From) {
 			return port.WriteOutcome{}, err
@@ -988,7 +1010,11 @@ func (s *Service) UnlinkWithOutcome(ctx context.Context, by model.PrincipalRef, 
 }
 
 func (s *Service) Unlink(ctx context.Context, by model.PrincipalRef, req LinkRequest, meta model.WriteMeta) (model.Commit, error) {
-	if workflowRef(req.From) || workflowRef(req.To) {
+	_, mixed, err := workflowLinkRequest(req)
+	if err != nil {
+		return model.Commit{}, err
+	}
+	if mixed {
 		v, err := s.UnlinkWithOutcome(ctx, by, req, meta)
 		return v.Commit, err
 	}

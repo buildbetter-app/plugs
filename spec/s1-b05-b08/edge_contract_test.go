@@ -1,12 +1,18 @@
 package s1b05b08
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/service"
+	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
+	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
 // Contract authorities: behaviors/work.md B07 (edge identity, mixed editor,
@@ -535,6 +541,8 @@ func TestB07UnresolvedExternalTargetsRetainIdentityAcrossBothProducers(t *testin
 				{name: "blocking-cross-prefix", kind: "blocks", ready: false},
 				{name: "association-external", kind: "relates-to", ready: true},
 				{name: "opaque-external", kind: "custom External/Edge@1", ready: true},
+				{name: "workflow-spelling", kind: "blocks", ready: false},
+				{name: "malformed-workflow-spelling", kind: "blocks", ready: false},
 			} {
 				t.Run(engine+"/"+producer+"/"+tc.name, func(t *testing.T) {
 					e := newEdgeContractFixture(t, engine)
@@ -542,6 +550,10 @@ func TestB07UnresolvedExternalTargetsRetainIdentityAcrossBothProducers(t *testin
 					toID := "foreign-prefix-404"
 					if tc.name == "opaque-external" {
 						toID = "external:tracker/1"
+					} else if tc.name == "workflow-spelling" {
+						toID = "workflow:item/0123456789abcdef0123456789abcdef"
+					} else if tc.name == "malformed-workflow-spelling" {
+						toID = "workflow:item/ opaque 外部 "
 					}
 					to := model.RefByID(toID, model.Natural64(0))
 					p := e.probe(producer, "unresolved-"+producer+"-"+tc.name)
@@ -982,8 +994,12 @@ func TestB07DurableEdgesRefuseActualEphemeralWorkflowItemsAtomically(t *testing.
 			}{
 				{method: "bead.link", params: map[string]any{"from": durable, "to": workflow, "kind": "blocks"}},
 				{method: "bead.link", params: map[string]any{"from": workflow, "to": durable, "kind": "blocks"}},
+				{method: "bead.unlink", params: map[string]any{"from": durable, "to": workflow, "kind": "blocks"}},
+				{method: "bead.unlink", params: map[string]any{"from": workflow, "to": durable, "kind": "blocks"}},
 				{method: "tx.apply", params: map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{edgeLinkOp(durable, workflow, "blocks")}}}},
 				{method: "tx.apply", params: map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{edgeLinkOp(workflow, durable, "blocks")}}}},
+				{method: "tx.apply", params: map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{{Kind: model.OpUnlink, Link: &model.LinkOp{Kind: model.OpUnlink, From: durable, To: workflow, LinkKind: "blocks"}}}}}},
+				{method: "tx.apply", params: map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{{Kind: model.OpUnlink, Link: &model.LinkOp{Kind: model.OpUnlink, From: workflow, To: durable, LinkKind: "blocks"}}}}}},
 			}
 			// Register every refusal probe before taking the baseline. The observer
 			// records the complete receipt key set, including absent receipts; adding
@@ -1016,5 +1032,140 @@ func TestB07DurableEdgesRefuseActualEphemeralWorkflowItemsAtomically(t *testing.
 				t.Fatal("mixed-plane refusals changed workflow state after reopen")
 			}
 		})
+	}
+}
+
+// Preserve PR381/PR371/B14's external-before-workflow controls on this distinct
+// composition. Both planes use the same selected physical SQL store. Existing
+// nil-provider controls above remain separate and retain their exact refusals.
+func TestB07ExternalWorkflowCollisionConservesProviderAcrossProducers(t *testing.T) {
+	for _, engine := range []string{"sqlite", "postgres"} {
+		for _, producer := range []string{"bead.link", "tx.apply", "direct"} {
+			t.Run(engine+"/"+producer, func(t *testing.T) {
+				e := newEdgeContractFixture(t, engine)
+				from := e.create(t, "external-workflow-collision")
+				install := func() {
+					t.Helper()
+					capability, ok := e.f.store.(driver.PersistentCheckpointStore)
+					if !ok || !capability.Persistent() {
+						t.Fatal("actual persistent SQL workflow capability required")
+					}
+					provider, err := workflowplugin.New(pluginhost.NewDurableState(capability, e.f.lease, workflowplugin.Alias, "default"))
+					if err != nil {
+						t.Fatal(err)
+					}
+					state, err := e.f.store.Meta(e.f.ctx)
+					if err != nil {
+						t.Fatal(err)
+					}
+					e.f.service = service.New(e.f.store, e.f.lease, e.f.writer,
+						service.WithOntology(service.NewOntology(nil)), service.WithClock(func() time.Time { return e.f.now }),
+						service.WithWorkflow(provider.WithIdentity(workflowplugin.Alias, "default", state.Incarnation)))
+					registry, err := rpc.NewRegistry()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := rpc.BindService(registry, e.f.service); err != nil {
+						t.Fatal(err)
+					}
+					e.f.server, err = rpc.New(registry, rpc.Config{DefaultProject: project, Incarnation: state.Incarnation, OntologyRevision: model.Natural64(1), CursorKey: []byte("s1-b05-b08-fixed-cursor-key-32-bytes")})
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				install()
+				run, err := e.f.service.WorkflowInvoke(e.f.ctx, anonymous,
+					workflowplugin.InvokeRequest{Template: "external-collision", Project: project, Mode: "ephemeral", Checklist: []workflowplugin.ChecklistItem{{Label: "item", Title: "actual collision", Type: "issue"}}},
+					model.WriteMeta{Method: "x.workflow.invoke", Project: project, IdempotencyKey: key("external-collision-invoke")})
+				if err != nil || run.Plane != "ephemeral" || len(run.Items) != 1 {
+					t.Fatalf("actual SQL invocation=%+v error=%v", run, err)
+				}
+				item := model.RefByID(run.Items[0].ID, model.Natural64(0))
+				method := producer
+				if producer == "direct" {
+					method = "bead.link"
+				}
+				link := e.probe(method, "collision-link")
+				unlinkMethod := "bead.unlink"
+				if producer == "tx.apply" {
+					unlinkMethod = producer
+				}
+				unlink := e.probe(unlinkMethod, "collision-unlink")
+				refuseLink := e.probe("bead.link", "collision-workflow-external-refusal")
+				refuseUnlink := e.probe("bead.unlink", "collision-workflow-external-refusal")
+				before := e.snapshot(t)
+				if before.Checkpoints["plugin/workflow/default/durable"].Generation == 0 {
+					t.Fatal("actual provider checkpoint absent")
+				}
+				for _, p := range []edgeReceiptProbe{refuseLink, refuseUnlink} {
+					edgeRequireRefusal(t, e.call(t, p, edgeTypedLinkParams(p.Method, model.OpLink, item, from, "blocks", model.LinkTargetExternal)), "unsupported")
+					edgeRequireStateEqual(t, before, e.snapshot(t))
+				}
+				write := func(p edgeReceiptProbe, op model.OpKind) envelope {
+					t.Helper()
+					if producer != "direct" {
+						return e.call(t, p, edgeTypedLinkParams(p.Method, op, from, item, "blocks", model.LinkTargetExternal))
+					}
+					req := service.LinkRequest{From: from, To: item, Kind: "blocks", TargetKind: model.LinkTargetExternal}
+					meta := model.WriteMeta{Method: p.Method, Project: project, Agent: actor, AgentLabel: actor, IdempotencyKey: p.Key}
+					var commit model.Commit
+					var err error
+					if op == model.OpLink {
+						commit, err = e.f.service.Link(context.Background(), anonymous, req, meta)
+					} else {
+						commit, err = e.f.service.Unlink(context.Background(), anonymous, req, meta)
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					raw, err := json.Marshal(commit)
+					if err != nil {
+						t.Fatal(err)
+					}
+					return envelope{Result: raw}
+				}
+				linked := write(link, model.OpLink)
+				edgeRequireSuccess(t, linked)
+				after := e.snapshot(t)
+				edgeRequireSingleCommit(t, before, after, edgeRequireReceipt(t, after, link, linked.Result, false), from)
+				edgeRequireLinks(t, after, from, edgeExternalLinkValue(item, "blocks"))
+				if !reflect.DeepEqual(before.Checkpoints, after.Checkpoints) {
+					t.Fatal("external collision entered the workflow plane")
+				}
+				edgeReadyContains(t, e, from.ID, false)
+				live, err := e.f.service.Get(e.f.ctx, anonymous, service.GetRequest{ID: item, Project: project})
+				if err != nil || live.Bead.ID != item.ID || live.Bead.Plane != "ephemeral" {
+					t.Fatalf("real collision disappeared: %+v error=%v", live, err)
+				}
+				if _, err := e.f.service.CloseWithOutcome(e.f.ctx, anonymous, service.CloseRequest{ID: item}, model.WriteMeta{Method: "bead.close", Project: project, IdempotencyKey: key("collision-close")}); err != nil {
+					t.Fatal(err)
+				}
+				closed := e.snapshot(t)
+				if reflect.DeepEqual(after.Checkpoints, closed.Checkpoints) {
+					t.Fatal("actual workflow close did not persist completion")
+				}
+				coreAfterClose := closed
+				coreAfterClose.Checkpoints = after.Checkpoints
+				edgeRequireStateEqual(t, after, coreAfterClose)
+				edgeReadyContains(t, e, from.ID, false)
+				e.f.reopen(t)
+				install()
+				edgeRequireStateEqual(t, closed, e.snapshot(t))
+				edgeRequireLinks(t, closed, from, edgeExternalLinkValue(item, "blocks"))
+				edgeReadyContains(t, e, from.ID, false)
+				removed := write(unlink, model.OpUnlink)
+				edgeRequireSuccess(t, removed)
+				final := e.snapshot(t)
+				edgeRequireSingleCommit(t, closed, final, edgeRequireReceipt(t, final, unlink, removed.Result, false), from)
+				edgeRequireLinks(t, final, from)
+				if !reflect.DeepEqual(closed.Checkpoints, final.Checkpoints) {
+					t.Fatal("external unlink entered completed workflow state")
+				}
+				edgeReadyContains(t, e, from.ID, true)
+				e.f.reopen(t)
+				install()
+				edgeRequireStateEqual(t, final, e.snapshot(t))
+			})
+		}
 	}
 }

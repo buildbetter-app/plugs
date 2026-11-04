@@ -368,6 +368,17 @@ func (s *GuardedService) ApplyWithOutcome(ctx context.Context, by model.Principa
 	return s.delegate.ApplyWithOutcome(ctx, by, cs, meta)
 }
 func (s *GuardedService) LinkWithOutcome(ctx context.Context, by model.PrincipalRef, req service.LinkRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	kind, err := req.TargetKind.Normalized()
+	if err != nil {
+		return port.WriteOutcome{}, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
+	}
+	if err := model.ValidateLinkTarget(kind, req.To); err != nil {
+		return port.WriteOutcome{}, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
+	}
+	req.TargetKind = kind
+	if kind == model.LinkTargetExternal {
+		return s.delegate.LinkWithOutcome(ctx, by, req, meta)
+	}
 	if workflowItemRef(req.From) || workflowItemRef(req.To) {
 		return s.workflowWrite(ctx, by, meta.Project, func() (port.WriteOutcome, error) {
 			if !workflowItemRef(req.From) {
@@ -390,6 +401,17 @@ func (s *GuardedService) LinkWithOutcome(ctx context.Context, by model.Principal
 	return s.delegate.LinkWithOutcome(ctx, by, req, meta)
 }
 func (s *GuardedService) UnlinkWithOutcome(ctx context.Context, by model.PrincipalRef, req service.LinkRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	kind, err := req.TargetKind.Normalized()
+	if err != nil {
+		return port.WriteOutcome{}, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
+	}
+	if err := model.ValidateLinkTarget(kind, req.To); err != nil {
+		return port.WriteOutcome{}, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
+	}
+	req.TargetKind = kind
+	if kind == model.LinkTargetExternal {
+		return s.delegate.UnlinkWithOutcome(ctx, by, req, meta)
+	}
 	if workflowItemRef(req.From) || workflowItemRef(req.To) {
 		return s.workflowWrite(ctx, by, meta.Project, func() (port.WriteOutcome, error) {
 			if !workflowItemRef(req.From) {
