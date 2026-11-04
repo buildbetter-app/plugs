@@ -14,8 +14,9 @@ import (
 )
 
 // RunSelection exercises a real store implementing the reference contract.
-// These finite semantic oracles do not qualify SQL execution or performance.
-func RunSelection(t *testing.T, factory Factory) {
+// sqlStatements is zero for memory and one for each SQL engine. These
+// finite semantic/accounting oracles do not qualify executor work or latency.
+func RunSelection(t *testing.T, factory Factory, sqlStatements int64) {
 	t.Run("optional_presence_boolean_template_numeric_order", func(t *testing.T) { selectionOptionalPresence(t, factory) })
 	t.Run("sealed_current_source_observations", func(t *testing.T) { selectionBoundaryControls(t, factory) })
 	t.Run("atomic_typed_writes_and_fresh_committed_exists", func(t *testing.T) { selectionAtomicAndFresh(t, factory) })
@@ -29,7 +30,7 @@ func RunSelection(t *testing.T, factory Factory) {
 	t.Run("staged_final_overlay_digest_and_rollback", func(t *testing.T) { selectionStaging(t, factory) })
 	t.Run("complete_absence_unavailable_and_owned_versions", func(t *testing.T) { selectionCoverage(t, factory) })
 	t.Run("summary_and_group_cap_boundaries", func(t *testing.T) { selectionSummaryCaps(t, factory) })
-	t.Run("executed_selection_work_on_concrete_readers_and_transactions", func(t *testing.T) { selectionExecutedWork(t, factory) })
+	t.Run("executed_selection_work_on_concrete_readers_and_transactions", func(t *testing.T) { selectionExecutedWork(t, factory, sqlStatements) })
 }
 
 type selectionImage struct {

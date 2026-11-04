@@ -24,7 +24,7 @@ func selectionStore(t *testing.T) driver.Store {
 }
 
 func TestSelectionConformance(t *testing.T) {
-	conformance.RunSelection(t, selectionStore)
+	conformance.RunSelection(t, selectionStore, 1)
 }
 
 func TestSelectionUntypedWriteRefusal(t *testing.T) {

@@ -27,7 +27,7 @@ go_test(
 
 go_test(
     name = "cp7_correctness_test",
-    srcs = _COMMON + ["correctness_test.go", "semantics_test.go", "work_accounting_test.go"],
+    srcs = _COMMON + ["correctness_test.go", "semantics_test.go", "work_accounting_test.go", "compiled_observation_test.go"],
     data = ["workload.json"],
     embedsrcs = ["workload.json"],
     deps = _DEPS,

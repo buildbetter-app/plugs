@@ -113,8 +113,13 @@ harness. The reviewed D fixture and rejected split-lock variants are unchanged.
 
 `cp7_qualification_test` adds complete compiled grouped-page membership,
 payload, parent, total and suffix checks, final-authority publication races,
-real heartbeat replay, and a committed candidate before terminal Head. Its
-small semantic fixtures supply no 100k latency evidence.
+real heartbeat replay and checkpoint-dependent readiness after the original
+graph lease expires, configured pending-producer interference, and a committed
+candidate that restarts the same guarded call before terminal publication.
+The original Writer boundary witness remains separate. The correctness target
+also exercises real Select execution followed by injected errors at the
+unchanged request deadline, retaining strict classification and no partial
+outputs. These small semantic fixtures supply no 100k latency evidence.
 
 The manual `cp7_summary_latency_sqlite_test` and
 `cp7_summary_latency_postgres_test` execute the separately declared

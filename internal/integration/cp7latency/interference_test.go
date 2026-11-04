@@ -24,15 +24,68 @@ type qualificationWriteStore struct {
 	driver.RecordGuardedCheckpointStore
 	driver.ResponseFinalizer
 	beforeWrite func()
+	writes      int
 }
 
 func (s *qualificationWriteStore) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
+	s.writes++
 	if hook := s.beforeWrite; hook != nil {
 		s.beforeWrite = nil
 		hook()
 	}
 	return s.Store.Write(ctx, lease)
 }
+
+func TestGuardedClaimNextRestartsSameCallAfterCommittedTerminalCandidate(t *testing.T) {
+	for _, engine := range []string{"sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			f := newFixture(t, engine, 1)
+			done := document(1)
+			done.Fields["status"] = "done"
+			encoded, err := json.Marshal(done)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.patchSource(t, "guarded_terminal_empty", beadRef(1), encoded, []string{"/fields/status"})
+			store := &qualificationWriteStore{Store: f.store.Store,
+				CheckpointStore:              f.store.Store.(driver.CheckpointStore),
+				RecordGuardedCheckpointStore: f.store.Store.(driver.RecordGuardedCheckpointStore),
+				ResponseFinalizer:            f.store.Store.(driver.ResponseFinalizer)}
+			f.store.Store = store
+			f.compose(t)
+			before, err := store.Meta(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			inserted := false
+			store.writes = 0
+			store.beforeWrite = func() {
+				f.patchSource(t, "guarded_terminal_candidate", beadRef(1), body(t, 1), []string{"/fields/status"})
+				inserted = true
+			}
+			p := f.agent(1, false)
+			meta := model.WriteMeta{Project: projectName, Return: "full", IdempotencyKey: requestKey("guarded-terminal-race", 1, "claim", 0)}
+			out, err := f.app.Service.ClaimNextWithOutcome(context.Background(), p, service.ClaimNextRequest{Project: projectName}, meta)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !inserted || store.writes < 3 || out == nil || out.NullResult || out.Replayed {
+				t.Fatalf("guarded same call did not restart its terminal attempt: out=%+v writes=%d inserted=%t", out, store.writes, inserted)
+			}
+			f.checkClaim(t, p, out, meta, 1)
+			after, err := store.Meta(context.Background())
+			head, _ := before.Head.Uint64()
+			if err != nil || after.Head.String() != model.Natural64(head+2).String() {
+				t.Fatalf("same call committed more than the candidate and its claim: %v", err)
+			}
+			t.Logf("CP7_GUARDED_TERMINAL_INSERT engine=%s one_public_call=true live_empty=true committed_candidate_before_head=true production_probe_restart=true receipt_one_claim=true", engine)
+		})
+	}
+}
+
+// The negative control deliberately withholds checkpoint support from a
+// separate domain reader. Measurement and the positive path retain it.
+type qualificationGraphLeaseOnly struct{ driver.Store }
 
 func TestCommittedCandidateBeforeTerminalHeadPreventsDurableNull(t *testing.T) {
 	for _, engine := range []string{"sqlite", "postgres"} {
@@ -138,10 +191,17 @@ func TestPublicHeartbeatKeepsGraphReceiptAndQueueEligibilitySeparate(t *testing.
 			if err != nil || len(prior) != 1 {
 				t.Fatalf("claim source: %v", err)
 			}
+			original, err := pipeline.DecodeDocument(prior[0].Body)
+			if err != nil || original.Lease == nil {
+				t.Fatalf("durable claim lease: %v", err)
+			}
 			beatMeta := model.WriteMeta{Project: projectName, IdempotencyKey: requestKey("heartbeat-control", 1, "beat", 0)}
 			beat, err := f.app.Service.HeartbeatWithOutcome(ctx, p, service.HeartbeatRequest{ID: ref}, beatMeta)
 			if err != nil || beat.Replayed || beat.LeaseExpiresAt.IsZero() {
 				t.Fatalf("real heartbeat: %+v %v", beat, err)
+			}
+			if !beat.LeaseExpiresAt.After(original.Lease.ExpiresAt) {
+				t.Fatal("real heartbeat did not extend the durable claim boundary")
 			}
 			replay, err := f.app.Service.HeartbeatWithOutcome(ctx, p, service.HeartbeatRequest{ID: ref}, beatMeta)
 			if err != nil || !replay.Replayed || !replay.LeaseExpiresAt.Equal(beat.LeaseExpiresAt) {
@@ -177,7 +237,44 @@ func TestPublicHeartbeatKeepsGraphReceiptAndQueueEligibilitySeparate(t *testing.
 					t.Fatal("queue changed complete heartbeat membership/order")
 				}
 			}
-			t.Logf("CP7_PUBLIC_HEARTBEAT engine=%s durable_graph_unchanged=true quiet_replay=true ready_and_queue_agree=true graph_revision=%s", engine, after.Head)
+			// Observe between the unchanged durable expiry and the real public
+			// heartbeat expiry. Ignoring its checkpoint now changes membership.
+			at := original.Lease.ExpiresAt.Add(beat.LeaseExpiresAt.Sub(original.Lease.ExpiresAt) / 2)
+			if !at.After(original.Lease.ExpiresAt) || !at.Before(beat.LeaseExpiresAt) {
+				t.Fatal("no distinguishing heartbeat interval")
+			}
+			clock := func() time.Time { return at }
+			observed := service.New(f.store.Store, f.lease, pipeline.New(f.store.Store, f.lease, pipeline.WithOntology(ontology)), service.WithOntology(ontology), service.WithClock(clock))
+			controlStore := qualificationGraphLeaseOnly{Store: f.store.Store}
+			control := service.New(controlStore, f.lease, pipeline.New(controlStore, f.lease, pipeline.WithOntology(ontology)), service.WithOntology(ontology), service.WithClock(clock))
+			contains := func(items []service.Bead) bool {
+				for _, bead := range items {
+					if bead.ID == ref.ID {
+						return true
+					}
+				}
+				return false
+			}
+			for _, point := range []struct {
+				label string
+				now   time.Time
+				held  bool
+			}{{"heartbeat_only", at, true}, {"heartbeat_expired", beat.LeaseExpiresAt.Add(time.Nanosecond), false}} {
+				at = point.now
+				ready, err := observed.Ready(ctx, p, service.ReadyRequest{Project: projectName, Limit: 1000})
+				if err != nil || contains(ready.Items) == point.held {
+					t.Fatalf("real heartbeat Ready %s: %+v %v", point.label, ready, err)
+				}
+				queue, err := observed.ClaimNextReadyPage(ctx, p, service.ReadyRequest{Project: projectName, Limit: 1000})
+				if err != nil || contains(queue.Items) == point.held || len(queue.Items) != len(ready.Items) {
+					t.Fatalf("real heartbeat queue %s: %+v %v", point.label, queue, err)
+				}
+				withoutOverlay, err := control.Ready(ctx, p, service.ReadyRequest{Project: projectName, Limit: 1000})
+				if err != nil || !contains(withoutOverlay.Items) {
+					t.Fatalf("expired graph-only lease control %s: %+v %v", point.label, withoutOverlay, err)
+				}
+			}
+			t.Logf("CP7_PUBLIC_HEARTBEAT engine=%s durable_graph_unchanged=true quiet_replay=true checkpoint_distinguishes_expired_graph_lease=true actual_checkpoint_expiry_releases=true graph_revision=%s", engine, after.Head)
 		})
 	}
 }

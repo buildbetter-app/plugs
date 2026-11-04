@@ -470,6 +470,7 @@ internal/integration/converterroundtrip/testdata/public-source-990eb800.md
 internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar
 internal/integration/cp7latency/BUILD.bazel
 internal/integration/cp7latency/README.md
+internal/integration/cp7latency/compiled_observation_test.go
 internal/integration/cp7latency/correctness_test.go
 internal/integration/cp7latency/dense_summary_test.go
 internal/integration/cp7latency/fixture_test.go

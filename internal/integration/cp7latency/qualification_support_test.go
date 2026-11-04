@@ -11,7 +11,7 @@ import (
 
 // This is the installed host's complete fixed-chain adapter. The original
 // opaque-callback fixture and its historical measurements stay unchanged.
-func qualificationViews(t *testing.T, f *fixture, beforeFence func()) *viewops.Service {
+func qualificationViews(t *testing.T, f *fixture, beforeFence func(), configure ...func(*viewops.Config)) *viewops.Service {
 	t.Helper()
 	selection := f.app.Service.ViewSelection()
 	bind := selection.Bind
@@ -23,7 +23,7 @@ func qualificationViews(t *testing.T, f *fixture, beforeFence func()) *viewops.S
 		}
 		return authority, err
 	}
-	views, err := viewops.New(f.store.Store, f.lease, viewops.Config{
+	cfg := viewops.Config{
 		OntologyRevision: model.Natural64(1), Selection: selection,
 		ParentProjection: &viewops.ParentProjectionConfig{
 			Project: func(ctx context.Context, p model.PrincipalRef, r driver.Reader, refs []model.Ref) (viewops.ParentProjectionAuthority, error) {
@@ -36,7 +36,11 @@ func qualificationViews(t *testing.T, f *fixture, beforeFence func()) *viewops.S
 			},
 			ValidateAuthority: f.app.Checker.ValidateReadAuthorityBinding,
 		},
-	})
+	}
+	for _, edit := range configure {
+		edit(&cfg)
+	}
+	views, err := viewops.New(f.store.Store, f.lease, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

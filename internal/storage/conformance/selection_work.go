@@ -1,7 +1,6 @@
 package conformance
 
 import (
-	"context"
 	"errors"
 	"reflect"
 	"sync"
@@ -32,7 +31,7 @@ func (w *selectionWork) count(kind driver.ReadWorkKind) int64 {
 
 // The same concrete reader and transaction execute both calls. No wrapper can
 // hide Select, fresh committed existence, staged publication or lock semantics.
-func selectionExecutedWork(t *testing.T, factory Factory) {
+func selectionExecutedWork(t *testing.T, factory Factory, sqlStatements int64) {
 	ctx, s, lease, _ := setup(t, factory)
 	images := []selectionImage{
 		selectionImageOf("a", "issue", "P", "a", 0),
@@ -67,7 +66,7 @@ func selectionExecutedWork(t *testing.T, factory Factory) {
 			// Memory has no SQL statement/control row. SQL exposes one decoded
 			// aggregate control even for count/summary with zero emitted keys.
 			statements := work.count(driver.ReadSelectionStatements)
-			if statements > 1 || work.count(driver.ReadSelectionControls) != statements {
+			if statements != sqlStatements || work.count(driver.ReadSelectionControls) != sqlStatements {
 				t.Fatalf("statement/control work differs: %+v", work.counts)
 			}
 			if mode != driver.SelectionPageMode && len(got.Keys) != 0 {
@@ -116,6 +115,9 @@ func selectionExecutedWork(t *testing.T, factory Factory) {
 	}
 	if txWork.count(driver.ReadFreshSelectionCalls) != 2 {
 		t.Fatal("empty existence work omitted")
+	}
+	if txWork.count(driver.ReadSelectionStatements) != 3*sqlStatements || txWork.count(driver.ReadSelectionControls) != 3*sqlStatements {
+		t.Fatalf("transaction statement/control work omitted: %+v", txWork.counts)
 	}
 	if err := tx.Rollback(ctx); err != nil {
 		t.Fatal(err)

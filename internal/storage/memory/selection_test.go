@@ -11,7 +11,7 @@ import (
 )
 
 func TestSelectionReference(t *testing.T) {
-	conformance.RunSelection(t, func(*testing.T) driver.Store { return New() })
+	conformance.RunSelection(t, func(*testing.T) driver.Store { return New() }, 0)
 }
 
 func TestSelectionRefsCanonicalAndRequestLocal(t *testing.T) {

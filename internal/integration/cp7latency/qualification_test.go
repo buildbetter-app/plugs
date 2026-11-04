@@ -2,6 +2,7 @@ package cp7latency_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -10,11 +11,84 @@ import (
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/core/viewops"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+type qualificationReadiness func(context.Context, driver.Reader, []model.Ref) (map[string]viewops.ReadinessState, error)
+
+func (fn qualificationReadiness) Pending(ctx context.Context, r driver.Reader, refs []model.Ref) (map[string]viewops.ReadinessState, error) {
+	return fn(ctx, r, refs)
+}
+
+func TestCompiledPendingProducerPinsContentAndFencesMixedPublication(t *testing.T) {
+	for _, engine := range []string{"sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			f := newFixture(t, engine, 33)
+			before, err := f.store.Meta(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			mutate, called := false, 0
+			views := qualificationViews(t, f, nil, func(cfg *viewops.Config) {
+				cfg.Readiness = qualificationReadiness(func(ctx context.Context, r driver.Reader, refs []model.Ref) (map[string]viewops.ReadinessState, error) {
+					called++
+					if r.Snapshot().At.String() != before.Head.String() || len(refs) != f.n {
+						t.Fatal("pending producer lost complete pinned page")
+					}
+					if mutate {
+						changed := document(1)
+						changed.Fields["title"] = "outside"
+						encoded, err := json.Marshal(changed)
+						if err != nil {
+							t.Fatal(err)
+						}
+						f.patchSource(t, "mixed_pending_publication", beadRef(1), encoded, []string{"/fields/title"})
+					}
+					rows, err := r.Get(ctx, refs)
+					if err != nil || len(rows) != f.n {
+						t.Fatalf("pending pinned source: %v", err)
+					}
+					states := map[string]viewops.ReadinessState{"outside-page": {Pending: true}}
+					for i, row := range rows {
+						doc, err := pipeline.DecodeDocument(row.Body)
+						if err != nil || doc.Fields["title"] != document(i + 1).Fields["title"] {
+							t.Fatalf("pending mixed current source into old content: %+v %v", doc, err)
+						}
+						states[row.Ref.ID] = viewops.ReadinessState{Pending: true}
+					}
+					return states, nil
+				})
+			})
+			var work counters
+			got, err := views.Run(driver.WithReadWorkObserver(context.Background(), &work), f.user(1), groupedRequest())
+			if err != nil || called != 1 || len(got.Groups) != 1 || got.Groups[0].Count != f.n || len(got.Groups[0].Items) != f.n || got.Count != nil || work.work().Selections != 1 || work.value().Queries != 0 {
+				t.Fatalf("configured pending changed compiled membership: %+v %v work=%+v", got, err, work.work())
+			}
+			for i, item := range got.Groups[0].Items {
+				if !item.ReadinessPending || item.ID != beadRef(i+1).ID {
+					t.Fatal("compiled result omitted pending or changed membership")
+				}
+			}
+			mutate = true
+			work.reset()
+			got, err = views.Run(driver.WithReadWorkObserver(context.Background(), &work), f.user(1), groupedRequest())
+			var typed *model.Error
+			if !errors.As(err, &typed) || typed.Data.Code != "authz_unavailable" || !reflect.DeepEqual(got, viewops.Result{}) || called != 2 || work.work().Selections != 1 || work.value().Queries != 0 {
+				t.Fatalf("mixed source publication escaped the final fence: %+v %v work=%+v", got, err, work.work())
+			}
+			fresh := qualificationViews(t, f, nil)
+			got, err = fresh.Run(context.Background(), f.user(1), groupedRequest())
+			if err != nil || len(got.Groups) != 1 || got.Groups[0].Count != f.n-1 || len(got.Groups[0].Items) != f.n-1 || got.Groups[0].Items[0].ID != beadRef(2).ID {
+				t.Fatalf("fresh source membership did not change: %+v %v", got, err)
+			}
+			t.Logf("CP7_COMPILED_PENDING engine=%s configured_producer=true pinned_source=true membership_unchanged=true actual_commit_during_pending=true mixed_publication_erased=true fresh_membership=true", engine)
+		})
+	}
+}
 
 func TestRefusedViewCountIsPartialOutputIncludingZero(t *testing.T) {
 	for _, count := range []int{0, 1, 20001} {
@@ -51,7 +125,7 @@ func TestCompiledGroupedEveryPageMatchesIndependentCorpus(t *testing.T) {
 						if got.Count != nil || len(got.Items) != 0 || len(got.Groups) != 1 || got.Groups[0].Key != "issue" || got.Groups[0].Count != total {
 							t.Fatalf("full group count changed on page at %d: %+v", position, got)
 						}
-						if work.work().Selections != 1 || work.value().Queries != 0 {
+						if work.work().Selections != 1 || work.value().Queries != 0 || work.work().SelectionSQL != 1 || work.work().SelectionControls != 1 {
 							t.Fatalf("compiled page escaped Select: %+v %+v", work.work(), work.value())
 						}
 						if position == 0 {
