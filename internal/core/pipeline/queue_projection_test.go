@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -72,5 +73,38 @@ func TestQueueProjectionFactsRequireExactCanonicalSource(t *testing.T) {
 	withLease[0].Index.Queue.Links[0].Metadata.Gate = "all-children"
 	if control[0].Index.Queue.Links[0].Metadata.Gate != "any-children" || doc.Links[0].Metadata.Gate != "any-children" {
 		t.Fatal("queue producer aliases source or another publication")
+	}
+}
+
+func TestQueueProjectionSurvivesCanonicalAgentClaim(t *testing.T) {
+	h := setup(t)
+	w := h.writer()
+	created := apply(t, w, model.ChangeSet{Ops: []model.Op{create("")}}, meta(1))
+	ref := created.Results[0].Ref
+	agent := model.PrincipalRef{Kind: "agent", ID: "queue-agent", Sponsor: &by,
+		Caveats: map[string]any{"refs": []model.Ref{ref}}}
+	m := meta(2)
+	m.Method = "bead.claim"
+	claimed, err := w.Apply(context.Background(), agent, model.ChangeSet{Ops: []model.Op{patch(ref, map[string]any{})}}, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := h.read(t)
+	records, err := r.Get(context.Background(), []model.Ref{ref})
+	if err != nil || len(records) != 1 || records[0].Revision.String() != claimed.Revision.String() {
+		t.Fatalf("committed claim source: %+v %v", records, err)
+	}
+	doc, err := DecodeDocument(records[0].Body)
+	if err != nil || doc.Lease == nil || doc.Lease.Principal.ID != agent.ID {
+		t.Fatalf("actual claim lease: %+v %v", doc.Lease, err)
+	}
+	decoded, err := json.Marshal(doc)
+	if err != nil || bytes.Equal(decoded, records[0].Body) {
+		t.Fatal("control did not exercise opaque ref-caveat key reordering")
+	}
+	rows, err := r.DerivedRows(context.Background(), driver.DerivedSortKey, ref.ID)
+	if err != nil || len(rows) != 1 || rows[0].Index == nil || rows[0].Index.Queue == nil || !rows[0].Index.Queue.LeasePresent ||
+		rows[0].Index.Source.Digest != driver.SelectionDigest(records[0].Body) || rows[0].Index.Source.Revision.String() != records[0].Revision.String() {
+		t.Fatalf("canonical Writer claim lost exact queue lease/source binding: %+v %v", rows, err)
 	}
 }
