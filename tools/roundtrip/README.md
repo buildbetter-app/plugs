@@ -41,8 +41,8 @@ with `beads_reimport=PASS` and `beads_readback=WAIT`.
 The artifact's hosted build receipt and digest must be independently verified
 before invoking the harness; a supplied run ID is provenance to record, not
 independent attestation. The supported executable pin is Beads
-`682ca798dab448803ea9b74f7da3715c21d8c3ae`, tree
-`9d026de307ee915953b247cf42758d0c53303574`. Its reported runtime commit and
+`c8eb3ba7d4177e111a6f5c8aebe06b5d0b1d5724`, tree
+`930405e863284a3955cbd35e73a6097b606b91a5`. Its reported runtime commit and
 actual binary hash must match. The archive's `beads_reference` is the schema
 reference, not executable provenance. No build, download, workflow dispatch,
 retry or PATH-selected `bd` is performed.
@@ -81,13 +81,23 @@ is bundled here, and tests never substitute a successful Beads factory. Without
 real pinned executable evidence, actual Beads reimport/readback remains WAIT.
 
 The explicit `//tools/roundtrip:public_beads_runtime_test` target requires a
-delivered `plug-public-companion/1` artifact. Its `-public-beads-runtime` flag
+delivered `plug-public-native/1` artifact. Its `-public-beads-runtime` flag
 is set by the target; missing artifact environment or identity fails the test.
 It checks `PLUG_PUBLIC_BEADS_BINARY`, `PLUG_PUBLIC_BEADS_SHA256`,
 `PLUG_PUBLIC_BEADS_BUILD_RUN` and `PLUG_PUBLIC_BEADS_MANIFEST` against the
 manifest's source pin, canonical exporter target, build identity, executable
 size/mode and digest. The production path then verifies the copied bytes and
 reported runtime commit before any init/import. No artifact is built by tests.
+
+The declared native profile and 26-family protocol files in `testdata/` are
+unchanged copies from `e44a1edbe1c939b755a1e5e88e33085d084c0414` under
+`spec/s1-b25-b28/testdata/`, authored in the separately owned native consumer
+lane. Their complete SHA256 pins are checked through Bazel runfiles. The
+profile identifies accepted producer run `41800330346`; its manifest digest
+is `ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a`.
+The old companion profile and historical source fixtures remain unchanged.
+The consumer still rejects altered source/version pins and unsupported
+profiles, including an explicit companion-profile refusal.
 
 After the trusted preparation workflow has landed, select the runtime target
 explicitly through `remote-bazel` and provide exactly one
@@ -100,7 +110,7 @@ artifact-backed runtime coverage must also name it explicitly.
 The runtime target imports the unchanged public complete-root and partial
 fixtures in full/partial/snapshot modes across memory, SQLite and disposable
 PostgreSQL, with the normal claim/release and live-edit workload. It requires
-four actual successful Beads subprocesses for each admitted case when using
+five actual successful Beads subprocesses for each admitted case when using
 `--beads-inventory auto`, including the native census, and retains their raw
 output in the test log. The raw exporter then reads that truthful target census
 and the runtime compares its archive against the submitted reverse JSONL plus

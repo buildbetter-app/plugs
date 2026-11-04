@@ -146,7 +146,9 @@ func deliveredPublicBeads(t *testing.T) beadsOptions {
 		t.Fatal("verified public artifact manifest is unavailable or invalid")
 	}
 	// External manifest wire names are source-controlled protocol data.
-	profileData, err := os.ReadFile("testdata/public-companion-profile.json")
+	profileData := publicNativeProtocolInput(t,
+		"tools/roundtrip/testdata/native-public-profile.json",
+		"67491cd9ce55d652ee99ce80144298648ce60af4c93d35f266ccf7a6fbfd739d")
 	var profile struct {
 		Schema   string `json:"schema"`
 		Exporter struct {
@@ -156,8 +158,8 @@ func deliveredPublicBeads(t *testing.T) beadsOptions {
 		} `json:"exporter"`
 		VersionKey string `json:"version_key"`
 	}
-	if err != nil || json.Unmarshal(profileData, &profile) != nil || profile.Schema == "" || profile.Exporter.TargetKey == "" || profile.Exporter.Label == "" || profile.Exporter.Binary == "" || profile.VersionKey == "" {
-		t.Fatal("public companion protocol data is unavailable or invalid")
+	if json.Unmarshal(profileData, &profile) != nil || profile.Schema != "plug-public-native/1" || profile.Exporter.TargetKey == "" || profile.Exporter.Label == "" || profile.Exporter.Binary == "" || profile.VersionKey == "" {
+		t.Fatal("public native protocol data is unavailable or invalid")
 	}
 	var identity struct {
 		Schema string `json:"schema"`

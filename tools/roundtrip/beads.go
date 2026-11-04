@@ -28,8 +28,8 @@ import (
 // These identify the supported importer/exporter interface inspected for this
 // integration. The archive's older beads_reference is its schema pin, not the
 // executable's build provenance. A future executable requires a new review.
-const beadsCommit = "682ca798dab448803ea9b74f7da3715c21d8c3ae"
-const beadsTree = "9d026de307ee915953b247cf42758d0c53303574"
+const beadsCommit = "c8eb3ba7d4177e111a6f5c8aebe06b5d0b1d5724"
+const beadsTree = "930405e863284a3955cbd35e73a6097b606b91a5"
 
 type beadsOptions struct {
 	Binary, SHA256, BuildRun, Inventory string

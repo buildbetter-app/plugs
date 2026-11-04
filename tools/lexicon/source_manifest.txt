@@ -1458,4 +1458,6 @@ tools/roundtrip/beads_runtime_test.go
 tools/roundtrip/beads_test.go
 tools/roundtrip/main.go
 tools/roundtrip/main_test.go
+tools/roundtrip/testdata/native-public-profile.json
+tools/roundtrip/testdata/native-public-recording-fixture.json
 tools/roundtrip/testdata/public-companion-profile.json
