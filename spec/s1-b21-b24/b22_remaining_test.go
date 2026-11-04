@@ -561,3 +561,129 @@ func TestS1B22LifecycleCASRacesBindWinnerEventsAndReopen(t *testing.T) {
 		}
 	}
 }
+
+func TestS1B22LateSQLPublicationFailureConservesEveryTableAndReopens(t *testing.T) {
+	for _, engine := range []string{"sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			post := &b22Post{}
+			f := newFixture(t, engine, pipeline.WithPostSubscribers(pipeline.PostBinding{ID: "b22-late-sql", Subscriber: post}))
+			target, seed := f.create(t, "b22-sql-target", "original")
+			other, _ := f.create(t, "b22-sql-other", "unrelated")
+			const label = "b22-late-sql-recovery"
+			params := batchParams(
+				map[string]any{"kind": "patch", "target": target, "fields": map[string]any{"title": "committed after recovery", "description": strings.Repeat("b22", 2048)}},
+				map[string]any{"kind": "setMeta", "target": target, "key": "plugin.b22", "value": map[string]any{"atomic": true}},
+				map[string]any{"kind": "comment", "target": target, "body": "one recovery comment"},
+				map[string]any{"kind": "link", "from": target, "to": other, "linkKind": "relates-to"},
+			)
+			params["changeSet"].(map[string]any)["expect"] = []model.Precondition{model.PreconditionByRevision(target, seed.Revision)}
+			request := f.request("tx.apply", label, params)
+			encoded, err := json.Marshal(params["changeSet"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			var cs model.ChangeSet
+			if err := json.Unmarshal(encoded, &cs); err != nil {
+				t.Fatal(err)
+			}
+			name, dsn := "sqlite", f.path
+			install := `CREATE TRIGGER b22_reject_changeset BEFORE INSERT ON changesets BEGIN
+ SELECT RAISE(ABORT,'B22_LATE_STATE_NOT_STAGED')
+ WHERE NOT EXISTS(SELECT 1 FROM versions WHERE rev=NEW.rev)
+ OR NOT EXISTS(SELECT 1 FROM key_history WHERE rev=NEW.rev)
+ OR NOT EXISTS(SELECT 1 FROM records WHERE json_extract(CAST(data AS TEXT),'$.Revision')=CAST(NEW.rev AS INTEGER));
+ SELECT RAISE(ABORT,'B22_LATE_SQL_REFUSAL'); END;`
+			remove := `DROP TRIGGER b22_reject_changeset`
+			if engine == "postgres" {
+				name, dsn = "pgx", f.dsn
+				install = `CREATE SEQUENCE public.b22_late_sql_hit;
+CREATE FUNCTION public.b22_reject_changeset() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF NOT EXISTS(SELECT 1 FROM plug_postgres.records WHERE revision=NEW.revision)
+ OR NOT EXISTS(SELECT 1 FROM plug_postgres.versions WHERE revision=NEW.revision)
+ OR NOT EXISTS(SELECT 1 FROM plug_postgres.states WHERE revision=NEW.revision)
+ THEN RAISE EXCEPTION 'B22_LATE_STATE_NOT_STAGED'; END IF;
+ PERFORM nextval('public.b22_late_sql_hit');
+ RAISE EXCEPTION 'B22_LATE_SQL_REFUSAL';
+END$$;
+CREATE TRIGGER b22_reject_changeset BEFORE INSERT ON plug_postgres.changesets
+FOR EACH ROW EXECUTE FUNCTION public.b22_reject_changeset();`
+				remove = `DROP TRIGGER b22_reject_changeset ON plug_postgres.changesets; DROP FUNCTION public.b22_reject_changeset(); DROP SEQUENCE public.b22_late_sql_hit;`
+			}
+			execute := func(statement string) {
+				t.Helper()
+				db, err := sql.Open(name, dsn)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, execErr := db.ExecContext(f.ctx, statement)
+				closeErr := db.Close()
+				if execErr != nil || closeErr != nil {
+					t.Fatalf("B22 owned SQL setup/removal: %v / %v", execErr, closeErr)
+				}
+			}
+			execute(install)
+			b22Evidence(t, "fault-installation", map[string]any{"sql": install, "exit": "success"})
+			before := f.state(t)
+			physical := b22Physical(t, f, "fault-before")
+			// Preserve the actual engine exception before the RPC catalog maps
+			// it. The marker can only be raised after the SQL-side staging checks.
+			outcome, fault := f.writer.ApplyWithOutcome(f.ctx, anonymous, cs, model.WriteMeta{Method: "tx.apply", Project: project, AgentLabel: actor, IdempotencyKey: key(label)})
+			if fault == nil || !strings.Contains(fault.Error(), "B22_LATE_SQL_REFUSAL") || strings.Contains(fault.Error(), "B22_LATE_STATE_NOT_STAGED") || outcome.Replayed || !outcome.Commit.Revision.IsZero() || len(outcome.Commit.Results) != 0 {
+				t.Fatalf("B22 actual late SQL fault not reached with empty outcome: %+v / %v", outcome, fault)
+			}
+			b22Evidence(t, "actual-sql-error", map[string]any{"error": fault.Error(), "revision": outcome.Commit.Revision, "result_count": len(outcome.Commit.Results), "replayed": outcome.Replayed})
+			sameState(t, before, f.state(t))
+			b22SamePhysical(t, physical, b22Physical(t, f, "fault-direct-after"), false)
+			got := f.dispatch(request)
+			if got.Error == nil || got.Error.Data.Code != "internal_error" || got.Meta.Replayed || len(got.Result) != 0 {
+				t.Fatalf("B22 raw SQL fault changed its established RPC error plane: %+v", got)
+			}
+			sameState(t, before, f.state(t))
+			b22SamePhysical(t, physical, b22Physical(t, f, "fault-rpc-after"), false)
+			if post.count() != 2 || f.casReceipt(t, "tx.apply", label) != nil {
+				t.Fatal("B22 SQL refusal ran post or stored a successful receipt")
+			}
+			if engine == "postgres" {
+				db, err := sql.Open(name, dsn)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var hits int64
+				var called bool
+				err = db.QueryRowContext(f.ctx, `SELECT last_value,is_called FROM public.b22_late_sql_hit`).Scan(&hits, &called)
+				closeErr := db.Close()
+				if err != nil || closeErr != nil || hits != 2 || !called {
+					t.Fatalf("B22 actual PostgreSQL fault hits=%d called=%v error=%v/%v", hits, called, err, closeErr)
+				}
+				b22Evidence(t, "actual-sql-hit-count", map[string]any{"hits": hits, "is_called": called})
+			}
+			f.reopen(t)
+			sameState(t, before, f.state(t))
+			b22SamePhysical(t, physical, b22Physical(t, f, "fault-all-pools-reopened"), true)
+			if f.casReceipt(t, "tx.apply", label) != nil {
+				t.Fatal("B22 refused receipt became visible after real store close/open")
+			}
+			execute(remove)
+			first := f.dispatch(request)
+			c := commit(t, first)
+			if first.Meta.Replayed || c.Revision != model.Natural64(3) || len(c.Results) != 4 || post.count() != 3 {
+				t.Fatalf("B22 same-key recovery did not commit once with full results: %+v", first)
+			}
+			after := f.state(t)
+			doc := closeDocument(t, after, target)
+			if doc.Fields["title"] != "committed after recovery" || len(doc.Comments) != 1 || doc.Comments[0].Body != "one recovery comment" || len(doc.Links) != 1 || doc.Links[0].To.ID != other.ID || string(doc.Metadata["plugin.b22"]) != `{"atomic":true}` || len(after.Versions[target.ID]) != 2 || len(after.Versions[other.ID]) != 1 || len(after.Changesets) != 3 || len(after.Changesets[2].Changes) != 1 {
+				t.Fatalf("B22 recovered transaction is not one complete relational mutation: %+v", doc)
+			}
+			physical = b22Physical(t, f, "recovered")
+			f.reopen(t)
+			replay := f.dispatch(request)
+			if replay.Error != nil || !replay.Meta.Replayed || !bytes.Equal(first.Result, replay.Result) || post.count() != 3 {
+				t.Fatalf("B22 recovered full stored Commit did not survive second reopen: %+v", replay)
+			}
+			sameState(t, after, f.state(t))
+			b22SamePhysical(t, physical, b22Physical(t, f, "recovered-reopened"), true)
+			t.Logf("B22 %s actual staged record/version/derived SQL refusal, full physical conservation, raw/RPC error planes, same-key relational recovery and two real reopens PASS", engine)
+		})
+	}
+}
