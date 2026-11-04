@@ -1385,12 +1385,28 @@ func writerPublishesKernelBooleanAndSourceOnlyRestamps(t *testing.T, open storeF
 		}
 		after := observe(afterReader, ref)
 		wantInventory := sourceRestampedInventory(t, beforeInventory, records[0], afterRecords[0])
+		afterInventory := selectionFamilyInventory(t, afterReader)
 		for j, state := range after {
 			want := before[j]
 			want.Revision = changed.Revision
-			row, ok := wantInventory[*want.Key.Derived]
+			key := *want.Key.Derived
+			row, ok := wantInventory[key]
 			if !ok {
 				t.Fatal("source-only expected inventory lost a selected row")
+			}
+			if key.Table == driver.DerivedAncestorClosure {
+				if state.Derived == nil {
+					t.Fatal("source-only restamp lost the selected ancestor row")
+				}
+				inventoryRow, ok := afterInventory[key]
+				if !ok {
+					t.Fatal("source-only inventory lost the selected ancestor row")
+				}
+				row = canonicalRestampAncestorOwners(t, row, afterRecords[0])
+				observedRow := canonicalRestampAncestorOwners(t, *state.Derived, afterRecords[0])
+				state.Derived = &observedRow
+				wantInventory[key] = row
+				afterInventory[key] = canonicalRestampAncestorOwners(t, inventoryRow, afterRecords[0])
 			}
 			want.Derived = &row
 			if !reflect.DeepEqual(state, want) {
@@ -1399,7 +1415,7 @@ func writerPublishesKernelBooleanAndSourceOnlyRestamps(t *testing.T, open storeF
 				t.Fatalf("source-only restamp changed fields outside exact provenance and semantic leaf: key=%+v want=%s got=%s expected_source_ref=%#v actual_source_ref=%#v", *want.Key.Derived, wantJSON, gotJSON, want.Derived.Index.Source.Key.Ref, state.Derived.Index.Source.Key.Ref)
 			}
 		}
-		if !reflect.DeepEqual(selectionFamilyInventory(t, afterReader), wantInventory) {
+		if !reflect.DeepEqual(afterInventory, wantInventory) {
 			t.Fatal("source-only restamp changed an unselected row or the complete selection inventory")
 		}
 		pinned := read(&created.Revision)
@@ -1424,6 +1440,46 @@ func writerPublishesKernelBooleanAndSourceOnlyRestamps(t *testing.T, open storeF
 			}
 		}
 	}
+}
+
+// Ancestor owners borrow Record.Ref, whose private arm discriminator differs
+// between native literals and JSON-decoded records. On detached comparison
+// copies, canonicalize only the selected ancestor's two owner references after
+// validating their complete lock identity and exact public fields against the
+// committed source. All logical bytes, other annotations and rows remain exact.
+func canonicalRestampAncestorOwners(t *testing.T, row driver.DerivedRow, source driver.Record) driver.DerivedRow {
+	t.Helper()
+	row = row.Clone()
+	index := row.Index
+	if index == nil || index.Facts == nil || index.Facts.Kind != driver.SelectionAncestorFact || len(index.Facts.Rows) != 1 {
+		t.Fatal("selected ancestor has an incomplete typed owner annotation")
+	}
+	if err := index.Validate(driver.DerivedAncestorClosure, row); err != nil {
+		t.Fatal("selected ancestor annotation is invalid:", err)
+	}
+	if err := driver.ValidateHierarchyRef(source.Ref); err != nil {
+		t.Fatal("committed ancestor source identity is invalid:", err)
+	}
+	canonicalize := func(name string, ref *model.Ref) {
+		t.Helper()
+		if ref == nil {
+			t.Fatal("selected ancestor owner reference is missing:", name)
+		}
+		if err := driver.ValidateHierarchyRef(*ref); err != nil {
+			t.Fatal("selected ancestor owner reference is invalid:", name, err)
+		}
+		if !driver.SelectionSameRef(*ref, source.Ref) || ref.ID != source.Ref.ID || ref.Branch != source.Ref.Branch || ref.Key != source.Ref.Key {
+			t.Fatalf("selected ancestor %s differs from committed source: owner=%#v source=%#v", name, *ref, source.Ref)
+		}
+		canonical := model.RefByID(ref.ID, ref.Branch)
+		if !reflect.DeepEqual(*ref, canonical) {
+			t.Logf("selected ancestor %s canonical identity preserves public fields: before=%#v after=%#v", name, *ref, canonical)
+		}
+		*ref = canonical
+	}
+	canonicalize("Source.Key.Ref", index.Source.Key.Ref)
+	canonicalize("Facts.Rows[0].Ref", index.Facts.Rows[0].Ref)
+	return row
 }
 
 func selectionFamilyInventory(t *testing.T, r driver.Reader) map[driver.DerivedRowKey]driver.DerivedRow {
