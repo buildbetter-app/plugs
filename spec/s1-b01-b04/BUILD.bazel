@@ -169,6 +169,7 @@ go_test(
     srcs = [
         "fixture_test.go",
         "manifest_test.go",
+        "native_b02_contract_test.go",
         "native_io_test.go",
         "native_b02_recording_test.go",
         "native_b02_replay_test.go",
@@ -200,4 +201,19 @@ go_test(
     ],
     tags = ["manual", "local", "requires-network"],
     timeout = "long",
+)
+
+# Ordinary B02 source-contract coverage. This target embeds and validates the
+# B02 input contract but excludes the physical recorder and all native setup.
+go_test(
+    name = "native_b02_contract_test",
+    srcs = [
+        "native_b02_contract_test.go",
+        "native_io_test.go",
+    ],
+    embedsrcs = [
+        "native_b02_inputs.json",
+        "native_inputs.json",
+    ],
+    args = ["-test.v"],
 )
