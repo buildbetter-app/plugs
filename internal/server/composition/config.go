@@ -503,7 +503,7 @@ func (r *Runtime) bind(config Config) error {
 					return readAuthorize(ctx, by, resource, project)
 				}
 				if installed() {
-					return &model.Error{Data: model.ErrorData{Code: "permission_denied", Hint: "current ontology read authorization is unavailable"}}
+					return &model.Error{Data: model.ErrorData{Code: "forbidden", Hint: "current ontology read authorization is unavailable"}}
 				}
 				return nil
 			}

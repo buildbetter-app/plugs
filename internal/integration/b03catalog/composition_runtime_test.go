@@ -197,6 +197,30 @@ func TestConfiguredRuntimeLoadsCatalogAndAuditsOnEveryEngine(t *testing.T) {
 		if err := json.Unmarshal(appliedRaw, &applied); err != nil || applied.Revision.IsZero() {
 			t.Fatalf("%s configured apply=%s err=%v", e.name, appliedRaw, err)
 		}
+		{
+			reader, err := runtime.Store.Read(context.Background(), driver.View{At: &applied.Revision})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sets, readErr := reader.Changesets(context.Background(), nil, 100)
+			closeErr := reader.Close()
+			if readErr != nil || closeErr != nil || len(sets) == 0 {
+				t.Fatalf("%s read migration audit: %v %v", e.name, readErr, closeErr)
+			}
+			migration := sets[len(sets)-1]
+			if migration.Revision != applied.Revision || migration.Kind != model.ChangesetMigration || len(migration.Changes) != 2 || len(migration.Events) != len(migration.Changes) || migration.ValidateEvents() != nil {
+				t.Fatalf("%s migration did not atomically retain complete events: %+v", e.name, migration)
+			}
+			for i, event := range migration.Events {
+				want := model.EventBeadUpdated
+				if migration.Changes[i].Ref.ID == sourceRef.ID {
+					want = model.EventOntologyApplied
+				}
+				if event.Type != want || event.Provenance.Method != "ontology.apply" || event.Provenance.Slot != "" || event.Provenance.Cause.Root != "0000000000000000000000000000002b" || len(event.Provenance.Chain) != 0 || len(event.Provenance.SetBy) == 0 {
+					t.Fatalf("%s migration event lost trusted provenance: %+v", e.name, event)
+				}
+			}
+		}
 		migratedRaw := composedRuntimeCall(t, transport, "bead.get", map[string]any{"id": existing.Results[0].Ref}, "b03-composition", "00000000000000000000000000000031")
 		var migrated struct {
 			Bead struct {
@@ -263,6 +287,17 @@ func TestConfiguredRuntimeLoadsCatalogAndAuditsOnEveryEngine(t *testing.T) {
 		}
 		if !pinned {
 			t.Fatalf("%s configured lifecycle lost ontology pin: %+v want ref=%s revision=%s digest=%s", e.name, last.Events, sourceRef.ID, applied.Revision, updatedCompiled.Digest())
+		}
+		// Traverse the actual migration boundary and its row patch before the
+		// later lifecycle notice. A legacy broad /fields patch has insufficient
+		// slot provenance and must not be guessed by the history materializer.
+		for _, want := range []struct {
+			kind model.DurableEventType
+			ref  string
+		}{{model.EventOntologyApplied, sourceRef.ID}, {model.EventBeadUpdated, existing.Results[0].Ref.ID}} {
+			if !composedEventListContains(t, transport, "b03-composition", string(want.kind), want.ref) {
+				t.Fatalf("%s event.list omitted committed migration event %s for %s", e.name, want.kind, want.ref)
+			}
 		}
 		if !composedEventListContains(t, transport, "b03-composition", string(model.EventDependencyConditionUnmet), sourceRef.ID) {
 			t.Fatalf("%s event.list omitted persisted installed ontology audit", e.name)

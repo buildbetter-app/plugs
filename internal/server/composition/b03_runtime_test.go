@@ -352,7 +352,7 @@ func runtimeRefusal(t *testing.T, transport *inprocess.Transport, method string,
 func TestConfiguredEventReaderDoesNotAdvertiseMissingAuthorization(t *testing.T) {
 	runtime := openConfiguredRuntime(t, func(config *Config) {
 		config.AuthorizeRead = func(context.Context, model.PrincipalRef, model.ResourceRef, string) error {
-			return &model.Error{Data: model.ErrorData{Code: "permission_denied"}}
+			return &model.Error{Data: model.ErrorData{Code: "forbidden"}}
 		}
 	})
 	runtimeRefusal(t, inprocess.New(runtime.RPC), "event.list", map[string]any{"filter": map[string]any{}, "limit": 100}, "method_not_found")
@@ -470,11 +470,11 @@ func TestConfiguredOntologyInstalledAuthorityRequiresReadAdapterAndDisablesApply
 			config.AuthMode = "authenticated"
 			config.Auth = authn.Config{Provider: keys, AuthorizationInstalled: installed}
 			config.Ontology.AuthorizeRead = func(context.Context, model.PrincipalRef, model.ResourceRef, string) error {
-				return &model.Error{Data: model.ErrorData{Code: "permission_denied"}}
+				return &model.Error{Data: model.ErrorData{Code: "forbidden"}}
 			}
 		})
 		transport := configuredAuthenticatedTransport(t, runtime, keys)
-		runtimeRefusal(t, transport, "ontology.get", map[string]any{}, "permission_denied")
+		runtimeRefusal(t, transport, "ontology.get", map[string]any{}, "forbidden")
 		runtimeRefusal(t, transport, "ontology.apply", map[string]any{}, "method_not_found")
 		runtimeRefusal(t, transport, "event.list", map[string]any{"filter": map[string]any{}, "limit": 100}, "method_not_found")
 	})
@@ -492,7 +492,7 @@ func TestConfiguredOntologyInstalledAuthorityRequiresReadAdapterAndDisablesApply
 		// Commit an actual ordinary event before changing the installed marker.
 		runtimeJSONCall(t, transport, "bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": "before policy install"}}, "b03-runtime", "000000000000000000000000000000e2")
 		installed = true
-		runtimeRefusal(t, transport, "ontology.get", map[string]any{}, "permission_denied")
+		runtimeRefusal(t, transport, "ontology.get", map[string]any{}, "forbidden")
 		runtimeRefusal(t, transport, "event.list", map[string]any{"filter": map[string]any{}, "limit": 100}, "authz_postfilter_cap")
 	})
 }
