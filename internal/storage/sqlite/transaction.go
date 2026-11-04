@@ -45,6 +45,7 @@ type transaction struct {
 	// change. Complete validation still runs against the final overlay at Commit.
 	selectionDependents map[string]map[string]bool
 	selectionRecheck    map[string]bool
+	readyPublication    *readyOrderPublicationState
 
 	checkpointGuards          map[string]uint64
 	sourceOverlay             sourceindex.Overlay
@@ -108,6 +109,7 @@ func (t *transaction) finish() {
 	t.selectionAnnotated = false
 	t.selectionDependents = nil
 	t.selectionRecheck = nil
+	t.invalidateReadyOrderPublication()
 	t.store.untrack(t)
 	close(t.done)
 }
@@ -374,6 +376,7 @@ func (t *transaction) Delete(ctx context.Context, ref driver.Ref) error {
 	t.records[id] = nil
 	t.sourceOverlay.Replace(id, nil)
 	t.selectionSourceStaged(id)
+	t.invalidateReadyOrderPublication()
 	return nil
 }
 func (t *transaction) PutBlob(ctx context.Context, data []byte) (driver.Hash, error) {
@@ -444,6 +447,9 @@ func (t *transaction) putDerived(ctx context.Context, table driver.DerivedTable,
 		return err
 	}
 	t.selectionAnnotated = annotated
+	if len(proposed) != 0 {
+		t.invalidateReadyOrderPublication()
+	}
 	return nil
 }
 func (t *transaction) bump(ctx context.Context, keys []driver.LockKey) error {
@@ -463,6 +469,9 @@ func (t *transaction) bump(ctx context.Context, keys []driver.LockKey) error {
 	for _, key := range keys {
 		t.bumps[keyID(key)] = copyKey(key)
 		t.selectionSourceStaged(keyID(key))
+	}
+	if len(keys) != 0 {
+		t.invalidateReadyOrderPublication()
 	}
 	return nil
 }
@@ -565,6 +574,10 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 			return err
 		}
 		sourcePlan, err := t.prepareSourcePublication(ctx, c, meta, revision)
+		if err != nil {
+			return err
+		}
+		readyProof, err := t.prepareReadyOrderCommit(ctx, c, meta, revision)
 		if err != nil {
 			return err
 		}
@@ -674,6 +687,9 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 			if _, err = c.ExecContext(ctx, `INSERT OR IGNORE INTO blobs(hash,rev,data) VALUES(?,?,?)`, string(hash), revKey(head+1), blob); err != nil {
 				return err
 			}
+		}
+		if err = t.finishReadyOrderCommit(ctx, c, readyProof, target); err != nil {
+			return err
 		}
 		if _, err = c.ExecContext(ctx, `INSERT INTO changesets(rev,data) VALUES(?,?)`, revKey(head+1), data); err != nil {
 			return err

@@ -114,6 +114,7 @@ func (t *transaction) putSourceRecord(ctx context.Context, record driver.Record,
 	t.records[id] = &record
 	t.sourceOverlay.Replace(id, declaration)
 	t.selectionSourceStaged(id)
+	t.invalidateReadyOrderPublication()
 	return nil
 }
 

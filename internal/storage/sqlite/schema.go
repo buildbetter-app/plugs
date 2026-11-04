@@ -293,4 +293,4 @@ CREATE INDEX IF NOT EXISTS selection_facts_scope
 CREATE INDEX IF NOT EXISTS selection_facts_scoped_project
  ON selection_facts(incarnation,branch,row_key,project_name,scope_kind,start_revision)
  WHERE kind='scoped_grant_v1';
-`
+` + readyOrderSchema

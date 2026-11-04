@@ -50,6 +50,7 @@ func (t *transaction) prepareRestore(ctx context.Context, source driver.StoreID)
 		return driver.Meta{}, err
 	}
 	t.restore = &m
+	t.invalidateReadyOrderPublication()
 	return m, nil
 }
 
