@@ -77,44 +77,81 @@ func NativeWithLifecycle(adapter NativeLifecycleAdapter) sdk.Native {
 				},
 			},
 		}
-		if adapter.Promote != nil {
-			methods = append(methods, sdk.Method{
-				Descriptor: pluginapi.Method{Name: "x.workflow.run.promote", Permission: "write", Params: map[string]any{"type": "object"}, Result: map[string]any{"type": "object"}},
-				Handle: func(ctx context.Context, params json.RawMessage) (json.RawMessage, error) {
-					var req PromoteRequest
-					if err := json.Unmarshal(params, &req); err != nil {
-						return nil, err
-					}
-					if adapter.Principal == nil {
-						return nil, fail("unauthenticated", "workflow promotion requires a trusted caller adapter")
-					}
-					result, err := adapter.Promote(ctx, provider, adapter.Principal(ctx), req, model.WriteMeta{Method: "x.workflow.run.promote"})
-					if err != nil {
-						return nil, err
-					}
-					return json.Marshal(result)
-				},
-			})
-		}
-		if adapter.Demote != nil {
-			methods = append(methods, sdk.Method{
-				Descriptor: pluginapi.Method{Name: "x.workflow.run.demote", Permission: "write", Params: map[string]any{"type": "object"}, Result: map[string]any{"type": "object"}},
-				Handle: func(ctx context.Context, params json.RawMessage) (json.RawMessage, error) {
-					var req DemoteRequest
-					if err := json.Unmarshal(params, &req); err != nil {
-						return nil, err
-					}
-					if adapter.Principal == nil {
-						return nil, fail("unauthenticated", "workflow demotion requires a trusted caller adapter")
-					}
-					result, err := adapter.Demote(ctx, provider, adapter.Principal(ctx), req, model.WriteMeta{Method: "x.workflow.run.demote"})
-					if err != nil {
-						return nil, err
-					}
-					return json.Marshal(result)
-				},
-			})
-		}
+		// The manifest is static, so every declared method must be registered even
+		// when a composition supplies only the invocation callback. Missing lifecycle
+		// callbacks fail closed at call time; they must never create a registration
+		// shape that the host cannot validate.
+		methods = append(methods, sdk.Method{
+			Descriptor: pluginapi.Method{
+				Name: "x.workflow.run.promote", Permission: "write",
+				Params: map[string]any{"type": "object"}, Result: map[string]any{"type": "object"},
+				Resource: func(params any) []pluginapi.Ref { return resourceFromParams(params, "target") },
+			},
+			Handle: func(ctx context.Context, params json.RawMessage) (json.RawMessage, error) {
+				if adapter.Promote == nil {
+					return nil, fail("method_not_found", "workflow promotion adapter is unavailable")
+				}
+				var req PromoteRequest
+				if err := json.Unmarshal(params, &req); err != nil {
+					return nil, err
+				}
+				if adapter.Principal == nil {
+					return nil, fail("unauthenticated", "workflow promotion requires a trusted caller adapter")
+				}
+				result, err := adapter.Promote(ctx, provider, adapter.Principal(ctx), req, model.WriteMeta{Method: "x.workflow.run.promote"})
+				if err != nil {
+					return nil, err
+				}
+				return json.Marshal(result)
+			},
+		})
+		methods = append(methods, sdk.Method{
+			Descriptor: pluginapi.Method{
+				Name: "x.workflow.run.demote", Permission: "write",
+				Params: map[string]any{"type": "object"}, Result: map[string]any{"type": "object"},
+				Resource: func(params any) []pluginapi.Ref { return resourceFromParams(params, "source") },
+			},
+			Handle: func(ctx context.Context, params json.RawMessage) (json.RawMessage, error) {
+				if adapter.Demote == nil {
+					return nil, fail("method_not_found", "workflow demotion adapter is unavailable")
+				}
+				var req DemoteRequest
+				if err := json.Unmarshal(params, &req); err != nil {
+					return nil, err
+				}
+				if adapter.Principal == nil {
+					return nil, fail("unauthenticated", "workflow demotion requires a trusted caller adapter")
+				}
+				result, err := adapter.Demote(ctx, provider, adapter.Principal(ctx), req, model.WriteMeta{Method: "x.workflow.run.demote"})
+				if err != nil {
+					return nil, err
+				}
+				return json.Marshal(result)
+			},
+		})
 		return sdk.Registration{Methods: methods}, nil
 	}}
+}
+
+// resourceFromParams converts a manifest resource field into the host's typed
+// resource reference. Invalid or absent values return no resources; the host
+// then rejects the call before authorization or plugin state is touched.
+func resourceFromParams(params any, field string) []pluginapi.Ref {
+	values, ok := params.(map[string]any)
+	if !ok {
+		return nil
+	}
+	raw, ok := values[field]
+	if !ok {
+		return nil
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+	var ref pluginapi.Ref
+	if err := json.Unmarshal(data, &ref); err != nil || !ref.IsID() {
+		return nil
+	}
+	return []pluginapi.Ref{ref}
 }
