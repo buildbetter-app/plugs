@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -663,12 +664,13 @@ func (p *backgroundPolicy) Read(ctx context.Context, by model.PrincipalRef, even
 	return coreevents.Visibility{Readable: readable, Before: event.Before, After: event.After}, err
 }
 
-// A gate delays exactly one real request before admission, without replacing
-// its context, deadline, principal, body or native response. Cancellation still
-// reaches the provider. It supplies explicit ordering, never a retry.
+// A gate delays exactly one real request before admission, or holds its actual
+// reply after native allocation. Contexts, deadlines, principals and native
+// response bytes are unchanged. It supplies explicit ordering, never a retry.
 type requestGate struct {
 	mu        sync.Mutex
 	method    string
+	holdReply bool
 	entered   chan struct{}
 	release   chan struct{}
 	done      chan struct{}
@@ -676,10 +678,13 @@ type requestGate struct {
 	cancelled atomic.Bool
 }
 
-func (g *requestGate) arm(method string) {
+func (g *requestGate) arm(method string) { g.armAt(method, false) }
+
+func (g *requestGate) armAt(method string, holdReply bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.method, g.entered, g.release, g.done = method, make(chan struct{}), make(chan struct{}), make(chan struct{})
+	g.holdReply, g.session = holdReply, ""
 	g.cancelled.Store(false)
 }
 
@@ -700,14 +705,29 @@ func (g *requestGate) handler(next http.Handler) http.Handler {
 			method = call.Method
 		}
 		g.mu.Lock()
-		var release, done chan struct{}
+		var entered, release, done chan struct{}
+		holdReply := false
 		if g.method == method && g.entered != nil {
 			g.method, g.session = "", r.Header.Get("Plug-Session")
-			release, done = g.release, g.done
-			close(g.entered)
+			entered, release, done, holdReply = g.entered, g.release, g.done, g.holdReply
 		}
 		g.mu.Unlock()
+		var reply *httptest.ResponseRecorder
+		if holdReply {
+			reply = httptest.NewRecorder()
+			next.ServeHTTP(reply, r)
+			if method == "session.open" {
+				var envelope struct {
+					Result collab.Session `json:"result"`
+				}
+				_ = json.Unmarshal(reply.Body.Bytes(), &envelope)
+				g.mu.Lock()
+				g.session = envelope.Result.SessionID
+				g.mu.Unlock()
+			}
+		}
 		if release != nil {
+			close(entered)
 			select {
 			case <-release:
 			case <-r.Context().Done():
@@ -718,6 +738,14 @@ func (g *requestGate) handler(next http.Handler) http.Handler {
 				g.cancelled.Store(true)
 			}
 			defer close(done)
+		}
+		if reply != nil {
+			for name, values := range reply.Header() {
+				w.Header()[name] = append([]string(nil), values...)
+			}
+			w.WriteHeader(reply.Code)
+			_, _ = w.Write(reply.Body.Bytes())
+			return
 		}
 		next.ServeHTTP(w, r)
 	})

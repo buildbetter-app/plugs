@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -106,7 +107,7 @@ func TestAuthenticatedChromeSignsInThroughNativeRPC(t *testing.T) {
 // Dedicated F-SRC-1 coverage. These small, actual native hosts isolate browser
 // authentication teardown; none replaces or qualifies the mandatory 20k case.
 func TestAuthenticatedChromeBackgroundAuthenticationTeardown(t *testing.T) {
-	for _, scenario := range []string{"watch-stream-401", "watch-read-401", "bridge-revoked", "bridge-expired", "non-auth-and-switch"} {
+	for _, scenario := range []string{"watch-stream-401", "watch-read-401", "bridge-revoked", "bridge-expired", "non-auth-and-switch", "stop-watch-revoked", "stop-watch-expired", "opening-sign-out", "opening-switch", "stale-cleanup-401"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newFixture(t, "sqlite", filepath.Join(t.TempDir(), "background.db"), true)
 			parent := f.create(t, epics, "background authenticated parent", nil)
@@ -146,6 +147,10 @@ func TestAuthenticatedChromeBackgroundAuthenticationTeardown(t *testing.T) {
 					h.gate.arm("bead.get")
 				case "arm-view":
 					h.gate.arm("view.run")
+				case "arm-open-reply":
+					h.gate.armAt("session.open", true)
+				case "arm-close":
+					h.gate.arm("session.close")
 				case "wait-held":
 					h.gate.wait(t)
 				case "release":
@@ -176,7 +181,23 @@ func TestAuthenticatedChromeBackgroundAuthenticationTeardown(t *testing.T) {
 				case "write-parent":
 					committed(t, f.write(t, f.owner, "bead.update", epics, map[string]any{"id": parent, "fields": map[string]any{"title": "background native update"}}))
 				case "stats":
-					return map[string]any{"active": h.active.Load(), "cancelled": h.gate.cancelled.Load()}
+					presence, err := h.sessions.List(context.Background(), collab.Caller{Principal: by}, epics)
+					if err != nil {
+						t.Fatal(err)
+					}
+					h.gate.mu.Lock()
+					heldSession := h.gate.session
+					h.gate.mu.Unlock()
+					heldSessionActive := false
+					if heldSession != "" {
+						_, err := h.sessions.SessionContext(context.Background(), collab.Caller{Principal: by}, heldSession)
+						heldSessionActive = err == nil
+						var domain *model.Error
+						if err != nil && (!errors.As(err, &domain) || domain.Data.Code != "not_found") {
+							t.Fatal(err)
+						}
+					}
+					return map[string]any{"active": h.active.Load(), "cancelled": h.gate.cancelled.Load(), "presence": presence, "heldSession": heldSession, "heldSessionActive": heldSessionActive}
 				case "streams":
 					h.mu.Lock()
 					rows := append([]streamRecord{}, h.streams...)

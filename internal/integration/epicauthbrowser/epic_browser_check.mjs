@@ -163,13 +163,13 @@ try {
       await until(async () => { const value = await send("Runtime.evaluate", { expression: `globalThis.responses[${JSON.stringify(id)}]`, contextId: executionContextId, returnByValue: true }); response = value.result.value; return !!response; }, "actual frame bridge response");
       return response;
     };
-    const homeReady = async () => {
-      await settled(); await completeWire();
+    const homeConnected = async () => {
       await until(() => evaluate("document.querySelector('#watch-state').textContent.includes('connected') && document.querySelectorAll('#changed-rows .row').length === 1"), "actual native saved view and watch");
       assert.equal((await auth()).count, "1");
     };
+    const homeReady = async () => { await settled(); await completeWire(); await homeConnected(); };
     await navigate(); await signIn(fixture.token); await homeReady();
-    if (fixture.background === "bridge-expired") {
+    if (["bridge-expired", "stop-watch-expired"].includes(fixture.background)) {
       const expiring = await control("expiring-key"); credentials.push(expiring.token); identities.set(expiring.token, fixture.principal);
       await signIn(expiring.token); await homeReady();
     }
@@ -177,7 +177,67 @@ try {
     await evaluate("globalThis.previousFrame = document.querySelector('#plugin-frames iframe')");
     step("Authenticated real saved Home view and native watch; closure read markers and active frame bridge observed before background failure");
     phase = fixture.background;
-    if (fixture.background === "watch-stream-401" || fixture.background === "non-auth-and-switch") {
+    if (fixture.background.startsWith("opening-")) {
+      await click('.tab[data-view="presence"]'); await settled(); await completeWire();
+      await until(async () => (await control("stats")).presence.length === 0, "previous native session closed before held open");
+      await control("arm-open-reply"); await click('.tab[data-view="home"]'); await control("wait-held");
+      const allocated = await control("stats");
+      assert(allocated.heldSession && allocated.heldSessionActive, "held reply must follow a real native session allocation");
+      assert.equal(allocated.presence.length, 1); assert.equal(allocated.presence[0].sessionId, allocated.heldSession);
+      assert.equal(allocated.presence[0].principal.id, fixture.principal);
+      assert(!wire.some(row => row.request.method === "session.open" && row.phase === phase && typeof row.rawResponse === "string"), "native allocation reply must still be held from Chrome");
+      if (fixture.background === "opening-sign-out") {
+        await click("#sign-out");
+        const cleared = await auth();
+        assert(cleared.signedOut && cleared.cancelHidden && !cleared.refreshDisabled && cleared.stopHidden);
+        assert.equal(cleared.footer, "Sign-in required"); assert.equal(cleared.rows, 0); assert.equal(cleared.count, "—");
+        assert.equal(cleared.frames, 0); assert(cleared.revoked); assert.equal(await mapSize(markers), 0);
+      } else {
+        const switched = await send("Runtime.callFunctionOn", { objectId: markers, functionDeclaration: "function(token){document.querySelector('#auth-token').value=token;document.querySelector('#auth-form').requestSubmit();return this.size}", arguments: [{ value: fixture.otherToken }], returnByValue: true });
+        assert.equal(switched.result.value, 0, "switch clears prior read markers even while native open reply is held");
+        await settled(); await homeConnected();
+        assert((await auth()).revoked, "switch revokes the prior frame before the delayed open reply");
+      }
+      const beforeReply = await control("stats");
+      assert(beforeReply.heldSessionActive && beforeReply.presence.some(row => row.sessionId === allocated.heldSession), "old native allocation must survive until its reply is delivered");
+      phase = "late-opening-cleanup"; await control("release");
+      await until(async () => { const stats = await control("stats"); return !stats.heldSessionActive && !stats.presence.some(row => row.sessionId === allocated.heldSession); }, "late opening allocation and presence released by originating identity");
+      await completeWire();
+      const close = wire.find(row => row.phase === phase && row.request.method === "session.close" && row.request.params.sessionId === allocated.heldSession);
+      assert(close?.status === 200 && !JSON.parse(close.rawResponse).error, "late native session.close must succeed, not await idle expiry");
+      assert.equal(close.principal, fixture.principal);
+      const oldCalls = wire.filter(row => row.phase === phase && row.principal === fixture.principal);
+      assert.deepEqual(oldCalls.map(row => row.request.method), ["session.close"], "old bearer after identity teardown is confined to same-origin allocation cleanup");
+      assert(oldCalls.every(row => row.url === base + "/rpc/v1" && row.authorizationPresent && !row.cookiePresent));
+      const remaining = (await control("stats")).presence;
+      if (fixture.background === "opening-sign-out") {
+        assert.deepEqual(remaining, []); assert.equal((await auth()).footer, "Sign-in required"); assert.equal((await auth()).rows, 0);
+      } else {
+        assert.equal(remaining.length, 1); assert.equal(remaining[0].principal.id, fixture.otherPrincipal);
+        assert.match((await auth()).footer, /Authenticated/); assert.equal((await auth()).rows, 1);
+        assert((await bridge({ id: { id: fixture.parent, branch: 0 } })).result?.bead);
+        assert.equal(wire.filter(row => row.request.method === "bead.get").at(-1).principal, fixture.otherPrincipal);
+      }
+      step("Held actual native session.open reply released after " + fixture.background + "; originating identity closes allocation immediately, old session/presence absent, replacement identity unchanged");
+    } else if (fixture.background === "stale-cleanup-401") {
+      await control("arm-close"); await click("#stop-watch"); await control("wait-held");
+      await until(() => wire.some(row => row.phase === phase && row.request.method === "event.unsubscribe" && row.status === 200 && typeof row.rawResponse === "string"), "actual unsubscribe completed before old close authentication failure");
+      await control("revoke");
+      const switched = await send("Runtime.callFunctionOn", { objectId: markers, functionDeclaration: "function(token){document.querySelector('#auth-token').value=token;document.querySelector('#auth-form').requestSubmit();return this.size}", arguments: [{ value: fixture.otherToken }], returnByValue: true });
+      assert.equal(switched.result.value, 0); await settled(); await homeConnected();
+      await control("release"); await completeWire(); await delay(100);
+      const refused = wire.find(row => row.phase === phase && row.request.method === "session.close");
+      assert.equal(refused?.status, 401, "prior-identity cleanup must encounter actual native key revocation");
+      assert.match((await auth()).footer, /Authenticated/); assert.equal((await auth()).rows, 1); assert((await auth()).revoked);
+      assert((await mapSize(markers)) > 0, "stale cleanup 401 must not clear the replacement read markers");
+      assert((await bridge({ id: { id: fixture.parent, branch: 0 } })).result?.bead);
+      assert.equal(wire.filter(row => row.request.method === "bead.get").at(-1).principal, fixture.otherPrincipal);
+      step("Actual revoked old-key session.close 401 arrives after distinct-principal switch; current identity, rows, read markers and new bridge remain active");
+    } else {
+    if (fixture.background.startsWith("stop-watch-")) {
+      await control(fixture.background === "stop-watch-expired" ? "wait-expired" : "revoke");
+      await click("#stop-watch");
+    } else if (fixture.background === "watch-stream-401" || fixture.background === "non-auth-and-switch") {
       await click('.tab[data-view="presence"]'); await settled(); await completeWire();
       await control("arm-stream"); await click('.tab[data-view="home"]'); await control("wait-held");
       if (fixture.background === "watch-stream-401") await control("revoke");
@@ -223,14 +283,20 @@ try {
       assert.equal(cleared.rows, 0); assert.equal(cleared.count, "—"); assert.equal(cleared.frames, 0); assert(cleared.revoked); assert.equal(cleared.text, "");
       assert.equal(await mapSize(markers), 0, "background auth failure must clear actual closure read markers");
       assert(await evaluate("localStorage.length === 0 && sessionStorage.length === 0 && document.querySelector('#auth-token').value === ''"));
-      if (fixture.background !== "watch-stream-401") {
+      if (fixture.background !== "watch-stream-401" && !fixture.background.startsWith("stop-watch-")) {
         await control("release");
         assert((await control("stats")).cancelled, "background auth teardown must cancel active actual native work");
       }
       await completeWire();
-      const refused = fixture.background === "watch-stream-401" ? streams.find(row => row.phase === phase && row.status === 401) : wire.find(row => row.phase === phase && row.status === 401 && row.request.method === (fixture.background === "watch-read-401" ? "view.run" : "bead.get"));
+      const refused = fixture.background === "watch-stream-401" ? streams.find(row => row.phase === phase && row.status === 401) : wire.find(row => row.phase === phase && row.status === 401 && row.request.method === (fixture.background.startsWith("stop-watch-") ? "session.close" : fixture.background === "watch-read-401" ? "view.run" : "bead.get"));
       assert(refused, "background failure must be an actual native HTTP 401");
-      if (fixture.background === "bridge-expired") assert.equal(JSON.parse(refused.rawResponse).error.data.code, "token_expired");
+      if (["bridge-expired", "stop-watch-expired"].includes(fixture.background)) assert.equal(JSON.parse(refused.rawResponse).error.data.code, "token_expired");
+      if (fixture.background.startsWith("stop-watch-")) {
+        const cleanupOnly = wire.filter(row => row.phase === phase);
+        assert.deepEqual(cleanupOnly.map(row => row.request.method).sort(), ["event.unsubscribe", "session.close"]);
+        assert(cleanupOnly.every(row => row.status === 401), "Stop alone must expose native cleanup authentication failures");
+        step("Stop live changes alone after actual key revocation/expiry tears down identity; no refresh, normal RPC or bridge failure is a fallback");
+      }
       step("Background " + fixture.background + " native 401 alone cleared credential presentation, actual closure read map, all rows and bridges; active work/watch aborted before any normal-read fallback");
       await screenshot();
       // Only after the teardown proof: a new explicit read must carry no old
@@ -238,6 +304,7 @@ try {
       phase = "post-teardown-no-bearer"; await fresh();
       assert(wire.filter(row => row.phase === phase).every(row => !row.authorizationPresent));
       step("Subsequent explicit read carries no previous bearer after background teardown");
+    }
     }
     await click("#sign-out");
     await until(async () => (await control("stats")).active === 0, "all actual native streams stopped");
