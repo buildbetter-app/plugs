@@ -150,6 +150,7 @@ internal/client/client_test.go
 internal/client/http.go
 internal/client/http_test.go
 internal/core/authz/BUILD.bazel
+internal/core/authz/binding_test.go
 internal/core/authz/chain.go
 internal/core/authz/chain_test.go
 internal/core/authz/doc.go
@@ -160,6 +161,9 @@ internal/core/authz/identity.go
 internal/core/authz/identity_test.go
 internal/core/authz/mutation.go
 internal/core/authz/mutation_test.go
+internal/core/authz/prepared.go
+internal/core/authz/prepared_differential_test.go
+internal/core/authz/prepared_legacy_test.go
 internal/core/authz/types.go
 internal/core/dumpformat/BUILD.bazel
 internal/core/dumpformat/README.md
@@ -694,6 +698,8 @@ internal/plugins/authnoidc/token.go
 internal/plugins/authzfixed/BUILD.bazel
 internal/plugins/authzfixed/facts.go
 internal/plugins/authzfixed/facts_test.go
+internal/plugins/authzfixed/prepared_differential_test.go
+internal/plugins/authzfixed/prepared_legacy_test.go
 internal/plugins/authzfixed/rules.go
 internal/plugins/authzfixed/rules_test.go
 internal/publicnative/BUILD.bazel
@@ -713,6 +719,7 @@ internal/server/authzrpc/authzrpc.go
 internal/server/authzrpc/authzrpc_test.go
 internal/server/authzrpc/b04_error_bounds_test.go
 internal/server/authzrpc/b15_comments_page_test.go
+internal/server/authzrpc/binding_test.go
 internal/server/authzrpc/checker.go
 internal/server/authzrpc/claim.go
 internal/server/authzrpc/claim_test.go
@@ -727,6 +734,7 @@ internal/server/authzrpc/hierarchy_read.go
 internal/server/authzrpc/hierarchy_test.go
 internal/server/authzrpc/history_authority_test.go
 internal/server/authzrpc/predicate_count_test.go
+internal/server/authzrpc/prepared_test.go
 internal/server/authzrpc/service.go
 internal/server/authzrpc/slice.go
 internal/server/authzrpc/workflow_boundary_test.go
