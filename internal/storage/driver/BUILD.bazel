@@ -44,6 +44,7 @@ go_test(
         "selection_binding_contract_test.go",
         "selection_source_contract_test.go",
         "ready_publication_test.go",
+        "ready_node_encoding_test.go",
         "offline_history_test.go",
     ],
     embed = [":driver"],

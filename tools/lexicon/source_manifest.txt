@@ -986,6 +986,7 @@ internal/storage/driver/offline_restore.go
 internal/storage/driver/parent_counter.go
 internal/storage/driver/parent_counter_test.go
 internal/storage/driver/read_work.go
+internal/storage/driver/ready_node_encoding_test.go
 internal/storage/driver/ready_order.go
 internal/storage/driver/ready_publication.go
 internal/storage/driver/ready_publication_test.go

@@ -122,8 +122,15 @@ func ReadyOrderLeafFor(item ReadyMembershipItem, priority int64) (ReadyOrderLeaf
 	return ReadyOrderLeaf{Key: SelectionKey{Ref: model.RefByID(item.ID, model.Natural64(0)), Revision: item.Revision, Order: []SelectionValue{SelectionInt(priority), SelectionString(item.ID)}, MembershipLeaf: SelectionDigest(b)}, Priority: priority, Digest: SelectionDigest(b)}, nil
 }
 func ValidReadyHash(s string) bool {
-	b, e := hex.DecodeString(s)
-	return e == nil && len(b) == sha256.Size && s == strings.ToLower(s)
+	if len(s) != 2*sha256.Size {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // SealReadyOrderNode binds exact cardinality, all child commitments, the sort
@@ -162,17 +169,59 @@ func SealReadyOrderNode(n *ReadyOrderNode) error {
 		}
 		count += c.Commitment.Count
 	}
-	b, err := json.Marshal(struct {
-		Domain, Prefix string
-		Leaf           *ReadyOrderLeaf
-		Children       []ReadyOrderChild
-	}{"plug.ready.radix.v2", n.Prefix, n.Leaf, n.Children})
+	b, err := readyOrderNodePreimage(n)
 	if err != nil {
 		return err
 	}
 	n.Commitment = ReadyCommitment{Count: count, Hash: SelectionDigest(b)}
 	n.digestBytes = uint64(len(b))
 	return nil
+}
+
+// Seal has validated every prefix as hexadecimal and every child hash as
+// canonical ASCII. Emit that fixed JSON envelope directly; leaves retain the
+// standard encoder for refs, ordering values and all required string escaping.
+// The bytes remain identical to the original four-field JSON struct encoding.
+func readyOrderNodePreimage(n *ReadyOrderNode) ([]byte, error) {
+	var leaf []byte
+	var err error
+	if n.Leaf != nil {
+		leaf, err = json.Marshal(n.Leaf)
+		if err != nil {
+			return nil, err
+		}
+	}
+	size := 128 + len(n.Prefix) + len(leaf)
+	for _, child := range n.Children {
+		size += len(child.Prefix) + 142
+	}
+	b := make([]byte, 0, size)
+	b = append(b, `{"Domain":"plug.ready.radix.v2","Prefix":"`...)
+	b = append(b, n.Prefix...)
+	b = append(b, `","Leaf":`...)
+	if n.Leaf == nil {
+		b = append(b, "null"...)
+	} else {
+		b = append(b, leaf...)
+	}
+	b = append(b, `,"Children":`...)
+	if len(n.Children) == 0 {
+		return append(b, "null}"...), nil
+	}
+	b = append(b, '[')
+	for i, child := range n.Children {
+		if i != 0 {
+			b = append(b, ',')
+		}
+		b = append(b, `{"Prefix":"`...)
+		b = append(b, child.Prefix...)
+		b = append(b, `","Commitment":{"Count":`...)
+		b = strconv.AppendUint(b, child.Commitment.Count, 10)
+		b = append(b, `,"Hash":"`...)
+		b = append(b, child.Commitment.Hash...)
+		b = append(b, `"}}`...)
+	}
+	return append(b, ']', '}'), nil
 }
 
 // ReadyCommitmentFromLeaves is the exact fallback and sparse oracle. It has
