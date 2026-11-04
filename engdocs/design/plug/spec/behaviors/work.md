@@ -126,6 +126,12 @@ foreign holders receive a typed conflict; pool aliases can claim only their
 pool work; wisps are never leased. Validation rejects actor-missing,
 limit/offset/brief claim-next requests before SQL.
 
+Public claim and claim-next refusals use the canonical error catalog's
+`retryable` value and transport-generated non-empty `traceId`. Domain errors
+may carry an empty trace ID before transport encoding; the public HTTP
+boundary must validate the closed error schema and add the trace ID without
+replaying or publishing a claim.
+
 **Plug disposition.** **Keep** semantic claim behavior, expose `bead.claimNext`
 and a 300,000 ms default lease, and add the A4 lazy walk/skip-locked behavior
 and 200-agent contention benchmark. Anonymous agent labels are unverified
@@ -169,8 +175,14 @@ scope. Foreign granting replicas are skipped unless explicitly scoped. A
 heartbeat on a wisp, released/closed claim, missing holder, or foreign actor
 is a typed refusal; orphan cleanup may commit without a successful heartbeat.
 
-**Plug disposition.** **Deviate** retain refresh/re-arm/reclaim semantics, but
-Plug leases are unversioned-but-logged and excluded from `plug-dump/1` (A6),
+**Plug disposition.** **Deviate** retain quiet refresh and reclaim; heartbeat
+may recreate only the replica-local overlay for a valid existing base
+`ClaimLease` held by the caller. A truly missing base lease returns the typed
+`lease_not_held` refusal and publishes no durable change or new overlay, even
+for a leaseless started/hooked bead. Unlike Beads' recorded missing-lease re-arm,
+heartbeat never creates a base lease; any future durable re-arm requires a
+separate protected operation and event. Plug leases are unversioned-but-logged
+and excluded from `plug-dump/1` (A6),
 unlike Beads JSONL lease snapshots. Lease commit fencing follows the
 storage-plugin epoch (A6/P49/P71); lease loss stops
 reads and writes. Restore preserves leaseless started/hooked beads and reports

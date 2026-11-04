@@ -253,7 +253,7 @@ func TestConcurrentRenewalsKeepOneDurableDeadline(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	row, err := readLease(ctx, s.db)
+	row, err := s.readLease(ctx, s.db)
 	if err != nil {
 		t.Fatal(err)
 	}

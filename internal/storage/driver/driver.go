@@ -78,6 +78,10 @@ type DerivedTable string
 type DerivedRow struct {
 	Key   string
 	Value []byte
+	// Index is an optional trusted-core projection of these exact logical
+	// bytes. It changes neither this row's identity nor its lock/sentinel
+	// obligations. Drivers must preserve it atomically or refuse the write.
+	Index *SelectionIndex
 }
 type LockKeyKind string
 type ReadFact string
@@ -362,6 +366,11 @@ type ErrFutureRevision struct {
 
 func (e ErrFutureRevision) Error() string { return "requested revision is beyond head" }
 
+// ErrIndeterminate means publication may or may not have completed; it is not
+// a cancellation/fencing rejection and must not unwrap to one. Graph commits and
+// response finalization retain the original IdempotencyKey for receipt readback.
+// Checkpoint publication leaves it empty: the caller already holds the checkpoint
+// key and expected generation and resolves them through LoadCheckpoint.
 type ErrIndeterminate struct {
 	IdempotencyKey string
 }
@@ -538,7 +547,12 @@ type Checkpoint struct {
 // generation, then publishes generation+1. A stale/foreign lease is ErrFenced;
 // a CAS mismatch is ErrCheckpointConflict. Overflow refuses without writing.
 // Inputs and every returned Payload are copied, including an empty payload.
-// Fencing, CAS failure, invalid input and overflow publish nothing.
+// Fencing, cancellation, CAS failure, invalid input and overflow publish nothing.
+// An uncertain publication instead returns ErrIndeterminate with an empty
+// IdempotencyKey and no successful Checkpoint, never a cancellation/fencing
+// rejection. Reload with a fresh context and compare generation and payload;
+// later generations cannot identify this attempt. Any retry keeps the original
+// expected generation, so a possibly completed CAS cannot be applied twice.
 type CheckpointStore interface {
 	LoadCheckpoint(context.Context, string) (Checkpoint, error)
 	SaveCheckpoint(context.Context, ActiveLease, string, uint64, []byte) (Checkpoint, error)
@@ -574,10 +588,11 @@ type CheckpointGuardTx interface {
 
 // RecordGuardedCheckpointStore publishes metadata only while the named live
 // record still has the observed revision in the supplied incarnation. The
-// record/incarnation check, checkpoint CAS,
-// lease fence and publication are atomic; a changed/deleted record returns
-// ErrConflict without writing. This closes the opposite side of the
-// heartbeat/reclaim race without turning a quiet heartbeat into a graph write.
+// record/incarnation check, checkpoint CAS, lease fence and publication are
+// atomic; a changed/deleted record returns ErrConflict without writing. The
+// CheckpointStore uncertain-publication and original-generation retry contract
+// applies here too. This closes the opposite side of the heartbeat/reclaim race
+// without turning a quiet heartbeat into a graph write.
 type RecordGuardedCheckpointStore interface {
 	SaveCheckpointIfRecord(context.Context, ActiveLease, string, uint64, []byte, Ref, model.Revision, string) (Checkpoint, error)
 }
@@ -595,7 +610,12 @@ type RecordGuardedCheckpointStore interface {
 // outcome is ErrConflict. An initially final receipt accepts only an empty
 // post outcome. A revision mismatch is ErrConflict; missing/expired scope is
 // ErrNotFound; a stale/foreign lease is ErrFenced. Validation, cancellation,
-// fencing and other errors publish nothing and leave the receipt intact.
+// fencing and other determinate errors publish nothing and leave the receipt
+// intact. An uncertain finalization instead returns ErrIndeterminate with the
+// original key, never a cancellation/fencing rejection. Resolve it through
+// IdempotencyByKey in a fresh reader/context for the same scope and revision;
+// retry only the same known post outcome with an active lease, never the graph
+// write or its callbacks. Uncertainty alone is not proof of finalization.
 //
 // Core must never return a pending Commit as success or rerun callbacks for
 // it. Pending replay polls fresh pinned readers with a bounded, cancellable

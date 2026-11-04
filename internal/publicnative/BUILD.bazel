@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "publicnative",
+    srcs = ["server_linux.go"],
+    importpath = "github.com/buildbetter-app/plugs/internal/publicnative",
+    visibility = ["//visibility:public"],
+)
+
+# Consumer tests must declare this input and pass
+# PLUG_PINNED_DOLT_BINARY=$(rlocationpath //internal/publicnative:dolt_runtime).
+# StartDolt hashes the extracted member again before executing it.
+filegroup(
+    name = "dolt_runtime",
+    srcs = ["@dolt_native_linux_amd64//:dolt"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "publicnative_test",
+    srcs = ["server_linux_test.go"],
+    embed = [":publicnative"],
+)

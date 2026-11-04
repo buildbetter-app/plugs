@@ -59,6 +59,26 @@ type SnapshotReader interface {
 	Observe(context.Context, []driver.LockKey) ([]driver.LockState, error)
 }
 
+// HierarchySnapshotReader is an optional trusted-core snapshot capability.
+// Children and selected closure groups join the same Writer read set as Get
+// and Observe, including empty membership, missing groups and exact row reads.
+// Unsupported source coverage must refuse; a generic Query is not a fallback.
+type HierarchySnapshotReader interface {
+	SnapshotReader
+	driver.HierarchyChildrenExcludingReader
+	driver.InverseSourceLinksReader
+	HierarchyClosureRows(context.Context, []model.Ref) ([]driver.DerivedRow, error)
+}
+
+// SelectionSnapshotReader is a future trusted-core capability. Implementors
+// must track every consumed source/control and absence plus predicate scopes,
+// preserving callback budgets. W3 defines this seam but enables no callers or
+// forwarding through the Writer; an untracked driver selector is insufficient.
+type SelectionSnapshotReader interface {
+	SnapshotReader
+	driver.SelectionReader
+}
+
 type Change struct {
 	Resource model.ResourceRef
 	Op       model.Op

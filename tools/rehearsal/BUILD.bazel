@@ -2,7 +2,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "rehearsal",
-    srcs = ["admin_fixture.go", "disposable.go", "files.go", "gate.go", "metrics.go"],
+    srcs = ["admin_fixture.go", "disposable.go", "files.go", "gate.go", "metrics.go", "transcript.go", "transcript_consumer.go"],
     importpath = "github.com/buildbetter-app/plugs/tools/rehearsal",
     visibility = ["//:__subpackages__"],
     deps = [
@@ -23,18 +23,61 @@ go_library(
 go_test(
     name = "rehearsal_test",
     size = "medium",
-    srcs = ["disposable_test.go", "files_test.go", "metrics_test.go"],
+    srcs = ["disposable_test.go", "files_test.go", "metrics_test.go", "rollback_fault_test.go", "transcript_consumer_test.go"],
     args = ["-test.v"],
     data = [
         "//tools/rehearsal/cmd/rollback-runtime:old-runtime",
         "//tools/rehearsal/cmd/rollback-runtime:candidate-runtime",
         "disposable.go",
+        "transcript.go",
+        "transcript_consumer.go",
         "//tools/rehearsal/cmd/rollback-runtime:source",
     ],
     env = {
         "R1_OLD_RUNTIME_BINARY": "$(rootpath //tools/rehearsal/cmd/rollback-runtime:old-runtime)",
         "R1_CANDIDATE_RUNTIME_BINARY": "$(rootpath //tools/rehearsal/cmd/rollback-runtime:candidate-runtime)",
     },
+    embed = [":rehearsal"],
+    deps = [
+        "//internal/api/wire",
+        "//internal/client",
+        "//internal/core/model",
+    ],
+)
+
+filegroup(
+    name = "source",
+    srcs = ["disposable.go", "transcript.go", "transcript_consumer.go"],
+    visibility = ["//tools/rehearsal/cmd/shadow-rehearsal:__pkg__"],
+)
+
+go_test(
+    name = "mcp_precision_test",
+    size = "small",
+    srcs = ["mcp_precision_test.go"],
+    embed = [":rehearsal"],
+    deps = [
+        "//internal/api/wire",
+        "//internal/client",
+        "//internal/core/model",
+        "//internal/server/authn",
+        "//internal/server/rpc",
+        "//internal/server/transport/mcp",
+    ],
+)
+
+go_test(
+    name = "transcript_test",
+    size = "small",
+    srcs = ["transcript_test.go"],
+    embed = [":rehearsal"],
+    deps = ["//internal/api/wire"],
+)
+
+go_test(
+    name = "metrics_completeness_test",
+    srcs = ["metrics_completeness_test.go"],
+    args = ["-test.v"],
     embed = [":rehearsal"],
 )
 

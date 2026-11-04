@@ -1,15 +1,25 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
+load("//internal/server/pluginbuild:test_sdk.bzl", "test_go_sdk")
+
+test_go_sdk(
+    name = "test_go_sdk",
+    testonly = True,
+)
 
 go_library(
     name = "composition",
-    srcs = ["config.go", "configfile.go", "mcp.go", "native.go", "restore_import.go", "telemetry.go"],
+    srcs = ["artifact.go", "config.go", "configfile.go", "mcp.go", "native.go", "restore_import.go", "telemetry.go"],
     importpath = "github.com/buildbetter-app/plugs/internal/server/composition",
     visibility = ["//:__subpackages__"],
     deps = [
         "//internal/core/events",
         "//internal/core/dumpformat",
         "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/core/ontologyops",
+        "//internal/core/ontologymigration",
         "//internal/core/pipeline",
+        "//internal/core/port",
         "//internal/core/restore",
         "//internal/core/service",
         "//internal/core/viewops",
@@ -18,6 +28,8 @@ go_library(
         "//internal/server/authn",
         "//internal/server/collab",
         "//internal/server/events",
+        "//internal/server/ontologyrpc",
+        "//internal/server/pluginbuild",
         "//internal/server/pluginhost",
         "//internal/server/rpc",
         "//internal/server/transport/httpjson",
@@ -32,6 +44,7 @@ go_library(
         "//internal/storage/postgres",
         "//internal/storage/sqlite",
         "//plugins/workflow",
+        "//pluginapi",
         "//sdk/go:sdk_go",
     ],
 )
@@ -41,10 +54,12 @@ go_test(
     srcs = glob(["*_test.go"]),
     embed = [":composition"],
     data = [
+        ":test_go_sdk",
         "//internal/integration/converterroundtrip:testdata/synthetic-plug-dump-1.tar",
         "//internal/server/composition:testdata/server-representative-plug-dump-1.tar",
     ],
     tags = ["exclusive"],
+    env = {"PLUG_TEST_GO_BINARY": "$(rlocationpath :test_go_sdk)"},
     deps = [
         "//internal/api/wire",
         "//internal/client",
@@ -65,7 +80,10 @@ go_test(
         "//internal/plugins/authzfixed",
         "//internal/server/authn",
         "//internal/server/authzrpc",
+        "//internal/server/pluginbuild",
         "//internal/server/pluginhost",
+        "//internal/server/pluginmanifest",
+        "//internal/server/rpc",
         "//internal/server/transport/httpjson",
         "//internal/server/transport/inprocess",
         "//internal/server/viewrpc",

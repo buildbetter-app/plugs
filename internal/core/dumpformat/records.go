@@ -9,15 +9,39 @@ import (
 	"strings"
 )
 
+// UnresolvedDependencyError identifies a source dependency whose endpoint is
+// not admitted by the archive or restore plan.  Callers can use errors.As to
+// distinguish a typed, state-preserving refusal from malformed source data.
+// The source and target values are retained exactly as they appeared in the
+// source edge; no endpoint is guessed or substituted.
+type UnresolvedDependencyError struct {
+	EdgeID     string `json:"edge_id"`
+	Project    string `json:"project"`
+	Source     string `json:"source"`
+	Target     string `json:"target"`
+	TargetKind string `json:"target_kind"`
+}
+
+func (e *UnresolvedDependencyError) Error() string {
+	if e == nil {
+		return "unresolved dependency target"
+	}
+	return fmt.Sprintf("unresolved dependency target: edge %s project %s source %s target %s kind %s", e.EdgeID, e.Project, e.Source, e.Target, e.TargetKind)
+}
+
 var hashPattern = regexp.MustCompile(`^[a-zA-Z0-9]+$`)
 
 func validateRecord(record Record, projects []Project, counts map[string]int) error {
+	return validateMigratedRecord(record, projects, counts, nil)
+}
+
+func validateMigratedRecord(record Record, projects []Project, counts map[string]int, migration *ImportMigration) error {
 	table, fields := record.Source.Table, record.Source.Fields
 	columns, ok := tableColumns[table]
 	if !ok {
 		return fmt.Errorf("unknown record source table")
 	}
-	if actionFor(table) == "refuse-if-nonempty" || table == "labels" || table == "repo_mtimes" || table == "leases" {
+	if migrationAction(table, migration) == "refuse-if-nonempty" || table == "labels" || table == "repo_mtimes" || table == "leases" {
 		return fmt.Errorf("unsupported or operational source record")
 	}
 	expectedKind := "beads-archive"
@@ -74,18 +98,27 @@ func validateRecord(record Record, projects []Project, counts map[string]int) er
 		if strings.TrimSpace(stringValue(fields["title"])) == "" || err != nil || priority > 4 {
 			return fmt.Errorf("invalid source title/priority")
 		}
-		category, result := "", ""
-		switch stringValue(fields["status"]) {
-		case "open":
-			category = "unstarted"
-		case "in_progress", "hooked":
-			category = "started"
-		case "blocked", "deferred", "pinned", "frozen":
-			category = "backlog"
-		case "closed":
-			category, result = "completed", "success"
-		default:
-			return fmt.Errorf("unsupported source status")
+		category, result, targetType := "", "", "issue"
+		if migration != nil {
+			target, ok := migration.Target(record.Project, record.ID)
+			status, known := migration.snapshot.Effective(record.Project).Status(target.Status)
+			if !ok || !known {
+				return migrationRefusal("undeclared-entry", record.ID, record.Project)
+			}
+			category, result, targetType = string(status.Category), string(status.Outcome), target.Type
+		} else {
+			switch stringValue(fields["status"]) {
+			case "open":
+				category = "unstarted"
+			case "in_progress", "hooked":
+				category = "started"
+			case "blocked", "deferred", "pinned", "frozen":
+				category = "backlog"
+			case "closed":
+				category, result = "completed", "success"
+			default:
+				return fmt.Errorf("unsupported source status")
+			}
 		}
 		if strings.TrimSpace(stringValue(fields["issue_type"])) == "" {
 			return fmt.Errorf("missing source type")
@@ -120,7 +153,7 @@ func validateRecord(record Record, projects []Project, counts map[string]int) er
 			last = label
 		}
 		counts["labels"] += len(labels)
-		body = Row{"type": "issue", "source_type": fields["issue_type"], "title": fields["title"], "status_category": category, "labels": labels}
+		body = Row{"type": targetType, "source_type": fields["issue_type"], "title": fields["title"], "status_category": category, "labels": labels}
 		if result != "" {
 			body["result"] = result
 		}
@@ -138,6 +171,11 @@ func validateRecord(record Record, projects []Project, counts map[string]int) er
 			}
 		}
 		if target == "" || targetKind == "depends_on_wisp_id" {
+			if target != "" && targetKind == "depends_on_wisp_id" {
+				return fmt.Errorf("unsupported or missing edge target: %w", &UnresolvedDependencyError{
+					EdgeID: record.ID, Project: record.Project, Source: stringValue(fields["issue_id"]), Target: target, TargetKind: targetKind,
+				})
+			}
 			return fmt.Errorf("unsupported or missing edge target")
 		}
 		switch stringValue(fields["type"]) {
@@ -275,7 +313,9 @@ func validateRelations(projects []Project, records map[string][]Record) error {
 			}
 			seen[record.ID] = true
 			if kind == "edge" && record.Body["target_kind"] == "depends_on_issue_id" && beads[stringValue(record.Body["to"])] == "" {
-				return fmt.Errorf("dangling typed edge target")
+				return fmt.Errorf("dangling typed edge target: %w", &UnresolvedDependencyError{
+					EdgeID: record.ID, Project: record.Project, Source: stringValue(record.Body["from"]), Target: stringValue(record.Body["to"]), TargetKind: stringValue(record.Body["target_kind"]),
+				})
 			}
 		}
 	}
@@ -318,4 +358,23 @@ func validateRelations(projects []Project, records map[string][]Record) error {
 		}
 	}
 	return nil
+}
+
+func sourceStatusTarget(source string) (string, bool) {
+	target, ok := map[string]string{
+		"open": "todo", "in_progress": "in_progress", "hooked": "in_progress",
+		"blocked": "backlog", "deferred": "backlog", "pinned": "backlog", "frozen": "backlog", "closed": "done",
+	}[source]
+	return target, ok
+}
+
+// Source built-in names differ from legacy import spellings: frozen is a
+// legal custom name at the pinned source, even though older imports accepted
+// that spelling as backlog without a declaration.
+func builtInSourceStatus(source string) bool {
+	switch source {
+	case "open", "in_progress", "hooked", "blocked", "deferred", "pinned", "closed":
+		return true
+	}
+	return false
 }

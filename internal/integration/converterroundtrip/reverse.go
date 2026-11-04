@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -254,8 +255,14 @@ func projectLiveBead(source reverseconverter.Record, row driver.Record, dump rev
 		return reverseconverter.Record{}, ReverseRefusal{"live_claim_or_attachment"}
 	}
 	for field := range doc.Fields {
-		if field != "status" && field != "title" && field != "description" && field != "priority" {
+		if field != "status" && field != "title" && field != "description" && field != "priority" && field != "labels" {
 			return reverseconverter.Record{}, ReverseRefusal{"unsupported_live_field"}
+		}
+	}
+	if raw, present := doc.Fields["labels"]; present {
+		labels, ok := exactLabelSet(raw)
+		if !ok || !slices.Equal(labels, doc.Labels) {
+			return reverseconverter.Record{}, ReverseRefusal{"inconsistent_live_labels"}
 		}
 	}
 	if err := checkLiveRelationsAndComments(source.ID, doc, dump); err != nil {
@@ -349,15 +356,27 @@ func projectLiveBead(source reverseconverter.Record, row driver.Record, dump rev
 
 func checkLiveRelationsAndComments(id string, doc pipeline.Document, dump reverseconverter.Dump) error {
 	links := []pipeline.Link{}
+	var parent *model.Ref
 	for _, edge := range dump.Records["edge"] {
 		if edge.Body["from"] != id {
 			continue
 		}
 		kind := stringValue(edge.Body["type"])
+		if kind == "parent-child" {
+			if parent != nil {
+				return ReverseRefusal{"changed_source_relationships"}
+			}
+			ref := model.RefByID(stringValue(edge.Body["to"]), model.Natural64(0))
+			parent = &ref
+			continue
+		}
 		if kind == "related" {
 			kind = "relates-to"
 		}
 		links = append(links, pipeline.Link{To: model.RefByID(stringValue(edge.Body["to"]), model.Natural64(0)), Kind: kind})
+	}
+	if !reflect.DeepEqual(parent, doc.Parent) {
+		return ReverseRefusal{"changed_source_relationships"}
 	}
 	key := func(link pipeline.Link) string {
 		return fmt.Sprintf("%s/%s/%s", link.Kind, link.To.Branch.String(), link.To.ID)

@@ -23,9 +23,9 @@ const (
 	idA = "pl-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	idB = "pl-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	idC = "pl-cccccccccccccccccccccccccccccccc"
-	// Fixed digest of an independently constructed builtin-head/1 image with
-	// each bead's required self ancestor at depth zero.
-	supportedDerived = "89f6eb61310b4f9193e9925e2a2305101b126f763e870986bc7ca51f6043d28a"
+	// Fixed digest of an independently constructed 20-row, nine-table
+	// builtin-head/1 image with canonical self-ancestor keys and scalar zero.
+	supportedDerived = "f170bf742699fb0bbc577c57b19e7907872e2ea99a34a94fda5e0659197f20ed"
 )
 
 // This is a separately constructed head-only input, NOT the pinned exporter
@@ -262,6 +262,12 @@ func TestRestoreRefusesUnsupportedSemanticsBeforeWrite(t *testing.T) {
 				if err == nil || !strings.Contains(err.Error(), tt.cause) {
 					t.Fatalf("got %v; wanted %s", err, tt.cause)
 				}
+				if tt.name == "external target even when ID matches a bead" {
+					var unresolved *dumpformat.UnresolvedDependencyError
+					if !errors.As(err, &unresolved) || unresolved.EdgeID == "" || unresolved.Project != "pl" || unresolved.Source != idB || unresolved.Target != idA || unresolved.TargetKind != "depends_on_external" {
+						t.Fatalf("external dependency lost its typed endpoint report: %+v", err)
+					}
+				}
 				if target.writes != 0 || !reflect.DeepEqual(before, snapshot(t, store)) {
 					t.Fatal("semantic refusal opened a write or changed the target")
 				}
@@ -286,6 +292,9 @@ func TestRestoreRequiresMatchingIndependentComparison(t *testing.T) {
 				// The previous image omitted mandatory self ancestors. Its
 				// comparison must refuse before any write, even on an empty store.
 				{{ArchiveSHA256: check.ArchiveSHA256, DerivedSHA256: "76f2bbff964bca8043b9952adeb69583432b567d622a9dbca2d541cf816229eb"}},
+				// The old array-valued closure image is also incompatible with
+				// canonical hierarchy rows and must never authorize publication.
+				{{ArchiveSHA256: check.ArchiveSHA256, DerivedSHA256: "89f6eb61310b4f9193e9925e2a2305101b126f763e870986bc7ca51f6043d28a"}},
 			} {
 				if _, err := RestoreWithLease(context.Background(), bytes.NewReader(data), target, lease, checks...); !errors.Is(err, ErrRestoreUnavailable) {
 					t.Fatalf("mismatch: %v", err)
@@ -310,10 +319,21 @@ func assertRestoreSelfAncestors(t *testing.T, store driver.Store) {
 		t.Fatal(err)
 	}
 	defer r.Close()
-	ids := []string{idA, idB, idC}
+	// Observe requires encoded key order, which differs from the source ID order.
+	ids := []string{idC, idA, idB}
+	// Fixed contract bytes, independently derived without the production codec.
+	selfKeys := []string{
+		"cGwtY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2M.cGwtY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2M",
+		"cGwtYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE.cGwtYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE",
+		"cGwtYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI.cGwtYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI",
+	}
 	keys := make([]driver.LockKey, len(ids))
-	for i, id := range ids {
-		keys[i] = driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAncestorClosure, Key: id}}
+	for i, key := range selfKeys {
+		keys[i] = driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAncestorClosure, Key: key}}
+	}
+	rows, err := r.DerivedRows(ctx, driver.DerivedAncestorClosure, "")
+	if err != nil || len(rows) != len(ids) {
+		t.Fatalf("self ancestor census: %+v %v", rows, err)
 	}
 	states, err := r.Observe(ctx, keys)
 	if err != nil || len(states) != len(ids) {
@@ -321,15 +341,14 @@ func assertRestoreSelfAncestors(t *testing.T, store driver.Store) {
 	}
 	for i, id := range ids {
 		state := states[i]
-		// The descendant is the row key. Parent links refuse, so each closure
-		// must contain exactly its self membership at depth zero, regardless
-		// of workflow status or blocking links. This expectation uses no plan.
-		want := `[{"ancestor":"` + id + `","depth":0}]`
+		// The parent-free image has exactly one self row per bead. Canonical
+		// depth is the scalar integer 0, independent of status/blocking links.
+		want := "0"
 		var got string
 		if state.Derived != nil {
 			got = string(state.Derived.Value)
 		}
-		if !state.Present || state.Derived == nil || state.Derived.Key != id || state.Revision.String() != "1" || string(state.Derived.Value) != want {
+		if !state.Present || state.Derived == nil || state.Derived.Key != keys[i].Derived.Key || state.Revision.String() != "1" || string(state.Derived.Value) != want {
 			t.Errorf("ancestor closure %s: got revision %s, value %q; want revision 1, value %s", id, state.Revision, got, want)
 		}
 	}
@@ -615,6 +634,124 @@ func TestConcurrentSameLeaseRestoresHaveOneWinner(t *testing.T) {
 			if meta.Head.String() != "1" {
 				t.Fatal("multiple restore commits")
 			}
+		})
+	}
+}
+
+func TestB27NonemptyAuxiliaryArchiveRetentionAcrossDrivers(t *testing.T) {
+	// Detached consumer input only: no native recording or public capture claim.
+	rows := map[string]dumpformat.Row{
+		"issue_snapshots": {
+			"id": "snapshot-1", "issue_id": idA, "snapshot_time": "2026-11-03T23:00:00Z", "compaction_level": json.Number("2"),
+			"original_size": json.Number("9007199254740993"), "compressed_size": json.Number("37"),
+			"original_content": "Snapshot λ\nexact", "archived_events": "{\"revision\":9007199254740993, \"optional\":null}\n",
+		},
+		"compaction_snapshots": {
+			"id": "compaction-1", "issue_id": idA, "compaction_level": json.Number("3"),
+			"snapshot_json": "{ \"title\":\"雪\", \"ratio\":1.0, \"optional\":null }\n", "created_at": "2026-11-03T23:00:01Z",
+		},
+		"provenance_events": {
+			"id": "provenance-1", "issue_id": idA, "kind": "import", "actor": "unverified-source-actor", "ref": "external-spec", "ref_kind": "spec",
+			"payload": "{\"literal\":9007199254740993,\"text\":\"λ\"}\n", "source": "independent-fixture", "occurred_at": nil, "created_at": "2026-11-03T23:00:02Z",
+		},
+		"events": {
+			"id": "event-1", "issue_id": idA, "event_type": "updated", "actor": "unverified-source-actor", "old_value": nil,
+			"new_value": "{ \"ratio\":1.0, \"large\":9007199254740993 }", "comment": "Event λ\nexact", "created_at": "2026-11-03T23:00:03Z",
+		},
+	}
+	want := map[string]dumpformat.Record{}
+	data := supportedBytes(t, func(members map[string][]byte) {
+		var records []dumpformat.Record
+		for _, line := range bytes.Split(bytes.TrimSpace(members["records/beads-archive.ndjson"]), []byte{'\n'}) {
+			var record dumpformat.Record
+			decode(t, line, &record)
+			records = append(records, record)
+		}
+		for family, fields := range rows {
+			record := dumpformat.Record{
+				Kind: "beads-archive", ID: family + "/" + digestBytes(encode(t, fields)),
+				Body:   dumpformat.Row{"read_only": true, "redactable": true, "history_verified": false, "attribution_verified": false},
+				Source: dumpformat.Provenance{Table: family, Fields: fields},
+			}
+			records = append(records, record)
+			want[record.ID] = record
+		}
+		sort.Slice(records, func(i, j int) bool { return records[i].ID < records[j].ID })
+		var raw []byte
+		for _, record := range records {
+			raw = append(raw, encode(t, record)...)
+		}
+		members["records/beads-archive.ndjson"] = raw
+		changeManifest(t, members, func(m map[string]any) {
+			m["history"] = "available-unverified"
+			for _, raw := range m["kind_registry"].([]any) {
+				kind := raw.(map[string]any)
+				if kind["name"] == "beads-archive" {
+					kind["count"] = len(records)
+				}
+			}
+			for _, raw := range m["sources"].([]any) {
+				source := raw.(map[string]any)
+				if _, present := rows[source["family"].(string)]; present {
+					source["rows"] = 1
+				}
+			}
+		})
+	})
+	profile, sourceArchive := admittedImportProfile(t, data)
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			store, lease, reopen := openIdentityTarget(t, engine)
+			report, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			check := func(t *testing.T) {
+				meta, err := store.Meta(ctx)
+				if err != nil || meta != report.Restored {
+					t.Fatalf("restored archive identity changed: %+v %v", meta, err)
+				}
+				r, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer r.Close()
+				retained, err := r.Blob(ctx, driver.Hash(sourceArchive.SHA256()))
+				if err != nil || !bytes.Equal(retained, data) {
+					t.Fatalf("nonempty auxiliary archive envelope changed: %v", err)
+				}
+				for name, file := range sourceArchive.Manifest().Files {
+					member, _ := sourceArchive.Member(name)
+					got, err := r.Blob(ctx, driver.Hash(file.SHA256))
+					if err != nil || !bytes.Equal(got, member) {
+						t.Fatalf("retained source member changed: %s %v", name, err)
+					}
+				}
+				for id, record := range want {
+					got, err := r.Get(ctx, []model.Ref{model.RefByID("source/beads-archive/"+id, model.Natural64(0))})
+					if err != nil || len(got) != 1 || got[0].Kind != "beads-archive" {
+						t.Fatalf("nonempty auxiliary source row missing: %s %v", record.Source.Table, err)
+					}
+					var body map[string]any
+					decode(t, got[0].Body, &body)
+					if body["source_table"] != record.Source.Table || body["source_id"] != record.ID || !bytes.Equal(encode(t, body["source"]), encode(t, record.Source.Fields)) ||
+						body["history_verified"] != false || body["attribution_verified"] != false || body["read_only"] != true || body["redactable"] != true {
+						t.Fatalf("source fields, opaque bytes or verification flags changed: %s %s", record.Source.Table, got[0].Body)
+					}
+				}
+				dump, err := retainedReverseDump(ctx, r)
+				if err != nil || dump.Manifest.History != "available-unverified" {
+					t.Fatalf("retained reverse archive lost unverified disposition: %v", err)
+				}
+				member, _ := sourceArchive.Member("records/beads-archive.ndjson")
+				if !bytes.Equal(dump.Members["records/beads-archive.ndjson"], member) {
+					t.Fatal("retained reverse archive lost nonempty auxiliary rows")
+				}
+			}
+			t.Run("restored", check)
+			store, lease = reopen() // SQL closes/reopens; memory refreshes its lease.
+			t.Run("reopened", check)
 		})
 	}
 }

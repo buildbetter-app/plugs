@@ -34,12 +34,16 @@ type transaction struct {
 	acquired                driver.LockSet
 	records                 map[string]*driver.Record
 	derived                 map[string]driver.LockState
+	selectionAnnotated      bool
 	blobs                   map[driver.Hash][]byte
 	bumps                   map[string]driver.LockKey
 	allocators              map[string]driver.OfflineAllocator
 	parentCounters          map[string]driver.ParentCounter
 	allocated               map[string]bool
 	checkpointGuards        map[string]uint64
+	sourceDeclarations      map[string]sourceDeclaration
+	stagedParents           map[string][]string
+	stagedIncoming          map[sourceLinkBucket][]string
 }
 
 func (t *transaction) check(ctx context.Context) error {
@@ -91,6 +95,9 @@ func (t *transaction) finish() {
 	t.allocators = nil
 	t.parentCounters = nil
 	t.allocated = nil
+	t.sourceDeclarations = nil
+	t.stagedParents = nil
+	t.stagedIncoming = nil
 	s.signal()
 }
 
@@ -234,25 +241,14 @@ func (t *transaction) Put(ctx context.Context, record driver.Record) error {
 	if err := t.check(ctx); err != nil {
 		return err
 	}
-	key, err := recordKey(record.Ref)
+	key, err := t.validateSourcePut(record)
 	if err != nil {
 		return err
 	}
-	if err := t.writable(driver.LockKey{Kind: driver.LockRecord, Ref: &record.Ref}); err != nil {
-		return err
+	if record.Kind == "bead" && (hierarchyReady(t.base.hierarchy) || sourceLinksReady(t.base.sourceLinks)) {
+		return fmt.Errorf("%w: certified bead publication requires typed source metadata", driver.ErrUnsupported)
 	}
-	if record.Kind == "" || !json.Valid(record.Body) {
-		return fmt.Errorf("memory: record requires kind and valid JSON body")
-	}
-	if kind, exists := t.base.kinds[key]; exists && kind != record.Kind {
-		return fmt.Errorf("memory: changing a record kind is unsupported")
-	}
-	if previous, ok := t.records[key]; ok && previous != nil && previous.Kind != record.Kind {
-		return fmt.Errorf("memory: changing a staged record kind is unsupported")
-	}
-	record = copyRecord(record)
-	record.Ref.Branch = model.Natural64(0)
-	t.records[key] = &record
+	t.stageSourceRecord(key, record, nil)
 	return nil
 }
 
@@ -274,6 +270,16 @@ func (t *transaction) Delete(ctx context.Context, ref driver.Ref) error {
 	if (!staged && t.base.records[key].Kind == "") || (staged && value == nil) {
 		return driver.ErrNotFound
 	}
+	kind := t.base.kinds[key]
+	if value != nil {
+		kind = value.Kind
+	}
+	if kind == "bead" && (hierarchyReady(t.base.hierarchy) || sourceLinksReady(t.base.sourceLinks)) {
+		if err := t.writable(driver.GraphBlockingSentinelLock); err != nil {
+			return err
+		}
+	}
+	t.replaceSourceDeclaration(key, nil)
 	t.records[key] = nil
 	return nil
 }
@@ -307,6 +313,9 @@ func (t *transaction) PutDerived(ctx context.Context, table driver.DerivedTable,
 	}
 	for _, rows := range [][]driver.DerivedRow{del, add} {
 		for _, row := range rows {
+			if err := row.Index.Validate(table, row); err != nil {
+				return err
+			}
 			key := driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: table, Key: row.Key}}
 			if err := key.Validate(); err != nil {
 				return err
@@ -316,15 +325,33 @@ func (t *transaction) PutDerived(ctx context.Context, table driver.DerivedTable,
 			}
 		}
 	}
+	annotated := t.selectionAnnotated
+	for _, row := range add {
+		annotated = annotated || row.Index != nil
+	}
+	proposed := t.derived
+	if annotated {
+		proposed = make(map[string]driver.LockState, len(t.derived)+len(add)+len(del))
+		for id, value := range t.derived {
+			proposed[id] = value
+		}
+	}
 	for _, row := range del {
 		key := driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: table, Key: row.Key}}
-		t.derived[keyID(key)] = driver.LockState{Key: key, Revision: model.Natural64(0)}
+		proposed[keyID(key)] = driver.LockState{Key: key, Revision: model.Natural64(0)}
 	}
 	for _, row := range add {
 		key := driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: table, Key: row.Key}}
-		copy := driver.DerivedRow{Key: row.Key, Value: bytes.Clone(row.Value)}
-		t.derived[keyID(key)] = driver.LockState{Key: key, Derived: &copy, Present: true, Revision: model.Natural64(0)}
+		copy := row.Clone()
+		proposed[keyID(key)] = driver.LockState{Key: key, Derived: &copy, Present: true, Revision: model.Natural64(0)}
 	}
+	if annotated {
+		if err := t.validateSelectionWrites(proposed); err != nil {
+			return err
+		}
+	}
+	t.derived = proposed
+	t.selectionAnnotated = annotated
 	return nil
 }
 
@@ -462,6 +489,11 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 	if err := t.validatePredicates(); err != nil {
 		return model.Changeset{}, err
 	}
+	if t.selectionAnnotated {
+		if err := t.validateSelectionWrites(t.derived); err != nil {
+			return model.Changeset{}, err
+		}
+	}
 	head, err := s.state.meta.Head.Uint64()
 	if err != nil {
 		return model.Changeset{}, err
@@ -544,9 +576,14 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 		next.publishKey(id, lock)
 	}
 	for id, value := range t.derived {
+		value = copyLock(value)
 		value.Revision = revision
+		if value.Derived != nil && value.Derived.Index != nil && t.selectionSourceChanged(value.Derived.Index.Source.Key) {
+			value.Derived.Index.Source.Revision = revision
+		}
 		next.publishKey(id, value)
 	}
+	next.publishDerivedKeys(t.derived)
 	for id, key := range t.bumps {
 		next.publishKey(id, driver.LockState{Key: key, Revision: revision, Present: true})
 	}
@@ -558,6 +595,9 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 	next.meta.Head = revision
 	if t.restore != nil {
 		next.meta = *t.restore
+	}
+	if err := t.publishSourceIndexes(next); err != nil {
+		return model.Changeset{}, err
 	}
 	next.log = append(append([]model.Changeset(nil), next.log...), entry)
 	if header.IdempotencyKey != "" {
@@ -586,10 +626,9 @@ func (s *state) publishKey(id string, value driver.LockState) {
 }
 
 func (t *transaction) recordRef(id string) driver.Ref {
-	for _, request := range t.acquired {
-		if keyID(request.Key) == id {
-			return *request.Key.Ref
-		}
+	i := sort.Search(len(t.acquired), func(i int) bool { return keyID(t.acquired[i].Key) >= id })
+	if i < len(t.acquired) && keyID(t.acquired[i].Key) == id && t.acquired[i].Key.Kind == driver.LockRecord {
+		return *t.acquired[i].Key.Ref
 	}
 	panic("validated record lost its update lock")
 }

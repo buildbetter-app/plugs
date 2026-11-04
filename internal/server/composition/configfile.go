@@ -7,6 +7,9 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 )
 
 const maxConfigBytes = 1 << 20
@@ -45,6 +48,9 @@ func ParseConfig(data []byte) (Config, error) {
 		UI:       true,
 		AuthMode: "anonymous",
 	}
+	// The local administrator may select an existing protected source identity.
+	// The file supplies no executable binding, source body or authorization;
+	// Open validates the durable source before admitting requests.
 	for key, raw := range values {
 		switch key {
 		case "driver":
@@ -59,6 +65,16 @@ func ParseConfig(data []byte) (Config, error) {
 			config.UI, err = configBool(raw, key)
 		case "auth.mode":
 			config.AuthMode, err = configString(raw, key)
+		case "ontology.source":
+			var id string
+			id, err = configString(raw, key)
+			if err == nil {
+				ref := model.RefByID(id, model.Natural64(0))
+				err = validateOntologySourceRef(ref)
+				if err == nil {
+					config.Ontology = &OntologyConfig{Source: service.StaticOntologySource(ref)}
+				}
+			}
 		default:
 			// parseConfigMap canonicalizes and validates all keys. Keep this
 			// guard in case a future alias is added without a field mapping.
@@ -185,7 +201,7 @@ func parseConfigMap(data []byte) (map[string]configValue, error) {
 }
 
 func validSection(key string) bool {
-	return key == "storage" || key == "server" || key == "auth"
+	return key == "storage" || key == "server" || key == "auth" || key == "ontology"
 }
 
 func canonicalConfigKey(key string) (string, bool) {
@@ -202,6 +218,8 @@ func canonicalConfigKey(key string) (string, bool) {
 		return "ui", true
 	case "auth.mode":
 		return "auth.mode", true
+	case "ontology.source":
+		return "ontology.source", true
 	default:
 		return "", false
 	}

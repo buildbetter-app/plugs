@@ -2,25 +2,13 @@ package s1b01b04
 
 import (
 	"bytes"
-	"crypto/sha256"
 	_ "embed"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"testing"
 )
-
-// These are immutable reference inputs. This target never starts a Plug
-// service; it checks that both fresh reference runs and their provenance are
-// complete before replay consumes them.
-//
-//go:embed manifest.json
-var manifestBytes []byte
-
-//go:embed run-1.json
-var runOneBytes []byte
 
 //go:embed run-2.json
 var runTwoBytes []byte
@@ -34,28 +22,8 @@ const (
 	pinnedBinary = "33cdadbe3bd7a82e2c3c40f4b5da4403d822acc00d544a321df24e277c0836a3"
 )
 
-func sha256Hex(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
-}
-
 func canonical(value any) ([]byte, error) {
 	return json.Marshal(value)
-}
-
-func decodeObject(t *testing.T, data []byte) map[string]any {
-	t.Helper()
-	var value map[string]any
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	if err := decoder.Decode(&value); err != nil {
-		t.Fatal(err)
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err == nil {
-		t.Fatal("accepted trailing JSON value")
-	}
-	return value
 }
 
 func stringField(t *testing.T, object map[string]any, path ...string) string {

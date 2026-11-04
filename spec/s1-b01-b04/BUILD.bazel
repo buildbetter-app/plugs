@@ -2,7 +2,10 @@ load("@rules_go//go:def.bzl", "go_test")
 
 go_test(
     name = "recorded_integrity_test",
-    srcs = ["recorded_integrity_test.go"],
+    srcs = [
+        "manifest_test.go",
+        "recorded_integrity_test.go",
+    ],
     embedsrcs = [
         "manifest.json",
         "record_reference.py",
@@ -17,6 +20,7 @@ go_test(
     srcs = [
         "fixture_test.go",
         "clock_boundary_test.go",
+        "manifest_test.go",
         "replay_test.go",
         "replay_support_test.go",
     ],
@@ -45,6 +49,7 @@ go_test(
 go_test(
     name = "claim_acceptance",
     srcs = [
+        "manifest_test.go",
         "claim_acceptance_test.go",
         "fixture_test.go",
         "replay_support_test.go",

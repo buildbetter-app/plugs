@@ -2,10 +2,15 @@ load("@rules_go//go:def.bzl", "go_test")
 
 go_test(
     name = "acceptance_test",
+    size = "large",
+    tags = ["local", "requires-network"],
     srcs = [
         "acceptance_test.go",
+        "config_union_test.go",
         "converter_test.go",
         "reference_test.go",
+        "relations_test.go",
+        "subscribers_test.go",
     ],
     args = ["-test.v"],
     data = glob(["testdata/**"]) + [
@@ -17,14 +22,88 @@ go_test(
     deps = [
         "//internal/core/dumpformat",
         "//internal/core/model",
+        "//internal/core/ontology",
         "//internal/core/pipeline",
         "//internal/core/port",
         "//internal/core/service",
         "//internal/integration/converterroundtrip",
         "//internal/storage/driver",
         "//internal/storage/memory",
+        "//internal/storage/postgres",
         "//internal/storage/sqlite",
+        "//internal/testclock",
     ],
+)
+
+# This target is intentionally manual: RunsOn prepares the pinned public
+# native executable only when the caller supplies its trusted PLUG_PUBLIC_BUNDLE.
+go_test(
+    name = "public_recording_test",
+    size = "large",
+    srcs = ["public_recording_test.go"],
+    args = ["-test.v", "-public-recording", "-test.run=^TestPublicNativeRecording$$"],
+    data = [
+        "testdata/native-public-profile.json",
+        "testdata/native-public-recording-fixture.json",
+        "//internal/publicnative:dolt_runtime",
+    ],
+    env = {
+        "PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)",
+    },
+    tags = ["local", "manual", "requires-network"],
+    timeout = "long",
+    deps = [
+        "//internal/core/dumpformat",
+        "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/core/pipeline",
+        "//internal/core/port",
+        "//internal/core/service",
+        "//internal/integration/converterroundtrip",
+        "//internal/publicnative",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/postgres",
+        "//internal/storage/sqlite",
+        "//internal/testclock",
+    ],
+)
+
+# Measurement-only controls can run while public producer delivery is blocked.
+# Their PASS is never paired-recording or behavior-card qualification.
+go_test(
+    name = "recorder_validation_test",
+    size = "large",
+    srcs = ["public_recording_test.go"],
+    args = ["-test.v", "-test.run=^TestPublicProjection"],
+    data = [
+        "//internal/integration/converterroundtrip:testdata/synthetic-plug-dump-1.tar",
+        "testdata/native-public-profile.json",
+        "testdata/native-public-recording-fixture.json",
+    ],
+    tags = ["local", "requires-network"],
+    deps = [
+        "//internal/core/dumpformat",
+        "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/core/pipeline",
+        "//internal/core/port",
+        "//internal/core/service",
+        "//internal/integration/converterroundtrip",
+        "//internal/publicnative",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/postgres",
+        "//internal/storage/sqlite",
+        "//internal/testclock",
+    ],
+)
+
+# Existing independent expected protocol data, shared without copying it.
+filegroup(
+    name = "public_recording_protocol",
+    srcs = ["testdata/public-recording-fixture.json"],
+    visibility = ["//tools/roundtrip:__pkg__"],
 )
 
 filegroup(

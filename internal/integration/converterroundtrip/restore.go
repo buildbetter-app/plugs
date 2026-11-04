@@ -159,8 +159,8 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		return report, err
 	}
 	// The historical Restore/RestoreWithLease wrappers predate the trusted
-	// host admission profile and retain their compatibility behavior: they are
-	// current-image imports. The explicit import surface defaults to strict
+	// host admission profile and retain their non-strict current-image behavior.
+	// Strict migrations require the explicit import surface, which defaults to
 	// full history and must name snapshot to flatten an incomplete archive.
 	if profile != nil {
 		mode, modeErr := driver.ParseRestoreHistoryMode(string(profile.HistoryMode))
@@ -535,6 +535,7 @@ type restoreRecord struct {
 }
 
 type restorePlan struct {
+	migration     *dumpformat.ImportMigration
 	records       []restoreRecord
 	sentinels     []driver.Sentinel
 	derived       []derivedImage
@@ -647,6 +648,12 @@ func buildPlanForInspection(archive *dumpformat.Archive) (restorePlan, error) {
 
 func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportProfile, restoreTime time.Time, mode planMode) (restorePlan, error) {
 	manifest := archive.Manifest()
+	migration, _ := archive.ImportMigration()
+	if mode == planLegacy && migration != nil {
+		// A missing import profile cannot opt a newly strict migration into
+		// snapshot semantics. Inspection remains available without admission.
+		return restorePlan{}, driver.ErrRestoreHistoryRefused{Mode: driver.RestoreHistoryModeFull, History: manifest.History, Reason: driver.RestoreHistoryReasonUnavailable}
+	}
 	if mode == planLegacy && manifest.History != "unavailable" {
 		return restorePlan{}, fmt.Errorf("%w: unverified source history cannot be restored", ErrRestoreUnavailable)
 	}
@@ -682,12 +689,17 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 			return restorePlan{}, fmt.Errorf("%w: source ID does not match the declared allocator", ErrRestoreUnavailable)
 		}
 		status, ok := targetStatus(stringValue(source.Source.Fields["status"]))
+		targetType := stringValue(source.Body["type"])
+		if migration != nil {
+			target, present := migration.Target(source.Project, source.ID)
+			status, targetType, ok = target.Status, target.Type, present
+		}
 		if !ok {
 			return restorePlan{}, fmt.Errorf("unsupported source status for %s", source.ID)
 		}
-		// The current built-in ontology has only title/description plus the
-		// kernel priority field. Preserve every other source field in metadata
-		// so restored beads remain writable by the ordinary pipeline instead of
+		// The admitted issue schema (including strict-union type aliases) has
+		// title/description plus the kernel priority field. Preserve every other
+		// source field in metadata so restored beads remain writable by the ordinary pipeline instead of
 		// presenting unsupported source columns as typed Plug fields.
 		fields := map[string]any{"status": status}
 		metadata := map[string]json.RawMessage{}
@@ -754,11 +766,14 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 				metadata["plug.restore.allocator"] = encoded
 			}
 		}
-		labels := []string{}
-		for _, value := range source.Body["labels"].([]any) {
-			labels = append(labels, value.(string))
+		labels, labelsOK := exactLabelSet(source.Body["labels"])
+		if !labelsOK {
+			return restorePlan{}, fmt.Errorf("%w: source labels are not writable for %s", ErrRestoreUnavailable, source.ID)
 		}
-		docs[source.ID] = pipeline.Document{Labels: labels, ID: source.ID, Type: stringValue(source.Body["type"]), Project: source.Project, Fields: fields, Metadata: metadata}
+		if len(labels) != 0 {
+			fields["labels"] = append([]string(nil), labels...)
+		}
+		docs[source.ID] = pipeline.Document{Labels: labels, ID: source.ID, Type: targetType, Project: source.Project, Fields: fields, Metadata: metadata}
 	}
 
 	if profile != nil {
@@ -788,18 +803,36 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 
 	for _, source := range archive.Records("edge") {
 		if stringValue(source.Body["target_kind"]) != "depends_on_issue_id" {
-			return restorePlan{}, fmt.Errorf("%w: external relation %s", ErrRestoreUnavailable, source.ID)
+			return restorePlan{}, fmt.Errorf("%w: external relation %s: %w", ErrRestoreUnavailable, source.ID, &dumpformat.UnresolvedDependencyError{
+				EdgeID: source.ID, Project: source.Project, Source: stringValue(source.Body["from"]), Target: stringValue(source.Body["to"]), TargetKind: stringValue(source.Body["target_kind"]),
+			})
 		}
 		from, to := stringValue(source.Body["from"]), stringValue(source.Body["to"])
 		doc, ok := docs[from]
 		if _, targetExists := docs[to]; !ok || !targetExists {
-			return restorePlan{}, fmt.Errorf("edge %s has no restored endpoint", source.ID)
+			return restorePlan{}, fmt.Errorf("%w: edge %s has no restored endpoint: %w", ErrRestoreUnavailable, source.ID, &dumpformat.UnresolvedDependencyError{
+				EdgeID: source.ID, Project: source.Project, Source: from, Target: to, TargetKind: stringValue(source.Body["target_kind"]),
+			})
 		}
 		kind := stringValue(source.Body["type"])
 		switch kind {
 		case "blocks":
 		case "related":
 			kind = "relates-to"
+		case "parent-child":
+			// The source edge points from child to parent. A Plug parent is
+			// core-owned hierarchy, not a second generic link. Keep the source
+			// edge mirror below for exact reverse provenance.
+			if mode == planLegacy {
+				return restorePlan{}, fmt.Errorf("%w: relation type %s", ErrRestoreUnavailable, kind)
+			}
+			if doc.Parent != nil {
+				return restorePlan{}, fmt.Errorf("%w: bead %s has multiple parent edges", ErrRestoreUnavailable, from)
+			}
+			parent := model.RefByID(to, model.Natural64(0))
+			doc.Parent = &parent
+			docs[from] = doc
+			continue
 		default:
 			return restorePlan{}, fmt.Errorf("%w: relation type %s", ErrRestoreUnavailable, kind)
 		}
@@ -807,7 +840,7 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		docs[from] = doc
 	}
 
-	plan := restorePlan{}
+	plan := restorePlan{migration: migration}
 	if profile != nil {
 		for _, project := range manifest.Projects {
 			plan.allocators = append(plan.allocators, driver.NewRandomAllocator(project.Prefix))

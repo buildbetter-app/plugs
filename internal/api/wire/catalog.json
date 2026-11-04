@@ -298,7 +298,7 @@
     {
       "name": "bead.get",
       "summary": "Read a bead and its evidence attachments.",
-      "description": "Read a bead and its evidence attachments.",
+      "description": "Read a bead and its evidence attachments. Optional commentPage selects a bounded (time, stored ordinal) keyset page in the same authorized bead.get read; omitted selection retains the existing comments response.",
       "tags": [
         {
           "name": "core"
@@ -318,6 +318,13 @@
           "schema": {
             "$ref": "#/components/schemas/AsOf"
           }
+        },
+        {
+          "name": "commentPage",
+          "schema": {
+            "$ref": "#/components/schemas/CommentPageSelection"
+          },
+          "description": "Optional comment page selection; omitted keeps the existing bead.get response."
         },
         {
           "name": "_meta",
@@ -349,6 +356,12 @@
         },
         {
           "$ref": "#/components/errors/CursorExpired"
+        },
+        {
+          "$ref": "#/components/errors/CursorInvalid"
+        },
+        {
+          "$ref": "#/components/errors/IncarnationChanged"
         }
       ],
       "x-effect": "read",
@@ -2115,6 +2128,9 @@
         },
         {
           "$ref": "#/components/errors/LeaseExpired"
+        },
+        {
+          "$ref": "#/components/errors/Unsupported"
         }
       ],
       "x-effect": "write",
@@ -5706,7 +5722,7 @@
     {
       "name": "view.run",
       "summary": "Run a saved or inline budgeted view.",
-      "description": "With countOnly=true, return the exact ordinary authorized predicate total, including zero, as {items:[],asOf,count}, plus existing projection metadata. No page, groups, elisions or nextCursor is returned; cursor/groupBy combinations refuse invalid_params. Valid fields/sort/budget cannot change or truncate membership. Historical content uses current authorization; more than 20,000 authorized candidates refuses scope_too_large. Absent/false keeps existing behavior and saved definitions unchanged. Run a saved or inline budgeted view. A trusted host may enable count-only parent-aware epic progress using definition={filter:{query:\"parent=<bare bead ID>\"},fields:[],groupBy:[\"epic-progress\"]} and _meta.project equal to the authorized parent project. One pinned content/ontology snapshot and fenced current authority select direct children only; each child keeps its own project permissions. The complete result has items=[], asOf, total and status:<canonical status ID> groups with empty items. total.count is visible children; only total.elided may report hidden children, as count plus reason=\"authorization\" and continueWith=view.run with the same request minus cursor/asOf. That is fresh reauthorization/refresh, never hidden-row pagination. There is no nextCursor; a supplied cursor refuses cursor_invalid. Hidden identities/statuses are absent. Disabled capability refuses invalid_params with details.capability=\"epic-progress\", details.available=false. Epic progress adds no separate RPC, filter, cursor or result member.",
+      "description": "With countOnly=true, return the exact ordinary authorized predicate total, including zero, as {items:[],asOf,count}, plus existing projection metadata. No page, groups, elisions or nextCursor is returned; cursor/groupBy combinations refuse invalid_params. Valid fields/sort/budget cannot change or truncate membership. Historical content uses current authorization; more than 20,000 authorized candidates refuses scope_too_large. Absent/false keeps existing behavior and saved definitions unchanged. Run a saved or inline budgeted view. A trusted host may enable count-only parent-aware epic progress using definition={filter:{query:\"parent=<bare bead ID>\"},fields:[],groupBy:[\"epic-progress\"]} and _meta.project equal to the authorized parent project. One pinned content/ontology snapshot and fenced current authority select direct children only; each child keeps its own project permissions. The complete result has items=[], asOf, total and status:<canonical status ID> groups with empty items. total.count is visible children; only total.elided may report hidden children, as count plus reason=\"authorization\" and continueWith=view.run with the same request minus cursor/asOf. That is fresh reauthorization/refresh, never hidden-row pagination. There is no nextCursor; a supplied cursor refuses cursor_invalid. Hidden identities/statuses are absent. Disabled capability refuses invalid_params with details.capability=\"epic-progress\", details.available=false. Epic progress adds no separate RPC, filter, cursor or result member. Read-only age/status selection for view.run. days is a positive UTC day count; the latest persisted version time must be strictly before one cutoff bound to the signed cursor for all pages. Omitted status selects the current ontology Unstarted/Started categories; an explicit exact status replaces that default and intersects with ordinary query predicates. No saved definition, ready, claimNext, watch or explain semantics change.",
       "tags": [
         {
           "name": "view"
@@ -5745,6 +5761,27 @@
             "default": false
           },
           "description": "Optional execution flag, default false; saved definitions are unchanged. True returns the complete authorized ordinary predicate count with items=[] and asOf, without groups, elisions or nextCursor. Any supplied cursor or nonempty groupBy refuses invalid_params. Valid fields, sort and budget remain validated but do not change membership or truncate the count. Current permissions apply to historical asOf content; the ordinary 20,000 cap is exact-or-refused."
+        },
+        {
+          "name": "stale",
+          "schema": {
+            "type": "object",
+            "required": [
+              "days"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "days": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 106751
+              },
+              "status": {
+                "type": "string"
+              }
+            }
+          },
+          "description": "Read-only age/status selection for view.run. days is a positive UTC day count; the latest persisted version time must be strictly before one cutoff bound to the signed cursor for all pages. Omitted status selects the current ontology Unstarted/Started categories; an explicit exact status replaces that default and intersects with ordinary query predicates. No saved definition, ready, claimNext, watch or explain semantics change."
         },
         {
           "name": "_meta",
@@ -6527,6 +6564,90 @@
       "x-agent-core": false,
       "x-stability": "v1",
       "x-inferred": true
+    },
+    {
+      "name": "bead.cycles",
+      "summary": "Report deterministic current durable-plane dependency cycles.",
+      "description": "Default follows blocks and conditional-blocks only. Optional tracks retains the default report and adds a shortest-return cycle per blocking edge. Parent-child and waits-for are excluded. A visible project member anchors each item; hidden members retain placeholders. includeEphemeral=true returns plugin_durable_state_unavailable without persistent workflow state; the current persistent workflow plane has no graph relationships and retains invalid_params refusal.",
+      "tags": [
+        {
+          "name": "core"
+        }
+      ],
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "includeTracks",
+          "schema": {
+            "type": "boolean"
+          },
+          "description": "Add the canonical mixed report; pure tracks loops are excluded."
+        },
+        {
+          "name": "includeEphemeral",
+          "schema": {
+            "type": "boolean"
+          },
+          "description": "True returns plugin_durable_state_unavailable without persistent workflow state. The current persistent workflow plane has no graph relationships and retains invalid_params refusal."
+        },
+        {
+          "name": "limit",
+          "schema": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "description": "Maximum returned items, default100; cycleCount remains the complete visible-project count."
+        },
+        {
+          "name": "_meta",
+          "schema": {
+            "$ref": "#/components/schemas/Meta"
+          },
+          "description": "Transport project scope and deadlines; no application actor field."
+        }
+      ],
+      "result": {
+        "name": "result",
+        "description": "Result",
+        "schema": {
+          "$ref": "#/components/schemas/CyclesResult"
+        }
+      },
+      "errors": [
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/Unauthenticated"
+        },
+        {
+          "$ref": "#/components/errors/AuthzUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/Forbidden"
+        },
+        {
+          "$ref": "#/components/errors/Busy"
+        },
+        {
+          "$ref": "#/components/errors/ProjectRequired"
+        },
+        {
+          "$ref": "#/components/errors/IncarnationChanged"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/PluginDurableStateUnavailable"
+        }
+      ],
+      "x-effect": "read",
+      "x-idempotency": "none",
+      "x-permission": "read",
+      "x-agent-core": true,
+      "x-stability": "v1"
     }
   ],
   "components": {
@@ -7320,6 +7441,9 @@
               "$ref": "#/components/schemas/Comment"
             },
             "description": "Optional imported or legacy comments. Existing bead.get authorization and as-of semantics apply."
+          },
+          "commentPage": {
+            "$ref": "#/components/schemas/CommentPage"
           }
         },
         "required": [
@@ -8937,7 +9061,9 @@
           "authz_verify_failed",
           "invalid_cursor",
           "compaction_unavailable",
-          "stale_snapshot"
+          "stale_snapshot",
+          "plugin_durable_state_unavailable",
+          "unsupported"
         ],
         "description": "Closed Plug wire error-code registry."
       },
@@ -9989,6 +10115,62 @@
         ],
         "description": "Stored comment. Legacy comments retain body, principal and time. Imported comments add a verified restoring principal, fixed import origin, restore commit time and separate source provenance."
       },
+      "PagedComment": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Stable one-based position in the append-only stored thread."
+          },
+          "comment": {
+            "$ref": "#/components/schemas/Comment"
+          }
+        },
+        "required": [
+          "id",
+          "comment"
+        ],
+        "additionalProperties": false
+      },
+      "CommentPageSelection": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "cursor": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Select one comment page. The default limit is 100 and the maximum is 500; a cursor resumes the pinned thread."
+      },
+      "CommentPage": {
+        "type": "object",
+        "properties": {
+          "comments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PagedComment"
+            }
+          },
+          "asOf": {
+            "$ref": "#/components/schemas/AsOf"
+          },
+          "nextCursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "comments",
+          "asOf"
+        ],
+        "additionalProperties": false,
+        "description": "One pinned comment thread page in (time, stored ordinal) order. An absent nextCursor marks the end."
+      },
       "LegacyComment": {
         "type": "object",
         "properties": {
@@ -10665,6 +10847,97 @@
             "type": "boolean"
           }
         },
+        "additionalProperties": false
+      },
+      "CycleMember": {
+        "description": "One member in directed cycle order; an unreadable member discloses no reference.",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "ref": {
+                "$ref": "#/components/schemas/Ref"
+              }
+            },
+            "required": [
+              "ref"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "unreadable": {
+                "type": "boolean",
+                "const": true
+              }
+            },
+            "required": [
+              "unreadable"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "Cycle": {
+        "type": "object",
+        "description": "A path rotated to its lowest internal ID; the closing endpoint is implied.",
+        "properties": {
+          "path": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CycleMember"
+            },
+            "minItems": 1
+          },
+          "memberCount": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "unreadableCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "partial": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "memberCount",
+          "unreadableCount",
+          "partial"
+        ],
+        "additionalProperties": false
+      },
+      "CyclesResult": {
+        "type": "object",
+        "description": "Current durable-plane cycles anchored by a readable member in the selected project. Wholly hidden cycles contribute no items or count.",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Cycle"
+            },
+            "maxItems": 1000
+          },
+          "cycleCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "asOf": {
+            "$ref": "#/components/schemas/AsOf"
+          }
+        },
+        "required": [
+          "items",
+          "cycleCount",
+          "truncated",
+          "asOf"
+        ],
         "additionalProperties": false
       }
     },
@@ -12772,6 +13045,41 @@
           ],
           "additionalProperties": false
         }
+      },
+      "Unsupported": {
+        "code": -32057,
+        "message": "operation is unsupported",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "unsupported"
+            },
+            "retryable": {
+              "type": "boolean",
+              "const": false
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
       }
     }
   },
@@ -13243,6 +13551,13 @@
       "retryable": false,
       "audience": "client",
       "warningCapable": false
+    },
+    {
+      "code": "unsupported",
+      "jsonRpc": -32057,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
     }
   ],
   "x-plugin-method-pattern": {
@@ -13258,10 +13573,10 @@
     "format": "plug-method-registry/1",
     "status": "bounded-contract-artifact",
     "purpose": "Human-maintained bounded contract artifact, read independently of methods at validation time; validates the closed method inventory, descriptor fields and wire inventories before an implementation generator exists.",
-    "methodCount": 82,
+    "methodCount": 83,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
-    "nameSha256": "9149680634f6becbd955204e4bfa1c19b0c37911ca3c7ad3f155969a892fc7c9",
-    "descriptorSha256": "23066fa00d6ae4de38f6b405b47db8519ad95625503d5c63adbd6496c5d5cd55",
+    "nameSha256": "0ce6a0ee3927753ec8622351c1337c1de3922a1662eae667196e447fd9c170ef",
+    "descriptorSha256": "2d18672c631f492cb63d7e5e7e31a0fcdf9d67867103e6cded560b917446acc6",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -13522,6 +13837,13 @@
             }
           },
           {
+            "name": "commentPage",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/CommentPageSelection"
+            }
+          },
+          {
             "name": "_meta",
             "required": false,
             "schema": {
@@ -13537,7 +13859,9 @@
           "#/components/errors/Forbidden",
           "#/components/errors/RateLimited",
           "#/components/errors/Busy",
-          "#/components/errors/CursorExpired"
+          "#/components/errors/CursorExpired",
+          "#/components/errors/CursorInvalid",
+          "#/components/errors/IncarnationChanged"
         ]
       },
       {
@@ -14642,7 +14966,8 @@
           "#/components/errors/ProtectedRecord",
           "#/components/errors/ClosureTooLarge",
           "#/components/errors/LeaseNotHeld",
-          "#/components/errors/LeaseExpired"
+          "#/components/errors/LeaseExpired",
+          "#/components/errors/Unsupported"
         ]
       },
       {
@@ -17054,6 +17379,27 @@
             }
           },
           {
+            "name": "stale",
+            "required": false,
+            "schema": {
+              "type": "object",
+              "required": [
+                "days"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "days": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 106751
+                },
+                "status": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
             "name": "_meta",
             "required": false,
             "schema": {
@@ -17551,6 +17897,60 @@
           "#/components/errors/LeaseNotHeld",
           "#/components/errors/LeaseExpired"
         ]
+      },
+      {
+        "name": "bead.cycles",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": true,
+        "params": [
+          {
+            "name": "includeTracks",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "includeEphemeral",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/CyclesResult"
+        },
+        "errors": [
+          "#/components/errors/InvalidParams",
+          "#/components/errors/Unauthenticated",
+          "#/components/errors/AuthzUnavailable",
+          "#/components/errors/Forbidden",
+          "#/components/errors/Busy",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/IncarnationChanged",
+          "#/components/errors/InternalError",
+          "#/components/errors/PluginDurableStateUnavailable"
+        ]
       }
     ],
     "wireInventory": {
@@ -17664,7 +18064,9 @@
         "authz_verify_failed",
         "invalid_cursor",
         "compaction_unavailable",
-        "stale_snapshot"
+        "stale_snapshot",
+        "plugin_durable_state_unavailable",
+        "unsupported"
       ],
       "warningCodes": [
         "ontology_drifted",
@@ -17867,9 +18269,9 @@
       "compatibility": "Legacy comments decode unchanged. Imported comments require origin import and sourceTime."
     },
     "resultSurface": {
-      "beadGet": "bead.get may include an optional typed comments array on BeadGetResult; preserve existing bead.get authorization and as-of semantics.",
+      "beadGet": "bead.get retains its optional typed comments array when commentPage is omitted. When commentPage is selected, the result carries a pinned typed page instead of the unbounded array, with the same read authorization and as-of semantics.",
       "noNewRPC": true,
-      "consumerLimit": "This schema does not claim that a current service or browser already reads or renders comments."
+      "consumerLimit": "The comment page is a service/RPC projection; browser rendering and full B15 qualification require separate evidence."
     },
     "ordinaryInputs": {
       "commentOp": "closed to kind, target and body",

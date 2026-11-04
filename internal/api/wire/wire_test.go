@@ -20,20 +20,23 @@ func TestBoundedCatalogParity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := len(c.Descriptors()); got != 82 {
+	if got := len(c.Descriptors()); got != 83 {
 		t.Fatalf("method inventory = %d", got)
 	}
-	if got := len(c.ErrorCatalog()); got != 62 {
+	if _, ok := c.Descriptor("bead.comments"); ok {
+		t.Fatal("comment listing must use the selected bead.get projection")
+	}
+	if got := len(c.ErrorCatalog()); got != 63 {
 		t.Fatalf("error inventory = %d", got)
 	}
-	if digest(catalogJSON) != "03e7ccac9ce6ef9af679624c9fad1bc03260e91c870a091a1ef963459a667d0b" {
+	if digest(catalogJSON) != "759b8fd42058644c08fdb2ef76440b092b830e4c7dbf6ffc806fa0254585fda4" {
 		t.Fatal("bounded source snapshot changed; reconcile approved contract")
 	}
 	// These changes affect one of two independent descriptor representations.
 	for _, change := range []struct{ before, after string }{
 		{`"x-agent-core": true`, `"x-agent-core": false`},
-		{`"methodCount": 82`, `"methodCount": 81`},
-		{`"nameSha256": "91496806`, `"nameSha256": "81496806`},
+		{`"methodCount": 83`, `"methodCount": 82`},
+		{`"nameSha256": "0ce6a0ee`, `"nameSha256": "1ce6a0ee`},
 		{`"stability": "v1"`, `"stability": ""`},
 		{`"#/components/errors/RateLimited"`, `"#/components/errors/NotARealError"`},
 	} {
@@ -62,7 +65,7 @@ func TestBoundedCatalogParity(t *testing.T) {
 	if err = json.Unmarshal(generated, &document); err != nil {
 		t.Fatal(err)
 	}
-	if len(document.Methods) != 82 {
+	if len(document.Methods) != 83 {
 		t.Fatal("generator dropped inventory methods")
 	}
 	for _, method := range document.Methods {
@@ -109,6 +112,51 @@ func TestBoundedCatalogParity(t *testing.T) {
 	}
 	if _, err = c.GenerateOpenRPC([]MethodDesc{{Name: "incomplete"}}); err == nil {
 		t.Fatal("generator accepted incomplete descriptor")
+	}
+}
+
+func TestB15CommentPageIsSelectedThroughBeadGet(t *testing.T) {
+	canonicalPath := filepath.Join(os.Getenv("TEST_SRCDIR"), os.Getenv("TEST_WORKSPACE"), "engdocs/design/plug/contracts/openrpc.json")
+	canonical, err := os.ReadFile(canonicalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, raw := range map[string][]byte{"canonical": canonical, "embedded": catalogJSON} {
+		t.Run(name, func(t *testing.T) {
+			c, err := ParseCatalog(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := c.Descriptor("bead.comments"); ok {
+				t.Fatal("comment listing escaped the adopted bead.get surface")
+			}
+			get, ok := c.Descriptor("bead.get")
+			if !ok {
+				t.Fatal("bead.get descriptor missing")
+			}
+			for _, params := range []string{
+				`{"id":{"id":"p-1"}}`,
+				`{"id":{"id":"p-1"},"commentPage":{}}`,
+				`{"id":{"id":"p-1"},"commentPage":{"limit":1}}`,
+				`{"id":{"id":"p-1"},"commentPage":{"limit":500,"cursor":"opaque"}}`,
+			} {
+				if err := c.ValidateParams(get, []byte(params)); err != nil {
+					t.Fatalf("valid comment selection refused: %s: %v", params, err)
+				}
+			}
+			for _, params := range []string{
+				`{"id":{"id":"p-1"},"commentPage":null}`,
+				`{"id":{"id":"p-1"},"commentPage":{"limit":0}}`,
+				`{"id":{"id":"p-1"},"commentPage":{"limit":501}}`,
+				`{"id":{"id":"p-1"},"commentPage":{"cursor":1}}`,
+				`{"id":{"id":"p-1"},"commentPage":{"unknown":true}}`,
+				`{"id":{"id":"p-1"},"limit":1}`,
+			} {
+				if err := c.ValidateParams(get, []byte(params)); err == nil {
+					t.Fatalf("invalid comment selection admitted: %s", params)
+				}
+			}
+		})
 	}
 }
 

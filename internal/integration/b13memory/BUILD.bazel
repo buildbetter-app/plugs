@@ -1,0 +1,36 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "b13memory_test",
+    srcs = [
+        "fixture_test.go",
+        "lifecycle_test.go",
+        "oracle_test.go",
+        "postgres_test.go",
+        "public_readback_test.go",
+        "readback_oracle_test.go",
+    ],
+    size = "large",
+    tags = ["exclusive", "local", "requires-network"],
+    deps = [
+        "//internal/api/wire",
+        "//internal/core/dumpformat",
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/restore",
+        "//internal/core/service",
+        "//internal/server/rpc",
+        "//internal/server/transport/inprocess",
+        "//internal/storage/conformance",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/postgres",
+        "//internal/storage/sqlite",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

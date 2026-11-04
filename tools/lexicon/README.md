@@ -24,6 +24,14 @@ Git, or use the network inside its sandbox.
 with sorted `missing` and `extra` paths when it differs from the checkout.
 All ordinary files are source, even ignored or untracked files. Only the root
 `.git` metadata entry and actual Bazel convenience symlinks are omitted.
+
+The pinned public companion's config-list command needs one external
+environment assignment. `engdocs/style/lexicon.toml` records its exact decoded
+Go string and the single recorder source path. The checker admits that string
+literal only at that path; identifiers, imports, other literals, and all other
+lexicon findings in the same file remain subject to the ordinary gate. This
+interop allowance does not admit a prefix, a family of environment names, or
+the rest of the source file.
 The output-link exception is bound to the current Bazel output base: the
 repository rule locates its own Bazel-supplied external-repository directory
 and verifies the output base's workspace marker. `bazel-out` must resolve to

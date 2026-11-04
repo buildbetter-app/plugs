@@ -368,6 +368,23 @@ func (t *hierarchyFaultTx) Put(ctx context.Context, record driver.Record) error 
 	}
 	return nil
 }
+func (t *hierarchyFaultTx) PutGraphRecord(ctx context.Context, record driver.Record, parent *model.Ref, links []driver.SourceLink) error {
+	var err error
+	if writer, ok := t.WriteTx.(driver.GraphSourceWriter); ok {
+		err = writer.PutGraphRecord(ctx, record, parent, links)
+	} else if writer, ok := t.WriteTx.(driver.HierarchySourceWriter); ok {
+		err = writer.PutHierarchyRecord(ctx, record, parent)
+	} else {
+		err = t.WriteTx.Put(ctx, record)
+	}
+	if err != nil {
+		return err
+	}
+	if t.stage == "record" {
+		return errHierarchyFault
+	}
+	return nil
+}
 func (t *hierarchyFaultTx) PutDerived(ctx context.Context, table driver.DerivedTable, remove, add []driver.DerivedRow) error {
 	if err := t.WriteTx.PutDerived(ctx, table, remove, add); err != nil {
 		return err
@@ -457,6 +474,71 @@ func TestHierarchyMalformedClosureRefusesAcrossStores(t *testing.T) {
 				requireSameState(t, before, f.state(t))
 				if !reflect.DeepEqual(rows, hierarchyRows(t, f)) || f.receipt(t, m) != nil {
 					t.Fatal("malformed closure was repaired or partially rewritten")
+				}
+			})
+		}
+	}
+}
+
+// A missing descendant closure row must not hide that descendant from a move.
+// The source-child index remains complete when only derived rows are damaged.
+func TestHierarchyMalformedDescendantClosureRefusesAcrossStores(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		for _, defect := range []string{"missing-direct-parent", "missing-external-ancestor", "missing-all-descendant-rows"} {
+			t.Run(engine+"/"+defect, func(t *testing.T) {
+				f := newFixture(t, engine)
+				seed := hierarchyApply(t, f,
+					hierarchyCreate("a", nil, "work"),
+					hierarchyCreate("b", hierarchyRef("a"), "work"),
+					hierarchyCreate("c", hierarchyRef("b"), "work"),
+					hierarchyCreate("d", hierarchyRef("c"), "work"),
+				)
+				b, c, d := seed.Results[1].Ref, seed.Results[2].Ref, seed.Results[3].Ref
+				original := hierarchyRows(t, f)
+				var remove []driver.DerivedRow
+				for _, row := range original {
+					descendant, ancestor, _, err := pipeline.DecodeAncestorRow(row)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if descendant == d.ID && (defect == "missing-all-descendant-rows" ||
+						(defect == "missing-direct-parent" && ancestor == c.ID) ||
+						(defect == "missing-external-ancestor" && ancestor == b.ID)) {
+						remove = append(remove, row)
+					}
+				}
+				if len(remove) == 0 {
+					t.Fatal("descendant corruption fixture removed no rows")
+				}
+				hierarchyRawRows(t, f, d.ID, remove, nil)
+				keys := []driver.LockKey{driver.GraphBlockingSentinelLock}
+				for _, result := range seed.Results {
+					sentinel, _ := driver.NewClosureSentinel(result.Ref.ID)
+					keys = append(keys, driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel})
+				}
+				for _, row := range original {
+					keys = append(keys, driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAncestorClosure, Key: row.Key}})
+				}
+				sort.Slice(keys, func(i, j int) bool {
+					a, _ := driver.EncodeLockKey(keys[i])
+					b, _ := driver.EncodeLockKey(keys[j])
+					return a < b
+				})
+				before, rows := f.state(t), hierarchyRows(t, f)
+				facts, err := hierarchyReader(t, f).Observe(f.ctx, keys)
+				if err != nil {
+					t.Fatal(err)
+				}
+				m := f.meta("refuse-malformed-descendant")
+				_, err = f.writer.Apply(f.ctx, batchPrincipal, model.ChangeSet{Ops: []model.Op{hierarchyMove(c, nil)}}, m)
+				requireCode(t, err, "ontology_guard_failed")
+				requireSameState(t, before, f.state(t))
+				if !reflect.DeepEqual(rows, hierarchyRows(t, f)) || f.receipt(t, m) != nil {
+					t.Fatal("malformed descendant closure was repaired or partially rewritten")
+				}
+				afterFacts, err := hierarchyReader(t, f).Observe(f.ctx, keys)
+				if err != nil || !reflect.DeepEqual(facts, afterFacts) {
+					t.Fatalf("refusal changed predicate or exact closure observations: %v", err)
 				}
 			})
 		}

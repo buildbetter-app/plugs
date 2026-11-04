@@ -280,7 +280,7 @@ func TestPairedCensusReadsActualMemoryAndReopenedSQLite(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	const derived = "89f6eb61310b4f9193e9925e2a2305101b126f763e870986bc7ca51f6043d28a"
+	const derived = "f170bf742699fb0bbc577c57b19e7907872e2ea99a34a94fda5e0659197f20ed"
 	check := converterroundtrip.Verification{ArchiveSHA256: bytesDigest(data), DerivedSHA256: derived}
 	var first []Metric
 	for _, engine := range []string{"memory", "sqlite"} {
@@ -314,6 +314,7 @@ func TestPairedCensusReadsActualMemoryAndReopenedSQLite(t *testing.T) {
 				if e != nil {
 					t.Fatal(e)
 				}
+				t.Log("B16_CENSUS_SQL_REOPEN physical sqlite store close + reopen completed before census measurement")
 			}
 			before, _ := store.Meta(ctx)
 			observed := &observedCensusStore{Store: store}
@@ -343,6 +344,7 @@ func TestPairedCensusReadsActualMemoryAndReopenedSQLite(t *testing.T) {
 				t.Fatal("memory/SQLite source census differs")
 			}
 			writeSanitized(t, "synthetic-"+engine+"-census.json", s)
+			checkCensusLabelProjections(t, capture, store, s)
 			// An actual ordinary Writer update leaves source provenance intact.
 			// A provenance-only census would miss this changed live description.
 			lease, e = store.Lease(ctx, "census-edit", 10*time.Second)
@@ -386,10 +388,114 @@ func TestPairedCensusReadsActualMemoryAndReopenedSQLite(t *testing.T) {
 	}
 }
 
+func checkCensusLabelProjections(t *testing.T, capture *Capture, store driver.Store, want Snapshot) {
+	t.Helper()
+	var labelledID, emptyID string
+	var sourceLabels []any
+	for _, source := range capture.archive.Records("bead") {
+		labels := source.Body["labels"].([]any)
+		if len(labels) >= 2 && labelledID == "" {
+			labelledID, sourceLabels = source.ID, append([]any(nil), labels...)
+		}
+		if len(labels) == 0 && emptyID == "" {
+			emptyID = source.ID
+		}
+	}
+	if labelledID == "" || emptyID == "" {
+		t.Fatal("public source fixture lacks the labelled and empty projection controls")
+	}
+	ctx := context.Background()
+	before, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceBefore := capture.Summary()
+	for _, test := range []struct {
+		name, id  string
+		typed     any
+		setTyped  bool
+		dropTyped bool
+		top       any
+		setTop    bool
+		extra     bool
+		refuse    bool
+	}{
+		{name: "canonical-both", id: labelledID},
+		{name: "typed-missing", id: labelledID, dropTyped: true, refuse: true},
+		{name: "typed-mismatch", id: labelledID, setTyped: true, typed: []any{"different"}, refuse: true},
+		{name: "typed-null", id: labelledID, setTyped: true, refuse: true},
+		{name: "typed-scalar", id: labelledID, setTyped: true, typed: sourceLabels[0], refuse: true},
+		{name: "typed-empty", id: labelledID, setTyped: true, typed: []any{}, refuse: true},
+		{name: "typed-unordered", id: labelledID, setTyped: true, typed: []any{sourceLabels[1], sourceLabels[0]}, refuse: true},
+		{name: "typed-duplicate", id: labelledID, setTyped: true, typed: []any{sourceLabels[0], sourceLabels[0]}, refuse: true},
+		{name: "top-mismatch", id: labelledID, setTop: true, top: []any{"different"}, refuse: true},
+		{name: "unknown-field", id: labelledID, extra: true, refuse: true},
+		{name: "empty-omitted", id: emptyID},
+		{name: "empty-typed-empty", id: emptyID, setTyped: true, typed: []any{}, refuse: true},
+		{name: "empty-typed-null", id: emptyID, setTyped: true, refuse: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changed := 0
+			observed := &observedCensusStore{Store: store, changeRecord: func(row driver.Record) driver.Record {
+				if row.Kind != "bead" || row.Ref.ID != test.id {
+					return row
+				}
+				changed++
+				if !test.dropTyped && !test.setTyped && !test.setTop && !test.extra {
+					return row
+				}
+				var body map[string]any
+				mustDecode(t, row.Body, &body)
+				fields := body["fields"].(map[string]any)
+				if test.dropTyped {
+					delete(fields, "labels")
+				}
+				if test.setTyped {
+					fields["labels"] = test.typed
+				}
+				if test.setTop {
+					body["labels"] = test.top
+				}
+				if test.extra {
+					fields["unexpected-census-field"] = true
+				}
+				row.Body = mustEncode(t, body)
+				return row
+			}}
+			got, err := capture.MeasureStore(ctx, observed, 7)
+			if changed != 1 {
+				t.Fatalf("projection control reached %d target rows, want one", changed)
+			}
+			if test.refuse {
+				var refusal CensusError
+				if !errors.As(err, &refusal) || refusal.Code != TargetDiffers || !reflect.DeepEqual(got, Snapshot{}) {
+					t.Fatalf("damaged projection returned a measurement or wrong refusal: %+v %v", got, err)
+				}
+			} else if err != nil || !reflect.DeepEqual(got, want) {
+				t.Fatalf("canonical projection changed the measurement: %+v %v", got, err)
+			}
+			if observed.reads != 1 || observed.closes != 1 || observed.writes != 0 || observed.leases != 0 {
+				t.Fatal("projection measurement changed state or leaked its reader")
+			}
+			after, err := store.Meta(ctx)
+			if err != nil || !reflect.DeepEqual(before, after) || !reflect.DeepEqual(sourceBefore, capture.Summary()) {
+				t.Fatal("projection measurement changed store or source state")
+			}
+			unmodified := &observedCensusStore{Store: store}
+			restored, err := capture.MeasureStore(ctx, unmodified, 7)
+			if err != nil || !reflect.DeepEqual(restored, want) || unmodified.reads != 1 || unmodified.closes != 1 || unmodified.writes != 0 || unmodified.leases != 0 {
+				t.Fatal("projection control changed the underlying complete source/native/blob/history measurement")
+			}
+			t.Logf("B16_CENSUS_LABEL_PROJECTION refuses=%t source_unchanged=true store_unchanged=true reads=%d closes=%d writes=%d leases=%d", test.refuse, observed.reads, observed.closes, observed.writes, observed.leases)
+		})
+	}
+}
+
 type observedCensusStore struct {
 	driver.Store
 	reads, closes, writes, leases int
 	failBlob                      bool
+	changeRecord                  func(driver.Record) driver.Record
 }
 
 func (s *observedCensusStore) Read(ctx context.Context, v driver.View) (driver.Reader, error) {
@@ -414,6 +520,17 @@ type observedCensusReader struct {
 	owner *observedCensusStore
 }
 
+func (r *observedCensusReader) Query(ctx context.Context, query driver.Query) (driver.Page[driver.Record], error) {
+	page, err := r.Reader.Query(ctx, query)
+	if err == nil && r.owner.changeRecord != nil {
+		page.Items = append([]driver.Record(nil), page.Items...)
+		for i, row := range page.Items {
+			page.Items[i] = r.owner.changeRecord(row)
+		}
+	}
+	return page, err
+}
+
 func (r *observedCensusReader) Close() error { r.owner.closes++; return r.Reader.Close() }
 func (r *observedCensusReader) Blob(ctx context.Context, h driver.Hash) ([]byte, error) {
 	if r.owner.failBlob {
@@ -430,7 +547,7 @@ func TestCensusBlobRefusalIsReadOnlyAndClosesReader(t *testing.T) {
 	}
 	store := memory.New()
 	defer store.Close()
-	if _, e = converterroundtrip.Restore(context.Background(), bytes.NewReader(data), store, converterroundtrip.Verification{ArchiveSHA256: bytesDigest(data), DerivedSHA256: "89f6eb61310b4f9193e9925e2a2305101b126f763e870986bc7ca51f6043d28a"}); e != nil {
+	if _, e = converterroundtrip.Restore(context.Background(), bytes.NewReader(data), store, converterroundtrip.Verification{ArchiveSHA256: bytesDigest(data), DerivedSHA256: "f170bf742699fb0bbc577c57b19e7907872e2ea99a34a94fda5e0659197f20ed"}); e != nil {
 		t.Fatal(e)
 	}
 	wrapped := &observedCensusStore{Store: store, failBlob: true}

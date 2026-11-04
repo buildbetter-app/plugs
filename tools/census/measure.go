@@ -385,6 +385,9 @@ func (c *Capture) checkBead(source dumpformat.Record, doc pipeline.Document) boo
 			fields[name] = v
 		}
 	}
+	if labels := source.Body["labels"].([]any); len(labels) != 0 {
+		fields["labels"] = append([]any(nil), labels...)
+	}
 	if status == "" || !sameJSON(fields, doc.Fields) || !sameJSON(source.Body["labels"], append([]string{}, doc.Labels...)) {
 		return false
 	}

@@ -14,7 +14,11 @@ incarnation, and runs a four-agent, eight-task sampled factory pool through
 authenticated HTTP and MCP. The MCP fixture uses the generic `plug_call` tool
 with canonical method names; projected core tools use snake-case names. It
 checks distinct claims, completed task lifecycles and the empty ready queue,
-then attempts reverse conversion of the post-workload native dump. The owned
+then compares three actual public read calls over independent HTTP and MCP
+transport frames on the same quiescent restored store. The comparison keeps
+request IDs, caller metadata, complete results and exact numeric tokens; the
+ordinary sampled lifecycle writes remain outside its read-only profile.
+It then attempts reverse conversion of the post-workload native dump. The owned
 directory, stores, HTTP clients and listeners close before a successful report
 is returned.
 There is no input for a server URL, DSN, bearer, command adapter or cloud account.
@@ -30,7 +34,11 @@ fixture is **not** authenticated BuildBetter staging. Neither fixture uses
 production or customer data.
 
 The three sampled preparations retain their descriptor-only rollback rows and
-explicit WAIT results. They do not qualify a deployment transition.
+explicit WAIT results. Before returning PASS, `RunDisposable` also invokes the
+separate complete owned edition transition once, requires its source-bound real
+artifact/readback/cleanup receipt, and includes it as `runtime_rollback`. A
+failed transition or incomplete receipt blocks the caller preparation. Neither
+row qualifies a production deployment or reverse Beads data rollback.
 
 `RunDeployableRollback` separately builds two static Bazel edition profiles from
 one exact clean source SHA/tree and builds real scratch Docker images with
@@ -109,8 +117,10 @@ on the same final head:
 
 The `//tools/rehearsal/cmd/shadow-rehearsal:shadow-rehearsal` executable also
 defaults to a plan. Its `--local --driver memory|sqlite --source-sha SHA
---source-tree TREE` mode runs the same owned fixtures on an authorized disposable
-host. Run Bazel only through RunsOn in this swarm.
+--source-tree TREE` mode requires a Bazel run with declared source and static
+edition runfiles plus the exact clean checkout. It runs the same owned fixtures
+and complete disposable rollback on an authorized disposable host. Run Bazel
+only through RunsOn in this swarm.
 
 ## Metrics and evidence windows
 
@@ -148,7 +158,7 @@ replace a shadow fortnight or its last measured week. Reports always say
 `r1_qualification: WAIT`; same-session receipts are deliberately unclean for
 gate admission. The native-head reverse profile currently refuses the dump.
 That measured refusal is WAIT, and a future conversion alone would still need
-import, loss accounting and source-system readback. The separate edition transition qualifies disposable snapshot deployment/rollback
+import, loss accounting and source-system readback. The consumed edition transition qualifies disposable snapshot deployment/rollback
 mechanics only. The sampled descriptor rows remain preparation evidence. Managed
 HA, RPO/RTO, staging, old-release/schema compatibility, Beads reverse/reimport,
 concurrent writers, independent principals and the full I8/R1 gates remain

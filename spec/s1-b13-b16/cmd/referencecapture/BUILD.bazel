@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_binary")
+
+go_binary(
+    name = "reference_capture",
+    srcs = ["reference_capture_main.go"],
+    importpath = "github.com/buildbetter-app/plugs/spec/s1-b13-b16/cmd/referencecapture",
+    data = ["//spec/s1-b13-b16:reference_capture_data"],
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

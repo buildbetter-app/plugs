@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"sort"
 	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -65,6 +66,9 @@ func (s *Service) Plan(ctx context.Context, by model.PrincipalRef, req PlanReque
 	compiled, problems := ontology.Compile(candidate.Base, candidate.Overlays, candidate.Plugins)
 	if len(problems) != 0 {
 		return PlanResult{}, failure("invalid_params", "candidate ontology does not compile")
+	}
+	if err := validateKeyContinuity(current.document, current.compiled, candidate, compiled); err != nil {
+		return PlanResult{}, err
 	}
 	revision, err := current.guard.Revision.Uint64()
 	if err != nil || revision == math.MaxUint64 {
@@ -226,6 +230,62 @@ func (s *Service) revalidate(ctx context.Context, by model.PrincipalRef, plan Pl
 		return failure("ontology_plan_stale", "validating-pre binding inventory changed")
 	}
 	return s.admit(ctx, by)
+}
+
+// A3 permits display-name edits and migration-like definition changes, but
+// elements are archived, never removed or reused. Candidate-local compilation
+// cannot detect a key that disappeared or was resurrected between revisions.
+// Compare the base separately, then each effective project: removing an
+// overlay must not silently unarchive a base element in that project.
+func validateKeyContinuity(beforeSource service.OntologySource, before ontology.Snapshot, afterSource service.OntologySource, after ontology.Snapshot) error {
+	projects := map[string]bool{"": true}
+	for project := range beforeSource.Overlays {
+		projects[project] = true
+	}
+	for project := range afterSource.Overlays {
+		projects[project] = true
+	}
+	ordered := make([]string, 0, len(projects))
+	for project := range projects {
+		ordered = append(ordered, project)
+	}
+	sort.Strings(ordered)
+	for _, project := range ordered {
+		old, next := before.Effective(project).Document(), after.Effective(project).Document()
+		path := "base"
+		if project != "" {
+			path = "projects." + project
+		}
+		for _, err := range []error{
+			definitionContinuity(old.Statuses, next.Statuses, func(v ontology.Status) bool { return v.Archived }, path+".statuses"),
+			definitionContinuity(old.Workflows, next.Workflows, func(v ontology.Workflow) bool { return v.Archived }, path+".workflows"),
+			definitionContinuity(old.Types, next.Types, func(v ontology.Type) bool { return v.Archived }, path+".types"),
+			definitionContinuity(old.GateKinds, next.GateKinds, func(v ontology.GateKind) bool { return v.Archived }, path+".gate_kinds"),
+		} {
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func definitionContinuity[T any](before, after map[string]T, archived func(T) bool, path string) error {
+	keys := make([]string, 0, len(before))
+	for key := range before {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		next, exists := after[key]
+		if !exists {
+			return failure("invalid_params", path+"."+key+": elements must be archived, never removed")
+		}
+		if archived(before[key]) && !archived(next) {
+			return failure("invalid_params", path+"."+key+": archived keys cannot be reused")
+		}
+	}
+	return nil
 }
 
 func (s *Service) checkExpect(ctx context.Context, by model.PrincipalRef, r driver.Reader, expect []model.Precondition) error {

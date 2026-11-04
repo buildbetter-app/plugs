@@ -28,7 +28,15 @@ import xml.etree.ElementTree as ET
 
 
 CAPTURE_ERROR = 86
+# Existing automatically prepared manual exception; other captures stay opt-in.
 PUBLIC_RUNTIME_TARGET = "//tools/roundtrip:public_beads_runtime_test"
+PUBLIC_RUNTIME_TARGETS = frozenset({
+    "//tools/roundtrip:public_beads_runtime_test",
+    "//spec/s1-b25-b28:public_recording_test",
+})
+# Native adoption replaces this and the descriptor only after official-byte
+# review and trusted-helper admission. Keep the current companion delivery.
+PUBLIC_BUNDLE_PROFILE = "plug-public-companion/1"
 PUBLIC_BUNDLE_DESCRIPTOR = (
     "41398730774:13120521766:"
     "66de7c070d365bbd7fc2bd39ed822e5bf72c21efabe0add9a5e26d07bf170a62"
@@ -381,16 +389,23 @@ def verify_selection(capture):
         raise ValueError("resolved test target file changed after selection")
 
 
+def public_selection(capture):
+    # The workflow uses exactly the collector's predicate, after the complete
+    # touched/reverse/owning closure has been resolved and bound to source.
+    verify_selection(capture)
+    print("true" if PUBLIC_RUNTIME_TARGETS.intersection(capture.state["resolved_tests"]) else "false")
+
+
 def public_test_env(capture):
     resolved = set(capture.state.get("resolved_tests", ()))
     present = {name: os.environ.get(name) for name in PUBLIC_ENV_NAMES if os.environ.get(name) is not None}
-    if PUBLIC_RUNTIME_TARGET not in resolved:
+    if not PUBLIC_RUNTIME_TARGETS.intersection(resolved):
         if present:
-            raise ValueError("public executable values supplied without the mandatory runtime target")
+            raise ValueError("public executable values supplied without either mandatory public consumer target")
         return []
     values = {name: os.environ.get(name) for name in PUBLIC_ENV_NAMES}
     if any(value is None or value == "" for value in values.values()):
-        raise ValueError("mandatory public runtime target lacks prepared executable values")
+        raise ValueError("mandatory public consumer selection lacks prepared executable values")
     if any("\n" in value or "\r" in value for value in values.values()):
         raise ValueError("prepared public executable value contains a newline")
     binary = Path(values["PLUG_PUBLIC_BEADS_BINARY"])
@@ -413,10 +428,37 @@ def public_test_env(capture):
         receipt = json.loads(receipt_path.read_text())
     except (OSError, ValueError) as error:
         raise ValueError("prepared public bundle receipt is invalid") from error
+    descriptor = re.fullmatch(r"([1-9][0-9]{0,19}):([1-9][0-9]{0,19}):([0-9a-f]{64})", PUBLIC_BUNDLE_DESCRIPTOR)
+    if descriptor is None:
+        raise ValueError("fixed public descriptor is malformed")
+    run_id, artifact_id, manifest_sha256 = descriptor.groups()
+    if digest(manifest) != manifest_sha256:
+        raise ValueError("prepared public manifest bytes differ from the fixed descriptor")
+    try:
+        sealed = json.loads(manifest.read_text())
+    except (OSError, ValueError) as error:
+        raise ValueError("prepared public manifest is invalid") from error
+    if not isinstance(receipt, dict) or not isinstance(sealed, dict):
+        raise ValueError("prepared public receipt and manifest must be objects")
     if (receipt.get("status") != "PASS" or receipt.get("descriptor") != PUBLIC_BUNDLE_DESCRIPTOR
-            or receipt.get("manifest_sha256") != PUBLIC_BUNDLE_DESCRIPTOR.rsplit(":", 1)[1]
-            or receipt.get("environment") != values):
-        raise ValueError("prepared public bundle receipt is not bound to the fixed descriptor")
+            or receipt.get("manifest_sha256") != manifest_sha256
+            or receipt.get("producer_run") != run_id or receipt.get("artifact_id") != artifact_id
+            or values["PLUG_PUBLIC_BEADS_BUILD_RUN"] != run_id
+            or sealed.get("build", {}).get("run_id") != run_id
+            or receipt.get("schema") != PUBLIC_BUNDLE_PROFILE
+            or receipt.get("environment") != values
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", str(receipt.get("artifact_digest"))) is None
+            or receipt.get("producer_workflow_sha") != sealed.get("workflow", {}).get("sha")
+            or re.fullmatch(r"[0-9a-f]{40}", str(receipt.get("producer_workflow_sha"))) is None
+            or any(receipt.get(field) != sealed.get(field)
+                   for field in ("schema", "source", "targets", "artifacts", "archive"))):
+        raise ValueError("prepared public bundle receipt is not bound to the fixed descriptor and manifest")
+    record = sealed.get("artifacts", {}).get("bin/bd-export", {})
+    if (record.get("sha256") != values["PLUG_PUBLIC_BEADS_SHA256"]
+            or record.get("mode") != "0o755" or record.get("size") != binary.stat().st_size
+            or binary != manifest.parent / "bin/bd-export"
+            or any(part.is_symlink() for part in (*binary.parents, *manifest.parents))):
+        raise ValueError("prepared public executable and manifest do not share the verified bundle")
     return [f"--test_env={name}={values[name]}" for name in PUBLIC_ENV_NAMES]
 
 
@@ -444,6 +486,96 @@ def run(capture):
     capture.state["test_started"] = True
     capture.save()
     capture.command("tests", args)
+
+
+def open_confined_test_output(allowed, source):
+    # Anchor every component, including the allowed-root path, before opening
+    # the selected file. A replacement symlink is never followed at read time.
+    parts = allowed.parts[1:] + source.relative_to(allowed).parts
+    directory = os.open(allowed.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    descriptor = None
+    try:
+        for part in parts[:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        descriptor = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ValueError("test output is not a regular file")
+        return os.fdopen(descriptor, "rb")
+    except Exception:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise
+    finally:
+        os.close(directory)
+
+
+def copy_test_outputs(capture, identity, result, destination):
+    # Keep each BEP declaration and attempt identity, even when copying fails.
+    inventory = {"identity": identity, "outputs": [
+        {"index": index, "bep": item, "state": "pending"}
+        for index, item in enumerate(result.get("testActionOutput", []))]}
+    receipt = destination / "test-action-outputs.json"
+    write_json(receipt, inventory)
+    copied, errors = [], []
+    allowed = (Path(capture.state["execution_root"]) / "bazel-out").resolve()
+    for record in inventory["outputs"]:
+        created, target = False, None
+        try:
+            item = record["bep"]
+            name = item.get("name")
+            if not isinstance(name, str) or not name:
+                raise ValueError("test output lacks its BEP name")
+            uri = urlparse(item.get("uri", ""))
+            if uri.scheme != "file" or uri.netloc not in {"", "localhost"}:
+                raise ValueError("test output is not a local file; cannot deliver complete evidence")
+            source = Path(unquote(uri.path)).resolve(strict=True)
+            if not source.is_relative_to(allowed) or "testlogs" not in source.relative_to(allowed).parts:
+                raise ValueError("test output escapes this run's Bazel testlogs")
+            required = name in {"test.log", "test.xml"}
+            if required and source.name != name:
+                raise ValueError("test output name mismatch")
+            # Logical names and URI basenames are metadata, never destination
+            # paths. Fixed visible payload names also survive hosted upload's
+            # default exclusion of hidden files, without changing that policy.
+            target = destination / name if required else destination / "outputs" / str(record["index"]) / "payload"
+            if target.exists():
+                raise ValueError("duplicate required test output: " + name)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            record.update(source=str(source), path=str(target.relative_to(capture.output)))
+            with open_confined_test_output(allowed, source) as snapshot:
+                before = os.fstat(snapshot.fileno())
+                h, size = hashlib.sha256(), 0
+                with target.open("xb") as output:
+                    created = True
+                    for block in iter(lambda: snapshot.read(1024 * 1024), b""):
+                        output.write(block)
+                        h.update(block)
+                        size += len(block)
+                after = os.fstat(snapshot.fileno())
+                if (size != before.st_size or
+                        any(getattr(before, key) != getattr(after, key) for key in
+                            ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns"))):
+                    raise ValueError("test output changed during the admitted descriptor snapshot")
+            facts = {"size": size, "sha256": h.hexdigest()}
+            if target.stat().st_size != size or digest(target) != facts["sha256"]:
+                raise ValueError("test output bytes changed while copying")
+            record.update(state="copied", **facts)
+            copied.append(record["path"])
+        except Exception as error:
+            if created:
+                try:
+                    target.unlink(missing_ok=True)
+                    record["partial_removed"] = True
+                except OSError as cleanup:
+                    error = ValueError(str(error) + "; incomplete output cleanup failed: " + str(cleanup))
+            record.update(state="error", error=str(error))
+            errors.append(str(error))
+        write_json(receipt, inventory)
+    if errors:
+        raise ValueError("test output retention incomplete for " + identity["label"] + ": " + "; ".join(errors))
+    return copied
 
 
 def collect_tests(capture):
@@ -477,41 +609,29 @@ def collect_tests(capture):
         key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
         destination = capture.output / "tests" / key
         destination.mkdir(parents=True, exist_ok=False)
-        copied = []
+        copied = copy_test_outputs(capture, identity, result, destination)
         counts = None
-        for item in result.get("testActionOutput", []):
-            name = item.get("name")
-            if name not in {"test.log", "test.xml"}:
-                continue
-            uri = urlparse(item.get("uri", ""))
-            if uri.scheme != "file" or uri.netloc not in {"", "localhost"}:
-                raise ValueError("test output is not a local file; cannot deliver complete evidence")
-            source = Path(unquote(uri.path)).resolve()
-            allowed = (Path(capture.state["execution_root"]) / "bazel-out").resolve()
-            if not source.is_relative_to(allowed) or "testlogs" not in source.relative_to(allowed).parts:
-                raise ValueError("test output escapes this run's Bazel testlogs")
-            if source.name != name:
-                raise ValueError("test output name mismatch")
-            shutil.copyfile(source, destination / name)
-            copied.append(str((destination / name).relative_to(capture.output)))
-            if name == "test.xml":
-                root = ET.parse(destination / name).getroot()
-                cases = list(root.iter("testcase"))
-                counts = {"cases": len(cases), "skipped": sum(x.find("skipped") is not None for x in cases),
-                          "failures": sum(x.find("failure") is not None for x in cases),
-                          "errors": sum(x.find("error") is not None for x in cases)}
-                if not cases:
-                    suites = list(root.iter("testsuite"))
-                    if not suites or any("tests" not in x.attrib for x in suites):
-                        raise ValueError("XML lacks test-case or explicit suite accounting for " + identity["label"])
-                    counts = {key: sum(int(x.get(attr, 0)) for x in suites) for key, attr in
-                              (("cases", "tests"), ("skipped", "skipped"), ("failures", "failures"), ("errors", "errors"))}
+        # Retain all opaque outputs for this attempt before XML accounting.
+        if (destination / "test.xml").is_file():
+            root = ET.parse(destination / "test.xml").getroot()
+            cases = list(root.iter("testcase"))
+            counts = {"cases": len(cases), "skipped": sum(x.find("skipped") is not None for x in cases),
+                      "failures": sum(x.find("failure") is not None for x in cases),
+                      "errors": sum(x.find("error") is not None for x in cases)}
+            if not cases:
+                suites = list(root.iter("testsuite"))
+                if not suites or any("tests" not in x.attrib for x in suites):
+                    raise ValueError("XML lacks test-case or explicit suite accounting for " + identity["label"])
+                counts = {key: sum(int(x.get(attr, 0)) for x in suites) for key, attr in
+                          (("cases", "tests"), ("skipped", "skipped"), ("failures", "failures"), ("errors", "errors"))}
         cached = bool(result.get("cachedLocally") or result.get("executionInfo", {}).get("cachedRemotely"))
         attempts.append({"identity": identity, "status": result.get("status", "UNKNOWN"),
-                         "cached": cached, "xml": counts, "files": copied})
+                         "cached": cached, "xml": counts, "files": copied,
+                         "output_inventory": str((destination / "test-action-outputs.json").relative_to(capture.output))})
         # Failed-to-build targets may have no test artifacts. Never label them
         # executed or skipped; the summary/process records the real failure.
-        if result.get("status") in {"PASSED", "FAILED", "FLAKY"} and {Path(x).name for x in copied} != {"test.log", "test.xml"}:
+        required = {str((destination / name).relative_to(capture.output)) for name in ("test.log", "test.xml")}
+        if result.get("status") in {"PASSED", "FAILED", "FLAKY"} and not required.issubset(copied):
             raise ValueError("test log/XML missing for " + identity["label"])
     reported = {x["label"] for x in summaries}
     unreported = sorted(set(capture.state["resolved_tests"]) - reported)
@@ -609,7 +729,7 @@ def verify(output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("begin", "selection", "run", "finish", "verify"))
+    parser.add_argument("phase", choices=("begin", "selection", "public-selection", "run", "finish", "verify"))
     parser.add_argument("--output", required=True)
     parser.add_argument("--base", default="")
     parser.add_argument("--head", default="")
@@ -634,6 +754,8 @@ def main():
             begin(capture, args)
         elif args.phase == "selection":
             selection(capture)
+        elif args.phase == "public-selection":
+            public_selection(capture)
         elif args.phase == "run":
             run(capture)
         else:
