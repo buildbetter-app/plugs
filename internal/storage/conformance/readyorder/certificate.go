@@ -207,7 +207,7 @@ func RunCertificateOverlay(t *testing.T, factory func(*testing.T) driver.Store) 
 				cancel()
 			}
 			defer cancel()
-			err = tx.Put(putCtx, records[0])
+			err = tx.(driver.GraphSourceWriter).PutGraphRecord(putCtx, records[0], nil, nil)
 			if mode == "failed_source" {
 				if !errors.Is(err, context.Canceled) {
 					t.Fatal(err)

@@ -113,7 +113,7 @@ func (t *transaction) prepareReadyOrderCommit(ctx context.Context, c *sql.Conn, 
 			return nil, nil
 		}
 	}
-	witnesses := map[string]readyindex.SourceWitness{}
+	sources := map[string]readyindex.StagedSource{}
 	for key, record := range t.records {
 		kind := ""
 		if record != nil {
@@ -121,9 +121,9 @@ func (t *transaction) prepareReadyOrderCommit(ctx context.Context, c *sql.Conn, 
 		} else if err = c.QueryRowContext(ctx, `SELECT kind FROM objects WHERE key=?`, key).Scan(&kind); err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
-		witnesses[key] = readyindex.SourceWitness{Record: record, Kind: kind}
+		sources[key] = readyindex.StagedSource{Record: record, Kind: kind}
 	}
-	if err = p.ValidateOverlay(witnesses, t.derived, t.acquired, t.bumps); err != nil {
+	if err = p.ValidateOverlay(sources, t.derived, t.acquired, t.bumps); err != nil {
 		return nil, nil
 	}
 	for _, before := range p.Data.Before {

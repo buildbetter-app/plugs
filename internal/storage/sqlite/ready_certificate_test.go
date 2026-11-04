@@ -10,7 +10,7 @@ import (
 )
 
 func TestReadyOrderPhysicalRawMutation(t *testing.T) {
-	for _, statement := range []string{"UPDATE records SET data=data", "UPDATE versions SET data=data", "UPDATE key_history SET data=data", "UPDATE selection_source_history SET source_digest=source_digest"} {
+	for _, statement := range []string{"UPDATE records SET data=data", "UPDATE versions SET data=data", "UPDATE key_history SET data=data", "UPDATE selection_source_history SET source_digest=source_digest", "INSERT OR REPLACE INTO records SELECT * FROM records", "INSERT OR REPLACE INTO versions SELECT * FROM versions", "INSERT OR REPLACE INTO key_history SELECT * FROM key_history"} {
 		t.Run(statement, func(t *testing.T) {
 			ctx := context.Background()
 			s := openStore(t, context.Background(), filepath.Join(t.TempDir(), "proof.db"))
@@ -31,6 +31,11 @@ func TestReadyOrderPhysicalRawMutation(t *testing.T) {
 			n, err := result.RowsAffected()
 			if err != nil || n == 0 {
 				t.Fatal("no actual physical mutation", n, err)
+			}
+			// Repeated replacement statements must merge the same journal keys
+			// without allowing their outer conflict policy to reject the write.
+			if _, err = rolled.ExecContext(ctx, statement); err != nil {
+				t.Fatal("repeated raw mutation rejected", err)
 			}
 			if err = rolled.Rollback(); err != nil {
 				t.Fatal(err)

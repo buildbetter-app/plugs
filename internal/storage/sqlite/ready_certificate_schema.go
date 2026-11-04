@@ -20,33 +20,45 @@ CREATE TABLE IF NOT EXISTS ready_order_changes (domain TEXT NOT NULL,key TEXT NO
 DROP TRIGGER IF EXISTS ready_order_checkpoints_insert;
 DROP TRIGGER IF EXISTS ready_order_checkpoints_update;
 DROP TRIGGER IF EXISTS ready_order_checkpoints_delete;
+-- Replace prototype journal triggers as part of the same schema transaction.
+DROP TRIGGER IF EXISTS ready_order_records_insert;
+DROP TRIGGER IF EXISTS ready_order_records_update;
+DROP TRIGGER IF EXISTS ready_order_records_delete;
+DROP TRIGGER IF EXISTS ready_order_versions_insert;
+DROP TRIGGER IF EXISTS ready_order_versions_update;
+DROP TRIGGER IF EXISTS ready_order_versions_delete;
+DROP TRIGGER IF EXISTS ready_order_key_history_insert;
+DROP TRIGGER IF EXISTS ready_order_key_history_update;
+DROP TRIGGER IF EXISTS ready_order_key_history_delete;
 INSERT OR IGNORE INTO ready_order_fence(singleton,generation,dirty,ever_source) VALUES(1,'unproved',1,0);
+-- The outer source statement may use OR REPLACE. Avoid journal conflicts
+-- explicitly so its conflict policy cannot override a trigger OR IGNORE.
 CREATE TRIGGER IF NOT EXISTS ready_order_records_insert BEFORE INSERT ON records BEGIN
- INSERT OR IGNORE INTO ready_order_changes(domain,key) VALUES('source',NEW.key); UPDATE ready_order_fence SET ever_source=1 WHERE singleton=1 AND ever_source=0; UPDATE ready_order_fence SET generation=lower(hex(randomblob(32))),dirty=1 WHERE singleton=1 AND dirty=0;
+ INSERT INTO ready_order_changes(domain,key) SELECT 'source',NEW.key WHERE NOT EXISTS(SELECT 1 FROM ready_order_changes WHERE domain='source' AND key=NEW.key); UPDATE ready_order_fence SET ever_source=1 WHERE singleton=1 AND ever_source=0; UPDATE ready_order_fence SET generation=lower(hex(randomblob(32))),dirty=1 WHERE singleton=1 AND dirty=0;
 END;
 CREATE TRIGGER IF NOT EXISTS ready_order_records_update BEFORE UPDATE ON records BEGIN
- INSERT OR IGNORE INTO ready_order_changes(domain,key) VALUES('source',OLD.key); INSERT OR IGNORE INTO ready_order_changes(domain,key) VALUES('source',NEW.key); UPDATE ready_order_fence SET ever_source=1 WHERE singleton=1 AND ever_source=0; UPDATE ready_order_fence SET generation=lower(hex(randomblob(32))),dirty=1 WHERE singleton=1 AND dirty=0;
+ INSERT INTO ready_order_changes(domain,key) SELECT 'source',OLD.key WHERE NOT EXISTS(SELECT 1 FROM ready_order_changes WHERE domain='source' AND key=OLD.key); INSERT INTO ready_order_changes(domain,key) SELECT 'source',NEW.key WHERE NOT EXISTS(SELECT 1 FROM ready_order_changes WHERE domain='source' AND key=NEW.key); UPDATE ready_order_fence SET ever_source=1 WHERE singleton=1 AND ever_source=0; UPDATE ready_order_fence SET generation=lower(hex(randomblob(32))),dirty=1 WHERE singleton=1 AND dirty=0;
 END;
 CREATE TRIGGER IF NOT EXISTS ready_order_records_delete BEFORE DELETE ON records BEGIN
- INSERT OR IGNORE INTO ready_order_changes(domain,key) VALUES('source',OLD.key); UPDATE ready_order_fence SET ever_source=1 WHERE singleton=1 AND ever_source=0; UPDATE ready_order_fence SET generation=lower(hex(randomblob(32))),dirty=1 WHERE singleton=1 AND dirty=0;
+ INSERT INTO ready_order_changes(domain,key) SELECT 'source',OLD.key WHERE NOT EXISTS(SELECT 1 FROM ready_order_changes WHERE domain='source' AND key=OLD.key); UPDATE ready_order_fence SET ever_source=1 WHERE singleton=1 AND ever_source=0; UPDATE ready_order_fence SET generation=lower(hex(randomblob(32))),dirty=1 WHERE singleton=1 AND dirty=0;
 END;
 CREATE TRIGGER IF NOT EXISTS ready_order_versions_insert BEFORE INSERT ON versions BEGIN
- INSERT OR IGNORE INTO ready_order_changes(domain,key) VALUES('source',NEW.key); UPDATE ready_order_fence SET ever_source=1 WHERE singleton=1 AND ever_source=0; UPDATE ready_order_fence SET generation=lower(hex(randomblob(32))),dirty=1 WHERE singleton=1 AND dirty=0;
+ INSERT INTO ready_order_changes(domain,key) SELECT 'source',NEW.key WHERE NOT EXISTS(SELECT 1 FROM ready_order_changes WHERE domain='source' AND key=NEW.key); UPDATE ready_order_fence SET ever_source=1 WHERE singleton=1 AND ever_source=0; UPDATE ready_order_fence SET generation=lower(hex(randomblob(32))),dirty=1 WHERE singleton=1 AND dirty=0;
 END;
 CREATE TRIGGER IF NOT EXISTS ready_order_versions_update BEFORE UPDATE ON versions BEGIN
- INSERT OR IGNORE INTO ready_order_changes(domain,key) VALUES('source',OLD.key); INSERT OR IGNORE INTO ready_order_changes(domain,key) VALUES('source',NEW.key); UPDATE ready_order_fence SET ever_source=1 WHERE singleton=1 AND ever_source=0; UPDATE ready_order_fence SET generation=lower(hex(randomblob(32))),dirty=1 WHERE singleton=1 AND dirty=0;
+ INSERT INTO ready_order_changes(domain,key) SELECT 'source',OLD.key WHERE NOT EXISTS(SELECT 1 FROM ready_order_changes WHERE domain='source' AND key=OLD.key); INSERT INTO ready_order_changes(domain,key) SELECT 'source',NEW.key WHERE NOT EXISTS(SELECT 1 FROM ready_order_changes WHERE domain='source' AND key=NEW.key); UPDATE ready_order_fence SET ever_source=1 WHERE singleton=1 AND ever_source=0; UPDATE ready_order_fence SET generation=lower(hex(randomblob(32))),dirty=1 WHERE singleton=1 AND dirty=0;
 END;
 CREATE TRIGGER IF NOT EXISTS ready_order_versions_delete BEFORE DELETE ON versions BEGIN
- INSERT OR IGNORE INTO ready_order_changes(domain,key) VALUES('source',OLD.key); UPDATE ready_order_fence SET ever_source=1 WHERE singleton=1 AND ever_source=0; UPDATE ready_order_fence SET generation=lower(hex(randomblob(32))),dirty=1 WHERE singleton=1 AND dirty=0;
+ INSERT INTO ready_order_changes(domain,key) SELECT 'source',OLD.key WHERE NOT EXISTS(SELECT 1 FROM ready_order_changes WHERE domain='source' AND key=OLD.key); UPDATE ready_order_fence SET ever_source=1 WHERE singleton=1 AND ever_source=0; UPDATE ready_order_fence SET generation=lower(hex(randomblob(32))),dirty=1 WHERE singleton=1 AND dirty=0;
 END;
 CREATE TRIGGER IF NOT EXISTS ready_order_key_history_insert BEFORE INSERT ON key_history BEGIN
- INSERT OR IGNORE INTO ready_order_changes(domain,key) VALUES('state',NEW.key); UPDATE ready_order_fence SET ever_source=1 WHERE singleton=1 AND ever_source=0; UPDATE ready_order_fence SET generation=lower(hex(randomblob(32))),dirty=1 WHERE singleton=1 AND dirty=0;
+ INSERT INTO ready_order_changes(domain,key) SELECT 'state',NEW.key WHERE NOT EXISTS(SELECT 1 FROM ready_order_changes WHERE domain='state' AND key=NEW.key); UPDATE ready_order_fence SET ever_source=1 WHERE singleton=1 AND ever_source=0; UPDATE ready_order_fence SET generation=lower(hex(randomblob(32))),dirty=1 WHERE singleton=1 AND dirty=0;
 END;
 CREATE TRIGGER IF NOT EXISTS ready_order_key_history_update BEFORE UPDATE ON key_history BEGIN
- INSERT OR IGNORE INTO ready_order_changes(domain,key) VALUES('state',OLD.key); INSERT OR IGNORE INTO ready_order_changes(domain,key) VALUES('state',NEW.key); UPDATE ready_order_fence SET ever_source=1 WHERE singleton=1 AND ever_source=0; UPDATE ready_order_fence SET generation=lower(hex(randomblob(32))),dirty=1 WHERE singleton=1 AND dirty=0;
+ INSERT INTO ready_order_changes(domain,key) SELECT 'state',OLD.key WHERE NOT EXISTS(SELECT 1 FROM ready_order_changes WHERE domain='state' AND key=OLD.key); INSERT INTO ready_order_changes(domain,key) SELECT 'state',NEW.key WHERE NOT EXISTS(SELECT 1 FROM ready_order_changes WHERE domain='state' AND key=NEW.key); UPDATE ready_order_fence SET ever_source=1 WHERE singleton=1 AND ever_source=0; UPDATE ready_order_fence SET generation=lower(hex(randomblob(32))),dirty=1 WHERE singleton=1 AND dirty=0;
 END;
 CREATE TRIGGER IF NOT EXISTS ready_order_key_history_delete BEFORE DELETE ON key_history BEGIN
- INSERT OR IGNORE INTO ready_order_changes(domain,key) VALUES('state',OLD.key); UPDATE ready_order_fence SET ever_source=1 WHERE singleton=1 AND ever_source=0; UPDATE ready_order_fence SET generation=lower(hex(randomblob(32))),dirty=1 WHERE singleton=1 AND dirty=0;
+ INSERT INTO ready_order_changes(domain,key) SELECT 'state',OLD.key WHERE NOT EXISTS(SELECT 1 FROM ready_order_changes WHERE domain='state' AND key=OLD.key); UPDATE ready_order_fence SET ever_source=1 WHERE singleton=1 AND ever_source=0; UPDATE ready_order_fence SET generation=lower(hex(randomblob(32))),dirty=1 WHERE singleton=1 AND dirty=0;
 END;
 CREATE TRIGGER IF NOT EXISTS ready_order_objects_insert BEFORE INSERT ON objects BEGIN
  UPDATE ready_order_fence SET ever_source=1 WHERE singleton=1 AND ever_source=0; UPDATE ready_order_fence SET generation=lower(hex(randomblob(32))),dirty=1 WHERE singleton=1 AND dirty=0;

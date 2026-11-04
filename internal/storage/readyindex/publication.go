@@ -61,7 +61,7 @@ func (r publicationImage) Observe(ctx context.Context, keys []driver.LockKey) ([
 }
 
 // Publication is a verified bounded transition. The SQL engine must also
-// compare its witnesses with the real source/staging overlay, lock observations
+// compare its sources with the real source/staging overlay, lock observations
 // and fenced physical generation. This result alone is not a certificate.
 type Publication struct {
 	Data                               driver.ReadyOrderPublicationData
@@ -71,9 +71,9 @@ type Publication struct {
 	Digest                             string
 }
 
-// SourceWitness describes the final staged source, retaining the old kind for
+// StagedSource describes the final staged source, retaining the old kind for
 // deletions. Keys use the driver's canonical record lock encoding.
-type SourceWitness struct {
+type StagedSource struct {
 	Record *driver.Record
 	Kind   string
 }
@@ -82,7 +82,7 @@ type SourceWitness struct {
 // exactly the Ready rows in the final transaction overlay. Other record kinds
 // carry authority/control state at the same target Head; they cannot silently
 // introduce a bead into this lifetime.
-func (p Publication) ValidateOverlay(sources map[string]SourceWitness, derived map[string]driver.LockState, acquired driver.LockSet, bumps map[string]driver.LockKey) error {
+func (p Publication) ValidateOverlay(sources map[string]StagedSource, derived map[string]driver.LockState, acquired driver.LockSet, bumps map[string]driver.LockKey) error {
 	mutations := map[string]driver.ReadyOrderMutation{}
 	for _, m := range p.Data.Mutations {
 		key, err := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &m.Ref})
@@ -91,7 +91,7 @@ func (p Publication) ValidateOverlay(sources map[string]SourceWitness, derived m
 		}
 		w, ok := sources[key]
 		if !ok || w.Kind != "bead" || (m.Item == nil) != (w.Record == nil) || w.Record != nil && driver.SelectionDigest(w.Record.Body) != m.SourceDigest {
-			return unavailable("source witness differs from staged image")
+			return unavailable("source image differs from staged image")
 		}
 		mutations[key] = m
 	}

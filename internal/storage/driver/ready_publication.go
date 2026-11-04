@@ -49,7 +49,7 @@ func NewReadyOrderPublication(data ReadyOrderPublicationData) (ReadyOrderPublica
 	}
 	for _, mutation := range data.Mutations {
 		if ValidateHierarchyRef(mutation.Ref) != nil || mutation.Item != nil && !ValidReadyHash(mutation.SourceDigest) {
-			return ReadyOrderPublication{}, fmt.Errorf("%w: Ready publication source witness", ErrUnsupported)
+			return ReadyOrderPublication{}, fmt.Errorf("%w: Ready publication source image", ErrUnsupported)
 		}
 	}
 	encoded, err := json.Marshal(data)
