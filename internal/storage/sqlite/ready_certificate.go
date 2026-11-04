@@ -126,14 +126,19 @@ func (t *transaction) prepareReadyOrderCommit(ctx context.Context, c *sql.Conn, 
 	if err = p.ValidateOverlay(sources, t.derived, t.acquired, t.bumps); err != nil {
 		return nil, nil
 	}
+	beforeKeys := make([]driver.LockKey, len(p.Data.Before))
+	for i, before := range p.Data.Before {
+		beforeKeys[i] = before.Key
+	}
+	beforeStates, err := readyOrderReadStates(ctx, c, beforeKeys)
+	if errors.Is(err, driver.ErrUnsupported) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
 	for _, before := range p.Data.Before {
-		actual, err := readyOrderReadState(ctx, c, before.Key)
-		if errors.Is(err, driver.ErrUnsupported) {
-			return nil, nil
-		}
-		if err != nil {
-			return nil, err
-		}
+		actual := beforeStates[keyID(before.Key)]
 		if !readyOrderSameImage(actual, before, true) {
 			return nil, nil
 		}
@@ -182,38 +187,48 @@ func (t *transaction) finishReadyOrderCommit(ctx context.Context, c *sql.Conn, p
 	if unknown {
 		return nil
 	}
+	sourceKeys := make([]string, len(p.Data.Mutations))
+	for i, mutation := range p.Data.Mutations {
+		sourceKeys[i], _ = recordKey(mutation.Ref)
+	}
+	sourceImages, err := readyOrderReadPhysical(ctx, c, sourceKeys, false)
+	if errors.Is(err, driver.ErrUnsupported) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
 	for _, mutation := range p.Data.Mutations {
 		id, _ := recordKey(mutation.Ref)
-		var data []byte
-		err = c.QueryRowContext(ctx, `SELECT data FROM records WHERE key=?`, id).Scan(&data)
+		image := sourceImages[id]
 		if mutation.Item == nil {
-			if errors.Is(err, sql.ErrNoRows) {
+			if !image.present {
 				continue
 			}
-			if err != nil {
-				return err
-			}
 			return nil
 		}
-		if errors.Is(err, sql.ErrNoRows) {
+		if !image.present {
 			return nil
-		}
-		if err != nil {
-			return err
 		}
 		var record driver.Record
-		if json.Unmarshal(data, &record) != nil || record.Kind != "bead" || record.Revision != target.Head || driver.SelectionDigest(record.Body) != mutation.SourceDigest {
+		if json.Unmarshal(image.data, &record) != nil || record.Kind != "bead" || record.Revision != target.Head || driver.SelectionDigest(record.Body) != mutation.SourceDigest {
 			return nil
 		}
 	}
-	for _, want := range p.FinalImages() {
-		actual, err := readyOrderReadState(ctx, c, want.Key)
-		if errors.Is(err, driver.ErrUnsupported) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
+	finalImages := p.FinalImages()
+	finalKeys := make([]driver.LockKey, len(finalImages))
+	for i, want := range finalImages {
+		finalKeys[i] = want.Key
+	}
+	finalStates, err := readyOrderReadStates(ctx, c, finalKeys)
+	if errors.Is(err, driver.ErrUnsupported) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, want := range finalImages {
+		actual := finalStates[keyID(want.Key)]
 		if !readyOrderSameImage(actual, want, false) {
 			return nil
 		}

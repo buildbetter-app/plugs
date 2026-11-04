@@ -1152,6 +1152,8 @@ internal/storage/sqlite/publication_lease_test.go
 internal/storage/sqlite/query_cursor_test.go
 internal/storage/sqlite/reader.go
 internal/storage/sqlite/ready_certificate.go
+internal/storage/sqlite/ready_certificate_reads.go
+internal/storage/sqlite/ready_certificate_reads_test.go
 internal/storage/sqlite/ready_certificate_schema.go
 internal/storage/sqlite/ready_certificate_test.go
 internal/storage/sqlite/ready_order.go
