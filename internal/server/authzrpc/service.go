@@ -859,10 +859,11 @@ func (s *GuardedService) PrepareViewSelection(ctx context.Context, by model.Prin
 		description := filter.Description()
 		permit, p := lowerViewFilter(description.Permit, description.Request.Caller, description.Namespace)
 		forbid, f := lowerViewFilter(description.Forbid, description.Request.Caller, description.Namespace)
-		args := []driver.SelectionExpr{{Op: driver.SelectionResourceExists}, permit, {Op: driver.SelectionNot, Args: []driver.SelectionExpr{forbid}}}
+		refs, r := lowerViewCallerRefs(description.Request.Caller)
+		args := []driver.SelectionExpr{{Op: driver.SelectionResourceExists}, permit, {Op: driver.SelectionNot, Args: []driver.SelectionExpr{forbid}}, refs}
 		// The no-plugin schema admits only authorization=true. It cannot
 		// encode this adapter's current-existence check, so retain check_only.
-		complete := p && f && !description.NoPlugins
+		complete := p && f && r && !description.NoPlugins
 		for _, restriction := range description.Restrictions {
 			expr, ok := lowerViewFilter(restriction, description.Request.Caller, description.Namespace)
 			complete = complete && ok
@@ -945,7 +946,7 @@ func finiteViewCaller(c authz.Caller) bool {
 		return false
 	}
 	p := c.Principal
-	if !authz.ValidID(p.ID) || len(p.Caveats) != 0 {
+	if !authz.ValidID(p.ID) {
 		return false
 	}
 	switch p.Kind {
@@ -953,14 +954,47 @@ func finiteViewCaller(c authz.Caller) bool {
 	default:
 		return false
 	}
-	if p.Sponsor != nil && (p.Kind != "agent" || p.Sponsor.Sponsor != nil || !authz.ValidID(p.Sponsor.ID) || (p.Sponsor.Kind != "user" && p.Sponsor.Kind != "service") || len(p.Sponsor.Caveats) != 0) {
+	if p.Sponsor != nil && (p.Kind != "agent" || p.Sponsor.Sponsor != nil || !authz.ValidID(p.Sponsor.ID) || (p.Sponsor.Kind != "user" && p.Sponsor.Kind != "service")) {
 		return false
 	}
 	return true
 }
 
+// lowerViewCallerRefs consumes the JSON-normalized prepared caller. It adds
+// every principal and sponsor restriction to the full policy conjunction;
+// refs never replace a permit, forbid, host restriction or current-source proof.
+// Other caveat forms deliberately retain ordinary Check/Fence in this child.
+func lowerViewCallerRefs(c authz.Caller) (driver.SelectionExpr, bool) {
+	args := []driver.SelectionExpr{}
+	for principal := &c.Principal; principal != nil; principal = principal.Sponsor {
+		for name, value := range principal.Caveats {
+			if name != "refs" {
+				return driver.SelectionExpr{}, false
+			}
+			data, err := json.Marshal(value)
+			if err != nil || string(data) == "null" {
+				return driver.SelectionExpr{}, false
+			}
+			var refs []model.Ref
+			if json.Unmarshal(data, &refs) != nil || len(refs) > driver.SelectionMaxNodes {
+				return driver.SelectionExpr{}, false
+			}
+			for _, ref := range refs {
+				if authz.CanonicalRef(ref) != nil {
+					return driver.SelectionExpr{}, false
+				}
+			}
+			// An explicitly empty vector is a denying membership predicate.
+			// Omitted refs contribute no restriction to the conjunction.
+			args = append(args, driver.SelectionExpr{Op: driver.SelectionRefs, Refs: refs})
+		}
+	}
+	return driver.SelectionExpr{Op: driver.SelectionAll, Args: args}, true
+}
+
 // No data-dependent simplification may remove an unsupported policy arm.
-// TeamInvolvement, Modify and caveated lowering remain check_only in full.
+// TeamInvolvement and Modify remain check_only in full. Caller refs are lowered
+// separately and ANDed only after every configured policy arm is complete.
 func lowerViewFilter(f authz.FilterExpr, caller authz.Caller, ns authz.Namespace) (driver.SelectionExpr, bool) {
 	constant := func(v bool) driver.SelectionExpr {
 		if v {

@@ -823,7 +823,7 @@ func TestW9UnsupportedMembershipCaveatsAndBothPolicyPlanesAcrossEngines(t *testi
 		f := newW9Fixture(t, store)
 		f.seed(t, []driver.Record{w9Record("a", "bug", "visible-name", "public", "todo", "x"), w9Record("b", "bug", "hidden-name", "secret", "todo", "x")})
 		f.store.allowScan = true
-		for _, name := range []string{"unbounded_label", "saved_without_source_binding", "extra_host_restriction", "caveat_intersection"} {
+		for _, name := range []string{"unbounded_label", "saved_without_source_binding", "extra_host_restriction", "caveat_intersection", "unsupported_caveat"} {
 			t.Run(name, func(t *testing.T) {
 				cfg := viewops.Config{}
 				def := viewops.Definition{Filter: &viewops.Filter{}}
@@ -845,11 +845,40 @@ func TestW9UnsupportedMembershipCaveatsAndBothPolicyPlanesAcrossEngines(t *testi
 				case "caveat_intersection":
 					by.Caveats = map[string]any{"refs": []model.Ref{w9Ref("b")}}
 					want = 0
+				case "unsupported_caveat":
+					by.Caveats = map[string]any{"provider": true}
+					want = 0
 				}
-				before := f.store.selects
-				got, err := f.views(t, cfg).Run(context.Background(), by, req)
-				if err != nil || got.Count == nil || *got.Count != want || f.store.selects != before {
-					t.Fatalf("check_only %s=%+v err=%v selects_delta=%d", name, got, err, f.store.selects-before)
+				// Both the newly supported exact refs and every ordinary fallback
+				// retain the same real current-authority final fence.
+				cfg.Selection = f.app.Service.ViewSelection()
+				cfg.OntologyRevision = model.Natural64(1)
+				bind, fences := cfg.Selection.Bind, 0
+				cfg.Selection.Bind = func(ctx context.Context, by model.PrincipalRef, inline string) (*viewops.SelectionAuthority, error) {
+					authority, err := bind(ctx, by, inline)
+					if err == nil && authority != nil {
+						fence := authority.Fence
+						authority.Fence = func(ctx context.Context) error { fences++; return fence(ctx) }
+					}
+					return authority, err
+				}
+				views, err := viewops.New(f.store, f.lease, cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				before, beforeQueries := f.store.selects, f.store.queries
+				got, err := views.Run(context.Background(), by, req)
+				wantSelects := 0
+				if name == "caveat_intersection" {
+					// The same hidden ref stays forbidden by the full policy. Only
+					// its former blanket check_only route changes with refs support.
+					wantSelects = 1
+				}
+				if err != nil || got.Count == nil || *got.Count != want || len(got.Items) != 0 || len(got.Groups) != 0 || got.NextCursor != nil || f.store.selects-before != wantSelects || fences != 1 {
+					t.Fatalf("restricted view %s=%+v err=%v selects_delta=%d want=%d fences=%d", name, got, err, f.store.selects-before, wantSelects, fences)
+				}
+				if wantSelects == 1 && f.store.queries != beforeQueries || name == "unsupported_caveat" && f.store.queries == beforeQueries {
+					t.Fatalf("wrong compiled/fallback route %s: queries_delta=%d", name, f.store.queries-beforeQueries)
 				}
 			})
 		}

@@ -93,13 +93,16 @@ func (commitQueryTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pg
 	capture.mu.Unlock()
 }
 
-func openCommitQueryTest(t *testing.T) (*Store, driver.ActiveLease) {
+func openCommitQueryTest(t *testing.T, tracer ...pgx.QueryTracer) (*Store, driver.ActiveLease) {
 	t.Helper()
 	config, err := pgx.ParseConfig(freshDSN(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	config.Tracer = commitQueryTracer{}
+	if len(tracer) > 0 {
+		config.Tracer = tracer[0]
+	}
 	dsn := stdlib.RegisterConnConfig(config)
 	t.Cleanup(func() { stdlib.UnregisterConnConfig(dsn) })
 	s := openTest(t, dsn)

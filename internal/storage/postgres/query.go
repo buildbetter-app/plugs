@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"sort"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -83,6 +85,39 @@ func matches(record driver.Record, filter map[string]any) (bool, error) {
 	return true, nil
 }
 
+// pgx can observe its socket deadline before the context timer records Err().
+// Preserve the network cause, but expose this operation's elapsed deadline to
+// callers such as viewops. An unrelated error, SQLSTATE, cancellation or joined
+// error must never become a request deadline just because time has passed.
+type queryDeadlineFailure struct{ cause error }
+
+func (e queryDeadlineFailure) Error() string        { return e.cause.Error() }
+func (e queryDeadlineFailure) Unwrap() error        { return e.cause }
+func (e queryDeadlineFailure) Is(target error) bool { return target == context.DeadlineExceeded }
+
+func queryDeadlineError(ctx context.Context, err error) error {
+	if err == nil || ctx.Err() == context.Canceled || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok || time.Now().Before(deadline) {
+		return err
+	}
+	for cause := err; cause != nil; cause = errors.Unwrap(cause) {
+		if _, joined := cause.(interface{ Unwrap() []error }); joined {
+			return err
+		}
+		if state, ok := cause.(interface{ SQLState() string }); ok && state.SQLState() != "" {
+			return err
+		}
+	}
+	var timeout net.Error
+	if !errors.As(err, &timeout) || !timeout.Timeout() {
+		return err
+	}
+	return queryDeadlineFailure{cause: err}
+}
+
 func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.Record], error) {
 	driver.ReportReadWork(ctx, driver.ReadQueryCalls, 1)
 	r.mu.Lock()
@@ -124,14 +159,14 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 	}
 	rows, err := r.sql.QueryContext(ctx, `SELECT key,ref FROM plug_postgres.records ORDER BY key`)
 	if err != nil {
-		return empty, err
+		return empty, queryDeadlineError(ctx, err)
 	}
 	refs := make(map[string]driver.Ref)
 	for rows.Next() {
 		var key, raw []byte
 		if err = rows.Scan(&key, &raw); err != nil {
 			_ = rows.Close()
-			return empty, err
+			return empty, queryDeadlineError(ctx, err)
 		}
 		var ref driver.Ref
 		if err = decode(raw, &ref); err != nil {
@@ -144,7 +179,7 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 	err = rows.Err()
 	_ = rows.Close()
 	if err != nil {
-		return empty, err
+		return empty, queryDeadlineError(ctx, err)
 	}
 	if r.writer != nil {
 		for key, record := range r.writer.records {
@@ -169,7 +204,7 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 	}
 	values, err := r.get(ctx, ordered)
 	if err != nil {
-		return empty, err
+		return empty, queryDeadlineError(ctx, err)
 	}
 	items := make([]driver.Record, 0)
 	for _, value := range values {

@@ -51,7 +51,7 @@ go_library(
 
 go_test(
     name = "composition_test",
-    srcs = glob(["*_test.go"]),
+    srcs = glob(["*_test.go"], exclude = ["view_selection_test.go"]),
     embed = [":composition"],
     data = [
         ":test_go_sdk",
@@ -94,6 +94,26 @@ go_test(
         "//internal/storage/sqlite",
         "//pluginapi",
         "//sdk/go:sdk_go",
+    ],
+)
+
+go_test(
+    name = "view_selection_test",
+    srcs = ["view_selection_test.go"],
+    embed = [":composition"],
+    tags = ["exclusive"],
+    deps = [
+        "//internal/core/authz",
+        "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/core/service",
+        "//internal/core/viewops",
+        "//internal/plugins/authnapikey",
+        "//internal/plugins/authzfixed",
+        "//internal/server/authn",
+        "//internal/server/authzrpc",
+        "//internal/storage/conformance",
+        "//internal/storage/driver",
     ],
 )
 

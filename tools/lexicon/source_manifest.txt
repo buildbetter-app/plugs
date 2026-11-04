@@ -371,6 +371,7 @@ internal/core/service/workflow_refs.go
 internal/core/viewops/BUILD.bazel
 internal/core/viewops/epic_progress.go
 internal/core/viewops/label_predicate.go
+internal/core/viewops/mapping_test.go
 internal/core/viewops/parent_projection.go
 internal/core/viewops/run.go
 internal/core/viewops/selection_test.go
@@ -728,6 +729,7 @@ internal/server/authzrpc/prepared_test.go
 internal/server/authzrpc/scoped_projection_test.go
 internal/server/authzrpc/service.go
 internal/server/authzrpc/slice.go
+internal/server/authzrpc/view_refs_test.go
 internal/server/authzrpc/view_selection_test.go
 internal/server/authzrpc/workflow_boundary_test.go
 internal/server/authzrpc/workflow_claimnext.go
@@ -771,6 +773,7 @@ internal/server/composition/source_indexes_test.go
 internal/server/composition/telemetry.go
 internal/server/composition/telemetry_test.go
 internal/server/composition/testdata/server-representative-plug-dump-1.tar
+internal/server/composition/view_selection_test.go
 internal/server/composition/workflow_runtime_test.go
 internal/server/events/BUILD.bazel
 internal/server/events/audit.go

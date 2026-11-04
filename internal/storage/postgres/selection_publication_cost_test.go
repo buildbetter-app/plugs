@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/jackc/pgx/v5"
 )
 
 // This finite PG control publishes two real 1000-record transactions. It is
@@ -198,7 +200,7 @@ func TestSelectionPublicationParentChainSetProof(t *testing.T) {
 	}
 }
 
-func publishSelectionCensusBatch(t *testing.T, s *Store, lease driver.ActiveLease, offset int) {
+func publishSelectionCensusBatch(t *testing.T, s *Store, lease driver.ActiveLease, offset int, measured ...bool) {
 	t.Helper()
 	ctx := context.Background()
 	plans := make([]*pipeline.SourceProjectionPlan, 1000)
@@ -273,10 +275,222 @@ func publishSelectionCensusBatch(t *testing.T, s *Store, lease driver.ActiveLeas
 		t.Fatal(err)
 	}
 	started := time.Now()
-	if _, err := tx.Commit(ctx, h); err != nil {
-		t.Fatalf("real 1000-record Commit offset=%d elapsed=%s: %v", offset, time.Since(started), err)
+	commitCtx := ctx
+	var timing *selectionCommitTiming
+	if len(measured) > 0 && measured[0] {
+		timing = newSelectionCommitTiming(lease.(*activeLease), started)
+		commitCtx = context.WithValue(ctx, selectionCommitTimingKey{}, timing)
 	}
-	t.Logf("W6_PUBLICATION_CENSUS batch_records=1000 completed_records=%d commit_elapsed=%s lease_ttl=%s renewal_cadence=%s", offset+1000, time.Since(started), driver.LeaseTTL, driver.LeaseTTL/3)
+	_, err := tx.Commit(commitCtx, h)
+	elapsed := time.Since(started)
+	if timing != nil {
+		// Observe and log after Commit even on failure, before Fatal exits this
+		// fixture. Tracing only buffers fixed timing state during Commit; it
+		// adds no SQL, heartbeat or external observer callback.
+		timing.log(t, offset, elapsed, err)
+	}
+	if err != nil {
+		t.Fatalf("real 1000-record Commit offset=%d elapsed=%s: %v", offset, elapsed, err)
+	}
+	t.Logf("W6_PUBLICATION_CENSUS batch_records=1000 completed_records=%d commit_elapsed=%s lease_ttl=%s renewal_cadence=%s", offset+1000, elapsed, driver.LeaseTTL, driver.LeaseTTL/3)
+}
+
+// Adapt W4 be2a73b9c's deferredPhaseTimings lifetime: closed vocabulary,
+// fixed storage and no observer/logging until the driver boundary returns.
+// These are actual pgx query boundaries, not plans, SQL executor row counts,
+// nested trigger phases or a measurement of the server's lease expiry.
+type selectionCommitTimingKey struct{}
+
+var selectionCommitQueryPhases = [...]string{
+	"lease_fence", "clock", "mutation_fence", "closure_discovery", "family_validity",
+	"source_index", "record_reads", "records", "states", "selection_sources",
+	"selection_rows", "selection_facts", "coverage", "certificate", "other",
+}
+
+type selectionCommitLeasePoint struct {
+	AtNS       int64
+	DeadlineNS int64
+	Lost       bool
+}
+
+type selectionCommitQuerySample struct {
+	Phase    string
+	Start    selectionCommitLeasePoint
+	End      selectionCommitLeasePoint
+	Done     bool
+	Failed   bool
+	SQLState string
+}
+
+type selectionCommitQueryBucket struct {
+	Phase                string
+	Starts, Ends, Errors uint64
+	ElapsedNS            int64
+}
+
+type selectionCommitTiming struct {
+	mu                         sync.Mutex
+	origin                     time.Time
+	lease                      *activeLease
+	before                     selectionCommitLeasePoint
+	buckets                    [len(selectionCommitQueryPhases)]selectionCommitQueryBucket
+	active                     selectionCommitQuerySample
+	activePhase                int
+	inflight                   bool
+	last, longest, lastError   selectionCommitQuerySample
+	firstLost                  selectionCommitLeasePoint
+	lossInside, deadlineInside bool
+	overlaps, unmatched        uint64
+}
+
+func newSelectionCommitTiming(lease *activeLease, started time.Time) *selectionCommitTiming {
+	c := &selectionCommitTiming{origin: started, lease: lease}
+	c.before = c.leasePoint()
+	for i, phase := range selectionCommitQueryPhases {
+		c.buckets[i].Phase = phase
+	}
+	return c
+}
+
+func (c *selectionCommitTiming) leasePoint() selectionCommitLeasePoint {
+	c.lease.mu.Lock()
+	defer c.lease.mu.Unlock()
+	return selectionCommitLeasePoint{AtNS: time.Since(c.origin).Nanoseconds(), DeadlineNS: c.lease.timerDeadline.Sub(c.origin).Nanoseconds(), Lost: c.lease.ended()}
+}
+
+// Called only by pgx while the opted-in Commit is executing, under c.mu.
+// A post-return sample alone must never be called loss inside Commit.
+func (c *selectionCommitTiming) observeInside(point selectionCommitLeasePoint) {
+	if !c.before.Lost && point.Lost && !c.lossInside {
+		c.firstLost, c.lossInside = point, true
+	}
+	c.deadlineInside = c.deadlineInside || point.AtNS >= point.DeadlineNS
+}
+
+func selectionCommitQueryPhase(query string) int {
+	query = strings.TrimSpace(query)
+	switch {
+	case strings.HasPrefix(query, "SELECT epoch::text,owner,expires FROM plug_postgres.lease"):
+		return 0
+	case query == "SELECT clock_timestamp()":
+		return 1
+	case strings.HasPrefix(query, "WITH roots AS MATERIALIZED"):
+		return 3
+	case strings.HasPrefix(query, "WITH proof_rows AS"):
+		return 4
+	case strings.Contains(query, "plug_postgres.selection_mutation_keys") && strings.HasPrefix(query, "DELETE"),
+		strings.HasPrefix(query, "UPDATE plug_postgres.selection_mutation_fence"):
+		return 13
+	case strings.Contains(query, "plug_postgres.selection_mutation_fence"):
+		return 2
+	case strings.Contains(query, "plug_postgres.hierarchy_"), strings.Contains(query, "plug_postgres.graph_link_"):
+		return 5
+	case strings.HasPrefix(query, "SELECT") && (strings.Contains(query, "plug_postgres.records") || strings.Contains(query, "plug_postgres.versions")):
+		return 6
+	case strings.Contains(query, "plug_postgres.records"), strings.Contains(query, "plug_postgres.versions"):
+		return 7
+	case strings.Contains(query, "plug_postgres.states"):
+		return 8
+	case strings.Contains(query, "plug_postgres.selection_sources"):
+		return 9
+	case strings.Contains(query, "plug_postgres.selection_rows"):
+		return 10
+	case strings.Contains(query, "plug_postgres.selection_facts"):
+		return 11
+	case strings.Contains(query, "plug_postgres.selection_coverage"):
+		return 12
+	default:
+		return 14
+	}
+}
+
+// Only the certificate fixture installs this tracer and opts its actual Commit
+// context in. Staging, EXPLAIN, readback and production-cadence renewal retain
+// their original contexts. Delegate the existing preimage tracer unchanged.
+type selectionPublicationQueryTracer struct{}
+
+func (selectionPublicationQueryTracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	ctx = (commitQueryTracer{}).TraceQueryStart(ctx, conn, data)
+	if c, _ := ctx.Value(selectionCommitTimingKey{}).(*selectionCommitTiming); c != nil {
+		point, phase := c.leasePoint(), selectionCommitQueryPhase(data.SQL)
+		c.mu.Lock()
+		c.observeInside(point)
+		if c.inflight {
+			c.overlaps++ // Never silently treat overlapping spans as complete.
+		}
+		c.active = selectionCommitQuerySample{Phase: selectionCommitQueryPhases[phase], Start: point}
+		c.activePhase, c.inflight = phase, true
+		c.buckets[phase].Starts++
+		c.mu.Unlock()
+	}
+	return ctx
+}
+
+func (selectionPublicationQueryTracer) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryEndData) {
+	if c, _ := ctx.Value(selectionCommitTimingKey{}).(*selectionCommitTiming); c != nil {
+		point := c.leasePoint()
+		c.mu.Lock()
+		c.observeInside(point)
+		if !c.inflight {
+			c.unmatched++
+		} else {
+			span := c.active
+			span.End, span.Done, span.Failed, span.SQLState = point, true, data.Err != nil, sqlState(data.Err)
+			bucket := &c.buckets[c.activePhase]
+			bucket.Ends++
+			bucket.ElapsedNS += span.End.AtNS - span.Start.AtNS
+			if span.Failed {
+				bucket.Errors++
+				c.lastError = span
+			}
+			c.last = span
+			if span.End.AtNS-span.Start.AtNS > c.longest.End.AtNS-c.longest.Start.AtNS {
+				c.longest = span
+			}
+			c.active = selectionCommitQuerySample{}
+			c.inflight = false
+		}
+		c.mu.Unlock()
+	}
+	(commitQueryTracer{}).TraceQueryEnd(ctx, conn, data)
+}
+
+func (c *selectionCommitTiming) log(t *testing.T, offset int, elapsed time.Duration, err error) {
+	t.Helper()
+	after := c.leasePoint()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var fenced driver.ErrFenced
+	// This is the local lease timer and Lost channel, bracketed by Commit.
+	// A local deadline/loss observation cannot identify server lock ownership
+	// or replace the DB clock/expiry values checked by the real lease fence.
+	raw, marshalErr := json.Marshal(struct {
+		Engine, Scope, DatabaseExpiry, ExecutorWork, SQLCommit string
+		Offset                                                 int
+		WallNS                                                 int64
+		CommitFailed, CommitFenced                             bool
+		Before, PostCommit, FirstLossInsideQuery               selectionCommitLeasePoint
+		LossObservedDuringCommit                               bool
+		LocalDeadlineElapsedInsideQuery                        bool
+		LocalDeadlineElapsedAtPostCommitSample                 bool
+		Buckets                                                [len(selectionCommitQueryPhases)]selectionCommitQueryBucket
+		Last, Longest, LastError, Active                       selectionCommitQuerySample
+		Inflight                                               bool
+		Overlaps, Unmatched                                    uint64
+	}{
+		Engine: "postgres", Scope: "ACTUAL_COMMIT_QUERY_BOUNDARIES_ONLY", DatabaseExpiry: "UNMEASURED", ExecutorWork: "UNMEASURED", SQLCommit: "BEGIN_CONTEXT_NOT_OPTED_IN",
+		Offset: offset, WallNS: elapsed.Nanoseconds(), CommitFailed: err != nil, CommitFenced: errors.As(err, &fenced),
+		Before: c.before, PostCommit: after, FirstLossInsideQuery: c.firstLost, LossObservedDuringCommit: c.lossInside,
+		LocalDeadlineElapsedInsideQuery:        c.deadlineInside,
+		LocalDeadlineElapsedAtPostCommitSample: after.AtNS >= after.DeadlineNS,
+		Buckets:                                c.buckets, Last: c.last, Longest: c.longest, LastError: c.lastError, Active: c.active,
+		Inflight: c.inflight, Overlaps: c.overlaps, Unmatched: c.unmatched,
+	})
+	if marshalErr != nil {
+		t.Errorf("commit timing could not be encoded: %v", marshalErr)
+		return
+	}
+	t.Logf("W6_PG_COMMIT_TIMING %s", raw)
 }
 
 func explainSelectionPublicationCensus(t *testing.T, r *reader, population int) {
@@ -399,12 +613,12 @@ func explainSelectionPublicationCensus(t *testing.T, r *reader, population int) 
 // the old certificate nor the retained read snapshot can absorb its writes.
 func TestSelectionPublicationMutationCertificate(t *testing.T) {
 	ctx := context.Background()
-	s, lease := openCommitQueryTest(t)
-	publishSelectionCensusBatch(t, s, lease, 0)
+	s, lease := openCommitQueryTest(t, selectionPublicationQueryTracer{})
+	publishSelectionCensusBatch(t, s, lease, 0, true)
 	first := pgStartupRead(t, s)
 	requireSelectionCertificate(t, first, true)
 	t.Run("affected_work_1000", func(t *testing.T) { explainSelectionAffectedWork(t, first, 1000) })
-	publishSelectionCensusBatch(t, s, lease, 1000)
+	publishSelectionCensusBatch(t, s, lease, 1000, true)
 	current := pgStartupRead(t, s)
 	requireSelectionCertificate(t, current, true)
 	t.Run("affected_work_2000", func(t *testing.T) { explainSelectionAffectedWork(t, current, 2000) })
