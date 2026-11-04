@@ -83,3 +83,62 @@ filegroup(
     srcs = glob(["**"]),
     visibility = ["//visibility:public"],
 )
+
+_NATIVE_ACCEPTANCE_SRCS = [
+    "fixture_test.go",
+    "native_history_probe_test.go",
+    "native_recording_test.go",
+    "native_replay_test.go",
+    "native_support_test.go",
+    "native_views_test.go",
+]
+
+_NATIVE_ACCEPTANCE_DEPS = [
+    "//internal/core/dumpformat",
+    "//internal/core/model",
+    "//internal/core/ontology",
+    "//internal/core/pipeline",
+    "//internal/core/port",
+    "//internal/core/service",
+    "//internal/core/viewops",
+    "//internal/integration/converterroundtrip",
+    "//internal/publicnative",
+    "//internal/server/rpc",
+    "//internal/server/viewrpc",
+    "//internal/storage/driver",
+    "//internal/storage/memory",
+    "//internal/storage/postgres",
+    "//internal/storage/sqlite",
+    "//internal/testclock",
+]
+
+# Compile the B24 canonical recorder and its source dependencies in ordinary
+# gates, executing only real-store observer controls. The independent B23 count
+# matrix is outside this B24 port. No native process or recording is used.
+go_test(
+    name = "native_probe_policy_test",
+    srcs = _NATIVE_ACCEPTANCE_SRCS,
+    args = ["-test.v", "-test.run=^TestNativeB24ProbeObservationAcrossStores$$"],
+    tags = ["local", "requires-network"],
+    deps = _NATIVE_ACCEPTANCE_DEPS,
+)
+
+# Separate accepted418 native workload; never included by ordinary //....
+# Each invocation must supply its own recording ID and trusted preparation.
+go_test(
+    name = "native_acceptance_test",
+    size = "large",
+    srcs = _NATIVE_ACCEPTANCE_SRCS,
+    args = ["-test.v"],
+    data = [
+        "native_testdata/profile.json",
+        "native_testdata/protocol.json",
+        "//internal/publicnative:dolt_runtime",
+    ],
+    env = {
+        "PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)",
+    },
+    tags = ["local", "manual", "requires-network"],
+    timeout = "long",
+    deps = _NATIVE_ACCEPTANCE_DEPS,
+)
