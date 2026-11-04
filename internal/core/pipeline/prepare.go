@@ -270,7 +270,8 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			if snapshot.reads.states[key].Present {
 				return nil, errStale
 			}
-			current = &pending{ref: target, kind: "bead", doc: Document{ID: id, Type: c.Type, Project: project, Parent: parent, Fields: map[string]any{}}, setBy: map[string]string{}, allocatorPrefix: allocatorPrefix, allocatorExpected: allocatorExpected, allocatorChild: allocatorChild, allocatorHash: allocatorHash}
+			createdAt := w.cfg.now().UTC()
+			current = &pending{ref: target, kind: "bead", doc: Document{ID: id, Type: c.Type, Project: project, Parent: parent, Fields: map[string]any{}, CreatedAt: &createdAt}, setBy: map[string]string{"createdAt": "core"}, allocatorPrefix: allocatorPrefix, allocatorExpected: allocatorExpected, allocatorChild: allocatorChild, allocatorHash: allocatorHash}
 			p.writes[id] = current
 			if parent != nil {
 				current.setBy["parent"] = "request"
@@ -1266,10 +1267,14 @@ func (w *Writer) checkLease(ctx context.Context, doc Document, by model.Principa
 }
 
 func (w *Writer) claims(p *prepared, by model.PrincipalRef, meta model.WriteMeta) error {
+	stamp := w.cfg.now().UTC()
+	if err := p.lifecycleTimes(stamp); err != nil {
+		return err
+	}
 	if isClaim(meta.Method) && !p.proposal.SameClaim {
 		ttl := model.Natural64(uint64(w.cfg.claimTTL / time.Millisecond))
 		for _, pending := range p.writes {
-			pending.doc.Lease = &ClaimLease{Principal: by, Agent: meta.AgentLabel, ExpiresAt: w.cfg.now().UTC().Add(w.cfg.claimTTL), TtlMs: ttl, Epoch: model.Natural64(w.lease.Epoch())}
+			pending.doc.Lease = &ClaimLease{Principal: by, Agent: meta.AgentLabel, ExpiresAt: stamp.Add(w.cfg.claimTTL), TtlMs: ttl, Epoch: model.Natural64(w.lease.Epoch())}
 			pending.setBy["lease"] = "request"
 		}
 	} else {

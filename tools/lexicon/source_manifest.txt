@@ -80,6 +80,7 @@ engdocs/plug-next/BUILD.bazel
 engdocs/plug-next/README.md
 engdocs/plug-next/audit.md
 engdocs/plug-next/authn.md
+engdocs/plug-next/cli-rpc-lifecycle-trace.json
 engdocs/plug-next/cli-rpc-trace.json
 engdocs/plug-next/dump-restore.md
 engdocs/plug-next/offline-history.md
@@ -274,6 +275,8 @@ internal/core/pipeline/hierarchy_source.go
 internal/core/pipeline/hierarchy_test.go
 internal/core/pipeline/labels.go
 internal/core/pipeline/lease_overlay.go
+internal/core/pipeline/lifecycle.go
+internal/core/pipeline/lifecycle_test.go
 internal/core/pipeline/noop_test.go
 internal/core/pipeline/operations_test.go
 internal/core/pipeline/options.go
@@ -378,6 +381,13 @@ internal/integration/auditsql/audit_sql_test.go
 internal/integration/auditsql/engine_test.go
 internal/integration/auditsql/faults_test.go
 internal/integration/auditsql/fixture_test.go
+internal/integration/b03catalog/BUILD.bazel
+internal/integration/b03catalog/README.md
+internal/integration/b03catalog/archival_test.go
+internal/integration/b03catalog/catalog_test.go
+internal/integration/b03catalog/composition_runtime_test.go
+internal/integration/b03catalog/engine_test.go
+internal/integration/b03catalog/fixture_test.go
 internal/integration/b13memory/BUILD.bazel
 internal/integration/b13memory/README.md
 internal/integration/b13memory/fixture_test.go
@@ -415,6 +425,7 @@ internal/integration/claimsql/README.md
 internal/integration/claimsql/claim_sql_test.go
 internal/integration/claimsql/engine_test.go
 internal/integration/claimsql/fixture_test.go
+internal/integration/claimsql/lifecycle_time_test.go
 internal/integration/clisql/BUILD.bazel
 internal/integration/clisql/README.md
 internal/integration/clisql/fixture_test.go
@@ -658,6 +669,7 @@ internal/server/authzrpc/README.md
 internal/server/authzrpc/atomic_close_test.go
 internal/server/authzrpc/authzrpc.go
 internal/server/authzrpc/authzrpc_test.go
+internal/server/authzrpc/b04_error_bounds_test.go
 internal/server/authzrpc/b15_comments_page_test.go
 internal/server/authzrpc/checker.go
 internal/server/authzrpc/claim.go
@@ -668,6 +680,7 @@ internal/server/authzrpc/export_test.go
 internal/server/authzrpc/hierarchy.go
 internal/server/authzrpc/hierarchy_lifecycle_guards_test.go
 internal/server/authzrpc/hierarchy_lifecycle_test.go
+internal/server/authzrpc/hierarchy_lifecycle_times_test.go
 internal/server/authzrpc/hierarchy_read.go
 internal/server/authzrpc/hierarchy_test.go
 internal/server/authzrpc/history_authority_test.go
@@ -697,6 +710,7 @@ internal/server/collab/rpc.go
 internal/server/collab/types.go
 internal/server/composition/BUILD.bazel
 internal/server/composition/artifact.go
+internal/server/composition/b03_runtime_test.go
 internal/server/composition/composition_test.go
 internal/server/composition/config.go
 internal/server/composition/configfile.go
@@ -1238,6 +1252,7 @@ spec/s1-b09-b12/compaction/audit_test.go
 spec/s1-b09-b12/compaction/b09_b10_conservation_test.go
 spec/s1-b09-b12/compaction/b09_b10_publication_test.go
 spec/s1-b09-b12/compaction/b11_b12_reopen_identity_test.go
+spec/s1-b09-b12/compaction/b12_late_update_failure_test.go
 spec/s1-b09-b12/compaction/b12_test.go
 spec/s1-b09-b12/compaction/composition_test.go
 spec/s1-b09-b12/compaction/continuation_test.go
@@ -1290,6 +1305,9 @@ spec/s1-b17-b20/b18_test.go
 spec/s1-b17-b20/b19_archive_test.go
 spec/s1-b17-b20/b19_fixture_test.go
 spec/s1-b17-b20/b19_snapshot_test.go
+spec/s1-b17-b20/b20_journal_engine_test.go
+spec/s1-b17-b20/b20_journal_log_test.go
+spec/s1-b17-b20/b20_source_compile.sh
 spec/s1-b17-b20/b20_test.go
 spec/s1-b17-b20/i6_test.go
 spec/s1-b17-b20/reference/b18/record.py

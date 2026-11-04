@@ -36,8 +36,8 @@ func assertClosePlan(t *testing.T, f *fixture, g graph, set model.Changeset, dig
 		t.Fatalf("incomplete close publication: %+v", set)
 	}
 	equalJSON(t, set.Principal, writerPrincipal)
-	equalJSON(t, set.Changes[0], model.ChangeRecord{Ref: g.blocker, Op: model.OpPatch, FromRevision: model.Natural64(2), ChangedPaths: []string{"/comments", "/fields/status", "/lease"}})
-	provenance := model.EventProvenance{Method: "bead.close", Slot: "close", SetBy: map[string]string{"fields.status": "request", "comments": "request", "lease": "request"}, Cause: model.EventCause{Root: key(6), Depth: model.Natural64(0), Chain: []string{}}, Chain: []string{}}
+	equalJSON(t, set.Changes[0], model.ChangeRecord{Ref: g.blocker, Op: model.OpPatch, FromRevision: model.Natural64(2), ChangedPaths: []string{"/closedAt", "/comments", "/fields/status", "/lease"}})
+	provenance := model.EventProvenance{Method: "bead.close", Slot: "close", SetBy: map[string]string{"closedAt": "core", "fields.status": "request", "comments": "request", "lease": "request"}, Cause: model.EventCause{Root: key(6), Depth: model.Natural64(0), Chain: []string{}}, Chain: []string{}}
 	for i, descriptor := range set.Events {
 		if descriptor.Index.String() != model.Natural64(uint64(i)).String() || !descriptor.ChangeIndex.IsZero() || descriptor.Resource.Kind != "bead" {
 			t.Fatalf("descriptor order/anchor=%+v", descriptor)
