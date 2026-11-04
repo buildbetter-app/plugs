@@ -19,6 +19,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/port"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/plugins/authzfixed"
 	"github.com/buildbetter-app/plugs/internal/server/authzrpc"
 	"github.com/buildbetter-app/plugs/internal/storage/conformance"
@@ -468,6 +469,156 @@ func TestB01ReadySnapshotDependencyRefusalsAcrossDrivers(t *testing.T) {
 			})
 		}
 	})
+}
+
+func TestB01GuardedReadyInternalPagesAcrossDrivers(t *testing.T) {
+	countDrivers(t, func(t *testing.T, open storeFactory) {
+		for _, mode := range []string{"project_caveat_stable", "compiled_mutation", "check_only_mutation"} {
+			t.Run(mode, func(t *testing.T) {
+				f := newFixtureOn(t, open(t), nil)
+				renewCountFixtureLease(t, f.lease)
+				createdAt := time.Now().UTC()
+				for start := 0; start < 1001; start += 1000 {
+					var changes []conformance.FixtureChange
+					for i := start; i < min(start+1000, 1001); i++ {
+						ref := fixtureRef(100 + i)
+						body, err := json.Marshal(map[string]any{"id": ref.ID, "type": "issue", "project": "project", "createdAt": createdAt, "fields": map[string]any{"title": "internal-pages", "status": "todo", "priority": 1}})
+						if err != nil {
+							t.Fatal(err)
+						}
+						changes = append(changes, conformance.FixtureChange{Ref: ref, Kind: "bead", Op: model.OpCreate, Body: body, Graph: &conformance.FixtureGraphSource{}})
+					}
+					if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, changes); err != nil {
+						t.Fatal(err)
+					}
+				}
+				by := model.PrincipalRef{Kind: "user", ID: "user:internal-project-reader", Caveats: map[string]any{"projects": []model.Ref{model.RefByID("project", model.Natural64(0))}}}
+				beforeHead, beforeACL := publicationState(t, f.store, f.server.Namespace)
+				if mode != "project_caveat_stable" {
+					if mode == "check_only_mutation" {
+						authzrpc.AddRuleForTest(f.server, readyCheckOnlyRules{})
+					}
+					barriers := 0
+					authzrpc.AfterFirstReadyPageForTest(f.server, func(first service.BeadPage) {
+						barriers++
+						if len(first.Items) != 1000 || first.Next == nil || first.Items[0].ID != fixtureRef(100).ID {
+							t.Fatalf("barrier did not follow an actual first1000-row domain page: %+v", first)
+						}
+						// A real public Writer update moves the prefix to the tail.
+						// Keeping offset1000 would omit row1100 and repeat row100.
+						success(t, f.call(t, worker("user:operator"), "bead.update", map[string]any{"id": fixtureRef(100), "fields": map[string]any{"priority": 4}}, 7090))
+					})
+					got := f.call(t, by, "bead.ready", map[string]any{"limit": 1}, 7091)
+					if barriers != 1 || got.Error == nil || got.Error.Data.Code != "cursor_invalid" || len(got.Result) != 0 {
+						t.Fatalf("mixed internal durable pages produced a partial or fingerprinted result: barriers=%d %+v", barriers, got)
+					}
+					afterHead, afterACL := publicationState(t, f.store, f.server.Namespace)
+					if afterHead.String() == beforeHead.String() || !reflect.DeepEqual(beforeACL, afterACL) {
+						t.Fatal("barrier failed to make a real content-only write under the same authority")
+					}
+					beforeHead = afterHead
+				}
+				first := page(t, f.call(t, by, "bead.ready", map[string]any{"limit": 1000}, 7092))
+				if len(first.Items) != 1000 || first.NextCursor == "" {
+					t.Fatalf("stable internal-reader traversal lost a full authorized page: %+v", first)
+				}
+				start := 100
+				if mode != "project_caveat_stable" {
+					start++
+				}
+				for i, item := range first.Items {
+					if item.ID != fixtureRef(start+i).ID {
+						t.Fatalf("complete stable order at%d: %s", i, item.ID)
+					}
+				}
+				last := page(t, f.call(t, by, "bead.ready", map[string]any{"limit": 1000, "cursor": first.NextCursor}, 7093))
+				tail := fixtureRef(1100).ID
+				if mode != "project_caveat_stable" {
+					tail = fixtureRef(100).ID
+				}
+				if len(last.Items) != 2 || last.Items[0].ID != tail || last.Items[1].ID != beadID || last.NextCursor != "" || last.AsOf.Revision.String() != beforeHead.String() {
+					t.Fatalf("stable continuation did not retain the exact complete authorized tail: %+v", last)
+				}
+				afterHead, afterACL := publicationState(t, f.store, f.server.Namespace)
+				if afterHead.String() != beforeHead.String() || !reflect.DeepEqual(beforeACL, afterACL) {
+					t.Fatal("stable internal paging changed source or authority")
+				}
+			})
+		}
+	})
+}
+
+func TestB01GuardedReadyInternalCutoffAcrossDrivers(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			var dsn func(*testing.T) string
+			if engine == "postgres" {
+				dsn = postgresDSNFactory(t)
+			}
+			f := newQuietFixture(t, engine, dsn)
+			// Exclude the ordinary seeded baseline before the witness begins.
+			success(t, f.call(t, worker("user:operator"), "bead.close", map[string]any{"id": model.RefByID(beadID, model.Natural64(0))}, 7100))
+			for start := 0; start < 1002; start += 1000 {
+				var changes []conformance.FixtureChange
+				for i := start; i < min(start+1000, 1002); i++ {
+					ref := fixtureRef(100 + i)
+					at, priority := f.clock.Now(), 4
+					if i == 0 {
+						at, priority = at.Add(-48*time.Hour), 0
+					}
+					body, err := json.Marshal(map[string]any{"id": ref.ID, "type": "issue", "project": "project", "createdAt": at, "fields": map[string]any{"title": "internal-cutoff", "status": "todo", "priority": priority}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					changes = append(changes, conformance.FixtureChange{Ref: ref, Kind: "bead", Op: model.OpCreate, Body: body, Graph: &conformance.FixtureGraphSource{}})
+				}
+				if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, changes); err != nil {
+					t.Fatal(err)
+				}
+			}
+			by := model.PrincipalRef{Kind: "user", ID: "user:internal-cutoff", Caveats: map[string]any{"projects": []model.Ref{model.RefByID("project", model.Natural64(0))}}}
+			beforeHead, beforeACL := publicationState(t, f.store, f.server.Namespace)
+			control := page(t, f.call(t, by, "bead.ready", map[string]any{"limit": 1000}, 7101))
+			if len(control.Items) != 1000 || control.Items[0].ID != fixtureRef(100).ID || control.NextCursor == "" {
+				t.Fatal("stable internal cutoff control did not produce its exact first page")
+			}
+			controlTail := page(t, f.call(t, by, "bead.ready", map[string]any{"limit": 1000, "cursor": control.NextCursor}, 7102))
+			if len(controlTail.Items) != 2 || controlTail.Items[0].ID != fixtureRef(1100).ID || controlTail.Items[1].ID != fixtureRef(1101).ID || controlTail.NextCursor != "" {
+				t.Fatalf("unchanged-order internal continuation failed: %+v", controlTail)
+			}
+			barriers := 0
+			authzrpc.AfterFirstReadyPageForTest(f.server, func(first service.BeadPage) {
+				barriers++
+				if len(first.Items) != 1000 || first.Items[0].ID != fixtureRef(100).ID || first.Next == nil {
+					t.Fatal("cutoff barrier missed the actual first1000-row page")
+				}
+				// Same handler/signing key, live lease, incarnation, head and
+				// authority. No write occurs; the actual SQL clock moves1us.
+				f.clock.Advance(t, time.Microsecond)
+			})
+			got := f.call(t, by, "bead.ready", map[string]any{"limit": 1}, 7103)
+			if barriers != 1 || got.Error == nil || got.Error.Data.Code != "cursor_invalid" || len(got.Result) != 0 {
+				t.Fatalf("same-head internal cutoff splice produced a partial/fingerprinted result: barriers=%d %+v", barriers, got)
+			}
+			fresh := page(t, f.call(t, by, "bead.ready", map[string]any{"limit": 1000}, 7104))
+			if len(fresh.Items) != 1000 || fresh.NextCursor == "" {
+				t.Fatal("fresh post-cutoff first page is incomplete")
+			}
+			for i, item := range fresh.Items {
+				if item.ID != fixtureRef(101+i).ID {
+					t.Fatalf("fresh cutoff order at%d: %s", i, item.ID)
+				}
+			}
+			last := page(t, f.call(t, by, "bead.ready", map[string]any{"limit": 1000, "cursor": fresh.NextCursor}, 7105))
+			if len(last.Items) != 2 || last.Items[0].ID != fixtureRef(1101).ID || last.Items[1].ID != fixtureRef(100).ID || last.NextCursor != "" {
+				t.Fatalf("fresh cutoff continuation omitted or duplicated a member: %+v", last)
+			}
+			afterHead, afterACL := publicationState(t, f.store, f.server.Namespace)
+			if afterHead.String() != beforeHead.String() || !reflect.DeepEqual(beforeACL, afterACL) || fresh.AsOf.Revision.String() != control.AsOf.Revision.String() || fresh.AsOf.Incarnation != control.AsOf.Incarnation {
+				t.Fatal("internal cutoff witness changed durable source, incarnation or authority")
+			}
+		})
+	}
 }
 
 func currentHistory(t *testing.T, open storeFactory) {

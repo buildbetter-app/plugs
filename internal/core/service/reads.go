@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"slices"
 	"strconv"
 	"strings"
@@ -247,7 +248,25 @@ func (s *Service) readyPage(ctx context.Context, by model.PrincipalRef, req Read
 		return BeadPage{}, err
 	}
 	view := r.Snapshot()
-	return pageResult(items, limit, req.Position, AsOf{Revision: *view.At, Incarnation: view.Incarnation}, false, restartOnRevision)
+	membership := ""
+	if req.readySourceBinding {
+		// Internal guarded collection binds the entire core order before any
+		// slice, including a cutoff change without a durable revision. The
+		// guard replaces this internal value with its authorized public digest.
+		h := sha256.New()
+		var length [8]byte
+		for _, item := range items {
+			binary.BigEndian.PutUint64(length[:], uint64(len(item.ID)))
+			_, _ = h.Write(length[:])
+			_, _ = h.Write([]byte(item.ID))
+		}
+		membership = hex.EncodeToString(h.Sum(nil))
+	}
+	page, err := pageResult(items, limit, req.Position, AsOf{Revision: *view.At, Incarnation: view.Incarnation}, false, restartOnRevision)
+	if err == nil {
+		page.ReadyMembership = membership
+	}
+	return page, err
 }
 
 // spreadClaimNextItems rotates equal hybrid-key groups by a stable offset.
@@ -305,6 +324,7 @@ func (s *Service) Ready(ctx context.Context, by model.PrincipalRef, req ReadyReq
 // predicate while allowing the guarded adapter to filter before pageResult.
 func (s *Service) ReadyWithFilter(ctx context.Context, by model.PrincipalRef, req ReadyRequest, filter ReadyAuthorizer) (BeadPage, error) {
 	req.authorizationFilter = filter
+	req.readySourceBinding = true
 	return s.Ready(ctx, by, req)
 }
 

@@ -259,6 +259,8 @@ type ReadyRequest struct {
 	// RPC adapter. The core service applies it to each complete ready candidate
 	// before cutting a page; it is never populated from wire input.
 	authorizationFilter ReadyAuthorizer
+	// Only the trusted guarded capability requests complete internal order metadata.
+	readySourceBinding bool
 }
 
 // ReadyAuthorizer is the narrow host-to-core read seam for a compiled finite

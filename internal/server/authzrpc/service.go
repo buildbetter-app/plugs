@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
@@ -208,54 +209,45 @@ func (s *GuardedService) Ready(ctx context.Context, by model.PrincipalRef, req s
 	filteredDelegate, supportsFiltered := s.delegate.(interface {
 		ReadyWithFilter(context.Context, model.PrincipalRef, service.ReadyRequest, service.ReadyAuthorizer) (service.BeadPage, error)
 	})
-	if compiled {
+	readPage := func() (service.BeadPage, error) {
 		if supportsFiltered {
-			page, err = filteredDelegate.ReadyWithFilter(ctx, by, full, readyFilter)
-		} else {
-			// Test doubles may only implement the RPC port. They are permitted to
-			// carry workflow-only rows, which filterPage still authorizes, but a
-			// core row must never bypass the pre-pagination capability.
-			page, err = s.delegate.Ready(ctx, by, full)
-			if err == nil {
-				for _, item := range page.Items {
-					if item.Kind != "workflow.item" {
-						return service.BeadPage{}, &model.Error{Message: "compiled ready filter is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
-					}
+			// The trusted capability also supplies complete source-order metadata
+			// for the bounded check-only path, whose authorizer remains nil.
+			return filteredDelegate.ReadyWithFilter(ctx, by, full, readyFilter)
+		}
+		candidate, err := s.delegate.Ready(ctx, by, full)
+		if err == nil {
+			for _, item := range candidate.Items {
+				if item.Kind != "workflow.item" {
+					return service.BeadPage{}, &model.Error{Message: "bound ready source is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
 				}
 			}
 		}
-	} else {
-		page, err = s.delegate.Ready(ctx, by, full)
+		return candidate, err
 	}
+	page, err = readPage()
 	if err != nil {
 		return service.BeadPage{}, err
 	}
 	items := append([]service.Bead(nil), page.Items...)
 	workflowSnapshot := page.WorkflowSnapshot
+	durableSnapshot := page.AsOf
+	coreMembership := page.ReadyMembership
 	for page.Next != nil {
 		if !compiled && len(items) >= listPostfilterCap {
 			return service.BeadPage{}, postfilterCap()
 		}
 		position := *page.Next
 		full.Position = &position
-		if compiled {
-			if supportsFiltered {
-				page, err = filteredDelegate.ReadyWithFilter(ctx, by, full, readyFilter)
-			} else {
-				page, err = s.delegate.Ready(ctx, by, full)
-				if err == nil {
-					for _, item := range page.Items {
-						if item.Kind != "workflow.item" {
-							return service.BeadPage{}, &model.Error{Message: "compiled ready filter is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
-						}
-					}
-				}
-			}
-		} else {
-			page, err = s.delegate.Ready(ctx, by, full)
-		}
+		page, err = readPage()
 		if err != nil {
 			return service.BeadPage{}, err
+		}
+		// Plain-core Ready offsets intentionally remain live. A guarded
+		// aggregate cannot sign a sequence spliced across durable snapshots or
+		// a same-revision no-write change to the complete core ready order.
+		if page.AsOf.Incarnation != durableSnapshot.Incarnation || page.AsOf.Revision.String() != durableSnapshot.Revision.String() || page.ReadyMembership != coreMembership {
+			return service.BeadPage{}, &model.Error{Message: "durable ready source changed while collecting candidates; restart paging", Data: model.ErrorData{Code: "cursor_invalid"}}
 		}
 		if workflowSnapshot != nil && !workflowSnapshot.Equal(page.WorkflowSnapshot) {
 			return service.BeadPage{}, &model.Error{Message: "workflow ready membership changed while collecting candidates", Data: model.ErrorData{Code: "cursor_invalid"}}
@@ -288,13 +280,14 @@ func (s *GuardedService) compiledReadyFilter(ctx context.Context, by model.Princ
 	var authorizationBound bool
 	var boundIncarnation, boundRevision string
 	var facts *countReadSlice
+	var boundReader driver.Reader
 	return func(ctx context.Context, reader driver.Reader, bead service.Bead) (bool, error) {
 		view := reader.Snapshot()
 		revision := "0"
 		if view.At != nil {
 			revision = view.At.String()
 		}
-		if facts == nil || boundIncarnation != view.Incarnation || boundRevision != revision {
+		if facts == nil || !sameReadyReader(boundReader, reader) || boundIncarnation != view.Incarnation || boundRevision != revision {
 			loaded, err := s.checker.load(ctx, reader, caller)
 			if err != nil {
 				return false, &model.Error{Message: "authorization facts unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
@@ -308,6 +301,7 @@ func (s *GuardedService) compiledReadyFilter(ctx context.Context, by model.Princ
 			if err != nil {
 				return false, err
 			}
+			boundReader = reader
 			boundIncarnation, boundRevision = view.Incarnation, revision
 		}
 		allowed, err := template.Match(ctx, facts, authz.Resource{Kind: authz.Bead, Ref: model.RefByID(bead.ID, model.Natural64(0))})
@@ -316,6 +310,14 @@ func (s *GuardedService) compiledReadyFilter(ctx context.Context, by model.Princ
 		}
 		return allowed, nil
 	}, true, nil
+}
+
+// A read snapshot owns its reader lifetime, even at an unchanged revision.
+// Production readers are pointer instances. Value adapters cannot prove the
+// same lifetime, so they conservatively reload rather than reuse source facts.
+func sameReadyReader(a, b driver.Reader) bool {
+	left, right := reflect.ValueOf(a), reflect.ValueOf(b)
+	return left.IsValid() && right.IsValid() && left.Kind() == reflect.Pointer && right.Kind() == reflect.Pointer && left.Type() == right.Type() && left.Pointer() == right.Pointer()
 }
 
 func (s *GuardedService) History(ctx context.Context, by model.PrincipalRef, req service.HistoryRequest) (service.BeadPage, error) {
