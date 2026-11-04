@@ -227,6 +227,7 @@ func explainSelectionPublicationCensus(t *testing.T, r *reader, population int) 
 		t.Fatalf("publication proof plan=%s err=%v", raw, err)
 	}
 	producer, scans, visits := 0, 0, float64(0)
+	headerScans, headerVisits := 0, float64(0)
 	var inspect func(any)
 	inspect = func(value any) {
 		switch node := value.(type) {
@@ -243,6 +244,15 @@ func explainSelectionPublicationCensus(t *testing.T, r *reader, population int) 
 				loops, _ := node["Actual Loops"].(float64)
 				removed, _ := node["Rows Removed by Filter"].(float64)
 				visits += loops * (rows + removed)
+			}
+			cte, _ := node["CTE Name"].(string)
+			relation, _ := node["Relation Name"].(string)
+			if cte == "proof_headers" || relation == "selection_sources" {
+				headerScans++
+				rows, _ := node["Actual Rows"].(float64)
+				loops, _ := node["Actual Loops"].(float64)
+				removed, _ := node["Rows Removed by Filter"].(float64)
+				headerVisits += loops * (rows + removed)
 			}
 			for _, child := range node {
 				inspect(child)
@@ -261,5 +271,12 @@ func explainSelectionPublicationCensus(t *testing.T, r *reader, population int) 
 	if producer != 1 || scans != 4 || visits > float64(32*population) {
 		t.Fatalf("publication census producer=%d scans=%d visits=%v population=%d: %s", producer, scans, visits, population, raw)
 	}
+	// Include every header alias: the fixture has about seven headers per bead,
+	// and the proof may scan that full domain for several family joins. Allow
+	// that linear work, but reject full-header rescans for every projection row.
+	if headerScans == 0 || headerVisits > float64(128*population) {
+		t.Fatalf("publication header scans=%d visits=%v population=%d: %s", headerScans, headerVisits, population, raw)
+	}
+	t.Logf("W6_HEADER_PROOF_WORK phase=publication_family_proof fixture_beads=%d source_header_scans=%d source_header_row_visits=%v bound=%d qualification=FINITE_CONTROL", population, headerScans, headerVisits, 128*population)
 	t.Logf("W6_EXPLAIN_ANALYZE phase=publication_family_proof fixture_beads=%d census_producer=%d census_scans=%d census_row_visits=%v qualification=FINITE_CONTROL actual_plan=%s", population, producer, scans, visits, raw)
 }
