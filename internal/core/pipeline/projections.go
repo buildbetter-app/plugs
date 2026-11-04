@@ -87,6 +87,7 @@ func decodeProjectionDocument(body []byte) (Document, projectionPresence, error)
 		{"parent", &doc.Parent}, {"fields", &doc.Fields}, {"metadata", &doc.Metadata},
 		{"labels", &doc.Labels}, {"comments", &doc.Comments}, {"links", &doc.Links},
 		{"attachments", &doc.Attachments}, {"lease", &doc.Lease},
+		{"createdAt", &doc.CreatedAt}, {"startedAt", &doc.StartedAt}, {"closedAt", &doc.ClosedAt},
 	}
 	seen := map[string]bool{}
 	for decoder.More() {
@@ -128,6 +129,12 @@ func decodeProjectionDocument(body []byte) (Document, projectionPresence, error)
 	doc.Project = project.value
 	if doc.ID == "" || doc.Type == "" || doc.Fields == nil {
 		return Document{}, presence, fmt.Errorf("invalid bead document")
+	}
+	if err := doc.validateLifecycleTimes(); err != nil {
+		return Document{}, presence, err
+	}
+	if err := validateLifecycleTimeMembers(body); err != nil {
+		return Document{}, presence, err
 	}
 	if err := validateParent(doc.Parent); err != nil {
 		return Document{}, presence, err
@@ -574,7 +581,17 @@ func (p *prepared) prepareProjections(ctx context.Context) error {
 		delta.sentinels = append(delta.sentinels, sentinel)
 	}
 	delta.locks = sortedKeys(keys)
-	if _, err := p.snapshot.observe(ctx, delta.locks); err != nil {
+	observed := make([]driver.LockKey, 0, len(delta.locks))
+	for _, key := range delta.locks {
+		// Publication serializes and bumps graph/blocking without reading its
+		// old snapshot value. Keep the update lock, and retain any genuine
+		// semantic graph dependency already recorded during preparation.
+		if key.Kind == driver.LockSentinel && key.Sentinel == driver.SentinelGraphBlocking {
+			continue
+		}
+		observed = append(observed, key)
+	}
+	if _, err := p.snapshot.observe(ctx, observed); err != nil {
 		return err
 	}
 	sort.Slice(delta.sentinels, func(i, j int) bool { return delta.sentinels[i] < delta.sentinels[j] })

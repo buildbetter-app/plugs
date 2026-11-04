@@ -421,6 +421,11 @@ func TestNativeRestoreDerivedFailureRollsBackRecordsAndRows(t *testing.T) {
 	if len(store.sources) != 6 || len(store.staged) != 29 {
 		t.Fatalf("failure preceded real source/projection staging: sources=%d rows=%d", len(store.sources), len(store.staged))
 	}
+	for _, table := range []driver.DerivedTable{driver.DerivedSortKey, driver.DerivedAttribute, driver.DerivedReferenceIndex, driver.DerivedAncestorClosure} {
+		if store.typedCalls[table] != 1 {
+			t.Fatalf("native restore staged %s in %d typed calls, want one complete batch", table, store.typedCalls[table])
+		}
+	}
 	keys := make([]driver.LockKey, 0, len(store.staged))
 	for key, row := range store.staged {
 		if row.Index == nil || row.Index.Source.Key.Ref == nil || row.Index.Incarnation == before.Incarnation || row.Index.Source.Revision.String() != "0" || row.Index.Source.Digest != driver.SelectionDigest(store.sources[row.Index.Source.Key.Ref.ID].Body) {
@@ -509,8 +514,9 @@ func malformedNativeAncestorArchive(t *testing.T, cycle bool) ([]byte, *dumpform
 
 type failDerivedStore struct {
 	driver.Store
-	staged  map[driver.DerivedRowKey]driver.DerivedRow
-	sources map[string]driver.Record
+	staged     map[driver.DerivedRowKey]driver.DerivedRow
+	sources    map[string]driver.Record
+	typedCalls map[driver.DerivedTable]int
 }
 
 func (s *failDerivedStore) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
@@ -521,6 +527,7 @@ func (s *failDerivedStore) Write(ctx context.Context, lease driver.ActiveLease) 
 	if s.staged == nil {
 		s.staged = map[driver.DerivedRowKey]driver.DerivedRow{}
 		s.sources = map[string]driver.Record{}
+		s.typedCalls = map[driver.DerivedTable]int{}
 	}
 	return &failDerivedTx{WriteTx: tx, store: s}, nil
 }
@@ -567,6 +574,7 @@ func (tx *failDerivedTx) PutSelectionDerived(ctx context.Context, table driver.D
 	if err := writer.PutSelectionDerived(ctx, table, del, add); err != nil {
 		return err
 	}
+	tx.store.typedCalls[table]++
 	for _, row := range add {
 		tx.store.staged[driver.DerivedRowKey{Table: table, Key: row.Key}] = row.Clone()
 	}

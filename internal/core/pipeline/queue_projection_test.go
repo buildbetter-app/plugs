@@ -16,6 +16,9 @@ func TestQueueProjectionFactsRequireExactCanonicalSource(t *testing.T) {
 	ref := model.RefByID("queue-source", model.Natural64(0))
 	doc := Document{ID: ref.ID, Type: "issue", Project: "p", Fields: map[string]any{"status": "todo", "priority": 0},
 		Links: []Link{{Kind: "waits-for", To: model.RefByID("spawner", model.Natural64(0)), Metadata: &model.LinkMetadata{Gate: "any-children", AlsoBlocks: true}}}}
+	createdAt := time.Date(2026, 11, 4, 7, 0, 0, 0, time.UTC)
+	startedAt, closedAt := createdAt.Add(time.Minute), createdAt.Add(2*time.Minute)
+	doc.CreatedAt, doc.StartedAt, doc.ClosedAt = &createdAt, &startedAt, &closedAt
 	canonical, err := json.Marshal(doc)
 	if err != nil {
 		t.Fatal(err)
@@ -43,6 +46,8 @@ func TestQueueProjectionFactsRequireExactCanonicalSource(t *testing.T) {
 		"miscased_lease":   strings.TrimSuffix(string(canonical), "}") + `,"Lease":null}`,
 		"unknown_property": strings.TrimSuffix(string(canonical), "}") + `,"futureLease":false}`,
 		"noncanonical":     " " + string(canonical),
+		"duplicate_time":   strings.TrimSuffix(string(canonical), "}") + `,"createdAt":"2026-11-04T07:00:00Z"}`,
+		"miscased_time":    strings.TrimSuffix(string(canonical), "}") + `,"CreatedAt":"2026-11-04T07:00:00Z"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := rows([]byte(raw))

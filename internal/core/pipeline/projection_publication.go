@@ -12,6 +12,14 @@ import (
 // projection table. Revalidating every accumulated row after each individual
 // source would make a supported batch quadratic before its unchanged deadline.
 func publishSourceProjections(ctx context.Context, tx driver.WriteTx, plans []*SourceProjectionPlan) error {
+	return PublishSourceProjectionsInIncarnation(ctx, tx, tx.Snapshot().Incarnation, plans)
+}
+
+// PublishSourceProjectionsInIncarnation stages the complete prepared batch in
+// one call per selection table. An admitted native restore supplies its returned
+// incarnation, since the held transaction snapshot still has the old identity.
+// The caller owns the complete lock census and atomic commit or rollback.
+func PublishSourceProjectionsInIncarnation(ctx context.Context, tx driver.WriteTx, incarnation string, plans []*SourceProjectionPlan) error {
 	byKey := make(map[string]driver.LockKey, len(plans))
 	for _, p := range plans {
 		if !p.deleted && p.doc != nil {
@@ -55,7 +63,7 @@ func publishSourceProjections(ctx context.Context, tx driver.WriteTx, plans []*S
 			if err := putDecodedGraphSource(ctx, tx, p.record, *p.doc, p.links); err != nil {
 				return err
 			}
-			rows, err := p.SelectionRows(tx.Snapshot().Incarnation, revisions[p.record.Ref.ID])
+			rows, err := p.SelectionRows(incarnation, revisions[p.record.Ref.ID])
 			if err != nil {
 				return err
 			}

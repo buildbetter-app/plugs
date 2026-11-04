@@ -1023,14 +1023,16 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 	if err := allocatorRestore.RestoreNativeAllocators(ctx, allocatorSnapshot); err != nil {
 		return model.Changeset{}, restoreAdmissionError(err)
 	}
+	plans := make([]*pipeline.SourceProjectionPlan, 0, len(records))
 	for _, record := range records {
 		plan, err := pipeline.PrepareSourceRecord(record)
 		if err != nil {
 			return model.Changeset{}, err
 		}
-		if err := plan.PublishInIncarnation(ctx, tx, prepared.Incarnation); err != nil {
-			return model.Changeset{}, err
-		}
+		plans = append(plans, plan)
+	}
+	if err := pipeline.PublishSourceProjectionsInIncarnation(ctx, tx, prepared.Incarnation, plans); err != nil {
+		return model.Changeset{}, err
 	}
 	if ancestorPlan != nil && len(ancestorPlan.rows) != 0 {
 		if err := pipeline.PutAncestorProjectionsInIncarnation(ctx, tx, prepared.Incarnation, nil, ancestorPlan.rows); err != nil {
