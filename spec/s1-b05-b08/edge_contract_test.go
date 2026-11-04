@@ -1060,11 +1060,7 @@ func TestB07DurableEdgesRefuseActualEphemeralWorkflowItemsAtomically(t *testing.
 			for _, attempt := range attempts {
 				probe := attempt.probe
 				got := durableFixture.call(t, probe, attempt.params)
-				code := "invalid_params"
-				if attempt.method == "bead.link" {
-					code = "not_found"
-				}
-				if got.Error == nil || got.Error.Data.Code != code || len(got.Result) != 0 {
+				if got.Error == nil || got.Error.Data.Code != "invalid_params" || len(got.Result) != 0 {
 					t.Fatalf("%s mixed-plane refusal=%+v result=%s", attempt.method, got.Error, got.Result)
 				}
 				if after := durableFixture.snapshot(t); !reflect.DeepEqual(beforeDurable, after) {
