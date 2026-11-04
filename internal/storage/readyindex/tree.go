@@ -245,12 +245,13 @@ func (t *tree) replace(scope, p, key string, leaf *driver.ReadyOrderLeaf) (*driv
 }
 
 type Delta struct {
-	t         *tree
-	coverage  marker
-	mutations map[string]Mutation
-	sentinels map[driver.Sentinel]bool
-	valid     bool
-	published bool
+	t            *tree
+	coverage     marker
+	mutations    map[string]Mutation
+	sentinels    map[driver.Sentinel]bool
+	valid        bool
+	published    bool
+	registration driver.ReadyOrderPublication
 }
 
 // Prepare starts only at the proven empty initial Head, or continues an exact
@@ -523,6 +524,9 @@ func (d *Delta) Publish(ctx context.Context, tx driver.WriteTx, revision model.R
 	if proofErr != nil && !errors.Is(proofErr, driver.ErrUnsupported) {
 		return d.t.work, proofErr
 	}
+	if proofErr == nil {
+		d.registration = publication
+	}
 	if err = tx.PutDerived(ctx, driver.DerivedReadyState, removed, added); err != nil {
 		return d.t.work, err
 	}
@@ -535,6 +539,24 @@ func (d *Delta) Publish(ctx context.Context, tx driver.WriteTx, revision model.R
 		}
 	}
 	return d.t.work, nil
+}
+
+// FinalizePublication registers the same immutable transition after the core
+// has finished ALL source, authority and predicate staging. Any accepted later
+// mutation still invalidates the engine's registered overlay signature.
+func (d *Delta) FinalizePublication(ctx context.Context, tx driver.WriteTx) error {
+	if d == nil || !d.published {
+		return nil
+	}
+	if _, err := d.registration.Data(); err != nil {
+		return nil
+	}
+	if writer, ok := tx.(driver.ReadyOrderPublicationWriter); ok {
+		if err := writer.StageReadyOrderPublication(ctx, d.registration); err != nil && !errors.Is(err, driver.ErrUnsupported) {
+			return err
+		}
+	}
+	return nil
 }
 
 // BumpPredicates completes the declared update locks even when an intervening

@@ -27,6 +27,16 @@ type ReadyProjectionEvaluator interface {
 
 type ReadyProjectionPlan struct{ delta *readyindex.Delta }
 
+// Finalize must run after ordinary source/authority staging and sentinel bumps.
+// It registers the already materialized immutable proof, without more reads,
+// locks or logical writes. A skipped/unavailable plan remains an uncovered no-op.
+func (p *ReadyProjectionPlan) Finalize(ctx context.Context, tx driver.WriteTx) error {
+	if p == nil || p.delta == nil {
+		return nil
+	}
+	return p.delta.FinalizePublication(ctx, tx)
+}
+
 // PrepareReadyProjection is also the typed fixture publication seam. Sources
 // are FINAL validated graph images; each deletion carries its actual old kind.
 // Call before Lock/Head on the SAME pinned reader, include every returned lock,
