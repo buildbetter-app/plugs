@@ -72,6 +72,15 @@ func composedRuntimeStore(t *testing.T, e engine, source model.Ref, body []byte)
 		_ = store.Close()
 		t.Fatalf("release seed lease %s: %v", e.name, err)
 	}
+	if e.name != "memory" {
+		// The production composition must reopen the same durable database through
+		// openStore. A memory store cannot be preseeded before Open, so the
+		// in-memory case intentionally retains the narrow StoreFactory seam.
+		if err := store.Close(); err != nil {
+			t.Fatalf("close %s seed store: %v", e.name, err)
+		}
+		return nil
+	}
 	return store
 }
 
@@ -87,18 +96,23 @@ func TestConfiguredRuntimeLoadsCatalogAndAuditsOnEveryEngine(t *testing.T) {
 			t.Fatal(err)
 		}
 		store := composedRuntimeStore(t, e, sourceRef, body)
-		runtime, err := composition.Open(context.Background(), composition.Config{
-			Driver:  e.name,
-			DSN:     e.dsn,
-			Project: "b03-composition",
-			Address: composition.DefaultAddress,
-			StoreFactory: func(context.Context, string, driver.Config) (driver.Store, error) {
-				return store, nil
-			},
+		config := composition.Config{
+			Driver:   e.name,
+			DSN:      e.dsn,
+			Project:  "b03-composition",
+			Address:  composition.DefaultAddress,
 			Ontology: &composition.OntologyConfig{Source: service.StaticOntologySource(sourceRef)},
-		})
+		}
+		if store != nil {
+			config.StoreFactory = func(context.Context, string, driver.Config) (driver.Store, error) {
+				return store, nil
+			}
+		}
+		runtime, err := composition.Open(context.Background(), config)
 		if err != nil {
-			_ = store.Close()
+			if store != nil {
+				_ = store.Close()
+			}
 			t.Fatalf("configured %s runtime refused installed source: %v", e.name, err)
 		}
 		defer func() {
@@ -109,7 +123,8 @@ func TestConfiguredRuntimeLoadsCatalogAndAuditsOnEveryEngine(t *testing.T) {
 
 		transport := inprocess.New(runtime.RPC)
 		got := composedRuntimeCall(t, transport, "ontology.get", nil, "b03-composition", "00000000000000000000000000000001")
-		if !strings.Contains(string(got), `"revision":"1"`) || !strings.Contains(string(got), `"types"`) {
+		var initial ontologyops.Result
+		if err := json.Unmarshal(got, &initial); err != nil || initial.Revision != "1" || initial.Document == nil {
 			t.Fatalf("%s configured ontology.get did not expose installed document: %s", e.name, got)
 		}
 		updated := ontology.DefaultDocument()

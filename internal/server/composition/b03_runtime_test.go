@@ -52,6 +52,19 @@ func configuredSourceBody(t *testing.T) []byte {
 	return body
 }
 
+func uncompilableSourceBody(t *testing.T) []byte {
+	t.Helper()
+	doc := ontology.DefaultDocument()
+	typ := doc.Types["issue"]
+	typ.Fields["expression"] = ontology.Field{Type: "expression"}
+	doc.Types["issue"] = typ
+	body, err := service.MarshalOntologySource(service.OntologySource{Base: doc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
 func runtimeJSONCall(t *testing.T, transport *inprocess.Transport, method string, params map[string]any, project, key string) json.RawMessage {
 	t.Helper()
 	if params == nil {
@@ -210,6 +223,7 @@ func TestConfiguredOntologyStartupRefusesInvalidSourceAndClosesStore(t *testing.
 		{name: "missing"},
 		{name: "wrong-kind", kind: "config", body: configuredSourceBody(t)},
 		{name: "malformed", kind: "ontology", body: []byte(`{"base":{},"unsupported":true}`)},
+		{name: "valid-json-uncompilable", kind: "ontology", body: uncompilableSourceBody(t)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

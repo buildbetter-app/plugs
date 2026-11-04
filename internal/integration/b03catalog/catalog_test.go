@@ -9,6 +9,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/ontologyops"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
@@ -77,6 +78,15 @@ func slot(f *fixture, t *testing.T, project string, ref model.Ref, method, want 
 	f.result(t, method, f.params(method, project, map[string]any{"id": ref}), &commit)
 	f.status(t, ref, want)
 	return commit
+}
+
+func lifecycleDocument(t *testing.T, f *fixture, ref model.Ref) pipeline.Document {
+	t.Helper()
+	doc, err := pipeline.DecodeDocument(record(t, f.snapshot(t), ref).Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return doc
 }
 
 func TestInstalledCatalogPlanApplyLifecycleAndDurableReopen(t *testing.T) {
@@ -159,6 +169,46 @@ func TestInstalledCatalogPlanApplyLifecycleAndDurableReopen(t *testing.T) {
 			}
 			equal(t, "receipt replay after reopen adds no revision", durable, f.snapshot(t))
 			slot(f, t, "base-project", ref, "bead.claim", started)
+		}
+	})
+}
+
+func TestInstalledCatalogLifecycleTimestampsPreserveStatusSpecificEntries(t *testing.T) {
+	eachEngine(t, allEngines, func(t *testing.T, e engine) {
+		f := newFixture(t, e)
+		f.install(t, "", catalogDocument())
+		ref, _, _ := f.create(t, "base-project", "delivery")
+		created := lifecycleDocument(t, f, ref)
+		if created.CreatedAt == nil || created.CreatedAt.IsZero() || created.StartedAt != nil || created.ClosedAt != nil {
+			t.Fatalf("create lifecycle times=%+v", created)
+		}
+
+		slot(f, t, "base-project", ref, "bead.claim", started)
+		claimed := lifecycleDocument(t, f, ref)
+		if claimed.StartedAt == nil || claimed.StartedAt.IsZero() || claimed.ClosedAt != nil || !claimed.CreatedAt.Equal(*created.CreatedAt) {
+			t.Fatalf("claim lifecycle times=%+v", claimed)
+		}
+		startedAt := *claimed.StartedAt
+
+		slot(f, t, "base-project", ref, "bead.close", completed)
+		closed := lifecycleDocument(t, f, ref)
+		if closed.ClosedAt == nil || closed.ClosedAt.IsZero() || closed.StartedAt == nil || !closed.StartedAt.Equal(startedAt) {
+			t.Fatalf("close lifecycle times=%+v", closed)
+		}
+		closedAt := *closed.ClosedAt
+
+		// A same-status close may append a reason, but it must retain the first
+		// terminal instant rather than stamping a second close time.
+		f.result(t, "bead.close", f.params("bead.close", "base-project", map[string]any{"id": ref, "reason": "settlement note"}), nil)
+		repeated := lifecycleDocument(t, f, ref)
+		if repeated.ClosedAt == nil || !repeated.ClosedAt.Equal(closedAt) {
+			t.Fatalf("repeated close rewrote closedAt: before=%s after=%+v", closedAt, repeated)
+		}
+
+		slot(f, t, "base-project", ref, "bead.reopen", queued)
+		reopened := lifecycleDocument(t, f, ref)
+		if reopened.ClosedAt != nil || reopened.StartedAt == nil || !reopened.StartedAt.Equal(startedAt) || !reopened.CreatedAt.Equal(*created.CreatedAt) {
+			t.Fatalf("reopen lifecycle times=%+v", reopened)
 		}
 	})
 }

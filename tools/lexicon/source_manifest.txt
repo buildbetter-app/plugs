@@ -273,6 +273,8 @@ internal/core/pipeline/hierarchy_source.go
 internal/core/pipeline/hierarchy_test.go
 internal/core/pipeline/labels.go
 internal/core/pipeline/lease_overlay.go
+internal/core/pipeline/lifecycle.go
+internal/core/pipeline/lifecycle_test.go
 internal/core/pipeline/noop_test.go
 internal/core/pipeline/operations_test.go
 internal/core/pipeline/options.go
@@ -419,6 +421,7 @@ internal/integration/claimsql/README.md
 internal/integration/claimsql/claim_sql_test.go
 internal/integration/claimsql/engine_test.go
 internal/integration/claimsql/fixture_test.go
+internal/integration/claimsql/lifecycle_time_test.go
 internal/integration/clisql/BUILD.bazel
 internal/integration/clisql/README.md
 internal/integration/clisql/fixture_test.go

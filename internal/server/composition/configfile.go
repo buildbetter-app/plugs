@@ -45,6 +45,9 @@ func ParseConfig(data []byte) (Config, error) {
 		UI:       true,
 		AuthMode: "anonymous",
 	}
+	// Standalone YAML deliberately selects storage/listener/auth settings only.
+	// Trusted compiled-in ontology sources are an embedding-host responsibility;
+	// ParseConfig must never manufacture one from untrusted configuration text.
 	for key, raw := range values {
 		switch key {
 		case "driver":

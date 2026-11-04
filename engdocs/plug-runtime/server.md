@@ -51,6 +51,12 @@ level. The supported settings are:
 | `ui` or `server.ui` | `true` or `false`; the default is `true`. Set `false` to omit the embedded UI route. |
 | `auth.mode` | `anonymous` by default. The standalone CLI has no provider configuration for `authenticated` mode, so it refuses that mode rather than starting without authentication. |
 
+The standalone YAML parser intentionally has no ontology or plugin-source key.
+`Config.Ontology` remains nil for `LoadConfigFile`/`ParseConfig`; installing a
+trusted protected ontology source is a programmatic composition responsibility.
+The server refuses a configured source that is missing, malformed, the wrong
+kind, or does not compile before it admits RPCs.
+
 For example, a persistent SQLite server can use:
 
 ```yaml

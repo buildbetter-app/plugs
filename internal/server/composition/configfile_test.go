@@ -18,6 +18,9 @@ func TestParseConfigSupportsFlatAndNestedAliases(t *testing.T) {
 	if err != nil || flat.Driver != "memory" || flat.Project != "local" || !flat.UI {
 		t.Fatalf("flat config=%+v err=%v", flat, err)
 	}
+	if flat.Ontology != nil {
+		t.Fatalf("standalone YAML unexpectedly installed ontology source: %+v", flat.Ontology)
+	}
 
 	quoted, err := ParseConfig([]byte("driver: \"memory\"\naddress: 127.0.0.1:0\nproject: \"true\"\nui: false\n"))
 	if err != nil || quoted.Driver != "memory" || quoted.Project != "true" {
