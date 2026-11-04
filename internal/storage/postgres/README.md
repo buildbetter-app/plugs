@@ -12,7 +12,10 @@ their MVCC snapshots remain stable across writes, response finalization and
 other pool closures. As-of reads reconstruct records from full bases and forward
 JSON Patch replacements, with at most 31 patches. Creation, recreation and
 every 32nd version position create replay boundaries; tombstones retain their
-revision. Current records preserve the caller's JSON bytes.
+revision. Current records preserve the caller's JSON bytes. Batched point reads
+resolve missing keys from the current-record lookup without probing version
+history for each absence. Only a physical row newer than the requested snapshot
+requires historical reconstruction; current tombstones are retained.
 
 Writers declare the complete, bytewise sorted lock set once. Exact bytea lock
 rows cover missing records, read facts, sentinels and derived rows without hash

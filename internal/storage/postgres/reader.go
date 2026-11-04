@@ -175,23 +175,30 @@ func (r *reader) recordAt(ctx context.Context, key string) (storedRecord, bool, 
 	var rev, count string
 	var kind string
 	var deleted bool
-	err := r.sql.QueryRowContext(ctx, `SELECT ref,kind,revision::text,body,deleted,version_count::text FROM plug_postgres.records WHERE key=$1 AND revision<=$2`, []byte(key), decimal(r.at)).Scan(&raw, &kind, &rev, &body, &deleted, &count)
+	err := r.sql.QueryRowContext(ctx, `SELECT ref,kind,revision::text,body,deleted,version_count::text FROM plug_postgres.records WHERE key=$1`, []byte(key)).Scan(&raw, &kind, &rev, &body, &deleted, &count)
 	if err == nil {
-		var ref driver.Ref
-		if err = decode(raw, &ref); err != nil {
-			return result, false, err
-		}
 		n, e := parseCounter(rev)
 		if e != nil {
 			return result, false, e
 		}
-		c, e := parseCounter(count)
-		if e != nil {
-			return result, false, e
+		if n <= r.at {
+			var ref driver.Ref
+			if err = decode(raw, &ref); err != nil {
+				return result, false, err
+			}
+			c, e := parseCounter(count)
+			if e != nil {
+				return result, false, e
+			}
+			return storedRecord{record: driver.Record{Ref: ref, Kind: kind, Revision: model.Natural64(n), Body: body}, deleted: deleted, count: c}, true, nil
 		}
-		return storedRecord{record: driver.Record{Ref: ref, Kind: kind, Revision: model.Natural64(n), Body: body}, deleted: deleted, count: c}, true, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	} else {
+		// Current rows retain tombstones, so physical absence also proves
+		// absence at every earlier revision. Only a newer current row needs
+		// historical reconstruction.
+		if errors.Is(err, sql.ErrNoRows) {
+			return result, false, nil
+		}
 		return result, false, err
 	}
 	err = r.sql.QueryRowContext(ctx, `SELECT value FROM plug_postgres.versions WHERE key=$1 AND revision<=$2 ORDER BY revision DESC LIMIT 1`, []byte(key), decimal(r.at)).Scan(&raw)
@@ -255,9 +262,10 @@ func (r *reader) recordAt(ctx context.Context, key string) (storedRecord, bool, 
 	return result, true, nil
 }
 
-// recordsAt batches current rows without changing the bounded historical
-// reconstruction path. Any current-row miss still uses recordAt, except at
-// revision zero where no committed record can exist. Nothing survives this call.
+// recordsAt batches current rows and their absences. Only rows newer than the
+// requested snapshot need the bounded historical reconstruction path. Current
+// rows retain tombstones, so a missing key has no history. Nothing survives this
+// call, including absence observations made before a writer acquires Head.
 func (r *reader) recordsAt(ctx context.Context, ids []string) (map[string]storedRecord, error) {
 	result := make(map[string]storedRecord, len(ids))
 	if len(ids) == 0 || r.at == 0 {
@@ -268,10 +276,11 @@ func (r *reader) recordsAt(ctx context.Context, ids []string) (map[string]stored
 		keys[i] = []byte(id)
 	}
 	rows, err := r.sql.QueryContext(ctx, `SELECT key,ref,kind,revision::text,body,deleted,version_count::text
-	 FROM plug_postgres.records WHERE key=ANY($1::bytea[]) AND revision<=$2`, keys, decimal(r.at))
+	 FROM plug_postgres.records WHERE key=ANY($1::bytea[])`, keys)
 	if err != nil {
 		return nil, err
 	}
+	var historical []string
 	for rows.Next() {
 		var id, raw []byte
 		var value storedRecord
@@ -279,11 +288,15 @@ func (r *reader) recordsAt(ctx context.Context, ids []string) (map[string]stored
 		if err = rows.Scan(&id, &raw, &value.record.Kind, &revision, &value.record.Body, &value.deleted, &count); err != nil {
 			break
 		}
-		if err = decode(raw, &value.record.Ref); err != nil {
-			break
-		}
 		var n uint64
 		if n, err = parseCounter(revision); err != nil {
+			break
+		}
+		if n > r.at {
+			historical = append(historical, string(id))
+			continue
+		}
+		if err = decode(raw, &value.record.Ref); err != nil {
 			break
 		}
 		value.record.Revision = model.Natural64(n)
@@ -302,10 +315,7 @@ func (r *reader) recordsAt(ctx context.Context, ids []string) (map[string]stored
 	if closeErr != nil {
 		return nil, closeErr
 	}
-	for _, id := range ids {
-		if _, exists := result[id]; exists {
-			continue
-		}
+	for _, id := range historical {
 		value, exists, err := r.recordAt(ctx, id)
 		if err != nil {
 			return nil, err
