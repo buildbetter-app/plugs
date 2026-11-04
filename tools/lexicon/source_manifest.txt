@@ -209,6 +209,7 @@ internal/core/model/encodings_test.go
 internal/core/model/events.go
 internal/core/model/history.go
 internal/core/model/json.go
+internal/core/model/link_target_test.go
 internal/core/model/natural.go
 internal/core/model/natural_test.go
 internal/core/model/precondition.go
