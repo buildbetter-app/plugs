@@ -84,6 +84,20 @@ an already-pinned selector, and held non-replay Commit against an unknown
 persisted version. It is AUTHORED_NOT_RUN and does not substitute for eventual
 real 1/2-to-3 migration and independent old/new-binary controls.
 
+Migration sequence must handle the actual schema-1 fixture, which has only
+meta, active_lease and replays: preserve its existing pending/final receipt
+upgrade, create key_history with the current columns when that table is
+absent, and detect/add columns transactionally when a version-2 table exists.
+Do not ALTER a missing table or stamp version 3 before the entire migration
+succeeds. Repeated/racing Opens serialize on the same publication lock and
+BEGIN IMMEDIATE, inspect the resulting columns, and cannot race into duplicate
+ALTERs. An inconsistent version/column shape refuses. No history compactor was
+found in this frozen tree; floor checks are reader.go:72-76 and selection.go:
+613-615, with the floor set through restore/import. A real compaction witness
+is not claimed. Future rollback controls must snapshot all physical
+key_history columns, including projected metadata, alongside intervals and
+receipts; the authored image helper uses SELECT * to retain those columns.
+
 Frozen 6b4 direct dependencies (all paths under internal/storage/sqlite):
 
 | Path / exact seam | Preimage blob | Ownership / requested change |

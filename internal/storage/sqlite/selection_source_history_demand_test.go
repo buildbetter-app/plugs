@@ -790,6 +790,7 @@ func demandPublicationImages(t *testing.T, s *Store) [][][]any {
 	var image [][][]any
 	for _, query := range []string{
 		`SELECT * FROM meta ORDER BY singleton`,
+		`SELECT * FROM key_history ORDER BY key,rev`,
 		`SELECT * FROM selection_fact_sets ORDER BY incarnation,branch,row_key,start_revision`,
 		`SELECT * FROM selection_facts ORDER BY incarnation,branch,row_key,start_revision,ordinal`,
 		`SELECT * FROM selection_bead_history ORDER BY incarnation,branch,derived_key,start_revision`,
