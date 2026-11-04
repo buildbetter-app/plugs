@@ -257,10 +257,15 @@ func (t *transaction) selectionRecordBuiltSource(ctx context.Context, c queryer,
 	return kind == "bead", true, nil
 }
 
+// The caller compares row identities as a set. An ORDER BY row_key can make
+// SQLite choose the row-key primary index and walk every source in the branch
+// before applying source_key. Force the current-source index for this bounded
+// touched-source lookup; canonical ancestor sources may return multiple rows.
+const selectionSourceFactRowsSQL = `SELECT row_key FROM selection_fact_sets INDEXED BY selection_fact_sets_source
+	WHERE incarnation=? AND branch=? AND row_table=? AND kind=? AND source_key=? AND end_revision IS NULL`
+
 func querySelectionSourceFactRows(ctx context.Context, c queryer, incarnation string, family driver.SelectionProjectionFamily, source string) ([]string, error) {
-	rows, err := c.QueryContext(ctx, `SELECT row_key FROM selection_fact_sets
-		WHERE incarnation=? AND branch=? AND row_table=? AND kind=? AND source_key=? AND end_revision IS NULL
-		ORDER BY row_key`, incarnation, revKey(0), string(family.Table), string(family.Kind), source)
+	rows, err := c.QueryContext(ctx, selectionSourceFactRowsSQL, incarnation, revKey(0), string(family.Table), string(family.Kind), source)
 	if err != nil {
 		return nil, err
 	}
