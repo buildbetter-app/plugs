@@ -42,7 +42,7 @@ func TestLinkTargetKindWireAndCanonicalIdentity(t *testing.T) {
 }
 
 func TestExternalLinkTargetRejectsLocalAliasesAndBranches(t *testing.T) {
-	for _, target := range []Ref{RefByKey("alias"), RefByID("", Natural64(0)), RefByID("x", Natural64(1)), {ID: "x", Key: "alias"}} {
+	for _, target := range []Ref{RefByKey("alias"), RefByID("", Natural64(0)), RefByID(string([]byte{0xff}), Natural64(0)), RefByID("x", Natural64(1)), {ID: "x", Key: "alias"}} {
 		if err := ValidateLinkTarget(LinkTargetExternal, target); err == nil {
 			t.Fatalf("external target admitted %#v", target)
 		}
