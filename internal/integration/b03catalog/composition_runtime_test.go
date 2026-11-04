@@ -132,7 +132,9 @@ func TestConfiguredRuntimeLoadsCatalogAndAuditsOnEveryEngine(t *testing.T) {
 		issue := updated.Types["issue"]
 		issue.Fields["reviewed"] = ontology.Field{Type: "boolean", Default: false}
 		updated.Types["issue"] = issue
-		updatedCompiled, problems := ontology.Compile(updated, nil, nil)
+		// The request carries the b03-composition project in _meta, so the
+		// production planner installs this candidate as that project's overlay.
+		updatedCompiled, problems := ontology.Compile(ontology.DefaultDocument(), map[string]ontology.Document{"b03-composition": updated}, nil)
 		if len(problems) != 0 {
 			t.Fatalf("%s updated ontology compile: %+v", e.name, problems)
 		}
@@ -199,7 +201,7 @@ func TestConfiguredRuntimeLoadsCatalogAndAuditsOnEveryEngine(t *testing.T) {
 			if event.Details != nil {
 				t.Logf("%s event ontology pin=%+v", e.name, event.Details.Ontology)
 			}
-			if event.Details == nil || event.Details.Ontology.Ref != sourceRef {
+			if event.Details == nil || event.Details.Ontology.Ref.ID != sourceRef.ID || event.Details.Ontology.Ref.Branch.String() != sourceRef.Branch.String() {
 				continue
 			}
 			if event.Details.Ontology.Revision == "2" && event.Details.Ontology.Digest == updatedCompiled.Digest() {
@@ -207,7 +209,7 @@ func TestConfiguredRuntimeLoadsCatalogAndAuditsOnEveryEngine(t *testing.T) {
 			}
 		}
 		if !pinned {
-			t.Fatalf("%s configured lifecycle lost ontology pin: %+v want ref=%s revision=2 digest=%s", e.name, last.Events, sourceRef, updatedCompiled.Digest())
+			t.Fatalf("%s configured lifecycle lost ontology pin: %+v want ref=%s revision=2 digest=%s", e.name, last.Events, sourceRef.ID, updatedCompiled.Digest())
 		}
 		events := composedRuntimeCall(t, transport, "event.list", map[string]any{"filter": map[string]any{"events": []string{"dependency.conditionUnmet"}}, "limit": 100}, "b03-composition", "00000000000000000000000000000007")
 		if !strings.Contains(string(events), sourceRef.ID) || !strings.Contains(string(events), string(model.EventDependencyConditionUnmet)) {

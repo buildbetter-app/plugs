@@ -204,7 +204,7 @@ func TestConfiguredOntologyRuntimeLoadsCatalogAndAuditsLifecycle(t *testing.T) {
 			continue
 		}
 		pin := event.Details.Ontology
-		if pin.Ref == configuredOntologyRef && pin.Revision == "1" && pin.Digest == compiled.Digest() {
+		if pin.Ref.ID == configuredOntologyRef.ID && pin.Ref.Branch.String() == configuredOntologyRef.Branch.String() && pin.Revision == "1" && pin.Digest == compiled.Digest() {
 			pinned = true
 		}
 	}
