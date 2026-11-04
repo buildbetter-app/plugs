@@ -91,13 +91,6 @@ func (s *Service) Get(ctx context.Context, by model.PrincipalRef, req GetRequest
 			if relation.From != req.ID.ID || relation.Kind != "parent-child" {
 				continue
 			}
-			targetKind, err := relation.TargetKind.Normalized()
-			if err != nil {
-				return GetResult{}, failure("internal_error", "invalid persisted mixed hierarchy target kind")
-			}
-			if targetKind == model.LinkTargetExternal {
-				continue
-			}
 			if err := validateWorkflowRef(relation.To); err != nil {
 				return GetResult{}, failure("internal_error", "invalid persisted mixed hierarchy parent")
 			}
