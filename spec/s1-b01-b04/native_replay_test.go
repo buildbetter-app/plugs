@@ -239,7 +239,7 @@ func (r *nativeReplay) drain(label string, first map[string]any, filters ...map[
 		}
 		seenCursors[cursor] = true
 		params := map[string]any{"limit": 1, "cursor": cursor}
-		if len(filters) != 0 {
+		if len(filters) != 0 && filters[0] != nil {
 			params["filter"] = filters[0]
 		}
 		page = r.call(fmt.Sprintf("%s-page-%d", label, count+1), "bead.ready", params, false)
