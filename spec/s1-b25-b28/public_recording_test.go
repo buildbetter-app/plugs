@@ -1246,7 +1246,7 @@ func recordNativeB27Probes(t *testing.T, output, storeRoot, pinned string, serve
 	if err := os.MkdirAll(filepath.Join(workspace, "home", ".config"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	env := server.ChildEnv(baseEnv(workspace))
+	env := server.provider.ChildEnv(baseEnv(workspace))
 	var receipts []commandReceipt
 	command := func(label string, argv []string, stdin []byte) []byte {
 		return runCommand(t, root, &receipts, label, "b27-probe", workspace, env, append([]string{pinned}, argv...), stdin)
