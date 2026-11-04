@@ -20,6 +20,7 @@ type AuthorityConfig struct {
 	Namespace          authz.Namespace
 	Caller             CallerSource
 	Hierarchy          bool
+	ClaimPolicy        *ClaimPolicyConfig
 	LifecyclePolicy    *LifecyclePolicyConfig
 	OntologyManagement bool
 }
@@ -67,6 +68,13 @@ func newCheckerWithClock(ctx context.Context, store driver.Store, lease driver.A
 		return nil, err
 	}
 	chain := authz.Chain{Namespace: ns, Rules: []authz.RuleSet{rules}}
+	if config.ClaimPolicy != nil {
+		claims, err := newClaimRuleSet(ns, ontology, *config.ClaimPolicy)
+		if err != nil {
+			return nil, fmt.Errorf("authzrpc: install claim policy: %w", err)
+		}
+		chain.Rules = append(chain.Rules, claims)
+	}
 	if config.LifecyclePolicy != nil {
 		if err := authz.CanonicalRef(config.LifecyclePolicy.Ref); err != nil {
 			return nil, fmt.Errorf("authzrpc: invalid lifecycle policy reference: %w", err)

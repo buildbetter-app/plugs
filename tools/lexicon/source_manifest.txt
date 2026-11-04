@@ -729,6 +729,7 @@ internal/server/authzrpc/b04_error_bounds_test.go
 internal/server/authzrpc/b15_comments_page_test.go
 internal/server/authzrpc/checker.go
 internal/server/authzrpc/claim.go
+internal/server/authzrpc/claim_authority.go
 internal/server/authzrpc/claim_eligibility_test.go
 internal/server/authzrpc/claim_test.go
 internal/server/authzrpc/cycles.go
