@@ -203,6 +203,7 @@ internal/core/model/encodings_test.go
 internal/core/model/events.go
 internal/core/model/history.go
 internal/core/model/json.go
+internal/core/model/link_target_test.go
 internal/core/model/natural.go
 internal/core/model/natural_test.go
 internal/core/model/precondition.go
@@ -324,6 +325,7 @@ internal/core/service/cycles.go
 internal/core/service/cycles_test.go
 internal/core/service/direct_blockers.go
 internal/core/service/direct_blockers_test.go
+internal/core/service/external_target_test.go
 internal/core/service/gate.go
 internal/core/service/graph.go
 internal/core/service/heartbeat.go
@@ -350,6 +352,7 @@ internal/core/service/workflow_permanent_test.go
 internal/core/service/workflow_refs.go
 internal/core/viewops/BUILD.bazel
 internal/core/viewops/epic_progress.go
+internal/core/viewops/external_target_test.go
 internal/core/viewops/label_predicate.go
 internal/core/viewops/parent_projection.go
 internal/core/viewops/run.go
@@ -420,6 +423,7 @@ internal/integration/collabwatch/BUILD.bazel
 internal/integration/collabwatch/integration_test.go
 internal/integration/collabwatch/reconnect_acceptance_test.go
 internal/integration/converterroundtrip/BUILD.bazel
+internal/integration/converterroundtrip/external_target_test.go
 internal/integration/converterroundtrip/hierarchy_import_test.go
 internal/integration/converterroundtrip/history.go
 internal/integration/converterroundtrip/identity_counters_test.go
@@ -465,6 +469,7 @@ internal/integration/gatecontract/authorization_test.go
 internal/integration/gatecontract/consumer_host_test.go
 internal/integration/gatecontract/consumer_test.go
 internal/integration/gatecontract/engine_test.go
+internal/integration/gatecontract/external_target_test.go
 internal/integration/gatecontract/fanout_test.go
 internal/integration/gatecontract/fixture_test.go
 internal/integration/gatecontract/metadata_test.go
