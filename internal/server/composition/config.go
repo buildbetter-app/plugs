@@ -494,14 +494,19 @@ func (r *Runtime) bind(config Config) error {
 		if readAuthorize == nil && (installed() || config.AuthorizeReadBatch != nil || config.EventAuthorization != nil) {
 			return errors.New("composition: installed ontology with configured authorization requires a current read authorizer")
 		}
-		ontologyReadAuthorize = func(ctx context.Context, by model.PrincipalRef, resource model.ResourceRef, project string) error {
-			if readAuthorize != nil {
-				return readAuthorize(ctx, by, resource, project)
+		// A nil callback is the canonical absence of an authorization chain in
+		// ontologyops migration facts. Do not manufacture an installed chain for
+		// an explicit no-policy host merely to guard a nonexistent callback.
+		if readAuthorize != nil || authConfig.AuthorizationInstalled != nil || config.Ontology.Authorizer != nil {
+			ontologyReadAuthorize = func(ctx context.Context, by model.PrincipalRef, resource model.ResourceRef, project string) error {
+				if readAuthorize != nil {
+					return readAuthorize(ctx, by, resource, project)
+				}
+				if installed() {
+					return &model.Error{Data: model.ErrorData{Code: "permission_denied", Hint: "current ontology read authorization is unavailable"}}
+				}
+				return nil
 			}
-			if installed() {
-				return &model.Error{Data: model.ErrorData{Code: "permission_denied", Hint: "current ontology read authorization is unavailable"}}
-			}
-			return nil
 		}
 		// ApplyProtected has no installed-authorizer revalidation capability.
 		// Ordinary Writer authorization cannot grant this distinct operation.

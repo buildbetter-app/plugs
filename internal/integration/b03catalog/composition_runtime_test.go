@@ -162,6 +162,15 @@ func TestConfiguredRuntimeLoadsCatalogAndAuditsOnEveryEngine(t *testing.T) {
 		if err := json.Unmarshal(got, &initial); err != nil || initial.Revision != "1" || initial.Document == nil {
 			t.Fatalf("%s configured ontology.get did not expose installed document: %s", e.name, got)
 		}
+		// Create an ordinary row before planning so migration must evaluate the
+		// real default workflow's Permission guard without inventing a policy.
+		existingRaw := composedRuntimeCall(t, transport, "bead.create", map[string]any{
+			"type": "issue", "fields": map[string]any{"title": "existing before catalog migration"},
+		}, "b03-composition", "00000000000000000000000000000030")
+		var existing model.Commit
+		if err := json.Unmarshal(existingRaw, &existing); err != nil || len(existing.Results) != 1 {
+			t.Fatalf("%s pre-migration create=%s err=%v", e.name, existingRaw, err)
+		}
 		updated := ontology.DefaultDocument()
 		issue := updated.Types["issue"]
 		issue.Fields["reviewed"] = ontology.Field{Type: "boolean", Default: false}
@@ -177,16 +186,29 @@ func TestConfiguredRuntimeLoadsCatalogAndAuditsOnEveryEngine(t *testing.T) {
 		if err := json.Unmarshal(planned, &plan); err != nil || !plan.Changes.Ready || plan.PlanDigest == "" {
 			t.Fatalf("%s configured ontology.plan=%s err=%v", e.name, planned, err)
 		}
-		composedRuntimeCall(t, transport, "ontology.apply", map[string]any{
+		appliedRaw := composedRuntimeCall(t, transport, "ontology.apply", map[string]any{
 			"planDigest": plan.PlanDigest,
 			"expect":     plan.Changes.Expect,
 			"humanPresence": map[string]any{
 				"mode": "presence_check", "challenge": plan.PlanDigest, "proof": plan.PlanDigest,
 			},
 		}, "b03-composition", "0000000000000000000000000000002b")
+		var applied model.Commit
+		if err := json.Unmarshal(appliedRaw, &applied); err != nil || applied.Revision.IsZero() {
+			t.Fatalf("%s configured apply=%s err=%v", e.name, appliedRaw, err)
+		}
+		migratedRaw := composedRuntimeCall(t, transport, "bead.get", map[string]any{"id": existing.Results[0].Ref}, "b03-composition", "00000000000000000000000000000031")
+		var migrated struct {
+			Bead struct {
+				Fields map[string]any `json:"fields"`
+			} `json:"bead"`
+		}
+		if err := json.Unmarshal(migratedRaw, &migrated); err != nil || migrated.Bead.Fields["reviewed"] != false || migrated.Bead.Fields["title"] != "existing before catalog migration" {
+			t.Fatalf("%s existing ordinary row was not atomically migrated: %s err=%v", e.name, migratedRaw, err)
+		}
 		refreshed := composedRuntimeCall(t, transport, "ontology.get", nil, "b03-composition", "0000000000000000000000000000002c")
 		var refreshedResult ontologyops.Result
-		if err := json.Unmarshal(refreshed, &refreshedResult); err != nil || refreshedResult.Revision != "2" || refreshedResult.Document == nil || refreshedResult.Document.Types["issue"].Fields["reviewed"].Default != false {
+		if err := json.Unmarshal(refreshed, &refreshedResult); err != nil || refreshedResult.Revision != applied.Revision || refreshedResult.Document == nil || refreshedResult.Document.Types["issue"].Fields["reviewed"].Default != false {
 			t.Fatalf("%s ontology.apply did not refresh configured runtime: %s err=%v", e.name, refreshed, err)
 		}
 		created := composedRuntimeCall(t, transport, "bead.create", map[string]any{
@@ -235,12 +257,12 @@ func TestConfiguredRuntimeLoadsCatalogAndAuditsOnEveryEngine(t *testing.T) {
 			if event.Details == nil || event.Details.Ontology.Ref.ID != sourceRef.ID || event.Details.Ontology.Ref.Branch.String() != sourceRef.Branch.String() {
 				continue
 			}
-			if event.Details.Ontology.Revision == "2" && event.Details.Ontology.Digest == updatedCompiled.Digest() {
+			if event.Details.Ontology.Revision == applied.Revision && event.Details.Ontology.Digest == updatedCompiled.Digest() {
 				pinned = true
 			}
 		}
 		if !pinned {
-			t.Fatalf("%s configured lifecycle lost ontology pin: %+v want ref=%s revision=2 digest=%s", e.name, last.Events, sourceRef.ID, updatedCompiled.Digest())
+			t.Fatalf("%s configured lifecycle lost ontology pin: %+v want ref=%s revision=%s digest=%s", e.name, last.Events, sourceRef.ID, applied.Revision, updatedCompiled.Digest())
 		}
 		if !composedEventListContains(t, transport, "b03-composition", string(model.EventDependencyConditionUnmet), sourceRef.ID) {
 			t.Fatalf("%s event.list omitted persisted installed ontology audit", e.name)
