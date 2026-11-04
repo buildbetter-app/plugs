@@ -10,6 +10,7 @@ go_test(
     name = "acceptance",
     srcs = [
         "acceptance_test.go",
+        "b22_remaining_test.go",
         "b24_independent_clock_test.go",
         "cas_contract_test.go",
         "clock_boundary_test.go",
