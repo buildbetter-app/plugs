@@ -211,10 +211,14 @@ func (s *Service) WorkflowInvoke(ctx context.Context, by model.PrincipalRef, req
 		}
 		meta.Method = "x.workflow.invoke"
 		meta.Project = req.Project
+		var refs []model.Ref
 		for _, item := range req.Checklist {
-			if err := s.validateWorkflowEndpoints(ctx, by, req.Project, workflowAuxiliaryRefs(item.Parent, item.Links)...); err != nil {
-				return workflowplugin.InvokeResult{}, err
-			}
+			refs = append(refs, workflowAuxiliaryRefs(item.Parent, item.Links)...)
+		}
+		var err error
+		req.CoreHead, err = s.workflowEndpointHead(ctx, by, req.Project, refs...)
+		if err != nil {
+			return workflowplugin.InvokeResult{}, err
 		}
 		return s.workflow.Invoke(ctx, by, req, meta)
 	}
@@ -329,10 +333,11 @@ func (s *Service) update(ctx context.Context, by model.PrincipalRef, req UpdateR
 		if err != nil {
 			return port.WriteOutcome{}, err
 		}
-		if err := s.validateWorkflowEndpoints(ctx, by, meta.Project, refs...); err != nil {
+		head, err := s.workflowEndpointHead(ctx, by, meta.Project, refs...)
+		if err != nil {
 			return port.WriteOutcome{}, err
 		}
-		commit, err := s.workflow.Update(ctx, by, req.ID, req.Fields, meta)
+		commit, err := s.workflow.UpdateAtHead(ctx, by, req.ID, req.Fields, meta, head)
 		return port.WriteOutcome{Commit: commit}, err
 	}
 	if err := namedRef(req.ID); err != nil {

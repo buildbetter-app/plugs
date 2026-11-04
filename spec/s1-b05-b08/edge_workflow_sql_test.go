@@ -105,6 +105,116 @@ func TestB07SQLWorkflowRelationsFenceOrdinaryEndpointsAtPublication(t *testing.T
 	}
 }
 
+func TestB07SQLWorkflowAuxiliaryEndpointsFenceCompletePublication(t *testing.T) {
+	for _, engine := range []string{"sqlite", "postgres"} {
+		for _, method := range []string{"x.workflow.invoke", "bead.update"} {
+			for _, auxiliary := range []string{"parent", "links"} {
+				for _, mutation := range []string{"update", "delete"} {
+					t.Run(engine+"/"+method+"/"+auxiliary+"/"+mutation, func(t *testing.T) {
+						f := newB07SQLPlaneFixture(t, engine)
+						ordinary := f.createB08(t, "auxiliary-endpoint", "issue", nil, nil)
+						var source model.Ref
+						if method == "bead.update" {
+							source = b07InvokeSQLWorkflow(t, f, 1)[0]
+						}
+						params := func(target model.Ref) map[string]any {
+							if method == "bead.update" {
+								fields := map[string]any{"parent": target}
+								if auxiliary == "links" {
+									fields = map[string]any{"links": []workflowplugin.RelationSpec{{To: target, Kind: "related"}}}
+								}
+								return map[string]any{"id": source, "fields": fields}
+							}
+							item := workflowplugin.ChecklistItem{Label: "linked", Title: "linked", Type: "issue", Parent: &target}
+							if auxiliary == "links" {
+								item.Parent = nil
+								item.Links = []workflowplugin.RelationSpec{{To: target, Kind: "related"}}
+							}
+							// The final item has no auxiliary refs: the invocation must
+							// retain one observation for the complete checklist.
+							return map[string]any{"template": "auxiliary-fence", "project": project, "mode": "ephemeral", "checklist": []workflowplugin.ChecklistItem{item, {Label: "plain", Title: "plain", Type: "issue"}}}
+						}
+						base := f.store
+						barrier := &b07EndpointFenceStore{Store: base, PersistentCheckpointStore: base.(driver.PersistentCheckpointStore), HeadGuardedCheckpointStore: base.(driver.HeadGuardedCheckpointStore)}
+						f.store = barrier
+						f.install(t)
+						before := f.conservation(t)
+						var afterRace b08Conservation
+						barrier.beforeSave = func() {
+							if mutation == "delete" {
+								b08Commit(t, f.callB08(t, "tx.apply", "delete-auxiliary-endpoint", b08Batch(model.Op{Kind: model.OpDelete, Delete: &model.DeleteOp{Target: ordinary}})))
+							} else {
+								b08Commit(t, f.callB08(t, "bead.update", "advance-auxiliary-endpoint", map[string]any{"id": ordinary, "fields": map[string]any{"title": "updated before publication"}}))
+							}
+							// Observe after the real competing public commit, before
+							// workflow checkpoint, indexes, audit or receipt publication.
+							afterRace = f.conservation(t)
+						}
+						got := f.callB08(t, method, "auxiliary-fence", params(ordinary))
+						if got.Error == nil || got.Error.Data.Code != "write_conflict" || barrier.beforeSave != nil || barrier.fencedWrites != 1 {
+							t.Fatalf("stale auxiliary endpoint published: error=%+v fencedWrites=%d result=%s", got.Error, barrier.fencedWrites, got.Result)
+						}
+						if before.Meta.Head.String() == afterRace.Meta.Head.String() || !reflect.DeepEqual(before.Checkpoints, afterRace.Checkpoints) {
+							t.Fatal("barrier failed to isolate the real competing core mutation")
+						}
+						b08SameConservation(t, afterRace, f.conservation(t))
+						f.reopenB08(t)
+						b08SameConservation(t, afterRace, f.conservation(t))
+						target := ordinary
+						if mutation == "delete" {
+							missing := f.callB08(t, method, "auxiliary-fence", params(ordinary))
+							b08RequireRefusal(t, method, missing, "not_found", "")
+							b08SameConservation(t, afterRace, f.conservation(t))
+							target = f.createB08(t, "replacement-auxiliary-endpoint", "issue", nil, nil)
+						}
+						beforeRetry := f.conservation(t)
+						retried := f.callB08(t, method, "auxiliary-fence", params(target))
+						if method == "x.workflow.invoke" {
+							var invoked workflowplugin.InvokeResult
+							if retried.Error != nil || json.Unmarshal(retried.Result, &invoked) != nil || invoked.Run == nil || len(invoked.Items) != 2 {
+								t.Fatalf("refused invocation consumed its key or partial checklist: error=%+v result=%s", retried.Error, retried.Result)
+							}
+							source = model.RefByID(invoked.Items[0].ID, model.Natural64(0))
+						} else {
+							b08Commit(t, retried)
+						}
+						b07RequireSameCoreState(t, beforeRetry, f.conservation(t))
+						// Change the core head again before replay. The host-only
+						// observation must not become part of request identity.
+						b08Commit(t, f.callB08(t, "bead.update", "advance-before-auxiliary-replay", map[string]any{"id": target, "fields": map[string]any{"title": "fresh replay observation"}}))
+						beforeReplay := f.conservation(t)
+						f.reopenB08(t)
+						b08SameConservation(t, beforeReplay, f.conservation(t))
+						replayed := f.callB08(t, method, "auxiliary-fence", params(target))
+						if replayed.Error != nil || !reflect.DeepEqual(retried.Result, replayed.Result) {
+							t.Fatalf("auxiliary replay changed after SQL reopen/fresh core head: error=%+v first=%s replay=%s", replayed.Error, retried.Result, replayed.Result)
+						}
+						b08SameConservation(t, beforeReplay, f.conservation(t))
+						var read struct {
+							Bead struct {
+								Parent string
+								Links  []workflowplugin.RelationView
+							}
+						}
+						public := f.callB08(t, "bead.get", "read-auxiliary-recovery", map[string]any{"id": source})
+						if public.Error != nil || json.Unmarshal(public.Result, &read) != nil {
+							t.Fatalf("recovered auxiliary body: error=%+v result=%s", public.Error, public.Result)
+						}
+						if auxiliary == "parent" {
+							if read.Bead.Parent != target.ID || len(read.Bead.Links) != 0 {
+								t.Fatalf("recovered parent body changed: %+v", read.Bead)
+							}
+						} else if read.Bead.Parent != "" || len(read.Bead.Links) != 1 || read.Bead.Links[0].From != source.ID || read.Bead.Links[0].To != target || read.Bead.Links[0].Kind != "related" {
+							t.Fatalf("recovered relation body changed: %+v", read.Bead)
+						}
+						b08SameConservation(t, beforeReplay, f.conservation(t))
+					})
+				}
+			}
+		}
+	}
+}
+
 // These are Plug RPC assertions, not native reference observations. Each SQL
 // fixture has one store, lease, Writer and service for both ordinary beads and
 // actual plugin-owned workflow items. No workflow reference or checkpoint is

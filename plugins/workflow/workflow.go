@@ -123,6 +123,8 @@ type InvokeRequest struct {
 	Project   string          `json:"project"`
 	Mode      string          `json:"mode"`
 	Checklist []ChecklistItem `json:"checklist"`
+	// CoreHead is trusted host context, excluded from wire and replay identity.
+	CoreHead *driver.CoreSnapshotExpectation `json:"-"`
 }
 
 type RunView struct {
@@ -902,7 +904,7 @@ func (p *Provider) Invoke(ctx context.Context, by model.PrincipalRef, req Invoke
 		return InvokeResult{}, err
 	}
 	p.appendAudit(&value, "workflow.run.created", receipt)
-	if err := p.mapSaveError(p.save(ctx, value, revision)); err != nil {
+	if err := p.mapSaveError(p.saveAtHead(ctx, value, revision, req.CoreHead)); err != nil {
 		return InvokeResult{}, err
 	}
 	return result, nil
@@ -1467,6 +1469,13 @@ func (p *Provider) applyAuxiliary(value *persisted, old, next itemState) error {
 // image and all relation/parent targets before publishing one checkpoint CAS;
 // a failed target lookup therefore leaves the previous image untouched.
 func (p *Provider) Update(ctx context.Context, by model.PrincipalRef, id model.Ref, fields map[string]any, meta model.WriteMeta) (model.Commit, error) {
+	return p.UpdateAtHead(ctx, by, id, fields, meta, nil)
+}
+
+// UpdateAtHead carries trusted host endpoint observations through the same
+// checkpoint transaction as the auxiliary fields, mirrors, audit and receipt.
+// The snapshot is publication context and never changes the replay request.
+func (p *Provider) UpdateAtHead(ctx context.Context, by model.PrincipalRef, id model.Ref, fields map[string]any, meta model.WriteMeta, head *driver.CoreSnapshotExpectation) (model.Commit, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if err := validateRef(id); err != nil || !workflowTarget(id) {
@@ -1511,7 +1520,7 @@ func (p *Provider) Update(ctx context.Context, by model.PrincipalRef, id model.R
 		return model.Commit{}, err
 	}
 	p.appendAudit(&value, "workflow.update", receipt)
-	if err := p.mapSaveError(p.save(ctx, value, revision)); err != nil {
+	if err := p.mapSaveError(p.saveAtHead(ctx, value, revision, head)); err != nil {
 		return model.Commit{}, err
 	}
 	return commit, nil

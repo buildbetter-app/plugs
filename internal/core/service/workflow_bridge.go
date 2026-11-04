@@ -75,15 +75,10 @@ func (r *workflowCoreResolver) IsBlocked(ctx context.Context, principal model.Pr
 	return !satisfied, nil
 }
 
-// validateWorkflowEndpoints rejects absent or cross-project ordinary endpoints
-// before any provider CAS. Workflow endpoint ownership is checked by Provider.
-func (s *Service) validateWorkflowEndpoints(ctx context.Context, by model.PrincipalRef, project string, refs ...model.Ref) error {
-	_, err := s.workflowEndpointHead(ctx, by, project, refs...)
-	return err
-}
-
 // workflowEndpointHead binds ordinary endpoint validation to checkpoint
-// publication. Workflow-only relations do not consume a core snapshot.
+// publication. All auxiliary endpoints in an invocation share this snapshot.
+// Workflow-only relations do not consume a core snapshot; the Provider checks
+// their ownership and checkpoint CAS.
 func (s *Service) workflowEndpointHead(ctx context.Context, by model.PrincipalRef, project string, refs ...model.Ref) (*driver.CoreSnapshotExpectation, error) {
 	var ordinary []model.Ref
 	for _, ref := range refs {
