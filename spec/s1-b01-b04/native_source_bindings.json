@@ -1,7 +1,7 @@
 {
   "format": "plug.s1.b01.native-source-binding.v1",
-  "consumerBase": "686704bda3e9dd3f7ba945555a2c6f087dbd2ce3",
-  "consumerBaseTree": "3c585962fd6590fe7e1c47a2280e9c3d944009bd",
+  "consumerBase": "6dba1a9532200437fd528bfaeed55ef3ce925166",
+  "consumerBaseTree": "24be1a5d9a3c2cd86e7b40314f9c91703634595d",
   "donor": "43c0f2410ccb24062b8bd1bd073aeb29ef21288f",
   "donorTree": "05153e1c051b1887fa875b53739adc036ae8cf16",
   "donorSourceDisposition": "CAUSAL_SOURCE_AUTHORED; owning independent49 source review WAIT. Author-reported ordinary focus/build/whole PASS is separate and supplies no consumer or native proof.",
@@ -44,10 +44,10 @@
     "d1f7": "Independent source BLOCK report5ed9993d; independent ordinary report9191419f: build-only R41772696197 PASS/99actions; focus R41772731443 RED/rawRUN6PASS5FAIL1, helper3PASS+contract2PASS+lexiconFAIL. Whole NOT_RUN."
   },
   "nativeStatus": {
-    "actualPreparedInput": "NOT_DELIVERED",
-    "timed": "NOT_DELIVERED",
-    "indefinite": "NOT_DELIVERED",
-    "ownedRuntimeOriginals": "WAIT",
+    "actualPreparedInput": "NOT_RUN_FOR_THIS_CONSUMER",
+    "timed": "AUTHORED_NOT_RUN",
+    "indefinite": "AUTHORED_NOT_RUN",
+    "ownedRuntimeOriginals": "WAIT_FRESH_SAME_RUN",
     "threeDriverReplay": "AUTHORED_NOT_RUN",
     "NativeAdmission": null,
     "fullB01": "UNQUALIFIED",
@@ -60,5 +60,15 @@
     "path": "/tmp/plug-swarm/reports/native-public-dolt-source-43c0f24-20261104/report.md",
     "sha256": "4eb2fcc5937668a29077c634ce361872e4b2a43152443da31ce65c800309beb4"
   },
-  "sourceComposition": "Exact attributed producer43 MODULE/helper blobs; existing B01 recorder, V3 inputs,96 argv and three-driver replay unchanged except helper source/tree attribution. Returned ChildEnv stays unchanged; private config root remains separate from physical DataRoot."
+  "sourceComposition": "Exact attributed producer43 MODULE/helper blobs; existing B01 recorder, V3 inputs,96 argv and three-driver replay unchanged except helper source/tree attribution. Returned ChildEnv stays unchanged; private config root remains separate from physical DataRoot.",
+  "currentConsumerScope": "Accepted c8eb/R41800330346 repin on current-main ordinary product6d; existing native vectors/96 commands/twins/physical lifecycle/ChildEnv/three-driver replay and negative controls unchanged. Trusted preparer2d/702 is distinct from original publicnative helper43. All old native and ordinary results stay bound to their historical source.",
+  "trustedPreparation": {
+    "control": "2d2164ba3d8e456c9aba15fbeb8cae4edc755997",
+    "controlTree": "ae226eed2e9a85d4da19958db7a3520ebfe9cf05",
+    "controlBranch": "swarm/native-preparer-c8eb-rebind-20261104",
+    "helperSource": "70230ccd92597a96000f90223c5d89b103e25426",
+    "helperSHA256": "6a84191fd016ddcb637cb5a470e88727176a70e8b5c6e8e6c69f33db6a1559eb",
+    "readinessReviewSHA256": "d860d82915eb728aa8ee2b33bbadfb7f5e33df59369ff7de24d430aad58eeba6",
+    "scope": "Fixed reviewed control only. Each consumer invocation must supply its own preparation and four matching exports. publicnative helper43 attribution remains separate."
+  }
 }

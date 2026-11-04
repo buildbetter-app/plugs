@@ -1,20 +1,20 @@
 {
   "format": "plug.s1.b01.native-inputs.v1",
-  "consumer": "686704bda3e9dd3f7ba945555a2c6f087dbd2ce3",
-  "consumerTree": "3c585962fd6590fe7e1c47a2280e9c3d944009bd",
+  "consumer": "6dba1a9532200437fd528bfaeed55ef3ce925166",
+  "consumerTree": "24be1a5d9a3c2cd86e7b40314f9c91703634595d",
   "helperSource": "43c0f2410ccb24062b8bd1bd073aeb29ef21288f",
   "helperTree": "05153e1c051b1887fa875b53739adc036ae8cf16",
-  "source": "305fec3afac83224f46c54f982959fd99db136fa",
-  "sourceTree": "48e3545b7c5c6a5cdc0119e34dfa379354456a6e",
-  "sourceManifest": "6c2e549b54b472790d57a27370821d69159d4d6dc817e5bf38dbc56c856c8420",
+  "source": "c8eb3ba7d4177e111a6f5c8aebe06b5d0b1d5724",
+  "sourceTree": "930405e863284a3955cbd35e73a6097b606b91a5",
+  "sourceManifest": "e01a584042b4a2c32ea3cbcbdd55069f7c23bc2b853f8734857c5082e828f15d",
   "sourceEntries": 5141,
-  "binarySHA256": "86f3d846b437daefd892db8ddf62d9b725e4bb0424900b0a45f7f25c0e79a3a6",
-  "binaryBytes": 161298184,
-  "buildRun": "41610284344",
+  "binarySHA256": "b734da8ba8b6f50d7fd32239e405b8f8ed9d171b7be5fbbccb63a923d257a123",
+  "binaryBytes": 161299592,
+  "buildRun": "41800330346",
   "profile": "plug-public-native/1",
-  "manifestSHA256": "4aa497bb1dfb70bf85371daa9e388b5b0ae84130f83f45a49816559d4698c0db",
-  "workflowSHA": "5b1546459abe9c21fc6045380ad2bb25df8cbf99",
-  "descriptor": "41610284344:13218208758:4aa497bb1dfb70bf85371daa9e388b5b0ae84130f83f45a49816559d4698c0db",
+  "manifestSHA256": "ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a",
+  "workflowSHA": "d758fdf42a426e9e2a4b707dbcebb22ec68b264e",
+  "descriptor": "41800330346:13307042737:ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a",
   "adoptedIndefiniteDecision": "b0d8be0f-3bde-4dbc-b4c7-51cb125c7511",
   "vectors": [
     {
@@ -60,11 +60,20 @@
       ]
     }
   ],
-  "argvDeltaFromV3": "One actual public dolt commit command after readback and before the quiesced inventory per fresh store. Source305 CommitAll includes config and tolerates clean no-op; native capture requires a clean working set. 24 CLI commands per store,96 total. V3 proposed92 stays immutable.",
+  "argvDeltaFromV3": "One actual public dolt commit command after readback and before the quiesced inventory per fresh store. Original source305; retained on accepted source c8eb CommitAll includes config and tolerates clean no-op; native capture requires a clean working set. 24 CLI commands per store,96 total. V3 proposed92 stays immutable.",
   "clockScope": "Raw wall-clock command windows only; native Go time.Now and SQL UTC_TIMESTAMP are uncontrolled. No expiry/wake/48h/B05/full-card claim.",
-  "qualification": "AUTHORED_NOT_RUN; manual target requires actual reviewed prepared admission and applicable helper originals.",
-  "workflowBranch": "codex/b1c-native-producer-d70c-20261102",
-  "label": "b1c-native-d70c-20261102",
-  "artifactDigest": "sha256:c6e9bf1b87a115be24eb17a0e80964ab92032b2c29573c0ccc78503a41fb3e92",
-  "artifactSize": 111644381
+  "qualification": "AUTHORED_NOT_RUN for this consumer; fresh same-run trusted preparation, native twins and three-driver replay required. Historical consumer evidence does not transfer.",
+  "workflowBranch": "swarm/native-producer-census-control-c8eb-20261104",
+  "label": "native-census-c8eb-20261104",
+  "artifactDigest": "sha256:28609d7c072c281a748cb53a361d9a3ffada826d6f2e8866a3b1e62b23d5ffc4",
+  "artifactSize": 111646601,
+  "trustedPreparation": {
+    "control": "2d2164ba3d8e456c9aba15fbeb8cae4edc755997",
+    "controlTree": "ae226eed2e9a85d4da19958db7a3520ebfe9cf05",
+    "controlBranch": "swarm/native-preparer-c8eb-rebind-20261104",
+    "helperSource": "70230ccd92597a96000f90223c5d89b103e25426",
+    "helperSHA256": "6a84191fd016ddcb637cb5a470e88727176a70e8b5c6e8e6c69f33db6a1559eb",
+    "readinessReviewSHA256": "d860d82915eb728aa8ee2b33bbadfb7f5e33df59369ff7de24d430aad58eeba6",
+    "scope": "Fixed reviewed control only. Each consumer invocation must supply its own preparation and four matching exports. publicnative helper43 attribution remains separate."
+  }
 }
