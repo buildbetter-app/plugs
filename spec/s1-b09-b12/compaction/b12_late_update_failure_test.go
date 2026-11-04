@@ -264,6 +264,18 @@ func b12LateUpdateSQLImage(t *testing.T, f *fixture) map[string][]string {
 		"graph_link_index_coverage", "graph_link_source_current", "graph_link_current",
 		"graph_link_source_history", "graph_link_history",
 	}
+	if f.engine == "postgres" {
+		typed = append(typed,
+			"selection_coverage", "selection_facts", "selection_mutation_fence",
+			"selection_mutation_keys", "selection_rows", "selection_sources",
+		)
+	} else {
+		typed = append(typed,
+			"selection_backfill_rows", "selection_backfill_runs", "selection_bead_history",
+			"selection_coverage", "selection_fact_sets", "selection_facts",
+			"selection_family_coverage", "selection_source_history", "selection_virgin_state",
+		)
+	}
 	expected := append([]string{}, excluded...)
 	for table := range image {
 		expected = append(expected, table)
