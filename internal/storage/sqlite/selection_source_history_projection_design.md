@@ -25,16 +25,27 @@ present=0 retains a tombstone's actual revision; a latest projected row cannot
 be confused with missing history. Invalid/partial column pairs refuse.
 
 For an additive transition, old rows keep both columns NULL and the existing
-thin-history intervals. A NULL pair selects the existing thin-history lookup
-at the same pin; it never proves absence or authorizes a body decode. If no
-key_history row exists, that same legacy thin lookup preserves the prior
-never-present behavior. New writes populate metadata atomically and close old
+thin-history intervals. A NULL pair requires an actual covering legacy interval
+at the same pin whose source_revision equals the selected SQL key_history rev;
+missing legacy history or a token disagreement refuses instead of returning
+miss0. The retained row itself proves that this key has a mutation history.
+No fallback authorizes a body decode. New writes populate metadata atomically and close old
 open thin intervals at the new commit revision without deleting historical
 ones. Old pins retain those intervals. Cold unchanged legacy sources continue
 using legacy thin state until their next mutation. No startup history scan,
 JSON backfill, retention-floor movement or migration of fact boundaries is
 needed. NULL metadata identifies legacy physical rows, not permission to run
 old selector binaries after new sparse physical publication begins.
+
+| Pinned key_history result | Metadata / legacy result | Required outcome |
+| --- | --- | --- |
+| Native query, scan or cancellation error | Any | Preserve that error; no alternate query or decoded body can mask it |
+| Row found | Both metadata columns valid | Return that SQL rev, explicit presence and exact digest |
+| Row found | Both columns NULL; one covering legacy interval with source_revision equal to SQL rev | Return the legacy presence/digest at that exact token |
+| Row found | Both columns NULL; missing, overlapping or mismatched legacy interval | Refuse; a retained mutation is never a revision-zero miss |
+| Row found | Partial NULL pair, invalid presence, malformed revision/digest, or nonempty absent digest | Refuse malformed metadata |
+| No row | No covering legacy interval | Preserve the true never-present observation, after the existing pin/floor checks |
+| No row | Covering legacy interval | Refuse the inconsistent retained witnesses; do not substitute a current image |
 
 Open adds the two columns under its existing immediate transaction/OS lock;
 new-store DDL includes them. This proposal requires a schema-version gate
@@ -49,6 +60,29 @@ cover derived states, including offline history's scalar publishKey route.
 Ready's existing per-row triggers remain on key_history; none is disabled.
 Caller fact invalidation,
 lease fencing, replay, Parent/family completeness and admission remain exact.
+
+The existing compatibility contract is precise: schema.go:3 declares version
+2; Driver.Open (store.go:121-143) accepts 2 or explicitly upgrades 1, refusing
+other versions. readMeta (296-306) requires exact equality. reader.pin (49-57)
+uses readMeta as its first SELECT, fixing a WAL snapshot; Write (transaction.go:
+59-70), Lock (190) and Head (313) all use that gate. The ordinary non-replay
+Commit checks current metadata at transaction.go:548 before any new source
+publication. Offline-history publication starts with restoreEmpty, which calls
+readMeta before writes. Existing pinned readers intentionally do not reread
+the version in reader.check: they retain the old physical snapshot and cannot
+raise their authority pin past its captured head. FreshSelectionExists also
+uses that pinned committed snapshot. Keep these properties unchanged.
+
+Exact replay returns before Commit's version check and must remain an
+idempotent result without new source publication. Do not move a new fence ahead
+of replay, header/lease checks, or earlier validation failures. Public Migrate
+(store.go:321-329) supports identity only; Open owns explicit version upgrades.
+Existing pending_test.go:262 covers the actual 1-to-2 upgrade's receipts,
+identity and epoch; engine_test.go:457 rejects arbitrary future Migrate calls.
+The new schema-fence control exercises actual API Open/Read/Write/Meta/Migrate,
+an already-pinned selector, and held non-replay Commit against an unknown
+persisted version. It is AUTHORED_NOT_RUN and does not substitute for eventual
+real 1/2-to-3 migration and independent old/new-binary controls.
 
 Frozen 6b4 direct dependencies (all paths under internal/storage/sqlite):
 

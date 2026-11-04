@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -688,4 +689,149 @@ func TestDemandSelectionColdWitnessErrorsPrecedePublication(t *testing.T) {
 			}
 		})
 	}
+}
+
+// This is an existing-contract fence control, not a simulated successful
+// migration. The running binary remains on its real compiled schema version;
+// an independent SQL transaction changes only the advertised version. Public
+// calls must refuse new snapshots/publication while an earlier pinned reader
+// continues to see its exact old source state. Actual 1/2-to-3 migration and
+// independent old/new executables remain separate integration obligations.
+func TestDemandSelectionSchemaFenceNewViewsAndHeldPublication(t *testing.T) {
+	for _, tombstone := range []bool{false, true} {
+		t.Run(fmt.Sprintf("pinned_tombstone_%t", tombstone), func(t *testing.T) {
+			ctx := context.Background()
+			path := filepath.Join(t.TempDir(), "source-version-fence.db")
+			s := openStore(t, ctx, path)
+			lease := getLease(t, ctx, s, driver.LeaseTTL)
+			meta := getMeta(t, ctx, s)
+			decode, projection := selectionBackfillRaceProjection(meta.Incarnation, nil)
+			if err := s.BuildGraphSourceIndexes(ctx, lease, decode, projection); err != nil {
+				t.Fatal(err)
+			}
+			source, fact := demandSourceKey("version-source-"+string([]byte{0xff})), demandFactKey("version-facts")
+			value := []byte{0, 0xff, 'v'}
+			want := driver.SelectionSource{Key: demandSourceLock(source), Present: true, Digest: driver.SelectionDigest(value)}
+			want.Revision = demandAPIWriteSource(t, s, lease, source, value, true)
+			if tombstone {
+				want.Revision = demandAPIWriteSource(t, s, lease, source, nil, false)
+				want.Present, want.Digest = false, ""
+			}
+			// Bind normally so this fence control is independent of the sparse
+			// prototype's separately captured first-boundary publication gap.
+			bound, header := beginSourceTestWithLocks(t, s, lease, []driver.LockKey{want.Key, demandSourceLock(fact)}, false)
+			row := demandAPIFactRow(t, meta.Incarnation, want, fact)
+			if err := bound.PutSelectionDerived(ctx, fact.Table, nil, []driver.DerivedRow{row}); err != nil {
+				t.Fatal(err)
+			}
+			commitSourceTest(t, bound, header)
+			pinned := sourceReader(t, s, nil)
+			plan := demandAPIPlan(t, pinned, want)
+			if got, err := pinned.Select(ctx, plan); err != nil || got.Total != 0 || got.More {
+				t.Fatalf("pre-fence source binding: %+v %v", got, err)
+			}
+			pendingKey := demandSourceKey("must-not-publish-across-version")
+			pending, pendingHeader := beginSourceTestWithLocks(t, s, lease, []driver.LockKey{demandSourceLock(pendingKey)}, false)
+			if err := pending.PutDerived(ctx, pendingKey.Table, nil, []driver.DerivedRow{{Key: pendingKey.Key, Value: []byte("pending")}}); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.immediate(ctx, nil, func(c *sql.Conn) error {
+				_, err := c.ExecContext(ctx, `UPDATE meta SET schema_version=? WHERE singleton=1`, schemaVersion+1)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			beforeKeys, beforeHistory := keyPublicationImages(t, s), selectionSourceHistoryImages(t, s)
+			beforePublication := demandPublicationImages(t, s)
+			if got, err := pinned.Select(ctx, plan); err != nil || got.Total != 0 || got.More {
+				t.Fatalf("version change altered already-pinned source selection: %+v %v", got, err)
+			}
+			opened, err := (Driver{}).Open(ctx, driver.Config{DSN: path})
+			if opened != nil {
+				_ = opened.Close()
+			}
+			if !errors.Is(err, driver.ErrUnsupported) {
+				t.Fatalf("old binary Open accepted an unknown version: %v", err)
+			}
+			newReader, err := s.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+			if newReader != nil {
+				_ = newReader.Close()
+			}
+			if !errors.Is(err, driver.ErrUnsupported) {
+				t.Fatalf("existing handle acquired a new snapshot across version fence: %v", err)
+			}
+			newWriter, err := s.Write(ctx, lease)
+			if newWriter != nil {
+				_ = newWriter.Close()
+			}
+			if !errors.Is(err, driver.ErrUnsupported) {
+				t.Fatalf("existing handle acquired a new writer across version fence: %v", err)
+			}
+			if _, err := s.Meta(ctx); !errors.Is(err, driver.ErrUnsupported) {
+				t.Fatalf("Meta accepted an unknown version: %v", err)
+			}
+			if _, err := s.Migrate(ctx, schemaVersion); !errors.Is(err, driver.ErrUnsupported) {
+				t.Fatalf("Migrate silently downgraded unknown representation: %v", err)
+			}
+			if _, err := pending.Commit(ctx, pendingHeader); !errors.Is(err, driver.ErrUnsupported) {
+				t.Fatalf("held writer published across version fence: %v", err)
+			}
+			if !reflect.DeepEqual(keyPublicationImages(t, s), beforeKeys) ||
+				!reflect.DeepEqual(selectionSourceHistoryImages(t, s), beforeHistory) ||
+				!reflect.DeepEqual(demandPublicationImages(t, s), beforePublication) {
+				t.Fatal("version refusal changed source, selection, head, history or receipts")
+			}
+		})
+	}
+}
+
+func demandPublicationImages(t *testing.T, s *Store) [][][]any {
+	t.Helper()
+	var image [][][]any
+	for _, query := range []string{
+		`SELECT * FROM meta ORDER BY singleton`,
+		`SELECT * FROM selection_fact_sets ORDER BY incarnation,branch,row_key,start_revision`,
+		`SELECT * FROM selection_facts ORDER BY incarnation,branch,row_key,start_revision,ordinal`,
+		`SELECT * FROM selection_bead_history ORDER BY incarnation,branch,derived_key,start_revision`,
+		`SELECT * FROM changesets ORDER BY rev`,
+		`SELECT * FROM replays ORDER BY scope`,
+	} {
+		rows, err := s.db.QueryContext(context.Background(), query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		columns, err := rows.Columns()
+		if err != nil {
+			_ = rows.Close()
+			t.Fatal(err)
+		}
+		var table [][]any
+		for rows.Next() {
+			values := make([]any, len(columns))
+			pointers := make([]any, len(columns))
+			for i := range values {
+				pointers[i] = &values[i]
+			}
+			if err := rows.Scan(pointers...); err != nil {
+				_ = rows.Close()
+				t.Fatal(err)
+			}
+			for i, value := range values {
+				if raw, ok := value.([]byte); ok {
+					values[i] = append([]byte(nil), raw...)
+				}
+			}
+			table = append(table, values)
+		}
+		err = rows.Err()
+		closeErr := rows.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if closeErr != nil {
+			t.Fatal(closeErr)
+		}
+		image = append(image, table)
+	}
+	return image
 }
