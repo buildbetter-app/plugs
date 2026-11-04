@@ -7951,6 +7951,9 @@
           "reason": {
             "type": "string",
             "maxLength": 128
+          },
+          "targetKind": {
+            "$ref": "#/components/schemas/LinkTargetKind"
           }
         },
         "required": [

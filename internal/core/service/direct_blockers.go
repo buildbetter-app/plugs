@@ -25,12 +25,13 @@ const (
 // blocker reference is retained for the consumer to apply its own current-read
 // authorization; this service never authorizes or redacts a resource.
 type DirectBlockerEdge struct {
-	Blocker model.Ref
-	Kind    string
-	Project string
-	Status  string
-	State   DirectBlockerState
-	Reason  string
+	TargetKind model.LinkTargetKind
+	Blocker    model.Ref
+	Kind       string
+	Project    string
+	Status     string
+	State      DirectBlockerState
+	Reason     string
 }
 
 // DirectBlockerVerdict is bounded to the dependent's stored direct edges.
@@ -108,7 +109,7 @@ func ReadDirectBlockers(ctx context.Context, reader driver.Reader, req DirectBlo
 	refs := make([]model.Ref, 0, len(links))
 	seenRefs := make(map[string]bool, len(links))
 	for _, link := range links {
-		if !link.To.IsID() || !link.To.Branch.IsZero() {
+		if link.TargetKind == model.LinkTargetExternal || !link.To.IsID() || !link.To.Branch.IsZero() {
 			continue
 		}
 		if seenRefs[link.To.ID] {
@@ -133,8 +134,8 @@ func ReadDirectBlockers(ctx context.Context, reader driver.Reader, req DirectBlo
 	evaluation := directBlockerEvaluation{reader: reader, locate: req.Ontology,
 		compiled: map[string]ontology.Effective{}, known: map[string]bool{}, available: map[string]bool{}}
 	for _, link := range links {
-		edge := DirectBlockerEdge{Blocker: link.To, Kind: link.Kind}
-		if !link.To.IsID() || !link.To.Branch.IsZero() {
+		edge := DirectBlockerEdge{Blocker: link.To, Kind: link.Kind, TargetKind: link.TargetKind}
+		if link.TargetKind == model.LinkTargetExternal || !link.To.IsID() || !link.To.Branch.IsZero() {
 			edge.State, edge.Reason = DirectBlockerUnknown, "blocker reference is unresolved"
 			verdict.Edges = append(verdict.Edges, edge)
 			continue
@@ -238,7 +239,7 @@ func (e *directBlockerEvaluation) waitsFor(ctx context.Context, link pipeline.Li
 	for _, child := range e.graph {
 		member := child.doc.Parent != nil && child.doc.Parent.ID == spawner.doc.ID
 		for _, edge := range child.doc.Links {
-			member = member || edge.Kind == "parent-child" && edge.To.ID == spawner.doc.ID
+			member = member || edge.TargetKind != model.LinkTargetExternal && edge.Kind == "parent-child" && edge.To.ID == spawner.doc.ID
 		}
 		if !member {
 			continue
