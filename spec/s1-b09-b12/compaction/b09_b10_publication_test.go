@@ -219,7 +219,55 @@ func TestB09B10CompactionPublicationVisibilityRefusalAndReplay(t *testing.T) {
 			}
 			b09B10Equal(t, "selected/graph publication and unselected predicate conservation", wantPredicates, after.Predicates)
 			b09B10Equal(t, "live allocator inventory after compaction", before.Allocator.Inventory, after.Allocator.Inventory)
-			b09B10Equal(t, "derived rows after compaction", before.Derived, after.Derived)
+			// A successful Writer mutation refreshes exactly its own ready-rank
+			// projection. Every unrelated derived row remains byte-identical.
+			wantDerived := make(map[driver.DerivedTable][]driver.DerivedRow, len(before.Derived))
+			for table, rows := range before.Derived {
+				wantDerived[table] = append([]driver.DerivedRow(nil), rows...)
+				if rows != nil && wantDerived[table] == nil {
+					wantDerived[table] = []driver.DerivedRow{}
+				}
+			}
+			var sourceCreation time.Time
+			for _, record := range before.Records {
+				if record.Ref.ID == children[0]["id"] {
+					var source struct {
+						CreatedAt time.Time `json:"createdAt"`
+					}
+					if err := json.Unmarshal(record.Body, &source); err != nil {
+						t.Fatal(err)
+					}
+					sourceCreation = source.CreatedAt
+				}
+			}
+			if sourceCreation.IsZero() || !sourceCreation.Before(f.clock.Add(-48*time.Hour)) {
+				t.Fatal("compaction rank fixture did not establish a real backlog creation instant")
+			}
+			rankRows := 0
+			for i, row := range wantDerived[driver.DerivedSortKey] {
+				if row.Key != "ready/"+children[0]["id"].(string) {
+					continue
+				}
+				rankRows++
+				// Literal backlog bucket/rank, actual creation and compaction
+				// clock, and the one newly published revision form the oracle.
+				expected := struct {
+					Bucket    int            `json:"bucket"`
+					Rank      int            `json:"rank"`
+					CreatedAt time.Time      `json:"createdAt"`
+					RankedAt  time.Time      `json:"rankedAt"`
+					Revision  model.Revision `json:"revision"`
+				}{1, 999, sourceCreation, f.clock, *after.View.At}
+				value, err := json.Marshal(expected)
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantDerived[driver.DerivedSortKey][i].Value = value
+			}
+			if rankRows != 1 {
+				t.Fatal("compaction oracle omitted the selected ready-rank row")
+			}
+			b09B10Equal(t, "selected rank publication and all other derived conservation", wantDerived, after.Derived)
 			for _, record := range before.Records {
 				wantVersions := len(before.Versions[record.Ref.ID])
 				if record.Ref.ID == children[0]["id"] {
