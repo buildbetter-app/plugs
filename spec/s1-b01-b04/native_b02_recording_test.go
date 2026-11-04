@@ -61,13 +61,36 @@ func validateB02Inputs(t *testing.T, inputs nativeInputs) {
 			"conditionalBlocks": "c8eb dependency exporter accepts no conditional-blocks edge; B02 conditional outcomes remain native-only and public replay is separately labeled",
 			"customStatuses":    "c8eb exporter refuses nonempty custom_statuses/custom_types; category-outcomes retains the real native command and expected dump refusal",
 		},
+		ProducerBinding: nativeProducerBinding{
+			Commit:              "c8eb3ba7d4177e111a6f5c8aebe06b5d0b1d5724",
+			Tree:                "930405e863284a3955cbd35e73a6097b606b91a5",
+			Parent:              "305fec3afac83224f46c54f982959fd99db136fa",
+			DependencyPath:      "internal/plugdump/map.go",
+			DependencyBlob:      "106adb8fa19ae96117e27ef3291014706640e10c",
+			DependencySHA256:    "9549c124151d1a74b2d8115bda0f9cacd83b4a50d6a252e08a2aafd0de50f872",
+			DependencyLines:     "244-267",
+			DependencyGuard:     "dependencies rows accept only blocks,parent-child,related,discovered-from; every other type returns unsupported dependency type",
+			FamilyBuildPath:     "internal/plugdump/build.go",
+			FamilyBuildBlob:     "9f2c8a8d8e1f93bfe3e91e51370a3ce617f1d140",
+			FamilyBuildLines:    "54-57",
+			FamilyCatalogPath:   "internal/plugdump/catalog.go",
+			FamilyCatalogBlob:   "c12556ed36823875ddd0e8ceeeb6e98532bcb6ea",
+			FamilyCatalogSHA256: "808d49d37ee63991715568067d69a48587d213b79d5ce1938ca0991f892c51fb",
+			FamilyCatalogLines:  "59-70",
+			RefusalTestPath:     "internal/plugdump/plugdump_test.go",
+			RefusalTestBlob:     "f5f271045849cf6ea09ef20911003278b167d253",
+			RefusalTestSHA256:   "9f4d844799a670724a9002f38349e07010105bd8aa931ce78f9dc42e3ca8fd4",
+			RefusalTestLines:    "594-619",
+			FamilyRefusalGuard:  "every family classified refuse-if-nonempty is populated with one row and must return nonempty family <name> with zero archive bytes",
+		},
 	}
 	if inputs.Format != want.Format || inputs.Consumer != want.Consumer || inputs.ConsumerTree != want.ConsumerTree || inputs.ConsumerParent != want.ConsumerParent ||
 		inputs.HelperSource != want.HelperSource || inputs.HelperTree != want.HelperTree || inputs.Source != want.Source || inputs.SourceTree != want.SourceTree ||
 		inputs.SourceManifest != want.SourceManifest || inputs.SourceEntries != want.SourceEntries || inputs.BinarySHA256 != want.BinarySHA256 ||
 		inputs.BinaryBytes != want.BinaryBytes || inputs.BuildRun != want.BuildRun || inputs.Profile != want.Profile || inputs.ManifestSHA256 != want.ManifestSHA256 ||
 		inputs.WorkflowSHA != want.WorkflowSHA || inputs.Descriptor != want.Descriptor || inputs.ArtifactDigest != want.ArtifactDigest || inputs.ArtifactSize != want.ArtifactSize ||
-		inputs.TrustedPreparation != want.TrustedPreparation || !reflect.DeepEqual(inputs.CapabilityBoundary, want.CapabilityBoundary) {
+		inputs.TrustedPreparation != want.TrustedPreparation || !reflect.DeepEqual(inputs.CapabilityBoundary, want.CapabilityBoundary) ||
+		inputs.ProducerBinding != want.ProducerBinding {
 		t.Fatalf("B02 native input contract drifted: got=%+v", inputs)
 	}
 }

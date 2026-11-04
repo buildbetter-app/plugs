@@ -33,6 +33,29 @@ type nativeTrustedPreparation struct {
 	Scope                 string `json:"scope"`
 }
 
+type nativeProducerBinding struct {
+	Commit              string `json:"commit"`
+	Tree                string `json:"tree"`
+	Parent              string `json:"parent"`
+	DependencyPath      string `json:"dependencyPath"`
+	DependencyBlob      string `json:"dependencyBlob"`
+	DependencySHA256    string `json:"dependencySHA256"`
+	DependencyLines     string `json:"dependencyLines"`
+	DependencyGuard     string `json:"dependencyGuard"`
+	FamilyBuildPath     string `json:"familyBuildPath"`
+	FamilyBuildBlob     string `json:"familyBuildBlob"`
+	FamilyBuildLines    string `json:"familyBuildLines"`
+	FamilyCatalogPath   string `json:"familyCatalogPath"`
+	FamilyCatalogBlob   string `json:"familyCatalogBlob"`
+	FamilyCatalogSHA256 string `json:"familyCatalogSHA256"`
+	FamilyCatalogLines  string `json:"familyCatalogLines"`
+	RefusalTestPath     string `json:"refusalTestPath"`
+	RefusalTestBlob     string `json:"refusalTestBlob"`
+	RefusalTestSHA256   string `json:"refusalTestSHA256"`
+	RefusalTestLines    string `json:"refusalTestLines"`
+	FamilyRefusalGuard  string `json:"familyRefusalGuard"`
+}
+
 type nativeInputs struct {
 	Format                                         string `json:"format"`
 	Consumer, ConsumerTree, ConsumerParent         string
@@ -47,6 +70,7 @@ type nativeInputs struct {
 	ArtifactSize                                   int64                    `json:"artifactSize"`
 	TrustedPreparation                             nativeTrustedPreparation `json:"trustedPreparation"`
 	CapabilityBoundary                             map[string]string        `json:"capabilityBoundary"`
+	ProducerBinding                                nativeProducerBinding    `json:"producerBinding"`
 	ClockScope                                     string
 	Vectors                                        []nativeVector
 	ExternalHierarchyTarget                        string

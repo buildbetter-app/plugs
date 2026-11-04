@@ -38,6 +38,17 @@ the real native custom-status command and the expected dump refusal. These are
 capability limits, not reasons to drop native plans or change the fixed
 producer/control/helper pins.
 
+The earliest required producer seam is bound to the c8eb preimage in
+`native_b02_inputs.json`: `internal/plugdump/map.go:244-267` (blob
+`106adb8fa19ae96117e27ef3291014706640e10c`, SHA256
+`9549c124151d1a74b2d8115bda0f9cacd83b4a50d6a252e08a2aafd0de50f872`) returns
+`unsupported dependency type` for every dependency outside that allowlist.
+The nonempty-family path is `internal/plugdump/build.go:54-57` plus
+`internal/plugdump/catalog.go:59-70`; the immutable refusal control is
+`internal/plugdump/plugdump_test.go:594-619`. These are producer source and
+guard references only; no producer donor, repin or native invocation is
+created by this B02 child.
+
 The canonical card is B02 in `engdocs/design/plug/spec/behaviors/work.md`.
 Its pinned protocol blocking/blocked tests and the accepted implementation's
 `blocked_state.go`, `blocked.go`, `blocked_consistency.go`,
