@@ -33,24 +33,29 @@ open thin intervals at the new commit revision without deleting historical
 ones. Old pins retain those intervals. Cold unchanged legacy sources continue
 using legacy thin state until their next mutation. No startup history scan,
 JSON backfill, retention-floor movement or migration of fact boundaries is
-needed. Older binaries still write the old eager representation, so NULL
-metadata continues through that existing path; this mixed-writer case needs a
-causal control before the additive transition is accepted.
+needed. NULL metadata identifies legacy physical rows, not permission to run
+old selector binaries after new sparse physical publication begins.
 
 Open adds the two columns under its existing immediate transaction/OS lock;
-new-store DDL includes them. The public schema version need not change for
-this additive representation, but that decision requires the schema owner's
-review. All key-history writers must cover derived states, including offline
-history's scalar publishKey route. Ready's existing per-row triggers remain
-on key_history; no trigger or Ready work is skipped. Caller fact invalidation,
+new-store DDL includes them. This proposal requires a schema-version gate
+(2 to 3) in that same transaction. Keeping version 2 would let old binaries
+ignore the new metadata and misread absent thin rows. Old pinned readers retain
+their pre-upgrade SQL snapshots and thin rows; old new-read/Commit paths must
+refuse the new schema before observing or publishing it. The existing readMeta
+version check supplies that boundary, subject to explicit causal controls.
+If a version gate is outside the authorized schema contract, keep dual eager
+publication and do not claim reduced writes. All key-history writers must
+cover derived states, including offline history's scalar publishKey route.
+Ready's existing per-row triggers remain on key_history; none is disabled.
+Caller fact invalidation,
 lease fencing, replay, Parent/family completeness and admission remain exact.
 
 Frozen 6b4 direct dependencies (all paths under internal/storage/sqlite):
 
 | Path / exact seam | Preimage blob | Ownership / requested change |
 | --- | --- | --- |
-| schema.go, key_history DDL | ca74b65d2abd7fe2e429f374d16996110d4dbc9b | Unleased; root must assign schema owner; add nullable physical metadata |
-| store.go, Driver.Open additive init | 407d6044b31b18f1f8ee8a2a7af5605fa9563850 | Unleased; root/schema owner; atomic column detection/addition |
+| schema.go, schemaVersion and key_history DDL | ca74b65d2abd7fe2e429f374d16996110d4dbc9b | Unleased; root must assign schema owner; version gate and nullable physical metadata |
+| store.go, Driver.Open init/migration | 407d6044b31b18f1f8ee8a2a7af5605fa9563850 | Unleased; root/schema owner; atomic 1/2-to-3 migration and column addition |
 | key_publication_batch.go, keyPublicationBatch.add/flush and publishDerivedKeys | 6b875bc14c93d198762f911c18fdca874e5dfc9d | F6/shared source, not author-leased; add metadata to the same native insert, preserve 128 cap and error ordering |
 | transaction.go, publishKey only (717-723) | 24ed8b0ddd8448470d30a20508e9270ace259c3e | Explicitly unleased; scalar derived metadata for offline-history route |
 | selection_query.go, selectionSourceState only (32-98) | 8e16afca87b3a4ac2fcdf7ab2582ef9c151a2d1f | F6/shared, read-only for this author; metadata-only lookup plus legacy thin transition |
@@ -71,7 +76,7 @@ small bindings; separate derived thin INSERTs disappear. Reads of new derived
 states use one indexed metadata lookup; legacy states may require a second
 thin lookup. Ready trigger work on key_history persists. This is neither an
 exclusive timing claim nor a 2-second cure. Required checks include new/legacy
-and mixed-writer histories, pins around mutation/deletion, raw non-UTF8 keys,
+histories and old-binary refusal, pins around migration/mutation/deletion, raw non-UTF8 keys,
 null/empty values, malformed pairs, rollback between publication arms, restore,
 replay, floor/incarnation/branch refusals and unchanged Parent/family proofs.
 Only a genuinely corrected scoped candidate should receive the focused/build
