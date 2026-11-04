@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -33,6 +34,12 @@ func TestNativeRestoreReopenDetachUsesCertifiedHierarchyCoverage(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "native-detach.db")
 	s := openStore(t, ctx, path)
 	lease := getLease(t, ctx, s, driver.LeaseTTL)
+	stopRenewal := renewNativeDetachLease(t, ctx, lease)
+	defer func() {
+		if stopRenewal != nil {
+			stopRenewal()
+		}
+	}()
 
 	started := time.Now()
 	records, closure, direct := nativeDetachCorpus(t, 20000)
@@ -47,6 +54,8 @@ func TestNativeRestoreReopenDetachUsesCertifiedHierarchyCoverage(t *testing.T) {
 	if err := publishNativeDetachCorpus(ctx, t, s, lease, profile, records, closure); err != nil {
 		t.Fatal(err)
 	}
+	stopRenewal()
+	stopRenewal = nil
 	if err := lease.Release(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -238,6 +247,41 @@ func publishNativeDetachCorpus(ctx context.Context, t *testing.T, s *Store, leas
 		}
 	}
 	return nil
+}
+
+// This correctness fixture holds the production lease across archive setup
+// and restore. Supervise normal heartbeats and join them before closing the
+// physical store; neither a missed renewal nor its error is ignored.
+func renewNativeDetachLease(t *testing.T, ctx context.Context, lease driver.ActiveLease) func() {
+	t.Helper()
+	renewCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() {
+		ticker := time.NewTicker(driver.LeaseRenewEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-renewCtx.Done():
+				done <- nil
+				return
+			case <-ticker.C:
+				if err := lease.Renew(renewCtx); err != nil {
+					if errors.Is(err, context.Canceled) && renewCtx.Err() != nil {
+						done <- nil
+					} else {
+						done <- err
+					}
+					return
+				}
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("native detach lease renewal: %v", err)
+		}
+	}
 }
 
 // Passive observations distinguish archive preparation from target publication.

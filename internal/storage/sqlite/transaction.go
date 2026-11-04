@@ -41,6 +41,10 @@ type transaction struct {
 	parentCounters     map[string]driver.ParentCounter
 	allocated          map[string]bool
 	selectionAnnotated bool
+	// Reverse edges identify annotations affected by a later staged source
+	// change. Complete validation still runs against the final overlay at Commit.
+	selectionDependents map[string]map[string]bool
+	selectionRecheck    map[string]bool
 
 	checkpointGuards          map[string]uint64
 	sourceOverlay             sourceindex.Overlay
@@ -102,6 +106,8 @@ func (t *transaction) finish() {
 	t.parentCounters = nil
 	t.allocated = nil
 	t.selectionAnnotated = false
+	t.selectionDependents = nil
+	t.selectionRecheck = nil
 	t.store.untrack(t)
 	close(t.done)
 }
@@ -367,6 +373,7 @@ func (t *transaction) Delete(ctx context.Context, ref driver.Ref) error {
 	t.sourceIdentities[id] = driver.Record{Ref: ref, Kind: record.Kind}
 	t.records[id] = nil
 	t.sourceOverlay.Replace(id, nil)
+	t.selectionSourceStaged(id)
 	return nil
 }
 func (t *transaction) PutBlob(ctx context.Context, data []byte) (driver.Hash, error) {
@@ -421,10 +428,7 @@ func (t *transaction) putDerived(ctx context.Context, table driver.DerivedTable,
 			}
 		}
 	}
-	proposed := make(map[string]driver.LockState, len(t.derived)+len(add)+len(del))
-	for id, state := range t.derived {
-		proposed[id] = state
-	}
+	proposed := make(map[string]driver.LockState, len(add)+len(del))
 	annotated := t.selectionAnnotated
 	for _, row := range del {
 		key := driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: table, Key: row.Key}}
@@ -436,12 +440,9 @@ func (t *transaction) putDerived(ctx context.Context, table driver.DerivedTable,
 		proposed[keyID(key)] = driver.LockState{Key: key, Derived: &copy, Present: true, Revision: model.Natural64(0)}
 		annotated = annotated || copy.Index != nil
 	}
-	if annotated {
-		if err := t.validateSelectionWrites(ctx, proposed); err != nil {
-			return err
-		}
+	if err := t.stageSelectionDelta(ctx, proposed, annotated); err != nil {
+		return err
 	}
-	t.derived = proposed
 	t.selectionAnnotated = annotated
 	return nil
 }
@@ -461,6 +462,7 @@ func (t *transaction) bump(ctx context.Context, keys []driver.LockKey) error {
 	}
 	for _, key := range keys {
 		t.bumps[keyID(key)] = copyKey(key)
+		t.selectionSourceStaged(keyID(key))
 	}
 	return nil
 }
