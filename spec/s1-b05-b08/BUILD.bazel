@@ -102,6 +102,8 @@ go_test(
     name = "native_b06_b08",
     srcs = [
         "native_io_test.go",
+        "native_oidc_b06_b08_test.go",
+        "native_import_b06_b08_test.go",
         "native_recording_b06_b08_test.go",
         "blocking_hierarchy_test.go",
         "checkpoint_guards_test.go",
@@ -141,6 +143,7 @@ go_test(
     args = ["-test.v", "-test.run=^(TestB06NativePublicCyclesTwinsAndThreeDriverReplay|TestB08NativePublicSettlementTwinsAndThreeDriverReplay)$$"],
     deps = [
         "//internal/publicnative",
+        "//internal/integration/converterroundtrip",
         "//internal/core/authz",
         "//internal/core/model",
         "//internal/core/ontology",
@@ -149,6 +152,7 @@ go_test(
         "//internal/core/restore",
         "//internal/core/service",
         "//internal/plugins/authnapikey",
+        "//internal/plugins/authnoidc",
         "//internal/plugins/authzfixed",
         "//internal/server/authn",
         "//internal/server/authzrpc",

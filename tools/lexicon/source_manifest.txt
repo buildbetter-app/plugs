@@ -165,6 +165,8 @@ internal/core/authz/types.go
 internal/core/dumpformat/BUILD.bazel
 internal/core/dumpformat/README.md
 internal/core/dumpformat/catalog.go
+internal/core/dumpformat/edge_metadata.go
+internal/core/dumpformat/edge_version_test.go
 internal/core/dumpformat/history.go
 internal/core/dumpformat/history_test.go
 internal/core/dumpformat/json.go
@@ -178,6 +180,8 @@ internal/core/dumpformat/migration_test.go
 internal/core/dumpformat/ontology.go
 internal/core/dumpformat/ontology_test.go
 internal/core/dumpformat/records.go
+internal/core/dumpformat/source_fields_contract_test.go
+internal/core/dumpformat/source_metadata_test.go
 internal/core/dumpformat/sources.go
 internal/core/dumpformat/types.go
 internal/core/dumpformat/validate.go
@@ -467,11 +471,13 @@ internal/integration/collabwatch/BUILD.bazel
 internal/integration/collabwatch/integration_test.go
 internal/integration/collabwatch/reconnect_acceptance_test.go
 internal/integration/converterroundtrip/BUILD.bazel
+internal/integration/converterroundtrip/dependency_semantics_test.go
 internal/integration/converterroundtrip/hierarchy_import_test.go
 internal/integration/converterroundtrip/history.go
 internal/integration/converterroundtrip/identity_counters_test.go
 internal/integration/converterroundtrip/image.go
 internal/integration/converterroundtrip/import_test.go
+internal/integration/converterroundtrip/imported_ontology_source_test.go
 internal/integration/converterroundtrip/label_projection_test.go
 internal/integration/converterroundtrip/labels.go
 internal/integration/converterroundtrip/native_restore_test.go
@@ -481,10 +487,12 @@ internal/integration/converterroundtrip/restore.go
 internal/integration/converterroundtrip/reverse.go
 internal/integration/converterroundtrip/reverse_test.go
 internal/integration/converterroundtrip/roundtrip_test.go
+internal/integration/converterroundtrip/source_metadata_restore_test.go
 internal/integration/converterroundtrip/testdata/public-complete-root-990eb800.tar
 internal/integration/converterroundtrip/testdata/public-partial-990eb800.tar
 internal/integration/converterroundtrip/testdata/public-source-990eb800.md
 internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar
+internal/integration/converterroundtrip/versioned_dependencies_test.go
 internal/integration/cursorhttp/BUILD.bazel
 internal/integration/cursorhttp/cursor_test.go
 internal/integration/cursorhttp/fixture_test.go
@@ -717,6 +725,7 @@ internal/server/authzrpc/b04_error_bounds_test.go
 internal/server/authzrpc/b15_comments_page_test.go
 internal/server/authzrpc/checker.go
 internal/server/authzrpc/claim.go
+internal/server/authzrpc/claim_authority.go
 internal/server/authzrpc/claim_eligibility_test.go
 internal/server/authzrpc/claim_test.go
 internal/server/authzrpc/cycles.go
@@ -1296,8 +1305,10 @@ spec/s1-b05-b08/fixture_test.go
 spec/s1-b05-b08/force_contract_test.go
 spec/s1-b05-b08/heartbeat_repair_test.go
 spec/s1-b05-b08/installed_lifecycle_test.go
+spec/s1-b05-b08/native_import_b06_b08_test.go
 spec/s1-b05-b08/native_inputs_b06_b08.json
 spec/s1-b05-b08/native_io_test.go
+spec/s1-b05-b08/native_oidc_b06_b08_test.go
 spec/s1-b05-b08/native_protocol_b06_b08.py
 spec/s1-b05-b08/native_recording_b06_b08_test.go
 spec/s1-b05-b08/opaque_kinds_test.go

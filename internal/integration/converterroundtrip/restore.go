@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -708,7 +709,11 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 				fields[key] = value
 			}
 		}
-		if raw, ok := source.Body["metadata"].(map[string]any); ok {
+		rawMetadata, err := dumpformat.SourceMetadataObject(source.Body["metadata"])
+		if err != nil {
+			return restorePlan{}, fmt.Errorf("bead %s metadata: %w", source.ID, err)
+		}
+		if raw := rawMetadata; raw != nil {
 			for key, value := range raw {
 				if strings.HasPrefix(key, "beads.") || strings.HasPrefix(key, "plug.restore.") {
 					return restorePlan{}, fmt.Errorf("reserved restore metadata key %q", key)
@@ -811,14 +816,19 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 	}
 
 	for _, source := range archive.Records("edge") {
-		if stringValue(source.Body["target_kind"]) != "depends_on_issue_id" {
-			return restorePlan{}, fmt.Errorf("%w: external relation %s: %w", ErrRestoreUnavailable, source.ID, &dumpformat.UnresolvedDependencyError{
+		var targetKind model.LinkTargetKind
+		switch stringValue(source.Body["target_kind"]) {
+		case "depends_on_issue_id":
+		case "depends_on_external":
+			targetKind = model.LinkTargetExternal
+		default:
+			return restorePlan{}, fmt.Errorf("%w: unsupported typed relation %s: %w", ErrRestoreUnavailable, source.ID, &dumpformat.UnresolvedDependencyError{
 				EdgeID: source.ID, Project: source.Project, Source: stringValue(source.Body["from"]), Target: stringValue(source.Body["to"]), TargetKind: stringValue(source.Body["target_kind"]),
 			})
 		}
 		from, to := stringValue(source.Body["from"]), stringValue(source.Body["to"])
 		doc, ok := docs[from]
-		if _, targetExists := docs[to]; !ok || !targetExists {
+		if _, targetExists := docs[to]; !ok || targetKind != model.LinkTargetExternal && !targetExists {
 			return restorePlan{}, fmt.Errorf("%w: edge %s has no restored endpoint: %w", ErrRestoreUnavailable, source.ID, &dumpformat.UnresolvedDependencyError{
 				EdgeID: source.ID, Project: source.Project, Source: from, Target: to, TargetKind: stringValue(source.Body["target_kind"]),
 			})
@@ -826,9 +836,16 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		kind := stringValue(source.Body["type"])
 		switch kind {
 		case "blocks":
+		case "waits-for", "conditional-blocks":
+			if targetKind != model.LinkTargetExternal && (manifest.EdgeVersion() != dumpformat.EdgeVersionTypedDependencies || mode == planLegacy) {
+				return restorePlan{}, fmt.Errorf("%w: relation type %s requires the versioned import contract", ErrRestoreUnavailable, kind)
+			}
 		case "related":
 			kind = "relates-to"
 		case "parent-child":
+			if targetKind == model.LinkTargetExternal {
+				break
+			}
 			// The source edge points from child to parent. A Plug parent is
 			// core-owned hierarchy, not a second generic link. Keep the source
 			// edge mirror below for exact reverse provenance.
@@ -843,9 +860,15 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 			docs[from] = doc
 			continue
 		default:
-			return restorePlan{}, fmt.Errorf("%w: relation type %s", ErrRestoreUnavailable, kind)
+			if targetKind != model.LinkTargetExternal || kind == "" || len(kind) > 32 || !utf8.ValidString(kind) {
+				return restorePlan{}, fmt.Errorf("%w: relation type %s", ErrRestoreUnavailable, kind)
+			}
 		}
-		doc.Links = append(doc.Links, pipeline.Link{To: model.RefByID(to, model.Natural64(0)), Kind: kind})
+		link, err := importedVersionedSourceLink(source, kind, targetKind, manifest.EdgeVersion())
+		if err != nil {
+			return restorePlan{}, fmt.Errorf("%w: relation %s: %v", ErrRestoreUnavailable, source.ID, err)
+		}
+		doc.Links = append(doc.Links, link)
 		docs[from] = doc
 	}
 
@@ -899,6 +922,9 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 	}
 
 	if err := rebuildDerived(&plan, docs); err != nil {
+		return restorePlan{}, err
+	}
+	if err := retainImportedOntology(&plan, archive, add); err != nil {
 		return restorePlan{}, err
 	}
 	if err := retainArchive(&plan, archive, add); err != nil {
@@ -1086,4 +1112,22 @@ func sourceCreationTime(source dumpformat.Record) (*time.Time, error) {
 	}
 	createdAt = createdAt.UTC()
 	return &createdAt, nil
+}
+
+// importedSourceLink preserves the typed endpoint before any local lookup.
+func importedSourceLink(body map[string]any, kind string, targetKind model.LinkTargetKind) (pipeline.Link, error) {
+	return importedVersionedSourceLink(dumpformat.Record{Body: body}, kind, targetKind, 1)
+}
+
+func importedVersionedSourceLink(source dumpformat.Record, kind string, targetKind model.LinkTargetKind, edgeVersion int) (pipeline.Link, error) {
+	link := pipeline.Link{To: model.RefByID(stringValue(source.Body["to"]), model.Natural64(0)), Kind: kind, TargetKind: targetKind}
+	if err := model.ValidateLinkTarget(targetKind, link.To); err != nil {
+		return pipeline.Link{}, err
+	}
+	metadata, err := dumpformat.SourceEdgeMetadata(edgeVersion, source.ID, kind, source.Body["metadata"])
+	if err != nil {
+		return pipeline.Link{}, err
+	}
+	link.Metadata = metadata
+	return link, nil
 }

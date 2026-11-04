@@ -5,6 +5,24 @@ from pathlib import Path
 
 OUTPUT = Path(sys.argv[3])
 def sha(data): return hashlib.sha256(data).hexdigest()
+def sidecar_inventory(root):
+    entries = []
+    def visit(directory):
+        for entry in sorted(os.scandir(directory), key=lambda item: item.name):
+            if entry.name == "poll.log":
+                continue
+            if entry.is_symlink():
+                raise RuntimeError("native sidecar cannot be a symlink")
+            if entry.is_dir(follow_symlinks=False):
+                visit(Path(entry.path))
+            elif entry.is_file(follow_symlinks=False):
+                data = Path(entry.path).read_bytes()
+                entries.append({"path": str(Path(entry.path).relative_to(root)), "bytes": len(data), "sha256": sha(data)})
+            else:
+                raise RuntimeError("native sidecar is not a regular file or directory")
+    visit(root)
+    return entries
+
 def run(binary, root, commands, args, expected=None, env=None):
     started = time.time_ns()
     result = subprocess.run([str(binary), *args], cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
@@ -211,6 +229,21 @@ def record_b08(binary, root, commands, env):
     call(["dep","add",ids[1],ids[0],"--type","parent-child"])
     call(["dep","add",ids[3],ids[2],"--type","blocks"])
     call(["dep","add",ids[4],ids[3],"--type","blocks"])
+    # Admit the entire seven-role initial image to the existing Plug receiver.
+    # No reconstructed graph, selected-row export or archive rewrite is used.
+    call(["dolt","commit","-m","B08 complete initial role corpus"])
+    initial_inventory=OUTPUT / "initial-inventory.json"
+    call(["--readonly","export","--format","beads-inventory/1","--plug-capture-public","-o",str(initial_inventory)])
+    initial_census=json.loads(initial_inventory.read_text())
+    if (initial_census.get("version")!="beads-inventory/1" or initial_census.get("quiesced") is not True
+            or initial_census.get("working_set_clean") is not True):
+        raise RuntimeError("initial seven-role inventory is not clean and quiesced")
+    initial_before=sidecar_inventory(Path(str(initial_inventory)+".sources"))
+    call(["--readonly","export","--format","plug-dump/1","--plug-inventory",str(initial_inventory),"-o",str(OUTPUT / "initial-readback.tar")])
+    initial_after=sidecar_inventory(Path(str(initial_inventory)+".sources"))
+    (OUTPUT / "initial-sidecar-closure.json").write_text(json.dumps({"before":initial_before,"after":initial_after,"equal":initial_before==initial_after},sort_keys=True,indent=2)+"\n")
+    if initial_before!=initial_after or not (OUTPUT / "initial-readback.tar").stat().st_size:
+        raise RuntimeError("initial native dump missing or original sidecars changed")
     before_ready=ready()
     refusal("open-child",["close",ids[0],"--json"],rb"child|children")
     refusal("live-blocker",["close",ids[3],"--json"],rb"block")

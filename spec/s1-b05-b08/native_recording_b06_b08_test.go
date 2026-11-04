@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/service"
@@ -25,8 +24,9 @@ import (
 var b068Protocol []byte
 
 type b068Capture struct {
-	Card     string `json:"card"`
-	Commands []struct {
+	Directory string `json:"-"`
+	Card      string `json:"card"`
+	Commands  []struct {
 		Argv   []string `json:"argv"`
 		Exit   int      `json:"exitCode"`
 		Stdout []byte   `json:"stdoutBase64"`
@@ -99,6 +99,7 @@ func b068Record(t *testing.T, card, twin, root string) b068Capture {
 		t.Fatal(err)
 	}
 	nativeDecode(t, data, &capture)
+	capture.Directory = output
 	if capture.Card != card || len(capture.Commands) == 0 {
 		t.Fatal("native protocol omitted its own observations")
 	}
@@ -306,73 +307,139 @@ func b068ReplaySettlement(t *testing.T, engine string, capture b068Capture) {
 	var observed struct {
 		BeforeReady, AfterReady, ReopenedReady   []string
 		ForcedStatus, ChildStatus, ForeignHolder string
+		FinalRows                                []struct {
+			ID string `json:"id"`
+		}
 	}
 	nativeDecode(t, capture.Observations, &observed)
-	if observed.ForcedStatus != "closed" || observed.ChildStatus != "open" || observed.ForeignHolder != "another-actor" {
-		t.Fatal("native vector is incomplete")
+	if observed.ForcedStatus != "closed" || observed.ChildStatus != "open" || observed.ForeignHolder != "another-actor" || len(observed.FinalRows) != 7 {
+		t.Fatal("native seven-role vector is incomplete")
 	}
-	f := newB08CloseFixture(t, engine, ontology.DefaultDocument())
-	f.ids = []string{"b08-parent", "b08-child", "b08-blocker", "b08-dependent", "b08-grandchild"}
-	parent := f.createB08(t, "b08-parent", "issue", nil, nil)
-	child := f.createB08(t, "b08-child", "issue", nil, &parent)
-	blocker := f.createB08(t, "b08-blocker", "issue", nil, nil)
-	dependent := f.createB08(t, "b08-dependent", "issue", nil, nil)
-	grandchild := f.createB08(t, "b08-grandchild", "issue", nil, nil)
-	for i, edge := range [][2]model.Ref{{dependent, blocker}, {grandchild, dependent}} {
-		b08Commit(t, f.callB08(t, "bead.link", fmt.Sprintf("native-settle-link-%d", i), map[string]any{"from": edge[0], "to": edge[1], "kind": "blocks"}))
+	p := b068ImportInitial(t, engine, capture)
+	f := p.f
+	ref := func(id string) model.Ref { return model.RefByID(id, model.Natural64(0)) }
+	parent, child := ref("b08-parent"), ref("b08-child")
+	blocker, dependent, foreign, pinned := ref("b08-blocker"), ref("b08-dependent"), ref("b08-foreign"), ref("b08-pinned")
+	// Census the complete imported corpus. No selected-row reconstruction or
+	// discarded foreign/pinned members can satisfy this comparison.
+	state := f.conservation(t)
+	var gotIDs, wantIDs []string
+	for _, row := range state.Rows {
+		if row.Kind == "bead" {
+			gotIDs = append(gotIDs, row.Ref.ID)
+		}
 	}
-	f.refuseB08(t, "bead.close", "native-parent-refusal", b08ForceParams("bead.close", parent, false, ""), "ontology_guard_failed", ontology.NoOpenChildren)
-	f.refuseB08(t, "bead.close", "native-blocker-refusal", b08ForceParams("bead.close", dependent, false, ""), "ontology_guard_failed", ontology.NoOpenBlockers)
-	p := newB08ProductionLifecycle(t, f)
+	for _, row := range observed.FinalRows {
+		wantIDs = append(wantIDs, row.ID)
+	}
+	slices.Sort(gotIDs)
+	slices.Sort(wantIDs)
+	if !reflect.DeepEqual(gotIDs, wantIDs) {
+		t.Fatalf("complete imported role corpus differs: got=%v want=%v", gotIDs, wantIDs)
+	}
+	nativeJSON(t, filepath.Join(p.output, "initial-full-state.json"), state)
 	b068CompareReady(t, p, observed.BeforeReady)
+	for _, control := range []struct {
+		name   string
+		target model.Ref
+		guard  ontology.GuardKind
+	}{
+		{"parent", parent, ontology.NoOpenChildren}, {"blocker", dependent, ontology.NoOpenBlockers},
+	} {
+		before := f.conservation(t)
+		b08RequireRefusal(t, "bead.close", p.call(t, "bead.close", "native-"+control.name+"-refusal", b08ForceParams("bead.close", control.target, false, "")), "ontology_guard_failed", control.guard)
+		b08SameConservation(t, before, f.conservation(t))
+	}
+	// Exercise both additional genuine roles. Missing typed holder/pinned
+	// semantics produces an actual parity failure; source metadata is never
+	// promoted to a grant, and no lease or authorization facts are invented.
+	for _, control := range []struct {
+		name   string
+		target model.Ref
+	}{{"foreign", foreign}, {"pinned", pinned}} {
+		before := f.conservation(t)
+		reply := p.call(t, "bead.close", "native-"+control.name+"-refusal", b08ForceParams("bead.close", control.target, false, ""))
+		after := f.conservation(t)
+		nativeJSON(t, filepath.Join(p.output, control.name+"-refusal-conservation.json"), map[string]any{"reply": reply, "before": before, "after": after})
+		if reply.Error == nil {
+			t.Errorf("actual imported %s close admitted where native refused; typed native authority/role parity is absent", control.name)
+		}
+		if !reflect.DeepEqual(before, after) {
+			t.Errorf("actual imported %s refusal did not conserve complete state", control.name)
+		}
+	}
 	params := b08ForceParams("bead.close", parent, true, "first forced reason")
 	first := b08Commit(t, p.call(t, "bead.close", "native-production-close", params))
 	if f.document(t, parent).Fields["status"] != "done" || f.document(t, child).Fields["status"] != "todo" {
-		t.Fatal("installed force did not match native child conservation")
+		t.Fatal("actual imported force changed child conservation")
 	}
 	after := f.conservation(t)
 	p.reopen(t)
 	b08SameConservation(t, after, f.conservation(t))
 	replay := p.call(t, "bead.close", "native-production-close", params)
 	if replay.Meta["replayed"] != true || !reflect.DeepEqual(b08Commit(t, replay), first) {
-		t.Fatal("native-mapped production receipt changed")
+		t.Fatal("actual imported production receipt changed")
 	}
 	b08SameConservation(t, after, f.conservation(t))
 	b08Commit(t, p.call(t, "bead.close", "native-production-blocker", b08ForceParams("bead.close", blocker, false, "settle blocker")))
 	b068CompareReady(t, p, observed.AfterReady)
-	if !slices.Contains(observed.AfterReady, "b08-dependent") || slices.Contains(observed.BeforeReady, "b08-dependent") || slices.Contains(observed.AfterReady, "b08-grandchild") {
-		t.Fatal("native settlement observation differs")
+	b08Commit(t, p.call(t, "bead.reopen", "native-production-reblock", map[string]any{"id": blocker, "reason": "reblock dependent"}))
+	b068CompareReady(t, p, observed.ReopenedReady)
+	reblocked := f.conservation(t)
+	p.reopen(t)
+	b08SameConservation(t, reblocked, f.conservation(t))
+	b068CompareReady(t, p, observed.ReopenedReady)
+	foreignBefore := f.document(t, foreign)
+	b08Commit(t, p.call(t, "bead.close", "native-production-foreign-force", b08ForceParams("bead.close", foreign, true, "")))
+	b068CompareHolder(t, p, foreign, observed.ForeignHolder, "closed")
+	b08Commit(t, p.call(t, "bead.reopen", "native-production-foreign-reopen", map[string]any{"id": foreign}))
+	b068CompareHolder(t, p, foreign, observed.ForeignHolder, "reopened")
+	if !reflect.DeepEqual(foreignBefore.Metadata, f.document(t, foreign).Metadata) {
+		t.Error("foreign close/reopen changed actual retained source metadata")
 	}
-	p.revoke(t, authz.Transition)
-	before := f.conservation(t)
-	b08RequireRefusal(t, "bead.close", p.call(t, "bead.close", "native-production-close", params), "forbidden", "")
-	b08SameConservation(t, before, f.conservation(t))
+	final := f.conservation(t)
+	nativeJSON(t, filepath.Join(p.output, "final-full-state.json"), final)
+	p.reopen(t)
+	b08SameConservation(t, final, f.conservation(t))
 }
 
-func b068CompareReady(t *testing.T, p *b08ProductionLifecycle, native []string) {
+func b068CompareHolder(t *testing.T, p *b068ImportedRuntime, ref model.Ref, expected, stage string) {
+	t.Helper()
+	reply := p.call(t, "bead.get", "native-holder-"+stage, map[string]any{"id": ref})
+	var actual struct {
+		Bead struct {
+			ID       string `json:"id"`
+			Assignee string `json:"assignee"`
+		} `json:"bead"`
+	}
+	if reply.Error != nil || json.Unmarshal(reply.Result, &actual) != nil || actual.Bead.ID != ref.ID {
+		t.Fatalf("actual imported holder read failed: %+v", reply)
+	}
+	nativeJSON(t, filepath.Join(p.output, "foreign-holder-"+stage+".json"), map[string]any{"nativeHolder": expected, "actualPublicResult": json.RawMessage(reply.Result), "actualStoredDocument": p.f.document(t, ref)})
+	if actual.Bead.Assignee != expected {
+		t.Errorf("actual %s holder parity absent: native=%q Plug=%q; opaque imported assignee is not authenticated holder authority", stage, expected, actual.Bead.Assignee)
+	}
+}
+
+func b068CompareReady(t *testing.T, p *b068ImportedRuntime, native []string) {
 	t.Helper()
 	reply := p.call(t, "bead.ready", "native-production-ready", map[string]any{"limit": 1000})
-	var actual service.BeadPage
-	if reply.Error != nil || json.Unmarshal(reply.Result, &actual) != nil || actual.Next != nil {
-		t.Fatalf("complete guarded production ready failed: %+v", reply)
+	var actual struct {
+		Items      []service.Bead `json:"items"`
+		NextCursor *string        `json:"nextCursor"`
 	}
-	// These are the five graph nodes mirrored by actual public create/link
-	// operations. Native foreign/pinned rows remain intact in the capture and
-	// have separate holder/refusal assertions, not a fabricated Plug claim.
-	mirrored := []string{"b08-parent", "b08-child", "b08-blocker", "b08-dependent", "b08-grandchild"}
-	want, got := []string{}, []string{}
-	for _, id := range native {
-		if slices.Contains(mirrored, id) {
-			want = append(want, id)
-		}
+	if reply.Error != nil || json.Unmarshal(reply.Result, &actual) != nil || actual.NextCursor != nil {
+		t.Fatalf("complete production ready failed: %+v", reply)
 	}
+	want, got := append([]string{}, native...), []string{}
 	for _, row := range actual.Items {
 		got = append(got, row.ID)
 	}
 	slices.Sort(want)
 	slices.Sort(got)
+	nativeJSON(t, filepath.Join(p.output, fmt.Sprintf("ready-comparison-%03d.json", p.calls)), map[string]any{"nativeComplete": want, "plugComplete": got, "equal": reflect.DeepEqual(want, got)})
 	if !reflect.DeepEqual(want, got) {
-		t.Fatalf("native/installed Plug ready graph differs: native=%v Plug=%v", want, got)
+		t.Errorf("native/Plug complete role readiness differs: native=%v Plug=%v", want, got)
 	}
 }
 

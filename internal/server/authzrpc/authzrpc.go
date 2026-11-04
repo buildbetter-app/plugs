@@ -110,6 +110,9 @@ type Config struct {
 	// guarded service exposes x.workflow.invoke and standard-tool routing while
 	// preserving the checker for core beads.
 	Workflow *workflowplugin.Provider
+	// ClaimPolicy is explicit trusted claim-slot installation state. Nil grants
+	// no Transition permission.
+	ClaimPolicy *ClaimPolicyConfig
 	// LifecyclePolicy opts into the native close authority. Ref names a
 	// host-owned lifecycle_policy record in this store; public bead writes
 	// cannot create or replace that record. Missing policy grants deny.
@@ -143,7 +146,7 @@ func newWithClock(ctx context.Context, config Config, now func() time.Time) (*Co
 	}))
 	checker, err := newCheckerWithClock(ctx, config.Store, config.Lease, ontology, AuthorityConfig{
 		Facts: config.Facts, Namespace: config.Namespace, Caller: config.Caller,
-		Hierarchy: config.Hierarchy, LifecyclePolicy: config.LifecyclePolicy,
+		Hierarchy: config.Hierarchy, LifecyclePolicy: config.LifecyclePolicy, ClaimPolicy: config.ClaimPolicy,
 	}, now)
 	if err != nil {
 		return nil, err
