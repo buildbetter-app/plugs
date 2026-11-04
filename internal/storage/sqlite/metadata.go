@@ -154,6 +154,20 @@ func (s *Store) SaveCheckpoint(ctx context.Context, value driver.ActiveLease, ke
 	return s.saveCheckpoint(ctx, value, key, expected, payload, nil)
 }
 
+func (s *Store) SaveCheckpointAtHead(ctx context.Context, lease driver.ActiveLease, key string, expected uint64, payload []byte, head driver.CoreSnapshotExpectation) (driver.Checkpoint, error) {
+	return s.saveCheckpoint(ctx, lease, key, expected, payload, func(c *sql.Conn) error {
+		meta, err := readMeta(ctx, c)
+		if err != nil {
+			return err
+		}
+		// saveCheckpoint owns BEGIN IMMEDIATE and the active lease fence.
+		// No ordinary commit can change this head until checkpoint publication.
+		return head.Check(meta)
+	})
+}
+
+var _ driver.HeadGuardedCheckpointStore = (*Store)(nil)
+
 func (s *Store) SaveCheckpointIfRecord(ctx context.Context, lease driver.ActiveLease, key string, expected uint64, payload []byte, ref driver.Ref, revision model.Revision, incarnation string) (driver.Checkpoint, error) {
 	id, err := recordKey(ref)
 	if err != nil {

@@ -11,19 +11,30 @@ import (
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
-// workflowBlockerResolver is the narrow bridge from the plugin's active
-// checkpoint to the ordinary graph and ontology. It reads one complete core
-// snapshot for each resolution so a workflow ready/claim decision never
-// treats an absent or stale durable endpoint as ready.
+// workflowBlockerResolver lazily binds every durable endpoint and waits-for
+// predicate to one pinned core graph. Publishing workflow state additionally
+// checks that graph's head inside the host checkpoint transaction.
 func (s *Service) workflowBlockerResolver(ctx context.Context, by model.PrincipalRef, meta model.WriteMeta) workflowplugin.BlockerResolver {
-	return workflowplugin.BlockerResolverFunc(func(ctx context.Context, principal model.PrincipalRef, writeMeta model.WriteMeta, target model.Ref, kind string, metadata *model.LinkMetadata) (bool, error) {
+	return &workflowCoreResolver{service: s, principal: by}
+}
+
+type workflowCoreResolver struct {
+	service   *Service
+	principal model.PrincipalRef
+	graph     map[string]storedBead
+	head      driver.CoreSnapshotExpectation
+}
+
+func (r *workflowCoreResolver) CheckpointHead() (driver.CoreSnapshotExpectation, bool) {
+	return r.head, r.graph != nil
+}
+
+func (r *workflowCoreResolver) IsBlocked(ctx context.Context, principal model.PrincipalRef, _ model.WriteMeta, target model.Ref, kind string, metadata *model.LinkMetadata) (bool, error) {
+	if r.graph == nil {
 		if principal.Kind == "" {
-			principal = by
+			principal = r.principal
 		}
-		if writeMeta.Method == "" {
-			writeMeta = meta
-		}
-		reader, err := s.reader(ctx, principal, nil)
+		reader, err := r.service.reader(ctx, principal, nil)
 		if err != nil {
 			return true, err
 		}
@@ -32,27 +43,36 @@ func (s *Service) workflowBlockerResolver(ctx context.Context, by model.Principa
 		if err != nil {
 			return true, err
 		}
-		row, ok := graph[target.ID]
-		if !ok || !target.IsID() || !target.Branch.IsZero() {
-			return true, nil
+		snapshot := reader.Snapshot()
+		meta, err := r.service.store.Meta(ctx)
+		if err != nil {
+			return true, mapped(err)
 		}
-		effective := s.ontology.effective(row.doc.Project)
-		status := state(row.doc).Status
-		satisfied := false
-		switch kind {
-		case "blocks":
-			satisfied = effective.SatisfiesBlocks(status)
-		case "conditional-blocks":
-			satisfied = effective.SatisfiesConditionalBlocks(status)
-		case "waits-for":
-			link := pipeline.Link{To: target, Kind: kind, Metadata: metadata}
-			satisfied = s.ontology.waitsForSatisfied(link, row, graph)
-		default:
-			// Non-blocking auxiliary relations do not affect ready membership.
-			return false, nil
+		if snapshot.Incarnation != meta.Incarnation {
+			return true, mapped(driver.ErrIncarnationChanged{From: snapshot.Incarnation, To: meta.Incarnation})
 		}
-		return !satisfied, nil
-	})
+		r.head = driver.CoreSnapshotExpectation{StoreID: meta.StoreID, Incarnation: snapshot.Incarnation, Head: *snapshot.At}
+		r.graph = graph
+	}
+	row, ok := r.graph[target.ID]
+	if !ok || !target.IsID() || !target.Branch.IsZero() {
+		return true, nil
+	}
+	effective := r.service.ontology.effective(row.doc.Project)
+	status := state(row.doc).Status
+	satisfied := false
+	switch kind {
+	case "blocks":
+		satisfied = effective.SatisfiesBlocks(status)
+	case "conditional-blocks":
+		satisfied = effective.SatisfiesConditionalBlocks(status)
+	case "waits-for":
+		link := pipeline.Link{To: target, Kind: kind, Metadata: metadata}
+		satisfied = r.service.ontology.waitsForSatisfied(link, row, r.graph)
+	default:
+		return false, nil
+	}
+	return !satisfied, nil
 }
 
 // validateWorkflowEndpoints rejects absent or cross-project ordinary endpoints

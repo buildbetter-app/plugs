@@ -121,8 +121,18 @@ close operations consult the same active workflow dependency predicate. Ordinary
 write decisions run after receipt replay and pre-image authorization, and their
 checkpoint generation is fenced in the core transaction. A concurrent mixed-edge
 edit forces a fresh decision, including on receipt-only no-op commits. A closed ordinary
-blocker releases its workflow dependent. Completing a run removes its mixed
-edges and clears other-run workflow parents that referred to deleted items.
+blocker releases its workflow dependent. In the reverse direction, workflow
+claim, claimNext (including terminal null), and close resolve all durable
+endpoints and waits-for children from one pinned core graph. The host checks
+that snapshot's store, incarnation and head atomically with checkpoint CAS and
+the lease fence; a concurrent core change rejects publication with
+`write_conflict`. Drivers without this atomic capability return typed
+`unsupported` before publication. This guarded metadata write creates no core
+version, lease or receipt. Successful receipt replay precedes new blocker reads.
+The stored explicit `blocked` flag is also a blocker for ordinary direct claim,
+close and ordered transaction close after promotion; clearing it permits the
+normal ontology checks. Completing a run removes its mixed edges and clears
+other-run workflow parents that referred to deleted items.
 
 ## Restart, expiry, and fencing
 

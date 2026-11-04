@@ -77,11 +77,35 @@
     ],
     "sql_generation_fence": [
       "TestB26MixedBlockerGenerationFenceSQLite",
-      "TestB26MixedBlockerGenerationFencePostgreSQL"
+      "TestB26MixedBlockerGenerationFencePostgreSQL",
+      "TestB26ReverseDurableBlockerFenceSQLite",
+      "TestB26ReverseDurableBlockerFencePostgreSQL"
     ],
     "terminal_payload_cases": [
       "TestB26PromotionErasesRemovedPayloadsFromLiveAndTerminalReplay",
       "TestB26CompletedDemotionErasesPayloadsAndReplaysIdentity"
+    ],
+    "reverse_fence_vectors": {
+      "methods": [
+        "bead.claim",
+        "bead.claimNext",
+        "bead.close"
+      ],
+      "durable_mutation": "real public reopen after all resolver reads and before actual SQL checkpoint/head CAS",
+      "relations": [
+        "blocks",
+        "waits-for/nil",
+        "waits-for/default",
+        "waits-for/all-children",
+        "waits-for/any-children"
+      ],
+      "boundary": "AUTHORED_NOT_RUN on this successor; rejected CAS cannot publish state/receipt, safe queue restart may record a freshly fenced terminal null"
+    },
+    "explicit_blocker_vectors": [
+      "promoted direct claim refusal",
+      "promoted direct close refusal",
+      "promoted tx.apply close refusal",
+      "clear then success, reassert then exact receipt replay without publication"
     ]
   }
 }

@@ -193,11 +193,15 @@ func (p *Provider) DemoteAtomic(ctx context.Context, by model.PrincipalRef, req 
 		if err != nil {
 			return DemoteResult{}, err
 		}
-		if ok, err := staged.checkReplay(value, by, meta, req, &result); err != nil {
+		// Terminal receipts intentionally omit payload fields. Decode into a
+		// fresh value so JSON omission cannot retain the hydrated live image.
+		var terminal DemoteResult
+		if ok, err := staged.checkReplay(value, by, meta, req, &terminal); err != nil {
 			return DemoteResult{}, err
 		} else if !ok {
 			return DemoteResult{}, fmt.Errorf("completed demotion lost its terminal receipt")
 		}
+		result = terminal
 	}
 	if err := publish(result, state.prepared()); err != nil {
 		return DemoteResult{}, err

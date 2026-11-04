@@ -177,6 +177,9 @@ func state(doc pipeline.Document) ontology.BeadState {
 }
 
 func (o *Ontology) noOpenBlockers(doc pipeline.Document, graph map[string]storedBead) (bool, error) {
+	if blocked, _ := doc.Fields["blocked"].(bool); blocked {
+		return false, nil
+	}
 	terminal := func(target storedBead) bool {
 		effective := o.effective(target.doc.Project)
 		return effective.SatisfiesBlocks(state(target.doc).Status)

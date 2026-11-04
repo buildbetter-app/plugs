@@ -751,20 +751,198 @@ func TestB26MixedBlockerGenerationFencePostgreSQL(t *testing.T) {
 	b26GuardRace(t, openStore(t, freshDatabase(t)))
 }
 
+// b26HeadRaceStore intercepts only the final host checkpoint call. All reads,
+// ordinary writes, fences and failed/successful CAS operations use the real SQL
+// driver. No provider or resolver result is fabricated by the race fixture.
+type b26HeadRaceStore struct {
+	driver.Store
+	driver.PersistentCheckpointStore
+	guard    driver.HeadGuardedCheckpointStore
+	mu       sync.Mutex
+	before   func(driver.CoreSnapshotExpectation)
+	rejected int
+}
+
+func (s *b26HeadRaceStore) SaveCheckpointAtHead(ctx context.Context, lease driver.ActiveLease, name string, expected uint64, payload []byte, head driver.CoreSnapshotExpectation) (driver.Checkpoint, error) {
+	s.mu.Lock()
+	before := s.before
+	s.before = nil
+	s.mu.Unlock()
+	if before != nil {
+		before(head)
+	}
+	result, err := s.guard.SaveCheckpointAtHead(ctx, lease, name, expected, payload, head)
+	if errors.Is(err, driver.ErrCheckpointConflict) {
+		s.mu.Lock()
+		s.rejected++
+		s.mu.Unlock()
+	}
+	return result, err
+}
+
+func b26ReverseGuardRace(t *testing.T, open func(*testing.T) driver.Store) {
+	for _, method := range []string{"bead.claim", "bead.claimNext", "bead.close"} {
+		for _, relation := range []string{"blocks", "waits-for/nil", "waits-for/default", "waits-for/all-children", "waits-for/any-children"} {
+			t.Run(method+"/"+relation, func(t *testing.T) {
+				base := open(t)
+				store := &b26HeadRaceStore{Store: base, PersistentCheckpointStore: base.(driver.PersistentCheckpointStore), guard: base.(driver.HeadGuardedCheckpointStore)}
+				h := b26Host(t, store)
+				item := b26Invoke(t, h, "reverse-race-item", 1)[0].ID
+				blocker := h.create(t, "reverse-race-blocker")
+				reopen := blocker
+				link := map[string]any{"from": ref(item), "to": ref(blocker), "kind": "blocks"}
+				if relation != "blocks" {
+					child := decode[model.Commit](t, b26OK(t, h.call(t, "bead.create", map[string]any{"type": "issue", "parent": ref(blocker), "fields": map[string]any{"title": "reverse-race-child"}}, "reverse-race-child")))
+					reopen = child.Results[0].Ref.ID
+					link["kind"] = "waits-for"
+					if relation != "waits-for/nil" {
+						metadata := map[string]any{}
+						if relation != "waits-for/default" {
+							metadata["gate"] = relation[len("waits-for/"):]
+						}
+						link["metadata"] = metadata
+					}
+				}
+				b26OK(t, h.call(t, "bead.close", map[string]any{"id": ref(reopen)}, "reverse-race-initial-close"))
+				b26OK(t, h.call(t, "bead.link", link, "reverse-race-link"))
+				if !h.ready(t, true)[item] {
+					t.Fatal("fixture's satisfied dependency is not ready")
+				}
+				before := workflowCheckpoint(t, store)
+				originalMeta, err := store.Meta(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				var reopenedMeta driver.Meta
+				store.mu.Lock()
+				store.before = func(head driver.CoreSnapshotExpectation) {
+					if head.StoreID != originalMeta.StoreID || head.Incarnation != originalMeta.Incarnation || head.Head != originalMeta.Head {
+						t.Errorf("publication did not bind the observed complete graph: %+v", head)
+					}
+					// Reopen after every durable resolver read, immediately before
+					// the real driver's atomic core-head/checkpoint CAS boundary.
+					b26OK(t, h.call(t, "bead.reopen", map[string]any{"id": ref(reopen), "reason": "deterministic reverse race"}, "reverse-race-reopen"))
+					reopenedMeta, err = store.Meta(context.Background())
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !reflect.DeepEqual(before, workflowCheckpoint(t, store)) {
+						t.Fatal("ordinary reopen changed workflow namespace")
+					}
+				}
+				store.mu.Unlock()
+				params := map[string]any{"id": ref(item)}
+				if method == "bead.claimNext" {
+					params = map[string]any{"filter": map[string]any{"includeEphemeral": true, "resources": []string{item}}}
+				}
+				result := h.call(t, method, params, "reverse-race-write")
+				store.mu.Lock()
+				rejected, pending := store.rejected, store.before != nil
+				store.mu.Unlock()
+				if rejected != 1 || pending {
+					t.Fatalf("race did not reach/reject the atomic publication: rejected=%d", rejected)
+				}
+				if method == "bead.claimNext" {
+					// The public queue may restart selection after the conflict;
+					// its newly fenced terminal null is safe and has no live claim.
+					if string(b26OK(t, result)) != "null" {
+						t.Fatal("racing queue claimed a stale ready item")
+					}
+					after := workflowCheckpoint(t, store)
+					if !reflect.DeepEqual(before.Items, after.Items) || !reflect.DeepEqual(before.Runs, after.Runs) {
+						t.Fatal("queue retry changed live workflow state")
+					}
+				} else {
+					if result.Error == nil || result.Error.Data.Code != "write_conflict" {
+						t.Fatalf("racing mutation was not refused: %+v", result.Error)
+					}
+					if !reflect.DeepEqual(before, workflowCheckpoint(t, store)) {
+						t.Fatal("failed head fence published a receipt, claim or close")
+					}
+				}
+				afterMeta, err := store.Meta(context.Background())
+				if err != nil || afterMeta != reopenedMeta {
+					t.Fatalf("workflow mutation wrote core history: %v", err)
+				}
+				if h.ready(t, true)[item] || h.get(t, item)["lease"] != nil {
+					t.Fatal("stale blocker observation became a live workflow claim or close")
+				}
+				b26NoVersion(t, store, item)
+				b26OK(t, h.call(t, "bead.close", map[string]any{"id": ref(reopen)}, "reverse-race-satisfy-again"))
+				b26OK(t, h.call(t, method, params, "reverse-race-success"))
+				// Receipt replay precedes a later durable blocker observation.
+				b26OK(t, h.call(t, "bead.reopen", map[string]any{"id": ref(reopen), "reason": "after successful workflow write"}, "reverse-race-reopen-again"))
+				replayState := workflowCheckpoint(t, store)
+				b26OK(t, h.call(t, method, params, "reverse-race-success"))
+				if !reflect.DeepEqual(replayState, workflowCheckpoint(t, store)) {
+					t.Fatal("workflow receipt replay republished checkpoint")
+				}
+			})
+		}
+	}
+}
+
+func TestB26ReverseDurableBlockerFenceSQLite(t *testing.T) {
+	b26ReverseGuardRace(t, func(t *testing.T) driver.Store {
+		store, err := (sqlite.Driver{}).Open(context.Background(), driver.Config{DSN: filepath.Join(t.TempDir(), "reverse-race.db")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return store
+	})
+}
+func TestB26ReverseDurableBlockerFencePostgreSQL(t *testing.T) {
+	b26ReverseGuardRace(t, func(t *testing.T) driver.Store { return openStore(t, freshDatabase(t)) })
+}
+
 func b26ExplicitBlocker(t *testing.T, h *b26HTTP) {
-	item := b26Invoke(t, h, "explicit-blocker", 1)[0].ID
-	b26OK(t, h.call(t, "bead.update", map[string]any{"id": ref(item), "fields": map[string]any{"blocked": true}}, "explicit-blocker-set"))
-	if h.ready(t, true)[item] || h.get(t, item)["bead"].(map[string]any)["blocked"] != true {
-		t.Fatal("explicit workflow blocker was ignored")
-	}
-	b26AssertRefusalUnchanged(t, h, "bead.close", map[string]any{"id": ref(item)}, "explicit-blocker-close", "ontology_guard_failed")
-	target := h.create(t, "explicit-blocker-target")
-	b26OK(t, h.call(t, "x.workflow.run.promote", map[string]any{"item": ref(item), "target": ref(target)}, "explicit-blocker-promote"))
-	if h.ready(t, true)[target] || h.get(t, target)["bead"].(map[string]any)["blocked"] != true {
-		t.Fatal("promotion dropped explicit blocker")
-	}
-	b26OK(t, h.call(t, "bead.update", map[string]any{"id": ref(target), "fields": map[string]any{"blocked": false}}, "explicit-blocker-clear"))
-	if !h.ready(t, true)[target] {
-		t.Fatal("explicit blocker clear did not release promoted work")
+	for _, method := range []string{"bead.claim", "bead.close", "tx.apply"} {
+		t.Run(method, func(t *testing.T) {
+			prefix := "explicit-blocker-" + method
+			item := b26Invoke(t, h, prefix, 1)[0].ID
+			b26OK(t, h.call(t, "bead.update", map[string]any{"id": ref(item), "fields": map[string]any{"blocked": true}}, prefix+"-set"))
+			if h.ready(t, true)[item] || h.get(t, item)["bead"].(map[string]any)["blocked"] != true {
+				t.Fatal("explicit workflow blocker was ignored")
+			}
+			b26AssertRefusalUnchanged(t, h, "bead.close", map[string]any{"id": ref(item)}, prefix+"-workflow-close", "ontology_guard_failed")
+			target := h.create(t, prefix+"-target")
+			b26OK(t, h.call(t, "x.workflow.run.promote", map[string]any{"item": ref(item), "target": ref(target)}, prefix+"-promote"))
+			if h.ready(t, true)[target] || h.get(t, target)["bead"].(map[string]any)["blocked"] != true {
+				t.Fatal("promotion dropped explicit blocker")
+			}
+			params := map[string]any{"id": ref(target)}
+			if method == "tx.apply" {
+				params = map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{{Kind: model.OpClose, Close: &model.CloseOp{Target: ref(target)}}}}}
+			}
+			b26AssertRefusalUnchanged(t, h, method, params, prefix+"-write", "ontology_guard_failed")
+			b26OK(t, h.call(t, "bead.update", map[string]any{"id": ref(target), "fields": map[string]any{"blocked": false}}, prefix+"-clear"))
+			if !h.ready(t, true)[target] {
+				t.Fatal("explicit blocker clear did not release promoted work")
+			}
+			result := b26OK(t, h.call(t, method, params, prefix+"-write"))
+			b26OK(t, h.call(t, "bead.update", map[string]any{"id": ref(target), "fields": map[string]any{"blocked": true}}, prefix+"-set-again"))
+			checkpoint := workflowCheckpoint(t, h.store.(driver.CheckpointStore))
+			meta, err := h.store.Meta(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			replay := b26OK(t, h.call(t, method, params, prefix+"-write"))
+			var want, got map[string]any
+			if err := json.Unmarshal(result, &want); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(replay, &got); err != nil {
+				t.Fatal(err)
+			}
+			delete(want, "_meta")
+			delete(got, "_meta")
+			if !reflect.DeepEqual(want, got) {
+				t.Fatal("explicit blocker changed an existing successful receipt")
+			}
+			after, err := h.store.Meta(context.Background())
+			if err != nil || after != meta || !reflect.DeepEqual(checkpoint, workflowCheckpoint(t, h.store.(driver.CheckpointStore))) {
+				t.Fatal("blocked replay republished graph or checkpoint")
+			}
+		})
 	}
 }

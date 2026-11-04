@@ -84,6 +84,17 @@ func (d *durableStateAccess) Put(ctx context.Context, key string, value any, exp
 	return d.instance.durable.Put(ctx, key, value, expect)
 }
 
+// PutAtHead is a trusted workflow bridge, absent from pluginapi.DurableState.
+// Native calls retain the same live invocation and cancellation checks.
+func (d *durableStateAccess) PutAtHead(ctx context.Context, key string, value any, expect pluginapi.Revision, head driver.CoreSnapshotExpectation) (pluginapi.Revision, error) {
+	ctx, cancel, err := d.context(ctx, true)
+	if err != nil {
+		return "", err
+	}
+	defer cancel()
+	return d.instance.durable.PutAtHead(ctx, key, value, expect, head)
+}
+
 func (d *durableStateAccess) Delete(ctx context.Context, key string, expect pluginapi.Revision) error {
 	ctx, cancel, err := d.context(ctx, true)
 	if err != nil {
@@ -257,12 +268,24 @@ func (d *durableAccess) Put(ctx context.Context, key string, value any, expect p
 	return d.replace(ctx, key, data, expect)
 }
 
+func (d *durableAccess) PutAtHead(ctx context.Context, key string, value any, expect pluginapi.Revision, head driver.CoreSnapshotExpectation) (pluginapi.Revision, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	return d.replaceAtHead(ctx, key, data, expect, &head)
+}
+
 func (d *durableAccess) Delete(ctx context.Context, key string, expect pluginapi.Revision) error {
 	_, err := d.replace(ctx, key, nil, expect)
 	return err
 }
 
 func (d *durableAccess) replace(ctx context.Context, key string, data []byte, expect pluginapi.Revision) (pluginapi.Revision, error) {
+	return d.replaceAtHead(ctx, key, data, expect, nil)
+}
+
+func (d *durableAccess) replaceAtHead(ctx context.Context, key string, data []byte, expect pluginapi.Revision, head *driver.CoreSnapshotExpectation) (pluginapi.Revision, error) {
 	if err := driver.ValidateCheckpointKey(key); err != nil {
 		return "", err
 	}
@@ -288,7 +311,14 @@ func (d *durableAccess) replace(ctx context.Context, key string, data []byte, ex
 	if err != nil {
 		return "", err
 	}
-	if _, err := d.store.SaveCheckpoint(ctx, d.lease, d.key, checkpoint.Generation, payload); err != nil {
+	if head == nil {
+		_, err = d.store.SaveCheckpoint(ctx, d.lease, d.key, checkpoint.Generation, payload)
+	} else if guarded, ok := d.store.(driver.HeadGuardedCheckpointStore); ok {
+		_, err = guarded.SaveCheckpointAtHead(ctx, d.lease, d.key, checkpoint.Generation, payload, *head)
+	} else {
+		err = driver.ErrUnsupported
+	}
+	if err != nil {
 		return "", err
 	}
 	return pluginapi.Natural64(current.Revision), nil

@@ -198,6 +198,13 @@ type BlockerResolver interface {
 	IsBlocked(context.Context, model.PrincipalRef, model.WriteMeta, model.Ref, string, *model.LinkMetadata) (bool, error)
 }
 
+// BlockerPublicationFence describes the core snapshot actually consumed by a
+// trusted resolver. A read-only resolver can omit it; writes fail closed unless
+// every durable observation can join the checkpoint publication transaction.
+type BlockerPublicationFence interface {
+	CheckpointHead() (driver.CoreSnapshotExpectation, bool)
+}
+
 // BlockerResolverFunc adapts a trusted service closure to BlockerResolver.
 type BlockerResolverFunc func(context.Context, model.PrincipalRef, model.WriteMeta, model.Ref, string, *model.LinkMetadata) (bool, error)
 
@@ -624,6 +631,28 @@ func (p *Provider) appendAudit(value *persisted, event string, receipt receiptSt
 
 func (p *Provider) save(ctx context.Context, value persisted, revision pluginapi.Revision) error {
 	_, err := p.state.Put(ctx, stateKey, value, revision)
+	return err
+}
+
+func (p *Provider) saveWithResolver(ctx context.Context, value persisted, revision pluginapi.Revision, resolver BlockerResolver) error {
+	if resolver == nil {
+		return p.save(ctx, value, revision)
+	}
+	fence, ok := resolver.(BlockerPublicationFence)
+	if !ok {
+		return fail("unsupported", "durable blocker observations require an atomic publication fence")
+	}
+	head, observed := fence.CheckpointHead()
+	if !observed {
+		return p.save(ctx, value, revision)
+	}
+	guarded, ok := p.state.(interface {
+		PutAtHead(context.Context, string, any, pluginapi.Revision, driver.CoreSnapshotExpectation) (pluginapi.Revision, error)
+	})
+	if !ok {
+		return fail("unsupported", "durable state cannot atomically fence core blocker observations")
+	}
+	_, err := guarded.PutAtHead(ctx, stateKey, value, revision, head)
 	return err
 }
 
@@ -1975,7 +2004,7 @@ func (p *Provider) claimNext(ctx context.Context, by model.PrincipalRef, project
 			return ItemView{}, false, false, err
 		}
 		p.appendAudit(&value, "workflow.claim_next.empty", receipt)
-		if err := p.mapSaveError(p.save(ctx, value, revision)); err != nil {
+		if err := p.mapSaveError(p.saveWithResolver(ctx, value, revision, resolver)); err != nil {
 			return ItemView{}, false, false, err
 		}
 		return ItemView{}, false, false, nil
@@ -1997,7 +2026,7 @@ func (p *Provider) claimNext(ctx context.Context, by model.PrincipalRef, project
 		return ItemView{}, false, false, err
 	}
 	p.appendAudit(&value, "workflow.claim_next", receipt)
-	if err := p.mapSaveError(p.save(ctx, value, revision)); err != nil {
+	if err := p.mapSaveError(p.saveWithResolver(ctx, value, revision, resolver)); err != nil {
 		return ItemView{}, false, false, err
 	}
 	return item, true, false, nil
@@ -2071,7 +2100,7 @@ func (p *Provider) claimWithResolver(ctx context.Context, by model.PrincipalRef,
 		return ItemView{}, err
 	}
 	p.appendAudit(&value, "workflow.claim", receipt)
-	if err := p.mapSaveError(p.save(ctx, value, revision)); err != nil {
+	if err := p.mapSaveError(p.saveWithResolver(ctx, value, revision, resolver)); err != nil {
 		return ItemView{}, err
 	}
 	return view, nil
@@ -2260,7 +2289,7 @@ func (p *Provider) closeWithResolver(ctx context.Context, by model.PrincipalRef,
 	if complete {
 		p.appendAudit(&value, "workflow.run.completed", receipt)
 	}
-	if err := p.mapSaveError(p.save(ctx, value, revision)); err != nil {
+	if err := p.mapSaveError(p.saveWithResolver(ctx, value, revision, resolver)); err != nil {
 		return model.Commit{}, err
 	}
 	return commit, nil
