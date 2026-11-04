@@ -1,10 +1,10 @@
 package s1b25b28_test
 
 // This is an opt-in runtime recording.  It deliberately consumes the public
-// companion artifact prepared by RunsOn instead of building, downloading, or
+// native artifact prepared by RunsOn instead of building, downloading, or
 // faking a Beads executable in the test. Raw evidence goes to Bazel's undeclared
 // outputs; executable copies and disposable stores stay under /tmp/plug-swarm/work.
-// The remote workflow must collect undeclared outputs before retention is proven.
+// RunsOn retains undeclared outputs; each recording still needs its own receipt.
 
 import (
 	"bytes"
@@ -22,24 +22,32 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/ontology"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/port"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/integration/converterroundtrip"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
+	"github.com/buildbetter-app/plugs/internal/storage/postgres"
 	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
+	"github.com/buildbetter-app/plugs/internal/testclock"
 )
 
 const (
-	publicBeadsCommit = "682ca798dab448803ea9b74f7da3715c21d8c3ae"
-	publicBeadsTree   = "9d026de307ee915953b247cf42758d0c53303574"
+	publicBeadsCommit = "305fec3afac83224f46c54f982959fd99db136fa"
+	publicBeadsTree   = "48e3545b7c5c6a5cdc0119e34dfa379354456a6e"
 	publicChildID     = "pub-root.1"
 )
 
 var requirePublicRecording = flag.Bool("public-recording", false, "Require the independently delivered public Beads recording artifact")
+var publicRecordingID = flag.String("public-recording-id", "", "One independent RunsOn recording: recording1 or recording2")
 
 type recordingProfile struct {
 	Schema   string `json:"schema"`
@@ -50,6 +58,12 @@ type recordingProfile struct {
 	} `json:"exporter"`
 	VersionKey     string `json:"version_key"`
 	GoModuleSHA256 string `json:"go_module_sha256"`
+	Producer       struct {
+		RunID          string `json:"run_id"`
+		ManifestSHA256 string `json:"manifest_sha256"`
+		WorkflowSHA    string `json:"workflow_sha"`
+		WorkflowBranch string `json:"workflow_branch"`
+	} `json:"producer"`
 }
 
 type recordingFixture struct {
@@ -74,10 +88,29 @@ type publicArtifact struct {
 	Size         int64
 }
 
+type publicNativeServer struct {
+	Port     int    `json:"port"`
+	PID      int    `json:"pid"`
+	DataRoot string `json:"data_root"`
+}
+
+// The producer owns this missing adapter. Keeping the target closed makes
+// ordinary consumer controls executable without inventing a port, launching a
+// substitute server or accepting a caller-provided endpoint. A causal source
+// change must compose the independently reviewed producer helper before this
+// manual target can record anything. This is a blocker, never a skip or PASS.
+func requireNativePublicServer(t *testing.T, output string) publicNativeServer {
+	t.Helper()
+	t.Fatal("native producer server helper is not composed: require producer28's reviewed in-process port, actual data root, owned PID and cleanup receipt")
+	return publicNativeServer{}
+}
+
 type commandReceipt struct {
 	Label        string   `json:"label"`
 	Store        string   `json:"store"`
 	Argv         []string `json:"argv"`
+	Directory    string   `json:"directory"`
+	Environment  []string `json:"environment"`
 	StdinSHA256  string   `json:"stdin_sha256,omitempty"`
 	StdoutSHA256 string   `json:"stdout_sha256"`
 	StderrSHA256 string   `json:"stderr_sha256"`
@@ -131,12 +164,15 @@ type publicConfigExpectation struct {
 	References []string                     `json:"config_references"`
 }
 
-// TestPublicPairedRecording is intentionally manual.  The target fails when
+// TestPublicNativeRecording is intentionally manual. The target fails when
 // the trusted bundle environment is absent; a missing artifact is never
 // converted into a skip or a successful fixture result.
-func TestPublicPairedRecording(t *testing.T) {
+func TestPublicNativeRecording(t *testing.T) {
 	if !*requirePublicRecording {
 		t.Fatal("public recording target requires -public-recording")
+	}
+	if *publicRecordingID != "recording1" && *publicRecordingID != "recording2" {
+		t.Fatal("native recording requires a recording1/recording2 identity")
 	}
 	profile := readRecordingProfile(t)
 	fixture := readRecordingFixture(t)
@@ -159,23 +195,19 @@ func TestPublicPairedRecording(t *testing.T) {
 	if hashBytes(manifest) != artifact.ManifestSHA {
 		t.Fatal("public manifest changed after artifact admission")
 	}
-	writeRecordingBytes(t, filepath.Join(root, "public-companion-manifest.json"), manifest)
+	writeRecordingBytes(t, filepath.Join(root, "native-public-manifest.json"), manifest)
 	buildInfo := recordBuildInfo(t, root, artifact, profile)
 	t.Logf("PUBLIC_RECORDING_ARTIFACT build_run=%s binary_sha256=%s manifest_sha256=%s build_info_sha256=%s", artifact.BuildRun, artifact.SHA256, artifact.ManifestSHA, hashBytes(buildInfo))
 
-	run1 := recordPublicRun(t, root, storeRoot, "run1", artifact, fixture)
-	run2 := recordPublicRun(t, root, storeRoot, "run2", artifact, fixture)
-	if run1.SourceProjectionSHA != run2.SourceProjectionSHA || run1.TargetProjectionSHA != run2.TargetProjectionSHA {
-		t.Fatalf("paired public projections differ: run1 source=%s target=%s, run2 source=%s target=%s", run1.SourceProjectionSHA, run1.TargetProjectionSHA, run2.SourceProjectionSHA, run2.TargetProjectionSHA)
-	}
-	if !equalJSON(run1.PlugSourceProjection, run2.PlugSourceProjection) || !equalJSON(run1.PlugTargetProjection, run2.PlugTargetProjection) {
-		t.Fatal("paired Plug replay projections differ")
-	}
-	if run1.SourceArchiveSHA256 == "" || run2.SourceArchiveSHA256 == "" || run1.TargetArchiveSHA256 == "" || run2.TargetArchiveSHA256 == "" {
-		t.Fatal("paired recording did not retain both validated archives")
+	server := requireNativePublicServer(t, root)
+	run := recordPublicRun(t, root, storeRoot, *publicRecordingID, artifact, fixture, server)
+	if run.SourceArchiveSHA256 == "" || run.TargetArchiveSHA256 == "" {
+		t.Fatal("recording did not retain both validated archives")
 	}
 	provenance := map[string]any{
 		"schema":            fixture.Schema,
+		"recording_id":      *publicRecordingID,
+		"pair_status":       "requires-independent-second-run-and-comparison",
 		"source_commit":     publicBeadsCommit,
 		"source_tree":       publicBeadsTree,
 		"build_run":         artifact.BuildRun,
@@ -183,10 +215,10 @@ func TestPublicPairedRecording(t *testing.T) {
 		"manifest_sha256":   artifact.ManifestSHA,
 		"build_info_sha256": hashBytes(buildInfo),
 		"projection_sha256": map[string]string{
-			"source": run1.SourceProjectionSHA,
-			"target": run1.TargetProjectionSHA,
+			"source": run.SourceProjectionSHA,
+			"target": run.TargetProjectionSHA,
 		},
-		"runs": []any{run1, run2},
+		"runs": []any{run},
 	}
 	data, err := json.MarshalIndent(provenance, "", "  ")
 	if err != nil {
@@ -202,9 +234,9 @@ func TestPublicPairedRecording(t *testing.T) {
 func readRecordingProfile(t *testing.T) recordingProfile {
 	t.Helper()
 	var profile recordingProfile
-	data := recordingRunfile(t, "testdata/public-companion-profile.json")
-	if err := json.Unmarshal(data, &profile); err != nil || profile.Schema == "" || profile.Exporter.TargetKey == "" || profile.Exporter.Label == "" || profile.Exporter.Binary == "" || profile.VersionKey == "" || len(profile.GoModuleSHA256) != 64 || !isLowerHex(profile.GoModuleSHA256) {
-		t.Fatalf("public companion profile is invalid: %v", err)
+	data := recordingRunfile(t, "testdata/native-public-profile.json")
+	if err := json.Unmarshal(data, &profile); err != nil || profile.Schema != "plug-public-native/1" || profile.Exporter.TargetKey == "" || profile.Exporter.Label == "" || profile.Exporter.Binary == "" || profile.VersionKey == "" || len(profile.GoModuleSHA256) != 64 || !isLowerHex(profile.GoModuleSHA256) || profile.Producer.RunID == "" || len(profile.Producer.ManifestSHA256) != 64 || !isLowerHex(profile.Producer.ManifestSHA256) || len(profile.Producer.WorkflowSHA) != 40 || !isLowerHex(profile.Producer.WorkflowSHA) || profile.Producer.WorkflowBranch == "" {
+		t.Fatalf("native public profile is invalid: %v", err)
 	}
 	return profile
 }
@@ -212,7 +244,7 @@ func readRecordingProfile(t *testing.T) recordingProfile {
 func readRecordingFixture(t *testing.T) recordingFixture {
 	t.Helper()
 	var fixture recordingFixture
-	data := recordingRunfile(t, "testdata/public-recording-fixture.json")
+	data := recordingRunfile(t, "testdata/native-public-recording-fixture.json")
 	if err := json.Unmarshal(data, &fixture); err != nil {
 		t.Fatalf("public recording fixture is invalid: %v", err)
 	}
@@ -272,6 +304,9 @@ func verifyPublicArtifact(t *testing.T, profile recordingProfile) publicArtifact
 		t.Fatalf("public artifact manifest is unavailable: %v", err)
 	}
 	artifact.ManifestSHA = hashBytes(manifestData)
+	if artifact.ManifestSHA != profile.Producer.ManifestSHA256 || artifact.BuildRun != profile.Producer.RunID {
+		t.Fatal("native public manifest or producer run differs from the reviewed profile")
+	}
 	var manifest struct {
 		Schema    string                                    `json:"schema"`
 		Source    map[string]struct{ Commit, Tree string }  `json:"source"`
@@ -284,6 +319,11 @@ func verifyPublicArtifact(t *testing.T, profile recordingProfile) publicArtifact
 		Build struct {
 			RunID string `json:"run_id"`
 		} `json:"build"`
+		Workflow struct {
+			Ref     string `json:"ref"`
+			SHA     string `json:"sha"`
+			Profile string `json:"profile"`
+		} `json:"workflow"`
 		Resolution map[string]json.RawMessage `json:"resolution"`
 	}
 	if err := json.Unmarshal(manifestData, &manifest); err != nil {
@@ -299,7 +339,7 @@ func verifyPublicArtifact(t *testing.T, profile recordingProfile) publicArtifact
 		t.Fatal("public artifact version probe is missing or malformed")
 	}
 	beadsSource := manifest.Source["beads"]
-	if manifest.Schema != profile.Schema || beadsSource.Commit != publicBeadsCommit || beadsSource.Tree != publicBeadsTree || target.Label != profile.Exporter.Label || target.Binary != profile.Exporter.Binary || binaryInfo.SHA256 != artifact.SHA256 || binaryInfo.Mode != "0o755" || binaryInfo.Size <= 0 || manifest.Build.RunID != artifact.BuildRun || version.Commit != publicBeadsCommit || version.Build != "public-"+publicBeadsCommit {
+	if manifest.Schema != profile.Schema || beadsSource.Commit != publicBeadsCommit || beadsSource.Tree != publicBeadsTree || target.Label != profile.Exporter.Label || target.Binary != profile.Exporter.Binary || binaryInfo.SHA256 != artifact.SHA256 || binaryInfo.Mode != "0o755" || binaryInfo.Size <= 0 || manifest.Build.RunID != artifact.BuildRun || manifest.Workflow.SHA != profile.Producer.WorkflowSHA || manifest.Workflow.Ref != "refs/heads/"+profile.Producer.WorkflowBranch || manifest.Workflow.Profile != profile.Schema || version.Commit != publicBeadsCommit || version.Build != "public-"+publicBeadsCommit {
 		t.Fatalf("public artifact identity does not match profile: schema=%q source=%+v target=%+v binary=%+v build=%+v version=%+v", manifest.Schema, beadsSource, target, binaryInfo, manifest.Build, version)
 	}
 	info, err := os.Lstat(artifact.Binary)
@@ -413,7 +453,7 @@ func checkPublicBuildInfo(data []byte, expectedModuleSHA256, exporterLabel strin
 	return nil
 }
 
-func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact publicArtifact, fixture recordingFixture) publicRun {
+func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact publicArtifact, fixture recordingFixture, server publicNativeServer) publicRun {
 	t.Helper()
 	run := publicRun{Name: name, Root: filepath.Join(root, name)}
 	if err := os.MkdirAll(run.Root, 0o700); err != nil {
@@ -434,9 +474,16 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 			t.Fatal(err)
 		}
 	}
-	pinned := filepath.Join(run.Root, "native-companion-pinned")
+	pinned := filepath.Join(storeRoot, "native-exporter-pinned")
 	copyPinned(t, artifact.Binary, pinned, artifact.SHA256, artifact.Size)
-	env := recordingEnv(source)
+	if server.Port < 1 || server.Port > 65535 || server.PID < 1 || !filepath.IsAbs(server.DataRoot) {
+		t.Fatal("producer helper did not return a complete in-process server binding")
+	}
+	dataRoot, err := filepath.EvalSymlinks(server.DataRoot)
+	if err != nil || dataRoot != server.DataRoot {
+		t.Fatal("producer data root must be the actual physical directory")
+	}
+	env := recordingEnv(server.DataRoot)
 	commandGit := func(label, store string, dir string, argv []string) []byte {
 		return runCommand(t, run.Root, &run.Commands, label, store, dir, env(dir), append([]string{"git"}, argv...), nil)
 	}
@@ -457,7 +504,8 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 	if err := json.Unmarshal(bytes.TrimSpace(version), &identity); err != nil || identity.Commit != publicBeadsCommit {
 		t.Fatalf("pinned version identity changed: %v %s", err, version)
 	}
-	commandReference("source-init", "source", source, []string{"init", "--prefix", "pub", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet"}, nil)
+	commandReference("source-init", "source", source, nativeInitArgs(source, server.Port), nil)
+	recordNativeDatabaseBinding(t, run.Root, "source", source, server)
 	commandReference("source-config", "source", source, []string{"--json", "config", "set", fixture.ConfigKey, "paired-public"}, nil)
 	configOutput := commandConfigList("source-config-list", "source", source)
 	settings, err := readPublicConfigSettings(configOutput)
@@ -482,9 +530,10 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 	commandReference("source-label", "source", source, []string{"--json", "label", "add", "pub-root", "reviewed"}, nil)
 	commandReference("source-comment", "source", source, []string{"--json", "comment", "pub-root", "preserve this public comment"}, nil)
 	commandReference("source-close", "source", source, []string{"--json", "close", "pub-dependency", "--reason", "dependency complete"}, nil)
+	commandReference("source-commit", "source", source, []string{"dolt", "commit"}, nil)
 
 	run.SourceExportPath = filepath.Join(run.Root, "source-export.jsonl")
-	commandReference("source-export", "source", source, []string{"export", "--include-memories", "--output", run.SourceExportPath}, nil)
+	commandReference("source-export", "source", source, []string{"--readonly", "export", "--include-memories", "--output", run.SourceExportPath}, nil)
 	sourceExport, err := os.ReadFile(run.SourceExportPath)
 	if err != nil {
 		t.Fatal(err)
@@ -505,11 +554,13 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 
 	commandGit("target-git-init", "target", target, []string{"-c", "init.defaultBranch=main", "init", "--quiet"})
 	commandReference("target-version", "target", target, []string{"version", "--json"}, nil)
-	commandReference("target-init", "target", target, []string{"init", "--prefix", "pub", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet"}, nil)
+	commandReference("target-init", "target", target, nativeInitArgs(target, server.Port), nil)
+	recordNativeDatabaseBinding(t, run.Root, "target", target, server)
 	commandReference("target-create-keep", "target", target, []string{"--json", "create", "--id", "pub-keep", "--type", "task", "--title", "Keep target row", "--description", "must survive import"}, nil)
 	commandReference("target-import", "target", target, []string{"--json", "import", run.SourceExportPath}, nil)
+	commandReference("target-commit", "target", target, []string{"dolt", "commit"}, nil)
 	run.TargetExportPath = filepath.Join(run.Root, "target-export.jsonl")
-	commandReference("target-export", "target", target, []string{"export", "--include-memories", "--output", run.TargetExportPath}, nil)
+	commandReference("target-export", "target", target, []string{"--readonly", "export", "--include-memories", "--output", run.TargetExportPath}, nil)
 	targetExport, err := os.ReadFile(run.TargetExportPath)
 	if err != nil {
 		t.Fatal(err)
@@ -566,6 +617,29 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 	return run
 }
 
+// The producer owns the server executable, provisioning and lifecycle. The
+// consumer can address only its explicit loopback port and creates fresh,
+// per-workspace database names. No external DSN or producer pin is accepted.
+func nativeDatabaseName(store string) string { return "b27_" + hashBytes([]byte(store))[:24] }
+
+func nativeInitArgs(store string, port int) []string {
+	return []string{"init", "--backend", "dolt", "--server", "--external", "--server-host", "127.0.0.1", "--server-port", strconv.Itoa(port), "--database", nativeDatabaseName(store), "--prefix", "pub", "--quiet", "--skip-hooks", "--skip-agents", "--non-interactive"}
+}
+
+func recordNativeDatabaseBinding(t *testing.T, output, label, store string, server publicNativeServer) {
+	t.Helper()
+	dir := filepath.Join(server.DataRoot, nativeDatabaseName(store))
+	info, err := os.Lstat(dir)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("actual Dolt database directory is missing or is a link: %s: %v", dir, err)
+	}
+	data, err := json.MarshalIndent(map[string]any{"server": server, "database": nativeDatabaseName(store), "database_directory": dir, "mode": info.Mode().String()}, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRecordingBytes(t, filepath.Join(output, label+"-server-binding.json"), append(data, '\n'))
+}
+
 // Replay consumes the exact native producer envelope. It never manufactures an
 // archive or treats a converter refusal as success. Snapshot is an explicit
 // head-state slice under P5c/P44/P22/P46; this does not qualify source history.
@@ -588,16 +662,22 @@ func replayPublicArchive(t *testing.T, output, storeRoot, label string, archive 
 		DerivedDigest: inspection.DerivedSHA256, HistoryMode: driver.RestoreHistoryModeSnapshot,
 	}
 	hashes := map[string]string{}
-	clock := func() time.Time { return time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC) }
-	for _, engine := range []string{"memory", "sqlite"} {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		if !t.Run(label+"-plug-"+engine, func(t *testing.T) {
 			var store driver.Store
 			path := filepath.Join(storeRoot, "plug-"+label+".sqlite")
+			var sqlDriver driver.Driver
+			dsn := path
 			var err error
 			if engine == "memory" {
-				store, err = memory.NewWithOptions(memory.Options{Clock: clock, StoreID: driver.StoreID("s1-b27-public-" + label), Incarnation: "s1-b27-public-" + label})
+				store, err = memory.NewWithOptions(memory.Options{StoreID: driver.StoreID("s1-b27-public-" + label), Incarnation: "s1-b27-public-" + label})
 			} else {
-				store, err = (sqlite.Driver{Clock: clock}).Open(ctx, driver.Config{DSN: path})
+				sqlDriver = sqlite.Driver{}
+				if engine == "postgres" {
+					sqlDriver = postgres.Driver{}
+					dsn = testclock.PostgresDSN(t)
+				}
+				store, err = sqlDriver.Open(ctx, driver.Config{DSN: dsn})
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -635,18 +715,19 @@ func replayPublicArchive(t *testing.T, output, storeRoot, label string, archive 
 				hashes[engine+suffix] = hashBytes(projection)
 			}
 			compare("")
-			if engine == "sqlite" {
+			if sqlDriver != nil {
 				err := store.Close()
 				store = nil
 				if err != nil {
 					t.Fatal(err)
 				}
-				store, err = (sqlite.Driver{Clock: clock}).Open(ctx, driver.Config{DSN: path})
+				store, err = sqlDriver.Open(ctx, driver.Config{DSN: dsn})
 				if err != nil {
 					t.Fatal(err)
 				}
 				compare("-reopen")
 			}
+			recordPublicSubscriber(t, ctx, store, filepath.Join(output, label+"-plug-"+engine+"-subscriber.json"), fixture.IDs[:3])
 		}) {
 			t.Fatalf("%s Plug replay stopped at %s; no later engine qualifies", label, engine)
 		}
@@ -654,10 +735,227 @@ func replayPublicArchive(t *testing.T, output, storeRoot, label string, archive 
 	return hashes
 }
 
+type publicPostObservation struct {
+	Change   port.CommittedChange `json:"change"`
+	Snapshot driver.View          `json:"snapshot"`
+	Rows     []driver.Record      `json:"rows"`
+}
+
+type publicPostRecorder struct {
+	mu           sync.Mutex
+	Observations []publicPostObservation
+}
+
+func (p *publicPostRecorder) After(ctx context.Context, change port.CommittedChange, reader port.SnapshotReader) error {
+	view := reader.Snapshot()
+	if view.At == nil || view.At.String() != change.Revision.String() || len(change.Changes) != 1 {
+		return errors.New("public subscriber did not receive the committed single-row snapshot")
+	}
+	c := change.Changes[0]
+	rows, err := reader.Get(ctx, []model.Ref{c.Resource.Ref})
+	if err != nil {
+		return err
+	}
+	if len(rows) != 1 || !bytes.Equal(rows[0].Body, c.After) {
+		return errors.New("public subscriber readback differs from the committed after image")
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.Observations = append(p.Observations, publicPostObservation{change, view, rows})
+	return nil
+}
+
+// These are real public service writes on the just-imported native rows. The
+// offline import itself makes no subscriber claim. Evidence is flushed before
+// every assertion, including a refused or unexpectedly published operation.
+func recordPublicSubscriber(t *testing.T, ctx context.Context, store driver.Store, path string, ids []string) {
+	t.Helper()
+	if len(ids) != 3 {
+		t.Fatal("public subscriber recording requires exact root, child and dependency IDs")
+	}
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ontologyRows, err := r.DerivedRows(ctx, driver.DerivedOntology, "")
+	closeErr := r.Close()
+	if err != nil || closeErr != nil || len(ontologyRows) != 1 || ontologyRows[0].Key != "builtin" {
+		t.Fatalf("native replay stored ontology: %v / %v", err, closeErr)
+	}
+	doc, err := ontology.Decode(ontologyRows[0].Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, problems := ontology.Compile(doc, nil, nil)
+	if len(problems) != 0 {
+		t.Fatalf("native replay stored ontology compilation: %v", problems)
+	}
+	lease, err := store.Lease(ctx, "s1-native-public-subscriber", driver.LeaseTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := lease.Release(context.Background()); err != nil {
+			t.Error(err)
+		}
+	}()
+	observer := &publicPostRecorder{}
+	rules := service.NewOntology(snapshot.Effective)
+	w := pipeline.New(store, lease, pipeline.WithOntology(rules), pipeline.WithPostSubscribers(pipeline.PostBinding{ID: "s1-native-public-observer", Subscriber: observer}))
+	domain := service.New(store, lease, w, service.WithOntology(rules))
+	actor := model.PrincipalRef{Kind: "user", ID: "public-recorder"}
+	read := func() map[string]pipeline.Document {
+		meta, err := store.Meta(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		refs := []model.Ref{model.RefByID(ids[0], model.Natural64(0)), model.RefByID(ids[1], model.Natural64(0)), model.RefByID(ids[2], model.Natural64(0))}
+		rows, err := r.Get(ctx, refs)
+		if err != nil || len(rows) != len(refs) {
+			t.Fatalf("native public readback: %v", err)
+		}
+		out := map[string]pipeline.Document{}
+		for _, row := range rows {
+			doc, err := pipeline.DecodeDocument(row.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out[doc.ID] = doc
+		}
+		return out
+	}
+	var receipts []json.RawMessage
+	postCount := func() int {
+		observer.mu.Lock()
+		defer observer.mu.Unlock()
+		return len(observer.Observations)
+	}
+	appendReceipt := func(v any) {
+		data, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		receipts = append(receipts, data)
+	}
+	flush := func() {
+		observer.mu.Lock()
+		defer observer.mu.Unlock()
+		data, err := json.MarshalIndent(map[string]any{"schema": "plug-s1-native-public-subscriber/1", "surface": "service.UpdateWithOutcome", "operations": receipts, "posts": observer.Observations}, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeRecordingBytes(t, path, append(data, '\n'))
+	}
+	requests := []service.UpdateRequest{
+		{ID: model.RefByID(ids[0], model.Natural64(0)), Fields: map[string]any{"title": "Public root after scalar update"}},
+		{ID: model.RefByID(ids[1], model.Natural64(0)), Fields: map[string]any{"title": "Public child after scalar update"}},
+		{ID: model.RefByID(ids[0], model.Natural64(0)), Fields: map[string]any{"labels": []string{"native-reviewed"}}},
+	}
+	var last port.WriteOutcome
+	for i, req := range requests {
+		before := read()
+		meta := model.WriteMeta{Project: before[req.ID.ID].Project, IdempotencyKey: hashBytes([]byte(fmt.Sprintf("s1-native-public-%d", i)))}
+		outcome, err := domain.UpdateWithOutcome(ctx, actor, req, meta)
+		after := read()
+		appendReceipt(map[string]any{"method": "bead.update", "request": req, "meta": meta, "outcome": outcome, "error": fmt.Sprint(err), "before": before, "after": after})
+		flush()
+		if err != nil || outcome.Replayed || len(outcome.Commit.Warnings) != 0 || postCount() != i+1 {
+			t.Fatalf("native public update/subscriber: %+v err=%v", outcome, err)
+		}
+		expected := before[req.ID.ID]
+		for field, value := range req.Fields {
+			expected.Fields[field] = value
+			if field == "labels" {
+				expected.Labels = value.([]string)
+			}
+		}
+		before[req.ID.ID] = expected
+		if !equalJSON(before, after) {
+			t.Fatal("native public update changed unpatched fields, metadata, parent, links, comments or close provenance")
+		}
+		replayed, replayErr := domain.UpdateWithOutcome(ctx, actor, req, meta)
+		appendReceipt(map[string]any{"method": "bead.update", "request": req, "meta": meta, "outcome": replayed, "error": fmt.Sprint(replayErr), "after": read()})
+		flush()
+		if replayErr != nil || !replayed.Replayed || !equalJSON(outcome.Commit, replayed.Commit) || postCount() != i+1 || !equalJSON(after, read()) {
+			t.Fatal("native public replay changed state, receipt or subscriber count")
+		}
+		last = outcome
+	}
+	before := read()
+	noopMeta := model.WriteMeta{Project: before[ids[0]].Project, IdempotencyKey: hashBytes([]byte("s1-native-public-equal-labels"))}
+	noop, err := domain.UpdateWithOutcome(ctx, actor, requests[2], noopMeta)
+	appendReceipt(map[string]any{"method": "bead.update", "request": requests[2], "meta": noopMeta, "outcome": noop, "error": fmt.Sprint(err), "after": read()})
+	flush()
+	if err != nil || noop.Replayed || noop.Commit.Revision.String() != last.Commit.Revision.String() || postCount() != 3 || !equalJSON(before, read()) {
+		t.Fatal("native public equal replacement created a revision, subscriber call or changed state")
+	}
+	t.Logf("PUBLIC_SUBSCRIBER_RECORDING path=%s posts=%d scalar=2 replacement=1 replay=3 noop=1", path, postCount())
+}
+
+// This control uses the existing explicitly synthetic archive. It exercises
+// real restore/service/subscriber code on three engines, never a Beads process
+// or a native recording. Its target and raw receipt keep that scope explicit.
+func TestPublicProjectionAuthoredImportPublicSubscriberAcrossDrivers(t *testing.T) {
+	path := filepath.Join(os.Getenv("TEST_SRCDIR"), os.Getenv("TEST_WORKSPACE"), "internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			var store driver.Store
+			var err error
+			switch engine {
+			case "memory":
+				store = memory.New()
+			case "sqlite":
+				store, err = (sqlite.Driver{}).Open(ctx, driver.Config{DSN: filepath.Join(t.TempDir(), "control.sqlite")})
+			case "postgres":
+				store, err = (postgres.Driver{}).Open(ctx, driver.Config{DSN: testclock.PostgresDSN(t)})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := store.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			inspection, err := converterroundtrip.InspectImport(ctx, bytes.NewReader(data))
+			if err != nil {
+				t.Fatal(err)
+			}
+			profile := driver.RestoreImportProfile{
+				Admission:     driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "authored-measurement"}, Authority: "restore-admin", AdmissionDigest: hashBytes([]byte("authored-measurement"))},
+				SourceStoreID: inspection.SourceStoreID, Method: "offline.restore.import", IdempotencyKey: "authored-subscriber-control", ArchiveDigest: inspection.ArchiveSHA256, DerivedDigest: inspection.DerivedSHA256, HistoryMode: driver.RestoreHistoryModeSnapshot,
+			}
+			if _, err := converterroundtrip.RestoreImport(ctx, bytes.NewReader(data), store, profile); err != nil {
+				t.Fatal(err)
+			}
+			output := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")
+			if output == "" {
+				output = t.TempDir()
+			}
+			recordPublicSubscriber(t, ctx, store, filepath.Join(output, "authored-subscriber-control-"+engine+".json"), []string{"demo-7", "demo-7.4", "demo-8"})
+		})
+	}
+}
+
 func validateInventoryAndArchive(t *testing.T, run *publicRun, commandReference func(string, string, string, []string, []byte) []byte, label, store, root string, fixture recordingFixture) {
 	t.Helper()
 	path := filepath.Join(root, label+"-inventory.json")
-	commandReference(label+"-inventory", label, store, []string{"--readonly", "export", "--format", "beads-inventory/1", "--output", path}, nil)
+	commandReference(label+"-inventory", label, store, []string{"--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "-o", path}, nil)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("%s inventory was not published: %v", label, err)
@@ -669,7 +967,7 @@ func validateInventoryAndArchive(t *testing.T, run *publicRun, commandReference 
 		t.Fatalf("%s inventory sidecars were not retained: %v", label, err)
 	}
 	archivePath := filepath.Join(root, label+"-plug-dump.tar")
-	commandReference(label+"-dump", label, store, []string{"--readonly", "export", "--format", "plug-dump/1", "--plug-inventory", path, "--output", archivePath}, nil)
+	commandReference(label+"-dump", label, store, []string{"--readonly", "export", "--format", "plug-dump/1", "--plug-inventory", path, "-o", archivePath}, nil)
 	archive, err := dumpformat.ReadFile(archivePath)
 	if err != nil {
 		t.Fatalf("%s raw plug-dump is invalid: %v", label, err)
@@ -1578,10 +1876,10 @@ func copyPinned(t *testing.T, source, destination, expected string, expectedSize
 	}
 }
 
-func recordingEnv(store string) func(string) []string {
+func recordingEnv(dataRoot string) func(string) []string {
 	return func(dir string) []string {
 		home := filepath.Join(dir, "home")
-		return []string{"PATH=/usr/bin:/bin", "HOME=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config"), "BEADS_DIR=" + filepath.Join(dir, ".beads"), "LANG=C.UTF-8", "TZ=UTC", "CI=true", "DO_NOT_TRACK=1", "BEADS_NO_DAEMON=1", "BEADS_ACTOR=public-recorder", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=Public recorder", "GIT_AUTHOR_EMAIL=public@example.invalid", "GIT_COMMITTER_NAME=Public recorder", "GIT_COMMITTER_EMAIL=public@example.invalid"}
+		return []string{"PATH=/usr/bin:/bin", "HOME=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config"), "BEADS_DIR=" + filepath.Join(dir, ".beads"), "BEADS_DOLT_DATA_DIR=" + dataRoot, "LANG=C.UTF-8", "TZ=UTC", "CI=true", "DO_NOT_TRACK=1", "BEADS_NO_DAEMON=1", "BEADS_ACTOR=public-recorder", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=Public recorder", "GIT_AUTHOR_EMAIL=public@example.invalid", "GIT_COMMITTER_NAME=Public recorder", "GIT_COMMITTER_EMAIL=public@example.invalid"}
 	}
 }
 
@@ -1619,7 +1917,7 @@ func runCommand(t *testing.T, root string, receipts *[]commandReceipt, label, st
 	if writeErr := os.WriteFile(stderrPath, stderr.Bytes(), 0o600); writeErr != nil {
 		t.Fatal(writeErr)
 	}
-	receipt := commandReceipt{Label: label, Store: store, Argv: append([]string(nil), args...), StdoutSHA256: hashBytes(stdout.Bytes()), StderrSHA256: hashBytes(stderr.Bytes()), Exit: exit, StdoutPath: stdoutPath, StderrPath: stderrPath}
+	receipt := commandReceipt{Label: label, Store: store, Argv: append([]string(nil), argv...), Directory: dir, Environment: append([]string(nil), env...), StdoutSHA256: hashBytes(stdout.Bytes()), StderrSHA256: hashBytes(stderr.Bytes()), Exit: exit, StdoutPath: stdoutPath, StderrPath: stderrPath}
 	if stdin != nil {
 		receipt.StdinSHA256 = hashBytes(stdin)
 	}

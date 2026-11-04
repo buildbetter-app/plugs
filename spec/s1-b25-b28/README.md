@@ -32,31 +32,44 @@ target. The retained B25 extension bytes and existing B28 reference bytes stay
 outside this package and are not rewritten.
 
 The manual `public_recording_test` target requires two fresh, independent
-RunsOn recordings to close its executable-side B27 slice. It consumes the verified
-`plug-public-companion/1` bundle through `PLUG_PUBLIC_BUNDLE`, checks the
-sealed Beads commit/tree, executable digest, manifest, and `go version -m`
-build information, then runs real commands in disposable stores. Each run
+RunsOn recordings to close its executable-side B27 slice. Its native profile is
+`plug-public-native/1`, Beads source `305fec3afac83224f46c54f982959fd99db136fa`,
+tree `48e3545b7c5c6a5cdc0119e34dfa379354456a6e`. The separately named
+`native-public-profile.json` and `native-public-recording-fixture.json` preserve
+the old companion runfiles and the PR295/roundtrip consumer contract.
+The target consumes only the trusted prepared artifact through
+`PLUG_PUBLIC_BUNDLE`, binds producer run `41610284344`, the exact manifest digest
+and workflow source, then checks executable bytes and `go version -m` main-package
+identity. The module pin hashes the actual source module path, not `go.mod` bytes.
+Each separately dispatched recording uses `-public-recording-id=recording1` or
+`recording2`; its individual receipt explicitly requires the independent second
+run and semantic comparison before pair qualification. Each run
 records `init`, configuration, `remember`, relational issue creation with
 labels/metadata/parent/dependency/comment/close data, JSONL export, import
 into a non-empty target, and target export. It then captures the actual
-`beads-inventory/1` census and `plug-dump/1` archive for both stores. Raw
-stdout/stderr, argv, stdin/output hashes, inventories, archives, build info,
+`beads-inventory/1 --plug-capture-public` census and `plug-dump/1` archive for
+both stores. Both exports are `--readonly`; explicit `dolt commit` commands
+precede capture so dirty source state cannot be silently declared clean. Raw
+stdout/stderr, full executable/argv, cwd, isolated public environment, stdin/output hashes, inventories, archives, build info,
 and projections go to `TEST_UNDECLARED_OUTPUTS_DIR` (or a disposable directory
 under `/tmp/plug-swarm/work` when the variable is absent). Command receipts
 are flushed after each command, including failures. Executable copies and
 stores stay in separate disposable directories and are removed at test end.
 The test also compares an independent JSONL projection with an independent archive
-projection and requires the two recordings to match. Store identifiers and
+projection. The two independent RunsOn packets must additionally match. Store identifiers and
 timestamps are excluded only by the declared projection fields in
-`testdata/public-recording-fixture.json`. Dependency endpoints/types, the
+`testdata/native-public-recording-fixture.json`. Dependency endpoints/types, the
 parent edge, and comment contents/multiplicity must survive import exactly;
 equal row counts do not establish preservation. The separate manual
 `recorder_validation_test` contains authored corruption controls for those
-assertions and does not invoke Beads or qualify a behavior card.
+assertions and does not invoke Beads or qualify a behavior card. This control
+target is now registered in ordinary `//...` and includes real three-engine
+restore/service/subscriber measurement using an explicitly synthetic archive.
 
 When native capture is available, each actual archive is replayed through the
-real Plug restore and reverse layers in fresh memory and SQLite stores (with
-SQLite reopen). Ordinary JSONL import keeps its original user-memory
+real Plug restore and reverse layers in fresh memory, SQLite and PostgreSQL
+stores, including both SQL reopens. PostgreSQL is an owned disposable loopback
+engine; an external DSN or missing-engine skip is not accepted. Ordinary JSONL import keeps its original user-memory
 expectation. Reverse output must contain those exact user memories plus exactly
 the independently expected `plug.config/<sourceKey>` string memories, with
 matching `ConfigReferences` and `ConfigAsMemories`. No reserved prefix is
@@ -64,6 +77,16 @@ discarded: an unrelated user memory with that prefix still has to survive, and
 a key collision refuses the expectation. The replay is an additional connected
 check; it does not convert a producer refusal or a missing hosted raw-output
 upload into a pass.
+
+After each replay, real public `service.UpdateWithOutcome` requests patch the
+native-origin root and child, then explicitly replace labels. A production
+Writer post subscriber records the committed revision, before/after changes,
+and exact pinned-snapshot readback. Assertions preserve every unpatched field,
+metadata, parent, dependency, comment and close provenance. Request replay and
+equal replacement must not publish another post or change state. These are
+subscribers on the subsequent public writes; offline restore itself makes no
+subscriber claim. The authored measurement control exercises the same observer
+on all three stores without invoking or impersonating a native producer.
 
 The recorder retains two additional genuine `config list --json` readbacks,
 after setup/export for each store, and writes separate config expectation
@@ -83,30 +106,49 @@ or extra config, duplicate archive IDs/memory keys, reserved collisions,
 classification/source/value changes, missing config source with unchanged
 relational output, malformed readbacks, and incorrect reverse report entries.
 Their authored observations and output rows are measurement inputs, not public
-recordings. This oracle correction adds no status/type union, YAML-only
-configuration evidence, producer policy, native delivery or PostgreSQL replay.
+recordings. These controls add no native delivery or genuine public capture.
 
-The current `682ca798` companion has JSONL and `plug-dump/1` export but no
-native `beads-inventory/1` capture. Focused r8/r9 therefore remain RED at
+The historical `682ca798` companion has JSONL and `plug-dump/1` export but no
+native `beads-inventory/1` capture. Historical focused r8/r9 remain RED at
 inventory capture; two complete new recordings and paired archive projections
 have not been produced. A separately delivered, reviewed native producer is
 required before that boundary can execute. No fixture inventory substitutes
-for it. The remote workflow must also collect Bazel's undeclared outputs;
-placing files there does not establish hosted retention when the workflow
-uploads only test logs/XML.
+for it. The existing remote workflow retains undeclared outputs and original
+output archives, but actual new recording bytes and receipts are still required.
+
+Native recording is currently **BLOCKED** at the explicit
+`requireNativePublicServer` refusal. The producer owns the reviewed helper that
+must return an actual owned loopback port, PID, real data root and cleanup
+receipt in process. No endpoint flag, guessed port, substitute server or caller
+environment can open this boundary. Its eventual adapter must pass
+`BEADS_DOLT_DATA_DIR` to every Beads child and verify the actual database directory
+created by real init at `DATA_ROOT/UNIQUE_DB`, without stand-in directories or
+symlinks. Trusted preparer/admission/control adoption, actual RunsOn preparation,
+the producer helper and its real lifecycle proof, and the B01 pair must precede
+these physical recordings. This source is a consumer checkpoint, not a native
+admission or executable recording receipt.
 
 Run it only on RunsOn after preparing the public bundle descriptor:
 
 ```sh
 export PATH=/tmp/plug-swarm/bin/worker-safe:$PATH
-/tmp/plug-swarm/bin/remote-bazel "$PWD" HEAD s1-b25-b28-public-recording -- \
-  test --test_env=PLUG_PUBLIC_BUNDLE=RUN_ID:ARTIFACT_ID:MANIFEST_SHA256 \
-  //spec/s1-b25-b28:public_recording_test --test_output=all
+/tmp/plug-swarm/bin/remote-bazel "$PWD" SEALED_CONSUMER_SHA s1-b25-b27-native-recording1 -- \
+  test //spec/s1-b25-b28:public_recording_test \
+  --test_env=PLUG_PUBLIC_BUNDLE=41610284344:13218208758:4aa497bb1dfb70bf85371daa9e388b5b0ae84130f83f45a49816559d4698c0db \
+  --test_arg=-public-recording-id=recording1 \
+  --cache_test_results=no --flaky_test_attempts=1 --test_env=GO_TEST_WRAP_TESTV=1 \
+  --test_output=all --test_timeout=900,900,900,9000 --jobs=2 --local_resources=memory=8192
 ```
+
+The second independent RunsOn invocation uses the same sealed source and flags,
+label `s1-b25-b27-native-recording2`, and `-public-recording-id=recording2`.
+Both invocations remain planned and must fail until the producer adapter is
+causally composed. Individual successful runs would still require preserved
+full raw/XML/undeclared outputs and independent cross-run comparison.
 
 The recorder is evidence for the pinned public head-state/configuration and
 relational import/export boundary. It does not turn the explicit B26
-unqualified boundary, Postgres replay, production operation, or release into
+unqualified boundary, production operation, or release into
 a passing claim.
 
 B26 is a typed unqualified boundary, not a successful substitute. No admitted
