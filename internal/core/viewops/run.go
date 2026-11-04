@@ -2,9 +2,12 @@ package viewops
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -153,10 +156,19 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 	if err != nil {
 		return Result{}, err
 	}
+	if err := validateStale(req.Stale); err != nil {
+		return Result{}, err
+	}
+	if req.Stale != nil && s.cfg.StaleOntologySource == nil && s.cfg.StaleDefaultOntology == nil {
+		return Result{}, failure("invalid_params", "stale selection requires an ontology source")
+	}
 	if req.CountOnly && (req.Cursor != nil || len(definition.GroupBy) != 0) {
 		return Result{}, failure("invalid_params", "countOnly does not accept a cursor or grouping")
 	}
 	if isEpicProgress(definition) {
+		if req.Stale != nil {
+			return Result{}, failure("invalid_params", "stale selection is unavailable for epic progress")
+		}
 		return s.runEpicProgress(ctx, by, req, definition)
 	}
 	filter := *definition.Filter
@@ -173,7 +185,7 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 			project = term.value
 		}
 	}
-	definitionDigest, err := s.effectiveDigest(definition, project, req.ViewID)
+	definitionDigest, err := s.effectiveDigest(definition, project, req.ViewID, req.Stale)
 	if err != nil {
 		return Result{}, err
 	}
@@ -187,55 +199,107 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 	if err != nil {
 		return Result{}, err
 	}
-	if err := s.validateCursor(req.Cursor, by, req.Agent, req.ViewID, definitionDigest, asOf.Incarnation); err != nil {
+	if err := s.validateCursor(req.Cursor, by, req.Agent, req.ViewID, definitionDigest, asOf.Incarnation, req.Stale); err != nil {
 		return Result{}, err
 	}
 	if req.AsOf != nil && req.Cursor != nil && (!sameRevision(req.AsOf.Revision, req.Cursor.Revision) || (req.AsOf.Incarnation != "" && req.AsOf.Incarnation != req.Cursor.Incarnation)) {
 		return Result{}, failure("cursor_invalid", "cursor does not match asOf")
 	}
+	cutoff, err := s.staleCutoff(req.Stale, req.Cursor)
+	if err != nil {
+		return Result{}, err
+	}
 	rows, err := scan(ctx, reader)
 	if err != nil {
 		return Result{}, err
 	}
-	// Cache the current authorization result for candidates and blockers. This
-	// still evaluates on every page request, so a revoked grant cannot reuse an
-	// earlier page's decision.
+	// Cache current authorization on every request. For stale reads, the
+	// query/order stream is the paging coordinate: authorization is checked
+	// before any age or protected-ontology read, then only authorized rows are
+	// admitted to the stale predicate. This keeps denied rows opaque while
+	// preventing a changed allowed set from shifting a signed cursor offset.
 	authorized := make(map[string]bool, len(rows))
-	if req.CountOnly && s.cfg.AuthorizeReadBatch != nil {
-		refs := make([]model.ResourceRef, 0, len(rows))
+	var queryOrder []stored
+	var candidates []stored
+	if cutoff != nil {
 		for _, row := range rows {
 			if matches(row, filter, project, terms) {
+				queryOrder = append(queryOrder, row)
+			}
+		}
+		sortStored(queryOrder, definition.Sort)
+		if req.CountOnly && s.cfg.AuthorizeReadBatch != nil {
+			refs := make([]model.ResourceRef, 0, len(queryOrder))
+			for _, row := range queryOrder {
 				refs = append(refs, model.ResourceRef{Kind: "bead", Ref: row.record.Ref})
 			}
+			if len(refs) != 0 {
+				decisions, err := s.cfg.AuthorizeReadBatch(ctx, by, refs)
+				if err != nil {
+					return Result{}, mapped(err)
+				}
+				if len(decisions) != len(refs) {
+					return Result{}, failure("authz_unavailable", "batch read authorization returned incomplete decisions")
+				}
+				for i, ref := range refs {
+					authorized[ref.Ref.ID] = decisions[i]
+				}
+			}
+		} else {
+			for _, row := range queryOrder {
+				ok, err := s.authorize(ctx, by, row)
+				if err != nil {
+					return Result{}, mapped(err)
+				}
+				authorized[row.doc.ID] = ok
+			}
 		}
-		if len(refs) != 0 {
-			decisions, err := s.cfg.AuthorizeReadBatch(ctx, by, refs)
-			if err != nil {
-				return Result{}, mapped(err)
-			}
-			if len(decisions) != len(refs) {
-				return Result{}, failure("authz_unavailable", "batch read authorization returned incomplete decisions")
-			}
-			for i, ref := range refs {
-				authorized[ref.Ref.ID] = decisions[i]
-			}
-		}
-	} else {
-		for _, row := range rows {
-			if !matches(row, filter, project, terms) {
+		for _, row := range queryOrder {
+			if !authorized[row.doc.ID] {
 				continue
 			}
-			ok, err := s.authorize(ctx, by, row)
+			stale, err := s.staleCandidates(ctx, reader, []stored{row}, *req.Stale, *cutoff)
 			if err != nil {
-				return Result{}, mapped(err)
+				return Result{}, err
 			}
-			authorized[row.doc.ID] = ok
+			candidates = append(candidates, stale...)
 		}
-	}
-	candidates := make([]stored, 0, len(rows))
-	for _, row := range rows {
-		if matches(row, filter, project, terms) && authorized[row.doc.ID] {
-			candidates = append(candidates, row)
+	} else {
+		if req.CountOnly && s.cfg.AuthorizeReadBatch != nil {
+			refs := make([]model.ResourceRef, 0, len(rows))
+			for _, row := range rows {
+				if matches(row, filter, project, terms) {
+					refs = append(refs, model.ResourceRef{Kind: "bead", Ref: row.record.Ref})
+				}
+			}
+			if len(refs) != 0 {
+				decisions, err := s.cfg.AuthorizeReadBatch(ctx, by, refs)
+				if err != nil {
+					return Result{}, mapped(err)
+				}
+				if len(decisions) != len(refs) {
+					return Result{}, failure("authz_unavailable", "batch read authorization returned incomplete decisions")
+				}
+				for i, ref := range refs {
+					authorized[ref.Ref.ID] = decisions[i]
+				}
+			}
+		} else {
+			for _, row := range rows {
+				if !matches(row, filter, project, terms) {
+					continue
+				}
+				ok, err := s.authorize(ctx, by, row)
+				if err != nil {
+					return Result{}, mapped(err)
+				}
+				authorized[row.doc.ID] = ok
+			}
+		}
+		for _, row := range rows {
+			if matches(row, filter, project, terms) && authorized[row.doc.ID] {
+				candidates = append(candidates, row)
+			}
 		}
 	}
 	if !req.CountOnly {
@@ -303,32 +367,58 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 	if err != nil {
 		return Result{}, err
 	}
-	start, err := cursorIndex(req.Cursor, len(candidates))
-	if err != nil {
-		return Result{}, err
+	// Every stale page, including grouped output, uses the same visible keyset
+	// coordinate. Group membership is rendered after the page scan; it must not
+	// fall back to an authorized-subset offset when an earlier row is revoked.
+	stalePaging := cutoff != nil
+	start, end := 0, 0
+	pageRows := candidates
+	remainingRows := candidates
+	hasNext := false
+	var staleResumeDigest string
+	if stalePaging {
+		start, err = staleResumeIndex(queryOrder, req.Cursor)
+		if err != nil {
+			return Result{}, err
+		}
+		pageRows, end, hasNext, staleResumeDigest, remainingRows = stalePage(queryOrder, candidates, authorized, start, budget)
+	} else {
+		start, err = cursorIndex(req.Cursor, len(candidates))
+		if err != nil {
+			return Result{}, err
+		}
+		end = start + budget
+		if end < start || end > len(candidates) {
+			end = len(candidates)
+		}
+		pageRows = candidates[start:end]
+		remainingRows = candidates[end:]
+		hasNext = end < len(candidates)
 	}
-	end := start + budget
-	if end < start || end > len(candidates) {
-		end = len(candidates)
-	}
-	result := Result{Items: make([]Bead, 0, end-start), AsOf: asOf, Projection: projection}
-	for _, row := range candidates[start:end] {
+	result := Result{Items: make([]Bead, 0, len(pageRows)), AsOf: asOf, Projection: projection}
+	for _, row := range pageRows {
 		item, err := s.item(ctx, row, definition.Fields, rows, authorized, pending)
 		if err != nil {
 			return Result{}, err
 		}
 		result.Items = append(result.Items, item)
 	}
-	if end < len(candidates) {
-		result.NextCursor = s.nextCursor(by, req.Agent, req.ViewID, definitionDigest, asOf, uint64(end))
+	if hasNext {
+		index := uint64(end)
+		resume := ""
+		if stalePaging {
+			index = 0
+			resume = staleResumeDigest
+		}
+		result.NextCursor = s.nextCursor(by, req.Agent, req.ViewID, definitionDigest, asOf, index, cutoff, resume)
 	}
 	if len(definition.GroupBy) != 0 {
-		result.Groups, err = s.grouped(ctx, candidates, start, end, definition.Fields, rows, authorized, pending)
+		result.Groups, err = s.grouped(ctx, candidates, pageRows, remainingRows, definition.Fields, rows, authorized, pending)
 		if err != nil {
 			return Result{}, err
 		}
 		result.Items = []Bead{}
-		if result.NextCursor != nil {
+		if result.NextCursor != nil && !stalePaging {
 			for i := range result.Groups {
 				if result.Groups[i].Elided != nil {
 					result.Groups[i].Elided.ContinueIndex = result.NextCursor.Index
@@ -390,9 +480,72 @@ func cursorIndex(cursor *Cursor, length int) (int, error) {
 	return int(cursor.Index), nil
 }
 
-func (s *Service) nextCursor(by model.PrincipalRef, agent, viewID, definitionDigest string, asOf AsOf, index uint64) *Cursor {
+// The signed digest identifies an emitted row in the pinned query/order stream.
+// Its sort position is recovered from that stream on every page, so a later
+// authority change cannot shift an unread row or expose a denied-row index.
+func staleResumeIndex(queryOrder []stored, cursor *Cursor) (int, error) {
+	if cursor == nil {
+		return 0, nil
+	}
+	position := -1
+	for i, row := range queryOrder {
+		if staleResumeDigest(row.doc.ID) == cursor.StaleResumeDigest {
+			if position >= 0 {
+				return 0, failure("cursor_invalid", "age-query cursor resume row is ambiguous")
+			}
+			position = i
+		}
+	}
+	if position < 0 {
+		return 0, failure("cursor_invalid", "age-query cursor resume row is outside the view snapshot")
+	}
+	return position + 1, nil
+}
+
+func staleResumeDigest(id string) string {
+	sum := sha256.Sum256([]byte(id))
+	return hex.EncodeToString(sum[:])
+}
+
+// stalePage consumes the pinned stream once while emitting only rows that
+// passed this request's fresh authorization and stale predicate.
+func stalePage(queryOrder, candidates []stored, authorized map[string]bool, start, budget int) ([]stored, int, bool, string, []stored) {
+	eligible := make(map[string]struct{}, len(candidates))
+	for _, row := range candidates {
+		eligible[row.doc.ID] = struct{}{}
+	}
+	page := make([]stored, 0, budget)
+	position := start
+	for position < len(queryOrder) && len(page) < budget {
+		row := queryOrder[position]
+		position++
+		if !authorized[row.doc.ID] {
+			continue
+		}
+		if _, ok := eligible[row.doc.ID]; !ok {
+			continue
+		}
+		page = append(page, row)
+	}
+	remaining := make([]stored, 0)
+	for i := position; i < len(queryOrder); i++ {
+		row := queryOrder[i]
+		if authorized[row.doc.ID] {
+			if _, ok := eligible[row.doc.ID]; ok {
+				remaining = append(remaining, row)
+			}
+		}
+	}
+	var resume string
+	if len(page) != 0 {
+		resume = staleResumeDigest(page[len(page)-1].doc.ID)
+	}
+	return page, position, len(remaining) != 0, resume, remaining
+}
+
+func (s *Service) nextCursor(by model.PrincipalRef, agent, viewID, definitionDigest string, asOf AsOf, index uint64, cutoff *time.Time, staleResumeDigest string) *Cursor {
 	principal, _ := principalDigest(by, agent)
-	return &Cursor{Version: 1, Method: "view.run", PrincipalDigest: principal, DefinitionDigest: definitionDigest, ViewID: viewID, OntologyRevision: s.cfg.OntologyRevision, Incarnation: asOf.Incarnation, Revision: asOf.Revision, Index: index}
+	return &Cursor{Version: 1, Method: "view.run", PrincipalDigest: principal, DefinitionDigest: definitionDigest, ViewID: viewID, OntologyRevision: s.cfg.OntologyRevision, Incarnation: asOf.Incarnation, Revision: asOf.Revision, Index: index, StaleResumeDigest: staleResumeDigest, StaleCutoff: cutoff}
 }
 
 func (s *Service) typeSummaryResult(ctx context.Context, candidates, rows []stored, authorized map[string]bool, pending map[string]ReadinessState, definition Definition, asOf AsOf) (Result, error) {
@@ -429,18 +582,18 @@ func (s *Service) typeSummaryResult(ctx context.Context, candidates, rows []stor
 	return result, nil
 }
 
-func (s *Service) grouped(ctx context.Context, candidates []stored, start, end int, fields []string, rows []stored, authorized map[string]bool, pending map[string]ReadinessState) ([]Group, error) {
+func (s *Service) grouped(ctx context.Context, candidates, pageRows, remainingRows []stored, fields []string, rows []stored, authorized map[string]bool, pending map[string]ReadinessState) ([]Group, error) {
 	groups := map[string][]stored{}
 	for _, row := range candidates {
 		driver.ReportReadWork(ctx, driver.ReadAggregateInputs, 1)
 		groups[row.doc.Type] = append(groups[row.doc.Type], row)
 	}
 	pageGroups := map[string][]stored{}
-	for _, row := range candidates[start:end] {
+	for _, row := range pageRows {
 		pageGroups[row.doc.Type] = append(pageGroups[row.doc.Type], row)
 	}
 	remaining := map[string]int{}
-	for _, row := range candidates[end:] {
+	for _, row := range remainingRows {
 		remaining[row.doc.Type]++
 	}
 	keys := make([]string, 0, len(groups))
@@ -476,7 +629,7 @@ func (s *Service) item(ctx context.Context, row stored, fields []string, rows []
 		fieldsMap, metadata = projectMaps(fields, fieldsMap, metadata)
 	}
 	status, _ := row.doc.Fields["status"].(string)
-	item := Bead{ID: row.doc.ID, Type: row.doc.Type, Project: row.doc.Project, Revision: row.record.Revision, Status: status, Fields: fieldsMap, Metadata: metadata}
+	item := Bead{ID: row.doc.ID, Type: row.doc.Type, Project: row.doc.Project, Revision: row.record.Revision, Status: status, Fields: fieldsMap, Metadata: metadata, Labels: append([]string(nil), row.doc.Labels...)}
 	if state, ok := pending[row.doc.ID]; ok {
 		item.ReadinessPending = state.Pending
 	}
@@ -486,6 +639,9 @@ func (s *Service) item(ctx context.Context, row stored, fields []string, rows []
 		}
 		if !hasField(fields, "status") {
 			item.Status = ""
+		}
+		if !hasField(fields, "labels") {
+			item.Labels = nil
 		}
 	}
 	if row.doc.Parent != nil && (fields == nil || hasField(fields, "parent")) {
