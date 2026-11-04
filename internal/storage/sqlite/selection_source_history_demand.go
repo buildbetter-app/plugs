@@ -126,7 +126,7 @@ func (t *transaction) publishDemandSelectionSourceHistory(ctx context.Context, c
 		if t.reader == nil {
 			return fmt.Errorf("%w: SQLite demand history requires the pinned transaction reader", driver.ErrUnsupported)
 		}
-		observation, loadErr := loadDemandedSelectionSource(ctx, query, id, t.at)
+		observation, loadErr := loadDemandedSelectionSource(ctx, query, demandedSources[id].Key, t.at)
 		if loadErr != nil {
 			return loadErr
 		}
@@ -150,87 +150,75 @@ func (t *transaction) publishDemandSelectionSourceHistory(ctx context.Context, c
 		observations[id] = observation
 	}
 
-	closeKeys := make([]string, 0, len(changed))
+	publicationKeys := make(map[string]struct{}, len(changed)+len(observations))
 	for id := range changed {
-		closeKeys = append(closeKeys, id)
+		publicationKeys[id] = struct{}{}
 	}
-	sort.Strings(closeKeys)
-	insertKeys := make([]string, 0, len(observations))
 	for id := range observations {
 		if _, skip := reused[id]; !skip {
-			insertKeys = append(insertKeys, id)
+			publicationKeys[id] = struct{}{}
 		}
 	}
-	sort.Strings(insertKeys)
+	keys := make([]string, 0, len(publicationKeys))
+	for id := range publicationKeys {
+		keys = append(keys, id)
+	}
+	sort.Strings(keys)
 
-	// Close changed source intervals first, then seed only the demanded image.
-	// Each statement is bounded by the historical 128-row cap and all writes
-	// share Commit's fenced SQL transaction.
+	// Keep the existing close/insert order within each bounded source batch.
+	// In particular an eager record insert error must precede the next close
+	// preparation. Sparse arms can have fewer than 128 rows; cache by arity.
+	// All writes still share Commit's fenced SQL transaction.
 	var closeStatement, insertStatement keyPublicationStatement
-	var closeOpened, insertOpened []keyPublicationStatement
+	closeStatements := make(map[int]keyPublicationStatement)
+	insertStatements := make(map[int]keyPublicationStatement)
+	var opened []keyPublicationStatement
 	defer func() {
-		for _, statement := range closeOpened {
-			closeKeyPublicationStatement(statement, &err)
-		}
-		for _, statement := range insertOpened {
-			closeKeyPublicationStatement(statement, &err)
+		for i := len(opened) - 1; i >= 0; i-- {
+			closeKeyPublicationStatement(opened[i], &err)
 		}
 	}()
-	for start := 0; start < len(closeKeys); start += selectionSourceHistoryBatch {
-		end := min(start+selectionSourceHistoryBatch, len(closeKeys))
-		batch := closeKeys[start:end]
-		args := make([]any, 0, 3+len(batch))
-		args = append(args, next, incarnation, revKey(0))
+	for start := 0; start < len(keys); start += selectionSourceHistoryBatch {
+		end := min(start+selectionSourceHistoryBatch, len(keys))
+		batch := keys[start:end]
+		closeArgs := []any{next, incarnation, revKey(0)}
+		insertArgs := make([]any, 0, 7*len(batch))
 		for _, id := range batch {
-			args = append(args, id)
+			if _, close := changed[id]; close {
+				closeArgs = append(closeArgs, id)
+			}
+			if observation, insert := observations[id]; insert {
+				insertArgs = append(insertArgs, incarnation, revKey(0), id, next,
+					observation.revision, observation.present, observation.digest)
+			}
 		}
-		if closeStatement == nil || len(batch) != selectionSourceHistoryBatch {
-			closeStatement, err = prepareKeyPublication(ctx, c, selectionSourceHistoryCloseSQL(len(batch)))
-			if err != nil {
+		if count := len(closeArgs) - 3; count != 0 {
+			closeStatement = closeStatements[count]
+			if closeStatement == nil {
+				closeStatement, err = prepareKeyPublication(ctx, c, selectionSourceHistoryCloseSQL(count))
+				if err != nil {
+					return err
+				}
+				opened = append(opened, closeStatement)
+				closeStatements[count] = closeStatement
+			}
+			if _, err = closeStatement.ExecContext(ctx, closeArgs...); err != nil {
 				return err
 			}
-			closeOpened = append(closeOpened, closeStatement)
-			if len(batch) != selectionSourceHistoryBatch {
-				closeStatement = nil
+		}
+		if count := len(insertArgs) / 7; count != 0 {
+			insertStatement = insertStatements[count]
+			if insertStatement == nil {
+				insertStatement, err = prepareKeyPublication(ctx, c, selectionSourceHistoryInsertSQL(count))
+				if err != nil {
+					return err
+				}
+				opened = append(opened, insertStatement)
+				insertStatements[count] = insertStatement
 			}
-		}
-		statement := closeStatement
-		if statement == nil {
-			statement = closeOpened[len(closeOpened)-1]
-		}
-		if _, err = statement.ExecContext(ctx, args...); err != nil {
-			return err
-		}
-	}
-	for start := 0; start < len(insertKeys); start += selectionSourceHistoryBatch {
-		end := min(start+selectionSourceHistoryBatch, len(insertKeys))
-		batch := insertKeys[start:end]
-		args := make([]any, 0, 7*len(batch))
-		for _, id := range batch {
-			observation := observations[id]
-			sourceRevision := observation.revision
-			if sourceRevision == "" {
-				sourceRevision = next
-			}
-			args = append(args, incarnation, revKey(0), id, next, sourceRevision,
-				observation.present, observation.digest)
-		}
-		if insertStatement == nil || len(batch) != selectionSourceHistoryBatch {
-			insertStatement, err = prepareKeyPublication(ctx, c, selectionSourceHistoryInsertSQL(len(batch)))
-			if err != nil {
+			if _, err = insertStatement.ExecContext(ctx, insertArgs...); err != nil {
 				return err
 			}
-			insertOpened = append(insertOpened, insertStatement)
-			if len(batch) != selectionSourceHistoryBatch {
-				insertStatement = nil
-			}
-		}
-		statement := insertStatement
-		if statement == nil {
-			statement = insertOpened[len(insertOpened)-1]
-		}
-		if _, err = statement.ExecContext(ctx, args...); err != nil {
-			return err
 		}
 	}
 	return nil
@@ -240,11 +228,12 @@ type selectionSourceHistoryQueryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
-func loadDemandedSelectionSource(ctx context.Context, c selectionSourceHistoryQueryer, id string, at uint64) (selectionSourceObservation, error) {
+func loadDemandedSelectionSource(ctx context.Context, c selectionSourceHistoryQueryer, key driver.LockKey, at uint64) (selectionSourceObservation, error) {
+	id := keyID(key)
 	observation := selectionSourceObservation{key: id}
-	var rowRevision string
+	var rowKey, rowRevision string
 	var raw []byte
-	err := c.QueryRowContext(ctx, `SELECT rev,data FROM key_history WHERE key=? AND rev<=? ORDER BY rev DESC LIMIT 1`, id, revKey(at)).Scan(&rowRevision, &raw)
+	err := c.QueryRowContext(ctx, `SELECT key,rev,data FROM key_history WHERE key=? AND rev<=? ORDER BY rev DESC LIMIT 1`, id, revKey(at)).Scan(&rowKey, &rowRevision, &raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		// No key_history row is the exact never-present observation. This is a
 		// proof of absence at the pinned token, not a substitution from records
@@ -262,7 +251,19 @@ func loadDemandedSelectionSource(ctx context.Context, c selectionSourceHistoryQu
 	if err := json.Unmarshal(raw, &state); err != nil {
 		return observation, err
 	}
-	if keyID(state.Key) != id || state.Key.Kind != driver.LockDerived || state.Key.Derived == nil {
+	// SQL key is the lossless identity. JSON replaces invalid UTF-8 in string
+	// fields, so comparing decoded keyID(state.Key) to a raw opaque key would
+	// reject values which the existing driver admits. Compare the decoded
+	// envelope only to the same JSON encoding of the already-admitted key.
+	encodedKey, err := json.Marshal(key)
+	if err != nil {
+		return observation, err
+	}
+	var historyKey driver.LockKey
+	if err := json.Unmarshal(encodedKey, &historyKey); err != nil {
+		return observation, err
+	}
+	if rowKey != id || keyID(state.Key) != keyID(historyKey) || state.Key.Kind != driver.LockDerived || state.Key.Derived == nil {
 		return observation, fmt.Errorf("%w: SQLite demanded source key identity mismatch", driver.ErrUnsupported)
 	}
 	storedRevision, err := parseRev(rowRevision)
@@ -297,9 +298,9 @@ func validateDemandedDerivedImage(state driver.LockState) error {
 	if state.Key.Derived == nil || state.Derived == nil || state.Derived.Key != state.Key.Derived.Key {
 		return fmt.Errorf("%w: SQLite demanded source row identity mismatch", driver.ErrUnsupported)
 	}
-	if index := state.Derived.Index; index != nil && index.Row != *state.Key.Derived {
-		return fmt.Errorf("%w: SQLite demanded source annotation identity mismatch", driver.ErrUnsupported)
-	}
+	// The source's own Index is not a transitive proof. Existing binders
+	// consume the opaque Value; they do not revalidate that Index's namespace,
+	// branch, value envelope, or source metadata.
 	return nil
 }
 
