@@ -200,6 +200,7 @@ func newWithClock(ctx context.Context, config Config, now func() time.Time) (*Co
 		commitEmpty:     domain.CommitClaimNextEmpty,
 		claimNextPage:   domain.ClaimNextReadyPage,
 		readyCandidates: domain.ReadyCandidates,
+		claimEligible:   domain.ClaimNextCandidateEligible,
 	}
 	registry, err := rpc.NewRegistry()
 	if err != nil {
