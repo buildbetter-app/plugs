@@ -33,12 +33,12 @@ outside this package and are not rewritten.
 
 The manual `public_recording_test` target requires two fresh, independent
 RunsOn recordings to close its executable-side B27 slice. Its native profile is
-`plug-public-native/1`, Beads source `305fec3afac83224f46c54f982959fd99db136fa`,
-tree `48e3545b7c5c6a5cdc0119e34dfa379354456a6e`. The separately named
+`plug-public-native/1`, corrected Beads source `c8eb3ba7d4177e111a6f5c8aebe06b5d0b1d5724`,
+tree `930405e863284a3955cbd35e73a6097b606b91a5`. The separately named
 `native-public-profile.json` and `native-public-recording-fixture.json` preserve
 the old companion runfiles and the PR295/roundtrip consumer contract.
 The target consumes only the trusted prepared artifact through
-`PLUG_PUBLIC_BUNDLE`, binds producer run `41610284344`, the exact manifest digest
+`PLUG_PUBLIC_BUNDLE`, binds producer run `41800330346`, the exact manifest digest
 and workflow source, then checks executable bytes and `go version -m` main-package
 identity. The module pin hashes the actual source module path, not `go.mod` bytes.
 Each separately dispatched recording uses `-public-recording-id=recording1` or
@@ -122,6 +122,46 @@ runs. Canonical root-layout capture still needs a corrected accepted producer
 and its own preparation/recordings; B26, full-card admission and FullS1 remain
 unqualified, with FullS1 `0/28` and B05 paused.
 
+### Corrected canonical root-layout continuation
+
+Done = two fresh canonical root-layout recordings preserve the complete B25/B27
+workload through actual corrected public capture, replay, reopens and public
+writes, proven by their own exact-source/control/preparation/lifecycle/content
+packets and retained265 review; the nested57e pair does not count.
+
+The accepted corrected artifact is producer run `41800330346`, artifact
+`13307042737`, manifest digest
+`ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a`.
+The consumer composes exact preparer-author source
+`70230ccd92597a96000f90223c5d89b103e25426` admission bytes, with no new
+preparer logic. Dc8 retains trusted helper/control adoption and genuine fresh
+preparation. Source composition and ordinary gates do not supply that runtime
+binding. Every recording still needs its own four receipt-equal exports and
+same-run bundle/helper proof; no outer port or fifth field is introduced.
+
+The new input is a canonical Git-root workspace, with explicit supported
+`export.auto=false`. The corrected producer alone deduplicates exact repeated
+census paths. Distinct paths, strict reader duplicate refusal, full capture,
+metadata readbacks, optional-field typing, declared reverse provenance, every
+negative/control, workload and all import/reverse/reopen/update guards remain.
+No default/comments-only or historical root failure is retrospectively passed.
+
+Before any new physical execution, the canonical pair rule declares exact
+agreement on every existing projected issue/edge/user-memory field and complete
+config source/body/classification/policy census. Each live comment must retain
+its exact original ID/time/content through both stores and every reverse,
+replay, reopen and public-write preservation guard. Across two independent live
+creations, require unique correspondence by exact owner, author and body with
+multiplicity one; independently derive each full original ID from its own
+command-return timestamp using the accepted c8eb algorithm. Its three identity
+source files are byte-identical to the frozen305 authorities above. Only the
+explicit four fresh metadata identity/time values listed above may differ,
+each matched to its own independent pre-capture observation. Report every
+literal difference and refuse any unexplained, ambiguous or typed substitution.
+The fixed57e offline comparison remains its own historical evidence unit and
+is not an executable or proof of this future canonical pair. Own new physical
+packets, their source-bound pair comparison and retained review remain NOT_RUN.
+
 When native capture is available, each actual archive is replayed through the
 real Plug restore and reverse layers in fresh memory, SQLite and PostgreSQL
 stores, including both SQL reopens. PostgreSQL is an owned disposable loopback
@@ -200,7 +240,7 @@ Run it only on RunsOn after preparing the public bundle descriptor:
 export PATH=/tmp/plug-swarm/bin/worker-safe:$PATH
 /tmp/plug-swarm/bin/remote-bazel "$PWD" SEALED_CONSUMER_SHA s1-b25-b27-native-recording1 -- \
   test //spec/s1-b25-b28:public_recording_test \
-  --test_env=PLUG_PUBLIC_BUNDLE=41610284344:13218208758:4aa497bb1dfb70bf85371daa9e388b5b0ae84130f83f45a49816559d4698c0db \
+  --test_env=PLUG_PUBLIC_BUNDLE=41800330346:13307042737:ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a \
   --test_arg=-public-recording-id=recording1 \
   --cache_test_results=no --flaky_test_attempts=1 --test_env=GO_TEST_WRAP_TESTV=1 \
   --test_output=all --test_timeout=900,900,900,9000 --jobs=2 --local_resources=memory=8192

@@ -43,8 +43,8 @@ import (
 )
 
 const (
-	publicBeadsCommit = "305fec3afac83224f46c54f982959fd99db136fa"
-	publicBeadsTree   = "48e3545b7c5c6a5cdc0119e34dfa379354456a6e"
+	publicBeadsCommit = "c8eb3ba7d4177e111a6f5c8aebe06b5d0b1d5724"
+	publicBeadsTree   = "930405e863284a3955cbd35e73a6097b606b91a5"
 	publicChildID     = "pub-root.1"
 )
 
@@ -464,10 +464,10 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 		t.Fatal(err)
 	}
 	storeRoot = filepath.Join(storeRoot, name)
-	// Use supported nested workspaces so project and active source locations
-	// remain distinct. Repository-root capture retains its separate refusal.
-	source := filepath.Join(storeRoot, "source", "workspace")
-	target := filepath.Join(storeRoot, "target", "workspace")
+	// Exercise canonical root workspaces with the corrected accepted census.
+	// Exact repeated producer paths are deduplicated upstream, never here.
+	source := filepath.Join(storeRoot, "source")
+	target := filepath.Join(storeRoot, "target")
 	if err := os.MkdirAll(source, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -507,7 +507,7 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 		return runCommand(t, run.Root, &run.Commands, label, store, dir,
 			append(env(dir), "BD_JSON_ENVELOPE=1"), []string{pinned, "--readonly", "--json", "sql", "SELECT `key`, `value` FROM metadata ORDER BY `key`"}, nil)
 	}
-	commandGit("source-git-init", "source", source, []string{"-C", "..", "-c", "init.defaultBranch=main", "init", "--quiet"})
+	commandGit("source-git-init", "source", source, []string{"-c", "init.defaultBranch=main", "init", "--quiet"})
 	version := commandReference("source-version", "source", source, []string{"version", "--json"}, nil)
 	var identity struct {
 		Commit string `json:"commit"`
@@ -566,7 +566,7 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 	}
 	validateInventoryAndArchive(t, &run, commandReference, "source", source, run.Root, fixture)
 
-	commandGit("target-git-init", "target", target, []string{"-C", "..", "-c", "init.defaultBranch=main", "init", "--quiet"})
+	commandGit("target-git-init", "target", target, []string{"-c", "init.defaultBranch=main", "init", "--quiet"})
 	commandReference("target-version", "target", target, []string{"version", "--json"}, nil)
 	commandReference("target-init", "target", target, nativeInitArgs(target, server.Port), nil)
 	recordNativeDatabaseBinding(t, run.Root, "target", target, server)
