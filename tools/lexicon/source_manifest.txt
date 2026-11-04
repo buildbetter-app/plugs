@@ -1310,6 +1310,7 @@ spec/s1-b13-b16/slice_test.go
 spec/s1-b17-b20/BUILD.bazel
 spec/s1-b17-b20/README.md
 spec/s1-b17-b20/b17_test.go
+spec/s1-b17-b20/b18_instant_test.go
 spec/s1-b17-b20/b18_test.go
 spec/s1-b17-b20/b19_archive_test.go
 spec/s1-b17-b20/b19_fixture_test.go
