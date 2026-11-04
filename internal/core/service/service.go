@@ -875,14 +875,23 @@ func linkChangeSet(req LinkRequest, kind model.OpKind) (model.ChangeSet, error) 
 	if err := namedRef(req.From); err != nil {
 		return model.ChangeSet{}, err
 	}
-	if err := namedRef(req.To); err != nil {
-		return model.ChangeSet{}, err
+	targetKind, err := req.TargetKind.Normalized()
+	if err != nil {
+		return model.ChangeSet{}, failure("invalid_params", err.Error())
+	}
+	if err := model.ValidateLinkTarget(targetKind, req.To); err != nil {
+		return model.ChangeSet{}, failure("invalid_params", err.Error())
+	}
+	if targetKind != model.LinkTargetExternal {
+		if err := namedRef(req.To); err != nil {
+			return model.ChangeSet{}, err
+		}
 	}
 	if req.Kind == "" {
 		return model.ChangeSet{}, failure("invalid_params", "link kind must not be empty")
 	}
 	return model.ChangeSet{
-		Ops:    []model.Op{{Kind: kind, Link: &model.LinkOp{Kind: kind, From: req.From, To: req.To, LinkKind: req.Kind, Metadata: req.Metadata}}},
+		Ops:    []model.Op{{Kind: kind, Link: &model.LinkOp{Kind: kind, From: req.From, To: req.To, LinkKind: req.Kind, TargetKind: targetKind, Metadata: req.Metadata}}},
 		Expect: req.Expect,
 	}, nil
 }

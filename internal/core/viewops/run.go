@@ -311,7 +311,7 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 				if link.Kind != "blocks" && link.Kind != "conditional-blocks" {
 					continue
 				}
-				if !link.To.IsID() || !link.To.Branch.IsZero() {
+				if link.TargetKind == model.LinkTargetExternal || !link.To.IsID() || !link.To.Branch.IsZero() {
 					continue
 				}
 				target, exists := findStored(rows, link.To.ID)
@@ -650,7 +650,7 @@ func (s *Service) item(row stored, fields []string, rows []stored, authorized ma
 		if target.Kind != "blocks" && target.Kind != "conditional-blocks" {
 			continue
 		}
-		if target.To.IsID() && target.To.Branch.IsZero() {
+		if target.TargetKind != model.LinkTargetExternal && target.To.IsID() && target.To.Branch.IsZero() {
 			if _, exists := findStored(rows, target.To.ID); exists && !authorized[target.To.ID] {
 				item.HiddenBlockers++
 			}
@@ -828,7 +828,7 @@ func (s *Service) projectDirectBlockers(ctx context.Context, by model.PrincipalR
 	refs := make([]model.Ref, 0, len(verdict.Edges))
 	seen := make(map[string]bool, len(verdict.Edges))
 	for _, edge := range verdict.Edges {
-		if !edge.Blocker.IsID() || !edge.Blocker.Branch.IsZero() || seen[edge.Blocker.ID] {
+		if edge.TargetKind == model.LinkTargetExternal || !edge.Blocker.IsID() || !edge.Blocker.Branch.IsZero() || seen[edge.Blocker.ID] {
 			continue
 		}
 		seen[edge.Blocker.ID] = true
@@ -860,11 +860,16 @@ func (s *Service) projectDirectBlockers(ctx context.Context, by model.PrincipalR
 		if edge.State != DirectBlockerSatisfied && edge.State != DirectBlockerUnsatisfied && edge.State != DirectBlockerUnknown {
 			return nil, failure("internal_error", "invalid direct blocker state")
 		}
+		targetKind, kindErr := edge.TargetKind.Normalized()
+		if kindErr != nil || model.ValidateLinkTarget(targetKind, edge.Blocker) != nil {
+			return nil, failure("internal_error", "invalid direct blocker target kind")
+		}
+		edge.TargetKind = targetKind
 		edge.State, edge.Reason = safeDirectBlockerVerdict(edge.State, edge.Reason)
 		// An unresolved or missing reference is an unknown link on a readable
 		// dependent. There is no target record/project to authorize.
 		target, exists := byID[edge.Blocker.ID]
-		if !edge.Blocker.IsID() || !edge.Blocker.Branch.IsZero() || !exists {
+		if edge.TargetKind == model.LinkTargetExternal || !edge.Blocker.IsID() || !edge.Blocker.Branch.IsZero() || !exists {
 			edge.State = DirectBlockerUnknown
 			if edge.Reason == "" {
 				edge.Reason = "blocker reference is unresolved or missing from the snapshot"
@@ -909,7 +914,7 @@ func safeDirectBlockerVerdict(state DirectBlockerState, reason string) (DirectBl
 func (s *Service) hiddenBlockers(ctx context.Context, by model.PrincipalRef, reader driver.Reader, row stored) (int, error) {
 	refs := make([]driver.Ref, 0, len(row.doc.Links))
 	for _, link := range row.doc.Links {
-		if (link.Kind == "blocks" || link.Kind == "conditional-blocks") && link.To.IsID() && link.To.Branch.IsZero() {
+		if link.TargetKind != model.LinkTargetExternal && (link.Kind == "blocks" || link.Kind == "conditional-blocks") && link.To.IsID() && link.To.Branch.IsZero() {
 			refs = append(refs, link.To)
 		}
 	}

@@ -66,9 +66,10 @@ type Comment struct {
 }
 
 type Link struct {
-	To       model.Ref           `json:"to"`
-	Kind     string              `json:"kind"`
-	Metadata *model.LinkMetadata `json:"metadata,omitempty"`
+	TargetKind model.LinkTargetKind `json:"targetKind,omitempty"`
+	To         model.Ref            `json:"to"`
+	Kind       string               `json:"kind"`
+	Metadata   *model.LinkMetadata  `json:"metadata,omitempty"`
 }
 
 type ClaimLease struct {
@@ -99,6 +100,13 @@ func DecodeDocument(body []byte) (Document, error) {
 	}
 	if err := validateParent(d.Parent); err != nil {
 		return d, failure("invalid_params", err.Error())
+	}
+	for i := range d.Links {
+		link := &d.Links[i]
+		if err := model.ValidateLinkTarget(link.TargetKind, link.To); err != nil {
+			return d, err
+		}
+		link.TargetKind, _ = link.TargetKind.Normalized()
 	}
 	parent, err := HierarchyParent(d)
 	if err != nil {
