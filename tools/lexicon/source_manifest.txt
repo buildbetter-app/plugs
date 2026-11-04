@@ -1236,6 +1236,7 @@ spec/s1-b09-b12/compaction/audit_test.go
 spec/s1-b09-b12/compaction/b09_b10_conservation_test.go
 spec/s1-b09-b12/compaction/b09_b10_publication_test.go
 spec/s1-b09-b12/compaction/b11_b12_reopen_identity_test.go
+spec/s1-b09-b12/compaction/b12_late_update_failure_test.go
 spec/s1-b09-b12/compaction/b12_test.go
 spec/s1-b09-b12/compaction/composition_test.go
 spec/s1-b09-b12/compaction/continuation_test.go
