@@ -79,7 +79,15 @@ func (c *selectionCompiler) relationForSources(r *reader, name string, at uint64
 	if len(staged) > 0 {
 		base += ` UNION ALL SELECT ` + selectionJSONColumns + ` FROM jsonb_to_recordset(` + c.bind(selectionJSON(staged)) + `::jsonb) AS p(` + selectionJSONLayout + `)`
 	}
-	c.ctes = append(c.ctes, name+`_rows AS NOT MATERIALIZED (`+base+`)`)
+	rowMaterialization := "NOT MATERIALIZED"
+	if sources != nil {
+		// Fence only the already restricted owner domain. Inlining lets a
+		// family predicate choose its population-wide index and apply the
+		// source restriction afterwards, revisiting unrelated rows in every
+		// proof branch. Full-domain selectors retain their original relation.
+		rowMaterialization = "MATERIALIZED"
+	}
+	c.ctes = append(c.ctes, name+`_rows AS `+rowMaterialization+` (`+base+`)`)
 	f := `SELECT ` + prefixSelectionFactColumns("f") + ` FROM plug_postgres.selection_facts f JOIN plug_postgres.selection_rows s ON s.incarnation=f.incarnation AND s.row_key=f.row_key AND s.start_revision=f.start_revision WHERE s.incarnation=` + scope + ` AND s.layout=2 AND ` + interval + exclude
 	if len(facts) > 0 {
 		f += ` UNION ALL SELECT ` + selectionFactJSONColumns + ` FROM jsonb_to_recordset(` + c.bind(selectionJSON(facts)) + `::jsonb) AS p(` + selectionFactJSONLayout + `)`
