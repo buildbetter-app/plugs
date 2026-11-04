@@ -953,7 +953,7 @@ func (s *Service) LinkWithOutcome(ctx context.Context, by model.PrincipalRef, re
 	}
 	if mixed {
 		if s.workflow == nil {
-			return port.WriteOutcome{}, failure("not_found", "workflow provider is unavailable")
+			return port.WriteOutcome{}, failure("invalid_params", "workflow references require a supported workflow item operation")
 		}
 		if err := validateWorkflowWrite(req.From, req.Expect, meta); err != nil && workflowRef(req.From) {
 			return port.WriteOutcome{}, err
@@ -999,7 +999,7 @@ func (s *Service) UnlinkWithOutcome(ctx context.Context, by model.PrincipalRef, 
 	}
 	if mixed {
 		if s.workflow == nil {
-			return port.WriteOutcome{}, failure("not_found", "workflow provider is unavailable")
+			return port.WriteOutcome{}, failure("invalid_params", "workflow references require a supported workflow item operation")
 		}
 		if err := validateWorkflowWrite(req.From, req.Expect, meta); err != nil && workflowRef(req.From) {
 			return port.WriteOutcome{}, err
