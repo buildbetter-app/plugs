@@ -75,6 +75,9 @@ func TestQueueProjectionMatchesExactReadinessBeforeRotation(t *testing.T) {
 			}
 			queueOverlay(t, f, 20, principal, now)
 			queueOverlay(t, f, 21, model.PrincipalRef{Kind: "user", ID: "stale-owner"}, now)
+			// Existing roots isolate satisfied blockers from the separate
+			// transitive waits-for controls without changing canonical parents.
+			queueFixturePatch(t, f, 23, func(d *pipeline.Document) { d.Links = []pipeline.Link{{Kind: "blocks", To: beadRef(42)}} })
 			for _, n := range []int{34, 35, 36, 37} {
 				queueFixturePatch(t, f, n, func(d *pipeline.Document) {
 					link := pipeline.Link{Kind: "waits-for", To: beadRef(12)}
@@ -94,6 +97,7 @@ func TestQueueProjectionMatchesExactReadinessBeforeRotation(t *testing.T) {
 			queueFixturePatch(t, f, 41, func(d *pipeline.Document) { d.Links = []pipeline.Link{{Kind: "blocks", To: beadRef(42)}} })
 			queueFixturePatch(t, f, 42, func(d *pipeline.Document) { d.Fields["status"] = "done" })
 			queueFixturePatch(t, f, 43, func(d *pipeline.Document) { d.Links = []pipeline.Link{{Kind: "blocks", To: beadRef(999)}} })
+			queueFixturePatch(t, f, 45, func(d *pipeline.Document) { d.Links = []pipeline.Link{{Kind: "conditional-blocks", To: beadRef(40)}} })
 			queueFixturePatch(t, f, 46, func(d *pipeline.Document) {
 				d.Fields["priority"] = 2
 				d.Fields["extra"] = "retained source field"
@@ -112,12 +116,12 @@ func TestQueueProjectionMatchesExactReadinessBeforeRotation(t *testing.T) {
 			for i, bead := range reference.Items {
 				ids[i] = bead.ID
 			}
-			for _, n := range []int{19, 21, 34, 39, 41, 46} {
+			for _, n := range []int{19, 21, 23, 34, 45, 46} {
 				if !slices.Contains(ids, beadRef(n).ID) {
 					t.Fatalf("reference lost ready dependency control %d", n)
 				}
 			}
-			for _, n := range []int{1, 2, 13, 15, 17, 18, 20, 35, 36, 37, 38, 40, 42, 43, 44, 49, 50, 51} {
+			for _, n := range []int{1, 2, 13, 15, 17, 18, 20, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 49, 50, 51} {
 				if slices.Contains(ids, beadRef(n).ID) {
 					t.Fatalf("reference admitted blocked control %d", n)
 				}

@@ -142,7 +142,16 @@ func CompleteQueueProjection(ctx context.Context, view View, ready bool, headers
 			if links[id] != nil {
 				return zero, QueueUnavailable("duplicate complete link envelope")
 			}
-			links[id], value = index, index.Facts
+			links[id] = index
+			// Clone and gob may represent an empty slice as nil. The typed
+			// envelope still certifies zero links; its logical producer value
+			// uses an explicit empty array. Preserve that canonical wire shape
+			// while retaining the full value/digest and envelope comparison.
+			facts := *index.Facts
+			if facts.Rows == nil {
+				facts.Rows = []SelectionFact{}
+			}
+			value = &facts
 		} else {
 			return zero, QueueUnavailable("unexpected logical input family")
 		}

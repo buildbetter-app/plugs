@@ -6,7 +6,6 @@ import (
 	"encoding/gob"
 	"encoding/json"
 	"errors"
-	"reflect"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -82,6 +81,9 @@ func TestQueueProjectionRequiresIndependentCompleteInputs(t *testing.T) {
 		})
 	}
 	v, headers, rows := queueContractInput(t)
+	for i := range rows {
+		rows[i] = rows[i].Clone()
+	}
 	got, err := CompleteQueueProjection(context.Background(), v, true, headers, rows)
 	if err != nil || len(got.Beads) != 2 || got.Beads[1].Bead.Ref.ID != "hidden" {
 		t.Fatalf("complete control: %+v %v", got, err)
@@ -122,8 +124,19 @@ func TestQueueFactsOwnershipAndWireRoundtrip(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if !reflect.DeepEqual(row, copy) {
-				t.Fatalf("%s lost queue metadata", codec)
+			// Ref's private selected-arm marker is not a gob field. Valid
+			// nonempty references must preserve their entire canonical wire
+			// representation, including every public queue metadata field.
+			want, err := json.Marshal(row)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := json.Marshal(copy)
+			if err != nil || !bytes.Equal(want, got) {
+				t.Fatalf("%s lost queue wire metadata: got=%s want=%s err=%v", codec, got, want, err)
+			}
+			if err := copy.Index.Validate(DerivedSortKey, copy); err != nil {
+				t.Fatal(err)
 			}
 			copy = copy.Clone()
 			copy.Index.Queue.Links[0].Metadata.Gate = "all-children"
