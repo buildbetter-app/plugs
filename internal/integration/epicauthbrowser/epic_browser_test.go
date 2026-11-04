@@ -349,7 +349,7 @@ func qualifyBrowserLifecycle(t *testing.T, population int) {
 			sourceAdmin.close(t)
 			f.close(t)
 			path := filepath.Join(dir, "restored.db")
-			target, lease := openStore(t, "sqlite", path)
+			target, lease, closeTarget := openRenewingTarget(t, "sqlite", path)
 			// Empty target receives no fixture seed, facts, ontology or graph repair.
 			targetAdmin := admin(t, target, lease)
 			restoreIncarnation = restoreHead(t, targetAdmin, data, archive)
@@ -357,12 +357,7 @@ func qualifyBrowserLifecycle(t *testing.T, population int) {
 				t.Fatal("native restore changed source images or canonical closure")
 			}
 			targetAdmin.close(t)
-			if err := lease.Release(context.Background()); err != nil {
-				t.Fatal(err)
-			}
-			if err := target.Close(); err != nil {
-				t.Fatal(err)
-			}
+			closeTarget()
 			reopened = newFixtureMode(t, "sqlite", path, true, false)
 			f = reopened
 			if !reflect.DeepEqual(persistedImages(t, f.store), beforeImages) || !reflect.DeepEqual(persistedClosure(t, f.store), beforeClosure) {
