@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
@@ -20,11 +21,30 @@ func GraphValidityLockKey() driver.LockKey {
 }
 
 func (p *prepared) graphIsCertified(ctx context.Context) (bool, error) {
-	states, err := p.snapshot.observe(ctx, []driver.LockKey{driver.GraphBlockingSentinelLock, GraphValidityLockKey()})
+	states, err := p.snapshot.observe(ctx, []driver.LockKey{GraphValidityLockKey(), driver.GraphBlockingSentinelLock})
 	if err != nil {
 		return false, err
 	}
-	return states[0].Present && states[1].Present && !states[0].Revision.IsZero() && states[0].Revision.String() == states[1].Revision.String(), nil
+	return states[0].Present && states[1].Present && !states[1].Revision.IsZero() && states[0].Revision.String() == states[1].Revision.String(), nil
+}
+
+// A certificate also needs the active typed-write fence. Otherwise a legacy
+// untyped writer could change a bead without graph/blocking, and later startup
+// membership activation could make the old certificate appear current again.
+func (p *prepared) graphCoverageActive(ctx context.Context) (bool, error) {
+	if _, _, err := p.snapshot.HierarchyChildren(ctx, nil, 0); err != nil {
+		if errors.Is(err, driver.ErrUnsupported) {
+			return false, nil
+		}
+		return false, err
+	}
+	if _, _, err := p.snapshot.InverseSourceLinks(ctx, nil, nil, nil, 0); err != nil {
+		if errors.Is(err, driver.ErrUnsupported) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // ValidateGraphDocuments checks the complete relevant graph, not just the

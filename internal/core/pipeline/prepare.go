@@ -1417,6 +1417,6 @@ func (p *prepared) graph(ctx context.Context) error {
 	if err := ValidateGraphDocuments(ctx, docs); err != nil {
 		return err
 	}
-	p.graphValidated = true
-	return nil
+	p.graphValidated, err = p.graphCoverageActive(ctx)
+	return err
 }

@@ -112,7 +112,7 @@ func TestGraphValidityCertificateMaintainedByValidatedWrites(t *testing.T) {
 	assertCertificate := func(want bool) {
 		t.Helper()
 		r := h.read(t)
-		states, err := r.Observe(context.Background(), []driver.LockKey{driver.GraphBlockingSentinelLock, GraphValidityLockKey()})
+		states, err := r.Observe(context.Background(), []driver.LockKey{GraphValidityLockKey(), driver.GraphBlockingSentinelLock})
 		if err != nil || len(states) != 2 {
 			t.Fatalf("certificate observation=%+v err=%v", states, err)
 		}

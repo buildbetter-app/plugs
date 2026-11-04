@@ -550,3 +550,27 @@ func TestIndexedGraphRequiresCurrentGlobalValidityCertificate(t *testing.T) {
 		})
 	}
 }
+
+func TestCompleteGraphValidationDoesNotCertifyUnbuiltSourceCoverage(t *testing.T) {
+	for _, domain := range []string{"parent", "links"} {
+		t.Run(domain, func(t *testing.T) {
+			r := indexedHierarchyFixture(t, map[string]string{"c": "", "p": ""})
+			if domain == "parent" {
+				r.err = driver.ErrUnsupported
+			} else {
+				r.inverseErr = driver.ErrUnsupported
+			}
+			r.allowQuery = true
+			c, _ := DecodeDocument(r.records["c"].Body)
+			c.Parent = &model.Ref{ID: "p"}
+			p := indexedPrepared(r, hierarchyEdit{id: "c", parent: "p"})
+			p.writes["c"] = &pending{ref: model.Ref{ID: "c"}, kind: "bead", doc: c, before: r.records["c"].Body}
+			if err := p.graph(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if p.graphValidated || r.queryReads == 0 {
+				t.Fatalf("unbuilt %s coverage received a reusable certificate: validated=%t queries=%d", domain, p.graphValidated, r.queryReads)
+			}
+		})
+	}
+}

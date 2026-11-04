@@ -1036,7 +1036,10 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 	if err := tx.BumpSentinels(ctx, sentinels); err != nil {
 		return model.Changeset{}, err
 	}
-	if ancestorPlan != nil {
+	// Without complete typed publication, legacy untyped writes need not bump
+	// graph/blocking. Do not create a reusable certificate on that path.
+	_, typedGraph := tx.(driver.GraphSourceWriter)
+	if ancestorPlan != nil && len(ancestorPlan.rows) != 0 && typedGraph {
 		if err := tx.BumpReadFacts(ctx, []driver.ReadFact{pipeline.GraphValidityReadFact}); err != nil {
 			return model.Changeset{}, err
 		}
