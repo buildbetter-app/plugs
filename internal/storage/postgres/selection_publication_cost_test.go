@@ -131,6 +131,71 @@ func TestSelectionPublicationCensusBatchesAndFullDomain(t *testing.T) {
 	}
 }
 
+// Execute the production chain fragments against typed scalar fixtures. The
+// real publication test above separately covers temporal headers and source
+// freshness. This isolates the set/window rewrite's NULL, depth and edge rules.
+func TestSelectionPublicationParentChainSetProof(t *testing.T) {
+	ctx := context.Background()
+	s := openTest(t, freshDSN(t))
+	const inputs = `WITH beads_input(bead_key,parent_key,source_key) AS (VALUES
+ ('\x01'::bytea,NULL::bytea,'\x01'::bytea),
+ ('\x02'::bytea,'\x01'::bytea,'\x02'::bytea),
+ ('\x03'::bytea,'\x02'::bytea,'\x03'::bytea)),
+ ancestors_input(source_key,ref_key,target_key,depth) AS (VALUES
+ ('\x03'::bytea,'\x03'::bytea,'\x01'::bytea,2::bigint),
+ ('\x02'::bytea,'\x02'::bytea,'\x02'::bytea,0::bigint),
+ ('\x01'::bytea,'\x01'::bytea,'\x01'::bytea,0::bigint),
+ ('\x03'::bytea,'\x03'::bytea,'\x03'::bytea,0::bigint),
+ ('\x02'::bytea,'\x02'::bytea,'\x01'::bytea,1::bigint),
+ ('\x03'::bytea,'\x03'::bytea,'\x02'::bytea,1::bigint)), `
+	for _, tc := range []struct {
+		name, beads, ancestors string
+		valid                  bool
+	}{
+		{"empty", `SELECT * FROM beads_input WHERE false`, `SELECT * FROM ancestors_input WHERE false`, true},
+		{"complete_three_levels", "", "", true},
+		{"independent_roots", `SELECT bead_key,NULL::bytea,source_key FROM beads_input`, `SELECT * FROM ancestors_input WHERE depth=0`, true},
+		{"duplicate_bead", `TABLE beads_input UNION ALL SELECT bead_key,parent_key,'\x04'::bytea FROM beads_input WHERE bead_key='\x01'::bytea`, "", false},
+		{"duplicate_source", `SELECT bead_key,parent_key,CASE WHEN bead_key='\x03'::bytea THEN '\x02'::bytea ELSE source_key END FROM beads_input`, "", false},
+		{"orphan_owner", "", `TABLE ancestors_input UNION ALL SELECT '\x04'::bytea,'\x04'::bytea,'\x01'::bytea,0::bigint`, false},
+		{"wrong_source", "", `SELECT CASE WHEN ref_key='\x03'::bytea THEN '\x02'::bytea ELSE source_key END,ref_key,target_key,depth FROM ancestors_input`, false},
+		{"missing_target", "", `SELECT source_key,ref_key,CASE WHEN depth=2 THEN '\xff'::bytea ELSE target_key END,depth FROM ancestors_input`, false},
+		{"duplicate_depth", "", `TABLE ancestors_input UNION ALL SELECT '\x03'::bytea,'\x03'::bytea,'\x01'::bytea,1::bigint`, false},
+		{"repeated_target", "", `SELECT source_key,ref_key,CASE WHEN depth=2 THEN '\x02'::bytea ELSE target_key END,depth FROM ancestors_input`, false},
+		{"missing_self", "", `SELECT * FROM ancestors_input WHERE NOT(ref_key='\x03'::bytea AND depth=0)`, false},
+		{"negative_depth", "", `SELECT source_key,ref_key,target_key,CASE WHEN depth=2 THEN -1 ELSE depth END FROM ancestors_input`, false},
+		{"depth_gap", "", `SELECT source_key,ref_key,target_key,CASE WHEN depth=2 THEN 3 ELSE depth END FROM ancestors_input`, false},
+		{"wrong_self", "", `SELECT source_key,ref_key,CASE WHEN ref_key='\x03'::bytea AND depth=0 THEN '\x02'::bytea ELSE target_key END,depth FROM ancestors_input`, false},
+		{"stale_parent", `SELECT bead_key,CASE WHEN bead_key='\x03'::bytea THEN '\x01'::bytea ELSE parent_key END,source_key FROM beads_input`, "", false},
+		{"missing_root", "", `SELECT * FROM ancestors_input WHERE depth<>2`, false},
+		{"non_root_terminal", "", `SELECT * FROM ancestors_input WHERE NOT(ref_key='\x02'::bytea AND depth=1)`, false},
+		{"root_successor", "", `TABLE ancestors_input UNION ALL SELECT '\x01'::bytea,'\x01'::bytea,'\x02'::bytea,1::bigint`, false},
+		{"null_owner", "", `SELECT source_key,CASE WHEN depth=2 THEN NULL::bytea ELSE ref_key END,target_key,depth FROM ancestors_input`, false},
+		{"null_target", "", `SELECT source_key,ref_key,CASE WHEN depth=2 THEN NULL::bytea ELSE target_key END,depth FROM ancestors_input`, false},
+		{"minimum_depth", "", `SELECT source_key,ref_key,target_key,CASE WHEN depth=2 THEN '-9223372036854775808'::bigint ELSE depth END FROM ancestors_input`, false},
+		{"maximum_depth", "", `SELECT source_key,ref_key,target_key,CASE WHEN depth=2 THEN '9223372036854775807'::bigint ELSE depth END FROM ancestors_input`, false},
+		{"ancestors_without_beads", `SELECT * FROM beads_input WHERE false`, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			beads, ancestors := tc.beads, tc.ancestors
+			if beads == "" {
+				beads = `TABLE beads_input`
+			}
+			if ancestors == "" {
+				ancestors = `TABLE ancestors_input`
+			}
+			query := inputs + `proof_beads(bead_key,parent_key,source_key) AS MATERIALIZED (` + beads + `), proof_ancestors(source_key,ref_key,target_key,depth) AS MATERIALIZED (` + ancestors + `), ` + selectionParentChainRelationSQL + ` SELECT (` + selectionParentChainSQL + `)`
+			var valid bool
+			if err := s.db.QueryRowContext(ctx, query).Scan(&valid); err != nil {
+				t.Fatal(err)
+			}
+			if valid != tc.valid {
+				t.Fatalf("typed parent-chain proof=%t want=%t", valid, tc.valid)
+			}
+		})
+	}
+}
+
 func publishSelectionCensusBatch(t *testing.T, s *Store, lease driver.ActiveLease, offset int) {
 	t.Helper()
 	ctx := context.Background()
@@ -229,8 +294,10 @@ func explainSelectionPublicationCensus(t *testing.T, r *reader, population int) 
 	producer, scans, visits := 0, 0, float64(0)
 	headerScans, headerVisits := 0, float64(0)
 	liveScans, liveVisits := 0, float64(0)
-	var inspect func(any) bool
-	inspect = func(value any) bool {
+	chainScans, chainVisits := 0, float64(0)
+	const liveInput, chainInput = uint8(1), uint8(2)
+	var inspect func(any) uint8
+	inspect = func(value any) uint8 {
 		switch node := value.(type) {
 		case map[string]any:
 			if name, _ := node["Subplan Name"].(string); name == "CTE proof_census" {
@@ -255,34 +322,45 @@ func explainSelectionPublicationCensus(t *testing.T, r *reader, population int) 
 				removed, _ := node["Rows Removed by Filter"].(float64)
 				headerVisits += loops * (rows + removed)
 			}
-			liveInput := false
+			inputs := uint8(0)
 			for _, child := range node {
-				if inspect(child) {
-					liveInput = true
-				}
+				inputs |= inspect(child)
 			}
 			live := cte == "proof_live" || relation == "records"
+			chain := cte == "proof_beads" || cte == "proof_ancestors" || cte == "proof_chain"
 			nodeType, _ := node["Node Type"].(string)
+			cache := nodeType == "Materialize" || nodeType == "Memoize"
 			// Include executor caches above live input, so an inlined records
 			// scan cannot hide repeated full-domain reads in Materialize.
-			if live || liveInput && (nodeType == "Materialize" || nodeType == "Memoize") {
+			if live || inputs&liveInput != 0 && cache {
 				liveScans++
 				rows, _ := node["Actual Rows"].(float64)
 				loops, _ := node["Actual Loops"].(float64)
 				removed, _ := node["Rows Removed by Filter"].(float64)
 				liveVisits += loops * (rows + removed)
 			}
-			return live || liveInput
-		case []any:
-			live := false
-			for _, child := range node {
-				if inspect(child) {
-					live = true
-				}
+			if chain || inputs&chainInput != 0 && cache {
+				chainScans++
+				rows, _ := node["Actual Rows"].(float64)
+				loops, _ := node["Actual Loops"].(float64)
+				removed, _ := node["Rows Removed by Filter"].(float64)
+				chainVisits += loops * (rows + removed)
 			}
-			return live
+			if live {
+				inputs |= liveInput
+			}
+			if chain {
+				inputs |= chainInput
+			}
+			return inputs
+		case []any:
+			inputs := uint8(0)
+			for _, child := range node {
+				inputs |= inspect(child)
+			}
+			return inputs
 		}
-		return false
+		return 0
 	}
 	for _, root := range plan {
 		inspect(root)
@@ -303,6 +381,12 @@ func explainSelectionPublicationCensus(t *testing.T, r *reader, population int) 
 	if liveScans == 0 || liveVisits > float64(32*population) {
 		t.Fatalf("publication live scans=%d visits=%v population=%d: %s", liveScans, liveVisits, population, raw)
 	}
+	// This fixture has one self ancestor per bead. All chain relations may be
+	// read a fixed number of times, including executor caches, never per bead.
+	if chainScans == 0 || chainVisits > float64(64*population) {
+		t.Fatalf("publication chain scans=%d visits=%v population=%d: %s", chainScans, chainVisits, population, raw)
+	}
+	t.Logf("W6_CHAIN_PROOF_WORK phase=publication_family_proof fixture_beads=%d chain_scans=%d chain_row_visits=%v bound=%d qualification=FINITE_CONTROL", population, chainScans, chainVisits, 64*population)
 	t.Logf("W6_LIVE_PROOF_WORK phase=publication_family_proof fixture_beads=%d live_record_scans=%d live_record_row_visits=%v bound=%d qualification=FINITE_CONTROL", population, liveScans, liveVisits, 32*population)
 	t.Logf("W6_HEADER_PROOF_WORK phase=publication_family_proof fixture_beads=%d source_header_scans=%d source_header_row_visits=%v bound=%d qualification=FINITE_CONTROL", population, headerScans, headerVisits, 128*population)
 	t.Logf("W6_EXPLAIN_ANALYZE phase=publication_family_proof fixture_beads=%d census_producer=%d census_scans=%d census_row_visits=%v qualification=FINITE_CONTROL actual_plan=%s", population, producer, scans, visits, raw)

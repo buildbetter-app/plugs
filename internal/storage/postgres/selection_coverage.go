@@ -136,7 +136,8 @@ func (r *reader) compileSelectionFamilyValidity(ctx context.Context, at uint64, 
 	// The relation includes ALL current closure rows, including untouched rows
 	// after an ancestor move. CutClosure and derived-source domains are separate.
 	c.ctes = append(c.ctes, `proof_beads AS MATERIALIZED (SELECT bead_key,parent_key,source_key FROM proof_rows WHERE family_table='sort_key' AND source_kind='record' AND bead_key IS NOT NULL)`,
-		`proof_ancestors AS MATERIALIZED (SELECT r.source_key,f.ref_key,f.target_key,f.depth FROM proof_rows r JOIN proof_facts f ON f.row_key=r.row_key LEFT JOIN proof_headers h ON h.key=r.source_key WHERE (h.kind='bead' OR h.key IS NULL AND r.source_present) AND r.family_table='ancestor_closure' AND r.source_kind='record' AND r.fact_kind='ancestor')`)
+		`proof_ancestors AS MATERIALIZED (SELECT r.source_key,f.ref_key,f.target_key,f.depth FROM proof_rows r JOIN proof_facts f ON f.row_key=r.row_key LEFT JOIN proof_headers h ON h.key=r.source_key WHERE (h.kind='bead' OR h.key IS NULL AND r.source_present) AND r.family_table='ancestor_closure' AND r.source_kind='record' AND r.fact_kind='ancestor')`,
+		selectionParentChainRelationSQL)
 	// Count the complete relation once, rather than running an aggregate for
 	// each live source in every family while publication holds the lease fence.
 	// Each family uses a full equality join so its materialized census cannot
@@ -202,18 +203,28 @@ func (r *reader) selectionFamilyValidity(ctx context.Context, at uint64, overlay
 	return result, nil
 }
 
-// Scalar equivalent of driver.ValidateSelectionParentChains. Every conjunct
-// is consumed in the family proof, including on an empty candidate request.
+// Order each complete chain once. Independent uniqueness and depth checks below
+// make adjacent rows equivalent to equality lookups at depth-1 and depth+1.
+const selectionParentChainRelationSQL = `proof_chain AS MATERIALIZED (
+ SELECT ref_key,target_key,depth,
+ row_number() OVER parent_chain - 1 expected_depth,lead(target_key) OVER parent_chain next_target_key
+ FROM proof_ancestors
+ WINDOW parent_chain AS (PARTITION BY ref_key ORDER BY depth))`
+
+// Scalar equivalent of driver.ValidateSelectionParentChains. Set differences
+// avoid rescanning an unindexed materialized relation for every chain row.
+// EXCEPT's NULL equality preserves IS DISTINCT FROM for nullable root parents.
+// Every conjunct is consumed, including on an empty candidate request.
 const selectionParentChainSQL = `
  NOT EXISTS(SELECT 1 FROM proof_beads GROUP BY bead_key HAVING count(*)<>1) AND
  NOT EXISTS(SELECT 1 FROM proof_beads GROUP BY source_key HAVING count(*)<>1) AND
- NOT EXISTS(SELECT 1 FROM proof_ancestors a LEFT JOIN proof_beads owner ON owner.bead_key=a.ref_key WHERE owner.bead_key IS NULL OR a.source_key IS DISTINCT FROM owner.source_key) AND
- NOT EXISTS(SELECT 1 FROM proof_ancestors a LEFT JOIN proof_beads target ON target.bead_key=a.target_key WHERE target.bead_key IS NULL) AND
+ NOT EXISTS(SELECT ref_key,source_key FROM proof_ancestors EXCEPT SELECT bead_key,source_key FROM proof_beads) AND
+ NOT EXISTS(SELECT target_key FROM proof_ancestors EXCEPT SELECT bead_key FROM proof_beads) AND
  NOT EXISTS(SELECT 1 FROM proof_ancestors GROUP BY ref_key,depth HAVING count(*)<>1) AND
  NOT EXISTS(SELECT 1 FROM proof_ancestors GROUP BY ref_key,target_key HAVING count(*)<>1) AND
- NOT EXISTS(SELECT 1 FROM proof_beads b WHERE NOT EXISTS(SELECT 1 FROM proof_ancestors a WHERE a.ref_key=b.bead_key AND a.depth=0 AND a.target_key=b.bead_key)) AND
- NOT EXISTS(SELECT 1 FROM proof_ancestors a WHERE a.depth<0 OR (a.depth=0 AND a.target_key IS DISTINCT FROM a.ref_key) OR (a.depth>0 AND NOT EXISTS(SELECT 1 FROM proof_ancestors previous WHERE previous.ref_key=a.ref_key AND previous.depth=a.depth-1))) AND
- NOT EXISTS(SELECT 1 FROM proof_ancestors a LEFT JOIN proof_beads target ON target.bead_key=a.target_key LEFT JOIN proof_ancestors next ON next.ref_key=a.ref_key AND next.depth=a.depth+1 WHERE next.target_key IS DISTINCT FROM target.parent_key)`
+ NOT EXISTS(SELECT bead_key FROM proof_beads EXCEPT SELECT ref_key FROM proof_ancestors WHERE depth=0 AND target_key=ref_key) AND
+ NOT EXISTS(SELECT 1 FROM proof_chain WHERE depth IS DISTINCT FROM expected_depth OR (depth=0 AND target_key IS DISTINCT FROM ref_key)) AND
+ NOT EXISTS(SELECT target_key,next_target_key FROM proof_chain EXCEPT SELECT bead_key,parent_key FROM proof_beads)`
 
 func (t *transaction) writeSelectionCoverage(ctx context.Context, revision model.Revision, incarnation string) error {
 	view := &reader{sql: t.sql, meta: t.meta, at: mustRevision(revision)}
