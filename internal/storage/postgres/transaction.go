@@ -50,6 +50,10 @@ type transaction struct {
 	sourceCoverageIncarnation string
 	sourceCoverageValid       bool
 	selectionVirgin           bool
+	selectionProofCarry       bool
+	selectionProofSeed        bool
+	selectionProofRoots       [][]byte
+	selectionProofOld         [][]byte
 }
 
 func (s *Store) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
