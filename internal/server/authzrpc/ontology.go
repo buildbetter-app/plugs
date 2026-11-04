@@ -102,3 +102,44 @@ func (c *Checker) RevalidateProtectedContext(ctx context.Context, by model.Princ
 	}
 	return authn.RequireInteractiveUser(ctx, by)
 }
+
+// Discovery uses the same installed management rule, current source and live
+// interactive identity as apply. A generic write grant or historical receipt
+// cannot make the protected method visible. This remains an inventory check;
+// the Writer independently reauthorizes the actual proposed source.
+func (c *Checker) ontologyManagementVisible(ctx context.Context, by model.PrincipalRef) (bool, error) {
+	if !c.ontologyManagementInstalled() || authn.RequireInteractiveUser(ctx, by) != nil {
+		return false, nil
+	}
+	meta, err := c.store.Meta(ctx)
+	if err != nil {
+		return false, err
+	}
+	at := meta.Head
+	reader, err := c.store.Read(ctx, driver.View{Incarnation: meta.Incarnation, At: &at})
+	if err != nil {
+		return false, err
+	}
+	defer reader.Close()
+	query := driver.Query{Filter: map[string]any{"kind": "ontology"}, Limit: 1000}
+	for {
+		page, err := reader.Query(ctx, query)
+		if err != nil {
+			return false, err
+		}
+		for _, row := range page.Items {
+			if row.Kind != "ontology" || !row.Ref.IsID() || !row.Ref.Branch.IsZero() || row.Revision.Validate() != nil ||
+				(row.Ref.ID != "ontology" && !strings.HasPrefix(row.Ref.ID, "ontology/")) {
+				continue
+			}
+			allowed, err := c.decision(ctx, reader, by, authz.ManageOntology, authz.Ontology, row.Ref, "ontology.apply")
+			if err != nil || allowed {
+				return allowed, err
+			}
+		}
+		if page.NextCursor == nil {
+			return false, nil
+		}
+		query.Cursor = page.NextCursor
+	}
+}

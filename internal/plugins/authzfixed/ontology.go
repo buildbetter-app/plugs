@@ -43,6 +43,13 @@ func (r *OntologyRuleSet) Eval(ctx context.Context, s authz.Slice, requests []au
 		if err != nil {
 			return nil, err
 		}
+		// The chain has already prepared the caller and common dependencies.
+		// An unrelated operation cannot receive a permit or forbid here. Avoid
+		// repeating those reads in a bounded event-context snapshot.
+		if t.Permit.Op == authz.False && t.Forbid.Op == authz.False {
+			decisions[i].Effect = authz.NoDecision
+			continue
+		}
 		allowed, err := t.Match(ctx, s, req.Resource)
 		if err != nil {
 			return nil, err

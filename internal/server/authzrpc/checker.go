@@ -337,12 +337,15 @@ func (c *Checker) modifyDecision(ctx context.Context, snapshot Snapshot, p model
 // Visible keeps discovery from advertising methods that the fixed component
 // can never permit. Resource-level authorization still happens in the service
 // and Writer boundaries, so this is only a non-leaking method inventory.
-func (c *Checker) Visible(_ context.Context, p model.PrincipalRef, d wire.MethodDesc) (bool, error) {
+func (c *Checker) Visible(ctx context.Context, p model.PrincipalRef, d wire.MethodDesc) (bool, error) {
 	if d.Permission == "none" || d.Name == "server.hello" || strings.HasPrefix(d.Name, "rpc.") {
 		return true, nil
 	}
 	if d.Permission == "read" {
 		return p.Kind == "user", nil
+	}
+	if d.Permission == "admin" && d.Name == "ontology.apply" {
+		return c.ontologyManagementVisible(ctx, p)
 	}
 	if d.Permission == "write" {
 		switch d.Name {
