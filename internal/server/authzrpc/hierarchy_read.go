@@ -71,54 +71,7 @@ func (c *Checker) AuthorizeParentProjection(ctx context.Context, principal model
 }
 
 func (c *Checker) parentProjections(ctx context.Context, caller authz.Caller, authority *slice, content driver.Reader, children []model.Ref) (map[string]ParentDisclosure, error) {
-	if content == nil || content.Snapshot().Incarnation != c.chain.Namespace.Incarnation {
-		return nil, hierarchyUnavailable()
-	}
-	parents := make(map[string]ParentDisclosure, len(children))
-	for _, child := range children {
-		if hierarchyRef(child) != nil {
-			return nil, hierarchyUnavailable()
-		}
-		if _, duplicate := parents[child.ID]; duplicate {
-			return nil, hierarchyUnavailable()
-		}
-		allowed, err := c.hierarchyRead(ctx, caller, authority, child)
-		if err != nil {
-			return nil, err
-		}
-		if !allowed {
-			return nil, notFound()
-		}
-		row, err := hierarchySource(ctx, content, child)
-		if err != nil {
-			return nil, err
-		}
-		if row == nil {
-			return nil, notFound()
-		}
-		target, _ := authz.HierarchyImage(*row)
-		projection := ParentDisclosure{Exists: target.Parent != nil}
-		if target.Parent != nil {
-			// Historical content never carries an older read grant. A missing
-			// or currently denied parent contributes existence only.
-			current, err := hierarchySource(ctx, authority.snapshot, *target.Parent)
-			if err != nil {
-				return nil, err
-			}
-			if current != nil {
-				allowed, err := c.hierarchyRead(ctx, caller, authority, *target.Parent)
-				if err != nil {
-					return nil, err
-				}
-				if allowed {
-					ref := *target.Parent
-					projection.Ref = &ref
-				}
-			}
-		}
-		parents[child.ID] = projection
-	}
-	return parents, nil
+	return c.parentProjectionsBatch(ctx, caller, authority, content, children, nil)
 }
 
 func projectBeadParent(bead *service.Bead, disclosure ParentDisclosure) {

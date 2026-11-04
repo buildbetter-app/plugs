@@ -982,6 +982,110 @@ func TestParentProjectionFinalCheckRefusesRevocation(t *testing.T) {
 	}
 }
 
+type parentBatchRecorder struct {
+	mu      sync.Mutex
+	batches [][]string
+}
+
+func (r *parentBatchRecorder) Check(ctx context.Context, source authz.Slice, requests []authz.CheckRequest) ([]authz.Step, error) {
+	ids := make([]string, len(requests))
+	for i, request := range requests {
+		ids[i] = request.Resource.Ref.ID
+		// Exercise the actual resource-dependent policy source path too.
+		if _, err := source.ProjectForBead(ctx, request.Resource.Ref); err != nil {
+			return nil, err
+		}
+	}
+	r.mu.Lock()
+	r.batches = append(r.batches, ids)
+	r.mu.Unlock()
+	return make([]authz.Step, len(requests)), nil
+}
+
+func (*parentBatchRecorder) Filter(authz.ListRequest) (authz.FilterExpr, error) {
+	return authz.FilterExpr{}, authz.ErrCheckOnly
+}
+
+func TestParentProjectionPage1000ReusesEmittedBodiesAndDistinctParent(t *testing.T) {
+	f := newHFixture(t, true)
+	ctx := context.Background()
+	children := make([]model.Ref, 1000)
+	changes := make([]conformance.FixtureChange, len(children))
+	for i := range children {
+		id := fmt.Sprintf("page-child-%04d", i)
+		children[i] = hRef(id)
+		changes[i] = conformance.FixtureChange{Ref: children[i], Kind: "bead", Op: model.OpCreate, Body: hBody(id, "child-project", "new", "todo")}
+	}
+	if _, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{}, changes); err != nil {
+		t.Fatal(err)
+	}
+	content := f.snapshot(t)
+	rows, err := content.Get(ctx, children)
+	if err != nil || len(rows) != len(children) {
+		t.Fatalf("emitted sources: rows=%d err=%v", len(rows), err)
+	}
+	recorder := &parentBatchRecorder{}
+	f.app.Checker.chain.Links = []authz.Link{recorder}
+	caller, err := f.app.Checker.callerFor(ctx, model.PrincipalRef{Kind: "user", ID: "user:viewer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := f.app.Checker.load(ctx, content, caller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parents, err := f.app.Checker.parentProjectionsFromRows(ctx, caller, authority, content, rows)
+	if err != nil || len(parents) != 1000 {
+		t.Fatalf("parent batch: parents=%d err=%v", len(parents), err)
+	}
+	for _, child := range children {
+		if got := parents[child.ID]; !got.Exists || got.Ref == nil || got.Ref.ID != "new" {
+			t.Fatalf("parent for %s: %+v", child.ID, got)
+		}
+		if content.gets[child.ID] != 1 {
+			t.Fatalf("emitted body %s materialized %d times", child.ID, content.gets[child.ID])
+		}
+	}
+	if content.gets["new"] != 1 {
+		t.Fatalf("shared parent materialized %d times", content.gets["new"])
+	}
+	if len(recorder.batches) != 2 || len(recorder.batches[0]) != 1000 || len(recorder.batches[1]) != 1 {
+		t.Fatalf("authorization was not batched by emitted children and distinct parents: %+v", recorder.batches)
+	}
+}
+
+func TestParentProjectionReusesParentAlreadyEmittedAndRefusesFailedBatch(t *testing.T) {
+	f := newHFixture(t, true)
+	ctx := context.Background()
+	content := f.snapshot(t)
+	caller, err := f.app.Checker.callerFor(ctx, model.PrincipalRef{Kind: "user", ID: "user:viewer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := f.app.Checker.load(ctx, content, caller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := content.Get(ctx, []model.Ref{hRef("visible"), hRef("new")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parents, err := f.app.Checker.parentProjectionsFromRows(ctx, caller, authority, content, rows)
+	if err != nil || parents["visible"].Ref == nil || content.gets["visible"] != 1 || content.gets["new"] != 1 {
+		t.Fatalf("emitted parent reread: projections=%+v gets=%+v err=%v", parents, content.gets, err)
+	}
+	content.failGet = "old"
+	rows, err = content.Get(ctx, []model.Ref{hRef("child")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parents, err = f.app.Checker.parentProjectionsFromRows(ctx, caller, authority, content, rows)
+	requireHCode(t, err, "authz_unavailable")
+	if parents != nil {
+		t.Fatal("failed parent batch published partial output")
+	}
+}
+
 func TestHierarchyHTTPParentCustomForbidAndRefCaveat(t *testing.T) {
 	for _, mode := range []string{"custom-forbid", "ref-caveat"} {
 		t.Run(mode, func(t *testing.T) {

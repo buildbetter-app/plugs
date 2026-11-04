@@ -3,6 +3,8 @@ package rpc_test
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -43,6 +45,96 @@ func TestWorkflowCursorCarriesSnapshotAcrossPhaseTransition(t *testing.T) {
 	last := result(t, call(t, s, context.Background(), "bead.ready", paramsJSON(t, params)))
 	if calls != 2 || last["nextCursor"] != nil || last["items"].([]any)[0].(map[string]any)["id"] != "next" {
 		t.Fatal("provider transition failed", last)
+	}
+}
+
+func TestReadyCursorRetainsLegacyDigestAndVersionsCanonicalCommitment(t *testing.T) {
+	legacy := strings.Repeat("ab", sha256.Size)
+	for _, membership := range []string{"", legacy, "v2:" + legacy} {
+		t.Run(fmt.Sprintf("membership=%s", membership), func(t *testing.T) {
+			at := service.AsOf{Revision: model.Natural64(9), Incarnation: "inc"}
+			deadline := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+			binding := &service.WorkflowPageSnapshot{Revision: model.Natural64(12), ValidUntil: &deadline}
+			calls := 0
+			probe := &incarnationService{readyPage: func(_ context.Context, req service.ReadyRequest) (service.BeadPage, error) {
+				calls++
+				if req.Position != nil {
+					position := req.Position
+					if position.ReadyMembership != membership || position.Offset != 1 || !position.AuthorizationBound || position.AuthorizationRevision.String() != "7" || !position.WorkflowSnapshot.Equal(binding) {
+						t.Fatalf("cursor changed its verifier or authority/provider binding: %+v", position)
+					}
+					return service.BeadPage{Items: []service.Bead{{ID: "last", Type: "issue"}}, AsOf: at, WorkflowSnapshot: binding, ReadyMembership: membership}, nil
+				}
+				return service.BeadPage{Items: []service.Bead{{ID: "first", Type: "issue"}}, AsOf: at, WorkflowSnapshot: binding, ReadyMembership: membership,
+					Next: &service.PagePosition{Offset: 1, AsOf: at, AuthorizationBound: true, AuthorizationRevision: model.Natural64(7), WorkflowSnapshot: binding, ReadyMembership: membership}}, nil
+			}}
+			s := pagingServer(t, probe, pagingConfig())
+			params := pageParams("bead.ready")
+			params["limit"] = 1
+			first := result(t, call(t, s, context.Background(), "bead.ready", paramsJSON(t, params)))
+			token := first["nextCursor"].(string)
+			body, err := base64.RawURLEncoding.DecodeString(strings.Split(token, ".")[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatal(err)
+			}
+			version := float64(1)
+			if strings.HasPrefix(membership, "v2:") {
+				version = 2
+			}
+			if payload["version"] != version {
+				t.Fatalf("cursor version = %v, want %v", payload["version"], version)
+			}
+			params["cursor"] = token
+			last := result(t, call(t, s, context.Background(), "bead.ready", paramsJSON(t, params)))
+			if calls != 2 || last["nextCursor"] != nil || last["items"].([]any)[0].(map[string]any)["id"] != "last" {
+				t.Fatalf("membership continuation failed: calls=%d page=%v", calls, last)
+			}
+		})
+	}
+}
+
+func TestReadyCursorRejectsCommitmentVersionMismatchBeforeService(t *testing.T) {
+	legacy := strings.Repeat("ab", sha256.Size)
+	at := service.AsOf{Revision: model.Natural64(9), Incarnation: "inc"}
+	calls := 0
+	probe := &incarnationService{readyPage: func(context.Context, service.ReadyRequest) (service.BeadPage, error) {
+		calls++
+		return service.BeadPage{Items: []service.Bead{{ID: "first", Type: "issue"}}, AsOf: at, ReadyMembership: legacy,
+			Next: &service.PagePosition{Offset: 1, AsOf: at, ReadyMembership: legacy}}, nil
+	}}
+	config := pagingConfig()
+	s := pagingServer(t, probe, config)
+	params := pageParams("bead.ready")
+	first := result(t, call(t, s, context.Background(), "bead.ready", paramsJSON(t, params)))
+	token := first["nextCursor"].(string)
+	body, err := base64.RawURLEncoding.DecodeString(strings.Split(token, ".")[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []struct {
+		version    int
+		membership string
+	}{{1, "v2:" + legacy}, {2, legacy}, {2, ""}, {3, "v2:" + legacy}, {2, "v2:" + legacy[:62]}, {2, "v3:" + legacy}} {
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		payload["version"], payload["readyMembership"] = invalid.version, invalid.membership
+		changed, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mac := hmac.New(sha256.New, config.CursorKey)
+		_, _ = mac.Write(changed)
+		params["cursor"] = base64.RawURLEncoding.EncodeToString(changed) + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+		requireCode(t, call(t, s, context.Background(), "bead.ready", paramsJSON(t, params)), "cursor_invalid")
+	}
+	if calls != 1 {
+		t.Fatalf("invalid commitment reached service: calls=%d", calls)
 	}
 }
 
