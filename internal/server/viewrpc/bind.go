@@ -60,13 +60,14 @@ func BindWithConfig(registry *rpc.Registry, service Service, cfg Config) error {
 }
 
 type params struct {
-	CountOnly  bool            `json:"countOnly,omitempty"`
-	ViewID     string          `json:"viewId,omitempty"`
-	Definition *definitionWire `json:"definition,omitempty"`
-	Cursor     *string         `json:"cursor,omitempty"`
-	AsOf       *asOfWire       `json:"asOf,omitempty"`
-	ItemID     string          `json:"itemId,omitempty"`
-	Meta       wire.Meta       `json:"_meta,omitempty"`
+	CountOnly  bool                 `json:"countOnly,omitempty"`
+	Stale      *viewops.StaleFilter `json:"stale,omitempty"`
+	ViewID     string               `json:"viewId,omitempty"`
+	Definition *definitionWire      `json:"definition,omitempty"`
+	Cursor     *string              `json:"cursor,omitempty"`
+	AsOf       *asOfWire            `json:"asOf,omitempty"`
+	ItemID     string               `json:"itemId,omitempty"`
+	Meta       wire.Meta            `json:"_meta,omitempty"`
 }
 
 type asOfWire struct {
@@ -130,12 +131,15 @@ func dispatch(ctx context.Context, service Service, codec *CursorCodec, call rpc
 				return nil, err
 			}
 		}
-		result, err := service.Run(ctx, call.Principal, viewops.RunRequest{CountOnly: p.CountOnly, ViewID: p.ViewID, Definition: p.Definition.domain(), Cursor: cursor, AsOf: p.AsOf.domain(), Project: call.Meta.Project, Agent: call.Meta.Agent})
+		result, err := service.Run(ctx, call.Principal, viewops.RunRequest{CountOnly: p.CountOnly, Stale: p.Stale, ViewID: p.ViewID, Definition: p.Definition.domain(), Cursor: cursor, AsOf: p.AsOf.domain(), Project: call.Meta.Project, Agent: call.Meta.Agent})
 		if err != nil {
 			return nil, err
 		}
 		return encodeResult(codec, call, p, result)
 	case "view.explain":
+		if p.Stale != nil {
+			return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: "stale is only available on view.run"}}
+		}
 		result, err := service.Explain(ctx, call.Principal, viewops.ExplainRequest{ViewID: p.ViewID, ItemID: p.ItemID, Project: call.Meta.Project, Agent: call.Meta.Agent})
 		if err != nil {
 			return nil, err
@@ -205,6 +209,9 @@ func encodeResult(codec *CursorCodec, call rpc.Call, p params, result viewops.Re
 
 func continuationParams(call rpc.Call, p params, cursor string) (map[string]any, error) {
 	params := map[string]any{}
+	if p.Stale != nil {
+		params["stale"] = *p.Stale
+	}
 	if cursor != "" {
 		params["cursor"] = cursor
 	}
