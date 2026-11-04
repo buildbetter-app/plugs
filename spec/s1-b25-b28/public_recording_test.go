@@ -1202,7 +1202,7 @@ func nativePlugImageRows(t *testing.T, image map[string]any) map[string]driver.R
 	return index
 }
 
-func assertNativePlugBaseline(t *testing.T, image map[string]any) {
+func assertNativePlugBaseline(t *testing.T, image map[string]any, profile driver.RestoreImportProfile) {
 	t.Helper()
 	rows := nativePlugImageRows(t, image)
 	meta := image["meta"].(driver.Meta)
@@ -1222,13 +1222,109 @@ func assertNativePlugBaseline(t *testing.T, image map[string]any) {
 			t.Fatalf("native-origin operation receipt predates its recording: %s", key)
 		}
 	}
+	assertNativePlugImportRows(t, image, rows, profile)
+}
+
+// Bind the saved baseline to the actual retained input, not just to itself.
+// This checks complete raw issue fields and auxiliary source bodies; it does
+// not turn retained provenance into proof of every typed interchange semantic.
+func assertNativePlugImportRows(t *testing.T, image map[string]any, rows map[string]driver.Record, profile driver.RestoreImportProfile) {
+	t.Helper()
+	archiveBytes := image["source_archive"].([]byte)
+	archive, err := dumpformat.Read(bytes.NewReader(archiveBytes))
+	if err != nil || hashBytes(archiveBytes) != profile.ArchiveDigest {
+		t.Fatalf("native-origin import baseline lacks its exact retained input: %v", err)
+	}
+	manifest := archive.Manifest()
+	if driver.StoreID(manifest.StoreID) != profile.SourceStoreID || profile.HistoryMode != driver.RestoreHistoryModeSnapshot {
+		t.Fatal("native-origin import baseline differs from its admitted snapshot source")
+	}
+	wantKinds := map[string]string{}
+	add := func(id, kind string) {
+		if _, duplicate := wantKinds[id]; duplicate {
+			t.Fatalf("native-origin input/generated row identity collides: %s", id)
+		}
+		wantKinds[id] = kind
+	}
+	// These are the generated records in this exact product's snapshot importer.
+	// Additional generated kinds require their own source-defined contract.
+	add("restore/archive", "restore-archive")
+	add("instance_config/restore-import/binding", "instance_config")
+	for _, project := range manifest.Projects {
+		add("instance_config/restore-import/project/"+project.Prefix, "instance_config")
+	}
+	requireJSON := func(id string, got []byte, want any) {
+		wantBytes, encodeErr := json.Marshal(want)
+		actual, actualErr := readNativeJSON(got)
+		expected, expectedErr := readNativeJSON(wantBytes)
+		if encodeErr != nil || actualErr != nil || expectedErr != nil || !reflect.DeepEqual(actual, expected) {
+			t.Fatalf("native-origin complete retained source payload differs: %s", id)
+		}
+	}
+	for _, kind := range manifest.Kinds {
+		sources := archive.Records(kind.Name)
+		if len(sources) != kind.Count {
+			t.Fatalf("native-origin input kind census differs: %s", kind.Name)
+		}
+		for _, source := range sources {
+			id := source.ID
+			if kind.Name != "bead" {
+				id = "source/" + kind.Name + "/" + source.ID
+			}
+			add(id, kind.Name)
+			row, present := rows[id]
+			if !present || row.Kind != kind.Name {
+				t.Fatalf("native-origin input row is absent or has another kind: %s", id)
+			}
+			if kind.Name == "bead" {
+				doc, err := pipeline.DecodeDocument(row.Body)
+				if err != nil || doc.ID != source.ID || doc.Project != source.Project {
+					t.Fatalf("native-origin source bead identity differs: %s: %v", id, err)
+				}
+				requireJSON(id+"/beads.source_fields", doc.Metadata["beads.source_fields"], source.Source.Fields)
+				continue
+			}
+			body := make(map[string]any, len(source.Body)+3)
+			for key, value := range source.Body {
+				body[key] = value
+			}
+			body["source_id"], body["source_table"], body["source"] = source.ID, source.Source.Table, source.Source.Fields
+			if kind.Name == "beads-archive" {
+				body["read_only"], body["redactable"] = true, true
+			}
+			requireJSON(id, row.Body, body)
+		}
+	}
+	if len(rows) != len(wantKinds) {
+		t.Fatalf("native-origin complete import row census differs: got %d, want %d", len(rows), len(wantKinds))
+	}
+	ids := make([]string, 0, len(wantKinds))
+	for id, kind := range wantKinds {
+		if row, present := rows[id]; !present || row.Kind != kind {
+			t.Fatalf("native-origin generated/source row is absent or has another kind: %s", id)
+		}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	imported := image["import_receipt"].(*driver.IdempotencyRecord)
+	meta := image["meta"].(driver.Meta)
+	wantCommit := model.Commit{Revision: meta.HistoryFloor, Results: []model.OpResult{}, Warnings: []model.Warning{}}
+	wantChanges := make([]model.ChangeRecord, 0, len(ids))
+	for _, id := range ids {
+		row := rows[id]
+		wantCommit.Results = append(wantCommit.Results, model.OpResult{Ref: row.Ref, Revision: row.Revision, Record: json.RawMessage(row.Body)})
+		wantChanges = append(wantChanges, model.ChangeRecord{Ref: row.Ref, Op: model.OpCreate, FromRevision: model.Natural64(0), ChangedPaths: []string{"/"}})
+	}
+	if !reflect.DeepEqual(imported.Commit, wantCommit) || !reflect.DeepEqual(imported.Changeset.Changes, wantChanges) || !reflect.DeepEqual(imported.Changeset.Principal, profile.Admission.Actor) || imported.Changeset.IdempotencyKey != profile.IdempotencyKey {
+		t.Fatal("native-origin import receipt does not bind every complete saved row and creation exactly once in order")
+	}
 }
 
 // The four declared scalar/label updates have no hierarchy edits or mutators.
 // Conserve every captured plane, permitting only the requested target body,
 // one revision/version/legacy changeset and that operation's finalized receipt.
-// Derivation rows (including Index values) have no permitted delta here.
-func assertNativePlugWriteDelta(t *testing.T, before, after map[string]any, req service.UpdateRequest, meta model.WriteMeta, actor model.PrincipalRef, commit model.Commit, receiptKey string) {
+// The current Writer also publishes exactly the touched bead's ready sort key.
+func assertNativePlugWriteDelta(t *testing.T, store driver.Store, before, after map[string]any, req service.UpdateRequest, meta model.WriteMeta, actor model.PrincipalRef, commit model.Commit, receiptKey string, interval [2]time.Time) {
 	t.Helper()
 	oldRows, newRows := nativePlugImageRows(t, before), nativePlugImageRows(t, after)
 	oldMeta, newMeta := before["meta"].(driver.Meta), after["meta"].(driver.Meta)
@@ -1244,7 +1340,7 @@ func assertNativePlugWriteDelta(t *testing.T, before, after map[string]any, req 
 	if !reflect.DeepEqual(newMeta, wantMeta) || !reflect.DeepEqual(after["snapshot"], wantView) || commit.Revision != revision {
 		t.Fatal("native-origin successful write changed identity/floor or advanced by other than one revision")
 	}
-	for _, key := range []string{"changeset_cursor", "import_receipt", "source_archive", "derived", "derived_observations"} {
+	for _, key := range []string{"changeset_cursor", "import_receipt", "source_archive"} {
 		if !reflect.DeepEqual(before[key], after[key]) {
 			t.Fatalf("native-origin successful write changed conserved %s", key)
 		}
@@ -1326,9 +1422,21 @@ func assertNativePlugWriteDelta(t *testing.T, before, after map[string]any, req 
 		t.Fatal("native-origin changeset lacks its actual UTC time or request key")
 	}
 	wantEntry := model.Changeset{Revision: revision, Branch: model.Natural64(0), Incarnation: oldMeta.Incarnation, Kind: model.ChangesetWrite, Time: entry.Time, Principal: actor, IdempotencyKey: meta.IdempotencyKey, Changes: []model.ChangeRecord{{Ref: old.Ref, Op: model.OpPatch, FromRevision: old.Revision, ChangedPaths: paths}}}
+	// PostgreSQL Commit explicitly stores an empty authorization chain when
+	// the legacy Writer header supplies nil; memory and SQLite preserve nil.
+	// Bind that exact representation to the real engine, never to the observed
+	// entry. Keep all captured slices and every other header field unchanged.
+	switch store.(type) {
+	case *postgres.Store:
+		wantEntry.Chain = []string{}
+	case *memory.Store, *sqlite.Store:
+	default:
+		t.Fatalf("native-origin changeset oracle has no declared engine: %T", store)
+	}
 	if !reflect.DeepEqual(entry, wantEntry) {
 		t.Fatal("native-origin new changeset has an undeclared identity/path/event/mutator delta")
 	}
+	assertNativeReadySortDelta(t, before, after, actual, interval, entry.Time)
 	oldVersions, newVersions := before["versions"].(map[string][]driver.Version), after["versions"].(map[string][]driver.Version)
 	for id, history := range oldVersions {
 		if id != req.ID.ID {
@@ -1380,6 +1488,96 @@ func assertNativePlugWriteDelta(t *testing.T, before, after map[string]any, req 
 			}
 		} else if !reflect.DeepEqual(previous, newReceipts[key]) {
 			t.Fatalf("native-origin successful write changed unrelated receipt %s", key)
+		}
+	}
+}
+
+// The post-PR393 base includes the Writer's ready/<id> projection. Validate
+// its one exact source-defined delta, including the full observed Index,
+// without exempting the sort table or learning expected payloads from it.
+func assertNativeReadySortDelta(t *testing.T, before, after map[string]any, target driver.Record, interval [2]time.Time, committedAt time.Time) {
+	t.Helper()
+	key := "ready/" + target.Ref.ID
+	oldRows := before["derived"].(map[driver.DerivedTable][]driver.DerivedRow)
+	newRows := after["derived"].(map[driver.DerivedTable][]driver.DerivedRow)
+	oldStates := before["derived_observations"].(map[driver.DerivedTable][]driver.LockState)
+	newStates := after["derived_observations"].(map[driver.DerivedTable][]driver.LockState)
+	var changed *driver.DerivedRow
+	for i := range newRows[driver.DerivedSortKey] {
+		row := &newRows[driver.DerivedSortKey][i]
+		if row.Key == key {
+			changed = row
+		}
+	}
+	if changed == nil {
+		t.Fatal("native-origin write omitted its exact ready sort projection")
+	}
+	id, ranked, err := pipeline.DecodeReadySortKey(*changed)
+	if err != nil || id != target.Ref.ID || interval[0].IsZero() || interval[1].Before(interval[0]) || ranked.RankedAt.Before(interval[0]) || ranked.RankedAt.After(committedAt) || committedAt.After(interval[1]) {
+		t.Fatalf("native-origin ready sort clock/identity is outside the actual write interval: %v", err)
+	}
+	doc, err := pipeline.DecodeDocument(target.Body)
+	if err != nil || doc.CreatedAt == nil || doc.CreatedAt.IsZero() {
+		t.Fatalf("native-origin ready sort projection lacks its original creation instant: %v", err)
+	}
+	body, err := readNativeJSON(target.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	object, ok := body.(map[string]any)
+	if !ok {
+		t.Fatal("native-origin ready sort source is not an object")
+	}
+	fields, ok := object["fields"].(map[string]any)
+	if !ok {
+		t.Fatal("native-origin ready sort source lacks fields")
+	}
+	priority, ok := fields["priority"].(json.Number)
+	if !ok {
+		t.Fatal("native-origin ready sort priority is not a captured number")
+	}
+	p, err := priority.Int64()
+	if err != nil || p < 0 || p > 4 {
+		t.Fatal("native-origin ready sort priority is not a declared integer")
+	}
+	// B01 uses >= at the 48-hour boundary. Compute the classifier from the
+	// verified target document and bounded actual evaluation time, independently
+	// of service.ReadySortKey and of the stored bucket/rank values.
+	bucket, rank := 0, int(p)
+	if doc.CreatedAt.Before(ranked.RankedAt.Add(-48 * time.Hour)) {
+		bucket, rank = 1, 999
+	}
+	value, err := json.Marshal(pipeline.ReadySortKey{Bucket: bucket, Rank: rank, CreatedAt: doc.CreatedAt.UTC(), RankedAt: ranked.RankedAt, Revision: target.Revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRow := driver.DerivedRow{Key: key, Value: value}
+	wantState := driver.LockState{Key: driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedSortKey, Key: key}}, Revision: target.Revision, Derived: &wantRow, Present: true}
+	for table, previous := range oldRows {
+		if table != driver.DerivedSortKey {
+			if !reflect.DeepEqual(previous, newRows[table]) || !reflect.DeepEqual(oldStates[table], newStates[table]) {
+				t.Fatalf("native-origin ready sort publication changed another derived table: %s", table)
+			}
+			continue
+		}
+		wantRows := make([]driver.DerivedRow, 0, len(previous)+1)
+		wantStates := make([]driver.LockState, 0, len(oldStates[table])+1)
+		for _, row := range previous {
+			if row.Key != key {
+				wantRows = append(wantRows, row)
+			}
+		}
+		for _, state := range oldStates[table] {
+			if state.Key.Derived.Key != key {
+				wantStates = append(wantStates, state)
+			}
+		}
+		wantRows = append(wantRows, wantRow)
+		wantStates = append(wantStates, wantState)
+		sort.Slice(wantRows, func(i, j int) bool { return wantRows[i].Key < wantRows[j].Key })
+		sort.Slice(wantStates, func(i, j int) bool { return wantStates[i].Key.Derived.Key < wantStates[j].Key.Derived.Key })
+		if !reflect.DeepEqual(wantRows, newRows[table]) || !reflect.DeepEqual(wantStates, newStates[table]) {
+			t.Fatal("native-origin ready sort publication changed more than its exact target payload/index/revision")
 		}
 	}
 }
@@ -1504,7 +1702,7 @@ func recordPublicSubscriber(t *testing.T, ctx context.Context, store driver.Stor
 	}
 	baseline := nativePlugImage(t, ctx, store, profile)
 	writeRecordingValue(t, path+".baseline.json", baseline)
-	assertNativePlugBaseline(t, baseline)
+	assertNativePlugBaseline(t, baseline, profile)
 	previousImage := baseline
 	var last port.WriteOutcome
 	for i, req := range requests {
@@ -1517,18 +1715,21 @@ func recordPublicSubscriber(t *testing.T, ctx context.Context, store driver.Stor
 		before := read()
 		receiptKey := fmt.Sprintf("s1-native-public-%d", i)
 		meta := model.WriteMeta{Project: before[req.ID.ID].Project, IdempotencyKey: hashBytes([]byte(receiptKey))}
+		startedAt := time.Now().UTC()
 		outcome, err := domain.UpdateWithOutcome(ctx, actor, req, meta)
+		interval := [2]time.Time{startedAt, time.Now().UTC()}
 		typed := retainReturn(fmt.Sprintf("write-%d", i), outcome, err)
+		writeRecordingValue(t, path+fmt.Sprintf(".write-%d.interval.json", i), interval)
 		complete := nativePlugImage(t, ctx, store, profile)
 		writeRecordingValue(t, path+fmt.Sprintf(".write-%d.json", i), complete)
 		after := read()
-		appendReceipt(map[string]any{"method": "bead.update", "request": req, "meta": meta, "outcome": rawOutcome(outcome), "error": fmt.Sprint(err), "typed_error": typed, "before": before, "after": after, "complete_preimage": preimagePath})
+		appendReceipt(map[string]any{"method": "bead.update", "request": req, "meta": meta, "outcome": rawOutcome(outcome), "error": fmt.Sprint(err), "typed_error": typed, "before": before, "after": after, "complete_preimage": preimagePath, "call_interval": interval})
 		flush()
 		validateSuccessfulOutcome(outcome, err)
 		if err != nil || outcome.Replayed || len(outcome.Commit.Warnings) != 0 || postCount() != i+1 {
 			t.Fatalf("native public update/subscriber: %+v err=%v", outcome, err)
 		}
-		assertNativePlugWriteDelta(t, preimage, complete, req, meta, actor, outcome.Commit, receiptKey)
+		assertNativePlugWriteDelta(t, store, preimage, complete, req, meta, actor, outcome.Commit, receiptKey, interval)
 		expected := before[req.ID.ID]
 		for field, value := range req.Fields {
 			expected.Fields[field] = value
