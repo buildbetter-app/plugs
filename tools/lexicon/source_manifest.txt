@@ -950,6 +950,7 @@ internal/storage/conformance/lifetimes.go
 internal/storage/conformance/locks.go
 internal/storage/conformance/noops.go
 internal/storage/conformance/readyorder/BUILD.bazel
+internal/storage/conformance/readyorder/certificate.go
 internal/storage/conformance/readyorder/writer.go
 internal/storage/conformance/responses.go
 internal/storage/conformance/selection.go
@@ -986,6 +987,7 @@ internal/storage/driver/parent_counter.go
 internal/storage/driver/parent_counter_test.go
 internal/storage/driver/read_work.go
 internal/storage/driver/ready_order.go
+internal/storage/driver/ready_publication.go
 internal/storage/driver/receipt_contract_test.go
 internal/storage/driver/restore.go
 internal/storage/driver/restore_test.go
@@ -1074,6 +1076,9 @@ internal/storage/postgres/persistence_test.go
 internal/storage/postgres/query.go
 internal/storage/postgres/reader.go
 internal/storage/postgres/reader_batch_test.go
+internal/storage/postgres/ready_certificate.go
+internal/storage/postgres/ready_certificate_schema.go
+internal/storage/postgres/ready_certificate_test.go
 internal/storage/postgres/ready_order.go
 internal/storage/postgres/ready_order_test.go
 internal/storage/postgres/schema.go
@@ -1098,6 +1103,7 @@ internal/storage/postgres/store.go
 internal/storage/postgres/transaction.go
 internal/storage/readyindex/BUILD.bazel
 internal/storage/readyindex/dense_test.go
+internal/storage/readyindex/publication.go
 internal/storage/readyindex/ready_order_test.go
 internal/storage/readyindex/select.go
 internal/storage/readyindex/tree.go
@@ -1144,6 +1150,9 @@ internal/storage/sqlite/publication_lease_race_test.go
 internal/storage/sqlite/publication_lease_test.go
 internal/storage/sqlite/query_cursor_test.go
 internal/storage/sqlite/reader.go
+internal/storage/sqlite/ready_certificate.go
+internal/storage/sqlite/ready_certificate_schema.go
+internal/storage/sqlite/ready_certificate_test.go
 internal/storage/sqlite/ready_order.go
 internal/storage/sqlite/recordref_test.go
 internal/storage/sqlite/schema.go

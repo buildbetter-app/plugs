@@ -2,7 +2,7 @@ load("@rules_go//go:def.bzl", "go_library")
 
 go_library(
     name = "readyorder",
-    srcs = ["writer.go"],
+    srcs = ["certificate.go", "writer.go"],
     importpath = "github.com/buildbetter-app/plugs/internal/storage/conformance/readyorder",
     visibility = ["//:__subpackages__"],
     deps = [

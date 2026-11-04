@@ -451,8 +451,8 @@ func TestReadyOrderRealWriter(t *testing.T) {
 			return s
 		})
 	})
-	t.Run("sqlite_metadata", func(t *testing.T) {
-		readyorder.RunWriterMetadata(t, func(t *testing.T) driver.Store {
+	t.Run("sqlite_certified", func(t *testing.T) {
+		readyorder.RunWriter(t, func(t *testing.T) driver.Store {
 			s, err := (sqlite.Driver{}).Open(context.Background(), driver.Config{DSN: filepath.Join(t.TempDir(), "writer.db")})
 			if err != nil {
 				t.Fatal(err)
