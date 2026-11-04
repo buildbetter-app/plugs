@@ -26,6 +26,8 @@ const (
 	Read              Action = "read"
 	Modify            Action = "modify"
 	ImportBulkHistory Action = "importBulkHistory"
+	Transition        Action = "transition"
+	OverrideGuard     Action = "override_guard"
 )
 
 type ResourceKind string
@@ -120,6 +122,14 @@ type CheckRequest struct {
 	Action   Action
 	Resource Resource
 	Method   string
+	// Transition is trusted host context, never RPC input. Strings are values,
+	// so freezing a request also detaches this exact target-status binding.
+	Transition TransitionContext
+}
+
+type TransitionContext struct {
+	Project, Type        string
+	FromStatus, ToStatus string
 }
 type ListRequest struct {
 	Caller       Caller

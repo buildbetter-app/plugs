@@ -19,6 +19,7 @@ go_test(
         "fixture_test.go",
         "force_contract_test.go",
         "heartbeat_repair_test.go",
+        "installed_lifecycle_test.go",
         "opaque_kinds_test.go",
         "projection_test.go",
         "provenance_test.go",

@@ -20,7 +20,7 @@ func (c *Checker) AuthorizeGuardOverride(ctx context.Context, _ port.Authorizati
 		if target.Kind != "bead" || authz.CanonicalRef(target.Ref) != nil {
 			return forbidden("invalid guard override target")
 		}
-		allowed, err := c.decision(ctx, reader, by, authz.Action("override_guard"), authz.Bead, target.Ref, "bead.close")
+		allowed, err := c.decision(ctx, reader, by, authz.OverrideGuard, authz.Bead, target.Ref, "bead.close")
 		if err != nil {
 			return err
 		}

@@ -723,6 +723,7 @@ internal/server/authzrpc/hierarchy_lifecycle_times_test.go
 internal/server/authzrpc/hierarchy_read.go
 internal/server/authzrpc/hierarchy_test.go
 internal/server/authzrpc/history_authority_test.go
+internal/server/authzrpc/lifecycle.go
 internal/server/authzrpc/predicate_count_test.go
 internal/server/authzrpc/service.go
 internal/server/authzrpc/slice.go
@@ -1285,6 +1286,7 @@ spec/s1-b05-b08/ephemeral_cycle_test.go
 spec/s1-b05-b08/fixture_test.go
 spec/s1-b05-b08/force_contract_test.go
 spec/s1-b05-b08/heartbeat_repair_test.go
+spec/s1-b05-b08/installed_lifecycle_test.go
 spec/s1-b05-b08/opaque_kinds_test.go
 spec/s1-b05-b08/prepared_reference_test.py
 spec/s1-b05-b08/project_reference.py

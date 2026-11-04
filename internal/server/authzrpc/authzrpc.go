@@ -110,6 +110,10 @@ type Config struct {
 	// guarded service exposes x.workflow.invoke and standard-tool routing while
 	// preserving the checker for core beads.
 	Workflow *workflowplugin.Provider
+	// LifecyclePolicy opts into the native close authority. Ref names a
+	// host-owned lifecycle_policy record in this store; public bead writes
+	// cannot create or replace that record. Missing policy grants deny.
+	LifecyclePolicy *LifecyclePolicyConfig
 }
 
 // Composition owns the installed chain and is useful to hosts that need the
@@ -165,17 +169,24 @@ func newWithClock(ctx context.Context, config Config, now func() time.Time) (*Co
 		return nil, err
 	}
 	chain := authz.Chain{Namespace: ns, Rules: []authz.RuleSet{rules}}
+	if config.LifecyclePolicy != nil {
+		if err := authz.CanonicalRef(config.LifecyclePolicy.Ref); err != nil {
+			return nil, fmt.Errorf("authzrpc: invalid lifecycle policy reference: %w", err)
+		}
+		chain.Rules = append(chain.Rules, &lifecycleRuleSet{namespace: ns, ref: config.LifecyclePolicy.Ref})
+	}
 	checker := &Checker{chain: chain, source: config.Facts, caller: caller, store: config.Store, lease: config.Lease, hierarchy: config.Hierarchy, now: now}
+	checker.lifecycle = config.LifecyclePolicy != nil
 	if mutable, ok := config.Facts.(*MutableFacts); ok {
 		if err := mutable.bind(ctx, config.Store, config.Lease, ns); err != nil {
 			return nil, err
 		}
 	}
-	// Only this successfully constructed fixed-authorizer route marks
-	// installation; requests still validate its current host facts. #18 has no
-	// transition action/target-status adapter. Keep that observation missing:
-	// the existing A3 permission guard must deny, never reuse modify grants.
-	ontology := service.NewOntology(nil, service.WithTransitionPermissionObserver(nil))
+	// The A3 guard asks this same chain for the distinct transition action on
+	// its tracked reader. The finite fixed rule has no such permit; an opt-in
+	// native lifecycle policy must supply a real target-status decision.
+	ontology := service.NewOntology(nil, service.WithTransitionPermissionObserver(checker.observeTransitionPermission))
+	checker.ontology = ontology
 	options := []pipeline.Option{pipeline.WithOntology(ontology), pipeline.WithAuthorizer(checker), pipeline.WithEventContext(checker), pipeline.WithClock(now)}
 	if config.Audit != nil {
 		options = append(options, pipeline.WithOntologyAudit(config.Audit))

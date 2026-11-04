@@ -12,6 +12,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/port"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -26,6 +27,8 @@ type Checker struct {
 	lease     driver.ActiveLease
 	hierarchy bool
 	now       func() time.Time
+	lifecycle bool
+	ontology  *service.Ontology
 }
 
 var _ port.Authorizer = (*Checker)(nil)
@@ -78,7 +81,14 @@ func (c *Checker) decision(ctx context.Context, snapshot Snapshot, principal mod
 	if err != nil {
 		return false, &model.Error{Message: "authorization facts unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
 	}
-	decisions, err := c.chain.Check(ctx, s, []authz.CheckRequest{{Caller: caller, Action: action, Resource: authz.Resource{Kind: kind, Ref: ref}, Method: method}})
+	request := authz.CheckRequest{Caller: caller, Action: action, Resource: authz.Resource{Kind: kind, Ref: ref}, Method: method}
+	if c.lifecycle && kind == authz.Bead && method == "bead.close" {
+		request.Transition, err = c.closeContext(ctx, snapshot, ref)
+		if err != nil {
+			return false, authzError(err)
+		}
+	}
+	decisions, err := c.chain.Check(ctx, s, []authz.CheckRequest{request})
 	if err != nil {
 		return false, authzError(err)
 	}
@@ -165,6 +175,33 @@ func (c *Checker) Authorize(ctx context.Context, stage port.AuthorizationStage, 
 		requests = append(requests, authz.CheckRequest{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Project, Ref: project}, Method: ""})
 	}
 	chain := c.chain
+	if c.lifecycle && !claimMaintenance {
+		closeRefs := make(map[model.Ref]bool)
+		for _, change := range proposal.Changes {
+			if proposal.Meta.Method == "bead.close" || change.Op.Kind == model.OpClose {
+				closeRefs[change.Resource.Ref] = true
+			}
+		}
+		for i := range requests {
+			if closeRefs[requests[i].Resource.Ref] {
+				requests[i].Transition, err = c.closeContext(ctx, reader, requests[i].Resource.Ref)
+				if err != nil {
+					return authzError(err)
+				}
+			}
+		}
+		// Receipt replay must obtain current transition authority too. The
+		// original publication's decision is never a reusable grant.
+		if stage == port.AuthorizeReplay {
+			for ref := range closeRefs {
+				transition, err := c.closeContext(ctx, reader, ref)
+				if err != nil {
+					return authzError(err)
+				}
+				requests = append(requests, authz.CheckRequest{Caller: caller, Action: authz.Transition, Resource: authz.Resource{Kind: authz.Bead, Ref: ref}, Method: "bead.close", Transition: transition})
+			}
+		}
+	}
 	var checkSlice authz.Slice = s
 	if claimMaintenance {
 		chain = c.claimMaintenanceChain()
@@ -237,6 +274,9 @@ func (c *Checker) validateExistingWrite(ctx context.Context, reader Snapshot, pr
 	if err != nil {
 		return forbidden("invalid proposed bead image")
 	}
+	if c.lifecycle && (proposal.Meta.Method == "bead.close" || change.Op.Kind == model.OpClose) {
+		return validateLifecycleImage(before, after, proposal.Principal, caller, change.SetBy)
+	}
 	method := proposal.Meta.Method
 	if method == "bead.heartbeat" || method == "bead.release" {
 		// The chain already evaluated the actual protected method. This
@@ -306,6 +346,8 @@ func (c *Checker) Visible(_ context.Context, p model.PrincipalRef, d wire.Method
 	}
 	if d.Permission == "write" {
 		switch d.Name {
+		case "bead.close", "tx.apply":
+			return c.lifecycle && p.Kind == "user", nil
 		case "bead.claim", "bead.claimNext", "bead.update", "bead.heartbeat", "bead.release":
 			return p.Kind == "agent" && p.Sponsor != nil && p.Sponsor.Kind == "user", nil
 		case "x.workflow.invoke":
