@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -16,6 +17,25 @@ func TestNativeCaptureRequiresPublicDeclaration(t *testing.T) {
 	_, files, err := (SQLSource{}).NativeInventory(context.Background(), NativeCapture{})
 	if err == nil || !strings.Contains(err.Error(), "explicit --plug-capture-public") || len(files) != 0 {
 		t.Fatalf("unapproved public census: %v", err)
+	}
+}
+
+func TestUniqueNativePathsPreservesFirstSeenDistinctPaths(t *testing.T) {
+	input := []string{
+		"/workspace/.beads/config.local.yaml",
+		"/workspace/.beads/config.yaml",
+		"/workspace/.beads/config.local.yaml",
+		"/workspace/.beads/metadata.json",
+		"/workspace/.beads/config.yaml",
+	}
+	got := uniqueNativePaths(input)
+	want := []string{
+		"/workspace/.beads/config.local.yaml",
+		"/workspace/.beads/config.yaml",
+		"/workspace/.beads/metadata.json",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("uniqueNativePaths() = %v, want %v", got, want)
 	}
 }
 

@@ -114,7 +114,7 @@ func (s SQLSource) NativeInventory(ctx context.Context, capture NativeCapture) (
 			return Inventory{}, nil, fmt.Errorf("unsupported native filesystem family %s", family)
 		}
 		rows := []any{}
-		for _, path := range paths {
+		for _, path := range uniqueNativePaths(paths) {
 			observed, err := observeNativePath(path, 0, &nativeCaptureBudget{})
 			if err != nil {
 				return Inventory{}, nil, fmt.Errorf("native %s: %w", family, err)
@@ -190,6 +190,24 @@ func (s SQLSource) NativeInventory(ctx context.Context, capture NativeCapture) (
 		return Inventory{}, nil, fmt.Errorf("native source census changed")
 	}
 	return inventory, sidecars, nil
+}
+
+// uniqueNativePaths preserves the caller's first-seen order while preventing
+// one filesystem path from being observed twice under the same native family.
+// The producer enumerates some families from two equivalent workspace roots;
+// when those roots resolve to the same absolute path, the strict consumer
+// must receive one observation with the path's actual state.
+func uniqueNativePaths(paths []string) []string {
+	seen := make(map[string]struct{}, len(paths))
+	unique := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		unique = append(unique, path)
+	}
+	return unique
 }
 
 func nativeFileFamily(family string) bool {
