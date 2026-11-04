@@ -18,6 +18,9 @@ func TestParseConfigSupportsFlatAndNestedAliases(t *testing.T) {
 	if err != nil || flat.Driver != "memory" || flat.Project != "local" || !flat.UI {
 		t.Fatalf("flat config=%+v err=%v", flat, err)
 	}
+	if flat.Ontology != nil {
+		t.Fatalf("standalone YAML unexpectedly installed ontology source: %+v", flat.Ontology)
+	}
 
 	quoted, err := ParseConfig([]byte("driver: \"memory\"\naddress: 127.0.0.1:0\nproject: \"true\"\nui: false\n"))
 	if err != nil || quoted.Driver != "memory" || quoted.Project != "true" {
@@ -71,6 +74,37 @@ func TestParseConfigRefusesUnsafeAnonymousListenerAndInvalidStorage(t *testing.T
 		}
 		if strings.Contains(err.Error(), "secret") {
 			t.Fatalf("DSN leaked in error: %v", err)
+		}
+	}
+}
+
+func TestParseConfigSelectsOnlyProtectedInstalledOntologyIdentity(t *testing.T) {
+	for _, data := range []string{
+		"ontology:\n  source: ontology/b03-runtime\n",
+		"ontology.source: ontology/b03-runtime\n",
+	} {
+		config, err := ParseConfig([]byte(data))
+		if err != nil || config.Ontology == nil || config.Ontology.Source == nil {
+			t.Fatalf("installed source config=%+v err=%v", config, err)
+		}
+		ref, err := config.Ontology.Source(config.Project)
+		if err != nil || ref.ID != "ontology/b03-runtime" || !ref.Branch.IsZero() {
+			t.Fatalf("installed source ref=%+v err=%v", ref, err)
+		}
+		if config.Ontology.Authorizer != nil || config.Ontology.ValidatingPre != nil || config.Ontology.EventContext != nil {
+			t.Fatal("configuration manufactured trusted plugin capabilities")
+		}
+	}
+	for _, data := range []string{
+		"ontology:\n  source: bead/not-ontology\n",
+		"ontology.source: ''\n",
+		"ontology.source: 'ontology/with space'\n",
+		"ontology.source: true\n",
+		"ontology.source: ontology/one\nontology:\n  source: ontology/two\n",
+		"ontology:\n  authorizer: allow\n",
+	} {
+		if _, err := ParseConfig([]byte(data)); err == nil {
+			t.Fatalf("accepted invalid installed source configuration %q", data)
 		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"sort"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
@@ -34,6 +35,11 @@ func decodeDocument(raw []byte) (pipeline.Document, error) {
 	if err := dec.Decode(new(any)); err != io.EOF || doc.ID == "" || doc.Type == "" || doc.Fields == nil {
 		return doc, failure("invalid_params", "invalid bead document")
 	}
+	for _, at := range []*time.Time{doc.CreatedAt, doc.StartedAt, doc.ClosedAt} {
+		if at != nil && at.IsZero() {
+			return doc, failure("invalid_params", "invalid stored lifecycle time")
+		}
+	}
 	if doc.Parent != nil {
 		if err := doc.Parent.Validate(); err != nil || !doc.Parent.IsID() || doc.Parent.ID == "" || !doc.Parent.Branch.IsZero() {
 			return doc, failure("invalid_params", "invalid stored parent")
@@ -44,10 +50,18 @@ func decodeDocument(raw []byte) (pipeline.Document, error) {
 	}
 	// Preserve member presence before Go zero values erase null/empty provenance.
 	var envelope struct {
-		Comments json.RawMessage `json:"comments"`
+		Comments  json.RawMessage `json:"comments"`
+		CreatedAt json.RawMessage `json:"createdAt"`
+		StartedAt json.RawMessage `json:"startedAt"`
+		ClosedAt  json.RawMessage `json:"closedAt"`
 	}
 	if json.Unmarshal(raw, &envelope) != nil {
 		return doc, failure("invalid_params", "invalid bead document")
+	}
+	for _, at := range []json.RawMessage{envelope.CreatedAt, envelope.StartedAt, envelope.ClosedAt} {
+		if bytes.Equal(bytes.TrimSpace(at), []byte("null")) {
+			return doc, failure("invalid_params", "stored lifecycle time must be an instant or absent")
+		}
 	}
 	if len(envelope.Comments) != 0 {
 		var comments []map[string]json.RawMessage
@@ -300,7 +314,8 @@ func beadValue(row storedBead) (Bead, error) {
 	if doc.Parent != nil {
 		parent = doc.Parent.ID
 	}
-	return Bead{ID: doc.ID, Type: doc.Type, Project: doc.Project, Revision: row.record.Revision, Status: state(doc).Status, Fields: doc.Fields, Metadata: metadata, Labels: append([]string(nil), doc.Labels...), Parent: parent}, nil
+	createdAt, _ := doc.CreationTime()
+	return Bead{ID: doc.ID, Type: doc.Type, Project: doc.Project, Revision: row.record.Revision, Status: state(doc).Status, Fields: doc.Fields, Metadata: metadata, Labels: append([]string(nil), doc.Labels...), Parent: parent, CreatedAt: createdAt}, nil
 }
 
 func beadPriority(bead Bead) (int, error) {
