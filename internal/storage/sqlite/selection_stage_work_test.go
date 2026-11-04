@@ -44,6 +44,10 @@ type selectionStageConn struct {
 	counts *selectionStageConnector
 }
 
+func (c *selectionStageConn) BeginTx(ctx context.Context, options sqldriver.TxOptions) (sqldriver.Tx, error) {
+	return c.Conn.(sqldriver.ConnBeginTx).BeginTx(ctx, options)
+}
+
 func (c *selectionStageConn) ExecContext(ctx context.Context, query string, args []sqldriver.NamedValue) (sqldriver.Result, error) {
 	return c.Conn.(sqldriver.ExecerContext).ExecContext(ctx, query, args)
 }
