@@ -100,14 +100,18 @@ func failure(code model.ErrorCode, message string) error {
 
 // preconditionFailure describes the selected CAS arm. Preparation keeps this
 // refusal private until AuthorizeBefore covers its expectation target.
-func preconditionFailure(reason, message string) *model.Error {
-	return &model.Error{Message: message, Data: model.ErrorData{Code: "precondition_failed", Details: map[string]any{"reason": reason}}}
+func preconditionFailure(reason, message string, refusing ...model.Ref) *model.Error {
+	err := &model.Error{Message: message, Data: model.ErrorData{Code: "precondition_failed", Details: map[string]any{"reason": reason}}}
+	if len(refusing) != 0 {
+		err.Data.Details["ref"] = refusing[0]
+	}
+	return err
 }
 
 // preconditionRevisionFailure adds the token from the pinned pre-read only
 // when the expected record exists.
-func preconditionRevisionFailure(current model.Revision) error {
-	err := preconditionFailure("revision", "precondition failed")
+func preconditionRevisionFailure(current model.Revision, refusing ...model.Ref) error {
+	err := preconditionFailure("revision", "precondition failed", refusing...)
 	err.Data.Details["currentRevision"] = current
 	return err
 }
@@ -657,7 +661,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				if expect.Revision != nil {
 					reason = "revision"
 				}
-				p.refusal = preconditionFailure(reason, "expected record is absent")
+				p.refusal = preconditionFailure(reason, "expected record is absent", ref)
 			}
 			continue
 		}
@@ -667,7 +671,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			}
 			if expect.Revision.String() != records[0].Revision.String() {
 				if p.refusal == nil {
-					p.refusal = preconditionRevisionFailure(records[0].Revision)
+					p.refusal = preconditionRevisionFailure(records[0].Revision, ref)
 				}
 			}
 		} else {
@@ -678,7 +682,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			if err != nil {
 				return nil, err
 			}
-			hash, err := expectationHash(doc, expect.Field)
+			hash, err := expectationHash(doc, expect.Field, ref)
 			if err != nil {
 				if p.refusal == nil {
 					p.refusal = err
@@ -687,7 +691,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			}
 			if hash != expect.Hash {
 				if p.refusal == nil {
-					p.refusal = preconditionFailure("hash", "field hash changed")
+					p.refusal = preconditionFailure("hash", "field hash changed", ref)
 				}
 			}
 		}
@@ -905,7 +909,7 @@ func (w *Writer) prepareMemory(ctx context.Context, reader driver.Reader, by mod
 				if expect.Revision != nil {
 					reason = "revision"
 				}
-				p.refusal = preconditionFailure(reason, "expected record is absent")
+				p.refusal = preconditionFailure(reason, "expected record is absent", ref)
 			}
 			continue
 		}
@@ -915,7 +919,7 @@ func (w *Writer) prepareMemory(ctx context.Context, reader driver.Reader, by mod
 			}
 			if expect.Revision.String() != rows[0].Revision.String() {
 				if p.refusal == nil {
-					p.refusal = preconditionRevisionFailure(rows[0].Revision)
+					p.refusal = preconditionRevisionFailure(rows[0].Revision, ref)
 				}
 			}
 			continue
@@ -941,7 +945,7 @@ func (w *Writer) prepareMemory(ctx context.Context, reader driver.Reader, by mod
 		hash, err := FieldHash(value)
 		if err != nil || hash != expect.Hash {
 			if p.refusal == nil {
-				p.refusal = preconditionFailure("hash", "field hash changed")
+				p.refusal = preconditionFailure("hash", "field hash changed", ref)
 			}
 		}
 	}
@@ -1444,17 +1448,17 @@ func FieldHash(value any) (string, error) {
 // the committed document metadata. Metadata is decoded and canonicalized only
 // for this comparison; the stored RawMessage and exported FieldHash remain
 // untouched.
-func expectationHash(doc Document, selector string) (string, error) {
+func expectationHash(doc Document, selector string, refusing ...model.Ref) (string, error) {
 	if key, ok := strings.CutPrefix(selector, "metadata."); ok {
 		raw, present := doc.Metadata[key]
 		if !present {
 			// The admitted string hash arm has no absence discriminator. Never
 			// treat a missing metadata key as the digest of JSON null.
-			return "", preconditionFailure("hash", "metadata key is absent")
+			return "", preconditionFailure("hash", "metadata key is absent", refusing...)
 		}
 		canonical, err := canonicalMetadataJSON(raw)
 		if err != nil {
-			return "", preconditionFailure("hash", "metadata value is invalid JSON")
+			return "", preconditionFailure("hash", "metadata value is invalid JSON", refusing...)
 		}
 		digest := sha256.Sum256(canonical)
 		return hex.EncodeToString(digest[:]), nil
