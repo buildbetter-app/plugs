@@ -140,7 +140,8 @@ func assertB14DumpHost(t *testing.T, host b14DumpHost, refs []model.Ref, want ma
 	}
 	for id, links := range want {
 		bead := b14DumpCall(t, host, "bead.get", map[string]any{"id": ref(id)})["bead"].(map[string]any)
-		gotJSON, err := json.Marshal(bead["links"])
+		body := b14DumpCall(t, host, "history.get", map[string]any{"ref": ref(id), "asOf": map[string]any{"revision": bead["revision"]}})["body"].(map[string]any)
+		gotJSON, err := json.Marshal(body["links"])
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -149,7 +150,7 @@ func assertB14DumpHost(t *testing.T, host b14DumpHost, refs []model.Ref, want ma
 			t.Fatal(err)
 		}
 		wantValue, err := wire.DecodeJSON(wantJSON)
-		if err != nil || !reflect.DeepEqual(bead["links"], wantValue) {
+		if err != nil || !reflect.DeepEqual(body["links"], wantValue) {
 			t.Fatalf("public links %s: got %s want %s err=%v", id, gotJSON, wantJSON, err)
 		}
 	}
