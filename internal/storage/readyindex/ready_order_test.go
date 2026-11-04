@@ -137,7 +137,7 @@ func maintain(t *testing.T, s driver.Store, lease driver.ActiveLease, mutations 
 	}
 	return work, revision
 }
-func selectOrder(t *testing.T, s driver.Store, modify func(*driver.ReadyOrderPlan)) (driver.ReadyOrderResult, error) {
+func selectOrder(t *testing.T, s driver.Store, metadataOnly bool, modify func(*driver.ReadyOrderPlan)) (driver.ReadyOrderResult, error) {
 	t.Helper()
 	ctx := context.Background()
 	m, e := s.Meta(ctx)
@@ -157,7 +157,16 @@ func selectOrder(t *testing.T, s driver.Store, modify func(*driver.ReadyOrderPla
 	if !ok {
 		t.Fatal("missing Ready capability")
 	}
-	return selector.SelectReadyOrder(ctx, p)
+	result, err := selector.SelectReadyOrder(ctx, p)
+	if !metadataOnly {
+		return result, err
+	}
+	// SQL metadata publication is checked independently of the public reader,
+	// which must refuse until the full physical source proof is available.
+	if !errors.Is(err, driver.ErrUnsupported) {
+		t.Fatalf("uncertified SQL snapshot accelerated: %+v %v", result, err)
+	}
+	return readyindex.Select(ctx, r, p)
 }
 func TestReadyOrderRealStoresMaintenanceAndSemantics(t *testing.T) {
 	factories := map[string]func(*testing.T) driver.Store{
@@ -173,6 +182,7 @@ func TestReadyOrderRealStoresMaintenanceAndSemantics(t *testing.T) {
 	for name, factory := range factories {
 		t.Run(name, func(t *testing.T) {
 			s := factory(t)
+			metadataOnly := name == "sqlite"
 			defer s.Close()
 			lease, err := s.Lease(context.Background(), "ready-regression", driver.LeaseTTL)
 			if err != nil {
@@ -201,7 +211,7 @@ func TestReadyOrderRealStoresMaintenanceAndSemantics(t *testing.T) {
 			}
 			work, revision := maintain(t, s, lease, mutations, false)
 			t.Logf("READY_WRITE sources=%d nodes=%d bytes=%d", len(mutations), work.WrittenNodes, work.WrittenBytes)
-			all, err := selectOrder(t, s, nil)
+			all, err := selectOrder(t, s, metadataOnly, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -237,7 +247,7 @@ func TestReadyOrderRealStoresMaintenanceAndSemantics(t *testing.T) {
 				refs = append(refs, mutations[i*10].Ref)
 			}
 			getSparse := func() (driver.ReadyOrderResult, error) {
-				return selectOrder(t, s, func(p *driver.ReadyOrderPlan) { p.UniformAuthorization = false; p.AuthorizedRefs = refs })
+				return selectOrder(t, s, metadataOnly, func(p *driver.ReadyOrderPlan) { p.UniformAuthorization = false; p.AuthorizedRefs = refs })
 			}
 			sparse, err := getSparse()
 			if err != nil || sparse.Total != 100 || sparse.Work.Leaves > 100 {
@@ -270,25 +280,25 @@ func TestReadyOrderRealStoresMaintenanceAndSemantics(t *testing.T) {
 			unsafe := mutations[0]
 			unsafe.Local = false
 			maintain(t, s, lease, []readyindex.Mutation{unsafe}, false)
-			if _, err = selectOrder(t, s, nil); !errors.Is(err, driver.ErrUnsupported) {
+			if _, err = selectOrder(t, s, metadataOnly, nil); !errors.Is(err, driver.ErrUnsupported) {
 				t.Fatal("unsafe source accelerated", err)
 			}
 			if _, err = s.(driver.CheckpointStore).SaveCheckpoint(context.Background(), lease, "ready-pending", 0, []byte("heartbeat overlay")); err != nil {
 				t.Fatal(err)
 			}
-			if _, err = selectOrder(t, s, nil); !errors.Is(err, driver.ErrUnsupported) {
+			if _, err = selectOrder(t, s, metadataOnly, nil); !errors.Is(err, driver.ErrUnsupported) {
 				t.Fatal("heartbeat restored coverage", err)
 			}
 			unsafe.Local = true
 			maintain(t, s, lease, []readyindex.Mutation{unsafe}, false)
-			if _, err = selectOrder(t, s, nil); err != nil {
+			if _, err = selectOrder(t, s, metadataOnly, nil); err != nil {
 				t.Fatal(err)
 			}
-			if _, err = selectOrder(t, s, func(p *driver.ReadyOrderPlan) { p.Eligibility = "refreshed ontology" }); !errors.Is(err, driver.ErrUnsupported) {
+			if _, err = selectOrder(t, s, metadataOnly, func(p *driver.ReadyOrderPlan) { p.Eligibility = "refreshed ontology" }); !errors.Is(err, driver.ErrUnsupported) {
 				t.Fatal("ontology refresh accepted", err)
 			}
 			for _, seed := range []string{"request-a", "request-b", "request-c"} {
-				got, err := selectOrder(t, s, func(p *driver.ReadyOrderPlan) { p.UniformAuthorization = false; p.AuthorizedRefs = refs; p.Seed = seed })
+				got, err := selectOrder(t, s, metadataOnly, func(p *driver.ReadyOrderPlan) { p.UniformAuthorization = false; p.AuthorizedRefs = refs; p.Seed = seed })
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -313,7 +323,7 @@ func TestReadyOrderRealStoresMaintenanceAndSemantics(t *testing.T) {
 					}
 				}
 			}
-			empty, err := selectOrder(t, s, func(p *driver.ReadyOrderPlan) { p.RawRefs = []model.Ref{} })
+			empty, err := selectOrder(t, s, metadataOnly, func(p *driver.ReadyOrderPlan) { p.RawRefs = []model.Ref{} })
 			if err != nil || empty.Total != 0 {
 				t.Fatal("present-empty raw refs", err)
 			}
@@ -366,11 +376,11 @@ func TestReadyOrderRealStoresMaintenanceAndSemantics(t *testing.T) {
 				t.Fatal(err)
 			}
 			tx.Close()
-			if _, err = selectOrder(t, s, nil); !errors.Is(err, driver.ErrUnsupported) {
+			if _, err = selectOrder(t, s, metadataOnly, nil); !errors.Is(err, driver.ErrUnsupported) {
 				t.Fatal("gap certified", err)
 			}
 			maintain(t, s, lease, []readyindex.Mutation{mutations[1]}, false)
-			if _, err = selectOrder(t, s, nil); !errors.Is(err, driver.ErrUnsupported) {
+			if _, err = selectOrder(t, s, metadataOnly, nil); !errors.Is(err, driver.ErrUnsupported) {
 				t.Fatal("gap recertified from final images", err)
 			}
 		})
@@ -381,6 +391,7 @@ func TestReadyOrderDeletionCanonicalPersistence(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite"} {
 		t.Run(engine, func(t *testing.T) {
 			var s driver.Store
+			metadataOnly := engine == "sqlite"
 			if engine == "memory" {
 				s = memory.New()
 			} else {
@@ -399,7 +410,7 @@ func TestReadyOrderDeletionCanonicalPersistence(t *testing.T) {
 			a, ab := sourceMutation("a", "project", 0), sourceMutation("ab", "project", 0)
 			maintain(t, s, lease, []readyindex.Mutation{a, ab}, false)
 			maintain(t, s, lease, []readyindex.Mutation{{Ref: ab.Ref}}, false)
-			got, e := selectOrder(t, s, nil)
+			got, e := selectOrder(t, s, metadataOnly, nil)
 			if e != nil || got.Total != 1 || len(got.Keys) != 1 || got.Keys[0].Ref.ID != "a" {
 				t.Fatalf("prefix child deletion: %+v %v", got, e)
 			}
@@ -411,13 +422,13 @@ func TestReadyOrderDeletionCanonicalPersistence(t *testing.T) {
 				t.Fatal("prefix commitment differs from exact fallback")
 			}
 			maintain(t, s, lease, []readyindex.Mutation{{Ref: a.Ref}}, false)
-			empty, e := selectOrder(t, s, nil)
+			empty, e := selectOrder(t, s, metadataOnly, nil)
 			want, _ = driver.ReadyCommitmentFromLeaves(nil)
 			if e != nil || empty.Total != 0 || empty.Commitment != want {
 				t.Fatalf("delete last: %+v %v", empty, e)
 			}
 			_, rev := maintain(t, s, lease, []readyindex.Mutation{ab, a}, false)
-			again, e := selectOrder(t, s, nil)
+			again, e := selectOrder(t, s, metadataOnly, nil)
 			item = *a.Item
 			item.Revision = rev
 			la, _ := driver.ReadyOrderLeafFor(item, 0)
@@ -440,8 +451,8 @@ func TestReadyOrderRealWriter(t *testing.T) {
 			return s
 		})
 	})
-	t.Run("sqlite", func(t *testing.T) {
-		readyorder.RunWriter(t, func(t *testing.T) driver.Store {
+	t.Run("sqlite_metadata", func(t *testing.T) {
+		readyorder.RunWriterMetadata(t, func(t *testing.T) driver.Store {
 			s, err := (sqlite.Driver{}).Open(context.Background(), driver.Config{DSN: filepath.Join(t.TempDir(), "writer.db")})
 			if err != nil {
 				t.Fatal(err)
