@@ -423,10 +423,24 @@ The new changeset pins its full identity, principal, paths, prior revision and
 legacy event/mutator fields, while its actual UTC timestamp also binds the new
 version. The receipt must match the returned commit, changeset and independently
 computed named-request hash. All nine captured derived tables, their complete
-rows and selection indexes, snapshot identity/floor/cursor, import receipt and
+enumerated Key/Value rows, snapshot identity/floor/cursor, import receipt and
 original archive bytes are conserved. Duplicate row/history/derived identities
 or missing census keys fail; JSON body comparisons preserve number types and
 reject duplicate members.
+
+Review of `16eed85a151097a2cbc00c4b87b1ae67a07cbf9a` found that SQLite and
+PostgreSQL `DerivedRows` omit the stored selection Index. That child's SQL index
+conservation claim was unsupported. This source successor keeps the original
+enumerations and separately captures complete `LockDerived` states through the
+same pinned reader's `Observe`, after sorting and validating each table's exact
+key set. The image retains every returned state, including presence, revision,
+payload and actual nil/non-nil Index, before correspondence assertions. The
+assertions require one observed state per enumerated row with the exact key,
+present derived payload and identical Key/Value; any index actually supplied by
+enumeration must also match. Whole observation-state equality now checks index
+and revision conservation for every enumerated key, alongside the existing
+derived projection check. Observe acquires no locks and shared readers remain
+unchanged. This does not add a census of deleted or otherwise unenumerated keys.
 
 This child is **AUTHORED_NOT_RUN**. Formatting and static source checks do not
 validate these runtime assertions. The independent r10 result remains bounded

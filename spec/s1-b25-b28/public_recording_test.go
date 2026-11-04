@@ -1030,11 +1030,31 @@ func nativePlugImage(t *testing.T, ctx context.Context, store driver.Store, prof
 		t.Fatalf("complete native-origin changesets: %v", err)
 	}
 	derived := map[driver.DerivedTable][]driver.DerivedRow{}
+	derivedObservations := map[driver.DerivedTable][]driver.LockState{}
 	for _, table := range []driver.DerivedTable{driver.DerivedReadyState, driver.DerivedAncestorClosure, driver.DerivedCutClosure, driver.DerivedAttribute, driver.DerivedSortKey, driver.DerivedReferenceIndex, driver.DerivedGrant, driver.DerivedOntology, driver.DerivedPlugins} {
 		derived[table], err = r.DerivedRows(ctx, table, "")
 		if err != nil {
 			t.Fatal(err)
 		}
+		// SQL enumeration returns Key/Value without the stored Index. Retain
+		// that projection, then read the full payload at the same pinned view.
+		// Observe acquires no locks. Never infer a nil index from enumeration.
+		keys := make([]driver.LockKey, len(derived[table]))
+		for i, row := range derived[table] {
+			keys[i] = driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: table, Key: row.Key}}
+		}
+		// Table and kind are identical within this call, so bytewise row-key
+		// order is the driver key order. Validate before observing any key.
+		sort.Slice(keys, func(i, j int) bool { return keys[i].Derived.Key < keys[j].Derived.Key })
+		if err := driver.ValidateLockKeys(keys); err != nil {
+			t.Fatalf("native-origin derived observation keys for %s: %v", table, err)
+		}
+		derivedObservations[table], err = r.Observe(ctx, keys)
+		if err != nil {
+			t.Fatalf("native-origin complete derived observations for %s: %v", table, err)
+		}
+		// Preserve returned states before the later correspondence assertions;
+		// a mismatch must not erase a successfully acquired raw after-image.
 	}
 	principal, err := driver.PrincipalKey(model.PrincipalRef{Kind: "user", ID: "public-recorder"})
 	if err != nil {
@@ -1073,7 +1093,7 @@ func nativePlugImage(t *testing.T, ctx context.Context, store driver.Store, prof
 	if err != nil || hashBytes(archive) != profile.ArchiveDigest {
 		t.Fatalf("snapshot retained source archive changed: %v", err)
 	}
-	return map[string]any{"meta": meta, "snapshot": r.Snapshot(), "rows": rows.Items, "versions": versions, "changesets": changes, "changeset_cursor": cursor, "import_receipt": importReceipt, "source_archive": archive, "derived": derived, "receipts": receipts}
+	return map[string]any{"meta": meta, "snapshot": r.Snapshot(), "rows": rows.Items, "versions": versions, "changesets": changes, "changeset_cursor": cursor, "import_receipt": importReceipt, "source_archive": archive, "derived": derived, "derived_observations": derivedObservations, "receipts": receipts}
 }
 
 // Check the complete captured reader image before indexing it. A map must not
@@ -1082,7 +1102,7 @@ func nativePlugImage(t *testing.T, ctx context.Context, store driver.Store, prof
 // scopes are outside this reader API; this oracle makes no claim about them.
 func nativePlugImageRows(t *testing.T, image map[string]any) map[string]driver.Record {
 	t.Helper()
-	keys := []string{"meta", "snapshot", "rows", "versions", "changesets", "changeset_cursor", "import_receipt", "source_archive", "derived", "receipts"}
+	keys := []string{"meta", "snapshot", "rows", "versions", "changesets", "changeset_cursor", "import_receipt", "source_archive", "derived", "derived_observations", "receipts"}
 	if len(image) != len(keys) {
 		t.Fatal("native-origin image plane census changed")
 	}
@@ -1134,20 +1154,31 @@ func nativePlugImageRows(t *testing.T, image map[string]any) map[string]driver.R
 	}
 	tables := []driver.DerivedTable{driver.DerivedReadyState, driver.DerivedAncestorClosure, driver.DerivedCutClosure, driver.DerivedAttribute, driver.DerivedSortKey, driver.DerivedReferenceIndex, driver.DerivedGrant, driver.DerivedOntology, driver.DerivedPlugins}
 	derived := image["derived"].(map[driver.DerivedTable][]driver.DerivedRow)
-	if len(derived) != len(tables) {
+	observations := image["derived_observations"].(map[driver.DerivedTable][]driver.LockState)
+	if len(derived) != len(tables) || len(observations) != len(tables) {
 		t.Fatal("native-origin nine-table derived census changed")
 	}
 	for _, table := range tables {
 		rows, ok := derived[table]
-		if !ok {
-			t.Fatalf("native-origin derived table missing: %s", table)
+		states, observed := observations[table]
+		if !ok || !observed || len(states) != len(rows) {
+			t.Fatalf("native-origin derived table/observation census differs: %s", table)
 		}
 		seen := map[string]bool{}
-		for _, row := range rows {
-			if seen[row.Key] {
-				t.Fatalf("native-origin duplicate derived row: %s/%s", table, row.Key)
+		for i, row := range rows {
+			if seen[row.Key] || i > 0 && rows[i-1].Key >= row.Key {
+				t.Fatalf("native-origin duplicate or unordered derived row: %s/%s", table, row.Key)
 			}
 			seen[row.Key] = true
+			key := driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: table, Key: row.Key}}
+			state := states[i]
+			revision, err := state.Revision.Uint64()
+			if key.Validate() != nil || !reflect.DeepEqual(state.Key, key) || !state.Present || state.Record != nil || state.Derived == nil || err != nil || revision > head {
+				t.Fatalf("native-origin derived observation has wrong key/presence/payload/revision: %s/%s", table, row.Key)
+			}
+			if state.Derived.Key != row.Key || !reflect.DeepEqual(state.Derived.Value, row.Value) || row.Index != nil && !reflect.DeepEqual(state.Derived.Index, row.Index) {
+				t.Fatalf("native-origin full derived observation differs from its enumerated row: %s/%s", table, row.Key)
+			}
 		}
 	}
 	receiptKeys := []string{"s1-native-public-0", "s1-native-public-1", "s1-native-public-2", "s1-native-public-3", "s1-native-public-equal-labels", "s1-native-public-refused-aux"}
@@ -1205,7 +1236,7 @@ func assertNativePlugWriteDelta(t *testing.T, before, after map[string]any, req 
 	if !reflect.DeepEqual(newMeta, wantMeta) || !reflect.DeepEqual(after["snapshot"], wantView) || commit.Revision != revision {
 		t.Fatal("native-origin successful write changed identity/floor or advanced by other than one revision")
 	}
-	for _, key := range []string{"changeset_cursor", "import_receipt", "source_archive", "derived"} {
+	for _, key := range []string{"changeset_cursor", "import_receipt", "source_archive", "derived", "derived_observations"} {
 		if !reflect.DeepEqual(before[key], after[key]) {
 			t.Fatalf("native-origin successful write changed conserved %s", key)
 		}
