@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -211,6 +212,7 @@ func TestPublicNativeRecording(t *testing.T) {
 	root := makeRecordingRoot(t)
 	actualProduct := recordNativeProductIdentity(t, root)
 	recordR418ComparatorControls(t, root)
+	recordRawFieldControls(t, root)
 	t.Logf("PUBLIC_RECORDING_OUTPUT %s", root)
 	storeRoot := makeRecordingDirectory(t, "/tmp/plug-swarm/work", "s1-b25-b28-public-stores-")
 	t.Cleanup(func() {
@@ -445,6 +447,124 @@ func writeRecordingBytes(t *testing.T, path string, data []byte) {
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// These typed raw fields are diagnostic evidence, not a public response. Read
+// the underlying values without calling model marshaling/string methods. This
+// also retains nil versus empty slices, optional zero fields, pointer contents,
+// invalid nested codes/numbers and arbitrary bytes in a RawMessage.
+func rawRecordingFields(value reflect.Value) any {
+	if !value.IsValid() {
+		return map[string]any{"kind": "invalid"}
+	}
+	node := map[string]any{"go_type": value.Type().String(), "kind": value.Kind().String()}
+	switch value.Kind() {
+	case reflect.Pointer, reflect.Interface:
+		if value.IsNil() {
+			node["nil"] = true
+		} else {
+			node["value"] = rawRecordingFields(value.Elem())
+		}
+	case reflect.Struct:
+		fields := map[string]any{}
+		for i := 0; i < value.NumField(); i++ {
+			fields[value.Type().Field(i).Name] = rawRecordingFields(value.Field(i))
+		}
+		node["fields"] = fields
+	case reflect.Map:
+		if value.IsNil() {
+			node["nil"] = true
+		} else {
+			entries := make([]any, 0, value.Len())
+			iter := value.MapRange()
+			for iter.Next() {
+				entries = append(entries, map[string]any{"key": rawRecordingFields(iter.Key()), "value": rawRecordingFields(iter.Value())})
+			}
+			node["entries"] = entries
+		}
+	case reflect.Slice, reflect.Array:
+		if value.Kind() == reflect.Slice && value.IsNil() {
+			node["nil"] = true
+		} else if value.Type().Elem().Kind() == reflect.Uint8 {
+			data := make([]byte, value.Len())
+			for i := range data {
+				data[i] = byte(value.Index(i).Uint())
+			}
+			node["bytes"] = data
+		} else {
+			items := make([]any, value.Len())
+			for i := range items {
+				items[i] = rawRecordingFields(value.Index(i))
+			}
+			node["items"] = items
+		}
+	case reflect.String:
+		node["value"] = value.String()
+	case reflect.Bool:
+		node["value"] = value.Bool()
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		node["value"] = value.Int()
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		node["value"] = value.Uint()
+	case reflect.Float32, reflect.Float64:
+		node["value"] = strconv.FormatFloat(value.Float(), 'g', -1, value.Type().Bits())
+	default:
+		panic("unsupported raw recorder kind: " + value.Kind().String())
+	}
+	return node
+}
+
+func writeRawRecordingValue(t *testing.T, path string, value any) {
+	t.Helper()
+	data, err := json.Marshal(map[string]any{"schema": "plug-private-raw-go-fields/1", "value": rawRecordingFields(reflect.ValueOf(value))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRecordingBytes(t, path, append(data, '\n'))
+}
+
+// Encoding controls are authored recorder tests, never native observations.
+func recordRawFieldControls(t *testing.T, output string) {
+	t.Helper()
+	valid := model.Commit{Revision: model.Natural64(1), Results: []model.OpResult{}, Warnings: []model.Warning{}}
+	badNumber := valid
+	badNumber.Revision = model.Natural("-1")
+	badWarning := valid
+	badWarning.Warnings = []model.Warning{{Code: model.WarningCode("invalid-recorder-control")}}
+	badRecord := valid
+	badRecord.Results = []model.OpResult{{Ref: model.RefByID("control", model.Natural64(0)), Revision: model.Natural64(1), Record: json.RawMessage("invalid JSON")}}
+	cases := map[string]any{
+		"zero-outcome": port.WriteOutcome{}, "invalid-number": badNumber,
+		"invalid-warning": badWarning, "invalid-record-bytes": badRecord,
+		"invalid-error-code": &model.Error{Data: model.ErrorData{Code: model.ErrorCode("invalid-recorder-control")}},
+	}
+	for label, value := range cases {
+		if _, err := json.Marshal(value); err == nil {
+			t.Fatalf("raw field negative control %s was unexpectedly a valid public response", label)
+		}
+		writeRawRecordingValue(t, filepath.Join(output, "recorder-control-"+label+".raw-fields.json"), value)
+	}
+	if _, err := json.Marshal(valid); err != nil {
+		t.Fatal(err)
+	}
+	writeRawRecordingValue(t, filepath.Join(output, "recorder-control-valid.raw-fields.json"), valid)
+	zero := rawRecordingFields(reflect.ValueOf(model.Commit{})).(map[string]any)["fields"].(map[string]any)
+	positive := rawRecordingFields(reflect.ValueOf(valid)).(map[string]any)["fields"].(map[string]any)
+	if len(zero) != reflect.TypeOf(valid).NumField() || zero["Revision"].(map[string]any)["value"] != "" || zero["Results"].(map[string]any)["nil"] != true || zero["Warnings"].(map[string]any)["nil"] != true || positive["Results"].(map[string]any)["nil"] != nil || len(positive["Results"].(map[string]any)["items"].([]any)) != 0 {
+		t.Fatal("raw field encoder lost underlying zero/nil/empty values or a commit field")
+	}
+	t.Log("RAW_RECORDER_ENCODING_CONTROLS one_positive=PASS five_invalid_public_responses_retained=PASS native=false")
+}
+
+// Save raw fields before public model validation can reject JSON encoding.
+func writeRecordingValue(t *testing.T, path string, value any) {
+	t.Helper()
+	writeRawRecordingValue(t, path+".raw-fields.json", value)
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("recording JSON %s refused after raw field capture: %v", path, err)
+	}
+	writeRecordingBytes(t, path, append(data, '\n'))
 }
 
 func recordBuildInfo(t *testing.T, root string, artifact publicArtifact, profile recordingProfile) []byte {
@@ -813,7 +933,7 @@ func replayPublicArchive(t *testing.T, output, storeRoot, label string, archive 
 			}
 			recordPublicSubscriber(t, ctx, store, filepath.Join(output, label+"-plug-"+engine+"-subscriber.json"), []string{"pub-root", publicChildID, "pub-dependency"}, profile)
 			complete := nativePlugImage(t, ctx, store, profile)
-			writeRecordingBytes(t, filepath.Join(output, label+"-plug-"+engine+"-post-write-state.json"), []byte(canonical(complete)+"\n"))
+			writeRecordingValue(t, filepath.Join(output, label+"-plug-"+engine+"-post-write-state.json"), complete)
 			if sqlDriver != nil {
 				err := store.Close()
 				store = nil
@@ -825,7 +945,7 @@ func replayPublicArchive(t *testing.T, output, storeRoot, label string, archive 
 					t.Fatal(err)
 				}
 				reopened := nativePlugImage(t, ctx, store, profile)
-				writeRecordingBytes(t, filepath.Join(output, label+"-plug-"+engine+"-post-write-reopen-state.json"), []byte(canonical(reopened)+"\n"))
+				writeRecordingValue(t, filepath.Join(output, label+"-plug-"+engine+"-post-write-reopen-state.json"), reopened)
 				if !equalJSON(complete, reopened) {
 					t.Fatal("SQL reopen changed native-origin source, history, derived state or durable receipts")
 				}
@@ -1031,6 +1151,7 @@ func recordPublicSubscriber(t *testing.T, ctx context.Context, store driver.Stor
 		return len(observer.Observations)
 	}
 	appendReceipt := func(v any) {
+		writeRawRecordingValue(t, path+fmt.Sprintf(".operation-%d.raw-fields.json", len(receipts)), v)
 		data, err := json.Marshal(v)
 		if err != nil {
 			t.Fatal(err)
@@ -1040,11 +1161,32 @@ func recordPublicSubscriber(t *testing.T, ctx context.Context, store driver.Stor
 	flush := func() {
 		observer.mu.Lock()
 		defer observer.mu.Unlock()
+		writeRawRecordingValue(t, path+".posts.raw-fields.json", observer.Observations)
 		data, err := json.MarshalIndent(map[string]any{"schema": "plug-s1-native-public-subscriber/1", "surface": "service.UpdateWithOutcome", "operations": receipts, "posts": observer.Observations}, "", "  ")
 		if err != nil {
 			t.Fatal(err)
 		}
 		writeRecordingBytes(t, path, append(data, '\n'))
+	}
+	// Capture each actual return before a reader, assertion or custom JSON
+	// marshaler can abort. The later full image is saved before JSON receipts
+	// and behavioral assertions, including on unexpected update/replay errors.
+	retainReturn := func(label string, outcome port.WriteOutcome, err error) *model.Error {
+		var typed *model.Error
+		errors.As(err, &typed)
+		writeRawRecordingValue(t, path+"."+label+".return.raw-fields.json", map[string]any{"outcome": outcome, "error_type": fmt.Sprintf("%T", err), "error": err, "typed_error": typed})
+		return typed
+	}
+	type rawCommitFields model.Commit
+	rawOutcome := func(outcome port.WriteOutcome) map[string]any {
+		return map[string]any{"Commit": rawCommitFields(outcome.Commit), "Replayed": outcome.Replayed, "NullResult": outcome.NullResult}
+	}
+	validateSuccessfulOutcome := func(outcome port.WriteOutcome, err error) {
+		if err == nil {
+			if _, encodeErr := json.Marshal(outcome); encodeErr != nil {
+				t.Fatalf("invalid successful public outcome after raw evidence capture: %v", encodeErr)
+			}
+		}
 	}
 	requests := []service.UpdateRequest{
 		{ID: model.RefByID(ids[0], model.Natural64(0)), Fields: map[string]any{"title": "Public root after scalar update", "priority": 1, "description": "Plug scalar conservation"}},
@@ -1057,9 +1199,13 @@ func recordPublicSubscriber(t *testing.T, ctx context.Context, store driver.Stor
 		before := read()
 		meta := model.WriteMeta{Project: before[req.ID.ID].Project, IdempotencyKey: hashBytes([]byte(fmt.Sprintf("s1-native-public-%d", i)))}
 		outcome, err := domain.UpdateWithOutcome(ctx, actor, req, meta)
+		typed := retainReturn(fmt.Sprintf("write-%d", i), outcome, err)
+		complete := nativePlugImage(t, ctx, store, profile)
+		writeRecordingValue(t, path+fmt.Sprintf(".write-%d.json", i), complete)
 		after := read()
-		appendReceipt(map[string]any{"method": "bead.update", "request": req, "meta": meta, "outcome": outcome, "error": fmt.Sprint(err), "before": before, "after": after})
+		appendReceipt(map[string]any{"method": "bead.update", "request": req, "meta": meta, "outcome": rawOutcome(outcome), "error": fmt.Sprint(err), "typed_error": typed, "before": before, "after": after})
 		flush()
+		validateSuccessfulOutcome(outcome, err)
 		if err != nil || outcome.Replayed || len(outcome.Commit.Warnings) != 0 || postCount() != i+1 {
 			t.Fatalf("native public update/subscriber: %+v err=%v", outcome, err)
 		}
@@ -1074,12 +1220,14 @@ func recordPublicSubscriber(t *testing.T, ctx context.Context, store driver.Stor
 		if !equalJSON(before, after) {
 			t.Fatal("native public update changed unpatched fields, metadata, parent, links, comments or close provenance")
 		}
-		complete := nativePlugImage(t, ctx, store, profile)
-		writeRecordingBytes(t, path+fmt.Sprintf(".write-%d.json", i), []byte(canonical(complete)+"\n"))
 		replayed, replayErr := domain.UpdateWithOutcome(ctx, actor, req, meta)
-		appendReceipt(map[string]any{"method": "bead.update", "request": req, "meta": meta, "outcome": replayed, "error": fmt.Sprint(replayErr), "after": read()})
+		replayTyped := retainReturn(fmt.Sprintf("replay-%d", i), replayed, replayErr)
+		replayImage := nativePlugImage(t, ctx, store, profile)
+		writeRecordingValue(t, path+fmt.Sprintf(".replay-%d.json", i), replayImage)
+		appendReceipt(map[string]any{"method": "bead.update", "request": req, "meta": meta, "outcome": rawOutcome(replayed), "error": fmt.Sprint(replayErr), "typed_error": replayTyped, "after": read()})
 		flush()
-		if replayErr != nil || !replayed.Replayed || !equalJSON(outcome.Commit, replayed.Commit) || postCount() != i+1 || !equalJSON(after, read()) || !equalJSON(complete, nativePlugImage(t, ctx, store, profile)) {
+		validateSuccessfulOutcome(replayed, replayErr)
+		if replayErr != nil || !replayed.Replayed || !equalJSON(outcome.Commit, replayed.Commit) || postCount() != i+1 || !equalJSON(after, read()) || !equalJSON(complete, replayImage) {
 			t.Fatal("native public replay changed state, receipt or subscriber count")
 		}
 		last = outcome
@@ -1087,12 +1235,15 @@ func recordPublicSubscriber(t *testing.T, ctx context.Context, store driver.Stor
 	before := read()
 	noopMeta := model.WriteMeta{Project: before[ids[0]].Project, IdempotencyKey: hashBytes([]byte("s1-native-public-equal-labels"))}
 	noop, err := domain.UpdateWithOutcome(ctx, actor, requests[len(requests)-1], noopMeta)
-	appendReceipt(map[string]any{"method": "bead.update", "request": requests[len(requests)-1], "meta": noopMeta, "outcome": noop, "error": fmt.Sprint(err), "after": read()})
+	noopTyped := retainReturn("noop", noop, err)
+	complete := nativePlugImage(t, ctx, store, profile)
+	writeRecordingValue(t, path+".noop.json", complete)
+	appendReceipt(map[string]any{"method": "bead.update", "request": requests[len(requests)-1], "meta": noopMeta, "outcome": rawOutcome(noop), "error": fmt.Sprint(err), "typed_error": noopTyped, "after": read()})
 	flush()
+	validateSuccessfulOutcome(noop, err)
 	if err != nil || noop.Replayed || noop.Commit.Revision.String() != last.Commit.Revision.String() || postCount() != len(requests) || !equalJSON(before, read()) {
 		t.Fatal("native public equal replacement created a revision, subscriber call or changed state")
 	}
-	complete := nativePlugImage(t, ctx, store, profile)
 	closed := model.RefByID(ids[2], model.Natural64(0))
 	bad := model.ChangeSet{Ops: []model.Op{
 		{Kind: model.OpPatch, Patch: &model.PatchOp{Target: closed, Fields: map[string]any{"title": "must not land", "labels": []string{"must-not-land"}}}},
@@ -1100,16 +1251,15 @@ func recordPublicSubscriber(t *testing.T, ctx context.Context, store driver.Stor
 	}}
 	refusalMeta := model.WriteMeta{Project: before[ids[2]].Project, IdempotencyKey: hashBytes([]byte("s1-native-public-refused-aux"))}
 	refused, refusalErr := domain.ApplyWithOutcome(ctx, actor, bad, refusalMeta)
-	var typed *model.Error
-	isTyped := errors.As(refusalErr, &typed)
+	typed := retainReturn("refusal", refused, refusalErr)
+	afterRefusal := nativePlugImage(t, ctx, store, profile)
+	writeRecordingValue(t, path+".refusal.json", afterRefusal)
 	// A refused operation has no valid public Commit response. Retain its
 	// actual zero/nil fields without Commit.MarshalJSON's success validation;
 	// never replace nil results/warnings with invented successful arrays.
-	type rawCommitFields model.Commit
-	rawOutcome := map[string]any{"Commit": rawCommitFields(refused.Commit), "Replayed": refused.Replayed, "NullResult": refused.NullResult}
-	appendReceipt(map[string]any{"method": "tx.apply", "request": bad, "outcome": rawOutcome, "outcome_encoding": "raw-failure-fields-not-public-commit", "error": fmt.Sprint(refusalErr), "typed_error": typed, "before": complete, "after": nativePlugImage(t, ctx, store, profile)})
+	appendReceipt(map[string]any{"method": "tx.apply", "request": bad, "outcome": rawOutcome(refused), "outcome_encoding": "raw-failure-fields-not-public-commit", "error": fmt.Sprint(refusalErr), "typed_error": typed, "before": complete, "after": afterRefusal})
 	flush()
-	if !isTyped || typed.Data.Code != "ontology_guard_failed" || refused.Replayed || refused.NullResult || !refused.Commit.Revision.IsZero() || refused.Commit.Results != nil || refused.Commit.Warnings != nil || !equalJSON(complete, nativePlugImage(t, ctx, store, profile)) || postCount() != len(requests) {
+	if typed == nil || typed.Data.Code != "ontology_guard_failed" || refused.Replayed || refused.NullResult || !refused.Commit.Revision.IsZero() || refused.Commit.Results != nil || refused.Commit.Warnings != nil || !equalJSON(complete, afterRefusal) || postCount() != len(requests) {
 		t.Fatalf("native-origin auxiliary refusal changed a source/history/receipt/subscriber plane: %v", refusalErr)
 	}
 	t.Logf("PUBLIC_SUBSCRIBER_RECORDING path=%s posts=%d scalar=3 replacement=1 replay=4 noop=1 refusal=1", path, postCount())
@@ -1467,8 +1617,8 @@ func recordNativeB27Probes(t *testing.T, output, storeRoot, pinned string, serve
 	runCommand(t, root, &receipts, "b27-probe-git-init", "b27-probe", workspace, env, []string{"git", "-c", "init.defaultBranch=main", "init", "--quiet"}, nil)
 	command("b27-probe-init", nativeInitArgs(workspace, server.Port), nil)
 	recordNativeDatabaseBinding(t, root, "b27-probe", workspace, server)
-	command("b27-keep-create", []string{"--json", "create", "--id", "pub-import-keep", "--title", "Keep before missing-target import", "--type", "task"}, nil)
-	keepBefore := decodeNativeIssue(t, command("b27-keep-before", []string{"--json", "show", "--include-comments", "pub-import-keep"}, nil))
+	command("b27-keep-create", []string{"--json", "create", "--id", "pub-importkeep", "--title", "Keep before missing-target import", "--type", "task"}, nil)
+	keepBefore := decodeNativeIssue(t, command("b27-keep-before", []string{"--json", "show", "--include-comments", "pub-importkeep"}, nil))
 	missing := []byte(`{"_type":"issue","id":"pub-missing","title":"Missing target import","description":"native skipped dependency","issue_type":"task","priority":1,"status":"open","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","dependencies":[{"issue_id":"pub-missing","depends_on_id":"pub-no-such-target","type":"blocks","created_at":"2026-01-01T00:00:00Z"}]}` + "\n")
 	missingPath := filepath.Join(root, "missing-target.jsonl")
 	writeRecordingBytes(t, missingPath, missing)
@@ -1484,7 +1634,7 @@ func recordNativeB27Probes(t *testing.T, output, storeRoot, pinned string, serve
 	if missingRow["title"] != "Missing target import" || len(nativeRelationEdges(missingRow["dependencies"])) != 0 {
 		t.Fatalf("native missing-target import failed to preserve the issue and omit only the unresolved edge: %s", canonical(missingRow))
 	}
-	keepAfter := decodeNativeIssue(t, command("b27-keep-after", []string{"--json", "show", "--include-comments", "pub-import-keep"}, nil))
+	keepAfter := decodeNativeIssue(t, command("b27-keep-after", []string{"--json", "show", "--include-comments", "pub-importkeep"}, nil))
 	if !equalJSON(keepBefore, keepAfter) {
 		t.Fatal("missing-target import changed its pre-existing survivor")
 	}
@@ -1493,9 +1643,9 @@ func recordNativeB27Probes(t *testing.T, output, storeRoot, pinned string, serve
 	if !bytes.Contains(statusList, []byte("status.custom")) {
 		t.Fatalf("native status registry did not expose stored custom status: %s", statusList)
 	}
-	command("b27-status-create", []string{"--json", "create", "--id", "pub-status-row", "--type", "task", "--status", "reviewing", "--title", "Stored custom status", "--description", "status registry probe"}, nil)
-	statusRow := command("b27-status-show", []string{"--json", "show", "pub-status-row"}, nil)
-	if row := decodeNativeIssue(t, statusRow); row["id"] != "pub-status-row" || row["status"] != "reviewing" || row["issue_type"] != "task" {
+	command("b27-status-create", []string{"--json", "create", "--id", "pub-statusrow", "--type", "task", "--status", "reviewing", "--title", "Stored custom status", "--description", "status registry probe"}, nil)
+	statusRow := command("b27-status-show", []string{"--json", "show", "pub-statusrow"}, nil)
+	if row := decodeNativeIssue(t, statusRow); row["id"] != "pub-statusrow" || row["status"] != "reviewing" || row["issue_type"] != "task" {
 		t.Fatalf("native stored custom status did not survive create/show: %s", statusRow)
 	}
 	physicalCommand := func(label string, argv []string) []byte { return command(label, argv, nil) }
@@ -1504,23 +1654,42 @@ func recordNativeB27Probes(t *testing.T, output, storeRoot, pinned string, serve
 	if len(beforeRefusal["custom_statuses"]) != 1 {
 		t.Fatal("status.custom setup did not materialize its normalized source row")
 	}
-	inventoryPath := filepath.Join(root, "custom-status-inventory.json")
-	command("b27-custom-inventory", []string{"--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "-o", inventoryPath}, nil)
-	archivePath := filepath.Join(root, "refused-custom-status.tar")
-	runCommandExpected(t, root, &receipts, "b27-custom-status-archive-refusal", "b27-probe", workspace, env, []string{pinned, "--readonly", "export", "--format", "plug-dump/1", "--plug-inventory", inventoryPath, "-o", archivePath}, nil, 1)
-	if _, err := os.Stat(archivePath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("unsupported custom status emitted an archive: %v", err)
-	}
-	afterRefusal := recordNativePhysicalImage(t, root, "custom-status-after-refusal", physicalCommand)
-	if !equalJSON(beforeRefusal, afterRefusal) {
-		t.Fatal("refused native capture changed physical source/config/history state")
-	}
+	sourceConfigBefore := map[string][]byte{}
 	for _, name := range []string{"config.yaml", "metadata.json"} {
 		data, err := os.ReadFile(filepath.Join(workspace, ".beads", name))
 		if err != nil {
 			t.Fatal(err)
 		}
+		sourceConfigBefore[name] = data
+		writeRecordingBytes(t, filepath.Join(root, "source-before-"+name), data)
+	}
+	inventoryPath := filepath.Join(root, "custom-status-inventory.json")
+	command("b27-custom-inventory", []string{"--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "-o", inventoryPath}, nil)
+	archivePath := filepath.Join(root, "refused-custom-status.tar")
+	refusalStdout := runCommandMode(t, root, &receipts, "b27-custom-status-archive-refusal", "b27-probe", workspace, env, []string{pinned, "--readonly", "export", "--format", "plug-dump/1", "--plug-inventory", inventoryPath, "-o", archivePath}, nil, false)
+	archiveRefusal := receipts[len(receipts)-1]
+	refusalStderr, err := os.ReadFile(archiveRefusal.StderrPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterRefusal := recordNativePhysicalImage(t, root, "custom-status-after-refusal", physicalCommand)
+	sourceConfigAfter := map[string][]byte{}
+	for _, name := range []string{"config.yaml", "metadata.json"} {
+		data, err := os.ReadFile(filepath.Join(workspace, ".beads", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sourceConfigAfter[name] = data
 		writeRecordingBytes(t, filepath.Join(root, "source-"+name), data)
+	}
+	if archiveRefusal.Exit != 1 || len(refusalStdout) != 0 || string(refusalStderr) != "Error: plug-dump/1 refused: unsupported nonempty family custom_statuses (live claims must be resolved)\n" {
+		t.Fatalf("native custom status refusal cause changed: exit=%d stdout=%s stderr=%s", archiveRefusal.Exit, refusalStdout, refusalStderr)
+	}
+	if _, err := os.Stat(archivePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unsupported custom status emitted an archive: %v", err)
+	}
+	if !equalJSON(beforeRefusal, afterRefusal) || !equalJSON(sourceConfigBefore, sourceConfigAfter) {
+		t.Fatal("refused native capture changed physical source/config/history state")
 	}
 	data, err := json.MarshalIndent(map[string]any{
 		"schema": "plug-s1-b27-native-probes/2", "workspace": workspace, "server": server,
@@ -1528,6 +1697,7 @@ func recordNativeB27Probes(t *testing.T, output, storeRoot, pinned string, serve
 		"status_row":  json.RawMessage(statusRow),
 		"missing_row": missingRow, "keep_before": keepBefore, "keep_after": keepAfter,
 		"physical_before_refusal": beforeRefusal, "physical_after_refusal": afterRefusal, "archive": "ABSENT_EXPECTED_REFUSAL",
+		"refusal_receipt": archiveRefusal, "refusal_stderr": string(refusalStderr), "source_config_before": sourceConfigBefore, "source_config_after": sourceConfigAfter,
 		"capability_boundary": "custom_statuses_and_custom_types_are_not_claimed_in_the_c8-native archive",
 	}, "", "  ")
 	if err != nil {

@@ -390,3 +390,18 @@ zero revision, nil result/warning slices and no replay/null-result flag; no
 empty success arrays are manufactured to make its evidence serializable.
 This is a recorder correction for r8, which remains RED with its refusal
 receipt and later branches unproved.
+
+The next recorder also retains typed raw field trees for every actual write,
+replay, no-op and refusal return before readback, and saves each complete
+after-image before JSON encoding or behavioral assertions. The raw format
+visits underlying Go fields without model serializers, including pointer
+contents, optional zero fields, nil/empty slices and invalid nested codes or
+raw bytes. Public JSON validation still fails closed; no valid result is
+manufactured. One positive and five invalid-response encoding controls are
+separate authored recorder controls, not native evidence or the comparer
+control census. Native B27 probe IDs now use accepted alphanumeric suffixes,
+so the intended nonempty custom-status dump refusal can be reached with the
+real corpus intact. Its exact native error, full 33-table after-image and
+source config bytes are retained before refusal/conservation assertions.
+R9 remains RED at the earlier invalid-ID inventory step; its later custom-
+status dump refusal/conservation and pair remain NOT_RUN.
