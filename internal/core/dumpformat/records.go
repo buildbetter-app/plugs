@@ -31,6 +31,33 @@ func (e *UnresolvedDependencyError) Error() string {
 
 var hashPattern = regexp.MustCompile(`^[a-zA-Z0-9]+$`)
 
+// SourceMetadataObject reads a source JSON object or its SQL JSON-text cell
+// without changing that source value. SQL NULL (nil) is absent metadata;
+// explicit {} is a non-nil empty object. Text must encode exactly one object:
+// null, arrays, scalars, duplicate keys and trailing data are refused. Callers
+// retain the original value separately; this detached object is a projection.
+// Presence of the metadata column is checked by the record schema validator.
+func SourceMetadataObject(value any) (map[string]any, error) {
+	if value == nil {
+		return nil, nil
+	}
+	var data []byte
+	if text, ok := value.(string); ok {
+		data = []byte(text)
+	} else {
+		var err error
+		data, err = json.Marshal(value)
+		if err != nil {
+			return nil, fmt.Errorf("source metadata: %w", err)
+		}
+	}
+	var object map[string]any
+	if err := decodeJSON(data, &object); err != nil {
+		return nil, fmt.Errorf("source metadata must be a JSON object: %w", err)
+	}
+	return object, nil
+}
+
 func validateRecord(record Record, projects []Project, counts map[string]int) error {
 	return validateMigratedRecord(record, projects, counts, nil)
 }

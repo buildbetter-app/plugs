@@ -177,6 +177,7 @@ internal/core/dumpformat/migration_test.go
 internal/core/dumpformat/ontology.go
 internal/core/dumpformat/ontology_test.go
 internal/core/dumpformat/records.go
+internal/core/dumpformat/source_metadata_test.go
 internal/core/dumpformat/sources.go
 internal/core/dumpformat/types.go
 internal/core/dumpformat/validate.go
