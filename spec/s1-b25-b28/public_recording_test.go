@@ -1200,7 +1200,7 @@ func recordNativeDeleteOperations(t *testing.T, output, storeRoot, source, pinne
 	command("b25-delete-link", []string{"--json", "dep", "add", "pub-delete-survivor", "pub-delete-owner"})
 	ownerBefore := show("b25-delete-owner-before", "pub-delete-owner")
 	survivorBefore := show("b25-delete-survivor-before", "pub-delete-survivor")
-	command("b25-delete-dry-run", []string{"--json", "delete", "pub-delete-owner"})
+	expected("b25-delete-dry-run", []string{"--json", "delete", "pub-delete-owner"}, 1)
 	ownerPreview := show("b25-delete-owner-after-dry-run", "pub-delete-owner")
 	if !equalJSON(nativePreservationImage(ownerBefore), nativePreservationImage(ownerPreview)) {
 		t.Fatal("native unforced delete preview changed the owner")
