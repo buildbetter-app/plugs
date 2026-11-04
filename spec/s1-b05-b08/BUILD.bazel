@@ -10,6 +10,8 @@ go_test(
         "cycle_rpc_test.go",
         "cycle_fence_test.go",
         "cycle_oracle_test.go",
+        "edge_contract_oracle_test.go",
+        "edge_contract_test.go",
         "engines_test.go",
         "ephemeral_cycle_oracle_test.go",
         "ephemeral_cycle_test.go",
