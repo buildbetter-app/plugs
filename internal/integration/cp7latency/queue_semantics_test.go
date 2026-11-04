@@ -94,12 +94,14 @@ func TestQueueProjectionMatchesExactReadinessBeforeRotation(t *testing.T) {
 			queueFixturePatch(t, f, 41, func(d *pipeline.Document) { d.Links = []pipeline.Link{{Kind: "blocks", To: beadRef(42)}} })
 			queueFixturePatch(t, f, 42, func(d *pipeline.Document) { d.Fields["status"] = "done" })
 			queueFixturePatch(t, f, 43, func(d *pipeline.Document) { d.Links = []pipeline.Link{{Kind: "blocks", To: beadRef(999)}} })
-			queueFixturePatch(t, f, 44, func(d *pipeline.Document) {
+			queueFixturePatch(t, f, 46, func(d *pipeline.Document) {
 				d.Fields["priority"] = 2
 				d.Fields["extra"] = "retained source field"
 				d.Labels = []string{"retained-label"}
 				d.Metadata = map[string]json.RawMessage{"custom": json.RawMessage(`{"v":1}`)}
 			})
+			queueFixturePatch(t, f, 49, func(d *pipeline.Document) { d.Links = []pipeline.Link{{Kind: "conditional-blocks", To: beadRef(50)}} })
+			queueFixturePatch(t, f, 50, func(d *pipeline.Document) { d.Fields["status"] = "done" })
 			domain := queueDomain(f, clock)
 			req := service.ReadyRequest{Project: projectName, Limit: 1000}
 			reference, err := domain.Ready(context.Background(), principal, req)
@@ -110,12 +112,12 @@ func TestQueueProjectionMatchesExactReadinessBeforeRotation(t *testing.T) {
 			for i, bead := range reference.Items {
 				ids[i] = bead.ID
 			}
-			for _, n := range []int{19, 21, 34, 41, 44} {
+			for _, n := range []int{19, 21, 34, 39, 41, 46} {
 				if !slices.Contains(ids, beadRef(n).ID) {
 					t.Fatalf("reference lost ready dependency control %d", n)
 				}
 			}
-			for _, n := range []int{1, 2, 13, 15, 17, 18, 20, 35, 36, 37, 38, 39, 40, 42, 43} {
+			for _, n := range []int{1, 2, 13, 15, 17, 18, 20, 35, 36, 37, 38, 40, 42, 43, 44, 49, 50, 51} {
 				if slices.Contains(ids, beadRef(n).ID) {
 					t.Fatalf("reference admitted blocked control %d", n)
 				}
