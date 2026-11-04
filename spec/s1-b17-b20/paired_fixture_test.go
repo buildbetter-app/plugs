@@ -134,6 +134,11 @@ func (p *pairedStore) receipt(t *testing.T, meta model.WriteMeta) *driver.Idempo
 
 func (p *pairedStore) rpc(t *testing.T) *runtime {
 	t.Helper()
+	return p.rpcWithWriter(t, p.writer())
+}
+
+func (p *pairedStore) rpcWithWriter(t *testing.T, writer model.Writer) *runtime {
+	t.Helper()
 	codec, err := serverevents.NewCursorCodec([]byte(b20CursorKey))
 	if err != nil {
 		t.Fatal(err)
@@ -142,7 +147,7 @@ func (p *pairedStore) rpc(t *testing.T) *runtime {
 		Log: serverevents.Log{Store: p.store}, Materializer: serverevents.HistoryMaterializer{Store: p.store}, Authorization: coreevents.AllowAll{},
 	}, Cursors: codec}
 	ontology := service.NewOntology(nil)
-	domain := service.New(p.store, p.lease, p.writer(), service.WithOntology(ontology), service.WithClock(p.clock.Now), service.WithEventProvider(eventProvider{events: events}))
+	domain := service.New(p.store, p.lease, writer, service.WithOntology(ontology), service.WithClock(p.clock.Now), service.WithEventProvider(eventProvider{events: events}))
 	registry, err := rpc.NewRegistry()
 	if err != nil {
 		t.Fatal(err)

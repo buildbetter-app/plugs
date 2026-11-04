@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 )
 
 func instantAt(at time.Time) map[string]any {
@@ -122,7 +124,12 @@ func TestB18InstantHistoryCursorPinsOriginalResolution(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			p := newPairedStore(t, engine)
-			r := p.rpc(t)
+			nextID := 0
+			writer := pipeline.New(p.store, p.lease, pipeline.WithOntology(service.NewOntology(nil)), pipeline.WithClock(p.clock.Now), pipeline.WithIDGenerator(func() (string, error) {
+				nextID++
+				return fmt.Sprintf("pl-instant-%d", nextID), nil
+			}))
+			r := p.rpcWithWriter(t, writer)
 			// Named create keys keep the public transaction on the ordinary
 			// allocator while supplying a deterministic three-record order.
 			ops := []map[string]any{}
