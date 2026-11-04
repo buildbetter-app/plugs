@@ -463,8 +463,10 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 		t.Fatal(err)
 	}
 	storeRoot = filepath.Join(storeRoot, name)
-	source := filepath.Join(storeRoot, "source")
-	target := filepath.Join(storeRoot, "target")
+	// Use supported nested workspaces so project and active source locations
+	// remain distinct. Repository-root capture retains its separate refusal.
+	source := filepath.Join(storeRoot, "source", "workspace")
+	target := filepath.Join(storeRoot, "target", "workspace")
 	if err := os.MkdirAll(source, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -500,7 +502,7 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 		return runCommand(t, run.Root, &run.Commands, label, store, dir,
 			append(env(dir), "BD_JSON_ENVELOPE=1"), []string{pinned, "--json", "config", "list"}, nil)
 	}
-	commandGit("source-git-init", "source", source, []string{"-c", "init.defaultBranch=main", "init", "--quiet"})
+	commandGit("source-git-init", "source", source, []string{"-C", "..", "-c", "init.defaultBranch=main", "init", "--quiet"})
 	version := commandReference("source-version", "source", source, []string{"version", "--json"}, nil)
 	var identity struct {
 		Commit string `json:"commit"`
@@ -558,7 +560,7 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 	}
 	validateInventoryAndArchive(t, &run, commandReference, "source", source, run.Root, fixture)
 
-	commandGit("target-git-init", "target", target, []string{"-c", "init.defaultBranch=main", "init", "--quiet"})
+	commandGit("target-git-init", "target", target, []string{"-C", "..", "-c", "init.defaultBranch=main", "init", "--quiet"})
 	commandReference("target-version", "target", target, []string{"version", "--json"}, nil)
 	commandReference("target-init", "target", target, nativeInitArgs(target, server.Port), nil)
 	recordNativeDatabaseBinding(t, run.Root, "target", target, server)
