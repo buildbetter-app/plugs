@@ -511,6 +511,43 @@ func TestProjectLiveBeadPreservesUnchangedFailureOutcome(t *testing.T) {
 	}
 }
 
+func TestLiveReverseComparesVersionedDependencyPredicatesExactly(t *testing.T) {
+	// Detached relationship controls exercise the live-source comparison, not
+	// a native capture or an accepted successor producer.
+	for _, test := range []struct {
+		name string
+		raw  any
+		want *model.LinkMetadata
+	}{
+		{"legacy NULL", nil, nil},
+		{"ID only", `{"_plug_edge_id":"edge-1"}`, nil},
+		{"explicit default", `{}`, &model.LinkMetadata{Gate: "all-children"}},
+		{"SQL predicate", ` {"gate":"any-children","also_blocks":true,"spawner_id":"not-the-target","opaque":9007199254740993} `, &model.LinkMetadata{Gate: "any-children", AlsoBlocks: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dump := reverseconverter.Dump{
+				Manifest: reverseconverter.Manifest{Kinds: []reverseconverter.Kind{{Name: "edge", Version: dumpformat.EdgeVersionTypedDependencies}}},
+				Records: map[string][]reverseconverter.Record{"edge": {{
+					Kind: "edge", ID: "edge-1", Body: map[string]any{"from": "demo-2", "to": "demo-1", "target_kind": "depends_on_issue_id", "type": "waits-for", "metadata": test.raw},
+				}}},
+			}
+			doc := pipeline.Document{Links: []pipeline.Link{{To: model.RefByID("demo-1", model.Natural64(0)), Kind: "waits-for", Metadata: test.want}}}
+			if err := checkLiveRelationsAndComments("demo-2", doc, dump); err != nil {
+				t.Fatalf("unchanged versioned source relationship refused: %v", err)
+			}
+			changed := model.LinkMetadata{Gate: "all-children"}
+			if test.want != nil {
+				changed = *test.want
+				changed.AlsoBlocks = !changed.AlsoBlocks
+			}
+			doc.Links[0].Metadata = &changed
+			if err := checkLiveRelationsAndComments("demo-2", doc, dump); err == nil {
+				t.Fatal("changed predicate or absent-versus-explicit metadata was accepted")
+			}
+		})
+	}
+}
+
 func TestProjectLiveBeadRetainsRawMetadataUntilAKeyChanges(t *testing.T) {
 	ctx := context.Background()
 	data := admittedFixtureBytes(t)

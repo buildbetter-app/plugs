@@ -385,7 +385,21 @@ func checkLiveRelationsAndComments(id string, doc pipeline.Document, dump revers
 		if kind == "related" {
 			kind = "relates-to"
 		}
-		links = append(links, pipeline.Link{To: model.RefByID(stringValue(edge.Body["to"]), model.Natural64(0)), Kind: kind})
+		link := pipeline.Link{To: model.RefByID(stringValue(edge.Body["to"]), model.Natural64(0)), Kind: kind}
+		edgeVersion := 1
+		for _, entry := range dump.Manifest.Kinds {
+			if entry.Name == "edge" {
+				edgeVersion = entry.Version
+			}
+		}
+		if edgeVersion == dumpformat.EdgeVersionTypedDependencies {
+			var err error
+			link.Metadata, err = dumpformat.SourceEdgeMetadata(edgeVersion, edge.ID, stringValue(edge.Body["type"]), edge.Body["metadata"])
+			if err != nil {
+				return ReverseRefusal{"invalid_source_relationship_metadata"}
+			}
+		}
+		links = append(links, link)
 	}
 	if !reflect.DeepEqual(parent, doc.Parent) {
 		return ReverseRefusal{"changed_source_relationships"}
