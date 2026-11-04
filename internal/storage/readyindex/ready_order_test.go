@@ -46,22 +46,34 @@ func maintain(t *testing.T, s driver.Store, lease driver.ActiveLease, mutations 
 		keys[k] = key
 	}
 	changes := []model.ChangeRecord{}
+	sentinels := []driver.Sentinel{}
 	for _, m := range mutations {
 		key := driver.LockKey{Kind: driver.LockRecord, Ref: &m.Ref}
 		k, _ := driver.EncodeLockKey(key)
 		keys[k] = key
-		prior, e := r.Get(ctx, []model.Ref{m.Ref})
+		prior, e := r.Observe(ctx, []driver.LockKey{key})
 		if e != nil {
 			t.Fatal(e)
 		}
 		op := model.OpCreate
-		if len(prior) > 0 {
+		if len(prior) != 1 {
+			t.Fatal("incomplete source observation")
+		}
+		if prior[0].Present {
 			op = model.OpPatch
 		}
 		if m.Item == nil {
 			op = model.OpDelete
 		}
-		changes = append(changes, model.ChangeRecord{Ref: m.Ref, Op: op})
+		changes = append(changes, model.ChangeRecord{Ref: m.Ref, Op: op, FromRevision: prior[0].Revision})
+		bead, e := driver.NewBeadSentinel(m.Ref.ID)
+		if e != nil {
+			t.Fatal(e)
+		}
+		sentinels = append(sentinels, bead)
+		key = driver.LockKey{Kind: driver.LockSentinel, Sentinel: bead}
+		k, _ = driver.EncodeLockKey(key)
+		keys[k] = key
 	}
 	ordered := make([]driver.LockKey, 0, len(keys))
 	for _, key := range keys {
@@ -107,6 +119,9 @@ func maintain(t *testing.T, s driver.Store, lease driver.ActiveLease, mutations 
 	}
 	work, err := delta.Publish(ctx, tx, revision)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.BumpSentinels(ctx, sentinels); err != nil {
 		t.Fatal(err)
 	}
 	if rollback {
@@ -301,6 +316,38 @@ func TestReadyOrderRealStoresMaintenanceAndSemantics(t *testing.T) {
 			if err != nil || empty.Total != 0 {
 				t.Fatal("present-empty raw refs", err)
 			}
+			for _, remove := range []bool{false, true} {
+				ctx := context.Background()
+				tx, e := s.Write(ctx, lease)
+				if e != nil {
+					t.Fatal(e)
+				}
+				ref := mutations[0].Ref
+				key := driver.LockKey{Kind: driver.LockRecord, Ref: &ref}
+				if _, e = tx.Lock(ctx, driver.LockSet{{Key: key, Mode: driver.LockUpdate}}); e != nil {
+					t.Fatal(e)
+				}
+				if _, e = tx.Head(ctx); e != nil {
+					t.Fatal(e)
+				}
+				if remove {
+					e = tx.Delete(ctx, ref)
+				} else {
+					e = tx.Put(ctx, driver.Record{Ref: ref, Kind: "bead", Body: []byte(`{"id":"item-0000","type":"issue","fields":{"status":"done"}}`)})
+				}
+				if e != nil {
+					t.Fatal(e)
+				}
+				view := tx.Snapshot()
+				p := driver.ReadyOrderPlan{Incarnation: view.Incarnation, ContentRevision: *view.At, AuthorityRevision: *view.At, Eligibility: "ontology", UniformAuthorization: true, Limit: 1}
+				if _, e = tx.(driver.ReadyOrderReader).SelectReadyOrder(ctx, p); !errors.Is(e, driver.ErrUnsupported) {
+					t.Fatalf("stale staged source returned: delete=%t err=%v", remove, e)
+				}
+				if e = tx.Rollback(ctx); e != nil {
+					t.Fatal(e)
+				}
+				tx.Close()
+			}
 			// A genuine unmaintained publication creates an explicit gap. A later
 			// one-source refresh must not infer coverage of that missing interval.
 			tx, err := s.Write(context.Background(), lease)
@@ -324,6 +371,61 @@ func TestReadyOrderRealStoresMaintenanceAndSemantics(t *testing.T) {
 			maintain(t, s, lease, []readyindex.Mutation{mutations[1]}, false)
 			if _, err = selectOrder(t, s, nil); !errors.Is(err, driver.ErrUnsupported) {
 				t.Fatal("gap recertified from final images", err)
+			}
+		})
+	}
+}
+
+func TestReadyOrderDeletionCanonicalPersistence(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite"} {
+		t.Run(engine, func(t *testing.T) {
+			var s driver.Store
+			if engine == "memory" {
+				s = memory.New()
+			} else {
+				var e error
+				s, e = (sqlite.Driver{}).Open(context.Background(), driver.Config{DSN: filepath.Join(t.TempDir(), "deletion.db")})
+				if e != nil {
+					t.Fatal(e)
+				}
+			}
+			defer s.Close()
+			lease, e := s.Lease(context.Background(), "delete-regression", driver.LeaseTTL)
+			if e != nil {
+				t.Fatal(e)
+			}
+			defer lease.Release(context.Background())
+			a, ab := sourceMutation("a", "project", 0), sourceMutation("ab", "project", 0)
+			maintain(t, s, lease, []readyindex.Mutation{a, ab}, false)
+			maintain(t, s, lease, []readyindex.Mutation{{Ref: ab.Ref}}, false)
+			got, e := selectOrder(t, s, nil)
+			if e != nil || got.Total != 1 || len(got.Keys) != 1 || got.Keys[0].Ref.ID != "a" {
+				t.Fatalf("prefix child deletion: %+v %v", got, e)
+			}
+			item := *a.Item
+			item.Revision = got.Keys[0].Revision
+			leaf, _ := driver.ReadyOrderLeafFor(item, 0)
+			want, _ := driver.ReadyCommitmentFromLeaves([]driver.ReadyOrderLeaf{leaf})
+			if got.Commitment != want {
+				t.Fatal("prefix commitment differs from exact fallback")
+			}
+			maintain(t, s, lease, []readyindex.Mutation{{Ref: a.Ref}}, false)
+			empty, e := selectOrder(t, s, nil)
+			want, _ = driver.ReadyCommitmentFromLeaves(nil)
+			if e != nil || empty.Total != 0 || empty.Commitment != want {
+				t.Fatalf("delete last: %+v %v", empty, e)
+			}
+			_, rev := maintain(t, s, lease, []readyindex.Mutation{ab, a}, false)
+			again, e := selectOrder(t, s, nil)
+			item = *a.Item
+			item.Revision = rev
+			la, _ := driver.ReadyOrderLeafFor(item, 0)
+			item = *ab.Item
+			item.Revision = rev
+			lb, _ := driver.ReadyOrderLeafFor(item, 0)
+			want, _ = driver.ReadyCommitmentFromLeaves([]driver.ReadyOrderLeaf{la, lb})
+			if e != nil || again.Commitment != want || again.Total != 2 {
+				t.Fatalf("reverse reinsertion: %+v %v", again, e)
 			}
 		})
 	}

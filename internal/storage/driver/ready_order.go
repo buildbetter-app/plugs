@@ -88,11 +88,16 @@ type ReadyOrderChild struct {
 // Nodes are keyed by the hexadecimal numeric-priority/bytewise-ID prefix.
 // Compression depends only on membership, never insertion order or balancing.
 type ReadyOrderNode struct {
-	Prefix     string
-	Leaf       *ReadyOrderLeaf   `json:",omitempty"`
-	Children   []ReadyOrderChild `json:",omitempty"`
-	Commitment ReadyCommitment
+	Prefix      string
+	Leaf        *ReadyOrderLeaf   `json:",omitempty"`
+	Children    []ReadyOrderChild `json:",omitempty"`
+	Commitment  ReadyCommitment
+	digestBytes uint64
 }
+
+// DigestBytes reports the exact canonical node preimage hashed by Seal. It is
+// instrumentation only and is excluded from persistence and commitments.
+func (n ReadyOrderNode) DigestBytes() uint64 { return n.digestBytes }
 
 func ReadyOrderKey(priority int64, id string) string {
 	var p [8]byte
@@ -124,6 +129,11 @@ func ValidReadyHash(s string) bool {
 // SealReadyOrderNode binds exact cardinality, all child commitments, the sort
 // prefix and the complete original item digest. Empty child subtrees are absent.
 func SealReadyOrderNode(n *ReadyOrderNode) error {
+	// Persistence omits empty child slices. Normalize before hashing so the
+	// commitment is identical before/after reload and after deleting a tail.
+	if len(n.Children) == 0 {
+		n.Children = nil
+	}
 	if len(n.Prefix)%2 != 0 {
 		return fmt.Errorf("%w: odd Ready prefix", ErrUnsupported)
 	}
@@ -161,6 +171,7 @@ func SealReadyOrderNode(n *ReadyOrderNode) error {
 		return err
 	}
 	n.Commitment = ReadyCommitment{Count: count, Hash: SelectionDigest(b)}
+	n.digestBytes = uint64(len(b))
 	return nil
 }
 

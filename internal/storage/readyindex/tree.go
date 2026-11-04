@@ -155,6 +155,7 @@ func (t *tree) node(scope, p string) (*driver.ReadyOrderNode, error) {
 		}
 	}
 	t.nodes[key] = &n
+	t.work.DigestBytes += n.DigestBytes()
 	if n.Leaf != nil {
 		t.work.Leaves++
 	}
@@ -165,6 +166,7 @@ func (t *tree) save(scope string, n *driver.ReadyOrderNode) error {
 	if err := driver.SealReadyOrderNode(n); err != nil {
 		return err
 	}
+	t.work.DigestBytes += n.DigestBytes()
 	key := nodeKey(scope, n.Prefix)
 	t.nodes[key] = n
 	return t.write(key, n)
@@ -244,6 +246,7 @@ type Delta struct {
 	t         *tree
 	coverage  marker
 	mutations map[string]Mutation
+	sentinels map[driver.Sentinel]bool
 	valid     bool
 	published bool
 }
@@ -254,7 +257,7 @@ type Delta struct {
 // retained by the ordinary driver derived-row/version machinery.
 func Prepare(ctx context.Context, r Observer, mutations []Mutation) (*Delta, error) {
 	t := newTree(ctx, r)
-	d := &Delta{t: t, mutations: map[string]Mutation{}}
+	d := &Delta{t: t, mutations: map[string]Mutation{}, sentinels: map[driver.Sentinel]bool{}}
 	v := r.Snapshot()
 	if v.At == nil || v.Incarnation == "" || !v.Branch.IsZero() {
 		return nil, unavailable("snapshot")
@@ -273,6 +276,13 @@ func Prepare(ctx context.Context, r Observer, mutations []Mutation) (*Delta, err
 		return d, nil
 	}
 	d.valid = true
+	// The literal global scope guards coverage/control metadata. It is a
+	// canonical predicate key, not a wildcard-matching rule in the driver.
+	global, err := driver.NewReadySentinel("*", "*")
+	if err != nil {
+		return nil, err
+	}
+	d.sentinels[global] = true
 	for _, m := range mutations {
 		if driver.ValidateHierarchyRef(m.Ref) != nil || m.Priority < 0 || m.Priority > 4 {
 			return nil, unavailable("mutation identity or priority")
@@ -323,6 +333,15 @@ func Prepare(ctx context.Context, r Observer, mutations []Mutation) (*Delta, err
 	return d, nil
 }
 func (d *Delta) adjust(s source, direction int) error {
+	project := s.Project
+	if project == "" {
+		project = "*"
+	}
+	sentinel, err := driver.NewReadySentinel(project, s.Type)
+	if err != nil {
+		return unavailable("predicate scope")
+	}
+	d.sentinels[sentinel] = true
 	if !s.Local {
 		if direction < 0 {
 			if d.coverage.Unsafe == 0 {
@@ -368,6 +387,9 @@ func (d *Delta) adjust(s source, direction int) error {
 	return nil
 }
 func (d *Delta) Available() bool { return d != nil && d.valid }
+
+// BaseRevision is the exact source Head observed during preparation.
+func (d *Delta) BaseRevision() model.Revision { return d.coverage.Through }
 func (d *Delta) Locks() []driver.LockKey {
 	if !d.Available() {
 		return nil
@@ -375,6 +397,9 @@ func (d *Delta) Locks() []driver.LockKey {
 	keys := make([]driver.LockKey, 0, len(d.t.rows))
 	for key := range d.t.rows {
 		keys = append(keys, lock(key))
+	}
+	for sentinel := range d.sentinels {
+		keys = append(keys, driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel})
 	}
 	sort.Slice(keys, func(i, j int) bool {
 		a, _ := driver.EncodeLockKey(keys[i])
@@ -445,6 +470,7 @@ func (d *Delta) Publish(ctx context.Context, tx driver.WriteTx, revision model.R
 		if err := driver.SealReadyOrderNode(n); err != nil {
 			return d.t.work, err
 		}
+		d.t.work.DigestBytes += n.DigestBytes()
 		b, err := json.Marshal(n)
 		if err != nil {
 			return d.t.work, err
@@ -473,5 +499,20 @@ func (d *Delta) Publish(ctx context.Context, tx driver.WriteTx, revision model.R
 	if err := tx.PutDerived(ctx, driver.DerivedReadyState, removed, added); err != nil {
 		return d.t.work, err
 	}
+	if err := d.BumpPredicates(ctx, tx); err != nil {
+		return d.t.work, err
+	}
 	return d.t.work, nil
+}
+
+// BumpPredicates completes the declared update locks even when an intervening
+// raw publication makes optional maintenance unavailable. It does not advance
+// coverage or write any nodes, so the next selection takes exact fallback.
+func (d *Delta) BumpPredicates(ctx context.Context, tx driver.WriteTx) error {
+	sentinels := make([]driver.Sentinel, 0, len(d.sentinels))
+	for sentinel := range d.sentinels {
+		sentinels = append(sentinels, sentinel)
+	}
+	sort.Slice(sentinels, func(i, j int) bool { return sentinels[i] < sentinels[j] })
+	return tx.BumpSentinels(ctx, sentinels)
 }
