@@ -208,12 +208,15 @@ go_test(
 go_test(
     name = "native_b02_contract_test",
     srcs = [
+        "manifest_test.go",
         "native_b02_contract_test.go",
         "native_io_test.go",
     ],
     embedsrcs = [
         "native_b02_inputs.json",
         "native_inputs.json",
+        "manifest.json",
+        "run-1.json",
     ],
     args = ["-test.v"],
 )
