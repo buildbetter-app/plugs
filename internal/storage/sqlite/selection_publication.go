@@ -125,13 +125,15 @@ func (t *transaction) selectionCompleteForCommit(ctx context.Context, c queryer,
 	return true, nil
 }
 
-func (t *transaction) publishSelection(ctx context.Context, c *sql.Conn, current driver.Meta, revision model.Revision, derived map[string]driver.LockState) error {
+func (t *transaction) publishSelection(ctx context.Context, c *sql.Conn, current driver.Meta, revision model.Revision, derived map[string]driver.LockState) (err error) {
+	phase := commitPhaseTracker{trace: commitTraceFromContext(ctx)}
+	phase.next(CommitPhaseSelectionPrepare, len(derived))
+	defer func() { phase.finish(err) }()
 	next := revKey(mustUint(revision))
 	incarnation := current.Incarnation
 	if t.restore != nil {
 		incarnation = t.restore.Incarnation
 	}
-	var err error
 	familyDecisions, err := t.prepareSelectionFamilyCoverage(ctx, c, current, incarnation, derived)
 	if err != nil {
 		return err
@@ -165,6 +167,7 @@ func (t *transaction) publishSelection(ctx context.Context, c *sql.Conn, current
 	for id := range t.bumps {
 		changedSources[id] = true
 	}
+	phase.next(CommitPhaseSelectionSources, len(changedSources))
 	for id := range changedSources {
 		// An annotated fact set sourced from a changed record/row/guard is
 		// invalid until its complete replacement is published in this commit.
@@ -216,6 +219,7 @@ func (t *transaction) publishSelection(ctx context.Context, c *sql.Conn, current
 	// Close every changed logical row before inserting any new physical image.
 	// This handles swaps and prevents a stale typed row surviving an untyped
 	// replacement or delete. The key_history and these intervals share Commit.
+	phase.next(CommitPhaseSelectionClose, len(t.derived))
 	for id := range t.derived {
 		if _, err = c.ExecContext(ctx, `UPDATE selection_bead_history SET end_revision=?
 		 WHERE incarnation=? AND branch=? AND derived_key=? AND end_revision IS NULL`, next, incarnation, revKey(0), id); err != nil {
@@ -226,6 +230,7 @@ func (t *transaction) publishSelection(ctx context.Context, c *sql.Conn, current
 			return err
 		}
 	}
+	phase.next(CommitPhaseSelectionInsert, len(derived))
 	for id, state := range derived {
 		if !state.Present || state.Derived == nil || state.Derived.Index == nil {
 			continue
@@ -309,5 +314,6 @@ func (t *transaction) publishSelection(ctx context.Context, c *sql.Conn, current
 	// Coverage is published after all rows in this same fenced SQL transaction.
 	// Each family retains its prior historical interval if this commit cannot
 	// prove a complete delta, and new typed-first readiness starts only here.
+	phase.next(CommitPhaseSelectionCoverage, len(familyDecisions))
 	return publishSelectionFamilyCoverage(ctx, c, incarnation, revKey(mustUint(current.Head)), next, familyDecisions, t.selectionParentProofSeeds(derived))
 }
