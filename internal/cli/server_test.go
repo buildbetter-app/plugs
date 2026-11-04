@@ -130,6 +130,7 @@ func TestServerCommandConfiguredOntologyUsesInstalledCatalogOverHTTP(t *testing.
 	doc := ontology.DefaultDocument()
 	doc.Statuses["b03-ready"] = ontology.Status{Name: "Configured ready", Category: ontology.Unstarted}
 	workflow := doc.Workflows["issue"]
+	workflow.Statuses = append(workflow.Statuses, "b03-ready")
 	workflow.Initial = "b03-ready"
 	doc.Workflows["issue"] = workflow
 	body, err := service.MarshalOntologySource(service.OntologySource{Base: doc})
