@@ -980,7 +980,10 @@ func lowerViewCallerRefs(c authz.Caller) (driver.SelectionExpr, bool) {
 				return driver.SelectionExpr{}, false
 			}
 			for _, ref := range refs {
-				if authz.CanonicalRef(ref) != nil {
+				// The authorization Ref domain is wider than SelectionRefs.
+				// Preserve ordinary checks for any storage-unrepresentable ID,
+				// including one beside a matching canonical reference.
+				if authz.CanonicalRef(ref) != nil || driver.ValidateHierarchyRef(ref) != nil {
 					return driver.SelectionExpr{}, false
 				}
 			}

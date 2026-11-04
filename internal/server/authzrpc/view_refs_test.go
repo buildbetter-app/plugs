@@ -67,6 +67,9 @@ func TestW10FixedRefsFullPolicyIntersectionAcrossEngines(t *testing.T) {
 			{name: "sponsor_projects_fallback", agent: true, sponsor: map[string]any{"projects": []model.Ref{w9Ref("project-canonical-visible")}}, want: []string{"a", "c"}},
 			{name: "sponsor_null_fallback", agent: true, sponsor: map[string]any{"refs": nil}, want: []string{}},
 			{name: "empty_refs_unsupported_sponsor_fallback", agent: true, principal: map[string]any{"refs": []model.Ref{}}, sponsor: map[string]any{"unknown": true}, want: []string{}},
+			{name: "slash_ref_fallback", principal: map[string]any{"refs": []model.Ref{w9Ref("a/b")}}, want: []string{}},
+			{name: "mixed_slash_refs_fallback", principal: map[string]any{"refs": []model.Ref{w9Ref("a"), w9Ref("a/b")}}, want: []string{"a"}},
+			{name: "sponsor_mixed_slash_refs_fallback", agent: true, principal: map[string]any{"refs": []model.Ref{w9Ref("a"), w9Ref("b")}}, sponsor: map[string]any{"refs": []model.Ref{w9Ref("b"), w9Ref("a/b")}}, want: []string{"b"}},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
@@ -75,7 +78,20 @@ func TestW10FixedRefsFullPolicyIntersectionAcrossEngines(t *testing.T) {
 				if tc.agent {
 					by = model.PrincipalRef{Kind: "agent", ID: "agent:worker", Caveats: tc.principal, Sponsor: &model.PrincipalRef{Kind: "user", ID: "user:direct", Caveats: tc.sponsor}}
 				}
-				v := f.views(t, viewops.Config{})
+				cfg := viewops.Config{Selection: f.app.Service.ViewSelection(), OntologyRevision: model.Natural64(1)}
+				bind, fences := cfg.Selection.Bind, 0
+				cfg.Selection.Bind = func(ctx context.Context, by model.PrincipalRef, inline string) (*viewops.SelectionAuthority, error) {
+					authority, err := bind(ctx, by, inline)
+					if err == nil && authority != nil {
+						fence := authority.Fence
+						authority.Fence = func(ctx context.Context) error { fences++; return fence(ctx) }
+					}
+					return authority, err
+				}
+				v, err := viewops.New(f.store, f.lease, cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
 				req := viewops.RunRequest{CountOnly: true, Definition: &viewops.Definition{Filter: &viewops.Filter{}}}
 				before := f.store.selects
 				count, err := v.Run(context.Background(), by, req)
@@ -90,6 +106,9 @@ func TestW10FixedRefsFullPolicyIntersectionAcrossEngines(t *testing.T) {
 				calls := f.store.selects - before
 				if tc.compiled && calls != 2 || !tc.compiled && calls != 0 {
 					t.Fatalf("compiled=%t selects%d", tc.compiled, calls)
+				}
+				if fences != 2 {
+					t.Fatalf("count/page final fences%d want2", fences)
 				}
 			})
 		}
