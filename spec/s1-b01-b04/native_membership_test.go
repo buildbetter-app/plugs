@@ -437,6 +437,17 @@ func nativeDocumentBytes(t *testing.T, doc any) []byte {
 	return b
 }
 
+// RPC results pass through a map before Commit is decoded, so a raw record's
+// object keys can be reordered. Compare the complete JSON values: UseNumber
+// retains number tokens, and DeepEqual retains array order and null/empty.
+func nativeCommitEqual(t *testing.T, receipt, response model.Commit) bool {
+	t.Helper()
+	var prior, current any
+	nativeDecode(t, nativeDocumentBytes(t, receipt), &prior)
+	nativeDecode(t, nativeDocumentBytes(t, response), &current)
+	return reflect.DeepEqual(prior, current)
+}
+
 func (r *nativeReplay) observeMembership(capture nativeCapture, step nativeMembershipStep, observed nativeMembershipPhase, label string) {
 	before, epoch := r.snapshot(), r.f.lease.Epoch()
 	nativeWrite(r.f.t, filepath.Join(r.output, label+"-state-before.json"), before)
@@ -546,6 +557,12 @@ func (r *nativeReplay) assertMembershipSettlement(before []byte, commit model.Co
 	}
 	nativeDecode(r.f.t, before, &old)
 	afterSnapshot := r.snapshot()
+	// Preserve both complete states and the response even if a later oracle
+	// assertion fails. These observations alone do not certify settlement.
+	base := filepath.Join(r.output, "membership-repeat-close-under-blocked-ancestor-settlement")
+	nativeWrite(r.f.t, base+"-before.json", before)
+	nativeWrite(r.f.t, base+"-after.json", afterSnapshot)
+	nativeJSON(r.f.t, base+"-returned-commit.json", commit)
 	nativeDecode(r.f.t, afterSnapshot, &after)
 	if len(r.calls) == 0 {
 		r.f.t.Fatal("quiet settlement lacks its actual RPC scope")
@@ -568,9 +585,17 @@ func (r *nativeReplay) assertMembershipSettlement(before []byte, commit model.Co
 		}
 	}
 	var receipt nativeReceiptEvidence
+	nativeWrite(r.f.t, base+"-receipt.json", added)
 	nativeDecode(r.f.t, added, &receipt)
+	commitEqual := nativeCommitEqual(r.f.t, receipt.Commit, commit)
+	nativeJSON(r.f.t, base+"-observation.json", map[string]any{
+		"method": call.Method, "idempotencyKey": call.Key, "receiptKey": key,
+		"completedReceipt": receipt, "returnedCommit": commit,
+		"commitJSONValuesEqual": commitEqual,
+		"commitJSONBytesEqual":  bytes.Equal(nativeDocumentBytes(r.f.t, receipt.Commit), nativeDocumentBytes(r.f.t, commit)),
+	})
 	if receipt.ResponsePending || len(receipt.RequestHash) != 64 ||
-		!bytes.Equal(nativeDocumentBytes(r.f.t, receipt.Commit), nativeDocumentBytes(r.f.t, commit)) ||
+		!commitEqual ||
 		!receipt.ZeroChangeset || receipt.Changeset != nil {
 		r.f.t.Fatal("quiet settlement receipt is not a completed no-op bound to the returned commit")
 	}

@@ -324,3 +324,27 @@ stored forms retain their exact bytes and refuse reads across SQL reopen.
 All compatibility proof outputs mark membershipParity=null and do not claim a
 native storage representation or product import. Source fixtures use the
 existing conformance Seed seam; they do not edit or replace driver behavior.
+
+
+The settlement continuation after exact1f retains all777 authored names and
+every native command/input/helper/control. Its parent reached all twelve actual
+repeated-close calls but failed the receipt binding assertion; no completed
+settlement or later compatibility proof follows from that RED. The parent did
+not preserve the newly added receipt after its failing assertion, so the exact
+failed subcondition is unmeasured. Earlier completed receipts independently
+expose differing object-key order between stored raw records and RPC records
+that passed through the replay's result map.
+
+The new oracle compares both complete Commit JSON values with the existing
+UseNumber decoder and reflect.DeepEqual. It ignores only object-key order and
+JSON whitespace; number tokens, every member, array order and null versus empty
+remain significant. Prior receipt bytes, the sole fresh method/key addition,
+completed/nonpending request hash, complete zero Changeset, response revision,
+source/history/versions/all nine derived tables and graph facts remain required.
+Both settlement helpers preserve complete before/after snapshots, the added
+receipt, returned Commit and independent byte/value comparison diagnostics
+before the response-binding assertion. Only the final separate settlement
+output follows all assertions. New execution remains AUTHORED_NOT_RUN until
+its own changed-source terminal; historical REDs and incomplete leaves remain
+literal. This test-only repair supplies no native input or product change,
+common clock, broader planes/query-error proof, fullB01 or admission.

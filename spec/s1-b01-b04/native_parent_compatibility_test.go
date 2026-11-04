@@ -358,6 +358,10 @@ func (r *nativeReplay) assertParentCompatibilitySettlement(label, method string,
 	var old, after map[string]json.RawMessage
 	nativeDecode(r.f.t, before, &old)
 	afterSnapshot := r.snapshot()
+	base := filepath.Join(r.output, label+"-quiet-settlement")
+	nativeWrite(r.f.t, base+"-before.json", before)
+	nativeWrite(r.f.t, base+"-after.json", afterSnapshot)
+	nativeJSON(r.f.t, base+"-returned-commit.json", commit)
 	nativeDecode(r.f.t, afterSnapshot, &after)
 	var prior, current map[string]json.RawMessage
 	nativeDecode(r.f.t, old["writeReceipts"], &prior)
@@ -373,9 +377,17 @@ func (r *nativeReplay) assertParentCompatibilitySettlement(label, method string,
 		}
 	}
 	var receipt nativeReceiptEvidence
+	nativeWrite(r.f.t, base+"-receipt.json", current[key])
 	nativeDecode(r.f.t, current[key], &receipt)
+	commitEqual := nativeCommitEqual(r.f.t, receipt.Commit, commit)
+	nativeJSON(r.f.t, base+"-observation.json", map[string]any{
+		"method": method, "idempotencyKey": call.Key, "receiptKey": key,
+		"completedReceipt": receipt, "returnedCommit": commit,
+		"commitJSONValuesEqual": commitEqual,
+		"commitJSONBytesEqual":  bytes.Equal(nativeDocumentBytes(r.f.t, receipt.Commit), nativeDocumentBytes(r.f.t, commit)),
+	})
 	if receipt.ResponsePending || len(receipt.RequestHash) != 64 || !receipt.ZeroChangeset || receipt.Changeset != nil ||
-		!bytes.Equal(nativeDocumentBytes(r.f.t, receipt.Commit), nativeDocumentBytes(r.f.t, commit)) {
+		!commitEqual {
 		r.f.t.Fatal("compatibility quiet receipt lacks its completed response binding and zero changeset")
 	}
 	delete(old, "writeReceipts")

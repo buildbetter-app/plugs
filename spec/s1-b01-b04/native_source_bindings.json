@@ -61,7 +61,7 @@
     "sha256": "4eb2fcc5937668a29077c634ce361872e4b2a43152443da31ce65c800309beb4"
   },
   "sourceComposition": "Exact attributed producer43 MODULE/helper blobs; existing B01 recorder, V3 inputs,96 argv and three-driver replay unchanged except helper source/tree attribution. Returned ChildEnv stays unchanged; private config root remains separate from physical DataRoot.",
-  "currentConsumerScope": "Child ofd5db2f940: retains its no-op receipt evidence and all477 original cases, adds only Plug parent storage-compatibility extensions after genuine native/public category replay. Literal canonical-only, legacy-only and matching parent bodies retain captured role identity/title/priority and real driver history/source facts; public reads/full+one-row/closure/SQL reopen conserve complete state. Exact conflict/multiple/missing/self/branch/cycle/staged-prefix refusals, same-target quiet receipt, atomic unlink/reparent and typed external target colliding with a real local ID run through public RPC. Seven malformed stored forms refuse public reads before/after SQL reopen without normalizing raw source. All new compatibility comparisons have parity=null; no native representation/import/protected-source substitute claim. Product/helper/control/native inputs and commands unchanged; full clocks/infrastructure/planes/error corpus remains incomplete. Own fresh gates AUTHORED_NOT_RUN. Also removes the unused driver import measured by own d5 native build RED; no source result transfer.",
+  "currentConsumerScope": "Child of1f1cd73879adb7ead25049d98b02447e84fd05e7: test-only complete-JSON receipt Commit comparison and pre-assert complete settlement observations in both helpers. All777 authored names, prior receipt byte conservation, sole fresh method/key, zero Changeset, source/head/history/versions/all nine derived/facts, native commands/input/preparation/helper/control and other assertions retained. Parent1f repeated-close response-binding RED remains exact; its unrecorded after-receipt prevents direct measurement of the failed subcondition. Product source and broader clock/plane/query-error qualification unchanged. Own fresh gates AUTHORED_NOT_RUN.",
   "trustedPreparation": {
     "control": "2d2164ba3d8e456c9aba15fbeb8cae4edc755997",
     "controlTree": "ae226eed2e9a85d4da19958db7a3520ebfe9cf05",
@@ -91,5 +91,11 @@
     "line": 224,
     "refusal": "external capability dependencies cannot use parent-child edges",
     "plugScope": "Typed extension, not native parity; frozen9346 graph.go readyDependencies excludes unresolved external direct subject."
+  },
+  "receiptCommitBinding": {
+    "comparison": "Complete model.Commit JSON values through existing nativeDecode UseNumber and reflect.DeepEqual; only object-key order and JSON whitespace ignored",
+    "evidence": "Before/after snapshots, complete added receipt, returned Commit and byte/value equality diagnostics survive a failing binding assertion; final settlement output requires all checks",
+    "parent": "1f1cd73879adb7ead25049d98b02447e84fd05e7",
+    "parentDisposition": "NATIVE_TEST_RED_TEST_EXECUTION_INCOMPLETE; exact failed compound subcondition UNMEASURED"
   }
 }
