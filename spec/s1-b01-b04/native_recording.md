@@ -112,7 +112,20 @@ capture requires the actual reviewed prepared input and applicable owned
 runtime originals; product queue integration and protected B05 stay outside
 this child.
 
-Current disposition: AUTHORED_NOT_RUN. Actual prepared admission, accepted305
-embedded measurement, applicable owned-helper originals, both recordings and
-new real-driver replay remain WAIT/NOT_RUN. NativeAdmission is None at this
-consumer; full B01 remains UNQUALIFIED, FullS1 remains 0/28 and B05 stays paused.
+The e6 ordinary-source snapshot was AUTHORED_NOT_RUN. At that snapshot, actual
+prepared admission, accepted305 embedded measurement, applicable owned-helper
+originals, both recordings and new real-driver replay were WAIT/NOT_RUN.
+NativeAdmission was None at this consumer; full B01 was UNQUALIFIED,
+FullS1 was 0/28 and B05 was paused.
+
+The first physical e6 unit R41784159876 reports four native capture passes,
+their actual inventories, complete sidecars and dumps, and an overall RED. All
+twelve replay leaves reached public defer and then failed the recorder's
+incorrect universal one-result assertion. The lifecycle service emits a patch
+and a comment for the captured nonempty reason, so this call returns two
+operation results. The causal recorder child requires exactly those two results
+with the actual requested parent, common committed revision and identical final
+record/metadata. Create and link still require exactly one result. All existing
+byte/revision conservation, real SQL reopen, read-receipt and workload checks
+remain unchanged. The original e6 physical RED and earlier ordinary PASS stay
+separate; the corrected source needs its own gates and physical proof.

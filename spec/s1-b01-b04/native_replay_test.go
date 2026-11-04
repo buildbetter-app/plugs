@@ -73,9 +73,30 @@ func (r *nativeReplay) write(label, method string, params map[string]any) model.
 	if err != nil {
 		r.f.t.Fatal(err)
 	}
+	wantResults := 1
+	if method == "bead.defer" {
+		// The nonempty reason lowers to a comment after the lifecycle patch;
+		// Commit.Results contains one result for each of those operations.
+		if reason, ok := params["reason"].(string); !ok || reason == "" {
+			r.f.t.Fatal("native replay defer requires its captured nonempty reason")
+		}
+		wantResults = 2
+	}
 	var commit model.Commit
-	if err := json.Unmarshal(data, &commit); err != nil || len(commit.Results) != 1 {
+	if err := json.Unmarshal(data, &commit); err != nil || len(commit.Results) != wantResults {
 		r.f.t.Fatalf("actual committed result %s: %v %s", method, err, data)
+	}
+	if method == "bead.defer" {
+		parent, ok := params["id"].(model.Ref)
+		if !ok || parent.ID == "" {
+			r.f.t.Fatal("native replay defer lacks its actual parent ref")
+		}
+		for _, item := range commit.Results {
+			if !reflect.DeepEqual(item.Ref, parent) || item.Revision != commit.Revision ||
+				!reflect.DeepEqual(item, commit.Results[0]) {
+				r.f.t.Fatalf("defer operation result changed parent, revision or final record: %+v", commit)
+			}
+		}
 	}
 	return commit
 }
