@@ -300,6 +300,7 @@ type SelectionIndex struct {
 	Source      SelectionSource
 	Bead        *SelectionBead
 	Facts       *SelectionFacts
+	Queue       *QueueFacts `json:",omitempty"`
 }
 type SelectionKey struct {
 	Ref            model.Ref
@@ -740,6 +741,22 @@ func (index *SelectionIndex) Validate(table DerivedTable, row DerivedRow) error 
 	if (index.Bead == nil) == (index.Facts == nil) {
 		return selectionError("index must have one layout")
 	}
+	if index.Queue != nil {
+		if index.Bead == nil || index.Queue.Version != QueueFactsVersion {
+			return selectionError("invalid queue annotation layout")
+		}
+		for _, link := range index.Queue.Links {
+			value := SourceLink{Kind: link.Kind, To: link.To}
+			if validateFact(DerivedReferenceIndex, SelectionFact{Kind: SelectionLinkFact, Ref: &index.Bead.Ref, Link: &value}) != nil {
+				return selectionError("invalid queue link")
+			}
+			if link.Metadata != nil {
+				if _, err := link.Metadata.Normalized(); err != nil {
+					return selectionError("invalid queue link metadata")
+				}
+			}
+		}
+	}
 	if index.Bead != nil {
 		b := index.Bead
 		if table != DerivedSortKey || !index.Source.Present || index.Source.Key.Kind != LockRecord || index.Source.Key.Ref == nil || !SelectionSameRef(*index.Source.Key.Ref, b.Ref) {
@@ -888,6 +905,17 @@ func (row DerivedRow) Clone() DerivedRow {
 	out := DerivedRow{Key: row.Key, Value: bytes.Clone(row.Value)}
 	if row.Index != nil {
 		x := *row.Index
+		if x.Queue != nil {
+			q := *x.Queue
+			q.Links = append([]QueueLink(nil), q.Links...)
+			for i := range q.Links {
+				if q.Links[i].Metadata != nil {
+					v := *q.Links[i].Metadata
+					q.Links[i].Metadata = &v
+				}
+			}
+			x.Queue = &q
+		}
 		if x.Source.Key.Ref != nil {
 			v := *x.Source.Key.Ref
 			x.Source.Key.Ref = &v

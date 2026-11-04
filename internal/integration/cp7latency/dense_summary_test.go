@@ -148,7 +148,19 @@ func checkCertifiedIndexedClaimWork(t *testing.T, f *fixture) {
 	if validationWork.Payloads < 3*validationWork.SourceImages || validationWork.PayloadBytes < 3*int64(len(body(t, winner+1))) {
 		t.Fatalf("indexed membership copies/fresh observations escaped accounting: %+v", validationWork)
 	}
-	if globalAPI.Queries == 0 || globalAPI.Queries < validationAPI.Queries || globalWork.Payloads < validationWork.Payloads || globalWork.SourceImages < validationWork.SourceImages {
+	// A queue projection can select without raw Query. Its complete live
+	// census must still expose at least one key and decoded header state per
+	// corpus bead, plus actual bytes, outside ontology validation. These are
+	// lower bounds on counted O(N) thin work, not bounded-work/SLO proof.
+	if globalAPI.Queries == 0 {
+		selectionKeys := globalWork.SelectorKeys - validationWork.SelectorKeys
+		selectionStates := globalWork.PrefixStates - validationWork.PrefixStates
+		selectionBytes := globalWork.PrefixBytes - validationWork.PrefixBytes
+		if selectionKeys < int64(f.n) || selectionStates < int64(f.n) || selectionBytes <= 0 {
+			t.Fatalf("claim selection did not expose raw Query or a counted complete census: global=%+v/%+v validation=%+v/%+v", globalAPI, globalWork, validationAPI, validationWork)
+		}
+	}
+	if globalAPI.Queries < validationAPI.Queries || globalWork.Payloads < validationWork.Payloads || globalWork.SourceImages < validationWork.SourceImages {
 		t.Fatalf("raw claim selection/global work was hidden: global=%+v/%+v validation=%+v/%+v", globalAPI, globalWork, validationAPI, validationWork)
 	}
 	if globalAPI.Observed != nil || validationAPI.Observed != nil {

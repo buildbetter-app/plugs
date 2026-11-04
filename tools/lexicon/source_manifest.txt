@@ -290,6 +290,7 @@ internal/core/pipeline/projection_publication.go
 internal/core/pipeline/projections.go
 internal/core/pipeline/projections_test.go
 internal/core/pipeline/protected.go
+internal/core/pipeline/queue_projection_test.go
 internal/core/pipeline/response.go
 internal/core/pipeline/response_test.go
 internal/core/pipeline/selection_indexes.go
@@ -354,6 +355,7 @@ internal/core/service/lease.go
 internal/core/service/memories.go
 internal/core/service/ontology.go
 internal/core/service/ordered_close.go
+internal/core/service/queue_projection.go
 internal/core/service/reads.go
 internal/core/service/rpc_reads.go
 internal/core/service/service.go
@@ -459,6 +461,7 @@ internal/integration/cp7latency/dense_summary_test.go
 internal/integration/cp7latency/fixture_test.go
 internal/integration/cp7latency/latency_test.go
 internal/integration/cp7latency/measurement_test.go
+internal/integration/cp7latency/queue_semantics_test.go
 internal/integration/cp7latency/semantics_test.go
 internal/integration/cp7latency/work_accounting_test.go
 internal/integration/cp7latency/work_counters_test.go
@@ -978,6 +981,8 @@ internal/storage/driver/offline_history_test.go
 internal/storage/driver/offline_restore.go
 internal/storage/driver/parent_counter.go
 internal/storage/driver/parent_counter_test.go
+internal/storage/driver/queue_projection.go
+internal/storage/driver/queue_projection_test.go
 internal/storage/driver/read_work.go
 internal/storage/driver/receipt_contract_test.go
 internal/storage/driver/restore.go
@@ -1064,6 +1069,8 @@ internal/storage/postgres/parent_counter.go
 internal/storage/postgres/pending_test.go
 internal/storage/postgres/persistence_test.go
 internal/storage/postgres/query.go
+internal/storage/postgres/queue_projection.go
+internal/storage/postgres/queue_projection_test.go
 internal/storage/postgres/reader.go
 internal/storage/postgres/reader_batch_test.go
 internal/storage/postgres/schema.go
@@ -1128,6 +1135,8 @@ internal/storage/sqlite/publication_lease_process_test.go
 internal/storage/sqlite/publication_lease_race_test.go
 internal/storage/sqlite/publication_lease_test.go
 internal/storage/sqlite/query_cursor_test.go
+internal/storage/sqlite/queue_projection.go
+internal/storage/sqlite/queue_projection_test.go
 internal/storage/sqlite/reader.go
 internal/storage/sqlite/recordref_test.go
 internal/storage/sqlite/schema.go

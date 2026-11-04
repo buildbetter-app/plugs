@@ -282,11 +282,15 @@ func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req 
 	if err := validatePosition(req.Position); err != nil {
 		return BeadPage{}, err
 	}
+	corePage := s.readyPage
+	if restartOnRevision {
+		corePage = s.queueReadyPage
+	}
 	if s.workflow == nil {
 		if req.Position != nil && (req.Position.Workflow || req.Position.WorkflowSnapshot != nil) {
 			return BeadPage{}, failure("cursor_invalid", "workflow provider is unavailable; restart paging")
 		}
-		return s.readyPage(ctx, by, req, restartOnRevision)
+		return corePage(ctx, by, req, restartOnRevision)
 	}
 	workflowPhase := req.Position != nil && req.Position.Workflow
 	coreReq := req
@@ -296,7 +300,7 @@ func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req 
 		coreReq.Position = nil
 		coreReq.Limit = 1
 	}
-	page, err := s.readyPage(ctx, by, coreReq, restartOnRevision)
+	page, err := corePage(ctx, by, coreReq, restartOnRevision)
 	if err != nil {
 		return BeadPage{}, err
 	}
@@ -390,6 +394,13 @@ func (s *Service) ReadyCandidates(ctx context.Context, req ReadyRequest, reader 
 	}
 	if reader == nil {
 		return nil, failure("internal_error", "ready probe reader is unavailable")
+	}
+	items, projection, err := s.queueReadyItems(ctx, req, reader)
+	if err != nil {
+		return nil, err
+	}
+	if projection != nil {
+		return items, nil
 	}
 	return s.readyItems(ctx, req, reader)
 }

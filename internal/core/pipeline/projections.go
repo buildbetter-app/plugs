@@ -348,6 +348,23 @@ func (p *SourceProjectionPlan) SelectionRows(incarnation string, revision model.
 		case 0:
 			if typed {
 				index.Bead = &bead
+				// Only byte-exact canonical documents attest queue facts. Legacy
+				// aliases, duplicate/miscased lease properties, nulls, unknown
+				// members or noncanonical envelopes keep Queue nil. Ordinary
+				// projections and their logical Values remain unchanged.
+				canonical, err := json.Marshal(doc)
+				if err == nil && bytes.Equal(canonical, p.record.Body) {
+					queue := &driver.QueueFacts{Version: driver.QueueFactsVersion, LeasePresent: doc.Lease != nil}
+					for _, link := range doc.Links {
+						value := driver.QueueLink{Kind: link.Kind, To: link.To}
+						if link.Metadata != nil {
+							metadata := *link.Metadata
+							value.Metadata = &metadata
+						}
+						queue.Links = append(queue.Links, value)
+					}
+					index.Queue = queue
+				}
 				row.Index = index
 			}
 		case 1:
