@@ -179,7 +179,7 @@ func TestReadyProjectFilterUnchangedCorpus(t *testing.T) {
 					}
 					// This explicitly excludes the attractive but wrong authorized-size pivot.
 					if stride != 1 && rotated[0].ID == want[int(binary.BigEndian.Uint64(seed[:8])%uint64(len(want)))].ID {
-						t.Fatal("seed witness does not distinguish authorized-cardinality rotation")
+						t.Fatal("seed case does not distinguish authorized-cardinality rotation")
 					}
 				}
 				baseline := readyMembershipDigest(selected)
