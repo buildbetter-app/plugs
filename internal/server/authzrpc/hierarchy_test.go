@@ -988,6 +988,9 @@ type parentBatchRecorder struct {
 }
 
 func (r *parentBatchRecorder) Check(ctx context.Context, source authz.Slice, requests []authz.CheckRequest) ([]authz.Step, error) {
+	if len(requests) != 1 {
+		return nil, errors.New("check-only policy requires its per-resource invocation budget")
+	}
 	ids := make([]string, len(requests))
 	for i, request := range requests {
 		ids[i] = request.Resource.Ref.ID
@@ -1004,6 +1007,22 @@ func (r *parentBatchRecorder) Check(ctx context.Context, source authz.Slice, req
 
 func (*parentBatchRecorder) Filter(authz.ListRequest) (authz.FilterExpr, error) {
 	return authz.FilterExpr{}, authz.ErrCheckOnly
+}
+
+type parentCompiledRecorder struct {
+	authz.RuleSet
+	compiles atomic.Int64
+	checks   atomic.Int64
+}
+
+func (r *parentCompiledRecorder) Compile(req authz.ListRequest) (authz.FilterTemplate, error) {
+	r.compiles.Add(1)
+	return r.RuleSet.Compile(req)
+}
+
+func (r *parentCompiledRecorder) Eval(ctx context.Context, source authz.Slice, requests []authz.CheckRequest) ([]authz.Decision, error) {
+	r.checks.Add(1)
+	return r.RuleSet.Eval(ctx, source, requests)
 }
 
 func TestParentProjectionPage1000ReusesEmittedBodiesAndDistinctParent(t *testing.T) {
@@ -1024,8 +1043,8 @@ func TestParentProjectionPage1000ReusesEmittedBodiesAndDistinctParent(t *testing
 	if err != nil || len(rows) != len(children) {
 		t.Fatalf("emitted sources: rows=%d err=%v", len(rows), err)
 	}
-	recorder := &parentBatchRecorder{}
-	f.app.Checker.chain.Links = []authz.Link{recorder}
+	recorder := &parentCompiledRecorder{RuleSet: f.app.Checker.chain.Rules[0]}
+	f.app.Checker.chain.Rules = []authz.RuleSet{recorder}
 	caller, err := f.app.Checker.callerFor(ctx, model.PrincipalRef{Kind: "user", ID: "user:viewer"})
 	if err != nil {
 		t.Fatal(err)
@@ -1049,8 +1068,40 @@ func TestParentProjectionPage1000ReusesEmittedBodiesAndDistinctParent(t *testing
 	if content.gets["new"] != 1 {
 		t.Fatalf("shared parent materialized %d times", content.gets["new"])
 	}
-	if len(recorder.batches) != 2 || len(recorder.batches[0]) != 1000 || len(recorder.batches[1]) != 1 {
-		t.Fatalf("authorization was not batched by emitted children and distinct parents: %+v", recorder.batches)
+	if recorder.compiles.Load() != 1 || recorder.checks.Load() != 0 {
+		t.Fatalf("page did not share its complete compiled parent policy: compiles=%d checks=%d", recorder.compiles.Load(), recorder.checks.Load())
+	}
+}
+
+func TestParentProjectionCheckOnlyPreservesPerResourcePolicyInvocation(t *testing.T) {
+	f := newHFixture(t, true)
+	ctx := context.Background()
+	content := f.snapshot(t)
+	rows, err := content.Get(ctx, []model.Ref{hRef("visible"), hRef("new")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := &parentBatchRecorder{}
+	f.app.Checker.chain.Links = []authz.Link{recorder}
+	caller, err := f.app.Checker.callerFor(ctx, model.PrincipalRef{Kind: "user", ID: "user:viewer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := f.app.Checker.load(ctx, content, caller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parents, err := f.app.Checker.parentProjectionsFromRows(ctx, caller, authority, content, rows)
+	if err != nil || parents["visible"].Ref == nil || content.gets["visible"] != 1 || content.gets["new"] != 1 {
+		t.Fatalf("check-only source batch changed behavior/work: parents=%+v gets=%+v err=%v", parents, content.gets, err)
+	}
+	if len(recorder.batches) != 3 {
+		t.Fatalf("check-only calls=%d, want two emitted children and one distinct parent", len(recorder.batches))
+	}
+	for _, batch := range recorder.batches {
+		if len(batch) != 1 {
+			t.Fatalf("check-only policy lost per-resource component budget: %+v", batch)
+		}
 	}
 }
 

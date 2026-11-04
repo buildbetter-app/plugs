@@ -112,24 +112,31 @@ func sameProjectionSnapshot(content driver.Reader, authority Snapshot) bool {
 	return a.At != nil && b.At != nil && a.Incarnation == b.Incarnation && a.Branch.String() == b.Branch.String() && a.At.String() == b.At.String()
 }
 
-func (c *Checker) hierarchyReadBatch(ctx context.Context, caller authz.Caller, authority authz.Slice, refs []model.Ref) ([]bool, error) {
+func (c *Checker) hierarchyReadBatch(ctx context.Context, caller authz.Caller, authority authz.Slice, refs []model.Ref, filter *authz.FilterTemplate) ([]bool, error) {
 	if len(refs) == 0 {
 		return []bool{}, ctx.Err()
 	}
-	requests := make([]authz.CheckRequest, len(refs))
-	for i, ref := range refs {
-		requests[i] = authz.CheckRequest{Caller: caller, Action: authz.Read, Resource: authz.Resource{Kind: authz.Bead, Ref: ref}, Method: "bead.get"}
-	}
-	decisions, err := c.chain.Check(ctx, authority, requests)
-	if err != nil {
-		return nil, authzError(err)
-	}
-	if len(decisions) != len(refs) {
-		return nil, hierarchyUnavailable()
-	}
 	allowed := make([]bool, len(refs))
-	for i, decision := range decisions {
-		allowed[i] = decision.Effect == authz.Allow
+	for i, ref := range refs {
+		if filter != nil {
+			var err error
+			allowed[i], err = filter.Match(ctx, authority, authz.Resource{Kind: authz.Bead, Ref: ref})
+			if err != nil {
+				return nil, authzError(err)
+			}
+			continue
+		}
+		// A check-only component keeps its existing per-resource budget.
+		// Batching source reads must not impose one shared component deadline
+		// on all emitted items or turn a valid custom policy into a refusal.
+		decisions, err := c.chain.Check(ctx, authority, []authz.CheckRequest{{Caller: caller, Action: authz.Read, Resource: authz.Resource{Kind: authz.Bead, Ref: ref}, Method: "bead.get"}})
+		if err != nil {
+			return nil, authzError(err)
+		}
+		if len(decisions) != 1 {
+			return nil, hierarchyUnavailable()
+		}
+		allowed[i] = decisions[0].Effect == authz.Allow
 	}
 	return allowed, nil
 }
@@ -172,7 +179,14 @@ func (c *Checker) parentProjectionsBatch(ctx context.Context, caller authz.Calle
 	if err := current.load(ctx, children); err != nil {
 		return nil, err
 	}
-	allowed, err := c.hierarchyReadBatch(ctx, caller, current, children)
+	// Compile one complete parent-read policy for both source batches. A
+	// component without a usable exact compiler retains its ordinary Check;
+	// compilation failure never manufactures a denial or an authorization.
+	var filter *authz.FilterTemplate
+	if compiled, err := c.chain.Compile(authz.ListRequest{Caller: caller, Action: authz.Read, ResourceKind: authz.Bead, Method: "bead.get"}); err == nil {
+		filter = &compiled
+	}
+	allowed, err := c.hierarchyReadBatch(ctx, caller, current, children, filter)
 	if err != nil {
 		return nil, err
 	}
@@ -230,7 +244,7 @@ func (c *Checker) parentProjectionsBatch(ctx context.Context, caller authz.Calle
 			present = append(present, ref)
 		}
 	}
-	parentAllowed, err := c.hierarchyReadBatch(ctx, caller, current, present)
+	parentAllowed, err := c.hierarchyReadBatch(ctx, caller, current, present, filter)
 	if err != nil {
 		return nil, err
 	}
