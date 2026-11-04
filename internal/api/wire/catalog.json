@@ -1015,6 +1015,14 @@
           }
         },
         {
+          "name": "force",
+          "schema": {
+            "type": "boolean",
+            "description": "Request close policy override through the separate override_guard action. Templates, schema, CAS, leases, ordinary write authorization and transition permission still apply; authenticated callers must be users."
+          },
+          "required": false
+        },
+        {
           "name": "_meta",
           "schema": {
             "$ref": "#/components/schemas/Meta"
@@ -10499,7 +10507,7 @@
       },
       "CloseOp": {
         "type": "object",
-        "description": "Enter the canonical close slot at this operation position in tx.apply; reuse bead.close guards, permission, reason and provenance. Any refusal rolls back the whole ChangeSet. No force or status shortcut.",
+        "description": "Enter the canonical close slot at this operation position in tx.apply. Optional force requests the separately authorized policy override only for this operation. Templates, schema, CAS, leases and transition permission remain mandatory; any refusal rolls back the whole ChangeSet.",
         "properties": {
           "kind": {
             "const": "close"
@@ -10516,6 +10524,10 @@
             "items": {
               "$ref": "#/components/schemas/Expect"
             }
+          },
+          "force": {
+            "type": "boolean",
+            "description": "Request close policy override through the separate override_guard action. Templates, schema, CAS, leases, ordinary write authorization and transition permission still apply; authenticated callers must be users."
           }
         },
         "required": [
@@ -13576,7 +13588,7 @@
     "methodCount": 83,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
     "nameSha256": "0ce6a0ee3927753ec8622351c1337c1de3922a1662eae667196e447fd9c170ef",
-    "descriptorSha256": "2d18672c631f492cb63d7e5e7e31a0fcdf9d67867103e6cded560b917446acc6",
+    "descriptorSha256": "b107ed567687dcfaf7427ef183d6af676699a7152f2b52c8cef81770e5af8219",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -14267,6 +14279,14 @@
                 "$ref": "#/components/schemas/Expect"
               }
             }
+          },
+          {
+            "name": "force",
+            "schema": {
+              "type": "boolean",
+              "description": "Request close policy override through the separate override_guard action. Templates, schema, CAS, leases, ordinary write authorization and transition permission still apply; authenticated callers must be users."
+            },
+            "required": false
           },
           {
             "name": "_meta",

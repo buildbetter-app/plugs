@@ -646,7 +646,7 @@ func TestAlreadyClosedCloseUsesGuardedNoopReceipt(t *testing.T) {
 	post := &failedPost{}
 	f := setup(t, pipeline.WithPostSubscribers(pipeline.PostBinding{ID: "close-post", Subscriber: post}))
 	ctx := context.Background()
-	id, _ := create(t, f, "Close settlement")
+	id, created := create(t, f, "Close settlement")
 	closed, err := f.svc.CloseWithOutcome(ctx, anonymous, CloseRequest{ID: id}, meta(t))
 	if err != nil {
 		t.Fatal(err)
@@ -664,18 +664,18 @@ func TestAlreadyClosedCloseUsesGuardedNoopReceipt(t *testing.T) {
 		t.Fatalf("close settlement replay: %+v %v", replay, err)
 	}
 	withReason, err := f.svc.CloseWithOutcome(ctx, anonymous, CloseRequest{ID: id, Reason: "Additional evidence"}, meta(t))
-	if err != nil || withReason.Replayed || withReason.Commit.Revision.String() == closed.Commit.Revision.String() || post.calls != calls+1 {
-		t.Fatalf("reason comment was lost as a no-op: %+v %v", withReason, err)
+	if err != nil || withReason.Replayed || withReason.Commit.Revision.String() != closed.Commit.Revision.String() || len(withReason.Commit.Results) == 0 || withReason.Commit.Results[0].Revision.String() != closed.Commit.Results[0].Revision.String() || !bytes.Equal(withReason.Commit.Results[0].Record, closed.Commit.Results[0].Record) || len(withReason.Commit.Warnings) != 0 || post.calls != calls {
+		t.Fatalf("late reason changed the first close settlement: %+v %v", withReason, err)
 	}
 	doc, err := pipeline.DecodeDocument(withReason.Commit.Results[0].Record)
-	if err != nil || len(doc.Comments) != 1 || doc.Comments[0].Body != "Additional evidence" {
-		t.Fatalf("reason comment was not committed: %+v %v", doc, err)
+	if err != nil || len(doc.Comments) != 0 {
+		t.Fatalf("late reason changed the first empty reason: %+v %v", doc, err)
 	}
 	got, err := f.svc.Get(ctx, anonymous, GetRequest{ID: id})
 	if err != nil || len(got.Bead.Fields) == 0 || got.Lease != nil {
 		t.Fatalf("settled bead: %+v %v", got, err)
 	}
-	stale := closed.Commit.Revision
+	stale := created.Revision
 	_, err = f.svc.CloseWithOutcome(ctx, anonymous, CloseRequest{ID: id, Expect: []model.Precondition{{Ref: id, Revision: &stale}}}, meta(t))
 	wantCode(t, err, "precondition_failed")
 }

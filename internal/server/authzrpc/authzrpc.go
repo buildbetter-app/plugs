@@ -171,7 +171,11 @@ func newWithClock(ctx context.Context, config Config, now func() time.Time) (*Co
 			return nil, err
 		}
 	}
-	ontology := service.NewOntology(nil)
+	// Only this successfully constructed fixed-authorizer route marks
+	// installation; requests still validate its current host facts. #18 has no
+	// transition action/target-status adapter. Keep that observation missing:
+	// the existing A3 permission guard must deny, never reuse modify grants.
+	ontology := service.NewOntology(nil, service.WithTransitionPermissionObserver(nil))
 	options := []pipeline.Option{pipeline.WithOntology(ontology), pipeline.WithAuthorizer(checker), pipeline.WithEventContext(checker), pipeline.WithClock(now)}
 	if config.Audit != nil {
 		options = append(options, pipeline.WithOntologyAudit(config.Audit))

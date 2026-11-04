@@ -320,7 +320,7 @@ func (p *prepared) ordinaryEvent(pending *pending, op model.OpKind) (model.Durab
 		}
 		return "", fmt.Errorf("unsupported memory event operation %q", op)
 	}
-	event, ok := map[model.OpKind]model.DurableEventType{model.OpCreate: model.EventBeadCreated, model.OpPatch: model.EventBeadUpdated, model.OpSetMeta: model.EventBeadUpdated, model.OpReparent: model.EventBeadReparented, model.OpComment: model.EventBeadCommented, model.OpLink: model.EventBeadLinked, model.OpUnlink: model.EventBeadUnlinked, model.OpDelete: model.EventBeadDeleted, model.OpClose: model.EventBeadCommented}[op]
+	event, ok := map[model.OpKind]model.DurableEventType{model.OpCreate: model.EventBeadCreated, model.OpPatch: model.EventBeadUpdated, model.OpSetMeta: model.EventBeadUpdated, model.OpReparent: model.EventBeadReparented, model.OpComment: model.EventBeadCommented, model.OpAttach: model.EventBeadAttached, model.OpLink: model.EventBeadLinked, model.OpUnlink: model.EventBeadUnlinked, model.OpDelete: model.EventBeadDeleted, model.OpClose: model.EventBeadCommented}[op]
 	if !ok {
 		return "", fmt.Errorf("unsupported ordinary event operation %q", op)
 	}

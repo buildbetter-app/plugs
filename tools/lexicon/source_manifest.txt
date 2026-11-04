@@ -264,6 +264,7 @@ internal/core/pipeline/dependency.go
 internal/core/pipeline/document.go
 internal/core/pipeline/gate.go
 internal/core/pipeline/graph_validation.go
+internal/core/pipeline/guard_override.go
 internal/core/pipeline/guard_test.go
 internal/core/pipeline/hierarchy.go
 internal/core/pipeline/hierarchy_indexed.go
@@ -334,6 +335,7 @@ internal/core/service/direct_blockers.go
 internal/core/service/direct_blockers_test.go
 internal/core/service/gate.go
 internal/core/service/graph.go
+internal/core/service/guard_override.go
 internal/core/service/heartbeat.go
 internal/core/service/hierarchy-index-consumer-design.md
 internal/core/service/hierarchy_guards.go
@@ -713,6 +715,7 @@ internal/server/authzrpc/claim_test.go
 internal/server/authzrpc/cycles.go
 internal/server/authzrpc/drivers_test.go
 internal/server/authzrpc/export_test.go
+internal/server/authzrpc/guard_override.go
 internal/server/authzrpc/hierarchy.go
 internal/server/authzrpc/hierarchy_lifecycle_guards_test.go
 internal/server/authzrpc/hierarchy_lifecycle_test.go
@@ -1269,7 +1272,10 @@ spec/s1-b05-b08/BUILD.bazel
 spec/s1-b05-b08/README.md
 spec/s1-b05-b08/blocking_hierarchy_test.go
 spec/s1-b05-b08/checkpoint_guards_test.go
+spec/s1-b05-b08/close_contract_oracle_test.go
+spec/s1-b05-b08/close_contract_test.go
 spec/s1-b05-b08/cycle_admission_test.go
+spec/s1-b05-b08/cycle_concurrency_test.go
 spec/s1-b05-b08/cycle_fence_test.go
 spec/s1-b05-b08/cycle_oracle_test.go
 spec/s1-b05-b08/cycle_rpc_test.go
@@ -1277,6 +1283,7 @@ spec/s1-b05-b08/engines_test.go
 spec/s1-b05-b08/ephemeral_cycle_oracle_test.go
 spec/s1-b05-b08/ephemeral_cycle_test.go
 spec/s1-b05-b08/fixture_test.go
+spec/s1-b05-b08/force_contract_test.go
 spec/s1-b05-b08/heartbeat_repair_test.go
 spec/s1-b05-b08/opaque_kinds_test.go
 spec/s1-b05-b08/prepared_reference_test.py
