@@ -22,7 +22,7 @@ func TestReadySelectionLeafBindsAllocatedSourceRevision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	index := &driver.SelectionIndex{Version: 1, Incarnation: "test", Branch: model.Natural64(0), Row: driver.DerivedRowKey{Table: driver.DerivedSortKey, Key: "ready-test"}, Source: driver.SelectionSource{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &ref}, Present: true, Revision: model.Natural64(7), Digest: driver.SelectionDigest(body)}, Bead: &bead, ValueDigest: driver.SelectionDigest(value)}
+	index := &driver.SelectionIndex{Version: driver.SelectionIndexVersion, Incarnation: "test", Branch: model.Natural64(0), Row: driver.DerivedRowKey{Table: driver.DerivedSortKey, Key: "ready-test"}, Source: driver.SelectionSource{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &ref}, Present: true, Revision: model.Natural64(7), Digest: driver.SelectionDigest(body)}, Bead: &bead, ValueDigest: driver.SelectionDigest(value)}
 	rows := []driver.DerivedRow{{Key: index.Row.Key, Value: value, Index: index}}
 	if err = BindReadySelectionRows(doc, model.Natural64(11), rows); err != nil {
 		t.Fatal(err)
