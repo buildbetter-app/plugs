@@ -296,7 +296,12 @@ func TestSelectionStageValidationNonDataSourceBumps(t *testing.T) {
 	ctx := testContext(t)
 	s, counts := selectionStageStore(t, ctx)
 	lease := getLease(t, ctx, s, driver.LeaseTTL)
-	fact := pipeline.GraphValidityReadFact
+	// Keep the donor's exact read-fact identity on the retained W4 base,
+	// which predates the exported semantic graph-certificate constant.
+	fact, err := driver.NewReadFact("core/graph-validity/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
 	sources := []driver.LockKey{driver.GraphBlockingSentinelLock, {Kind: driver.LockReadFact, Fact: fact}}
 	keys := []driver.DerivedRowKey{{Table: driver.DerivedAttribute, Key: "sentinel-source"}, {Table: driver.DerivedAttribute, Key: "read-fact-source"}}
 	extra := []driver.LockKey{sources[1]}
