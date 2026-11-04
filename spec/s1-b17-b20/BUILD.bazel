@@ -44,7 +44,6 @@ go_test(
         "//internal/storage/sqlite",
         "//internal/testclock",
     ],
-    tags = ["local", "requires-network"],
     timeout = "long",
 )
 
