@@ -495,6 +495,7 @@ internal/integration/gatecontract/external_target_test.go
 internal/integration/gatecontract/fanout_test.go
 internal/integration/gatecontract/fixture_test.go
 internal/integration/gatecontract/metadata_test.go
+internal/integration/gatecontract/public_dump_restore_test.go
 internal/integration/graphacceptance/BUILD.bazel
 internal/integration/graphacceptance/README.md
 internal/integration/graphacceptance/fixture_test.go
