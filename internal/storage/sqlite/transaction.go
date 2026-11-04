@@ -38,7 +38,12 @@ type transaction struct {
 	// A present=false, revision-zero observation proves that no version history
 	// exists for a first lifetime, so Commit can avoid re-counting that row.
 	// Existing and tombstoned rows keep the scalar COUNT(*) path.
-	recordStates       map[string]driver.LockState
+	recordStates map[string]driver.LockState
+	// Lock batches retain only unambiguous first-lifetime observations. The
+	// cache is used for ordinary record-only writes; selection producers keep
+	// their scalar observation count and ordering.
+	firstLifetimeState map[string]driver.LockState
+	reuseFirstLifetime bool
 	derived            map[string]driver.LockState
 	blobs              map[driver.Hash][]byte
 	bumps              map[string]driver.LockKey
@@ -106,6 +111,8 @@ func (t *transaction) finish() {
 	t.clearSourceOverlay()
 	t.records = nil
 	t.recordStates = nil
+	t.firstLifetimeState = nil
+	t.reuseFirstLifetime = false
 	t.derived = nil
 	t.blobs = nil
 	t.bumps = nil
@@ -207,6 +214,13 @@ func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) (
 			releaseGuards(guards)
 			return nil, err
 		}
+		t.reuseFirstLifetime = true
+		for _, request := range selected {
+			if request.Key.Kind == driver.LockDerived {
+				t.reuseFirstLifetime = false
+				break
+			}
+		}
 		t.acquired = selected
 		t.guards = guards
 		t.locked = true
@@ -278,6 +292,12 @@ func (t *transaction) observeLockSet(ctx context.Context, requests driver.LockSe
 							}
 							state.Record = &value
 						}
+					}
+					if !state.Present && state.Revision.IsZero() {
+						if t.firstLifetimeState == nil {
+							t.firstLifetimeState = make(map[string]driver.LockState)
+						}
+						t.firstLifetimeState[keys[i]] = state
 					}
 				}
 				if staged, ok := t.derived[keys[i]]; ok {

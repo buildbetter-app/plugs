@@ -86,9 +86,15 @@ func (t *transaction) putSourceRecord(ctx context.Context, record driver.Record,
 	if old, ok := t.records[id]; ok && old != nil && old.Kind != record.Kind {
 		return fmt.Errorf("%w: changing staged kind", driver.ErrUnsupported)
 	}
-	state, err := t.observe(ctx, driver.LockKey{Kind: driver.LockRecord, Ref: &record.Ref})
-	if err != nil {
-		return err
+	state, cached := driver.LockState{}, false
+	if t.reuseFirstLifetime {
+		state, cached = t.firstLifetimeState[id]
+	}
+	if !cached {
+		state, err = t.observe(ctx, driver.LockKey{Kind: driver.LockRecord, Ref: &record.Ref})
+		if err != nil {
+			return err
+		}
 	}
 	if t.recordStates == nil {
 		t.recordStates = make(map[string]driver.LockState)
