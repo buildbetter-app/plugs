@@ -3,6 +3,7 @@ package lexicon
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"go/ast"
@@ -33,14 +34,41 @@ type GoStringAllowance struct {
 	Value string
 }
 
+// NativeControlAllowance binds a complete finite set of decoded Go string
+// literals to one exact recorder source path. It is deliberately private to
+// the B24 listener/view controls; no family or prefix matching is supported.
+type NativeControlAllowance struct {
+	Path   string
+	Values []string
+}
+
 // Config is the small TOML subset used by the repository lexicon.
 type Config struct {
-	Terms                  []Term
-	Provenance             []string
-	ExternalProtocolString GoStringAllowance
+	Terms                   []Term
+	Provenance              []string
+	ExternalProtocolString  GoStringAllowance
+	NativeRecordingLiterals NativeControlAllowance
+	NativeViewStrings       NativeControlAllowance
 }
 
 const externalProtocolSource = "spec/s1-b25-b28/public_recording_test.go"
+const nativeRecordingLiteralSource = "spec/s1-b21-b24/native_recording_test.go"
+const nativeViewProtocolSource = "spec/s1-b21-b24/native_views_test.go"
+
+var nativeRecordingLiteralDigests = map[string]bool{
+	"d56ebf9119cfd53f6690d8ec4111275a19c16b5c1c89123d3ff99499b81586cd": true,
+	"91f880d51578af7df6289315f0b8e9e7e5c44e86b33f48900c26f031a0cc6f75": true,
+	"93602e05a1bff1bd127187c713caaeab338848eb4a6cba051123440a912cdf26": true,
+	"a250fe4bfeccf35cd1f34c8eb7625ef05127294cdeb6884a04adea45796adebc": true,
+	"bb4a56c556282d591f27cc54e1f06ac5a3de17e1aed41e0ac387b2b71fe30f91": true,
+	"c7e69eb7c0bdafa652aa9539c60152fb468d0ac0ddc4f71bb90469ec8747caf8": true,
+	"d29f73f45d1bb46a0ca4f641e919fcb6964b2aedeb3db5205118b50627c725fc": true,
+}
+
+var nativeViewProtocolDigests = map[string]bool{
+	"91f880d51578af7df6289315f0b8e9e7e5c44e86b33f48900c26f031a0cc6f75": true,
+	"93602e05a1bff1bd127187c713caaeab338848eb4a6cba051123440a912cdf26": true,
+}
 
 // Finding identifies one boundary violation.
 type Finding struct {
@@ -67,6 +95,8 @@ func LoadConfig(path string) (Config, error) {
 	section := ""
 	var current *Term
 	var externalSection, externalPath, externalValue bool
+	var recordingSection, recordingPath, recordingValues bool
+	var viewSection, viewPath, viewValues bool
 	for _, line := range strings.Split(string(b), "\n") {
 		line = strings.TrimSpace(strings.SplitN(line, "#", 2)[0])
 		if line == "" {
@@ -88,6 +118,22 @@ func LoadConfig(path string) (Config, error) {
 			}
 			externalSection = true
 			section = "external_protocol_string"
+			current = nil
+			continue
+		case "[native_recording_literals]":
+			if recordingSection {
+				return Config{}, errors.New("duplicate native recording literal section")
+			}
+			recordingSection = true
+			section = "native_recording_literals"
+			current = nil
+			continue
+		case "[native_view_strings]":
+			if viewSection {
+				return Config{}, errors.New("duplicate native view string section")
+			}
+			viewSection = true
+			section = "native_view_strings"
 			current = nil
 			continue
 		}
@@ -123,6 +169,43 @@ func LoadConfig(path string) (Config, error) {
 				cfg.ExternalProtocolString.Value = values[0]
 			default:
 				return Config{}, fmt.Errorf("unknown external protocol string key: %s", key)
+			}
+			continue
+		}
+		if section == "native_recording_literals" || section == "native_view_strings" {
+			allowance := &cfg.NativeRecordingLiterals
+			source := nativeRecordingLiteralSource
+			digests := nativeRecordingLiteralDigests
+			pathSeen, valuesSeen := &recordingPath, &recordingValues
+			if section == "native_view_strings" {
+				allowance = &cfg.NativeViewStrings
+				source = nativeViewProtocolSource
+				digests = nativeViewProtocolDigests
+				pathSeen, valuesSeen = &viewPath, &viewValues
+			}
+			switch key {
+			case "path":
+				if *pathSeen || !strings.HasPrefix(value, "\"") || len(values) != 1 || values[0] != source {
+					return Config{}, errors.New("native control literals require their exact source path")
+				}
+				*pathSeen = true
+				allowance.Path = values[0]
+			case "values":
+				if *valuesSeen || !strings.HasPrefix(value, "[") || len(values) != len(digests) {
+					return Config{}, errors.New("native control literals require one complete exact set")
+				}
+				*valuesSeen = true
+				seen := make(map[string]bool)
+				for _, literal := range values {
+					digest := nativeLiteralDigest(literal)
+					if !digests[digest] || seen[digest] {
+						return Config{}, errors.New("native control literal is unlisted or duplicated")
+					}
+					seen[digest] = true
+				}
+				allowance.Values = values
+			default:
+				return Config{}, fmt.Errorf("unknown native control literal key: %s", key)
 			}
 			continue
 		}
@@ -164,7 +247,39 @@ func LoadConfig(path string) (Config, error) {
 	if externalSection && (!externalPath || !externalValue || cfg.ExternalProtocolString.Path != externalProtocolSource || cfg.ExternalProtocolString.Value == "") {
 		return Config{}, errors.New("external protocol string must bind the exact source path and a nonempty literal")
 	}
+	if recordingSection && (!recordingPath || !recordingValues) || viewSection && (!viewPath || !viewValues) {
+		return Config{}, errors.New("native control literals lack their exact path or complete set")
+	}
 	return cfg, nil
+}
+
+func nativeLiteralDigest(value string) string {
+	digest := sha256.Sum256([]byte(value))
+	return fmt.Sprintf("%x", digest[:])
+}
+
+func nativeControlAllowance(path string, cfg Config) (NativeControlAllowance, map[string]bool, bool) {
+	switch path {
+	case nativeRecordingLiteralSource:
+		return cfg.NativeRecordingLiterals, nativeRecordingLiteralDigests, true
+	case nativeViewProtocolSource:
+		return cfg.NativeViewStrings, nativeViewProtocolDigests, true
+	default:
+		return NativeControlAllowance{}, nil, false
+	}
+}
+
+func allowsNativeControlLiteral(path, value string, cfg Config) bool {
+	allowance, digests, ok := nativeControlAllowance(path, cfg)
+	if !ok || allowance.Path != path || !digests[nativeLiteralDigest(value)] {
+		return false
+	}
+	for _, allowed := range allowance.Values {
+		if value == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 func quotedValues(value string) ([]string, error) {
@@ -306,8 +421,127 @@ func isProvenance(path string, zones []string) bool {
 	return false
 }
 
+type nativeStringLiteral struct {
+	start, end, line int
+	value            string
+	imported         bool
+}
+
+// nativeStringLiterals returns only Go AST string tokens. Comments, names and
+// import paths are intentionally represented separately so an allowance can
+// never turn into a file-wide or identifier exemption.
+func nativeStringLiterals(path string, content []byte) []nativeStringLiteral {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, content, parser.ParseComments)
+	if err != nil {
+		return nil
+	}
+	imports := make(map[token.Pos]bool, len(file.Imports))
+	for _, spec := range file.Imports {
+		imports[spec.Path.Pos()] = true
+	}
+	var literals []nativeStringLiteral
+	ast.Inspect(file, func(node ast.Node) bool {
+		basic, ok := node.(*ast.BasicLit)
+		if !ok || basic.Kind != token.STRING {
+			return true
+		}
+		value, err := strconv.Unquote(basic.Value)
+		if err != nil {
+			return true
+		}
+		position := fset.Position(basic.Pos())
+		literals = append(literals, nativeStringLiteral{
+			start:    position.Offset,
+			end:      fset.Position(basic.End()).Offset,
+			line:     position.Line,
+			value:    value,
+			imported: imports[basic.Pos()],
+		})
+		return true
+	})
+	return literals
+}
+
+func maskNativeControlLiterals(path string, content []byte, cfg Config) ([]byte, []nativeStringLiteral) {
+	literals := nativeStringLiterals(path, content)
+	if len(literals) == 0 {
+		return content, literals
+	}
+	masked := append([]byte(nil), content...)
+	for _, literal := range literals {
+		if literal.imported || !allowsNativeControlLiteral(path, literal.value, cfg) {
+			continue
+		}
+		for i := literal.start; i < literal.end; i++ {
+			if masked[i] != '\n' && masked[i] != '\r' {
+				masked[i] = ' '
+			}
+		}
+	}
+	return masked, literals
+}
+
+func appendUniqueFinding(findings *[]Finding, finding Finding) {
+	for _, existing := range *findings {
+		if existing == finding {
+			return
+		}
+	}
+	*findings = append(*findings, finding)
+}
+
+func appendDecodedNativeFindings(path string, literals []nativeStringLiteral, cfg Config, provenance bool, findings *[]Finding) {
+	if len(literals) == 0 {
+		return
+	}
+	for _, literal := range literals {
+		// Imported strings are never admitted by a native path allowance. Decode
+		// them through the ordinary non-identifier rules so an escaped import
+		// cannot evade a product-term or other applicable refusal.
+		if !literal.imported && allowsNativeControlLiteral(path, literal.value, cfg) {
+			continue
+		}
+		for _, term := range cfg.Terms {
+			if term.Class == "identifier" || provenance && term.Class != "upstream-infra" {
+				continue
+			}
+			if term.Pattern != "" {
+				re, err := regexp.Compile(term.Pattern)
+				if err != nil {
+					continue
+				}
+				for _, match := range re.FindAllString(literal.value, -1) {
+					bad := false
+					for _, r := range match {
+						if !term.Allow[r] {
+							bad = true
+							break
+						}
+					}
+					if bad {
+						appendUniqueFinding(findings, Finding{Path: path, Line: literal.line, Class: term.Class, Term: term.Pattern})
+					}
+				}
+				continue
+			}
+			for _, match := range term.Matches {
+				if phraseIndex(literal.value, match) >= 0 {
+					appendUniqueFinding(findings, Finding{Path: path, Line: literal.line, Class: term.Class, Term: match})
+				}
+			}
+		}
+	}
+}
+
 func scanFile(path string, content []byte, cfg Config, provenance bool) []Finding {
 	text := string(content)
+	var nativeLiterals []nativeStringLiteral
+	if _, _, ok := nativeControlAllowance(path, cfg); ok {
+		masked, literals := maskNativeControlLiterals(path, content, cfg)
+		text = string(masked)
+		nativeLiterals = literals
+	}
 	var findings []Finding
 	for _, term := range cfg.Terms {
 		if provenance && term.Class != "upstream-infra" {
@@ -336,7 +570,7 @@ func scanFile(path string, content []byte, cfg Config, provenance bool) []Findin
 			if filepath.Ext(path) != ".go" {
 				continue
 			}
-			findings = append(findings, scanGoIdentifiers(path, content, term, cfg.ExternalProtocolString)...)
+			findings = append(findings, scanGoIdentifiers(path, content, term, cfg)...)
 			continue
 		}
 		for _, match := range term.Matches {
@@ -345,13 +579,14 @@ func scanFile(path string, content []byte, cfg Config, provenance bool) []Findin
 			}
 		}
 	}
+	appendDecodedNativeFindings(path, nativeLiterals, cfg, provenance, &findings)
 	if filepath.Ext(path) == ".go" {
 		findings = append(findings, scanGoImports(path, content)...)
 	}
 	return findings
 }
 
-func scanGoIdentifiers(path string, content []byte, term Term, allowance GoStringAllowance) []Finding {
+func scanGoIdentifiers(path string, content []byte, term Term, cfg Config) []Finding {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, content, parser.ParseComments)
 	if err != nil {
@@ -376,11 +611,21 @@ func scanGoIdentifiers(path string, content []byte, term Term, allowance GoStrin
 						findings = append(findings, Finding{Path: path, Line: fset.Position(node.Pos()).Line, Class: "invalid-go", Term: "string"})
 						return true
 					}
-					if !imports[n.Pos()] && allowance.Path == path && decoded == allowance.Value && decoded != "" {
+					if !imports[n.Pos()] && cfg.ExternalProtocolString.Path == path && decoded == cfg.ExternalProtocolString.Value && decoded != "" {
 						return true
 					}
 					// Decode every other string here so altered spellings cannot use
 					// the allowance; keep the established scan elsewhere unchanged.
+					text = decoded
+				} else if path == nativeRecordingLiteralSource || path == nativeViewProtocolSource {
+					decoded, err := strconv.Unquote(n.Value)
+					if err != nil {
+						findings = append(findings, Finding{Path: path, Line: fset.Position(node.Pos()).Line, Class: "invalid-go", Term: "string"})
+						return true
+					}
+					if !imports[n.Pos()] && allowsNativeControlLiteral(path, decoded, cfg) {
+						return true
+					}
 					text = decoded
 				}
 			}
