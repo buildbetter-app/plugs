@@ -654,19 +654,14 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		// If any later publication statement fails, t.derived remains bound to
 		// the observed prepublication source token for a safe retry/rollback.
 		derived := t.reboundSelectionSources(revision)
-		for _, v := range derived {
-			v.Revision = revision
-			if err = publishKey(ctx, c, v); err != nil {
-				return err
-			}
+		if err = publishDerivedKeys(ctx, c, revision, derived); err != nil {
+			return err
 		}
 		if err = t.publishSelection(ctx, c, meta, revision, derived); err != nil {
 			return err
 		}
-		for _, key := range t.bumps {
-			if err = publishKey(ctx, c, driver.LockState{Key: key, Revision: revision, Present: true}); err != nil {
-				return err
-			}
+		if err = publishBumpKeys(ctx, c, revision, t.bumps); err != nil {
+			return err
 		}
 		for prefix, allocator := range t.allocators {
 			allocatorData, marshalErr := json.Marshal(allocator)
