@@ -3,6 +3,7 @@ package model
 import (
 	"encoding/json"
 	"fmt"
+	"unicode/utf8"
 )
 
 type Precondition struct {
@@ -158,7 +159,7 @@ func ValidateLinkTarget(kind LinkTargetKind, target Ref) error {
 		return err
 	}
 	if normalized == LinkTargetExternal {
-		if err := target.Validate(); err != nil || !target.IsID() || target.ID == "" || !target.Branch.IsZero() {
+		if err := target.Validate(); err != nil || !target.IsID() || target.ID == "" || !utf8.ValidString(target.ID) || !target.Branch.IsZero() {
 			return fmt.Errorf("external link target requires a nonempty ID on branch zero")
 		}
 	}
