@@ -126,7 +126,11 @@ func (r *reader) compileSelectionFamilyValidity(ctx context.Context, at uint64, 
 	if len(live) > 0 {
 		ls += ` UNION ALL SELECT decode(key,'hex'),revision::numeric FROM jsonb_to_recordset(` + c.bind(selectionJSON(live)) + `::jsonb) AS h(key text,revision text)`
 	}
-	c.ctes = append(c.ctes, `proof_headers AS MATERIALIZED (`+hs+`)`, `proof_live AS MATERIALIZED (`+ls+`)`)
+	// Inline the header relation so each source-key equality can use the
+	// selection_sources primary key. Materializing all headers makes nested
+	// joins repeatedly scan the complete domain, including unrelated sources.
+	// The interval and staged-header union remain the same statement snapshot.
+	c.ctes = append(c.ctes, `proof_headers AS NOT MATERIALIZED (`+hs+`)`, `proof_live AS MATERIALIZED (`+ls+`)`)
 	// The relation includes ALL current closure rows, including untouched rows
 	// after an ancestor move. CutClosure and derived-source domains are separate.
 	c.ctes = append(c.ctes, `proof_beads AS MATERIALIZED (SELECT bead_key,parent_key,source_key FROM proof_rows WHERE family_table='sort_key' AND source_kind='record' AND bead_key IS NOT NULL)`,
