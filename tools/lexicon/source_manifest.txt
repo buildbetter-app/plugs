@@ -80,6 +80,7 @@ engdocs/plug-next/BUILD.bazel
 engdocs/plug-next/README.md
 engdocs/plug-next/audit.md
 engdocs/plug-next/authn.md
+engdocs/plug-next/cli-rpc-lifecycle-trace.json
 engdocs/plug-next/cli-rpc-trace.json
 engdocs/plug-next/dump-restore.md
 engdocs/plug-next/offline-history.md
