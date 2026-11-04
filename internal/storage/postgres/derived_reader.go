@@ -57,7 +57,9 @@ func (r *reader) DerivedRowsForPrefixes(ctx context.Context, table driver.Derive
 		lower = append(lower, []byte(start))
 		upper = append(upper, end)
 	}
-	rows, err := r.sql.QueryContext(ctx, `SELECT DISTINCT ON (key) value FROM plug_postgres.states WHERE revision<=$3 AND EXISTS(SELECT 1 FROM unnest($1::bytea[],$2::bytea[]) AS requested(lo,hi) WHERE key>=lo AND key<hi) ORDER BY key,revision DESC`, lower, upper, decimal(r.at))
+	// Keep each disjoint range as a parameterized key-index probe. The OFFSET
+	// barrier prevents flattening this into a scan of unrelated state history.
+	rows, err := r.sql.QueryContext(ctx, `SELECT DISTINCT ON (matched.key) matched.value FROM unnest($1::bytea[],$2::bytea[]) AS requested(lo,hi) CROSS JOIN LATERAL (SELECT key,revision,value FROM plug_postgres.states WHERE key>=requested.lo AND key<requested.hi AND revision<=$3 OFFSET 0) AS matched ORDER BY matched.key,matched.revision DESC`, lower, upper, decimal(r.at))
 	if err != nil {
 		return nil, err
 	}
