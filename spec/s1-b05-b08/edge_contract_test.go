@@ -47,7 +47,7 @@ func edgePatchOp(ref model.Ref, title string) model.Op {
 func edgeRequireSuccess(t *testing.T, result envelope) {
 	t.Helper()
 	if result.Error != nil {
-		t.Fatalf("public write refused: %+v", result)
+		t.Fatalf("public write refused: code=%s envelope=%+v", result.Error.Data.Code, result)
 	}
 }
 
@@ -605,7 +605,7 @@ func TestB07ExternalIdentitySurvivesLocalSelfSpellingAndDeletion(t *testing.T) {
 				}
 				edgeRequireLinks(t, after, from, edgeExternalLinkValue(from, "blocks"), edgeExternalLinkValue(local, "parent-child"))
 				edgeReadyContains(t, e, from.ID, false)
-				cycles := e.f.call(t, e.f.ctx, "bead.cycles", map[string]any{"project": project}, "", actor)
+				cycles := e.f.call(t, e.f.ctx, "bead.cycles", map[string]any{}, "", actor)
 				edgeRequireSuccess(t, cycles)
 				var report struct {
 					CycleCount model.Natural `json:"cycleCount"`
