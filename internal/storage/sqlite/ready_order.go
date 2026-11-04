@@ -2,11 +2,15 @@ package sqlite
 
 import (
 	"context"
+	"fmt"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/readyindex"
 )
 
 func (r *reader) SelectReadyOrder(ctx context.Context, p driver.ReadyOrderPlan) (driver.ReadyOrderResult, error) {
+	if r.owner != nil {
+		return driver.ReadyOrderResult{}, fmt.Errorf("%w: Ready transaction overlay is not certified", driver.ErrUnsupported)
+	}
 	return readyindex.Select(ctx, r, p)
 }
 
