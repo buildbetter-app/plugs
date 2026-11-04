@@ -141,3 +141,20 @@ author gate runs new causal controls and unchanged relevant API controls,
 while integration must run the adapted physical controls on its own head.
 Local source_manifest preblob e7d94b601ede1235286bc1492ea6415a66e07b3c
 receives only the four sorted lane registrations; BUILD globs need no change.
+
+The first isolated candidate f70773b19 compiled on RunsOn 41897399180. Its
+focused receipt is RED (139 raw/XML records: 115 PASS, 24 FAIL). Failed API
+fixture leaves acquired GraphBlocking as an update lock without staging its
+required bump; they stopped before the intended observation. The next child
+corrects only those own fixtures, retains all assertions, and adds actual
+OfflineHistory scalar publication plus composed 257-source/legacy/fact late
+rollback and multiple-dependent removal/unbound-gap controls. No unchanged
+runtime retry or performance inference follows from that first receipt.
+
+6815dc73 also compiled, but its focused run41898245834 remained RED
+(142 raw/XML records:115 PASS/27 FAIL). Those fixture leaves next stopped at
+required Ready/closure family predicate bumps. The follow-up fixture helper
+includes those real locks and bumps every acquired sentinel; offline imports
+still bump only after Prepare. Full history retains its valid At0 baseline;
+a separate verified partial suffix with an actual captured baseline and gap
+proves floor1 refusal. Production blobs remain exactly those of f70773b19.

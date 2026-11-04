@@ -9,8 +9,134 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+func selectionRowPublicationContractInputs(facts bool) map[string]driver.LockState {
+	rows := make(map[string]driver.LockState)
+	add := func(key driver.DerivedRowKey, index *driver.SelectionIndex) {
+		lock := driver.LockKey{Kind: driver.LockDerived, Derived: &key}
+		index.Row = key
+		rows[keyID(lock)] = driver.LockState{Key: lock, Present: true,
+			Derived: &driver.DerivedRow{Key: key.Key, Index: index}}
+	}
+	if facts {
+		source := testKey("row-boundary-source")
+		ref := *source.Ref
+		add(driver.DerivedRowKey{Table: driver.DerivedAncestorClosure, Key: "row-boundary-facts"},
+			&driver.SelectionIndex{Source: driver.SelectionSource{Key: source,
+				Revision: model.Natural64(0), Present: true, Digest: "row-boundary-digest"},
+				Facts: &driver.SelectionFacts{Kind: driver.SelectionAncestorFact, Rows: []driver.SelectionFact{
+					{Kind: driver.SelectionAncestorFact, Ref: &ref, Depth: 0},
+					{Kind: driver.SelectionAncestorFact, Ref: &ref, Depth: 1},
+				}}})
+		return rows
+	}
+	for i := 0; i < 2; i++ {
+		source := testKey(fmt.Sprintf("row-boundary-bead-%d", i))
+		add(driver.DerivedRowKey{Table: driver.DerivedSortKey, Key: fmt.Sprintf("row-boundary-sort-%d", i)},
+			&driver.SelectionIndex{Source: driver.SelectionSource{Key: source,
+				Revision: model.Natural64(0), Present: true, Digest: "row-boundary-digest"},
+				Bead: &driver.SelectionBead{Ref: *source.Ref, Type: "task", MembershipLeaf: "row-boundary-leaf"}})
+	}
+	return rows
+}
+
+// The actual product caller must keep the original per-row statement boundary:
+// a second row observes changes()==1 after the first scalar INSERT. A buffered
+// multi-row INSERT instead exposes the prestatement value to both triggers.
+func TestSelectionRowPublicationScalarBoundaryTriggers(t *testing.T) {
+	ctx := context.Background()
+	s := selectionStore(t).(*Store)
+	t.Cleanup(func() { _ = s.Close() })
+	for _, query := range []string{
+		`CREATE TABLE selection_row_boundary_journal(row_key TEXT)`,
+		`CREATE TRIGGER selection_row_boundary_refusal BEFORE INSERT ON selection_bead_history
+		 WHEN (SELECT COUNT(*) FROM selection_row_boundary_journal)>0 AND changes()<>1
+		 BEGIN SELECT RAISE(ABORT,'selection scalar statement boundary changed'); END`,
+		`CREATE TRIGGER selection_row_boundary_journal_insert AFTER INSERT ON selection_bead_history
+		 BEGIN INSERT INTO selection_row_boundary_journal(row_key) VALUES(NEW.derived_key); END`,
+	} {
+		if _, err := s.db.ExecContext(ctx, query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.immediate(ctx, nil, func(c *sql.Conn) error {
+		if _, err := c.ExecContext(ctx, `DELETE FROM selection_row_boundary_journal WHERE 0`); err != nil {
+			return err
+		}
+		return publishSelectionRows(ctx, c, "row-boundary-incarnation", revKey(1), selectionRowPublicationContractInputs(false))
+	}); err != nil {
+		t.Fatalf("scalar-boundary publication must retain trigger acceptance: %v", err)
+	}
+	for _, table := range []string{"selection_bead_history", "selection_row_boundary_journal"} {
+		var count int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table).Scan(&count); err != nil || count != 2 {
+			t.Fatalf("%s count=%d, want two accepted scalar rows: %v", table, count, err)
+		}
+	}
+}
+
+// A missing immediate parent must fail on ordinal zero, before a later fact's
+// trigger can produce another error. Outer rollback alone does not prove this.
+func TestSelectionRowPublicationScalarForeignKeyErrorOrder(t *testing.T) {
+	ctx := context.Background()
+	s := selectionStore(t).(*Store)
+	t.Cleanup(func() { _ = s.Close() })
+	before, err := s.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, query := range []string{
+		`CREATE TRIGGER selection_row_boundary_remove_parent AFTER INSERT ON selection_fact_sets
+		 BEGIN DELETE FROM selection_fact_sets WHERE incarnation=NEW.incarnation AND branch=NEW.branch
+		 AND row_key=NEW.row_key AND start_revision=NEW.start_revision; END`,
+		`CREATE TRIGGER selection_row_boundary_later_refusal BEFORE INSERT ON selection_facts WHEN NEW.ordinal=1
+		 BEGIN SELECT RAISE(ABORT,'later selection fact refusal'); END`,
+	} {
+		if _, err := s.db.ExecContext(ctx, query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err = s.immediate(ctx, nil, func(c *sql.Conn) error {
+		var foreignKeys int
+		if err := c.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
+			return err
+		}
+		if foreignKeys != 1 {
+			return fmt.Errorf("native foreign keys=%d, want enabled", foreignKeys)
+		}
+		return publishSelectionRows(ctx, c, "row-boundary-incarnation", revKey(1), selectionRowPublicationContractInputs(true))
+	})
+	if err == nil || !strings.Contains(err.Error(), "FOREIGN KEY constraint failed") || strings.Contains(err.Error(), "later selection fact refusal") {
+		t.Fatalf("earlier native FK refusal lost to a later ordinal: %v", err)
+	}
+	for _, table := range []string{"selection_bead_history", "selection_fact_sets", "selection_facts"} {
+		var count int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("%s survived native rollback: count=%d err=%v", table, count, err)
+		}
+	}
+	after, err := s.Meta(ctx)
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("failed row publication changed metadata: before=%+v after=%+v err=%v", before, after, err)
+	}
+	for _, name := range []string{"selection_row_boundary_remove_parent", "selection_row_boundary_later_refusal"} {
+		if _, err := s.db.ExecContext(ctx, `DROP TRIGGER `+name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.immediate(ctx, nil, func(c *sql.Conn) error {
+		return publishSelectionRows(ctx, c, "row-boundary-incarnation", revKey(1), selectionRowPublicationContractInputs(true))
+	}); err != nil {
+		t.Fatalf("publication did not recover after native FK rollback: %v", err)
+	}
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM selection_facts`).Scan(&count); err != nil || count != 2 {
+		t.Fatalf("recovered fact count=%d want two: %v", count, err)
+	}
+}
 
 func TestSelectionSourceInvalidationBatchesAndRollsBack(t *testing.T) {
 	ctx := context.Background()
@@ -243,6 +369,12 @@ func TestSelectionSourceHistoryBatchesAndRollsBack(t *testing.T) {
 				}
 				continue
 			}
+			if _, derived := tx.derived[id]; derived {
+				if !errors.Is(err, sql.ErrNoRows) {
+					t.Fatalf("derived source %q received a duplicate thin interval: %v", id, err)
+				}
+				continue
+			}
 			if err != nil || revision != next || present != observation.present || digest != observation.digest {
 				t.Fatalf("source %q new observation revision=%q present=%d digest=%q err=%v, want %+v",
 					id, revision, present, digest, err, observation)
@@ -282,7 +414,7 @@ func TestSelectionSourceHistoryBatchesAndRollsBack(t *testing.T) {
 		}
 		return abort
 	})
-	if !errors.Is(err, abort) || work.statements != 4 || work.rows != 262 {
+	if !errors.Is(err, abort) || work.statements != 4 || work.rows != 260 {
 		t.Fatalf("source history abort: actual_exec=%d rows_affected=%d err=%v", work.statements, work.rows, err)
 	}
 	checkKeyPublicationPrepared(t, work, 4)
@@ -304,7 +436,7 @@ func TestSelectionSourceHistoryBatchesAndRollsBack(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if work.statements != 4 || work.rows != 262 {
+	if work.statements != 4 || work.rows != 260 {
 		t.Fatalf("source history commit: actual_exec=%d rows_affected=%d", work.statements, work.rows)
 	}
 	checkKeyPublicationPrepared(t, work, 4)
@@ -339,6 +471,45 @@ func selectionSourceHistoryImages(t *testing.T, s *Store) map[[2]string]selectio
 		t.Fatal(err)
 	}
 	return images
+}
+
+// Make the native UNIQUE failure deterministic without relying on Go map
+// iteration order. The production helper still receives 257 record
+// observations and the engine raises its UNIQUE error on the final record
+// INSERT, after the two full batches have succeeded.
+func selectionSourceHistoryUniqueTailFault(t *testing.T, s *Store) {
+	t.Helper()
+	ctx := context.Background()
+	for _, query := range []string{
+		`CREATE TABLE selection_source_history_unique_tail_guard(id INTEGER PRIMARY KEY)`,
+		`INSERT INTO selection_source_history_unique_tail_guard(id) VALUES(1)`,
+		`CREATE TABLE selection_source_history_unique_tail_count(n INTEGER NOT NULL)`,
+		`INSERT INTO selection_source_history_unique_tail_count(n) VALUES(0)`,
+		`CREATE TRIGGER selection_source_history_unique_tail_before
+			BEFORE INSERT ON selection_source_history
+			WHEN (SELECT n FROM selection_source_history_unique_tail_count)=256
+			BEGIN INSERT INTO selection_source_history_unique_tail_guard(id) VALUES(1); END`,
+		`CREATE TRIGGER selection_source_history_unique_tail_after
+			AFTER INSERT ON selection_source_history
+			BEGIN UPDATE selection_source_history_unique_tail_count SET n=n+1; END`,
+	} {
+		if _, err := s.db.ExecContext(ctx, query); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func dropSelectionSourceHistoryUniqueTailFault(t *testing.T, s *Store) {
+	t.Helper()
+	ctx := context.Background()
+	for _, name := range []string{
+		"selection_source_history_unique_tail_before",
+		"selection_source_history_unique_tail_after",
+	} {
+		if _, err := s.db.ExecContext(ctx, `DROP TRIGGER `+name); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func TestSelectionSourceHistoryPreparedReuseAndErrors(t *testing.T) {
@@ -390,19 +561,17 @@ func TestSelectionSourceHistoryPreparedReuseAndErrors(t *testing.T) {
 			branch, previous, next := revKey(0), revKey(1), revKey(2)
 			tx := &transaction{records: make(map[string]*driver.Record), derived: make(map[string]driver.LockState)}
 			observations := make(map[string]selectionSourceObservation)
-			derivedID := ""
 			for i := 0; i < test.count; i++ {
 				id := fmt.Sprintf("0:prepared-history-%03d", i)
 				body := []byte(fmt.Sprintf(`{"source":%d}`, i))
 				observation := selectionSourceObservation{key: id}
 				if i == test.count-1 {
-					// Record observations precede this sole derived observation,
-					// so the UNIQUE case fails in the tail after two full batches.
-					row := driver.DerivedRowKey{Table: driver.DerivedSortKey, Key: "prepared-history-derived"}
-					key := driver.LockKey{Kind: driver.LockDerived, Derived: &row}
-					id = keyID(key)
-					derivedID = id
-					tx.derived[id] = driver.LockState{Key: key, Present: true, Derived: &driver.DerivedRow{Value: body}}
+					// Keep a valid eagerly published record sentinel in the final
+					// observation. The engine fault below, rather than this key's
+					// map position, determines the failing tail statement.
+					ref := testRef("prepared-history-record")
+					id = keyID(driver.LockKey{Kind: driver.LockRecord, Ref: &ref})
+					tx.records[id] = &driver.Record{Ref: ref, Kind: "bead", Body: body}
 					observation = selectionSourceObservation{key: id, present: 1, digest: driver.SelectionDigest(body)}
 				} else if i%7 == 0 {
 					tx.records[id] = nil
@@ -424,9 +593,6 @@ func TestSelectionSourceHistoryPreparedReuseAndErrors(t *testing.T) {
 				seed(id, previous, nil)
 			}
 			seed("0:prepared-history-untouched", previous, nil)
-			if test.duplicate {
-				seed(derivedID, next, revKey(3))
-			}
 			before := selectionSourceHistoryImages(t, s)
 			after := make(map[[2]string]selectionSourceHistoryImage, len(before)+test.count)
 			for key, image := range before {
@@ -440,6 +606,9 @@ func TestSelectionSourceHistoryPreparedReuseAndErrors(t *testing.T) {
 					branch: branch, key: id, start: next, revision: next, present: observation.present, digest: observation.digest}
 			}
 			keyPublicationTriggerMarker(t, s)
+			if test.duplicate {
+				selectionSourceHistoryUniqueTailFault(t, s)
+			}
 			check := func(published bool) {
 				t.Helper()
 				want := before
@@ -492,10 +661,7 @@ func TestSelectionSourceHistoryPreparedReuseAndErrors(t *testing.T) {
 			check(err == nil)
 			if err != nil {
 				if test.duplicate {
-					if _, err := s.db.ExecContext(ctx, `DELETE FROM selection_source_history
-						WHERE source_key=? AND start_revision=?`, derivedID, next); err != nil {
-						t.Fatal(err)
-					}
+					dropSelectionSourceHistoryUniqueTailFault(t, s)
 				}
 				keyPublicationTriggerMarker(t, s)
 				// Recover through the actual production *sql.Conn preparer.

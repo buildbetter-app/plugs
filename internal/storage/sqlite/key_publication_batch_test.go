@@ -132,13 +132,15 @@ func keyPublicationInputs(t *testing.T, count int) (map[string]driver.LockState,
 }
 
 type keyPublicationImage struct {
-	key, revision string
-	data          []byte
+	key, revision        string
+	data                 []byte
+	derivedSourcePresent sql.NullInt64
+	derivedSourceDigest  sql.NullString
 }
 
 func keyPublicationImages(t *testing.T, s *Store) []keyPublicationImage {
 	t.Helper()
-	rows, err := s.db.QueryContext(context.Background(), `SELECT key,rev,data FROM key_history ORDER BY key,rev`)
+	rows, err := s.db.QueryContext(context.Background(), `SELECT key,rev,data,derived_source_present,derived_source_digest FROM key_history ORDER BY key,rev`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +148,7 @@ func keyPublicationImages(t *testing.T, s *Store) []keyPublicationImage {
 	var images []keyPublicationImage
 	for rows.Next() {
 		var image keyPublicationImage
-		if err := rows.Scan(&image.key, &image.revision, &image.data); err != nil {
+		if err := rows.Scan(&image.key, &image.revision, &image.data, &image.derivedSourcePresent, &image.derivedSourceDigest); err != nil {
 			t.Fatal(err)
 		}
 		images = append(images, image)
@@ -264,8 +266,11 @@ func TestKeyPublicationBatchesMatchScalarImagesAndTriggers(t *testing.T) {
 			}
 			checkKeyPublicationFence(t, s, count != 0)
 			checkKeyPublicationFence(t, reference, count != 0)
-			maxArgs := 3 * min(count, keyPublicationBatchSize)
 			for name, work := range map[string]keyPublicationWork{"derived": derivedWork, "bumps": bumpWork} {
+				maxArgs := 3 * min(count, keyPublicationBatchSize)
+				if name == "derived" {
+					maxArgs = 5 * min(count, keyPublicationBatchSize)
+				}
 				if work.statements != (count+127)/128 || work.rows != int64(count) || work.maxArgs != maxArgs {
 					t.Fatalf("%s actual_exec=%d rows_affected=%d max_bindings=%d for %d keys", name, work.statements, work.rows, work.maxArgs, count)
 				}

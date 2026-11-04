@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -298,9 +299,56 @@ func demandAPIStore(t *testing.T) (*Store, driver.ActiveLease) {
 	return s, lease
 }
 
+// Keep the real lock census and every structural predicate family in these
+// API fixtures. Offline preparation requests bump=false and stages the same
+// complete sentinel set only after PrepareOfflineHistory succeeds.
+func demandBeginWrite(t *testing.T, s *Store, lease driver.ActiveLease, extra []driver.LockKey, bump bool, refs ...model.Ref) (*transaction, driver.ChangesetHeader) {
+	t.Helper()
+	keys := append([]driver.LockKey(nil), extra...)
+	var ready, closure bool
+	for _, key := range extra {
+		if key.Kind != driver.LockDerived || key.Derived == nil {
+			continue
+		}
+		switch key.Derived.Table {
+		case driver.DerivedReadyState:
+			ready = true
+		case driver.DerivedAttribute, driver.DerivedAncestorClosure, driver.DerivedCutClosure:
+			closure = true
+		}
+	}
+	if ready {
+		sentinel, err := driver.NewReadySentinel("projection-control", "task")
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel})
+	}
+	if closure {
+		sentinel, err := driver.NewClosureSentinel("projection-control")
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel})
+	}
+	tx, header := beginSourceTestWithLocks(t, s, lease, keys, false, refs...)
+	if bump {
+		var sentinels []driver.Sentinel
+		for _, key := range header.LockKeys {
+			if key.Kind == driver.LockSentinel {
+				sentinels = append(sentinels, key.Sentinel)
+			}
+		}
+		if err := tx.BumpSentinels(context.Background(), sentinels); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return tx, header
+}
+
 func demandAPIWriteSource(t *testing.T, s *Store, lease driver.ActiveLease, source driver.DerivedRowKey, value []byte, present bool) model.Revision {
 	t.Helper()
-	tx, header := beginSourceTestWithLocks(t, s, lease, []driver.LockKey{demandSourceLock(source)}, false)
+	tx, header := demandBeginWrite(t, s, lease, []driver.LockKey{demandSourceLock(source)}, true)
 	row := driver.DerivedRow{Key: source.Key, Value: value}
 	var del, add []driver.DerivedRow
 	if present {
@@ -355,7 +403,7 @@ func TestDemandSelectionColdSourceSelectBeforeCommit(t *testing.T) {
 			source, fact := demandSourceKey("precommit-source"), demandFactKey("precommit-facts")
 			value := []byte(`{"ready":"old"}`)
 			revision := demandAPIWriteSource(t, s, lease, source, value, true)
-			tx, _ := beginSourceTestWithLocks(t, s, lease, []driver.LockKey{demandSourceLock(source), demandSourceLock(fact)}, false)
+			tx, _ := demandBeginWrite(t, s, lease, []driver.LockKey{demandSourceLock(source), demandSourceLock(fact)}, true)
 			if replacement {
 				value = []byte(`{"ready":"replacement"}`)
 				if err := tx.PutDerived(ctx, source.Table, nil, []driver.DerivedRow{{Key: source.Key, Value: value}}); err != nil {
@@ -428,7 +476,7 @@ func TestDemandSelectionStaleFirstBindingRefusesWithoutPublication(t *testing.T)
 			beforeHistory := selectionSourceHistoryImages(t, s)
 			beforeKeys := keyPublicationImages(t, s)
 			beforeMeta := getMeta(t, ctx, s)
-			tx, _ := beginSourceTestWithLocks(t, s, lease, []driver.LockKey{demandSourceLock(source), demandSourceLock(fact)}, false)
+			tx, _ := demandBeginWrite(t, s, lease, []driver.LockKey{demandSourceLock(source), demandSourceLock(fact)}, true)
 			want := driver.SelectionSource{Key: demandSourceLock(source), Revision: oldRevision, Present: true, Digest: driver.SelectionDigest(oldValue)}
 			row := demandAPIFactRow(t, tx.meta.Incarnation, want, fact)
 			err := tx.PutSelectionDerived(ctx, fact.Table, nil, []driver.DerivedRow{row})
@@ -463,7 +511,7 @@ func TestDemandSelectionOpaqueColdSourceCommit(t *testing.T) {
 	source, fact := demandSourceKey("opaque-source-"+string([]byte{0xff, 0xfe})), demandFactKey("opaque-facts")
 	value := []byte{0, 0xff, 0xfe, 'v'}
 	revision := demandAPIWriteSource(t, s, lease, source, value, true)
-	tx, header := beginSourceTestWithLocks(t, s, lease, []driver.LockKey{demandSourceLock(source), demandSourceLock(fact)}, false)
+	tx, header := demandBeginWrite(t, s, lease, []driver.LockKey{demandSourceLock(source), demandSourceLock(fact)}, true)
 	want := driver.SelectionSource{Key: demandSourceLock(source), Revision: revision, Present: true, Digest: driver.SelectionDigest(value)}
 	row := demandAPIFactRow(t, tx.meta.Incarnation, want, fact)
 	if err := tx.PutSelectionDerived(ctx, fact.Table, nil, []driver.DerivedRow{row}); err != nil {
@@ -488,7 +536,7 @@ func TestDemandSelectionBoundHistoricalFactsAndRebinding(t *testing.T) {
 	firstSourceRevision := demandAPIWriteSource(t, s, lease, source, firstValue, true)
 	bind := func(sourceRevision model.Revision, value []byte) model.Revision {
 		t.Helper()
-		tx, header := beginSourceTestWithLocks(t, s, lease, []driver.LockKey{demandSourceLock(source), demandSourceLock(fact)}, false)
+		tx, header := demandBeginWrite(t, s, lease, []driver.LockKey{demandSourceLock(source), demandSourceLock(fact)}, true)
 		want := driver.SelectionSource{Key: demandSourceLock(source), Revision: sourceRevision, Present: true, Digest: driver.SelectionDigest(value)}
 		row := demandAPIFactRow(t, tx.meta.Incarnation, want, fact)
 		if err := tx.PutSelectionDerived(ctx, fact.Table, nil, []driver.DerivedRow{row}); err != nil {
@@ -577,7 +625,7 @@ func TestDemandSelectionSchemaFenceNewViewsAndHeldPublication(t *testing.T) {
 			}
 			// Bind normally so this fence control is independent of the sparse
 			// prototype's separately captured first-boundary publication gap.
-			bound, header := beginSourceTestWithLocks(t, s, lease, []driver.LockKey{want.Key, demandSourceLock(fact)}, false)
+			bound, header := demandBeginWrite(t, s, lease, []driver.LockKey{want.Key, demandSourceLock(fact)}, true)
 			row := demandAPIFactRow(t, meta.Incarnation, want, fact)
 			if err := bound.PutSelectionDerived(ctx, fact.Table, nil, []driver.DerivedRow{row}); err != nil {
 				t.Fatal(err)
@@ -589,7 +637,7 @@ func TestDemandSelectionSchemaFenceNewViewsAndHeldPublication(t *testing.T) {
 				t.Fatalf("pre-fence source binding: %+v %v", got, err)
 			}
 			pendingKey := demandSourceKey("must-not-publish-across-version")
-			pending, pendingHeader := beginSourceTestWithLocks(t, s, lease, []driver.LockKey{demandSourceLock(pendingKey)}, false)
+			pending, pendingHeader := demandBeginWrite(t, s, lease, []driver.LockKey{demandSourceLock(pendingKey)}, true)
 			if err := pending.PutDerived(ctx, pendingKey.Table, nil, []driver.DerivedRow{{Key: pendingKey.Key, Value: []byte("pending")}}); err != nil {
 				t.Fatal(err)
 			}
@@ -1039,7 +1087,7 @@ func TestDemandSelectionSchemaFencePreservesExactReplay(t *testing.T) {
 	s, lease := demandAPIStore(t)
 	source := demandSourceKey("replay-source")
 	row := driver.DerivedRow{Key: source.Key, Value: []byte("replay-value")}
-	tx, header := beginSourceTestWithLocks(t, s, lease, []driver.LockKey{demandSourceLock(source)}, false)
+	tx, header := demandBeginWrite(t, s, lease, []driver.LockKey{demandSourceLock(source)}, true)
 	header.Method = "projection.replay"
 	header.IdempotencyKey = "projection-replay"
 	header.RequestHash = driver.SelectionDigest([]byte("projection-request"))
@@ -1047,7 +1095,7 @@ func TestDemandSelectionSchemaFencePreservesExactReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := commitSourceTest(t, tx, header)
-	held, _ := beginSourceTestWithLocks(t, s, lease, []driver.LockKey{demandSourceLock(source)}, false)
+	held, _ := demandBeginWrite(t, s, lease, []driver.LockKey{demandSourceLock(source)}, true)
 	if err := held.PutDerived(ctx, source.Table, nil, []driver.DerivedRow{row}); err != nil {
 		t.Fatal(err)
 	}
@@ -1081,5 +1129,313 @@ func TestDemandSelectionMetadataScanFailureIsNotAbsence(t *testing.T) {
 	// not be rewritten into a successful zero observation or legacy fallback.
 	if err == nil || (!errors.As(err, &numeric) && !strings.Contains(err.Error(), "converting driver.Value")) {
 		t.Fatalf("scan failure rewritten: %v", err)
+	}
+}
+
+func TestDemandSelectionOfflineHistoryScalarProjectionAndFloor(t *testing.T) {
+	for _, partial := range []bool{false, true} {
+		t.Run(fmt.Sprintf("partial_%t", partial), func(t *testing.T) {
+			ctx := context.Background()
+			original := selectionStore(t).(*Store)
+			t.Cleanup(func() { _ = original.Close() })
+			originalLease := getLease(t, ctx, original, driver.LeaseTTL)
+			ref := testRef("projection-imported-deleted")
+			create, h := beginSourceTest(t, original, originalLease, ref)
+			if err := create.PutGraphRecord(ctx, sourceRecord(ref.ID, `{"title":"retained"}`), nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			first := commitSourceTest(t, create, h)
+			captured := sourceReader(t, original, nil)
+			images, err := captured.Get(ctx, []model.Ref{ref})
+			if err != nil || len(images) != 1 {
+				t.Fatalf("actual import source=%v/%v", images, err)
+			}
+			remove, h := beginSourceTest(t, original, originalLease, ref)
+			if err := remove.Delete(ctx, ref); err != nil {
+				t.Fatal(err)
+			}
+			last := commitSourceTest(t, remove, h)
+			history := driver.OfflineHistory{Source: "sqlite-projection-history", Verified: true, Complete: true, First: 1, Head: 2, Batches: []driver.SourceHistoryBatch{
+				{Sequence: 1, CommitIDs: []string{first.Revision.String()}, Changes: []driver.SourceHistoryChange{{After: &images[0]}}},
+				{Sequence: 2, CommitIDs: []string{last.Revision.String()}, Changes: []driver.SourceHistoryChange{{Before: &images[0]}}},
+			}}
+			if partial {
+				history.Complete, history.First, history.BaselineVerified = false, 2, true
+				history.Baseline = []driver.Record{images[0]}
+				history.Gaps = []driver.SourceHistoryGap{{First: 1, Last: 1, Reason: "verified prefix omitted from retained suffix"}}
+				history.Batches = history.Batches[1:]
+			}
+			when := time.Date(2026, 11, 4, 0, 0, 0, 0, time.UTC)
+			profile := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "restore-admin"}, Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: getMeta(t, ctx, original).StoreID, Method: "offline.restore.import", IdempotencyKey: "projection-history", ArchiveDigest: strings.Repeat("b", 64), DerivedDigest: strings.Repeat("c", 64), HistoryMode: driver.RestoreHistoryModeFull, HistoryTime: when.Format(time.RFC3339Nano)}
+			if partial {
+				profile.HistoryMode = driver.RestoreHistoryModePartial
+			}
+			profile.HistoryDigest, err = driver.OfflineHistoryDigest(history)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := selectionStore(t).(*Store)
+			t.Cleanup(func() { _ = s.Close() })
+			lease := getLease(t, ctx, s, driver.LeaseTTL)
+			before := getMeta(t, ctx, s)
+			marker := model.RefByID(driver.OfflineHistoryEvidenceID, model.Natural64(0))
+			present, tombstone := demandSourceKey("offline-opaque-"+string([]byte{0xff})), demandSourceKey("offline-tombstone")
+			importer, header := demandBeginWrite(t, s, lease, []driver.LockKey{{Kind: driver.LockRecord, Ref: &marker}, demandSourceLock(present), demandSourceLock(tombstone)}, false, ref)
+			meta, err := importer.PrepareOfflineHistory(ctx, profile, history, when)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var sentinels []driver.Sentinel
+			for _, key := range header.LockKeys {
+				if key.Kind == driver.LockSentinel {
+					sentinels = append(sentinels, key.Sentinel)
+				}
+			}
+			if err := importer.BumpSentinels(ctx, sentinels); err != nil {
+				t.Fatal(err)
+			}
+			if err := importer.PutDerived(ctx, present.Table, []driver.DerivedRow{{Key: tombstone.Key}}, []driver.DerivedRow{{Key: present.Key, Value: nil}}); err != nil {
+				t.Fatal(err)
+			}
+			header.Incarnation, header.Kind, header.Time, header.Method, header.IdempotencyKey, header.Principal = meta.Incarnation, model.ChangesetRestore, when, profile.Method, profile.IdempotencyKey, profile.Admission.Actor
+			header.RequestHash, err = profile.RequestHash()
+			if err != nil {
+				t.Fatal(err)
+			}
+			entry, err := importer.CommitOfflineHistory(ctx, header)
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkProjectedSource(t, s, present, mustUint(entry.Revision), mustUint(entry.Revision), true, driver.SelectionDigest(nil))
+			checkProjectedSource(t, s, tombstone, mustUint(entry.Revision), mustUint(entry.Revision), false, "")
+			decode, projection := selectionBackfillRaceProjection(meta.Incarnation, nil)
+			if err := s.BuildGraphSourceIndexes(ctx, lease, decode, projection); err != nil {
+				t.Fatal(err)
+			}
+			r := sourceReader(t, s, nil)
+			for _, source := range []driver.SelectionSource{
+				{Key: demandSourceLock(present), Revision: entry.Revision, Present: true, Digest: driver.SelectionDigest(nil)},
+				{Key: demandSourceLock(tombstone), Revision: entry.Revision},
+			} {
+				if _, err := r.Select(ctx, demandAPIPlan(t, r, source)); err != nil {
+					t.Fatalf("offline scalar source boundary: %v", err)
+				}
+			}
+			zero := model.Natural64(0)
+			view, floorErr := s.Read(ctx, driver.View{Incarnation: meta.Incarnation, At: &zero})
+			if partial {
+				if view != nil {
+					_ = view.Close()
+				}
+				var truncated driver.ErrTruncated
+				if !errors.As(floorErr, &truncated) || mustUint(truncated.Floor) != 1 {
+					t.Fatalf("partial retained floor error=%v", floorErr)
+				}
+			} else {
+				if floorErr != nil {
+					t.Fatalf("full history refused its valid revision-zero baseline: %v", floorErr)
+				}
+				_ = view.Close()
+			}
+			if view, err := s.Read(ctx, driver.View{Incarnation: before.Incarnation}); err == nil {
+				_ = view.Close()
+				t.Fatal("old incarnation accepted")
+			} else {
+				var changed driver.ErrIncarnationChanged
+				if !errors.As(err, &changed) {
+					t.Fatalf("incarnation error=%v", err)
+				}
+			}
+			if view, err := s.Read(ctx, driver.View{Incarnation: meta.Incarnation, Branch: model.Natural64(1)}); !errors.Is(err, driver.ErrUnsupported) {
+				if view != nil {
+					_ = view.Close()
+				}
+				t.Fatalf("branch error=%v", err)
+			}
+		})
+	}
+}
+
+func demandAPIBindFacts(t *testing.T, s *Store, lease driver.ActiveLease, source driver.SelectionSource, facts ...driver.DerivedRowKey) model.Revision {
+	t.Helper()
+	keys := []driver.LockKey{source.Key}
+	for _, fact := range facts {
+		keys = append(keys, demandSourceLock(fact))
+	}
+	tx, header := demandBeginWrite(t, s, lease, keys, true)
+	rows := make([]driver.DerivedRow, len(facts))
+	for i, fact := range facts {
+		rows[i] = demandAPIFactRow(t, tx.meta.Incarnation, source, fact)
+	}
+	if err := tx.PutSelectionDerived(context.Background(), driver.DerivedAttribute, nil, rows); err != nil {
+		t.Fatal(err)
+	}
+	return commitSourceTest(t, tx, header).Revision
+}
+
+func demandCheckFactPin(t *testing.T, s *Store, content model.Revision, fact driver.DerivedRowKey, wantError bool) {
+	t.Helper()
+	ctx := context.Background()
+	r := sourceReader(t, s, nil)
+	control := testRef("fact-pin-never-present-control")
+	plan := demandAPIPlan(t, r, driver.SelectionSource{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &control}, Revision: model.Natural64(0)})
+	plan.ContentRevision, plan.ContentCommitted = content, true
+	plan.Membership = driver.SelectionExpr{Op: driver.SelectionExistsOp, Exists: &driver.SelectionExists{Row: fact, Kind: driver.SelectionLabelFact}}
+	got, err := r.Select(ctx, plan)
+	if wantError {
+		if !errors.Is(err, driver.ErrSelectionUnavailable) || !reflect.DeepEqual(got, driver.SelectionResult{}) {
+			t.Fatalf("removed fact did not refuse at %s: %+v/%v", content.String(), got, err)
+		}
+	} else if err != nil || got.Total != 0 || got.More {
+		t.Fatalf("historical fact lost source at %s: %+v/%v", content.String(), got, err)
+	}
+}
+
+func TestDemandSelectionProjectedBatchesLegacyAndFactsRollbackTogether(t *testing.T) {
+	ctx := context.Background()
+	s, lease := demandAPIStore(t)
+	const count = 2*keyPublicationBatchSize + 1
+	keys := make([]driver.LockKey, count)
+	rows := make([]driver.DerivedRow, count)
+	for i := range rows {
+		key := demandSourceKey(fmt.Sprintf("atomic-source-%03d", i))
+		keys[i] = demandSourceLock(key)
+		rows[i] = driver.DerivedRow{Key: key.Key, Value: []byte(fmt.Sprintf("before-%d", i))}
+	}
+	initial, header := demandBeginWrite(t, s, lease, keys, true)
+	if err := initial.PutDerived(ctx, driver.DerivedReadyState, nil, rows); err != nil {
+		t.Fatal(err)
+	}
+	r1 := commitSourceTest(t, initial, header).Revision
+	meta := getMeta(t, ctx, s)
+	legacyID := keyID(keys[0])
+	if err := s.immediate(ctx, nil, func(c *sql.Conn) error {
+		if _, err := c.ExecContext(ctx, `UPDATE key_history SET derived_source_present=NULL,derived_source_digest=NULL WHERE key=? AND rev=?`, legacyID, revKey(mustUint(r1))); err != nil {
+			return err
+		}
+		_, err := c.ExecContext(ctx, `INSERT INTO selection_source_history(incarnation,branch,source_key,start_revision,source_revision,source_present,source_digest) VALUES(?,?,?,?,?,?,?)`, meta.Incarnation, revKey(0), legacyID, revKey(mustUint(r1)), revKey(mustUint(r1)), 1, driver.SelectionDigest(rows[0].Value))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	facts := []driver.DerivedRowKey{demandFactKey("atomic-fact-a"), demandFactKey("atomic-fact-b")}
+	binding := demandAPIBindFacts(t, s, lease, driver.SelectionSource{Key: keys[0], Revision: r1, Present: true, Digest: driver.SelectionDigest(rows[0].Value)}, facts...)
+	for i := range rows {
+		rows[i].Value = []byte(fmt.Sprintf("after-%d", i))
+	}
+	changed, header := demandBeginWrite(t, s, lease, keys, true)
+	if err := changed.PutDerived(ctx, driver.DerivedReadyState, nil, rows); err != nil {
+		t.Fatal(err)
+	}
+	before := demandPublicationImages(t, s)
+	if _, err := s.db.ExecContext(ctx, `CREATE TRIGGER abort_projection_publication BEFORE INSERT ON changesets BEGIN SELECT RAISE(ABORT,'projected legacy fact abort'); END`); err != nil {
+		t.Fatal(err)
+	}
+	_, err := changed.Commit(ctx, header)
+	var native interface{ Code() int }
+	if !errors.As(err, &native) || native.Code()&255 != 19 || !strings.Contains(err.Error(), "projected legacy fact abort") {
+		t.Fatalf("late native failure=%v", err)
+	}
+	if !reflect.DeepEqual(before, demandPublicationImages(t, s)) {
+		t.Fatal("late abort changed projected columns, legacy/fact intervals, head or receipt")
+	}
+	if _, err := s.db.ExecContext(ctx, `DROP TRIGGER abort_projection_publication`); err != nil {
+		t.Fatal(err)
+	}
+	recovered := commitSourceTest(t, changed, header)
+	for i, key := range keys {
+		checkProjectedSource(t, s, *key.Derived, mustUint(recovered.Revision), mustUint(recovered.Revision), true, driver.SelectionDigest(rows[i].Value))
+	}
+	if n, _, end, _, _, _ := demandSourceHistoryRows(t, s, legacyID); n != 1 || end != revKey(mustUint(recovered.Revision)) {
+		t.Fatalf("legacy interval not closed exactly once: %d/%s", n, end)
+	}
+	for _, fact := range facts {
+		var end string
+		if err := s.db.QueryRowContext(ctx, `SELECT end_revision FROM selection_fact_sets WHERE row_key=? AND start_revision=?`, keyID(demandSourceLock(fact)), revKey(mustUint(binding))).Scan(&end); err != nil {
+			t.Fatal(err)
+		}
+		if end != revKey(mustUint(recovered.Revision)) {
+			t.Fatalf("dependent invalidation=%s", end)
+		}
+		demandCheckFactPin(t, s, binding, fact, false)
+		demandCheckFactPin(t, s, recovered.Revision, fact, true)
+	}
+}
+
+func TestDemandSelectionMultipleDependentsRemovalAndUnboundGap(t *testing.T) {
+	ctx := context.Background()
+	s, lease := demandAPIStore(t)
+	source := demandSourceKey("unbound-source")
+	value := []byte("first")
+	r1 := demandAPIWriteSource(t, s, lease, source, value, true)
+	facts := []driver.DerivedRowKey{demandFactKey("unbound-a"), demandFactKey("unbound-b")}
+	firstBinding := demandAPIBindFacts(t, s, lease, driver.SelectionSource{Key: demandSourceLock(source), Revision: r1, Present: true, Digest: driver.SelectionDigest(value)}, facts...)
+	keys := []driver.LockKey{demandSourceLock(facts[0]), demandSourceLock(facts[1])}
+	remove, header := demandBeginWrite(t, s, lease, keys, true)
+	if err := remove.PutSelectionDerived(ctx, driver.DerivedAttribute, []driver.DerivedRow{{Key: facts[0].Key}, {Key: facts[1].Key}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	removed := commitSourceTest(t, remove, header).Revision
+	updated := demandAPIWriteSource(t, s, lease, source, []byte("after-gap"), true)
+	r := sourceReader(t, s, nil)
+	want := driver.SelectionSource{Key: demandSourceLock(source), Revision: updated, Present: true, Digest: driver.SelectionDigest([]byte("after-gap"))}
+	if _, err := r.Select(ctx, demandAPIPlan(t, r, want)); err != nil {
+		t.Fatalf("no dependents suppressed pure-reader state: %v", err)
+	}
+	for _, fact := range facts {
+		demandCheckFactPin(t, s, firstBinding, fact, false)
+		demandCheckFactPin(t, s, removed, fact, true)
+		demandCheckFactPin(t, s, updated, fact, true)
+	}
+	rebound := demandAPIBindFacts(t, s, lease, want, facts...)
+	for _, fact := range facts {
+		demandCheckFactPin(t, s, firstBinding, fact, false)
+		demandCheckFactPin(t, s, rebound, fact, false)
+	}
+	checkProjectedSource(t, s, source, mustUint(rebound), mustUint(updated), true, want.Digest)
+	if count, _, _, _, _, _ := demandSourceHistoryRows(t, s, keyID(want.Key)); count != 0 {
+		t.Fatal("rebind duplicated projected source into thin table")
+	}
+}
+
+func TestDemandSelectionSameCommitSourceAndDependentRebound(t *testing.T) {
+	for _, present := range []bool{false, true} {
+		t.Run(fmt.Sprintf("present_%t", present), func(t *testing.T) {
+			ctx := context.Background()
+			s, lease := demandAPIStore(t)
+			source, fact := demandSourceKey("same-commit-source"), demandFactKey("same-commit-fact")
+			r1 := demandAPIWriteSource(t, s, lease, source, []byte("old"), true)
+			tx, header := demandBeginWrite(t, s, lease, []driver.LockKey{demandSourceLock(source), demandSourceLock(fact)}, true)
+			var del, add []driver.DerivedRow
+			digest := ""
+			if present {
+				add = []driver.DerivedRow{{Key: source.Key, Value: []byte("replacement")}}
+				digest = driver.SelectionDigest(add[0].Value)
+			} else {
+				del = []driver.DerivedRow{{Key: source.Key}}
+			}
+			if err := tx.PutDerived(ctx, source.Table, del, add); err != nil {
+				t.Fatal(err)
+			}
+			observed := driver.SelectionSource{Key: demandSourceLock(source), Revision: r1, Present: present, Digest: digest}
+			row := demandAPIFactRow(t, tx.meta.Incarnation, observed, fact)
+			if err := tx.PutSelectionDerived(ctx, fact.Table, nil, []driver.DerivedRow{row}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.Select(ctx, demandAPIPlan(t, tx.reader, observed)); err != nil {
+				t.Fatalf("staged source lost pinned mutation token: %v", err)
+			}
+			committed := commitSourceTest(t, tx, header)
+			checkProjectedSource(t, s, source, mustUint(committed.Revision), mustUint(committed.Revision), present, digest)
+			var actualRevision, actualDigest string
+			var actualPresent int
+			if err := s.db.QueryRowContext(ctx, `SELECT source_revision,source_present,source_digest FROM selection_fact_sets WHERE row_key=? AND start_revision=?`, keyID(demandSourceLock(fact)), revKey(mustUint(committed.Revision))).Scan(&actualRevision, &actualPresent, &actualDigest); err != nil {
+				t.Fatal(err)
+			}
+			if actualRevision != revKey(mustUint(committed.Revision)) || (actualPresent == 1) != present || actualDigest != digest {
+				t.Fatalf("source/dependent rebound diverged: %s/%d/%s", actualRevision, actualPresent, actualDigest)
+			}
+			demandCheckFactPin(t, s, committed.Revision, fact, false)
+		})
 	}
 }

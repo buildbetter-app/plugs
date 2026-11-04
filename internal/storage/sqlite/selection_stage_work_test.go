@@ -334,10 +334,12 @@ func TestSelectionStageValidationExecutedWork(t *testing.T) {
 				t.Fatalf("Commit native history queries=%d rows=%d prepares=%d closes=%d max_keys=%d; want %d/%d/2/2/128",
 					counts.batchQueries.Load(), counts.batchRows.Load(), counts.batchPrepares.Load(), counts.batchCloses.Load(), counts.batchMaxKeys.Load(), wantBatches, population)
 			}
-			if counts.family.queries.Load() != 3*wantBatches || counts.family.scalar.Load() != 0 || counts.family.rows.Load() != 0 ||
-				counts.family.prepares.Load() != 6 || counts.family.closes.Load() != 6 || counts.family.maxKeys.Load() != 128 {
-				t.Fatalf("Commit family all-miss work: queries=%d scalar=%d rows=%d prepares=%d closes=%d max=%d; want %d/0/0/6/6/128",
-					counts.family.queries.Load(), counts.family.scalar.Load(), counts.family.rows.Load(), counts.family.prepares.Load(), counts.family.closes.Load(), counts.family.maxKeys.Load(), 3*wantBatches)
+			// Source publication supplies attribute and reference fact families.
+			// This fixture does not publish the canonical I1 ancestor family.
+			if counts.family.queries.Load() != 2*wantBatches || counts.family.scalar.Load() != 0 || counts.family.rows.Load() != 0 ||
+				counts.family.prepares.Load() != 4 || counts.family.closes.Load() != 4 || counts.family.maxKeys.Load() != 128 {
+				t.Fatalf("Commit family all-miss work: queries=%d scalar=%d rows=%d prepares=%d closes=%d max=%d; want %d/0/0/4/4/128",
+					counts.family.queries.Load(), counts.family.scalar.Load(), counts.family.rows.Load(), counts.family.prepares.Load(), counts.family.closes.Load(), counts.family.maxKeys.Load(), 2*wantBatches)
 			}
 			var durable int
 			if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM selection_bead_history WHERE end_revision IS NULL`).Scan(&durable); err != nil || durable != population {
@@ -413,8 +415,11 @@ func TestSelectionValidationScalarParityAndPinnedHistory(t *testing.T) {
 					key = driver.LockKey{Kind: driver.LockDerived, Derived: &row}
 				}
 				if i%6 == 5 {
-					key = driver.GraphBlockingSentinelLock
-					key.Sentinel = driver.Sentinel(fmt.Sprintf("validation/sentinel/%03d", i))
+					sentinel, err := driver.NewClosureSentinel(fmt.Sprintf("validation-sentinel-%03d", i))
+					if err != nil {
+						t.Fatal(err)
+					}
+					key = driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel}
 				}
 				if _, err := driver.EncodeLockKey(key); err != nil {
 					t.Fatal(err)
@@ -428,7 +433,7 @@ func TestSelectionValidationScalarParityAndPinnedHistory(t *testing.T) {
 					body := []byte(fmt.Sprintf(`{"version":2,"id":%q}`, ref.ID))
 					old.Record = &driver.Record{Ref: ref, Kind: "bead", Body: body, Revision: old.Revision}
 					selectionValidationExec(t, ctx, s, `INSERT INTO objects(key,kind) VALUES(?,?)`, keyID(key), "bead")
-					v := driver.Version{Ref: ref, Revision: old.Revision, Base: true, Body: body}
+					v := driver.Version{Ref: ref, Revision: old.Revision, Base: true, Body: body, Principal: model.PrincipalRef{Kind: "system", ID: "validation-history"}}
 					selectionValidationExec(t, ctx, s, `INSERT INTO versions(key,rev,base,data) VALUES(?,?,1,?)`, keyID(key), revKey(2), selectionValidationJSON(t, v))
 				} else if old.Present && key.Kind == driver.LockDerived {
 					old.Derived = &driver.DerivedRow{Key: key.Derived.Key, Value: []byte(`{"version":2}`)}
@@ -437,7 +442,7 @@ func TestSelectionValidationScalarParityAndPinnedHistory(t *testing.T) {
 				newer := old
 				newer.Revision = model.Natural64(7)
 				if key.Kind == driver.LockRecord {
-					v := driver.Version{Ref: ref, Revision: newer.Revision, Base: true, Body: []byte(`{"version":7}`)}
+					v := driver.Version{Ref: ref, Revision: newer.Revision, Base: true, Body: []byte(`{"version":7}`), Principal: model.PrincipalRef{Kind: "system", ID: "validation-history"}}
 					if i%6 == 1 {
 						v.Deleted, newer.Present, newer.Record = true, false, nil
 					} else {
