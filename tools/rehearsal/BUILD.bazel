@@ -74,6 +74,13 @@ go_test(
     deps = ["//internal/api/wire"],
 )
 
+go_test(
+    name = "metrics_completeness_test",
+    srcs = ["metrics_completeness_test.go"],
+    args = ["-test.v"],
+    embed = [":rehearsal"],
+)
+
 filegroup(
     name = "lexicon_files",
     srcs = glob(["**"]),

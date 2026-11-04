@@ -790,6 +790,9 @@
               "$ref": "#/components/schemas/Comment"
             },
             "description": "Optional imported or legacy comments. Existing bead.get authorization and as-of semantics apply."
+          },
+          "commentPage": {
+            "$ref": "#/components/schemas/CommentPage"
           }
         },
         "required": [
@@ -3460,6 +3463,62 @@
           }
         ],
         "description": "Stored comment. Legacy comments retain body, principal and time. Imported comments add a verified restoring principal, fixed import origin, restore commit time and separate source provenance."
+      },
+      "PagedComment": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Stable one-based position in the append-only stored thread."
+          },
+          "comment": {
+            "$ref": "#/components/schemas/Comment"
+          }
+        },
+        "required": [
+          "id",
+          "comment"
+        ],
+        "additionalProperties": false
+      },
+      "CommentPageSelection": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "cursor": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Select one comment page. The default limit is 100 and the maximum is 500; a cursor resumes the pinned thread."
+      },
+      "CommentPage": {
+        "type": "object",
+        "properties": {
+          "comments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PagedComment"
+            }
+          },
+          "asOf": {
+            "$ref": "#/components/schemas/AsOf"
+          },
+          "nextCursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "comments",
+          "asOf"
+        ],
+        "additionalProperties": false,
+        "description": "One pinned comment thread page in (time, stored ordinal) order. An absent nextCursor marks the end."
       },
       "LegacyComment": {
         "type": "object",

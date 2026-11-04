@@ -803,12 +803,16 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 
 	for _, source := range archive.Records("edge") {
 		if stringValue(source.Body["target_kind"]) != "depends_on_issue_id" {
-			return restorePlan{}, fmt.Errorf("%w: external relation %s", ErrRestoreUnavailable, source.ID)
+			return restorePlan{}, fmt.Errorf("%w: external relation %s: %w", ErrRestoreUnavailable, source.ID, &dumpformat.UnresolvedDependencyError{
+				EdgeID: source.ID, Project: source.Project, Source: stringValue(source.Body["from"]), Target: stringValue(source.Body["to"]), TargetKind: stringValue(source.Body["target_kind"]),
+			})
 		}
 		from, to := stringValue(source.Body["from"]), stringValue(source.Body["to"])
 		doc, ok := docs[from]
 		if _, targetExists := docs[to]; !ok || !targetExists {
-			return restorePlan{}, fmt.Errorf("edge %s has no restored endpoint", source.ID)
+			return restorePlan{}, fmt.Errorf("%w: edge %s has no restored endpoint: %w", ErrRestoreUnavailable, source.ID, &dumpformat.UnresolvedDependencyError{
+				EdgeID: source.ID, Project: source.Project, Source: from, Target: to, TargetKind: stringValue(source.Body["target_kind"]),
+			})
 		}
 		kind := stringValue(source.Body["type"])
 		switch kind {

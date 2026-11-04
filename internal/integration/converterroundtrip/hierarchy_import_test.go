@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"reflect"
@@ -210,6 +211,12 @@ func TestB27InvalidImportedHierarchyRefusesBeforeWriteAcrossDrivers(t *testing.T
 					_, err := RestoreImportWithLease(context.Background(), bytes.NewReader(data), target, lease, p)
 					if err == nil || !strings.Contains(err.Error(), test.cause) || target.writes != 0 || !reflect.DeepEqual(before, reverseState(t, store)) {
 						t.Fatalf("invalid hierarchy was not atomically refused before writes: %v, writes=%d", err, target.writes)
+					}
+					if test.name == "missing-parent" {
+						var unresolved *dumpformat.UnresolvedDependencyError
+						if !errors.As(err, &unresolved) || unresolved.EdgeID != "hierarchy-edge-0" || unresolved.Project != "demo" || unresolved.Source != "demo-7.4" || unresolved.Target != "demo-missing" || unresolved.TargetKind != "depends_on_issue_id" {
+							t.Fatalf("missing parent lost its typed endpoint report: %+v", err)
+						}
 					}
 				})
 			}
