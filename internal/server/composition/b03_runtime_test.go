@@ -84,6 +84,7 @@ func runtimeJSONCall(t *testing.T, transport *inprocess.Transport, method string
 		Error  *struct {
 			Data struct {
 				Code string `json:"code"`
+				Hint string `json:"hint"`
 			} `json:"data"`
 			Message string `json:"message"`
 		} `json:"error"`
@@ -92,7 +93,7 @@ func runtimeJSONCall(t *testing.T, transport *inprocess.Transport, method string
 		t.Fatalf("%s response: %s: %v", method, response, err)
 	}
 	if envelope.Error != nil {
-		t.Fatalf("%s refused: %s (%s)", method, envelope.Error.Data.Code, envelope.Error.Message)
+		t.Fatalf("%s refused: %s (%s; hint=%s)", method, envelope.Error.Data.Code, envelope.Error.Message, envelope.Error.Data.Hint)
 	}
 	return envelope.Result
 }

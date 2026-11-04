@@ -36,6 +36,7 @@ func composedRuntimeCall(t *testing.T, transport *inprocess.Transport, method st
 		Error  *struct {
 			Data struct {
 				Code string `json:"code"`
+				Hint string `json:"hint"`
 			} `json:"data"`
 			Message string `json:"message"`
 		} `json:"error"`
@@ -44,7 +45,7 @@ func composedRuntimeCall(t *testing.T, transport *inprocess.Transport, method st
 		t.Fatalf("%s response=%s: %v", method, response, err)
 	}
 	if envelope.Error != nil {
-		t.Fatalf("%s refused: %s (%s)", method, envelope.Error.Data.Code, envelope.Error.Message)
+		t.Fatalf("%s refused: %s (%s; hint=%s)", method, envelope.Error.Data.Code, envelope.Error.Message, envelope.Error.Data.Hint)
 	}
 	return envelope.Result
 }
@@ -203,7 +204,7 @@ func TestConfiguredRuntimeLoadsCatalogAndAuditsOnEveryEngine(t *testing.T) {
 			}
 		}
 		if !pinned {
-			t.Fatalf("%s configured lifecycle lost ontology pin: %+v", e.name, last.Events)
+			t.Fatalf("%s configured lifecycle lost ontology pin: %+v want ref=%s revision=2 digest=%s", e.name, last.Events, sourceRef, updatedCompiled.Digest())
 		}
 		events := composedRuntimeCall(t, transport, "event.list", map[string]any{"filter": map[string]any{"events": []string{"dependency.conditionUnmet"}}, "limit": 100}, "b03-composition", "00000000000000000000000000000007")
 		if !strings.Contains(string(events), sourceRef.ID) || !strings.Contains(string(events), string(model.EventDependencyConditionUnmet)) {
