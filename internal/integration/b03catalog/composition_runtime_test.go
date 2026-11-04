@@ -198,7 +198,11 @@ func TestConfiguredRuntimeLoadsCatalogAndAuditsOnEveryEngine(t *testing.T) {
 			t.Fatalf("%s configured apply=%s err=%v", e.name, appliedRaw, err)
 		}
 		{
-			reader, err := runtime.Store.Read(context.Background(), driver.View{At: &applied.Revision})
+			meta, err := runtime.Store.Meta(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			reader, err := runtime.Store.Read(context.Background(), driver.View{Incarnation: meta.Incarnation, At: &applied.Revision})
 			if err != nil {
 				t.Fatal(err)
 			}
