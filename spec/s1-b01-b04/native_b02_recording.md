@@ -10,14 +10,33 @@ whole-tree gate or collector authority. A future actual invocation of the
 separate manual `native_b02_recording` target requires its own authorized
 prepared-native scope. No runtime result is implied by the authored plan.
 
-The source base is `5d9bf23d54e198be456d51b41186f5089286a388`.
-The accepted `native_io_test.go`, `native_inputs.json`, source bindings and
-existing B01 target remain unchanged. Preparation checks the four actual
-environment values, manifest bytes, executable bytes, accepted source/tree,
-build run and linked version before recording. The accepted producer source
-is `c8eb3ba7d4177e111a6f5c8aebe06b5d0b1d5724`; its physical helper supplies
-the actual private child environment and database roots. Each case/run owns
-a fresh server and database, records physical identity, and stops its server.
+The source base is commit `7d1dd3911a08331ae537ddf154c9d9b2bac264ca`,
+tree `23b0da7f989b15a7c808a57aae5425bb1518e824`, with sole parent
+`5a92ea9f274c08d1116acac77aaa5946b6f73552` (parent tree
+`eff755baa23d206b121f024100bec13c764e91a8`). The B02-only
+`native_b02_inputs.json` binds that consumer lineage to the unchanged
+accepted producer/control/helper/artifact tuple. The older `native_inputs.json`
+remains the B01 consumer contract and is not reused as B02 provenance.
+Preparation checks the four actual environment values, manifest bytes,
+executable bytes, accepted source/tree, build run and linked version before
+recording. The accepted producer source is
+`c8eb3ba7d4177e111a6f5c8aebe06b5d0b1d5724`; its physical helper supplies the
+actual private child environment and database roots. Each case/run owns a
+fresh server and database, records physical identity, and stops its server.
+
+The producer capability boundary is part of this input contract. The accepted
+c8eb exporter refuses every nonempty `wisps`, `wisp_labels`,
+`wisp_dependencies`, `wisp_events`, `wisp_comments` and `wisp_child_counters`
+family; an `ephemeral` field retained on a durable issue is opaque source data,
+not live workflow semantics. Its dependency allowlist is only `blocks`,
+`parent-child`, `related` and `discovered-from`, so `waits-for`/gate metadata
+and `conditional-blocks` have no accepted native archive route. The waits-for
+and conditional plans therefore retain their actual native observations and
+public replay separately, with no fabricated producer values. Nonempty
+`custom_statuses`/`custom_types` are refused as well; the category plan keeps
+the real native custom-status command and the expected dump refusal. These are
+capability limits, not reasons to drop native plans or change the fixed
+producer/control/helper pins.
 
 The canonical card is B02 in `engdocs/design/plug/spec/behaviors/work.md`.
 Its pinned protocol blocking/blocked tests and the accepted implementation's

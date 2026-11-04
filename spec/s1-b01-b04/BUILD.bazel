@@ -175,6 +175,7 @@ go_test(
     ],
     embedsrcs = [
         "manifest.json",
+        "native_b02_inputs.json",
         "native_inputs.json",
         "run-1.json",
     ],

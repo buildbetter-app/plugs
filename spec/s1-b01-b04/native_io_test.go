@@ -23,16 +23,35 @@ import (
 //go:embed native_inputs.json
 var nativeInputsBytes []byte
 
+type nativeTrustedPreparation struct {
+	Control               string `json:"control"`
+	ControlTree           string `json:"controlTree"`
+	ControlBranch         string `json:"controlBranch"`
+	HelperSource          string `json:"helperSource"`
+	HelperSHA256          string `json:"helperSHA256"`
+	ReadinessReviewSHA256 string `json:"readinessReviewSHA256"`
+	Scope                 string `json:"scope"`
+}
+
 type nativeInputs struct {
-	Consumer, ConsumerTree, HelperSource, HelperTree string
-	Source, SourceTree, SourceManifest               string
-	SourceEntries                                    int
-	BinarySHA256                                     string
-	BinaryBytes                                      int64
-	BuildRun, Profile, ManifestSHA256, WorkflowSHA   string
-	Descriptor, AdoptedIndefiniteDecision            string
-	ClockScope                                       string
-	Vectors                                          []nativeVector
+	Format                                         string `json:"format"`
+	Consumer, ConsumerTree, ConsumerParent         string
+	HelperSource, HelperTree                       string
+	Source, SourceTree, SourceManifest             string
+	SourceEntries                                  int
+	BinarySHA256                                   string
+	BinaryBytes                                    int64
+	BuildRun, Profile, ManifestSHA256, WorkflowSHA string
+	Descriptor, AdoptedIndefiniteDecision          string
+	ArtifactDigest                                 string                   `json:"artifactDigest"`
+	ArtifactSize                                   int64                    `json:"artifactSize"`
+	TrustedPreparation                             nativeTrustedPreparation `json:"trustedPreparation"`
+	CapabilityBoundary                             map[string]string        `json:"capabilityBoundary"`
+	ClockScope                                     string
+	Vectors                                        []nativeVector
+	ExternalHierarchyTarget                        string
+	ExternalHierarchyRefusal                       string
+	HierarchyPhases                                map[string][]string
 }
 
 type nativeVector struct {
