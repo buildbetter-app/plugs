@@ -41,11 +41,15 @@ go_test(
     name = "public_recording_test",
     size = "large",
     srcs = ["public_recording_test.go"],
-    args = ["-test.v", "-public-recording"],
+    args = ["-test.v", "-public-recording", "-test.run=^TestPublicNativeRecording$"],
     data = [
         "testdata/native-public-profile.json",
         "testdata/native-public-recording-fixture.json",
+        "//internal/publicnative:dolt_runtime",
     ],
+    env = {
+        "PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)",
+    },
     tags = ["local", "manual", "requires-network"],
     timeout = "long",
     deps = [
@@ -56,6 +60,7 @@ go_test(
         "//internal/core/port",
         "//internal/core/service",
         "//internal/integration/converterroundtrip",
+        "//internal/publicnative",
         "//internal/storage/driver",
         "//internal/storage/memory",
         "//internal/storage/postgres",
@@ -85,6 +90,7 @@ go_test(
         "//internal/core/port",
         "//internal/core/service",
         "//internal/integration/converterroundtrip",
+        "//internal/publicnative",
         "//internal/storage/driver",
         "//internal/storage/memory",
         "//internal/storage/postgres",

@@ -7,6 +7,7 @@ package s1b25b28_test
 // RunsOn retains undeclared outputs; each recording still needs its own receipt.
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -33,6 +34,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/integration/converterroundtrip"
+	"github.com/buildbetter-app/plugs/internal/publicnative"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
 	"github.com/buildbetter-app/plugs/internal/storage/postgres"
@@ -92,17 +94,15 @@ type publicNativeServer struct {
 	Port     int    `json:"port"`
 	PID      int    `json:"pid"`
 	DataRoot string `json:"data_root"`
+	provider *publicnative.Server
 }
 
-// The producer owns this missing adapter. Keeping the target closed makes
-// ordinary consumer controls executable without inventing a port, launching a
-// substitute server or accepting a caller-provided endpoint. A causal source
-// change must compose the independently reviewed producer helper before this
-// manual target can record anything. This is a blocker, never a skip or PASS.
+// The producer owns provisioning, listener identity and lifecycle. The caller
+// consumes its in-process binding; no endpoint is supplied by a wrapper.
 func requireNativePublicServer(t *testing.T, output string) publicNativeServer {
 	t.Helper()
-	t.Fatal("native producer server helper is not composed: require producer28's reviewed in-process port, actual data root, owned PID and cleanup receipt")
-	return publicNativeServer{}
+	server := publicnative.StartDolt(t, output)
+	return publicNativeServer{Port: server.Port, PID: server.PID, DataRoot: server.DataRoot, provider: server}
 }
 
 type commandReceipt struct {
@@ -203,6 +203,9 @@ func TestPublicNativeRecording(t *testing.T) {
 	run := recordPublicRun(t, root, storeRoot, *publicRecordingID, artifact, fixture, server)
 	if run.SourceArchiveSHA256 == "" || run.TargetArchiveSHA256 == "" {
 		t.Fatal("recording did not retain both validated archives")
+	}
+	if err := server.provider.Stop(); err != nil {
+		t.Fatalf("producer-owned server cleanup: %v", err)
 	}
 	provenance := map[string]any{
 		"schema":            fixture.Schema,
@@ -483,7 +486,8 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 	if err != nil || dataRoot != server.DataRoot {
 		t.Fatal("producer data root must be the actual physical directory")
 	}
-	env := recordingEnv(server.DataRoot)
+	baseEnv := recordingEnv(server.DataRoot)
+	env := func(dir string) []string { return server.provider.ChildEnv(baseEnv(dir)) }
 	commandGit := func(label, store string, dir string, argv []string) []byte {
 		return runCommand(t, run.Root, &run.Commands, label, store, dir, env(dir), append([]string{"git"}, argv...), nil)
 	}
@@ -628,7 +632,7 @@ func nativeInitArgs(store string, port int) []string {
 
 func recordNativeDatabaseBinding(t *testing.T, output, label, store string, server publicNativeServer) {
 	t.Helper()
-	dir := filepath.Join(server.DataRoot, nativeDatabaseName(store))
+	dir := server.provider.RequireDatabaseDir(t, nativeDatabaseName(store))
 	info, err := os.Lstat(dir)
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		t.Fatalf("actual Dolt database directory is missing or is a link: %s: %v", dir, err)
@@ -901,15 +905,102 @@ func recordPublicSubscriber(t *testing.T, ctx context.Context, store driver.Stor
 	t.Logf("PUBLIC_SUBSCRIBER_RECORDING path=%s posts=%d scalar=2 replacement=1 replay=3 noop=1", path, postCount())
 }
 
-// This control uses the existing explicitly synthetic archive. It exercises
-// real restore/service/subscriber code on three engines, never a Beads process
-// or a native recording. Its target and raw receipt keep that scope explicit.
+// This control derives a declared hash-allocator variant of the explicitly
+// synthetic archive. The original sequential allocator remains unsupported;
+// none of these authored bytes is a native recording or producer evidence.
+func authoredSubscriberArchive(t *testing.T, original []byte) []byte {
+	t.Helper()
+	if hashBytes(original) != "c510f8e0b301086e1c9fdab6ed3dc60ea8da73597c4058a03d0abc478482ae3c" {
+		t.Fatal("original synthetic control fixture changed")
+	}
+	archive, err := dumpformat.Read(bytes.NewReader(original))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := archive.Manifest()
+	if len(manifest.Projects) != 1 || manifest.Projects[0].IDMode != "sequential" || manifest.Projects[0].HashLength != 0 {
+		t.Fatal("original synthetic allocator declaration changed")
+	}
+	var authoredManifest map[string]json.RawMessage
+	if err := json.Unmarshal(archiveMember(t, original, "manifest.json"), &authoredManifest); err != nil {
+		t.Fatal(err)
+	}
+	var projects []map[string]json.RawMessage
+	if err := json.Unmarshal(authoredManifest["projects"], &projects); err != nil {
+		t.Fatal(err)
+	}
+	projects[0]["id_mode"], projects[0]["hash_length"] = json.RawMessage(`"hash"`), json.RawMessage(`1`)
+	authoredManifest["projects"], err = json.Marshal(projects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestBytes, err := json.Marshal(authoredManifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	writer := tar.NewWriter(&output)
+	reader := tar.NewReader(bytes.NewReader(original))
+	for {
+		header, err := reader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if header.Name == "manifest.json" {
+			data = manifestBytes
+		}
+		header.Size = int64(len(data))
+		if err := writer.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dumpformat.Read(bytes.NewReader(output.Bytes())); err != nil {
+		t.Fatalf("authored synthetic control validation: %v", err)
+	}
+	t.Logf("AUTHORED_SUBSCRIBER_INPUT original_sha256=%s authored_sha256=%s only_delta=manifest_allocator_mode_and_width native=false", hashBytes(original), hashBytes(output.Bytes()))
+	return output.Bytes()
+}
+
+func archiveMember(t *testing.T, data []byte, name string) []byte {
+	t.Helper()
+	reader := tar.NewReader(bytes.NewReader(data))
+	for {
+		header, err := reader.Next()
+		if err != nil {
+			t.Fatalf("authored fixture member %s: %v", name, err)
+		}
+		if header.Name == name {
+			data, err := io.ReadAll(reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return data
+		}
+	}
+}
+
+// Exercise actual restore/service/subscribers on three engines. The manual
+// native target selects only TestPublicNativeRecording and excludes this input.
 func TestPublicProjectionAuthoredImportPublicSubscriberAcrossDrivers(t *testing.T) {
 	path := filepath.Join(os.Getenv("TEST_SRCDIR"), os.Getenv("TEST_WORKSPACE"), "internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	data = authoredSubscriberArchive(t, data)
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)

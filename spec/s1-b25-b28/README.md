@@ -116,17 +116,21 @@ required before that boundary can execute. No fixture inventory substitutes
 for it. The existing remote workflow retains undeclared outputs and original
 output archives, but actual new recording bytes and receipts are still required.
 
-Native recording is currently **BLOCKED** at the explicit
-`requireNativePublicServer` refusal. The producer owns the reviewed helper that
-must return an actual owned loopback port, PID, real data root and cleanup
-receipt in process. No endpoint flag, guessed port, substitute server or caller
-environment can open this boundary. Its eventual adapter must pass
-`BEADS_DOLT_DATA_DIR` to every Beads child and verify the actual database directory
-created by real init at `DATA_ROOT/UNIQUE_DB`, without stand-in directories or
-symlinks. Trusted preparer/admission/control adoption, actual RunsOn preparation,
-the producer helper and its real lifecycle proof, and the B01 pair must precede
-these physical recordings. This source is a consumer checkpoint, not a native
-admission or executable recording receipt.
+The consumer composes the producer-owned `internal/publicnative` helper from
+source `4daecb4457c92e9d2f6b08629bbd4073c6c01b22` without modifying its bytes.
+`StartDolt` returns the owned loopback port, PID and real data root in process;
+`ChildEnv` binds every Beads child to that root, and `RequireDatabaseDir`
+checks the actual database directory created by init. The target declares the
+pinned Dolt runfile, and the helper retains its startup and cleanup receipts.
+There is no outer endpoint argument or stand-in database directory.
+
+Native recording remains **BLOCKED** pending independent helper review and
+actual lifecycle proof, trusted preparer/admission/control adoption, actual
+RunsOn preparation, and the B01 pair. Source composition supplies none of those
+runtime receipts. The original `1a52615d` checkpoint's pending-helper refusal
+and RED synthetic-input gate remain immutable. Its causal control repair changes
+only the detached synthetic manifest's allocator mode/width; all source record
+bytes and the original fixture remain intact. That input carries no native credit.
 
 Run it only on RunsOn after preparing the public bundle descriptor:
 
@@ -142,9 +146,10 @@ export PATH=/tmp/plug-swarm/bin/worker-safe:$PATH
 
 The second independent RunsOn invocation uses the same sealed source and flags,
 label `s1-b25-b27-native-recording2`, and `-public-recording-id=recording2`.
-Both invocations remain planned and must fail until the producer adapter is
-causally composed. Individual successful runs would still require preserved
-full raw/XML/undeclared outputs and independent cross-run comparison.
+Both invocations remain planned until the preparation, helper-runtime and B01
+prerequisites are met. The manual target selects only `TestPublicNativeRecording`;
+synthetic controls run in `recorder_validation_test`. Individual successful runs
+still require full raw/XML/undeclared outputs and independent cross-run comparison.
 
 The recorder is evidence for the pinned public head-state/configuration and
 relational import/export boundary. It does not turn the explicit B26
