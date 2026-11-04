@@ -252,11 +252,21 @@ def record_b08(binary, root, commands, env):
     call(["close",ids[0],"--force","--reason","first forced reason","--json"])
     forced=row(ids[0]); child=row(ids[1])
     if forced["status"]!="closed" or child["status"]!="open": raise RuntimeError("native force changed the live child or failed to close")
-    # Already-closed retry must conserve all source rows, audit events and versions.
+    # The current native policy rechecks open children before its closed-row
+    # no-op. Preserve that refusal and the complete original state.
     closed_state=state("closed-once")
-    call(["close",ids[0],"--reason","must preserve first close","--json"])
+    call(["close",ids[0],"--reason","must preserve first close","--json"],expected=1)
+    diagnostic=base64.b64decode(commands[-1]["stdoutBase64"])+base64.b64decode(commands[-1]["stderrBase64"])
+    if not re.search(rb"open child|children",diagnostic,re.I) or re.search(rb"unknown command|unknown flag|usage:",diagnostic,re.I):
+        raise RuntimeError("native closed-parent repeat did not identify its current child guard")
     if state("closed-twice")!=closed_state: raise RuntimeError("native repeated close published a change")
     call(["close",ids[2],"--reason","settle blocker","--json"])
+    # An unblocked already-closed issue reaches the ordinary no-op. Keep the
+    # first reason and every row/event/history byte while repeating it.
+    blocker_closed_state=state("blocker-closed-once")
+    call(["close",ids[2],"--reason","must preserve blocker first close","--json"])
+    if state("blocker-closed-twice")!=blocker_closed_state:
+        raise RuntimeError("native unblocked repeated close changed its first reason or complete state")
     after_ready=ready()
     if ids[3] not in after_ready or ids[3] in before_ready or ids[4] in after_ready: raise RuntimeError("native direct/transitive readiness settlement differs")
     call(["reopen",ids[2],"--reason","reblock dependent","--json"])
@@ -270,6 +280,8 @@ def record_b08(binary, root, commands, env):
     if reopened.get("assignee")!="another-actor": raise RuntimeError("native reopen discarded assignee")
     return {"beforeReady":before_ready,"afterReady":after_ready,"reopenedReady":reopened_ready,
         "forcedStatus":forced["status"],"childStatus":child["status"],"foreignHolder":reopened.get("assignee"),
+        "closedParentRepeat":"open-child-refusal-full-state-conserved",
+        "blockerRepeat":"ordinary-close-noop-full-state-conserved",
         "finalRows":[row(i) for i in ids],"refusalConservation":"full issues/dependencies/events/dolt_log and public show bytes decoded without field stripping"}
 
 card,binary,output=sys.argv[1:4]

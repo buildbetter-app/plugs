@@ -384,12 +384,13 @@ func b068ReplaySettlement(t *testing.T, engine string, capture b068Capture) {
 	var observed struct {
 		BeforeReady, AfterReady, ReopenedReady   []string
 		ForcedStatus, ChildStatus, ForeignHolder string
+		ClosedParentRepeat, BlockerRepeat        string
 		FinalRows                                []struct {
 			ID string `json:"id"`
 		}
 	}
 	nativeDecode(t, capture.Observations, &observed)
-	if observed.ForcedStatus != "closed" || observed.ChildStatus != "open" || observed.ForeignHolder != "another-actor" || len(observed.FinalRows) != 7 {
+	if observed.ForcedStatus != "closed" || observed.ChildStatus != "open" || observed.ForeignHolder != "another-actor" || len(observed.FinalRows) != 7 || observed.ClosedParentRepeat != "open-child-refusal-full-state-conserved" || observed.BlockerRepeat != "ordinary-close-noop-full-state-conserved" {
 		t.Fatal("native seven-role vector is incomplete")
 	}
 	p := b068ImportArchive(t, engine, capture, "initial-readback.tar", "b08-parent")
@@ -458,7 +459,19 @@ func b068ReplaySettlement(t *testing.T, engine string, capture b068Capture) {
 		t.Fatal("actual imported production receipt changed")
 	}
 	b08SameConservation(t, after, f.conservation(t))
+	b08RequireRefusal(t, "bead.close", p.call(t, "bead.close", "native-production-parent-repeat", b08ForceParams("bead.close", parent, false, "must preserve first close")), "ontology_guard_failed", ontology.NoOpenChildren)
+	b08SameConservation(t, after, f.conservation(t))
 	b08Commit(t, p.call(t, "bead.close", "native-production-blocker", b08ForceParams("bead.close", blocker, false, "settle blocker")))
+	blockerClosed := f.conservation(t)
+	b08Commit(t, p.call(t, "bead.close", "native-production-blocker-repeat", b08ForceParams("bead.close", blocker, false, "must preserve blocker first close")))
+	blockerRepeated := f.conservation(t)
+	repeatScope := f.scope("bead.close", "native-production-blocker-repeat", actor)
+	receipt, exists := blockerRepeated.Receipts[repeatScope.identity()]
+	if !exists || receipt.Changeset.Kind != "" || receipt.ResponsePending {
+		t.Fatal("actual imported repeated blocker close did not retain a final no-op receipt")
+	}
+	delete(blockerRepeated.Receipts, repeatScope.identity())
+	b08SameConservation(t, blockerClosed, blockerRepeated)
 	b068CompareReady(t, p, observed.AfterReady)
 	b08Commit(t, p.call(t, "bead.reopen", "native-production-reblock", map[string]any{"id": blocker, "reason": "reblock dependent"}))
 	b068CompareReady(t, p, observed.ReopenedReady)
@@ -543,6 +556,7 @@ func b068CompareTwins(t *testing.T, root, card string, captures []b068Capture) {
 			var observation struct {
 				BeforeReady, AfterReady, ReopenedReady   []string
 				ForcedStatus, ChildStatus, ForeignHolder string
+				ClosedParentRepeat, BlockerRepeat        string
 				RefusalConservation                      string
 			}
 			nativeDecode(t, capture.Observations, &observation)
