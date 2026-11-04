@@ -719,6 +719,14 @@ func publishKey(ctx context.Context, c *sql.Conn, v driver.LockState) error {
 	if err != nil {
 		return err
 	}
+	if v.Key.Kind == driver.LockDerived {
+		present, digest, err := derivedSourceMetadata(v)
+		if err != nil {
+			return err
+		}
+		_, err = c.ExecContext(ctx, `INSERT INTO key_history(key,rev,data,derived_source_present,derived_source_digest) VALUES(?,?,?,?,?)`, keyID(v.Key), revKey(mustUint(v.Revision)), data, present, digest)
+		return err
+	}
 	_, err = c.ExecContext(ctx, `INSERT INTO key_history(key,rev,data) VALUES(?,?,?)`, keyID(v.Key), revKey(mustUint(v.Revision)), data)
 	return err
 }

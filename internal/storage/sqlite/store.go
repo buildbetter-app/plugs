@@ -118,11 +118,11 @@ func (d Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, erro
 	// processes. WAL read transactions never need this lock.
 	err = s.immediate(ctx, nil, func(c *sql.Conn) error {
 		var hasMeta bool
+		var version int
 		if e := c.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta')`).Scan(&hasMeta); e != nil {
 			return e
 		}
 		if hasMeta {
-			var version int
 			if e := c.QueryRowContext(ctx, `SELECT schema_version FROM meta WHERE singleton=1`).Scan(&version); e != nil {
 				return e
 			}
@@ -135,10 +135,7 @@ func (d Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, erro
 				if _, e := c.ExecContext(ctx, `UPDATE replays SET post=? WHERE finalized=1 AND (post IS NULL OR CAST(post AS TEXT)='null')`, []byte("[]")); e != nil {
 					return e
 				}
-				if _, e := c.ExecContext(ctx, `UPDATE meta SET schema_version=? WHERE singleton=1`, schemaVersion); e != nil {
-					return e
-				}
-			} else if version != schemaVersion {
+			} else if version != 2 && version != schemaVersion {
 				return fmt.Errorf("%w: sqlite schema version %d", driver.ErrUnsupported, version)
 			}
 		} else {
@@ -149,6 +146,9 @@ func (d Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, erro
 			if tables != 0 {
 				return fmt.Errorf("%w: sqlite database is not an empty or Plug store", driver.ErrUnsupported)
 			}
+		}
+		if e := migrateDerivedSourceMetadata(ctx, c, version); e != nil {
+			return e
 		}
 		_, e := c.ExecContext(ctx, schema)
 		if e != nil {
@@ -170,6 +170,13 @@ func (d Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, erro
 			FROM meta WHERE singleton=1`)
 		if e != nil {
 			return e
+		}
+		// Publish the compatibility fence only after every schema/data upgrade
+		// succeeds. Any failure rolls back columns, receipts and version together.
+		if hasMeta && version != schemaVersion {
+			if _, e = c.ExecContext(ctx, `UPDATE meta SET schema_version=? WHERE singleton=1`, schemaVersion); e != nil {
+				return e
+			}
 		}
 		// New stores start unbuilt. Only explicit complete startup or a first
 		// complete typed publication may establish a family interval.

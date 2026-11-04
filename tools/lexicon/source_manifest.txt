@@ -1177,6 +1177,10 @@ internal/storage/sqlite/selection_publication.go
 internal/storage/sqlite/selection_publication_batch.go
 internal/storage/sqlite/selection_publication_batch_test.go
 internal/storage/sqlite/selection_query.go
+internal/storage/sqlite/selection_source_history_demand.go
+internal/storage/sqlite/selection_source_history_demand.md
+internal/storage/sqlite/selection_source_history_demand_test.go
+internal/storage/sqlite/selection_source_history_projection_design.md
 internal/storage/sqlite/selection_stage_work_test.go
 internal/storage/sqlite/selection_test.go
 internal/storage/sqlite/source_activation_test.go

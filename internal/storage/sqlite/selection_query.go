@@ -27,7 +27,7 @@ type selectionFactID struct {
 }
 
 // A fact envelope binds the actual source observation at its selected token.
-// Data sources use only the thin publication-time history. In particular, a
+// Data sources use only publication-time metadata. In particular, a
 // Count/Summary preflight must not decode key_history's complete derived row.
 func (r *reader) selectionSourceState(ctx context.Context, id string, at uint64, overlay bool) (driver.LockState, string, error) {
 	state := driver.LockState{Revision: model.Natural64(0)}
@@ -54,26 +54,34 @@ func (r *reader) selectionSourceState(ctx context.Context, id string, at uint64,
 		}
 		return state, "", nil
 	}
-	var revision string
-	var present int
 	var digest string
-	err := r.tx.QueryRowContext(ctx, `SELECT source_revision,source_present,source_digest
-		FROM selection_source_history
-		WHERE incarnation=? AND branch=? AND source_key=? AND start_revision<=?
-		AND (end_revision IS NULL OR end_revision>?)
-		ORDER BY start_revision DESC LIMIT 1`, r.meta.Incarnation, revKey(0), id, revKey(at), revKey(at)).Scan(&revision, &present, &digest)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return driver.LockState{}, "", err
-	}
-	if err == nil {
-		observed, parseErr := parseRev(revision)
-		if parseErr != nil {
-			return driver.LockState{}, "", parseErr
+	var err error
+	if strings.HasPrefix(id, "3:") {
+		state, digest, err = projectedDerivedSource(ctx, r.tx, r.meta.Incarnation, id, at)
+		if err != nil {
+			return driver.LockState{}, "", err
 		}
-		if present != 0 && present != 1 {
-			return driver.LockState{}, "", fmt.Errorf("%w: SQLite malformed fact source presence", driver.ErrUnsupported)
+	} else {
+		var revision string
+		var present int
+		err = r.tx.QueryRowContext(ctx, `SELECT source_revision,source_present,source_digest
+			FROM selection_source_history
+			WHERE incarnation=? AND branch=? AND source_key=? AND start_revision<=?
+			AND (end_revision IS NULL OR end_revision>?)
+			ORDER BY start_revision DESC LIMIT 1`, r.meta.Incarnation, revKey(0), id, revKey(at), revKey(at)).Scan(&revision, &present, &digest)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return driver.LockState{}, "", err
 		}
-		state.Revision, state.Present = observed, present == 1
+		if err == nil {
+			observed, parseErr := parseRev(revision)
+			if parseErr != nil {
+				return driver.LockState{}, "", parseErr
+			}
+			if present != 0 && present != 1 {
+				return driver.LockState{}, "", fmt.Errorf("%w: SQLite malformed fact source presence", driver.ErrUnsupported)
+			}
+			state.Revision, state.Present = observed, present == 1
+		}
 	}
 	if overlay && r.owner != nil && at == r.at {
 		if staged, ok := r.owner.derived[id]; ok {

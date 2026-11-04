@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -41,25 +43,53 @@ func demandDependentState(incarnation string, source, dependent driver.DerivedRo
 
 func seedDemandSourceKeyHistory(t *testing.T, s *Store, incarnation string, key driver.DerivedRowKey, revision uint64, value []byte) {
 	t.Helper()
-	lock := demandSourceLock(key)
-	state := driver.LockState{Key: lock, Revision: model.Natural64(revision), Present: true,
+	state := driver.LockState{Key: demandSourceLock(key), Revision: model.Natural64(revision), Present: true,
 		Derived: &driver.DerivedRow{Key: key.Key, Value: value}}
-	data, err := json.Marshal(state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.db.ExecContext(context.Background(), `INSERT INTO key_history(key,rev,data) VALUES(?,?,?)`, keyID(lock), revKey(revision), data); err != nil {
+	if err := s.immediate(context.Background(), nil, func(c *sql.Conn) error {
+		return publishKey(context.Background(), c, state)
+	}); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func demandSourceHistoryRows(t *testing.T, s *Store, key string) (count int, start, end, sourceRevision string, present int, digest string) {
+func demandSourceHistoryRows(t *testing.T, s *Store, id string) (count int, start, end, revision string, present int, digest string) {
 	t.Helper()
-	err := s.db.QueryRowContext(context.Background(), `SELECT COUNT(*),COALESCE(MAX(start_revision),''),COALESCE(MAX(end_revision),''),COALESCE(MAX(source_revision),''),COALESCE(MAX(source_present),0),COALESCE(MAX(source_digest),'') FROM selection_source_history WHERE source_key=?`, key).Scan(&count, &start, &end, &sourceRevision, &present, &digest)
+	err := s.db.QueryRowContext(context.Background(), `SELECT COUNT(*),COALESCE(MAX(start_revision),''),
+		COALESCE(MAX(end_revision),''),COALESCE(MAX(source_revision),''),COALESCE(MAX(source_present),0),
+		COALESCE(MAX(source_digest),'') FROM selection_source_history WHERE source_key=?`, id).
+		Scan(&count, &start, &end, &revision, &present, &digest)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return
+}
+
+func checkProjectedSource(t *testing.T, s *Store, key driver.DerivedRowKey, at, revision uint64, present bool, digest string) {
+	t.Helper()
+	meta := getMeta(t, context.Background(), s)
+	state, got, err := projectedDerivedSource(context.Background(), s.db, meta.Incarnation, keyID(demandSourceLock(key)), at)
+	if err != nil || mustUint(state.Revision) != revision || state.Present != present || got != digest {
+		t.Fatalf("projected source at=%d got=%+v/%q err=%v want=%d/%t/%q", at, state, got, err, revision, present, digest)
+	}
+}
+
+func seedLegacyDemandSource(t *testing.T, s *Store, source driver.DerivedRowKey, revision uint64, value []byte) {
+	t.Helper()
+	ctx := context.Background()
+	meta := getMeta(t, ctx, s)
+	state := driver.LockState{Key: demandSourceLock(source), Revision: model.Natural64(revision), Present: true,
+		Derived: &driver.DerivedRow{Key: source.Key, Value: value}}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO key_history(key,rev,data) VALUES(?,?,?)`, keyID(state.Key), revKey(revision), data); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO selection_source_history(incarnation,branch,source_key,start_revision,source_revision,source_present,source_digest) VALUES(?,?,?,?,?,?,?)`,
+		meta.Incarnation, revKey(0), keyID(state.Key), revKey(revision), revKey(revision), 1, driver.SelectionDigest(value)); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestDemandSelectionSourceHistoryColdBindAndOpenReuse(t *testing.T) {
@@ -67,68 +97,48 @@ func TestDemandSelectionSourceHistoryColdBindAndOpenReuse(t *testing.T) {
 	s := selectionStore(t).(*Store)
 	t.Cleanup(func() { _ = s.Close() })
 	meta := getMeta(t, ctx, s)
-	source := demandSourceKey("cold-source")
-	dependent := demandFactKey("cold-dependent")
+	source, dependent := demandSourceKey("cold-source"), demandFactKey("cold-dependent")
 	value := []byte(`{"source":"r1"}`)
 	seedDemandSourceKeyHistory(t, s, meta.Incarnation, source, 1, value)
-	dependentID, dependentState := demandDependentState(meta.Incarnation, source, dependent, 1, true, driver.SelectionDigest(value))
-	tx := &transaction{reader: &reader{at: 1}, records: make(map[string]*driver.Record), derived: map[string]driver.LockState{dependentID: dependentState}}
-	keyPublicationTriggerMarker(t, s)
-	if err := s.immediate(ctx, nil, func(c *sql.Conn) error {
-		return tx.publishSelectionSourceHistory(ctx, c, meta.Incarnation, revKey(2))
-	}); err != nil {
-		t.Fatal(err)
+	id, state := demandDependentState(meta.Incarnation, source, dependent, 1, true, driver.SelectionDigest(value))
+	tx := &transaction{derived: map[string]driver.LockState{id: state}}
+	before := demandPublicationImages(t, s)
+	for _, next := range []uint64{2, 3} {
+		if err := s.immediate(ctx, nil, func(c *sql.Conn) error {
+			return tx.publishSelectionSourceHistory(ctx, c, meta.Incarnation, revKey(next))
+		}); err != nil {
+			t.Fatal(err)
+		}
+		checkProjectedSource(t, s, source, next, 1, true, driver.SelectionDigest(value))
+		if count, _, _, _, _, _ := demandSourceHistoryRows(t, s, keyID(demandSourceLock(source))); count != 0 {
+			t.Fatal("binding duplicated eager projection")
+		}
 	}
-	sourceID := keyID(demandSourceLock(source))
-	if count, start, end, sourceRevision, present, digest := demandSourceHistoryRows(t, s, sourceID); count != 1 || start != revKey(2) || end != "" || sourceRevision != revKey(1) || present != 1 || digest != driver.SelectionDigest(value) {
-		t.Fatalf("cold demand history count=%d start=%q end=%q source_revision=%q present=%d digest=%q", count, start, end, sourceRevision, present, digest)
-	}
-	if count, _, _, _, _, _ := demandSourceHistoryRows(t, s, dependentID); count != 0 {
-		t.Fatalf("unreferenced dependent received source history rows=%d", count)
-	}
-
-	// A second bind sees the same exact open interval and must not create a
-	// duplicate or close/reopen it.
-	keyPublicationTriggerMarker(t, s)
-	if err := s.immediate(ctx, nil, func(c *sql.Conn) error {
-		return tx.publishSelectionSourceHistory(ctx, c, meta.Incarnation, revKey(3))
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if count, start, end, sourceRevision, present, digest := demandSourceHistoryRows(t, s, sourceID); count != 1 || start != revKey(2) || end != "" || sourceRevision != revKey(1) || present != 1 || digest != driver.SelectionDigest(value) {
-		t.Fatalf("open reuse changed history count=%d start=%q end=%q source_revision=%q present=%d digest=%q", count, start, end, sourceRevision, present, digest)
+	if !reflect.DeepEqual(before, demandPublicationImages(t, s)) {
+		t.Fatal("rebinding altered the retained source")
 	}
 }
 
 func TestDemandSelectionSourceHistoryUsesPinnedRevisionBeforeAdvancedHead(t *testing.T) {
 	ctx := context.Background()
-	s := selectionStore(t).(*Store)
-	t.Cleanup(func() { _ = s.Close() })
-	meta := getMeta(t, ctx, s)
-	source := demandSourceKey("pinned-source")
-	dependent := demandFactKey("pinned-dependent")
-	oldValue := []byte(`{"source":"old-pinned"}`)
-	newValue := []byte(`{"source":"new-head"}`)
-	seedDemandSourceKeyHistory(t, s, meta.Incarnation, source, 1, oldValue)
-	seedDemandSourceKeyHistory(t, s, meta.Incarnation, source, 2, newValue)
-	if _, err := s.db.ExecContext(ctx, `UPDATE meta SET head=? WHERE singleton=1`, revKey(2)); err != nil {
-		t.Fatal(err)
+	s, lease := demandAPIStore(t)
+	source := demandSourceKey("held-pin-source")
+	oldValue, newValue := []byte("old"), []byte("new")
+	r1 := demandAPIWriteSource(t, s, lease, source, oldValue, true)
+	held := sourceReader(t, s, nil)
+	want := driver.SelectionSource{Key: demandSourceLock(source), Revision: r1, Present: true, Digest: driver.SelectionDigest(oldValue)}
+	heldPlan := demandAPIPlan(t, held, want)
+	r2 := demandAPIWriteSource(t, s, lease, source, newValue, true)
+	r3 := demandAPIWriteSource(t, s, lease, source, nil, false)
+	if _, err := held.Select(ctx, heldPlan); err != nil {
+		t.Fatalf("held snapshot changed after replacement/deletion: %v", err)
 	}
-
-	// The transaction was admitted against t.at=1 while the database head
-	// advanced to 2. A loader using next-1 would see newValue and refuse or,
-	// worse, bind the wrong image; the demand proof must read oldValue at t.at.
-	dependentID, dependentState := demandDependentState(meta.Incarnation, source, dependent, 1, true, driver.SelectionDigest(oldValue))
-	tx := &transaction{reader: &reader{at: 1}, records: make(map[string]*driver.Record), derived: map[string]driver.LockState{dependentID: dependentState}}
-	keyPublicationTriggerMarker(t, s)
-	if err := s.immediate(ctx, nil, func(c *sql.Conn) error {
-		return tx.publishSelectionSourceHistory(ctx, c, meta.Incarnation, revKey(3))
-	}); err != nil {
-		t.Fatal(err)
-	}
-	sourceID := keyID(demandSourceLock(source))
-	if count, start, end, sourceRevision, present, digest := demandSourceHistoryRows(t, s, sourceID); count != 1 || start != revKey(3) || end != "" || sourceRevision != revKey(1) || present != 1 || digest != driver.SelectionDigest(oldValue) {
-		t.Fatalf("pinned demand history count=%d start=%q end=%q source_revision=%q present=%d digest=%q", count, start, end, sourceRevision, present, digest)
+	checkProjectedSource(t, s, source, mustUint(r1), mustUint(r1), true, driver.SelectionDigest(oldValue))
+	checkProjectedSource(t, s, source, mustUint(r2), mustUint(r2), true, driver.SelectionDigest(newValue))
+	checkProjectedSource(t, s, source, mustUint(r3), mustUint(r3), false, "")
+	current := sourceReader(t, s, nil)
+	if _, err := current.Select(ctx, demandAPIPlan(t, current, want)); !errors.Is(err, driver.ErrSelectionUnavailable) {
+		t.Fatalf("current snapshot accepted old token: %v", err)
 	}
 }
 
@@ -137,179 +147,107 @@ func TestDemandSelectionSourceHistoryRejectsOverlappingIntervals(t *testing.T) {
 	s := selectionStore(t).(*Store)
 	t.Cleanup(func() { _ = s.Close() })
 	meta := getMeta(t, ctx, s)
-	source := demandSourceKey("overlap-source")
-	dependent := demandFactKey("overlap-dependent")
-	value := []byte(`{"source":"overlap"}`)
-	seedDemandSourceKeyHistory(t, s, meta.Incarnation, source, 1, value)
-	sourceID := keyID(demandSourceLock(source))
-	for _, interval := range [][2]uint64{{1, 5}, {3, 7}} {
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO selection_source_history(
-			incarnation,branch,source_key,start_revision,end_revision,source_revision,source_present,source_digest)
-			VALUES(?,?,?,?,?,?,?,?)`, meta.Incarnation, revKey(0), sourceID, revKey(interval[0]), revKey(interval[1]), revKey(1), 1, driver.SelectionDigest(value)); err != nil {
-			t.Fatal(err)
-		}
+	source := demandSourceKey("legacy-overlap")
+	value := []byte("old")
+	seedLegacyDemandSource(t, s, source, 1, value)
+	id := keyID(demandSourceLock(source))
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO selection_source_history(incarnation,branch,source_key,start_revision,end_revision,source_revision,source_present,source_digest) VALUES(?,?,?,?,?,?,?,?)`, meta.Incarnation, revKey(0), id, revKey(2), revKey(5), revKey(1), 1, driver.SelectionDigest(value)); err != nil {
+		t.Fatal(err)
 	}
-	dependentID, dependentState := demandDependentState(meta.Incarnation, source, dependent, 1, true, driver.SelectionDigest(value))
-	tx := &transaction{reader: &reader{at: 1}, records: make(map[string]*driver.Record), derived: map[string]driver.LockState{dependentID: dependentState}}
-	err := s.immediate(ctx, nil, func(c *sql.Conn) error {
-		return tx.publishSelectionSourceHistory(ctx, c, meta.Incarnation, revKey(8))
-	})
-	if !errors.Is(err, driver.ErrUnsupported) {
-		t.Fatalf("overlapping source history error=%v, want unsupported", err)
+	before := demandPublicationImages(t, s)
+	_, _, err := projectedDerivedSource(ctx, s.db, meta.Incarnation, id, 3)
+	if !errors.Is(err, driver.ErrSelectionUnavailable) {
+		t.Fatalf("overlap error=%v", err)
 	}
-	if count, _, _, _, _, _ := demandSourceHistoryRows(t, s, sourceID); count != 2 {
-		t.Fatalf("overlap refusal changed source rows=%d", count)
+	if !reflect.DeepEqual(before, demandPublicationImages(t, s)) {
+		t.Fatal("read refusal changed rows")
 	}
 }
 
 func TestDemandSelectionSourceHistoryRebindsReplacementAndInvalidatesFacts(t *testing.T) {
-	ctx := context.Background()
-	s := selectionStore(t).(*Store)
-	t.Cleanup(func() { _ = s.Close() })
-	meta := getMeta(t, ctx, s)
-	source := demandSourceKey("replacement-source")
-	dependent := demandFactKey("replacement-dependent")
-	oldValue := []byte(`{"source":"old"}`)
-	newValue := []byte(`{"source":"new"}`)
-	seedDemandSourceKeyHistory(t, s, meta.Incarnation, source, 1, oldValue)
-	sourceID := keyID(demandSourceLock(source))
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO selection_source_history(
-		incarnation,branch,source_key,start_revision,source_revision,source_present,source_digest)
-		VALUES(?,?,?,?,?,?,?)`, meta.Incarnation, revKey(0), sourceID, revKey(1), revKey(1), 1, driver.SelectionDigest(oldValue)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO selection_fact_sets(
-		incarnation,branch,row_key,row_table,kind,start_revision,source_key,source_revision,source_present,source_digest)
-		VALUES(?,?,?,?,?,?,?,?,?,?)`, meta.Incarnation, revKey(0), "replacement-fact", string(driver.DerivedAncestorClosure), string(driver.SelectionAncestorFact), revKey(1), sourceID, revKey(1), 1, driver.SelectionDigest(oldValue)); err != nil {
-		t.Fatal(err)
-	}
-	newState := driver.LockState{Key: demandSourceLock(source), Present: true, Derived: &driver.DerivedRow{Key: source.Key, Value: newValue}}
-	dependentID, dependentState := demandDependentState(meta.Incarnation, source, dependent, 1, true, driver.SelectionDigest(newValue))
-	tx := &transaction{reader: &reader{at: 1}, records: make(map[string]*driver.Record), derived: map[string]driver.LockState{sourceID: newState, dependentID: dependentState}}
-	err := s.immediate(ctx, nil, func(c *sql.Conn) error {
-		if err := invalidateSelectionFactSets(ctx, c, meta.Incarnation, revKey(2), map[string]bool{sourceID: true}); err != nil {
-			return err
-		}
-		return tx.publishSelectionSourceHistory(ctx, c, meta.Incarnation, revKey(2))
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var oldEnd string
-	if err := s.db.QueryRowContext(ctx, `SELECT end_revision FROM selection_source_history WHERE source_key=? AND start_revision=?`, sourceID, revKey(1)).Scan(&oldEnd); err != nil {
-		t.Fatal(err)
-	}
-	if oldEnd != revKey(2) {
-		t.Fatalf("replacement old source end=%q", oldEnd)
-	}
-	var sourceRevision, digest string
-	var present int
-	if err := s.db.QueryRowContext(ctx, `SELECT source_revision,source_present,source_digest FROM selection_source_history WHERE source_key=? AND start_revision=?`, sourceID, revKey(2)).Scan(&sourceRevision, &present, &digest); err != nil {
-		t.Fatal(err)
-	}
-	if sourceRevision != revKey(2) || present != 1 || digest != driver.SelectionDigest(newValue) {
-		t.Fatalf("replacement source revision=%q present=%d digest=%q", sourceRevision, present, digest)
-	}
-	if err := s.db.QueryRowContext(ctx, `SELECT end_revision FROM selection_fact_sets WHERE row_key=?`, "replacement-fact").Scan(&oldEnd); err != nil {
-		t.Fatal(err)
-	}
-	if oldEnd != revKey(2) {
-		t.Fatalf("replacement fact end=%q", oldEnd)
-	}
-}
-
-func TestDemandSelectionSourceHistoryChangedSourceClosesAndSeedsTombstone(t *testing.T) {
-	ctx := context.Background()
-	s := selectionStore(t).(*Store)
-	t.Cleanup(func() { _ = s.Close() })
-	meta := getMeta(t, ctx, s)
-	source := demandSourceKey("changed-source")
-	dependent := demandFactKey("changed-dependent")
-	oldValue := []byte(`{"source":"old"}`)
-	seedDemandSourceKeyHistory(t, s, meta.Incarnation, source, 1, oldValue)
-	sourceID := keyID(demandSourceLock(source))
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO selection_source_history(incarnation,branch,source_key,start_revision,source_revision,source_present,source_digest) VALUES(?,?,?,?,?,?,?)`, meta.Incarnation, revKey(0), sourceID, revKey(1), revKey(1), 1, driver.SelectionDigest(oldValue)); err != nil {
-		t.Fatal(err)
-	}
-	dependentID, dependentState := demandDependentState(meta.Incarnation, source, dependent, 1, false, "")
-	changedState := driver.LockState{Key: demandSourceLock(source), Present: false}
-	tx := &transaction{reader: &reader{at: 1}, records: make(map[string]*driver.Record), derived: map[string]driver.LockState{sourceID: changedState, dependentID: dependentState}}
-	keyPublicationTriggerMarker(t, s)
-	if err := s.immediate(ctx, nil, func(c *sql.Conn) error {
-		return tx.publishSelectionSourceHistory(ctx, c, meta.Incarnation, revKey(2))
-	}); err != nil {
-		t.Fatal(err)
-	}
-	var oldEnd string
-	var currentPresent int
-	var currentRevision string
-	if err := s.db.QueryRowContext(ctx, `SELECT (SELECT end_revision FROM selection_source_history WHERE source_key=? AND start_revision=?),(SELECT source_present FROM selection_source_history WHERE source_key=? AND start_revision=?)`, sourceID, revKey(1), sourceID, revKey(2)).Scan(&oldEnd, &currentPresent); err != nil {
-		t.Fatal(err)
-	}
-	if oldEnd != revKey(2) || currentPresent != 0 {
-		t.Fatalf("changed tombstone old_end=%q current_present=%d", oldEnd, currentPresent)
-	}
-	if err := s.db.QueryRowContext(ctx, `SELECT source_revision FROM selection_source_history WHERE source_key=? AND start_revision=?`, sourceID, revKey(2)).Scan(&currentRevision); err != nil {
-		t.Fatal(err)
-	}
-	if currentRevision != revKey(2) {
-		t.Fatalf("changed tombstone source_revision=%q", currentRevision)
+	for _, present := range []bool{false, true} {
+		t.Run(fmt.Sprint(present), func(t *testing.T) {
+			ctx := context.Background()
+			s := selectionStore(t).(*Store)
+			t.Cleanup(func() { _ = s.Close() })
+			meta := getMeta(t, ctx, s)
+			source := demandSourceKey("legacy-replacement")
+			oldValue, newValue := []byte("old"), []byte("new")
+			seedLegacyDemandSource(t, s, source, 1, oldValue)
+			id := keyID(demandSourceLock(source))
+			if _, err := s.db.ExecContext(ctx, `INSERT INTO selection_fact_sets(incarnation,branch,row_key,row_table,kind,start_revision,source_key,source_revision,source_present,source_digest) VALUES(?,?,?,?,?,?,?,?,?,?)`, meta.Incarnation, revKey(0), "legacy-fact", string(driver.DerivedAttribute), string(driver.SelectionLabelFact), revKey(1), id, revKey(1), 1, driver.SelectionDigest(oldValue)); err != nil {
+				t.Fatal(err)
+			}
+			state := driver.LockState{Key: demandSourceLock(source), Present: present}
+			digest := ""
+			if present {
+				state.Derived = &driver.DerivedRow{Key: source.Key, Value: newValue}
+				digest = driver.SelectionDigest(newValue)
+			}
+			tx := &transaction{derived: map[string]driver.LockState{id: state}}
+			if err := s.immediate(ctx, nil, func(c *sql.Conn) error {
+				if err := publishDerivedKeys(ctx, c, model.Natural64(2), tx.derived); err != nil {
+					return err
+				}
+				if err := invalidateSelectionFactSets(ctx, c, meta.Incarnation, revKey(2), map[string]bool{id: true}); err != nil {
+					return err
+				}
+				return tx.publishSelectionSourceHistory(ctx, c, meta.Incarnation, revKey(2))
+			}); err != nil {
+				t.Fatal(err)
+			}
+			checkProjectedSource(t, s, source, 1, 1, true, driver.SelectionDigest(oldValue))
+			checkProjectedSource(t, s, source, 2, 2, present, digest)
+			var factEnd string
+			if err := s.db.QueryRowContext(ctx, `SELECT end_revision FROM selection_fact_sets WHERE row_key='legacy-fact'`).Scan(&factEnd); err != nil {
+				t.Fatal(err)
+			}
+			if count, _, end, _, _, _ := demandSourceHistoryRows(t, s, id); count != 1 || end != revKey(2) || factEnd != end {
+				t.Fatalf("legacy close/fact invalidation count=%d end=%q fact=%q", count, end, factEnd)
+			}
+		})
 	}
 }
 
 func TestDemandSelectionSourceHistoryMissingAndMalformedRefuseAtomically(t *testing.T) {
 	ctx := context.Background()
-	s := selectionStore(t).(*Store)
-	t.Cleanup(func() { _ = s.Close() })
-	meta := getMeta(t, ctx, s)
+	s, lease := demandAPIStore(t)
 	source := demandSourceKey("malformed-source")
-	dependent := demandFactKey("malformed-dependent")
-	sourceID := keyID(demandSourceLock(source))
-	dependentID, dependentState := demandDependentState(meta.Incarnation, source, dependent, 1, true, driver.SelectionDigest([]byte(`{"source":"expected"}`)))
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO key_history(key,rev,data) VALUES(?,?,?)`, sourceID, revKey(1), []byte(`{"bad":`)); err != nil {
-		t.Fatal(err)
+	revision := demandAPIWriteSource(t, s, lease, source, []byte("value"), true)
+	id := keyID(demandSourceLock(source))
+	for _, test := range []struct {
+		name            string
+		present, digest any
+		want            error
+	}{
+		{"missing_legacy", nil, nil, driver.ErrSelectionUnavailable},
+		{"partial_presence", 1, nil, driver.ErrUnsupported},
+		{"partial_digest", nil, driver.SelectionDigest([]byte("value")), driver.ErrUnsupported},
+		{"invalid_presence", 2, "", driver.ErrUnsupported},
+		{"absent_digest", 0, "nonempty", driver.ErrUnsupported},
+		{"invalid_digest", 1, "not-a-digest", driver.ErrUnsupported},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := s.db.ExecContext(ctx, `UPDATE key_history SET derived_source_present=?,derived_source_digest=? WHERE key=?`, test.present, test.digest, id); err != nil {
+				t.Fatal(err)
+			}
+			before := demandPublicationImages(t, s)
+			r := sourceReader(t, s, nil)
+			want := driver.SelectionSource{Key: demandSourceLock(source), Revision: revision, Present: true, Digest: driver.SelectionDigest([]byte("value"))}
+			if _, err := r.Select(ctx, demandAPIPlan(t, r, want)); !errors.Is(err, test.want) {
+				t.Fatalf("malformed source error=%v want=%v", err, test.want)
+			}
+			if !reflect.DeepEqual(before, demandPublicationImages(t, s)) {
+				t.Fatal("refusal wrote rows")
+			}
+		})
 	}
-	tx := &transaction{reader: &reader{at: 1}, records: make(map[string]*driver.Record), derived: map[string]driver.LockState{dependentID: dependentState}}
-	err := s.immediate(ctx, nil, func(c *sql.Conn) error {
-		return tx.publishSelectionSourceHistory(ctx, c, meta.Incarnation, revKey(2))
-	})
-	if err == nil {
-		t.Fatal("malformed cold source unexpectedly seeded")
-	}
-	if count, _, _, _, _, _ := demandSourceHistoryRows(t, s, sourceID); count != 0 {
-		t.Fatalf("malformed source publication left rows=%d", count)
-	}
-
-	// A missing witness cannot satisfy an admitted present source. It must
-	// refuse before the source-history INSERT rather than becoming a current
-	// value or an implicit no-source result.
-	missingPresent := demandSourceKey("missing-present")
-	presentDependent := demandFactKey("missing-present-dependent")
-	presentID, presentState := demandDependentState(meta.Incarnation, missingPresent, presentDependent, 1, true, driver.SelectionDigest([]byte(`{"source":"expected"}`)))
-	tx = &transaction{reader: &reader{at: 1}, records: make(map[string]*driver.Record), derived: map[string]driver.LockState{presentID: presentState}}
-	err = s.immediate(ctx, nil, func(c *sql.Conn) error {
-		return tx.publishSelectionSourceHistory(ctx, c, meta.Incarnation, revKey(2))
-	})
-	if !errors.Is(err, driver.ErrSelectionUnavailable) {
-		t.Fatalf("missing present source error=%v, want selection unavailable", err)
-	}
-	if count, _, _, _, _, _ := demandSourceHistoryRows(t, s, keyID(demandSourceLock(missingPresent))); count != 0 {
-		t.Fatalf("missing present refusal left rows=%d", count)
-	}
-
-	// A never-present demanded source is an explicit absent interval, not a
-	// silent current-value substitution.
 	missing := demandSourceKey("never-present")
-	missingDependent := demandFactKey("missing-dependent")
-	missingID, missingState := demandDependentState(meta.Incarnation, missing, missingDependent, 0, false, "")
-	tx = &transaction{reader: &reader{at: 1}, records: make(map[string]*driver.Record), derived: map[string]driver.LockState{missingID: missingState}}
-	if err := s.immediate(ctx, nil, func(c *sql.Conn) error {
-		return tx.publishSelectionSourceHistory(ctx, c, meta.Incarnation, revKey(2))
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if count, _, _, sourceRevision, present, digest := demandSourceHistoryRows(t, s, keyID(demandSourceLock(missing))); count != 1 || sourceRevision != revKey(0) || present != 0 || digest != "" {
-		t.Fatalf("missing source interval count=%d source_revision=%q present=%d digest=%q", count, sourceRevision, present, digest)
+	checkProjectedSource(t, s, missing, mustUint(revision), 0, false, "")
+	r := sourceReader(t, s, nil)
+	want := driver.SelectionSource{Key: demandSourceLock(missing), Revision: revision, Present: true, Digest: driver.SelectionDigest([]byte("expected"))}
+	if _, err := r.Select(ctx, demandAPIPlan(t, r, want)); !errors.Is(err, driver.ErrSelectionUnavailable) {
+		t.Fatalf("missing present witness=%v", err)
 	}
 }
 
@@ -318,40 +256,34 @@ func TestDemandSelectionSourceHistoryBatchRollback(t *testing.T) {
 	s := selectionStore(t).(*Store)
 	t.Cleanup(func() { _ = s.Close() })
 	meta := getMeta(t, ctx, s)
-	derived := make(map[string]driver.LockState, selectionSourceHistoryBatch+1)
-	for i := 0; i <= selectionSourceHistoryBatch; i++ {
-		source := demandSourceKey(fmt.Sprintf("batch-source-%03d", i))
-		dependent := demandFactKey(fmt.Sprintf("batch-dependent-%03d", i))
-		value := []byte(fmt.Sprintf(`{"source":%d}`, i))
-		seedDemandSourceKeyHistory(t, s, meta.Incarnation, source, 1, value)
-		id, state := demandDependentState(meta.Incarnation, source, dependent, 1, true, driver.SelectionDigest(value))
-		derived[id] = state
-	}
-	tx := &transaction{reader: &reader{at: 1}, records: make(map[string]*driver.Record), derived: derived}
-	abort := errors.New("abort demand history after both batches")
+	derived, _ := keyPublicationInputs(t, 2*keyPublicationBatchSize+1)
+	before := demandPublicationImages(t, s)
+	abort := errors.New("abort after projected batches and legacy closes")
+	var work keyPublicationWork
 	err := s.immediate(ctx, nil, func(c *sql.Conn) error {
-		if err := tx.publishSelectionSourceHistory(ctx, c, meta.Incarnation, revKey(2)); err != nil {
+		work = keyPublicationWork{selectionCloseWork: selectionCloseWork{conn: c}}
+		if err := publishDerivedKeys(ctx, &work, model.Natural64(1), derived); err != nil {
+			return err
+		}
+		tx := &transaction{derived: derived}
+		if err := tx.publishSelectionSourceHistory(ctx, c, meta.Incarnation, revKey(1)); err != nil {
 			return err
 		}
 		return abort
 	})
-	if !errors.Is(err, abort) {
-		t.Fatalf("batch rollback err=%v", err)
+	if !errors.Is(err, abort) || work.statements != 3 || work.rows != 257 || work.maxArgs != 5*128 {
+		t.Fatalf("rollback control work=%+v err=%v", work, err)
 	}
-	var count int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM selection_source_history`).Scan(&count); err != nil {
-		t.Fatal(err)
-	}
-	if count != 0 {
-		t.Fatalf("demand history rollback left %d rows", count)
+	if !reflect.DeepEqual(before, demandPublicationImages(t, s)) {
+		t.Fatal("rollback changed projected columns or intervals")
 	}
 }
 
 // These controls exercise the public writer/selector boundaries. Unlike the
 // isolated publisher controls above, they establish coverage through the real
 // empty-store build and stage a complete, valid Facts annotation. They expose
-// the emitter-only prototype's unresolved precommit and pure-reader gaps; do
-// not skip or weaken them to qualify the sparse-history implementation.
+// the emitter-only prototype's precommit and pure-reader regressions. They
+// remain required controls for the corrected eager physical representation.
 func demandAPIStore(t *testing.T) (*Store, driver.ActiveLease) {
 	t.Helper()
 	s := selectionStore(t).(*Store)
@@ -566,16 +498,15 @@ func TestDemandSelectionBoundHistoricalFactsAndRebinding(t *testing.T) {
 	}
 	firstBinding := bind(firstSourceRevision, firstValue)
 	secondSourceRevision := demandAPIWriteSource(t, s, lease, source, secondValue, true)
-	var factEnd, sourceEnd string
+	var factEnd string
 	if err := s.db.QueryRowContext(ctx, `SELECT end_revision FROM selection_fact_sets WHERE row_key=? AND start_revision=?`, keyID(demandSourceLock(fact)), revKey(mustUint(firstBinding))).Scan(&factEnd); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT end_revision FROM selection_source_history WHERE source_key=? AND end_revision=?`, keyID(demandSourceLock(source)), revKey(mustUint(secondSourceRevision))).Scan(&sourceEnd); err != nil {
-		t.Fatal(err)
+	if factEnd != revKey(mustUint(secondSourceRevision)) {
+		t.Fatalf("source replacement did not atomically close fact interval: %q", factEnd)
 	}
-	if factEnd != revKey(mustUint(secondSourceRevision)) || sourceEnd != factEnd {
-		t.Fatalf("source replacement did not atomically close fact/source intervals: %q/%q", factEnd, sourceEnd)
-	}
+	checkProjectedSource(t, s, source, mustUint(firstBinding), mustUint(firstSourceRevision), true, driver.SelectionDigest(firstValue))
+	checkProjectedSource(t, s, source, mustUint(secondSourceRevision), mustUint(secondSourceRevision), true, driver.SelectionDigest(secondValue))
 	secondBinding := bind(secondSourceRevision, secondValue)
 	beforeReuse := selectionSourceHistoryImages(t, s)
 	thirdBinding := bind(secondSourceRevision, secondValue)
@@ -612,81 +543,8 @@ func TestDemandSelectionPresentNullAndEmptyValueRemainPresent(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if count, _, _, revision, present, digest := demandSourceHistoryRows(t, s, keyID(demandSourceLock(source))); count != 1 || revision != revKey(1) || present != 1 || digest != driver.SelectionDigest(value) || digest == "" {
-				t.Fatalf("present null/empty value became a tombstone: %d/%q/%d/%q", count, revision, present, digest)
-			}
-		})
-	}
-}
+			checkProjectedSource(t, s, source, 2, 1, true, driver.SelectionDigest(value))
 
-type demandSourceHistoryWork struct {
-	keyPublicationWork
-	queries int
-}
-
-func (w *demandSourceHistoryWork) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
-	w.queries++
-	return w.conn.QueryRowContext(ctx, query, args...)
-}
-
-func TestDemandSelectionColdWitnessErrorsPrecedePublication(t *testing.T) {
-	for _, name := range []string{"malformed_json", "native_table_error", "cancelled"} {
-		t.Run(name, func(t *testing.T) {
-			ctx := context.Background()
-			s := selectionStore(t).(*Store)
-			t.Cleanup(func() { _ = s.Close() })
-			meta := getMeta(t, ctx, s)
-			source, fact := demandSourceKey("error-source"), demandFactKey("error-facts")
-			value := []byte(`{"source":"expected"}`)
-			seedDemandSourceKeyHistory(t, s, meta.Incarnation, source, 1, value)
-			id, state := demandDependentState(meta.Incarnation, source, fact, 1, true, driver.SelectionDigest(value))
-			tx := &transaction{reader: &reader{at: 1}, records: map[string]*driver.Record{
-				"0:error-order-record": {Body: []byte(`{}`)},
-			}, derived: map[string]driver.LockState{id: state}}
-			beforeKeys, beforeHistory := keyPublicationImages(t, s), selectionSourceHistoryImages(t, s)
-			cleanupErr := errors.New("cleanup must not mask the source error")
-			prepareErr := errors.New("source error must precede prepare")
-			var work demandSourceHistoryWork
-			err := s.immediate(ctx, nil, func(c *sql.Conn) error {
-				work = demandSourceHistoryWork{keyPublicationWork: keyPublicationWork{
-					selectionCloseWork: selectionCloseWork{conn: c}, failPrepareAt: 1,
-					prepareErr: prepareErr, closeErr: cleanupErr,
-				}}
-				call := ctx
-				switch name {
-				case "malformed_json":
-					if _, err := c.ExecContext(ctx, `UPDATE key_history SET data=? WHERE key=?`, []byte(`{"bad":`), keyID(demandSourceLock(source))); err != nil {
-						return err
-					}
-				case "native_table_error":
-					if _, err := c.ExecContext(ctx, `DROP TABLE key_history`); err != nil {
-						return err
-					}
-				case "cancelled":
-					var cancel context.CancelFunc
-					call, cancel = context.WithCancel(ctx)
-					cancel()
-				}
-				return tx.publishSelectionSourceHistory(call, &work, meta.Incarnation, revKey(2))
-			})
-			if err == nil || errors.Is(err, prepareErr) || errors.Is(err, cleanupErr) {
-				t.Fatalf("source error lost to publication/cleanup: %v", err)
-			}
-			if name == "malformed_json" {
-				var syntax *json.SyntaxError
-				if !errors.As(err, &syntax) {
-					t.Fatalf("malformed JSON error was rewritten: %v", err)
-				}
-			}
-			if name == "cancelled" && !errors.Is(err, context.Canceled) {
-				t.Fatalf("cancellation was rewritten: %v", err)
-			}
-			if work.prepared != 0 || work.prepareAttempts != 0 || work.statements != 0 || work.closeCalls != 0 {
-				t.Fatalf("publication reached before source refusal: %+v", work)
-			}
-			if !reflect.DeepEqual(keyPublicationImages(t, s), beforeKeys) || !reflect.DeepEqual(selectionSourceHistoryImages(t, s), beforeHistory) {
-				t.Fatal("source refusal changed committed images")
-			}
 		})
 	}
 }
@@ -791,6 +649,7 @@ func demandPublicationImages(t *testing.T, s *Store) [][][]any {
 	for _, query := range []string{
 		`SELECT * FROM meta ORDER BY singleton`,
 		`SELECT * FROM key_history ORDER BY key,rev`,
+		`SELECT * FROM selection_source_history ORDER BY incarnation,branch,source_key,start_revision`,
 		`SELECT * FROM selection_fact_sets ORDER BY incarnation,branch,row_key,start_revision`,
 		`SELECT * FROM selection_facts ORDER BY incarnation,branch,row_key,start_revision,ordinal`,
 		`SELECT * FROM selection_bead_history ORDER BY incarnation,branch,derived_key,start_revision`,
@@ -835,4 +694,392 @@ func demandPublicationImages(t *testing.T, s *Store) [][][]any {
 		image = append(image, table)
 	}
 	return image
+}
+
+// A selector never reads the opaque data envelope, while ordinary admission
+// still observes it and retains its existing native/JSON error precedence.
+func TestDemandSelectionColdWitnessErrorsPrecedePublication(t *testing.T) {
+	for _, name := range []string{"malformed_json", "native_table_error", "cancelled"} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			s, lease := demandAPIStore(t)
+			source := demandSourceKey("error-source")
+			value := []byte("opaque")
+			revision := demandAPIWriteSource(t, s, lease, source, value, true)
+			id := keyID(demandSourceLock(source))
+			if name == "malformed_json" {
+				if _, err := s.db.ExecContext(ctx, `UPDATE key_history SET data=? WHERE key=?`, []byte(`{"bad":`), id); err != nil {
+					t.Fatal(err)
+				}
+				r := sourceReader(t, s, nil)
+				want := driver.SelectionSource{Key: demandSourceLock(source), Revision: revision, Present: true, Digest: driver.SelectionDigest(value)}
+				if _, err := r.Select(ctx, demandAPIPlan(t, r, want)); err != nil {
+					t.Fatalf("metadata selector decoded source body: %v", err)
+				}
+				before := demandPublicationImages(t, s)
+				tx, err := s.Write(ctx, lease)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback(ctx)
+				// Lock must surface the existing malformed observation before
+				// staging or publication is possible.
+				_, err = tx.Lock(ctx, []driver.LockRequest{{Key: demandSourceLock(source), Mode: driver.LockUpdate}})
+				var syntax *json.SyntaxError
+				if !errors.As(err, &syntax) {
+					t.Fatalf("opaque malformed source error=%v", err)
+				}
+				if !reflect.DeepEqual(before, demandPublicationImages(t, s)) {
+					t.Fatal("admission error changed publication")
+				}
+				return
+			}
+			before := demandPublicationImages(t, s)
+			err := s.immediate(ctx, nil, func(c *sql.Conn) error {
+				call := ctx
+				if name == "native_table_error" {
+					if _, err := c.ExecContext(ctx, `DROP TABLE key_history`); err != nil {
+						return err
+					}
+				} else {
+					var cancel context.CancelFunc
+					call, cancel = context.WithCancel(ctx)
+					cancel()
+				}
+				_, _, err := projectedDerivedSource(call, c, getMeta(t, ctx, s).Incarnation, id, mustUint(revision))
+				return err
+			})
+			if name == "cancelled" {
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("cancel error=%v", err)
+				}
+			} else {
+				var native interface{ Code() int }
+				if !errors.As(err, &native) || native.Code() != 1 {
+					t.Fatalf("native SQLite error replaced: %v", err)
+				}
+			}
+			if !reflect.DeepEqual(before, demandPublicationImages(t, s)) {
+				t.Fatal("failed read lost transaction rollback")
+			}
+		})
+	}
+}
+
+func TestDemandSelectionLegacyWitnessMustMatchMutation(t *testing.T) {
+	for _, name := range []string{"missing_interval", "wrong_token", "no_key_row", "other_incarnation", "other_branch"} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			s := selectionStore(t).(*Store)
+			t.Cleanup(func() { _ = s.Close() })
+			meta := getMeta(t, ctx, s)
+			source := demandSourceKey("legacy-" + name + string([]byte{0xff}))
+			seedLegacyDemandSource(t, s, source, 1, []byte("legacy"))
+			id := keyID(demandSourceLock(source))
+			var query string
+			switch name {
+			case "missing_interval":
+				query = `DELETE FROM selection_source_history WHERE source_key=?`
+			case "wrong_token":
+				query = `UPDATE selection_source_history SET source_revision='00000000000000000000' WHERE source_key=?`
+			case "no_key_row":
+				query = `DELETE FROM key_history WHERE key=?`
+			case "other_incarnation":
+				query = `UPDATE selection_source_history SET incarnation='other' WHERE source_key=?`
+			case "other_branch":
+				query = `UPDATE selection_source_history SET branch='00000000000000000001' WHERE source_key=?`
+			}
+			if _, err := s.db.ExecContext(ctx, query, id); err != nil {
+				t.Fatal(err)
+			}
+			before := demandPublicationImages(t, s)
+			_, _, err := projectedDerivedSource(ctx, s.db, meta.Incarnation, id, 1)
+			if !errors.Is(err, driver.ErrSelectionUnavailable) {
+				t.Fatalf("inconsistent retained witness became miss/current: %v", err)
+			}
+			if !reflect.DeepEqual(before, demandPublicationImages(t, s)) {
+				t.Fatal("legacy refusal changed rows")
+			}
+		})
+	}
+}
+
+// Construct the actual old physical layout, not a current store relabelled as
+// old. A held SQL read transaction represents the old binary's WAL snapshot;
+// independent executable compatibility remains a separate gate.
+func demandLegacyDatabase(t *testing.T, version int) (string, *sql.DB) {
+	t.Helper()
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), fmt.Sprintf("legacy%d.db", version))
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	legacy := strings.Replace(schema, " derived_source_present INTEGER, derived_source_digest TEXT, PRIMARY KEY(key, rev)", " PRIMARY KEY(key, rev)", 1)
+	if legacy == schema {
+		t.Fatal("legacy DDL did not remove projection columns")
+	}
+	if version == 1 {
+		legacy = `CREATE TABLE meta(singleton INTEGER PRIMARY KEY,store_id TEXT,incarnation TEXT,schema_version INTEGER,head TEXT,history_floor TEXT);
+		CREATE TABLE active_lease(singleton INTEGER PRIMARY KEY,epoch TEXT,token TEXT,holder TEXT,expires INTEGER);
+		CREATE TABLE replays(scope TEXT PRIMARY KEY,created INTEGER,rev TEXT,request_hash TEXT,response BLOB,changeset BLOB,finalized INTEGER,post BLOB);`
+	}
+	if _, err := db.ExecContext(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO meta VALUES(1,'projection-store','projection-incarnation',?,?,?)`, version, revKey(0), revKey(0)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO active_lease VALUES(1,?,'','',0)`, revKey(17)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO replays(scope,created,rev,request_hash,response,finalized,post) VALUES('final',1,?,'final-hash',?,1,?)`, revKey(0), []byte(`{"revision":0,"results":[],"warnings":[]}`), []byte(`null`)); err != nil {
+		t.Fatal(err)
+	}
+	if version == 2 {
+		if _, err := db.ExecContext(ctx, `INSERT INTO replays(scope,created,rev,request_hash,response,finalized,post,pending) VALUES('pending',2,?,'pending-hash',?,0,NULL,1)`, revKey(0), []byte(`{"revision":0,"results":[],"warnings":[]}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, `PRAGMA journal_mode=WAL`); err != nil {
+		t.Fatal(err)
+	}
+	return path, db
+}
+
+func TestDemandSelectionMetadataMigrationAtomicAndIdempotent(t *testing.T) {
+	for _, version := range []int{1, 2} {
+		t.Run(fmt.Sprint(version), func(t *testing.T) {
+			ctx := context.Background()
+			path, db := demandLegacyDatabase(t, version)
+			// Fail precisely at the last publication step, after both ALTERs
+			// (or the v1 CREATE) and pending-receipt migration have executed.
+			if _, err := db.ExecContext(ctx, `CREATE TRIGGER reject_projection_version BEFORE UPDATE OF schema_version ON meta BEGIN SELECT RAISE(ABORT,'reject projection version'); END`); err != nil {
+				t.Fatal(err)
+			}
+			if s, err := (Driver{}).Open(ctx, driver.Config{DSN: path}); err == nil {
+				_ = s.Close()
+				t.Fatal("failed migration opened")
+			}
+			var gotVersion, columns, pendingColumn int
+			var post []byte
+			if err := db.QueryRowContext(ctx, `SELECT schema_version FROM meta`).Scan(&gotVersion); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('key_history') WHERE name LIKE 'derived_source_%'`).Scan(&columns); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('replays') WHERE name='pending'`).Scan(&pendingColumn); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.QueryRowContext(ctx, `SELECT post FROM replays WHERE scope='final'`).Scan(&post); err != nil {
+				t.Fatal(err)
+			}
+			if gotVersion != version || columns != 0 || pendingColumn != version-1 || string(post) != "null" {
+				t.Fatalf("partial migration escaped: version=%d columns=%d pending=%d post=%s", gotVersion, columns, pendingColumn, post)
+			}
+			if _, err := db.ExecContext(ctx, `DROP TRIGGER reject_projection_version`); err != nil {
+				t.Fatal(err)
+			}
+			// Concurrent Open calls serialize on the real publication lock.
+			start := make(chan struct{})
+			results := make(chan error, 2)
+			for range 2 {
+				go func() {
+					<-start
+					s, err := (Driver{}).Open(ctx, driver.Config{DSN: path})
+					if err == nil {
+						err = s.Close()
+					}
+					results <- err
+				}()
+			}
+			close(start)
+			for range 2 {
+				if err := <-results; err != nil {
+					t.Fatal(err)
+				}
+			}
+			s := openStore(t, ctx, path)
+			meta := getMeta(t, ctx, s)
+			if meta.SchemaVersion != 3 || meta.StoreID != "projection-store" || meta.Incarnation != "projection-incarnation" || !meta.Head.IsZero() || !meta.HistoryFloor.IsZero() {
+				t.Fatalf("migration changed identity/floor/head: %+v", meta)
+			}
+			if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('key_history') WHERE name LIKE 'derived_source_%'`).Scan(&columns); err != nil {
+				t.Fatal(err)
+			}
+			if columns != 2 {
+				t.Fatalf("projection columns=%d", columns)
+			}
+			var epoch string
+			if err := db.QueryRowContext(ctx, `SELECT epoch FROM active_lease`).Scan(&epoch); err != nil {
+				t.Fatal(err)
+			}
+			if epoch != revKey(17) {
+				t.Fatalf("migration changed epoch=%s", epoch)
+			}
+			if err := db.QueryRowContext(ctx, `SELECT post FROM replays WHERE scope='final'`).Scan(&post); err != nil {
+				t.Fatal(err)
+			}
+			wantPost := "null"
+			if version == 1 {
+				wantPost = "[]"
+			}
+			if string(post) != wantPost {
+				t.Fatalf("final receipt post=%s want=%s", post, wantPost)
+			}
+			if version == 2 {
+				var pending int
+				if err := db.QueryRowContext(ctx, `SELECT pending FROM replays WHERE scope='pending'`).Scan(&pending); err != nil || pending != 1 {
+					t.Fatalf("pending receipt changed: %d/%v", pending, err)
+				}
+			}
+		})
+	}
+}
+
+func TestDemandSelectionMigrationMixedHistoryAndHeldPin(t *testing.T) {
+	ctx := context.Background()
+	path, db := demandLegacyDatabase(t, 2)
+	source := demandSourceKey("legacy-opaque-" + string([]byte{0xff, 0xfe}))
+	id := keyID(demandSourceLock(source))
+	value := []byte("legacy-value")
+	state := driver.LockState{Key: demandSourceLock(source), Revision: model.Natural64(1), Present: true, Derived: &driver.DerivedRow{Key: source.Key, Value: value}}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO key_history(key,rev,data) VALUES(?,?,?)`, id, revKey(1), raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO selection_source_history(incarnation,branch,source_key,start_revision,source_revision,source_present,source_digest) VALUES('projection-incarnation',?,?,?,?,?,?)`, revKey(0), id, revKey(1), revKey(1), 1, driver.SelectionDigest(value)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE meta SET head=?`, revKey(1)); err != nil {
+		t.Fatal(err)
+	}
+	held, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Rollback()
+	var version int
+	if err := held.QueryRowContext(ctx, `SELECT schema_version FROM meta`).Scan(&version); err != nil || version != 2 {
+		t.Fatalf("old pin=%d/%v", version, err)
+	}
+	s := openStore(t, ctx, path)
+	lease := getLease(t, ctx, s, driver.LeaseTTL)
+	meta := getMeta(t, ctx, s)
+	decode, projection := selectionBackfillRaceProjection(meta.Incarnation, nil)
+	if err := s.BuildGraphSourceIndexes(ctx, lease, decode, projection); err != nil {
+		t.Fatal(err)
+	}
+	r := sourceReader(t, s, nil)
+	want := driver.SelectionSource{Key: demandSourceLock(source), Revision: model.Natural64(1), Present: true, Digest: driver.SelectionDigest(value)}
+	if _, err := r.Select(ctx, demandAPIPlan(t, r, want)); err != nil {
+		t.Fatalf("migrated legacy boundary: %v", err)
+	}
+	newRevision := demandAPIWriteSource(t, s, lease, source, []byte("projected"), true)
+	deleted := demandAPIWriteSource(t, s, lease, source, nil, false)
+	checkProjectedSource(t, s, source, 1, 1, true, want.Digest)
+	checkProjectedSource(t, s, source, mustUint(newRevision), mustUint(newRevision), true, driver.SelectionDigest([]byte("projected")))
+	checkProjectedSource(t, s, source, mustUint(deleted), mustUint(deleted), false, "")
+	if _, err := r.Select(ctx, demandAPIPlan(t, r, want)); err != nil {
+		t.Fatalf("held new-reader pin changed: %v", err)
+	}
+	var end sql.NullString
+	var token, digest string
+	if err := held.QueryRowContext(ctx, `SELECT source_revision,source_digest,end_revision FROM selection_source_history WHERE source_key=?`, id).Scan(&token, &digest, &end); err != nil {
+		t.Fatal(err)
+	}
+	if token != revKey(1) || digest != want.Digest || end.Valid {
+		t.Fatalf("old WAL snapshot changed: %s/%s/%+v", token, digest, end)
+	}
+	if err := held.QueryRowContext(ctx, `SELECT schema_version FROM meta`).Scan(&version); err != nil || version != 2 {
+		t.Fatalf("old version snapshot changed: %d/%v", version, err)
+	}
+}
+
+func TestDemandSelectionMigrationRefusesInconsistentColumnShape(t *testing.T) {
+	for _, name := range []string{"partial_v2", "both_v2", "missing_v3", "wrong_type_v3"} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			path, db := demandLegacyDatabase(t, 2)
+			switch name {
+			case "partial_v2":
+				if _, err := db.ExecContext(ctx, `ALTER TABLE key_history ADD COLUMN derived_source_present INTEGER`); err != nil {
+					t.Fatal(err)
+				}
+			case "both_v2":
+				if _, err := db.ExecContext(ctx, `ALTER TABLE key_history ADD COLUMN derived_source_present INTEGER; ALTER TABLE key_history ADD COLUMN derived_source_digest TEXT`); err != nil {
+					t.Fatal(err)
+				}
+			case "missing_v3":
+				if _, err := db.ExecContext(ctx, `UPDATE meta SET schema_version=3`); err != nil {
+					t.Fatal(err)
+				}
+			case "wrong_type_v3":
+				if _, err := db.ExecContext(ctx, `ALTER TABLE key_history ADD COLUMN derived_source_present TEXT; ALTER TABLE key_history ADD COLUMN derived_source_digest TEXT; UPDATE meta SET schema_version=3`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if s, err := (Driver{}).Open(ctx, driver.Config{DSN: path}); !errors.Is(err, driver.ErrUnsupported) {
+				if s != nil {
+					_ = s.Close()
+				}
+				t.Fatalf("inconsistent column layout accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestDemandSelectionSchemaFencePreservesExactReplay(t *testing.T) {
+	ctx := context.Background()
+	s, lease := demandAPIStore(t)
+	source := demandSourceKey("replay-source")
+	row := driver.DerivedRow{Key: source.Key, Value: []byte("replay-value")}
+	tx, header := beginSourceTestWithLocks(t, s, lease, []driver.LockKey{demandSourceLock(source)}, false)
+	header.Method = "projection.replay"
+	header.IdempotencyKey = "projection-replay"
+	header.RequestHash = driver.SelectionDigest([]byte("projection-request"))
+	if err := tx.PutDerived(ctx, source.Table, nil, []driver.DerivedRow{row}); err != nil {
+		t.Fatal(err)
+	}
+	first := commitSourceTest(t, tx, header)
+	held, _ := beginSourceTestWithLocks(t, s, lease, []driver.LockKey{demandSourceLock(source)}, false)
+	if err := held.PutDerived(ctx, source.Table, nil, []driver.DerivedRow{row}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE meta SET schema_version=?`, schemaVersion+1); err != nil {
+		t.Fatal(err)
+	}
+	before := demandPublicationImages(t, s)
+	replayed, err := held.Commit(ctx, header)
+	if err != nil || !reflect.DeepEqual(replayed, first) {
+		t.Fatalf("exact replay reached the new-version fence: %+v/%v", replayed, err)
+	}
+	if !reflect.DeepEqual(before, demandPublicationImages(t, s)) {
+		t.Fatal("replay published projected source/receipt/head")
+	}
+}
+
+func TestDemandSelectionMetadataScanFailureIsNotAbsence(t *testing.T) {
+	ctx := context.Background()
+	s := selectionStore(t).(*Store)
+	t.Cleanup(func() { _ = s.Close() })
+	meta := getMeta(t, ctx, s)
+	source := demandSourceKey("malformed-sql-type")
+	seedDemandSourceKeyHistory(t, s, meta.Incarnation, source, 1, []byte("value"))
+	id := keyID(demandSourceLock(source))
+	if _, err := s.db.ExecContext(ctx, `UPDATE key_history SET derived_source_present='not-an-integer' WHERE key=?`, id); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := projectedDerivedSource(ctx, s.db, meta.Incarnation, id, 1)
+	var numeric *strconv.NumError
+	// database/sql preserves the conversion error's native message; it must
+	// not be rewritten into a successful zero observation or legacy fallback.
+	if err == nil || (!errors.As(err, &numeric) && !strings.Contains(err.Error(), "converting driver.Value")) {
+		t.Fatalf("scan failure rewritten: %v", err)
+	}
 }

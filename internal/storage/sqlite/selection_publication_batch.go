@@ -93,10 +93,9 @@ func invalidateSelectionFactSets(ctx context.Context, c selectionPublicationExec
 }
 
 type selectionSourceObservation struct {
-	key      string
-	revision string
-	present  int
-	digest   string
+	key     string
+	present int
+	digest  string
 }
 
 func selectionSourceHistoryCloseSQL(count int) string {
@@ -112,5 +111,64 @@ func selectionSourceHistoryInsertSQL(count int) string {
 }
 
 func (t *transaction) publishSelectionSourceHistory(ctx context.Context, c selectionPublicationExecutor, incarnation, next string) (err error) {
-	return t.publishDemandSelectionSourceHistory(ctx, c, incarnation, next)
+	observations := make([]selectionSourceObservation, 0, len(t.records)+len(t.derived))
+	for id, record := range t.records {
+		observation := selectionSourceObservation{key: id}
+		if record != nil {
+			observation.present = 1
+			observation.digest = driver.SelectionDigest(record.Body)
+		}
+		observations = append(observations, observation)
+	}
+	recordCount := len(observations)
+	// Derived observations are already eager in key_history. Close only the
+	// legacy thin intervals so retained pins keep their exact old witnesses.
+	for id, state := range t.derived {
+		if state.Key.Derived == nil {
+			continue
+		}
+		observations = append(observations, selectionSourceObservation{key: id})
+	}
+	// Prepare at each arm's first execution on the held connection. Full
+	// batches reuse their handles; exact-arity tails retain separate cleanup.
+	var closeStatement, insertStatement keyPublicationStatement
+	for start := 0; start < len(observations); start += selectionSourceHistoryBatch {
+		end := min(start+selectionSourceHistoryBatch, len(observations))
+		batch := observations[start:end]
+		closeArgs := make([]any, 0, 3+len(batch))
+		closeArgs = append(closeArgs, next, incarnation, revKey(0))
+		insertArgs := make([]any, 0, 7*len(batch))
+		for offset, observation := range batch {
+			closeArgs = append(closeArgs, observation.key)
+			if start+offset < recordCount {
+				insertArgs = append(insertArgs, incarnation, revKey(0), observation.key,
+					next, next, observation.present, observation.digest)
+			}
+		}
+		if closeStatement == nil || len(batch) != selectionSourceHistoryBatch {
+			closeStatement, err = prepareKeyPublication(ctx, c, selectionSourceHistoryCloseSQL(len(batch)))
+			if err != nil {
+				return err
+			}
+			defer closeKeyPublicationStatement(closeStatement, &err)
+		}
+		if _, err := closeStatement.ExecContext(ctx, closeArgs...); err != nil {
+			return err
+		}
+		insertCount := len(insertArgs) / 7
+		if insertCount == 0 {
+			continue
+		}
+		if insertStatement == nil || insertCount != selectionSourceHistoryBatch {
+			insertStatement, err = prepareKeyPublication(ctx, c, selectionSourceHistoryInsertSQL(insertCount))
+			if err != nil {
+				return err
+			}
+			defer closeKeyPublicationStatement(insertStatement, &err)
+		}
+		if _, err := insertStatement.ExecContext(ctx, insertArgs...); err != nil {
+			return err
+		}
+	}
+	return nil
 }

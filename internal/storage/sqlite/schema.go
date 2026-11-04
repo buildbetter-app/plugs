@@ -1,6 +1,6 @@
 package sqlite
 
-const schemaVersion = 2
+const schemaVersion = 3
 
 // All revisions sort as fixed-width unsigned decimal TEXT. SQLite INTEGER is
 // signed; binding a uint64 or casting a revision to INTEGER would lose data.
@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS versions (
  PRIMARY KEY(key, rev)
 );
 CREATE TABLE IF NOT EXISTS key_history (
- key TEXT NOT NULL, rev TEXT NOT NULL, data BLOB NOT NULL, PRIMARY KEY(key, rev)
+ key TEXT NOT NULL, rev TEXT NOT NULL, data BLOB NOT NULL,
+ derived_source_present INTEGER, derived_source_digest TEXT, PRIMARY KEY(key, rev)
 );
 CREATE TABLE IF NOT EXISTS blobs (hash TEXT PRIMARY KEY, rev TEXT NOT NULL, data BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS changesets (rev TEXT PRIMARY KEY, data BLOB NOT NULL);

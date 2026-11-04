@@ -1,4 +1,9 @@
-# Derived source history prototype: SOURCE_BLOCK
+# Rejected annotation-only prototype: historical SOURCE_BLOCK
+
+The sparse source described below is retained in commits 121b78a51/302ad3759,
+not in the current observation path. The current child implements the shared
+eager metadata design in `selection_source_history_projection_design.md`.
+Its review/runtime disposition must be established independently.
 
 Done = reduce duplicate derived-source history while preserving pinned
 selection, later binding, invalidation and all refusals, proven by existing
