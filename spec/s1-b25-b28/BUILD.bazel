@@ -122,3 +122,6 @@ filegroup(
     srcs = glob(["**"]),
     visibility = ["//visibility:public"],
 )
+
+# Offline byte-bound analysis of the fresh R418 recording pair.
+exports_files(["compare_r418_pair.py"])

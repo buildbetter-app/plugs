@@ -207,8 +207,13 @@ missing-target import with the producer's `skipped_dependencies` result and a
 stored `status.custom=reviewing:active` catalog/create/show probe. These
 operation packets retain raw stdout/stderr and expected nonzero receipts beside
 the canonical source and target packets. The native product binding records the
-frozen PR384 request identity and the changed consumer source identity
-separately; the runtime wrapper records the exact dispatched consumer commit.
+frozen PR384 request identity and an explicitly historical implementation
+checkpoint with its true parent. Runtime Git objects and the external finite
+dispatch packet independently bind the actual current commit, tree and ordered
+parents, avoiding a recursive self-pin claim. Config/SQL readers consume default
+native JSON with the helper-returned ChildEnv unchanged; an independent SQL
+settings read resolves the CLI schema_version collision without changing the
+strict envelope-parser controls.
 
 The `TestPublicProjection` controls include same-count substitutions, missing
 or extra config, duplicate archive IDs/memory keys, reserved collisions,
@@ -338,3 +343,22 @@ separate composition/review. Companion DB-first runtime, native restore and
 allocator profiles, pins/preparer, B26 and auxiliary writers remain outside
 this source change. Ordinary/control gates and a fresh independent source
 review require S1's separate candidate binding and release.
+
+The current private recorder captures all 33 accepted native physical tables
+before and after each scalar operation, including all unchanged scalar columns,
+complete relation rows, prior history rows and close timestamps. It records a
+real oversized-label auxiliary SQL failure alongside a scalar patch and requires
+complete physical rollback. Native delete snapshots retain the version/journal/
+address transitions without pretending those histories equal scalar history.
+The Plug replay adds closed-row updates, typed auxiliary refusal, all reader
+rows/versions/changesets/derived tables and operation receipts, including a
+second SQL close/reopen after writes. Native delete-to-Plug transition replay,
+full status/type precedence and collision/lease edges remain outstanding.
+
+`compare_r418_pair.py` is the separately declared byte-bound comparator for the
+fresh accepted-R418 pair. It checks seven successful XML leaves, literal raw/XML
+agreement and complete route/lifecycle seals, exact same product objects across
+two distinct runs, the existing full comment correspondence rule, default native
+config/SQL readback correspondence, all replay projections and post-write SQL
+reopen images. Its output is bounded and cannot promote full B25/B27 or supply
+independent review. `compare_native_pair.py` keeps its historical pins unchanged.

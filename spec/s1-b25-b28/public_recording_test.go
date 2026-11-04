@@ -51,7 +51,7 @@ const (
 	requestedProductParent = "70230ccd92597a96000f90223c5d89b103e25426"
 	productSourceCommit    = "258af5a5aa02c9b8d578f9f4f726a61ccd747315"
 	productSourceTree      = "e36bea685c3496a4241522a80a17195793a069cf"
-	productSourceParent    = requestedProductHead
+	productSourceParent    = "451b57270b7399d1a115d59ff307744ecf961bfd"
 )
 
 var requirePublicRecording = flag.Bool("public-recording", false, "Require the independently delivered public Beads recording artifact")
@@ -90,6 +90,7 @@ type recordingFixture struct {
 
 type nativeProductSourceBinding struct {
 	Schema                     string   `json:"schema"`
+	BindingScope               string   `json:"binding_scope"`
 	Repository                 string   `json:"repository"`
 	PullRequest                int      `json:"pull_request"`
 	RequestedHead              string   `json:"requested_head"`
@@ -208,6 +209,7 @@ func TestPublicNativeRecording(t *testing.T) {
 	}
 	artifact := verifyPublicArtifact(t, profile)
 	root := makeRecordingRoot(t)
+	actualProduct := recordNativeProductIdentity(t, root)
 	t.Logf("PUBLIC_RECORDING_OUTPUT %s", root)
 	storeRoot := makeRecordingDirectory(t, "/tmp/plug-swarm/work", "s1-b25-b28-public-stores-")
 	t.Cleanup(func() {
@@ -235,15 +237,17 @@ func TestPublicNativeRecording(t *testing.T) {
 		t.Fatalf("producer-owned server cleanup: %v", err)
 	}
 	provenance := map[string]any{
-		"schema":            fixture.Schema,
-		"recording_id":      *publicRecordingID,
-		"pair_status":       "requires-independent-second-run-and-comparison",
-		"source_commit":     publicBeadsCommit,
-		"source_tree":       publicBeadsTree,
-		"build_run":         artifact.BuildRun,
-		"binary_sha256":     artifact.SHA256,
-		"manifest_sha256":   artifact.ManifestSHA,
-		"build_info_sha256": hashBytes(buildInfo),
+		"schema":                   fixture.Schema,
+		"recording_id":             *publicRecordingID,
+		"product_source":           actualProduct,
+		"requested_and_checkpoint": product,
+		"pair_status":              "requires-independent-second-run-and-comparison",
+		"source_commit":            publicBeadsCommit,
+		"source_tree":              publicBeadsTree,
+		"build_run":                artifact.BuildRun,
+		"binary_sha256":            artifact.SHA256,
+		"manifest_sha256":          artifact.ManifestSHA,
+		"build_info_sha256":        hashBytes(buildInfo),
 		"projection_sha256": map[string]string{
 			"source": run.SourceProjectionSHA,
 			"target": run.TargetProjectionSHA,
@@ -300,7 +304,7 @@ func readNativeProductSourceBinding(t *testing.T) nativeProductSourceBinding {
 	t.Helper()
 	var binding nativeProductSourceBinding
 	data := recordingRunfile(t, "testdata/native-product-source-binding.json")
-	if err := json.Unmarshal(data, &binding); err != nil || binding.Schema != "plug-s1-native-product-source/1" || binding.Repository != "buildbetter-app/plugs" || binding.PullRequest != 384 || binding.AcceptedControlRef != "refs/heads/swarm/native-preparer-c8eb-rebind-20261104" || binding.ProductCommit == "" || binding.ProductTree == "" || binding.AcceptedProducerWorkflow == "" || binding.AcceptedProducerDescriptor == "" {
+	if err := json.Unmarshal(data, &binding); err != nil || binding.Schema != "plug-s1-native-product-source/2" || binding.BindingScope != "requested-product-and-historical-checkpoint" || binding.Repository != "buildbetter-app/plugs" || binding.PullRequest != 384 || binding.AcceptedControlRef != "refs/heads/swarm/native-preparer-c8eb-rebind-20261104" || binding.ProductCommit == "" || binding.ProductTree == "" || binding.AcceptedProducerWorkflow == "" || binding.AcceptedProducerDescriptor == "" {
 		t.Fatalf("native product source binding is invalid: %v %+v", err, binding)
 	}
 	return binding
@@ -533,15 +537,16 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 	commandReference := func(label, store, dir string, argv []string, stdin []byte) []byte {
 		return runCommand(t, run.Root, &run.Commands, label, store, dir, env(dir), append([]string{pinned}, argv...), stdin)
 	}
-	// Config list is the stored-settings readback. Use the CLI's explicit JSON
-	// envelope so its numeric schema_version cannot masquerade as a setting.
+	// Consume the default native protocol with ChildEnv unchanged. Independent
+	// SQL rows disambiguate a stored schema_version from CLI protocol metadata.
 	commandConfigList := func(label, store, dir string) []byte {
-		return runCommand(t, run.Root, &run.Commands, label, store, dir,
-			append(env(dir), "BD_JSON_ENVELOPE=1"), []string{pinned, "--json", "config", "list"}, nil)
+		return commandReference(label, store, dir, []string{"--json", "config", "list"}, nil)
+	}
+	commandSettings := func(label, store, dir string) []byte {
+		return commandReference(label, store, dir, []string{"--readonly", "--json", "sql", "SELECT `key`, `value` FROM config ORDER BY `key`"}, nil)
 	}
 	commandMetadata := func(label, store, dir string) []byte {
-		return runCommand(t, run.Root, &run.Commands, label, store, dir,
-			append(env(dir), "BD_JSON_ENVELOPE=1"), []string{pinned, "--readonly", "--json", "sql", "SELECT `key`, `value` FROM metadata ORDER BY `key`"}, nil)
+		return commandReference(label, store, dir, []string{"--readonly", "--json", "sql", "SELECT `key`, `value` FROM metadata ORDER BY `key`"}, nil)
 	}
 	commandGit("source-git-init", "source", source, []string{"-c", "init.defaultBranch=main", "init", "--quiet"})
 	version := commandReference("source-version", "source", source, []string{"version", "--json"}, nil)
@@ -557,7 +562,7 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 	commandReference("source-export-config", "source", source, []string{"--json", "config", "set", "export.auto", "false"}, nil)
 	commandReference("source-config", "source", source, []string{"--json", "config", "set", fixture.ConfigKey, "paired-public"}, nil)
 	configOutput := commandConfigList("source-config-list", "source", source)
-	settings, err := readPublicConfigSettings(configOutput)
+	settings, err := readNativeConfigSettings(configOutput, commandSettings("source-config-sql", "source", source))
 	if err != nil {
 		t.Fatalf("real config list is invalid: %v %s", err, configOutput)
 	}
@@ -597,7 +602,7 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 	validateSourceRows(t, sourceRawProjection, fixture)
 	sourceConfig := commandConfigList("source-config-readback", "source", source)
 	sourceMetadata := commandMetadata("source-metadata-readback", "source", source)
-	sourceExpected := observePublicConfig(t, run.Root, "source", sourceConfig, sourceMetadata, sourceRawProjection)
+	sourceExpected := observeNativeConfig(t, run.Root, "source", sourceConfig, commandSettings("source-config-sql-readback", "source", source), sourceMetadata, sourceRawProjection)
 	if observed, ok := sourceExpected.Config["config/"+fixture.ConfigKey]; !ok || observed.Source.Fields["value"] != configured {
 		t.Fatal("source setup config changed before independent archive observation")
 	}
@@ -627,7 +632,7 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 	assertTargetContainsSource(t, sourceRawProjection, targetRawProjection, fixture)
 	targetConfig := commandConfigList("target-config-readback", "target", target)
 	targetMetadata := commandMetadata("target-metadata-readback", "target", target)
-	targetExpected := observePublicConfig(t, run.Root, "target", targetConfig, targetMetadata, targetRawProjection)
+	targetExpected := observeNativeConfig(t, run.Root, "target", targetConfig, commandSettings("target-config-sql-readback", "target", target), targetMetadata, targetRawProjection)
 	validateInventoryAndArchive(t, &run, commandReference, "target", target, run.Root, fixture)
 
 	sourceArchive, err := dumpformat.ReadFile(run.SourceArchivePath)
@@ -791,6 +796,24 @@ func replayPublicArchive(t *testing.T, output, storeRoot, label string, archive 
 				compare("-reopen")
 			}
 			recordPublicSubscriber(t, ctx, store, filepath.Join(output, label+"-plug-"+engine+"-subscriber.json"), []string{"pub-root", publicChildID, "pub-dependency"})
+			complete := nativePlugImage(t, ctx, store)
+			writeRecordingBytes(t, filepath.Join(output, label+"-plug-"+engine+"-post-write-state.json"), []byte(canonical(complete)+"\n"))
+			if sqlDriver != nil {
+				err := store.Close()
+				store = nil
+				if err != nil {
+					t.Fatal(err)
+				}
+				store, err = sqlDriver.Open(ctx, driver.Config{DSN: dsn})
+				if err != nil {
+					t.Fatal(err)
+				}
+				reopened := nativePlugImage(t, ctx, store)
+				writeRecordingBytes(t, filepath.Join(output, label+"-plug-"+engine+"-post-write-reopen-state.json"), []byte(canonical(reopened)+"\n"))
+				if !equalJSON(complete, reopened) {
+					t.Fatal("SQL reopen changed native-origin source, history, derived state or durable receipts")
+				}
+			}
 		}) {
 			t.Fatalf("%s Plug replay stopped at %s; no later engine qualifies", label, engine)
 		}
@@ -826,6 +849,70 @@ func (p *publicPostRecorder) After(ctx context.Context, change port.CommittedCha
 	defer p.mu.Unlock()
 	p.Observations = append(p.Observations, publicPostObservation{change, view, rows})
 	return nil
+}
+
+// Retain every reader-visible row, version, changeset, derived table and each
+// declared operation's durable receipt. This is an observed store image, not
+// a counter or an assertion based solely on a subscriber callback.
+func nativePlugImage(t *testing.T, ctx context.Context, store driver.Store) map[string]any {
+	t.Helper()
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	rows, err := r.Query(ctx, driver.Query{Limit: 1000})
+	if err != nil || rows.NextCursor != nil {
+		t.Fatalf("complete native-origin rows: %v cursor=%v", err, rows.NextCursor)
+	}
+	versions := map[string][]driver.Version{}
+	for _, row := range rows.Items {
+		page, err := r.Versions(ctx, row.Ref, driver.PageReq{})
+		if err != nil || page.NextCursor != nil {
+			t.Fatalf("complete native-origin history: %v", err)
+		}
+		versions[row.Ref.ID] = page.Items
+	}
+	changes, err := r.Changesets(ctx, nil, 1000)
+	if err != nil || len(changes) >= 1000 {
+		t.Fatalf("complete native-origin changesets: %v", err)
+	}
+	derived := map[driver.DerivedTable][]driver.DerivedRow{}
+	for _, table := range []driver.DerivedTable{driver.DerivedReadyState, driver.DerivedAncestorClosure, driver.DerivedCutClosure, driver.DerivedAttribute, driver.DerivedSortKey, driver.DerivedReferenceIndex, driver.DerivedGrant, driver.DerivedOntology, driver.DerivedPlugins} {
+		derived[table], err = r.DerivedRows(ctx, table, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	principal, err := driver.PrincipalKey(model.PrincipalRef{Kind: "user", ID: "public-recorder"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipts := map[string]any{}
+	keys := []string{"s1-native-public-0", "s1-native-public-1", "s1-native-public-2", "s1-native-public-3", "s1-native-public-equal-labels", "s1-native-public-refused-aux"}
+	for _, key := range keys {
+		method := "bead.update"
+		if strings.HasSuffix(key, "refused-aux") {
+			method = "tx.apply"
+		}
+		receipt, err := r.IdempotencyByKey(ctx, principal, "", method, hashBytes([]byte(key)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		receipts[key] = nil
+		if receipt != nil {
+			value := map[string]any{"request_hash": receipt.RequestHash, "commit": receipt.Commit, "response_pending": receipt.ResponsePending}
+			if receipt.Changeset.Kind != "" {
+				value["changeset"] = receipt.Changeset
+			}
+			receipts[key] = value
+		}
+	}
+	return map[string]any{"meta": meta, "snapshot": r.Snapshot(), "rows": rows.Items, "versions": versions, "changesets": changes, "derived": derived, "receipts": receipts}
 }
 
 // These are real public service writes on the just-imported native rows. The
@@ -919,8 +1006,9 @@ func recordPublicSubscriber(t *testing.T, ctx context.Context, store driver.Stor
 		writeRecordingBytes(t, path, append(data, '\n'))
 	}
 	requests := []service.UpdateRequest{
-		{ID: model.RefByID(ids[0], model.Natural64(0)), Fields: map[string]any{"title": "Public root after scalar update"}},
+		{ID: model.RefByID(ids[0], model.Natural64(0)), Fields: map[string]any{"title": "Public root after scalar update", "priority": 1, "description": "Plug scalar conservation"}},
 		{ID: model.RefByID(ids[1], model.Natural64(0)), Fields: map[string]any{"title": "Public child after scalar update"}},
+		{ID: model.RefByID(ids[2], model.Natural64(0)), Fields: map[string]any{"title": "Closed dependency after Plug scalar update"}},
 		{ID: model.RefByID(ids[0], model.Natural64(0)), Fields: map[string]any{"labels": []string{"native-reviewed"}}},
 	}
 	var last port.WriteOutcome
@@ -945,23 +1033,39 @@ func recordPublicSubscriber(t *testing.T, ctx context.Context, store driver.Stor
 		if !equalJSON(before, after) {
 			t.Fatal("native public update changed unpatched fields, metadata, parent, links, comments or close provenance")
 		}
+		complete := nativePlugImage(t, ctx, store)
+		writeRecordingBytes(t, path+fmt.Sprintf(".write-%d.json", i), []byte(canonical(complete)+"\n"))
 		replayed, replayErr := domain.UpdateWithOutcome(ctx, actor, req, meta)
 		appendReceipt(map[string]any{"method": "bead.update", "request": req, "meta": meta, "outcome": replayed, "error": fmt.Sprint(replayErr), "after": read()})
 		flush()
-		if replayErr != nil || !replayed.Replayed || !equalJSON(outcome.Commit, replayed.Commit) || postCount() != i+1 || !equalJSON(after, read()) {
+		if replayErr != nil || !replayed.Replayed || !equalJSON(outcome.Commit, replayed.Commit) || postCount() != i+1 || !equalJSON(after, read()) || !equalJSON(complete, nativePlugImage(t, ctx, store)) {
 			t.Fatal("native public replay changed state, receipt or subscriber count")
 		}
 		last = outcome
 	}
 	before := read()
 	noopMeta := model.WriteMeta{Project: before[ids[0]].Project, IdempotencyKey: hashBytes([]byte("s1-native-public-equal-labels"))}
-	noop, err := domain.UpdateWithOutcome(ctx, actor, requests[2], noopMeta)
-	appendReceipt(map[string]any{"method": "bead.update", "request": requests[2], "meta": noopMeta, "outcome": noop, "error": fmt.Sprint(err), "after": read()})
+	noop, err := domain.UpdateWithOutcome(ctx, actor, requests[len(requests)-1], noopMeta)
+	appendReceipt(map[string]any{"method": "bead.update", "request": requests[len(requests)-1], "meta": noopMeta, "outcome": noop, "error": fmt.Sprint(err), "after": read()})
 	flush()
-	if err != nil || noop.Replayed || noop.Commit.Revision.String() != last.Commit.Revision.String() || postCount() != 3 || !equalJSON(before, read()) {
+	if err != nil || noop.Replayed || noop.Commit.Revision.String() != last.Commit.Revision.String() || postCount() != len(requests) || !equalJSON(before, read()) {
 		t.Fatal("native public equal replacement created a revision, subscriber call or changed state")
 	}
-	t.Logf("PUBLIC_SUBSCRIBER_RECORDING path=%s posts=%d scalar=2 replacement=1 replay=3 noop=1", path, postCount())
+	complete := nativePlugImage(t, ctx, store)
+	closed := model.RefByID(ids[2], model.Natural64(0))
+	bad := model.ChangeSet{Ops: []model.Op{
+		{Kind: model.OpPatch, Patch: &model.PatchOp{Target: closed, Fields: map[string]any{"title": "must not land", "labels": []string{"must-not-land"}}}},
+		{Kind: model.OpLink, Link: &model.LinkOp{From: closed, To: closed, LinkKind: "blocks"}},
+	}}
+	refusalMeta := model.WriteMeta{Project: before[ids[2]].Project, IdempotencyKey: hashBytes([]byte("s1-native-public-refused-aux"))}
+	refused, refusalErr := domain.ApplyWithOutcome(ctx, actor, bad, refusalMeta)
+	appendReceipt(map[string]any{"method": "tx.apply", "request": bad, "outcome": refused, "error": fmt.Sprint(refusalErr), "before": complete, "after": nativePlugImage(t, ctx, store)})
+	flush()
+	var typed *model.Error
+	if !errors.As(refusalErr, &typed) || typed.Data.Code != "ontology_guard_failed" || !equalJSON(complete, nativePlugImage(t, ctx, store)) || postCount() != len(requests) {
+		t.Fatalf("native-origin auxiliary refusal changed a source/history/receipt/subscriber plane: %v", refusalErr)
+	}
+	t.Logf("PUBLIC_SUBSCRIBER_RECORDING path=%s posts=%d scalar=3 replacement=1 replay=4 noop=1 refusal=1", path, postCount())
 }
 
 // This control derives a declared hash-allocator variant of the explicitly
@@ -1122,20 +1226,29 @@ func recordNativeScalarOperations(t *testing.T, output, storeRoot, source, pinne
 	show := func(label, id string) map[string]any {
 		return decodeNativeIssue(t, command(label, []string{"--json", "show", "--include-comments", id}))
 	}
+	physicalBefore := recordNativePhysicalImage(t, root, "scalar-before", command)
+	currentPhysical := physicalBefore
+	scalarWrite := func(label, id, field string, value any, argv []string) {
+		command(label, argv)
+		after := recordNativePhysicalImage(t, root, label+"-after", command)
+		assertNativeScalarPhysical(t, currentPhysical, after)
+		assertNativeIssuePatch(t, currentPhysical, after, id, field, value)
+		currentPhysical = after
+	}
 	before := show("b25-scalar-before", "pub-root")
 	childBefore := show("b25-child-before", publicChildID)
 	if len(nativeComments(before)) == 0 {
 		t.Fatal("native B25 before image did not expose full comment bodies")
 	}
-	command("b25-update-title", []string{"--json", "update", "pub-root", "--title", "Public root title updated natively"})
-	command("b25-update-priority", []string{"--json", "update", "pub-root", "--priority", "3"})
-	command("b25-update-description", []string{"--json", "update", "pub-root", "--description", "Public root description updated natively"})
-	command("b25-update-assignee", []string{"--json", "update", "pub-root", "--assignee", "native-owner"})
-	command("b25-update-notes", []string{"--json", "update", "pub-root", "--notes", "native notes retained", "--force"})
-	command("b25-update-child-title", []string{"--json", "update", publicChildID, "--title", "Public child title updated natively"})
+	scalarWrite("b25-update-title", "pub-root", "title", "Public root title updated natively", []string{"--json", "update", "pub-root", "--title", "Public root title updated natively"})
+	scalarWrite("b25-update-priority", "pub-root", "priority", 3, []string{"--json", "update", "pub-root", "--priority", "3"})
+	scalarWrite("b25-update-description", "pub-root", "description", "Public root description updated natively", []string{"--json", "update", "pub-root", "--description", "Public root description updated natively"})
+	scalarWrite("b25-update-assignee", "pub-root", "assignee", "native-owner", []string{"--json", "update", "pub-root", "--assignee", "native-owner"})
+	scalarWrite("b25-update-notes", "pub-root", "notes", "native notes retained", []string{"--json", "update", "pub-root", "--notes", "native notes retained", "--force"})
+	scalarWrite("b25-update-child-title", "pub-root.1", "title", "Public child title updated natively", []string{"--json", "update", publicChildID, "--title", "Public child title updated natively"})
 	childAfter := show("b25-child-after", publicChildID)
 	closedBefore := show("b25-closed-before", "pub-dependency")
-	command("b25-update-closed-title", []string{"--json", "update", "pub-dependency", "--title", "Closed dependency updated natively"})
+	scalarWrite("b25-update-closed-title", "pub-dependency", "title", "Closed dependency updated natively", []string{"--json", "update", "pub-dependency", "--title", "Closed dependency updated natively"})
 	closedAfter := show("b25-closed-after", "pub-dependency")
 	after := show("b25-scalar-after", "pub-root")
 	assertNativeScalarPreservation(t, before, after, map[string]any{
@@ -1147,11 +1260,29 @@ func recordNativeScalarOperations(t *testing.T, output, storeRoot, source, pinne
 	if closedAfter["status"] != "closed" || closedAfter["close_reason"] != "dependency complete" {
 		t.Fatalf("closed-row native scalar update lost close provenance: %s", canonical(closedAfter))
 	}
+	physicalAfter := currentPhysical
+	assertNativeScalarPhysical(t, physicalBefore, physicalAfter)
 	refusalBefore := show("b25-refusal-before", "pub-root")
 	expected("b25-refused-self-dependency", []string{"--json", "dep", "add", "pub-root", "pub-root"}, 1)
 	refusalAfter := show("b25-refusal-after", "pub-root")
 	if !equalJSON(nativePreservationImage(refusalBefore), nativePreservationImage(refusalAfter)) {
 		t.Fatal("native refused dependency mutation changed the root image")
+	}
+	refusalPhysical := recordNativePhysicalImage(t, root, "refusal-after", command)
+	if !equalJSON(physicalAfter, refusalPhysical) {
+		t.Fatal("native dependency refusal changed a physical source/history table")
+	}
+	expected("b25-refused-scalar-and-type", []string{"--json", "update", "pub-root", "--title", "must not land", "--type", "not-a-declared-type"}, 1)
+	typeRefusal := recordNativePhysicalImage(t, root, "type-refusal-after", command)
+	if !equalJSON(refusalPhysical, typeRefusal) {
+		t.Fatal("native scalar/type refusal wrote a partial patch")
+	}
+	// The accepted schema declares labels.label VARCHAR(255). A 256-byte
+	// auxiliary insert fails inside the same Update transaction as the scalar.
+	expected("b25-auxiliary-sql-fault", []string{"--json", "update", "pub-root", "--title", "must roll back", "--add-label", strings.Repeat("x", 256)}, 1)
+	faultAfter := recordNativePhysicalImage(t, root, "auxiliary-fault-after", command)
+	if !equalJSON(typeRefusal, faultAfter) {
+		t.Fatal("native auxiliary SQL fault failed full source/history rollback")
 	}
 	// Exercise the real child counter on the accepted native store. This row is
 	// retained in the source archive and its generated identity is checked here,
@@ -1167,6 +1298,7 @@ func recordNativeScalarOperations(t *testing.T, output, storeRoot, source, pinne
 		"child_after": childAfter, "closed_before": closedBefore, "closed_after": closedAfter, "refusal_before": refusalBefore,
 		"refusal_after": refusalAfter, "counter_child": counterRow,
 		"full_comment_bodies": nativeComments(after),
+		"physical_before":     physicalBefore, "physical_after": physicalAfter, "refusal_physical": refusalPhysical, "type_refusal_physical": typeRefusal, "fault_after": faultAfter,
 	}, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -1198,6 +1330,10 @@ func recordNativeDeleteOperations(t *testing.T, output, storeRoot, source, pinne
 	command("b25-delete-create-owner", []string{"--json", "create", "--id", "pub-delete-owner", "--type", "task", "--title", "Native delete owner", "--description", "orphan owner"})
 	command("b25-delete-create-survivor", []string{"--json", "create", "--id", "pub-delete-survivor", "--type", "task", "--title", "Native delete survivor", "--description", "orphan survivor"})
 	command("b25-delete-link", []string{"--json", "dep", "add", "pub-delete-survivor", "pub-delete-owner"})
+	command("b25-delete-owner-label", []string{"--json", "label", "add", "pub-delete-owner", "owned-label"})
+	command("b25-delete-owner-comment", []string{"--json", "comment", "pub-delete-owner", "owned full comment"})
+	command("b25-delete-survivor-comment", []string{"--json", "comment", "pub-delete-survivor", "surviving full comment"})
+	orphanBefore := recordNativePhysicalImage(t, root, "orphan-before", command)
 	ownerBefore := show("b25-delete-owner-before", "pub-delete-owner")
 	survivorBefore := show("b25-delete-survivor-before", "pub-delete-survivor")
 	expected("b25-delete-dry-run", []string{"--json", "delete", "pub-delete-owner"}, 1)
@@ -1205,26 +1341,38 @@ func recordNativeDeleteOperations(t *testing.T, output, storeRoot, source, pinne
 	if !equalJSON(nativePreservationImage(ownerBefore), nativePreservationImage(ownerPreview)) {
 		t.Fatal("native unforced delete preview changed the owner")
 	}
+	previewPhysical := recordNativePhysicalImage(t, root, "preview-after", command)
+	if !equalJSON(orphanBefore, previewPhysical) {
+		t.Fatal("native default delete refusal changed physical source state")
+	}
 	command("b25-delete-force-orphan", []string{"--json", "delete", "pub-delete-owner", "--force"})
 	expected("b25-delete-owner-missing-after-force", []string{"--json", "show", "--include-comments", "pub-delete-owner"}, 1)
 	survivorAfter := show("b25-delete-survivor-after-orphan", "pub-delete-survivor")
 	if strings.Contains(canonical(survivorAfter["dependencies"]), "pub-delete-owner") {
 		t.Fatal("native orphan delete left a dangling dependency")
 	}
+	orphanAfter := recordNativePhysicalImage(t, root, "orphan-after", command)
+	assertNativeDeletePhysical(t, orphanBefore, orphanAfter, []string{"pub-delete-owner"})
 	command("b25-cascade-create-owner", []string{"--json", "create", "--id", "pub-cascade-owner", "--type", "task", "--title", "Native cascade owner", "--description", "cascade owner"})
 	command("b25-cascade-create-child", []string{"--json", "create", "--id", "pub-cascade-child", "--type", "task", "--title", "Native cascade child", "--description", "cascade child"})
 	command("b25-cascade-link", []string{"--json", "dep", "add", "pub-cascade-child", "pub-cascade-owner"})
+	command("b25-cascade-owner-comment", []string{"--json", "comment", "pub-cascade-owner", "cascade owned full comment"})
+	command("b25-cascade-child-label", []string{"--json", "label", "add", "pub-cascade-child", "cascade-label"})
+	cascadePhysicalBefore := recordNativePhysicalImage(t, root, "cascade-before", command)
 	cascadeBefore := show("b25-cascade-owner-before", "pub-cascade-owner")
 	command("b25-delete-cascade-force", []string{"--json", "delete", "pub-cascade-owner", "--cascade", "--force"})
 	expected("b25-cascade-owner-missing", []string{"--json", "show", "--include-comments", "pub-cascade-owner"}, 1)
 	expected("b25-cascade-child-missing", []string{"--json", "show", "--include-comments", "pub-cascade-child"}, 1)
+	cascadePhysicalAfter := recordNativePhysicalImage(t, root, "cascade-after", command)
+	assertNativeDeletePhysical(t, cascadePhysicalBefore, cascadePhysicalAfter, []string{"pub-cascade-owner", "pub-cascade-child"})
 	expected("b25-delete-missing-row", []string{"--json", "delete", "pub-never-created", "--force"}, 1)
 	data, err := json.MarshalIndent(map[string]any{
 		"schema": "plug-s1-b25-native-delete/1", "source": source, "server": server,
 		"owner_before": ownerBefore, "owner_after_dry_run": ownerPreview,
 		"survivor_before": survivorBefore, "survivor_after_orphan": survivorAfter,
 		"cascade_owner_before": cascadeBefore,
-		"policy":               map[string]string{"default": "dry-run", "force": "orphan", "cascade_force": "cascade"},
+		"orphan_before":        orphanBefore, "orphan_after": orphanAfter, "cascade_before": cascadePhysicalBefore, "cascade_after": cascadePhysicalAfter,
+		"policy": map[string]string{"default": "dry-run", "force": "orphan", "cascade_force": "cascade"},
 	}, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -1255,31 +1403,68 @@ func recordNativeB27Probes(t *testing.T, output, storeRoot, pinned string, serve
 	}
 	runCommand(t, root, &receipts, "b27-probe-git-init", "b27-probe", workspace, env, []string{"git", "-c", "init.defaultBranch=main", "init", "--quiet"}, nil)
 	command("b27-probe-init", nativeInitArgs(workspace, server.Port), nil)
-	missing := []byte(`{"_type":"issue","id":"b27-missing","title":"Missing target import","description":"native skipped dependency","issue_type":"task","priority":1,"status":"open","dependencies":[{"depends_on_id":"b27-no-such-target","type":"blocks"}]}` + "\n")
+	recordNativeDatabaseBinding(t, root, "b27-probe", workspace, server)
+	command("b27-keep-create", []string{"--json", "create", "--id", "pub-import-keep", "--title", "Keep before missing-target import", "--type", "task"}, nil)
+	keepBefore := decodeNativeIssue(t, command("b27-keep-before", []string{"--json", "show", "--include-comments", "pub-import-keep"}, nil))
+	missing := []byte(`{"_type":"issue","id":"pub-missing","title":"Missing target import","description":"native skipped dependency","issue_type":"task","priority":1,"status":"open","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","dependencies":[{"issue_id":"pub-missing","depends_on_id":"pub-no-such-target","type":"blocks","created_at":"2026-01-01T00:00:00Z"}]}` + "\n")
 	missingPath := filepath.Join(root, "missing-target.jsonl")
 	writeRecordingBytes(t, missingPath, missing)
 	imported := command("b27-missing-target-import", []string{"--json", "import", missingPath}, nil)
-	var importResult any
+	var importResult map[string]any
 	if err := json.Unmarshal(bytes.TrimSpace(imported), &importResult); err != nil {
 		t.Fatalf("native missing-target import did not return JSON: %v: %s", err, imported)
 	}
-	if !nativeHasNonEmptyField(importResult, "skipped_dependencies") {
+	if !equalJSON(importResult["skipped_dependencies"], []string{"pub-missing -> pub-no-such-target: target not found"}) || !equalJSON(importResult["ids"], []string{"pub-missing"}) {
 		t.Fatalf("native importer omitted skipped dependency report: %s", imported)
+	}
+	missingRow := decodeNativeIssue(t, command("b27-missing-target-show", []string{"--json", "show", "--include-comments", "pub-missing"}, nil))
+	if missingRow["title"] != "Missing target import" || len(nativeRelationEdges(missingRow["dependencies"])) != 0 {
+		t.Fatalf("native missing-target import failed to preserve the issue and omit only the unresolved edge: %s", canonical(missingRow))
+	}
+	keepAfter := decodeNativeIssue(t, command("b27-keep-after", []string{"--json", "show", "--include-comments", "pub-import-keep"}, nil))
+	if !equalJSON(keepBefore, keepAfter) {
+		t.Fatal("missing-target import changed its pre-existing survivor")
 	}
 	command("b27-status-config-set", []string{"--json", "config", "set", "status.custom", "reviewing:active"}, nil)
 	statusList := command("b27-status-config-list", []string{"--json", "config", "list"}, nil)
 	if !bytes.Contains(statusList, []byte("status.custom")) {
 		t.Fatalf("native status registry did not expose stored custom status: %s", statusList)
 	}
-	command("b27-status-create", []string{"--json", "create", "--id", "b27-status-row", "--type", "task", "--status", "reviewing", "--title", "Stored custom status", "--description", "status registry probe"}, nil)
-	statusRow := command("b27-status-show", []string{"--json", "show", "b27-status-row"}, nil)
-	if !bytes.Contains(statusRow, []byte("reviewing")) {
+	command("b27-status-create", []string{"--json", "create", "--id", "pub-status-row", "--type", "task", "--status", "reviewing", "--title", "Stored custom status", "--description", "status registry probe"}, nil)
+	statusRow := command("b27-status-show", []string{"--json", "show", "pub-status-row"}, nil)
+	if row := decodeNativeIssue(t, statusRow); row["id"] != "pub-status-row" || row["status"] != "reviewing" || row["issue_type"] != "task" {
 		t.Fatalf("native stored custom status did not survive create/show: %s", statusRow)
 	}
+	physicalCommand := func(label string, argv []string) []byte { return command(label, argv, nil) }
+	command("b27-config-commit", []string{"dolt", "commit"}, nil)
+	beforeRefusal := recordNativePhysicalImage(t, root, "custom-status-before-refusal", physicalCommand)
+	if len(beforeRefusal["custom_statuses"]) != 1 {
+		t.Fatal("status.custom setup did not materialize its normalized source row")
+	}
+	inventoryPath := filepath.Join(root, "custom-status-inventory.json")
+	command("b27-custom-inventory", []string{"--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "-o", inventoryPath}, nil)
+	archivePath := filepath.Join(root, "refused-custom-status.tar")
+	runCommandExpected(t, root, &receipts, "b27-custom-status-archive-refusal", "b27-probe", workspace, env, []string{pinned, "--readonly", "export", "--format", "plug-dump/1", "--plug-inventory", inventoryPath, "-o", archivePath}, nil, 1)
+	if _, err := os.Stat(archivePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unsupported custom status emitted an archive: %v", err)
+	}
+	afterRefusal := recordNativePhysicalImage(t, root, "custom-status-after-refusal", physicalCommand)
+	if !equalJSON(beforeRefusal, afterRefusal) {
+		t.Fatal("refused native capture changed physical source/config/history state")
+	}
+	for _, name := range []string{"config.yaml", "metadata.json"} {
+		data, err := os.ReadFile(filepath.Join(workspace, ".beads", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeRecordingBytes(t, filepath.Join(root, "source-"+name), data)
+	}
 	data, err := json.MarshalIndent(map[string]any{
-		"schema": "plug-s1-b27-native-probes/1", "workspace": workspace, "server": server,
+		"schema": "plug-s1-b27-native-probes/2", "workspace": workspace, "server": server,
 		"missing_target_result": importResult, "status_config": json.RawMessage(statusList),
-		"status_row":          json.RawMessage(statusRow),
+		"status_row":  json.RawMessage(statusRow),
+		"missing_row": missingRow, "keep_before": keepBefore, "keep_after": keepAfter,
+		"physical_before_refusal": beforeRefusal, "physical_after_refusal": afterRefusal, "archive": "ABSENT_EXPECTED_REFUSAL",
 		"capability_boundary": "custom_statuses_and_custom_types_are_not_claimed_in_the_c8-native archive",
 	}, "", "  ")
 	if err != nil {
@@ -1412,6 +1597,348 @@ func nativeHasNonEmptyField(value any, field string) bool {
 		}
 	}
 	return false
+}
+
+// The workflow supplies this checkout. Read the immutable commit object rather
+// than %P, which suppresses parents at the workflow's shallow boundary. The
+// dispatch seal independently compares this observed tuple to its input SHA.
+func recordNativeProductIdentity(t *testing.T, output string) map[string]any {
+	t.Helper()
+	dir := os.Getenv("PLUG_SOURCE_MODULE_ROOT")
+	if !filepath.IsAbs(dir) {
+		t.Fatal("RunsOn did not supply an absolute product checkout")
+	}
+	root := filepath.Join(output, "product-git")
+	if err := os.MkdirAll(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	var receipts []commandReceipt
+	env := []string{"PATH=/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"}
+	head := strings.TrimSpace(string(runCommand(t, root, &receipts, "product-head", "product", dir, env, []string{"git", "rev-parse", "HEAD"}, nil)))
+	object := runCommand(t, root, &receipts, "product-object", "product", dir, env, []string{"git", "cat-file", "-p", head}, nil)
+	var tree string
+	parents := []string{}
+	for _, line := range strings.Split(string(object), "\n") {
+		if line == "" {
+			break
+		}
+		if strings.HasPrefix(line, "tree ") {
+			tree = strings.TrimPrefix(line, "tree ")
+		}
+		if strings.HasPrefix(line, "parent ") {
+			parents = append(parents, strings.TrimPrefix(line, "parent "))
+		}
+	}
+	if len(head) != 40 || !isLowerHex(head) || len(tree) != 40 || !isLowerHex(tree) || len(parents) == 0 {
+		t.Fatal("actual product commit object has an incomplete identity")
+	}
+	result := map[string]any{"commit": head, "tree": tree, "ordered_parents": parents, "raw_commit_sha256": hashBytes(object)}
+	writeRecordingBytes(t, filepath.Join(output, "actual-product-source.json"), []byte(canonical(result)+"\n"))
+	return result
+}
+
+// Default native JSON must remain raw evidence. This decoder rejects duplicate
+// fields at every depth and trailing values, without converting the protocol to
+// an envelope or changing the existing strict envelope-parser controls.
+func readNativeJSON(data []byte) (any, error) {
+	d := json.NewDecoder(bytes.NewReader(data))
+	d.UseNumber()
+	var read func() (any, error)
+	read = func() (any, error) {
+		token, err := d.Token()
+		if err != nil {
+			return nil, err
+		}
+		switch token {
+		case json.Delim('{'):
+			object := map[string]any{}
+			for d.More() {
+				keyToken, err := d.Token()
+				if err != nil {
+					return nil, err
+				}
+				key, ok := keyToken.(string)
+				if _, exists := object[key]; !ok || exists {
+					return nil, errors.New("duplicate native JSON field")
+				}
+				value, err := read()
+				if err != nil {
+					return nil, err
+				}
+				object[key] = value
+			}
+			end, err := d.Token()
+			if err != nil || end != json.Delim('}') {
+				return nil, errors.New("unclosed native object")
+			}
+			return object, nil
+		case json.Delim('['):
+			array := []any{}
+			for d.More() {
+				value, err := read()
+				if err != nil {
+					return nil, err
+				}
+				array = append(array, value)
+			}
+			end, err := d.Token()
+			if err != nil || end != json.Delim(']') {
+				return nil, errors.New("unclosed native array")
+			}
+			return array, nil
+		default:
+			if _, ok := token.(json.Delim); ok {
+				return nil, errors.New("unexpected native delimiter")
+			}
+			return token, nil
+		}
+	}
+	value, err := read()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := d.Token(); !errors.Is(err, io.EOF) {
+		return nil, errors.New("native JSON has trailing data")
+	}
+	return value, nil
+}
+
+func readNativeKVRows(data []byte, table string) ([]publicConfigObservation, error) {
+	value, err := readNativeJSON(data)
+	if err != nil {
+		return nil, err
+	}
+	rows, ok := value.([]any)
+	if !ok {
+		return nil, errors.New("native SQL readback must be an array")
+	}
+	result := []publicConfigObservation{}
+	seen := map[string]bool{}
+	for _, raw := range rows {
+		row, ok := raw.(map[string]any)
+		if !ok || len(row) != 2 {
+			return nil, errors.New("native SQL row must have key and value only")
+		}
+		key, keyOK := row["key"].(string)
+		value, valueOK := row["value"].(string)
+		if !keyOK || !valueOK || key == "" || seen[key] {
+			return nil, errors.New("invalid or duplicate native SQL key/value")
+		}
+		seen[key] = true
+		result = append(result, publicConfigObservation{Table: table, Key: key, Value: value, Classification: "public"})
+	}
+	return result, nil
+}
+
+func readNativeConfigSettings(list, sqlRows []byte) ([]publicConfigObservation, error) {
+	rows, err := readNativeKVRows(sqlRows, "config")
+	if err != nil {
+		return nil, err
+	}
+	value, err := readNativeJSON(list)
+	if err != nil {
+		return nil, err
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil, errors.New("default native config list must be an object")
+	}
+	version, ok := object["schema_version"].(json.Number)
+	if !ok || version != "1" {
+		return nil, errors.New("default native config schema is not 1")
+	}
+	want := map[string]any{"schema_version": json.Number("1")}
+	settings := []publicConfigObservation{}
+	for _, row := range rows {
+		if strings.HasPrefix(row.Key, "kv.") {
+			continue
+		} // CLI config-list's explicit settings plane.
+		settings = append(settings, row)
+		if row.Key != "schema_version" {
+			want[row.Key] = row.Value
+		}
+	}
+	if !equalJSON(want, object) {
+		return nil, errors.New("native config list and independent SQL settings disagree")
+	}
+	return settings, nil
+}
+
+func observeNativeConfig(t *testing.T, output, label string, list, sqlRows, metadata, ordinary []byte) publicConfigExpectation {
+	t.Helper()
+	observations, err := readNativeConfigSettings(list, sqlRows)
+	if err != nil {
+		t.Fatalf("%s default config readback: %v", label, err)
+	}
+	metaRows, err := readNativeKVRows(metadata, "metadata")
+	if err != nil {
+		t.Fatalf("%s default metadata readback: %v", label, err)
+	}
+	expected, err := expectPublicConfig(append(observations, metaRows...), ordinary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRecordingBytes(t, filepath.Join(output, label+"-config-expectation.json"), []byte(canonical(expected)+"\n"))
+	return expected
+}
+
+// Accepted c8 catalog.go's complete physical table census, including all
+// columns via SELECT *. Empty families remain observed emptiness only.
+var nativePhysicalTables = strings.Fields("schema_migrations ignored_schema_migrations issues wisps dependencies wisp_dependencies labels wisp_labels comments wisp_comments events wisp_events config metadata local_metadata child_counters wisp_child_counters issue_counter issue_snapshots compaction_snapshots repo_mtimes routes interactions federation_peers custom_statuses custom_types provenance_events bd_events_journal bd_events_seq issue_versions store_epoch epoch_minted_addresses leases")
+
+type nativePhysicalImage map[string][]any
+
+func recordNativePhysicalImage(t *testing.T, output, label string, command func(string, []string) []byte) nativePhysicalImage {
+	t.Helper()
+	image := nativePhysicalImage{}
+	for _, table := range nativePhysicalTables {
+		raw := command(label+"-"+table, []string{"--readonly", "--json", "sql", "SELECT * FROM `" + table + "`"})
+		value, err := readNativeJSON(raw)
+		if err != nil {
+			t.Fatalf("%s physical %s: %v", label, table, err)
+		}
+		rows, ok := value.([]any)
+		if !ok {
+			t.Fatalf("%s physical %s is not an array", label, table)
+		}
+		sort.SliceStable(rows, func(i, j int) bool { return canonical(rows[i]) < canonical(rows[j]) })
+		image[table] = rows
+	}
+	writeRecordingBytes(t, filepath.Join(output, label+"-physical.json"), []byte(canonical(image)+"\n"))
+	return image
+}
+
+func assertNativeScalarPhysical(t *testing.T, before, after nativePhysicalImage) {
+	t.Helper()
+	for _, table := range nativePhysicalTables {
+		switch table {
+		case "issues", "bd_events_seq": // Changed scalars and the journal cursor are observed in full.
+			continue
+		case "events", "bd_events_journal", "issue_versions", "provenance_events":
+			remaining := map[string]int{}
+			for _, row := range after[table] {
+				remaining[canonical(row)]++
+			}
+			for _, row := range before[table] {
+				key := canonical(row)
+				if remaining[key] == 0 {
+					t.Fatalf("native scalar update lost or rewrote prior %s row: %s", table, key)
+				}
+				remaining[key]--
+			}
+		default:
+			if !equalJSON(before[table], after[table]) {
+				t.Fatalf("native scalar update changed unpatched physical table %s", table)
+			}
+		}
+	}
+}
+
+func assertNativeIssuePatch(t *testing.T, before, after nativePhysicalImage, id, field string, value any) {
+	t.Helper()
+	index := func(rows []any) map[string]map[string]any {
+		result := map[string]map[string]any{}
+		for _, raw := range rows {
+			row, ok := raw.(map[string]any)
+			if !ok {
+				t.Fatal("native issue SQL row is not an object")
+			}
+			key, ok := row["id"].(string)
+			if !ok || result[key] != nil {
+				t.Fatal("invalid or duplicate native issue SQL identity")
+			}
+			result[key] = row
+		}
+		return result
+	}
+	a, b := index(before["issues"]), index(after["issues"])
+	if len(a) != len(b) || a[id] == nil || b[id] == nil {
+		t.Fatal("scalar update changed the native issue census")
+	}
+	for key, row := range a {
+		actual := b[key]
+		if len(row) != len(actual) {
+			t.Fatal("scalar update changed native issue column census")
+		}
+		for column, old := range row {
+			if key == id {
+				if column == field {
+					if !equalJSON(actual[column], value) {
+						t.Fatalf("native %s patch %s did not land", id, field)
+					}
+					continue
+				}
+				if column == "updated_at" || column == "content_hash" || column == "current_revision" {
+					continue
+				}
+			}
+			if !equalJSON(old, actual[column]) {
+				t.Fatalf("native scalar %s patch changed unpatched %s.%s", field, key, column)
+			}
+		}
+	}
+}
+
+func assertNativeDeletePhysical(t *testing.T, before, after nativePhysicalImage, removed []string) {
+	t.Helper()
+	deleted := map[string]bool{}
+	for _, id := range removed {
+		deleted[id] = true
+	}
+	for _, table := range nativePhysicalTables {
+		// Retain these complete raw histories/cursors; their deletion-specific
+		// version/address transition is not asserted to equal scalar history.
+		switch table {
+		case "issue_versions", "bd_events_journal", "bd_events_seq", "epoch_minted_addresses":
+			continue
+		}
+		want := []any{}
+		for _, raw := range before[table] {
+			row, ok := raw.(map[string]any)
+			if !ok {
+				t.Fatal("physical SQL row is not an object")
+			}
+			owned := false
+			switch table {
+			case "issues":
+				owned = deleted[fmt.Sprint(row["id"])]
+			case "child_counters":
+				owned = deleted[fmt.Sprint(row["parent_id"])]
+			case "dependencies":
+				for _, field := range []string{"issue_id", "depends_on_issue_id", "depends_on_wisp_id", "depends_on_external"} {
+					owned = owned || deleted[fmt.Sprint(row[field])]
+				}
+			case "labels", "comments", "events", "issue_snapshots", "compaction_snapshots", "provenance_events", "leases":
+				owned = deleted[fmt.Sprint(row["issue_id"])]
+			}
+			if !owned {
+				want = append(want, raw)
+			}
+		}
+		if !equalJSON(want, after[table]) {
+			t.Fatalf("native delete did not conserve survivors and remove only owned rows in %s", table)
+		}
+	}
+}
+
+func TestPublicProjectionDefaultNativeProtocol(t *testing.T) {
+	// The real CLI overwrites a stored schema_version key. SQL retains it.
+	list := []byte(`{"schema_version":1,"custom.public_recording":"paired-public"}`)
+	rows := []byte(`[{"key":"schema_version","value":"stored-value"},{"key":"custom.public_recording","value":"paired-public"},{"key":"kv.memory","value":"separate-plane"}]`)
+	got, err := readNativeConfigSettings(list, rows)
+	if err != nil || len(got) != 2 || got[0].Value != "stored-value" {
+		t.Fatalf("schema collision lost source setting: %+v %v", got, err)
+	}
+	for _, bad := range []string{`{"schema_version":1,"schema_version":1}`, `{"schema_version":1} {}`, `{"schema_version":"1"}`, `{"schema_version":1,"custom.public_recording":"substituted"}`} {
+		if _, err := readNativeConfigSettings([]byte(bad), rows); err == nil {
+			t.Fatalf("ambiguous or substituted native config accepted: %s", bad)
+		}
+	}
+	for _, bad := range []string{`null`, `[{"key":"x","key":"y","value":"v"}]`, `[{"key":"x","value":null}]`, `[{"key":"x","value":"v"},{"key":"x","value":"v"}]`} {
+		if _, err := readNativeKVRows([]byte(bad), "metadata"); err == nil {
+			t.Fatalf("ambiguous native SQL accepted: %s", bad)
+		}
+	}
 }
 
 func validateInventoryAndArchive(t *testing.T, run *publicRun, commandReference func(string, string, string, []string, []byte) []byte, label, store, root string, fixture recordingFixture) {
