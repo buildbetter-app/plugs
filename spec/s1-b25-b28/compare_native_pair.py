@@ -66,13 +66,27 @@ def unique_object(pairs):
 
 
 def decode(data):
-    return json.loads(data, object_pairs_hook=unique_object)
+    def invalid_constant(value):
+        raise ValueError("nonfinite JSON number: " + value)
+    return json.loads(data, object_pairs_hook=unique_object, parse_constant=invalid_constant)
+
+
+def equal(first, second):
+    # Python's ordinary equality aliases true, 1 and 1.0. Preserve JSON types
+    # recursively, including metadata and user memories, before comparing values.
+    if type(first) is not type(second):
+        return False
+    if isinstance(first, dict):
+        return first.keys() == second.keys() and all(equal(value, second[key]) for key, value in first.items())
+    if isinstance(first, list):
+        return len(first) == len(second) and all(equal(a, b) for a, b in zip(first, second))
+    return first == second
 
 
 def generated_identity(comment):
     require(set(comment) == {"schema_version", "id", "issue_id", "author", "text", "created_at"},
             "unexpected original command comment schema")
-    require(comment["schema_version"] == 1, "comment command schema version")
+    require(equal(comment["schema_version"], 1), "comment command schema version")
     require((comment["issue_id"], comment["author"], comment["text"]) == CONTENT,
             "comment owner/author/text differs from frozen workload")
     stamp = datetime.datetime.strptime(comment["created_at"], "%Y-%m-%dT%H:%M:%SZ")
@@ -95,46 +109,46 @@ def verify_unit(unit):
     expected_comment = projected_comment(comment)
     raw_comment = {key: value for key, value in comment.items() if key != "schema_version"}
     require(set(unit["raw_comments"]) == set(RAW_STAGES), "raw JSONL stage census")
-    require(all(rows == [raw_comment] for rows in unit["raw_comments"].values()),
+    require(all(equal(rows, [raw_comment]) for rows in unit["raw_comments"].values()),
             "original/reverse JSONL full comment identity/time/content")
     require(set(unit["stages"]) == set(STAGES), "missing or extra projection stage")
     for stage, projection in unit["stages"].items():
         require(set(projection) == {"issues", "edges", "comments", "memories"}, "projection shape: " + stage)
-        require(projection["comments"] == [expected_comment], "comment identity/content/multiplicity: " + stage)
+        require(equal(projection["comments"], [expected_comment]), "comment identity/content/multiplicity: " + stage)
     for store in STORES:
         stages = unit["stages"]
         ordinary = stages[store + "-jsonl-projection"]
-        require(ordinary == stages[store + "-archive-projection"], "JSONL/archive mismatch")
+        require(equal(ordinary, stages[store + "-archive-projection"]), "JSONL/archive mismatch")
         expected = stages[store + "-reverse-expected-projection"]
         config = unit["config"][store]
         require(set(config) == {"config", "user_memory", "policy", "reverse_memories", "config_references"},
                 "config expectation shape")
-        require(config["config"] == unit["observations"][store], "config must equal original independent readbacks")
+        require(equal(config["config"], unit["observations"][store]), "config must equal original independent readbacks")
         require(config["config_references"] == sorted(config["config"]), "config reference census")
         require(all(value == "public" for value in config["policy"].values()), "config policy")
         memories = dict(ordinary["memories"])
         for key, record in config["config"].items():
             table, name = key.split("/", 1)
             value = record["body"]["value"]
-            require(record == {
+            require(equal(record, {
                 "kind": "config", "id": key, "project": "",
                 "body": {"key": key, "value": value, "classification": "public"},
                 "source": {"table": table, "fields": {"key": name, "value": value}},
-            }, "config full source/body identity")
+            }), "config full source/body identity")
             memory_key = "plug.config/" + name
             require(memory_key not in memories, "config/user memory collision")
             memories[memory_key] = value
-        require(memories == config["reverse_memories"], "complete reverse memory expectation")
+        require(equal(memories, config["reverse_memories"]), "complete reverse memory expectation")
         for stage in STAGES:
             if stage.startswith(store + "-plug-"):
                 actual = stages[stage]
-                require(all(actual[key] == expected[key] for key in ("issues", "edges", "comments")),
+                require(all(equal(actual[key], expected[key]) for key in ("issues", "edges", "comments")),
                         "within-run reverse/reopen preservation: " + stage)
-                require(actual["memories"] == memories, "within-run reverse memory preservation")
-        require(unit["native_comments"][store] == [{
+                require(equal(actual["memories"], memories), "within-run reverse memory preservation")
+        require(equal(unit["native_comments"][store], [{
             "kind": "comment", "id": comment["id"], "project": "pub", "body": raw_comment,
             "source": {"table": "comments", "fields": raw_comment},
-        }], "native dump comment source/body identity")
+        }]), "native dump comment source/body identity")
     require(set(unit["subscriber_comments"]) == {s + "-" + e for s in STORES for e in ENGINES},
             "subscriber store/engine census")
     for key, images in unit["subscriber_comments"].items():
@@ -147,7 +161,7 @@ def verify_unit(unit):
         require(value["body"] == comment["text"] and value["principal"] == {"kind": "user", "id": comment["author"]}
                 and value["sourceAuthor"] == comment["author"] and value["sourceTime"] == comment["created_at"]
                 and value["origin"] == "import" and bool(value["time"]), "subscriber original content/provenance")
-        require(all(image == first for image in images), "within-run subscriber comment substitution")
+        require(all(equal(image, first) for image in images), "within-run subscriber comment substitution")
     return identity
 
 
@@ -157,13 +171,13 @@ def compare_pair(units):
     differences = []
     for store in STORES:
         first, second = [unit["config"][store] for unit in units]
-        require(all(first[key] == second[key] for key in ("policy", "config_references", "user_memory")),
+        require(all(equal(first[key], second[key]) for key in ("policy", "config_references", "user_memory")),
                 "pair config policy/census/user memory mismatch")
         require(set(first["config"]) == set(second["config"]), "pair config key mismatch")
         allowed_memories = set()
         for key in sorted(first["config"]):
             a, b = first["config"][key], second["config"][key]
-            if a != b:
+            if not equal(a, b):
                 require(key in GENERATED_CONFIG, "unexplained pair config difference: " + key)
                 values = [a["body"]["value"], b["body"]["value"]]
                 require(all(isinstance(value, str) and value for value in values), "generated config value type")
@@ -174,12 +188,12 @@ def compare_pair(units):
             if not stage.startswith(store + "-"):
                 continue
             a, b = [unit["stages"][stage] for unit in units]
-            require(a["issues"] == b["issues"] and a["edges"] == b["edges"], "pair issue/edge difference: " + stage)
+            require(equal(a["issues"], b["issues"]) and equal(a["edges"], b["edges"]), "pair issue/edge difference: " + stage)
             require(set(a["memories"]) == set(b["memories"]), "pair memory census: " + stage)
             for key in a["memories"]:
-                if a["memories"][key] != b["memories"][key]:
+                if not equal(a["memories"][key], b["memories"][key]):
                     require("-plug-" in stage and key in allowed_memories, "unexplained pair memory difference: " + key)
-    if identities[0]["original"] != identities[1]["original"]:
+    if not equal(identities[0]["original"], identities[1]["original"]):
         differences.append({"field": "comment.id/created_at", "values": [row["original"] for row in identities],
                             "cause": "exact own live-time inputs and frozen305 derived identity", "multiplicity": 1})
     return {"disposition": "PASS_BOUNDED_GENERATED_IDENTITY_CORRESPONDENCE", "comment_correspondence": identities,

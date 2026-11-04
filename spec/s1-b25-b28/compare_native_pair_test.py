@@ -174,6 +174,22 @@ class PairComparisonTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "immutable run identity"):
             pair.load_unit({"source": "wrong"}, 0)
 
+    def test_typed_json_values_and_nonfinite_numbers_do_not_alias(self):
+        for first, second in ((True, 1), (False, 0), (1, 1.0), (None, ""), ([], {})):
+            with self.subTest(first=first, second=second):
+                self.assertFalse(pair.equal({"nested": [first]}, {"nested": [second]}))
+        for value in (1, 1.0, True, None):
+            self.setUp()
+            for stage in self.units[1]["stages"].values():
+                stage["issues"]["pub-root"]["metadata"]["user"] = value
+            if type(value) is bool:
+                pair.compare_pair(self.units)
+            else:
+                self.refuses()
+        for literal in ("NaN", "Infinity", "-Infinity"):
+            with self.assertRaisesRegex(ValueError, "nonfinite JSON number"):
+                pair.decode(literal)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

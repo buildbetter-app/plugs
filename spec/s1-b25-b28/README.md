@@ -107,6 +107,9 @@ only permitted cross-run config value differences are the explicitly listed
 fresh `_project_id`, `clone_id`, `last_import_time` and `repo_id` metadata;
 every actual difference and its two original values is reported. This is no
 general timestamp exemption or reserved-prefix discard.
+Comparisons preserve JSON types recursively, so a boolean, integer and decimal
+cannot substitute for one another. Duplicate keys and nonfinite JSON numbers
+refuse before comparison.
 
 `native_pair_comparison_test` checks generated-ID golden vectors and refusals
 for wrong IDs/times, changed owner/author/text, missing/extra/duplicate or
