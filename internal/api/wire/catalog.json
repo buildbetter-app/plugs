@@ -5736,7 +5736,7 @@
     {
       "name": "view.run",
       "summary": "Run a saved or inline budgeted view.",
-      "description": "With countOnly=true, return the exact ordinary authorized predicate total, including zero, as {items:[],asOf,count}, plus existing projection metadata. No page, groups, elisions or nextCursor is returned; cursor/groupBy combinations refuse invalid_params. Valid fields/sort/budget cannot change or truncate membership. Historical content uses current authorization; more than 20,000 authorized candidates refuses scope_too_large. Absent/false keeps existing behavior and saved definitions unchanged. Run a saved or inline budgeted view. A trusted host may enable count-only parent-aware epic progress using definition={filter:{query:\"parent=<bare bead ID>\"},fields:[],groupBy:[\"epic-progress\"]} and _meta.project equal to the authorized parent project. One pinned content/ontology snapshot and fenced current authority select direct children only; each child keeps its own project permissions. The complete result has items=[], asOf, total and status:<canonical status ID> groups with empty items. total.count is visible children; only total.elided may report hidden children, as count plus reason=\"authorization\" and continueWith=view.run with the same request minus cursor/asOf. That is fresh reauthorization/refresh, never hidden-row pagination. There is no nextCursor; a supplied cursor refuses cursor_invalid. Hidden identities/statuses are absent. Disabled capability refuses invalid_params with details.capability=\"epic-progress\", details.available=false. Epic progress adds no separate RPC, filter, cursor or result member.",
+      "description": "With countOnly=true, return the exact ordinary authorized predicate total, including zero, as {items:[],asOf,count}, plus existing projection metadata. No page, groups, elisions or nextCursor is returned; cursor/groupBy combinations refuse invalid_params. Valid fields/sort/budget cannot change or truncate membership. Historical content uses current authorization; more than 20,000 authorized candidates refuses scope_too_large. Absent/false keeps existing behavior and saved definitions unchanged. Run a saved or inline budgeted view. A trusted host may enable count-only parent-aware epic progress using definition={filter:{query:\"parent=<bare bead ID>\"},fields:[],groupBy:[\"epic-progress\"]} and _meta.project equal to the authorized parent project. One pinned content/ontology snapshot and fenced current authority select direct children only; each child keeps its own project permissions. The complete result has items=[], asOf, total and status:<canonical status ID> groups with empty items. total.count is visible children; only total.elided may report hidden children, as count plus reason=\"authorization\" and continueWith=view.run with the same request minus cursor/asOf. That is fresh reauthorization/refresh, never hidden-row pagination. There is no nextCursor; a supplied cursor refuses cursor_invalid. Hidden identities/statuses are absent. Disabled capability refuses invalid_params with details.capability=\"epic-progress\", details.available=false. Epic progress adds no separate RPC, filter, cursor or result member. Read-only age/status selection for view.run. days is a positive UTC day count; the latest persisted version time must be strictly before one cutoff bound to the signed cursor for all pages. Omitted status selects the current ontology Unstarted/Started categories; an explicit exact status replaces that default and intersects with ordinary query predicates. No saved definition, ready, claimNext, watch or explain semantics change.",
       "tags": [
         {
           "name": "view"
@@ -5775,6 +5775,27 @@
             "default": false
           },
           "description": "Optional execution flag, default false; saved definitions are unchanged. True returns the complete authorized ordinary predicate count with items=[] and asOf, without groups, elisions or nextCursor. Any supplied cursor or nonempty groupBy refuses invalid_params. Valid fields, sort and budget remain validated but do not change membership or truncate the count. Current permissions apply to historical asOf content; the ordinary 20,000 cap is exact-or-refused."
+        },
+        {
+          "name": "stale",
+          "schema": {
+            "type": "object",
+            "required": [
+              "days"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "days": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 106751
+              },
+              "status": {
+                "type": "string"
+              }
+            }
+          },
+          "description": "Read-only age/status selection for view.run. days is a positive UTC day count; the latest persisted version time must be strictly before one cutoff bound to the signed cursor for all pages. Omitted status selects the current ontology Unstarted/Started categories; an explicit exact status replaces that default and intersects with ordinary query predicates. No saved definition, ready, claimNext, watch or explain semantics change."
         },
         {
           "name": "_meta",
@@ -13583,7 +13604,7 @@
     "methodCount": 83,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
     "nameSha256": "0ce6a0ee3927753ec8622351c1337c1de3922a1662eae667196e447fd9c170ef",
-    "descriptorSha256": "28e45d2e26ab9cf8d0b5240b40638b24a3fb3ff46f393bd70574fa9b77fa418c",
+    "descriptorSha256": "7a56f897baeea7e89bf0d1328e936ec16bb51b3e8bc57e16d855e6cab7d5a75d",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -17397,6 +17418,27 @@
             "schema": {
               "type": "boolean",
               "default": false
+            }
+          },
+          {
+            "name": "stale",
+            "required": false,
+            "schema": {
+              "type": "object",
+              "required": [
+                "days"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "days": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 106751
+                },
+                "status": {
+                  "type": "string"
+                }
+              }
             }
           },
           {
