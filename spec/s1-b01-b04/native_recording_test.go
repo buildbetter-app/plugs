@@ -173,6 +173,9 @@ func recordNativeVector(t *testing.T, binary, output string, inputs nativeInputs
 	}{
 		{"resumed", []string{"update", vector.SourceIDs["parent"], "--status", "open", "--defer", "", "--json"}},
 		{"blocked-parent", []string{"dep", "add", vector.SourceIDs["parent"], vector.SourceIDs["free"], "--type", "blocks", "--json"}},
+		{"detached-from-blocked", []string{"update", vector.SourceIDs["child"], "--parent", "", "--json"}},
+		{"reparented-to-open", []string{"update", vector.SourceIDs["child"], "--parent", vector.SourceIDs["free"], "--json"}},
+		{"reattached-to-blocked", []string{"update", vector.SourceIDs["child"], "--parent", vector.SourceIDs["parent"], "--json"}},
 		{"blocker-closed", []string{"close", vector.SourceIDs["free"], "--json"}},
 		{"blocker-reopened", []string{"reopen", vector.SourceIDs["free"], "--json"}},
 		{"restored", []string{"dep", "remove", vector.SourceIDs["parent"], vector.SourceIDs["free"], "--json"}},

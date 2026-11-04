@@ -43,8 +43,8 @@ func TestNativeFutureIdentityInputs(t *testing.T) {
 		t.Fatal("both native deferral modes are mandatory")
 	}
 	if inputs.ExternalHierarchyTarget != "external:b01-other:unresolved" ||
-		inputs.ExternalHierarchyRefusal != "external capability dependencies cannot use parent-child edges" || len(inputs.HierarchyPhases) != 6 {
-		t.Fatal("hierarchy continuation requires its exact external identity, refusal and six native phases")
+		inputs.ExternalHierarchyRefusal != "external capability dependencies cannot use parent-child edges" || len(inputs.HierarchyPhases) != 9 {
+		t.Fatal("hierarchy continuation requires its exact external identity, refusal and nine native phases")
 	}
 	for _, refused := range []string{"b01-timed-parent", "b01-indefinite-child", "b01-", "other-parent", "b01-a.b"} {
 		if nativeSafeSuffix(refused) {

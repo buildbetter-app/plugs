@@ -69,6 +69,11 @@ func recordNativePhase(t *testing.T, command *nativeCommand, vector nativeVector
 		wantParent := ""
 		if role == "child" {
 			wantParent = vector.SourceIDs["parent"]
+			if phase == "detached-from-blocked" {
+				wantParent = ""
+			} else if phase == "reparented-to-open" {
+				wantParent = vector.SourceIDs["free"]
+			}
 		} else if role == "grandchild" {
 			wantParent = vector.SourceIDs["child"]
 		}

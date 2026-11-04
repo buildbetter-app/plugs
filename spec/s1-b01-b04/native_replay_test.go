@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
@@ -74,6 +75,13 @@ func (r *nativeReplay) write(label, method string, params map[string]any) model.
 		r.f.t.Fatal(err)
 	}
 	wantResults := 1
+	if method == "tx.apply" {
+		cs, ok := params["changeSet"].(model.ChangeSet)
+		if !ok || len(cs.Ops) == 0 {
+			r.f.t.Fatal("native replay transaction requires its exact ordered operation set")
+		}
+		wantResults = len(cs.Ops)
+	}
 	if method == "bead.defer" {
 		// The nonempty reason lowers to a comment after the lifecycle patch;
 		// Commit.Results contains one result for each of those operations.
@@ -138,6 +146,18 @@ func (r *nativeReplay) snapshot() []byte {
 	}
 	defer reader.Close()
 	versions := map[string][]driver.Version{}
+	derived := map[driver.DerivedTable][]driver.DerivedRow{}
+	for _, table := range []driver.DerivedTable{driver.DerivedReadyState, driver.DerivedAncestorClosure, driver.DerivedCutClosure, driver.DerivedAttribute, driver.DerivedSortKey, driver.DerivedReferenceIndex, driver.DerivedGrant, driver.DerivedOntology, driver.DerivedPlugins} {
+		rows, err := reader.DerivedRows(r.f.ctx, table, "")
+		if err != nil {
+			r.f.t.Fatalf("complete derived state %s: %v", table, err)
+		}
+		derived[table] = rows
+	}
+	facts, err := reader.Observe(r.f.ctx, []driver.LockKey{pipeline.GraphValidityLockKey()})
+	if err != nil || len(facts) != 1 {
+		r.f.t.Fatalf("graph validity fact observation: %v", err)
+	}
 	for role, ref := range r.refs {
 		page, err := reader.Versions(r.f.ctx, ref, driver.PageReq{Limit: 1000})
 		if err != nil || page.NextCursor != nil {
@@ -157,6 +177,7 @@ func (r *nativeReplay) snapshot() []byte {
 	}
 	data, err := json.Marshal(map[string]any{
 		"meta": meta, "sourceAndChangesetSHA256": image, "versions": versions, "writeReceipts": receipts,
+		"allNineDerivedTables": derived, "graphValidityFact": facts,
 	})
 	if err != nil {
 		r.f.t.Fatal(err)

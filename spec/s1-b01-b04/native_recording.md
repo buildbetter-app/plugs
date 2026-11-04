@@ -166,7 +166,7 @@ closure; ordinary merges, static inventories and a bounded hierarchy result do
 not count as full B01 acceptance.
 Scope = this child executes the remaining explicit lifecycle reopen and direct
 blocker hierarchy slice, native external refusal, and separately labelled Plug
-typed external extension. Full-card clocks, categories, workflow/wisp planes,
+typed external extension. Full-card clocks, categories, workflow and ephemeral planes,
 optional-query errors, canonical/legacy refusal and reparent variants remain
 explicit obligations for subsequent executable work.
 
@@ -208,3 +208,33 @@ single-row states require exact terminal enumeration. All controls are
 AUTHORED_NOT_RUN until their own named runtime result is reached. Native Go and
 SQL clocks remain uncontrolled, broader native B01 remains unqualified,
 NativeAdmission=None, FullS1=0/28 and protected B05 stays paused.
+
+
+The next causal descendant of exact006 adds three actual native writes while
+the parent remains blocked: detach the child subtree, attach it to the open
+free node, and attach it back to the blocked parent. The four shows, ready and
+explain after each write must respectively retain child/grandchild/free,
+child/grandchild/free, and free. All prior native observations
+(including before/after) and external refusal controls remain. There are now
+nine continuation phases, 87 commands per physical store and 348 commands
+across both vectors and both fresh twins. The actual accepted producer and
+trusted preparation/control pins remain unchanged.
+
+Ten public replay phases include unlink, new local parent link, and an atomic
+unlink+link reattachment; every phase advances the actual store head exactly
+once and appends one version for the changed record at that revision. No
+unrelated source byte or version may change. Exact ancestor-closure rows for
+all four identities are reconstructed from captured native Parent topology,
+including self/depth rows, after each transition and physical reopen. Public
+reads and store reopen now conserve all nine derived-table byte sets and the
+graph-validity fact as well as source/head/history/versions/known receipts.
+Typed external edges never contribute an ancestor row. These authored controls
+need their own changed-source native/focused/whole proof; the separate006
+native PASS and ordinary lexicon RED remain literal and immutable.
+
+This descendant also fixes the precise documentation term rejected by the006
+focused lexicon gate. This is a source correction and additional executable
+hierarchy coverage; it does not retry the unchanged006 product failure or
+supply controlled native Go/SQL clock, full category/plane/refusal corpus,
+full B01, native admission, or full S1 proof. All new controls remain
+AUTHORED_NOT_RUN until reached by their own named actual execution.

@@ -25,13 +25,19 @@ func (r *nativeReplay) replayHierarchyContinuations(capture nativeCapture) {
 	}{
 		{"resumed", "bead.reopen", "parent", map[string]any{"id": r.refs["parent"]}, false},
 		{"blocked-parent", "bead.link", "parent", map[string]any{"from": r.refs["parent"], "to": r.refs["free"], "kind": "blocks"}, false},
+		{"detached-from-blocked", "bead.unlink", "child", map[string]any{"from": r.refs["child"], "to": r.refs["parent"], "kind": "parent-child"}, false},
+		{"reparented-to-open", "bead.link", "child", map[string]any{"from": r.refs["child"], "to": r.refs["free"], "kind": "parent-child"}, false},
+		{"reattached-to-blocked", "tx.apply", "child", map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{
+			{Kind: model.OpUnlink, Link: &model.LinkOp{Kind: model.OpUnlink, From: r.refs["child"], To: r.refs["free"], LinkKind: "parent-child"}},
+			{Kind: model.OpLink, Link: &model.LinkOp{Kind: model.OpLink, From: r.refs["child"], To: r.refs["parent"], LinkKind: "parent-child"}},
+		}}}, false},
 		{"blocker-closed", "bead.close", "free", map[string]any{"id": r.refs["free"]}, false},
 		{"blocker-reopened", "bead.reopen", "free", map[string]any{"id": r.refs["free"]}, false},
 		{"restored", "bead.unlink", "parent", map[string]any{"from": r.refs["parent"], "to": r.refs["free"], "kind": "blocks"}, false},
 		{"external-added", "bead.link", "free", map[string]any{"from": r.refs["free"], "to": model.Ref{ID: inputs.ExternalHierarchyTarget}, "targetKind": "external", "kind": "parent-child"}, true},
 		{"external-removed", "bead.unlink", "free", map[string]any{"from": r.refs["free"], "to": model.Ref{ID: inputs.ExternalHierarchyTarget}, "targetKind": "external", "kind": "parent-child"}, true},
 	}
-	if len(capture.Transitions) != 6 || len(inputs.HierarchyPhases) != 6 {
+	if len(capture.Transitions) != 9 || len(inputs.HierarchyPhases) != 9 {
 		r.f.t.Fatal("actual native continuation or finite expected phase set is incomplete")
 	}
 	parentTest := r.f.t
@@ -57,7 +63,9 @@ func (r *nativeReplay) replayHierarchyContinuations(capture nativeCapture) {
 				t.Fatal("missing actual native phase or independent expected membership")
 			}
 			before := r.sourceImages()
-			r.write("hierarchy-"+step.phase, step.method, step.params)
+			beforeState := r.snapshot()
+			commit := r.write("hierarchy-"+step.phase, step.method, step.params)
+			r.assertHierarchyWrite(step.phase, step.changedRole, beforeState, commit)
 			after := r.sourceImages()
 			if before[step.changedRole] == after[step.changedRole] {
 				t.Fatalf("%s did not publish its actual changed source image/revision", step.phase)
@@ -93,6 +101,49 @@ func (r *nativeReplay) replayHierarchyContinuations(capture nativeCapture) {
 			parentTest.Fatalf("actual hierarchy replay %s failed; originals retained", step.phase)
 		}
 	}
+}
+
+// Assert the exact published write boundary, independently of the changed body
+// hash. One atomic public operation sequence advances H once and appends one
+// version for the changed record, even when tx.apply contains unlink plus link.
+func (r *nativeReplay) assertHierarchyWrite(label, changedRole string, before []byte, commit model.Commit) {
+	r.f.t.Helper()
+	type state struct {
+		Meta     driver.Meta
+		Versions map[string][]driver.Version
+	}
+	var old, current state
+	if err := json.Unmarshal(before, &old); err != nil {
+		r.f.t.Fatal(err)
+	}
+	after := r.snapshot()
+	if err := json.Unmarshal(after, &current); err != nil {
+		r.f.t.Fatal(err)
+	}
+	if commit.Revision != old.Meta.Head+1 || current.Meta.Head != commit.Revision {
+		r.f.t.Fatalf("%s must publish exact H+1: before=%d commit=%d after=%d", label, old.Meta.Head, commit.Revision, current.Meta.Head)
+	}
+	wantMeta := old.Meta
+	wantMeta.Head = current.Meta.Head
+	if !reflect.DeepEqual(wantMeta, current.Meta) {
+		r.f.t.Fatalf("%s changed store identity/incarnation/history floor", label)
+	}
+	for _, role := range nativeRoles {
+		prior, next := old.Versions[role], current.Versions[role]
+		if role != changedRole {
+			if !reflect.DeepEqual(prior, next) {
+				r.f.t.Fatalf("%s added/changed an unrelated %s version", label, role)
+			}
+			continue
+		}
+		if len(next) != len(prior)+1 || !reflect.DeepEqual(prior, next[:len(prior)]) || next[len(prior)].Revision != commit.Revision {
+			r.f.t.Fatalf("%s did not append exactly one changed-record version at H+1", label)
+		}
+	}
+	nativeJSON(r.f.t, filepath.Join(r.output, label+"-exact-write-boundary.json"), map[string]any{
+		"beforeHead": old.Meta.Head, "afterHead": current.Meta.Head, "commitRevision": commit.Revision,
+		"changedRole": changedRole, "beforeVersions": old.Versions, "afterVersions": current.Versions,
+	})
 }
 
 func (r *nativeReplay) observeHierarchy(capture nativeCapture, label string, observed nativePhase, want []string, externalTarget string, extension bool) {
@@ -159,6 +210,7 @@ func (r *nativeReplay) observeHierarchy(capture nativeCapture, label string, obs
 		}
 		proof[role] = map[string]any{"canonicalParent": doc.Parent, "legacyAndTypedLinks": doc.Links, "actualNativeNode": node}
 	}
+	r.observeHierarchyClosure(label, observed, capture.Vector)
 	full := r.call(label+"-full", "bead.ready", map[string]any{"limit": 1000}, false)
 	first := r.call(label+"-one", "bead.ready", map[string]any{"limit": 1}, false)
 	if !reflect.DeepEqual(r.ids(full), r.wantIDs(want)) || !reflect.DeepEqual(r.drain(label, first), r.wantIDs(want)) {
@@ -200,6 +252,59 @@ func (r *nativeReplay) observeHierarchy(capture nativeCapture, label string, obs
 		r.f.t.Fatalf("%s lost its active authority", label)
 	default:
 	}
+}
+
+func (r *nativeReplay) observeHierarchyClosure(label string, observed nativePhase, vector nativeVector) {
+	r.f.t.Helper()
+	want := map[string]driver.DerivedRow{}
+	rolesByID := map[string]string{}
+	for role, id := range vector.SourceIDs {
+		rolesByID[id] = role
+	}
+	for _, role := range nativeRoles {
+		ancestor, depth := role, uint64(0)
+		seen := map[string]bool{}
+		for {
+			if seen[ancestor] {
+				r.f.t.Fatal("actual captured hierarchy contains a cycle")
+			}
+			seen[ancestor] = true
+			row, err := pipeline.AncestorRow(r.refs[role].ID, r.refs[ancestor].ID, depth)
+			if err != nil {
+				r.f.t.Fatal(err)
+			}
+			want[row.Key] = row
+			parent := observed.Nodes[ancestor].Parent
+			if parent == "" {
+				break
+			}
+			next, ok := rolesByID[parent]
+			if !ok {
+				r.f.t.Fatal("actual captured local parent lacks its source identity")
+			}
+			ancestor, depth = next, depth+1
+		}
+	}
+	reader, err := r.f.store.Read(r.f.ctx, driver.View{Incarnation: r.f.metaSnapshot().Incarnation})
+	if err != nil {
+		r.f.t.Fatal(err)
+	}
+	defer reader.Close()
+	rows, err := reader.DerivedRows(r.f.ctx, driver.DerivedAncestorClosure, "")
+	if err != nil || len(rows) != len(want) {
+		r.f.t.Fatalf("%s closure cardinality=%d want=%d error=%v", label, len(rows), len(want), err)
+	}
+	for _, row := range rows {
+		expected, ok := want[row.Key]
+		if !ok || !bytes.Equal(row.Value, expected.Value) {
+			r.f.t.Fatalf("%s actual closure row differs from captured local hierarchy: %+v", label, row)
+		}
+		delete(want, row.Key)
+	}
+	if len(want) != 0 {
+		r.f.t.Fatal("actual closure omitted a captured ancestor")
+	}
+	nativeJSON(r.f.t, filepath.Join(r.output, label+"-exact-ancestor-closure.json"), rows)
 }
 
 // Decode the actual persisted bytes directly. The production decoder may
