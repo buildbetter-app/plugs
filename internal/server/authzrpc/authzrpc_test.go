@@ -33,6 +33,54 @@ import (
 
 const beadID = "00000000-0000-4000-8000-000000000001"
 
+type factsConstructorStore struct {
+	driver.Store
+	metaReads int
+}
+
+func (s *factsConstructorStore) Meta(ctx context.Context) (driver.Meta, error) {
+	s.metaReads++
+	return s.Store.Meta(ctx)
+}
+
+type nilFactsSource struct{}
+
+func (*nilFactsSource) Load(context.Context, authzrpc.Snapshot) (authzfixed.Facts, error) {
+	panic("nil facts source must be refused before loading")
+}
+
+func TestNewRejectsNilFactsBeforeStorage(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	t.Cleanup(func() { _ = store.Close() })
+	lease, err := store.Lease(ctx, "nil-facts-constructor", driver.LeaseTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lease.Release(ctx) })
+	keys := authnapikey.New(authnapikey.Config{AuthorizationInstalled: func() bool { return true }})
+	for _, tc := range []struct {
+		name   string
+		source authzrpc.FactsSource
+	}{
+		{"absent", nil},
+		{"static", (*authzrpc.StaticFacts)(nil)},
+		{"mutable", (*authzrpc.MutableFacts)(nil)},
+		{"custom", (*nilFactsSource)(nil)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			observed := &factsConstructorStore{Store: store}
+			app, err := authzrpc.New(ctx, authzrpc.Config{Store: observed, Lease: lease, Provider: keys, Facts: tc.source})
+			if app != nil || err == nil || err.Error() != "authzrpc: store, lease, provider and facts are required" {
+				t.Fatalf("nil facts source was not refused: app=%v err=%v", app, err)
+			}
+			if observed.metaReads != 0 {
+				t.Fatalf("invalid facts source accessed storage %d times", observed.metaReads)
+			}
+		})
+	}
+}
+
 type leaseLossSnapshotStore struct {
 	driver.Store
 	lost      atomic.Bool

@@ -135,7 +135,7 @@ func New(ctx context.Context, config Config) (*Composition, error) {
 // newWithClock keeps controlled time at construction, outside RPC and server
 // configuration. The test build exposes this seam for real-store assertions.
 func newWithClock(ctx context.Context, config Config, now func() time.Time) (*Composition, error) {
-	if nilValue(config.Store) || nilValue(config.Lease) || config.Provider == nil || config.Facts == nil || now == nil {
+	if nilValue(config.Store) || nilValue(config.Lease) || config.Provider == nil || nilValue(config.Facts) || now == nil {
 		return nil, fmt.Errorf("authzrpc: store, lease, provider and facts are required")
 	}
 	meta, err := config.Store.Meta(ctx)
