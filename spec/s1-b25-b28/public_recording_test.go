@@ -1134,6 +1134,7 @@ func recordNativeScalarOperations(t *testing.T, output, storeRoot, source, pinne
 	command("b25-update-notes", []string{"--json", "update", "pub-root", "--notes", "native notes retained", "--force"})
 	command("b25-update-child-title", []string{"--json", "update", publicChildID, "--title", "Public child title updated natively"})
 	childAfter := show("b25-child-after", publicChildID)
+	closedBefore := show("b25-closed-before", "pub-dependency")
 	command("b25-update-closed-title", []string{"--json", "update", "pub-dependency", "--title", "Closed dependency updated natively"})
 	closedAfter := show("b25-closed-after", "pub-dependency")
 	after := show("b25-scalar-after", "pub-root")
@@ -1142,8 +1143,9 @@ func recordNativeScalarOperations(t *testing.T, output, storeRoot, source, pinne
 		"assignee": "native-owner", "notes": "native notes retained", "priority": float64(3),
 	})
 	assertNativeScalarPreservation(t, childBefore, childAfter, map[string]any{"title": "Public child title updated natively"})
-	if closedAfter["status"] != "closed" || len(nativeComments(closedAfter)) == 0 {
-		t.Fatalf("closed-row native scalar update lost close/comment provenance: %s", canonical(closedAfter))
+	assertNativeScalarPreservation(t, closedBefore, closedAfter, map[string]any{"title": "Closed dependency updated natively"})
+	if closedAfter["status"] != "closed" || closedAfter["close_reason"] != "dependency complete" {
+		t.Fatalf("closed-row native scalar update lost close provenance: %s", canonical(closedAfter))
 	}
 	refusalBefore := show("b25-refusal-before", "pub-root")
 	expected("b25-refused-self-dependency", []string{"--json", "dep", "add", "pub-root", "pub-root"}, 1)
@@ -1162,7 +1164,7 @@ func recordNativeScalarOperations(t *testing.T, output, storeRoot, source, pinne
 	data, err := json.MarshalIndent(map[string]any{
 		"schema": "plug-s1-b25-native-operations/1", "source": source,
 		"server": server, "before": before, "after": after, "child_before": childBefore,
-		"child_after": childAfter, "closed_after": closedAfter, "refusal_before": refusalBefore,
+		"child_after": childAfter, "closed_before": closedBefore, "closed_after": closedAfter, "refusal_before": refusalBefore,
 		"refusal_after": refusalAfter, "counter_child": counterRow,
 		"full_comment_bodies": nativeComments(after),
 	}, "", "  ")
