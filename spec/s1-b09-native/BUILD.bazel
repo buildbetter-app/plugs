@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+# Explicit only. The accepted native bundle is supplied by the existing
+# trusted RunsOn preparation route; wildcard test runs must not execute it.
+go_test(
+    name = "record_native_test",
+    srcs = ["recorder_test.go"],
+    args = ["-test.v", "-b09-native-recording", "-test.run=^TestRecordNativeB09$$"],
+    deps = ["//internal/core/dumpformat"],
+    size = "large",
+    tags = ["local", "manual"],
+    timeout = "long",
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
