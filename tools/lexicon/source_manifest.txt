@@ -1098,6 +1098,8 @@ internal/storage/sqlite/boundaries_test.go
 internal/storage/sqlite/checkpoint_guard.go
 internal/storage/sqlite/clock.go
 internal/storage/sqlite/clock_test.go
+internal/storage/sqlite/commit_trace.go
+internal/storage/sqlite/commit_trace_test.go
 internal/storage/sqlite/derived_prefix_test.go
 internal/storage/sqlite/derived_reader.go
 internal/storage/sqlite/engine_test.go

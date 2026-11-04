@@ -347,42 +347,70 @@ type commitError struct{ error }
 func (e commitError) Unwrap() error { return e.error }
 
 func (s *Store) immediate(ctx context.Context, l *activeLease, fn func(*sql.Conn) error) error {
+	trace := commitTraceFromContext(ctx)
 	var lost <-chan struct{}
 	if l != nil {
 		lost = l.Lost()
 	}
+	started := traceStart(trace)
 	gate, err := s.fileLock(ctx, "publication", false, lost)
+	trace.record(CommitPhasePublicationLock, started, 0, err)
 	if err != nil {
 		return err
 	}
 	defer unlockFile(gate)
+	started = traceStart(trace)
 	c, err := s.db.Conn(ctx)
+	trace.record(CommitPhaseConnection, started, 0, err)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
 	// Cancellation may be reported after native BEGIN acquired the writer.
 	// Roll back before returning that connection to the pool on every path.
-	defer func() { _, _ = c.ExecContext(context.Background(), `ROLLBACK`) }()
-	if _, err = c.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+	committed := false
+	defer func() {
+		started := traceStart(trace)
+		_, rollbackErr := c.ExecContext(context.Background(), `ROLLBACK`)
+		if !committed {
+			trace.record(CommitPhaseRollback, started, 0, rollbackErr)
+		}
+	}()
+	started = traceStart(trace)
+	_, err = c.ExecContext(ctx, `BEGIN IMMEDIATE`)
+	trace.record(CommitPhaseBegin, started, 0, err)
+	if err != nil {
 		return err
 	}
 	if l != nil {
-		if err = s.fence(ctx, c, l); err != nil {
+		started = traceStart(trace)
+		err = s.fence(ctx, c, l)
+		trace.record(CommitPhaseFenceBefore, started, 0, err)
+		if err != nil {
 			return err
 		}
 	}
-	if err = fn(c); err != nil {
+	started = traceStart(trace)
+	err = fn(c)
+	trace.record(CommitPhaseBody, started, 0, err)
+	if err != nil {
 		return err
 	}
 	if l != nil {
-		if err = s.fence(ctx, c, l); err != nil {
+		started = traceStart(trace)
+		err = s.fence(ctx, c, l)
+		trace.record(CommitPhaseFenceAfter, started, 0, err)
+		if err != nil {
 			return err
 		}
 	}
-	if _, err = c.ExecContext(ctx, `COMMIT`); err != nil {
+	started = traceStart(trace)
+	_, err = c.ExecContext(ctx, `COMMIT`)
+	trace.record(CommitPhaseSQLiteCommit, started, 0, err)
+	if err != nil {
 		return commitError{err}
 	}
+	committed = true
 	return nil
 }
 
