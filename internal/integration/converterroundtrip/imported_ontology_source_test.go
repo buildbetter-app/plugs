@@ -85,9 +85,11 @@ func importedOntologyBytes(t *testing.T, custom string) []byte {
 					// Read the independent source census rather than a hardcoded
 					// count from this particular archived fixture.
 					count := 1
-					for _, original := range archive.Records("config") {
-						if original.Source.Table == "config" {
-							count++
+					for _, kind := range archive.Manifest().Kinds {
+						for _, original := range archive.Records(kind.Name) {
+							if original.Source.Table == "config" {
+								count++
+							}
 						}
 					}
 					row["rows"] = count
