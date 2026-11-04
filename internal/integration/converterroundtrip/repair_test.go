@@ -823,7 +823,8 @@ func TestB26BuiltinDerivedGoldenRetainsLegacyAndAddsOnlyBlocked(t *testing.T) {
 		}
 		if id == idB {
 			ready = `{"blocked":true,"ready":false}`
-			links = fmt.Sprintf(`[{"to":{"id":%q,"branch":"0"},"kind":"blocks"}]`, idA)
+			// Natural is a JSON integer even though its Go backing type is string.
+			links = fmt.Sprintf(`[{"to":{"id":%q,"branch":0},"kind":"blocks"}]`, idA)
 		}
 		rows = append(rows,
 			row(driver.DerivedAncestorClosure, self+"."+self, `0`),
