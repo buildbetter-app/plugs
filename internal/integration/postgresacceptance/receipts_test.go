@@ -113,8 +113,10 @@ func TestB22CASNoopAndReplayRetainOriginalRevision(t *testing.T) {
 	before = graph(t, h.store)
 	fieldMiss := h.call(t, "bead.update", fieldCAS, key("field-stale"))
 	refused(t, fieldMiss, "precondition_failed")
-	if fieldMiss.Error.Data.Details["reason"] != "hash" || len(fieldMiss.Error.Data.Details) != 1 {
-		t.Fatalf("B22 PostgreSQL field CAS lost its typed hash reason: %+v", fieldMiss.Error.Data.Details)
+	actualRef, refErr := json.Marshal(fieldMiss.Error.Data.Details["ref"])
+	expectedRef, _ := json.Marshal(ref("pl-a"))
+	if fieldMiss.Error.Data.Details["reason"] != "hash" || len(fieldMiss.Error.Data.Details) != 2 || refErr != nil || !bytes.Equal(actualRef, expectedRef) {
+		t.Fatalf("B22 PostgreSQL field CAS must identify exactly its hash reason and resolved target: %+v", fieldMiss.Error.Data.Details)
 	}
 	unchanged(t, before, graph(t, h.store))
 	committed(t, h.call(t, "bead.update", map[string]any{"id": ref("pl-b"), "fields": map[string]any{"title": "other 2"}}, key("other-2")), 5)
@@ -337,8 +339,10 @@ func TestB17MetadataCASRealPostgresReceiptsAndReopen(t *testing.T) {
 		params := map[string]any{"id": target, "fields": map[string]any{"title": "must not publish"}, "expect": []model.Precondition{model.PreconditionByHash(target, miss.field, metadataSHA(miss.canonical))}}
 		r := h.call(t, "bead.update", params, requestKey)
 		refused(t, r, "precondition_failed")
-		if r.Error.Data.Details["reason"] != "hash" || len(r.Error.Data.Details) != 1 {
-			t.Fatalf("PostgreSQL metadata CAS lost its typed hash reason: %+v", r.Error.Data.Details)
+		actualRef, refErr := json.Marshal(r.Error.Data.Details["ref"])
+		expectedRef, _ := json.Marshal(target)
+		if r.Error.Data.Details["reason"] != "hash" || len(r.Error.Data.Details) != 2 || refErr != nil || !bytes.Equal(actualRef, expectedRef) {
+			t.Fatalf("PostgreSQL metadata CAS must identify exactly its hash reason and resolved target: %+v", r.Error.Data.Details)
 		}
 		if r.Error.Data.Retryable || receipt(t, other, "bead.update", requestKey, agent) != nil || post.calls.Load() != posts || !reflect.DeepEqual(sqlBefore, metadataSQLState(t, db)) {
 			t.Fatal("PostgreSQL metadata refusal mutated SQL/receipt/post state or was retryable")

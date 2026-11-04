@@ -29,9 +29,11 @@ import (
 type b22Post struct {
 	mu      sync.Mutex
 	changes []port.CommittedChange
+	calls   atomic.Int32
 }
 
 func (p *b22Post) After(ctx context.Context, change port.CommittedChange, reader port.SnapshotReader) error {
+	p.calls.Add(1)
 	view := reader.Snapshot()
 	if view.At == nil || *view.At != change.Revision {
 		return fmt.Errorf("B22 subscriber snapshot is not pinned to its commit")
@@ -68,6 +70,12 @@ func b22CASRefusal(t *testing.T, got reply, target model.Ref, reason, current st
 	if err != nil || wantErr != nil || !bytes.Equal(actual, want) {
 		t.Fatalf("B22 refusing address=%s want independently selected guard=%s: %v/%v", actual, want, err, wantErr)
 	}
+}
+
+func b22SameIDRef(a, b model.Ref) bool {
+	// Native readers may retain the zero Go value or explicit numeric zero
+	// for branch zero. Both identify the same validated ID address.
+	return a.Validate() == nil && b.Validate() == nil && a.IsID() && b.IsID() && a.ID == b.ID && a.Branch.String() == b.Branch.String()
 }
 
 // Read every physical application table and every column, including expired
@@ -843,6 +851,8 @@ type b22TransactionFaultStore struct {
 	commits atomic.Int32
 	staged  atomic.Int32
 	durable atomic.Int32
+	finals  atomic.Int32
+	lostAck atomic.Int32
 }
 
 type b22TransactionFaultTx struct {
@@ -859,7 +869,13 @@ func (s *b22TransactionFaultStore) Write(ctx context.Context, lease driver.Activ
 }
 
 func (s *b22TransactionFaultStore) FinalizeResponse(ctx context.Context, lease driver.ActiveLease, principal, agent, method, key string, revision model.Revision, warnings []model.Warning) error {
-	return s.Store.(driver.ResponseFinalizer).FinalizeResponse(ctx, lease, principal, agent, method, key, revision, warnings)
+	s.finals.Add(1)
+	err := s.Store.(driver.ResponseFinalizer).FinalizeResponse(ctx, lease, principal, agent, method, key, revision, warnings)
+	if err == nil && s.mode == "lost-finalize-ack" {
+		s.lostAck.Add(1)
+		return driver.ErrIndeterminate{IdempotencyKey: key}
+	}
+	return err
 }
 
 func (tx *b22TransactionFaultTx) PutGraphRecord(ctx context.Context, record driver.Record, parent *model.Ref, links []driver.SourceLink) error {
@@ -879,6 +895,7 @@ func (tx *b22TransactionFaultTx) Commit(ctx context.Context, header driver.Chang
 	if err == nil {
 		tx.store.durable.Add(1)
 		if tx.store.mode == "lost-commit-ack" {
+			tx.store.lostAck.Add(1)
 			return model.Changeset{}, driver.ErrIndeterminate{IdempotencyKey: header.IdempotencyKey}
 		}
 	}
@@ -887,7 +904,7 @@ func (tx *b22TransactionFaultTx) Commit(ctx context.Context, header driver.Chang
 
 func TestS1B22SerializationRetryExhaustionAndLostCommitAck(t *testing.T) {
 	for _, engine := range transactionEngines() {
-		for _, mode := range []string{"retry-once", "retry-exhausted", "lost-commit-ack"} {
+		for _, mode := range []string{"retry-once", "retry-exhausted", "lost-commit-ack", "lost-finalize-ack"} {
 			t.Run(engine+"/"+mode, func(t *testing.T) {
 				f := newFixture(t, engine)
 				target, _ := f.create(t, "b22-transaction-fault-target", "original")
@@ -897,26 +914,58 @@ func TestS1B22SerializationRetryExhaustionAndLostCommitAck(t *testing.T) {
 				options := []pipeline.Option{pipeline.WithOntology(f.ontology), pipeline.WithClock(f.clock.Now), pipeline.WithValidators(pipeline.ValidatorBinding{ID: "b22-retry-validate", Validator: b22Validator(func(context.Context, port.ProposedChange, port.SnapshotReader) (port.Verdict, error) {
 					validations.Add(1)
 					return port.Verdict{Allow: true}, nil
-				})})}
-				// A lost commit acknowledgment is resolved only by its already
-				// final receipt. No post callback is invented after publication.
-				if mode != "lost-commit-ack" {
-					options = append(options, pipeline.WithPostSubscribers(pipeline.PostBinding{ID: "b22-retry-post", Subscriber: post}))
-				}
+				})}), pipeline.WithPostSubscribers(pipeline.PostBinding{ID: "b22-retry-post", Subscriber: post})}
 				writer := pipeline.New(fault, f.lease, options...)
 				cs := model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: target, Fields: map[string]any{"description": "single durable transaction"}}}}}
 				meta := model.WriteMeta{Method: "tx.apply", Project: project, AgentLabel: actor, IdempotencyKey: key("b22-transaction-fault")}
 				before := f.state(t)
 				physical := b22Physical(t, f, "before")
 				out, err := writer.ApplyWithOutcome(f.ctx, anonymous, cs, meta)
-				observed := map[string]any{"revision": out.Commit.Revision, "result_count": len(out.Commit.Results), "replayed": out.Replayed, "error": fmt.Sprint(err), "attempts": fault.commits.Load(), "staged": fault.staged.Load(), "durable": fault.durable.Load(), "validations": validations.Load(), "posts": post.count()}
+				observed := map[string]any{"revision": out.Commit.Revision, "result_count": len(out.Commit.Results), "replayed": out.Replayed, "error": fmt.Sprint(err), "attempts": fault.commits.Load(), "staged": fault.staged.Load(), "durable": fault.durable.Load(), "validations": validations.Load(), "posts": post.count(), "post_calls": post.calls.Load(), "finalizations": fault.finals.Load(), "lost_acks": fault.lostAck.Load()}
 				if err == nil {
 					observed["commit"] = out.Commit
 				}
 				b22Evidence(t, "outcome", observed)
+				if mode == "lost-commit-ack" {
+					// The graph is durable, but its registered post binding has not
+					// run. The real pending receipt must never become a fabricated
+					// final response or cause another write/callback on replay.
+					pending := f.casReceipt(t, "tx.apply", "b22-transaction-fault")
+					if pending == nil || !pending.ResponsePending || pending.Commit.Revision.String() != "2" || len(pending.Commit.Results) != 1 || fault.commits.Load() != 1 || fault.staged.Load() != 1 || fault.durable.Load() != 1 || validations.Load() != 1 || fault.lostAck.Load() != 1 || fault.finals.Load() != 0 {
+						t.Fatal("B22 lost graph acknowledgment did not retain one real pending receipt")
+					}
+					checkPending := func(out port.WriteOutcome, err error) {
+						t.Helper()
+						var typed *model.Error
+						if !errors.As(err, &typed) || typed.Data.Code != "busy" || !typed.Data.Retryable || typed.Data.Details["committedRevision"] != pending.Commit.Revision || typed.Data.Details["idempotencyKey"] != meta.IdempotencyKey || typed.Data.Details["responsePending"] != true || !reflect.DeepEqual(out.Commit, model.Commit{}) || out.Replayed || post.calls.Load() != 0 || post.count() != 0 || validations.Load() != 1 || fault.commits.Load() != 1 || fault.durable.Load() != 1 {
+							t.Fatalf("B22 pending lost acknowledgment reran a callback/write or invented success: %+v / %v", out, err)
+						}
+					}
+					checkPending(out, err)
+					after := f.state(t)
+					if len(after.Changesets) != 2 || len(after.Versions[target.ID]) != 2 || closeDocument(t, after, target).Fields["description"] != "single durable transaction" {
+						t.Fatal("B22 pending outcome lost its actual durable graph mutation")
+					}
+					physical = b22Physical(t, f, "pending")
+					b22Evidence(t, "pending-receipt", pending)
+					for _, reopen := range []bool{false, true} {
+						if reopen {
+							f.reopen(t)
+							writer = pipeline.New(f.store, f.lease, options...)
+						}
+						replayed, replayErr := writer.ApplyWithOutcome(f.ctx, anonymous, cs, meta)
+						checkPending(replayed, replayErr)
+						if !reflect.DeepEqual(pending, f.casReceipt(t, "tx.apply", "b22-transaction-fault")) {
+							t.Fatal("B22 pending receipt changed across replay/reopen")
+						}
+						sameState(t, after, f.state(t))
+						b22SamePhysical(t, physical, b22Physical(t, f, fmt.Sprintf("pending-replay-%v", reopen)), reopen)
+					}
+					return
+				}
 				if mode == "retry-exhausted" {
 					var typed *model.Error
-					if !errors.As(err, &typed) || typed.Data.Code != "write_conflict" || !typed.Data.Retryable || !out.Commit.Revision.IsZero() || out.Replayed || fault.commits.Load() != 4 || fault.staged.Load() != 4 || validations.Load() != 4 || fault.durable.Load() != 0 || post.count() != 0 {
+					if !errors.As(err, &typed) || typed.Data.Code != "write_conflict" || !typed.Data.Retryable || !out.Commit.Revision.IsZero() || out.Replayed || fault.commits.Load() != 4 || fault.staged.Load() != 4 || validations.Load() != 4 || fault.durable.Load() != 0 || post.count() != 0 || post.calls.Load() != 0 {
 						t.Fatalf("B22 serialization exhaustion leaked a callback/commit or lost its typed refusal: %+v / %v", out, err)
 					}
 					sameState(t, before, f.state(t))
@@ -927,10 +976,10 @@ func TestS1B22SerializationRetryExhaustionAndLostCommitAck(t *testing.T) {
 				wantAttempts, wantValidations, wantPosts := int32(2), int32(2), 1
 				if mode == "retry-exhausted" {
 					wantAttempts, wantValidations = 5, 5
-				} else if mode == "lost-commit-ack" {
-					wantAttempts, wantValidations, wantPosts = 1, 1, 0
+				} else if mode == "lost-finalize-ack" {
+					wantAttempts, wantValidations = 1, 1
 				}
-				if err != nil || out.Replayed != (mode == "lost-commit-ack") || out.Commit.Revision != model.Natural64(2) || len(out.Commit.Results) != 1 || fault.commits.Load() != wantAttempts || fault.staged.Load() != wantAttempts || validations.Load() != wantValidations || fault.durable.Load() != 1 || post.count() != wantPosts {
+				if err != nil || out.Replayed || out.Commit.Revision != model.Natural64(2) || len(out.Commit.Results) != 1 || fault.commits.Load() != wantAttempts || fault.staged.Load() != wantAttempts || validations.Load() != wantValidations || fault.durable.Load() != 1 || post.count() != wantPosts || post.calls.Load() != int32(wantPosts) || fault.finals.Load() != 1 || mode == "lost-finalize-ack" && fault.lostAck.Load() != 1 {
 					t.Fatalf("B22 retry/indeterminate resolution did not produce one durable outcome: %+v / %v", out, err)
 				}
 				after := f.state(t)
@@ -939,13 +988,19 @@ func TestS1B22SerializationRetryExhaustionAndLostCommitAck(t *testing.T) {
 					t.Fatal("B22 retry/indeterminate recovery published duplicate history/receipts")
 				}
 				physical = b22Physical(t, f, "final")
-				f.reopen(t)
-				replayed, err := f.writer.ApplyWithOutcome(f.ctx, anonymous, cs, meta)
-				if err != nil || !replayed.Replayed || !reflect.DeepEqual(out.Commit, replayed.Commit) || validations.Load() != wantValidations || post.count() != wantPosts {
-					t.Fatalf("B22 durable full outcome changed after real SQL reopen: %+v / %v", replayed, err)
+				b22Evidence(t, "final-receipt", receipt)
+				for _, reopen := range []bool{false, true} {
+					if reopen {
+						f.reopen(t)
+						writer = pipeline.New(f.store, f.lease, options...)
+					}
+					replayed, err := writer.ApplyWithOutcome(f.ctx, anonymous, cs, meta)
+					if err != nil || !replayed.Replayed || !reflect.DeepEqual(out.Commit, replayed.Commit) || validations.Load() != wantValidations || post.count() != wantPosts || post.calls.Load() != int32(wantPosts) || fault.commits.Load() != wantAttempts || fault.finals.Load() != 1 {
+						t.Fatalf("B22 durable full outcome changed across replay/reopen: %+v / %v", replayed, err)
+					}
+					sameState(t, after, f.state(t))
+					b22SamePhysical(t, physical, b22Physical(t, f, fmt.Sprintf("final-replay-%v", reopen)), reopen)
 				}
-				sameState(t, after, f.state(t))
-				b22SamePhysical(t, physical, b22Physical(t, f, "reopened"), true)
 			})
 		}
 	}
@@ -1004,7 +1059,7 @@ func (r *b22ClaimFaultReader) Observe(ctx context.Context, keys []driver.LockKey
 		for _, state := range states {
 			// snapshotReader.Get hydrates directly from Observe's complete
 			// live Record on all three drivers; Reader.Get is only a fallback.
-			if state.Key.Kind == driver.LockRecord && state.Key.Ref != nil && reflect.DeepEqual(*state.Key.Ref, r.fault.target) && state.Present && state.Record != nil {
+			if state.Key.Kind == driver.LockRecord && state.Key.Ref != nil && b22SameIDRef(*state.Key.Ref, r.fault.target) && state.Present && state.Record != nil {
 				r.fault.hydrates.Add(1)
 				if r.fault.enabled.Load() && r.fault.phase == "candidate-hydration" {
 					row := *state.Record
@@ -1035,24 +1090,24 @@ func TestS1B22ClaimSelectionAndHydrationFailurePublishNothing(t *testing.T) {
 				before := f.state(t)
 				physical := b22Physical(t, f, "before")
 				out, err := svc.ClaimNextWithOutcome(f.ctx, anonymous, req, meta)
-				if out != nil || !errors.Is(err, fault.cause) || fault.scans.Load() == 0 || phase == "candidate-hydration" && fault.hydrates.Load() == 0 || fault.writes.Load() != 0 || post.count() != 0 {
+				if out != nil || !errors.Is(err, fault.cause) || fault.scans.Load() == 0 || phase == "candidate-hydration" && fault.hydrates.Load() == 0 || fault.writes.Load() != 0 || post.count() != 0 || post.calls.Load() != 0 {
 					t.Fatalf("B22 real claim read failure did not stop before publication: %+v / %v scans=%d hydrates=%d writes=%d posts=%d", out, err, fault.scans.Load(), fault.hydrates.Load(), fault.writes.Load(), post.count())
 				}
 				if phase == "candidate-hydration" {
 					var selected *driver.Record
 					for i := range before.Records {
-						if reflect.DeepEqual(before.Records[i].Ref, target) {
+						if b22SameIDRef(before.Records[i].Ref, target) {
 							selected = &before.Records[i]
 						}
 					}
-					if selected == nil || !reflect.DeepEqual(fault.hydrated, selected) || fault.view == nil || fault.view.At == nil || *fault.view.At != before.Meta.Head || fault.view.Incarnation != before.Meta.Incarnation {
+					if selected == nil || fault.hydrated == nil || !b22SameIDRef(fault.hydrated.Ref, selected.Ref) || fault.hydrated.Kind != selected.Kind || fault.hydrated.Revision.String() != selected.Revision.String() || !bytes.Equal(fault.hydrated.Body, selected.Body) || fault.view == nil || fault.view.At == nil || fault.view.At.String() != before.Meta.Head.String() || fault.view.Incarnation != before.Meta.Incarnation || fault.view.Branch.String() != target.Branch.String() {
 						t.Fatal("B22 hydration fault did not bind the actual selected row and pinned snapshot")
 					}
 				}
 				// Plug enumerates ready membership instead of issuing the old
 				// backend Count, then hydrates before admitting a writer. Both
 				// actual failures must leave the entire claim state untouched.
-				b22Evidence(t, "read-refusal", map[string]any{"error": err.Error(), "phase": phase, "scans": fault.scans.Load(), "hydrates": fault.hydrates.Load(), "writes": fault.writes.Load(), "posts": post.count(), "hydrated": fault.hydrated, "view": fault.view})
+				b22Evidence(t, "read-refusal", map[string]any{"error": err.Error(), "phase": phase, "scans": fault.scans.Load(), "hydrates": fault.hydrates.Load(), "writes": fault.writes.Load(), "posts": post.count(), "post_calls": post.calls.Load(), "hydrated": fault.hydrated, "view": fault.view})
 				sameState(t, before, f.state(t))
 				b22SamePhysical(t, physical, b22Physical(t, f, "refused"), false)
 				if f.casReceipt(t, "bead.claimNext", "b22-claim-read") != nil {
@@ -1060,7 +1115,7 @@ func TestS1B22ClaimSelectionAndHydrationFailurePublishNothing(t *testing.T) {
 				}
 				fault.enabled.Store(false)
 				out, err = svc.ClaimNextWithOutcome(f.ctx, anonymous, req, meta)
-				if err != nil || out == nil || out.NullResult || out.Replayed || out.Commit.Revision != model.Natural64(2) || len(out.Commit.Results) != 1 || out.Commit.Results[0].Ref.ID != target.ID || post.count() != 1 || fault.writes.Load() != 1 {
+				if err != nil || out == nil || out.NullResult || out.Replayed || out.Commit.Revision != model.Natural64(2) || len(out.Commit.Results) != 1 || out.Commit.Results[0].Ref.ID != target.ID || post.count() != 1 || post.calls.Load() != 1 || fault.writes.Load() != 1 {
 					t.Fatalf("B22 failed claim key was not reusable after read recovery: %+v / %v", out, err)
 				}
 				after := f.state(t)
@@ -1070,8 +1125,11 @@ func TestS1B22ClaimSelectionAndHydrationFailurePublishNothing(t *testing.T) {
 				}
 				physical = b22Physical(t, f, "recovered")
 				f.reopen(t)
-				replay, err := f.service.ClaimNextWithOutcome(f.ctx, anonymous, req, meta)
-				if err != nil || replay == nil || !replay.Replayed || !reflect.DeepEqual(out.Commit, replay.Commit) || post.count() != 1 {
+				fault.Store, fault.CheckpointStore = f.store, f.store.(driver.CheckpointStore)
+				writer = pipeline.New(fault, f.lease, pipeline.WithOntology(f.ontology), pipeline.WithClock(f.clock.Now), pipeline.WithPostSubscribers(pipeline.PostBinding{ID: "b22-read-post", Subscriber: post}))
+				svc = service.New(fault, f.lease, writer, service.WithOntology(f.ontology), service.WithClock(f.clock.Now))
+				replay, err := svc.ClaimNextWithOutcome(f.ctx, anonymous, req, meta)
+				if err != nil || replay == nil || !replay.Replayed || !reflect.DeepEqual(out.Commit, replay.Commit) || post.count() != 1 || post.calls.Load() != 1 || fault.writes.Load() != 1 {
 					t.Fatalf("B22 full claim receipt changed after SQL reopen: %+v / %v", replay, err)
 				}
 				sameState(t, after, f.state(t))
