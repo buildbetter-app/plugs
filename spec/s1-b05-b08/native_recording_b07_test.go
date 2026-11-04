@@ -169,10 +169,13 @@ func b07NativeRecord(t *testing.T, root, twin string, protocol b07NativeProtocol
 	}
 	sort.Strings(ready)
 	rows := b07NativeSQLCensus(t, c, query, "complete-pre-export")
-	var opaqueRows []struct{ IssueID, DependsOnID, Type string }
-	b07NativeDecode(t, c.run("stored-opaque-control", "sql", "SELECT issue_id AS IssueID, depends_on_id AS DependsOnID, type AS Type FROM dependencies WHERE type='custom kind'", "--json"), &opaqueRows)
+	var opaqueRows []struct {
+		IssueID, Type                                 string
+		DependsOnID, DependsOnWisp, DependsOnExternal *string
+	}
+	b07NativeDecode(t, c.run("stored-opaque-control", "sql", "SELECT issue_id AS IssueID, depends_on_issue_id AS DependsOnID, depends_on_wisp_id AS DependsOnWisp, depends_on_external AS DependsOnExternal, type AS Type FROM dependencies WHERE type='custom kind'", "--json"), &opaqueRows)
 	opaque := protocol.Cases[len(protocol.Cases)-1]
-	opaqueStored := len(opaqueRows) == 1 && opaqueRows[0].IssueID == opaque.From && opaqueRows[0].DependsOnID == opaque.To && opaqueRows[0].Type == opaque.Kind
+	opaqueStored := len(opaqueRows) == 1 && opaqueRows[0].IssueID == opaque.From && opaqueRows[0].DependsOnID != nil && *opaqueRows[0].DependsOnID == opaque.To && opaqueRows[0].DependsOnWisp == nil && opaqueRows[0].DependsOnExternal == nil && opaqueRows[0].Type == opaque.Kind
 	b07NativeJSON(t, filepath.Join(output, "source-coverage.json"), map[string]any{
 		"edges": edges, "ready": ready, "sqlTables": len(rows), "opaqueStoredControl": opaqueStored,
 		"scope": "19 genuine well-known kinds; custom CLI refusal is not stored-opaque-kind coverage",
