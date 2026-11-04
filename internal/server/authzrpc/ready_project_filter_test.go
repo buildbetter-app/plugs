@@ -134,6 +134,10 @@ func TestReadyProjectFilterUnchangedCorpus(t *testing.T) {
 				// independent of the classifier's set enumeration and policy AST.
 				want := make([]service.Bead, 0, fixture.CorpusSize/stride)
 				for n, row := range corpus {
+					allowed, err := bound.Allows(ctx, model.RefByID(row.ID, model.Natural64(0)), s.project)
+					if err != nil || allowed != ((n+1)%stride == 0) {
+						t.Fatalf("executed compiled membership at %d = %t/%v", n+1, allowed, err)
+					}
 					if (n+1)%stride == 0 {
 						want = append(want, row)
 					}
@@ -190,9 +194,19 @@ func TestReadyProjectFilterUnchangedCorpus(t *testing.T) {
 					t.Fatal("authorized tail fields omitted from fingerprint")
 				}
 				if stride != 1 {
-					hidden := corpus[0]
-					hidden.Fields = map[string]any{"title": "hidden mutation"}
-					if readyMembershipDigest(selected) != baseline {
+					changed := slices.Clone(corpus)
+					changed[0].Fields = map[string]any{"title": "hidden mutation"}
+					selectedAgain := make([]service.Bead, 0, len(selected))
+					for _, row := range changed {
+						allowed, err := bound.Allows(ctx, model.RefByID(row.ID, model.Natural64(0)), s.project)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if allowed {
+							selectedAgain = append(selectedAgain, row)
+						}
+					}
+					if readyMembershipDigest(selectedAgain) != baseline {
 						t.Fatal("hidden row changed authorized fingerprint")
 					}
 				}
