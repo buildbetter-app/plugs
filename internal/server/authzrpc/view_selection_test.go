@@ -118,6 +118,11 @@ func newW9Fixture(t *testing.T, store driver.Store) *w9Fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Host construction is read-only; this fixture explicitly installs the
+	// authority domains required by its grant/project selection assertions.
+	if err := f.facts.Replace(f.base); err != nil {
+		t.Fatal(err)
+	}
 	f.app.Checker.chain.Rules = append(f.app.Checker.chain.Rules, w9ProjectForbid{ns})
 	return f
 }
