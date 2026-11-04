@@ -16,9 +16,9 @@ var nativeB02ContractInputsBytes []byte
 func validateB02InputContract(inputs nativeInputs) error {
 	want := nativeInputs{
 		Format:         "plug.s1.b02.native-inputs.v1",
-		Consumer:       "7d1dd3911a08331ae537ddf154c9d9b2bac264ca",
-		ConsumerTree:   "23b0da7f989b15a7c808a57aae5425bb1518e824",
-		ConsumerParent: "5a92ea9f274c08d1116acac77aaa5946b6f73552",
+		Consumer:       "1a9bb22bc5eb688e40a929453e5623c118e4f18f",
+		ConsumerTree:   "94a3f363770bbf04e9ca533d8c0a4b3bf4c84042",
+		ConsumerParent: "d6e4fec401a3d3d0a350e59a1149677bc3b62f63",
 		HelperSource:   "43c0f2410ccb24062b8bd1bd073aeb29ef21288f",
 		HelperTree:     "05153e1c051b1887fa875b53739adc036ae8cf16",
 		Source:         "c8eb3ba7d4177e111a6f5c8aebe06b5d0b1d5724",

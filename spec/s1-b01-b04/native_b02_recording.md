@@ -10,10 +10,9 @@ whole-tree gate or collector authority. A future actual invocation of the
 separate manual `native_b02_recording` target requires its own authorized
 prepared-native scope. No runtime result is implied by the authored plan.
 
-The source base is commit `7d1dd3911a08331ae537ddf154c9d9b2bac264ca`,
-tree `23b0da7f989b15a7c808a57aae5425bb1518e824`, with sole parent
-`5a92ea9f274c08d1116acac77aaa5946b6f73552` (parent tree
-`eff755baa23d206b121f024100bec13c764e91a8`). The B02-only
+The main-based consumer source base is commit `1a9bb22bc5eb688e40a929453e5623c118e4f18f`,
+tree `94a3f363770bbf04e9ca533d8c0a4b3bf4c84042`, with sole parent
+`d6e4fec401a3d3d0a350e59a1149677bc3b62f63`. The B02-only
 `native_b02_inputs.json` binds that consumer lineage to the unchanged
 accepted producer/control/helper/artifact tuple. The older `native_inputs.json`
 remains the B01 consumer contract and is not reused as B02 provenance.
@@ -148,7 +147,8 @@ helper receipts, excluding `poll.log` by basename before metadata or reads.
 
 The mixed native chain, internal recheck trace, concurrent races, accepted
 ephemeral Plug workflow production, native import/restore, public network
-transport and hosted delivery remain explicit limits. The manual target has
-not run at this source seal. FullB02 and FullB01 remain incomplete,
-NativeAdmission=None and FullS1=0/28; existing B05 pause and historical REDs
-are unaffected.
+transport and hosted delivery remain explicit limits. The manual target has not run at this source seal. The current main preparer
+provides the authorized NativeAdmission tuple, but this consumer still requires
+a fresh same-run preparation and complete native/replay terminal. FullB02 and
+FullB01 remain incomplete, and FullS1=0/28; existing B05 pause and historical
+REDs are unaffected.
