@@ -1235,7 +1235,7 @@ func seedBulkReady(t *testing.T, f *localFixture, count int) {
 	changes = append(changes, conformance.FixtureChange{Ref: model.RefByID(bulkObserverID, model.Natural64(0)), Kind: "bead", Op: model.OpCreate, Body: observerBody})
 	for i := 2; i < count; i++ {
 		id := fmt.Sprintf("00000000-0000-4000-8000-%012d", i+1)
-		body, err := json.Marshal(map[string]any{"id": id, "type": "issue", "project": "project", "fields": map[string]any{
+		body, err := json.Marshal(map[string]any{"id": id, "type": "issue", "project": "project", "createdAt": "2026-10-01T00:00:00Z", "fields": map[string]any{
 			"title": fmt.Sprintf("bulk-%03d", i), "description": "hidden", "status": "todo", "priority": 0,
 		}})
 		demand(t, err == nil, "bulk seed encode failed")
@@ -1252,7 +1252,7 @@ func seedLifecycleReady(t *testing.T, f *localFixture, count int) ([]string, map
 	principals := make(map[string]model.PrincipalRef, count)
 	for i := 0; i < count; i++ {
 		id := fmt.Sprintf("e5-mutator-%03d", i)
-		body, err := json.Marshal(map[string]any{"id": id, "type": "issue", "project": "project", "fields": map[string]any{
+		body, err := json.Marshal(map[string]any{"id": id, "type": "issue", "project": "project", "createdAt": "2026-10-01T00:00:00Z", "fields": map[string]any{
 			"title": fmt.Sprintf("e5-mutator-seed-%03d", i), "description": "hidden", "status": "in_progress", "priority": 0,
 		}})
 		demand(t, err == nil, "lifecycle seed encode failed")
