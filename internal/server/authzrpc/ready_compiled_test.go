@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -21,7 +22,7 @@ import (
 // This recorder forwards the real maintained capability. It counts actual
 // source hydration and raw queries at the complete guarded request boundary.
 type readyRequestStore struct {
-	driver.Store
+	*memory.Store
 	enabled                                 bool
 	gets                                    map[string]int
 	queries                                 int
@@ -52,6 +53,9 @@ func (r *readyRequestReader) Get(ctx context.Context, refs []model.Ref) ([]drive
 		r.store.gets[ref.ID]++
 	}
 	return r.Reader.Get(ctx, refs)
+}
+func (r *readyRequestReader) LoadParentCounter(ctx context.Context, parent string) (driver.ParentCounter, error) {
+	return r.Reader.(driver.ParentCounterReader).LoadParentCounter(ctx, parent)
 }
 func (r *readyRequestReader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.Record], error) {
 	r.store.queries++
@@ -123,6 +127,7 @@ func newReadyRequestFixture(t *testing.T, count int) *readyRequestFixture {
 			f.refs = append(f.refs, result.Ref)
 		}
 	}
+	sort.Slice(f.refs, func(i, j int) bool { return f.refs[i].ID < f.refs[j].ID })
 	meta, err := s.Meta(ctx)
 	if err != nil {
 		t.Fatal(err)

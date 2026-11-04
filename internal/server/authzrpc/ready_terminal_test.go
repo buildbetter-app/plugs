@@ -40,8 +40,15 @@ func (t *readyTerminalTx) Head(ctx context.Context) (model.Revision, error) {
 	if err != nil {
 		return head, err
 	}
-	t.committed, err = t.store.Store.Read(ctx, t.WriteTx.Snapshot())
+	reader, err := t.store.Store.Read(ctx, t.WriteTx.Snapshot())
+	if err == nil {
+		t.committed = &readyRequestReader{Reader: reader, store: t.store}
+	}
 	return head, err
+}
+func (t *readyTerminalTx) Query(ctx context.Context, q driver.Query) (driver.Page[driver.Record], error) {
+	t.store.queries++
+	return t.WriteTx.Query(ctx, q)
 }
 func (t *readyTerminalTx) Close() error {
 	if t.committed != nil {

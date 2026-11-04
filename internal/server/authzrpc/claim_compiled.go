@@ -9,7 +9,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
-func (s *GuardedService) compiledClaimPage(ctx context.Context, by model.PrincipalRef, req service.ReadyRequest) (service.BeadPage, error) {
+func (s *GuardedService) compiledClaimPage(ctx context.Context, by model.PrincipalRef, req service.ReadyRequest) (out service.BeadPage, resultErr error) {
 	domain, ok := s.delegate.(readyOrderDomain)
 	if !ok {
 		return service.BeadPage{}, driver.ErrUnsupported
@@ -24,6 +24,12 @@ func (s *GuardedService) compiledClaimPage(ctx context.Context, by model.Princip
 		return service.BeadPage{}, driver.ErrUnsupported
 	}
 	caller, authority, filter, err := s.readyProjectFilter(ctx, by, snapshot, req.Project, "bead.claimNext", authz.Modify)
+	defer func() {
+		resultErr = s.fenceReadyFallback(ctx, by, caller, authority, snapshot, resultErr)
+		if resultErr != nil {
+			out = service.BeadPage{}
+		}
+	}()
 	if err != nil {
 		return service.BeadPage{}, err
 	}

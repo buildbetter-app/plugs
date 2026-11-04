@@ -70,7 +70,7 @@ func readyMembershipV2(items []service.Bead) (string, error) {
 	return driver.ReadyMembershipV2(core, workflow), nil
 }
 
-func (s *GuardedService) compiledReady(ctx context.Context, by model.PrincipalRef, req service.ReadyRequest) (service.BeadPage, error) {
+func (s *GuardedService) compiledReady(ctx context.Context, by model.PrincipalRef, req service.ReadyRequest) (out service.BeadPage, resultErr error) {
 	domain, ok := s.delegate.(readyOrderDomain)
 	if !ok || req.Position != nil && !strings.HasPrefix(req.Position.ReadyMembership, "v2:") {
 		return service.BeadPage{}, driver.ErrUnsupported
@@ -85,6 +85,12 @@ func (s *GuardedService) compiledReady(ctx context.Context, by model.PrincipalRe
 		return service.BeadPage{}, driver.ErrUnsupported
 	}
 	caller, authority, filter, err := s.readyProjectFilter(ctx, by, snapshot, req.Project, "bead.ready", authz.Read)
+	defer func() {
+		resultErr = s.fenceReadyFallback(ctx, by, caller, authority, snapshot, resultErr)
+		if resultErr != nil {
+			out = service.BeadPage{}
+		}
+	}()
 	if err != nil {
 		return service.BeadPage{}, err
 	}
@@ -233,6 +239,24 @@ func (s *GuardedService) compiledFreshReady(ctx context.Context, by model.Princi
 }
 
 func readyAccelerationUnavailable(err error) bool { return errors.Is(err, driver.ErrUnsupported) }
+
+// A capability refusal must not discard authority observations made while
+// preparing it. Fence before ordinary fallback so a concurrent policy change
+// retains the existing unavailable outcome. This helper is only for the
+// ordinary pre-Head read paths; the terminal fence uses its held reader.
+func (s *GuardedService) fenceReadyFallback(ctx context.Context, by model.PrincipalRef, caller authz.Caller, authority *slice, snapshot Snapshot, cause error) error {
+	if !readyAccelerationUnavailable(cause) || authority == nil {
+		return cause
+	}
+	binding, err := s.checker.readAuthorityBinding(ctx, caller, authority, snapshot)
+	if err != nil {
+		return err
+	}
+	if err := s.checker.ValidateReadAuthorityBinding(ctx, by, binding); err != nil {
+		return err
+	}
+	return cause
+}
 
 // The typed-link successor adds projectLinkTargets alongside Bead.Links.
 // Frozen main has neither. Discover the same-package hook so composing that
