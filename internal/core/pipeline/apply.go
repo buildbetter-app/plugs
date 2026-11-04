@@ -432,6 +432,16 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 			writes[id] = pending
 		}
 	}
+	// Head-only no-op receipts do not advance Ready coverage. Every ordinary
+	// H+1 publication does, including a claimNext terminal with no bead writes.
+	var ready *ReadyProjectionPlan
+	if len(writes) != 0 || meta.Method == "bead.claimNext" {
+		var err error
+		ready, err = p.prepareReadyProjection(ctx, w.cfg.ontology)
+		if err != nil {
+			return model.Commit{}, err
+		}
+	}
 	allocatorKeys := make([]driver.LockKey, 0)
 	allocatorPrefixes := map[string]bool{}
 	parentCounters := map[string]bool{}
@@ -471,6 +481,7 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	if p.projections != nil {
 		allocatorKeys = append(allocatorKeys, p.projections.locks...)
 	}
+	allocatorKeys = append(allocatorKeys, ready.LockKeys()...)
 	locks, err := p.snapshot.locks(writes, sentinels, allocatorKeys...)
 	if err != nil {
 		return model.Commit{}, err
@@ -614,6 +625,9 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 		if err := PutAncestorProjections(ctx, tx, p.projections.remove, p.projections.add); err != nil {
 			return model.Commit{}, err
 		}
+	}
+	if _, err := ready.Publish(ctx, tx, revision); err != nil {
+		return model.Commit{}, err
 	}
 	timings.next(PhaseCommitEvents)
 	changes := p.changeRecords()
