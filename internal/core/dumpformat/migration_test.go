@@ -3,6 +3,7 @@ package dumpformat
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"sort"
@@ -616,5 +617,163 @@ func TestStrictConfigUnionDeclaredLegacySpelling(t *testing.T) {
 	target, ok := m.Target("pl", f.records["bead"][0].ID)
 	if !ok || target.Status != "frozen" || m.Document().Statuses["frozen"].Category != ontology.Unstarted {
 		t.Fatal("legacy spelling replaced an explicitly declared custom status")
+	}
+}
+
+func TestB27AuxiliarySourceInventoryNamesIndependentTablesAndRefusals(t *testing.T) {
+	f := newMergeFixture(t, "pl")
+	a, err := Read(bytes.NewReader(f.bytes(t, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"routes":               "refuse-if-nonempty",
+		"interactions":         "refuse-if-nonempty",
+		"issue_snapshots":      "archive",
+		"compaction_snapshots": "archive",
+		"provenance_events":    "archive",
+		"events":               "archive",
+	}
+	got := map[string]Disposition{}
+	for _, source := range a.Manifest().Sources {
+		if _, needed := want[source.Family]; needed {
+			if _, duplicate := got[source.Family]; duplicate {
+				t.Fatalf("duplicate independent source disposition %q", source.Family)
+			}
+			got[source.Family] = source
+		}
+	}
+	for family, action := range want {
+		source, ok := got[family]
+		if !ok || source.Action != action || source.Rows != 0 || source.Reason == "" {
+			t.Fatalf("independent source %q was not explicitly inventoried: %+v", family, source)
+		}
+	}
+
+	// A nonempty independent table is rejected before the archive can become a
+	// restore plan. Exercise each refusal family separately so a generic
+	// refuse-if-nonempty branch cannot masquerade as a complete inventory.
+	for family := range want {
+		if want[family] != "refuse-if-nonempty" {
+			continue
+		}
+		t.Run(family, func(t *testing.T) {
+			fixture := newMergeFixture(t, "pl")
+			fixture.addArchive(t, family, Row{"synthetic": family})
+			archive, err := Read(bytes.NewReader(fixture.bytes(t, nil)))
+			if archive != nil || err == nil || !strings.Contains(err.Error(), "unsupported or operational source record") {
+				t.Fatalf("nonempty independent source %q was not refused before admission: archive=%v err=%v", family, archive, err)
+			}
+		})
+	}
+}
+
+func TestB27NonemptyAuxiliarySourcesSurviveReadAndMerge(t *testing.T) {
+	// These are independent consumer vectors, not a native producer recording.
+	rows := func(prefix string) map[string]Row {
+		return map[string]Row{
+			"issue_snapshots": {
+				"id": prefix + "-snapshot", "issue_id": prefix + "-1", "snapshot_time": "2026-11-03T23:00:00Z",
+				"compaction_level": json.Number("2"), "original_size": json.Number("9007199254740993"), "compressed_size": json.Number("37"),
+				"original_content": "Snapshot λ\n" + prefix, "archived_events": "{\"revision\":9007199254740993, \"optional\":null}\n",
+			},
+			"compaction_snapshots": {
+				"id": prefix + "-compaction", "issue_id": prefix + "-1", "compaction_level": json.Number("3"),
+				"snapshot_json": "{ \"title\":\"雪\", \"ratio\":1.0, \"optional\":null }\n", "created_at": "2026-11-03T23:00:01Z",
+			},
+			"provenance_events": {
+				"id": prefix + "-provenance", "issue_id": prefix + "-1", "kind": "import", "actor": "unverified-source-actor",
+				"ref": prefix + "-external", "ref_kind": "spec", "payload": "{\"literal\":9007199254740993,\"text\":\"λ\"}\n",
+				"source": "independent-fixture", "occurred_at": nil, "created_at": "2026-11-03T23:00:02Z",
+			},
+			"events": {
+				"id": prefix + "-event", "issue_id": prefix + "-1", "event_type": "updated", "actor": "unverified-source-actor",
+				"old_value": nil, "new_value": "{ \"ratio\":1.0, \"large\":9007199254740993 }", "comment": "Event λ\n" + prefix, "created_at": "2026-11-03T23:00:03Z",
+			},
+		}
+	}
+	for _, family := range []string{"issue_snapshots", "compaction_snapshots", "provenance_events", "events"} {
+		t.Run(family, func(t *testing.T) {
+			fixtures := []*mergeFixture{newMergeFixture(t, "alpha"), newMergeFixture(t, "beta")}
+			want := map[string]Record{}
+			inputs := make([][]byte, len(fixtures))
+			check := func(a *Archive, count int) {
+				t.Helper()
+				var dispositions []Disposition
+				for _, d := range a.Manifest().Sources {
+					if d.Family == family {
+						dispositions = append(dispositions, d)
+					}
+				}
+				if len(dispositions) != 1 || dispositions[0].Action != "archive" || dispositions[0].Rows != count || dispositions[0].Reason == "" {
+					t.Fatalf("nonempty independent source census lost: %+v", dispositions)
+				}
+				got := map[string]Record{}
+				for _, record := range a.Records("beads-archive") {
+					if record.Source.Table != family {
+						continue
+					}
+					if _, duplicate := got[record.ID]; duplicate || !equalJSON(record, want[record.ID]) {
+						t.Fatalf("source row, opaque bytes or verification flags changed: %+v", record)
+					}
+					got[record.ID] = record
+				}
+				if len(got) != count || a.Manifest().History != "available-unverified" {
+					t.Fatalf("archive row loss or invented verified history: count=%d manifest=%+v", len(got), a.Manifest())
+				}
+			}
+			for i, prefix := range []string{"alpha", "beta"} {
+				f := fixtures[i]
+				f.addArchive(t, family, rows(prefix)[family])
+				records := f.records["beads-archive"]
+				record := records[len(records)-1]
+				want[record.ID] = record
+				inputs[i] = f.bytes(t, nil)
+				a, err := Read(bytes.NewReader(inputs[i]))
+				if err != nil {
+					t.Fatal(err)
+				}
+				check(a, 1)
+			}
+			merged, err := Merge(bytes.NewReader(inputs[0]), bytes.NewReader(inputs[1]))
+			if err != nil {
+				t.Fatal(err)
+			}
+			a, err := Read(bytes.NewReader(merged))
+			if err != nil {
+				t.Fatal(err)
+			}
+			check(a, 2)
+			reversed, err := Merge(bytes.NewReader(inputs[1]), bytes.NewReader(inputs[0]))
+			if err != nil || !bytes.Equal(merged, reversed) {
+				t.Fatalf("input order changed retained archive: %v", err)
+			}
+			t.Run("census-mismatch-refused", func(t *testing.T) {
+				bad := fixtures[0].bytes(t, func(m *Manifest, _ map[string][]byte) {
+					for i := range m.Sources {
+						if m.Sources[i].Family == family {
+							m.Sources[i].Rows++
+						}
+					}
+				})
+				if archive, err := Read(bytes.NewReader(bad)); archive != nil || err == nil || !strings.Contains(err.Error(), "disposition/action/count mismatch") {
+					t.Fatalf("false nonempty source count admitted: archive=%v err=%v", archive, err)
+				}
+			})
+		})
+	}
+}
+
+func TestB27UnresolvedDependencyIsTypedAndRetainsExactEndpoint(t *testing.T) {
+	f := newMergeFixture(t, "pl")
+	f.records["edge"][0].Source.Fields["depends_on_issue_id"] = "pl-missing"
+	f.records["edge"][0].Body["to"] = "pl-missing"
+	archive, err := Read(bytes.NewReader(f.bytes(t, nil)))
+	var refusal *UnresolvedDependencyError
+	if archive != nil || !errors.As(err, &refusal) {
+		t.Fatalf("unresolved dependency was not a typed refusal: archive=%v err=%v", archive, err)
+	}
+	if refusal.EdgeID != "pl-edge" || refusal.Project != "pl" || refusal.Source != "pl-1" || refusal.Target != "pl-missing" || refusal.TargetKind != "depends_on_issue_id" {
+		t.Fatalf("typed unresolved dependency lost source details: %+v", refusal)
 	}
 }
