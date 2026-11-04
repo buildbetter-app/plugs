@@ -439,7 +439,7 @@ func (d configuredAdmittedDispatcher) Dispatch(ctx context.Context, request []by
 
 func configuredAuthenticatedTransport(t *testing.T, runtime *Runtime, keys *authnapikey.Provider) *inprocess.Transport {
 	t.Helper()
-	issued, err := keys.Issue(model.PrincipalRef{Kind: "user", ID: "b03-reader"}, time.Now().Add(time.Hour))
+	issued, err := keys.Issue(model.PrincipalRef{Kind: "user", ID: "user:b03-reader"}, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
