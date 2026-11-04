@@ -20,6 +20,7 @@
     "source-commit",
     "source-export",
     "source-config-readback",
+    "source-metadata-readback",
     "source-inventory",
     "source-dump",
     "target-git-init",
@@ -31,6 +32,7 @@
     "target-commit",
     "target-export",
     "target-config-readback",
+    "target-metadata-readback",
     "target-inventory",
     "target-dump"
   ],

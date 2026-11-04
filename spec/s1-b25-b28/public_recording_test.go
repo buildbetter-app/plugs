@@ -502,6 +502,10 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 		return runCommand(t, run.Root, &run.Commands, label, store, dir,
 			append(env(dir), "BD_JSON_ENVELOPE=1"), []string{pinned, "--json", "config", "list"}, nil)
 	}
+	commandMetadata := func(label, store, dir string) []byte {
+		return runCommand(t, run.Root, &run.Commands, label, store, dir,
+			append(env(dir), "BD_JSON_ENVELOPE=1"), []string{pinned, "--readonly", "--json", "sql", "SELECT `key`, `value` FROM metadata ORDER BY `key`"}, nil)
+	}
 	commandGit("source-git-init", "source", source, []string{"-C", "..", "-c", "init.defaultBranch=main", "init", "--quiet"})
 	version := commandReference("source-version", "source", source, []string{"version", "--json"}, nil)
 	var identity struct {
@@ -554,7 +558,8 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 	writeRecordingBytes(t, filepath.Join(run.Root, "source-jsonl-projection.json"), sourceRawProjection)
 	validateSourceRows(t, sourceRawProjection, fixture)
 	sourceConfig := commandConfigList("source-config-readback", "source", source)
-	sourceExpected := observePublicConfig(t, run.Root, "source", sourceConfig, sourceRawProjection)
+	sourceMetadata := commandMetadata("source-metadata-readback", "source", source)
+	sourceExpected := observePublicConfig(t, run.Root, "source", sourceConfig, sourceMetadata, sourceRawProjection)
 	if observed, ok := sourceExpected.Config["config/"+fixture.ConfigKey]; !ok || observed.Source.Fields["value"] != configured {
 		t.Fatal("source setup config changed before independent archive observation")
 	}
@@ -582,7 +587,8 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 	writeRecordingBytes(t, filepath.Join(run.Root, "target-jsonl-projection.json"), targetRawProjection)
 	assertTargetContainsSource(t, sourceRawProjection, targetRawProjection, fixture)
 	targetConfig := commandConfigList("target-config-readback", "target", target)
-	targetExpected := observePublicConfig(t, run.Root, "target", targetConfig, targetRawProjection)
+	targetMetadata := commandMetadata("target-metadata-readback", "target", target)
+	targetExpected := observePublicConfig(t, run.Root, "target", targetConfig, targetMetadata, targetRawProjection)
 	validateInventoryAndArchive(t, &run, commandReference, "target", target, run.Root, fixture)
 
 	sourceArchive, err := dumpformat.ReadFile(run.SourceArchivePath)
@@ -1121,12 +1127,17 @@ func validateInventory(data []byte, fixture recordingFixture) error {
 	return nil
 }
 
-func observePublicConfig(t *testing.T, output, label string, settings, ordinary []byte) publicConfigExpectation {
+func observePublicConfig(t *testing.T, output, label string, settings, metadata, ordinary []byte) publicConfigExpectation {
 	t.Helper()
 	observations, err := readPublicConfigSettings(settings)
 	if err != nil {
 		t.Fatalf("%s independent config readback: %v", label, err)
 	}
+	metadataRows, err := readPublicMetadata(metadata)
+	if err != nil {
+		t.Fatalf("%s independent metadata readback: %v", label, err)
+	}
+	observations = append(observations, metadataRows...)
 	expected, err := expectPublicConfig(observations, ordinary)
 	if err != nil {
 		t.Fatalf("%s independent config expectations: %v", label, err)
@@ -1144,7 +1155,7 @@ func observePublicConfig(t *testing.T, output, label string, settings, ordinary 
 // duplicate keys in either object rather than allowing map decoding to conceal
 // them. The envelope's numeric schema_version is protocol metadata, not a
 // setting. User memories are observed in ordinary JSONL independently.
-// Unobserved metadata/KV entries cannot pass.
+// Metadata has its own read-only SQL observation; unobserved entries cannot pass.
 func readPublicConfigSettings(data []byte) ([]publicConfigObservation, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
@@ -1215,6 +1226,93 @@ func readPublicConfigSettings(data []byte) ([]publicConfigObservation, error) {
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return nil, errors.New("config readback has trailing data")
+	}
+	return observations, nil
+}
+
+// Observe the fresh public corpus through the pinned CLI's read-only SQL
+// command, independently of inventory and archive bytes. Retain every metadata
+// row and reject ambiguous envelopes, duplicate rows and non-string values.
+func readPublicMetadata(data []byte) ([]publicConfigObservation, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	start, err := decoder.Token()
+	if err != nil || start != json.Delim('{') {
+		return nil, errors.New("metadata readback must be an envelope object")
+	}
+	observations := []publicConfigObservation{}
+	seenEnvelope, seenKeys := map[string]bool{}, map[string]bool{}
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		key, ok := token.(string)
+		if !ok || seenEnvelope[key] {
+			return nil, errors.New("duplicate or invalid metadata readback envelope key")
+		}
+		seenEnvelope[key] = true
+		switch key {
+		case "schema_version":
+			var version any
+			if err := decoder.Decode(&version); err != nil {
+				return nil, err
+			}
+			if number, ok := version.(json.Number); !ok || number != "1" {
+				return nil, errors.New("unsupported metadata readback schema_version")
+			}
+		case "data":
+			start, err := decoder.Token()
+			if err != nil || start != json.Delim('[') {
+				return nil, errors.New("metadata readback data must be an array")
+			}
+			for decoder.More() {
+				start, err := decoder.Token()
+				if err != nil || start != json.Delim('{') {
+					return nil, errors.New("metadata readback row must be an object")
+				}
+				row := map[string]string{}
+				for decoder.More() {
+					token, err := decoder.Token()
+					if err != nil {
+						return nil, err
+					}
+					field, ok := token.(string)
+					if _, duplicate := row[field]; !ok || duplicate || (field != "key" && field != "value") {
+						return nil, errors.New("duplicate or unexpected metadata readback field")
+					}
+					var rawValue any
+					if err := decoder.Decode(&rawValue); err != nil {
+						return nil, err
+					}
+					value, ok := rawValue.(string)
+					if !ok {
+						return nil, errors.New("metadata readback fields must be strings")
+					}
+					row[field] = value
+				}
+				end, err := decoder.Token()
+				if err != nil || end != json.Delim('}') || len(row) != 2 || row["key"] == "" || seenKeys[row["key"]] {
+					return nil, errors.New("incomplete or duplicate metadata readback row")
+				}
+				seenKeys[row["key"]] = true
+				observations = append(observations, publicConfigObservation{Table: "metadata", Key: row["key"], Value: row["value"], Classification: "public"})
+			}
+			end, err := decoder.Token()
+			if err != nil || end != json.Delim(']') {
+				return nil, errors.New("metadata readback array is not closed")
+			}
+		default:
+			return nil, errors.New("unexpected metadata readback envelope key")
+		}
+	}
+	end, err := decoder.Token()
+	if err != nil || end != json.Delim('}') || !seenEnvelope["schema_version"] || !seenEnvelope["data"] {
+		return nil, errors.New("metadata readback envelope is incomplete")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return nil, errors.New("metadata readback has trailing data")
 	}
 	return observations, nil
 }
@@ -1906,6 +2004,43 @@ func TestPublicProjectionConfigSettingsReadback(t *testing.T) {
 	} {
 		if _, err := readPublicConfigSettings([]byte(data)); err == nil {
 			t.Fatal("invalid/duplicate/non-setting readback admitted")
+		}
+	}
+}
+
+func TestPublicProjectionMetadataReadback(t *testing.T) {
+	observations, err := readPublicMetadata([]byte(`{"schema_version":1,"data":[{"key":"_project_id","value":"9007199254740993"},{"value":"","key":"empty"}]}`))
+	if err != nil || len(observations) != 2 || observations[0].Table != "metadata" || observations[0].Key != "_project_id" || observations[0].Value != "9007199254740993" || observations[0].Classification != "public" || observations[1].Value != "" {
+		t.Fatalf("independent metadata readback: %v, %+v", err, observations)
+	}
+	empty, err := readPublicMetadata([]byte(`{"data":[],"schema_version":1}`))
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("empty metadata readback: %v, %+v", err, empty)
+	}
+	for _, data := range []string{
+		`[]`, `{"data":[]}`, `{"schema_version":1}`,
+		`{"schema_version":2,"data":[]}`, `{"schema_version":"1","data":[]}`,
+		`{"schema_version":1,"schema_version":1,"data":[]}`,
+		`{"schema_version":1,"data":[],"data":[]}`,
+		`{"schema_version":1,"data":[],"other":true}`,
+		`{"schema_version":1,"data":{}}`, `{"schema_version":1,"data":null}`,
+		`{"schema_version":1,"data":[null]}`, `{"schema_version":1,"data":[[]]}`,
+		`{"schema_version":1,"data":[{}]}`,
+		`{"schema_version":1,"data":[{"key":"a"}]}`,
+		`{"schema_version":1,"data":[{"value":"x"}]}`,
+		`{"schema_version":1,"data":[{"key":"","value":"x"}]}`,
+		`{"schema_version":1,"data":[{"key":"a","key":"b","value":"x"}]}`,
+		`{"schema_version":1,"data":[{"key":"a","value":"x","value":"y"}]}`,
+		`{"schema_version":1,"data":[{"key":"a","value":"x","other":"y"}]}`,
+		`{"schema_version":1,"data":[{"key":"a","value":"x"},{"key":"a","value":"y"}]}`,
+		`{"schema_version":1,"data":[{"key":42,"value":"x"}]}`,
+		`{"schema_version":1,"data":[{"key":"a","value":42}]}`,
+		`{"schema_version":1,"data":[{"key":"a","value":null}]}`,
+		`{"schema_version":1,"data":[{"key":"a","value":false}]}`,
+		`{"schema_version":1,"data":[]} {}`,
+	} {
+		if _, err := readPublicMetadata([]byte(data)); err == nil {
+			t.Fatal("invalid or ambiguous metadata readback admitted")
 		}
 	}
 }
