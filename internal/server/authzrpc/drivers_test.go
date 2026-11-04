@@ -599,8 +599,9 @@ func TestB01GuardedReadyInternalCutoffAcrossDrivers(t *testing.T) {
 				dsn = postgresDSNFactory(t)
 			}
 			f := newQuietFixture(t, engine, dsn)
-			// Exclude the ordinary seeded baseline before the cutoff check.
-			success(t, f.call(t, worker("user:operator"), "bead.close", map[string]any{"id": model.RefByID(beadID, model.Natural64(0))}, 7100))
+			// Move the ordinary baseline to backlog through the fixture's
+			// permitted public update path before the cutoff check.
+			success(t, f.call(t, worker("user:operator"), "bead.update", map[string]any{"id": model.RefByID(beadID, model.Natural64(0)), "fields": map[string]any{"status": "backlog"}}, 7100))
 			for start := 0; start < 1002; start += 1000 {
 				var changes []conformance.FixtureChange
 				for i := start; i < min(start+1000, 1002); i++ {
