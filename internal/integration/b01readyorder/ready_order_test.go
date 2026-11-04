@@ -264,19 +264,6 @@ func TestB01PublicCursorBindingsAndLiveRevisionContract(t *testing.T) {
 		if second.Items[0].ID != "pl-b" || second.Items[0].Revision.String() != "2" || second.AsOf.Revision.String() != "2" || first.AsOf.Revision.String() != "1" {
 			t.Fatalf("ready cursor became a historical or invalid revision page: first %+v second %+v", first, second)
 		}
-		// Reordering the complete authorized sequence must invalidate the old
-		// offset. This is the concrete witness that the ordered-sequence digest
-		// already binds the hybrid order; no fresh clock field is needed.
-		a := document("pl-a", at, 4)
-		if _, err := conformance.Seed(f.ctx, f.store, f.lease, driver.ChangesetHeader{Time: f.clock.Now()}, []conformance.FixtureChange{{Ref: model.Ref{ID: "pl-a"}, Kind: "bead", Op: model.OpPatch, Body: jsonBytes(t, a), ChangedPaths: []string{"/fields/priority"}}}); err != nil {
-			t.Fatal(err)
-		}
-		f.unchanged(t, func() {
-			response := f.call(t, "bead.ready", map[string]any{"limit": 1, "cursor": *first.NextCursor})
-			if response.Error == nil || response.Error.Data.Code != "cursor_invalid" {
-				t.Fatalf("ordered ready membership change accepted old cursor: %+v", response)
-			}
-		})
 	})
 }
 

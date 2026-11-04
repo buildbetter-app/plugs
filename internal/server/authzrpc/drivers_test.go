@@ -52,6 +52,7 @@ func TestFixedPermissionsAcrossDrivers(t *testing.T) {
 			}
 			t.Run("immutable_registry", func(t *testing.T) { immutableRegistry(t, open) })
 			t.Run("compiled_lists_equal_point_reads", func(t *testing.T) { listMembership(t, open) })
+			t.Run("ready_order_cursor", func(t *testing.T) { readyMembershipCursorInvalidation(t, open) })
 			t.Run("history_uses_current_permissions", func(t *testing.T) { currentHistory(t, open) })
 			t.Run("post_image", func(t *testing.T) { postImage(t, open) })
 			t.Run("authorization_races", func(t *testing.T) { authorizationRaces(t, open) })
@@ -170,6 +171,53 @@ func listMembership(t *testing.T, open storeFactory) {
 				}
 			}
 		})
+	}
+}
+
+// readyMembershipCursorInvalidation is the guarded counterpart to the core
+// ready-order fixtures. The complete authorized sequence is captured in the
+// signed cursor; changing a recent row's priority reorders that sequence and
+// must refuse the old offset without disclosing a partial page.
+func readyMembershipCursorInvalidation(t *testing.T, open storeFactory) {
+	f := newFixtureOn(t, open(t), nil)
+	by := model.PrincipalRef{Kind: "user", ID: "user:reader"}
+	createdAt := time.Now().UTC().Add(-time.Minute)
+	changes := make([]conformance.FixtureChange, 0, 2)
+	for i, n := range []int{8, 9} {
+		ref := fixtureRef(n)
+		body, err := json.Marshal(map[string]any{
+			"id": ref.ID, "type": "issue", "project": "project", "createdAt": createdAt,
+			"fields": map[string]any{"title": "ready-order", "status": "todo", "priority": i},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		changes = append(changes, conformance.FixtureChange{Ref: ref, Kind: "bead", Op: model.OpCreate, Body: body})
+	}
+	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, changes); err != nil {
+		t.Fatal(err)
+	}
+	params := map[string]any{"limit": 1, "_meta": map[string]any{"project": "project"}}
+	first := page(t, f.call(t, by, "bead.ready", params, 7010))
+	if len(first.Items) != 1 || first.Items[0].ID != fixtureRef(8).ID || first.NextCursor == "" {
+		t.Fatalf("recent ready order did not produce a continuation: %+v", first)
+	}
+	updated, err := json.Marshal(map[string]any{
+		"id": fixtureRef(8).ID, "type": "issue", "project": "project", "createdAt": createdAt,
+		"fields": map[string]any{"title": "ready-order", "status": "todo", "priority": 4},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{
+		Ref: fixtureRef(8), Kind: "bead", Op: model.OpPatch, Body: updated,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	params["cursor"] = first.NextCursor
+	refused := f.call(t, by, "bead.ready", params, 7011)
+	if refused.Error == nil || refused.Error.Data.Code != "cursor_invalid" || len(refused.Result) != 0 {
+		t.Fatalf("ordered ready membership change was not an atomic cursor refusal: %+v", refused)
 	}
 }
 
