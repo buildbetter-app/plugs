@@ -1202,7 +1202,9 @@ func initialPublicationRows(t *testing.T, namespace authz.Namespace, body []byte
 		if typed {
 			row.Index = &driver.SelectionIndex{Version: driver.SelectionIndexVersion, Row: key, Incarnation: namespace.Incarnation, Branch: model.Natural64(0), ValueDigest: driver.SelectionDigest(value), Source: driver.SelectionSource{Key: driver.LockKey{Kind: driver.LockDerived, Derived: &keys.Source}, Revision: sourceRevision, Present: true, Digest: driver.SelectionDigest(body)}, Facts: &facts}
 		}
-		want[key] = row
+		// Own the expected annotation at the same boundary as driver reads and
+		// the fault capture; retain the explicit [] in the logical Value bytes.
+		want[key] = row.Clone()
 	}
 	marker, err := json.Marshal(struct {
 		Version     int
