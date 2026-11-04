@@ -371,6 +371,7 @@ internal/core/service/workflow_refs.go
 internal/core/viewops/BUILD.bazel
 internal/core/viewops/epic_progress.go
 internal/core/viewops/label_predicate.go
+internal/core/viewops/mapping_test.go
 internal/core/viewops/parent_projection.go
 internal/core/viewops/run.go
 internal/core/viewops/selection_test.go

@@ -67,12 +67,46 @@ func mapped(err error) error {
 		return nil
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		// A cancellation match in one branch must not erase another cause.
+		// Preserve the original tree when its leaves disagree or include a
+		// separate failure; callers still need that failure's identity.
+		if cancellationCause(err) == nil {
+			return err
+		}
 		return failure("busy", "view read was canceled or exceeded its deadline")
 	}
 	if code, details, ok := driver.ErrorMapping(err); ok {
 		return &model.Error{Data: model.ErrorData{Code: code, Details: details}}
 	}
 	return err
+}
+
+// cancellationCause accepts ordinary wrapping and joins of the same context
+// cause. A mixed join is not one canceled operation, even when errors.Is finds
+// a deadline in part of it.
+func cancellationCause(err error) error {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		var kind error
+		for _, cause := range joined.Unwrap() {
+			next := cancellationCause(cause)
+			if next == nil || kind != nil && next != kind {
+				return nil
+			}
+			kind = next
+		}
+		return kind
+	}
+	if cause := errors.Unwrap(err); cause != nil {
+		return cancellationCause(cause)
+	}
+	canceled, deadline := errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded)
+	if canceled && !deadline {
+		return context.Canceled
+	}
+	if deadline && !canceled {
+		return context.DeadlineExceeded
+	}
+	return nil
 }
 
 func (s *Service) admit(ctx context.Context, by model.PrincipalRef) error {
