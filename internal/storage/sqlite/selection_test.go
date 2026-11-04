@@ -892,3 +892,159 @@ func TestSelectionSourceInvalidationBatchesAndRollsBack(t *testing.T) {
 	}
 	check(1, selectionFactInvalidationBatch+2)
 }
+
+// The thin source observation is a temporal envelope, including tombstones
+// and derived values. Both sides of a 128-row batch boundary must publish
+// together, and an error after the second batch must restore every interval.
+func TestSelectionSourceHistoryBatchesAndRollsBack(t *testing.T) {
+	ctx := context.Background()
+	s := selectionStore(t).(*Store)
+	t.Cleanup(func() { _ = s.Close() })
+	meta, err := s.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch, previous, next := revKey(0), revKey(1), revKey(2)
+	tx := &transaction{records: make(map[string]*driver.Record), derived: make(map[string]driver.LockState)}
+	want := make(map[string]selectionSourceObservation)
+	for i := 0; i <= selectionSourceHistoryBatch; i++ {
+		id := fmt.Sprintf("0:history-source-%03d", i)
+		observation := selectionSourceObservation{key: id}
+		if i%7 != 0 {
+			body := []byte(fmt.Sprintf(`{"source":%d}`, i))
+			tx.records[id] = &driver.Record{Body: body}
+			observation.present = 1
+			observation.digest = driver.SelectionDigest(body)
+		} else {
+			tx.records[id] = nil
+		}
+		want[id] = observation
+	}
+	derivedKey := driver.DerivedRowKey{Table: driver.DerivedSortKey, Key: "history-batch-derived"}
+	derivedLock := driver.LockKey{Kind: driver.LockDerived, Derived: &derivedKey}
+	derivedID := keyID(derivedLock)
+	derivedValue := []byte(`{"derived":true}`)
+	tx.derived[derivedID] = driver.LockState{Key: derivedLock, Present: true,
+		Derived: &driver.DerivedRow{Value: derivedValue}}
+	want[derivedID] = selectionSourceObservation{key: derivedID, present: 1,
+		digest: driver.SelectionDigest(derivedValue)}
+	deletedDerivedKey := driver.DerivedRowKey{Table: driver.DerivedSortKey, Key: "history-batch-deleted"}
+	deletedDerivedLock := driver.LockKey{Kind: driver.LockDerived, Derived: &deletedDerivedKey}
+	deletedDerivedID := keyID(deletedDerivedLock)
+	tx.derived[deletedDerivedID] = driver.LockState{Key: deletedDerivedLock}
+	want[deletedDerivedID] = selectionSourceObservation{key: deletedDerivedID}
+	untouched := "0:history-untouched"
+	insertOld := func(id string) {
+		t.Helper()
+		_, err := s.db.ExecContext(ctx, `INSERT INTO selection_source_history(
+			incarnation,branch,source_key,start_revision,source_revision,source_present,source_digest)
+			VALUES(?,?,?,?,?,?,?)`, meta.Incarnation, branch, id, previous, previous, 1, "old-digest")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for id := range want {
+		insertOld(id)
+	}
+	insertOld(untouched)
+	// An already-closed interval is historical, even for a changed source.
+	historicalID := "0:history-source-000"
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO selection_source_history(
+		incarnation,branch,source_key,start_revision,end_revision,source_revision,source_present,source_digest)
+		VALUES(?,?,?,?,?,?,?,?)`, meta.Incarnation, branch, historicalID,
+		revKey(0), previous, revKey(0), 1, "historical-digest"); err != nil {
+		t.Fatal(err)
+	}
+	// This is the production UPDATE, with its largest batch of source keys.
+	args := []any{next, meta.Incarnation, branch}
+	for id := range want {
+		if len(args) == 3+selectionSourceHistoryBatch {
+			break
+		}
+		args = append(args, id)
+	}
+	plan, err := s.db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+selectionSourceHistoryCloseSQL(selectionSourceHistoryBatch), args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var details []string
+	for plan.Next() {
+		var node, parent, unused int
+		var detail string
+		if err := plan.Scan(&node, &parent, &unused, &detail); err != nil {
+			_ = plan.Close()
+			t.Fatal(err)
+		}
+		details = append(details, detail)
+	}
+	if err := plan.Err(); err != nil {
+		_ = plan.Close()
+		t.Fatal(err)
+	}
+	_ = plan.Close()
+	joined := strings.Join(details, "\n")
+	if !strings.Contains(joined, "SEARCH selection_source_history USING INDEX selection_source_history_lookup") ||
+		!strings.Contains(joined, "source_key=?") || strings.Contains(joined, "SCAN selection_source_history") {
+		t.Fatalf("source history close lost source-key lookup: %s", joined)
+	}
+	check := func(published bool) {
+		t.Helper()
+		for id, observation := range want {
+			var end sql.NullString
+			if err := s.db.QueryRowContext(ctx, `SELECT end_revision FROM selection_source_history
+				WHERE incarnation=? AND branch=? AND source_key=? AND start_revision=?`,
+				meta.Incarnation, branch, id, previous).Scan(&end); err != nil {
+				t.Fatal(err)
+			}
+			if published != end.Valid || published && end.String != next {
+				t.Fatalf("source %q old interval end=%+v published=%t", id, end, published)
+			}
+			var present int
+			var digest, revision string
+			err := s.db.QueryRowContext(ctx, `SELECT source_revision,source_present,source_digest
+				FROM selection_source_history WHERE incarnation=? AND branch=? AND source_key=? AND start_revision=?`,
+				meta.Incarnation, branch, id, next).Scan(&revision, &present, &digest)
+			if !published {
+				if !errors.Is(err, sql.ErrNoRows) {
+					t.Fatalf("source %q survived rollback: %v", id, err)
+				}
+				continue
+			}
+			if err != nil || revision != next || present != observation.present || digest != observation.digest {
+				t.Fatalf("source %q new observation revision=%q present=%d digest=%q err=%v, want %+v",
+					id, revision, present, digest, err, observation)
+			}
+		}
+		var end sql.NullString
+		if err := s.db.QueryRowContext(ctx, `SELECT end_revision FROM selection_source_history
+			WHERE incarnation=? AND branch=? AND source_key=? AND start_revision=?`,
+			meta.Incarnation, branch, untouched, previous).Scan(&end); err != nil || end.Valid {
+			t.Fatalf("untouched source interval end=%+v err=%v", end, err)
+		}
+		var historicalEnd, historicalDigest string
+		if err := s.db.QueryRowContext(ctx, `SELECT end_revision,source_digest FROM selection_source_history
+			WHERE incarnation=? AND branch=? AND source_key=? AND start_revision=?`,
+			meta.Incarnation, branch, historicalID, revKey(0)).Scan(&historicalEnd, &historicalDigest); err != nil ||
+			historicalEnd != previous || historicalDigest != "historical-digest" {
+			t.Fatalf("historical source interval end=%q digest=%q err=%v", historicalEnd, historicalDigest, err)
+		}
+	}
+	check(false)
+	abort := errors.New("abort after source history batches")
+	err = s.immediate(ctx, nil, func(c *sql.Conn) error {
+		if err := tx.publishSelectionSourceHistory(ctx, c, meta.Incarnation, next); err != nil {
+			return err
+		}
+		return abort
+	})
+	if !errors.Is(err, abort) {
+		t.Fatalf("source history abort: %v", err)
+	}
+	check(false)
+	if err := s.immediate(ctx, nil, func(c *sql.Conn) error {
+		return tx.publishSelectionSourceHistory(ctx, c, meta.Incarnation, next)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	check(true)
+}

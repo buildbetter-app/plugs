@@ -17,6 +17,11 @@ import (
 // a partial fact-set image.
 const selectionFactInvalidationBatch = 128
 
+// Each source-history insert binds seven values. A batch of 128 stays below
+// SQLite's older 999-variable limit, and both statements remain in Commit's
+// fenced transaction.
+const selectionSourceHistoryBatch = 128
+
 func selectionFactInvalidationSQL(count int) string {
 	return `UPDATE selection_fact_sets INDEXED BY selection_fact_sets_source SET end_revision=?
 		WHERE incarnation=? AND branch=? AND end_revision IS NULL AND source_key IN (` +
@@ -321,40 +326,63 @@ func (t *transaction) publishSelectionSources(ctx context.Context, c *sql.Conn, 
 	phase.next(CommitPhaseSelectionHistory, len(t.records)+len(t.derived))
 	// Persist thin source observations for typed fact envelopes without forcing
 	// selectors to reconstruct record bodies or complete derived rows.
+	return t.publishSelectionSourceHistory(ctx, c, incarnation, next)
+}
+
+type selectionSourceObservation struct {
+	key     string
+	present int
+	digest  string
+}
+
+func selectionSourceHistoryCloseSQL(count int) string {
+	return `UPDATE selection_source_history INDEXED BY selection_source_history_lookup SET end_revision=?
+		WHERE incarnation=? AND branch=? AND end_revision IS NULL AND source_key IN (` +
+		strings.TrimSuffix(strings.Repeat("?,", count), ",") + `)`
+}
+
+func selectionSourceHistoryInsertSQL(count int) string {
+	return `INSERT INTO selection_source_history(
+		incarnation,branch,source_key,start_revision,source_revision,source_present,source_digest)
+		VALUES ` + strings.TrimSuffix(strings.Repeat("(?,?,?,?,?,?,?),", count), ",")
+}
+
+func (t *transaction) publishSelectionSourceHistory(ctx context.Context, c *sql.Conn, incarnation, next string) error {
+	observations := make([]selectionSourceObservation, 0, len(t.records)+len(t.derived))
 	for id, record := range t.records {
-		if _, err = c.ExecContext(ctx, `UPDATE selection_source_history SET end_revision=?
-			WHERE incarnation=? AND branch=? AND source_key=? AND end_revision IS NULL`, next, incarnation, revKey(0), id); err != nil {
-			return err
-		}
-		digest := ""
-		present := 0
+		observation := selectionSourceObservation{key: id}
 		if record != nil {
-			present = 1
-			digest = driver.SelectionDigest(record.Body)
+			observation.present = 1
+			observation.digest = driver.SelectionDigest(record.Body)
 		}
-		if _, err = c.ExecContext(ctx, `INSERT INTO selection_source_history(
-			incarnation,branch,source_key,start_revision,source_revision,source_present,source_digest)
-			VALUES(?,?,?,?,?,?,?)`, incarnation, revKey(0), id, next, next, present, digest); err != nil {
-			return err
-		}
+		observations = append(observations, observation)
 	}
 	for id, state := range t.derived {
 		if state.Key.Derived == nil {
 			continue
 		}
-		if _, err = c.ExecContext(ctx, `UPDATE selection_source_history SET end_revision=?
-			WHERE incarnation=? AND branch=? AND source_key=? AND end_revision IS NULL`, next, incarnation, revKey(0), id); err != nil {
+		observation := selectionSourceObservation{key: id}
+		if state.Present && state.Derived != nil {
+			observation.present = 1
+			observation.digest = driver.SelectionDigest(state.Derived.Value)
+		}
+		observations = append(observations, observation)
+	}
+	for start := 0; start < len(observations); start += selectionSourceHistoryBatch {
+		end := min(start+selectionSourceHistoryBatch, len(observations))
+		batch := observations[start:end]
+		closeArgs := make([]any, 0, 3+len(batch))
+		closeArgs = append(closeArgs, next, incarnation, revKey(0))
+		insertArgs := make([]any, 0, 7*len(batch))
+		for _, observation := range batch {
+			closeArgs = append(closeArgs, observation.key)
+			insertArgs = append(insertArgs, incarnation, revKey(0), observation.key,
+				next, next, observation.present, observation.digest)
+		}
+		if _, err := c.ExecContext(ctx, selectionSourceHistoryCloseSQL(len(batch)), closeArgs...); err != nil {
 			return err
 		}
-		digest := ""
-		present := 0
-		if state.Present && state.Derived != nil {
-			present = 1
-			digest = driver.SelectionDigest(state.Derived.Value)
-		}
-		if _, err = c.ExecContext(ctx, `INSERT INTO selection_source_history(
-			incarnation,branch,source_key,start_revision,source_revision,source_present,source_digest)
-			VALUES(?,?,?,?,?,?,?)`, incarnation, revKey(0), id, next, next, present, digest); err != nil {
+		if _, err := c.ExecContext(ctx, selectionSourceHistoryInsertSQL(len(batch)), insertArgs...); err != nil {
 			return err
 		}
 	}
