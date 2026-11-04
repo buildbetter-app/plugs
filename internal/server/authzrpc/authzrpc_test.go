@@ -158,6 +158,11 @@ func newFixtureWith(t *testing.T, store driver.Store, mutators []pipeline.Mutato
 	if err != nil {
 		t.Fatal(err)
 	}
+	// These publication fixtures explicitly install durable authority. Host
+	// construction itself remains read-only, including on existing stores.
+	if err := f.facts.Replace(f.base); err != nil {
+		t.Fatal(err)
+	}
 	return f
 }
 
@@ -277,7 +282,7 @@ func hostMutators(t *testing.T, calls *atomic.Int32, fail bool) []pipeline.Mutat
 	native := sdk.Native{
 		Instance: "default",
 		Manifest: pluginapi.PluginManifest{ID: "app.example.authzrpc", Alias: "authzrpc", Version: "1.0.0", PluginAPI: pluginapi.APIVersion, Runtime: "native", Provides: []pluginapi.Provision{{
-			Kind: "subscriber", Name: "normalize", Phases: []pluginapi.Phase{pluginapi.PhaseMutate}, Reads: []string{"fields.title"}, Owns: []string{"fields.title"}, MaxPointReads: 1,
+			Kind: "subscriber", Name: "normalize", Phases: []pluginapi.Phase{pluginapi.PhaseMutate}, Reads: []string{"fields.title"}, Owns: []string{"fields.title"}, MaxPointReads: 1, MaxQueries: 1,
 		}}},
 		New: func(pluginapi.Host) (sdk.Registration, error) {
 			return sdk.Registration{Mutators: map[string]pluginapi.Mutator{"normalize": sdk.MutateFunc(func(ctx context.Context, change pluginapi.ProposedChange, snapshot pluginapi.SnapshotReader) ([]pluginapi.Patch, error) {
@@ -289,7 +294,14 @@ func hostMutators(t *testing.T, calls *atomic.Int32, fail bool) []pipeline.Mutat
 					return nil, errors.New("mutator unavailable")
 				}
 				rows, err := snapshot.Get(ctx, []pluginapi.Ref{pluginapi.RefByID(beadID, "")})
-				if err != nil || len(rows) != 1 || rows[0].Revision != change.BaseRevision {
+				if err != nil || len(rows) != 1 || rows[0].Ref.ID != beadID {
+					return nil, errors.New("mutator did not receive the pinned record")
+				}
+				// Facts publication can advance Head without rewriting this bead.
+				// The query AsOf is the snapshot identity; the record revision is
+				// the last content change and must agree across both accessors.
+				page, err := snapshot.Query(ctx, pluginapi.Query{Limit: 1})
+				if err != nil || page.AsOf != change.BaseRevision || len(page.Items) != 1 || page.Items[0].Ref.ID != beadID || page.Items[0].Revision != rows[0].Revision || !bytes.Equal(page.Items[0].Body, rows[0].Body) {
 					return nil, errors.New("mutator did not receive the pinned snapshot")
 				}
 				var doc pipeline.Document
@@ -303,7 +315,7 @@ func hostMutators(t *testing.T, calls *atomic.Int32, fail bool) []pipeline.Mutat
 		},
 	}
 	host, err := pluginhost.New(pluginhost.Config{Natives: []sdk.Native{native}, Bindings: []pluginhost.Binding{{
-		ID: "normalize", Alias: "authzrpc", Instance: "default", Subscriber: "normalize", Phase: pluginapi.PhaseMutate, Reads: []string{"fields.title"}, Owns: []string{"fields.title"}, MaxPointReads: 1,
+		ID: "normalize", Alias: "authzrpc", Instance: "default", Subscriber: "normalize", Phase: pluginapi.PhaseMutate, Reads: []string{"fields.title"}, Owns: []string{"fields.title"}, MaxPointReads: 1, MaxQueries: 1,
 	}}})
 	if err != nil {
 		t.Fatal(err)

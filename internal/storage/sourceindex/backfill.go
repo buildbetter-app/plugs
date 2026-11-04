@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -46,7 +47,12 @@ func (d Dialect) PrepareBackfill(ctx context.Context, q SQL, meta driver.Meta) (
 // ClearBackfill removes only unavailable-domain rows. Bound even restart cleanup
 // so a large interrupted build cannot starve SQLite lease renewal on deletion.
 // Coverage markers are left unchanged: they still fail closed until activation.
-func (p Plan) ClearBackfill(ctx context.Context, publish BackfillPublication) error {
+func (p Plan) ClearBackfill(ctx context.Context, publish BackfillPublication, selection ...func(context.Context, BackfillPublication) error) error {
+	for _, clear := range selection {
+		if err := clear(ctx, publish); err != nil {
+			return err
+		}
+	}
 	tables := []string{}
 	if p.ParentActive {
 		tables = append(tables, "hierarchy_source_current", "hierarchy_source_history")
@@ -84,11 +90,11 @@ func (p Plan) ClearBackfill(ctx context.Context, publish BackfillPublication) er
 
 // BuildBackfill decodes only one key page at a time, OUTSIDE publication locks.
 // Pages never contain coverage markers, so readers cannot observe partial proof.
-func (p Plan) BuildBackfill(ctx context.Context, sources SQL, decode driver.GraphSourceDecoder, publish BackfillPublication) error {
+func (p Plan) BuildBackfill(ctx context.Context, sources SQL, decode driver.GraphSourceDecoder, publish BackfillPublication, pages ...BackfillPage) error {
 	if decode == nil {
 		return fmt.Errorf("source index backfill requires a core decoder")
 	}
-	if !p.ParentActive && !p.LinksActive {
+	if !p.ParentActive && !p.LinksActive && len(pages) == 0 {
 		return nil
 	}
 	after := ""
@@ -105,6 +111,7 @@ func (p Plan) BuildBackfill(ctx context.Context, sources SQL, decode driver.Grap
 		}
 		p.Records = make(map[string]*driver.Record, len(records))
 		p.Declarations = make(map[string]Declaration, len(records))
+		metadata := make([]driver.GraphSourceMetadata, len(records))
 		for i := range records {
 			if err := ctx.Err(); err != nil {
 				return err
@@ -116,18 +123,29 @@ func (p Plan) BuildBackfill(ctx context.Context, sources SQL, decode driver.Grap
 			}
 			image := *record
 			image.Body = bytes.Clone(record.Body)
-			metadata, err := decode(image)
+			decoded, err := decode(image)
 			if err != nil {
 				return err
 			}
-			declaration, err := Declare(*record, metadata.Parent, metadata.Links, true)
+			metadata[i] = decoded
+			declaration, err := Declare(*record, decoded.Parent, decoded.Links, true)
 			if err != nil {
 				return err
 			}
 			p.Records[id], p.Declarations[id] = record, declaration
 			after = id
 		}
-		if err := publish(ctx, func(q SQL) error { return p.Publish(ctx, q) }); err != nil {
+		if err := publish(ctx, func(q SQL) error {
+			if err := p.Publish(ctx, q); err != nil {
+				return err
+			}
+			for _, page := range pages {
+				if err := page(ctx, q, records, metadata); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
 			return err
 		}
 	}
@@ -135,21 +153,28 @@ func (p Plan) BuildBackfill(ctx context.Context, sources SQL, decode driver.Grap
 
 // ActivateBackfill certifies both newly built domains in ONE final publication,
 // only after all sources were decoded and published under graph/Head locks.
-func (p Plan) ActivateBackfill(ctx context.Context, q SQL) error {
+func (p Plan) ActivateBackfill(ctx context.Context, q SQL, selection ...func(context.Context, SQL) error) error {
 	if p.ParentActive {
 		if err := p.marker(ctx, q, "hierarchy_index_coverage", p.Parent); err != nil {
 			return err
 		}
 	}
 	if p.LinksActive {
-		return p.marker(ctx, q, "graph_link_index_coverage", p.Links)
+		if err := p.marker(ctx, q, "graph_link_index_coverage", p.Links); err != nil {
+			return err
+		}
+	}
+	for _, activate := range selection {
+		if err := activate(ctx, q); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
 // Backfill uses one caller-owned transaction when the engine can renew its lease
 // independently. SQLite instead uses the same plan with short page publications.
-func (d Dialect) Backfill(ctx context.Context, q SQL, meta driver.Meta, decode driver.GraphSourceDecoder) error {
+func (d Dialect) Backfill(ctx context.Context, q SQL, meta driver.Meta, decode driver.GraphSourceDecoder, selection ...BackfillSelection) error {
 	if decode == nil {
 		return fmt.Errorf("source index backfill requires a core decoder")
 	}
@@ -158,13 +183,32 @@ func (d Dialect) Backfill(ctx context.Context, q SQL, meta driver.Meta, decode d
 		return err
 	}
 	publish := func(_ context.Context, fn func(SQL) error) error { return fn(q) }
-	if err := p.ClearBackfill(ctx, publish); err != nil {
+	clears := []func(context.Context, BackfillPublication) error{}
+	pages := []BackfillPage{}
+	activations := []func(context.Context, SQL) error{}
+	isolated := make([]BackfillSelection, 0, len(selection))
+	for _, hooks := range selection {
+		hooks = hooks.Independent()
+		isolated = append(isolated, hooks)
+		clears, pages, activations = append(clears, hooks.Clear), append(pages, hooks.Page), append(activations, hooks.Activate)
+	}
+	if err := p.ClearBackfill(ctx, publish, clears...); err != nil {
 		return err
 	}
-	if err := p.BuildBackfill(ctx, q, decode, publish); err != nil {
+	if err := p.BuildBackfill(ctx, q, decode, publish, pages...); err != nil {
 		return err
 	}
-	return p.ActivateBackfill(ctx, q)
+	if err := p.ActivateBackfill(ctx, q, activations...); err != nil {
+		return err
+	}
+	var refused error
+	for _, hooks := range isolated {
+		refused = errors.Join(refused, hooks.Refusal())
+	}
+	if refused != nil {
+		return NewSelectionBackfillRefused(refused)
+	}
+	return nil
 }
 
 // sourcePage decodes only the driver's Record envelope, never document JSON.

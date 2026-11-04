@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/api/wire"
@@ -69,23 +70,113 @@ func (c *Checker) load(ctx context.Context, snapshot Snapshot, expected authz.Ca
 	}, nil
 }
 
-func (c *Checker) decision(ctx context.Context, snapshot Snapshot, principal model.PrincipalRef, action authz.Action, kind authz.ResourceKind, ref model.Ref, method string) (bool, error) {
-	caller, err := c.callerFor(ctx, principal)
+// BoundAuthorization is one authenticated action/kind/method bound to one
+// immutable authority snapshot. Callers explicitly Rebind on a fresh snapshot,
+// Writer stage or retry, even when revision values or snapshot pointers agree.
+// Its finite filter covers the chain only; host-specific read restrictions and
+// a final fresh authority fence remain the trusted caller's responsibility.
+type BoundAuthorization struct {
+	checker    *Checker
+	slice      *slice
+	request    *authz.PreparedRequest
+	kind       authz.ResourceKind
+	filterOnce sync.Once
+	filter     *authz.PreparedFilter
+	filterErr  error
+}
+
+// BindAuthorization prepares the real host boundary once for a resource loop.
+// Every call reacquires the authenticated caller, owned facts, tracked ACL and
+// a new snapshot-local Preparation. It never accepts a request-supplied Caller.
+func (c *Checker) BindAuthorization(ctx context.Context, snapshot Snapshot, principal model.PrincipalRef, action authz.Action, kind authz.ResourceKind, method string) (*BoundAuthorization, error) {
+	admission, err := authz.PrepareRequest(authz.ListRequest{Caller: authz.Caller{Principal: principal}, Action: action, ResourceKind: kind, Method: method})
 	if err != nil {
-		return false, authzError(err)
+		return nil, authzError(err)
 	}
+	// The caller source receives its own copy. Compare its output with the
+	// separately owned admission, so mutating a shared sponsor/caveat map cannot
+	// replace the authenticated principal while appearing equal to itself.
+	caller, err := c.callerFor(ctx, admission.Request().Caller.Principal)
+	if err != nil {
+		return nil, authzError(err)
+	}
+	if !samePrincipal(caller.Principal, admission.Request().Caller.Principal) {
+		return nil, authzError(fmt.Errorf("authorization caller source changed the authenticated principal"))
+	}
+	prepared := admission.WithVerification(caller.VerificationID, caller.CapturedEpoch)
+	caller = prepared.Request().Caller
 	s, err := c.load(ctx, snapshot, caller)
 	if err != nil {
-		return false, &model.Error{Message: "authorization facts unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
+		return nil, &model.Error{Message: "authorization facts unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
 	}
-	decisions, err := c.chain.Check(ctx, s, []authz.CheckRequest{{Caller: caller, Action: action, Resource: authz.Resource{Kind: kind, Ref: ref}, Method: method}})
+	// The expected caller is an owned normalized value too. Equal prepared
+	// inputs need no second JSON codec pass during context checks. Other input
+	// representations retain the existing exact samePrincipal comparison.
+	s.expectedNormalized = true
+	return &BoundAuthorization{checker: c, slice: s, request: prepared, kind: kind}, nil
+}
+
+// Rebind always reloads authority, including a new caller-source verification.
+// Immutable parsing from the prior binding never carries observations forward.
+func (b *BoundAuthorization) Rebind(ctx context.Context, snapshot Snapshot) (*BoundAuthorization, error) {
+	if b == nil || b.request == nil || b.checker == nil {
+		return nil, &model.Error{Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
+	}
+	r := b.request.Request()
+	return b.checker.BindAuthorization(ctx, snapshot, r.Caller.Principal, r.Action, r.ResourceKind, r.Method)
+}
+
+// Check evaluates these resource targets without renormalizing their common
+// principal/caveats. Per-resource grants, restrictions and source facts remain
+// live reads, and custom components retain fresh observation/error behavior.
+func (b *BoundAuthorization) Check(ctx context.Context, refs []model.Ref) ([]bool, error) {
+	if b == nil || b.request == nil || b.checker == nil || b.slice == nil {
+		return nil, &model.Error{Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
+	}
+	resources := make([]authz.Resource, len(refs))
+	for i, ref := range refs {
+		resources[i] = authz.Resource{Kind: b.kind, Ref: ref}
+	}
+	decisions, err := b.checker.chain.CheckPrepared(ctx, b.slice, b.request.Checks(resources))
 	if err != nil {
-		return false, authzError(err)
+		return nil, authzError(err)
 	}
-	if len(decisions) != 1 {
-		return false, &model.Error{Message: "authorization returned an invalid decision", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
+	if len(decisions) != len(refs) {
+		return nil, &model.Error{Message: "authorization returned an invalid decision set", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
 	}
-	return decisions[0].Effect == authz.Allow, nil
+	allowed := make([]bool, len(refs))
+	for i, decision := range decisions {
+		allowed[i] = decision.Effect == authz.Allow
+	}
+	return allowed, nil
+}
+
+// Filter seals the same immutable finite chain description once per binding.
+// ErrCheckOnly and other compile errors keep their existing typed host mapping.
+func (b *BoundAuthorization) Filter() (*authz.PreparedFilter, error) {
+	if b == nil || b.request == nil || b.checker == nil {
+		return nil, &model.Error{Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
+	}
+	b.filterOnce.Do(func() {
+		template, err := b.checker.chain.CompilePrepared(b.request)
+		if err == nil {
+			b.filter, err = template.Prepare()
+		}
+		b.filterErr = authzError(err)
+	})
+	return b.filter, b.filterErr
+}
+
+func (c *Checker) decision(ctx context.Context, snapshot Snapshot, principal model.PrincipalRef, action authz.Action, kind authz.ResourceKind, ref model.Ref, method string) (bool, error) {
+	binding, err := c.BindAuthorization(ctx, snapshot, principal, action, kind, method)
+	if err != nil {
+		return false, err
+	}
+	allowed, err := binding.Check(ctx, []model.Ref{ref})
+	if err != nil {
+		return false, err
+	}
+	return allowed[0], nil
 }
 
 // Authorize implements the Writer boundary. Before and after both check the

@@ -1,7 +1,6 @@
 package sqlite
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"sort"
@@ -76,6 +75,8 @@ func (r *reader) DerivedRowsForPrefixes(ctx context.Context, table driver.Derive
 				if err := json.Unmarshal(raw, &state); err != nil {
 					return err
 				}
+				driver.ReportReadWork(ctx, driver.ReadPrefixStates, 1)
+				driver.ReportReadWork(ctx, driver.ReadPrefixBytes, int64(len(raw)))
 				if state.Present && state.Derived != nil {
 					byKey[state.Derived.Key] = *state.Derived
 				}
@@ -101,7 +102,7 @@ func (r *reader) DerivedRowsForPrefixes(ctx context.Context, table driver.Derive
 	}
 	result := make([]driver.DerivedRow, 0, len(byKey))
 	for _, row := range byKey {
-		result = append(result, driver.DerivedRow{Key: row.Key, Value: bytes.Clone(row.Value)})
+		result = append(result, row.Clone())
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Key < result[j].Key })
 	return result, nil

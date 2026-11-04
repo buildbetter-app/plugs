@@ -95,6 +95,9 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 		next.blobs[hash] = blob{bytes: bytes.Clone(data), revision: head}
 	}
 	next.meta = plan.Meta
+	// Imported final images and source history contain no selection-family
+	// interval proof. An explicit current-head build must establish it afresh.
+	next.selection = nil
 	next.log = plan.Entries
 	response := h.Response
 	if response.Results == nil {
@@ -123,6 +126,9 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 	}
 	if err := t.check(ctx); err != nil {
 		return zero, err
+	}
+	if s.selectionBuild != nil {
+		s.selectionBuild.invalid = true
 	}
 	s.state = next
 	t.finish()

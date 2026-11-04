@@ -9,7 +9,10 @@ import (
 )
 
 func selectionTestPlan() SelectionPlan {
-	return SelectionPlan{Incarnation: "inc", Branch: model.Natural64(0), ContentRevision: model.Natural64(1), AuthorityRevision: model.Natural64(1), Membership: SelectionExpr{Op: SelectionTrue}, Authorization: SelectionExpr{Op: SelectionTrue}, Mode: SelectionPageMode, Page: &SelectionPage{Limit: 2}}
+	p := SelectionPlan{Incarnation: "inc", Branch: model.Natural64(0), ContentRevision: model.Natural64(1), AuthorityRevision: model.Natural64(1), Membership: SelectionExpr{Op: SelectionTrue}, Authorization: SelectionExpr{Op: SelectionTrue}, Mode: SelectionPageMode, Page: &SelectionPage{Limit: 2}}
+	control := model.RefByKey("authority")
+	p.Boundary, _ = PrepareSelectionBoundary(SelectionBoundarySpec{Version: 1, PreparedBinding: SelectionDigest([]byte("driver-contract-v1")), Incarnation: p.Incarnation, Branch: p.Branch, AuthorityRevision: p.AuthorityRevision, Sources: []SelectionSource{{Key: LockKey{Kind: LockRecord, Ref: &control}, Revision: model.Natural64(0)}}, Chain: SelectionChainCompiled, Authorization: p.Authorization, Host: SelectionHostAbsent})
+	return p
 }
 func TestSelectionContractRejectsUnknownAndMalformed(t *testing.T) {
 	cases := map[string]func(*SelectionPlan){
@@ -83,7 +86,7 @@ func TestSelectionContractRejectsUnknownAndMalformed(t *testing.T) {
 func TestSelectionAnnotationClosedDomainAndOwnedOpaqueBytes(t *testing.T) {
 	k := DerivedRowKey{Table: DerivedAttribute, Key: "opaque-\xff"}
 	row := DerivedRow{Key: k.Key, Value: []byte("value")}
-	row.Index = &SelectionIndex{Version: 1, Row: k, Incarnation: "inc", Branch: model.Natural64(0), ValueDigest: SelectionDigest(row.Value), Source: SelectionSource{Key: LockKey{Kind: LockDerived, Derived: &k}, Revision: model.Natural64(0), Present: true, Digest: SelectionDigest(row.Value)}, Facts: &SelectionFacts{Kind: SelectionLabelFact}}
+	row.Index = &SelectionIndex{Version: SelectionIndexVersion, Row: k, Incarnation: "inc", Branch: model.Natural64(0), ValueDigest: SelectionDigest(row.Value), Source: SelectionSource{Key: LockKey{Kind: LockDerived, Derived: &k}, Revision: model.Natural64(0), Present: true, Digest: SelectionDigest(row.Value)}, Facts: &SelectionFacts{Kind: SelectionLabelFact}}
 	if err := row.Index.Validate(k.Table, row); err != nil {
 		t.Fatal(err)
 	}

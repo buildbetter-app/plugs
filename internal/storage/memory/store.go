@@ -55,8 +55,9 @@ type state struct {
 	replays          map[scope]replay
 	allocators       map[string]driver.OfflineAllocator
 	parentCounters   map[string]driver.ParentCounter
-	hierarchy        *hierarchyIndex  // immutable; nil/empty roots never certify coverage
-	sourceLinks      *sourceLinkIndex // separate complete outgoing-link coverage
+	hierarchy        *hierarchyIndex         // immutable; nil/empty roots never certify coverage
+	sourceLinks      *sourceLinkIndex        // separate complete outgoing-link coverage
+	selection        *selectionCoverageState // independent temporal selection families
 }
 
 func (s *state) fork() *state {
@@ -80,17 +81,18 @@ func (s *state) fork() *state {
 // Store satisfies driver.Store, ResponseFinalizer and CheckpointStore. No
 // committed map, slice or record body is ever mutated after publication.
 type Store struct {
-	mu           sync.Mutex
-	state        *state
-	locks        map[string]*heldLock
-	transactions map[*transaction]bool
-	head         *transaction
-	notify       chan struct{}
-	epoch        uint64
-	active       *activeLease
-	checkpoints  map[string]driver.Checkpoint
-	closed       bool
-	now          func() time.Time
+	mu             sync.Mutex
+	state          *state
+	locks          map[string]*heldLock
+	transactions   map[*transaction]bool
+	head           *transaction
+	notify         chan struct{}
+	epoch          uint64
+	active         *activeLease
+	checkpoints    map[string]driver.Checkpoint
+	closed         bool
+	now            func() time.Time
+	selectionBuild *selectionBuild
 }
 
 // SupportsRestore advertises the only restore mode this store can publish
@@ -154,6 +156,7 @@ func NewWithOptions(options Options) (*Store, error) {
 		derivedKeys: make(map[driver.DerivedTable][]string),
 		hierarchy:   newHierarchyIndex(options.Incarnation),
 		sourceLinks: newSourceLinkIndex(options.Incarnation),
+		selection:   newSelectionCoverage(),
 	}
 	return s, nil
 }

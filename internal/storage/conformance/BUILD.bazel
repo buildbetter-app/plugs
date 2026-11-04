@@ -5,5 +5,5 @@ go_library(
     srcs = glob(["*.go"]),
     importpath = "github.com/buildbetter-app/plugs/internal/storage/conformance",
     visibility = ["//:__subpackages__"],
-    deps = ["//internal/core/model", "//internal/storage/driver"],
+    deps = ["//internal/core/authz", "//internal/core/model", "//internal/storage/driver"],
 )

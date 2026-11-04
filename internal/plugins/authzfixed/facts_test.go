@@ -1,11 +1,111 @@
 package authzfixed
 
 import (
+	"encoding/json"
+	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+func TestScopedSelectionUsesSameSourceRegistryAndOpaqueIdentities(t *testing.T) {
+	t.Run("complete_empty_domains", func(t *testing.T) {
+		empty := Facts{Namespace: ns()}
+		body, err := FactsSourceBytes(empty)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys, _ := SelectionRows(empty.Namespace)
+		source := driver.SelectionSource{Key: driver.LockKey{Kind: driver.LockDerived, Derived: &keys.Source}, Present: true, Digest: driver.SelectionDigest(body)}
+		rows, err := SelectionProjection(empty, source)
+		if err != nil || len(rows) != 3 {
+			t.Fatalf("empty source admission: %v", err)
+		}
+		for i, kind := range []driver.SelectionFactKind{driver.SelectionScopedGrantFact, driver.SelectionProjectFact, driver.SelectionTeamFact} {
+			index := rows[i].Index
+			if index == nil || index.Facts == nil || index.Facts.Kind != kind || len(index.Facts.Rows) != 0 || index.Source.Digest != source.Digest {
+				t.Fatal("empty source lost a complete same-source domain")
+			}
+		}
+	})
+	f := facts() // project ID=project; exact registry name=web/api.
+	f.Grants = []authz.Grant{
+		grant("user", "team", authz.ProjectScope, "project", "involved"),
+		grant("team", "team", authz.ProjectScope, "project", "involved"),
+		grant("user", "u", authz.TeamScope, "team", "member"),
+		grant("user", "u", authz.AuthorityScope, "authority", "admin"),
+	}
+	body, err := FactsSourceBytes(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, _ := SelectionRows(f.Namespace)
+	source := driver.SelectionSource{Key: driver.LockKey{Kind: driver.LockDerived, Derived: &keys.Source}, Revision: model.Natural64(7), Present: true, Digest: driver.SelectionDigest(body)}
+	rows, err := SelectionProjection(f, source)
+	if err != nil || len(rows) != 3 || rows[0].Index == nil || rows[0].Index.Facts.Kind != driver.SelectionScopedGrantFact {
+		t.Fatalf("missing complete scoped domain: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, fact := range rows[0].Index.Facts.Rows {
+		if fact.ScopeRef == nil {
+			t.Fatal("scope reference metadata absent")
+		}
+		matched := false
+		for _, grant := range f.Grants {
+			identity, _ := authz.GrantIdentity(f.Namespace, grant)
+			dependency, _ := authz.GrantDependency(f.Namespace, grant.Scope)
+			scope, _ := authz.ScopeComponent(f.Namespace, grant.Scope)
+			if fact.Subject != authz.Encode(grant.Subject.Kind, grant.Subject.ID) || fact.Scope != scope || fact.Role != grant.Role {
+				continue
+			}
+			if fact.ScopeKind != driver.SelectionScopeKind(grant.Scope.Kind) || !driver.SelectionSameRef(*fact.ScopeRef, grant.Scope.Ref) || identity == "" || dependency.Key == "" {
+				t.Fatal("opaque and semantic grant identities diverged")
+			}
+			if grant.Scope.Kind == authz.ProjectScope {
+				if fact.ProjectName == nil || *fact.ProjectName != "web/api" || *fact.ProjectName == fact.ScopeRef.ID {
+					t.Fatal("project name was synthesized from scope ID")
+				}
+			} else if fact.ProjectName != nil {
+				t.Fatal("nonproject scope acquired a project target")
+			}
+			seen[fact.Subject+fact.Scope+fact.Role], matched = true, true
+		}
+		if !matched {
+			t.Fatal("projection invented an unrelated grant")
+		}
+	}
+	if len(seen) != len(f.Grants) {
+		t.Fatal("user/team equal-text IDs collapsed")
+	}
+	// Every redundant column must be justified by the same complete source,
+	// including its immutable registry rather than just a grant's shape.
+	for name, edit := range map[string]func(*driver.SelectionSource){
+		"wrong digest":   func(s *driver.SelectionSource) { s.Digest = driver.SelectionDigest([]byte("other")) },
+		"missing source": func(s *driver.SelectionSource) { s.Present = false },
+		"foreign source": func(s *driver.SelectionSource) { key := keys.Source; key.Key += "/other"; s.Key.Derived = &key },
+	} {
+		t.Run(name, func(t *testing.T) {
+			wrong := source
+			edit(&wrong)
+			if rows, err := SelectionProjection(f, wrong); err == nil || rows != nil {
+				t.Fatal("unrelated source certified semantic columns")
+			}
+		})
+	}
+	mutated := f
+	mutated.Projects = append([]Project(nil), f.Projects...)
+	mutated.Projects[0].Name = "other/name"
+	if rows, err := SelectionProjection(mutated, source); err == nil || rows != nil {
+		t.Fatal("registry metadata rebound to old source bytes")
+	}
+	rows[0].Index.Facts.Rows[0].ScopeRef.ID = "changed owned output"
+	if !reflect.DeepEqual(f.Grants[0].Scope.Ref, ref("project")) {
+		t.Fatal("projection aliases source scope refs")
+	}
+}
 
 func ref(id string) model.Ref { return model.RefByID(id, model.Natural64(0)) }
 func ns() authz.Namespace {
@@ -91,5 +191,34 @@ func TestCanonicalFactAndRegistryValidation(t *testing.T) {
 	inactive.Grants = []authz.Grant{grant("user", "u", authz.TeamScope, "team", "member"), grant("team", "team", authz.ProjectScope, "project", "involved")}
 	if err := inactive.Validate(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSelectionFactLimitDoesNotChangeSourceAdmission(t *testing.T) {
+	f := facts()
+	f.Grants = make([]authz.Grant, driver.SelectionSummaryCap+1)
+	for i := range f.Grants {
+		f.Grants[i] = grant("user", fmt.Sprintf("user-%06d", i), authz.ProjectScope, "project", "involved")
+	}
+	body, err := FactsSourceBytes(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := SelectionRows(f.Namespace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := SelectionProjection(f, driver.SelectionSource{Key: driver.LockKey{Kind: driver.LockDerived, Derived: &keys.Source}, Present: true, Digest: driver.SelectionDigest(body)})
+	if err != nil || len(rows) != 3 || rows[0].Index != nil {
+		t.Fatalf("optional projection cap rejected valid source: rows=%d error=%v", len(rows), err)
+	}
+	var grants driver.SelectionFacts
+	if err := json.Unmarshal(rows[0].Value, &grants); err != nil || len(grants.Rows) != len(f.Grants) {
+		t.Fatal("large ordinary grant set was truncated")
+	}
+	for _, row := range rows[1:] {
+		if row.Index == nil || row.Index.Facts == nil {
+			t.Fatal("supported complete domain lost its annotation")
+		}
 	}
 }

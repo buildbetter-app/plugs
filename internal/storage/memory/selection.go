@@ -14,11 +14,13 @@ import (
 // selectionView keeps historical content out of the transaction's same-token
 // overlay. The reference evaluator scans memory; SQL execution is a later lane.
 type selectionView struct {
-	state   *state
-	at      uint64
-	records map[string]*driver.Record
-	derived map[string]driver.LockState
-	bumps   map[string]driver.LockKey
+	state            *state
+	at               uint64
+	records          map[string]*driver.Record
+	derived          map[string]driver.LockState
+	bumps            map[string]driver.LockKey
+	declarations     map[string]sourceDeclaration
+	writeIncarnation string
 }
 
 func (v selectionView) observeID(id string, at uint64) driver.LockState {
@@ -53,39 +55,46 @@ func (v selectionView) observeID(id string, at uint64) driver.LockState {
 	return s
 }
 func (v selectionView) source(index *driver.SelectionIndex, at uint64) (driver.LockState, error) {
-	s := v.observeID(keyID(index.Source.Key), at)
-	if s.Present != index.Source.Present || s.Revision.String() != index.Source.Revision.String() {
-		return driver.LockState{}, fmt.Errorf("%w: selection source observation changed", driver.ErrUnsupported)
+	return v.observeSource(index.Source, at)
+}
+func (v selectionView) observeSource(source driver.SelectionSource, at uint64) (driver.LockState, error) {
+	s := v.observeID(keyID(source.Key), at)
+	if s.Present != source.Present || s.Revision.String() != source.Revision.String() {
+		return driver.LockState{}, fmt.Errorf("%w: source observation changed", driver.ErrSelectionUnavailable)
 	}
 	digest := ""
 	if s.Present {
-		switch index.Source.Key.Kind {
+		switch source.Key.Kind {
 		case driver.LockRecord:
 			if s.Record == nil {
-				return driver.LockState{}, fmt.Errorf("%w: selection source image missing", driver.ErrUnsupported)
+				return driver.LockState{}, fmt.Errorf("%w: source image missing", driver.ErrSelectionUnavailable)
 			}
 			digest = driver.SelectionDigest(s.Record.Body)
 		case driver.LockDerived:
 			if s.Derived == nil {
-				return driver.LockState{}, fmt.Errorf("%w: selection source row missing", driver.ErrUnsupported)
+				return driver.LockState{}, fmt.Errorf("%w: source row missing", driver.ErrSelectionUnavailable)
 			}
 			digest = driver.SelectionDigest(s.Derived.Value)
 		}
 	}
-	if digest != index.Source.Digest {
-		return driver.LockState{}, fmt.Errorf("%w: selection source digest changed", driver.ErrUnsupported)
+	if digest != source.Digest {
+		return driver.LockState{}, fmt.Errorf("%w: source digest changed", driver.ErrSelectionUnavailable)
 	}
 	return s, nil
 }
 func (v selectionView) index(row driver.DerivedRow, table driver.DerivedTable, at uint64) (driver.LockState, error) {
 	if row.Index == nil {
-		return driver.LockState{}, fmt.Errorf("%w: selection projection unavailable", driver.ErrUnsupported)
+		return driver.LockState{}, fmt.Errorf("%w: projection unavailable", driver.ErrSelectionUnavailable)
 	}
 	if err := row.Index.Validate(table, row); err != nil {
-		return driver.LockState{}, err
+		return driver.LockState{}, fmt.Errorf("%w: %v", driver.ErrSelectionUnavailable, err)
 	}
-	if row.Index.Incarnation != v.state.meta.Incarnation || !row.Index.Branch.IsZero() {
-		return driver.LockState{}, fmt.Errorf("%w: selection index snapshot mismatch", driver.ErrUnsupported)
+	incarnation := v.state.meta.Incarnation
+	if v.writeIncarnation != "" {
+		incarnation = v.writeIncarnation
+	}
+	if row.Index.Incarnation != incarnation || !row.Index.Branch.IsZero() {
+		return driver.LockState{}, fmt.Errorf("%w: index snapshot mismatch", driver.ErrSelectionUnavailable)
 	}
 	return v.source(row.Index, at)
 }
@@ -123,7 +132,7 @@ func (v selectionView) beads(ctx context.Context, at uint64) (map[string]selecti
 			continue
 		}
 		if s.Derived == nil {
-			return nil, fmt.Errorf("%w: selection row missing", driver.ErrUnsupported)
+			return nil, fmt.Errorf("%w: selection row missing", driver.ErrSelectionUnavailable)
 		}
 		if s.Derived.Index == nil {
 			continue
@@ -133,7 +142,7 @@ func (v selectionView) beads(ctx context.Context, at uint64) (map[string]selecti
 			return nil, err
 		}
 		if s.Derived.Index.Bead == nil || source.Record == nil || source.Record.Kind != "bead" {
-			return nil, fmt.Errorf("%w: selection bead layout/source mismatch", driver.ErrUnsupported)
+			return nil, fmt.Errorf("%w: selection bead layout/source mismatch", driver.ErrSelectionUnavailable)
 		}
 		b := *s.Derived.Index.Bead
 		k, err := recordKey(b.Ref)
@@ -141,11 +150,12 @@ func (v selectionView) beads(ctx context.Context, at uint64) (map[string]selecti
 			return nil, err
 		}
 		if _, ok := out[k]; ok {
-			return nil, fmt.Errorf("%w: duplicate selection bead projection", driver.ErrUnsupported)
+			return nil, fmt.Errorf("%w: duplicate selection bead projection", driver.ErrSelectionUnavailable)
 		}
 		out[k] = selectionBead{row: b, revision: source.Revision}
 	}
-	// Coverage is checked against actual live sources, not a decorative marker.
+	// The temporal range was admitted before enumeration. This independent
+	// census still requires one exact projection per live source at that revision.
 	// Memory's reference path may enumerate; no SQL fallback is implied.
 	ids := map[string]bool{}
 	for id := range v.state.kinds {
@@ -161,46 +171,172 @@ func (v selectionView) beads(ctx context.Context, at uint64) (map[string]selecti
 		s := v.observeID(id, at)
 		if s.Present && s.Record != nil && s.Record.Kind == "bead" {
 			if _, ok := out[id]; !ok {
-				return nil, fmt.Errorf("%w: live bead lacks selection projection", driver.ErrUnsupported)
+				return nil, fmt.Errorf("%w: live bead lacks selection projection", driver.ErrSelectionUnavailable)
 			}
 		}
 	}
 	return out, nil
 }
 
-type selectionFacts map[string]driver.SelectionFacts
+type selectionFacts struct {
+	rows    map[string]driver.SelectionFacts
+	sources map[*driver.SelectionSources]map[string]bool
+	// Ref sets belong to expression nodes in this request, never to a store or
+	// snapshot cache. Different vectors can share a backing array or prefix.
+	refs map[*driver.SelectionExpr]map[string]bool
+}
 
-func (v selectionView) facts(ctx context.Context, e driver.SelectionExpr, at uint64, out selectionFacts) error {
+func newSelectionFacts() selectionFacts {
+	return selectionFacts{rows: map[string]driver.SelectionFacts{}, sources: map[*driver.SelectionSources]map[string]bool{}, refs: map[*driver.SelectionExpr]map[string]bool{}}
+}
+
+func (v selectionView) facts(ctx context.Context, e *driver.SelectionExpr, at uint64, out selectionFacts) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if e.Op == driver.SelectionRefs {
+		members := make(map[string]bool, len(e.Refs))
+		for _, ref := range e.Refs {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			// Plan validation already checked each Ref. Keep the same opaque
+			// canonical identity as SelectionSameRef, including branch aliases.
+			members[keyID(driver.LockKey{Kind: driver.LockRecord, Ref: &ref})] = true
+		}
+		out.refs[e] = members
 	}
 	if e.Exists != nil {
 		x := e.Exists
 		key := driver.LockKey{Kind: driver.LockDerived, Derived: &x.Row}
 		id := keyID(key)
-		if _, ok := out[id]; !ok {
+		if _, ok := out.rows[id]; !ok {
 			s := v.observeID(id, at)
 			if !s.Present || s.Derived == nil {
-				return fmt.Errorf("%w: selection fact coverage unavailable", driver.ErrUnsupported)
+				return fmt.Errorf("%w: selection fact coverage unavailable", driver.ErrSelectionUnavailable)
+			}
+			if index := s.Derived.Index; index != nil && index.Source.Key.Kind == driver.LockRecord {
+				family := driver.SelectionProjectionFamily{Table: x.Row.Table, Kind: x.Kind, Version: driver.SelectionIndexVersion}
+				switch {
+				case x.Row.Table == driver.DerivedAttribute && x.Kind == driver.SelectionLabelFact,
+					x.Row.Table == driver.DerivedReferenceIndex && x.Kind == driver.SelectionLinkFact,
+					x.Row.Table == driver.DerivedAncestorClosure && x.Kind == driver.SelectionAncestorFact:
+					if err := v.requireSelectionCoverage(family, at); err != nil {
+						return err
+					}
+				}
 			}
 			if _, err := v.index(*s.Derived, x.Row.Table, at); err != nil {
 				return err
 			}
 			if s.Derived.Index.Facts == nil {
-				return fmt.Errorf("%w: selection expected complete facts", driver.ErrUnsupported)
+				return fmt.Errorf("%w: selection expected complete facts", driver.ErrSelectionUnavailable)
 			}
-			out[id] = *s.Derived.Index.Facts
+			out.rows[id] = *s.Derived.Index.Facts
 		}
-		if out[id].Kind != x.Kind {
-			return fmt.Errorf("%w: selection fact domain uncovered", driver.ErrUnsupported)
+		if out.rows[id].Kind != x.Kind {
+			return fmt.Errorf("%w: selection fact domain uncovered", driver.ErrSelectionUnavailable)
 		}
 	}
-	for _, child := range e.Args {
-		if err := v.facts(ctx, child, at, out); err != nil {
+	if e.Sources != nil {
+		members, err := v.sourceMembers(ctx, *e, at)
+		if err != nil {
+			return err
+		}
+		out.sources[e.Sources] = members
+	}
+	for i := range e.Args {
+		if err := v.facts(ctx, &e.Args[i], at, out); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// Membership comes from the already-maintained source indexes, never the
+// SelectionFact link/closure rows or a second source declaration database.
+// This oracle may enumerate keys; it never obtains candidate bodies here.
+func (v selectionView) sourceMembers(ctx context.Context, e driver.SelectionExpr, at uint64) (map[string]bool, error) {
+	out := map[string]bool{}
+	refs := canonicalSourceKeys(e.Sources.Refs)
+	kinds := map[string]bool{}
+	for _, kind := range e.Sources.Kinds {
+		kinds[string(kind)] = true
+	}
+	if e.Op == driver.SelectionChildrenOp {
+		root, err := v.state.hierarchy.rootAt(v.state.meta.Incarnation, 0, at)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", driver.ErrSelectionUnavailable, err)
+		}
+		for parent := range refs {
+			for _, source := range root.children[parent] {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				id, err := recordKey(source.record.Ref)
+				if err != nil {
+					return nil, err
+				}
+				out[id] = true
+			}
+		}
+	} else {
+		root, err := v.state.sourceLinks.rootAt(v.state.meta.Incarnation, 0, at)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", driver.ErrSelectionUnavailable, err)
+		}
+		for target := range refs {
+			for kind := range kinds {
+				for _, id := range root.incoming[sourceLinkBucket{kind: kind, targetKey: target}] {
+					if err := ctx.Err(); err != nil {
+						return nil, err
+					}
+					out[id] = true
+				}
+			}
+		}
+	}
+	if at != v.at {
+		return out, nil
+	}
+	for id, record := range v.records {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if v.state.kinds[id] != "bead" && (record == nil || record.Kind != "bead") {
+			continue
+		}
+		delete(out, id) // a staged image shadows its entire committed membership
+		if record == nil {
+			continue
+		}
+		declaration, ok := v.declarations[id]
+		if !ok {
+			return nil, fmt.Errorf("%w: staged source declaration unavailable", driver.ErrSelectionUnavailable)
+		}
+		if e.Op == driver.SelectionChildrenOp {
+			if refs[declaration.parentKey] {
+				out[id] = true
+			}
+		} else {
+			// Parent-only publication is a complete, independent domain. It
+			// can satisfy Children, but Incoming requires the separate
+			// complete outgoing-links declaration.
+			if !declaration.graph {
+				return nil, fmt.Errorf("%w: staged outgoing link declaration unavailable", driver.ErrSelectionUnavailable)
+			}
+			for _, link := range declaration.links {
+				target, err := recordKey(link.target)
+				if err != nil {
+					return nil, err
+				}
+				if refs[target] && kinds[link.kind] {
+					out[id] = true
+				}
+			}
+		}
+	}
+	return out, nil
 }
 
 func beadValue(b *selectionBead, identity model.Ref, c driver.SelectionColumn) *driver.SelectionValue {
@@ -211,6 +347,11 @@ func beadValue(b *selectionBead, identity model.Ref, c driver.SelectionColumn) *
 	}
 	if b == nil {
 		return nil
+	}
+	for _, absent := range b.row.Absent {
+		if absent == c {
+			return nil
+		}
 	}
 	switch c {
 	case driver.SelectionType:
@@ -227,7 +368,7 @@ func beadValue(b *selectionBead, identity model.Ref, c driver.SelectionColumn) *
 	case driver.SelectionRevision:
 		value = driver.SelectionString(b.revision.String())
 	case driver.SelectionTemplate:
-		value = driver.SelectionString(b.row.Template)
+		value = driver.SelectionBool(b.row.Template)
 	case driver.SelectionParent:
 		if b.row.Parent == nil {
 			return nil
@@ -253,6 +394,13 @@ func factValue(f driver.SelectionFact, c driver.SelectionFactColumn) driver.Sele
 		return driver.SelectionString(f.Subject)
 	case driver.SelectionFactScope:
 		return driver.SelectionString(f.Scope)
+	case driver.SelectionFactScopeKind:
+		return driver.SelectionString(string(f.ScopeKind))
+	case driver.SelectionFactProjectName:
+		if f.ProjectName != nil {
+			return driver.SelectionString(*f.ProjectName)
+		}
+		return driver.SelectionValue{}
 	case driver.SelectionFactRole:
 		return driver.SelectionString(f.Role)
 	case driver.SelectionFactName:
@@ -266,7 +414,7 @@ func factValue(f driver.SelectionFact, c driver.SelectionFactColumn) driver.Sele
 	}
 	return driver.SelectionValue{}
 }
-func evalSelection(ctx context.Context, e driver.SelectionExpr, b *selectionBead, identity model.Ref, facts selectionFacts) (bool, error) {
+func evalSelection(ctx context.Context, e *driver.SelectionExpr, b *selectionBead, identity model.Ref, identityKey string, facts selectionFacts) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -278,31 +426,26 @@ func evalSelection(ctx context.Context, e driver.SelectionExpr, b *selectionBead
 	case driver.SelectionResourceExists:
 		return b != nil, nil
 	case driver.SelectionAll:
-		for _, a := range e.Args {
-			match, err := evalSelection(ctx, a, b, identity, facts)
+		for i := range e.Args {
+			match, err := evalSelection(ctx, &e.Args[i], b, identity, identityKey, facts)
 			if err != nil || !match {
 				return false, err
 			}
 		}
 		return true, nil
 	case driver.SelectionAny:
-		for _, a := range e.Args {
-			match, err := evalSelection(ctx, a, b, identity, facts)
+		for i := range e.Args {
+			match, err := evalSelection(ctx, &e.Args[i], b, identity, identityKey, facts)
 			if err != nil || match {
 				return match, err
 			}
 		}
 		return false, nil
 	case driver.SelectionNot:
-		match, err := evalSelection(ctx, e.Args[0], b, identity, facts)
+		match, err := evalSelection(ctx, &e.Args[0], b, identity, identityKey, facts)
 		return !match, err
 	case driver.SelectionRefs:
-		for _, r := range e.Refs {
-			if driver.SelectionSameRef(r, identity) {
-				return true, nil
-			}
-		}
-		return false, nil
+		return facts.refs[e][identityKey], nil
 	case driver.SelectionCompareOp:
 		c := e.Compare
 		v := beadValue(b, identity, c.Column)
@@ -319,7 +462,7 @@ func evalSelection(ctx context.Context, e driver.SelectionExpr, b *selectionBead
 	case driver.SelectionExistsOp:
 		x := e.Exists
 		id := keyID(driver.LockKey{Kind: driver.LockDerived, Derived: &x.Row})
-		for _, f := range facts[id].Rows {
+		for _, f := range facts.rows[id].Rows {
 			if err := ctx.Err(); err != nil {
 				return false, err
 			}
@@ -347,6 +490,12 @@ func evalSelection(ctx context.Context, e driver.SelectionExpr, b *selectionBead
 				return true, nil
 			}
 		}
+	case driver.SelectionChildrenOp, driver.SelectionIncomingOp:
+		id, err := recordKey(identity)
+		if err != nil {
+			return false, err
+		}
+		return facts.sources[e.Sources][id], nil
 	}
 	return false, nil // only reachable for already-rejected plans
 }
@@ -382,20 +531,30 @@ func compareValue(a, b driver.SelectionValue) int {
 	}
 	return 0
 }
+func orderValue(b *selectionBead, c driver.SelectionColumn) driver.SelectionValue {
+	if value := beadValue(b, b.row.Ref, c); value != nil {
+		return *value
+	}
+	// Existing Ready priority defaults to numeric zero. Ordinary view fields
+	// sort by their existing empty string default, including absent project.
+	if c == driver.SelectionPriority {
+		return driver.SelectionInt(0)
+	}
+	return driver.SelectionString("")
+}
+
 func orderKey(b selectionBead, order []driver.SelectionOrder) driver.SelectionKey {
 	k := driver.SelectionKey{Ref: b.row.Ref, Revision: b.revision, MembershipLeaf: b.row.MembershipLeaf, Order: make([]driver.SelectionValue, 0, len(order))}
 	for _, o := range order {
-		v := beadValue(&b, b.row.Ref, o.Column)
-		if v == nil {
-			x := driver.SelectionString("")
-			v = &x
-		}
-		k.Order = append(k.Order, *v)
+		k.Order = append(k.Order, orderValue(&b, o.Column))
 	}
 	return k
 }
 
 func (v selectionView) selectPlan(ctx context.Context, p driver.SelectionPlan) (driver.SelectionResult, error) {
+	return v.evaluate(ctx, p, false)
+}
+func (v selectionView) evaluate(ctx context.Context, p driver.SelectionPlan, existence bool) (driver.SelectionResult, error) {
 	zero := driver.SelectionResult{}
 	if err := ctx.Err(); err != nil {
 		return zero, err
@@ -416,26 +575,69 @@ func (v selectionView) selectPlan(ctx context.Context, p driver.SelectionPlan) (
 	if c < floor {
 		return zero, driver.ErrTruncated{Floor: v.state.meta.HistoryFloor}
 	}
-	content, err := v.beads(ctx, c)
+	// A complete final image cannot prove an unbuilt or interrupted revision
+	// range. Both planes require their own certificate, even with no candidates.
+	family := driver.SelectionProjectionFamily{Table: driver.DerivedSortKey, Version: driver.SelectionIndexVersion}
+	if err := v.requireSelectionCoverage(family, c); err != nil {
+		return zero, err
+	}
+	if err := v.requireSelectionCoverage(family, a); err != nil {
+		return zero, err
+	}
+	boundary, err := p.Boundary.Description()
+	if err != nil {
+		return zero, err
+	}
+	for _, source := range boundary.Sources {
+		if err := ctx.Err(); err != nil {
+			return zero, err
+		}
+		if _, err := v.observeSource(source, a); err != nil {
+			return zero, err
+		}
+	}
+	// Relation coverage is checked by facts for every declared source arm,
+	// including arms hidden below false/NOT, empty vectors and probes. Parent
+	// and outgoing-link roots are independent domains: a Children-only plan
+	// needs the former, while Incoming needs the latter. Requiring both here
+	// would reject valid Parent-only stores and would turn an unrelated
+	// ordinary plan into a link-coverage refusal.
+	cv := v
+	if p.ContentCommitted || c != a {
+		cv.records, cv.derived, cv.bumps, cv.declarations = nil, nil, nil, nil
+	}
+	// Preflight every declared arm at its own plane before even reading bead
+	// candidates. False/NOT, exclusions, empty vectors and probes cannot hide
+	// unavailable facts or independent source domains.
+	cf, af := newSelectionFacts(), newSelectionFacts()
+	if err = cv.facts(ctx, &p.Membership, c, cf); err != nil {
+		return zero, err
+	}
+	if err = v.facts(ctx, &p.Authorization, a, af); err != nil {
+		return zero, err
+	}
+	if boundary.HostExpression != nil {
+		if err = v.facts(ctx, boundary.HostExpression, a, af); err != nil {
+			return zero, err
+		}
+	}
+	content, err := cv.beads(ctx, c)
 	if err != nil {
 		return zero, err
 	}
 	authority := content
-	if c != a {
+	if c != a || p.ContentCommitted {
 		authority, err = v.beads(ctx, a)
 		if err != nil {
 			return zero, err
 		}
 	}
-	cf, af := selectionFacts{}, selectionFacts{}
-	if err = v.facts(ctx, p.Membership, c, cf); err != nil {
-		return zero, err
-	}
-	if err = v.facts(ctx, p.Authorization, a, af); err != nil {
-		return zero, err
-	}
+	excluded := canonicalSourceKeys(p.Excluded)
 	items := make([]selectionBead, 0)
 	for id, b := range content {
+		if excluded[id] {
+			continue
+		}
 		if err = ctx.Err(); err != nil {
 			return zero, err
 		}
@@ -443,18 +645,30 @@ func (v selectionView) selectPlan(ctx context.Context, p driver.SelectionPlan) (
 		if x, ok := authority[id]; ok {
 			current = &x
 		}
-		member, err := evalSelection(ctx, p.Membership, &b, b.row.Ref, cf)
+		member, err := evalSelection(ctx, &p.Membership, &b, b.row.Ref, id, cf)
 		if err != nil {
 			return zero, err
 		}
 		if !member {
 			continue
 		}
-		allowed, err := evalSelection(ctx, p.Authorization, current, b.row.Ref, af)
+		allowed, err := evalSelection(ctx, &p.Authorization, current, b.row.Ref, id, af)
 		if err != nil {
 			return zero, err
 		}
+		if allowed && boundary.HostExpression != nil {
+			allowed, err = evalSelection(ctx, boundary.HostExpression, current, b.row.Ref, id, af)
+			if err != nil {
+				return zero, err
+			}
+		}
 		if allowed {
+			if existence {
+				if err := ctx.Err(); err != nil {
+					return zero, err
+				}
+				return driver.SelectionResult{Total: 1}, nil
+			}
 			items = append(items, b)
 			if len(items) > p.EffectiveCap() {
 				return zero, driver.ErrSelectionCap{Limit: p.EffectiveCap()}
@@ -463,16 +677,7 @@ func (v selectionView) selectPlan(ctx context.Context, p driver.SelectionPlan) (
 	}
 	sort.Slice(items, func(i, j int) bool {
 		for _, o := range p.Order {
-			a, b := beadValue(&items[i], items[i].row.Ref, o.Column), beadValue(&items[j], items[j].row.Ref, o.Column)
-			if a == nil {
-				x := driver.SelectionString("")
-				a = &x
-			}
-			if b == nil {
-				x := driver.SelectionString("")
-				b = &x
-			}
-			cmp := compareValue(*a, *b)
+			cmp := compareValue(orderValue(&items[i], o.Column), orderValue(&items[j], o.Column))
 			if cmp != 0 {
 				if o.Desc {
 					return cmp > 0
@@ -556,7 +761,7 @@ func (r *reader) Select(ctx context.Context, p driver.SelectionPlan) (driver.Sel
 }
 func (t *transaction) selectionView() selectionView {
 	at, _ := t.snapshotAt.Uint64()
-	return selectionView{state: t.base, at: at, records: t.records, derived: t.derived, bumps: t.bumps}
+	return selectionView{state: t.base, at: at, records: t.records, derived: t.derived, bumps: t.bumps, declarations: t.sourceDeclarations}
 }
 func (t *transaction) Select(ctx context.Context, p driver.SelectionPlan) (driver.SelectionResult, error) {
 	s := t.store
@@ -571,8 +776,40 @@ func (t *transaction) Select(ctx context.Context, p driver.SelectionPlan) (drive
 var _ driver.SelectionReader = (*reader)(nil)
 var _ driver.SelectionReader = (*transaction)(nil)
 
+func (t *transaction) PutSelectionDerived(ctx context.Context, table driver.DerivedTable, del, add []driver.DerivedRow) error {
+	return t.PutDerived(ctx, table, del, add)
+}
+
+var _ driver.SelectionIndexWriter = (*transaction)(nil)
+
+func (t *transaction) FreshSelectionExists(ctx context.Context, p driver.SelectionPlan) (bool, error) {
+	s := t.store
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := t.check(ctx); err != nil {
+		return false, err
+	}
+	if s.head != t {
+		return false, fmt.Errorf("%w: fresh existence requires Head", driver.ErrSelectionInvalid)
+	}
+	if p.Mode != driver.SelectionCountMode || p.Cap != 0 || p.Page != nil || p.GroupBy != "" || len(p.Excluded) != 0 || p.ContentRevision.String() != p.AuthorityRevision.String() {
+		return false, fmt.Errorf("%w: fresh existence requires uncapped current count intent", driver.ErrSelectionInvalid)
+	}
+	at, _ := s.state.meta.Head.Uint64()
+	result, err := (selectionView{state: s.state, at: at}).evaluate(ctx, p, true)
+	if err != nil {
+		return false, err
+	}
+	return result.Total != 0, nil
+}
+
+var _ driver.FreshSelectionExistsReader = (*transaction)(nil)
+
 func (t *transaction) validateSelectionWrites(proposed map[string]driver.LockState) error {
 	v := t.selectionView()
+	if t.restore != nil {
+		v.writeIncarnation = t.restore.Incarnation
+	}
 	v.derived = proposed
 	for _, s := range proposed {
 		if !s.Present || s.Derived == nil || s.Derived.Index == nil {

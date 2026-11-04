@@ -415,6 +415,9 @@ func (p *prepared) response(revision model.Revision, meta model.WriteMeta) (mode
 }
 
 func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRef, meta model.WriteMeta, principal, hash string, terminalProbe port.ClaimNextReadyProbe) (model.Commit, error) {
+	if err := p.prepareProjections(ctx); err != nil {
+		return model.Commit{}, err
+	}
 	sentinels := p.sentinels()
 	writes := map[string]*pending{}
 	for id, pending := range p.writes {
@@ -457,6 +460,9 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	}
 	if p.hierarchyDelta != nil {
 		allocatorKeys = append(allocatorKeys, p.hierarchyDelta.locks...)
+	}
+	if p.projections != nil {
+		allocatorKeys = append(allocatorKeys, p.projections.locks...)
 	}
 	locks, err := p.snapshot.locks(writes, sentinels, allocatorKeys...)
 	if err != nil {
@@ -585,28 +591,11 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	if err != nil {
 		return model.Commit{}, err
 	}
-	ids := make([]string, 0, len(writes))
-	for id := range writes {
-		ids = append(ids, id)
+	if err := publishSourceProjections(ctx, tx, p.projections.sources); err != nil {
+		return model.Commit{}, err
 	}
-	sort.Strings(ids)
-	for _, id := range ids {
-		pending := p.writes[id]
-		if pending.deleted {
-			err = tx.Delete(ctx, pending.ref)
-		} else {
-			body, e := pending.body()
-			if e != nil {
-				return model.Commit{}, e
-			}
-			err = PutSourceRecord(ctx, tx, driver.Record{Ref: pending.ref, Kind: pending.kind, Body: body})
-		}
-		if err != nil {
-			return model.Commit{}, err
-		}
-	}
-	if p.hierarchyDelta != nil && (len(p.hierarchyDelta.remove) != 0 || len(p.hierarchyDelta.add) != 0) {
-		if err := tx.PutDerived(ctx, driver.DerivedAncestorClosure, p.hierarchyDelta.remove, p.hierarchyDelta.add); err != nil {
+	if len(p.projections.remove) != 0 || len(p.projections.add) != 0 {
+		if err := PutAncestorProjections(ctx, tx, p.projections.remove, p.projections.add); err != nil {
 			return model.Commit{}, err
 		}
 	}
