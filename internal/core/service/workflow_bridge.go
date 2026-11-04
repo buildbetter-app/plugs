@@ -6,6 +6,8 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/port"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
@@ -113,4 +115,31 @@ func workflowUpdateRefs(fields map[string]any) ([]model.Ref, error) {
 		return nil, failure("invalid_params", "invalid workflow auxiliary fields")
 	}
 	return workflowAuxiliaryRefs(aux.Parent, aux.Links), nil
+}
+
+// workflowWriteGuard runs only on a receipt miss, after ordinary pre-image
+// authorization. Its checkpoint expectation joins the writer's tracked reads.
+func (s *Service) workflowWriteGuard(ctx context.Context, proposal port.ProposedChange) (driver.CheckpointExpectation, error) {
+	ids := []string{}
+	for _, change := range proposal.Changes {
+		if change.Resource.Kind != "bead" || !hasDocument(change.After) {
+			continue
+		}
+		if proposal.Meta.Method == "bead.claim" || proposal.Meta.Method == "bead.claimNext" || proposal.Meta.Method == "bead.close" || proposal.Meta.Method == "tx.apply" && change.Op.Kind == model.OpClose {
+			ids = append(ids, change.Resource.Ref.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return driver.CheckpointExpectation{}, nil
+	}
+	blocked, expectation, err := s.workflow.OrdinaryBlockerSnapshot(ctx, proposal.Principal, ids, proposal.Meta)
+	if err != nil {
+		return driver.CheckpointExpectation{}, err
+	}
+	for _, id := range ids {
+		if blocked[id] {
+			return driver.CheckpointExpectation{}, failure("ontology_guard_failed", "an active workflow dependency is not satisfied")
+		}
+	}
+	return expectation, nil
 }

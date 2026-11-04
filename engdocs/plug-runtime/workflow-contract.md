@@ -79,6 +79,11 @@ equal request returns that identity/commit-only terminal receipt and never
 recreates a live run; a changed request or scope returns
 `idempotency_key_reused`. Completed ephemeral items are absent from
 `bead.ready`, `bead.get`, and all permanent history/as-of/export reads.
+Demotion receipts follow the same rule: terminal replay returns the completed
+run/item identity and revision with empty body fields. Promotion erases the
+removed item's receipt projections in its atomic move. Invocation replay for
+a partially promoted checklist contains only its remaining live items; final
+promotion yields the completed run identity with no items.
 The plugin retains identity-only lifecycle audit entries for invocation,
 completion, lifecycle operations, and receipt GC. These entries contain the
 receipt scope and typed run/item IDs but never titles, fields, comments, claims,
@@ -111,7 +116,11 @@ Mixed-plane `bead.link` and `bead.unlink` validate ordinary endpoint existence
 and project before the provider CAS. Both workflow endpoints are owner-checked.
 The checkpoint owns mixed edges, and ordinary reads append them to ordinary
 links. Ready and direct claim resolve ordinary blocker status using the canonical
-ontology; durable ready consults the active workflow blockers. A closed ordinary
+ontology. Durable get/ready, direct claim/claimNext/close and ordered `tx.apply`
+close operations consult the same active workflow dependency predicate. Ordinary
+write decisions run after receipt replay and pre-image authorization, and their
+checkpoint generation is fenced in the core transaction. A concurrent mixed-edge
+edit forces a fresh decision, including on receipt-only no-op commits. A closed ordinary
 blocker releases its workflow dependent. Completing a run removes its mixed
 edges and clears other-run workflow parents that referred to deleted items.
 
@@ -161,3 +170,26 @@ A restore into a different incarnation refuses a retained prior-incarnation
 operation with `idempotency_key_reused`; it cannot turn a scoped receipt miss
 into another run. Live operational state remains recoverable from the
 persistent checkpoint.
+
+### Status and child-gate lowering
+
+Workflow state uses `open`, `claimed`, and `closed`; concrete project ontology
+status keys never become workflow state. Demotion maps unstarted and unleased
+started work to unclaimed `open`. Completed/canceled sources are already complete
+one-item checklists: the atomic move deletes the ordinary source and publishes
+only completed replay identity, with no live workflow payload. Deferred/triage
+sources return typed `unsupported` until a workflow scheduling bridge exists.
+Promotion preserves the target's ontology status. Open or expired-claim sources
+require an unstarted ordinary target; a closed source requires the target's
+canonical close slot. Clients prepare a target with normal lifecycle verbs;
+the move cannot bypass ontology transitions by patching a status field. Migration
+copies only the stored explicit blocker flag and preserves dependency edges;
+a computed ready/get blocker never becomes a permanent flag on the target.
+
+Every `waits-for` edge evaluates its child gate, including absent/default metadata
+and `also_blocks=false`. Durable spawners use the canonical ontology graph resolver.
+Workflow spawners use Parent/legacy parent-child membership in the checkpoint.
+Explicit all-children/default gates require no open child; any-children also allows
+one terminal child; `also_blocks` additionally requires the spawner to be closed.
+Absent metadata retains the terminal-spawner-or-no-open-children fallback. Ordinary
+hierarchy operations do not admit durable children under workflow parents.

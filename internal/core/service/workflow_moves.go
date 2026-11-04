@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
@@ -91,6 +92,16 @@ func (s *Service) WorkflowPromote(ctx context.Context, by model.PrincipalRef, re
 		if target.doc.Project != item.Project || meta.Project != item.Project || target.doc.Type != item.Type {
 			return failure("invalid_params", "promotion target must have the source project and type")
 		}
+		effective := s.ontology.effective(item.Project)
+		category, known := effective.Category(state(target.doc).Status)
+		compatible := known && (item.Status == "open" || item.Status == "claimed") && category == ontology.Unstarted
+		if item.Status == "closed" {
+			closeStatus, ok := effective.SlotStatus(item.Type, ontology.Close)
+			compatible = ok && state(target.doc).Status == closeStatus
+		}
+		if !compatible {
+			return failure("invalid_params", "prepare the promotion target in the equivalent ontology lifecycle state before moving")
+		}
 		if target.doc.Lease != nil {
 			return failure("busy", "promotion target has an ordinary claim")
 		}
@@ -99,10 +110,18 @@ func (s *Service) WorkflowPromote(ctx context.Context, by model.PrincipalRef, re
 			fields = map[string]any{}
 		}
 		fields["title"] = item.Title
-		fields["status"] = item.Status
+		// Equivalent status remains owned by canonical ontology lifecycle slots.
+		delete(fields, "status")
 		fields["labels"] = append([]string{}, item.Labels...)
-		fields["blocked"] = item.Blocked
+		if item.Blocked {
+			fields["blocked"] = true
+		} else {
+			fields["blocked"] = nil
+		}
 		for name := range target.doc.Fields {
+			if name == "status" {
+				continue
+			}
 			if _, ok := fields[name]; !ok {
 				fields[name] = nil
 			}
@@ -183,10 +202,21 @@ func (s *Service) WorkflowDemote(ctx context.Context, by model.PrincipalRef, req
 		if image.Label == "" {
 			image.Label = req.Source.ID
 		}
-		image.Status = state(row.doc).Status
-		if image.Status == "in_progress" {
-			image.Status = "open"
+		category, known := s.ontology.effective(row.doc.Project).Category(state(row.doc).Status)
+		if !known {
+			return image, failure("invalid_params", "demotion source has no canonical status category")
 		}
+		switch category {
+		case ontology.Unstarted, ontology.Started:
+			// Unleased live work becomes an unclaimed workflow task. No core
+			// lease or concrete ontology status is imported into plugin state.
+			image.Status = "open"
+		case ontology.Completed, ontology.Canceled:
+			image.Status = "closed"
+		default:
+			return image, failure("unsupported", "demotion of deferred or triage work requires a workflow scheduling bridge")
+		}
+		delete(image.Fields, "status")
 		image.Blocked, _ = row.doc.Fields["blocked"].(bool)
 		for name, raw := range row.doc.Metadata {
 			var value any

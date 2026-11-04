@@ -11,11 +11,14 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"reflect"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/plugins/authnapikey"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
@@ -34,10 +37,10 @@ type b26HTTP struct {
 	lease  driver.ActiveLease
 	server *httptest.Server
 	token  string
-	serial int
+	serial atomic.Int64
 }
 
-func b26Host(t *testing.T, store driver.Store) *b26HTTP {
+func b26Host(t *testing.T, store driver.Store, writerOptions ...pipeline.Option) *b26HTTP {
 	t.Helper()
 	ctx := context.Background()
 	lease, err := store.Lease(ctx, "b26-public", driver.LeaseTTL)
@@ -59,7 +62,7 @@ func b26Host(t *testing.T, store driver.Store) *b26HTTP {
 	}
 	ontology := service.NewOntology(nil)
 	options = append(options, service.WithOntology(ontology))
-	writer := pipeline.New(store, lease, pipeline.WithOntology(ontology))
+	writer := pipeline.New(store, lease, append([]pipeline.Option{pipeline.WithOntology(ontology)}, writerOptions...)...)
 	domain := service.New(store, lease, writer, options...)
 	registry, err := rpc.NewRegistry()
 	if err != nil {
@@ -91,7 +94,7 @@ func b26Host(t *testing.T, store driver.Store) *b26HTTP {
 }
 func (h *b26HTTP) call(t *testing.T, method string, params map[string]any, label string) reply {
 	t.Helper()
-	h.serial++
+	serial := h.serial.Add(1)
 	values := map[string]any{}
 	for name, value := range params {
 		values[name] = value
@@ -101,7 +104,7 @@ func (h *b26HTTP) call(t *testing.T, method string, params map[string]any, label
 		meta["idempotencyKey"] = key(label)
 	}
 	values["_meta"] = meta
-	data, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": h.serial, "method": method, "params": values})
+	data, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": serial, "method": method, "params": values})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,6 +226,12 @@ func TestB26PublicLifecyclePostgreSQLAtomicMoves(t *testing.T) {
 }
 func b26Lifecycle(t *testing.T, h *b26HTTP, db *sql.DB, engine string) {
 	t.Run("CheckpointNoopReplayAndCASRollback", func(t *testing.T) { b26CheckpointNoop(t, h) })
+	t.Run("MixedBlockerDirectWritesAndReplay", func(t *testing.T) { b26DirectGuards(t, h) })
+	t.Run("OntologyDemotionFreshAndCompleted", func(t *testing.T) { b26DemotionStatuses(t, h) })
+	t.Run("WaitsForDurableChildGates", func(t *testing.T) { b26WaitsForDurable(t, h) })
+	t.Run("WaitsForWorkflowChildGates", func(t *testing.T) { b26WaitsForWorkflow(t, h) })
+	t.Run("PromotionDoesNotPersistDerivedBlockers", func(t *testing.T) { b26PromotionBlockers(t, h) })
+	t.Run("ExplicitBlockerFlagMoves", func(t *testing.T) { b26ExplicitBlocker(t, h) })
 	ctx := context.Background()
 	target := h.create(t, "b26 target")
 	blocker := h.create(t, "b26 durable blocker")
@@ -311,6 +320,9 @@ func b26Lifecycle(t *testing.T, h *b26HTTP, db *sql.DB, engine string) {
 	if fields["title"] != "ephemeral body" || fields["description"] != "preserve me" || len(bead["labels"].([]any)) != 1 || !reflect.DeepEqual(durable["comments"], beforeItem["comments"]) {
 		t.Fatalf("promotion lost public auxiliary fields: %v", durable)
 	}
+	if !h.ready(t, true)[target] || bead["blocked"] == true {
+		t.Fatal("promotion persisted a satisfied dependency as an explicit blocker")
+	}
 	b26NoVersion(t, h.store, item)
 	demoted := decode[workflowplugin.DemoteResult](t, b26OK(t, h.call(t, "x.workflow.run.demote", map[string]any{"source": ref(target), "template": "demoted", "label": "moved"}, "demote")))
 	retry := decode[workflowplugin.DemoteResult](t, b26OK(t, h.call(t, "x.workflow.run.demote", map[string]any{"source": ref(target), "template": "demoted", "label": "moved"}, "demote")))
@@ -333,6 +345,19 @@ func b26Lifecycle(t *testing.T, h *b26HTTP, db *sql.DB, engine string) {
 	b26NoVersion(t, h.store, keeper)
 	for i, id := range []string{keeper, demoted.Item.ID} {
 		b26OK(t, h.call(t, "bead.close", map[string]any{"id": ref(id), "reason": "done"}, fmt.Sprintf("finish-%d", i)))
+	}
+	completed := workflowCheckpoint(t, h.store.(driver.CheckpointStore))
+	for _, payload := range []string{"ephemeral body", "preserve me", "preserve original comment", "user.note"} {
+		if bytes.Contains(completed.Checkpoint.Payload, []byte(payload)) {
+			t.Fatalf("completed lifecycle retained payload %q in the raw checkpoint", payload)
+		}
+	}
+	terminal := decode[workflowplugin.DemoteResult](t, b26OK(t, h.call(t, "x.workflow.run.demote", map[string]any{"source": ref(target), "template": "demoted", "label": "moved"}, "demote")))
+	if terminal.Run.State != "completed" || terminal.Item.ID != demoted.Item.ID || terminal.Item.Title != "" || terminal.Item.Fields != nil || terminal.Item.Metadata != nil || terminal.Item.Comments != nil || terminal.Item.Claim != nil {
+		t.Fatalf("completed demotion replay retained a payload or recreated the run: %+v", terminal)
+	}
+	if after := workflowCheckpoint(t, h.store.(driver.CheckpointStore)); !reflect.DeepEqual(after, completed) {
+		t.Fatal("terminal demotion replay published a new checkpoint")
 	}
 	if !h.ready(t, true)[dependent] {
 		t.Fatal("completion did not delete mixed-plane blocker")
@@ -400,6 +425,13 @@ func TestB26NativeLifecycleRegistrationAndTrustedMetadataSQLite(t *testing.T) {
 	run := decode[workflowplugin.InvokeResult](t, invoke("x.workflow.invoke", "native-invoke", workflowplugin.InvokeRequest{Template: "native", Project: project, Mode: "ephemeral", Checklist: []workflowplugin.ChecklistItem{{Label: "item", Title: "native body", Type: "issue"}}}))
 	target := h.create(t, "native-target")
 	invoke("x.workflow.run.promote", "native-promote", workflowplugin.PromoteRequest{Item: ref(run.Items[0].ID), Target: ref(target)})
+	if checkpoint := workflowCheckpoint(t, store.(driver.CheckpointStore)); bytes.Contains(checkpoint.Checkpoint.Payload, []byte("native body")) {
+		t.Fatal("final native promotion retained the removed source payload in its checkpoint")
+	}
+	terminal := decode[workflowplugin.InvokeResult](t, invoke("x.workflow.invoke", "native-invoke", workflowplugin.InvokeRequest{Template: "native", Project: project, Mode: "ephemeral", Checklist: []workflowplugin.ChecklistItem{{Label: "item", Title: "native body", Type: "issue"}}}))
+	if terminal.Run == nil || terminal.Run.State != "completed" || len(terminal.Items) != 0 {
+		t.Fatalf("final promotion replay resurrected an ephemeral item: %+v", terminal)
+	}
 	moved := decode[workflowplugin.DemoteResult](t, invoke("x.workflow.run.demote", "native-demote", workflowplugin.DemoteRequest{Source: ref(target), Template: "native", Label: "back"}))
 	if moved.Item.Title != "native body" {
 		t.Fatalf("native lifecycle body=%+v", moved)
@@ -453,5 +485,286 @@ func b26CheckpointNoop(t *testing.T, h *b26HTTP) {
 	after, err := h.store.Meta(ctx)
 	if err != nil || before.Head != after.Head {
 		t.Fatalf("receipt-only publication consumed Head: %+v %v", after, err)
+	}
+}
+
+func b26Invoke(t *testing.T, h *b26HTTP, label string, count int) []workflowplugin.ItemView {
+	t.Helper()
+	checklist := make([]map[string]any, count)
+	for i := range checklist {
+		checklist[i] = map[string]any{"label": fmt.Sprintf("item-%d", i), "title": label, "type": "issue"}
+	}
+	return decode[workflowplugin.InvokeResult](t, b26OK(t, h.call(t, "x.workflow.invoke", map[string]any{"template": label, "project": project, "mode": "ephemeral", "checklist": checklist}, label))).Items
+}
+
+func b26AssertRefusalUnchanged(t *testing.T, h *b26HTTP, method string, params map[string]any, label, code string) {
+	t.Helper()
+	before := workflowCheckpoint(t, h.store.(driver.CheckpointStore))
+	meta, err := h.store.Meta(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := h.call(t, method, params, label)
+	if result.Error == nil || string(result.Error.Data.Code) != code {
+		t.Fatalf("%s expected %s, got %+v", method, code, result.Error)
+	}
+	after, err := h.store.Meta(context.Background())
+	if err != nil || after != meta || !reflect.DeepEqual(before, workflowCheckpoint(t, h.store.(driver.CheckpointStore))) {
+		t.Fatalf("%s refusal published a graph/checkpoint change: %v", method, err)
+	}
+}
+
+func b26DirectGuards(t *testing.T, h *b26HTTP) {
+	claimTarget, closeTarget, batchTarget := h.create(t, "guard-claim"), h.create(t, "guard-close"), h.create(t, "guard-batch")
+	blocker := b26Invoke(t, h, "guard-blocker", 1)[0].ID
+	for i, id := range []string{claimTarget, closeTarget, batchTarget} {
+		b26OK(t, h.call(t, "bead.link", map[string]any{"from": ref(id), "to": ref(blocker), "kind": "blocks"}, fmt.Sprintf("guard-link-%d", i)))
+		if h.ready(t, true)[id] || h.get(t, id)["bead"].(map[string]any)["blocked"] != true {
+			t.Fatal("mixed blocker disagreed between ordinary get and ready")
+		}
+	}
+	batch := map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{{Kind: model.OpClose, Close: &model.CloseOp{Target: ref(batchTarget)}}}}}
+	b26AssertRefusalUnchanged(t, h, "bead.claim", map[string]any{"id": ref(claimTarget)}, "guard-claim-write", "ontology_guard_failed")
+	b26AssertRefusalUnchanged(t, h, "bead.close", map[string]any{"id": ref(closeTarget), "reason": "guarded close"}, "guard-close-write", "ontology_guard_failed")
+	b26AssertRefusalUnchanged(t, h, "tx.apply", batch, "guard-batch-write", "ontology_guard_failed")
+	b26OK(t, h.call(t, "bead.close", map[string]any{"id": ref(blocker)}, "guard-complete"))
+	claim := b26OK(t, h.call(t, "bead.claim", map[string]any{"id": ref(claimTarget)}, "guard-claim-write"))
+	closeResult := b26OK(t, h.call(t, "bead.close", map[string]any{"id": ref(closeTarget), "reason": "guarded close"}, "guard-close-write"))
+	batchResult := b26OK(t, h.call(t, "tx.apply", batch, "guard-batch-write"))
+	newBlocker := b26Invoke(t, h, "guard-new-blocker", 1)[0].ID
+	for i, id := range []string{claimTarget, closeTarget, batchTarget} {
+		b26OK(t, h.call(t, "bead.link", map[string]any{"from": ref(id), "to": ref(newBlocker), "kind": "blocks"}, fmt.Sprintf("guard-new-link-%d", i)))
+	}
+	before := workflowCheckpoint(t, h.store.(driver.CheckpointStore))
+	meta, err := h.store.Meta(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, call := range []struct {
+		method, label string
+		params        map[string]any
+		result        json.RawMessage
+	}{
+		{"bead.claim", "guard-claim-write", map[string]any{"id": ref(claimTarget)}, claim},
+		{"bead.close", "guard-close-write", map[string]any{"id": ref(closeTarget), "reason": "guarded close"}, closeResult},
+		{"tx.apply", "guard-batch-write", batch, batchResult},
+	} {
+		var want, got map[string]any
+		if err := json.Unmarshal(call.result, &want); err != nil {
+			t.Fatal(err)
+		}
+		raw := b26OK(t, h.call(t, call.method, call.params, call.label))
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatal(err)
+		}
+		delete(want, "_meta")
+		delete(got, "_meta")
+		if !reflect.DeepEqual(want, got) {
+			t.Fatalf("%s replay consulted a later blocker or changed receipt: %s", call.method, raw)
+		}
+	}
+	after, err := h.store.Meta(context.Background())
+	if err != nil || after != meta || !reflect.DeepEqual(before, workflowCheckpoint(t, h.store.(driver.CheckpointStore))) {
+		t.Fatal("ordinary replay republished graph or checkpoint")
+	}
+	b26OK(t, h.call(t, "bead.close", map[string]any{"id": ref(newBlocker)}, "guard-new-complete"))
+}
+
+func b26DemotionStatuses(t *testing.T, h *b26HTTP) {
+	fresh := h.create(t, "status-fresh-source")
+	if h.get(t, fresh)["bead"].(map[string]any)["status"] != "todo" {
+		t.Fatal("fixture lacks canonical initial status")
+	}
+	moved := decode[workflowplugin.DemoteResult](t, b26OK(t, h.call(t, "x.workflow.run.demote", map[string]any{"source": ref(fresh)}, "status-demote-fresh")))
+	if moved.Item.Status != "open" || !h.ready(t, true)[moved.Item.ID] {
+		t.Fatalf("fresh canonical task became unclaimable: %+v", moved)
+	}
+	b26OK(t, h.call(t, "bead.claim", map[string]any{"id": ref(moved.Item.ID)}, "status-claim-fresh"))
+	b26NoVersion(t, h.store, moved.Item.ID)
+	b26OK(t, h.call(t, "bead.close", map[string]any{"id": ref(moved.Item.ID)}, "status-complete-fresh"))
+	completed := h.create(t, "status-completed-payload-marker")
+	b26OK(t, h.call(t, "bead.close", map[string]any{"id": ref(completed)}, "status-close-source"))
+	result := decode[workflowplugin.DemoteResult](t, b26OK(t, h.call(t, "x.workflow.run.demote", map[string]any{"source": ref(completed)}, "status-demote-completed")))
+	if result.Run.State != "completed" || result.Item.Status != "closed" || result.Item.Title != "" || h.ready(t, true)[result.Item.ID] {
+		t.Fatalf("completed source became a live payload: %+v", result)
+	}
+	checkpoint := workflowCheckpoint(t, h.store.(driver.CheckpointStore))
+	if bytes.Contains(checkpoint.Checkpoint.Payload, []byte("status-completed-payload-marker")) {
+		t.Fatal("completed demotion retained payload")
+	}
+	replay := decode[workflowplugin.DemoteResult](t, b26OK(t, h.call(t, "x.workflow.run.demote", map[string]any{"source": ref(completed)}, "status-demote-completed")))
+	if !reflect.DeepEqual(result, replay) || !reflect.DeepEqual(checkpoint, workflowCheckpoint(t, h.store.(driver.CheckpointStore))) {
+		t.Fatal("completed demotion replay recreated or changed state")
+	}
+	for _, id := range []string{completed, result.Item.ID} {
+		gone := h.call(t, "bead.get", map[string]any{"id": ref(id)}, "")
+		if gone.Error == nil || gone.Error.Data.Code != "not_found" {
+			t.Fatalf("completed demotion left %s visible: %+v", id, gone.Error)
+		}
+	}
+	b26NoVersion(t, h.store, result.Item.ID)
+}
+
+func b26WaitsForDurable(t *testing.T, h *b26HTTP) {
+	for _, gate := range []string{"nil", "default", "all-children", "any-children"} {
+		t.Run(gate, func(t *testing.T) {
+			prefix := "wait-durable-" + gate
+			spawner := h.create(t, prefix+"-spawner")
+			children := []string{}
+			for i := 0; i < 2; i++ {
+				c := decode[model.Commit](t, b26OK(t, h.call(t, "bead.create", map[string]any{"type": "issue", "parent": ref(spawner), "fields": map[string]any{"title": prefix}}, fmt.Sprintf("%s-child-%d", prefix, i))))
+				children = append(children, c.Results[0].Ref.ID)
+			}
+			dependent := b26Invoke(t, h, prefix+"-dependent", 1)[0].ID
+			params := map[string]any{"from": ref(dependent), "to": ref(spawner), "kind": "waits-for"}
+			if gate != "nil" {
+				m := map[string]any{}
+				if gate != "default" {
+					m["gate"] = gate
+				}
+				params["metadata"] = m
+			}
+			b26OK(t, h.call(t, "bead.link", params, prefix+"-link"))
+			if h.ready(t, true)[dependent] {
+				t.Fatal("open durable child did not block mixed waits-for")
+			}
+			b26AssertRefusalUnchanged(t, h, "bead.claim", map[string]any{"id": ref(dependent)}, prefix+"-claim-refusal", "busy")
+			b26OK(t, h.call(t, "bead.close", map[string]any{"id": ref(children[0])}, prefix+"-close-first"))
+			if h.ready(t, true)[dependent] != (gate == "any-children") {
+				t.Fatal("mixed gate did not distinguish all/any child completion")
+			}
+			b26OK(t, h.call(t, "bead.close", map[string]any{"id": ref(children[1])}, prefix+"-close-second"))
+			if !h.ready(t, true)[dependent] {
+				t.Fatal("all terminal durable children did not satisfy mixed gate")
+			}
+			b26OK(t, h.call(t, "bead.claim", map[string]any{"id": ref(dependent)}, prefix+"-claim"))
+			b26OK(t, h.call(t, "bead.close", map[string]any{"id": ref(dependent)}, prefix+"-complete"))
+		})
+	}
+}
+
+func b26WaitsForWorkflow(t *testing.T, h *b26HTTP) {
+	for _, gate := range []string{"nil", "default", "all-children", "any-children"} {
+		t.Run(gate, func(t *testing.T) {
+			prefix := "wait-workflow-" + gate
+			items := b26Invoke(t, h, prefix, 3)
+			spawner := items[0].ID
+			for i, item := range items[1:] {
+				b26OK(t, h.call(t, "bead.update", map[string]any{"id": ref(item.ID), "fields": map[string]any{"parent": ref(spawner)}}, fmt.Sprintf("%s-parent-%d", prefix, i)))
+			}
+			dependent := h.create(t, prefix+"-dependent")
+			params := map[string]any{"from": ref(dependent), "to": ref(spawner), "kind": "waits-for"}
+			if gate != "nil" {
+				m := map[string]any{}
+				if gate != "default" {
+					m["gate"] = gate
+				}
+				params["metadata"] = m
+			}
+			b26OK(t, h.call(t, "bead.link", params, prefix+"-link"))
+			if h.ready(t, true)[dependent] {
+				t.Fatal("open workflow child did not block ordinary dependent")
+			}
+			b26AssertRefusalUnchanged(t, h, "bead.claim", map[string]any{"id": ref(dependent)}, prefix+"-claim-refusal", "ontology_guard_failed")
+			b26OK(t, h.call(t, "bead.close", map[string]any{"id": ref(items[1].ID)}, prefix+"-close-first"))
+			if h.ready(t, true)[dependent] != (gate == "any-children") {
+				t.Fatal("workflow gate did not distinguish all/any child completion")
+			}
+			b26OK(t, h.call(t, "bead.close", map[string]any{"id": ref(spawner)}, prefix+"-close-spawner"))
+			if h.ready(t, true)[dependent] != (gate == "nil" || gate == "any-children") {
+				t.Fatal("terminal-spawner fallback was applied to explicit all-children gate")
+			}
+			if gate == "all-children" || gate == "default" {
+				b26AssertRefusalUnchanged(t, h, "bead.close", map[string]any{"id": ref(dependent)}, prefix+"-close-refusal", "ontology_guard_failed")
+			}
+			b26OK(t, h.call(t, "bead.close", map[string]any{"id": ref(items[2].ID)}, prefix+"-close-last"))
+			if !h.ready(t, true)[dependent] {
+				t.Fatal("completed workflow run left an ordinary blocker")
+			}
+		})
+	}
+}
+
+func b26PromotionBlockers(t *testing.T, h *b26HTTP) {
+	items := b26Invoke(t, h, "promote-derived-blockers", 2)
+	target := h.create(t, "promote-derived-target")
+	b26OK(t, h.call(t, "bead.link", map[string]any{"from": ref(items[0].ID), "to": ref(items[1].ID), "kind": "blocks"}, "promote-derived-link"))
+	b26OK(t, h.call(t, "x.workflow.run.promote", map[string]any{"item": ref(items[0].ID), "target": ref(target)}, "promote-derived-move"))
+	if h.ready(t, true)[target] || h.get(t, target)["bead"].(map[string]any)["blocked"] != true {
+		t.Fatal("promotion lost live workflow blocker")
+	}
+	b26AssertRefusalUnchanged(t, h, "bead.claim", map[string]any{"id": ref(target)}, "promote-derived-claim", "ontology_guard_failed")
+	b26OK(t, h.call(t, "bead.close", map[string]any{"id": ref(items[1].ID)}, "promote-derived-complete"))
+	if !h.ready(t, true)[target] || h.get(t, target)["bead"].(map[string]any)["blocked"] == true {
+		t.Fatal("derived blocker became sticky after workflow completion")
+	}
+}
+
+type b26GuardMutator func(context.Context, port.ProposedChange, port.SnapshotReader) ([]port.Patch, error)
+
+func (f b26GuardMutator) Mutate(ctx context.Context, p port.ProposedChange, r port.SnapshotReader) ([]port.Patch, error) {
+	return f(ctx, p, r)
+}
+
+func b26GuardRace(t *testing.T, store driver.Store) {
+	var h *b26HTTP
+	var dependent, blocker string
+	var once sync.Once
+	mutator := b26GuardMutator(func(_ context.Context, p port.ProposedChange, _ port.SnapshotReader) ([]port.Patch, error) {
+		if p.Meta.Method == "bead.claim" && p.Meta.IdempotencyKey == key("generation-race-claim") {
+			once.Do(func() {
+				b26OK(t, h.call(t, "bead.link", map[string]any{"from": ref(dependent), "to": ref(blocker), "kind": "blocks"}, "generation-race-edge"))
+			})
+		}
+		return nil, nil
+	})
+	h = b26Host(t, store, pipeline.WithMutators(pipeline.MutatorBinding{ID: "b26-race", Mutator: mutator}))
+	dependent = h.create(t, "generation-race-dependent")
+	blocker = b26Invoke(t, h, "generation-race-blocker", 1)[0].ID
+	before, err := store.Meta(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := h.call(t, "bead.claim", map[string]any{"id": ref(dependent)}, "generation-race-claim")
+	if result.Error == nil || result.Error.Data.Code != "ontology_guard_failed" {
+		t.Fatalf("checkpoint-racing direct claim published: %+v", result.Error)
+	}
+	after, err := store.Meta(context.Background())
+	if err != nil || before.Head != after.Head {
+		t.Fatalf("racing claim consumed a durable revision: %v", err)
+	}
+	if _, ok := h.get(t, dependent)["lease"]; ok {
+		t.Fatal("racing claim persisted a lease")
+	}
+	if h.ready(t, true)[dependent] {
+		t.Fatal("racing mixed edge was lost")
+	}
+}
+func TestB26MixedBlockerGenerationFenceSQLite(t *testing.T) {
+	store, err := (sqlite.Driver{}).Open(context.Background(), driver.Config{DSN: filepath.Join(t.TempDir(), "guard-race.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b26GuardRace(t, store)
+}
+func TestB26MixedBlockerGenerationFencePostgreSQL(t *testing.T) {
+	b26GuardRace(t, openStore(t, freshDatabase(t)))
+}
+
+func b26ExplicitBlocker(t *testing.T, h *b26HTTP) {
+	item := b26Invoke(t, h, "explicit-blocker", 1)[0].ID
+	b26OK(t, h.call(t, "bead.update", map[string]any{"id": ref(item), "fields": map[string]any{"blocked": true}}, "explicit-blocker-set"))
+	if h.ready(t, true)[item] || h.get(t, item)["bead"].(map[string]any)["blocked"] != true {
+		t.Fatal("explicit workflow blocker was ignored")
+	}
+	b26AssertRefusalUnchanged(t, h, "bead.close", map[string]any{"id": ref(item)}, "explicit-blocker-close", "ontology_guard_failed")
+	target := h.create(t, "explicit-blocker-target")
+	b26OK(t, h.call(t, "x.workflow.run.promote", map[string]any{"item": ref(item), "target": ref(target)}, "explicit-blocker-promote"))
+	if h.ready(t, true)[target] || h.get(t, target)["bead"].(map[string]any)["blocked"] != true {
+		t.Fatal("promotion dropped explicit blocker")
+	}
+	b26OK(t, h.call(t, "bead.update", map[string]any{"id": ref(target), "fields": map[string]any{"blocked": false}}, "explicit-blocker-clear"))
+	if !h.ready(t, true)[target] {
+		t.Fatal("explicit blocker clear did not release promoted work")
 	}
 }

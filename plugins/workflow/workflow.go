@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -233,16 +234,10 @@ func ValidateInvokeRequest(req InvokeRequest) error {
 }
 
 func validateLabels(labels []string) error {
-	seen := make(map[string]struct{}, len(labels))
 	for _, label := range labels {
-		label = strings.TrimSpace(label)
-		if label == "" {
-			return fail("invalid_params", "workflow labels must be nonempty")
+		if !utf8.ValidString(label) || utf8.RuneCountInString(label) > 255 {
+			return fail("invalid_params", "a label must contain at most 255 Unicode scalars")
 		}
-		if _, ok := seen[label]; ok {
-			return fail("invalid_params", "workflow labels must be unique")
-		}
-		seen[label] = struct{}{}
 	}
 	return nil
 }
@@ -415,7 +410,6 @@ func normalizeLabels(labels []string) []string {
 	out := make([]string, 0, len(labels))
 	seen := make(map[string]struct{}, len(labels))
 	for _, label := range labels {
-		label = strings.TrimSpace(label)
 		if label == "" {
 			continue
 		}
@@ -425,6 +419,7 @@ func normalizeLabels(labels []string) []string {
 		seen[label] = struct{}{}
 		out = append(out, label)
 	}
+	sort.Strings(out)
 	return out
 }
 
@@ -924,7 +919,7 @@ func relationBlocks(kind string, metadata *model.LinkMetadata) bool {
 	case "blocks", "conditional-blocks":
 		return true
 	case "waits-for":
-		return metadata != nil && metadata.AlsoBlocks
+		return true
 	default:
 		return false
 	}
@@ -945,7 +940,7 @@ func itemBlockedWithResolver(ctx context.Context, value persisted, item itemStat
 		}
 		if workflowTarget(link.To) {
 			target, ok := value.Items[link.To.ID]
-			if !ok || target.Status != "closed" {
+			if !ok || !workflowRelationSatisfied(value, target, link.Kind, link.Metadata) {
 				return true, nil
 			}
 			continue
@@ -1089,24 +1084,88 @@ func (p *Provider) OrdinaryBlocked(ctx context.Context, by model.PrincipalRef, i
 	if err != nil {
 		return nil, err
 	}
+	return ordinaryBlocked(value, ids, meta), nil
+}
+
+// OrdinaryBlockerSnapshot also binds the decision to a host-owned checkpoint
+// expectation, so direct ordinary writes cannot race a mixed-plane edge edit.
+func (p *Provider) OrdinaryBlockerSnapshot(ctx context.Context, by model.PrincipalRef, ids []string, meta model.WriteMeta) (map[string]bool, driver.CheckpointExpectation, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	value, revision, err := p.load(ctx)
+	if err != nil {
+		return nil, driver.CheckpointExpectation{}, err
+	}
+	host, ok := p.state.(interface {
+		PrepareCheckpointExpectation(context.Context, string, pluginapi.Revision) (driver.CheckpointExpectation, error)
+	})
+	if !ok {
+		return nil, driver.CheckpointExpectation{}, driver.ErrUnsupported
+	}
+	expectation, err := host.PrepareCheckpointExpectation(ctx, stateKey, revision)
+	if err != nil {
+		return nil, driver.CheckpointExpectation{}, err
+	}
+	return ordinaryBlocked(value, ids, meta), expectation, nil
+}
+
+// Workflow children are the typed Parent and legacy parent-child edges in
+// this checkpoint. Durable children of workflow parents are not admitted by
+// the ordinary hierarchy writer. The gate formula matches core waits-for.
+func workflowRelationSatisfied(value persisted, target itemState, kind string, metadata *model.LinkMetadata) bool {
+	switch kind {
+	case "blocks":
+		return target.Status == "closed"
+	case "conditional-blocks":
+		// Workflow close has a success outcome; it is never a failed outcome.
+		return false
+	case "waits-for":
+		terminal := target.Status == "closed"
+		if metadata == nil && terminal {
+			return true
+		}
+		if metadata != nil && metadata.AlsoBlocks && !terminal {
+			return false
+		}
+		openChild, terminalChild := false, false
+		for _, child := range value.Items {
+			member := child.Parent != nil && child.Parent.ID == target.ID
+			for _, edge := range child.Links {
+				member = member || edge.Kind == "parent-child" && edge.To.ID == target.ID
+			}
+			if member {
+				if child.Status == "closed" {
+					terminalChild = true
+				} else {
+					openChild = true
+				}
+			}
+		}
+		return !openChild || metadata != nil && metadata.Gate == "any-children" && terminalChild
+	default:
+		return true
+	}
+}
+
+func ordinaryBlocked(value persisted, ids []string, meta model.WriteMeta) map[string]bool {
 	wanted := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
 		wanted[id] = struct{}{}
 	}
 	blocked := make(map[string]bool)
 	for _, item := range value.Items {
-		if item.Status == "closed" || meta.Project != "" && item.Project != meta.Project {
+		if meta.Project != "" && item.Project != meta.Project {
 			continue
 		}
 		for _, relation := range item.Inbound {
-			if relationBlocks(relation.Kind, relation.Metadata) {
+			if relationBlocks(relation.Kind, relation.Metadata) && !workflowRelationSatisfied(value, item, relation.Kind, relation.Metadata) {
 				if _, ok := wanted[relation.From]; ok {
 					blocked[relation.From] = true
 				}
 			}
 		}
 	}
-	return blocked, nil
+	return blocked
 }
 
 // ActiveIDs returns the provider's live item namespace. The service uses it to
@@ -1652,6 +1711,11 @@ func (p *Provider) Promote(ctx context.Context, by model.PrincipalRef, req Promo
 	if err != nil {
 		return PromoteResult{}, err
 	}
+	if _, active := value.Runs[item.RunID]; active {
+		p.sanitizePromotedItemReceipts(value, item.RunID, item.ID)
+	} else {
+		p.sanitizeTerminalReceipts(value, item.RunID)
+	}
 	p.appendAudit(&value, "workflow.promote", receipt)
 	if err := p.mapSaveError(p.save(ctx, value, revision)); err != nil {
 		return PromoteResult{}, err
@@ -2058,6 +2122,14 @@ func (p *Provider) Comment(ctx context.Context, by model.PrincipalRef, req model
 }
 
 func (p *Provider) Close(ctx context.Context, by model.PrincipalRef, req model.Ref, reason string, meta model.WriteMeta) (model.Commit, error) {
+	return p.closeWithResolver(ctx, by, req, reason, meta, nil)
+}
+
+func (p *Provider) CloseWithResolver(ctx context.Context, by model.PrincipalRef, req model.Ref, reason string, meta model.WriteMeta, resolver BlockerResolver) (model.Commit, error) {
+	return p.closeWithResolver(ctx, by, req, reason, meta, resolver)
+}
+
+func (p *Provider) closeWithResolver(ctx context.Context, by model.PrincipalRef, req model.Ref, reason string, meta model.WriteMeta, resolver BlockerResolver) (model.Commit, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	value, revision, err := p.load(ctx)
@@ -2080,7 +2152,17 @@ func (p *Provider) Close(ctx context.Context, by model.PrincipalRef, req model.R
 	if err := p.authorized(item, by, meta); err != nil {
 		return model.Commit{}, err
 	}
+	if item.Status != "closed" {
+		blocked, err := itemBlockedWithResolver(ctx, value, item, by, meta, resolver)
+		if err != nil {
+			return model.Commit{}, err
+		}
+		if blocked {
+			return model.Commit{}, fail("ontology_guard_failed", "workflow dependency is not satisfied")
+		}
+	}
 	item.Status = "closed"
+	item.Claim = nil
 	item.Generation++
 	value.Items[item.ID] = item
 	run := value.Runs[item.RunID]
@@ -2214,7 +2296,53 @@ func (p *Provider) sanitizeTerminalReceipts(value persisted, runID string) {
 				item = ItemView{ID: receipt.ItemID, RunID: runID, Status: "closed", Plane: "ephemeral", Kind: "workflow.item", Plugin: Alias, Revision: item.Revision}
 				receipt.Result, _ = json.Marshal(item)
 			}
+		} else if receipt.Method == "x.workflow.run.demote" {
+			var result DemoteResult
+			_ = json.Unmarshal(receipt.Result, &result)
+			result = DemoteResult{
+				Run:  RunView{ID: runID, Mode: "ephemeral", State: "completed"},
+				Item: ItemView{ID: receipt.ItemID, RunID: runID, Status: "closed", Plane: "ephemeral", Kind: "workflow.item", Plugin: Alias, Revision: result.Item.Revision},
+			}
+			receipt.Result, _ = json.Marshal(result)
+		} else if receipt.Method == "x.workflow.run.promote" {
+			var result PromoteResult
+			_ = json.Unmarshal(receipt.Result, &result)
+			result.Relations = nil
+			result.ChildCount = 0
+			receipt.Result, _ = json.Marshal(result)
 		}
+		value.Receipts[key] = receipt
+	}
+}
+
+// A promotion can remove one item while its checklist remains active. Keep
+// the live run's invocation receipt, but erase the removed item's projection
+// and terminalize its individual operation receipts in the same checkpoint.
+func (p *Provider) sanitizePromotedItemReceipts(value persisted, runID, itemID string) {
+	removed := persisted{Receipts: map[string]receiptState{}}
+	for key, receipt := range value.Receipts {
+		if receipt.RunID != runID {
+			continue
+		}
+		if receipt.Method == "x.workflow.invoke" {
+			var result InvokeResult
+			if json.Unmarshal(receipt.Result, &result) == nil {
+				items := make([]ItemView, 0, len(result.Items))
+				for _, item := range result.Items {
+					if item.ID != itemID {
+						items = append(items, item)
+					}
+				}
+				result.Items = items
+				receipt.Result, _ = json.Marshal(result)
+				value.Receipts[key] = receipt
+			}
+		} else if receipt.ItemID == itemID {
+			removed.Receipts[key] = receipt
+		}
+	}
+	p.sanitizeTerminalReceipts(removed, runID)
+	for key, receipt := range removed.Receipts {
 		value.Receipts[key] = receipt
 	}
 }

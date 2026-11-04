@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -1035,6 +1036,94 @@ func TestB26PromotionMovesRelationsAndPreservesChildCounter(t *testing.T) {
 	_, err = provider.Promote(ctx, by, PromoteRequest{Item: grandchild, Target: parent}, meta("x.workflow.run.promote", "c"))
 	if err == nil || !bytes.Equal(before, state.value) {
 		t.Fatalf("active workflow collision changed state: err=%v stateChanged=%v", err, !bytes.Equal(before, state.value))
+	}
+}
+
+func TestB26PromotionErasesRemovedPayloadsFromLiveAndTerminalReplay(t *testing.T) {
+	for _, count := range []int{1, 2} {
+		t.Run(fmt.Sprintf("items-%d", count), func(t *testing.T) {
+			ctx := context.Background()
+			state := &testDurableState{}
+			provider, err := New(state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			by := model.PrincipalRef{Kind: "user", ID: "owner"}
+			meta := func(method, key string) model.WriteMeta {
+				return model.WriteMeta{Method: method, Project: "project", IdempotencyKey: strings.Repeat(key, 64)}
+			}
+			request := InvokeRequest{Template: "template", Project: "project", Mode: "ephemeral", Checklist: []ChecklistItem{{Label: "first", Title: "removed-title-marker", Fields: map[string]any{"description": "removed-field-marker"}, Metadata: map[string]any{"note": "removed-metadata-marker"}}}}
+			if count == 2 {
+				request.Checklist = append(request.Checklist, ChecklistItem{Label: "keeper", Title: "keeper-title-marker"})
+			}
+			run, err := provider.Invoke(ctx, by, request, meta("x.workflow.invoke", "1"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			item := model.RefByID(run.Items[0].ID, model.Natural64(0))
+			if _, err := provider.Comment(ctx, by, item, "removed-comment-marker", meta("bead.comment", "2")); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := provider.Claim(ctx, by, item, meta("bead.claim", "3")); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := provider.Promote(ctx, by, PromoteRequest{Item: item, Target: model.RefByID("durable-target", model.Natural64(0))}, meta("x.workflow.run.promote", "4")); err != nil {
+				t.Fatal(err)
+			}
+			for _, payload := range []string{"removed-title-marker", "removed-field-marker", "removed-metadata-marker", "removed-comment-marker"} {
+				if bytes.Contains(state.value, []byte(payload)) {
+					t.Fatalf("promotion retained removed payload %q in its raw state", payload)
+				}
+			}
+			beforeReplay := append([]byte(nil), state.value...)
+			replay, err := provider.Invoke(ctx, by, request, meta("x.workflow.invoke", "1"))
+			if err != nil || replay.Run == nil || len(replay.Items) != count-1 {
+				t.Fatalf("invocation replay after promotion=%+v err=%v", replay, err)
+			}
+			if count == 1 && replay.Run.State != "completed" || count == 2 && replay.Run.State != "active" {
+				t.Fatalf("promotion lost the actual remaining run state: %+v", replay.Run)
+			}
+			claim, err := provider.Claim(ctx, by, item, meta("bead.claim", "3"))
+			if err != nil || claim.ID != item.ID || claim.Title != "" || claim.Fields != nil || claim.Metadata != nil || claim.Comments != nil || claim.Claim != nil {
+				t.Fatalf("claim replay retained the removed payload: %+v err=%v", claim, err)
+			}
+			if !bytes.Equal(beforeReplay, state.value) {
+				t.Fatal("identity replay recreated or republished workflow state")
+			}
+		})
+	}
+}
+
+func TestB26CompletedDemotionErasesPayloadsAndReplaysIdentity(t *testing.T) {
+	ctx := context.Background()
+	state := &testDurableState{}
+	provider, err := New(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := model.PrincipalRef{Kind: "user", ID: "owner"}
+	meta := model.WriteMeta{Method: "x.workflow.run.demote", Project: "project", IdempotencyKey: strings.Repeat("1", 64)}
+	request := DemoteRequest{Source: model.RefByID("durable-source", model.Natural64(0)), Project: "project", Label: "item", Title: "demoted-title-marker", Fields: map[string]any{"description": "demoted-field-marker"}, Metadata: map[string]any{"note": "demoted-metadata-marker"}, Comments: []CommentView{{Body: "demoted-comment-marker", Principal: by, Time: time.Now().UTC()}}}
+	result, err := provider.Demote(ctx, by, request, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeMeta := model.WriteMeta{Method: "bead.close", Project: "project", IdempotencyKey: strings.Repeat("2", 64)}
+	if _, err := provider.Close(ctx, by, model.RefByID(result.Item.ID, model.Natural64(0)), "done", closeMeta); err != nil {
+		t.Fatal(err)
+	}
+	for _, payload := range []string{"demoted-title-marker", "demoted-field-marker", "demoted-metadata-marker", "demoted-comment-marker"} {
+		if bytes.Contains(state.value, []byte(payload)) {
+			t.Fatalf("completed demotion retained payload %q", payload)
+		}
+	}
+	beforeReplay := append([]byte(nil), state.value...)
+	replay, err := provider.Demote(ctx, by, request, meta)
+	if err != nil || replay.Run.State != "completed" || replay.Item.ID != result.Item.ID || replay.Item.Title != "" || replay.Item.Fields != nil || replay.Item.Metadata != nil || replay.Item.Comments != nil || replay.Item.Claim != nil {
+		t.Fatalf("completed demotion replay=%+v err=%v", replay, err)
+	}
+	if !bytes.Equal(beforeReplay, state.value) {
+		t.Fatal("terminal demotion replay recreated or republished workflow state")
 	}
 }
 

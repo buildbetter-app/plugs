@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
@@ -136,6 +137,9 @@ func (s *Service) apply(ctx context.Context, by model.PrincipalRef, method strin
 		return port.WriteOutcome{}, failure("project_required", "supply a project")
 	}
 	meta.Method = method
+	if s.workflow != nil && (method == "bead.claim" || method == "bead.claimNext" || method == "bead.close" || method == "tx.apply") {
+		ctx = pipeline.WithWorkflowGuard(ctx, s.workflowWriteGuard)
+	}
 	if writer, ok := s.writer.(port.OutcomeWriter); ok {
 		v, err := writer.ApplyWithOutcome(ctx, by, cs, meta)
 		return v, mapped(err)
@@ -773,7 +777,7 @@ func (s *Service) CloseWithOutcome(ctx context.Context, by model.PrincipalRef, r
 		if s.workflow == nil {
 			return port.WriteOutcome{}, failure("not_found", "workflow item was not found")
 		}
-		commit, err := s.workflow.Close(ctx, by, req.ID, req.Reason, meta)
+		commit, err := s.workflow.CloseWithResolver(ctx, by, req.ID, req.Reason, meta, s.workflowBlockerResolver(ctx, by, meta))
 		return port.WriteOutcome{Commit: commit}, err
 	}
 	return s.close(ctx, by, req, meta, true)

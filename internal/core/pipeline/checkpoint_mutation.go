@@ -2,9 +2,52 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+type workflowGuardKey struct{}
+
+// WithWorkflowGuard installs a trusted provider read for this ordinary write.
+// The Writer invokes it after receipt replay and pre-image authorization, then
+// checks its checkpoint generation in the same transaction as publication.
+func WithWorkflowGuard(ctx context.Context, guard func(context.Context, port.ProposedChange) (driver.CheckpointExpectation, error)) context.Context {
+	return context.WithValue(ctx, workflowGuardKey{}, guard)
+}
+
+func (w *Writer) checkWorkflowGuard(ctx context.Context, p *prepared) error {
+	guard, _ := ctx.Value(workflowGuardKey{}).(func(context.Context, port.ProposedChange) (driver.CheckpointExpectation, error))
+	if guard == nil {
+		return nil
+	}
+	expectation, err := guard(ctx, p.proposal)
+	if errors.Is(err, driver.ErrCheckpointConflict) {
+		return errStale
+	}
+	if err != nil || expectation.Key == "" {
+		return err
+	}
+	if err := driver.ValidateCheckpointKey(expectation.Key); err != nil {
+		return err
+	}
+	meta, err := w.store.Meta(ctx)
+	if err != nil {
+		return err
+	}
+	if meta.StoreID != expectation.StoreID || meta.Incarnation != expectation.Incarnation || expectation.Incarnation != p.snapshot.Snapshot().Incarnation {
+		return driver.ErrConflict
+	}
+	if p.checkpointReads == nil {
+		p.checkpointReads = make(map[string]uint64)
+	}
+	if prior, ok := p.checkpointReads[expectation.Key]; ok && prior != expectation.Expected {
+		return errStale
+	}
+	p.checkpointReads[expectation.Key] = expectation.Expected
+	return nil
+}
 
 type checkpointMutationKey struct{}
 

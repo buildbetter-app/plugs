@@ -79,12 +79,17 @@ func (s *Service) Get(ctx context.Context, by model.PrincipalRef, req GetRequest
 		return GetResult{}, err
 	}
 	result := GetResult{Bead: bead, Attachments: doc.Attachments}
-	if s.workflow != nil {
+	if s.workflow != nil && req.AsOf == nil {
 		links, err := s.workflow.Relations(ctx, by, req.ID, workflowMeta(by, "bead.get", req.Project, req.Agent))
 		if err != nil {
 			return GetResult{}, err
 		}
 		result.Bead.Links = append(result.Bead.Links, links...)
+		blocked, err := s.workflow.OrdinaryBlocked(ctx, by, []string{req.ID.ID}, workflowMeta(by, "bead.get", doc.Project, req.Agent))
+		if err != nil {
+			return GetResult{}, err
+		}
+		result.Bead.Blocked = result.Bead.Blocked || blocked[req.ID.ID]
 	}
 	if len(doc.Comments) != 0 {
 		result.Comments = make([]Comment, len(doc.Comments))

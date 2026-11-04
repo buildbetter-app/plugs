@@ -54,13 +54,34 @@
   },
   "native": {
     "case": "TestB26NativeLifecycleRegistrationAndTrustedMetadataSQLite",
-    "status": "authored-not-run; not CLI producer admission"
+    "status": "authored-not-run on repaired successor; not CLI producer admission"
   },
   "historical_refusal": "spec/s1-b25-b28/b26-deviation.json",
   "unqualified": [
     "protected native/public producer capture",
-    "focused and whole named raw/XML outcomes",
-    "mixed hierarchy variants, attachments and imported-comment provenance"
+    "focused and whole named raw/XML outcomes on the repaired source",
+    "mixed hierarchy variants, attachments and imported-comment provenance",
+    "durable allocator counter reconciliation and public colliding imported-row fixture",
+    "deferred and triage demotion scheduling bridge"
   ],
-  "boundary": "Source, compile, focus, whole, hosted, native and full-card qualification are separate. fullS1=0/28; E3=5/5 bounded; NativeAdmission=None."
+  "boundary": "Source, compile, focus, whole, hosted, native and full-card qualification are separate. fullS1=0/28; E3=5/5 bounded; NativeAdmission=None.",
+  "repair_acceptance": {
+    "status": "authored-not-run; exact successor and outcomes bind only in the sealed external packet",
+    "sql_subcases": [
+      "MixedBlockerDirectWritesAndReplay",
+      "OntologyDemotionFreshAndCompleted",
+      "WaitsForDurableChildGates",
+      "WaitsForWorkflowChildGates",
+      "PromotionDoesNotPersistDerivedBlockers",
+      "ExplicitBlockerFlagMoves"
+    ],
+    "sql_generation_fence": [
+      "TestB26MixedBlockerGenerationFenceSQLite",
+      "TestB26MixedBlockerGenerationFencePostgreSQL"
+    ],
+    "terminal_payload_cases": [
+      "TestB26PromotionErasesRemovedPayloadsFromLiveAndTerminalReplay",
+      "TestB26CompletedDemotionErasesPayloadsAndReplaysIdentity"
+    ]
+  }
 }

@@ -592,7 +592,11 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 		if err != nil {
 			return model.Commit{}, err
 		}
-		return noop.CommitNoop(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: kind, Time: w.cfg.now().UTC(), Principal: by, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: response, LockKeys: keys})
+		commit, err := noop.CommitNoop(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: kind, Time: w.cfg.now().UTC(), Principal: by, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: response, LockKeys: keys})
+		if errors.Is(err, driver.ErrCheckpointConflict) {
+			return model.Commit{}, errStale
+		}
+		return commit, err
 	}
 	n, err := head.Uint64()
 	if err != nil || n == math.MaxUint64 {

@@ -379,3 +379,42 @@ func (d *durableStateAccess) PrepareCheckpoint(ctx context.Context, key string, 
 	defer cancel()
 	return d.instance.durable.PrepareCheckpoint(ctx, key, value, expect)
 }
+
+// PrepareCheckpointExpectation binds a provider read to the complete namespace
+// generation. It never writes and is absent from the public plugin capability.
+func (d *durableAccess) PrepareCheckpointExpectation(ctx context.Context, key string, expect pluginapi.Revision) (driver.CheckpointExpectation, error) {
+	if err := driver.ValidateCheckpointKey(key); err != nil {
+		return driver.CheckpointExpectation{}, err
+	}
+	expected, err := expect.Uint64()
+	if err != nil {
+		return driver.CheckpointExpectation{}, err
+	}
+	checkpoint, namespace, err := d.load(ctx)
+	if err != nil {
+		return driver.CheckpointExpectation{}, err
+	}
+	if namespace.Values[key].Revision != expected {
+		return driver.CheckpointExpectation{}, driver.ErrCheckpointConflict
+	}
+	metadata, ok := d.store.(interface {
+		Meta(context.Context) (driver.Meta, error)
+	})
+	if !ok {
+		return driver.CheckpointExpectation{}, driver.ErrUnsupported
+	}
+	meta, err := metadata.Meta(ctx)
+	if err != nil {
+		return driver.CheckpointExpectation{}, err
+	}
+	return driver.CheckpointExpectation{StoreID: meta.StoreID, Incarnation: meta.Incarnation, Key: d.key, Expected: checkpoint.Generation}, nil
+}
+
+func (d *durableStateAccess) PrepareCheckpointExpectation(ctx context.Context, key string, expect pluginapi.Revision) (driver.CheckpointExpectation, error) {
+	ctx, cancel, err := d.context(ctx, false)
+	if err != nil {
+		return driver.CheckpointExpectation{}, err
+	}
+	defer cancel()
+	return d.instance.durable.PrepareCheckpointExpectation(ctx, key, expect)
+}

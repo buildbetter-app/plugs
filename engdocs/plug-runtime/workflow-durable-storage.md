@@ -45,7 +45,7 @@ terminal receipts, replay across process restart. A retained receipt from a
 different incarnation explicitly returns `idempotency_key_reused` instead of
 being treated as a miss that could create another run. Restored live state
 can continue under new operation keys in the current incarnation.
-Completion atomically replaces body-bearing invocation/claim results with
+Completion atomically replaces body-bearing invocation/claim/demotion results with
 identity-only terminal results and deletes all run/item/comment/claim payloads.
 Replay after completion therefore returns only the bounded identity/commit
 receipt (never title, fields, comments, claims or body) and cannot resurrect the
@@ -54,6 +54,13 @@ workflow lifecycle operations, completion, and receipt GC. Audit entries carry
 full receipt scope and typed IDs but no work-item payload; they remain plugin
 audit provenance and are not core versions, events, dumps, or permanent item
 history.
+
+Promotion erases the removed item's body from its operation receipts in the
+same checkpoint transaction. If other checklist items remain, invocation
+replay returns only those remaining items and the still-active run. Final
+promotion returns terminal invocation replay with no items. Demotion replay
+after completion retains only the completed run/item identity and revision;
+the item projection's body fields are empty and no live run is recreated.
 
 The ordinary service passes its canonical full `bead.claimNext` selector to
 the provider separately from the selected item reference. Selected claims,
@@ -104,3 +111,12 @@ current task, comment, or claim state. It does not erase the core durable
 audit/history retained by P45; the plugin audit ledger records its own
 completion and GC boundary in the same CAS. Completion starts a fresh bounded
 24-hour terminal replay window and does not preserve the run body.
+
+Direct ordinary claim/close decisions read the workflow dependency checkpoint
+only after ordinary receipt replay and pre-image authorization. The trusted host
+returns a read-only namespace generation expectation, not a transaction handle.
+That expectation enters the existing Writer checkpoint read set and is checked
+inside the ordinary/no-op SQL fence; a concurrent edge or child-state change
+invalidates the attempt. Historical as-of ordinary reads do not append current
+workflow links or blocker state. Completed-source demotion terminalizes and
+sanitizes its staged one-item run before atomic publication.

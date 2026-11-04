@@ -134,7 +134,9 @@ func (p *Provider) PromoteAtomic(ctx context.Context, by model.PrincipalRef, req
 	if publish == nil {
 		return PromoteResult{}, driver.ErrUnsupported
 	}
-	if err := publish(staged.itemViewIn(value, item), result, state.prepared()); err != nil {
+	// Migration carries the stored explicit flag. Ready/Get views additionally
+	// derive blockers from relationships, which must never become sticky data.
+	if err := publish(itemViewAt(item, p.now()), result, state.prepared()); err != nil {
 		return PromoteResult{}, err
 	}
 	return result, nil
@@ -177,6 +179,25 @@ func (p *Provider) DemoteAtomic(ctx context.Context, by model.PrincipalRef, req 
 	}
 	if err := staged.save(ctx, value, revision); err != nil {
 		return DemoteResult{}, err
+	}
+	if image.Status == "closed" {
+		// A one-item completed source is already a completed checklist. Erase
+		// its operational body before either plane is published, retaining only
+		// terminal replay identity under the original public request digest.
+		closeMeta := meta
+		closeMeta.Method = "bead.close"
+		if _, err := staged.Close(ctx, by, model.RefByID(result.Item.ID, model.Natural64(0)), "", closeMeta); err != nil {
+			return DemoteResult{}, err
+		}
+		value, _, err = staged.load(ctx)
+		if err != nil {
+			return DemoteResult{}, err
+		}
+		if ok, err := staged.checkReplay(value, by, meta, req, &result); err != nil {
+			return DemoteResult{}, err
+		} else if !ok {
+			return DemoteResult{}, fmt.Errorf("completed demotion lost its terminal receipt")
+		}
 	}
 	if err := publish(result, state.prepared()); err != nil {
 		return DemoteResult{}, err

@@ -2,6 +2,15 @@ package driver
 
 import "context"
 
+// CheckpointExpectation binds a host-owned read to the exact store namespace.
+// It fences a graph write without publishing or advancing the checkpoint.
+type CheckpointExpectation struct {
+	StoreID     StoreID
+	Incarnation string
+	Key         string
+	Expected    uint64
+}
+
 // CheckpointMutation is prepared by a trusted host namespace adapter. It is
 // data only: plugins never receive the transaction that publishes it.
 type CheckpointMutation struct {
