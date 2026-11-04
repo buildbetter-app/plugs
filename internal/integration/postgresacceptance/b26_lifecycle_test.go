@@ -575,7 +575,7 @@ func b26DemotionStatuses(t *testing.T, h *b26HTTP) {
 	if h.get(t, fresh)["bead"].(map[string]any)["status"] != "todo" {
 		t.Fatal("fixture lacks canonical initial status")
 	}
-	moved := decode[workflowplugin.DemoteResult](t, b26OK(t, h.call(t, "x.workflow.run.demote", map[string]any{"source": ref(fresh)}, "status-demote-fresh")))
+	moved := decode[workflowplugin.DemoteResult](t, b26OK(t, h.call(t, "x.workflow.run.demote", map[string]any{"source": ref(fresh), "template": "status", "label": "fresh"}, "status-demote-fresh")))
 	if moved.Item.Status != "open" || !h.ready(t, true)[moved.Item.ID] {
 		t.Fatalf("fresh canonical task became unclaimable: %+v", moved)
 	}
@@ -584,7 +584,7 @@ func b26DemotionStatuses(t *testing.T, h *b26HTTP) {
 	b26OK(t, h.call(t, "bead.close", map[string]any{"id": ref(moved.Item.ID)}, "status-complete-fresh"))
 	completed := h.create(t, "status-completed-payload-marker")
 	b26OK(t, h.call(t, "bead.close", map[string]any{"id": ref(completed)}, "status-close-source"))
-	result := decode[workflowplugin.DemoteResult](t, b26OK(t, h.call(t, "x.workflow.run.demote", map[string]any{"source": ref(completed)}, "status-demote-completed")))
+	result := decode[workflowplugin.DemoteResult](t, b26OK(t, h.call(t, "x.workflow.run.demote", map[string]any{"source": ref(completed), "template": "status", "label": "completed"}, "status-demote-completed")))
 	if result.Run.State != "completed" || result.Item.Status != "closed" || result.Item.Title != "" || h.ready(t, true)[result.Item.ID] {
 		t.Fatalf("completed source became a live payload: %+v", result)
 	}
@@ -592,7 +592,7 @@ func b26DemotionStatuses(t *testing.T, h *b26HTTP) {
 	if bytes.Contains(checkpoint.Checkpoint.Payload, []byte("status-completed-payload-marker")) {
 		t.Fatal("completed demotion retained payload")
 	}
-	replay := decode[workflowplugin.DemoteResult](t, b26OK(t, h.call(t, "x.workflow.run.demote", map[string]any{"source": ref(completed)}, "status-demote-completed")))
+	replay := decode[workflowplugin.DemoteResult](t, b26OK(t, h.call(t, "x.workflow.run.demote", map[string]any{"source": ref(completed), "template": "status", "label": "completed"}, "status-demote-completed")))
 	if !reflect.DeepEqual(result, replay) || !reflect.DeepEqual(checkpoint, workflowCheckpoint(t, h.store.(driver.CheckpointStore))) {
 		t.Fatal("completed demotion replay recreated or changed state")
 	}
