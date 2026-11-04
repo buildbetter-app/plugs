@@ -56,5 +56,18 @@ and a fresh target stays empty for native restore. Merely opening a driver
 store does not certify or backfill it.
 Hosts composing the Writer directly can run `pipeline.BuildSourceIndexes`
 before serving requests. Until coverage is complete, readers return unsupported
-and validation retains the complete source-validation fallback. The ordinary
-write pre-phase deadline remains two seconds.
+and validation retains the complete source-validation fallback.
+
+Source-index coverage proves membership, not semantic graph validity. Native
+restore separately validates the complete parent and dependency graph, including
+unrelated components and custom-link targets, before atomically publishing a
+revision-bound validity certificate with its records, indexes, and ancestor rows.
+The certificate survives physical SQLite close/reopen. A hierarchy-only move or
+detach can avoid whole-graph validation only when that certificate is current
+and bounded source checks prove the affected hierarchy has no incoming or
+outgoing dependency links. Validated writes maintain the certificate in their
+existing transaction; a graph publication without certification makes it stale.
+Missing or stale certificates, link-bearing affected sources, deletes, and link
+edits retain complete validation. Startup membership backfill alone never
+certifies semantic validity. The ordinary write pre-phase deadline remains two
+seconds.

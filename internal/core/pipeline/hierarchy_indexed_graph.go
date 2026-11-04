@@ -16,43 +16,44 @@ var hierarchyIncomingKinds = []driver.IncomingLinkKind{
 }
 
 // observeIndexedGraphIncoming retains the selected inverse-link facts in the
-// same pinned read set as canonical children. Even an empty covered result is
-// only a selected-domain observation: native restore can publish complete
-// link metadata for a globally invalid graph, so the complete validator still
-// runs until a separate global-validity witness exists.
-func (p *prepared) observeIndexedGraphIncoming(ctx context.Context) error {
+// same pinned read set as canonical children. A true result means the changed
+// hierarchy sources have no scheduling or legacy parent-child links, so this
+// hierarchy-only write preserves the dependency graph outside the selected
+// sources. This local observation is NOT proof of global validity: skipping
+// complete revalidation also requires a separate, current semantic certificate.
+func (p *prepared) observeIndexedGraphIncoming(ctx context.Context) (bool, error) {
 	s := p.hierarchySources
 	if s == nil || len(p.hierarchyEdits) == 0 {
-		return nil
+		return false, nil
 	}
 	for _, change := range p.proposal.Changes {
 		switch change.Op.Kind {
 		case model.OpDelete, model.OpLink, model.OpUnlink:
 			// General deletion needs every custom/association incoming kind.
-			return nil
+			return false, nil
 		}
 	}
 	for _, row := range s.stored {
 		if len(row.Links) != 0 {
-			return nil
+			return false, nil
 		}
 	}
 	for _, row := range s.current {
 		if len(row.Links) != 0 {
-			return nil
+			return false, nil
 		}
 	}
 	for _, pending := range p.writes {
 		if pending.deleted || len(pending.doc.Links) != 0 {
-			return nil
+			return false, nil
 		}
 		if len(pending.before) != 0 {
 			before, err := DecodeDocument(pending.before)
 			if err != nil {
-				return err
+				return false, err
 			}
 			if len(before.Links) != 0 {
-				return nil
+				return false, nil
 			}
 		}
 	}
@@ -76,21 +77,21 @@ func (p *prepared) observeIndexedGraphIncoming(ctx context.Context) error {
 		}
 		rows, more, err := s.snapshot.InverseSourceLinks(ctx, refs[start:end], hierarchyIncomingKinds, nil, 0)
 		if errors.Is(err, driver.ErrUnsupported) {
-			return nil
+			return false, nil
 		}
 		if err != nil {
-			return err
+			return false, err
 		}
 		if len(rows) != 0 || more {
-			return nil
+			return false, nil
 		}
 	}
-	return nil
+	return true, nil
 }
 
-func unsupportedInverse(err error) error {
+func unsupportedInverse(err error) (bool, error) {
 	if errors.Is(err, driver.ErrUnsupported) {
-		return nil
+		return false, nil
 	}
-	return err
+	return false, err
 }
