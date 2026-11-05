@@ -28,8 +28,13 @@ import (
 const (
 	Alias      = "workflow"
 	ItemPrefix = "workflow:item/"
-	stateKey   = "workflow/state"
-	claimTTL   = 30 * time.Minute
+	// RunKind and ItemKind are the provider's durable user-content kinds. The
+	// native creation guard receives these from the actual create paths; it does
+	// not classify method names or a service-side example allowlist.
+	RunKind  = "workflow.run"
+	ItemKind = "workflow.item"
+	stateKey = "workflow/state"
+	claimTTL = 30 * time.Minute
 	// ClaimTTL is the original duration recorded in workflow claim responses.
 	// Replays retain that duration instead of recomputing a remaining lease.
 	ClaimTTL = claimTTL
@@ -200,8 +205,19 @@ type Provider struct {
 	plugin      string
 	instance    string
 	incarnation string
-	mu          sync.Mutex
+	// userContentGuard is installed by the trusted service composition. The
+	// provider calls it with the complete set of user-content kinds it is about
+	// to create, immediately before mutating its checkpoint image. Receipts,
+	// audit entries and other operational state are deliberately not included.
+	userContentGuard func([]string) error
+	mu               sync.Mutex
 }
+
+// UserContentGuard is the common rollback-window admission seam for native
+// provider writes. The callback receives actual provider-created kinds rather
+// than a service-side allowlist, so a future provider creation path must name
+// every user-content record it publishes before its checkpoint CAS.
+type UserContentGuard func([]string) error
 
 // BlockerResolver bridges a workflow dependency to the canonical core
 // ontology. The workflow provider owns the active endpoint and invokes this
@@ -621,6 +637,20 @@ func (p *Provider) WithClock(now func() time.Time) *Provider {
 	return p
 }
 
+// WithUserContentGuard installs the trusted host guard for native user-content
+// creation. A nil guard restores the default (window disabled) behavior.
+func (p *Provider) WithUserContentGuard(guard UserContentGuard) *Provider {
+	p.userContentGuard = guard
+	return p
+}
+
+func (p *Provider) guardUserContent(kinds ...string) error {
+	if p.userContentGuard == nil || len(kinds) == 0 {
+		return nil
+	}
+	return p.userContentGuard(append([]string(nil), kinds...))
+}
+
 // WithIdentity binds receipts to the plugin instance and store incarnation.
 // A new incarnation cannot replay an old response, even when the checkpoint
 // namespace is restored into a fresh store.
@@ -885,6 +915,9 @@ func (p *Provider) Invoke(ctx context.Context, by model.PrincipalRef, req Invoke
 	if err != nil {
 		return InvokeResult{}, err
 	}
+	if err := p.guardUserContent(RunKind, ItemKind); err != nil {
+		return InvokeResult{}, err
+	}
 	run := runState{ID: runID, Template: req.Template, Project: req.Project, Owner: ownerState{Principal: principal, Agent: agent, Project: req.Project}, State: "active", CreatedAt: p.now().UTC()}
 	result := InvokeResult{Plane: "ephemeral", Run: &RunView{ID: runID, Template: req.Template, Project: req.Project, Mode: req.Mode, State: run.State, Owner: principal, CreatedAt: run.CreatedAt}, Items: []ItemView{}}
 	// Keep the authoritative run timestamp available while constructing item
@@ -987,7 +1020,7 @@ func (p *Provider) itemViewIn(value persisted, item itemState) ItemView {
 func itemViewAt(item itemState, now time.Time) ItemView {
 	view := ItemView{
 		ID: item.ID, RunID: item.RunID, Label: item.Label, Title: item.Title, Type: item.Type,
-		Project: item.Project, Status: item.Status, Plane: "ephemeral", Kind: "workflow.item",
+		Project: item.Project, Status: item.Status, Plane: "ephemeral", Kind: ItemKind,
 		Plugin: Alias, Revision: model.Natural64(item.Generation), Fields: cloneMetadata(item.Fields), Labels: append([]string(nil), item.Labels...),
 		Metadata: cloneMetadata(item.Metadata), Parent: cloneRef(item.Parent), Blocked: item.Blocked, ChildCounter: item.ChildCounter,
 	}
@@ -1989,6 +2022,9 @@ func (p *Provider) Demote(ctx context.Context, by model.PrincipalRef, req Demote
 	if req.Status != "" {
 		item.Status = req.Status
 	}
+	if err := p.guardUserContent(RunKind, ItemKind); err != nil {
+		return DemoteResult{}, err
+	}
 	item.Blocked, item.ChildCounter = req.Blocked, req.ChildCounter
 	for _, comment := range req.Comments {
 		item.Comments = append(item.Comments, commentState{Body: comment.Body, Principal: comment.Principal, Time: comment.Time})
@@ -2488,12 +2524,12 @@ func (p *Provider) sanitizeTerminalReceipts(value persisted, runID string) {
 				}
 			}
 			result.Found = receipt.ItemID != ""
-			result.Item = ItemView{ID: receipt.ItemID, RunID: runID, Status: "closed", Plane: "ephemeral", Kind: "workflow.item", Plugin: Alias, Revision: result.Item.Revision}
+			result.Item = ItemView{ID: receipt.ItemID, RunID: runID, Status: "closed", Plane: "ephemeral", Kind: ItemKind, Plugin: Alias, Revision: result.Item.Revision}
 			receipt.Result, _ = json.Marshal(result)
 		} else if receipt.Method == "bead.claim" {
 			var item ItemView
 			if json.Unmarshal(receipt.Result, &item) == nil {
-				item = ItemView{ID: receipt.ItemID, RunID: runID, Status: "closed", Plane: "ephemeral", Kind: "workflow.item", Plugin: Alias, Revision: item.Revision}
+				item = ItemView{ID: receipt.ItemID, RunID: runID, Status: "closed", Plane: "ephemeral", Kind: ItemKind, Plugin: Alias, Revision: item.Revision}
 				receipt.Result, _ = json.Marshal(item)
 			}
 		} else if receipt.Method == "x.workflow.run.demote" {
@@ -2501,7 +2537,7 @@ func (p *Provider) sanitizeTerminalReceipts(value persisted, runID string) {
 			_ = json.Unmarshal(receipt.Result, &result)
 			result = DemoteResult{
 				Run:  RunView{ID: runID, Mode: "ephemeral", State: "completed"},
-				Item: ItemView{ID: receipt.ItemID, RunID: runID, Status: "closed", Plane: "ephemeral", Kind: "workflow.item", Plugin: Alias, Revision: result.Item.Revision},
+				Item: ItemView{ID: receipt.ItemID, RunID: runID, Status: "closed", Plane: "ephemeral", Kind: ItemKind, Plugin: Alias, Revision: result.Item.Revision},
 			}
 			receipt.Result, _ = json.Marshal(result)
 		} else if receipt.Method == "x.workflow.run.promote" {

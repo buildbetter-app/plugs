@@ -29,6 +29,35 @@ const (
 // "bead" or "memory").
 type KindMapping func(kind string) (beadsKind string, ok bool)
 
+// KindRegistry is the trusted reverse/export registry owned by a composed
+// host. It answers from the same canonical mapping used to emit Beads records;
+// it is never populated from request data or a UI setting.
+type KindRegistry interface {
+	ReverseKind(kind string) (beadsKind string, ok bool)
+}
+
+// KindRegistryFunc adapts a host registry callback without weakening the
+// registry boundary. Production hosts normally expose a concrete registry;
+// tests may use this adapter to exercise the same composition seam.
+type KindRegistryFunc func(kind string) (beadsKind string, ok bool)
+
+func (f KindRegistryFunc) ReverseKind(kind string) (string, bool) {
+	if f == nil {
+		return "", false
+	}
+	return f(kind)
+}
+
+// MappingFromRegistry returns the classifier callback for a trusted registry.
+// A nil registry deliberately leaves only the converter's built-in vocabulary
+// available.
+func MappingFromRegistry(registry KindRegistry) KindMapping {
+	if registry == nil {
+		return nil
+	}
+	return registry.ReverseKind
+}
+
 // KindClassification is the detached result of ClassifyKind. BeadsKind is set
 // when the kind has an actual canonical mapping; it is empty for operational or
 // refused user-content kinds.

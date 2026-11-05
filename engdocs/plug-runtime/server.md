@@ -80,6 +80,14 @@ prepared rollback window closes, the operator prepares the matching
 normal host control plane. The setting does not change authorization, CAS,
 lifecycle, transaction atomicity, or receipt/audit admission.
 
+Hosts that compose native content provide the trusted
+`composition.Config.RollbackKindRegistry` from the same canonical reverse/export
+registry used for rollback. YAML cannot install a callback or add an example
+allowlist: when this field is nil, only the reverse converter's built-in
+canonical record vocabulary is representable. The mapping is passed unchanged
+to both the common Writer and native provider creation guard, so a kind becomes
+allowed only when the configured reverse path can actually represent it.
+
 For example, a persistent SQLite server can use:
 
 ```yaml

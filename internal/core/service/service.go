@@ -68,7 +68,27 @@ func WithEventProvider(provider EventProvider) Option {
 // The service keeps the standard bead tools as the public adapter while the
 // provider owns only its unversioned active-run state.
 func WithWorkflow(provider *workflowplugin.Provider) Option {
-	return func(s *Service) { s.workflow = provider }
+	return func(s *Service) {
+		s.workflow = provider
+		if provider != nil {
+			// The provider owns the native checkpoint mutation. Install the same
+			// classifier used by the common Writer at that boundary so every
+			// provider-created user-content kind is checked immediately before
+			// publication. The closure reads the service's live switch/mapping so
+			// host-owned tests and reload seams retain ordinary toggle semantics.
+			provider.WithUserContentGuard(func(kinds []string) error {
+				if !s.rollbackWindow {
+					return nil
+				}
+				for _, kind := range kinds {
+					if err := s.rollbackWindowKind(kind); err != nil {
+						return err
+					}
+				}
+				return nil
+			})
+		}
+	}
 }
 
 // WithRollbackWindow enables the server-wide admission guard for newly
@@ -146,13 +166,6 @@ func (s *Service) rollbackWindowKind(kind string) error {
 		return reverseconverter.RollbackWindowRefusal(kind)
 	}
 	return nil
-}
-
-func (s *Service) rollbackWindowWorkflowCreation() error {
-	if err := s.rollbackWindowKind("workflow.run"); err != nil {
-		return err
-	}
-	return s.rollbackWindowKind("workflow.item")
 }
 
 func namedRef(ref model.Ref) error {
@@ -251,9 +264,6 @@ func (s *Service) WorkflowInvoke(ctx context.Context, by model.PrincipalRef, req
 			if err := s.validateWorkflowEndpoints(ctx, by, req.Project, workflowAuxiliaryRefs(item.Parent, item.Links)...); err != nil {
 				return workflowplugin.InvokeResult{}, err
 			}
-		}
-		if err := s.rollbackWindowWorkflowCreation(); err != nil {
-			return workflowplugin.InvokeResult{}, err
 		}
 		return s.workflow.Invoke(ctx, by, req, meta)
 	}

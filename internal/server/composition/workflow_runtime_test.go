@@ -15,11 +15,43 @@ import (
 	"github.com/buildbetter-app/plugs/internal/client"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/restore"
+	"github.com/buildbetter-app/plugs/internal/core/reverseconverter"
 	"github.com/buildbetter-app/plugs/internal/plugins/authnapikey"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
 	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
+
+func TestRollbackWindowCompositionUsesConfiguredReverseRegistry(t *testing.T) {
+	ctx := context.Background()
+	registry := reverseconverter.KindRegistryFunc(func(kind string) (string, bool) {
+		if kind == workflowplugin.RunKind || kind == workflowplugin.ItemKind {
+			return "bead", true
+		}
+		return "", false
+	})
+	runtime, err := Open(ctx, Config{
+		Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "rollback-window.db"),
+		Project: "rollback-window", Address: DefaultAddress, RollbackWindow: true,
+		RollbackKindRegistry: registry,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close(ctx) })
+	result, err := runtime.Service.WorkflowInvoke(ctx,
+		model.PrincipalRef{Kind: "anonymous", ID: "anonymous"},
+		workflowplugin.InvokeRequest{
+			Template: "configured", Project: "rollback-window", Mode: "ephemeral",
+			Checklist: []workflowplugin.ChecklistItem{{Label: "one", Title: "configured item"}},
+		},
+		model.WriteMeta{Project: "rollback-window", IdempotencyKey: strings.Repeat("r", 64)},
+	)
+	if err != nil || len(result.Items) != 1 || result.Items[0].Kind != workflowplugin.ItemKind {
+		t.Fatalf("configured reverse registry did not admit native write: result=%+v err=%v", result, err)
+	}
+}
 
 func TestMemoryRuntimeKeepsOrdinaryWorkflowToolsAndRefusesEphemeral(t *testing.T) {
 	ctx := context.Background()

@@ -37,6 +37,22 @@ func TestClassifyKindAcceptsOnlyCanonicalMappedBeadsKinds(t *testing.T) {
 	}
 }
 
+func TestMappingFromRegistryFeedsCanonicalClassifier(t *testing.T) {
+	registry := KindRegistryFunc(func(kind string) (string, bool) {
+		if kind == "native.task" {
+			return "bead", true
+		}
+		return "", false
+	})
+	classification := ClassifyKindWithMapping("native.task", MappingFromRegistry(registry))
+	if classification.Disposition != KindRepresentable || classification.BeadsKind != "bead" {
+		t.Fatalf("registry mapping classification=%+v", classification)
+	}
+	if got := MappingFromRegistry(nil); got != nil {
+		t.Fatalf("nil registry produced a mapping callback")
+	}
+}
+
 func TestRollbackWindowRefusalCarriesTypedKind(t *testing.T) {
 	err := RollbackWindowRefusal("workflow.item")
 	var typed *model.Error
