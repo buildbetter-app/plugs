@@ -1,7 +1,7 @@
 {
   "format": "plug.s1.b01.native-source-binding.v1",
-  "consumerBase": "9346ab3f384d9994dda3f447ec3ffa6148803919",
-  "consumerBaseTree": "127947f6bd096c1ff2af22bbd191b4dbe864913e",
+  "consumerBase": "7a43c3c625a5c08d3a4364a321cd47d6357ef30e",
+  "consumerBaseTree": "be93a595dc4c44ef4d94d2333060788fd344dca0",
   "donor": "43c0f2410ccb24062b8bd1bd073aeb29ef21288f",
   "donorTree": "05153e1c051b1887fa875b53739adc036ae8cf16",
   "donorSourceDisposition": "CAUSAL_SOURCE_AUTHORED; owning independent49 source review WAIT. Author-reported ordinary focus/build/whole PASS is separate and supplies no consumer or native proof.",
@@ -49,7 +49,7 @@
     "indefinite": "AUTHORED_NOT_RUN",
     "ownedRuntimeOriginals": "WAIT_FRESH_SAME_RUN",
     "threeDriverReplay": "AUTHORED_NOT_RUN",
-    "NativeAdmission": null,
+    "NativeAdmission": "41800330346:13307042737:ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a",
     "fullB01": "UNQUALIFIED",
     "FullS1": "0/28",
     "B05": "paused"
@@ -61,7 +61,7 @@
     "sha256": "4eb2fcc5937668a29077c634ce361872e4b2a43152443da31ce65c800309beb4"
   },
   "sourceComposition": "Exact attributed producer43 MODULE/helper blobs; existing B01 recorder, V3 inputs,96 argv and three-driver replay unchanged except helper source/tree attribution. Returned ChildEnv stays unchanged; private config root remains separate from physical DataRoot.",
-  "currentConsumerScope": "Child of8b9173ceb2e26b57278f0807dafa17096c3d50f9: retains all777 hierarchy/category/compatibility names and complete-JSON quiet receipt oracle, appends nine genuine native type phases per capture and fresh public-created type/filter/template-extension fixtures in all three backends. 933 source-derived planned names,422 CLI per physical store/1688 total. Native explicit type override remains visible beside Plug ReadyEligible=false mandatory behavior; typed/template parity=null where applicable. Full source/receipt/history/version/all9derived/facts, signed pages and physical SQL reopen remain asserted. All own runtime AUTHORED_NOT_RUN; common Go+SQL clock, planes and optional errors still unqualified.",
+  "currentConsumerScope": "Authorized child of pinned main 7a43c3c625a5c08d3a4364a321cd47d6357ef30e/tree be93a595dc4c44ef4d94d2333060788fd344dca0: retains the original native recorder and adds the finite H03/H04 hierarchy, membership, conservation, filtered-page and SQL-reopen matrix. External-refused remains a separately labelled E01/H05-H08 control; clocks, durable/ephemeral planes, optional errors and M03 remain unqualified. All runtime evidence for this consumer is AUTHORED_NOT_RUN until a fresh same-run preparation and named native execution.",
   "trustedPreparation": {
     "control": "2d2164ba3d8e456c9aba15fbeb8cae4edc755997",
     "controlTree": "ae226eed2e9a85d4da19958db7a3520ebfe9cf05",

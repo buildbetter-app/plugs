@@ -99,6 +99,7 @@ type FilterTemplate struct {
 	Request        ListRequest
 	Permit, Forbid FilterExpr
 	Restrictions   []FilterExpr
+	prepared       *PreparedRequest
 }
 
 func (t FilterTemplate) Validate() error {
@@ -141,6 +142,9 @@ func (t FilterTemplate) Match(ctx context.Context, s Slice, r Resource) (bool, e
 	if r.Kind != t.Request.ResourceKind {
 		return false, nil
 	}
+	if t.prepared != nil && reflect.DeepEqual(t.Request, t.prepared.request) {
+		return t.matchPrepared(ctx, s, r, t.prepared, snapshotPreparation(ctx, s))
+	}
 	req := CheckRequest{Caller: t.Request.Caller, Action: t.Request.Action, Resource: r, Method: t.Request.Method}
 	ok, err := prepare(ctx, s, t.Namespace, req)
 	if err != nil || !ok {
@@ -150,6 +154,45 @@ func (t FilterTemplate) Match(ctx context.Context, s Slice, r Resource) (bool, e
 	if err != nil || !ok {
 		return false, err
 	}
+	for _, f := range t.Restrictions {
+		ok, err = evalExpr(ctx, s, req, f)
+		if err != nil {
+			return false, unavailable(err)
+		}
+		if !ok {
+			return false, nil
+		}
+	}
+	deny, err := evalExpr(ctx, s, req, t.Forbid)
+	if err != nil {
+		return false, unavailable(err)
+	}
+	if deny {
+		return false, nil
+	}
+	ok, err = evalExpr(ctx, s, req, t.Permit)
+	if err != nil {
+		return false, unavailable(err)
+	}
+	return ok, nil
+}
+
+func (t FilterTemplate) matchPrepared(ctx context.Context, s Slice, r Resource, p *PreparedRequest, state *Preparation) (bool, error) {
+	if r.Kind != p.request.ResourceKind {
+		return false, nil
+	}
+	if t.prepared != nil && t.prepared.freshObservations {
+		state = nil
+	}
+	ok, err := p.prepare(ctx, s, t.Namespace, r, state)
+	if err != nil || !ok {
+		return false, err
+	}
+	ok, err = p.caveatsAllow(ctx, s, r)
+	if err != nil || !ok {
+		return false, err
+	}
+	req := CheckRequest{Caller: p.request.Caller, Action: p.request.Action, Resource: r, Method: p.request.Method}
 	for _, f := range t.Restrictions {
 		ok, err = evalExpr(ctx, s, req, f)
 		if err != nil {

@@ -36,6 +36,7 @@ type nativeBlocked struct {
 type nativePhase struct {
 	Nodes        map[string]nativeNode
 	Ready        []string
+	First        []string
 	ExplainReady []nativeExplained
 	Blocked      []nativeBlocked
 	TotalReady   int
@@ -44,7 +45,7 @@ type nativePhase struct {
 
 func recordNativePhase(t *testing.T, command *nativeCommand, vector nativeVector, phase string) nativePhase {
 	t.Helper()
-	projection := nativePhase{Nodes: make(map[string]nativeNode), Ready: []string{}, ExplainReady: []nativeExplained{}}
+	projection := nativePhase{Nodes: make(map[string]nativeNode), Ready: []string{}, First: []string{}, ExplainReady: []nativeExplained{}}
 	for priority, role := range nativeRoles {
 		var issues []struct {
 			ID, Title, Status string
@@ -140,6 +141,18 @@ func recordNativePhase(t *testing.T, command *nativeCommand, vector nativeVector
 		}
 		seen[item.ID] = true
 		projection.Ready = append(projection.Ready, item.ID)
+	}
+	var first []struct{ ID string }
+	nativeDecode(t, command.run("ready-one-"+phase, "ready", "--json", "--sort", "hybrid", "--limit", "1"), &first)
+	for _, item := range first {
+		projection.First = append(projection.First, item.ID)
+	}
+	wantFirst := projection.Ready
+	if len(wantFirst) > 1 {
+		wantFirst = wantFirst[:1]
+	}
+	if !reflect.DeepEqual(projection.First, wantFirst) {
+		t.Fatalf("actual native %s applied the page before readiness filters: first=%v full=%v", phase, projection.First, projection.Ready)
 	}
 	var explanation struct {
 		Ready   []nativeExplained

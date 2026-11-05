@@ -1,0 +1,30 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+# Explicit only. The accepted native bundle is supplied by the existing
+# trusted RunsOn preparation route; wildcard test runs must not execute it.
+go_test(
+    name = "record_native_test",
+    srcs = ["conservation_test.go", "paired_replay_test.go", "recorder_test.go"],
+    embedsrcs = ["native_inputs.json"],
+    args = ["-test.v", "-b09-native-recording", "-test.run=^TestRecordNativeB09$$"],
+    deps = [
+        "//internal/core/dumpformat",
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/integration/converterroundtrip",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/postgres",
+        "//internal/storage/sqlite",
+    ],
+    size = "large",
+    tags = ["local", "manual"],
+    timeout = "long",
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

@@ -200,12 +200,15 @@ func nativeMembershipReady(t *testing.T, c *nativeCommand, label string, filters
 	return ids
 }
 
-func (r *nativeReplay) replayMembershipContinuations(capture nativeCapture) {
+func (r *nativeReplay) replayMembershipContinuations(capture nativeCapture, coverage *nativeReplayCoverage) {
 	parent := r.f.t
 	for _, step := range nativeMembershipSteps() {
 		if !parent.Run("membership/"+step.Name, func(t *testing.T) {
 			r.f.t = t
 			defer func() { r.f.t = parent }()
+			if coverage != nil {
+				coverage.Membership[step.Name] = true
+			}
 			r.configureMembershipSlots(step)
 			observed, ok := capture.Membership[step.Name]
 			if !ok || len(observed.Nodes) != len(nativeRoles) {

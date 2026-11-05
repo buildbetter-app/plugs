@@ -1,7 +1,7 @@
 {
   "format": "plug.s1.b01.native-inputs.v1",
-  "consumer": "9346ab3f384d9994dda3f447ec3ffa6148803919",
-  "consumerTree": "127947f6bd096c1ff2af22bbd191b4dbe864913e",
+  "consumer": "7a43c3c625a5c08d3a4364a321cd47d6357ef30e",
+  "consumerTree": "be93a595dc4c44ef4d94d2333060788fd344dca0",
   "helperSource": "43c0f2410ccb24062b8bd1bd073aeb29ef21288f",
   "helperTree": "05153e1c051b1887fa875b53739adc036ae8cf16",
   "source": "c8eb3ba7d4177e111a6f5c8aebe06b5d0b1d5724",
@@ -60,7 +60,7 @@
       ]
     }
   ],
-  "argvDeltaFromV3": "Retain original24/store and all006 controls. Nine actual named continuation phases add detach/reparent/reattach of a subtree under a blocked ancestor.87CLI/store,348 total. All original writes/shows/ready/explain/refusal/export controls retained. Native reference and Plug typed external extension remain distinct. Current category/guard child retains original87/store success before custom statuses, adds1configuration+19x13real phase commands+commit/inventory/genuine custom-status dump refusal.338CLI/store,1352planned total;477planned named nodes,248planned physical SQL reopens. All source plans AUTHORED_NOT_RUN until own terminal.",
+  "argvDeltaFromV3": "Retain original24/store and all006 controls. Nine actual named continuation phases add detach/reparent/reattach of a subtree under a blocked ancestor.87CLI/store,348 total. All original writes/shows/ready/explain/refusal/export controls retained. Native reference and Plug typed external extension remain distinct. Current category/guard child retains original87/store success before custom statuses, adds1configuration+19x13real phase commands+commit/inventory/genuine custom-status dump refusal.338CLI/store,1352planned total;477planned named nodes,248planned physical SQL reopens. All source plans AUTHORED_NOT_RUN until own terminal. The current hierarchy page extension adds one actual limit-one query to both baseline phases and all nine continuation phases:11additional commands/store,433total/store and1732overall. The new First projection is retained in both semantic twins; no observed result is borrowed from an earlier head.",
   "clockScope": "Raw wall-clock command windows only; native Go time.Now and SQL UTC_TIMESTAMP are uncontrolled. No expiry/wake/48h/B05/full-card claim.",
   "qualification": "AUTHORED_NOT_RUN on genuine hierarchy/readiness/membership/reopen source child; fresh same-run preparation, both twins and all three-driver replay required. Historical f9 and ordinary results do not transfer.",
   "workflowBranch": "swarm/native-producer-census-control-c8eb-20261104",

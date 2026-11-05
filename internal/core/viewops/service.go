@@ -60,12 +60,47 @@ func mapped(err error) error {
 		return nil
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		// A cancellation match in one branch must not erase another cause.
+		// Preserve the original tree when its leaves disagree or include a
+		// separate failure; callers still need that failure's identity.
+		if cancellationCause(err) == nil {
+			return err
+		}
 		return failure("busy", "view read was canceled or exceeded its deadline")
 	}
 	if code, details, ok := driver.ErrorMapping(err); ok {
 		return &model.Error{Data: model.ErrorData{Code: code, Details: details}}
 	}
 	return err
+}
+
+// cancellationCause retains a linear wrapper's context classification, which
+// can normalize its underlying network timeout. Every branch of a joined error
+// must independently carry that same cause; wrapping cannot hide another error.
+func cancellationCause(err error) error {
+	canceled, deadline := errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded)
+	if canceled == deadline {
+		return nil
+	}
+	kind := context.DeadlineExceeded
+	if canceled {
+		kind = context.Canceled
+	}
+	for cause := err; cause != nil; cause = errors.Unwrap(cause) {
+		if joined, ok := cause.(interface{ Unwrap() []error }); ok {
+			branches := joined.Unwrap()
+			if len(branches) == 0 {
+				return nil
+			}
+			for _, branch := range branches {
+				if cancellationCause(branch) != kind {
+					return nil
+				}
+			}
+			return kind
+		}
+	}
+	return kind
 }
 
 func (s *Service) admit(ctx context.Context, by model.PrincipalRef) error {

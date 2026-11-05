@@ -1,0 +1,75 @@
+{
+  "format": "plug.s1.b04.native-inputs.v1",
+  "consumer": "7a43c3c625a5c08d3a4364a321cd47d6357ef30e",
+  "consumerTree": "be93a595dc4c44ef4d94d2333060788fd344dca0",
+  "consumerParent": "5812dd80f0c6e4d1e9136604941c7f54eef3238a",
+  "package": "internal/integration/b04claimidentity",
+  "packageBuildBlob": "e7b5374682bae8e02f09b72b20b939002955e571",
+  "packageBuildSHA256": "da1d81f65d4a86a21558d668ada170a7e133dd1b3e10d762902dfb38763bd1f3",
+  "source": "c8eb3ba7d4177e111a6f5c8aebe06b5d0b1d5724",
+  "sourceTree": "930405e863284a3955cbd35e73a6097b606b91a5",
+  "helperSource": "70230ccd92597a96000f90223c5d89b103e25426",
+  "helperSHA256": "6a84191fd016ddcb637cb5a470e88727176a70e8b5c6e8e6c69f33db6a1559eb",
+  "buildRun": "41800330346",
+  "artifact": "13307042737",
+  "artifactSHA256": "28609d7c072c281a748cb53a361d9a3ffada826d6f2e8866a3b1e62b23d5ffc4",
+  "artifactBytes": 111646601,
+  "binarySHA256": "b734da8ba8b6f50d7fd32239e405b8f8ed9d171b7be5fbbccb63a923d257a123",
+  "binaryBytes": 161299592,
+  "descriptor": "41800330346:13307042737:ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a",
+  "manifestSHA256": "ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a",
+  "workflowSHA": "d758fdf42a426e9e2a4b707dbcebb22ec68b264e",
+  "control": "2d2164ba3d8e456c9aba15fbeb8cae4edc755997",
+  "flags": [
+    "--nocache_test_results",
+    "--flaky_test_attempts=1",
+    "--test_env=GO_TEST_WRAP_TESTV=1",
+    "--test_output=all",
+    "--test_timeout=900,900,900,9000",
+    "--jobs=2",
+    "--local_resources=memory=8192"
+  ],
+  "vector": {
+    "id": "B04-claim-next-native",
+    "databasePrefix": "b04_native",
+    "sourceIDs": {
+      "direct": "b04-d00",
+      "customActive": "b04-c00",
+      "foreignHeld": "b04-f00",
+      "next": "b04-n00",
+      "empty": "b04-e00"
+    },
+    "runs": [
+      {
+        "id": "run-a",
+        "database": "b04_native_a"
+      },
+      {
+        "id": "run-b",
+        "database": "b04_native_b"
+      }
+    ]
+  },
+  "commandContract": {
+    "direct": "update <id> --claim --json",
+    "sameOwner": "repeat the same direct claim under the original actor",
+    "foreign": "repeat claim with BEADS_ACTOR=s1-b04-foreign and retain exit/stderr",
+    "claimNext": "ready --claim --json",
+    "emptyFront": "claimNext after all eligible rows are consumed returns JSON null/empty success",
+    "inventory": "--readonly export --format beads-inventory/1 --plug-capture-public",
+    "dump": "--readonly export --format plug-dump/1 --plug-inventory; retain real custom-status/live-claim refusal with absent archive and unchanged source; downstream NOT_RUN",
+    "customActive": "update <configured-active-id> --claim --json; assert observed hydrated output and stored postimage",
+    "show": "--readonly show <observed-id> --json",
+    "history": "--readonly history <observed-id> --events --limit 0 --json; exact same-owner equality",
+    "versions": "--readonly versions <observed-id> --json; preserve actual rows or default history-off refusal without toggling source policy",
+    "physical": "--readonly sql SHOW TABLES / SELECT * / SHOW COLUMNS / dolt_log; complete row multisets and column schema, no-op and refusal equality"
+  },
+  "qualification": "AUTHORED_NOT_RUN; fresh accepted preparation, two native stores, and Plug replay are required; no historical unit transfers credit",
+  "clockScope": "native claim columns must be observed DATETIME(0); compare started_at to both actual command endpoints rounded to that same nearest-second domain, retaining raw nanosecond receipts; no lease-expiry or B05 qualification",
+  "boundaries": [
+    "native source IDs are bound to actual Plug refs and never treated as identical identities",
+    "expected refusal streams are retained before assertions",
+    "ordinary B04 tests remain separate from this manual native target",
+    "no B05 heartbeat/renewal/reclaim or B22 topic work"
+  ]
+}

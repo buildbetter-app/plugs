@@ -142,6 +142,67 @@ func TestM03ProviderOnlyUnequalPriorityPagesNoDuplication(t *testing.T) {
 	}
 }
 
+func TestM03CombinedReadyMixedParentSnapshotAndReopen(t *testing.T) {
+	for _, engine := range []string{"sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			f := newFixture(t, engine)
+			svc := m03ReadyService(t, f)
+			child := model.RefByID(m03CreateDurable(t, f, 0), model.Natural64(0))
+			grandchild := model.RefByID(m03CreateDurable(t, f, 0), model.Natural64(0))
+			result, err := svc.WorkflowInvoke(f.ctx, m03ReadyPrincipal, workflowplugin.InvokeRequest{
+				Template: "m03-parents", Project: "batch-local", Mode: "ephemeral",
+				Checklist: []workflowplugin.ChecklistItem{
+					{Label: "parent", Title: "blocked parent", Type: "task", Blocked: true},
+					{Label: "free-one", Title: "free one", Type: "task"},
+					{Label: "free-two", Title: "free two", Type: "task"},
+				},
+			}, model.WriteMeta{Project: "batch-local", IdempotencyKey: "m03-parent-invoke"})
+			if err != nil || len(result.Items) != 3 {
+				t.Fatalf("parent control invocation: %+v err=%v", result, err)
+			}
+			parent := model.RefByID(result.Items[0].ID, model.Natural64(0))
+			for i, request := range []service.LinkRequest{
+				{From: child, To: parent, Kind: "parent-child"},
+				{From: grandchild, To: child, Kind: "parent-child"},
+			} {
+				if _, err := svc.Link(f.ctx, m03ReadyPrincipal, request, model.WriteMeta{Project: "batch-local", IdempotencyKey: fmt.Sprintf("m03-parent-link-%d", i)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			first, err := svc.Ready(f.ctx, m03ReadyPrincipal, service.ReadyRequest{Project: "batch-local", Limit: 1})
+			if err != nil || len(first.Items) != 1 || first.Next == nil {
+				t.Fatalf("mixed parent first page: %+v err=%v", first, err)
+			}
+			f.reopen(t)
+			svc = m03ReadyService(t, f)
+			second, err := svc.Ready(f.ctx, m03ReadyPrincipal, service.ReadyRequest{Project: "batch-local", Limit: 1, Position: first.Next})
+			if err != nil || len(second.Items) != 1 || second.Next != nil || second.Items[0].ID == first.Items[0].ID {
+				t.Fatalf("mixed parent continuation: first=%+v second=%+v err=%v", first, second, err)
+			}
+			got := map[string]bool{first.Items[0].ID: true, second.Items[0].ID: true}
+			if !got[result.Items[1].ID] || !got[result.Items[2].ID] {
+				t.Fatalf("blocked mixed ancestors leaked into ready pages: %v", got)
+			}
+			if _, err := svc.Update(f.ctx, m03ReadyPrincipal, service.UpdateRequest{ID: parent, Fields: map[string]any{"blocked": false}}, model.WriteMeta{Project: "batch-local", IdempotencyKey: "m03-parent-unblock"}); err != nil {
+				t.Fatal(err)
+			}
+			_, err = svc.Ready(f.ctx, m03ReadyPrincipal, service.ReadyRequest{Project: "batch-local", Limit: 1, Position: first.Next})
+			m03RequireCode(t, err, "cursor_invalid")
+			fresh, err := svc.Ready(f.ctx, m03ReadyPrincipal, service.ReadyRequest{Project: "batch-local", Limit: 10})
+			if err != nil || len(fresh.Items) != 5 || fresh.Next != nil {
+				t.Fatalf("unblocked mixed ancestry omitted ready descendants: %+v err=%v", fresh, err)
+			}
+			ids := map[string]bool{}
+			for _, item := range fresh.Items {
+				ids[item.ID] = true
+			}
+			if len(ids) != 5 || !ids[child.ID] || !ids[grandchild.ID] || !ids[parent.ID] {
+				t.Fatalf("unblocked mixed membership duplicated or omitted rows: %v", ids)
+			}
+		})
+	}
+}
+
 func TestM03AggregateBoundsAndIncarnationPrecedence(t *testing.T) {
 	f := newFixture(t, "sqlite")
 	svc := m03ReadyService(t, f)

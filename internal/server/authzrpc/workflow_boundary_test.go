@@ -8,7 +8,9 @@ import (
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
+	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
@@ -130,5 +132,44 @@ func TestWorkflowItemWritesRequireProjectScope(t *testing.T) {
 				t.Fatal("unscoped workflow write reached provider mutation")
 			}
 		})
+	}
+}
+
+// A durable external edge remains subject to the Writer's authorization. This
+// boundary probe makes any attempted workflow-authority/lookup path fail and
+// retains the exact delegate refusal instead of granting a write in the test.
+type externalWorkflowBoundaryDelegate struct {
+	rpc.Service
+	request service.LinkRequest
+	called  bool
+	refusal error
+}
+
+func (d *externalWorkflowBoundaryDelegate) LinkWithOutcome(_ context.Context, _ model.PrincipalRef, req service.LinkRequest, _ model.WriteMeta) (port.WriteOutcome, error) {
+	d.called, d.request = true, req
+	return port.WriteOutcome{}, d.refusal
+}
+func (d *externalWorkflowBoundaryDelegate) UnlinkWithOutcome(ctx context.Context, by model.PrincipalRef, req service.LinkRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	return d.LinkWithOutcome(ctx, by, req, meta)
+}
+func TestB14GuardedExternalWorkflowSpellingPreservesWriterRefusal(t *testing.T) {
+	for _, target := range []string{"workflow:item/0123456789abcdef0123456789abcdef", "workflow:item/ opaque 外部 "} {
+		for _, unlink := range []bool{false, true} {
+			t.Run(target+map[bool]string{false: "/link", true: "/unlink"}[unlink], func(t *testing.T) {
+				denied := &model.Error{Data: model.ErrorData{Code: "forbidden", Hint: "actual delegate refusal"}}
+				d := &externalWorkflowBoundaryDelegate{refusal: denied}
+				guard := &GuardedService{delegate: d}
+				req := service.LinkRequest{From: model.RefByID("ordinary-source", model.Natural64(0)), To: model.RefByID(target, model.Natural64(0)), Kind: "blocks", TargetKind: model.LinkTargetExternal}
+				var err error
+				if unlink {
+					_, err = guard.UnlinkWithOutcome(context.Background(), model.PrincipalRef{}, req, model.WriteMeta{})
+				} else {
+					_, err = guard.LinkWithOutcome(context.Background(), model.PrincipalRef{}, req, model.WriteMeta{})
+				}
+				if err != denied || !d.called || d.request.To.ID != target || d.request.TargetKind != model.LinkTargetExternal {
+					t.Fatalf("opaque external lost Writer refusal/identity: called=%v request=%+v error=%v", d.called, d.request, err)
+				}
+			})
+		}
 	}
 }

@@ -1,8 +1,8 @@
 # B01 native pair recorder source
 
 This is a causal source child of consumer
-`686704bda3e9dd3f7ba945555a2c6f087dbd2ce3`, tree
-`3c585962fd6590fe7e1c47a2280e9c3d944009bd`. It adds a separate manual
+`7a43c3c625a5c08d3a4364a321cd47d6357ef30e`, tree
+`be93a595dc4c44ef4d94d2333060788fd344dca0`. It adds a separate manual
 `//spec/s1-b01-b04:native_recording` target. The historical recorder, inputs,
 captures, source/focused/whole receipts and all parent REDs remain immutable.
 The embedded legacy manifest and run file in this target supply the existing
@@ -19,7 +19,7 @@ each need their own exact child binding. None establishes a physical recording.
 Physical execution remains WAIT until the reviewed actual prepared input and
 applicable producer route have been delivered directly. The four preparer
 values retain their existing meanings. The exact six-field trusted admission,
-accepted source305/tree48e and executable86f3d846 are recorded in
+accepted c8eb source/tree and prepared executable digest/size are recorded in
 `native_inputs.json`. No outer port argument or additional preparer field is
 introduced. Published preparer source/gate PASS is separate from delivery of
 an actual `public-bundle.json` and helper-binding receipt.
@@ -67,6 +67,26 @@ before metadata/read/hash. The producer owns startup/early-failure/version/
 listener/collision/lifetime/cleanup receipts; copied source carries no runtime
 or independent acceptance credit.
 
+After every owned cleanup and the complete inventory/sums are written, the
+recorder retains the entire original evidence tree in a PAX tar archive. It
+verifies each ordered member's name, type, mode, link target and regular-file
+length/hash by reading the archive before removing the loose owned tree. A
+sibling archive receipt binds the original root, archive bytes/hash and exact
+entry counts. The inventory, sums, preparation bindings, all native streams,
+RPC triples, snapshots, SQL reopen and physical lifecycle records remain
+original archive members. No link target is read as source bytes. A pack or verification
+failure fails the test and preserves the loose originals; an existing archive
+destination is refused. A later removal failure retains the verified archive. This changes collection layout only, after execution.
+
+The preceding b708 native run completed all 945 named assertions and cleanup
+records but retained a literal Bazel 900-second TIMEOUT. Its post-test Bazel
+manifest stopped at the exact first 47,521 of 65,488 regular output paths.
+Bazel 9.3.0 runs external stat/file commands per output after the test child
+exits. Collecting the verified archive avoids that per-file processing without
+changing any command, assertion, store lifetime, clock, TTL, cap or deadline.
+The old terminal remains RED; this source change requires its own gates and
+fresh native preparation, execution and independent review.
+
 Each of the four captures is replayed through the actual RPC registry,
 core service and Writer on all three engines. Creates use captured titles and
 priorities, and retain explicit source-ID to actual returned-ref mappings.
@@ -79,6 +99,21 @@ four-row signed continuation crosses the first reopen; old authority is lost,
 new authority is acquired and the same cursor key is installed. Every actual
 reopen prints a unique leaf/stage marker and retains its original identity and
 state digest.
+
+Each native twin pair uses the same two-slot ceiling as replay. The parent
+joins both workers before comparing the declared run-a/run-b projections and
+before starting the next pair. Every capture retains its own server, database,
+output directory, ChildEnv and serial 433-command sequence, including original
+start/stop and cleanup. All four captures and their server lifetimes finish
+before replay starts. Independent replay roots use at most two concurrent slots;
+every root keeps its own store, clock, authority, output paths and serial
+operation/reopen sequence. Slots are released after fixture cleanup. The
+shared PostgreSQL harness serializes database creation, and the final matrix
+omission guard runs after all parallel roots and before harness teardown and
+output inventory. This scheduling change preserves every state/receipt
+observation and the unchanged 900-second test deadline. The preceding d225
+run exhausted that global deadline during the final progressing PostgreSQL
+root; it did not establish a blocked close or a product deadlock.
 
 Native after-membership stays distinct from the independent Plug expectation.
 Both replay modes assert Plug's exact free-only result. Timed native replay
@@ -148,11 +183,11 @@ all original outputs and earlier ordinary evidence remain unchanged; the
 successor needs its own source, ordinary and physical proof.
 
 
-The current native acceptance continuation is anchored to frozen train
-`9346ab3f384d9994dda3f447ec3ffa6148803919`, tree
-`127947f6bd096c1ff2af22bbd191b4dbe864913e`. This supersedes historical consumer
+The current native acceptance continuation is anchored to pinned main
+`7a43c3c625a5c08d3a4364a321cd47d6357ef30e`, tree
+`be93a595dc4c44ef4d94d2333060788fd344dca0`. This supersedes historical consumer
 pins only for this new execution unit. The independently passed e9 six-path
-hierarchy carrier and final9346 binding are named and hashed in
+hierarchy carrier and prior9346 binding are named and hashed in
 `native_source_bindings.json`; no three-path resolution or product/driver/helper
 source is changed here. The accepted executable remains actual c8eb/R418, with
 trusted helper702 and fixed control2d. Every invocation requires its own fresh
@@ -207,7 +242,22 @@ the state. An actual signed cursor crosses every new multirow phase reopen;
 single-row states require exact terminal enumeration. All controls are
 AUTHORED_NOT_RUN until their own named runtime result is reached. Native Go and
 SQL clocks remain uncontrolled, broader native B01 remains unqualified,
-NativeAdmission=None, FullS1=0/28 and protected B05 stays paused.
+The accepted NativeAdmission descriptor is recorded above; FullS1=0/28 and
+protected B05 stays paused.
+
+The H03/H04 child writes `native-replay-manifest.json` and requires a unique
+named `root` plus the full existing lifecycle continuation (`resumed`,
+`blocked-parent`, `detached-from-blocked`, `reparented-to-open`,
+`reattached-to-blocked`, blocker close/reopen, `restored`) and corresponding
+membership phases for each of the four vector/run pairs on memory, SQLite, and
+PostgreSQL. The root is a real seed/link and before/after conservation
+subtest. Memory makes no SQL-reopen claim; SQLite and PostgreSQL each carry a
+signed multirow cursor across a physical close and reopen, acquire a new handle
+and greater lease epoch, drain the cursor, and retain the full read-key/state
+checks. A filtered selector that omits any required root or phase fails closed
+before the native unit can be treated as a complete all-store result. The
+existing `external-refused` phase remains a separate E01/H05-H08 control and
+is not counted in this H03/H04 manifest.
 
 
 The next causal descendant of exact006 adds three actual native writes while
@@ -352,9 +402,9 @@ common clock, broader planes/query-error proof, fullB01 or admission.
 
 The hidden-type continuation retains the preceding hierarchy/category/quiet
 receipt/parent-compatibility corpus and appends nine genuine native parent
-type mutations in each physical capture: merge-request, gate, molecule, rig,
-agent, role, message, bug and restored task. The accepted source declares the
-first seven hidden by default. Each mutation retains actual four-role shows
+type mutations in each physical capture, using the exact nine-value vector
+returned by `nativeExclusionTypes` in `native_exclusion_test.go`. The accepted
+source declares the first seven hidden by default. Each mutation retains actual four-role shows
 and full, limit-one, explicit-type and task-type ready queries. The hidden
 highest-priority parent must disappear before the limit while its open local
 children remain ready. Explicit native --type bypasses the default type list;
@@ -390,3 +440,45 @@ optional-table absence versus unrelated query errors, and other full-card
 obligations remain explicitly incomplete. Existing accepted preparation and
 fixed helper/control are unchanged; no borrowed head/gate credit, FullB01,
 NativeAdmission or FullS1 promotion follows from this source.
+
+
+The hierarchy page extension adds an actual `ready --sort hybrid --limit 1`
+command after the full query in before/after and every native hierarchy
+continuation. Its retained First projection must equal the first eligible ID
+from that phase's independently checked full membership, including the phases
+where the three higher-priority hierarchy roles are blocked and free is the
+only eligible row. Both semantic twins include First. The existing all-store
+replay continues to check full/one-row signed enumeration, resource filtering,
+state conservation and physical SQL reopen. These eleven additional commands
+per store bring the current source plan to 433/store and 1732 overall. The
+previous 422-command recordings remain immutable evidence for their own heads;
+this extension is AUTHORED_NOT_RUN until a fresh changed-source terminal. It
+does not establish mixed-plane pagination or controlled 48-hour ordering.
+
+The native target now declares `shard_count = 2` and exposes two real top-level
+cases, `TestB01NativeTimedPair` followed by `TestB01NativeIndefinitePair`.
+The pinned rules_go 0.63.0 generated runner assigns top-level cases by declaration
+index modulo `TEST_TOTAL_SHARDS`. Each case requires its assigned shard index,
+a total of two and the runner's touched status file. Splitting subtests under
+one parent would leave that parent on one shard and is not used here.
+
+Each shard owns one complete vector: both actual 433-command captures, their
+unchanged semantic comparison, and both runs' memory/SQLite/PostgreSQL replay.
+Each has six store roots and 84 required phase paths; the disjoint union has
+all twelve roots and 168 paths. The original 944 child names keep their suffixes
+under the two distinct top-level names, yielding 946 total raw/XML names.
+The shard record retains its local paths and the complete global manifest.
+Only its selected vector executes, so neither the full suite nor captures are
+repeated. Each shard keeps one store slot, preserving the total two-store
+ceiling across the two Bazel actions. Each has its own PostgreSQL harness;
+every capture, replay store, physical reopen and cleanup keeps its original
+operations and ordering. Captures join before their own comparison/replay.
+
+The reviewed ee2 archive layout remains: final inventory and sums are packed
+outside the owned root and completely verified before loose-root removal.
+No deadline, TTL, clock, command, assertion, environment export, native input
+or accepted helper/artifact pin changes. Original b708/e293 timeout receipts
+remain literal. The separate ee2 native run 41963878136 exited zero with all
+945 original raw/XML names; it supplies no execution credit to this sharded
+source. This partition requires fresh preparation, both shard terminals and
+independent named-union review. FullB01 remains incomplete.
