@@ -302,6 +302,7 @@ internal/core/pipeline/snapshot_get_test.go
 internal/core/pipeline/snapshot_hierarchy.go
 internal/core/pipeline/source_indexes.go
 internal/core/pipeline/source_indexes_test.go
+internal/core/pipeline/source_operations.go
 internal/core/pipeline/telemetry.go
 internal/core/pipeline/telemetry_test.go
 internal/core/pipeline/workflow_close_ref.go
