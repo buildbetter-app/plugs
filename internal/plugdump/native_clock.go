@@ -9,7 +9,8 @@ import (
 )
 
 // Read the genuine SQL expressions used by native decisions. In particular,
-// UTC_TIMESTAMP() has second precision even when the engine clock has usecs.
+// The pinned GMS UTCTimestamp.Eval truncates to microseconds and ignores its
+// precision argument, so both UTC_TIMESTAMP() and UTC_TIMESTAMP(6) retain usecs.
 // This is an observation, never a replacement for a business query or result.
 const nativeClockQuery = `SELECT
 DATE_FORMAT(UTC_TIMESTAMP(6), '%Y-%m-%dT%H:%i:%s.%fZ') AS utc_microseconds,
@@ -51,7 +52,7 @@ func (s SQLSource) observeNativeClock(ctx context.Context, input *captureclock.S
 	}
 	format := "2006-01-02T15:04:05.000000Z"
 	if text(table.Rows[0], "utc_microseconds") != input.SQLTime.Format(format) ||
-		text(table.Rows[0], "utc_default") != input.SQLTime.Truncate(time.Second).Format(format) {
+		text(table.Rows[0], "utc_default") != input.SQLTime.Format(format) {
 		return nil, fmt.Errorf("native capture SQL clock differs from explicit input")
 	}
 	columns, err := s.historyTable(ctx, nativeClockColumnsQuery)
@@ -61,7 +62,7 @@ func (s SQLSource) observeNativeClock(ctx context.Context, input *captureclock.S
 	return &nativeClockEvidence{
 		Input: input, GoObserved: observed,
 		GoInputResolutionNS: 1, SQLInputResolutionNS: 1000,
-		SQLDefaultUTCResolutionNS: int64(time.Second),
+		SQLDefaultUTCResolutionNS: int64(time.Microsecond),
 		SQLQuery:                  nativeClockQuery, SQLResult: table,
 		ColumnPrecisionQuery: nativeClockColumnsQuery, ColumnPrecision: columns,
 		Scope: "named Go wall-time seams and genuine SQL-server query time; embedded SQL clock unsupported; no elapsed-time override",

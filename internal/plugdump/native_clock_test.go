@@ -37,6 +37,7 @@ func TestNativeClockReadbackAndRefusals(t *testing.T) {
 		{"valid", ""},
 		{"wrong-sql-microseconds", "differs from explicit input"},
 		{"wrong-sql-default", "differs from explicit input"},
+		{"truncated-sql-default", "differs from explicit input"},
 		{"empty-readback", "requires one row"},
 		{"sql-error", "SQL clock readback"},
 		{"missing-column-precision", "column precision census"},
@@ -53,16 +54,19 @@ func TestNativeClockReadbackAndRefusals(t *testing.T) {
 				}
 				_ = db.Close()
 			})
-			microseconds, seconds := "2026-11-03T12:00:10.123456Z", "2026-11-03T12:00:10.000000Z"
+			microseconds, defaultUTC := "2026-11-03T12:00:10.123456Z", "2026-11-03T12:00:10.123456Z"
 			if tc.name == "wrong-sql-microseconds" {
 				microseconds = "2026-11-03T12:00:10.123457Z"
 			}
 			if tc.name == "wrong-sql-default" {
-				seconds = "2026-11-03T12:00:11.000000Z"
+				defaultUTC = "2026-11-03T12:00:11.000000Z"
+			}
+			if tc.name == "truncated-sql-default" {
+				defaultUTC = "2026-11-03T12:00:10.000000Z"
 			}
 			rows := sqlmock.NewRows([]string{"utc_microseconds", "utc_default", "session_time_zone", "server_version"})
 			if tc.name != "empty-readback" {
-				rows.AddRow(microseconds, seconds, "+00:00", "unit-readback")
+				rows.AddRow(microseconds, defaultUTC, "+00:00", "unit-readback")
 			}
 			expect := mock.ExpectQuery(nativeClockQuery)
 			if tc.name == "sql-error" {
@@ -88,7 +92,7 @@ func TestNativeClockReadbackAndRefusals(t *testing.T) {
 				}
 				return
 			}
-			if err != nil || evidence == nil || !evidence.GoObserved.Equal(input.GoTime) || evidence.GoObserved.Equal(input.SQLTime) || evidence.SQLInputResolutionNS != 1000 || evidence.SQLDefaultUTCResolutionNS != 1000000000 {
+			if err != nil || evidence == nil || !evidence.GoObserved.Equal(input.GoTime) || evidence.GoObserved.Equal(input.SQLTime) || evidence.SQLInputResolutionNS != 1000 || evidence.SQLDefaultUTCResolutionNS != 1000 {
 				t.Fatalf("independent clock evidence: %+v %v", evidence, err)
 			}
 			if err := unchangedNativeClock(input); err != nil {

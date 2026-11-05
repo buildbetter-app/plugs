@@ -19,6 +19,7 @@ func TestCaptureClockStrictInput(t *testing.T) {
 		t.Fatalf("independent valid clock inputs: %+v %v", baseline, err)
 	}
 	cases := []struct{ name, input, reason string }{
+		{"invalid-utf8", strings.Replace(validInput, "before", "before\xff", 1), "must be valid UTF-8"},
 		{"null", "null", "must be an object"},
 		{"array", "[]", "must be an object"},
 		{"missing", strings.Replace(validInput, `"step":"before",`, "", 1), "all four fields"},

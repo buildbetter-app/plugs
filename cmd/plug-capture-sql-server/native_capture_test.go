@@ -130,14 +130,14 @@ func (f *nativeFixture) step(name string, goTime, sqlTime time.Time) {
 
 func (f *nativeFixture) sqlClock(want time.Time) {
 	f.t.Helper()
-	var actual, seconds string
-	err := f.db.QueryRow(`SELECT DATE_FORMAT(UTC_TIMESTAMP(6), '%Y-%m-%dT%H:%i:%s.%fZ'), DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%dT%H:%i:%s.%fZ')`).Scan(&actual, &seconds)
+	var actual, defaultUTC string
+	err := f.db.QueryRow(`SELECT DATE_FORMAT(UTC_TIMESTAMP(6), '%Y-%m-%dT%H:%i:%s.%fZ'), DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%dT%H:%i:%s.%fZ')`).Scan(&actual, &defaultUTC)
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	f.t.Logf("NATIVE_CAPTURE_SQL_CLOCK microseconds=%s default=%s", actual, seconds)
-	if actual != want.Format("2006-01-02T15:04:05.000000Z") || seconds != want.Truncate(time.Second).Format("2006-01-02T15:04:05.000000Z") {
-		f.t.Fatalf("real SQL query clock differs: %s / %s want %s", actual, seconds, want)
+	f.t.Logf("NATIVE_CAPTURE_SQL_CLOCK microseconds=%s default=%s", actual, defaultUTC)
+	if actual != want.Format("2006-01-02T15:04:05.000000Z") || defaultUTC != want.Format("2006-01-02T15:04:05.000000Z") {
+		f.t.Fatalf("real SQL query clock differs: %s / %s want %s", actual, defaultUTC, want)
 	}
 }
 
@@ -289,6 +289,9 @@ func TestPublicControlledClockAndActiveFamilyCapture(t *testing.T) {
 		{"before", -time.Microsecond, []string{aging, recent}},
 		{"at", 0, []string{aging, recent}},
 		{"after", time.Microsecond, []string{recent, aging}},
+		// Keep a separately named coarse point as well as the actual pinned
+		// UTC_TIMESTAMP() microsecond crossing above; do not infer precision.
+		{"one-second-after", time.Second, []string{recent, aging}},
 	} {
 		t.Run("hybrid-48h-"+point.name, func(t *testing.T) {
 			local := *f
@@ -333,6 +336,7 @@ func TestPublicControlledClockAndActiveFamilyCapture(t *testing.T) {
 		{"before", time.Second - time.Microsecond, false},
 		{"at", time.Second, true},
 		{"after", time.Second + time.Microsecond, true},
+		{"one-second-after", 2 * time.Second, true},
 	} {
 		instant := nativeBoundary.Add(point.delta)
 		f.step("defer-"+point.name, instant, instant)
@@ -428,7 +432,7 @@ func TestPublicControlledClockAndActiveFamilyCapture(t *testing.T) {
 			Columns    plugdump.Table        `json:"column_precision"`
 		} `json:"capture_clock"`
 	}
-	if err := json.Unmarshal(sidecar, &evidence); err != nil || evidence.Clock.Input.Step != "defer-after" || !evidence.Clock.GoObserved.Equal(evidence.Clock.Input.GoTime) || len(evidence.Clock.SQLResult.Rows) != 1 || len(evidence.Clock.Columns.Rows) != 6 {
+	if err := json.Unmarshal(sidecar, &evidence); err != nil || evidence.Clock.Input.Step != "defer-one-second-after" || !evidence.Clock.GoObserved.Equal(evidence.Clock.Input.GoTime) || len(evidence.Clock.SQLResult.Rows) != 1 || len(evidence.Clock.Columns.Rows) != 6 {
 		t.Fatalf("actual clock sidecar: %s %v", sidecar, err)
 	}
 	t.Logf("NATIVE_CAPTURE_CLOCK_SIDECAR sha256=%x bytes=%s", sha256.Sum256(sidecar), sidecar)

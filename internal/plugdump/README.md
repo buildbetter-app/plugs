@@ -414,11 +414,16 @@ With the opt-in present, the existing `environment-and-flags.json` sidecar adds
 hook observation, raw real `UTC_TIMESTAMP(6)` and `UTC_TIMESTAMP()` query
 results, session timezone/server version, and SQL metadata for the physical
 `issues`/`wisps` creation/update/defer columns. It explicitly records 1ns Go
-input resolution, 1us SQL clock input resolution and 1s default
-`UTC_TIMESTAMP()` expression resolution. The native DATETIME column precision
+input resolution and 1us SQL clock/expression resolution. The pinned GMS
+`UTCTimestamp.Eval` ignores its precision argument and truncates to microseconds:
+both `UTC_TIMESTAMP()` and `UTC_TIMESTAMP(6)` retain fractional microseconds.
+This engine behavior is preserved. The native DATETIME column precision
 is retained as observed metadata. It is not upgraded to nanoseconds. Native
-before/at/after points must name their actual representable boundaries;
-unchanged Plug nanosecond fixtures remain separate. The input hash is checked
+before/at/after points must name their actual representable boundaries.
+The native controls retain the actual -1us/at/+1us query-clock observations
+and a separately named `one-second-after` point, with both SQL expressions
+read at every point. Unchanged Plug nanosecond fixtures remain separate.
+The input hash is checked
 again before inventory publication. With no opt-in the additional queries and
 sidecar field are absent.
 

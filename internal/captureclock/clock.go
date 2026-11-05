@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -61,7 +62,9 @@ func Read() (*Snapshot, error) {
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
 		return nil, fmt.Errorf("capture clock input must be a private regular file")
 	}
-	file, err := os.Open(path)
+	// Keep resolution inside the validated private parent even if the input
+	// changes between validation and opening. SameFile below also binds the inode.
+	file, err := os.OpenInRoot(filepath.Dir(path), filepath.Base(path))
 	if err != nil {
 		return nil, fmt.Errorf("open capture clock: %w", err)
 	}
@@ -113,6 +116,9 @@ func SQLNow() time.Time {
 }
 
 func parse(data []byte) (*Snapshot, error) {
+	if !utf8.Valid(data) {
+		return nil, fmt.Errorf("capture clock input must be valid UTF-8")
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	first, err := decoder.Token()
 	if err != nil || first != json.Delim('{') {
