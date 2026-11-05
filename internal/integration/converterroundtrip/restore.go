@@ -709,7 +709,11 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 				fields[key] = value
 			}
 		}
-		if raw, ok := source.Body["metadata"].(map[string]any); ok {
+		rawMetadata, err := dumpformat.SourceMetadataObject(source.Body["metadata"])
+		if err != nil {
+			return restorePlan{}, fmt.Errorf("bead %s metadata: %w", source.ID, err)
+		}
+		if raw := rawMetadata; raw != nil {
 			for key, value := range raw {
 				if strings.HasPrefix(key, "beads.") || strings.HasPrefix(key, "plug.restore.") {
 					return restorePlan{}, fmt.Errorf("reserved restore metadata key %q", key)
@@ -830,8 +834,13 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 			})
 		}
 		kind := stringValue(source.Body["type"])
+		targetKindName := stringValue(source.Body["target_kind"])
 		switch kind {
 		case "blocks":
+		case "waits-for", "conditional-blocks", "tracks":
+			if targetKind != model.LinkTargetExternal && (!dumpformat.IsVersionedLocalKnownEdgeType(manifest.EdgeVersion(), targetKindName, kind) || mode == planLegacy) {
+				return restorePlan{}, fmt.Errorf("%w: relation type %s requires the versioned import contract", ErrRestoreUnavailable, kind)
+			}
 		case "related":
 			kind = "relates-to"
 		case "parent-child":
@@ -852,11 +861,15 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 			docs[from] = doc
 			continue
 		default:
-			if targetKind != model.LinkTargetExternal || kind == "" || len(kind) > 32 || !utf8.ValidString(kind) {
+			if !dumpformat.IsLocalOpaqueEdgeType(manifest.EdgeVersion(), targetKindName, kind) &&
+				(targetKind != model.LinkTargetExternal || kind == "" || len(kind) > 32 || !utf8.ValidString(kind)) {
 				return restorePlan{}, fmt.Errorf("%w: relation type %s", ErrRestoreUnavailable, kind)
 			}
+			if targetKind != model.LinkTargetExternal && mode == planLegacy {
+				return restorePlan{}, fmt.Errorf("%w: relation type %s requires the versioned import contract", ErrRestoreUnavailable, kind)
+			}
 		}
-		link, err := importedSourceLink(source.Body, kind, targetKind)
+		link, err := importedVersionedSourceLink(source, kind, targetKind, manifest.EdgeVersion())
 		if err != nil {
 			return restorePlan{}, fmt.Errorf("%w: relation %s: %v", ErrRestoreUnavailable, source.ID, err)
 		}
@@ -914,6 +927,9 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 	}
 
 	if err := rebuildDerived(&plan, docs); err != nil {
+		return restorePlan{}, err
+	}
+	if err := retainImportedOntology(&plan, archive, add); err != nil {
 		return restorePlan{}, err
 	}
 	if err := retainArchive(&plan, archive, add); err != nil {
@@ -1105,19 +1121,18 @@ func sourceCreationTime(source dumpformat.Record) (*time.Time, error) {
 
 // importedSourceLink preserves the typed endpoint before any local lookup.
 func importedSourceLink(body map[string]any, kind string, targetKind model.LinkTargetKind) (pipeline.Link, error) {
-	link := pipeline.Link{To: model.RefByID(stringValue(body["to"]), model.Natural64(0)), Kind: kind, TargetKind: targetKind}
+	return importedVersionedSourceLink(dumpformat.Record{Body: body}, kind, targetKind, 1)
+}
+
+func importedVersionedSourceLink(source dumpformat.Record, kind string, targetKind model.LinkTargetKind, edgeVersion int) (pipeline.Link, error) {
+	link := pipeline.Link{To: model.RefByID(stringValue(source.Body["to"]), model.Natural64(0)), Kind: kind, TargetKind: targetKind}
 	if err := model.ValidateLinkTarget(targetKind, link.To); err != nil {
 		return pipeline.Link{}, err
 	}
-	if kind == "waits-for" && body["metadata"] != nil {
-		raw, err := json.Marshal(body["metadata"])
-		if err != nil {
-			return pipeline.Link{}, err
-		}
-		link.Metadata = new(model.LinkMetadata)
-		if err := json.Unmarshal(raw, link.Metadata); err != nil {
-			return pipeline.Link{}, err
-		}
+	metadata, err := dumpformat.SourceEdgeMetadata(edgeVersion, source.ID, kind, source.Body["metadata"])
+	if err != nil {
+		return pipeline.Link{}, err
 	}
+	link.Metadata = metadata
 	return link, nil
 }
