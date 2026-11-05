@@ -3,11 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -77,6 +80,14 @@ func i8CommitID(t *testing.T, method string, response sqliteRestartResponse) str
 	return value.Results[0].Ref.ID
 }
 
+func i8Scope(endpoint, incarnation, project string) string {
+	// stableJson(binding) sorts object keys recursively, matching the
+	// Heartbeads receipt reader's instance/project scope digest.
+	canonical := fmt.Sprintf(`{"endpoint":%q,"incarnation":%q,"principal":{"id":"anonymous","kind":"anonymous"},"project":%q}`, endpoint, incarnation, project)
+	digest := sha256.Sum256([]byte(canonical))
+	return hex.EncodeToString(digest[:])
+}
+
 func i8WriteJournal(t *testing.T, dir, project, endpoint, incarnation string, ids ...string) string {
 	t.Helper()
 	workspace := filepath.Join(dir, project)
@@ -92,7 +103,7 @@ func i8WriteJournal(t *testing.T, dir, project, endpoint, incarnation string, id
 		})
 	}
 	journal := map[string]any{"schema": "plug-host-journal/1", "jobs": map[string]any{"i8": map[string]any{
-		"scope": "actual-fixture", "calls": calls,
+		"scope": i8Scope(endpoint, incarnation, project), "calls": calls,
 	}}}
 	path := filepath.Join(workspace, ".plug-host-journal.json")
 	data, err := json.MarshalIndent(journal, "", "  ")
@@ -103,6 +114,38 @@ func i8WriteJournal(t *testing.T, dir, project, endpoint, incarnation string, id
 		t.Fatal(err)
 	}
 	return path
+}
+
+func i8RunAdapter(t *testing.T, bindingPath string) {
+	t.Helper()
+	adapterPath := os.Getenv("I8_ADAPTER")
+	if adapterPath == "" {
+		t.Log("I8_ADAPTER_BOUNDARY no adapter runfile was provided")
+		return
+	}
+	if !filepath.IsAbs(adapterPath) {
+		cwd, err := os.Getwd()
+		if err != nil {
+			t.Logf("I8_ADAPTER_BOUNDARY cannot resolve runfile: %v", err)
+			return
+		}
+		adapterPath = filepath.Join(cwd, adapterPath)
+	}
+	script := `
+const {loadBinding, PlugClient, ProjectionStore} = await import(process.env.I8_ADAPTER);
+const binding = await loadBinding(process.argv[1]);
+const store = new ProjectionStore(new PlugClient(binding));
+const snapshot = await store.refresh();
+console.log(JSON.stringify({nodes:snapshot.graphData.nodes.map(n=>({id:n.id,canonicalId:n.canonicalId,project:n.project,status:n.status,closeReason:n.closeReason})),stats:snapshot.stats,projects:snapshot.projects}));
+`
+	cmd := exec.Command("node", "--input-type=module", "-e", script, bindingPath)
+	cmd.Env = append(os.Environ(), "I8_ADAPTER="+adapterPath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Logf("I8_ADAPTER_BOUNDARY actual Plug endpoint did not complete Heartbeads projection: err=%v output=%s", err, out)
+		return
+	}
+	t.Logf("I8_ADAPTER_ACTUAL_READBACK %s", out)
 }
 
 func TestI8HeartbeadsActualSQLiteTwoProjectFixture(t *testing.T) {
@@ -247,6 +290,7 @@ func TestI8HeartbeadsActualSQLiteTwoProjectFixture(t *testing.T) {
 	if err := os.WriteFile(bindingPath, bindingBytes, 0600); err != nil {
 		t.Fatal(err)
 	}
+	i8RunAdapter(t, bindingPath)
 
 	server.stop(t)
 	server = startPlugServer(t, dir, false)
@@ -257,5 +301,5 @@ func TestI8HeartbeadsActualSQLiteTwoProjectFixture(t *testing.T) {
 		}
 	}
 	t.Logf("I8_ACTUAL_FIXTURE_PASS endpoint=%s incarnation=%s projects=%v colliding_legacy=SHARED canonical=%v new_ids=%v typed_reason=amended field=after journals=[%s,%s] binding=%s", server.endpoint, incarnation, projects, roots, children, journalOps, journalSig, bindingPath)
-	t.Logf("I8_ACTUAL_FIXTURE_BLOCK view.run is not bound by pinned Plug RPC registry; adapter contract requires view.run, so direct Heartbeads adapter qualification remains blocked until an authorized host view binding exists")
+	t.Logf("I8_ACTUAL_FIXTURE_BOUNDARY raw Plug view.run/readback passed; direct UI/feed qualification stays on the separate disposable browser receipt, and any I8_ADAPTER_BOUNDARY line above is preserved literally")
 }
