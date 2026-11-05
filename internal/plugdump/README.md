@@ -43,8 +43,22 @@ manifest does not checksum itself. Integrity is not authentication: a checksum
 cannot prove that an operator's capture declarations are true.
 
 Registry entries are `{name,version,file,count}`. Legacy archives use version
-`1`; a successor archive uses edge version `2` for the typed `waits-for` and
-`conditional-blocks` contract while all other kinds remain version `1`.
+`1`; a fixed-kind successor archive uses edge version `2` for the typed
+`waits-for` and `conditional-blocks` contract while all other kinds remain
+version `1`. When a stored local dependency uses an opaque kind, the edge
+registry uses version `3`, a strict superset of version `2`; fixed-only edge
+archives remain version `2`.
+
+Version `3` admits only a local `depends_on_issue_id` target whose kind is
+nonempty, valid UTF-8, at most 32 bytes, and outside the fixed well-known set:
+`blocks`, `parent-child`, `conditional-blocks`, `waits-for`, `related`,
+`discovered-from`, `replies-to`, `relates-to`, `duplicates`, `supersedes`,
+`authored-by`, `assigned-to`, `approved-by`, `attests`, `tracks`, `until`,
+`caused-by`, `validates`, and `delegated-from`. Unsupported names from that
+fixed set remain refusals; they are never relabeled as opaque. Custom v3 wisp
+targets, dangling, multiple-target and malformed external-target rows remain
+refusals; typed wisp links use the faithful `wisp_dependencies` source family.
+The producer still aborts before encoding when any row is invalid.
 Records are `{kind,id,project,body,source:{table,fields}}`. A successor archive
 also carries the optional manifest field `source_fields_contract:
 "beads-issues-source-fields/1"`. Its absence is the legacy profile; an explicit
@@ -78,14 +92,23 @@ a row. Directives that are malformed, unused, overlap, target a built-in type,
 or target an unaccounted project refuse before archive publication.
 Supported edge types are `blocks`, `parent-child`, `related`,
 `discovered-from`, `waits-for` and `conditional-blocks`. Targets retain their
-typed issue/external discriminator; wisp targets and dangling issue targets
-refuse. Dependency metadata is retained verbatim in the typed body and source
-provenance. It must be valid JSON; waits-for metadata must be an object whose
-known `gate`, `also_blocks` and `spawner_id` members use their canonical types,
-while unknown metadata members remain opaque. The exporter never rewrites a
-gate to `blocks` or drops conditional semantics. Labels sort without loss;
-comments keep IDs, authors, text and timestamps. Only the `kv.memory.` prefix
-is stripped from persistent-memory keys.
+typed issue, wisp or external discriminator; durable and wisp endpoint sets,
+source plane, dangling targets and the exactly-one target arm are validated
+before encoding. Dependency metadata is retained verbatim in the typed body
+and source provenance. It must be valid JSON; waits-for metadata must be an
+object whose known `gate`, `also_blocks` and `spawner_id` members use their
+canonical types, while unknown metadata members remain opaque. The exporter
+never rewrites a gate to `blocks` or drops conditional semantics. Labels sort
+without loss; comments keep IDs, authors, text and timestamps. Only the
+`kv.memory.` prefix is stripped from persistent-memory keys.
+
+Nonempty wisp and catalog families are retained as read-only `beads-archive`
+records with complete source fields. Stored and YAML custom status/type values
+are validated as a deduplicated union, while their raw source rows and
+configuration observations remain in provenance. A durable issue and an active
+wisp with the same ID remain separate records. This producer does not change
+the consumer's durable-first read source, so B26 active-first behavior remains
+a separately owned consumer prerequisite.
 
 ## Input inventory
 
@@ -146,8 +169,8 @@ verification is explicitly unimplemented; the manifest never certifies it.
 | `local_metadata`, `bd_events_seq`, `store_epoch`, `epoch_minted_addresses` | Retain source identity/history-floor/allocator evidence; rebuild target incarnation/cursors |
 | `repo_mtimes` | Record row count and rebuild disposition; target filesystem state is not restored |
 | `leases` | Refuse every nonempty set, including expired rows until resolved by the capture producer |
-| `wisps`, `wisp_labels`, `wisp_dependencies`, `wisp_events`, `wisp_comments`, `wisp_child_counters` | Explicitly refuse nonempty families pending row-level workflow/active/inactive classification |
-| `custom_statuses`, `custom_types` | Explicitly refuse nonempty families pending overlay mapping |
+| `wisps`, `wisp_labels`, `wisp_dependencies`, `wisp_events`, `wisp_comments`, `wisp_child_counters` | Retain complete nonempty rows as read-only workflow evidence; validate plane, endpoint, target-arm and source-field mirrors |
+| `custom_statuses`, `custom_types` | Retain complete rows and validate their stored/YAML union; no Plug lifecycle semantics are inferred |
 | `routes` | Explicitly refuse nonempty SQL routing until multi-store source resolution is implemented |
 | `interactions`, `federation_peers` | Explicitly refuse nonempty families pending redaction/credential-safe archive policy |
 | `ready_issues`, `blocked_issues` | Derived views are excluded from base-table reads; rebuilding and runtime membership/cycle comparison remain unverified |
@@ -163,7 +186,7 @@ Every external family below is mandatory in the inventory, even when absent:
 
 | External source families | Initial support and remaining work |
 | --- | --- |
-| `user-legacy-config`, `user-xdg-config`, `user-native-config`, `project-config`, `beads-dir-config`, `project-local-config` | Absence or explicit normalized JSON only; YAML parsing, six-layer discovery and effective-key resolution unsupported |
+| `user-legacy-config`, `user-xdg-config`, `user-native-config`, `project-config`, `beads-dir-config`, `project-local-config` | Absence or explicit normalized JSON sidecars; present YAML observations retain exact path/bytes/hash and parsed objects, while six-layer discovery and effective-key resolution remain unsupported |
 | `environment-and-flags` | Explicit normalized non-secret JSON/ref provenance; automatic override discovery unsupported |
 | `metadata-json`, `legacy-config-json` | Explicit JSON provenance; automatic legacy migration/discovery and backend binding verification unsupported |
 | `beads-hooks`, `legacy-hooks`, `git-hooks`, `external-hook-managers` | Absence or supplied JSON audit provenance; script/directory discovery and manager parsing unsupported; hooks never execute |
@@ -178,9 +201,9 @@ the successful archive. The inventory cannot prove that an operator omitted
 an undeclared path; its declarations and verification limits remain visible.
 
 Further work includes concrete SQL type/constraint validation, automatic
-external-source census, active/inactive wisp dispositions, custom overlays,
-complete history floors/A6 conversion, empty-target Plug restore, reverse
-conversion and real-store rehearsals. No real-store, production data,
+external-source census, consumer active/inactive wisp semantics, complete
+history floors/A6 conversion, empty-target Plug restore, reverse conversion
+and real-store rehearsals. No real-store, production data,
 performance, runtime parity or cutover acceptance is claimed by these tests.
 
 ## Verification

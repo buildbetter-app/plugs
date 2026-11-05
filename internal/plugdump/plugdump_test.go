@@ -4,8 +4,10 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -55,6 +57,15 @@ func fixture(t *testing.T) (fixtureSource, Inventory) {
 func buildFixture(t *testing.T, source Source, inventory Inventory) []byte {
 	t.Helper()
 	data, err := Build(context.Background(), source, inventory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	data, err := marshal(value)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,6 +368,360 @@ func rowFieldForDependencyTest(base Row, field, kind, id string) any {
 		return id
 	}
 	return base[field]
+}
+
+func TestDumpLocalOpaqueDependencyUsesV3AndPreservesStoredRow(t *testing.T) {
+	source, inventory := fixture(t)
+	base := source["dependencies"].Rows[0]
+	row := cloneRow(base)
+	row["id"] = "edge-local-opaque"
+	row["type"] = "custom-waits-later"
+	row["metadata"] = map[string]any{"opaque": "kept", "number": int64(9007199254740993)}
+	row["depends_on_issue_id"], row["depends_on_wisp_id"], row["depends_on_external"] = "demo-8", nil, nil
+	table := source["dependencies"]
+	table.Rows = append(table.Rows, row)
+	source["dependencies"] = table
+
+	data := buildFixture(t, source, inventory)
+	manifest, err := Validate(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range manifest.Kinds {
+		if kind.Name == "edge" && kind.Version != EdgeVersionLocalOpaque {
+			t.Fatalf("opaque edge registry version=%d, want %d", kind.Version, EdgeVersionLocalOpaque)
+		}
+	}
+	var record Record
+	for _, line := range bytes.Split(bytes.TrimSpace(archiveMembers(t, data)["records/edge.ndjson"]), []byte{'\n'}) {
+		var candidate Record
+		if err := decodeJSON(line, &candidate); err != nil {
+			t.Fatal(err)
+		}
+		if candidate.ID == "edge-local-opaque" {
+			record = candidate
+			break
+		}
+	}
+	if record.ID == "" {
+		t.Fatal("local opaque dependency was not exported")
+	}
+	if record.Body["type"] != row["type"] || record.Body["to"] != row["depends_on_issue_id"] || record.Body["target_kind"] != "depends_on_issue_id" {
+		t.Fatalf("opaque edge target/type changed: body=%+v", record.Body)
+	}
+	if !reflect.DeepEqual(record.Body["metadata"], row["metadata"]) || !reflect.DeepEqual(record.Source.Fields["metadata"], row["metadata"]) {
+		t.Fatalf("opaque metadata changed: body=%#v source=%#v", record.Body["metadata"], record.Source.Fields["metadata"])
+	}
+	for _, field := range []string{"created_at", "created_by", "thread_id", "issue_id", "type", "depends_on_issue_id", "depends_on_wisp_id", "depends_on_external"} {
+		if !reflect.DeepEqual(record.Source.Fields[field], row[field]) {
+			t.Fatalf("opaque source field %s changed: got=%#v want=%#v", field, record.Source.Fields[field], row[field])
+		}
+	}
+}
+
+func TestDumpLocalOpaqueDependencyRefusals(t *testing.T) {
+	tests := []struct {
+		name      string
+		kind      string
+		targetKey string
+		target    any
+		secondKey string
+		second    any
+		want      string
+	}{
+		{name: "empty kind", kind: "", targetKey: "depends_on_issue_id", target: "demo-8", want: "unsupported dependency type"},
+		{name: "invalid utf8", kind: string([]byte{0xff}), targetKey: "depends_on_issue_id", target: "demo-8", want: "unsupported dependency type"},
+		{name: "over limit", kind: strings.Repeat("x", 33), targetKey: "depends_on_issue_id", target: "demo-8", want: "unsupported dependency type"},
+		{name: "unsupported well-known", kind: "duplicates", targetKey: "depends_on_issue_id", target: "demo-8", want: "unsupported dependency type"},
+		{name: "external target", kind: "custom-external", targetKey: "depends_on_external", target: "external:tracker:source", want: "unsupported dependency type"},
+		{name: "wisp target", kind: "custom-wisp", targetKey: "depends_on_wisp_id", target: "wisp-1", want: "dangling wisp edge target"},
+		{name: "multiple targets", kind: "custom-multiple", targetKey: "depends_on_issue_id", target: "demo-8", secondKey: "depends_on_external", second: "external:tracker:source", want: "edge must have exactly one typed target"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			source, inventory := fixture(t)
+			row := cloneRow(source["dependencies"].Rows[0])
+			row["id"] = "edge-local-opaque-refusal"
+			row["type"] = test.kind
+			row["metadata"] = map[string]any{"opaque": true}
+			row["depends_on_issue_id"], row["depends_on_wisp_id"], row["depends_on_external"] = nil, nil, nil
+			row[test.targetKey] = test.target
+			if test.secondKey != "" {
+				row[test.secondKey] = test.second
+			}
+			table := source["dependencies"]
+			table.Rows = append(table.Rows, row)
+			source["dependencies"] = table
+			data, err := Build(context.Background(), source, inventory)
+			if err == nil || len(data) != 0 || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("invalid local opaque edge accepted: data=%d err=%v", len(data), err)
+			}
+		})
+	}
+}
+
+func TestDumpFaithfulWispFamiliesPreserveCollidingActiveRows(t *testing.T) {
+	source, inventory := fixture(t)
+	issue := cloneRow(source["issues"].Rows[0])
+	issue["title"] = "durable collision"
+	source["issues"].Rows[0]["title"] = issue["title"]
+	wisp := cloneRow(issue)
+	wisp["title"] = "active collision wisp"
+	secondWisp := cloneRow(wisp)
+	secondWisp["id"] = "demo-9"
+	secondWisp["title"] = "second active wisp"
+	wisps := source["wisps"]
+	wisps.Rows = append(wisps.Rows, wisp, secondWisp)
+	source["wisps"] = wisps
+
+	source["wisp_labels"] = Table{Columns: columnsFor("wisp_labels"), Rows: []Row{{"issue_id": "demo-7", "label": "active"}}}
+	source["wisp_comments"] = Table{Columns: columnsFor("wisp_comments"), Rows: []Row{{"id": "wisp-comment", "issue_id": "demo-7", "author": "wisp-author", "text": "wisp text", "created_at": "2026-01-02T00:00:00Z"}}}
+	source["wisp_events"] = Table{Columns: columnsFor("wisp_events"), Rows: []Row{{"id": "wisp-event", "issue_id": "demo-7", "event_type": "created", "actor": "wisp-author", "old_value": nil, "new_value": "open", "comment": "wisp event", "created_at": "2026-01-02T00:00:00Z"}}}
+	source["wisp_child_counters"] = Table{Columns: columnsFor("wisp_child_counters"), Rows: []Row{{"parent_id": "demo-7", "last_child": 2}}}
+	dep := cloneRow(source["dependencies"].Rows[0])
+	dep["id"], dep["issue_id"], dep["depends_on_issue_id"] = "wisp-edge", "demo-7", "demo-8"
+	dep["depends_on_wisp_id"], dep["depends_on_external"] = nil, nil
+	wispToWisp := cloneRow(dep)
+	wispToWisp["id"], wispToWisp["depends_on_issue_id"], wispToWisp["depends_on_wisp_id"] = "wisp-edge-wisp", nil, "demo-9"
+	wispToWisp["type"] = "waits-for"
+	wispToWisp["metadata"] = map[string]any{"gate": "any-children"}
+	wispToExternal := cloneRow(dep)
+	wispToExternal["id"], wispToExternal["depends_on_issue_id"], wispToExternal["depends_on_wisp_id"], wispToExternal["depends_on_external"] = "wisp-edge-external", nil, nil, "external:tracker:capability"
+	durableToWisp := cloneRow(dep)
+	durableToWisp["id"], durableToWisp["issue_id"], durableToWisp["depends_on_issue_id"], durableToWisp["depends_on_wisp_id"] = "durable-edge-wisp", "demo-8", nil, "demo-7"
+	source["wisp_dependencies"] = Table{Columns: columnsFor("wisp_dependencies"), Rows: []Row{dep, wispToWisp, wispToExternal}}
+	durableDependencies := source["dependencies"]
+	durableDependencies.Rows = append(durableDependencies.Rows, durableToWisp)
+	source["dependencies"] = durableDependencies
+
+	data := buildFixture(t, source, inventory)
+	if _, err := Validate(bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	members := archiveMembers(t, data)
+	var durable, active, wispEdge, wispToWispEdge, wispExternalEdge, durableToWispEdge bool
+	for _, line := range bytes.Split(bytes.TrimSpace(members["records/bead.ndjson"]), []byte{'\n'}) {
+		var record Record
+		if err := decodeJSON(line, &record); err != nil {
+			t.Fatal(err)
+		}
+		if record.ID == "demo-7" && reflect.DeepEqual(record.Source.Fields, issue) {
+			durable = true
+		}
+	}
+	for _, line := range bytes.Split(bytes.TrimSpace(members["records/beads-archive.ndjson"]), []byte{'\n'}) {
+		var record Record
+		if err := decodeJSON(line, &record); err != nil {
+			t.Fatal(err)
+		}
+		if record.Source.Table == "wisps" && text(record.Source.Fields, "id") == "demo-7" && reflect.DeepEqual(record.Source.Fields, wisp) {
+			active = true
+		}
+		if record.Source.Table == "wisp_labels" || record.Source.Table == "wisp_comments" || record.Source.Table == "wisp_events" || record.Source.Table == "wisp_child_counters" {
+			if !record.Body["read_only"].(bool) || !record.Body["redactable"].(bool) {
+				t.Fatalf("wisp sidecar lost archive controls: %+v", record.Body)
+			}
+		}
+	}
+	for _, line := range bytes.Split(bytes.TrimSpace(members["records/edge.ndjson"]), []byte{'\n'}) {
+		var record Record
+		if err := decodeJSON(line, &record); err != nil {
+			t.Fatal(err)
+		}
+		if record.Source.Table == "wisp_dependencies" {
+			switch record.ID {
+			case "wisp-edge":
+				wispEdge = record.Body["from"] == "demo-7" && record.Body["to"] == "demo-8"
+			case "wisp-edge-wisp":
+				wispToWispEdge = record.Body["from"] == "demo-7" && record.Body["to"] == "demo-9"
+			case "wisp-edge-external":
+				wispExternalEdge = record.Body["from"] == "demo-7" && record.Body["to"] == "external:tracker:capability"
+			}
+		}
+		if record.ID == "durable-edge-wisp" && record.Source.Table == "dependencies" && record.Body["from"] == "demo-8" && record.Body["to"] == "demo-7" {
+			durableToWispEdge = true
+		}
+	}
+	if !durable || !active || !wispEdge || !wispToWispEdge || !wispExternalEdge || !durableToWispEdge {
+		t.Fatalf("faithful active collision lost a source row: durable=%v active=%v wispEdge=%v wispToWisp=%v wispExternal=%v durableToWisp=%v", durable, active, wispEdge, wispToWispEdge, wispExternalEdge, durableToWispEdge)
+	}
+}
+
+func TestDumpProjectConfigEmptyYAMLObservationIsExplicitObject(t *testing.T) {
+	source, inventory := fixture(t)
+	root := t.TempDir()
+	yamlPath := filepath.Join(root, "config.yaml")
+	raw := []byte("# project config remains byte exact\n# no values\n")
+	if err := os.WriteFile(yamlPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	observation, err := observeNativePath(yamlPath, 0, &nativeCaptureBudget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range inventory.External {
+		if inventory.External[i].Family != "project-config" {
+			continue
+		}
+		inventory.External[i].State = "json-config"
+		if err := os.WriteFile(inventory.External[i].Path, mustJSON(t, map[string]any{"observations": []any{observation}}), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data := buildFixture(t, source, inventory)
+	if !bytes.Contains(archiveMembers(t, data)["config/sources.json"], []byte(`"values":{}`)) || !bytes.Contains(archiveMembers(t, data)["config/sources.json"], []byte(fmt.Sprintf("%x", sha256.Sum256(raw)))) {
+		t.Fatal("project-config empty YAML did not preserve explicit values, bytes or hash")
+	}
+	if _, err := Validate(bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDumpProjectConfigExplicitNullYAMLRefuses(t *testing.T) {
+	source, inventory := fixture(t)
+	root := t.TempDir()
+	yamlPath := filepath.Join(root, "config.yaml")
+	raw := []byte("null\n")
+	if err := os.WriteFile(yamlPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	observation, err := observeNativePath(yamlPath, 0, &nativeCaptureBudget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range inventory.External {
+		if inventory.External[i].Family == "project-config" {
+			inventory.External[i].State = "json-config"
+			if err := os.WriteFile(inventory.External[i].Path, mustJSON(t, map[string]any{"observations": []any{observation}}), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if data, err := Build(context.Background(), source, inventory); err == nil || len(data) != 0 || !strings.Contains(err.Error(), "missing parsed values") {
+		t.Fatalf("explicit-null project YAML was accepted: data=%d err=%v", len(data), err)
+	}
+}
+
+func TestDumpProjectConfigDirectoryObservationPreservesEmptyYAMLObject(t *testing.T) {
+	source, inventory := fixture(t)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte("# directory comment-only\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	observation, err := observeNativePath(root, 0, &nativeCaptureBudget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range inventory.External {
+		if inventory.External[i].Family == "project-config" {
+			inventory.External[i].State = "json-config"
+			if err := os.WriteFile(inventory.External[i].Path, mustJSON(t, map[string]any{"observations": []any{observation}}), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	data := buildFixture(t, source, inventory)
+	if !bytes.Contains(archiveMembers(t, data)["config/sources.json"], []byte(`"values":{}`)) {
+		t.Fatal("directory project-config lost nested empty YAML object")
+	}
+}
+
+func TestDumpCatalogUnionIncludesStoredAndYAMLSources(t *testing.T) {
+	source, inventory := fixture(t)
+	status := source["custom_statuses"]
+	status.Rows = append(status.Rows, Row{"name": "review", "category": "active"})
+	source["custom_statuses"] = status
+	typesTable := source["custom_types"]
+	typesTable.Rows = append(typesTable.Rows, Row{"name": "gate"})
+	source["custom_types"] = typesTable
+	config := source["config"]
+	config.Rows = append(config.Rows,
+		Row{"key": "status.custom", "value": "review:active,stored_done:done"},
+		Row{"key": "types.custom", "value": "gate,stored-kind"},
+	)
+	source["config"] = config
+	inventory.ConfigPolicy["config/status.custom"] = "public"
+	inventory.ConfigPolicy["config/types.custom"] = "public"
+	root := t.TempDir()
+	yamlPath := filepath.Join(root, "config.yaml")
+	raw := []byte("status:\n  custom: review:active,yaml_done:done\ntypes:\n  custom: [gate, yaml-kind]\n")
+	if err := os.WriteFile(yamlPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	observation, err := observeNativePath(yamlPath, 0, &nativeCaptureBudget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range inventory.External {
+		if inventory.External[i].Family == "project-config" {
+			inventory.External[i].State = "json-config"
+			if err := os.WriteFile(inventory.External[i].Path, mustJSON(t, map[string]any{"observations": []any{observation}}), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	data := buildFixture(t, source, inventory)
+	for _, wanted := range []string{"review", "stored_done", "yaml_done", "gate", "stored-kind", "yaml-kind"} {
+		if !bytes.Contains(data, []byte(wanted)) {
+			t.Errorf("catalog union value %q missing", wanted)
+		}
+	}
+	if _, err := Validate(bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	var statusRow, typeRow bool
+	for _, line := range bytes.Split(bytes.TrimSpace(archiveMembers(t, data)["records/beads-archive.ndjson"]), []byte{'\n'}) {
+		var record Record
+		if err := decodeJSON(line, &record); err != nil {
+			t.Fatal(err)
+		}
+		statusRow = statusRow || record.Source.Table == "custom_statuses"
+		typeRow = typeRow || record.Source.Table == "custom_types"
+	}
+	if !statusRow || !typeRow {
+		t.Fatalf("catalog source rows were not archived: status=%v type=%v", statusRow, typeRow)
+	}
+}
+
+func TestDumpCatalogMalformedAndDuplicateRowsRefuse(t *testing.T) {
+	for name, mutate := range map[string]func(fixtureSource){
+		"duplicate status rows": func(source fixtureSource) {
+			table := source["custom_statuses"]
+			table.Rows = []Row{{"name": "review", "category": "active"}, {"name": "review", "category": "active"}}
+			source["custom_statuses"] = table
+		},
+		"empty custom type": func(source fixtureSource) {
+			table := source["custom_types"]
+			table.Rows = []Row{{"name": ""}}
+			source["custom_types"] = table
+		},
+		"malformed status config": func(source fixtureSource) {
+			table := source["config"]
+			table.Rows = append(table.Rows, Row{"key": "status.custom", "value": "review:unknown"})
+			source["config"] = table
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			source, inventory := fixture(t)
+			mutate(source)
+			if name == "malformed status config" {
+				inventory.ConfigPolicy["config/status.custom"] = "public"
+			}
+			data, err := Build(context.Background(), source, inventory)
+			if err == nil || len(data) != 0 {
+				t.Fatalf("malformed catalog accepted: data=%d err=%v", len(data), err)
+			}
+		})
+	}
+}
+
+func TestIssueSourceFieldsContractRefusesMissingOpaqueField(t *testing.T) {
+	source, _ := fixture(t)
+	row := cloneRow(source["issues"].Rows[0])
+	delete(row, "payload")
+	if _, err := copyIssueSourceFields(row); err == nil || !strings.Contains(err.Error(), "missing source field in issues") {
+		t.Fatalf("missing physical source field was accepted: %v", err)
+	}
 }
 
 func TestDumpDependencyMetadataRefusals(t *testing.T) {

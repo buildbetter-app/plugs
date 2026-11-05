@@ -15,6 +15,10 @@ const (
 	// contract. Format/schema/reference alone never enable local waits-for or
 	// conditional-blocks semantics.
 	EdgeVersionTypedDependencies = 2
+	// EdgeVersionLocalOpaque is the strict successor of the typed dependency
+	// contract. It is selected only when a stored local dependency has a
+	// non-well-known kind that the v2 archive cannot represent.
+	EdgeVersionLocalOpaque = 3
 	// IssueSourceFieldsContract binds the producer's complete physical issue
 	// row image. Recognition is separate from native SQL import capability.
 	IssueSourceFieldsContract = "beads-issues-source-fields/1"

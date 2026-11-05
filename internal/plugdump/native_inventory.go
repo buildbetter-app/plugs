@@ -294,7 +294,9 @@ func observeNativePath(path string, depth int, budget *nativeCaptureBudget) (map
 	var values map[string]any
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".yaml", ".yml":
-		if err := yaml.Unmarshal(data, &values); err != nil {
+		var err error
+		values, err = decodeNativeYAMLValues(data)
+		if err != nil {
 			return nil, fmt.Errorf("invalid native YAML")
 		}
 	case ".json":
@@ -311,6 +313,44 @@ func observeNativePath(path string, depth int, budget *nativeCaptureBudget) (map
 		result["values"] = values
 	}
 	return result, nil
+}
+
+// decodeNativeYAMLValues keeps the distinction between an empty YAML document
+// and an explicitly null document. yaml.Unmarshal maps both to a nil map, but
+// an empty/comment-only config is a real, successfully parsed object for the
+// native inventory. Explicit null (including an explicitly tagged empty
+// scalar) remains nil so the receiver can refuse it under its object contract.
+func decodeNativeYAMLValues(data []byte) (map[string]any, error) {
+	var document yaml.Node
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return nil, err
+	}
+	if emptyYAMLDocument(document) {
+		return map[string]any{}, nil
+	}
+
+	var values map[string]any
+	if err := yaml.Unmarshal(data, &values); err != nil {
+		return nil, err
+	}
+	return values, nil
+}
+
+func emptyYAMLDocument(document yaml.Node) bool {
+	if document.Kind == 0 {
+		return true
+	}
+	if document.Kind != yaml.DocumentNode || len(document.Content) == 0 {
+		return false
+	}
+	root := document.Content[0]
+	if root.Kind == 0 {
+		return true
+	}
+	// A parser-created empty document has an implicit null scalar with no
+	// value or explicit tag. Tagged/quoted nulls are explicit input and must
+	// retain the old nil/refusal behavior.
+	return root.Kind == yaml.ScalarNode && root.Tag == "!!null" && root.Value == "" && root.Style&yaml.TaggedStyle == 0
 }
 
 // MarshalNativeInventory preserves the existing inventory representation.

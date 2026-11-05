@@ -82,12 +82,12 @@
       "required": ["name", "version", "file", "count"],
       "properties": {
         "name": {"enum": ["bead", "edge", "comment", "memory", "config", "beads-archive"]},
-        "version": {"enum": [1, 2]},
+        "version": {"enum": [1, 2, 3]},
         "file": {"type": "string", "pattern": "^records/(bead|edge|comment|memory|config|beads-archive)\\.ndjson$"},
         "count": {"type": "integer", "minimum": 1}
       },
       "allOf": [
-        {"if": {"properties": {"name": {"const": "edge"}}}, "then": {"properties": {"version": {"enum": [1, 2]}}}, "else": {"properties": {"version": {"const": 1}}}}
+        {"if": {"properties": {"name": {"const": "edge"}}}, "then": {"properties": {"version": {"enum": [1, 2, 3]}}}, "else": {"properties": {"version": {"const": 1}}}}
       ]
     },
     "file": {

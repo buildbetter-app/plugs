@@ -37,6 +37,10 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 	if err != nil {
 		return nil, err
 	}
+	yamlValues, err := nativeYAMLCatalogValues(config)
+	if err != nil {
+		return nil, err
+	}
 	tables, err := readTables(ctx, src)
 	if err != nil {
 		return nil, err
@@ -60,14 +64,33 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 	mapper := mapping{
 		projects:     projects,
 		beads:        map[string]string{},
+		wisps:        map[string]string{},
 		records:      map[string][]Record{},
 		policy:       inventory.ConfigPolicy,
 		usedPolicy:   map[string]bool{},
 		ontology:     ontology,
 		usedOntology: map[string]bool{},
 	}
+	if err := mapper.wispRows(tables["wisps"].Rows); err != nil {
+		return nil, err
+	}
 	if err := mapper.issues(tables["issues"].Rows); err != nil {
 		return nil, err
+	}
+	storedConfig := map[string]any{}
+	for _, row := range tables["config"].Rows {
+		key := text(row, "key")
+		if key == "status.custom" || key == "types.custom" {
+			storedConfig[key] = row["value"]
+		}
+	}
+	if err := mapper.catalogs(tables["custom_statuses"].Rows, tables["custom_types"].Rows, storedConfig, yamlValues); err != nil {
+		return nil, err
+	}
+	for _, family := range []string{"wisp_labels", "wisp_comments", "wisp_events", "wisp_child_counters"} {
+		if err := mapper.wispAuxiliary(family, tables[family].Rows); err != nil {
+			return nil, err
+		}
 	}
 	if len(mapper.usedOntology) != len(ontology) {
 		return nil, fmt.Errorf("unaccounted ontology directive")

@@ -68,6 +68,73 @@ func TestNativeFileObservations(t *testing.T) {
 	}
 }
 
+func TestNativeYAMLCommentOnlyDocumentEmitsObject(t *testing.T) {
+	for name, raw := range map[string][]byte{
+		"empty":        nil,
+		"comment-only": []byte("# comment-only native config\n# preserved exactly\n"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "config.yaml")
+			if err := os.WriteFile(path, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+
+			value, err := observeNativePath(path, 0, &nativeCaptureBudget{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			values, ok := value["values"].(map[string]any)
+			if !ok || values == nil || len(values) != 0 {
+				t.Fatalf("empty YAML values = %#v, want explicit empty object", value["values"])
+			}
+			encoded := value["bytes"].(map[string]string)["$bytes"]
+			decoded, err := base64.StdEncoding.DecodeString(encoded)
+			if err != nil || !bytes.Equal(decoded, raw) || value["sha256"] != fmt.Sprintf("%x", sha256.Sum256(raw)) {
+				t.Fatal("empty YAML raw bytes or hash changed")
+			}
+		})
+	}
+}
+
+func TestNativeYAMLExplicitNullDoesNotBecomeObject(t *testing.T) {
+	for _, raw := range []string{"null\n", "~\n", "!!null \"\"\n"} {
+		t.Run(strings.TrimSpace(raw), func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "config.yaml")
+			if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+				t.Fatal(err)
+			}
+			value, err := observeNativePath(path, 0, &nativeCaptureBudget{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := value["values"]; ok {
+				t.Fatalf("explicit null emitted values: %#v", value["values"])
+			}
+		})
+	}
+}
+
+func TestNativeYAMLNonObjectsRemainRefused(t *testing.T) {
+	for name, raw := range map[string]string{
+		"scalar":   "hello\n",
+		"sequence": "- hello\n",
+		"invalid":  "key: [unterminated\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "config.yaml")
+			if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if value, err := observeNativePath(path, 0, &nativeCaptureBudget{}); err == nil || value != nil {
+				t.Fatalf("non-object YAML was captured: value=%#v err=%v", value, err)
+			}
+		})
+	}
+}
+
 func TestNativeCaptureRefusesUnboundedOrUnsafeSources(t *testing.T) {
 	for _, name := range []string{"symlink", "engine-directory", "credential-yaml", "duplicate-json", "oversized", "relative"} {
 		t.Run(name, func(t *testing.T) {

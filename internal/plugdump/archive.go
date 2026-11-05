@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // MaxArchiveBytes bounds this initial in-memory exporter/validator slice.
@@ -27,6 +28,14 @@ func encode(manifest Manifest, records map[string][]Record, files map[string][]b
 		if !knownKinds[kind] {
 			return nil, fmt.Errorf("unknown record kind")
 		}
+		version := 1
+		if kind == "edge" {
+			var err error
+			version, err = edgeRegistryVersion(rows)
+			if err != nil {
+				return nil, err
+			}
+		}
 		sort.Slice(rows, func(i, j int) bool { return recordKey(rows[i]) < recordKey(rows[j]) })
 		var data []byte
 		for i, record := range rows {
@@ -41,10 +50,6 @@ func encode(manifest Manifest, records map[string][]Record, files map[string][]b
 		}
 		path := "records/" + kind + ".ndjson"
 		files[path] = data
-		version := 1
-		if kind == "edge" {
-			version = EdgeVersionTypedDependencies
-		}
 		manifest.Kinds = append(manifest.Kinds, Kind{kind, version, path, len(rows)})
 	}
 	sort.Slice(manifest.Kinds, func(i, j int) bool { return manifest.Kinds[i].Name < manifest.Kinds[j].Name })
@@ -92,6 +97,25 @@ func encode(manifest Manifest, records map[string][]Record, files map[string][]b
 }
 
 func recordKey(record Record) string { return record.Project + "\x00" + record.ID }
+
+func edgeRegistryVersion(records []Record) (int, error) {
+	version := EdgeVersionTypedDependencies
+	for _, record := range records {
+		kind, _ := record.Body["type"].(string)
+		if isTypedDependencyKind(kind) {
+			continue
+		}
+		if !isValidLocalOpaqueDependencyKind(kind) {
+			return 0, fmt.Errorf("unsupported dependency type")
+		}
+		targetKind, _ := record.Body["target_kind"].(string)
+		if targetKind != "depends_on_issue_id" {
+			return 0, fmt.Errorf("local opaque dependency requires an issue target")
+		}
+		version = EdgeVersionLocalOpaque
+	}
+	return version, nil
+}
 
 // Validate checks the declared schema, every member/checksum, registry and
 // canonical record ordering without extracting files or touching a store.
@@ -197,9 +221,12 @@ func Validate(reader io.Reader) (Manifest, error) {
 	registry := map[string]bool{}
 	counts := map[string]int{}
 	var beadRecords []Record
+	var edgeRecords []Record
+	beadIDs := map[string]bool{}
+	wispIDs := map[string]bool{}
 	lastKind := ""
 	for _, kind := range manifest.Kinds {
-		versionOK := kind.Version == 1 || kind.Name == "edge" && kind.Version == EdgeVersionTypedDependencies
+		versionOK := kind.Version == 1 || kind.Name == "edge" && (kind.Version == EdgeVersionTypedDependencies || kind.Version == EdgeVersionLocalOpaque)
 		if !knownKinds[kind.Name] || !versionOK || kind.Name <= lastKind || kind.File != "records/"+kind.Name+".ndjson" || kind.Count < 1 {
 			return Manifest{}, fmt.Errorf("unknown, duplicate or unordered kind registry entry")
 		}
@@ -224,6 +251,15 @@ func Validate(reader io.Reader) (Manifest, error) {
 			}
 			if record.Kind == "bead" {
 				beadRecords = append(beadRecords, record)
+				beadIDs[record.ID] = true
+			}
+			if record.Kind == "edge" {
+				edgeRecords = append(edgeRecords, record)
+			}
+			if record.Kind == "beads-archive" && record.Source.Table == "wisps" {
+				if id := text(record.Source.Fields, "id"); id != "" {
+					wispIDs[id] = true
+				}
 			}
 			last = recordKey(record)
 		}
@@ -234,6 +270,9 @@ func Validate(reader io.Reader) (Manifest, error) {
 		}
 	}
 	if err := validateDispositions(manifest.Sources, counts); err != nil {
+		return Manifest{}, err
+	}
+	if err := validateEdgeEndpoints(edgeRecords, beadIDs, wispIDs); err != nil {
 		return Manifest{}, err
 	}
 	if err := validateOntologyRecords(manifest.Ontology, manifest.Projects, beadRecords); err != nil {
@@ -292,11 +331,13 @@ func validateRecordVersioned(record Record, projects []Project, counts map[strin
 			// These kinds are valid in both the legacy and successor edge
 			// contracts.
 		case "waits-for", "conditional-blocks":
-			if edgeVersion != EdgeVersionTypedDependencies {
-				return fmt.Errorf("dependency %s requires edge registry version %d", kind, EdgeVersionTypedDependencies)
+			if edgeVersion != EdgeVersionTypedDependencies && edgeVersion != EdgeVersionLocalOpaque {
+				return fmt.Errorf("dependency %s requires edge registry version %d or %d", kind, EdgeVersionTypedDependencies, EdgeVersionLocalOpaque)
 			}
 		default:
-			return fmt.Errorf("unsupported dependency type")
+			if edgeVersion != EdgeVersionLocalOpaque || !isValidLocalOpaqueDependencyKind(kind) || text(record.Body, "target_kind") != "depends_on_issue_id" {
+				return fmt.Errorf("unsupported dependency type")
+			}
 		}
 	}
 	table := record.Source.Table
@@ -307,7 +348,7 @@ func validateRecordVersioned(record Record, projects []Project, counts map[strin
 	switch table {
 	case "issues":
 		expectedKind = "bead"
-	case "dependencies":
+	case "dependencies", "wisp_dependencies":
 		expectedKind = "edge"
 	case "comments":
 		expectedKind = "comment"
@@ -402,6 +443,73 @@ func validateRecordVersioned(record Record, projects []Project, counts map[strin
 	return nil
 }
 
+func validateEdgeEndpoints(records []Record, beadIDs, wispIDs map[string]bool) error {
+	for _, record := range records {
+		table := record.Source.Table
+		if table != "dependencies" && table != "wisp_dependencies" {
+			return fmt.Errorf("unsupported edge source table")
+		}
+		from := text(record.Source.Fields, "issue_id")
+		if from == "" || text(record.Body, "from") != from {
+			return fmt.Errorf("edge source mirror mismatch")
+		}
+		if text(record.Body, "type") != text(record.Source.Fields, "type") {
+			return fmt.Errorf("edge type/source mirror mismatch")
+		}
+		if table == "dependencies" {
+			if !beadIDs[from] {
+				return fmt.Errorf("durable edge source is not an archived bead")
+			}
+		} else if !wispIDs[from] {
+			return fmt.Errorf("wisp edge source is not an archived wisp")
+		}
+		targetKind := text(record.Body, "target_kind")
+		if targetKind != "depends_on_issue_id" && targetKind != "depends_on_wisp_id" && targetKind != "depends_on_external" {
+			return fmt.Errorf("unsupported edge target arm")
+		}
+		target, ok := record.Body["to"].(string)
+		if !ok || target == "" || !utf8.ValidString(target) {
+			return fmt.Errorf("invalid edge target")
+		}
+		targetArms := 0
+		for _, key := range []string{"depends_on_issue_id", "depends_on_wisp_id", "depends_on_external"} {
+			value, present := record.Source.Fields[key]
+			if !present || value == nil {
+				continue
+			}
+			targetArms++
+			candidate, ok := value.(string)
+			if !ok || candidate == "" || candidate != target {
+				return fmt.Errorf("edge target/source mirror mismatch")
+			}
+			if key != targetKind {
+				return fmt.Errorf("edge has multiple or mismatched target arms")
+			}
+		}
+		if targetArms != 1 {
+			return fmt.Errorf("edge must have exactly one target arm")
+		}
+		if targetKind == "depends_on_issue_id" && !beadIDs[target] {
+			return fmt.Errorf("edge issue target is not an archived bead")
+		}
+		if targetKind == "depends_on_wisp_id" && !wispIDs[target] {
+			return fmt.Errorf("edge wisp target is not an archived wisp")
+		}
+		if targetKind == "depends_on_external" && !validExternalDependencyTarget(target) {
+			return fmt.Errorf("invalid external edge target")
+		}
+		if text(record.Body, "thread_id") != text(record.Source.Fields, "thread_id") {
+			return fmt.Errorf("edge thread mirror mismatch")
+		}
+		bodyMetadata, _ := marshal(record.Body["metadata"])
+		sourceMetadata, _ := marshal(record.Source.Fields["metadata"])
+		if !bytes.Equal(bodyMetadata, sourceMetadata) {
+			return fmt.Errorf("edge metadata/source mirror mismatch")
+		}
+	}
+	return nil
+}
+
 func validateConfigProvenance(data []byte) error {
 	var entries []struct {
 		Input  ExternalInput  `json:"input"`
@@ -421,6 +529,9 @@ func validateConfigProvenance(data []byte) error {
 			return fmt.Errorf("unknown, duplicate or inconsistent configuration input")
 		}
 		if err := validateSecretReferences(entry.Values); err != nil {
+			return err
+		}
+		if err := validateNativeObservations(input.Family, entry.Values); err != nil {
 			return err
 		}
 		seen[input.Family], paths[key] = true, true
