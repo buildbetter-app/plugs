@@ -456,7 +456,12 @@ func workflowReadyOrderKey(item workflowplugin.ItemView, now time.Time) (readyOr
 	}
 	created, known := workflowReadyCreatedAt(item)
 	if !known {
-		return readyOrderKey{Bucket: 1, Rank: priority, Revision: item.Revision}, false, nil
+		// The workflow provider's legacy ItemView has no creation instant. Keep
+		// those rows after the fully classified durable order rather than
+		// inventing a timestamp or letting provider priority reorder the core
+		// plane. A provider row with a real creation field still participates in
+		// the shared hybrid tuple below.
+		return readyOrderKey{Bucket: 2, Rank: priority, Revision: item.Revision}, false, nil
 	}
 	return liveReadyOrderKey(created, now, priority, item.Revision), true, nil
 }
@@ -734,14 +739,21 @@ func (s *Service) readyCombinedPage(ctx context.Context, by model.PrincipalRef, 
 		}
 	}
 	if len(durable) == 0 && req.Position == nil {
-		// Keep the released provider-only cursor shape for callers that already
-		// understand the workflow phase. Mixed-plane pages use the aggregate
-		// cursor below; an empty durable plane has no merge boundary to bind.
+		// Keep the released provider-only cursor shape for direct callers that
+		// already understand the workflow phase. Guarded callers must retain an
+		// aggregate cursor even when the durable plane is empty, otherwise their
+		// next page would lose the combined membership digest and be mistaken
+		// for a fresh durable read.
 		page := BeadPage{AsOf: asOf, WorkflowSnapshot: binding}
+		membership := combinedReadyMembership(items)
+		page.ReadyMembership = membership
 		end := min(limit, len(items))
 		page.Items = append([]Bead(nil), items[:end]...)
 		if end < len(items) {
-			page.Next = &PagePosition{Offset: end, AsOf: asOf, Workflow: true, WorkflowSnapshot: binding}
+			page.Next = &PagePosition{Offset: end, AsOf: asOf, WorkflowSnapshot: binding, ReadyMembership: membership}
+			if !req.readySourceBinding {
+				page.Next.Workflow = true
+			}
 		}
 		return page, nil
 	}
