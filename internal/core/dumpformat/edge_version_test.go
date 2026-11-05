@@ -336,17 +336,46 @@ func TestEdgeV3MetadataIsOpaqueAndDoesNotProjectScheduling(t *testing.T) {
 	}
 }
 
+func TestEdgeV3HistoryKeepsLocalOpaqueRowsInEveryImage(t *testing.T) {
+	fixture, history := sourceHistoryFixture(t, false)
+	edge := &fixture.records["edge"][0]
+	edge.Body["type"], edge.Source.Fields["type"] = "local-opaque", "local-opaque"
+	edge.Body["metadata"], edge.Source.Fields["metadata"] = " {\"literal\":1.0} ", " {\"literal\":1.0} "
+	data := fixture.bytes(t, func(manifest *Manifest, files map[string][]byte) {
+		manifest.History = "verified"
+		for i := range manifest.Kinds {
+			if manifest.Kinds[i].Name == "edge" {
+				manifest.Kinds[i].Version = EdgeVersionLocalOpaque
+			}
+		}
+		files[SourceHistoryMember] = fixtureJSON(t, history)
+		manifest.Files[SourceHistoryMember] = File{Size: int64(len(files[SourceHistoryMember])), SHA256: digest(files[SourceHistoryMember])}
+	})
+	archive, err := Read(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sequence := range []uint64{history.Range.First, history.Range.Head} {
+		image, err := archive.HistoryImage(sequence)
+		if err != nil || image.Manifest().EdgeVersion() != EdgeVersionLocalOpaque || !reflect.DeepEqual(image.Records("edge"), archive.Records("edge")) {
+			t.Fatalf("history lost v3 local opaque source at %d: %v", sequence, err)
+		}
+	}
+}
+
 func TestEdgeVersionMergeChecksEveryInputWhenAnInputHasNoEdges(t *testing.T) {
-	empty, legacy, successor := newMergeFixture(t, "empty"), newMergeFixture(t, "legacy"), newMergeFixture(t, "successor")
+	empty, legacy, successor, opaque := newMergeFixture(t, "empty"), newMergeFixture(t, "legacy"), newMergeFixture(t, "successor"), newMergeFixture(t, "opaque")
 	delete(empty.records, "edge")
 	successor.records["edge"][0].Body["type"], successor.records["edge"][0].Source.Fields["type"] = "waits-for", "waits-for"
+	opaque.records["edge"][0].Body["type"], opaque.records["edge"][0].Source.Fields["type"] = "local-opaque", "local-opaque"
 	noEdges := readMergeArchive(t, empty.bytes(t, nil))
 	v1 := readMergeArchive(t, edgeVersionFixture(t, legacy, 1))
 	v2 := readMergeArchive(t, edgeVersionFixture(t, successor, 2))
+	v3 := readMergeArchive(t, edgeVersionFixture(t, opaque, 3))
 	// MergeArchives sorts internally. Vary an irrelevant source store ID until
 	// the actual edge-free input sorts first, to exercise the causal old gap.
 	for i := 0; ; i++ {
-		if archiveKey(noEdges) < archiveKey(v1) && archiveKey(noEdges) < archiveKey(v2) {
+		if archiveKey(noEdges) < archiveKey(v1) && archiveKey(noEdges) < archiveKey(v2) && archiveKey(noEdges) < archiveKey(v3) {
 			break
 		}
 		if i == 10000 {
@@ -355,15 +384,19 @@ func TestEdgeVersionMergeChecksEveryInputWhenAnInputHasNoEdges(t *testing.T) {
 		empty.manifest.StoreID += "x"
 		noEdges = readMergeArchive(t, empty.bytes(t, nil))
 	}
-	if _, err := MergeArchives(noEdges, v1, v2); err == nil {
-		t.Fatal("later overlapping edge versions escaped conflict checking")
+	for _, pair := range [][2]*Archive{{v1, v2}, {v1, v3}, {v2, v3}} {
+		if output, err := MergeArchives(noEdges, pair[0], pair[1]); err == nil || len(output) != 0 {
+			t.Fatal("later overlapping edge versions escaped conflict checking or published partial output")
+		}
 	}
-	merged, err := MergeArchives(noEdges, v2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	readback := readMergeArchive(t, merged)
-	if readback.Manifest().EdgeVersion() != 2 || !reflect.DeepEqual(readback.Records("edge"), v2.Records("edge")) {
-		t.Fatal("later-only edge version or source image was downgraded")
+	for _, successor := range []*Archive{v2, v3} {
+		merged, err := MergeArchives(noEdges, successor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		readback := readMergeArchive(t, merged)
+		if readback.Manifest().EdgeVersion() != successor.Manifest().EdgeVersion() || !reflect.DeepEqual(readback.Records("edge"), successor.Records("edge")) {
+			t.Fatal("later-only edge version or source image was downgraded")
+		}
 	}
 }
