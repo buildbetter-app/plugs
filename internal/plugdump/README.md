@@ -408,6 +408,11 @@ server must identify the same real data root; inventory records the existing
 directory without reading its engine contents.
 The companion uses the pinned upstream pre-start data-directory resolver before
 loading the server environment, as the upstream Dolt entrypoint does.
+For a fresh workspace, use a disposable server root outside `.beads` and set
+the existing `BEADS_DOLT_DATA_DIR` to that same root for every native process.
+Server configuration written before `bd init` then stays outside the workspace;
+the unchanged legacy-workspace guard still refuses an unversioned, nonempty
+`.beads/dolt` directory.
 The companion installs the engine's existing
 query-context clock hook around the server's entire lifetime, so persistent
 connections and later HTTP/CLI calls observe published steps. The normal Dolt
