@@ -75,20 +75,37 @@ func (t *transaction) putSourceRecord(ctx context.Context, record driver.Record,
 	if record.Kind == "" || !json.Valid(record.Body) {
 		return fmt.Errorf("sqlite: kind and valid JSON body required")
 	}
-	var kind string
-	err = t.tx.QueryRowContext(ctx, `SELECT kind FROM objects WHERE key=?`, id).Scan(&kind)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
+	kindObservation, foundKind := t.recordKinds[id]
+	kind := kindObservation.kind
+	knownKind := kindObservation.present
+	if !foundKind {
+		kind, err = t.recordKind(ctx, id)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		knownKind = err == nil
 	}
-	if err == nil && kind != record.Kind {
+	if knownKind && kind != record.Kind {
 		return fmt.Errorf("%w: changing record kind", driver.ErrUnsupported)
 	}
 	if old, ok := t.records[id]; ok && old != nil && old.Kind != record.Kind {
 		return fmt.Errorf("%w: changing staged kind", driver.ErrUnsupported)
 	}
-	state, err := t.observe(ctx, driver.LockKey{Kind: driver.LockRecord, Ref: &record.Ref})
-	if err != nil {
-		return err
+	state, cached := driver.LockState{}, false
+	if t.reuseFirstLifetime {
+		state, cached = t.firstLifetimeState[id]
+	}
+	if !cached {
+		state, err = t.observe(ctx, driver.LockKey{Kind: driver.LockRecord, Ref: &record.Ref})
+		if err != nil {
+			return err
+		}
+	}
+	if t.recordStates == nil {
+		t.recordStates = make(map[string]driver.LockState)
+	}
+	if _, seen := t.recordStates[id]; !seen {
+		t.recordStates[id] = state
 	}
 	if record.Kind == "bead" {
 		coverage, err := t.currentSourceCoverage(ctx)
@@ -113,6 +130,8 @@ func (t *transaction) putSourceRecord(ctx context.Context, record driver.Record,
 	t.sourceIdentities[id] = driver.Record{Ref: record.Ref, Kind: record.Kind}
 	t.records[id] = &record
 	t.sourceOverlay.Replace(id, declaration)
+	t.selectionSourceStaged(id)
+	t.invalidateReadyOrderPublication()
 	return nil
 }
 

@@ -114,6 +114,7 @@ func (r *reader) finish() error {
 	}
 	r.store.untrack(r)
 	if r.writer != nil {
+		r.writer.invalidateReadyOrderPublication()
 		r.writer.clearSourceOverlay()
 		r.writer.records = nil
 		r.writer.identities = nil
@@ -611,6 +612,7 @@ func (r *reader) get(ctx context.Context, refs []driver.Ref) ([]driver.Record, e
 		if value, exists := values[id]; exists && !value.deleted {
 			row := value.record
 			row.Body = bytes.Clone(row.Body)
+			driver.ReportReadPayload(ctx, row.Body)
 			result = append(result, row)
 		}
 	}
@@ -734,13 +736,29 @@ func (r *reader) observeKeys(ctx context.Context, keys []driver.LockKey) ([]driv
 				states[i].Present = staged.Present
 				states[i].Derived = nil
 				if staged.Derived != nil {
-					row, err := copied(*staged.Derived)
-					if err != nil {
-						return nil, err
-					}
+					row := staged.Derived.Clone()
 					states[i].Derived = &row
 				}
 			}
+		}
+	}
+	// Restore binary-owned annotations without changing ordinary opaque states.
+	byTable := map[driver.DerivedTable][]int{}
+	for i, s := range states {
+		if s.Present && s.Derived != nil && s.Key.Derived != nil {
+			byTable[s.Key.Derived.Table] = append(byTable[s.Key.Derived.Table], i)
+		}
+	}
+	for table, positions := range byTable {
+		values := make([]driver.DerivedRow, 0, len(positions))
+		for _, i := range positions {
+			values = append(values, *states[i].Derived)
+		}
+		if err := r.selectionAnnotations(ctx, values, table); err != nil {
+			return nil, err
+		}
+		for j, i := range positions {
+			states[i].Derived = &values[j]
 		}
 	}
 	return states, nil

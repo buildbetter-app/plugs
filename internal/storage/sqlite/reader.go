@@ -24,10 +24,17 @@ type reader struct {
 	mu             sync.Mutex
 	store          *Store
 	tx             *sql.Tx
-	meta           driver.Meta
-	at             uint64
-	closed         bool
-	owner          *transaction
+	// observeHistoryStmt is bound to the current pinned transaction. Reusing
+	// this scalar statement for ordinary readers keeps the one-key history
+	// lookup and its error boundary intact while avoiding a prepare/finalize
+	// cycle for every Ready point observation. Transaction-owned observations
+	// retain their QueryRowContext path so staging keeps its native boundary.
+	// pin closes this statement before replacing the transaction.
+	observeHistoryStmt *sql.Stmt
+	meta               driver.Meta
+	at                 uint64
+	closed             bool
+	owner              *transaction
 }
 
 func (s *Store) Read(ctx context.Context, v driver.View) (driver.Reader, error) {
@@ -81,6 +88,10 @@ func (r *reader) pin(ctx context.Context, v driver.View) error {
 		_ = tx.Rollback()
 		return err
 	}
+	if r.observeHistoryStmt != nil {
+		_ = r.observeHistoryStmt.Close()
+		r.observeHistoryStmt = nil
+	}
 	if r.tx != nil {
 		_ = r.tx.Rollback()
 	}
@@ -119,6 +130,10 @@ func (r *reader) Close() error {
 		return nil
 	}
 	r.closed = true
+	if r.observeHistoryStmt != nil {
+		_ = r.observeHistoryStmt.Close()
+		r.observeHistoryStmt = nil
+	}
 	err := r.tx.Rollback()
 	r.tx = nil
 	r.store.untrack(r)
@@ -301,7 +316,19 @@ func (r *reader) Observe(ctx context.Context, keys []driver.LockKey) ([]driver.L
 func (r *reader) observe(ctx context.Context, key driver.LockKey) (driver.LockState, error) {
 	state := driver.LockState{Key: copyKey(key), Revision: model.Natural64(0)}
 	var data []byte
-	err := r.tx.QueryRowContext(ctx, `SELECT data FROM key_history WHERE key=? AND rev<=? ORDER BY rev DESC LIMIT 1`, keyID(key), revKey(r.at)).Scan(&data)
+	var err error
+	if r.owner == nil {
+		if r.observeHistoryStmt == nil {
+			statement, prepareErr := r.tx.PrepareContext(ctx, `SELECT data FROM key_history WHERE key=? AND rev<=? ORDER BY rev DESC LIMIT 1`)
+			if prepareErr != nil {
+				return state, prepareErr
+			}
+			r.observeHistoryStmt = statement
+		}
+		err = r.observeHistoryStmt.QueryRowContext(ctx, keyID(key), revKey(r.at)).Scan(&data)
+	} else {
+		err = r.tx.QueryRowContext(ctx, `SELECT data FROM key_history WHERE key=? AND rev<=? ORDER BY rev DESC LIMIT 1`, keyID(key), revKey(r.at)).Scan(&data)
+	}
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return state, err
 	}
@@ -325,13 +352,54 @@ func (r *reader) observe(ctx context.Context, key driver.LockKey) (driver.LockSt
 			state.Present = v.Present
 			state.Derived = nil
 			if v.Derived != nil {
-				value := *v.Derived
-				value.Value = bytes.Clone(value.Value)
+				value := v.Derived.Clone()
 				state.Derived = &value
 			}
 		}
 	}
 	return state, nil
+}
+
+// ObserveRecordStates is the narrow post-staging observation seam used by
+// ancestor projection publication. Ordinary Observe keeps its scalar SQL path;
+// this method reuses only lock-time record revisions already captured for the
+// staged source rows and still falls back to that scalar path when uncached.
+func (t *transaction) ObserveRecordStates(ctx context.Context, keys []driver.LockKey) ([]driver.LockState, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err := t.check(ctx); err != nil {
+		return nil, err
+	}
+	if err := driver.ValidateLockKeys(keys); err != nil {
+		return nil, err
+	}
+	states := make([]driver.LockState, 0, len(keys))
+	for _, key := range keys {
+		if key.Kind != driver.LockRecord {
+			return nil, fmt.Errorf("sqlite: record observation requires record keys")
+		}
+		id := keyID(key)
+		if observed, cached := t.recordStates[id]; cached {
+			if staged, present := t.records[id]; present {
+				state := observed
+				state.Key = copyKey(key)
+				state.Record = nil
+				state.Present = staged != nil
+				if staged != nil {
+					value := copyRecord(*staged)
+					state.Record = &value
+				}
+				states = append(states, state)
+				continue
+			}
+		}
+		state, err := t.reader.observe(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		states = append(states, state)
+	}
+	return states, nil
 }
 func pageLimit(n int) (int, error) {
 	if n < 0 || n > 10000 {

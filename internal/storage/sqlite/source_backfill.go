@@ -10,7 +10,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/sourceindex"
 )
 
-func (s *Store) BuildGraphSourceIndexes(ctx context.Context, lease driver.ActiveLease, decode driver.GraphSourceDecoder) (err error) {
+func (s *Store) buildGraphSourceIndexes(ctx context.Context, lease driver.ActiveLease, decode driver.GraphSourceDecoder, preparationRefusal error) (err error) {
 	if decode == nil {
 		return fmt.Errorf("source index backfill requires a core decoder")
 	}
@@ -32,8 +32,14 @@ func (s *Store) BuildGraphSourceIndexes(ctx context.Context, lease driver.Active
 		return err
 	}
 	plan, err := sourceindex.SQLite.PrepareBackfill(ctx, t.tx, t.meta)
-	if err != nil || !plan.ParentActive && !plan.LinksActive {
+	if err != nil {
 		return err
+	}
+	if !plan.ParentActive && !plan.LinksActive {
+		if preparationRefusal != nil {
+			return sourceindex.NewSelectionBackfillRefused(preparationRefusal)
+		}
+		return nil
 	}
 	// Retain graph/Head and the pinned source snapshot, not the publication
 	// lock or BEGIN IMMEDIATE, while decoding. Heartbeats can publish between
@@ -51,7 +57,7 @@ func (s *Store) BuildGraphSourceIndexes(ctx context.Context, lease driver.Active
 		})
 	}
 	defer func() {
-		if err == nil {
+		if err == nil || sourceindex.IsSelectionBackfillRefused(err) {
 			return
 		}
 		// Roll back unpublished pages even on cancellation/lease loss. t.mu
@@ -77,7 +83,13 @@ func (s *Store) BuildGraphSourceIndexes(ctx context.Context, lease driver.Active
 	if err = plan.BuildBackfill(ctx, t.tx, decode, publish); err != nil {
 		return err
 	}
-	return publish(ctx, func(q sourceindex.SQL) error { return plan.ActivateBackfill(ctx, q) })
+	if err = publish(ctx, func(q sourceindex.SQL) error { return plan.ActivateBackfill(ctx, q) }); err != nil {
+		return err
+	}
+	if preparationRefusal != nil {
+		return sourceindex.NewSelectionBackfillRefused(preparationRefusal)
+	}
+	return nil
 }
 
 var _ driver.GraphSourceIndexBuilder = (*Store)(nil)

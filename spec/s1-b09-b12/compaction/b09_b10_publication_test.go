@@ -62,6 +62,17 @@ func (tx *b09B10PublicationTx) PutGraphRecord(ctx context.Context, record driver
 	return nil
 }
 
+// Retain the real driver's typed projection capability through the fault
+// wrapper. Otherwise an ordinary fallback drops the source-bound annotations
+// before the injected commit boundary instead of exercising their publication.
+func (tx *b09B10PublicationTx) PutSelectionDerived(ctx context.Context, table driver.DerivedTable, del, add []driver.DerivedRow) error {
+	writer, ok := tx.WriteTx.(driver.SelectionIndexWriter)
+	if !ok {
+		return driver.ErrUnsupported
+	}
+	return writer.PutSelectionDerived(ctx, table, del, add)
+}
+
 func (tx *b09B10PublicationTx) BumpSentinels(ctx context.Context, keys []driver.Sentinel) error {
 	if err := tx.WriteTx.BumpSentinels(ctx, keys); err != nil {
 		return err
@@ -219,15 +230,9 @@ func TestB09B10CompactionPublicationVisibilityRefusalAndReplay(t *testing.T) {
 			}
 			b09B10Equal(t, "selected/graph publication and unselected predicate conservation", wantPredicates, after.Predicates)
 			b09B10Equal(t, "live allocator inventory after compaction", before.Allocator.Inventory, after.Allocator.Inventory)
-			// A successful Writer mutation refreshes exactly its own ready-rank
-			// projection. Every unrelated derived row remains byte-identical.
-			wantDerived := make(map[driver.DerivedTable][]driver.DerivedRow, len(before.Derived))
-			for table, rows := range before.Derived {
-				wantDerived[table] = append([]driver.DerivedRow(nil), rows...)
-				if rows != nil && wantDerived[table] == nil {
-					wantDerived[table] = []driver.DerivedRow{}
-				}
-			}
+			// The source-bound rows refresh with the selected record. The ready
+			// rank changes independently; every unrelated row stays byte-identical.
+			wantDerived := b09B10CompactedDerived(t, before, after, children[0]["id"].(string))
 			var sourceCreation time.Time
 			for _, record := range before.Records {
 				if record.Ref.ID == children[0]["id"] {
@@ -267,7 +272,7 @@ func TestB09B10CompactionPublicationVisibilityRefusalAndReplay(t *testing.T) {
 			if rankRows != 1 {
 				t.Fatal("compaction oracle omitted the selected ready-rank row")
 			}
-			b09B10Equal(t, "selected rank publication and all other derived conservation", wantDerived, after.Derived)
+			b09B10Equal(t, "selected source and rank publication with all other derived conservation", wantDerived, after.Derived)
 			for _, record := range before.Records {
 				wantVersions := len(before.Versions[record.Ref.ID])
 				if record.Ref.ID == children[0]["id"] {

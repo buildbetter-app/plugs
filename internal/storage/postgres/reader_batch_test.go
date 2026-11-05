@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -11,6 +12,59 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+func TestStagedGetReportsOnlyMaterializedBodies(t *testing.T) {
+	ctx := context.Background()
+	s := openTest(t, freshDSN(t))
+	lease := testLease(t, s)
+	ref := testRef("staged-payload-accounting")
+	body := []byte(`{"staged":"payload"}`)
+	tx, _ := beginTest(t, s, lease, testLock(ref))
+	if err := tx.Put(ctx, driver.Record{Ref: ref, Kind: "test", Body: body}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		refs []model.Ref
+	}{
+		{name: "single", refs: []model.Ref{ref}},
+		{name: "duplicate", refs: []model.Ref{ref, ref}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Observe only the real staged Get, excluding Put and verification
+			// reads. Each returned body must be an independent materialization.
+			work := &selectionSQLWork{}
+			rows, err := tx.Get(driver.WithReadWorkObserver(ctx, work), tc.refs)
+			if err != nil || len(rows) != len(tc.refs) {
+				t.Fatalf("staged Get returned %d rows, want %d: %v", len(rows), len(tc.refs), err)
+			}
+			for i, row := range rows {
+				if row.Ref.ID != ref.ID || !bytes.Equal(row.Body, body) {
+					t.Fatalf("staged result %d changed: %+v", i, row)
+				}
+			}
+			want := map[driver.ReadWorkKind]int64{
+				driver.ReadGetCalls:       1,
+				driver.ReadPayloadRecords: int64(len(tc.refs)),
+				driver.ReadPayloadBytes:   int64(len(tc.refs) * len(body)),
+			}
+			if !reflect.DeepEqual(work.counts, want) {
+				t.Fatalf("staged Get work=%v, want actual body copies=%v", work.counts, want)
+			}
+			t.Logf("staged Get: calls=1 materialized_bodies=%d body_bytes=%d", len(tc.refs), len(tc.refs)*len(body))
+			rows[0].Body[0] = '!'
+			for _, row := range rows[1:] {
+				if !bytes.Equal(row.Body, body) {
+					t.Fatal("duplicate result bodies alias")
+				}
+			}
+			again, err := tx.Get(ctx, []model.Ref{ref})
+			if err != nil || len(again) != 1 || !bytes.Equal(again[0].Body, body) {
+				t.Fatalf("returned body aliases staged bytes: rows=%+v err=%v", again, err)
+			}
+		})
+	}
+}
 
 func TestMissingRecordReadsDoNotProbeVersionHistory(t *testing.T) {
 	ctx := context.Background()

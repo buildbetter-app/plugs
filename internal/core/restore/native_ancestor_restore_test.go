@@ -51,6 +51,7 @@ func TestNativeRestoreRebuildsAncestorClosure(t *testing.T) {
 			if err != nil || status.State != "complete" {
 				t.Fatalf("native ancestor restore=%+v %v", status, err)
 			}
+			assertNativeSelectionBindings(t, store, lease)
 			if err := lease.Release(ctx); err != nil {
 				t.Fatal(err)
 			}
@@ -59,8 +60,8 @@ func TestNativeRestoreRebuildsAncestorClosure(t *testing.T) {
 	}
 }
 
-// The native manager acquires four guards per root plus the graph sentinel.
-// Exercise that real 80,001-key path, not only a synthetic driver Lock call.
+// Exercise the actual manager's complete source, selection and closure census
+// for 20,000 roots, including shared fences, rather than a synthetic Lock call.
 func TestNativeRestoreTwentyThousandRootBeadsSQLite(t *testing.T) {
 	ctx := context.Background()
 	const count = 20000
@@ -199,7 +200,7 @@ func TestNativeRestoreTwentyThousandRootBeadsSQLite(t *testing.T) {
 	if len(seen) != count {
 		t.Fatalf("durable restored root census=%d, want %d", len(seen), count)
 	}
-	t.Logf("actual native manager restored %d root beads with 80001 guards in %s; all %d self-ancestor rows and records survived physical reopen", count, elapsed, len(want))
+	t.Logf("actual native manager restored %d root beads with source/selection/closure guards in %s; all %d self-ancestor rows and records survived physical reopen", count, elapsed, len(want))
 }
 
 type nativeAncestorNode struct {
@@ -417,6 +418,36 @@ func TestNativeRestoreDerivedFailureRollsBackRecordsAndRows(t *testing.T) {
 	}
 	assertEmptyRestoreTarget(t, ctx, store)
 	assertNoAncestorRows(t, store, want)
+	if len(store.sources) != 6 || len(store.staged) != 29 {
+		t.Fatalf("failure preceded real source/projection staging: sources=%d rows=%d", len(store.sources), len(store.staged))
+	}
+	keys := make([]driver.LockKey, 0, len(store.staged))
+	for key, row := range store.staged {
+		if row.Index == nil || row.Index.Source.Key.Ref == nil || row.Index.Incarnation == before.Incarnation || row.Index.Source.Revision.String() != "0" || row.Index.Source.Digest != driver.SelectionDigest(store.sources[row.Index.Source.Key.Ref.ID].Body) {
+			t.Fatal("restore fault lost actual typed new-incarnation source binding")
+		}
+		key := key
+		keys = append(keys, driver.LockKey{Kind: driver.LockDerived, Derived: &key})
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		a, _ := driver.EncodeLockKey(keys[i])
+		b, _ := driver.EncodeLockKey(keys[j])
+		return a < b
+	})
+	r, err := store.Read(ctx, driver.View{Incarnation: after.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	states, err := r.Observe(ctx, keys)
+	_ = r.Close()
+	if err != nil || len(states) != len(keys) {
+		t.Fatal(err)
+	}
+	for _, state := range states {
+		if state.Present || state.Derived != nil || !state.Revision.IsZero() {
+			t.Fatal("native rollback leaked selection projection/tombstone")
+		}
+	}
 	reader, err := store.Read(ctx, driver.View{Incarnation: after.Incarnation})
 	if err != nil {
 		t.Fatal(err)
@@ -478,6 +509,8 @@ func malformedNativeAncestorArchive(t *testing.T, cycle bool) ([]byte, *dumpform
 
 type failDerivedStore struct {
 	driver.Store
+	staged  map[driver.DerivedRowKey]driver.DerivedRow
+	sources map[string]driver.Record
 }
 
 func (s *failDerivedStore) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
@@ -485,11 +518,16 @@ func (s *failDerivedStore) Write(ctx context.Context, lease driver.ActiveLease) 
 	if err != nil {
 		return nil, err
 	}
-	return &failDerivedTx{WriteTx: tx}, nil
+	if s.staged == nil {
+		s.staged = map[driver.DerivedRowKey]driver.DerivedRow{}
+		s.sources = map[string]driver.Record{}
+	}
+	return &failDerivedTx{WriteTx: tx, store: s}, nil
 }
 
 type failDerivedTx struct {
 	driver.WriteTx
+	store *failDerivedStore
 }
 
 func (t *failDerivedTx) RestoreNativeAllocators(ctx context.Context, snapshot driver.AllocatorSnapshot) error {
@@ -506,6 +544,96 @@ func (t *failDerivedTx) PrepareNativeRestore(ctx context.Context, profile driver
 
 func (t *failDerivedTx) PutDerived(context.Context, driver.DerivedTable, []driver.DerivedRow, []driver.DerivedRow) error {
 	return errors.New("injected derived failure")
+}
+
+func (tx *failDerivedTx) PutGraphRecord(ctx context.Context, record driver.Record, parent *model.Ref, links []driver.SourceLink) error {
+	writer, ok := tx.WriteTx.(driver.GraphSourceWriter)
+	if !ok {
+		return driver.ErrUnsupported
+	}
+	if err := writer.PutGraphRecord(ctx, record, parent, links); err != nil {
+		return err
+	}
+	record.Body = bytes.Clone(record.Body)
+	tx.store.sources[record.Ref.ID] = record
+	return nil
+}
+
+func (tx *failDerivedTx) PutSelectionDerived(ctx context.Context, table driver.DerivedTable, del, add []driver.DerivedRow) error {
+	writer, ok := tx.WriteTx.(driver.SelectionIndexWriter)
+	if !ok {
+		return driver.ErrUnsupported
+	}
+	if err := writer.PutSelectionDerived(ctx, table, del, add); err != nil {
+		return err
+	}
+	for _, row := range add {
+		tx.store.staged[driver.DerivedRowKey{Table: table, Key: row.Key}] = row.Clone()
+	}
+	if table == driver.DerivedAncestorClosure {
+		return errors.New("injected derived failure after actual typed staging")
+	}
+	return nil
+}
+
+func assertNativeSelectionBindings(t *testing.T, store driver.Store, lease driver.ActiveLease) {
+	t.Helper()
+	ctx := context.Background()
+	probe, err := store.Write(ctx, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, typed := probe.(driver.SelectionIndexWriter)
+	_ = probe.Close()
+	if _, memoryEngine := store.(*memory.Store); memoryEngine && !typed {
+		t.Fatal("W3 memory typed restore writer required")
+	}
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	page, err := r.Query(ctx, driver.Query{Filter: map[string]any{"kind": "bead"}, Limit: 100})
+	if err != nil || len(page.Items) != 6 || page.NextCursor != nil {
+		t.Fatal("native fixture census changed:", err)
+	}
+	sources := map[string]driver.Record{}
+	for _, record := range page.Items {
+		sources[record.Ref.ID] = record
+	}
+	for _, table := range []driver.DerivedTable{driver.DerivedSortKey, driver.DerivedAttribute, driver.DerivedReferenceIndex, driver.DerivedAncestorClosure} {
+		rows, err := r.DerivedRows(ctx, table, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := 6
+		if table == driver.DerivedAncestorClosure {
+			want = 11
+		}
+		if len(rows) != want {
+			t.Fatalf("native %s projection count=%d want%d", table, len(rows), want)
+		}
+		for _, row := range rows {
+			index := row.Index
+			if !typed {
+				if index != nil {
+					t.Fatal("unsupported writer certified native selection")
+				}
+				continue
+			}
+			if index == nil || index.Source.Key.Kind != driver.LockRecord || index.Source.Key.Ref == nil {
+				t.Fatal("typed native restore omitted source annotation")
+			}
+			source, ok := sources[index.Source.Key.Ref.ID]
+			if !ok || index.Incarnation != meta.Incarnation || index.Source.Revision.String() != source.Revision.String() || source.Revision.String() != "1" || index.Source.Digest != driver.SelectionDigest(source.Body) || !index.Source.Present || index.Validate(table, row) != nil {
+				t.Fatal("native annotation lost admitted incarnation/exact source binding")
+			}
+		}
+	}
 }
 
 func TestNativeRestoreRejectsUnrelatedInvalidGraphBeforeWrite(t *testing.T) {

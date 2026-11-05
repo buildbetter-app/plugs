@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"sort"
@@ -21,7 +22,7 @@ func (r *reader) DerivedRowsForPrefixes(ctx context.Context, table driver.Derive
 	if err := r.check(ctx); err != nil {
 		return nil, err
 	}
-	return r.state.derivedRowsForPrefixes(ctx, table, prefixes, r.at, nil, nil)
+	return r.state.derivedRowsForPrefixes(ctx, table, prefixes, r.at, nil, nil, nil)
 }
 
 func (t *transaction) DerivedRows(ctx context.Context, table driver.DerivedTable, prefix string) ([]driver.DerivedRow, error) {
@@ -41,7 +42,7 @@ func (t *transaction) DerivedRowsForPrefixes(ctx context.Context, table driver.D
 	}
 	// Read the captured immutable base directly; building a snapshotReader
 	// would clone unrelated record and derived-history maps for each call.
-	return t.base.derivedRowsForPrefixes(ctx, table, prefixes, at, t.derived, nil)
+	return t.base.derivedRowsForPrefixes(ctx, table, prefixes, at, t.derived, nil, t.selectionSourceChanged)
 }
 
 // publishDerivedKeys merges new historical keys once per changed table.
@@ -99,12 +100,17 @@ func derivedPrefixUnion(table driver.DerivedTable, prefixes []string) ([]string,
 
 type derivedPrefixWork struct{ histories, staged int }
 
-func (s *state) derivedRowsForPrefixes(ctx context.Context, table driver.DerivedTable, prefixes []string, at uint64, staged map[string]driver.LockState, work *derivedPrefixWork) ([]driver.DerivedRow, error) {
+func (s *state) derivedRowsForPrefixes(ctx context.Context, table driver.DerivedTable, prefixes []string, at uint64, staged map[string]driver.LockState, work *derivedPrefixWork, sourceChanges ...func(driver.LockKey) bool) ([]driver.DerivedRow, error) {
+	var sourceChanged func(driver.LockKey) bool
+	if len(sourceChanges) != 0 {
+		sourceChanged = sourceChanges[0]
+	}
 	union, err := derivedPrefixUnion(table, prefixes)
 	if err != nil {
 		return nil, err
 	}
 	rows := make([]driver.DerivedRow, 0)
+	committed := make(map[string]driver.DerivedRow)
 	if len(union) == 0 {
 		return rows, nil
 	}
@@ -116,9 +122,7 @@ func (s *state) derivedRowsForPrefixes(ctx context.Context, table driver.Derived
 			}
 			key := keys[i]
 			id := keyID(driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: table, Key: key}})
-			if _, shadowed := staged[id]; shadowed {
-				continue
-			}
+			_, shadowed := staged[id]
 			if work != nil {
 				work.histories++
 			}
@@ -132,9 +136,15 @@ func (s *state) derivedRowsForPrefixes(ctx context.Context, table driver.Derived
 				return e != nil || n > at
 			}) - 1
 			if revisionErr != nil {
+				if shadowed {
+					continue
+				}
 				return nil, revisionErr
 			}
 			if len(history) == 0 {
+				if shadowed {
+					continue
+				}
 				return nil, fmt.Errorf("memory: missing indexed derived history")
 			}
 			if index < 0 {
@@ -142,9 +152,18 @@ func (s *state) derivedRowsForPrefixes(ctx context.Context, table driver.Derived
 			}
 			row, present, e := selectedDerivedRow(history[index], table, key)
 			if e != nil {
+				if shadowed {
+					continue
+				}
 				return nil, e
 			}
 			if present {
+				if staged != nil {
+					committed[key] = row.Clone()
+				}
+				if shadowed {
+					continue
+				}
 				rows = append(rows, row)
 			}
 		}
@@ -169,6 +188,11 @@ func (s *state) derivedRowsForPrefixes(ctx context.Context, table driver.Derived
 			return nil, e
 		}
 		if present {
+			if row.Index == nil {
+				if base, ok := committed[key]; ok && base.Index != nil && bytes.Equal(base.Value, row.Value) && (sourceChanged == nil || !sourceChanged(base.Index.Source.Key)) {
+					row.Index = base.Clone().Index
+				}
+			}
 			rows = append(rows, row)
 		}
 	}

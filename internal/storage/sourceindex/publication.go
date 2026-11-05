@@ -70,8 +70,10 @@ func (p Plan) Publish(ctx context.Context, q SQL) error {
 	d := p.Dialect
 	branch, at := d.revision(0), d.revision(p.At)
 	if p.ParentActive {
-		if err := p.closeRows(ctx, q, "hierarchy_source_current", "hierarchy_source_history", "child_key", keys); err != nil {
-			return err
+		if !p.empty {
+			if err := p.closeRows(ctx, q, "hierarchy_source_current", "hierarchy_source_history", "child_key", keys); err != nil {
+				return err
+			}
 		}
 		current, history := make([][]any, 0), make([][]any, 0)
 		for _, id := range keys {
@@ -110,8 +112,10 @@ func (p Plan) Publish(ctx context.Context, q SQL) error {
 		}
 	}
 	if p.LinksActive {
-		if err := p.closeRows(ctx, q, "graph_link_source_current", "graph_link_source_history", "source_key", keys); err != nil {
-			return err
+		if !p.empty {
+			if err := p.closeRows(ctx, q, "graph_link_source_current", "graph_link_source_history", "source_key", keys); err != nil {
+				return err
+			}
 		}
 		current, history, facts, historyFacts := make([][]any, 0), make([][]any, 0), make([][]any, 0), make([][]any, 0)
 		for _, id := range keys {

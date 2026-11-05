@@ -2,6 +2,8 @@ package memory
 
 import (
 	"context"
+	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -27,6 +29,7 @@ func TestSourceCoverageLegacyStartupUpgrade(t *testing.T) {
 		next.sourceLinks = newSourceLinkIndex(next.meta.Incarnation)
 		s.state = next
 	})
+	requireUnbuiltSelectionFamilies(t, s)
 }
 
 func TestSourceCoverageNativeOntologyFirst(t *testing.T) {
@@ -40,6 +43,70 @@ func TestSourceCoverageIndependentStartupUpgrade(t *testing.T) {
 	defer s.Close()
 	lease := sourceLease(t, s)
 	sourceactivation.ParentOnlyUpgrade(t, s, lease)
+	requireUnbuiltSelectionFamilies(t, s)
+}
+
+func requireUnbuiltSelectionFamilies(t *testing.T, s *Store) {
+	t.Helper()
+	for _, family := range selectionFamilies() {
+		if err := (selectionView{state: s.state}).requireSelectionCoverage(family, mustSelectionHead(s.state)); !errors.Is(err, driver.ErrSelectionUnavailable) {
+			t.Fatalf("optional refusal certified family %+v: %v", family, err)
+		}
+	}
+}
+
+func TestSelectionStartupRefusalKeepsGraphCoverage(t *testing.T) {
+	for _, phase := range []string{"preparation", "page", "activation"} {
+		t.Run(phase, func(t *testing.T) {
+			ctx := context.Background()
+			s := New()
+			defer s.Close()
+			lease := sourceLease(t, s)
+			ref := sourceRef("legacy-optional")
+			key := driver.DerivedRowKey{Table: driver.DerivedSortKey, Key: "startup/" + ref.ID}
+			tx, header := beginSourceTestWithLocks(t, s, lease, []driver.LockKey{{Kind: driver.LockDerived, Derived: &key}}, true, ref)
+			if err := tx.Put(ctx, sourceRecord(ref.ID, `{}`)); err != nil {
+				t.Fatal(err)
+			}
+			if phase == "activation" {
+				if err := tx.PutDerived(ctx, key.Table, nil, []driver.DerivedRow{{Key: key.Key, Value: []byte("different existing logical value")}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			commitSourceTest(t, tx, header)
+			before := s.state
+			projection := startupSortProjection()
+			switch phase {
+			case "preparation":
+				projection.Inputs = nil
+			case "page":
+				projection.Inputs = func(driver.Record) ([]driver.DerivedRowRange, error) { return nil, driver.ErrUnsupported }
+			case "activation": // A valid complete page cannot rewrite existing logical bytes at final activation.
+				projection.Decode = func(record driver.Record, _ []driver.DerivedRow) ([]driver.DerivedSelectionRow, error) {
+					row := startupBeadRow(record, before.meta.Incarnation)
+					return []driver.DerivedSelectionRow{row}, nil
+				}
+			}
+			err := s.BuildGraphSourceIndexes(ctx, lease, func(driver.Record) (driver.GraphSourceMetadata, error) { return driver.GraphSourceMetadata{}, nil }, projection)
+			if !driver.IsSelectionBackfillRefused(err) {
+				t.Fatalf("graph-completed optional refusal lost its explicit result: %v", err)
+			}
+			if !errors.Is(err, driver.ErrSelectionUnavailable) && !errors.Is(err, driver.ErrUnsupported) {
+				t.Fatalf("optional refusal lost: %v", err)
+			}
+			current := sourceReader(t, s, nil)
+			if rows, more, err := current.HierarchyChildren(ctx, nil, 0); err != nil || len(rows) != 0 || more {
+				t.Fatalf("Parent activation rolled back: %v", err)
+			}
+			if rows, more, err := current.InverseSourceLinks(ctx, nil, nil, nil, 0); err != nil || len(rows) != 0 || more {
+				t.Fatalf("Links activation rolled back: %v", err)
+			}
+			if before.meta != s.state.meta || !reflect.DeepEqual(before.records, s.state.records) || !reflect.DeepEqual(before.log, s.state.log) {
+				t.Fatal("optional refusal changed source/history/Head")
+			}
+			requireUnbuiltSelectionFamilies(t, s)
+		})
+	}
 }
 
 func TestSourceCoverageStartupGapRefuses(t *testing.T) {

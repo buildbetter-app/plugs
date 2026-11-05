@@ -1024,12 +1024,16 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 		return model.Changeset{}, restoreAdmissionError(err)
 	}
 	for _, record := range records {
-		if err := pipeline.PutSourceRecord(ctx, tx, record); err != nil {
+		plan, err := pipeline.PrepareSourceRecord(record)
+		if err != nil {
+			return model.Changeset{}, err
+		}
+		if err := plan.PublishInIncarnation(ctx, tx, prepared.Incarnation); err != nil {
 			return model.Changeset{}, err
 		}
 	}
 	if ancestorPlan != nil && len(ancestorPlan.rows) != 0 {
-		if err := tx.PutDerived(ctx, driver.DerivedAncestorClosure, nil, ancestorPlan.rows); err != nil {
+		if err := pipeline.PutAncestorProjectionsInIncarnation(ctx, tx, prepared.Incarnation, nil, ancestorPlan.rows); err != nil {
 			return model.Changeset{}, err
 		}
 	}
@@ -1419,6 +1423,18 @@ func restoreLocks(records []driver.Record, ancestorPlan *nativeAncestorPlan, all
 		return nil
 	}
 	for _, record := range records {
+		plan, err := pipeline.PrepareSourceRecord(record)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, key := range plan.LockKeys() {
+			if err := add(key, driver.LockUpdate); err != nil {
+				return nil, nil, err
+			}
+		}
+		for _, sentinel := range plan.Sentinels() {
+			sentinelSet[sentinel] = true
+		}
 		ref := record.Ref
 		if err := add(driver.LockKey{Kind: driver.LockRecord, Ref: &ref}, driver.LockUpdate); err != nil {
 			return nil, nil, err

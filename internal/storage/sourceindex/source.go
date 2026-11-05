@@ -214,9 +214,14 @@ type Plan struct {
 	At                        uint64
 	Parent, Links             Coverage
 	ParentActive, LinksActive bool
-	Records                   map[string]*driver.Record
-	Declarations              map[string]Declaration
-	backfill                  bool // preserve source revisions; publish markers only after every page
+	// empty is the same-connection proof that both typed source index domains
+	// were empty when this plan was prepared. It lets the first publication
+	// avoid cleanup statements that cannot affect a row; later plans retain the
+	// legacy close/delete boundary.
+	empty        bool
+	Records      map[string]*driver.Record
+	Declarations map[string]Declaration
+	backfill     bool // preserve source revisions; publish markers only after every page
 }
 
 func (d Dialect) Prepare(ctx context.Context, q SQL, current, next driver.Meta, durableEmpty bool, records map[string]*driver.Record, identities map[string]driver.Record, overlay *Overlay, graphWritable func() error, graphBumped bool) (Plan, error) {
@@ -307,7 +312,7 @@ func (d Dialect) Prepare(ctx context.Context, q SQL, current, next driver.Meta, 
 		linksActive = empty && linksComplete && linksDeclared
 	}
 	parent.Through, links.Through = at, at
-	return Plan{Dialect: d, Incarnation: next.Incarnation, At: at, Parent: parent, Links: links, ParentActive: parentActive, LinksActive: linksActive, Records: records, Declarations: overlay.Declarations}, nil
+	return Plan{Dialect: d, Incarnation: next.Incarnation, At: at, Parent: parent, Links: links, ParentActive: parentActive, LinksActive: linksActive, empty: empty, Records: records, Declarations: overlay.Declarations}, nil
 }
 
 func sortedRecordKeys(records map[string]*driver.Record) []string {

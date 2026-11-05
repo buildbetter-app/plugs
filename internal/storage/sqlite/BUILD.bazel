@@ -8,6 +8,7 @@ go_library(
     deps = [
         "//internal/core/model",
         "//internal/storage/driver",
+        "//internal/storage/readyindex",
         "//internal/storage/sourceindex",
         "@org_modernc_sqlite//:sqlite",
     ],
@@ -26,6 +27,7 @@ go_test(
         "//internal/core/restore",
         "//internal/core/service",
         "//internal/storage/conformance",
+        "//internal/storage/conformance/readyorder",
         "//internal/storage/conformance/sourceactivation",
         "//internal/storage/memory",
         "//internal/testclock",
