@@ -586,7 +586,7 @@ func (r *Runtime) bind(config Config) error {
 		serviceOptions = append(serviceOptions, service.WithCompaction(*config.Compaction))
 	}
 	r.Service = service.New(r.Store, r.Lease, writer, serviceOptions...)
-	if err := r.recoverSourceWorkflow(ctx); err != nil {
+	if err := r.recoverSourceWorkflow(r.ctx); err != nil {
 		return fmt.Errorf("composition: recover source workflow: %w", err)
 	}
 	var ontologyService *ontologyops.Service
