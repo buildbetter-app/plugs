@@ -105,7 +105,10 @@ func TestB13NativeMemoryRecording(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(home, ".config"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	base := []string{"PATH=/usr/bin:/bin", "HOME=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config"), "BEADS_DIR=" + filepath.Join(workspace, ".beads"), "BEADS_NO_DAEMON=1", "BEADS_ACTOR=b13-native-recorder", "CI=true", "DO_NOT_TRACK=1", "LANG=C.UTF-8", "TZ=UTC", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=B13 recorder", "GIT_AUTHOR_EMAIL=b13@example.invalid", "GIT_COMMITTER_NAME=B13 recorder", "GIT_COMMITTER_EMAIL=b13@example.invalid"}
+	// The pinned init writes workspace discovery metadata when it resolves the
+	// isolated cwd itself; an explicit workspace-dir override plus the external
+	// ChildEnv data root selects its metadata-free initialization route.
+	base := []string{"PATH=/usr/bin:/bin", "HOME=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config"), "BEADS_NO_DAEMON=1", "BEADS_ACTOR=b13-native-recorder", "CI=true", "DO_NOT_TRACK=1", "LANG=C.UTF-8", "TZ=UTC", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=B13 recorder", "GIT_AUTHOR_EMAIL=b13@example.invalid", "GIT_COMMITTER_NAME=B13 recorder", "GIT_COMMITTER_EMAIL=b13@example.invalid"}
 	// No routing, envelope, expected pin or credential is appended after ChildEnv.
 	n := &b13Native{t: t, ctx: ctx, root: root, workspace: workspace, binary: binary, env: server.ChildEnv(base)}
 	n.must("git-init", []string{"git", "-c", "init.defaultBranch=main", "init", "--quiet"})
@@ -115,6 +118,11 @@ func TestB13NativeMemoryRecording(t *testing.T) {
 	}
 	db := "b13_" + b13SHA([]byte(workspace))[:24]
 	n.mustCLI("init", "init", "--backend", "dolt", "--server", "--external", "--server-host", "127.0.0.1", "--server-port", strconv.Itoa(server.Port), "--database", db, "--prefix", "b13", "--quiet", "--skip-hooks", "--skip-agents", "--non-interactive")
+	metadata, err := os.ReadFile(filepath.Join(workspace, ".beads", "metadata.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b13Bytes(t, root, "native-workspace-metadata.json", metadata)
 	dir := server.RequireDatabaseDir(t, db)
 	b13Save(t, root, "database.json", map[string]any{"database": db, "physical_directory": dir, "pid": server.PID, "port": server.Port, "data_root": server.DataRoot})
 	n.mustCLI("ordinary-bead", "--json", "create", "--id", "b13-c0ffee", "--type", "task", "--title", "B13 settings-plane survivor")
