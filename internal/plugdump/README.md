@@ -106,8 +106,13 @@ without loss; comments keep IDs, authors, text and timestamps. Only the
 
 Nonempty wisp and catalog families are retained as read-only `beads-archive`
 records with complete source fields. Stored and YAML custom status/type values
-are validated as a deduplicated union, while their raw source rows and
-configuration observations remain in provenance. A durable issue and an active
+are validated as a strict union of compatible declarations, while their raw
+source rows and configuration observations remain in provenance. Every status
+requires an explicit `active`, `wip`, `done` or `frozen` category; missing or
+conflicting categories refuse with the declaration names. Empty or duplicate
+entries within a declaration and malformed nested `status`/`types` objects
+also refuse. Compatible repetitions across the stored and YAML layers remain
+a union; no layer takes precedence and no category is invented. A durable issue and an active
 wisp with the same ID remain separate records. This producer does not change
 the consumer's durable-first read source, so B26 active-first behavior remains
 a separately owned consumer prerequisite.

@@ -695,11 +695,36 @@ func TestDumpCatalogUnionIncludesStoredAndYAMLSources(t *testing.T) {
 		if err := decodeJSON(line, &record); err != nil {
 			t.Fatal(err)
 		}
-		statusRow = statusRow || record.Source.Table == "custom_statuses"
-		typeRow = typeRow || record.Source.Table == "custom_types"
+		statusRow = statusRow || record.Source.Table == "custom_statuses" && jsonEqual(record.Source.Fields, status.Rows[0])
+		typeRow = typeRow || record.Source.Table == "custom_types" && jsonEqual(record.Source.Fields, typesTable.Rows[0])
 	}
 	if !statusRow || !typeRow {
-		t.Fatalf("catalog source rows were not archived: status=%v type=%v", statusRow, typeRow)
+		t.Fatalf("catalog source rows were not archived exactly: status=%v type=%v", statusRow, typeRow)
+	}
+	var storedStatus, storedType bool
+	for _, line := range bytes.Split(bytes.TrimSpace(archiveMembers(t, data)["records/config.ndjson"]), []byte{'\n'}) {
+		var record Record
+		if err := decodeJSON(line, &record); err != nil {
+			t.Fatal(err)
+		}
+		storedStatus = storedStatus || record.Source.Table == "config" && jsonEqual(record.Source.Fields, Row{"key": "status.custom", "value": "review:active,stored_done:done"})
+		storedType = storedType || record.Source.Table == "config" && jsonEqual(record.Source.Fields, Row{"key": "types.custom", "value": "gate,stored-kind"})
+	}
+	var entries []struct {
+		Input  ExternalInput  `json:"input"`
+		Values map[string]any `json:"values"`
+	}
+	if err := decodeJSON(archiveMembers(t, data)["config/sources.json"], &entries); err != nil {
+		t.Fatal(err)
+	}
+	var yamlLayer bool
+	for _, entry := range entries {
+		if entry.Input.Family == "project-config" {
+			yamlLayer = jsonEqual(entry.Values, map[string]any{"observations": []any{observation}})
+		}
+	}
+	if !storedStatus || !storedType || !yamlLayer {
+		t.Fatalf("raw stored/YAML layers changed: status=%v type=%v YAML=%v", storedStatus, storedType, yamlLayer)
 	}
 }
 
@@ -751,6 +776,7 @@ func TestDumpCatalogConfigDeclarationsRefuse(t *testing.T) {
 		{name: "status inner empty", key: "status.custom", value: "review:active,,done_review:done", want: "empty declaration"},
 		{name: "status duplicate", key: "status.custom", value: "review:active,review:active", want: "review"},
 		{name: "status duplicate conflicting category", key: "status.custom", value: "review:active,review:done", want: "review"},
+		{name: "status empty list", key: "status.custom", value: []any{}, want: "empty declaration"},
 		{name: "status null", key: "status.custom", value: nil, want: "invalid custom status"},
 		{name: "status number", key: "status.custom", value: 7, want: "invalid custom status"},
 		{name: "status object", key: "status.custom", value: map[string]any{"review": "active"}, want: "invalid custom status"},
@@ -759,6 +785,7 @@ func TestDumpCatalogConfigDeclarationsRefuse(t *testing.T) {
 		{name: "type duplicate", key: "types.custom", value: "gate,gate", want: "gate"},
 		{name: "type JSON empty", key: "types.custom", value: `["gate", ""]`, want: "empty declaration"},
 		{name: "type JSON duplicate", key: "types.custom", value: `["gate", "gate"]`, want: "gate"},
+		{name: "type empty list", key: "types.custom", value: []any{}, want: "empty declaration"},
 		{name: "type null", key: "types.custom", value: nil, want: "invalid custom type"},
 		{name: "type number", key: "types.custom", value: 7, want: "invalid custom type"},
 		{name: "type object", key: "types.custom", value: map[string]any{"gate": true}, want: "invalid custom type"},

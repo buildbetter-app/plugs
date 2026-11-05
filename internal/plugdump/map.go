@@ -213,20 +213,16 @@ func (m *mapping) catalogs(statusRows, typeRows []Row, storedConfig map[string]a
 	addStatus := func(name, category string) error {
 		lower := strings.ToLower(name)
 		if !validCatalogName(name) || statusNames[lower] && statusCategories[lower] == "" {
-			return fmt.Errorf("invalid or colliding custom status")
+			return fmt.Errorf("invalid or colliding custom status %q", name)
 		}
-		if category != "active" && category != "wip" && category != "done" && category != "frozen" && category != "unspecified" {
-			return fmt.Errorf("invalid custom status category")
+		if category != "active" && category != "wip" && category != "done" && category != "frozen" {
+			return fmt.Errorf("custom status %q requires an explicit active, wip, done or frozen category", name)
 		}
 		if existing, ok := statusCategories[lower]; ok {
-			if existing == category || category == "unspecified" {
+			if existing == category {
 				return nil
 			}
-			if existing == "unspecified" {
-				statusCategories[lower] = category
-				return nil
-			}
-			return fmt.Errorf("conflicting custom status category")
+			return fmt.Errorf("conflicting custom status declarations %q and %q", name+":"+existing, name+":"+category)
 		}
 		statusNames[lower] = true
 		statusCategories[lower] = category
@@ -240,7 +236,7 @@ func (m *mapping) catalogs(statusRows, typeRows []Row, storedConfig map[string]a
 	for _, row := range statusRows {
 		name, category := text(row, "name"), text(row, "category")
 		if seenStatusRows[strings.ToLower(name)] {
-			return fmt.Errorf("invalid or duplicate custom status")
+			return fmt.Errorf("duplicate custom status row %q", name)
 		}
 		seenStatusRows[strings.ToLower(name)] = true
 		if err := addStatus(name, category); err != nil {
@@ -250,7 +246,7 @@ func (m *mapping) catalogs(statusRows, typeRows []Row, storedConfig map[string]a
 	typeNames := map[string]bool{}
 	addType := func(name string) error {
 		if !validCatalogTypeName(name) {
-			return fmt.Errorf("invalid or duplicate custom type")
+			return fmt.Errorf("invalid custom type %q", name)
 		}
 		if typeNames[name] {
 			return nil
@@ -262,7 +258,7 @@ func (m *mapping) catalogs(statusRows, typeRows []Row, storedConfig map[string]a
 	for _, row := range typeRows {
 		name := text(row, "name")
 		if seenTypeRows[name] {
-			return fmt.Errorf("invalid or duplicate custom type")
+			return fmt.Errorf("duplicate custom type row %q", name)
 		}
 		seenTypeRows[name] = true
 		if err := addType(name); err != nil {
@@ -307,9 +303,13 @@ func addCatalogConfig(values map[string]any, addStatus func(string, string) erro
 		}
 	}
 	for _, key := range []string{"status", "types"} {
-		nested, ok := values[key].(map[string]any)
-		if !ok {
+		raw, present := values[key]
+		if !present {
 			continue
+		}
+		nested, ok := raw.(map[string]any)
+		if !ok || nested == nil {
+			return fmt.Errorf("%s catalog declaration must be an object", key)
 		}
 		if key == "status" {
 			if raw, ok := nested["custom"]; ok {
@@ -359,20 +359,25 @@ func parseCatalogStatuses(value any) ([]catalogStatus, error) {
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		if part == "" {
-			continue
+			return nil, fmt.Errorf("invalid custom status catalog value: empty declaration")
 		}
-		name, category := part, "unspecified"
-		if index := strings.IndexByte(part, ':'); index >= 0 {
-			name, category = part[:index], part[index+1:]
-			if category == "" {
-				return nil, fmt.Errorf("invalid custom status catalog value")
-			}
+		index := strings.IndexByte(part, ':')
+		if index <= 0 || index == len(part)-1 {
+			return nil, fmt.Errorf("invalid custom status declaration %q: explicit category required", part)
 		}
-		if seen[name] {
-			return nil, fmt.Errorf("invalid or duplicate custom status catalog")
+		name, category := part[:index], part[index+1:]
+		if name == "" || category == "" {
+			return nil, fmt.Errorf("invalid custom status declaration %q: explicit name and category required", part)
 		}
-		seen[name] = true
+		nameKey := strings.ToLower(name)
+		if seen[nameKey] {
+			return nil, fmt.Errorf("duplicate custom status catalog declaration %q", name)
+		}
+		seen[nameKey] = true
 		result = append(result, catalogStatus{name: name, category: category})
+	}
+	if len(result) == 0 {
+		return nil, fmt.Errorf("invalid custom status catalog value: empty declaration")
 	}
 	return result, nil
 }
@@ -406,13 +411,16 @@ func parseCatalogTypes(value any) ([]string, error) {
 	for _, name := range result {
 		name = strings.TrimSpace(name)
 		if name == "" {
-			continue
+			return nil, fmt.Errorf("invalid custom type catalog value: empty declaration")
 		}
 		if seen[name] {
-			continue
+			return nil, fmt.Errorf("duplicate custom type catalog declaration %q", name)
 		}
 		seen[name] = true
 		cleaned = append(cleaned, name)
+	}
+	if len(cleaned) == 0 {
+		return nil, fmt.Errorf("invalid custom type catalog value: empty declaration")
 	}
 	return cleaned, nil
 }
