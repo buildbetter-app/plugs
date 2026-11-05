@@ -265,6 +265,7 @@ type Delta struct {
 	coverage     marker
 	mutations    map[string]Mutation
 	sentinels    map[driver.Sentinel]bool
+	headers      map[string]*scopeHeader
 	valid        bool
 	published    bool
 	registration driver.ReadyOrderPublication
@@ -276,7 +277,7 @@ type Delta struct {
 // retained by the ordinary driver derived-row/version machinery.
 func Prepare(ctx context.Context, r Observer, mutations []Mutation) (*Delta, error) {
 	t := newTree(ctx, r)
-	d := &Delta{t: t, mutations: map[string]Mutation{}, sentinels: map[driver.Sentinel]bool{}}
+	d := &Delta{t: t, mutations: map[string]Mutation{}, sentinels: map[driver.Sentinel]bool{}, headers: map[string]*scopeHeader{}}
 	v := r.Snapshot()
 	if v.At == nil || v.Incarnation == "" || !v.Branch.IsZero() {
 		return nil, unavailable("snapshot")
@@ -356,6 +357,14 @@ func Prepare(ctx context.Context, r Observer, mutations []Mutation) (*Delta, err
 			return nil, err
 		}
 	}
+	// Many mutations share the same four scope headers. Their point
+	// observations happen at first use, while the final header image needs
+	// serialization only once after every binding count is settled.
+	for scope, header := range d.headers {
+		if err = t.write(headerKey(scope), header); err != nil {
+			return nil, err
+		}
+	}
 	if err = t.write(markerKey, d.coverage); err != nil {
 		return nil, err
 	}
@@ -382,12 +391,16 @@ func (d *Delta) adjust(s source, direction int) error {
 		}
 	}
 	for _, scope := range scopes(s) {
-		var header scopeHeader
-		if _, err := d.t.read(headerKey(scope), &header); err != nil {
-			return err
-		}
-		if header.Bindings == nil {
-			header.Bindings = map[string]uint64{}
+		header := d.headers[scope]
+		if header == nil {
+			header = &scopeHeader{}
+			if _, err := d.t.read(headerKey(scope), header); err != nil {
+				return err
+			}
+			if header.Bindings == nil {
+				header.Bindings = map[string]uint64{}
+			}
+			d.headers[scope] = header
 		}
 		if direction < 0 {
 			if header.Bindings[s.Binding] == 0 {
@@ -399,9 +412,6 @@ func (d *Delta) adjust(s source, direction int) error {
 			}
 		} else {
 			header.Bindings[s.Binding]++
-		}
-		if err := d.t.write(headerKey(scope), header); err != nil {
-			return err
 		}
 		if s.Leaf != nil {
 			var l *driver.ReadyOrderLeaf
