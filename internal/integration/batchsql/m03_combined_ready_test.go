@@ -149,6 +149,8 @@ func TestM03CombinedReadyMixedParentSnapshotAndReopen(t *testing.T) {
 			svc := m03ReadyService(t, f)
 			child := model.RefByID(m03CreateDurable(t, f, 0), model.Natural64(0))
 			grandchild := model.RefByID(m03CreateDurable(t, f, 0), model.Natural64(0))
+			invokeMeta := f.meta("m03-parent-invoke")
+			invokeMeta.Method = "x.workflow.invoke"
 			result, err := svc.WorkflowInvoke(f.ctx, m03ReadyPrincipal, workflowplugin.InvokeRequest{
 				Template: "m03-parents", Project: "batch-local", Mode: "ephemeral",
 				Checklist: []workflowplugin.ChecklistItem{
@@ -156,7 +158,7 @@ func TestM03CombinedReadyMixedParentSnapshotAndReopen(t *testing.T) {
 					{Label: "free-one", Title: "free one", Type: "task"},
 					{Label: "free-two", Title: "free two", Type: "task"},
 				},
-			}, model.WriteMeta{Project: "batch-local", IdempotencyKey: "m03-parent-invoke"})
+			}, invokeMeta)
 			if err != nil || len(result.Items) != 3 {
 				t.Fatalf("parent control invocation: %+v err=%v", result, err)
 			}
@@ -165,7 +167,9 @@ func TestM03CombinedReadyMixedParentSnapshotAndReopen(t *testing.T) {
 				{From: child, To: parent, Kind: "parent-child"},
 				{From: grandchild, To: child, Kind: "parent-child"},
 			} {
-				if _, err := svc.Link(f.ctx, m03ReadyPrincipal, request, model.WriteMeta{Project: "batch-local", IdempotencyKey: fmt.Sprintf("m03-parent-link-%d", i)}); err != nil {
+				linkMeta := f.meta(fmt.Sprintf("m03-parent-link-%d", i))
+				linkMeta.Method = "bead.link"
+				if _, err := svc.Link(f.ctx, m03ReadyPrincipal, request, linkMeta); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -183,7 +187,9 @@ func TestM03CombinedReadyMixedParentSnapshotAndReopen(t *testing.T) {
 			if !got[result.Items[1].ID] || !got[result.Items[2].ID] {
 				t.Fatalf("blocked mixed ancestors leaked into ready pages: %v", got)
 			}
-			if _, err := svc.Update(f.ctx, m03ReadyPrincipal, service.UpdateRequest{ID: parent, Fields: map[string]any{"blocked": false}}, model.WriteMeta{Project: "batch-local", IdempotencyKey: "m03-parent-unblock"}); err != nil {
+			updateMeta := f.meta("m03-parent-unblock")
+			updateMeta.Method = "bead.update"
+			if _, err := svc.Update(f.ctx, m03ReadyPrincipal, service.UpdateRequest{ID: parent, Fields: map[string]any{"blocked": false}}, updateMeta); err != nil {
 				t.Fatal(err)
 			}
 			_, err = svc.Ready(f.ctx, m03ReadyPrincipal, service.ReadyRequest{Project: "batch-local", Limit: 1, Position: first.Next})
