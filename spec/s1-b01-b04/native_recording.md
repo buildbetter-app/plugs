@@ -80,6 +80,17 @@ new authority is acquired and the same cursor key is installed. Every actual
 reopen prints a unique leaf/stage marker and retains its original identity and
 state digest.
 
+The four native captures and their original server lifetimes finish before
+replay starts. Independent replay roots use at most two concurrent slots;
+every root keeps its own store, clock, authority, output paths and serial
+operation/reopen sequence. Slots are released after fixture cleanup. The
+shared PostgreSQL harness serializes database creation, and the final matrix
+omission guard runs after all parallel roots and before harness teardown and
+output inventory. This scheduling change preserves every state/receipt
+observation and the unchanged 900-second test deadline. The preceding d225
+run exhausted that global deadline during the final progressing PostgreSQL
+root; it did not establish a blocked close or a product deadlock.
+
 Native after-membership stays distinct from the independent Plug expectation.
 Both replay modes assert Plug's exact free-only result. Timed native replay
 separately requires the observed grandchild/free result under orchestrator

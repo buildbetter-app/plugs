@@ -134,31 +134,46 @@ func TestB01NativeTimedAndIndefinitePair(t *testing.T) {
 	// observation is reconstructed from Plug expectations or historical files.
 	h := newPostgresHarness(t)
 	coverage := map[string]*nativeReplayCoverage{}
+	// Replay roots have disjoint stores, clocks, authorities and output paths.
+	// Bound their concurrency without extending the native test's deadline or
+	// dropping any observations. Each root's operations and reopen stay serial.
+	replaySlots := make(chan struct{}, 2)
+	// Parallel children finish before parent cleanup. Keep this guard ahead of
+	// PostgreSQL teardown and the final output inventory (cleanup is LIFO).
+	t.Cleanup(func() {
+		if len(coverage) != len(captures)*len(nativeReplayBackends) {
+			t.Errorf("native replay coverage matrix has %d roots, want %d", len(coverage), len(captures)*len(nativeReplayBackends))
+		}
+		for _, capture := range captures {
+			for _, backend := range nativeReplayBackends {
+				key := capture.Vector.ID + "/" + capture.Run.ID + "/" + backend
+				current, ok := coverage[key]
+				if !ok {
+					t.Errorf("native replay coverage omitted root %s", key)
+					continue
+				}
+				current.require(t, capture.Vector.ID, capture.Run.ID)
+			}
+		}
+	})
 	for _, capture := range captures {
 		for _, backend := range nativeReplayBackends {
+			key := capture.Vector.ID + "/" + capture.Run.ID + "/" + backend
+			current := newNativeReplayCoverage(backend)
+			coverage[key] = current
 			t.Run(capture.Vector.ID+"/"+capture.Run.ID+"/replay/"+backend, func(t *testing.T) {
+				t.Parallel()
+				replaySlots <- struct{}{}
+				// Release the slot after this root's fixture cleanups, including
+				// lease release and physical store close, have completed.
+				t.Cleanup(func() { <-replaySlots })
 				dsn := ""
 				if backend == "postgres" {
 					dsn = h.dsn(t)
 				}
-				key := capture.Vector.ID + "/" + capture.Run.ID + "/" + backend
-				coverage[key] = newNativeReplayCoverage(backend)
-				replayNativeVector(t, capture, backend, dsn, inputs.AdoptedIndefiniteDecision, coverage[key])
+				replayNativeVector(t, capture, backend, dsn, inputs.AdoptedIndefiniteDecision, current)
 				replayNativeExclusionVector(t, capture, backend, h)
 			})
-		}
-	}
-	if len(coverage) != len(captures)*len(nativeReplayBackends) {
-		t.Fatalf("native replay coverage matrix has %d roots, want %d", len(coverage), len(captures)*len(nativeReplayBackends))
-	}
-	for _, capture := range captures {
-		for _, backend := range nativeReplayBackends {
-			key := capture.Vector.ID + "/" + capture.Run.ID + "/" + backend
-			current, ok := coverage[key]
-			if !ok {
-				t.Fatalf("native replay coverage omitted root %s", key)
-			}
-			current.require(t, capture.Vector.ID, capture.Run.ID)
 		}
 	}
 }
