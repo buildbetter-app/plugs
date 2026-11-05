@@ -272,6 +272,11 @@ func rewriteHistoryRow(row dumpformat.Row, project string, eventMap map[string]s
 			row["id"] = replacement
 		}
 	}
+	for key, raw := range row {
+		if text, ok := raw.(string); ok {
+			row[key] = strings.ReplaceAll(text, "demo-42v", project+"-42v")
+		}
+	}
 	if issueID, ok := row["issue_id"].(string); ok && strings.HasPrefix(issueID, "demo-") {
 		row["issue_id"] = project + strings.TrimPrefix(issueID, "demo")
 	}
