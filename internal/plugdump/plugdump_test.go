@@ -386,6 +386,128 @@ func rowFieldForDependencyTest(base Row, field, kind, id string) any {
 	return base[field]
 }
 
+// This is mapper/encoder/self-validation coverage. Persisted SQL coverage lives
+// in TestNativeProducerBundleFromStoredDoltRows; neither is native delivery.
+func TestDumpAllFixedLocalKindsPreserveSourceInV2AndV3(t *testing.T) {
+	kinds := []string{
+		"blocks", "parent-child", "conditional-blocks", "waits-for", "related", "discovered-from",
+		"replies-to", "relates-to", "duplicates", "supersedes", "authored-by", "assigned-to",
+		"approved-by", "attests", "tracks", "until", "caused-by", "validates", "delegated-from",
+	}
+	for _, opaque := range []bool{false, true} {
+		t.Run(fmt.Sprintf("opaque=%t", opaque), func(t *testing.T) {
+			source, inventory := fixture(t)
+			base := source["dependencies"].Rows[0]
+			table := source["dependencies"]
+			expected := map[string]Row{}
+			for i, kind := range kinds {
+				row := cloneRow(base)
+				row["id"], row["type"], row["thread_id"] = "fixed-"+kind, kind, "thread-"+kind
+				row["depends_on_issue_id"], row["depends_on_wisp_id"], row["depends_on_external"] = "demo-8", nil, nil
+				metadata := []any{nil, map[string]any{}, `{"gate":"kept-as-text","n":9007199254740993}`, json.Number("9007199254740993")}
+				row["metadata"] = metadata[i%len(metadata)]
+				if kind == "waits-for" {
+					row["metadata"] = map[string]any{"gate": "", "also_blocks": false, "n": json.Number("9007199254740993")}
+				}
+				expected[row["id"].(string)] = row
+				table.Rows = append(table.Rows, row)
+			}
+			version := EdgeVersionTypedDependencies
+			if opaque {
+				row := cloneRow(base)
+				row["id"], row["type"] = "opaque-alongside-fixed", "custom-stored"
+				table.Rows = append(table.Rows, row)
+				version = EdgeVersionLocalOpaque
+			}
+			source["dependencies"] = table
+			data := buildFixture(t, source, inventory)
+			manifest, err := Validate(bytes.NewReader(data))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, registry := range manifest.Kinds {
+				if registry.Name == "edge" && (registry.Version != version || registry.Count != len(table.Rows)) {
+					t.Fatalf("edge registry=%+v, want version=%d count=%d", registry, version, len(table.Rows))
+				}
+			}
+			seen := map[string]bool{}
+			for _, line := range bytes.Split(bytes.TrimSpace(archiveMembers(t, data)["records/edge.ndjson"]), []byte{'\n'}) {
+				var record Record
+				if err := decodeJSON(line, &record); err != nil {
+					t.Fatal(err)
+				}
+				row, ok := expected[record.ID]
+				if !ok {
+					continue
+				}
+				if seen[record.ID] || record.Project != "demo" || record.Source.Table != "dependencies" || !jsonEqual(record.Source.Fields, row) {
+					t.Fatalf("fixed source row changed: got=%+v want=%+v", record, row)
+				}
+				body := map[string]any{"from": row["issue_id"], "to": row["depends_on_issue_id"], "target_kind": "depends_on_issue_id", "type": row["type"], "metadata": row["metadata"], "thread_id": row["thread_id"]}
+				if !jsonEqual(record.Body, body) {
+					t.Fatalf("fixed body changed: got=%+v want=%+v", record.Body, body)
+				}
+				for _, typedVersion := range []int{EdgeVersionTypedDependencies, EdgeVersionLocalOpaque} {
+					if err := validateRecordVersioned(record, manifest.Projects, map[string]int{}, typedVersion); err != nil {
+						t.Fatalf("fixed kind %s refused at version %d: %v", row["type"], typedVersion, err)
+					}
+				}
+				legacy := row["type"] == "blocks" || row["type"] == "parent-child" || row["type"] == "related" || row["type"] == "discovered-from"
+				if err := validateRecordVersioned(record, manifest.Projects, map[string]int{}, 1); (err == nil) != legacy {
+					t.Fatalf("legacy admission changed for %s: %v", row["type"], err)
+				}
+				seen[record.ID] = true
+			}
+			if len(seen) != len(kinds) {
+				t.Fatalf("fixed kinds lost: got=%d want=%d", len(seen), len(kinds))
+			}
+		})
+	}
+}
+
+func TestDumpAdditionalFixedKindsRetainPlaneAndTargetRefusals(t *testing.T) {
+	kinds := []string{"replies-to", "relates-to", "duplicates", "supersedes", "authored-by", "assigned-to", "approved-by", "attests", "until", "caused-by", "validates", "delegated-from"}
+	for _, kind := range kinds {
+		for _, arm := range []string{"external", "wisp-target", "wisp-source"} {
+			t.Run(kind+"/"+arm, func(t *testing.T) {
+				source, inventory := fixture(t)
+				wisp := cloneRow(source["issues"].Rows[0])
+				wisps := source["wisps"]
+				wisps.Rows = []Row{wisp}
+				source["wisps"] = wisps
+				row := cloneRow(source["dependencies"].Rows[0])
+				row["id"], row["type"] = "fixed-refusal", kind
+				row["depends_on_issue_id"], row["depends_on_wisp_id"], row["depends_on_external"] = "demo-8", nil, nil
+				tableName := "dependencies"
+				targetKind := "depends_on_issue_id"
+				switch arm {
+				case "external":
+					row["depends_on_issue_id"], row["depends_on_external"] = nil, "external:tracker:fixed"
+					targetKind = "depends_on_external"
+				case "wisp-target":
+					row["depends_on_issue_id"], row["depends_on_wisp_id"] = nil, wisp["id"]
+					targetKind = "depends_on_wisp_id"
+				case "wisp-source":
+					tableName = "wisp_dependencies"
+				}
+				table := source[tableName]
+				table.Rows = append(table.Rows, row)
+				source[tableName] = table
+				data, err := Build(context.Background(), source, inventory)
+				if err == nil || len(data) != 0 || !strings.Contains(err.Error(), "unsupported dependency type") {
+					t.Fatalf("unsupported fixed arm accepted: data=%d err=%v", len(data), err)
+				}
+				record := Record{Kind: "edge", ID: row["id"].(string), Project: "demo", Body: map[string]any{"type": kind, "target_kind": targetKind}, Source: Provenance{Table: tableName, Fields: row}}
+				for _, version := range []int{EdgeVersionTypedDependencies, EdgeVersionLocalOpaque} {
+					if err := validateRecordVersioned(record, inventory.Projects, map[string]int{}, version); err == nil || !strings.Contains(err.Error(), "unsupported dependency type") {
+						t.Fatalf("validator accepted unsupported fixed arm at version %d: %v", version, err)
+					}
+				}
+			})
+		}
+	}
+}
+
 // Unit mapping control; real persisted SQL coverage is in
 // TestNativeProducerBundleFromStoredDoltRows in the Dolt package.
 func TestDumpLocalOpaqueDependencyUsesV3AndPreservesStoredRow(t *testing.T) {
@@ -450,7 +572,7 @@ func TestDumpLocalOpaqueDependencyRefusals(t *testing.T) {
 		{name: "empty kind", kind: "", targetKey: "depends_on_issue_id", target: "demo-8", want: "unsupported dependency type"},
 		{name: "invalid utf8", kind: string([]byte{0xff}), targetKey: "depends_on_issue_id", target: "demo-8", want: "invalid UTF-8"},
 		{name: "over limit", kind: strings.Repeat("x", 33), targetKey: "depends_on_issue_id", target: "demo-8", want: "unsupported dependency type"},
-		{name: "unsupported well-known", kind: "duplicates", targetKey: "depends_on_issue_id", target: "demo-8", want: "unsupported dependency type"},
+		{name: "unsupported well-known external arm", kind: "duplicates", targetKey: "depends_on_external", target: "external:tracker:fixed", want: "unsupported dependency type"},
 		{name: "external target", kind: "custom-external", targetKey: "depends_on_external", target: "external:tracker:source", want: "unsupported dependency type"},
 		{name: "wisp target", kind: "custom-wisp", targetKey: "depends_on_wisp_id", target: "wisp-1", want: "dangling wisp edge target"},
 		{name: "multiple targets", kind: "custom-multiple", targetKey: "depends_on_issue_id", target: "demo-8", secondKey: "depends_on_external", second: "external:tracker:source", want: "edge must have exactly one typed target"},

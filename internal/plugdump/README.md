@@ -44,8 +44,8 @@ cannot prove that an operator's capture declarations are true.
 
 Registry entries are `{name,version,file,count}`. Legacy archives use version
 `1`; a fixed-kind successor archive uses edge version `2` for the typed
-`waits-for`, `conditional-blocks` and `tracks` contract while all other kinds
-remain version `1`. When a stored local dependency uses an opaque kind, the edge
+local issue contract for all 19 fixed dependency kinds while all other record
+kinds remain version `1`. When a stored local dependency uses an opaque kind, the edge
 registry uses version `3`, a strict superset of version `2`; fixed-only edge
 archives remain version `2`.
 
@@ -54,8 +54,8 @@ nonempty, valid UTF-8, at most 32 bytes, and outside the fixed well-known set:
 `blocks`, `parent-child`, `conditional-blocks`, `waits-for`, `related`,
 `discovered-from`, `replies-to`, `relates-to`, `duplicates`, `supersedes`,
 `authored-by`, `assigned-to`, `approved-by`, `attests`, `tracks`, `until`,
-`caused-by`, `validates`, and `delegated-from`. Unsupported names from that
-fixed set remain refusals; they are never relabeled as opaque. Custom v3 wisp
+`caused-by`, `validates`, and `delegated-from`. These fixed names use the typed
+v2/v3 path; they are never relabeled as opaque. Custom v3 wisp
 targets, dangling, multiple-target and malformed external-target rows remain
 refusals; typed wisp links use the faithful `wisp_dependencies` source family.
 The producer still aborts before encoding when any row is invalid.
@@ -90,10 +90,14 @@ mirrors Plug's ontology migration shape (`id`, `kind`, `target`, `from`, and
 `to`), is recorded in the manifest, and never rewrites `source_type` or drops
 a row. Directives that are malformed, unused, overlap, target a built-in type,
 or target an unaccounted project refuse before archive publication.
-Supported edge types are `blocks`, `parent-child`, `related`,
-`discovered-from`, `waits-for`, `conditional-blocks` and `tracks`. Tracks are a
-fixed typed kind in the v2 edge registry; they are never admitted through the
-opaque-v3 arm. Targets retain their
+All 19 fixed kinds are supported for local durable issue-to-issue rows in edge
+v2/v3. The additional association/entity/tracker kinds retain their exact type
+and metadata without adding readiness or close guards. Existing typed
+`blocks`, `parent-child`, `related`, `discovered-from`, `waits-for`,
+`conditional-blocks` and `tracks` retain their wisp/external source contract;
+the other 12 kinds on those arms still refuse. Local v1 refusal remains for
+all successor-only kinds. Tracks are never admitted through opaque-v3.
+Targets retain their
 typed issue, wisp or external discriminator; durable and wisp endpoint sets,
 source plane, dangling targets and the exactly-one target arm are validated
 before encoding. Dependency metadata is retained verbatim in the typed body

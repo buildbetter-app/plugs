@@ -125,9 +125,9 @@ func TestNativeProducerBundleFromStoredDoltRows(t *testing.T) {
 			VALUES (?, ?, 'open', 2, 'task', ?, ?, 1, 1)`, id, "active "+id, at, at)
 	}
 	exec(`INSERT INTO wisp_labels (issue_id, label) VALUES ('test-abc', 'active-label')`)
-	exec(`INSERT INTO wisp_comments (issue_id, author, text, created_at) VALUES ('test-abc', 'producer-control', 'stored active comment', ?)`, at)
-	exec(`INSERT INTO wisp_events (issue_id, event_type, actor, old_value, new_value, comment, created_at)
-		VALUES ('test-abc', 'created', 'producer-control', NULL, 'open', 'stored active event', ?)`, at)
+	exec(`INSERT INTO wisp_comments (id, issue_id, author, text, created_at) VALUES ('stored-active-comment', 'test-abc', 'producer-control', 'stored active comment', ?)`, at)
+	exec(`INSERT INTO wisp_events (id, issue_id, event_type, actor, old_value, new_value, comment, created_at)
+		VALUES ('stored-active-event', 'test-abc', 'created', 'producer-control', NULL, 'open', 'stored active event', ?)`, at)
 	exec(`INSERT INTO wisp_child_counters (parent_id, last_child) VALUES ('test-abc', 2)`)
 	exec(`INSERT INTO custom_statuses (name, category) VALUES ('review', 'active')`)
 	exec(`INSERT INTO custom_types (name) VALUES ('gate')`)
@@ -149,6 +149,28 @@ func TestNativeProducerBundleFromStoredDoltRows(t *testing.T) {
 		{"known-tracks", "tracks", "depends_on_issue_id", "test-def", `{"report":"expanded"}`},
 		{"durable-active", "blocks", "depends_on_wisp_id", "test-ghi", `{}`},
 		{"durable-external", "blocks", "depends_on_external", "external:tracker:stored", `{}`},
+	}
+	fixedKinds := []string{
+		"blocks", "parent-child", "conditional-blocks", "waits-for", "related", "discovered-from",
+		"replies-to", "relates-to", "duplicates", "supersedes", "authored-by", "assigned-to",
+		"approved-by", "attests", "tracks", "until", "caused-by", "validates", "delegated-from",
+	}
+	for i, kind := range fixedKinds {
+		// The source has a unique (issue_id, target) constraint independent of
+		// type, so every fixed kind gets a distinct real target row.
+		target := fmt.Sprintf("test-k%02d", i)
+		issue := &types.Issue{ID: target, Title: "fixed target " + kind, Status: types.StatusOpen, Priority: 2, IssueType: types.TypeTask}
+		if err := store.CreateIssue(ctx, issue, "producer-control"); err != nil {
+			t.Fatal(err)
+		}
+		metadata := []any{nil, `{}`, `{"gate":"inert","n":9007199254740993}`}[i%3]
+		if kind == "waits-for" {
+			metadata = `{"gate":"","also_blocks":false,"n":9007199254740993}`
+		}
+		edges = append(edges, struct {
+			id, kind, arm, target string
+			metadata              any
+		}{"fixed-" + kind, kind, "depends_on_issue_id", target, metadata})
 	}
 	insertEdges := func(opaque bool) {
 		for _, edge := range edges {
@@ -286,15 +308,7 @@ func TestNativeProducerBundleFromStoredDoltRows(t *testing.T) {
 				if !ok || record.Body["to"] != fields[arm] {
 					t.Fatalf("stored edge endpoint changed: %+v", record)
 				}
-				metadata := fields["metadata"]
-				if raw, ok := metadata.(string); ok {
-					decoder := json.NewDecoder(strings.NewReader(raw))
-					decoder.UseNumber()
-					if err := decoder.Decode(&metadata); err != nil {
-						t.Fatal(err)
-					}
-				}
-				if rowKey(record.Body["metadata"]) != rowKey(metadata) {
+				if rowKey(record.Body["metadata"]) != rowKey(fields["metadata"]) {
 					t.Fatalf("stored edge metadata changed: %+v", record)
 				}
 			}
@@ -321,7 +335,7 @@ func TestNativeProducerBundleFromStoredDoltRows(t *testing.T) {
 		}
 	}
 	for _, test := range []struct{ name, update, restore, want string }{
-		{"unsupported known kind", `UPDATE dependencies SET type='duplicates' WHERE id='opaque-null'`, `UPDATE dependencies SET type='custom-stored' WHERE id='opaque-null'`, "unsupported dependency type"},
+		{"unsupported known external arm", `UPDATE dependencies SET type='duplicates', depends_on_issue_id=NULL, depends_on_external='external:tracker:unsupported' WHERE id='opaque-null'`, `UPDATE dependencies SET type='custom-stored', depends_on_issue_id='test-jkl', depends_on_external=NULL WHERE id='opaque-null'`, "unsupported dependency type"},
 		{"opaque active target", `UPDATE dependencies SET depends_on_issue_id=NULL, depends_on_wisp_id='test-stu' WHERE id='opaque-null'`, `UPDATE dependencies SET depends_on_issue_id='test-jkl', depends_on_wisp_id=NULL WHERE id='opaque-null'`, "unsupported dependency type"},
 		{"catalog category conflict", "UPDATE config SET value='review:done' WHERE `key`='status.custom'", "UPDATE config SET value='review:active' WHERE `key`='status.custom'", "conflicting custom status"},
 	} {

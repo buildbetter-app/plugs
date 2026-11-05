@@ -353,16 +353,15 @@ func validateRecordVersioned(record Record, projects []Project, counts map[strin
 		case "blocks", "parent-child", "related", "discovered-from":
 			// These kinds are valid in both the legacy and successor edge
 			// contracts.
-		case "waits-for", "conditional-blocks":
-			if edgeVersion != EdgeVersionTypedDependencies && edgeVersion != EdgeVersionLocalOpaque {
-				return fmt.Errorf("dependency %s requires edge registry version %d or %d", kind, EdgeVersionTypedDependencies, EdgeVersionLocalOpaque)
-			}
-		case "tracks":
-			if edgeVersion != EdgeVersionTypedDependencies && edgeVersion != EdgeVersionLocalOpaque {
-				return fmt.Errorf("dependency %s requires edge registry version %d or %d", kind, EdgeVersionTypedDependencies, EdgeVersionLocalOpaque)
-			}
 		default:
-			if edgeVersion != EdgeVersionLocalOpaque || !isValidLocalOpaqueDependencyKind(kind) || text(record.Body, "target_kind") != "depends_on_issue_id" {
+			if isTypedDependencyKind(kind) {
+				if edgeVersion != EdgeVersionTypedDependencies && edgeVersion != EdgeVersionLocalOpaque {
+					return fmt.Errorf("dependency %s requires edge registry version %d or %d", kind, EdgeVersionTypedDependencies, EdgeVersionLocalOpaque)
+				}
+				if !supportsTypedDependency(kind, record.Source.Table, text(record.Body, "target_kind")) {
+					return fmt.Errorf("unsupported dependency type")
+				}
+			} else if edgeVersion != EdgeVersionLocalOpaque || !isValidLocalOpaqueDependencyKind(kind) || text(record.Body, "target_kind") != "depends_on_issue_id" {
 				return fmt.Errorf("unsupported dependency type")
 			}
 		}

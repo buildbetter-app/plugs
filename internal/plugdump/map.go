@@ -35,10 +35,9 @@ var wellKnownDependencyKinds = map[string]struct{}{
 	"validates": {}, "delegated-from": {},
 }
 
-// typedDependencyKinds is the subset whose producer representation is
-// already defined by the v2 edge contract. Other well-known names remain
-// explicit refusals until their own source capability is admitted.
-var typedDependencyKinds = map[string]struct{}{
+// crossPlaneTypedDependencyKinds retains the existing wisp/external contract.
+// The other fixed kinds are admitted only for durable issue-to-issue rows.
+var crossPlaneTypedDependencyKinds = map[string]struct{}{
 	"blocks": {}, "parent-child": {}, "related": {}, "discovered-from": {},
 	"waits-for": {}, "conditional-blocks": {}, "tracks": {},
 }
@@ -51,8 +50,15 @@ func isValidLocalOpaqueDependencyKind(kind string) bool {
 }
 
 func isTypedDependencyKind(kind string) bool {
-	_, ok := typedDependencyKinds[kind]
+	_, ok := wellKnownDependencyKinds[kind]
 	return ok
+}
+
+func supportsTypedDependency(kind, table, targetKind string) bool {
+	if _, ok := crossPlaneTypedDependencyKinds[kind]; ok {
+		return true
+	}
+	return isTypedDependencyKind(kind) && table == "dependencies" && targetKind == "depends_on_issue_id"
 }
 
 // These issue columns have no lossless Plug issue-body representation. They
@@ -733,7 +739,7 @@ func (m *mapping) dependency(table string, row Row) error {
 	if err != nil || len(kind) > 32 {
 		return fmt.Errorf("unsupported dependency type")
 	}
-	if !isTypedDependencyKind(kind) && !(targetKind == "depends_on_issue_id" && isValidLocalOpaqueDependencyKind(kind)) {
+	if !supportsTypedDependency(kind, table, targetKind) && !(targetKind == "depends_on_issue_id" && isValidLocalOpaqueDependencyKind(kind)) {
 		return fmt.Errorf("unsupported dependency type")
 	}
 	if err := validateDependencyMetadata(kind, row["metadata"]); err != nil {
