@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"sort"
@@ -88,6 +89,10 @@ func (r *reader) DerivedRowsForPrefixes(ctx context.Context, table driver.Derive
 		}
 	}
 	if r.owner != nil {
+		committed := make(map[string]driver.DerivedRow, len(byKey))
+		for key, row := range byKey {
+			committed[key] = row.Clone()
+		}
 		for _, state := range r.owner.derived {
 			key := state.Key.Derived.Key
 			i := sort.Search(len(union), func(i int) bool { return union[i] > key }) - 1
@@ -96,7 +101,13 @@ func (r *reader) DerivedRowsForPrefixes(ctx context.Context, table driver.Derive
 			}
 			delete(byKey, state.Key.Derived.Key)
 			if state.Present && state.Derived != nil {
-				byKey[state.Derived.Key] = *state.Derived
+				row := state.Derived.Clone()
+				if row.Index == nil {
+					if base, ok := committed[key]; ok && base.Index != nil && bytes.Equal(base.Value, row.Value) && !r.owner.selectionSourceChanged(base.Index.Source.Key) {
+						row.Index = base.Clone().Index
+					}
+				}
+				byKey[row.Key] = row
 			}
 		}
 	}

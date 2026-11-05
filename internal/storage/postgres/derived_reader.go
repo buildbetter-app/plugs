@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"sort"
 	"strings"
@@ -85,6 +86,21 @@ func (r *reader) DerivedRowsForPrefixes(ctx context.Context, table driver.Derive
 		return nil, err
 	}
 	if r.writer != nil {
+		committed := make(map[string]driver.DerivedRow, len(byKey))
+		for key, row := range byKey {
+			committed[key] = row.Clone()
+		}
+		base := make([]driver.DerivedRow, 0, len(committed))
+		for _, row := range committed {
+			base = append(base, row)
+		}
+		if err := r.selectionAnnotations(ctx, base, table, true); err != nil {
+			return nil, err
+		}
+		for _, row := range base {
+			byKey[row.Key] = row
+			committed[row.Key] = row.Clone()
+		}
 		for _, state := range r.writer.derived {
 			if state.Key.Derived.Table != table {
 				continue
@@ -101,7 +117,13 @@ func (r *reader) DerivedRowsForPrefixes(ctx context.Context, table driver.Derive
 			}
 			delete(byKey, state.Key.Derived.Key)
 			if state.Present && state.Derived != nil {
-				byKey[state.Derived.Key] = *state.Derived
+				row := state.Derived.Clone()
+				if row.Index == nil {
+					if base, ok := committed[state.Derived.Key]; ok && base.Index != nil && bytes.Equal(base.Value, row.Value) && !r.writer.selectionSourceChanged(base.Index.Source.Key) {
+						row.Index = base.Clone().Index
+					}
+				}
+				byKey[row.Key] = row
 			}
 		}
 	}
@@ -109,8 +131,10 @@ func (r *reader) DerivedRowsForPrefixes(ctx context.Context, table driver.Derive
 	for _, row := range byKey {
 		result = append(result, row.Clone())
 	}
-	if err := r.selectionAnnotations(ctx, result, table); err != nil {
-		return nil, err
+	if r.writer == nil {
+		if err := r.selectionAnnotations(ctx, result, table); err != nil {
+			return nil, err
+		}
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Key < result[j].Key })
 	return result, nil

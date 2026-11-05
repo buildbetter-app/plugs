@@ -215,13 +215,14 @@ func (t *transaction) selectionOverlayCovered(ctx context.Context) (bool, error)
 // Logical state JSON predates typed annotations. Preserve opaque annotation
 // string bytes in a separate binary encoding, while keeping the logical Value
 // and every existing state/version byte unchanged.
-func (r *reader) selectionAnnotations(ctx context.Context, values []driver.DerivedRow, table driver.DerivedTable) error {
+func (r *reader) selectionAnnotations(ctx context.Context, values []driver.DerivedRow, table driver.DerivedTable, includeStaged ...bool) error {
+	allowStaged := len(includeStaged) != 0 && includeStaged[0]
 	ids := [][]byte{}
 	positions := map[string]int{}
 	for i, row := range values {
 		key := driver.DerivedRowKey{Table: table, Key: row.Key}
 		id, _ := keyID(driver.LockKey{Kind: driver.LockDerived, Derived: &key})
-		if r.writer != nil {
+		if !allowStaged && r.writer != nil {
 			if _, staged := r.writer.derived[id]; staged {
 				continue
 			}
