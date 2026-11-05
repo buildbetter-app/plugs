@@ -288,10 +288,14 @@ class HostCallerFixture(unittest.TestCase):
 
     def test_paginated_projection_is_pinned_during_competing_write(self):
         marker = str(uuid.uuid4())
-        ops = [{"kind": "create", "key": "page-" + str(i), "type": "task", "project": self.c.project,
-                "fields": {"title": "pagination fixture " + marker}} for i in range(200)]
-        commit = self.c.rpc("tx.apply", {"changeSet": {"ops": ops}}, str(uuid.uuid4()))
-        expected = {ph.created_ref(commit, i) for i in range(200)}
+        # The current view budget counts rows. Exceed the adapter's 1000-row
+        # budget with six bounded transactions, rather than guessing token cost.
+        expected = set()
+        for batch in range(6):
+            ops = [{"kind": "create", "key": "page-" + str(batch * 200 + i), "type": "task", "project": self.c.project,
+                    "fields": {"title": "pagination fixture " + marker}} for i in range(200)]
+            commit = self.c.rpc("tx.apply", {"changeSet": {"ops": ops}}, str(uuid.uuid4()))
+            expected.update(ph.created_ref(commit, i) for i in range(200))
         original = self.c.rpc
         pages = 0
         late = None
@@ -340,13 +344,15 @@ class HostCallerFixture(unittest.TestCase):
         view=Projection(self.c)
         path=Path(view.fresh())
         for age in (0, 30):
-            if age:
-                os.utime(path,(0,0))
             for code in ('forbidden','unauthenticated','token_expired','not_found'):
                 with self.subTest(age=age,code=code):
                     view.fresh()
+                    if age:
+                        os.utime(path,(0,0))
                     with patch.object(self.c,'snapshot',side_effect=ph.RPCError(code)):
                         with self.assertRaises(ph.RPCError): view.fresh()
+                    self.assertFalse(path.exists())
+                    self.assertFalse(view.stale)
         with patch.object(self.c,'verify_identity',side_effect=ph.AdapterError('principal changed')):
             with self.assertRaises(ph.AdapterError): view.fresh()
 
