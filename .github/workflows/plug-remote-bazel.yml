@@ -89,6 +89,38 @@ jobs:
           printf '%s\n' "sha=${{ inputs.sha }}" "label=${{ inputs.label }}" \
             "args=$ARGS_INPUT" > "$REMOTE_BAZEL_EVIDENCE_DIR/request.txt"
 
+      - name: Prepare Beads integration prerequisites
+        if: ${{ hashFiles('tools/bazel/go_test_offline.sh') != '' }}
+        run: |
+          set -euo pipefail
+          # The proxied lane requires the real endpoint bridge. The managed
+          # local lane requires an isolated, loopback-only network namespace.
+          sudo -n apt-get update
+          sudo -n apt-get install -y --no-install-recommends socat iproute2 util-linux
+          {
+            command -v socat ip unshare
+            socat -V
+            unshare --version
+            if ! unshare --user --map-root-user --net -- true; then
+              # Ubuntu's AppArmor user-namespace restriction can prevent the
+              # test user from creating namespaces on this disposable VM.
+              restriction=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+              if [[ -r "$restriction" && "$(cat "$restriction")" == 1 ]]; then
+                sudo -n sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+              fi
+            fi
+            # Fail setup if the required capability is still unavailable;
+            # running this lane with outbound networking would change its claim.
+            unshare --user --map-root-user --net -- bash -euc '
+              ip link set lo up
+              ip -o link show lo
+              if ip route get 1.1.1.1; then
+                echo "unexpected outbound route in Beads test namespace" >&2
+                exit 1
+              fi
+            '
+          } 2>&1 | tee "$REMOTE_BAZEL_EVIDENCE_DIR/beads-prerequisites.log"
+
       - name: Select opt-in public reference
         id: public_reference
         if: ${{ contains(inputs.args, 'PLUG_PUBLIC_REFERENCE') }}
