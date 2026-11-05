@@ -61,7 +61,7 @@
     "sha256": "4eb2fcc5937668a29077c634ce361872e4b2a43152443da31ce65c800309beb4"
   },
   "sourceComposition": "Exact attributed producer43 MODULE/helper blobs; existing B01 recorder, V3 inputs,96 argv and three-driver replay unchanged except helper source/tree attribution. Returned ChildEnv stays unchanged; private config root remains separate from physical DataRoot.",
-  "currentConsumerScope": "Authorized child of pinned main 7a43c3c625a5c08d3a4364a321cd47d6357ef30e/tree be93a595dc4c44ef4d94d2333060788fd344dca0: retains the original native recorder and adds the finite H03/H04 hierarchy, membership, conservation, filtered-page and SQL-reopen matrix. External-refused remains a separately labelled E01/H05-H08 control; clocks, durable/wisp planes, optional errors and M03 remain unqualified. All runtime evidence for this consumer is AUTHORED_NOT_RUN until a fresh same-run preparation and named native execution.",
+  "currentConsumerScope": "Authorized child of pinned main 7a43c3c625a5c08d3a4364a321cd47d6357ef30e/tree be93a595dc4c44ef4d94d2333060788fd344dca0: retains the original native recorder and adds the finite H03/H04 hierarchy, membership, conservation, filtered-page and SQL-reopen matrix. External-refused remains a separately labelled E01/H05-H08 control; clocks, durable/ephemeral planes, optional errors and M03 remain unqualified. All runtime evidence for this consumer is AUTHORED_NOT_RUN until a fresh same-run preparation and named native execution.",
   "trustedPreparation": {
     "control": "2d2164ba3d8e456c9aba15fbeb8cae4edc755997",
     "controlTree": "ae226eed2e9a85d4da19958db7a3520ebfe9cf05",

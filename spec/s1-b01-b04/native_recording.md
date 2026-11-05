@@ -378,9 +378,9 @@ common clock, broader planes/query-error proof, fullB01 or admission.
 
 The hidden-type continuation retains the preceding hierarchy/category/quiet
 receipt/parent-compatibility corpus and appends nine genuine native parent
-type mutations in each physical capture: merge-request, gate, molecule, rig,
-agent, role, message, bug and restored task. The accepted source declares the
-first seven hidden by default. Each mutation retains actual four-role shows
+type mutations in each physical capture, using the exact nine-value vector
+returned by `nativeExclusionTypes` in `native_exclusion_test.go`. The accepted
+source declares the first seven hidden by default. Each mutation retains actual four-role shows
 and full, limit-one, explicit-type and task-type ready queries. The hidden
 highest-priority parent must disappear before the limit while its open local
 children remain ready. Explicit native --type bypasses the default type list;
