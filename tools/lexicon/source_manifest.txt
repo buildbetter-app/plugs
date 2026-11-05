@@ -1450,6 +1450,14 @@ spec/s1-b21-b24/count-reference-first.json
 spec/s1-b21-b24/count-reference-repeat.json
 spec/s1-b21-b24/extract_ordinary_count_packet.py
 spec/s1-b21-b24/fixture_test.go
+spec/s1-b21-b24/native_history_probe_test.go
+spec/s1-b21-b24/native_recording_test.go
+spec/s1-b21-b24/native_replay_test.go
+spec/s1-b21-b24/native_support_test.go
+spec/s1-b21-b24/native_testdata/README.md
+spec/s1-b21-b24/native_testdata/profile.json
+spec/s1-b21-b24/native_testdata/protocol.json
+spec/s1-b21-b24/native_views_test.go
 spec/s1-b21-b24/ordinary_count_capture.py
 spec/s1-b21-b24/ordinary_count_capture_harness_test.go
 spec/s1-b21-b24/ordinary_count_capture_policy_test.go
