@@ -342,7 +342,11 @@ func (r *b09ReplayTarget) assertMutation(before, after b09ReplayStage, id, opera
 		b09Equal(t, operation+" retained changeset prefix", before.Changesets, after.Changesets[:len(before.Changesets)])
 	}
 	last := after.Changesets[len(after.Changesets)-1]
-	if last.Revision.String() != wantMeta.Head.String() || last.Incarnation != before.Meta.Incarnation || last.Kind != model.ChangesetWrite || !reflect.DeepEqual(last.Principal, b09Principal) || !last.Time.Equal(r.now) || last.IdempotencyKey != b09Meta(r.engine, operation).IdempotencyKey || len(last.Changes) != 1 || last.Changes[0].Ref.ID != id || last.Changes[0].FromRevision.String() != prior.Revision.String() {
+	wantKind := model.ChangesetWrite
+	if operation == "revert" {
+		wantKind = model.ChangesetRevert
+	}
+	if last.Revision.String() != wantMeta.Head.String() || last.Incarnation != before.Meta.Incarnation || last.Kind != wantKind || !reflect.DeepEqual(last.Principal, b09Principal) || !last.Time.Equal(r.now) || last.IdempotencyKey != b09Meta(r.engine, operation).IdempotencyKey || len(last.Changes) != 1 || last.Changes[0].Ref.ID != id || last.Changes[0].FromRevision.String() != prior.Revision.String() {
 		t.Fatalf("%s unexpected complete changeset: %+v", operation, last)
 	}
 	if len(after.Receipts) != len(before.Receipts)+1 {
