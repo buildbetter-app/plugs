@@ -349,7 +349,13 @@ func (o *Ontology) validate(ctx context.Context, proposal port.ProposedChange, r
 		graph = prefix
 		if graph == nil {
 			var complete bool
-			graph, complete, err = indexedGuardGraph(ctx, proposal, reader)
+			graph, complete, err = o.independentClaimGraph(proposal)
+			if err != nil {
+				return err
+			}
+			if !complete {
+				graph, complete, err = indexedGuardGraph(ctx, proposal, reader)
+			}
 			if err != nil {
 				return err
 			}

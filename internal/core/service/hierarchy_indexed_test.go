@@ -5,14 +5,151 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+type pausedClaimOntology struct {
+	*Ontology
+	entered chan struct{}
+	release chan struct{}
+	calls   atomic.Int32
+}
+
+func (o *pausedClaimOntology) Validate(ctx context.Context, p port.ProposedChange, r port.SnapshotReader) error {
+	if p.Meta.Method != "bead.claim" && p.Meta.Method != "bead.claimNext" {
+		return o.Ontology.Validate(ctx, p, r)
+	}
+	call := o.calls.Add(1)
+	if err := o.Ontology.Validate(ctx, p, r); err != nil {
+		return err
+	}
+	if call == 1 {
+		close(o.entered)
+		select {
+		case <-o.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+// Use the real ontology, Writer, memory store and service. The hook pauses
+// only after actual guard observations, so the intervening publication tests
+// whether those exact observations force a restart or preserve a safe claim.
+func TestIndependentRootClaimRetainsConfiguredChildGuardRaces(t *testing.T) {
+	for _, method := range []string{"bead.claim", "bead.claimNext"} {
+		for _, childGuard := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/child-guard=%t", method, childGuard), func(t *testing.T) {
+				ctx := context.Background()
+				f := setup(t)
+				id, _ := create(t, f, "root to claim")
+				var other model.Ref
+				if !childGuard {
+					other, _ = create(t, f, "independent root")
+				}
+				document := ontology.DefaultDocument()
+				if childGuard {
+					document.Workflows["issue"].Transitions[0].Guards = append(document.Workflows["issue"].Transitions[0].Guards, ontology.Guard{Kind: ontology.NoOpenChildren})
+				}
+				snapshot, problems := ontology.Compile(document, nil, nil)
+				if len(problems) != 0 {
+					t.Fatal(problems)
+				}
+				o := NewOntology(snapshot.Effective)
+				f.svc = New(f.store, f.lease, pipeline.New(f.store, f.lease, pipeline.WithOntology(o)), WithOntology(o))
+				paused := &pausedClaimOntology{Ontology: o, entered: make(chan struct{}), release: make(chan struct{})}
+				var once sync.Once
+				resume := func() { once.Do(func() { close(paused.release) }) }
+				t.Cleanup(resume)
+				first := New(f.store, f.lease, pipeline.New(f.store, f.lease, pipeline.WithOntology(paused)), WithOntology(o))
+				key := meta(t)
+				claim := func() (port.WriteOutcome, error) {
+					// Pin the selected candidate's actual service lowering for both
+					// verbs. Public queue traversal is exercised by the A4 witness.
+					return first.claimWithMethod(ctx, anonymous, ClaimRequest{ID: id}, key, true, method)
+				}
+				type result struct {
+					out port.WriteOutcome
+					err error
+				}
+				done := make(chan result, 1)
+				go func() { out, err := claim(); done <- result{out, err} }()
+				select {
+				case <-paused.entered:
+				case <-time.After(time.Second):
+					t.Fatal("claim did not reach its observed guard")
+				}
+				if childGuard {
+					_, err := f.svc.Create(ctx, anonymous, CreateRequest{Type: "issue", Parent: &id, Fields: map[string]any{"title": "concurrent open child"}}, meta(t))
+					if err != nil {
+						t.Fatal(err)
+					}
+				} else if _, err := f.svc.Claim(ctx, anonymous, ClaimRequest{ID: other}, meta(t)); err != nil {
+					t.Fatal(err)
+				}
+				resume()
+				var got result
+				select {
+				case got = <-done:
+				case <-time.After(3 * time.Second):
+					t.Fatal("claim did not finish")
+				}
+				if childGuard {
+					wantCode(t, got.err, "ontology_guard_failed")
+					if paused.calls.Load() != 2 {
+						t.Fatalf("child membership phantom was not revalidated: %d", paused.calls.Load())
+					}
+				} else if got.err != nil || got.out.Replayed || got.out.Commit.Revision.String() != "4" || paused.calls.Load() != 1 {
+					t.Fatalf("unrelated claim invalidated root guard: %+v calls=%d", got, paused.calls.Load())
+				}
+				stored, err := f.store.Meta(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				r, err := f.store.Read(ctx, driver.View{Incarnation: stored.Incarnation})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer r.Close()
+				versions, err := r.Versions(ctx, id, driver.PageReq{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				principal, _ := driver.PrincipalKey(anonymous)
+				receipt, err := r.IdempotencyByKey(ctx, principal, key.AgentLabel, method, key.IdempotencyKey)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if childGuard {
+					if stored.Head.String() != "2" || len(versions.Items) != 1 || receipt != nil {
+						t.Fatalf("refused claim published: head=%s versions=%d receipt=%+v", stored.Head.String(), len(versions.Items), receipt)
+					}
+					return
+				}
+				if stored.Head.String() != "4" || len(versions.Items) != 2 || receipt == nil || receipt.ResponsePending || !reflect.DeepEqual(receipt.Commit, got.out.Commit) {
+					t.Fatalf("winner history/receipt mismatch: head=%s versions=%d receipt=%+v", stored.Head.String(), len(versions.Items), receipt)
+				}
+				again, err := claim()
+				after, metaErr := f.store.Meta(ctx)
+				if err != nil || metaErr != nil || !again.Replayed || !reflect.DeepEqual(again.Commit, got.out.Commit) || after.Head.String() != "4" || paused.calls.Load() != 1 {
+					t.Fatalf("winner replay changed state: %+v errors=%v/%v calls=%d", again, err, metaErr, paused.calls.Load())
+				}
+			})
+		}
+	}
+}
 
 type indexedGuardReader struct {
 	port.SnapshotReader

@@ -4,14 +4,57 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"sort"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 const indexedHierarchyLimit = 5000
+
+// independentClaimGraph needs no membership query: the tracked target images
+// prove that a root claim has neither ancestors nor outgoing dependencies.
+// Incoming children matter only when the exact configured transition consumes
+// their guard. All other proposals retain the complete indexed/fallback path.
+func (o *Ontology) independentClaimGraph(proposal port.ProposedChange) (map[string]storedBead, bool, error) {
+	if (proposal.Meta.Method != "bead.claim" && proposal.Meta.Method != "bead.claimNext") || proposal.SameClaim || len(proposal.Changes) != 1 {
+		return nil, false, nil
+	}
+	change := proposal.Changes[0]
+	if change.Resource.Kind != "bead" || change.Op.Kind != model.OpPatch || !hasDocument(change.Before) || !hasDocument(change.After) {
+		return nil, false, nil
+	}
+	before, err := decodeDocument(change.Before)
+	if err != nil {
+		return nil, false, err
+	}
+	after, err := decodeDocument(change.After)
+	if err != nil {
+		return nil, false, err
+	}
+	if driver.ValidateHierarchyRef(change.Resource.Ref) != nil || before.ID != change.Resource.Ref.ID || after.ID != before.ID || before.Type != after.Type || before.Project != after.Project || before.Parent != nil || after.Parent != nil || len(before.Links) != 0 || len(after.Links) != 0 {
+		return nil, false, nil
+	}
+	document := o.effective(after.Project).Document()
+	typ, ok := document.Types[after.Type]
+	if !ok {
+		return nil, false, nil
+	}
+	for _, rule := range document.Workflows[typ.Workflow].Transitions {
+		if rule.To != state(after).Status || len(rule.From) != 0 && !slices.Contains(rule.From, state(before).Status) {
+			continue
+		}
+		for _, guard := range rule.Guards {
+			if guard.Kind == ontology.NoOpenChildren {
+				return nil, false, nil
+			}
+		}
+	}
+	return map[string]storedBead{after.ID: {doc: after}}, true, nil
+}
 
 // indexedGuardGraph builds the complete fact slice used by ontology guards.
 // Deletion retains the full scan because custom/association incoming links are
