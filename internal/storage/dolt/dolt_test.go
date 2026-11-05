@@ -2845,7 +2845,18 @@ func TestNativeProducerBundleFromStoredDoltRows(t *testing.T) {
 	for _, family := range retained {
 		want := map[string]int{}
 		for _, row := range before[family].Rows {
-			want[rowKey(row)]++
+			fields := row
+			if family == "issues" {
+				// The durable issue source contract omits only transient row_lock
+				// and derived is_blocked. Active rows retain every physical field.
+				fields = make(plugdump.Row, len(row))
+				for name, value := range row {
+					if name != "row_lock" && name != "is_blocked" {
+						fields[name] = value
+					}
+				}
+			}
+			want[rowKey(fields)]++
 		}
 		if !reflect.DeepEqual(actual[family], want) {
 			t.Fatalf("stored %s rows/fields changed: got=%v want=%v", family, actual[family], want)
