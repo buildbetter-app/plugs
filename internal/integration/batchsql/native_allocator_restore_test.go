@@ -528,6 +528,58 @@ func nativeMutatedArchive(t *testing.T, input []byte, scenario string) []byte {
 		raw = bytes.Replace(raw, []byte(`"parents":[`), []byte(`"unknown_parents":[`), 1)
 	case "digest":
 		manifest.NativeAllocatorDigest = strings.Repeat("0", 64)
+	case "priority-five":
+		data := members["records/native.ndjson"]
+		lines := bytes.Split(data, []byte{'\n'})
+		changed := false
+		var err error
+		for i, line := range lines {
+			if len(bytes.TrimSpace(line)) == 0 {
+				continue
+			}
+			var record struct {
+				Ref      model.Ref       `json:"ref"`
+				Kind     string          `json:"kind"`
+				Revision model.Revision  `json:"revision"`
+				Body     json.RawMessage `json:"body"`
+			}
+			if err := json.Unmarshal(line, &record); err != nil {
+				t.Fatal(err)
+			}
+			if record.Kind != "bead" {
+				continue
+			}
+			var body map[string]json.RawMessage
+			if err := json.Unmarshal(record.Body, &body); err != nil {
+				t.Fatal(err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(body["fields"], &fields); err != nil {
+				t.Fatal(err)
+			}
+			fields["priority"] = json.RawMessage("5")
+			body["fields"], err = json.Marshal(fields)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record.Body, err = json.Marshal(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Keep the native record identity intact. Re-encoding only kind/body
+			// would make the transport parser reject the intended field mutation
+			// before restore validation can name the offending bead.
+			lines[i], err = json.Marshal(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			changed = true
+			break
+		}
+		if !changed {
+			t.Fatal("native archive has no bead to mutate")
+		}
+		members["records/native.ndjson"] = bytes.Join(lines, []byte{'\n'})
 	default:
 		t.Fatalf("unknown negative scenario %s", scenario)
 	}
@@ -574,6 +626,45 @@ func nativeMutatedArchive(t *testing.T, input []byte, scenario string) []byte {
 		t.Fatal(err)
 	}
 	return out.Bytes()
+}
+
+func TestNativeRestoreRejectsInvalidPriorityBeforePublicationAcrossStores(t *testing.T) {
+	source := newFixture(t, "memory")
+	nativeAllocatorSource(t, source)
+	data, _, err := restore.Dump(source.ctx, source.store, "head")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutated := nativeMutatedArchive(t, data, "priority-five")
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			target := newFixture(t, engine)
+			before := childAllocatorDurableState(t, target)
+			empty := observedAllocatorSnapshot(t, target, nil)
+			wrapped := &nativeAllocatorFaultStore{Store: target.store}
+			manager := nativeManager(t, target, wrapped)
+			status, hash := nativeUpload(t, target, manager, mutated)
+			status, err := manager.Finish(target.ctx, status.RestoreID, hash, batchPrincipal, nativeFinishMeta(), nativeTestPresence)
+			requireCode(t, err, "restore_violation")
+			var typed *model.Error
+			if !errors.As(err, &typed) || !strings.Contains(typed.Data.Hint, "native record bead/") || !strings.Contains(typed.Data.Hint, "P0 through P4") {
+				t.Fatalf("invalid priority refusal did not name the bead: %+v %v", typed, err)
+			}
+			if status.State != "failed" || wrapped.writes != 0 {
+				t.Fatalf("invalid native field reached publication: %+v writes=%d", status, wrapped.writes)
+			}
+			requireSameState(t, before, childAllocatorDurableState(t, target))
+			requireAllocatorSnapshotBytes(t, empty, observedAllocatorSnapshot(t, target, nil))
+			if target.receipt(t, nativeFinishMeta()) != nil || len(nativeAllocatorDerivedRows(t, target)) != 0 {
+				t.Fatal("invalid native field published receipt or derived state")
+			}
+			if engine != "memory" {
+				target.reopen(t)
+				requireSameState(t, before, childAllocatorDurableState(t, target))
+				requireAllocatorSnapshotBytes(t, empty, observedAllocatorSnapshot(t, target, nil))
+			}
+		})
+	}
 }
 
 func TestNativeAllocatorArchiveRefusalsPublishNothingAcrossStores(t *testing.T) {
