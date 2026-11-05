@@ -266,7 +266,7 @@ func projectHistoryArchive(t *testing.T, prefix string, ordinal int) []byte {
 	}
 	rawDebug, _ := json.Marshal(debugBead)
 	frameDebug, _ := json.Marshal(debugFrameBead)
-	t.Logf("fixture %s bead_equal=%t bead_sha=%s frame_sha=%s raw_source_id=%v frame_source_id=%v raw_project=%s frame_project=%s", prefix, bytes.Equal(rawDebug, frameDebug), hashBytes(rawDebug), hashBytes(frameDebug), debugBead.Source.Fields["id"], debugFrameBead.Source.Fields["id"], debugBead.Project, debugFrameBead.Project)
+	t.Logf("fixture %s bead_equal=%t bead_sha=%s frame_sha=%s raw_source_id=%v frame_source_id=%v raw_project=%s frame_project=%s final_frame_records=%d", prefix, bytes.Equal(rawDebug, frameDebug), hashBytes(rawDebug), hashBytes(frameDebug), debugBead.Source.Fields["id"], debugFrameBead.Source.Fields["id"], debugBead.Project, debugFrameBead.Project, len(debugHistory.Range.Frames[len(debugHistory.Range.Frames)-1].Records))
 	return writeTarMembers(t, members)
 }
 
