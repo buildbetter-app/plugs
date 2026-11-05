@@ -36,6 +36,10 @@ func (w *keyPublicationWork) ExecContext(ctx context.Context, query string, args
 	return nil, errors.New("key publication bypassed the prepared statement path")
 }
 
+func (w *keyPublicationWork) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	return w.conn.QueryRowContext(ctx, query, args...)
+}
+
 func (w *keyPublicationWork) prepareKeyPublication(ctx context.Context, query string) (keyPublicationStatement, error) {
 	w.prepareAttempts++
 	if w.prepareAttempts == w.failPrepareAt {

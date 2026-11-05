@@ -28,6 +28,15 @@ type selectionPublicationExecutor interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
+type selectionSourceHistoryProber interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+const selectionDerivedSourceHistoryEmptySQL = `SELECT NOT EXISTS(
+	SELECT 1 FROM selection_source_history INDEXED BY selection_source_history_current
+	WHERE incarnation=? AND branch=? AND end_revision IS NULL
+	AND source_key >= '3:' AND source_key < '4:')`
+
 func selectionBeadCloseSQL(count int) string {
 	return `UPDATE selection_bead_history INDEXED BY selection_bead_current_derived SET end_revision=?
 		WHERE incarnation=? AND branch=? AND end_revision IS NULL AND derived_key IN (` +
@@ -136,15 +145,30 @@ func (t *transaction) publishSelectionSourceHistoryWithProof(ctx context.Context
 	// Prepare at each arm's first execution on the held connection. Full
 	// batches reuse their handles; exact-arity tails retain separate cleanup.
 	var closeStatement, insertStatement keyPublicationStatement
+	derivedProbeChecked := false
 	for start := 0; start < len(observations); start += selectionSourceHistoryBatch {
-		// The Ready bootstrap proof was made on this same fenced connection
-		// before any publication writes. Once record batches are past, derived
-		// keys have no thin intervals to close in an entirely empty history.
 		if sourceHistoryEmpty && start >= recordCount {
-			if err := ctx.Err(); err != nil {
-				return err
+			if !derivedProbeChecked {
+				// Record INSERT triggers ran after the initial virgin proof.
+				// A native derived interval they created must retain the normal
+				// close and its error precedence. Probe the current partial index
+				// once, on the same executor connection, before omitting work.
+				if probe, ok := c.(selectionSourceHistoryProber); ok {
+					err = probe.QueryRowContext(ctx, selectionDerivedSourceHistoryEmptySQL, incarnation, revKey(0)).Scan(&sourceHistoryEmpty)
+					if err != nil {
+						return err
+					}
+				} else {
+					sourceHistoryEmpty = false
+				}
+				derivedProbeChecked = true
 			}
-			continue
+			if sourceHistoryEmpty {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				continue
+			}
 		}
 		end := min(start+selectionSourceHistoryBatch, len(observations))
 		batch := observations[start:end]

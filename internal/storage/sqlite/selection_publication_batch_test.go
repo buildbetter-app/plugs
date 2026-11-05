@@ -498,6 +498,106 @@ func TestSelectionSourceHistoryVirginProofKeepsRecordCloses(t *testing.T) {
 	}
 }
 
+func TestSelectionSourceHistoryRecordTriggerInvalidatesVirginCloseProof(t *testing.T) {
+	for _, test := range []struct {
+		name, start string
+		refuse      bool
+	}{
+		{name: "closes_triggered_derived_interval", start: revKey(0)},
+		{name: "retains_native_check_refusal", start: revKey(1), refuse: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			s := selectionStore(t).(*Store)
+			t.Cleanup(func() { _ = s.Close() })
+			meta, err := s.Meta(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tx := &transaction{records: make(map[string]*driver.Record), derived: make(map[string]driver.LockState)}
+			for i := 0; i < selectionSourceHistoryBatch; i++ {
+				id := fmt.Sprintf("0:trigger-record-%03d", i)
+				tx.records[id] = &driver.Record{Body: []byte(`{"record":true}`)}
+			}
+			key := driver.DerivedRowKey{Table: driver.DerivedReadyState, Key: "trigger-derived"}
+			lock := driver.LockKey{Kind: driver.LockDerived, Derived: &key}
+			derivedID := keyID(lock)
+			tx.derived[derivedID] = driver.LockState{Key: lock}
+			// The initial empty proof is true. One actual record INSERT then
+			// creates the touched derived interval before the next batch closes.
+			trigger := fmt.Sprintf(`CREATE TRIGGER selection_source_history_record_insert
+				AFTER INSERT ON selection_source_history WHEN NEW.source_key='0:trigger-record-000'
+				BEGIN INSERT INTO selection_source_history(
+				incarnation,branch,source_key,start_revision,source_revision,source_present,source_digest)
+				VALUES(NEW.incarnation,NEW.branch,'%s','%s','%s',1,'trigger'); END`,
+				derivedID, test.start, test.start)
+			if _, err := s.db.ExecContext(ctx, trigger); err != nil {
+				t.Fatal(err)
+			}
+			plan, err := s.db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+selectionDerivedSourceHistoryEmptySQL, meta.Incarnation, revKey(0))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var details []string
+			for plan.Next() {
+				var node, parent, unused int
+				var detail string
+				if err := plan.Scan(&node, &parent, &unused, &detail); err != nil {
+					_ = plan.Close()
+					t.Fatal(err)
+				}
+				details = append(details, detail)
+			}
+			if err := plan.Err(); err != nil {
+				_ = plan.Close()
+				t.Fatal(err)
+			}
+			_ = plan.Close()
+			joined := strings.Join(details, "\n")
+			if !strings.Contains(joined, "SEARCH selection_source_history USING INDEX selection_source_history_current") || strings.Contains(joined, "SCAN selection_source_history") {
+				t.Fatalf("derived close proof lost bounded index lookup: %s", joined)
+			}
+			var work keyPublicationWork
+			err = s.immediate(ctx, nil, func(c *sql.Conn) error {
+				var empty bool
+				if err := c.QueryRowContext(ctx, `SELECT NOT EXISTS(SELECT 1 FROM selection_source_history)`).Scan(&empty); err != nil {
+					return err
+				}
+				if !empty {
+					return errors.New("fixture source history is not empty")
+				}
+				work = keyPublicationWork{selectionCloseWork: selectionCloseWork{conn: c}}
+				return tx.publishSelectionSourceHistoryWithProof(ctx, &work, meta.Incarnation, revKey(1), empty)
+			})
+			if test.refuse {
+				if err == nil || !strings.Contains(err.Error(), "CHECK constraint failed") {
+					t.Fatalf("native derived close refusal hidden: %v", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			checkKeyPublicationPrepared(t, work, 3)
+			var total int
+			if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM selection_source_history`).Scan(&total); err != nil {
+				t.Fatal(err)
+			}
+			if test.refuse {
+				if total != 0 || work.statements != 2 {
+					t.Fatalf("native refusal rollback: rows=%d executed=%d", total, work.statements)
+				}
+				return
+			}
+			var end sql.NullString
+			if err := s.db.QueryRowContext(ctx, `SELECT end_revision FROM selection_source_history WHERE source_key=?`, derivedID).Scan(&end); err != nil {
+				t.Fatal(err)
+			}
+			if total != selectionSourceHistoryBatch+1 || !end.Valid || end.String != revKey(1) || work.statements != 3 {
+				t.Fatalf("triggered derived interval not closed: rows=%d end=%+v executed=%d", total, end, work.statements)
+			}
+		})
+	}
+}
+
 type selectionSourceHistoryImage struct {
 	incarnation, branch, key, start, revision, digest string
 	end                                               sql.NullString
