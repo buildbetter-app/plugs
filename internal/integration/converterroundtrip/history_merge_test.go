@@ -208,7 +208,7 @@ func projectHistoryArchive(t *testing.T, prefix string, ordinal int) []byte {
 	// identity; unchanged migration rows retain their exact shared identity and
 	// are deduplicated by MergeArchives.
 	if raw, ok := members["records/beads-archive.ndjson"]; ok {
-		var output bytes.Buffer
+		rows := make([]dumpformat.Record, 0)
 		for _, line := range bytes.Split(raw, []byte{'\n'}) {
 			line = bytes.TrimSpace(line)
 			if len(line) == 0 {
@@ -223,6 +223,13 @@ func projectHistoryArchive(t *testing.T, prefix string, ordinal int) []byte {
 				t.Fatalf("marshal archive source fields: %v", err)
 			}
 			record.ID = record.Source.Table + "/" + hashBytes(append(fields, '\n'))
+			rows = append(rows, record)
+		}
+		sort.Slice(rows, func(i, j int) bool {
+			return rows[i].ID < rows[j].ID
+		})
+		var output bytes.Buffer
+		for _, record := range rows {
 			encoded, err := json.Marshal(record)
 			if err != nil {
 				t.Fatalf("marshal archive record: %v", err)
