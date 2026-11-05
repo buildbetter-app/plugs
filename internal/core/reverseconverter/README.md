@@ -101,7 +101,8 @@ bounded to `SourcePlaneMaxListEntries` keys and `SourcePlaneMaxPlanBytes` total
 payload bytes and refuses an oversized census rather than truncating it.
 
 The live report's `core_kind_losses` counts the `instance_config` and
-`restore-archive` control records. `namespace_losses` lists every physical
+`restore-archive` control records and report-only `beads-archive` provenance.
+`namespace_losses` lists every physical
 namespace and value key, including namespaces outside the admitted import
 plan. Each stored workflow family (`runs`, `items`, `receipts`, `audit`, and
 `source.*`) has a record count, field-instance count and disposition. Actual

@@ -64,7 +64,7 @@ func rollbackAssertLossAccounting(t *testing.T, report reverseconverter.Report, 
 	t.Helper()
 	expectedCore := map[string][2]int{}
 	for _, row := range core {
-		if row.Kind != "instance_config" && row.Kind != "restore-archive" {
+		if row.Kind != "instance_config" && row.Kind != "restore-archive" && row.Kind != "beads-archive" {
 			continue
 		}
 		count := expectedCore[row.Kind]
@@ -76,7 +76,11 @@ func rollbackAssertLossAccounting(t *testing.T, report reverseconverter.Report, 
 		t.Fatal("incomplete product core-kind inventory", report.CoreKindLosses, expectedCore)
 	}
 	for _, loss := range report.CoreKindLosses {
-		if expectedCore[loss.Kind] != [2]int{loss.RecordCount, loss.FieldInstances} || loss.Disposition != "retained_control_state" || loss.Family != "" {
+		disposition := "retained_control_state"
+		if loss.Kind == "beads-archive" {
+			disposition = "retained_source_provenance"
+		}
+		if expectedCore[loss.Kind] != [2]int{loss.RecordCount, loss.FieldInstances} || loss.Disposition != disposition || loss.Family != "" {
 			t.Fatal("incorrect product core-kind accounting", loss, expectedCore)
 		}
 		delete(expectedCore, loss.Kind)
@@ -212,7 +216,7 @@ func rollbackAssertLossAccounting(t *testing.T, report reverseconverter.Report, 
 			t.Fatal("wrapper and logical row units were conflated", actual, wrapperFields)
 		}
 	}
-	wantKinds := []string{"instance_config", "restore-archive"}
+	wantKinds := []string{"beads-archive", "instance_config", "restore-archive"}
 	if len(physical) > 1 {
 		wantKinds = append(wantKinds, "workflow.item")
 	}
@@ -294,6 +298,7 @@ func TestJointSourceReverseReportsNamespaceLossesAcrossThreeStores(t *testing.T)
 				}
 				rollbackAssertLossAccounting(t, converted.Result.Report, physical, page.Items, ephemeral)
 				wantCore := []reverseconverter.StateLoss{
+					{Kind: "beads-archive", RecordCount: 108, FieldInstances: 1067, Disposition: "retained_source_provenance"},
 					{Kind: "instance_config", RecordCount: 4, FieldInstances: 119, Disposition: "retained_control_state"},
 					{Kind: "restore-archive", RecordCount: 1, FieldInstances: 20, Disposition: "retained_control_state"},
 				}

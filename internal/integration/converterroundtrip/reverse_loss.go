@@ -12,7 +12,7 @@ import (
 func reverseLossCensus(r driver.CheckpointInventory, live map[string]driver.Record, plan *driver.SourcePlanePlanV1, options reverseconverter.Options) ([]reverseconverter.StateLoss, []reverseconverter.NamespaceLoss, error) {
 	core := map[string]reverseconverter.StateLoss{}
 	for _, row := range live {
-		if row.Kind != "instance_config" && row.Kind != "restore-archive" {
+		if row.Kind != "instance_config" && row.Kind != "restore-archive" && row.Kind != "beads-archive" {
 			continue // Other unmapped core records already refuse projection.
 		}
 		var body map[string]any
@@ -21,6 +21,9 @@ func reverseLossCensus(r driver.CheckpointInventory, live map[string]driver.Reco
 		}
 		loss := core[row.Kind]
 		loss.Kind, loss.Disposition = row.Kind, "retained_control_state"
+		if row.Kind == "beads-archive" {
+			loss.Disposition = "retained_source_provenance"
+		}
 		loss.RecordCount++
 		loss.FieldInstances += reverseconverter.CountFieldInstances(body)
 		core[row.Kind] = loss

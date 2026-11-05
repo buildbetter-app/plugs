@@ -119,6 +119,9 @@ func (s *Store) readCheckpointSnapshot(ctx context.Context, view driver.View, ke
 func (r *sourcePlaneSnapshot) CheckpointKeys() ([]string, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	if r.state == nil {
+		return nil, driver.ErrTxClosed
+	}
 	if err := r.check(context.Background()); err != nil {
 		return nil, err
 	}
