@@ -35,7 +35,9 @@ const (
 	b13ProducerTree = "930405e863284a3955cbd35e73a6097b606b91a5"
 	b13AcceptedRun  = "41800330346"
 	b13ManifestSHA  = "ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a"
-	b13Control      = "2d2164ba3d8e456c9aba15fbeb8cae4edc755997"
+	b13SourceBase   = "7a43c3c625a5c08d3a4364a321cd47d6357ef30e"
+	b13BaseTree     = "be93a595dc4c44ef4d94d2333060788fd344dca0"
+	b13BaseParent   = "5812dd80f0c6e4d1e9136604941c7f54eef3238a"
 	b13ModuleSHA    = "744bc17b41d8afec00b4e339540dea0d68e6677b9dcca5daef2e9e2725b774c2"
 )
 
@@ -70,8 +72,8 @@ type b13Physical struct {
 // The native CLI is the source of these observations. No authored archive or
 // substituted source record enters the public replay path.
 func TestB13NativeMemoryRecording(t *testing.T) {
-	if !*b13Required || *b13Recording != "recording1" {
-		t.Fatal("B13 requires an explicit recording1 route; no implicit/second recording is admitted")
+	if !*b13Required || (*b13Recording != "recording1" && *b13Recording != "recording2") {
+		t.Fatal("B13 requires one of the two explicit, separately retained recording identities")
 	}
 	output := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")
 	if output == "" || !filepath.IsAbs(output) {
@@ -81,7 +83,8 @@ func TestB13NativeMemoryRecording(t *testing.T) {
 	if err := os.Mkdir(root, 0700); err != nil {
 		t.Fatal(err)
 	}
-	b13Save(t, root, "claim.json", map[string]any{"schema": "plug-b13-native-claim/1", "recording": *b13Recording, "pid": os.Getpid(), "created_utc": time.Now().UTC(), "control": b13Control, "producer": b13Producer})
+	source := b13ProductSource(t, root)
+	b13Save(t, root, "claim.json", map[string]any{"schema": "plug-b13-native-claim/1", "recording": *b13Recording, "pid": os.Getpid(), "created_utc": time.Now().UTC(), "source": source, "producer": b13Producer})
 	binary := b13Admit(t, root)
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Minute)
 	defer cancel()
@@ -200,7 +203,50 @@ func TestB13NativeMemoryRecording(t *testing.T) {
 	if err := server.Stop(); err != nil {
 		t.Fatal(err)
 	}
-	b13Save(t, root, "recording-complete.json", map[string]any{"schema": "plug-b13-native/1", "status": "RECORDING_COMPLETE_REQUIRES_INDEPENDENT_REVIEW", "producer": b13Producer, "control": b13Control, "recording": *b13Recording, "archive_sha256": b13SHA(archiveBytes), "FullS1": "0/28", "NativeAdmission": "None"})
+	b13Save(t, root, "recording-complete.json", map[string]any{"schema": "plug-b13-native/1", "status": "RECORDING_COMPLETE_REQUIRES_INDEPENDENT_REVIEW", "producer": b13Producer, "source": source, "recording": *b13Recording, "archive_sha256": b13SHA(archiveBytes), "FullS1": "0/28", "NativeAdmission": "ADOPTED R" + b13AcceptedRun})
+}
+
+// The runner supplies this checkout path. Record the real commit object and
+// ordered parents instead of attributing a new recording to an old control ref.
+func b13ProductSource(t *testing.T, root string) map[string]any {
+	t.Helper()
+	sourceRoot := os.Getenv("PLUG_SOURCE_MODULE_ROOT")
+	if !filepath.IsAbs(sourceRoot) {
+		t.Fatal("B13 requires the runner's actual source checkout")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	n := &b13Native{t: t, ctx: ctx, root: filepath.Join(root, "product-source"), workspace: sourceRoot, env: []string{"PATH=/usr/bin:/bin", "LANG=C.UTF-8", "TZ=UTC", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_OPTIONAL_LOCKS=0"}}
+	git := func(label string, args ...string) []byte {
+		return n.must(label, append([]string{"git"}, args...))
+	}
+	head := strings.TrimSpace(string(git("head", "rev-parse", "--verify", "HEAD")))
+	tree := strings.TrimSpace(string(git("tree", "rev-parse", "--verify", "HEAD^{tree}")))
+	lineage := strings.Fields(string(git("parents", "rev-list", "--parents", "-n", "1", "HEAD")))
+	raw := git("commit", "cat-file", "commit", head)
+	git("base-ancestor", "merge-base", "--is-ancestor", b13SourceBase, head)
+	baseTree := strings.TrimSpace(string(git("base-tree", "rev-parse", b13SourceBase+"^{tree}")))
+	baseLineage := strings.Fields(string(git("base-parent", "rev-list", "--parents", "-n", "1", b13SourceBase)))
+	if len(head) != 40 || len(tree) != 40 || len(lineage) < 2 || lineage[0] != head || baseTree != b13BaseTree || !reflect.DeepEqual(baseLineage, []string{b13SourceBase, b13BaseParent}) {
+		t.Fatal("actual product source or pinned base identity differs")
+	}
+	headers := strings.SplitN(string(raw), "\n\n", 2)[0]
+	var objectTree string
+	var objectParents []string
+	for _, line := range strings.Split(headers, "\n") {
+		if strings.HasPrefix(line, "tree ") {
+			objectTree = strings.TrimPrefix(line, "tree ")
+		}
+		if strings.HasPrefix(line, "parent ") {
+			objectParents = append(objectParents, strings.TrimPrefix(line, "parent "))
+		}
+	}
+	if objectTree != tree || !reflect.DeepEqual(objectParents, lineage[1:]) {
+		t.Fatal("actual raw commit object and ordered lineage disagree")
+	}
+	source := map[string]any{"commit": head, "tree": tree, "ordered_parents": lineage[1:], "raw_commit_sha256": b13SHA(raw), "base_commit": b13SourceBase, "base_tree": b13BaseTree, "base_parent": b13BaseParent}
+	b13Save(t, root, "product-source.json", source)
+	return source
 }
 
 func b13Admit(t *testing.T, root string) string {

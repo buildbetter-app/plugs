@@ -26,17 +26,17 @@ includes that field. The recorder neither strips it nor enables another
 envelope after ChildEnv.
 
 The intended manual target is `//spec/s1-b13-native:recording`. It refuses an
-implicit run or a recording identity other than explicitly supplied
-`-b13-native-recording -b13-native-recording-id=recording1`, and claims an
-exclusive retained output directory. These flags and that in-test claim do not
-authorize execution. Any future invocation must have a separate existing finite
-route that binds the actual integrated commit/tree/parents, BUILD and complete
-manifest, current wrapper/private allowed diff, fresh atomic outer claim,
-immediate fixed-2d guard, helper702, own same-run accepted418 preparation, all
-four receipt-equal exports, exact argv and all seven required settings under
-`S1-native-R418-multicard-author-contract-20261104T125642Z.json`. Source work has
-no grant for preparation, API, collection, local execution or recording2.
-All tests/builds remain RunsOn-only when separately authorized.
+implicit run or an identity outside the explicitly supplied
+`-b13-native-recording -b13-native-recording-id=recording1` or `recording2`,
+and claims a separate retained output directory for each. The pinned-main
+paired-recording mandate authorizes these two fresh RunsOn recordings. Each
+invocation must use its own same-run accepted R418 preparation and all four
+matching exports, the complete unfiltered target and all seven required
+settings. No old fixed-2d branch, receipt or prepared path is adopted. The
+trusted main workflow selects the committed preparer; this package changes no
+workflow or helper pin. Actual product commit, tree, ordered parents and raw
+commit bytes/hash are retained alongside the pinned base and verified ancestry.
+Every build, test, preparation and native process remains RunsOn-only.
 
 ## Native observations
 
