@@ -1,11 +1,13 @@
 package postgresacceptance
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -135,6 +137,154 @@ func b26MixedParentCode(t *testing.T, err error, want model.ErrorCode) {
 	var actual *model.Error
 	if !errors.As(err, &actual) || actual.Data.Code != want {
 		t.Fatalf("expected %s, got %v", want, err)
+	}
+}
+
+func TestB26PublicMoveMetadataPrecisionSQLite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "move-metadata-precision.db")
+	open := func() driver.Store {
+		store, err := (sqlite.Driver{}).Open(context.Background(), driver.Config{DSN: path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return store
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	b26PublicMoveMetadataPrecision(t, open, db, "sqlite")
+}
+
+func TestB26PublicMoveMetadataPrecisionPostgreSQL(t *testing.T) {
+	dsn := freshDatabase(t)
+	open := func() driver.Store { return openStore(t, dsn) }
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	b26PublicMoveMetadataPrecision(t, open, db, "postgres")
+}
+
+// Exercise the public move and actual persisted checkpoint/receipt, keeping an
+// independent JSON-number oracle rather than decoding through float64 again.
+func b26PublicMoveMetadataPrecision(t *testing.T, open func() driver.Store, db *sql.DB, engine string) {
+	h := b26Host(t, open())
+	canonical := func(raw json.RawMessage) []byte {
+		t.Helper()
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.UseNumber()
+		var value any
+		if err := decoder.Decode(&value); err != nil {
+			t.Fatal(err)
+		}
+		if err := decoder.Decode(new(any)); err != io.EOF {
+			t.Fatalf("unexpected trailing JSON: %v", err)
+		}
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return encoded
+	}
+	const metadataKey = "user.precision"
+	value := json.RawMessage(`{"large":9007199254740993,"negative":-9007199254740993,"nested":[null,{"largest":9223372036854775807,"text":"9007199254740993"}],"zero":0}`)
+	want := canonical(json.RawMessage(`{"` + metadataKey + `":` + string(value) + `}`))
+	assertMetadata := func(raw json.RawMessage) {
+		t.Helper()
+		if got := canonical(raw); !bytes.Equal(got, want) {
+			t.Fatalf("public move changed complete metadata: want=%s got=%s", want, got)
+		}
+	}
+	assertGet := func(id string) {
+		t.Helper()
+		var result struct {
+			Bead struct {
+				Metadata json.RawMessage `json:"metadata"`
+			} `json:"bead"`
+		}
+		if err := json.Unmarshal(b26OK(t, h.call(t, "bead.get", map[string]any{"id": ref(id)}, "")), &result); err != nil {
+			t.Fatal(err)
+		}
+		assertMetadata(result.Bead.Metadata)
+	}
+	source := h.create(t, "precision-source")
+	set := model.Op{Kind: model.OpSetMeta, SetMeta: &model.SetMetaOp{Target: ref(source), Key: metadataKey, Value: value}}
+	b26OK(t, h.call(t, "tx.apply", map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{set}}}, "precision-source-metadata"))
+	assertGet(source)
+	params := map[string]any{"source": ref(source), "template": "precision", "label": "precision-item"}
+	first := b26OK(t, h.call(t, "x.workflow.run.demote", params, "precision-demote"))
+	var demoted struct {
+		Item struct {
+			ID       string          `json:"id"`
+			Metadata json.RawMessage `json:"metadata"`
+		} `json:"item"`
+	}
+	if err := json.Unmarshal(first, &demoted); err != nil || demoted.Item.ID == "" {
+		t.Fatalf("demotion omitted its item: %s %v", first, err)
+	}
+	assertMetadata(demoted.Item.Metadata)
+	assertGet(demoted.Item.ID)
+	b26NoVersion(t, h.store, demoted.Item.ID)
+	checkpoint := workflowCheckpoint(t, h.store.(driver.CheckpointStore))
+	var stored struct {
+		Metadata json.RawMessage `json:"metadata"`
+	}
+	if err := json.Unmarshal(checkpoint.Items[demoted.Item.ID], &stored); err != nil {
+		t.Fatal(err)
+	}
+	assertMetadata(stored.Metadata)
+	var actualReceipt json.RawMessage
+	for _, receipt := range checkpoint.Receipts {
+		if receipt.Method == "x.workflow.run.demote" && receipt.Key == key("precision-demote") {
+			if actualReceipt != nil {
+				t.Fatal("duplicate demotion receipt")
+			}
+			actualReceipt = receipt.Result
+		}
+	}
+	if len(actualReceipt) == 0 || !bytes.Equal(canonical(first), canonical(actualReceipt)) {
+		t.Fatalf("first result differs from actual stored receipt: first=%s receipt=%s", first, actualReceipt)
+	}
+	h.server.Close()
+	if err := h.lease.Release(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	h = b26Host(t, open())
+	before := b26CompleteSQL(t, db, engine)
+	assertGet(demoted.Item.ID)
+	replay := b26OK(t, h.call(t, "x.workflow.run.demote", params, "precision-demote"))
+	if !bytes.Equal(canonical(replay), canonical(actualReceipt)) || !reflect.DeepEqual(before, b26CompleteSQL(t, db, engine)) {
+		t.Fatal("reopen/read/replay changed the complete stored result or SQL state")
+	}
+	changed := map[string]any{"source": ref(source), "template": "different-template", "label": "precision-item"}
+	b26SQLRefusal(t, h, db, engine, "x.workflow.run.demote", changed, "precision-demote", "idempotency_key_reused")
+	target := h.create(t, "precision-target")
+	promote := map[string]any{"item": ref(demoted.Item.ID), "target": ref(target)}
+	promoted := b26OK(t, h.call(t, "x.workflow.run.promote", promote, "precision-promote"))
+	assertGet(target)
+	b26NoVersion(t, h.store, demoted.Item.ID)
+	actualReceipt = nil
+	for _, receipt := range workflowCheckpoint(t, h.store.(driver.CheckpointStore)).Receipts {
+		if receipt.Method == "x.workflow.run.promote" && receipt.Key == key("precision-promote") {
+			if actualReceipt != nil {
+				t.Fatal("duplicate promotion receipt")
+			}
+			actualReceipt = receipt.Result
+		}
+	}
+	if len(actualReceipt) == 0 || !bytes.Equal(canonical(promoted), canonical(actualReceipt)) {
+		t.Fatalf("first promotion differs from actual stored receipt: first=%s receipt=%s", promoted, actualReceipt)
+	}
+	before = b26CompleteSQL(t, db, engine)
+	replay = b26OK(t, h.call(t, "x.workflow.run.promote", promote, "precision-promote"))
+	if !bytes.Equal(canonical(replay), canonical(actualReceipt)) || !reflect.DeepEqual(before, b26CompleteSQL(t, db, engine)) {
+		t.Fatal("promotion replay changed the complete stored result or SQL state")
 	}
 }
 
