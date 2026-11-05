@@ -18,6 +18,33 @@ func (s *Service) workflowBlockerResolver(ctx context.Context, by model.Principa
 	return &workflowCoreResolver{service: s, principal: by}
 }
 
+// workflowBlockerResolverForGraph binds workflow durable-target checks to the
+// exact core reader used to build a combined ready page. The provider may call
+// this resolver while holding its checkpoint read lock; it must never open a
+// second core reader for the same page.
+func (s *Service) workflowBlockerResolverForGraph(ctx context.Context, by model.PrincipalRef, r driver.Reader, graph map[string]storedBead) (*workflowCoreResolver, error) {
+	view := r.Snapshot()
+	if view.At == nil || view.Incarnation == "" {
+		return nil, failure("internal_error", "ready reader has no snapshot binding")
+	}
+	meta, err := s.store.Meta(ctx)
+	if err != nil {
+		return nil, mapped(err)
+	}
+	if meta.Incarnation != view.Incarnation {
+		return nil, mapped(driver.ErrIncarnationChanged{From: view.Incarnation, To: meta.Incarnation})
+	}
+	if meta.Head.String() != view.At.String() {
+		return nil, failure("cursor_invalid", "ready source changed while collecting candidates; restart paging")
+	}
+	return &workflowCoreResolver{
+		service:   s,
+		principal: by,
+		graph:     graph,
+		head:      driver.CoreSnapshotExpectation{StoreID: meta.StoreID, Incarnation: view.Incarnation, Head: *view.At},
+	}, nil
+}
+
 type workflowCoreResolver struct {
 	service   *Service
 	principal model.PrincipalRef

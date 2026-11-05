@@ -7,8 +7,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -259,9 +261,17 @@ func (s *Service) readyItems(ctx context.Context, by model.PrincipalRef, req Rea
 			workflowBlocked[id] = blocked
 		}
 	}
+	return s.readyItemsFromGraph(ctx, by, req, r, graph, workflowBlocked, s.now().UTC())
+}
+
+// readyItemsFromGraph evaluates durable membership and ordering against the
+// supplied core reader and provider blocker facts. Combined reads use this
+// path after collecting both facts from one provider checkpoint, so no later
+// eligibility call can silently observe a different plane.
+func (s *Service) readyItemsFromGraph(ctx context.Context, by model.PrincipalRef, req ReadyRequest, r driver.Reader, graph map[string]storedBead, workflowBlocked map[string]bool, now time.Time) ([]Bead, map[string]readyOrderKey, error) {
+	graphIDs := sortedIDs(graph)
 	// Membership is always evaluated against the complete current graph. P74
 	// applies only to the order of this exact set, before any page is cut.
-	now := s.now().UTC()
 	eligible := map[string]storedBead{}
 	for _, id := range graphIDs {
 		row := graph[id]
@@ -391,6 +401,202 @@ func (s *Service) readyPage(ctx context.Context, by model.PrincipalRef, req Read
 	return page, err
 }
 
+// readyCandidateItems returns the complete durable candidate order before a
+// page is cut. Combined durable/workflow reads use this same admission and
+// ordering path so a durable continuation cannot bypass the workflow plane.
+func (s *Service) readyCandidateItems(ctx context.Context, by model.PrincipalRef, req ReadyRequest, restartOnRevision bool) ([]Bead, map[string]readyOrderKey, AsOf, error) {
+	combined, err := s.readyCombinedSnapshot(ctx, by, req, restartOnRevision)
+	if err != nil {
+		return nil, nil, AsOf{}, err
+	}
+	return combined.durable, combined.durableKeys, combined.asOf, nil
+}
+
+type readyCombinedSnapshot struct {
+	durable     []Bead
+	durableKeys map[string]readyOrderKey
+	workflow    workflowplugin.ReadySnapshot
+	asOf        AsOf
+	now         time.Time
+}
+
+// readyCombinedSnapshot collects both planes while the core reader remains
+// pinned and the provider supplies all of its eligibility facts from one
+// checkpoint image. The returned bindings are the only inputs used to cut an
+// aggregate page.
+func (s *Service) readyCombinedSnapshot(ctx context.Context, by model.PrincipalRef, req ReadyRequest, restartOnRevision bool) (readyCombinedSnapshot, error) {
+	r, err := s.reader(ctx, by, nil)
+	if err != nil {
+		return readyCombinedSnapshot{}, err
+	}
+	defer r.Close()
+	graph, err := scanBeads(ctx, r)
+	if err != nil {
+		return readyCombinedSnapshot{}, err
+	}
+	view := r.Snapshot()
+	if view.At == nil {
+		return readyCombinedSnapshot{}, failure("internal_error", "ready reader has no snapshot revision")
+	}
+	resolver, err := s.workflowBlockerResolverForGraph(ctx, by, r, graph)
+	if err != nil {
+		return readyCombinedSnapshot{}, err
+	}
+	types := []string(nil)
+	if req.Filter != nil {
+		types = req.Filter.Types
+	}
+	now := s.now().UTC()
+	includeEphemeral := true
+	if req.Filter != nil && req.Filter.IncludeEphemeral != nil {
+		includeEphemeral = *req.Filter.IncludeEphemeral
+	}
+	meta := workflowMeta(by, "bead.ready", req.Project, req.Agent)
+	provider, err := s.workflow.ReadySnapshotWithResolverAndCore(ctx, by, req.Project, types, meta, includeEphemeral, sortedIDs(graph), resolver)
+	if err != nil {
+		return readyCombinedSnapshot{}, err
+	}
+	if provider.OrderAt.IsZero() {
+		return readyCombinedSnapshot{}, failure("internal_error", "workflow ready snapshot has no ordering clock")
+	}
+	// The provider owns claim expiry and its run creation clock. Use that same
+	// observed instant for durable rank classification so a controlled provider
+	// clock cannot make live claims appear expired or split the two order planes.
+	now = provider.OrderAt.UTC()
+	current, err := s.store.Meta(ctx)
+	if err != nil {
+		return readyCombinedSnapshot{}, mapped(err)
+	}
+	if current.Incarnation != view.Incarnation {
+		return readyCombinedSnapshot{}, mapped(driver.ErrIncarnationChanged{From: view.Incarnation, To: current.Incarnation})
+	}
+	if current.Head.String() != view.At.String() {
+		return readyCombinedSnapshot{}, failure("cursor_invalid", "ready source changed while collecting candidates; restart paging")
+	}
+	workflowBlocked := make(map[string]bool, len(graph))
+	lookup := func(id string) (workflowplugin.OrdinaryParentFact, error) { return provider.OrdinaryParents[id], nil }
+	for _, id := range sortedIDs(graph) {
+		blocked, err := resolver.mixedParentBlocked(ctx, model.RefByID(id, model.Natural64(0)), lookup)
+		if err != nil {
+			return readyCombinedSnapshot{}, err
+		}
+		workflowBlocked[id] = blocked
+	}
+	durable, keys, err := s.readyItemsFromGraph(ctx, by, req, r, graph, workflowBlocked, now)
+	if err != nil {
+		return readyCombinedSnapshot{}, err
+	}
+	if includeEphemeral {
+		filtered := durable[:0]
+		for _, item := range durable {
+			if _, collides := provider.ActiveIDs[item.ID]; collides {
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		durable = filtered
+	}
+	if err := s.admit(ctx, by); err != nil {
+		return readyCombinedSnapshot{}, err
+	}
+	return readyCombinedSnapshot{durable: durable, durableKeys: keys, workflow: provider, asOf: AsOf{Revision: *view.At, Incarnation: view.Incarnation}, now: now}, nil
+}
+
+// combinedReadyEntry is the service-owned merge key for the two ready
+// planes. Durable rows retain the persisted hybrid bucket/rank key. Workflow
+// rows use the same key when they expose a creation time. Legacy workflow
+// rows without a creation field retain their priority bucket and use a zero
+// creation tie, so they can still interleave with durable rows instead of
+// becoming a second concatenated page. Their final tie is provider ID.
+type combinedReadyEntry struct {
+	item        Bead
+	key         readyOrderKey
+	knownCreate bool
+	plane       int
+}
+
+func workflowReadyCreatedAt(item workflowplugin.ItemView) (time.Time, bool) {
+	// This is provider-owned run provenance. User fields and metadata are not
+	// ordering inputs because callers may edit them or omit them entirely.
+	if !item.CreatedAt.IsZero() {
+		return item.CreatedAt.UTC(), true
+	}
+	return time.Time{}, false
+}
+
+func workflowReadyOrderKey(item workflowplugin.ItemView, now time.Time) (readyOrderKey, bool, error) {
+	bead := workflowBead(item)
+	priority, err := beadPriority(bead)
+	if err != nil {
+		return readyOrderKey{}, false, err
+	}
+	created, known := workflowReadyCreatedAt(item)
+	if !known {
+		// Every normal provider item is required to carry its run's authoritative
+		// creation instant. Falling back to a synthetic bucket would recreate the
+		// rejected second ordering plane and make the page boundary unstable.
+		return readyOrderKey{}, false, failure("internal_error", "workflow ready item has no authoritative creation time")
+	}
+	return liveReadyOrderKey(created, now, priority, item.Revision), true, nil
+}
+
+func combinedReadyItems(durable []Bead, durableKeys map[string]readyOrderKey, workflow []workflowplugin.ItemView, now time.Time) ([]Bead, map[string]readyOrderKey, error) {
+	entries := make([]combinedReadyEntry, 0, len(durable)+len(workflow))
+	keys := make(map[string]readyOrderKey, len(durable)+len(workflow))
+	for _, item := range durable {
+		key, ok := durableKeys[item.ID]
+		if !ok {
+			return nil, nil, failure("internal_error", "durable ready order is missing a candidate key")
+		}
+		entries = append(entries, combinedReadyEntry{item: item, key: key, knownCreate: true})
+		keys[item.ID] = key
+	}
+	for _, item := range workflow {
+		bead := workflowBead(item)
+		key, known, err := workflowReadyOrderKey(item, now)
+		if err != nil {
+			return nil, nil, err
+		}
+		entries = append(entries, combinedReadyEntry{item: bead, key: key, knownCreate: known, plane: 1})
+		keys[bead.ID] = key
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		a, b := entries[i], entries[j]
+		if a.key.Bucket != b.key.Bucket {
+			return a.key.Bucket < b.key.Bucket
+		}
+		if a.key.Rank != b.key.Rank {
+			return a.key.Rank < b.key.Rank
+		}
+		if a.knownCreate != b.knownCreate {
+			return a.knownCreate
+		}
+		if a.knownCreate && !a.key.CreatedAt.Equal(b.key.CreatedAt) {
+			return a.key.CreatedAt.Before(b.key.CreatedAt)
+		}
+		if a.item.ID != b.item.ID {
+			return a.item.ID < b.item.ID
+		}
+		return a.plane < b.plane
+	})
+	items := make([]Bead, len(entries))
+	for i, entry := range entries {
+		items[i] = entry.item
+	}
+	return items, keys, nil
+}
+
+func combinedReadyMembership(items []Bead) string {
+	h := sha256.New()
+	var length [8]byte
+	for _, item := range items {
+		binary.BigEndian.PutUint64(length[:], uint64(len(item.ID)))
+		_, _ = h.Write(length[:])
+		_, _ = h.Write([]byte(item.ID))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 // spreadClaimNextItems rotates equal hybrid-key groups by a stable offset.
 // It never crosses a bucket, rank or creation-time boundary. The optional
 // projection preserves the existing helper's priority-only test callers;
@@ -473,12 +679,18 @@ func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req 
 		return s.readyPage(ctx, by, req, restartOnRevision)
 	}
 	workflowPhase := req.Position != nil && req.Position.Workflow
+	if req.Position != nil && !workflowPhase && req.Position.WorkflowSnapshot == nil && req.Position.ReadyMembership != "" {
+		return BeadPage{}, failure("cursor_invalid", "aggregate ready cursor is missing its snapshot binding")
+	}
 	coreReq := req
 	if workflowPhase {
 		// Observe the current core incarnation without applying a provider
 		// offset to core content or re-emitting the first phase.
 		coreReq.Position = nil
 		coreReq.Limit = 1
+	}
+	if !workflowPhase && (req.Position == nil || req.Position.WorkflowSnapshot != nil) {
+		return s.readyCombinedPage(ctx, by, coreReq, limit, restartOnRevision)
 	}
 	page, err := s.readyPage(ctx, by, coreReq, restartOnRevision)
 	if err != nil {
@@ -550,13 +762,125 @@ func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req 
 	return page, nil
 }
 
+func (s *Service) readyCombinedPage(ctx context.Context, by model.PrincipalRef, req ReadyRequest, limit int, restartOnRevision bool) (BeadPage, error) {
+	if req.Position != nil && req.Position.AsOf.Incarnation != "" {
+		meta, err := s.store.Meta(ctx)
+		if err != nil {
+			return BeadPage{}, mapped(err)
+		}
+		if meta.Incarnation != req.Position.AsOf.Incarnation {
+			return BeadPage{}, mapped(driver.ErrIncarnationChanged{From: req.Position.AsOf.Incarnation, To: meta.Incarnation})
+		}
+	}
+	combined, err := s.readyCombinedSnapshot(ctx, by, req, restartOnRevision)
+	if err != nil {
+		return BeadPage{}, err
+	}
+	durable, durableKeys, asOf := combined.durable, combined.durableKeys, combined.asOf
+	snapshot := combined.workflow
+	binding := &WorkflowPageSnapshot{Revision: model.Revision(snapshot.Revision), ValidUntil: snapshot.ValidUntil}
+	if !binding.Valid() {
+		return BeadPage{}, failure("internal_error", "invalid workflow ready snapshot")
+	}
+	position := req.Position
+	if position != nil && (position.WorkflowSnapshot == nil || position.ReadyMembership == "") {
+		return BeadPage{}, failure("cursor_invalid", "aggregate ready cursor is missing its snapshot binding")
+	}
+	if position != nil && position.WorkflowSnapshot != nil {
+		if !position.WorkflowSnapshot.Valid() {
+			return BeadPage{}, failure("cursor_invalid", "workflow cursor is not snapshot-bound; restart paging")
+		}
+		if !position.WorkflowSnapshot.Equal(binding) {
+			if !restartOnRevision {
+				return BeadPage{}, failure("cursor_invalid", "workflow ready membership changed; restart paging")
+			}
+			position = nil
+		}
+	}
+	workflowItems := snapshot.Items
+	if req.Filter != nil && len(req.Filter.Resources) != 0 {
+		filtered := make([]workflowplugin.ItemView, 0, len(workflowItems))
+		for _, item := range workflowItems {
+			if slices.Contains(req.Filter.Resources, item.ID) {
+				filtered = append(filtered, item)
+			}
+		}
+		workflowItems = filtered
+	}
+	items, keys, err := combinedReadyItems(durable, durableKeys, workflowItems, combined.now)
+	if err != nil {
+		return BeadPage{}, err
+	}
+	if restartOnRevision && req.ClaimNextSeed != "" {
+		items, err = spreadClaimNextItems(items, req.ClaimNextSeed, keys)
+		if err != nil {
+			return BeadPage{}, err
+		}
+	}
+	if len(durable) == 0 && req.Position == nil {
+		// Keep the released provider-only cursor shape for direct callers that
+		// already understand the workflow phase. Guarded callers must retain an
+		// aggregate cursor even when the durable plane is empty, otherwise their
+		// next page would lose the combined membership digest and be mistaken
+		// for a fresh durable read.
+		page := BeadPage{AsOf: asOf, WorkflowSnapshot: binding}
+		membership := combinedReadyMembership(items)
+		page.ReadyMembership = membership
+		end := min(limit, len(items))
+		page.Items = append([]Bead(nil), items[:end]...)
+		if end < len(items) {
+			page.Next = &PagePosition{Offset: end, AsOf: asOf, WorkflowSnapshot: binding, ReadyMembership: membership}
+		}
+		return page, nil
+	}
+	if position != nil {
+		if position.AsOf.Incarnation != asOf.Incarnation {
+			return BeadPage{}, mapped(driver.ErrIncarnationChanged{From: position.AsOf.Incarnation, To: asOf.Incarnation})
+		}
+		if position.AsOf.Revision.String() != asOf.Revision.String() {
+			if !restartOnRevision {
+				return BeadPage{}, failure("cursor_invalid", "durable ready membership changed; restart paging")
+			}
+			position = nil
+		}
+		if position != nil && position.WorkflowSnapshot != nil && !position.WorkflowSnapshot.Equal(binding) {
+			if !restartOnRevision {
+				return BeadPage{}, failure("cursor_invalid", "workflow ready membership changed; restart paging")
+			}
+			position = nil
+		}
+		membership := combinedReadyMembership(items)
+		if position != nil && position.ReadyMembership != "" && position.ReadyMembership != membership {
+			if !restartOnRevision {
+				return BeadPage{}, failure("cursor_invalid", "combined ready membership changed; restart paging")
+			}
+			position = nil
+		}
+		if position != nil && position.Offset > len(items) {
+			return BeadPage{}, failure("cursor_invalid", "aggregate ready cursor is beyond the captured ready set")
+		}
+	}
+	membership := combinedReadyMembership(items)
+	page, err := pageResult(items, limit, position, asOf, false, restartOnRevision)
+	if err != nil {
+		return BeadPage{}, err
+	}
+	page.WorkflowSnapshot = binding
+	page.ReadyMembership = membership
+	if page.Next != nil {
+		page.Next.WorkflowSnapshot = binding
+		page.Next.ReadyMembership = membership
+	}
+	return page, nil
+}
+
 func workflowBead(item workflowplugin.ItemView) Bead {
 	fields := cloneMap(item.Fields)
 	if fields == nil {
 		fields = map[string]any{}
 	}
 	fields["title"] = item.Title
-	bead := Bead{ID: item.ID, Type: item.Type, Project: item.Project, Revision: item.Revision, Status: item.Status,
+	bead := Bead{ID: item.ID, Type: item.Type, Project: item.Project, Revision: item.Revision, Status: item.Status, CreatedAt: item.CreatedAt.UTC(),
 		Fields: fields, Metadata: item.Metadata, Parent: refID(item.Parent), Labels: append([]string(nil), item.Labels...), Links: append([]workflowplugin.RelationView(nil), item.Links...),
 		Blocked: item.Blocked, ChildCounter: item.ChildCounter, Plane: item.Plane, Kind: item.Kind, Plugin: item.Plugin, WorkflowRunID: item.RunID}
 	if item.Claim != nil {

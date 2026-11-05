@@ -461,6 +461,7 @@ internal/integration/batchsql/child_allocator_test.go
 internal/integration/batchsql/fixture_test.go
 internal/integration/batchsql/hierarchy_authorization_test.go
 internal/integration/batchsql/hierarchy_test.go
+internal/integration/batchsql/m03_combined_ready_test.go
 internal/integration/batchsql/native_allocator_restore_test.go
 internal/integration/batchsql/public_batch_guard_order_test.go
 internal/integration/batchsql/raw_workflow_close_refusal_test.go
