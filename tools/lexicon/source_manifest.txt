@@ -499,6 +499,17 @@ internal/integration/converterroundtrip/testdata/public-complete-root-990eb800.t
 internal/integration/converterroundtrip/testdata/public-partial-990eb800.tar
 internal/integration/converterroundtrip/testdata/public-source-990eb800.md
 internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar
+internal/integration/cp7latency/BUILD.bazel
+internal/integration/cp7latency/README.md
+internal/integration/cp7latency/correctness_test.go
+internal/integration/cp7latency/dense_summary_test.go
+internal/integration/cp7latency/fixture_test.go
+internal/integration/cp7latency/latency_test.go
+internal/integration/cp7latency/measurement_test.go
+internal/integration/cp7latency/semantics_test.go
+internal/integration/cp7latency/work_accounting_test.go
+internal/integration/cp7latency/work_counters_test.go
+internal/integration/cp7latency/workload.json
 internal/integration/cursorhttp/BUILD.bazel
 internal/integration/cursorhttp/cursor_test.go
 internal/integration/cursorhttp/fixture_test.go
@@ -1030,6 +1041,7 @@ internal/storage/driver/offline_history_test.go
 internal/storage/driver/offline_restore.go
 internal/storage/driver/parent_counter.go
 internal/storage/driver/parent_counter_test.go
+internal/storage/driver/read_work.go
 internal/storage/driver/receipt_contract_test.go
 internal/storage/driver/restore.go
 internal/storage/driver/restore_test.go

@@ -12,6 +12,7 @@ go_library(
         "errors.go",
         "hierarchy.go",
         "keys.go",
+        "read_work.go",
         "offline_restore.go",
         "offline_history.go",
         "restore.go",
