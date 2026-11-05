@@ -214,10 +214,13 @@ func TestI8HeartbeadsActualSQLiteTwoProjectFixture(t *testing.T) {
 		}
 	}
 
-	badView := i8FixtureRPC(t, endpoint, "cody-ops", "view.run", map[string]any{"limit": 10}, "")
-	if badView.Error == nil || badView.Error.Data.Code != "method_not_found" {
-		t.Fatalf("expected pinned Plug to refuse unbound view.run, got %+v", badView)
+	view := i8FixtureRPC(t, endpoint, "cody-ops", "view.run", map[string]any{"definition": map[string]any{
+		"filter": map[string]any{}, "fields": []string{"fields", "metadata", "project", "status", "labels", "parent"}, "sort": []string{"id"}, "budgetTokens": 100000,
+	}}, "")
+	if view.Error != nil || !strings.Contains(string(view.Result), roots["cody-ops"]) || !strings.Contains(string(view.Result), children["cody-ops"]) {
+		t.Fatalf("actual view.run did not return both cody beads: %+v", view)
 	}
+	t.Logf("actual view.run PASS items include root=%s child=%s pinned asOf=%s", roots["cody-ops"], children["cody-ops"], view.Result)
 	wrongProject := i8FixtureRPC(t, endpoint, "signals-v2", "bead.get", map[string]any{"id": map[string]any{"id": roots["cody-ops"]}}, "")
 	if wrongProject.Error == nil {
 		t.Fatalf("cross-project canonical read unexpectedly succeeded: %s", wrongProject.Result)
