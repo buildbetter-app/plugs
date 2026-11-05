@@ -43,6 +43,10 @@ func TestB21SourceReverseImageCurrentSnapshotWithoutPublication(t *testing.T) {
 			}
 			f := b21Fixture(t, original, v.cap.WorkflowCheckpointLifetime())
 			logical := b21Logical(t, &f)
+			initial, err := workflowplugin.InspectSourceReverseImage(logical)
+			if err != nil || initial.OriginSHA256 == "" {
+				t.Fatalf("reverse admitted-origin precondition: %v", err)
+			}
 			tx, _, prepared, header := b21PreparePrivateRestore(t, v, f, logical)
 			if _, err := tx.Commit(ctx, header); err != nil {
 				t.Fatal(err)
@@ -95,6 +99,9 @@ func TestB21SourceReverseImageCurrentSnapshotWithoutPublication(t *testing.T) {
 				image, err := workflowplugin.InspectSourceReverseImage(current)
 				if err != nil || !bytes.Equal(copy, current) {
 					t.Fatalf("reverse current logical inspection: %v", err)
+				}
+				if image.OriginSHA256 != initial.OriginSHA256 {
+					t.Fatal("supported current mutation or terminal cleanup changed the admitted immutable origin")
 				}
 				if err := snapshot.Close(); err != nil {
 					t.Fatal(err)

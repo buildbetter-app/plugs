@@ -51,9 +51,14 @@ type SourceReverseEntry struct {
 // Entities includes every imported workflow:item declaration, including terminal
 // identities. Present entries exhaust the current active item map. Relations
 // contains current workflow-owned edges, including typed parent references.
+// OriginSHA256 commits to the canonical immutable source schema, entities,
+// relations, origins and original records. Compare it with the admitted initial
+// preparation's inspection before using current state for reverse conversion.
+// Mutable items, runs and receipts do not contribute to this digest.
 type SourceReverseImage struct {
-	Entities  map[driver.SourceEntityKey]SourceReverseEntry
-	Relations []RelationView
+	OriginSHA256 string
+	Entities     map[driver.SourceEntityKey]SourceReverseEntry
+	Relations    []RelationView
 }
 
 // InspectSourceReverseImage never loads a provider, reads a store, samples a
@@ -250,6 +255,11 @@ func InspectSourceReverseImage(logical []byte) (SourceReverseImage, error) {
 	for _, key := range keys {
 		result.Relations = append(result.Relations, relationView(edges[key].edge))
 	}
+	origin, err := json.Marshal(value.Source)
+	if err != nil {
+		return empty, sourceRefusal("invalid reverse immutable origin: " + err.Error())
+	}
+	result.OriginSHA256 = sourceImageHash(origin)
 	return result, nil
 }
 

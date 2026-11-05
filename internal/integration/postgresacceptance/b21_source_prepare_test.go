@@ -62,6 +62,56 @@ func TestB21SourceReverseImageDetachedCensus(t *testing.T) {
 	}
 }
 
+func TestB21SourceReverseOriginBindsEveryImmutableComponent(t *testing.T) {
+	f := b21Fixture(t, driver.Meta{StoreID: "target", Incarnation: "before"}, driver.CheckpointLifetimeProcess)
+	logical := b21Logical(t, &f)
+	baseline, err := workflowplugin.InspectSourceReverseImage(logical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var original struct {
+		Source json.RawMessage `json:"source"`
+	}
+	if err := json.Unmarshal(logical, &original); err != nil {
+		t.Fatal(err)
+	}
+	if baseline.OriginSHA256 != b21Bytes(original.Source, "object").SHA256 {
+		t.Fatal("origin digest does not bind the complete canonical immutable source")
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(original.Source, &fields); err != nil {
+		t.Fatal(err)
+	}
+	// Reorder each immutable component without changing any record commitment
+	// or current item/relation. Internal consistency and the active census alone
+	// cannot distinguish these images from the admitted initial preparation.
+	for _, component := range []string{"entities", "relations", "origins", "records"} {
+		t.Run(component, func(t *testing.T) {
+			var entries []json.RawMessage
+			if err := json.Unmarshal(fields[component], &entries); err != nil || len(entries) < 2 {
+				t.Fatalf("missing immutable-component precondition: %v", err)
+			}
+			entries[0], entries[len(entries)-1] = entries[len(entries)-1], entries[0]
+			reordered, err := json.Marshal(entries)
+			if err != nil || bytes.Equal(fields[component], reordered) || bytes.Count(original.Source, fields[component]) != 1 {
+				t.Fatalf("invalid component-only replacement: %v", err)
+			}
+			source := bytes.Replace(original.Source, fields[component], reordered, 1)
+			changed := bytes.Replace(logical, original.Source, source, 1)
+			image, err := workflowplugin.InspectSourceReverseImage(changed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if image.OriginSHA256 == "" || image.OriginSHA256 == baseline.OriginSHA256 || image.OriginSHA256 != b21Bytes(source, "object").SHA256 {
+				t.Fatal("changed immutable source was accepted as the admitted origin")
+			}
+			if !reflect.DeepEqual(baseline.Entities, image.Entities) || !reflect.DeepEqual(baseline.Relations, image.Relations) {
+				t.Fatal("component-only change altered the current census")
+			}
+		})
+	}
+}
+
 func TestB21SourceReverseImageRefusesMalformedAndUnmapped(t *testing.T) {
 	f := b21Fixture(t, driver.Meta{StoreID: "target", Incarnation: "before"}, driver.CheckpointLifetimeProcess)
 	logical := b21Logical(t, &f)
@@ -94,7 +144,7 @@ func TestB21SourceReverseImageRefusesMalformedAndUnmapped(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			before := bytes.Clone(input)
 			image, err := workflowplugin.InspectSourceReverseImage(input)
-			if !errors.Is(err, driver.ErrUnsupported) || len(image.Entities) != 0 || len(image.Relations) != 0 || !bytes.Equal(input, before) {
+			if !errors.Is(err, driver.ErrUnsupported) || image.OriginSHA256 != "" || len(image.Entities) != 0 || len(image.Relations) != 0 || !bytes.Equal(input, before) {
 				t.Fatalf("malformed image returned partial state or changed input: %+v %v", image, err)
 			}
 		})
