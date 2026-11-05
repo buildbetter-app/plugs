@@ -244,6 +244,32 @@ func TestJointSourceReversePinnedDefaultAndAllAcrossThreeStores(t *testing.T) {
 				if err != nil || sourceReverseRows(t, latest.Result.JSONL)["demo-9"]["title"] != "later active reverse" || sourceReverseRows(t, latest.Result.JSONL)["demo-8"]["title"] != "later durable reverse" {
 					t.Fatal("later observation failed to advance both planes", err)
 				}
+				if ephemeral {
+					sourcePublicCall(t, server, profile.Admission.Actor, "bead.close", 903, map[string]any{"id": model.RefByID("demo-9", model.Natural64(0)), "reason": "terminal omitted source"}, "")
+					terminalBaseline := savedLabelImport(t, store, report.Archive, profile, "")
+					terminalCheckpoint, err := capability.LoadCheckpoint(ctx, namespace)
+					if err != nil {
+						t.Fatal(err)
+					}
+					terminalDefault, err := ReverseRestored(ctx, store)
+					if err != nil || len(terminalDefault.Result.Report.OmittedEphemeralRows) != 1 || sourceReverseRows(t, terminalDefault.Result.JSONL)["demo-9"] != nil {
+						t.Fatal("terminal ephemeral identity prevented default omission", err)
+					}
+					for _, edge := range terminalDefault.Result.Projection.Edges {
+						if edge.From == "demo-9" || edge.To == "demo-9" {
+							t.Fatal("terminal cleanup resurrected a retained edge", edge)
+						}
+					}
+					terminalAll, err := ReverseRestoredWithOptions(ctx, store, reverseconverter.Options{All: true})
+					var refused ReverseRefusal
+					if !errors.As(err, &refused) || len(terminalAll.Result.JSONL) != 0 {
+						t.Fatal("all-planes reconstructed unavailable terminal body", err)
+					}
+					afterTerminal, err := capability.LoadCheckpoint(ctx, namespace)
+					if err != nil || !reflect.DeepEqual(terminalCheckpoint, afterTerminal) || !reflect.DeepEqual(terminalBaseline, savedLabelImport(t, store, report.Archive, profile, "")) {
+						t.Fatal("terminal reverse/refusal published state", err)
+					}
+				}
 			})
 		}
 	}

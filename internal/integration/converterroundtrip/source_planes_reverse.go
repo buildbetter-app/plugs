@@ -134,10 +134,16 @@ func projectJointReverseDump(ctx context.Context, bound driver.RestoreImportProf
 		}
 		included[entity.TargetID] = options.All || !reverseEphemeral(fields)
 	}
+	terminalTargets := map[string]bool{}
+	for _, entry := range current.Entities {
+		if entry.Terminal && !entry.Present && entry.Item == nil {
+			terminalTargets[entry.TargetID] = true
+		}
+	}
 	selectedRelations := func(rows []workflowplugin.RelationView) []workflowplugin.RelationView {
 		var result []workflowplugin.RelationView
 		for _, row := range rows {
-			if included[row.From] {
+			if included[row.From] && !terminalTargets[row.From] && !terminalTargets[row.To.ID] {
 				result = append(result, row)
 			}
 		}
@@ -145,6 +151,17 @@ func projectJointReverseDump(ctx context.Context, bound driver.RestoreImportProf
 	}
 	if !sameReverseJSON(selectedRelations(initial.Relations), selectedRelations(current.Relations)) {
 		return ReverseRefusal{"changed_source_relationships"}
+	}
+	// Whole-run cleanup removes auxiliary relations along with terminal items.
+	// Do not export their immutable edge mirrors as if they were still live.
+	var currentEdges []reverseconverter.Record
+	for _, edge := range dump.Records["edge"] {
+		relation := projection.relations[driver.SourceEdgeKey{Project: edge.Project, Table: edge.Source.Table, ID: edge.ID}]
+		from := projection.entities[relation.From]
+		toTerminal := relation.To != nil && terminalTargets[projection.entities[*relation.To].TargetID]
+		if !terminalTargets[from.TargetID] && !toTerminal {
+			currentEdges = append(currentEdges, edge)
+		}
 	}
 	dispositions := map[string]driver.SourcePlaneDispositionV1{}
 	for _, disposition := range plan.Dispositions {
@@ -197,6 +214,7 @@ func projectJointReverseDump(ctx context.Context, bound driver.RestoreImportProf
 	if len(live) != 0 {
 		return ReverseRefusal{"unmapped_live_record"}
 	}
+	dump.Records["edge"] = currentEdges
 	for i, source := range dump.Records["beads-archive"] {
 		if source.Source.Table != dumpformat.EphemeralEntityTable {
 			continue
@@ -204,8 +222,17 @@ func projectJointReverseDump(ctx context.Context, bound driver.RestoreImportProf
 		key := physicalEntities[[2]string{source.Source.Table, stringValue(source.Source.Fields["id"])}].Source
 		entry, exists := current.Entities[key]
 		before := initial.Entities[key]
-		if !exists || !entry.Present || entry.Item == nil || before.Item == nil {
-			// Never resurrect terminal content from immutable origin records.
+		if !exists || before.Item == nil {
+			return ReverseRefusal{"missing_source_entity_binding"}
+		}
+		if !entry.Present || entry.Item == nil {
+			if entry.Terminal && !included[entry.TargetID] {
+				// Only the immutable address/flag is needed for the explicit
+				// omission report; no retained body enters the JSONL output.
+				source.Project = key.Project
+				dump.Records["beads-archive"][i] = source
+				continue
+			}
 			return ReverseRefusal{"terminal_source_body_unavailable"}
 		}
 		entity := projection.entities[key]
