@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -220,7 +221,9 @@ func (s *Service) WorkflowDemote(ctx context.Context, by model.PrincipalRef, req
 		image.Blocked, _ = row.doc.Fields["blocked"].(bool)
 		for name, raw := range row.doc.Metadata {
 			var value any
-			if err := json.Unmarshal(raw, &value); err != nil {
+			decoder := json.NewDecoder(bytes.NewReader(raw))
+			decoder.UseNumber()
+			if err := decoder.Decode(&value); err != nil {
 				return image, err
 			}
 			image.Metadata[name] = value

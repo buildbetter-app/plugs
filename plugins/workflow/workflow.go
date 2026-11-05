@@ -4,6 +4,7 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -11,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"sort"
 	"strings"
@@ -395,6 +397,40 @@ func hasRelation(values []relationState, want relationState) bool {
 	return false
 }
 
+// Preserve JSON numbers through workflow checkpoints, detached images and
+// receipt replay so later public moves retain the original metadata values.
+func decodeWorkflowJSON(data []byte, dst any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return errors.New("trailing workflow JSON image")
+	}
+	return nil
+}
+
+func (item *itemState) UnmarshalJSON(data []byte) error {
+	type wire itemState
+	var value wire
+	if err := decodeWorkflowJSON(data, &value); err != nil {
+		return err
+	}
+	*item = itemState(value)
+	return nil
+}
+
+func (item *ItemView) UnmarshalJSON(data []byte) error {
+	type wire ItemView
+	var value wire
+	if err := decodeWorkflowJSON(data, &value); err != nil {
+		return err
+	}
+	*item = ItemView(value)
+	return nil
+}
+
 func cloneMetadata(value map[string]any) map[string]any {
 	if value == nil {
 		return nil
@@ -404,7 +440,7 @@ func cloneMetadata(value map[string]any) map[string]any {
 		return nil
 	}
 	var clone map[string]any
-	if json.Unmarshal(data, &clone) != nil {
+	if decodeWorkflowJSON(data, &clone) != nil {
 		return nil
 	}
 	return clone
