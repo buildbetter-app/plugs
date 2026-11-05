@@ -65,7 +65,7 @@ func TestB21SourceReverseImageCurrentSnapshotWithoutPublication(t *testing.T) {
 			// snapshot accessor must preserve it without clock-based projection.
 			p.WithClock(func() time.Time { return clock.Add(-2 * workflowplugin.ClaimTTL) })
 			claimed, err := p.Claim(ctx, b21SourceActor, parent, b21WriteMeta("reverse-claim", "bead.claim"))
-			if err != nil || claimed.Claim == nil || !claimed.Claim.ExpiresAt.Before(clock) {
+			if err != nil || claimed.Status != "claimed" || claimed.Claim == nil || !claimed.Claim.ExpiresAt.Before(clock) {
 				t.Fatalf("expired stored claim precondition: %+v %v", claimed, err)
 			}
 			p.WithClock(func() time.Time { return clock })
@@ -116,7 +116,7 @@ func TestB21SourceReverseImageCurrentSnapshotWithoutPublication(t *testing.T) {
 			childKey := driver.SourceEntityKey{Project: project, Plane: dumpformat.EphemeralEntityTable, ID: "child"}
 			image := read()
 			entry := image.Entities[parentKey]
-			if len(image.Entities) != 2 || len(image.Relations) != 3 || !entry.Present || entry.Terminal || entry.Item == nil || entry.Item.Title != "current reverse title" || entry.Item.Metadata["large"] != json.Number("9007199254740993") || entry.Item.Claim == nil || !reflect.DeepEqual(entry.Item.Claim, claimed.Claim) {
+			if len(image.Entities) != 2 || len(image.Relations) != 3 || !entry.Present || entry.Terminal || entry.Item == nil || entry.Item.Title != "current reverse title" || entry.Item.Status != claimed.Status || entry.Item.Metadata["large"] != json.Number("9007199254740993") || entry.Item.Claim == nil || !reflect.DeepEqual(entry.Item.Claim, claimed.Claim) {
 				t.Fatalf("inspection returned stale or projected current state: %+v", image)
 			}
 			comments := entry.Item.Comments

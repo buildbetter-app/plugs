@@ -140,7 +140,8 @@ func InspectSourceReverseImage(logical []byte) (SourceReverseImage, error) {
 	for id, item := range value.Items {
 		entity, ok := byTarget[id]
 		run, runOK := value.Runs[item.RunID]
-		if !ok || entity.TargetKind != "workflow:item" || item.ID != id || item.Project != entity.Source.Project || item.Label != entity.Source.ID || strings.TrimSpace(item.Title) == "" || strings.TrimSpace(item.Type) == "" || (item.Status != "open" && item.Status != "closed") || item.Generation == 0 || !runOK || run.ID != item.RunID || run.Project != item.Project || run.Owner != item.Owner || item.Owner.Principal == "" || item.Owner.Project != item.Project {
+		validStatus := item.Status == "open" || item.Status == "closed" || item.Status == "claimed" && item.Claim != nil
+		if !ok || entity.TargetKind != "workflow:item" || item.ID != id || item.Project != entity.Source.Project || item.Label != entity.Source.ID || strings.TrimSpace(item.Title) == "" || strings.TrimSpace(item.Type) == "" || !validStatus || item.Generation == 0 || !runOK || run.ID != item.RunID || run.Project != item.Project || run.Owner != item.Owner || item.Owner.Principal == "" || item.Owner.Project != item.Project {
 			return empty, sourceRefusal("malformed or unmapped current reverse item")
 		}
 		key := runKey{entity.Source.Project, entity.RunKey}

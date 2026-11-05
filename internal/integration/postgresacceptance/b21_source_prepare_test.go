@@ -7,6 +7,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -59,6 +60,59 @@ func TestB21SourceReverseImageDetachedCensus(t *testing.T) {
 	again, err := workflowplugin.InspectSourceReverseImage(logical)
 	if err != nil || !reflect.DeepEqual(want, again) || !bytes.Equal(logical, original) {
 		t.Fatalf("reverse inspection aliased or changed its input: %v", err)
+	}
+}
+
+func TestB21SourceReverseImagePreservesStoredClaims(t *testing.T) {
+	f := b21Fixture(t, driver.Meta{StoreID: "target", Incarnation: "before"}, driver.CheckpointLifetimeProcess)
+	logical := b21Logical(t, &f)
+	baseline, err := workflowplugin.InspectSourceReverseImage(logical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var value struct {
+		Items map[string]json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(logical, &value); err != nil {
+		t.Fatal(err)
+	}
+	original := value.Items["workflow:item/source-parent"]
+	if bytes.Count(original, []byte(`"status":"open"`)) != 1 || bytes.Count(original, []byte(`"generation":1`)) != 1 || bytes.Count(logical, original) != 1 {
+		t.Fatal("missing canonical current-item precondition")
+	}
+	for name, expiry := range map[string]time.Time{
+		"expired": time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC),
+		"live":    time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC),
+	} {
+		t.Run(name, func(t *testing.T) {
+			// Match the provider's stored claim field order and number encoding;
+			// keep every unrelated canonical image byte and origin unchanged.
+			storedClaim, err := json.Marshal(struct {
+				Principal  model.PrincipalRef `json:"principal"`
+				Agent      string             `json:"agent,omitempty"`
+				ExpiresAt  time.Time          `json:"expiresAt"`
+				Generation uint64             `json:"generation"`
+			}{b21SourceActor, "stored-agent", expiry, 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			item := bytes.Replace(original, []byte(`"status":"open"`), []byte(`"status":"claimed"`), 1)
+			item = bytes.Replace(item, []byte(`"generation":1`), append([]byte(`"generation":1,"claim":`), storedClaim...), 1)
+			current := bytes.Replace(logical, original, item, 1)
+			before := bytes.Clone(current)
+			image, err := workflowplugin.InspectSourceReverseImage(current)
+			if err != nil {
+				t.Fatal(err)
+			}
+			key := driver.SourceEntityKey{Project: project, Plane: dumpformat.EphemeralEntityTable, ID: "same-id"}
+			entry := image.Entities[key]
+			want := *baseline.Entities[key].Item
+			want.Status = "claimed"
+			want.Claim = &workflowplugin.ClaimView{Principal: b21SourceActor, Agent: "stored-agent", ExpiresAt: expiry, Generation: model.Natural64(1)}
+			if !entry.Present || entry.Terminal || !reflect.DeepEqual(entry.Item, &want) || len(image.Entities) != len(baseline.Entities) || !reflect.DeepEqual(image.Relations, baseline.Relations) || image.OriginSHA256 != baseline.OriginSHA256 || !bytes.Equal(current, before) {
+				t.Fatalf("claimed inspection changed stored claim, census, origin or input: %+v", image)
+			}
+		})
 	}
 }
 
@@ -135,6 +189,9 @@ func TestB21SourceReverseImageRefusesMalformedAndUnmapped(t *testing.T) {
 		"missing run member":          replace(`"itemIds":["workflow:item/source-parent"]`, `"itemIds":[]`),
 		"duplicate run member":        replace(`"itemIds":["workflow:item/source-parent"]`, `"itemIds":["workflow:item/source-parent","workflow:item/source-parent"]`),
 		"zero item generation":        replace(`"generation":1`, `"generation":0`),
+		"unsupported current status":  replace(`"status":"open"`, `"status":"unsupported"`),
+		"claimed without claim":       replace(`"status":"open"`, `"status":"claimed"`),
+		"malformed current claim":     replace(`"generation":1`, `"generation":1,"claim":{"principal":{},"expiresAt":"0001-01-01T00:00:00Z","generation":0}`),
 		"mismatched relation indexes": replace(`"kind":"blocks"`, `"kind":"relates-to"`),
 		"unmapped relation":           replace(`"from":"workflow:item/source-parent"`, `"from":"workflow:item/unmapped"`),
 		"unknown item field":          replace(`"generation":1`, `"generation":1,"future":true`),
