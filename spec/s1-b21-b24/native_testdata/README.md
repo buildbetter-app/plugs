@@ -122,3 +122,24 @@ B23 count-matrix test is outside this port; no B24 source calls it. Shared
 public contracts and the reconciler remain at their fixed-main bytes. Earlier
 source and gate receipts retain their original identities and do not qualify
 this integrated child or supply any new native execution.
+# History-off source image correspondence
+
+The actual first recording on `3cdbd4c2` is RED before import/reopen. Its
+complete physical source image contains 58 columns, while the pinned native
+exporter deliberately omits `row_lock` and `is_blocked` from the 56 exported
+source fields. The immutable exporter `c8eb3ba7d4177e111a6f5c8aebe06b5d0b1d5724`
+defines those exclusions in `internal/plugdump/map.go:200-201` and the exact
+manifest policies in `internal/plugdump/build.go:100-101`; `archive.go` independently
+checks that boundary. This is an existing export policy, not data to fabricate
+in the archive.
+
+The consumer retains the complete raw census, independent SQL column types,
+and complete normalized physical image. It checks the two exact exclusion
+policies and the issue carry policy once each, including their actions,
+reasons, and row counts from the unfiltered physical census. Only those two
+fixed columns are removed from a fresh comparison map. Every exported key,
+value, and explicit null must then equal the independently observed source.
+Unknown issue-column policies, other omissions, extra fields, and changed
+policies are refused. Ordinary positive/refusal controls do not qualify a
+native recording. The original RED and all remaining native proof gaps stay
+separate from the corrected child's gates and fresh recordings.

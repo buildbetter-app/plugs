@@ -21,10 +21,11 @@ import (
 )
 
 type nativeHistoryOffObservation struct {
-	Target   string                          `json:"target"`
-	Settings []nativePublicConfigObservation `json:"settings"`
-	WokenRow map[string]any                  `json:"woken_row"`
-	Columns  []map[string]any                `json:"source_columns"`
+	Target    string                          `json:"target"`
+	Settings  []nativePublicConfigObservation `json:"settings"`
+	WokenRow  map[string]any                  `json:"woken_row"`
+	Columns   []map[string]any                `json:"source_columns"`
+	IssueRows int                             `json:"source_issue_rows"`
 }
 
 func nativeHistoryOffSourceRow(t *testing.T, census map[string]any, target string) map[string]any {
@@ -85,6 +86,49 @@ func nativePhysicalSourceFields(raw map[string]any, columns []map[string]any) (m
 	return fields, nil
 }
 
+// The pinned c8eb3ba7 exporter independently specifies these exclusions in
+// internal/plugdump/map.go:200-201 and build.go:100-101. Preserve the complete
+// physical image; project only those fixed fields after checking the actual
+// manifest against the independently counted, unfiltered source issue rows.
+func nativeHistoryOffSourceCorrespondence(observed nativeHistoryOffObservation, sources []dumpformat.Disposition, table string, archived map[string]any) error {
+	fields, err := nativePhysicalSourceFields(observed.WokenRow, observed.Columns)
+	if err != nil {
+		return err
+	}
+	if observed.IssueRows < 1 || table != "issues" {
+		return fmt.Errorf("history-off source table or physical issue count is invalid")
+	}
+	policies := map[string]dumpformat.Disposition{
+		"issues":            {Family: "issues", Rows: observed.IssueRows, Action: "carry", Reason: "head state and source provenance"},
+		"issues.row_lock":   {Family: "issues.row_lock", Rows: observed.IssueRows, Action: "manifest/rebuild", Reason: "transient locks excluded"},
+		"issues.is_blocked": {Family: "issues.is_blocked", Rows: observed.IssueRows, Action: "manifest/rebuild", Reason: "derived blocking excluded; Plug must recompute"},
+	}
+	seen := map[string]bool{}
+	for _, source := range sources {
+		if source.Family != "issues" && !strings.HasPrefix(source.Family, "issues.") {
+			continue
+		}
+		want, known := policies[source.Family]
+		if !known || seen[source.Family] || source != want {
+			return fmt.Errorf("unexpected, duplicate or changed issue source policy: %+v", source)
+		}
+		seen[source.Family] = true
+	}
+	if len(seen) != len(policies) {
+		return fmt.Errorf("history-off archive omitted an exact issue source policy")
+	}
+	for _, name := range []string{"row_lock", "is_blocked"} {
+		if _, present := fields[name]; !present {
+			return fmt.Errorf("physical source omitted excluded column %q", name)
+		}
+		delete(fields, name)
+	}
+	if !nativeEqualJSON(fields, archived) {
+		return fmt.Errorf("history-off archive exported source row differs in keys, values or null presence: expected=%v archived=%v", fields, archived)
+	}
+	return nil
+}
+
 func nativeAssertHistoryOffArchive(t *testing.T, archive *dumpformat.Archive, observed nativeHistoryOffObservation) dumpformat.Record {
 	t.Helper()
 	if observed.Target == "" || observed.WokenRow["id"] != observed.Target || observed.WokenRow["issue_type"] != "task" || observed.WokenRow["status"] != "open" || observed.WokenRow["defer_until"] != nil {
@@ -102,10 +146,6 @@ func nativeAssertHistoryOffArchive(t *testing.T, archive *dumpformat.Archive, ob
 	if settingsCount != 1 {
 		t.Fatal("actual source observation lost the unique history setting")
 	}
-	expectedFields, err := nativePhysicalSourceFields(observed.WokenRow, observed.Columns)
-	if err != nil {
-		t.Fatal(err)
-	}
 	var found dumpformat.Record
 	count := 0
 	for _, record := range archive.Records("bead") {
@@ -114,11 +154,8 @@ func nativeAssertHistoryOffArchive(t *testing.T, archive *dumpformat.Archive, ob
 		}
 		count++
 		found = record
-		if record.Source.Table != "issues" {
-			t.Fatal("history-off source task changed physical source table")
-		}
-		if !nativeEqualJSON(record.Source.Fields, expectedFields) {
-			t.Fatalf("history-off archive full typed source row differs in keys, values or null presence: actual=%v archived=%v", expectedFields, record.Source.Fields)
+		if err := nativeHistoryOffSourceCorrespondence(observed, archive.Manifest().Sources, record.Source.Table, record.Source.Fields); err != nil {
+			t.Fatal(err)
 		}
 	}
 	if count != 1 {
@@ -494,6 +531,120 @@ func TestNativeB24ProbeObservationAcrossStores(t *testing.T) {
 		columns[3] = columns[2]
 		if _, err := nativePhysicalSourceFields(raw, columns); err == nil {
 			t.Fatal("duplicate physical column hid the absent column")
+		}
+	})
+	t.Run("source-export-policy-correspondence", func(t *testing.T) {
+		control := func() (nativeHistoryOffObservation, []dumpformat.Disposition, map[string]any) {
+			return nativeHistoryOffObservation{
+					IssueRows: 3,
+					WokenRow: map[string]any{
+						"id": "source-control", "title": `{"n":1}`, "defer_until": nil,
+						"metadata": `{"n":9007199254740993}`, "row_lock": float64(9), "is_blocked": true,
+					},
+					Columns: []map[string]any{
+						{"column_name": "id", "data_type": "varchar"},
+						{"column_name": "title", "data_type": "text"},
+						{"column_name": "defer_until", "data_type": "datetime"},
+						{"column_name": "metadata", "data_type": "json"},
+						{"column_name": "row_lock", "data_type": "bigint"},
+						{"column_name": "is_blocked", "data_type": "boolean"},
+					},
+				}, []dumpformat.Disposition{
+					{Family: "issues", Rows: 3, Action: "carry", Reason: "head state and source provenance"},
+					{Family: "issues.row_lock", Rows: 3, Action: "manifest/rebuild", Reason: "transient locks excluded"},
+					{Family: "issues.is_blocked", Rows: 3, Action: "manifest/rebuild", Reason: "derived blocking excluded; Plug must recompute"},
+				}, map[string]any{
+					"id": "source-control", "title": `{"n":1}`, "defer_until": nil,
+					"metadata": map[string]any{"n": json.Number("9007199254740993")},
+				}
+		}
+		observed, sources, archived := control()
+		before, err := json.Marshal(observed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := nativeHistoryOffSourceCorrespondence(observed, sources, "issues", archived); err != nil {
+			t.Fatalf("exact fixed export policies rejected: %v", err)
+		}
+		after, err := json.Marshal(observed)
+		if err != nil || string(before) != string(after) {
+			t.Fatal("source projection changed the complete raw observation or excluded values")
+		}
+		for _, test := range []struct {
+			name   string
+			mutate func(*nativeHistoryOffObservation, *[]dumpformat.Disposition, *string, map[string]any)
+		}{
+			{"missing-lock-policy", func(_ *nativeHistoryOffObservation, s *[]dumpformat.Disposition, _ *string, _ map[string]any) {
+				*s = append((*s)[:1], (*s)[2:]...)
+			}},
+			{"missing-blocked-policy", func(_ *nativeHistoryOffObservation, s *[]dumpformat.Disposition, _ *string, _ map[string]any) {
+				*s = (*s)[:2]
+			}},
+			{"duplicate-policy", func(_ *nativeHistoryOffObservation, s *[]dumpformat.Disposition, _ *string, _ map[string]any) {
+				*s = append(*s, (*s)[1])
+			}},
+			{"changed-action", func(_ *nativeHistoryOffObservation, s *[]dumpformat.Disposition, _ *string, _ map[string]any) {
+				(*s)[1].Action = "carry"
+			}},
+			{"changed-reason", func(_ *nativeHistoryOffObservation, s *[]dumpformat.Disposition, _ *string, _ map[string]any) {
+				(*s)[2].Reason = "other exclusion"
+			}},
+			{"changed-policy-row-count", func(_ *nativeHistoryOffObservation, s *[]dumpformat.Disposition, _ *string, _ map[string]any) {
+				(*s)[1].Rows++
+			}},
+			{"changed-issue-row-count", func(_ *nativeHistoryOffObservation, s *[]dumpformat.Disposition, _ *string, _ map[string]any) {
+				(*s)[0].Rows++
+			}},
+			{"changed-census-row-count", func(o *nativeHistoryOffObservation, _ *[]dumpformat.Disposition, _ *string, _ map[string]any) {
+				o.IssueRows++
+			}},
+			{"absent-census-row-count", func(o *nativeHistoryOffObservation, _ *[]dumpformat.Disposition, _ *string, _ map[string]any) {
+				o.IssueRows = 0
+			}},
+			{"extra-column-policy", func(_ *nativeHistoryOffObservation, s *[]dumpformat.Disposition, _ *string, _ map[string]any) {
+				*s = append(*s, dumpformat.Disposition{Family: "issues.title", Rows: 3, Action: "manifest/rebuild", Reason: "other exclusion"})
+			}},
+			{"wrong-source-table", func(_ *nativeHistoryOffObservation, _ *[]dumpformat.Disposition, table *string, _ map[string]any) {
+				*table = "other"
+			}},
+			{"missing-raw-excluded-column", func(o *nativeHistoryOffObservation, _ *[]dumpformat.Disposition, _ *string, _ map[string]any) {
+				delete(o.WokenRow, "row_lock")
+				o.Columns = append(o.Columns[:4], o.Columns[5:]...)
+			}},
+			{"extra-physical-column", func(o *nativeHistoryOffObservation, _ *[]dumpformat.Disposition, _ *string, _ map[string]any) {
+				o.WokenRow["priority"] = float64(2)
+				o.Columns = append(o.Columns, map[string]any{"column_name": "priority", "data_type": "int"})
+			}},
+			{"missing-exported-field", func(_ *nativeHistoryOffObservation, _ *[]dumpformat.Disposition, _ *string, a map[string]any) {
+				delete(a, "title")
+			}},
+			{"missing-explicit-null", func(_ *nativeHistoryOffObservation, _ *[]dumpformat.Disposition, _ *string, a map[string]any) {
+				delete(a, "defer_until")
+			}},
+			{"changed-exported-value", func(_ *nativeHistoryOffObservation, _ *[]dumpformat.Disposition, _ *string, a map[string]any) {
+				a["title"] = "changed"
+			}},
+			{"changed-json-precision", func(_ *nativeHistoryOffObservation, _ *[]dumpformat.Disposition, _ *string, a map[string]any) {
+				a["metadata"] = map[string]any{"n": json.Number("9007199254740992")}
+			}},
+			{"unexpected-lock-field", func(_ *nativeHistoryOffObservation, _ *[]dumpformat.Disposition, _ *string, a map[string]any) {
+				a["row_lock"] = nil
+			}},
+			{"unexpected-blocked-field", func(_ *nativeHistoryOffObservation, _ *[]dumpformat.Disposition, _ *string, a map[string]any) {
+				a["is_blocked"] = true
+			}},
+			{"extra-exported-field", func(_ *nativeHistoryOffObservation, _ *[]dumpformat.Disposition, _ *string, a map[string]any) {
+				a["extra"] = nil
+			}},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				observed, sources, archived := control()
+				table := "issues"
+				test.mutate(&observed, &sources, &table, archived)
+				if err := nativeHistoryOffSourceCorrespondence(observed, sources, table, archived); err == nil {
+					t.Fatal("changed source fields or export policy was admitted")
+				}
+			})
 		}
 	})
 }

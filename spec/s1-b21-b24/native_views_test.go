@@ -224,13 +224,15 @@ func nativeRecordHistoryOffWake(t *testing.T, root string, run func(*testing.T, 
 		if !reflect.DeepEqual(secondBefore, secondAfter) {
 			t.Fatal("history-off ready re-woke or rewrote state after the first wake")
 		}
-		observation = nativeHistoryOffObservation{Target: target, Settings: settings, WokenRow: sourceRow, Columns: sourceColumns}
+		issueRows := len(after["issues"].([]map[string]any))
+		observation = nativeHistoryOffObservation{Target: target, Settings: settings, WokenRow: sourceRow, Columns: sourceColumns, IssueRows: issueRows}
 		nativeWriteJSON(t, filepath.Join(root, "native-history-off-wake.json"), map[string]any{
 			"config": settings, "target": target, "ready_after_wake": ready, "deferred_row": rows,
 			"woken_row": woken, "before": before, "after": after,
 			"full_source_row": sourceRow, "full_source_row_census": "history-off-wake-after/issues",
 			"source_columns": sourceColumns, "full_typed_source_row": typedSourceRow,
-			"version_tables": versionTables, "version_rows_unchanged": true,
+			"source_issue_rows": issueRows,
+			"version_tables":    versionTables, "version_rows_unchanged": true,
 			"unrelated_tables_unchanged": true, "second_ready_noop": true,
 			"no_version_read_claim": "UNQUALIFIED: physical before/after proves no version mint only",
 			"clock_boundary":        "native wall clock; exact SQL/Go equality is not claimed",
