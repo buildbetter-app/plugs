@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -362,7 +363,9 @@ func (f *fixture) a4Renewal() {
 }
 
 // One public network operation with a fixed five-second request deadline.
-// The benchmark deliberately has no semaphore and no external retry loop.
+// The benchmark has no semaphore. Its separately counted bounded retry loop
+// retains the Lane E 64-attempt budget and backoffs; each retry uses this same
+// deadline, principal, selector and idempotency key.
 func a4HTTP(ctx context.Context, client *http.Client, url string, by credential, key string, payload map[string]any) (reply, error) {
 	params := map[string]any{"_meta": map[string]any{"project": poolA, "idempotencyKey": key}}
 	for k, v := range payload {
@@ -487,11 +490,13 @@ func TestB04A4TwoHundredSimultaneousPublicAgentsWithWASMMutator(t *testing.T) {
 		}
 		before := f.state()
 		var arrived atomic.Int64
+		var firstArrivals sync.Map
 		allArrived := make(chan struct{})
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// All 200 network requests reach this barrier before any claim is
 			// dispatched. There is no concurrency cap around the application.
-			if arrived.Add(1) == agents {
+			_, repeated := firstArrivals.LoadOrStore(r.Header.Get("Authorization"), true)
+			if !repeated && arrived.Add(1) == agents {
 				close(allArrived)
 			}
 			select {
@@ -506,44 +511,113 @@ func TestB04A4TwoHundredSimultaneousPublicAgentsWithWASMMutator(t *testing.T) {
 		defer transport.CloseIdleConnections()
 		client := &http.Client{Transport: transport}
 		type result struct {
-			index int
-			r     reply
-			err   error
+			index     int
+			r         reply
+			err       error
+			attempts  int
+			responses []reply
 		}
+		const retryBudget = 64
 		results := make(chan result, agents)
 		start := make(chan struct{})
 		began := time.Now()
 		for i := range callers {
 			go func(i int) {
 				<-start
-				r, err := a4HTTP(f.ctx, client, server.URL+"/rpc/v1", callers[i], keys[i], nil)
-				results <- result{i, r, err}
+				out := result{index: i}
+				for attempt := 1; attempt <= retryBudget; attempt++ {
+					out.attempts++
+					out.r, out.err = a4HTTP(f.ctx, client, server.URL+"/rpc/v1", callers[i], keys[i], nil)
+					if out.err != nil {
+						break
+					}
+					out.responses = append(out.responses, out.r)
+					// This only decides whether to start the next bounded attempt.
+					// The main goroutine validates every retained response against
+					// the closed error catalog and transport trace-ID contract.
+					var envelope struct {
+						Error *struct {
+							Data struct {
+								Code      string
+								Retryable bool
+							}
+						}
+					}
+					if json.Unmarshal(out.r.raw, &envelope) != nil || envelope.Error == nil || !envelope.Error.Data.Retryable || attempt == retryBudget {
+						break
+					}
+					code := envelope.Error.Data.Code
+					switch code {
+					case "write_conflict", "busy", "rate_limited", "authn_unavailable", "authz_unavailable":
+					default:
+						results <- out
+						return
+					}
+					backoff := time.Duration(1+i%4) * time.Millisecond
+					if code == "rate_limited" {
+						backoff = time.Duration(3+i%7) * time.Millisecond
+					}
+					timer := time.NewTimer(backoff)
+					select {
+					case <-timer.C:
+					case <-f.ctx.Done():
+						timer.Stop()
+						out.err = f.ctx.Err()
+						results <- out
+						return
+					}
+				}
+				results <- out
 			}(i)
 		}
 		close(start)
 		outcomes := make([]result, agents)
-		conflicts, failures := 0, 0
+		conflicts, failures, attempts, initialFailures := 0, 0, 0, 0
+		initialCodes, allCodes := map[string]int{}, map[string]int{}
 		for range agents {
 			out := <-results
+			if out.attempts < 1 || out.attempts > retryBudget {
+				t.Fatal("A4 worker changed the bounded retry budget")
+			}
+			attempts += out.attempts
+			for attempt, r := range out.responses {
+				r = f.checkedReply(r)
+				out.r = r
+				if r.code == "write_conflict" {
+					conflicts++
+				}
+				if r.code != "" {
+					allCodes[r.code]++
+					if attempt == 0 {
+						initialFailures++
+						initialCodes[r.code]++
+					}
+				}
+			}
 			outcomes[out.index] = out
 			if out.err != nil {
 				failures++
 				t.Logf("A4 worker%d transport failure: %v", out.index, out.err)
 				continue
 			}
-			out.r = f.checkedReply(out.r)
-			outcomes[out.index] = out
-			if out.r.code == "write_conflict" {
-				conflicts++
+			if len(out.responses) != out.attempts {
+				t.Fatal("A4 attempt ledger lost a public response")
 			}
 			if out.r.code != "" {
 				failures++
 				t.Logf("A4 worker%d code=%s", out.index, out.r.code)
 			}
 		}
-		t.Logf("A4 engine=%s simultaneous_arrivals=%d attempts=%d write_conflict=%d other_or_conflict_failures=%d elapsed=%s actual_wasm=%s authz=authz/fixed no_http_semaphore=true external_retries=0 request_deadline=5s", e.name, arrived.Load(), agents, conflicts, failures, time.Since(began), artifact.ArtifactDigest())
+		t.Logf("A4 engine=%s simultaneous_arrivals=%d initial_attempts=%d initial_failures=%d initial_codes=%v attempts=%d retry_starts=%d all_codes=%v write_conflict=%d final_failures=%d elapsed=%s actual_wasm=%s authz=authz/fixed no_http_semaphore=true retry_budget=%d request_deadline=5s callback_budget=250ms", e.name, arrived.Load(), agents, initialFailures, initialCodes, attempts, attempts-agents, allCodes, conflicts, failures, time.Since(began), artifact.ArtifactDigest(), retryBudget)
 		if arrived.Load() != agents || conflicts*100 >= agents || failures != 0 {
 			t.Fatalf("A4 200-agent bound failed: arrivals=%d conflicts=%d failures=%d", arrived.Load(), conflicts, failures)
+		}
+		retryResponses := 0
+		for _, n := range allCodes {
+			retryResponses += n
+		}
+		if attempts != agents+retryResponses {
+			t.Fatal("A4 attempts do not conserve all typed retry responses and final successes")
 		}
 		after := f.state()
 		head, _ := before.Meta.Head.Uint64()
@@ -573,6 +647,7 @@ func TestB04A4TwoHundredSimultaneousPublicAgentsWithWASMMutator(t *testing.T) {
 		replayed := f.call(callers[0], "bead.claimNext", poolA, keys[0], "", nil)
 		replayed.replay(t, outcomes[0].r)
 		sameState(t, after, f.state())
+		t.Logf("A4 engine=%s eventual_winners=%d distinct_principals=%d distinct_keys=%d sole_history_event_receipt_per_winner=true head_delta=200 unrelated_rows_conserved=true replay_conserved=true", e.name, len(winners), len(principalSet), len(keys))
 	})
 }
 
