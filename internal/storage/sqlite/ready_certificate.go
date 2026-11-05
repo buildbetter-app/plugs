@@ -101,6 +101,7 @@ func (t *transaction) prepareReadyOrderCommit(ctx context.Context, c *sql.Conn, 
 	if err = c.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM ready_order_fence WHERE singleton=1 AND dirty=0 AND certified_generation=generation AND incarnation=? AND head=? AND authority_head=head AND format=2 AND NOT EXISTS(SELECT 1 FROM ready_order_changes)),EXISTS(SELECT 1 FROM ready_order_fence WHERE singleton=1 AND ever_source=0)`, meta.Incarnation, revKey(mustUint(meta.Head))).Scan(&predecessor, &virgin); err != nil {
 		return nil, err
 	}
+	emptyKeyHistory := false
 	if !predecessor {
 		if !meta.Head.IsZero() || !virgin {
 			return nil, nil
@@ -112,6 +113,10 @@ func (t *transaction) prepareReadyOrderCommit(ctx context.Context, c *sql.Conn, 
 		if occupied {
 			return nil, nil
 		}
+		// The same-connection bootstrap proof also establishes that every
+		// requested Ready before-image is absent. Retain the exact comparison
+		// below without repeating its physical point reads.
+		emptyKeyHistory = true
 	}
 	sources := map[string]readyindex.StagedSource{}
 	for key, record := range t.records {
@@ -130,12 +135,27 @@ func (t *transaction) prepareReadyOrderCommit(ctx context.Context, c *sql.Conn, 
 	for i, before := range p.Data.Before {
 		beforeKeys[i] = before.Key
 	}
-	beforeStates, err := readyOrderReadStates(ctx, c, beforeKeys)
-	if errors.Is(err, driver.ErrUnsupported) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
+	var beforeStates map[string]driver.LockState
+	if emptyKeyHistory {
+		if err = ctx.Err(); err != nil {
+			return nil, err
+		}
+		beforeStates = make(map[string]driver.LockState, len(beforeKeys))
+		for _, key := range beforeKeys {
+			id := keyID(key)
+			if _, duplicate := beforeStates[id]; duplicate {
+				return nil, nil
+			}
+			beforeStates[id] = driver.LockState{Key: key, Revision: model.Natural64(0)}
+		}
+	} else {
+		beforeStates, err = readyOrderReadStates(ctx, c, beforeKeys)
+		if errors.Is(err, driver.ErrUnsupported) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
 	}
 	for _, before := range p.Data.Before {
 		actual := beforeStates[keyID(before.Key)]
