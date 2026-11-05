@@ -1286,8 +1286,12 @@ spec/s1-b01-b04/fixture_test.go
 spec/s1-b01-b04/manifest.json
 spec/s1-b01-b04/manifest_test.go
 spec/s1-b01-b04/native_contract_test.go
+spec/s1-b01-b04/native_exclusion_test.go
+spec/s1-b01-b04/native_hierarchy_test.go
 spec/s1-b01-b04/native_inputs.json
 spec/s1-b01-b04/native_io_test.go
+spec/s1-b01-b04/native_membership_test.go
+spec/s1-b01-b04/native_parent_compatibility_test.go
 spec/s1-b01-b04/native_projection_test.go
 spec/s1-b01-b04/native_recording.md
 spec/s1-b01-b04/native_recording_test.go

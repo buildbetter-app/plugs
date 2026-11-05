@@ -1,6 +1,7 @@
 package s1b01b04
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -14,7 +15,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -33,6 +36,9 @@ type nativeInputs struct {
 	Descriptor, AdoptedIndefiniteDecision            string
 	ClockScope                                       string
 	Vectors                                          []nativeVector
+	ExternalHierarchyTarget                          string
+	ExternalHierarchyRefusal                         string
+	HierarchyPhases                                  map[string][]string
 }
 
 type nativeVector struct {
@@ -43,6 +49,19 @@ type nativeVector struct {
 }
 
 type nativeRun struct{ ID, Database string }
+
+// Each top-level case owns a complete vector's two captures and comparison.
+// rules_go partitions top-level cases; subtests of one parent cannot shard.
+func nativeVectorTestName(vector nativeVector) string {
+	switch vector.Mode {
+	case "timed":
+		return "TestB01NativeTimedPair"
+	case "indefinite":
+		return "TestB01NativeIndefinitePair"
+	default:
+		return ""
+	}
+}
 
 var nativeRoles = []string{"parent", "child", "grandchild", "free"}
 
@@ -160,6 +179,21 @@ type nativeCommand struct {
 // asserting success. The environment is newly constructed and contains no
 // inherited credential or database locator.
 func (c *nativeCommand) run(label string, args ...string) []byte {
+	return c.runExpected(label, "", args...)
+}
+
+// The accepted native implementation refuses external parent-child edges.
+// Exercise that real refusal without converting an execution/setup failure
+// into a semantic result. Both original streams and the literal exit survive.
+func (c *nativeCommand) refuse(label, message string, args ...string) {
+	c.t.Helper()
+	if message == "" {
+		c.t.Fatal("native refusal requires its exact source-defined diagnostic")
+	}
+	c.runExpected(label, message, args...)
+}
+
+func (c *nativeCommand) runExpected(label, refusal string, args ...string) []byte {
 	c.t.Helper()
 	c.count++
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -192,10 +226,17 @@ func (c *nativeCommand) run(label string, args ...string) []byte {
 		"startedUTC": started, "endedUTC": ended, "exit": exit, "error": errorText,
 		"timedOut": ctx.Err() != nil, "stdoutBytes": stdout.Len(), "stderrBytes": stderr.Len(),
 		"stdoutSHA256": sha256Hex(stdout.Bytes()), "stderrSHA256": sha256Hex(stderr.Bytes()),
+		"expectedRefusal": refusal,
 	}
 	nativeJSON(c.t, filepath.Join(c.output, name+".receipt.json"), receipt)
 	c.t.Logf("B01_NATIVE_CLI label=%s argv0=%s exit=%d start=%s end=%s", label, c.binary, exit, started.Format(time.RFC3339Nano), ended.Format(time.RFC3339Nano))
-	if err != nil || ctx.Err() != nil {
+	if refusal != "" {
+		var failure *exec.ExitError
+		if !errors.As(err, &failure) || exit <= 0 || ctx.Err() != nil ||
+			!strings.Contains(stdout.String()+stderr.String(), refusal) {
+			c.t.Fatalf("native command %s lacks the exact semantic refusal %q: exit=%d error=%s context=%v; originals retained", label, refusal, exit, errorText, ctx.Err())
+		}
+	} else if err != nil || ctx.Err() != nil {
 		c.t.Fatalf("native command %s failed: %s, context %v; original streams retained", label, errorText, ctx.Err())
 	}
 	return append([]byte(nil), stdout.Bytes()...)
@@ -249,6 +290,166 @@ func nativeInventory(root string) ([]map[string]any, error) {
 		return nil
 	})
 	return entries, err
+}
+
+type nativeEvidenceArchive struct {
+	Path                string `json:"path"`
+	OriginalRoot        string `json:"originalRoot"`
+	SHA256              string `json:"sha256"`
+	Bytes               int64  `json:"bytes"`
+	Entries             int    `json:"entries"`
+	RegularFiles        int    `json:"regularFiles"`
+	Verified            bool   `json:"verified"`
+	OriginalRootRemoved bool   `json:"originalRootRemoved"`
+}
+
+// Pack only after every capture, replay and owned cleanup has finished. Bazel's
+// post-test manifest otherwise spawns stat/file processes for every raw output.
+// The archive keeps the complete original tree, including its inventory/sums.
+// No original is removed until a separate read verifies every archive entry.
+func nativePackEvidence(root string, original []map[string]any) (nativeEvidenceArchive, error) {
+	receipt := nativeEvidenceArchive{Path: root + ".tar", OriginalRoot: root}
+	entries, err := nativeInventory(root)
+	if err != nil {
+		return receipt, err
+	}
+	// The caller's inventory was used to write output-inventory.json and sums.
+	// Require the same complete payload set, including modes and link targets,
+	// then also archive and verify those two final metadata files themselves.
+	payloads := func(values []map[string]any) []map[string]any {
+		var result []map[string]any
+		for _, entry := range values {
+			if entry["path"] != "output-inventory.json" && entry["path"] != "SHA256SUMS" {
+				result = append(result, entry)
+			}
+		}
+		return result
+	}
+	if !reflect.DeepEqual(payloads(original), payloads(entries)) {
+		return receipt, fmt.Errorf("original evidence differs from the final inventory/sums payload set")
+	}
+	file, err := os.OpenFile(receipt.Path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return receipt, err
+	}
+	keepArchive := false
+	defer func() {
+		_ = file.Close()
+		if !keepArchive {
+			_ = os.Remove(receipt.Path)
+		}
+	}()
+	writer := tar.NewWriter(file)
+	writeErr := func() error {
+		for _, entry := range entries {
+			name := entry["path"].(string)
+			path := filepath.Join(root, filepath.FromSlash(name))
+			info, err := os.Lstat(path)
+			if err != nil {
+				return err
+			}
+			if info.Mode().String() != entry["mode"] {
+				return fmt.Errorf("output mode changed before archive: %s", name)
+			}
+			target, _ := entry["target"].(string)
+			if info.Mode()&os.ModeSymlink != 0 {
+				actual, err := os.Readlink(path)
+				if err != nil {
+					return err
+				}
+				if actual != target {
+					return fmt.Errorf("output link changed before archive: %s", name)
+				}
+			}
+			header, err := tar.FileInfoHeader(info, target)
+			if err != nil {
+				return err
+			}
+			header.Name = name
+			header.Format = tar.FormatPAX
+			if err := writer.WriteHeader(header); err != nil {
+				return err
+			}
+			if entry["type"] != "file" {
+				continue
+			}
+			original, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			hash := sha256.New()
+			size, copyErr := io.Copy(io.MultiWriter(writer, hash), original)
+			if err := errors.Join(copyErr, original.Close()); err != nil {
+				return err
+			}
+			if size != entry["bytes"] || hex.EncodeToString(hash.Sum(nil)) != entry["sha256"] {
+				return fmt.Errorf("original output changed while archiving: %s", name)
+			}
+			receipt.RegularFiles++
+		}
+		return nil
+	}()
+	if err := errors.Join(writeErr, writer.Close(), file.Sync(), file.Close()); err != nil {
+		return receipt, err
+	}
+	if err := nativeVerifyEvidenceArchive(receipt.Path, entries); err != nil {
+		return receipt, err
+	}
+	receipt.SHA256, receipt.Bytes, err = nativeDigestFile(receipt.Path)
+	if err != nil {
+		return receipt, err
+	}
+	receipt.Entries, receipt.Verified = len(entries), true
+	// Keep the verified archive even if removing the now-retained originals fails.
+	keepArchive = true
+	if err := os.RemoveAll(root); err != nil {
+		return receipt, err
+	}
+	receipt.OriginalRootRemoved = true
+	return receipt, nil
+}
+
+func nativeVerifyEvidenceArchive(path string, entries []map[string]any) (retErr error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer func() { retErr = errors.Join(retErr, file.Close()) }()
+	reader := tar.NewReader(file)
+	for _, entry := range entries {
+		header, err := reader.Next()
+		if err != nil {
+			return fmt.Errorf("missing original archive entry %s: %w", entry["path"], err)
+		}
+		if header.Name != entry["path"] || header.FileInfo().Mode().String() != entry["mode"] {
+			return fmt.Errorf("archive name or mode differs at %s", entry["path"])
+		}
+		switch entry["type"] {
+		case "file":
+			hash := sha256.New()
+			size, err := io.Copy(hash, reader)
+			if err != nil {
+				return err
+			}
+			if header.Typeflag != tar.TypeReg || size != entry["bytes"] || hex.EncodeToString(hash.Sum(nil)) != entry["sha256"] {
+				return fmt.Errorf("archive payload differs at %s", header.Name)
+			}
+		case "directory":
+			if header.Typeflag != tar.TypeDir {
+				return fmt.Errorf("archive directory differs at %s", header.Name)
+			}
+		case "symlink":
+			if header.Typeflag != tar.TypeSymlink || header.Linkname != entry["target"] {
+				return fmt.Errorf("archive link differs at %s", header.Name)
+			}
+		default:
+			return fmt.Errorf("refused archive entry type at %s", header.Name)
+		}
+	}
+	if _, err := reader.Next(); err != io.EOF {
+		return fmt.Errorf("archive has an extra entry or invalid ending: %v", err)
+	}
+	return nil
 }
 
 func nativeOutputState(path string) map[string]any {
