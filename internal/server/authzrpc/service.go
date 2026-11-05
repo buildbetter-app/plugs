@@ -706,7 +706,8 @@ func claimNextCandidateConflict(err error) bool {
 	if !errors.As(err, &value) || value.Data.Code != "write_conflict" {
 		return false
 	}
-	return value.Message == "snapshot changed during all four write attempts" || value.Data.Hint == "snapshot changed during all four write attempts"
+	return value.Message == "claimNext candidate is locked" || value.Data.Hint == "claimNext candidate is locked" ||
+		value.Message == "snapshot changed during all four write attempts" || value.Data.Hint == "snapshot changed during all four write attempts"
 }
 func (s *GuardedService) CommentWithOutcome(ctx context.Context, by model.PrincipalRef, req service.CommentRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
 	if workflowItemRef(req.ID) {

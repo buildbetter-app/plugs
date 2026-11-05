@@ -77,6 +77,80 @@ func TestB04PublicClaimNextWalksMatchingReadyFrontBeyondOnePage(t *testing.T) {
 	})
 }
 
+// A separate real transaction retains the selected record lock throughout the
+// public call. PostgreSQL must use its SKIP LOCKED path; memory enforces the same
+// logical contract. SQLite serializes actual writers with BEGIN IMMEDIATE and
+// is covered by the three-store matching-front and publication witnesses.
+func TestB04PublicClaimNextSkipsHeldCandidateWithoutPublication(t *testing.T) {
+	eachStoreNamed(t, []string{"memory", "postgres"}, func(t *testing.T, e engine) {
+		f := newFixture(t, e)
+		by := f.issue("agent:held-front-worker", "user:pool-a", nil)
+		selected, next := f.work["a1"], f.work["a2"]
+		// Give the selected row a unique earlier priority, independent of IDs
+		// or the request's deterministic equal-key rotation.
+		f.request(f.bootstrap, credential{}, "bead.update", poolA, f.key("next-priority"), "setup", map[string]any{"id": next, "fields": map[string]any{"priority": 1}}).commit(t)
+		held, err := f.store.Write(f.ctx, f.lease)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer held.Close()
+		states, err := held.Lock(f.ctx, driver.LockSet{{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &selected}, Mode: driver.LockUpdate}})
+		if err != nil || len(states) != 1 || !states[0].Present {
+			t.Fatalf("actual selected record lock: states=%+v err=%v", states, err)
+		}
+		key := f.key("held-front-next")
+		f.remember(by, "bead.claimNext", key, "held-front")
+		before := f.state()
+		first := f.call(by, "bead.claimNext", poolA, key, "held-front", nil)
+		f.winner(before, by, "bead.claimNext", key, "held-front", next, first, true)
+		// The holder still owns its real lock and sees its unchanged preimage.
+		rows, err := held.Get(f.ctx, []model.Ref{selected})
+		if err != nil || len(rows) != 1 || !bytes.Equal(rows[0].Body, before.record(t, selected).Body) {
+			t.Fatalf("skipped held candidate changed: %v", err)
+		}
+		after := f.state()
+		if err := held.Rollback(f.ctx); err != nil {
+			t.Fatal(err)
+		}
+		sameState(t, after, f.state())
+		// Releasing the real lock makes that untouched candidate claimable.
+		secondKey := f.key("released-front-next")
+		f.remember(by, "bead.claimNext", secondKey, "held-front")
+		before = f.state()
+		second := f.call(by, "bead.claimNext", poolA, secondKey, "held-front", nil)
+		f.winner(before, by, "bead.claimNext", secondKey, "held-front", selected, second, true)
+		t.Logf("%s: public claimNext passed a real held first candidate, conserved its row/history, and claimed it once after release", e.name)
+	})
+}
+
+func TestB04PublicClaimNextLockedFrontNeverPublishesNull(t *testing.T) {
+	eachStoreNamed(t, []string{"memory", "postgres"}, func(t *testing.T, e engine) {
+		f := newFixture(t, e)
+		by := f.issue("agent:locked-front-worker", "user:pool-a", nil)
+		selected := f.work["a1"]
+		held, err := f.store.Write(f.ctx, f.lease)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer held.Close()
+		states, err := held.Lock(f.ctx, driver.LockSet{{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &selected}, Mode: driver.LockUpdate}})
+		if err != nil || len(states) != 1 || !states[0].Present {
+			t.Fatalf("actual selected record lock: states=%+v err=%v", states, err)
+		}
+		selector := map[string]any{"filter": map[string]any{"resources": []string{selected.ID}}}
+		key := f.key("locked-front-refusal")
+		f.refuse(by, "bead.claimNext", poolA, key, "locked-front", selector, "write_conflict")
+		before := f.state()
+		if err := held.Rollback(f.ctx); err != nil {
+			t.Fatal(err)
+		}
+		sameState(t, before, f.state())
+		first := f.call(by, "bead.claimNext", poolA, key, "locked-front", selector)
+		f.winner(before, by, "bead.claimNext", key, "locked-front", selected, first, true)
+		t.Logf("%s: locked nonempty front returns catalog write_conflict without null/receipt/history; released same key wins once", e.name)
+	})
+}
+
 // The HTTP transport supplies a fresh trace ID after catalog mapping. The
 // expected retryability comes from the canonical error catalog, never from a
 // caller-provided domain flag. Exercise both public claim endpoints and the

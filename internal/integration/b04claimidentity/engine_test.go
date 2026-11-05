@@ -113,6 +113,11 @@ func eachStore(t *testing.T, sqlOnly bool, run func(*testing.T, engine)) {
 	if sqlOnly {
 		names = names[1:]
 	}
+	eachStoreNamed(t, names, run)
+}
+
+func eachStoreNamed(t *testing.T, names []string, run func(*testing.T, engine)) {
+	t.Helper()
 	for _, name := range names {
 		t.Run(name, func(t *testing.T) {
 			e := engine{name: name, storage: memory.Driver{}}

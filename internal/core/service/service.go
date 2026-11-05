@@ -699,7 +699,8 @@ func claimNextCandidateConflict(err error) bool {
 	if !errors.As(err, &value) || value.Data.Code != "write_conflict" {
 		return false
 	}
-	return value.Message == "snapshot changed during all four write attempts" || value.Data.Hint == "snapshot changed during all four write attempts"
+	return value.Message == "claimNext candidate is locked" || value.Data.Hint == "claimNext candidate is locked" ||
+		value.Message == "snapshot changed during all four write attempts" || value.Data.Hint == "snapshot changed during all four write attempts"
 }
 
 func (s *Service) claimWithMethod(ctx context.Context, by model.PrincipalRef, req ClaimRequest, meta model.WriteMeta, outcomeRequired bool, method string) (port.WriteOutcome, error) {

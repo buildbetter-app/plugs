@@ -469,6 +469,9 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	}
 	allocatorKeys = append(allocatorKeys, p.readySort.locks()...)
 	locks, err := p.snapshot.locks(writes, sentinels, allocatorKeys...)
+	if meta.Method == "bead.claimNext" && len(writes) == 1 {
+		locks, err = p.snapshot.claimNextLocks(writes, sentinels, allocatorKeys...)
+	}
 	if err != nil {
 		return model.Commit{}, err
 	}
@@ -482,8 +485,8 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	if err != nil {
 		return model.Commit{}, err
 	}
-	if len(states) != len(locks) {
-		return model.Commit{}, fmt.Errorf("driver failed to acquire the complete lock set")
+	if err := checkSelectedLocks(locks, states); err != nil {
+		return model.Commit{}, err
 	}
 	if err := p.snapshot.check(states); err != nil {
 		return model.Commit{}, err
