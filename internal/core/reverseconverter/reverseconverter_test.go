@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -1005,6 +1006,10 @@ func TestConvertVersionedDependenciesKeepRawMetadataAndOneEnvelope(t *testing.T)
 	}{
 		{"legacy NULL", "waits-for", nil, false},
 		{"explicit empty", "waits-for", map[string]any{}, false},
+		{"empty gate object", "waits-for", map[string]any{"gate": ""}, false},
+		{"empty gate SQL", "waits-for", " {\"gate\":\"\"} \n", false},
+		{"empty gate object envelope", "waits-for", map[string]any{"_plug_edge_id": "edge-1", "_plug_metadata": map[string]any{"gate": ""}}, true},
+		{"empty gate SQL envelope", "waits-for", " {\"_plug_edge_id\":\"edge-1\",\"_plug_metadata\":\" {\\\"gate\\\":\\\"\\\"} \\n\"} \n", true},
 		{"SQL text", "waits-for", sql, false},
 		{"typed object", "waits-for", map[string]any{"gate": "all-children", "also_blocks": false, "spawner_id": "demo-1", "opaque": json.Number("9007199254740993")}, false},
 		{"conditional array", "conditional-blocks", []any{json.Number("9007199254740993"), json.Number("1.0"), nil}, false},
@@ -1014,52 +1019,55 @@ func TestConvertVersionedDependenciesKeepRawMetadataAndOneEnvelope(t *testing.T)
 		{"existing typed envelope", "waits-for", map[string]any{"_plug_edge_id": "edge-1", "_plug_metadata": map[string]any{"gate": "any-children", "opaque": json.Number("9007199254740993")}}, true},
 		{"existing ID-only envelope", "waits-for", ` {"_plug_edge_id":"edge-1"} `, true},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			dump := versionedDependencyDump(test.kind, test.raw)
-			before := cloneDump(dump)
-			result, err := Convert(dump)
-			if err != nil {
-				t.Fatal(err)
-			}
-			found := false
-			for _, raw := range bytes.Split(bytes.TrimSpace(result.JSONL), []byte{'\n'}) {
-				var issue issueLine
-				if json.Unmarshal(raw, &issue) != nil || issue.ID != "demo-2" {
-					continue
+		for _, version := range []int{dumpformat.EdgeVersionTypedDependencies, dumpformat.EdgeVersionLocalOpaque} {
+			t.Run(fmt.Sprintf("%s/v%d", test.name, version), func(t *testing.T) {
+				dump := versionedDependencyDump(test.kind, test.raw)
+				dump.Manifest.Kinds[4].Version = version
+				before := cloneDump(dump)
+				result, err := Convert(dump)
+				if err != nil {
+					t.Fatal(err)
 				}
-				if len(issue.Dependencies) != 1 || issue.Dependencies[0].Type != test.kind || issue.Dependencies[0].ID != "edge-1" || issue.Dependencies[0].ThreadID != "thread-1" {
-					t.Fatalf("dependency identity/type/thread changed: %#v", issue.Dependencies)
-				}
-				encoded := issue.Dependencies[0].Metadata
-				if test.envelope {
-					want, ok := test.raw.(string)
-					if !ok {
-						want, err = canonicalJSON(test.raw)
-						if err != nil {
-							t.Fatal(err)
+				found := false
+				for _, raw := range bytes.Split(bytes.TrimSpace(result.JSONL), []byte{'\n'}) {
+					var issue issueLine
+					if json.Unmarshal(raw, &issue) != nil || issue.ID != "demo-2" {
+						continue
+					}
+					if len(issue.Dependencies) != 1 || issue.Dependencies[0].Type != test.kind || issue.Dependencies[0].ID != "edge-1" || issue.Dependencies[0].ThreadID != "thread-1" {
+						t.Fatalf("dependency identity/type/thread changed: %#v", issue.Dependencies)
+					}
+					encoded := issue.Dependencies[0].Metadata
+					if test.envelope {
+						want, ok := test.raw.(string)
+						if !ok {
+							want, err = canonicalJSON(test.raw)
+							if err != nil {
+								t.Fatal(err)
+							}
+						}
+						if encoded != want {
+							t.Fatalf("existing flat envelope changed: %q want %q", encoded, want)
+						}
+					} else {
+						var envelope map[string]any
+						decoder := json.NewDecoder(strings.NewReader(encoded))
+						decoder.UseNumber()
+						if err := decoder.Decode(&envelope); err != nil || envelope["_plug_edge_id"] != "edge-1" {
+							t.Fatalf("invalid identity envelope: %#v %v", envelope, err)
+						}
+						payload, present := envelope["_plug_metadata"]
+						if present != (test.raw != nil) || !reflect.DeepEqual(payload, test.raw) {
+							t.Fatalf("source payload type/value changed: %#v want %#v", payload, test.raw)
 						}
 					}
-					if encoded != want {
-						t.Fatalf("existing flat envelope changed: %q want %q", encoded, want)
-					}
-				} else {
-					var envelope map[string]any
-					decoder := json.NewDecoder(strings.NewReader(encoded))
-					decoder.UseNumber()
-					if err := decoder.Decode(&envelope); err != nil || envelope["_plug_edge_id"] != "edge-1" {
-						t.Fatalf("invalid identity envelope: %#v %v", envelope, err)
-					}
-					payload, present := envelope["_plug_metadata"]
-					if present != (test.raw != nil) || !reflect.DeepEqual(payload, test.raw) {
-						t.Fatalf("source payload type/value changed: %#v want %#v", payload, test.raw)
-					}
+					found = true
 				}
-				found = true
-			}
-			if !found || !reflect.DeepEqual(dump, before) {
-				t.Fatal("conversion omitted dependency or mutated retained raw source")
-			}
-		})
+				if !found || !reflect.DeepEqual(dump, before) {
+					t.Fatal("conversion omitted dependency or mutated retained raw source")
+				}
+			})
+		}
 	}
 }
 
@@ -1106,9 +1114,10 @@ func TestConvertVersionedDependenciesRetainRefusalBoundaries(t *testing.T) {
 			}
 		})
 	}
-	for _, metadata := range []any{
+	for i, metadata := range []any{
 		`{"gate":"all-children","gate":"any-children"}`, `{} {}`, `{"x":"\ud800"}`,
-		map[string]any{"gate": nil}, map[string]any{"gate": ""}, map[string]any{"gate": "other"},
+		map[string]any{"gate": nil}, map[string]any{"gate": " "}, map[string]any{"gate": "other"},
+		map[string]any{"gate": true}, map[string]any{"gate": json.Number("1")},
 		map[string]any{"also_blocks": nil}, map[string]any{"also_blocks": json.Number("1")},
 		map[string]any{"spawner_id": json.Number("1")},
 		map[string]any{"_plug_edge_id": "wrong", "_plug_metadata": map[string]any{}},
@@ -1118,10 +1127,16 @@ func TestConvertVersionedDependenciesRetainRefusalBoundaries(t *testing.T) {
 		map[string]any{"opaque": map[string]any{"_plug_edge_id": "nested"}},
 		map[string]any{"_plug_edge_id": "edge-1", "_plug_metadata": map[string]any{"_plug_edge_id": "edge-1"}},
 	} {
-		dump := versionedDependencyDump("waits-for", metadata)
-		result, err := Convert(dump)
-		if err == nil || len(result.JSONL) != 0 {
-			t.Fatalf("ambiguous versioned metadata emitted output: %#v %v", metadata, err)
+		for _, version := range []int{dumpformat.EdgeVersionTypedDependencies, dumpformat.EdgeVersionLocalOpaque} {
+			t.Run(fmt.Sprintf("invalid_metadata/v%d/%d", version, i), func(t *testing.T) {
+				dump := versionedDependencyDump("waits-for", metadata)
+				dump.Manifest.Kinds[4].Version = version
+				result, err := Convert(dump)
+				var refusal *Refusal
+				if !errors.As(err, &refusal) || len(result.JSONL) != 0 {
+					t.Fatalf("ambiguous versioned metadata emitted output: %#v %v", metadata, err)
+				}
+			})
 		}
 	}
 }
