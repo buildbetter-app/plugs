@@ -17,7 +17,8 @@ idempotency keys. Principal comes from transport and must match agent.brief.whoa
 
 Legacy original IDs remain byte-for-byte Python strings in sidecars and JSONL;
 the per-project mapping determines the canonical ref. New IDs use the returned
-canonical ref. IDs are never split, case-folded, shortened, or prefix-matched.
+canonical ref and require a create receipt scoped to this instance/project.
+Unmapped sidecar IDs are refused; no direct-ID identity fallback is guessed. IDs are never split, case-folded, shortened, or prefix-matched.
 Dependency direction: dependent -> prerequisite, kind `blocks`. Parent is
 child -> parent. Graph targets must resolve in the same bound project.
 

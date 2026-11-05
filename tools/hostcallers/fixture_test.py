@@ -64,7 +64,7 @@ class HostCallerFixture(unittest.TestCase):
     def assert_refused(self, ident):
         with self.assertRaises(ph.RPCError) as e:
             self.lifecycle(ident)
-        self.assertIn(e.exception.code, ('blocked','guard_failed','invalid_transition','constraint_violation','validation_failed'))
+        self.assertEqual(e.exception.code, 'ontology_guard_failed')
 
     def test_six_prepared_scripts_real_rpc(self):
         plan={'doc':'fixture.md','items':[
@@ -99,7 +99,9 @@ class HostCallerFixture(unittest.TestCase):
         self.assertEqual(set(mol['steps']),set(hd.STEPS))
         for ident in (ids['A'],mol['root'],mol['steps']['land'],mol['steps']['verify']):
             self.assert_refused(ident)
-        for step in hd.STEPS:
+        for i, step in enumerate(hd.STEPS):
+            if i + 1 < len(hd.STEPS):
+                self.assert_refused(mol['steps'][hd.STEPS[i + 1]])
             self.lifecycle(mol['steps'][step])
         self.lifecycle(mol['root']); self.lifecycle(ids['A'])
         self.write('prep-restructure.json',{'reopen':['B'],'dep_add':{'B':['A']}})
@@ -147,6 +149,14 @@ class HostCallerFixture(unittest.TestCase):
             j.finish({'ids.json':j.data['ids.json']})
         self.assertEqual(ph.read_json(self.signals/'ids.json')['K'],original)
         with self.assertRaises(ph.AdapterError): sc.get(ops)
+        # An otherwise valid canonical ID without mapping/receipt must not be
+        # guessed from a legacy sidecar, even when it belongs to this project.
+        isolated = self.root/'unmapped-signals'; isolated.mkdir()
+        self.cfg['projects']['signals-v2']['workspace'] = str(isolated)
+        self.cfg['projects']['signals-v2']['legacy_ids'] = {}
+        self.write_binding()
+        unmapped = ph.Client(self.binding, 'signals-v2')
+        with self.assertRaises(ph.AdapterError): unmapped.get(signal)
 
     def test_multi_id_label_cas_preserves_competing_edit(self):
         a,b=self.create(labels=['base']),self.create(labels=['base'])

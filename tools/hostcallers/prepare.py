@@ -113,5 +113,8 @@ projection = Projection(client)
         'patch_sha256':hashlib.sha256(patch.encode()).hexdigest(),
         'private_payload_copied_to_disk':False,
         'fixture_payload':'synthetic replacement' if name in {'cody-ops-seed.py','restructure_milestones.py'} else 'generic source'})
+for helper in ('plug_host.py', 'host_drivers.py', 'projection.py'):
+    (ROOT/'patches'/(helper+'.patch')).write_text(''.join(difflib.unified_diff(
+        [], (ROOT/helper).read_text().splitlines(True), fromfile='/dev/null', tofile='b/scripts/'+helper, n=0)))
 (ROOT/'source-manifest.json').write_text(json.dumps(manifest, indent=2)+'\n')
 print('prepared six zero-context patches; private payload retained only in live source and transient hash image')

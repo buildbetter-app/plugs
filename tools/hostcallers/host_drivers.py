@@ -206,6 +206,7 @@ def pour(c, chunk, keys):
         commit = j.mutate("tx.apply", build)
         root = created_ref(commit, 0)
         steps = {step: created_ref(commit, i + 1) for i, step in enumerate(STEPS)}
+        c.generated.update([root, *steps.values()])
         mols[chunk] = {"root": root, "steps": steps, "keys": keys}
         j.finish({"molecules.json": mols})
         return {"id_mapping": {"mol-execplan-step": root, **{"mol-execplan-step." + k: v for k, v in steps.items()}}}

@@ -1,0 +1,25 @@
+{
+  "schema": "plug-host-topology-preparation/1",
+  "state": "UNAPPLIED_REQUIRES_RESTORE_HOST_BINDINGS",
+  "authority": "one Plug process and one store active lease",
+  "projects": ["cody-ops", "signals-v2"],
+  "client_transport": "same explicitly bound HTTP(S) RPC origin",
+  "instance_identity": "must equal restored server.hello incarnation",
+  "identity_check": "agent.brief.whoami.principal must equal configured transport principal",
+  "ontology": "host-ontology.json is a fixture/preparation specimen, not proof of the real restored ontology",
+  "import_maps": "per-project lossless original-ID -> canonical Ref; never prefix resolution",
+  "sync": {
+    "normal_host_operation": "all callers use the single authoritative instance; no separate per-project replica",
+    "dolt_push_pull_compatible": false,
+    "dolt_data_ref": null,
+    "sync_run_destination": null,
+    "backup_or_replication_destination": "UNBOUND_HOST_INPUT",
+    "commands_issued": []
+  },
+  "restore_and_cutover": {
+    "performed_by_this_packet": false,
+    "two_project_restoration": "separate authorized lane restores both into one empty target",
+    "cloud_factory": "none, binding escalations.md931-937",
+    "shadow_trial": "separate host trial; no BuildBetter staging binding"
+  }
+}

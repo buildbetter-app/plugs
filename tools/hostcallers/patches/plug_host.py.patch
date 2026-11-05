@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/scripts/plug_host.py
-@@ -0,0 +1,362 @@
+@@ -0,0 +1,388 @@
 +"""Typed, explicitly bound Plug host adapter. No Beads subprocess or discovery."""
 +import contextlib
 +import copy
@@ -96,6 +96,23 @@
 +            raise AdapterError("non-loopback endpoint requires HTTPS")
 +        self.endpoint = cfg["endpoint"].rstrip("/") + "/rpc/v1"
 +        self.identity = digest(cfg)
++        self.scope = digest({"endpoint": cfg["endpoint"], "incarnation": cfg["incarnation"],
++                             "principal": cfg["principal"], "project": project})
++        self.generated = set()
++        ledger = read_json(self.workspace / ".plug-host-journal.json", {"jobs": {}})
++        for job in ledger.get("jobs", {}).values():
++            if job.get("scope") != self.scope:
++                continue
++            for call in job.get("calls", []):
++                if "result" not in call:
++                    continue
++                if call["method"] == "bead.create":
++                    self.generated.add(created_ref(call["result"]))
++                elif call["method"] == "tx.apply":
++                    ops = call["attempts"][-1]["params"]["changeSet"]["ops"]
++                    for i, op in enumerate(ops):
++                        if op["kind"] == "create":
++                            self.generated.add(created_ref(call["result"], i))
 +        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
 +        hello = self.rpc("server.hello", {})
 +        if hello.get("incarnation") != cfg["incarnation"]:
@@ -144,10 +161,17 @@
 +    def ref(self, original):
 +        if not isinstance(original, str) or not original:
 +            raise AdapterError("ID must be a nonempty exact string")
-+        return copy.deepcopy(self.ids.get(original, {"id": original}))
++        if original in self.ids:
++            return copy.deepcopy(self.ids[original])
++        if original in self.generated:
++            return {"id": original}
++        raise AdapterError("ID has neither an explicit import mapping nor a scoped create receipt")
 +
 +    def get(self, original, as_of=None):
-+        params = {"id": self.ref(original)}
++        return self._get_ref(self.ref(original), as_of)
++
++    def _get_ref(self, ref, as_of=None):
++        params = {"id": ref}
 +        if as_of is not None:
 +            params["asOf"] = as_of
 +        bead = self.rpc("bead.get", params)["bead"]
@@ -178,7 +202,7 @@
 +                raise AdapterError("projection did not advance within bound")
 +            seen.add(cursor)
 +            params["cursor"] = cursor
-+        return [self.get(self.original(i), as_of) for i in ids]
++        return [self._get_ref({"id": i}, as_of) for i in ids]
 +
 +
 +class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -215,7 +239,7 @@
 +        jobs = self.book["jobs"]
 +        if self.job_id not in jobs:
 +            jobs[self.job_id] = {"initial": {k: read_json(self.client.workspace / k, v) for k, v in self.defaults.items()},
-+                                 "calls": [], "stamp": time.strftime("%Y%m%d-%H%M%S"), "done": False}
++                                 "calls": [], "scope": self.client.scope, "stamp": time.strftime("%Y%m%d-%H%M%S"), "done": False}
 +        self.state = jobs[self.job_id]
 +        self.done = self.state["done"]
 +        self.data = copy.deepcopy(self.state["initial"])
@@ -312,7 +336,9 @@
 +                self.c.get(parent)
 +                p["parent"] = self.c.ref(parent)
 +            return p
-+        return created_ref(self.job.mutate("bead.create", build))
++        ident = created_ref(self.job.mutate("bead.create", build))
++        self.c.generated.add(ident)
++        return ident
 +
 +    def update(self, original, fields):
 +        return self.job.mutate("bead.update", lambda: {"id": self.c.ref(original), "fields": fields, "expect": [expect(self.c.get(original))]})
