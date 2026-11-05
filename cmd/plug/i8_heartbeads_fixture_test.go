@@ -129,7 +129,16 @@ func i8RunAdapter(t *testing.T, bindingPath string) {
 			t.Logf("I8_ADAPTER_BOUNDARY cannot resolve runfile: %v", err)
 			return
 		}
-		adapterPath = filepath.Join(cwd, adapterPath)
+		candidates := []string{filepath.Join(cwd, adapterPath)}
+		if strings.HasPrefix(adapterPath, "cmd/plug/") {
+			candidates = append(candidates, filepath.Join(cwd, strings.TrimPrefix(adapterPath, "cmd/plug/")))
+		}
+		for _, candidate := range candidates {
+			if _, statErr := os.Stat(candidate); statErr == nil {
+				adapterPath = candidate
+				break
+			}
+		}
 	}
 	script := `
 const {loadBinding, PlugClient, ProjectionStore} = await import(process.env.I8_ADAPTER);
