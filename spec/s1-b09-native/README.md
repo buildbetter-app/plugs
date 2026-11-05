@@ -8,6 +8,9 @@ binary, manifest, producer source/tree, run and workflow before execution.
 The same run's preparation receipt, helper binding and literal command are
 retained by the RunsOn collector alongside the test's command/environment,
 raw streams, inventory, 26 sidecars, validated archive and physical file copies.
+`native_inputs.json` retains the exact external protocol names as reviewed
+data. Its embedded bytes are digest-bound and copied into the runtime receipt;
+all admission and source-family comparisons use these independent expectations.
 
 This case explicitly writes the real source file `.beads/config.yaml` with
 the exact bytes `export:\n  auto: false\n`. It is the **configured YAML object**

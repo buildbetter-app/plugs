@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -34,20 +35,24 @@ const (
 	nativeDescriptor     = "41800330346:13307042737:ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a"
 	nativeWorkflowSHA    = "d758fdf42a426e9e2a4b707dbcebb22ec68b264e"
 	nativeWorkflowBranch = "swarm/native-producer-census-control-c8eb-20261104"
+	nativeInputsSHA256   = "a7ddd9047eb94e54cdaa138b1adf756c5088a50bc01605ee2c6eafbfb9d0d9c2"
 	maxSnapshotSize      = 512 << 20
 )
 
 var nativeRecording = flag.Bool("b09-native-recording", false, "explicit accepted Beads B09 recording")
 
-var expectedFamilies = []string{
-	"user-legacy-config", "user-xdg-config", "user-native-config",
-	"project-config", "beads-dir-config", "project-local-config",
-	"environment-and-flags", "metadata-json", "legacy-config-json",
-	"beads-hooks", "legacy-hooks", "git-hooks", "external-hook-managers",
-	"routes-jsonl", "formulas", "formula-search-paths", "issues-jsonl",
-	"interactions-jsonl", "dolt-ignore", "dolt-nonlocal-tables",
-	"dolt-working-set", "dolt-commit-graph", "dolt-remotes",
-	"dolt-conflicts", "dolt-history-maintenance", "store-files-and-quiescence",
+// The reviewed external protocol names are data, separate from Go identifiers.
+// Embed and retain the exact committed bytes; no runtime input can replace them.
+//
+//go:embed native_inputs.json
+var nativeInputBytes []byte
+
+type nativeInputs struct {
+	SourceFamilies            []string `json:"source_families"`
+	ExporterArtifact          string   `json:"exporter_artifact"`
+	ExporterLabel             string   `json:"exporter_label"`
+	VersionResolution         string   `json:"version_resolution"`
+	NoninteractiveEnvironment string   `json:"noninteractive_environment"`
 }
 
 type commandReceipt struct {
@@ -105,6 +110,7 @@ type recorder struct {
 	t        *testing.T
 	root     string
 	binary   string
+	inputs   nativeInputs
 	commands []commandReceipt
 	captures []captureReceipt
 }
@@ -125,6 +131,20 @@ func TestRecordNativeB09(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := &recorder{t: t, root: root}
+	if hashBytes(nativeInputBytes) != nativeInputsSHA256 {
+		t.Fatal("committed external protocol input digest changed")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(nativeInputBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&r.inputs); err != nil {
+		t.Fatalf("committed external protocol input: %v", err)
+	}
+	if len(r.inputs.SourceFamilies) != 26 || r.inputs.ExporterArtifact == "" || r.inputs.ExporterLabel == "" || r.inputs.VersionResolution == "" || r.inputs.NoninteractiveEnvironment == "" {
+		t.Fatal("committed external protocol input is incomplete")
+	}
+	if err := os.WriteFile(filepath.Join(root, "native-inputs.json"), nativeInputBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
 	t.Logf("B09_NATIVE_OUTPUT %s", root)
 	r.binary = r.admitBinary()
 	adaptive := r.newWorkspace("adaptive")
@@ -284,11 +304,11 @@ func (r *recorder) admitBinary() string {
 		r.t.Fatalf("trusted public descriptor differs from admitted preparation: %q", got)
 	}
 	target := identity.Targets["beads_exporter"]
-	artifact := identity.Artifacts["bin/bd-export"]
+	artifact := identity.Artifacts[r.inputs.ExporterArtifact]
 	var version struct{ Commit, Build string }
-	if err := json.Unmarshal(identity.Resolution["bd_export_version"], &version); err != nil ||
+	if err := json.Unmarshal(identity.Resolution[r.inputs.VersionResolution], &version); err != nil ||
 		identity.Schema != "plug-public-native/1" || identity.Source["beads"].Commit != beadsCommit || identity.Source["beads"].Tree != beadsTree ||
-		target.Label != "//cmd/bd:bd" || target.Binary != "bin/bd-export" || artifact.SHA256 != binarySHA256 || artifact.Size != info.Size() || artifact.Mode != "0o755" ||
+		target.Label != r.inputs.ExporterLabel || target.Binary != r.inputs.ExporterArtifact || artifact.SHA256 != binarySHA256 || artifact.Size != info.Size() || artifact.Mode != "0o755" ||
 		identity.Build.RunID != beadsBuildRun || version.Commit != beadsCommit || version.Build != "public-"+beadsCommit ||
 		identity.Workflow.SHA != nativeWorkflowSHA || identity.Workflow.Ref != "refs/heads/"+nativeWorkflowBranch || identity.Workflow.Profile != "plug-public-native/1" {
 		r.t.Fatal("trusted public manifest fields do not bind the accepted source and executable")
@@ -344,7 +364,7 @@ func (r *recorder) newWorkspace(name string) workspace {
 		"XDG_CONFIG_HOME=" + filepath.Join(w.Home, ".config"), "XDG_CACHE_HOME=" + filepath.Join(w.Home, ".cache"),
 		"XDG_DATA_HOME=" + filepath.Join(w.Home, ".local", "share"), "XDG_STATE_HOME=" + filepath.Join(w.Home, ".local", "state"),
 		"TMPDIR=" + w.Temp, "BEADS_DOLT_DATA_DIR=" + w.Data,
-		"BEADS_ACTOR=b09-native", "BEADS_NO_DAEMON=1", "BD_NON_INTERACTIVE=1", "DO_NOT_TRACK=1",
+		"BEADS_ACTOR=b09-native", "BEADS_NO_DAEMON=1", r.inputs.NoninteractiveEnvironment, "DO_NOT_TRACK=1",
 		"LANG=C", "LC_ALL=C", "TZ=UTC", "TERM=dumb", "CI=true", "NO_COLOR=1",
 		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
 		"GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=/bin/false", "SSH_ASKPASS=/bin/false", "GIT_SSH_COMMAND=/bin/false",
@@ -570,11 +590,11 @@ func (r *recorder) capture(w workspace, label string, wantBeads int) captureRece
 	}
 	sidecarDir := inventoryPath + ".sources"
 	dirInfo, err := os.Lstat(sidecarDir)
-	if err != nil || !dirInfo.IsDir() || dirInfo.Mode().Perm() != 0700 || len(inventory.External) != len(expectedFamilies) {
+	if err != nil || !dirInfo.IsDir() || dirInfo.Mode().Perm() != 0700 || len(inventory.External) != len(r.inputs.SourceFamilies) {
 		r.t.Fatalf("native inventory sidecar directory or family census is incomplete: %v", err)
 	}
 	wantFamilies := map[string]bool{}
-	for _, family := range expectedFamilies {
+	for _, family := range r.inputs.SourceFamilies {
 		wantFamilies[family] = true
 	}
 	sidecars := map[string]string{}
