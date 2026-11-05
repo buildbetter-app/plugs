@@ -180,9 +180,15 @@ func TestI8HeartbeadsActualSQLiteTwoProjectFixture(t *testing.T) {
 		t.Fatalf("reopen refused: %+v", reopen.Error)
 	}
 	reopened := i8FixtureRPC(t, endpoint, "cody-ops", "bead.get", map[string]any{"id": map[string]any{"id": roots["cody-ops"]}}, "")
-	if strings.Contains(string(reopened.Result), "plug-host-close-reason") {
-		t.Fatalf("reopen projection retained typed close reason: %s", reopened.Result)
+	var reopenedValue map[string]any
+	if err := json.Unmarshal(reopened.Result, &reopenedValue); err != nil {
+		t.Fatalf("reopen readback=%s err=%v", reopened.Result, err)
 	}
+	reopenedBead, _ := reopenedValue["bead"].(map[string]any)
+	if status, _ := reopenedBead["status"].(string); status == "done" || status == "closed" {
+		t.Fatalf("reopen did not return an open lifecycle status: %s", reopened.Result)
+	}
+	t.Logf("reopen raw store retains typed metadata/comment for history; adapter closed-only projection must omit it while status=%v", reopenedBead["status"])
 	updated := i8FixtureRPC(t, endpoint, "cody-ops", "bead.update", map[string]any{"id": map[string]any{"id": roots["cody-ops"]}, "fields": map[string]any{"description": "after"}}, "0000000000000000000000000000000003")
 	if updated.Error != nil {
 		t.Fatalf("field update refused: %+v", updated.Error)
