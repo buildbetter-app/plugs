@@ -25,7 +25,7 @@ var b09b12PostgresDSN string
 // The B11 accepted replay target owns a real disposable PostgreSQL engine.
 // Setup failure fails the target; it cannot become a SQLite or memory result.
 func TestMain(m *testing.M) {
-	os.Exit(func() int {
+	os.Exit(func() (code int) {
 		name := "plug-s1-b09-b12-" + b09b12RandomID()
 		out, err := b09b12Docker("run", "-d", "--rm", "--name", name,
 			"-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=plug_test",
@@ -35,9 +35,14 @@ func TestMain(m *testing.M) {
 			return 1
 		}
 		defer func() {
-			if out, err := b09b12Docker("rm", "-f", name); err != nil {
+			out, err := b09b12Docker("rm", "-f", name)
+			removed := strings.TrimSpace(string(out))
+			if err != nil || removed == "" {
 				fmt.Fprintf(os.Stderr, "owned PostgreSQL cleanup failed: %v %s\n", err, out)
+				code = 1
+				return
 			}
+			fmt.Fprintf(os.Stderr, "owned PostgreSQL cleanup succeeded: %s\n", removed)
 		}()
 		out, err = b09b12Docker("port", name, "5432/tcp")
 		if err != nil {
@@ -72,7 +77,8 @@ func TestMain(m *testing.M) {
 			return 1
 		}
 		fmt.Printf("Real PostgreSQL: %s\nImage: %s\n", version, b09b12PostgresImage)
-		return m.Run()
+		code = m.Run()
+		return code
 	}())
 }
 
