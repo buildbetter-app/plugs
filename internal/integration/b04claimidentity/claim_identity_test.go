@@ -52,7 +52,7 @@ func TestB04PublicClaimNextWalksMatchingReadyFrontBeyondOnePage(t *testing.T) {
 		selector := map[string]any{"filter": map[string]any{"types": []string{"issue"}}}
 		// Observe the real unguarded queue source through its public read route.
 		// The tail has lower priority, so the first page must be full without it.
-		ready := f.request(f.bootstrap, credential{}, "bead.ready", poolA, "", "front-observer", map[string]any{"limit": 1000, "filter": selector["filter"]})
+		ready := f.request(f.bootstrap, credential{}, "bead.ready", poolA, f.key("front-observer"), "front-observer", map[string]any{"limit": 1000, "filter": selector["filter"]})
 		var front struct{ Items []struct{ ID string } }
 		if ready.code != "" || json.Unmarshal(ready.envelope["result"], &front) != nil || len(front.Items) != 1000 {
 			t.Fatalf("matching ready front is not one full source page: %s", ready.raw)
