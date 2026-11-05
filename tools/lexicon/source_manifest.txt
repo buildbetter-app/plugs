@@ -424,6 +424,10 @@ internal/integration/b04claimidentity/README.md
 internal/integration/b04claimidentity/claim_identity_test.go
 internal/integration/b04claimidentity/engine_test.go
 internal/integration/b04claimidentity/fixture_test.go
+internal/integration/b04claimidentity/native_b04_contract_test.go
+internal/integration/b04claimidentity/native_b04_inputs.json
+internal/integration/b04claimidentity/native_b04_io_test.go
+internal/integration/b04claimidentity/native_b04_recording_test.go
 internal/integration/b13memory/BUILD.bazel
 internal/integration/b13memory/README.md
 internal/integration/b13memory/fixture_test.go
