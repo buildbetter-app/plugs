@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 )
@@ -28,6 +30,10 @@ type QueueProjectionReader interface {
 	QueueProjectionImages(context.Context, View, []model.Ref) ([]Record, error)
 }
 
+// Version 1 remains wire-compatible as the queue annotation grows. Older
+// rows decode with zero CreatedAt/Blocked/TargetKind and are accepted as
+// complete graph facts, but the queue interpreter refuses acceleration until
+// the required typed inputs are present.
 const QueueFactsVersion = 1
 
 // QueueFacts is optional, independently versioned annotation metadata. It is
@@ -36,13 +42,55 @@ const QueueFactsVersion = 1
 type QueueFacts struct {
 	Version      uint8
 	LeasePresent bool
-	Links        []QueueLink
+	// CreatedAt is copied from the canonical source image. A zero value is
+	// intentionally uncertified: the hybrid ready order cannot safely place a
+	// legacy source whose creation instant is unknown.
+	CreatedAt time.Time
+	// Blocked is the canonical scheduling field, kept beside the thin bead
+	// annotation so the queue interpreter need not reconstruct the source body.
+	Blocked bool
+	Links   []QueueLink
 }
 
 type QueueLink struct {
-	Kind     string
-	To       model.Ref
-	Metadata *model.LinkMetadata
+	Kind       string
+	TargetKind string
+	To         model.Ref
+	Metadata   *model.LinkMetadata
+}
+
+// normalizeQueueTargetKind keeps the legacy empty/local spellings equivalent
+// while retaining the typed external arm. Queue annotations and complete link
+// facts must use this same canonical value before they are compared.
+func normalizeQueueTargetKind(raw string) (string, error) {
+	switch raw {
+	case "", "local":
+		return "", nil
+	case "external":
+		return "external", nil
+	default:
+		return "", fmt.Errorf("invalid queue link target kind %q", raw)
+	}
+}
+
+func validateQueueTargetKind(raw string, target model.Ref) error {
+	normalized, err := normalizeQueueTargetKind(raw)
+	if err != nil {
+		return err
+	}
+	if normalized == "external" {
+		if err := target.Validate(); err != nil || !target.IsID() || target.ID == "" || !utf8.ValidString(target.ID) || !target.Branch.IsZero() {
+			return fmt.Errorf("external queue link target is not a canonical ID")
+		}
+	}
+	return nil
+}
+
+func validateQueueLinkKind(kind string) error {
+	if kind == "" || len(kind) > SourceLinkMaxKindBytes || !utf8.ValidString(kind) {
+		return fmt.Errorf("queue link kind is not canonical")
+	}
+	return nil
 }
 
 type QueueBead struct {
@@ -116,6 +164,13 @@ func CompleteQueueProjection(ctx context.Context, view View, ready bool, headers
 		if err := ctx.Err(); err != nil {
 			return zero, err
 		}
+		// Main's ready-order projection shares DerivedSortKey with the
+		// selection rows but is a separate logical namespace. Its rows are
+		// intentionally unannotated and must not count as missing selection
+		// coverage. Any other unannotated selection row still refuses below.
+		if row.Row.Index == nil && row.Table == DerivedSortKey && strings.HasPrefix(row.Row.Key, "ready/") {
+			continue
+		}
 		index := row.Row.Index
 		if index == nil {
 			return zero, QueueUnavailable("unannotated logical input")
@@ -167,15 +222,31 @@ func CompleteQueueProjection(ctx context.Context, view View, ready bool, headers
 	for id, index := range beads {
 		ReportReadWork(ctx, ReadSelectorKeys, 1)
 		facts := links[id].Facts.Rows
-		if len(index.Queue.Links) != len(facts) {
-			return zero, QueueUnavailable("queue links differ from complete envelope")
-		}
-		for i, fact := range facts {
+		factIndex := 0
+		for _, link := range index.Queue.Links {
 			ReportReadWork(ctx, ReadSelectorKeys, 1)
-			link := index.Queue.Links[i]
+			queueTargetKind, queueErr := normalizeQueueTargetKind(link.TargetKind)
+			if queueErr != nil || validateQueueTargetKind(link.TargetKind, link.To) != nil {
+				return zero, QueueUnavailable("queue link source or target mismatch")
+			}
+			// Main's typed source metadata intentionally omits external edges
+			// from SelectionLinkFact. They remain in QueueFacts for the core
+			// interpreter, while the local subsequence binds to the unchanged
+			// local-only envelope.
+			if queueTargetKind == "external" {
+				continue
+			}
+			if factIndex >= len(facts) {
+				return zero, QueueUnavailable("queue links differ from complete envelope")
+			}
+			fact := facts[factIndex]
 			if fact.Ref == nil || !SelectionSameRef(*fact.Ref, index.Bead.Ref) || fact.Link == nil || fact.Link.Kind != link.Kind || !SelectionSameRef(fact.Link.To, link.To) {
 				return zero, QueueUnavailable("queue link source or target mismatch")
 			}
+			factIndex++
+		}
+		if factIndex != len(facts) {
+			return zero, QueueUnavailable("queue links differ from complete envelope")
 		}
 		copy := (DerivedRow{Index: index}).Clone().Index
 		result.Beads = append(result.Beads, QueueBead{Bead: *copy.Bead, Source: copy.Source, Facts: *copy.Queue})

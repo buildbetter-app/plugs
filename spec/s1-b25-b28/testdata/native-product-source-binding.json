@@ -1,0 +1,21 @@
+{
+  "schema": "plug-s1-native-product-source/2",
+  "repository": "buildbetter-app/plugs",
+  "pull_request": 384,
+  "requested_head": "2d2164ba3d8e456c9aba15fbeb8cae4edc755997",
+  "requested_tree": "ae226eed2e9a85d4da19958db7a3520ebfe9cf05",
+  "ordered_parents": [
+    "70230ccd92597a96000f90223c5d89b103e25426"
+  ],
+  "product_commit": "258af5a5aa02c9b8d578f9f4f726a61ccd747315",
+  "product_tree": "e36bea685c3496a4241522a80a17195793a069cf",
+  "product_ordered_parents": [
+    "451b57270b7399d1a115d59ff307744ecf961bfd"
+  ],
+  "accepted_control_ref": "refs/heads/swarm/native-preparer-c8eb-rebind-20261104",
+  "accepted_control_sha": "2d2164ba3d8e456c9aba15fbeb8cae4edc755997",
+  "accepted_producer_workflow_sha": "d758fdf42a426e9e2a4b707dbcebb22ec68b264e",
+  "accepted_producer_descriptor": "41800330346:13307042737:ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a",
+  "binding_scope": "requested-product-and-historical-checkpoint",
+  "current_product_binding": "actual Git HEAD/tree/ordered parents recorded at runtime and separately by finite dispatch; product_* is the immutable historical checkpoint, not the current source"
+}

@@ -177,34 +177,38 @@ func (r *reader) recordAt(ctx context.Context, key string) (storedRecord, bool, 
 	var rev, count string
 	var kind string
 	var deleted bool
-	err := r.sql.QueryRowContext(ctx, `SELECT ref,kind,revision::text,body,deleted,version_count::text FROM plug_postgres.records WHERE key=$1`, []byte(key)).Scan(&raw, &kind, &rev, &body, &deleted, &count)
+	err := r.sql.QueryRowContext(ctx, `SELECT ref,kind,revision::text,body,deleted,version_count::text FROM plug_postgres.records WHERE key=$1 AND revision<=$2`, []byte(key), decimal(r.at)).Scan(&raw, &kind, &rev, &body, &deleted, &count)
 	if err == nil {
+		var ref driver.Ref
+		if err = decode(raw, &ref); err != nil {
+			return result, false, err
+		}
 		n, e := parseCounter(rev)
 		if e != nil {
 			return result, false, e
 		}
-		if n <= r.at {
-			var ref driver.Ref
-			if err = decode(raw, &ref); err != nil {
-				return result, false, err
-			}
-			c, e := parseCounter(count)
-			if e != nil {
-				return result, false, e
-			}
-			if !deleted {
-				driver.ReportReadPayload(ctx, body)
-			}
-			return storedRecord{record: driver.Record{Ref: ref, Kind: kind, Revision: model.Natural64(n), Body: body}, deleted: deleted, count: c}, true, nil
+		c, e := parseCounter(count)
+		if e != nil {
+			return result, false, e
 		}
-	} else {
-		// Current rows retain tombstones, so physical absence also proves
-		// absence at every earlier revision. Only a newer current row needs
-		// historical reconstruction.
-		if errors.Is(err, sql.ErrNoRows) {
-			return result, false, nil
+		if !deleted {
+			driver.ReportReadPayload(ctx, body)
 		}
+		return storedRecord{record: driver.Record{Ref: ref, Kind: kind, Revision: model.Natural64(n), Body: body}, deleted: deleted, count: c}, true, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
 		return result, false, err
+	}
+	// The bounded current-row read conflates a physical absence with a row
+	// newer than this snapshot. Distinguish them before probing versions so a
+	// true absence keeps the zero-history-scan guarantee while a newer row
+	// still follows the retained scalar historical path.
+	var present bool
+	if err = r.sql.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM plug_postgres.records WHERE key=$1)`, []byte(key)).Scan(&present); err != nil {
+		return result, false, err
+	}
+	if !present {
+		return result, false, nil
 	}
 	err = r.sql.QueryRowContext(ctx, `SELECT value FROM plug_postgres.versions WHERE key=$1 AND revision<=$2 ORDER BY revision DESC LIMIT 1`, []byte(key), decimal(r.at)).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -497,28 +501,29 @@ func (r *reader) recordsAt(ctx context.Context, ids []string) (map[string]stored
 	for i, id := range ids {
 		keys[i] = []byte(id)
 	}
-	rows, err := r.sql.QueryContext(ctx, `SELECT key,ref,kind,revision::text,body,deleted,version_count::text
-	 FROM plug_postgres.records WHERE key=ANY($1::bytea[])`, keys)
+	rows, err := r.sql.QueryContext(ctx, `SELECT key,ref,kind,revision::text,body,deleted,version_count::text,revision<=$2
+	 FROM plug_postgres.records WHERE key=ANY($1::bytea[])`, keys, decimal(r.at))
 	if err != nil {
 		return nil, err
 	}
-	var historical []string
+	historicalKeys := make(map[string]struct{}, len(ids))
 	for rows.Next() {
 		var id, raw []byte
 		var value storedRecord
 		var revision, count string
-		if err = rows.Scan(&id, &raw, &value.record.Kind, &revision, &value.record.Body, &value.deleted, &count); err != nil {
+		var eligible bool
+		if err = rows.Scan(&id, &raw, &value.record.Kind, &revision, &value.record.Body, &value.deleted, &count, &eligible); err != nil {
+			break
+		}
+		if !eligible {
+			historicalKeys[string(id)] = struct{}{}
+			continue
+		}
+		if err = decode(raw, &value.record.Ref); err != nil {
 			break
 		}
 		var n uint64
 		if n, err = parseCounter(revision); err != nil {
-			break
-		}
-		if n > r.at {
-			historical = append(historical, string(id))
-			continue
-		}
-		if err = decode(raw, &value.record.Ref); err != nil {
 			break
 		}
 		value.record.Revision = model.Natural64(n)
@@ -539,6 +544,22 @@ func (r *reader) recordsAt(ctx context.Context, ids []string) (map[string]stored
 	}
 	if closeErr != nil {
 		return nil, closeErr
+	}
+	// PostgreSQL does not promise an order for the ANY query. Rebuild the
+	// historical miss list from the caller's order so decode/replay errors keep
+	// the scalar reader's requested-key precedence, while retaining the
+	// physical-absence optimization that excludes keys with no newer row.
+	historical := make([]string, 0, len(historicalKeys))
+	seenHistorical := make(map[string]struct{}, len(historicalKeys))
+	for _, id := range ids {
+		if _, ok := historicalKeys[id]; !ok {
+			continue
+		}
+		if _, ok := seenHistorical[id]; ok {
+			continue
+		}
+		seenHistorical[id] = struct{}{}
+		historical = append(historical, id)
 	}
 	historicalValues, err := r.historicalRecordsAt(ctx, historical)
 	if err != nil {

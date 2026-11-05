@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
@@ -24,6 +25,19 @@ func readinessVisit(work []context.Context) {
 }
 
 func (s *Service) queueReadyItems(ctx context.Context, req ReadyRequest, reader driver.Reader) ([]Bead, *driver.QueueProjection, error) {
+	return s.queueReadyItemsWithBlocked(ctx, req, reader, model.PrincipalRef{}, nil)
+}
+
+// queueReadyItemsBy is the integration seam for the main queue caller. The
+// caller supplies the workflow provider's OrdinaryBlocked operation for the
+// same pinned candidate IDs; a nil callback preserves standalone core
+// behavior. Keeping the principal and callback together prevents a caller
+// from evaluating provider blocking for a different request identity.
+func (s *Service) queueReadyItemsBy(ctx context.Context, by model.PrincipalRef, req ReadyRequest, reader driver.Reader, ordinaryBlocked func(context.Context, model.PrincipalRef, []string) (map[string]bool, error)) ([]Bead, *driver.QueueProjection, error) {
+	return s.queueReadyItemsWithBlocked(ctx, req, reader, by, ordinaryBlocked)
+}
+
+func (s *Service) queueReadyItemsWithBlocked(ctx context.Context, req ReadyRequest, reader driver.Reader, by model.PrincipalRef, ordinaryBlocked func(context.Context, model.PrincipalRef, []string) (map[string]bool, error)) ([]Bead, *driver.QueueProjection, error) {
 	queue, ok := reader.(driver.QueueProjectionReader)
 	if !ok {
 		return nil, nil, nil
@@ -34,6 +48,15 @@ func (s *Service) queueReadyItems(ctx context.Context, req ReadyRequest, reader 
 	}
 	if err != nil {
 		return nil, nil, mapped(err)
+	}
+	// Hybrid ordering and workflow membership both require their typed source
+	// inputs. A legacy/partial annotation stays on the exact graph fallback;
+	// this path never invents a creation instant or silently treats an unknown
+	// block state as false.
+	for _, source := range projection.Beads {
+		if source.Facts.CreatedAt.IsZero() {
+			return nil, nil, nil
+		}
 	}
 	graph := make(map[string]storedBead, len(projection.Beads))
 	sources := make(map[string]driver.QueueBead, len(projection.Beads))
@@ -51,7 +74,16 @@ func (s *Service) queueReadyItems(ctx context.Context, req ReadyRequest, reader 
 		}
 		for _, link := range source.Facts.Links {
 			driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
-			doc.Links = append(doc.Links, pipeline.Link{Kind: link.Kind, To: link.To, Metadata: link.Metadata})
+			decoded, err := queueDocumentLink(link)
+			if err != nil {
+				return nil, nil, failure("internal_error", "invalid persisted queue link")
+			}
+			doc.Links = append(doc.Links, decoded)
+		}
+		createdAt := source.Facts.CreatedAt.UTC()
+		doc.CreatedAt = &createdAt
+		if source.Facts.Blocked {
+			doc.Fields["blocked"] = true
 		}
 		graph[doc.ID] = storedBead{record: driver.Record{Ref: b.Ref, Kind: "bead", Revision: source.Source.Revision}, doc: doc}
 		sources[doc.ID] = source
@@ -68,6 +100,14 @@ func (s *Service) queueReadyItems(ctx context.Context, req ReadyRequest, reader 
 		driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
 		return ids[i] < ids[j]
 	})
+	blocked := map[string]bool{}
+	if ordinaryBlocked != nil {
+		var err error
+		blocked, err = ordinaryBlocked(ctx, by, append([]string(nil), ids...))
+		if err != nil {
+			return nil, nil, err
+		}
+	}
 	priorities := map[string]int{}
 	for _, id := range ids {
 		driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
@@ -77,13 +117,33 @@ func (s *Service) queueReadyItems(ctx context.Context, req ReadyRequest, reader 
 		}
 		priorities[id] = p
 	}
-	// The old interpreter orders by numeric priority then bytewise ID.
+	now := s.now()
+	// Match the main hybrid ReadySortKey rule: recent rows keep their ontology
+	// rank, older rows share the deferred bucket, then creation time and ID are
+	// deterministic tie breakers.
+	order := map[string]queueReadyOrderKey{}
+	for _, id := range ids {
+		createdAt := graph[id].doc.CreatedAt
+		if createdAt == nil || createdAt.IsZero() {
+			return nil, nil, nil
+		}
+		order[id] = queueReadyOrderKeyFor(*createdAt, now, priorities[id])
+	}
 	sort.SliceStable(ids, func(i, j int) bool {
 		driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
-		return priorities[ids[i]] < priorities[ids[j]]
+		a, b := order[ids[i]], order[ids[j]]
+		if a.Bucket != b.Bucket {
+			return a.Bucket < b.Bucket
+		}
+		if a.Rank != b.Rank {
+			return a.Rank < b.Rank
+		}
+		if !a.CreatedAt.Equal(b.CreatedAt) {
+			return a.CreatedAt.Before(b.CreatedAt)
+		}
+		return ids[i] < ids[j]
 	})
 	items := []Bead{}
-	now := s.now()
 	for _, id := range ids {
 		driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
 		if err := ctx.Err(); err != nil {
@@ -91,7 +151,7 @@ func (s *Service) queueReadyItems(ctx context.Context, req ReadyRequest, reader 
 		}
 		row := graph[id]
 		st := state(row.doc)
-		if !matchesFilter(row, req.Project, req.Filter) || st.Template || !s.ontology.effective(st.Project).ReadyEligible(st.Type, st.Status) {
+		if !matchesFilter(row, req.Project, req.Filter) || st.Template || sources[id].Facts.Blocked || blocked[id] || !s.ontology.effective(st.Project).ReadyEligible(st.Type, st.Status) {
 			continue
 		}
 		if sources[id].Facts.LeasePresent {
@@ -123,6 +183,44 @@ func (s *Service) queueReadyItems(ctx context.Context, req ReadyRequest, reader 
 		items = append(items, bead)
 	}
 	return items, &projection, nil
+}
+
+type queueReadyOrderKey struct {
+	Bucket    int
+	Rank      int
+	CreatedAt time.Time
+}
+
+func queueReadyOrderKeyFor(createdAt, at time.Time, priority int) queueReadyOrderKey {
+	key := queueReadyOrderKey{CreatedAt: createdAt.UTC()}
+	if createdAt.Before(at.Add(-48 * time.Hour)) {
+		key.Bucket, key.Rank = 1, 999
+	} else {
+		key.Rank = priority
+	}
+	return key
+}
+
+// queueDocumentLink round-trips the trusted queue annotation through the
+// pipeline link codec. The W3 branch has no target-kind member yet; the main
+// composition does, and this keeps that field when the destination struct
+// advertises it without changing the legacy link schema here.
+func queueDocumentLink(link driver.QueueLink) (pipeline.Link, error) {
+	wire := struct {
+		TargetKind string              `json:"targetKind,omitempty"`
+		To         model.Ref           `json:"to"`
+		Kind       string              `json:"kind"`
+		Metadata   *model.LinkMetadata `json:"metadata,omitempty"`
+	}{TargetKind: link.TargetKind, To: link.To, Kind: link.Kind, Metadata: link.Metadata}
+	raw, err := json.Marshal(wire)
+	if err != nil {
+		return pipeline.Link{}, err
+	}
+	var decoded pipeline.Link
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return pipeline.Link{}, err
+	}
+	return decoded, nil
 }
 
 func queueImages(ctx context.Context, reader driver.QueueProjectionReader, projection *driver.QueueProjection, sources []driver.QueueBead) ([]storedBead, error) {
@@ -170,18 +268,30 @@ func (s *Service) queueReadyPage(ctx context.Context, by model.PrincipalRef, req
 		return BeadPage{}, err
 	}
 	defer r.Close()
-	items, projection, err := s.queueReadyItems(ctx, req, r)
+	items, keys, projection, err := s.queueReadyCandidates(ctx, by, req, r)
 	if err != nil {
 		return BeadPage{}, err
 	}
-	if projection == nil {
-		items, err = s.readyItems(ctx, req, r)
+	includeEphemeral := true
+	if req.Filter != nil && req.Filter.IncludeEphemeral != nil {
+		includeEphemeral = *req.Filter.IncludeEphemeral
+	}
+	if s.workflow != nil && includeEphemeral {
+		active, err := s.workflow.ActiveIDsFor(ctx, by, workflowMeta(by, "bead.ready", req.Project, req.Agent))
 		if err != nil {
 			return BeadPage{}, err
 		}
+		filtered := items[:0]
+		for _, item := range items {
+			driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
+			if _, collides := active[item.ID]; !collides {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
 	}
-	if req.ClaimNextSeed != "" {
-		items, err = spreadClaimNextItems(items, req.ClaimNextSeed, ctx)
+	if restartOnRevision && req.ClaimNextSeed != "" {
+		items, err = spreadClaimNextItemsObserved(ctx, items, req.ClaimNextSeed, keys)
 		if err != nil {
 			return BeadPage{}, err
 		}

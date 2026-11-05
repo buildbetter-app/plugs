@@ -1,4 +1,13 @@
 load("@rules_go//go:def.bzl", "go_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+# Offline comparison controls only; no public executable or preparation.
+sh_test(
+    name = "native_pair_comparison_test",
+    srcs = ["compare_native_pair_test.py"],
+    data = ["compare_native_pair.py"],
+    size = "small",
+)
 
 go_test(
     name = "acceptance_test",
@@ -17,6 +26,7 @@ go_test(
         "record_reference.py",
         "provenance.py",
         "b26-deviation.json",
+        "b26-positive-producer.json",
         "//internal/integration/converterroundtrip:testdata/synthetic-plug-dump-1.tar",
     ],
     deps = [
@@ -43,8 +53,11 @@ go_test(
     srcs = ["public_recording_test.go"],
     args = ["-test.v", "-public-recording", "-test.run=^TestPublicNativeRecording$$"],
     data = [
+        "compare_r418_pair.py",
+        "compare_r418_pair_test.py",
         "testdata/native-public-profile.json",
         "testdata/native-public-recording-fixture.json",
+        "testdata/native-product-source-binding.json",
         "//internal/publicnative:dolt_runtime",
     ],
     env = {
@@ -111,3 +124,6 @@ filegroup(
     srcs = glob(["**"]),
     visibility = ["//visibility:public"],
 )
+
+# Offline byte-bound analysis of the fresh R418 recording pair.
+exports_files(["compare_r418_pair.py", "compare_r418_pair_test.py"])

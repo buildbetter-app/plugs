@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // UnresolvedDependencyError identifies a source dependency whose endpoint is
@@ -181,7 +182,10 @@ func validateMigratedRecord(record Record, projects []Project, counts map[string
 		switch stringValue(fields["type"]) {
 		case "blocks", "parent-child", "related", "discovered-from":
 		default:
-			return fmt.Errorf("unsupported dependency type")
+			kind := stringValue(fields["type"])
+			if targetKind != "depends_on_external" || kind == "" || len(kind) > 32 || !utf8.ValidString(kind) {
+				return fmt.Errorf("unsupported dependency type")
+			}
 		}
 		body = Row{"from": fields["issue_id"], "to": target, "target_kind": targetKind, "type": fields["type"], "metadata": fields["metadata"], "thread_id": fields["thread_id"]}
 	case "comment":

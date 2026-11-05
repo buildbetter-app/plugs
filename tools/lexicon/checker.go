@@ -3,6 +3,7 @@ package lexicon
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"go/ast"
@@ -27,10 +28,11 @@ type Term struct {
 	Allow   map[rune]bool
 }
 
-// GoStringAllowance admits one decoded external-protocol string at one path.
+// GoStringAllowance admits exact decoded external-protocol strings at one path.
 type GoStringAllowance struct {
-	Path  string
-	Value string
+	Path           string
+	Value          string
+	PhysicalValues []string
 }
 
 // Config is the small TOML subset used by the repository lexicon.
@@ -41,6 +43,34 @@ type Config struct {
 }
 
 const externalProtocolSource = "spec/s1-b25-b28/public_recording_test.go"
+
+const externalEnvironmentDigest = "1b48d14732a1b4689f7af2d622235e53ddf1703e7043985592e66b0d1ecf4eff"
+
+// These decoded-string digests bind the accepted physical catalog, its two
+// journal/cursor names and one dependency column. Config cannot add a family
+// of names or substitute another literal, even at the authorized source path.
+var physicalProtocolDigests = map[string]bool{
+	"39d6e7ef1121f5ac563d8c278431a6a19f9d420534e9cbe38d2f9f41d9912502": true,
+	"93602e05a1bff1bd127187c713caaeab338848eb4a6cba051123440a912cdf26": true,
+	"91f880d51578af7df6289315f0b8e9e7e5c44e86b33f48900c26f031a0cc6f75": true,
+	"7853d42458d77d5bd188bd1a1bba51e87257cbe5ec12826168bc639f95bb0a72": true,
+}
+
+func protocolLiteralDigest(value string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(value)))
+}
+
+func allowsPhysicalProtocolString(path, value string, allowance GoStringAllowance) bool {
+	if path != externalProtocolSource || allowance.Path != path || !physicalProtocolDigests[protocolLiteralDigest(value)] {
+		return false
+	}
+	for _, allowed := range allowance.PhysicalValues {
+		if value == allowed {
+			return true
+		}
+	}
+	return false
+}
 
 // Finding identifies one boundary violation.
 type Finding struct {
@@ -66,7 +96,7 @@ func LoadConfig(path string) (Config, error) {
 	var cfg Config
 	section := ""
 	var current *Term
-	var externalSection, externalPath, externalValue bool
+	var externalSection, externalPath, externalValue, externalPhysical bool
 	for _, line := range strings.Split(string(b), "\n") {
 		line = strings.TrimSpace(strings.SplitN(line, "#", 2)[0])
 		if line == "" {
@@ -105,7 +135,7 @@ func LoadConfig(path string) (Config, error) {
 			continue
 		}
 		if section == "external_protocol_string" {
-			if len(values) != 1 {
+			if key != "physical_values" && len(values) != 1 {
 				return Config{}, errors.New("external protocol string fields require one value")
 			}
 			switch key {
@@ -121,6 +151,20 @@ func LoadConfig(path string) (Config, error) {
 				}
 				externalValue = true
 				cfg.ExternalProtocolString.Value = values[0]
+			case "physical_values":
+				if externalPhysical || len(values) != len(physicalProtocolDigests) {
+					return Config{}, errors.New("physical protocol strings require one complete exact literal set")
+				}
+				externalPhysical = true
+				seen := make(map[string]bool)
+				for _, value := range values {
+					digest := protocolLiteralDigest(value)
+					if !physicalProtocolDigests[digest] || seen[digest] {
+						return Config{}, errors.New("physical protocol string is unlisted or duplicated")
+					}
+					seen[digest] = true
+				}
+				cfg.ExternalProtocolString.PhysicalValues = values
 			default:
 				return Config{}, fmt.Errorf("unknown external protocol string key: %s", key)
 			}
@@ -161,8 +205,8 @@ func LoadConfig(path string) (Config, error) {
 			return Config{}, fmt.Errorf("lexicon term %d is incomplete", i)
 		}
 	}
-	if externalSection && (!externalPath || !externalValue || cfg.ExternalProtocolString.Path != externalProtocolSource || cfg.ExternalProtocolString.Value == "") {
-		return Config{}, errors.New("external protocol string must bind the exact source path and a nonempty literal")
+	if externalSection && (!externalPath || !externalValue || cfg.ExternalProtocolString.Path != externalProtocolSource || protocolLiteralDigest(cfg.ExternalProtocolString.Value) != externalEnvironmentDigest) {
+		return Config{}, errors.New("external protocol string must bind the exact source path and environment literal")
 	}
 	return cfg, nil
 }
@@ -308,7 +352,32 @@ func isProvenance(path string, zones []string) bool {
 
 func scanFile(path string, content []byte, cfg Config, provenance bool) []Finding {
 	text := string(content)
+	var literals []goStringLiteral
+	if path == externalProtocolSource && len(cfg.ExternalProtocolString.PhysicalValues) != 0 {
+		masked := append([]byte(nil), content...)
+		for _, literal := range goStringLiterals(path, content) {
+			if !literal.imported && allowsPhysicalProtocolString(path, literal.value, cfg.ExternalProtocolString) {
+				for i := literal.start; i < literal.end; i++ {
+					if masked[i] != '\n' && masked[i] != '\r' {
+						masked[i] = ' '
+					}
+				}
+			} else {
+				literals = append(literals, literal)
+			}
+		}
+		text = string(masked)
+	}
 	var findings []Finding
+	appendDecoded := func(literal goStringLiteral, term Term, match string) {
+		finding := Finding{Path: path, Line: literal.line, Class: term.Class, Term: match}
+		for _, previous := range findings {
+			if previous == finding {
+				return
+			}
+		}
+		findings = append(findings, finding)
+	}
 	for _, term := range cfg.Terms {
 		if provenance && term.Class != "upstream-infra" {
 			continue
@@ -330,6 +399,16 @@ func scanFile(path string, content []byte, cfg Config, provenance bool) []Findin
 					findings = append(findings, Finding{Path: path, Line: lineAt(text, loc[0]), Class: term.Class, Term: term.Pattern})
 				}
 			}
+			for _, literal := range literals {
+				for _, match := range re.FindAllString(literal.value, -1) {
+					for _, r := range match {
+						if !term.Allow[r] {
+							appendDecoded(literal, term, term.Pattern)
+							break
+						}
+					}
+				}
+			}
 			continue
 		}
 		if term.Class == "identifier" {
@@ -343,12 +422,51 @@ func scanFile(path string, content []byte, cfg Config, provenance bool) []Findin
 			if at := phraseIndex(text, match); at >= 0 {
 				findings = append(findings, Finding{Path: path, Line: lineAt(text, at), Class: term.Class, Term: match})
 			}
+			// Decode non-admitted strings at this exact recorder path too;
+			// retain the established scan at every other source path.
+			for _, literal := range literals {
+				if phraseIndex(literal.value, match) >= 0 {
+					appendDecoded(literal, term, match)
+				}
+			}
 		}
 	}
 	if filepath.Ext(path) == ".go" {
 		findings = append(findings, scanGoImports(path, content)...)
 	}
 	return findings
+}
+
+type goStringLiteral struct {
+	start, end, line int
+	value            string
+	imported         bool
+}
+
+func goStringLiterals(path string, content []byte) []goStringLiteral {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, content, 0)
+	if err != nil {
+		return nil // The identifier scan retains the invalid-Go refusal.
+	}
+	imports := make(map[token.Pos]bool, len(file.Imports))
+	for _, spec := range file.Imports {
+		imports[spec.Path.Pos()] = true
+	}
+	var literals []goStringLiteral
+	ast.Inspect(file, func(node ast.Node) bool {
+		literal, ok := node.(*ast.BasicLit)
+		if !ok || literal.Kind != token.STRING {
+			return true
+		}
+		value, err := strconv.Unquote(literal.Value)
+		if err == nil {
+			position := fset.Position(literal.Pos())
+			literals = append(literals, goStringLiteral{start: position.Offset, end: fset.Position(literal.End()).Offset, line: position.Line, value: value, imported: imports[literal.Pos()]})
+		}
+		return true
+	})
+	return literals
 }
 
 func scanGoIdentifiers(path string, content []byte, term Term, allowance GoStringAllowance) []Finding {
@@ -370,17 +488,15 @@ func scanGoIdentifiers(path string, content []byte, term Term, allowance GoStrin
 		case *ast.BasicLit:
 			if n.Kind == token.STRING {
 				text = n.Value
+				decoded, err := strconv.Unquote(n.Value)
+				if err != nil {
+					findings = append(findings, Finding{Path: path, Line: fset.Position(node.Pos()).Line, Class: "invalid-go", Term: "string"})
+					return true
+				}
 				if path == externalProtocolSource {
-					decoded, err := strconv.Unquote(n.Value)
-					if err != nil {
-						findings = append(findings, Finding{Path: path, Line: fset.Position(node.Pos()).Line, Class: "invalid-go", Term: "string"})
+					if !imports[n.Pos()] && path == externalProtocolSource && allowance.Path == path && (decoded == allowance.Value && protocolLiteralDigest(decoded) == externalEnvironmentDigest || allowsPhysicalProtocolString(path, decoded, allowance)) {
 						return true
 					}
-					if !imports[n.Pos()] && allowance.Path == path && decoded == allowance.Value && decoded != "" {
-						return true
-					}
-					// Decode every other string here so altered spellings cannot use
-					// the allowance; keep the established scan elsewhere unchanged.
 					text = decoded
 				}
 			}

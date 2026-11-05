@@ -67,7 +67,7 @@ func (r *snapshotReader) InverseSourceLinks(ctx context.Context, targets []model
 		}
 		matched := false
 		for _, link := range doc.Links {
-			if targetSet[link.To.ID] && kindSet[link.Kind] {
+			if link.TargetKind != model.LinkTargetExternal && targetSet[link.To.ID] && kindSet[link.Kind] {
 				matched = true
 				break
 			}

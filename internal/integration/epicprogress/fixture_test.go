@@ -99,13 +99,31 @@ func (e *endpoint) close(t *testing.T) {
 type reply struct {
 	Result json.RawMessage `json:"result"`
 	Error  *struct {
-		Data model.ErrorData `json:"data"`
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    model.ErrorData `json:"data"`
 	} `json:"error"`
 	Meta struct {
 		Replayed bool `json:"replayed"`
 	} `json:"_meta"`
 	status int
 	raw    []byte
+}
+
+// logRefusal keeps the complete canonical transport error beside the caller
+// phase. The diagnostic is test-only; it does not change the request,
+// retry, authorization, or assertion path.
+func logRefusal(t *testing.T, r reply) {
+	t.Helper()
+	if r.Error == nil {
+		return
+	}
+	data, err := json.Marshal(r.Error.Data)
+	if err != nil {
+		t.Logf("EP6 RPC refusal: code=%d message=%q data=<marshal error: %v>", r.Error.Code, r.Error.Message, err)
+		return
+	}
+	t.Logf("EP6 RPC refusal: code=%d message=%q data=%s", r.Error.Code, r.Error.Message, data)
 }
 
 // Observe only the real service's error before RPC canonicalizes its message.
@@ -190,6 +208,7 @@ func (e *endpoint) call(t *testing.T, token, method string, params map[string]an
 func result(t *testing.T, r reply) map[string]any {
 	t.Helper()
 	if r.status != http.StatusOK || r.Error != nil || len(r.Result) == 0 {
+		logRefusal(t, r)
 		t.Fatalf("RPC did not succeed: HTTP %d %s", r.status, r.raw)
 	}
 	var out map[string]any
@@ -203,6 +222,7 @@ func result(t *testing.T, r reply) map[string]any {
 
 func requireCode(t *testing.T, r reply, code model.ErrorCode) {
 	t.Helper()
+	logRefusal(t, r)
 	if r.Error == nil || r.Error.Data.Code != code || len(r.Result) != 0 || r.Meta.Replayed {
 		t.Fatalf("expected pure %s refusal: HTTP %d %s", code, r.status, r.raw)
 	}

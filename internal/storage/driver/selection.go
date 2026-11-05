@@ -746,9 +746,18 @@ func (index *SelectionIndex) Validate(table DerivedTable, row DerivedRow) error 
 			return selectionError("invalid queue annotation layout")
 		}
 		for _, link := range index.Queue.Links {
-			value := SourceLink{Kind: link.Kind, To: link.To}
-			if validateFact(DerivedReferenceIndex, SelectionFact{Kind: SelectionLinkFact, Ref: &index.Bead.Ref, Link: &value}) != nil {
+			targetKind, err := normalizeQueueTargetKind(link.TargetKind)
+			if err != nil {
+				return selectionError("invalid queue link target kind")
+			}
+			if err := validateQueueTargetKind(targetKind, link.To); err != nil || validateQueueLinkKind(link.Kind) != nil {
 				return selectionError("invalid queue link")
+			}
+			if targetKind != "external" {
+				value := SourceLink{Kind: link.Kind, To: link.To}
+				if validateFact(DerivedReferenceIndex, SelectionFact{Kind: SelectionLinkFact, Ref: &index.Bead.Ref, Link: &value}) != nil {
+					return selectionError("invalid queue link")
+				}
 			}
 			if link.Metadata != nil {
 				if _, err := link.Metadata.Normalized(); err != nil {

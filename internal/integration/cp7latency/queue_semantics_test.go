@@ -134,7 +134,7 @@ func TestQueueProjectionMatchesExactReadinessBeforeRotation(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				want := queueRotateReference(t, reference.Items, seed)
+				want := queueRotateReference(t, reference.Items, seed, now)
 				if !reflect.DeepEqual(page.Items, want) || page.Next != nil {
 					t.Fatal("queue changed complete READY rotation or hydrated fields/metadata/labels")
 				}
@@ -146,21 +146,46 @@ func TestQueueProjectionMatchesExactReadinessBeforeRotation(t *testing.T) {
 	}
 }
 
-func queueRotateReference(t *testing.T, items []service.Bead, seed string) []service.Bead {
+// The fixture has real, fixed creation instants and no persisted rank rows
+// before this read. Apply the reference hybrid-key rule at the captured clock;
+// rotate only ties in bucket, rank and creation time, preserving every member.
+func queueRotateReference(t *testing.T, items []service.Bead, seed string, at time.Time) []service.Bead {
 	t.Helper()
 	copy := append([]service.Bead(nil), items...)
-	priority := func(b service.Bead) string {
+	priority := func(b service.Bead) int {
 		if b.Fields["priority"] == nil {
-			return "0"
+			return 0
 		}
-		return fmt.Sprint(b.Fields["priority"])
+		value, err := model.Natural(fmt.Sprint(b.Fields["priority"])).Uint64()
+		if err != nil || value > 4 {
+			t.Fatalf("invalid priority in reference row %s", b.ID)
+		}
+		return int(value)
+	}
+	type key struct {
+		bucket, rank int
+		created      time.Time
+	}
+	order := func(b service.Bead) key {
+		if b.CreatedAt.IsZero() {
+			t.Fatalf("reference row %s has no creation instant", b.ID)
+		}
+		if b.CreatedAt.Before(at.Add(-48 * time.Hour)) {
+			return key{bucket: 1, rank: 999, created: b.CreatedAt}
+		}
+		return key{rank: priority(b), created: b.CreatedAt}
 	}
 	for start := 0; start < len(copy); {
+		groupKey := order(copy[start])
 		end := start + 1
-		for end < len(copy) && priority(copy[end]) == priority(copy[start]) {
+		for end < len(copy) {
+			next := order(copy[end])
+			if next.bucket != groupKey.bucket || next.rank != groupKey.rank || !next.created.Equal(groupKey.created) {
+				break
+			}
 			end++
 		}
-		digest := sha256.Sum256([]byte(seed + "\x00" + priority(copy[start])))
+		digest := sha256.Sum256([]byte(seed + "\x00" + fmt.Sprint(priority(copy[start]))))
 		offset := int(binary.BigEndian.Uint64(digest[:8]) % uint64(end-start))
 		group := append([]service.Bead(nil), copy[start:end]...)
 		for i := start; i < end; i++ {

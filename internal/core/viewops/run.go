@@ -263,6 +263,8 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 	if err != nil {
 		return Result{}, err
 	}
+	typeSummary := len(definition.GroupBy) == 1 && definition.GroupBy[0] == "type" && definition.Fields != nil && len(definition.Fields) == 0
+	useBatchAuthorization := (req.CountOnly || typeSummary) && s.cfg.AuthorizeReadBatch != nil
 	// Cache current authorization on every request. For stale reads, the
 	// query/order stream is the paging coordinate: authorization is checked
 	// before any age or protected-ontology read, then only authorized rows are
@@ -283,7 +285,7 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 			if err != nil {
 				return Result{}, err
 			}
-		} else if req.CountOnly && s.cfg.AuthorizeReadBatch != nil {
+		} else if useBatchAuthorization {
 			refs := make([]model.ResourceRef, 0, len(queryOrder))
 			for _, row := range queryOrder {
 				refs = append(refs, model.ResourceRef{Kind: "bead", Ref: row.record.Ref})
@@ -331,7 +333,7 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 			if err != nil {
 				return Result{}, err
 			}
-		} else if req.CountOnly && s.cfg.AuthorizeReadBatch != nil {
+		} else if useBatchAuthorization {
 			refs := make([]model.ResourceRef, 0, len(rows))
 			for _, row := range rows {
 				if matches(row, filter, project, terms) {
@@ -368,7 +370,6 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 			}
 		}
 	}
-	typeSummary := len(definition.GroupBy) == 1 && definition.GroupBy[0] == "type" && definition.Fields != nil && len(definition.Fields) == 0
 	if !req.CountOnly && !typeSummary {
 		// Only unreadable blocker targets contribute a hidden-blocker count. They
 		// are authorized independently so a visible non-candidate never becomes a
@@ -378,7 +379,7 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 				if link.Kind != "blocks" && link.Kind != "conditional-blocks" {
 					continue
 				}
-				if !link.To.IsID() || !link.To.Branch.IsZero() {
+				if link.TargetKind == model.LinkTargetExternal || !link.To.IsID() || !link.To.Branch.IsZero() {
 					continue
 				}
 				target, exists := findStored(rows, link.To.ID)
@@ -418,10 +419,16 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 	}
 	if typeSummary {
 		result, err := s.typeSummaryResult(ctx, candidates, nil, nil, nil, definition, asOf)
-		if err == nil {
-			result.Projection = projection
+		if err != nil {
+			return Result{}, err
 		}
-		return result, err
+		// Summary rendering can finish after batch authorization returns. Fence
+		// the complete result against cancellation or lease loss before publish.
+		if err := s.admit(ctx, by); err != nil {
+			return Result{}, err
+		}
+		result.Projection = projection
+		return result, nil
 	}
 	pending, err := s.pendingReadiness(ctx, reader, candidates)
 	if err != nil {
@@ -709,7 +716,7 @@ func (s *Service) item(ctx context.Context, row stored, fields []string, rows []
 		if target.Kind != "blocks" && target.Kind != "conditional-blocks" {
 			continue
 		}
-		if target.To.IsID() && target.To.Branch.IsZero() {
+		if target.TargetKind != model.LinkTargetExternal && target.To.IsID() && target.To.Branch.IsZero() {
 			if _, exists := findStored(rows, target.To.ID); exists && !authorized[target.To.ID] {
 				item.HiddenBlockers++
 			}
@@ -887,7 +894,7 @@ func (s *Service) projectDirectBlockers(ctx context.Context, by model.PrincipalR
 	refs := make([]model.Ref, 0, len(verdict.Edges))
 	seen := make(map[string]bool, len(verdict.Edges))
 	for _, edge := range verdict.Edges {
-		if !edge.Blocker.IsID() || !edge.Blocker.Branch.IsZero() || seen[edge.Blocker.ID] {
+		if edge.TargetKind == model.LinkTargetExternal || !edge.Blocker.IsID() || !edge.Blocker.Branch.IsZero() || seen[edge.Blocker.ID] {
 			continue
 		}
 		seen[edge.Blocker.ID] = true
@@ -919,11 +926,16 @@ func (s *Service) projectDirectBlockers(ctx context.Context, by model.PrincipalR
 		if edge.State != DirectBlockerSatisfied && edge.State != DirectBlockerUnsatisfied && edge.State != DirectBlockerUnknown {
 			return nil, failure("internal_error", "invalid direct blocker state")
 		}
+		targetKind, kindErr := edge.TargetKind.Normalized()
+		if kindErr != nil || model.ValidateLinkTarget(targetKind, edge.Blocker) != nil {
+			return nil, failure("internal_error", "invalid direct blocker target kind")
+		}
+		edge.TargetKind = targetKind
 		edge.State, edge.Reason = safeDirectBlockerVerdict(edge.State, edge.Reason)
 		// An unresolved or missing reference is an unknown link on a readable
 		// dependent. There is no target record/project to authorize.
 		target, exists := byID[edge.Blocker.ID]
-		if !edge.Blocker.IsID() || !edge.Blocker.Branch.IsZero() || !exists {
+		if edge.TargetKind == model.LinkTargetExternal || !edge.Blocker.IsID() || !edge.Blocker.Branch.IsZero() || !exists {
 			edge.State = DirectBlockerUnknown
 			if edge.Reason == "" {
 				edge.Reason = "blocker reference is unresolved or missing from the snapshot"
@@ -968,7 +980,7 @@ func safeDirectBlockerVerdict(state DirectBlockerState, reason string) (DirectBl
 func (s *Service) hiddenBlockers(ctx context.Context, by model.PrincipalRef, reader driver.Reader, row stored) (int, error) {
 	refs := make([]driver.Ref, 0, len(row.doc.Links))
 	for _, link := range row.doc.Links {
-		if (link.Kind == "blocks" || link.Kind == "conditional-blocks") && link.To.IsID() && link.To.Branch.IsZero() {
+		if link.TargetKind != model.LinkTargetExternal && (link.Kind == "blocks" || link.Kind == "conditional-blocks") && link.To.IsID() && link.To.Branch.IsZero() {
 			refs = append(refs, link.To)
 		}
 	}

@@ -44,6 +44,7 @@ type transaction struct {
 	done             chan struct{}
 
 	checkpointGuards          map[string]uint64
+	checkpointWrites          map[string]driver.Checkpoint
 	sourceOverlay             sourceindex.Overlay
 	sourceCoverage            sourceindex.CoveragePair
 	sourceCoverageHead        model.Revision

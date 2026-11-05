@@ -43,6 +43,11 @@ type WorkflowService interface {
 	WorkflowInvoke(context.Context, model.PrincipalRef, workflowplugin.InvokeRequest, model.WriteMeta) (workflowplugin.InvokeResult, error)
 }
 
+type WorkflowLifecycleService interface {
+	WorkflowPromote(context.Context, model.PrincipalRef, workflowplugin.PromoteRequest, model.WriteMeta) (workflowplugin.PromoteResult, error)
+	WorkflowDemote(context.Context, model.PrincipalRef, workflowplugin.DemoteRequest, model.WriteMeta) (workflowplugin.DemoteResult, error)
+}
+
 // WorkflowClaimNextService is an optional standard-tool adapter seam. The
 // guarded composition asks it for a provider-owned durable replay before
 // walking the live queue, while existing Service test doubles remain valid.
@@ -62,6 +67,7 @@ type MemoryService interface {
 }
 
 type serviceParams struct {
+	TargetKind   model.LinkTargetKind           `json:"targetKind"`
 	ID           json.RawMessage                `json:"id"`
 	Ref          model.Ref                      `json:"ref"`
 	AsOf         *asOf                          `json:"asOf"`
@@ -74,6 +80,8 @@ type serviceParams struct {
 	FromRevision model.Revision                 `json:"fromRevision"`
 	ToRevision   model.Revision                 `json:"toRevision"`
 	Type         string                         `json:"type"`
+	Label        string                         `json:"label"`
+	Title        string                         `json:"title"`
 	Fields       map[string]any                 `json:"fields"`
 	Parent       *model.Ref                     `json:"parent"`
 	Expect       []model.Precondition           `json:"expect"`
@@ -94,6 +102,11 @@ type serviceParams struct {
 	Template     string                         `json:"template"`
 	Mode         string                         `json:"mode"`
 	Checklist    []workflowplugin.ChecklistItem `json:"checklist"`
+	Item         model.Ref                      `json:"item"`
+	Target       model.Ref                      `json:"target"`
+	Source       model.Ref                      `json:"source"`
+	Labels       []string                       `json:"labels"`
+	Links        []workflowplugin.RelationSpec  `json:"links"`
 	Meta         wire.Meta                      `json:"_meta"`
 }
 type asOf struct {
@@ -101,11 +114,12 @@ type asOf struct {
 	Incarnation string         `json:"incarnation,omitempty"`
 }
 type filter struct {
-	Query     string   `json:"query,omitempty"`
-	Resources []string `json:"resources,omitempty"`
-	Types     []string `json:"types,omitempty"`
-	Events    []string `json:"events,omitempty"`
-	ViewID    string   `json:"viewId,omitempty"`
+	Query            string   `json:"query,omitempty"`
+	Resources        []string `json:"resources,omitempty"`
+	Types            []string `json:"types,omitempty"`
+	Events           []string `json:"events,omitempty"`
+	ViewID           string   `json:"viewId,omitempty"`
+	IncludeEphemeral *bool    `json:"includeEphemeral,omitempty"`
 }
 
 func (p *asOf) domain() *service.AsOf {
@@ -118,7 +132,7 @@ func (p *filter) domain() *service.Filter {
 	if p == nil {
 		return nil
 	}
-	return &service.Filter{Query: p.Query, Resources: p.Resources, Types: p.Types, Events: p.Events, ViewID: p.ViewID}
+	return &service.Filter{Query: p.Query, Resources: p.Resources, Types: p.Types, Events: p.Events, ViewID: p.ViewID, IncludeEphemeral: p.IncludeEphemeral}
 }
 
 func (p serviceParams) refID() (model.Ref, error) {
@@ -161,6 +175,9 @@ func BindService(registry *Registry, svc Service) error {
 	}
 	if _, ok := svc.(WorkflowService); ok {
 		names = append(names, "x.workflow.invoke")
+	}
+	if _, ok := svc.(WorkflowLifecycleService); ok {
+		names = append(names, "x.workflow.run.promote", "x.workflow.run.demote")
 	}
 	if capability, ok := any(svc).(interface{ EventListConfigured() bool }); !ok || capability.EventListConfigured() {
 		if _, ok := any(svc).(service.EventReader); ok {
@@ -214,6 +231,20 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 			return nil, &model.Error{Data: model.ErrorData{Code: "method_not_found"}}
 		}
 		v, err := workflow.WorkflowInvoke(ctx, c.Principal, workflowplugin.InvokeRequest{Template: p.Template, Project: p.Project, Mode: p.Mode, Checklist: p.Checklist}, meta)
+		return v, err
+	case "x.workflow.run.promote":
+		lifecycle, ok := svc.(WorkflowLifecycleService)
+		if !ok {
+			return nil, &model.Error{Data: model.ErrorData{Code: "method_not_found"}}
+		}
+		v, err := lifecycle.WorkflowPromote(ctx, c.Principal, workflowplugin.PromoteRequest{Item: p.Item, Target: p.Target}, meta)
+		return v, err
+	case "x.workflow.run.demote":
+		lifecycle, ok := svc.(WorkflowLifecycleService)
+		if !ok {
+			return nil, &model.Error{Data: model.ErrorData{Code: "method_not_found"}}
+		}
+		v, err := lifecycle.WorkflowDemote(ctx, c.Principal, workflowplugin.DemoteRequest{Source: p.Source, Template: p.Template, Project: p.Project, Label: p.Label, Title: p.Title, Type: p.Type, Labels: p.Labels, Metadata: p.Metadata, Parent: p.Parent, Links: p.Links}, meta)
 		return v, err
 	case "bead.get":
 		id, err := p.refID()
@@ -427,10 +458,10 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 				return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
 			}
 		}
-		v, err := svc.LinkWithOutcome(ctx, c.Principal, service.LinkRequest{From: p.From, To: p.To, Kind: p.Kind, Metadata: metadata, Expect: p.Expect}, meta)
+		v, err := svc.LinkWithOutcome(ctx, c.Principal, service.LinkRequest{From: p.From, To: p.To, TargetKind: p.TargetKind, Kind: p.Kind, Metadata: metadata, Expect: p.Expect}, meta)
 		return writeOutcome(v), err
 	case "bead.unlink":
-		v, err := svc.UnlinkWithOutcome(ctx, c.Principal, service.LinkRequest{From: p.From, To: p.To, Kind: p.Kind, Expect: p.Expect}, meta)
+		v, err := svc.UnlinkWithOutcome(ctx, c.Principal, service.LinkRequest{From: p.From, To: p.To, TargetKind: p.TargetKind, Kind: p.Kind, Expect: p.Expect}, meta)
 		return writeOutcome(v), err
 	case "tx.apply":
 		v, err := svc.ApplyWithOutcome(ctx, c.Principal, p.ChangeSet, meta)
@@ -681,6 +712,15 @@ func beadJSON(b service.Bead) map[string]any {
 	}
 	if b.Labels != nil {
 		out["labels"] = b.Labels
+	}
+	if b.Links != nil {
+		out["links"] = b.Links
+	}
+	if b.Blocked {
+		out["blocked"] = true
+	}
+	if b.ChildCounter != 0 {
+		out["childCounter"] = b.ChildCounter
 	}
 	if b.HiddenBlockers != 0 {
 		out["hiddenBlockers"] = b.HiddenBlockers

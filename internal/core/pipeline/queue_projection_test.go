@@ -14,7 +14,7 @@ import (
 
 func TestQueueProjectionFactsRequireExactCanonicalSource(t *testing.T) {
 	ref := model.RefByID("queue-source", model.Natural64(0))
-	doc := Document{ID: ref.ID, Type: "issue", Project: "p", Fields: map[string]any{"status": "todo", "priority": 0},
+	doc := Document{ID: ref.ID, Type: "issue", Project: "p", Fields: map[string]any{"status": "todo", "priority": 0, "blocked": true},
 		Links: []Link{{Kind: "waits-for", To: model.RefByID("spawner", model.Natural64(0)), Metadata: &model.LinkMetadata{Gate: "any-children", AlsoBlocks: true}}}}
 	createdAt := time.Date(2026, 11, 4, 7, 0, 0, 0, time.UTC)
 	startedAt, closedAt := createdAt.Add(time.Minute), createdAt.Add(2*time.Minute)
@@ -37,7 +37,7 @@ func TestQueueProjectionFactsRequireExactCanonicalSource(t *testing.T) {
 	}
 	control := rows(canonical)
 	queue := control[0].Index.Queue
-	if queue == nil || queue.LeasePresent || queue.Version != driver.QueueFactsVersion || len(queue.Links) != 1 || queue.Links[0].Metadata.Gate != "any-children" || !queue.Links[0].Metadata.AlsoBlocks {
+	if queue == nil || queue.LeasePresent || queue.Version != driver.QueueFactsVersion || !queue.Blocked || !queue.CreatedAt.Equal(createdAt) || len(queue.Links) != 1 || queue.Links[0].Metadata.Gate != "any-children" || !queue.Links[0].Metadata.AlsoBlocks {
 		t.Fatalf("canonical source lost scheduling facts: %+v", queue)
 	}
 	for name, raw := range map[string]string{
@@ -60,6 +60,24 @@ func TestQueueProjectionFactsRequireExactCanonicalSource(t *testing.T) {
 				}
 			}
 		})
+	}
+	withoutCreation := doc
+	withoutCreation.CreatedAt = nil
+	rawWithoutCreation, err := json.Marshal(withoutCreation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rows(rawWithoutCreation); got[0].Index == nil || got[0].Index.Queue == nil || !got[0].Index.Queue.CreatedAt.IsZero() {
+		t.Fatal("source without a canonical creation instant changed its legacy queue envelope")
+	}
+	wrongBlocked := doc
+	wrongBlocked.Fields = map[string]any{"status": "todo", "priority": 0, "blocked": "yes"}
+	rawWrongBlocked, err := json.Marshal(wrongBlocked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rows(rawWrongBlocked); got[0].Index == nil || got[0].Index.Queue != nil {
+		t.Fatal("nonboolean blocked source entered queue acceleration")
 	}
 	doc.Lease = &ClaimLease{Principal: model.PrincipalRef{Kind: "user", ID: "lease-owner"}, ExpiresAt: time.Date(2026, 11, 4, 8, 0, 0, 0, time.UTC), TtlMs: model.Natural64(60000), Epoch: model.Natural64(1)}
 	leased, err := json.Marshal(doc)

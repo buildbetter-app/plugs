@@ -357,20 +357,43 @@ func (p *SourceProjectionPlan) SelectionRows(incarnation string, revision model.
 				index.Bead = &bead
 				// Only byte-exact canonical documents attest queue facts. Legacy
 				// aliases, duplicate/miscased lease properties, nulls, unknown
-				// members or noncanonical envelopes keep Queue nil. Ordinary
-				// projections and their logical Values remain unchanged.
+				// members or noncanonical envelopes keep Queue nil. Queue ordering
+				// also needs a real creation instant and a boolean blocked field;
+				// legacy/malformed values therefore remain on the exact fallback.
+				// Ordinary projections and their logical Values remain unchanged.
 				canonical, err := json.Marshal(doc)
 				if err == nil && bytes.Equal(canonical, p.record.Body) {
-					queue := &driver.QueueFacts{Version: driver.QueueFactsVersion, LeasePresent: doc.Lease != nil}
-					for _, link := range doc.Links {
-						value := driver.QueueLink{Kind: link.Kind, To: link.To}
-						if link.Metadata != nil {
-							metadata := *link.Metadata
-							value.Metadata = &metadata
+					blocked := false
+					queueValid := true
+					if raw, present := doc.Fields["blocked"]; present {
+						var ok bool
+						blocked, ok = raw.(bool)
+						if !ok {
+							queueValid = false
 						}
-						queue.Links = append(queue.Links, value)
 					}
-					index.Queue = queue
+					queue := &driver.QueueFacts{Version: driver.QueueFactsVersion, LeasePresent: doc.Lease != nil, Blocked: blocked}
+					if doc.CreatedAt != nil {
+						queue.CreatedAt = doc.CreatedAt.UTC()
+					}
+					if queueValid {
+						for _, link := range doc.Links {
+							targetKind, targetErr := projectionLinkTargetKind(link)
+							if targetErr != nil {
+								queueValid = false
+								break
+							}
+							value := driver.QueueLink{Kind: link.Kind, TargetKind: targetKind, To: link.To}
+							if link.Metadata != nil {
+								metadata := *link.Metadata
+								value.Metadata = &metadata
+							}
+							queue.Links = append(queue.Links, value)
+						}
+					}
+					if queueValid {
+						index.Queue = queue
+					}
 				}
 				row.Index = index
 			}
@@ -394,6 +417,25 @@ func (p *SourceProjectionPlan) SelectionRows(incarnation string, revision model.
 		rows[i] = row.Clone()
 	}
 	return rows, nil
+}
+
+// projectionLinkTargetKind is deliberately decoded through the canonical link
+// JSON. The W3 source branch predates the typed target-kind member, while the
+// main composition carries it on pipeline.Link; this adapter preserves the
+// field when present without teaching the storage projection a second link
+// schema or accepting a caller-supplied value.
+func projectionLinkTargetKind(link Link) (string, error) {
+	raw, err := json.Marshal(link)
+	if err != nil {
+		return "", err
+	}
+	var wire struct {
+		TargetKind string `json:"targetKind"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		return "", err
+	}
+	return wire.TargetKind, nil
 }
 
 type projectionDelta struct {

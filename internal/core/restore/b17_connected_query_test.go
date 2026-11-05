@@ -17,6 +17,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
 )
 
+// Historical pre-B26 derived image: f170bf742699fb0bbc577c57b19e7907872e2ea99a34a94fda5e0659197f20ed
 // This uses the admitted supported fixture and its fixed independent digests.
 // An ordinary field patch must preserve archive metadata without setMeta.
 func TestB17SupportedArchiveNullThroughWriterAndServiceQueries(t *testing.T) {
@@ -24,7 +25,7 @@ func TestB17SupportedArchiveNullThroughWriterAndServiceQueries(t *testing.T) {
 	const description = "B17 ordinary field update preserves archive metadata"
 	verification := converterroundtrip.Verification{
 		ArchiveSHA256: "2f06663c3d3778f689e971398028f88cd8d6c9e85d987108abbdb92363d20b18",
-		DerivedSHA256: "f170bf742699fb0bbc577c57b19e7907872e2ea99a34a94fda5e0659197f20ed",
+		DerivedSHA256: "6f1b59b29636cf665d447b1a4d49c1b5670af05f9d0170cf2c548ff1e51d62ab",
 	}
 	data := b17SupportedOfflineArchive(t)
 	if sha(data) != verification.ArchiveSHA256 {

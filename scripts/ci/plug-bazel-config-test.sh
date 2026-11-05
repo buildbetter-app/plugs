@@ -407,8 +407,22 @@ for fragment in (
         raise SystemExit("config: remote workflow is missing: " + fragment)
 if "eval " in remote_code or "set -x" in remote_code or "pull_request_target:" in remote_code:
     raise SystemExit("config: remote workflow contains an unsafe command or trigger")
+helper_checkout = remote_code.split("- name: Checkout trusted CI helpers", 1)[1].split("- name:", 1)[0]
+require_fragments("trusted remote archive helper checkout", helper_checkout, (
+    "if: always()", "ref: ${{ github.workflow_sha }}", "persist-credentials: false",
+    "fetch-depth: 1", "sparse-checkout: |\n            scripts/ci/bazel-testlogs", "path: trusted-ci",
+))
+archive_step = remote_code.split("- name: Archive Bazel test logs", 1)[1].split("- name:", 1)[0]
+require_fragments("trusted remote archive helper invocation", archive_step, (
+    'python3 "$GITHUB_WORKSPACE/trusted-ci/scripts/ci/bazel-testlogs/archive.py"',
+    '--testlogs bazel-testlogs --output "$archive"',
+))
+if not (remote_code.index("- name: Run remote Bazel command")
+        < remote_code.index("- name: Checkout trusted CI helpers")
+        < remote_code.index("- name: Archive Bazel test logs")):
+    raise SystemExit("config: trusted helper checkout must follow Bazel and precede archiving")
 remote_actions = re.findall(r"uses: (\S+)", remote_code)
-if len(remote_actions) != 5 or any(not re.fullmatch(r"(?:actions|runs-on)/[a-z/-]+@[0-9a-f]{40}", action) for action in remote_actions):
+if len(remote_actions) != 6 or any(not re.fullmatch(r"(?:actions|runs-on)/[a-z/-]+@[0-9a-f]{40}", action) for action in remote_actions):
     raise SystemExit("config: every remote Bazel action must retain its full immutable pin")
 check_workflow_inventory(Path(".github/workflows"))
 print("plug-ci-config: workflow, permissions, cache, lock, targets, and retirement checks passed")

@@ -43,8 +43,11 @@ func beadRef(n int) model.Ref {
 }
 
 func document(n int) pipeline.Document {
+	// Persist the same creation instant for every seed and reset body so
+	// creation-time ordering retains the fixture's existing ID tie-break.
+	createdAt := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	d := pipeline.Document{ID: beadRef(n).ID, Type: "issue", Project: projectName,
-		Fields: map[string]any{"title": fmt.Sprintf("CP7 bead %06d", n), "status": "todo", "priority": 0}}
+		Fields: map[string]any{"title": fmt.Sprintf("CP7 bead %06d", n), "status": "todo", "priority": 0}, CreatedAt: &createdAt}
 	if (n-1)%11 != 0 {
 		parent := beadRef(n - 1)
 		d.Parent = &parent
@@ -91,6 +94,20 @@ type fixture struct {
 	n          int
 	corpusHash string
 	seededAt   service.AsOf
+	viewPlan   func(driver.SelectionPlan)
+}
+
+// Dedicated route controls observe the real plan and delegate unchanged to
+// the concrete SQL selector. Other fixture readers remain unwrapped.
+type viewPlanReader struct {
+	driver.Reader
+	selector driver.SelectionReader
+	observe  func(driver.SelectionPlan)
+}
+
+func (r *viewPlanReader) Select(ctx context.Context, plan driver.SelectionPlan) (driver.SelectionResult, error) {
+	r.observe(plan)
+	return r.selector.Select(ctx, plan)
 }
 
 func openStore(t *testing.T, engine string) driver.Store {
@@ -246,6 +263,11 @@ func newFixture(t *testing.T, engine string, n int) *fixture {
 		t.Fatal(err)
 	}
 	f.compose(t)
+	// Binding is read-only. Initial setup must explicitly publish the canonical
+	// authority source; later recompositions must not republish or restore it.
+	if err := f.facts.Replace(f.base); err != nil {
+		t.Fatal(err)
+	}
 	f.verifySourceCoverage(t, "composed")
 	t.Logf("CP7_CORPUS engine=%s beads=%d bodies_sha256=%s setup_ms=%.3f max_parent_depth=10 seed_batch=%d product_driver_defaults=true", engine, n, f.corpusHash, float64(time.Since(started).Microseconds())/1000, seedBatch)
 	return f
@@ -260,11 +282,25 @@ func (f *fixture) compose(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.app = app
+	selection := app.Service.ViewSelection()
+	if f.viewPlan != nil {
+		bind := selection.Bind
+		selection.Bind = func(ctx context.Context, p model.PrincipalRef, definition string) (*viewops.SelectionAuthority, error) {
+			authority, err := bind(ctx, p, definition)
+			if err != nil {
+				return nil, err
+			}
+			selector, ok := authority.Reader.(driver.SelectionReader)
+			if !ok {
+				_ = authority.Reader.Close()
+				return nil, fmt.Errorf("declared SQL driver lacks view selection")
+			}
+			authority.Reader = &viewPlanReader{Reader: authority.Reader, selector: selector, observe: f.viewPlan}
+			return authority, nil
+		}
+	}
 	f.views, err = viewops.New(f.store.Store, f.lease, viewops.Config{OntologyRevision: model.Natural64(1),
-		AuthorizeRead: func(ctx context.Context, p model.PrincipalRef, r model.ResourceRef, _ string) error {
-			_, err := app.Service.Get(ctx, p, service.GetRequest{ID: r.Ref})
-			return err
-		},
+		Selection: selection,
 		ParentProjection: &viewops.ParentProjectionConfig{
 			Project: func(ctx context.Context, p model.PrincipalRef, r driver.Reader, refs []model.Ref) (viewops.ParentProjectionAuthority, error) {
 				a, err := app.Checker.AuthorizeParentProjections(ctx, p, r, refs)

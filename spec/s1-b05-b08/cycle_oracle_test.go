@@ -198,14 +198,26 @@ func TestB06CycleReportPathOracle(t *testing.T) {
 	kinds := []string{"blocks", "conditional-blocks", "tracks", "waits-for", "parent-child", "relates-to"}
 	for graph := 0; graph < 32; graph++ {
 		edges := []cycleOracleEdge{}
+		parentSeen := [5]bool{}
 		for from := 0; from < 5; from++ {
 			for to := 0; to < 5; to++ {
 				if random.Intn(4) != 0 {
 					continue
 				}
 				e := cycleOracleEdge{fmt.Sprintf("n%d", from), fmt.Sprintf("n%d", to), kinds[random.Intn(len(kinds))]}
+				// Consume every duplicate draw before filtering hierarchy noise so
+				// the scheduling edges retain their original random stream.
+				duplicate := random.Intn(4) == 0
+				if e.kind == "parent-child" {
+					// Increasing IDs keep parents acyclic; each child has one row.
+					if from >= to || parentSeen[from] {
+						continue
+					}
+					parentSeen[from] = true
+					duplicate = false
+				}
 				edges = append(edges, e)
-				if random.Intn(4) == 0 {
+				if duplicate {
 					edges = append(edges, e)
 				}
 			}
