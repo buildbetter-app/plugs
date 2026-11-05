@@ -99,6 +99,29 @@ func runWriter(t *testing.T, factory func(*testing.T) driver.Store, metadataOnly
 		if e != nil {
 			t.Fatal(e)
 		}
+		// The public page supplies the genuine source creation time. Read the
+		// independent Writer sort row at that exact snapshot only for its rank
+		// clock, then reclassify from the public source before hashing leaves.
+		view, e := s.Read(ctx, driver.View{Incarnation: page.AsOf.Incarnation, At: &page.AsOf.Revision})
+		if e != nil {
+			t.Fatal(e)
+		}
+		rows, e := view.DerivedRows(ctx, driver.DerivedSortKey, "ready/")
+		closeErr := view.Close()
+		if e != nil || closeErr != nil {
+			t.Fatalf("public sort oracle rows: %v close=%v", e, closeErr)
+		}
+		sorts := make(map[string]pipeline.ReadySortKey, len(rows))
+		for _, row := range rows {
+			id, value, e := pipeline.DecodeReadySortKey(row)
+			if e != nil {
+				t.Fatal(e)
+			}
+			if _, duplicate := sorts[id]; duplicate {
+				t.Fatalf("duplicate Writer sort row for %s", id)
+			}
+			sorts[id] = value
+		}
 		wanted := map[string]bool{}
 		for _, ref := range refs {
 			wanted[ref.ID] = true
@@ -116,7 +139,17 @@ func runWriter(t *testing.T, factory func(*testing.T) driver.Store, metadataOnly
 				}
 				priority = n
 			}
-			leaf, e := driver.ReadyOrderLeafFor(driver.ReadyMembershipItem{ID: item.ID, Type: item.Type, Project: item.Project, Status: item.Status, Revision: item.Revision, Fields: item.Fields, Plane: item.Plane, Kind: item.Kind, Plugin: item.Plugin, WorkflowRunID: item.WorkflowRunID}, priority)
+			recorded, present := sorts[item.ID]
+			if !present || !recorded.CreatedAt.Equal(item.CreatedAt) || recorded.Revision.String() != item.Revision.String() {
+				t.Fatalf("Writer sort row is not source-bound: id=%s row=%+v source=%+v", item.ID, recorded, item)
+			}
+			createdAt := item.CreatedAt
+			doc := pipeline.Document{ID: item.ID, Type: item.Type, Project: item.Project, Fields: item.Fields, CreatedAt: &createdAt}
+			bucket, rank, known, e := service.ReadySortKey(doc, recorded.RankedAt)
+			if e != nil || !known || bucket != recorded.Bucket || rank != recorded.Rank {
+				t.Fatalf("Writer sort row disagrees with source classification: id=%s row=%+v class=%d/%d known=%t err=%v", item.ID, recorded, bucket, rank, known, e)
+			}
+			leaf, e := driver.ReadyOrderLeafForSort(driver.ReadyMembershipItem{ID: item.ID, Type: item.Type, Project: item.Project, Status: item.Status, Revision: item.Revision, Fields: item.Fields, Plane: item.Plane, Kind: item.Kind, Plugin: item.Plugin, WorkflowRunID: item.WorkflowRunID}, priority, &driver.ReadyOrderSort{Bucket: bucket, Rank: rank, CreatedAt: createdAt, RankedAt: recorded.RankedAt})
 			if e != nil {
 				t.Fatal(e)
 			}
