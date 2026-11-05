@@ -93,6 +93,51 @@ func (s *testDurableState) List(_ context.Context, prefix string, limit int) ([]
 
 var _ pluginapi.DurableState = (*testDurableState)(nil)
 
+func TestM03CreationProvenanceSurvivesReceiptReplay(t *testing.T) {
+	ctx := context.Background()
+	created := time.Date(2026, 11, 5, 1, 0, 0, 0, time.UTC)
+	clock := created
+	state := &testDurableState{}
+	newProvider := func() *Provider {
+		provider, err := New(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return provider.WithClock(func() time.Time { return clock }).WithIdentity(Alias, "default", "m03-incarnation")
+	}
+	provider := newProvider()
+	by := model.PrincipalRef{Kind: "user", ID: "m03-owner"}
+	meta := model.WriteMeta{Method: "x.workflow.invoke", Project: "m03", IdempotencyKey: strings.Repeat("1", 64)}
+	request := InvokeRequest{Template: "m03", Project: "m03", Mode: "ephemeral", Checklist: []ChecklistItem{{Label: "one", Title: "one", Type: "task"}}}
+	first, err := provider.Invoke(ctx, by, request, meta)
+	if err != nil || len(first.Items) != 1 || !first.Items[0].CreatedAt.Equal(created) {
+		t.Fatalf("initial item lost authoritative run creation: result=%+v err=%v", first, err)
+	}
+	wire, err := json.Marshal(first.Items[0])
+	if err != nil || bytes.Contains(wire, []byte(`"createdAt"`)) {
+		t.Fatalf("internal order metadata changed item wire projection: %s err=%v", wire, err)
+	}
+	before, revision := append([]byte(nil), state.value...), state.rev
+	clock = clock.Add(time.Hour)
+	provider = newProvider()
+	replay, err := provider.Invoke(ctx, by, request, meta)
+	if err != nil || !reflect.DeepEqual(first, replay) || !bytes.Equal(before, state.value) || revision != state.rev {
+		t.Fatalf("reopened provider replay changed creation provenance or checkpoint: result=%+v err=%v", replay, err)
+	}
+	claimMeta := meta
+	claimMeta.Method, claimMeta.IdempotencyKey = "bead.claimNext", strings.Repeat("2", 64)
+	claimed, found, replayed, err := provider.ClaimNextSelected(ctx, by, model.RefByID(first.Items[0].ID, model.Natural64(0)), "m03", nil, claimMeta)
+	if err != nil || !found || replayed || !claimed.CreatedAt.Equal(created) {
+		t.Fatalf("selected claim lost run creation: item=%+v found=%v replayed=%v err=%v", claimed, found, replayed, err)
+	}
+	before, revision = append([]byte(nil), state.value...), state.rev
+	provider = newProvider()
+	retry, found, replayed, err := provider.ReplayClaimNext(ctx, by, "m03", nil, claimMeta)
+	if err != nil || !found || !replayed || !reflect.DeepEqual(claimed, retry) || !bytes.Equal(before, state.value) || revision != state.rev {
+		t.Fatalf("reopened selected replay changed creation provenance or checkpoint: item=%+v found=%v replayed=%v err=%v", retry, found, replayed, err)
+	}
+}
+
 func TestNativeRequiresTrustedCallerAdapter(t *testing.T) {
 	_, err := Native(nil).New(nil)
 	var failure *model.Error
