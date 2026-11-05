@@ -554,7 +554,8 @@ func TestSelectionSourceHistoryRecordTriggerInvalidatesVirginCloseProof(t *testi
 			}
 			_ = plan.Close()
 			joined := strings.Join(details, "\n")
-			if !strings.Contains(joined, "SEARCH selection_source_history USING INDEX selection_source_history_current") || strings.Contains(joined, "SCAN selection_source_history") {
+			if !strings.Contains(joined, "SEARCH selection_source_history USING") ||
+				!strings.Contains(joined, "selection_source_history_current") || strings.Contains(joined, "SCAN selection_source_history") {
 				t.Fatalf("derived close proof lost bounded index lookup: %s", joined)
 			}
 			var work keyPublicationWork

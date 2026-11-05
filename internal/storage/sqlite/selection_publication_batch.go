@@ -148,6 +148,9 @@ func (t *transaction) publishSelectionSourceHistoryWithProof(ctx context.Context
 	derivedProbeChecked := false
 	for start := 0; start < len(observations); start += selectionSourceHistoryBatch {
 		if sourceHistoryEmpty && start >= recordCount {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if !derivedProbeChecked {
 				// Record INSERT triggers ran after the initial virgin proof.
 				// A native derived interval they created must retain the normal
@@ -164,9 +167,6 @@ func (t *transaction) publishSelectionSourceHistoryWithProof(ctx context.Context
 				derivedProbeChecked = true
 			}
 			if sourceHistoryEmpty {
-				if err := ctx.Err(); err != nil {
-					return err
-				}
 				continue
 			}
 		}
