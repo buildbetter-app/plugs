@@ -546,6 +546,7 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 	var exhaustedConflict error
 	repeatedConflictThisPass := false
 	conflictRestarts := 0
+walk:
 	for {
 		page, err := s.claimPage(ctx, by, service.ReadyRequest{Project: req.Project, Agent: meta.AgentLabel, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position, ClaimNextSeed: selectionSeed})
 		if err != nil {
@@ -595,6 +596,20 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 						exhaustedConflict = claimErr
 					}
 				}
+			}
+			// Refresh a raced page when competing commits changed its head.
+			// With an unchanged head, keep walking past locked candidates so
+			// a full front cannot hide a later permitted winner.
+			current, err := s.checker.store.Meta(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if current.Incarnation != page.AsOf.Incarnation {
+				return nil, driver.ErrIncarnationChanged{From: page.AsOf.Incarnation, To: current.Incarnation}
+			}
+			if current.Head.String() != page.AsOf.Revision.String() {
+				fresh, position, repeatedConflictThisPass = false, nil, false
+				continue walk
 			}
 		}
 		if page.Next == nil {

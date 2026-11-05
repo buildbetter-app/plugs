@@ -530,6 +530,7 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 	var exhaustedConflict error
 	repeatedConflictThisPass := false
 	conflictRestarts := 0
+walk:
 	for {
 		page, err := s.ClaimNextReadyPage(ctx, by, ReadyRequest{Project: req.Project, Agent: meta.AgentLabel, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position, ClaimNextSeed: selectionSeed})
 		if err != nil {
@@ -560,6 +561,20 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 						exhaustedConflict = claimErr
 					}
 				}
+			}
+			// A race may retire many candidates from this fetched page. Once
+			// its head changes, use the live pager's existing revision restart
+			// instead of preparing the remaining obsolete candidates one by one.
+			current, err := s.store.Meta(ctx)
+			if err != nil {
+				return nil, mapped(err)
+			}
+			if current.Incarnation != page.AsOf.Incarnation {
+				return nil, mapped(driver.ErrIncarnationChanged{From: page.AsOf.Incarnation, To: current.Incarnation})
+			}
+			if current.Head.String() != page.AsOf.Revision.String() {
+				fresh, position, repeatedConflictThisPass = false, nil, false
+				continue walk
 			}
 		}
 		if page.Next == nil {
