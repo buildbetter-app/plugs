@@ -53,19 +53,27 @@ func b09Equal(t *testing.T, label string, want, got any) {
 	}
 }
 
-func assertB09Source(t *testing.T, archive *dumpformat.Archive, stage b09ReplayStage) {
+func assertB09Source(t *testing.T, archive *dumpformat.Archive, profile driver.RestoreImportProfile, derivedDigest string, started, finished time.Time, stage b09ReplayStage) {
 	t.Helper()
-	for _, source := range archive.Records("bead") {
-		key := b09RecordKey(t, model.RefByID(source.ID, model.Natural64(0)))
-		row, ok := stage.Records[key]
-		if !ok || row.Kind != "bead" || row.Revision.String() != "1" {
-			t.Fatalf("source bead missing at snapshot restore: %s", source.ID)
+	wantRecords := map[string]driver.Record{}
+	add := func(id, kind string, body any) {
+		ref := model.RefByID(id, model.Natural64(0))
+		key := b09RecordKey(t, ref)
+		if _, exists := wantRecords[key]; exists {
+			t.Fatalf("duplicate expected restored identity %s", id)
 		}
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantRecords[key] = driver.Record{Ref: ref, Kind: kind, Revision: model.Natural64(1), Body: raw}
+	}
+	for _, source := range archive.Records("bead") {
 		// This named native corpus has open tasks, no labels, links or comments.
 		if source.Source.Table != "issues" || source.Source.Fields["status"] != "open" {
 			t.Fatalf("unexpected native corpus row: %+v", source)
 		}
-		fields := map[string]any{"status": "open"}
+		fields := map[string]any{"status": "todo"}
 		for _, name := range []string{"title", "description", "priority"} {
 			fields[name] = source.Body[name]
 		}
@@ -96,12 +104,7 @@ func assertB09Source(t *testing.T, archive *dumpformat.Archive, stage b09ReplayS
 			t.Fatal(err)
 		}
 		want := pipeline.Document{ID: source.ID, Type: "issue", Project: "b09", Fields: fields, Metadata: metadata, CreatedAt: &created}
-		b09Equal(t, "complete restored native bead and source provenance "+source.ID, want, json.RawMessage(row.Body))
-		versions := stage.Versions[key]
-		if len(versions) != 1 || !versions[0].Base || versions[0].Deleted || versions[0].Revision.String() != "1" {
-			t.Fatalf("snapshot restore fabricated/missed versions for %s: %+v", source.ID, versions)
-		}
-		b09Equal(t, "snapshot version body "+source.ID, json.RawMessage(row.Body), json.RawMessage(versions[0].Body))
+		add(source.ID, "bead", want)
 	}
 	for _, kind := range []string{"edge", "comment", "memory", "config", "beads-archive"} {
 		for _, source := range archive.Records(kind) {
@@ -113,17 +116,86 @@ func assertB09Source(t *testing.T, archive *dumpformat.Archive, stage b09ReplayS
 			if kind == "beads-archive" {
 				want["read_only"], want["redactable"] = true, true
 			}
-			key := b09RecordKey(t, model.RefByID("source/"+kind+"/"+source.ID, model.Natural64(0)))
-			row, ok := stage.Records[key]
-			if !ok || row.Kind != kind {
-				t.Fatalf("complete source row absent %s/%s", kind, source.ID)
-			}
-			b09Equal(t, "complete restored source "+key, want, json.RawMessage(row.Body))
+			add("source/"+kind+"/"+source.ID, kind, want)
 		}
+	}
+	manifest := archive.Manifest()
+	members := map[string]dumpformat.File{}
+	for name, member := range manifest.Files {
+		members[name] = member
+	}
+	rawManifest, ok := archive.Member("manifest.json")
+	if !ok {
+		t.Fatal("validated archive lost manifest")
+	}
+	members["manifest.json"] = dumpformat.File{SHA256: hashBytes(rawManifest), Size: int64(len(rawManifest))}
+	imageProfile := "builtin-head/1"
+	if migration, _ := archive.ImportMigration(); migration != nil {
+		imageProfile = "beads-compat-union-head/1"
+	}
+	add("restore/archive", "restore-archive", map[string]any{
+		"archive_sha256": archive.SHA256(), "derived_sha256": derivedDigest,
+		"profile": imageProfile, "source_store": manifest.StoreID, "members": members,
+	})
+	projects := []any{}
+	for _, project := range manifest.Projects {
+		allocator := driver.NewRandomAllocator(project.Prefix)
+		projects = append(projects, map[string]any{"sourceAllocator": project, "targetAllocator": allocator})
+		add("instance_config/restore-import/project/"+project.Prefix, "instance_config", map[string]any{
+			"project": project.Prefix, "importProfile": profile,
+			"metadata": map[string]any{"plug.restore.sourceAllocator": project}, "targetAllocator": allocator,
+		})
+	}
+	requestHash, err := profile.RequestHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	add("instance_config/restore-import/binding", "instance_config", map[string]any{"profile": profile, "request_hash": requestHash, "projects": projects})
+	wantKeys, recordKeys, versionKeys := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	for key := range wantRecords {
+		wantKeys[key] = true
+	}
+	for key := range stage.Records {
+		recordKeys[key] = true
+	}
+	for key := range stage.Versions {
+		versionKeys[key] = true
+	}
+	b09Equal(t, "complete initial restored record identity set", wantKeys, recordKeys)
+	b09Equal(t, "complete initial restored version identity set", wantKeys, versionKeys)
+	if stage.Meta.Head.String() != "1" || stage.Meta.HistoryFloor.String() != "1" || stage.Meta.StoreID != profile.SourceStoreID {
+		t.Fatalf("snapshot metadata differs from admitted source: %+v", stage.Meta)
+	}
+	receipt := stage.Receipts[profile.Method]
+	if receipt == nil || receipt.RequestHash != requestHash || receipt.Changeset.Revision.String() != "1" || !reflect.DeepEqual(receipt.Changeset.Principal, profile.Admission.Actor) {
+		t.Fatal("initial restore receipt does not bind the admitted request")
+	}
+	// Snapshot restore chooses wall time internally. Bind every version to the
+	// committed restore receipt and bound that instant by the actual call.
+	stamp := receipt.Changeset.Time
+	if stamp.Before(started) || stamp.After(finished) {
+		t.Fatalf("restore time %s falls outside call [%s,%s]", stamp, started, finished)
+	}
+	for key, want := range wantRecords {
+		got := stage.Records[key]
+		b09Equal(t, "complete initial restored body "+key, json.RawMessage(want.Body), json.RawMessage(got.Body))
+		want.Body, got.Body = nil, nil
+		b09Equal(t, "complete initial restored record envelope "+key, want, got)
+		versions := stage.Versions[key]
+		if len(versions) != 1 {
+			t.Fatalf("snapshot restore must have one base for %s: %+v", key, versions)
+		}
+		version := versions[0]
+		b09Equal(t, "complete initial snapshot version body "+key, json.RawMessage(wantRecords[key].Body), json.RawMessage(version.Body))
+		version.Body = nil
+		b09Equal(t, "complete initial snapshot version envelope "+key, driver.Version{Ref: want.Ref, Revision: want.Revision, Base: true, CreatedAt: stamp, Principal: profile.Admission.Actor}, version)
+	}
+	if stage.SQL != nil {
+		assertB09InitialSQL(t, stage, wantRecords)
 	}
 }
 
-func assertB09ResultPair(t *testing.T, label, id string, commit model.Commit) {
+func assertB09ResultPair(t *testing.T, label, id string, commit model.Commit, want driver.Record) {
 	t.Helper()
 	if len(commit.Results) != 2 || commit.Revision.IsZero() {
 		t.Fatalf("%s must publish patch and metadata results: %+v", label, commit)
@@ -132,6 +204,7 @@ func assertB09ResultPair(t *testing.T, label, id string, commit model.Commit) {
 		if result.Ref.ID != id || !result.Ref.Branch.IsZero() || result.Revision.String() != commit.Revision.String() || len(result.Record) == 0 {
 			t.Fatalf("%s result %d changed identity/revision: %+v", label, i, result)
 		}
+		b09Equal(t, fmt.Sprintf("%s result %d complete expected state", label, i), json.RawMessage(want.Body), json.RawMessage(result.Record))
 	}
 	if !bytes.Equal(commit.Results[0].Record, commit.Results[1].Record) {
 		t.Fatalf("%s per-operation results disagree on committed state", label)
@@ -154,7 +227,7 @@ func assertB09Reopen(t *testing.T, before, after b09ReplayStage) {
 	}
 }
 
-func (r *b09ReplayTarget) assertMutation(before, after b09ReplayStage, id, operation string) {
+func (r *b09ReplayTarget) assertMutation(before, after b09ReplayStage, id, operation string) driver.Record {
 	r.t.Helper()
 	t := r.t
 	key := b09RecordKey(t, model.RefByID(id, model.Natural64(0)))
@@ -280,6 +353,7 @@ func (r *b09ReplayTarget) assertMutation(before, after b09ReplayStage, id, opera
 	if before.SQL != nil {
 		r.assertSQLMutation(before, after, id, operation, wantRecords[key])
 	}
+	return wantRecords[key]
 }
 
 func b09SQLCells(t *testing.T, row string) []string {
@@ -329,6 +403,150 @@ func b09SQLNumber(t *testing.T, value string) uint64 {
 		t.Fatal(err)
 	}
 	return n
+}
+
+// These images are constructed from the archive/request or the expected
+// logical delta. No field in an affected SQL image supplies its own oracle.
+func assertB09SQLSourceRow(t *testing.T, table b09SQLTable, row string, meta driver.Meta, want driver.Record, history bool) {
+	t.Helper()
+	doc, err := pipeline.DecodeDocument(want.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyColumn := "source_key"
+	for _, c := range table.Columns {
+		if c == "child_key" {
+			keyColumn = c
+		}
+	}
+	text := map[string]string{"incarnation": meta.Incarnation, keyColumn: b09RecordKey(t, want.Ref), "ref": want.Ref.ID, "kind": want.Kind}
+	numbers := map[string]uint64{"branch": mustB09Revision(t, want.Ref.Branch), "revision": mustB09Revision(t, want.Revision)}
+	nulls := map[string]bool{}
+	if keyColumn == "child_key" {
+		if doc.Parent == nil {
+			nulls["parent_key"] = true
+		} else {
+			text["parent_key"] = b09RecordKey(t, *doc.Parent)
+		}
+	}
+	if history {
+		numbers["start_revision"] = mustB09Revision(t, want.Revision)
+		nulls["end_revision"] = true
+	}
+	if len(table.Columns) != len(text)+len(numbers)+len(nulls)+1 {
+		t.Fatal("source image schema differs from complete expected columns")
+	}
+	for name, value := range text {
+		if got := b09SQLText(t, b09SQLColumn(t, table, row, name)); got != value {
+			t.Fatalf("complete SQL source image %s want=%q got=%q", name, value, got)
+		}
+	}
+	for name, value := range numbers {
+		if got := b09SQLNumber(t, b09SQLColumn(t, table, row, name)); got != value {
+			t.Fatalf("complete SQL source image %s want=%d got=%d", name, value, got)
+		}
+	}
+	for name := range nulls {
+		if b09SQLColumn(t, table, row, name) != b09SQLValue(nil) {
+			t.Fatalf("complete SQL source image %s must be SQL NULL", name)
+		}
+	}
+	b09Equal(t, "complete SQL source image body", json.RawMessage(want.Body), json.RawMessage(b09SQLText(t, b09SQLColumn(t, table, row, "body"))))
+}
+
+func assertB09SQLRecord(t *testing.T, engine string, table b09SQLTable, row string, want driver.Record, versionCount int) {
+	t.Helper()
+	column := func(name string) string { return b09SQLText(t, b09SQLColumn(t, table, row, name)) }
+	if column("key") != b09RecordKey(t, want.Ref) {
+		t.Fatal("physical record identity differs from expected record")
+	}
+	if engine == "sqlite" {
+		if len(table.Columns) != 2 {
+			t.Fatal("SQLite record schema changed")
+		}
+		var got driver.Record
+		if err := json.Unmarshal([]byte(column("data")), &got); err != nil {
+			t.Fatal(err)
+		}
+		b09Equal(t, "complete physical SQLite record body", json.RawMessage(want.Body), json.RawMessage(got.Body))
+		want.Body, got.Body = nil, nil
+		b09Equal(t, "complete physical SQLite record envelope", want, got)
+		return
+	}
+	if len(table.Columns) != 7 || column("kind") != want.Kind || column("deleted") != "false" || b09SQLNumber(t, b09SQLColumn(t, table, row, "revision")) != mustB09Revision(t, want.Revision) || b09SQLNumber(t, b09SQLColumn(t, table, row, "version_count")) != uint64(versionCount) {
+		t.Fatal("complete PostgreSQL record envelope differs")
+	}
+	b09Equal(t, "complete physical PostgreSQL record ref", want.Ref, json.RawMessage(column("ref")))
+	b09Equal(t, "complete physical PostgreSQL record body", json.RawMessage(want.Body), json.RawMessage(column("body")))
+}
+
+func assertB09SQLVersion(t *testing.T, engine string, table b09SQLTable, row string, want driver.Version) {
+	t.Helper()
+	revColumn, baseColumn, dataColumn := "rev", "base", "data"
+	base := strconv.Itoa(boolB09(want.Base))
+	if engine == "postgres" {
+		revColumn, baseColumn, dataColumn = "revision", "is_base", "value"
+		base = strconv.FormatBool(want.Base)
+	}
+	text := func(name string) string { return b09SQLText(t, b09SQLColumn(t, table, row, name)) }
+	if len(table.Columns) != 4 || text("key") != b09RecordKey(t, want.Ref) || text(baseColumn) != base || b09SQLNumber(t, b09SQLColumn(t, table, row, revColumn)) != mustB09Revision(t, want.Revision) {
+		t.Fatal("complete physical version columns differ")
+	}
+	var got driver.Version
+	if err := json.Unmarshal([]byte(text(dataColumn)), &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, bodies := range []struct {
+		name      string
+		want, got []byte
+	}{{"body", want.Body, got.Body}, {"patch", want.Patch, got.Patch}} {
+		if bodies.want == nil {
+			b09Equal(t, "physical version absent "+bodies.name, bodies.want, bodies.got)
+		} else {
+			b09Equal(t, "complete physical version "+bodies.name, json.RawMessage(bodies.want), json.RawMessage(bodies.got))
+		}
+	}
+	want.Body, want.Patch, got.Body, got.Patch = nil, nil, nil, nil
+	b09Equal(t, "complete physical version envelope", want, got)
+}
+
+func assertB09InitialSQL(t *testing.T, stage b09ReplayStage, want map[string]driver.Record) {
+	t.Helper()
+	for _, name := range []string{"records", "versions", "hierarchy_source_current", "hierarchy_source_history", "graph_link_source_current", "graph_link_source_history"} {
+		table := stage.SQL.Tables[name]
+		remaining := map[string]driver.Record{}
+		for key, record := range want {
+			if name == "records" || name == "versions" || record.Kind == "bead" {
+				remaining[key] = record
+			}
+		}
+		for _, row := range table.Rows {
+			keyColumn := "key"
+			if strings.HasPrefix(name, "hierarchy_") {
+				keyColumn = "child_key"
+			}
+			if strings.HasPrefix(name, "graph_") {
+				keyColumn = "source_key"
+			}
+			key := b09SQLText(t, b09SQLColumn(t, table, row, keyColumn))
+			record, ok := remaining[key]
+			if !ok {
+				t.Fatalf("unexplained/duplicate initial physical %s identity %s", name, key)
+			}
+			delete(remaining, key)
+			switch name {
+			case "records":
+				assertB09SQLRecord(t, stage.SQL.Engine, table, row, record, 1)
+			case "versions":
+				assertB09SQLVersion(t, stage.SQL.Engine, table, row, driver.Version{Ref: record.Ref, Revision: record.Revision, Base: true, Body: record.Body, Principal: b09Principal, CreatedAt: stage.Receipts["offline.restore.import"].Changeset.Time})
+			default:
+				assertB09SQLSourceRow(t, table, row, stage.Meta, record, strings.HasSuffix(name, "_history"))
+			}
+		}
+		if len(remaining) != 0 {
+			t.Fatalf("initial physical %s omitted expected identities: %v", name, remaining)
+		}
+	}
 }
 
 func assertB09SQLReopen(t *testing.T, before, after *b09SQLCensus) {
@@ -414,6 +632,57 @@ func b09SQLRows(t *testing.T, engine, name string, table b09SQLTable) map[string
 	return result
 }
 
+func (r *b09ReplayTarget) expectedSQLStates(want driver.Record, creating bool) map[string]driver.LockState {
+	t := r.t
+	t.Helper()
+	result := map[string]driver.LockState{}
+	add := func(state driver.LockState) {
+		key, err := driver.EncodeLockKey(state.Key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state.Revision = want.Revision
+		result[key] = state
+	}
+	// PostgreSQL keeps record state in records; SQLite also journals its key.
+	if r.engine == "sqlite" {
+		ref := want.Ref
+		add(driver.LockState{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &ref}, Present: true})
+	}
+	for _, sentinel := range []driver.Sentinel{driver.Sentinel("bead/" + want.Ref.ID), driver.SentinelGraphBlocking} {
+		add(driver.LockState{Key: driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel}, Present: true})
+	}
+	add(driver.LockState{Key: pipeline.GraphValidityLockKey(), Present: true})
+	if creating {
+		add(driver.LockState{Key: driver.LockKey{Kind: driver.LockSentinel, Sentinel: driver.Sentinel("closure/" + want.Ref.ID)}, Present: true})
+		row, err := pipeline.AncestorRow(want.Ref.ID, want.Ref.ID, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		add(driver.LockState{Key: driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAncestorClosure, Key: row.Key}}, Derived: &row, Present: true})
+	}
+	doc, err := pipeline.DecodeDocument(want.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.CreatedAt == nil {
+		t.Fatal("named B09 corpus lacks expected creation time")
+	}
+	// This corpus explicitly supplies priority 2. The canonical rank rule
+	// changes to the old bucket strictly after 48 hours.
+	bucket, rank := 0, 2
+	if doc.CreatedAt.Before(r.now.Add(-48 * time.Hour)) {
+		bucket, rank = 1, 999
+	}
+	value, err := json.Marshal(pipeline.ReadySortKey{Bucket: bucket, Rank: rank, CreatedAt: *doc.CreatedAt, RankedAt: r.now, Revision: want.Revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := driver.DerivedRow{Key: "ready/" + want.Ref.ID, Value: value}
+	add(driver.LockState{Key: driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedSortKey, Key: row.Key}}, Derived: &row, Present: true})
+	return result
+}
+
 func (r *b09ReplayTarget) assertSQLMutation(before, after b09ReplayStage, id, operation string, want driver.Record) {
 	t := r.t
 	t.Helper()
@@ -428,10 +697,13 @@ func (r *b09ReplayTarget) assertSQLMutation(before, after b09ReplayStage, id, op
 	}
 	keys := map[string]bool{recordKey: true, "2:bead/" + id: true, "2:graph/blocking": true, "1:" + string(pipeline.GraphValidityReadFact): true, "2:closure/" + id: true, "3:ancestor_closure:" + ancestor.Key: true, "3:sort_key:ready/" + id: true}
 	creating := strings.HasPrefix(operation, "create-")
-	journal, err := driver.AllocatorJournalDelta(before.Allocator, after.Allocator)
+	wantAllocator := before.Allocator
+	wantAllocator.At = want.Revision
+	journal, err := driver.AllocatorJournalDelta(before.Allocator, wantAllocator)
 	if err != nil {
 		t.Fatal(err)
 	}
+	wantStates := r.expectedSQLStates(want, creating)
 	for name, old := range before.SQL.Tables {
 		next, ok := after.SQL.Tables[name]
 		if !ok {
@@ -454,7 +726,7 @@ func (r *b09ReplayTarget) assertSQLMutation(before, after b09ReplayStage, id, op
 		}
 		if len(added)+len(updated)+len(removed) == 0 {
 			switch name {
-			case "meta", "records", "versions", "changesets", "replays", "receipts", "allocator_states", "hierarchy_source_current", "graph_link_source_current", "hierarchy_source_history", "graph_link_source_history":
+			case "meta", "records", "versions", "key_history", "states", "changesets", "replays", "receipts", "allocator_states", "hierarchy_source_current", "graph_link_source_current", "hierarchy_source_history", "graph_link_source_history", "hierarchy_index_coverage", "graph_link_index_coverage":
 			default:
 				continue
 			}
@@ -485,16 +757,7 @@ func (r *b09ReplayTarget) assertSQLMutation(before, after b09ReplayStage, id, op
 			if len(added)+len(updated) != 1 || len(added) != boolB09(creating) {
 				t.Fatal("SQL record cardinality delta")
 			}
-			for _, row := range append(added, updated...) {
-				if columnText(row, "key") != recordKey {
-					t.Fatalf("%s mutated unrelated physical record", operation)
-				}
-			}
-			if r.engine == "postgres" {
-				row := append(added, updated...)[0]
-				revision(row, "revision")
-				b09Equal(t, operation+" physical complete target body", json.RawMessage(want.Body), json.RawMessage(columnText(row, "body")))
-			}
+			assertB09SQLRecord(t, r.engine, next, append(added, updated...)[0], want, len(before.Versions[recordKey])+1)
 		case "objects", "locks":
 			if len(updated) != 0 {
 				t.Fatalf("%s mutated existing %s rows", operation, name)
@@ -508,28 +771,40 @@ func (r *b09ReplayTarget) assertSQLMutation(before, after b09ReplayStage, id, op
 			if len(updated) != 0 || len(added) != 1 {
 				t.Fatal("SQL version exact append")
 			}
-			row := added[0]
-			if columnText(row, "key") != recordKey {
-				t.Fatal("SQL unrelated appended version")
+			version := driver.Version{Ref: want.Ref, Revision: want.Revision, Base: creating, CreatedAt: r.now, Principal: b09Principal}
+			if creating {
+				version.Body = want.Body
+			} else {
+				version.Patch, err = json.Marshal([]map[string]any{{"op": "replace", "path": "", "value": json.RawMessage(want.Body)}})
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
-			column := "rev"
-			if r.engine == "postgres" {
-				column = "revision"
-			}
-			revision(row, column)
+			assertB09SQLVersion(t, r.engine, next, added[0], version)
 		case "key_history", "states":
-			if len(updated) != 0 {
-				t.Fatal("SQL immutable key history changed")
+			if len(updated) != 0 || len(added) != len(wantStates) || len(next.Columns) != 3 {
+				t.Fatalf("%s exact immutable state append differs: added=%d want=%d", operation, len(added), len(wantStates))
+			}
+			remaining := map[string]driver.LockState{}
+			for key, state := range wantStates {
+				remaining[key] = state
 			}
 			for _, row := range added {
-				if !keys[columnText(row, "key")] {
-					t.Fatalf("%s unexpected physical state key %q", operation, columnText(row, "key"))
+				key := columnText(row, "key")
+				state, ok := remaining[key]
+				if !ok {
+					t.Fatalf("%s unexplained/duplicate physical state key %q", operation, key)
 				}
-				column := "rev"
+				delete(remaining, key)
+				column, payload := "rev", "data"
 				if name == "states" {
-					column = "revision"
+					column, payload = "revision", "value"
 				}
 				revision(row, column)
+				b09Equal(t, operation+" complete physical state payload "+key, state, json.RawMessage(columnText(row, payload)))
+			}
+			if len(remaining) != 0 {
+				t.Fatalf("%s omitted expected physical states: %v", operation, remaining)
 			}
 		case "changesets", "replays", "receipts":
 			if len(updated) != 0 || len(added) != 1 {
@@ -574,16 +849,12 @@ func (r *b09ReplayTarget) assertSQLMutation(before, after b09ReplayStage, id, op
 			if len(added) != boolB09(creating || history) || len(updated) != boolB09(!creating) {
 				t.Fatalf("%s SQL %s exact delta add=%d update=%d", operation, name, len(added), len(updated))
 			}
-			for _, row := range append(added, updated...) {
-				if columnText(row, column) != recordKey {
-					t.Fatal("SQL unrelated source image changed")
-				}
+			newImages := added
+			if !history {
+				newImages = append(newImages, updated...)
 			}
-			for _, row := range added {
-				revision(row, "revision")
-				if history {
-					revision(row, "start_revision")
-				}
+			for _, row := range newImages {
+				assertB09SQLSourceRow(t, next, row, before.Meta, want, history)
 			}
 			if history {
 				for key, oldRow := range a {
@@ -591,6 +862,10 @@ func (r *b09ReplayTarget) assertSQLMutation(before, after b09ReplayStage, id, op
 					if !ok || newRow == oldRow {
 						continue
 					}
+					if columnText(oldRow, column) != recordKey || b09SQLColumn(t, old, oldRow, "end_revision") != b09SQLValue(nil) {
+						t.Fatal("SQL changed an unrelated/already closed source interval")
+					}
+					assertB09SQLSourceRow(t, old, oldRow, before.Meta, before.Records[recordKey], true)
 					oldCells, newCells := b09SQLCells(t, oldRow), b09SQLCells(t, newRow)
 					for i, c := range old.Columns {
 						if c == "end_revision" {

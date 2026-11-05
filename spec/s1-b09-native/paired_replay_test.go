@@ -163,7 +163,9 @@ func runB09Replay(t *testing.T, engine string, data []byte, inspection converter
 	if profile.SourceStoreID != driver.StoreID(archive.Manifest().StoreID) {
 		t.Fatalf("%s source store identity changed between inspection and archive", engine)
 	}
+	restoreStarted := time.Now().UTC()
 	report, err := converterroundtrip.RestoreImportWithLease(ctx, bytes.NewReader(data), target.store, target.lease, profile)
+	restoreFinished := time.Now().UTC()
 	if err != nil {
 		t.Fatalf("%s same-run RestoreImport: %v", engine, err)
 	}
@@ -174,7 +176,7 @@ func runB09Replay(t *testing.T, engine string, data []byte, inspection converter
 	writer, domain := target.bind()
 	_ = writer
 	initial := target.stage("restore", sourceIDs, nil)
-	assertB09Source(t, archive, initial)
+	assertB09Source(t, archive, profile, inspection.DerivedSHA256, restoreStarted, restoreFinished, initial)
 	if !reflect.DeepEqual(initial.BeadIDs, sourceIDs) {
 		t.Fatalf("%s restored bead IDs differ from same-run source: got=%v want=%v", engine, initial.BeadIDs, sourceIDs)
 	}
@@ -207,7 +209,7 @@ func runB09Replay(t *testing.T, engine string, data []byte, inspection converter
 	target.receipts["bead.close"] = b09Meta(engine, "close").IdempotencyKey
 	closed := target.stage("close", sourceIDs, []string{firstNew})
 	target.assertMutation(postCreate, closed, sourceIDs[0], "close")
-	if len(closed.VersionRevisions[sourceIDs[0]]) < 2 {
+	if len(closed.VersionRevisions[sourceIDs[0]]) != 2 {
 		t.Fatalf("%s close did not append source history: %+v", engine, closed.VersionRevisions)
 	}
 	target.now = target.now.Add(3 * 24 * time.Hour)
@@ -217,11 +219,11 @@ func runB09Replay(t *testing.T, engine string, data []byte, inspection converter
 	if err != nil {
 		t.Fatalf("%s compaction: %v", engine, err)
 	}
-	assertB09ResultPair(t, "compaction", sourceIDs[0], outcome.Commit)
 	target.receipts["admin.compact"] = b09Meta(engine, "compact").IdempotencyKey
 	compacted := target.stage("compaction", sourceIDs, []string{firstNew})
-	target.assertMutation(closed, compacted, sourceIDs[0], "compact")
-	if len(compacted.VersionRevisions[sourceIDs[0]]) < 3 {
+	wantCompacted := target.assertMutation(closed, compacted, sourceIDs[0], "compact")
+	assertB09ResultPair(t, "compaction", sourceIDs[0], outcome.Commit, wantCompacted)
+	if len(compacted.VersionRevisions[sourceIDs[0]]) != 3 {
 		t.Fatalf("%s compaction did not retain ordinary version history: %+v", engine, compacted.VersionRevisions[sourceIDs[0]])
 	}
 	latest := latestB09Version(t, target, closeRef)
@@ -245,11 +247,11 @@ func runB09Replay(t *testing.T, engine string, data []byte, inspection converter
 	if err != nil {
 		t.Fatalf("%s compaction history restore: %v", engine, err)
 	}
-	assertB09ResultPair(t, "history restore", sourceIDs[0], reverted.Commit)
 	target.receipts["history.revert"] = b09Meta(engine, "revert").IdempotencyKey
 	revertedImage := target.stage("revert", sourceIDs, []string{firstNew})
-	target.assertMutation(compacted, revertedImage, sourceIDs[0], "revert")
-	if len(revertedImage.VersionRevisions[sourceIDs[0]]) < 4 {
+	wantReverted := target.assertMutation(compacted, revertedImage, sourceIDs[0], "revert")
+	assertB09ResultPair(t, "history restore", sourceIDs[0], reverted.Commit, wantReverted)
+	if len(revertedImage.VersionRevisions[sourceIDs[0]]) != 4 {
 		t.Fatalf("%s history restore did not append a reversal version: %+v", engine, revertedImage.VersionRevisions[sourceIDs[0]])
 	}
 	revertedDoc, err := pipeline.DecodeDocument(latestB09Version(t, target, closeRef).Body)
@@ -277,6 +279,9 @@ func runB09Replay(t *testing.T, engine string, data []byte, inspection converter
 	}
 	if len(final.ChangesetRevs) != 5 {
 		t.Fatalf("%s history stream omitted paired writes: %+v", engine, final.ChangesetRevs)
+	}
+	if err := target.finish(); err != nil {
+		t.Fatalf("%s final lease/store cleanup: %v", engine, err)
 	}
 	return b09ReplayReceipt{
 		Engine: engine, SourceStoreID: inspection.SourceStoreID, ArchiveSHA256: inspection.ArchiveSHA256, DerivedSHA256: inspection.DerivedSHA256,
@@ -317,7 +322,7 @@ func (r *b09ReplayTarget) bind() (*pipeline.Writer, *service.Service) {
 
 func createB09Continuation(t *testing.T, domain *service.Service, engine, label string) string {
 	t.Helper()
-	commit, err := domain.Create(context.Background(), b09Principal, service.CreateRequest{Type: "issue", Fields: map[string]any{"title": "Plug native continuation " + label, "description": "continuation after accepted native restore"}}, b09Meta(engine, "create-"+label))
+	commit, err := domain.Create(context.Background(), b09Principal, service.CreateRequest{Type: "issue", Fields: map[string]any{"title": "Plug native continuation " + label, "description": "continuation after accepted native restore", "priority": 2}}, b09Meta(engine, "create-"+label))
 	if err != nil || len(commit.Results) != 1 {
 		t.Fatalf("%s native continuation %s: %+v %v", engine, label, commit, err)
 	}
@@ -338,7 +343,11 @@ func latestB09Version(t *testing.T, target *b09ReplayTarget, ref model.Ref) driv
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
+	defer func() {
+		if err := r.Close(); err != nil {
+			t.Errorf("latest B09 history reader close: %v", err)
+		}
+	}()
 	page, err := r.Versions(context.Background(), ref, driver.PageReq{Limit: 1000})
 	if err != nil || page.NextCursor != nil || len(page.Items) == 0 {
 		t.Fatalf("latest B09 history read: %v %+v", err, page)
@@ -357,7 +366,11 @@ func (r *b09ReplayTarget) stage(name string, sourceIDs, extraIDs []string) b09Re
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	defer reader.Close()
+	defer func() {
+		if err := reader.Close(); err != nil {
+			r.t.Errorf("%s census reader close: %v", name, err)
+		}
+	}()
 	page, err := reader.Query(ctx, driver.Query{Limit: 1000})
 	if err != nil || page.NextCursor != nil {
 		r.t.Fatalf("%s bead census: %v %+v", name, err, page)
@@ -452,23 +465,37 @@ func openB09ReplayTarget(t *testing.T, engine string) *b09ReplayTarget {
 	}
 	r.lease, err = r.store.Lease(ctx, "b09-native-replay-"+engine, driver.LeaseTTL)
 	if err != nil {
-		_ = r.store.Close()
+		if closeErr := r.store.Close(); closeErr != nil {
+			t.Errorf("%s close after lease failure: %v", engine, closeErr)
+		}
 		t.Fatalf("%s lease: %v", engine, err)
 	}
 	t.Cleanup(func() {
-		if r.lease != nil {
-			if err := r.lease.Release(context.Background()); err != nil {
-				t.Errorf("%s cleanup lease: %v", engine, err)
-			}
+		if err := r.finish(); err != nil {
+			t.Errorf("%s cleanup: %v", engine, err)
 		}
-		if r.store != nil {
-			if err := r.store.Close(); err != nil {
-				t.Errorf("%s cleanup store: %v", engine, err)
-			}
-		}
-		t.Logf("B09 cleanup lease/store completed for %s", engine)
 	})
 	return r
+}
+
+func (r *b09ReplayTarget) finish() error {
+	var cleanup []error
+	if r.lease != nil {
+		cleanup = append(cleanup, r.lease.Release(context.Background()))
+		r.lease = nil
+	}
+	if r.store != nil {
+		cleanup = append(cleanup, r.store.Close())
+		r.store = nil
+	}
+	err := errors.Join(cleanup...)
+	if len(cleanup) != 0 {
+		r.t.Logf("B09 cleanup lease/store engine=%s error=%v", r.engine, err)
+		if r.output != "" {
+			(&recorder{t: r.t}).writeJSON(filepath.Join(r.output, "cleanup.json"), map[string]any{"engine": r.engine, "success": err == nil, "error": fmt.Sprint(err)})
+		}
+	}
+	return err
 }
 
 func (r *b09ReplayTarget) reopen() error {
