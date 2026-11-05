@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -274,19 +277,291 @@ func requireLocalOpaqueDependencyState(t *testing.T, store driver.Store, archive
 }
 
 func TestLocalOpaqueDependencyImportIsInertAndReopenSafe(t *testing.T) {
-	data := localOpaqueDependencyBytes(t, admittedFixtureBytes(t), "local-opaque", map[string]any{
-		"large": json.Number("9007199254740993"), "literal": json.Number("1.0"), "null": nil,
-	}, false)
+	for _, test := range []struct {
+		name string
+		raw  any
+	}{
+		{"SQL-NULL", nil},
+		{"empty-SQL-object", " {} \n"},
+		{"SQL-text", " {\"large\":9007199254740993,\"literal\":1.0,\"null\":null} \n"},
+		{"object", map[string]any{"large": json.Number("9007199254740993"), "literal": json.Number("1.0"), "gate": "any-children", "also_blocks": true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			data := localOpaqueDependencyBytes(t, admittedFixtureBytes(t), "local-opaque", test.raw, false)
+			profile, archive := admittedImportProfile(t, data)
+			for _, engine := range []string{"memory", "sqlite", "postgres"} {
+				t.Run(engine, func(t *testing.T) {
+					store, lease, reopen := openIdentityTarget(t, engine)
+					if _, err := RestoreImportWithLease(context.Background(), bytes.NewReader(data), store, lease, profile); err != nil {
+						t.Fatal(err)
+					}
+					requireLocalOpaqueDependencyState(t, store, archive)
+					requireDependencyReverse(t, store, archive, profile)
+					store, _ = reopen()
+					requireLocalOpaqueDependencyState(t, store, archive)
+					requireDependencyReverse(t, store, archive, profile)
+				})
+			}
+		})
+	}
+}
+
+func requireDependencyReverse(t *testing.T, store driver.Store, archive *dumpformat.Archive, profile driver.RestoreImportProfile) {
+	t.Helper()
+	before := savedLabelImport(t, store, archive, profile, "")
+	got, err := ReverseRestored(context.Background(), store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type dependency struct {
+		ID, IssueID, To, External, Kind, Thread, CreatedAt, CreatedBy, Metadata string
+	}
+	dependencies := map[string]dependency{}
+	for _, line := range bytes.Split(bytes.TrimSpace(got.Result.JSONL), []byte{'\n'}) {
+		var issue struct {
+			ID           string `json:"id"`
+			Dependencies []struct {
+				ID        string `json:"id"`
+				IssueID   string `json:"issue_id"`
+				To        string `json:"depends_on_id"`
+				External  string `json:"depends_on_external"`
+				Kind      string `json:"type"`
+				Thread    string `json:"thread_id"`
+				CreatedAt string `json:"created_at"`
+				CreatedBy string `json:"created_by"`
+				Metadata  string `json:"metadata"`
+			} `json:"dependencies"`
+		}
+		if err := json.Unmarshal(line, &issue); err != nil {
+			t.Fatal(err)
+		}
+		for _, edge := range issue.Dependencies {
+			if _, duplicate := dependencies[edge.ID]; duplicate || edge.IssueID != issue.ID {
+				t.Fatal("reverse duplicated an edge or changed its owner")
+			}
+			dependencies[edge.ID] = dependency{edge.ID, edge.IssueID, edge.To, edge.External, edge.Kind, edge.Thread, edge.CreatedAt, edge.CreatedBy, edge.Metadata}
+		}
+	}
+	if len(dependencies) != len(archive.Records("edge")) {
+		t.Fatal("reverse edge census changed")
+	}
+	for _, edge := range archive.Records("edge") {
+		got, present := dependencies[edge.ID]
+		if !present || got.IssueID != edge.Body["from"] || got.To != edge.Body["to"] || got.External != "" || got.Kind != edge.Body["type"] || got.Thread != edge.Body["thread_id"] || got.CreatedAt != edge.Source.Fields["created_at"] || got.CreatedBy != edge.Source.Fields["created_by"] {
+			t.Fatalf("reverse dependency identity/target/source fields changed: %+v", got)
+		}
+		var envelope map[string]any
+		if err := decodeReverseJSON([]byte(got.Metadata), &envelope); err != nil || envelope["_plug_edge_id"] != edge.ID {
+			t.Fatalf("reverse dependency envelope changed: %s %v", got.Metadata, err)
+		}
+		payload, present := envelope["_plug_metadata"]
+		if present != (edge.Body["metadata"] != nil) || !reflect.DeepEqual(payload, edge.Body["metadata"]) {
+			t.Fatalf("reverse changed NULL/object/SQL-text metadata: %#v want %#v", payload, edge.Body["metadata"])
+		}
+	}
+	if !reflect.DeepEqual(before, savedLabelImport(t, store, archive, profile, "")) {
+		t.Fatal("reverse changed source records, history, derived rows, blobs or receipt")
+	}
+}
+
+func editDependencyArchive(t *testing.T, archive *dumpformat.Archive, edit func(map[string][]byte)) []byte {
+	t.Helper()
+	return rewriteData(t, func(members map[string][]byte) {
+		clear(members)
+		members["manifest.json"], _ = archive.Member("manifest.json")
+		for name := range archive.Manifest().Files {
+			members[name], _ = archive.Member(name)
+		}
+		edit(members)
+	})
+}
+
+func TestTypedTracksReadbackKeepsExpandedReportsAndPureLoopsInert(t *testing.T) {
+	ctx := context.Background()
+	for _, returningKind := range []string{"tracks", "blocks"} {
+		t.Run(returningKind, func(t *testing.T) {
+			data := versionedDependencyBytes(t, admittedFixtureBytes(t), "tracks", " {\"large\":9007199254740993,\"literal\":1.0} ", false)
+			_, archive := admittedImportProfile(t, data)
+			data = editDependencyArchive(t, archive, func(members map[string][]byte) {
+				edge := archive.Records("edge")[0]
+				edge.ID, edge.Body, edge.Source.Fields = "tracks-return", cloneRow(edge.Body), cloneRow(edge.Source.Fields)
+				edge.Source.Fields["id"] = edge.ID
+				edge.Body["from"], edge.Source.Fields["issue_id"] = "demo-7", "demo-7"
+				edge.Body["to"], edge.Source.Fields["depends_on_issue_id"] = "demo-7.4", "demo-7.4"
+				edge.Body["type"], edge.Source.Fields["type"] = returningKind, returningKind
+				members["records/edge.ndjson"] = append(members["records/edge.ndjson"], encode(t, edge)...)
+				changeManifest(t, members, func(m map[string]any) {
+					for _, raw := range m["kind_registry"].([]any) {
+						if entry := raw.(map[string]any); entry["name"] == "edge" {
+							entry["count"] = len(archive.Records("edge")) + 1
+						}
+					}
+					for _, raw := range m["sources"].([]any) {
+						if entry := raw.(map[string]any); entry["family"] == "dependencies" {
+							entry["rows"] = len(archive.Records("edge")) + 1
+						}
+					}
+				})
+			})
+			profile, archive := admittedImportProfile(t, data)
+			for _, engine := range []string{"memory", "sqlite", "postgres"} {
+				t.Run(engine, func(t *testing.T) {
+					store, lease, reopen := openIdentityTarget(t, engine)
+					if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile); err != nil {
+						t.Fatal(err)
+					}
+					for pass := 0; pass < 2; pass++ {
+						requireVersionedDependencyState(t, store, archive, true)
+						requireDependencyReverse(t, store, archive, profile)
+						meta, err := store.Meta(ctx)
+						if err != nil {
+							t.Fatal(err)
+						}
+						r, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+						if err != nil {
+							t.Fatal(err)
+						}
+						for _, include := range []bool{false, true} {
+							report, err := service.ReadCycles(ctx, r, service.CyclesRequest{Project: "demo", IncludeTracks: include, Limit: 100}, nil)
+							want := uint64(0)
+							if include && returningKind == "blocks" {
+								want = 1
+								if len(report.Items) != 1 || len(report.Items[0].Path) != 2 || report.Items[0].Path[0].Ref == nil || report.Items[0].Path[1].Ref == nil || report.Items[0].Path[0].Ref.ID != "demo-7" || report.Items[0].Path[1].Ref.ID != "demo-7.4" || report.Items[0].Partial {
+									t.Fatalf("tracks-expanded report lost canonical rotation or members: %+v", report)
+								}
+							}
+							if err != nil || report.Truncated || report.CycleCount != model.Natural64(want) || len(report.Items) != int(want) {
+								t.Fatalf("tracks changed scheduling-cycle/report semantics: %+v %v", report, err)
+							}
+						}
+						r.Close()
+						if pass == 0 {
+							store, _ = reopen()
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+type dependencyRollbackTx struct {
+	driver.WriteTx
+	driver.RestoreImportTx
+	driver.AllocatorContinuation
+	reached *bool
+	fault   error
+}
+
+func (tx dependencyRollbackTx) Commit(context.Context, driver.ChangesetHeader) (model.Changeset, error) {
+	*tx.reached = true
+	return model.Changeset{}, tx.fault
+}
+
+func TestV3DependencyRefusalsAndStagingRollbackConserveTarget(t *testing.T) {
+	ctx := context.Background()
+	data := localOpaqueDependencyBytes(t, admittedFixtureBytes(t), "local-opaque", " {\"large\":9007199254740993} ", false)
 	profile, archive := admittedImportProfile(t, data)
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			store, lease, reopen := openIdentityTarget(t, engine)
-			if _, err := RestoreImportWithLease(context.Background(), bytes.NewReader(data), store, lease, profile); err != nil {
-				t.Fatal(err)
+			for _, test := range []struct {
+				name  string
+				edit  func(map[string][]byte)
+				cause string
+			}{
+				{"v2-local-opaque", func(m map[string][]byte) {
+					changeManifest(t, m, func(manifest map[string]any) {
+						for _, raw := range manifest["kind_registry"].([]any) {
+							if entry := raw.(map[string]any); entry["name"] == "edge" {
+								entry["version"] = 2
+							}
+						}
+					})
+				}, "unsupported dependency type"},
+				{"unsupported-known", func(m map[string][]byte) {
+					changeRecord(t, m, "edge", func(r map[string]any) { body(r)["type"], source(r)["type"] = "duplicates", "duplicates" })
+				}, "unsupported dependency type"},
+				{"multi-arm", func(m map[string][]byte) {
+					changeRecord(t, m, "edge", func(r map[string]any) { source(r)["depends_on_external"] = "tracker:collision" })
+				}, "multiple typed edge targets"},
+				{"wisp-arm", func(m map[string][]byte) {
+					changeRecord(t, m, "edge", func(r map[string]any) {
+						source(r)["depends_on_issue_id"], source(r)["depends_on_wisp_id"] = nil, "demo-7"
+						body(r)["target_kind"] = "depends_on_wisp_id"
+					})
+				}, "unsupported or missing edge target"},
+				{"dangling", func(m map[string][]byte) {
+					changeRecord(t, m, "edge", func(r map[string]any) {
+						body(r)["to"], source(r)["depends_on_issue_id"] = "demo-missing", "demo-missing"
+					})
+				}, "dangling typed edge target"},
+				{"metadata-identity", func(m map[string][]byte) {
+					changeRecord(t, m, "edge", func(r map[string]any) {
+						body(r)["metadata"], source(r)["metadata"] = `{"_plug_edge_id":"wrong"}`, `{"_plug_edge_id":"wrong"}`
+					})
+				}, "edge metadata envelope identity mismatch"},
+				{"staging-rollback", nil, ""},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					input := data
+					if test.edit != nil {
+						input = editDependencyArchive(t, archive, test.edit)
+					}
+					before := snapshot(t, store)
+					reached := false
+					fault := errors.New("B07 staged import publication refused")
+					target := &observedTarget{Store: store, wrap: func(tx driver.WriteTx) driver.WriteTx {
+						return dependencyRollbackTx{tx, tx.(driver.RestoreImportTx), tx.(driver.AllocatorContinuation), &reached, fault}
+					}}
+					_, err := RestoreImportWithLease(ctx, bytes.NewReader(input), target, lease, profile)
+					if err == nil || test.edit == nil && (!errors.Is(err, fault) || !reached || target.writes != 1) || test.edit != nil && (target.writes != 0 || reached) {
+						t.Fatalf("wrong refusal/staging boundary: err=%v writes=%d staged=%v", err, target.writes, reached)
+					}
+					if test.cause != "" && !strings.Contains(err.Error(), test.cause) {
+						t.Fatalf("lost direct dependency refusal %q: %v", test.cause, err)
+					}
+					if !reflect.DeepEqual(before, snapshot(t, store)) {
+						t.Fatal("refused v3 import changed metadata, records, versions or log")
+					}
+					meta, err := store.Meta(ctx)
+					if err != nil {
+						t.Fatal(err)
+					}
+					r, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, table := range []driver.DerivedTable{driver.DerivedAncestorClosure, driver.DerivedCutClosure, driver.DerivedAttribute, driver.DerivedGrant, driver.DerivedOntology, driver.DerivedPlugins, driver.DerivedReadyState, driver.DerivedReferenceIndex, driver.DerivedSortKey} {
+						rows, err := r.DerivedRows(ctx, table, "")
+						if err != nil || len(rows) != 0 {
+							t.Fatalf("refused v3 import published %s: %v", table, err)
+						}
+					}
+					hashes := map[string]bool{archive.SHA256(): true}
+					for _, file := range archive.Manifest().Files {
+						hashes[file.SHA256] = true
+					}
+					for hash := range hashes {
+						if _, err := r.Blob(ctx, driver.Hash(hash)); !errors.Is(err, driver.ErrNotFound) {
+							t.Fatalf("refused v3 import published source blob %s: %v", hash, err)
+						}
+					}
+					principal, err := driver.PrincipalKey(profile.Admission.Actor)
+					if err != nil {
+						t.Fatal(err)
+					}
+					receipt, err := r.IdempotencyByKey(ctx, principal, profile.AgentLabel(), profile.Method, profile.IdempotencyKey)
+					if err != nil || receipt != nil {
+						t.Fatalf("refused v3 import published receipt: %v", err)
+					}
+					r.Close()
+					store, lease = reopen()
+					if !reflect.DeepEqual(before, snapshot(t, store)) {
+						t.Fatal("refused v3 import changed state across reopen")
+					}
+				})
 			}
-			requireLocalOpaqueDependencyState(t, store, archive)
-			store, _ = reopen()
-			requireLocalOpaqueDependencyState(t, store, archive)
 		})
 	}
 }
