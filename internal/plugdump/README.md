@@ -401,7 +401,11 @@ sql-server` parser. For example, start the companion in the native job with
 then use the existing public `bd init --server --server-host 127.0.0.1
 --server-port <port> ...` route. The pinned server initializes its local root
 account in a fresh data directory and rejects the removed `--user` and
-`--password` startup options. The companion installs the engine's existing
+`--password` startup options. For local native inventory capture, start the
+companion in the workspace's resolved Dolt data root (`.beads/dolt` by default,
+or the existing `BEADS_DOLT_DATA_DIR` setting). The client storage locator and
+server must identify the same real data root; inventory records the existing
+directory without reading its engine contents. The companion installs the engine's existing
 query-context clock hook around the server's entire lifetime, so persistent
 connections and later HTTP/CLI calls observe published steps. The normal Dolt
 release executable, driver, SQL predicates and command semantics are unchanged.

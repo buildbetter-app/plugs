@@ -180,7 +180,13 @@ func newNativeFixture(t *testing.T) *nativeFixture {
 	port := freePort(t)
 	// The pinned server initializes root@localhost for a fresh data directory.
 	// Its parser rejects the removed --user/--password startup options.
-	f.start(f.companion, "--host", "127.0.0.1", "--port", strconv.Itoa(port), "--data-dir", privateDir(t))
+	// Use the workspace's actual data root so the unchanged native inventory
+	// storage locator observes the database created by this server.
+	dataDir := filepath.Join(f.work, ".beads", "dolt")
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	f.start(f.companion, "--host", "127.0.0.1", "--port", strconv.Itoa(port), "--data-dir", dataDir)
 	db, err := sql.Open("mysql", fmt.Sprintf("root@tcp(127.0.0.1:%d)/?parseTime=true&loc=UTC&timeout=1s&readTimeout=10s&writeTimeout=10s", port))
 	if err != nil {
 		t.Fatal(err)
