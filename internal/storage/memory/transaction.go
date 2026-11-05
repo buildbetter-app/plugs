@@ -41,6 +41,7 @@ type transaction struct {
 	parentCounters          map[string]driver.ParentCounter
 	allocated               map[string]bool
 	checkpointGuards        map[string]uint64
+	checkpointWrites        map[string]driver.Checkpoint
 	sourceDeclarations      map[string]sourceDeclaration
 	stagedParents           map[string][]string
 	stagedIncoming          map[sourceLinkBucket][]string
@@ -612,10 +613,12 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 	if err := next.publishAllocatorImage(s.state, t.restore != nil); err != nil {
 		return model.Changeset{}, err
 	}
+	checkpoints := t.prepareCheckpointPublication()
 	if err := t.check(ctx); err != nil {
 		return model.Changeset{}, err
 	}
 	s.state = next
+	s.checkpoints = checkpoints
 	t.finish()
 	return cloneJSON(entry)
 }

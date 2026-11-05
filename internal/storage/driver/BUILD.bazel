@@ -18,6 +18,7 @@ go_library(
         "source_links.go",
         "source_planes.go",
         "source_planes_codec.go",
+        "source_planes_snapshot.go",
         "source_planes_validate.go",
         "selection.go",
     ],

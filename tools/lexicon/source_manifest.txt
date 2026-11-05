@@ -493,6 +493,7 @@ internal/integration/converterroundtrip/restore.go
 internal/integration/converterroundtrip/reverse.go
 internal/integration/converterroundtrip/reverse_test.go
 internal/integration/converterroundtrip/roundtrip_test.go
+internal/integration/converterroundtrip/source_checkpoint_test.go
 internal/integration/converterroundtrip/testdata/public-complete-root-990eb800.tar
 internal/integration/converterroundtrip/testdata/public-partial-990eb800.tar
 internal/integration/converterroundtrip/testdata/public-source-990eb800.md
@@ -1033,6 +1034,11 @@ internal/storage/driver/selection.go
 internal/storage/driver/selection_contract_test.go
 internal/storage/driver/source_links.go
 internal/storage/driver/source_links_contract_test.go
+internal/storage/driver/source_planes.go
+internal/storage/driver/source_planes_codec.go
+internal/storage/driver/source_planes_snapshot.go
+internal/storage/driver/source_planes_test.go
+internal/storage/driver/source_planes_validate.go
 internal/storage/hierarchy-index-design.md
 internal/storage/memory/BUILD.bazel
 internal/storage/memory/allocator.go
@@ -1062,6 +1068,7 @@ internal/storage/memory/selection_test.go
 internal/storage/memory/source_activation_test.go
 internal/storage/memory/source_backend_test.go
 internal/storage/memory/source_backfill.go
+internal/storage/memory/source_checkpoint_test.go
 internal/storage/memory/source_link_index.go
 internal/storage/memory/source_link_index_test.go
 internal/storage/memory/source_publication.go
