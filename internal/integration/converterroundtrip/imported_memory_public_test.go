@@ -94,6 +94,7 @@ func TestImportedBeadsMemoriesPublicReadsAllDrivers(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			ctx := context.Background()
+			anonymous := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
 			profile, _ := admittedImportProfile(t, data)
 			store, lease, reopen := openIdentityTarget(t, engine)
 			if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile); err != nil {
@@ -118,7 +119,7 @@ func TestImportedBeadsMemoriesPublicReadsAllDrivers(t *testing.T) {
 				writer := pipeline.New(store, lease, pipeline.WithOntology(ontology))
 				svc := service.New(store, lease, writer, service.WithOntology(ontology))
 				id := model.RefByID("source/memory/fixture", model.Natural64(0))
-				got, err := svc.MemoryGet(ctx, model.PrincipalRef{}, service.MemoryGetRequest{ID: id})
+				got, err := svc.MemoryGet(ctx, anonymous, service.MemoryGetRequest{ID: id})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -128,7 +129,7 @@ func TestImportedBeadsMemoriesPublicReadsAllDrivers(t *testing.T) {
 				if !sameReverseJSON(got.Metadata, map[string]any{"plug.restore.source_id": "fixture", "plug.restore.source_table": "config", "plug.restore.source": map[string]any{"key": "kv.memory.fixture", "value": "A complete synthetic memory"}, "plug.restore.archive_sha256": archive.SHA256()}) {
 					t.Fatal("public memory provenance changed")
 				}
-				page, err := svc.MemoryList(ctx, model.PrincipalRef{}, service.MemoryListRequest{Limit: 100})
+				page, err := svc.MemoryList(ctx, anonymous, service.MemoryListRequest{Limit: 100})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -142,7 +143,7 @@ func TestImportedBeadsMemoriesPublicReadsAllDrivers(t *testing.T) {
 					t.Fatalf("imported memory %s missing from list", id.ID)
 				}
 				unicodeID := model.RefByID("source/memory/unicode", model.Natural64(0))
-				unicode, err := svc.MemoryGet(ctx, model.PrincipalRef{}, service.MemoryGetRequest{ID: unicodeID})
+				unicode, err := svc.MemoryGet(ctx, anonymous, service.MemoryGetRequest{ID: unicodeID})
 				if err != nil || unicode.Key != "unicode" || unicode.Content != "  π\n終  " {
 					t.Fatalf("unicode memory: %+v %v", unicode, err)
 				}
@@ -150,7 +151,7 @@ func TestImportedBeadsMemoriesPublicReadsAllDrivers(t *testing.T) {
 					t.Fatal("unicode identity/provenance changed")
 				}
 				for _, denied := range []string{"secret", "object", "number", "null", "array", "boolean"} {
-					_, err := svc.MemoryGet(ctx, model.PrincipalRef{}, service.MemoryGetRequest{ID: model.RefByID("source/memory/"+denied, model.Natural64(0))})
+					_, err := svc.MemoryGet(ctx, anonymous, service.MemoryGetRequest{ID: model.RefByID("source/memory/"+denied, model.Natural64(0))})
 					var typed *model.Error
 					if !errors.As(err, &typed) || typed.Data.Code != "not_found" {
 						t.Fatalf("ineligible %s: %v", denied, err)
@@ -192,11 +193,11 @@ func TestImportedBeadsMemoriesPublicReadsAllDrivers(t *testing.T) {
 						t.Fatalf("ineligible raw row missing: %s", source.ID)
 					}
 				}
-				first, err := svc.MemoryList(ctx, model.PrincipalRef{}, service.MemoryListRequest{Limit: 1})
+				first, err := svc.MemoryList(ctx, anonymous, service.MemoryListRequest{Limit: 1})
 				if err != nil || len(first.Items) != 1 || first.Next == nil {
 					t.Fatalf("first memory page: %+v %v", first, err)
 				}
-				second, err := svc.MemoryList(ctx, model.PrincipalRef{}, service.MemoryListRequest{Limit: 1, Position: first.Next})
+				second, err := svc.MemoryList(ctx, anonymous, service.MemoryListRequest{Limit: 1, Position: first.Next})
 				if err != nil || len(second.Items) != 1 || second.Next != nil || first.Items[0].ID == second.Items[0].ID {
 					t.Fatalf("second memory page: %+v %v", second, err)
 				}
@@ -402,7 +403,11 @@ func importedMemoryHistory(t *testing.T, store driver.Store) any {
 		}
 		versions[record.Ref.ID] = page
 	}
-	changes, err := r.Changesets(ctx, nil, 1000)
+	var cursor *driver.Cursor
+	if !state.Meta.HistoryFloor.IsZero() {
+		cursor = &driver.Cursor{Incarnation: state.Meta.Incarnation, Revision: state.Meta.HistoryFloor, Index: model.Natural64(0)}
+	}
+	changes, err := r.Changesets(ctx, cursor, 1000)
 	if err != nil || len(changes) >= 1000 {
 		t.Fatalf("incomplete changeset history: %v", err)
 	}
@@ -461,8 +466,9 @@ func TestImportedMemoryNearMissesRemainMalformedAllDrivers(t *testing.T) {
 					}
 					ontology := service.NewOntology(nil)
 					svc := service.New(store, lease, pipeline.New(store, lease, pipeline.WithOntology(ontology)), service.WithOntology(ontology))
-					_, getErr := svc.MemoryGet(ctx, model.PrincipalRef{}, service.MemoryGetRequest{ID: ref})
-					_, listErr := svc.MemoryList(ctx, model.PrincipalRef{}, service.MemoryListRequest{})
+					anonymous := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+					_, getErr := svc.MemoryGet(ctx, anonymous, service.MemoryGetRequest{ID: ref})
+					_, listErr := svc.MemoryList(ctx, anonymous, service.MemoryListRequest{})
 					for _, err := range []error{getErr, listErr} {
 						var typed *model.Error
 						if !errors.As(err, &typed) || typed.Data.Code != "internal_error" {
@@ -477,11 +483,12 @@ func TestImportedMemoryNearMissesRemainMalformedAllDrivers(t *testing.T) {
 
 func TestLegacyMemoryRawMirrorReverseUnchangedAllDrivers(t *testing.T) {
 	data := supportedBytes(t, nil)
+	verification := supportedVerification(t)
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			ctx := context.Background()
 			store, lease, _ := openIdentityTarget(t, engine)
-			if _, err := RestoreWithLease(ctx, bytes.NewReader(data), store, lease); err != nil {
+			if _, err := RestoreWithLease(ctx, bytes.NewReader(data), store, lease, verification); err != nil {
 				t.Fatal(err)
 			}
 			before := reverseState(t, store)
