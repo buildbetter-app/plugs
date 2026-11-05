@@ -35,7 +35,10 @@ matching exports, the complete unfiltered target and all seven required
 settings. No old fixed-2d branch, receipt or prepared path is adopted. The
 trusted main workflow selects the committed preparer; this package changes no
 workflow or helper pin. Actual product commit, tree, ordered parents and raw
-commit bytes/hash are retained alongside the pinned base and verified ancestry.
+commit bytes/hash are retained alongside the pinned base. The runner's checkout
+is shallow, so ordered parents come from its original raw commit headers. Base
+ancestry is verified separately before author dispatch and by source review in
+the complete object store; no runtime Git fetch or workflow change is used.
 Every build, test, preparation and native process remains RunsOn-only.
 
 ## Native observations
