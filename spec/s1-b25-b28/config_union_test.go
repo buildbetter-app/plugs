@@ -354,8 +354,24 @@ func assertStoredConfigUnion(t *testing.T, s *stack, data []byte, p driver.Resto
 			} else {
 				var got dumpformat.Row
 				decodeUnionJSON(t, row.Body, &got)
-				want := source.Body
+				want := dumpformat.Row{}
+				for key, value := range source.Body {
+					want[key] = value
+				}
 				want["source_id"], want["source_table"], want["source"] = source.ID, source.Source.Table, source.Source.Fields
+				if content, eligible := source.Body["value"].(string); kind.Name == "memory" && source.Body["classification"] == "public" && eligible {
+					key, ok := source.Body["key"].(string)
+					if !ok || strings.TrimSpace(key) == "" {
+						t.Fatal("public source memory lacks its admitted key")
+					}
+					want = dumpformat.Row{
+						"id": id, "key": strings.TrimSpace(key), "content": content,
+						"metadata": map[string]any{
+							"plug.restore.source_id": source.ID, "plug.restore.source_table": source.Source.Table,
+							"plug.restore.source": source.Source.Fields, "plug.restore.archive_sha256": a.SHA256(),
+						},
+					}
+				}
 				if !sameUnionJSON(got, want) {
 					t.Fatalf("complete source/config body changed: %s", id)
 				}

@@ -49,6 +49,27 @@ func same(t *testing.T, family string, got, want any) {
 	}
 }
 
+// Derive the adopted public-string shape from the archive, independently of
+// restore lowering. Secret and non-string rows retain the existing raw oracle.
+func expectedPublicMemory(t *testing.T, source dumpformat.Record, archiveSHA string) (map[string]any, bool) {
+	t.Helper()
+	content, eligible := source.Body["value"].(string)
+	if source.Kind != "memory" || source.Body["classification"] != "public" || !eligible {
+		return nil, false
+	}
+	key, ok := source.Body["key"].(string)
+	if !ok || strings.TrimSpace(key) == "" {
+		t.Fatal("public source memory lacks its admitted key")
+	}
+	return map[string]any{
+		"id": "source/memory/" + source.ID, "key": strings.TrimSpace(key), "content": content,
+		"metadata": map[string]any{
+			"plug.restore.source_id": source.ID, "plug.restore.source_table": source.Source.Table,
+			"plug.restore.source": source.Source.Fields, "plug.restore.archive_sha256": archiveSHA,
+		},
+	}, true
+}
+
 func profile(t *testing.T, data []byte) driver.RestoreImportProfile {
 	t.Helper()
 	i, err := converterroundtrip.InspectImport(context.Background(), bytes.NewReader(data))
@@ -209,6 +230,10 @@ func collect(t *testing.T, store driver.Store, archive *dumpformat.Archive, p dr
 					got.Dependencies = append(got.Dependencies, id+"/"+link.Kind+"/"+link.To.ID)
 				}
 			} else {
+				if want, projected := expectedPublicMemory(t, source, archive.SHA256()); projected {
+					sameJSON(t, "complete public memory source/provenance", json.RawMessage(row.Body), want)
+					continue
+				}
 				if err := snapshotArchiveContent(row.Body, source); err != nil {
 					t.Fatal(err)
 				}
