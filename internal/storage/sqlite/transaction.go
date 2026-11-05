@@ -682,7 +682,22 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		return model.Changeset{}, err
 	}
 	var result model.Changeset
+	// Bounded W5 diagnostic: one line per Commit when explicitly requested by
+	// the RunsOn command. It is removed after the measured source correction.
+	diagEnabled := os.Getenv("PLUG_W5_SQL_DIAG") == "1" && len(t.records) >= 1000
+	diagLast := time.Now()
+	var diagMarks []string
+	diagMark := func(name string) {
+		if !diagEnabled {
+			return
+		}
+		now := time.Now()
+		diagMarks = append(diagMarks, fmt.Sprintf("%s=%.3f", name, float64(now.Sub(diagLast))/float64(time.Millisecond)))
+		diagLast = now
+	}
 	err := t.store.immediate(ctx, t.lease, func(c *sql.Conn) (err error) {
+		diagMark("begin")
+		defer diagMark("callback_tail")
 		// The record/history publication loop deliberately keeps one scalar
 		// execution per logical row. Reusing the connection-bound statements
 		// removes database/sql's implicit prepare/finalize work without changing
@@ -711,14 +726,17 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		if err = t.validateChanges(ctx, h.Changes); err != nil {
 			return err
 		}
+		diagMark("validate_changes")
 		if err = t.validatePredicates(ctx); err != nil {
 			return err
 		}
+		diagMark("validate_predicates")
 		if t.selectionAnnotated {
 			if err = t.validateSelectionWrites(ctx, t.derived); err != nil {
 				return err
 			}
 		}
+		diagMark("validate_selection")
 		meta, err := readMeta(ctx, c)
 		if err != nil {
 			return err
@@ -751,10 +769,12 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		if err != nil {
 			return err
 		}
+		diagMark("prepare_source")
 		readyProof, err := t.prepareReadyOrderCommit(ctx, c, meta, revision)
 		if err != nil {
 			return err
 		}
+		diagMark("prepare_ready")
 		target := meta
 		target.Head = revision
 		if t.restore != nil {
@@ -765,6 +785,7 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		if err = t.publishAllocatorJournal(ctx, c, target, t.restore != nil); err != nil {
 			return err
 		}
+		diagMark("allocator")
 		for id, record := range t.records {
 			ref := t.recordRef(id)
 			v := driver.Version{Ref: ref, Revision: revision, CreatedAt: when, Principal: h.Principal, Deleted: record == nil}
@@ -860,9 +881,11 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 				return err
 			}
 		}
+		diagMark("records")
 		if err = sourcePlan.Publish(ctx, c); err != nil {
 			return err
 		}
+		diagMark("source_index")
 		// Rebind changed source annotations only in this commit-local overlay.
 		// If any later publication statement fails, t.derived remains bound to
 		// the observed prepublication source token for a safe retry/rollback.
@@ -870,12 +893,15 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		if err = publishDerivedKeys(ctx, c, revision, derived); err != nil {
 			return err
 		}
+		diagMark("derived_keys")
 		if err = t.publishSelection(ctx, c, meta, revision, derived, readyProof); err != nil {
 			return err
 		}
+		diagMark("selection")
 		if err = publishBumpKeys(ctx, c, revision, t.bumps); err != nil {
 			return err
 		}
+		diagMark("bumps")
 		for prefix, allocator := range t.allocators {
 			allocatorData, marshalErr := json.Marshal(allocator)
 			if marshalErr != nil {
@@ -899,6 +925,7 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		if err = t.finishReadyOrderCommit(ctx, c, readyProof, target); err != nil {
 			return err
 		}
+		diagMark("ready_finish")
 		if _, err = c.ExecContext(ctx, `INSERT INTO changesets(rev,data) VALUES(?,?)`, revKey(head+1), data); err != nil {
 			return err
 		}
@@ -910,8 +937,16 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 				return err
 			}
 		}
-		return t.store.saveReplay(ctx, c, h, revision, data)
+		if err = t.store.saveReplay(ctx, c, h, revision, data); err != nil {
+			return err
+		}
+		diagMark("final_receipt")
+		return nil
 	})
+	diagMark("transaction_finish")
+	if diagEnabled {
+		fmt.Fprintf(os.Stderr, "W5_SQL_DIAG records=%d derived=%d bumps=%d %s\n", len(t.records), len(t.derived), len(t.bumps), strings.Join(diagMarks, " "))
+	}
 	if err == nil {
 		t.finish()
 		return result, nil
