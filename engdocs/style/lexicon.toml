@@ -1,3 +1,13 @@
+# Exact B24 listener/table/refusal and fixture strings at one recorder path.
+[native_recording_literals]
+path = "spec/s1-b21-b24/native_recording_test.go"
+values = ["bd serve: listening on http://", "bd_events_journal", "bd_events_seq", "wisp_dependencies", "B21-metadata-delta-despite-changed-false-and-wisp", "wisp only", "unsupported nonempty family wisp"]
+
+# The views recorder admits only its two physical table names.
+[native_view_strings]
+path = "spec/s1-b21-b24/native_views_test.go"
+values = ["bd_events_journal", "bd_events_seq"]
+
 [[term]]
 match = ["gas town", "gastown", "gascity", "steampunk"]
 class = "ban"

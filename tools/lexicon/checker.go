@@ -43,6 +43,14 @@ type GoStringSetAllowance struct {
 	Values []string
 }
 
+// NativeControlAllowance binds a complete finite set of decoded Go string
+// literals to one exact native source path. No family or prefix matching is
+// supported, and imports are never admitted by this allowance.
+type NativeControlAllowance struct {
+	Path   string
+	Values []string
+}
+
 // NativeLiteralSite binds a complete decoded vector to one source field.
 // Go sites require their actual function/argv context; JSON requires its field.
 type NativeLiteralSite struct {
@@ -52,12 +60,14 @@ type NativeLiteralSite struct {
 
 // Config is the small TOML subset used by the repository lexicon.
 type Config struct {
-	Terms                  []Term
-	Provenance             []string
-	ExternalProtocolString GoStringAllowance
-	NativeManifestStrings  GoStringSetAllowance
-	NativeFieldLiterals    []NativeLiteralSite
-	B03NativeGoLiterals    []NativeLiteralSite
+	Terms                   []Term
+	Provenance              []string
+	ExternalProtocolString  GoStringAllowance
+	NativeManifestStrings   GoStringSetAllowance
+	NativeFieldLiterals     []NativeLiteralSite
+	B03NativeGoLiterals     []NativeLiteralSite
+	NativeRecordingLiterals NativeControlAllowance
+	NativeViewStrings       NativeControlAllowance
 }
 
 const externalProtocolSource = "spec/s1-b25-b28/public_recording_test.go"
@@ -66,6 +76,9 @@ const b01NativeGoSource = "spec/s1-b01-b04/native_exclusion_test.go"
 const b01NativeJSONSource = "spec/s1-b01-b04/native_source_bindings.json"
 const b03CatalogJSONSource = "internal/integration/b03catalog/native_catalog_inputs.json"
 const b03CatalogGoSource = "internal/integration/b03catalog/native_catalog_recording_test.go"
+
+const nativeRecordingLiteralSource = "spec/s1-b21-b24/native_recording_test.go"
+const nativeViewProtocolSource = "spec/s1-b21-b24/native_views_test.go"
 
 const externalEnvironmentDigest = "1b48d14732a1b4689f7af2d622235e53ddf1703e7043985592e66b0d1ecf4eff"
 
@@ -86,6 +99,21 @@ var nativeManifestProtocolDigests = map[string]bool{
 	"189e26badd76744c7e096b1d22c566d77a483176d37748a42b5c8ea3301c09ea": true,
 	"8610e53a1800745f41cf493e7f8e05da1513988d330e48bffe2a65422300379e": true,
 	"28eb85035ca7f533164539df882ca0584982aaad9f833d341983a6bff0fd0d33": true,
+}
+
+var nativeRecordingLiteralDigests = map[string]bool{
+	"d56ebf9119cfd53f6690d8ec4111275a19c16b5c1c89123d3ff99499b81586cd": true,
+	"91f880d51578af7df6289315f0b8e9e7e5c44e86b33f48900c26f031a0cc6f75": true,
+	"93602e05a1bff1bd127187c713caaeab338848eb4a6cba051123440a912cdf26": true,
+	"a250fe4bfeccf35cd1f34c8eb7625ef05127294cdeb6884a04adea45796adebc": true,
+	"bb4a56c556282d591f27cc54e1f06ac5a3de17e1aed41e0ac387b2b71fe30f91": true,
+	"c7e69eb7c0bdafa652aa9539c60152fb468d0ac0ddc4f71bb90469ec8747caf8": true,
+	"d29f73f45d1bb46a0ca4f641e919fcb6964b2aedeb3db5205118b50627c725fc": true,
+}
+
+var nativeViewProtocolDigests = map[string]bool{
+	"91f880d51578af7df6289315f0b8e9e7e5c44e86b33f48900c26f031a0cc6f75": true,
+	"93602e05a1bff1bd127187c713caaeab338848eb4a6cba051123440a912cdf26": true,
 }
 
 func protocolLiteralDigest(value string) string {
@@ -116,6 +144,39 @@ func allowsNativeManifestString(path, value string, allowance GoStringSetAllowan
 	return false
 }
 
+func nativeControlAllowance(path string, cfg Config) (NativeControlAllowance, map[string]bool, bool) {
+	switch path {
+	case nativeRecordingLiteralSource:
+		return cfg.NativeRecordingLiterals, nativeRecordingLiteralDigests, true
+	case nativeViewProtocolSource:
+		return cfg.NativeViewStrings, nativeViewProtocolDigests, true
+	default:
+		return NativeControlAllowance{}, nil, false
+	}
+}
+
+func allowsNativeControlLiteral(path, value string, cfg Config) bool {
+	allowance, digests, ok := nativeControlAllowance(path, cfg)
+	if !ok || allowance.Path != path || !digests[protocolLiteralDigest(value)] {
+		return false
+	}
+	for _, allowed := range allowance.Values {
+		if value == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+func hasNativeControlAllowance(path string, cfg Config) bool {
+	allowance, _, ok := nativeControlAllowance(path, cfg)
+	return ok && allowance.Path == path && len(allowance.Values) != 0
+}
+
+func allowsConfiguredLiteral(path, value string, cfg Config) bool {
+	return allowsPhysicalProtocolString(path, value, cfg.ExternalProtocolString) || allowsNativeControlLiteral(path, value, cfg)
+}
+
 // Finding identifies one boundary violation.
 type Finding struct {
 	Path  string
@@ -142,6 +203,8 @@ func LoadConfig(path string) (Config, error) {
 	var current *Term
 	var externalSection, externalPath, externalValue, externalPhysical bool
 	var manifestSection, manifestPath, manifestValues bool
+	var recordingSection, recordingPath, recordingValues bool
+	var viewSection, viewPath, viewValues bool
 	var nativeSite *NativeLiteralSite
 	var nativeFields map[string]bool
 	for _, line := range strings.Split(string(b), "\n") {
@@ -165,6 +228,22 @@ func LoadConfig(path string) (Config, error) {
 			}
 			externalSection = true
 			section = "external_protocol_string"
+			current = nil
+			continue
+		case "[native_recording_literals]":
+			if recordingSection {
+				return Config{}, errors.New("duplicate native recording literal section")
+			}
+			recordingSection = true
+			section = "native_recording_literals"
+			current = nil
+			continue
+		case "[native_view_strings]":
+			if viewSection {
+				return Config{}, errors.New("duplicate native view string section")
+			}
+			viewSection = true
+			section = "native_view_strings"
 			current = nil
 			continue
 		case "[native_manifest_strings]":
@@ -293,6 +372,43 @@ func LoadConfig(path string) (Config, error) {
 			}
 			continue
 		}
+		if section == "native_recording_literals" || section == "native_view_strings" {
+			allowance := &cfg.NativeRecordingLiterals
+			source := nativeRecordingLiteralSource
+			digests := nativeRecordingLiteralDigests
+			pathSeen, valuesSeen := &recordingPath, &recordingValues
+			if section == "native_view_strings" {
+				allowance = &cfg.NativeViewStrings
+				source = nativeViewProtocolSource
+				digests = nativeViewProtocolDigests
+				pathSeen, valuesSeen = &viewPath, &viewValues
+			}
+			switch key {
+			case "path":
+				if *pathSeen || !strings.HasPrefix(value, "\"") || len(values) != 1 || values[0] != source {
+					return Config{}, errors.New("native control literals require their exact source path")
+				}
+				*pathSeen = true
+				allowance.Path = values[0]
+			case "values":
+				if *valuesSeen || !strings.HasPrefix(value, "[") || len(values) != len(digests) {
+					return Config{}, errors.New("native control literals require one complete exact set")
+				}
+				*valuesSeen = true
+				seen := make(map[string]bool)
+				for _, literal := range values {
+					digest := protocolLiteralDigest(literal)
+					if !digests[digest] || seen[digest] {
+						return Config{}, errors.New("native control literal is unlisted or duplicated")
+					}
+					seen[digest] = true
+				}
+				allowance.Values = values
+			default:
+				return Config{}, fmt.Errorf("unknown native control literal key: %s", key)
+			}
+			continue
+		}
 		if current == nil {
 			return Config{}, fmt.Errorf("lexicon key outside a section: %s", key)
 		}
@@ -330,6 +446,9 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if externalSection && (!externalPath || !externalValue || cfg.ExternalProtocolString.Path != externalProtocolSource || protocolLiteralDigest(cfg.ExternalProtocolString.Value) != externalEnvironmentDigest) {
 		return Config{}, errors.New("external protocol string must bind the exact source path and environment literal")
+	}
+	if recordingSection && (!recordingPath || !recordingValues) || viewSection && (!viewPath || !viewValues) {
+		return Config{}, errors.New("native control literals lack their exact path or complete set")
 	}
 	if manifestSection && (!manifestPath || !manifestValues) {
 		return Config{}, errors.New("native manifest strings lack their exact path or literal set")
@@ -862,14 +981,14 @@ func scanFile(path string, content []byte, cfg Config, provenance bool) []Findin
 	}
 	fieldOffsets := nativeFieldLiteralOffsets(path, content, cfg.NativeFieldLiterals)
 	b03Offsets := b03NativeGoLiteralOffsets(path, content, cfg.B03NativeGoLiterals)
-	if path == externalProtocolSource && len(cfg.ExternalProtocolString.PhysicalValues) != 0 || path == nativeManifestProtocolSource && len(cfg.NativeManifestStrings.Values) != 0 || path == b01NativeGoSource || path == b01NativeJSONSource || path == b03CatalogJSONSource || path == b03CatalogGoSource {
+	if path == externalProtocolSource && len(cfg.ExternalProtocolString.PhysicalValues) != 0 || path == nativeManifestProtocolSource && len(cfg.NativeManifestStrings.Values) != 0 || path == b01NativeGoSource || path == b01NativeJSONSource || path == b03CatalogJSONSource || path == b03CatalogGoSource || hasNativeControlAllowance(path, cfg) {
 		masked := append([]byte(nil), content...)
 		sourceLiterals := goStringLiterals(path, content)
 		if path == b01NativeJSONSource || path == b03CatalogJSONSource {
 			sourceLiterals = jsonStringLiterals(content)
 		}
 		for _, literal := range sourceLiterals {
-			if !literal.imported && (fieldOffsets[literal.start] || b03Offsets[literal.start] || allowsPhysicalProtocolString(path, literal.value, cfg.ExternalProtocolString) || allowsNativeManifestString(path, literal.value, cfg.NativeManifestStrings)) {
+			if !literal.imported && (fieldOffsets[literal.start] || b03Offsets[literal.start] || allowsConfiguredLiteral(path, literal.value, cfg) || allowsNativeManifestString(path, literal.value, cfg.NativeManifestStrings)) {
 				for i := literal.start; i < literal.end; i++ {
 					if masked[i] != '\n' && masked[i] != '\r' {
 						masked[i] = ' '
@@ -1009,8 +1128,8 @@ func scanGoIdentifiers(path string, content []byte, term Term, cfg Config) []Fin
 					findings = append(findings, Finding{Path: path, Line: fset.Position(node.Pos()).Line, Class: "invalid-go", Term: "string"})
 					return true
 				}
-				if path == externalProtocolSource || path == nativeManifestProtocolSource || path == b01NativeGoSource || path == b03CatalogGoSource {
-					if !imports[n.Pos()] && (fieldOffsets[fset.Position(n.Pos()).Offset] || b03Offsets[fset.Position(n.Pos()).Offset] || path == externalProtocolSource && allowance.Path == path && decoded == allowance.Value && protocolLiteralDigest(decoded) == externalEnvironmentDigest || allowsPhysicalProtocolString(path, decoded, allowance) || allowsNativeManifestString(path, decoded, cfg.NativeManifestStrings)) {
+				if path == externalProtocolSource || path == nativeManifestProtocolSource || path == b01NativeGoSource || path == b03CatalogGoSource || hasNativeControlAllowance(path, cfg) {
+					if !imports[n.Pos()] && (fieldOffsets[fset.Position(n.Pos()).Offset] || b03Offsets[fset.Position(n.Pos()).Offset] || path == externalProtocolSource && allowance.Path == path && decoded == allowance.Value && protocolLiteralDigest(decoded) == externalEnvironmentDigest || allowsPhysicalProtocolString(path, decoded, allowance) || allowsNativeManifestString(path, decoded, cfg.NativeManifestStrings) || allowsNativeControlLiteral(path, decoded, cfg)) {
 						return true
 					}
 					text = decoded

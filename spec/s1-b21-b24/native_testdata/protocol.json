@@ -1,0 +1,226 @@
+{
+  "source_commit": "c8eb3ba7d4177e111a6f5c8aebe06b5d0b1d5724",
+  "source_tree": "930405e863284a3955cbd35e73a6097b606b91a5",
+  "projection_fields": [
+    "title",
+    "description",
+    "status_category",
+    "source_type",
+    "priority",
+    "labels",
+    "metadata",
+    "spec_id",
+    "close_reason",
+    "notes",
+    "created_at",
+    "updated_at",
+    "closed_at"
+  ],
+  "external_families": [
+    "user-legacy-config",
+    "user-xdg-config",
+    "user-native-config",
+    "project-config",
+    "beads-dir-config",
+    "project-local-config",
+    "environment-and-flags",
+    "metadata-json",
+    "legacy-config-json",
+    "beads-hooks",
+    "legacy-hooks",
+    "git-hooks",
+    "external-hook-managers",
+    "routes-jsonl",
+    "formulas",
+    "formula-search-paths",
+    "issues-jsonl",
+    "interactions-jsonl",
+    "dolt-ignore",
+    "dolt-nonlocal-tables",
+    "dolt-working-set",
+    "dolt-commit-graph",
+    "dolt-remotes",
+    "dolt-conflicts",
+    "dolt-history-maintenance",
+    "store-files-and-quiescence"
+  ],
+  "status_categories": {
+    "open": "unstarted",
+    "in_progress": "started",
+    "hooked": "started",
+    "blocked": "backlog",
+    "deferred": "backlog",
+    "pinned": "backlog",
+    "frozen": "backlog",
+    "closed": "completed"
+  },
+  "reverse_archived_fields": [
+    "actor",
+    "compaction_level",
+    "content_hash",
+    "current_revision",
+    "no_history",
+    "participation_generation",
+    "rig",
+    "sender",
+    "source_repo"
+  ],
+  "schema": "plug.s1-b21-b24.native-protocol.v1",
+  "cards": [
+    "B21",
+    "B22",
+    "B23",
+    "B24"
+  ],
+  "config_key": "custom.s1_native_21_24",
+  "memory_key": "native-21-24-memory",
+  "ids": [
+    "s1-b21-b24-anchor",
+    "s1-b21-b24-closednow",
+    "s1-b21-b24-guardrow",
+    "s1-b21-b24-guardbl",
+    "s1-b21-b24-casrow",
+    "s1-b21-b24-alphaa",
+    "s1-b21-b24-betaaa",
+    "s1-b21-b24-gammaa",
+    "s1-b21-b24-untimed",
+    "s1-b21-b24-timedaa",
+    "s1-b21-b24-partiala",
+    "s1-b21-b24-partialb",
+    "s1-b21-b24-spawner",
+    "s1-b21-b24-wisprow",
+    "s1-b21-b24-racecc",
+    "s1-b21-b24-raceuc",
+    "s1-b21-b24-plugracecc",
+    "s1-b21-b24-plugraceuc"
+  ],
+  "recordings": [
+    "recording1",
+    "recording2"
+  ],
+  "commands": [
+    "version",
+    "init external pinned owned Dolt",
+    "fresh independent role-only and exchange workspaces/databases/ChildEnv/HTTP lifecycles on the same owned pinned server",
+    "config set export.auto false",
+    "config set versioned-history.enabled true",
+    "config set events-journal true; actual native human events/version/journal/sequence and two close-coordination cells",
+    "remember",
+    "serve --addr 127.0.0.1:0",
+    "HTTP POST /v0/beads/issues:batchApply ordered/backward/close-policy/as-modified-guards/late/unknown/1000/1001/noop/ephemeral/metadata/CAS",
+    "HTTP POST /v0/beads/issues:batchClose partial and idempotent",
+    "readonly sql physical census of every SHOW TABLES row plus dolt_log",
+    "list --title Needle --limit 1; count --title Needle",
+    "list --label Alpha; list --label alpha",
+    "ready blocker aware",
+    "defer blank/indefinite/future/past; ready auto-wake",
+    "stale --days 0; stale --days 1",
+    "config list; readonly sql metadata",
+    "readonly export --include-memories",
+    "readonly export --format beads-inventory/1 --plug-capture-public",
+    "readonly export --format plug-dump/1 --plug-inventory",
+    "RestoreImport snapshot memory/sqlite/postgres",
+    "ReverseRestored each driver and physical SQL reopen",
+    "public tx.apply/subscriber warning/stored replay/no-post/late rollback/1000 bound on imported rows",
+    "public concurrent bead.update expected revision on imported rows",
+    "public view.run full predicate/count/current authorization/numeric revision cursor pages",
+    "public bead.defer controlled untimed plus bead.reopen; missing protected-source stale refusal",
+    "public native SQL age fixture; readonly stale age/status membership and full conservation",
+    "public historical view.run with current authorization; persisted cursor continuation after actual SQL reopen",
+    "role-only exact physical census/inventory; actual plug-dump/1 refusal for preserved active ephemeral issue; no archive/filter/deletion",
+    "HTTP POST issue:close 16-way close/close and PATCH issue 8-way update/close; shared authentic decimal-string row_lock, one changed winner, every loser and stale retry typed refusal/full physical conservation",
+    "public bead.close/bead.update 16-way close/close and 8-way update/close on untouched imported native rows; actual winning Commit/numeric loser, exact receipt/subscriber, revoked-current-authority denial, winning stored replay and stale refusal after physical SQL close/open"
+  ],
+  "limits": {
+    "apply_items": 1000,
+    "ordinary_count": 20000,
+    "scope": "canonical card operations plus explicitly snapshot native archive replay; no source-history/full-card proxy",
+    "configured_import_stale": "WAIT: missing pinned protected source; refusal and conservation only",
+    "native_exact_timer_boundary": "no native clock override; past/future observed, Plug untimed controlled separately",
+    "count_cap": "this native workload does not seed 20001 native issues or qualify the full ordinary cap",
+    "whole_native_corpus_replay": "NOT_QUALIFIED: role-only unsupported families remain intact; exchange archive is a distinct fresh corpus"
+  },
+  "decisions": {
+    "B21": [
+      "P2",
+      "D28",
+      "mid-request expected_version refuses request shape; expected_status/assignee read as-modified state"
+    ],
+    "B22": [
+      "P3",
+      "A6 G1-G5"
+    ],
+    "B23": [
+      "P31b",
+      "P74",
+      "countOnly OPT_IN"
+    ],
+    "B24": [
+      "untimed Plug defer; explicit reopen; native timed vector retained separately"
+    ]
+  },
+  "corpora": {
+    "role-only": {
+      "fresh_physical_database": true,
+      "operations": "full native role, including waits-for metadata rewrite and active ephemeral issue",
+      "physical_state": "preserved with full physical census and native inventory",
+      "export": "assert actual pinned supported-profile refusal and no output; full conservation",
+      "replay": false
+    },
+    "exchange": {
+      "fresh_physical_database": true,
+      "operations": "supported batch/close/CAS/views/defer/stale operations; no metadata waits-for or active ephemeral issue vector",
+      "export": "own exact native source/config/inventory/sidecar/archive closure",
+      "replay": "only this exact separately initialized supported corpus, snapshot memory/sqlite/postgres"
+    }
+  },
+  "config_observation": {
+    "transport": "accepted c8 flat object with injected numeric schema_version:1; require exact1, duplicate-free and EOF",
+    "stored_settings": "all non-kv.* values remain strings; exact map equality with independently recorded complete physical config census",
+    "memories": "kv.memory.* retains separate ordinary JSONL/source/policy projection; no archive-derived expectations"
+  },
+  "lifecycle_races": {
+    "card": "B22",
+    "close_close_racers": 16,
+    "update_close_racers": 8,
+    "native": {
+      "targets": [
+        "s1-b21-b24-racecc",
+        "s1-b21-b24-raceuc"
+      ],
+      "routes": [
+        "POST /v0/beads/issues/{id}:close",
+        "PATCH /v0/beads/issues/{id}"
+      ],
+      "updated_field": "description (public native API does not expose backend Owner)",
+      "guard": "authentic SQL row_lock, exact equality-only decimal string",
+      "winner": "one changed verb; response revision equals actual post-row_lock; one event/version/journal/Dolt commit; sequence advances one",
+      "losers": "409 precondition_failed/param expected_version/exact expected token; no invented public current token; full table+history conservation for each stale retry",
+      "stored_replay": "native lifecycle has no stored-idempotency API; not claimed"
+    },
+    "imported": {
+      "targets": [
+        "s1-b21-b24-plugracecc",
+        "s1-b21-b24-plugraceuc"
+      ],
+      "drivers": [
+        "memory",
+        "sqlite",
+        "postgres"
+      ],
+      "guard": "actual imported revision1; one real production RPC winning Commit",
+      "losers": "precondition_failed/reason revision/numeric currentRevision equal actual winning Commit/nonretryable/no result/no replay/no receipt",
+      "planes": [
+        "Meta",
+        "records",
+        "paginated versions",
+        "nine derived tables",
+        "complete available postfloor changesets",
+        "all attempted request receipts",
+        "pinned subscriber afterimages"
+      ],
+      "replay": "byte-exact original winner stored Commit with no extra post before and after real SQL close/open; memory no physical-persistence claim",
+      "current_authority": "revoked winning replay and stale loser disclose no content/token/details; full state/subscriber conservation before and after SQL reopen"
+    }
+  }
+}

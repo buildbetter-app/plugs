@@ -464,6 +464,7 @@ internal/integration/batchsql/child_allocator_test.go
 internal/integration/batchsql/fixture_test.go
 internal/integration/batchsql/hierarchy_authorization_test.go
 internal/integration/batchsql/hierarchy_test.go
+internal/integration/batchsql/m03_combined_ready_test.go
 internal/integration/batchsql/native_allocator_restore_test.go
 internal/integration/batchsql/public_batch_guard_order_test.go
 internal/integration/batchsql/raw_workflow_close_refusal_test.go
@@ -1450,6 +1451,14 @@ spec/s1-b21-b24/count-reference-first.json
 spec/s1-b21-b24/count-reference-repeat.json
 spec/s1-b21-b24/extract_ordinary_count_packet.py
 spec/s1-b21-b24/fixture_test.go
+spec/s1-b21-b24/native_history_probe_test.go
+spec/s1-b21-b24/native_recording_test.go
+spec/s1-b21-b24/native_replay_test.go
+spec/s1-b21-b24/native_support_test.go
+spec/s1-b21-b24/native_testdata/README.md
+spec/s1-b21-b24/native_testdata/profile.json
+spec/s1-b21-b24/native_testdata/protocol.json
+spec/s1-b21-b24/native_views_test.go
 spec/s1-b21-b24/ordinary_count_capture.py
 spec/s1-b21-b24/ordinary_count_capture_harness_test.go
 spec/s1-b21-b24/ordinary_count_capture_policy_test.go
