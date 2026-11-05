@@ -126,7 +126,7 @@ func TestJointSourcePublicRoutingBatchReplayAndReopen(t *testing.T) {
 			policy := &sourcePublicPolicy{}
 			_, server := sourcePublicService(t, store, lease, p, report, policy)
 			actor := p.Admission.Actor
-			get := sourcePublicCall(t, server, actor, "bead.get", 0, map[string]any{"id": "demo-7"}, "")
+			get := sourcePublicCall(t, server, actor, "bead.get", 0, map[string]any{"id": model.RefByID("demo-7", model.Natural64(0))}, "")
 			if !bytes.Contains(get.Result, []byte("workflow:item/restored")) || !bytes.Contains(get.Result, []byte("Exact active collision")) {
 				t.Fatalf("source route did not reach active item: %s", get.Result)
 			}
@@ -140,7 +140,7 @@ func TestJointSourcePublicRoutingBatchReplayAndReopen(t *testing.T) {
 				t.Fatal(err)
 			}
 			core := savedLabelImport(t, store, report.Archive, p, "")
-			updated := sourcePublicCall(t, server, actor, "bead.update", 1, map[string]any{"id": "demo-7", "fields": map[string]any{"title": "public active title"}}, "")
+			updated := sourcePublicCall(t, server, actor, "bead.update", 1, map[string]any{"id": model.RefByID("demo-7", model.Natural64(0)), "fields": map[string]any{"title": "public active title"}}, "")
 			if !reflect.DeepEqual(core, savedLabelImport(t, store, report.Archive, p, "")) {
 				t.Fatal("active-only public write touched core/history/derived data")
 			}
@@ -148,7 +148,7 @@ func TestJointSourcePublicRoutingBatchReplayAndReopen(t *testing.T) {
 			if err != nil || later.Generation != initial.Generation+1 {
 				t.Fatal("active-only generation", err)
 			}
-			replayed := sourcePublicCall(t, server, actor, "bead.update", 1, map[string]any{"id": "demo-7", "fields": map[string]any{"title": "public active title"}}, "")
+			replayed := sourcePublicCall(t, server, actor, "bead.update", 1, map[string]any{"id": model.RefByID("demo-7", model.Natural64(0)), "fields": map[string]any{"title": "public active title"}}, "")
 			if !replayed.Meta.Replayed || !bytes.Equal(replayed.Result, updated.Result) {
 				t.Fatal("canonical source replay changed result")
 			}
@@ -157,7 +157,7 @@ func TestJointSourcePublicRoutingBatchReplayAndReopen(t *testing.T) {
 				t.Fatal("source replay republished namespace")
 			}
 			policy.deny = true
-			sourcePublicCall(t, server, actor, "bead.update", 1, map[string]any{"id": "demo-7", "fields": map[string]any{"title": "public active title"}}, "forbidden")
+			sourcePublicCall(t, server, actor, "bead.update", 1, map[string]any{"id": model.RefByID("demo-7", model.Natural64(0)), "fields": map[string]any{"title": "public active title"}}, "forbidden")
 			policy.deny = false
 			beforeFailure := savedLabelImport(t, store, report.Archive, p, "")
 			bad := model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: model.RefByID("demo-7", model.Natural64(0)), Fields: map[string]any{"title": "discard active draft"}}}, {Kind: model.OpPatch, Patch: &model.PatchOp{Target: model.RefByID("missing", model.Natural64(0)), Fields: map[string]any{"title": "absent"}}}}}
@@ -178,13 +178,13 @@ func TestJointSourcePublicRoutingBatchReplayAndReopen(t *testing.T) {
 			if both.Generation != later.Generation+1 || meta.Head.String() != "2" {
 				t.Fatal("mixed proposal did not publish once in both planes", both.Generation, meta.Head)
 			}
-			closed := sourcePublicCall(t, server, actor, "bead.close", 4, map[string]any{"id": "demo-7", "reason": "public source complete"}, "")
-			sourcePublicCall(t, server, actor, "bead.get", 0, map[string]any{"id": "workflow:item/restored"}, "not_found")
-			fallback := sourcePublicCall(t, server, actor, "bead.get", 0, map[string]any{"id": "demo-7"}, "")
+			closed := sourcePublicCall(t, server, actor, "bead.close", 4, map[string]any{"id": model.RefByID("demo-7", model.Natural64(0)), "reason": "public source complete"}, "")
+			sourcePublicCall(t, server, actor, "bead.get", 0, map[string]any{"id": model.RefByID("workflow:item/restored", model.Natural64(0))}, "not_found")
+			fallback := sourcePublicCall(t, server, actor, "bead.get", 0, map[string]any{"id": model.RefByID("demo-7", model.Natural64(0))}, "")
 			if bytes.Contains(fallback.Result, []byte("workflow:item/restored")) || bytes.Contains(fallback.Result, []byte("committed mixed active")) {
 				t.Fatal("completed source did not fall back to its durable collision")
 			}
-			closedReplay := sourcePublicCall(t, server, actor, "bead.close", 4, map[string]any{"id": "demo-7", "reason": "public source complete"}, "")
+			closedReplay := sourcePublicCall(t, server, actor, "bead.close", 4, map[string]any{"id": model.RefByID("demo-7", model.Natural64(0)), "reason": "public source complete"}, "")
 			if !closedReplay.Meta.Replayed || !bytes.Equal(closed.Result, closedReplay.Result) {
 				t.Fatal("completed active replay was routed to durable collision")
 			}
@@ -232,7 +232,7 @@ func TestJointSourcePublicOrdinaryRelationsAndActiveLifecycle(t *testing.T) {
 			}
 			var refs []model.Ref
 			for i, title := range []string{"ordinary relation source", "ordinary relation target"} {
-				created := sourcePublicCall(t, server, actor, "bead.create", 10+i, map[string]any{"type": "task", "fields": map[string]any{"title": title}}, "")
+				created := sourcePublicCall(t, server, actor, "bead.create", 10+i, map[string]any{"type": "issue", "fields": map[string]any{"title": title}}, "")
 				var commit model.Commit
 				decode(t, created.Result, &commit)
 				if len(commit.Results) != 1 {
@@ -268,13 +268,13 @@ func TestJointSourcePublicOrdinaryRelationsAndActiveLifecycle(t *testing.T) {
 				t.Fatal("ordinary named operations changed the source namespace", err)
 			}
 			core := savedLabelImport(t, store, report.Archive, p, "")
-			comment := sourcePublicCall(t, server, actor, "bead.comment", 17, map[string]any{"id": "demo-7", "body": "public active comment"}, "")
-			commentReplay := sourcePublicCall(t, server, actor, "bead.comment", 17, map[string]any{"id": "demo-7", "body": "public active comment"}, "")
+			comment := sourcePublicCall(t, server, actor, "bead.comment", 17, map[string]any{"id": model.RefByID("demo-7", model.Natural64(0)), "body": "public active comment"}, "")
+			commentReplay := sourcePublicCall(t, server, actor, "bead.comment", 17, map[string]any{"id": model.RefByID("demo-7", model.Natural64(0)), "body": "public active comment"}, "")
 			if !commentReplay.Meta.Replayed || !bytes.Equal(comment.Result, commentReplay.Result) {
 				t.Fatal("active comment receipt was not canonical")
 			}
-			claimed := sourcePublicCall(t, server, actor, "bead.claim", 18, map[string]any{"id": "demo-7"}, "")
-			claimedReplay := sourcePublicCall(t, server, actor, "bead.claim", 18, map[string]any{"id": "demo-7"}, "")
+			claimed := sourcePublicCall(t, server, actor, "bead.claim", 18, map[string]any{"id": model.RefByID("demo-7", model.Natural64(0))}, "")
+			claimedReplay := sourcePublicCall(t, server, actor, "bead.claim", 18, map[string]any{"id": model.RefByID("demo-7", model.Natural64(0))}, "")
 			if !claimedReplay.Meta.Replayed || !bytes.Equal(claimed.Result, claimedReplay.Result) {
 				t.Fatal("active claim receipt was not canonical")
 			}
