@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -391,7 +392,41 @@ func a4HTTP(ctx context.Context, client *http.Client, url string, by credential,
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(resp.Body)
-	return reply{raw: raw, status: resp.StatusCode, started: started, finished: time.Now().UTC()}, err
+	return reply{raw: raw, status: resp.StatusCode, started: started, finished: time.Now().UTC(), retryAfter: resp.Header.Get("Retry-After")}, err
+}
+
+// Honor both canonical retryAfterMs and HTTP Retry-After without shortening
+// the bounded backoff. A hint that cannot be represented is an error, never
+// permission to retry early or enlarge the fixture/request deadlines.
+func a4RetryDelay(r reply, milliseconds *model.Natural, backoff time.Duration) (time.Duration, error) {
+	if milliseconds != nil {
+		n, err := milliseconds.Uint64()
+		if err != nil || n > uint64((1<<63-1)/time.Millisecond) {
+			return 0, fmt.Errorf("invalid A4 retryAfterMs")
+		}
+		if wait := time.Duration(n) * time.Millisecond; wait > backoff {
+			backoff = wait
+		}
+	}
+	if hint := strings.TrimSpace(r.retryAfter); hint != "" {
+		var wait time.Duration
+		if seconds, err := strconv.ParseUint(hint, 10, 64); err == nil {
+			if seconds > uint64((1<<63-1)/time.Second) {
+				return 0, fmt.Errorf("invalid A4 Retry-After seconds")
+			}
+			wait = time.Duration(seconds) * time.Second
+		} else {
+			when, err := http.ParseTime(hint)
+			if err != nil {
+				return 0, fmt.Errorf("invalid A4 Retry-After date")
+			}
+			wait = time.Until(when)
+		}
+		if wait > backoff {
+			backoff = wait
+		}
+	}
+	return backoff, nil
 }
 
 func (f *fixture) a4Winner(before, after durableState, by credential, key string, r reply, observer driver.Record) string {
@@ -516,6 +551,7 @@ func TestB04A4TwoHundredSimultaneousPublicAgentsWithWASMMutator(t *testing.T) {
 			err       error
 			attempts  int
 			responses []reply
+			waits     []time.Duration
 		}
 		const retryBudget = 64
 		results := make(chan result, agents)
@@ -538,8 +574,9 @@ func TestB04A4TwoHundredSimultaneousPublicAgentsWithWASMMutator(t *testing.T) {
 					var envelope struct {
 						Error *struct {
 							Data struct {
-								Code      string
-								Retryable bool
+								Code         string
+								Retryable    bool
+								RetryAfterMS *model.Natural `json:"retryAfterMs"`
 							}
 						}
 					}
@@ -557,6 +594,11 @@ func TestB04A4TwoHundredSimultaneousPublicAgentsWithWASMMutator(t *testing.T) {
 					if code == "rate_limited" {
 						backoff = time.Duration(3+i%7) * time.Millisecond
 					}
+					backoff, out.err = a4RetryDelay(out.r, envelope.Error.Data.RetryAfterMS, backoff)
+					if out.err != nil {
+						break
+					}
+					out.waits = append(out.waits, backoff)
 					timer := time.NewTimer(backoff)
 					select {
 					case <-timer.C:
@@ -582,6 +624,9 @@ func TestB04A4TwoHundredSimultaneousPublicAgentsWithWASMMutator(t *testing.T) {
 			attempts += out.attempts
 			for attempt, r := range out.responses {
 				r = f.checkedReply(r)
+				if attempt > 0 && (len(out.waits) < attempt || r.started.Sub(out.responses[attempt-1].finished) < out.waits[attempt-1]) {
+					t.Fatal("A4 retried before the bounded backoff or advertised retry-after hint")
+				}
 				out.r = r
 				if r.code == "write_conflict" {
 					conflicts++

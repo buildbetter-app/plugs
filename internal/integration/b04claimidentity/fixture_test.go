@@ -309,13 +309,14 @@ func (f *fixture) remember(by credential, method, key, agent string) receiptScop
 }
 
 type reply struct {
-	raw      []byte
-	status   int
-	envelope map[string]json.RawMessage
-	code     string
-	error    *wire.Error
-	started  time.Time
-	finished time.Time
+	raw        []byte
+	status     int
+	envelope   map[string]json.RawMessage
+	code       string
+	error      *wire.Error
+	started    time.Time
+	finished   time.Time
+	retryAfter string
 }
 
 func (f *fixture) request(handler http.Handler, by credential, method, project, key, agent string, payload map[string]any) reply {
