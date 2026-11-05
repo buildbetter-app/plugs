@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -115,11 +116,11 @@ func TestB21SourceReverseImageCurrentSnapshotWithoutPublication(t *testing.T) {
 			childKey := driver.SourceEntityKey{Project: project, Plane: dumpformat.EphemeralEntityTable, ID: "child"}
 			image := read()
 			entry := image.Entities[parentKey]
-			if len(image.Entities) != 2 || len(image.Relations) != 3 || !entry.Present || entry.Terminal || entry.Item == nil || entry.Item.Title != "current reverse title" || entry.Item.Metadata["large"] != json.Number("9007199254740993") || entry.Item.Claim == nil || *entry.Item.Claim != *claimed.Claim {
+			if len(image.Entities) != 2 || len(image.Relations) != 3 || !entry.Present || entry.Terminal || entry.Item == nil || entry.Item.Title != "current reverse title" || entry.Item.Metadata["large"] != json.Number("9007199254740993") || entry.Item.Claim == nil || !reflect.DeepEqual(entry.Item.Claim, claimed.Claim) {
 				t.Fatalf("inspection returned stale or projected current state: %+v", image)
 			}
 			comments := entry.Item.Comments
-			if len(comments) != 2 || comments[0].Source == nil || comments[0].Source.Author != "unverified-author" || comments[0].Principal.Kind != "" || comments[1].Source != nil || comments[1].Principal != b21SourceActor {
+			if len(comments) != 2 || comments[0].Source == nil || comments[0].Source.Author != "unverified-author" || comments[0].Principal.Kind != "" || comments[1].Source != nil || !reflect.DeepEqual(comments[1].Principal, b21SourceActor) {
 				t.Fatalf("inspection changed imported/authenticated comment attribution: %+v", comments)
 			}
 			if _, err := p.Close(ctx, b21SourceActor, parent, "complete", b21WriteMeta("reverse-close", "bead.close")); err != nil {
@@ -308,7 +309,7 @@ func (v *b21PrivateTarget) reopen(t *testing.T) {
 func (v *b21PrivateTarget) physical(t *testing.T) any {
 	t.Helper()
 	if v.db != nil {
-		return b26CompleteSQL(t, v.db, v.engine)
+		return b21CompleteSQL(t, v.db, v.engine)
 	}
 	cp, err := v.cap.LoadCheckpoint(context.Background(), "plugin/workflow/default/durable")
 	if err != nil {
@@ -932,4 +933,86 @@ func TestB21SourceHostAdmissionRetainsInvocationFence(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Snapshot every application table, preserving the complete column census,
+// SQL NULL, actual SQL value types and full bytes. No lock/receipt/checkpoint
+// table is removed to make a refusal pass.
+func b21CompleteSQL(t *testing.T, db *sql.DB, engine string) map[string][]string {
+	t.Helper()
+	query := "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+	if engine == "postgres" {
+		query = "SELECT table_name FROM information_schema.tables WHERE table_schema='plug_postgres' AND table_type='BASE TABLE' ORDER BY table_name"
+	}
+	rows, err := db.QueryContext(context.Background(), query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tables []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		if name == "" || strings.ContainsAny(name, "\"\x00") {
+			t.Fatal("unsafe application table")
+		}
+		tables = append(tables, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(tables) < 10 {
+		t.Fatalf("incomplete application-table census: %v", tables)
+	}
+	result := map[string][]string{}
+	for _, table := range tables {
+		qualified := `"` + table + `"`
+		if engine == "postgres" {
+			qualified = `plug_postgres.` + qualified
+		}
+		rows, err := db.QueryContext(context.Background(), "SELECT * FROM "+qualified)
+		if err != nil {
+			t.Fatal(err)
+		}
+		columns, err := rows.Columns()
+		if err != nil {
+			t.Fatal(err)
+		}
+		header, err := json.Marshal(columns)
+		if err != nil {
+			t.Fatal(err)
+		}
+		images := []string{}
+		for rows.Next() {
+			values, ptrs := make([]any, len(columns)), make([]any, len(columns))
+			for i := range values {
+				ptrs[i] = &values[i]
+			}
+			if err := rows.Scan(ptrs...); err != nil {
+				t.Fatal(err)
+			}
+			cells := make([]map[string]any, len(columns))
+			for i, value := range values {
+				cells[i] = map[string]any{"column": columns[i], "type": fmt.Sprintf("%T", value), "value": value}
+			}
+			body, err := json.Marshal(cells)
+			if err != nil {
+				t.Fatal(err)
+			}
+			images = append(images, string(body))
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		if err := rows.Close(); err != nil {
+			t.Fatal(err)
+		}
+		sort.Strings(images)
+		result[table] = append([]string{string(header)}, images...)
+	}
+	return result
 }
