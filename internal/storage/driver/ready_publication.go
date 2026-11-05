@@ -20,6 +20,7 @@ type ReadyOrderMutation struct {
 	Project, Type, Binding string
 	Eligible, Local        bool
 	SourceDigest           string
+	Sort                   *ReadyOrderSort
 }
 
 // ReadyOrderPublicationWriter registers a bounded, independently replayable

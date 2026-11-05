@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 )
@@ -78,6 +79,16 @@ type ReadyOrderLeaf struct {
 	Key      SelectionKey
 	Priority int64
 	Digest   string
+	Sort     *ReadyOrderSort `json:",omitempty"`
+}
+
+// ReadyOrderSort is the trusted Writer's persisted public ordering tuple.
+// A nil tuple retains the original priority/ID fixture domain.
+type ReadyOrderSort struct {
+	Bucket    int
+	Rank      int
+	CreatedAt time.Time
+	RankedAt  time.Time
 }
 type ReadyOrderChild struct {
 	Prefix     string
@@ -103,6 +114,33 @@ func ReadyOrderKey(priority int64, id string) string {
 	var p [8]byte
 	binary.BigEndian.PutUint64(p[:], uint64(priority)^(uint64(1)<<63))
 	return hex.EncodeToString(p[:]) + hex.EncodeToString([]byte(id))
+}
+
+// ReadyOrderTreeKey preserves the legacy tree encoding for synthetic sources.
+// Writer sources use the public bucket/rank/creation/ID order. Every component
+// is fixed-width before the variable ID suffix, so bytewise radix order agrees
+// with the public comparator.
+func ReadyOrderTreeKey(l ReadyOrderLeaf) (string, error) {
+	if l.Sort == nil {
+		return ReadyOrderKey(l.Priority, l.Key.Ref.ID), nil
+	}
+	s := l.Sort
+	ns := s.CreatedAt.UTC().UnixNano()
+	if s.Bucket < 0 || s.Bucket > 1 || s.Rank < 0 || s.Rank > 999 || s.CreatedAt.IsZero() || s.RankedAt.IsZero() || !time.Unix(0, ns).UTC().Equal(s.CreatedAt.UTC()) {
+		return "", fmt.Errorf("%w: invalid Ready sort tuple", ErrUnsupported)
+	}
+	var prefix [17]byte
+	prefix[0] = byte(s.Bucket)
+	binary.BigEndian.PutUint64(prefix[1:9], uint64(s.Rank))
+	binary.BigEndian.PutUint64(prefix[9:17], uint64(ns)^(uint64(1)<<63))
+	return hex.EncodeToString(prefix[:]) + hex.EncodeToString([]byte(l.Key.Ref.ID)), nil
+}
+func ReadyOrderGroupPrefix(l ReadyOrderLeaf) (string, error) {
+	key, err := ReadyOrderTreeKey(l)
+	if err != nil || l.Sort == nil {
+		return key[:min(16, len(key))], err
+	}
+	return key[:34], nil
 }
 func ReadyOrderPivot(seed string, priority int64, count uint64) uint64 {
 	if seed == "" || count < 2 {
@@ -181,7 +219,8 @@ func readyOrderNodeCount(n *ReadyOrderNode) (uint64, error) {
 	count := uint64(0)
 	if n.Leaf != nil {
 		l := n.Leaf
-		if ValidateHierarchyRef(l.Key.Ref) != nil || l.Key.Revision.Validate() != nil || !ValidReadyHash(l.Digest) || l.Key.MembershipLeaf != l.Digest || ReadyOrderKey(l.Priority, l.Key.Ref.ID) != n.Prefix {
+		key, keyErr := ReadyOrderTreeKey(*l)
+		if ValidateHierarchyRef(l.Key.Ref) != nil || l.Key.Revision.Validate() != nil || !ValidReadyHash(l.Digest) || l.Key.MembershipLeaf != l.Digest || keyErr != nil || key != n.Prefix {
 			return 0, fmt.Errorf("%w: invalid Ready leaf", ErrUnsupported)
 		}
 		count = 1
@@ -260,22 +299,28 @@ func ReadyCommitmentFromLeaves(leaves []ReadyOrderLeaf) (ReadyCommitment, error)
 }
 func BuildReadyOrderNodes(leaves []ReadyOrderLeaf) (map[string]ReadyOrderNode, error) {
 	leaves = append([]ReadyOrderLeaf(nil), leaves...)
-	sort.Slice(leaves, func(i, j int) bool {
-		return ReadyOrderKey(leaves[i].Priority, leaves[i].Key.Ref.ID) < ReadyOrderKey(leaves[j].Priority, leaves[j].Key.Ref.ID)
-	})
+	keys := make(map[string]string, len(leaves))
 	seen := map[string]bool{}
 	for _, leaf := range leaves {
 		if seen[leaf.Key.Ref.ID] {
 			return nil, fmt.Errorf("duplicate Ready identity")
 		}
 		seen[leaf.Key.Ref.ID] = true
+		key, err := ReadyOrderTreeKey(leaf)
+		if err != nil {
+			return nil, err
+		}
+		keys[leaf.Key.Ref.ID] = key
 	}
+	sort.Slice(leaves, func(i, j int) bool {
+		return keys[leaves[i].Key.Ref.ID] < keys[leaves[j].Key.Ref.ID]
+	})
 	nodes := map[string]ReadyOrderNode{}
 	var build func(string, []ReadyOrderLeaf) (ReadyOrderNode, error)
 	build = func(prefix string, ls []ReadyOrderLeaf) (ReadyOrderNode, error) {
 		n := ReadyOrderNode{Prefix: prefix}
 		for start := 0; start < len(ls); {
-			key := ReadyOrderKey(ls[start].Priority, ls[start].Key.Ref.ID)
+			key := keys[ls[start].Key.Ref.ID]
 			if key == prefix {
 				l := ls[start]
 				n.Leaf = &l
@@ -283,10 +328,10 @@ func BuildReadyOrderNodes(leaves []ReadyOrderLeaf) (map[string]ReadyOrderNode, e
 				continue
 			}
 			end := start + 1
-			for end < len(ls) && ReadyOrderKey(ls[end].Priority, ls[end].Key.Ref.ID)[:len(prefix)+2] == key[:len(prefix)+2] {
+			for end < len(ls) && keys[ls[end].Key.Ref.ID][:len(prefix)+2] == key[:len(prefix)+2] {
 				end++
 			}
-			last := ReadyOrderKey(ls[end-1].Priority, ls[end-1].Key.Ref.ID)
+			last := keys[ls[end-1].Key.Ref.ID]
 			common := CommonReadyPrefix(key, last)
 			child, err := build(common, ls[start:end])
 			if err != nil {

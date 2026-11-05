@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -32,6 +33,9 @@ type marker struct {
 	Incarnation string
 	Through     model.Revision
 	Unsafe      uint64
+	OrderMode   string
+	OrderAt     time.Time
+	ValidUntil  time.Time
 }
 type scopeHeader struct{ Bindings map[string]uint64 }
 type source struct {
@@ -344,6 +348,17 @@ func Prepare(ctx context.Context, r Observer, mutations []Mutation) (*Delta, err
 		if m.Binding == "" || m.Item.ID != m.Ref.ID || m.Item.Project != m.Project || m.Item.Type != m.Type {
 			return nil, unavailable("incomplete mutation")
 		}
+		if m.Eligible {
+			if m.Sort != nil && d.coverage.OrderMode == "" {
+				if t.nodes[nodeKey(globalScope, "")].Commitment.Count != 0 {
+					return nil, unavailable("mixed public ordering and legacy tree")
+				}
+				d.coverage.OrderMode = "public"
+			}
+			if (m.Sort != nil) != (d.coverage.OrderMode == "public") {
+				return nil, unavailable("mixed Ready ordering")
+			}
+		}
 		s := source{Project: m.Project, Type: m.Type, Binding: m.Binding, Local: m.Local}
 		if m.Eligible {
 			item := *m.Item
@@ -351,6 +366,22 @@ func Prepare(ctx context.Context, r Observer, mutations []Mutation) (*Delta, err
 			l, e := driver.ReadyOrderLeafFor(item, m.Priority)
 			if e != nil {
 				return nil, e
+			}
+			if m.Sort != nil {
+				value := *m.Sort
+				l.Sort = &value
+				if _, e = driver.ReadyOrderTreeKey(l); e != nil {
+					return nil, e
+				}
+				if value.RankedAt.After(d.coverage.OrderAt) {
+					d.coverage.OrderAt = value.RankedAt
+				}
+				if value.Bucket == 0 {
+					deadline := value.CreatedAt.Add(48 * time.Hour)
+					if d.coverage.ValidUntil.IsZero() || deadline.Before(d.coverage.ValidUntil) {
+						d.coverage.ValidUntil = deadline
+					}
+				}
 			}
 			s.Leaf = &l
 		}
@@ -422,7 +453,11 @@ func (d *Delta) adjust(s source, direction int) error {
 			if direction > 0 {
 				l = s.Leaf
 			}
-			if _, err := d.t.replace(scope, "", driver.ReadyOrderKey(s.Leaf.Priority, s.Leaf.Key.Ref.ID), l); err != nil {
+			key, err := driver.ReadyOrderTreeKey(*s.Leaf)
+			if err != nil {
+				return err
+			}
+			if _, err := d.t.replace(scope, "", key, l); err != nil {
 				return err
 			}
 		}
@@ -486,6 +521,10 @@ func (d *Delta) materialize(revision model.Revision) ([]driver.DerivedRow, []dri
 		if err != nil {
 			return nil, nil, err
 		}
+		if m.Sort != nil {
+			value := *m.Sort
+			leaf.Sort = &value
+		}
 		var s source
 		if _, err = d.t.read(sourceKey(id), &s); err != nil {
 			return nil, nil, err
@@ -495,7 +534,11 @@ func (d *Delta) materialize(revision model.Revision) ([]driver.DerivedRow, []dri
 			return nil, nil, err
 		}
 		for _, scope := range scopes(s) {
-			key := nodeKey(scope, driver.ReadyOrderKey(m.Priority, id))
+			prefix, err := driver.ReadyOrderTreeKey(leaf)
+			if err != nil {
+				return nil, nil, err
+			}
+			key := nodeKey(scope, prefix)
 			n := d.t.nodes[key]
 			if n == nil || n.Leaf == nil {
 				return nil, nil, unavailable("undeclared revision leaf")

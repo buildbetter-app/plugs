@@ -47,6 +47,13 @@ func PrepareReadyProjection(ctx context.Context, r interface {
 	Snapshot() driver.View
 	Observe(context.Context, []driver.LockKey) ([]driver.LockState, error)
 }, sources []driver.Record, deleted []driver.Record, evaluator ReadyProjectionEvaluator) (*ReadyProjectionPlan, error) {
+	return prepareReadyProjectionWithSort(ctx, r, sources, deleted, evaluator, nil)
+}
+
+func prepareReadyProjectionWithSort(ctx context.Context, r interface {
+	Snapshot() driver.View
+	Observe(context.Context, []driver.LockKey) ([]driver.LockState, error)
+}, sources []driver.Record, deleted []driver.Record, evaluator ReadyProjectionEvaluator, sorts map[string]driver.ReadyOrderSort) (*ReadyProjectionPlan, error) {
 	if evaluator == nil && (len(sources) != 0 || len(deleted) != 0) {
 		return &ReadyProjectionPlan{}, nil
 	}
@@ -69,7 +76,11 @@ func PrepareReadyProjection(ctx context.Context, r interface {
 			return nil, fmt.Errorf("invalid Ready priority")
 		}
 		item := driver.ReadyMembershipItem{ID: doc.ID, Type: doc.Type, Project: doc.Project, Status: status, Revision: model.Natural64(0), Fields: doc.Fields}
-		mutations = append(mutations, readyindex.Mutation{Ref: record.Ref, Item: &item, Priority: int64(priority), Project: doc.Project, Type: doc.Type, Binding: st.Binding, Eligible: st.Eligible, Local: st.Local, SourceDigest: driver.SelectionDigest(record.Body)})
+		mutation := readyindex.Mutation{Ref: record.Ref, Item: &item, Priority: int64(priority), Project: doc.Project, Type: doc.Type, Binding: st.Binding, Eligible: st.Eligible, Local: st.Local, SourceDigest: driver.SelectionDigest(record.Body)}
+		if value, ok := sorts[doc.ID]; ok {
+			mutation.Sort = &value
+		}
+		mutations = append(mutations, mutation)
 	}
 	for _, record := range deleted {
 		if record.Kind == "bead" {
@@ -150,7 +161,15 @@ func (p *prepared) prepareReadyProjection(ctx context.Context, o any) (*ReadyPro
 	// read conflicts or become a new ordinary-write refusal.
 	isolated := &snapshotReader{reader: p.snapshot.reader, reads: &readSet{states: map[string]driver.LockState{}}}
 	reader := readyProjectionReader{parent: p.snapshot, isolated: isolated}
-	plan, err := PrepareReadyProjection(ctx, reader, sources, deleted, evaluator)
+	sorts := make(map[string]driver.ReadyOrderSort, len(p.readySort))
+	for _, mutation := range p.readySort {
+		if mutation.value == nil {
+			continue
+		}
+		v := mutation.value
+		sorts[mutation.key.Key[len("ready/"):]] = driver.ReadyOrderSort{Bucket: v.Bucket, Rank: v.Rank, CreatedAt: v.CreatedAt, RankedAt: v.RankedAt}
+	}
+	plan, err := prepareReadyProjectionWithSort(ctx, reader, sources, deleted, evaluator, sorts)
 	if err != nil || !plan.Available() {
 		return plan, err
 	}

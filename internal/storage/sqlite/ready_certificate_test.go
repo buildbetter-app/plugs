@@ -3,7 +3,9 @@ package sqlite
 import (
 	"context"
 	"errors"
+	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/conformance/readyorder"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"path/filepath"
@@ -31,6 +33,17 @@ func TestReadyOrderWriterFinalizesAfterGraphCertificateBump(t *testing.T) {
 			t.Fatalf("Writer did not advance its graph certificate with Head: head=%s states=%+v err=%v close=%v", meta.Head.String(), states, err, closeErr)
 		}
 		return meta.Head.String()
+	}
+	// A root create preserves an uncertified graph; it cannot invent the
+	// semantic graph certificate. A real link/unlink validates the graph and
+	// restores local Ready eligibility before the field-only update below.
+	link := service.LinkRequest{From: f.Ref, To: model.RefByID("opaque-ready-graph", model.Natural64(0)), Kind: "waits-for", TargetKind: model.LinkTargetExternal}
+	by := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+	if _, err := f.Service.Link(ctx, by, link, f.meta()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Service.Unlink(ctx, by, link, f.meta()); err != nil {
+		t.Fatal(err)
 	}
 	before := graphHead()
 	f.Update(t)

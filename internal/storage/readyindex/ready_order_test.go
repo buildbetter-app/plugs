@@ -462,3 +462,54 @@ func TestReadyOrderRealWriter(t *testing.T) {
 		})
 	})
 }
+
+func TestReadyOrderPublicSortUsesCreationBeforeIDAndSeedsOnlyTies(t *testing.T) {
+	ctx := context.Background()
+	s := memory.New()
+	defer s.Close()
+	lease, err := s.Lease(ctx, "public-sort-order", driver.LeaseTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release(ctx)
+	now := time.Now().UTC()
+	mutations := []readyindex.Mutation{
+		sourceMutation("pl-z", "visible", 2),
+		sourceMutation("pl-a", "visible", 2),
+		sourceMutation("pl-c", "visible", 2),
+		sourceMutation("pl-d", "visible", 2),
+		sourceMutation("pl-old", "visible", 0),
+	}
+	for i, age := range []time.Duration{3 * time.Minute, 2 * time.Minute, time.Minute, time.Minute, 72 * time.Hour} {
+		bucket, rank := 0, 2
+		if i == 4 {
+			bucket, rank = 1, 999
+		}
+		mutations[i].Sort = &driver.ReadyOrderSort{Bucket: bucket, Rank: rank, CreatedAt: now.Add(-age), RankedAt: now}
+	}
+	maintain(t, s, lease, mutations, false)
+	check := func(seed string, want ...string) {
+		t.Helper()
+		got, err := selectOrder(t, s, false, func(p *driver.ReadyOrderPlan) { p.Seed = seed })
+		if err != nil || len(got.Keys) != len(want) {
+			t.Fatalf("public sorted selection=%+v err=%v", got, err)
+		}
+		for i, key := range got.Keys {
+			if key.Ref.ID != want[i] {
+				t.Fatalf("public order index=%d got=%s want=%s", i, key.Ref.ID, want[i])
+			}
+		}
+	}
+	check("", "pl-z", "pl-a", "pl-c", "pl-d", "pl-old")
+	seed := ""
+	for i := 0; i < 100 && seed == ""; i++ {
+		candidate := fmt.Sprintf("tie-%d", i)
+		if driver.ReadyOrderPivot(candidate, 2, 2) == 1 {
+			seed = candidate
+		}
+	}
+	if seed == "" {
+		t.Fatal("no deterministic tie rotation seed")
+	}
+	check(seed, "pl-z", "pl-a", "pl-d", "pl-c", "pl-old")
+}
