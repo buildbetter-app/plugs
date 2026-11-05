@@ -2,13 +2,16 @@ package sqlite
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	modernsqlite "modernc.org/sqlite"
@@ -34,6 +37,106 @@ func TestSelectionUntypedWriteRefusal(t *testing.T) {
 		}
 		return s
 	})
+}
+
+func TestSelectionReadySortRowKeepsCoverageOnlyWhenDisjoint(t *testing.T) {
+	stamp := time.Date(2026, time.November, 5, 0, 0, 0, 0, time.UTC)
+	value, err := json.Marshal(pipeline.ReadySortKey{
+		Bucket: 0, Rank: 0, CreatedAt: stamp, RankedAt: stamp, Revision: model.Natural64(2),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, typedKey string
+		rawKeys        []string
+		deleteSource   bool
+		wantReady      bool
+	}{
+		{name: "scalar-miss", typedKey: "selection-ready-source", rawKeys: []string{"ready/selection-ready-a"}, wantReady: true},
+		{name: "batched-all-miss", typedKey: "selection-ready-source", rawKeys: []string{"ready/selection-ready-a", "ready/selection-ready-b"}, wantReady: true},
+		{name: "ordinary-untyped", typedKey: "selection-ready-source", rawKeys: []string{"other/selection-ready-a"}},
+		{name: "malformed-ready-id", typedKey: "selection-ready-source", rawKeys: []string{"ready/bad/id"}},
+		{name: "typed-shadow-during-delete", typedKey: "ready/selection-ready-source", rawKeys: []string{"ready/selection-ready-source"}, deleteSource: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			s := selectionStore(t).(*Store)
+			t.Cleanup(func() { _ = s.Close() })
+			lease := getLease(t, ctx, s, driver.LeaseTTL)
+			ref := testRef("selection-ready-source")
+			typedKey := driver.DerivedRowKey{Table: driver.DerivedSortKey, Key: tc.typedKey}
+			typedLock := driver.LockKey{Kind: driver.LockDerived, Derived: &typedKey}
+			seed, header := beginSourceTestWithLocks(t, s, lease, []driver.LockKey{typedLock}, true, ref)
+			body := []byte(`{"id":"selection-ready-source","type":"task"}`)
+			if err := seed.PutGraphRecord(ctx, driver.Record{Ref: ref, Kind: "bead", Body: body}, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			typed := selectionStageBead(header.Incarnation, ref, body)
+			typed.Key, typed.Index.Row = typedKey.Key, typedKey
+			if err := seed.PutSelectionDerived(ctx, typedKey.Table, nil, []driver.DerivedRow{typed}); err != nil {
+				t.Fatal(err)
+			}
+			commitSourceTest(t, seed, header)
+			family := sqliteSelectionFamilies()[0]
+			meta := getMeta(t, ctx, s)
+			ready, err := selectionFamilyReady(ctx, s.db, meta.Incarnation, family, revKey(mustUint(meta.Head)))
+			if err != nil || !ready {
+				t.Fatalf("typed seed did not certify sort coverage: ready=%t err=%v", ready, err)
+			}
+
+			locks := make([]driver.LockKey, 0, len(tc.rawKeys))
+			rows := make([]driver.DerivedRow, 0, len(tc.rawKeys))
+			for _, id := range tc.rawKeys {
+				key := driver.DerivedRowKey{Table: driver.DerivedSortKey, Key: id}
+				locks = append(locks, driver.LockKey{Kind: driver.LockDerived, Derived: &key})
+				rows = append(rows, driver.DerivedRow{Key: id, Value: value})
+			}
+			refs := []model.Ref(nil)
+			if tc.deleteSource {
+				refs = append(refs, ref)
+			}
+			tx, next := beginSourceTestWithLocks(t, s, lease, locks, true, refs...)
+			if tc.deleteSource {
+				if err := tx.Delete(ctx, ref); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := tx.PutDerived(ctx, driver.DerivedSortKey, nil, rows); err != nil {
+				t.Fatal(err)
+			}
+			commitSourceTest(t, tx, next)
+			meta = getMeta(t, ctx, s)
+			ready, err = selectionFamilyReady(ctx, s.db, meta.Incarnation, family, revKey(mustUint(meta.Head)))
+			if err != nil || ready != tc.wantReady {
+				t.Fatalf("sort coverage after raw %s: ready=%t want=%t err=%v", tc.name, ready, tc.wantReady, err)
+			}
+			reader := sourceReader(t, s, nil)
+			defer reader.Close()
+			control := testRef("selection-ready-absent-control")
+			plan := driver.SelectionPlan{Incarnation: meta.Incarnation, Branch: model.Natural64(0),
+				ContentRevision: meta.Head, AuthorityRevision: meta.Head,
+				Membership: driver.SelectionExpr{Op: driver.SelectionTrue}, Authorization: driver.SelectionExpr{Op: driver.SelectionTrue},
+				Mode: driver.SelectionCountMode}
+			plan.Boundary, err = driver.PrepareSelectionBoundary(driver.SelectionBoundarySpec{
+				Version: 1, PreparedBinding: driver.SelectionDigest([]byte("ready-sort-disjoint-control")),
+				Incarnation: meta.Incarnation, Branch: model.Natural64(0), AuthorityRevision: meta.Head,
+				Sources: []driver.SelectionSource{{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &control}, Revision: model.Natural64(0)}},
+				Chain:   driver.SelectionChainNone, Authorization: plan.Authorization, Host: driver.SelectionHostAbsent,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			count, err := reader.Select(ctx, plan)
+			if tc.wantReady {
+				if err != nil || count.Total != 1 {
+					t.Fatalf("disjoint ready sort row lost public selection: %+v %v", count, err)
+				}
+			} else if !errors.Is(err, driver.ErrSelectionUnavailable) {
+				t.Fatalf("untyped shadow retained public selection: %+v %v", count, err)
+			}
+		})
+	}
 }
 
 func TestSelectionOfflineRestoreNeedsExplicitCoverageBuild(t *testing.T) {

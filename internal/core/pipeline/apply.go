@@ -667,14 +667,14 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	if err := tx.BumpSentinels(ctx, sentinels); err != nil {
 		return model.Commit{}, err
 	}
-	if err := ready.Finalize(ctx, tx); err != nil {
-		return model.Commit{}, err
-	}
 	graphValidated := p.graphValidated || p.graphPreserved && currentGraphCertificate(states)
 	if graphValidated && len(writes) != 0 {
 		if err := tx.BumpReadFacts(ctx, []driver.ReadFact{GraphValidityReadFact}); err != nil {
 			return model.Commit{}, err
 		}
+	}
+	if err := ready.Finalize(ctx, tx); err != nil {
+		return model.Commit{}, err
 	}
 	timings.next(PhaseCommitDriver)
 	entry, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: kind, Time: w.cfg.now().UTC(), Principal: by, Chain: chain, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: commit, ResponsePending: len(p.changed) != 0 && len(w.cfg.posts) > 0, Mutators: p.mutators, Changes: changes, Events: events, LockKeys: keys})

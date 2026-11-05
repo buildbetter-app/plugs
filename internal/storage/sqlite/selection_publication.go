@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -27,6 +28,22 @@ func (t *transaction) reboundSelectionSources(revision model.Revision) map[strin
 		derived[id] = state
 	}
 	return derived
+}
+
+// A ready sort row has its own untyped keyspace. It can coexist with typed
+// selection rows only after the physical lookup proves this exact key has no
+// typed predecessor. The key uses the same ID boundary as the Writer codec.
+func disjointReadySortRow(state driver.LockState) bool {
+	if state.Key.Derived == nil || state.Key.Derived.Table != driver.DerivedSortKey ||
+		state.Derived == nil || state.Derived.Index != nil {
+		return false
+	}
+	id, ready := strings.CutPrefix(state.Key.Derived.Key, "ready/")
+	if !ready {
+		return false
+	}
+	_, err := driver.NewBeadSentinel(id)
+	return err == nil
 }
 
 // selectionCompleteForCommit is the inductive counting-family check. A new
@@ -220,13 +237,18 @@ func (t *transaction) selectionCompleteForCommit(ctx context.Context, c queryer,
 		}
 		if absent {
 			if state.Present && (state.Derived == nil || state.Derived.Index == nil) {
-				// The miss proof only replaces the old-row lookup. It does not
-				// certify an untyped present row.
-				return false, nil
+				if !disjointReadySortRow(state) {
+					return false, nil
+				}
 			}
 			continue
 		}
 		if lookupErr == nil {
+			if state.Present && (state.Derived == nil || state.Derived.Index == nil) {
+				// An untyped replacement cannot inherit this exact typed row's
+				// coverage, even when its source is deleted in this token.
+				return false, nil
+			}
 			if state.Present && state.Derived != nil && state.Derived.Index != nil && state.Derived.Index.Bead != nil && keyID(state.Derived.Index.Source.Key) == previous {
 				continue
 			}
@@ -234,8 +256,9 @@ func (t *transaction) selectionCompleteForCommit(ctx context.Context, c queryer,
 				return false, nil
 			}
 		} else if state.Present && (state.Derived == nil || state.Derived.Index == nil) {
-			// An untyped sort-key replacement can shadow a typed logical row.
-			return false, nil
+			if !disjointReadySortRow(state) {
+				return false, nil
+			}
 		}
 	}
 	return true, nil

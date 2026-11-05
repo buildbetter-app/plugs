@@ -3,11 +3,45 @@ package sqlite
 import (
 	"context"
 	"errors"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/storage/conformance/readyorder"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"path/filepath"
 	"testing"
 )
+
+func TestReadyOrderWriterFinalizesAfterGraphCertificateBump(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t, ctx, filepath.Join(t.TempDir(), "graph-ready.db"))
+	t.Cleanup(func() { _ = s.Close() })
+	f := readyorder.NewCertificateFixture(t, s)
+	graphHead := func() string {
+		t.Helper()
+		meta, err := s.Meta(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := s.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+		if err != nil {
+			t.Fatal(err)
+		}
+		states, err := r.Observe(ctx, []driver.LockKey{pipeline.GraphValidityLockKey()})
+		closeErr := r.Close()
+		if err != nil || closeErr != nil || len(states) != 1 || !states[0].Present || states[0].Revision.String() != meta.Head.String() {
+			t.Fatalf("Writer did not advance its graph certificate with Head: head=%s states=%+v err=%v close=%v", meta.Head.String(), states, err, closeErr)
+		}
+		return meta.Head.String()
+	}
+	before := graphHead()
+	f.Update(t)
+	if after := graphHead(); after == before {
+		t.Fatal("ordinary Writer update did not advance graph certificate")
+	}
+	result, err := f.Select(ctx)
+	if err != nil || result.Total != 1 || len(result.Keys) != 1 || result.Keys[0].Ref.ID != f.Ref.ID {
+		t.Fatalf("graph-certified Writer update lost Ready publication: %+v %v", result, err)
+	}
+}
 
 func TestReadyOrderPhysicalRawMutation(t *testing.T) {
 	for _, statement := range []string{"UPDATE records SET data=data", "UPDATE versions SET data=data", "UPDATE key_history SET data=data", "UPDATE selection_source_history SET source_digest=source_digest", "INSERT OR REPLACE INTO records SELECT * FROM records", "INSERT OR REPLACE INTO versions SELECT * FROM versions", "INSERT OR REPLACE INTO key_history SELECT * FROM key_history"} {
