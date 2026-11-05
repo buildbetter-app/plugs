@@ -38,9 +38,9 @@ func authoredMixedMemoryFixture(t *testing.T) []byte {
 		}
 		lines := bytes.TrimSuffix(m["records/memory.ndjson"], []byte{'\n'})
 		rows := []map[string]any{
-			{"kind": "memory", "id": "secret", "body": map[string]any{"key": "secret", "value": map[string]any{"$secret": "config/kv.memory.secret"}, "classification": "secret"}, "source": map[string]any{"table": "config", "fields": map[string]any{"key": "kv.memory.secret", "value": map[string]any{"$secret": "config/kv.memory.secret"}}}},
-			{"kind": "memory", "id": "object", "body": map[string]any{"key": "object", "value": map[string]any{"x": 1}, "classification": "public"}, "source": map[string]any{"table": "config", "fields": map[string]any{"key": "kv.memory.object", "value": map[string]any{"x": 1}}}},
-			{"kind": "memory", "id": "unicode", "body": map[string]any{"key": "unicode", "value": "  π\n終  ", "classification": "public"}, "source": map[string]any{"table": "config", "fields": map[string]any{"key": "kv.memory.unicode", "value": "  π\n終  "}}},
+			{"kind": "memory", "id": "secret", "project": "", "body": map[string]any{"key": "secret", "value": map[string]any{"$secret": "config/kv.memory.secret"}, "classification": "secret"}, "source": map[string]any{"table": "config", "fields": map[string]any{"key": "kv.memory.secret", "value": map[string]any{"$secret": "config/kv.memory.secret"}}}},
+			{"kind": "memory", "id": "object", "project": "", "body": map[string]any{"key": "object", "value": map[string]any{"x": 1}, "classification": "public"}, "source": map[string]any{"table": "config", "fields": map[string]any{"key": "kv.memory.object", "value": map[string]any{"x": 1}}}},
+			{"kind": "memory", "id": "unicode", "project": "", "body": map[string]any{"key": "unicode", "value": "  π\n終  ", "classification": "public"}, "source": map[string]any{"table": "config", "fields": map[string]any{"key": "kv.memory.unicode", "value": "  π\n終  "}}},
 		}
 		for _, control := range []struct {
 			id    string
@@ -51,7 +51,7 @@ func authoredMixedMemoryFixture(t *testing.T) []byte {
 			{"array", []any{json.Number("9007199254740993"), nil, " π "}},
 			{"boolean", false},
 		} {
-			rows = append(rows, map[string]any{"kind": "memory", "id": control.id, "body": map[string]any{"key": control.id, "classification": "public", "value": control.value}, "source": map[string]any{"table": "config", "fields": map[string]any{"key": "kv.memory." + control.id, "value": control.value}}})
+			rows = append(rows, map[string]any{"kind": "memory", "id": control.id, "project": "", "body": map[string]any{"key": control.id, "classification": "public", "value": control.value}, "source": map[string]any{"table": "config", "fields": map[string]any{"key": "kv.memory." + control.id, "value": control.value}}})
 		}
 		for _, row := range rows {
 			b, _ := json.Marshal(row)
@@ -476,7 +476,7 @@ func TestImportedMemoryNearMissesRemainMalformedAllDrivers(t *testing.T) {
 }
 
 func TestLegacyMemoryRawMirrorReverseUnchangedAllDrivers(t *testing.T) {
-	data := admittedFixtureBytes(t)
+	data := supportedBytes(t, nil)
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			ctx := context.Background()
