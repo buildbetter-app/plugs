@@ -136,6 +136,8 @@ func jointSourceFixture(t *testing.T) []byte {
 				m.Sources[i].Rows = count
 			}
 			switch d.Family {
+			case "issues.row_lock", "issues.is_blocked":
+				m.Sources[i].Rows = counts[dumpformat.DurableEntityTable]
 			case dumpformat.EphemeralEntityTable, dumpformat.EphemeralDependencyTable, dumpformat.EphemeralCommentTable, dumpformat.EphemeralLabelTable, dumpformat.EphemeralEventTable, dumpformat.EphemeralChildCounterTable, "custom_statuses", "custom_types":
 				m.Sources[i].Action = "archive"
 			}
@@ -720,6 +722,70 @@ func (s *jointTargetAccess) Write(ctx context.Context, lease driver.ActiveLease)
 	return s.Store.Write(ctx, lease)
 }
 
+// Refused imports start from an empty target, so expected source blobs and
+// the original import receipt must remain absent. Capture the same logical
+// surfaces as the post-import census without assuming publication occurred.
+func savedEmptyJointTarget(t *testing.T, store driver.Store, archive *dumpformat.Archive, p driver.RestoreImportProfile) labelImportState {
+	t.Helper()
+	ctx := context.Background()
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	rows, err := r.Query(ctx, driver.Query{Limit: 1000})
+	if err != nil || rows.NextCursor != nil || len(rows.Items) == 1000 {
+		t.Fatal("incomplete pre-import record census", err)
+	}
+	state := labelImportState{Meta: meta, Records: rows.Items, Versions: map[string][]driver.Version{}, Derived: map[driver.DerivedTable][]driver.DerivedRow{}, Blobs: map[string][]byte{}}
+	for _, row := range rows.Items {
+		versions, err := r.Versions(ctx, row.Ref, driver.PageReq{Limit: 1000})
+		if err != nil || versions.NextCursor != nil || len(versions.Items) == 1000 {
+			t.Fatal("incomplete pre-import version census", row.Ref.ID, err)
+		}
+		state.Versions[row.Ref.ID] = versions.Items
+	}
+	var cursor *driver.Cursor
+	if !meta.HistoryFloor.IsZero() {
+		cursor = &driver.Cursor{Incarnation: meta.Incarnation, Revision: meta.HistoryFloor}
+	}
+	state.Log, err = r.Changesets(ctx, cursor, 1000)
+	if err != nil || len(state.Log) == 1000 {
+		t.Fatal("incomplete pre-import changeset census", err)
+	}
+	for _, table := range []driver.DerivedTable{driver.DerivedAncestorClosure, driver.DerivedCutClosure, driver.DerivedAttribute, driver.DerivedGrant, driver.DerivedOntology, driver.DerivedPlugins, driver.DerivedReadyState, driver.DerivedReferenceIndex, driver.DerivedSortKey} {
+		state.Derived[table], err = r.DerivedRows(ctx, table, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	hashes := map[string]bool{archive.SHA256(): true}
+	for _, file := range archive.Manifest().Files {
+		hashes[file.SHA256] = true
+	}
+	for hash := range hashes {
+		data, err := r.Blob(ctx, driver.Hash(hash))
+		if !errors.Is(err, driver.ErrNotFound) || len(data) != 0 {
+			t.Fatal("source blob present before import", hash, err)
+		}
+		// A present key with nil bytes explicitly records expected absence.
+		state.Blobs[hash] = nil
+	}
+	principal, err := driver.PrincipalKey(p.Admission.Actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.ImportReceipt, err = r.IdempotencyByKey(ctx, principal, p.AgentLabel(), p.Method, p.IdempotencyKey)
+	if err != nil || state.ImportReceipt != nil {
+		t.Fatal("original import receipt present before publication", err)
+	}
+	return state
+}
+
 func TestJointSourceCoreFieldDispositionsAndCommitmentsAcrossThreeStores(t *testing.T) {
 	data := jointSourceFixture(t)
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
@@ -738,7 +804,7 @@ func TestJointSourceCoreFieldDispositionsAndCommitmentsAcrossThreeStores(t *test
 					if err != nil {
 						t.Fatal(err)
 					}
-					before := savedLabelImport(t, store, archive, p, "")
+					before := savedEmptyJointTarget(t, store, archive, p)
 					checkpoint, err := cap.LoadCheckpoint(ctx, "plugin/workflow/default/durable")
 					if err != nil {
 						t.Fatal(err)
@@ -803,7 +869,7 @@ func TestJointSourceCoreFieldDispositionsAndCommitmentsAcrossThreeStores(t *test
 								t.Fatal("changed plan accepted or refused for unrelated reason", err)
 							}
 							afterCP, err := cap.LoadCheckpoint(ctx, "plugin/workflow/default/durable")
-							if err != nil || target.metaReads != 0 || target.writes != 0 || !reflect.DeepEqual(before, savedLabelImport(t, store, archive, p, "")) || !reflect.DeepEqual(checkpoint, afterCP) {
+							if err != nil || target.metaReads != 0 || target.writes != 0 || !reflect.DeepEqual(before, savedEmptyJointTarget(t, store, archive, p)) || !reflect.DeepEqual(checkpoint, afterCP) {
 								t.Fatal("plan refusal accessed target or published state", err)
 							}
 							if db != nil && !reflect.DeepEqual(physical, jointPhysicalSQL(t, db, engine)) {
