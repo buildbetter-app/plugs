@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	sqldriver "database/sql/driver"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -15,7 +16,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 // Store owns a connection pool and its readers, transactions and active leases.
@@ -215,26 +216,54 @@ func (s *Store) discardRenewConnLocked(conn *sql.Conn) {
 func (s *Store) ensureLockKeys(ctx context.Context, ids []string) error {
 	s.lockMu.Lock()
 	defer s.lockMu.Unlock()
-	if err := ctx.Err(); err != nil {
+	if err := s.check(ctx); err != nil {
 		return err
 	}
-	if s.lockConn == nil {
-		return driver.ErrTxClosed
+	if len(ids) == 0 {
+		return nil
 	}
-	if len(ids) != 0 {
-		keys := make([][]byte, len(ids))
-		for i, id := range ids {
-			keys[i] = []byte(id)
-		}
-		if _, err := s.lockConn.ExecContext(ctx, `INSERT INTO plug_postgres.locks (key)
-		 SELECT key FROM unnest($1::bytea[]) AS pending(key) ORDER BY key ON CONFLICT DO NOTHING`, keys); err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
+	keys := make([][]byte, len(ids))
+	for i, id := range ids {
+		keys[i] = []byte(id)
+	}
+	for attempt := 0; ; attempt++ {
+		if s.lockConn == nil {
+			conn, err := s.db.Conn(ctx)
+			if err != nil {
+				return err
 			}
-			return err
+			if err := s.check(ctx); err != nil {
+				_ = conn.Close()
+				return err
+			}
+			s.lockConn = conn
+		}
+		_, err := s.lockConn.ExecContext(ctx, `INSERT INTO plug_postgres.locks (key)
+		 SELECT key FROM unnest($1::bytea[]) AS pending(key) ORDER BY key ON CONFLICT DO NOTHING`, keys)
+		if err == nil {
+			return nil
+		}
+		dead := errors.Is(err, sql.ErrConnDone) || errors.Is(err, sqldriver.ErrBadConn)
+		if !dead {
+			rawErr := s.lockConn.Raw(func(raw any) error {
+				dead = raw.(*stdlib.Conn).Conn().IsClosed()
+				return nil
+			})
+			dead = dead || errors.Is(rawErr, sql.ErrConnDone) || errors.Is(rawErr, sqldriver.ErrBadConn)
+		}
+		// A canceled query can invalidate a reserved pgx connection. Never
+		// leave that handle installed for every later lock preparation.
+		_ = s.lockConn.Close()
+		s.lockConn = nil
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		// Placeholder insertion is idempotent and publishes no graph state.
+		// Recover a dead reservation once within this caller's existing budget.
+		if attempt != 0 || !dead {
+			return fmt.Errorf("postgres: prepare lock keys: %w", err)
 		}
 	}
-	return nil
 }
 func (s *Store) track(r interface{ Close() error }) error {
 	s.mu.Lock()

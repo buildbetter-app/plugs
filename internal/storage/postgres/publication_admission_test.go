@@ -148,3 +148,64 @@ func TestPreparationAdmissionWaitsWithoutPoolConnectionsAndPreservesRawReaders(t
 		t.Fatalf("preparation admission published: %+v %v", meta, err)
 	}
 }
+
+func TestLockPreparationReacquiresFailedReservedConnectionWithoutPublication(t *testing.T) {
+	for _, failure := range []string{"closed-handle", "terminated-backend", "canceled-insert"} {
+		t.Run(failure, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			s := openTest(t, freshDSN(t))
+			original := s.lockConn
+			key := []byte("b04-reserved-lock-recovery")
+			switch failure {
+			case "closed-handle":
+				if err := original.Close(); err != nil {
+					t.Fatal(err)
+				}
+			case "terminated-backend":
+				var pid int
+				if err := original.QueryRowContext(ctx, "SELECT pg_backend_pid()").Scan(&pid); err != nil {
+					t.Fatal(err)
+				}
+				var terminated bool
+				if err := s.db.QueryRowContext(ctx, "SELECT pg_terminate_backend($1)", pid).Scan(&terminated); err != nil || !terminated {
+					t.Fatalf("owned lock backend was not terminated: %t %v", terminated, err)
+				}
+			case "canceled-insert":
+				blocker, err := s.db.BeginTx(ctx, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer blocker.Rollback()
+				if _, err := blocker.ExecContext(ctx, "INSERT INTO plug_postgres.locks (key) VALUES ($1)", key); err != nil {
+					t.Fatal(err)
+				}
+				queued, stop := context.WithTimeout(ctx, 100*time.Millisecond)
+				err = s.ensureLockKeys(queued, []string{string(key)})
+				stop()
+				if !errors.Is(err, context.DeadlineExceeded) || s.lockConn != nil {
+					t.Fatalf("canceled lock insertion retained its reservation or changed the deadline: conn=%p err=%v", s.lockConn, err)
+				}
+				if err := blocker.Rollback(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for range 2 {
+				if err := s.ensureLockKeys(ctx, []string{string(key)}); err != nil {
+					t.Fatalf("failed lock reservation was not recovered: %v", err)
+				}
+			}
+			if s.lockConn == nil || s.lockConn == original {
+				t.Fatal("failed reserved connection was reused")
+			}
+			var count int
+			if err := s.db.QueryRowContext(ctx, "SELECT count(*) FROM plug_postgres.locks WHERE key=$1", key).Scan(&count); err != nil || count != 1 {
+				t.Fatalf("lock preparation was not idempotent: count=%d err=%v", count, err)
+			}
+			meta, err := s.Meta(ctx)
+			if err != nil || !meta.Head.IsZero() {
+				t.Fatalf("lock recovery published graph state: %+v %v", meta, err)
+			}
+		})
+	}
+}
