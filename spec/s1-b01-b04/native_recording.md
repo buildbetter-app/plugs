@@ -80,8 +80,12 @@ new authority is acquired and the same cursor key is installed. Every actual
 reopen prints a unique leaf/stage marker and retains its original identity and
 state digest.
 
-The four native captures and their original server lifetimes finish before
-replay starts. Independent replay roots use at most two concurrent slots;
+Each native twin pair uses the same two-slot ceiling as replay. The parent
+joins both workers before comparing the declared run-a/run-b projections and
+before starting the next pair. Every capture retains its own server, database,
+output directory, ChildEnv and serial 433-command sequence, including original
+start/stop and cleanup. All four captures and their server lifetimes finish
+before replay starts. Independent replay roots use at most two concurrent slots;
 every root keeps its own store, clock, authority, output paths and serial
 operation/reopen sequence. Slots are released after fixture cleanup. The
 shared PostgreSQL harness serializes database creation, and the final matrix

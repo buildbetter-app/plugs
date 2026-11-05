@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -96,24 +97,41 @@ func TestB01NativeTimedAndIndefinitePair(t *testing.T) {
 			"filteredOmission":    "fail closed",
 		},
 	})
+	// Capture pairs and replay roots share the existing two-store ceiling.
+	// Join both capture workers before comparing twins or starting any replay.
+	replaySlots := make(chan struct{}, 2)
 	var captures []nativeCapture
 	for _, vector := range inputs.Vectors {
 		var twins []nativeCapture
 		if len(vector.Runs) != 2 {
 			t.Fatal("each vector requires two fresh stores")
 		}
-		for _, run := range vector.Runs {
-			var captured nativeCapture
-			ok := t.Run(vector.ID+"/"+run.ID, func(t *testing.T) {
-				output := filepath.Join(root, vector.ID+"-"+run.ID)
-				if err := os.Mkdir(output, 0o700); err != nil {
-					t.Fatal(err)
-				}
-				captured = recordNativeVector(t, binary, output, inputs, vector, run)
-			})
-			if ok {
-				twins = append(twins, captured)
-				captures = append(captures, captured)
+		results := make([]struct {
+			capture nativeCapture
+			passed  bool
+		}, len(vector.Runs))
+		var workers sync.WaitGroup
+		for index, run := range vector.Runs {
+			workers.Add(1)
+			go func(index int, run nativeRun) {
+				defer workers.Done()
+				replaySlots <- struct{}{}
+				defer func() { <-replaySlots }()
+				results[index].passed = t.Run(vector.ID+"/"+run.ID, func(t *testing.T) {
+					output := filepath.Join(root, vector.ID+"-"+run.ID)
+					if err := os.Mkdir(output, 0o700); err != nil {
+						t.Fatal(err)
+					}
+					results[index].capture = recordNativeVector(t, binary, output, inputs, vector, run)
+				})
+			}(index, run)
+		}
+		workers.Wait()
+		// Retain declared run-a/run-b order, independent of worker completion.
+		for _, result := range results {
+			if result.passed {
+				twins = append(twins, result.capture)
+				captures = append(captures, result.capture)
 			}
 		}
 		if len(twins) != 2 {
@@ -137,7 +155,6 @@ func TestB01NativeTimedAndIndefinitePair(t *testing.T) {
 	// Replay roots have disjoint stores, clocks, authorities and output paths.
 	// Bound their concurrency without extending the native test's deadline or
 	// dropping any observations. Each root's operations and reopen stay serial.
-	replaySlots := make(chan struct{}, 2)
 	// Parallel children finish before parent cleanup. Keep this guard ahead of
 	// PostgreSQL teardown and the final output inventory (cleanup is LIFO).
 	t.Cleanup(func() {
