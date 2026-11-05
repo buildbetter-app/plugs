@@ -159,12 +159,24 @@ func TestQueueProjectionCoverageAcrossReadyRankPublication(t *testing.T) {
 				key.Key = "ready/queue/rank"
 			}
 			locks := []driver.LockKey{{Kind: driver.LockDerived, Derived: &key}}
+			var sentinels []driver.Sentinel
 			if mode == "shadowed_ready_source_deleted" {
-				locks = append(locks, testLock(record.Ref), driver.GraphBlockingSentinelLock)
+				plan, err := pipeline.PrepareSourceDelete(record.Ref, record.Kind)
+				if err != nil {
+					t.Fatal(err)
+				}
+				sentinels = plan.Sentinels()
+				locks = append(locks, testLock(record.Ref))
+				for _, sentinel := range sentinels {
+					locks = append(locks, driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel})
+				}
 			}
 			writer, h := beginTest(t, s, lease, locks...)
 			if mode == "shadowed_ready_source_deleted" {
 				if err := writer.Delete(ctx, record.Ref); err != nil {
+					t.Fatal(err)
+				}
+				if err := writer.BumpSentinels(ctx, sentinels); err != nil {
 					t.Fatal(err)
 				}
 				h.Changes = []model.ChangeRecord{{Ref: record.Ref, Op: model.OpDelete, FromRevision: created.Revision}}
