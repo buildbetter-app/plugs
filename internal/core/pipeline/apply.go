@@ -69,6 +69,11 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 	started := time.Now()
 	committed := false
 	defer func() {
+		// Admission, replay and stale-snapshot restarts share the same bounded
+		// preparation context. Its expiry is retryable even on an early return.
+		if !committed && errors.Is(retErr, context.DeadlineExceeded) && ctx.Err() == nil {
+			retErr = failure("busy", "write pre phases exceeded their deadline")
+		}
 		result := classifyOutcome(ctx, outcome, retErr, committed, meta.DryRun)
 		w.observeOutcome(result)
 		w.observePhaseResult(PhaseApply, time.Since(started), result)
@@ -256,9 +261,6 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 						return port.WriteOutcome{Commit: result, Replayed: found && e == nil}, e
 					}
 				}
-			}
-			if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
-				return port.WriteOutcome{}, failure("busy", "write pre phases exceeded their deadline")
 			}
 			return port.WriteOutcome{}, err
 		}
