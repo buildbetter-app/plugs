@@ -97,6 +97,22 @@ func (w *Writer) prepareAudit(ctx context.Context, p *prepared) error {
 	if len(blockers) == 0 {
 		return nil
 	}
+	// A claim's validated nonterminal transition cannot emit a conditional
+	// notice, regardless of incoming edges. Avoid a whole-graph read that would
+	// make unrelated claims invalidate each other's preparation. Keep the
+	// ordinary event context and the decision's exact ontology observations.
+	var claimDecision port.ConditionalDecision
+	var claimDecisionErr error
+	claimDecided := false
+	if (p.proposal.Meta.Method == "bead.claim" || p.proposal.Meta.Method == "bead.claimNext") && len(blockers) == 1 {
+		for id := range blockers {
+			claimDecision, claimDecisionErr = w.auditDecision(ctx, p, p.writes[id])
+			claimDecided = true
+			if claimDecisionErr == nil && (!claimDecision.After.Terminal || claimDecision.After.Satisfied) {
+				return nil
+			}
+		}
+	}
 	graph, err := p.auditGraph(ctx)
 	if err != nil {
 		return err
@@ -128,26 +144,12 @@ func (w *Writer) prepareAudit(ctx context.Context, p *prepared) error {
 	sort.Strings(ids)
 	for _, id := range ids {
 		pending := p.writes[id]
-		after, err := json.Marshal(pending.doc)
-		if err != nil {
-			return err
+		decision, decisionErr := claimDecision, claimDecisionErr
+		if !claimDecided {
+			decision, decisionErr = w.auditDecision(ctx, p, pending)
 		}
-		change, err := clone(port.Change{Resource: model.ResourceRef{Kind: "bead", Ref: pending.ref}, Op: model.Op{Kind: model.OpPatch, Patch: &model.PatchOp{Target: pending.ref, Fields: map[string]any{}}}, Before: pending.before, After: after, SetBy: cloneMap(pending.setBy)})
-		if err != nil {
-			return err
-		}
-		decision, err := invoke(ctx, 500*time.Millisecond, func(call context.Context) (port.ConditionalDecision, error) {
-			return w.cfg.audit.DecideConditional(call, change, p.snapshot.child())
-		})
-		if err != nil {
-			return err
-		}
-		decision, err = clone(decision)
-		if err != nil {
-			return failure("invalid_params", "invalid conditional ontology decision")
-		}
-		if err := p.checkDecision(ctx, pending, decision); err != nil {
-			return err
+		if decisionErr != nil {
+			return decisionErr
 		}
 		// A false condition on an open state is ordinary readiness, not an
 		// outcome notice. Completed/failure satisfies and emits no notice.
@@ -167,6 +169,28 @@ func (w *Writer) prepareAudit(ctx context.Context, p *prepared) error {
 		p.audit.transitions[id] = auditTransition{decision, dependents}
 	}
 	return nil
+}
+
+func (w *Writer) auditDecision(ctx context.Context, p *prepared, pending *pending) (port.ConditionalDecision, error) {
+	after, err := json.Marshal(pending.doc)
+	if err != nil {
+		return port.ConditionalDecision{}, err
+	}
+	change, err := clone(port.Change{Resource: model.ResourceRef{Kind: "bead", Ref: pending.ref}, Op: model.Op{Kind: model.OpPatch, Patch: &model.PatchOp{Target: pending.ref, Fields: map[string]any{}}}, Before: pending.before, After: after, SetBy: cloneMap(pending.setBy)})
+	if err != nil {
+		return port.ConditionalDecision{}, err
+	}
+	decision, err := invoke(ctx, 500*time.Millisecond, func(call context.Context) (port.ConditionalDecision, error) {
+		return w.cfg.audit.DecideConditional(call, change, p.snapshot.child())
+	})
+	if err != nil {
+		return port.ConditionalDecision{}, err
+	}
+	decision, err = clone(decision)
+	if err != nil {
+		return port.ConditionalDecision{}, failure("invalid_params", "invalid conditional ontology decision")
+	}
+	return decision, p.checkDecision(ctx, pending, decision)
 }
 
 type auditRow struct {
