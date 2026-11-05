@@ -22,7 +22,6 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
-	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
@@ -171,6 +170,11 @@ func (f *fixture) a4Mutators(artifact *pluginbuild.Artifact) []pipeline.MutatorB
 
 func (f *fixture) a4Queue(count int) map[string]bool {
 	f.t.Helper()
+	// Ordinary setup creates the workflow's initial todo state. Retire those
+	// two setup beads through the real close slot before adding the A4 queue.
+	for _, name := range []string{"a1", "a2"} {
+		f.request(f.bootstrap, credential{}, "bead.close", poolA, f.key("a4-close-"+name), "setup", target(f.work[name])).commit(f.t)
+	}
 	created := time.Now().UTC()
 	changes := make([]conformance.FixtureChange, 0, count+1)
 	ids := map[string]bool{}
@@ -328,7 +332,7 @@ func (f *fixture) a4Winner(before, after durableState, by credential, key string
 func TestB04A4TwoHundredSimultaneousPublicAgentsWithWASMMutator(t *testing.T) {
 	artifact := a4Artifact(t)
 	eachStore(t, false, func(t *testing.T, e engine) {
-		f := newFixtureWithSetup(t, e, ontology.DefaultDocument(), map[string]string{"a1": "done", "a2": "done"})
+		f := newFixture(t, e)
 		f.a4Renewal()
 		ids := f.a4Queue(200)
 		f.installMutators(f.a4Mutators(artifact)...)
@@ -481,7 +485,7 @@ func (m *a4LaggingMutator) MutateWithTimeout(ctx context.Context, timeout time.D
 func TestB04A4LaggingPublicClaimRestartsActualWASMSnapshot(t *testing.T) {
 	artifact := a4Artifact(t)
 	eachStore(t, false, func(t *testing.T, e engine) {
-		f := newFixtureWithSetup(t, e, ontology.DefaultDocument(), map[string]string{"a1": "done", "a2": "done"})
+		f := newFixture(t, e)
 		f.a4Renewal()
 		ids := f.a4Queue(1)
 		bindings := f.a4Mutators(artifact)
