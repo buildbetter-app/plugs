@@ -44,7 +44,7 @@ func TestJointSourceCompositionImportInstallAndStartupRecovery(t *testing.T) {
 			}
 			t.Cleanup(func() {
 				if runtime != nil {
-					if err := runtime.Close(); err != nil {
+					if err := runtime.Close(ctx); err != nil {
 						t.Error(err)
 					}
 				}
@@ -75,7 +75,7 @@ func TestJointSourceCompositionImportInstallAndStartupRecovery(t *testing.T) {
 				t.Fatal("composed import did not recover original receipt", err)
 			}
 			if engine != "memory" {
-				if err := runtime.Close(); err != nil {
+				if err := runtime.Close(ctx); err != nil {
 					t.Fatal(err)
 				}
 				runtime = nil
