@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
-	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
