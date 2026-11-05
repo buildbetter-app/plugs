@@ -19,7 +19,10 @@ type readyOrderPublicationState struct {
 	overlay     string
 }
 
-type readyOrderCommitProof struct{ publication readyindex.Publication }
+type readyOrderCommitProof struct {
+	publication        readyindex.Publication
+	sourceHistoryEmpty bool
+}
 
 func (t *transaction) readyOrderOverlaySignature() (string, error) {
 	data, err := json.Marshal([]any{t.records, t.derived, t.bumps, t.allocators, t.parentCounters, t.restore, t.offlineHistory})
@@ -163,7 +166,7 @@ func (t *transaction) prepareReadyOrderCommit(ctx context.Context, c *sql.Conn, 
 			return nil, nil
 		}
 	}
-	return &readyOrderCommitProof{publication: p}, nil
+	return &readyOrderCommitProof{publication: p, sourceHistoryEmpty: emptyKeyHistory}, nil
 }
 
 // No watched tables may change after this call. Meta, receipts, changesets,

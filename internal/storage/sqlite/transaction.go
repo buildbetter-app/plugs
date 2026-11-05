@@ -870,7 +870,7 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		if err = publishDerivedKeys(ctx, c, revision, derived); err != nil {
 			return err
 		}
-		if err = t.publishSelection(ctx, c, meta, revision, derived); err != nil {
+		if err = t.publishSelection(ctx, c, meta, revision, derived, readyProof); err != nil {
 			return err
 		}
 		if err = publishBumpKeys(ctx, c, revision, t.bumps); err != nil {

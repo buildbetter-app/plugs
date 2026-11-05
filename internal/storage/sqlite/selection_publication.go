@@ -241,7 +241,7 @@ func (t *transaction) selectionCompleteForCommit(ctx context.Context, c queryer,
 	return true, nil
 }
 
-func (t *transaction) publishSelection(ctx context.Context, c *sql.Conn, current driver.Meta, revision model.Revision, derived map[string]driver.LockState) error {
+func (t *transaction) publishSelection(ctx context.Context, c *sql.Conn, current driver.Meta, revision model.Revision, derived map[string]driver.LockState, readyProof *readyOrderCommitProof) error {
 	next := revKey(mustUint(revision))
 	incarnation := current.Incarnation
 	if t.restore != nil {
@@ -296,8 +296,16 @@ func (t *transaction) publishSelection(ctx context.Context, c *sql.Conn, current
 			return err
 		}
 	}
+	emptySourceHistory := readyProof != nil && readyProof.sourceHistoryEmpty
+	if emptySourceHistory {
+		// Earlier publication arms may run triggers on this connection. Carry
+		// the virgin proof only while the thin history is still entirely empty.
+		if err = c.QueryRowContext(ctx, `SELECT NOT EXISTS(SELECT 1 FROM selection_source_history)`).Scan(&emptySourceHistory); err != nil {
+			return err
+		}
+	}
 	// Publish the same thin record/derived observations in bounded batches.
-	if err = t.publishSelectionSourceHistory(ctx, c, incarnation, next); err != nil {
+	if err = t.publishSelectionSourceHistoryWithProof(ctx, c, incarnation, next, emptySourceHistory); err != nil {
 		return err
 	}
 	// Close both physical arms before inserting any replacement image.

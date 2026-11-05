@@ -444,6 +444,60 @@ func TestSelectionSourceHistoryBatchesAndRollsBack(t *testing.T) {
 	t.Logf("source history actual_exec=%d rows_affected=%d executor_row_visits=UNMEASURED", work.statements, work.rows)
 }
 
+func TestSelectionSourceHistoryVirginProofKeepsRecordCloses(t *testing.T) {
+	ctx := context.Background()
+	s := selectionStore(t).(*Store)
+	t.Cleanup(func() { _ = s.Close() })
+	meta, err := s.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx := &transaction{records: make(map[string]*driver.Record), derived: make(map[string]driver.LockState)}
+	for i := 0; i < selectionSourceHistoryBatch+1; i++ {
+		id := fmt.Sprintf("0:virgin-record-%03d", i)
+		tx.records[id] = &driver.Record{Body: []byte(fmt.Sprintf(`{"record":%d}`, i))}
+	}
+	for i := 0; i < 2*selectionSourceHistoryBatch+1; i++ {
+		key := driver.DerivedRowKey{Table: driver.DerivedReadyState, Key: fmt.Sprintf("virgin-derived-%03d", i)}
+		lock := driver.LockKey{Kind: driver.LockDerived, Derived: &key}
+		tx.derived[keyID(lock)] = driver.LockState{Key: lock}
+	}
+	var work keyPublicationWork
+	err = s.immediate(ctx, nil, func(c *sql.Conn) error {
+		var empty bool
+		if err := c.QueryRowContext(ctx, `SELECT NOT EXISTS(SELECT 1 FROM selection_source_history)`).Scan(&empty); err != nil {
+			return err
+		}
+		if !empty {
+			return errors.New("fixture source history is not empty")
+		}
+		work = keyPublicationWork{selectionCloseWork: selectionCloseWork{conn: c}}
+		return tx.publishSelectionSourceHistoryWithProof(ctx, &work, meta.Incarnation, revKey(1), empty)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The second batch still contains one record and must execute its close.
+	// Only the later derived-only batches may omit zero-row native work.
+	checkKeyPublicationPrepared(t, work, 3)
+	if work.statements != 4 || work.rows != int64(len(tx.records)) || work.maxArgs > 7*selectionSourceHistoryBatch {
+		t.Fatalf("virgin source history exec=%d rows=%d max_args=%d", work.statements, work.rows, work.maxArgs)
+	}
+	var records, derived int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*),COUNT(*) FILTER (WHERE source_key LIKE '3:%') FROM selection_source_history`).Scan(&records, &derived); err != nil {
+		t.Fatal(err)
+	}
+	if records != len(tx.records) || derived != 0 {
+		t.Fatalf("virgin source history records=%d derived=%d", records, derived)
+	}
+
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := (&transaction{derived: tx.derived}).publishSelectionSourceHistoryWithProof(cancelled, &keyPublicationWork{}, meta.Incarnation, revKey(2), true); !errors.Is(err, context.Canceled) {
+		t.Fatalf("skipped derived close hid cancellation: %v", err)
+	}
+}
+
 type selectionSourceHistoryImage struct {
 	incarnation, branch, key, start, revision, digest string
 	end                                               sql.NullString

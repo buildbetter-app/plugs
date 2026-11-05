@@ -111,6 +111,10 @@ func selectionSourceHistoryInsertSQL(count int) string {
 }
 
 func (t *transaction) publishSelectionSourceHistory(ctx context.Context, c selectionPublicationExecutor, incarnation, next string) (err error) {
+	return t.publishSelectionSourceHistoryWithProof(ctx, c, incarnation, next, false)
+}
+
+func (t *transaction) publishSelectionSourceHistoryWithProof(ctx context.Context, c selectionPublicationExecutor, incarnation, next string, sourceHistoryEmpty bool) (err error) {
 	observations := make([]selectionSourceObservation, 0, len(t.records)+len(t.derived))
 	for id, record := range t.records {
 		observation := selectionSourceObservation{key: id}
@@ -133,6 +137,15 @@ func (t *transaction) publishSelectionSourceHistory(ctx context.Context, c selec
 	// batches reuse their handles; exact-arity tails retain separate cleanup.
 	var closeStatement, insertStatement keyPublicationStatement
 	for start := 0; start < len(observations); start += selectionSourceHistoryBatch {
+		// The Ready bootstrap proof was made on this same fenced connection
+		// before any publication writes. Once record batches are past, derived
+		// keys have no thin intervals to close in an entirely empty history.
+		if sourceHistoryEmpty && start >= recordCount {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			continue
+		}
 		end := min(start+selectionSourceHistoryBatch, len(observations))
 		batch := observations[start:end]
 		closeArgs := make([]any, 0, 3+len(batch))
