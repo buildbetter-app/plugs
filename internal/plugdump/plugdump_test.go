@@ -475,6 +475,10 @@ func TestDumpFaithfulWispFamiliesPreserveCollidingActiveRows(t *testing.T) {
 	issue := cloneRow(source["issues"].Rows[0])
 	issue["title"] = "durable collision"
 	source["issues"].Rows[0]["title"] = issue["title"]
+	expectedIssue, err := copyIssueSourceFields(issue)
+	if err != nil {
+		t.Fatal(err)
+	}
 	wisp := cloneRow(issue)
 	wisp["title"] = "active collision wisp"
 	secondWisp := cloneRow(wisp)
@@ -515,7 +519,7 @@ func TestDumpFaithfulWispFamiliesPreserveCollidingActiveRows(t *testing.T) {
 		if err := decodeJSON(line, &record); err != nil {
 			t.Fatal(err)
 		}
-		if record.ID == "demo-7" && jsonEqual(record.Source.Fields, issue) {
+		if record.ID == "demo-7" && jsonEqual(record.Source.Fields, expectedIssue) {
 			durable = true
 		}
 	}
