@@ -200,7 +200,10 @@ func (p *Provider) PrepareSourceOperations(ctx context.Context, apply func(*Prov
 		return PreparedState{}, err
 	}
 	if !state.written {
-		return PreparedState{}, nil
+		// Ordinary-only guarded decisions and active replay still consumed
+		// this core image, even though no provider checkpoint needs staging.
+		copy := *state.head
+		return PreparedState{head: &copy}, nil
 	}
 	return state.prepared(), nil
 }

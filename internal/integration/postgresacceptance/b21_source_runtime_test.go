@@ -682,6 +682,27 @@ func TestB21SourceStagedParentGuardsUnderHeldHeadThreeStores(t *testing.T) {
 			if state.Meta.Head.String() != "1" || len(state.Changesets) != 1 {
 				t.Fatal("source-only guarded stage created core history")
 			}
+			before := v.physical(t)
+			readOnly, err := p.PrepareSourceOperations(ctx, func(staged *workflowplugin.Provider) error {
+				facts, expectation, err := staged.OrdinaryParentSnapshot(ctx, b21SourceActor, []string{"pl-source-shadow"}, b21WriteMeta("read-only-staged-parent", "bead.ready"), nil)
+				if err == nil && (!facts["pl-source-shadow"].Blocked || expectation.Expected != 2) {
+					t.Fatal("read-only staged guard lost the actual current namespace")
+				}
+				return err
+			})
+			if err != nil || !readOnly.Empty() {
+				t.Fatalf("read-only staged guard prepared a write: %v", err)
+			}
+			observed, ok := readOnly.CoreSnapshot()
+			if !ok || observed.Check(state.Meta) != nil {
+				t.Fatalf("read-only staged guard lost its consumed core image: %+v", observed)
+			}
+			if _, err := readOnly.Checkpoint(ctx); !errors.Is(err, driver.ErrUnsupported) {
+				t.Fatalf("read-only staged decision produced a checkpoint: %v", err)
+			}
+			if !reflect.DeepEqual(before, v.physical(t)) {
+				t.Fatal("read-only staged guard changed the physical store")
+			}
 		})
 	}
 }
