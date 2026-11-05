@@ -283,7 +283,7 @@ func TestWorkflowReadyDomainRejectsUnboundAndInvalidPhase(t *testing.T) {
 	f := newWorkflowCursorFixture(t)
 	f.invoke(t, 530, 3)
 	first, err := f.domain.Ready(context.Background(), f.by, service.ReadyRequest{Project: "project", Limit: 1})
-	if err != nil || first.Next == nil || !first.Next.Workflow {
+	if err != nil || first.Next == nil || first.Next.Workflow || first.Next.WorkflowSnapshot == nil || first.Next.ReadyMembership == "" {
 		t.Fatalf("first page=%+v err=%v", first, err)
 	}
 	for _, invalid := range []string{"unbound", "negative", "past-end", "incarnation", "revision", "deadline", "limit"} {
