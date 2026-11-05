@@ -78,7 +78,7 @@ func assertB09Source(t *testing.T, archive *dumpformat.Archive, profile driver.R
 			fields[name] = source.Body[name]
 		}
 		metadata := map[string]json.RawMessage{}
-		add := func(name string, value any) {
+		addMetadata := func(name string, value any) {
 			raw, err := json.Marshal(value)
 			if err != nil {
 				t.Fatal(err)
@@ -87,7 +87,7 @@ func assertB09Source(t *testing.T, archive *dumpformat.Archive, profile driver.R
 		}
 		for _, name := range dumpformat.OpaqueIssueFields() {
 			if value, ok := source.Source.Fields[name]; ok {
-				add("beads."+name, value)
+				addMetadata("beads."+name, value)
 			}
 		}
 		for name, value := range source.Body {
@@ -95,10 +95,10 @@ func assertB09Source(t *testing.T, archive *dumpformat.Archive, profile driver.R
 			case "title", "description", "priority", "metadata", "labels":
 				continue
 			}
-			add("beads.source."+name, value)
+			addMetadata("beads.source."+name, value)
 		}
-		add("beads.source.status", "open")
-		add("beads.source_fields", source.Source.Fields)
+		addMetadata("beads.source.status", "open")
+		addMetadata("beads.source_fields", source.Source.Fields)
 		created, err := time.Parse(time.RFC3339Nano, fmt.Sprint(source.Source.Fields["created_at"]))
 		if err != nil {
 			t.Fatal(err)
