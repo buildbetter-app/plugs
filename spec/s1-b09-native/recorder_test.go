@@ -26,12 +26,15 @@ import (
 // replacement preparer. The fixed-2d private workflow supplies the four
 // PLUG_PUBLIC_BEADS_* exports only after its existing helper has admitted them.
 const (
-	beadsBuildRun   = "41800330346"
-	beadsCommit     = "c8eb3ba7d4177e111a6f5c8aebe06b5d0b1d5724"
-	beadsTree       = "930405e863284a3955cbd35e73a6097b606b91a5"
-	binarySHA256    = "b734da8ba8b6f50d7fd32239e405b8f8ed9d171b7be5fbbccb63a923d257a123"
-	manifestSHA256  = "ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a"
-	maxSnapshotSize = 512 << 20
+	beadsBuildRun        = "41800330346"
+	beadsCommit          = "c8eb3ba7d4177e111a6f5c8aebe06b5d0b1d5724"
+	beadsTree            = "930405e863284a3955cbd35e73a6097b606b91a5"
+	binarySHA256         = "b734da8ba8b6f50d7fd32239e405b8f8ed9d171b7be5fbbccb63a923d257a123"
+	manifestSHA256       = "ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a"
+	nativeDescriptor     = "41800330346:13307042737:ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a"
+	nativeWorkflowSHA    = "d758fdf42a426e9e2a4b707dbcebb22ec68b264e"
+	nativeWorkflowBranch = "swarm/native-producer-census-control-c8eb-20261104"
+	maxSnapshotSize      = 512 << 20
 )
 
 var nativeRecording = flag.Bool("b09-native-recording", false, "explicit accepted Beads B09 recording")
@@ -72,16 +75,17 @@ type fileReceipt struct {
 }
 
 type captureReceipt struct {
-	Label           string            `json:"label"`
-	InventoryPath   string            `json:"inventory_path"`
-	InventorySHA256 string            `json:"inventory_sha256"`
-	Sidecars        map[string]string `json:"sidecar_sha256"`
-	ArchivePath     string            `json:"archive_path"`
-	ArchiveSHA256   string            `json:"archive_sha256"`
-	ArchiveStateSHA string            `json:"archive_state_sha256"`
-	FilesystemPath  string            `json:"filesystem_path"`
-	FilesystemSHA   string            `json:"filesystem_sha256"`
-	BeadIDs         []string          `json:"bead_ids"`
+	Label              string            `json:"label"`
+	InventoryPath      string            `json:"inventory_path"`
+	InventorySHA256    string            `json:"inventory_sha256"`
+	Sidecars           map[string]string `json:"sidecar_sha256"`
+	NormalizedSidecars map[string]string `json:"normalized_sidecar_sha256"`
+	ArchivePath        string            `json:"archive_path"`
+	ArchiveSHA256      string            `json:"archive_sha256"`
+	ArchiveStateSHA    string            `json:"archive_state_sha256"`
+	FilesystemPath     string            `json:"filesystem_path"`
+	FilesystemSHA      string            `json:"filesystem_sha256"`
+	BeadIDs            []string          `json:"bead_ids"`
 }
 
 type workspace struct {
@@ -124,6 +128,11 @@ func TestRecordNativeB09(t *testing.T) {
 	r.run(adaptive, "adaptive-git-init", "/usr/bin/git", []string{"init", "--quiet", "--template="}, 0)
 	r.run(adaptive, "adaptive-init", r.binary, []string{"init", "--prefix", "b09", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet"}, 0)
 	r.version(adaptive)
+	// The admitted producer must emit object-valued parsed configuration for
+	// every real YAML file.  Make the otherwise comment-only native project
+	// config a genuine empty-key-compatible YAML document through the CLI; this
+	// keeps the raw bytes and parser binding on the native route.
+	r.setConfig(adaptive, "json", "false")
 	first := r.create(adaptive, "default-length-3", "Adaptive first")
 	r.requireIDLength(first, 3)
 	firstState := r.capture(adaptive, "adaptive-first", 1)
@@ -182,6 +191,7 @@ func TestRecordNativeB09(t *testing.T) {
 	r.run(imported, "imported-git-init", "/usr/bin/git", []string{"init", "--quiet", "--template="}, 0)
 	r.run(imported, "imported-init", r.binary, []string{"init", "--prefix", "b09", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet"}, 0)
 	r.version(imported)
+	r.setConfig(imported, "json", "false")
 	r.run(imported, "native-jsonl-import", r.binary, []string{"--json", "import", exportPath}, 0)
 	importedState := r.capture(imported, "native-imported", 3)
 	r.requireIDs(importedState, first, second, maximum)
@@ -281,7 +291,12 @@ func (r *recorder) admitBinary() string {
 		r.t.Fatal("trusted public manifest digest differs from the accepted producer")
 	}
 	var identity struct {
-		Schema    string                                    `json:"schema"`
+		Schema   string `json:"schema"`
+		Workflow struct {
+			Ref     string `json:"ref"`
+			SHA     string `json:"sha"`
+			Profile string `json:"profile"`
+		} `json:"workflow"`
 		Source    map[string]struct{ Commit, Tree string }  `json:"source"`
 		Targets   map[string]struct{ Label, Binary string } `json:"targets"`
 		Artifacts map[string]struct {
@@ -297,14 +312,23 @@ func (r *recorder) admitBinary() string {
 	if err := json.Unmarshal(manifest, &identity); err != nil {
 		r.t.Fatal(err)
 	}
+	if got := os.Getenv("PLUG_PUBLIC_BUNDLE"); got != nativeDescriptor {
+		r.Fatalf("trusted public descriptor differs from admitted preparation: %q", got)
+	}
 	target := identity.Targets["beads_exporter"]
 	artifact := identity.Artifacts["bin/bd-export"]
 	var version struct{ Commit, Build string }
 	if err := json.Unmarshal(identity.Resolution["bd_export_version"], &version); err != nil ||
 		identity.Schema != "plug-public-native/1" || identity.Source["beads"].Commit != beadsCommit || identity.Source["beads"].Tree != beadsTree ||
 		target.Label != "//cmd/bd:bd" || target.Binary != "bin/bd-export" || artifact.SHA256 != binarySHA256 || artifact.Size != info.Size() || artifact.Mode != "0o755" ||
-		identity.Build.RunID != beadsBuildRun || version.Commit != beadsCommit || version.Build != "public-"+beadsCommit {
+		identity.Build.RunID != beadsBuildRun || version.Commit != beadsCommit || version.Build != "public-"+beadsCommit ||
+		identity.Workflow.SHA != nativeWorkflowSHA || identity.Workflow.Ref != "refs/heads/"+nativeWorkflowBranch || identity.Workflow.Profile != "plug-public-native/1" {
 		r.t.Fatal("trusted public manifest fields do not bind the accepted source and executable")
+	}
+	receiptPath := filepath.Join(filepath.Dir(manifestPath), "receipt.json")
+	receipt, err := os.ReadFile(receiptPath)
+	if err != nil || !bytes.Equal(receipt, manifest) {
+		r.Fatalf("trusted public preparation receipt differs from manifest: %v", err)
 	}
 	digest, size, err := hashFile(binary)
 	if err != nil || digest != binarySHA256 || size != artifact.Size {
@@ -561,6 +585,7 @@ func (r *recorder) capture(w workspace, label string, wantBeads int) captureRece
 		wantFamilies[family] = true
 	}
 	sidecars := map[string]string{}
+	normalizedSidecars := map[string]string{}
 	for _, item := range inventory.External {
 		if !wantFamilies[item.Family] || item.State != "json-config" || item.Path != filepath.Join(sidecarDir, item.Family+".json") {
 			r.t.Fatalf("native inventory family is missing, repeated, or relocated: %+v", item)
@@ -575,6 +600,7 @@ func (r *recorder) capture(w workspace, label string, wantBeads int) captureRece
 			r.t.Fatalf("native sidecar %s is not complete JSON: %v", item.Family, err)
 		}
 		sidecars[item.Family] = hashBytes(data)
+		normalizedSidecars[item.Family] = r.normalizedJSONDigest(data)
 	}
 	if len(wantFamilies) != 0 {
 		r.t.Fatalf("native family census omitted %v", wantFamilies)
@@ -612,8 +638,8 @@ func (r *recorder) capture(w workspace, label string, wantBeads int) captureRece
 	}
 	filesystemPath, filesystemSHA := r.snapshot(w, root)
 	receipt := captureReceipt{
-		Label: label, InventoryPath: inventoryPath, InventorySHA256: hashBytes(inventoryBytes), Sidecars: sidecars,
-		ArchivePath: archivePath, ArchiveSHA256: archive.SHA256(), ArchiveStateSHA: archiveStateSHA(archive),
+		Label: label, InventoryPath: inventoryPath, InventorySHA256: hashBytes(inventoryBytes), Sidecars: sidecars, NormalizedSidecars: normalizedSidecars,
+		ArchivePath: archivePath, ArchiveSHA256: archive.SHA256(), ArchiveStateSHA: r.archiveStateSHA(archive),
 		FilesystemPath: filesystemPath, FilesystemSHA: filesystemSHA, BeadIDs: ids,
 	}
 	r.captures = append(r.captures, receipt)
@@ -624,16 +650,16 @@ func (r *recorder) capture(w workspace, label string, wantBeads int) captureRece
 // Exclude only the capture destination's absolute paths in config/sources.json.
 // Every source row, history member, ontology and project setting remains in
 // the comparison; the complete validated tar bytes are retained separately.
-func archiveStateSHA(archive *dumpformat.Archive) string {
+func (r *recorder) archiveStateSHA(archive *dumpformat.Archive) string {
 	m := archive.Manifest()
 	members := map[string]string{}
 	for path := range m.Files {
-		if path == "config/sources.json" {
-			continue
-		}
 		data, ok := archive.Member(path)
 		if !ok {
 			panic("validated archive lost a manifest member")
+		}
+		if path == "config/sources.json" {
+			data = r.normalizedJSON(data)
 		}
 		members[path] = hashBytes(data)
 	}
@@ -650,6 +676,59 @@ func archiveStateSHA(archive *dumpformat.Archive) string {
 		panic(err)
 	}
 	return hashBytes(data)
+}
+
+// normalizedJSON retains every source/flag/value field while replacing only
+// run-local capture paths and the native gate's process PID. Raw sidecars and
+// archive bytes remain in the receipt; this digest is solely the conservation
+// comparison across captures that intentionally use fresh output paths.
+func (r *recorder) normalizedJSON(data []byte) []byte {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		r.t.Fatalf("source JSON normalization decode: %v", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		r.t.Fatalf("source JSON normalization has trailing data: %v", err)
+	}
+	var normalize func(any, string) any
+	normalize = func(input any, key string) any {
+		switch value := input.(type) {
+		case map[string]any:
+			out := make(map[string]any, len(value))
+			for name, child := range value {
+				out[name] = normalize(child, name)
+			}
+			return out
+		case []any:
+			out := make([]any, len(value))
+			for i, child := range value {
+				out[i] = normalize(child, key)
+			}
+			return out
+		case string:
+			if key == "BEADS_GATE_SHARED_HOLDER_PID" {
+				return "<native-gate-process-id>"
+			}
+			if strings.HasPrefix(value, r.root+string(os.PathSeparator)+"captures"+string(os.PathSeparator)) {
+				return "<native-capture-output>"
+			}
+			return value
+		default:
+			return input
+		}
+	}
+	canonical, err := json.Marshal(normalize(value, ""))
+	if err != nil {
+		r.t.Fatalf("source JSON normalization encode: %v", err)
+	}
+	return canonical
+}
+
+func (r *recorder) normalizedJSONDigest(data []byte) string {
+	return hashBytes(r.normalizedJSON(data))
 }
 
 func (r *recorder) snapshot(w workspace, output string) (string, string) {
@@ -773,11 +852,12 @@ func (r *recorder) requireConserved(before, after captureReceipt, label string) 
 		strings.Join(before.BeadIDs, "\x00") != strings.Join(after.BeadIDs, "\x00") {
 		r.t.Fatalf("%s changed native source rows or physical workspace/home bytes; before=%s after=%s", label, before.Label, after.Label)
 	}
-	// The native inventory captures the rest of the source census. Its
-	// environment-and-flags sidecar includes this capture's unique --output
-	// path, so only that one family has an expected location difference.
-	for family, digest := range before.Sidecars {
-		if family != "environment-and-flags" && after.Sidecars[family] != digest {
+	// The native inventory captures the rest of the source census. Compare the
+	// normalized digest for every family; only explicit capture paths and the
+	// native gate PID are expected to vary. Raw sidecar hashes remain available
+	// for an independent physical census.
+	for family, digest := range before.NormalizedSidecars {
+		if after.NormalizedSidecars[family] != digest {
 			r.t.Fatalf("%s changed native sidecar family %s", label, family)
 		}
 	}
