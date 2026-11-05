@@ -245,7 +245,14 @@ func b02Sorted(values []string) []string {
 	return out
 }
 
-func b02ID(plan b02Plan, role string) string { return "b02-" + plan.Name + "-" + role }
+// The accepted native inventory format reserves the source prefix before the
+// first dash and admits only an alphanumeric hash suffix. Keep the authored
+// plan name (and its human-readable titles/labels) intact, but encode its
+// storage identity without punctuation so native export can census the actual
+// rows instead of refusing them as an unsupported issue identity.
+func b02ID(plan b02Plan, role string) string {
+	return "b02-" + strings.ReplaceAll(plan.Name, "-", "") + role
+}
 
 func b02Bytes(t *testing.T, value any) []byte {
 	t.Helper()
