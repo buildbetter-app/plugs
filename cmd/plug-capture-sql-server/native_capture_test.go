@@ -178,7 +178,9 @@ func newNativeFixture(t *testing.T) *nativeFixture {
 	f.run(f.companion, "--capture-version")
 	f.run(f.companion, "--help")
 	port := freePort(t)
-	f.start(f.companion, "--host", "127.0.0.1", "--port", strconv.Itoa(port), "--data-dir", privateDir(t), "--user", "root")
+	// The pinned server initializes root@localhost for a fresh data directory.
+	// Its parser rejects the removed --user/--password startup options.
+	f.start(f.companion, "--host", "127.0.0.1", "--port", strconv.Itoa(port), "--data-dir", privateDir(t))
 	db, err := sql.Open("mysql", fmt.Sprintf("root@tcp(127.0.0.1:%d)/?parseTime=true&loc=UTC&timeout=1s&readTimeout=10s&writeTimeout=10s", port))
 	if err != nil {
 		t.Fatal(err)

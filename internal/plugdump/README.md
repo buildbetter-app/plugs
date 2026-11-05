@@ -397,9 +397,11 @@ SQL server from the existing pinned module. `--capture-version` prints its
 contract, upstream Dolt version and module versions; `--help` describes the
 capture invocation. Other arguments go unchanged to the upstream `dolt
 sql-server` parser. For example, start the companion in the native job with
-`--host 127.0.0.1 --port <port> --data-dir <disposable-directory> --user root`,
+`--host 127.0.0.1 --port <port> --data-dir <disposable-directory>`,
 then use the existing public `bd init --server --server-host 127.0.0.1
---server-port <port> ...` route. The companion installs the engine's existing
+--server-port <port> ...` route. The pinned server initializes its local root
+account in a fresh data directory and rejects the removed `--user` and
+`--password` startup options. The companion installs the engine's existing
 query-context clock hook around the server's entire lifetime, so persistent
 connections and later HTTP/CLI calls observe published steps. The normal Dolt
 release executable, driver, SQL predicates and command semantics are unchanged.
