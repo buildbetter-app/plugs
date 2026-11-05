@@ -120,7 +120,7 @@ func TestRollbackRehearsalFixtureEvidence(t *testing.T) {
 				t.Fatal(err)
 			}
 			write(name+"-reverse-report.json", reverse.Result.Report)
-			r, err := store.Read(ctx, driver.View{})
+			r, err := store.Read(ctx, driver.View{Incarnation: restored.Restored.Incarnation})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -151,7 +151,7 @@ func TestRollbackRehearsalFixtureEvidence(t *testing.T) {
 					postEvents += len(commit.Events)
 				}
 			}
-			db, err := sql.Open("sqlite3", dsn)
+			db, err := sql.Open("sqlite", dsn)
 			if err != nil {
 				t.Fatal(err)
 			}
