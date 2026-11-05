@@ -12,7 +12,7 @@ via the binding's named `token_env`; it is never saved in journal/diagnostics.
 Commands/RPC: `server.hello`, `agent.brief`, `bead.get`, `bead.create`,
 `bead.update`, `bead.link`, `bead.unlink`, `bead.close`, `bead.reopen`, `tx.apply`,
 `view.run`. Mutation responses use Commit.results[i].ref, never stdout parsing.
-All requests carry `_meta.project` and `_meta.agent`; writes have durable random
+All project requests carry `_meta.project` and `_meta.agent` (server.hello has no metadata member); writes have durable random
 idempotency keys. Principal comes from transport and must match agent.brief.whoami.
 
 Legacy original IDs remain byte-for-byte Python strings in sidecars and JSONL;

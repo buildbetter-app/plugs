@@ -107,7 +107,8 @@ class Client:
 
     def rpc(self, method, params, key=None):
         params = copy.deepcopy(params)
-        params["_meta"] = {"project": self.project, "agent": self.binding["agent"]}
+        if method != "server.hello":
+            params["_meta"] = {"project": self.project, "agent": self.binding["agent"]}
         if key:
             params["_meta"]["idempotencyKey"] = key
         request_id = str(uuid.uuid4())
