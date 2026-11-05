@@ -189,6 +189,14 @@ type reverseWriteCounter struct {
 	writes int
 }
 
+func (s *reverseWriteCounter) ReadCheckpointInventory(ctx context.Context, view driver.View) (driver.CheckpointInventory, error) {
+	capability, ok := s.Store.(driver.CheckpointInventoryStore)
+	if !ok {
+		return nil, driver.ErrUnsupported
+	}
+	return capability.ReadCheckpointInventory(ctx, view)
+}
+
 func (s *reverseWriteCounter) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
 	s.writes++
 	return s.Store.Write(ctx, lease)

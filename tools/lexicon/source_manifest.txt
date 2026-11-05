@@ -331,6 +331,7 @@ internal/core/reverseconverter/BUILD.bazel
 internal/core/reverseconverter/README.md
 internal/core/reverseconverter/archive.go
 internal/core/reverseconverter/convert.go
+internal/core/reverseconverter/loss.go
 internal/core/reverseconverter/public_archive_test.go
 internal/core/reverseconverter/reverseconverter_test.go
 internal/core/reverseconverter/source_planes.go
@@ -501,7 +502,10 @@ internal/integration/converterroundtrip/public_source_test.go
 internal/integration/converterroundtrip/repair_test.go
 internal/integration/converterroundtrip/restore.go
 internal/integration/converterroundtrip/reverse.go
+internal/integration/converterroundtrip/reverse_loss.go
+internal/integration/converterroundtrip/reverse_loss_test.go
 internal/integration/converterroundtrip/reverse_test.go
+internal/integration/converterroundtrip/rollback_rehearsal_fixture_test.go
 internal/integration/converterroundtrip/roundtrip_test.go
 internal/integration/converterroundtrip/source_authz_test.go
 internal/integration/converterroundtrip/source_checkpoint_test.go
