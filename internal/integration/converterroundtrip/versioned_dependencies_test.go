@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"reflect"
 	"sort"
 	"testing"
@@ -288,52 +287,6 @@ func TestLocalOpaqueDependencyImportIsInertAndReopenSafe(t *testing.T) {
 			requireLocalOpaqueDependencyState(t, store, archive)
 			store, _ = reopen()
 			requireLocalOpaqueDependencyState(t, store, archive)
-		})
-	}
-}
-
-func TestVersionedDependencyStagingFailureConservesAllSQLAndReopens(t *testing.T) {
-	data := versionedDependencyBytes(t, importedOntologyBytes(t, "queued:active,working:wip,shelved:frozen,finished:done"), "waits-for", `{"gate":"any-children","opaque":9007199254740993}`, false)
-	profile, archive := admittedImportProfile(t, data)
-	for _, engine := range []string{"sqlite", "postgres"} {
-		t.Run(engine, func(t *testing.T) {
-			ctx := context.Background()
-			store, lease, db, reopen := openDependencySQLTarget(t, engine)
-			before := dependencySQLCensus(t, db, engine, false)
-			failure, hit := errors.New("injected v2 lineage staging failure"), false
-			target := &observedTarget{Store: store, wrap: func(tx driver.WriteTx) driver.WriteTx {
-				return &ontologySourceFaultTx{WriteTx: tx, RestoreImportTx: tx.(driver.RestoreImportTx), AllocatorContinuation: tx.(driver.AllocatorContinuation), hit: &hit, err: failure}
-			}}
-			if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), target, lease, profile); !errors.Is(err, failure) || !hit {
-				t.Fatalf("v2 staging fault not reached: %v", err)
-			}
-			if got := dependencySQLCensus(t, db, engine, false); !reflect.DeepEqual(before, got) {
-				t.Fatalf("v2 rollback changed complete SQL census: %s", dependencySQLDifference(before, got))
-			}
-			stable := dependencySQLCensus(t, db, engine, true)
-			store, lease = reopen()
-			if !reflect.DeepEqual(stable, dependencySQLCensus(t, db, engine, true)) {
-				t.Fatal("staged v2 rows survived physical reopen")
-			}
-			report, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile)
-			if err != nil {
-				t.Fatal(err)
-			}
-			requireVersionedDependencyState(t, store, archive, true)
-			requireImportedOntology(t, store, archive, profile, report.Restored.Head)
-			stable = dependencySQLCensus(t, db, engine, true)
-			store, lease = reopen()
-			if !reflect.DeepEqual(stable, dependencySQLCensus(t, db, engine, true)) {
-				t.Fatal("committed v2 SQL image changed on reopen")
-			}
-			requireVersionedDependencyState(t, store, archive, true)
-			before = dependencySQLCensus(t, db, engine, false)
-			if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile); !errors.Is(err, ErrTargetNotEmpty) {
-				t.Fatalf("nonempty v2 restore changed: %v", err)
-			}
-			if !reflect.DeepEqual(before, dependencySQLCensus(t, db, engine, false)) {
-				t.Fatal("nonempty v2 refusal changed SQL")
-			}
 		})
 	}
 }

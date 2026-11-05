@@ -311,6 +311,7 @@ func TestEdgeV3ReaderAdmitsOnlyDurableLocalOpaqueKinds(t *testing.T) {
 	edge = &fixture.records["edge"][0]
 	edge.Source.Fields["depends_on_issue_id"], edge.Source.Fields["depends_on_external"] = nil, " external:tracker/1 "
 	edge.Body["to"], edge.Body["target_kind"], edge.Body["type"] = " external:tracker/1 ", "depends_on_external", "external-opaque"
+	edge.Source.Fields["type"] = "external-opaque"
 	if _, err := Read(bytes.NewReader(edgeVersionFixture(t, fixture, EdgeVersionLocalOpaque))); err != nil {
 		t.Fatalf("v3 changed external-arm behavior: %v", err)
 	}

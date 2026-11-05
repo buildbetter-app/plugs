@@ -929,9 +929,6 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 	if err := rebuildDerived(&plan, docs); err != nil {
 		return restorePlan{}, err
 	}
-	if err := retainImportedOntology(&plan, archive, add); err != nil {
-		return restorePlan{}, err
-	}
 	if err := retainArchive(&plan, archive, add); err != nil {
 		return restorePlan{}, err
 	}

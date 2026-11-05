@@ -65,6 +65,15 @@ func MergeArchives(archives ...*Archive) ([]byte, error) {
 			return nil, fmt.Errorf("incompatible archive %d: %w", i, err)
 		}
 	}
+	versions := map[string]int{}
+	for _, input := range inputs {
+		for _, kind := range input.manifest.Kinds {
+			if version, present := versions[kind.Name]; present && version != kind.Version {
+				return nil, fmt.Errorf("incompatible archive kind version for %s", kind.Name)
+			}
+			versions[kind.Name] = kind.Version
+		}
+	}
 
 	projects := make([]Project, 0)
 	records := map[string]map[string]Record{}
@@ -162,6 +171,10 @@ func MergeArchives(archives ...*Archive) ([]byte, error) {
 	manifest.History = history
 	manifest.Projects = projects
 	manifest.Sources = sources
+	manifest.Kinds = nil
+	for name, version := range versions {
+		manifest.Kinds = append(manifest.Kinds, Kind{Name: name, Version: version})
+	}
 	return encodeArchive(manifest, mergedRecords, append(config, '\n'))
 }
 
@@ -364,6 +377,7 @@ func encodeArchive(manifest Manifest, records map[string][]Record, config []byte
 		return nil, fmt.Errorf("merged archive configuration provenance is empty")
 	}
 	files := map[string][]byte{"config/sources.json": append([]byte(nil), config...)}
+	versions := kindVersions(manifest.Kinds)
 	manifest.Kinds = nil
 	manifest.Files = map[string]File{}
 	for _, kind := range knownKindNames() {
@@ -386,7 +400,11 @@ func encodeArchive(manifest Manifest, records map[string][]Record, config []byte
 		}
 		path := "records/" + kind + ".ndjson"
 		files[path] = data.Bytes()
-		manifest.Kinds = append(manifest.Kinds, Kind{Name: kind, Version: 1, File: path, Count: len(rows)})
+		version := versions[kind]
+		if version == 0 {
+			version = 1
+		}
+		manifest.Kinds = append(manifest.Kinds, Kind{Name: kind, Version: version, File: path, Count: len(rows)})
 	}
 	sort.Slice(manifest.Kinds, func(i, j int) bool { return manifest.Kinds[i].Name < manifest.Kinds[j].Name })
 	for path, data := range files {
