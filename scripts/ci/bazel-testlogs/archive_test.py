@@ -100,6 +100,8 @@ class ArchiveTransportTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, expected_exit, result.stderr.decode(errors="replace"))
         with tarfile.open(self.evidence / "bazel-testlogs.tgz", "r:gz") as archive:
+            names = [member.name for member in archive.getmembers()]
+            self.assertEqual(len(names), len(set(names)), "archive paths must not overwrite another configuration")
             files = {member.name.removeprefix("./"): archive.extractfile(member).read()
                      for member in archive.getmembers() if member.isfile()}
         self.assertIn(INVENTORY, files, "standard artifact must retain the actual output inventory")
@@ -204,6 +206,113 @@ class ArchiveTransportTest(unittest.TestCase):
         files, inventory = self.archive()
         self.assertTrue(inventory["complete"])
         self.assert_original_outputs(files, inventory, {(B13_TEST, SINKS[0]): b"original sink bytes\n"})
+
+    def configured_logs(self):
+        output_tree = self.root / "output-base/execroot/_main/bazel-out"
+        default_logs = output_tree / "k8-fastbuild/testlogs"
+        default_logs.parent.mkdir(parents=True)
+        if self.logs.exists():
+            self.logs.rename(default_logs)
+        else:
+            default_logs.mkdir()
+        self.logs.symlink_to(default_logs, target_is_directory=True)
+        return output_tree
+
+    def write_configuration(self, output_tree, configuration, path, data):
+        destination = output_tree / configuration / "testlogs" / path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(data)
+        return destination
+
+    def test_configured_doc_and_companions_keep_own_raw_logs_and_xml(self):
+        # Transport fixtures model the actual split that omitted the doc target;
+        # these bytes are not claimed as execution of the Beads doc suite.
+        expected = {}
+        for target in ("scripts/scripts_test", "scripts/go_test_sources_test"):
+            for suffix, data in (("test.log", (target + " original log\n").encode()),
+                                 ("test.xml", ("<testsuite name='" + target + "'/>\n").encode())):
+                path = target + "/" + suffix
+                self.write(path, data)
+                expected[path] = data
+        output_tree = self.configured_logs()
+        configuration = "k8-fastbuild-ST-doc-integration"
+        prefix = "_configurations/" + configuration
+        for suffix, data in (("test.log", b"original configured doc log\n"),
+                             ("test.xml", b"<testsuite name='configured-doc'/>\n")):
+            path = "scripts/doc_freshness_required_test/" + suffix
+            self.write_configuration(output_tree, configuration, path, data)
+            expected[prefix + "/" + path] = data
+        files, inventory = self.archive()
+        self.assertTrue(inventory["complete"])
+        self.assertEqual({name: data for name, data in files.items() if name != INVENTORY}, expected)
+        self.assertEqual(inventory["testlog_roots"], [
+            {"configuration": "k8-fastbuild", "archive_prefix": ""},
+            {"configuration": configuration, "archive_prefix": prefix},
+        ])
+
+    def test_same_label_in_two_configurations_keeps_distinct_results_and_outputs(self):
+        target = "scripts/same_test"
+        self.write(target + "/test.log", b"default original log\n")
+        self.write(target + "/test.xml", b"<testsuite name='default'/>\n")
+        self.write(target + "/test.outputs/raw.bin", b"default original output\n")
+        output_tree = self.configured_logs()
+        configuration = "k8-fastbuild-ST-integration"
+        configured = "_configurations/" + configuration + "/" + target
+        self.write_configuration(output_tree, configuration, target + "/test.xml", b"<testsuite name='configured'/>\n")
+        self.write_configuration(output_tree, configuration, target + "/test.outputs/raw.bin", b"configured original output\n")
+        attempt = self.write_configuration(output_tree, configuration, target + "/test_attempts/attempt_1.log", b"configured original log\n")
+        (attempt.parent.parent / "test.log").symlink_to("test_attempts/attempt_1.log")
+        files, inventory = self.archive()
+        self.assertTrue(inventory["complete"])
+        self.assertEqual(files[target + "/test.log"], b"default original log\n")
+        self.assertEqual(files[configured + "/test.log"], b"configured original log\n")
+        self.assertEqual(files[target + "/test.xml"], b"<testsuite name='default'/>\n")
+        self.assertEqual(files[configured + "/test.xml"], b"<testsuite name='configured'/>\n")
+        record = next(row for row in inventory["files"] if row["path"] == configured + "/test.log")
+        self.assertEqual(record["snapshot_source"], configured + "/test_attempts/attempt_1.log")
+        self.assert_original_outputs(files, inventory, {
+            (target, "raw.bin"): b"default original output\n",
+            (configured, "raw.bin"): b"configured original output\n",
+        })
+
+    def test_configuration_alias_does_not_duplicate_the_convenience_tree(self):
+        path = "scripts/original_test/test.log"
+        self.write(path, b"one original log\n")
+        output_tree = self.configured_logs()
+        (output_tree / "alias").symlink_to("k8-fastbuild", target_is_directory=True)
+        files, inventory = self.archive()
+        self.assertTrue(inventory["complete"])
+        self.assertEqual(set(files), {path, INVENTORY})
+        self.assertEqual(inventory["testlog_roots"], [{"configuration": "k8-fastbuild", "archive_prefix": ""}])
+
+    def test_configured_testlog_escape_keeps_default_logs_and_fails_collection(self):
+        path = "scripts/original_test/test.log"
+        self.write(path, b"original default log\n")
+        output_tree = self.configured_logs()
+        unrelated = self.root / "unrelated/testlogs"
+        unrelated.mkdir(parents=True)
+        (unrelated / "secret").write_bytes(b"must not be archived\n")
+        configuration = output_tree / "k8-fastbuild-ST-escape"
+        configuration.mkdir()
+        (configuration / "testlogs").symlink_to(unrelated, target_is_directory=True)
+        files, inventory = self.archive(expected_exit=86)
+        self.assertFalse(inventory["complete"])
+        self.assertEqual(set(files), {path, INVENTORY})
+        self.assertEqual(files[path], b"original default log\n")
+        self.assertIn("inside the Bazel output tree", inventory["errors"][0]["error"])
+
+    def test_configured_archive_collision_is_explicit_and_never_overwrites(self):
+        configuration = "k8-fastbuild-ST-collision"
+        relative = "scripts/same_test/test.log"
+        path = "_configurations/" + configuration + "/" + relative
+        self.write(path, b"default original bytes\n")
+        output_tree = self.configured_logs()
+        self.write_configuration(output_tree, configuration, relative, b"configured conflicting bytes\n")
+        files, inventory = self.archive(expected_exit=86)
+        self.assertFalse(inventory["complete"])
+        self.assertEqual(files[path], b"default original bytes\n")
+        self.assertEqual(inventory["errors"][0]["path"], path)
+        self.assertIn("duplicate configured archive path", inventory["errors"][0]["error"])
 
     def test_missing_testlogs_keeps_empty_inventory_without_invented_sinks(self):
         files, inventory = self.archive()
