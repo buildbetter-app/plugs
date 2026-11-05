@@ -80,7 +80,7 @@ func projectHistoryArchive(t *testing.T, prefix string, ordinal int) []byte {
 	oldPrefix := []byte(`"demo"`)
 	newPrefix := []byte(`"` + prefix + `"`)
 	for name, raw := range members {
-		if name == "manifest.json" || name == dumpformat.SourceHistoryMember {
+		if name == "manifest.json" || name == dumpformat.SourceHistoryMember || name == "records/beads-archive.ndjson" {
 			continue
 		}
 		raw = bytes.ReplaceAll(raw, oldBead, newBead)
