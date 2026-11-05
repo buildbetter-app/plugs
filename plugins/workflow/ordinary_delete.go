@@ -142,20 +142,38 @@ func (p *Provider) PrepareOrdinaryDelete(ctx context.Context, by model.Principal
 		if err != nil {
 			return nil, err
 		}
-		result := model.OpResult{Ref: active, Revision: model.Natural64(item.Generation), SetBy: map[string]string{"links": "request"}}
-		if meta.Return != "minimal" {
-			result.Record = after
-		}
-		results[position] = result
-		if !meta.DryRun {
-			if err := p.storeOrdinaryDeleteResult(&value, by, meta, requestDigest, position, item, result); err != nil {
-				return nil, err
-			}
-		}
+		results[position] = model.OpResult{Ref: active}
 		return &OrdinaryDeleteImage{Ref: active, Before: before, After: after, Generation: model.Natural64(item.Generation)}, nil
 	})
 	if err != nil {
 		return OrdinaryDeletePreparation{}, err
+	}
+	// Each ordinal returns the endpoint's final post-image, even if another
+	// unlink later in the same request changes that endpoint again. Ordered
+	// change images remain separate input to authorization and validation.
+	for position := range cs.Ops {
+		result, exists := results[position]
+		if !exists {
+			continue
+		}
+		item, exists := value.Items[result.Ref.ID]
+		if !exists {
+			return OrdinaryDeletePreparation{}, fail("internal_error", "prepared workflow endpoint was removed")
+		}
+		result.Revision = model.Natural64(item.Generation)
+		result.SetBy = map[string]string{"links": "request"}
+		if meta.Return != "minimal" {
+			result.Record, err = json.Marshal(p.itemViewIn(value, item))
+			if err != nil {
+				return OrdinaryDeletePreparation{}, err
+			}
+		}
+		results[position] = result
+		if !meta.DryRun {
+			if err := p.storeOrdinaryDeleteResult(&value, by, meta, requestDigest, position, item, result); err != nil {
+				return OrdinaryDeletePreparation{}, err
+			}
+		}
 	}
 	result := OrdinaryDeletePreparation{Namespace: expectation, Results: results}
 	if changed {

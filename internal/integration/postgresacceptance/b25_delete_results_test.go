@@ -107,7 +107,10 @@ func b25DeleteResultControls(t *testing.T, h *b26HTTP, db *sql.DB, engine string
 			b26OK(t, h.call(t, "bead.comment", map[string]any{"id": ref(item), "body": secret + "-comment"}, label+"-comment"))
 			victim := h.create(t, label+"-victim")
 			b25Link(t, h, item, victim, "relates-to", label+"-link")
-			params := map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{b25Unlink(item, victim, "relates-to"), b25Delete(victim)}}}
+			b25Link(t, h, item, victim, "blocks", label+"-second-link")
+			generation := b25Items(t, h)[item].Generation
+			finalRevision := model.Natural64(generation + 2)
+			params := map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{b25Unlink(item, victim, "relates-to"), b25Unlink(item, victim, "blocks"), b25Delete(victim)}}}
 			meta := map[string]any{}
 			if format != "default" {
 				meta["return"] = format
@@ -118,20 +121,26 @@ func b25DeleteResultControls(t *testing.T, h *b26HTTP, db *sql.DB, engine string
 				dryMeta[name] = value
 			}
 			preview := decode[model.Commit](t, b26OK(t, b25CallMeta(t, h, params, label+"-dry", dryMeta)))
-			if !preview.WouldCommit || len(preview.Results) != 2 || len(preview.Results[1].Record) != 0 || !reflect.DeepEqual(before, b26CompleteSQL(t, db, engine)) {
+			if !preview.WouldCommit || len(preview.Results) != 3 || len(preview.Results[2].Record) != 0 || !reflect.DeepEqual(before, b26CompleteSQL(t, db, engine)) {
 				t.Fatal("mixed delete dry-run changed storage or lost original result positions")
+			}
+			if !reflect.DeepEqual(preview.Results[0], preview.Results[1]) || preview.Results[0].Ref != ref(item) || preview.Results[0].Revision != finalRevision {
+				t.Fatal("same-endpoint dry-run results did not share the final image and revision")
 			}
 			if format == "minimal" {
 				if len(preview.Results[0].Record) != 0 {
 					t.Fatal("minimal dry-run disclosed an active body")
 				}
-			} else if image := decode[workflowplugin.ItemView](t, preview.Results[0].Record); image.ID != item || image.Title != secret || len(image.Links) != 0 || len(image.Comments) != 1 || image.Comments[0].Body != secret+"-comment" {
+			} else if image := decode[workflowplugin.ItemView](t, preview.Results[0].Record); image.ID != item || image.Revision != finalRevision || image.Title != secret || len(image.Links) != 0 || len(image.Comments) != 1 || image.Comments[0].Body != secret+"-comment" {
 				t.Fatal("full dry-run omitted the unpublished active post-image")
 			}
 			first := b25CallMeta(t, h, params, label, meta)
 			commit := decode[model.Commit](t, b26OK(t, first))
-			if first.replayed() || len(commit.Results) != 2 || commit.Results[0].Ref != ref(item) || commit.Results[1].Ref != ref(victim) || len(commit.Results[1].Record) != 0 {
+			if first.replayed() || len(commit.Results) != 3 || commit.Results[0].Ref != ref(item) || commit.Results[1].Ref != ref(item) || commit.Results[2].Ref != ref(victim) || len(commit.Results[2].Record) != 0 {
 				t.Fatal("mixed delete result changed original positions or deleted post-image")
+			}
+			if !reflect.DeepEqual(commit.Results[:2], preview.Results[:2]) || model.Natural64(b25Items(t, h)[item].Generation) != finalRevision {
+				t.Fatal("committed same-endpoint results differ from the final prepared generation")
 			}
 			if format == "minimal" {
 				if len(commit.Results[0].Record) != 0 {
@@ -139,8 +148,12 @@ func b25DeleteResultControls(t *testing.T, h *b26HTTP, db *sql.DB, engine string
 				}
 			} else {
 				b25AssertFullWorkflowResult(t, h, commit.Results[0], item)
+				b25AssertFullWorkflowResult(t, h, commit.Results[1], item)
 			}
 			coreReceipt := b25CoreDeleteReceipt(t, h, label, 0)
+			if !reflect.DeepEqual(coreReceipt, b25CoreDeleteReceipt(t, h, label, 1)) || !reflect.DeepEqual(coreReceipt.Commit.Results[0], coreReceipt.Commit.Results[1]) || coreReceipt.Commit.Results[0].Revision != finalRevision {
+				t.Fatal("core receipt did not retain both final payload-free result identities")
+			}
 			// The receipt must retain its original post-image after a later
 			// public update; rebuilding a replay from the current item is wrong.
 			b26OK(t, h.call(t, "bead.update", map[string]any{"id": ref(item), "fields": map[string]any{"title": label + "-later"}}, label+"-later"))
@@ -170,6 +183,7 @@ func b25DeleteResultControls(t *testing.T, h *b26HTTP, db *sql.DB, engine string
 			terminalReply := b25CallMeta(t, h, params, label, meta)
 			terminal := decode[model.Commit](t, b26OK(t, terminalReply))
 			commit.Results[0].Record = nil
+			commit.Results[1].Record = nil
 			if !terminalReply.replayed() || !reflect.DeepEqual(commit, terminal) || !reflect.DeepEqual(before, b26CompleteSQL(t, db, engine)) || !reflect.DeepEqual(coreReceipt, b25CoreDeleteReceipt(t, h, label, 0)) {
 				t.Fatal("terminal replay did not retain identity-only results without writes")
 			}

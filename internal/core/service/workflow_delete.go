@@ -48,6 +48,11 @@ func (s *Service) ordinaryDeletePreparation(by model.PrincipalRef, cs model.Chan
 		}
 		*preview = planned.Results
 		publication := pipeline.SourcePublication{Head: driver.CoreSnapshotExpectation{StoreID: planned.Namespace.StoreID, Incarnation: reader.Snapshot().Incarnation, Head: *reader.Snapshot().At}, Namespace: planned.Namespace}
+		publication.FinalResults = make(map[int]model.OpResult, len(planned.Results))
+		for position, result := range planned.Results {
+			result.Record = nil
+			publication.FinalResults[position] = result
+		}
 		if planned.State != nil {
 			mutation, err := planned.State.Checkpoint(ctx)
 			if err != nil {
