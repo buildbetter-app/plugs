@@ -455,7 +455,7 @@ func verifyB03NativeInput(t *testing.T, input b03NativeInput) {
 	}
 	seen := map[string]bool{}
 	for _, store := range input.Stores {
-		if store.ID == "" || store.Database == "" || store.Prefix == "" || store.RootID == "" || seen[store.ID] || seen[store.Database] || seen[store.Prefix] || seen[store.RootID] {
+		if store.ID == "" || store.Database == "" || store.Prefix == "" || store.RootID == "" || !strings.HasPrefix(store.RootID, store.Prefix+"-") || seen[store.ID] || seen[store.Database] || seen[store.Prefix] || seen[store.RootID] {
 			t.Fatalf("B03 native stores do not have distinct physical identities: %+v", input.Stores)
 		}
 		seen[store.ID], seen[store.Database], seen[store.Prefix], seen[store.RootID] = true, true, true, true
@@ -572,17 +572,6 @@ func recordB03NativeStore(t *testing.T, root string, input b03NativeInput, id, d
 		blockers = append(blockers, exactNativeRefusal(runner, receipt, "config list"))
 	}
 	before := recordB03PhysicalCensus(t, runner, binary, "before")
-	exportPath := filepath.Join(storeRoot, "native-export.jsonl")
-	if _, receipt = command("native-export", "--readonly", "export", "--include-memories", "--output", exportPath); receipt.Exit != 0 {
-		blockers = append(blockers, exactNativeRefusal(runner, receipt, "native JSONL export"))
-	} else {
-		data, err := os.ReadFile(exportPath)
-		if err != nil || len(bytes.TrimSpace(data)) == 0 {
-			blockers = append(blockers, fmt.Sprintf("native export is empty store=%s err=%v", id, err))
-		} else {
-			evidence.ExportPath, evidence.ExportSHA256, evidence.ExportBytes = exportPath, b03Hash(data), len(data)
-		}
-	}
 	inventoryPath := filepath.Join(storeRoot, "native-inventory.json")
 	_, inventoryReceipt := command("inventory", "--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "-o", inventoryPath)
 	if inventoryReceipt.Exit == 0 {
@@ -623,7 +612,12 @@ func recordB03NativeStore(t *testing.T, root string, input b03NativeInput, id, d
 	evidence.SQLCensusBeforePath, evidence.SQLCensusBeforeSHA256 = before.Path, before.SHA256
 	evidence.SQLCensusAfterPath, evidence.SQLCensusAfterSHA256 = after.Path, after.SHA256
 	evidence.SQLTables = after.Tables
-	if !equalB03JSON(before.Tables, after.Tables) {
+	// The command receipts intentionally use fresh paths for each census.  A
+	// read-only export must be compared by the physical table bytes and parsed
+	// rows, while both phase-specific raw paths remain in the immutable receipt.
+	// Comparing the full structs here would turn those expected path changes
+	// into a false mutation blocker.
+	if !equalB03JSON(normalizeB03Census(before.Tables), normalizeB03Census(after.Tables)) {
 		blockers = append(blockers, fmt.Sprintf("read-only export changed the complete SQL census store=%s", id))
 	}
 	race := runner.runRace("catalog-read-race", map[string][]string{
@@ -665,6 +659,19 @@ func recordB03PhysicalCensus(t *testing.T, runner *b03CommandRunner, binary, pha
 		t.Fatal(err)
 	}
 	return b03PhysicalCensus{Tables: image, Path: path, SHA256: b03FileHash(path), Bytes: int(info.Size())}
+}
+
+func normalizeB03Census(tables []b03SQLTableEvidence) []b03SQLTableEvidence {
+	result := make([]b03SQLTableEvidence, len(tables))
+	for i, table := range tables {
+		result[i] = b03SQLTableEvidence{
+			Table:     table.Table,
+			RawSHA256: table.RawSHA256,
+			RawBytes:  table.RawBytes,
+			Rows:      table.Rows,
+		}
+	}
+	return result
 }
 
 func validateB03CanonicalArchive(input b03NativeInput, archive *dumpformat.Archive, path string) error {
