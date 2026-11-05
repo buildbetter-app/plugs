@@ -102,3 +102,25 @@ func readyOrderReadStates(ctx context.Context, c *sql.Conn, keys []driver.LockKe
 	}
 	return states, nil
 }
+
+// readyOrderAcquiredStates reuses the exact same-connection observations made
+// while the complete lock census was acquired. A Ready publication's Before
+// image is drawn from that census, so another latest-row query cannot observe
+// a different state while the update locks are held. Transactions created by
+// direct driver callers may not retain this cache; those callers keep the
+// original bounded physical read below.
+func (t *transaction) readyOrderAcquiredStates(keys []driver.LockKey) (map[string]driver.LockState, bool) {
+	if len(keys) == 0 || len(t.acquiredStates) == 0 {
+		return nil, false
+	}
+	states := make(map[string]driver.LockState, len(keys))
+	for _, key := range keys {
+		id := keyID(key)
+		state, ok := t.acquiredStates[id]
+		if !ok {
+			return nil, false
+		}
+		states[id] = state
+	}
+	return states, true
+}

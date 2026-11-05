@@ -174,12 +174,16 @@ func (t *transaction) prepareReadyOrderCommit(ctx context.Context, c *sql.Conn, 
 			beforeStates[id] = driver.LockState{Key: key, Revision: model.Natural64(0)}
 		}
 	} else {
-		beforeStates, err = readyOrderReadStates(ctx, c, beforeKeys)
-		if errors.Is(err, driver.ErrUnsupported) {
-			return nil, nil
-		}
-		if err != nil {
-			return nil, err
+		var cached bool
+		beforeStates, cached = t.readyOrderAcquiredStates(beforeKeys)
+		if !cached {
+			beforeStates, err = readyOrderReadStates(ctx, c, beforeKeys)
+			if errors.Is(err, driver.ErrUnsupported) {
+				return nil, nil
+			}
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 	for _, before := range p.Data.Before {

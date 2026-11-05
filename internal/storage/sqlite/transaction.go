@@ -30,12 +30,17 @@ type transaction struct {
 	nativeAllocators bool
 	importRestore    *driver.RestoreImportProfile
 	acquired         driver.LockSet
-	acquiredModes    map[string]driver.LockMode
-	acquiredRecords  map[string]driver.Ref
-	files            []*os.File
-	guards           []guardHandle
-	done             chan struct{}
-	records          map[string]*driver.Record
+	// acquiredStates retains the exact physical images observed while the
+	// complete lock set was acquired. Ready publication already declares those
+	// same before-images; reusing this fenced observation avoids a second
+	// latest-row read for every Ready path during Commit.
+	acquiredStates  map[string]driver.LockState
+	acquiredModes   map[string]driver.LockMode
+	acquiredRecords map[string]driver.Ref
+	files           []*os.File
+	guards          []guardHandle
+	done            chan struct{}
+	records         map[string]*driver.Record
 	// recordStates retains the first lock observation for each staged record.
 	// A present=false, revision-zero observation proves that no version history
 	// exists for a first lifetime, so Commit can avoid re-counting that row.
@@ -142,6 +147,7 @@ func (t *transaction) finish() {
 	t.recordStates = nil
 	t.recordKinds = nil
 	t.acquiredModes = nil
+	t.acquiredStates = nil
 	t.acquiredRecords = nil
 	t.firstLifetimeState = nil
 	t.reuseFirstLifetime = false
@@ -294,6 +300,7 @@ func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) (
 		// staged projection checks before Commit.
 		modes := make(map[string]driver.LockMode, len(selected))
 		records := make(map[string]driver.Ref)
+		observed := make(map[string]driver.LockState, len(states))
 		for _, request := range selected {
 			id := keyID(request.Key)
 			modes[id] = request.Mode
@@ -301,7 +308,11 @@ func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) (
 				records[id] = *request.Key.Ref
 			}
 		}
+		for _, state := range states {
+			observed[keyID(state.Key)] = state
+		}
 		t.acquired = selected
+		t.acquiredStates = observed
 		t.acquiredModes = modes
 		t.acquiredRecords = records
 		t.guards = guards
