@@ -217,6 +217,11 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 			commit.WouldCommit = err == nil && len(p.changed) > 0
 			return port.WriteOutcome{Commit: commit}, err
 		}
+		// Preparation has captured every read revision and the bound snapshot
+		// metadata. Release its SQL connection before requesting a write
+		// connection, and before another snapshot attempt can retain a reader.
+		// The read-set lock/check guard below remains authoritative at commit.
+		_ = reader.Close()
 		var commit model.Commit
 		if err == nil {
 			phaseStarted = time.Now()
