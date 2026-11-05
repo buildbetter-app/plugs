@@ -735,6 +735,124 @@ func TestDumpCatalogMalformedAndDuplicateRowsRefuse(t *testing.T) {
 	}
 }
 
+// These controls use actual stored config rows and observed YAML files through
+// Build, so malformed declarations must abort before any archive is returned.
+func TestDumpCatalogConfigDeclarationsRefuse(t *testing.T) {
+	tests := []struct {
+		name  string
+		key   string
+		value any
+		want  string
+	}{
+		{name: "status without category", key: "status.custom", value: "review", want: "review"},
+		{name: "status empty category", key: "status.custom", value: "review:", want: "review"},
+		{name: "status unspecified category", key: "status.custom", value: "review:unspecified", want: "review"},
+		{name: "status trailing empty", key: "status.custom", value: "review:active,", want: "empty declaration"},
+		{name: "status inner empty", key: "status.custom", value: "review:active,,done_review:done", want: "empty declaration"},
+		{name: "status duplicate", key: "status.custom", value: "review:active,review:active", want: "review"},
+		{name: "status duplicate conflicting category", key: "status.custom", value: "review:active,review:done", want: "review"},
+		{name: "status null", key: "status.custom", value: nil, want: "invalid custom status"},
+		{name: "status number", key: "status.custom", value: 7, want: "invalid custom status"},
+		{name: "status object", key: "status.custom", value: map[string]any{"review": "active"}, want: "invalid custom status"},
+		{name: "type inner empty", key: "types.custom", value: "gate,,other", want: "empty declaration"},
+		{name: "type trailing empty", key: "types.custom", value: "gate,", want: "empty declaration"},
+		{name: "type duplicate", key: "types.custom", value: "gate,gate", want: "gate"},
+		{name: "type JSON empty", key: "types.custom", value: `["gate", ""]`, want: "empty declaration"},
+		{name: "type JSON duplicate", key: "types.custom", value: `["gate", "gate"]`, want: "gate"},
+		{name: "type null", key: "types.custom", value: nil, want: "invalid custom type"},
+		{name: "type number", key: "types.custom", value: 7, want: "invalid custom type"},
+		{name: "type object", key: "types.custom", value: map[string]any{"gate": true}, want: "invalid custom type"},
+	}
+	for _, layer := range []string{"stored", "YAML"} {
+		for _, test := range tests {
+			t.Run(layer+"/"+test.name, func(t *testing.T) {
+				source, inventory := fixture(t)
+				if layer == "stored" {
+					table := source["config"]
+					table.Rows = append(table.Rows, Row{"key": test.key, "value": test.value})
+					source["config"] = table
+					inventory.ConfigPolicy["config/"+test.key] = "public"
+				} else {
+					// JSON is also YAML: write the declaration to a real YAML file
+					// and use the same observation path as native inventory.
+					setCatalogYAML(t, &inventory, mustJSON(t, map[string]any{test.key: test.value}))
+				}
+				data, err := Build(context.Background(), source, inventory)
+				if err == nil || len(data) != 0 || !strings.Contains(err.Error(), test.want) {
+					t.Fatalf("malformed %s catalog accepted: data=%d err=%v, want refusal naming %q", layer, len(data), err, test.want)
+				}
+			})
+		}
+	}
+	for name, raw := range map[string]string{
+		"status scalar":                "status: review\n",
+		"status null":                  "status: null\n",
+		"status sequence":              "status: [review]\n",
+		"status missing category list": "status:\n  custom: [review]\n",
+		"status duplicate list":        "status:\n  custom: [review:active, review:active]\n",
+		"status empty list entry":      "status:\n  custom: [review:active, '']\n",
+		"status nonstring list entry":  "status:\n  custom: [review:active, 7]\n",
+		"types scalar":                 "types: gate\n",
+		"types null":                   "types: null\n",
+		"types sequence":               "types: [gate]\n",
+		"types duplicate list":         "types:\n  custom: [gate, gate]\n",
+		"types empty list entry":       "types:\n  custom: [gate, '']\n",
+		"types nonstring list entry":   "types:\n  custom: [gate, 7]\n",
+	} {
+		t.Run("nested YAML/"+name, func(t *testing.T) {
+			source, inventory := fixture(t)
+			setCatalogYAML(t, &inventory, []byte(raw))
+			if data, err := Build(context.Background(), source, inventory); err == nil || len(data) != 0 {
+				t.Fatalf("malformed nested YAML catalog accepted: data=%d err=%v", len(data), err)
+			}
+		})
+	}
+}
+
+func TestDumpCatalogUnionConflictNamesBothDeclarations(t *testing.T) {
+	for _, storedLayer := range []string{"custom_statuses", "config"} {
+		t.Run(storedLayer, func(t *testing.T) {
+			source, inventory := fixture(t)
+			table := source[storedLayer]
+			if storedLayer == "custom_statuses" {
+				table.Rows = append(table.Rows, Row{"name": "review", "category": "active"})
+			} else {
+				table.Rows = append(table.Rows, Row{"key": "status.custom", "value": "review:active"})
+				inventory.ConfigPolicy["config/status.custom"] = "public"
+			}
+			source[storedLayer] = table
+			setCatalogYAML(t, &inventory, []byte("status:\n  custom: review:done\n"))
+			data, err := Build(context.Background(), source, inventory)
+			if err == nil || len(data) != 0 || !strings.Contains(err.Error(), "review:active") || !strings.Contains(err.Error(), "review:done") {
+				t.Fatalf("catalog conflict did not name both declarations: data=%d err=%v", len(data), err)
+			}
+		})
+	}
+}
+
+func setCatalogYAML(t *testing.T, inventory *Inventory, raw []byte) map[string]any {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	observation, err := observeNativePath(path, 0, &nativeCaptureBudget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range inventory.External {
+		if inventory.External[i].Family == "project-config" {
+			inventory.External[i].State = "json-config"
+			if err := os.WriteFile(inventory.External[i].Path, mustJSON(t, map[string]any{"observations": []any{observation}}), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return observation
+		}
+	}
+	t.Fatal("fixture is missing project-config family")
+	return nil
+}
+
 func TestIssueSourceFieldsContractRefusesMissingOpaqueField(t *testing.T) {
 	source, _ := fixture(t)
 	row := cloneRow(source["issues"].Rows[0])
