@@ -65,7 +65,7 @@
     "physical": "--readonly sql SHOW TABLES / SELECT * / SHOW COLUMNS / dolt_log; complete row multisets and column schema, no-op and refusal equality"
   },
   "qualification": "AUTHORED_NOT_RUN; fresh accepted preparation, two native stores, and Plug replay are required; no historical unit transfers credit",
-  "clockScope": "native timestamps and SQL timestamps are observed wall-clock values; no lease-expiry or B05 qualification",
+  "clockScope": "native claim columns must be observed DATETIME(0); compare started_at to both actual command endpoints rounded to that same nearest-second domain, retaining raw nanosecond receipts; no lease-expiry or B05 qualification",
   "boundaries": [
     "native source IDs are bound to actual Plug refs and never treated as identical identities",
     "expected refusal streams are retained before assertions",

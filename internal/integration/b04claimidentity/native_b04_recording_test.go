@@ -184,6 +184,21 @@ func recordB04NativeStore(t *testing.T, binary, root string, inputs b04NativeInp
 	}
 	c.run("init-server", "init", "--backend", "dolt", "--server", "--external", "--server-host", "127.0.0.1", "--server-port", strconv.Itoa(server.Port), "--database", database, "--prefix", "b04", "--quiet", "--skip-hooks", "--skip-agents", "--non-interactive")
 	c.run("config-custom", "config", "set", "status.custom", "awaiting_review:active")
+	clockColumns := b04NativeRows(t, c.run("claim-clock-columns", "--readonly", "sql", "SHOW COLUMNS FROM `issues`", "--json"))
+	for _, field := range []string{"started_at", "updated_at"} {
+		found := false
+		for _, column := range clockColumns {
+			if column["Field"] == field {
+				found = true
+				if column["Type"] != "datetime" {
+					t.Fatalf("native %s precision changed: %+v", field, column)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("native claim clock column %s is absent", field)
+		}
+	}
 	ids := inputs.Vector.SourceIDs
 	create := func(label, id, title, status string, priority int) {
 		args := []string{"create", "--id", id, "--title", title, "--type", "task", "--priority", strconv.Itoa(priority), "--status", status, "--json"}
@@ -423,9 +438,12 @@ func b04NativeClaimed(t *testing.T, data []byte, expected string) b04NativeIssue
 func b04NativeStartedDuring(t *testing.T, got b04NativeIssueProjection, result b04NativeResult) {
 	t.Helper()
 	started, err := time.Parse(time.RFC3339Nano, got.StartedAt)
-	// The producer serializes SQL timestamps at second precision. Compare
-	// against the actual command interval at that precision, not a fake clock.
-	if err != nil || started.Before(result.StartedUTC.Truncate(time.Second)) || started.After(result.EndedUTC) {
+	// The observed issues schema is DATETIME(0). Dolt rounds values to its
+	// nearest second (the admitted producer pins that behavior in its 0069
+	// precision replay). Project both actual command endpoints into that same
+	// domain; retain the raw nanosecond bounds in the command receipt.
+	lower, upper := result.StartedUTC.Round(time.Second), result.EndedUTC.Round(time.Second)
+	if err != nil || started.Nanosecond() != 0 || started.Before(lower) || started.After(upper) {
 		t.Fatalf("native start is outside the actual claim command: %+v %+v", got, result)
 	}
 }
