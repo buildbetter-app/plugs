@@ -7,6 +7,7 @@ go_test(
     tags = ["local", "requires-network"],
     deps = [
         "//internal/api/wire",
+        "//internal/core/dumpformat",
         "//internal/core/model",
         "//internal/core/pipeline",
         "//internal/core/port",

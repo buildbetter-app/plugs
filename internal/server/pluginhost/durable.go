@@ -124,10 +124,12 @@ type durableAccess struct {
 	lease      driver.ActiveLease
 	key        string
 	persistent bool
+	source     *driver.SourcePlaneProviderCommitV1
 }
 
 type durableNamespace struct {
-	Values map[string]durableValue `json:"values"`
+	Values map[string]durableValue            `json:"values"`
+	Origin *driver.SourcePlaneOriginBindingV1 `json:"sourceOrigin,omitempty"`
 }
 
 type durableValue struct {
@@ -170,7 +172,7 @@ func (d *durableAccess) available(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if d == nil || d.store == nil || d.lease == nil || !d.persistent {
+	if d == nil || d.store == nil || d.lease == nil || (!d.persistent && d.source == nil) {
 		return failure(ErrDurableState, "persistent durable capability is not configured")
 	}
 	select {
@@ -182,6 +184,10 @@ func (d *durableAccess) available(ctx context.Context) error {
 }
 
 func (d *durableAccess) load(ctx context.Context) (driver.Checkpoint, durableNamespace, error) {
+	if d != nil && d.source != nil {
+		checkpoint, namespace, _, err := d.loadSource(ctx)
+		return checkpoint, namespace, err
+	}
 	var namespace durableNamespace
 	if err := d.available(ctx); err != nil {
 		return driver.Checkpoint{}, namespace, err
@@ -211,6 +217,9 @@ func (d *durableAccess) load(ctx context.Context) (driver.Checkpoint, durableNam
 	if namespace.Values == nil {
 		namespace.Values = map[string]durableValue{}
 	}
+	if namespace.Origin != nil {
+		return driver.Checkpoint{}, namespace, failure(ErrDurableState, "source-restored state requires its bound runtime")
+	}
 	for key, value := range namespace.Values {
 		if err := driver.ValidateCheckpointKey(key); err != nil {
 			return driver.Checkpoint{}, namespace, err
@@ -223,6 +232,9 @@ func (d *durableAccess) load(ctx context.Context) (driver.Checkpoint, durableNam
 }
 
 func (d *durableAccess) Read(ctx context.Context, key string, dst any) (bool, pluginapi.Revision, error) {
+	if err := d.sourceKey(key); err != nil {
+		return false, "", err
+	}
 	if err := driver.ValidateCheckpointKey(key); err != nil {
 		return false, "", err
 	}
@@ -250,6 +262,9 @@ func (d *durableAccess) Get(ctx context.Context, key string, dst any) (bool, err
 }
 
 func (d *durableAccess) Revision(ctx context.Context, key string) (pluginapi.Revision, error) {
+	if err := d.sourceKey(key); err != nil {
+		return "", err
+	}
 	if err := driver.ValidateCheckpointKey(key); err != nil {
 		return "", err
 	}
@@ -277,6 +292,9 @@ func (d *durableAccess) PutAtHead(ctx context.Context, key string, value any, ex
 }
 
 func (d *durableAccess) Delete(ctx context.Context, key string, expect pluginapi.Revision) error {
+	if d != nil && d.source != nil {
+		return driver.ErrUnsupported
+	}
 	_, err := d.replace(ctx, key, nil, expect)
 	return err
 }
@@ -286,6 +304,14 @@ func (d *durableAccess) replace(ctx context.Context, key string, data []byte, ex
 }
 
 func (d *durableAccess) replaceAtHead(ctx context.Context, key string, data []byte, expect pluginapi.Revision, head *driver.CoreSnapshotExpectation) (pluginapi.Revision, error) {
+	if err := d.sourceKey(key); err != nil {
+		return "", err
+	}
+	if d.source != nil {
+		if err := sourceObject(data); err != nil {
+			return "", err
+		}
+	}
 	if err := driver.ValidateCheckpointKey(key); err != nil {
 		return "", err
 	}
@@ -293,7 +319,19 @@ func (d *durableAccess) replaceAtHead(ctx context.Context, key string, data []by
 	if err != nil {
 		return "", err
 	}
-	checkpoint, namespace, err := d.load(ctx)
+	var checkpoint driver.Checkpoint
+	var namespace durableNamespace
+	if d.source != nil {
+		var observed driver.CoreSnapshotExpectation
+		checkpoint, namespace, observed, err = d.loadSource(ctx)
+		if head == nil {
+			head = &observed
+		} else if *head != observed {
+			return "", driver.ErrCheckpointConflict
+		}
+	} else {
+		checkpoint, namespace, err = d.load(ctx)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -325,6 +363,9 @@ func (d *durableAccess) replaceAtHead(ctx context.Context, key string, data []by
 }
 
 func (d *durableAccess) List(ctx context.Context, prefix string, limit int) ([]pluginapi.DurableEntry, error) {
+	if err := d.sourceKey(prefix); err != nil {
+		return nil, err
+	}
 	if err := driver.ValidateCheckpointKey(prefix); err != nil {
 		return nil, err
 	}
@@ -359,6 +400,9 @@ var _ pluginapi.DurableState = (*durableAccess)(nil)
 // lifecycle writes. It is intentionally absent from pluginapi.DurableState.
 // Preparation publishes nothing; the ordinary writer owns fencing and commit.
 func (d *durableAccess) PrepareCheckpoint(ctx context.Context, key string, value any, expect pluginapi.Revision) (driver.CheckpointMutation, error) {
+	if err := d.sourceKey(key); err != nil {
+		return driver.CheckpointMutation{}, err
+	}
 	if err := driver.ValidateCheckpointKey(key); err != nil {
 		return driver.CheckpointMutation{}, err
 	}
@@ -366,7 +410,7 @@ func (d *durableAccess) PrepareCheckpoint(ctx context.Context, key string, value
 	if err != nil {
 		return driver.CheckpointMutation{}, err
 	}
-	checkpoint, namespace, err := d.load(ctx)
+	checkpoint, namespace, err := d.loadForPreparation(ctx)
 	if err != nil {
 		return driver.CheckpointMutation{}, err
 	}
@@ -381,6 +425,11 @@ func (d *durableAccess) PrepareCheckpoint(ctx context.Context, key string, value
 	if err != nil {
 		return driver.CheckpointMutation{}, err
 	}
+	if d.source != nil {
+		if err := sourceObject(data); err != nil {
+			return driver.CheckpointMutation{}, err
+		}
+	}
 	namespace.Values[key] = durableValue{Revision: expected + 1, Value: data}
 	payload, err := json.Marshal(namespace)
 	if err != nil {
@@ -394,6 +443,9 @@ func (d *durableAccess) PrepareCheckpoint(ctx context.Context, key string, value
 	}
 	meta, err := metadata.Meta(ctx)
 	if err != nil {
+		return driver.CheckpointMutation{}, err
+	}
+	if err := d.sourceMeta(meta); err != nil {
 		return driver.CheckpointMutation{}, err
 	}
 	return driver.CheckpointMutation{StoreID: meta.StoreID, Incarnation: meta.Incarnation, Key: d.key, Expected: checkpoint.Generation, Payload: payload}, nil
@@ -413,6 +465,9 @@ func (d *durableStateAccess) PrepareCheckpoint(ctx context.Context, key string, 
 // PrepareCheckpointExpectation binds a provider read to the complete namespace
 // generation. It never writes and is absent from the public plugin capability.
 func (d *durableAccess) PrepareCheckpointExpectation(ctx context.Context, key string, expect pluginapi.Revision) (driver.CheckpointExpectation, error) {
+	if err := d.sourceKey(key); err != nil {
+		return driver.CheckpointExpectation{}, err
+	}
 	if err := driver.ValidateCheckpointKey(key); err != nil {
 		return driver.CheckpointExpectation{}, err
 	}
@@ -420,7 +475,7 @@ func (d *durableAccess) PrepareCheckpointExpectation(ctx context.Context, key st
 	if err != nil {
 		return driver.CheckpointExpectation{}, err
 	}
-	checkpoint, namespace, err := d.load(ctx)
+	checkpoint, namespace, err := d.loadForPreparation(ctx)
 	if err != nil {
 		return driver.CheckpointExpectation{}, err
 	}
@@ -435,6 +490,9 @@ func (d *durableAccess) PrepareCheckpointExpectation(ctx context.Context, key st
 	}
 	meta, err := metadata.Meta(ctx)
 	if err != nil {
+		return driver.CheckpointExpectation{}, err
+	}
+	if err := d.sourceMeta(meta); err != nil {
 		return driver.CheckpointExpectation{}, err
 	}
 	return driver.CheckpointExpectation{StoreID: meta.StoreID, Incarnation: meta.Incarnation, Key: d.key, Expected: checkpoint.Generation}, nil

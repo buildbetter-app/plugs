@@ -17,6 +17,16 @@ type PreparedState struct {
 	key    string
 	value  json.RawMessage
 	expect pluginapi.Revision
+	head   *driver.CoreSnapshotExpectation
+}
+
+// CoreSnapshot is the complete ordinary observation consumed while staging.
+// A coordinated writer must join it to the same transaction as Checkpoint.
+func (s PreparedState) CoreSnapshot() (driver.CoreSnapshotExpectation, bool) {
+	if s.head == nil {
+		return driver.CoreSnapshotExpectation{}, false
+	}
+	return *s.head, true
 }
 
 func (s PreparedState) Checkpoint(ctx context.Context) (driver.CheckpointMutation, error) {
@@ -35,14 +45,43 @@ type stagedState struct {
 	value            json.RawMessage
 	expect, revision pluginapi.Revision
 	written          bool
+	loaded           bool
+	head             *driver.CoreSnapshotExpectation
 }
 
 func (s *stagedState) Persistent() bool {
 	marker, ok := s.base.(interface{ Persistent() bool })
 	return ok && marker.Persistent()
 }
+
+func (s *stagedState) SourceRuntimeBinding() (driver.SourcePlaneProviderCommitV1, error) {
+	if bound, ok := s.base.(interface {
+		SourceRuntimeBinding() (driver.SourcePlaneProviderCommitV1, error)
+	}); ok {
+		return bound.SourceRuntimeBinding()
+	}
+	return driver.SourcePlaneProviderCommitV1{}, driver.ErrUnsupported
+}
+
+func (s *stagedState) PutAtHead(ctx context.Context, key string, value any, expect pluginapi.Revision, head driver.CoreSnapshotExpectation) (pluginapi.Revision, error) {
+	if s.head != nil && *s.head != head {
+		return "", driver.ErrCheckpointConflict
+	}
+	if err := head.Head.Validate(); err != nil {
+		return "", err
+	}
+	if head.StoreID == "" || head.Incarnation == "" {
+		return "", driver.ErrCheckpointConflict
+	}
+	revision, err := s.Put(ctx, key, value, expect)
+	if err == nil {
+		copy := head
+		s.head = &copy
+	}
+	return revision, err
+}
 func (s *stagedState) Read(ctx context.Context, key string, dst any) (bool, pluginapi.Revision, error) {
-	if !s.written {
+	if !s.written && !s.loaded {
 		return s.base.Read(ctx, key, dst)
 	}
 	if key != s.key {
@@ -59,7 +98,7 @@ func (s *stagedState) Get(ctx context.Context, key string, dst any) (bool, error
 	return found, err
 }
 func (s *stagedState) Revision(ctx context.Context, key string) (pluginapi.Revision, error) {
-	if s.written && s.key == key {
+	if (s.written || s.loaded) && s.key == key {
 		return s.revision, nil
 	}
 	return s.base.Revision(ctx, key)
@@ -97,11 +136,55 @@ func (s *stagedState) List(context.Context, string, int) ([]pluginapi.DurableEnt
 }
 func (p *Provider) staged() (*Provider, *stagedState) {
 	state := &stagedState{base: p.state}
-	return &Provider{state: state, now: p.now, persistent: p.persistent, plugin: p.plugin, instance: p.instance, incarnation: p.incarnation}, state
+	return &Provider{state: state, now: p.now, persistent: p.persistent, plugin: p.plugin, instance: p.instance, incarnation: p.incarnation, source: p.source}, state
 }
 func (s *stagedState) prepared() PreparedState {
-	return PreparedState{state: s.base, key: s.key, value: append(json.RawMessage(nil), s.value...), expect: s.expect}
+	var head *driver.CoreSnapshotExpectation
+	if s.head != nil {
+		copy := *s.head
+		head = &copy
+	}
+	return PreparedState{state: s.base, key: s.key, value: append(json.RawMessage(nil), s.value...), expect: s.expect, head: head}
 }
+
+// PrepareSourceOperations applies ordered active operations to a detached
+// image. A trusted service can interleave these methods with ordinary proposal
+// work, then stage Checkpoint in its real writer transaction. Any refusal or
+// cancellation discards the entire image. It never publishes the base state.
+func (p *Provider) PrepareSourceOperations(ctx context.Context, apply func(*Provider) error) (PreparedState, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.source == nil || apply == nil {
+		return PreparedState{}, driver.ErrUnsupported
+	}
+	if err := ctx.Err(); err != nil {
+		return PreparedState{}, err
+	}
+	staged, state := p.staged()
+	snapshot, ok := p.state.(interface {
+		ReadSourceRuntime(context.Context) (json.RawMessage, pluginapi.Revision, driver.CoreSnapshotExpectation, error)
+	})
+	if !ok {
+		return PreparedState{}, driver.ErrUnsupported
+	}
+	logical, revision, head, err := snapshot.ReadSourceRuntime(ctx)
+	if err != nil {
+		return PreparedState{}, err
+	}
+	state.key, state.value, state.revision, state.loaded, state.head = stateKey, logical, revision, true, &head
+	if err := apply(staged); err != nil {
+		return PreparedState{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return PreparedState{}, err
+	}
+	if !state.written {
+		return PreparedState{}, nil
+	}
+	return state.prepared(), nil
+}
+
+func (s PreparedState) Empty() bool { return s.state == nil }
 
 // PromoteAtomic holds the provider's mutation fence until the trusted writer
 // has atomically published the ordinary target and this prepared checkpoint.
