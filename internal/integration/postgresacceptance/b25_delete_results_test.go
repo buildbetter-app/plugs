@@ -67,7 +67,17 @@ func b25AssertFullWorkflowResult(t *testing.T, h *b26HTTP, result model.OpResult
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Ref != ref(id) || result.Revision != expected.Revision || !reflect.DeepEqual(expected, decode[workflowplugin.ItemView](t, result.Record)) {
+	// The transaction record is the public JSON image.  Normalize the
+	// independently read image through that same wire projection before
+	// comparing it: current-main carries internal ordering provenance on
+	// ItemView, but CreatedAt is deliberately omitted from this response.
+	expectedWire, err := json.Marshal(expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual := decode[workflowplugin.ItemView](t, result.Record)
+	wireExpected := decode[workflowplugin.ItemView](t, expectedWire)
+	if result.Ref != ref(id) || result.Revision != expected.Revision || !reflect.DeepEqual(wireExpected, actual) {
 		t.Fatalf("full surviving endpoint post-image differs: result=%s expected=%+v", result.Record, expected)
 	}
 }
