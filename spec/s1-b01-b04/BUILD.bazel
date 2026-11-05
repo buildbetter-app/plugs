@@ -134,6 +134,10 @@ go_test(
         "native_projection_test.go",
         "native_recording_test.go",
         "native_replay_test.go",
+        "native_hierarchy_test.go",
+        "native_membership_test.go",
+        "native_parent_compatibility_test.go",
+        "native_exclusion_test.go",
     ],
     embedsrcs = [
         "manifest.json",
@@ -153,6 +157,7 @@ go_test(
         "//internal/publicnative",
         "//internal/server/rpc",
         "//internal/server/transport/inprocess",
+        "//internal/storage/conformance",
         "//internal/storage/driver",
         "//internal/storage/memory",
         "//internal/storage/postgres",
@@ -160,5 +165,6 @@ go_test(
         "//internal/testclock",
     ],
     tags = ["manual", "local", "requires-network"],
+    shard_count = 2,
     timeout = "long",
 )

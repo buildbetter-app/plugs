@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
@@ -21,6 +22,28 @@ import (
 type nativeRPCScope struct {
 	Method, Key string
 	Write       bool
+}
+
+// A driver no-op receipt has a real zero Changeset, which is not a valid
+// product wire changeset. Preserve that exact state explicitly in test
+// evidence; nonzero changesets retain their full ordinary wire encoding.
+type nativeReceiptEvidence struct {
+	RequestHash     string
+	Commit          model.Commit
+	Changeset       *model.Changeset
+	ResponsePending bool
+	ZeroChangeset   bool
+}
+
+func nativeReceiptState(receipt *driver.IdempotencyRecord) nativeReceiptEvidence {
+	state := nativeReceiptEvidence{RequestHash: receipt.RequestHash, Commit: receipt.Commit, ResponsePending: receipt.ResponsePending}
+	if reflect.DeepEqual(receipt.Changeset, model.Changeset{}) {
+		state.ZeroChangeset = true
+	} else {
+		changeset := receipt.Changeset
+		state.Changeset = &changeset
+	}
+	return state
 }
 
 type nativeReplay struct {
@@ -31,8 +54,125 @@ type nativeReplay struct {
 	calls  []nativeRPCScope
 }
 
+// The native matrix is longer than the driver's ordinary ten-second storage
+// lease. Keep the fixture's existing host authority alive with its normal
+// heartbeat; do not change the lease budget or any application/SQL clock.
+func (r *nativeReplay) renewLease() {
+	r.f.t.Helper()
+	if err := r.f.lease.Renew(r.f.ctx); err != nil {
+		r.f.t.Fatalf("native replay lease renewal: %v", err)
+	}
+}
+
+// nativeReplayManifest is the finite H03/H04 execution boundary. The
+// existing recorder has broader hierarchy, external and category phases, but
+// this child requires the finite deferred-parent, live-ancestor blocker and
+// affected-subtree continuation names. Keeping the boundary explicit prevents
+// a filtered native run from looking complete because it happened to execute
+// PostgreSQL leaves while omitting the memory/SQLite roots.
+type nativeReplayManifest struct {
+	Schema               string            `json:"schema"`
+	Backends             []string          `json:"backends"`
+	Root                 string            `json:"root"`
+	HierarchyPhases      []string          `json:"hierarchyPhases"`
+	MembershipPhases     []string          `json:"membershipPhases"`
+	RootProof            map[string]string `json:"rootProof"`
+	ExternalNativePhases []string          `json:"externalNativePhases"`
+	RawXMLNamedSet       string            `json:"rawXMLNamedSet"`
+	FilterGuard          string            `json:"filterGuard"`
+}
+
+var nativeReplayBackends = []string{"memory", "sqlite", "postgres"}
+
+func nativeRequiredReplayManifest() nativeReplayManifest {
+	return nativeReplayManifest{
+		Schema:   "plug.s1.b01.native-replay-manifest.v1",
+		Backends: append([]string(nil), nativeReplayBackends...),
+		Root:     "root",
+		HierarchyPhases: []string{
+			"resumed",
+			"blocked-parent",
+			"detached-from-blocked",
+			"reparented-to-open",
+			"reattached-to-blocked",
+			"blocker-closed",
+			"blocker-reopened",
+			"restored",
+		},
+		MembershipPhases: []string{
+			"status-resumed",
+			"ancestor-blocked",
+			"close-under-blocked-ancestor",
+			"reopen-under-blocked-ancestor",
+			"ancestor-unblocked",
+		},
+		RootProof: map[string]string{
+			"memory":   "seed/link/before-after conservation; no SQL reopen claim",
+			"sqlite":   "signed multirow cursor across physical close/reopen with new handle and greater lease epoch",
+			"postgres": "signed multirow cursor across physical close/reopen with new handle and greater lease epoch",
+		},
+		ExternalNativePhases: []string{"external-refused"},
+		RawXMLNamedSet:       "exact equality with the emitted paths set; representation differences remain visible",
+		FilterGuard:          "every expected root and phase must execute; filtered omission fails closed",
+	}
+}
+
+func nativeReplayManifestPaths(inputs nativeInputs) []string {
+	manifest := nativeRequiredReplayManifest()
+	paths := []string{}
+	for _, vector := range inputs.Vectors {
+		for _, run := range vector.Runs {
+			for _, backend := range manifest.Backends {
+				base := fmt.Sprintf("%s/%s/%s/replay/%s", nativeVectorTestName(vector), vector.ID, run.ID, backend)
+				paths = append(paths, base+"/"+manifest.Root)
+				for _, phase := range manifest.HierarchyPhases {
+					paths = append(paths, base+"/"+phase)
+				}
+				for _, phase := range manifest.MembershipPhases {
+					paths = append(paths, base+"/membership/"+phase)
+				}
+			}
+		}
+	}
+	return paths
+}
+
+type nativeReplayCoverage struct {
+	Backend    string
+	Root       bool
+	Hierarchy  map[string]bool
+	Membership map[string]bool
+}
+
+func newNativeReplayCoverage(backend string) *nativeReplayCoverage {
+	return &nativeReplayCoverage{
+		Backend:    backend,
+		Hierarchy:  map[string]bool{},
+		Membership: map[string]bool{},
+	}
+}
+
+func (c *nativeReplayCoverage) require(t *testing.T, vector, run string) {
+	t.Helper()
+	manifest := nativeRequiredReplayManifest()
+	if !c.Root {
+		t.Fatalf("native replay selector omitted %s/%s/%s/root", vector, run, c.Backend)
+	}
+	for _, phase := range manifest.HierarchyPhases {
+		if !c.Hierarchy[phase] {
+			t.Fatalf("native replay selector omitted %s/%s/%s/%s", vector, run, c.Backend, phase)
+		}
+	}
+	for _, phase := range manifest.MembershipPhases {
+		if !c.Membership[phase] {
+			t.Fatalf("native replay selector omitted %s/%s/%s/membership/%s", vector, run, c.Backend, phase)
+		}
+	}
+}
+
 func (r *nativeReplay) call(label, method string, params map[string]any, write bool) map[string]any {
 	r.f.t.Helper()
+	r.renewLease()
 	key := r.f.key(label, method, owner)
 	requestParams := make(map[string]any, len(params)+1)
 	for name, value := range params {
@@ -74,6 +214,13 @@ func (r *nativeReplay) write(label, method string, params map[string]any) model.
 		r.f.t.Fatal(err)
 	}
 	wantResults := 1
+	if method == "tx.apply" {
+		cs, ok := params["changeSet"].(model.ChangeSet)
+		if !ok || len(cs.Ops) == 0 {
+			r.f.t.Fatal("native replay transaction requires its exact ordered operation set")
+		}
+		wantResults = len(cs.Ops)
+	}
 	if method == "bead.defer" {
 		// The nonempty reason lowers to a comment after the lifecycle patch;
 		// Commit.Results contains one result for each of those operations.
@@ -103,6 +250,7 @@ func (r *nativeReplay) write(label, method string, params map[string]any) model.
 
 func (r *nativeReplay) sourceImages() map[string]string {
 	r.f.t.Helper()
+	r.renewLease()
 	reader, err := r.f.store.Read(r.f.ctx, driver.View{Incarnation: r.f.metaSnapshot().Incarnation})
 	if err != nil {
 		r.f.t.Fatal(err)
@@ -130,6 +278,7 @@ func (r *nativeReplay) sourceImages() map[string]string {
 // key is checked absent; read keys are not added to the state digest.
 func (r *nativeReplay) snapshot() []byte {
 	r.f.t.Helper()
+	r.renewLease()
 	meta := r.f.metaSnapshot()
 	image := r.f.imageDigest()
 	reader, err := r.f.store.Read(r.f.ctx, driver.View{Incarnation: meta.Incarnation})
@@ -138,6 +287,18 @@ func (r *nativeReplay) snapshot() []byte {
 	}
 	defer reader.Close()
 	versions := map[string][]driver.Version{}
+	derived := map[driver.DerivedTable][]driver.DerivedRow{}
+	for _, table := range []driver.DerivedTable{driver.DerivedReadyState, driver.DerivedAncestorClosure, driver.DerivedCutClosure, driver.DerivedAttribute, driver.DerivedSortKey, driver.DerivedReferenceIndex, driver.DerivedGrant, driver.DerivedOntology, driver.DerivedPlugins} {
+		rows, err := reader.DerivedRows(r.f.ctx, table, "")
+		if err != nil {
+			r.f.t.Fatalf("complete derived state %s: %v", table, err)
+		}
+		derived[table] = rows
+	}
+	facts, err := reader.Observe(r.f.ctx, []driver.LockKey{pipeline.GraphValidityLockKey()})
+	if err != nil || len(facts) != 1 {
+		r.f.t.Fatalf("graph validity fact observation: %v", err)
+	}
 	for role, ref := range r.refs {
 		page, err := reader.Versions(r.f.ctx, ref, driver.PageReq{Limit: 1000})
 		if err != nil || page.NextCursor != nil {
@@ -145,18 +306,19 @@ func (r *nativeReplay) snapshot() []byte {
 		}
 		versions[role] = page.Items
 	}
-	receipts := map[string]*driver.IdempotencyRecord{}
+	receipts := map[string]nativeReceiptEvidence{}
 	for _, call := range r.calls {
 		receipt, err := reader.IdempotencyByKey(r.f.ctx, "anonymous:anonymous", owner, call.Method, call.Key)
 		if err != nil || (call.Write && (receipt == nil || receipt.ResponsePending)) || (!call.Write && receipt != nil) {
 			r.f.t.Fatalf("receipt scope %s/write=%v: %v, %+v", call.Method, call.Write, err, receipt)
 		}
 		if call.Write {
-			receipts[call.Method+"/"+call.Key] = receipt
+			receipts[call.Method+"/"+call.Key] = nativeReceiptState(receipt)
 		}
 	}
 	data, err := json.Marshal(map[string]any{
 		"meta": meta, "sourceAndChangesetSHA256": image, "versions": versions, "writeReceipts": receipts,
+		"allNineDerivedTables": derived, "graphValidityFact": facts,
 	})
 	if err != nil {
 		r.f.t.Fatal(err)
@@ -185,7 +347,7 @@ func (r *nativeReplay) ids(page map[string]any) []string {
 	return ids
 }
 
-func (r *nativeReplay) drain(label string, first map[string]any) []string {
+func (r *nativeReplay) drain(label string, first map[string]any, filters ...map[string]any) []string {
 	r.f.t.Helper()
 	page := first
 	asOf, err := json.Marshal(page["asOf"])
@@ -217,7 +379,11 @@ func (r *nativeReplay) drain(label string, first map[string]any) []string {
 			r.f.t.Fatal("actual cursor loop or empty nonterminal page")
 		}
 		seenCursors[cursor] = true
-		page = r.call(fmt.Sprintf("%s-page-%d", label, count+1), "bead.ready", map[string]any{"limit": 1, "cursor": cursor}, false)
+		params := map[string]any{"limit": 1, "cursor": cursor}
+		if len(filters) != 0 && filters[0] != nil {
+			params["filter"] = filters[0]
+		}
+		page = r.call(fmt.Sprintf("%s-page-%d", label, count+1), "bead.ready", params, false)
 	}
 	r.f.t.Fatal("actual ready pagination did not terminate within the four-node corpus")
 	return nil
@@ -305,6 +471,7 @@ func (r *nativeReplay) observe(label string, deferred bool) {
 
 func (r *nativeReplay) reopen(label string) {
 	r.f.t.Helper()
+	r.renewLease()
 	before, oldStore, oldLease := r.snapshot(), r.f.store, r.f.lease
 	if err := oldLease.Release(r.f.ctx); err != nil {
 		r.f.t.Fatal(err)
@@ -335,7 +502,7 @@ func (r *nativeReplay) reopen(label string) {
 	r.f.t.Logf("B01_NATIVE_ACTUAL_SQL_REOPEN case=%s stage=%s engine=%s old=%p new=%p state=%s", r.f.t.Name(), label, r.f.backend, oldStore, r.f.store, sha256Hex(after))
 }
 
-func replayNativeVector(t *testing.T, capture nativeCapture, backend, dsn, decision string) {
+func replayNativeVector(t *testing.T, capture nativeCapture, backend, dsn, decision string, coverage *nativeReplayCoverage) {
 	t.Helper()
 	output := filepath.Join(capture.Output, "replay-"+backend)
 	if err := os.Mkdir(output, 0o700); err != nil {
@@ -347,20 +514,69 @@ func replayNativeVector(t *testing.T, capture nativeCapture, backend, dsn, decis
 	}
 	f := newFixture(t, backend, dsn, service.NewOntology(nil), generated)
 	r := &nativeReplay{f: f, output: output, refs: map[string]model.Ref{}, nodes: capture.Before.Nodes}
-	bindings := map[string]any{}
-	for _, role := range nativeRoles {
-		node := capture.Before.Nodes[role]
-		commit := r.write("seed-"+role, "bead.create", map[string]any{
-			"type": "issue", "fields": map[string]any{"title": node.Title, "priority": node.Priority},
-		})
-		actual := commit.Results[0].Ref
-		if actual.ID == "" || actual.ID == node.ID || !actual.Branch.IsZero() {
-			t.Fatal("replay must bind actual returned refs separately from source IDs")
+	manifest := nativeRequiredReplayManifest()
+	for _, phase := range manifest.ExternalNativePhases {
+		if _, ok := capture.Transitions[phase]; !ok {
+			t.Fatalf("native external phase %s is missing; E01/H05-H08 remains separate from H03/H04", phase)
 		}
-		r.refs[role] = actual
-		bindings[role] = map[string]any{"sourceID": node.ID, "actualPlugRef": actual}
 	}
-	nativeJSON(t, filepath.Join(output, "source-to-plug-refs.json"), bindings)
+	nativeJSON(t, filepath.Join(output, "external-refused-boundary.json"), map[string]any{
+		"label":                "E01/H05-H08",
+		"phase":                "external-refused",
+		"includedInH03H04":     false,
+		"nativeCapturePresent": true,
+	})
+	if coverage == nil {
+		coverage = newNativeReplayCoverage(backend)
+	}
+	rootRan := false
+	var observedAfter []string
+	if !t.Run("root", func(rootTest *testing.T) {
+		rootRan = true
+		parentTest := r.f.t
+		r.f.t = rootTest
+		defer func() { r.f.t = parentTest }()
+		bindings := map[string]any{}
+		for _, role := range nativeRoles {
+			node := capture.Before.Nodes[role]
+			commit := r.write("seed-"+role, "bead.create", map[string]any{
+				"type": "issue", "fields": map[string]any{"title": node.Title, "priority": node.Priority},
+			})
+			actual := commit.Results[0].Ref
+			if actual.ID == "" || actual.ID == node.ID || !actual.Branch.IsZero() {
+				rootTest.Fatal("replay must bind actual returned refs separately from source IDs")
+			}
+			r.refs[role] = actual
+			bindings[role] = map[string]any{"sourceID": node.ID, "actualPlugRef": actual}
+		}
+		nativeJSON(rootTest, filepath.Join(output, "source-to-plug-refs.json"), bindings)
+		_, observedAfter = replayNativeRoot(rootTest, r, capture, backend, decision)
+		coverage.Root = true
+	}) || !rootRan {
+		t.Fatal("native replay root was filtered or failed; H03/H04 requires a named root for every backend")
+	}
+	decision = decisionForNativeVector(capture.Vector, decision)
+	t.Logf("B01_NATIVE_REPLAY vector=%s run=%s engine=%s referenceAfter=%s plugAfter=free decision=%s", capture.Vector.ID, capture.Run.ID, backend, strings.Join(observedAfter, ","), decision)
+	r.replayHierarchyContinuations(capture, coverage)
+	r.replayMembershipContinuations(capture, coverage)
+	r.replayParentCompatibility(capture)
+	coverage.require(t, capture.Vector.ID, capture.Run.ID)
+	nativeJSON(t, filepath.Join(output, "h03-h04-coverage.json"), map[string]any{
+		"manifest": manifest, "backend": backend,
+		"vector": capture.Vector.ID, "run": capture.Run.ID,
+		"root": coverage.Root, "hierarchy": coverage.Hierarchy, "membership": coverage.Membership,
+	})
+}
+
+func decisionForNativeVector(vector nativeVector, decision string) string {
+	if vector.Mode == "timed" {
+		return "273e90f1-19bf-4ddb-84a3-1a49a957a547"
+	}
+	return decision
+}
+
+func replayNativeRoot(t *testing.T, r *nativeReplay, capture nativeCapture, backend, decision string) ([]string, []string) {
+	t.Helper()
 	r.write("link-child", "bead.link", map[string]any{"from": r.refs["child"], "to": r.refs["parent"], "kind": "parent-child"})
 	r.write("link-grandchild", "bead.link", map[string]any{"from": r.refs["grandchild"], "to": r.refs["child"], "kind": "parent-child"})
 	r.observe("before", false)
@@ -413,7 +629,7 @@ func replayNativeVector(t *testing.T, capture nativeCapture, backend, dsn, decis
 	if decision == "" {
 		t.Fatal("native comparison is missing its recorded disposition")
 	}
-	nativeJSON(t, filepath.Join(output, "comparison.json"), map[string]any{
+	nativeJSON(t, filepath.Join(r.output, "comparison.json"), map[string]any{
 		"actualNativeBeforeRoles": observedBefore, "actualNativeAfterRoles": observedAfter,
 		"assertedPlugBeforeRoles": nativeRoles, "assertedPlugAfterRoles": []string{"free"},
 		"classification": classification, "decision": decision, "nativeAfter": capture.After,
@@ -427,5 +643,5 @@ func replayNativeVector(t *testing.T, capture nativeCapture, backend, dsn, decis
 	if !reflect.DeepEqual(observedAfter, expectedNativeAfter) {
 		t.Fatalf("actual %s reference differs from its declared membership: %v want=%v; originals retained", capture.Vector.Mode, observedAfter, expectedNativeAfter)
 	}
-	t.Logf("B01_NATIVE_REPLAY vector=%s run=%s engine=%s referenceAfter=%s plugAfter=free decision=%s", capture.Vector.ID, capture.Run.ID, backend, strings.Join(observedAfter, ","), decision)
+	return observedBefore, observedAfter
 }

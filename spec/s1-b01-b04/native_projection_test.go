@@ -16,6 +16,7 @@ type nativeNode struct {
 	Parent            string
 	Until             string
 	UntilState        string
+	ExternalHierarchy []string
 }
 
 type nativeExplained struct {
@@ -35,6 +36,7 @@ type nativeBlocked struct {
 type nativePhase struct {
 	Nodes        map[string]nativeNode
 	Ready        []string
+	First        []string
 	ExplainReady []nativeExplained
 	Blocked      []nativeBlocked
 	TotalReady   int
@@ -43,7 +45,7 @@ type nativePhase struct {
 
 func recordNativePhase(t *testing.T, command *nativeCommand, vector nativeVector, phase string) nativePhase {
 	t.Helper()
-	projection := nativePhase{Nodes: make(map[string]nativeNode), Ready: []string{}, ExplainReady: []nativeExplained{}}
+	projection := nativePhase{Nodes: make(map[string]nativeNode), Ready: []string{}, First: []string{}, ExplainReady: []nativeExplained{}}
 	for priority, role := range nativeRoles {
 		var issues []struct {
 			ID, Title, Status string
@@ -56,6 +58,7 @@ func recordNativePhase(t *testing.T, command *nativeCommand, vector nativeVector
 			}
 		}
 		data := command.run("show-"+phase+"-"+role, "show", vector.SourceIDs[role], "--json")
+		nativeWrite(t, filepath.Join(command.output, phase+"-show-"+role+".json"), data)
 		nativeDecode(t, data, &issues)
 		if len(issues) != 1 {
 			t.Fatalf("%s public show returned %d rows", role, len(issues))
@@ -67,6 +70,11 @@ func recordNativePhase(t *testing.T, command *nativeCommand, vector nativeVector
 		wantParent := ""
 		if role == "child" {
 			wantParent = vector.SourceIDs["parent"]
+			if phase == "detached-from-blocked" {
+				wantParent = ""
+			} else if phase == "reparented-to-open" {
+				wantParent = vector.SourceIDs["free"]
+			}
 		} else if role == "grandchild" {
 			wantParent = vector.SourceIDs["child"]
 		}
@@ -74,10 +82,14 @@ func recordNativePhase(t *testing.T, command *nativeCommand, vector nativeVector
 		if issue.Parent != nil {
 			parent = *issue.Parent
 		}
-		var hierarchy []string
+		var hierarchy, externalHierarchy []string
 		for _, dependency := range issue.Dependencies {
 			if dependency.Kind == "parent-child" {
-				hierarchy = append(hierarchy, dependency.ID)
+				if strings.HasPrefix(dependency.ID, "external:") {
+					externalHierarchy = append(externalHierarchy, dependency.ID)
+				} else {
+					hierarchy = append(hierarchy, dependency.ID)
+				}
 			}
 		}
 		if parent != wantParent || (wantParent == "" && len(hierarchy) != 0) ||
@@ -88,10 +100,16 @@ func recordNativePhase(t *testing.T, command *nativeCommand, vector nativeVector
 		if phase == "after" && role == "parent" {
 			wantStatus = "deferred"
 		}
+		if phase == "blocker-closed" && role == "free" {
+			wantStatus = "closed"
+		}
 		if issue.Status != wantStatus {
 			t.Fatalf("%s %s status=%s want=%s", phase, role, issue.Status, wantStatus)
 		}
-		node := nativeNode{ID: issue.ID, Title: issue.Title, Status: issue.Status, Priority: issue.Priority, Parent: parent, UntilState: "absent"}
+		if len(externalHierarchy) != 0 {
+			t.Fatalf("%s %s native refusal control persisted external hierarchy edges=%v", phase, role, externalHierarchy)
+		}
+		node := nativeNode{ID: issue.ID, Title: issue.Title, Status: issue.Status, Priority: issue.Priority, Parent: parent, UntilState: "absent", ExternalHierarchy: externalHierarchy}
 		if len(issue.Until) != 0 {
 			node.UntilState = "null"
 			if string(issue.Until) != "null" {
@@ -123,6 +141,18 @@ func recordNativePhase(t *testing.T, command *nativeCommand, vector nativeVector
 		}
 		seen[item.ID] = true
 		projection.Ready = append(projection.Ready, item.ID)
+	}
+	var first []struct{ ID string }
+	nativeDecode(t, command.run("ready-one-"+phase, "ready", "--json", "--sort", "hybrid", "--limit", "1"), &first)
+	for _, item := range first {
+		projection.First = append(projection.First, item.ID)
+	}
+	wantFirst := projection.Ready
+	if len(wantFirst) > 1 {
+		wantFirst = wantFirst[:1]
+	}
+	if !reflect.DeepEqual(projection.First, wantFirst) {
+		t.Fatalf("actual native %s applied the page before readiness filters: first=%v full=%v", phase, projection.First, projection.Ready)
 	}
 	var explanation struct {
 		Ready   []nativeExplained
@@ -166,8 +196,22 @@ func recordNativePhase(t *testing.T, command *nativeCommand, vector nativeVector
 		if !reflect.DeepEqual(projection.Ready, all) {
 			t.Fatalf("open-parent native control membership/order=%v want=%v", projection.Ready, all)
 		}
-	} else if seen[vector.SourceIDs["parent"]] {
+	} else if phase == "after" && seen[vector.SourceIDs["parent"]] {
 		t.Fatal("deferred parent is unexpectedly present in the actual ready result")
+	} else if phase != "after" {
+		var inputs nativeInputs
+		nativeDecode(t, nativeInputsBytes, &inputs)
+		roles, ok := inputs.HierarchyPhases[phase]
+		if !ok {
+			t.Fatalf("unrecognized native hierarchy phase %s", phase)
+		}
+		want := make([]string, 0, len(roles))
+		for _, role := range roles {
+			want = append(want, vector.SourceIDs[role])
+		}
+		if !reflect.DeepEqual(projection.Ready, want) {
+			t.Fatalf("actual native %s membership/order=%v want=%v; originals retained", phase, projection.Ready, want)
+		}
 	}
 	nativeJSON(t, filepath.Join(command.output, phase+"-projection.json"), projection)
 	return projection
