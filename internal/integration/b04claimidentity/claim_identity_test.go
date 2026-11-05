@@ -27,9 +27,13 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
+	"github.com/buildbetter-app/plugs/internal/server/authn"
+	"github.com/buildbetter-app/plugs/internal/server/authzrpc"
 	"github.com/buildbetter-app/plugs/internal/server/pluginbuild"
 	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
 	"github.com/buildbetter-app/plugs/internal/server/pluginmanifest"
+	"github.com/buildbetter-app/plugs/internal/server/rpc"
+	"github.com/buildbetter-app/plugs/internal/server/transport/httpjson"
 	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/pluginapi"
@@ -37,6 +41,80 @@ import (
 
 const a4Binding = "b04-a4-wasm-derive"
 const a4Observer = "b04-a4-observer"
+
+// This test-only wrapper preserves the actual guarded service and its exact
+// return values. Bounded diagnostics contain only errors, never requests,
+// principals, credentials or proposal bodies.
+type a4ServiceProbe struct {
+	*authzrpc.GuardedService
+	mu      sync.Mutex
+	counts  map[string]int
+	samples map[string]string
+}
+
+func (p *a4ServiceProbe) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRef, req service.ClaimNextRequest, meta model.WriteMeta) (*port.WriteOutcome, error) {
+	out, err := p.GuardedService.ClaimNextWithOutcome(ctx, by, req, meta)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	code := "success"
+	if err != nil {
+		code = fmt.Sprintf("%T", err)
+		var domain *model.Error
+		if errors.As(err, &domain) {
+			code = string(domain.Data.Code)
+		}
+		if len(p.samples) < 8 && p.samples[code] == "" {
+			sample := fmt.Sprintf("%T: %v", err, err)
+			if len(sample) > 2048 {
+				sample = sample[:2048]
+			}
+			p.samples[code] = sample
+		}
+	}
+	p.counts[code]++
+	if ctx.Err() != nil {
+		p.counts["caller_context_done_at_accounting"]++
+	}
+	return out, err
+}
+
+func (p *a4ServiceProbe) snapshot() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	b, _ := json.Marshal(struct {
+		Counts  map[string]int
+		Samples map[string]string
+	}{p.counts, p.samples})
+	return string(b)
+}
+
+func (f *fixture) a4ObservedHandler(probe *a4ServiceProbe) http.Handler {
+	f.t.Helper()
+	registry, err := rpc.NewRegistry()
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if err := rpc.BindService(registry, probe); err != nil {
+		f.t.Fatal(err)
+	}
+	server, err := rpc.New(registry, rpc.Config{
+		Incarnation: f.meta().Incarnation, DefaultProject: poolA,
+		AuthMode: "authenticated", OntologyRevision: model.Natural64(1),
+		Visible: f.app.Checker.Visible,
+	})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	admission, err := authn.New(authn.Config{Provider: f.keys, AuthorizationInstalled: func() bool { return true }})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	handler, err := httpjson.New(server, admission, f.httpConfig)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return handler
+}
 
 // Retain the actual timed host adapter and its exact return values. These
 // bounded test diagnostics explain refusals hidden by the public error catalog
@@ -596,6 +674,8 @@ func TestB04A4TwoHundredSimultaneousPublicAgentsWithWASMMutator(t *testing.T) {
 			tokenSet[callers[i].key.Token] = true
 		}
 		before := f.state()
+		serviceProbe := &a4ServiceProbe{GuardedService: f.app.Service, counts: map[string]int{}, samples: map[string]string{}}
+		observedHandler := f.a4ObservedHandler(serviceProbe)
 		var arrived atomic.Int64
 		var firstArrivals sync.Map
 		allArrived := make(chan struct{})
@@ -608,7 +688,7 @@ func TestB04A4TwoHundredSimultaneousPublicAgentsWithWASMMutator(t *testing.T) {
 			}
 			select {
 			case <-allArrived:
-				f.app.Handler.ServeHTTP(w, r)
+				observedHandler.ServeHTTP(w, r)
 			case <-r.Context().Done():
 				return
 			}
@@ -761,6 +841,7 @@ func TestB04A4TwoHundredSimultaneousPublicAgentsWithWASMMutator(t *testing.T) {
 		t.Logf("A4 engine=%s simultaneous_arrivals=%d initial_attempts=%d initial_failures=%d initial_codes=%v attempts=%d retry_starts=%d all_codes=%v write_conflict=%d final_failures=%d elapsed=%s actual_wasm=%s authz=authz/fixed no_http_semaphore=true retry_budget=%d request_deadline=5s callback_budget=250ms", e.name, arrived.Load(), agents, initialFailures, initialCodes, attempts, attempts-agents, allCodes, conflicts, failures, time.Since(began), artifact.ArtifactDigest(), retryBudget)
 		t.Logf("A4 refusal hints engine=%s histogram=%v", e.name, refusalHints)
 		t.Logf("A4 callback diagnostics engine=%s snapshot=%s", e.name, probe.snapshot())
+		t.Logf("A4 service diagnostics engine=%s snapshot=%s", e.name, serviceProbe.snapshot())
 		metrics, err := json.Marshal(collector.Snapshot())
 		if err != nil {
 			t.Fatal(err)
