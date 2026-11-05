@@ -23,7 +23,7 @@ func callbackFailure(ctx context.Context, kind, id string, err error) error {
 	// The preparation/caller context can expire while a callback is queued or
 	// running. Preserve that parent error for admission handling; an independent
 	// callback execution deadline still means the subscriber was unavailable.
-	if parentErr := ctx.Err(); parentErr != nil {
+	if parentErr := ctx.Err(); parentErr == context.DeadlineExceeded {
 		return parentErr
 	}
 	var busy callbackBusy

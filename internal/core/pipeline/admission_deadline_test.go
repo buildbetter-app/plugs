@@ -165,13 +165,14 @@ func TestCallbackParentDeadlineIsRetryableWithoutPublication(t *testing.T) {
 	}
 }
 
-func TestCallbackFailurePreservesIndependentDeadlineAndParentCancellation(t *testing.T) {
+func TestCallbackFailurePreservesIndependentDeadlineAndEstablishedCancellationMapping(t *testing.T) {
 	for _, kind := range []string{"mutator", "validator"} {
 		code(t, callbackFailure(context.Background(), kind, "test", context.DeadlineExceeded), "subscriber_unavailable")
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		if err := callbackFailure(ctx, kind, "test", context.Canceled); !errors.Is(err, context.Canceled) {
-			t.Fatalf("callback changed parent cancellation: %v", err)
+		code(t, callbackFailure(ctx, kind, "test", context.Canceled), "subscriber_unavailable")
+		if err := callbackFailure(context.Background(), kind, "test", context.Canceled); !errors.Is(err, context.Canceled) {
+			t.Fatalf("callback changed independent cancellation error: %v", err)
 		}
 	}
 }
