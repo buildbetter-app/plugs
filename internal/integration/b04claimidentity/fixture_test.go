@@ -186,6 +186,10 @@ func (f *fixture) close() {
 }
 
 func (f *fixture) install() {
+	f.installMutators()
+}
+
+func (f *fixture) installMutators(mutators ...pipeline.MutatorBinding) {
 	f.t.Helper()
 	source, err := authzrpc.NewMutableFacts(f.facts)
 	if err != nil {
@@ -193,7 +197,8 @@ func (f *fixture) install() {
 	}
 	app, err := authzrpc.New(f.ctx, authzrpc.Config{
 		Store: f.store, Lease: f.lease, Provider: f.keys, Facts: source, Namespace: f.facts.Namespace, DefaultProject: poolA,
-		Audit: service.NewTrackedOntologyAudit(service.StaticOntologySource(ref(ontologySourceID))),
+		Audit:    service.NewTrackedOntologyAudit(service.StaticOntologySource(ref(ontologySourceID))),
+		Mutators: mutators,
 	})
 	if err != nil {
 		f.t.Fatal(err)
@@ -336,6 +341,11 @@ func (f *fixture) request(handler http.Handler, by credential, method, project, 
 	started := time.Now().UTC()
 	handler.ServeHTTP(recorder, req)
 	r := reply{raw: append([]byte(nil), recorder.Body.Bytes()...), status: recorder.Code, started: started, finished: time.Now().UTC()}
+	return f.checkedReply(r)
+}
+
+func (f *fixture) checkedReply(r reply) reply {
+	f.t.Helper()
 	if err := json.Unmarshal(r.raw, &r.envelope); err != nil {
 		f.t.Fatalf("invalid public response: %v", err)
 	}

@@ -2,20 +2,555 @@ package b04claimidentity_test
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
+	"github.com/buildbetter-app/plugs/internal/server/pluginbuild"
+	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
+	"github.com/buildbetter-app/plugs/internal/server/pluginmanifest"
 	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/buildbetter-app/plugs/pluginapi"
 )
+
+const a4Binding = "b04-a4-wasm-derive"
+const a4Observer = "b04-a4-observer"
+
+// The source is committed and digest-pinned in a disposable checkout on the
+// remote runner, then compiled and admitted by the real contained WASI route.
+// A callback must read the observer through plug.call and derive a visible
+// title from the verified principal, read revision, and proposal snapshot.
+const a4GuestSource = `//go:build wasip1
+package main
+import ("encoding/json"; "fmt"; "unsafe")
+var arena [2 << 20]byte
+var next uint32 = 1024
+var base = uint32(uintptr(unsafe.Pointer(&arena[0])))
+//go:wasmimport env plug.call
+func snapshotCall(ptr, size uint32) uint64
+//go:wasmexport plug_alloc
+func allocate(size uint32) uint32 {
+ if size == 0 || size > uint32(len(arena))-next { return 0 }
+ ptr := base+next; next += size; return ptr
+}
+func encode(value any) uint64 {
+ data,_ := json.Marshal(value); ptr := allocate(uint32(len(data)))
+ if ptr==0 { return 0 }; copy(arena[ptr-base:ptr-base+uint32(len(data))],data)
+ return uint64(ptr)<<32|uint64(len(data))
+}
+//go:wasmexport plug_handle
+func handle(ptr,size uint32) uint64 {
+ var req struct { Op string; Payload struct {
+  BaseRevision json.Number
+  Principal struct { Kind,ID string; Sponsor struct { ID string } }
+  Changes []struct { Resource json.RawMessage; After struct { Fields map[string]any } }
+ } }
+ if ptr<base || uint64(ptr-base)+uint64(size)>uint64(len(arena)) || json.Unmarshal(arena[ptr-base:ptr-base+size],&req)!=nil || req.Op!="mutate" || len(req.Payload.Changes)!=1 { return encode(map[string]any{"error":"expected one actual mutation"}) }
+ p:=req.Payload.Principal
+ if p.Kind!="agent" || p.Sponsor.ID!="user:pool-a" { return encode(map[string]any{"error":"verified actor changed"}) }
+ read,_:=json.Marshal(map[string]any{"op":"read","method":"get","params":map[string]any{"refs":[]any{map[string]string{"id":"b04-a4-observer"}}}})
+ rp:=allocate(uint32(len(read))); if rp==0 {return 0}; copy(arena[rp-base:rp-base+uint32(len(read))],read)
+ packed:=snapshotCall(rp,uint32(len(read))); out,n:=uint32(packed>>32),uint32(packed)
+ if out<base || uint64(out-base)+uint64(n)>uint64(len(arena)) {return encode(map[string]any{"error":"invalid read response"})}
+ var reply struct {Result json.RawMessage; Error string}
+ if json.Unmarshal(arena[out-base:out-base+n],&reply)!=nil || reply.Error!="" {return encode(map[string]any{"error":"observer read refused"})}
+ var rows []struct {Revision json.Number; Body struct {Fields map[string]any}}
+ if json.Unmarshal(reply.Result,&rows)!=nil || len(rows)!=1 || len(rows[0].Body.Fields)!=1 || req.Payload.BaseRevision=="" {return encode(map[string]any{"error":"observer not masked and pinned"})}
+ title,ok:=req.Payload.Changes[0].After.Fields["title"].(string); observed,valid:=rows[0].Body.Fields["title"].(string)
+ if !ok || !valid {return encode(map[string]any{"error":"title absent"})}
+ derived:=fmt.Sprintf("%s|actor=%s|observer=%s|read=%s|base=%s",title,p.ID,observed,rows[0].Revision,req.Payload.BaseRevision)
+ return encode(map[string]any{"patches":[]any{map[string]any{"resource":req.Payload.Changes[0].Resource,"paths":map[string]string{"fields.title":derived}}}})
+}
+func main() {}
+`
+
+func a4Artifact(t *testing.T) *pluginbuild.Artifact {
+	t.Helper()
+	module := os.Getenv("PLUG_SOURCE_MODULE_ROOT")
+	if !filepath.IsAbs(module) {
+		t.Fatal("remote isolated PLUG_SOURCE_MODULE_ROOT is required")
+	}
+	root := t.TempDir()
+	files := map[string]string{
+		"go.mod":           "module fixture.example/b04a4\n\ngo 1.26.5\n\ntoolchain go1.26.10\n",
+		"plugin.go":        a4GuestSource,
+		"plug-plugin.json": `{"manifest_version":1,"plugins":[{"id":"app.example.b04a4","alias":"b04a4","version":"1.0.0","plugin_api":"1.0","runtime":"wasip1","provides":[{"kind":"subscriber","name":"derive","phases":["mutate"],"reads":["fields.title"],"owns":["fields.title"],"max_point_reads":1}]}]}`,
+	}
+	for name, data := range files {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git := func(args ...string) string {
+		cmd := exec.Command("git", append([]string{"-c", "user.name=B04 source fixture", "-c", "user.email=b04-fixture@invalid.local", "-c", "commit.gpgsign=false"}, args...)...)
+		cmd.Dir = root
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("local fixture git %s: %v: %s", args[0], err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init", "-q", "--template=", "--initial-branch=main")
+	git("add", "--all")
+	git("commit", "-q", "-m", "test: pin B04 actual WASI guest")
+	checkout := pluginmanifest.Checkout{Root: root, Commit: git("rev-parse", "HEAD")}
+	bundle, err := pluginmanifest.Load(context.Background(), checkout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkout.ExpectedDigest = bundle.Digest()
+	compiler, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := pluginbuild.Build(context.Background(), pluginbuild.Request{Runtime: pluginapi.RuntimeWASI, Source: checkout, ModuleRoot: module, GoBinary: compiler})
+	if err != nil {
+		t.Fatalf("contained source-built WASI: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := artifact.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := artifact.Verify(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	wasm, err := os.ReadFile(artifact.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(wasm)
+	if artifact.ArtifactDigest() != hex.EncodeToString(digest[:]) || artifact.SourceDigest() != checkout.ExpectedDigest || artifact.Commit() != checkout.Commit {
+		t.Fatal("WASI artifact/source identity drift")
+	}
+	t.Logf("actual WASI guest commit=%s source=%s manifest=%s artifact=%s", checkout.Commit, artifact.SourceDigest(), artifact.ManifestDigest(), artifact.ArtifactDigest())
+	if out := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR"); out != "" {
+		if err := os.WriteFile(filepath.Join(out, strings.ReplaceAll(t.Name(), "/", "_")+".wasm"), wasm, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return artifact
+}
+
+func (f *fixture) a4Mutators(artifact *pluginbuild.Artifact) []pipeline.MutatorBinding {
+	f.t.Helper()
+	host, err := artifact.Host(f.ctx, pluginhost.Config{Bindings: []pluginhost.Binding{{ID: a4Binding, Alias: "b04a4", Instance: "default", Subscriber: "derive", Phase: pluginapi.PhaseMutate, Reads: []string{"fields.title"}, Owns: []string{"fields.title"}, MaxPointReads: 1, Timeout: 250 * time.Millisecond}}})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	bindings := host.Mutators()
+	if len(bindings) != 1 || bindings[0].ID != a4Binding || bindings[0].FailOpen {
+		f.t.Fatal("actual fail-closed WASI binding missing")
+	}
+	if _, ok := bindings[0].Mutator.(port.TimedMutator); !ok {
+		f.t.Fatal("actual host lost execution-pool timing")
+	}
+	return bindings
+}
+
+func (f *fixture) a4Queue(count int) map[string]bool {
+	f.t.Helper()
+	created := time.Now().UTC()
+	changes := make([]conformance.FixtureChange, 0, count+1)
+	ids := map[string]bool{}
+	for i := 0; i <= count; i++ {
+		id, status, title := fmt.Sprintf("b04-a4-work-%03d", i), "todo", fmt.Sprintf("work-%03d", i)
+		if i == count {
+			id, status, title = a4Observer, "done", "observed"
+		} else {
+			ids[id] = true
+		}
+		body, err := json.Marshal(pipeline.Document{ID: id, Type: "issue", Project: poolA, CreatedAt: &created, Fields: map[string]any{"title": title, "description": "A4 source fixture", "status": status, "priority": 0}})
+		if err != nil {
+			f.t.Fatal(err)
+		}
+		changes = append(changes, conformance.FixtureChange{Ref: ref(id), Kind: "bead", Op: model.OpCreate, Body: body, ChangedPaths: []string{"fields"}, Graph: &conformance.FixtureGraphSource{}})
+	}
+	if _, err := conformance.Seed(f.ctx, f.store, f.lease, driver.ChangesetHeader{Time: created, Principal: model.PrincipalRef{Kind: "system", ID: "b04-a4-fixture"}}, changes); err != nil {
+		f.t.Fatal(err)
+	}
+	return ids
+}
+
+// This is ordinary storage lease maintenance inside the remote test, not a
+// Paseo worker/heartbeat. The fixture's original 90-second deadline is retained.
+func (f *fixture) a4Renewal() {
+	f.t.Helper()
+	ctx, stop := context.WithCancel(f.ctx)
+	done := make(chan error, 1)
+	go func() {
+		ticker := time.NewTicker(driver.LeaseRenewEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				done <- nil
+				return
+			case <-ticker.C:
+				if err := f.lease.Renew(ctx); err != nil {
+					if ctx.Err() != nil {
+						err = nil
+					}
+					done <- err
+					return
+				}
+			}
+		}
+	}()
+	f.t.Cleanup(func() {
+		stop()
+		if err := <-done; err != nil {
+			f.t.Errorf("A4 host lease renewal: %v", err)
+		}
+	})
+}
+
+// One public network operation with a fixed five-second request deadline.
+// The benchmark deliberately has no semaphore and no external retry loop.
+func a4HTTP(ctx context.Context, client *http.Client, url string, by credential, key string, payload map[string]any) (reply, error) {
+	params := map[string]any{"_meta": map[string]any{"project": poolA, "idempotencyKey": key}}
+	for k, v := range payload {
+		params[k] = v
+	}
+	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": key, "method": "bead.claimNext", "params": params})
+	if err != nil {
+		return reply{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return reply{}, err
+	}
+	req.Header.Set("Plug-RPC", "1")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+by.key.Token)
+	started := time.Now().UTC()
+	resp, err := client.Do(req)
+	if err != nil {
+		return reply{started: started, finished: time.Now().UTC()}, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	return reply{raw: raw, status: resp.StatusCode, started: started, finished: time.Now().UTC()}, err
+}
+
+func (f *fixture) a4Winner(before, after durableState, by credential, key string, r reply, observer driver.Record) string {
+	f.t.Helper()
+	commit := r.commit(f.t)
+	if len(commit.Results) != 1 {
+		f.t.Fatalf("A4 returned null or non-singular winner: %s", r.raw)
+	}
+	id := commit.Results[0].Ref.ID
+	row := after.record(f.t, ref(id))
+	old := before.record(f.t, ref(id))
+	doc, err := pipeline.DecodeDocument(row.Body)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	oldDoc, err := pipeline.DecodeDocument(old.Body)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	observed, err := pipeline.DecodeDocument(observer.Body)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	title, _ := doc.Fields["title"].(string)
+	prefix := fmt.Sprintf("%s|actor=%s|observer=%s|read=%s|base=", oldDoc.Fields["title"], by.principal.ID, observed.Fields["title"], observer.Revision)
+	var base uint64
+	if !strings.HasPrefix(title, prefix) {
+		f.t.Fatalf("winner lacks actual masked WASI read/actor proof: %q", title)
+	}
+	if _, err := fmt.Sscan(strings.TrimPrefix(title, prefix), &base); err != nil {
+		f.t.Fatal(err)
+	}
+	head, _ := before.Meta.Head.Uint64()
+	revision, _ := commit.Revision.Uint64()
+	observedRevision, _ := observer.Revision.Uint64()
+	if base < head || base < observedRevision || base >= revision || row.Revision != commit.Revision || commit.Results[0].Revision != row.Revision || doc.Lease == nil || !reflect.DeepEqual(doc.Lease.Principal, by.principal) || doc.Lease.Agent != "" || doc.Lease.TtlMs != model.Natural64(300000) || doc.Lease.Epoch != model.Natural64(f.lease.Epoch()) || doc.Fields["status"] != "in_progress" || doc.StartedAt == nil {
+		f.t.Fatalf("A4 winner lost snapshot/claim invariants: %+v", doc)
+	}
+	var hydrated bytes.Buffer
+	if json.Compact(&hydrated, commit.Results[0].Record) != nil || !bytes.Equal(hydrated.Bytes(), row.Body) { // Compare semantic JSON below: encoders may choose whitespace.
+		var returned, stored any
+		if json.Unmarshal(commit.Results[0].Record, &returned) != nil || json.Unmarshal(row.Body, &stored) != nil || !reflect.DeepEqual(returned, stored) {
+			f.t.Fatal("A4 omitted the hydrated durable postimage")
+		}
+	}
+	versions := after.Versions[id]
+	if len(versions) != len(before.Versions[id])+1 || !reflect.DeepEqual(versions[:len(versions)-1], before.Versions[id]) || versions[len(versions)-1].Revision != commit.Revision {
+		f.t.Fatal("A4 winner lacks one preserved history addition")
+	}
+	var change *model.Changeset
+	for i := range after.Changesets {
+		if after.Changesets[i].Revision == commit.Revision {
+			change = &after.Changesets[i]
+			break
+		}
+	}
+	if change == nil || len(change.Changes) != 1 || change.Changes[0].Ref.ID != id || change.IdempotencyKey != key || !reflect.DeepEqual(change.Principal, by.principal) || !reflect.DeepEqual(change.Chain, []string{"authz/fixed"}) || !reflect.DeepEqual(change.Mutators, []string{a4Binding}) || len(change.Events) != 1 || change.Events[0].Type != model.EventBeadClaimed || change.Events[0].Resource.Ref.ID != id || change.Events[0].Provenance.Method != "bead.claimNext" || change.Events[0].Provenance.Cause.Root != key {
+		f.t.Fatalf("A4 winner lost sole event/actual WASI/authz provenance: %+v", change)
+	}
+	start := doc.Lease.ExpiresAt.Add(-5 * time.Minute)
+	if start.Before(r.started) || start.After(r.finished) || change.Time.Before(r.started) || change.Time.After(r.finished) || !versions[len(versions)-1].CreatedAt.Equal(change.Time) {
+		f.t.Fatal("A4 history/lease lies outside the actual HTTP request")
+	}
+	scope := f.remember(by, "bead.claimNext", key, "")
+	receipt := after.Receipts[scope]
+	if receipt == nil || receipt.ResponsePending || !reflect.DeepEqual(receipt.Commit, commit) || !reflect.DeepEqual(receipt.Changeset, *change) {
+		f.t.Fatal("A4 winner receipt differs from the public result/history")
+	}
+	return id
+}
+
+func TestB04A4TwoHundredSimultaneousPublicAgentsWithWASMMutator(t *testing.T) {
+	artifact := a4Artifact(t)
+	eachStore(t, false, func(t *testing.T, e engine) {
+		f := newFixtureWithSetup(t, e, ontology.DefaultDocument(), map[string]string{"a1": "done", "a2": "done"})
+		f.a4Renewal()
+		ids := f.a4Queue(200)
+		f.installMutators(f.a4Mutators(artifact)...)
+		const agents = 200
+		callers := make([]credential, agents)
+		keys := make([]string, agents)
+		principalSet, tokenSet := map[string]bool{}, map[string]bool{}
+		for i := range callers {
+			callers[i] = f.issue(fmt.Sprintf("agent:b04-a4-%03d", i), "user:pool-a", nil)
+			keys[i] = f.key(fmt.Sprintf("a4-worker-%03d", i))
+			f.remember(callers[i], "bead.claimNext", keys[i], "")
+			principal, _ := driver.PrincipalKey(callers[i].principal)
+			if principalSet[principal] || tokenSet[callers[i].key.Token] {
+				t.Fatal("A4 identity denominator is not distinct")
+			}
+			principalSet[principal] = true
+			tokenSet[callers[i].key.Token] = true
+		}
+		before := f.state()
+		var arrived atomic.Int64
+		allArrived := make(chan struct{})
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// All 200 network requests reach this barrier before any claim is
+			// dispatched. There is no concurrency cap around the application.
+			if arrived.Add(1) == agents {
+				close(allArrived)
+			}
+			select {
+			case <-allArrived:
+				f.app.Handler.ServeHTTP(w, r)
+			case <-r.Context().Done():
+				return
+			}
+		}))
+		defer server.Close()
+		transport := &http.Transport{MaxIdleConns: agents, MaxIdleConnsPerHost: agents}
+		defer transport.CloseIdleConnections()
+		client := &http.Client{Transport: transport}
+		type result struct {
+			index int
+			r     reply
+			err   error
+		}
+		results := make(chan result, agents)
+		start := make(chan struct{})
+		began := time.Now()
+		for i := range callers {
+			go func(i int) {
+				<-start
+				r, err := a4HTTP(f.ctx, client, server.URL+"/rpc/v1", callers[i], keys[i], nil)
+				results <- result{i, r, err}
+			}(i)
+		}
+		close(start)
+		outcomes := make([]result, agents)
+		conflicts, failures := 0, 0
+		for range agents {
+			out := <-results
+			outcomes[out.index] = out
+			if out.err != nil {
+				failures++
+				t.Logf("A4 worker%d transport failure: %v", out.index, out.err)
+				continue
+			}
+			out.r = f.checkedReply(out.r)
+			outcomes[out.index] = out
+			if out.r.code == "write_conflict" {
+				conflicts++
+			}
+			if out.r.code != "" {
+				failures++
+				t.Logf("A4 worker%d code=%s", out.index, out.r.code)
+			}
+		}
+		t.Logf("A4 engine=%s simultaneous_arrivals=%d attempts=%d write_conflict=%d other_or_conflict_failures=%d elapsed=%s actual_wasm=%s authz=authz/fixed no_http_semaphore=true external_retries=0 request_deadline=5s", e.name, arrived.Load(), agents, conflicts, failures, time.Since(began), artifact.ArtifactDigest())
+		if arrived.Load() != agents || conflicts*100 >= agents || failures != 0 {
+			t.Fatalf("A4 200-agent bound failed: arrivals=%d conflicts=%d failures=%d", arrived.Load(), conflicts, failures)
+		}
+		after := f.state()
+		head, _ := before.Meta.Head.Uint64()
+		if after.Meta.Head != model.Natural64(head+agents) || len(after.Changesets) != len(before.Changesets)+agents || len(after.Records) != len(before.Records) || !reflect.DeepEqual(after.Changesets[:len(before.Changesets)], before.Changesets) {
+			t.Fatal("A4 publication census differs from exactly200 wins")
+		}
+		observer := before.record(t, ref(a4Observer))
+		winners := map[string]bool{}
+		for i, out := range outcomes {
+			id := f.a4Winner(before, after, callers[i], keys[i], out.r, observer)
+			if !ids[id] || winners[id] {
+				t.Fatalf("A4 duplicated or invented winner%s", id)
+			}
+			winners[id] = true
+		}
+		if len(winners) != agents {
+			t.Fatal("A4 winner denominator changed")
+		}
+		for _, row := range before.Records {
+			if !ids[row.Ref.ID] && (!reflect.DeepEqual(row, after.record(t, row.Ref)) || !reflect.DeepEqual(before.Versions[row.Ref.ID], after.Versions[row.Ref.ID])) {
+				t.Fatalf("A4 changed unrelated row%s", row.Ref.ID)
+			}
+		}
+		if !reflect.DeepEqual(before.Ontology, after.Ontology) || !reflect.DeepEqual(before.Versions[ontologySourceID], after.Versions[ontologySourceID]) {
+			t.Fatal("A4 altered ontology authority")
+		}
+		replayed := f.call(callers[0], "bead.claimNext", poolA, keys[0], "", nil)
+		replayed.replay(t, outcomes[0].r)
+		sameState(t, after, f.state())
+	})
+}
+
+// Pause only after the real guest has returned its actual masked observer
+// read and derived patch. Forward the timed interface and retain the original
+// 250ms callback bound, including this controlled pause; no clock is changed.
+type a4LaggingMutator struct {
+	inner   port.Mutator
+	timed   port.TimedMutator
+	paused  chan model.Revision
+	release chan struct{}
+	calls   atomic.Int64
+}
+
+func (m *a4LaggingMutator) Mutate(ctx context.Context, p port.ProposedChange, r port.SnapshotReader) ([]port.Patch, error) {
+	return m.MutateWithTimeout(ctx, 250*time.Millisecond, p, r)
+}
+
+func (m *a4LaggingMutator) MutateWithTimeout(ctx context.Context, timeout time.Duration, p port.ProposedChange, r port.SnapshotReader) ([]port.Patch, error) {
+	started := time.Now()
+	patches, err := m.timed.MutateWithTimeout(ctx, timeout, p, r)
+	if err != nil {
+		return nil, err
+	}
+	if m.calls.Add(1) == 1 {
+		remaining := timeout - time.Since(started)
+		if remaining <= 0 {
+			return nil, context.DeadlineExceeded
+		}
+		timer := time.NewTimer(remaining)
+		defer timer.Stop()
+		m.paused <- p.BaseRevision
+		select {
+		case <-m.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timer.C:
+			return nil, context.DeadlineExceeded
+		}
+	}
+	return patches, nil
+}
+
+func TestB04A4LaggingPublicClaimRestartsActualWASMSnapshot(t *testing.T) {
+	artifact := a4Artifact(t)
+	eachStore(t, false, func(t *testing.T, e engine) {
+		f := newFixtureWithSetup(t, e, ontology.DefaultDocument(), map[string]string{"a1": "done", "a2": "done"})
+		f.a4Renewal()
+		ids := f.a4Queue(1)
+		bindings := f.a4Mutators(artifact)
+		lag := &a4LaggingMutator{inner: bindings[0].Mutator, timed: bindings[0].Mutator.(port.TimedMutator), paused: make(chan model.Revision, 1), release: make(chan struct{})}
+		bindings[0].Mutator = lag
+		f.installMutators(bindings...)
+		by := f.issue("agent:b04-a4-lagging", "user:pool-a", nil)
+		key := f.key("a4-lagging")
+		f.remember(by, "bead.claimNext", key, "")
+		before := f.state()
+		server := httptest.NewServer(f.app.Handler)
+		defer server.Close()
+		type result struct {
+			r   reply
+			err error
+		}
+		resultCh := make(chan result, 1)
+		go func() {
+			r, err := a4HTTP(f.ctx, server.Client(), server.URL+"/rpc/v1", by, key, nil)
+			resultCh <- result{r, err}
+		}()
+		var paused model.Revision
+		select {
+		case paused = <-lag.paused:
+		case out := <-resultCh:
+			t.Fatalf("claim completed before actual WASI pause: err=%v raw=%s", out.err, out.r.raw)
+		case <-f.ctx.Done():
+			t.Fatal(f.ctx.Err())
+		}
+		if paused != before.Meta.Head {
+			close(lag.release)
+			t.Fatalf("lagging guest read wrong base: %s want%s", paused, before.Meta.Head)
+		}
+		// This separate real public write changes exactly the row the guest
+		// already read. The claim remains paused with no transaction lock.
+		observerWrite := f.request(f.bootstrap, credential{}, "bead.update", poolA, f.key("a4-observer-change"), "setup", map[string]any{"id": ref(a4Observer), "fields": map[string]any{"title": "fresh-observer"}}).commit(t)
+		atPause := f.meta().Head
+		close(lag.release)
+		if atPause != observerWrite.Revision {
+			t.Fatalf("paused claim published before restart: head%s observer%s", atPause, observerWrite.Revision)
+		}
+		out := <-resultCh
+		if out.err != nil {
+			t.Fatal(out.err)
+		}
+		r := f.checkedReply(out.r)
+		after := f.state()
+		head, _ := before.Meta.Head.Uint64()
+		if after.Meta.Head != model.Natural64(head+2) || len(after.Changesets) != len(before.Changesets)+2 || lag.calls.Load() < 2 {
+			t.Fatalf("lagging snapshot was not restarted exactly once at publication: head%s calls%d", after.Meta.Head, lag.calls.Load())
+		}
+		observer := after.record(t, ref(a4Observer))
+		if observer.Revision != observerWrite.Revision || len(after.Versions[a4Observer]) != len(before.Versions[a4Observer])+1 {
+			t.Fatal("competing public observer write/history changed")
+		}
+		id := f.a4Winner(before, after, by, key, r, observer)
+		if !ids[id] {
+			t.Fatal("lagging claim invented a winner")
+		}
+		for _, row := range before.Records {
+			if row.Ref.ID != id && row.Ref.ID != a4Observer && (!reflect.DeepEqual(row, after.record(t, row.Ref)) || !reflect.DeepEqual(before.Versions[row.Ref.ID], after.Versions[row.Ref.ID])) {
+				t.Fatal("lagging claim changed unrelated state")
+			}
+		}
+		f.call(by, "bead.claimNext", poolA, key, "", nil).replay(t, r)
+		sameState(t, after, f.state())
+		t.Logf("A4 engine=%s actual_wasm=%s paused_base=%s observer_commit=%s winning_commit=%s actual_guest_calls=%d callback_budget=250ms request_deadline=5s one_winner_history_event_receipt=true", e.name, artifact.ArtifactDigest(), paused, observerWrite.Revision, r.commit(t).Revision, lag.calls.Load())
+	})
+}
 
 // Every prefix row matches the requested project/type and is genuinely ready.
 // Only the installed caller's ref caveat makes it ineligible to win. Unlike a
