@@ -236,7 +236,7 @@ func (s *GuardedService) collectReady(ctx context.Context, by model.PrincipalRef
 		}
 		return candidate, err
 	}
-	page, err = readPage()
+	page, err := readPage()
 	if err != nil {
 		return service.BeadPage{}, err
 	}
