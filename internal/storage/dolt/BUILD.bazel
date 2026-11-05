@@ -137,6 +137,7 @@ go_library(
 go_test(
     name = "dolt_test",
     srcs = [
+        "a_native_producer_bundle_test.go",
         "active_database_size_test.go",
         "autostart_test.go",
         "aux_row_id_rekey_test.go",
