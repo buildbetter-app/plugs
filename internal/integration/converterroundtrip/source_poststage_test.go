@@ -22,6 +22,13 @@ type sourcePoststageStore struct {
 	staged, reached int
 }
 
+// Preserve the selected store's real persistence capability through the fault
+// wrapper; the memory store truthfully remains process-scoped.
+func (s *sourcePoststageStore) Persistent() bool {
+	marker, ok := s.Store.(driver.PersistentCheckpointStore)
+	return ok && marker.Persistent()
+}
+
 func (s *sourcePoststageStore) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
 	tx, err := s.Store.Write(ctx, lease)
 	if err != nil {
