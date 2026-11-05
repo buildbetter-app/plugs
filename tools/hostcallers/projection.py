@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import tempfile
 import time
-from plug_host import AdapterError, Client, RPCError
+from plug_host import AdapterError, Client, TransportError
 
 
 class Projection:
@@ -15,17 +15,20 @@ class Projection:
 
     def fresh(self):
         try:
-            if time.time() - self.path.stat().st_mtime < 15:
-                return str(self.path)
-        except FileNotFoundError:
-            pass
-        try:
+            # Authority is checked before reuse, including the 15-second window.
+            self.c.verify_identity()
             rows = [self.row(b) for b in self.c.snapshot()]
+            content = ''.join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows)
+            try:
+                if time.time() - self.path.stat().st_mtime < 15 and self.path.read_text() == content:
+                    self.stale = False
+                    return str(self.path)
+            except FileNotFoundError:
+                pass
             fd, tmp = tempfile.mkstemp(prefix=".plug-view-", dir=self.path.parent)
             try:
                 with os.fdopen(fd, "w") as out:
-                    for row in rows:
-                        out.write(json.dumps(row, ensure_ascii=False) + "\n")
+                    out.write(content)
                     out.flush()
                     os.fsync(out.fileno())
                 os.replace(tmp, self.path)
@@ -34,11 +37,16 @@ class Projection:
                     os.unlink(tmp)
             self.stale = False
             return str(self.path)
-        except (AdapterError, OSError):
+        except TransportError:
             if self.path.exists():
                 self.stale = True
                 return str(self.path)
             raise AdapterError("no validated projection available for this instance/project") from None
+        except AdapterError:
+            # A known refusal invalidates the previous grant for future offline calls.
+            self.stale = False
+            self.path.unlink(missing_ok=True)
+            raise
 
     def row(self, bead):
         if bead.get("project") != self.c.project:
@@ -49,7 +57,15 @@ class Projection:
             raise AdapterError("unmapped imported status in projection")
         row = {"id": self.c.original(bead["id"]), "issue_type": bead["type"], "status": status, **fields}
         row["labels"] = bead.get("labels", fields.get("labels", []))
-        row["close_reason"] = fields.get("close_reason", fields.get("result"))
+        reason = bead.get("metadata", {}).get("i8.host.close_reason")
+        if status != "closed":
+            row["close_reason"] = None
+        elif reason is not None:
+            if reason.get("schema") != "plug-host-close-reason/1" or not isinstance(reason.get("reason"), str):
+                raise AdapterError("close reason metadata is malformed")
+            row["close_reason"] = reason["reason"]
+        else:
+            row["close_reason"] = fields.get("close_reason", fields.get("result"))
         dependencies = []
         for link in bead.get("links", []):
             if link.get("from") != bead["id"]:

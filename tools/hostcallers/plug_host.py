@@ -19,6 +19,11 @@ class AdapterError(RuntimeError):
     pass
 
 
+class TransportError(AdapterError):
+    """Only a network outage permits explicitly marked stale projection fallback."""
+    pass
+
+
 class RPCError(AdapterError):
     def __init__(self, code):
         self.code = code
@@ -111,6 +116,10 @@ class Client:
                         if op["kind"] == "create":
                             self.generated.add(created_ref(call["result"], i))
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+        self.verify_identity()
+
+    def verify_identity(self):
+        cfg = self.binding
         hello = self.rpc("server.hello", {})
         if hello.get("incarnation") != cfg["incarnation"]:
             raise AdapterError("server incarnation differs from binding")
@@ -144,9 +153,14 @@ class Client:
             if len(raw) > 32 * 1024 * 1024:
                 raise AdapterError("RPC response exceeds bound")
             result = json.loads(raw)
-        except (OSError, ValueError, urllib.error.URLError):
-            # Do not include URL, response body, credential or private field values.
-            raise AdapterError("RPC transport/result unavailable; retain journal for exact replay") from None
+        except urllib.error.HTTPError as error:
+            # HTTP refusals are authority/result failures, not an offline cache grant.
+            codes = {401: "unauthenticated", 403: "forbidden", 404: "not_found", 429: "rate_limited"}
+            raise RPCError(codes.get(error.code, "http_refused")) from None
+        except (OSError, urllib.error.URLError):
+            raise TransportError("RPC transport unavailable; retain journal for exact replay") from None
+        except ValueError:
+            raise AdapterError("RPC result is malformed") from None
         if result.get("id") != request_id or result.get("jsonrpc") != "2.0":
             raise AdapterError("RPC response identity mismatch")
         if "error" in result:
@@ -362,7 +376,17 @@ class Writes:
         return self.job.mutate("bead.unlink" if remove else "bead.link", build)
 
     def lifecycle(self, original, close=True, reason=""):
-        return self.job.mutate("bead.close" if close else "bead.reopen", lambda: {"id": self.c.ref(original), "reason": reason, "expect": [expect(self.c.get(original))]})
+        if not close:
+            return self.job.mutate("bead.reopen", lambda: {"id": self.c.ref(original), "reason": reason, "expect": [expect(self.c.get(original))]})
+        def build():
+            bead = self.c.get(original)
+            target = self.c.ref(original)
+            return {"changeSet": {"ops": [
+                {"kind": "close", "target": target, "reason": reason},
+                {"kind": "setMeta", "target": target, "key": "i8.host.close_reason",
+                 "value": {"schema": "plug-host-close-reason/1", "reason": reason}},
+            ], "expect": [expect(bead)]}}
+        return self.job.mutate("tx.apply", build)
 
 
 def fields_for(item, doc=None, project="signals-v2"):

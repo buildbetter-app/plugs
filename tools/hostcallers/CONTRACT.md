@@ -48,3 +48,14 @@ clients use that endpoint. No Dolt remote or refs/dolt/data push/pull. No sync.r
 is issued: no supported destination is bound yet. Backup, replica/sync destination
 and live credentials/incarnation/import maps are explicit deployment inputs, not
 invented by this packet. No deployed cloud factory exists per binding931-937.
+
+Review fixes: every projection request checks the bound identity and current
+project visibility before the 15-second disk reuse decision. Only a typed
+transport outage can return marked stale data; an authority/result refusal
+invalidates the cache. An ordinary close is a canonical CloseOp plus typed
+metadata i8.host.close_reason in one tx.apply revision, preserving the current
+reason without inferring lifecycle meaning from arbitrary comments. Reopen
+projections omit the old reason. Other close-producing adapters should use the
+same metadata convention; arbitrary external closes have no typed core reason
+slot in the pinned read envelope. Completed and recovered pours return the
+persisted id_mapping, including the stdout-loss boundary.

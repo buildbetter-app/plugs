@@ -183,10 +183,15 @@ def seed(c, items, resume=None):
 STEPS = ("implement", "verify", "self-review", "review", "land")
 
 
+def molecule_mapping(mol):
+    return {"id_mapping": {"mol-execplan-step": mol["root"],
+            **{"mol-execplan-step." + k: v for k, v in mol["steps"].items()}}}
+
+
 def pour(c, chunk, keys):
     with Job(c, "pour", {"chunk": chunk, "keys": keys}, {"ids.json": {}, "molecules.json": {}}) as j:
         if j.done:
-            return
+            return molecule_mapping(j.state["outputs"]["molecules.json"][chunk])
         ids, mols = j.data["ids.json"], j.data["molecules.json"]
         if not keys or len(set(keys)) != len(keys) or any(k not in ids for k in keys) or chunk in mols:
             raise AdapterError("unknown/duplicate keys or chunk already poured")
@@ -209,7 +214,7 @@ def pour(c, chunk, keys):
         c.generated.update([root, *steps.values()])
         mols[chunk] = {"root": root, "steps": steps, "keys": keys}
         j.finish({"molecules.json": mols})
-        return {"id_mapping": {"mol-execplan-step": root, **{"mol-execplan-step." + k: v for k, v in steps.items()}}}
+        return molecule_mapping(mols[chunk])
 
 
 def main(kind, payload=None):
@@ -240,6 +245,6 @@ def main(kind, payload=None):
         return seed(c, payload, args.resume)
     if kind == "pour":
         result = pour(c, args.chunk, args.keys)
-        print(json.dumps(result, ensure_ascii=False))
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return result
     raise AdapterError("unknown driver")

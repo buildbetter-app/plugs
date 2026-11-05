@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"sync/atomic"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -57,7 +59,16 @@ func TestSixHostCallersSQLiteEndToEnd(t *testing.T) {
 	rules := service.NewOntology(snapshot.Effective)
 	writer := pipeline.New(store, lease, pipeline.WithOntology(rules))
 	domain := service.New(store, lease, writer, service.WithOntology(rules))
-	views, err := viewops.New(store, lease, viewops.Config{})
+	var visibility atomic.Int32
+	views, err := viewops.New(store, lease, viewops.Config{AuthorizeRead: func(context.Context, model.PrincipalRef, model.ResourceRef, string) error {
+		switch visibility.Load() {
+		case 1:
+			return &model.Error{Data: model.ErrorData{Code: "forbidden"}}
+		case 2:
+			return &model.Error{Data: model.ErrorData{Code: "token_expired"}}
+		}
+		return nil
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,6 +91,16 @@ func TestSixHostCallersSQLiteEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	host := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/fixture-visibility" {
+			mode, err := strconv.Atoi(r.URL.Query().Get("mode"))
+			if err != nil || mode < 0 || mode > 2 {
+				http.Error(w, "invalid fixture mode", 400)
+				return
+			}
+			visibility.Store(int32(mode))
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		if r.URL.Path != "/rpc/v1" {
 			http.NotFound(w, r)
 			return

@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import uuid
+import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import plug_host as ph
@@ -92,8 +93,13 @@ class HostCallerFixture(unittest.TestCase):
         self.write('amend.json',{'reopen':['B'],'close':{'B':'fixture amended close'}})
         self.run_script('apply_change.py',self.signals,self.signals/'amend.json')
         self.assertEqual(len(ph.read_json(self.signals/'linear-pending.json')),2)
+        bprojected=Projection(self.c).row(self.c.get(ids['B']))
+        self.assertEqual(bprojected['close_reason'],'fixture amended close')
         out=json.loads(self.run_script('pour_step.py',self.signals,'synthetic chunk','A'))
         mapping=out['id_mapping']; self.assertEqual(len(mapping),6)
+        # Completed stdout-loss retry must return the same durable mapping.
+        again=json.loads(self.run_script('pour_step.py',self.signals,'synthetic chunk','A'))
+        self.assertEqual(again,out)
         mol=ph.read_json(self.signals/'molecules.json')['synthetic chunk']
         self.assertEqual(mapping['mol-execplan-step'],mol['root'])
         self.assertEqual(set(mol['steps']),set(hd.STEPS))
@@ -117,6 +123,9 @@ class HostCallerFixture(unittest.TestCase):
         node=next(n for n in view['nodes'] if n['id']==ids['A'])
         self.assertEqual(node['linear'],'https://linear.app/buildbetter/issue/FIXTURE-1')
         self.assertEqual(node['milestone'],'M1'); self.assertFalse(view['projectionStale'])
+        bnode=next(n for n in view['nodes'] if n['id']==ids['B'])
+        # Restructure reopened B; the old amended resolution must be absent.
+        self.assertIsNone(bnode['resolution'])
         self.assertTrue(any(e['type']=='parent-child' and e['target']==ids['A'] and e['source']==ids['P'] for e in view['edges']))
         self.run_script('cody-ops-seed.py')
         opsids=ph.read_json(self.ops/'ids.json'); oc=ph.Client(self.binding,'cody-ops')
@@ -225,17 +234,96 @@ class HostCallerFixture(unittest.TestCase):
         with self.assertRaises(ph.AdapterError):
             with ph.Job(self.c,'unfinished','one',{'ids.json':{}}): pass
 
+    def test_paginated_projection_is_pinned_during_competing_write(self):
+        marker = str(uuid.uuid4())
+        ops = [{"kind": "create", "key": "page-" + str(i), "type": "task", "project": self.c.project,
+                "fields": {"title": "pagination fixture " + marker}} for i in range(200)]
+        commit = self.c.rpc("tx.apply", {"changeSet": {"ops": ops}}, str(uuid.uuid4()))
+        expected = {ph.created_ref(commit, i) for i in range(200)}
+        original = self.c.rpc
+        pages = 0
+        late = None
+        def competing(method, params, key=None):
+            nonlocal pages, late
+            result = original(method, params, key)
+            if method == "view.run":
+                pages += 1
+                if pages == 1:
+                    late = ph.created_ref(original("bead.create", {"type": "task", "fields": {"title": "after pinned snapshot"}}, str(uuid.uuid4())))
+            return result
+        with patch.object(self.c, "rpc", competing):
+            snapshot = self.c.snapshot()
+        got = {b["id"] for b in snapshot}
+        self.assertGreater(pages, 1)
+        self.assertTrue(expected <= got)
+        self.assertNotIn(late, got)
+        self.assertIn(late, {b["id"] for b in self.c.snapshot()})
+
+    def test_projection_real_current_visibility_and_expiry(self):
+        self.create()
+        view=Projection(self.c)
+        path=Path(view.fresh())
+        self.assertTrue(path.read_bytes())
+        def mode(value):
+            with urllib.request.urlopen(self.cfg['endpoint']+'/fixture-visibility?mode='+str(value)) as response:
+                self.assertEqual(response.status,204)
+        try:
+            mode(1)
+            # Actual viewops current authorization silently removes denied rows.
+            self.assertEqual(Path(view.fresh()).read_bytes(),b'')
+            self.assertFalse(view.stale)
+            mode(0); view.fresh(); self.assertTrue(path.read_bytes())
+            mode(2)
+            # Actual viewops non-redaction refusal must not use the fresh cache.
+            with self.assertRaises(ph.RPCError) as error: view.fresh()
+            self.assertEqual(error.exception.code,'token_expired')
+            self.assertFalse(path.exists())
+            with patch.object(self.c,'verify_identity',side_effect=ph.TransportError('fixture offline after expiry')):
+                with self.assertRaises(ph.AdapterError): view.fresh()
+        finally:
+            mode(0)
+
+    def test_projection_authority_refusals_bypass_fresh_and_stale_cache(self):
+        self.create()
+        view=Projection(self.c)
+        path=Path(view.fresh())
+        for age in (0, 30):
+            if age:
+                os.utime(path,(0,0))
+            for code in ('forbidden','unauthenticated','token_expired','not_found'):
+                with self.subTest(age=age,code=code):
+                    view.fresh()
+                    with patch.object(self.c,'snapshot',side_effect=ph.RPCError(code)):
+                        with self.assertRaises(ph.RPCError): view.fresh()
+        with patch.object(self.c,'verify_identity',side_effect=ph.AdapterError('principal changed')):
+            with self.assertRaises(ph.AdapterError): view.fresh()
+
+    def test_pour_recovers_mapping_after_sidecar_finish_interruption(self):
+        ident=self.create(); self.write('ids.json',{'A':ident})
+        original=ph.atomic_json; failed=False
+        def interrupted(path,value):
+            nonlocal failed
+            if Path(path).name=='molecules.json' and not failed:
+                failed=True
+                raise OSError('fixture interrupted sidecar finish')
+            return original(path,value)
+        with patch.object(ph,'atomic_json',interrupted):
+            with self.assertRaises(OSError): hd.pour(self.c,'recovered mapping',['A'])
+        result=hd.pour(self.c,'recovered mapping',['A'])
+        self.assertEqual(len(result['id_mapping']),6)
+        self.assertEqual(hd.pour(self.c,'recovered mapping',['A']),result)
+
     def test_scoped_projection_cache_marks_stale_and_keeps_complete_file(self):
         ident=self.create(); view=Projection(self.c)
         path=Path(view.fresh()); previous=path.read_bytes()
         self.assertIn(ident,[json.loads(x)['id'] for x in path.read_text().splitlines()])
         os.utime(path,(0,0))
-        with patch.object(self.c,'snapshot',side_effect=ph.AdapterError('fixture offline')):
+        with patch.object(self.c,'snapshot',side_effect=ph.TransportError('fixture offline')):
             self.assertEqual(view.fresh(),str(path)); self.assertTrue(view.stale)
         self.assertEqual(path.read_bytes(),previous)
         changed=copy.deepcopy(self.cfg); changed['agent']='other-agent'
         self.cfg=changed; self.write_binding(); fresh=Projection(ph.Client(self.binding,'signals-v2'))
-        with patch.object(fresh.c,'snapshot',side_effect=ph.AdapterError('fixture offline')):
+        with patch.object(fresh.c,'snapshot',side_effect=ph.TransportError('fixture offline')):
             with self.assertRaises(ph.AdapterError): fresh.fresh()
 
 
