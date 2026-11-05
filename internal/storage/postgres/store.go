@@ -26,6 +26,9 @@ type Store struct {
 	// Publication already serializes through the durable head. Admit those
 	// transactions before they reserve general-purpose pool connections.
 	publication chan struct{}
+	// Keep pipeline preparation snapshots from retaining the general pool
+	// while they wait for the same bounded callback resources.
+	preparation chan struct{}
 	// renewConn is reserved from the pool so lease heartbeats cannot wait for
 	// request transactions to return a general-purpose connection.
 	renewConn *sql.Conn
@@ -71,7 +74,7 @@ func Open(ctx context.Context, cfg driver.Config) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	s := &Store{db: db, lockConn: lockConn, publication: make(chan struct{}, 1), renewConn: renewConn, resources: make(map[interface{ Close() error }]struct{}), leases: make(map[*activeLease]struct{})}
+	s := &Store{db: db, lockConn: lockConn, publication: make(chan struct{}, 1), preparation: make(chan struct{}, 4), renewConn: renewConn, resources: make(map[interface{ Close() error }]struct{}), leases: make(map[*activeLease]struct{})}
 	if err := s.initialize(ctx); err != nil {
 		_ = renewConn.Close()
 		_ = lockConn.Close()

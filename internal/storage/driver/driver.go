@@ -668,6 +668,21 @@ type Store interface {
 }
 
 type publicationAdmissionKey struct{}
+type preparationAdmissionKey struct{}
+
+// WithPreparationAdmission marks a bounded pipeline preparation snapshot.
+// Pooled drivers may admit it before reserving a connection; ordinary readers
+// remain independent. The snapshot must close before publication admission.
+func WithPreparationAdmission(ctx context.Context) context.Context {
+	return context.WithValue(ctx, preparationAdmissionKey{}, true)
+}
+
+// PreparationAdmission reports whether a pipeline snapshot requested resource
+// admission before reserving a pooled connection.
+func PreparationAdmission(ctx context.Context) bool {
+	marked, _ := ctx.Value(preparationAdmissionKey{}).(bool)
+	return marked
+}
 
 // WithPublicationAdmission marks a pipeline transaction that will serialize
 // through the publication head. A pooled driver may admit it before reserving

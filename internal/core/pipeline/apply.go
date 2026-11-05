@@ -135,6 +135,7 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 	}
 	preCtx, cancel := context.WithTimeout(context.WithValue(ctx, preparationCallerKey{}, ctx), 2*time.Second)
 	defer cancel()
+	preCtx = driver.WithPreparationAdmission(preCtx)
 	for attempt := 0; attempt <= 3; attempt++ {
 		phaseStarted := time.Now()
 		reader, err := w.reader(preCtx)

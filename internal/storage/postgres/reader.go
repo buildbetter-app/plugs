@@ -28,6 +28,8 @@ type reader struct {
 	// pgx's asynchronous server termination before another lock probe starts.
 	conn        *sql.Conn
 	cleanupDone <-chan struct{}
+
+	releasePreparation func()
 }
 
 func (s *Store) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
@@ -35,6 +37,23 @@ func (s *Store) Read(ctx context.Context, view driver.View) (driver.Reader, erro
 		return nil, err
 	}
 	if err := branchZero(view.Branch); err != nil {
+		return nil, err
+	}
+	var release func()
+	if driver.PreparationAdmission(ctx) {
+		select {
+		case s.preparation <- struct{}{}:
+			release = func() { <-s.preparation }
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	defer func() {
+		if release != nil {
+			release()
+		}
+	}()
+	if err := s.check(ctx); err != nil {
 		return nil, err
 	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
@@ -76,8 +95,10 @@ func (s *Store) Read(ctx context.Context, view driver.View) (driver.Reader, erro
 		return fail(driver.ErrFutureRevision{Requested: requested, Head: m.Head})
 	}
 	r := &reader{store: s, sql: tx, meta: m, at: at}
+	r.releasePreparation, release = release, nil
 	if err = s.track(r); err != nil {
-		return fail(err)
+		_ = r.finish()
+		return nil, err
 	}
 	return r, nil
 }
@@ -129,6 +150,10 @@ func (r *reader) finish() error {
 			r.writer.releasePublication = nil
 			release()
 		}
+	}
+	if release := r.releasePreparation; release != nil {
+		r.releasePreparation = nil
+		release()
 	}
 	return err
 }
