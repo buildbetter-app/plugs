@@ -2,15 +2,80 @@ package b04claimidentity_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
+	"github.com/buildbetter-app/plugs/internal/storage/conformance"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+// Every prefix row matches the requested project/type and is genuinely ready.
+// Only the installed caller's ref caveat makes it ineligible to win. Unlike a
+// selector-excluded prefix, these rows consume the first actual queue page.
+func TestB04PublicClaimNextWalksMatchingReadyFrontBeyondOnePage(t *testing.T) {
+	eachStore(t, false, func(t *testing.T, e engine) {
+		f := newFixture(t, e)
+		const prefix = 1000
+		created := time.Now().UTC()
+		changes := make([]conformance.FixtureChange, 0, prefix+1)
+		winner := ref("b04-front-target")
+		for i := 0; i <= prefix; i++ {
+			id, priority := fmt.Sprintf("b04-front-%04d", i), 0
+			if i == prefix {
+				id, priority = winner.ID, 1
+			}
+			body, err := json.Marshal(pipeline.Document{
+				ID: id, Type: "issue", Project: poolA, CreatedAt: &created,
+				Fields: map[string]any{"title": id, "description": "matching ready front", "status": "open", "priority": priority},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			changes = append(changes, conformance.FixtureChange{Ref: ref(id), Kind: "bead", Op: model.OpCreate, Body: body, ChangedPaths: []string{"fields"}, Graph: &conformance.FixtureGraphSource{}})
+		}
+		if _, err := conformance.Seed(f.ctx, f.store, f.lease,
+			driver.ChangesetHeader{Time: created, Principal: model.PrincipalRef{Kind: "system", ID: "b04-ready-front-fixture"}}, changes); err != nil {
+			t.Fatal(err)
+		}
+		by := f.issue("agent:front-tail", "user:pool-a", map[string]any{
+			"actions":  []string{string(authz.Modify), "transition"},
+			"projects": []model.Ref{ref(poolA)}, "refs": []model.Ref{winner},
+		})
+		selector := map[string]any{"filter": map[string]any{"types": []string{"issue"}}}
+		// Observe the real unguarded queue source through its public read route.
+		// The tail has lower priority, so the first page must be full without it.
+		ready := f.request(f.bootstrap, credential{}, "bead.ready", poolA, "", "front-observer", map[string]any{"limit": 1000, "filter": selector["filter"]})
+		var front struct{ Items []struct{ ID string } }
+		if ready.code != "" || json.Unmarshal(ready.envelope["result"], &front) != nil || len(front.Items) != 1000 {
+			t.Fatalf("matching ready front is not one full source page: %s", ready.raw)
+		}
+		for _, row := range front.Items {
+			if row.ID == winner.ID {
+				t.Fatal("tail unexpectedly entered the first matching ready page")
+			}
+		}
+		key := f.key("matching-front-win")
+		f.remember(by, "bead.claimNext", key, "front-tail")
+		before := f.state()
+		if len(before.Records) != prefix+4 {
+			t.Fatalf("complete fixture census=%d want=%d", len(before.Records), prefix+4)
+		}
+		first := f.call(by, "bead.claimNext", poolA, key, "front-tail", selector)
+		f.winner(before, by, "bead.claimNext", key, "front-tail", winner, first, true)
+		before = f.state()
+		f.call(by, "bead.claimNext", poolA, key, "changed-label", selector).replay(t, first)
+		sameState(t, before, f.state())
+		t.Logf("%s: %d matching ready rows precede the permitted hydrated winner; one version/event/receipt, denied rows conserved", e.name, prefix)
+	})
+}
 
 // The HTTP transport supplies a fresh trace ID after catalog mapping. The
 // expected retryability comes from the canonical error catalog, never from a

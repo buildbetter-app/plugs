@@ -423,11 +423,28 @@ func (f *fixture) state() durableState {
 		f.t.Fatal(err)
 	}
 	defer r.Close()
-	page, err := r.Query(f.ctx, driver.Query{Filter: map[string]any{"kind": "bead"}, Limit: 1000})
-	if err != nil || page.NextCursor != nil {
-		f.t.Fatalf("complete fixture rows: %v next=%v", err, page.NextCursor)
+	var cursor *driver.Cursor
+	seenRows := map[string]bool{}
+	for {
+		page, err := r.Query(f.ctx, driver.Query{Filter: map[string]any{"kind": "bead"}, Limit: 1000, Cursor: cursor})
+		if err != nil {
+			f.t.Fatalf("complete fixture rows: %v", err)
+		}
+		for _, row := range page.Items {
+			if seenRows[row.Ref.ID] {
+				f.t.Fatalf("fixture row repeated across pages: %s", row.Ref.ID)
+			}
+			seenRows[row.Ref.ID] = true
+			s.Records = append(s.Records, row)
+		}
+		if page.NextCursor == nil {
+			break
+		}
+		if len(page.Items) == 0 || reflect.DeepEqual(cursor, page.NextCursor) {
+			f.t.Fatal("fixture row cursor failed to advance")
+		}
+		cursor = page.NextCursor
 	}
-	s.Records = page.Items
 	sort.Slice(s.Records, func(i, j int) bool { return s.Records[i].Ref.ID < s.Records[j].Ref.ID })
 	checkpoints, ok := f.store.(driver.CheckpointStore)
 	if !ok {
