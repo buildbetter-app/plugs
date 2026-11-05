@@ -39,6 +39,14 @@ func (w *Writer) checkWorkflowGuard(ctx context.Context, p *prepared) error {
 	if meta.StoreID != expectation.StoreID || meta.Incarnation != expectation.Incarnation || expectation.Incarnation != p.snapshot.Snapshot().Incarnation {
 		return driver.ErrConflict
 	}
+	if p.proposal.Meta.Method == "bead.claim" || p.proposal.Meta.Method == "bead.claimNext" {
+		// Mixed-parent resolution scans ordinary sources at BaseRevision outside
+		// this reader. Join that exact snapshot's graph predicate to publication;
+		// a relation-free target image cannot prove those sources stayed ready.
+		if _, err := p.snapshot.Observe(ctx, []driver.LockKey{driver.GraphBlockingSentinelLock}); err != nil {
+			return err
+		}
+	}
 	if p.checkpointReads == nil {
 		p.checkpointReads = make(map[string]uint64)
 	}

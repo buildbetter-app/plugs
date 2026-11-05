@@ -133,7 +133,7 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 	if err != nil {
 		return port.WriteOutcome{}, failure("invalid_params", err.Error())
 	}
-	preCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	preCtx, cancel := context.WithTimeout(context.WithValue(ctx, preparationCallerKey{}, ctx), 2*time.Second)
 	defer cancel()
 	for attempt := 0; attempt <= 3; attempt++ {
 		phaseStarted := time.Now()
@@ -482,15 +482,10 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	if err != nil {
 		return model.Commit{}, err
 	}
-	// The preparation reader is closed before entering transact. Waiting here
-	// retains neither a snapshot connection nor a prefix of database locks.
-	// Other Writers/processes still use the complete driver lock/check guard.
-	select {
-	case w.commitGate <- struct{}{}:
-		defer func() { <-w.commitGate }()
-	case <-ctx.Done():
-		return model.Commit{}, ctx.Err()
-	}
+	// The preparation reader is closed before entering transact. Publication
+	// admission belongs to the driver, including competing claims which arrive
+	// before this Write has opened its transaction. The sorted lock/check guard
+	// below fences every Writer and process without an additional Writer queue.
 	if err := ctx.Err(); err != nil {
 		return model.Commit{}, err
 	}

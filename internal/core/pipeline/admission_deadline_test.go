@@ -181,6 +181,7 @@ type publicationAdmissionStore struct {
 	writes, readers  atomic.Int32
 	entered, release chan struct{}
 	readerClosed     chan struct{}
+	admission        chan struct{}
 }
 
 func (s *publicationAdmissionStore) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
@@ -193,6 +194,14 @@ func (s *publicationAdmissionStore) Read(ctx context.Context, view driver.View) 
 }
 
 func (s *publicationAdmissionStore) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
+	// Model storage-owned admission, keeping the original cancellation and
+	// publication assertions independent of any Writer-local queue.
+	select {
+	case s.admission <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	defer func() { <-s.admission }()
 	if s.writes.Add(1) == 1 {
 		close(s.entered)
 		select {
@@ -221,7 +230,7 @@ func (r *publicationAdmissionReader) Close() error {
 
 func TestPublicationAdmissionCancellationClosesReadersAndCannotPublish(t *testing.T) {
 	h := setup(t)
-	store := &publicationAdmissionStore{Store: h.store, entered: make(chan struct{}), release: make(chan struct{}), readerClosed: make(chan struct{}, 16)}
+	store := &publicationAdmissionStore{Store: h.store, entered: make(chan struct{}), release: make(chan struct{}), readerClosed: make(chan struct{}, 16), admission: make(chan struct{}, 1)}
 	w := h.writer()
 	w.store = store
 	first := make(chan applyResult, 1)

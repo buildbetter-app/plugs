@@ -19,12 +19,16 @@ type callbackBusy interface {
 	CallbackBusy() bool
 }
 
+type preparationCallerKey struct{}
+
 func callbackFailure(ctx context.Context, kind, id string, err error) error {
-	// The preparation/caller context can expire while a callback is queued or
-	// running. Preserve that parent error for admission handling; an independent
-	// callback execution deadline still means the subscriber was unavailable.
+	// Only the Writer's preparation deadline is a retryable admission expiry.
+	// An expired caller retains the established subscriber-unavailable mapping,
+	// as does a callback's independent execution deadline.
 	if parentErr := ctx.Err(); parentErr == context.DeadlineExceeded {
-		return parentErr
+		if caller, ok := ctx.Value(preparationCallerKey{}).(context.Context); ok && caller.Err() == nil {
+			return parentErr
+		}
 	}
 	var busy callbackBusy
 	if errors.As(err, &busy) && busy.CallbackBusy() {
