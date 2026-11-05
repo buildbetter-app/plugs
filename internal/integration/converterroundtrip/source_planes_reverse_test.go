@@ -135,8 +135,18 @@ func sourceReverseRows(t *testing.T, data []byte) map[string]map[string]any {
 type sourceReverseSnapshotHook struct {
 	driver.Store
 	driver.SourcePlaneSnapshotStore
+	driver.CheckpointInventoryStore
 	afterSnapshot func()
 	reads, pins   int
+}
+
+func (s *sourceReverseSnapshotHook) ReadCheckpointInventory(ctx context.Context, view driver.View) (driver.CheckpointInventory, error) {
+	s.pins++
+	reader, err := s.CheckpointInventoryStore.ReadCheckpointInventory(ctx, view)
+	if err == nil && s.afterSnapshot != nil {
+		s.afterSnapshot()
+	}
+	return reader, err
 }
 
 func (s *sourceReverseSnapshotHook) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
@@ -239,9 +249,9 @@ func TestJointSourceReversePinnedDefaultAndAllAcrossThreeStores(t *testing.T) {
 				if db != nil && !reflect.DeepEqual(physical, jointPhysicalSQL(t, db, engine)) {
 					t.Fatal("reverse changed physical SQL state")
 				}
-				observed := &sourceReverseSnapshotHook{Store: store, SourcePlaneSnapshotStore: capability, afterSnapshot: func() { apply("later active reverse", "later durable reverse", 902) }}
+				observed := &sourceReverseSnapshotHook{Store: store, SourcePlaneSnapshotStore: capability, CheckpointInventoryStore: store.(driver.CheckpointInventoryStore), afterSnapshot: func() { apply("later active reverse", "later durable reverse", 902) }}
 				captured, err := ReverseRestoredWithOptions(ctx, observed, reverseconverter.Options{All: true})
-				if err != nil || observed.reads != 1 || observed.pins != 1 || captured.Result.Digest != all.Result.Digest {
+				if err != nil || observed.reads != 0 || observed.pins != 1 || captured.Result.Digest != all.Result.Digest {
 					t.Fatalf("reverse mixed current namespace/core observations: reads=%d pins=%d err=%v", observed.reads, observed.pins, err)
 				}
 				latest, err := ReverseRestoredWithOptions(ctx, store, reverseconverter.Options{All: true})

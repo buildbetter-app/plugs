@@ -44,6 +44,21 @@ type SourcePlaneSnapshot interface {
 	SourcePlaneCheckpoint(string) (Checkpoint, error)
 }
 
+// CheckpointInventoryStore is the stronger, read-only rollback capability.
+// It captures every physical checkpoint, including namespaces outside the
+// import plan, in the same observation as the graph. Requested-key source
+// snapshots deliberately keep their existing semantics.
+type CheckpointInventoryStore interface {
+	ReadCheckpointInventory(context.Context, View) (CheckpointInventory, error)
+}
+
+type CheckpointInventory interface {
+	SourcePlaneSnapshot
+	// CheckpointKeys returns a detached, sorted complete key set. It does not
+	// query a later store generation. Close invalidates the inventory.
+	CheckpointKeys() ([]string, error)
+}
+
 type SourceEntityKey struct{ Project, Plane, ID string }
 type SourceEdgeKey struct{ Project, Table, ID string }
 

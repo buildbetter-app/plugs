@@ -169,6 +169,9 @@ func rollbackRehearsalFixtureEvidence(t *testing.T, namespaces bool) {
 			if err := r.Close(); err != nil {
 				t.Fatal(err)
 			}
+			if namespaces {
+				rollbackAssertLossAccounting(t, reverse.Result.Report, namespaceBefore, page.Items, ephemeral)
+			}
 			coreKinds, principals := map[string]int{}, map[string]bool{}
 			for _, row := range page.Items {
 				coreKinds[row.Kind]++
