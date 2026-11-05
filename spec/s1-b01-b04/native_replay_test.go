@@ -123,7 +123,7 @@ func nativeReplayManifestPaths(inputs nativeInputs) []string {
 	for _, vector := range inputs.Vectors {
 		for _, run := range vector.Runs {
 			for _, backend := range manifest.Backends {
-				base := fmt.Sprintf("TestB01NativeTimedAndIndefinitePair/%s/%s/replay/%s", vector.ID, run.ID, backend)
+				base := fmt.Sprintf("%s/%s/%s/replay/%s", nativeVectorTestName(vector), vector.ID, run.ID, backend)
 				paths = append(paths, base+"/"+manifest.Root)
 				for _, phase := range manifest.HierarchyPhases {
 					paths = append(paths, base+"/"+phase)

@@ -50,6 +50,19 @@ type nativeVector struct {
 
 type nativeRun struct{ ID, Database string }
 
+// Each top-level case owns a complete vector's two captures and comparison.
+// rules_go partitions top-level cases; subtests of one parent cannot shard.
+func nativeVectorTestName(vector nativeVector) string {
+	switch vector.Mode {
+	case "timed":
+		return "TestB01NativeTimedPair"
+	case "indefinite":
+		return "TestB01NativeIndefinitePair"
+	default:
+		return ""
+	}
+}
+
 var nativeRoles = []string{"parent", "child", "grandchild", "free"}
 
 func nativeWrite(t *testing.T, path string, data []byte) {

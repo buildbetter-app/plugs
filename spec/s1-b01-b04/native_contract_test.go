@@ -203,11 +203,17 @@ func TestNativeFutureIdentityInputs(t *testing.T) {
 		t.Fatal("future inputs lost the exact consumer or deviation binding")
 	}
 	seenIDs, databases, modes := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	caseNames := map[string]bool{}
 	for _, vector := range inputs.Vectors {
 		if vector.ID != "B01-parent-"+vector.Mode || len(vector.Runs) != 2 || modes[vector.Mode] || len(vector.SourceIDs) != 4 {
 			t.Fatal("future inputs lost distinct vectors/twins/roles")
 		}
 		modes[vector.Mode] = true
+		name := nativeVectorTestName(vector)
+		if name == "" || caseNames[name] {
+			t.Fatal("native vectors do not have two distinct top-level shard cases")
+		}
+		caseNames[name] = true
 		for _, role := range nativeRoles {
 			id := vector.SourceIDs[role]
 			if !nativeSafeSuffix(id) || id != "b01-"+vector.Mode+role || seenIDs[id] {

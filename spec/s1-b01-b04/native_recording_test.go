@@ -28,9 +28,24 @@ type nativeCapture struct {
 // This manual target is a physical recorder, never part of ordinary //...
 // gates. Launch requires the separately delivered, reviewed prepared input.
 // Ordinary compilation cannot establish a native recording or admission.
-func TestB01NativeTimedAndIndefinitePair(t *testing.T) {
+func TestB01NativeTimedPair(t *testing.T) {
+	recordNativePair(t, "timed", 0)
+}
+
+func TestB01NativeIndefinitePair(t *testing.T) {
+	recordNativePair(t, "indefinite", 1)
+}
+
+func recordNativePair(t *testing.T, mode string, shardIndex int) {
 	var inputs nativeInputs
 	nativeDecode(t, nativeInputsBytes, &inputs)
+	if t.Name() != nativeVectorTestName(nativeVector{Mode: mode}) ||
+		nativeEnv(t, "TEST_TOTAL_SHARDS") != "2" || nativeEnv(t, "TEST_SHARD_INDEX") != strconv.Itoa(shardIndex) {
+		t.Fatal("native vector pair requires its distinct top-level case in the assigned two-shard runner")
+	}
+	if _, err := os.Stat(nativeEnv(t, "TEST_SHARD_STATUS_FILE")); err != nil {
+		t.Fatalf("native runner did not acknowledge actual test sharding: %v", err)
+	}
 	retained := nativeEnv(t, "TEST_UNDECLARED_OUTPUTS_DIR")
 	root, err := os.MkdirTemp(retained, "b01-native-pair-")
 	if err != nil {
@@ -73,7 +88,7 @@ func TestB01NativeTimedAndIndefinitePair(t *testing.T) {
 		t.Fatal("both distinct timed and indefinite input vectors are required")
 	}
 	replayManifest := nativeRequiredReplayManifest()
-	replayPaths := nativeReplayManifestPaths(inputs)
+	allReplayPaths := nativeReplayManifestPaths(inputs)
 	expectedRoots := 0
 	for _, vector := range inputs.Vectors {
 		if len(vector.Runs) != 2 {
@@ -82,31 +97,52 @@ func TestB01NativeTimedAndIndefinitePair(t *testing.T) {
 		expectedRoots += len(vector.Runs)
 	}
 	pathsPerRoot := 1 + len(replayManifest.HierarchyPhases) + len(replayManifest.MembershipPhases)
-	if expectedRoots != 4 || len(replayManifest.Backends) != 3 || len(replayPaths) != expectedRoots*len(replayManifest.Backends)*pathsPerRoot {
-		t.Fatalf("native replay manifest matrix has roots=%d backends=%d paths=%d; want 4 roots, 3 backends, %d paths", expectedRoots, len(replayManifest.Backends), len(replayPaths), expectedRoots*len(replayManifest.Backends)*pathsPerRoot)
+	if expectedRoots != 4 || len(replayManifest.Backends) != 3 || len(allReplayPaths) != expectedRoots*len(replayManifest.Backends)*pathsPerRoot {
+		t.Fatalf("native replay manifest matrix has roots=%d backends=%d paths=%d; want 4 roots, 3 backends, %d paths", expectedRoots, len(replayManifest.Backends), len(allReplayPaths), expectedRoots*len(replayManifest.Backends)*pathsPerRoot)
 	}
 	seenReplayPaths := map[string]bool{}
-	for _, path := range replayPaths {
+	for _, path := range allReplayPaths {
 		if seenReplayPaths[path] {
 			t.Fatalf("native replay manifest contains duplicate named path %s", path)
 		}
 		seenReplayPaths[path] = true
 	}
+	selectedInputs := inputs
+	selectedInputs.Vectors = nil
+	for _, vector := range inputs.Vectors {
+		if vector.Mode == mode {
+			selectedInputs.Vectors = append(selectedInputs.Vectors, vector)
+		}
+	}
+	if len(selectedInputs.Vectors) != 1 || len(selectedInputs.Vectors[0].Runs) != 2 {
+		t.Fatal("native shard must own exactly one complete vector and both distinct twins")
+	}
+	replayPaths := nativeReplayManifestPaths(selectedInputs)
+	if len(replayPaths)*2 != len(allReplayPaths) {
+		t.Fatal("native shard manifest does not partition the full two-vector matrix equally")
+	}
+	nativeJSON(t, filepath.Join(root, "native-shard.json"), map[string]any{
+		"schema": "plug.s1.b01.native-vector-shard.v1", "test": t.Name(), "mode": mode,
+		"index": shardIndex, "total": 2, "paths": replayPaths, "allPaths": allReplayPaths,
+		"captures": 2, "replayRoots": 6, "commandsPerCapture": 433, "storeSlots": 1,
+	})
+	t.Logf("B01_NATIVE_SHARD test=%s mode=%s index=%d total=2 captures=2 replayRoots=6 paths=%d", t.Name(), mode, shardIndex, len(replayPaths))
 	nativeJSON(t, filepath.Join(root, "native-replay-manifest.json"), map[string]any{
 		"manifest": replayManifest,
 		"paths":    replayPaths,
+		"allPaths": allReplayPaths,
 		"coverage": map[string]any{
-			"matrix":              "4 vector/run roots x 3 backends",
+			"matrix":              "2 vector/run roots x 3 backends per shard; 4 roots x 3 backends across both shards",
 			"requiredNamedPhases": "every H03/H04 path in manifest",
 			"rawXMLNamedSet":      "exact equality with paths; representation differences remain visible",
 			"filteredOmission":    "fail closed",
 		},
 	})
-	// Capture pairs and replay roots share the existing two-store ceiling.
-	// Join both capture workers before comparing twins or starting any replay.
-	replaySlots := make(chan struct{}, 2)
+	// Each of the two shard actions owns one store slot, preserving the total
+	// two-store ceiling. Join both captures before their comparison and replay.
+	replaySlots := make(chan struct{}, 1)
 	var captures []nativeCapture
-	for _, vector := range inputs.Vectors {
+	for _, vector := range selectedInputs.Vectors {
 		var twins []nativeCapture
 		if len(vector.Runs) != 2 {
 			t.Fatal("each vector requires two fresh stores")
@@ -153,8 +189,8 @@ func TestB01NativeTimedAndIndefinitePair(t *testing.T) {
 			t.Fatalf("%s semantic twin projections differ; originals retained", vector.ID)
 		}
 	}
-	// All four real captures are complete before replay starts. No reference
-	// observation is reconstructed from Plug expectations or historical files.
+	// Both real captures owned by this shard finish before replay starts.
+	// No reference is reconstructed from Plug expectations or historical files.
 	h := newPostgresHarness(t)
 	coverage := map[string]*nativeReplayCoverage{}
 	// Replay roots have disjoint stores, clocks, authorities and output paths.

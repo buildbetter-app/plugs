@@ -165,5 +165,6 @@ go_test(
         "//internal/testclock",
     ],
     tags = ["manual", "local", "requires-network"],
+    shard_count = 2,
     timeout = "long",
 )

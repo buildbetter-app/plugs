@@ -454,3 +454,31 @@ per store bring the current source plan to 433/store and 1732 overall. The
 previous 422-command recordings remain immutable evidence for their own heads;
 this extension is AUTHORED_NOT_RUN until a fresh changed-source terminal. It
 does not establish mixed-plane pagination or controlled 48-hour ordering.
+
+The native target now declares `shard_count = 2` and exposes two real top-level
+cases, `TestB01NativeTimedPair` followed by `TestB01NativeIndefinitePair`.
+The pinned rules_go 0.63.0 generated runner assigns top-level cases by declaration
+index modulo `TEST_TOTAL_SHARDS`. Each case requires its assigned shard index,
+a total of two and the runner's touched status file. Splitting subtests under
+one parent would leave that parent on one shard and is not used here.
+
+Each shard owns one complete vector: both actual 433-command captures, their
+unchanged semantic comparison, and both runs' memory/SQLite/PostgreSQL replay.
+Each has six store roots and 84 required phase paths; the disjoint union has
+all twelve roots and 168 paths. The original 944 child names keep their suffixes
+under the two distinct top-level names, yielding 946 total raw/XML names.
+The shard record retains its local paths and the complete global manifest.
+Only its selected vector executes, so neither the full suite nor captures are
+repeated. Each shard keeps one store slot, preserving the total two-store
+ceiling across the two Bazel actions. Each has its own PostgreSQL harness;
+every capture, replay store, physical reopen and cleanup keeps its original
+operations and ordering. Captures join before their own comparison/replay.
+
+The reviewed ee2 archive layout remains: final inventory and sums are packed
+outside the owned root and completely verified before loose-root removal.
+No deadline, TTL, clock, command, assertion, environment export, native input
+or accepted helper/artifact pin changes. Original b708/e293 timeout receipts
+remain literal. The separate ee2 native run 41963878136 exited zero with all
+945 original raw/XML names; it supplies no execution credit to this sharded
+source. This partition requires fresh preparation, both shard terminals and
+independent named-union review. FullB01 remains incomplete.
