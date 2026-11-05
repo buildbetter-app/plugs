@@ -95,6 +95,7 @@ func sourceReverseProfile(t *testing.T, data []byte, store driver.Store, lease d
 		for i := range plan.Entities {
 			entity := &plan.Entities[i]
 			if entity.TargetKind == "workflow:item" {
+				entity.Route.ActiveTargetID = entity.TargetID
 				entity.Route.DurableTargetID = ""
 			} else {
 				entity.Route.ActiveTargetID = ""
@@ -238,10 +239,10 @@ func TestJointSourceReversePinnedDefaultAndAllAcrossThreeStores(t *testing.T) {
 				if db != nil && !reflect.DeepEqual(physical, jointPhysicalSQL(t, db, engine)) {
 					t.Fatal("reverse changed physical SQL state")
 				}
-				hooked := &sourceReverseSnapshotHook{Store: store, SourcePlaneSnapshotStore: capability, afterSnapshot: func() { apply("later active reverse", "later durable reverse", 902) }}
-				captured, err := ReverseRestoredWithOptions(ctx, hooked, reverseconverter.Options{All: true})
-				if err != nil || hooked.reads != 1 || hooked.pins != 1 || captured.Result.Digest != all.Result.Digest {
-					t.Fatalf("reverse mixed current namespace/core observations: reads=%d pins=%d err=%v", hooked.reads, hooked.pins, err)
+				observed := &sourceReverseSnapshotHook{Store: store, SourcePlaneSnapshotStore: capability, afterSnapshot: func() { apply("later active reverse", "later durable reverse", 902) }}
+				captured, err := ReverseRestoredWithOptions(ctx, observed, reverseconverter.Options{All: true})
+				if err != nil || observed.reads != 1 || observed.pins != 1 || captured.Result.Digest != all.Result.Digest {
+					t.Fatalf("reverse mixed current namespace/core observations: reads=%d pins=%d err=%v", observed.reads, observed.pins, err)
 				}
 				latest, err := ReverseRestoredWithOptions(ctx, store, reverseconverter.Options{All: true})
 				if err != nil || sourceReverseRows(t, latest.Result.JSONL)["demo-9"]["title"] != "later active reverse" || sourceReverseRows(t, latest.Result.JSONL)["demo-8"]["title"] != "later durable reverse" {

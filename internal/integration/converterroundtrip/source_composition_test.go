@@ -63,12 +63,16 @@ func TestJointSourceCompositionImportInstallAndStartupRecovery(t *testing.T) {
 			if !runtime.Service.SourceRuntimeInstalled() {
 				t.Fatal("import omitted live installation")
 			}
+			admitted, original, found, err := converterroundtrip.RecoverBoundSourceImport(ctx, runtime.Store)
+			if err != nil || !found || !reflect.DeepEqual(original.Receipt, report.Receipt) || !reflect.DeepEqual(admitted.Admission.Actor, owner) {
+				t.Fatal("composition did not retain the actual admitted importer and original receipt", err)
+			}
 			ref := model.RefByID("demo-7", model.Natural64(0))
 			got := converterroundtrip.JointHTTPForTest(t, runtime.HTTPHandler, "bead.get", 0, map[string]any{"id": ref})
 			if !bytes.Contains(got, []byte("Exact active collision")) {
 				t.Fatal("bound HTTP handler missed newly installed provider", string(got))
 			}
-			converterroundtrip.JointAssertSourceCommentForTest(t, got, profile, report)
+			converterroundtrip.JointAssertSourceCommentForTest(t, got, admitted, report)
 			converterroundtrip.JointHTTPForTest(t, runtime.HTTPHandler, "bead.update", 701, map[string]any{"id": ref, "fields": map[string]any{"title": "composed current source title"}})
 			request.SourcePlanes = nil
 			recovered, err := runtime.RestoreImport(ctx, owner, bytes.NewReader(data), request)
@@ -92,7 +96,7 @@ func TestJointSourceCompositionImportInstallAndStartupRecovery(t *testing.T) {
 			if !bytes.Contains(current, []byte("composed current source title")) {
 				t.Fatal("recovery substituted initial receipt payload for current namespace", string(current))
 			}
-			converterroundtrip.JointAssertSourceCommentForTest(t, current, profile, report)
+			converterroundtrip.JointAssertSourceCommentForTest(t, current, admitted, report)
 			replay := converterroundtrip.JointHTTPForTest(t, runtime.HTTPHandler, "bead.update", 701, map[string]any{"id": ref, "fields": map[string]any{"title": "composed current source title"}})
 			if !bytes.Contains(replay, []byte("composed current source title")) {
 				t.Fatal("recovery replay changed result", string(replay))
