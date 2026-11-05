@@ -6,7 +6,10 @@ import (
 	"errors"
 	"math"
 	"reflect"
+	"sort"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -331,5 +334,106 @@ func TestSourceCheckpointStageCannotPrecedeRestorePreparation(t *testing.T) {
 	value, _ := s.LoadCheckpoint(ctx, "workflow")
 	if value.Generation != 1 || string(value.Payload) != "ordinary" || !s.state.meta.Head.IsZero() {
 		t.Fatal("ordinary checkpoint publication lost its original mode")
+	}
+}
+
+func TestSourceCheckpointStageAfterHistoryPreparationRefusesWithoutChangingLegacyHistory(t *testing.T) {
+	for _, mode := range []driver.RestoreHistoryMode{driver.RestoreHistoryModeFull, driver.RestoreHistoryModePartial} {
+		for _, publish := range []bool{false, true} {
+			t.Run(string(mode)+map[bool]string{false: "/rollback", true: "/commit"}[publish], func(t *testing.T) {
+				ctx := context.Background()
+				s := New()
+				defer s.Close()
+				lease := sourceLease(t, s)
+				before := s.state
+				when := time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC)
+				a := driver.Record{Ref: model.RefByID("history-checkpoint", model.Natural64(0)), Kind: "test", Body: []byte(`{"value":"before"}`)}
+				b := a
+				b.Body = []byte(`{"value":"after"}`)
+				history := driver.OfflineHistory{Source: "explicit-history-control", Verified: true, Complete: true, First: 1, Head: 1, Batches: []driver.SourceHistoryBatch{{Sequence: 1, EventIDs: []string{"event:1"}, Changes: []driver.SourceHistoryChange{{After: &b}}}}}
+				if mode == driver.RestoreHistoryModePartial {
+					history.Complete, history.BaselineVerified = false, true
+					history.First, history.Head = 2, 2
+					history.Baseline = []driver.Record{a}
+					history.Gaps = []driver.SourceHistoryGap{{First: 1, Last: 1, Reason: "unavailable prefix"}}
+					history.Batches = []driver.SourceHistoryBatch{{Sequence: 2, EventIDs: []string{"event:2"}, Changes: []driver.SourceHistoryChange{{Before: &a, After: &b}}}}
+				}
+				p := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "restore-admin"}, Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: "source-history", Method: "offline.restore.import", IdempotencyKey: "history-checkpoint", ArchiveDigest: strings.Repeat("b", 64), DerivedDigest: strings.Repeat("c", 64), HistoryMode: mode, HistoryTime: when.Format(time.RFC3339Nano)}
+				var err error
+				p.HistoryDigest, err = driver.OfflineHistoryDigest(history)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := driver.BuildOfflineHistory(before.meta, p, history, when, []driver.Record{b}); err != nil {
+					t.Fatal("invalid positive history precondition", err)
+				}
+				marker := model.RefByID(driver.OfflineHistoryEvidenceID, model.Natural64(0))
+				locks := driver.LockSet{{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &b.Ref}, Mode: driver.LockUpdate}, {Key: driver.LockKey{Kind: driver.LockRecord, Ref: &marker}, Mode: driver.LockUpdate}}
+				sort.Slice(locks, func(i, j int) bool { return keyID(locks[i].Key) < keyID(locks[j].Key) })
+				write, err := s.Write(ctx, lease)
+				if err != nil {
+					t.Fatal(err)
+				}
+				tx := write.(*transaction)
+				defer tx.Close()
+				if _, err := tx.Lock(ctx, locks); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.Head(ctx); err != nil {
+					t.Fatal(err)
+				}
+				meta, err := tx.PrepareOfflineHistory(ctx, p, history, when)
+				if err != nil {
+					t.Fatal("legacy preparation failed", err)
+				}
+				if err := tx.StageCheckpoint(ctx, "workflow", 0, []byte("must not be ignored")); !errors.Is(err, driver.ErrUnsupported) {
+					t.Fatalf("checkpoint after history preparation=%v", err)
+				}
+				if len(tx.checkpointWrites)+len(tx.checkpointGuards) != 0 || s.state != before || len(s.checkpoints) != 0 {
+					t.Fatal("refusal staged or published checkpoint, graph, metadata or receipt")
+				}
+				if !publish {
+					if err := tx.Close(); err != nil {
+						t.Fatal(err)
+					}
+					if s.state != before || len(s.checkpoints) != 0 {
+						t.Fatal("rollback changed original graph, history, receipt or checkpoint")
+					}
+					return
+				}
+				// The SAME prepared transaction still publishes ordinary legacy
+				// history and its receipt; refusal never poisons its mode.
+				if err := tx.Put(ctx, b); err != nil {
+					t.Fatal(err)
+				}
+				hash, err := p.RequestHash()
+				if err != nil {
+					t.Fatal(err)
+				}
+				keys := []driver.LockKey{}
+				for _, held := range locks {
+					keys = append(keys, held.Key)
+				}
+				header := driver.ChangesetHeader{Incarnation: meta.Incarnation, Kind: model.ChangesetRestore, Time: when, Principal: p.Admission.Actor, Method: p.Method, IdempotencyKey: p.IdempotencyKey, RequestHash: hash, LockKeys: keys, Changes: []model.ChangeRecord{{Ref: b.Ref, Op: model.OpCreate, FromRevision: model.Natural64(0), ChangedPaths: []string{""}}}}
+				entry, err := tx.CommitOfflineHistory(ctx, header)
+				if err != nil {
+					t.Fatal("refusal broke same-transaction legacy commit", err)
+				}
+				want := "2"
+				wantEntries := 2
+				if mode == driver.RestoreHistoryModePartial {
+					want = "3"
+					wantEntries = 3
+				}
+				if entry.Revision.String() != want || s.state.meta.Head != entry.Revision || s.state.meta.Incarnation != meta.Incarnation || len(s.state.records) != 2 || len(s.state.log) != wantEntries || len(s.state.replays) != 1 || len(s.checkpoints) != 0 {
+					t.Fatal("legacy history/receipt correspondence changed or checkpoint leaked")
+				}
+				for _, replay := range s.state.replays {
+					if replay.value.RequestHash != hash || !reflect.DeepEqual(replay.value.Changeset, entry) {
+						t.Fatal("legacy immutable receipt changed")
+					}
+				}
+			})
+		}
 	}
 }
