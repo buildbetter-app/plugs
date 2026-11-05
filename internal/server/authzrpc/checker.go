@@ -216,6 +216,10 @@ func (c *Checker) Authorize(ctx context.Context, stage port.AuthorizationStage, 
 	if err != nil {
 		return &model.Error{Message: "authorization facts unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
 	}
+	sourceSlice, err := sourceAuthorizationSlice(s, stage, proposal)
+	if err != nil {
+		return err
+	}
 	requests := make([]authz.CheckRequest, 0, len(proposal.Changes)+len(proposal.Expect)+1)
 	for _, change := range proposal.Changes {
 		requests = append(requests, authz.CheckRequest{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Bead, Ref: change.Resource.Ref}, Method: proposal.Meta.Method})
@@ -236,7 +240,7 @@ func (c *Checker) Authorize(ctx context.Context, stage port.AuthorizationStage, 
 	// refusal remains authoritative, including receipt replay.
 	for _, change := range proposal.Changes {
 		if change.Op.Kind == model.OpClose {
-			if proposal.Meta.Method != "tx.apply" {
+			if proposal.Meta.Method != "tx.apply" && proposal.Meta.Method != "bead.close" {
 				return forbidden("close operation requires tx.apply")
 			}
 			requests = append(requests, authz.CheckRequest{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Bead, Ref: change.Resource.Ref}, Method: "bead.close"})
@@ -256,7 +260,7 @@ func (c *Checker) Authorize(ctx context.Context, stage port.AuthorizationStage, 
 		requests = append(requests, authz.CheckRequest{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Project, Ref: project}, Method: ""})
 	}
 	chain := c.chain
-	var checkSlice authz.Slice = s
+	var checkSlice authz.Slice = sourceSlice
 	if claimMaintenance {
 		chain = c.claimMaintenanceChain()
 		checkSlice = &claimMaintenanceSlice{Slice: s, recorded: make(map[authz.Dependency]struct{})}
@@ -272,7 +276,7 @@ func (c *Checker) Authorize(ctx context.Context, stage port.AuthorizationStage, 
 		if decision.Effect != authz.Allow {
 			return forbidden(strings.Join(decision.Reasons, ","))
 		}
-		if stage == port.AuthorizeAfter && i < changeCount && !heartbeat {
+		if stage == port.AuthorizeAfter && i < changeCount && !heartbeat && proposal.Changes[i].Resource.Kind == "bead" {
 			if err := c.validateExistingWrite(ctx, reader, proposal, proposal.Changes[i], caller); err != nil {
 				return err
 			}

@@ -309,6 +309,7 @@ internal/core/pipeline/snapshot_get_test.go
 internal/core/pipeline/snapshot_hierarchy.go
 internal/core/pipeline/source_indexes.go
 internal/core/pipeline/source_indexes_test.go
+internal/core/pipeline/source_operations.go
 internal/core/pipeline/telemetry.go
 internal/core/pipeline/telemetry_test.go
 internal/core/pipeline/workflow_close_ref.go
@@ -369,6 +370,7 @@ internal/core/service/ready_order.go
 internal/core/service/rpc_reads.go
 internal/core/service/service.go
 internal/core/service/service_test.go
+internal/core/service/source_workflow.go
 internal/core/service/types.go
 internal/core/service/waits_for_consumer_test.go
 internal/core/service/workflow_bridge.go
@@ -502,6 +504,7 @@ internal/integration/converterroundtrip/source_checkpoint_test.go
 internal/integration/converterroundtrip/source_planes.go
 internal/integration/converterroundtrip/source_planes_recovery.go
 internal/integration/converterroundtrip/source_planes_test.go
+internal/integration/converterroundtrip/source_public_test.go
 internal/integration/converterroundtrip/testdata/public-complete-root-990eb800.tar
 internal/integration/converterroundtrip/testdata/public-partial-990eb800.tar
 internal/integration/converterroundtrip/testdata/public-source-990eb800.md
@@ -760,6 +763,7 @@ internal/server/authzrpc/predicate_count_test.go
 internal/server/authzrpc/prepared_test.go
 internal/server/authzrpc/service.go
 internal/server/authzrpc/slice.go
+internal/server/authzrpc/source_workflow.go
 internal/server/authzrpc/workflow_boundary_test.go
 internal/server/authzrpc/workflow_claimnext.go
 internal/server/authzrpc/workflow_claimnext_auth_test.go
@@ -800,6 +804,7 @@ internal/server/composition/restore_actual_archive_test.go
 internal/server/composition/restore_import.go
 internal/server/composition/restore_import_test.go
 internal/server/composition/source_indexes_test.go
+internal/server/composition/source_workflow.go
 internal/server/composition/telemetry.go
 internal/server/composition/telemetry_test.go
 internal/server/composition/testdata/server-representative-plug-dump-1.tar

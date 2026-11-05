@@ -37,12 +37,17 @@ func cloneMap(value map[string]any) map[string]any {
 }
 
 func (s *Service) Get(ctx context.Context, by model.PrincipalRef, req GetRequest) (GetResult, error) {
+	resolved, _, err := s.ResolveSourceAddress(ctx, by, req.Project, req.ID)
+	if err != nil {
+		return GetResult{}, err
+	}
+	req.ID = resolved
 	if workflowRef(req.ID) {
-		if err := validateWorkflowRef(req.ID); err != nil {
+		if err := validateWorkflowRef(req.ID); err != nil && !s.knownSourceWorkflowRef(req.Project, req.ID) {
 			return GetResult{}, err
 		}
-		if s.workflow != nil {
-			item, err := s.workflow.GetWithResolver(ctx, by, req.ID, workflowMeta(by, "bead.get", req.Project, req.Agent), s.workflowBlockerResolver(ctx, by, workflowMeta(by, "bead.get", req.Project, req.Agent)))
+		if s.workflowProvider() != nil {
+			item, err := s.workflowProvider().GetWithResolver(ctx, by, req.ID, workflowMeta(by, "bead.get", req.Project, req.Agent), s.workflowBlockerResolver(ctx, by, workflowMeta(by, "bead.get", req.Project, req.Agent)))
 			if err == nil {
 				if req.AsOf != nil {
 					return GetResult{}, failure("invalid_params", "workflow items have no historical asOf view")
@@ -79,13 +84,13 @@ func (s *Service) Get(ctx context.Context, by model.PrincipalRef, req GetRequest
 		return GetResult{}, err
 	}
 	result := GetResult{Bead: bead, Attachments: doc.Attachments}
-	if s.workflow != nil && req.AsOf == nil {
-		links, err := s.workflow.Relations(ctx, by, req.ID, workflowMeta(by, "bead.get", req.Project, req.Agent))
+	if s.workflowProvider() != nil && req.AsOf == nil {
+		links, err := s.workflowProvider().Relations(ctx, by, req.ID, workflowMeta(by, "bead.get", req.Project, req.Agent))
 		if err != nil {
 			return GetResult{}, err
 		}
 		result.Bead.Links = append(result.Bead.Links, links...)
-		blocked, err := s.workflow.OrdinaryBlocked(ctx, by, []string{req.ID.ID}, workflowMeta(by, "bead.get", doc.Project, req.Agent))
+		blocked, err := s.workflowProvider().OrdinaryBlocked(ctx, by, []string{req.ID.ID}, workflowMeta(by, "bead.get", doc.Project, req.Agent))
 		if err != nil {
 			return GetResult{}, err
 		}
@@ -230,8 +235,8 @@ func (s *Service) readyItems(ctx context.Context, by model.PrincipalRef, req Rea
 	}
 	graphIDs := sortedIDs(graph)
 	workflowBlocked := map[string]bool{}
-	if s.workflow != nil {
-		blocked, err := s.workflow.OrdinaryBlocked(ctx, by, graphIDs, workflowMeta(by, "bead.ready", req.Project, req.Agent))
+	if s.workflowProvider() != nil {
+		blocked, err := s.workflowProvider().OrdinaryBlocked(ctx, by, graphIDs, workflowMeta(by, "bead.ready", req.Project, req.Agent))
 		if err != nil {
 			return nil, nil, err
 		}
@@ -324,8 +329,8 @@ func (s *Service) readyPage(ctx context.Context, by model.PrincipalRef, req Read
 	if req.Filter != nil && req.Filter.IncludeEphemeral != nil {
 		includeEphemeral = *req.Filter.IncludeEphemeral
 	}
-	if s.workflow != nil && includeEphemeral {
-		active, err := s.workflow.ActiveIDsFor(ctx, by, workflowMeta(by, "bead.ready", req.Project, req.Agent))
+	if s.workflowProvider() != nil && includeEphemeral {
+		active, err := s.workflowProvider().ActiveIDsFor(ctx, by, workflowMeta(by, "bead.ready", req.Project, req.Agent))
 		if err != nil {
 			return BeadPage{}, err
 		}
@@ -444,7 +449,7 @@ func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req 
 	if err := validatePosition(req.Position); err != nil {
 		return BeadPage{}, err
 	}
-	if s.workflow == nil {
+	if s.workflowProvider() == nil {
 		if req.Position != nil && (req.Position.Workflow || req.Position.WorkflowSnapshot != nil) {
 			return BeadPage{}, failure("cursor_invalid", "workflow provider is unavailable; restart paging")
 		}
@@ -478,7 +483,7 @@ func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req 
 	if req.Filter != nil && req.Filter.IncludeEphemeral != nil {
 		includeEphemeral = *req.Filter.IncludeEphemeral
 	}
-	snapshot, err := s.workflow.ReadySnapshotWithResolver(ctx, by, req.Project, types, workflowMeta(by, "bead.ready", req.Project, req.Agent), includeEphemeral, s.workflowBlockerResolver(ctx, by, workflowMeta(by, "bead.ready", req.Project, req.Agent)))
+	snapshot, err := s.workflowProvider().ReadySnapshotWithResolver(ctx, by, req.Project, types, workflowMeta(by, "bead.ready", req.Project, req.Agent), includeEphemeral, s.workflowBlockerResolver(ctx, by, workflowMeta(by, "bead.ready", req.Project, req.Agent)))
 	if err != nil {
 		return BeadPage{}, err
 	}

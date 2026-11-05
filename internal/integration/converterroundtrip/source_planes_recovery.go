@@ -12,6 +12,48 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
+// RecoverBoundSourceImport discovers only the protected binding, then verifies
+// the original receipt, retained archive and current joint namespace through
+// RecoverImport. The returned profile is detached data, never caller authority.
+func RecoverBoundSourceImport(ctx context.Context, target driver.Store) (driver.RestoreImportProfile, Report, bool, error) {
+	meta, err := target.Meta(ctx)
+	if err != nil {
+		return driver.RestoreImportProfile{}, Report{}, false, err
+	}
+	r, err := target.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		return driver.RestoreImportProfile{}, Report{}, false, err
+	}
+	rows, readErr := r.Get(ctx, []model.Ref{model.RefByID(importBindingRecordID, model.Natural64(0))})
+	closeErr := r.Close()
+	if readErr != nil {
+		return driver.RestoreImportProfile{}, Report{}, false, readErr
+	}
+	if closeErr != nil {
+		return driver.RestoreImportProfile{}, Report{}, false, closeErr
+	}
+	if len(rows) == 0 {
+		return driver.RestoreImportProfile{}, Report{}, false, nil
+	}
+	var binding importBindingEvidence
+	if len(rows) != 1 || rows[0].Kind != "instance_config" || json.Unmarshal(rows[0].Body, &binding) != nil {
+		return driver.RestoreImportProfile{}, Report{}, false, driver.ErrConflict
+	}
+	profile, err := binding.Profile.Detached()
+	if err != nil {
+		return driver.RestoreImportProfile{}, Report{}, false, err
+	}
+	if profile.SourcePlanes == nil {
+		return driver.RestoreImportProfile{}, Report{}, false, nil
+	}
+	request, err := profile.RequestHash()
+	if err != nil || request != binding.RequestHash {
+		return driver.RestoreImportProfile{}, Report{}, false, driver.ErrConflict
+	}
+	report, err := RecoverImport(ctx, target, profile, Verification{ArchiveSHA256: profile.ArchiveDigest, DerivedSHA256: profile.DerivedDigest})
+	return profile, report, true, err
+}
+
 func recoverSourceImport(ctx context.Context, target driver.Store, profile driver.RestoreImportProfile, check Verification) (Report, error) {
 	capability, ok := target.(driver.SourcePlaneSnapshotStore)
 	if !ok {

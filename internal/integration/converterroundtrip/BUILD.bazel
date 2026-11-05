@@ -34,6 +34,7 @@ go_test(
         "//internal/core/pipeline",
         "//internal/core/reverseconverter",
         "//internal/core/service",
+        "//internal/server/rpc",
         "//internal/core/viewops",
         "//internal/storage/driver",
         "//internal/server/pluginhost",

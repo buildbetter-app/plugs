@@ -8,7 +8,7 @@ test_go_sdk(
 
 go_library(
     name = "composition",
-    srcs = ["artifact.go", "config.go", "configfile.go", "mcp.go", "native.go", "restore_import.go", "telemetry.go"],
+    srcs = ["artifact.go", "config.go", "configfile.go", "mcp.go", "native.go", "restore_import.go", "source_workflow.go", "telemetry.go"],
     importpath = "github.com/buildbetter-app/plugs/internal/server/composition",
     visibility = ["//:__subpackages__"],
     deps = [

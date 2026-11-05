@@ -152,7 +152,7 @@ func (s *Service) workflowWriteGuard(ctx context.Context, proposal port.Proposed
 	if len(ids) == 0 {
 		return driver.CheckpointExpectation{}, nil
 	}
-	blocked, expectation, err := s.workflow.OrdinaryBlockerSnapshot(ctx, proposal.Principal, ids, proposal.Meta)
+	blocked, expectation, err := s.workflowProvider().OrdinaryBlockerSnapshot(ctx, proposal.Principal, ids, proposal.Meta)
 	if err != nil {
 		return driver.CheckpointExpectation{}, err
 	}
