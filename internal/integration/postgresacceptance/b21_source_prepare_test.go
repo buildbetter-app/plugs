@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -23,6 +24,81 @@ func b21Logical(t *testing.T, f *b21SourceFixture) []byte {
 	f.plan.Providers[0].LogicalImageSHA256 = prepared.SHA256()
 	f.plan.Providers[0].LogicalImageSize = uint64(len(logical))
 	return logical
+}
+
+func TestB21SourceReverseImageDetachedCensus(t *testing.T) {
+	f := b21Fixture(t, driver.Meta{StoreID: "target", Incarnation: "before"}, driver.CheckpointLifetimeProcess)
+	logical := b21Logical(t, &f)
+	original := bytes.Clone(logical)
+	image, err := workflowplugin.InspectSourceReverseImage(logical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := driver.SourceEntityKey{Project: project, Plane: dumpformat.EphemeralEntityTable, ID: "same-id"}
+	durable := driver.SourceEntityKey{Project: project, Plane: dumpformat.DurableEntityTable, ID: "same-id"}
+	entry := image.Entities[parent]
+	if len(image.Entities) != 2 || len(image.Relations) != 3 || !entry.Present || entry.Terminal || entry.Item == nil || entry.TargetID != "workflow:item/source-parent" || entry.Item.Metadata["large"] != json.Number("9007199254740993") || entry.Item.Metadata["negative"] != json.Number("-9007199254740993") || entry.Item.ChildCounter != 13 {
+		t.Fatalf("incomplete source-keyed current census: %+v", image)
+	}
+	if _, aliased := image.Entities[durable]; aliased {
+		t.Fatal("equal physical IDs aliased durable and active source planes")
+	}
+	if len(entry.Item.Comments) != 1 || entry.Item.Comments[0].Source == nil || entry.Item.Comments[0].Source.Author != "unverified-author" || entry.Item.Comments[0].Principal.Kind != "" {
+		t.Fatalf("inspection changed source attribution: %+v", entry.Item.Comments)
+	}
+	want, err := workflowplugin.InspectSourceReverseImage(logical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry.Item.Title = "changed detached view"
+	entry.Item.Metadata["large"] = "changed"
+	entry.Item.Metadata["nested"].([]any)[1] = "changed"
+	entry.Item.Comments[0].Source.Author = "changed"
+	image.Relations[0].From = "changed"
+	delete(image.Entities, parent)
+	again, err := workflowplugin.InspectSourceReverseImage(logical)
+	if err != nil || !reflect.DeepEqual(want, again) || !bytes.Equal(logical, original) {
+		t.Fatalf("reverse inspection aliased or changed its input: %v", err)
+	}
+}
+
+func TestB21SourceReverseImageRefusesMalformedAndUnmapped(t *testing.T) {
+	f := b21Fixture(t, driver.Meta{StoreID: "target", Incarnation: "before"}, driver.CheckpointLifetimeProcess)
+	logical := b21Logical(t, &f)
+	replace := func(before, after string) []byte {
+		t.Helper()
+		if !bytes.Contains(logical, []byte(before)) {
+			t.Fatalf("missing causal image precondition: %s", before)
+		}
+		return bytes.Replace(logical, []byte(before), []byte(after), 1)
+	}
+	// Keep the writer's struct/map order and all unrelated bytes unchanged so
+	// each changed known field reaches the corresponding identity/index guard.
+	inputs := map[string][]byte{
+		"empty": nil, "null": []byte("null"), "truncated": logical[:len(logical)-1],
+		"trailing":                    append(bytes.Clone(logical), []byte("{}")...),
+		"duplicate JSON member":       append([]byte(`{"runs":null,`), logical[1:]...),
+		"unsupported source schema":   replace(`"schema":"workflow/source-state/1"`, `"schema":"unsupported/1"`),
+		"unmapped current item":       replace(`"workflow:item/source-parent":`, `"workflow:item/unmapped":`),
+		"mismatched current identity": replace(`"id":"workflow:item/source-parent"`, `"id":"workflow:item/other"`),
+		"missing current run":         replace(`"workflow:run/source-parent":`, `"workflow:run/unmapped":`),
+		"missing run member":          replace(`"itemIds":["workflow:item/source-parent"]`, `"itemIds":[]`),
+		"duplicate run member":        replace(`"itemIds":["workflow:item/source-parent"]`, `"itemIds":["workflow:item/source-parent","workflow:item/source-parent"]`),
+		"zero item generation":        replace(`"generation":1`, `"generation":0`),
+		"mismatched relation indexes": replace(`"kind":"blocks"`, `"kind":"relates-to"`),
+		"unmapped relation":           replace(`"from":"workflow:item/source-parent"`, `"from":"workflow:item/unmapped"`),
+		"unknown item field":          replace(`"generation":1`, `"generation":1,"future":true`),
+		"malformed source comment":    replace(`"id":"physical-comment"`, `"id":""`),
+	}
+	for name, input := range inputs {
+		t.Run(name, func(t *testing.T) {
+			before := bytes.Clone(input)
+			image, err := workflowplugin.InspectSourceReverseImage(input)
+			if !errors.Is(err, driver.ErrUnsupported) || len(image.Entities) != 0 || len(image.Relations) != 0 || !bytes.Equal(input, before) {
+				t.Fatalf("malformed image returned partial state or changed input: %+v %v", image, err)
+			}
+		})
+	}
 }
 
 func TestB21SourcePreparationExactOriginsAndNumbers(t *testing.T) {

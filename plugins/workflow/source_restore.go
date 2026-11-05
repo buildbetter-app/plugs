@@ -7,7 +7,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -34,6 +36,222 @@ type PreparedSourceRestore struct{ logical []byte }
 
 func (s PreparedSourceRestore) LogicalImage() []byte { return bytes.Clone(s.logical) }
 func (s PreparedSourceRestore) SHA256() string       { return sourceImageHash(s.logical) }
+
+// SourceReverseEntry identifies one imported workflow item in its physical
+// source address domain. An absent item is terminal and has no retained body.
+// Present closed items remain present until their whole run completes.
+type SourceReverseEntry struct {
+	TargetID string
+	Present  bool
+	Terminal bool
+	Item     *ItemView
+}
+
+// SourceReverseImage is a detached census of one already pinned logical image.
+// Entities includes every imported workflow:item declaration, including terminal
+// identities. Present entries exhaust the current active item map. Relations
+// contains current workflow-owned edges, including typed parent references.
+type SourceReverseImage struct {
+	Entities  map[driver.SourceEntityKey]SourceReverseEntry
+	Relations []RelationView
+}
+
+// InspectSourceReverseImage never loads a provider, reads a store, samples a
+// clock, collects receipts or publishes state. The caller must first bind these
+// logical bytes to the original archive/plan and the host origin in the same
+// SourcePlaneSnapshot as its core reader. Lifetime and authority remain those
+// of that checked binding; neither is inferred from an imported source actor.
+// Claims are returned exactly as stored, including expired claims, without
+// applying a later wall clock to the pinned observation. The logical image
+// must use the canonical encoding written by source preparation/runtime saves.
+func InspectSourceReverseImage(logical []byte) (SourceReverseImage, error) {
+	var empty SourceReverseImage
+	if len(logical) == 0 || len(logical) > driver.SourcePlaneMaxPlanBytes || len(bytes.TrimSpace(logical)) == 0 || bytes.TrimSpace(logical)[0] != '{' {
+		return empty, sourceRefusal("invalid reverse logical image")
+	}
+	var value persisted
+	decoder := json.NewDecoder(bytes.NewReader(logical))
+	decoder.UseNumber()
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&value); err != nil {
+		return empty, sourceRefusal("malformed reverse logical image: " + err.Error())
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return empty, sourceRefusal("trailing reverse logical image")
+	}
+	canonical, err := json.Marshal(value)
+	if err != nil || !bytes.Equal(logical, canonical) {
+		return empty, sourceRefusal("noncanonical or unsupported reverse logical fields")
+	}
+	if value.Source == nil || value.Source.Schema != SourceStateSchema || value.Items == nil || value.Runs == nil || value.Receipts == nil || len(value.Source.Entities) > driver.SourcePlaneMaxListEntries {
+		return empty, sourceRefusal("incomplete source-restored reverse image")
+	}
+	byHash, _, err := sourceWireRecords(value.Source.Records)
+	if err != nil {
+		return empty, sourceRefusal("invalid reverse source records: " + err.Error())
+	}
+	result := SourceReverseImage{Entities: make(map[driver.SourceEntityKey]SourceReverseEntry)}
+	byTarget := make(map[string]driver.SourcePlaneEntityV1, len(value.Source.Entities))
+	sources := make(map[driver.SourceEntityKey]bool, len(value.Source.Entities))
+	for _, entity := range value.Source.Entities {
+		if err := entity.Source.Validate(); err != nil || sources[entity.Source] || entity.TargetID == "" {
+			return empty, sourceRefusal("invalid or duplicate reverse source address")
+		}
+		if _, duplicate := byTarget[entity.TargetID]; duplicate {
+			return empty, sourceRefusal("duplicate reverse target address")
+		}
+		ref := model.RefByID(entity.TargetID, model.Natural64(0))
+		if err := validateRef(ref); err != nil || (entity.TargetKind != "workflow:item" && entity.TargetKind != "bead") || (entity.TargetKind == "workflow:item") != workflowTarget(ref) {
+			return empty, sourceRefusal("invalid reverse target binding")
+		}
+		if entity.TargetKind == "bead" && driver.ValidateHierarchyRef(ref) != nil {
+			return empty, sourceRefusal("invalid reverse ordinary target binding")
+		}
+		wire, err := sourceMatchedRecord(byHash, entity.Origin)
+		if err != nil {
+			return empty, sourceRefusal("invalid reverse entity origin: " + err.Error())
+		}
+		id, err := sourceText(wire.Source.Fields["id"])
+		if err != nil || id != entity.Source.ID || wire.Source.Table != entity.Source.Plane || wire.Project != "" && wire.Project != entity.Source.Project {
+			return empty, sourceRefusal("reverse entity origin address differs")
+		}
+		if err := sourceFieldCensus(wire.Source.Fields, entity.Fields); err != nil {
+			return empty, sourceRefusal("invalid reverse entity fields: " + err.Error())
+		}
+		sources[entity.Source], byTarget[entity.TargetID] = true, entity
+		if entity.TargetKind == "workflow:item" {
+			if entity.RunKey == "" || entity.PrincipalKey == "" {
+				return empty, sourceRefusal("incomplete reverse active binding")
+			}
+			result.Entities[entity.Source] = SourceReverseEntry{TargetID: entity.TargetID, Terminal: true}
+		}
+	}
+	// Run keys belong to a project; a delimiter-joined key would alias distinct
+	// physical source components. Current members must preserve that grouping.
+	type runKey struct{ project, key string }
+	runs := map[runKey]string{}
+	runKeys := map[string]runKey{}
+	runCounts := map[string]int{}
+	for id, item := range value.Items {
+		entity, ok := byTarget[id]
+		run, runOK := value.Runs[item.RunID]
+		if !ok || entity.TargetKind != "workflow:item" || item.ID != id || item.Project != entity.Source.Project || item.Label != entity.Source.ID || strings.TrimSpace(item.Title) == "" || strings.TrimSpace(item.Type) == "" || (item.Status != "open" && item.Status != "closed") || item.Generation == 0 || !runOK || run.ID != item.RunID || run.Project != item.Project || run.Owner != item.Owner || item.Owner.Principal == "" || item.Owner.Project != item.Project {
+			return empty, sourceRefusal("malformed or unmapped current reverse item")
+		}
+		key := runKey{entity.Source.Project, entity.RunKey}
+		if prior, ok := runs[key]; ok && prior != run.ID {
+			return empty, sourceRefusal("reverse source run split across current runs")
+		}
+		if prior, ok := runKeys[run.ID]; ok && prior != key {
+			return empty, sourceRefusal("reverse source runs share a current run")
+		}
+		runs[key], runKeys[run.ID] = run.ID, key
+		runCounts[run.ID]++
+		if item.Claim != nil && (item.Claim.Principal.Validate() != nil || item.Claim.Generation == 0 || item.Claim.ExpiresAt.IsZero()) {
+			return empty, sourceRefusal("malformed reverse claim")
+		}
+		for _, comment := range item.Comments {
+			if comment.Source != nil {
+				if comment.Source.Project != item.Project {
+					return empty, sourceRefusal("reverse comment origin is outside its project")
+				}
+			} else if err := comment.Principal.Validate(); err != nil {
+				return empty, sourceRefusal("malformed reverse comment principal")
+			}
+		}
+		view := itemViewAt(item, time.Time{})
+		if item.Claim != nil {
+			view.Claim = &ClaimView{Principal: item.Claim.Principal, Agent: item.Claim.Agent, ExpiresAt: item.Claim.ExpiresAt, Generation: model.Natural64(item.Claim.Generation)}
+		}
+		result.Entities[entity.Source] = SourceReverseEntry{TargetID: id, Present: true, Item: &view}
+	}
+	const runPrefix = "workflow:run/"
+	for id, run := range value.Runs {
+		if id != run.ID || !strings.HasPrefix(id, runPrefix) || len(id) == len(runPrefix) || run.State != "active" || len(run.ItemIDs) == 0 {
+			return empty, sourceRefusal("malformed current reverse run")
+		}
+		members := map[string]bool{}
+		for _, member := range run.ItemIDs {
+			item, ok := value.Items[member]
+			if !ok || members[member] || item.RunID != id || item.Owner != run.Owner || item.Project != run.Project {
+				return empty, sourceRefusal("reverse run has missing or duplicate members")
+			}
+			members[member] = true
+		}
+		if len(members) != runCounts[id] {
+			return empty, sourceRefusal("reverse run omits a current member")
+		}
+	}
+	known := func(id string) bool {
+		entity, ok := byTarget[id]
+		return ok && (entity.TargetKind == "bead" || result.Entities[entity.Source].Present)
+	}
+	type edgeIndexes struct {
+		edge              relationState
+		outbound, inbound bool
+	}
+	edges := map[string]edgeIndexes{}
+	for id, item := range value.Items {
+		for index, links := range [][]relationState{item.Links, item.Inbound} {
+			seen := map[string]bool{}
+			for _, link := range links {
+				if !known(link.From) || !known(link.To.ID) || link.From == link.To.ID || index == 0 && link.From != id || index == 1 && link.To.ID != id {
+					return empty, sourceRefusal("unmapped or inconsistent reverse relation")
+				}
+				if err := validateRelation(RelationSpec{To: link.To, Kind: link.Kind, Metadata: link.Metadata}); err != nil {
+					return empty, sourceRefusal("malformed reverse relation: " + err.Error())
+				}
+				key := relationKey(link)
+				if seen[key] {
+					return empty, sourceRefusal("duplicate reverse relation index")
+				}
+				seen[key] = true
+				entry := edges[key]
+				entry.edge = link
+				if index == 0 {
+					entry.outbound = true
+				} else {
+					entry.inbound = true
+				}
+				edges[key] = entry
+			}
+		}
+	}
+	type parentEdge struct{ from, to string }
+	parents := map[parentEdge]bool{}
+	for _, entry := range edges {
+		from, to := byTarget[entry.edge.From], byTarget[entry.edge.To.ID]
+		if (from.TargetKind == "workflow:item") != entry.outbound || (to.TargetKind == "workflow:item") != entry.inbound {
+			return empty, sourceRefusal("incomplete reverse relation indexes")
+		}
+		if entry.edge.Kind == "parent-child" {
+			parents[parentEdge{entry.edge.From, entry.edge.To.ID}] = true
+		}
+	}
+	// A public parent update can store the typed parent independently of an
+	// auxiliary link. Include that current field without inventing a raw edge ID.
+	for id, item := range value.Items {
+		if item.Parent == nil {
+			continue
+		}
+		if validateRef(*item.Parent) != nil || !known(item.Parent.ID) || item.Parent.ID == id {
+			return empty, sourceRefusal("malformed or unmapped reverse parent")
+		}
+		if !parents[parentEdge{id, item.Parent.ID}] {
+			link := relationState{From: id, To: *item.Parent, Kind: "parent-child"}
+			edges[relationKey(link)] = edgeIndexes{edge: link}
+		}
+	}
+	keys := make([]string, 0, len(edges))
+	for key := range edges {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		result.Relations = append(result.Relations, relationView(edges[key].edge))
+	}
+	return result, nil
+}
 
 func sourceImageHash(data []byte) string {
 	sum := sha256.Sum256(data)

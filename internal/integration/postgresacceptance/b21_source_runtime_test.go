@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -29,6 +30,101 @@ type b21PrivateTarget struct {
 	db     *sql.DB
 	engine string
 	open   func() driver.Store
+}
+
+func TestB21SourceReverseImageCurrentSnapshotWithoutPublication(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			v := b21Target(t, engine)
+			original, err := v.store.Meta(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := b21Fixture(t, original, v.cap.WorkflowCheckpointLifetime())
+			logical := b21Logical(t, &f)
+			tx, _, prepared, header := b21PreparePrivateRestore(t, v, f, logical)
+			if _, err := tx.Commit(ctx, header); err != nil {
+				t.Fatal(err)
+			}
+			_ = tx.Close()
+			p := b21Runtime(t, v, prepared.Binding)
+			parent := ref("workflow:item/source-parent")
+			if _, err := p.Update(ctx, b21SourceActor, parent, map[string]any{"title": "current reverse title"}, b21WriteMeta("reverse-update", "bead.update")); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := p.Comment(ctx, b21SourceActor, parent, "authenticated current comment", b21WriteMeta("reverse-comment", "bead.comment")); err != nil {
+				t.Fatal(err)
+			}
+			// Keep a stored claim whose expiry precedes the inspection clock. A
+			// snapshot accessor must preserve it without clock-based projection.
+			p.WithClock(func() time.Time { return clock.Add(-2 * workflowplugin.ClaimTTL) })
+			claimed, err := p.Claim(ctx, b21SourceActor, parent, b21WriteMeta("reverse-claim", "bead.claim"))
+			if err != nil || claimed.Claim == nil || !claimed.Claim.ExpiresAt.Before(clock) {
+				t.Fatalf("expired stored claim precondition: %+v %v", claimed, err)
+			}
+			p.WithClock(func() time.Time { return clock })
+			read := func() workflowplugin.SourceReverseImage {
+				t.Helper()
+				before := v.physical(t)
+				snapshot, err := v.cap.ReadSourcePlaneSnapshot(ctx, driver.View{}, []string{prepared.Mutation.Key})
+				if err != nil {
+					t.Fatal(err)
+				}
+				// This is the same pinned core/provider observation. No ordinary
+				// writer Head is held and no original Provider is reloaded.
+				core, err := snapshot.Query(ctx, driver.Query{Limit: 1000})
+				if err != nil || core.NextCursor != nil {
+					t.Fatalf("reverse pinned core census: %v", err)
+				}
+				for _, row := range core.Items {
+					if strings.HasPrefix(row.Ref.ID, workflowplugin.ItemPrefix) {
+						t.Fatal("source item entered the ordinary core")
+					}
+				}
+				checkpoint, err := snapshot.SourcePlaneCheckpoint(prepared.Mutation.Key)
+				if err != nil || checkpoint.Generation <= prepared.Binding.Origin.InitialGeneration {
+					t.Fatalf("reverse pinned current checkpoint: %+v %v", checkpoint, err)
+				}
+				host := pluginhost.NewDurableState(v.cap, v.lease, "workflow", "default").(driver.SourcePlaneOriginReader)
+				origin, current, err := host.InspectSourcePlaneOrigin(checkpoint)
+				if err != nil || origin != prepared.Binding.Origin {
+					t.Fatalf("reverse pinned immutable origin: %+v %v", origin, err)
+				}
+				copy := bytes.Clone(current)
+				image, err := workflowplugin.InspectSourceReverseImage(current)
+				if err != nil || !bytes.Equal(copy, current) {
+					t.Fatalf("reverse current logical inspection: %v", err)
+				}
+				if err := snapshot.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(before, v.physical(t)) {
+					t.Fatal("reverse inspection changed graph, receipts, checkpoint generation or physical rows")
+				}
+				return image
+			}
+			parentKey := driver.SourceEntityKey{Project: project, Plane: dumpformat.EphemeralEntityTable, ID: "same-id"}
+			childKey := driver.SourceEntityKey{Project: project, Plane: dumpformat.EphemeralEntityTable, ID: "child"}
+			image := read()
+			entry := image.Entities[parentKey]
+			if len(image.Entities) != 2 || len(image.Relations) != 3 || !entry.Present || entry.Terminal || entry.Item == nil || entry.Item.Title != "current reverse title" || entry.Item.Metadata["large"] != json.Number("9007199254740993") || entry.Item.Claim == nil || *entry.Item.Claim != *claimed.Claim {
+				t.Fatalf("inspection returned stale or projected current state: %+v", image)
+			}
+			comments := entry.Item.Comments
+			if len(comments) != 2 || comments[0].Source == nil || comments[0].Source.Author != "unverified-author" || comments[0].Principal.Kind != "" || comments[1].Source != nil || comments[1].Principal != b21SourceActor {
+				t.Fatalf("inspection changed imported/authenticated comment attribution: %+v", comments)
+			}
+			if _, err := p.Close(ctx, b21SourceActor, parent, "complete", b21WriteMeta("reverse-close", "bead.close")); err != nil {
+				t.Fatal(err)
+			}
+			terminal := read()
+			entry = terminal.Entities[parentKey]
+			if len(terminal.Entities) != 2 || entry.Present || !entry.Terminal || entry.Item != nil || entry.TargetID != parent.ID || !terminal.Entities[childKey].Present || len(terminal.Relations) != 0 {
+				t.Fatalf("terminal source identity revived old payload or relations: %+v", terminal)
+			}
+		})
+	}
 }
 
 func b21Target(t *testing.T, engine string) *b21PrivateTarget {
