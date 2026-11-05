@@ -333,6 +333,8 @@ internal/core/reverseconverter/archive.go
 internal/core/reverseconverter/convert.go
 internal/core/reverseconverter/public_archive_test.go
 internal/core/reverseconverter/reverseconverter_test.go
+internal/core/reverseconverter/source_planes.go
+internal/core/reverseconverter/source_planes_test.go
 internal/core/reverseconverter/types.go
 internal/core/service/BUILD.bazel
 internal/core/service/audit.go
@@ -491,6 +493,7 @@ internal/integration/converterroundtrip/history.go
 internal/integration/converterroundtrip/identity_counters_test.go
 internal/integration/converterroundtrip/image.go
 internal/integration/converterroundtrip/import_test.go
+internal/integration/converterroundtrip/joint_exports_test.go
 internal/integration/converterroundtrip/label_projection_test.go
 internal/integration/converterroundtrip/labels.go
 internal/integration/converterroundtrip/native_restore_test.go
@@ -500,10 +503,15 @@ internal/integration/converterroundtrip/restore.go
 internal/integration/converterroundtrip/reverse.go
 internal/integration/converterroundtrip/reverse_test.go
 internal/integration/converterroundtrip/roundtrip_test.go
+internal/integration/converterroundtrip/source_authz_test.go
 internal/integration/converterroundtrip/source_checkpoint_test.go
+internal/integration/converterroundtrip/source_composition_test.go
 internal/integration/converterroundtrip/source_planes.go
 internal/integration/converterroundtrip/source_planes_recovery.go
+internal/integration/converterroundtrip/source_planes_reverse.go
+internal/integration/converterroundtrip/source_planes_reverse_test.go
 internal/integration/converterroundtrip/source_planes_test.go
+internal/integration/converterroundtrip/source_poststage_test.go
 internal/integration/converterroundtrip/source_public_test.go
 internal/integration/converterroundtrip/testdata/public-complete-root-990eb800.tar
 internal/integration/converterroundtrip/testdata/public-partial-990eb800.tar

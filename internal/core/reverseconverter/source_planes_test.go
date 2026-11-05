@@ -50,6 +50,8 @@ func TestReverseBothPhysicalPlanesWithEqualRawIDRefusesWithoutOutput(t *testing.
 	raw := cloneMap(dump.Records["bead"][0].Source.Fields)
 	raw["ephemeral"], raw["no_history"], raw["storage_class"] = true, true, "ephemeral"
 	dump.Records["beads-archive"] = append(dump.Records["beads-archive"], Record{Kind: "beads-archive", ID: "active-origin", Project: "demo", Body: map[string]any{"read_only": true}, Source: Provenance{Table: dumpformat.EphemeralEntityTable, Fields: raw}})
+	comment := map[string]any{"id": "active-comment", "issue_id": raw["id"], "author": "unverified", "text": "physical active comment", "created_at": "2026-11-05T00:00:00Z"}
+	dump.Records["beads-archive"] = append(dump.Records["beads-archive"], Record{Kind: "beads-archive", ID: "comment-origin", Project: "demo", Body: map[string]any{"read_only": true}, Source: Provenance{Table: dumpformat.EphemeralCommentTable, Fields: comment}})
 	for i := range dump.Manifest.Kinds {
 		dump.Manifest.Kinds[i].Count = len(dump.Records[dump.Manifest.Kinds[i].Name])
 	}

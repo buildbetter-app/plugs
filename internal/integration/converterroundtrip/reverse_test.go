@@ -24,6 +24,12 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/postgres"
 )
 
+// These full-archive preservation controls explicitly request the pinned --all
+// form. Default filtering and omission reports have separate joint controls.
+func reverseAllRestored(ctx context.Context, store driver.Store) (LiveReverse, error) {
+	return ReverseRestoredWithOptions(ctx, store, reverseconverter.Options{All: true})
+}
+
 func TestLiveReverseReadsPostRestoreEditsAndOpaqueValues(t *testing.T) {
 	ctx := context.Background()
 	opaque := map[string]any{
@@ -50,7 +56,7 @@ func TestLiveReverseReadsPostRestoreEditsAndOpaqueValues(t *testing.T) {
 			if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile); err != nil {
 				t.Fatal(err)
 			}
-			before, err := ReverseRestored(ctx, store)
+			before, err := reverseAllRestored(ctx, store)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -67,7 +73,7 @@ func TestLiveReverseReadsPostRestoreEditsAndOpaqueValues(t *testing.T) {
 			}
 			apply("live edit", "f")
 			state := reverseState(t, store)
-			after, err := ReverseRestored(ctx, store)
+			after, err := reverseAllRestored(ctx, store)
 			if err != nil || after.Snapshot.At == nil || after.Snapshot.At.String() != state.Meta.Head.String() || after.Result.Digest == before.Result.Digest {
 				t.Fatalf("live reverse revision/digest failed: %v", err)
 			}
@@ -104,7 +110,7 @@ func TestLiveReverseReadsPostRestoreEditsAndOpaqueValues(t *testing.T) {
 			// The wrapper writes after opening the reader. Export must remain
 			// entirely on its captured snapshot, including all source blobs.
 			bound := reverseReadHook{Store: store, afterRead: func() { apply("concurrent edit", "a") }}
-			captured, err := ReverseRestored(ctx, bound)
+			captured, err := reverseAllRestored(ctx, bound)
 			if err != nil || captured.Result.Digest != after.Result.Digest {
 				t.Fatalf("reverse mixed snapshots: %v", err)
 			}
@@ -141,7 +147,7 @@ func TestLiveReverseRefusesUnrepresentableDeltasWithoutPartialOutput(t *testing.
 			profile, _ := admittedImportProfile(t, data)
 			store, lease, cleanup := openReverseTarget(t, kind)
 			defer cleanup()
-			if _, err := ReverseRestored(ctx, store); err == nil {
+			if _, err := reverseAllRestored(ctx, store); err == nil {
 				t.Fatal("empty store was treated as a restored source")
 			}
 			if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile); err != nil {
@@ -150,7 +156,7 @@ func TestLiveReverseRefusesUnrepresentableDeltasWithoutPartialOutput(t *testing.
 			state := reverseState(t, store)
 			for _, mode := range []string{"extra", "missing", "comment", "opaque", "provenance", "claim"} {
 				t.Run(mode, func(t *testing.T) {
-					got, err := ReverseRestored(ctx, reverseReadHook{Store: store, mode: mode})
+					got, err := reverseAllRestored(ctx, reverseReadHook{Store: store, mode: mode})
 					var refused ReverseRefusal
 					if !errors.As(err, &refused) || len(got.Result.JSONL) != 0 || got.Result.Digest != "" {
 						t.Fatalf("unrepresentable image produced partial output: %v", err)
@@ -193,7 +199,7 @@ func TestLiveReverseFromCheckedSourceHistory(t *testing.T) {
 				if _, err = RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, p); err != nil {
 					t.Fatal(err)
 				}
-				before, err := ReverseRestored(ctx, store)
+				before, err := reverseAllRestored(ctx, store)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -209,7 +215,7 @@ func TestLiveReverseFromCheckedSourceHistory(t *testing.T) {
 					t.Fatal(err)
 				}
 				state := reverseState(t, store)
-				after, err := ReverseRestored(ctx, store)
+				after, err := reverseAllRestored(ctx, store)
 				if err != nil || after.Result.Digest == before.Result.Digest {
 					t.Fatalf("live history reverse failed: %v", err)
 				}
@@ -220,7 +226,7 @@ func TestLiveReverseFromCheckedSourceHistory(t *testing.T) {
 				}
 				if test.mode != driver.RestoreHistoryModeSnapshot {
 					for _, mode := range []string{"history-changed", "history-missing"} {
-						got, err := ReverseRestored(ctx, reverseReadHook{Store: store, mode: mode})
+						got, err := reverseAllRestored(ctx, reverseReadHook{Store: store, mode: mode})
 						var refused ReverseRefusal
 						if !errors.As(err, &refused) || len(got.Result.JSONL) != 0 {
 							t.Fatalf("changed history binding did not refuse: %v", err)
@@ -446,7 +452,7 @@ func TestLiveReverseRetainsExactValidatedEnvelope(t *testing.T) {
 	if _, err := RestoreImportWithLease(context.Background(), bytes.NewReader(data), store, lease, profile); err != nil {
 		t.Fatal(err)
 	}
-	got, err := ReverseRestored(context.Background(), store)
+	got, err := reverseAllRestored(context.Background(), store)
 	if err != nil || len(got.Result.JSONL) == 0 {
 		t.Fatalf("exact padded source reverse: %v", err)
 	}

@@ -373,7 +373,7 @@ func TestAdmittedImportRestoresCommentAndServesWorkload(t *testing.T) {
 			}
 			if _, err := reverseconverter.ReadBytes(data); err != nil {
 				t.Fatalf("reverse read: %v", err)
-			} else if converted, err := reverseconverter.ConvertArchive(data); err != nil {
+			} else if converted, err := reverseconverter.ConvertArchiveWithOptions(data, reverseconverter.Options{All: true}); err != nil {
 				t.Fatalf("reverse convert: %v", err)
 			} else {
 				decoder := json.NewDecoder(bytes.NewReader(converted.JSONL))

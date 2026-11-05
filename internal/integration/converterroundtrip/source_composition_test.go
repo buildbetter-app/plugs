@@ -33,7 +33,7 @@ func TestJointSourceCompositionImportInstallAndStartupRecovery(t *testing.T) {
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
-				if method != "offline.restore.import" || len(digest) != 64 || p["proof"] != "joint-composition" {
+				if method != "admin.restore.begin" || len(digest) != 64 || p["proof"] != "joint-composition" {
 					return errors.New("unbound presence")
 				}
 				return nil

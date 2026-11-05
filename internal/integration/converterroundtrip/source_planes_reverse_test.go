@@ -64,6 +64,9 @@ func sourceReverseFixture(t *testing.T, ephemeral bool) []byte {
 						fields[dumpformat.EphemeralDependencyTargetField], row.Body["to"] = "demo-9", "demo-9"
 					}
 				}
+				if row.Kind == "beads-archive" {
+					row.ID = row.Source.Table + "/" + digestBytes(encode(t, fields))
+				}
 				rows = append(rows, row)
 			}
 			sort.Slice(rows, func(i, j int) bool {

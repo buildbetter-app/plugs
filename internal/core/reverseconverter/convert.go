@@ -251,6 +251,14 @@ func ConvertWithOptions(dump Dump, options Options) (Result, error) {
 	commentIDs := make(map[[2]string]bool)
 	entities, edges, comments, physicalReasons := physicalExportRecords(dump)
 	reasons = append(reasons, physicalReasons...)
+	planes := make(map[string]string)
+	for _, record := range entities {
+		if prior, exists := planes[record.ID]; exists && prior != record.Source.Table {
+			normalizeReport(&report)
+			return Result{Report: report}, withReport(refusal("%s", collisionReason(record.ID, prior, record.Source.Table)), report)
+		}
+		planes[record.ID] = record.Source.Table
+	}
 	for _, record := range sortedRecords(entities) {
 		ephemeral, flagOK := sourceFlag(record.Source.Fields, "ephemeral")
 		if !flagOK {

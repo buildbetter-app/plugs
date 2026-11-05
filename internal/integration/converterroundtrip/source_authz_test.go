@@ -91,9 +91,9 @@ func TestJointSourceInstalledAuthenticationAndFixedAuthorization(t *testing.T) {
 			t.Run(engine+"/"+kind, func(t *testing.T) {
 				ctx := context.Background()
 				store, lease, _ := openIdentityTarget(t, engine)
-				owner := model.PrincipalRef{Kind: "user", ID: "restore-admin"}
+				owner := model.PrincipalRef{Kind: "user", ID: "user:restore-admin"}
 				if kind == "agent" {
-					owner = model.PrincipalRef{Kind: "agent", ID: "source-worker", Sponsor: &model.PrincipalRef{Kind: "user", ID: "source-sponsor"}}
+					owner = model.PrincipalRef{Kind: "agent", ID: "agent:source-worker", Sponsor: &model.PrincipalRef{Kind: "user", ID: "user:source-sponsor"}}
 				}
 				p := jointOwnedProfile(t, data, jointProfile(t, data, store, lease), owner)
 				report, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, p)
@@ -102,7 +102,7 @@ func TestJointSourceInstalledAuthenticationAndFixedAuthorization(t *testing.T) {
 				}
 				ns := authz.Namespace{StoreID: string(report.Restored.StoreID), Incarnation: report.Restored.Incarnation, InstallationID: "fixed", Authority: model.RefByID("authority", model.Natural64(0))}
 				project := model.RefByID("source-project", model.Natural64(0))
-				base := authzfixed.Facts{Namespace: ns, Projects: []authzfixed.Project{{Ref: project, Name: "demo", InstallationID: "fixed", Active: true}}, Grants: []authz.Grant{{Subject: authz.SubjectRef{Kind: "user", ID: "source-sponsor"}, Scope: authz.Scope{Kind: authz.ProjectScope, Ref: project}, Role: "involved"}}}
+				base := authzfixed.Facts{Namespace: ns, Projects: []authzfixed.Project{{Ref: project, Name: "demo", InstallationID: "fixed", Active: true}}, Grants: []authz.Grant{{Subject: authz.SubjectRef{Kind: "user", ID: "user:source-sponsor"}, Scope: authz.Scope{Kind: authz.ProjectScope, Ref: project}, Role: "involved"}}}
 				facts, err := authzrpc.NewMutableFacts(base)
 				if err != nil {
 					t.Fatal(err)
@@ -140,7 +140,7 @@ func TestJointSourceInstalledAuthenticationAndFixedAuthorization(t *testing.T) {
 					if !bytes.Contains(got.Result, []byte("Exact active collision")) {
 						t.Fatal("installed user read missed source", string(got.Result))
 					}
-					sourceHTTPCall(t, installed.Handler, keys, model.PrincipalRef{Kind: "user", ID: "foreign-owner"}, "bead.get", 0, map[string]any{"id": ref}, "not_found")
+					sourceHTTPCall(t, installed.Handler, keys, model.PrincipalRef{Kind: "user", ID: "user:foreign-owner"}, "bead.get", 0, map[string]any{"id": ref}, "not_found")
 					sourceHTTPCall(t, installed.Handler, keys, owner, "bead.update", 601, map[string]any{"id": ref, "fields": map[string]any{"title": "forbidden user write"}}, "forbidden")
 				} else {
 					sourceHTTPCall(t, installed.Handler, keys, owner, "bead.get", 0, map[string]any{"id": ref}, "not_found")
