@@ -1,0 +1,16 @@
+{
+  "schema": "plug-public-native/1",
+  "exporter": {
+    "target_key": "beads_exporter",
+    "label": "//cmd/bd:bd",
+    "binary": "bin/bd-export"
+  },
+  "version_key": "bd_export_version",
+  "go_module_sha256": "744bc17b41d8afec00b4e339540dea0d68e6677b9dcca5daef2e9e2725b774c2",
+  "producer": {
+    "run_id": "41800330346",
+    "manifest_sha256": "ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a",
+    "workflow_sha": "d758fdf42a426e9e2a4b707dbcebb22ec68b264e",
+    "workflow_branch": "swarm/native-producer-census-control-c8eb-20261104"
+  }
+}
