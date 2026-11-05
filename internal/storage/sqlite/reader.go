@@ -25,9 +25,11 @@ type reader struct {
 	store          *Store
 	tx             *sql.Tx
 	// observeHistoryStmt is bound to the current pinned transaction. Reusing
-	// this scalar statement keeps the one-key history lookup and its error
-	// boundary intact while avoiding a prepare/finalize cycle for every Ready
-	// point observation. pin closes it before replacing the transaction.
+	// this scalar statement for ordinary readers keeps the one-key history
+	// lookup and its error boundary intact while avoiding a prepare/finalize
+	// cycle for every Ready point observation. Transaction-owned observations
+	// retain their QueryRowContext path so staging keeps its native boundary.
+	// pin closes this statement before replacing the transaction.
 	observeHistoryStmt *sql.Stmt
 	meta               driver.Meta
 	at                 uint64
@@ -314,14 +316,19 @@ func (r *reader) Observe(ctx context.Context, keys []driver.LockKey) ([]driver.L
 func (r *reader) observe(ctx context.Context, key driver.LockKey) (driver.LockState, error) {
 	state := driver.LockState{Key: copyKey(key), Revision: model.Natural64(0)}
 	var data []byte
-	if r.observeHistoryStmt == nil {
-		statement, err := r.tx.PrepareContext(ctx, `SELECT data FROM key_history WHERE key=? AND rev<=? ORDER BY rev DESC LIMIT 1`)
-		if err != nil {
-			return state, err
+	var err error
+	if r.owner == nil {
+		if r.observeHistoryStmt == nil {
+			statement, prepareErr := r.tx.PrepareContext(ctx, `SELECT data FROM key_history WHERE key=? AND rev<=? ORDER BY rev DESC LIMIT 1`)
+			if prepareErr != nil {
+				return state, prepareErr
+			}
+			r.observeHistoryStmt = statement
 		}
-		r.observeHistoryStmt = statement
+		err = r.observeHistoryStmt.QueryRowContext(ctx, keyID(key), revKey(r.at)).Scan(&data)
+	} else {
+		err = r.tx.QueryRowContext(ctx, `SELECT data FROM key_history WHERE key=? AND rev<=? ORDER BY rev DESC LIMIT 1`, keyID(key), revKey(r.at)).Scan(&data)
 	}
-	err := r.observeHistoryStmt.QueryRowContext(ctx, keyID(key), revKey(r.at)).Scan(&data)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return state, err
 	}
