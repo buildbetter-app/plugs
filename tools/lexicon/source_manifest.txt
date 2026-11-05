@@ -255,6 +255,7 @@ internal/core/ontologyops/service_test.go
 internal/core/ontologyops/source.go
 internal/core/ontologyops/types.go
 internal/core/pipeline/BUILD.bazel
+internal/core/pipeline/admission_deadline_test.go
 internal/core/pipeline/allocator_test.go
 internal/core/pipeline/ancestor.go
 internal/core/pipeline/apply.go
@@ -265,6 +266,7 @@ internal/core/pipeline/blocking_hierarchy.go
 internal/core/pipeline/callbacks.go
 internal/core/pipeline/callbacks_test.go
 internal/core/pipeline/checkpoint_mutation.go
+internal/core/pipeline/claim_audit_test.go
 internal/core/pipeline/claim_recovery.go
 internal/core/pipeline/dependency.go
 internal/core/pipeline/document.go
