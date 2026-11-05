@@ -291,6 +291,11 @@ func (f *fixture) a4Mutators(artifact *pluginbuild.Artifact) []pipeline.MutatorB
 	if err != nil {
 		f.t.Fatal(err)
 	}
+	f.t.Cleanup(func() {
+		if err := host.Close(); err != nil {
+			f.t.Error(err)
+		}
+	})
 	bindings := host.Mutators()
 	if len(bindings) != 1 || bindings[0].ID != a4Binding || bindings[0].FailOpen {
 		f.t.Fatal("actual fail-closed WASI binding missing")
@@ -507,6 +512,8 @@ func TestB04A4TwoHundredSimultaneousPublicAgentsWithWASMMutator(t *testing.T) {
 		// A4 explicitly exercises a 200-request host. Use the existing host
 		// capacity option; all execution and request deadlines stay unchanged.
 		f.httpConfig.MaxConcurrentRequests = 200
+		collector := pipeline.NewCollector()
+		f.observer = collector
 		f.installMutators(f.a4Mutators(artifact)...)
 		const agents = 200
 		callers := make([]credential, agents)
@@ -616,6 +623,20 @@ func TestB04A4TwoHundredSimultaneousPublicAgentsWithWASMMutator(t *testing.T) {
 		outcomes := make([]result, agents)
 		conflicts, failures, attempts, initialFailures := 0, 0, 0, 0
 		initialCodes, allCodes := map[string]int{}, map[string]int{}
+		refusalHints := map[string]int{}
+		var evidence *json.Encoder
+		if dir := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR"); dir != "" {
+			file, err := os.OpenFile(filepath.Join(dir, "a4-"+e.name+"-attempts.jsonl"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if err := file.Close(); err != nil {
+					t.Error(err)
+				}
+			}()
+			evidence = json.NewEncoder(file)
+		}
 		for range agents {
 			out := <-results
 			if out.attempts < 1 || out.attempts > retryBudget {
@@ -624,6 +645,24 @@ func TestB04A4TwoHundredSimultaneousPublicAgentsWithWASMMutator(t *testing.T) {
 			attempts += out.attempts
 			for attempt, r := range out.responses {
 				r = f.checkedReply(r)
+				if evidence != nil {
+					var delay time.Duration
+					if attempt < len(out.waits) {
+						delay = out.waits[attempt]
+					}
+					// Record only public replies and timing; bearer credentials are
+					// never part of this finite attempt ledger.
+					if err := evidence.Encode(struct {
+						Worker, Attempt   int
+						Status            int
+						Started, Finished time.Time
+						RetryAfter        string
+						NextWait          time.Duration
+						Response          json.RawMessage
+					}{out.index, attempt + 1, r.status, r.started, r.finished, r.retryAfter, delay, r.raw}); err != nil {
+						t.Fatal(err)
+					}
+				}
 				if attempt > 0 && (len(out.waits) < attempt || r.started.Sub(out.responses[attempt-1].finished) < out.waits[attempt-1]) {
 					t.Fatal("A4 retried before the bounded backoff or advertised retry-after hint")
 				}
@@ -633,6 +672,7 @@ func TestB04A4TwoHundredSimultaneousPublicAgentsWithWASMMutator(t *testing.T) {
 				}
 				if r.code != "" {
 					allCodes[r.code]++
+					refusalHints[r.code+"|"+r.error.Data.Hint]++
 					if attempt == 0 {
 						initialFailures++
 						initialCodes[r.code]++
@@ -654,6 +694,12 @@ func TestB04A4TwoHundredSimultaneousPublicAgentsWithWASMMutator(t *testing.T) {
 			}
 		}
 		t.Logf("A4 engine=%s simultaneous_arrivals=%d initial_attempts=%d initial_failures=%d initial_codes=%v attempts=%d retry_starts=%d all_codes=%v write_conflict=%d final_failures=%d elapsed=%s actual_wasm=%s authz=authz/fixed no_http_semaphore=true retry_budget=%d request_deadline=5s callback_budget=250ms", e.name, arrived.Load(), agents, initialFailures, initialCodes, attempts, attempts-agents, allCodes, conflicts, failures, time.Since(began), artifact.ArtifactDigest(), retryBudget)
+		t.Logf("A4 refusal hints engine=%s histogram=%v", e.name, refusalHints)
+		metrics, err := json.Marshal(collector.Snapshot())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("A4 pipeline engine=%s metrics=%s", e.name, metrics)
 		if arrived.Load() != agents || conflicts*100 >= agents || failures != 0 {
 			t.Fatalf("A4 200-agent bound failed: arrivals=%d conflicts=%d failures=%d", arrived.Load(), conflicts, failures)
 		}

@@ -65,6 +65,7 @@ type fixture struct {
 	ontology   []byte
 	httpConfig httpjson.Config
 	claimPools []string
+	observer   pipeline.Observer
 }
 
 func newFixture(t *testing.T, e engine) *fixture {
@@ -203,6 +204,7 @@ func (f *fixture) installMutators(mutators ...pipeline.MutatorBinding) {
 		Mutators:   mutators,
 		HTTP:       f.httpConfig,
 		ClaimPools: f.claimPools,
+		Observer:   f.observer,
 	})
 	if err != nil {
 		f.t.Fatal(err)

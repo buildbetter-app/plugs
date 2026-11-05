@@ -102,6 +102,9 @@ type Config struct {
 	// Mutators optionally installs trusted host bindings on the same Writer as
 	// the fixed checker and event context. Callback resources remain caller-owned.
 	Mutators []pipeline.MutatorBinding
+	// Observer receives the Writer's existing bounded phase/outcome metrics.
+	// A nil observer leaves the ordinary composition unchanged.
+	Observer pipeline.Observer
 	// ClaimPools is the trusted host's literal pseudo-assignee registry.
 	// It grants no authentication, project access, or pool membership.
 	ClaimPools []string
@@ -181,6 +184,9 @@ func newWithClock(ctx context.Context, config Config, now func() time.Time) (*Co
 	}
 	if len(config.Mutators) != 0 {
 		options = append(options, pipeline.WithMutators(config.Mutators...))
+	}
+	if config.Observer != nil {
+		options = append(options, pipeline.WithObserver(config.Observer))
 	}
 	writer := pipeline.New(config.Store, config.Lease, options...)
 	serviceOptions := []service.Option{

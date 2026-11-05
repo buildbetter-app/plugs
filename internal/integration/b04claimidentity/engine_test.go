@@ -60,6 +60,10 @@ func TestMain(m *testing.M) {
 			return 1
 		}
 		defer func() {
+			if code != 0 {
+				out, err := docker("logs", "--tail", "200", name)
+				fmt.Fprintf(os.Stderr, "Owned PostgreSQL failure diagnostics: err=%v\n%s\n", err, out)
+			}
 			if out, err := docker("rm", "-f", name); err != nil {
 				fmt.Fprintf(os.Stderr, "owned PostgreSQL cleanup failed: %v %s\n", err, out)
 				code = 1
