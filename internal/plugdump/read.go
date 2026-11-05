@@ -346,6 +346,15 @@ func validateNativeObservation(value any) error {
 			if !ok || object == nil {
 				return fmt.Errorf("YAML file observation values must be an object")
 			}
+			decoded, err := decodeNativeYAMLValues(raw)
+			if err != nil || decoded == nil {
+				return fmt.Errorf("YAML file observation bytes must contain a valid object")
+			}
+			observedJSON, observedErr := marshal(object)
+			decodedJSON, decodedErr := marshal(decoded)
+			if observedErr != nil || decodedErr != nil || !bytes.Equal(observedJSON, decodedJSON) {
+				return fmt.Errorf("YAML file observation values disagree with its bytes")
+			}
 		}
 		if parsed, present := observation["values"]; present {
 			if object, ok := parsed.(map[string]any); !ok || object == nil {

@@ -203,7 +203,7 @@ type catalogStatus struct {
 	category string
 }
 
-func (m *mapping) catalogs(statusRows, typeRows []Row, storedConfig map[string]any, yamlValues []map[string]any) error {
+func validateCatalogUnion(statusRows, typeRows []Row, storedConfig map[string]any, yamlValues []map[string]any) error {
 	if len(statusRows) > 50 {
 		return fmt.Errorf("too many custom statuses")
 	}

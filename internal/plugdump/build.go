@@ -84,7 +84,7 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 			storedConfig[key] = row["value"]
 		}
 	}
-	if err := mapper.catalogs(tables["custom_statuses"].Rows, tables["custom_types"].Rows, storedConfig, yamlValues); err != nil {
+	if err := validateCatalogUnion(tables["custom_statuses"].Rows, tables["custom_types"].Rows, storedConfig, yamlValues); err != nil {
 		return nil, err
 	}
 	for _, family := range []string{"wisp_labels", "wisp_comments", "wisp_events", "wisp_child_counters"} {

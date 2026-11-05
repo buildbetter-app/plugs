@@ -222,6 +222,8 @@ func Validate(reader io.Reader) (Manifest, error) {
 	counts := map[string]int{}
 	var beadRecords []Record
 	var edgeRecords []Record
+	var statusRows, typeRows []Row
+	storedCatalogConfig := map[string]any{}
 	beadIDs := map[string]bool{}
 	wispIDs := map[string]bool{}
 	lastKind := ""
@@ -249,6 +251,20 @@ func Validate(reader io.Reader) (Manifest, error) {
 			if err := validateRecordVersioned(record, manifest.Projects, counts, kind.Version); err != nil {
 				return Manifest{}, err
 			}
+			switch record.Source.Table {
+			case "custom_statuses":
+				statusRows = append(statusRows, record.Source.Fields)
+			case "custom_types":
+				typeRows = append(typeRows, record.Source.Fields)
+			case "config":
+				key := text(record.Source.Fields, "key")
+				if key == "status.custom" || key == "types.custom" {
+					if _, duplicate := storedCatalogConfig[key]; duplicate {
+						return Manifest{}, fmt.Errorf("duplicate stored catalog configuration %q", key)
+					}
+					storedCatalogConfig[key] = record.Source.Fields["value"]
+				}
+			}
 			if record.Kind == "bead" {
 				beadRecords = append(beadRecords, record)
 				beadIDs[record.ID] = true
@@ -268,6 +284,13 @@ func Validate(reader io.Reader) (Manifest, error) {
 		if strings.HasPrefix(path, "records/") && !registry[path] {
 			return Manifest{}, fmt.Errorf("unregistered record kind")
 		}
+	}
+	yamlCatalogs, err := nativeYAMLCatalogValues(members["config/sources.json"])
+	if err != nil {
+		return Manifest{}, err
+	}
+	if err := validateCatalogUnion(statusRows, typeRows, storedCatalogConfig, yamlCatalogs); err != nil {
+		return Manifest{}, err
 	}
 	if err := validateDispositions(manifest.Sources, counts); err != nil {
 		return Manifest{}, err

@@ -836,6 +836,99 @@ func TestDumpCatalogConfigDeclarationsRefuse(t *testing.T) {
 	}
 }
 
+func TestValidateCatalogUnionRefusals(t *testing.T) {
+	for _, test := range []struct {
+		name, key, value, want string
+	}{
+		{name: "missing status category", key: "status.custom", value: "review", want: "explicit category"},
+		{name: "status empty entry", key: "status.custom", value: "review:active,", want: "empty declaration"},
+		{name: "type empty entry", key: "types.custom", value: "gate,,other", want: "empty declaration"},
+		{name: "type duplicate entry", key: "types.custom", value: "gate,gate", want: "gate"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source, inventory := fixture(t)
+			table := source["config"]
+			initial := "review:active"
+			if test.key == "types.custom" {
+				initial = "gate"
+			}
+			table.Rows = append(table.Rows, Row{"key": test.key, "value": initial})
+			source["config"] = table
+			inventory.ConfigPolicy["config/"+test.key] = "public"
+			members := archiveMembers(t, buildFixture(t, source, inventory))
+			var records []byte
+			for _, line := range bytes.Split(bytes.TrimSpace(members["records/config.ndjson"]), []byte{'\n'}) {
+				var record Record
+				if err := decodeJSON(line, &record); err != nil {
+					t.Fatal(err)
+				}
+				if text(record.Source.Fields, "key") == test.key {
+					record.Source.Fields["value"], record.Body["value"] = test.value, test.value
+				}
+				records = append(records, mustJSON(t, record)...)
+			}
+			members["records/config.ndjson"] = records
+			if _, err := Validate(bytes.NewReader(repackCatalogRefusalArchive(t, members))); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("readback accepted malformed catalog: err=%v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+// Recompute framing checksums only so negative unit controls reach the semantic
+// validator. This corrupted test archive is never native or delivery evidence.
+func repackCatalogRefusalArchive(t *testing.T, members map[string][]byte) []byte {
+	t.Helper()
+	var manifest Manifest
+	if err := decodeJSON(members["manifest.json"], &manifest); err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for path, data := range members {
+		if path != "manifest.json" {
+			manifest.Files[path] = File{digest(data), int64(len(data))}
+			names = append(names, path)
+		}
+	}
+	members["manifest.json"] = mustJSON(t, manifest)
+	sort.Strings(names)
+	var output bytes.Buffer
+	writer := tar.NewWriter(&output)
+	for _, path := range append([]string{"manifest.json"}, names...) {
+		data := members[path]
+		if err := writer.WriteHeader(&tar.Header{Name: path, Mode: 0o600, Size: int64(len(data)), Typeflag: tar.TypeReg, Format: tar.FormatUSTAR}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return output.Bytes()
+}
+
+func TestDumpNativeYAMLValuesMustMatchObservedBytes(t *testing.T) {
+	for _, raw := range []string{"# empty configuration\n", "null\n", "status:\n  custom: review:done\n"} {
+		t.Run(strings.TrimSpace(raw), func(t *testing.T) {
+			source, inventory := fixture(t)
+			observation := setCatalogYAML(t, &inventory, []byte(raw))
+			observation["values"] = map[string]any{"status": map[string]any{"custom": "review:active"}}
+			for _, input := range inventory.External {
+				if input.Family == "project-config" {
+					if err := os.WriteFile(input.Path, mustJSON(t, map[string]any{"observations": []any{observation}}), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if data, err := Build(context.Background(), source, inventory); err == nil || len(data) != 0 || !strings.Contains(err.Error(), "YAML file observation") {
+				t.Fatalf("mismatched parsed/raw YAML accepted: data=%d err=%v", len(data), err)
+			}
+		})
+	}
+}
+
 func TestDumpCatalogUnionConflictNamesBothDeclarations(t *testing.T) {
 	for _, storedLayer := range []string{"custom_statuses", "config"} {
 		t.Run(storedLayer, func(t *testing.T) {
