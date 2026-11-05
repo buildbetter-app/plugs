@@ -5,6 +5,7 @@ go_test(
     srcs = [
         "accepted_replay_test.go",
         "accepted_source_test.go",
+        "postgres_fixture_test.go",
         "reference_test.go",
         "replay_test.go",
     ],
@@ -24,8 +25,10 @@ go_test(
         "//internal/storage/depid",
         "//internal/storage/driver",
         "//internal/storage/memory",
+        "//internal/storage/postgres",
         "//internal/storage/sqlite",
     ],
+    tags = ["requires-network"],
 )
 
 filegroup(

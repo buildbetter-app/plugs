@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
@@ -51,15 +52,18 @@ func (fixtureOntology) Validate(context.Context, port.ProposedChange, port.Snaps
 }
 
 type opened struct {
-	store driver.Store
-	lease driver.ActiveLease
-	path  string
+	store    driver.Store
+	lease    driver.ActiveLease
+	path     string
+	admin    *sql.DB
+	database string
 }
 
 func open(t *testing.T, kind string) opened {
 	t.Helper()
 	ctx := context.Background()
-	if kind == "memory" {
+	switch kind {
+	case "memory":
 		store := memory.New()
 		lease, err := store.Lease(ctx, "s1-b09-b12", driver.LeaseTTL)
 		if err != nil {
@@ -67,6 +71,12 @@ func open(t *testing.T, kind string) opened {
 			t.Fatal(err)
 		}
 		return opened{store: store, lease: lease}
+	case "postgres":
+		return openPostgres(t)
+	case "sqlite":
+		// handled below
+	default:
+		t.Fatalf("unknown storage engine %q", kind)
 	}
 	path := filepath.Join(t.TempDir(), "s1-b09-b12.db")
 	store, err := (sqlite.Driver{}).Open(ctx, driver.Config{DSN: path})
@@ -90,6 +100,14 @@ func (o opened) close(t *testing.T) {
 	}
 	if o.store != nil {
 		if err := o.store.Close(); err != nil {
+			t.Error(err)
+		}
+	}
+	if o.admin != nil {
+		if _, err := o.admin.ExecContext(context.Background(), `DROP DATABASE "`+o.database+`" WITH (FORCE)`); err != nil {
+			t.Error(err)
+		}
+		if err := o.admin.Close(); err != nil {
 			t.Error(err)
 		}
 	}
@@ -410,27 +428,31 @@ func TestB11EndpointIdentityAndTypedLinkConflict(t *testing.T) {
 	if got := depid.New("issue-1", "issue-2"); got != "91990ee3-275c-59c5-9291-30f8a8732228" {
 		t.Fatalf("dependency UUIDv5=%q", got)
 	}
-	o := open(t, "memory")
-	defer o.close(t)
-	ids := []string{"source", "target"}
-	w := writer(o, ids...)
-	seed, err := w.Apply(context.Background(), recorderPrincipal, model.ChangeSet{Ops: []model.Op{create(map[string]any{"title": "source"}, nil, ""), create(map[string]any{"title": "target"}, nil, "")}}, meta(705))
-	if err != nil {
-		t.Fatal(err)
+	for _, kind := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(kind, func(t *testing.T) {
+			o := open(t, kind)
+			defer o.close(t)
+			ids := []string{"source", "target"}
+			w := writer(o, ids...)
+			seed, err := w.Apply(context.Background(), recorderPrincipal, model.ChangeSet{Ops: []model.Op{create(map[string]any{"title": "source"}, nil, ""), create(map[string]any{"title": "target"}, nil, "")}}, meta(705))
+			if err != nil {
+				t.Fatal(err)
+			}
+			source, target := seed.Results[0].Ref, seed.Results[1].Ref
+			link := func(kind model.OpKind, linkKind string) model.Op {
+				return model.Op{Kind: kind, Link: &model.LinkOp{Kind: kind, From: source, To: target, LinkKind: linkKind}}
+			}
+			if _, err = w.Apply(context.Background(), recorderPrincipal, model.ChangeSet{Ops: []model.Op{link(model.OpLink, "blocks")}}, meta(706)); err != nil {
+				t.Fatal(err)
+			}
+			// Association annotations are allowed alongside workflow edges; a second
+			// workflow kind is the typed-conflict case for this card.
+			_, err = w.Apply(context.Background(), recorderPrincipal, model.ChangeSet{Ops: []model.Op{link(model.OpLink, "waits-for")}}, meta(707))
+			requireCode(t, err, "ontology_guard_failed")
+			_, err = w.Apply(context.Background(), recorderPrincipal, model.ChangeSet{Ops: []model.Op{link(model.OpUnlink, "waits-for")}}, meta(708))
+			requireCode(t, err, "not_found")
+		})
 	}
-	source, target := seed.Results[0].Ref, seed.Results[1].Ref
-	link := func(kind model.OpKind, linkKind string) model.Op {
-		return model.Op{Kind: kind, Link: &model.LinkOp{Kind: kind, From: source, To: target, LinkKind: linkKind}}
-	}
-	if _, err = w.Apply(context.Background(), recorderPrincipal, model.ChangeSet{Ops: []model.Op{link(model.OpLink, "blocks")}}, meta(706)); err != nil {
-		t.Fatal(err)
-	}
-	// Association annotations are allowed alongside workflow edges; a second
-	// workflow kind is the typed-conflict case for this card.
-	_, err = w.Apply(context.Background(), recorderPrincipal, model.ChangeSet{Ops: []model.Op{link(model.OpLink, "waits-for")}}, meta(707))
-	requireCode(t, err, "ontology_guard_failed")
-	_, err = w.Apply(context.Background(), recorderPrincipal, model.ChangeSet{Ops: []model.Op{link(model.OpUnlink, "waits-for")}}, meta(708))
-	requireCode(t, err, "not_found")
 }
 
 func TestB12ManifestStaysExplicitlyUnqualifiedAndProjectionPreservesOrder(t *testing.T) {
