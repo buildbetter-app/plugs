@@ -144,7 +144,9 @@ func TestJointSourceInstalledAuthenticationAndFixedAuthorization(t *testing.T) {
 						t.Fatal("installed user read missed source", string(got.Result))
 					}
 					assertSourceCommentAttribution(t, got.Result, p, report)
-					sourceHTTPCall(t, installed.Handler, keys, model.PrincipalRef{Kind: "user", ID: "user:foreign-owner"}, "bead.get", 0, map[string]any{"id": ref}, "not_found")
+					// Fixed Read/Bead permits users; the provider separately rejects
+					// foreign ownership, and the guarded service preserves its refusal.
+					sourceHTTPCall(t, installed.Handler, keys, model.PrincipalRef{Kind: "user", ID: "user:foreign-owner"}, "bead.get", 0, map[string]any{"id": ref}, "forbidden")
 					sourceHTTPCall(t, installed.Handler, keys, owner, "bead.update", 601, map[string]any{"id": ref, "fields": map[string]any{"title": "forbidden user write"}}, "forbidden")
 				} else {
 					sourceHTTPCall(t, installed.Handler, keys, owner, "bead.get", 0, map[string]any{"id": ref}, "not_found")
