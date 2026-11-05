@@ -12,17 +12,23 @@ import (
 func sourceHistoryFixture(t *testing.T, partial bool) (*mergeFixture, SourceHistory) {
 	t.Helper()
 	f := newMergeFixture(t, "pl")
+	h := sourceHistoryForFixture(t, f, strings.Repeat("a", 32), strings.Repeat("b", 32), partial)
+	return f, h
+}
+
+func sourceHistoryForFixture(t *testing.T, f *mergeFixture, first, second string, partial bool) SourceHistory {
+	t.Helper()
 	records := []Record{}
 	for _, kind := range historyKinds {
 		records = append(records, f.records[kind]...)
 	}
 	h := SourceHistory{Format: SourceHistoryFormat, Commits: []SourceCommit{
-		{ID: strings.Repeat("a", 32), Parents: []string{}, Metadata: Row{"message": "synthetic initial commit"}},
-		{ID: strings.Repeat("b", 32), Parents: []string{strings.Repeat("a", 32)}, Metadata: Row{"message": "synthetic update"}},
+		{ID: first, Parents: []string{}, Metadata: Row{"message": "synthetic initial commit"}},
+		{ID: second, Parents: []string{first}, Metadata: Row{"message": "synthetic update"}},
 	}, Events: []Row{}, Range: SourceHistoryRange{Status: "verified", Reason: "", Complete: true, First: 1, Head: 2,
 		Baseline: []Record{}, BaselineEvents: []Row{}, Gaps: []HistoryGap{}, Frames: []SourceHistoryFrame{
-			{Sequence: 1, CommitID: strings.Repeat("a", 32), Records: records, Events: []Row{}},
-			{Sequence: 2, CommitID: strings.Repeat("b", 32), Records: records, Events: []Row{}},
+			{Sequence: 1, CommitID: first, Records: records, Events: []Row{}},
+			{Sequence: 2, CommitID: second, Records: records, Events: []Row{}},
 		}}}
 	if partial {
 		h.Range.First, h.Range.Complete = 2, false
@@ -30,7 +36,7 @@ func sourceHistoryFixture(t *testing.T, partial bool) (*mergeFixture, SourceHist
 		h.Range.Frames = h.Range.Frames[1:]
 		h.Range.Gaps = []HistoryGap{{First: 1, Last: 1, Reason: "not-retained"}}
 	}
-	return f, h
+	return h
 }
 
 func withSourceHistory(t *testing.T, f *mergeFixture, h SourceHistory) []byte {
@@ -96,8 +102,61 @@ func TestSourceHistoryDoesNotPromoteRawCommitsToVerifiedReplay(t *testing.T) {
 	if _, err := a.HistoryImage(1); err == nil {
 		t.Fatal("raw source commits fabricated a replay image")
 	}
-	if _, err := MergeArchives(a); err == nil {
-		t.Fatal("merge silently discarded source history")
+	merged, err := MergeArchives(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mergedArchive := readMergeArchive(t, merged)
+	if mergedArchive.Manifest().History != "available-unverified" {
+		t.Fatalf("merge promoted unverified history: %s", mergedArchive.Manifest().History)
+	}
+	mergedHistory, ok := mergedArchive.SourceHistory()
+	if !ok || len(mergedHistory.ProjectHistories) != 1 || mergedHistory.ProjectHistories[0].Range.Status != "unverified" {
+		t.Fatal("merge did not retain the unverified project history")
+	}
+}
+
+func TestMergePreservesDisjointProjectHistories(t *testing.T) {
+	aFixture := newMergeFixture(t, "pl")
+	bFixture := newMergeFixture(t, "qa")
+	aHistory := sourceHistoryForFixture(t, aFixture, strings.Repeat("a", 32), strings.Repeat("b", 32), false)
+	bHistory := sourceHistoryForFixture(t, bFixture, strings.Repeat("c", 32), strings.Repeat("d", 32), false)
+	left := withSourceHistory(t, aFixture, aHistory)
+	right := withSourceHistory(t, bFixture, bHistory)
+	merged, err := Merge(bytes.NewReader(left), bytes.NewReader(right))
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := readMergeArchive(t, merged)
+	history, ok := archive.SourceHistory()
+	if !ok || len(history.ProjectHistories) != 2 {
+		t.Fatalf("merged project histories: ok=%t count=%d", ok, len(history.ProjectHistories))
+	}
+	for _, project := range []string{"pl", "qa"} {
+		image, err := archive.HistoryImageForProject(project, 2)
+		if err != nil {
+			t.Fatalf("project %s image: %v", project, err)
+		}
+		if len(image.Records("bead")) != 3 || len(image.Records("config")) == 0 {
+			t.Fatalf("project %s history image lost source rows", project)
+		}
+	}
+	if history.ProjectHistories[0].Project != "pl" || history.ProjectHistories[1].Project != "qa" {
+		t.Fatalf("project history order is not deterministic: %#v", history.ProjectHistories)
+	}
+}
+
+func TestMergeRefusesOverlappingSourceRevisionIDsAtomically(t *testing.T) {
+	aFixture := newMergeFixture(t, "pl")
+	bFixture := newMergeFixture(t, "qa")
+	aHistory := sourceHistoryForFixture(t, aFixture, strings.Repeat("a", 32), strings.Repeat("b", 32), false)
+	bHistory := sourceHistoryForFixture(t, bFixture, strings.Repeat("a", 32), strings.Repeat("c", 32), false)
+	left := withSourceHistory(t, aFixture, aHistory)
+	right := withSourceHistory(t, bFixture, bHistory)
+	_, err := Merge(bytes.NewReader(left), bytes.NewReader(right))
+	var refusal HistoryMergeRefusal
+	if !errors.As(err, &refusal) || refusal.Kind != "commit identity" || refusal.ID != strings.Repeat("a", 32) || refusal.Project == refusal.OtherProject {
+		t.Fatalf("overlapping source revision was not named by typed refusal: %v", err)
 	}
 }
 

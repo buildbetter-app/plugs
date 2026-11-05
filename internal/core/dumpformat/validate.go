@@ -429,6 +429,11 @@ func validateProjects(input []Project) error {
 			}
 			_ = counter
 		}
+		for j, namespace := range project.HashNamespaces {
+			if project.IDMode != "hash" || !validHashNamespace(namespace) || j > 0 && namespace <= project.HashNamespaces[j-1] {
+				return fmt.Errorf("hash_namespaces requires sorted unique native namespaces in hash mode")
+			}
+		}
 	}
 	return nil
 }

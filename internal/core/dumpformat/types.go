@@ -76,11 +76,12 @@ func IsLocalOpaqueEdgeType(version int, targetKind, kind string) bool {
 type Row map[string]any
 
 type Project struct {
-	Prefix        string            `json:"prefix"`
-	IDMode        string            `json:"id_mode"`
-	HashLength    int               `json:"hash_length"`
-	LastID        uint64            `json:"last_id"`
-	ChildCounters map[string]uint64 `json:"child_counters"`
+	Prefix         string            `json:"prefix"`
+	IDMode         string            `json:"id_mode"`
+	HashLength     int               `json:"hash_length"`
+	HashNamespaces []string          `json:"hash_namespaces,omitempty"`
+	LastID         uint64            `json:"last_id"`
+	ChildCounters  map[string]uint64 `json:"child_counters"`
 }
 
 type Kind struct {
@@ -217,6 +218,7 @@ func (a *Archive) Manifest() Manifest {
 	// readback hash differ from the admitted manifest.
 	m.Projects = append([]Project{}, m.Projects...)
 	for i := range m.Projects {
+		m.Projects[i].HashNamespaces = append([]string(nil), m.Projects[i].HashNamespaces...)
 		c := make(map[string]uint64, len(m.Projects[i].ChildCounters))
 		for key, value := range m.Projects[i].ChildCounters {
 			c[key] = value

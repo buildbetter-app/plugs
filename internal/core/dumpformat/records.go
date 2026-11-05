@@ -354,8 +354,18 @@ func checkID(id string, p Project) error {
 		if err != nil || n == 0 || n > p.LastID {
 			return fmt.Errorf("source ID exceeds sequential allocator")
 		}
-	} else if !hashPattern.MatchString(parts[0]) || len(parts[0]) < p.HashLength {
-		return fmt.Errorf("invalid source hash ID")
+	} else {
+		namespace, hash, ok := splitHashRoot(parts[0])
+		declared := namespace == ""
+		for _, candidate := range p.HashNamespaces {
+			if namespace == candidate {
+				declared = true
+				break
+			}
+		}
+		if !ok || !declared || len(hash) < p.HashLength {
+			return fmt.Errorf("invalid source hash ID")
+		}
 	}
 	for i := 1; i < len(parts); i++ {
 		n, err := natural(parts[i])

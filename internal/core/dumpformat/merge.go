@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -46,9 +47,6 @@ func MergeArchives(archives ...*Archive) ([]byte, error) {
 			return nil, fmt.Errorf("offline merge input %d has not been validated by Read", i)
 		}
 		manifest := archive.Manifest()
-		if _, present := archive.SourceHistory(); present {
-			return nil, fmt.Errorf("offline merge cannot preserve source history mappings")
-		}
 		if manifest.Scope != Scope {
 			return nil, fmt.Errorf("offline merge input %d has unsupported scope %q", i, manifest.Scope)
 		}
@@ -56,7 +54,11 @@ func MergeArchives(archives ...*Archive) ([]byte, error) {
 			return nil, fmt.Errorf("offline merge input %d: %w", i, err)
 		}
 		key := archiveKey(archive)
-		inputs = append(inputs, mergeInput{archive: archive, manifest: manifest, key: key})
+		histories, err := mergeInputHistories(archive)
+		if err != nil {
+			return nil, fmt.Errorf("offline merge input %d: %w", i, err)
+		}
+		inputs = append(inputs, mergeInput{archive: archive, manifest: manifest, key: key, histories: histories})
 	}
 	sort.Slice(inputs, func(i, j int) bool { return inputs[i].key < inputs[j].key })
 
@@ -78,8 +80,51 @@ func MergeArchives(archives ...*Archive) ([]byte, error) {
 	projects := make([]Project, 0)
 	records := map[string]map[sourceRecordIdentity]Record{}
 	entries := map[string]externalEntry{}
+	historyScopes := make([]ProjectSourceHistory, 0)
+	seenHistoryProjects := map[string]bool{}
+	seenHistoryCommits := map[string]string{}
+	seenHistoryEvents := map[string]string{}
+	seenHistoryRecords := map[string]Record{}
 	for _, input := range inputs {
 		projects = append(projects, input.manifest.Projects...)
+		for _, scoped := range input.histories {
+			if seenHistoryProjects[scoped.Project] {
+				return nil, HistoryMergeRefusal{Kind: "project", Project: scoped.Project, ID: scoped.Project, Reason: "project history is declared more than once"}
+			}
+			seenHistoryProjects[scoped.Project] = true
+			for _, commit := range scoped.Commits {
+				if previous, ok := seenHistoryCommits[commit.ID]; ok && previous != scoped.Project {
+					return nil, HistoryMergeRefusal{Kind: "commit identity", Project: scoped.Project, OtherProject: previous, ID: commit.ID, Reason: "source revisions cannot be ordered across projects"}
+				}
+				seenHistoryCommits[commit.ID] = scoped.Project
+			}
+			for _, event := range scoped.Events {
+				id := SourceEventID(event)
+				if id == "" {
+					continue
+				}
+				if previous, ok := seenHistoryEvents[id]; ok && previous != scoped.Project {
+					return nil, HistoryMergeRefusal{Kind: "event identity", Project: scoped.Project, OtherProject: previous, ID: id, Reason: "source events cannot be shared across project histories"}
+				}
+				seenHistoryEvents[id] = scoped.Project
+			}
+			for _, frame := range scoped.Range.Frames {
+				for _, record := range frame.Records {
+					key := record.Kind + "\x00" + recordKey(record)
+					if previous, ok := seenHistoryRecords[key]; ok {
+						if previous.Project == scoped.Project {
+							continue
+						}
+						if previous.Project == "" && record.Project == "" && equalJSON(previous, record) {
+							continue
+						}
+						return nil, HistoryMergeRefusal{Kind: "record identity", Project: scoped.Project, OtherProject: previous.Project, ID: record.ID, Reason: "source record is shared across project histories"}
+					}
+					seenHistoryRecords[key] = record
+				}
+			}
+			historyScopes = append(historyScopes, scoped)
+		}
 		for _, kind := range knownKindNames() {
 			for _, record := range input.archive.Records(kind) {
 				key := sourceRecordIdentity{Kind: recordIdentity(kind, record)}
@@ -123,6 +168,13 @@ func MergeArchives(archives ...*Archive) ([]byte, error) {
 	}
 
 	if err := validateProjects(projects); err != nil {
+		for i := range projects {
+			for j := i + 1; j < len(projects); j++ {
+				if projects[i].Prefix == projects[j].Prefix || strings.HasPrefix(projects[i].Prefix, projects[j].Prefix+"-") || strings.HasPrefix(projects[j].Prefix, projects[i].Prefix+"-") {
+					return nil, HistoryMergeRefusal{Kind: "project", Project: projects[i].Prefix, OtherProject: projects[j].Prefix, ID: projects[i].Prefix, Reason: "project prefixes overlap"}
+				}
+			}
+		}
 		return nil, fmt.Errorf("duplicate or conflicting project prefix: %w", err)
 	}
 	sort.Slice(projects, func(i, j int) bool { return projects[i].Prefix < projects[j].Prefix })
@@ -164,10 +216,20 @@ func MergeArchives(archives ...*Archive) ([]byte, error) {
 		return nil, err
 	}
 	history := "unavailable"
-	for _, input := range inputs {
-		if input.manifest.History == "available-unverified" {
-			history = "available-unverified"
-			break
+	if len(historyScopes) != 0 {
+		history = "verified"
+		for _, scoped := range historyScopes {
+			if scoped.Range.Status != "verified" || !scoped.Range.Complete {
+				history = "available-unverified"
+				break
+			}
+		}
+	} else {
+		for _, input := range inputs {
+			if input.manifest.History == "available-unverified" {
+				history = "available-unverified"
+				break
+			}
 		}
 	}
 
@@ -181,13 +243,32 @@ func MergeArchives(archives ...*Archive) ([]byte, error) {
 	for name, version := range versions {
 		manifest.Kinds = append(manifest.Kinds, Kind{Name: name, Version: version})
 	}
-	return encodeArchive(manifest, mergedRecords, append(config, '\n'))
+	var historyMember []byte
+	if len(historyScopes) != 0 {
+		sort.Slice(historyScopes, func(i, j int) bool { return historyScopes[i].Project < historyScopes[j].Project })
+		mergedHistory := SourceHistory{Format: SourceHistoryFormat, ProjectHistories: historyScopes}
+		historyMember, err = json.Marshal(mergedHistory)
+		if err != nil {
+			return nil, fmt.Errorf("serialize merged source history: %w", err)
+		}
+		historyMember = append(historyMember, '\n')
+	}
+	return encodeArchive(manifest, mergedRecords, append(config, '\n'), historyMember)
 }
 
 type mergeInput struct {
-	archive  *Archive
-	manifest Manifest
-	key      string
+	archive   *Archive
+	manifest  Manifest
+	key       string
+	histories []ProjectSourceHistory
+}
+
+func mergeInputHistories(archive *Archive) ([]ProjectSourceHistory, error) {
+	history, ok := archive.SourceHistory()
+	if !ok {
+		return nil, nil
+	}
+	return sourceHistoryProjects(history, archive.Manifest())
 }
 
 func knownKindNames() []string {
@@ -378,11 +459,14 @@ func mergeDigest(inputs []mergeInput) string {
 	return fmt.Sprintf("%x", sum[:])
 }
 
-func encodeArchive(manifest Manifest, records map[string][]Record, config []byte) ([]byte, error) {
+func encodeArchive(manifest Manifest, records map[string][]Record, config, history []byte) ([]byte, error) {
 	if len(config) == 0 {
 		return nil, fmt.Errorf("merged archive configuration provenance is empty")
 	}
 	files := map[string][]byte{"config/sources.json": append([]byte(nil), config...)}
+	if len(history) != 0 {
+		files[SourceHistoryMember] = append([]byte(nil), history...)
+	}
 	versions := kindVersions(manifest.Kinds)
 	manifest.Kinds = nil
 	manifest.Files = map[string]File{}

@@ -24,11 +24,12 @@ const (
 // Project and Kind mirror the versioned plug-dump/1 manifest fields needed by
 // the reverse path. They intentionally contain no restore or storage methods.
 type Project struct {
-	Prefix        string            `json:"prefix"`
-	IDMode        string            `json:"id_mode"`
-	HashLength    int               `json:"hash_length"`
-	LastID        uint64            `json:"last_id"`
-	ChildCounters map[string]uint64 `json:"child_counters"`
+	Prefix         string            `json:"prefix"`
+	IDMode         string            `json:"id_mode"`
+	HashLength     int               `json:"hash_length"`
+	HashNamespaces []string          `json:"hash_namespaces,omitempty"`
+	LastID         uint64            `json:"last_id"`
+	ChildCounters  map[string]uint64 `json:"child_counters"`
 }
 
 type Kind struct {
