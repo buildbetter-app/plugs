@@ -330,3 +330,9 @@ backup, source-history completeness or Plug restore certificate. Native sources
 whose ignored events or old schema images cannot prove continuity retain
 partial or unverified history. The existing complete-root producer, raw stored
 JSON/BIGINT/time values, history refusal controls and dump formats are unchanged.
+
+Native single-ID reads hydrate the active wisp image and its wisp labels before
+falling back to the durable issue image. Only an absent optional active plane or
+row permits fallback; active query or label errors remain errors. Export still
+retains both physical images when IDs collide. This lookup correction does not
+supply consumer restore, history, expiry, restart, or GC qualification.

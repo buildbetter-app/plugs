@@ -2554,3 +2554,80 @@ func TestCreateMultipleEphemeralAutoIDs(t *testing.T) {
 		ids[issue.ID] = true
 	}
 }
+
+// The collision is two actual persisted rows with independent labels. Keeping
+// both images in an archive cannot establish which image the native read uses.
+func TestGetIssueActiveImageWinsStoredCollision(t *testing.T) {
+	store, cleanup := setupConcurrentTestStore(t)
+	defer cleanup()
+	ctx, cancel := testContext(t)
+	defer cancel()
+	const id = "test-active-collision"
+	durable := &types.Issue{ID: id, Title: "durable title", Description: "durable description", Notes: "durable notes", Status: types.StatusOpen, Priority: 2, IssueType: types.TypeTask}
+	if err := store.CreateIssue(ctx, durable, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO labels (issue_id, label) VALUES (?, ?)`, id, "durable-label"); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC)
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO wisps
+		(id, title, description, notes, status, priority, issue_type, created_at, updated_at, ephemeral, no_history, metadata)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, "active title", "active description", "active notes", "blocked", 1, "bug", at, at, true, true, `{"plane":"active","n":9007199254740993}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO wisp_labels (issue_id, label) VALUES (?, ?)`, id, "active-label"); err != nil {
+		t.Fatal(err)
+	}
+	type image struct {
+		ID, Title, Description, Notes, Status, Type, Metadata string
+		Priority, Ephemeral, NoHistory                        int
+	}
+	readImage := func(table string) image {
+		t.Helper()
+		var row image
+		//nolint:gosec // table is one of the two literal issue planes below.
+		err := store.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT id, title, description, notes, status, priority, issue_type, ephemeral, no_history, metadata FROM %s WHERE id = ?`, table), id).
+			Scan(&row.ID, &row.Title, &row.Description, &row.Notes, &row.Status, &row.Priority, &row.Type, &row.Ephemeral, &row.NoHistory, &row.Metadata)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return row
+	}
+	beforeDurable, beforeActive := readImage("issues"), readImage("wisps")
+	got, err := store.GetIssue(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != beforeActive.ID || got.Title != beforeActive.Title || got.Description != beforeActive.Description || got.Notes != beforeActive.Notes || string(got.Status) != beforeActive.Status || got.Priority != beforeActive.Priority || string(got.IssueType) != beforeActive.Type || !got.Ephemeral || !got.NoHistory || string(got.Metadata) != beforeActive.Metadata || len(got.Labels) != 1 || got.Labels[0] != "active-label" {
+		t.Fatalf("GetIssue returned a different source image: got=%+v active=%+v", got, beforeActive)
+	}
+	if after := readImage("issues"); after != beforeDurable {
+		t.Fatalf("durable image changed: before=%+v after=%+v", beforeDurable, after)
+	}
+	if after := readImage("wisps"); after != beforeActive {
+		t.Fatalf("active image changed: before=%+v after=%+v", beforeActive, after)
+	}
+	var durableLabel string
+	if err := store.db.QueryRowContext(ctx, `SELECT label FROM labels WHERE issue_id = ?`, id).Scan(&durableLabel); err != nil || durableLabel != "durable-label" {
+		t.Fatalf("durable labels changed: label=%q err=%v", durableLabel, err)
+	}
+	durableOnly := &types.Issue{ID: "test-durable-only", Title: "durable-only title", Status: types.StatusOpen, Priority: 2, IssueType: types.TypeTask}
+	if err := store.CreateIssue(ctx, durableOnly, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.GetIssue(ctx, durableOnly.ID); err != nil || got.Title != durableOnly.Title || got.Ephemeral {
+		t.Fatalf("durable-only fallback: got=%+v err=%v", got, err)
+	}
+	if _, err := store.GetIssue(ctx, "test-absent-image"); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("missing image: %v", err)
+	}
+	// The test owns a separate database. A broken active label source must
+	// remain an error even though an intact durable row with this ID exists.
+	if _, err := store.db.ExecContext(ctx, `DROP TABLE wisp_labels`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetIssue(ctx, id); err == nil || errors.Is(err, storage.ErrNotFound) || !strings.Contains(err.Error(), "wisp_labels") {
+		t.Fatalf("active label failure hidden by durable image: %v", err)
+	}
+}
