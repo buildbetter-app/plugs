@@ -995,6 +995,59 @@ func versionedDependencyDump(kind string, metadata any) Dump {
 	return dump
 }
 
+func TestReverseFixed19LocalKindsPreserveAllDependencyFields(t *testing.T) {
+	kinds := []string{"blocks", "parent-child", "conditional-blocks", "waits-for", "related", "discovered-from", "replies-to", "relates-to", "duplicates", "supersedes", "authored-by", "assigned-to", "approved-by", "attests", "tracks", "until", "caused-by", "validates", "delegated-from"}
+	for _, kind := range kinds {
+		for _, version := range []int{dumpformat.EdgeVersionTypedDependencies, dumpformat.EdgeVersionLocalOpaque} {
+			t.Run(fmt.Sprintf("%s/v%d", kind, version), func(t *testing.T) {
+				const raw = " {\"gate\":\"all-children\",\"also_blocks\":true,\"opaque\":[9007199254740993,1.0,null]} \n"
+				dump := versionedDependencyDump(kind, raw)
+				dump.Manifest.Kinds[4].Version = version
+				edge := &dump.Records["edge"][0]
+				edge.Source.Fields["depends_on_wisp_id"], edge.Source.Fields["depends_on_external"] = nil, nil
+				before := cloneDump(dump)
+				result, err := Convert(dump)
+				if err != nil {
+					t.Fatal(err)
+				}
+				found := false
+				for _, line := range bytes.Split(bytes.TrimSpace(result.JSONL), []byte{'\n'}) {
+					var issue issueLine
+					if err := json.Unmarshal(line, &issue); err != nil {
+						t.Fatal(err)
+					}
+					if issue.ID != "demo-2" {
+						continue
+					}
+					if len(issue.Dependencies) != 1 {
+						t.Fatal("fixed dependency omitted or duplicated")
+					}
+					got := issue.Dependencies[0]
+					if got.ID != edge.ID || got.IssueID != edge.Body["from"] || got.DependsOnID != edge.Body["to"] || got.DependsOnExternal != "" || got.Type != kind || got.ThreadID != edge.Body["thread_id"] || got.CreatedAt != edge.Source.Fields["created_at"] || got.CreatedBy != edge.Source.Fields["created_by"] {
+						t.Fatalf("fixed dependency fields changed: %+v", got)
+					}
+					var envelope map[string]any
+					if err := json.Unmarshal([]byte(got.Metadata), &envelope); err != nil || envelope["_plug_edge_id"] != edge.ID || envelope["_plug_metadata"] != raw {
+						t.Fatalf("fixed dependency lost its identity envelope or SQL-text bytes: %#v %v", envelope, err)
+					}
+					found = true
+				}
+				if !found || !reflect.DeepEqual(dump, before) {
+					t.Fatal("fixed dependency reverse mutated or omitted source")
+				}
+				if kind != "blocks" && kind != "parent-child" && kind != "related" && kind != "discovered-from" {
+					dump.Manifest.Kinds[4].Version = 1
+					got, err := Convert(dump)
+					var refusal *Refusal
+					if !errors.As(err, &refusal) || len(got.JSONL) != 0 {
+						t.Fatal("legacy v1 emitted a newly typed fixed local dependency")
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestConvertVersionedDependenciesKeepRawMetadataAndOneEnvelope(t *testing.T) {
 	const sql = " {\"gate\":\"any-children\",\"also_blocks\":true,\"spawner_id\":\"demo-1\",\"opaque\":{\"large\":9007199254740993,\"literal\":1.0}} \n"
 	const existing = " {\"_plug_edge_id\":\"edge-1\",\"_plug_metadata\":\" {\\\"gate\\\":\\\"any-children\\\",\\\"opaque\\\":9007199254740993} \\n\"} \n"
@@ -1377,7 +1430,8 @@ func TestConvertV3LocalOpaqueRetainsNegativeAndExternalBoundaries(t *testing.T) 
 	}{
 		{"v2-local-custom", func(d *Dump) { d.Manifest.Kinds[4].Version = dumpformat.EdgeVersionTypedDependencies }},
 		{"unknown-version", func(d *Dump) { d.Manifest.Kinds[4].Version = 4 }},
-		{"canonical-local-kind", func(d *Dump) {
+		{"v1-fixed-local-kind", func(d *Dump) {
+			d.Manifest.Kinds[4].Version = 1
 			d.Records["edge"][0].Body["type"] = "replies-to"
 			d.Records["edge"][0].Source.Fields["type"] = "replies-to"
 		}},

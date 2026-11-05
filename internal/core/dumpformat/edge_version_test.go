@@ -21,6 +21,43 @@ func edgeVersionFixture(t *testing.T, f *mergeFixture, version int) []byte {
 	})
 }
 
+func TestFixed19LocalKindsKeepTypedVersionAndCompleteSource(t *testing.T) {
+	// Literal contract census, independent of the implementation's vocabulary.
+	kinds := []string{"blocks", "parent-child", "conditional-blocks", "waits-for", "related", "discovered-from", "replies-to", "relates-to", "duplicates", "supersedes", "authored-by", "assigned-to", "approved-by", "attests", "tracks", "until", "caused-by", "validates", "delegated-from"}
+	for _, kind := range kinds {
+		for _, version := range []int{EdgeVersionTypedDependencies, EdgeVersionLocalOpaque} {
+			t.Run(fmt.Sprintf("%s/v%d", kind, version), func(t *testing.T) {
+				f := newMergeFixture(t, "pl")
+				edge := &f.records["edge"][0]
+				raw := " {\"gate\":\"all-children\",\"also_blocks\":true,\"opaque\":[9007199254740993,1.0,null]} \n"
+				edge.Source.Fields = Row{
+					"id": edge.ID, "issue_id": edge.Body["from"], "depends_on_issue_id": edge.Body["to"],
+					"depends_on_wisp_id": nil, "depends_on_external": nil, "type": kind,
+					"created_at": "2026-01-01T00:00:00Z", "created_by": " source actor ",
+					"metadata": raw, "thread_id": " exact/thread ",
+				}
+				edge.Body["type"], edge.Body["metadata"], edge.Body["thread_id"] = kind, raw, " exact/thread "
+				data := edgeVersionFixture(t, f, version)
+				archive, err := Read(bytes.NewReader(data))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if archive.Manifest().EdgeVersion() != version || !reflect.DeepEqual(archive.Records("edge")[0], *edge) || !bytes.Equal(archive.TarBytes(), data) {
+					t.Fatal("fixed kind lost version, identity, endpoint, raw metadata, thread or one of ten source columns")
+				}
+				if !IsVersionedLocalKnownEdgeType(version, "depends_on_issue_id", kind) || IsLocalOpaqueEdgeType(version, "depends_on_issue_id", kind) || IsVersionedLocalKnownEdgeType(version, "depends_on_wisp_id", kind) || IsVersionedLocalKnownEdgeType(version, "depends_on_external", kind) {
+					t.Fatal("fixed kind crossed typed/local/opaque boundaries")
+				}
+				if kind != "blocks" && kind != "parent-child" && kind != "related" && kind != "discovered-from" {
+					if _, err := Read(bytes.NewReader(edgeVersionFixture(t, f, 1))); err == nil {
+						t.Fatal("legacy v1 admitted a newly typed local kind")
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestEdgeV2ReaderSeparatelyBindsLocalSemanticsAndExactSource(t *testing.T) {
 	for _, kind := range []string{"waits-for", "conditional-blocks"} {
 		t.Run(kind, func(t *testing.T) {
@@ -313,8 +350,11 @@ func TestEdgeV3ReaderAdmitsOnlyDurableLocalOpaqueKinds(t *testing.T) {
 		fixture := newMergeFixture(t, "pl")
 		edge := &fixture.records["edge"][0]
 		edge.Body["type"], edge.Source.Fields["type"] = kind, kind
-		if _, err := Read(bytes.NewReader(edgeVersionFixture(t, fixture, EdgeVersionLocalOpaque))); err == nil {
-			t.Fatalf("canonical unsupported kind %q was relabeled as opaque", kind)
+		if IsLocalOpaqueEdgeType(EdgeVersionLocalOpaque, "depends_on_issue_id", kind) {
+			t.Fatalf("canonical kind %q was relabeled as opaque", kind)
+		}
+		if _, err := Read(bytes.NewReader(edgeVersionFixture(t, fixture, 1))); err == nil {
+			t.Fatalf("legacy v1 admitted newly typed fixed kind %q", kind)
 		}
 	}
 	for _, test := range []struct {

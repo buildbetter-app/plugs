@@ -43,20 +43,15 @@ func IsTypedEdgeVersion(version int) bool {
 	return version == EdgeVersionTypedDependencies || version == EdgeVersionLocalOpaque
 }
 
-// IsVersionedLocalKnownEdgeType admits the small set of local dependency kinds
-// whose wire shape is explicitly versioned. Tracks is a fixed well-known edge:
-// it is never admitted through the v3 local-opaque predicate, while v3 remains
-// a strict superset of the v2 typed contract when an opaque row is also present.
+// IsVersionedLocalKnownEdgeType admits the fixed dependency vocabulary only
+// through a typed local issue-target contract. These kinds keep their existing
+// graph effects; admission never makes a nonblocking kind a scheduling edge.
+// The v3 local-opaque predicate remains disjoint from all fixed kinds.
 func IsVersionedLocalKnownEdgeType(version int, targetKind, kind string) bool {
 	if !IsTypedEdgeVersion(version) || targetKind != "depends_on_issue_id" {
 		return false
 	}
-	switch kind {
-	case "waits-for", "conditional-blocks", "tracks":
-		return true
-	default:
-		return false
-	}
+	return IsCanonicalEdgeType(kind)
 }
 
 // IsCanonicalEdgeType reports whether kind belongs to the closed well-known

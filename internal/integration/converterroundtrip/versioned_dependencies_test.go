@@ -415,6 +415,179 @@ func editDependencyArchive(t *testing.T, archive *dumpformat.Archive, edit func(
 	})
 }
 
+// Detached consumer control only: distinct endpoints prevent an edge from
+// borrowing another kind's graph effects. This is never native producer proof.
+func fixed19DependencyBytes(t *testing.T, version int) []byte {
+	t.Helper()
+	input, err := dumpformat.Read(bytes.NewReader(admittedFixtureBytes(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := []string{"blocks", "parent-child", "conditional-blocks", "waits-for", "related", "discovered-from", "replies-to", "relates-to", "duplicates", "supersedes", "authored-by", "assigned-to", "approved-by", "attests", "tracks", "until", "caused-by", "validates", "delegated-from"}
+	beads := input.Records("bead")
+	var edges []dumpformat.Record
+	for i, kind := range kinds {
+		from, to := fmt.Sprintf("demo-%d", 100+2*i), fmt.Sprintf("demo-%d", 101+2*i)
+		for _, id := range []string{from, to} {
+			row := beads[0]
+			row.ID, row.Body, row.Source.Fields = id, cloneRow(row.Body), cloneRow(row.Source.Fields)
+			row.Source.Fields["id"] = id
+			row.Body["title"], row.Source.Fields["title"] = kind+" "+id, kind+" "+id
+			row.Source.Fields["status"], row.Body["status_category"] = "open", "unstarted"
+			delete(row.Body, "result")
+			for _, field := range []string{"assignee", "owner", "closed_at", "due_at", "defer_until", "started_at"} {
+				row.Body[field], row.Source.Fields[field] = nil, nil
+			}
+			row.Body["pinned"], row.Source.Fields["pinned"] = false, false
+			if kind == "conditional-blocks" && id == to {
+				row.Source.Fields["status"], row.Body["status_category"], row.Body["result"] = "closed", "completed", "success"
+			}
+			beads = append(beads, row)
+		}
+		raw := any(" {\"gate\":\"not-a-scheduling-gate\",\"also_blocks\":true,\"opaque\":[9007199254740993,1.0,null]} \n")
+		if kind == "waits-for" {
+			raw = `{"gate":"all-children","also_blocks":true}`
+		}
+		edge := input.Records("edge")[0]
+		edge.ID = fmt.Sprintf("fixed-%02d", i)
+		edge.Body = dumpformat.Row{"from": from, "to": to, "target_kind": "depends_on_issue_id", "type": kind, "metadata": raw, "thread_id": " exact/" + kind + " "}
+		edge.Source.Fields = dumpformat.Row{
+			"id": edge.ID, "issue_id": from, "depends_on_issue_id": to,
+			"depends_on_wisp_id": nil, "depends_on_external": nil, "type": kind,
+			"created_at": "2026-01-01T00:00:00Z", "created_by": " exact source actor ",
+			"metadata": raw, "thread_id": edge.Body["thread_id"],
+		}
+		edges = append(edges, edge)
+	}
+	return editDependencyArchive(t, input, func(members map[string][]byte) {
+		for name, rows := range map[string][]dumpformat.Record{"bead": beads, "edge": edges} {
+			sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
+			var data bytes.Buffer
+			for _, row := range rows {
+				data.Write(encode(t, row))
+			}
+			members["records/"+name+".ndjson"] = data.Bytes()
+		}
+		changeManifest(t, members, func(m map[string]any) {
+			for _, raw := range m["kind_registry"].([]any) {
+				entry := raw.(map[string]any)
+				if entry["name"] == "edge" {
+					entry["version"], entry["count"] = version, len(edges)
+				}
+				if entry["name"] == "bead" {
+					entry["count"] = len(beads)
+				}
+			}
+			labels := 0
+			for _, row := range beads {
+				labels += len(row.Body["labels"].([]any))
+			}
+			for _, raw := range m["sources"].([]any) {
+				entry := raw.(map[string]any)
+				switch entry["family"] {
+				case "issues", "issues.row_lock", "issues.is_blocked":
+					entry["rows"] = len(beads)
+				case "dependencies":
+					entry["rows"] = len(edges)
+				case "labels":
+					entry["rows"] = labels
+				}
+			}
+		})
+	})
+}
+
+func TestFixed19TypedRestoreReverseReopenAndNonblockingEffects(t *testing.T) {
+	ctx := context.Background()
+	for _, version := range []int{dumpformat.EdgeVersionTypedDependencies, dumpformat.EdgeVersionLocalOpaque} {
+		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
+			data := fixed19DependencyBytes(t, version)
+			profile, archive := admittedImportProfile(t, data)
+			if len(archive.Records("edge")) != 19 {
+				t.Fatal("fixed19 control lost a dependency")
+			}
+			for _, engine := range []string{"memory", "sqlite", "postgres"} {
+				t.Run(engine, func(t *testing.T) {
+					store, lease, reopen := openIdentityTarget(t, engine)
+					if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile); err != nil {
+						t.Fatal(err)
+					}
+					for pass := 0; pass < 2; pass++ {
+						requireDependencyReverse(t, store, archive, profile)
+						state := savedLabelImport(t, store, archive, profile, "")
+						rows := map[string]driver.Record{}
+						for _, row := range state.Records {
+							rows[row.Ref.ID] = row
+						}
+						for _, edge := range archive.Records("edge") {
+							kind, from, to := stringValue(edge.Body["type"]), stringValue(edge.Body["from"]), stringValue(edge.Body["to"])
+							doc, err := pipeline.DecodeDocument(rows[from].Body)
+							if err != nil {
+								t.Fatal(err)
+							}
+							if kind == "parent-child" {
+								if doc.Parent == nil || doc.Parent.ID != to || len(doc.Links) != 0 {
+									t.Fatal("fixed parent-child lost canonical hierarchy")
+								}
+							} else {
+								wantKind := kind
+								if kind == "related" {
+									wantKind = "relates-to"
+								}
+								if doc.Parent != nil || len(doc.Links) != 1 || doc.Links[0].Kind != wantKind || doc.Links[0].To.ID != to || doc.Links[0].TargetKind == model.LinkTargetExternal || kind != "waits-for" && doc.Links[0].Metadata != nil {
+									t.Fatalf("fixed kind acquired hierarchy, routing or scheduling metadata: %+v", doc)
+								}
+							}
+							var mirror map[string]any
+							if err := decodeReverseJSON(rows["source/edge/"+edge.ID].Body, &mirror); err != nil || !reflect.DeepEqual(mirror["source"], map[string]any(edge.Source.Fields)) {
+								t.Fatalf("fixed dependency lost complete physical source: %v", err)
+							}
+							for field, value := range edge.Body {
+								if !reflect.DeepEqual(mirror[field], value) {
+									t.Fatalf("fixed dependency source body changed at %s/%s", edge.ID, field)
+								}
+							}
+							found := false
+							for _, row := range state.Derived[driver.DerivedReadyState] {
+								if row.Key == from {
+									found = true
+									var ready struct{ Ready, Blocked bool }
+									want := kind != "blocks" && kind != "waits-for" && kind != "conditional-blocks"
+									if err := json.Unmarshal(row.Value, &ready); err != nil || ready.Ready != want || ready.Blocked == want {
+										t.Fatalf("fixed kind changed ready/blocking effects: %s %s %v", kind, row.Value, err)
+									}
+								}
+							}
+							if !found {
+								t.Fatal("fixed dependency owner missing from physical ready state")
+							}
+						}
+						if pass == 0 {
+							store, lease = reopen()
+							if !reflect.DeepEqual(state, savedLabelImport(t, store, archive, profile, "")) {
+								t.Fatal("reopen changed records, versions, derived state, source blobs or import receipt")
+							}
+						}
+					}
+					ontology := service.NewOntology(nil)
+					domain := service.New(store, lease, pipeline.New(store, lease, pipeline.WithOntology(ontology)), service.WithOntology(ontology))
+					for i, edge := range archive.Records("edge") {
+						switch stringValue(edge.Body["type"]) {
+						case "replies-to", "relates-to", "duplicates", "supersedes", "authored-by", "assigned-to", "approved-by", "attests", "until", "caused-by", "validates", "delegated-from":
+							// An open target and gate-shaped raw metadata cannot
+							// turn a nonblocking known kind into a close guard.
+							_, err := domain.Close(ctx, model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}, service.CloseRequest{ID: model.RefByID(stringValue(edge.Body["from"]), model.Natural64(0))}, model.WriteMeta{Project: "demo", Agent: "fixed19-control", AgentLabel: "fixed19-control", IdempotencyKey: fmt.Sprintf("%032x", i+1)})
+							if err != nil {
+								t.Fatalf("nonblocking fixed kind close-guarded its owner: %s %v", edge.Body["type"], err)
+							}
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestTypedTracksReadbackKeepsExpandedReportsAndPureLoopsInert(t *testing.T) {
 	ctx := context.Background()
 	for _, returningKind := range []string{"tracks", "blocks"} {
@@ -518,8 +691,15 @@ func TestV3DependencyRefusalsAndStagingRollbackConserveTarget(t *testing.T) {
 						}
 					})
 				}, "unsupported dependency type"},
-				{"unsupported-known", func(m map[string][]byte) {
+				{"v1-fixed-kind", func(m map[string][]byte) {
 					changeRecord(t, m, "edge", func(r map[string]any) { body(r)["type"], source(r)["type"] = "duplicates", "duplicates" })
+					changeManifest(t, m, func(manifest map[string]any) {
+						for _, raw := range manifest["kind_registry"].([]any) {
+							if entry := raw.(map[string]any); entry["name"] == "edge" {
+								entry["version"] = 1
+							}
+						}
+					})
 				}, "unsupported dependency type"},
 				{"multi-arm", func(m map[string][]byte) {
 					changeRecord(t, m, "edge", func(r map[string]any) { source(r)["depends_on_external"] = "tracker:collision" })
