@@ -76,7 +76,7 @@ func (t *sourcePoststageTx) Head(ctx context.Context) (model.Revision, error) {
 	head, err := t.WriteTx.Head(ctx)
 	if err == nil && t.staged && t.owner.mode == "head" {
 		t.owner.reached++
-		return model.Revision{}, errSourcePoststage
+		return model.Natural64(0), errSourcePoststage
 	}
 	return head, err
 }
