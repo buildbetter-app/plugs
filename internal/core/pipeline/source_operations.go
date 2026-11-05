@@ -142,6 +142,12 @@ func (p *prepared) checkSourceCoreBodies(before map[string][]byte) error {
 // callbacks still receive every operation in the complete ordered proposal.
 func (p *prepared) ontologyProposal() port.ProposedChange {
 	proposal := p.proposal
+	if p.source != nil && p.closes != nil && proposal.Meta.Method == "bead.close" {
+		// Installed source calls use the trusted typed close lowering, including
+		// ordinary targets. Only ontology receives the ordered batch context;
+		// authorization, callbacks and receipt identity retain bead.close.
+		proposal.Meta.Method = "tx.apply"
+	}
 	if len(p.external) == 0 {
 		return proposal
 	}

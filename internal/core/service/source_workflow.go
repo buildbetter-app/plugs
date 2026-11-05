@@ -209,14 +209,20 @@ func (s *Service) sourcePreparation(source *sourceWorkflow, by model.PrincipalRe
 				resolver := &workflowCoreResolver{service: s, principal: by, graph: graph, head: driver.CoreSnapshotExpectation{StoreID: namespace.StoreID, Incarnation: reader.Snapshot().Incarnation, Head: *reader.Snapshot().At}}
 				if !workflowRef(target) {
 					if original.Kind == model.OpLink || original.Kind == model.OpUnlink {
-						to, err := resolve(original.Link.To)
+						kind, err := original.Link.TargetKind.Normalized()
 						if err != nil {
-							return model.Op{}, nil, err
+							return model.Op{}, nil, failure("invalid_params", err.Error())
 						}
-						if workflowRef(to) {
-							return model.Op{}, nil, failure("unsupported", "mixed source relation edits require provider preparation")
+						if kind != model.LinkTargetExternal {
+							to, err := resolve(original.Link.To)
+							if err != nil {
+								return model.Op{}, nil, err
+							}
+							if workflowRef(to) {
+								return model.Op{}, nil, failure("unsupported", "mixed source relation edits require provider preparation")
+							}
+							op.Link.To = to
 						}
-						op.Link.To = to
 					}
 					if original.Kind == model.OpClose || isSourceClaim(meta.Method) || meta.Method == "bead.close" {
 						if err := s.sourceOrdinaryGuard(ctx, staged, by, target, meta, resolver); err != nil {

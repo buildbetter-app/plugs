@@ -971,14 +971,14 @@ func validateRefForWorkflowEndpoint(ref model.Ref, workflow bool) error {
 }
 
 func (s *Service) LinkWithOutcome(ctx context.Context, by model.PrincipalRef, req LinkRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
-	if s.SourceRuntimeInstalled() {
-		return port.WriteOutcome{}, failure("unsupported", "source relation edits require canonical batch preparation")
-	}
 	workflowReq, mixed, err := workflowLinkRequest(req)
 	if err != nil {
 		return port.WriteOutcome{}, err
 	}
 	if mixed {
+		if s.SourceRuntimeInstalled() {
+			return port.WriteOutcome{}, failure("unsupported", "source relation edits require canonical batch preparation")
+		}
 		if s.workflowProvider() == nil {
 			return port.WriteOutcome{}, failure("invalid_params", "workflow references require a supported workflow item operation")
 		}
@@ -1019,14 +1019,14 @@ func (s *Service) Link(ctx context.Context, by model.PrincipalRef, req LinkReque
 }
 
 func (s *Service) UnlinkWithOutcome(ctx context.Context, by model.PrincipalRef, req LinkRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
-	if s.SourceRuntimeInstalled() {
-		return port.WriteOutcome{}, failure("unsupported", "source relation edits require canonical batch preparation")
-	}
 	workflowReq, mixed, err := workflowLinkRequest(req)
 	if err != nil {
 		return port.WriteOutcome{}, err
 	}
 	if mixed {
+		if s.SourceRuntimeInstalled() {
+			return port.WriteOutcome{}, failure("unsupported", "source relation edits require canonical batch preparation")
+		}
 		if s.workflowProvider() == nil {
 			return port.WriteOutcome{}, failure("invalid_params", "workflow references require a supported workflow item operation")
 		}

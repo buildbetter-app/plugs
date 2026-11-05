@@ -179,6 +179,7 @@ func TestJointSourcePublicRoutingBatchReplayAndReopen(t *testing.T) {
 				t.Fatal("mixed proposal did not publish once in both planes", both.Generation, meta.Head)
 			}
 			closed := sourcePublicCall(t, server, actor, "bead.close", 4, map[string]any{"id": "demo-7", "reason": "public source complete"}, "")
+			sourcePublicCall(t, server, actor, "bead.get", 0, map[string]any{"id": "workflow:item/restored"}, "not_found")
 			fallback := sourcePublicCall(t, server, actor, "bead.get", 0, map[string]any{"id": "demo-7"}, "")
 			if bytes.Contains(fallback.Result, []byte("workflow:item/restored")) || bytes.Contains(fallback.Result, []byte("committed mixed active")) {
 				t.Fatal("completed source did not fall back to its durable collision")
@@ -202,6 +203,87 @@ func TestJointSourcePublicRoutingBatchReplayAndReopen(t *testing.T) {
 			}
 			if strings.Contains(string(retry.Result), "discard active draft") {
 				t.Fatal("failed draft escaped into recovered receipt")
+			}
+		})
+	}
+}
+
+func TestJointSourcePublicOrdinaryRelationsAndActiveLifecycle(t *testing.T) {
+	data := jointSourceFixture(t)
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			store, lease, _ := openIdentityTarget(t, engine)
+			p := jointProfile(t, data, store, lease)
+			report, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, server := sourcePublicService(t, store, lease, p, report, &sourcePublicPolicy{})
+			actor := p.Admission.Actor
+			capability, err := driver.RequireWorkflowCheckpointStore(store, lease)
+			if err != nil {
+				t.Fatal(err)
+			}
+			namespace := report.SourcePlanes.Providers[0].Provider.Namespace
+			initial, err := capability.LoadCheckpoint(ctx, namespace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var refs []model.Ref
+			for i, title := range []string{"ordinary relation source", "ordinary relation target"} {
+				created := sourcePublicCall(t, server, actor, "bead.create", 10+i, map[string]any{"type": "task", "fields": map[string]any{"title": title}}, "")
+				var commit model.Commit
+				decode(t, created.Result, &commit)
+				if len(commit.Results) != 1 {
+					t.Fatal("ordinary create result", commit)
+				}
+				refs = append(refs, commit.Results[0].Ref)
+			}
+			link := sourcePublicCall(t, server, actor, "bead.link", 12, map[string]any{"from": refs[0], "to": refs[1], "kind": "related"}, "")
+			replay := sourcePublicCall(t, server, actor, "bead.link", 12, map[string]any{"from": refs[0], "to": refs[1], "kind": "related"}, "")
+			if !replay.Meta.Replayed || !bytes.Equal(link.Result, replay.Result) {
+				t.Fatal("ordinary named link lost canonical replay after source installation")
+			}
+			sourcePublicCall(t, server, actor, "bead.unlink", 13, map[string]any{"from": refs[0], "to": refs[1], "kind": "related"}, "")
+			// An external ID remains opaque even when it equals a live source alias.
+			sourcePublicCall(t, server, actor, "bead.link", 14, map[string]any{"from": refs[0], "to": model.RefByID("demo-7", model.Natural64(0)), "targetKind": "external", "kind": "related"}, "")
+			reader, err := store.Read(ctx, driver.View{Incarnation: report.Restored.Incarnation})
+			if err != nil {
+				t.Fatal(err)
+			}
+			rows, readErr := reader.Get(ctx, refs[:1])
+			_ = reader.Close()
+			if readErr != nil || len(rows) != 1 {
+				t.Fatal("ordinary relation readback", readErr)
+			}
+			doc, err := pipeline.DecodeDocument(rows[0].Body)
+			if err != nil || len(doc.Links) != 1 || doc.Links[0].To.ID != "demo-7" || doc.Links[0].TargetKind != model.LinkTargetExternal {
+				t.Fatal("ordinary/external relation was routed into active state", doc.Links, err)
+			}
+			sourcePublicCall(t, server, actor, "bead.close", 15, map[string]any{"id": refs[1], "reason": "ordinary named close"}, "")
+			sourcePublicCall(t, server, actor, "bead.close", 16, map[string]any{"id": refs[1]}, "")
+			unchanged, err := capability.LoadCheckpoint(ctx, namespace)
+			if err != nil || !reflect.DeepEqual(initial, unchanged) {
+				t.Fatal("ordinary named operations changed the source namespace", err)
+			}
+			core := savedLabelImport(t, store, report.Archive, p, "")
+			comment := sourcePublicCall(t, server, actor, "bead.comment", 17, map[string]any{"id": "demo-7", "body": "public active comment"}, "")
+			commentReplay := sourcePublicCall(t, server, actor, "bead.comment", 17, map[string]any{"id": "demo-7", "body": "public active comment"}, "")
+			if !commentReplay.Meta.Replayed || !bytes.Equal(comment.Result, commentReplay.Result) {
+				t.Fatal("active comment receipt was not canonical")
+			}
+			claimed := sourcePublicCall(t, server, actor, "bead.claim", 18, map[string]any{"id": "demo-7"}, "")
+			claimedReplay := sourcePublicCall(t, server, actor, "bead.claim", 18, map[string]any{"id": "demo-7"}, "")
+			if !claimedReplay.Meta.Replayed || !bytes.Equal(claimed.Result, claimedReplay.Result) {
+				t.Fatal("active claim receipt was not canonical")
+			}
+			if !reflect.DeepEqual(core, savedLabelImport(t, store, report.Archive, p, "")) {
+				t.Fatal("active comment/claim changed core records/history/derived data")
+			}
+			active, err := capability.LoadCheckpoint(ctx, namespace)
+			if err != nil || active.Generation != initial.Generation+2 {
+				t.Fatal("active comment/claim did not each publish once", err)
 			}
 		})
 	}

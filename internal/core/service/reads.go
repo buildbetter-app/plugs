@@ -58,6 +58,9 @@ func (s *Service) Get(ctx context.Context, by model.PrincipalRef, req GetRequest
 			if !errors.As(err, &typed) || typed.Data.Code != "not_found" {
 				return GetResult{}, err
 			}
+			if s.knownSourceWorkflowRef(req.Project, req.ID) {
+				return GetResult{}, err
+			}
 		}
 	}
 	if err := coreReadRef(req.ID); err != nil {
