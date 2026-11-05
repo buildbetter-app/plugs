@@ -505,6 +505,12 @@ func b02OwnerRow(t *testing.T, image b02DatabaseImage, id string) (string, map[s
 	var table string
 	var found map[string]any
 	for name, rows := range image.Rows {
+		// The complete census includes derived projections such as
+		// ready_issues. Only the native owner planes carry the authoritative
+		// issue/wisp row; a projection with the same id is not a second owner.
+		if name != "issues" && name != "wisps" {
+			continue
+		}
 		for _, row := range rows {
 			if row["id"] == id && row["title"] != nil {
 				if found != nil {
