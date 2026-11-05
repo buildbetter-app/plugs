@@ -271,6 +271,16 @@ func (t *transaction) publishSelection(ctx context.Context, c *sql.Conn, current
 			return err
 		}
 	}
+	// The first authored publication may have no prior projection rows to
+	// close. Prove both physical arms empty on this same fenced connection;
+	// an imported or legacy image must retain the ordinary close sequence.
+	emptyPriorProjections := false
+	if current.Head.IsZero() && t.restore == nil {
+		if err = c.QueryRowContext(ctx, `SELECT NOT EXISTS(SELECT 1 FROM selection_bead_history)
+			AND NOT EXISTS(SELECT 1 FROM selection_fact_sets)`).Scan(&emptyPriorProjections); err != nil {
+			return err
+		}
+	}
 	changedSources := make(map[string]bool, len(t.records)+len(t.derived)+len(t.bumps))
 	for id := range t.records {
 		changedSources[id] = true
@@ -281,16 +291,20 @@ func (t *transaction) publishSelection(ctx context.Context, c *sql.Conn, current
 	for id := range t.bumps {
 		changedSources[id] = true
 	}
-	if err = invalidateSelectionFactSets(ctx, c, incarnation, next, changedSources); err != nil {
-		return err
+	if !emptyPriorProjections {
+		if err = invalidateSelectionFactSets(ctx, c, incarnation, next, changedSources); err != nil {
+			return err
+		}
 	}
 	// Publish the same thin record/derived observations in bounded batches.
 	if err = t.publishSelectionSourceHistory(ctx, c, incarnation, next); err != nil {
 		return err
 	}
 	// Close both physical arms before inserting any replacement image.
-	if err = closeSelectionDerived(ctx, c, incarnation, next, t.derived); err != nil {
-		return err
+	if !emptyPriorProjections {
+		if err = closeSelectionDerived(ctx, c, incarnation, next, t.derived); err != nil {
+			return err
+		}
 	}
 	if err = publishSelectionRows(ctx, c, incarnation, next, derived); err != nil {
 		return err
