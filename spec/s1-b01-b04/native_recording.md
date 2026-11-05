@@ -67,6 +67,26 @@ before metadata/read/hash. The producer owns startup/early-failure/version/
 listener/collision/lifetime/cleanup receipts; copied source carries no runtime
 or independent acceptance credit.
 
+After every owned cleanup and the complete inventory/sums are written, the
+recorder retains the entire original evidence tree in a PAX tar archive. It
+verifies each ordered member's name, type, mode, link target and regular-file
+length/hash by reading the archive before removing the loose owned tree. A
+sibling archive receipt binds the original root, archive bytes/hash and exact
+entry counts. The inventory, sums, preparation bindings, all native streams,
+RPC triples, snapshots, SQL reopen and physical lifecycle records remain
+original archive members. No link target is read as source bytes. A pack or verification
+failure fails the test and preserves the loose originals; an existing archive
+destination is refused. A later removal failure retains the verified archive. This changes collection layout only, after execution.
+
+The preceding b708 native run completed all 945 named assertions and cleanup
+records but retained a literal Bazel 900-second TIMEOUT. Its post-test Bazel
+manifest stopped at the exact first 47,521 of 65,488 regular output paths.
+Bazel 9.3.0 runs external stat/file commands per output after the test child
+exits. Collecting the verified archive avoids that per-file processing without
+changing any command, assertion, store lifetime, clock, TTL, cap or deadline.
+The old terminal remains RED; this source change requires its own gates and
+fresh native preparation, execution and independent review.
+
 Each of the four captures is replayed through the actual RPC registry,
 core service and Writer on all three engines. Creates use captured titles and
 priorities, and retain explicit source-ID to actual returned-ref mappings.

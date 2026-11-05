@@ -60,7 +60,12 @@ func TestB01NativeTimedAndIndefinitePair(t *testing.T) {
 			fmt.Fprintf(&sums, "%s  output-inventory.json\n", digest)
 		}
 		nativeWrite(t, filepath.Join(root, "SHA256SUMS"), []byte(sums.String()))
-		t.Logf("B01_NATIVE_OUTPUT root=%s inventory=output-inventory.json", root)
+		archive, err := nativePackEvidence(root, inventory)
+		if err != nil {
+			t.Errorf("retain complete native evidence archive: %v", err)
+		}
+		nativeJSON(t, root+"-archive.json", archive)
+		t.Logf("B01_NATIVE_OUTPUT root=%s inventory=output-inventory.json archive=%s verified=%t", root, archive.Path, archive.Verified)
 	})
 	nativeWrite(t, filepath.Join(root, "native-inputs.json"), nativeInputsBytes)
 	binary := nativePrepared(t, root, inputs)
