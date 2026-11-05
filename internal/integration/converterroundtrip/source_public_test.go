@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
@@ -68,10 +69,35 @@ func sourcePublicService(t *testing.T, store driver.Store, lease driver.ActiveLe
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := domain.InstallSourceWorkflow(ctx, provider, *p.SourcePlanes, *report.SourcePlanes); err != nil {
+	if report.Receipt == nil {
+		t.Fatal("source import has no original receipt")
+	}
+	if err := domain.InstallSourceWorkflow(ctx, provider, p, *report.SourcePlanes, *report.Receipt); err != nil {
 		t.Fatal(err)
 	}
 	return domain, server
+}
+
+func assertSourceCommentAttribution(t *testing.T, result []byte, p driver.RestoreImportProfile, report Report) {
+	t.Helper()
+	var value struct {
+		Comments []struct {
+			Body         string             `json:"body"`
+			Principal    model.PrincipalRef `json:"principal"`
+			Time         time.Time          `json:"time"`
+			Origin       string             `json:"origin"`
+			SourceAuthor string             `json:"sourceAuthor"`
+			SourceTime   time.Time          `json:"sourceTime"`
+		} `json:"comments"`
+	}
+	decode(t, result, &value)
+	if len(value.Comments) != 1 || report.Receipt == nil {
+		t.Fatalf("missing imported source comment or original receipt: %s", result)
+	}
+	comment := value.Comments[0]
+	if comment.Body != "raw active comment" || comment.Origin != "import" || !reflect.DeepEqual(comment.Principal, p.Admission.Actor) || !comment.Time.Equal(report.Receipt.Changeset.Time) || comment.SourceAuthor != "unverified source author" || !comment.SourceTime.Equal(time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)) || comment.Time.Equal(comment.SourceTime) || comment.Principal.ID == comment.SourceAuthor {
+		t.Fatalf("verified importer/restore time were conflated with raw source attribution: %s", result)
+	}
 }
 
 type sourcePublicReply struct {
@@ -124,12 +150,13 @@ func TestJointSourcePublicRoutingBatchReplayAndReopen(t *testing.T) {
 				t.Fatal(err)
 			}
 			policy := &sourcePublicPolicy{}
-			_, server := sourcePublicService(t, store, lease, p, report, policy)
+			domain, server := sourcePublicService(t, store, lease, p, report, policy)
 			actor := p.Admission.Actor
 			get := sourcePublicCall(t, server, actor, "bead.get", 0, map[string]any{"id": model.RefByID("demo-7", model.Natural64(0))}, "")
 			if !bytes.Contains(get.Result, []byte("workflow:item/restored")) || !bytes.Contains(get.Result, []byte("Exact active collision")) {
 				t.Fatalf("source route did not reach active item: %s", get.Result)
 			}
+			assertSourceCommentAttribution(t, get.Result, p, report)
 			capability, err := driver.RequireWorkflowCheckpointStore(store, lease)
 			if err != nil {
 				t.Fatal(err)
@@ -140,6 +167,43 @@ func TestJointSourcePublicRoutingBatchReplayAndReopen(t *testing.T) {
 				t.Fatal(err)
 			}
 			core := savedLabelImport(t, store, report.Archive, p, "")
+			state, err := pluginhost.NewSourceRuntimeState(ctx, capability, lease, report.SourcePlanes.Providers[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			provider, err := workflowplugin.NewSourceRuntime(state, report.SourcePlanes.Providers[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, bad := range []string{"hash", "pending", "time", "actor", "key", "incarnation", "evidence"} {
+				t.Run("install-refuses-"+bad, func(t *testing.T) {
+					var receipt driver.IdempotencyRecord
+					decode(t, encode(t, report.Receipt), &receipt)
+					switch bad {
+					case "hash":
+						receipt.RequestHash = strings.Repeat("f", 64)
+					case "pending":
+						receipt.ResponsePending = true
+					case "time":
+						receipt.Changeset.Time = time.Time{}
+					case "actor":
+						receipt.Changeset.Principal = model.PrincipalRef{Kind: "user", ID: "user:other-importer"}
+					case "key":
+						receipt.Changeset.IdempotencyKey = strings.Repeat("f", 32)
+					case "incarnation":
+						receipt.Changeset.Incarnation = "other-incarnation"
+					case "evidence":
+						receipt.Commit.Results = nil
+					}
+					if err := domain.InstallSourceWorkflow(ctx, provider, p, *report.SourcePlanes, receipt); !errors.Is(err, driver.ErrConflict) {
+						t.Fatalf("invalid import attribution was installed: %v", err)
+					}
+				})
+			}
+			still, err := capability.LoadCheckpoint(ctx, namespace)
+			if err != nil || !reflect.DeepEqual(initial, still) || !reflect.DeepEqual(core, savedLabelImport(t, store, report.Archive, p, "")) {
+				t.Fatal("refused attribution binding changed the source namespace or core", err)
+			}
 			updated := sourcePublicCall(t, server, actor, "bead.update", 1, map[string]any{"id": model.RefByID("demo-7", model.Natural64(0)), "fields": map[string]any{"title": "public active title"}}, "")
 			if !reflect.DeepEqual(core, savedLabelImport(t, store, report.Archive, p, "")) {
 				t.Fatal("active-only public write touched core/history/derived data")
@@ -178,6 +242,8 @@ func TestJointSourcePublicRoutingBatchReplayAndReopen(t *testing.T) {
 			if both.Generation != later.Generation+1 || meta.Head.String() != "2" {
 				t.Fatal("mixed proposal did not publish once in both planes", both.Generation, meta.Head)
 			}
+			currentGet := sourcePublicCall(t, server, actor, "bead.get", 0, map[string]any{"id": model.RefByID("demo-7", model.Natural64(0))}, "")
+			assertSourceCommentAttribution(t, currentGet.Result, p, report)
 			closed := sourcePublicCall(t, server, actor, "bead.close", 4, map[string]any{"id": model.RefByID("demo-7", model.Natural64(0)), "reason": "public source complete"}, "")
 			sourcePublicCall(t, server, actor, "bead.get", 0, map[string]any{"id": model.RefByID("workflow:item/restored", model.Natural64(0))}, "not_found")
 			fallback := sourcePublicCall(t, server, actor, "bead.get", 0, map[string]any{"id": model.RefByID("demo-7", model.Natural64(0))}, "")

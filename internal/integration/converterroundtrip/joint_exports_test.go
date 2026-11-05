@@ -17,3 +17,6 @@ func JointPostgresDSNForTest(t *testing.T) string { return identityPostgresDSN(t
 func JointHTTPForTest(t *testing.T, handler http.Handler, method string, key int, params map[string]any) []byte {
 	return sourceHTTPTokenCall(t, handler, "", method, key, params, "").Result
 }
+func JointAssertSourceCommentForTest(t *testing.T, result []byte, p driver.RestoreImportProfile, report Report) {
+	assertSourceCommentAttribution(t, result, p, report)
+}

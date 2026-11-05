@@ -69,14 +69,14 @@ func (s *GuardedService) sourceRuntimeInstalled() bool {
 
 // InstallSourceWorkflow installs the host-verified joint binding on the same
 // domain object already captured by the authenticated RPC handler.
-func (s *GuardedService) InstallSourceWorkflow(ctx context.Context, provider *workflowplugin.Provider, binding driver.SourcePlaneImportBindingV1, commit driver.SourcePlaneCommitBindingV1) error {
+func (s *GuardedService) InstallSourceWorkflow(ctx context.Context, provider *workflowplugin.Provider, profile driver.RestoreImportProfile, commit driver.SourcePlaneCommitBindingV1, receipt driver.IdempotencyRecord) error {
 	host, ok := s.delegate.(interface {
-		InstallSourceWorkflow(context.Context, *workflowplugin.Provider, driver.SourcePlaneImportBindingV1, driver.SourcePlaneCommitBindingV1) error
+		InstallSourceWorkflow(context.Context, *workflowplugin.Provider, driver.RestoreImportProfile, driver.SourcePlaneCommitBindingV1, driver.IdempotencyRecord) error
 	})
 	if !ok {
 		return driver.ErrUnsupported
 	}
-	return host.InstallSourceWorkflow(ctx, provider, binding, commit)
+	return host.InstallSourceWorkflow(ctx, provider, profile, commit, receipt)
 }
 
 func (s *GuardedService) sourceRead(ctx context.Context, caller authz.Caller, authority *slice, ref model.Ref, project string) (bool, error) {

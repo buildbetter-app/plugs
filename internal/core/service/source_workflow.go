@@ -1,12 +1,14 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strconv"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
@@ -16,17 +18,25 @@ import (
 )
 
 type sourceWorkflow struct {
-	provider  *workflowplugin.Provider
-	digest    string
-	active    map[string]string // exact target -> project, retained after completion
-	addresses map[sourceAddress]bool
+	provider    *workflowplugin.Provider
+	digest      string
+	profile     driver.RestoreImportProfile
+	restoreTime time.Time
+	active      map[string]string // exact target -> project, retained after completion
+	addresses   map[sourceAddress]bool
 }
 type sourceAddress struct{ project, id string }
 
 // InstallSourceWorkflow is a trusted host seam, never an RPC. The host first
-// recovers the original joint receipt and immutable namespace origin. Installing
-// on this service preserves the method closures already bound by transports.
-func (s *Service) InstallSourceWorkflow(ctx context.Context, provider *workflowplugin.Provider, binding driver.SourcePlaneImportBindingV1, commit driver.SourcePlaneCommitBindingV1) error {
+// recovers the original joint receipt and immutable namespace origin. The final
+// receipt binds verified import attribution separately from raw source authors.
+// Installing preserves the method closures already bound by transports.
+func (s *Service) InstallSourceWorkflow(ctx context.Context, provider *workflowplugin.Provider, profile driver.RestoreImportProfile, commit driver.SourcePlaneCommitBindingV1, receipt driver.IdempotencyRecord) error {
+	bound, err := profile.Detached()
+	if err != nil || bound.SourcePlanes == nil {
+		return driver.ErrConflict
+	}
+	binding := bound.SourcePlanes
 	plan, err := binding.Plan()
 	if err != nil {
 		return err
@@ -35,10 +45,33 @@ func (s *Service) InstallSourceWorkflow(ctx context.Context, provider *workflowp
 	if err != nil {
 		return err
 	}
-	if provider == nil || commit.JointPlanDigest != binding.JointPlanDigest || commit.StoreID != meta.StoreID || commit.Incarnation != meta.Incarnation || len(commit.Providers) != 1 || len(plan.Providers) != 1 || commit.Providers[0].Provider != plan.Providers[0] {
+	initial := driver.Meta{StoreID: meta.StoreID, Incarnation: meta.Incarnation, Head: model.Natural64(1), HistoryFloor: model.Natural64(1)}
+	if provider == nil || meta.Head.IsZero() || commit.Validate(bound, initial) != nil || len(commit.Providers) != 1 || len(plan.Providers) != 1 {
 		return driver.ErrConflict
 	}
-	installed := &sourceWorkflow{provider: provider, digest: binding.JointPlanDigest, active: map[string]string{}, addresses: map[sourceAddress]bool{}}
+	change := receipt.Changeset
+	header := driver.ChangesetHeader{Branch: change.Branch, Incarnation: change.Incarnation, Kind: change.Kind, Time: change.Time, Principal: change.Principal, IdempotencyKey: change.IdempotencyKey, Method: bound.Method, AgentLabel: bound.AgentLabel(), RequestHash: receipt.RequestHash, ResponsePending: receipt.ResponsePending, Changes: change.Changes}
+	if bound.ValidateHeader(header) != nil || !change.Branch.IsZero() || change.Incarnation != commit.Incarnation || change.Revision != commit.Revision || receipt.Commit.Revision != commit.Revision || receipt.RequestHash != commit.RequestHash {
+		return driver.ErrConflict
+	}
+	evidence, err := json.Marshal(commit)
+	if err != nil {
+		return err
+	}
+	matched := 0
+	for _, result := range receipt.Commit.Results {
+		if result.Ref.ID != driver.SourcePlaneCommitRecordID {
+			continue
+		}
+		if !result.Ref.Branch.IsZero() || result.Revision != commit.Revision || !bytes.Equal(result.Record, evidence) {
+			return driver.ErrConflict
+		}
+		matched++
+	}
+	if matched != 1 {
+		return driver.ErrConflict
+	}
+	installed := &sourceWorkflow{provider: provider, digest: commit.RequestHash, profile: bound, restoreTime: change.Time, active: map[string]string{}, addresses: map[sourceAddress]bool{}}
 	for _, entity := range plan.Entities {
 		installed.addresses[sourceAddress{entity.Source.Project, entity.Source.ID}] = true
 		if entity.TargetKind == "workflow:item" {
@@ -47,7 +80,7 @@ func (s *Service) InstallSourceWorkflow(ctx context.Context, provider *workflowp
 	}
 	for {
 		prior := s.source.Load()
-		if prior != nil && prior.digest != installed.digest {
+		if prior != nil && (prior.digest != installed.digest || !prior.restoreTime.Equal(installed.restoreTime)) {
 			return driver.ErrConflict
 		}
 		if s.source.CompareAndSwap(prior, installed) {

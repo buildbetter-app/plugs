@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
@@ -52,7 +53,7 @@ func (s *Service) Get(ctx context.Context, by model.PrincipalRef, req GetRequest
 				if req.AsOf != nil {
 					return GetResult{}, failure("invalid_params", "workflow items have no historical asOf view")
 				}
-				return workflowGetResult(item), nil
+				return s.workflowGetResult(item)
 			}
 			var typed *model.Error
 			if !errors.As(err, &typed) || typed.Data.Code != "not_found" {
@@ -558,15 +559,27 @@ func refID(ref *model.Ref) string {
 	return ref.ID
 }
 
-func workflowGetResult(item workflowplugin.ItemView) GetResult {
+func (s *Service) workflowGetResult(item workflowplugin.ItemView) (GetResult, error) {
 	result := GetResult{Bead: workflowBead(item), Comments: []Comment{}}
 	if item.Claim != nil {
 		result.Lease = &Lease{Principal: item.Claim.Principal, Agent: item.Claim.Agent, ExpiresAt: item.Claim.ExpiresAt, TTL: workflowplugin.ClaimTTL, Epoch: item.Claim.Generation}
 	}
 	for _, comment := range item.Comments {
-		result.Comments = append(result.Comments, Comment{Body: comment.Body, Principal: comment.Principal, Time: comment.Time})
+		value := Comment{Body: comment.Body, Principal: comment.Principal, Time: comment.Time}
+		if comment.Source != nil {
+			source := s.source.Load()
+			if source == nil || source.active[item.ID] != item.Project || comment.Source.Project != item.Project {
+				return GetResult{}, failure("internal_error", "source comment has no admitted import binding")
+			}
+			imported, err := pipeline.NewImportedComment(source.profile, comment.Body, comment.Source.Author, comment.Time, source.restoreTime)
+			if err != nil {
+				return GetResult{}, failure("internal_error", "invalid imported workflow comment")
+			}
+			value = Comment{Body: imported.Body, Principal: imported.Principal, Time: imported.Time, Origin: imported.Origin, SourceAuthor: imported.SourceAuthor, SourceTime: imported.SourceTime}
+		}
+		result.Comments = append(result.Comments, value)
 	}
-	return result
+	return result, nil
 }
 
 // ClaimNextReadyPage is the queue-specific live pager. A revision change

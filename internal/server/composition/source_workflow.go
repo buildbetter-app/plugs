@@ -24,7 +24,7 @@ import (
 type RestoreSourcePlanner func(context.Context, io.Reader, driver.SourcePlaneTargetV1) (driver.SourcePlanePlanV1, error)
 
 func (r *Runtime) installSourceWorkflow(ctx context.Context, profile driver.RestoreImportProfile, report converterroundtrip.Report) error {
-	if profile.SourcePlanes == nil || report.SourcePlanes == nil || len(report.SourcePlanes.Providers) != 1 {
+	if profile.SourcePlanes == nil || report.SourcePlanes == nil || report.Receipt == nil || len(report.SourcePlanes.Providers) != 1 {
 		return driver.ErrConflict
 	}
 	capability, err := driver.RequireWorkflowCheckpointStore(r.Store, r.Lease)
@@ -39,7 +39,7 @@ func (r *Runtime) installSourceWorkflow(ctx context.Context, profile driver.Rest
 	if err != nil {
 		return err
 	}
-	return r.Service.InstallSourceWorkflow(ctx, provider, *profile.SourcePlanes, *report.SourcePlanes)
+	return r.Service.InstallSourceWorkflow(ctx, provider, profile, *report.SourcePlanes, *report.Receipt)
 }
 
 func (r *Runtime) recoverSourceWorkflow(ctx context.Context) error {

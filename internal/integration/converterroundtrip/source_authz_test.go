@@ -127,7 +127,10 @@ func TestJointSourceInstalledAuthenticationAndFixedAuthorization(t *testing.T) {
 				}
 				// The real authenticated HTTP handler is already bound. Installation must
 				// update its existing delegate and keep the fixed policy unchanged.
-				if err := installed.Service.InstallSourceWorkflow(ctx, provider, *p.SourcePlanes, *report.SourcePlanes); err != nil {
+				if report.Receipt == nil {
+					t.Fatal("source import has no original receipt")
+				}
+				if err := installed.Service.InstallSourceWorkflow(ctx, provider, p, *report.SourcePlanes, *report.Receipt); err != nil {
 					t.Fatal(err)
 				}
 				ref := model.RefByID("demo-7", model.Natural64(0))
@@ -140,6 +143,7 @@ func TestJointSourceInstalledAuthenticationAndFixedAuthorization(t *testing.T) {
 					if !bytes.Contains(got.Result, []byte("Exact active collision")) {
 						t.Fatal("installed user read missed source", string(got.Result))
 					}
+					assertSourceCommentAttribution(t, got.Result, p, report)
 					sourceHTTPCall(t, installed.Handler, keys, model.PrincipalRef{Kind: "user", ID: "user:foreign-owner"}, "bead.get", 0, map[string]any{"id": ref}, "not_found")
 					sourceHTTPCall(t, installed.Handler, keys, owner, "bead.update", 601, map[string]any{"id": ref, "fields": map[string]any{"title": "forbidden user write"}}, "forbidden")
 				} else {
