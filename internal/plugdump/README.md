@@ -405,7 +405,10 @@ account in a fresh data directory and rejects the removed `--user` and
 companion in the workspace's resolved Dolt data root (`.beads/dolt` by default,
 or the existing `BEADS_DOLT_DATA_DIR` setting). The client storage locator and
 server must identify the same real data root; inventory records the existing
-directory without reading its engine contents. The companion installs the engine's existing
+directory without reading its engine contents.
+The companion uses the pinned upstream pre-start data-directory resolver before
+loading the server environment, as the upstream Dolt entrypoint does.
+The companion installs the engine's existing
 query-context clock hook around the server's entire lifetime, so persistent
 connections and later HTTP/CLI calls observe published steps. The normal Dolt
 release executable, driver, SQL predicates and command semantics are unchanged.

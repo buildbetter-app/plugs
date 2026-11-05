@@ -210,6 +210,15 @@ func newNativeFixture(t *testing.T) *nativeFixture {
 	f.sqlClock(t0.Add(10 * time.Second))
 	f.env = append(f.env, "BEADS_DOLT_SERVER_MODE=1", "BEADS_DOLT_SERVER_HOST=127.0.0.1", "BEADS_DOLT_SERVER_PORT="+strconv.Itoa(port))
 	f.run(f.bd, "init", "--server", "--server-host", "127.0.0.1", "--server-port", strconv.Itoa(port), "--database", "capture", "--prefix", "native", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet")
+	// Observe the actual server-created database; never create a directory to
+	// stand in for the native inventory's storage observation.
+	for _, path := range []string{filepath.Join(dataDir, "capture"), filepath.Join(dataDir, "capture", ".dolt")} {
+		info, err := os.Lstat(path)
+		if err != nil || !info.IsDir() {
+			t.Fatalf("server-created native database directory %q: %v", path, err)
+		}
+		t.Logf("NATIVE_CAPTURE_DATABASE_DIRECTORY path=%s mode=%04o", path, info.Mode().Perm())
+	}
 	if _, err := db.Exec("USE `capture`"); err != nil {
 		t.Fatal(err)
 	}

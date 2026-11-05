@@ -51,7 +51,21 @@ func Run(ctx context.Context, args []string) error {
 	}
 	restoreIO := cli.InitIO()
 	defer restoreIO()
-	dEnv := env.LoadWithoutDB(ctx, env.GetCurrentUserHomeDir, filesys.LocalFS, doltdb.LocalDirDoltDB, doltversion.Version)
+	// The upstream dolt entrypoint resolves --data-dir before loading dEnv.
+	// StartServer uses dEnv.FS for database discovery and creation; forwarding
+	// the flag alone leaves those operations rooted in the process directory.
+	dataDir, err := sqlserver.GetDataDirPreStart(filesys.LocalFS, args)
+	if err != nil {
+		return fmt.Errorf("capture SQL server data directory: %w", err)
+	}
+	var dataFS filesys.Filesys = filesys.LocalFS
+	if dataDir != "" {
+		dataFS, err = filesys.LocalFS.WithWorkingDir(dataDir)
+		if err != nil {
+			return fmt.Errorf("capture SQL server data directory: %w", err)
+		}
+	}
+	dEnv := env.LoadWithoutDB(ctx, env.GetCurrentUserHomeDir, dataFS, doltdb.LocalDirDoltDB, doltversion.Version)
 	if dEnv.CfgLoadErr != nil {
 		return fmt.Errorf("capture SQL server config: %w", dEnv.CfgLoadErr)
 	}
