@@ -91,6 +91,47 @@ func projectHistoryArchive(t *testing.T, prefix string, ordinal int) []byte {
 	delete(members, "records/config.ndjson")
 	delete(members, "records/beads-archive.ndjson")
 
+	// The archive rows above are deliberately narrowed to the project bead.
+	// Rebind every database disposition to the retained record census instead
+	// of leaving the complete fixture's counts for the removed archive tables.
+	// This keeps validation strict while making the fixture's lossless scope
+	// explicit; excluded issue fields follow the retained issue count.
+	retainedCounts := map[string]int{}
+	for name, raw := range members {
+		if !strings.HasPrefix(name, "records/") || name == "records/config.ndjson" {
+			continue
+		}
+		for _, line := range bytes.Split(raw, []byte{'\n'}) {
+			line = bytes.TrimSpace(line)
+			if len(line) == 0 {
+				continue
+			}
+			var record dumpformat.Record
+			if err := json.Unmarshal(line, &record); err != nil {
+				t.Fatalf("retained record census: %s: %v", name, err)
+			}
+			retainedCounts[record.Source.Table]++
+			if record.Source.Table == "issues" {
+				if labels, ok := record.Body["labels"].([]any); ok {
+					retainedCounts["labels"] += len(labels)
+				}
+			}
+		}
+	}
+	retainedCounts["issues.row_lock"] = retainedCounts["issues"]
+	retainedCounts["issues.is_blocked"] = retainedCounts["issues"]
+	for _, raw := range manifest["sources"].([]any) {
+		source := raw.(map[string]any)
+		family, _ := source["family"].(string)
+		if !externalFamilies[family] {
+			if rows, ok := retainedCounts[family]; ok {
+				source["rows"] = rows
+			} else {
+				source["rows"] = 0
+			}
+		}
+	}
+
 	var history dumpformat.SourceHistory
 	decode(t, members[dumpformat.SourceHistoryMember], &history)
 	if len(history.ProjectHistories) != 0 || len(history.Commits) < 2 {
