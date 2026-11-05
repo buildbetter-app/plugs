@@ -70,7 +70,7 @@ go_test(
 
 go_test(
     name = "workflow_claimnext_test",
-    srcs = ["workflow_claimnext_test.go", "workflow_claimnext_auth_test.go", "workflow_writes_test.go", "workflow_boundary_test.go", "workflow_reads_test.go", "workflow_cursor_test.go"],
+    srcs = ["workflow_claimnext_test.go", "workflow_claimnext_auth_test.go", "workflow_writes_test.go", "workflow_boundary_test.go", "workflow_reads_test.go", "workflow_cursor_test.go", "ready_compiled_number_test.go"],
     embed = [":authzrpc"],
     tags = ["block-network"],
     deps = [

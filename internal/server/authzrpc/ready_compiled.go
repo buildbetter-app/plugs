@@ -7,8 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"math"
-	"math/big"
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -95,56 +93,16 @@ func readyMembershipPriority(item service.Bead) (int, error) {
 	if !present {
 		return 2, nil
 	}
-	var priority int64
-	switch value := value.(type) {
-	case int:
-		priority = int64(value)
-	case int8:
-		priority = int64(value)
-	case int16:
-		priority = int64(value)
-	case int32:
-		priority = int64(value)
-	case int64:
-		priority = value
-	case uint:
-		priority = int64(value)
-	case uint8:
-		priority = int64(value)
-	case uint16:
-		priority = int64(value)
-	case uint32:
-		priority = int64(value)
-	case uint64:
-		if value > math.MaxInt64 {
-			return 0, fmt.Errorf("priority overflows signed integer")
-		}
-		priority = int64(value)
-	case float32:
-		if float32(math.Trunc(float64(value))) != value {
-			return 0, fmt.Errorf("priority is fractional")
-		}
-		priority = int64(value)
-	case float64:
-		if math.Trunc(value) != value || value < math.MinInt64 || value > math.MaxInt64 {
-			return 0, fmt.Errorf("priority is not an integer")
-		}
-		priority = int64(value)
-	case json.Number:
-		rational, ok := new(big.Rat).SetString(string(value))
-		if !ok || !rational.IsInt() {
-			return 0, fmt.Errorf("priority is not an integer")
-		}
-		numerator := rational.Num()
-		if numerator.Sign() < 0 || numerator.Cmp(big.NewInt(4)) > 0 {
-			return 0, fmt.Errorf("priority outside P0 through P4")
-		}
-		priority = numerator.Int64()
-	default:
-		return 0, fmt.Errorf("priority has unsupported type %T", value)
+	// Natural canonicalizes JSON integer spellings symbolically (including
+	// decimal and exponent forms) using the same lossless path as ontology
+	// Priority, before the fixed P0 through P4 bound is applied.
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return 0, fmt.Errorf("priority is not an integer")
 	}
-	if priority < 0 || priority > 4 {
-		return 0, fmt.Errorf("priority outside P0 through P4")
+	priority, err := model.Natural(string(raw)).Uint64()
+	if err != nil || priority > 4 {
+		return 0, fmt.Errorf("priority is not an integer from P0 through P4")
 	}
 	return int(priority), nil
 }
