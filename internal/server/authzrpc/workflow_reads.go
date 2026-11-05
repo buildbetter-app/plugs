@@ -45,7 +45,12 @@ func (s *GuardedService) getWorkflow(ctx context.Context, by model.PrincipalRef,
 	if err != nil {
 		return service.GetResult{}, &model.Error{Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
 	}
-	allowed, err := s.checker.workflowRead(ctx, caller, authority, "bead.get", req.Project)
+	var allowed bool
+	if s.sourceRuntimeInstalled() {
+		allowed, err = s.sourceRead(ctx, caller, authority, req.ID, req.Project)
+	} else {
+		allowed, err = s.checker.workflowRead(ctx, caller, authority, "bead.get", req.Project)
+	}
 	if err != nil {
 		return service.GetResult{}, err
 	}

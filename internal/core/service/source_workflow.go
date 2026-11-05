@@ -68,6 +68,17 @@ func (s *Service) workflowProvider() *workflowplugin.Provider {
 // writer authorization path instead of its legacy standalone provider path.
 func (s *Service) SourceRuntimeInstalled() bool { return s.source.Load() != nil }
 
+// SourceWorkflowProject exposes only the immutable imported target binding to
+// the guarded transport. The provider still checks current presence and owner.
+func (s *Service) SourceWorkflowProject(ref model.Ref) (string, bool) {
+	source := s.source.Load()
+	if source == nil || !ref.IsID() || !ref.Branch.IsZero() {
+		return "", false
+	}
+	project, ok := source.active[ref.ID]
+	return project, ok
+}
+
 // ResolveSourceAddress is an active-first current-view address lookup. A
 // known source with no remaining target refuses instead of falling through to
 // an unrelated ordinary record with the same naked ID.

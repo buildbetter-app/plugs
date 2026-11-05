@@ -7,6 +7,8 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/port"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
 // The trusted Writer identifies active changes only after the installed source
@@ -63,4 +65,42 @@ func sourceAuthorizationSlice(base *slice, stage port.AuthorizationStage, propos
 func (s *GuardedService) sourceRuntimeInstalled() bool {
 	installed, ok := s.delegate.(interface{ SourceRuntimeInstalled() bool })
 	return ok && installed.SourceRuntimeInstalled()
+}
+
+// InstallSourceWorkflow installs the host-verified joint binding on the same
+// domain object already captured by the authenticated RPC handler.
+func (s *GuardedService) InstallSourceWorkflow(ctx context.Context, provider *workflowplugin.Provider, binding driver.SourcePlaneImportBindingV1, commit driver.SourcePlaneCommitBindingV1) error {
+	host, ok := s.delegate.(interface {
+		InstallSourceWorkflow(context.Context, *workflowplugin.Provider, driver.SourcePlaneImportBindingV1, driver.SourcePlaneCommitBindingV1) error
+	})
+	if !ok {
+		return driver.ErrUnsupported
+	}
+	return host.InstallSourceWorkflow(ctx, provider, binding, commit)
+}
+
+func (s *GuardedService) sourceRead(ctx context.Context, caller authz.Caller, authority *slice, ref model.Ref, project string) (bool, error) {
+	host, ok := s.delegate.(interface {
+		SourceWorkflowProject(model.Ref) (string, bool)
+	})
+	if !ok {
+		return false, nil
+	}
+	bound, found := host.SourceWorkflowProject(ref)
+	if !found || bound != project {
+		return false, nil
+	}
+	registry, found := authority.projectByName(bound)
+	if !found {
+		return false, nil
+	}
+	facts := &sourceWriteSlice{Slice: authority, projects: map[string]authz.ProjectBinding{ref.ID: {Name: bound, Ref: registry, Found: true}}}
+	decisions, err := s.checker.chain.Check(ctx, facts, []authz.CheckRequest{{Caller: caller, Action: authz.Read, Resource: authz.Resource{Kind: authz.Bead, Ref: ref}, Method: "bead.get"}})
+	if err != nil {
+		return false, authzError(err)
+	}
+	if len(decisions) != 1 {
+		return false, &model.Error{Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
+	}
+	return decisions[0].Effect == authz.Allow, nil
 }
