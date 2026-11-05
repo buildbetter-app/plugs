@@ -14,6 +14,8 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 )
 
+const sourcePlaneFixtureActiveEventTable = "wisp_events"
+
 func sourcePlaneTestBytes(data string, presence string) SourcePlaneBytesV1 {
 	h := sha256.Sum256([]byte(data))
 	return SourcePlaneBytesV1{Presence: presence, Size: uint64(len(data)), SHA256: hex.EncodeToString(h[:])}
@@ -40,9 +42,9 @@ func sourcePlaneTestPlan() SourcePlanePlanV1 {
 		},
 		Relations: []SourcePlaneRelationV1{
 			{Source: SourceEdgeKey{Project: "p", Table: "dependencies", ID: "same-edge"}, From: durable, To: &active, Kind: "relates-to", PredicateContract: "source-metadata/1", PredicateJSON: []byte(`{}`), Origin: origin, Fields: field},
-			{Source: SourceEdgeKey{Project: "p", Table: "wisp_dependencies", ID: "same-edge"}, From: active, To: &durable, Kind: "relates-to", PredicateContract: "source-metadata/1", PredicateJSON: []byte(`{}`), Origin: origin, Fields: field},
+			{Source: SourceEdgeKey{Project: "p", Table: sourcePlaneEphemeralDependencyTable, ID: "same-edge"}, From: active, To: &durable, Kind: "relates-to", PredicateContract: "source-metadata/1", PredicateJSON: []byte(`{}`), Origin: origin, Fields: field},
 		},
-		Origins:   []SourcePlaneOriginV1{{Project: "p", Table: "wisp_events", ID: "history", Action: "inert-origin", Owner: &active, Raw: origin, Parsed: SourcePlaneBytesV1{Presence: "absent"}, Precedence: []string{"stored", "yaml"}}},
+		Origins:   []SourcePlaneOriginV1{{Project: "p", Table: sourcePlaneFixtureActiveEventTable, ID: "history", Action: "inert-origin", Owner: &active, Raw: origin, Parsed: SourcePlaneBytesV1{Presence: "absent"}, Precedence: []string{"stored", "yaml"}}},
 		Providers: []SourcePlaneProviderV1{{Alias: "workflow", Instance: "default", Namespace: "plugin/workflow/default/durable", Schema: "workflow/source-state/1", Codec: "workflow/json/1", RuntimeContract: SourcePlaneRuntimeContractV1, Lifetime: CheckpointLifetimeProcess, LogicalImageSize: 2, LogicalImageSHA256: sourcePlaneTestBytes("{}", "object").SHA256, OriginAdapter: "beads-workflow-origins/1"}},
 	}
 }
@@ -263,8 +265,8 @@ func TestSourcePlaneProfileLegacyAbsenceAndStrictPresence(t *testing.T) {
 }
 
 func TestSourcePlaneComponentOrderingHasNoDelimiterAliases(t *testing.T) {
-	a := SourceEdgeKey{Project: "a", Table: "wisp_dependencies", ID: "z"}
-	b := SourceEdgeKey{Project: "a\x00wisp_dependencies", Table: "dependencies", ID: "z"}
+	a := SourceEdgeKey{Project: "a", Table: sourcePlaneEphemeralDependencyTable, ID: "z"}
+	b := SourceEdgeKey{Project: "a\x00" + sourcePlaneEphemeralDependencyTable, Table: "dependencies", ID: "z"}
 	if CompareSourceEdgeKeys(a, b) >= 0 || CompareSourceEdgeKeys(a, a) != 0 {
 		t.Fatal("tuple order collapsed components")
 	}

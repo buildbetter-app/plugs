@@ -45,7 +45,7 @@ func TestFixed19LocalKindsKeepTypedVersionAndCompleteSource(t *testing.T) {
 				if archive.Manifest().EdgeVersion() != version || !reflect.DeepEqual(archive.Records("edge")[0], *edge) || !bytes.Equal(archive.TarBytes(), data) {
 					t.Fatal("fixed kind lost version, identity, endpoint, raw metadata, thread or one of ten source columns")
 				}
-				if !IsVersionedLocalKnownEdgeType(version, "depends_on_issue_id", kind) || IsLocalOpaqueEdgeType(version, "depends_on_issue_id", kind) || IsVersionedLocalKnownEdgeType(version, "depends_on_wisp_id", kind) || IsVersionedLocalKnownEdgeType(version, "depends_on_external", kind) {
+				if !IsVersionedLocalKnownEdgeType(version, "depends_on_issue_id", kind) || IsLocalOpaqueEdgeType(version, "depends_on_issue_id", kind) || IsVersionedLocalKnownEdgeType(version, EphemeralDependencyTargetField, kind) || IsVersionedLocalKnownEdgeType(version, "depends_on_external", kind) {
 					t.Fatal("fixed kind crossed typed/local/opaque boundaries")
 				}
 				if kind != "blocks" && kind != "parent-child" && kind != "related" && kind != "discovered-from" {

@@ -157,6 +157,9 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 	if archive == nil || target == nil {
 		return Report{Archive: archive}, fmt.Errorf("restore requires an archive and target store")
 	}
+	if archive.Manifest().SourcePlaneAddressContract != "" {
+		return Report{Archive: archive}, fmt.Errorf("%w: source plane archive requires the joint restore adapter", driver.ErrUnsupported)
+	}
 	meta, err := target.Meta(ctx)
 	report := Report{Archive: archive, Target: meta}
 	if err != nil {

@@ -76,13 +76,19 @@ func MergeArchives(archives ...*Archive) ([]byte, error) {
 	}
 
 	projects := make([]Project, 0)
-	records := map[string]map[string]Record{}
+	records := map[string]map[sourceRecordIdentity]Record{}
 	entries := map[string]externalEntry{}
 	for _, input := range inputs {
 		projects = append(projects, input.manifest.Projects...)
 		for _, kind := range knownKindNames() {
 			for _, record := range input.archive.Records(kind) {
-				key := recordIdentity(kind, record)
+				key := sourceRecordIdentity{Kind: recordIdentity(kind, record)}
+				if input.manifest.SourcePlaneAddressContract == SourcePlaneAddressContract {
+					key = sourceRecordIdentity{Kind: kind, Project: record.Project, ID: record.ID}
+					if kind == "edge" {
+						key.Table = record.Source.Table
+					}
+				}
 				if previous, ok := records[kind][key]; ok {
 					if !equalJSON(previous, record) {
 						return nil, fmt.Errorf("conflicting %s record %q", kind, record.ID)
@@ -90,7 +96,7 @@ func MergeArchives(archives ...*Archive) ([]byte, error) {
 					continue
 				}
 				if records[kind] == nil {
-					records[kind] = map[string]Record{}
+					records[kind] = map[sourceRecordIdentity]Record{}
 				}
 				records[kind][key] = record
 			}
@@ -211,7 +217,7 @@ func rejectUnmerged(manifest Manifest) error {
 
 func compatibleManifests(base, other Manifest) error {
 	if base.Format != other.Format || base.Schema != other.Schema || base.Reference != other.Reference ||
-		base.MainVersion != other.MainVersion || base.IgnoredVersion != other.IgnoredVersion || base.Scope != other.Scope {
+		base.MainVersion != other.MainVersion || base.IgnoredVersion != other.IgnoredVersion || base.Scope != other.Scope || base.SourcePlaneAddressContract != other.SourcePlaneAddressContract {
 		return fmt.Errorf("format, reference, scope or schema version differs")
 	}
 	if !equalJSON(base.Warnings, other.Warnings) || !equalJSON(base.Verification, other.Verification) {
@@ -385,10 +391,12 @@ func encodeArchive(manifest Manifest, records map[string][]Record, config []byte
 		if len(rows) == 0 {
 			continue
 		}
-		sort.Slice(rows, func(i, j int) bool { return recordKey(rows[i]) < recordKey(rows[j]) })
+		sort.Slice(rows, func(i, j int) bool {
+			return compareSourceRecords(rows[i], rows[j], manifest.SourcePlaneAddressContract) < 0
+		})
 		var data bytes.Buffer
 		for i, record := range rows {
-			if i > 0 && recordKey(rows[i-1]) == recordKey(record) {
+			if i > 0 && compareSourceRecords(rows[i-1], record, manifest.SourcePlaneAddressContract) == 0 {
 				return nil, fmt.Errorf("duplicate %s record identity", kind)
 			}
 			encoded, err := json.Marshal(record)

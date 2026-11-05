@@ -717,3 +717,65 @@ func TestRestoreCreationTimeRequiresTheActualSourceInstant(t *testing.T) {
 		})
 	}
 }
+
+// Capability-aware parsing does not authorize the legacy core-only writer.
+func TestSourcePlaneArchiveCannotUseLegacyRestoreRoutes(t *testing.T) {
+	legacy := admittedFixtureBytes(t)
+	profile, _ := admittedImportProfile(t, legacy)
+	data := rewriteData(t, func(members map[string][]byte) {
+		var manifest map[string]any
+		if err := json.Unmarshal(members["manifest.json"], &manifest); err != nil {
+			t.Fatal(err)
+		}
+		manifest["source_plane_address_contract"] = dumpformat.SourcePlaneAddressContract
+		for _, raw := range manifest["kind_registry"].([]any) {
+			kind := raw.(map[string]any)
+			if kind["name"] == "edge" {
+				kind["version"] = dumpformat.EdgeVersionLocalOpaque
+			}
+		}
+		for _, raw := range manifest["sources"].([]any) {
+			disposition := raw.(map[string]any)
+			switch disposition["family"] {
+			case dumpformat.EphemeralEntityTable, dumpformat.EphemeralDependencyTable, dumpformat.EphemeralLabelTable, dumpformat.EphemeralCommentTable, dumpformat.EphemeralEventTable, dumpformat.EphemeralChildCounterTable, "custom_statuses", "custom_types":
+				disposition["action"] = "archive"
+			}
+		}
+		members["manifest.json"] = encode(t, manifest)
+	})
+	if _, err := dumpformat.Read(bytes.NewReader(data)); err != nil {
+		t.Fatal("invalid supported capability archive precondition", err)
+	}
+	profile.ArchiveDigest = digestBytes(data)
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			store, lease, _ := openIdentityTarget(t, engine)
+			before := reverseState(t, store)
+			counted := &labelWriteCounter{Store: store}
+			cp := store.(driver.CheckpointStore)
+			namespace := "plugin/workflow/default/durable"
+			beforeCheckpoint, err := cp.LoadCheckpoint(ctx, namespace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, call := range []func() error{
+				func() error { _, err := Restore(ctx, bytes.NewReader(data), counted); return err },
+				func() error { _, err := RestoreWithLease(ctx, bytes.NewReader(data), counted, lease); return err },
+				func() error { _, err := RestoreImport(ctx, bytes.NewReader(data), counted, profile); return err },
+				func() error {
+					_, err := RestoreImportWithLease(ctx, bytes.NewReader(data), counted, lease, profile)
+					return err
+				},
+			} {
+				if err := call(); !errors.Is(err, driver.ErrUnsupported) || !strings.Contains(err.Error(), "joint restore adapter") {
+					t.Fatalf("cap archive did not reach core-only boundary refusal: %v", err)
+				}
+			}
+			afterCheckpoint, err := cp.LoadCheckpoint(ctx, namespace)
+			if err != nil || counted.writes != 0 || !reflect.DeepEqual(before, reverseState(t, store)) || !reflect.DeepEqual(beforeCheckpoint, afterCheckpoint) {
+				t.Fatal("legacy route published or staged a partial plane")
+			}
+		})
+	}
+}

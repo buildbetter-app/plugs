@@ -10,6 +10,8 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 )
 
+const sourcePlaneEphemeralDependencyTable = "wisp_dependencies"
+
 // CompareSourceEntityKeys and CompareSourceEdgeKeys compare components,
 // without delimiter concatenation or Unicode normalization. Source identity
 // is never inferred from a target ref or a naked source ID.
@@ -39,7 +41,7 @@ func (k SourceEntityKey) Validate() error {
 	return nil
 }
 func (k SourceEdgeKey) Validate() error {
-	if !sourcePlaneNames(k.Project, k.ID) || (k.Table != "dependencies" && k.Table != "wisp_dependencies") {
+	if !sourcePlaneNames(k.Project, k.ID) || (k.Table != "dependencies" && k.Table != sourcePlaneEphemeralDependencyTable) {
 		return sourcePlaneError("invalid source edge address")
 	}
 	return nil
@@ -317,7 +319,7 @@ func (p SourcePlanePlanV1) Validate() error {
 			return err
 		}
 		plane := "issues"
-		if r.Source.Table == "wisp_dependencies" {
+		if r.Source.Table == sourcePlaneEphemeralDependencyTable {
 			plane = "wisps"
 		}
 		if r.From.Project != r.Source.Project || r.From.Plane != plane {

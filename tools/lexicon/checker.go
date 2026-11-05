@@ -35,14 +35,22 @@ type GoStringAllowance struct {
 	PhysicalValues []string
 }
 
+// GoConstantAllowance binds one complete decoded value to a named declaration.
+type GoConstantAllowance struct {
+	Path, Name, Value string
+}
+
 // Config is the small TOML subset used by the repository lexicon.
 type Config struct {
 	Terms                  []Term
 	Provenance             []string
 	ExternalProtocolString GoStringAllowance
+	SourcePlaneConstants   []GoConstantAllowance
 }
 
 const externalProtocolSource = "spec/s1-b25-b28/public_recording_test.go"
+const sourcePlaneProtocolSource = "internal/storage/driver/source_planes_validate.go"
+const sourcePlaneFixtureSource = "internal/storage/driver/source_planes_test.go"
 
 const externalEnvironmentDigest = "1b48d14732a1b4689f7af2d622235e53ddf1703e7043985592e66b0d1ecf4eff"
 
@@ -58,6 +66,91 @@ var physicalProtocolDigests = map[string]bool{
 
 func protocolLiteralDigest(value string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(value)))
+}
+
+func validSourcePlaneConstants(allowances []GoConstantAllowance) bool {
+	want := map[string]bool{
+		"fe552dc8dc9e69d88a9f9eb00b1ad65eb317b9d53f956115eaae5efc56376876": true,
+		"2a882a552d7e1e6461ee57b1d1b2dfc7b6d05b50f26ef2ce5811e78440f35216": true,
+	}
+	if len(allowances) != len(want) {
+		return false
+	}
+	for _, allowance := range allowances {
+		fields := []string{allowance.Path, allowance.Name, allowance.Value}
+		for _, field := range fields {
+			if strings.ContainsRune(field, '\x00') {
+				return false
+			}
+		}
+		digest := protocolLiteralDigest(strings.Join(fields, "\x00"))
+		if !want[digest] {
+			return false
+		}
+		delete(want, digest)
+	}
+	return true
+}
+
+// Only the unique top-level untyped constant's direct string initializer gains
+// an offset. Copies, local declarations and other source contexts grant none.
+// An invalid declaration of the bound name is refused even if its initializer
+// splits the physical spelling across multiple expressions.
+func sourcePlaneConstantLiteralOffset(path string, content []byte, allowances []GoConstantAllowance) (offset int, admitted, invalid bool) {
+	if path != sourcePlaneProtocolSource && path != sourcePlaneFixtureSource || !validSourcePlaneConstants(allowances) {
+		return 0, false, false
+	}
+	var allowance GoConstantAllowance
+	for _, candidate := range allowances {
+		if candidate.Path == path {
+			allowance = candidate
+		}
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, content, 0)
+	if err != nil {
+		return 0, false, false
+	}
+	count := 0
+	var selected *ast.BasicLit
+	for _, declaration := range file.Decls {
+		switch node := declaration.(type) {
+		case *ast.FuncDecl:
+			if node.Name.Name == allowance.Name {
+				count++
+			}
+		case *ast.GenDecl:
+			for _, spec := range node.Specs {
+				switch spec := spec.(type) {
+				case *ast.TypeSpec:
+					if spec.Name.Name == allowance.Name {
+						count++
+					}
+				case *ast.ValueSpec:
+					for _, name := range spec.Names {
+						if name.Name != allowance.Name {
+							continue
+						}
+						count++
+						if node.Tok != token.CONST || spec.Type != nil || len(spec.Names) != 1 || len(spec.Values) != 1 {
+							continue
+						}
+						literal, ok := spec.Values[0].(*ast.BasicLit)
+						if !ok || literal.Kind != token.STRING {
+							continue
+						}
+						if value, err := strconv.Unquote(literal.Value); err == nil && value == allowance.Value {
+							selected = literal
+						}
+					}
+				}
+			}
+		}
+	}
+	if count != 1 || selected == nil {
+		return 0, false, count != 0
+	}
+	return fset.Position(selected.Pos()).Offset, true, false
 }
 
 func allowsPhysicalProtocolString(path, value string, allowance GoStringAllowance) bool {
@@ -97,6 +190,8 @@ func LoadConfig(path string) (Config, error) {
 	section := ""
 	var current *Term
 	var externalSection, externalPath, externalValue, externalPhysical bool
+	var sourcePlaneFields map[string]bool
+	var sourcePlaneConstant *GoConstantAllowance
 	for _, line := range strings.Split(string(b), "\n") {
 		line = strings.TrimSpace(strings.SplitN(line, "#", 2)[0])
 		if line == "" {
@@ -120,12 +215,39 @@ func LoadConfig(path string) (Config, error) {
 			section = "external_protocol_string"
 			current = nil
 			continue
+		case "[[source_plane_constant]]":
+			cfg.SourcePlaneConstants = append(cfg.SourcePlaneConstants, GoConstantAllowance{})
+			sourcePlaneConstant = &cfg.SourcePlaneConstants[len(cfg.SourcePlaneConstants)-1]
+			sourcePlaneFields = make(map[string]bool)
+			section, current = "source_plane_constant", nil
+			continue
 		}
 		key, value, ok := strings.Cut(line, "=")
 		if !ok {
 			return Config{}, fmt.Errorf("invalid lexicon line %q", line)
 		}
 		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
+		if section == "source_plane_constant" {
+			if sourcePlaneFields[key] {
+				return Config{}, fmt.Errorf("duplicate source plane constant field: %s", key)
+			}
+			sourcePlaneFields[key] = true
+			decoded, err := strconv.Unquote(value)
+			if err != nil || !strings.HasPrefix(value, "\"") {
+				return Config{}, errors.New("source plane constant fields require quoted scalars")
+			}
+			switch key {
+			case "path":
+				sourcePlaneConstant.Path = decoded
+			case "name":
+				sourcePlaneConstant.Name = decoded
+			case "value":
+				sourcePlaneConstant.Value = decoded
+			default:
+				return Config{}, fmt.Errorf("unknown source plane constant field: %s", key)
+			}
+			continue
+		}
 		values, err := quotedValues(value)
 		if err != nil {
 			return Config{}, fmt.Errorf("lexicon %s: %w", key, err)
@@ -207,6 +329,9 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if externalSection && (!externalPath || !externalValue || cfg.ExternalProtocolString.Path != externalProtocolSource || protocolLiteralDigest(cfg.ExternalProtocolString.Value) != externalEnvironmentDigest) {
 		return Config{}, errors.New("external protocol string must bind the exact source path and environment literal")
+	}
+	if len(cfg.SourcePlaneConstants) != 0 && !validSourcePlaneConstants(cfg.SourcePlaneConstants) {
+		return Config{}, errors.New("source plane constants require both exact path, name and value bindings")
 	}
 	return cfg, nil
 }
@@ -353,10 +478,11 @@ func isProvenance(path string, zones []string) bool {
 func scanFile(path string, content []byte, cfg Config, provenance bool) []Finding {
 	text := string(content)
 	var literals []goStringLiteral
-	if path == externalProtocolSource && len(cfg.ExternalProtocolString.PhysicalValues) != 0 {
+	sourcePlaneOffset, sourcePlaneAllowed, sourcePlaneInvalid := sourcePlaneConstantLiteralOffset(path, content, cfg.SourcePlaneConstants)
+	if path == externalProtocolSource && len(cfg.ExternalProtocolString.PhysicalValues) != 0 || path == sourcePlaneProtocolSource || path == sourcePlaneFixtureSource {
 		masked := append([]byte(nil), content...)
 		for _, literal := range goStringLiterals(path, content) {
-			if !literal.imported && allowsPhysicalProtocolString(path, literal.value, cfg.ExternalProtocolString) {
+			if !literal.imported && (sourcePlaneAllowed && literal.start == sourcePlaneOffset || allowsPhysicalProtocolString(path, literal.value, cfg.ExternalProtocolString)) {
 				for i := literal.start; i < literal.end; i++ {
 					if masked[i] != '\n' && masked[i] != '\r' {
 						masked[i] = ' '
@@ -369,6 +495,9 @@ func scanFile(path string, content []byte, cfg Config, provenance bool) []Findin
 		text = string(masked)
 	}
 	var findings []Finding
+	if sourcePlaneInvalid {
+		findings = append(findings, Finding{Path: path, Line: 1, Class: "invalid-protocol-literal", Term: "source-plane-constant"})
+	}
 	appendDecoded := func(literal goStringLiteral, term Term, match string) {
 		finding := Finding{Path: path, Line: literal.line, Class: term.Class, Term: match}
 		for _, previous := range findings {
@@ -422,7 +551,7 @@ func scanFile(path string, content []byte, cfg Config, provenance bool) []Findin
 			if at := phraseIndex(text, match); at >= 0 {
 				findings = append(findings, Finding{Path: path, Line: lineAt(text, at), Class: term.Class, Term: match})
 			}
-			// Decode non-admitted strings at this exact recorder path too;
+			// Decode non-admitted strings at these exact protocol paths too;
 			// retain the established scan at every other source path.
 			for _, literal := range literals {
 				if phraseIndex(literal.value, match) >= 0 {
