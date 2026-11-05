@@ -97,7 +97,7 @@ func (s *stagedState) List(context.Context, string, int) ([]pluginapi.DurableEnt
 }
 func (p *Provider) staged() (*Provider, *stagedState) {
 	state := &stagedState{base: p.state}
-	return &Provider{state: state, now: p.now, persistent: p.persistent, plugin: p.plugin, instance: p.instance, incarnation: p.incarnation}, state
+	return &Provider{state: state, now: p.now, persistent: p.persistent, plugin: p.plugin, instance: p.instance, incarnation: p.incarnation, userContentGuard: p.userContentGuard}, state
 }
 func (s *stagedState) prepared() PreparedState {
 	return PreparedState{state: s.base, key: s.key, value: append(json.RawMessage(nil), s.value...), expect: s.expect}
