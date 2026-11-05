@@ -83,6 +83,7 @@ type serviceParams struct {
 	Label        string                         `json:"label"`
 	Title        string                         `json:"title"`
 	Fields       map[string]any                 `json:"fields"`
+	Assignment   *model.ClaimAssignment         `json:"assignment"`
 	Parent       *model.Ref                     `json:"parent"`
 	Expect       []model.Precondition           `json:"expect"`
 	Body         string                         `json:"body"`
@@ -388,7 +389,7 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 		v, err := memory.MemoryDeleteWithOutcome(ctx, c.Principal, service.MemoryDeleteRequest{ID: id, Expect: p.Expect}, meta)
 		return writeOutcome(v), err
 	case "bead.create":
-		v, err := svc.CreateWithOutcome(ctx, c.Principal, service.CreateRequest{Type: p.Type, Fields: p.Fields, Parent: p.Parent}, meta)
+		v, err := svc.CreateWithOutcome(ctx, c.Principal, service.CreateRequest{Type: p.Type, Fields: p.Fields, Parent: p.Parent, Assignment: p.Assignment}, meta)
 		return writeOutcome(v), err
 	case "bead.update":
 		id, err := p.refID()
@@ -696,6 +697,9 @@ func beadGetJSON(v service.GetResult, includeComments bool) map[string]any {
 
 func beadJSON(b service.Bead) map[string]any {
 	out := map[string]any{"id": b.ID, "type": b.Type, "revision": b.Revision}
+	if b.Assignment != nil {
+		out["assignment"] = b.Assignment
+	}
 	for k, v := range map[string]string{"project": b.Project, "status": b.Status, "parent": b.Parent, "assignee": b.Assignee} {
 		if v != "" {
 			out[k] = v

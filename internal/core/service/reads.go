@@ -266,6 +266,9 @@ func (s *Service) readyItems(ctx context.Context, by model.PrincipalRef, req Rea
 	for _, id := range graphIDs {
 		row := graph[id]
 		st := state(row.doc)
+		if req.claiming && !pipeline.ClaimAssignmentEligible(row.doc.Assignment, by, req.Agent, s.claimPools) {
+			continue
+		}
 		if !matchesFilter(row, req.Project, req.Filter) || st.Template || !s.ontology.effective(st.Project).ReadyEligible(st.Type, st.Status) {
 			continue
 		}
@@ -586,6 +589,7 @@ func workflowGetResult(item workflowplugin.ItemView) GetResult {
 // ClaimNextReadyPage is the queue-specific live pager. A revision change
 // restarts its offset from the beginning of the newly observed ready set.
 func (s *Service) ClaimNextReadyPage(ctx context.Context, by model.PrincipalRef, req ReadyRequest) (BeadPage, error) {
+	req.claiming = true
 	return s.readyCombined(ctx, by, req, true)
 }
 
@@ -593,6 +597,7 @@ func (s *Service) ClaimNextReadyPage(ctx context.Context, by model.PrincipalRef,
 // ClaimNext's terminal transaction probe uses this to inspect the same fresh
 // write snapshot after head acquisition without opening a second reader.
 func (s *Service) ReadyCandidates(ctx context.Context, by model.PrincipalRef, req ReadyRequest, reader driver.Reader) ([]Bead, error) {
+	req.claiming = true
 	if _, err := pageOptions(req.Project, req.ViewID, req.Cursor, req.Filter, 1000); err != nil {
 		return nil, err
 	}

@@ -547,7 +547,7 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 	repeatedConflictThisPass := false
 	conflictRestarts := 0
 	for {
-		page, err := s.claimPage(ctx, by, service.ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position, ClaimNextSeed: selectionSeed})
+		page, err := s.claimPage(ctx, by, service.ReadyRequest{Project: req.Project, Agent: meta.AgentLabel, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position, ClaimNextSeed: selectionSeed})
 		if err != nil {
 			return nil, err
 		}
@@ -613,7 +613,7 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 			if err != nil {
 				return nil, err
 			}
-			out, err := s.commitEmpty(ctx, by, req, meta, s.claimNextReadyProbe(by, req))
+			out, err := s.commitEmpty(ctx, by, req, meta, s.claimNextReadyProbe(by, req, meta.AgentLabel))
 			if err != nil {
 				if errors.Is(err, port.ErrClaimNextReady) {
 					if repeatedConflictThisPass {
@@ -656,12 +656,12 @@ func (s *GuardedService) claimPage(ctx context.Context, by model.PrincipalRef, r
 // walk, but reads through the transaction that already owns the head. An
 // unauthorized ready bead therefore does not keep an otherwise empty queue
 // from publishing its terminal null receipt.
-func (s *GuardedService) claimNextReadyProbe(by model.PrincipalRef, req service.ClaimNextRequest) port.ClaimNextReadyProbe {
+func (s *GuardedService) claimNextReadyProbe(by model.PrincipalRef, req service.ClaimNextRequest, agent string) port.ClaimNextReadyProbe {
 	return func(ctx context.Context, reader driver.Reader) (bool, error) {
 		if s.readyCandidates == nil {
 			return false, &model.Error{Message: "authorization service is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
 		}
-		items, err := s.readyCandidates(ctx, by, service.ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter}, reader)
+		items, err := s.readyCandidates(ctx, by, service.ReadyRequest{Project: req.Project, Agent: agent, ViewID: req.ViewID, Filter: req.Filter}, reader)
 		if err != nil {
 			return false, err
 		}

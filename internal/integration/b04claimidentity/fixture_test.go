@@ -64,6 +64,7 @@ type fixture struct {
 	writeKeys  map[string]string
 	ontology   []byte
 	httpConfig httpjson.Config
+	claimPools []string
 }
 
 func newFixture(t *testing.T, e engine) *fixture {
@@ -198,9 +199,10 @@ func (f *fixture) installMutators(mutators ...pipeline.MutatorBinding) {
 	}
 	app, err := authzrpc.New(f.ctx, authzrpc.Config{
 		Store: f.store, Lease: f.lease, Provider: f.keys, Facts: source, Namespace: f.facts.Namespace, DefaultProject: poolA,
-		Audit:    service.NewTrackedOntologyAudit(service.StaticOntologySource(ref(ontologySourceID))),
-		Mutators: mutators,
-		HTTP:     f.httpConfig,
+		Audit:      service.NewTrackedOntologyAudit(service.StaticOntologySource(ref(ontologySourceID))),
+		Mutators:   mutators,
+		HTTP:       f.httpConfig,
+		ClaimPools: f.claimPools,
 	})
 	if err != nil {
 		f.t.Fatal(err)
@@ -232,9 +234,10 @@ func (f *fixture) anonymousHandler() http.Handler {
 	ontology := service.NewOntology(nil)
 	writer := pipeline.New(f.store, f.lease,
 		pipeline.WithOntology(ontology),
+		pipeline.WithClaimPools(f.claimPools...),
 		pipeline.WithOntologyAudit(service.NewTrackedOntologyAudit(service.StaticOntologySource(ref(ontologySourceID)))),
 	)
-	domain := service.New(f.store, f.lease, writer, service.WithOntology(ontology))
+	domain := service.New(f.store, f.lease, writer, service.WithOntology(ontology), service.WithClaimPools(f.claimPools...))
 	registry, err := rpc.NewRegistry()
 	if err != nil {
 		f.t.Fatal(err)

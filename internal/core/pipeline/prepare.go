@@ -273,6 +273,14 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			}
 			createdAt := w.cfg.now().UTC()
 			current = &pending{ref: target, kind: "bead", doc: Document{ID: id, Type: c.Type, Project: project, Parent: parent, Fields: map[string]any{}, CreatedAt: &createdAt}, setBy: map[string]string{"createdAt": "core"}, allocatorPrefix: allocatorPrefix, allocatorExpected: allocatorExpected, allocatorChild: allocatorChild, allocatorHash: allocatorHash}
+			if c.Assignment != nil {
+				assignment := *c.Assignment
+				if err := assignment.Validate(); err != nil {
+					return nil, failure("invalid_params", err.Error())
+				}
+				current.doc.Assignment = &assignment
+				current.setBy["assignment"] = "request"
+			}
 			p.writes[id] = current
 			if parent != nil {
 				current.setBy["parent"] = "request"
@@ -1314,7 +1322,30 @@ func isSlot(method string) bool {
 
 func isClaim(method string) bool { return method == "bead.claim" || method == "bead.claimNext" }
 
+// ClaimAssignmentEligible never authenticates an alias. Principal kinds and
+// IDs retain their exact effective identity; anonymous labels retain P60's
+// exact unverified scope. Only a literal configured pool may be consumed by
+// any otherwise authorized claimant, matching the native claim.pools rule.
+func ClaimAssignmentEligible(assignment *model.ClaimAssignment, by model.PrincipalRef, agent string, pools map[string]bool) bool {
+	if assignment == nil {
+		return true
+	}
+	if assignment.Kind == "pool" {
+		return pools[assignment.ID]
+	}
+	if assignment.Kind != by.Kind {
+		return false
+	}
+	if by.Kind == "anonymous" {
+		return assignment.ID == agent
+	}
+	return assignment.ID == by.ID
+}
+
 func (w *Writer) checkLease(ctx context.Context, doc Document, by model.PrincipalRef, meta model.WriteMeta) error {
+	if isClaim(meta.Method) && !ClaimAssignmentEligible(doc.Assignment, by, meta.AgentLabel, w.cfg.claimPools) {
+		return failure("busy", "bead is assigned to another actor or pool")
+	}
 	if isGateMethod(meta.Method) && meta.Method == "gate."+meta.GateAction {
 		// Approval and resolver authority are independent of claim ownership.
 		// Normalization and authorization still validate the gate operation;
@@ -1363,6 +1394,13 @@ func (w *Writer) claims(p *prepared, by model.PrincipalRef, meta model.WriteMeta
 		for _, pending := range p.writes {
 			pending.doc.Lease = &ClaimLease{Principal: by, Agent: meta.AgentLabel, ExpiresAt: stamp.Add(w.cfg.claimTTL), TtlMs: ttl, Epoch: model.Natural64(w.lease.Epoch())}
 			pending.setBy["lease"] = "request"
+			// A winning claim consumes the preassignment. Its existing durable
+			// lease principal/label is now the owner; a second owner field would
+			// outlive that lease and change unrelated lifecycle behavior.
+			if pending.doc.Assignment != nil {
+				pending.doc.Assignment = nil
+				pending.setBy["assignment"] = "request"
+			}
 		}
 	} else {
 		for _, pending := range p.writes {

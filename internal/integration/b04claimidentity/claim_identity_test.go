@@ -36,6 +36,137 @@ import (
 const a4Binding = "b04-a4-wasm-derive"
 const a4Observer = "b04-a4-observer"
 
+func (f *fixture) assignedWork(title, project string, assignment *model.ClaimAssignment) model.Ref {
+	f.t.Helper()
+	payload := map[string]any{"type": "issue", "fields": map[string]any{"title": title, "description": "typed durable preassignment", "priority": 0}, "assignment": assignment}
+	commit := f.request(f.bootstrap, credential{}, "bead.create", project, f.key("assigned-create-"+title), "setup", payload).commit(f.t)
+	if len(commit.Results) != 1 {
+		f.t.Fatal("assigned create omitted its actual result")
+	}
+	id := commit.Results[0].Ref
+	doc, err := pipeline.DecodeDocument(commit.Results[0].Record)
+	if err != nil || !reflect.DeepEqual(doc.Assignment, assignment) || doc.Lease != nil {
+		f.t.Fatalf("public create did not retain exact preassignment without a lease: %v", err)
+	}
+	return id
+}
+
+func TestB04TypedPreassignmentPreservesIdentityAndLiteralPoolEligibility(t *testing.T) {
+	eachStore(t, false, func(t *testing.T, e engine) {
+		f := newFixture(t, e)
+		f.claimPools = []string{poolA}
+		f.install()
+		f.bootstrap = f.anonymousHandler()
+		owner := f.issue("agent:worker.primary", "user:pool-a", nil)
+		foreign := f.issue("agent:worker__primary", "user:pool-a", nil)
+		assigned := f.assignedWork("exact-owner", poolA, &model.ClaimAssignment{Kind: "agent", ID: owner.principal.ID})
+		// A similar authenticated ID and an impersonating display label cannot
+		// consume another identity's durable assignment, even without a lease.
+		f.refuse(foreign, "bead.claim", poolA, f.key("preassigned-foreign"), "worker.primary", target(assigned), "busy")
+		key := f.key("preassigned-owner")
+		f.remember(owner, "bead.claim", key, "")
+		before := f.state()
+		first := f.call(owner, "bead.claim", poolA, key, "worker__primary", target(assigned))
+		claimed := f.winner(before, owner, "bead.claim", key, "", assigned, first, true)
+		stored, err := pipeline.DecodeDocument(f.state().record(t, assigned).Body)
+		if err != nil || stored.Assignment != nil {
+			t.Fatal("winning claim did not consume preassignment into its exact durable lease owner")
+		}
+		read := f.request(f.bootstrap, credential{}, "bead.get", poolA, f.key("preassigned-read"), "setup", target(assigned))
+		var got struct {
+			Bead struct {
+				Assignee   string
+				Assignment *model.ClaimAssignment
+			}
+		}
+		if read.code != "" || json.Unmarshal(read.envelope["result"], &got) != nil || got.Bead.Assignee != owner.principal.ID || !reflect.DeepEqual(got.Bead.Assignment, &model.ClaimAssignment{Kind: "agent", ID: owner.principal.ID}) {
+			t.Fatalf("public hydration lost exact assignee: %s", read.raw)
+		}
+		noopKey := f.key("preassigned-noop")
+		scope := f.remember(owner, "bead.claim", noopKey, "worker--primary")
+		before = f.state()
+		noop := f.call(owner, "bead.claim", poolA, noopKey, "worker--primary", target(assigned)).commit(t)
+		sameClaimState(t, claimed, noop)
+		onlyNoopReceipt(t, before, f.state(), scope, noop)
+
+		pool := f.assignedWork("literal-pool", poolA, &model.ClaimAssignment{Kind: "pool", ID: poolA})
+		confusable := f.assignedWork("confusable-pool", poolA, &model.ClaimAssignment{Kind: "pool", ID: poolB})
+		f.refuse(foreign, "bead.claim", poolA, f.key("preassigned-pool-confusable"), poolA, target(confusable), "busy")
+		selector := map[string]any{"filter": map[string]any{"resources": []string{pool.ID, confusable.ID}}}
+		key = f.key("preassigned-pool-next")
+		f.remember(foreign, "bead.claimNext", key, "")
+		before = f.state()
+		win := f.call(foreign, "bead.claimNext", poolA, key, poolB, selector)
+		f.winner(before, foreign, "bead.claimNext", key, "", pool, win, true)
+		before = f.state()
+		f.call(foreign, "bead.claimNext", poolA, key, "changed-display", selector).replay(t, win)
+		sameState(t, before, f.state())
+		// The terminal probe must apply the same exact pool eligibility as the
+		// live walker. An unconfigured confusable alias is an ineligible row.
+		emptyKey := f.key("preassigned-pool-empty")
+		scope = f.remember(foreign, "bead.claimNext", emptyKey, "")
+		before = f.state()
+		empty := f.call(foreign, "bead.claimNext", poolA, emptyKey, poolA, selector)
+		if empty.code != "" || !bytes.Equal(empty.envelope["result"], []byte("null")) {
+			t.Fatalf("ineligible pool front is not a committed empty result: %s", empty.raw)
+		}
+		after := f.state()
+		head, _ := before.Meta.Head.Uint64()
+		receipt := after.Receipts[scope]
+		if after.Meta.Head != model.Natural64(head+1) || len(after.Changesets) != len(before.Changesets)+1 || receipt == nil || receipt.Commit.Revision != after.Meta.Head || len(receipt.Commit.Results) != 0 || receipt.ResponsePending || len(receipt.Changeset.Changes) != 0 || len(receipt.Changeset.Events) != 0 || !reflect.DeepEqual(before.Records, after.Records) || !reflect.DeepEqual(before.Versions, after.Versions) || !reflect.DeepEqual(before.Derived, after.Derived) || !reflect.DeepEqual(before.LeaseOverlays, after.LeaseOverlays) {
+			t.Fatal("empty typed-pool result published a bead/history/event or lost its sole final receipt")
+		}
+		f.remember(foreign, "bead.claimNext", emptyKey, "different-label")
+		before = f.state()
+		replay := f.call(foreign, "bead.claimNext", poolA, emptyKey, "different-label", selector)
+		var replayMeta struct{ Replayed bool }
+		_ = json.Unmarshal(replay.envelope["_meta"], &replayMeta)
+		if replay.code != "" || !bytes.Equal(replay.envelope["result"], []byte("null")) || !replayMeta.Replayed {
+			t.Fatal("typed-pool terminal result did not replay")
+		}
+		sameState(t, before, f.state())
+		crossProject := f.assignedWork("pool-without-project-authority", poolB, &model.ClaimAssignment{Kind: "pool", ID: poolA})
+		f.refuse(foreign, "bead.claim", poolB, f.key("preassigned-pool-no-authority"), poolA, target(crossProject), "forbidden")
+		for i, bad := range []any{map[string]any{"kind": "future", "id": poolA}, map[string]any{"kind": "pool", "id": ""}, map[string]any{"kind": "pool", "id": poolA, "verified": true}, nil} {
+			badKey := f.key(fmt.Sprintf("bad-assignment-%d", i))
+			f.remember(credential{}, "bead.create", badKey, "setup")
+			before := f.state()
+			r := f.request(f.bootstrap, credential{}, "bead.create", poolA, badKey, "setup", map[string]any{"type": "issue", "fields": map[string]any{"title": "invalid-assignment"}, "assignment": bad})
+			if r.code != "invalid_params" {
+				t.Fatalf("invalid typed assignment was admitted: %s", r.raw)
+			}
+			sameState(t, before, f.state())
+		}
+		t.Logf("%s: durable exact actor assignment, foreign-ID refusal, literal configured pool only, pool does not grant project authority, hydrated owner, one winning history and replay", e.name)
+	})
+}
+
+func TestB04TypedAnonymousPreassignmentRetainsExactUnverifiedLabel(t *testing.T) {
+	eachStore(t, false, func(t *testing.T, e engine) {
+		f := newFixture(t, e)
+		id := f.assignedWork("anonymous-preassignment", poolA, &model.ClaimAssignment{Kind: "anonymous", ID: "worker.primary"})
+		for _, label := range []string{"worker__primary", "worker-primary", "worker/primary"} {
+			key := f.key("anonymous-preassignment-foreign-" + label)
+			f.remember(credential{}, "bead.claim", key, label)
+			before := f.state()
+			r := f.request(f.bootstrap, credential{}, "bead.claim", poolA, key, label, target(id))
+			if r.code != "busy" {
+				t.Fatalf("anonymous assignment normalized its unverified label: %s", r.raw)
+			}
+			sameState(t, before, f.state())
+		}
+		key := f.key("anonymous-preassignment-win")
+		f.remember(credential{}, "bead.claim", key, "worker.primary")
+		before := f.state()
+		r := f.request(f.bootstrap, credential{}, "bead.claim", poolA, key, "worker.primary", target(id))
+		f.winner(before, credential{}, "bead.claim", key, "worker.primary", id, r, false)
+		before = f.state()
+		f.request(f.bootstrap, credential{}, "bead.claim", poolA, key, "worker.primary", target(id)).replay(t, r)
+		sameState(t, before, f.state())
+		t.Logf("%s: typed anonymous preassignment is an exact unverified P60 label, never an authenticated actor alias", e.name)
+	})
+}
+
 // The source is committed and digest-pinned in a disposable checkout on the
 // remote runner, then compiled and admitted by the real contained WASI route.
 // A callback must read the observer through plug.call and derive a visible
