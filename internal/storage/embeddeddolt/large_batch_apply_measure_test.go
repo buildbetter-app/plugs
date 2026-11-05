@@ -20,6 +20,8 @@ package embeddeddolt_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -30,6 +32,7 @@ import (
 	"github.com/cenkalti/backoff/v4"
 	doltembed "github.com/dolthub/driver/v2"
 
+	"github.com/steveyegge/beads/internal/idgen"
 	storageissueops "github.com/steveyegge/beads/internal/storage/issueops"
 
 	"github.com/steveyegge/beads/internal/storage/batchfixtures"
@@ -112,10 +115,17 @@ func openCountedConn(ctx context.Context, dataDir, database string, counts *sqlc
 // setup and excluded; only the transaction ApplyBatchInTx runs inside is
 // measured.
 func measureApply(ctx context.Context, dataDir, database, rootID string, build func(rootID string) issueops.ApplyBatchRequest) (sqlcount.Snapshot, error) {
+	got, _, err := measureApplyWithResult(ctx, dataDir, database, rootID, build)
+	return got, err
+}
+
+// Retain the already-produced result for pure, post-measurement ID evidence.
+// No SQL, counter, plan, or transaction boundary changes for that observation.
+func measureApplyWithResult(ctx context.Context, dataDir, database, rootID string, build func(rootID string) issueops.ApplyBatchRequest) (sqlcount.Snapshot, issueops.ApplyBatchResult, error) {
 	counts := &sqlcount.Counts{}
 	db, cleanup, err := openCountedConn(ctx, dataDir, database, counts)
 	if err != nil {
-		return sqlcount.Snapshot{}, err
+		return sqlcount.Snapshot{}, issueops.ApplyBatchResult{}, err
 	}
 	defer cleanup()
 
@@ -124,16 +134,76 @@ func measureApply(ctx context.Context, dataDir, database, rootID string, build f
 
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return sqlcount.Snapshot{}, err
+		return sqlcount.Snapshot{}, issueops.ApplyBatchResult{}, err
 	}
-	if _, _, err := storageissueops.ApplyBatchInTx(ctx, tx, plan); err != nil {
+	result, _, err := storageissueops.ApplyBatchInTx(ctx, tx, plan)
+	if err != nil {
 		_ = tx.Rollback()
-		return sqlcount.Snapshot{}, err
+		return sqlcount.Snapshot{}, issueops.ApplyBatchResult{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		return sqlcount.Snapshot{}, err
+		return sqlcount.Snapshot{}, issueops.ApplyBatchResult{}, err
 	}
-	return counts.Snapshot(), nil
+	return counts.Snapshot(), result, nil
+}
+
+type measuredCreateID struct {
+	Index       int       `json:"index"`
+	ID          string    `json:"id"`
+	Title       string    `json:"title"`
+	Description string    `json:"description"`
+	CreatedAt   time.Time `json:"created_at"`
+	BaseLength  int       `json:"base_length"`
+	Rejected    []string  `json:"rejected"`
+}
+
+// The pristine fixtures use the default adaptive configuration and contain
+// only rootID before ApplyBatchInTx. Reconstruct from actual create snapshots,
+// including the full-precision CreatedAt that ExecuteCreate returns. A candidate
+// counts as a retry only when a prior real ID occupied it. The first unoccupied
+// candidate MUST equal the actual result; a missing/mutated preimage refuses.
+// This cannot recover IDs/timestamps absent from historical saved logs.
+func measuredCreateIDs(result issueops.ApplyBatchResult, prefix, actor, rootID string) ([]measuredCreateID, error) {
+	occupied := map[string]bool{rootID: true}
+	observed := []measuredCreateID{}
+	for index, item := range result.Items {
+		if item.Kind != issueops.ItemCreate {
+			continue
+		}
+		if item.Issue == nil || item.Issue.CreatedAt.IsZero() || item.Issue.ID != item.IssueID {
+			return nil, fmt.Errorf("create %d lacks an intact ID/timestamp snapshot", index)
+		}
+		issue := item.Issue
+		rootCount := 0
+		for id := range occupied {
+			if strings.HasPrefix(id, prefix+"-") && !strings.Contains(strings.TrimPrefix(id, prefix+"-"), ".") {
+				rootCount++
+			}
+		}
+		base := storageissueops.ComputeAdaptiveLength(rootCount, storageissueops.DefaultAdaptiveConfig())
+		entry := measuredCreateID{Index: index, ID: issue.ID, Title: issue.Title, Description: issue.Description, CreatedAt: issue.CreatedAt, BaseLength: base, Rejected: []string{}}
+		matched := false
+		for length := base; length <= 8 && !matched; length++ {
+			for nonce := 0; nonce < 10; nonce++ {
+				candidate := idgen.GenerateHashID(prefix, issue.Title, issue.Description, actor, issue.CreatedAt, length, nonce)
+				if occupied[candidate] {
+					entry.Rejected = append(entry.Rejected, candidate)
+					continue
+				}
+				if candidate != issue.ID {
+					return nil, fmt.Errorf("create %d first free candidate %s differs from actual %s", index, candidate, issue.ID)
+				}
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return nil, fmt.Errorf("create %d has no free candidate", index)
+		}
+		occupied[issue.ID] = true
+		observed = append(observed, entry)
+	}
+	return observed, nil
 }
 
 // largeBatchApplyShapes is the design's three measured shapes, shared by the
@@ -248,12 +318,21 @@ func runLargeBatchApplyStatementCountsShape(t *testing.T, shapeName string) {
 				t.Fatalf("create root issue: %v", err)
 			}
 
-			got, err := measureApply(ctx, fixture.dataDir, fixture.database, root.ID, tc.build)
+			got, result, err := measureApplyWithResult(ctx, fixture.dataDir, fixture.database, root.ID, tc.build)
 			if err != nil {
 				t.Fatalf("measureApply: %v", err)
 			}
 			t.Logf("embedded %s: Prepare=%d Exec=%d Query=%d StmtExec=%d StmtQuery=%d Total=%d",
 				tc.name, got.Prepare, got.Exec, got.Query, got.StmtExec, got.StmtQuery, got.Total())
+			observed, err := measuredCreateIDs(result, tc.db, "tester", root.ID)
+			if err != nil {
+				t.Fatalf("post-measurement ID evidence: %v", err)
+			}
+			evidence, err := json.Marshal(observed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("MEASURED_CREATE_IDS prefix=%s actor=tester initial_root=%s creates=%s", tc.db, root.ID, evidence)
 
 			want, ok := pinnedEmbeddedStatementCounts[tc.name]
 			if !ok {
@@ -266,6 +345,17 @@ func runLargeBatchApplyStatementCountsShape(t *testing.T, shapeName string) {
 			if diff > statementCountTolerance {
 				t.Errorf("embedded %s: Total() = %d, want pinned %d +/- %d (see large_batch_apply_measure_test.go)",
 					tc.name, got.Total(), want, statementCountTolerance)
+			}
+			// Keep the original tolerant assertion above. Separately refuse
+			// causal clearance when actual ID retries do not explain a drift.
+			retries := 0
+			for _, create := range observed {
+				retries += len(create.Rejected)
+			}
+			unexplained := got.Total() - want - int64(retries)
+			t.Logf("MEASURED_QUERY_CAUSE pinned=%d actual=%d actual_id_retries=%d unexplained=%d", want, got.Total(), retries, unexplained)
+			if unexplained != 0 {
+				t.Errorf("unexplained measured statement drift: %d after %d witnessed ID-collision queries", unexplained, retries)
 			}
 		})
 	}
@@ -290,6 +380,71 @@ func TestLargeBatchApplyStatementCounts712_Embedded(t *testing.T) {
 
 func TestLargeBatchApplyStatementCountsClassic40_Embedded(t *testing.T) {
 	runLargeBatchApplyStatementCountsShape(t, "40 (classic)")
+}
+
+// This separate real-driver control exercises the pre-existing nonce branch;
+// it never seeds or changes any measured 356/712/classic fixture.
+func TestLargeBatchApplyIDCollisionQueryControl_Embedded(t *testing.T) {
+	skipUnlessEmbeddedDolt(t)
+	ctx := t.Context()
+	fixture := newPristineEmbeddedDoltFixture(t, "idcollision")
+	t.Cleanup(func() { closeEmbeddedDoltStore(t, fixture.store) })
+	createdAt := time.Date(2026, 11, 3, 12, 0, 0, 123456789, time.UTC)
+	issue := &types.Issue{Title: "collision control", CreatedAt: createdAt, Status: types.StatusOpen, Priority: 2, IssueType: types.TypeTask}
+	if err := fixture.store.CreateIssue(ctx, issue, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	first := idgen.GenerateHashID(fixture.database, issue.Title, issue.Description, "tester", createdAt, 3, 0)
+	if issue.ID != first {
+		t.Fatalf("real initial ID %s differs from nonce0 %s", issue.ID, first)
+	}
+	counts := &sqlcount.Counts{}
+	db, cleanup, err := openCountedConn(ctx, fixture.dataDir, fixture.database, counts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	free := *issue
+	free.Title = "unoccupied control"
+	counts.Reset()
+	freeID, err := storageissueops.GenerateIssueIDInTable(ctx, tx, "issues", fixture.database, &free, "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	freeCounts := counts.Snapshot()
+	if freeID != idgen.GenerateHashID(fixture.database, free.Title, free.Description, "tester", createdAt, 3, 0) || freeID == first {
+		t.Fatalf("free control must use its unoccupied nonce0: %s", freeID)
+	}
+	counts.Reset()
+	retriedID, err := storageissueops.GenerateIssueIDInTable(ctx, tx, "issues", fixture.database, issue, "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	retriedCounts := counts.Snapshot()
+	if retriedID != idgen.GenerateHashID(fixture.database, issue.Title, issue.Description, "tester", createdAt, 3, 1) {
+		t.Fatalf("real collision did not choose nonce1: %s", retriedID)
+	}
+	if freeCounts.Query != 6 || freeCounts.Total() != 6 || retriedCounts.Query != 7 || retriedCounts.Total() != 7 {
+		t.Fatalf("ID collision query cost: free=%+v retried=%+v", freeCounts, retriedCounts)
+	}
+	retried := *issue
+	retried.ID = retriedID
+	result := issueops.ApplyBatchResult{Items: []issueops.ItemResult{{Kind: issueops.ItemCreate, IssueID: retriedID, Issue: &retried}}}
+	observed, err := measuredCreateIDs(result, fixture.database, "tester", first)
+	if err != nil || len(observed) != 1 || len(observed[0].Rejected) != 1 || observed[0].Rejected[0] != first {
+		t.Fatalf("real nonce witness: %+v %v", observed, err)
+	}
+	// The same returned ID with a changed preimage must not invent a witness.
+	retried.CreatedAt = retried.CreatedAt.Add(time.Nanosecond)
+	if _, err := measuredCreateIDs(result, fixture.database, "tester", first); err == nil {
+		t.Fatal("accepted a mismatched timestamp as ID-collision evidence")
+	}
+	t.Logf("REAL_ID_COLLISION_QUERY_CONTROL free=%s query=%d retried=%s query=%d rejected=%s created_at=%s", freeID, freeCounts.Query, retriedID, retriedCounts.Query, first, createdAt.Format(time.RFC3339Nano))
 }
 
 // wallClockShapes is the coordinator's item-8 ask: real wall-clock numbers at

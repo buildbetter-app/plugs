@@ -262,6 +262,7 @@ go_test(
         "//internal/debug",
         "//internal/eventsjournal",
         "//internal/hooks",
+        "//internal/idgen",
         "//internal/storage",
         "//internal/storage/batchbench",
         "//internal/storage/batchfixtures",
