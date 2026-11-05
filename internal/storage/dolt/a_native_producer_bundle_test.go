@@ -361,16 +361,16 @@ func TestNativeSourcePlaneContractFromStoredDoltRows(t *testing.T) {
 	defer cleanup()
 	ctx, cancel := testContext(t)
 	defer cancel()
-	exec := func(query string, args ...any) {
+	exec := func(t *testing.T, query string, args ...any) {
 		t.Helper()
 		if _, err := store.db.ExecContext(ctx, query, args...); err != nil {
 			t.Fatal(err)
 		}
 	}
-	commit := func() {
+	commit := func(t *testing.T) {
 		t.Helper()
-		exec(`CALL DOLT_ADD('-A')`)
-		exec(`CALL DOLT_COMMIT('-m', 'disposable physical source-plane control')`)
+		exec(t, `CALL DOLT_ADD('-A')`)
+		exec(t, `CALL DOLT_COMMIT('-m', 'disposable physical source-plane control')`)
 	}
 	for _, id := range []string{"test-abc", "test-def"} {
 		if err := store.CreateIssue(ctx, &types.Issue{ID: id, Title: "durable " + id, Status: types.StatusOpen, Priority: 2, IssueType: types.TypeTask}, "plane-control"); err != nil {
@@ -379,31 +379,31 @@ func TestNativeSourcePlaneContractFromStoredDoltRows(t *testing.T) {
 	}
 	at := time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC)
 	for _, id := range []string{"test-abc", "test-ghi"} {
-		exec(`INSERT INTO wisps (id,title,status,priority,issue_type,created_at,updated_at,ephemeral,no_history)
+		exec(t, `INSERT INTO wisps (id,title,status,priority,issue_type,created_at,updated_at,ephemeral,no_history)
 			VALUES (?,?,'review',2,'gate',?,?,1,1)`, id, "active "+id, at, at)
 	}
-	exec(`INSERT INTO custom_statuses (name,category) VALUES ('review','active')`)
-	exec(`INSERT INTO custom_types (name) VALUES ('gate')`)
+	exec(t, `INSERT INTO custom_statuses (name,category) VALUES ('review','active')`)
+	exec(t, `INSERT INTO custom_types (name) VALUES ('gate')`)
 	if err := store.SetConfig(ctx, "status.custom", "review:active"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SetConfig(ctx, "types.custom", "gate"); err != nil {
 		t.Fatal(err)
 	}
-	exec(`INSERT INTO dependencies (id,issue_id,depends_on_issue_id,type,created_at,created_by,metadata,thread_id)
+	exec(t, `INSERT INTO dependencies (id,issue_id,depends_on_issue_id,type,created_at,created_by,metadata,thread_id)
 		VALUES ('shared-edge','test-abc','test-def','waits-for',?,'plane-control',?,'durable-thread')`, at, `{"gate":"","n":9007199254740993}`)
-	exec(`INSERT INTO wisp_dependencies (id,issue_id,depends_on_wisp_id,type,created_at,created_by,metadata,thread_id)
+	exec(t, `INSERT INTO wisp_dependencies (id,issue_id,depends_on_wisp_id,type,created_at,created_by,metadata,thread_id)
 		VALUES ('shared-edge','test-abc','test-ghi','waits-for',?,'plane-control',?,'active-thread')`, at, `{"gate":"all-children","also_blocks":true,"n":9007199254740993}`)
-	exec(`INSERT INTO wisp_dependencies (id,issue_id,depends_on_external,type,created_at,created_by,metadata,thread_id)
+	exec(t, `INSERT INTO wisp_dependencies (id,issue_id,depends_on_external,type,created_at,created_by,metadata,thread_id)
 		VALUES ('external-edge','test-abc','external:tracker:raw','tracks',?,'plane-control',?,'external-thread')`, at, `{"raw":true}`)
-	exec(`INSERT INTO dependencies (id,issue_id,depends_on_wisp_id,type,created_at,created_by,metadata,thread_id)
+	exec(t, `INSERT INTO dependencies (id,issue_id,depends_on_wisp_id,type,created_at,created_by,metadata,thread_id)
 		VALUES ('active-target','test-abc','test-ghi','blocks',?,'plane-control',NULL,'target-thread')`, at)
-	exec(`INSERT INTO wisp_labels (issue_id,label) VALUES ('test-abc','active-label')`)
-	exec(`INSERT INTO wisp_comments (id,issue_id,author,text,created_at) VALUES ('plane-comment','test-abc','plane-control','raw comment',?)`, at)
-	exec(`INSERT INTO wisp_events (id,issue_id,event_type,actor,old_value,new_value,comment,created_at)
+	exec(t, `INSERT INTO wisp_labels (issue_id,label) VALUES ('test-abc','active-label')`)
+	exec(t, `INSERT INTO wisp_comments (id,issue_id,author,text,created_at) VALUES ('plane-comment','test-abc','plane-control','raw comment',?)`, at)
+	exec(t, `INSERT INTO wisp_events (id,issue_id,event_type,actor,old_value,new_value,comment,created_at)
 		VALUES ('plane-event','test-abc','created','plane-control',NULL,'review','raw event',?)`, at)
-	exec(`INSERT INTO wisp_child_counters (parent_id,last_child) VALUES ('test-abc',7)`)
-	commit()
+	exec(t, `INSERT INTO wisp_child_counters (parent_id,last_child) VALUES ('test-abc',7)`)
+	commit(t)
 	root := t.TempDir()
 	configPath := filepath.Join(root, "config.yaml")
 	configBytes := []byte("# raw process config observation\nstatus:\n  custom: [review:active]\ntypes:\n  custom: [gate]\n")
@@ -412,7 +412,8 @@ func TestNativeSourcePlaneContractFromStoredDoltRows(t *testing.T) {
 	}
 	retained := []string{"issues", "wisps", "dependencies", "wisp_dependencies", "wisp_labels", "wisp_comments", "wisp_events", "wisp_child_counters", "custom_statuses", "custom_types"}
 	var before map[string]plugdump.Table
-	build := func(contract string) ([]byte, error) {
+	build := func(t *testing.T, contract string) ([]byte, error) {
+		t.Helper()
 		sidecarDir := t.TempDir()
 		paths := map[string][]string{}
 		for _, family := range []string{"user-legacy-config", "user-xdg-config", "user-native-config", "project-config", "beads-dir-config", "project-local-config", "metadata-json", "legacy-config-json", "beads-hooks", "legacy-hooks", "git-hooks", "external-hook-managers", "routes-jsonl", "formulas", "formula-search-paths", "issues-jsonl", "interactions-jsonl"} {
@@ -455,7 +456,7 @@ func TestNativeSourcePlaneContractFromStoredDoltRows(t *testing.T) {
 		})
 		return data, err
 	}
-	data, err := build(plugdump.SourcePlaneAddressContract)
+	data, err := build(t, plugdump.SourcePlaneAddressContract)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -551,7 +552,7 @@ func TestNativeSourcePlaneContractFromStoredDoltRows(t *testing.T) {
 			t.Fatalf("stored %s raw multiset/count changed: got=%v want=%v", family, actual[family], want)
 		}
 	}
-	legacy, err := build("")
+	legacy, err := build(t, "")
 	if err == nil || len(legacy) != 0 || !strings.Contains(err.Error(), "unsupported wisp status") {
 		t.Fatalf("legacy active-status refusal changed: bytes=%d err=%v", len(legacy), err)
 	}
@@ -560,13 +561,15 @@ func TestNativeSourcePlaneContractFromStoredDoltRows(t *testing.T) {
 		{"opaque active source", `UPDATE wisp_dependencies SET type='custom-kind',depends_on_wisp_id=NULL,depends_on_issue_id='test-def' WHERE id='shared-edge'`, `UPDATE wisp_dependencies SET type='waits-for',depends_on_wisp_id='test-ghi',depends_on_issue_id=NULL WHERE id='shared-edge'`, "durable issue source"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			exec(test.change)
-			t.Cleanup(func() { exec(test.restore) })
-			commit()
-			data, err := build(plugdump.SourcePlaneAddressContract)
+			exec(t, test.change)
+			t.Cleanup(func() { exec(t, test.restore) })
+			// Both mutations affect only dolt-ignored active tables. Their live
+			// rows are read directly; there is no versioned change to commit.
+			data, err := build(t, plugdump.SourcePlaneAddressContract)
 			if err == nil || len(data) != 0 || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("stored refusal not atomic: bytes=%d err=%v", len(data), err)
 			}
+			t.Logf("stored source refusal: %v", err)
 		})
 	}
 }
