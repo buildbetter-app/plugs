@@ -363,6 +363,9 @@ export class PlugClient {
       detailByCanonical.set(canonical, bead);
       const fields = object(bead.fields || item.fields || {}, `${project} bead ${canonical}.fields`);
       const status = string(bead.status || item.status || fields.status, `${project} bead ${canonical}.status`);
+      if (!new Set(["open", "in_progress", "blocked", "closed"]).has(status)) {
+        throw new AuthorityError(`${project} bead ${canonical} has unsupported status ${status}; install an explicit host ontology mapping`);
+      }
       const labels = Array.isArray(bead.labels) ? bead.labels.slice() : (Array.isArray(item.labels) ? item.labels.slice() : (Array.isArray(fields.labels) ? fields.labels.slice() : []));
       const node = {
         id: legacy,
