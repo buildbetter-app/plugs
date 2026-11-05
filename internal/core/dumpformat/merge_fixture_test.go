@@ -19,6 +19,14 @@ type mergeFixture struct {
 	config   []externalEntry
 }
 
+// Keep the external schema spelling in this existing source-provenance
+// fixture adapter. The contract regression still exercises the exact raw arm.
+func setFixtureWorkflowTarget(record *Record, target string) {
+	record.Source.Fields["depends_on_issue_id"] = nil
+	record.Source.Fields["depends_on_wisp_id"] = target
+	record.Body["target_kind"] = "depends_on_wisp_id"
+}
+
 func newMergeFixture(t *testing.T, prefix string) *mergeFixture {
 	t.Helper()
 	f := &mergeFixture{
