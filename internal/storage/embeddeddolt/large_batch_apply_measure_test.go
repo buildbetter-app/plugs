@@ -434,10 +434,23 @@ func TestLargeBatchApplyWallClock_Embedded(t *testing.T) {
 //
 // Net: classic +49 (seven distinct parent-child adds; the eighth repeats a
 // pair and is a no-op). 356 and 712 are unchanged.
+//
+// Re-measured on cd1928c7 (R41970651104), separately from the TCP baseline:
+// the embedded suite observed 6546 / 13090 / 875. Exact base be10aade
+// (R41993125097) observed 6396 / 12790 / 835, with the same fixture,
+// measurement boundary and counter instrumentation.
+// Required c5c5e74e active-first GetIssueInTx adds an absent-wisp query for
+// each durable read: one hydration per create and three reads per assign
+// update. C + 3U adds 150 / 300 / 40 queries for these unchanged shapes,
+// matching those measured deltas; Exec counts are unchanged. The saved
+// non-race 712 run observed 13091, an unlocalized +1 query within the
+// existing tolerance 2. No per-SQL trace localizes that residual; it is not
+// attributed to the active-first mechanism. Keep the assertions, tolerance,
+// workloads and counter boundary unchanged to detect unexplained drift.
 var pinnedEmbeddedStatementCounts = map[string]int64{
-	"356 (mol 1x)":    6396,
-	large712ShapeName: 12790,
-	"40 (classic)":    835,
+	"356 (mol 1x)":    6546,
+	large712ShapeName: 13090,
+	"40 (classic)":    875,
 }
 
 // BenchmarkLargeBatchApply_Embedded benchmarks issueops.ApplyBatchInTx on
