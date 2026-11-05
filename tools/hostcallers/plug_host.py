@@ -101,6 +101,11 @@ class Client:
         self.scope = digest({"endpoint": cfg["endpoint"], "incarnation": cfg["incarnation"],
                              "principal": cfg["principal"], "project": project})
         self.generated = set()
+        self._load_generated()
+        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+        self.verify_identity()
+
+    def _load_generated(self):
         ledger = read_json(self.workspace / ".plug-host-journal.json", {"jobs": {}})
         for job in ledger.get("jobs", {}).values():
             if job.get("scope") != self.scope:
@@ -115,9 +120,6 @@ class Client:
                     for i, op in enumerate(ops):
                         if op["kind"] == "create":
                             self.generated.add(created_ref(call["result"], i))
-        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
-        self.verify_identity()
-
     def verify_identity(self):
         cfg = self.binding
         hello = self.rpc("server.hello", {})
@@ -174,6 +176,8 @@ class Client:
             raise AdapterError("ID must be a nonempty exact string")
         if original in self.ids:
             return copy.deepcopy(self.ids[original])
+        if original not in self.generated:
+            self._load_generated()
         if original in self.generated:
             return {"id": original}
         raise AdapterError("ID has neither an explicit import mapping nor a scoped create receipt")

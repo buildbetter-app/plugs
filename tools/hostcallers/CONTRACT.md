@@ -59,3 +59,9 @@ projections omit the old reason. Other close-producing adapters should use the
 same metadata convention; arbitrary external closes have no typed core reason
 slot in the pinned read envelope. Completed and recovered pours return the
 persisted id_mapping, including the stdout-loss boundary.
+
+Closed plan imports use a topological close order satisfying dependency
+prerequisites and child-before-parent constraints. Open/missing prerequisites or
+children and closure cycles are refused before creating anything. Core close
+guards remain enabled. Scoped create receipts are refreshed when another
+prepared caller has written the workspace journal.

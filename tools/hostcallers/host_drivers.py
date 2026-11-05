@@ -96,11 +96,41 @@ def apply_body(w, plan, ids, change):
     return items
 
 
+def closure_order(items):
+    """Prerequisites first and children before parents; retain all core guards."""
+    by_key = {item["key"]: item for item in items}
+    closed = {k for k, item in by_key.items() if item.get("status") == "closed"}
+    children = {k: [i["key"] for i in items if i.get("parent") == k] for k in by_key}
+    dependencies = {}
+    for key in closed:
+        required = list(by_key[key].get("deps", [])) + children[key]
+        if any(k not in by_key or k not in closed for k in required):
+            raise AdapterError("closed item has an unknown or open prerequisite/child")
+        dependencies[key] = required
+    result, visiting, seen = [], set(), set()
+    def visit(key):
+        if key in seen:
+            return
+        if key in visiting:
+            raise AdapterError("closure constraints contain a cycle")
+        visiting.add(key)
+        for required in dependencies[key]:
+            visit(required)
+        visiting.remove(key)
+        seen.add(key)
+        result.append(key)
+    for item in items:
+        if item["key"] in closed:
+            visit(item["key"])
+    return result
+
+
 def load_plan(c, plan_path):
     plan_path = Path(plan_path).resolve()
     if plan_path.parent != c.workspace:
         raise AdapterError("plan must belong to the explicitly bound workspace")
     plan = read_json(plan_path)
+    close_order = closure_order(plan["items"])
     with Job(c, "load_plan", plan, {"ids.json": {}}) as j:
         if j.done:
             return
@@ -113,9 +143,9 @@ def load_plan(c, plan_path):
         for item in plan["items"]:
             for dep in item.get("deps", []):
                 w.link(ids[item["key"]], ids[dep])
-        for item in reversed(plan["items"]):
-            if item.get("status") == "closed":
-                w.lifecycle(ids[item["key"]], reason=item["description"])
+        by_key = {item["key"]: item for item in plan["items"]}
+        for key in close_order:
+            w.lifecycle(ids[key], reason=by_key[key]["description"])
         j.finish({"ids.json": ids})
 
 

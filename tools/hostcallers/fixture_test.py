@@ -135,6 +135,25 @@ class HostCallerFixture(unittest.TestCase):
         self.assertEqual(op['parent'],opsids['OPS'])
         self.assertNotIn(opsids['OPS.1'],[b['id'] for b in self.c.snapshot()])
 
+    def test_load_closed_graph_orders_prerequisites_and_children(self):
+        plan = {"doc": "fixture.md", "items": [
+            dict(key="P",type="epic",priority=1,parent=None,deps=[],title="Closed parent",description="parent close",status="closed"),
+            dict(key="A",type="task",priority=1,parent="P",deps=[],title="Closed prerequisite",description="A close",status="closed"),
+            dict(key="B",type="task",priority=1,parent="P",deps=["A"],title="Closed dependent",description="B close",status="closed"),
+        ]}
+        self.write('plan.json', plan)
+        self.assertEqual(hd.closure_order(plan['items']), ['A','B','P'])
+        self.run_script('load_plan.py', self.signals/'plan.json')
+        ids=ph.read_json(self.signals/'ids.json')
+        for key in ('A','B','P'):
+            bead=self.c.get(ids[key])
+            self.assertEqual(bead['status'],'closed')
+            self.assertEqual(Projection(self.c).row(bead)['close_reason'],key+' close' if key!='P' else 'parent close')
+        self.run_script('load_plan.py', self.signals/'plan.json')
+        invalid=copy.deepcopy(plan['items'])
+        invalid[1]['status']='open'
+        with self.assertRaises(ph.AdapterError): hd.closure_order(invalid)
+
     def test_binding_cwd_env_principal_and_incarnation(self):
         with self.assertRaises(ph.AdapterError):
             ph.Client(self.binding,'signals-v2',self.ops)
