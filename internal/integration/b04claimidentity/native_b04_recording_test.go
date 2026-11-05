@@ -469,9 +469,13 @@ func b04NativeShow(t *testing.T, c *b04NativeCommand, label, id string) b04Nativ
 	data := c.run(label, "--readonly", "show", id, "--json")
 	claim := b04NativeClaimed(t, data, id)
 	row := b04NativeRows(t, data)[0]
-	revision := fmt.Sprint(row["revision"])
-	if value, err := strconv.ParseUint(revision, 10, 64); err != nil || value == 0 {
-		t.Fatalf("native show has no genuine positive stored revision: %s", data)
+	// The admitted producer's RevisionToken is an opaque decimal int64 string,
+	// including negative values and the legacy "0". Require its exact canonical
+	// spelling; never normalize the token or invent one from update output.
+	revision, present := row["revision"].(string)
+	value, err := strconv.ParseInt(revision, 10, 64)
+	if !present || err != nil || strconv.FormatInt(value, 10) != revision {
+		t.Fatalf("native show has no genuine canonical signed revision token: %s", data)
 	}
 	return b04NativeStoredIssue{b04NativeIssueProjection: claim, Revision: revision}
 }
