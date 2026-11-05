@@ -516,27 +516,107 @@ func b13NativeDelta(before, after b13Physical, key string, content *string) erro
 	if len(before.Head) != 1 || len(after.Head) != 1 || after.Head[0]["head"] == before.Head[0]["head"] || after.Head[0]["parent"] != before.Head[0]["head"] || len(after.Log) != len(before.Log)+1 {
 		return fmt.Errorf("one native commit with exact old parent was not observed")
 	}
-	prior := map[string]int{}
-	for _, row := range before.Log {
-		b, _ := json.Marshal(row)
-		prior[string(b)]++
+	oldHead, oldOK := before.Head[0]["head"].(string)
+	newHead, newOK := after.Head[0]["head"].(string)
+	if !oldOK || !newOK || oldHead == "" || newHead == "" {
+		return fmt.Errorf("native history head is not a nonempty identity")
 	}
-	for _, row := range after.Log {
-		b, _ := json.Marshal(row)
-		prior[string(b)]--
+	return b13NativeHistoryDelta(before.Log, after.Log, oldHead, newHead)
+}
+
+func b13NativeHistoryDelta(before, after []map[string]any, oldHead, newHead string) error {
+	if oldHead == "" || newHead == "" || oldHead == newHead || len(after) != len(before)+1 {
+		return fmt.Errorf("native history delta is not one new head")
 	}
-	newRows := 0
-	for _, count := range prior {
-		if count == -1 {
-			newRows++
-		} else if count != 0 {
-			return fmt.Errorf("prior native history changed")
+	prior := map[string]map[string]any{}
+	for _, row := range before {
+		hash, ok := row["commit_hash"].(string)
+		if !ok || hash == "" || prior[hash] != nil {
+			return fmt.Errorf("prior native history identity is invalid or duplicated")
+		}
+		prior[hash] = row
+	}
+	if prior[oldHead] == nil || prior[oldHead]["refs"] != "HEAD -> main" || prior[newHead] != nil {
+		return fmt.Errorf("native history head/reference boundary is invalid")
+	}
+	seen := map[string]bool{}
+	for _, row := range after {
+		hash, ok := row["commit_hash"].(string)
+		if !ok || hash == "" || seen[hash] {
+			return fmt.Errorf("current native history identity is invalid or duplicated")
+		}
+		seen[hash] = true
+		if hash == newHead {
+			if row["parents"] != oldHead || row["refs"] != "HEAD -> main" {
+				return fmt.Errorf("new native history row differs from actual head/parent/reference")
+			}
+			continue
+		}
+		old, exists := prior[hash]
+		if !exists {
+			return fmt.Errorf("native history contains an undeclared new row")
+		}
+		// refs is a live branch decoration, not immutable commit data. Retain
+		// both raw rows and require its sole exact move from old to new HEAD.
+		expected := old
+		if hash == oldHead {
+			expected = make(map[string]any, len(old))
+			for key, value := range old {
+				expected[key] = value
+			}
+			expected["refs"] = ""
+		}
+		if !reflect.DeepEqual(expected, row) {
+			return fmt.Errorf("prior native history changed outside the exact head-reference move")
 		}
 	}
-	if newRows != 1 {
-		return fmt.Errorf("native history delta is not one new row")
+	if !seen[newHead] || len(seen) != len(prior)+1 {
+		return fmt.Errorf("native history omitted a prior row or the new head")
 	}
 	return nil
+}
+
+func TestB13NativeHistoryReferenceConservation(t *testing.T) {
+	fixture := func() ([]map[string]any, []map[string]any) {
+		before := []map[string]any{
+			{"commit_hash": "older", "parents": "", "refs": "", "message": "original ancestor", "extra": json.Number("17")},
+			{"commit_hash": "old", "parents": "older", "refs": "HEAD -> main", "message": "original head", "extra": json.Number("23")},
+		}
+		after := []map[string]any{
+			{"commit_hash": "older", "parents": "", "refs": "", "message": "original ancestor", "extra": json.Number("17")},
+			{"commit_hash": "old", "parents": "older", "refs": "", "message": "original head", "extra": json.Number("23")},
+			{"commit_hash": "new", "parents": "old", "refs": "HEAD -> main", "message": "new operation", "extra": json.Number("29")},
+		}
+		return before, after
+	}
+	before, after := fixture()
+	if err := b13NativeHistoryDelta(before, after, "old", "new"); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func([]map[string]any, []map[string]any)
+	}{
+		{"changed-ancestor", func(_, after []map[string]any) { after[0]["message"] = "rewritten" }},
+		{"changed-old-head", func(_, after []map[string]any) { after[1]["extra"] = json.Number("24") }},
+		{"lost-prior-field", func(_, after []map[string]any) { delete(after[1], "extra") }},
+		{"extra-prior-field", func(_, after []map[string]any) { after[0]["new_field"] = true }},
+		{"wrong-new-parent", func(_, after []map[string]any) { after[2]["parents"] = "older" }},
+		{"unknown-new-head", func(_, after []map[string]any) { after[2]["commit_hash"] = "other" }},
+		{"duplicate-prior-row", func(_, after []map[string]any) { after[0] = after[1] }},
+		{"retained-old-reference", func(_, after []map[string]any) { after[1]["refs"] = "HEAD -> main" }},
+		{"wrong-new-reference", func(_, after []map[string]any) { after[2]["refs"] = "" }},
+		{"unrelated-reference", func(_, after []map[string]any) { after[0]["refs"] = "HEAD -> main" }},
+		{"missing-old-reference", func(before, _ []map[string]any) { before[1]["refs"] = "" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before, after := fixture()
+			tc.mutate(before, after)
+			if err := b13NativeHistoryDelta(before, after, "old", "new"); err == nil {
+				t.Fatal("history corruption or an inexact reference move was accepted")
+			}
+		})
+	}
 }
 
 func b13SHA(data []byte) string { s := sha256.Sum256(data); return hex.EncodeToString(s[:]) }

@@ -64,6 +64,13 @@ types, nulls and duplicate row multiplicity. It is a CLI-visible physical
 image, not an independent native SQL-driver type or multi-query transaction
 oracle.
 
+The history oracle retains every raw `dolt_log` column. On a successful
+mutation it requires the live `HEAD -> main` decoration to move exactly from
+the old head to the one new commit, whose recorded parent must be the old
+head. Every other prior-row field stays equal, including additional columns;
+the decoration is never removed from retained output. Counterexamples reject
+rewritten history, missing/duplicate rows and any other reference movement.
+
 One complete, unfiltered inventory/archive checkpoint is taken while the
 native empty row and full supported string corpus still exist. Both exports
 must conserve the complete native state. The original archive bytes are used
