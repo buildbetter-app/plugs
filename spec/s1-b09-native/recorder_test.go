@@ -23,8 +23,8 @@ import (
 )
 
 // These are the accepted public-bundle inputs, not an executable factory or a
-// replacement preparer. The fixed-2d private workflow supplies the four
-// PLUG_PUBLIC_BEADS_* exports only after its existing helper has admitted them.
+// replacement preparer. The committed main trusted workflow supplies the four
+// PLUG_PUBLIC_BEADS_* exports only after its pinned helper has admitted them.
 const (
 	beadsBuildRun        = "41800330346"
 	beadsCommit          = "c8eb3ba7d4177e111a6f5c8aebe06b5d0b1d5724"
@@ -146,7 +146,7 @@ func TestRecordNativeB09(t *testing.T) {
 	secondState := r.capture(adaptive, "adaptive-second", 2)
 	maximum := r.create(adaptive, "native-third", "Native third")
 	r.requireIDLength(maximum, 3)
-	maxState := r.capture(adaptive, "adaptive-max-ten", 3)
+	maxState := r.capture(adaptive, "native-three", 3)
 	r.requireIDs(maxState, first, second, maximum)
 	r.requireListMatches(adaptive, maxState)
 	r.replayNative(maxState)
@@ -204,7 +204,8 @@ func TestRecordNativeB09(t *testing.T) {
 		"source_commit": beadsCommit, "source_tree": beadsTree,
 		"build_run": beadsBuildRun, "binary_sha256": binarySHA256,
 		"manifest_sha256": manifestSHA256,
-		"default_id":      first, "adaptive_id": second, "configured_max_id": maximum,
+		"setup_case":      "configured-yaml-object",
+		"default_id":      first, "second_id": second, "third_id": maximum,
 		"native_jsonl_export_sha256": exportSHA, "native_import_continuation_id": continued,
 		"explicit_refusal_conserved": true,
 		"limits":                     []string{"the admitted producer exposes only its default three-character native allocator through the accepted CLI", "native JSONL import is not Plug snapshot restore", "native recording alone does not prove Plug parity, restored-ID safety or full-card admission"},

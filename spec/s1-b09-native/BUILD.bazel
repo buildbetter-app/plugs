@@ -4,7 +4,7 @@ load("@rules_go//go:def.bzl", "go_test")
 # trusted RunsOn preparation route; wildcard test runs must not execute it.
 go_test(
     name = "record_native_test",
-    srcs = ["paired_replay_test.go", "recorder_test.go"],
+    srcs = ["conservation_test.go", "paired_replay_test.go", "recorder_test.go"],
     args = ["-test.v", "-b09-native-recording", "-test.run=^TestRecordNativeB09$$"],
     deps = [
         "//internal/core/dumpformat",

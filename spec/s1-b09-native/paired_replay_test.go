@@ -34,20 +34,26 @@ const b09PostgresImage = "postgres@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4
 var b09NativeID = regexp.MustCompile(`^b09-[0-9a-f]{32}$`)
 
 type b09ReplayStage struct {
-	Name             string                   `json:"name"`
-	Meta             driver.Meta              `json:"meta"`
-	BeadIDs          []string                 `json:"bead_ids"`
-	VersionRevisions map[string][]string      `json:"version_revisions"`
-	ChangesetRevs    []string                 `json:"changeset_revisions"`
-	Allocator        driver.AllocatorSnapshot `json:"allocator"`
-	AllocatorSHA256  string                   `json:"allocator_sha256"`
-	SQL              *b09SQLCensus            `json:"sql,omitempty"`
+	Name             string                               `json:"name"`
+	Meta             driver.Meta                          `json:"meta"`
+	BeadIDs          []string                             `json:"bead_ids"`
+	VersionRevisions map[string][]string                  `json:"version_revisions"`
+	ChangesetRevs    []string                             `json:"changeset_revisions"`
+	Allocator        driver.AllocatorSnapshot             `json:"allocator"`
+	AllocatorSHA256  string                               `json:"allocator_sha256"`
+	SQL              *b09SQLCensus                        `json:"sql,omitempty"`
+	Records          map[string]driver.Record             `json:"records"`
+	Versions         map[string][]driver.Version          `json:"versions"`
+	Changesets       []model.Changeset                    `json:"changesets"`
+	Receipts         map[string]*driver.IdempotencyRecord `json:"receipts"`
+	LeaseEpoch       uint64                               `json:"lease_epoch"`
 }
 
 type b09SQLCensus struct {
-	Engine string                 `json:"engine"`
-	Tables map[string]b09SQLTable `json:"tables"`
-	SHA256 string                 `json:"sha256"`
+	Engine   string                 `json:"engine"`
+	Tables   map[string]b09SQLTable `json:"tables"`
+	SHA256   string                 `json:"sha256"`
+	Commands []string               `json:"commands"`
 }
 
 type b09SQLTable struct {
@@ -80,6 +86,8 @@ type b09ReplayTarget struct {
 	lease       driver.ActiveLease
 	now         time.Time
 	postgresDSN string
+	output      string
+	receipts    map[string]string
 }
 
 func (r *recorder) replayNative(source captureReceipt) {
@@ -119,7 +127,7 @@ func (r *recorder) replayNative(source captureReceipt) {
 
 	results := make([]b09ReplayReceipt, 0, 3)
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
-		results = append(results, runB09Replay(r.t, engine, data, inspection, archive, sourceIDs))
+		results = append(results, runB09Replay(r.t, engine, data, inspection, archive, sourceIDs, filepath.Join(r.root, "paired", engine)))
 	}
 	r.writeJSON(filepath.Join(r.root, "paired-replay.json"), map[string]any{
 		"schema":               "plug-s1-b09-native-paired-replay/1",
@@ -137,9 +145,13 @@ func (r *recorder) replayNative(source captureReceipt) {
 	})
 }
 
-func runB09Replay(t *testing.T, engine string, data []byte, inspection converterroundtrip.ImportInspection, archive *dumpformat.Archive, sourceIDs []string) b09ReplayReceipt {
+func runB09Replay(t *testing.T, engine string, data []byte, inspection converterroundtrip.ImportInspection, archive *dumpformat.Archive, sourceIDs []string, output string) b09ReplayReceipt {
 	t.Helper()
 	target := openB09ReplayTarget(t, engine)
+	target.output = output
+	if err := os.MkdirAll(output, 0700); err != nil {
+		t.Fatal(err)
+	}
 	ctx := context.Background()
 	profile := driver.RestoreImportProfile{
 		Admission: driver.RestoreImportAdmission{
@@ -158,9 +170,11 @@ func runB09Replay(t *testing.T, engine string, data []byte, inspection converter
 	if report.Restored.StoreID != profile.SourceStoreID || report.Restored.Head.IsZero() || report.Restored.HistoryFloor.IsZero() {
 		t.Fatalf("%s restore metadata lost source identity/floor: %+v", engine, report.Restored)
 	}
+	target.receipts[profile.Method] = profile.IdempotencyKey
 	writer, domain := target.bind()
 	_ = writer
 	initial := target.stage("restore", sourceIDs, nil)
+	assertB09Source(t, archive, initial)
 	if !reflect.DeepEqual(initial.BeadIDs, sourceIDs) {
 		t.Fatalf("%s restored bead IDs differ from same-run source: got=%v want=%v", engine, initial.BeadIDs, sourceIDs)
 	}
@@ -175,9 +189,13 @@ func runB09Replay(t *testing.T, engine string, data []byte, inspection converter
 	if err := target.reopen(); err != nil {
 		t.Fatal(err)
 	}
+	firstReopen := target.stage("reopen-before-create", sourceIDs, nil)
+	assertB09Reopen(t, initial, firstReopen)
 	_, domain = target.bind()
 	firstNew := createB09Continuation(t, domain, engine, "first")
+	target.receipts["bead.create/first"] = b09Meta(engine, "create-first").IdempotencyKey
 	postCreate := target.stage("create-before-reopen", sourceIDs, []string{firstNew})
+	target.assertMutation(firstReopen, postCreate, firstNew, "create-first")
 	closeRef := model.RefByID(sourceIDs[0], model.Natural64(0))
 	closeCommit, err := domain.Close(ctx, b09Principal, service.CloseRequest{ID: closeRef, Reason: "B09 native paired close"}, b09Meta(engine, "close"))
 	if err != nil {
@@ -186,7 +204,9 @@ func runB09Replay(t *testing.T, engine string, data []byte, inspection converter
 	if closeCommit.Revision.IsZero() {
 		t.Fatalf("%s close returned no revision", engine)
 	}
+	target.receipts["bead.close"] = b09Meta(engine, "close").IdempotencyKey
 	closed := target.stage("close", sourceIDs, []string{firstNew})
+	target.assertMutation(postCreate, closed, sourceIDs[0], "close")
 	if len(closed.VersionRevisions[sourceIDs[0]]) < 2 {
 		t.Fatalf("%s close did not append source history: %+v", engine, closed.VersionRevisions)
 	}
@@ -197,10 +217,10 @@ func runB09Replay(t *testing.T, engine string, data []byte, inspection converter
 	if err != nil {
 		t.Fatalf("%s compaction: %v", engine, err)
 	}
-	if len(outcome.Commit.Results) != 1 || outcome.Commit.Results[0].Ref.ID != sourceIDs[0] {
-		t.Fatalf("%s compaction selected a different source: %+v", engine, outcome.Commit)
-	}
+	assertB09ResultPair(t, "compaction", sourceIDs[0], outcome.Commit)
+	target.receipts["admin.compact"] = b09Meta(engine, "compact").IdempotencyKey
 	compacted := target.stage("compaction", sourceIDs, []string{firstNew})
+	target.assertMutation(closed, compacted, sourceIDs[0], "compact")
 	if len(compacted.VersionRevisions[sourceIDs[0]]) < 3 {
 		t.Fatalf("%s compaction did not retain ordinary version history: %+v", engine, compacted.VersionRevisions[sourceIDs[0]])
 	}
@@ -225,10 +245,10 @@ func runB09Replay(t *testing.T, engine string, data []byte, inspection converter
 	if err != nil {
 		t.Fatalf("%s compaction history restore: %v", engine, err)
 	}
-	if len(reverted.Commit.Results) != 1 || reverted.Commit.Results[0].Ref.ID != sourceIDs[0] {
-		t.Fatalf("%s history restore selected a different source: %+v", engine, reverted.Commit)
-	}
+	assertB09ResultPair(t, "history restore", sourceIDs[0], reverted.Commit)
+	target.receipts["history.revert"] = b09Meta(engine, "revert").IdempotencyKey
 	revertedImage := target.stage("revert", sourceIDs, []string{firstNew})
+	target.assertMutation(compacted, revertedImage, sourceIDs[0], "revert")
 	if len(revertedImage.VersionRevisions[sourceIDs[0]]) < 4 {
 		t.Fatalf("%s history restore did not append a reversal version: %+v", engine, revertedImage.VersionRevisions[sourceIDs[0]])
 	}
@@ -240,24 +260,28 @@ func runB09Replay(t *testing.T, engine string, data []byte, inspection converter
 	if err := target.reopen(); err != nil {
 		t.Fatal(err)
 	}
+	secondReopen := target.stage("reopen-after-history", sourceIDs, []string{firstNew})
+	assertB09Reopen(t, revertedImage, secondReopen)
 	_, domain = target.bind()
 	secondNew := createB09Continuation(t, domain, engine, "after-reopen")
+	target.receipts["bead.create/after-reopen"] = b09Meta(engine, "create-after-reopen").IdempotencyKey
 	final := target.stage("create-after-reopen", sourceIDs, []string{firstNew, secondNew})
+	target.assertMutation(secondReopen, final, secondNew, "create-after-reopen")
 	if firstNew == secondNew || !b09NativeID.MatchString(firstNew) || !b09NativeID.MatchString(secondNew) {
 		t.Fatalf("%s live allocator did not mint independent different-shape IDs: %q %q", engine, firstNew, secondNew)
 	}
-	for _, id := range append(append([]string{}, sourceIDs...), secondNew) {
-		if id == firstNew && !b09NativeID.MatchString(id) {
-			t.Fatalf("%s continuation ID is not native Plug random shape: %q", engine, id)
+	for _, id := range sourceIDs {
+		if id == firstNew || id == secondNew {
+			t.Fatalf("%s continuation collided with restored ID %s", engine, id)
 		}
 	}
-	if len(final.ChangesetRevs) < 5 {
+	if len(final.ChangesetRevs) != 5 {
 		t.Fatalf("%s history stream omitted paired writes: %+v", engine, final.ChangesetRevs)
 	}
 	return b09ReplayReceipt{
 		Engine: engine, SourceStoreID: inspection.SourceStoreID, ArchiveSHA256: inspection.ArchiveSHA256, DerivedSHA256: inspection.DerivedSHA256,
 		SourceIDs: sourceIDs, NewIDs: []string{firstNew, secondNew}, RestoreHead: initial.Meta.Head.String(), CloseRevision: closeCommit.Revision.String(),
-		CompactionRevision: compactRevision.String(), RevertRevision: reverted.Commit.Revision.String(), Stages: []b09ReplayStage{initial, postCreate, closed, compacted, revertedImage, final},
+		CompactionRevision: compactRevision.String(), RevertRevision: reverted.Commit.Revision.String(), Stages: []b09ReplayStage{initial, firstReopen, postCreate, closed, compacted, revertedImage, secondReopen, final},
 		Operations: []string{"converterroundtrip.InspectImport", "converterroundtrip.RestoreImportWithLease(history=snapshot)", "service.Close", "service.CompactWithOutcome", "service.RevertCompactionWithOutcome", "persistent close/reopen", "service.Create"},
 	}
 }
@@ -334,13 +358,24 @@ func (r *b09ReplayTarget) stage(name string, sourceIDs, extraIDs []string) b09Re
 		r.t.Fatal(err)
 	}
 	defer reader.Close()
-	page, err := reader.Query(ctx, driver.Query{Filter: map[string]any{"kind": "bead"}, Limit: 1000})
+	page, err := reader.Query(ctx, driver.Query{Limit: 1000})
 	if err != nil || page.NextCursor != nil {
 		r.t.Fatalf("%s bead census: %v %+v", name, err, page)
 	}
 	ids := make([]string, 0, len(page.Items))
+	records := map[string]driver.Record{}
+	fullVersions := map[string][]driver.Version{}
 	for _, row := range page.Items {
-		ids = append(ids, row.Ref.ID)
+		key := b09RecordKey(r.t, row.Ref)
+		records[key] = row
+		v, err := reader.Versions(ctx, row.Ref, driver.PageReq{Limit: 1000})
+		if err != nil || v.NextCursor != nil {
+			r.t.Fatalf("%s complete versions %s: %v", name, key, err)
+		}
+		fullVersions[key] = v.Items
+		if row.Kind == "bead" {
+			ids = append(ids, row.Ref.ID)
+		}
 	}
 	sort.Strings(ids)
 	versions := map[string][]string{}
@@ -378,16 +413,26 @@ func (r *b09ReplayTarget) stage(name string, sourceIDs, extraIDs []string) b09Re
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	stage := b09ReplayStage{Name: name, Meta: meta, BeadIDs: ids, VersionRevisions: versions, ChangesetRevs: changeRevs, Allocator: allocation, AllocatorSHA256: hashBytes(encoded)}
+	receipts := map[string]*driver.IdempotencyRecord{}
+	for name, key := range r.receipts {
+		method := strings.Split(name, "/")[0]
+		receipt, err := reader.IdempotencyByKey(ctx, "user:b09-native-review", "", method, key)
+		if err != nil || receipt == nil {
+			r.t.Fatalf("%s receipt %s missing: %v", name, method, err)
+		}
+		receipts[name] = receipt
+	}
+	stage := b09ReplayStage{Name: name, Meta: meta, BeadIDs: ids, VersionRevisions: versions, ChangesetRevs: changeRevs, Allocator: allocation, AllocatorSHA256: hashBytes(encoded), Records: records, Versions: fullVersions, Changesets: changesets, Receipts: receipts, LeaseEpoch: r.lease.Epoch()}
 	if r.engine != "memory" {
 		stage.SQL = r.sqlCensus()
 	}
+	(&recorder{t: r.t}).writeJSON(filepath.Join(r.output, name+".json"), stage)
 	return stage
 }
 
 func openB09ReplayTarget(t *testing.T, engine string) *b09ReplayTarget {
 	t.Helper()
-	r := &b09ReplayTarget{t: t, engine: engine, now: time.Date(2026, 11, 5, 1, 0, 0, 0, time.UTC)}
+	r := &b09ReplayTarget{t: t, engine: engine, now: time.Date(2026, 11, 5, 1, 0, 0, 0, time.UTC), receipts: map[string]string{}}
 	ctx := context.Background()
 	var err error
 	switch engine {
@@ -395,7 +440,7 @@ func openB09ReplayTarget(t *testing.T, engine string) *b09ReplayTarget {
 		r.store = memory.New()
 	case "sqlite":
 		r.path = filepath.Join(t.TempDir(), "b09-native.db")
-		r.store, err = (sqlite.Driver{Clock: func() time.Time { return r.now }}).Open(ctx, driver.Config{DSN: r.path})
+		r.store, err = (sqlite.Driver{}).Open(ctx, driver.Config{DSN: r.path})
 	case "postgres":
 		r.postgresDSN = startB09Postgres(t, r)
 		r.store, err = postgres.Open(ctx, driver.Config{DSN: r.postgresDSN})
@@ -412,11 +457,16 @@ func openB09ReplayTarget(t *testing.T, engine string) *b09ReplayTarget {
 	}
 	t.Cleanup(func() {
 		if r.lease != nil {
-			_ = r.lease.Release(context.Background())
+			if err := r.lease.Release(context.Background()); err != nil {
+				t.Errorf("%s cleanup lease: %v", engine, err)
+			}
 		}
 		if r.store != nil {
-			_ = r.store.Close()
+			if err := r.store.Close(); err != nil {
+				t.Errorf("%s cleanup store: %v", engine, err)
+			}
 		}
+		t.Logf("B09 cleanup lease/store completed for %s", engine)
 	})
 	return r
 }
@@ -436,7 +486,7 @@ func (r *b09ReplayTarget) reopen() error {
 		var err error
 		switch r.engine {
 		case "sqlite":
-			r.store, err = (sqlite.Driver{Clock: func() time.Time { return r.now }}).Open(ctx, driver.Config{DSN: r.path})
+			r.store, err = (sqlite.Driver{}).Open(ctx, driver.Config{DSN: r.path})
 		case "postgres":
 			r.store, err = postgres.Open(ctx, driver.Config{DSN: r.postgresDSN})
 		}
@@ -456,22 +506,50 @@ func (r *b09ReplayTarget) sqlCensus() *b09SQLCensus {
 	r.t.Helper()
 	driverName := "sqlite"
 	schema := ""
-	tables := []string{"meta", "objects", "records", "versions", "key_history", "blobs", "changesets", "replays", "checkpoints", "core_sessions", "allocator_states", "hierarchy_index_coverage", "hierarchy_source_current", "hierarchy_source_history", "graph_link_index_coverage", "graph_link_source_current", "graph_link_current", "graph_link_source_history", "graph_link_history"}
 	dsn := r.path
+	listTables := "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
 	if r.engine == "postgres" {
 		driverName, schema, dsn = "pgx", "plug_postgres.", r.postgresDSN
-		tables = []string{"meta", "records", "versions", "states", "blobs", "changesets", "receipts", "checkpoints", "core_sessions", "allocator_states", "hierarchy_index_coverage", "hierarchy_source_current", "hierarchy_source_history", "graph_link_index_coverage", "graph_link_source_current", "graph_link_current", "graph_link_source_history", "graph_link_history"}
+		listTables = "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname='plug_postgres' ORDER BY tablename"
 	}
 	db, err := sql.Open(driverName, dsn)
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			r.t.Errorf("SQL census close: %v", err)
+		}
+	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	census := &b09SQLCensus{Engine: r.engine, Tables: map[string]b09SQLTable{}}
+	list, err := db.QueryContext(ctx, listTables)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	tables := []string{}
+	for list.Next() {
+		var table string
+		if err := list.Scan(&table); err != nil {
+			r.t.Fatal(err)
+		}
+		if _, ok := b09SQLPrimary[table]; !ok {
+			r.t.Fatalf("unreviewed physical SQL table %s", table)
+		}
+		tables = append(tables, table)
+	}
+	if err := list.Err(); err != nil {
+		r.t.Fatal(err)
+	}
+	if err := list.Close(); err != nil {
+		r.t.Fatal(err)
+	}
+	census.Commands = append(census.Commands, listTables)
 	for _, table := range tables {
-		rows, err := db.QueryContext(ctx, "SELECT * FROM "+schema+table)
+		query := "SELECT * FROM " + schema + table
+		census.Commands = append(census.Commands, query)
+		rows, err := db.QueryContext(ctx, query)
 		if err != nil {
 			r.t.Fatalf("%s physical SQL census %s: %v", r.engine, table, err)
 		}
@@ -493,7 +571,7 @@ func (r *b09ReplayTarget) sqlCensus() *b09SQLCensus {
 			}
 			encoded := make([]string, len(values))
 			for i, value := range values {
-				encoded[i] = fmt.Sprintf("%T:%v", value, value)
+				encoded[i] = b09SQLValue(value)
 			}
 			row, err := json.Marshal(encoded)
 			if err != nil {
@@ -541,7 +619,11 @@ func startB09Postgres(t *testing.T, target *b09ReplayTarget) string {
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cleanupCancel()
-		_, _ = docker(cleanupCtx, "rm", "-f", name)
+		if out, err := docker(cleanupCtx, "rm", "-f", name); err != nil {
+			t.Errorf("PostgreSQL cleanup: %v %s", err, out)
+		} else {
+			t.Log("B09 cleanup PostgreSQL container removed")
+		}
 	})
 	out, err := docker(ctx, "port", name, "5432/tcp")
 	if err != nil {

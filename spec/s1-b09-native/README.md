@@ -1,27 +1,49 @@
-# B09 accepted-native recorder source
+# B09 admitted native recording and paired continuation
 
-`record_native_test` is an explicit, manual RunsOn recording target. It accepts
-only the four `PLUG_PUBLIC_BEADS_*` exports from the existing trusted
-`70230ccd` public-bundle preparer on the fixed-2d private route. The test binds
-the accepted producer run, manifest, source commit and
-tree, and executable bytes before running any native command. It creates fresh
-Git-backed workspaces with an explicit child environment and retains every
-command's raw streams, typed JSON result, exit code, full native inventory,
-26 sidecars, validated `plug-dump/1` archive, and complete workspace/home file
-snapshots in `TEST_UNDECLARED_OUTPUTS_DIR`.
+`record_native_test` is an explicit manual RunsOn target. The committed main
+workflow uses its pinned `70230ccd` public-bundle preparer to validate descriptor
+`41800330346:13307042737:ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a`
+and inject all four `PLUG_PUBLIC_BEADS_*` exports. The test binds the actual
+binary, manifest, producer source/tree, run and workflow before execution.
+The same run's preparation receipt, helper binding and literal command are
+retained by the RunsOn collector alongside the test's command/environment,
+raw streams, inventory, 26 sidecars, validated archive and physical file copies.
 
-The corpus records default length 3, a count-driven length 4 with
-`max_collision_prob=0.000001`, configured length 10, explicit-ID collision
-refusal, real Beads JSONL export/import followed by a new native mint, and a
-separate one-character diagnostic that occupies all 36 suffixes and forces
-the actual allocator's ten-nonce exhaustion. That diagnostic is
-outside B09's ordinary 3-through-10 policy and is labeled accordingly. The
-recorder compares archive records and every workspace/home byte before and
-after each refusal; any difference blocks conservation. Native JSONL import is
-not Plug snapshot restore. This source makes no Plug parity, restored-ID,
-legacy-clamp, or full-card claim by itself.
+This case explicitly writes the real source file `.beads/config.yaml` with
+the exact bytes `export:\n  auto: false\n`. It is the **configured YAML object**
+case. It does not repair or clear the genuine initializer's comment-only YAML
+omission, including the historical `425d9` RED. The accepted CLI records its
+default three-character IDs, explicit-ID refusal conservation, and JSONL
+export/import continuation. Configured adaptive length and nonce exhaustion
+are not exposed by this admitted CLI corpus and remain separate dependencies.
 
-The accepted inventory declares `store-files-and-quiescence` engine contents
-`not-read`; the independent file snapshots are required for a physical
-conservation claim. This source is not a recording. No native execution is
-authorized by adding this target.
+The exact archive from the third native create is read directly by
+`InspectImport` and authenticated-profile `RestoreImportWithLease(snapshot)`
+on memory, SQLite and PostgreSQL. Snapshot mode explicitly establishes the
+history floor because the producer declares `available-unverified` history;
+the test does not fabricate or certify source history. The paired sequence
+checks every restored field and source row, complete unaffected records and
+versions, exact write/receipt/allocator deltas, ordinary compaction and history
+reversal, and independent continuation IDs. Immediate complete equality checks
+precede both continuation writes after reopen. SQLite/PostgreSQL reopen actual
+stores; memory reacquires its lease on the same in-memory store.
+
+Each stage retains all physical driver SQL tables and exact SELECT commands.
+The conservation oracles compare those full row images, preserve unaffected
+rows and immutable history/receipts, and permit only the named write or lease
+transition. Store and PostgreSQL-container cleanup errors fail the test.
+Restore admission and digest-bound presence are test adapters; this target
+does not qualify public authentication, hardware presence, source history,
+hosted delivery, B09's full adaptive corpus, or FullS1.
+
+Run through `remote-bazel` with the descriptor marker and all seven controls:
+
+```sh
+export PATH=/tmp/plug-swarm/bin/worker-safe:$PATH
+/tmp/plug-swarm/bin/remote-bazel "$PWD" HEAD b09-native -- test \
+  //spec/s1-b09-native:record_native_test \
+  --test_env=PLUG_PUBLIC_BUNDLE=41800330346:13307042737:ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a \
+  --cache_test_results=no --flaky_test_attempts=1 --test_env=GO_TEST_WRAP_TESTV=1 \
+  --test_output=all --test_timeout=900,900,900,9000 --jobs=2 \
+  --local_resources=memory=8192
+```
