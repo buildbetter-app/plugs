@@ -71,7 +71,7 @@ func i8CommitID(t *testing.T, method string, response sqliteRestartResponse) str
 			} `json:"ref"`
 		} `json:"results"`
 	}
-	if err := wire.DecodeInto(response.Result, &value); err != nil || len(value.Results) != 1 || value.Results[0].Ref.ID == "" {
+	if err := json.Unmarshal(response.Result, &value); err != nil || len(value.Results) != 1 || value.Results[0].Ref.ID == "" {
 		t.Fatalf("%s commit=%s err=%v", method, response.Result, err)
 	}
 	return value.Results[0].Ref.ID
@@ -121,13 +121,14 @@ func TestI8HeartbeadsActualSQLiteTwoProjectFixture(t *testing.T) {
 	if hello.Error != nil {
 		t.Fatalf("bare server.hello refused: %+v", hello.Error)
 	}
-	var helloValue struct {
-		Incarnation string `json:"incarnation"`
-	}
-	if err := wire.DecodeInto(hello.Result, &helloValue); err != nil || helloValue.Incarnation == "" {
+	var helloValue map[string]any
+	if err := json.Unmarshal(hello.Result, &helloValue); err != nil {
 		t.Fatalf("server.hello=%s err=%v", hello.Result, err)
 	}
-	incarnation := helloValue.Incarnation
+	incarnation, _ := helloValue["incarnation"].(string)
+	if incarnation == "" {
+		t.Fatalf("server.hello omitted incarnation: %s", hello.Result)
+	}
 
 	projects := []string{"cody-ops", "signals-v2"}
 	roots := make(map[string]string, len(projects))
