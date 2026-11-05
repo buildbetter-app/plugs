@@ -30,10 +30,10 @@ type transaction struct {
 	nativeAllocators bool
 	importRestore    *driver.RestoreImportProfile
 	acquired         driver.LockSet
-	// acquiredStates retains the exact physical images observed while the
-	// complete lock set was acquired. Ready publication already declares those
-	// same before-images; reusing this fenced observation avoids a second
-	// latest-row read for every Ready path during Commit.
+	// acquiredStates retains detached Ready images observed while the complete
+	// lock set was acquired. Ready publication already declares those same
+	// before-images; reusing this fenced observation avoids a second latest-row
+	// read during Commit without trusting mutable states returned from Lock.
 	acquiredStates  map[string]driver.LockState
 	acquiredModes   map[string]driver.LockMode
 	acquiredRecords map[string]driver.Ref
@@ -300,7 +300,7 @@ func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) (
 		// staged projection checks before Commit.
 		modes := make(map[string]driver.LockMode, len(selected))
 		records := make(map[string]driver.Ref)
-		observed := make(map[string]driver.LockState, len(states))
+		observed := make(map[string]driver.LockState)
 		for _, request := range selected {
 			id := keyID(request.Key)
 			modes[id] = request.Mode
@@ -309,7 +309,20 @@ func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) (
 			}
 		}
 		for _, state := range states {
-			observed[keyID(state.Key)] = state
+			if state.Key.Kind != driver.LockDerived || state.Key.Derived == nil || state.Key.Derived.Table != driver.DerivedReadyState {
+				continue
+			}
+			copy := state
+			copy.Key = copyKey(state.Key)
+			if state.Record != nil {
+				record := copyRecord(*state.Record)
+				copy.Record = &record
+			}
+			if state.Derived != nil {
+				row := state.Derived.Clone()
+				copy.Derived = &row
+			}
+			observed[keyID(copy.Key)] = copy
 		}
 		t.acquired = selected
 		t.acquiredStates = observed

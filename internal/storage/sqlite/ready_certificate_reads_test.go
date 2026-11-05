@@ -8,12 +8,98 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/storage/conformance/readyorder"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+func TestReadyOrderLockReturnCannotAlterAcquiredBeforeImage(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t, ctx, filepath.Join(t.TempDir(), "detached-ready.db"))
+	t.Cleanup(func() { _ = s.Close() })
+	f := readyorder.NewCertificateFixture(t, s)
+	meta, err := s.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := pipeline.PrepareReadyProjection(ctx, r, nil, nil, nil)
+	closeErr := r.Close()
+	if err != nil || closeErr != nil || !plan.Available() {
+		t.Fatalf("real Ready control preparation: plan=%v err=%v close=%v", plan, err, closeErr)
+	}
+	keys := plan.LockKeys()
+	requests := make(driver.LockSet, len(keys))
+	for i, key := range keys {
+		requests[i] = driver.LockRequest{Key: key, Mode: driver.LockUpdate}
+	}
+	writer, err := s.Write(ctx, f.Lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx := writer.(*transaction)
+	defer tx.Close()
+	states, err := tx.Lock(ctx, requests)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var originalKey driver.LockKey
+	var originalValue []byte
+	var altered driver.LockState
+	mutated := false
+	for i := range states {
+		state := &states[i]
+		if state.Key.Kind != driver.LockDerived || state.Key.Derived == nil || state.Key.Derived.Table != driver.DerivedReadyState || !state.Present || state.Derived == nil || len(state.Derived.Value) == 0 {
+			continue
+		}
+		originalKey = copyKey(state.Key)
+		originalValue = bytes.Clone(state.Derived.Value)
+		state.Key.Derived.Key = "caller-edited-lock-key"
+		state.Derived.Key = "caller-edited-row-key"
+		state.Derived.Value[0] ^= 0xff
+		state.Derived.Index = &driver.SelectionIndex{}
+		altered = *state
+		mutated = true
+		break
+	}
+	if !mutated {
+		t.Fatal("real Ready publication did not observe a present physical row")
+	}
+	retained, ok := tx.readyOrderAcquiredStates([]driver.LockKey{originalKey})
+	state := retained[keyID(originalKey)]
+	if !ok || state.Key.Derived == nil || state.Key.Derived.Key != originalKey.Derived.Key || state.Derived == nil || state.Derived.Key != originalKey.Derived.Key || state.Derived.Index != nil || !bytes.Equal(state.Derived.Value, originalValue) {
+		t.Fatalf("returned Lock state altered retained Ready before-image: ok=%t state=%+v", ok, state)
+	}
+	if readyOrderSameImage(state, altered, true) {
+		t.Fatal("caller-altered Lock result matched the physical before-image")
+	}
+	if head, err := tx.Head(ctx); err != nil {
+		t.Fatal(err)
+	} else {
+		n, _ := head.Uint64()
+		if _, err = plan.Publish(ctx, tx, model.Natural64(n+1)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := plan.Finalize(ctx, tx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: meta.Incarnation, Kind: model.ChangesetDerived, Principal: model.PrincipalRef{Kind: "system", ID: "ready-cache-test"}, LockKeys: keys}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := f.Select(ctx)
+	if err != nil || result.Total != 1 || len(result.Keys) != 1 || result.Keys[0].Ref.ID != f.Ref.ID {
+		t.Fatalf("caller mutation discarded genuine Ready proof: %+v %v", result, err)
+	}
+}
 
 // Forward real native reads, consuming cancellation only at this helper's
 // actual query boundary. Counts measure dispatch, not executor row visits.
