@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/publicnative"
 )
 
@@ -173,7 +174,7 @@ func b07NativeRecord(t *testing.T, root, twin string, protocol b07NativeProtocol
 		IssueID, Type                                   string
 		DependsOnID, EphemeralTarget, DependsOnExternal *string
 	}
-	b07NativeDecode(t, c.run("stored-opaque-control", "sql", "SELECT issue_id AS IssueID, depends_on_issue_id AS DependsOnID, depends_on_wisp_id AS EphemeralTarget, depends_on_external AS DependsOnExternal, type AS Type FROM dependencies WHERE type='custom kind'", "--json"), &opaqueRows)
+	b07NativeDecode(t, c.run("stored-opaque-control", "sql", "SELECT issue_id AS IssueID, depends_on_issue_id AS DependsOnID, "+dumpformat.EphemeralDependencyTargetField+" AS EphemeralTarget, depends_on_external AS DependsOnExternal, type AS Type FROM dependencies WHERE type='custom kind'", "--json"), &opaqueRows)
 	opaque := protocol.Cases[len(protocol.Cases)-1]
 	opaqueStored := len(opaqueRows) == 1 && opaqueRows[0].IssueID == opaque.From && opaqueRows[0].DependsOnID != nil && *opaqueRows[0].DependsOnID == opaque.To && opaqueRows[0].EphemeralTarget == nil && opaqueRows[0].DependsOnExternal == nil && opaqueRows[0].Type == opaque.Kind
 	b07NativeJSON(t, filepath.Join(output, "source-coverage.json"), map[string]any{

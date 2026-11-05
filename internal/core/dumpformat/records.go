@@ -34,6 +34,10 @@ func (e *UnresolvedDependencyError) Error() string {
 
 var hashPattern = regexp.MustCompile(`^[a-zA-Z0-9]+$`)
 
+// EphemeralDependencyTargetField names the physical exporter column used by
+// SQL conservation checks and the archive reader's explicit target refusal.
+const EphemeralDependencyTargetField = "depends_on_wisp_id"
+
 // SourceMetadataObject reads a source JSON object or its SQL JSON-text cell
 // without changing that source value. SQL NULL (nil) is absent metadata;
 // explicit {} is a non-nil empty object. Text must encode exactly one object:
@@ -226,7 +230,7 @@ func validateVersionedRecord(record Record, projects []Project, counts map[strin
 		}
 	case "edge":
 		target, targetKind := "", ""
-		for _, key := range []string{"depends_on_issue_id", "depends_on_wisp_id", "depends_on_external"} {
+		for _, key := range []string{"depends_on_issue_id", EphemeralDependencyTargetField, "depends_on_external"} {
 			if IsTypedEdgeVersion(edgeVersion) && fields[key] != nil {
 				if _, ok := fields[key].(string); !ok {
 					return fmt.Errorf("typed edge target %s must be text or null", key)
@@ -239,8 +243,8 @@ func validateVersionedRecord(record Record, projects []Project, counts map[strin
 				target, targetKind = value, key
 			}
 		}
-		if target == "" || targetKind == "depends_on_wisp_id" {
-			if target != "" && targetKind == "depends_on_wisp_id" {
+		if target == "" || targetKind == EphemeralDependencyTargetField {
+			if target != "" && targetKind == EphemeralDependencyTargetField {
 				return fmt.Errorf("unsupported or missing edge target: %w", &UnresolvedDependencyError{
 					EdgeID: record.ID, Project: record.Project, Source: stringValue(fields["issue_id"]), Target: target, TargetKind: targetKind,
 				})

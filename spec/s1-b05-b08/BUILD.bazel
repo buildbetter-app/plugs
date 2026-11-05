@@ -93,6 +93,7 @@ go_test(
     timeout = "long",
     args = ["-test.v"],
     deps = [
+        "//internal/core/dumpformat",
         "//internal/core/events",
         "//internal/core/model",
         "//internal/core/pipeline",

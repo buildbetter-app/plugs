@@ -168,6 +168,8 @@ internal/core/authz/types.go
 internal/core/dumpformat/BUILD.bazel
 internal/core/dumpformat/README.md
 internal/core/dumpformat/catalog.go
+internal/core/dumpformat/edge_metadata.go
+internal/core/dumpformat/edge_version_test.go
 internal/core/dumpformat/history.go
 internal/core/dumpformat/history_test.go
 internal/core/dumpformat/json.go
@@ -495,6 +497,7 @@ internal/integration/converterroundtrip/testdata/public-complete-root-990eb800.t
 internal/integration/converterroundtrip/testdata/public-partial-990eb800.tar
 internal/integration/converterroundtrip/testdata/public-source-990eb800.md
 internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar
+internal/integration/converterroundtrip/versioned_dependencies_test.go
 internal/integration/cursorhttp/BUILD.bazel
 internal/integration/cursorhttp/cursor_test.go
 internal/integration/cursorhttp/fixture_test.go
@@ -1293,6 +1296,7 @@ spec/s1-b01-b04/replay_test.go
 spec/s1-b01-b04/run-1.json
 spec/s1-b01-b04/run-2.json
 spec/s1-b05-b08/BUILD.bazel
+spec/s1-b05-b08/NATIVE-B07.md
 spec/s1-b05-b08/README.md
 spec/s1-b05-b08/blocking_hierarchy_test.go
 spec/s1-b05-b08/checkpoint_guards_test.go
@@ -1307,6 +1311,11 @@ spec/s1-b05-b08/ephemeral_cycle_oracle_test.go
 spec/s1-b05-b08/ephemeral_cycle_test.go
 spec/s1-b05-b08/fixture_test.go
 spec/s1-b05-b08/heartbeat_repair_test.go
+spec/s1-b05-b08/native_import_b07_test.go
+spec/s1-b05-b08/native_inputs_b07.json
+spec/s1-b05-b08/native_io_b07_test.go
+spec/s1-b05-b08/native_protocol_b07.json
+spec/s1-b05-b08/native_recording_b07_test.go
 spec/s1-b05-b08/opaque_kinds_test.go
 spec/s1-b05-b08/prepared_reference_test.py
 spec/s1-b05-b08/project_reference.py

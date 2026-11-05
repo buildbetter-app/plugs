@@ -291,16 +291,14 @@ func TestEdgeV3ReaderAdmitsOnlyDurableLocalOpaqueKinds(t *testing.T) {
 			r.Body["type"], r.Source.Fields["type"] = kind, kind
 		}},
 		{"wrong-arm-type", func(r *Record) { r.Source.Fields["depends_on_issue_id"] = json.Number("1") }},
-		{"wisp-arm", func(r *Record) {
-			r.Source.Fields["depends_on_issue_id"], r.Source.Fields["depends_on_wisp_id"] = nil, "pl-2"
-			r.Body["to"], r.Body["target_kind"] = "pl-2", "depends_on_wisp_id"
-		}},
+		{"ephemeral-arm", func(r *Record) { setFixtureWorkflowTarget(r, "pl-2") }},
 		{"dangling", func(r *Record) {
 			r.Source.Fields["depends_on_issue_id"], r.Body["to"] = "pl-missing", "pl-missing"
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newMergeFixture(t, "pl")
+			fixture.records["edge"][0].Body["type"], fixture.records["edge"][0].Source.Fields["type"] = "local-opaque", "local-opaque"
 			test.edit(&fixture.records["edge"][0])
 			if _, err := Read(bytes.NewReader(edgeVersionFixture(t, fixture, EdgeVersionLocalOpaque))); err == nil {
 				t.Fatal("invalid v3 local opaque row was admitted")

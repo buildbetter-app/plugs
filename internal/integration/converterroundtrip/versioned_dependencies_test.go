@@ -485,10 +485,10 @@ func TestV3DependencyRefusalsAndStagingRollbackConserveTarget(t *testing.T) {
 				{"multi-arm", func(m map[string][]byte) {
 					changeRecord(t, m, "edge", func(r map[string]any) { source(r)["depends_on_external"] = "tracker:collision" })
 				}, "multiple typed edge targets"},
-				{"wisp-arm", func(m map[string][]byte) {
+				{"ephemeral-arm", func(m map[string][]byte) {
 					changeRecord(t, m, "edge", func(r map[string]any) {
-						source(r)["depends_on_issue_id"], source(r)["depends_on_wisp_id"] = nil, "demo-7"
-						body(r)["target_kind"] = "depends_on_wisp_id"
+						source(r)["depends_on_issue_id"], source(r)[dumpformat.EphemeralDependencyTargetField] = nil, "demo-7"
+						body(r)["target_kind"] = dumpformat.EphemeralDependencyTargetField
 					})
 				}, "unsupported or missing edge target"},
 				{"dangling", func(m map[string][]byte) {

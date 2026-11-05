@@ -67,7 +67,7 @@ func IsCanonicalEdgeType(kind string) bool {
 }
 
 // IsLocalOpaqueEdgeType is the strict v3 admission predicate. It deliberately
-// does not admit external arms or wisp targets, and it never relabels a
+// does not admit external arms or ephemeral targets, and it never relabels a
 // canonical well-known kind as opaque.
 func IsLocalOpaqueEdgeType(version int, targetKind, kind string) bool {
 	return version == EdgeVersionLocalOpaque && targetKind == "depends_on_issue_id" &&
