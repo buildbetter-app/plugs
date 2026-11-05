@@ -128,6 +128,9 @@ func TestRecordNativeB09(t *testing.T) {
 	r.run(adaptive, "adaptive-git-init", "/usr/bin/git", []string{"init", "--quiet", "--template="}, 0)
 	r.run(adaptive, "adaptive-init", r.binary, []string{"init", "--prefix", "b09", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet"}, 0)
 	r.version(adaptive)
+	if help := r.run(adaptive, "adaptive-config-help", r.binary, []string{"config", "--help"}, 0); len(bytes.TrimSpace(help)) == 0 {
+		t.Fatal("native config help was empty")
+	}
 	// The admitted producer must emit object-valued parsed configuration for
 	// every real YAML file.  Make the otherwise comment-only native project
 	// config a genuine empty-key-compatible YAML document through the CLI; this
@@ -499,6 +502,14 @@ func (r *recorder) version(w workspace) {
 func (r *recorder) setConfig(w workspace, key, value string) {
 	r.t.Helper()
 	data := r.run(w, w.Name+"-set-"+key+"-"+value, r.binary, []string{"config", "set", key, value, "--json"}, 0)
+	last := r.commands[len(r.commands)-1]
+	stderr, err := os.ReadFile(last.StderrPath)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	if bytes.Contains(stderr, []byte("not a recognized config key")) {
+		r.t.Fatalf("native config key %q was refused by the admitted producer", key)
+	}
 	var response map[string]any
 	if json.Unmarshal(data, &response) != nil || response["key"] != key || response["value"] != value {
 		r.t.Fatalf("native config set did not return its typed value for %s", key)
