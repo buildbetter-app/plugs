@@ -355,6 +355,7 @@ internal/core/service/i1_acceptance_test.go
 internal/core/service/label_rename.go
 internal/core/service/lease.go
 internal/core/service/memories.go
+internal/core/service/native_restore.go
 internal/core/service/ontology.go
 internal/core/service/ordered_close.go
 internal/core/service/reads.go
