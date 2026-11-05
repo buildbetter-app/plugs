@@ -82,7 +82,7 @@ func run(args []string) outcome {
 	flags.StringVar(&beads.BuildRun, "beads-build-run", "", "Independently verified RunsOn build receipt ID")
 	flags.StringVar(&beads.Inventory, "beads-inventory", "", "Actual disposable Beads target inventory for supported raw export")
 	exercise := flags.Bool("exercise", true, "Exercise claim/release and an idempotent live edit")
-	all := flags.Bool("all", false, "Include Ephemeral=true source rows, matching bd export --all")
+	all := flags.Bool("all", false, "Include Ephemeral=true source rows for the explicit all-planes export")
 	if flags.Parse(args) != nil || flags.NArg() != 0 || *input == "" || *output == "" {
 		result.Reason = "invalid_arguments"
 		return result
