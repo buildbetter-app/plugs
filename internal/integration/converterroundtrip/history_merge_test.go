@@ -250,6 +250,23 @@ func projectHistoryArchive(t *testing.T, prefix string, ordinal int) []byte {
 	}
 	manifest["files"] = files
 	members["manifest.json"] = encode(t, manifest)
+	var debugBead dumpformat.Record
+	if raw, ok := members["records/bead.ndjson"]; ok {
+		if err := json.Unmarshal(bytes.TrimSpace(raw), &debugBead); err != nil {
+			t.Fatalf("debug bead: %v", err)
+		}
+	}
+	var debugHistory dumpformat.SourceHistory
+	decode(t, members[dumpformat.SourceHistoryMember], &debugHistory)
+	var debugFrameBead dumpformat.Record
+	for _, record := range debugHistory.Range.Frames[len(debugHistory.Range.Frames)-1].Records {
+		if record.Kind == "bead" {
+			debugFrameBead = record
+		}
+	}
+	rawDebug, _ := json.Marshal(debugBead)
+	frameDebug, _ := json.Marshal(debugFrameBead)
+	t.Logf("fixture %s bead_equal=%t bead_sha=%s frame_sha=%s raw_source_id=%v frame_source_id=%v raw_project=%s frame_project=%s", prefix, bytes.Equal(rawDebug, frameDebug), hashBytes(rawDebug), hashBytes(frameDebug), debugBead.Source.Fields["id"], debugFrameBead.Source.Fields["id"], debugBead.Project, debugFrameBead.Project)
 	return writeTarMembers(t, members)
 }
 
