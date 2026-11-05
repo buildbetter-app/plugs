@@ -453,7 +453,7 @@ func fixed19DependencyBytes(t *testing.T, version int) []byte {
 		edge.Body = dumpformat.Row{"from": from, "to": to, "target_kind": "depends_on_issue_id", "type": kind, "metadata": raw, "thread_id": " exact/" + kind + " "}
 		edge.Source.Fields = dumpformat.Row{
 			"id": edge.ID, "issue_id": from, "depends_on_issue_id": to,
-			"depends_on_wisp_id": nil, "depends_on_external": nil, "type": kind,
+			dumpformat.EphemeralDependencyTargetField: nil, "depends_on_external": nil, "type": kind,
 			"created_at": "2026-01-01T00:00:00Z", "created_by": " exact source actor ",
 			"metadata": raw, "thread_id": edge.Body["thread_id"],
 		}

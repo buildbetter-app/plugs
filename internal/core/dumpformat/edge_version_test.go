@@ -32,7 +32,7 @@ func TestFixed19LocalKindsKeepTypedVersionAndCompleteSource(t *testing.T) {
 				raw := " {\"gate\":\"all-children\",\"also_blocks\":true,\"opaque\":[9007199254740993,1.0,null]} \n"
 				edge.Source.Fields = Row{
 					"id": edge.ID, "issue_id": edge.Body["from"], "depends_on_issue_id": edge.Body["to"],
-					"depends_on_wisp_id": nil, "depends_on_external": nil, "type": kind,
+					EphemeralDependencyTargetField: nil, "depends_on_external": nil, "type": kind,
 					"created_at": "2026-01-01T00:00:00Z", "created_by": " source actor ",
 					"metadata": raw, "thread_id": " exact/thread ",
 				}

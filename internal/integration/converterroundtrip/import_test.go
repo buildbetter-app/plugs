@@ -524,8 +524,7 @@ func TestSourcePlaneFoundationRefusesUnadaptedExecutionBeforeWrite(t *testing.T)
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			ctx := context.Background()
-			store, lease, cleanup := openTarget(t, engine)
-			defer cleanup()
+			store, lease, _ := openIdentityTarget(t, engine)
 			meta, err := store.Meta(ctx)
 			if err != nil {
 				t.Fatal(err)
@@ -596,6 +595,66 @@ func TestSourcePlaneFoundationRefusesUnadaptedExecutionBeforeWrite(t *testing.T)
 			afterCheckpoint, err := cp.LoadCheckpoint(ctx, namespace)
 			if err != nil || !reflect.DeepEqual(beforeCheckpoint, afterCheckpoint) || !reflect.DeepEqual(before, reverseState(t, store)) {
 				t.Fatal("direct refusal/rollback changed graph/checkpoint/receipt")
+			}
+			for _, mode := range []driver.RestoreHistoryMode{driver.RestoreHistoryModeFull, driver.RestoreHistoryModePartial} {
+				t.Run(string(mode), func(t *testing.T) {
+					when := time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC)
+					a := driver.Record{Ref: model.RefByID("history-item", model.Natural64(0)), Kind: "bead", Body: []byte(`{"title":"before"}`)}
+					b := a
+					b.Body = []byte(`{"title":"after"}`)
+					history := driver.OfflineHistory{Source: "explicit-history-control", Verified: true, Complete: true, First: 1, Head: 1, Batches: []driver.SourceHistoryBatch{{Sequence: 1, EventIDs: []string{"event:1"}, Changes: []driver.SourceHistoryChange{{After: &b}}}}}
+					if mode == driver.RestoreHistoryModePartial {
+						history.Complete, history.BaselineVerified = false, true
+						history.First, history.Head = 2, 2
+						history.Baseline = []driver.Record{a}
+						history.Gaps = []driver.SourceHistoryGap{{First: 1, Last: 1, Reason: "unavailable prefix"}}
+						history.Batches = []driver.SourceHistoryBatch{{Sequence: 2, EventIDs: []string{"event:2"}, Changes: []driver.SourceHistoryChange{{Before: &a, After: &b}}}}
+					}
+					legacy := base
+					legacy.HistoryMode, legacy.HistoryTime = mode, when.Format(time.RFC3339Nano)
+					legacy.HistoryDigest, err = driver.OfflineHistoryDigest(history)
+					if err != nil {
+						t.Fatal(err)
+					}
+					// A valid full/partial history reaches the execution seam; the
+					// refusal cannot be explained by an invalid history precondition.
+					if _, err := driver.BuildOfflineHistory(meta, legacy, history, when, nil); err != nil {
+						t.Fatal("valid legacy history control", err)
+					}
+					joint := legacy
+					joint.SourcePlanes = &binding
+					if _, err := driver.BuildOfflineHistory(meta, joint, history, when, nil); !errors.Is(err, driver.ErrUnsupported) {
+						t.Fatalf("core-only history builder accepted joint plan: %v", err)
+					}
+					if _, err := driver.PrepareOfflineHistoryBinding(meta, joint, history, when); !errors.Is(err, driver.ErrUnsupported) {
+						t.Fatalf("core-only history binding accepted joint plan: %v", err)
+					}
+					htx, err := store.Write(ctx, lease)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer htx.Close()
+					if _, err := htx.Lock(ctx, nil); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := htx.Head(ctx); err != nil {
+						t.Fatal(err)
+					}
+					hport := htx.(driver.OfflineHistoryTx)
+					if _, err := hport.PrepareOfflineHistory(ctx, joint, history, when); !errors.Is(err, driver.ErrUnsupported) {
+						t.Fatalf("direct history execution accepted joint plan: %v", err)
+					}
+					if _, err := hport.PrepareOfflineHistory(ctx, legacy, history, when); err != nil {
+						t.Fatal("joint refusal staged state before SAME-tx legacy history preparation", err)
+					}
+					if err := htx.Close(); err != nil {
+						t.Fatal(err)
+					}
+					afterCheckpoint, err := cp.LoadCheckpoint(ctx, namespace)
+					if err != nil || !reflect.DeepEqual(beforeCheckpoint, afterCheckpoint) || !reflect.DeepEqual(before, reverseState(t, store)) {
+						t.Fatal("history refusal/rollback changed graph/checkpoint/receipt")
+					}
+				})
 			}
 		})
 	}
