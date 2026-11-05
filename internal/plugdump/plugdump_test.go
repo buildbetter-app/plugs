@@ -317,6 +317,7 @@ func TestDumpDependencyKindsPreserveTypedEdges(t *testing.T) {
 		{id: "edge-discovered", kind: "discovered-from", targetKey: "depends_on_external", target: "external:tracker:source", metadata: map[string]any{"source": "opaque"}, targetKind: "depends_on_external"},
 		{id: "edge-waits", kind: "waits-for", targetKey: "depends_on_issue_id", target: "demo-7", metadata: map[string]any{"gate": "any-children", "also_blocks": true, "spawner_id": "demo-7"}, targetKind: "depends_on_issue_id"},
 		{id: "edge-conditional", kind: "conditional-blocks", targetKey: "depends_on_external", target: "external:tracker:condition", metadata: map[string]any{"branch": "failure", "predicate": "terminal-error"}, targetKind: "depends_on_external"},
+		{id: "edge-tracks", kind: "tracks", targetKey: "depends_on_issue_id", target: "demo-7", metadata: map[string]any{"cycle": "expanded"}, targetKind: "depends_on_issue_id"},
 	}
 	for _, test := range cases {
 		row := cloneRow(base)

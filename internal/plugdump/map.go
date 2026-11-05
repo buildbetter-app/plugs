@@ -40,7 +40,7 @@ var wellKnownDependencyKinds = map[string]struct{}{
 // explicit refusals until their own source capability is admitted.
 var typedDependencyKinds = map[string]struct{}{
 	"blocks": {}, "parent-child": {}, "related": {}, "discovered-from": {},
-	"waits-for": {}, "conditional-blocks": {},
+	"waits-for": {}, "conditional-blocks": {}, "tracks": {},
 }
 
 func isValidLocalOpaqueDependencyKind(kind string) bool {

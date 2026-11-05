@@ -91,7 +91,9 @@ mirrors Plug's ontology migration shape (`id`, `kind`, `target`, `from`, and
 a row. Directives that are malformed, unused, overlap, target a built-in type,
 or target an unaccounted project refuse before archive publication.
 Supported edge types are `blocks`, `parent-child`, `related`,
-`discovered-from`, `waits-for` and `conditional-blocks`. Targets retain their
+`discovered-from`, `waits-for`, `conditional-blocks` and `tracks`. Tracks are a
+fixed typed kind in the v2 edge registry; they are never admitted through the
+opaque-v3 arm. Targets retain their
 typed issue, wisp or external discriminator; durable and wisp endpoint sets,
 source plane, dangling targets and the exactly-one target arm are validated
 before encoding. Dependency metadata is retained verbatim in the typed body

@@ -364,6 +364,7 @@ func validateNativeObservation(value any) error {
 // custom status/type union before the archive is encoded.
 func nativeYAMLCatalogValues(data []byte) ([]map[string]any, error) {
 	var entries []struct {
+		Input  ExternalInput  `json:"input"`
 		Values map[string]any `json:"values,omitempty"`
 	}
 	if err := decodeJSON(data, &entries); err != nil {
