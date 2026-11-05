@@ -1,4 +1,13 @@
 load("@rules_go//go:def.bzl", "go_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+# Offline comparison controls only; no public executable or preparation.
+sh_test(
+    name = "native_pair_comparison_test",
+    srcs = ["compare_native_pair_test.py"],
+    data = ["compare_native_pair.py"],
+    size = "small",
+)
 
 go_test(
     name = "acceptance_test",
@@ -17,6 +26,7 @@ go_test(
         "record_reference.py",
         "provenance.py",
         "b26-deviation.json",
+        "b26-positive-producer.json",
         "//internal/integration/converterroundtrip:testdata/synthetic-plug-dump-1.tar",
     ],
     deps = [
@@ -36,24 +46,39 @@ go_test(
 )
 
 # This target is intentionally manual: RunsOn prepares the pinned public
-# companion executable only when the caller supplies PLUG_PUBLIC_BUNDLE.
+# native executable only when the caller supplies its trusted PLUG_PUBLIC_BUNDLE.
 go_test(
     name = "public_recording_test",
+    size = "large",
     srcs = ["public_recording_test.go"],
-    args = ["-test.v", "-public-recording"],
+    args = ["-test.v", "-public-recording", "-test.run=^TestPublicNativeRecording$$"],
     data = [
-        "testdata/public-companion-profile.json",
-        "testdata/public-recording-fixture.json",
+        "compare_r418_pair.py",
+        "compare_r418_pair_test.py",
+        "testdata/native-public-profile.json",
+        "testdata/native-public-recording-fixture.json",
+        "testdata/native-product-source-binding.json",
+        "//internal/publicnative:dolt_runtime",
     ],
-    tags = ["manual"],
+    env = {
+        "PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)",
+    },
+    tags = ["local", "manual", "requires-network"],
     timeout = "long",
     deps = [
         "//internal/core/dumpformat",
         "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/core/pipeline",
+        "//internal/core/port",
+        "//internal/core/service",
         "//internal/integration/converterroundtrip",
+        "//internal/publicnative",
         "//internal/storage/driver",
         "//internal/storage/memory",
+        "//internal/storage/postgres",
         "//internal/storage/sqlite",
+        "//internal/testclock",
     ],
 )
 
@@ -61,20 +86,29 @@ go_test(
 # Their PASS is never paired-recording or behavior-card qualification.
 go_test(
     name = "recorder_validation_test",
+    size = "large",
     srcs = ["public_recording_test.go"],
     args = ["-test.v", "-test.run=^TestPublicProjection"],
     data = [
-        "testdata/public-companion-profile.json",
-        "testdata/public-recording-fixture.json",
+        "//internal/integration/converterroundtrip:testdata/synthetic-plug-dump-1.tar",
+        "testdata/native-public-profile.json",
+        "testdata/native-public-recording-fixture.json",
     ],
-    tags = ["manual"],
+    tags = ["local", "requires-network"],
     deps = [
         "//internal/core/dumpformat",
         "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/core/pipeline",
+        "//internal/core/port",
+        "//internal/core/service",
         "//internal/integration/converterroundtrip",
+        "//internal/publicnative",
         "//internal/storage/driver",
         "//internal/storage/memory",
+        "//internal/storage/postgres",
         "//internal/storage/sqlite",
+        "//internal/testclock",
     ],
 )
 
@@ -90,3 +124,6 @@ filegroup(
     srcs = glob(["**"]),
     visibility = ["//visibility:public"],
 )
+
+# Offline byte-bound analysis of the fresh R418 recording pair.
+exports_files(["compare_r418_pair.py", "compare_r418_pair_test.py"])

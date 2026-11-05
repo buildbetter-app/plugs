@@ -152,6 +152,9 @@ func indexedGuardGraph(ctx context.Context, proposal port.ProposedChange, reader
 				}
 			}
 			for _, link := range row.doc.Links {
+				if link.TargetKind == model.LinkTargetExternal {
+					continue
+				}
 				switch link.Kind {
 				case "parent-child", "blocks", "conditional-blocks", "waits-for":
 					if !enqueue(link.To.ID) {
@@ -179,7 +182,7 @@ func indexedGuardGraph(ctx context.Context, proposal port.ProposedChange, reader
 			for _, row := range overlay {
 				member := row.doc.Parent != nil && row.doc.Parent.ID == id
 				for _, link := range row.doc.Links {
-					member = member || link.Kind == "parent-child" && link.To.ID == id
+					member = member || link.TargetKind != model.LinkTargetExternal && link.Kind == "parent-child" && link.To.ID == id
 				}
 				if member {
 					memberOverlay++

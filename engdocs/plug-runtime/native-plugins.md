@@ -50,6 +50,13 @@ interpret YAML as executable plugin registration or create an authentication
 provider from `auth.mode`. The merged workflow service adapter continues to
 use its existing provider and standard-tool interfaces.
 
+Standalone YAML may select an existing protected ontology identity through
+`ontology.source`; `LoadConfigFile` passes that locator to `composition.Open`,
+which validates the durable source at store head before admitting requests.
+The file supplies no ontology body, executable binding or authorization.
+An embedding host with native/plugin validators must provide its actual
+validating-pre inventory directly to `composition.Open`.
+
 Configured-runtime regressions open real SQLite through this composition,
 exercise admitted native callbacks and durable checkpoints, and reopen the
 same database after shutdown. This boundary does not qualify arbitrary native

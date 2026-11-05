@@ -27,6 +27,11 @@ type Document struct {
 	Links       []Link                     `json:"links,omitempty"`
 	Attachments []model.Attachment         `json:"attachments,omitempty"`
 	Lease       *ClaimLease                `json:"lease,omitempty"`
+	// Core timestamps are outside ontology fields and cannot be patched by a
+	// request or subscriber. Missing values preserve legacy unknown instants.
+	CreatedAt *time.Time `json:"createdAt,omitempty"`
+	StartedAt *time.Time `json:"startedAt,omitempty"`
+	ClosedAt  *time.Time `json:"closedAt,omitempty"`
 }
 
 // MemoryDocument is the canonical body for a core memory record. Memories
@@ -61,9 +66,10 @@ type Comment struct {
 }
 
 type Link struct {
-	To       model.Ref           `json:"to"`
-	Kind     string              `json:"kind"`
-	Metadata *model.LinkMetadata `json:"metadata,omitempty"`
+	TargetKind model.LinkTargetKind `json:"targetKind,omitempty"`
+	To         model.Ref            `json:"to"`
+	Kind       string               `json:"kind"`
+	Metadata   *model.LinkMetadata  `json:"metadata,omitempty"`
 }
 
 type ClaimLease struct {
@@ -74,7 +80,8 @@ type ClaimLease struct {
 	Epoch     model.Natural      `json:"epoch"`
 }
 
-// DecodeDocument preserves JSON numbers instead of rounding fields to float64.
+// DecodeDocument preserves JSON numbers and resolves hierarchy in memory without
+// rewriting the stored body.
 func DecodeDocument(body []byte) (Document, error) {
 	var d Document
 	dec := json.NewDecoder(bytes.NewReader(body))
@@ -85,9 +92,27 @@ func DecodeDocument(body []byte) (Document, error) {
 	if d.ID == "" || d.Type == "" || d.Fields == nil {
 		return d, fmt.Errorf("invalid bead document")
 	}
-	if err := validateParent(d.Parent); err != nil {
+	if err := d.validateLifecycleTimes(); err != nil {
 		return d, err
 	}
+	if err := validateLifecycleTimeMembers(body); err != nil {
+		return d, err
+	}
+	if err := validateParent(d.Parent); err != nil {
+		return d, failure("invalid_params", err.Error())
+	}
+	for i := range d.Links {
+		link := &d.Links[i]
+		if err := model.ValidateLinkTarget(link.TargetKind, link.To); err != nil {
+			return d, err
+		}
+		link.TargetKind, _ = link.TargetKind.Normalized()
+	}
+	parent, err := HierarchyParent(d)
+	if err != nil {
+		return d, err
+	}
+	d.Parent = parent
 	for _, comment := range d.Comments {
 		if err := comment.Validate(); err != nil {
 			return d, err

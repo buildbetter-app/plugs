@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_test")
 go_test(
     name = "batchsql_test",
     size = "large",
-    srcs = glob(["*_test.go"], exclude = ["public_batch_guard_order_test.go", "raw_workflow_close_refusal_test.go"]),
+    srcs = glob(["*_test.go"], exclude = ["b02_public_graph_test.go", "public_batch_guard_order_test.go", "raw_workflow_close_refusal_test.go"]),
     args = ["-test.v"],
     tags = ["exclusive", "local", "requires-network"],
     deps = [
@@ -23,6 +23,28 @@ go_test(
         "//internal/server/rpc",
         "//internal/server/transport/httpjson",
         "//internal/server/viewrpc",
+        "//internal/storage/conformance",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/postgres",
+        "//internal/storage/sqlite",
+    ],
+)
+
+go_test(
+    name = "b02_public_graph_test",
+    size = "large",
+    srcs = ["fixture_test.go", "b02_public_graph_test.go"],
+    args = ["-test.v"],
+    tags = ["exclusive", "local", "requires-network"],
+    deps = [
+        "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/server/authn",
+        "//internal/server/rpc",
+        "//internal/server/transport/httpjson",
         "//internal/storage/conformance",
         "//internal/storage/driver",
         "//internal/storage/memory",

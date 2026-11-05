@@ -945,7 +945,7 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 	if err != nil {
 		return model.Changeset{}, restoreAdmissionError(err)
 	}
-	ancestorPlan, err := nativeAncestorPlanForArchive(records, archive.Native())
+	ancestorPlan, err := nativeAncestorPlanForArchive(ctx, records, archive.Native())
 	if err != nil {
 		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}}
 	}
@@ -1039,6 +1039,14 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 	}
 	if err := tx.BumpSentinels(ctx, sentinels); err != nil {
 		return model.Changeset{}, err
+	}
+	// Without complete typed publication, legacy untyped writes need not bump
+	// graph/blocking. Do not create a reusable certificate on that path.
+	_, typedGraph := tx.(driver.GraphSourceWriter)
+	if ancestorPlan != nil && len(ancestorPlan.rows) != 0 && typedGraph {
+		if err := tx.BumpReadFacts(ctx, []driver.ReadFact{pipeline.GraphValidityReadFact}); err != nil {
+			return model.Changeset{}, err
+		}
 	}
 	changes := make([]model.ChangeRecord, 0, len(records))
 	results := make([]model.OpResult, 0, len(records))
@@ -1449,6 +1457,9 @@ func restoreLocks(records []driver.Record, ancestorPlan *nativeAncestorPlan, all
 		}
 	}
 	if ancestorPlan != nil {
+		if err := add(pipeline.GraphValidityLockKey(), driver.LockUpdate); err != nil {
+			return nil, nil, err
+		}
 		for _, lock := range ancestorPlan.locks {
 			if err := add(lock.Key, lock.Mode); err != nil {
 				return nil, nil, err

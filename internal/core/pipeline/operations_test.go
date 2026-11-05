@@ -106,6 +106,46 @@ func TestDependencyEndpointIdentityRefusesRetypeAndWrongKindUnlink(t *testing.T)
 	}
 }
 
+func TestUnresolvedExternalEdgeIsRetainedButDeletedLocalTargetIsRefused(t *testing.T) {
+	h := setup(t)
+	w := h.writer()
+	seed := apply(t, w, model.ChangeSet{Ops: []model.Op{create("source"), create("local-target")}}, meta(31))
+	source, localTarget := seed.Results[0].Ref, seed.Results[1].Ref
+	external := model.RefByID("foreign-prefix-404", model.Natural64(0))
+	externalOp := link(source, external, "blocks")
+	externalOp.Link.TargetKind = model.LinkTargetExternal
+	linked := apply(t, w, model.ChangeSet{Ops: []model.Op{externalOp}}, meta(32))
+	doc, err := DecodeDocument(linked.Results[0].Record)
+	if err != nil || len(doc.Links) != 1 || doc.Links[0].To.ID != external.ID || doc.Links[0].Kind != "blocks" || doc.Links[0].TargetKind != model.LinkTargetExternal {
+		t.Fatalf("unresolved external edge was not retained: links=%+v err=%v", doc.Links, err)
+	}
+	// A source edge to a local target cannot be hidden by deleting the target
+	// in the same final graph. The refusal is atomic and leaves both records.
+	apply(t, w, model.ChangeSet{Ops: []model.Op{link(source, localTarget, "relates-to")}}, meta(33))
+	before := metadataGraph(t, h)
+	_, err = w.Apply(context.Background(), by, model.ChangeSet{Ops: []model.Op{{Kind: model.OpDelete, Delete: &model.DeleteOp{Target: localTarget}}}}, meta(34))
+	code(t, err, "ontology_guard_failed")
+	if !reflect.DeepEqual(before, metadataGraph(t, h)) {
+		t.Fatal("deleting a local edge target changed durable state")
+	}
+}
+
+func TestTxApplyRefusesWorkflowPlaneEdgeBeforeTargetLoad(t *testing.T) {
+	h := setup(t)
+	w := h.writer()
+	seed := apply(t, w, model.ChangeSet{Ops: []model.Op{create("source")}}, meta(35))
+	source := seed.Results[0].Ref
+	workflow := model.RefByID("workflow:item/0123456789abcdef0123456789abcdef", model.Natural64(0))
+	for i, pair := range [][2]model.Ref{{source, workflow}, {workflow, source}} {
+		before := metadataGraph(t, h)
+		_, err := w.Apply(context.Background(), by, model.ChangeSet{Ops: []model.Op{link(pair[0], pair[1], "blocks")}}, meta(36+i))
+		code(t, err, "invalid_params")
+		if !reflect.DeepEqual(before, metadataGraph(t, h)) {
+			t.Fatalf("cross-plane edge refusal published state for pair %d", i)
+		}
+	}
+}
+
 func TestCommentsMetadataAndNullFieldsPreserveAtomicImages(t *testing.T) {
 	h := setup(t)
 	w := h.writer()

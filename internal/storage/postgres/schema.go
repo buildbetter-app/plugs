@@ -20,6 +20,11 @@ CREATE TABLE IF NOT EXISTS plug_postgres.lease (
  epoch numeric(20,0) NOT NULL CHECK (epoch BETWEEN 0 AND 18446744073709551615),
  owner text NOT NULL, holder text NOT NULL, expires timestamptz NOT NULL
 );
+-- Publication protects ownership, while the reserved heartbeat connection
+-- may update expiry. PostgreSQL treats these unique-index columns as the row
+-- key: KEY SHARE blocks Release/takeover, but permits expiry-only updates.
+CREATE UNIQUE INDEX IF NOT EXISTS lease_ownership
+ ON plug_postgres.lease(singleton,epoch,owner);
 CREATE TABLE IF NOT EXISTS plug_postgres.locks (key bytea PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS plug_postgres.records (
  key bytea PRIMARY KEY, ref bytea NOT NULL, kind text NOT NULL,

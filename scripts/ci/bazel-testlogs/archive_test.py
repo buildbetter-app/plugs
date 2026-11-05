@@ -53,9 +53,18 @@ class ArchiveTransportTest(unittest.TestCase):
         self.logs = self.root / "bazel-testlogs"
         self.evidence = self.root / "evidence"
         self.evidence.mkdir()
-        helper = self.root / "scripts/ci/bazel-testlogs/archive.py"
-        helper.parent.mkdir(parents=True)
-        shutil.copyfile(HERE / "archive.py", helper)
+        self.candidate_marker = self.root / "candidate-archive-helper-used"
+        candidate = self.root / "scripts/ci/bazel-testlogs/archive.py"
+        candidate.parent.mkdir(parents=True)
+        candidate.write_text(
+            "import os\n"
+            "from pathlib import Path\n"
+            "Path(os.environ['CANDIDATE_ARCHIVE_MARKER']).write_text('candidate\\n')\n"
+            "raise SystemExit('candidate archive helper must not run')\n"
+        )
+        trusted = self.root / "trusted-ci/scripts/ci/bazel-testlogs/archive.py"
+        trusted.parent.mkdir(parents=True)
+        shutil.copyfile(HERE / "archive.py", trusted)
 
     def write(self, path, data):
         destination = self.logs / path
@@ -64,7 +73,12 @@ class ArchiveTransportTest(unittest.TestCase):
         return destination
 
     def archive(self, expected_exit=0, resolution_error=None):
-        environment = dict(os.environ, REMOTE_BAZEL_EVIDENCE_DIR=str(self.evidence))
+        environment = dict(
+            os.environ,
+            GITHUB_WORKSPACE=str(self.root),
+            REMOTE_BAZEL_EVIDENCE_DIR=str(self.evidence),
+            CANDIDATE_ARCHIVE_MARKER=str(self.candidate_marker),
+        )
         if resolution_error is not None:
             # Exercise Python 3.12's RuntimeError path on every test interpreter,
             # while running the unchanged helper via the actual workflow block.
@@ -94,6 +108,16 @@ class ArchiveTransportTest(unittest.TestCase):
             self.assertEqual(record["bytes"], len(files[record["path"]]))
             self.assertEqual(record["sha256"], hashlib.sha256(files[record["path"]]).hexdigest())
         return files, inventory
+
+    def test_archive_step_uses_trusted_checkout_helper(self):
+        block = workflow_archive_block()
+        self.assertIn(
+            'python3 "$GITHUB_WORKSPACE/trusted-ci/scripts/ci/bazel-testlogs/archive.py"',
+            block,
+        )
+        self.assertNotIn("python3 scripts/ci/bazel-testlogs/archive.py", block)
+        self.archive()
+        self.assertFalse(self.candidate_marker.exists())
 
     def zipped(self, name, contents):
         raw = io.BytesIO()

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 )
@@ -78,6 +79,14 @@ func ValidateHierarchyWrite(kind model.OpKind, before *model.Record, after model
 		for key := range after.Body {
 			switch key {
 			case "id", "type", "project", "fields", "parent":
+			case "createdAt":
+				// The trusted Writer stamps this core member before policy runs.
+				// It carries no permission and is never a caller assignment.
+				text, ok := after.Body[key].(string)
+				instant, err := time.Parse(time.RFC3339Nano, text)
+				if !ok || err != nil || instant.IsZero() || instant.UTC().Format(time.RFC3339Nano) != text {
+					return HierarchyTarget{}, errors.New("invalid core creation instant")
+				}
 			default:
 				return HierarchyTarget{}, errors.New("unsupported hierarchy create member")
 			}

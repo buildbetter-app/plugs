@@ -44,6 +44,7 @@ type transaction struct {
 	done             chan struct{}
 
 	checkpointGuards          map[string]uint64
+	checkpointWrites          map[string]driver.Checkpoint
 	sourceOverlay             sourceindex.Overlay
 	sourceCoverage            sourceindex.CoveragePair
 	sourceCoverageHead        model.Revision
@@ -76,7 +77,7 @@ func (s *Store) Write(ctx context.Context, lease driver.ActiveLease) (driver.Wri
 	}
 	// Prepare the writer against the same SQL transaction that will stage and
 	// publish it. The observation is deliberately not a row lock: Release or a
-	// takeover may proceed while staging, and the final FOR SHARE fence remains
+	// takeover may proceed while staging, and the final ownership fence remains
 	// authoritative at publication.
 	l, err := s.checkLease(ctx, tx, lease, false)
 	if err != nil {

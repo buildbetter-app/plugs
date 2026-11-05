@@ -75,6 +75,7 @@ type transaction struct {
 	readyPublication    *readyOrderPublicationState
 
 	checkpointGuards          map[string]uint64
+	checkpointWrites          map[string]driver.Checkpoint
 	sourceOverlay             sourceindex.Overlay
 	sourceIdentities          map[string]driver.Record
 	sourceCoverage            sourceindex.CoveragePair
@@ -730,6 +731,9 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 			return nil
 		}
 		if err := t.checkCheckpointGuards(ctx, c); err != nil {
+			return err
+		}
+		if err := t.publishCheckpoints(ctx, c); err != nil {
 			return err
 		}
 		if err = t.validateChanges(ctx, h.Changes); err != nil {

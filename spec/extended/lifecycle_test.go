@@ -256,6 +256,8 @@ func TestB08CloseGuardsReadTheFinalBatchImage(t *testing.T) {
 	after := f.image(t)
 	want := before.document(t, "pl-guard")
 	want.Fields["template"], want.Fields["status"], want.Fields["resolution"] = false, "done", "verified"
+	closedAt := f.inputs.Now().UTC()
+	want.ClosedAt = &closedAt
 	want.Comments = []pipeline.Comment{{Body: "closed after verification", Principal: f.by, Time: f.inputs.Now()}}
 	sameJSON(t, after.document(t, "pl-guard"), want)
 	if len(after.Log) != 2 || len(after.Versions["pl-guard"]) != 2 || after.row(t, "pl-guard").Revision.String() != "2" {

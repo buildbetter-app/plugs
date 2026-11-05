@@ -151,6 +151,9 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 			p, err = w.prepareMemory(preCtx, reader, by, cs, meta)
 		} else {
 			p, err = w.prepare(preCtx, reader, by, cs, meta, release)
+			if err == nil {
+				err = p.preserveWorkflowComments(preCtx)
+			}
 		}
 		w.observePhaseSince(preCtx, PhasePrepare, phaseStarted, err)
 		if memoryMethod(meta.Method) {
@@ -189,6 +192,9 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 			phaseStarted = time.Now()
 			err = p.detectChanges()
 			w.observePhaseSince(preCtx, PhaseChanges, phaseStarted, err)
+		}
+		if err == nil && !memoryMethod(meta.Method) {
+			err = w.prepareReadySortKeys(p)
 		}
 		if err == nil {
 			phaseStarted = time.Now()
@@ -482,6 +488,10 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 		allocatorKeys = append(allocatorKeys, p.projections.locks...)
 	}
 	allocatorKeys = append(allocatorKeys, ready.LockKeys()...)
+	if (p.graphValidated || p.graphPreserved) && len(writes) != 0 {
+		allocatorKeys = append(allocatorKeys, GraphValidityLockKey())
+	}
+	allocatorKeys = append(allocatorKeys, p.readySort.locks()...)
 	locks, err := p.snapshot.locks(writes, sentinels, allocatorKeys...)
 	if err != nil {
 		return model.Commit{}, err
@@ -504,6 +514,18 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	}
 	if err := p.snapshot.check(states); err != nil {
 		return model.Commit{}, err
+	}
+	if mutation, ok := ctx.Value(checkpointMutationKey{}).(driver.CheckpointMutation); ok {
+		if mutation.Incarnation != p.snapshot.Snapshot().Incarnation {
+			return model.Commit{}, driver.ErrConflict
+		}
+		staged, ok := tx.(driver.CheckpointWriteTx)
+		if !ok {
+			return model.Commit{}, driver.ErrUnsupported
+		}
+		if err := staged.StageCheckpoint(ctx, mutation.Key, mutation.Expected, mutation.Payload); err != nil {
+			return model.Commit{}, err
+		}
 	}
 	timings.next(PhaseCommitHead)
 	head, err := tx.Head(ctx)
@@ -605,7 +627,11 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 			return model.Commit{}, err
 		}
 		timings.next(PhaseCommitNoop)
-		return noop.CommitNoop(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: kind, Time: w.cfg.now().UTC(), Principal: by, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: response, LockKeys: keys})
+		commit, err := noop.CommitNoop(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: kind, Time: w.cfg.now().UTC(), Principal: by, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: response, LockKeys: keys})
+		if errors.Is(err, driver.ErrCheckpointConflict) {
+			return model.Commit{}, errStale
+		}
+		return commit, err
 	}
 	n, err := head.Uint64()
 	if err != nil || n == math.MaxUint64 {
@@ -629,6 +655,9 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	if _, err := ready.Publish(ctx, tx, revision); err != nil {
 		return model.Commit{}, err
 	}
+	if err := p.readySort.publish(ctx, tx, revision); err != nil {
+		return model.Commit{}, err
+	}
 	timings.next(PhaseCommitEvents)
 	changes := p.changeRecords()
 	events, chain, err := p.events(revision, changes)
@@ -640,6 +669,12 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	}
 	if err := ready.Finalize(ctx, tx); err != nil {
 		return model.Commit{}, err
+	}
+	graphValidated := p.graphValidated || p.graphPreserved && currentGraphCertificate(states)
+	if graphValidated && len(writes) != 0 {
+		if err := tx.BumpReadFacts(ctx, []driver.ReadFact{GraphValidityReadFact}); err != nil {
+			return model.Commit{}, err
+		}
 	}
 	timings.next(PhaseCommitDriver)
 	entry, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: kind, Time: w.cfg.now().UTC(), Principal: by, Chain: chain, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: commit, ResponsePending: len(p.changed) != 0 && len(w.cfg.posts) > 0, Mutators: p.mutators, Changes: changes, Events: events, LockKeys: keys})

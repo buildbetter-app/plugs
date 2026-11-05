@@ -28,7 +28,15 @@ import xml.etree.ElementTree as ET
 
 
 CAPTURE_ERROR = 86
+# Existing automatically prepared manual exception; other captures stay opt-in.
 PUBLIC_RUNTIME_TARGET = "//tools/roundtrip:public_beads_runtime_test"
+PUBLIC_RUNTIME_TARGETS = frozenset({
+    "//tools/roundtrip:public_beads_runtime_test",
+    "//spec/s1-b25-b28:public_recording_test",
+})
+# Native adoption replaces this and the descriptor only after official-byte
+# review and trusted-helper admission. Keep the current companion delivery.
+PUBLIC_BUNDLE_PROFILE = "plug-public-companion/1"
 PUBLIC_BUNDLE_DESCRIPTOR = (
     "41398730774:13120521766:"
     "66de7c070d365bbd7fc2bd39ed822e5bf72c21efabe0add9a5e26d07bf170a62"
@@ -381,16 +389,23 @@ def verify_selection(capture):
         raise ValueError("resolved test target file changed after selection")
 
 
+def public_selection(capture):
+    # The workflow uses exactly the collector's predicate, after the complete
+    # touched/reverse/owning closure has been resolved and bound to source.
+    verify_selection(capture)
+    print("true" if PUBLIC_RUNTIME_TARGETS.intersection(capture.state["resolved_tests"]) else "false")
+
+
 def public_test_env(capture):
     resolved = set(capture.state.get("resolved_tests", ()))
     present = {name: os.environ.get(name) for name in PUBLIC_ENV_NAMES if os.environ.get(name) is not None}
-    if PUBLIC_RUNTIME_TARGET not in resolved:
+    if not PUBLIC_RUNTIME_TARGETS.intersection(resolved):
         if present:
-            raise ValueError("public executable values supplied without the mandatory runtime target")
+            raise ValueError("public executable values supplied without either mandatory public consumer target")
         return []
     values = {name: os.environ.get(name) for name in PUBLIC_ENV_NAMES}
     if any(value is None or value == "" for value in values.values()):
-        raise ValueError("mandatory public runtime target lacks prepared executable values")
+        raise ValueError("mandatory public consumer selection lacks prepared executable values")
     if any("\n" in value or "\r" in value for value in values.values()):
         raise ValueError("prepared public executable value contains a newline")
     binary = Path(values["PLUG_PUBLIC_BEADS_BINARY"])
@@ -413,10 +428,37 @@ def public_test_env(capture):
         receipt = json.loads(receipt_path.read_text())
     except (OSError, ValueError) as error:
         raise ValueError("prepared public bundle receipt is invalid") from error
+    descriptor = re.fullmatch(r"([1-9][0-9]{0,19}):([1-9][0-9]{0,19}):([0-9a-f]{64})", PUBLIC_BUNDLE_DESCRIPTOR)
+    if descriptor is None:
+        raise ValueError("fixed public descriptor is malformed")
+    run_id, artifact_id, manifest_sha256 = descriptor.groups()
+    if digest(manifest) != manifest_sha256:
+        raise ValueError("prepared public manifest bytes differ from the fixed descriptor")
+    try:
+        sealed = json.loads(manifest.read_text())
+    except (OSError, ValueError) as error:
+        raise ValueError("prepared public manifest is invalid") from error
+    if not isinstance(receipt, dict) or not isinstance(sealed, dict):
+        raise ValueError("prepared public receipt and manifest must be objects")
     if (receipt.get("status") != "PASS" or receipt.get("descriptor") != PUBLIC_BUNDLE_DESCRIPTOR
-            or receipt.get("manifest_sha256") != PUBLIC_BUNDLE_DESCRIPTOR.rsplit(":", 1)[1]
-            or receipt.get("environment") != values):
-        raise ValueError("prepared public bundle receipt is not bound to the fixed descriptor")
+            or receipt.get("manifest_sha256") != manifest_sha256
+            or receipt.get("producer_run") != run_id or receipt.get("artifact_id") != artifact_id
+            or values["PLUG_PUBLIC_BEADS_BUILD_RUN"] != run_id
+            or sealed.get("build", {}).get("run_id") != run_id
+            or receipt.get("schema") != PUBLIC_BUNDLE_PROFILE
+            or receipt.get("environment") != values
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", str(receipt.get("artifact_digest"))) is None
+            or receipt.get("producer_workflow_sha") != sealed.get("workflow", {}).get("sha")
+            or re.fullmatch(r"[0-9a-f]{40}", str(receipt.get("producer_workflow_sha"))) is None
+            or any(receipt.get(field) != sealed.get(field)
+                   for field in ("schema", "source", "targets", "artifacts", "archive"))):
+        raise ValueError("prepared public bundle receipt is not bound to the fixed descriptor and manifest")
+    record = sealed.get("artifacts", {}).get("bin/bd-export", {})
+    if (record.get("sha256") != values["PLUG_PUBLIC_BEADS_SHA256"]
+            or record.get("mode") != "0o755" or record.get("size") != binary.stat().st_size
+            or binary != manifest.parent / "bin/bd-export"
+            or any(part.is_symlink() for part in (*binary.parents, *manifest.parents))):
+        raise ValueError("prepared public executable and manifest do not share the verified bundle")
     return [f"--test_env={name}={values[name]}" for name in PUBLIC_ENV_NAMES]
 
 
@@ -687,7 +729,7 @@ def verify(output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("begin", "selection", "run", "finish", "verify"))
+    parser.add_argument("phase", choices=("begin", "selection", "public-selection", "run", "finish", "verify"))
     parser.add_argument("--output", required=True)
     parser.add_argument("--base", default="")
     parser.add_argument("--head", default="")
@@ -712,6 +754,8 @@ def main():
             begin(capture, args)
         elif args.phase == "selection":
             selection(capture)
+        elif args.phase == "public-selection":
+            public_selection(capture)
         elif args.phase == "run":
             run(capture)
         else:

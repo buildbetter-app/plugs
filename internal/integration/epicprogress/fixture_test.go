@@ -209,13 +209,15 @@ func requireCode(t *testing.T, r reply, code model.ErrorCode) {
 }
 
 type readObserver struct {
-	queries           atomic.Uint64
-	hierarchyChildren atomic.Uint64
+	queries            atomic.Uint64
+	hierarchyChildren  atomic.Uint64
+	inverseSourceLinks atomic.Uint64
 }
 
 func (o *readObserver) reset() {
 	o.queries.Store(0)
 	o.hierarchyChildren.Store(0)
+	o.inverseSourceLinks.Store(0)
 }
 
 func (o *readObserver) queryCount() uint64 {
@@ -224,6 +226,10 @@ func (o *readObserver) queryCount() uint64 {
 
 func (o *readObserver) hierarchyCount() uint64 {
 	return o.hierarchyChildren.Load()
+}
+
+func (o *readObserver) inverseCount() uint64 {
+	return o.inverseSourceLinks.Load()
 }
 
 type observedReadStore struct {
@@ -269,6 +275,15 @@ func (r *observedReader) HierarchyChildrenExcluding(ctx context.Context, parents
 		return nil, false, driver.ErrUnsupported
 	}
 	return reader.HierarchyChildrenExcluding(ctx, parents, excluded, limit)
+}
+
+func (r *observedReader) InverseSourceLinks(ctx context.Context, targets []model.Ref, kinds []driver.IncomingLinkKind, excluded []model.Ref, limit int) ([]driver.Record, bool, error) {
+	r.observer.inverseSourceLinks.Add(1)
+	reader, ok := r.Reader.(driver.InverseSourceLinksReader)
+	if !ok {
+		return nil, false, driver.ErrUnsupported
+	}
+	return reader.InverseSourceLinks(ctx, targets, kinds, excluded, limit)
 }
 
 // readerOnly intentionally exposes no optional hierarchy interface. It lets
@@ -391,6 +406,55 @@ func openStore(t *testing.T, backend, path string) (driver.Store, driver.ActiveL
 		t.Fatal(err)
 	}
 	return store, lease
+}
+
+// Native restore targets bypass newFixtureMode. Own the same renewal cadence
+// until close, including upload, publication, and the subsequent indexed write.
+func openRenewingTarget(t *testing.T, backend, path string) (driver.Store, driver.ActiveLease, func()) {
+	t.Helper()
+	store, lease := openStore(t, backend, path)
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	var renewalErr error
+	renewals := 0
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := lease.Renew(ctx); err != nil {
+					if ctx.Err() == nil || !errors.Is(err, context.Canceled) {
+						renewalErr = err
+					}
+					return
+				}
+				renewals++
+			}
+		}
+	}()
+	var once sync.Once
+	closeTarget := func() {
+		once.Do(func() {
+			stop()
+			<-done
+			if renewalErr != nil {
+				t.Errorf("native target lease renewal: %v", renewalErr)
+			}
+			t.Logf("native target lease renewals=%d error=%v", renewals, renewalErr)
+			if err := lease.Release(context.Background()); err != nil {
+				t.Error(err)
+			}
+			if err := store.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	t.Cleanup(closeTarget)
+	return store, lease, closeTarget
 }
 
 func newFixture(t *testing.T, backend, path string, progress bool) *fixture {

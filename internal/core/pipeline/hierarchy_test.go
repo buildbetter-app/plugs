@@ -1,9 +1,11 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -68,6 +70,190 @@ func TestAncestorCodecAndParentEnvelope(t *testing.T) {
 		if _, err := DecodeDocument([]byte(`{"id":"pl-c","type":"issue","fields":{},"parent":` + parent + `}`)); err != nil {
 			t.Fatalf("canonical Parent %s: %v", parent, err)
 		}
+	}
+}
+
+func TestStoredHierarchyFormsCanonicalizeWithoutRewriting(t *testing.T) {
+	for _, tc := range []struct {
+		name, members, parent string
+	}{
+		{"root", ``, ""},
+		{"canonical", `,"parent":{"id":"pl-p"}`, "pl-p"},
+		{"legacy-only", `,"links":[{"to":{"id":"pl-p"},"kind":"parent-child"}]`, "pl-p"},
+		{"legacy-branch-zero", `,"links":[{"to":{"id":"pl-p","branch":0},"kind":"parent-child"}]`, "pl-p"},
+		{"null-parent-legacy", `,"parent":null,"links":[{"to":{"id":"pl-p"},"kind":"parent-child"}]`, "pl-p"},
+		{"matching-forms", `,"parent":{"id":"pl-p","branch":0},"links":[{"to":{"id":"pl-p"},"kind":"parent-child"}]`, "pl-p"},
+		{"unrelated-link", `,"links":[{"to":{"id":"pl-other"},"kind":"blocks"},{"to":{"id":"pl-p"},"kind":"parent-child"}]`, "pl-p"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"id":"pl-c","type":"issue","fields":{"count":9007199254740993}` + tc.members + `}`)
+			original := append([]byte(nil), body...)
+			var stored Document
+			if err := json.Unmarshal(body, &stored); err != nil {
+				t.Fatal(err)
+			}
+			before, err := json.Marshal(stored)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertParent := func(parent *model.Ref, err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tc.parent == "" {
+					if parent != nil {
+						t.Fatalf("root gained parent: %+v", parent)
+					}
+				} else if parent == nil || !parent.IsID() || parent.ID != tc.parent || !parent.Branch.IsZero() {
+					t.Fatalf("parent=%+v, want literal canonical ID %q on branch zero", parent, tc.parent)
+				}
+			}
+			assertParent(HierarchyParent(stored))
+			after, err := json.Marshal(stored)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("hierarchy resolution changed its input: %s -> %s, %v", before, after, err)
+			}
+			decoded, err := DecodeDocument(body)
+			assertParent(decoded.Parent, err)
+			assertParent(HierarchyParent(decoded))
+			if decoded.Fields["count"] != json.Number("9007199254740993") || !reflect.DeepEqual(decoded.Links, stored.Links) {
+				t.Fatalf("canonicalization changed numbers or links: %+v", decoded)
+			}
+			if !bytes.Equal(body, original) {
+				t.Fatal("decoding rewrote original stored bytes")
+			}
+		})
+	}
+}
+
+func TestStoredHierarchyConflictsRefuseTyped(t *testing.T) {
+	for _, tc := range []struct{ name, members string }{
+		{"different-forms", `"parent":{"id":"pl-p"},"links":[{"to":{"id":"pl-other"},"kind":"parent-child"}]`},
+		{"multiple-legacy-parents", `"links":[{"to":{"id":"pl-p"},"kind":"parent-child"},{"to":{"id":"pl-other"},"kind":"parent-child"}]`},
+		{"duplicate-legacy-parent", `"links":[{"to":{"id":"pl-p"},"kind":"parent-child"},{"to":{"id":"pl-p"},"kind":"parent-child"}]`},
+		{"matching-then-conflicting", `"parent":{"id":"pl-p"},"links":[{"to":{"id":"pl-p"},"kind":"parent-child"},{"to":{"id":"pl-other"},"kind":"parent-child"}]`},
+		{"matching-then-duplicate", `"parent":{"id":"pl-p"},"links":[{"to":{"id":"pl-p"},"kind":"parent-child"},{"to":{"id":"pl-p"},"kind":"parent-child"}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"id":"pl-c","type":"issue","fields":{},` + tc.members + `}`)
+			var stored Document
+			if err := json.Unmarshal(body, &stored); err != nil {
+				t.Fatal(err)
+			}
+			_, err := HierarchyParent(stored)
+			code(t, err, "invalid_params")
+			_, err = DecodeDocument(body)
+			code(t, err, "invalid_params")
+		})
+	}
+}
+
+func TestStoredHierarchyMalformedRefsStayRefused(t *testing.T) {
+	for _, tc := range []struct{ name, ref string }{
+		{"key", `{"key":"pl-p"}`},
+		{"empty-id", `{"id":""}`},
+		{"nonzero-branch", `{"id":"pl-p","branch":1}`},
+		{"slash-id", `{"id":"pl/p"}`},
+		{"spaced-id", `{"id":" pl-p"}`},
+	} {
+		for _, form := range []string{"canonical", "legacy"} {
+			t.Run(form+"/"+tc.name, func(t *testing.T) {
+				member := `"parent":` + tc.ref
+				if form == "legacy" {
+					member = `"links":[{"kind":"parent-child","to":` + tc.ref + `}]`
+				}
+				body := []byte(`{"id":"pl-c","type":"issue","fields":{},` + member + `}`)
+				var stored Document
+				if err := json.Unmarshal(body, &stored); err != nil {
+					t.Fatal(err)
+				}
+				_, err := HierarchyParent(stored)
+				code(t, err, "invalid_params")
+				_, err = DecodeDocument(body)
+				code(t, err, "invalid_params")
+			})
+		}
+	}
+	for _, ref := range []string{`"pl-p"`, `{}`, `{"id":"pl-p","key":"p"}`, `{"id":"pl-p","branch":-1}`} {
+		for _, member := range []string{`"parent":` + ref, `"links":[{"kind":"parent-child","to":` + ref + `}]`} {
+			if _, err := DecodeDocument([]byte(`{"id":"pl-c","type":"issue","fields":{},` + member + `}`)); err == nil {
+				t.Fatalf("accepted malformed reference %s", member)
+			}
+		}
+	}
+	if _, err := DecodeDocument([]byte(`{"id":"pl-c","type":"issue","fields":{},"links":[{"kind":"parent-child","to":null}]}`)); err == nil {
+		t.Fatal("accepted null legacy parent")
+	}
+}
+
+func TestLegacyHierarchyKeepsEnvelopeAndCommentValidation(t *testing.T) {
+	for _, tc := range []struct{ name, members string }{
+		{"missing-id", `"type":"issue","fields":{}`},
+		{"missing-type", `"id":"pl-c","fields":{}`},
+		{"null-fields", `"id":"pl-c","type":"issue","fields":null`},
+		{"legacy-comment-provenance", `"id":"pl-c","type":"issue","fields":{},"comments":[{"body":"old","sourceAuthor":"source"}]`},
+		{"incomplete-imported-comment", `"id":"pl-c","type":"issue","fields":{},"comments":[{"body":"old","origin":"import"}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := DecodeDocument([]byte(`{` + tc.members + `,"links":[{"to":{"id":"pl-p"},"kind":"parent-child"}]}`)); err == nil {
+				t.Fatal("legacy hierarchy bypassed document/comment validation")
+			}
+		})
+	}
+}
+
+func TestHierarchyDetachRequiresExplicitLegacyUnlink(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		legacy, unlink bool
+	}{
+		{"canonical-detach", false, false},
+		{"legacy-detach-refuses", true, false},
+		{"legacy-unlink-then-detach", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := setup(t)
+			w := h.writer()
+			seed := apply(t, w, model.ChangeSet{Ops: []model.Op{create("parent"), create("child")}}, meta(1))
+			parent, child := seed.Results[0].Ref, seed.Results[1].Ref
+			detach := model.Op{Kind: model.OpReparent, Reparent: &model.ReparentOp{Target: child}}
+			attach := model.Op{Kind: model.OpReparent, Reparent: &model.ReparentOp{Target: child, Parent: &parent}}
+			if tc.legacy {
+				attach = link(child, parent, "parent-child")
+			}
+			apply(t, w, model.ChangeSet{Ops: []model.Op{attach}}, meta(2))
+			before := metadataGraph(t, h)
+			ops := []model.Op{patch(child, map[string]any{"title": "detached"})}
+			if tc.unlink {
+				unlink := link(child, parent, "parent-child")
+				unlink.Kind = model.OpUnlink
+				ops = append(ops, unlink)
+			}
+			ops = append(ops, detach)
+			_, err := w.Apply(context.Background(), by, model.ChangeSet{Ops: ops}, meta(3))
+			if tc.legacy && !tc.unlink {
+				code(t, err, "invalid_params")
+				if after := metadataGraph(t, h); !reflect.DeepEqual(before, after) {
+					t.Fatal("refused detach published staged fields, versions, history or observations")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			rows, err := h.read(t).Get(context.Background(), []model.Ref{child})
+			if err != nil || len(rows) != 1 {
+				t.Fatal(rows, err)
+			}
+			var stored Document
+			if err := json.Unmarshal(rows[0].Body, &stored); err != nil {
+				t.Fatal(err)
+			}
+			if stored.Parent != nil || len(stored.Links) != 0 || stored.Fields["title"] != "detached" {
+				t.Fatalf("detach did not persist an unparented child: %+v", stored)
+			}
+		})
 	}
 }
 

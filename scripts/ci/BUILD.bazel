@@ -64,3 +64,18 @@ sh_test(
     ],
     size = "small",
 )
+
+sh_test(
+    name = "plug_bazel_config_test",
+    srcs = ["plug-bazel-config-test.sh"],
+    data = [
+        "plug-bazel-delivery.py",
+        "plug-bazel-delivery-test.sh",
+        "plug-bazel-targets.sh",
+        "plug-bazel-targets-test.sh",
+        "public-bundle.py",
+        "public-bundle-test.py",
+        "//.github/workflows:plug_ci_configuration",
+    ],
+    size = "small",
+)

@@ -7,3 +7,10 @@ exports_files(
     ["plug-remote-bazel.yml"],
     visibility = ["//scripts/ci/bazel-testlogs:__pkg__"],
 )
+
+# Actual workflow files consumed by the CI configuration acceptance guard.
+filegroup(
+    name = "plug_ci_configuration",
+    srcs = glob(["*.yml"]) + glob(["*.yaml"], allow_empty = True),
+    visibility = ["//scripts/ci:__pkg__"],
+)

@@ -107,10 +107,11 @@ type IssueProjection struct {
 }
 
 type EdgeProjection struct {
-	ID   string `json:"id"`
-	From string `json:"from"`
-	To   string `json:"to"`
-	Type string `json:"type"`
+	TargetKind string `json:"target_kind,omitempty"`
+	ID         string `json:"id"`
+	From       string `json:"from"`
+	To         string `json:"to"`
+	Type       string `json:"type"`
 }
 
 type CommentProjection struct {

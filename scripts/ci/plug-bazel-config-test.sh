@@ -2,7 +2,15 @@
 # Static and executable checks for the Plug CI contract.
 set -euo pipefail
 
-repo_root="$(git rev-parse --show-toplevel)"
+if [[ -n "${TEST_SRCDIR:-}" || -n "${TEST_WORKSPACE:-}" ]]; then
+  [[ -n "${TEST_SRCDIR:-}" && -n "${TEST_WORKSPACE:-}" && -d "$TEST_SRCDIR/$TEST_WORKSPACE" ]] || {
+    echo "config: Bazel runfiles workspace is missing" >&2
+    exit 1
+  }
+  repo_root="$TEST_SRCDIR/$TEST_WORKSPACE"
+else
+  repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+fi
 cd "$repo_root"
 workflow=.github/workflows/plug-bazel.yml
 nightly_workflow=.github/workflows/plug-nightly-restore-diffs.yml
@@ -148,6 +156,50 @@ required_collector = {
 }
 if missing := sorted(required_collector - collector_literals):
     raise SystemExit("config: collector is missing executable literals: " + ", ".join(missing))
+# One complete-selection predicate drives workflow preparation and execution.
+public_targets = next(node.value for node in ast.parse(collector).body if isinstance(node, ast.Assign)
+                      and any(isinstance(target, ast.Name) and target.id == "PUBLIC_RUNTIME_TARGETS" for target in node.targets))
+if (not isinstance(public_targets, ast.Call) or not isinstance(public_targets.func, ast.Name)
+        or public_targets.func.id != "frozenset" or len(public_targets.args) != 1
+        or ast.literal_eval(public_targets.args[0]) != {"//tools/roundtrip:public_beads_runtime_test",
+                                                       "//spec/s1-b25-b28:public_recording_test"}):
+    raise SystemExit("config: both mandatory native consumer labels must share selection")
+selection_step = workflow_code.split("- name: Resolve complete Plug Bazel selection", 1)[1].split("- name:", 1)[0]
+if ('plug-bazel-delivery.py selection --output' not in selection_step
+        or 'plug-bazel-delivery.py public-selection --output' not in selection_step
+        or selection_step.index('plug-bazel-delivery.py selection --output') > selection_step.index('plug-bazel-delivery.py public-selection --output')):
+    raise SystemExit("config: complete source-bound selection must precede public preparation")
+if "GH_TOKEN" in selection_step:
+    raise SystemExit("config: selection cannot receive the artifact-read token")
+
+# Both privileged paths fetch and hash the same independently admitted helper.
+helper_bindings = []
+for workflow_text, step_name in ((workflow, "Prepare verified public Beads executable"),
+                                 (remote_workflow, "Select opt-in public executable bundle")):
+    step = workflow_text.split("- name: " + step_name, 1)[1].split("- name:", 1)[0]
+    sha = re.findall(r"(?m)^ +TRUSTED_PREPARER_SHA: ([0-9a-f]{40})$", step)
+    checksum = re.findall(r"(?m)^ +TRUSTED_PREPARER_SHA256: ([0-9a-f]{64})$", step)
+    if len(sha) != 1 or len(checksum) != 1:
+        raise SystemExit("config: helper admission needs literal immutable SHA and content hash")
+    if ('prepare-public-bundle.py?ref=$TRUSTED_PREPARER_SHA' not in step
+            or 'sha256sum --check --status' not in step
+            or step.index('sha256sum --check --status') > step.index('prepare-public-bundle.py" request')):
+        raise SystemExit("config: helper must be hash-checked before privileged invocation")
+    helper_bindings.append((sha[0], checksum[0]))
+if helper_bindings[0] != helper_bindings[1]:
+    raise SystemExit("config: hosted and remote helper admission differs")
+for step_name, workflow_text in (("Capture and run Plug Bazel lanes", workflow),
+                                 ("Run remote Bazel command", remote_workflow)):
+    step = workflow_text.split("- name: " + step_name, 1)[1].split("- name:", 1)[0]
+    if "GH_TOKEN:" in step or "github.token" in step:
+        raise SystemExit("config: read token must remain isolated from the test step")
+workflow_descriptor = re.findall(r"(?m)^ +PUBLIC_BUNDLE_DESCRIPTOR: ([1-9][0-9]*:[1-9][0-9]*:[0-9a-f]{64})$", workflow)
+collector_descriptor = next(ast.literal_eval(node.value) for node in ast.parse(collector).body
+                            if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name)
+                            and target.id == "PUBLIC_BUNDLE_DESCRIPTOR" for target in node.targets))
+if workflow_descriptor != [collector_descriptor]:
+    raise SystemExit("config: hosted descriptor and collector receipt descriptor disagree")
+
 for phase in ("begin", "run", "finish"):
     if f"python3 scripts/ci/plug-bazel-delivery.py {phase}" not in workflow_code:
         raise SystemExit("config: workflow must invoke delivery phase " + phase)
@@ -355,8 +407,22 @@ for fragment in (
         raise SystemExit("config: remote workflow is missing: " + fragment)
 if "eval " in remote_code or "set -x" in remote_code or "pull_request_target:" in remote_code:
     raise SystemExit("config: remote workflow contains an unsafe command or trigger")
+helper_checkout = remote_code.split("- name: Checkout trusted CI helpers", 1)[1].split("- name:", 1)[0]
+require_fragments("trusted remote archive helper checkout", helper_checkout, (
+    "if: always()", "ref: ${{ github.workflow_sha }}", "persist-credentials: false",
+    "fetch-depth: 1", "sparse-checkout: |\n            scripts/ci/bazel-testlogs", "path: trusted-ci",
+))
+archive_step = remote_code.split("- name: Archive Bazel test logs", 1)[1].split("- name:", 1)[0]
+require_fragments("trusted remote archive helper invocation", archive_step, (
+    'python3 "$GITHUB_WORKSPACE/trusted-ci/scripts/ci/bazel-testlogs/archive.py"',
+    '--testlogs bazel-testlogs --output "$archive"',
+))
+if not (remote_code.index("- name: Run remote Bazel command")
+        < remote_code.index("- name: Checkout trusted CI helpers")
+        < remote_code.index("- name: Archive Bazel test logs")):
+    raise SystemExit("config: trusted helper checkout must follow Bazel and precede archiving")
 remote_actions = re.findall(r"uses: (\S+)", remote_code)
-if len(remote_actions) != 5 or any(not re.fullmatch(r"(?:actions|runs-on)/[a-z/-]+@[0-9a-f]{40}", action) for action in remote_actions):
+if len(remote_actions) != 6 or any(not re.fullmatch(r"(?:actions|runs-on)/[a-z/-]+@[0-9a-f]{40}", action) for action in remote_actions):
     raise SystemExit("config: every remote Bazel action must retain its full immutable pin")
 check_workflow_inventory(Path(".github/workflows"))
 print("plug-ci-config: workflow, permissions, cache, lock, targets, and retirement checks passed")

@@ -29,3 +29,15 @@ lexicon_sources(
     name = "lexicon_sources",
     root_file = "//:MODULE.bazel",
 )
+
+# Disposable public-native RunsOn tests use the same pinned Linux/amd64 Dolt
+# release as accepted Beads source 305fec3a (tools/bazel/dolt.bzl). Bazel
+# verifies the complete upstream archive before exposing its one executable.
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+http_archive(
+    name = "dolt_native_linux_amd64",
+    urls = ["https://github.com/dolthub/dolt/releases/download/v2.2.0/dolt-linux-amd64.tar.gz"],
+    sha256 = "1f7ad8c2622995789420a3fb0f2d16b4aa7430000a825dd91d5938f36480cbf6",
+    strip_prefix = "dolt-linux-amd64/bin",
+    build_file_content = 'exports_files(["dolt"], visibility = ["//visibility:public"])',
+)

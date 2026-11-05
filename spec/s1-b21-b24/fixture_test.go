@@ -60,36 +60,52 @@ type reply struct {
 }
 
 type fixture struct {
-	t       *testing.T
-	ctx     context.Context
-	engine  string
-	dsn     string
-	path    string
-	store   driver.Store
-	lease   driver.ActiveLease
-	writer  *pipeline.Writer
-	service *service.Service
-	server  *rpc.Server
-	clock   *testclock.Clock
-	ids     []string
-	idIndex int
-	options []pipeline.Option
-	frames  []frame
-	mu      sync.Mutex
+	t           *testing.T
+	ctx         context.Context
+	engine      string
+	dsn         string
+	path        string
+	store       driver.Store
+	lease       driver.ActiveLease
+	writer      *pipeline.Writer
+	service     *service.Service
+	ontology    *service.Ontology
+	server      *rpc.Server
+	clock       *testclock.Clock
+	ids         []string
+	idIndex     int
+	options     []pipeline.Option
+	staleSource service.OntologySourceLocator
+	authorize   viewops.AuthorizeRead
+	frames      []frame
+	mu          sync.Mutex
 }
 
 func newFixture(t *testing.T, engine string, options ...pipeline.Option) *fixture {
+	return newFixtureWithConfig(t, engine, nil, nil, options...)
+}
+
+func newFixtureWithStaleSource(t *testing.T, engine string, staleSource service.OntologySourceLocator, options ...pipeline.Option) *fixture {
+	return newFixtureWithConfig(t, engine, staleSource, nil, options...)
+}
+
+func newFixtureWithConfig(t *testing.T, engine string, staleSource service.OntologySourceLocator, authorize viewops.AuthorizeRead, options ...pipeline.Option) *fixture {
 	t.Helper()
 	f := &fixture{
-		t:       t,
-		ctx:     context.Background(),
-		engine:  engine,
-		options: append([]pipeline.Option(nil), options...),
-		clock:   testclock.New(t, time.Date(2026, 11, 1, 23, 0, 0, 123456000, time.UTC)),
+		t:           t,
+		ctx:         context.Background(),
+		engine:      engine,
+		options:     append([]pipeline.Option(nil), options...),
+		staleSource: staleSource,
+		authorize:   authorize,
+		clock:       testclock.New(t, time.Date(2026, 11, 1, 23, 0, 0, 123456000, time.UTC)),
 		ids: []string{
 			"s1-b21-anchor", "s1-b21-created", "s1-b22-anchor",
 			"s1-b23-alpha", "s1-b23-beta", "s1-b23-closed", "s1-b24-item",
 			"s1-i1-memory",
+			"b23-upper", "b23-lower", "b23-gamma", "b23-plain", "b23-bug", "b23-closed",
+			"b23-blocker", "b23-dependent", "b23-auth-first", "b23-auth-second",
+			"stale-before", "stale-at", "stale-after", "stale-younger", "stale-authority-first", "stale-authority-second",
 		},
 	}
 	if engine == "sqlite" {
@@ -146,6 +162,7 @@ func (f *fixture) bind(t *testing.T) {
 		t.Fatal(err)
 	}
 	ontology := service.NewOntology(nil)
+	f.ontology = ontology
 	options := []pipeline.Option{
 		pipeline.WithOntology(ontology),
 		pipeline.WithClock(f.clock.Now),
@@ -164,7 +181,13 @@ func (f *fixture) bind(t *testing.T) {
 	if err := rpc.BindService(registry, f.service); err != nil {
 		t.Fatal(err)
 	}
-	view, err := viewops.New(f.store, f.lease, viewops.Config{OntologyRevision: model.Natural64(1)})
+	view, err := viewops.New(f.store, f.lease, viewops.Config{
+		OntologyRevision:     model.Natural64(1),
+		StaleDefaultOntology: ontology,
+		StaleOntologySource:  f.staleSource,
+		AuthorizeRead:        f.authorize,
+		Now:                  f.clock.Now,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,11 +230,11 @@ func (f *fixture) close(t *testing.T) {
 
 func (f *fixture) reopen(t *testing.T) {
 	t.Helper()
-	if f.engine != "sqlite" {
+	if f.engine != "sqlite" && f.engine != "postgres" {
 		return
 	}
 	if f.lease == nil || f.store == nil {
-		t.Fatal("SQLite fixture is already closed")
+		t.Fatal("SQL fixture is already closed")
 	}
 	if err := f.lease.Release(context.Background()); err != nil {
 		t.Fatal(err)
@@ -222,7 +245,11 @@ func (f *fixture) reopen(t *testing.T) {
 	}
 	f.store = nil
 	var err error
-	f.store, err = (sqlite.Driver{Clock: f.clock.Now}).Open(f.ctx, driver.Config{DSN: f.path})
+	if f.engine == "sqlite" {
+		f.store, err = (sqlite.Driver{Clock: f.clock.Now}).Open(f.ctx, driver.Config{DSN: f.path})
+	} else {
+		f.store, err = postgres.Open(f.ctx, driver.Config{DSN: f.dsn})
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,11 +267,18 @@ func (f *fixture) request(method, label string, params map[string]any) []byte {
 	for name, value := range params {
 		body[name] = value
 	}
-	body["_meta"] = map[string]any{
+	meta := map[string]any{
 		"project":        project,
 		"agent":          actor,
 		"idempotencyKey": key(label),
 	}
+	if supplied, ok := params["_meta"].(map[string]any); ok {
+		for name, value := range supplied {
+			meta[name] = value
+		}
+		meta["idempotencyKey"] = key(label)
+	}
+	body["_meta"] = meta
 	raw, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": label, "method": method, "params": body})
 	if err != nil {
 		f.t.Fatal(err)
@@ -303,7 +337,9 @@ type storedState struct {
 	Meta       driver.Meta
 	Records    []driver.Record
 	Versions   map[string][]driver.Version
+	Derived    map[driver.DerivedTable][]driver.DerivedRow
 	Changesets []model.Changeset
+	Receipts   map[string]*driver.IdempotencyRecord
 }
 
 func (f *fixture) state(t *testing.T) storedState {
@@ -321,7 +357,12 @@ func (f *fixture) state(t *testing.T) storedState {
 	if err != nil || page.NextCursor != nil {
 		t.Fatalf("record census: %+v %v", page, err)
 	}
-	state := storedState{Meta: meta, Versions: map[string][]driver.Version{}}
+	state := storedState{
+		Meta:     meta,
+		Versions: map[string][]driver.Version{},
+		Derived:  map[driver.DerivedTable][]driver.DerivedRow{},
+		Receipts: map[string]*driver.IdempotencyRecord{},
+	}
 	state.Records = append([]driver.Record(nil), page.Items...)
 	for i := range state.Records {
 		state.Records[i].Body = append([]byte(nil), state.Records[i].Body...)
@@ -331,9 +372,50 @@ func (f *fixture) state(t *testing.T) storedState {
 		}
 		state.Versions[state.Records[i].Ref.ID] = append([]driver.Version(nil), versions.Items...)
 	}
+	for _, table := range []driver.DerivedTable{
+		driver.DerivedReadyState, driver.DerivedAncestorClosure, driver.DerivedCutClosure,
+		driver.DerivedAttribute, driver.DerivedSortKey, driver.DerivedReferenceIndex,
+		driver.DerivedGrant, driver.DerivedOntology, driver.DerivedPlugins,
+	} {
+		rows, err := r.DerivedRows(f.ctx, table, "")
+		if err != nil {
+			t.Fatalf("derived %s: %v", table, err)
+		}
+		state.Derived[table] = append([]driver.DerivedRow(nil), rows...)
+	}
 	state.Changesets, err = r.Changesets(f.ctx, nil, 10000)
 	if err != nil {
 		t.Fatal(err)
+	}
+	var requests []frame
+	f.mu.Lock()
+	requests = append(requests, f.frames...)
+	f.mu.Unlock()
+	principal, err := driver.PrincipalKey(anonymous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, captured := range requests {
+		var request struct {
+			Method string `json:"method"`
+			Params struct {
+				Meta struct {
+					Agent          string `json:"agent"`
+					IdempotencyKey string `json:"idempotencyKey"`
+				} `json:"_meta"`
+			} `json:"params"`
+		}
+		if err := json.Unmarshal(captured.Request, &request); err != nil || request.Method == "" || request.Params.Meta.IdempotencyKey == "" {
+			continue
+		}
+		receipt, err := r.IdempotencyByKey(f.ctx, principal, request.Params.Meta.Agent, request.Method, request.Params.Meta.IdempotencyKey)
+		if err != nil {
+			t.Fatalf("receipt %s/%s: %v", request.Method, request.Params.Meta.IdempotencyKey, err)
+		}
+		if receipt != nil {
+			copy := *receipt
+			state.Receipts[request.Method+"/"+request.Params.Meta.IdempotencyKey] = &copy
+		}
 	}
 	return state
 }
@@ -343,6 +425,16 @@ func sameState(t *testing.T, before, after storedState) {
 	if !reflect.DeepEqual(before, after) {
 		t.Fatalf("durable state changed: before=%+v after=%+v", before, after)
 	}
+}
+
+func sameMutationState(t *testing.T, before, after storedState) {
+	t.Helper()
+	// CommitNoop intentionally persists one final idempotency receipt. Keep
+	// that response-only plane out of the graph/history comparison while the
+	// caller separately proves its exact durable contents.
+	before.Receipts = nil
+	after.Receipts = nil
+	sameState(t, before, after)
 }
 
 func (f *fixture) writeTrace() {

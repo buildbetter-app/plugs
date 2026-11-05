@@ -308,6 +308,7 @@ try {
     await send("Page.navigate", { url: base + "/ui/" });
     probe = await frameSession("probe");
     await until(() => evaluate("globalThis.safetyLoaded === true", probe), "configured host before teardown");
+    await until(() => evaluate("document.querySelector('#cancel')?.hidden === true"), "configured host read completion before teardown");
     const control = await call(probe, "before-close", "bead.get", {id:configured.ref});
     assert.equal(control.result?.bead?.fields?.title, configured.title, JSON.stringify(control));
     const closeResponse = await fetch(base + "/fixture/close", {method:"POST"});

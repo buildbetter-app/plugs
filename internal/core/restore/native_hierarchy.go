@@ -1,6 +1,7 @@
 package restore
 
 import (
+	"context"
 	"fmt"
 	"sort"
 
@@ -19,7 +20,7 @@ type nativeAncestorPlan struct {
 	sentinels []driver.Sentinel
 }
 
-func buildNativeAncestorPlan(records []driver.Record) (*nativeAncestorPlan, error) {
+func buildNativeAncestorPlan(ctx context.Context, records []driver.Record) (*nativeAncestorPlan, error) {
 	documents := make(map[string]pipeline.Document)
 	parents := make(map[string]string)
 	for _, record := range records {
@@ -43,6 +44,12 @@ func buildNativeAncestorPlan(records []driver.Record) (*nativeAncestorPlan, erro
 		if doc.Parent != nil {
 			parents[doc.ID] = doc.Parent.ID
 		}
+	}
+	// Typed Parent/Links coverage proves membership only. Certify the complete
+	// semantic graph, including unrelated components and opaque link targets,
+	// before any restore publication can carry the global-validity read fact.
+	if err := pipeline.ValidateGraphDocuments(ctx, documents); err != nil {
+		return nil, err
 	}
 	for id, parent := range parents {
 		if _, exists := documents[parent]; !exists {
@@ -94,9 +101,9 @@ func buildNativeAncestorPlan(records []driver.Record) (*nativeAncestorPlan, erro
 	return &nativeAncestorPlan{rows: rows, locks: locks, sentinels: sentinels}, nil
 }
 
-func nativeAncestorPlanForArchive(records []driver.Record, native bool) (*nativeAncestorPlan, error) {
+func nativeAncestorPlanForArchive(ctx context.Context, records []driver.Record, native bool) (*nativeAncestorPlan, error) {
 	if !native {
 		return nil, nil
 	}
-	return buildNativeAncestorPlan(records)
+	return buildNativeAncestorPlan(ctx, records)
 }

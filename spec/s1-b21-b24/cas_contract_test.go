@@ -57,7 +57,7 @@ func requireCASReason(t *testing.T, got reply, reason, current string) {
 }
 
 func TestS1B22TypedCASRefusalsLeaveNoDurableDelta(t *testing.T) {
-	for _, engine := range engines() {
+	for _, engine := range transactionEngines() {
 		t.Run(engine, func(t *testing.T) {
 			f := newFixture(t, engine)
 			target, _ := f.create(t, "typed-cas-target", "target")
@@ -110,7 +110,7 @@ func TestS1B22TypedCASRefusalsLeaveNoDurableDelta(t *testing.T) {
 }
 
 func TestS1B22CorrectedHashCanReuseRefusedKeyAndReplayAfterReopen(t *testing.T) {
-	for _, engine := range engines() {
+	for _, engine := range transactionEngines() {
 		t.Run(engine, func(t *testing.T) {
 			f := newFixture(t, engine)
 			id, _ := f.create(t, "corrected-hash-create", "selected")

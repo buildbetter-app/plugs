@@ -128,7 +128,10 @@ jobs:
         id: public_bundle
         if: ${{ contains(inputs.args, 'PLUG_PUBLIC_BUNDLE') }}
         env:
-          TRUSTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          # Use the same independently reviewed helper as ordinary CI.
+          # Only trusted-source admission selects a native descriptor/profile.
+          TRUSTED_PREPARER_SHA: 70230ccd92597a96000f90223c5d89b103e25426
+          TRUSTED_PREPARER_SHA256: 6a84191fd016ddcb637cb5a470e88727176a70e8b5c6e8e6c69f33db6a1559eb
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -136,13 +139,17 @@ jobs:
             exit 0
           fi
           test "$GITHUB_REPOSITORY" = buildbetter-app/plugs
-          [[ "$TRUSTED_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
-          # Privileged preparation must never execute the test candidate's
-          # helper. Fetch only this workflow-control commit's public source.
+          [[ "$TRUSTED_PREPARER_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$TRUSTED_PREPARER_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          # Never execute the test candidate's helper in the privileged step.
           gh api -H 'Accept: application/vnd.github.raw+json' \
-            "repos/buildbetter-app/plugs/contents/scripts/ci/prepare-public-bundle.py?ref=$TRUSTED_WORKFLOW_SHA" \
+            "repos/buildbetter-app/plugs/contents/scripts/ci/prepare-public-bundle.py?ref=$TRUSTED_PREPARER_SHA" \
             > "$RUNNER_TEMP/prepare-public-bundle.py"
+          printf '%s  %s\n' "$TRUSTED_PREPARER_SHA256" "$RUNNER_TEMP/prepare-public-bundle.py" | sha256sum --check --status
           descriptor="$(python3 "$RUNNER_TEMP/prepare-public-bundle.py" request --args "$ARGS_INPUT")"
+          printf '%s\n' "trusted_preparer_sha=$TRUSTED_PREPARER_SHA" \
+            "trusted_preparer_sha256=$TRUSTED_PREPARER_SHA256" "descriptor=$descriptor" \
+            > "$REMOTE_BAZEL_EVIDENCE_DIR/public-bundle-helper-binding.txt"
           printf 'descriptor=%s\n' "$descriptor" >> "$GITHUB_OUTPUT"
 
       - name: Prepare verified public executable bundle
@@ -274,12 +281,25 @@ jobs:
             echo "Bazel exited $rc; evidence will still be uploaded" >&2
           fi
 
+      # Checkout paths must be inside the workspace. Defer the helper checkout
+      # until after Bazel so it cannot change the candidate's build inputs.
+      - name: Checkout trusted CI helpers
+        if: always()
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+          sparse-checkout: |
+            scripts/ci/bazel-testlogs
+          path: trusted-ci
+
       - name: Archive Bazel test logs
         if: always()
         run: |
           set -euo pipefail
           archive="$REMOTE_BAZEL_EVIDENCE_DIR/bazel-testlogs.tgz"
-          python3 scripts/ci/bazel-testlogs/archive.py \
+          python3 "$GITHUB_WORKSPACE/trusted-ci/scripts/ci/bazel-testlogs/archive.py" \
             --testlogs bazel-testlogs --output "$archive"
 
       - name: Upload remote Bazel evidence
@@ -296,6 +316,7 @@ jobs:
             ${{ runner.temp }}/remote-bazel-evidence/toolchain.txt
             ${{ runner.temp }}/remote-bazel-evidence/bazel-testlogs.tgz
             ${{ runner.temp }}/remote-bazel-evidence/public-bundle.json
+            ${{ runner.temp }}/remote-bazel-evidence/public-bundle-helper-binding.txt
             ${{ runner.temp }}/remote-bazel-evidence/public-reference.json
 
       - name: Set job result to Bazel exit code

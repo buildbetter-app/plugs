@@ -16,6 +16,30 @@ go_test(
 )
 
 go_test(
+    name = "reference_recording",
+    srcs = [
+        "reference_recording_test.go",
+        "reference_runtime.go",
+    ],
+    embedsrcs = ["record_reference.py"],
+    args = ["-test.v"],
+    tags = ["manual"],
+)
+
+go_test(
+    name = "capture_runtime_test",
+    srcs = [
+        "reference_runtime.go",
+        "reference_runtime_test.go",
+    ],
+    embedsrcs = [
+        "record_reference.py",
+        "extract_reference_packet.py",
+    ],
+    args = ["-test.v"],
+)
+
+go_test(
     name = "replay",
     srcs = [
         "fixture_test.go",
@@ -80,4 +104,67 @@ filegroup(
     name = "lexicon_files",
     srcs = glob(["**"]),
     visibility = ["//visibility:public"],
+)
+
+# Source-contract tests never execute the physical native recorder.
+go_test(
+    name = "native_contract_test",
+    srcs = [
+        "manifest_test.go",
+        "native_contract_test.go",
+        "native_io_test.go",
+        "native_projection_test.go",
+    ],
+    embedsrcs = [
+        "manifest.json",
+        "native_inputs.json",
+        "run-1.json",
+    ],
+    args = ["-test.v"],
+)
+
+# Physical execution requires a separate, reviewed actual prepared-admission
+# handoff. Ordinary focused/whole gates must not request this manual target.
+go_test(
+    name = "native_recording",
+    srcs = [
+        "fixture_test.go",
+        "manifest_test.go",
+        "native_io_test.go",
+        "native_projection_test.go",
+        "native_recording_test.go",
+        "native_replay_test.go",
+        "native_hierarchy_test.go",
+        "native_membership_test.go",
+        "native_parent_compatibility_test.go",
+        "native_exclusion_test.go",
+    ],
+    embedsrcs = [
+        "manifest.json",
+        "native_inputs.json",
+        "run-1.json",
+    ],
+    args = ["-test.v"],
+    data = ["//internal/publicnative:dolt_runtime"],
+    env = {
+        "PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)",
+    },
+    deps = [
+        "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/publicnative",
+        "//internal/server/rpc",
+        "//internal/server/transport/inprocess",
+        "//internal/storage/conformance",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/postgres",
+        "//internal/storage/sqlite",
+        "//internal/testclock",
+    ],
+    tags = ["manual", "local", "requires-network"],
+    shard_count = 2,
+    timeout = "long",
 )

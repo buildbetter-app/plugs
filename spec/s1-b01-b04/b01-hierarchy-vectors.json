@@ -1,0 +1,53 @@
+{
+  "format": "plug.s1.b01.hierarchy-inputs.v1",
+  "decision": "b0d8be0f-3bde-4dbc-b4c7-51cb125c7511",
+  "scope": "source-only future reference definitions; no new execution or qualification",
+  "source": {
+    "commit": "9d6fff760b7a314b476539198504d77ce0959656",
+    "tree": "cde121d6e4119e454857ad1c3ca293e2791be840",
+    "binarySha256": "3c6bbb888431751adce98dfebc8cbeeb5869300698e8b069a4d7438fabfb3af4",
+    "supportedUntilFlag": "cmd/bd/defer.go:151-154"
+  },
+  "historicalObservation": {
+    "runs": ["41576108523", "41576714283"],
+    "acceptedRecording": "/tmp/plug-swarm/reports/S1-B01-B04-configured-1568e960-repeat-41576714283/accepted-raw/reference-recording.json",
+    "commandLabel": "B01-defer-parent",
+    "parentArgv": ["reference-engine", "defer", "b01-parent", "--reason", "recorded parent defer"],
+    "observedReferenceChildReady": true,
+    "adoptedPlugChildReady": false,
+    "disposition": "adopted indefinite-parent membership deviation; not a P74 ordering allowance",
+    "qualification": "raw-capture-unqualified / hierarchy-gap-unqualified; historical labels unchanged"
+  },
+  "futureReferenceVectors": [
+    {
+      "id": "B01-parent-indefinite",
+      "executionStatus": "not-executed-future-input-definition",
+      "parentId": "b01-indefinite-parent",
+      "childId": "b01-indefinite-child",
+      "grandchildId": "b01-indefinite-grandchild",
+      "deferArgv": ["reference-engine", "defer", "b01-indefinite-parent", "--reason", "distinct indefinite hierarchy vector"],
+      "requiredObservations": ["actual argv/exits/streams", "parent status and stored deferral readback", "public parent edges", "ready membership and explain cardinality", "controlled clock provenance"],
+      "referenceResult": "unobserved for these new IDs",
+      "adoptedPlugExpectation": "suppress direct child and grandchild by backlog category, without a timer"
+    },
+    {
+      "id": "B01-parent-timed",
+      "executionStatus": "not-executed-future-input-definition",
+      "parentId": "b01-timed-parent",
+      "childId": "b01-timed-child",
+      "grandchildId": "b01-timed-grandchild",
+      "deferArgv": ["reference-engine", "defer", "b01-timed-parent", "--until", "2099-01-01", "--reason", "distinct timed hierarchy vector"],
+      "requiredObservations": ["actual argv/exits/streams", "parent status and persisted future defer_until", "public parent edges", "ready membership and explain cardinality", "every reached Go/SQL clock bound before the cutoff"],
+      "referenceResult": "unobserved; source reasoning is not a runtime result",
+      "adoptedPlugExpectation": "category suppression only; no wake timer or expiry-parity claim"
+    }
+  ],
+  "productAssertionSource": {
+    "target": "//internal/integration/batchsql:batchsql_test",
+    "tests": ["TestB01PublicCanonicalAndLegacyHierarchyAcrossDrivers", "TestB01PublicHierarchyConflictsAndLegacyBoundaryAcrossDrivers"],
+    "drivers": ["memory", "sqlite/reopen", "postgres/reopen"],
+    "executionStatus": "source-only; not built or run in this lane"
+  },
+  "fullS1": "0/28",
+  "E3": "4/5"
+}

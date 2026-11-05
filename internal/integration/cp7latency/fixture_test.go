@@ -44,8 +44,11 @@ func beadRef(n int) model.Ref {
 }
 
 func document(n int) pipeline.Document {
+	// Persist the same creation instant for every seed and reset body so
+	// creation-time ordering retains the fixture's existing ID tie-break.
+	createdAt := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	d := pipeline.Document{ID: beadRef(n).ID, Type: "issue", Project: projectName,
-		Fields: map[string]any{"title": fmt.Sprintf("CP7 bead %06d", n), "status": "todo", "priority": 0}}
+		Fields: map[string]any{"title": fmt.Sprintf("CP7 bead %06d", n), "status": "todo", "priority": 0}, CreatedAt: &createdAt}
 	if (n-1)%11 != 0 {
 		parent := beadRef(n - 1)
 		d.Parent = &parent
@@ -256,6 +259,7 @@ func (f *fixture) compose(t *testing.T) {
 			_, err := app.Service.Get(ctx, p, service.GetRequest{ID: r.Ref})
 			return err
 		},
+		AuthorizeReadBatch: app.Service.AuthorizeReadBatch,
 		ParentProjection: &viewops.ParentProjectionConfig{
 			Project: func(ctx context.Context, p model.PrincipalRef, r driver.Reader, refs []model.Ref) (viewops.ParentProjectionAuthority, error) {
 				a, err := app.Checker.AuthorizeParentProjections(ctx, p, r, refs)
@@ -495,6 +499,9 @@ func (f *fixture) checkGrouped(t *testing.T, result viewops.Result, divisor int)
 
 func validateGrouped(result viewops.Result, n, divisor int) error {
 	population := n / divisor
+	if result.Count != nil {
+		return fmt.Errorf("ordinary grouped result emitted countOnly output")
+	}
 	if population > viewops.OrdinaryCandidateCap {
 		return fmt.Errorf("ordinary count bypassed candidate cap")
 	}
@@ -506,6 +513,9 @@ func validateGrouped(result viewops.Result, n, divisor int) error {
 	}
 	g := result.Groups[0]
 	wantItems := min(population, viewops.DefaultOutputBudget)
+	if result.NextCursor != nil && result.NextCursor.Index != uint64(wantItems) {
+		return fmt.Errorf("grouped cursor index differs from emitted prefix")
+	}
 	if len(g.Items) != wantItems {
 		return fmt.Errorf("grouped payload cardinality=%d want=%d", len(g.Items), wantItems)
 	}
@@ -528,7 +538,7 @@ func validateGrouped(result viewops.Result, n, divisor int) error {
 		}
 	}
 	if population > wantItems {
-		if g.Elided == nil || g.Elided.Count != population-wantItems {
+		if g.Elided == nil || g.Elided.Count != population-wantItems || g.Elided.ContinueIndex != uint64(wantItems) {
 			return fmt.Errorf("grouped count excludes elided authorized tail")
 		}
 	} else if g.Elided != nil {

@@ -12,12 +12,14 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/restore"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/plugins/authzfixed"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
 	"github.com/buildbetter-app/plugs/internal/server/authzrpc"
@@ -71,7 +73,7 @@ func dumpHead(t *testing.T, e *endpoint) ([]byte, *dumpformat.Archive) {
 	var data bytes.Buffer
 	cursor, dumpID := "", ""
 	for page := 0; page < 4096; page++ {
-		params := map[string]any{"history": "head", "pageSize": 1024, "humanPresence": presence}
+		params := map[string]any{"history": "head", "pageSize": 65536, "humanPresence": presence}
 		if cursor != "" {
 			params["cursor"] = cursor
 		}
@@ -104,6 +106,15 @@ func dumpHead(t *testing.T, e *endpoint) ([]byte, *dumpformat.Archive) {
 
 func restoreHead(t *testing.T, e *endpoint, data []byte, archive *dumpformat.Archive) string {
 	t.Helper()
+	// Keep the public envelope unchanged while retaining the exact failed
+	// phase in test.log before result's caller-level fatal attribution.
+	call := func(phase, method string, params map[string]any) map[string]any {
+		t.Helper()
+		t.Logf("NATIVE_RESTORE_RPC phase=%s boundary=begin method=%s", phase, method)
+		reply := e.call(t, "", method, params)
+		t.Logf("NATIVE_RESTORE_RPC phase=%s boundary=returned method=%s http=%d reply=%s", phase, method, reply.status, reply.raw)
+		return result(t, reply)
+	}
 	raw, err := json.Marshal(archive.Manifest())
 	if err != nil {
 		t.Fatal(err)
@@ -117,20 +128,20 @@ func restoreHead(t *testing.T, e *endpoint, data []byte, archive *dumpformat.Arc
 	meta := func(n int) map[string]any {
 		return map[string]any{"project": epics, "idempotencyKey": fmt.Sprintf("ep6-restore-%032x", n)}
 	}
-	begin := result(t, e.call(t, "", "admin.restore.begin", map[string]any{"manifest": manifest, "history": "head", "humanPresence": presence, "_meta": meta(0)}))
+	begin := call("begin", "admin.restore.begin", map[string]any{"manifest": manifest, "history": "head", "humanPresence": presence, "_meta": meta(0)})
 	id := begin["restoreId"].(string)
 	for page, offset := 0, 0; offset < len(data); page++ {
-		end := offset + 1024
+		end := offset + 65536
 		if end > len(data) {
 			end = len(data)
 		}
 		chunk := data[offset:end]
 		sum := sha256.Sum256(chunk)
-		result(t, e.call(t, "", "admin.restore.chunk", map[string]any{"restoreId": id, "page": page, "data": base64.StdEncoding.EncodeToString(chunk), "sha256": hex.EncodeToString(sum[:]), "humanPresence": presence, "_meta": meta(page + 1)}))
+		call(fmt.Sprintf("chunk/%d", page), "admin.restore.chunk", map[string]any{"restoreId": id, "page": page, "data": base64.StdEncoding.EncodeToString(chunk), "sha256": hex.EncodeToString(sum[:]), "humanPresence": presence, "_meta": meta(page + 1)})
 		offset = end
 	}
 	sum := sha256.Sum256(raw)
-	finish := result(t, e.call(t, "", "admin.restore.finish", map[string]any{"restoreId": id, "manifestSha256": hex.EncodeToString(sum[:]), "humanPresence": presence, "_meta": meta(1000000)}))
+	finish := call("finish", "admin.restore.finish", map[string]any{"restoreId": id, "manifestSha256": hex.EncodeToString(sum[:]), "humanPresence": presence, "_meta": meta(1000000)})
 	if finish["state"] != "complete" {
 		t.Fatalf("restore incomplete: %v", finish)
 	}
@@ -382,6 +393,154 @@ func requireReadOnlyRestoredFacts(t *testing.T, f *fixture, refs []model.Ref) {
 		t.Fatal(err)
 	}
 	requireAllocatorBytes(t, current, persistedAllocatorSnapshot(t, f.store))
+}
+
+// TestEpicProgressNativeRestoreReopenDetachUsesIndexedHierarchy exercises the
+// actual paged native dump/restore path at the 20,000-bead workload. The
+// reopened Writer must use the certified direct-parent source index rather than
+// enumerating every bead during the unchanged two-second pre-phase.
+func TestEpicProgressNativeRestoreReopenDetachUsesIndexedHierarchy(t *testing.T) {
+	dir := t.TempDir()
+	source := newFixture(t, "sqlite", filepath.Join(dir, "source-large.db"), true)
+	_, child := buildLargeEpic(t, source)
+	sourceAdmin := admin(t, source.store, source.lease)
+	data, archive := dumpHead(t, sourceAdmin)
+	if !archive.Native() {
+		t.Fatal("large fixture dump was not native")
+	}
+	sourceAdmin.close(t)
+	source.close(t)
+
+	path := filepath.Join(dir, "restored-large.db")
+	target, lease, closeTarget := openRenewingTarget(t, "sqlite", path)
+	targetAdmin := admin(t, target, lease)
+	incarnation := restoreHead(t, targetAdmin, data, archive)
+	targetAdmin.close(t)
+	closeTarget()
+
+	reopened := newFixtureMode(t, "sqlite", path, true, false)
+	reads := reopened.reads
+	reads.reset()
+	writer := pipeline.New(&observedWriteStore{Store: reopened.store, observer: reads}, reopened.lease, pipeline.WithOntology(service.NewOntology(nil)))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, err := writer.Apply(ctx, model.PrincipalRef{Kind: "user", ID: "operator"}, model.ChangeSet{Ops: []model.Op{{
+		Kind:     model.OpReparent,
+		Reparent: &model.ReparentOp{Target: child},
+	}}}, model.WriteMeta{Project: visible, Method: "tx.apply", AgentLabel: "native-restore-detach", IdempotencyKey: "00000000000000000000000000000011"})
+	if err != nil {
+		t.Fatalf("native restore/reopen detach failed: %v (queries=%d parent_reads=%d inverse_reads=%d)", err, reads.queryCount(), reads.hierarchyCount(), reads.inverseCount())
+	}
+	if reads.queryCount() != 0 {
+		t.Fatalf("native restore/reopen detach used whole-bead Query fallback: queries=%d hierarchy_reads=%d inverse_reads=%d", reads.queryCount(), reads.hierarchyCount(), reads.inverseCount())
+	}
+	if reads.hierarchyCount() == 0 || reads.inverseCount() == 0 {
+		t.Fatalf("native restore/reopen detach did not use bounded source reads: hierarchy=%d inverse=%d", reads.hierarchyCount(), reads.inverseCount())
+	}
+	if rows := len(persistedClosure(t, reopened.store)); rows != 20049 {
+		t.Fatalf("native restore/reopen detach left %d closure rows, want 20049", rows)
+	}
+	t.Logf("native restore/reopen detach indexed: incarnation=%s whole-bead queries=%d hierarchy_reads=%d inverse_reads=%d", incarnation, reads.queryCount(), reads.hierarchyCount(), reads.inverseCount())
+}
+
+func TestEpicProgressNativeRestoreDetachUsesIndexedHierarchyAcrossBackends(t *testing.T) {
+	for _, backend := range []string{"memory", "postgres"} {
+		t.Run(backend, func(t *testing.T) {
+			dir := t.TempDir()
+			source := newFixture(t, backend, filepath.Join(dir, "source-large.db"), true)
+			_, child := buildLargeEpic(t, source)
+			sourceAdmin := admin(t, source.store, source.lease)
+			data, archive := dumpHead(t, sourceAdmin)
+			if !archive.Native() {
+				t.Fatal("large fixture dump was not native")
+			}
+			sourceAdmin.close(t)
+			source.close(t)
+
+			target, lease, closeTarget := openRenewingTarget(t, backend, filepath.Join(dir, "restored-large.db"))
+			targetAdmin := admin(t, target, lease)
+			incarnation := restoreHead(t, targetAdmin, data, archive)
+			targetAdmin.close(t)
+
+			var targetStore driver.Store = target
+			var targetLease driver.ActiveLease = lease
+			if backend == "sqlite" {
+				closeTarget()
+				reopened := newFixtureMode(t, backend, filepath.Join(dir, "restored-large.db"), true, false)
+				targetStore, targetLease = reopened.store, reopened.lease
+			}
+
+			reads := &readObserver{}
+			writer := pipeline.New(&observedWriteStore{Store: targetStore, observer: reads}, targetLease, pipeline.WithOntology(service.NewOntology(nil)))
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if _, err := writer.Apply(ctx, model.PrincipalRef{Kind: "user", ID: "operator"}, model.ChangeSet{Ops: []model.Op{{
+				Kind:     model.OpReparent,
+				Reparent: &model.ReparentOp{Target: child},
+			}}}, model.WriteMeta{Project: visible, Method: "tx.apply", AgentLabel: "native-restore-detach", IdempotencyKey: "00000000000000000000000000000012"}); err != nil {
+				t.Fatalf("native restore detach failed: %v (queries=%d hierarchy_reads=%d inverse_reads=%d)", err, reads.queryCount(), reads.hierarchyCount(), reads.inverseCount())
+			}
+			if reads.queryCount() != 0 {
+				t.Fatalf("native restore detach used whole-bead Query fallback: queries=%d hierarchy_reads=%d inverse_reads=%d", reads.queryCount(), reads.hierarchyCount(), reads.inverseCount())
+			}
+			if reads.hierarchyCount() == 0 || reads.inverseCount() == 0 {
+				t.Fatalf("native restore detach did not use bounded source reads: hierarchy=%d inverse=%d", reads.hierarchyCount(), reads.inverseCount())
+			}
+			if rows := len(persistedClosure(t, targetStore)); rows != 20049 {
+				t.Fatalf("native restore detach left %d closure rows, want 20049", rows)
+			}
+			t.Logf("native %s restore detach indexed: incarnation=%s whole-bead queries=%d hierarchy_reads=%d inverse_reads=%d", backend, incarnation, reads.queryCount(), reads.hierarchyCount(), reads.inverseCount())
+		})
+	}
+}
+
+type observedWriteStore struct {
+	driver.Store
+	observer *readObserver
+}
+
+func (s *observedWriteStore) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
+	reader, err := s.Store.Read(ctx, view)
+	if err != nil {
+		return nil, err
+	}
+	return &observedReader{Reader: reader, observer: s.observer}, nil
+}
+
+func (s *observedWriteStore) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
+	tx, err := s.Store.Write(ctx, lease)
+	if err != nil {
+		return nil, err
+	}
+	return &observedWriteTx{WriteTx: tx, observer: s.observer}, nil
+}
+
+type observedWriteTx struct {
+	driver.WriteTx
+	observer *readObserver
+}
+
+func (t *observedWriteTx) Query(ctx context.Context, query driver.Query) (driver.Page[driver.Record], error) {
+	t.observer.queries.Add(1)
+	return t.WriteTx.Query(ctx, query)
+}
+func (t *observedWriteTx) HierarchyChildren(ctx context.Context, parents []model.Ref, limit int) ([]driver.Record, bool, error) {
+	t.observer.hierarchyChildren.Add(1)
+	return t.WriteTx.(driver.HierarchyChildrenReader).HierarchyChildren(ctx, parents, limit)
+}
+func (t *observedWriteTx) HierarchyChildrenExcluding(ctx context.Context, parents, excluded []model.Ref, limit int) ([]driver.Record, bool, error) {
+	t.observer.hierarchyChildren.Add(1)
+	return t.WriteTx.(driver.HierarchyChildrenExcludingReader).HierarchyChildrenExcluding(ctx, parents, excluded, limit)
+}
+func (t *observedWriteTx) InverseSourceLinks(ctx context.Context, targets []model.Ref, kinds []driver.IncomingLinkKind, excluded []model.Ref, limit int) ([]driver.Record, bool, error) {
+	t.observer.inverseSourceLinks.Add(1)
+	return t.WriteTx.(driver.InverseSourceLinksReader).InverseSourceLinks(ctx, targets, kinds, excluded, limit)
+}
+func (t *observedWriteTx) DerivedRowsForPrefixes(ctx context.Context, table driver.DerivedTable, prefixes []string) ([]driver.DerivedRow, error) {
+	return t.WriteTx.(driver.DerivedPrefixReader).DerivedRowsForPrefixes(ctx, table, prefixes)
+}
+func (t *observedWriteTx) PutGraphRecord(ctx context.Context, record driver.Record, parent *model.Ref, links []driver.SourceLink) error {
+	return t.WriteTx.(driver.GraphSourceWriter).PutGraphRecord(ctx, record, parent, links)
 }
 
 // Derived hierarchy state is part of a usable restore: count reads can succeed

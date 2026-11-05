@@ -3,6 +3,7 @@ package model
 import (
 	"encoding/json"
 	"fmt"
+	"unicode/utf8"
 )
 
 type Precondition struct {
@@ -117,12 +118,61 @@ func (m *LinkMetadata) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// LinkTargetKind selects the target identity domain. The zero value is local.
+// External identities are opaque and are never resolved against local beads.
+type LinkTargetKind string
+
+const (
+	LinkTargetLocal    LinkTargetKind = "local"
+	LinkTargetExternal LinkTargetKind = "external"
+)
+
+// Normalized canonicalizes the local default to omission without changing IDs.
+func (k LinkTargetKind) Normalized() (LinkTargetKind, error) {
+	switch k {
+	case "", LinkTargetLocal:
+		return "", nil
+	case LinkTargetExternal:
+		return k, nil
+	default:
+		return "", fmt.Errorf("unsupported link target kind %q", k)
+	}
+}
+
+func (k *LinkTargetKind) UnmarshalJSON(data []byte) error {
+	var value string
+	if err := decodeJSON(data, &value); err != nil {
+		return err
+	}
+	if value != string(LinkTargetLocal) && value != string(LinkTargetExternal) {
+		return fmt.Errorf("link target kind must be local or external")
+	}
+	*k = LinkTargetKind(value)
+	return nil
+}
+
+// ValidateLinkTarget validates the explicit external arm without interpreting
+// its ID. Local references retain the producer's ordinary resolution rules.
+func ValidateLinkTarget(kind LinkTargetKind, target Ref) error {
+	normalized, err := kind.Normalized()
+	if err != nil {
+		return err
+	}
+	if normalized == LinkTargetExternal {
+		if err := target.Validate(); err != nil || !target.IsID() || target.ID == "" || !utf8.ValidString(target.ID) || !target.Branch.IsZero() {
+			return fmt.Errorf("external link target requires a nonempty ID on branch zero")
+		}
+	}
+	return nil
+}
+
 type LinkOp struct {
-	Kind     OpKind        `json:"kind"`
-	From     Ref           `json:"from"`
-	To       Ref           `json:"to"`
-	LinkKind string        `json:"linkKind"`
-	Metadata *LinkMetadata `json:"metadata,omitempty"`
+	TargetKind LinkTargetKind `json:"targetKind,omitempty"`
+	Kind       OpKind         `json:"kind"`
+	From       Ref            `json:"from"`
+	To         Ref            `json:"to"`
+	LinkKind   string         `json:"linkKind"`
+	Metadata   *LinkMetadata  `json:"metadata,omitempty"`
 }
 type CommentOp struct {
 	Kind   OpKind `json:"kind"`
@@ -213,6 +263,9 @@ func validateReparent(value ReparentOp) error {
 }
 
 func validateLink(value LinkOp) error {
+	if err := ValidateLinkTarget(value.TargetKind, value.To); err != nil {
+		return err
+	}
 	if value.Kind != OpLink && value.Kind != OpUnlink {
 		return fmt.Errorf("link operation has kind %q", value.Kind)
 	}
@@ -342,6 +395,11 @@ func (o Op) MarshalJSON() ([]byte, error) {
 		}
 		value := *o.Link
 		value.Kind = o.Kind
+		var err error
+		value.TargetKind, err = value.TargetKind.Normalized()
+		if err != nil {
+			return nil, err
+		}
 		if err := validateLink(value); err != nil {
 			return nil, err
 		}

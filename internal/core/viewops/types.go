@@ -7,6 +7,7 @@ package viewops
 
 import (
 	"context"
+	"time"
 
 	coreevents "github.com/buildbetter-app/plugs/internal/core/events"
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -80,10 +81,11 @@ const (
 // DirectBlockerEdge is the redacted, consumer-facing projection of one
 // producer edge. Project and raw status are intentionally absent.
 type DirectBlockerEdge struct {
-	Blocker model.Ref          `json:"blocker"`
-	Kind    string             `json:"kind"`
-	State   DirectBlockerState `json:"state"`
-	Reason  string             `json:"reason,omitempty"`
+	TargetKind model.LinkTargetKind `json:"targetKind,omitempty"`
+	Blocker    model.Ref            `json:"blocker"`
+	Kind       string               `json:"kind"`
+	State      DirectBlockerState   `json:"state"`
+	Reason     string               `json:"reason,omitempty"`
 }
 
 // DirectBlockerVerdict is the bounded verdict returned by a configured host
@@ -104,7 +106,18 @@ type Config struct {
 	Views              ViewReader
 	Readiness          ReadinessReader
 	DirectBlockers     DirectBlockerSource
-	ProjectionStatus   coreevents.ProjectionStatusReader
+	// StaleOntologySource selects the configured protected ontology from the
+	// same pinned reader as an age query. If configured, missing/invalid source
+	// refuses and never falls back to the process-local resolver.
+	StaleOntologySource service.OntologySourceLocator
+	// StaleDefaultOntology is the exact ontology instance used by the Writer
+	// and Service on a no-plugin host. Only its immutable built-in default mode
+	// may serve a stale query without a protected, pinned source.
+	StaleDefaultOntology *service.Ontology
+	// Now is sampled once for the first page of an age query. Continuations
+	// reuse its signed cutoff; nil uses the production wall clock.
+	Now              func() time.Time
+	ProjectionStatus coreevents.ProjectionStatusReader
 	// ProjectionBinding is the durable checkpoint binding whose status is
 	// surfaced with view results and view.watch frames. "core" is the stable
 	// default used by the projection composition root.
@@ -197,12 +210,28 @@ type Cursor struct {
 	Incarnation      string         `json:"incarnation"`
 	Revision         model.Revision `json:"revision"`
 	Index            uint64         `json:"index"`
+	// StaleResumeDigest identifies the last emitted visible row by a fixed-size
+	// digest of its ID. The signed definition and snapshot recover its sort
+	// position without embedding unbounded sort values or denied-row indexes.
+	StaleResumeDigest string     `json:"staleResume,omitempty"`
+	StaleCutoff       *time.Time `json:"staleCutoff,omitempty"`
+}
+
+// StaleFilter is an execution-only view.run option. Saved definitions and
+// the shared Filter used by ready/claimNext/watch have no age semantics.
+type StaleFilter struct {
+	Days int `json:"days"`
+	// Status is a pointer so the wire layer can distinguish an omitted
+	// status (the default active categories) from an explicitly supplied
+	// empty status (an exact, unknown status that matches nothing).
+	Status *string `json:"status,omitempty"`
 }
 
 type RunRequest struct {
 	// CountOnly counts the complete ordinary predicate set without item paging.
 	// It is an execution option and never part of a saved Definition.
 	CountOnly  bool
+	Stale      *StaleFilter
 	ViewID     string
 	Definition *Definition
 	Cursor     *Cursor

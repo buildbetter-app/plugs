@@ -141,21 +141,18 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/ci/plug-bazel-delivery.py selection --output "$PLUG_BAZEL_EVIDENCE_DIR"
-          mandatory='//tools/roundtrip:public_beads_runtime_test'
-          resolved="$PLUG_BAZEL_EVIDENCE_DIR/selection/resolved-test-targets.txt"
-          test -f "$resolved"
-          if grep -Fxq "$mandatory" "$resolved"; then
-            echo 'selected=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'selected=false' >> "$GITHUB_OUTPUT"
-          fi
+          selected="$(python3 scripts/ci/plug-bazel-delivery.py public-selection --output "$PLUG_BAZEL_EVIDENCE_DIR")"
+          [[ "$selected" == true || "$selected" == false ]]
+          printf 'selected=%s\n' "$selected" >> "$GITHUB_OUTPUT"
 
       - name: Prepare verified public Beads executable
         if: ${{ steps.public_runtime_selection.outputs.selected == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          TRUSTED_PREPARER_SHA: cdc2948fb60572b9bc694269ac8a5fdff6720de3
-          TRUSTED_PREPARER_SHA256: a4ad328f11d59bb41cdf814a47b647e4b419a67675e35c111b8c41f878f12280
+          # Reviewed helper supports the separately admitted native descriptor.
+          # Ordinary CI retains its existing companion descriptor below.
+          TRUSTED_PREPARER_SHA: 70230ccd92597a96000f90223c5d89b103e25426
+          TRUSTED_PREPARER_SHA256: 6a84191fd016ddcb637cb5a470e88727176a70e8b5c6e8e6c69f33db6a1559eb
           PUBLIC_BUNDLE_DESCRIPTOR: 41398730774:13120521766:66de7c070d365bbd7fc2bd39ed822e5bf72c21efabe0add9a5e26d07bf170a62
         run: |
           set -euo pipefail

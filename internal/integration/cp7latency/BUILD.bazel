@@ -39,7 +39,8 @@ go_test(
 
 # These two tests always execute all three fractions and all three operations.
 # Their explicit timeouts cover 24 attempts/case at the unchanged 30s request
-# bound, plus real corpus setup. Neither is manual or omitted from //....
+# bound, plus real corpus setup. Run them explicitly for latency qualification;
+# ordinary //... retains correctness and the separate dense semantic controls.
 [
     go_test(
         name = "cp7_latency_" + engine + "_test",
@@ -49,6 +50,7 @@ go_test(
         embedsrcs = ["workload.json"],
         env = {"CP7_LATENCY_ENGINE": engine},
         size = "enormous",
+        tags = ["manual"],
         timeout = "eternal",
         deps = _DEPS,
     )
@@ -57,6 +59,7 @@ go_test(
 
 test_suite(
     name = "cp7_latency_test",
+    tags = ["manual"],
     tests = [
         ":cp7_correctness_test",
         ":cp7_dense_semantics_test",

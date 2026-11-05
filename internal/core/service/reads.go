@@ -4,8 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
+	"errors"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -14,24 +15,47 @@ import (
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
+func coreReadRef(ref model.Ref) error {
+	if err := ref.Validate(); err != nil || !ref.IsID() || ref.ID == "" || !ref.Branch.IsZero() {
+		return failure("invalid_params", "point reads require a nonempty ID on the main branch")
+	}
+	if strings.HasPrefix(ref.ID, "workflow:") {
+		return validateWorkflowRef(ref)
+	}
+	return nil
+}
+
+func cloneMap(value map[string]any) map[string]any {
+	if value == nil {
+		return nil
+	}
+	copy := make(map[string]any, len(value))
+	for key, item := range value {
+		copy[key] = item
+	}
+	return copy
+}
+
 func (s *Service) Get(ctx context.Context, by model.PrincipalRef, req GetRequest) (GetResult, error) {
 	if workflowRef(req.ID) {
 		if err := validateWorkflowRef(req.ID); err != nil {
 			return GetResult{}, err
 		}
-		if req.AsOf != nil {
-			return GetResult{}, failure("invalid_params", "workflow items have no historical asOf view")
+		if s.workflow != nil {
+			item, err := s.workflow.GetWithResolver(ctx, by, req.ID, workflowMeta(by, "bead.get", req.Project, req.Agent), s.workflowBlockerResolver(ctx, by, workflowMeta(by, "bead.get", req.Project, req.Agent)))
+			if err == nil {
+				if req.AsOf != nil {
+					return GetResult{}, failure("invalid_params", "workflow items have no historical asOf view")
+				}
+				return workflowGetResult(item), nil
+			}
+			var typed *model.Error
+			if !errors.As(err, &typed) || typed.Data.Code != "not_found" {
+				return GetResult{}, err
+			}
 		}
-		if s.workflow == nil {
-			return GetResult{}, failure("not_found", "workflow item was not found")
-		}
-		item, err := s.workflow.Get(ctx, by, req.ID, workflowMeta(by, "bead.get", req.Project, req.Agent))
-		if err != nil {
-			return GetResult{}, err
-		}
-		return workflowGetResult(item), nil
 	}
-	if err := namedRef(req.ID); err != nil {
+	if err := coreReadRef(req.ID); err != nil {
 		return GetResult{}, err
 	}
 	r, err := s.reader(ctx, by, req.AsOf)
@@ -55,6 +79,32 @@ func (s *Service) Get(ctx context.Context, by model.PrincipalRef, req GetRequest
 		return GetResult{}, err
 	}
 	result := GetResult{Bead: bead, Attachments: doc.Attachments}
+	if s.workflow != nil && req.AsOf == nil {
+		links, err := s.workflow.Relations(ctx, by, req.ID, workflowMeta(by, "bead.get", req.Project, req.Agent))
+		if err != nil {
+			return GetResult{}, err
+		}
+		result.Bead.Links = append(result.Bead.Links, links...)
+		// These visible relations come from the actual checkpoint index. The
+		// ordinary row remains in its own graph without a shadow parent row.
+		for _, relation := range links {
+			if relation.From != req.ID.ID || relation.Kind != "parent-child" {
+				continue
+			}
+			if err := validateWorkflowRef(relation.To); err != nil {
+				return GetResult{}, failure("internal_error", "invalid persisted mixed hierarchy parent")
+			}
+			if result.Bead.Parent != "" && result.Bead.Parent != relation.To.ID {
+				return GetResult{}, failure("internal_error", "conflicting persisted mixed hierarchy parents")
+			}
+			result.Bead.Parent = relation.To.ID
+		}
+		blocked, err := s.workflow.OrdinaryBlocked(ctx, by, []string{req.ID.ID}, workflowMeta(by, "bead.get", doc.Project, req.Agent))
+		if err != nil {
+			return GetResult{}, err
+		}
+		result.Bead.Blocked = result.Bead.Blocked || blocked[req.ID.ID]
+	}
 	if len(doc.Comments) != 0 {
 		result.Comments = make([]Comment, len(doc.Comments))
 		for i, comment := range doc.Comments {
@@ -153,33 +203,79 @@ func validatePosition(position *PagePosition) error {
 	return nil
 }
 
-func (s *Service) readyItems(ctx context.Context, req ReadyRequest, r queryReader) ([]Bead, error) {
-	graph, err := scanBeads(ctx, r)
-	if err != nil {
-		return nil, err
-	}
-	items := []Bead{}
-	now := s.now()
-	ids := sortedIDs(graph)
-	priorities := map[string]int{}
-	for _, id := range ids {
-		p, err := priority(graph[id].doc)
-		if err != nil {
-			return nil, err
+// Only a trusted ReadyWithFilter traversal carries this detached graph between
+// internal pages. Readers, authorization facts and membership decisions are
+// never retained here. Every page validates the source and reevaluates its live
+// clock, leases, policy and ordering on that page's own reader.
+type readyGraphSelection struct {
+	owner *Service
+	asOf  AsOf
+	graph map[string]storedBead
+}
+
+func (s *Service) readyItems(ctx context.Context, by model.PrincipalRef, req ReadyRequest, r driver.Reader) ([]Bead, map[string]readyOrderKey, error) {
+	var graph map[string]storedBead
+	if req.readySourceBinding && req.readyGraph != nil {
+		selection := req.readyGraph
+		view := r.Snapshot()
+		if selection.owner != s || view.At == nil {
+			return nil, nil, failure("cursor_invalid", "invalid guarded ready source")
 		}
-		priorities[id] = p
+		if selection.graph != nil {
+			if selection.asOf.Incarnation != view.Incarnation || selection.asOf.Revision.String() != view.At.String() {
+				return nil, nil, failure("cursor_invalid", "durable ready source changed while collecting candidates; restart paging")
+			}
+			graph = selection.graph
+		} else {
+			var err error
+			graph, err = scanBeads(ctx, r)
+			if err != nil {
+				return nil, nil, err
+			}
+			selection.graph = graph
+			selection.asOf = AsOf{Revision: *view.At, Incarnation: view.Incarnation}
+		}
+	} else {
+		var err error
+		graph, err = scanBeads(ctx, r)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
-	sort.SliceStable(ids, func(i, j int) bool { return priorities[ids[i]] < priorities[ids[j]] })
-	for _, id := range ids {
+	graphIDs := sortedIDs(graph)
+	workflowBlocked := map[string]bool{}
+	if s.workflow != nil {
+		resolver := &workflowCoreResolver{service: s, principal: by, graph: graph}
+		facts, _, err := s.workflow.OrdinaryParentSnapshot(ctx, by, graphIDs, workflowMeta(by, "bead.ready", req.Project, req.Agent), resolver)
+		if err != nil {
+			return nil, nil, err
+		}
+		lookup := func(id string) (workflowplugin.OrdinaryParentFact, error) { return facts[id], nil }
+		for _, id := range graphIDs {
+			blocked, err := resolver.mixedParentBlocked(ctx, model.RefByID(id, model.Natural64(0)), lookup)
+			if err != nil {
+				return nil, nil, err
+			}
+			workflowBlocked[id] = blocked
+		}
+	}
+	// Membership is always evaluated against the complete current graph. P74
+	// applies only to the order of this exact set, before any page is cut.
+	now := s.now().UTC()
+	eligible := map[string]storedBead{}
+	for _, id := range graphIDs {
 		row := graph[id]
 		st := state(row.doc)
 		if !matchesFilter(row, req.Project, req.Filter) || st.Template || !s.ontology.effective(st.Project).ReadyEligible(st.Type, st.Status) {
 			continue
 		}
+		if workflowBlocked[row.doc.ID] || row.doc.Fields["blocked"] == true {
+			continue
+		}
 		if row.doc.Lease != nil {
 			lease, err := s.effectiveLease(ctx, row.doc.ID, row.doc.Lease)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			if now.Before(lease.ExpiresAt) {
 				continue
@@ -187,18 +283,46 @@ func (s *Service) readyItems(ctx context.Context, req ReadyRequest, r queryReade
 		}
 		unblocked, err := s.ontology.readyDependencies(row.doc, graph)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if !unblocked {
 			continue
 		}
+		// Only the authorized membership needs ordering inputs. In particular,
+		// a denied legacy row with unknown creation time must not prevent an
+		// otherwise valid authorized set from being read.
+		if req.authorizationFilter != nil {
+			bead, err := beadValue(row)
+			if err != nil {
+				return nil, nil, err
+			}
+			allowed, err := req.authorizationFilter(ctx, r, bead)
+			if err != nil {
+				return nil, nil, err
+			}
+			if !allowed {
+				continue
+			}
+		}
+		eligible[id] = row
+	}
+	keys, err := readyOrderKeys(ctx, r, eligible, now)
+	if err != nil {
+		return nil, nil, err
+	}
+	ids := sortedIDs(eligible)
+	sortReadyIDs(ids, keys)
+	items := make([]Bead, 0, len(ids))
+	for _, id := range ids {
+		row := eligible[id]
 		bead, err := beadValue(row)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		bead.CreatedAt = keys[id].CreatedAt
 		items = append(items, bead)
 	}
-	return items, nil
+	return items, keys, nil
 }
 
 func (s *Service) readyPage(ctx context.Context, by model.PrincipalRef, req ReadyRequest, restartOnRevision bool) (BeadPage, error) {
@@ -214,12 +338,30 @@ func (s *Service) readyPage(ctx context.Context, by model.PrincipalRef, req Read
 		return BeadPage{}, err
 	}
 	defer r.Close()
-	items, err := s.readyItems(ctx, req, r)
+	items, keys, err := s.readyItems(ctx, by, req, r)
 	if err != nil {
 		return BeadPage{}, err
 	}
+	includeEphemeral := true
+	if req.Filter != nil && req.Filter.IncludeEphemeral != nil {
+		includeEphemeral = *req.Filter.IncludeEphemeral
+	}
+	if s.workflow != nil && includeEphemeral {
+		active, err := s.workflow.ActiveIDsFor(ctx, by, workflowMeta(by, "bead.ready", req.Project, req.Agent))
+		if err != nil {
+			return BeadPage{}, err
+		}
+		filtered := items[:0]
+		for _, item := range items {
+			if _, collides := active[item.ID]; collides {
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		items = filtered
+	}
 	if restartOnRevision && req.ClaimNextSeed != "" {
-		items, err = spreadClaimNextItems(items, req.ClaimNextSeed)
+		items, err = spreadClaimNextItems(items, req.ClaimNextSeed, keys)
 		if err != nil {
 			return BeadPage{}, err
 		}
@@ -228,14 +370,33 @@ func (s *Service) readyPage(ctx context.Context, by model.PrincipalRef, req Read
 		return BeadPage{}, err
 	}
 	view := r.Snapshot()
-	return pageResult(items, limit, req.Position, AsOf{Revision: *view.At, Incarnation: view.Incarnation}, false, restartOnRevision)
+	membership := ""
+	if req.readySourceBinding {
+		// Internal guarded collection binds the entire core order before any
+		// slice, including a cutoff change without a durable revision. The
+		// guard replaces this internal value with its authorized public digest.
+		h := sha256.New()
+		var length [8]byte
+		for _, item := range items {
+			binary.BigEndian.PutUint64(length[:], uint64(len(item.ID)))
+			_, _ = h.Write(length[:])
+			_, _ = h.Write([]byte(item.ID))
+		}
+		membership = hex.EncodeToString(h.Sum(nil))
+	}
+	page, err := pageResult(items, limit, req.Position, AsOf{Revision: *view.At, Incarnation: view.Incarnation}, false, restartOnRevision)
+	if err == nil {
+		page.ReadyMembership = membership
+	}
+	return page, err
 }
 
-// spreadClaimNextItems rotates each equal-priority group by a stable offset.
-// Priority groups stay contiguous, so the queue still drains every lower
-// priority before considering a higher one; only ID ties are spread between
-// concurrent request keys. The ordinary bead.ready path never calls this.
-func spreadClaimNextItems(items []Bead, seed string) ([]Bead, error) {
+// spreadClaimNextItems rotates equal hybrid-key groups by a stable offset.
+// It never crosses a bucket, rank or creation-time boundary. The optional
+// projection preserves the existing helper's priority-only test callers;
+// the live queue always supplies the complete keys from its pinned snapshot.
+// The ordinary bead.ready path never calls this.
+func spreadClaimNextItems(items []Bead, seed string, order ...map[string]readyOrderKey) ([]Bead, error) {
 	if len(items) < 2 || seed == "" {
 		return items, nil
 	}
@@ -251,7 +412,12 @@ func spreadClaimNextItems(items []Bead, seed string) ([]Bead, error) {
 			if err != nil {
 				return nil, err
 			}
-			if priority != groupPriority {
+			same := priority == groupPriority
+			if len(order) != 0 {
+				a, b := order[0][ordered[start].ID], order[0][ordered[end].ID]
+				same = a.Bucket == b.Bucket && a.Rank == b.Rank && a.CreatedAt.Equal(b.CreatedAt)
+			}
+			if !same {
 				break
 			}
 			end++
@@ -272,6 +438,24 @@ func spreadClaimNextItems(items []Bead, seed string) ([]Bead, error) {
 
 func (s *Service) Ready(ctx context.Context, by model.PrincipalRef, req ReadyRequest) (BeadPage, error) {
 	return s.readyCombined(ctx, by, req, false)
+}
+
+// ReadyWithFilter is the composition-root entry point for a compiled finite
+// authorization predicate. Keeping this capability separate from the public
+// ReadyRequest prevents a transport caller from supplying an arbitrary
+// predicate while allowing the guarded adapter to filter before pageResult.
+func (s *Service) ReadyWithFilter(ctx context.Context, by model.PrincipalRef, req ReadyRequest, filter ReadyAuthorizer) (BeadPage, error) {
+	req.authorizationFilter = filter
+	req.readySourceBinding = true
+	req.readyGraph = &readyGraphSelection{owner: s}
+	if req.Position != nil && req.Position.readyGraph != nil {
+		req.readyGraph = req.Position.readyGraph
+	}
+	page, err := s.Ready(ctx, by, req)
+	if err == nil && page.Next != nil {
+		page.Next.readyGraph = req.readyGraph
+	}
+	return page, err
 }
 
 func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req ReadyRequest, restartOnRevision bool) (BeadPage, error) {
@@ -312,7 +496,11 @@ func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req 
 	if req.Filter != nil {
 		types = req.Filter.Types
 	}
-	snapshot, err := s.workflow.ReadySnapshot(ctx, by, req.Project, types, workflowMeta(by, "bead.ready", req.Project, req.Agent))
+	includeEphemeral := true
+	if req.Filter != nil && req.Filter.IncludeEphemeral != nil {
+		includeEphemeral = *req.Filter.IncludeEphemeral
+	}
+	snapshot, err := s.workflow.ReadySnapshotWithResolver(ctx, by, req.Project, types, workflowMeta(by, "bead.ready", req.Project, req.Agent), includeEphemeral, s.workflowBlockerResolver(ctx, by, workflowMeta(by, "bead.ready", req.Project, req.Agent)))
 	if err != nil {
 		return BeadPage{}, err
 	}
@@ -363,12 +551,32 @@ func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req 
 }
 
 func workflowBead(item workflowplugin.ItemView) Bead {
-	fields := map[string]any{"title": item.Title}
-	return Bead{ID: item.ID, Type: item.Type, Project: item.Project, Revision: item.Revision, Status: item.Status, Fields: fields, Plane: item.Plane, Kind: item.Kind, Plugin: item.Plugin, WorkflowRunID: item.RunID}
+	fields := cloneMap(item.Fields)
+	if fields == nil {
+		fields = map[string]any{}
+	}
+	fields["title"] = item.Title
+	bead := Bead{ID: item.ID, Type: item.Type, Project: item.Project, Revision: item.Revision, Status: item.Status,
+		Fields: fields, Metadata: item.Metadata, Parent: refID(item.Parent), Labels: append([]string(nil), item.Labels...), Links: append([]workflowplugin.RelationView(nil), item.Links...),
+		Blocked: item.Blocked, ChildCounter: item.ChildCounter, Plane: item.Plane, Kind: item.Kind, Plugin: item.Plugin, WorkflowRunID: item.RunID}
+	if item.Claim != nil {
+		bead.Assignee = item.Claim.Agent
+	}
+	return bead
+}
+
+func refID(ref *model.Ref) string {
+	if ref == nil {
+		return ""
+	}
+	return ref.ID
 }
 
 func workflowGetResult(item workflowplugin.ItemView) GetResult {
 	result := GetResult{Bead: workflowBead(item), Comments: []Comment{}}
+	if item.Claim != nil {
+		result.Lease = &Lease{Principal: item.Claim.Principal, Agent: item.Claim.Agent, ExpiresAt: item.Claim.ExpiresAt, TTL: workflowplugin.ClaimTTL, Epoch: item.Claim.Generation}
+	}
 	for _, comment := range item.Comments {
 		result.Comments = append(result.Comments, Comment{Body: comment.Body, Principal: comment.Principal, Time: comment.Time})
 	}
@@ -384,14 +592,15 @@ func (s *Service) ClaimNextReadyPage(ctx context.Context, by model.PrincipalRef,
 // ReadyCandidates evaluates the complete ready set on a supplied snapshot.
 // ClaimNext's terminal transaction probe uses this to inspect the same fresh
 // write snapshot after head acquisition without opening a second reader.
-func (s *Service) ReadyCandidates(ctx context.Context, req ReadyRequest, reader driver.Reader) ([]Bead, error) {
+func (s *Service) ReadyCandidates(ctx context.Context, by model.PrincipalRef, req ReadyRequest, reader driver.Reader) ([]Bead, error) {
 	if _, err := pageOptions(req.Project, req.ViewID, req.Cursor, req.Filter, 1000); err != nil {
 		return nil, err
 	}
 	if reader == nil {
 		return nil, failure("internal_error", "ready probe reader is unavailable")
 	}
-	return s.readyItems(ctx, req, reader)
+	items, _, err := s.readyItems(ctx, by, req, reader)
+	return items, err
 }
 
 func (s *Service) History(ctx context.Context, by model.PrincipalRef, req HistoryRequest) (BeadPage, error) {

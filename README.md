@@ -24,6 +24,22 @@ described in the [server guide](engdocs/plug-runtime/server.md). Use
 `plug --help` for the public CLI commands and
 [CLI connections](internal/cli/README.md) for server selection and JSON output.
 
+## External dependency targets
+
+`bead.link`, `bead.unlink`, and link/unlink operations in `tx.apply` accept an
+optional `targetKind` of `local` or `external`. Omission means local: a missing
+local endpoint returns `not_found`, regardless of its prefix. External targets
+require a nonempty ID reference on branch zero and retain the exact ID bytes.
+For example, link to an unresolved spawner with `"targetKind":"external"`
+and `"to":{"id":"missing-spawner"}`.
+
+Local and external IDs belong to separate identity domains, even when spelled
+the same. External scheduling edges stay unresolved and fail readiness closed;
+external association edges stay inert. They never bind to local graph members,
+indexes, child fanout, blocker authorization, or outcome notifications. Admitted
+archive restore and reverse conversion retain the external arm. Generated
+archive checks do not establish compatibility with a native Beads importer.
+
 ## Parent changes
 
 Moving or detaching a bead updates ancestor relationships for its entire
@@ -56,5 +72,18 @@ and a fresh target stays empty for native restore. Merely opening a driver
 store does not certify or backfill it.
 Hosts composing the Writer directly can run `pipeline.BuildSourceIndexes`
 before serving requests. Until coverage is complete, readers return unsupported
-and validation retains the complete source-validation fallback. The ordinary
-write pre-phase deadline remains two seconds.
+and validation retains the complete source-validation fallback.
+
+Source-index coverage proves membership, not semantic graph validity. Native
+restore separately validates the complete parent and dependency graph, including
+unrelated components and custom-link targets, before atomically publishing a
+revision-bound validity certificate with its records, indexes, and ancestor rows.
+The certificate survives physical SQLite close/reopen. A hierarchy-only move or
+detach can avoid whole-graph validation only when that certificate is current
+and bounded source checks prove the affected hierarchy has no incoming or
+outgoing dependency links. Validated writes maintain the certificate in their
+existing transaction; a graph publication without certification makes it stale.
+Missing or stale certificates, link-bearing affected sources, deletes, and link
+edits retain complete validation. Startup membership backfill alone never
+certifies semantic validity. The ordinary write pre-phase deadline remains two
+seconds.

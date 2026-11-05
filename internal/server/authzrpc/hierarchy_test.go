@@ -29,7 +29,8 @@ import (
 func hRef(id string) model.Ref { return model.RefByID(id, model.Natural64(0)) }
 
 func hBody(id, project, parent, status string) []byte {
-	body := map[string]any{"id": id, "type": "issue", "project": project, "fields": map[string]any{"title": id, "status": status, "priority": 0}}
+	// A known fixture creation instant, independent of seed and version clocks.
+	body := map[string]any{"id": id, "type": "issue", "project": project, "createdAt": "2026-11-03T00:00:00Z", "fields": map[string]any{"title": id, "status": status, "priority": 0}}
 	if parent != "" {
 		body["parent"] = hRef(parent)
 	}

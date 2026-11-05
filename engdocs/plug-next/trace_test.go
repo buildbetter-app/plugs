@@ -27,10 +27,11 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
 )
 
-//go:embed cli-rpc-trace.json
+//go:embed cli-rpc-lifecycle-trace.json
 var capturedTrace []byte
 
 type trace struct {
+	FixedCoreClock    time.Time         `json:"fixedCoreClock"`
 	RPCRequest        json.RawMessage   `json:"rpcRequest"`
 	RPCResponse       json.RawMessage   `json:"rpcResponse"`
 	RPCReplayResponse json.RawMessage   `json:"rpcReplayResponse"`
@@ -61,6 +62,9 @@ func runTrace(t *testing.T, authenticated bool) {
 	if err := json.Unmarshal(capturedTrace, &capture); err != nil {
 		t.Fatal(err)
 	}
+	if capture.FixedCoreClock.IsZero() || capture.FixedCoreClock.Location() != time.UTC {
+		t.Fatal("executable expectations require an explicit nonzero UTC core clock")
+	}
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 	defer cancel()
 	store := memory.New()
@@ -72,6 +76,7 @@ func runTrace(t *testing.T, authenticated bool) {
 	defer lease.Release(context.Background())
 	workflow := service.NewOntology(nil)
 	writer := pipeline.New(store, lease, pipeline.WithOntology(workflow),
+		pipeline.WithClock(func() time.Time { return capture.FixedCoreClock }),
 		pipeline.WithIDGenerator(func() (string, error) { return "pl-guide-1", nil }))
 	registry, err := rpc.NewRegistry()
 	if err != nil {

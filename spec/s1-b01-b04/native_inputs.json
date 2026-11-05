@@ -1,0 +1,125 @@
+{
+  "format": "plug.s1.b01.native-inputs.v1",
+  "consumer": "7a43c3c625a5c08d3a4364a321cd47d6357ef30e",
+  "consumerTree": "be93a595dc4c44ef4d94d2333060788fd344dca0",
+  "helperSource": "43c0f2410ccb24062b8bd1bd073aeb29ef21288f",
+  "helperTree": "05153e1c051b1887fa875b53739adc036ae8cf16",
+  "source": "c8eb3ba7d4177e111a6f5c8aebe06b5d0b1d5724",
+  "sourceTree": "930405e863284a3955cbd35e73a6097b606b91a5",
+  "sourceManifest": "e01a584042b4a2c32ea3cbcbdd55069f7c23bc2b853f8734857c5082e828f15d",
+  "sourceEntries": 5141,
+  "binarySHA256": "b734da8ba8b6f50d7fd32239e405b8f8ed9d171b7be5fbbccb63a923d257a123",
+  "binaryBytes": 161299592,
+  "buildRun": "41800330346",
+  "profile": "plug-public-native/1",
+  "manifestSHA256": "ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a",
+  "workflowSHA": "d758fdf42a426e9e2a4b707dbcebb22ec68b264e",
+  "descriptor": "41800330346:13307042737:ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a",
+  "adoptedIndefiniteDecision": "b0d8be0f-3bde-4dbc-b4c7-51cb125c7511",
+  "vectors": [
+    {
+      "id": "B01-parent-timed",
+      "mode": "timed",
+      "sourceIds": {
+        "parent": "b01-timedparent",
+        "child": "b01-timedchild",
+        "grandchild": "b01-timedgrandchild",
+        "free": "b01-timedfree"
+      },
+      "until": "2099-01-01",
+      "runs": [
+        {
+          "id": "run-a",
+          "database": "b01_timed_a"
+        },
+        {
+          "id": "run-b",
+          "database": "b01_timed_b"
+        }
+      ]
+    },
+    {
+      "id": "B01-parent-indefinite",
+      "mode": "indefinite",
+      "sourceIds": {
+        "parent": "b01-indefiniteparent",
+        "child": "b01-indefinitechild",
+        "grandchild": "b01-indefinitegrandchild",
+        "free": "b01-indefinitefree"
+      },
+      "until": null,
+      "runs": [
+        {
+          "id": "run-a",
+          "database": "b01_indefinite_a"
+        },
+        {
+          "id": "run-b",
+          "database": "b01_indefinite_b"
+        }
+      ]
+    }
+  ],
+  "argvDeltaFromV3": "Retain original24/store and all006 controls. Nine actual named continuation phases add detach/reparent/reattach of a subtree under a blocked ancestor.87CLI/store,348 total. All original writes/shows/ready/explain/refusal/export controls retained. Native reference and Plug typed external extension remain distinct. Current category/guard child retains original87/store success before custom statuses, adds1configuration+19x13real phase commands+commit/inventory/genuine custom-status dump refusal.338CLI/store,1352planned total;477planned named nodes,248planned physical SQL reopens. All source plans AUTHORED_NOT_RUN until own terminal. The current hierarchy page extension adds one actual limit-one query to both baseline phases and all nine continuation phases:11additional commands/store,433total/store and1732overall. The new First projection is retained in both semantic twins; no observed result is borrowed from an earlier head.",
+  "clockScope": "Raw wall-clock command windows only; native Go time.Now and SQL UTC_TIMESTAMP are uncontrolled. No expiry/wake/48h/B05/full-card claim.",
+  "qualification": "AUTHORED_NOT_RUN on genuine hierarchy/readiness/membership/reopen source child; fresh same-run preparation, both twins and all three-driver replay required. Historical f9 and ordinary results do not transfer.",
+  "workflowBranch": "swarm/native-producer-census-control-c8eb-20261104",
+  "label": "native-census-c8eb-20261104",
+  "artifactDigest": "sha256:28609d7c072c281a748cb53a361d9a3ffada826d6f2e8866a3b1e62b23d5ffc4",
+  "artifactSize": 111646601,
+  "trustedPreparation": {
+    "control": "2d2164ba3d8e456c9aba15fbeb8cae4edc755997",
+    "controlTree": "ae226eed2e9a85d4da19958db7a3520ebfe9cf05",
+    "controlBranch": "swarm/native-preparer-c8eb-rebind-20261104",
+    "helperSource": "70230ccd92597a96000f90223c5d89b103e25426",
+    "helperSHA256": "6a84191fd016ddcb637cb5a470e88727176a70e8b5c6e8e6c69f33db6a1559eb",
+    "readinessReviewSHA256": "d860d82915eb728aa8ee2b33bbadfb7f5e33df59369ff7de24d430aad58eeba6",
+    "scope": "Fixed reviewed control only. Each consumer invocation must supply its own preparation and four matching exports. publicnative helper43 attribution remains separate."
+  },
+  "externalHierarchyTarget": "external:b01-other:unresolved",
+  "hierarchyPhases": {
+    "resumed": [
+      "parent",
+      "child",
+      "grandchild",
+      "free"
+    ],
+    "blocked-parent": [
+      "free"
+    ],
+    "detached-from-blocked": [
+      "child",
+      "grandchild",
+      "free"
+    ],
+    "reparented-to-open": [
+      "child",
+      "grandchild",
+      "free"
+    ],
+    "reattached-to-blocked": [
+      "free"
+    ],
+    "blocker-closed": [
+      "parent",
+      "child",
+      "grandchild"
+    ],
+    "blocker-reopened": [
+      "free"
+    ],
+    "restored": [
+      "parent",
+      "child",
+      "grandchild",
+      "free"
+    ],
+    "external-refused": [
+      "parent",
+      "child",
+      "grandchild",
+      "free"
+    ]
+  },
+  "externalHierarchyRefusal": "external capability dependencies cannot use parent-child edges"
+}

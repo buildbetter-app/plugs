@@ -318,6 +318,20 @@ func TestAdmittedImportRestoresCommentAndServesWorkload(t *testing.T) {
 				if decodeErr != nil {
 					t.Fatal(decodeErr)
 				}
+				// The canonical instant must come from the admitted source row,
+				// with its exact source value still retained as provenance.
+				var sourceStamp string
+				for _, source := range archive.Records("bead") {
+					if source.ID == doc.ID {
+						sourceStamp, _ = source.Source.Fields["created_at"].(string)
+					}
+				}
+				wantCreatedAt, stampErr := time.Parse(time.RFC3339Nano, sourceStamp)
+				var retainedStamp string
+				provenanceErr := json.Unmarshal(doc.Metadata["beads.source.created_at"], &retainedStamp)
+				if stampErr != nil || provenanceErr != nil || doc.CreatedAt == nil || !doc.CreatedAt.Equal(wantCreatedAt) || retainedStamp != sourceStamp {
+					t.Fatalf("source creation instant/provenance not preserved for %s", doc.ID)
+				}
 				if len(doc.Comments) == 1 {
 					imported, foundComment = doc.Comments[0], true
 				}
@@ -503,3 +517,61 @@ func TestAdmittedImportRejectsUntrustedProfileBeforeWrite(t *testing.T) {
 // Keep json imported in this file's test-only fixture helpers even when the
 // compiler inlines the common decode helper differently across Bazel modes.
 var _ = json.Valid
+
+// Only the immutable source row supplies creation time. The public memory and
+// SQLite regression above independently checks the stored canonical instant,
+// exact source provenance and successful post-restore claim.
+func TestRestoreCreationTimeRequiresTheActualSourceInstant(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		value  any
+		absent bool
+		want   string
+		refuse bool
+	}{
+		{name: "unknown-null", value: nil},
+		{name: "unknown-absent", absent: true},
+		{name: "offset-instant", value: "2026-01-01T01:00:00.000000001+01:00", want: "2026-01-01T00:00:00.000000001Z"},
+		{name: "invalid-instant", value: "not-an-instant", refuse: true},
+		{name: "not-text", value: 1, refuse: true},
+		{name: "zero-instant", value: "0001-01-01T00:00:00Z", refuse: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// Records returns detached rows; the checked-in archive stays exact.
+			source := readFixture(t).Records("bead")[0]
+			source.Source.Fields["created_at"] = test.value
+			if test.absent {
+				delete(source.Source.Fields, "created_at")
+			}
+			// Neither this different mirror nor a later source version proves
+			// the missing creation instant. Only the original row field does.
+			source.Body["created_at"] = "2040-01-01T00:00:00Z"
+			source.Source.Fields["updated_at"] = "2040-01-01T00:00:00Z"
+			before, err := json.Marshal(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			at, err := sourceCreationTime(source)
+			after, marshalErr := json.Marshal(source)
+			if marshalErr != nil || !bytes.Equal(before, after) {
+				t.Fatal("source creation provenance was mutated")
+			}
+			if test.refuse {
+				if err == nil {
+					t.Fatal("invalid source creation instant accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.want == "" {
+				if at != nil {
+					t.Fatal("unknown creation time was invented")
+				}
+			} else if at == nil || at.Format(time.RFC3339Nano) != test.want {
+				t.Fatalf("creation instant=%v want=%s", at, test.want)
+			}
+		})
+	}
+}

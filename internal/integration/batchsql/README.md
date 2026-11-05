@@ -43,3 +43,28 @@ blocker suppresses ready and fresh direct claim, while child close and fresh
 close settlement still succeed after the child's own direct blocker is removed.
 The public regression checks unchanged parent records/versions and all three
 drivers without changing the original hierarchy assertions.
+
+`//internal/integration/batchsql:b02_public_graph_test` adds
+`TestB02PublicCategoryDiamondAndReadPurityAcrossDrivers`. Five category/outcome
+cases run through real loopback HTTP, the public RPC binder, service and Writer
+on memory, file-backed SQLite and disposable PostgreSQL. The root's project
+catalog deliberately disagrees with the dependent project's interpretation of
+the same status keys. Completed success/failure and canceled release ordinary
+branches, only completed failure releases the conditional dependent, and
+`frozen`/`pinned` backlog roots keep both kinds blocked.
+
+The graph retains both diamond branches, close refusal, close/reopen/unlink,
+and the distinction between reopening a transitive root and an immediate
+blocker. Repeated ready reads across controlled clock changes preserve records,
+timestamps, versions, head and persisted changesets/events. Root transitions
+also preserve dependent records and histories. Both SQL drivers close/reopen
+all store and HTTP handles, reconstruct the catalog from its persisted source,
+and repeat the category verdict. Memory is explicitly in-process. Each matrix
+leaf retains actual request/response frames in the test's undeclared outputs.
+
+Only the initial protected ontology record is seeded. All graph and lifecycle
+operations are public calls in supported anonymous no-plugin mode. This target
+does not qualify live ontology plan/apply refresh, installed authorization,
+complete conditional-notice delivery, parent/waits-for integration, positive
+mixed durable/ephemeral graphs, reference twins, or the full B02 card. B14 and
+B07 retain endpoint/typed-target ownership; no donor execution is inherited.

@@ -365,7 +365,9 @@ func TestB17ArchiveStoredNullReverseConversionAndRestore(t *testing.T) {
 func TestB17SupportedOfflineStoredNullRestoreAndReverse(t *testing.T) {
 	const id = "pl-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	const archiveSHA = "2f06663c3d3778f689e971398028f88cd8d6c9e85d987108abbdb92363d20b18"
-	const derivedSHA = "f170bf742699fb0bbc577c57b19e7907872e2ea99a34a94fda5e0659197f20ed"
+	// The archive is unchanged. Its current default ontology image additionally admits blocked:boolean.
+	// Historical pre-B26 derived digest: f170bf742699fb0bbc577c57b19e7907872e2ea99a34a94fda5e0659197f20ed
+	const derivedSHA = "6f1b59b29636cf665d447b1a4d49c1b5670af05f9d0170cf2c548ff1e51d62ab"
 	data := b17SupportedOfflineArchive(t)
 	if got := sha(data); got != archiveSHA {
 		t.Fatalf("authored supported archive digest=%s size=%d, want %s", got, len(data), archiveSHA)

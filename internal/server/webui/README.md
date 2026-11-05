@@ -85,6 +85,23 @@ embedding and forms are disabled. Frame responses add their own opaque-origin
 `sandbox allow-scripts` CSP.
 Untrusted titles, IDs, reasons and presence data are rendered as text.
 
+When native RPC reports authenticated mode, the page offers explicit bearer
+sign-in using a password field. The key and authenticated read markers stay in
+tab memory, not URLs, browser storage, cookies, static requests or plugin frames.
+Sign-out, identity changes and current-key authentication failures clear the
+credential, read markers, displayed rows, work, watches and frame bridges. This
+includes native 401s encountered only while stopping live changes; no refresh is
+needed to clear an expired or revoked identity. Non-authentication refusals do
+not sign the caller out.
+
+Each collaboration opening retains its originating credential generation and
+same-origin RPC endpoint. If sign-out or an identity change happens before an
+opening reply arrives, the late session/subscription is released with that
+opening identity, rather than the empty or replacement bearer. A retired key is
+used only for that bounded allocation cleanup, never a new read or watch, and
+its late authentication failures cannot clear a replacement identity. This
+bearer flow is not an OIDC or browser-session login composition.
+
 `sandbox_safety_test` runs Chrome against the real UI and RPC handler. The
 bundle's classic and module scripts must load under the product headers. It
 checks frame and direct-open storage/DOM isolation, denied network/forms/popups,
@@ -207,8 +224,8 @@ CORS. Both use disposable loopback fixtures, not a production server.
   from the producer's fixed-policy HTTP acceptance and the EP6 workload.
 
 - Refresh, cancellation, a 15-second read deadline, empty results and RPC
-  refusals have explicit states. Interactive login and remote/CORS composition
-  remain outside this slice. The frame bridge is a bounded host seam;
+  refusals have explicit states. OIDC/browser-session login and remote/CORS
+  composition remain outside this slice. The frame bridge is a bounded host seam;
   plugin installation, digest locks and authorization grants remain owned by
   the plugin-host lane. Five-person UX validation against real views/watches
   remains unqualified.

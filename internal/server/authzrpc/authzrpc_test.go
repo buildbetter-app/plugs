@@ -174,7 +174,7 @@ func newFixtureWith(t *testing.T, store driver.Store, mutators []pipeline.Mutato
 	// Writer or alternate service exists: all product writes use New's Writer.
 	_, err = conformance.Seed(ctx, f.store, lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{
 		Ref: model.RefByID(beadID, model.Natural64(0)), Kind: "bead", Op: model.OpCreate,
-		Body: []byte(`{"id":"` + beadID + `","type":"issue","project":"project","fields":{"title":"seed","status":"todo","priority":0}}`),
+		Body: []byte(`{"id":"` + beadID + `","type":"issue","project":"project","createdAt":"2026-10-01T00:00:00Z","fields":{"title":"seed","status":"todo","priority":0}}`),
 	}})
 	if err != nil {
 		t.Fatal(err)

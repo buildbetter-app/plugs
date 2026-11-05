@@ -1,0 +1,45 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "epicauthbrowser_test",
+    size = "large",
+    timeout = "long",
+    srcs = glob(["*_test.go"]),
+    embedsrcs = ["epic_browser_check.mjs"],
+    env_inherit = ["PATH"],
+    args = ["-test.v"],
+    deps = [
+        "//internal/core/authz",
+        "//internal/core/dumpformat",
+        "//internal/core/events",
+        "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/core/pipeline",
+        "//internal/core/port",
+        "//internal/core/restore",
+        "//internal/core/service",
+        "//internal/core/viewops",
+        "//internal/plugins/authnapikey",
+        "//internal/plugins/authzfixed",
+        "//internal/server/authn",
+        "//internal/server/authzrpc",
+        "//internal/server/collab",
+        "//internal/server/events",
+        "//internal/server/rpc",
+        "//internal/server/transport/httpjson",
+        "//internal/server/viewrpc",
+        "//internal/server/watch",
+        "//internal/server/watchhttp",
+        "//internal/server/webui",
+        "//internal/storage/conformance",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/sqlite",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

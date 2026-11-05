@@ -2,7 +2,10 @@
   "source": "contracts/openrpc.json",
   "sourceSHA256": "a1526ff907601720282714ddefef0f2550f9ff79ae6b8360ea6dec48d7e9c457",
   "schemaSourceSHA256": {
-    "ErrorCode": "5322921149cd542890ae721448fc185f33cb543f0891f64d2b95a3b67bc7d8ba"
+    "ErrorCode": "5322921149cd542890ae721448fc185f33cb543f0891f64d2b95a3b67bc7d8ba",
+    "LinkOp": "d96d7dd03cd091f18d0436e45cf77a4783e0a9d29fa0cbd12611ef13e23ef1dc",
+    "LinkTargetKind": "d96d7dd03cd091f18d0436e45cf77a4783e0a9d29fa0cbd12611ef13e23ef1dc",
+    "LinkMetadata": "d96d7dd03cd091f18d0436e45cf77a4783e0a9d29fa0cbd12611ef13e23ef1dc"
   },
   "sourceNote": "sourceSHA256 pins the historical baseline. schemaSourceSHA256 records full source-document hashes for individually refreshed schemas; all other schemas retain the historical baseline.",
   "schemas": {
@@ -179,6 +182,13 @@
         },
         "linkKind": {
           "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/components/schemas/LinkMetadata",
+          "description": "Only valid for a waits-for link. Omission preserves existing metadata on re-add; explicit {} selects all-children without also_blocks."
+        },
+        "targetKind": {
+          "$ref": "#/components/schemas/LinkTargetKind"
         }
       },
       "required": [
@@ -1938,6 +1948,30 @@
         "kind",
         "target"
       ],
+      "additionalProperties": false
+    },
+    "LinkTargetKind": {
+      "type": "string",
+      "enum": [
+        "local",
+        "external"
+      ],
+      "description": "Omission is local. Explicit external targets retain an exact nonempty branch-zero ID and are never resolved against local beads."
+    },
+    "LinkMetadata": {
+      "type": "object",
+      "properties": {
+        "gate": {
+          "type": "string",
+          "enum": [
+            "all-children",
+            "any-children"
+          ]
+        },
+        "also_blocks": {
+          "type": "boolean"
+        }
+      },
       "additionalProperties": false
     }
   }

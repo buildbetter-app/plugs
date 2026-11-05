@@ -5,6 +5,7 @@ repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 python3 - "$repo_root" <<'PY'
 import json
 import hashlib
+import ast
 from pathlib import Path
 import shutil
 from urllib.parse import unquote, urlparse
@@ -25,9 +26,30 @@ with tempfile.TemporaryDirectory(prefix="plug-bazel-delivery-test.") as temporar
     git("init", "-q")
     git("config", "user.name", "Plug CI test")
     git("config", "user.email", "plug-ci-test@example.invalid")
+    # Synthetic provenance for this fixture only. Patch only the copied
+    # collector before its fixture commit; never claim official bytes or pins.
+    public_payload = b"fixture public exporter\n"
+    public_manifest = {
+        "schema": "plug-public-companion/1", "build": {"run_id": "123"},
+        "workflow": {"sha": "a" * 40},
+        "source": {"beads": {"commit": "1" * 40}, "plug": {"commit": "2" * 40}},
+        "targets": {"beads_exporter": {"label": "//cmd/bd:bd", "binary": "bin/bd-export"}},
+        "artifacts": {"bin/bd-export": {"mode": "0o755", "size": len(public_payload),
+                                       "sha256": hashlib.sha256(public_payload).hexdigest()}},
+        "archive": {"name": "bundle.tar", "size": 10240, "sha256": "b" * 64},
+    }
+    public_manifest_bytes = (json.dumps(public_manifest, sort_keys=True) + "\n").encode()
+    public_descriptor = "123:456:" + hashlib.sha256(public_manifest_bytes).hexdigest()
     (repo / "scripts/ci").mkdir(parents=True)
     for name in ("plug-bazel-delivery.py", "plug-bazel-targets.sh"):
         shutil.copyfile(source / "scripts/ci" / name, repo / "scripts/ci" / name)
+    fixture_collector = repo / "scripts/ci/plug-bazel-delivery.py"
+    fixture_source = fixture_collector.read_text()
+    assignment = next(node for node in ast.parse(fixture_source).body if isinstance(node, ast.Assign)
+                      and any(isinstance(target, ast.Name) and target.id == "PUBLIC_BUNDLE_DESCRIPTOR" for target in node.targets))
+    source_lines = fixture_source.splitlines(keepends=True)
+    source_lines[assignment.lineno - 1:assignment.end_lineno] = ["PUBLIC_BUNDLE_DESCRIPTOR = " + repr(public_descriptor) + "\n"]
+    fixture_collector.write_text("".join(source_lines))
     (repo / "pkg/cmd/nested").mkdir(parents=True)
     (repo / "pkg/file.go").write_text("package pkg\n")
     (repo / "pkg/cmd/nested/main.go").write_text("package main\nfunc main() {}\n")
@@ -68,7 +90,8 @@ execution = root / "execution"
 cp7 = ("//internal/integration/cp7latency:cp7_correctness_test",
        "//internal/integration/cp7latency:cp7_latency_sqlite_test",
        "//internal/integration/cp7latency:cp7_latency_postgres_test") if config.get("cp7") else ()
-public_target = ("//tools/roundtrip:public_beads_runtime_test",) if config.get("public_runtime") else ()
+public_target = (("//tools/roundtrip:public_beads_runtime_test",) if config.get("public_runtime") else ()) + (
+    ("//spec/s1-b25-b28:public_recording_test",) if config.get("public_recording") else ())
 ordinary_policy = ("//pkg:manual_policy_test",) if config.get("manual_candidates") else ()
 count_capture = "//spec/s1-b21-b24:ordinary_count_capture_test"
 manual_targets = (count_capture, "//pkg:manual_capture_test") if config.get("manual_candidates") else ()
@@ -290,8 +313,8 @@ runpy.run_path(script, run_name="__main__")
             argv = ["/usr/bin/python3", "-c", inject, copy_fault, *argv[1:]]
         result = subprocess.run(argv, cwd=repo, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         assert result.returncode == expected, (name, result.returncode, expected, result.stdout.decode())
+        return result.stdout.decode().strip()
 
-    public_descriptor = "41398730774:13120521766:66de7c070d365bbd7fc2bd39ed822e5bf72c21efabe0add9a5e26d07bf170a62"
     public_names = ("PLUG_PUBLIC_BEADS_BINARY", "PLUG_PUBLIC_BEADS_SHA256",
                     "PLUG_PUBLIC_BEADS_BUILD_RUN", "PLUG_PUBLIC_BEADS_MANIFEST")
 
@@ -308,29 +331,66 @@ runpy.run_path(script, run_name="__main__")
         try:
             phase("begin", out, 0, "--base", base, "--head", head)
             phase("selection", out, config.get("selection_exit", config.get("query_exit", 0)))
-            if public_mode in {"valid", "malformed"}:
+            if not config.get("selection_exit", config.get("query_exit", 0)):
+                selected_public = phase("public-selection", out)
+                assert selected_public == ("true" if config.get("public_runtime") or config.get("public_recording") else "false")
+            if public_mode and public_mode not in {"missing", "stray"}:
                 runtime = fixture / (name + "-runtime")
                 (runtime / "bin").mkdir(parents=True)
                 binary = runtime / "bin/bd-export"
-                binary.write_bytes(b"fixture public exporter\n")
+                binary.write_bytes(public_payload)
                 binary.chmod(0o755)
                 manifest = runtime / "manifest.json"
-                manifest.write_text("{}\n")
+                manifest.write_bytes(public_manifest_bytes)
                 values = {
                     "PLUG_PUBLIC_BEADS_BINARY": str(binary),
                     "PLUG_PUBLIC_BEADS_SHA256": hashlib.sha256(binary.read_bytes()).hexdigest(),
-                    "PLUG_PUBLIC_BEADS_BUILD_RUN": "41398730774",
+                    "PLUG_PUBLIC_BEADS_BUILD_RUN": "123",
                     "PLUG_PUBLIC_BEADS_MANIFEST": str(manifest),
                 }
-                (out / "public-bundle.json").write_text(json.dumps({
+                receipt = {
                     "status": "PASS", "descriptor": public_descriptor,
                     "manifest_sha256": public_descriptor.rsplit(":", 1)[1],
-                    "environment": values,
-                }) + "\n")
+                    "producer_run": "123", "artifact_id": "456", "producer_workflow_sha": "a" * 40,
+                    "artifact_digest": "sha256:" + "c" * 64,
+                    **{field: public_manifest[field] for field in ("schema", "source", "targets", "artifacts", "archive")},
+                    "environment": dict(values),
+                }
                 env.update(values)
                 config["public_env"] = [f"--test_env={key}={values[key]}" for key in public_names]
                 if public_mode == "malformed":
                     env["PLUG_PUBLIC_BEADS_SHA256"] = "0" * 64
+                elif public_mode.startswith("missing-value:"):
+                    env.pop(public_mode.split(":", 1)[1], None)
+                elif public_mode == "manifest-bytes":
+                    manifest.write_bytes(public_manifest_bytes + b" ")
+                elif public_mode == "binary-mode":
+                    binary.chmod(0o644)
+                elif public_mode == "binary-link":
+                    binary.unlink()
+                    binary.symlink_to(manifest)
+                elif public_mode == "receipt-run":
+                    receipt["producer_run"] = "999"
+                elif public_mode == "receipt-artifact":
+                    receipt["artifact_id"] = "999"
+                elif public_mode == "receipt-workflow":
+                    receipt["producer_workflow_sha"] = "b" * 40
+                elif public_mode == "receipt-schema":
+                    receipt["schema"] = "plug-public-native/1"
+                elif public_mode == "receipt-digest":
+                    receipt["artifact_digest"] = "invalid"
+                elif public_mode == "receipt-descriptor":
+                    receipt["descriptor"] = "999:456:" + public_descriptor.rsplit(":", 1)[1]
+                elif public_mode == "receipt-status":
+                    receipt["status"] = "WAIT"
+                elif public_mode == "receipt-environment":
+                    receipt["environment"]["PLUG_PUBLIC_BEADS_EXTRA"] = "untrusted"
+                elif public_mode == "receipt-source":
+                    receipt["source"] = {}
+                elif public_mode == "receipt-archive":
+                    receipt["archive"] = {}
+                if public_mode != "receipt-missing":
+                    (out / "public-bundle.json").write_text(json.dumps(receipt) + "\n")
             elif public_mode == "stray":
                 env.update({key: "fixture-stray-value" for key in public_names})
             (fixture / "control.json").write_text(json.dumps(config))
@@ -627,15 +687,37 @@ runpy.run_path(script, run_name="__main__")
     assert not tests["unreported_tests"] and tests["accounting"]["executed_attempts"] == 6
     assert cp7.issubset({attempt["identity"]["label"] for attempt in tests["attempts"] if not attempt["cached"]})
 
-    public_config = {"public_runtime": True}
-    out, result = exercise("public-runtime", public_config, public_mode="valid")
-    public_args = [arg for arg in json.loads((out / "commands/tests/argv.json").read_text())
-                   if arg.startswith("--test_env=PLUG_PUBLIC_BEADS_")]
-    assert public_args == public_config["public_env"]
-    out, result = exercise("public-missing", {"public_runtime": True}, 86, 86, public_mode="missing")
-    assert result["first_failure"]["stage"] == "collector-run"
-    out, result = exercise("public-malformed", {"public_runtime": True}, 86, 86, public_mode="malformed")
-    assert result["first_failure"]["stage"] == "collector-run"
+    # Both complete resolved consumer selections use exactly the same workflow
+    # predicate and four-value receipt check; no leaf is filtered or waived.
+    runtime_target = "//tools/roundtrip:public_beads_runtime_test"
+    recording_target = "//spec/s1-b25-b28:public_recording_test"
+    for name, config, mandatory in (
+        ("pr290-only", {"public_runtime": True}, {runtime_target}),
+        ("pr295-only", {"public_recording": True}, {recording_target}),
+        ("both", {"public_runtime": True, "public_recording": True}, {runtime_target, recording_target}),
+        ("neither", {}, set()),
+    ):
+        out, result = exercise(name, config, public_mode="valid" if mandatory else None)
+        actual_resolved = set((out / "selection/resolved-test-targets.txt").read_text().splitlines())
+        assert actual_resolved.intersection({runtime_target, recording_target}) == mandatory
+        actual_args = json.loads((out / "commands/tests/argv.json").read_text())
+        assert mandatory.issubset(actual_args)
+        public_args = [arg for arg in actual_args if arg.startswith("--test_env=PLUG_PUBLIC_BEADS_")]
+        assert public_args == config.get("public_env", [])
+        assert len(public_args) == (4 if mandatory else 0)
+        if mandatory:
+            for missing in ("missing", *("missing-value:" + key for key in public_names)):
+                out, result = exercise(name + "-" + missing.replace(":", "-"), config.copy(), 86, 86, public_mode=missing)
+                assert result["first_failure"]["stage"] == "collector-run"
+                assert not (out / "commands/tests").exists()
+
+    for mode in ("malformed", "manifest-bytes", "binary-mode", "binary-link", "receipt-run",
+                 "receipt-artifact", "receipt-workflow", "receipt-schema", "receipt-digest",
+                 "receipt-descriptor", "receipt-status", "receipt-environment", "receipt-source",
+                 "receipt-archive", "receipt-missing"):
+        out, result = exercise("public-" + mode, {"public_recording": True}, 86, 86, public_mode=mode)
+        assert result["first_failure"]["stage"] == "collector-run"
+        assert not (out / "commands/tests").exists()
     out, result = exercise("public-stray", {}, 86, 86, public_mode="stray")
     assert result["first_failure"]["stage"] == "collector-run"
 
