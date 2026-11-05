@@ -1,7 +1,7 @@
 # B01 native pair recorder source
 
 This is a causal source child of consumer
-`7a43c3c625a5c08d3a4364a321cd47d6357ef30`, tree
+`7a43c3c625a5c08d3a4364a321cd47d6357ef30e`, tree
 `be93a595dc4c44ef4d94d2333060788fd344dca0`. It adds a separate manual
 `//spec/s1-b01-b04:native_recording` target. The historical recorder, inputs,
 captures, source/focused/whole receipts and all parent REDs remain immutable.
@@ -160,7 +160,7 @@ successor needs its own source, ordinary and physical proof.
 
 
 The current native acceptance continuation is anchored to pinned main
-`7a43c3c625a5c08d3a4364a321cd47d6357ef30`, tree
+`7a43c3c625a5c08d3a4364a321cd47d6357ef30e`, tree
 `be93a595dc4c44ef4d94d2333060788fd344dca0`. This supersedes historical consumer
 pins only for this new execution unit. The independently passed e9 six-path
 hierarchy carrier and prior9346 binding are named and hashed in

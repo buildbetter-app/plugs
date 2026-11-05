@@ -11,7 +11,7 @@ import (
 func TestNativeFutureIdentityInputs(t *testing.T) {
 	var inputs nativeInputs
 	nativeDecode(t, nativeInputsBytes, &inputs)
-	if len(inputs.Vectors) != 2 || inputs.Consumer != "7a43c3c625a5c08d3a4364a321cd47d6357ef30" ||
+	if len(inputs.Vectors) != 2 || inputs.Consumer != "7a43c3c625a5c08d3a4364a321cd47d6357ef30e" ||
 		inputs.ConsumerTree != "be93a595dc4c44ef4d94d2333060788fd344dca0" ||
 		inputs.AdoptedIndefiniteDecision != "b0d8be0f-3bde-4dbc-b4c7-51cb125c7511" {
 		t.Fatal("future inputs lost the exact consumer or deviation binding")
