@@ -842,7 +842,7 @@ func TestNativeRestoreRequiresUnambiguousOntologySourceAcrossStores(t *testing.T
 			status, err := manager.Finish(target.ctx, status.RestoreID, hash, batchPrincipal, nativeFinishMeta(), nativeTestPresence)
 			requireCode(t, err, "restore_violation")
 			var typed *model.Error
-			if !errors.As(err, &typed) || !strings.Contains(typed.Data.Hint, "native record ontology/z") || !strings.Contains(typed.Data.Hint, "multiple protected ontology sources") {
+			if !errors.As(err, &typed) || !strings.Contains(typed.Data.Hint, "native record ontology/ontology/z") || !strings.Contains(typed.Data.Hint, "multiple protected ontology sources") {
 				t.Fatalf("ambiguous ontology refusal did not name the second source: status=%+v data=%+v err=%v", status, typed.Data, err)
 			}
 			if status.State != "failed" || wrapped.writes != 0 {
