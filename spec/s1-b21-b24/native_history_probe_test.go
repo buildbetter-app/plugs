@@ -424,11 +424,15 @@ func nativeAssertDeferWithReason(t *testing.T, ref model.Ref, reason string, got
 	if err != nil || len(got.Results) != 2 || got.Revision != model.Natural64(oldHead+1) || after.Meta.Head != got.Revision {
 		t.Fatal("defer with reason must return two ordered results at one new revision")
 	}
+	// Omitted branch and explicit zero select the same typed reference.
+	sameRef := func(actual model.Ref) bool {
+		return actual.Validate() == nil && ref.Validate() == nil && actual.IsID() && ref.IsID() && actual.ID == ref.ID && actual.Branch.String() == ref.Branch.String()
+	}
 	find := func(state storedState) driver.Record {
 		var found driver.Record
 		count := 0
 		for _, row := range state.Records {
-			if nativeEqualJSON(row.Ref, ref) {
+			if sameRef(row.Ref) {
 				found, count = row, count+1
 			}
 		}
@@ -440,7 +444,7 @@ func nativeAssertDeferWithReason(t *testing.T, ref model.Ref, reason string, got
 	oldRecord, record := find(before), find(after)
 	for i, operation := range []string{"patch", "comment"} {
 		result := got.Results[i]
-		if !nativeEqualJSON(result.Ref, ref) || result.Revision != got.Revision || len(result.Record) == 0 || string(result.Record) != string(record.Body) {
+		if !sameRef(result.Ref) || result.Revision != got.Revision || len(result.Record) == 0 || string(result.Record) != string(record.Body) {
 			t.Fatalf("defer %s result lost its exact target, revision or final record", operation)
 		}
 	}
@@ -462,7 +466,7 @@ func nativeAssertDeferWithReason(t *testing.T, ref model.Ref, reason string, got
 		t.Fatal("defer must preserve prior history and add one target version and changeset")
 	}
 	change := after.Changesets[len(before.Changesets)]
-	if change.Revision != got.Revision || len(change.Changes) != 1 || !nativeEqualJSON(change.Changes[0].Ref, ref) {
+	if change.Revision != got.Revision || len(change.Changes) != 1 || !sameRef(change.Changes[0].Ref) {
 		t.Fatal("defer patch and reason must publish one changed target at the commit revision")
 	}
 }
