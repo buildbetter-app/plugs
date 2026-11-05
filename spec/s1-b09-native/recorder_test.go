@@ -208,7 +208,7 @@ func TestRecordNativeB09(t *testing.T) {
 		"default_id":      first, "second_id": second, "third_id": maximum,
 		"native_jsonl_export_sha256": exportSHA, "native_import_continuation_id": continued,
 		"explicit_refusal_conserved": true,
-		"limits":                     []string{"the admitted producer exposes only its default three-character native allocator through the accepted CLI", "native JSONL import is not Plug snapshot restore", "native recording alone does not prove Plug parity, restored-ID safety or full-card admission"},
+		"limits":                     []string{"this recording uses the native default three-character allocator and does not exercise configured adaptive length or nonce exhaustion", "native JSONL import is not Plug snapshot restore", "native recording alone does not prove Plug parity, restored-ID safety or full-card admission"},
 		"captures":                   r.captures,
 	})
 }

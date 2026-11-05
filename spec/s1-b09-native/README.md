@@ -14,8 +14,9 @@ the exact bytes `export:\n  auto: false\n`. It is the **configured YAML object**
 case. It does not repair or clear the genuine initializer's comment-only YAML
 omission, including the historical `425d9` RED. The accepted CLI records its
 default three-character IDs, explicit-ID refusal conservation, and JSONL
-export/import continuation. Configured adaptive length and nonce exhaustion
-are not exposed by this admitted CLI corpus and remain separate dependencies.
+export/import continuation. This corpus has not recorded configured adaptive
+length or nonce exhaustion; the native CLI's configuration interface and those
+cases still require their own actual recordings.
 
 The exact archive from the third native create is read directly by
 `InspectImport` and authenticated-profile `RestoreImportWithLease(snapshot)`
@@ -24,7 +25,8 @@ history floor because the producer declares `available-unverified` history;
 the test does not fabricate or certify source history. The paired sequence
 checks every restored field and source row, complete unaffected records and
 versions, exact write/receipt/allocator deltas, ordinary compaction and history
-reversal, and independent continuation IDs. Immediate complete equality checks
+reversal, raw forward patches and actual `HistoryGet` replay of the current
+state and preimage, and independent continuation IDs. Immediate complete equality checks
 precede both continuation writes after reopen. SQLite/PostgreSQL reopen actual
 stores; memory reacquires its lease on the same in-memory store.
 

@@ -226,8 +226,7 @@ func runB09Replay(t *testing.T, engine string, data []byte, inspection converter
 	if len(compacted.VersionRevisions[sourceIDs[0]]) != 3 {
 		t.Fatalf("%s compaction did not retain ordinary version history: %+v", engine, compacted.VersionRevisions[sourceIDs[0]])
 	}
-	latest := latestB09Version(t, target, closeRef)
-	latestDoc, err := pipeline.DecodeDocument(latest.Body)
+	latestDoc, err := pipeline.DecodeDocument(compacted.Records[b09RecordKey(t, closeRef)].Body)
 	if err != nil || latestDoc.Fields["description"] != "native compacted summary" || len(latestDoc.Metadata["plug.compaction"]) == 0 {
 		t.Fatalf("%s compacted source does not retain summary/state: %v %+v", engine, err, latestDoc)
 	}
@@ -254,7 +253,7 @@ func runB09Replay(t *testing.T, engine string, data []byte, inspection converter
 	if len(revertedImage.VersionRevisions[sourceIDs[0]]) != 4 {
 		t.Fatalf("%s history restore did not append a reversal version: %+v", engine, revertedImage.VersionRevisions[sourceIDs[0]])
 	}
-	revertedDoc, err := pipeline.DecodeDocument(latestB09Version(t, target, closeRef).Body)
+	revertedDoc, err := pipeline.DecodeDocument(revertedImage.Records[b09RecordKey(t, closeRef)].Body)
 	if err != nil || revertedDoc.Fields["description"] != "B09 accepted native recorder" || len(revertedDoc.Metadata["plug.compaction"]) != 0 {
 		t.Fatalf("%s history restore did not recover original text: %v %+v", engine, err, revertedDoc)
 	}
@@ -287,7 +286,7 @@ func runB09Replay(t *testing.T, engine string, data []byte, inspection converter
 		Engine: engine, SourceStoreID: inspection.SourceStoreID, ArchiveSHA256: inspection.ArchiveSHA256, DerivedSHA256: inspection.DerivedSHA256,
 		SourceIDs: sourceIDs, NewIDs: []string{firstNew, secondNew}, RestoreHead: initial.Meta.Head.String(), CloseRevision: closeCommit.Revision.String(),
 		CompactionRevision: compactRevision.String(), RevertRevision: reverted.Commit.Revision.String(), Stages: []b09ReplayStage{initial, firstReopen, postCreate, closed, compacted, revertedImage, secondReopen, final},
-		Operations: []string{"converterroundtrip.InspectImport", "converterroundtrip.RestoreImportWithLease(history=snapshot)", "service.Close", "service.CompactWithOutcome", "service.RevertCompactionWithOutcome", "persistent close/reopen", "service.Create"},
+		Operations: []string{"converterroundtrip.InspectImport", "converterroundtrip.RestoreImportWithLease(history=snapshot)", "service.Close", "service.CompactWithOutcome", "service.RevertCompactionWithOutcome", "service.HistoryGet(current and preimage)", "persistent close/reopen", "service.Create"},
 	}
 }
 
@@ -322,7 +321,7 @@ func (r *b09ReplayTarget) bind() (*pipeline.Writer, *service.Service) {
 
 func createB09Continuation(t *testing.T, domain *service.Service, engine, label string) string {
 	t.Helper()
-	commit, err := domain.Create(context.Background(), b09Principal, service.CreateRequest{Type: "issue", Fields: map[string]any{"title": "Plug native continuation " + label, "description": "continuation after accepted native restore", "priority": 2}}, b09Meta(engine, "create-"+label))
+	commit, err := domain.Create(context.Background(), b09Principal, service.CreateRequest{Type: "issue", Fields: map[string]any{"title": "Plug native continuation " + label, "description": "continuation after accepted native restore", "priority": 2, "template": false}}, b09Meta(engine, "create-"+label))
 	if err != nil || len(commit.Results) != 1 {
 		t.Fatalf("%s native continuation %s: %+v %v", engine, label, commit, err)
 	}
@@ -333,26 +332,27 @@ func createB09Continuation(t *testing.T, domain *service.Service, engine, label 
 	return id
 }
 
-func latestB09Version(t *testing.T, target *b09ReplayTarget, ref model.Ref) driver.Version {
-	t.Helper()
-	meta, err := target.store.Meta(context.Background())
+func (r *b09ReplayTarget) assertHistoryState(label string, meta driver.Meta, want driver.Record, version driver.Version) {
+	r.t.Helper()
+	_, domain := r.bind()
+	req := service.HistoryVersionRequest{Ref: want.Ref, AsOf: service.AsOf{Revision: meta.Head, Incarnation: meta.Incarnation}}
+	got, err := domain.HistoryGet(context.Background(), b09Principal, req)
 	if err != nil {
-		t.Fatal(err)
+		r.t.Fatalf("%s actual history replay: %v", label, err)
 	}
-	r, err := target.store.Read(context.Background(), driver.View{Incarnation: meta.Incarnation})
-	if err != nil {
-		t.Fatal(err)
+	b09Equal(r.t, label+" replayed complete body", json.RawMessage(want.Body), got.Body)
+	b09Equal(r.t, label+" replayed ref", want.Ref, got.Ref)
+	if got.Revision.String() != want.Revision.String() || got.Base != version.Base || got.Deleted || !got.CreatedAt.Equal(version.CreatedAt) || !reflect.DeepEqual(got.Principal, version.Principal) {
+		r.t.Fatalf("%s replayed version envelope differs: %+v", label, got)
 	}
-	defer func() {
-		if err := r.Close(); err != nil {
-			t.Errorf("latest B09 history reader close: %v", err)
+	wantPatch := []map[string]any{}
+	if version.Patch != nil {
+		if err := json.Unmarshal(version.Patch, &wantPatch); err != nil {
+			r.t.Fatal(err)
 		}
-	}()
-	page, err := r.Versions(context.Background(), ref, driver.PageReq{Limit: 1000})
-	if err != nil || page.NextCursor != nil || len(page.Items) == 0 {
-		t.Fatalf("latest B09 history read: %v %+v", err, page)
 	}
-	return page.Items[len(page.Items)-1]
+	b09Equal(r.t, label+" retained forward patch", wantPatch, got.Patch)
+	(&recorder{t: r.t}).writeJSON(filepath.Join(r.output, "history-"+label+".json"), map[string]any{"method": "service.HistoryGet", "request": req, "result": got})
 }
 
 func (r *b09ReplayTarget) stage(name string, sourceIDs, extraIDs []string) b09ReplayStage {

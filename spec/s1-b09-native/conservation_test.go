@@ -251,7 +251,7 @@ func (r *b09ReplayTarget) assertMutation(before, after b09ReplayStage, id, opera
 	if creating {
 		label := strings.TrimPrefix(operation, "create-")
 		stamp := r.now
-		wantDoc = pipeline.Document{ID: id, Type: "issue", Project: "b09", Fields: map[string]any{"title": "Plug native continuation " + label, "description": "continuation after accepted native restore", "status": "todo", "priority": 2}, CreatedAt: &stamp}
+		wantDoc = pipeline.Document{ID: id, Type: "issue", Project: "b09", Fields: map[string]any{"title": "Plug native continuation " + label, "description": "continuation after accepted native restore", "status": "todo", "priority": 2, "template": false}, CreatedAt: &stamp}
 	} else {
 		wantDoc, err = pipeline.DecodeDocument(prior.Body)
 		if err != nil {
@@ -320,10 +320,20 @@ func (r *b09ReplayTarget) assertMutation(before, after b09ReplayStage, id, opera
 			b09Equal(t, operation+" retained version prefix", old, got[:len(old)])
 		}
 		latest := got[len(got)-1]
-		if latest.Revision.String() != wantMeta.Head.String() || latest.Deleted || latest.Base != creating || !latest.CreatedAt.Equal(r.now) || !reflect.DeepEqual(latest.Principal, b09Principal) {
-			t.Fatalf("%s invalid appended version: %+v", operation, latest)
+		wantVersion := driver.Version{Ref: wantRecords[key].Ref, Revision: wantMeta.Head, Base: creating, CreatedAt: r.now, Principal: b09Principal}
+		if creating {
+			wantVersion.Body = wantBody
+		} else {
+			wantVersion.Patch, err = json.Marshal([]map[string]any{{"op": "replace", "path": "", "value": json.RawMessage(wantBody)}})
+			if err != nil {
+				t.Fatal(err)
+			}
 		}
-		b09Equal(t, operation+" appended version body", json.RawMessage(wantBody), json.RawMessage(latest.Body))
+		assertB09Version(t, operation+" complete appended version", wantVersion, latest)
+		r.assertHistoryState(operation+"-current", after.Meta, wantRecords[key], wantVersion)
+		if !creating {
+			r.assertHistoryState(operation+"-preimage", before.Meta, prior, old[len(old)-1])
+		}
 	}
 	if len(after.Changesets) != len(before.Changesets)+1 {
 		t.Fatalf("%s must append exactly one changeset", operation)
@@ -496,18 +506,23 @@ func assertB09SQLVersion(t *testing.T, engine string, table b09SQLTable, row str
 	if err := json.Unmarshal([]byte(text(dataColumn)), &got); err != nil {
 		t.Fatal(err)
 	}
+	assertB09Version(t, "physical version", want, got)
+}
+
+func assertB09Version(t *testing.T, label string, want, got driver.Version) {
+	t.Helper()
 	for _, bodies := range []struct {
 		name      string
 		want, got []byte
 	}{{"body", want.Body, got.Body}, {"patch", want.Patch, got.Patch}} {
 		if bodies.want == nil {
-			b09Equal(t, "physical version absent "+bodies.name, bodies.want, bodies.got)
+			b09Equal(t, label+" absent "+bodies.name, bodies.want, bodies.got)
 		} else {
-			b09Equal(t, "complete physical version "+bodies.name, json.RawMessage(bodies.want), json.RawMessage(bodies.got))
+			b09Equal(t, label+" complete "+bodies.name, json.RawMessage(bodies.want), json.RawMessage(bodies.got))
 		}
 	}
 	want.Body, want.Patch, got.Body, got.Patch = nil, nil, nil, nil
-	b09Equal(t, "complete physical version envelope", want, got)
+	b09Equal(t, label+" complete envelope", want, got)
 }
 
 func assertB09InitialSQL(t *testing.T, stage b09ReplayStage, want map[string]driver.Record) {
