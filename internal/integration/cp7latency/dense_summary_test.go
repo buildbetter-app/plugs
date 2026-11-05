@@ -115,7 +115,7 @@ func TestDenseOrdinaryQ6RefusalAndSeparateDecision20TypeSummary(t *testing.T) {
 				if len(got.Items) != 0 || got.NextCursor != nil || got.Count != nil || len(got.Groups) != 1 || got.Groups[0].Key != "issue" || got.Groups[0].Count != n || len(got.Groups[0].Items) != 0 || got.Groups[0].Elided != nil {
 					t.Fatalf("dense summary differs from independent corpus population: %+v", got)
 				}
-				if counts.work().AggregateInputs != n || counts.work().AggregateGroups != 1 {
+				if counts.work().AggregateInputs != int64(n) || counts.work().AggregateGroups != 1 {
 					t.Fatalf("dense summary aggregate work hidden: %+v", counts.work())
 				}
 				t.Logf("CP7_DENSE_TYPE_SUMMARY fields_present=true fields_empty=true group_by=type finite_cp7=true authorized_inputs=%d groups=1 corpus_sha256=%s executed_work=%+v performance=UNMEASURED", n, f.corpusHash, counts.work())
