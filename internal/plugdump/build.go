@@ -16,6 +16,9 @@ var hashPattern = regexp.MustCompile(`^[a-zA-Z0-9]+$`)
 // Build gathers and validates the whole read set before serializing any output.
 // No partial success is possible after a source read or mapping failure.
 func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error) {
+	if err := validateSourcePlaneContract(inventory.SourcePlaneAddressContract); err != nil {
+		return nil, err
+	}
 	if inventory.Version != "beads-inventory/1" || inventory.StoreID == "" || inventory.Machine == "" {
 		return nil, fmt.Errorf("unsupported inventory version or missing source identity")
 	}
@@ -61,22 +64,6 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 			return nil, fmt.Errorf("unsupported nonempty family %s (live claims must be resolved)", name)
 		}
 	}
-	mapper := mapping{
-		projects:     projects,
-		beads:        map[string]string{},
-		wisps:        map[string]string{},
-		records:      map[string][]Record{},
-		policy:       inventory.ConfigPolicy,
-		usedPolicy:   map[string]bool{},
-		ontology:     ontology,
-		usedOntology: map[string]bool{},
-	}
-	if err := mapper.wispRows(tables["wisps"].Rows); err != nil {
-		return nil, err
-	}
-	if err := mapper.issues(tables["issues"].Rows); err != nil {
-		return nil, err
-	}
 	storedConfig := map[string]any{}
 	for _, row := range tables["config"].Rows {
 		key := text(row, "key")
@@ -84,8 +71,33 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 			storedConfig[key] = row["value"]
 		}
 	}
-	if err := validateCatalogUnion(tables["custom_statuses"].Rows, tables["custom_types"].Rows, storedConfig, yamlValues); err != nil {
+	mapper := mapping{
+		sourcePlanes:   inventory.SourcePlaneAddressContract == SourcePlaneAddressContract,
+		customStatuses: map[string]bool{},
+		projects:       projects,
+		beads:          map[string]string{},
+		wisps:          map[string]string{},
+		records:        map[string][]Record{},
+		policy:         inventory.ConfigPolicy,
+		usedPolicy:     map[string]bool{},
+		ontology:       ontology,
+		usedOntology:   map[string]bool{},
+	}
+	if mapper.sourcePlanes {
+		if err := readCatalogUnion(tables["custom_statuses"].Rows, tables["custom_types"].Rows, storedConfig, yamlValues, mapper.customStatuses); err != nil {
+			return nil, err
+		}
+	}
+	if err := mapper.wispRows(tables["wisps"].Rows); err != nil {
 		return nil, err
+	}
+	if err := mapper.issues(tables["issues"].Rows); err != nil {
+		return nil, err
+	}
+	if !mapper.sourcePlanes {
+		if err := validateCatalogUnion(tables["custom_statuses"].Rows, tables["custom_types"].Rows, storedConfig, yamlValues); err != nil {
+			return nil, err
+		}
 	}
 	for _, family := range []string{"wisp_labels", "wisp_comments", "wisp_events", "wisp_child_counters"} {
 		if err := mapper.wispAuxiliary(family, tables[family].Rows); err != nil {
@@ -123,7 +135,8 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 		Disposition{"issues.row_lock", len(tables["issues"].Rows), "manifest/rebuild", "transient locks excluded"},
 		Disposition{"issues.is_blocked", len(tables["issues"].Rows), "manifest/rebuild", "derived blocking excluded; Plug must recompute"})
 	manifest := Manifest{
-		Format: Format, Schema: 1, Reference: BeadsReference, StoreID: inventory.StoreID, Machine: inventory.Machine,
+		SourcePlaneAddressContract: inventory.SourcePlaneAddressContract,
+		Format:                     Format, Schema: 1, Reference: BeadsReference, StoreID: inventory.StoreID, Machine: inventory.Machine,
 		MainVersion: 72, IgnoredVersion: 28, Scope: "offline-head-and-source-archives", History: inventory.History,
 		SourceFieldsContract: IssueSourceFieldsContract,
 		Projects:             mapper.projects, Ontology: ontology, Sources: dispositions,

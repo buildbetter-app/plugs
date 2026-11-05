@@ -10,14 +10,16 @@ import (
 )
 
 type mapping struct {
-	projects     []Project
-	beads        map[string]string
-	wisps        map[string]string
-	records      map[string][]Record
-	policy       map[string]string
-	usedPolicy   map[string]bool
-	ontology     []OntologyDirective
-	usedOntology map[string]bool
+	sourcePlanes   bool
+	customStatuses map[string]bool
+	projects       []Project
+	beads          map[string]string
+	wisps          map[string]string
+	records        map[string][]Record
+	policy         map[string]string
+	usedPolicy     map[string]bool
+	ontology       []OntologyDirective
+	usedOntology   map[string]bool
 }
 
 var builtInIssueTypes = map[string]bool{
@@ -173,7 +175,7 @@ func (m *mapping) wispRows(rows []Row) error {
 			return fmt.Errorf("unknown project, empty or duplicate wisp ID")
 		}
 		status, statusErr := requiredText(row, "status")
-		if statusErr != nil || !supportedSourceStatus(status) {
+		if statusErr != nil || !supportedSourceStatus(status) && !(m.sourcePlanes && m.customStatuses[status]) {
 			return fmt.Errorf("unsupported wisp status")
 		}
 		if strings.TrimSpace(text(row, "title")) == "" {
@@ -210,6 +212,13 @@ type catalogStatus struct {
 }
 
 func validateCatalogUnion(statusRows, typeRows []Row, storedConfig map[string]any, yamlValues []map[string]any) error {
+	return readCatalogUnion(statusRows, typeRows, storedConfig, yamlValues, nil)
+}
+
+// readCatalogUnion validates the same strict SQL/config/YAML union and may
+// return its declared status names for raw active-plane capture. It does not
+// select consumer workflow or lifetime semantics.
+func readCatalogUnion(statusRows, typeRows []Row, storedConfig map[string]any, yamlValues []map[string]any, customStatuses map[string]bool) error {
 	if len(statusRows) > 50 {
 		return fmt.Errorf("too many custom statuses")
 	}
@@ -277,6 +286,11 @@ func validateCatalogUnion(statusRows, typeRows []Row, storedConfig map[string]an
 	for _, values := range yamlValues {
 		if err := addCatalogConfig(values, addStatus, addType); err != nil {
 			return err
+		}
+	}
+	for name := range statusCategories {
+		if customStatuses != nil {
+			customStatuses[name] = true
 		}
 	}
 	return nil
@@ -433,6 +447,7 @@ func parseCatalogTypes(value any) ([]string, error) {
 
 func (m *mapping) wispAuxiliary(table string, rows []Row) error {
 	seen := map[string]bool{}
+	labels := map[string]map[string]bool{}
 	for _, row := range rows {
 		if err := validateRowUTF8(row); err != nil {
 			return fmt.Errorf("%s row: %w", table, err)
@@ -452,6 +467,22 @@ func (m *mapping) wispAuxiliary(table string, rows []Row) error {
 		}
 		if table == "wisp_labels" && text(row, "label") == "" {
 			return fmt.Errorf("empty wisp label")
+		}
+		if m.sourcePlanes && table == "wisp_labels" {
+			if labels[id] == nil {
+				labels[id] = map[string]bool{}
+			}
+			label := text(row, "label")
+			if labels[id][label] {
+				return fmt.Errorf("duplicate wisp label identity")
+			}
+			labels[id][label] = true
+		}
+		if m.sourcePlanes && table == "wisp_child_counters" {
+			if seen[id] {
+				return fmt.Errorf("duplicate wisp child counter identity")
+			}
+			seen[id] = true
 		}
 		if table == "wisp_comments" || table == "wisp_events" {
 			rowID, err := requiredText(row, "id")
@@ -741,6 +772,9 @@ func (m *mapping) dependency(table string, row Row) error {
 	}
 	if !supportsTypedDependency(kind, table, targetKind) && !(targetKind == "depends_on_issue_id" && isValidLocalOpaqueDependencyKind(kind)) {
 		return fmt.Errorf("unsupported dependency type")
+	}
+	if m.sourcePlanes && table != "dependencies" && isValidLocalOpaqueDependencyKind(kind) {
+		return fmt.Errorf("local opaque dependency requires a durable issue source")
 	}
 	if err := validateDependencyMetadata(kind, row["metadata"]); err != nil {
 		return fmt.Errorf("dependency %s metadata: %w", kind, err)

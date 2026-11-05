@@ -36,10 +36,10 @@ func encode(manifest Manifest, records map[string][]Record, files map[string][]b
 				return nil, err
 			}
 		}
-		sort.Slice(rows, func(i, j int) bool { return recordKey(rows[i]) < recordKey(rows[j]) })
+		sort.Slice(rows, func(i, j int) bool { return compareRecords(rows[i], rows[j], manifest.SourcePlaneAddressContract) < 0 })
 		var data []byte
 		for i, record := range rows {
-			if i > 0 && recordKey(rows[i-1]) == recordKey(record) {
+			if i > 0 && compareRecords(rows[i-1], record, manifest.SourcePlaneAddressContract) == 0 {
 				return nil, fmt.Errorf("duplicate %s record identity", kind)
 			}
 			encoded, err := marshal(record)
@@ -178,6 +178,9 @@ func Validate(reader io.Reader) (Manifest, error) {
 	if _, present := manifestFields["source_fields_contract"]; present && manifest.SourceFieldsContract != IssueSourceFieldsContract {
 		return Manifest{}, fmt.Errorf("unsupported source fields contract")
 	}
+	if err := validateSourcePlaneMarker(members["manifest.json"], manifest.SourcePlaneAddressContract); err != nil {
+		return Manifest{}, err
+	}
 	if manifest.Format != Format || manifest.Schema != 1 || manifest.Reference != BeadsReference || manifest.MainVersion != 72 || manifest.IgnoredVersion != 28 || manifest.StoreID == "" || manifest.Machine == "" || manifest.Scope != "offline-head-and-source-archives" {
 		return Manifest{}, fmt.Errorf("unsupported manifest schema, source or scope")
 	}
@@ -223,6 +226,7 @@ func Validate(reader io.Reader) (Manifest, error) {
 	var beadRecords []Record
 	var edgeRecords []Record
 	var statusRows, typeRows []Row
+	activeRows := map[string][]Row{}
 	storedCatalogConfig := map[string]any{}
 	beadIDs := map[string]bool{}
 	wispIDs := map[string]bool{}
@@ -242,10 +246,10 @@ func Validate(reader io.Reader) (Manifest, error) {
 		if len(lines) != kind.Count {
 			return Manifest{}, fmt.Errorf("record count mismatch")
 		}
-		last := ""
-		for _, line := range lines {
+		var last Record
+		for i, line := range lines {
 			var record Record
-			if err := decodeJSON(line, &record); err != nil || record.Kind != kind.Name || record.ID == "" || record.Source.Table == "" || record.Source.Fields == nil || record.Body == nil || recordKey(record) <= last {
+			if err := decodeJSON(line, &record); err != nil || record.Kind != kind.Name || record.ID == "" || record.Source.Table == "" || record.Source.Fields == nil || record.Body == nil || (i > 0 && compareRecords(last, record, manifest.SourcePlaneAddressContract) >= 0) {
 				return Manifest{}, fmt.Errorf("invalid, duplicate or unordered typed record")
 			}
 			if err := validateRecordVersioned(record, manifest.Projects, counts, kind.Version); err != nil {
@@ -277,7 +281,14 @@ func Validate(reader io.Reader) (Manifest, error) {
 					wispIDs[id] = true
 				}
 			}
-			last = recordKey(record)
+			if manifest.SourcePlaneAddressContract == SourcePlaneAddressContract && record.Kind == "beads-archive" {
+				encoded, err := marshal(record.Source.Fields)
+				if err != nil || record.ID != record.Source.Table+"/"+digest(encoded) {
+					return Manifest{}, fmt.Errorf("source archive identity does not bind its raw row")
+				}
+				activeRows[record.Source.Table] = append(activeRows[record.Source.Table], record.Source.Fields)
+			}
+			last = record
 		}
 	}
 	for path := range members {
@@ -289,8 +300,14 @@ func Validate(reader io.Reader) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, err
 	}
-	if err := validateCatalogUnion(statusRows, typeRows, storedCatalogConfig, yamlCatalogs); err != nil {
+	customStatuses := map[string]bool{}
+	if err := readCatalogUnion(statusRows, typeRows, storedCatalogConfig, yamlCatalogs, customStatuses); err != nil {
 		return Manifest{}, err
+	}
+	if manifest.SourcePlaneAddressContract == SourcePlaneAddressContract {
+		if err := validateSourcePlanes(manifest.Projects, beadRecords, edgeRecords, activeRows, customStatuses); err != nil {
+			return Manifest{}, err
+		}
 	}
 	if err := validateDispositions(manifest.Sources, counts); err != nil {
 		return Manifest{}, err

@@ -1,0 +1,367 @@
+package plugdump
+
+import (
+	"archive/tar"
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"reflect"
+	"sort"
+	"strings"
+	"testing"
+)
+
+// This is a mapping fixture, not persisted-native or public-runtime evidence.
+func sourcePlaneFixture(t *testing.T, status string) (fixtureSource, Inventory) {
+	t.Helper()
+	source, inventory := fixture(t)
+	inventory.SourcePlaneAddressContract = SourcePlaneAddressContract
+	wisp := cloneRow(source["issues"].Rows[0])
+	wisp["title"], wisp["status"], wisp["ephemeral"], wisp["no_history"] = "raw active source", status, true, true
+	second := cloneRow(wisp)
+	second["id"], second["title"] = "demo-9", "second active source"
+	source["wisps"] = Table{Columns: columnsFor("wisps"), Rows: []Row{wisp, second}}
+	source["custom_statuses"] = Table{Columns: columnsFor("custom_statuses"), Rows: []Row{{"name": "review", "category": "active"}}}
+	durable := cloneRow(source["dependencies"].Rows[0])
+	durable["id"], durable["issue_id"], durable["type"] = "shared\x00physical-edge", wisp["id"], "waits-for"
+	durable["depends_on_issue_id"], durable["depends_on_wisp_id"], durable["depends_on_external"] = source["issues"].Rows[1]["id"], nil, nil
+	durable["metadata"], durable["thread_id"] = `{"gate":"","n":9007199254740993}`, "physical-thread"
+	active := cloneRow(durable)
+	active["depends_on_issue_id"], active["depends_on_wisp_id"] = nil, second["id"]
+	active["metadata"] = map[string]any{"gate": "any-children", "also_blocks": true, "n": json.Number("9007199254740993")}
+	source["dependencies"] = Table{Columns: columnsFor("dependencies"), Rows: []Row{durable}}
+	source["wisp_dependencies"] = Table{Columns: columnsFor("wisp_dependencies"), Rows: []Row{active}}
+	return source, inventory
+}
+
+func sourcePlaneRecords(t *testing.T, member []byte) []Record {
+	t.Helper()
+	var records []Record
+	decoder := json.NewDecoder(bytes.NewReader(member))
+	decoder.UseNumber()
+	for {
+		var r Record
+		if err := decoder.Decode(&r); err == io.EOF {
+			return records
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		records = append(records, r)
+	}
+}
+
+// Recompute only USTAR framing and checksums to exercise hostile-input
+// validation. Keeping the raw manifest map preserves null/empty marker tests.
+func reframeSourcePlaneArchive(t *testing.T, members map[string][]byte) []byte {
+	t.Helper()
+	var manifest map[string]any
+	if err := decodeJSON(members["manifest.json"], &manifest); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]File{}
+	var paths []string
+	for path, data := range members {
+		if path != "manifest.json" {
+			files[path] = File{digest(data), int64(len(data))}
+			paths = append(paths, path)
+		}
+	}
+	manifest["files"] = files
+	members["manifest.json"] = mustJSON(t, manifest)
+	sort.Strings(paths)
+	var output bytes.Buffer
+	writer := tar.NewWriter(&output)
+	for _, path := range append([]string{"manifest.json"}, paths...) {
+		data := members[path]
+		if err := writer.WriteHeader(&tar.Header{Name: path, Mode: 0o600, Size: int64(len(data)), Typeflag: tar.TypeReg, Format: tar.FormatUSTAR}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return output.Bytes()
+}
+
+func TestSourcePlaneCaptureConservesPhysicalIdentitiesAndRawRows(t *testing.T) {
+	source, inventory := sourcePlaneFixture(t, "review")
+	data := buildFixture(t, source, inventory)
+	manifest, err := Validate(bytes.NewReader(data))
+	if err != nil || manifest.SourcePlaneAddressContract != SourcePlaneAddressContract {
+		t.Fatalf("source plane marker lost: %+v %v", manifest, err)
+	}
+	members := archiveMembers(t, data)
+	actual := map[string][]Row{}
+	edges := sourcePlaneRecords(t, members["records/edge.ndjson"])
+	if len(edges) != 2 || edges[0].Source.Table != "dependencies" || edges[1].Source.Table != "wisp_dependencies" || edges[0].ID != edges[1].ID || edges[0].Project != edges[1].Project {
+		t.Fatalf("equal physical edge IDs collapsed or reminted: %+v", edges)
+	}
+	for _, edge := range edges {
+		actual[edge.Source.Table] = append(actual[edge.Source.Table], edge.Source.Fields)
+		if len(edge.Source.Fields) != 10 || edge.ID != edge.Source.Fields["id"] || edge.Body["from"] != edge.Source.Fields["issue_id"] || edge.Body["to"] != edge.Source.Fields[text(edge.Body, "target_kind")] || edge.Body["type"] != edge.Source.Fields["type"] || edge.Body["thread_id"] != edge.Source.Fields["thread_id"] || !jsonEqual(edge.Body["metadata"], edge.Source.Fields["metadata"]) {
+			t.Fatalf("physical edge fields/body changed: %+v", edge)
+		}
+	}
+	for _, record := range sourcePlaneRecords(t, members["records/beads-archive.ndjson"]) {
+		actual[record.Source.Table] = append(actual[record.Source.Table], record.Source.Fields)
+	}
+	for _, table := range []string{"wisps", "custom_statuses", "dependencies", "wisp_dependencies"} {
+		want, got := []string{}, []string{}
+		for _, row := range source[table].Rows {
+			want = append(want, string(mustJSON(t, row)))
+		}
+		for _, row := range actual[table] {
+			got = append(got, string(mustJSON(t, row)))
+		}
+		sort.Strings(want)
+		sort.Strings(got)
+		if !reflect.DeepEqual(want, got) {
+			t.Fatalf("raw %s multiset changed: got=%v want=%v", table, got, want)
+		}
+	}
+	for table, input := range source {
+		for i, j := 0, len(input.Rows)-1; i < j; i, j = i+1, j-1 {
+			input.Rows[i], input.Rows[j] = input.Rows[j], input.Rows[i]
+		}
+		source[table] = input
+	}
+	if again := buildFixture(t, source, inventory); !bytes.Equal(data, again) {
+		t.Fatal("source row order changed archive bytes")
+	}
+}
+
+func TestSourcePlaneCapabilityKeepsLegacyBytesAndRefusals(t *testing.T) {
+	source, inventory := fixture(t)
+	legacy := archiveMembers(t, buildFixture(t, source, inventory))
+	inventory.SourcePlaneAddressContract = SourcePlaneAddressContract
+	current := archiveMembers(t, buildFixture(t, source, inventory))
+	var manifest map[string]any
+	if err := decodeJSON(current["manifest.json"], &manifest); err != nil {
+		t.Fatal(err)
+	}
+	delete(manifest, "source_plane_address_contract")
+	current["manifest.json"] = mustJSON(t, manifest)
+	var legacyManifest map[string]any
+	if err := decodeJSON(legacy["manifest.json"], &legacyManifest); err != nil {
+		t.Fatal(err)
+	}
+	legacy["manifest.json"] = mustJSON(t, legacyManifest)
+	if !reflect.DeepEqual(legacy, current) {
+		t.Fatal("explicit cap changed ordinary source members beyond its marker")
+	}
+	for _, test := range []struct{ status, want string }{{"open", "duplicate edge record identity"}, {"review", "unsupported wisp status"}} {
+		source, inventory := sourcePlaneFixture(t, test.status)
+		inventory.SourcePlaneAddressContract = ""
+		data, err := Build(context.Background(), source, inventory)
+		if err == nil || len(data) != 0 || !strings.Contains(err.Error(), test.want) {
+			t.Fatalf("legacy refusal lost: bytes=%d err=%v want=%s", len(data), err, test.want)
+		}
+	}
+}
+
+func TestSourcePlaneMarkerRequiresExactPresentValue(t *testing.T) {
+	for _, value := range []any{nil, "", "beads-source-planes/2", false, json.Number("1"), map[string]any{}} {
+		t.Run(string(mustJSON(t, value)), func(t *testing.T) {
+			_, inventory := fixture(t)
+			var object map[string]any
+			if err := decodeJSON(mustJSON(t, inventory), &object); err != nil {
+				t.Fatal(err)
+			}
+			object["source_plane_address_contract"] = value
+			if _, err := ReadInventory(bytes.NewReader(mustJSON(t, object))); err == nil {
+				t.Fatal("inventory accepted malformed present marker")
+			}
+			source, inventory := fixture(t)
+			members := archiveMembers(t, buildFixture(t, source, inventory))
+			if err := decodeJSON(members["manifest.json"], &object); err != nil {
+				t.Fatal(err)
+			}
+			object["source_plane_address_contract"] = value
+			members["manifest.json"] = mustJSON(t, object)
+			if _, err := Validate(bytes.NewReader(reframeSourcePlaneArchive(t, members))); err == nil {
+				t.Fatal("manifest accepted malformed present marker")
+			}
+		})
+	}
+	_, _, err := (SQLSource{}).NativeInventory(context.Background(), NativeCapture{SourcePlaneAddressContract: "unknown"})
+	if err == nil || !strings.Contains(err.Error(), "source plane address contract") {
+		t.Fatalf("native selector was not rejected before SQL: %v", err)
+	}
+}
+
+func TestSourcePlaneFullTupleAndOpaqueRefusals(t *testing.T) {
+	for _, test := range []struct {
+		name, want string
+		change     func(fixtureSource)
+	}{
+		{"same full edge tuple", "duplicate edge record identity", func(s fixtureSource) {
+			table := s["dependencies"]
+			row := cloneRow(table.Rows[0])
+			row["metadata"] = `{"n":2}`
+			table.Rows = append(table.Rows, row)
+			s["dependencies"] = table
+		}},
+		{"duplicate active entity", "duplicate wisp ID", func(s fixtureSource) {
+			table := s["wisps"]
+			row := cloneRow(table.Rows[0])
+			row["title"] = "different raw row, same physical ID"
+			table.Rows = append(table.Rows, row)
+			s["wisps"] = table
+		}},
+		{"undeclared active status", "unsupported wisp status", func(s fixtureSource) { s["wisps"].Rows[0]["status"] = "undeclared" }},
+		{"duplicate status declaration", "duplicate custom status row", func(s fixtureSource) {
+			table := s["custom_statuses"]
+			table.Rows = append(table.Rows, Row{"name": "review", "category": "done"})
+			s["custom_statuses"] = table
+		}},
+		{"missing target", "exactly one typed target", func(s fixtureSource) { s["dependencies"].Rows[0]["depends_on_issue_id"] = nil }},
+		{"multiple target arms", "exactly one typed target", func(s fixtureSource) { s["dependencies"].Rows[0]["depends_on_wisp_id"] = "demo-9" }},
+		{"new fixed kind active source", "unsupported dependency type", func(s fixtureSource) { s["wisp_dependencies"].Rows[0]["type"] = "duplicates" }},
+		{"opaque active source", "durable issue source", func(s fixtureSource) {
+			row := s["wisp_dependencies"].Rows[0]
+			row["type"] = "custom-kind"
+			row["depends_on_wisp_id"] = nil
+			row["depends_on_issue_id"] = s["issues"].Rows[1]["id"]
+		}},
+		{"opaque active target", "unsupported dependency type", func(s fixtureSource) {
+			row := s["dependencies"].Rows[0]
+			row["type"] = "custom-kind"
+			row["depends_on_issue_id"] = nil
+			row["depends_on_wisp_id"] = "demo-9"
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source, inventory := sourcePlaneFixture(t, "review")
+			test.change(source)
+			data, err := Build(context.Background(), source, inventory)
+			if err == nil || len(data) != 0 || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("non-atomic refusal: bytes=%d err=%v want=%s", len(data), err, test.want)
+			}
+		})
+	}
+}
+
+func TestSourcePlaneReadbackRefusesReorderedOrForgedOrigins(t *testing.T) {
+	for _, test := range []struct {
+		name, want string
+		change     func(*testing.T, map[string][]byte)
+	}{
+		{"reordered edges", "unordered typed record", func(t *testing.T, m map[string][]byte) {
+			r := sourcePlaneRecords(t, m["records/edge.ndjson"])
+			m["records/edge.ndjson"] = append(mustJSON(t, r[1]), mustJSON(t, r[0])...)
+		}},
+		{"wrong source project", "edge project", func(t *testing.T, m map[string][]byte) {
+			r := sourcePlaneRecords(t, m["records/edge.ndjson"])
+			r[0].Project = "other"
+			sort.Slice(r, func(i, j int) bool { return compareRecords(r[i], r[j], SourcePlaneAddressContract) < 0 })
+			m["records/edge.ndjson"] = append(mustJSON(t, r[0]), mustJSON(t, r[1])...)
+			var manifest Manifest
+			if err := decodeJSON(m["manifest.json"], &manifest); err != nil {
+				t.Fatal(err)
+			}
+			manifest.Projects = append(manifest.Projects, Project{Prefix: "other", IDMode: "sequential", HashLength: 0, ChildCounters: map[string]uint64{}})
+			m["manifest.json"] = mustJSON(t, manifest)
+		}},
+		{"unbound raw active row", "source archive identity", func(t *testing.T, m map[string][]byte) {
+			records := sourcePlaneRecords(t, m["records/beads-archive.ndjson"])
+			for i := range records {
+				if records[i].Source.Table == "wisps" {
+					records[i].Source.Fields["title"] = "forged"
+					break
+				}
+			}
+			m["records/beads-archive.ndjson"] = nil
+			for _, r := range records {
+				m["records/beads-archive.ndjson"] = append(m["records/beads-archive.ndjson"], mustJSON(t, r)...)
+			}
+		}},
+		{"rehashed undeclared active status", "unsupported wisp status", func(t *testing.T, m map[string][]byte) {
+			records := sourcePlaneRecords(t, m["records/beads-archive.ndjson"])
+			for i := range records {
+				if records[i].Source.Table == "wisps" {
+					records[i].Source.Fields["status"] = "undeclared"
+					records[i].ID = "wisps/" + digest(mustJSON(t, records[i].Source.Fields))
+					break
+				}
+			}
+			sort.Slice(records, func(i, j int) bool { return compareRecords(records[i], records[j], SourcePlaneAddressContract) < 0 })
+			m["records/beads-archive.ndjson"] = nil
+			for _, r := range records {
+				m["records/beads-archive.ndjson"] = append(m["records/beads-archive.ndjson"], mustJSON(t, r)...)
+			}
+		}},
+		{"marker cannot override edge version", "requires edge registry version", func(t *testing.T, m map[string][]byte) {
+			var manifest Manifest
+			if err := decodeJSON(m["manifest.json"], &manifest); err != nil {
+				t.Fatal(err)
+			}
+			for i := range manifest.Kinds {
+				if manifest.Kinds[i].Name == "edge" {
+					manifest.Kinds[i].Version = 1
+				}
+			}
+			m["manifest.json"] = mustJSON(t, manifest)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source, inventory := sourcePlaneFixture(t, "review")
+			members := archiveMembers(t, buildFixture(t, source, inventory))
+			test.change(t, members)
+			_, err := Validate(bytes.NewReader(reframeSourcePlaneArchive(t, members)))
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("readback admitted forged source: %v want=%s", err, test.want)
+			}
+		})
+	}
+}
+
+func TestSourcePlaneActiveStatusUsesStrictStoredAndYAMLUnion(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		yaml []byte
+		want string
+	}{
+		{"YAML-only declaration", []byte("status:\n  custom: [review:active]\n"), ""},
+		{"SQL YAML conflict", []byte("status:\n  custom: [review:done]\n"), "conflicting custom status"},
+		{"explicit null catalog", []byte("status:\n  custom: null\n"), "custom status"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source, inventory := sourcePlaneFixture(t, "review")
+			if test.name == "YAML-only declaration" {
+				source["custom_statuses"] = Table{Columns: columnsFor("custom_statuses")}
+			}
+			setCatalogYAML(t, &inventory, test.yaml)
+			data, err := Build(context.Background(), source, inventory)
+			if test.want != "" {
+				if err == nil || len(data) != 0 || !strings.Contains(err.Error(), test.want) {
+					t.Fatalf("catalog refusal: bytes=%d err=%v want=%s", len(data), err, test.want)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Validate(bytes.NewReader(data)); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestSourcePlaneCaptureCannotPromoteUnrepresentablePortableHistory(t *testing.T) {
+	source, inventory := sourcePlaneFixture(t, "review")
+	id := strings.Repeat("a", 32)
+	port := &historyFixtureSource{fixtureSource: source, log: SourceCommitLog{Head: id, Clean: true, Commits: []SourceCommit{{ID: id, Parents: []string{}, Metadata: Row{"message": "synthetic source-plane history boundary"}}}}, images: map[string]map[string]Table{id: source}}
+	data := buildFixture(t, port, inventory)
+	manifest, history := sourceCapture(t, data)
+	if manifest.History != "available-unverified" || history.Range.Status != "unverified" || history.Range.Complete || history.Range.Reason != "head-image-not-proven" || len(history.Range.Frames) != 0 {
+		t.Fatalf("unrepresentable source image acquired history credit: %+v %+v", manifest, history.Range)
+	}
+	if len(sourcePlaneRecords(t, archiveMembers(t, data)["records/edge.ndjson"])) != 2 || !jsonEqual(history.Events, canonicalSourceEvents(source["events"].Rows)) {
+		t.Fatal("source-plane head or event evidence dropped")
+	}
+}

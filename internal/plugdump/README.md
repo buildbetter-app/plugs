@@ -49,6 +49,17 @@ kinds remain version `1`. When a stored local dependency uses an opaque kind, th
 registry uses version `3`, a strict superset of version `2`; fixed-only edge
 archives remain version `2`.
 
+An inventory and manifest may explicitly select
+`source_plane_address_contract: "beads-source-planes/1"`. Under this capability,
+edge identity and order use the separate valid UTF-8 byte components project,
+source table (`dependencies` or `wisp_dependencies`), then physical ID. Equal
+IDs on different planes remain distinct; a duplicate complete tuple refuses.
+Raw record IDs, all ten dependency columns, target arms, metadata and source
+origins remain unchanged. An absent marker retains the legacy keys and
+refusals; an explicitly null, empty or unknown marker refuses at both inputs.
+The native inventory command selects this capability explicitly; generic
+inventory callers may continue to omit it.
+
 Version `3` admits only a local `depends_on_issue_id` target whose kind is
 nonempty, valid UTF-8, at most 32 bytes, and outside the fixed well-known set:
 `blocks`, `parent-child`, `conditional-blocks`, `waits-for`, `related`,
@@ -123,6 +134,15 @@ durable issue and an active wisp with the same ID remain separate source records
 `GetIssueInTx` reads the active image and its own labels first. The separate
 consumer adoption and native runtime proof remain unqualified by this source
 correction.
+
+With the source-plane capability, a wisp may retain a custom status declared
+by that strict SQL/config/YAML union. Active rows and auxiliary families remain
+complete raw source records, including their lifetime, type, counter and event
+fields. This is source capture; consumer workflow/status/lifetime mapping and
+runtime adoption require their separate typed joint plan. Opaque kinds remain
+durable issue-to-issue only under this capability. A source-plane image outside
+the existing portable-history contract is reported as unverified, with its raw
+head rows and source evidence retained.
 
 ## Input inventory
 

@@ -252,6 +252,14 @@ func portableSourceImage(ctx context.Context, tables map[string]Table, inventory
 		}
 	}
 	sort.Slice(records, func(i, j int) bool { return recordKey(records[i]) < recordKey(records[j]) })
+	if inventory.SourcePlaneAddressContract == SourcePlaneAddressContract {
+		// Source-plane capture does not extend the separate portable history
+		// contract. Keep every raw head row, but mark an unrepresentable commit
+		// image unmappable rather than publishing a verified partial history.
+		if err := validateHistoryImage(records, Manifest{Projects: inventory.Projects, Ontology: inventory.Ontology}); err != nil {
+			return nil, nil, fmt.Errorf("source image is outside the portable history contract: %w", err)
+		}
+	}
 	if _, ok := eventImage(tables["events"].Rows); !ok {
 		return nil, nil, fmt.Errorf("invalid source audit image")
 	}

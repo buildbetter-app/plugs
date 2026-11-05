@@ -298,6 +298,9 @@ func TestEmbeddedPlugNativeInventoryActualCLI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if inventory.SourcePlaneAddressContract != plugdump.SourcePlaneAddressContract {
+		t.Fatalf("native CLI omitted its explicit source-plane contract: %s", raw)
+	}
 	if len(inventory.External) != 26 || len(inventory.ConfigPolicy) == 0 || len(inventory.Projects) != 1 || inventory.Projects[0].Prefix != "native" {
 		t.Fatalf("incomplete actual native inventory: %s", raw)
 	}

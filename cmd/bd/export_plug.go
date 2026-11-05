@@ -195,6 +195,7 @@ func runNativePlugInventory(cmd *cobra.Command) error {
 	flags := map[string]any{}
 	cmd.Flags().Visit(func(flag *pflag.Flag) { flags[flag.Name] = flag.Value.String() })
 	capture := plugdump.NativeCapture{Public: true, StoreDir: locator.CLIDir(), BeadsDir: active, Machine: machine, SidecarDir: output + ".sources", Paths: paths, Environment: environment, Flags: flags}
+	capture.SourcePlaneAddressContract = plugdump.SourcePlaneAddressContract
 	ctx := rootCtx
 	if ctx == nil {
 		ctx = context.Background()

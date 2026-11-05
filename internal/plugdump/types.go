@@ -22,6 +22,9 @@ const (
 	// IssueSourceFieldsContract binds the producer's complete physical issue
 	// row image. Recognition is separate from native SQL import capability.
 	IssueSourceFieldsContract = "beads-issues-source-fields/1"
+	// SourcePlaneAddressContract enables physical dependency identities scoped
+	// by project and source table. Omission retains the legacy address rules.
+	SourcePlaneAddressContract = "beads-source-planes/1"
 )
 
 // Row retains every source column, including SQL NULL and lossless numbers.
@@ -44,17 +47,18 @@ type Source interface {
 // Inventory supplies the offline capture's identity and external-file census.
 // These declarations are operator evidence, never an independent freeze proof.
 type Inventory struct {
-	Version         string              `json:"version"`
-	StoreID         string              `json:"store_id"`
-	Machine         string              `json:"machine"`
-	Projects        []Project           `json:"projects"`
-	Ontology        []OntologyDirective `json:"ontology"`
-	Quiesced        bool                `json:"quiesced"`
-	RemotesMerged   bool                `json:"remotes_merged"`
-	WorkingSetClean bool                `json:"working_set_clean"`
-	History         string              `json:"history"` // unavailable or available-unverified
-	External        []ExternalInput     `json:"external"`
-	ConfigPolicy    map[string]string   `json:"config_policy"` // public or secret, every DB config/metadata key
+	SourcePlaneAddressContract string              `json:"source_plane_address_contract,omitempty"`
+	Version                    string              `json:"version"`
+	StoreID                    string              `json:"store_id"`
+	Machine                    string              `json:"machine"`
+	Projects                   []Project           `json:"projects"`
+	Ontology                   []OntologyDirective `json:"ontology"`
+	Quiesced                   bool                `json:"quiesced"`
+	RemotesMerged              bool                `json:"remotes_merged"`
+	WorkingSetClean            bool                `json:"working_set_clean"`
+	History                    string              `json:"history"` // unavailable or available-unverified
+	External                   []ExternalInput     `json:"external"`
+	ConfigPolicy               map[string]string   `json:"config_policy"` // public or secret, every DB config/metadata key
 }
 
 type Project struct {
@@ -128,23 +132,24 @@ type Disposition struct {
 }
 
 type Manifest struct {
-	Format               string              `json:"format"`
-	Schema               int                 `json:"schema"`
-	Reference            string              `json:"beads_reference"`
-	StoreID              string              `json:"store_id"`
-	Machine              string              `json:"machine"`
-	MainVersion          int                 `json:"main_version"`
-	IgnoredVersion       int                 `json:"ignored_version"`
-	Scope                string              `json:"scope"`
-	History              string              `json:"history"`
-	Projects             []Project           `json:"projects"`
-	Ontology             []OntologyDirective `json:"ontology,omitempty"`
-	Kinds                []Kind              `json:"kind_registry"`
-	Files                map[string]File     `json:"files"`
-	Sources              []Disposition       `json:"sources"`
-	Warnings             []string            `json:"warnings"`
-	Verification         map[string]string   `json:"verification"`
-	SourceFieldsContract string              `json:"source_fields_contract,omitempty"`
+	SourcePlaneAddressContract string              `json:"source_plane_address_contract,omitempty"`
+	Format                     string              `json:"format"`
+	Schema                     int                 `json:"schema"`
+	Reference                  string              `json:"beads_reference"`
+	StoreID                    string              `json:"store_id"`
+	Machine                    string              `json:"machine"`
+	MainVersion                int                 `json:"main_version"`
+	IgnoredVersion             int                 `json:"ignored_version"`
+	Scope                      string              `json:"scope"`
+	History                    string              `json:"history"`
+	Projects                   []Project           `json:"projects"`
+	Ontology                   []OntologyDirective `json:"ontology,omitempty"`
+	Kinds                      []Kind              `json:"kind_registry"`
+	Files                      map[string]File     `json:"files"`
+	Sources                    []Disposition       `json:"sources"`
+	Warnings                   []string            `json:"warnings"`
+	Verification               map[string]string   `json:"verification"`
+	SourceFieldsContract       string              `json:"source_fields_contract,omitempty"`
 }
 
 func marshal(value any) ([]byte, error) {

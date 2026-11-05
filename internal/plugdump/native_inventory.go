@@ -21,6 +21,7 @@ import (
 // explicit operator declaration covering values, quiescence and disposal. SQL
 // and filesystem reads are observations, not a global filesystem snapshot.
 type NativeCapture struct {
+	SourcePlaneAddressContract              string
 	Public                                  bool
 	StoreDir, BeadsDir, Machine, SidecarDir string
 	Paths                                   map[string][]string
@@ -30,6 +31,9 @@ type NativeCapture struct {
 // NativeInventory reads through the same scoped SQL port as the dump exporter.
 // It returns data only; the command publishes sidecars before the inventory.
 func (s SQLSource) NativeInventory(ctx context.Context, capture NativeCapture) (Inventory, map[string][]byte, error) {
+	if err := validateSourcePlaneContract(capture.SourcePlaneAddressContract); err != nil {
+		return Inventory{}, nil, err
+	}
 	if !capture.Public {
 		return Inventory{}, nil, fmt.Errorf("native inventory requires explicit --plug-capture-public")
 	}
@@ -56,6 +60,7 @@ func (s SQLSource) NativeInventory(ctx context.Context, capture NativeCapture) (
 		return Inventory{}, nil, fmt.Errorf("native capture requires a clean source working set")
 	}
 	inventory := Inventory{Version: "beads-inventory/1", StoreID: "native/" + digest([]byte(capture.StoreDir)), Machine: capture.Machine, Quiesced: true, RemotesMerged: true, WorkingSetClean: true, History: "unavailable", Projects: []Project{}, Ontology: []OntologyDirective{}, External: []ExternalInput{}, ConfigPolicy: map[string]string{}}
+	inventory.SourcePlaneAddressContract = capture.SourcePlaneAddressContract
 	if len(tables["issue_versions"].Rows)+len(tables["issue_snapshots"].Rows)+len(tables["compaction_snapshots"].Rows) > 0 {
 		inventory.History = "available-unverified"
 	}

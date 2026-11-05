@@ -129,8 +129,13 @@ func ReadInventory(reader io.Reader) (Inventory, error) {
 		return Inventory{}, fmt.Errorf("inventory exceeds 4 MiB")
 	}
 	var inventory Inventory
-	err = decodeJSON(data, &inventory)
-	return inventory, err
+	if err := decodeJSON(data, &inventory); err != nil {
+		return Inventory{}, err
+	}
+	if err := validateSourcePlaneMarker(data, inventory.SourcePlaneAddressContract); err != nil {
+		return Inventory{}, err
+	}
+	return inventory, nil
 }
 
 func decodeJSON(data []byte, target any) error {
