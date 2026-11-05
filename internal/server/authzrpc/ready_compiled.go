@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"strconv"
+	"math/big"
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -131,11 +131,15 @@ func readyMembershipPriority(item service.Bead) (int, error) {
 		}
 		priority = int64(value)
 	case json.Number:
-		parsed, err := strconv.ParseInt(string(value), 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("priority is not an integer: %w", err)
+		rational, ok := new(big.Rat).SetString(string(value))
+		if !ok || !rational.IsInt() {
+			return 0, fmt.Errorf("priority is not an integer")
 		}
-		priority = parsed
+		numerator := rational.Num()
+		if numerator.Sign() < 0 || numerator.Cmp(big.NewInt(4)) > 0 {
+			return 0, fmt.Errorf("priority outside P0 through P4")
+		}
+		priority = numerator.Int64()
 	default:
 		return 0, fmt.Errorf("priority has unsupported type %T", value)
 	}
