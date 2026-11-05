@@ -147,11 +147,3 @@ func sourcePlaneCatalogValues(values map[string]any, origin string) ([]ConfigDec
 	}
 	return result, nil
 }
-
-func sourcePlaneFileFamily(family string) bool {
-	switch family {
-	case "user-legacy-config", "user-xdg-config", "user-native-config", "project-config", "beads-dir-config", "project-local-config", "metadata-json", "legacy-config-json", "beads-hooks", "legacy-hooks", "git-hooks", "external-hook-managers", "routes-jsonl", "formulas", "formula-search-paths", "issues-jsonl", "interactions-jsonl":
-		return true
-	}
-	return false
-}

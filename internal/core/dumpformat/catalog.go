@@ -78,3 +78,13 @@ func actionFor(table string) string {
 		return "archive"
 	}
 }
+
+// sourcePlaneFileFamily classifies the existing physical capture families.
+// All source vocabulary remains visible in this authoritative catalog.
+func sourcePlaneFileFamily(family string) bool {
+	switch family {
+	case "user-legacy-config", "user-xdg-config", "user-native-config", "project-config", "beads-dir-config", "project-local-config", "metadata-json", "legacy-config-json", "beads-hooks", "legacy-hooks", "git-hooks", "external-hook-managers", "routes-jsonl", "formulas", "formula-search-paths", "issues-jsonl", "interactions-jsonl":
+		return true
+	}
+	return false
+}
