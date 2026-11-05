@@ -75,3 +75,19 @@ would accompany a successful result.
 The archive and Beads workspaces used for qualification must be disposable.
 The pinned Beads reference is recorded in `BeadsReference`; this package has no
 production or upstream repository access.
+
+The default conversion mirrors `bd export` at the pinned reference: every
+`ephemeral=true` row is omitted, with its full physical source tuple in
+`Report.OmittedEphemeralRows`. Physical active-plane placement alone does not
+exclude a row. `ConvertWithOptions(..., Options{All: true})` and
+`ConvertArchiveWithOptions` select the explicit `bd export --all` behavior.
+Active rows retain the pinned explicit plane marker and their original raw IDs.
+A raw ID present in both entity planes refuses with `source-plane-contract`
+because the JSONL importer cannot distinguish that endpoint identity.
+
+`converterroundtrip.ReverseRestoredWithOptions` applies the same selection to a
+restored joint image. It verifies the original receipt/archive/plan and immutable
+provider origin against current core and namespace data in one source-plane
+snapshot, then exports current supported fields and labels. It never rebuilds
+terminal item bodies from retained origin records. Existing limits on claims,
+unsupported fields, and changed comments/relationships remain explicit refusals.

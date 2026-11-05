@@ -302,7 +302,7 @@ func TestConvertPreservesEveryOpaqueIssueFieldByteForByte(t *testing.T) {
 	for field, value := range want {
 		dump.Records["bead"][0].Source.Fields[field] = value
 	}
-	result, err := Convert(dump)
+	result, err := ConvertWithOptions(dump, Options{All: true})
 	if err != nil {
 		t.Fatalf("opaque fields were refused: %v", err)
 	}

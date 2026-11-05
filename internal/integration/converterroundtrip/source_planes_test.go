@@ -198,6 +198,11 @@ func jointFields(t *testing.T, record driver.SourcePlaneRecordV1) []driver.Sourc
 
 func jointProfile(t *testing.T, data []byte, store driver.Store, lease driver.ActiveLease) driver.RestoreImportProfile {
 	t.Helper()
+	return jointProfileWithPlan(t, data, store, lease, nil)
+}
+
+func jointProfileWithPlan(t *testing.T, data []byte, store driver.Store, lease driver.ActiveLease, adjust func(*driver.SourcePlanePlanV1)) driver.RestoreImportProfile {
+	t.Helper()
 	ctx := context.Background()
 	archive, err := dumpformat.Read(bytes.NewReader(data))
 	if err != nil {
@@ -310,6 +315,9 @@ func jointProfile(t *testing.T, data []byte, store driver.Store, lease driver.Ac
 		}
 		return false
 	})
+	if adjust != nil {
+		adjust(&plan)
+	}
 	p := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: actor, Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: driver.StoreID(archive.Manifest().StoreID), Method: "offline.restore.import", IdempotencyKey: strings.Repeat("b", 32), ArchiveDigest: archive.SHA256(), HistoryMode: driver.RestoreHistoryModeSnapshot}
 	p, err = BindSourceImport(ctx, bytes.NewReader(data), p, plan)
 	if err != nil {

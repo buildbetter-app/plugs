@@ -5,6 +5,7 @@ package dumpformat
 // lifetime, principal, status mapping or permission to replay source events.
 const (
 	DurableEntityTable         = "issues"
+	EphemeralPlaneWireField    = "wisp_plane"
 	EphemeralEntityTable       = "wisps"
 	DurableDependencyTable     = "dependencies"
 	EphemeralDependencyTable   = "wisp_dependencies"

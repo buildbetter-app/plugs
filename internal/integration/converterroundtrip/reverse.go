@@ -39,6 +39,12 @@ type LiveReverse struct {
 // comments refuse rather than silently exporting the old archive instead.
 // This is an offline trusted-host seam, not an authorization or RPC surface.
 func ReverseRestored(ctx context.Context, store driver.Store) (LiveReverse, error) {
+	return ReverseRestoredWithOptions(ctx, store, reverseconverter.Options{})
+}
+
+// ReverseRestoredWithOptions selects the pinned default export or explicit
+// all-planes export. Imported joint images use one core/namespace snapshot.
+func ReverseRestoredWithOptions(ctx context.Context, store driver.Store, options reverseconverter.Options) (LiveReverse, error) {
 	if store == nil {
 		return LiveReverse{}, ReverseRefusal{"missing_store"}
 	}
@@ -51,22 +57,53 @@ func ReverseRestored(ctx context.Context, store driver.Store) (LiveReverse, erro
 		return LiveReverse{}, err
 	}
 	defer r.Close()
+	rows, err := r.Get(ctx, []model.Ref{model.RefByID(importBindingRecordID, model.Natural64(0))})
+	if err != nil {
+		return LiveReverse{}, err
+	}
+	if len(rows) != 0 {
+		var binding importBindingEvidence
+		if len(rows) != 1 || rows[0].Kind != "instance_config" || json.Unmarshal(rows[0].Body, &binding) != nil {
+			return LiveReverse{}, ReverseRefusal{"invalid_import_binding"}
+		}
+		if binding.Profile.SourcePlanes != nil {
+			if err := r.Close(); err != nil {
+				return LiveReverse{}, err
+			}
+			return reverseSourceRestored(ctx, store, meta, binding.Profile, options)
+		}
+	}
 	dump, err := retainedReverseDump(ctx, r)
 	if err != nil {
 		return LiveReverse{}, err
 	}
+	live, err := reverseLiveCensus(ctx, r)
+	if err != nil {
+		return LiveReverse{}, err
+	}
+	if err := projectLiveDump(ctx, r, &dump, live); err != nil {
+		return LiveReverse{}, err
+	}
+	converted, err := reverseconverter.ConvertWithOptions(dump, options)
+	if err != nil {
+		return LiveReverse{}, err
+	}
+	return LiveReverse{Snapshot: r.Snapshot(), Result: converted}, nil
+}
+
+func reverseLiveCensus(ctx context.Context, r driver.Reader) (map[string]driver.Record, error) {
 	live := map[string]driver.Record{}
 	var cursor *driver.Cursor
 	totalBytes := 0
 	for {
 		page, err := r.Query(ctx, driver.Query{Cursor: cursor, Limit: 1000})
 		if err != nil {
-			return LiveReverse{}, err
+			return nil, err
 		}
 		for _, row := range page.Items {
 			totalBytes += len(row.Body)
 			if !row.Ref.IsID() || !row.Ref.Branch.IsZero() || row.Ref.ID == "" || live[row.Ref.ID].Kind != "" || totalBytes > dumpformat.MaxArchiveBytes {
-				return LiveReverse{}, ReverseRefusal{"unsupported_live_census"}
+				return nil, ReverseRefusal{"unsupported_live_census"}
 			}
 			live[row.Ref.ID] = row
 		}
@@ -74,18 +111,11 @@ func ReverseRestored(ctx context.Context, store driver.Store) (LiveReverse, erro
 			break
 		}
 		if reflect.DeepEqual(cursor, page.NextCursor) {
-			return LiveReverse{}, ReverseRefusal{"invalid_live_cursor"}
+			return nil, ReverseRefusal{"invalid_live_cursor"}
 		}
 		cursor = page.NextCursor
 	}
-	if err := projectLiveDump(ctx, r, &dump, live); err != nil {
-		return LiveReverse{}, err
-	}
-	converted, err := reverseconverter.Convert(dump)
-	if err != nil {
-		return LiveReverse{}, err
-	}
-	return LiveReverse{Snapshot: r.Snapshot(), Result: converted}, nil
+	return live, nil
 }
 
 func retainedReverseDump(ctx context.Context, r driver.Reader) (reverseconverter.Dump, error) {
