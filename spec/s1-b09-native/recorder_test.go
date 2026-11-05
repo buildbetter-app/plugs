@@ -313,7 +313,7 @@ func (r *recorder) admitBinary() string {
 		r.t.Fatal(err)
 	}
 	if got := os.Getenv("PLUG_PUBLIC_BUNDLE"); got != nativeDescriptor {
-		r.Fatalf("trusted public descriptor differs from admitted preparation: %q", got)
+		r.t.Fatalf("trusted public descriptor differs from admitted preparation: %q", got)
 	}
 	target := identity.Targets["beads_exporter"]
 	artifact := identity.Artifacts["bin/bd-export"]
@@ -328,7 +328,7 @@ func (r *recorder) admitBinary() string {
 	receiptPath := filepath.Join(filepath.Dir(manifestPath), "receipt.json")
 	receipt, err := os.ReadFile(receiptPath)
 	if err != nil || !bytes.Equal(receipt, manifest) {
-		r.Fatalf("trusted public preparation receipt differs from manifest: %v", err)
+		r.t.Fatalf("trusted public preparation receipt differs from manifest: %v", err)
 	}
 	digest, size, err := hashFile(binary)
 	if err != nil || digest != binarySHA256 || size != artifact.Size {
