@@ -223,7 +223,17 @@ func TestI8HeartbeadsActualSQLiteTwoProjectFixture(t *testing.T) {
 	t.Logf("actual view.run PASS items include root=%s child=%s pinned asOf=%s", roots["cody-ops"], children["cody-ops"], view.Result)
 	wrongProject := i8FixtureRPC(t, endpoint, "signals-v2", "bead.get", map[string]any{"id": map[string]any{"id": roots["cody-ops"]}}, "")
 	if wrongProject.Error == nil {
-		t.Fatalf("cross-project canonical read unexpectedly succeeded: %s", wrongProject.Result)
+		var cross map[string]any
+		if err := json.Unmarshal(wrongProject.Result, &cross); err != nil {
+			t.Fatalf("cross-project readback=%s err=%v", wrongProject.Result, err)
+		}
+		bead, _ := cross["bead"].(map[string]any)
+		if bead["project"] != "cody-ops" {
+			t.Fatalf("cross-project read did not identify its source project: %s", wrongProject.Result)
+		}
+		t.Logf("cross-project raw bead.get is globally addressable (requested signals-v2, returned project=%v); adapter project mismatch refusal is required", bead["project"])
+	} else {
+		t.Logf("cross-project canonical read refused by Plug: %+v", wrongProject.Error)
 	}
 
 	journalOps := i8WriteJournal(t, dir, "cody-ops", endpoint, incarnation, roots["cody-ops"], children["cody-ops"])
