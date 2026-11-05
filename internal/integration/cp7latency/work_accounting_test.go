@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -158,4 +160,45 @@ func TestAggregateWorkIncludesNonEmittedSummaryProjections(t *testing.T) {
 			t.Logf("CP7_AGGREGATE_WORK ordinary=%+v fields_empty_summary=%+v emitted_summary_payload_rows=0", ordinary, summary)
 		})
 	}
+}
+
+func TestPostgresHistoricalReadCountsDiscardedCurrentBodies(t *testing.T) {
+	f := newFixture(t, "postgres", 2)
+	originalOne := body(t, 1)
+	originalTwo := body(t, 2)
+	currentOne := append(append([]byte(nil), originalOne...), ' ')
+	at := f.seededAt.Revision
+	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{
+		{Ref: beadRef(1), Kind: "bead", Op: model.OpPatch, Body: currentOne, ChangedPaths: []string{"/fields/title"}},
+		{Ref: beadRef(2), Kind: "bead", Op: model.OpDelete},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	refs := []model.Ref{beadRef(1), beadRef(2), beadRef(99)}
+	plainReader := f.reader(t, &at)
+	plain, err := plainReader.Get(context.Background(), refs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plain) != 2 || !reflect.DeepEqual(plain[0].Body, originalOne) || !reflect.DeepEqual(plain[1].Body, originalTwo) {
+		t.Fatalf("historical control lost body/snapshot/absence semantics: %+v", plain)
+	}
+	if err := plainReader.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	observedReader := f.reader(t, &at)
+	defer observedReader.Close()
+	var counts counters
+	observed, err := observedReader.Get(driver.WithReadWorkObserver(context.Background(), &counts), refs)
+	if err != nil || !reflect.DeepEqual(plain, observed) {
+		t.Fatalf("observer changed historical result: %v", err)
+	}
+	work := counts.work()
+	wantBytes := int64(2*len(currentOne) + len(originalOne) + len(originalTwo))
+	if work.Payloads != 4 || work.PayloadBytes != wantBytes {
+		t.Fatalf("historical body work missed discarded/repeated materialization: work=%+v want_payloads=4 want_bytes=%d", work, wantBytes)
+	}
+	t.Logf("CP7_HISTORICAL_BODY_WORK output_rows=2 current_body_scans=2 historical_bodies=2 absent=1 deleted_current_body=0 payload_records=%d payload_bytes=%d", work.Payloads, work.PayloadBytes)
 }
