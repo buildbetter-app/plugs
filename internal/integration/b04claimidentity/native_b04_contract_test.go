@@ -45,8 +45,8 @@ func TestB04NativeInputContract(t *testing.T) {
 		t.Fatalf("native vector/twin stores are incomplete: %+v", inputs.Vector)
 	}
 	wantIDs := map[string]string{
-		"direct": "b04-native-direct", "customActive": "b04-native-custom-active",
-		"foreignHeld": "b04-native-foreign-held", "next": "b04-native-next", "empty": "b04-native-empty",
+		"direct": "b04-d00", "customActive": "b04-c00",
+		"foreignHeld": "b04-f00", "next": "b04-n00", "empty": "b04-e00",
 	}
 	if !reflect.DeepEqual(inputs.Vector.SourceIDs, wantIDs) {
 		t.Fatalf("source IDs=%v want=%v", inputs.Vector.SourceIDs, wantIDs)
@@ -65,7 +65,7 @@ func TestB04NativeInputContract(t *testing.T) {
 		}
 		stores[run.Database] = true
 	}
-	for _, key := range []string{"direct", "sameOwner", "foreign", "claimNext", "emptyFront", "inventory", "dump"} {
+	for _, key := range []string{"direct", "sameOwner", "customActive", "foreign", "claimNext", "emptyFront", "show", "history", "versions", "physical", "inventory", "dump"} {
 		if inputs.CommandContract[key] == "" {
 			t.Fatalf("command contract omitted %s", key)
 		}

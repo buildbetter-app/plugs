@@ -33,25 +33,36 @@
     "id": "B04-claim-next-native",
     "databasePrefix": "b04_native",
     "sourceIDs": {
-      "direct": "b04-native-direct",
-      "customActive": "b04-native-custom-active",
-      "foreignHeld": "b04-native-foreign-held",
-      "next": "b04-native-next",
-      "empty": "b04-native-empty"
+      "direct": "b04-d00",
+      "customActive": "b04-c00",
+      "foreignHeld": "b04-f00",
+      "next": "b04-n00",
+      "empty": "b04-e00"
     },
     "runs": [
-      {"id": "run-a", "database": "b04_native_a"},
-      {"id": "run-b", "database": "b04_native_b"}
+      {
+        "id": "run-a",
+        "database": "b04_native_a"
+      },
+      {
+        "id": "run-b",
+        "database": "b04_native_b"
+      }
     ]
   },
   "commandContract": {
     "direct": "update <id> --claim --json",
     "sameOwner": "repeat the same direct claim under the original actor",
     "foreign": "repeat claim with BEADS_ACTOR=s1-b04-foreign and retain exit/stderr",
-    "claimNext": "ready --claim --json --limit 1",
+    "claimNext": "ready --claim --json",
     "emptyFront": "claimNext after all eligible rows are consumed returns JSON null/empty success",
     "inventory": "--readonly export --format beads-inventory/1 --plug-capture-public",
-    "dump": "--readonly export --format plug-dump/1 --plug-inventory"
+    "dump": "--readonly export --format plug-dump/1 --plug-inventory; retain real custom-status/live-claim refusal with absent archive and unchanged source; downstream NOT_RUN",
+    "customActive": "update <configured-active-id> --claim --json; assert observed hydrated output and stored postimage",
+    "show": "--readonly show <observed-id> --json",
+    "history": "--readonly history <observed-id> --events --limit 0 --json; exact same-owner equality",
+    "versions": "--readonly versions <observed-id> --json; preserve actual rows or default history-off refusal without toggling source policy",
+    "physical": "--readonly sql SHOW TABLES / SELECT * / SHOW COLUMNS / dolt_log; complete row multisets and column schema, no-op and refusal equality"
   },
   "qualification": "AUTHORED_NOT_RUN; fresh accepted preparation, two native stores, and Plug replay are required; no historical unit transfers credit",
   "clockScope": "native timestamps and SQL timestamps are observed wall-clock values; no lease-expiry or B05 qualification",
