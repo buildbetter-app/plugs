@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -172,5 +173,103 @@ func TestCallbackFailurePreservesIndependentDeadlineAndEstablishedCancellationMa
 		cancel()
 		code(t, callbackFailure(ctx, kind, "test", context.Canceled), "subscriber_unavailable")
 		code(t, callbackFailure(context.Background(), kind, "test", context.Canceled), "subscriber_unavailable")
+	}
+}
+
+type publicationAdmissionStore struct {
+	*memory.Store
+	writes, readers  atomic.Int32
+	entered, release chan struct{}
+	readerClosed     chan struct{}
+}
+
+func (s *publicationAdmissionStore) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
+	r, err := s.Store.Read(ctx, view)
+	if err != nil {
+		return nil, err
+	}
+	s.readers.Add(1)
+	return &publicationAdmissionReader{Reader: r, store: s}, nil
+}
+
+func (s *publicationAdmissionStore) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
+	if s.writes.Add(1) == 1 {
+		close(s.entered)
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return s.Store.Write(ctx, lease)
+}
+
+type publicationAdmissionReader struct {
+	driver.Reader
+	store *publicationAdmissionStore
+	once  sync.Once
+}
+
+func (r *publicationAdmissionReader) Close() error {
+	err := r.Reader.Close()
+	r.once.Do(func() {
+		r.store.readers.Add(-1)
+		r.store.readerClosed <- struct{}{}
+	})
+	return err
+}
+
+func TestPublicationAdmissionCancellationClosesReadersAndCannotPublish(t *testing.T) {
+	h := setup(t)
+	store := &publicationAdmissionStore{Store: h.store, entered: make(chan struct{}), release: make(chan struct{}), readerClosed: make(chan struct{}, 16)}
+	w := h.writer()
+	w.store = store
+	first := make(chan applyResult, 1)
+	go func() {
+		commit, err := w.Apply(context.Background(), by, model.ChangeSet{Ops: []model.Op{create("")}}, meta(707))
+		first <- applyResult{commit, err}
+	}()
+	select {
+	case <-store.entered:
+	case <-time.After(time.Second):
+		t.Fatal("first publication did not reach storage")
+	}
+	<-store.readerClosed
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	second := make(chan applyResult, 1)
+	cs, m := model.ChangeSet{Ops: []model.Op{create("")}}, meta(708)
+	go func() {
+		commit, err := w.Apply(ctx, by, cs, m)
+		second <- applyResult{commit, err}
+	}()
+	select {
+	case <-store.readerClosed:
+	case <-time.After(time.Second):
+		t.Fatal("queued publication retained its preparation reader")
+	}
+	select {
+	case result := <-second:
+		t.Fatalf("queued publication bypassed the held admission: %+v", result)
+	case <-time.After(100 * time.Millisecond):
+	}
+	cancel()
+	result := awaitResult(t, second)
+	r := h.read(t)
+	principal, _ := driver.PrincipalKey(by)
+	entry, receiptErr := r.IdempotencyByKey(context.Background(), principal, "", m.Method, m.IdempotencyKey)
+	if !errors.Is(result.err, context.Canceled) || store.writes.Load() != 1 || store.readers.Load() != 0 || r.Snapshot().At.String() != "0" || entry != nil || receiptErr != nil {
+		t.Fatalf("canceled admission entered storage or published: result=%+v writes=%d readers=%d receipt=%v error=%v", result, store.writes.Load(), store.readers.Load(), entry, receiptErr)
+	}
+	close(store.release)
+	winner := awaitResult(t, first)
+	if winner.err != nil || winner.commit.Revision.String() != "1" {
+		t.Fatalf("held publication failed: %+v", winner)
+	}
+	retried := apply(t, w, cs, m)
+	replayed := apply(t, w, cs, m)
+	assertSameResponses(t, applyResult{commit: retried}, applyResult{commit: replayed})
+	if retried.Revision.String() != "2" || h.read(t).Snapshot().At.String() != "2" || store.writes.Load() != 2 || store.readers.Load() != 0 {
+		t.Fatalf("admission did not release or retry/replay republished: commit=%+v writes=%d readers=%d", retried, store.writes.Load(), store.readers.Load())
 	}
 }

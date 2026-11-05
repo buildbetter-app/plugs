@@ -128,6 +128,10 @@ type Writer struct {
 	lease driver.ActiveLease
 	cfg   config
 	err   error
+	// Publication already serializes through the store's head. Queue this
+	// Writer's transactions before opening SQL connections or contending on
+	// the shared publication locks; preparation callbacks remain concurrent.
+	commitGate chan struct{}
 }
 
 var _ model.Writer = (*Writer)(nil)
@@ -136,7 +140,7 @@ var _ port.OutcomeWriter = (*Writer)(nil)
 // New uses an already active storage lease. It never creates a second store.
 // Invalid callback configuration is refused by Apply before any storage write.
 func New(store driver.Store, lease driver.ActiveLease, options ...Option) *Writer {
-	w := &Writer{store: store, lease: lease, cfg: config{now: time.Now, newID: newID, newAllocatorID: func(a driver.OfflineAllocator) (string, error) { return a.NextID() }, newAllocatorChildID: func(a driver.OfflineAllocator, parent string) (string, error) { return a.NextChildID(parent) }, hierarchyMaxDepth: 3, claimTTL: 5 * time.Minute}}
+	w := &Writer{store: store, lease: lease, commitGate: make(chan struct{}, 1), cfg: config{now: time.Now, newID: newID, newAllocatorID: func(a driver.OfflineAllocator) (string, error) { return a.NextID() }, newAllocatorChildID: func(a driver.OfflineAllocator, parent string) (string, error) { return a.NextChildID(parent) }, hierarchyMaxDepth: 3, claimTTL: 5 * time.Minute}}
 	for _, option := range options {
 		option(&w.cfg)
 	}

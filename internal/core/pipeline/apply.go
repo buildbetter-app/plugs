@@ -482,6 +482,18 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	if err != nil {
 		return model.Commit{}, err
 	}
+	// The preparation reader is closed before entering transact. Waiting here
+	// retains neither a snapshot connection nor a prefix of database locks.
+	// Other Writers/processes still use the complete driver lock/check guard.
+	select {
+	case w.commitGate <- struct{}{}:
+		defer func() { <-w.commitGate }()
+	case <-ctx.Done():
+		return model.Commit{}, ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return model.Commit{}, err
+	}
 	tx, err := w.store.Write(ctx, w.lease)
 	if err != nil {
 		return model.Commit{}, err
