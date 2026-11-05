@@ -137,12 +137,11 @@ func TestI8HeartbeadsActualSQLiteTwoProjectFixture(t *testing.T) {
 		rootResp := i8FixtureRPC(t, endpoint, project, "bead.create", map[string]any{
 			"type": "issue", "fields": map[string]any{
 				"title": "SHARED root " + project, "description": "before", "priority": 1,
-				"external_ref": "SHARED", "labels": []string{"fixture", project},
 			},
 		}, fmt.Sprintf("%032d", len(roots)+1))
 		roots[project] = i8CommitID(t, "bead.create", rootResp)
 		childParams := map[string]any{
-			"type": "issue", "fields": map[string]any{"title": "receipt new " + project, "priority": 2, "external_ref": "NEW"},
+			"type": "issue", "fields": map[string]any{"title": "receipt new " + project, "priority": 2},
 		}
 		if project == "signals-v2" {
 			childParams["parent"] = map[string]any{"id": roots[project]}
