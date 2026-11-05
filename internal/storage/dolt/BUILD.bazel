@@ -136,6 +136,10 @@ go_library(
 # (BEADS_TEST_SUBPROCESS_BINARY) instead.
 go_test(
     name = "dolt_test",
+    # rules_go partitions the complete top-level test list by index modulo
+    # shard_count; subtests and their workloads stay with their parent.
+    # Keep the existing per-action timeout and all suite controls unchanged.
+    shard_count = 16,
     srcs = [
         "a_native_producer_bundle_test.go",
         "active_database_size_test.go",
