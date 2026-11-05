@@ -745,7 +745,11 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		return restorePlan{}, fmt.Errorf("%w: import restore time is required", ErrRestoreUnavailable)
 	}
 
-	entities := sourcePlaneEntities(profile)
+	projection, err := newSourceCoreProjection(profile)
+	if err != nil {
+		return restorePlan{}, err
+	}
+	entities := projection.entities
 	beads := archive.Records("bead")
 	if entities != nil {
 		var durable []dumpformat.Record
@@ -781,13 +785,16 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		fields := map[string]any{"status": status}
 		metadata := map[string]json.RawMessage{}
 		for _, key := range []string{"title", "description", "priority"} {
-			if value := source.Body[key]; value != nil {
+			if value := source.Body[key]; value != nil && projection.mapsField(source, key) {
 				fields[key] = value
 			}
 		}
-		rawMetadata, err := dumpformat.SourceMetadataObject(source.Body["metadata"])
-		if err != nil {
-			return restorePlan{}, fmt.Errorf("bead %s metadata: %w", source.ID, err)
+		var rawMetadata map[string]any
+		if projection.mapsField(source, "metadata") {
+			rawMetadata, err = dumpformat.SourceMetadataObject(source.Body["metadata"])
+			if err != nil {
+				return restorePlan{}, fmt.Errorf("bead %s metadata: %w", source.ID, err)
+			}
 		}
 		if raw := rawMetadata; raw != nil {
 			for key, value := range raw {
@@ -858,11 +865,13 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		// The admitted source row is the creation authority. Its exact value
 		// remains in reserved source metadata above; absence stays unknown.
 		// Restore time, version time and incomplete history cannot fill it in.
-		createdAt, err := sourceCreationTime(source)
-		if err != nil {
-			return restorePlan{}, err
+		if projection.mapsField(source, "created_at") {
+			createdAt, err := sourceCreationTime(source)
+			if err != nil {
+				return restorePlan{}, err
+			}
+			doc.CreatedAt = createdAt
 		}
-		doc.CreatedAt = createdAt
 		docs[source.ID] = doc
 	}
 
@@ -895,7 +904,11 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 	}
 
 	for _, source := range archive.Records("edge") {
-		if !sourcePlaneCoreEdge(source, entities) {
+		coreEdge, err := projection.coreEdge(source)
+		if err != nil {
+			return restorePlan{}, err
+		}
+		if !coreEdge {
 			continue
 		}
 		var targetKind model.LinkTargetKind

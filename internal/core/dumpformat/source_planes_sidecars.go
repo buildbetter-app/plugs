@@ -23,7 +23,10 @@ func (a *Archive) SourcePlaneSidecarOrigins() ([]driver.SourcePlaneOriginV1, err
 		return nil, fmt.Errorf("missing captured configuration")
 	}
 	var raw []json.RawMessage
-	if err := decodeJSON(data, &raw); err != nil {
+	// Archive admission already validated this JSON and its typed shape.
+	// Decode raw tokens directly: the typed decoder treats RawMessage as a
+	// byte slice, which requires a JSON array instead of preserving a token.
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, err
 	}
 	var origins []driver.SourcePlaneOriginV1

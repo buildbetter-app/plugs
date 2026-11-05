@@ -121,42 +121,70 @@ func prepareSourceArchive(ctx context.Context, archive *dumpformat.Archive, prof
 	return prepared, nil
 }
 
-func sourcePlaneEntities(profile *driver.RestoreImportProfile) map[driver.SourceEntityKey]driver.SourcePlaneEntityV1 {
+type sourceCoreProjection struct {
+	entities  map[driver.SourceEntityKey]driver.SourcePlaneEntityV1
+	relations map[driver.SourceEdgeKey]driver.SourcePlaneRelationV1
+	fields    map[driver.SourceEntityKey]map[string]bool
+}
+
+func newSourceCoreProjection(profile *driver.RestoreImportProfile) (sourceCoreProjection, error) {
+	var projection sourceCoreProjection
 	if profile == nil || profile.SourcePlanes == nil {
-		return nil
+		return projection, nil
 	}
 	plan, err := profile.SourcePlanes.Plan()
 	if err != nil {
-		return nil
-	} // Entry points validate before core lowering.
-	entities := make(map[driver.SourceEntityKey]driver.SourcePlaneEntityV1, len(plan.Entities))
-	for _, e := range plan.Entities {
-		entities[e.Source] = e
+		return projection, err
 	}
-	return entities
+	dispositions := make(map[string]map[string]bool, len(plan.Dispositions))
+	for _, d := range plan.Dispositions {
+		fields := make(map[string]bool, len(d.Fields))
+		for _, rule := range d.Fields {
+			fields[rule.Source] = rule.Disposition == "exact-map"
+		}
+		dispositions[d.Key] = fields
+	}
+	projection.entities = make(map[driver.SourceEntityKey]driver.SourcePlaneEntityV1, len(plan.Entities))
+	projection.fields = make(map[driver.SourceEntityKey]map[string]bool, len(plan.Entities))
+	for _, e := range plan.Entities {
+		projection.entities[e.Source] = e
+		projection.fields[e.Source] = dispositions[e.DispositionKey]
+	}
+	projection.relations = make(map[driver.SourceEdgeKey]driver.SourcePlaneRelationV1, len(plan.Relations))
+	for _, relation := range plan.Relations {
+		projection.relations[relation.Source] = relation
+	}
+	return projection, nil
 }
 
-func sourcePlaneCoreEdge(source dumpformat.Record, entities map[driver.SourceEntityKey]driver.SourcePlaneEntityV1) bool {
-	if entities == nil {
+func (p sourceCoreProjection) mapsField(source dumpformat.Record, field string) bool {
+	if p.entities == nil {
 		return true
 	}
-	plane := dumpformat.DurableEntityTable
-	if source.Source.Table == dumpformat.EphemeralDependencyTable {
-		plane = dumpformat.EphemeralEntityTable
+	return p.fields[driver.SourceEntityKey{Project: source.Project, Plane: source.Source.Table, ID: source.ID}][field]
+}
+
+func (p sourceCoreProjection) coreEdge(source dumpformat.Record) (bool, error) {
+	if p.entities == nil {
+		return true, nil
 	}
-	from := entities[driver.SourceEntityKey{Project: source.Project, Plane: plane, ID: stringValue(source.Body["from"])}]
+	// Provider preparation verifies each relation against its raw edge. Route
+	// using those complete endpoint tuples, including each endpoint's project.
+	relation, ok := p.relations[driver.SourceEdgeKey{Project: source.Project, Table: source.Source.Table, ID: source.ID}]
+	if !ok {
+		return false, fmt.Errorf("%w: core edge lacks its checked source relation", driver.ErrUnsupported)
+	}
+	from := p.entities[relation.From]
 	if from.TargetKind != "bead" {
-		return false
+		return false, nil
 	}
-	arm := stringValue(source.Body["target_kind"])
-	if arm == "depends_on_external" {
-		return true
+	if relation.External != nil {
+		return true, nil
 	}
-	plane = dumpformat.DurableEntityTable
-	if arm == dumpformat.EphemeralDependencyTargetField {
-		plane = dumpformat.EphemeralEntityTable
+	if relation.To == nil {
+		return false, driver.ErrUnsupported
 	}
-	return entities[driver.SourceEntityKey{Project: source.Project, Plane: plane, ID: stringValue(source.Body["to"])}].TargetKind == "bead"
+	return p.entities[*relation.To].TargetKind == "bead", nil
 }
 
 // Internal evidence keys frame all physical components. This never changes
@@ -214,6 +242,9 @@ func validateSourceCoreMappings(archive *dumpformat.Archive, plan driver.SourceP
 			if _, present := source.Source.Fields[rule.Source]; !present {
 				return driver.ErrUnsupported
 			}
+			if rule.Disposition == "refuse-required" {
+				return fmt.Errorf("%w: core field explicitly refused: %s", driver.ErrUnsupported, rule.Source)
+			}
 			if rule.Disposition == "origin-only" && rule.Target == "" {
 				continue
 			}
@@ -236,7 +267,7 @@ func validateSourceCoreMappings(archive *dumpformat.Archive, plan driver.SourceP
 		}
 		for _, required := range []string{"id", "title", "type", "status"} {
 			if !mapped[required] {
-				return driver.ErrUnsupported
+				return fmt.Errorf("%w: required core field lacks exact mapping: %s", driver.ErrUnsupported, required)
 			}
 		}
 	}

@@ -16,6 +16,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
@@ -60,7 +61,27 @@ func jointSourceFixture(t *testing.T) []byte {
 			fields := rows["bead"][i].Source.Fields
 			fields["storage_class"] = "versioned"
 			fields["ephemeral"], fields["no_history"] = json.Number("0"), json.Number("0")
+			if rows["bead"][i].ID == "demo-7" {
+				for field, value := range (dumpformat.Row{"description": "explicit durable description", "priority": json.Number("3"), "metadata": ` {"durable_only":9007199254740993,"decimal":1.0,"null":null} `, "created_at": "2026-01-01T00:00:00Z"}) {
+					fields[field], rows["bead"][i].Body[field] = value, value
+				}
+			}
 		}
+		// The declared empty project now has an explicit durable endpoint. A
+		// cross-project both-bead edge must belong to core exactly once.
+		other := rows["bead"][0]
+		other.ID, other.Project = "empty-1", "empty"
+		other.Source.Fields = cloneRow(other.Source.Fields)
+		other.Source.Fields["id"] = other.ID
+		other.Body = cloneRow(other.Body)
+		rows["bead"] = append(rows["bead"], other)
+		for i := range m.Projects {
+			if m.Projects[i].Prefix == "empty" {
+				m.Projects[i].LastID = 1
+			}
+		}
+		crossFields := dumpformat.Row{"id": "cross-project-block", "issue_id": "demo-7", "depends_on_issue_id": "empty-1", dumpformat.EphemeralDependencyTargetField: nil, "depends_on_external": nil, "type": "blocks", "created_at": "2026-11-01T00:00:00Z", "created_by": "raw author", "metadata": `{}`, "thread_id": " raw cross-project thread "}
+		rows["edge"] = append(rows["edge"], dumpformat.Record{Kind: "edge", ID: "cross-project-block", Project: "demo", Source: dumpformat.Provenance{Table: dumpformat.DurableDependencyTable, Fields: crossFields}, Body: dumpformat.Row{"from": "demo-7", "to": "empty-1", "target_kind": "depends_on_issue_id", "type": "blocks", "metadata": crossFields["metadata"], "thread_id": crossFields["thread_id"]}})
 		fields := cloneRow(rows["bead"][0].Source.Fields)
 		fields["id"], fields["title"], fields["status"] = "demo-7", "Exact active collision", "open"
 		fields["ephemeral"], fields["no_history"], fields["storage_class"] = json.Number("1"), json.Number("1"), "ephemeral"
@@ -126,6 +147,18 @@ func jointSourceFixture(t *testing.T) []byte {
 func jointCommitment(data []byte, presence string) driver.SourcePlaneBytesV1 {
 	return driver.SourcePlaneBytesV1{Presence: presence, Size: uint64(len(data)), SHA256: digestBytes(data)}
 }
+
+func jointSourceProject(t *testing.T, id string, projects []dumpformat.Project) string {
+	t.Helper()
+	for _, project := range projects {
+		if strings.HasPrefix(id, project.Prefix+"-") {
+			return project.Prefix
+		}
+	}
+	t.Fatalf("fixture source ID %q lacks its declared project", id)
+	return ""
+}
+
 func jointFields(t *testing.T, record driver.SourcePlaneRecordV1) []driver.SourcePlaneFieldV1 {
 	t.Helper()
 	var wire struct {
@@ -144,6 +177,11 @@ func jointFields(t *testing.T, record driver.SourcePlaneRecordV1) []driver.Sourc
 			presence = "array"
 		case '"':
 			presence = "text"
+			var text string
+			if err := json.Unmarshal(raw, &text); err != nil {
+				t.Fatal(err)
+			}
+			raw = []byte(text)
 		case 't', 'f':
 			presence = "boolean"
 		case 'n':
@@ -186,8 +224,9 @@ func jointProfile(t *testing.T, data []byte, store driver.Store, lease driver.Ac
 		var row dumpformat.Record
 		decode(t, record.Raw, &row)
 		if record.Table == dumpformat.DurableEntityTable || record.Table == dumpformat.EphemeralEntityTable {
-			key := driver.SourceEntityKey{Project: "demo", Plane: record.Table, ID: stringValue(row.Source.Fields["id"])}
-			route := driver.SourcePlaneRouteV1{Project: "demo", SourceID: key.ID, DurableTargetID: key.ID, Preference: "active-first"}
+			key := driver.SourceEntityKey{Plane: record.Table, ID: stringValue(row.Source.Fields["id"])}
+			key.Project = jointSourceProject(t, key.ID, archive.Manifest().Projects)
+			route := driver.SourcePlaneRouteV1{Project: key.Project, SourceID: key.ID, DurableTargetID: key.ID, Preference: "active-first"}
 			e := driver.SourcePlaneEntityV1{Source: key, TargetKind: "bead", TargetID: key.ID, DispositionKey: "durable", PrincipalKey: "owner", Route: route, Origin: origin, Fields: census}
 			index := 1
 			if key.ID == "demo-7" {
@@ -229,7 +268,8 @@ func jointProfile(t *testing.T, data []byte, store driver.Store, lease driver.Ac
 			if row.Body["target_kind"] == dumpformat.EphemeralDependencyTargetField {
 				plane = dumpformat.EphemeralEntityTable
 			}
-			to := driver.SourceEntityKey{Project: record.Project, Plane: plane, ID: stringValue(row.Body["to"])}
+			to := driver.SourceEntityKey{Plane: plane, ID: stringValue(row.Body["to"])}
+			to.Project = jointSourceProject(t, to.ID, archive.Manifest().Projects)
 			predicate, err := dumpformat.SourceEdgeMetadata(3, record.ID, stringValue(row.Body["type"]), row.Source.Fields["metadata"])
 			if err != nil {
 				t.Fatal(err)
@@ -291,6 +331,7 @@ func TestJointSourceImportPublishesAndRecoversAcrossThreeStores(t *testing.T) {
 			if report.SourcePlanes == nil || report.Receipt == nil || report.Restored.Incarnation == before.Meta.Incarnation || report.Restored.StoreID != p.SourceStoreID || report.Restored.Head.String() != "1" {
 				t.Fatal("missing joint publication", report)
 			}
+			requireJointCrossProjectCoreEdge(t, store, report)
 			binding := report.SourcePlanes.Providers[0]
 			cap, err := driver.RequireWorkflowCheckpointStore(store, lease)
 			if err != nil {
@@ -598,6 +639,242 @@ func TestJointSourceImportRefusesIncompletePublicationWithoutWrites(t *testing.T
 			}
 			if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, p); err != nil {
 				t.Fatal("valid joint control after refusals", err)
+			}
+		})
+	}
+}
+
+func requireJointCrossProjectCoreEdge(t *testing.T, store driver.Store, report Report) {
+	t.Helper()
+	ctx := context.Background()
+	r, err := store.Read(ctx, driver.View{Incarnation: report.Restored.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	rows, err := r.Get(ctx, []model.Ref{model.RefByID("demo-7", model.Natural64(0)), model.RefByID("empty-1", model.Natural64(0))})
+	if err != nil || len(rows) != 2 {
+		t.Fatal("cross-project endpoint census", err)
+	}
+	owner := false
+	for _, row := range rows {
+		doc, err := pipeline.DecodeDocument(row.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if doc.ID == "demo-7" {
+			owner = true
+			if doc.Project != "demo" || len(doc.Links) != 1 || doc.Links[0].Kind != "blocks" || doc.Links[0].To.ID != "empty-1" || doc.Links[0].TargetKind == model.LinkTargetExternal {
+				t.Fatalf("cross-project both-bead edge was lost or duplicated: %+v", doc.Links)
+			}
+		} else if doc.Project != "empty" || doc.Fields["status"] != "todo" {
+			t.Fatal("cross-project target identity/status changed", doc)
+		}
+	}
+	states, err := r.DerivedRows(ctx, driver.DerivedReadyState, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked := false
+	for _, row := range states {
+		if row.Key == "demo-7" {
+			var state struct{ Ready, Blocked bool }
+			if err := json.Unmarshal(row.Value, &state); err != nil || state.Ready || !state.Blocked {
+				t.Fatal("cross-project edge has no live blocking effect", string(row.Value), err)
+			}
+			blocked = true
+		}
+	}
+	if !owner || !blocked {
+		t.Fatal("cross-project owner/readiness missing")
+	}
+	for _, edge := range report.Archive.Records("edge") {
+		if edge.ID != "cross-project-block" {
+			continue
+		}
+		mirror, err := r.Get(ctx, []model.Ref{model.RefByID(sourcePlaneMirrorID(edge, true), model.Natural64(0))})
+		if err != nil || len(mirror) != 1 {
+			t.Fatal("cross-project exact raw mirror missing", err)
+		}
+		var body dumpformat.Row
+		decode(t, mirror[0].Body, &body)
+		if !reflect.DeepEqual(body["source"], map[string]any(edge.Source.Fields)) || body["source_project"] != edge.Project || body["source_id"] != edge.ID || body["source_table"] != edge.Source.Table {
+			t.Fatal("cross-project raw identity or TEN physical fields changed")
+		}
+		return
+	}
+	t.Fatal("cross-project source edge absent from admitted baseline")
+}
+
+type jointTargetAccess struct {
+	driver.Store
+	metaReads, writes int
+}
+
+func (s *jointTargetAccess) Meta(ctx context.Context) (driver.Meta, error) {
+	s.metaReads++
+	return s.Store.Meta(ctx)
+}
+func (s *jointTargetAccess) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
+	s.writes++
+	return s.Store.Write(ctx, lease)
+}
+
+func TestJointSourceCoreFieldDispositionsAndCommitmentsAcrossThreeStores(t *testing.T) {
+	data := jointSourceFixture(t)
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			for _, mode := range []string{"exact-map", "origin-only"} {
+				t.Run(mode, func(t *testing.T) {
+					ctx := context.Background()
+					var dsn string
+					store, lease, _ := openIdentityTarget(t, engine, func(value string) { dsn = value })
+					p := jointProfile(t, data, store, lease)
+					cap, err := driver.RequireWorkflowCheckpointStore(store, lease)
+					if err != nil {
+						t.Fatal(err)
+					}
+					archive, err := dumpformat.Read(bytes.NewReader(data))
+					if err != nil {
+						t.Fatal(err)
+					}
+					before := savedLabelImport(t, store, archive, p, "")
+					checkpoint, err := cap.LoadCheckpoint(ctx, "plugin/workflow/default/durable")
+					if err != nil {
+						t.Fatal(err)
+					}
+					var db *sql.DB
+					var physical map[string][]string
+					if engine != "memory" {
+						dialect := "sqlite"
+						if engine == "postgres" {
+							dialect = "pgx"
+						}
+						db, err = sql.Open(dialect, dsn)
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer db.Close()
+						physical = jointPhysicalSQL(t, db, engine)
+					}
+					// Every mutation starts from a valid complete plan. Refusals
+					// must identify the changed field/commitment before target access.
+					for _, field := range []string{"description", "priority", "metadata", "created_at", "title", "bad-text-commitment"} {
+						t.Run(field, func(t *testing.T) {
+							plan, err := p.SourcePlanes.Plan()
+							if err != nil {
+								t.Fatal(err)
+							}
+							reason := "core field explicitly refused: " + field
+							if field == "bad-text-commitment" {
+								reason = "source byte commitment differs"
+								for i := range plan.Entities {
+									for j := range plan.Entities[i].Fields {
+										if plan.Entities[i].Fields[j].Name == "id" {
+											plan.Entities[i].Fields[j].Value.SHA256 = strings.Repeat("f", 64)
+										}
+									}
+								}
+							} else {
+								for i := range plan.Dispositions {
+									if plan.Dispositions[i].SinkKind != "bead" {
+										continue
+									}
+									for j := range plan.Dispositions[i].Fields {
+										rule := &plan.Dispositions[i].Fields[j]
+										if rule.Source == field {
+											rule.Disposition, rule.Target = "refuse-required", ""
+											if field == "title" {
+												rule.Disposition = "origin-only"
+												reason = "required core field lacks exact mapping: title"
+											}
+										}
+									}
+								}
+							}
+							binding, err := driver.NewSourcePlaneImportBindingV1(plan)
+							if err != nil {
+								t.Fatal("negative control lost valid structural baseline", err)
+							}
+							bad := p
+							bad.SourcePlanes = &binding
+							target := &jointTargetAccess{Store: store}
+							if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), target, lease, bad); !errors.Is(err, driver.ErrUnsupported) || !strings.Contains(err.Error(), reason) {
+								t.Fatal("changed plan accepted or refused for unrelated reason", err)
+							}
+							afterCP, err := cap.LoadCheckpoint(ctx, "plugin/workflow/default/durable")
+							if err != nil || target.metaReads != 0 || target.writes != 0 || !reflect.DeepEqual(before, savedLabelImport(t, store, archive, p, "")) || !reflect.DeepEqual(checkpoint, afterCP) {
+								t.Fatal("plan refusal accessed target or published state", err)
+							}
+							if db != nil && !reflect.DeepEqual(physical, jointPhysicalSQL(t, db, engine)) {
+								t.Fatal("plan refusal changed full physical SQL census")
+							}
+						})
+					}
+					if mode == "origin-only" {
+						plan, err := p.SourcePlanes.Plan()
+						if err != nil {
+							t.Fatal(err)
+						}
+						for i := range plan.Dispositions {
+							if plan.Dispositions[i].SinkKind != "bead" {
+								continue
+							}
+							for j := range plan.Dispositions[i].Fields {
+								rule := &plan.Dispositions[i].Fields[j]
+								switch rule.Source {
+								case "description", "priority", "metadata", "created_at":
+									rule.Disposition, rule.Target = "origin-only", ""
+								}
+							}
+						}
+						plan.Providers[0].LogicalImageSHA256, plan.Providers[0].LogicalImageSize = "", 0
+						p.SourcePlanes, p.DerivedDigest = nil, ""
+						p, err = BindSourceImport(ctx, bytes.NewReader(data), p, plan)
+						if err != nil {
+							t.Fatal("origin-only complete preparation", err)
+						}
+					}
+					report, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, p)
+					if err != nil {
+						t.Fatal("valid publication after same-target refusals", err)
+					}
+					requireJointCrossProjectCoreEdge(t, store, report)
+					r, err := store.Read(ctx, driver.View{Incarnation: report.Restored.Incarnation})
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer r.Close()
+					rows, err := r.Get(ctx, []model.Ref{model.RefByID("demo-7", model.Natural64(0))})
+					if err != nil || len(rows) != 1 {
+						t.Fatal("durable field publication missing", err)
+					}
+					doc, err := pipeline.DecodeDocument(rows[0].Body)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if mode == "origin-only" {
+						_, description := doc.Fields["description"]
+						_, priority := doc.Fields["priority"]
+						_, metadata := doc.Metadata["durable_only"]
+						if description || priority || metadata || doc.CreatedAt != nil {
+							t.Fatal("origin-only durable value acquired a live slot", doc)
+						}
+					} else if doc.Fields["description"] != "explicit durable description" || string(encode(t, doc.Fields["priority"])) != "3\n" || string(doc.Metadata["durable_only"]) != "9007199254740993" || doc.CreatedAt == nil || !doc.CreatedAt.Equal(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)) {
+						t.Fatal("exact-map durable values were lost", doc)
+					}
+					var raw dumpformat.Row
+					decode(t, doc.Metadata["beads.source_fields"], &raw)
+					for _, source := range report.Archive.Records("bead") {
+						if source.ID == "demo-7" && !reflect.DeepEqual(raw, source.Source.Fields) {
+							t.Fatal("disposition changed retained inert physical fields")
+						}
+					}
+					saved, err := r.Blob(ctx, driver.Hash(archive.SHA256()))
+					if err != nil || !bytes.Equal(saved, data) {
+						t.Fatal("disposition changed retained raw archive", err)
+					}
+				})
 			}
 		})
 	}
