@@ -26,7 +26,7 @@ func TestB04NativeInputContract(t *testing.T) {
 		inputs.HelperSource != "70230ccd92597a96000f90223c5d89b103e25426" || inputs.HelperSHA256 == "" {
 		t.Fatalf("producer/source/helper bindings are incomplete: %+v", inputs)
 	}
-	if inputs.BuildRun != "41800330346" || inputs.Artifact != "13307042737" || inputs.ArtifactSHA256 != "28609d7c072c281a748cb53a361d9a3ffada826d6f2e8866a3b1e62b23d5ffc4" || inputs.ArtifactBytes != 111646601 {
+	if inputs.BuildRun != "41800330346" || inputs.Artifact != "13307042737" || inputs.ArtifactSHA256 != "28609d7c072c281a748cb53a361d9a3ffada826d6f2e8866a3b1e62b23d5ffc4" || inputs.ArtifactBytes != 111646601 || inputs.BinarySHA256 != "b734da8ba8b6f50d7fd32239e405b8f8ed9d171b7be5fbbccb63a923d257a123" || inputs.BinaryBytes != 161299592 {
 		t.Fatalf("admitted artifact binding changed: %+v", inputs)
 	}
 	if inputs.Descriptor != "41800330346:13307042737:ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a" ||

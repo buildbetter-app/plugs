@@ -40,6 +40,8 @@ type b04NativeInputs struct {
 	Artifact           string   `json:"artifact"`
 	ArtifactSHA256     string   `json:"artifactSHA256"`
 	ArtifactBytes      int64    `json:"artifactBytes"`
+	BinarySHA256       string   `json:"binarySHA256"`
+	BinaryBytes        int64    `json:"binaryBytes"`
 	Descriptor         string   `json:"descriptor"`
 	ManifestSHA256     string   `json:"manifestSHA256"`
 	WorkflowSHA        string   `json:"workflowSHA"`
@@ -115,7 +117,7 @@ func b04NativePrepared(t *testing.T, evidence string, inputs b04NativeInputs) st
 		t.Fatal("B04 native admission requires Linux/amd64")
 	}
 	binary := b04NativeEnv(t, "PLUG_PUBLIC_BEADS_BINARY")
-	if b04NativeEnv(t, "PLUG_PUBLIC_BEADS_BUILD_RUN") != inputs.BuildRun || b04NativeEnv(t, "PLUG_PUBLIC_BEADS_SHA256") != inputs.ArtifactSHA256 {
+	if b04NativeEnv(t, "PLUG_PUBLIC_BEADS_BUILD_RUN") != inputs.BuildRun || b04NativeEnv(t, "PLUG_PUBLIC_BEADS_SHA256") != inputs.BinarySHA256 {
 		t.Fatal("prepared run or executable digest differs from the admitted B04 input")
 	}
 	manifestPath := b04NativeEnv(t, "PLUG_PUBLIC_BEADS_MANIFEST")
@@ -156,12 +158,12 @@ func b04NativePrepared(t *testing.T, evidence string, inputs b04NativeInputs) st
 	}
 	matches := 0
 	for _, artifact := range manifest.Artifacts {
-		if artifact.SHA256 == inputs.ArtifactSHA256 && artifact.Size == inputs.ArtifactBytes {
+		if artifact.SHA256 == inputs.BinarySHA256 && artifact.Size == inputs.BinaryBytes {
 			matches++
 		}
 	}
 	digest, size, err := b04NativeFileSHA(binary)
-	if err != nil || digest != inputs.ArtifactSHA256 || size != inputs.ArtifactBytes || matches != 1 {
+	if err != nil || digest != inputs.BinarySHA256 || size != inputs.BinaryBytes || matches != 1 {
 		t.Fatalf("prepared executable digest=%s bytes=%d manifestMatches=%d err=%v", digest, size, matches, err)
 	}
 	b04NativeJSON(t, filepath.Join(evidence, "prepared-executable.json"), map[string]any{
