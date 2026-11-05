@@ -18,7 +18,10 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/restore"
+	"github.com/buildbetter-app/plugs/internal/core/service"
+	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -580,6 +583,53 @@ func nativeMutatedArchive(t *testing.T, input []byte, scenario string) []byte {
 			t.Fatal("native archive has no bead to mutate")
 		}
 		members["records/native.ndjson"] = bytes.Join(lines, []byte{'\n'})
+	case "memory-id-mismatch", "memory-blank-key", "memory-empty-content":
+		lines := bytes.Split(members["records/native.ndjson"], []byte{'\n'})
+		changed := false
+		for i, line := range lines {
+			if len(line) == 0 {
+				continue
+			}
+			var record struct {
+				Ref      model.Ref       `json:"ref"`
+				Kind     string          `json:"kind"`
+				Revision model.Revision  `json:"revision"`
+				Body     json.RawMessage `json:"body"`
+			}
+			if err := json.Unmarshal(line, &record); err != nil {
+				t.Fatal(err)
+			}
+			if record.Kind != "memory" {
+				continue
+			}
+			var body map[string]json.RawMessage
+			if err := json.Unmarshal(record.Body, &body); err != nil {
+				t.Fatal(err)
+			}
+			switch scenario {
+			case "memory-id-mismatch":
+				body["id"] = json.RawMessage(`"different-memory-id"`)
+			case "memory-blank-key":
+				body["key"] = json.RawMessage(`" "`)
+			case "memory-empty-content":
+				body["content"] = json.RawMessage(`""`)
+			}
+			var err error
+			record.Body, err = json.Marshal(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lines[i], err = json.Marshal(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			changed = true
+			break
+		}
+		if !changed {
+			t.Fatal("native archive has no memory to mutate")
+		}
+		members["records/native.ndjson"] = bytes.Join(lines, []byte{'\n'})
 	default:
 		t.Fatalf("unknown negative scenario %s", scenario)
 	}
@@ -657,6 +707,145 @@ func TestNativeRestoreRejectsInvalidPriorityBeforePublicationAcrossStores(t *tes
 			requireAllocatorSnapshotBytes(t, empty, observedAllocatorSnapshot(t, target, nil))
 			if target.receipt(t, nativeFinishMeta()) != nil || len(nativeAllocatorDerivedRows(t, target)) != 0 {
 				t.Fatal("invalid native field published receipt or derived state")
+			}
+			if engine != "memory" {
+				target.reopen(t)
+				requireSameState(t, before, childAllocatorDurableState(t, target))
+				requireAllocatorSnapshotBytes(t, empty, observedAllocatorSnapshot(t, target, nil))
+			}
+		})
+	}
+}
+
+func TestNativeRestoreRejectsInvalidMemoryBeforePublicationAcrossStores(t *testing.T) {
+	source := newFixture(t, "memory")
+	meta := source.meta("native-memory-source")
+	meta.Method, meta.Project = "memory.save", ""
+	commit, err := source.writer.Apply(source.ctx, batchPrincipal, model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{
+		Type: "memory", Fields: map[string]any{"key": "restore-key", "content": "ordinary memory content", "metadata": map[string]any{"origin": "ordinary"}},
+	}}}}, meta)
+	if err != nil || len(commit.Results) != 1 {
+		t.Fatalf("ordinary source memory write: %+v %v", commit, err)
+	}
+	memoryID := commit.Results[0].Ref.ID
+	data, _, err := restore.Dump(source.ctx, source.store, "head")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, scenario := range []struct{ name, reason string }{
+		{"memory-id-mismatch", "memory document ID differs"},
+		{"memory-blank-key", "memory key must be nonempty"},
+		{"memory-empty-content", "memory content must be nonempty"},
+	} {
+		mutated := nativeMutatedArchive(t, data, scenario.name)
+		for _, engine := range []string{"memory", "sqlite", "postgres"} {
+			t.Run(scenario.name+"/"+engine, func(t *testing.T) {
+				target := newFixture(t, engine)
+				before := childAllocatorDurableState(t, target)
+				empty := observedAllocatorSnapshot(t, target, nil)
+				wrapped := &nativeAllocatorFaultStore{Store: target.store}
+				manager := nativeManager(t, target, wrapped)
+				status, hash := nativeUpload(t, target, manager, mutated)
+				status, err := manager.Finish(target.ctx, status.RestoreID, hash, batchPrincipal, nativeFinishMeta(), nativeTestPresence)
+				requireCode(t, err, "restore_violation")
+				var typed *model.Error
+				if !errors.As(err, &typed) || !strings.Contains(typed.Data.Hint, "native record memory/"+memoryID) || !strings.Contains(typed.Data.Hint, scenario.reason) {
+					t.Fatalf("invalid memory refusal did not name the record and field: %+v %v", typed, err)
+				}
+				if status.State != "failed" || wrapped.writes != 0 {
+					t.Fatalf("invalid native memory reached publication: %+v writes=%d", status, wrapped.writes)
+				}
+				requireSameState(t, before, childAllocatorDurableState(t, target))
+				requireAllocatorSnapshotBytes(t, empty, observedAllocatorSnapshot(t, target, nil))
+				if target.receipt(t, nativeFinishMeta()) != nil || len(nativeAllocatorDerivedRows(t, target)) != 0 {
+					t.Fatal("invalid native memory published receipt or derived state")
+				}
+				if engine != "memory" {
+					target.reopen(t)
+					requireSameState(t, before, childAllocatorDurableState(t, target))
+					requireAllocatorSnapshotBytes(t, empty, observedAllocatorSnapshot(t, target, nil))
+				}
+			})
+		}
+	}
+}
+
+func TestNativeRestoreRequiresUnambiguousOntologySourceAcrossStores(t *testing.T) {
+	source := newFixture(t, "memory")
+	created := hierarchyApply(t, source, hierarchyCreate("source-with-title", nil, ""))
+	if len(created.Results) != 1 {
+		t.Fatalf("ordinary source bead: %+v", created)
+	}
+	seedOntology := func(id string, document ontology.Document) {
+		t.Helper()
+		body, err := service.MarshalOntologySource(service.OntologySource{Base: document})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = conformance.Seed(source.ctx, source.store, source.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{
+			Ref: model.RefByID(id, model.Natural64(0)), Kind: "ontology", Op: model.OpCreate, Body: body,
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	seedOntology("ontology/a", ontology.DefaultDocument())
+	unambiguous, _, err := restore.Dump(source.ctx, source.store, "head")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflicting := ontology.DefaultDocument()
+	issue := conflicting.Types["issue"]
+	issue.Fields["title"] = ontology.Field{Type: "integer"}
+	conflicting.Types["issue"] = issue
+	seedOntology("ontology/z", conflicting)
+	ambiguous, _, err := restore.Dump(source.ctx, source.store, "head")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine+"/single-source", func(t *testing.T) {
+			target := newFixture(t, engine)
+			manager := nativeManager(t, target, target.store)
+			status, hash := nativeUpload(t, target, manager, unambiguous)
+			status, err := manager.Finish(target.ctx, status.RestoreID, hash, batchPrincipal, nativeFinishMeta(), nativeTestPresence)
+			if err != nil || status.State != "complete" {
+				t.Fatalf("single-source native restore: %+v %v", status, err)
+			}
+			meta, err := target.store.Meta(target.ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r, err := target.store.Read(target.ctx, driver.View{Incarnation: meta.Incarnation})
+			if err != nil {
+				t.Fatal(err)
+			}
+			rows, readErr := r.Get(target.ctx, []model.Ref{created.Results[0].Ref})
+			closeErr := r.Close()
+			if readErr != nil || closeErr != nil || len(rows) != 1 || rows[0].Kind != "bead" {
+				t.Fatalf("single-source bead image: %+v read=%v close=%v", rows, readErr, closeErr)
+			}
+		})
+		t.Run(engine+"/ambiguous-source", func(t *testing.T) {
+			target := newFixture(t, engine)
+			before := childAllocatorDurableState(t, target)
+			empty := observedAllocatorSnapshot(t, target, nil)
+			wrapped := &nativeAllocatorFaultStore{Store: target.store}
+			manager := nativeManager(t, target, wrapped)
+			status, hash := nativeUpload(t, target, manager, ambiguous)
+			status, err := manager.Finish(target.ctx, status.RestoreID, hash, batchPrincipal, nativeFinishMeta(), nativeTestPresence)
+			requireCode(t, err, "restore_violation")
+			var typed *model.Error
+			if !errors.As(err, &typed) || !strings.Contains(typed.Data.Hint, "native record ontology/z") || !strings.Contains(typed.Data.Hint, "multiple protected ontology sources") {
+				t.Fatalf("ambiguous ontology refusal did not name the second source: %+v %v", typed, err)
+			}
+			if status.State != "failed" || wrapped.writes != 0 {
+				t.Fatalf("ambiguous ontology reached publication: %+v writes=%d", status, wrapped.writes)
+			}
+			requireSameState(t, before, childAllocatorDurableState(t, target))
+			requireAllocatorSnapshotBytes(t, empty, observedAllocatorSnapshot(t, target, nil))
+			if target.receipt(t, nativeFinishMeta()) != nil || len(nativeAllocatorDerivedRows(t, target)) != 0 {
+				t.Fatal("ambiguous ontology published receipt or derived state")
 			}
 			if engine != "memory" {
 				target.reopen(t)

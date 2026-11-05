@@ -10,23 +10,30 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
-// ValidateNativeRestoreRecords applies the same final-image field rules used
-// by ordinary bead creates to every bead in a native restore image. Native
+// ValidateNativeRestoreRecords applies the ordinary final-image field rules
+// to every bead and memory in a native restore image. Native
 // restore is a direct storage publication path, so it cannot rely on the
 // ordinary Writer callbacks to perform this check after a transaction opens.
 //
 // The protected ontology record, when present, is compiled first and supplies
-// the effective type/status/field definitions for the restored projects. A
-// native archive without one uses the built-in ontology, matching the
-// ordinary no-plugin writer. The returned error names the offending record so
-// the restore boundary can expose a typed, state-preserving refusal.
+// the effective type/status/field definitions for the restored projects. The
+// restore request has no configured source locator, so multiple protected
+// sources are ambiguous and must be refused. An archive without one uses the
+// built-in ontology, matching the ordinary no-plugin writer. The error names
+// the offending record so the restore boundary can expose a typed,
+// state-preserving refusal.
 func ValidateNativeRestoreRecords(records []driver.Record) error {
 	base := ontology.Default()
 	resolve := func(string) ontology.Effective { return base }
+	var sourceID string
 	for _, record := range records {
 		if record.Kind != "ontology" {
 			continue
 		}
+		if sourceID != "" {
+			return nativeRestoreRecordError(record, fmt.Errorf("multiple protected ontology sources (%s and %s) without a selected source identity", sourceID, record.Ref.ID))
+		}
+		sourceID = record.Ref.ID
 		source, err := DecodeOntologySource(record.Body)
 		if err != nil {
 			return nativeRestoreRecordError(record, fmt.Errorf("invalid ontology source: %w", err))
@@ -67,7 +74,22 @@ func ValidateNativeRestoreRecords(records []driver.Record) error {
 				}
 			}
 		case "memory":
-			_, err = pipeline.DecodeMemoryDocument(record.Body)
+			var doc pipeline.MemoryDocument
+			doc, err = pipeline.DecodeMemoryDocument(record.Body)
+			if err == nil {
+				err = memoryRef(record.Ref)
+			}
+			if err == nil && doc.ID != record.Ref.ID {
+				err = failure("invalid_params", "memory document ID differs from record reference")
+			}
+			if err == nil {
+				_, err = resolveMemoryKey(doc.Key, doc.Content)
+			}
+			if err == nil {
+				if _, cloneErr := cloneMemoryMetadata(doc.Metadata); cloneErr != nil {
+					err = failure("invalid_params", "memory metadata must be a JSON object")
+				}
+			}
 		}
 		if err != nil {
 			return nativeRestoreRecordError(record, err)
