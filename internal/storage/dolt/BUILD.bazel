@@ -411,6 +411,7 @@ go_test(
         "//internal/debug",
         "//internal/doltserver",
         "//internal/githooksenv",
+        "//internal/plugdump",
         "//internal/storage",
         "//internal/storage/batchbench",
         "//internal/storage/batchfixtures",

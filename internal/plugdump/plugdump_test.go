@@ -386,6 +386,8 @@ func rowFieldForDependencyTest(base Row, field, kind, id string) any {
 	return base[field]
 }
 
+// Unit mapping control; real persisted SQL coverage is in
+// TestNativeProducerBundleFromStoredDoltRows in the Dolt package.
 func TestDumpLocalOpaqueDependencyUsesV3AndPreservesStoredRow(t *testing.T) {
 	source, inventory := fixture(t)
 	base := source["dependencies"].Rows[0]

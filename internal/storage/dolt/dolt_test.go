@@ -1,17 +1,24 @@
 package dolt
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/steveyegge/beads/internal/plugdump"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/doltutil"
 	"github.com/steveyegge/beads/internal/testutil"
@@ -2629,5 +2636,236 @@ func TestGetIssueActiveImageWinsStoredCollision(t *testing.T) {
 	}
 	if _, err := store.GetIssue(ctx, id); err == nil || errors.Is(err, storage.ErrNotFound) || !strings.Contains(err.Error(), "wisp_labels") {
 		t.Fatalf("active label failure hidden by durable image: %v", err)
+	}
+}
+
+// This control starts with the real migrated schema and actual stored rows,
+// not fixtureSource or prebuilt archive bytes. It exercises the native SQL
+// census, filesystem observation, mapper, encoder and self-validator together.
+// It remains a disposable test control, not an official executable delivery or
+// a consumer restore/history qualification.
+func TestNativeProducerBundleFromStoredDoltRows(t *testing.T) {
+	store, cleanup := setupConcurrentTestStore(t)
+	defer cleanup()
+	ctx, cancel := testContext(t)
+	defer cancel()
+	exec := func(query string, args ...any) {
+		t.Helper()
+		if _, err := store.db.ExecContext(ctx, query, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []string{"test-abc", "test-def", "test-jkl", "test-mno", "test-pqr"} {
+		issue := &types.Issue{ID: id, Title: "durable " + id, Status: types.StatusOpen, Priority: 2, IssueType: types.TypeTask}
+		if err := store.CreateIssue(ctx, issue, "producer-control"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	at := time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC)
+	for _, id := range []string{"test-abc", "test-ghi", "test-stu"} {
+		exec(`INSERT INTO wisps (id, title, status, priority, issue_type, created_at, updated_at, ephemeral, no_history)
+			VALUES (?, ?, 'open', 2, 'task', ?, ?, 1, 1)`, id, "active "+id, at, at)
+	}
+	exec(`INSERT INTO wisp_labels (issue_id, label) VALUES ('test-abc', 'active-label')`)
+	exec(`INSERT INTO wisp_comments (issue_id, author, text, created_at) VALUES ('test-abc', 'producer-control', 'stored active comment', ?)`, at)
+	exec(`INSERT INTO wisp_events (issue_id, event_type, actor, old_value, new_value, comment, created_at)
+		VALUES ('test-abc', 'created', 'producer-control', NULL, 'open', 'stored active event', ?)`, at)
+	exec(`INSERT INTO wisp_child_counters (parent_id, last_child) VALUES ('test-abc', 2)`)
+	exec(`INSERT INTO custom_statuses (name, category) VALUES ('review', 'active')`)
+	exec(`INSERT INTO custom_types (name) VALUES ('gate')`)
+	if err := store.SetConfig(ctx, "status.custom", "review:active"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetConfig(ctx, "types.custom", "gate"); err != nil {
+		t.Fatal(err)
+	}
+	// Opaque creation is deliberately direct SQL: the existing public custom
+	// kind creation refusal stays in force. All later reads use SQLSource.
+	edges := []struct {
+		id, kind, arm, target string
+		metadata              any
+	}{
+		{"opaque-null", "custom-stored", "depends_on_issue_id", "test-jkl", nil},
+		{"opaque-object", "custom-stored", "depends_on_issue_id", "test-mno", `{}`},
+		{"opaque-number", "custom-stored", "depends_on_issue_id", "test-pqr", `{"n":9007199254740993,"gate":"inert"}`},
+		{"known-tracks", "tracks", "depends_on_issue_id", "test-def", `{"report":"expanded"}`},
+		{"durable-active", "blocks", "depends_on_wisp_id", "test-ghi", `{}`},
+		{"durable-external", "blocks", "depends_on_external", "external:tracker:stored", `{}`},
+	}
+	insertEdges := func(opaque bool) {
+		for _, edge := range edges {
+			if strings.HasPrefix(edge.id, "opaque-") != opaque {
+				continue
+			}
+			//nolint:gosec // arm is one of the three literal typed columns above.
+			exec(fmt.Sprintf(`INSERT INTO dependencies (id, issue_id, %s, type, created_at, created_by, metadata, thread_id)
+				VALUES (?, 'test-abc', ?, ?, ?, 'producer-control', ?, 'stored-thread')`, edge.arm), edge.id, edge.target, edge.kind, at, edge.metadata)
+		}
+	}
+	insertEdges(false)
+	exec(`INSERT INTO wisp_dependencies (id, issue_id, depends_on_wisp_id, type, created_at, created_by, metadata, thread_id)
+		VALUES ('active-waits', 'test-abc', 'test-ghi', 'waits-for', ?, 'producer-control', ?, 'active-thread')`, at, `{"gate":"any-children","also_blocks":true}`)
+	exec(`CALL DOLT_ADD('-A')`)
+	exec(`CALL DOLT_COMMIT('-m', 'disposable producer capability control')`)
+
+	root := t.TempDir()
+	configPath := filepath.Join(root, "config.yaml")
+	// This explicitly test-authored comment-only file is an observation
+	// regression control; it is not relabeled as a genuine initializer file.
+	configBytes := []byte("# disposable public producer observation\n\n")
+	if err := os.WriteFile(configPath, configBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	retained := []string{"issues", "wisps", "dependencies", "wisp_dependencies", "wisp_labels", "wisp_comments", "wisp_events", "wisp_child_counters", "custom_statuses", "custom_types"}
+	var before map[string]plugdump.Table
+	build := func(t *testing.T) ([]byte, error) {
+		t.Helper()
+		sidecarDir := t.TempDir()
+		paths := map[string][]string{}
+		for _, family := range []string{"user-legacy-config", "user-xdg-config", "user-native-config", "project-config", "beads-dir-config", "project-local-config", "metadata-json", "legacy-config-json", "beads-hooks", "legacy-hooks", "git-hooks", "external-hook-managers", "routes-jsonl", "formulas", "formula-search-paths", "issues-jsonl", "interactions-jsonl"} {
+			paths[family] = []string{filepath.Join(root, "absent-"+family)}
+		}
+		paths["project-config"], paths["beads-dir-config"] = []string{configPath}, []string{configPath}
+		var data []byte
+		err := store.WithRawDBTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelSerializable}, func(tx *sql.Tx) error {
+			source := plugdump.SQLSource{DB: tx}
+			inventory, sidecars, err := source.NativeInventory(ctx, plugdump.NativeCapture{Public: true, StoreDir: store.cfg.Path, BeadsDir: store.cfg.Path, Machine: "disposable-control", SidecarDir: sidecarDir, Paths: paths})
+			if err != nil {
+				return err
+			}
+			for name, raw := range sidecars {
+				if err := os.WriteFile(filepath.Join(sidecarDir, name), raw, 0o600); err != nil {
+					return err
+				}
+			}
+			before = map[string]plugdump.Table{}
+			for _, family := range retained {
+				table, err := source.ReadTable(ctx, family)
+				if err != nil {
+					return err
+				}
+				before[family] = table
+			}
+			data, err = plugdump.Build(ctx, source, inventory)
+			return err
+		})
+		return data, err
+	}
+	fixed, err := build(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixedManifest, err := plugdump.Validate(bytes.NewReader(fixed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	edgeVersion := func(manifest plugdump.Manifest) int {
+		for _, kind := range manifest.Kinds {
+			if kind.Name == "edge" {
+				return kind.Version
+			}
+		}
+		return 0
+	}
+	if got := edgeVersion(fixedManifest); got != plugdump.EdgeVersionTypedDependencies {
+		t.Fatalf("fixed-only stored archive selected edge version %d", got)
+	}
+	insertEdges(true)
+	exec(`CALL DOLT_ADD('-A')`)
+	exec(`CALL DOLT_COMMIT('-m', 'disposable stored opaque dependency control')`)
+	data, err := build(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := plugdump.Validate(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := edgeVersion(manifest); got != plugdump.EdgeVersionLocalOpaque {
+		t.Fatalf("stored opaque row selected edge version %d", got)
+	}
+	rowKey := func(value any) string {
+		t.Helper()
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
+	}
+	actual := map[string]map[string]int{}
+	reader := tar.NewReader(bytes.NewReader(data))
+	for {
+		header, err := reader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(header.Name, "records/") || !strings.HasSuffix(header.Name, ".ndjson") {
+			continue
+		}
+		decoder := json.NewDecoder(reader)
+		decoder.UseNumber()
+		for {
+			var record plugdump.Record
+			if err := decoder.Decode(&record); err == io.EOF {
+				break
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			family := record.Source.Table
+			if actual[family] == nil {
+				actual[family] = map[string]int{}
+			}
+			actual[family][rowKey(record.Source.Fields)]++
+			if record.Kind == "edge" {
+				fields := record.Source.Fields
+				if record.Body["from"] != fields["issue_id"] || record.Body["type"] != fields["type"] || record.Body["thread_id"] != fields["thread_id"] {
+					t.Fatalf("stored edge identity changed: %+v", record)
+				}
+				arm, ok := record.Body["target_kind"].(string)
+				if !ok || record.Body["to"] != fields[arm] {
+					t.Fatalf("stored edge endpoint changed: %+v", record)
+				}
+				metadata := fields["metadata"]
+				if raw, ok := metadata.(string); ok {
+					decoder := json.NewDecoder(strings.NewReader(raw))
+					decoder.UseNumber()
+					if err := decoder.Decode(&metadata); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if rowKey(record.Body["metadata"]) != rowKey(metadata) {
+					t.Fatalf("stored edge metadata changed: %+v", record)
+				}
+			}
+		}
+	}
+	for _, family := range retained {
+		want := map[string]int{}
+		for _, row := range before[family].Rows {
+			want[rowKey(row)]++
+		}
+		if !reflect.DeepEqual(actual[family], want) {
+			t.Fatalf("stored %s rows/fields changed: got=%v want=%v", family, actual[family], want)
+		}
+	}
+	for _, test := range []struct{ name, update, restore, want string }{
+		{"unsupported known kind", `UPDATE dependencies SET type='duplicates' WHERE id='opaque-null'`, `UPDATE dependencies SET type='custom-stored' WHERE id='opaque-null'`, "unsupported dependency type"},
+		{"opaque active target", `UPDATE dependencies SET depends_on_issue_id=NULL, depends_on_wisp_id='test-stu' WHERE id='opaque-null'`, `UPDATE dependencies SET depends_on_issue_id='test-jkl', depends_on_wisp_id=NULL WHERE id='opaque-null'`, "unsupported dependency type"},
+		{"catalog category conflict", "UPDATE config SET value='review:done' WHERE `key`='status.custom'", "UPDATE config SET value='review:active' WHERE `key`='status.custom'", "conflicting custom status"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			exec(test.update)
+			t.Cleanup(func() { exec(test.restore) })
+			// Commit actual test mutations, retaining honest source history.
+			exec(`CALL DOLT_ADD('-A')`)
+			exec(`CALL DOLT_COMMIT('-m', 'disposable stored refusal control')`)
+			data, err := build(t)
+			if err == nil || len(data) != 0 || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("stored invalid source did not refuse atomically: bytes=%d err=%v", len(data), err)
+			}
+		})
 	}
 }
