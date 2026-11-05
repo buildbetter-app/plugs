@@ -99,3 +99,68 @@ source/dispatch/artifact identities must be recorded separately from target
 summaries. A focused PASS does not qualify whole-tree, hosted, native or full
 B03/S1 behavior. Native/public producer evidence and full-card qualification
 remain unclaimed until their required real receipts exist.
+
+## Native catalog recording boundary
+
+The separate manual `b03catalog_native_test` consumes the committed
+`native_catalog_inputs.json` and accepted R418 executable through the committed
+main preparer. Ordinary `b03catalog_test` and literal `//...` exclude this
+recorder. The input preserves the accepted producer/control/readiness tuple;
+the historical B01 input is unchanged. Each recording owns four Dolt databases
+with different prefixes and root IDs, and retains every physical command,
+stdout/stderr hash, inventory sidecar, complete 33-table SQL census, concurrent
+catalog read, canonical export refusal and validated archive metadata.
+
+The canonical gate requires exact custom status/type values and provenance
+rows, the production strict-union import migration, and a nonempty validated
+archive from each physical store. Empty exports, synthetic archives and
+input-derived custom ontology seeds cannot qualify. The recorder bootstraps
+only a built-in protected source, then publicly plans/applies the migration
+document derived by the validator from that store's actual native archive.
+Custom lifecycle slot edits are a subsequent public action, distinct from the
+producer's original catalog. Replay acts on the imported root/project/type on
+memory, SQLite and PostgreSQL. It checks active readiness, claim, terminal and
+frozen refusals, close/repeated-close/reopen timestamps, full refusal
+conservation, and exact durable state across SQL close/open plus public checks
+after reopen. Memory has no durable reopen claim. Raw RPC streams, imported
+metadata and timestamp bytes remain available; correspondence compares actual
+semantic images across all four different IDs and three engines, normalizing
+only physical root/project identity and wall instants. Source and compilation
+alone do not establish any of these runtime outcomes.
+
+At `a813392398e2ed7be9453a8ef7c193c437c6fdb4` (tree
+`b6fdb8fd649c99413a7aa5212c7ce869e18da9b2`), native RunsOn
+`41948679662` completed with evidence status `ok`, exit 3, raw
+**1 RUN / 0 PASS / 1 FAIL / 0 SKIP**, and XML **1 test / 1 failure / 0 errors /
+0 skipped**. Its immutable receipt is
+`/tmp/plug-swarm/ci-local/remote/b03-main7a43-native-0005-a813392398e2-20261105T012739Z-99174fa1f331`;
+the archived testlogs SHA256 is
+`e1b6ba2c61a74eda174ad2467c60e23ffab7a7e1d67fccffb19454080726d7d5`.
+The independent reviewer confirmed all four real roots retained
+`awaiting_review` / `delivery`, all before/after SQL bytes and rows matched,
+and all 316 command streams were hash-bound. The recorder's compact-JSON
+substring check was a false negative; typed decoding replaces it without
+changing this RED receipt.
+
+The actual producer dependency remains literal: native-a/b/d refused canonical
+export with `Error: plug-dump/1 refused: unsupported nonempty family
+custom_statuses (live claims must be resolved)`; native-c refused the same way
+for `custom_types`. There are **no canonical archives and no paired replay**.
+The existing producer-owned capability route is controller bundle `2f2/564`.
+No further native run is authorized against the unchanged c8eb producer.
+Qualification remains **BLOCKED; paired replay AUTHORED_NOT_RUN/NOT_RUN**.
+
+The downloaded native0005 receipt contains `prepared-artifact-binding.json`
+but lacks workflow `public-bundle-helper-binding.txt` and `public-bundle.json`;
+accepted-preparation evidence is therefore incomplete. Future authorized runs
+must retain those exact same-run files from the workflow's fixed evidence
+directory, verifying helper identity and the actual manifest/executable/ZIP
+tuple. No new preparation or native result is inferred from that source change.
+
+Preserve native0004 `41946520562` (faff72ad prefix/setup and census-path defects
+plus producer refusal), historical ordinary whole RED `41901144448`
+(154/163), and historical native **17 RUN / 14 PASS / 3 FAIL** with downstream
+capability/replay NOT_RUN. Pinned-main focus `41937629687` and whole
+`41937629903` are bounded ordinary PASS only; the latter's three unrelated
+optional E5 skips remain literal. No source, ordinary gate or compile result
+promotes native, hosted, full B03 or FullS1 qualification.

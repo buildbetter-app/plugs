@@ -49,6 +49,7 @@ go_test(
         "//internal/core/model",
         "//internal/core/ontology",
         "//internal/core/ontologyops",
+        "//internal/core/pipeline",
         "//internal/core/service",
         "//internal/integration/converterroundtrip",
         "//internal/publicnative",
