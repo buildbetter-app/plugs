@@ -34,7 +34,7 @@ func TestB04PublicClaimNextWalksMatchingReadyFrontBeyondOnePage(t *testing.T) {
 			}
 			body, err := json.Marshal(pipeline.Document{
 				ID: id, Type: "issue", Project: poolA, CreatedAt: &created,
-				Fields: map[string]any{"title": id, "description": "matching ready front", "status": "open", "priority": priority},
+				Fields: map[string]any{"title": id, "description": "matching ready front", "status": "todo", "priority": priority},
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -88,7 +88,12 @@ func TestB04PublicClaimNextSkipsHeldCandidateWithoutPublication(t *testing.T) {
 		selected, next := f.work["a1"], f.work["a2"]
 		// Give the selected row a unique earlier priority, independent of IDs
 		// or the request's deterministic equal-key rotation.
-		f.request(f.bootstrap, credential{}, "bead.update", poolA, f.key("next-priority"), "setup", map[string]any{"id": next, "fields": map[string]any{"priority": 1}}).commit(t)
+		f.request(f.bootstrap, credential{}, "bead.update", poolA, f.key("selected-priority"), "setup", map[string]any{"id": selected, "fields": map[string]any{"priority": 0}}).commit(t)
+		ready := f.request(f.bootstrap, credential{}, "bead.ready", poolA, f.key("held-front-observer"), "setup", nil)
+		var front struct{ Items []struct{ ID string } }
+		if ready.code != "" || json.Unmarshal(ready.envelope["result"], &front) != nil || len(front.Items) != 2 || front.Items[0].ID != selected.ID {
+			t.Fatalf("held candidate is not the first actual ready row: %s", ready.raw)
+		}
 		held, err := f.store.Write(f.ctx, f.lease)
 		if err != nil {
 			t.Fatal(err)
