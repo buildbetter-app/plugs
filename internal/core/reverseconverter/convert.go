@@ -256,7 +256,7 @@ func ConvertWithDirectives(dump Dump, directives []ontologymigration.Directive) 
 				edgeIDs[record.ID] = true
 			}
 		}
-		reasons = append(reasons, convertEdge(record, working, &report)...)
+		reasons = append(reasons, convertEdge(record, working, manifestEdgeVersion(dump.Manifest), &report)...)
 	}
 	for _, record := range sortedRecords(dump.Records["comment"]) {
 		if record.ID != "" {
@@ -432,8 +432,20 @@ func withReport(err error, report Report) error {
 	return err
 }
 
+func manifestEdgeVersion(manifest Manifest) int {
+	for _, kind := range manifest.Kinds {
+		if kind.Name == "edge" {
+			return kind.Version
+		}
+	}
+	return 1
+}
+
 func validateDumpShape(dump Dump, report *Report) error {
 	m := dump.Manifest
+	if m.SourceFieldsContract != "" && m.SourceFieldsContract != dumpformat.IssueSourceFieldsContract {
+		return refusal("unsupported physical source fields contract")
+	}
 	if m.Format != PlugDumpFormat || m.Schema != 1 || m.Reference != BeadsReference || m.MainVersion != 72 || m.IgnoredVersion != 28 || m.StoreID == "" || m.Machine == "" || m.Scope != "offline-head-and-source-archives" {
 		return refusal("unsupported plug-dump manifest")
 	}
@@ -445,7 +457,7 @@ func validateDumpShape(dump Dump, report *Report) error {
 	}
 	registered := map[string]bool{}
 	for i, kind := range m.Kinds {
-		if !supportedKinds[kind.Name] || kind.Version != 1 || kind.File != "records/"+kind.Name+".ndjson" || kind.Count < 1 || registered[kind.Name] || i > 0 && m.Kinds[i-1].Name >= kind.Name {
+		if !supportedKinds[kind.Name] || (kind.Version != 1 && (kind.Name != "edge" || !dumpformat.IsTypedEdgeVersion(kind.Version))) || kind.File != "records/"+kind.Name+".ndjson" || kind.Count < 1 || registered[kind.Name] || i > 0 && m.Kinds[i-1].Name >= kind.Name {
 			if !supportedKinds[kind.Name] && kind.Name != "" {
 				addUnique(&report.PlugOnlyKinds, kind.Name)
 				addUnique(&report.UnsupportedFields, "kind/"+kind.Name)
@@ -596,12 +608,12 @@ func convertBead(record Record, report *Report, directives *typeDirectives) (*wo
 	if createdAt == "" || updatedAt == "" {
 		reasons = append(reasons, fmt.Sprintf("bead %q lacks RFC3339 created_at/updated_at", record.ID))
 	}
-	metadata, metadataOK := body["metadata"].(map[string]any)
-	if body["metadata"] != nil && !metadataOK {
-		reasons = append(reasons, fmt.Sprintf("bead %q metadata is not an object", record.ID))
+	metadata, metadataErr := dumpformat.SourceMetadataObject(body["metadata"])
+	if metadataErr != nil {
+		reasons = append(reasons, fmt.Sprintf("bead %q metadata is not an object: %v", record.ID, metadataErr))
 	}
 	if body["metadata"] != nil {
-		if _, err := canonicalJSON(body["metadata"]); err != nil {
+		if _, err := canonicalJSON(metadata); err != nil {
 			reasons = append(reasons, fmt.Sprintf("bead %q metadata: %v", record.ID, err))
 		}
 	}
@@ -689,7 +701,7 @@ const (
 	BeadsJSONLIssueType = "issue"
 )
 
-func convertEdge(record Record, issues map[string]*workingIssue, report *Report) []string {
+func convertEdge(record Record, issues map[string]*workingIssue, edgeVersion int, report *Report) []string {
 	body := record.Body
 	var reasons []string
 	reasons = append(reasons, unsupportedSourceFields(record, report)...)
@@ -728,8 +740,28 @@ func convertEdge(record Record, issues map[string]*workingIssue, report *Report)
 	} else {
 		reasons = append(reasons, fmt.Sprintf("edge %q has unsupported target kind %q", record.ID, targetKind))
 	}
-	if targetKind != "depends_on_external" && !supportedEdgeTypes[edgeType] || targetKind == "depends_on_external" && (edgeType == "" || len(edgeType) > 32 || !utf8.ValidString(edgeType)) {
+	var metadataProjection dumpformat.EdgeMetadataProjection
+	versionedType := dumpformat.IsVersionedLocalKnownEdgeType(edgeVersion, targetKind, edgeType)
+	localOpaque := dumpformat.IsLocalOpaqueEdgeType(edgeVersion, targetKind, edgeType)
+	if targetKind != "depends_on_external" {
+		if !supportedEdgeTypes[edgeType] && !versionedType && !localOpaque {
+			reasons = append(reasons, fmt.Sprintf("edge %q has unsupported type %q", record.ID, edgeType))
+		}
+	} else if edgeType == "" || len(edgeType) > 32 || !utf8.ValidString(edgeType) {
 		reasons = append(reasons, fmt.Sprintf("edge %q has unsupported type %q", record.ID, edgeType))
+	}
+	if dumpformat.IsTypedEdgeVersion(edgeVersion) {
+		if _, present := body["metadata"]; !present {
+			reasons = append(reasons, fmt.Sprintf("edge %q lacks metadata column", record.ID))
+		}
+		if _, present := record.Source.Fields["metadata"]; !present {
+			reasons = append(reasons, fmt.Sprintf("edge %q lacks source metadata column", record.ID))
+		}
+		var err error
+		metadataProjection, err = dumpformat.InspectSourceEdgeMetadata(edgeVersion, record.ID, edgeType, body["metadata"])
+		if err != nil {
+			reasons = append(reasons, fmt.Sprintf("edge %q metadata: %v", record.ID, err))
+		}
 	}
 	if record.ID == "" || from == "" || to == "" {
 		reasons = append(reasons, fmt.Sprintf("edge %q lacks identity or endpoints", record.ID))
@@ -773,7 +805,16 @@ func convertEdge(record Record, issues map[string]*workingIssue, report *Report)
 		reasons = append(reasons, fmt.Sprintf("edge %q source thread mismatch", record.ID))
 	}
 	for _, sourceTarget := range []string{"depends_on_issue_id", "depends_on_" + "wi" + "sp" + "_id", "depends_on_external"} {
-		if value, present := record.Source.Fields[sourceTarget]; present && value != nil && text(value) != "" {
+		if value, present := record.Source.Fields[sourceTarget]; present && value != nil {
+			if dumpformat.IsTypedEdgeVersion(edgeVersion) {
+				if _, ok := value.(string); !ok {
+					reasons = append(reasons, fmt.Sprintf("edge %q source %s is not a string", record.ID, sourceTarget))
+					continue
+				}
+			}
+			if text(value) == "" {
+				continue
+			}
 			if sourceTarget != targetKind || text(value) != to {
 				reasons = append(reasons, fmt.Sprintf("edge %q source target mismatch", record.ID))
 			}
@@ -791,7 +832,20 @@ func convertEdge(record Record, issues map[string]*workingIssue, report *Report)
 	if value := body["metadata"]; value != nil {
 		envelope["_plug_metadata"] = value
 	}
-	metadata, err := canonicalJSON(envelope)
+	var metadata string
+	var err error
+	if metadataProjection.Envelope {
+		// A v2 source may already carry the exact flat identity envelope.
+		// Keep SQL text byte-for-byte; wrapping again would invent a nested
+		// reserved envelope and change the native source representation.
+		if raw, ok := body["metadata"].(string); ok {
+			metadata = raw
+		} else {
+			metadata, err = canonicalJSON(body["metadata"])
+		}
+	} else {
+		metadata, err = canonicalJSON(envelope)
+	}
 	if err != nil {
 		return []string{fmt.Sprintf("edge %q metadata: %v", record.ID, err)}
 	}

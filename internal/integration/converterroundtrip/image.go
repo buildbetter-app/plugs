@@ -49,7 +49,7 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 			}
 		}
 		for _, link := range docs[id].Links {
-			if link.TargetKind != model.LinkTargetExternal && link.Kind == "blocks" {
+			if link.TargetKind != model.LinkTargetExternal && (link.Kind == "blocks" || link.Kind == "conditional-blocks") {
 				if err := walk(link.To.ID); err != nil {
 					return err
 				}
@@ -86,7 +86,7 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 	}
 	for id, doc := range docs {
 		for _, link := range doc.Links {
-			if link.TargetKind != model.LinkTargetExternal && link.Kind == "blocks" && (ancestors[id][link.To.ID] > 0 || ancestors[link.To.ID][id] > 0) {
+			if link.TargetKind != model.LinkTargetExternal && (link.Kind == "blocks" || link.Kind == "conditional-blocks") && (ancestors[id][link.To.ID] > 0 || ancestors[link.To.ID][id] > 0) {
 				return fmt.Errorf("restore blocking link cannot join an ancestor and descendant")
 			}
 		}
@@ -117,8 +117,15 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 				unresolvedScheduling = unresolvedScheduling || link.Kind == "parent-child"
 				continue
 			}
-			if blocker := docs[link.To.ID]; link.Kind == "blocks" && !snapshot.Effective(blocker.Project).SatisfiesBlocks(stringValue(blocker.Fields["status"])) {
-				blocked = true
+			blocker := docs[link.To.ID]
+			blockerOntology := snapshot.Effective(blocker.Project)
+			switch link.Kind {
+			case "blocks":
+				blocked = blocked || !blockerOntology.SatisfiesBlocks(stringValue(blocker.Fields["status"]))
+			case "conditional-blocks":
+				blocked = blocked || !blockerOntology.SatisfiesConditionalBlocks(stringValue(blocker.Fields["status"]))
+			case "waits-for":
+				blocked = blocked || !importedWaitsForSatisfied(link, blocker, docs, snapshot)
 			}
 		}
 		priority, violations := ontology.Priority(ontology.BeadState{Fields: doc.Fields})
@@ -183,6 +190,33 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 	}
 	plan.derivedDigest = hashBytes(data)
 	return nil
+}
+
+// Use the same waits predicate as the live ontology: absent metadata keeps
+// the terminal-spawner fallback; explicit metadata gates on direct children.
+// No other dependency kind, including tracks and local opaque kinds, enters it.
+func importedWaitsForSatisfied(link pipeline.Link, spawner pipeline.Document, docs map[string]pipeline.Document, snapshot ontology.Snapshot) bool {
+	terminal := func(doc pipeline.Document) bool {
+		return snapshot.Effective(doc.Project).SatisfiesBlocks(stringValue(doc.Fields["status"]))
+	}
+	if link.Metadata == nil && terminal(spawner) {
+		return true
+	}
+	if link.Metadata != nil && link.Metadata.AlsoBlocks && !terminal(spawner) {
+		return false
+	}
+	openChild, terminalChild := false, false
+	for _, child := range docs {
+		if child.Parent == nil || child.Parent.ID != spawner.ID {
+			continue
+		}
+		if terminal(child) {
+			terminalChild = true
+		} else {
+			openChild = true
+		}
+	}
+	return !openChild || link.Metadata != nil && link.Metadata.Gate == "any-children" && terminalChild
 }
 
 // The strict profile binds the admitted document in the same canonical image

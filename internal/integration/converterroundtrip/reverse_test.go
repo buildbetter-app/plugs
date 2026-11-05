@@ -510,3 +510,160 @@ func TestProjectLiveBeadPreservesUnchangedFailureOutcome(t *testing.T) {
 		t.Fatalf("unchanged imported failure was rewritten: result=%v err=%v", got.Body["result"], err)
 	}
 }
+
+func TestLiveReverseComparesVersionedDependencyPredicatesExactly(t *testing.T) {
+	// Detached relationship controls exercise the live-source comparison, not
+	// a native capture or an accepted successor producer.
+	for _, test := range []struct {
+		name string
+		raw  any
+		want *model.LinkMetadata
+	}{
+		{"legacy NULL", nil, nil},
+		{"ID only", `{"_plug_edge_id":"edge-1"}`, nil},
+		{"explicit default", `{}`, &model.LinkMetadata{Gate: "all-children"}},
+		{"SQL predicate", ` {"gate":"any-children","also_blocks":true,"spawner_id":"not-the-target","opaque":9007199254740993} `, &model.LinkMetadata{Gate: "any-children", AlsoBlocks: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dump := reverseconverter.Dump{
+				Manifest: reverseconverter.Manifest{Kinds: []reverseconverter.Kind{{Name: "edge", Version: dumpformat.EdgeVersionTypedDependencies}}},
+				Records: map[string][]reverseconverter.Record{"edge": {{
+					Kind: "edge", ID: "edge-1", Body: map[string]any{"from": "demo-2", "to": "demo-1", "target_kind": "depends_on_issue_id", "type": "waits-for", "metadata": test.raw},
+				}}},
+			}
+			doc := pipeline.Document{Links: []pipeline.Link{{To: model.RefByID("demo-1", model.Natural64(0)), Kind: "waits-for", Metadata: test.want}}}
+			if err := checkLiveRelationsAndComments("demo-2", doc, dump); err != nil {
+				t.Fatalf("unchanged versioned source relationship refused: %v", err)
+			}
+			changed := model.LinkMetadata{Gate: "all-children"}
+			if test.want != nil {
+				changed = *test.want
+				changed.AlsoBlocks = !changed.AlsoBlocks
+			}
+			doc.Links[0].Metadata = &changed
+			if err := checkLiveRelationsAndComments("demo-2", doc, dump); err == nil {
+				t.Fatal("changed predicate or absent-versus-explicit metadata was accepted")
+			}
+		})
+	}
+}
+
+func TestLiveReverseRetainsV3LocalOpaqueRelationshipAndRefusesEdits(t *testing.T) {
+	dump := reverseconverter.Dump{
+		Manifest: reverseconverter.Manifest{Kinds: []reverseconverter.Kind{{Name: "edge", Version: dumpformat.EdgeVersionLocalOpaque}}},
+		Records: map[string][]reverseconverter.Record{"edge": {{
+			Kind: "edge", ID: "edge-opaque", Body: map[string]any{
+				"from": "demo-2", "to": "demo-1", "target_kind": "depends_on_issue_id", "type": "local-opaque", "metadata": map[string]any{"large": json.Number("9007199254740993")}, "thread_id": "thread-opaque",
+			},
+		}}},
+	}
+	doc := pipeline.Document{Links: []pipeline.Link{{To: model.RefByID("demo-1", model.Natural64(0)), Kind: "local-opaque"}}}
+	if err := checkLiveRelationsAndComments("demo-2", doc, dump); err != nil {
+		t.Fatalf("unchanged v3 local opaque relationship refused: %v", err)
+	}
+	doc.Links[0].To = model.RefByID("demo-missing", model.Natural64(0))
+	if err := checkLiveRelationsAndComments("demo-2", doc, dump); err == nil {
+		t.Fatal("changed v3 local opaque endpoint was accepted")
+	}
+}
+
+func TestProjectLiveBeadRetainsRawMetadataUntilAKeyChanges(t *testing.T) {
+	ctx := context.Background()
+	data := admittedFixtureBytes(t)
+	profile, _ := admittedImportProfile(t, data)
+	store, lease, cleanup := openTarget(t, "memory")
+	defer cleanup()
+	if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile); err != nil {
+		t.Fatal(err)
+	}
+	dump, err := reverseconverter.ReadBytes(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := dump.Records["bead"][0]
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	rows, err := r.Get(ctx, []model.Ref{model.RefByID(baseline.ID, model.Natural64(0))})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("restored fixture bead: %v", err)
+	}
+	const sqlText = " {\"large\":9007199254740993,\"literal\":1.0,\"null\":null} \n"
+	for _, test := range []struct {
+		name string
+		raw  any
+		edit bool
+	}{
+		{"SQL text", sqlText, false},
+		{"SQL NULL", nil, false},
+		{"empty SQL object", " {} \n", false},
+		{"object", map[string]any{"large": json.Number("9007199254740993"), "literal": json.Number("1.0")}, false},
+		{"changed SQL text", sqlText, true},
+		{"changed SQL NULL", nil, true},
+		{"changed object", map[string]any{"literal": json.Number("1.0")}, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// A source-representation unit variant of the admitted fixture,
+			// not an input or readback attributed to a native executable.
+			source := baseline
+			source.Body, source.Source.Fields = cloneRow(source.Body), cloneRow(source.Source.Fields)
+			source.Body["metadata"], source.Source.Fields["metadata"] = test.raw, test.raw
+			doc, err := pipeline.DecodeDocument(rows[0].Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for key := range doc.Metadata {
+				if !strings.HasPrefix(key, "beads.") && !strings.HasPrefix(key, "plug.restore.") {
+					delete(doc.Metadata, key)
+				}
+			}
+			metadata, err := dumpformat.SourceMetadataObject(test.raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for key, value := range metadata {
+				doc.Metadata[key], err = json.Marshal(value)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.edit {
+				// 1 and 1.0 remain distinct even when their numeric values agree.
+				doc.Metadata["literal"] = json.RawMessage("1")
+				if metadata == nil {
+					metadata = map[string]any{}
+				}
+				metadata["literal"] = json.Number("1")
+			}
+			doc.Metadata["beads.source_fields"], err = json.Marshal(source.Source.Fields)
+			if err != nil {
+				t.Fatal(err)
+			}
+			row := rows[0]
+			row.Body, err = json.Marshal(doc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := projectLiveBead(source, row, dump)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := test.raw
+			if test.edit {
+				want = metadata
+			}
+			if !reflect.DeepEqual(got.Body["metadata"], want) || !reflect.DeepEqual(got.Source.Fields["metadata"], want) {
+				t.Fatalf("projected metadata representation changed: body=%#v source=%#v want=%#v", got.Body["metadata"], got.Source.Fields["metadata"], want)
+			}
+			if !reflect.DeepEqual(source.Body["metadata"], test.raw) || !reflect.DeepEqual(source.Source.Fields["metadata"], test.raw) {
+				t.Fatal("live projection mutated the retained source")
+			}
+		})
+	}
+}

@@ -313,7 +313,15 @@ func projectLiveBead(source reverseconverter.Record, row driver.Record, dump rev
 	for _, field := range []string{"title", "description", "priority"} {
 		source.Body[field], source.Source.Fields[field] = doc.Fields[field], doc.Fields[field]
 	}
-	source.Body["metadata"], source.Source.Fields["metadata"] = metadata, metadata
+	originalMetadata, err := dumpformat.SourceMetadataObject(source.Body["metadata"])
+	if err != nil {
+		return reverseconverter.Record{}, ReverseRefusal{"invalid_source_metadata"}
+	}
+	// The live document projects metadata keys, not the SQL cell's spelling.
+	// Keep an unchanged source cell verbatim, including NULL and JSON text.
+	if len(originalMetadata) != len(metadata) || len(metadata) != 0 && !sameReverseJSON(originalMetadata, metadata) {
+		source.Body["metadata"], source.Source.Fields["metadata"] = metadata, metadata
+	}
 	labels := []any{}
 	for _, label := range doc.Labels {
 		labels = append(labels, label)
@@ -357,6 +365,12 @@ func projectLiveBead(source reverseconverter.Record, row driver.Record, dump rev
 func checkLiveRelationsAndComments(id string, doc pipeline.Document, dump reverseconverter.Dump) error {
 	links := []pipeline.Link{}
 	var parent *model.Ref
+	edgeVersion := 1
+	for _, kind := range dump.Manifest.Kinds {
+		if kind.Name == "edge" {
+			edgeVersion = kind.Version
+		}
+	}
 	for _, edge := range dump.Records["edge"] {
 		if edge.Body["from"] != id {
 			continue
@@ -381,7 +395,7 @@ func checkLiveRelationsAndComments(id string, doc pipeline.Document, dump revers
 		if kind == "related" {
 			kind = "relates-to"
 		}
-		link, err := importedSourceLink(edge.Body, kind, targetKind)
+		link, err := importedVersionedSourceLink(dumpformat.Record{ID: edge.ID, Body: dumpformat.Row(edge.Body)}, kind, targetKind, edgeVersion)
 		if err != nil {
 			return ReverseRefusal{"changed_source_relationships"}
 		}
