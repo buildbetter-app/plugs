@@ -906,6 +906,187 @@ func TestNativeManifestProtocolConfigurationRejectsBroadening(t *testing.T) {
 	}
 }
 
+func checkedInNativeControlConfig(t *testing.T) (Config, string) {
+	t.Helper()
+	path := filepath.Join("..", "..", "engdocs", "style", "lexicon.toml")
+	if root := os.Getenv("TEST_SRCDIR"); root != "" {
+		path = filepath.Join(root, os.Getenv("TEST_WORKSPACE"), "engdocs", "style", "lexicon.toml")
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("checked-in native control config: %v", err)
+	}
+	if cfg.NativeRecordingLiterals.Path != nativeRecordingLiteralSource || len(cfg.NativeRecordingLiterals.Values) != len(nativeRecordingLiteralDigests) {
+		t.Fatalf("recording allowance is incomplete: %+v", cfg.NativeRecordingLiterals)
+	}
+	if cfg.NativeViewStrings.Path != nativeViewProtocolSource || len(cfg.NativeViewStrings.Values) != len(nativeViewProtocolDigests) {
+		t.Fatalf("view allowance is incomplete: %+v", cfg.NativeViewStrings)
+	}
+	return cfg, path
+}
+
+func escapedNativeLiteral(value string) string {
+	return "\"\\x" + hex.EncodeToString([]byte(value[:1])) + value[1:] + "\""
+}
+
+func TestNativeControlLiteralsAllowOnlyExactDecodedValues(t *testing.T) {
+	cfg, _ := checkedInNativeControlConfig(t)
+	for _, allowance := range []NativeControlAllowance{cfg.NativeRecordingLiterals, cfg.NativeViewStrings} {
+		for i, value := range allowance.Values {
+			for name, literal := range map[string]string{
+				"quoted":  strconv.Quote(value),
+				"raw":     "`" + value + "`",
+				"escaped": escapedNativeLiteral(value),
+			} {
+				t.Run(fmt.Sprintf("%s/value%d/%s", allowance.Path, i, name), func(t *testing.T) {
+					findings, err := CheckFiles(map[string][]byte{allowance.Path: []byte("package recorder\nvar externalValue = " + literal)}, cfg)
+					if err != nil || len(findings) != 0 {
+						t.Fatalf("exact decoded native control literal was not admitted: %#v, %v", findings, err)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestNativeControlLiteralsKeepOtherRefusals(t *testing.T) {
+	cfg, _ := checkedInNativeControlConfig(t)
+	productWord := string([]byte{119, 105, 115, 112})
+	for _, allowance := range []NativeControlAllowance{cfg.NativeRecordingLiterals, cfg.NativeViewStrings} {
+		for i, value := range allowance.Values {
+			assignment := "var externalValue = " + strconv.Quote(value)
+			for _, test := range []struct {
+				name, path, source string
+			}{
+				{"neighbor_path", strings.TrimSuffix(allowance.Path, ".go") + "_other.go", "package recorder\n" + assignment},
+				{"changed_value", allowance.Path, "package recorder\nvar externalValue = " + strconv.Quote(value+"_other")},
+				{"changed_escaped", allowance.Path, "package recorder\nvar externalValue = " + escapedNativeLiteral(value+"_other")},
+				{"comment", allowance.Path, "package recorder\n// " + productWord + " " + value},
+				{"identifier", allowance.Path, "package recorder\nvar " + productWord + " = 1\n" + assignment},
+				{"import", allowance.Path, "package recorder\nimport " + strconv.Quote(value) + "\n" + assignment},
+				{"escaped_import", allowance.Path, "package recorder\nimport " + escapedNativeLiteral(value) + "\n" + assignment},
+				{"structured_json", "spec/s1-b21-b24/native_testdata/protocol.json", "{\"value\":" + strconv.Quote(value) + ",\"other\":" + strconv.Quote(productWord) + "}"},
+			} {
+				t.Run(fmt.Sprintf("%s/value%d/%s", allowance.Path, i, test.name), func(t *testing.T) {
+					findings, err := CheckFiles(map[string][]byte{test.path: []byte(test.source)}, cfg)
+					if err != nil || len(findings) == 0 {
+						t.Fatalf("native control refusal was lost: %#v, %v", findings, err)
+					}
+				})
+			}
+		}
+	}
+	without := cfg
+	without.NativeRecordingLiterals = NativeControlAllowance{}
+	without.NativeViewStrings = NativeControlAllowance{}
+	for _, allowance := range []NativeControlAllowance{cfg.NativeRecordingLiterals, cfg.NativeViewStrings} {
+		for i, value := range allowance.Values {
+			source := []byte("package recorder\n// " + value)
+			before, beforeErr := CheckFiles(map[string][]byte{allowance.Path: source}, without)
+			after, afterErr := CheckFiles(map[string][]byte{allowance.Path: source}, cfg)
+			if beforeErr != nil || afterErr != nil || !reflect.DeepEqual(before, after) {
+				t.Fatalf("comment baseline changed for %s/value%d: before=%#v/%v after=%#v/%v", allowance.Path, i, before, beforeErr, after, afterErr)
+			}
+		}
+	}
+	for _, value := range cfg.NativeRecordingLiterals.Values {
+		if allowsNativeControlLiteral(nativeViewProtocolSource, value, cfg) {
+			continue
+		}
+		findings, err := CheckFiles(map[string][]byte{nativeViewProtocolSource: []byte("package recorder\nvar externalValue = " + strconv.Quote(value))}, cfg)
+		if err != nil || len(findings) == 0 {
+			t.Fatalf("recording-only literal leaked into the views allowance: %#v, %v", findings, err)
+		}
+	}
+}
+
+func TestNativeControlLiteralsPreserveOutsidePathBaseline(t *testing.T) {
+	cfg, _ := checkedInNativeControlConfig(t)
+	productValue := string([]byte{119, 105, 115, 112, 32, 111, 110, 108, 121})
+	without := cfg
+	without.NativeRecordingLiterals = NativeControlAllowance{}
+	without.NativeViewStrings = NativeControlAllowance{}
+	for _, path := range []string{
+		"other/existing.go",
+		"spec/s1-b21-b24/native_recording_other_test.go",
+		"spec/s1-b13-native/recording_test.go",
+		externalProtocolSource,
+	} {
+		files := map[string][]byte{path: []byte("package existing\nvar retained = " + escapedNativeLiteral(productValue))}
+		before, beforeErr := CheckFiles(files, without)
+		after, afterErr := CheckFiles(files, cfg)
+		if beforeErr != nil || afterErr != nil || !reflect.DeepEqual(before, after) {
+			t.Fatalf("allowance changed unrelated path %s: before=%#v/%v after=%#v/%v", path, before, beforeErr, after, afterErr)
+		}
+	}
+}
+
+func TestNativeControlLiteralConfigurationRejectsBroadening(t *testing.T) {
+	cfg, path := checkedInNativeControlConfig(t)
+	originalBytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := string(originalBytes)
+	for _, set := range []struct {
+		name, section string
+		allowance     NativeControlAllowance
+	}{
+		{"recording", "native_recording_literals", cfg.NativeRecordingLiterals},
+		{"views", "native_view_strings", cfg.NativeViewStrings},
+	} {
+		section := "[" + set.section + "]\npath = " + strconv.Quote(set.allowance.Path) + "\nvalues = ["
+		for i, value := range set.allowance.Values {
+			if i != 0 {
+				section += ", "
+			}
+			section += strconv.Quote(value)
+		}
+		section += "]"
+		if !strings.Contains(original, section) {
+			t.Fatalf("checked-in %s section was not found", set.name)
+		}
+		mutated := append([]string(nil), set.allowance.Values...)
+		mutated[0] += "_other"
+		duplicate := append([]string(nil), set.allowance.Values...)
+		duplicate[len(duplicate)-1] = duplicate[0]
+		line := func(values []string) string {
+			quoted := make([]string, 0, len(values))
+			for _, value := range values {
+				quoted = append(quoted, strconv.Quote(value))
+			}
+			return "values = [" + strings.Join(quoted, ", ") + "]"
+		}
+		for _, test := range []struct {
+			name, replacement string
+		}{
+			{"neighbor_path", strings.Replace(section, set.allowance.Path, strings.TrimSuffix(set.allowance.Path, ".go")+"_other.go", 1)},
+			{"wildcard_path", strings.Replace(section, set.allowance.Path, strings.TrimSuffix(set.allowance.Path, ".go")+"/*.go", 1)},
+			{"missing_path", strings.Replace(section, "path = "+strconv.Quote(set.allowance.Path)+"\n", "", 1)},
+			{"missing_values", strings.Replace(section, "\n"+line(set.allowance.Values), "", 1)},
+			{"missing_literal", strings.Replace(section, line(set.allowance.Values), line(set.allowance.Values[:len(set.allowance.Values)-1]), 1)},
+			{"duplicate_literal", strings.Replace(section, line(set.allowance.Values), line(duplicate), 1)},
+			{"extra_literal", strings.Replace(section, line(set.allowance.Values), line(append(append([]string(nil), set.allowance.Values...), "other")), 1)},
+			{"mutated_literal", strings.Replace(section, line(set.allowance.Values), line(mutated), 1)},
+			{"scalar_values", strings.Replace(section, line(set.allowance.Values), "values = "+strconv.Quote(set.allowance.Values[0]), 1)},
+			{"unknown_key", section + "\npattern = \"*\""},
+			{"duplicate_path", section + "\npath = " + strconv.Quote(set.allowance.Path)},
+			{"duplicate_values", section + "\n" + line(set.allowance.Values)},
+			{"duplicate_section", section + "\n" + section},
+		} {
+			t.Run(set.name+"/"+test.name, func(t *testing.T) {
+				file := filepath.Join(t.TempDir(), "lexicon.toml")
+				if err := os.WriteFile(file, []byte(strings.Replace(original, section, test.replacement, 1)), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := LoadConfig(file); err == nil {
+					t.Fatal("broadened or malformed native control configuration was accepted")
+				}
+			})
+		}
+	}
+}
+
 func TestCheckFilesBlocksTermsAndImports(t *testing.T) {
 	cfg := testConfig()
 	files := map[string][]byte{
