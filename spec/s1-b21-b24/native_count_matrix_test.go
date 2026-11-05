@@ -111,11 +111,12 @@ func (c *nativeB23Corpus) apply(label string, items ...any) {
 }
 
 // The cap and exchange corpora keep their exact canonical row counts and
-// independent 1,000-row public batches.  The pinned public server processes a
-// batch serially; sending those independent batches through a small bounded
-// pool keeps the full workload inside the canonical test timeout while still
-// exercising the real public endpoint for every row.  Responses are checked
-// only after all requests complete so one batch cannot hide another's result.
+// independent 1,000-row public batches. The pinned public server has one
+// mutation writer: overlapping batch requests produce its literal 503 busy
+// refusal. Send the independent batches serially so this fixture preserves the
+// full workload and observes each real endpoint response without retries or
+// backoff hiding a refusal. Responses are checked only after all requests
+// complete so one batch cannot hide another's result.
 func (c *nativeB23Corpus) applyBatches(batches []nativeB23Batch, workers int) {
 	c.t.Helper()
 	if len(batches) == 0 || workers < 1 {
@@ -323,7 +324,7 @@ func TestNativeB23CountMatrix(t *testing.T) {
 			}
 			batches = append(batches, nativeB23Batch{label: fmt.Sprintf("bulk-%05d", start), items: items})
 		}
-		c.applyBatches(batches, 4)
+		c.applyBatches(batches, 1)
 		before := c.census("cap-before")
 		if len(before["issues"].([]map[string]any)) != 20001 {
 			t.Fatal("native cap corpus is not exactly 20001 durable issues")
@@ -368,7 +369,7 @@ func TestNativeB23CountMatrix(t *testing.T) {
 			}
 			batches = append(batches, nativeB23Batch{label: fmt.Sprintf("bulk-%05d", start), items: items})
 		}
-		c.applyBatches(batches, 4)
+		c.applyBatches(batches, 1)
 		state := c.census("source-final")
 		if len(state["issues"].([]map[string]any)) != 20000 {
 			t.Fatal("separate supported source is not exactly 20000 rows")
