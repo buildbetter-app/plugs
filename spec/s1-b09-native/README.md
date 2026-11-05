@@ -31,6 +31,9 @@ precede both continuation writes after reopen. SQLite/PostgreSQL reopen actual
 stores; memory reacquires its lease on the same in-memory store.
 
 Each stage retains all physical driver SQL tables and exact SELECT commands.
+The raw restored image is retained before the real host startup
+`pipeline.BuildSourceIndexes` call; its separate census checks complete source
+images/coverage and exact conservation of all other state before either reopen.
 The conservation oracles compare those full row images, preserve unaffected
 rows and immutable history/receipts, and permit only the named write or lease
 transition. Store and PostgreSQL-container cleanup errors fail the test.

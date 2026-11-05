@@ -173,10 +173,19 @@ func runB09Replay(t *testing.T, engine string, data []byte, inspection converter
 		t.Fatalf("%s restore metadata lost source identity/floor: %+v", engine, report.Restored)
 	}
 	target.receipts[profile.Method] = profile.IdempotencyKey
+	rawRestore := target.stage("restore-before-index-activation", sourceIDs, nil)
+	assertB09Source(t, archive, profile, inspection.DerivedSHA256, restoreStarted, restoreFinished, rawRestore, false)
+	// Hosts activate populated-store source indexes after restore and before
+	// serving requests. Retain the actual unbuilt image as well as this real
+	// startup operation; activation may change only the eight index tables.
+	if err := pipeline.BuildSourceIndexes(ctx, target.store, target.lease); err != nil {
+		t.Fatalf("%s restored-store startup index activation: %v", engine, err)
+	}
 	writer, domain := target.bind()
 	_ = writer
 	initial := target.stage("restore", sourceIDs, nil)
-	assertB09Source(t, archive, profile, inspection.DerivedSHA256, restoreStarted, restoreFinished, initial)
+	assertB09Source(t, archive, profile, inspection.DerivedSHA256, restoreStarted, restoreFinished, initial, true)
+	assertB09IndexActivation(t, rawRestore, initial)
 	if !reflect.DeepEqual(initial.BeadIDs, sourceIDs) {
 		t.Fatalf("%s restored bead IDs differ from same-run source: got=%v want=%v", engine, initial.BeadIDs, sourceIDs)
 	}
@@ -282,12 +291,14 @@ func runB09Replay(t *testing.T, engine string, data []byte, inspection converter
 	if err := target.finish(); err != nil {
 		t.Fatalf("%s final lease/store cleanup: %v", engine, err)
 	}
-	return b09ReplayReceipt{
+	receipt := b09ReplayReceipt{
 		Engine: engine, SourceStoreID: inspection.SourceStoreID, ArchiveSHA256: inspection.ArchiveSHA256, DerivedSHA256: inspection.DerivedSHA256,
 		SourceIDs: sourceIDs, NewIDs: []string{firstNew, secondNew}, RestoreHead: initial.Meta.Head.String(), CloseRevision: closeCommit.Revision.String(),
-		CompactionRevision: compactRevision.String(), RevertRevision: reverted.Commit.Revision.String(), Stages: []b09ReplayStage{initial, firstReopen, postCreate, closed, compacted, revertedImage, secondReopen, final},
-		Operations: []string{"converterroundtrip.InspectImport", "converterroundtrip.RestoreImportWithLease(history=snapshot)", "service.Close", "service.CompactWithOutcome", "service.RevertCompactionWithOutcome", "service.HistoryGet(current and preimage)", "persistent close/reopen", "service.Create"},
+		CompactionRevision: compactRevision.String(), RevertRevision: reverted.Commit.Revision.String(), Stages: []b09ReplayStage{rawRestore, initial, firstReopen, postCreate, closed, compacted, revertedImage, secondReopen, final},
+		Operations: []string{"converterroundtrip.InspectImport", "converterroundtrip.RestoreImportWithLease(history=snapshot)", "pipeline.BuildSourceIndexes", "service.Close", "service.CompactWithOutcome", "service.RevertCompactionWithOutcome", "service.HistoryGet(current and preimage)", "persistent close/reopen", "service.Create"},
 	}
+	(&recorder{t: t}).writeJSON(filepath.Join(output, "replay-complete.json"), receipt)
+	return receipt
 }
 
 var b09Principal = model.PrincipalRef{Kind: "user", ID: "b09-native-review"}

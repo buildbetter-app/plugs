@@ -53,7 +53,7 @@ func b09Equal(t *testing.T, label string, want, got any) {
 	}
 }
 
-func assertB09Source(t *testing.T, archive *dumpformat.Archive, profile driver.RestoreImportProfile, derivedDigest string, started, finished time.Time, stage b09ReplayStage) {
+func assertB09Source(t *testing.T, archive *dumpformat.Archive, profile driver.RestoreImportProfile, derivedDigest string, started, finished time.Time, stage b09ReplayStage, indexesBuilt bool) {
 	t.Helper()
 	wantRecords := map[string]driver.Record{}
 	add := func(id, kind string, body any) {
@@ -191,7 +191,7 @@ func assertB09Source(t *testing.T, archive *dumpformat.Archive, profile driver.R
 		b09Equal(t, "complete initial snapshot version envelope "+key, driver.Version{Ref: want.Ref, Revision: want.Revision, Base: true, CreatedAt: stamp, Principal: profile.Admission.Actor}, version)
 	}
 	if stage.SQL != nil {
-		assertB09InitialSQL(t, stage, wantRecords)
+		assertB09InitialSQL(t, stage, wantRecords, indexesBuilt)
 	}
 }
 
@@ -541,13 +541,13 @@ func (r *b09ReplayTarget) expectedVersionRef(id string, creating bool) model.Ref
 	return model.RefByID(id, model.Natural64(0))
 }
 
-func assertB09InitialSQL(t *testing.T, stage b09ReplayStage, want map[string]driver.Record) {
+func assertB09InitialSQL(t *testing.T, stage b09ReplayStage, want map[string]driver.Record, indexesBuilt bool) {
 	t.Helper()
 	for _, name := range []string{"records", "versions", "hierarchy_source_current", "hierarchy_source_history", "graph_link_source_current", "graph_link_source_history"} {
 		table := stage.SQL.Tables[name]
 		remaining := map[string]driver.Record{}
 		for key, record := range want {
-			if name == "records" || name == "versions" || record.Kind == "bead" {
+			if name == "records" || name == "versions" || indexesBuilt && record.Kind == "bead" {
 				remaining[key] = record
 			}
 		}
@@ -576,6 +576,65 @@ func assertB09InitialSQL(t *testing.T, stage b09ReplayStage, want map[string]dri
 		}
 		if len(remaining) != 0 {
 			t.Fatalf("initial physical %s omitted expected identities: %v", name, remaining)
+		}
+	}
+	// The admitted source corpus has no graph links. Before startup no source
+	// coverage is certified; afterward both domains cover exactly restore Head.
+	for _, name := range []string{"graph_link_current", "graph_link_history", "hierarchy_index_coverage", "graph_link_index_coverage"} {
+		table := stage.SQL.Tables[name]
+		if !indexesBuilt || name == "graph_link_current" || name == "graph_link_history" {
+			if len(table.Rows) != 0 {
+				t.Fatalf("unexpected initial %s rows before/after explicit startup", name)
+			}
+			continue
+		}
+		if len(table.Rows) != 1 || len(table.Columns) != 6 {
+			t.Fatalf("startup %s must have one complete coverage marker", name)
+		}
+		row := table.Rows[0]
+		for column, want := range map[string]string{"incarnation": stage.Meta.Incarnation, "state": "ready"} {
+			if got := b09SQLText(t, b09SQLColumn(t, table, row, column)); got != want {
+				t.Fatalf("startup %s %s want=%q got=%q", name, column, want, got)
+			}
+		}
+		for column, want := range map[string]uint64{"branch": 0, "format": 1, "built_from": mustB09Revision(t, stage.Meta.Head), "certified_through": mustB09Revision(t, stage.Meta.Head)} {
+			if got := b09SQLNumber(t, b09SQLColumn(t, table, row, column)); got != want {
+				t.Fatalf("startup %s %s want=%d got=%d", name, column, want, got)
+			}
+		}
+	}
+}
+
+func assertB09IndexActivation(t *testing.T, before, after b09ReplayStage) {
+	t.Helper()
+	prior, current := before, after
+	prior.Name, current.Name = "", ""
+	prior.SQL, current.SQL = nil, nil
+	b09Equal(t, "startup preserves every logical/allocator/history/receipt/lease field", prior, current)
+	if before.SQL == nil {
+		if after.SQL != nil {
+			t.Fatal("startup added an unexpected SQL engine")
+		}
+		return
+	}
+	if after.SQL == nil || before.SQL.Engine != after.SQL.Engine || len(before.SQL.Tables) != len(after.SQL.Tables) {
+		t.Fatal("startup changed the physical engine/table set")
+	}
+	for name, old := range before.SQL.Tables {
+		next, ok := after.SQL.Tables[name]
+		if !ok {
+			t.Fatalf("startup lost physical table %s", name)
+		}
+		b09Equal(t, "startup preserves physical schema "+name, old.Columns, next.Columns)
+		switch name {
+		case "hierarchy_source_current", "hierarchy_source_history", "graph_link_source_current", "graph_link_source_history", "graph_link_current", "graph_link_history", "hierarchy_index_coverage", "graph_link_index_coverage":
+			if len(old.Rows) != 0 {
+				t.Fatalf("raw restore unexpectedly prebuilt %s", name)
+			}
+			// Complete post-startup rows and marker payloads are independently
+			// checked against archive-derived records by assertB09Source.
+		default:
+			b09Equal(t, "startup preserves every unrelated SQL row "+name, old, next)
 		}
 	}
 }
