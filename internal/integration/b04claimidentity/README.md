@@ -53,8 +53,8 @@ winners, and requires the empty-front H+1 terminal receipt plus quiet replay
 and SQL reopen. It is not native archive import or imported protected
 authority. The present exporter refusal keeps this replay and its memory
 200-agent contention case unreachable. Full imported state/replay, native
-pool/alias/wisp behavior, held-candidate race traversal, SQL contention and
-full-card qualification remain unproved.
+pool and alias handling, ephemeral record behavior, held-candidate race
+traversal, SQL contention and full-card qualification remain unproved.
 
 Earlier setup/source/product REDs and bounded fixture results remain separate.
 Full S1 stays `0/28`; adopted native admission authorizes a fresh preparation,
