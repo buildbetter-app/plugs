@@ -78,6 +78,9 @@ type captureReceipt struct {
 	Label              string            `json:"label"`
 	InventoryPath      string            `json:"inventory_path"`
 	InventorySHA256    string            `json:"inventory_sha256"`
+	SourceConfigPath   string            `json:"source_config_path"`
+	SourceConfigBytes  string            `json:"source_config_bytes"`
+	SourceConfigSHA256 string            `json:"source_config_sha256"`
 	Sidecars           map[string]string `json:"sidecar_sha256"`
 	NormalizedSidecars map[string]string `json:"normalized_sidecar_sha256"`
 	ArchivePath        string            `json:"archive_path"`
@@ -146,6 +149,7 @@ func TestRecordNativeB09(t *testing.T) {
 	maxState := r.capture(adaptive, "adaptive-max-ten", 3)
 	r.requireIDs(maxState, first, second, maximum)
 	r.requireListMatches(adaptive, maxState)
+	r.replayNative(maxState)
 	if len(firstState.BeadIDs) != 1 || len(secondState.BeadIDs) != 2 {
 		t.Fatal("adaptive archive did not conserve the earlier native issues")
 	}
@@ -484,11 +488,11 @@ func (r *recorder) writeNativeConfig(w workspace) {
 		r.t.Fatalf("write native YAML configuration: %v", err)
 	}
 	r.commands = append(r.commands, commandReceipt{
-		Label: "" + w.Name + "-write-native-yaml",
-		Argv:  []string{"native-source-write", path}, Directory: w.Dir,
+		Label: w.Name + "-write-native-yaml",
+		Argv:  []string{"source-file", "write", "--path", path, "--bytes", string(data)}, Directory: w.Dir,
 		Environment: append([]string(nil), w.Env...), Exit: 0,
 		StdoutSHA256: hashBytes(nil), StderrSHA256: hashBytes(nil),
-		ResultType: "file-write", Result: map[string]any{"path": path, "sha256": hashBytes(data), "size": len(data)},
+		ResultType: "file-write", Result: map[string]any{"path": path, "bytes": string(data), "sha256": hashBytes(data), "size": len(data)},
 	})
 	r.writeJSON(filepath.Join(r.root, "commands.json"), r.commands)
 }
@@ -624,9 +628,15 @@ func (r *recorder) capture(w workspace, label string, wantBeads int) captureRece
 			r.t.Fatal("native archive contains a repeated issue ID")
 		}
 	}
+	configPath := filepath.Join(w.Dir, ".beads", "config.yaml")
+	configBytes, err := os.ReadFile(configPath)
+	if err != nil || len(configBytes) == 0 {
+		r.t.Fatalf("native source YAML config is not retained at capture %s: %v", label, err)
+	}
 	filesystemPath, filesystemSHA := r.snapshot(w, root)
 	receipt := captureReceipt{
 		Label: label, InventoryPath: inventoryPath, InventorySHA256: hashBytes(inventoryBytes), Sidecars: sidecars, NormalizedSidecars: normalizedSidecars,
+		SourceConfigPath: configPath, SourceConfigBytes: string(configBytes), SourceConfigSHA256: hashBytes(configBytes),
 		ArchivePath: archivePath, ArchiveSHA256: archive.SHA256(), ArchiveStateSHA: r.archiveStateSHA(archive),
 		FilesystemPath: filesystemPath, FilesystemSHA: filesystemSHA, BeadIDs: ids,
 	}
