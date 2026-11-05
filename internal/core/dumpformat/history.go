@@ -383,8 +383,11 @@ func validateHistoryScope(a *Archive, scoped ProjectSourceHistory, seenCommits m
 			return fail("non-contiguous")
 		}
 	} else {
-		if r.Complete || validateHistoryImage(r.Baseline, a.manifest) != nil {
-			return fail("unmappable")
+		if r.Complete {
+			return fail("unmappable: baseline marked complete")
+		}
+		if err := validateHistoryImage(r.Baseline, a.manifest); err != nil {
+			return fail("unmappable: baseline: " + err.Error())
 		}
 		next := uint64(1)
 		for _, gap := range r.Gaps {
@@ -402,11 +405,11 @@ func validateHistoryScope(a *Archive, scoped ProjectSourceHistory, seenCommits m
 		if frame.Sequence != r.First+uint64(i) || frame.CommitID != scoped.Commits[frame.Sequence-1].ID {
 			return fail("non-contiguous")
 		}
-		if validateHistoryImage(frame.Records, a.manifest) != nil {
-			return fail("unmappable")
+		if err := validateHistoryImage(frame.Records, a.manifest); err != nil {
+			return fail("unmappable: frame: " + err.Error())
 		}
 		if !extendsEvents(previous, frame.Events) {
-			return fail("unmappable")
+			return fail("unmappable: event image regressed")
 		}
 		previous = frame.Events
 	}
@@ -419,13 +422,13 @@ func validateHistoryScope(a *Archive, scoped ProjectSourceHistory, seenCommits m
 		}
 	}
 	if len(r.Frames) == 0 {
-		return fail("unmappable")
+		return fail("unmappable: no frames")
 	}
 	if !sameRecordImage(current, r.Frames[len(r.Frames)-1].Records) {
-		return fail("unmappable")
+		return fail("unmappable: current record image")
 	}
 	if !sameEventImage(scoped.Events, previous) {
-		return fail("unmappable")
+		return fail("unmappable: current event image")
 	}
 	return nil
 }
