@@ -1,0 +1,286 @@
+name: Plug CP7 Product Latency
+
+on:
+  schedule:
+    - cron: '41 5 * * *'
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Exact commit to measure (defaults to the workflow ref)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: plug-cp7-latency-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  product-baseline:
+    name: Real CP7 baseline (${{ matrix.engine }})
+    runs-on: runs-on=${{ github.run_id }}/runner=bb-x64-16
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [sqlite, postgres]
+    env:
+      CP7_ENGINE: ${{ matrix.engine }}
+      CP7_REVISION: ${{ github.event.inputs.revision || github.sha }}
+    steps:
+      - name: Set up RunsOn
+        uses: runs-on/action@284bff869d4a825f778ac7c38e50f1e31ef198fd # v2.6.0
+
+      - name: Checkout exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          ref: ${{ github.event.inputs.revision || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify checkout and declare selection scope
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/cp7-evidence"
+          [[ "$CP7_REVISION" =~ ^[0-9a-fA-F]{40}$ ]] || {
+            echo "revision must be a full 40-character commit SHA" >&2
+            exit 1
+          }
+          python3 - <<'PY'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+
+          head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip()
+          expected = os.environ["CP7_REVISION"].lower()
+          if head != expected:
+              raise SystemExit(f"checkout differs from requested revision: {head} != {expected}")
+          target_dir = "internal/integration/cp7latency"
+          workload = Path(target_dir, "workload.json")
+          report = {
+              "schema": "plug-real-cp7-manual-selection/v1",
+              "head": head,
+              "tree": tree,
+              "requested_revision": expected,
+              "checkout_verified": True,
+              "engine": os.environ["CP7_ENGINE"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "event": os.environ["GITHUB_EVENT_NAME"],
+              "workload_sha256": hashlib.sha256(workload.read_bytes()).hexdigest(),
+              "targets": [
+                  f"//{target_dir}:cp7_latency_{os.environ['CP7_ENGINE']}_test",
+                  f"//{target_dir}:cp7_dense_semantics_{os.environ['CP7_ENGINE']}_test",
+                  "//tools/lexicon:lexicon_gate",
+              ],
+              "ordinary_controls": [
+                  "//internal/integration/cp7latency:cp7_correctness_test",
+                  "//internal/integration/cp7latency:cp7_dense_semantics_test",
+              ],
+              "scope": "explicit manual 100k CP7 latency and dense semantic controls; ordinary semantic/correctness controls remain in //...",
+              "gate": "cap, deadline and SLO misses remain literal RED; transport and real-host SLO are unqualified",
+          }
+          Path(os.environ["RUNNER_TEMP"], "cp7-evidence", "run.json").write_text(json.dumps(report, indent=2) + "\n")
+          PY
+
+      - name: Restore verified Bazel repository cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/cp7-bazel-repository-cache
+          key: plug-bazel-repository-${{ runner.os }}-${{ hashFiles('.bazelversion', 'MODULE.bazel', 'MODULE.bazel.lock') }}
+
+      - name: Install pinned Bazel toolchain
+        env:
+          BAZELISK_SHA256: 5a408715e932c0250d28bd84555f12edbf70117de42f9181691c736eacc4a992
+          BAZEL_SHA256: d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8
+        run: |
+          set -euo pipefail
+          test "$(tr -d '[:space:]' < .bazelversion)" = 9.3.0
+          mkdir -p "$RUNNER_TEMP/cp7-bazelisk" "$RUNNER_TEMP/cp7-bazel-repository-cache"
+          curl --fail --silent --show-error --location --retry 3 --max-time 120 \
+            --output "$RUNNER_TEMP/cp7-bazel" \
+            https://github.com/bazelbuild/bazelisk/releases/download/v1.29.0/bazelisk-linux-amd64
+          printf '%s  %s\n' "$BAZELISK_SHA256" "$RUNNER_TEMP/cp7-bazel" | sha256sum --check --status
+          chmod 755 "$RUNNER_TEMP/cp7-bazel"
+          {
+            echo "BAZELISK_HOME=$RUNNER_TEMP/cp7-bazelisk"
+            echo "BAZELISK_VERIFY_SHA256=$BAZEL_SHA256"
+          } >> "$GITHUB_ENV"
+          cat > "$RUNNER_TEMP/cp7.bazelrc" <<EOF
+          common --enable_bzlmod
+          common --color=no
+          common --repository_cache=$RUNNER_TEMP/cp7-bazel-repository-cache
+          common --remote_cache=
+          common --remote_executor=
+          common --repo_contents_cache=
+          test --nocache_test_results
+          test --test_output=all
+          test --test_timeout=900,900,900,9000
+          EOF
+          "$RUNNER_TEMP/cp7-bazel" --nosystem_rc --nohome_rc --noworkspace_rc \
+            --bazelrc="$RUNNER_TEMP/cp7.bazelrc" --version | tee "$RUNNER_TEMP/cp7-evidence/bazel-version.log"
+
+      - name: Resolve and bind explicit CP7 targets
+        env:
+          BAZEL_BIN: ${{ runner.temp }}/cp7-bazel
+          BAZEL_RC: ${{ runner.temp }}/cp7.bazelrc
+        run: |
+          set -euo pipefail
+          target_dir="$RUNNER_TEMP/cp7-evidence"
+          latency="//internal/integration/cp7latency:cp7_latency_${CP7_ENGINE}_test"
+          dense="//internal/integration/cp7latency:cp7_dense_semantics_${CP7_ENGINE}_test"
+          lexicon="//tools/lexicon:lexicon_gate"
+          printf '%s\n' "$latency" "$dense" "$lexicon" | sort -u > "$target_dir/requested-targets.txt"
+          mapfile -t requested < "$target_dir/requested-targets.txt"
+          expression="set(${requested[*]})"
+          "$RUNNER_TEMP/cp7-bazel" --nosystem_rc --nohome_rc --noworkspace_rc \
+            --bazelrc="$RUNNER_TEMP/cp7.bazelrc" query "$expression" \
+            --lockfile_mode=error --output=label | sort -u > "$target_dir/resolved-targets.txt"
+          diff -u "$target_dir/requested-targets.txt" "$target_dir/resolved-targets.txt"
+          : > "$target_dir/manual-tags.txt"
+          for label in "$latency" "$dense"; do
+            tags="$($RUNNER_TEMP/cp7-bazel --nosystem_rc --nohome_rc --noworkspace_rc \
+              --bazelrc="$RUNNER_TEMP/cp7.bazelrc" query "attr(tags, 'manual', $label)" \
+              --lockfile_mode=error --output=label)"
+            [[ "$tags" == "$label" ]] || {
+              echo "manual target lost its tag: $label -> $tags" >&2
+              exit 1
+            }
+            printf '%s\tmanual\n' "$label" >> "$target_dir/manual-tags.txt"
+          done
+          tags="$($RUNNER_TEMP/cp7-bazel --nosystem_rc --nohome_rc --noworkspace_rc \
+            --bazelrc="$RUNNER_TEMP/cp7.bazelrc" query "attr(tags, 'manual', $lexicon)" \
+            --lockfile_mode=error --output=label)"
+          [[ -z "$tags" ]] || { echo "lexicon unexpectedly became manual: $tags" >&2; exit 1; }
+          printf '%s\tordinary\n' "$lexicon" >> "$target_dir/manual-tags.txt"
+          {
+            echo "engine=$CP7_ENGINE"
+            echo "ordinary_automatic_targets=//internal/integration/cp7latency:cp7_correctness_test, //internal/integration/cp7latency:cp7_dense_semantics_test"
+            echo "manual_targets=$latency, $dense"
+            echo "required_cases=9 latency CP7_CASE, 216 latency CP7_SAMPLE, 2 dense semantic markers"
+          } > "$target_dir/selection.txt"
+
+      - name: Execute every CP7 fraction, operation and dense control
+        run: |
+          set -euo pipefail
+          latency="//internal/integration/cp7latency:cp7_latency_${CP7_ENGINE}_test"
+          dense="//internal/integration/cp7latency:cp7_dense_semantics_${CP7_ENGINE}_test"
+          args=(test "$latency" "$dense" //tools/lexicon:lexicon_gate
+            --lockfile_mode=error --jobs=2 --local_test_jobs=1 --local_resources=memory=8192
+            --nocache_test_results --test_output=all --test_arg=-test.v
+            --test_timeout=900,900,900,9000
+            "--test_env=PLUG_SOURCE_MODULE_ROOT=$GITHUB_WORKSPACE"
+            "--build_event_json_file=$RUNNER_TEMP/cp7-evidence/raw.bep.json")
+          printf '%q ' "$RUNNER_TEMP/cp7-bazel" --nosystem_rc --nohome_rc --noworkspace_rc \
+            --bazelrc="$RUNNER_TEMP/cp7.bazelrc" "${args[@]}" > "$RUNNER_TEMP/cp7-evidence/command.txt"
+          printf '\n' >> "$RUNNER_TEMP/cp7-evidence/command.txt"
+          set +e
+          "$RUNNER_TEMP/cp7-bazel" --nosystem_rc --nohome_rc --noworkspace_rc \
+            --bazelrc="$RUNNER_TEMP/cp7.bazelrc" "${args[@]}" \
+            2>&1 | tee "$RUNNER_TEMP/cp7-evidence/bazel.log"
+          rc=${PIPESTATUS[0]}
+          printf '%s\n' "$rc" > "$RUNNER_TEMP/cp7-evidence/exit_code"
+          exit "$rc"
+
+      - name: Preserve raw measurements and XML evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          destination="$RUNNER_TEMP/cp7-evidence"
+          mkdir -p "$destination/test-results"
+          for name in "cp7_latency_${CP7_ENGINE}_test" "cp7_dense_semantics_${CP7_ENGINE}_test"; do
+            source="bazel-testlogs/internal/integration/cp7latency/$name"
+            if [[ -d "$source" ]]; then
+              cp -R -L "$source" "$destination/test-results/$name"
+            fi
+          done
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          destination = Path(os.environ["RUNNER_TEMP"], "cp7-evidence")
+          engine = os.environ["CP7_ENGINE"]
+          latency = destination / "test-results" / f"cp7_latency_{engine}_test"
+          dense = destination / "test-results" / f"cp7_dense_semantics_{engine}_test"
+
+          def markers(path, kind):
+              records = []
+              if path.exists():
+                  for line in path.read_text(errors="replace").splitlines():
+                      marker = kind + " "
+                      if marker in line:
+                          records.append(json.loads(line.split(marker, 1)[1]))
+              return records
+
+          def xml_counts(path):
+              if not path.exists():
+                  return {"present": False, "cases": 0, "failures": 0, "errors": 0, "skipped": 0}
+              root = ET.parse(path).getroot()
+              cases = list(root.iter("testcase"))
+              return {
+                  "present": True,
+                  "cases": len(cases),
+                  "failures": sum(x.find("failure") is not None for x in cases),
+                  "errors": sum(x.find("error") is not None for x in cases),
+                  "skipped": sum(x.find("skipped") is not None for x in cases),
+              }
+
+          latency_cases = markers(latency / "test.log", "CP7_CASE")
+          latency_samples = markers(latency / "test.log", "CP7_SAMPLE")
+          dense_ordinary = markers(dense / "test.log", "CP7_DENSE_ORDINARY")
+          dense_summary = markers(dense / "test.log", "CP7_DENSE_TYPE_SUMMARY")
+          accounting = {
+              "schema": "plug-real-cp7-manual-accounting/v1",
+              "engine": engine,
+              "latency": {
+                  "raw_cases": len(latency_cases),
+                  "raw_samples": len(latency_samples),
+                  "expected_cases": 9,
+                  "expected_samples": 216,
+                  "xml": xml_counts(latency / "test.xml"),
+                  "cases": latency_cases,
+              },
+              "dense": {
+                  "raw_ordinary_markers": len(dense_ordinary),
+                  "raw_summary_markers": len(dense_summary),
+                  "expected_ordinary_markers": 1,
+                  "expected_summary_markers": 1,
+                  "xml": xml_counts(dense / "test.xml"),
+              },
+              "meaning": "raw CP7 markers and outer XML are retained separately; nested Go observation failures, if any, remain literal child evidence",
+          }
+          (destination / "case-accounting.json").write_text(json.dumps(accounting, indent=2) + "\n")
+          exit_code = (destination / "exit_code").read_text().strip() if (destination / "exit_code").exists() else "unknown"
+          if exit_code == "0":
+              if len(latency_cases) != 9 or len(latency_samples) != 216:
+                  raise SystemExit("successful latency target did not emit the declared 9/216 matrix")
+              if len(dense_ordinary) != 1 or len(dense_summary) != 1:
+                  raise SystemExit("successful dense target did not emit both semantic controls")
+              for name in ("latency", "dense"):
+                  xml = accounting[name]["xml"]
+                  if not xml["present"] or xml["failures"] or xml["errors"] or xml["skipped"]:
+                      raise SystemExit(f"successful {name} target lacks passing outer XML accounting")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write(
+                  f"CP7 {engine}: raw latency {len(latency_cases)}/9 cases and "
+                  f"{len(latency_samples)}/216 samples; dense markers "
+                  f"{len(dense_ordinary)}/1 + {len(dense_summary)}/1. "
+                  f"Outer XML is retained in the artifact; cap/deadline/SLO REDs remain literal.\n"
+              )
+          PY
+          if [[ -x "$RUNNER_TEMP/cp7-bazel" ]]; then
+            "$RUNNER_TEMP/cp7-bazel" --nosystem_rc --nohome_rc --noworkspace_rc \
+              --bazelrc="$RUNNER_TEMP/cp7.bazelrc" shutdown
+          fi
+
+      - name: Upload CP7 evidence including RED measurements
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: plug-cp7-latency-${{ matrix.engine }}-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 30
+          if-no-files-found: error
+          path: ${{ runner.temp }}/cp7-evidence
