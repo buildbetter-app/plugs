@@ -742,8 +742,19 @@ func (r *b09ReplayTarget) expectedSQLStates(want driver.Record, creating bool) m
 	for _, sentinel := range []driver.Sentinel{driver.Sentinel("bead/" + want.Ref.ID), driver.SentinelGraphBlocking} {
 		add(driver.LockState{Key: driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel}, Present: true})
 	}
-	add(driver.LockState{Key: pipeline.GraphValidityLockKey(), Present: true})
+	// RestoreImport does not publish a semantic graph certificate, and startup
+	// BuildSourceIndexes publishes only membership coverage. Both parentless
+	// creates and the field-only close/compact/revert preserve the graph rather
+	// than validate it completely (prepare.graph), so this sequence never gains
+	// GraphValidityReadFact. Its lock can exist without a state-history row.
 	if creating {
+		// Random allocation stages even an unchanged allocator inventory;
+		// both SQL drivers publish its typed fact in the same transaction.
+		key, err := driver.AllocatorLock("b09")
+		if err != nil {
+			t.Fatal(err)
+		}
+		add(driver.LockState{Key: key, Present: true})
 		add(driver.LockState{Key: driver.LockKey{Kind: driver.LockSentinel, Sentinel: driver.Sentinel("closure/" + want.Ref.ID)}, Present: true})
 		row, err := pipeline.AncestorRow(want.Ref.ID, want.Ref.ID, 0)
 		if err != nil {
@@ -794,6 +805,9 @@ func (r *b09ReplayTarget) assertSQLMutation(before, after b09ReplayStage, id, op
 		t.Fatal(err)
 	}
 	wantStates := r.expectedSQLStates(want, creating)
+	for key := range wantStates {
+		keys[key] = true
+	}
 	for name, old := range before.SQL.Tables {
 		next, ok := after.SQL.Tables[name]
 		if !ok {
