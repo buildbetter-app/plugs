@@ -55,7 +55,7 @@ func checkCompiledSummaryPlan(t *testing.T, f *fixture, plans []driver.Selection
 			return
 		}
 	}
-	t.Fatal("storage plan lacks the published canonical facts witness")
+	t.Fatal("storage plan lacks the published canonical facts record")
 }
 
 func TestCP7CompiledSummaryUsesPublishedAuthorityAfterRecompose(t *testing.T) {

@@ -136,7 +136,7 @@ func TestQueueProjectionCoverageAcrossReadyRankPublication(t *testing.T) {
 				}
 				row := states[0].Derived.Clone()
 				row.Key, row.Index.Row = rankKey, newKey
-				move, h := beginTest(t, s, lease, driver.LockKey{Kind: driver.LockDerived, Derived: &oldKey}, driver.LockKey{Kind: driver.LockDerived, Derived: &newKey})
+				move, h := beginTest(t, s, lease, testLock(record.Ref), driver.LockKey{Kind: driver.LockDerived, Derived: &oldKey}, driver.LockKey{Kind: driver.LockDerived, Derived: &newKey})
 				if err := move.(driver.SelectionIndexWriter).PutSelectionDerived(ctx, driver.DerivedSortKey, []driver.DerivedRow{{Key: oldKey.Key}}, []driver.DerivedRow{row}); err != nil {
 					t.Fatal(err)
 				}
