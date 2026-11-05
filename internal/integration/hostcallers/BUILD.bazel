@@ -1,0 +1,20 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "hostcallers_test",
+    size = "medium",
+    srcs = ["fixture_test.go"],
+    args = ["-test.v"],
+    data = ["//tools/hostcallers:fixture_sources"],
+    deps = [
+        "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/core/viewops",
+        "//internal/server/rpc",
+        "//internal/server/viewrpc",
+        "//internal/storage/driver",
+        "//internal/storage/sqlite",
+    ],
+)
