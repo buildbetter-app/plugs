@@ -1368,6 +1368,7 @@ spec/s1-b09-b12/compaction/publication_test.go
 spec/s1-b09-b12/compaction/selection_test.go
 spec/s1-b09-b12/extract_proxied_reference_packet.py
 spec/s1-b09-b12/extract_reference_packet.py
+spec/s1-b09-b12/postgres_fixture_test.go
 spec/s1-b09-b12/projection.py
 spec/s1-b09-b12/provenance.json
 spec/s1-b09-b12/proxied_capture_harness_test.go
