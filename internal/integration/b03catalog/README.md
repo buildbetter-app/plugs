@@ -11,6 +11,12 @@ covered separately across memory, SQLite and PostgreSQL; compiler tests,
 fixture presence and inherited/base PASS do not count as runtime or full-card
 qualification.
 
+Full B03 additionally requires this author's main-based accepted-artifact
+preparation, four matching physical canonical exports with complete command
+and SQL evidence, actual memory/SQLite/PostgreSQL replay, and independent
+different-ID review. The native producer dependency recorded below keeps that
+qualification blocked.
+
 Scope = B03's installed catalog boundary, configured startup/source selection,
 catalog RPC wiring and the routed key-continuity guard in
 `internal/core/ontologyops/plan.go`, plus the direct lifecycle timestamp
@@ -138,7 +144,7 @@ the archived testlogs SHA256 is
 `e1b6ba2c61a74eda174ad2467c60e23ffab7a7e1d67fccffb19454080726d7d5`.
 The independent reviewer confirmed all four real roots retained
 `awaiting_review` / `delivery`, all before/after SQL bytes and rows matched,
-and all 316 command streams were hash-bound. The recorder's compact-JSON
+and all 316 commands / 632 stdout+stderr streams were hash-bound. The recorder's compact-JSON
 substring check was a false negative; typed decoding replaces it without
 changing this RED receipt.
 
@@ -150,12 +156,18 @@ The existing producer-owned capability route is controller bundle `2f2/564`.
 No further native run is authorized against the unchanged c8eb producer.
 Qualification remains **BLOCKED; paired replay AUTHORED_NOT_RUN/NOT_RUN**.
 
-The downloaded native0005 receipt contains `prepared-artifact-binding.json`
-but lacks workflow `public-bundle-helper-binding.txt` and `public-bundle.json`;
-accepted-preparation evidence is therefore incomplete. Future authorized runs
-must retain those exact same-run files from the workflow's fixed evidence
-directory, verifying helper identity and the actual manifest/executable/ZIP
-tuple. No new preparation or native result is inferred from that source change.
+The native0005 workflow preparation files were retained under its existing
+`.artifact/` directory; the wrapper copied only selected evidence files to the
+receipt root. `public-bundle-helper-binding.txt` has SHA256
+`edf10d53aca4e853c11132172543733574c7c3d91f61f0b6fb870a3e8a018b5f`
+(251 bytes), and `public-bundle.json` has SHA256
+`0c6d19f3eec0bb1044a8f4765ed77edbfd18ef891ff652edbfab6e29f914f3b1`
+(1,431 bytes). They bind the trusted helper, accepted R418 tuple, ZIP,
+manifest, canonical bundle and executable to this same native attempt. This
+local discovery required no API, collector change, new preparation or native
+execution, and does not alter the canonical-export RED. Future authorized runs
+also retain these exact files inside the test's own evidence directory and
+verify the helper and actual manifest/executable/ZIP tuple.
 
 Preserve native0004 `41946520562` (faff72ad prefix/setup and census-path defects
 plus producer refusal), historical ordinary whole RED `41901144448`

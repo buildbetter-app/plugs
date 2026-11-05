@@ -968,6 +968,15 @@ func replayB03Archive(t *testing.T, root, id, rootID, path string, input b03Nati
 	// manifest supplies expected values, never a replacement ontology fixture.
 	document := migration.Document()
 	project := archive.Manifest().Projects[0].Prefix
+	var nativeRoot dumpformat.Record
+	for _, row := range archive.Records("bead") {
+		if row.ID == rootID && row.Project == project {
+			nativeRoot = row
+		}
+	}
+	if nativeRoot.ID == "" {
+		t.Fatal("validated archive omitted its actual native root")
+	}
 	profile := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "b03-native-reviewer"}, Authority: "restore-admin", AdmissionDigest: b03Hash([]byte("s1-b03-native-admission"))}, SourceStoreID: inspection.SourceStoreID, Method: "offline.restore.import", IdempotencyKey: "s1-b03-native-" + id, ArchiveDigest: inspection.ArchiveSHA256, DerivedDigest: inspection.DerivedSHA256, HistoryMode: driver.RestoreHistoryModeSnapshot}
 	replayRoot := filepath.Join(root, id, "replay")
 	if err := os.MkdirAll(replayRoot, 0o700); err != nil {
@@ -975,6 +984,7 @@ func replayB03Archive(t *testing.T, root, id, rootID, path string, input b03Nati
 	}
 	documentPath := filepath.Join(replayRoot, "archive-import-document.json")
 	writeB03JSON(t, documentPath, document)
+	writeB03JSON(t, filepath.Join(replayRoot, "archive-native-root.json"), nativeRoot)
 	receipts := map[string]any{"archive_sha256": inspection.ArchiveSHA256, "source_store_id": inspection.SourceStoreID, "derived_sha256": inspection.DerivedSHA256, "import_document_path": documentPath, "import_document_sha256": b03FileHash(documentPath), "native_root_id": rootID, "native_project": project, "engines": map[string]any{}}
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(id+"/replay/"+engine, func(t *testing.T) {
@@ -991,6 +1001,7 @@ func replayB03Archive(t *testing.T, root, id, rootID, path string, input b03Nati
 			if imported.Project != project || imported.Type != input.Catalog.Type || imported.Fields["status"] != "awaiting_review" {
 				t.Fatalf("restore lost actual native root/project/catalog: %+v", imported)
 			}
+			assertB03ImportedSource(t, imported, nativeRoot)
 			writeB03JSON(t, filepath.Join(engineRoot, "imported-root.json"), imported)
 			if err := bootstrapB03ReplaySource(ctx, store, id); err != nil {
 				_ = store.Close()
@@ -1005,7 +1016,7 @@ func replayB03Archive(t *testing.T, root, id, rootID, path string, input b03Nati
 			}
 			runtime, transport := openB03ReplayRuntime(t, store, dsn, engine, id, project)
 			rpc := &b03ReplayRPC{t: t, transport: transport, root: engineRoot, project: project}
-			lifecycle := exerciseB03ReplayRuntime(t, rpc, runtime.Store, input, rootID, document)
+			lifecycle := exerciseB03ReplayRuntime(t, rpc, runtime.Store, input, rootID, document, imported)
 			beforeClose := b03ReplaySnapshot(t, runtime.Store, project, rpc.calls)
 			writeB03JSON(t, filepath.Join(engineRoot, "before-close.json"), beforeClose)
 			if err := runtime.Close(context.Background()); err != nil {
@@ -1022,7 +1033,8 @@ func replayB03Archive(t *testing.T, root, id, rootID, path string, input b03Nati
 				}
 				engineEvidence["after_reopen_sha256"] = b03FileHash(filepath.Join(engineRoot, "after-reopen.json"))
 				rpc.transport = transport
-				b03ReplayPublicRoot(t, rpc, runtime.Store, rootID, input.Catalog.Type, "awaiting_review")
+				reopenedRoot := b03ReplayPublicRoot(t, rpc, runtime.Store, rootID, input.Catalog.Type, "awaiting_review")
+				assertB03ImportedConservation(t, imported, reopenedRoot)
 				b03ReplayReady(t, rpc, rootID, true)
 				b03ReplayCatalog(t, rpc, lifecycle["document"].(ontology.Document))
 				engineEvidence["durable_reopen"] = "exact census conserved and installed runtime reloaded"
@@ -1241,13 +1253,16 @@ func b03ReplayReady(t *testing.T, rpc *b03ReplayRPC, rootID string, want bool) {
 	}
 }
 
-func exerciseB03ReplayRuntime(t *testing.T, rpc *b03ReplayRPC, store driver.Store, input b03NativeInput, rootID string, imported ontology.Document) map[string]any {
+func exerciseB03ReplayRuntime(t *testing.T, rpc *b03ReplayRPC, store driver.Store, input b03NativeInput, rootID string, imported ontology.Document, original pipeline.Document) map[string]any {
 	t.Helper()
 	// The first public adoption uses exactly the production migration document
 	// from this archive. Slot edits below are a separate public catalog action,
 	// never an assertion about what the native producer's slots implemented.
 	applyB03ReplayCatalog(t, rpc, imported)
-	b03ReplayPublicRoot(t, rpc, store, rootID, input.Catalog.Type, "awaiting_review")
+	adopted := b03ReplayPublicRoot(t, rpc, store, rootID, input.Catalog.Type, "awaiting_review")
+	if !equalB03JSON(original, adopted) {
+		t.Fatal("public adoption changed the pre-bootstrap imported native document")
+	}
 	b03ReplayReady(t, rpc, rootID, true)
 	docBytes, err := json.Marshal(imported)
 	if err != nil {
@@ -1264,6 +1279,9 @@ func exerciseB03ReplayRuntime(t *testing.T, rpc *b03ReplayRPC, store driver.Stor
 	doc.Workflows[workflowKey] = workflow
 	applyB03ReplayCatalog(t, rpc, doc)
 	initial := b03ReplayPublicRoot(t, rpc, store, rootID, input.Catalog.Type, "awaiting_review")
+	if !equalB03JSON(original, initial) {
+		t.Fatal("public slot adoption changed the original imported native document")
+	}
 	if initial.CreatedAt == nil || initial.CreatedAt.IsZero() || initial.StartedAt != nil || initial.ClosedAt != nil {
 		t.Fatalf("native imported root initial timestamps: %+v", initial)
 	}
@@ -1320,9 +1338,7 @@ func exerciseB03ReplayRuntime(t *testing.T, rpc *b03ReplayRPC, store driver.Stor
 	}
 	var images []map[string]any
 	for _, stage := range []pipeline.Document{initial, claimed, closed, repeated, reopened, frozen, final} {
-		if !equalB03JSON(initial.Metadata, stage.Metadata) {
-			t.Fatal("catalog lifecycle changed exact imported native provenance metadata")
-		}
+		assertB03ImportedConservation(t, original, stage)
 		images = append(images, map[string]any{"id": "$ROOT", "project": "$PROJECT", "type": stage.Type, "fields": stage.Fields, "labels": stage.Labels, "parent": stage.Parent, "links": stage.Links, "attachments": stage.Attachments, "created": stage.CreatedAt != nil, "started": stage.StartedAt != nil, "closed": stage.ClosedAt != nil, "claimed": stage.Lease != nil})
 	}
 	// Correspondence normalizes only physical root/project identity and wall
@@ -1330,6 +1346,58 @@ func exerciseB03ReplayRuntime(t *testing.T, rpc *b03ReplayRPC, store driver.Stor
 	// replays; exact provenance and timestamps remain in raw/state receipts and
 	// are conserved within each replay above and through durable reopen.
 	return map[string]any{"root": "$ROOT", "project": "$PROJECT", "type": input.Catalog.Type, "document": doc, "archive_document_sha256": b03Hash(docBytes), "images": images, "ready": []bool{true, false, false, true, false, true}, "claim_refusal_code": "invalid_params", "malformed_catalog_code": "invalid_params", "unsupported_catalog_code": "invalid_params", "created_time_preserved": true, "started_time_preserved": true, "first_close_preserved": true, "reopen_clears_close": true, "imported_metadata_conserved": true}
+}
+
+// Bind the pre-bootstrap imported image to the actual validated archive row.
+// Catalog adoption is not permitted to replace native creation or provenance
+// and then compare only against that replacement as its own baseline.
+func assertB03ImportedSource(t *testing.T, imported pipeline.Document, source dumpformat.Record) {
+	t.Helper()
+	wantMetadata := map[string]json.RawMessage{}
+	put := func(key string, value any) {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantMetadata[key] = raw
+	}
+	if metadata, ok := source.Body["metadata"].(map[string]any); ok {
+		for key, value := range metadata {
+			put(key, value)
+		}
+	}
+	for _, key := range dumpformat.OpaqueIssueFields() {
+		if value, present := source.Source.Fields[key]; present {
+			put("beads."+key, value)
+		}
+	}
+	for key, value := range source.Body {
+		switch key {
+		case "title", "description", "priority", "metadata", "labels":
+			continue
+		}
+		put("beads.source."+key, value)
+	}
+	put("beads.source.status", source.Source.Fields["status"])
+	put("beads.source_fields", source.Source.Fields)
+	if imported.ID != source.ID || imported.Project != source.Project || imported.Type != source.Body["type"] || !equalB03JSON(imported.Metadata, wantMetadata) {
+		t.Fatal("pre-bootstrap imported native identity/type/provenance differs from the validated archive row")
+	}
+	stamp, ok := source.Source.Fields["created_at"].(string)
+	if !ok || stamp == "" {
+		t.Fatal("fresh native root has no source creation instant")
+	}
+	created, err := time.Parse(time.RFC3339Nano, stamp)
+	if err != nil || imported.CreatedAt == nil || !imported.CreatedAt.Equal(created) || imported.StartedAt != nil || imported.ClosedAt != nil {
+		t.Fatal("pre-bootstrap imported creation instant differs from native archive provenance")
+	}
+}
+
+func assertB03ImportedConservation(t *testing.T, original, current pipeline.Document) {
+	t.Helper()
+	if current.ID != original.ID || current.Project != original.Project || current.Type != original.Type || !equalB03JSON(original.Metadata, current.Metadata) || original.CreatedAt == nil || current.CreatedAt == nil || !current.CreatedAt.Equal(*original.CreatedAt) {
+		t.Fatal("catalog adoption/lifecycle/reopen changed original imported native identity, type, provenance or creation instant")
+	}
 }
 
 func compareB03ReplayVectors(t *testing.T, root string, stores []b03StoreEvidence) {
