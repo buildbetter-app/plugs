@@ -140,6 +140,7 @@ func copyKey(k driver.LockKey) driver.LockKey {
 	return k
 }
 func (r *reader) Get(ctx context.Context, refs []driver.Ref) ([]driver.Record, error) {
+	driver.ReportReadWork(ctx, driver.ReadGetCalls, 1)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := r.check(ctx); err != nil {
@@ -167,6 +168,7 @@ func (r *reader) recordAt(ctx context.Context, id string) (driver.Record, bool, 
 			if v == nil {
 				return driver.Record{}, false, nil
 			}
+			driver.ReportReadPayload(ctx, v.Body)
 			return copyRecord(*v), true, nil
 		}
 	}
@@ -179,6 +181,9 @@ func (r *reader) recordAt(ctx context.Context, id string) (driver.Record, bool, 
 		var record driver.Record
 		if err == nil {
 			err = json.Unmarshal(data, &record)
+		}
+		if err == nil {
+			driver.ReportReadPayload(ctx, record.Body)
 		}
 		return record, err == nil, err
 	}
@@ -247,6 +252,7 @@ func (r *reader) recordAt(ctx context.Context, id string) (driver.Record, bool, 
 	if err = r.tx.QueryRowContext(ctx, `SELECT kind FROM objects WHERE key=?`, id).Scan(&kind); err != nil {
 		return driver.Record{}, false, err
 	}
+	driver.ReportReadPayload(ctx, body)
 	return driver.Record{Ref: last.Ref, Kind: kind, Revision: last.Revision, Body: body}, true, nil
 }
 func mustUint(v model.Natural) uint64 { n, _ := v.Uint64(); return n }
@@ -359,6 +365,7 @@ func (r *reader) nextCursor(method, digest string, index uint64) *driver.Cursor 
 	return &driver.Cursor{Method: method, FilterDigest: digest, Incarnation: r.meta.Incarnation, Revision: model.Natural64(r.at), Index: model.Natural64(index)}
 }
 func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.Record], error) {
+	driver.ReportReadWork(ctx, driver.ReadQueryCalls, 1)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := r.check(ctx); err != nil {
@@ -407,6 +414,7 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 		if err = rows.Scan(&id); err != nil {
 			break
 		}
+		driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
 		ids[id] = true
 	}
 	if err == nil {
@@ -451,6 +459,7 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 	if end < uint64(len(items)) {
 		page.NextCursor = r.nextCursor("query", digest, end)
 	}
+	driver.ReportReadWork(ctx, driver.ReadQueryReturned, int64(len(page.Items)))
 	return page, nil
 }
 func matches(r driver.Record, filter map[string]any) (bool, error) {
