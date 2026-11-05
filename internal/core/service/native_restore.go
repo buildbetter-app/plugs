@@ -1,8 +1,10 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
@@ -10,9 +12,9 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
-// ValidateNativeRestoreRecords applies the ordinary final-image field rules
-// to every bead and memory in a native restore image. Native
-// restore is a direct storage publication path, so it cannot rely on the
+// ValidateNativeRestoreRecords applies ordinary final-image field rules to
+// beads and structural persisted-image rules to memories in a native restore.
+// Native restore is a direct storage publication path, so it cannot rely on the
 // ordinary Writer callbacks to perform this check after a transaction opens.
 //
 // The protected ontology record, when present, is compiled first and supplies
@@ -75,15 +77,25 @@ func ValidateNativeRestoreRecords(records []driver.Record) error {
 			}
 		case "memory":
 			var doc pipeline.MemoryDocument
-			doc, err = pipeline.DecodeMemoryDocument(record.Body)
+			// Restore preserves an existing memory image, including legacy
+			// empty content. The ordinary creation-time content rule does not
+			// apply, but the stored content member must still be a string.
+			var shape struct {
+				Content *string `json:"content"`
+			}
+			if json.Unmarshal(record.Body, &shape) != nil || shape.Content == nil {
+				err = failure("invalid_params", "memory content must be a string")
+			} else {
+				doc, err = pipeline.DecodeMemoryDocument(record.Body)
+			}
 			if err == nil {
 				err = memoryRef(record.Ref)
 			}
 			if err == nil && doc.ID != record.Ref.ID {
 				err = failure("invalid_params", "memory document ID differs from record reference")
 			}
-			if err == nil {
-				_, err = resolveMemoryKey(doc.Key, doc.Content)
+			if err == nil && strings.TrimSpace(doc.Key) == "" {
+				err = failure("invalid_params", "memory key must be nonempty")
 			}
 			if err == nil {
 				if _, cloneErr := cloneMemoryMetadata(doc.Metadata); cloneErr != nil {

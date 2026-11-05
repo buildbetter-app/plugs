@@ -583,7 +583,7 @@ func nativeMutatedArchive(t *testing.T, input []byte, scenario string) []byte {
 			t.Fatal("native archive has no bead to mutate")
 		}
 		members["records/native.ndjson"] = bytes.Join(lines, []byte{'\n'})
-	case "memory-id-mismatch", "memory-blank-key", "memory-empty-content", "memory-blank-content":
+	case "memory-id-mismatch", "memory-blank-key", "memory-empty-content", "memory-blank-content", "memory-missing-content", "memory-null-content", "memory-number-content":
 		lines := bytes.Split(members["records/native.ndjson"], []byte{'\n'})
 		changed := false
 		for i, line := range lines {
@@ -615,6 +615,12 @@ func nativeMutatedArchive(t *testing.T, input []byte, scenario string) []byte {
 				body["content"] = json.RawMessage(`""`)
 			case "memory-blank-content":
 				body["content"] = json.RawMessage(`"   "`)
+			case "memory-missing-content":
+				delete(body, "content")
+			case "memory-null-content":
+				body["content"] = json.RawMessage(`null`)
+			case "memory-number-content":
+				body["content"] = json.RawMessage(`7`)
 			}
 			var err error
 			record.Body, err = json.Marshal(body)
@@ -737,8 +743,9 @@ func TestNativeRestoreRejectsInvalidMemoryBeforePublicationAcrossStores(t *testi
 	for _, scenario := range []struct{ name, reason string }{
 		{"memory-id-mismatch", "memory document ID differs"},
 		{"memory-blank-key", "memory key must be nonempty"},
-		{"memory-empty-content", "memory content must be nonempty"},
-		{"memory-blank-content", "memory content must be nonempty"},
+		{"memory-missing-content", "memory content must be a string"},
+		{"memory-null-content", "memory content must be a string"},
+		{"memory-number-content", "memory content must be a string"},
 	} {
 		mutated := nativeMutatedArchive(t, data, scenario.name)
 		for _, engine := range []string{"memory", "sqlite", "postgres"} {
@@ -767,6 +774,59 @@ func TestNativeRestoreRejectsInvalidMemoryBeforePublicationAcrossStores(t *testi
 					target.reopen(t)
 					requireSameState(t, before, childAllocatorDurableState(t, target))
 					requireAllocatorSnapshotBytes(t, empty, observedAllocatorSnapshot(t, target, nil))
+				}
+			})
+		}
+	}
+}
+
+func TestNativeRestorePreservesEmptyMemoryAndRecallAcrossStores(t *testing.T) {
+	source := newFixture(t, "memory")
+	meta := source.meta("native-memory-empty-source")
+	meta.Method, meta.Project = "memory.save", ""
+	commit, err := source.writer.Apply(source.ctx, batchPrincipal, model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{
+		Type: "memory", Fields: map[string]any{"key": "restore-key", "content": "ordinary memory content", "metadata": map[string]any{"origin": "ordinary"}},
+	}}}}, meta)
+	if err != nil || len(commit.Results) != 1 {
+		t.Fatalf("ordinary source memory write: %+v %v", commit, err)
+	}
+	memoryID := commit.Results[0].Ref.ID
+	data, _, err := restore.Dump(source.ctx, source.store, "head")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, scenario := range []struct{ name, content string }{
+		{"memory-empty-content", ""},
+		{"memory-blank-content", "   "},
+	} {
+		mutated := nativeMutatedArchive(t, data, scenario.name)
+		for _, engine := range []string{"memory", "sqlite", "postgres"} {
+			t.Run(scenario.name+"/"+engine, func(t *testing.T) {
+				target := newFixture(t, engine)
+				manager := nativeManager(t, target, target.store)
+				status, hash := nativeUpload(t, target, manager, mutated)
+				status, err := manager.Finish(target.ctx, status.RestoreID, hash, batchPrincipal, nativeFinishMeta(), nativeTestPresence)
+				if err != nil || status.State != "complete" || target.receipt(t, nativeFinishMeta()) == nil {
+					t.Fatalf("native memory image was not published: %+v %v", status, err)
+				}
+				recall := func() {
+					t.Helper()
+					svc := service.New(target.store, target.lease, target.writer, service.WithOntology(target.ontology), service.WithClock(target.now))
+					got, err := svc.MemoryGet(target.ctx, batchPrincipal, service.MemoryGetRequest{ID: model.RefByID(memoryID, model.Natural64(0))})
+					if err != nil || got.ID != memoryID || got.Key != "restore-key" || got.Content != scenario.content || got.Revision.String() != "1" || !reflect.DeepEqual(got.Metadata, map[string]any{"origin": "ordinary"}) {
+						t.Fatalf("restored memory was absent or changed: %+v %v", got, err)
+					}
+					page, err := svc.MemoryList(target.ctx, batchPrincipal, service.MemoryListRequest{Limit: 10})
+					if err != nil || len(page.Items) != 1 || page.Items[0].ID != memoryID || page.Items[0].Content != scenario.content {
+						t.Fatalf("restored memory list lost the present image: %+v %v", page, err)
+					}
+					_, err = svc.MemoryGet(target.ctx, batchPrincipal, service.MemoryGetRequest{ID: model.RefByID("never-restored-memory", model.Natural64(0))})
+					requireCode(t, err, "not_found")
+				}
+				recall()
+				if engine != "memory" {
+					target.reopen(t)
+					recall()
 				}
 			})
 		}
