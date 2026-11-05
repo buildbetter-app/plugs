@@ -221,8 +221,11 @@ func b25MixedDeleteAndDemotion(t *testing.T, open func() driver.Store, db *sql.D
 	deletedReply := h.call(t, "tx.apply", deleteParams, "b25-delete")
 	deleted := decode[model.Commit](t, b26OK(t, deletedReply))
 	n, _ := beforeMeta.Head.Uint64()
-	if deletedReply.Meta.Replayed || deleted.Revision != model.Natural64(n+1) || len(deleted.Results) != len(ops) || len(deleted.Results[4].Record) != 0 {
+	if deletedReply.replayed() || deleted.Revision != model.Natural64(n+1) || len(deleted.Results) != len(ops) || len(deleted.Results[4].Record) != 0 {
 		t.Fatalf("mixed delete did not publish all original positions in one revision: %+v", deleted)
+	}
+	for position, active := range map[int]string{2: outgoing, 3: incoming} {
+		b25AssertFullWorkflowResult(t, h, deleted.Results[position], active)
 	}
 	items = b25Items(t, h)
 	if items[outgoing].Generation != beforeItems[outgoing].Generation+1 || items[incoming].Generation != beforeItems[incoming].Generation+1 {
@@ -258,7 +261,7 @@ func b25MixedDeleteAndDemotion(t *testing.T, open func() driver.Store, db *sql.D
 	}
 	committed = b26CompleteSQL(t, db, engine)
 	replay := h.call(t, "tx.apply", deleteParams, "b25-delete")
-	if replay.Error != nil || !replay.Meta.Replayed || !reflect.DeepEqual(decode[any](t, deletedReply.Result), decode[any](t, replay.Result)) || !reflect.DeepEqual(committed, b26CompleteSQL(t, db, engine)) {
+	if replay.Error != nil || !replay.replayed() || !reflect.DeepEqual(decode[any](t, deletedReply.Result), decode[any](t, replay.Result)) || !reflect.DeepEqual(committed, b26CompleteSQL(t, db, engine)) {
 		t.Fatal("mixed delete replay changed current relations, history or receipts")
 	}
 	changedOps := append([]model.Op{}, ops...)
@@ -267,6 +270,7 @@ func b25MixedDeleteAndDemotion(t *testing.T, open func() driver.Store, db *sql.D
 	if gone := h.call(t, "bead.get", map[string]any{"id": ref(victim)}, ""); gone.Error == nil || gone.Error.Data.Code != "not_found" {
 		t.Fatal("deleted owner remained publicly readable after reopen")
 	}
+	b25DeleteResultControls(t, h, db, engine)
 	t.Log("B25 exact physical arm multiplicities, inbound rebinding, owned body/counter preservation, one-revision mixed explicit unlink/delete, actual SQL auxiliary fault conservation and original receipt replay after reopen")
 }
 

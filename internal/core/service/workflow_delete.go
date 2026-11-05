@@ -27,14 +27,16 @@ func ordinaryDeleteKind(ref model.Ref) string {
 	return "bead"
 }
 
-func (s *Service) ordinaryDeletePreparation(by model.PrincipalRef, meta model.WriteMeta, deletes []model.Ref) pipeline.SourcePreparation {
+func (s *Service) ordinaryDeletePreparation(by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta, preview *map[int]model.OpResult) pipeline.SourcePreparation {
 	return func(ctx context.Context, reader driver.Reader, prepare func(pipeline.SourceOperationHandler) error) (pipeline.SourcePublication, error) {
-		planned, err := s.workflow.PrepareOrdinaryDelete(ctx, by, meta, deletes, func(handle func(model.Op) (*workflowplugin.OrdinaryDeleteImage, error)) error {
+		planned, err := s.workflow.PrepareOrdinaryDelete(ctx, by, cs, meta, func(handle func(model.Op) (*workflowplugin.OrdinaryDeleteImage, error)) error {
 			return prepare(func(_ context.Context, op model.Op, _ pipeline.SourceCoreImage) (model.Op, *pipeline.SourceOperation, error) {
 				image, err := handle(op)
 				if err != nil || image == nil {
 					return op, nil, err
 				}
+				// The core receipt keeps identity only for ephemeral endpoints.
+				// Full results come from the atomically joined plugin receipts.
 				return op, &pipeline.SourceOperation{
 					Change: port.Change{Resource: model.ResourceRef{Kind: "workflow:item", Ref: image.Ref}, Op: op, Before: image.Before, After: image.After, SetBy: map[string]string{"links": "request"}},
 					Result: model.OpResult{Ref: image.Ref, Revision: image.Generation, SetBy: map[string]string{"links": "request"}},
@@ -44,6 +46,7 @@ func (s *Service) ordinaryDeletePreparation(by model.PrincipalRef, meta model.Wr
 		if err != nil {
 			return pipeline.SourcePublication{}, err
 		}
+		*preview = planned.Results
 		publication := pipeline.SourcePublication{Head: driver.CoreSnapshotExpectation{StoreID: planned.Namespace.StoreID, Incarnation: reader.Snapshot().Incarnation, Head: *reader.Snapshot().At}, Namespace: planned.Namespace}
 		if planned.State != nil {
 			mutation, err := planned.State.Checkpoint(ctx)

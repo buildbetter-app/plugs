@@ -630,6 +630,7 @@ internal/integration/postgresacceptance/atomic_test.go
 internal/integration/postgresacceptance/b15_comments_test.go
 internal/integration/postgresacceptance/b15_page_test.go
 internal/integration/postgresacceptance/b16_labels_test.go
+internal/integration/postgresacceptance/b25_delete_results_test.go
 internal/integration/postgresacceptance/b25_mixed_delete_test.go
 internal/integration/postgresacceptance/b26_lifecycle_test.go
 internal/integration/postgresacceptance/b26_move_body_test.go

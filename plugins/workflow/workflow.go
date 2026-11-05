@@ -2414,6 +2414,14 @@ func (p *Provider) sanitizeTerminalReceipts(value persisted, runID string) {
 				item = ItemView{ID: receipt.ItemID, RunID: runID, Status: "closed", Plane: "ephemeral", Kind: "workflow.item", Plugin: Alias, Revision: item.Revision}
 				receipt.Result, _ = json.Marshal(item)
 			}
+		} else if receipt.Method == "tx.apply" {
+			var result model.OpResult
+			if json.Unmarshal(receipt.Result, &result) == nil {
+				result.Record = nil
+				receipt.Result, _ = json.Marshal(result)
+			} else {
+				receipt.Result = nil
+			}
 		} else if receipt.Method == "x.workflow.run.demote" {
 			var result DemoteResult
 			_ = json.Unmarshal(receipt.Result, &result)

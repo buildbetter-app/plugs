@@ -149,9 +149,16 @@ func (s *Service) apply(ctx context.Context, by model.PrincipalRef, method strin
 		if !ok {
 			return port.WriteOutcome{}, failure("unsupported", "writer lacks atomic workflow delete capability")
 		}
-		v, err := writer.ApplyWithSourceOperations(ctx, by, cs, meta, s.ordinaryDeletePreparation(by, meta, deletes), ordinaryDeleteKind)
-		if err == nil && v.Replayed {
-			err = s.workflow.AuthorizeOrdinaryDeleteReplay(ctx, by, cs, meta)
+		var preview map[int]model.OpResult
+		v, err := writer.ApplyWithSourceOperations(ctx, by, cs, meta, s.ordinaryDeletePreparation(by, cs, meta, &preview), ordinaryDeleteKind)
+		if err == nil {
+			if meta.DryRun {
+				for position, result := range preview {
+					v.Commit.Results[position] = result
+				}
+			} else {
+				v.Commit, err = s.workflow.ProjectOrdinaryDeleteResults(ctx, by, cs, meta, v.Commit)
+			}
 		}
 		if err != nil {
 			return port.WriteOutcome{}, mapped(err)
