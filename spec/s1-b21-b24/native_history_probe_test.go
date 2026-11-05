@@ -15,6 +15,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/testclock"
@@ -415,18 +416,68 @@ func nativeAdvanceImportedClock(t *testing.T, f *fixture, observer *nativePostOb
 	nativeBindImported(t, f, observer, denied)
 }
 
+// A named defer with a reason lowers to an ordered patch and comment. Both
+// OpResults carry the same final record at one durable revision.
+func nativeAssertDeferWithReason(t *testing.T, ref model.Ref, reason string, got model.Commit, before, after storedState) {
+	t.Helper()
+	oldHead, err := before.Meta.Head.Uint64()
+	if err != nil || len(got.Results) != 2 || got.Revision != model.Natural64(oldHead+1) || after.Meta.Head != got.Revision {
+		t.Fatal("defer with reason must return two ordered results at one new revision")
+	}
+	find := func(state storedState) driver.Record {
+		var found driver.Record
+		count := 0
+		for _, row := range state.Records {
+			if nativeEqualJSON(row.Ref, ref) {
+				found, count = row, count+1
+			}
+		}
+		if count != 1 {
+			t.Fatalf("defer target must have one stored record, got %d", count)
+		}
+		return found
+	}
+	oldRecord, record := find(before), find(after)
+	for i, operation := range []string{"patch", "comment"} {
+		result := got.Results[i]
+		if !nativeEqualJSON(result.Ref, ref) || result.Revision != got.Revision || len(result.Record) == 0 || string(result.Record) != string(record.Body) {
+			t.Fatalf("defer %s result lost its exact target, revision or final record", operation)
+		}
+	}
+	oldDocument, err := pipeline.DecodeDocument(oldRecord.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document, err := pipeline.DecodeDocument(record.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if document.Fields["status"] != "backlog" || len(document.Comments) != len(oldDocument.Comments)+1 || document.Comments[len(oldDocument.Comments)].Body != reason {
+		t.Fatal("defer must enter backlog and append exactly the requested reason once")
+	}
+	if len(oldDocument.Comments) != 0 && !reflect.DeepEqual(oldDocument.Comments, document.Comments[:len(oldDocument.Comments)]) || !reflect.DeepEqual(oldDocument.Metadata, document.Metadata) {
+		t.Fatal("defer changed prior comments or complete source metadata")
+	}
+	if len(after.Records) != len(before.Records) || len(after.Versions[ref.ID]) != len(before.Versions[ref.ID])+1 || len(after.Changesets) != len(before.Changesets)+1 || !reflect.DeepEqual(before.Changesets, after.Changesets[:len(before.Changesets)]) {
+		t.Fatal("defer must preserve prior history and add one target version and changeset")
+	}
+	change := after.Changesets[len(before.Changesets)]
+	if change.Revision != got.Revision || len(change.Changes) != 1 || !nativeEqualJSON(change.Changes[0].Ref, ref) {
+		t.Fatal("defer patch and reason must publish one changed target at the commit revision")
+	}
+}
+
 func nativeImportedHistoryOffLifecycle(t *testing.T, root string, f *fixture, observer *nativePostObserver, denied *atomic.Bool, source dumpformat.Record, observed nativeHistoryOffObservation) {
 	t.Helper()
 	if !t.Run("B24-history-off-imported-defer-clock-and-reopen", func(t *testing.T) {
 		ref := model.RefByID(observed.Target, model.Natural64(0))
 		nativeRefuse(t, f, observer, "bead.defer", "history-off-imported-blank-reason", map[string]any{"id": ref, "reason": " "}, "invalid_params")
 		label := "history-off-imported-defer"
+		before := nativeImportedState(t, f)
 		first := f.call("bead.defer", label, map[string]any{"id": ref, "reason": "explicit imported history-off waiting"})
 		deferred := commit(t, first)
 		state := nativeImportedState(t, f)
-		if nativeDocument(t, f, ref).Fields["status"] != "backlog" || len(deferred.Results) != 1 {
-			t.Fatal("actual imported history-off task did not enter untimed defer")
-		}
+		nativeAssertDeferWithReason(t, ref, "explicit imported history-off waiting", deferred, before, state)
 		versions := state.Versions[ref.ID]
 		if len(versions) == 0 || !versions[len(versions)-1].CreatedAt.Equal(f.clock.Now()) {
 			t.Fatal("imported deferral persisted a different time from its Go clock")
@@ -508,6 +559,24 @@ func TestNativeB24ProbeObservationAcrossStores(t *testing.T) {
 			sameState(t, before, f.state(t))
 			clock := nativeImportedClock(t, f)
 			t.Logf("B24_PROBE_CONTROL engine=%s actual_version_calls=2 successful=1 failed=1 ready_versions=0 state_equal=true clock=%v control=%v", engine, clock, control)
+		})
+		t.Run("defer-with-reason/"+engine, func(t *testing.T) {
+			f := newFixture(t, engine)
+			ref, _ := f.create(t, "defer-result-control", "actual defer result control")
+			before := nativeImportedState(t, f)
+			params := map[string]any{"id": ref, "reason": "explicit defer result control"}
+			first := f.call("bead.defer", "defer-result-control", params)
+			got := commit(t, first)
+			after := nativeImportedState(t, f)
+			if first.Meta.Replayed {
+				t.Fatal("first defer result control was a replay")
+			}
+			nativeAssertDeferWithReason(t, ref, "explicit defer result control", got, before, after)
+			replayed := f.call("bead.defer", "defer-result-control", params)
+			if !replayed.Meta.Replayed || !reflect.DeepEqual(got, commit(t, replayed)) {
+				t.Fatal("defer replay changed the ordered two-result commit")
+			}
+			sameState(t, after, nativeImportedState(t, f))
 		})
 	}
 	t.Run("physical-source-json-types-and-null-presence", func(t *testing.T) {

@@ -157,3 +157,15 @@ empty strings, and large integers remain nonnull archived values. Ordinary
 controls cover those distinctions, missing keys, and reserved-key collisions.
 The automatic Spot retry's actual RED and all unrun imports/reopen/pair proof
 remain separate from this source correction and its new gates.
+
+The subsequent `047ac444` recording `41964303288/a1` reached real memory
+import and same-store reopen, then failed the defer result-count expectation.
+The existing service lowers a defer with a reason into an ordered patch and
+comment, so its response has exactly two operation results for the same target,
+revision and final document. The oracle now requires those exact results,
+backlog status, one appended reason, unchanged prior comments/source metadata,
+and one new target version and changeset. Public defer and idempotent replay
+controls exercise this contract on memory, SQLite and PostgreSQL in ordinary
+gates. The failed recording remains RED; later lifecycle boundaries, SQL
+imports/reopen, native READ/clock/protected-positive and paired recording proof
+remain unqualified until actual changed-source runtime and independent review.
