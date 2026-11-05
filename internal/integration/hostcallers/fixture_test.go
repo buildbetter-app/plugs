@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
@@ -44,6 +45,33 @@ func TestSixHostCallersSQLiteEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer lease.Release(ctx)
+	renewCtx, stopRenewal := context.WithCancel(ctx)
+	renewed := make(chan error, 1)
+	go func() {
+		ticker := time.NewTicker(driver.LeaseRenewEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-renewCtx.Done():
+				renewed <- nil
+				return
+			case <-ticker.C:
+				if err := lease.Renew(renewCtx); err != nil {
+					if renewCtx.Err() != nil {
+						err = nil
+					}
+					renewed <- err
+					return
+				}
+			}
+		}
+	}()
+	defer func() {
+		stopRenewal()
+		if err := <-renewed; err != nil {
+			t.Errorf("fixture lease renewal: %v", err)
+		}
+	}()
 	raw, err := os.ReadFile(filepath.Join(root, "tools/hostcallers/host-ontology.json"))
 	if err != nil {
 		t.Fatal(err)
