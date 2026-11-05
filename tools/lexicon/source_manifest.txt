@@ -1367,6 +1367,11 @@ spec/s1-b09-b12/reference_proxied_capture_test.go
 spec/s1-b09-b12/reference_test.go
 spec/s1-b09-b12/replay_test.go
 spec/s1-b09-b12/vectors.json
+spec/s1-b09-native/BUILD.bazel
+spec/s1-b09-native/README.md
+spec/s1-b09-native/conservation_test.go
+spec/s1-b09-native/paired_replay_test.go
+spec/s1-b09-native/recorder_test.go
 spec/s1-b13-b16/BUILD.bazel
 spec/s1-b13-b16/README.md
 spec/s1-b13-b16/capture_regressions_test.go
