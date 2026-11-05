@@ -239,9 +239,17 @@ func (s *Service) readyItems(ctx context.Context, by model.PrincipalRef, req Rea
 		}
 		workflowBlocked = blocked
 	}
+	return s.readyItemsFromGraph(ctx, by, req, r, graph, workflowBlocked, s.now().UTC())
+}
+
+// readyItemsFromGraph evaluates durable membership and ordering against the
+// supplied core reader and provider blocker facts. Combined reads use this
+// path after collecting both facts from one provider checkpoint, so no later
+// eligibility call can silently observe a different plane.
+func (s *Service) readyItemsFromGraph(ctx context.Context, by model.PrincipalRef, req ReadyRequest, r driver.Reader, graph map[string]storedBead, workflowBlocked map[string]bool, now time.Time) ([]Bead, map[string]readyOrderKey, error) {
+	graphIDs := sortedIDs(graph)
 	// Membership is always evaluated against the complete current graph. P74
 	// applies only to the order of this exact set, before any page is cut.
-	now := s.now().UTC()
 	eligible := map[string]storedBead{}
 	for _, id := range graphIDs {
 		row := graph[id]
@@ -375,41 +383,85 @@ func (s *Service) readyPage(ctx context.Context, by model.PrincipalRef, req Read
 // page is cut. Combined durable/workflow reads use this same admission and
 // ordering path so a durable continuation cannot bypass the workflow plane.
 func (s *Service) readyCandidateItems(ctx context.Context, by model.PrincipalRef, req ReadyRequest, restartOnRevision bool) ([]Bead, map[string]readyOrderKey, AsOf, error) {
+	combined, err := s.readyCombinedSnapshot(ctx, by, req, restartOnRevision)
+	if err != nil {
+		return nil, nil, AsOf{}, err
+	}
+	return combined.durable, combined.durableKeys, combined.asOf, nil
+}
+
+type readyCombinedSnapshot struct {
+	durable     []Bead
+	durableKeys map[string]readyOrderKey
+	workflow    workflowplugin.ReadySnapshot
+	asOf        AsOf
+	now         time.Time
+}
+
+// readyCombinedSnapshot collects both planes while the core reader remains
+// pinned and the provider supplies all of its eligibility facts from one
+// checkpoint image. The returned bindings are the only inputs used to cut an
+// aggregate page.
+func (s *Service) readyCombinedSnapshot(ctx context.Context, by model.PrincipalRef, req ReadyRequest, restartOnRevision bool) (readyCombinedSnapshot, error) {
 	r, err := s.reader(ctx, by, nil)
 	if err != nil {
-		return nil, nil, AsOf{}, err
+		return readyCombinedSnapshot{}, err
 	}
 	defer r.Close()
-	items, keys, err := s.readyItems(ctx, by, req, r)
+	graph, err := scanBeads(ctx, r)
 	if err != nil {
-		return nil, nil, AsOf{}, err
+		return readyCombinedSnapshot{}, err
 	}
+	view := r.Snapshot()
+	if view.At == nil {
+		return readyCombinedSnapshot{}, failure("internal_error", "ready reader has no snapshot revision")
+	}
+	resolver, err := s.workflowBlockerResolverForGraph(ctx, by, r, graph)
+	if err != nil {
+		return readyCombinedSnapshot{}, err
+	}
+	types := []string(nil)
+	if req.Filter != nil {
+		types = req.Filter.Types
+	}
+	now := s.now().UTC()
 	includeEphemeral := true
 	if req.Filter != nil && req.Filter.IncludeEphemeral != nil {
 		includeEphemeral = *req.Filter.IncludeEphemeral
 	}
-	if s.workflow != nil && includeEphemeral {
-		active, err := s.workflow.ActiveIDsFor(ctx, by, workflowMeta(by, "bead.ready", req.Project, req.Agent))
-		if err != nil {
-			return nil, nil, AsOf{}, err
-		}
-		filtered := items[:0]
-		for _, item := range items {
-			if _, collides := active[item.ID]; collides {
+	meta := workflowMeta(by, "bead.ready", req.Project, req.Agent)
+	provider, err := s.workflow.ReadySnapshotWithResolverAndCoreAt(ctx, by, req.Project, types, meta, includeEphemeral, sortedIDs(graph), resolver, now)
+	if err != nil {
+		return readyCombinedSnapshot{}, err
+	}
+	current, err := s.store.Meta(ctx)
+	if err != nil {
+		return readyCombinedSnapshot{}, mapped(err)
+	}
+	if current.Incarnation != view.Incarnation {
+		return readyCombinedSnapshot{}, mapped(driver.ErrIncarnationChanged{From: view.Incarnation, To: current.Incarnation})
+	}
+	if current.Head.String() != view.At.String() {
+		return readyCombinedSnapshot{}, failure("cursor_invalid", "ready source changed while collecting candidates; restart paging")
+	}
+	durable, keys, err := s.readyItemsFromGraph(ctx, by, req, r, graph, provider.BlockedOrdinary, now)
+	if err != nil {
+		return readyCombinedSnapshot{}, err
+	}
+	if includeEphemeral {
+		filtered := durable[:0]
+		for _, item := range durable {
+			if _, collides := provider.ActiveIDs[item.ID]; collides {
 				continue
 			}
 			filtered = append(filtered, item)
 		}
-		items = filtered
+		durable = filtered
 	}
 	if err := s.admit(ctx, by); err != nil {
-		return nil, nil, AsOf{}, err
+		return readyCombinedSnapshot{}, err
 	}
-	view := r.Snapshot()
-	if view.At == nil {
-		return nil, nil, AsOf{}, failure("internal_error", "ready reader has no snapshot revision")
-	}
-	return items, keys, AsOf{Revision: *view.At, Incarnation: view.Incarnation}, nil
+	return readyCombinedSnapshot{durable: durable, durableKeys: keys, workflow: provider, asOf: AsOf{Revision: *view.At, Incarnation: view.Incarnation}, now: now}, nil
 }
 
 // combinedReadyEntry is the service-owned merge key for the two ready
@@ -426,24 +478,10 @@ type combinedReadyEntry struct {
 }
 
 func workflowReadyCreatedAt(item workflowplugin.ItemView) (time.Time, bool) {
-	for _, fields := range []map[string]any{item.Fields, item.Metadata} {
-		for _, name := range []string{"createdAt", "created_at"} {
-			value, ok := fields[name]
-			if !ok {
-				continue
-			}
-			switch value := value.(type) {
-			case time.Time:
-				if !value.IsZero() {
-					return value.UTC(), true
-				}
-			case string:
-				created, err := time.Parse(time.RFC3339Nano, value)
-				if err == nil && !created.IsZero() {
-					return created.UTC(), true
-				}
-			}
-		}
+	// This is provider-owned run provenance. User fields and metadata are not
+	// ordering inputs because callers may edit them or omit them entirely.
+	if !item.CreatedAt.IsZero() {
+		return item.CreatedAt.UTC(), true
 	}
 	return time.Time{}, false
 }
@@ -686,22 +724,21 @@ func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req 
 }
 
 func (s *Service) readyCombinedPage(ctx context.Context, by model.PrincipalRef, req ReadyRequest, limit int, restartOnRevision bool) (BeadPage, error) {
-	durable, durableKeys, asOf, err := s.readyCandidateItems(ctx, by, req, restartOnRevision)
+	if req.Position != nil && req.Position.AsOf.Incarnation != "" {
+		meta, err := s.store.Meta(ctx)
+		if err != nil {
+			return BeadPage{}, mapped(err)
+		}
+		if meta.Incarnation != req.Position.AsOf.Incarnation {
+			return BeadPage{}, mapped(driver.ErrIncarnationChanged{From: req.Position.AsOf.Incarnation, To: meta.Incarnation})
+		}
+	}
+	combined, err := s.readyCombinedSnapshot(ctx, by, req, restartOnRevision)
 	if err != nil {
 		return BeadPage{}, err
 	}
-	types := []string(nil)
-	if req.Filter != nil {
-		types = req.Filter.Types
-	}
-	includeEphemeral := true
-	if req.Filter != nil && req.Filter.IncludeEphemeral != nil {
-		includeEphemeral = *req.Filter.IncludeEphemeral
-	}
-	snapshot, err := s.workflow.ReadySnapshotWithResolver(ctx, by, req.Project, types, workflowMeta(by, "bead.ready", req.Project, req.Agent), includeEphemeral, s.workflowBlockerResolver(ctx, by, workflowMeta(by, "bead.ready", req.Project, req.Agent)))
-	if err != nil {
-		return BeadPage{}, err
-	}
+	durable, durableKeys, asOf := combined.durable, combined.durableKeys, combined.asOf
+	snapshot := combined.workflow
 	binding := &WorkflowPageSnapshot{Revision: model.Revision(snapshot.Revision), ValidUntil: snapshot.ValidUntil}
 	if !binding.Valid() {
 		return BeadPage{}, failure("internal_error", "invalid workflow ready snapshot")
@@ -728,7 +765,7 @@ func (s *Service) readyCombinedPage(ctx context.Context, by model.PrincipalRef, 
 		}
 		workflowItems = filtered
 	}
-	items, keys, err := combinedReadyItems(durable, durableKeys, workflowItems, s.now().UTC())
+	items, keys, err := combinedReadyItems(durable, durableKeys, workflowItems, combined.now)
 	if err != nil {
 		return BeadPage{}, err
 	}
@@ -751,9 +788,6 @@ func (s *Service) readyCombinedPage(ctx context.Context, by model.PrincipalRef, 
 		page.Items = append([]Bead(nil), items[:end]...)
 		if end < len(items) {
 			page.Next = &PagePosition{Offset: end, AsOf: asOf, WorkflowSnapshot: binding, ReadyMembership: membership}
-			if !req.readySourceBinding {
-				page.Next.Workflow = true
-			}
 		}
 		return page, nil
 	}
@@ -801,7 +835,7 @@ func workflowBead(item workflowplugin.ItemView) Bead {
 		fields = map[string]any{}
 	}
 	fields["title"] = item.Title
-	bead := Bead{ID: item.ID, Type: item.Type, Project: item.Project, Revision: item.Revision, Status: item.Status,
+	bead := Bead{ID: item.ID, Type: item.Type, Project: item.Project, Revision: item.Revision, Status: item.Status, CreatedAt: item.CreatedAt.UTC(),
 		Fields: fields, Metadata: item.Metadata, Parent: refID(item.Parent), Labels: append([]string(nil), item.Labels...), Links: append([]workflowplugin.RelationView(nil), item.Links...),
 		Blocked: item.Blocked, ChildCounter: item.ChildCounter, Plane: item.Plane, Kind: item.Kind, Plugin: item.Plugin, WorkflowRunID: item.RunID}
 	if item.Claim != nil {
