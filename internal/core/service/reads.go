@@ -430,10 +430,17 @@ func (s *Service) readyCombinedSnapshot(ctx context.Context, by model.PrincipalR
 		includeEphemeral = *req.Filter.IncludeEphemeral
 	}
 	meta := workflowMeta(by, "bead.ready", req.Project, req.Agent)
-	provider, err := s.workflow.ReadySnapshotWithResolverAndCoreAt(ctx, by, req.Project, types, meta, includeEphemeral, sortedIDs(graph), resolver, now)
+	provider, err := s.workflow.ReadySnapshotWithResolverAndCore(ctx, by, req.Project, types, meta, includeEphemeral, sortedIDs(graph), resolver)
 	if err != nil {
 		return readyCombinedSnapshot{}, err
 	}
+	if provider.OrderAt.IsZero() {
+		return readyCombinedSnapshot{}, failure("internal_error", "workflow ready snapshot has no ordering clock")
+	}
+	// The provider owns claim expiry and its run creation clock. Use that same
+	// observed instant for durable rank classification so a controlled provider
+	// clock cannot make live claims appear expired or split the two order planes.
+	now = provider.OrderAt.UTC()
 	current, err := s.store.Meta(ctx)
 	if err != nil {
 		return readyCombinedSnapshot{}, mapped(err)
@@ -494,12 +501,10 @@ func workflowReadyOrderKey(item workflowplugin.ItemView, now time.Time) (readyOr
 	}
 	created, known := workflowReadyCreatedAt(item)
 	if !known {
-		// The workflow provider's legacy ItemView has no creation instant. Keep
-		// those rows after the fully classified durable order rather than
-		// inventing a timestamp or letting provider priority reorder the core
-		// plane. A provider row with a real creation field still participates in
-		// the shared hybrid tuple below.
-		return readyOrderKey{Bucket: 2, Rank: priority, Revision: item.Revision}, false, nil
+		// Every normal provider item is required to carry its run's authoritative
+		// creation instant. Falling back to a synthetic bucket would recreate the
+		// rejected second ordering plane and make the page boundary unstable.
+		return readyOrderKey{}, false, failure("internal_error", "workflow ready item has no authoritative creation time")
 	}
 	return liveReadyOrderKey(created, now, priority, item.Revision), true, nil
 }
@@ -643,6 +648,9 @@ func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req 
 		return s.readyPage(ctx, by, req, restartOnRevision)
 	}
 	workflowPhase := req.Position != nil && req.Position.Workflow
+	if req.Position != nil && !workflowPhase && req.Position.WorkflowSnapshot == nil && req.Position.ReadyMembership != "" {
+		return BeadPage{}, failure("cursor_invalid", "aggregate ready cursor is missing its snapshot binding")
+	}
 	coreReq := req
 	if workflowPhase {
 		// Observe the current core incarnation without applying a provider
@@ -744,6 +752,9 @@ func (s *Service) readyCombinedPage(ctx context.Context, by model.PrincipalRef, 
 		return BeadPage{}, failure("internal_error", "invalid workflow ready snapshot")
 	}
 	position := req.Position
+	if position != nil && (position.WorkflowSnapshot == nil || position.ReadyMembership == "") {
+		return BeadPage{}, failure("cursor_invalid", "aggregate ready cursor is missing its snapshot binding")
+	}
 	if position != nil && position.WorkflowSnapshot != nil {
 		if !position.WorkflowSnapshot.Valid() {
 			return BeadPage{}, failure("cursor_invalid", "workflow cursor is not snapshot-bound; restart paging")
@@ -813,6 +824,9 @@ func (s *Service) readyCombinedPage(ctx context.Context, by model.PrincipalRef, 
 				return BeadPage{}, failure("cursor_invalid", "combined ready membership changed; restart paging")
 			}
 			position = nil
+		}
+		if position != nil && position.Offset > len(items) {
+			return BeadPage{}, failure("cursor_invalid", "aggregate ready cursor is beyond the captured ready set")
 		}
 	}
 	membership := combinedReadyMembership(items)

@@ -161,6 +161,10 @@ type ReadySnapshot struct {
 	Items      []ItemView
 	Revision   pluginapi.Revision
 	ValidUntil *time.Time
+	// OrderAt is the provider clock used for this checkpoint's readiness and
+	// claim-expiry decisions. The service uses it for the shared durable and
+	// workflow ordering tuple so controlled clocks cannot drift between planes.
+	OrderAt time.Time `json:"-"`
 	// These fields are service-internal observations from the same provider
 	// checkpoint as Items. They are omitted from wire projections.
 	BlockedOrdinary map[string]bool     `json:"-"`
@@ -1107,7 +1111,13 @@ func (p *Provider) ReadySnapshot(ctx context.Context, by model.PrincipalRef, pro
 	if len(include) != 0 {
 		includeEphemeral = include[0]
 	}
-	return p.readySnapshot(ctx, value, revision, by, project, types, meta, p.now(), includeEphemeral, nil)
+	now := p.now().UTC()
+	snapshot, err := p.readySnapshot(ctx, value, revision, by, project, types, meta, now, includeEphemeral, nil)
+	if err != nil {
+		return ReadySnapshot{}, err
+	}
+	snapshot.OrderAt = now
+	return snapshot, nil
 }
 
 // ReadySnapshotWithResolver is the service-facing ready seam. Durable
@@ -1143,6 +1153,7 @@ func (p *Provider) readySnapshotWithResolverAndCoreAt(ctx context.Context, by mo
 	if err != nil {
 		return ReadySnapshot{}, err
 	}
+	snapshot.OrderAt = now.UTC()
 	snapshot.BlockedOrdinary = ordinaryBlocked(value, ordinaryIDs, meta)
 	snapshot.ActiveIDs = activeIDs(value, by, meta)
 	return snapshot, nil
