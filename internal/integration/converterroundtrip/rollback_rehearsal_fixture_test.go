@@ -124,11 +124,12 @@ func TestRollbackRehearsalFixtureEvidence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			defer r.Close()
 			page, err := r.Query(ctx, driver.Query{Limit: 1000})
 			if err != nil || page.NextCursor != nil {
 				t.Fatal("incomplete actual record census", err)
 			}
-			commits, err := r.Changesets(ctx, nil, 1000)
+			commits, err := r.Changesets(ctx, &driver.Cursor{Incarnation: restored.Restored.Incarnation, Revision: restored.Restored.Head}, 1000)
 			if err != nil || len(commits) == 1000 {
 				t.Fatal("incomplete actual changeset census", err)
 			}
