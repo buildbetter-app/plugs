@@ -91,14 +91,7 @@ def equal(first, second):
     return first == second
 
 
-def validate_binding(binding):
-    require(type(binding) is dict, "binding object")
-    require(equal(binding["control"], CONTROL) and equal(binding["attempt"], 1),
-            "immutable control identity")
-    for key in ("run", "artifact"):
-        require(type(binding[key]) is str and re.fullmatch(r"[1-9][0-9]*", binding[key]) is not None,
-                "decimal string identity: " + key)
-    product = binding["product"]
+def validate_product(product):
     require(type(product) is dict and set(product) == {"commit", "tree", "ordered_parents", "raw_commit_sha256"},
             "complete product identity shape")
     for key, width in (("commit", 40), ("tree", 40), ("raw_commit_sha256", 64)):
@@ -108,6 +101,20 @@ def validate_binding(binding):
     require(type(parents) is list and len(parents) > 0
             and all(type(p) is str and re.fullmatch(r"[0-9a-f]{40}", p) is not None for p in parents)
             and len(parents) == len(set(parents)), "ordered product parents")
+
+
+def validate_binding(binding, expected_product=None):
+    require(type(binding) is dict, "binding object")
+    require(equal(binding["control"], CONTROL) and equal(binding["attempt"], 1),
+            "immutable control identity")
+    for key in ("run", "artifact"):
+        require(type(binding[key]) is str and re.fullmatch(r"[1-9][0-9]*", binding[key]) is not None,
+                "decimal string identity: " + key)
+    product = binding["product"]
+    validate_product(product)
+    if expected_product is not None:
+        validate_product(expected_product)
+        require(equal(product, expected_product), "product identity differs from finite dispatch receipt")
 
 
 def validate_runtime_summary(summary, binding):
@@ -240,7 +247,7 @@ def compare_pair(units):
     return {"disposition": "PASS_BOUNDED_GENERATED_IDENTITY_CORRESPONDENCE", "comment_correspondence": identities,
             "literal_differences": differences, "full_B25_B27": "UNQUALIFIED",
             "scope": "Bounded R418 main archive and replay correspondence only. Native deletion transitions, precedence/type/collision/lease branches and HTTP lifecycle are separate obligations.",
-            "NativeAdmission": "None", "FullS1": "0/28", "B26": "SEPARATE", "B05": "PAUSED"}
+            "NativeAdmission": "ADOPTED_R41800330346_ON_MAIN_7a43c3c6", "FullS1": "0/28", "B26": "SEPARATE", "B05": "PAUSED"}
 
 
 def subscriber_comment_images(sub):
@@ -263,8 +270,8 @@ def subscriber_comment_images(sub):
     return images
 
 
-def load_unit(binding, index):
-    validate_binding(binding)
+def load_unit(binding, index, expected_product=None):
+    validate_binding(binding, expected_product)
     assets = binding["assets"]
     used = set()
 
@@ -357,15 +364,18 @@ def main():
     require(digest(raw) == args.inputs_sha256, "input manifest hash")
     binding = decode(raw)
     require(binding["producer"] == PRODUCER and binding["authority_sha256"] == list(AUTHORITIES), "frozen producer authority")
+    consumer = binding.get("consumer")
+    validate_product(consumer)
     require(len(binding["recordings"]) == 2, "two own recording units")
     first, second = binding["recordings"]
-    validate_binding(first)
-    validate_binding(second)
+    validate_binding(first, consumer)
+    validate_binding(second, consumer)
     require(equal(first["product"], second["product"]) and first["run"] != second["run"]
             and first["artifact"] != second["artifact"], "same product and distinct runs/artifacts")
-    units = [load_unit(row, index) for index, row in enumerate(binding["recordings"])]
+    units = [load_unit(row, index, consumer) for index, row in enumerate(binding["recordings"])]
     report = compare_pair(units)
     report["recording_bindings"] = binding
+    report["consumer_product"] = consumer
     report["input_manifest_sha256"] = args.inputs_sha256
     report["comparator_sha256"] = digest(Path(__file__).read_bytes())
     print(json.dumps(report, indent=2, ensure_ascii=False))
