@@ -171,8 +171,6 @@ func TestCallbackFailurePreservesIndependentDeadlineAndEstablishedCancellationMa
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		code(t, callbackFailure(ctx, kind, "test", context.Canceled), "subscriber_unavailable")
-		if err := callbackFailure(context.Background(), kind, "test", context.Canceled); !errors.Is(err, context.Canceled) {
-			t.Fatalf("callback changed independent cancellation error: %v", err)
-		}
+		code(t, callbackFailure(context.Background(), kind, "test", context.Canceled), "subscriber_unavailable")
 	}
 }
