@@ -166,11 +166,21 @@ const statementCountToleranceDolt = 2
 // Re-pinned for the batch-create round-trip work (was 7008 / 14014 / 846),
 // then for the parent-child cascade (classic was 786); see
 // pinnedEmbeddedStatementCounts in internal/storage/embeddeddolt for the
-// per-change breakdown. The two backends now agree to within the tolerance.
+// earlier per-change breakdown.
+//
+// Re-measured at 042defcf58f2, original run 41965189104, after the required
+// active-first GetIssueInTx change c5c5e74e41d4. A durable lookup now pays an
+// absent-wisp SELECT before reading issues. Each create hydrates once; each
+// assign update reads three times, so C creates and U updates add C+3U queries:
+// 356: 102+3*16=150; 712: 204+3*32=300; classic: 10+3*10=40.
+// Saved totals were 6546 / 13090 / 875, versus prior 6396 / 12791 / 835.
+// The 712 delta is 299: its -1 residual is unexplained within the unchanged
+// tolerance of 2, not evidence of a per-SQL trace. Workloads and instrumentation
+// are unchanged. The embedded baseline was not re-measured or re-pinned.
 var pinnedDoltStatementCounts = map[string]int64{
-	"356 (mol 1x)": 6396,
-	"712 (mol 2x)": 12791,
-	"40 (classic)": 835,
+	"356 (mol 1x)": 6546,
+	"712 (mol 2x)": 13090,
+	"40 (classic)": 875,
 }
 
 // BenchmarkLargeBatchApply_Dolt is gated by setupBenchStore's own
