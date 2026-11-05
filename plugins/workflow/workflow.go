@@ -1931,6 +1931,7 @@ func (p *Provider) Demote(ctx context.Context, by model.PrincipalRef, req Demote
 		if target.Parent != nil && target.Parent.ID == req.Source.ID {
 			ref := model.RefByID(itemID, model.Natural64(0))
 			target.Parent = &ref
+			item.ChildCounter++
 		}
 		filtered := target.Inbound[:0]
 		for _, relation := range target.Inbound {

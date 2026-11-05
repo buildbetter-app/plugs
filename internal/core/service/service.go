@@ -137,8 +137,26 @@ func (s *Service) apply(ctx context.Context, by model.PrincipalRef, method strin
 		return port.WriteOutcome{}, failure("project_required", "supply a project")
 	}
 	meta.Method = method
+	deletes := ordinaryDeletes(cs)
+	jointDelete := method == "tx.apply" && s.workflow != nil && len(deletes) != 0
 	if s.workflow != nil && (method == "bead.claim" || method == "bead.claimNext" || method == "bead.close" || method == "tx.apply") {
 		ctx = pipeline.WithWorkflowGuard(ctx, s.workflowWriteGuard)
+	}
+	if jointDelete {
+		writer, ok := s.writer.(interface {
+			ApplyWithSourceOperations(context.Context, model.PrincipalRef, model.ChangeSet, model.WriteMeta, pipeline.SourcePreparation, func(model.Ref) string) (port.WriteOutcome, error)
+		})
+		if !ok {
+			return port.WriteOutcome{}, failure("unsupported", "writer lacks atomic workflow delete capability")
+		}
+		v, err := writer.ApplyWithSourceOperations(ctx, by, cs, meta, s.ordinaryDeletePreparation(by, meta, deletes), ordinaryDeleteKind)
+		if err == nil && v.Replayed {
+			err = s.workflow.AuthorizeOrdinaryDeleteReplay(ctx, by, cs, meta)
+		}
+		if err != nil {
+			return port.WriteOutcome{}, mapped(err)
+		}
+		return v, nil
 	}
 	if writer, ok := s.writer.(port.OutcomeWriter); ok {
 		v, err := writer.ApplyWithOutcome(ctx, by, cs, meta)
