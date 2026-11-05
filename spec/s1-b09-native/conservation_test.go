@@ -320,7 +320,7 @@ func (r *b09ReplayTarget) assertMutation(before, after b09ReplayStage, id, opera
 			b09Equal(t, operation+" retained version prefix", old, got[:len(old)])
 		}
 		latest := got[len(got)-1]
-		wantVersion := driver.Version{Ref: wantRecords[key].Ref, Revision: wantMeta.Head, Base: creating, CreatedAt: r.now, Principal: b09Principal}
+		wantVersion := driver.Version{Ref: r.expectedVersionRef(id, creating), Revision: wantMeta.Head, Base: creating, CreatedAt: r.now, Principal: b09Principal}
 		if creating {
 			wantVersion.Body = wantBody
 		} else {
@@ -525,6 +525,18 @@ func assertB09Version(t *testing.T, label string, want, got driver.Version) {
 	b09Equal(t, label+" complete envelope", want, got)
 }
 
+// Create prepares model.Ref{ID: id}, with the branch omitted. Memory and
+// SQLite retain that acquired lock reference in each raw version; PostgreSQL
+// constructs versions from its staged record, whose branch is explicitly zero.
+// The other operations in this sequence supply an explicit zero branch.
+// Keep these independently expected wire images exact, including presence.
+func (r *b09ReplayTarget) expectedVersionRef(id string, creating bool) model.Ref {
+	if creating && r.engine != "postgres" {
+		return model.Ref{ID: id}
+	}
+	return model.RefByID(id, model.Natural64(0))
+}
+
 func assertB09InitialSQL(t *testing.T, stage b09ReplayStage, want map[string]driver.Record) {
 	t.Helper()
 	for _, name := range []string{"records", "versions", "hierarchy_source_current", "hierarchy_source_history", "graph_link_source_current", "graph_link_source_history"} {
@@ -661,7 +673,7 @@ func (r *b09ReplayTarget) expectedSQLStates(want driver.Record, creating bool) m
 	}
 	// PostgreSQL keeps record state in records; SQLite also journals its key.
 	if r.engine == "sqlite" {
-		ref := want.Ref
+		ref := r.expectedVersionRef(want.Ref.ID, creating)
 		add(driver.LockState{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &ref}, Present: true})
 	}
 	for _, sentinel := range []driver.Sentinel{driver.Sentinel("bead/" + want.Ref.ID), driver.SentinelGraphBlocking} {
@@ -786,7 +798,7 @@ func (r *b09ReplayTarget) assertSQLMutation(before, after b09ReplayStage, id, op
 			if len(updated) != 0 || len(added) != 1 {
 				t.Fatal("SQL version exact append")
 			}
-			version := driver.Version{Ref: want.Ref, Revision: want.Revision, Base: creating, CreatedAt: r.now, Principal: b09Principal}
+			version := driver.Version{Ref: r.expectedVersionRef(id, creating), Revision: want.Revision, Base: creating, CreatedAt: r.now, Principal: b09Principal}
 			if creating {
 				version.Body = want.Body
 			} else {

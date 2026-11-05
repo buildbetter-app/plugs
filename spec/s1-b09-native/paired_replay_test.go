@@ -341,7 +341,7 @@ func (r *b09ReplayTarget) assertHistoryState(label string, meta driver.Meta, wan
 		r.t.Fatalf("%s actual history replay: %v", label, err)
 	}
 	b09Equal(r.t, label+" replayed complete body", json.RawMessage(want.Body), got.Body)
-	b09Equal(r.t, label+" replayed ref", want.Ref, got.Ref)
+	b09Equal(r.t, label+" replayed ref", version.Ref, got.Ref)
 	if got.Revision.String() != want.Revision.String() || got.Base != version.Base || got.Deleted || !got.CreatedAt.Equal(version.CreatedAt) || !reflect.DeepEqual(got.Principal, version.Principal) {
 		r.t.Fatalf("%s replayed version envelope differs: %+v", label, got)
 	}
