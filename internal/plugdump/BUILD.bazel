@@ -34,11 +34,12 @@ go_test(
         "source_history_test.go",
         "source_planes_test.go",
     ],
-    data = glob(["testdata/**"]),
+    data = ["manifest.schema.json"] + glob(["testdata/**"]),
     embed = [":plugdump"],
     deps = [
         "//internal/testutil",
         "@com_github_go_sql_driver_mysql//:mysql",
+        "@com_github_santhosh_tekuri_jsonschema_v6//:jsonschema",
     ],
 )
 

@@ -17,6 +17,7 @@
     "scope": {"const": "offline-head-and-source-archives"},
     "history": {"enum": ["unavailable", "available-unverified", "verified"]},
     "source_fields_contract": {"const": "beads-issues-source-fields/1"},
+    "source_plane_address_contract": {"const": "beads-source-planes/1"},
     "projects": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/project"}},
     "ontology": {"type": "array", "items": {"$ref": "#/$defs/ontologyDirective"}},
     "kind_registry": {"type": "array", "items": {"$ref": "#/$defs/kind"}},

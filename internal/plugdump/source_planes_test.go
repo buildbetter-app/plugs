@@ -6,10 +6,13 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
 	"reflect"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 // This is a mapping fixture, not persisted-native or public-runtime evidence.
@@ -167,29 +170,171 @@ func TestSourcePlaneMarkerRequiresExactPresentValue(t *testing.T) {
 	for _, value := range []any{nil, "", "beads-source-planes/2", false, json.Number("1"), map[string]any{}} {
 		t.Run(string(mustJSON(t, value)), func(t *testing.T) {
 			_, inventory := fixture(t)
+			baseline := mustJSON(t, inventory)
+			if _, err := ReadInventory(bytes.NewReader(baseline)); err != nil {
+				t.Fatalf("invalid baseline inventory: %v", err)
+			}
 			var object map[string]any
-			if err := decodeJSON(mustJSON(t, inventory), &object); err != nil {
+			if err := decodeJSON(baseline, &object); err != nil {
 				t.Fatal(err)
 			}
 			object["source_plane_address_contract"] = value
-			if _, err := ReadInventory(bytes.NewReader(mustJSON(t, object))); err == nil {
-				t.Fatal("inventory accepted malformed present marker")
+			checkRefusal := func(where string, err error) {
+				t.Helper()
+				want := "source_plane_address_contract"
+				if value == nil {
+					want = "unsupported source plane address contract"
+				}
+				if _, ok := value.(string); ok {
+					want = "unsupported source plane address contract"
+				}
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Fatalf("%s did not reach the marker refusal: err=%v want=%s", where, err, want)
+				}
 			}
+			_, err := ReadInventory(bytes.NewReader(mustJSON(t, object)))
+			checkRefusal("inventory", err)
 			source, inventory := fixture(t)
-			members := archiveMembers(t, buildFixture(t, source, inventory))
+			archive := buildFixture(t, source, inventory)
+			if _, err := Validate(bytes.NewReader(archive)); err != nil {
+				t.Fatalf("invalid baseline archive: %v", err)
+			}
+			members := archiveMembers(t, archive)
+			// Decode into a fresh object: reusing the inventory map would retain
+			// unrelated inventory keys and cause an earlier unknown-field refusal.
+			object = nil
 			if err := decodeJSON(members["manifest.json"], &object); err != nil {
 				t.Fatal(err)
 			}
 			object["source_plane_address_contract"] = value
 			members["manifest.json"] = mustJSON(t, object)
-			if _, err := Validate(bytes.NewReader(reframeSourcePlaneArchive(t, members))); err == nil {
-				t.Fatal("manifest accepted malformed present marker")
-			}
+			_, err = Validate(bytes.NewReader(reframeSourcePlaneArchive(t, members)))
+			checkRefusal("manifest", err)
 		})
 	}
 	_, _, err := (SQLSource{}).NativeInventory(context.Background(), NativeCapture{SourcePlaneAddressContract: "unknown"})
 	if err == nil || !strings.Contains(err.Error(), "source plane address contract") {
 		t.Fatalf("native selector was not rejected before SQL: %v", err)
+	}
+}
+
+func TestSourcePlaneMarkerRejectsNoncanonicalAliases(t *testing.T) {
+	source, inventory := fixture(t)
+	baselineInventory := mustJSON(t, inventory)
+	baselineArchive := buildFixture(t, source, inventory)
+	if _, err := ReadInventory(bytes.NewReader(baselineInventory)); err != nil {
+		t.Fatalf("invalid baseline inventory: %v", err)
+	}
+	if _, err := Validate(bytes.NewReader(baselineArchive)); err != nil {
+		t.Fatalf("invalid baseline archive: %v", err)
+	}
+	for _, alias := range []string{"SOURCE_PLANE_ADDRESS_CONTRACT", "Source_Plane_Address_Contract", "ſource_plane_address_contract"} {
+		for _, test := range []struct {
+			name   string
+			fields map[string]any
+		}{
+			{"null alias", map[string]any{alias: nil}},
+			{"empty alias", map[string]any{alias: ""}},
+			{"supported alias", map[string]any{alias: SourcePlaneAddressContract}},
+			{"matching alias and canonical", map[string]any{alias: SourcePlaneAddressContract, "source_plane_address_contract": SourcePlaneAddressContract}},
+			{"null alias and supported canonical", map[string]any{alias: nil, "source_plane_address_contract": SourcePlaneAddressContract}},
+			{"supported alias and empty canonical", map[string]any{alias: SourcePlaneAddressContract, "source_plane_address_contract": ""}},
+		} {
+			t.Run(alias+"/"+test.name, func(t *testing.T) {
+				var object map[string]any
+				if err := decodeJSON(baselineInventory, &object); err != nil {
+					t.Fatal(err)
+				}
+				for key, value := range test.fields {
+					object[key] = value
+				}
+				_, err := ReadInventory(bytes.NewReader(mustJSON(t, object)))
+				if err == nil || !strings.Contains(err.Error(), "noncanonical source_plane_address_contract key") {
+					t.Fatalf("inventory alias did not reach marker refusal: %v", err)
+				}
+				members := archiveMembers(t, baselineArchive)
+				object = nil
+				if err := decodeJSON(members["manifest.json"], &object); err != nil {
+					t.Fatal(err)
+				}
+				for key, value := range test.fields {
+					object[key] = value
+				}
+				members["manifest.json"] = mustJSON(t, object)
+				_, err = Validate(bytes.NewReader(reframeSourcePlaneArchive(t, members)))
+				if err == nil || !strings.Contains(err.Error(), "noncanonical source_plane_address_contract key") {
+					t.Fatalf("manifest alias did not reach marker refusal: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestSourcePlaneManifestPublishedSchemaCorrespondence(t *testing.T) {
+	data, err := os.ReadFile("manifest.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document any
+	if err := decodeJSON(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	compiler := jsonschema.NewCompiler()
+	const schemaURL = "https://plug.invalid/manifest.schema.json"
+	if err := compiler.AddResource(schemaURL, document); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := compiler.Compile(schemaURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, contract := range []string{"", SourcePlaneAddressContract} {
+		name := "legacy"
+		if contract != "" {
+			name = "capability"
+		}
+		source, inventory := fixture(t)
+		inventory.SourcePlaneAddressContract = contract
+		if _, err := ReadInventory(bytes.NewReader(mustJSON(t, inventory))); err != nil {
+			t.Fatalf("canonical inventory refused: %v", err)
+		}
+		archive := buildFixture(t, source, inventory)
+		if _, err := Validate(bytes.NewReader(archive)); err != nil {
+			t.Fatalf("canonical archive refused: %v", err)
+		}
+		var manifest map[string]any
+		if err := decodeJSON(archiveMembers(t, archive)["manifest.json"], &manifest); err != nil {
+			t.Fatal(err)
+		}
+		if err := schema.Validate(manifest); err != nil {
+			t.Fatalf("emitted manifest violates published schema (contract %q): %v", contract, err)
+		}
+		if got, present := manifest["source_plane_address_contract"]; (contract == "" && present) || (contract != "" && (!present || got != contract)) {
+			t.Fatalf("canonical marker emission changed: contract=%q present=%v value=%v", contract, present, got)
+		}
+		for _, test := range []struct {
+			name, key string
+			value     any
+		}{
+			{"null marker", "source_plane_address_contract", nil},
+			{"empty marker", "source_plane_address_contract", ""},
+			{"unknown marker", "source_plane_address_contract", "beads-source-planes/2"},
+			{"wrong marker type", "source_plane_address_contract", true},
+			{"folded marker alias", "SOURCE_PLANE_ADDRESS_CONTRACT", SourcePlaneAddressContract},
+			{"unknown member", "undeclared_member", "value"},
+			{"unknown existing schema version", "schema", json.Number("2")},
+		} {
+			t.Run(name+"/"+test.name, func(t *testing.T) {
+				var changed map[string]any
+				if err := decodeJSON(mustJSON(t, manifest), &changed); err != nil {
+					t.Fatal(err)
+				}
+				changed[test.key] = test.value
+				if err := schema.Validate(changed); err == nil || !strings.Contains(err.Error(), test.key) {
+					t.Fatalf("published schema did not refuse %s at %q: %v", test.name, test.key, err)
+				}
+			})
+		}
 	}
 }
 

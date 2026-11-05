@@ -57,6 +57,8 @@ IDs on different planes remain distinct; a duplicate complete tuple refuses.
 Raw record IDs, all ten dependency columns, target arms, metadata and source
 origins remain unchanged. An absent marker retains the legacy keys and
 refusals; an explicitly null, empty or unknown marker refuses at both inputs.
+The marker name must use the exact spelling above; case-folded aliases and
+alias/canonical combinations refuse, even when their values match.
 The native inventory command selects this capability explicitly; generic
 inventory callers may continue to omit it.
 

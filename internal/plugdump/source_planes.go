@@ -20,6 +20,14 @@ func validateSourcePlaneMarker(data []byte, contract string) error {
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return err
 	}
+	for key := range fields {
+		// encoding/json accepts folded matches for tagged struct fields. Such
+		// aliases must not turn a present marker into legacy omission or enable
+		// the capability without its canonical wire spelling.
+		if key != "source_plane_address_contract" && strings.EqualFold(key, "source_plane_address_contract") {
+			return fmt.Errorf("noncanonical source_plane_address_contract key %q", key)
+		}
+	}
 	if _, present := fields["source_plane_address_contract"]; present && contract != SourcePlaneAddressContract {
 		return fmt.Errorf("unsupported source plane address contract")
 	}
