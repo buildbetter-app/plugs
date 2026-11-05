@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"sort"
 	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -46,8 +45,7 @@ func (t *transaction) validateSelectionRowsObserved(ctx context.Context, rows ma
 			return fmt.Errorf("%w: SQLite selection incarnation mismatch", driver.ErrUnsupported)
 		}
 		id := keyID(index.Source.Key)
-		i := sort.Search(len(t.acquired), func(i int) bool { return keyID(t.acquired[i].Key) >= id })
-		if i == len(t.acquired) || keyID(t.acquired[i].Key) != id {
+		if _, found := t.acquiredMode(id); !found {
 			return fmt.Errorf("%w: SQLite selection source absent from lock census", driver.ErrUnsupported)
 		}
 		source, err := observe(ctx, index.Source.Key)
