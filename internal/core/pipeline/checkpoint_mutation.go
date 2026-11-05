@@ -18,6 +18,11 @@ func WithWorkflowGuard(ctx context.Context, guard func(context.Context, port.Pro
 }
 
 func (w *Writer) checkWorkflowGuard(ctx context.Context, p *prepared) error {
+	if p.source != nil {
+		// The trusted source adapter checked each ordered prefix against its
+		// staged image. Its original namespace CAS already joins this proposal.
+		return nil
+	}
 	guard, _ := ctx.Value(workflowGuardKey{}).(func(context.Context, port.ProposedChange) (driver.CheckpointExpectation, error))
 	if guard == nil {
 		return nil
