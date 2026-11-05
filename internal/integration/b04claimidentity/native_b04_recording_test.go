@@ -32,10 +32,10 @@ type b04NativeCapture struct {
 	SameOwner          string                     `json:"sameOwner"`
 	CustomActive       string                     `json:"customActive"`
 	ForeignHeld        string                     `json:"foreignHeld"`
-	DirectPost         b04NativeIssueProjection   `json:"directPost"`
-	SameOwnerPost      b04NativeIssueProjection   `json:"sameOwnerPost"`
-	CustomActivePost   b04NativeIssueProjection   `json:"customActivePost"`
-	ForeignHeldPost    b04NativeIssueProjection   `json:"foreignHeldPost"`
+	DirectPost         b04NativeStoredIssue       `json:"directPost"`
+	SameOwnerPost      b04NativeStoredIssue       `json:"sameOwnerPost"`
+	CustomActivePost   b04NativeStoredIssue       `json:"customActivePost"`
+	ForeignHeldPost    b04NativeStoredIssue       `json:"foreignHeldPost"`
 	Foreign            b04NativeForeignProjection `json:"foreign"`
 	NoOpHistorySame    bool                       `json:"noOpHistorySame"`
 	NoOpVersionsSame   bool                       `json:"noOpVersionsSame"`
@@ -60,7 +60,13 @@ type b04NativeIssueProjection struct {
 	Status    string `json:"status"`
 	Assignee  string `json:"assignee"`
 	StartedAt string `json:"startedAt,omitempty"`
-	Revision  string `json:"revision,omitempty"`
+}
+
+// Update returns claim fields without a revision. Show independently exposes
+// the stored revision; keep that observation separate and require it.
+type b04NativeStoredIssue struct {
+	b04NativeIssueProjection
+	Revision string `json:"revision"`
 }
 
 type b04NativeForeignProjection struct {
@@ -213,7 +219,7 @@ func recordB04NativeStore(t *testing.T, binary, root string, inputs b04NativeInp
 	readyIDs := b04NativeIDs(t, readyBefore)
 	direct := b04NativeClaim(t, c, "claim-direct", ids["direct"], true)
 	directPost := b04NativeShow(t, c, "show-direct", direct.ID)
-	if direct != directPost {
+	if direct != directPost.b04NativeIssueProjection {
 		t.Fatal("direct claim response differs from its hydrated stored postimage")
 	}
 	beforeNoOp := b04NativeState(t, c, "same-owner-before")
@@ -231,12 +237,12 @@ func recordB04NativeStore(t *testing.T, binary, root string, inputs b04NativeInp
 	}
 	custom := b04NativeClaim(t, c, "claim-custom-active", ids["customActive"], true)
 	customPost := b04NativeShow(t, c, "show-custom-active", custom.ID)
-	if custom != customPost {
+	if custom != customPost.b04NativeIssueProjection {
 		t.Fatal("custom-active claim response differs from its hydrated stored postimage")
 	}
 	held := b04NativeClaim(t, c, "claim-foreign-held", ids["foreignHeld"], true)
 	heldPost := b04NativeShow(t, c, "show-foreign-held", held.ID)
-	if held != heldPost {
+	if held != heldPost.b04NativeIssueProjection {
 		t.Fatal("foreign-holder initial claim did not return its stored postimage")
 	}
 	beforeForeign := b04NativeState(t, c, "foreign-before")
@@ -270,7 +276,7 @@ func recordB04NativeStore(t *testing.T, binary, root string, inputs b04NativeInp
 	for i, expected := range remaining {
 		result := c.expect(fmt.Sprintf("claim-next-%d", i+1), 0, "ready", "--claim", "--json")
 		winner := b04NativeClaimed(t, result.Stdout, expected)
-		if seen[winner.ID] || winner != b04NativeShow(t, c, fmt.Sprintf("show-next-%d", i+1), winner.ID) {
+		if seen[winner.ID] || winner != b04NativeShow(t, c, fmt.Sprintf("show-next-%d", i+1), winner.ID).b04NativeIssueProjection {
 			t.Fatal("claimNext repeated a winner or returned a different stored postimage")
 		}
 		b04NativeStartedDuring(t, winner, result)
@@ -425,7 +431,7 @@ func b04NativeClaimed(t *testing.T, data []byte, expected string) b04NativeIssue
 		}
 		return fmt.Sprint(row[key])
 	}
-	got := b04NativeIssueProjection{ID: text("id"), Status: text("status"), Assignee: text("assignee"), StartedAt: text("started_at"), Revision: text("current_revision")}
+	got := b04NativeIssueProjection{ID: text("id"), Status: text("status"), Assignee: text("assignee"), StartedAt: text("started_at")}
 	if got.ID != expected || got.Status != "in_progress" || got.Assignee != "s1-b04-native-owner" || got.StartedAt == "" {
 		t.Fatalf("native claim did not atomically return the expected hydrated owner/status/start: %+v", got)
 	}
@@ -458,9 +464,16 @@ func b04NativeClaim(t *testing.T, c *b04NativeCommand, label, id string, fresh b
 	return got
 }
 
-func b04NativeShow(t *testing.T, c *b04NativeCommand, label, id string) b04NativeIssueProjection {
+func b04NativeShow(t *testing.T, c *b04NativeCommand, label, id string) b04NativeStoredIssue {
 	t.Helper()
-	return b04NativeClaimed(t, c.run(label, "--readonly", "show", id, "--json"), id)
+	data := c.run(label, "--readonly", "show", id, "--json")
+	claim := b04NativeClaimed(t, data, id)
+	row := b04NativeRows(t, data)[0]
+	revision := fmt.Sprint(row["revision"])
+	if value, err := strconv.ParseUint(revision, 10, 64); err != nil || value == 0 {
+		t.Fatalf("native show has no genuine positive stored revision: %s", data)
+	}
+	return b04NativeStoredIssue{b04NativeIssueProjection: claim, Revision: revision}
 }
 
 func b04NativeVersions(t *testing.T, c *b04NativeCommand, label, id string) map[string]any {
