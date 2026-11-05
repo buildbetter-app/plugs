@@ -88,6 +88,9 @@ func TestB13NativeMemoryRecording(t *testing.T) {
 	binary := b13Admit(t, root)
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Minute)
 	defer cancel()
+	if err := os.MkdirAll("/tmp/plug-swarm/work", 0700); err != nil {
+		t.Fatal(err)
+	}
 	workspace, err := os.MkdirTemp("/tmp/plug-swarm/work", "b13-native-")
 	if err != nil {
 		t.Fatal(err)
