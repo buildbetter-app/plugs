@@ -54,6 +54,16 @@ type nativeReplay struct {
 	calls  []nativeRPCScope
 }
 
+// The native matrix is longer than the driver's ordinary ten-second storage
+// lease. Keep the fixture's existing host authority alive with its normal
+// heartbeat; do not change the lease budget or any application/SQL clock.
+func (r *nativeReplay) renewLease() {
+	r.f.t.Helper()
+	if err := r.f.lease.Renew(r.f.ctx); err != nil {
+		r.f.t.Fatalf("native replay lease renewal: %v", err)
+	}
+}
+
 // nativeReplayManifest is the finite H03/H04 execution boundary. The
 // existing recorder has broader hierarchy, external and category phases, but
 // this child requires the finite deferred-parent, live-ancestor blocker and
@@ -162,6 +172,7 @@ func (c *nativeReplayCoverage) require(t *testing.T, vector, run string) {
 
 func (r *nativeReplay) call(label, method string, params map[string]any, write bool) map[string]any {
 	r.f.t.Helper()
+	r.renewLease()
 	key := r.f.key(label, method, owner)
 	requestParams := make(map[string]any, len(params)+1)
 	for name, value := range params {
@@ -239,6 +250,7 @@ func (r *nativeReplay) write(label, method string, params map[string]any) model.
 
 func (r *nativeReplay) sourceImages() map[string]string {
 	r.f.t.Helper()
+	r.renewLease()
 	reader, err := r.f.store.Read(r.f.ctx, driver.View{Incarnation: r.f.metaSnapshot().Incarnation})
 	if err != nil {
 		r.f.t.Fatal(err)
@@ -266,6 +278,7 @@ func (r *nativeReplay) sourceImages() map[string]string {
 // key is checked absent; read keys are not added to the state digest.
 func (r *nativeReplay) snapshot() []byte {
 	r.f.t.Helper()
+	r.renewLease()
 	meta := r.f.metaSnapshot()
 	image := r.f.imageDigest()
 	reader, err := r.f.store.Read(r.f.ctx, driver.View{Incarnation: meta.Incarnation})
@@ -458,6 +471,7 @@ func (r *nativeReplay) observe(label string, deferred bool) {
 
 func (r *nativeReplay) reopen(label string) {
 	r.f.t.Helper()
+	r.renewLease()
 	before, oldStore, oldLease := r.snapshot(), r.f.store, r.f.lease
 	if err := oldLease.Release(r.f.ctx); err != nil {
 		r.f.t.Fatal(err)

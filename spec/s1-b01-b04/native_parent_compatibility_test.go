@@ -230,6 +230,7 @@ func (r *nativeReplay) seedCompatibility(label string, bodies map[string][]byte,
 }
 
 func (r *nativeReplay) rawCompatibilityBody(role string) []byte {
+	r.renewLease()
 	reader, err := r.f.store.Read(r.f.ctx, driver.View{Incarnation: r.f.metaSnapshot().Incarnation})
 	if err != nil {
 		r.f.t.Fatal(err)
