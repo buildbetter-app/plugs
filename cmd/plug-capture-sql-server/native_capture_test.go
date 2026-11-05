@@ -490,8 +490,10 @@ func TestPublicNativeCustomTypesAndNamespacedHashes(t *testing.T) {
 				}
 			}
 			parent := prefix + "-" + roots[0]
-			child := parent + ".2"
-			if got := f.create("synthetic child control", "--id", child, "--parent", parent); got != child {
+			// The public CLI deliberately makes --id and --parent exclusive.
+			// Let its real child allocator preserve the complete namespaced parent.
+			child := parent + ".1"
+			if got := f.create("synthetic child control", "--parent", parent); got != child {
 				t.Fatal("public child create relabelled the synthetic source")
 			}
 			source, err := (plugdump.SQLSource{DB: f.db}).ReadTable(context.Background(), "issues")
@@ -526,7 +528,7 @@ func TestPublicNativeCustomTypesAndNamespacedHashes(t *testing.T) {
 				t.Fatal(err)
 			}
 			manifest, err := plugdump.Validate(bytes.NewReader(archive))
-			if err != nil || len(manifest.Projects) != 1 || manifest.Projects[0].Prefix != prefix || manifest.Projects[0].ChildCounters[parent] != 2 || len(manifest.Ontology) != len(types) {
+			if err != nil || len(manifest.Projects) != 1 || manifest.Projects[0].Prefix != prefix || manifest.Projects[0].ChildCounters[parent] != 1 || len(manifest.Ontology) != len(types) {
 				t.Fatalf("actual archive identity/ontology validation: %+v %v", manifest, err)
 			}
 			observed := map[string]string{}
