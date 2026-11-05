@@ -899,6 +899,29 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 	}
 	for _, kind := range []string{"edge", "comment", "memory", "config", "beads-archive"} {
 		for _, source := range archive.Records(kind) {
+			// Imported Beads memories retain their source row in the archive, but
+			// only public string values are eligible for the live Plug memory view.
+			// The projection uses the exact target Ref.ID and preserves the value
+			// byte-for-byte; secret and non-string rows keep their raw storage body.
+			if profile != nil && kind == "memory" && source.Body["classification"] == "public" {
+				if value, ok := source.Body["value"].(string); ok {
+					key := strings.TrimSpace(stringValue(source.Body["key"]))
+					if key == "" {
+						return restorePlan{}, fmt.Errorf("imported memory %s has an empty public key", source.ID)
+					}
+					ref := model.RefByID("source/memory/"+source.ID, model.Natural64(0))
+					body := pipeline.MemoryDocument{ID: ref.ID, Key: key, Content: value, Metadata: map[string]any{
+						"plug.restore.source_id":      source.ID,
+						"plug.restore.source_table":   source.Source.Table,
+						"plug.restore.source":         cloneRow(source.Source.Fields),
+						"plug.restore.archive_sha256": archive.SHA256(),
+					}}
+					if err := add(ref, kind, body); err != nil {
+						return restorePlan{}, err
+					}
+					continue
+				}
+			}
 			body := cloneRow(source.Body)
 			body["source_id"] = source.ID
 			body["source_table"] = source.Source.Table

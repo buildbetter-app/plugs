@@ -102,7 +102,7 @@ type issueLine struct {
 type memoryLine struct {
 	RecordType string `json:"_type"`
 	Key        string `json:"key"`
-	Value      string `json:"value"`
+	Value      any    `json:"value"`
 }
 
 type headerLine struct {
@@ -339,7 +339,15 @@ func ConvertWithDirectives(dump Dump, directives []ontologymigration.Directive) 
 		if memories[i].Key != memories[j].Key {
 			return memories[i].Key < memories[j].Key
 		}
-		return memories[i].Value < memories[j].Value
+		// Preserve the established byte ordering for every string-only case.
+		left, leftString := memories[i].Value.(string)
+		right, rightString := memories[j].Value.(string)
+		if leftString && rightString {
+			return left < right
+		}
+		a, _ := canonicalJSON(memories[i].Value)
+		b, _ := canonicalJSON(memories[j].Value)
+		return a < b
 	})
 	projection := Projection{}
 	var out bytes.Buffer
@@ -886,7 +894,7 @@ func convertMemory(record Record, config bool, report *Report) (memoryLine, erro
 	} else if _, ok := classification.(string); !ok {
 		return memoryLine{}, fmt.Errorf("%s %q classification is not a string", record.Kind, record.ID)
 	}
-	if value, present := record.Body["value"]; !present || value == nil {
+	if value, present := record.Body["value"]; !present || value == nil && record.Kind != "memory" {
 		return memoryLine{}, fmt.Errorf("%s %q has null value", record.Kind, record.ID)
 	} else if stringValue, ok := value.(string); ok && stringValue == "" {
 		addUnique(&report.UnsupportedFields, fmt.Sprintf("%s/%s/value", record.Kind, record.ID))
@@ -905,18 +913,25 @@ func convertMemory(record Record, config bool, report *Report) (memoryLine, erro
 		return memoryLine{}, fmt.Errorf("%s %q source key is not a string", record.Kind, record.ID)
 	}
 	if record.Kind == "memory" {
-		if record.Source.Table != "config" || !strings.HasPrefix(sourceKey, "kv.memory.") || record.ID != strings.TrimPrefix(sourceKey, "kv.memory.") || bodyKey != record.ID {
+		if record.Source.Table != "config" || len(record.Source.Fields) != 2 || len(record.Body) != 3 || !strings.HasPrefix(sourceKey, "kv.memory.") || record.ID != strings.TrimPrefix(sourceKey, "kv.memory.") || bodyKey != record.ID {
 			return memoryLine{}, fmt.Errorf("memory %q identity does not match kv.memory source key", record.ID)
 		}
-		if text(record.Body["classification"]) != "public" {
+		classification := text(record.Body["classification"])
+		if classification != "public" && classification != "secret" {
 			return memoryLine{}, fmt.Errorf("memory %q has unsupported classification %q", record.ID, text(record.Body["classification"]))
 		}
 		if sourceValue, ok := record.Source.Fields["value"]; !ok || !jsonEquivalent(sourceValue, valueFromBody(record.Body)) {
 			return memoryLine{}, fmt.Errorf("memory %q source/body value mismatch", record.ID)
 		}
-		value, err := memoryValue(valueFromBody(record.Body), record)
-		if err != nil {
-			return memoryLine{}, err
+		value := valueFromBody(record.Body)
+		if classification == "secret" {
+			ref, ok := value.(map[string]any)
+			if !ok || len(ref) != 1 || ref["$secret"] != "config/"+sourceKey {
+				return memoryLine{}, fmt.Errorf("memory %q secret value is not its canonical reference", record.ID)
+			}
+		}
+		if err := validateSecretReferences(value); err != nil {
+			return memoryLine{}, fmt.Errorf("memory %q value: %w", record.ID, err)
 		}
 		return memoryLine{RecordType: "memory", Key: record.ID, Value: value}, nil
 	} else if record.Kind == "config" {
