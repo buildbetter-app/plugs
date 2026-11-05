@@ -131,13 +131,16 @@ func TestCompiledReadyRefusesInvalidPersistedPriorityBoundaries(t *testing.T) {
 			f := newWorkflowCursorFixture(t)
 			id := fmt.Sprintf("00000000-0000-4000-8000-%012d", 201+i)
 			seedPersistedReadyPriority(t, f, id, tc.priority)
-			_, err := f.app.Service.Ready(context.Background(), f.by, service.ReadyRequest{Project: "project", Limit: 1})
+			page, err := f.app.Service.Ready(context.Background(), f.by, service.ReadyRequest{Project: "project", Limit: 1})
 			if err == nil {
 				t.Fatalf("invalid persisted priority %q was accepted", tc.priority)
 			}
+			if len(page.Items) != 0 {
+				t.Fatalf("invalid persisted priority %q disclosed a partial page: %+v", tc.priority, page)
+			}
 			var typed *model.Error
-			if !errors.As(err, &typed) || typed.Data.Code != "invalid_params" {
-				t.Fatalf("invalid persisted priority %q returned %v, want invalid_params", tc.priority, err)
+			if !errors.As(err, &typed) || typed.Data.Code != "internal_error" {
+				t.Fatalf("invalid persisted priority %q returned %v, want internal_error", tc.priority, err)
 			}
 		})
 	}
