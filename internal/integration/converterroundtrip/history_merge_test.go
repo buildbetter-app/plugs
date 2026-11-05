@@ -80,7 +80,7 @@ func projectHistoryArchive(t *testing.T, prefix string, ordinal int) []byte {
 	oldPrefix := []byte(`"demo"`)
 	newPrefix := []byte(`"` + prefix + `"`)
 	for name, raw := range members {
-		if name == "manifest.json" || name == dumpformat.SourceHistoryMember || name == "records/beads-archive.ndjson" {
+		if name == "manifest.json" || name == dumpformat.SourceHistoryMember {
 			continue
 		}
 		raw = bytes.ReplaceAll(raw, oldBead, newBead)
@@ -134,10 +134,6 @@ func projectHistoryArchive(t *testing.T, prefix string, ordinal int) []byte {
 	decode(t, members[dumpformat.SourceHistoryMember], &history)
 	if len(history.ProjectHistories) != 0 || len(history.Commits) < 2 {
 		t.Fatal("complete fixture no longer has a legacy verified history")
-	}
-	history.Events = []dumpformat.Row{}
-	for i := range history.Range.Frames {
-		history.Range.Frames[i].Events = []dumpformat.Row{}
 	}
 
 	// Make commit and event identities disjoint without changing their shape.
@@ -206,6 +202,35 @@ func projectHistoryArchive(t *testing.T, prefix string, ordinal int) []byte {
 			raw = bytes.ReplaceAll(raw, []byte(`"`+old+`"`), []byte(`"`+newID+`"`))
 		}
 		members[name] = raw
+	}
+	// Archive rows are content-addressed by their source fields. Prefix and
+	// event-ID rewrites above therefore require recomputing each changed row's
+	// identity; unchanged migration rows retain their exact shared identity and
+	// are deduplicated by MergeArchives.
+	if raw, ok := members["records/beads-archive.ndjson"]; ok {
+		var output bytes.Buffer
+		for _, line := range bytes.Split(raw, []byte{'\n'}) {
+			line = bytes.TrimSpace(line)
+			if len(line) == 0 {
+				continue
+			}
+			var record dumpformat.Record
+			if err := json.Unmarshal(line, &record); err != nil {
+				t.Fatalf("rewrite archive record: %v", err)
+			}
+			fields, err := json.Marshal(record.Source.Fields)
+			if err != nil {
+				t.Fatalf("marshal archive source fields: %v", err)
+			}
+			record.ID = record.Source.Table + "/" + hashBytes(append(fields, '\n'))
+			encoded, err := json.Marshal(record)
+			if err != nil {
+				t.Fatalf("marshal archive record: %v", err)
+			}
+			output.Write(encoded)
+			output.WriteByte('\n')
+		}
+		members["records/beads-archive.ndjson"] = output.Bytes()
 	}
 	members[dumpformat.SourceHistoryMember] = encode(t, history)
 	for name, raw := range members {
