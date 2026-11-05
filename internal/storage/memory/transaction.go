@@ -30,6 +30,7 @@ type transaction struct {
 	nativeRestore           *driver.NativeRestoreProfile
 	nativeAllocators        bool
 	importRestore           *driver.RestoreImportProfile
+	sourcePlaneImport       *driver.SourcePlaneImportPublication
 	closed, locked, hasHead bool
 	acquired                driver.LockSet
 	records                 map[string]*driver.Record
@@ -440,6 +441,11 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 						return model.Changeset{}, err
 					}
 				}
+			}
+		}
+		if t.sourcePlaneImport != nil {
+			if err := t.sourcePlaneImport.Validate(header, t.checkpointWrites, t.records); err != nil {
+				return model.Changeset{}, err
 			}
 		}
 		expected = t.restore.Incarnation

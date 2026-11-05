@@ -42,6 +42,8 @@ type Report struct {
 	IdempotencyKey string
 	RequestHash    string
 	Recovered      bool
+	SourcePlanes   *driver.SourcePlaneCommitBindingV1
+	Receipt        *driver.IdempotencyRecord
 }
 
 // Verification is a trusted offline comparison, bound to the exact tar bytes.
@@ -90,7 +92,7 @@ func RestoreImport(ctx context.Context, input io.Reader, target driver.Store, pr
 	if err := ctx.Err(); err != nil {
 		return Report{}, err
 	}
-	bound, err := profile.DetachedCoreOnly()
+	bound, err := profile.Detached()
 	if err != nil {
 		return Report{}, err
 	}
@@ -107,7 +109,7 @@ func RestoreImportWithLease(ctx context.Context, input io.Reader, target driver.
 	if err := ctx.Err(); err != nil {
 		return Report{}, err
 	}
-	bound, err := profile.DetachedCoreOnly()
+	bound, err := profile.Detached()
 	if err != nil {
 		return Report{}, err
 	}
@@ -151,14 +153,19 @@ func restoreArchive(ctx context.Context, archive *dumpformat.Archive, target dri
 }
 
 func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive, target driver.Store, supplied driver.ActiveLease, profile *driver.RestoreImportProfile, checks []Verification) (Report, error) {
-	if profile != nil && profile.SourcePlanes != nil {
-		return Report{Archive: archive}, driver.ErrUnsupported
-	}
 	if archive == nil || target == nil {
 		return Report{Archive: archive}, fmt.Errorf("restore requires an archive and target store")
 	}
-	if archive.Manifest().SourcePlaneAddressContract != "" {
+	if archive.Manifest().SourcePlaneAddressContract != "" && (profile == nil || profile.SourcePlanes == nil) {
 		return Report{Archive: archive}, fmt.Errorf("%w: source plane archive requires the joint restore adapter", driver.ErrUnsupported)
+	}
+	var sourceLogical []byte
+	if profile != nil && profile.SourcePlanes != nil {
+		prepared, prepareErr := prepareSourceArchive(ctx, archive, *profile, true)
+		if prepareErr != nil {
+			return Report{Archive: archive}, prepareErr
+		}
+		sourceLogical = prepared.LogicalImage()
 	}
 	meta, err := target.Meta(ctx)
 	report := Report{Archive: archive, Target: meta}
@@ -252,6 +259,19 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		}
 		defer func() { _ = lease.Release(context.WithoutCancel(ctx)) }()
 	}
+	var sourceCapability driver.WorkflowCheckpointStore
+	if sourceLogical != nil {
+		sourceCapability, err = driver.RequireWorkflowCheckpointStore(target, lease)
+		if err != nil {
+			return report, err
+		}
+		if _, err = driver.PrepareSourcePlaneImportProfile(*profile, meta, sourceCapability.WorkflowCheckpointLifetime()); err != nil {
+			return report, err
+		}
+		// The final evidence has a new-incarnation-dependent body, but its complete
+		// lock is acquired with the rest of the core before Head.
+		lockPlan.records = append(append([]restoreRecord(nil), lockPlan.records...), restoreRecord{ref: model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0)), kind: "instance_config"})
+	}
 	requests := lockRequests(lockPlan)
 	tx, err := target.Write(ctx, lease)
 	if err != nil {
@@ -281,6 +301,19 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 			}
 			err = continuation.RestoreAllocators(ctx, plan.allocators)
 		}
+	} else if sourceLogical != nil {
+		capability, ok := tx.(driver.SourcePlaneRestoreTx)
+		if !ok {
+			return report, driver.ErrUnsupported
+		}
+		restored, err = capability.PrepareSourcePlaneImport(ctx, *profile)
+		if err == nil {
+			continuation, ok := tx.(driver.AllocatorContinuation)
+			if !ok {
+				return report, driver.ErrUnsupported
+			}
+			err = continuation.RestoreAllocators(ctx, plan.allocators)
+		}
 	} else if profile == nil {
 		capability, ok := tx.(driver.OfflineRestoreTx)
 		if !ok {
@@ -305,6 +338,18 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		return report, err
 	}
 
+	if sourceLogical != nil {
+		binding, bindErr := prepareSourcePublication(ctx, sourceCapability, lease, tx, *profile, restored, sourceLogical)
+		if bindErr != nil {
+			return report, bindErr
+		}
+		body, encodeErr := json.Marshal(binding)
+		if encodeErr != nil {
+			return report, encodeErr
+		}
+		plan.records = append(plan.records, restoreRecord{ref: model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0)), kind: "instance_config", body: body})
+		report.SourcePlanes = &binding
+	}
 	changes := make([]model.ChangeRecord, 0, len(plan.records))
 	results := make([]model.OpResult, 0, len(plan.records))
 	for _, record := range plan.records {
@@ -380,12 +425,20 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 			return report, err
 		}
 		report.Restored, report.Recovered = recovered.Restored, true
+		report.SourcePlanes, report.Receipt = recovered.SourcePlanes, recovered.Receipt
 		return report, nil
 	}
 	if commit.Kind != model.ChangesetRestore || commit.Incarnation != restored.Incarnation || commit.Revision != restored.Head || history == nil && len(commit.Changes) != len(plan.records) {
 		return report, fmt.Errorf("restore commit did not retain its complete changeset")
 	}
 	report.Restored = restored
+	if sourceLogical != nil {
+		recovered, recoverErr := recoverSourceImport(ctx, target, *profile, checks[0])
+		if recoverErr != nil {
+			return report, recoverErr
+		}
+		report.Receipt = recovered.Receipt
+	}
 	return report, nil
 }
 
@@ -438,7 +491,7 @@ func Recover(ctx context.Context, target driver.Store, check Verification) (Repo
 // archive marker; it never replays records or reseeds an allocator.
 func RecoverImport(ctx context.Context, target driver.Store, profile driver.RestoreImportProfile, check Verification) (Report, error) {
 	if profile.SourcePlanes != nil {
-		return Report{}, driver.ErrUnsupported
+		return recoverSourceImport(ctx, target, profile, check)
 	}
 	bound, err := profile.Detached()
 	if err != nil || !validDigest(check.ArchiveSHA256) || !validDigest(check.DerivedSHA256) || check.ArchiveSHA256 != bound.ArchiveDigest || check.DerivedSHA256 != bound.DerivedDigest {
@@ -457,6 +510,10 @@ func RecoverImport(ctx context.Context, target driver.Store, profile driver.Rest
 		return Report{}, err
 	}
 	defer r.Close()
+	return recoverImportReader(ctx, r, meta, bound, check, request)
+}
+
+func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta, bound driver.RestoreImportProfile, check Verification, request string) (Report, error) {
 	principal, err := driver.PrincipalKey(bound.Admission.Actor)
 	if err != nil {
 		return Report{}, err
@@ -535,7 +592,7 @@ func RecoverImport(ctx context.Context, target driver.Store, profile driver.Rest
 			return Report{}, driver.ErrConflict
 		}
 	}
-	return Report{Restored: meta, IdempotencyKey: bound.IdempotencyKey, RequestHash: request, Recovered: true}, nil
+	return Report{Restored: meta, IdempotencyKey: bound.IdempotencyKey, RequestHash: request, Recovered: true, Receipt: receipt}, nil
 }
 
 type restoreRecord struct {
@@ -688,7 +745,17 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		return restorePlan{}, fmt.Errorf("%w: import restore time is required", ErrRestoreUnavailable)
 	}
 
+	entities := sourcePlaneEntities(profile)
 	beads := archive.Records("bead")
+	if entities != nil {
+		var durable []dumpformat.Record
+		for _, source := range beads {
+			if entities[driver.SourceEntityKey{Project: source.Project, Plane: source.Source.Table, ID: source.ID}].TargetKind == "bead" {
+				durable = append(durable, source)
+			}
+		}
+		beads = durable
+	}
 	docs := map[string]pipeline.Document{}
 	if len(beads) > 20000 {
 		return restorePlan{}, fmt.Errorf("restore graph exceeds local service limit")
@@ -803,6 +870,9 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		for _, source := range archive.Records("comment") {
 			issueID := stringValue(source.Body["issue_id"])
 			doc, ok := docs[issueID]
+			if !ok && entities != nil && entities[driver.SourceEntityKey{Project: source.Project, Plane: dumpformat.DurableEntityTable, ID: issueID}].TargetKind == "workflow:item" {
+				continue
+			}
 			if !ok {
 				return restorePlan{}, fmt.Errorf("comment %s has no restored bead", source.ID)
 			}
@@ -825,6 +895,9 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 	}
 
 	for _, source := range archive.Records("edge") {
+		if !sourcePlaneCoreEdge(source, entities) {
+			continue
+		}
 		var targetKind model.LinkTargetKind
 		switch stringValue(source.Body["target_kind"]) {
 		case "depends_on_issue_id":
@@ -930,7 +1003,10 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 				body["read_only"] = true
 				body["redactable"] = true
 			}
-			if err := add(model.RefByID("source/"+kind+"/"+source.ID, model.Natural64(0)), kind, body); err != nil {
+			if entities != nil {
+				body["source_project"] = source.Project
+			}
+			if err := add(model.RefByID(sourcePlaneMirrorID(source, entities != nil), model.Natural64(0)), kind, body); err != nil {
 				return restorePlan{}, err
 			}
 		}

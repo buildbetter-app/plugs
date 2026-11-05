@@ -185,6 +185,8 @@ internal/core/dumpformat/ontology_test.go
 internal/core/dumpformat/records.go
 internal/core/dumpformat/source_planes.go
 internal/core/dumpformat/source_planes_catalog.go
+internal/core/dumpformat/source_planes_sidecars.go
+internal/core/dumpformat/source_planes_sidecars_test.go
 internal/core/dumpformat/source_planes_test.go
 internal/core/dumpformat/sources.go
 internal/core/dumpformat/types.go
@@ -497,6 +499,9 @@ internal/integration/converterroundtrip/reverse.go
 internal/integration/converterroundtrip/reverse_test.go
 internal/integration/converterroundtrip/roundtrip_test.go
 internal/integration/converterroundtrip/source_checkpoint_test.go
+internal/integration/converterroundtrip/source_planes.go
+internal/integration/converterroundtrip/source_planes_recovery.go
+internal/integration/converterroundtrip/source_planes_test.go
 internal/integration/converterroundtrip/testdata/public-complete-root-990eb800.tar
 internal/integration/converterroundtrip/testdata/public-partial-990eb800.tar
 internal/integration/converterroundtrip/testdata/public-source-990eb800.md
@@ -1043,6 +1048,8 @@ internal/storage/driver/source_links.go
 internal/storage/driver/source_links_contract_test.go
 internal/storage/driver/source_planes.go
 internal/storage/driver/source_planes_codec.go
+internal/storage/driver/source_planes_restore.go
+internal/storage/driver/source_planes_restore_test.go
 internal/storage/driver/source_planes_snapshot.go
 internal/storage/driver/source_planes_test.go
 internal/storage/driver/source_planes_validate.go
@@ -1078,6 +1085,7 @@ internal/storage/memory/source_backfill.go
 internal/storage/memory/source_checkpoint_test.go
 internal/storage/memory/source_link_index.go
 internal/storage/memory/source_link_index_test.go
+internal/storage/memory/source_planes_restore.go
 internal/storage/memory/source_publication.go
 internal/storage/memory/source_reader.go
 internal/storage/memory/staged_reads_test.go
@@ -1124,6 +1132,7 @@ internal/storage/postgres/source_backend_test.go
 internal/storage/postgres/source_backfill.go
 internal/storage/postgres/source_index.go
 internal/storage/postgres/source_link_schema_test.go
+internal/storage/postgres/source_planes_restore.go
 internal/storage/postgres/store.go
 internal/storage/postgres/transaction.go
 internal/storage/sourceindex/BUILD.bazel
@@ -1177,6 +1186,7 @@ internal/storage/sqlite/source_backend_test.go
 internal/storage/sqlite/source_backfill.go
 internal/storage/sqlite/source_index.go
 internal/storage/sqlite/source_link_schema_test.go
+internal/storage/sqlite/source_planes_restore.go
 internal/storage/sqlite/sqlite_test.go
 internal/storage/sqlite/staged_reads_test.go
 internal/storage/sqlite/store.go

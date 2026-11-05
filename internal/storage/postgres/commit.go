@@ -46,6 +46,11 @@ func (t *transaction) header(h driver.ChangesetHeader) ([]byte, error) {
 				}
 			}
 		}
+		if t.sourcePlaneImport != nil {
+			if err := t.sourcePlaneImport.Validate(h, t.checkpointWrites, t.records); err != nil {
+				return nil, err
+			}
+		}
 		expected = t.restore.Incarnation
 	}
 	if h.Incarnation != expected {
