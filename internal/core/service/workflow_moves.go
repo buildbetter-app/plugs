@@ -173,6 +173,9 @@ func (s *Service) WorkflowDemote(ctx context.Context, by model.PrincipalRef, req
 	if s.workflow == nil {
 		return workflowplugin.DemoteResult{}, failure("plugin_durable_state_unavailable", "ephemeral workflows require persistent checkpoint storage")
 	}
+	if err := s.rollbackWindowWorkflowCreation(); err != nil {
+		return workflowplugin.DemoteResult{}, err
+	}
 	meta.Method = "x.workflow.run.demote"
 	var cs model.ChangeSet
 	return s.workflow.DemoteAtomic(ctx, by, req, meta, func() (workflowplugin.DemoteRequest, error) {

@@ -217,6 +217,9 @@ func (w *Writer) pre(ctx context.Context, p *prepared) error {
 			return &model.Error{Message: "pre validator rejected the write", Data: model.ErrorData{Code: "ontology_guard_failed", Details: map[string]any{"binding": binding.ID, "violations": result.verdict.Violations}}}
 		}
 	}
+	if err := w.checkRollbackWindow(p); err != nil {
+		return err
+	}
 	return ctx.Err()
 }
 

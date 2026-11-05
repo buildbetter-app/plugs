@@ -10,6 +10,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/port"
+	"github.com/buildbetter-app/plugs/internal/core/reverseconverter"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -48,6 +49,8 @@ type config struct {
 	newAllocatorChildID func(driver.OfflineAllocator, string) (string, error)
 	hierarchyMaxDepth   int
 	claimTTL            time.Duration
+	rollbackWindow      bool
+	reverseKindMapping  reverseconverter.KindMapping
 	observer            Observer
 }
 
@@ -106,6 +109,20 @@ func WithHierarchyMaxDepth(depth int) Option {
 	return func(c *config) { c.hierarchyMaxDepth = depth }
 }
 func WithClaimTTL(ttl time.Duration) Option { return func(c *config) { c.claimTTL = ttl } }
+
+// WithRollbackWindow enables the common write-boundary admission guard. The
+// guard is disabled by default; host configuration is the only intended way to
+// enable it for a prepared switch-day window.
+func WithRollbackWindow(enabled bool) Option {
+	return func(c *config) { c.rollbackWindow = enabled }
+}
+
+// WithRollbackKindMapping supplies the trusted reverse mapping used for kinds
+// that have gained an actual Beads representation. The callback must come from
+// the host's canonical reverse/export path, never from client input.
+func WithRollbackKindMapping(mapping reverseconverter.KindMapping) Option {
+	return func(c *config) { c.reverseKindMapping = mapping }
+}
 
 // WithObserver replaces the default bounded in-process collector. Hosts may
 // use this only for another internal observer that obeys the same closed

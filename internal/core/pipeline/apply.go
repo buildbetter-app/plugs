@@ -169,6 +169,9 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 				if err == nil {
 					err = w.authorize(preCtx, port.AuthorizeAfter, p.proposal, p.snapshot)
 				}
+				if err == nil {
+					err = w.checkRollbackWindow(p)
+				}
 				w.observePhaseSince(preCtx, PhasePre, phaseStarted, err)
 			}
 		} else {

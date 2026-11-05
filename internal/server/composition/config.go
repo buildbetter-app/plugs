@@ -104,13 +104,17 @@ type EventAuthorization interface {
 // separate so an invalid combination can be refused before any listener is
 // opened. UI is enabled for shared servers and disabled by in-process callers.
 type Config struct {
-	Driver   string
-	DSN      string
-	Project  string
-	Address  string
-	UI       bool
-	AuthMode string
-	Auth     authn.Config
+	Driver  string
+	DSN     string
+	Project string
+	Address string
+	UI      bool
+	// RollbackWindow refuses newly created user-content kinds without an
+	// actual canonical reverse Beads mapping. It defaults to false and is a
+	// prepared switch-day control; it is never enabled by a live action here.
+	RollbackWindow bool
+	AuthMode       string
+	Auth           authn.Config
 	// OIDC enables the existing OIDC provider. Its SessionStore is owned by
 	// composition and is replaced with the selected SQLite/PostgreSQL store;
 	// the typed config is not parsed from .plug/config.yaml yet.
@@ -531,7 +535,7 @@ func (r *Runtime) bind(config Config) error {
 	ontology := ontologyRuntime
 	eventProvider := &runtimeEventProvider{}
 	nativeValidatorCount := 0
-	writerOptions := []pipeline.Option{pipeline.WithOntology(ontology)}
+	writerOptions := []pipeline.Option{pipeline.WithOntology(ontology), pipeline.WithRollbackWindow(config.RollbackWindow)}
 	if config.Ontology != nil {
 		writerOptions = append(writerOptions, pipeline.WithOntologyAudit(service.NewOntologyAudit(ontologyLocator)))
 		if config.Ontology.Authorizer != nil {
@@ -569,7 +573,7 @@ func (r *Runtime) bind(config Config) error {
 		trusted:  config.EventAuthorization,
 		required: func() bool { return eventAuthorizationRequired(config, authConfig) },
 	}
-	serviceOptions := []service.Option{service.WithOntology(ontology)}
+	serviceOptions := []service.Option{service.WithOntology(ontology), service.WithRollbackWindow(config.RollbackWindow)}
 	if config.EventAuthorization != nil || !eventAuthorization.required() {
 		serviceOptions = append(serviceOptions, service.WithEventProvider(eventProvider))
 	}

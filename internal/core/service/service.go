@@ -13,6 +13,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/port"
+	"github.com/buildbetter-app/plugs/internal/core/reverseconverter"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
@@ -27,6 +28,8 @@ type Service struct {
 	authorizationInstalled func() bool
 	events                 EventProvider
 	workflow               *workflowplugin.Provider
+	rollbackWindow         bool
+	reverseKindMapping     reverseconverter.KindMapping
 	compaction             CompactionConfig
 }
 
@@ -66,6 +69,21 @@ func WithEventProvider(provider EventProvider) Option {
 // provider owns only its unversioned active-run state.
 func WithWorkflow(provider *workflowplugin.Provider) Option {
 	return func(s *Service) { s.workflow = provider }
+}
+
+// WithRollbackWindow enables the server-wide admission guard for newly
+// created user-content kinds that the canonical reverse path cannot represent.
+// It is disabled by default and is intended for the prepared switch-day
+// rollback window only.
+func WithRollbackWindow(enabled bool) Option {
+	return func(s *Service) { s.rollbackWindow = enabled }
+}
+
+// WithRollbackKindMapping supplies a trusted canonical reverse mapping for a
+// kind that has gained a Beads representation. Client input cannot provide
+// this callback.
+func WithRollbackKindMapping(mapping reverseconverter.KindMapping) Option {
+	return func(s *Service) { s.reverseKindMapping = mapping }
 }
 
 // New never opens a transaction or storage driver. The composition root owns
@@ -117,6 +135,24 @@ func (s *Service) admit(ctx context.Context, by model.PrincipalRef) error {
 	default:
 		return nil
 	}
+}
+
+func (s *Service) rollbackWindowKind(kind string) error {
+	if !s.rollbackWindow {
+		return nil
+	}
+	classification := reverseconverter.ClassifyKindWithMapping(kind, s.reverseKindMapping)
+	if classification.Disposition == reverseconverter.KindUnrepresentable {
+		return reverseconverter.RollbackWindowRefusal(kind)
+	}
+	return nil
+}
+
+func (s *Service) rollbackWindowWorkflowCreation() error {
+	if err := s.rollbackWindowKind("workflow.run"); err != nil {
+		return err
+	}
+	return s.rollbackWindowKind("workflow.item")
 }
 
 func namedRef(ref model.Ref) error {
@@ -215,6 +251,9 @@ func (s *Service) WorkflowInvoke(ctx context.Context, by model.PrincipalRef, req
 			if err := s.validateWorkflowEndpoints(ctx, by, req.Project, workflowAuxiliaryRefs(item.Parent, item.Links)...); err != nil {
 				return workflowplugin.InvokeResult{}, err
 			}
+		}
+		if err := s.rollbackWindowWorkflowCreation(); err != nil {
+			return workflowplugin.InvokeResult{}, err
 		}
 		return s.workflow.Invoke(ctx, by, req, meta)
 	}
