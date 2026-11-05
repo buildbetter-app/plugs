@@ -425,7 +425,7 @@ func validateHistoryScope(a *Archive, scoped ProjectSourceHistory, seenCommits m
 		return fail("unmappable: no frames")
 	}
 	if !sameRecordImage(current, r.Frames[len(r.Frames)-1].Records) {
-		return fail("unmappable: current record image")
+		return fail(fmt.Sprintf("unmappable: current record image current=%#v final=%#v", current, r.Frames[len(r.Frames)-1].Records))
 	}
 	if !sameEventImage(scoped.Events, previous) {
 		return fail("unmappable: current event image")
