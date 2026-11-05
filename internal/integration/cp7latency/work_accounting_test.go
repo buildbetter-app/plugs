@@ -13,6 +13,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
+	"github.com/buildbetter-app/plugs/internal/core/viewops"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -344,13 +345,60 @@ func TestAggregateWorkIncludesNonEmittedSummaryProjections(t *testing.T) {
 	for _, engine := range []string{"sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			f := newFixture(t, engine, 11)
+			var plans []driver.SelectionPlan
+			f.viewPlan = func(plan driver.SelectionPlan) { plans = append(plans, plan) }
+			f.compose(t)
 			var counts counters
 			ctx := driver.WithReadWorkObserver(context.Background(), &counts)
+			compiled, err := f.views.Run(ctx, f.user(1), groupedRequest())
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.checkGrouped(t, compiled, 1)
+			if len(plans) != 1 || plans[0].Validate() != nil || plans[0].Mode != driver.SelectionPageMode || plans[0].Cap != viewops.OrdinaryCandidateCap || plans[0].GroupBy != driver.SelectionGroupType {
+				t.Fatalf("ordinary grouping did not use its real SQL plan: %+v", plans)
+			}
+			if work := counts.work(); work.AggregateInputs != 0 || work.AggregateGroups != 1 || work.Projections != 11 || counts.value().Queries != 0 {
+				t.Fatalf("compiled grouping hid core work or scanned: %+v %+v", counts.value(), work)
+			}
+			counts.reset()
+			plans = nil
+			summaryRequest := groupedRequest()
+			summaryRequest.Definition.Fields = []string{}
+			summaryRequest.Definition.Sort = nil
+			compiledSummary, err := f.views.Run(ctx, f.user(1), summaryRequest)
+			if err != nil || len(plans) != 1 || plans[0].Validate() != nil || plans[0].Mode != driver.SelectionTypeSummary || plans[0].Cap != viewops.TypeSummaryCandidateCap {
+				t.Fatalf("compiled summary plan: %+v %v", plans, err)
+			}
+			if work := counts.work(); work.AggregateInputs != 0 || work.AggregateGroups != 1 || work.Projections != 0 || counts.value().Queries != 0 || counts.value().Gets != 0 {
+				t.Fatalf("compiled summary performed core payload work: %+v %+v", counts.value(), work)
+			}
+			// This control measures core aggregation, including discarded item
+			// projections. Keep real current authorization and its final fence,
+			// but explicitly omit SQL selection on this dedicated bound reader.
+			// Compiled SQL aggregation is covered separately and never reported
+			// as fabricated core input visits.
+			selection := f.app.Service.ViewSelection()
+			bind := selection.Bind
+			bound := 0
+			selection.Bind = func(ctx context.Context, by model.PrincipalRef, definition string) (*viewops.SelectionAuthority, error) {
+				authority, err := bind(ctx, by, definition)
+				if err == nil {
+					bound++
+					authority.Reader = accountingScanSnapshot{Reader: authority.Reader}
+				}
+				return authority, err
+			}
+			f.configureViews(t, selection)
+			counts.reset()
 			got, err := f.views.Run(ctx, f.user(1), groupedRequest())
 			if err != nil {
 				t.Fatal(err)
 			}
 			f.checkGrouped(t, got, 1)
+			if !reflect.DeepEqual(got.Groups, compiled.Groups) || got.AsOf != compiled.AsOf {
+				t.Fatal("ordinary fallback and SQL grouping changed output or snapshot")
+			}
 			ordinary := counts.work()
 			if ordinary.AggregateInputs != 11 || ordinary.AggregateGroups != 1 || ordinary.Projections != 22 {
 				t.Fatalf("ordinary executed projection/aggregate work=%+v", ordinary)
@@ -364,8 +412,16 @@ func TestAggregateWorkIncludesNonEmittedSummaryProjections(t *testing.T) {
 				t.Fatalf("summary: %+v %v", got, err)
 			}
 			summary := counts.work()
-			if summary.AggregateInputs != 11 || summary.AggregateGroups != 1 || summary.Projections != 11 {
-				t.Fatalf("empty output hid executed summary work=%+v", summary)
+			// The core summary now returns before the item loop. Requiring a
+			// projection here would invent work that was removed by that path.
+			if summary.AggregateInputs != 11 || summary.AggregateGroups != 1 || summary.Projections != 0 {
+				t.Fatalf("core summary input/group work or projection elision=%+v", summary)
+			}
+			if !reflect.DeepEqual(got.Groups, compiledSummary.Groups) || got.AsOf != compiledSummary.AsOf {
+				t.Fatal("summary fallback and SQL grouping changed output or snapshot")
+			}
+			if bound != 2 || counts.value().Queries == 0 {
+				t.Fatalf("core accounting control did not bind and scan: bound=%d api=%+v", bound, counts.value())
 			}
 			t.Logf("CP7_AGGREGATE_WORK ordinary=%+v fields_empty_summary=%+v emitted_summary_payload_rows=0", ordinary, summary)
 		})

@@ -28,8 +28,20 @@ func queueDomain(f *fixture, now func() time.Time) *service.Service {
 
 func queueFixturePatch(t *testing.T, f *fixture, n int, change func(*pipeline.Document)) {
 	t.Helper()
-	doc := document(n)
+	r := f.reader(t, nil)
+	rows, err := r.Get(context.Background(), []model.Ref{beadRef(n)})
+	r.Close()
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("queue setup source %d: %v", n, err)
+	}
+	var doc pipeline.Document
+	if err := json.Unmarshal(rows[0].Body, &doc); err != nil {
+		t.Fatal(err)
+	}
 	change(&doc)
+	if _, err := pipeline.HierarchyParent(doc); err != nil {
+		t.Fatalf("queue setup has conflicting hierarchy for %d: %v", n, err)
+	}
 	raw, err := json.Marshal(doc)
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +74,24 @@ func TestQueueProjectionMatchesExactReadinessBeforeRotation(t *testing.T) {
 			principal := f.agent(1, false)
 			queueFixturePatch(t, f, 1, func(d *pipeline.Document) { d.Fields["status"] = "backlog" })
 			queueFixturePatch(t, f, 13, func(d *pipeline.Document) { d.Fields["status"] = "done" })
-			queueFixturePatch(t, f, 15, func(d *pipeline.Document) { d.Links = []pipeline.Link{{Kind: "parent-child", To: beadRef(12)}} })
+			// waits-for needs a real terminal child and a real open child of
+			// 12. Use the production reparent writer so canonical Parent,
+			// descendants and closure annotations agree; a contradictory legacy
+			// edge is not a valid fixture. Started is open but not ready, while
+			// its own open parent does not block the later descendant controls.
+			parent := beadRef(12)
+			writer := pipeline.New(f.store.Store, f.lease, pipeline.WithOntology(service.NewOntology(nil)), pipeline.WithClock(clock))
+			_, err := writer.Apply(context.Background(), principal, model.ChangeSet{Ops: []model.Op{{Kind: model.OpReparent, Reparent: &model.ReparentOp{Target: beadRef(15), Parent: &parent}}}}, model.WriteMeta{Project: projectName, Return: "full", IdempotencyKey: requestKey("queue-parent-setup", 1, engine, 0)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			queueFixturePatch(t, f, 15, func(d *pipeline.Document) {
+				if d.Parent == nil || !driver.SelectionSameRef(*d.Parent, parent) {
+					t.Fatal("production reparent did not publish the open sibling")
+				}
+				d.Fields["status"] = "in_progress"
+				d.Links = []pipeline.Link{{Kind: "parent-child", To: parent}}
+			})
 			queueFixturePatch(t, f, 17, func(d *pipeline.Document) { d.Fields["template"] = true })
 			for _, n := range []int{18, 19, 20, 21} {
 				queueFixturePatch(t, f, n, func(d *pipeline.Document) {
@@ -91,7 +120,9 @@ func TestQueueProjectionMatchesExactReadinessBeforeRotation(t *testing.T) {
 					d.Links = []pipeline.Link{link}
 				})
 			}
-			queueFixturePatch(t, f, 38, func(d *pipeline.Document) { d.Links = []pipeline.Link{{Kind: "parent-child", To: beadRef(12)}} })
+			// The same canonical parent carries 37's unsatisfied waits-for
+			// dependency into this subtree. Both parent spellings must agree.
+			queueFixturePatch(t, f, 38, func(d *pipeline.Document) { d.Links = []pipeline.Link{{Kind: "parent-child", To: beadRef(37)}} })
 			queueFixturePatch(t, f, 39, func(d *pipeline.Document) { d.Links = []pipeline.Link{{Kind: "conditional-blocks", To: beadRef(40)}} })
 			queueFixturePatch(t, f, 40, func(d *pipeline.Document) { d.Fields["status"] = "failed" })
 			queueFixturePatch(t, f, 41, func(d *pipeline.Document) { d.Links = []pipeline.Link{{Kind: "blocks", To: beadRef(42)}} })
@@ -116,7 +147,7 @@ func TestQueueProjectionMatchesExactReadinessBeforeRotation(t *testing.T) {
 			for i, bead := range reference.Items {
 				ids[i] = bead.ID
 			}
-			for _, n := range []int{19, 21, 23, 34, 45, 46} {
+			for _, n := range []int{14, 19, 21, 23, 34, 45, 46} {
 				if !slices.Contains(ids, beadRef(n).ID) {
 					t.Fatalf("reference lost ready dependency control %d", n)
 				}

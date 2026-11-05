@@ -7,6 +7,7 @@ import (
 	"errors"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
@@ -107,6 +108,103 @@ func queueRequire(t *testing.T, r driver.QueueProjectionReader, ids ...string) d
 		}
 	}
 	return got
+}
+
+func TestQueueProjectionCoverageAcrossReadyRankPublication(t *testing.T) {
+	for _, mode := range []string{"rank", "unannotated_source", "unannotated_other", "malformed_ready", "shadowed_ready_source", "shadowed_ready_source_deleted"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := context.Background()
+			s, lease := queueTestStore(t)
+			record := queueDocument("queue-rank", "ranked source")
+			tx, header := queueStage(t, s, lease, record)
+			created := commitSourceTest(t, tx, header)
+			rankKey, err := pipeline.ReadySortKeyRowKey(record.Ref.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "shadowed_ready_source" || mode == "shadowed_ready_source_deleted" {
+				// Typed projection keys are not restricted to the usual source
+				// ID. Move the actual annotation into the reserved rank prefix
+				// before testing that an untyped replacement still invalidates it.
+				oldKey := driver.DerivedRowKey{Table: driver.DerivedSortKey, Key: record.Ref.ID}
+				newKey := driver.DerivedRowKey{Table: driver.DerivedSortKey, Key: rankKey}
+				r := sourceReader(t, s, nil)
+				states, err := r.Observe(ctx, []driver.LockKey{{Kind: driver.LockDerived, Derived: &oldKey}})
+				_ = r.Close()
+				if err != nil || len(states) != 1 || !states[0].Present || states[0].Derived == nil || states[0].Derived.Index == nil {
+					t.Fatalf("source annotation: %+v %v", states, err)
+				}
+				row := states[0].Derived.Clone()
+				row.Key, row.Index.Row = rankKey, newKey
+				move, h := beginTest(t, s, lease, driver.LockKey{Kind: driver.LockDerived, Derived: &oldKey}, driver.LockKey{Kind: driver.LockDerived, Derived: &newKey})
+				if err := move.(driver.SelectionIndexWriter).PutSelectionDerived(ctx, driver.DerivedSortKey, []driver.DerivedRow{{Key: oldKey.Key}}, []driver.DerivedRow{row}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := move.Commit(ctx, h); err != nil {
+					t.Fatal(err)
+				}
+				_ = move.Close()
+			}
+			pinned := sourceReader(t, s, nil)
+			queueRequire(t, pinned, record.Ref.ID)
+			defer pinned.Close()
+			key := driver.DerivedRowKey{Table: driver.DerivedSortKey, Key: rankKey}
+			if mode == "unannotated_source" {
+				key.Key = record.Ref.ID
+			}
+			if mode == "unannotated_other" {
+				key.Key = "other/" + record.Ref.ID
+			}
+			if mode == "malformed_ready" {
+				key.Key = "ready/queue/rank"
+			}
+			locks := []driver.LockKey{{Kind: driver.LockDerived, Derived: &key}}
+			if mode == "shadowed_ready_source_deleted" {
+				locks = append(locks, testLock(record.Ref), driver.GraphBlockingSentinelLock)
+			}
+			writer, h := beginTest(t, s, lease, locks...)
+			if mode == "shadowed_ready_source_deleted" {
+				if err := writer.Delete(ctx, record.Ref); err != nil {
+					t.Fatal(err)
+				}
+				h.Changes = []model.ChangeRecord{{Ref: record.Ref, Op: model.OpDelete, FromRevision: created.Revision}}
+			}
+			at := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+			value, err := json.Marshal(pipeline.ReadySortKey{CreatedAt: at, RankedAt: at, Revision: created.Revision})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.PutDerived(ctx, key.Table, nil, []driver.DerivedRow{{Key: key.Key, Value: value}}); err != nil {
+				t.Fatal(err)
+			}
+			committed, err := writer.Commit(ctx, h)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = writer.Close()
+			current := sourceReader(t, s, nil)
+			defer current.Close()
+			covered, err := current.selectionCoverage(ctx, current.at)
+			if err != nil || covered != (mode == "rank") {
+				t.Fatalf("bead family coverage after %s: covered=%v err=%v", mode, covered, err)
+			}
+			if mode != "rank" {
+				if _, err := current.QueueProjection(ctx); !errors.Is(err, driver.ErrSelectionUnavailable) {
+					t.Fatalf("untyped source replacement retained coverage: %v", err)
+				}
+			} else {
+				projection := queueRequire(t, current, record.Ref.ID)
+				if projection.View.At == nil || projection.View.At.String() != committed.Revision.String() {
+					t.Fatalf("rank publication coverage did not advance: %+v", projection.View)
+				}
+				rows, err := current.DerivedRows(ctx, key.Table, "ready/")
+				if err != nil || len(rows) != 1 || rows[0].Key != rankKey || !bytes.Equal(rows[0].Value, value) {
+					t.Fatalf("rank publication was omitted: %+v %v", rows, err)
+				}
+			}
+			queueRequire(t, pinned, record.Ref.ID)
+		})
+	}
 }
 
 func TestQueueProjectionCommittedSnapshotAndOverlay(t *testing.T) {

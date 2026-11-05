@@ -577,6 +577,43 @@ func (r *reader) certifySelectionProof(ctx context.Context, valid map[driver.Sel
 	return err
 }
 
+// Rank rows are outside the selection source domain only when their logical
+// key did not own a typed row at the predecessor snapshot. Check the old
+// interval even after publication closed it, including same-commit deletion.
+func (t *transaction) disjointReadySortRows(ctx context.Context, incarnation string) (map[string]bool, error) {
+	disjoint := map[string]bool{}
+	keys := [][]byte{}
+	for key, state := range t.derived {
+		if !state.Present || state.Derived == nil || state.Derived.Index != nil || state.Key.Derived == nil || state.Key.Derived.Table != driver.DerivedSortKey {
+			continue
+		}
+		id, ready := strings.CutPrefix(state.Key.Derived.Key, "ready/")
+		if _, err := driver.NewBeadSentinel(id); !ready || err != nil {
+			continue
+		}
+		disjoint[key] = true
+		keys = append(keys, []byte(key))
+	}
+	if len(keys) == 0 {
+		return disjoint, nil
+	}
+	rows, err := t.sql.QueryContext(ctx, `SELECT row_key FROM plug_postgres.selection_rows
+	 WHERE incarnation=$1 AND row_key=ANY($2::bytea[]) AND start_revision<=$3::numeric
+	 AND (end_revision IS NULL OR end_revision>$3::numeric)`, incarnation, keys, t.meta.Head.String())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key []byte
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		delete(disjoint, string(key))
+	}
+	return disjoint, rows.Err()
+}
+
 func (t *transaction) writeSelectionCoverage(ctx context.Context, revision model.Revision, incarnation string) error {
 	view := &reader{sql: t.sql, meta: t.meta, at: mustRevision(revision)}
 	view.meta.Incarnation = incarnation
@@ -612,8 +649,18 @@ func (t *transaction) writeSelectionCoverage(ctx context.Context, revision model
 	for id, record := range t.records {
 		affected = affected || record != nil && record.Kind == "bead" || t.identities[id].Kind == "bead"
 	}
-	for _, state := range t.derived {
+	disjoint, err := t.disjointReadySortRows(ctx, incarnation)
+	if err != nil {
+		return err
+	}
+	for key, state := range t.derived {
 		if !state.Present || state.Derived != nil && state.Derived.Index != nil {
+			continue
+		}
+		// The main writer's ready/<id> rank rows share this table, but do
+		// not claim to be selection source images. Exclude only a valid,
+		// independently owned key, preserving every false family proof.
+		if disjoint[key] {
 			continue
 		}
 		for _, family := range selectionFamilies() {

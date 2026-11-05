@@ -7,6 +7,7 @@ import (
 	"errors"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
@@ -186,6 +187,91 @@ func TestQueueProjectionRejectsHiddenSourceAndCoverageCorruption(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestQueueProjectionReadySortWriteKeepsCoverageOnlyWhenDisjoint(t *testing.T) {
+	stamp := time.Date(2026, time.November, 5, 0, 0, 0, 0, time.UTC)
+	readyValue, err := json.Marshal(pipeline.ReadySortKey{
+		Bucket: 0, Rank: 0, CreatedAt: stamp, RankedAt: stamp, Revision: model.Natural64(2),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, key string
+		ready     bool
+	}{
+		{name: "main-ready-sort", key: "ready/queue-main", ready: true},
+		{name: "ordinary-untyped-sort", key: "other/queue-main"},
+		{name: "malformed-ready-sort", key: "ready/queue/main"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			s, lease := queueTestStore(t)
+			record := queueDocument("queue-main", "source")
+			seed, header := queueStage(t, s, lease, record)
+			commitSourceTest(t, seed, header)
+			key := driver.DerivedRowKey{Table: driver.DerivedSortKey, Key: tc.key}
+			lock := driver.LockKey{Kind: driver.LockDerived, Derived: &key}
+			tx, header := beginSourceTestWithLocks(t, s, lease, []driver.LockKey{lock}, true)
+			if err := tx.PutDerived(ctx, key.Table, nil, []driver.DerivedRow{{Key: key.Key, Value: readyValue}}); err != nil {
+				t.Fatal(err)
+			}
+			commitSourceTest(t, tx, header)
+			meta := getMeta(t, ctx, s)
+			ready, err := selectionFamilyReady(ctx, s.db, meta.Incarnation, sqliteSelectionFamilies()[0], revKey(mustUint(meta.Head)))
+			if err != nil || ready != tc.ready {
+				t.Fatalf("sort coverage after %s: ready=%t want=%t err=%v", tc.name, ready, tc.ready, err)
+			}
+			r := sourceReader(t, s, nil)
+			defer r.Close()
+			if tc.ready {
+				queueRequire(t, r, record.Ref.ID)
+			} else if projection, err := r.QueueProjection(ctx); !errors.Is(err, driver.ErrSelectionUnavailable) || len(projection.Beads) != 0 {
+				t.Fatalf("untyped sort row retained queue coverage: %+v %v", projection, err)
+			}
+		})
+	}
+
+	// A typed bead projection can own a key in the ready/ namespace. A raw
+	// replacement cannot inherit that key's coverage, even when its source is
+	// deleted in the same commit.
+	t.Run("typed-row-shadowed-during-delete", func(t *testing.T) {
+		ctx := context.Background()
+		s, lease := queueTestStore(t)
+		record := queueDocument("queue-shadow", "source")
+		key := driver.DerivedRowKey{Table: driver.DerivedSortKey, Key: "ready/" + record.Ref.ID}
+		lock := driver.LockKey{Kind: driver.LockDerived, Derived: &key}
+		seed, header := beginSourceTestWithLocks(t, s, lease, []driver.LockKey{lock}, true, record.Ref)
+		if err := seed.PutGraphRecord(ctx, record, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		row := selectionStageBead(header.Incarnation, record.Ref, record.Body)
+		row.Key, row.Index.Row = key.Key, key
+		row.Index.Bead.Type = "issue"
+		if err := seed.PutSelectionDerived(ctx, key.Table, nil, []driver.DerivedRow{row}); err != nil {
+			t.Fatal(err)
+		}
+		commitSourceTest(t, seed, header)
+		before := getMeta(t, ctx, s)
+		ready, err := selectionFamilyReady(ctx, s.db, before.Incarnation, sqliteSelectionFamilies()[0], revKey(mustUint(before.Head)))
+		if err != nil || !ready {
+			t.Fatalf("typed shadow control was not certified: ready=%t err=%v", ready, err)
+		}
+		tx, header := beginSourceTestWithLocks(t, s, lease, []driver.LockKey{lock}, true, record.Ref)
+		if err := tx.Delete(ctx, record.Ref); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.PutDerived(ctx, key.Table, nil, []driver.DerivedRow{{Key: key.Key, Value: readyValue}}); err != nil {
+			t.Fatal(err)
+		}
+		commitSourceTest(t, tx, header)
+		after := getMeta(t, ctx, s)
+		ready, err = selectionFamilyReady(ctx, s.db, after.Incarnation, sqliteSelectionFamilies()[0], revKey(mustUint(after.Head)))
+		if err != nil || ready {
+			t.Fatalf("raw replacement shadowed typed row: ready=%t err=%v", ready, err)
+		}
+	})
 }
 
 func queueCorrupt(t *testing.T, s *Store, ref model.Ref, corruption string) {

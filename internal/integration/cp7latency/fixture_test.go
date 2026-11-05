@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -95,6 +96,7 @@ type fixture struct {
 	corpusHash string
 	seededAt   service.AsOf
 	viewPlan   func(driver.SelectionPlan)
+	readyRows  map[string]driver.DerivedRow
 }
 
 // Dedicated route controls observe the real plan and delegate unchanged to
@@ -299,18 +301,24 @@ func (f *fixture) compose(t *testing.T) {
 			return authority, nil
 		}
 	}
+	f.configureViews(t, selection)
+}
+
+func (f *fixture) configureViews(t *testing.T, selection *viewops.SelectionConfig) {
+	t.Helper()
+	var err error
 	f.views, err = viewops.New(f.store.Store, f.lease, viewops.Config{OntologyRevision: model.Natural64(1),
 		Selection: selection,
 		ParentProjection: &viewops.ParentProjectionConfig{
 			Project: func(ctx context.Context, p model.PrincipalRef, r driver.Reader, refs []model.Ref) (viewops.ParentProjectionAuthority, error) {
-				a, err := app.Checker.AuthorizeParentProjections(ctx, p, r, refs)
+				a, err := f.app.Checker.AuthorizeParentProjections(ctx, p, r, refs)
 				out := viewops.ParentProjectionAuthority{PolicyBinding: a.PolicyBinding, Parents: make(map[string]viewops.ParentDisclosure, len(a.Parents))}
 				for id, value := range a.Parents {
 					out.Parents[id] = viewops.ParentDisclosure{Exists: value.Exists, Ref: value.Ref}
 				}
 				return out, err
 			},
-			ValidateAuthority: app.Checker.ValidateReadAuthorityBinding,
+			ValidateAuthority: f.app.Checker.ValidateReadAuthorityBinding,
 		},
 	})
 	if err != nil {
@@ -445,6 +453,38 @@ func (f *fixture) verifyCorpus(t *testing.T) {
 		}
 	}
 	f.corpusHash = fmt.Sprintf("%x", h.Sum(nil))
+	// The source census shares tables with independently owned producers.
+	// Enumerate their exact expected rows; never accept arbitrary extras or
+	// relabel the full bead census after composition or a public claim.
+	extra := map[driver.DerivedRowKey]driver.DerivedRow{}
+	if f.app != nil {
+		keys, err := authzfixed.SelectionRows(f.base.Namespace)
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := driver.LockKey{Kind: driver.LockDerived, Derived: &keys.Source}
+		states, err := r.Observe(context.Background(), []driver.LockKey{key})
+		canonical, encodeErr := authzfixed.FactsSourceBytes(f.base)
+		if err != nil || encodeErr != nil || len(states) != 1 || !states[0].Present || states[0].Derived == nil || !bytes.Equal(states[0].Derived.Value, canonical) {
+			t.Fatalf("canonical authority source readback: %v %v", err, encodeErr)
+		}
+		source := driver.SelectionSource{Key: key, Revision: states[0].Revision, Present: true, Digest: driver.SelectionDigest(canonical)}
+		rows, err := authzfixed.SelectionProjection(f.base, source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range rows {
+			if row.Index == nil {
+				t.Fatal("fixture authority projection is not certified")
+			}
+			if row.Index.Row.Table == driver.DerivedAttribute {
+				extra[row.Index.Row] = row
+			}
+		}
+	}
+	for key, row := range f.readyRows {
+		extra[driver.DerivedRowKey{Table: driver.DerivedSortKey, Key: key}] = row
+	}
 	checkProjection := func(table driver.DerivedTable, row driver.DerivedRow, id string) {
 		t.Helper()
 		index := row.Index
@@ -458,11 +498,19 @@ func (f *fixture) verifyCorpus(t *testing.T) {
 	// subsequent batches as the unchanged bodies, not a retrospective build.
 	for _, table := range []driver.DerivedTable{driver.DerivedSortKey, driver.DerivedAttribute, driver.DerivedReferenceIndex} {
 		rows, err := r.DerivedRows(context.Background(), table, "")
-		if err != nil || len(rows) != f.n {
-			t.Fatalf("complete %s source projection readback: rows=%d want=%d err=%v", table, len(rows), f.n, err)
+		if err != nil {
+			t.Fatalf("complete %s source projection readback: %v", table, err)
 		}
 		seen := make(map[string]bool, f.n)
 		for _, row := range rows {
+			key := driver.DerivedRowKey{Table: table, Key: row.Key}
+			if expected, ok := extra[key]; ok {
+				if !bytes.Equal(row.Value, expected.Value) || !reflect.DeepEqual(row.Index, expected.Index) {
+					t.Fatalf("independent %s producer row changed: %s", table, row.Key)
+				}
+				delete(extra, key)
+				continue
+			}
 			if _, ok := revisions[row.Key]; !ok || seen[row.Key] {
 				t.Fatalf("duplicate or unknown %s source projection %s", table, row.Key)
 			}
@@ -492,6 +540,12 @@ func (f *fixture) verifyCorpus(t *testing.T) {
 				}
 			}
 		}
+		if len(seen) != f.n {
+			t.Fatalf("complete %s source projection readback: rows=%d want=%d", table, len(seen), f.n)
+		}
+	}
+	if len(extra) != 0 {
+		t.Fatalf("independent producer rows missing: %+v", extra)
 	}
 	// Independently enumerate canonical children from the frozen eleven-row
 	// chains. Check every indexed image against the exact source read above.
@@ -760,12 +814,37 @@ func (f *fixture) resetClaim(t *testing.T, ref model.Ref) {
 	if _, err := fmt.Sscanf(ref.ID, "00000000-0000-4000-8000-%012d", &n); err != nil || n < 1 || n > f.n {
 		t.Fatalf("claim identity outside corpus: %s", ref.ID)
 	}
-	f.patchSource(t, "claim_reset", ref, body(t, n), []string{"/lease"})
+	// Main publishes a separate rank row atomically with each public claim.
+	// Bind it to the actual claimed revision before the source-only reset;
+	// retain its exact bytes so the later complete census proves conservation.
 	r := f.reader(t, nil)
+	claimed, err := r.Get(context.Background(), []model.Ref{ref})
+	key, keyErr := pipeline.ReadySortKeyRowKey(ref.ID)
+	rows, rankErr := r.DerivedRows(context.Background(), driver.DerivedSortKey, key)
+	r.Close()
+	if err != nil || keyErr != nil || rankErr != nil || len(claimed) != 1 || len(rows) != 1 || rows[0].Index != nil {
+		t.Fatalf("claimed source/rank readback: %v %v %v", err, keyErr, rankErr)
+	}
+	id, rank, err := pipeline.DecodeReadySortKey(rows[0])
+	seed := document(n)
+	bucket, priority, known, orderErr := service.ReadySortKey(seed, rank.RankedAt)
+	if err != nil || orderErr != nil || id != ref.ID || !known || rank.Revision.String() != claimed[0].Revision.String() || !rank.CreatedAt.Equal(*seed.CreatedAt) || rank.Bucket != bucket || rank.Rank != priority {
+		t.Fatalf("claim rank is not bound to its source and clock: %+v %v %v", rank, err, orderErr)
+	}
+	if f.readyRows == nil {
+		f.readyRows = map[string]driver.DerivedRow{}
+	}
+	f.readyRows[key] = rows[0].Clone()
+	f.patchSource(t, "claim_reset", ref, body(t, n), []string{"/lease"})
+	r = f.reader(t, nil)
 	defer r.Close()
-	rows, err := r.Get(context.Background(), []model.Ref{ref})
-	if err != nil || len(rows) != 1 || !bytes.Equal(rows[0].Body, body(t, n)) {
+	restored, err := r.Get(context.Background(), []model.Ref{ref})
+	if err != nil || len(restored) != 1 || !bytes.Equal(restored[0].Body, body(t, n)) {
 		t.Fatalf("claim reset did not restore the exact original body: %v", err)
+	}
+	rows, err = r.DerivedRows(context.Background(), driver.DerivedSortKey, key)
+	if err != nil || len(rows) != 1 || !reflect.DeepEqual(rows[0], f.readyRows[key]) {
+		t.Fatalf("source reset changed the independent rank row: %v", err)
 	}
 }
 

@@ -196,6 +196,11 @@ func (t *transaction) selectionCompleteForCommit(ctx context.Context, c queryer,
 			return false, err
 		}
 		if err == nil {
+			if state.Present && (state.Derived == nil || state.Derived.Index == nil) {
+				// Even a ready/<id> row is a raw replacement when this logical
+				// key already owns a typed bead projection.
+				return false, nil
+			}
 			if state.Present && state.Derived != nil && state.Derived.Index != nil && state.Derived.Index.Bead != nil && keyID(state.Derived.Index.Source.Key) == previous {
 				continue
 			}
@@ -203,8 +208,17 @@ func (t *transaction) selectionCompleteForCommit(ctx context.Context, c queryer,
 				return false, nil
 			}
 		} else if state.Present && (state.Derived == nil || state.Derived.Index == nil) {
-			// An untyped sort-key replacement can shadow a typed logical row.
-			return false, nil
+			// Main's ready-order row is a separate, unannotated sort-key
+			// namespace. It cannot change bead selection coverage unless it
+			// replaces an existing typed row, checked above. Keep every other
+			// unannotated sort-key write unavailable.
+			id, ready := strings.CutPrefix(state.Key.Derived.Key, "ready/")
+			if !ready || id == "" {
+				return false, nil
+			}
+			if _, err := driver.NewBeadSentinel(id); err != nil {
+				return false, nil
+			}
 		}
 	}
 	return true, nil
