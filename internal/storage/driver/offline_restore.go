@@ -245,6 +245,20 @@ func (p RestoreImportProfile) RequestHash() (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
+// DetachedCoreOnly is the execution boundary for the historical importer.
+// A checked joint plan is valid preparation input, but cannot be executed by
+// a core-only writer that has no provider/origin/receipt correspondence.
+func (p RestoreImportProfile) DetachedCoreOnly() (RestoreImportProfile, error) {
+	bound, err := p.Detached()
+	if err != nil {
+		return RestoreImportProfile{}, err
+	}
+	if bound.SourcePlanes != nil {
+		return RestoreImportProfile{}, sourcePlaneError("joint import requires atomic source-plane execution capability")
+	}
+	return bound, nil
+}
+
 // AgentLabel retains existing G4 normalization; full admission scope remains
 // in RequestHash for both modes and must be compared again on recovery.
 func (p RestoreImportProfile) AgentLabel() string {

@@ -90,7 +90,7 @@ func RestoreImport(ctx context.Context, input io.Reader, target driver.Store, pr
 	if err := ctx.Err(); err != nil {
 		return Report{}, err
 	}
-	bound, err := profile.Detached()
+	bound, err := profile.DetachedCoreOnly()
 	if err != nil {
 		return Report{}, err
 	}
@@ -107,7 +107,7 @@ func RestoreImportWithLease(ctx context.Context, input io.Reader, target driver.
 	if err := ctx.Err(); err != nil {
 		return Report{}, err
 	}
-	bound, err := profile.Detached()
+	bound, err := profile.DetachedCoreOnly()
 	if err != nil {
 		return Report{}, err
 	}
@@ -151,6 +151,9 @@ func restoreArchive(ctx context.Context, archive *dumpformat.Archive, target dri
 }
 
 func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive, target driver.Store, supplied driver.ActiveLease, profile *driver.RestoreImportProfile, checks []Verification) (Report, error) {
+	if profile != nil && profile.SourcePlanes != nil {
+		return Report{Archive: archive}, driver.ErrUnsupported
+	}
 	if archive == nil || target == nil {
 		return Report{Archive: archive}, fmt.Errorf("restore requires an archive and target store")
 	}
@@ -431,6 +434,9 @@ func Recover(ctx context.Context, target driver.Store, check Verification) (Repo
 // looks up the exact actor/scope/method/key binding and verifies the retained
 // archive marker; it never replays records or reseeds an allocator.
 func RecoverImport(ctx context.Context, target driver.Store, profile driver.RestoreImportProfile, check Verification) (Report, error) {
+	if profile.SourcePlanes != nil {
+		return Report{}, driver.ErrUnsupported
+	}
 	bound, err := profile.Detached()
 	if err != nil || !validDigest(check.ArchiveSHA256) || !validDigest(check.DerivedSHA256) || check.ArchiveSHA256 != bound.ArchiveDigest || check.DerivedSHA256 != bound.DerivedDigest {
 		return Report{}, driver.ErrConflict

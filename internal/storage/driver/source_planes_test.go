@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 	"testing"
 
@@ -274,5 +275,58 @@ func TestSourcePlaneComponentOrderingHasNoDelimiterAliases(t *testing.T) {
 	c.Table = "dependencies"
 	if CompareSourceEdgeKeys(c, a) >= 0 {
 		t.Fatal("table component not ordered before physical ID")
+	}
+}
+
+func TestSourcePlaneRouteAlternativesRequireExactSourceInverse(t *testing.T) {
+	// The same-ID cross-plane route in the complete plan is the positive
+	// control. Each negative keeps all target refs globally available.
+	if _, err := EncodeSourcePlanePlanV1(sourcePlaneTestPlan()); err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range []string{"different-id", "different-project"} {
+		t.Run(scope, func(t *testing.T) {
+			p := sourcePlaneTestPlan()
+			other := p.Entities[0]
+			other.Source.ID = "z-other"
+			other.TargetID = "other-durable"
+			other.Route = SourcePlaneRouteV1{Project: "p", SourceID: "z-other", DurableTargetID: other.TargetID, Preference: "active-first"}
+			if scope == "different-project" {
+				other.Source.Project = "z"
+				other.Source.ID = "same-id"
+				other.Route.Project = "z"
+				other.Route.SourceID = "same-id"
+			}
+			p.Entities = append(p.Entities, other)
+			for i := 0; i < 2; i++ {
+				p.Entities[i].Route.DurableTargetID = other.TargetID
+			}
+			// Remove the original durable entity so its own selected route arm is
+			// valid; the active entity's alternate points at the unrelated target.
+			p.Entities = p.Entities[1:]
+			p.Relations = nil
+			sort.Slice(p.Entities, func(i, j int) bool { return CompareSourceEntityKeys(p.Entities[i].Source, p.Entities[j].Source) < 0 })
+			if _, err := EncodeSourcePlanePlanV1(p); !errors.Is(err, ErrUnsupported) {
+				t.Fatalf("unrelated alternate accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestSourcePlaneFoundationRefusesCoreOnlyExecution(t *testing.T) {
+	p := sourcePlaneTestProfile()
+	if _, err := p.DetachedCoreOnly(); err != nil {
+		t.Fatal("legacy nil profile refused", err)
+	}
+	binding, err := NewSourcePlaneImportBindingV1(sourcePlaneTestPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.SourcePlanes = &binding
+	if _, err := p.Detached(); err != nil {
+		t.Fatal("checked preparation profile refused", err)
+	}
+	if _, err := p.DetachedCoreOnly(); !errors.Is(err, ErrUnsupported) {
+		t.Fatal("core-only execution accepted joint plan", err)
 	}
 }

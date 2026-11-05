@@ -518,6 +518,89 @@ func TestAdmittedImportRejectsUntrustedProfileBeforeWrite(t *testing.T) {
 // compiler inlines the common decode helper differently across Bazel modes.
 var _ = json.Valid
 
+func TestSourcePlaneFoundationRefusesUnadaptedExecutionBeforeWrite(t *testing.T) {
+	data := admittedFixtureBytes(t)
+	base, _ := admittedImportProfile(t, data)
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			store, lease, cleanup := openTarget(t, engine)
+			defer cleanup()
+			meta, err := store.Meta(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lifetime := driver.CheckpointLifetimeRestart
+			if engine == "memory" {
+				lifetime = driver.CheckpointLifetimeProcess
+			}
+			p := base
+			binding, err := driver.NewSourcePlaneImportBindingV1(driver.SourcePlanePlanV1{Version: driver.SourcePlanePlanVersionV1, AddressContract: driver.SourcePlaneAddressContractV1, SourceStoreID: string(p.SourceStoreID), ArchiveSHA256: p.ArchiveDigest, Target: driver.SourcePlaneTargetV1{StoreID: string(meta.StoreID), Incarnation: meta.Incarnation, RequireEmpty: true, Lifetime: lifetime, RuntimeContract: driver.SourcePlaneRuntimeContractV1}, Providers: []driver.SourcePlaneProviderV1{{Alias: "workflow", Instance: "default", Namespace: "plugin/workflow/default/durable", Schema: "workflow/source-state/1", Codec: "workflow/json/1", RuntimeContract: driver.SourcePlaneRuntimeContractV1, Lifetime: lifetime, LogicalImageSize: 2, LogicalImageSHA256: digestBytes([]byte("{}")), OriginAdapter: "beads-workflow-origins/1"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.SourcePlanes = &binding
+			if _, err := p.Detached(); err != nil {
+				t.Fatal("valid detached preparation blocked", err)
+			}
+			before := reverseState(t, store)
+			counted := &labelWriteCounter{Store: store}
+			for _, call := range []func() error{
+				func() error {
+					_, err := RestoreImportWithLease(ctx, bytes.NewReader(data), counted, lease, p)
+					return err
+				},
+				func() error { _, err := RestoreImport(ctx, bytes.NewReader(data), counted, p); return err },
+				func() error {
+					_, err := RecoverImport(ctx, counted, p, Verification{ArchiveSHA256: p.ArchiveDigest, DerivedSHA256: p.DerivedDigest})
+					return err
+				},
+			} {
+				if err := call(); !errors.Is(err, driver.ErrUnsupported) {
+					t.Fatalf("unadapted joint execution=%v", err)
+				}
+			}
+			if counted.writes != 0 || !reflect.DeepEqual(before, reverseState(t, store)) {
+				t.Fatal("refused joint execution mutated target")
+			}
+			cp := store.(driver.CheckpointStore)
+			namespace := "plugin/workflow/default/durable"
+			beforeCheckpoint, err := cp.LoadCheckpoint(ctx, namespace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The direct driver boundary must refuse before even staging restore
+			// metadata. Reusing the SAME transaction for the legacy preparation is
+			// a positive control: no joint-restore mode was left behind.
+			tx, err := store.Write(ctx, lease)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Close()
+			if _, err := tx.Lock(ctx, nil); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.Head(ctx); err != nil {
+				t.Fatal(err)
+			}
+			port := tx.(driver.RestoreImportTx)
+			if _, err := port.PrepareRestoreImport(ctx, p); !errors.Is(err, driver.ErrUnsupported) {
+				t.Fatalf("direct unadapted driver accepted plan: %v", err)
+			}
+			if _, err := port.PrepareRestoreImport(ctx, base); err != nil {
+				t.Fatal("refusal staged metadata or broke legacy nil", err)
+			}
+			if err := tx.Close(); err != nil {
+				t.Fatal(err)
+			}
+			afterCheckpoint, err := cp.LoadCheckpoint(ctx, namespace)
+			if err != nil || !reflect.DeepEqual(beforeCheckpoint, afterCheckpoint) || !reflect.DeepEqual(before, reverseState(t, store)) {
+				t.Fatal("direct refusal/rollback changed graph/checkpoint/receipt")
+			}
+		})
+	}
+}
+
 // Only the immutable source row supplies creation time. The public memory and
 // SQLite regression above independently checks the stored canonical instant,
 // exact source provenance and successful post-restore claim.

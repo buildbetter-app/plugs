@@ -295,11 +295,18 @@ func (p SourcePlanePlanV1) Validate() error {
 		}
 	}
 	for _, r := range routes {
-		if r.ActiveTargetID != "" && !targets[struct{ kind, id string }{"workflow:item", r.ActiveTargetID}] {
-			return sourcePlaneError("route has dangling active target")
-		}
-		if r.DurableTargetID != "" && !targets[struct{ kind, id string }{"bead", r.DurableTargetID}] {
-			return sourcePlaneError("route has dangling durable target")
+		for _, arm := range []struct{ kind, id string }{{"workflow:item", r.ActiveTargetID}, {"bead", r.DurableTargetID}} {
+			if arm.id == "" {
+				continue
+			}
+			found := false
+			for _, plane := range []string{"issues", "wisps"} {
+				e, ok := entities[SourceEntityKey{Project: r.Project, Plane: plane, ID: r.SourceID}]
+				found = found || ok && e.TargetKind == arm.kind && e.TargetID == arm.id
+			}
+			if !found {
+				return sourcePlaneError("route alternative lacks exact inverse source project/ID")
+			}
 		}
 	}
 	if err := sourcePlaneOrder(p.Relations, func(v SourcePlaneRelationV1) []string { return []string{v.Source.Project, v.Source.Table, v.Source.ID} }); err != nil {

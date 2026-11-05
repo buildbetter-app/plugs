@@ -46,7 +46,7 @@ func (t *transaction) PrepareOfflineRestore(ctx context.Context, source driver.S
 	return t.prepareRestore(ctx, source)
 }
 func (t *transaction) PrepareRestoreImport(ctx context.Context, p driver.RestoreImportProfile) (driver.Meta, error) {
-	bound, err := p.Detached()
+	bound, err := p.DetachedCoreOnly()
 	if err != nil {
 		return driver.Meta{}, err
 	}
