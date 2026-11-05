@@ -243,12 +243,20 @@ func (r *nativeReplay) observeHierarchy(capture nativeCapture, label string, obs
 	if err != nil || !extension && !reflect.DeepEqual(actualNativeRoles, want) || extension && !reflect.DeepEqual(actualNativeRoles, nativeRoles) {
 		r.f.t.Fatalf("%s actual native roles=%v want=%v: %v", label, actualNativeRoles, want, err)
 	}
+	actualNativeFirst, err := nativeRolesForIDs(capture.Vector, observed.First)
+	if err != nil || !reflect.DeepEqual(actualNativeFirst, actualNativeRoles[:1]) {
+		r.f.t.Fatalf("%s actual native first page=%v full roles=%v: %v", label, actualNativeFirst, actualNativeRoles, err)
+	}
+	if !reflect.DeepEqual(r.ids(first), r.wantIDs(want[:1])) {
+		r.f.t.Fatalf("%s actual Plug first page did not filter blocked rows before its limit", label)
+	}
 	var parity any = true
 	if extension {
 		parity = nil // Native refused the typed edge; no typed-arm parity exists.
 	}
 	nativeJSON(r.f.t, filepath.Join(r.output, label+"-hierarchy-comparison.json"), map[string]any{
 		"actualNativeReadyRoles": actualNativeRoles, "assertedPlugReadyRoles": want, "membershipParity": parity,
+		"actualNativeFirstRoles": actualNativeFirst, "assertedPlugFirstRoles": want[:1],
 		"plugTypedExtension": extension, "nativeTypedEdgeEquivalent": !extension,
 		"hierarchyProof": proof, "ruling": "2026-11-04 12:05Z local versus typed external parent-child",
 	})

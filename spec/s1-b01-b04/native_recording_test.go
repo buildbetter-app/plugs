@@ -346,7 +346,7 @@ func recordNativeVector(t *testing.T, binary, output string, inputs nativeInputs
 		t.Fatalf("public dump changed original sidecar closure: %v", err)
 	}
 	_, dumpBytes, err := nativeDigestFile(filepath.Join(output, "readback.tar"))
-	if err != nil || dumpBytes == 0 || c.count != 24+7*len(steps) {
+	if err != nil || dumpBytes == 0 || c.count != 26+8*len(steps) {
 		t.Fatalf("public dump bytes=%d, commands=%d: %v", dumpBytes, c.count, err)
 	}
 	// Preserve the original successful hierarchy export before adding custom
@@ -366,7 +366,7 @@ func recordNativeVector(t *testing.T, binary, output string, inputs nativeInputs
 		"refusedDump": nativeOutputState(filepath.Join(output, "membership-refused-dump.tar")),
 		"scope":       "Original hierarchy dump success is retained; custom-status native capture has a genuine explicitly unsupported export, no native import/restore proof",
 	})
-	if c.count != 24+7*len(steps)+1+13*len(nativeMembershipSteps())+3 {
+	if c.count != 26+8*len(steps)+1+13*len(nativeMembershipSteps())+3 {
 		t.Fatal("native category/export command set is incomplete")
 	}
 	exclusionStart := c.count
@@ -377,7 +377,7 @@ func recordNativeVector(t *testing.T, binary, output string, inputs nativeInputs
 	c.run("exclusions-quiesce", "dolt", "commit", "-m", "B01 hidden type capture "+run.ID)
 	c.run("exclusions-inventory", "--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "-o", filepath.Join(output, "exclusions-inventory.json"))
 	checkNativeExclusionInventory(t, filepath.Join(output, "exclusions-inventory.json"), output)
-	if c.count != 422 {
+	if c.count != 433 {
 		t.Fatal("complete native hierarchy/category/type command set differs")
 	}
 	if err := server.Stop(); err != nil {

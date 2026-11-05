@@ -416,3 +416,17 @@ optional-table absence versus unrelated query errors, and other full-card
 obligations remain explicitly incomplete. Existing accepted preparation and
 fixed helper/control are unchanged; no borrowed head/gate credit, FullB01,
 NativeAdmission or FullS1 promotion follows from this source.
+
+
+The hierarchy page extension adds an actual `ready --sort hybrid --limit 1`
+command after the full query in before/after and every native hierarchy
+continuation. Its retained First projection must equal the first eligible ID
+from that phase's independently checked full membership, including the phases
+where the three higher-priority hierarchy roles are blocked and free is the
+only eligible row. Both semantic twins include First. The existing all-store
+replay continues to check full/one-row signed enumeration, resource filtering,
+state conservation and physical SQL reopen. These eleven additional commands
+per store bring the current source plan to 433/store and 1732 overall. The
+previous 422-command recordings remain immutable evidence for their own heads;
+this extension is AUTHORED_NOT_RUN until a fresh changed-source terminal. It
+does not establish mixed-plane pagination or controlled 48-hour ordering.
