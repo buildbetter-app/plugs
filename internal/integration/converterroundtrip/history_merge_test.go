@@ -43,7 +43,7 @@ func projectHistoryArchive(t *testing.T, prefix string, ordinal int) []byte {
 	filteredKinds := make([]any, 0, len(manifest["kind_registry"].([]any)))
 	for _, raw := range manifest["kind_registry"].([]any) {
 		kind := raw.(map[string]any)
-		if kind["name"] == "config" || kind["name"] == "beads-archive" {
+		if kind["name"] == "config" {
 			continue
 		}
 		filteredKinds = append(filteredKinds, kind)
@@ -51,7 +51,6 @@ func projectHistoryArchive(t *testing.T, prefix string, ordinal int) []byte {
 	manifest["kind_registry"] = filteredKinds
 	files := manifest["files"].(map[string]any)
 	delete(files, "records/config.ndjson")
-	delete(files, "records/beads-archive.ndjson")
 	var externalEntries []map[string]any
 	decode(t, members["config/sources.json"], &externalEntries)
 	externalFamilies := map[string]bool{}
@@ -89,7 +88,6 @@ func projectHistoryArchive(t *testing.T, prefix string, ordinal int) []byte {
 		members[name] = raw
 	}
 	delete(members, "records/config.ndjson")
-	delete(members, "records/beads-archive.ndjson")
 
 	// The archive rows above are deliberately narrowed to the project bead.
 	// Rebind every database disposition to the retained record census instead
