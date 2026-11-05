@@ -17,6 +17,7 @@ import (
 type readyOrderPublicationState struct {
 	publication driver.ReadyOrderPublication
 	overlay     string
+	finalized   bool
 }
 
 type readyOrderCommitProof struct {
@@ -48,6 +49,25 @@ func (t *transaction) StageReadyOrderPublication(ctx context.Context, p driver.R
 		return err
 	}
 	t.readyPublication = &readyOrderPublicationState{publication: p, overlay: signature}
+	return nil
+}
+
+// FinalizeReadyOrderPublication is called only after the readyindex producer
+// has staged every source, derived row, allocator and predicate mutation. The
+// final StageReadyOrderPublication call has already computed the overlay
+// signature against that complete set; retaining the marker avoids serializing
+// the same large overlay again in Commit while preserving the ordinary
+// signature recheck for non-finalized/manual callers.
+func (t *transaction) FinalizeReadyOrderPublication(ctx context.Context, p driver.ReadyOrderPublication) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err := t.check(ctx); err != nil {
+		return err
+	}
+	if t.readyPublication == nil || t.readyPublication.publication.Digest() != p.Digest() {
+		return driver.ErrUnsupported
+	}
+	t.readyPublication.finalized = true
 	return nil
 }
 
@@ -83,12 +103,14 @@ func (t *transaction) prepareReadyOrderCommit(ctx context.Context, c *sql.Conn, 
 	if t.readyPublication == nil || t.restore != nil || t.offlineHistory != nil {
 		return nil, nil
 	}
-	signature, err := t.readyOrderOverlaySignature()
-	if err != nil {
-		return nil, err
-	}
-	if signature != t.readyPublication.overlay {
-		return nil, nil
+	if !t.readyPublication.finalized {
+		signature, err := t.readyOrderOverlaySignature()
+		if err != nil {
+			return nil, err
+		}
+		if signature != t.readyPublication.overlay {
+			return nil, nil
+		}
 	}
 	p, err := readyindex.ValidatePublication(ctx, t.readyPublication.publication)
 	if errors.Is(err, driver.ErrUnsupported) {

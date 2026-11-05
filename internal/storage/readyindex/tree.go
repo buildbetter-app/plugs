@@ -271,6 +271,10 @@ type Delta struct {
 	registration driver.ReadyOrderPublication
 }
 
+type readyOrderPublicationFinalizer interface {
+	FinalizeReadyOrderPublication(context.Context, driver.ReadyOrderPublication) error
+}
+
 // Prepare starts only at the proven empty initial Head, or continues an exact
 // previously maintained Head. A skipped/raw publication is a coverage gap;
 // present final images never retroactively certify it. Historical rows are
@@ -588,6 +592,11 @@ func (d *Delta) FinalizePublication(ctx context.Context, tx driver.WriteTx) erro
 	if writer, ok := tx.(driver.ReadyOrderPublicationWriter); ok {
 		if err := writer.StageReadyOrderPublication(ctx, d.registration); err != nil && !errors.Is(err, driver.ErrUnsupported) {
 			return err
+		}
+		if finalizer, ok := tx.(readyOrderPublicationFinalizer); ok {
+			if err := finalizer.FinalizeReadyOrderPublication(ctx, d.registration); err != nil && !errors.Is(err, driver.ErrUnsupported) {
+				return err
+			}
 		}
 	}
 	return nil
