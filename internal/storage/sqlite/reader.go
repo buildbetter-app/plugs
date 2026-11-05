@@ -24,10 +24,15 @@ type reader struct {
 	mu             sync.Mutex
 	store          *Store
 	tx             *sql.Tx
-	meta           driver.Meta
-	at             uint64
-	closed         bool
-	owner          *transaction
+	// observeHistoryStmt is bound to the current pinned transaction. Reusing
+	// this scalar statement keeps the one-key history lookup and its error
+	// boundary intact while avoiding a prepare/finalize cycle for every Ready
+	// point observation. pin closes it before replacing the transaction.
+	observeHistoryStmt *sql.Stmt
+	meta               driver.Meta
+	at                 uint64
+	closed             bool
+	owner              *transaction
 }
 
 func (s *Store) Read(ctx context.Context, v driver.View) (driver.Reader, error) {
@@ -81,6 +86,10 @@ func (r *reader) pin(ctx context.Context, v driver.View) error {
 		_ = tx.Rollback()
 		return err
 	}
+	if r.observeHistoryStmt != nil {
+		_ = r.observeHistoryStmt.Close()
+		r.observeHistoryStmt = nil
+	}
 	if r.tx != nil {
 		_ = r.tx.Rollback()
 	}
@@ -119,6 +128,10 @@ func (r *reader) Close() error {
 		return nil
 	}
 	r.closed = true
+	if r.observeHistoryStmt != nil {
+		_ = r.observeHistoryStmt.Close()
+		r.observeHistoryStmt = nil
+	}
 	err := r.tx.Rollback()
 	r.tx = nil
 	r.store.untrack(r)
@@ -301,7 +314,14 @@ func (r *reader) Observe(ctx context.Context, keys []driver.LockKey) ([]driver.L
 func (r *reader) observe(ctx context.Context, key driver.LockKey) (driver.LockState, error) {
 	state := driver.LockState{Key: copyKey(key), Revision: model.Natural64(0)}
 	var data []byte
-	err := r.tx.QueryRowContext(ctx, `SELECT data FROM key_history WHERE key=? AND rev<=? ORDER BY rev DESC LIMIT 1`, keyID(key), revKey(r.at)).Scan(&data)
+	if r.observeHistoryStmt == nil {
+		statement, err := r.tx.PrepareContext(ctx, `SELECT data FROM key_history WHERE key=? AND rev<=? ORDER BY rev DESC LIMIT 1`)
+		if err != nil {
+			return state, err
+		}
+		r.observeHistoryStmt = statement
+	}
+	err := r.observeHistoryStmt.QueryRowContext(ctx, keyID(key), revKey(r.at)).Scan(&data)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return state, err
 	}

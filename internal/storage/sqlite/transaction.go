@@ -123,6 +123,10 @@ func (t *transaction) finish() {
 		_ = t.validationHistoryStmt.Close()
 		t.validationHistoryStmt = nil
 	}
+	if t.observeHistoryStmt != nil {
+		_ = t.observeHistoryStmt.Close()
+		t.observeHistoryStmt = nil
+	}
 	_ = t.tx.Rollback()
 	t.tx = nil
 	releaseGuards(t.guards)
