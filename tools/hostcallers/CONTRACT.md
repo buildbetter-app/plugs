@@ -65,3 +65,7 @@ prerequisites and child-before-parent constraints. Open/missing prerequisites or
 children and closure cycles are refused before creating anything. Core close
 guards remain enabled. Scoped create receipts are refreshed when another
 prepared caller has written the workspace journal.
+
+Priority is a checked P0..P4 integer. The legacy seed's supported decimal
+strings "0" through "4" are converted deliberately; boolean, fractional,
+null, out-of-range and other string values refuse before their create RPC.

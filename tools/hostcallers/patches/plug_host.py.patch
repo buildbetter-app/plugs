@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/scripts/plug_host.py
-@@ -0,0 +1,416 @@
+@@ -0,0 +1,423 @@
 +"""Typed, explicitly bound Plug host adapter. No Beads subprocess or discovery."""
 +import contextlib
 +import copy
@@ -403,8 +403,15 @@
 +    labels = [x for x in item.get("labels", []) if x != "decision"]
 +    if project == "signals-v2" and project not in labels:
 +        labels.append(project)
++    priority = item.get("priority", item.get("prio", 2))
++    # The old seed deliberately represents P0..P4 as decimal strings. Other
++    # JSON types must not become a different accepted value through int(...).
++    if type(priority) is str and priority in {"0", "1", "2", "3", "4"}:
++        priority = int(priority)
++    if type(priority) is not int or not 0 <= priority <= 4:
++        raise AdapterError("priority must be an integer P0 through P4 or a seed decimal string")
 +    fields = {"title": item["title"], "description": description,
-+              "priority": int(item.get("priority", item.get("prio", 2))), "labels": labels}
++              "priority": priority, "labels": labels}
 +    for src, dst in [("design", "design"), ("acceptance", "acceptance_criteria"), ("acceptance_criteria", "acceptance_criteria"),
 +                     ("owner", "assignee"), ("ext", "external_ref")]:
 +        if item.get(src) is not None:

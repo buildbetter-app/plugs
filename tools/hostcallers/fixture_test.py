@@ -163,6 +163,39 @@ class HostCallerFixture(unittest.TestCase):
         self.cfg['incarnation']='wrong'; self.write_binding()
         with self.assertRaises(ph.AdapterError): ph.Client(self.binding,'signals-v2')
 
+    def test_priorities_refuse_coercion_and_preserve_seed_integer_strings(self):
+        before={b['id'] for b in self.c.snapshot()}
+        before_ops={b['id'] for b in ph.Client(self.binding,'cody-ops').snapshot()}
+        for n, priority in enumerate((True, False, 2.9, 2.0, None, '2.9', 'true', -1, 5)):
+            for kind, project in (('load','signals-v2'),('seed','cody-ops')):
+                with self.subTest(kind=kind, priority=priority):
+                    workspace=self.root/(kind+'-priority-'+str(n)); workspace.mkdir()
+                    self.cfg['projects'][project]['workspace']=str(workspace)
+                    self.write_binding(); client=ph.Client(self.binding,project)
+                    item=dict(key='K',type='task',title='Invalid priority fixture',description='fixture',parent=None,deps=[])
+                    if kind=='load':
+                        item['priority']=priority
+                        plan=workspace/'plan.json'; ph.atomic_json(plan,{'doc':'fixture.md','items':[item]})
+                        with self.assertRaisesRegex(ph.AdapterError,'priority'):
+                            hd.load_plan(client,plan)
+                    else:
+                        item['prio']=priority
+                        with self.assertRaisesRegex(ph.AdapterError,'priority'):
+                            hd.seed(client,[item])
+                    self.assertFalse((workspace/'ids.json').exists())
+        self.assertEqual({b['id'] for b in self.c.snapshot()},before)
+        self.assertEqual({b['id'] for b in ph.Client(self.binding,'cody-ops').snapshot()},before_ops)
+        workspace=self.root/'valid-seed-priorities'; workspace.mkdir()
+        self.cfg['projects']['cody-ops']['workspace']=str(workspace)
+        self.write_binding(); client=ph.Client(self.binding,'cody-ops')
+        before_ops={b['id'] for b in client.snapshot()}
+        items=[dict(key=str(p),type='task',title='Seed integer priority',prio=str(p)) for p in range(5)]
+        hd.seed(client,items)
+        ids=ph.read_json(workspace/'ids.json')
+        self.assertEqual({b['id'] for b in client.snapshot()}-before_ops,set(ids.values()))
+        for p in range(5):
+            self.assertEqual(client.get(ids[str(p)])['fields']['priority'],p)
+
     def test_lossless_import_ids_and_cross_project_refusal(self):
         signal=self.create(); oc=ph.Client(self.binding,'cody-ops'); ops=self.create(oc)
         original='Case.Same/İD:opaque'
