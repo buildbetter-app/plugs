@@ -19,7 +19,13 @@ type callbackBusy interface {
 	CallbackBusy() bool
 }
 
-func callbackFailure(kind, id string, err error) error {
+func callbackFailure(ctx context.Context, kind, id string, err error) error {
+	// The preparation/caller context can expire while a callback is queued or
+	// running. Preserve that parent error for admission handling; an independent
+	// callback execution deadline still means the subscriber was unavailable.
+	if parentErr := ctx.Err(); parentErr != nil {
+		return parentErr
+	}
 	var busy callbackBusy
 	if errors.As(err, &busy) && busy.CallbackBusy() {
 		return failure("busy", "write pre phases exceeded their deadline")
@@ -127,7 +133,7 @@ func (w *Writer) pre(ctx context.Context, p *prepared) error {
 				p.warnings = append(p.warnings, skipped(binding.ID))
 				continue
 			}
-			return callbackFailure("mutator", binding.ID, err)
+			return callbackFailure(ctx, "mutator", binding.ID, err)
 		}
 		patches, err = clone(patches)
 		if err != nil {
@@ -211,7 +217,7 @@ func (w *Writer) pre(ctx context.Context, p *prepared) error {
 				p.warnings = append(p.warnings, skipped(binding.ID))
 				continue
 			}
-			return callbackFailure("validator", binding.ID, result.err)
+			return callbackFailure(ctx, "validator", binding.ID, result.err)
 		}
 		if !result.verdict.Allow {
 			return &model.Error{Message: "pre validator rejected the write", Data: model.ErrorData{Code: "ontology_guard_failed", Details: map[string]any{"binding": binding.ID, "violations": result.verdict.Violations}}}
