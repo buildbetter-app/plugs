@@ -84,6 +84,7 @@ func matches(record driver.Record, filter map[string]any) (bool, error) {
 }
 
 func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.Record], error) {
+	driver.ReportReadWork(ctx, driver.ReadQueryCalls, 1)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	empty := driver.Page[driver.Record]{}
@@ -137,6 +138,7 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 			_ = rows.Close()
 			return empty, err
 		}
+		driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
 		refs[string(key)] = ref
 	}
 	err = rows.Err()
@@ -190,6 +192,7 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 	if end < uint64(len(items)) {
 		page.NextCursor = r.next("query", filter, end)
 	}
+	driver.ReportReadWork(ctx, driver.ReadQueryReturned, int64(len(page.Items)))
 	return page, nil
 }
 

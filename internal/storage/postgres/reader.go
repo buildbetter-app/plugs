@@ -190,6 +190,9 @@ func (r *reader) recordAt(ctx context.Context, key string) (storedRecord, bool, 
 			if e != nil {
 				return result, false, e
 			}
+			if !deleted {
+				driver.ReportReadPayload(ctx, body)
+			}
 			return storedRecord{record: driver.Record{Ref: ref, Kind: kind, Revision: model.Natural64(n), Body: body}, deleted: deleted, count: c}, true, nil
 		}
 	} else {
@@ -259,6 +262,7 @@ func (r *reader) recordAt(ctx context.Context, key string) (storedRecord, bool, 
 	if !found {
 		return result, false, fmt.Errorf("postgres: historical version has no base")
 	}
+	driver.ReportReadPayload(ctx, result.record.Body)
 	return result, true, nil
 }
 
@@ -303,6 +307,9 @@ func (r *reader) recordsAt(ctx context.Context, ids []string) (map[string]stored
 		if value.count, err = parseCounter(count); err != nil {
 			break
 		}
+		if !value.deleted {
+			driver.ReportReadPayload(ctx, value.record.Body)
+		}
 		result[string(id)] = value
 	}
 	if err == nil {
@@ -345,6 +352,7 @@ func (r *reader) get(ctx context.Context, refs []driver.Ref) ([]driver.Record, e
 		if r.writer != nil {
 			if v, ok := r.writer.records[key]; ok {
 				if v != nil {
+					driver.ReportReadPayload(ctx, v.Body)
 					values[key] = storedRecord{record: *v}
 				}
 				continue
@@ -370,6 +378,7 @@ func (r *reader) get(ctx context.Context, refs []driver.Ref) ([]driver.Record, e
 	return result, nil
 }
 func (r *reader) Get(ctx context.Context, refs []driver.Ref) ([]driver.Record, error) {
+	driver.ReportReadWork(ctx, driver.ReadGetCalls, 1)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := r.check(ctx); err != nil {
