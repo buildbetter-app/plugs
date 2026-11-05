@@ -22,6 +22,7 @@ import (
 )
 
 const readbackBody = "  After restore\nExact Ω 東京\t  "
+const readbackExistingBody = "Existing memory made valid for native restore"
 
 var readbackPresence = map[string]any{"mode": "presence_check", "challenge": "b13-readback-disposable", "proof": "b13-test-verifier"}
 
@@ -290,6 +291,14 @@ func TestB13PublicArchiveMemoryBriefReadback(t *testing.T) {
 			source := newFixture(t, engine)
 			source.retainReadbackTrace("source")
 			emptyRevision := source.seedExistingRows() // Existing empty/config rows only.
+			// The ordinary read path still admits the legacy empty row. Native
+			// restore applies ordinary write field rules, so make the head image
+			// restorable through an ordinary memory.save before dumping it.
+			source.verifyConnected(map[string]memoryValue{"b13-empty": {ID: "b13-empty", Key: "empty legacy ✓", Content: "", Revision: emptyRevision}}, "")
+			existing, _ := source.accept("memory.save", map[string]any{"key": "empty legacy ✓", "content": readbackExistingBody}, key("readback-source-upgrade-legacy"), model.OpPatch)
+			if existing.Results[0].Ref.ID != "b13-empty" {
+				t.Fatal("ordinary save did not retain the legacy memory identity")
+			}
 			bead, _ := source.accept("bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": explicitKey}}, key("readback-source-bead"), model.OpCreate)
 			beadID := bead.Results[0].Ref.ID
 			metadata := map[string]any{"source": "public producer", "literal.dot/Ω": " kept "}
@@ -305,7 +314,7 @@ func TestB13PublicArchiveMemoryBriefReadback(t *testing.T) {
 			forgottenID := forgotten.Results[0].Ref.ID
 			source.accept("memory.delete", map[string]any{"id": forgottenID}, key("readback-source-forget"), model.OpDelete)
 			want := map[string]memoryValue{
-				"b13-empty":                {ID: "b13-empty", Key: "empty legacy ✓", Content: "", Revision: emptyRevision},
+				"b13-empty":                {ID: "b13-empty", Key: "empty legacy ✓", Content: readbackExistingBody, Revision: existing.Revision},
 				id:                         {ID: id, Key: explicitKey, Content: replacedBody, Metadata: metadata, Revision: replaced.Revision},
 				derived.Results[0].Ref.ID:  {ID: derived.Results[0].Ref.ID, Key: "keep-these-exact-words", Content: "Keep these exact\nwords.", Revision: derived.Revision},
 				neighbor.Results[0].Ref.ID: {ID: neighbor.Results[0].Ref.ID, Key: explicitKey + "suffix", Content: "日本語 !!!", Revision: neighbor.Revision},
