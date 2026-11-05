@@ -1171,6 +1171,7 @@ internal/storage/sqlite/offline_history.go
 internal/storage/sqlite/offline_restore.go
 internal/storage/sqlite/parent_counter.go
 internal/storage/sqlite/pending_test.go
+internal/storage/sqlite/preparation_admission_test.go
 internal/storage/sqlite/process_test.go
 internal/storage/sqlite/publication_cancel_test.go
 internal/storage/sqlite/publication_lease_process_test.go

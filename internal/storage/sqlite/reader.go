@@ -28,6 +28,8 @@ type reader struct {
 	at             uint64
 	closed         bool
 	owner          *transaction
+
+	releasePreparation func()
 }
 
 func (s *Store) Read(ctx context.Context, v driver.View) (driver.Reader, error) {
@@ -37,12 +39,27 @@ func (s *Store) Read(ctx context.Context, v driver.View) (driver.Reader, error) 
 	if err := branchZero(v.Branch); err != nil {
 		return nil, err
 	}
+	var release func()
+	if driver.PreparationAdmission(ctx) {
+		select {
+		case s.preparation <- struct{}{}:
+			release = func() { <-s.preparation }
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	defer func() {
+		if release != nil {
+			release()
+		}
+	}()
 	r := &reader{store: s}
 	if err := r.pin(ctx, v); err != nil {
 		return nil, err
 	}
+	r.releasePreparation, release = release, nil
 	if err := s.track(r); err != nil {
-		_ = r.tx.Rollback()
+		_ = r.Close()
 		return nil, err
 	}
 	return r, nil
@@ -122,6 +139,10 @@ func (r *reader) Close() error {
 	err := r.tx.Rollback()
 	r.tx = nil
 	r.store.untrack(r)
+	if release := r.releasePreparation; release != nil {
+		r.releasePreparation = nil
+		release()
+	}
 	if errors.Is(err, sql.ErrTxDone) {
 		return nil
 	}
