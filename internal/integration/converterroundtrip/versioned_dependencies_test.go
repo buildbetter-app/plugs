@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"sort"
 	"strings"
@@ -136,7 +137,7 @@ func requireVersionedDependencyState(t *testing.T, store driver.Store, archive *
 		}
 		if doc.ID == "demo-7.4" {
 			edge := archive.Records("edge")[0]
-			predicate, err := dumpformat.SourceEdgeMetadata(2, edge.ID, stringValue(edge.Body["type"]), edge.Body["metadata"])
+			predicate, err := dumpformat.SourceEdgeMetadata(archive.Manifest().EdgeVersion(), edge.ID, stringValue(edge.Body["type"]), edge.Body["metadata"])
 			if err != nil || doc.Parent != nil || len(doc.Links) != 1 || doc.Links[0].Kind != edge.Body["type"] || doc.Links[0].To.ID != edge.Body["to"] || doc.Links[0].TargetKind == model.LinkTargetExternal || !reflect.DeepEqual(doc.Links[0].Metadata, predicate) {
 				t.Fatalf("typed local source projection changed: %+v %v", doc, err)
 			}
@@ -213,6 +214,44 @@ func TestVersionedDependencyImportReadinessSourceAndReopen(t *testing.T) {
 					requireVersionedDependencyState(t, store, archive, test.ready)
 					store, _ = reopen()
 					requireVersionedDependencyState(t, store, archive, test.ready)
+				})
+			}
+		})
+	}
+}
+
+func TestEmptyWaitsGateReadRestoreReverseAndReopenPreserveRawValue(t *testing.T) {
+	for _, version := range []int{dumpformat.EdgeVersionTypedDependencies, dumpformat.EdgeVersionLocalOpaque} {
+		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
+			for _, test := range []struct {
+				name string
+				raw  any
+			}{
+				{"object", map[string]any{"gate": ""}},
+				{"SQL-text", " {\"gate\":\"\",\"opaque\":[9007199254740993,1.0]} \n"},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					data := versionedDependencyBytesAtVersion(t, admittedFixtureBytes(t), "waits-for", test.raw, true, version)
+					profile, archive := admittedImportProfile(t, data)
+					edge := archive.Records("edge")[0]
+					if !reflect.DeepEqual(edge.Body["metadata"], test.raw) || !reflect.DeepEqual(edge.Source.Fields["metadata"], test.raw) {
+						t.Fatal("reader changed the exact empty-gate body/source metadata")
+					}
+					for _, engine := range []string{"memory", "sqlite", "postgres"} {
+						t.Run(engine, func(t *testing.T) {
+							store, lease, reopen := openIdentityTarget(t, engine)
+							if _, err := RestoreImportWithLease(context.Background(), bytes.NewReader(data), store, lease, profile); err != nil {
+								t.Fatal(err)
+							}
+							// One child is still open, so an explicit empty gate is
+							// all-children even when its spawner is terminal.
+							requireVersionedDependencyState(t, store, archive, false)
+							requireDependencyReverse(t, store, archive, profile)
+							store, _ = reopen()
+							requireVersionedDependencyState(t, store, archive, false)
+							requireDependencyReverse(t, store, archive, profile)
+						})
+					}
 				})
 			}
 		})

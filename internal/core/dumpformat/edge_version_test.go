@@ -216,17 +216,53 @@ func TestEdgeV2MetadataProjectsPredicateWithoutChangingRawValue(t *testing.T) {
 	}
 }
 
-func TestEdgeV2MetadataRejectsMalformedOrAmbiguousEnvelopes(t *testing.T) {
+func TestVersionedEmptyWaitsGatePreservesRawValueAndCanonicalPredicate(t *testing.T) {
+	for _, version := range []int{EdgeVersionTypedDependencies, EdgeVersionLocalOpaque} {
+		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
+			for _, test := range []struct {
+				name       string
+				raw, value any
+			}{
+				{"object", map[string]any{"gate": ""}, map[string]any{"gate": ""}},
+				{"SQL-text", " {\"gate\":\"\",\"opaque\":[9007199254740993,1.0]} \n", " {\"gate\":\"\",\"opaque\":[9007199254740993,1.0]} \n"},
+				{"object-envelope", map[string]any{"_plug_edge_id": "edge-1", "_plug_metadata": map[string]any{"gate": ""}}, map[string]any{"gate": ""}},
+				{"SQL-text-envelope", `{"_plug_edge_id":"edge-1","_plug_metadata":" {\"gate\":\"\",\"n\":1.0} "}`, " {\"gate\":\"\",\"n\":1.0} "},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					before, _ := json.Marshal(test.raw)
+					got, err := InspectSourceEdgeMetadata(version, "edge-1", "waits-for", test.raw)
+					if err != nil || got.Predicate == nil || got.Predicate.Gate != "all-children" || got.Predicate.AlsoBlocks {
+						t.Fatalf("empty gate changed the canonical explicit predicate: %+v %v", got, err)
+					}
+					after, _ := json.Marshal(test.raw)
+					if !bytes.Equal(before, after) {
+						t.Fatal("empty gate raw source representation changed")
+					}
+					if !reflect.DeepEqual(got.Value, test.value) {
+						t.Fatalf("empty gate unwrapped value changed: %#v want %#v", got.Value, test.value)
+					}
+				})
+			}
+		})
+	}
+	if _, err := SourceEdgeMetadata(1, "edge-1", "waits-for", `{"gate":""}`); err == nil {
+		t.Fatal("legacy v1 empty-gate refusal changed")
+	}
+}
+
+func TestVersionedMetadataRejectsMalformedOrAmbiguousEnvelopes(t *testing.T) {
 	for _, raw := range []string{
-		`{"gate":null}`, `{"gate":""}`, `{"gate":"any"}`, `{"gate":1}`, `{"also_blocks":null}`, `{"also_blocks":1}`, `{"spawner_id":null}`, `{"spawner_id":1}`,
+		`{"gate":null}`, `{"gate":" "}`, `{"gate":"any"}`, `{"gate":1}`, `{"gate":false}`, `{"also_blocks":null}`, `{"also_blocks":1}`, `{"spawner_id":null}`, `{"spawner_id":1}`,
 		`null`, `[]`, `"{}"`, `{`, `{} {}`, `{"x":1,"x":2}`, `{"x":{"n":1,"n":2}}`, `{"x":"\ud800"}`,
 		`{"_plug_edge_id":"other"}`, `{"_plug_edge_id":""}`, `{"_plug_edge_id":1}`, `{"_plug_metadata":{}}`,
 		`{"_plug_edge_id":"edge-1","gate":"any-children"}`, `{"_plug_edge_id":"edge-1","_plug_metadata":null}`,
 		`{"_plug_edge_id":"edge-1","_plug_edge_id":"edge-1"}`, `{"_plug_edge_id":"edge-1","_plug_metadata":{"_plug_edge_id":"edge-1"}}`,
 		`{"opaque":[{"_plug_metadata":{}}]}`, `{"_plug_edge_id":"edge-1","_plug_metadata":"{\"_plug_metadata\":{}}"}`,
 	} {
-		if got, err := SourceEdgeMetadata(2, "edge-1", "waits-for", raw); err == nil {
-			t.Fatalf("invalid metadata admitted: %s => %+v", raw, got)
+		for _, version := range []int{EdgeVersionTypedDependencies, EdgeVersionLocalOpaque} {
+			if got, err := SourceEdgeMetadata(version, "edge-1", "waits-for", raw); err == nil {
+				t.Fatalf("invalid v%d metadata admitted: %s => %+v", version, raw, got)
+			}
 		}
 	}
 }
