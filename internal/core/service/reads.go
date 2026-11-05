@@ -7,8 +7,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -369,6 +371,153 @@ func (s *Service) readyPage(ctx context.Context, by model.PrincipalRef, req Read
 	return page, err
 }
 
+// readyCandidateItems returns the complete durable candidate order before a
+// page is cut. Combined durable/workflow reads use this same admission and
+// ordering path so a durable continuation cannot bypass the workflow plane.
+func (s *Service) readyCandidateItems(ctx context.Context, by model.PrincipalRef, req ReadyRequest, restartOnRevision bool) ([]Bead, map[string]readyOrderKey, AsOf, error) {
+	r, err := s.reader(ctx, by, nil)
+	if err != nil {
+		return nil, nil, AsOf{}, err
+	}
+	defer r.Close()
+	items, keys, err := s.readyItems(ctx, by, req, r)
+	if err != nil {
+		return nil, nil, AsOf{}, err
+	}
+	includeEphemeral := true
+	if req.Filter != nil && req.Filter.IncludeEphemeral != nil {
+		includeEphemeral = *req.Filter.IncludeEphemeral
+	}
+	if s.workflow != nil && includeEphemeral {
+		active, err := s.workflow.ActiveIDsFor(ctx, by, workflowMeta(by, "bead.ready", req.Project, req.Agent))
+		if err != nil {
+			return nil, nil, AsOf{}, err
+		}
+		filtered := items[:0]
+		for _, item := range items {
+			if _, collides := active[item.ID]; collides {
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		items = filtered
+	}
+	if err := s.admit(ctx, by); err != nil {
+		return nil, nil, AsOf{}, err
+	}
+	view := r.Snapshot()
+	if view.At == nil {
+		return nil, nil, AsOf{}, failure("internal_error", "ready reader has no snapshot revision")
+	}
+	return items, keys, AsOf{Revision: *view.At, Incarnation: view.Incarnation}, nil
+}
+
+// combinedReadyEntry is the service-owned merge key for the two ready
+// planes. Durable rows retain the persisted hybrid bucket/rank key. Workflow
+// rows use the same key when they expose a creation time. Legacy workflow
+// rows without a creation field retain their priority bucket and use a zero
+// creation tie, so they can still interleave with durable rows instead of
+// becoming a second concatenated page. Their final tie is provider ID.
+type combinedReadyEntry struct {
+	item        Bead
+	key         readyOrderKey
+	knownCreate bool
+	plane       int
+}
+
+func workflowReadyCreatedAt(item workflowplugin.ItemView) (time.Time, bool) {
+	for _, fields := range []map[string]any{item.Fields, item.Metadata} {
+		for _, name := range []string{"createdAt", "created_at"} {
+			value, ok := fields[name]
+			if !ok {
+				continue
+			}
+			switch value := value.(type) {
+			case time.Time:
+				if !value.IsZero() {
+					return value.UTC(), true
+				}
+			case string:
+				created, err := time.Parse(time.RFC3339Nano, value)
+				if err == nil && !created.IsZero() {
+					return created.UTC(), true
+				}
+			}
+		}
+	}
+	return time.Time{}, false
+}
+
+func workflowReadyOrderKey(item workflowplugin.ItemView, now time.Time) (readyOrderKey, bool, error) {
+	bead := workflowBead(item)
+	priority, err := beadPriority(bead)
+	if err != nil {
+		return readyOrderKey{}, false, err
+	}
+	created, known := workflowReadyCreatedAt(item)
+	if !known {
+		return readyOrderKey{Bucket: 1, Rank: priority, Revision: item.Revision}, false, nil
+	}
+	return liveReadyOrderKey(created, now, priority, item.Revision), true, nil
+}
+
+func combinedReadyItems(durable []Bead, durableKeys map[string]readyOrderKey, workflow []workflowplugin.ItemView, now time.Time) ([]Bead, map[string]readyOrderKey, error) {
+	entries := make([]combinedReadyEntry, 0, len(durable)+len(workflow))
+	keys := make(map[string]readyOrderKey, len(durable)+len(workflow))
+	for _, item := range durable {
+		key, ok := durableKeys[item.ID]
+		if !ok {
+			return nil, nil, failure("internal_error", "durable ready order is missing a candidate key")
+		}
+		entries = append(entries, combinedReadyEntry{item: item, key: key, knownCreate: true})
+		keys[item.ID] = key
+	}
+	for _, item := range workflow {
+		bead := workflowBead(item)
+		key, known, err := workflowReadyOrderKey(item, now)
+		if err != nil {
+			return nil, nil, err
+		}
+		entries = append(entries, combinedReadyEntry{item: bead, key: key, knownCreate: known, plane: 1})
+		keys[bead.ID] = key
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		a, b := entries[i], entries[j]
+		if a.key.Bucket != b.key.Bucket {
+			return a.key.Bucket < b.key.Bucket
+		}
+		if a.key.Rank != b.key.Rank {
+			return a.key.Rank < b.key.Rank
+		}
+		if a.knownCreate != b.knownCreate {
+			return a.knownCreate
+		}
+		if a.knownCreate && !a.key.CreatedAt.Equal(b.key.CreatedAt) {
+			return a.key.CreatedAt.Before(b.key.CreatedAt)
+		}
+		if a.item.ID != b.item.ID {
+			return a.item.ID < b.item.ID
+		}
+		return a.plane < b.plane
+	})
+	items := make([]Bead, len(entries))
+	for i, entry := range entries {
+		items[i] = entry.item
+	}
+	return items, keys, nil
+}
+
+func combinedReadyMembership(items []Bead) string {
+	h := sha256.New()
+	var length [8]byte
+	for _, item := range items {
+		binary.BigEndian.PutUint64(length[:], uint64(len(item.ID)))
+		_, _ = h.Write(length[:])
+		_, _ = h.Write([]byte(item.ID))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 // spreadClaimNextItems rotates equal hybrid-key groups by a stable offset.
 // It never crosses a bucket, rank or creation-time boundary. The optional
 // projection preserves the existing helper's priority-only test callers;
@@ -458,6 +607,9 @@ func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req 
 		coreReq.Position = nil
 		coreReq.Limit = 1
 	}
+	if !workflowPhase && (req.Position == nil || req.Position.WorkflowSnapshot != nil) {
+		return s.readyCombinedPage(ctx, by, coreReq, limit, restartOnRevision)
+	}
 	page, err := s.readyPage(ctx, by, coreReq, restartOnRevision)
 	if err != nil {
 		return BeadPage{}, err
@@ -524,6 +676,109 @@ func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req 
 	}
 	if end < len(items) {
 		page.Next = &PagePosition{Offset: end, AsOf: page.AsOf, Workflow: true, WorkflowSnapshot: binding}
+	}
+	return page, nil
+}
+
+func (s *Service) readyCombinedPage(ctx context.Context, by model.PrincipalRef, req ReadyRequest, limit int, restartOnRevision bool) (BeadPage, error) {
+	durable, durableKeys, asOf, err := s.readyCandidateItems(ctx, by, req, restartOnRevision)
+	if err != nil {
+		return BeadPage{}, err
+	}
+	types := []string(nil)
+	if req.Filter != nil {
+		types = req.Filter.Types
+	}
+	includeEphemeral := true
+	if req.Filter != nil && req.Filter.IncludeEphemeral != nil {
+		includeEphemeral = *req.Filter.IncludeEphemeral
+	}
+	snapshot, err := s.workflow.ReadySnapshotWithResolver(ctx, by, req.Project, types, workflowMeta(by, "bead.ready", req.Project, req.Agent), includeEphemeral, s.workflowBlockerResolver(ctx, by, workflowMeta(by, "bead.ready", req.Project, req.Agent)))
+	if err != nil {
+		return BeadPage{}, err
+	}
+	binding := &WorkflowPageSnapshot{Revision: model.Revision(snapshot.Revision), ValidUntil: snapshot.ValidUntil}
+	if !binding.Valid() {
+		return BeadPage{}, failure("internal_error", "invalid workflow ready snapshot")
+	}
+	position := req.Position
+	if position != nil && position.WorkflowSnapshot != nil {
+		if !position.WorkflowSnapshot.Valid() {
+			return BeadPage{}, failure("cursor_invalid", "workflow cursor is not snapshot-bound; restart paging")
+		}
+		if !position.WorkflowSnapshot.Equal(binding) {
+			if !restartOnRevision {
+				return BeadPage{}, failure("cursor_invalid", "workflow ready membership changed; restart paging")
+			}
+			position = nil
+		}
+	}
+	workflowItems := snapshot.Items
+	if req.Filter != nil && len(req.Filter.Resources) != 0 {
+		filtered := make([]workflowplugin.ItemView, 0, len(workflowItems))
+		for _, item := range workflowItems {
+			if slices.Contains(req.Filter.Resources, item.ID) {
+				filtered = append(filtered, item)
+			}
+		}
+		workflowItems = filtered
+	}
+	items, keys, err := combinedReadyItems(durable, durableKeys, workflowItems, s.now().UTC())
+	if err != nil {
+		return BeadPage{}, err
+	}
+	if restartOnRevision && req.ClaimNextSeed != "" {
+		items, err = spreadClaimNextItems(items, req.ClaimNextSeed, keys)
+		if err != nil {
+			return BeadPage{}, err
+		}
+	}
+	if len(durable) == 0 && req.Position == nil {
+		// Keep the released provider-only cursor shape for callers that already
+		// understand the workflow phase. Mixed-plane pages use the aggregate
+		// cursor below; an empty durable plane has no merge boundary to bind.
+		page := BeadPage{AsOf: asOf, WorkflowSnapshot: binding}
+		end := min(limit, len(items))
+		page.Items = append([]Bead(nil), items[:end]...)
+		if end < len(items) {
+			page.Next = &PagePosition{Offset: end, AsOf: asOf, Workflow: true, WorkflowSnapshot: binding}
+		}
+		return page, nil
+	}
+	if position != nil {
+		if position.AsOf.Incarnation != asOf.Incarnation {
+			return BeadPage{}, mapped(driver.ErrIncarnationChanged{From: position.AsOf.Incarnation, To: asOf.Incarnation})
+		}
+		if position.AsOf.Revision.String() != asOf.Revision.String() {
+			if !restartOnRevision {
+				return BeadPage{}, failure("cursor_invalid", "durable ready membership changed; restart paging")
+			}
+			position = nil
+		}
+		if position != nil && position.WorkflowSnapshot != nil && !position.WorkflowSnapshot.Equal(binding) {
+			if !restartOnRevision {
+				return BeadPage{}, failure("cursor_invalid", "workflow ready membership changed; restart paging")
+			}
+			position = nil
+		}
+		membership := combinedReadyMembership(items)
+		if position != nil && position.ReadyMembership != "" && position.ReadyMembership != membership {
+			if !restartOnRevision {
+				return BeadPage{}, failure("cursor_invalid", "combined ready membership changed; restart paging")
+			}
+			position = nil
+		}
+	}
+	membership := combinedReadyMembership(items)
+	page, err := pageResult(items, limit, position, asOf, false, restartOnRevision)
+	if err != nil {
+		return BeadPage{}, err
+	}
+	page.WorkflowSnapshot = binding
+	page.ReadyMembership = membership
+	if page.Next != nil {
+		page.Next.WorkflowSnapshot = binding
+		page.Next.ReadyMembership = membership
 	}
 	return page, nil
 }
