@@ -205,7 +205,7 @@ func (h *b07NativeSQLHost) open() {
 	go func() { h.done <- s.Serve() }()
 	b07NativeJSON(h.t, filepath.Join(h.output, fmt.Sprintf("runtime-open-%03d.json", h.count)), map[string]any{
 		"engine": h.config.Driver, "listener": s.Addr().String(), "openedUTC": time.Now().UTC(),
-		"sqlLocatorSHA256": b07NativeSHA([]byte(h.config.DSN)), "authorizationInstalled": r.Authority != nil,
+		"sqlLocatorSHA256": b07NativeSHA([]byte(h.config.DSN)), "authorizationInstalled": h.config.Auth.AuthorizationInstalled != nil && h.config.Auth.AuthorizationInstalled(),
 	})
 }
 
