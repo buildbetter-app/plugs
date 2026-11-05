@@ -427,6 +427,10 @@ internal/integration/b04claimidentity/README.md
 internal/integration/b04claimidentity/claim_identity_test.go
 internal/integration/b04claimidentity/engine_test.go
 internal/integration/b04claimidentity/fixture_test.go
+internal/integration/b04claimidentity/native_b04_contract_test.go
+internal/integration/b04claimidentity/native_b04_inputs.json
+internal/integration/b04claimidentity/native_b04_io_test.go
+internal/integration/b04claimidentity/native_b04_recording_test.go
 internal/integration/b13memory/BUILD.bazel
 internal/integration/b13memory/README.md
 internal/integration/b13memory/fixture_test.go
@@ -498,6 +502,17 @@ internal/integration/converterroundtrip/testdata/public-complete-root-990eb800.t
 internal/integration/converterroundtrip/testdata/public-partial-990eb800.tar
 internal/integration/converterroundtrip/testdata/public-source-990eb800.md
 internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar
+internal/integration/cp7latency/BUILD.bazel
+internal/integration/cp7latency/README.md
+internal/integration/cp7latency/correctness_test.go
+internal/integration/cp7latency/dense_summary_test.go
+internal/integration/cp7latency/fixture_test.go
+internal/integration/cp7latency/latency_test.go
+internal/integration/cp7latency/measurement_test.go
+internal/integration/cp7latency/semantics_test.go
+internal/integration/cp7latency/work_accounting_test.go
+internal/integration/cp7latency/work_counters_test.go
+internal/integration/cp7latency/workload.json
 internal/integration/cursorhttp/BUILD.bazel
 internal/integration/cursorhttp/cursor_test.go
 internal/integration/cursorhttp/fixture_test.go
@@ -616,6 +631,7 @@ internal/integration/postgresacceptance/b15_comments_test.go
 internal/integration/postgresacceptance/b15_page_test.go
 internal/integration/postgresacceptance/b16_labels_test.go
 internal/integration/postgresacceptance/b26_lifecycle_test.go
+internal/integration/postgresacceptance/b26_move_body_test.go
 internal/integration/postgresacceptance/engine_test.go
 internal/integration/postgresacceptance/fixture_test.go
 internal/integration/postgresacceptance/history_test.go
@@ -746,6 +762,8 @@ internal/server/authzrpc/hierarchy_test.go
 internal/server/authzrpc/history_authority_test.go
 internal/server/authzrpc/predicate_count_test.go
 internal/server/authzrpc/prepared_test.go
+internal/server/authzrpc/ready_compiled.go
+internal/server/authzrpc/ready_compiled_number_test.go
 internal/server/authzrpc/service.go
 internal/server/authzrpc/slice.go
 internal/server/authzrpc/workflow_boundary_test.go
@@ -1026,6 +1044,7 @@ internal/storage/driver/offline_history_test.go
 internal/storage/driver/offline_restore.go
 internal/storage/driver/parent_counter.go
 internal/storage/driver/parent_counter_test.go
+internal/storage/driver/read_work.go
 internal/storage/driver/receipt_contract_test.go
 internal/storage/driver/restore.go
 internal/storage/driver/restore_test.go
@@ -1102,6 +1121,8 @@ internal/storage/postgres/persistence_test.go
 internal/storage/postgres/query.go
 internal/storage/postgres/reader.go
 internal/storage/postgres/reader_batch_test.go
+internal/storage/postgres/reader_versions_batch_negative_test.go
+internal/storage/postgres/reader_versions_batch_test.go
 internal/storage/postgres/schema.go
 internal/storage/postgres/selection.go
 internal/storage/postgres/selection_test.go
@@ -1182,6 +1203,7 @@ plugins/workflow/BUILD.bazel
 plugins/workflow/atomic.go
 plugins/workflow/manifest.json
 plugins/workflow/native.go
+plugins/workflow/scheduling.go
 plugins/workflow/workflow.go
 plugins/workflow/workflow_test.go
 scripts/ci/BUILD.bazel
@@ -1279,8 +1301,12 @@ spec/s1-b01-b04/fixture_test.go
 spec/s1-b01-b04/manifest.json
 spec/s1-b01-b04/manifest_test.go
 spec/s1-b01-b04/native_contract_test.go
+spec/s1-b01-b04/native_exclusion_test.go
+spec/s1-b01-b04/native_hierarchy_test.go
 spec/s1-b01-b04/native_inputs.json
 spec/s1-b01-b04/native_io_test.go
+spec/s1-b01-b04/native_membership_test.go
+spec/s1-b01-b04/native_parent_compatibility_test.go
 spec/s1-b01-b04/native_projection_test.go
 spec/s1-b01-b04/native_recording.md
 spec/s1-b01-b04/native_recording_test.go
@@ -1345,6 +1371,7 @@ spec/s1-b09-b12/compaction/publication_test.go
 spec/s1-b09-b12/compaction/selection_test.go
 spec/s1-b09-b12/extract_proxied_reference_packet.py
 spec/s1-b09-b12/extract_reference_packet.py
+spec/s1-b09-b12/postgres_fixture_test.go
 spec/s1-b09-b12/projection.py
 spec/s1-b09-b12/provenance.json
 spec/s1-b09-b12/proxied_capture_harness_test.go
@@ -1370,6 +1397,12 @@ spec/s1-b09-b12/reference_proxied_capture_test.go
 spec/s1-b09-b12/reference_test.go
 spec/s1-b09-b12/replay_test.go
 spec/s1-b09-b12/vectors.json
+spec/s1-b09-native/BUILD.bazel
+spec/s1-b09-native/README.md
+spec/s1-b09-native/conservation_test.go
+spec/s1-b09-native/native_inputs.json
+spec/s1-b09-native/paired_replay_test.go
+spec/s1-b09-native/recorder_test.go
 spec/s1-b13-b16/BUILD.bazel
 spec/s1-b13-b16/README.md
 spec/s1-b13-b16/capture_regressions_test.go

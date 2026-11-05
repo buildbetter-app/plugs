@@ -44,6 +44,8 @@ func (r *reader) DerivedRows(ctx context.Context, table driver.DerivedTable, pre
 		if err := decode(raw, &state); err != nil {
 			return nil, err
 		}
+		driver.ReportReadWork(ctx, driver.ReadPrefixStates, 1)
+		driver.ReportReadWork(ctx, driver.ReadPrefixBytes, int64(len(raw)))
 		if state.Present && state.Derived != nil {
 			byKey[state.Derived.Key] = *state.Derived
 		}

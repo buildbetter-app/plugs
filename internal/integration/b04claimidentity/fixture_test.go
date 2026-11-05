@@ -66,6 +66,13 @@ type fixture struct {
 }
 
 func newFixture(t *testing.T, e engine) *fixture {
+	return newFixtureWithSetup(t, e, ontology.DefaultDocument(), nil)
+}
+
+// newFixtureWithSetup keeps the ordinary default fixture unchanged. Native
+// outcome replay may explicitly configure a test workflow and starting state;
+// this remains a fixture, never an imported native protected authority.
+func newFixtureWithSetup(t *testing.T, e engine, document ontology.Document, statuses map[string]string) *fixture {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	t.Cleanup(cancel)
@@ -76,7 +83,7 @@ func newFixture(t *testing.T, e engine) *fixture {
 	f := &fixture{t: t, ctx: ctx, engine: e, catalog: catalog, work: map[string]model.Ref{}, queries: map[receiptScope]bool{}, writeKeys: map[string]string{}}
 	f.open()
 	t.Cleanup(f.close)
-	f.seedOntology()
+	f.seedOntologyDocument(document)
 	meta := f.meta()
 	f.keys = authnapikey.New(authnapikey.Config{AuthorizationInstalled: func() bool { return true }})
 	ns := authz.Namespace{StoreID: string(meta.StoreID), Incarnation: meta.Incarnation, InstallationID: "fixed", Authority: ref("authority")}
@@ -102,7 +109,11 @@ func newFixture(t *testing.T, e engine) *fixture {
 	// the installed authenticated host; no test calls WithPrincipal.
 	f.bootstrap = f.anonymousHandler()
 	for _, seed := range []struct{ title, project string }{{"a1", poolA}, {"a2", poolA}, {"b1", poolB}} {
-		r := f.request(f.bootstrap, credential{}, "bead.create", seed.project, f.key("seed-"+seed.title), "setup", map[string]any{"type": "issue", "fields": map[string]any{"title": seed.title, "description": "hydrated " + seed.title}})
+		fields := map[string]any{"title": seed.title, "description": "hydrated " + seed.title}
+		if status := statuses[seed.title]; status != "" {
+			fields["status"] = status
+		}
+		r := f.request(f.bootstrap, credential{}, "bead.create", seed.project, f.key("seed-"+seed.title), "setup", map[string]any{"type": "issue", "fields": fields})
 		commit := r.commit(t)
 		if len(commit.Results) != 1 {
 			t.Fatalf("setup create has no singular result: %s", r.raw)
@@ -114,12 +125,16 @@ func newFixture(t *testing.T, e engine) *fixture {
 }
 
 func (f *fixture) seedOntology() {
+	f.seedOntologyDocument(ontology.DefaultDocument())
+}
+
+func (f *fixture) seedOntologyDocument(document ontology.Document) {
 	f.t.Helper()
-	body, err := service.MarshalOntologySource(service.OntologySource{Base: ontology.DefaultDocument()})
+	body, err := service.MarshalOntologySource(service.OntologySource{Base: document})
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	// Trusted setup persists only the protected default ontology source.
+	// Trusted setup persists only the explicitly configured ontology fixture.
 	// The real driver records this fixture attribution; no claim event,
 	// authorization chain, receipt or lease history is supplied here.
 	if _, err := conformance.Seed(f.ctx, f.store, f.lease,

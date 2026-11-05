@@ -623,6 +623,97 @@ func TestCountBatchAuthorizationIsCompleteAndFailsClosed(t *testing.T) {
 	}
 }
 
+func TestTypeSummaryUsesBatchAuthorizationWithoutPointReads(t *testing.T) {
+	rows := []driver.Record{
+		{Ref: model.RefByID("allowed", model.Natural64(0)), Kind: "bead", Revision: model.Natural64(1), Body: explainDocument(t, "allowed", "p")},
+		{Ref: model.RefByID("denied", model.Natural64(0)), Kind: "bead", Revision: model.Natural64(1), Body: explainDocument(t, "denied", "p")},
+	}
+	pointCalls, batchCalls := 0, 0
+	svc, err := New(&syntheticStore{rows: rows, meta: driver.Meta{StoreID: "store", Incarnation: "inc", Head: model.Natural64(1)}}, &testLease{lost: make(chan struct{})}, Config{
+		AuthorizeRead: func(_ context.Context, _ model.PrincipalRef, ref model.ResourceRef, _ string) error {
+			pointCalls++
+			if ref.Ref.ID == "denied" {
+				return &model.Error{Data: model.ErrorData{Code: "not_found"}}
+			}
+			return nil
+		},
+		AuthorizeReadBatch: func(_ context.Context, _ model.PrincipalRef, refs []model.ResourceRef) ([]bool, error) {
+			batchCalls++
+			if len(refs) != 2 || refs[0].Ref.ID != "allowed" || refs[1].Ref.ID != "denied" {
+				t.Fatalf("summary changed batch membership: %+v", refs)
+			}
+			return []bool{true, false}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := svc.Run(context.Background(), model.PrincipalRef{Kind: "user", ID: "reader"}, RunRequest{
+		Definition: &Definition{Filter: &Filter{}, Fields: []string{}, GroupBy: []string{"type"}},
+	})
+	if err != nil || batchCalls != 1 || pointCalls != 0 {
+		t.Fatalf("summary authorization calls: result=%+v err=%v batch=%d point=%d", result, err, batchCalls, pointCalls)
+	}
+	if len(result.Items) != 0 || len(result.Groups) != 1 || result.Groups[0].Key != "issue" || result.Groups[0].Count != 1 || len(result.Groups[0].Items) != 0 {
+		t.Fatalf("summary membership=%+v", result)
+	}
+
+	// A nonempty Fields value is an ordinary grouped view, not the explicit
+	// fields=[] type-summary exception. It must retain per-row authorization
+	// and render the allowed item while keeping the batch adapter unused.
+	pointCalls, batchCalls = 0, 0
+	ordinary, err := svc.Run(context.Background(), model.PrincipalRef{Kind: "user", ID: "reader"}, RunRequest{
+		Definition: &Definition{Filter: &Filter{}, Fields: []string{"id"}, GroupBy: []string{"type"}},
+	})
+	if err != nil || pointCalls != 2 || batchCalls != 0 {
+		t.Fatalf("ordinary-fields authorization calls: result=%+v err=%v point=%d batch=%d", ordinary, err, pointCalls, batchCalls)
+	}
+	if len(ordinary.Groups) != 1 || ordinary.Groups[0].Key != "issue" || ordinary.Groups[0].Count != 1 || len(ordinary.Groups[0].Items) != 1 || ordinary.Groups[0].Items[0].ID != "allowed" {
+		t.Fatalf("ordinary-fields membership=%+v", ordinary)
+	}
+}
+
+func TestTypeSummaryFencesBatchAuthorizationBeforePublish(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(context.CancelFunc, *testLease)
+	}{
+		{name: "canceled", setup: func(cancel context.CancelFunc, _ *testLease) { cancel() }},
+		{name: "lease_lost", setup: func(_ context.CancelFunc, lease *testLease) { close(lease.lost) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			lease := &testLease{lost: make(chan struct{})}
+			svc, err := New(&syntheticStore{
+				rows: []driver.Record{{Ref: model.RefByID("candidate", model.Natural64(0)), Kind: "bead", Revision: model.Natural64(1), Body: explainDocument(t, "candidate", "p")}},
+				meta: driver.Meta{StoreID: "store", Incarnation: "inc", Head: model.Natural64(1)},
+			}, lease, Config{
+				AuthorizeRead: func(context.Context, model.PrincipalRef, model.ResourceRef, string) error { return nil },
+				AuthorizeReadBatch: func(_ context.Context, _ model.PrincipalRef, refs []model.ResourceRef) ([]bool, error) {
+					if len(refs) != 1 || refs[0].Kind != "bead" || refs[0].Ref.ID != "candidate" {
+						t.Fatalf("summary changed batch membership: %+v", refs)
+					}
+					// Return a complete decision, then invalidate the request. The
+					// final summary admission must reject publication.
+					tc.setup(cancel, lease)
+					return []bool{true}, nil
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := svc.Run(ctx, model.PrincipalRef{Kind: "user", ID: "reader"}, RunRequest{
+				Definition: &Definition{Filter: &Filter{}, Fields: []string{}, GroupBy: []string{"type"}},
+			})
+			var typed *model.Error
+			if !errors.As(err, &typed) || typed.Data.Code != "busy" || result.Groups != nil || result.Items != nil {
+				t.Fatalf("summary escaped final admission: result=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
 type epicIndexedReader struct {
 	driver.Reader
 	children               []driver.Record
