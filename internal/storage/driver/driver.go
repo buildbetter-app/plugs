@@ -666,6 +666,24 @@ type Store interface {
 	// the store. Close is idempotent and never commits staged writes.
 	Close() error
 }
+
+type publicationAdmissionKey struct{}
+
+// WithPublicationAdmission marks a pipeline transaction that will serialize
+// through the publication head. A pooled driver may admit it before reserving
+// a connection. This is only a resource hint: all lease and lock checks remain
+// mandatory, and ordinary Write transactions retain independent admission.
+func WithPublicationAdmission(ctx context.Context) context.Context {
+	return context.WithValue(ctx, publicationAdmissionKey{}, true)
+}
+
+// PublicationAdmission reports whether a pipeline transaction requested
+// resource admission before reserving a pooled connection.
+func PublicationAdmission(ctx context.Context) bool {
+	marked, _ := ctx.Value(publicationAdmissionKey{}).(bool)
+	return marked
+}
+
 type ActiveLease interface {
 	Epoch() uint64
 	Renew(context.Context) error

@@ -489,7 +489,7 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	if err := ctx.Err(); err != nil {
 		return model.Commit{}, err
 	}
-	tx, err := w.store.Write(ctx, w.lease)
+	tx, err := w.store.Write(driver.WithPublicationAdmission(ctx), w.lease)
 	if err != nil {
 		return model.Commit{}, err
 	}

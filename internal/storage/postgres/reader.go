@@ -125,6 +125,10 @@ func (r *reader) finish() error {
 		r.writer.allocated = nil
 		r.writer.acquired = nil
 		close(r.writer.done)
+		if release := r.writer.releasePublication; release != nil {
+			r.writer.releasePublication = nil
+			release()
+		}
 	}
 	return err
 }
