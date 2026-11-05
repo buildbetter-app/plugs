@@ -129,6 +129,12 @@ func ReadyOrderTreeKey(l ReadyOrderLeaf) (string, error) {
 	if s.Bucket < 0 || s.Bucket > 1 || s.Rank < 0 || s.Rank > 999 || s.CreatedAt.IsZero() || s.RankedAt.IsZero() || !time.Unix(0, ns).UTC().Equal(s.CreatedAt.UTC()) {
 		return "", fmt.Errorf("%w: invalid Ready sort tuple", ErrUnsupported)
 	}
+	if len(l.Key.Order) != 4 || l.Key.Order[0].Int == nil || *l.Key.Order[0].Int != int64(s.Bucket) ||
+		l.Key.Order[1].Int == nil || *l.Key.Order[1].Int != int64(s.Rank) ||
+		l.Key.Order[2].Int == nil || *l.Key.Order[2].Int != ns ||
+		l.Key.Order[3].String == nil || *l.Key.Order[3].String != l.Key.Ref.ID {
+		return "", fmt.Errorf("%w: Ready sort key disagrees with tuple", ErrUnsupported)
+	}
 	var prefix [17]byte
 	prefix[0] = byte(s.Bucket)
 	binary.BigEndian.PutUint64(prefix[1:9], uint64(s.Rank))
@@ -158,6 +164,20 @@ func ReadyOrderLeafFor(item ReadyMembershipItem, priority int64) (ReadyOrderLeaf
 		return ReadyOrderLeaf{}, err
 	}
 	return ReadyOrderLeaf{Key: SelectionKey{Ref: model.RefByID(item.ID, model.Natural64(0)), Revision: item.Revision, Order: []SelectionValue{SelectionInt(priority), SelectionString(item.ID)}, MembershipLeaf: SelectionDigest(b)}, Priority: priority, Digest: SelectionDigest(b)}, nil
+}
+func ReadyOrderLeafForSort(item ReadyMembershipItem, priority int64, sortTuple *ReadyOrderSort) (ReadyOrderLeaf, error) {
+	leaf, err := ReadyOrderLeafFor(item, priority)
+	if err != nil || sortTuple == nil {
+		return leaf, err
+	}
+	value := *sortTuple
+	leaf.Sort = &value
+	leaf.Key.Order = []SelectionValue{
+		SelectionInt(int64(value.Bucket)), SelectionInt(int64(value.Rank)),
+		SelectionInt(value.CreatedAt.UTC().UnixNano()), SelectionString(item.ID),
+	}
+	_, err = ReadyOrderTreeKey(leaf)
+	return leaf, err
 }
 func ValidReadyHash(s string) bool {
 	if len(s) != 2*sha256.Size {

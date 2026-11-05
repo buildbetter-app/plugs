@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
@@ -39,10 +40,13 @@ func TestReadyOrderWriterFinalizesAfterGraphCertificateBump(t *testing.T) {
 	// restores local Ready eligibility before the field-only update below.
 	link := service.LinkRequest{From: f.Ref, To: model.RefByID("opaque-ready-graph", model.Natural64(0)), Kind: "waits-for", TargetKind: model.LinkTargetExternal}
 	by := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
-	if _, err := f.Service.Link(ctx, by, link, f.meta()); err != nil {
+	writeMeta := func(sequence int) model.WriteMeta {
+		return model.WriteMeta{Project: "local", Agent: "ready-proof", AgentLabel: "ready-proof", IdempotencyKey: fmt.Sprintf("%064x", sequence)}
+	}
+	if _, err := f.Service.Link(ctx, by, link, writeMeta(100)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.Service.Unlink(ctx, by, link, f.meta()); err != nil {
+	if _, err := f.Service.Unlink(ctx, by, link, writeMeta(101)); err != nil {
 		t.Fatal(err)
 	}
 	before := graphHead()

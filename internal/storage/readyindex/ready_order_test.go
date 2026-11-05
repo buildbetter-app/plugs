@@ -498,6 +498,9 @@ func TestReadyOrderPublicSortUsesCreationBeforeIDAndSeedsOnlyTies(t *testing.T) 
 			if key.Ref.ID != want[i] {
 				t.Fatalf("public order index=%d got=%s want=%s", i, key.Ref.ID, want[i])
 			}
+			if len(key.Order) != 4 || key.Order[3].String == nil || *key.Order[3].String != key.Ref.ID {
+				t.Fatalf("public keyset lost its sort tuple: %+v", key)
+			}
 		}
 	}
 	check("", "pl-z", "pl-a", "pl-c", "pl-d", "pl-old")

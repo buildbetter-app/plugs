@@ -363,16 +363,12 @@ func Prepare(ctx context.Context, r Observer, mutations []Mutation) (*Delta, err
 		if m.Eligible {
 			item := *m.Item
 			item.Revision = model.Natural64(0)
-			l, e := driver.ReadyOrderLeafFor(item, m.Priority)
+			l, e := driver.ReadyOrderLeafForSort(item, m.Priority, m.Sort)
 			if e != nil {
 				return nil, e
 			}
 			if m.Sort != nil {
 				value := *m.Sort
-				l.Sort = &value
-				if _, e = driver.ReadyOrderTreeKey(l); e != nil {
-					return nil, e
-				}
 				if value.RankedAt.After(d.coverage.OrderAt) {
 					d.coverage.OrderAt = value.RankedAt
 				}
@@ -517,13 +513,9 @@ func (d *Delta) materialize(revision model.Revision) ([]driver.DerivedRow, []dri
 		}
 		item := *m.Item
 		item.Revision = revision
-		leaf, err := driver.ReadyOrderLeafFor(item, m.Priority)
+		leaf, err := driver.ReadyOrderLeafForSort(item, m.Priority, m.Sort)
 		if err != nil {
 			return nil, nil, err
-		}
-		if m.Sort != nil {
-			value := *m.Sort
-			leaf.Sort = &value
 		}
 		var s source
 		if _, err = d.t.read(sourceKey(id), &s); err != nil {
