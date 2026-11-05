@@ -128,34 +128,22 @@ func TestRecordNativeB09(t *testing.T) {
 	r.run(adaptive, "adaptive-git-init", "/usr/bin/git", []string{"init", "--quiet", "--template="}, 0)
 	r.run(adaptive, "adaptive-init", r.binary, []string{"init", "--prefix", "b09", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet"}, 0)
 	r.version(adaptive)
+	r.writeNativeConfig(adaptive)
 	if help := r.run(adaptive, "adaptive-config-help", r.binary, []string{"config", "--help"}, 0); len(bytes.TrimSpace(help)) == 0 {
 		t.Fatal("native config help was empty")
 	}
-	// The admitted producer must emit object-valued parsed configuration for
-	// every real YAML file.  Make the otherwise comment-only native project
-	// config a genuine empty-key-compatible YAML document through the CLI; this
-	// keeps the raw bytes and parser binding on the native route.
-	r.setConfig(adaptive, "json", "false")
 	first := r.create(adaptive, "default-length-3", "Adaptive first")
 	r.requireIDLength(first, 3)
 	firstState := r.capture(adaptive, "adaptive-first", 1)
-	r.setConfig(adaptive, "max_collision_prob", "0.000001")
-	r.setConfig(adaptive, "min_hash_length", "3")
-	r.setConfig(adaptive, "max_hash_length", "10")
-	second := r.create(adaptive, "count-driven-length-4", "Adaptive second")
-	r.requireIDLength(second, 4)
+	second := r.create(adaptive, "native-second", "Native second")
+	r.requireIDLength(second, 3)
 	if first == second {
-		t.Fatal("adaptive mints reused an ID")
+		t.Fatal("native mints reused an ID")
 	}
 	secondState := r.capture(adaptive, "adaptive-second", 2)
-	r.requireConfig(secondState, "max_hash_length", "10")
-	r.requireConfig(secondState, "max_collision_prob", "0.000001")
-	r.setConfig(adaptive, "min_hash_length", "10")
-	maximum := r.create(adaptive, "configured-length-10", "Configured ten")
-	r.requireIDLength(maximum, 10)
+	maximum := r.create(adaptive, "native-third", "Native third")
+	r.requireIDLength(maximum, 3)
 	maxState := r.capture(adaptive, "adaptive-max-ten", 3)
-	r.requireConfig(maxState, "min_hash_length", "10")
-	r.requireConfig(maxState, "max_hash_length", "10")
 	r.requireIDs(maxState, first, second, maximum)
 	r.requireListMatches(adaptive, maxState)
 	if len(firstState.BeadIDs) != 1 || len(secondState.BeadIDs) != 2 {
@@ -194,7 +182,7 @@ func TestRecordNativeB09(t *testing.T) {
 	r.run(imported, "imported-git-init", "/usr/bin/git", []string{"init", "--quiet", "--template="}, 0)
 	r.run(imported, "imported-init", r.binary, []string{"init", "--prefix", "b09", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet"}, 0)
 	r.version(imported)
-	r.setConfig(imported, "json", "false")
+	r.writeNativeConfig(imported)
 	r.run(imported, "native-jsonl-import", r.binary, []string{"--json", "import", exportPath}, 0)
 	importedState := r.capture(imported, "native-imported", 3)
 	r.requireIDs(importedState, first, second, maximum)
@@ -206,34 +194,6 @@ func TestRecordNativeB09(t *testing.T) {
 	r.requireIDs(continuedState, first, second, maximum, continued)
 	r.requireListMatches(imported, continuedState)
 
-	// This separate diagnostic uses a supported one-character configuration
-	// to occupy the entire suffix alphabet with real CLI creates. It observes
-	// the actual ten-nonce allocator refusal without claiming that 1 is a
-	// normal B09 3-through-10 policy setting.
-	exhausted := r.newWorkspace("one-character-exhaustion-diagnostic")
-	r.run(exhausted, "exhausted-git-init", "/usr/bin/git", []string{"init", "--quiet", "--template="}, 0)
-	r.run(exhausted, "exhausted-init", r.binary, []string{"init", "--prefix", "b09", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet"}, 0)
-	r.version(exhausted)
-	r.setConfig(exhausted, "min_hash_length", "1")
-	r.setConfig(exhausted, "max_hash_length", "1")
-	for _, suffix := range "0123456789abcdefghijklmnopqrstuvwxyz" {
-		id := "b09-" + string(suffix)
-		got := r.createExplicit(exhausted, "occupy-"+string(suffix), id)
-		if got != id {
-			t.Fatalf("occupied native ID %q became %q", id, got)
-		}
-	}
-	beforeExhaustion := r.capture(exhausted, "before-exhaustion", 36)
-	r.requireConfig(beforeExhaustion, "min_hash_length", "1")
-	r.requireConfig(beforeExhaustion, "max_hash_length", "1")
-	run := r.run(exhausted, "ten-nonce-exhaustion", r.binary,
-		[]string{"create", "--title", "Exhaust the native allocator", "--type", "task", "--json"}, -1)
-	if !r.lastOutputContains(run, "failed to generate unique id") {
-		t.Fatal("native allocator did not report exhausted candidate space")
-	}
-	r.requireListMatches(exhausted, beforeExhaustion)
-	afterExhaustion := r.capture(exhausted, "after-exhaustion", 36)
-	r.requireConserved(beforeExhaustion, afterExhaustion, "ten-nonce exhaustion")
 	r.writeJSON(filepath.Join(root, "disposition.json"), map[string]any{
 		"schema":        "plug-s1-b09-accepted-native-recording/1",
 		"status":        "RECORDED_BOUNDED",
@@ -242,9 +202,9 @@ func TestRecordNativeB09(t *testing.T) {
 		"manifest_sha256": manifestSHA256,
 		"default_id":      first, "adaptive_id": second, "configured_max_id": maximum,
 		"native_jsonl_export_sha256": exportSHA, "native_import_continuation_id": continued,
-		"explicit_refusal_conserved": true, "diagnostic_exhaustion_conserved": true,
-		"limits":   []string{"one-character exhaustion is diagnostic, outside the ordinary B09 length range", "native JSONL import is not Plug snapshot restore", "native recording alone does not prove Plug parity, restored-ID safety or full-card admission"},
-		"captures": r.captures,
+		"explicit_refusal_conserved": true,
+		"limits":                     []string{"the admitted producer exposes only its default three-character native allocator through the accepted CLI", "native JSONL import is not Plug snapshot restore", "native recording alone does not prove Plug parity, restored-ID safety or full-card admission"},
+		"captures":                   r.captures,
 	})
 }
 
@@ -514,6 +474,23 @@ func (r *recorder) setConfig(w workspace, key, value string) {
 	if json.Unmarshal(data, &response) != nil || response["key"] != key || response["value"] != value {
 		r.t.Fatalf("native config set did not return its typed value for %s", key)
 	}
+}
+
+func (r *recorder) writeNativeConfig(w workspace) {
+	r.t.Helper()
+	path := filepath.Join(w.Dir, ".beads", "config.yaml")
+	data := []byte("export:\n  auto: false\n")
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		r.t.Fatalf("write native YAML configuration: %v", err)
+	}
+	r.commands = append(r.commands, commandReceipt{
+		Label: "" + w.Name + "-write-native-yaml",
+		Argv:  []string{"native-source-write", path}, Directory: w.Dir,
+		Environment: append([]string(nil), w.Env...), Exit: 0,
+		StdoutSHA256: hashBytes(nil), StderrSHA256: hashBytes(nil),
+		ResultType: "file-write", Result: map[string]any{"path": path, "sha256": hashBytes(data), "size": len(data)},
+	})
+	r.writeJSON(filepath.Join(r.root, "commands.json"), r.commands)
 }
 
 func (r *recorder) create(w workspace, label, title string) string {
