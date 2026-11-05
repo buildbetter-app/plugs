@@ -583,7 +583,7 @@ func nativeMutatedArchive(t *testing.T, input []byte, scenario string) []byte {
 			t.Fatal("native archive has no bead to mutate")
 		}
 		members["records/native.ndjson"] = bytes.Join(lines, []byte{'\n'})
-	case "memory-id-mismatch", "memory-blank-key", "memory-empty-content":
+	case "memory-id-mismatch", "memory-blank-key", "memory-empty-content", "memory-blank-content":
 		lines := bytes.Split(members["records/native.ndjson"], []byte{'\n'})
 		changed := false
 		for i, line := range lines {
@@ -613,6 +613,8 @@ func nativeMutatedArchive(t *testing.T, input []byte, scenario string) []byte {
 				body["key"] = json.RawMessage(`" "`)
 			case "memory-empty-content":
 				body["content"] = json.RawMessage(`""`)
+			case "memory-blank-content":
+				body["content"] = json.RawMessage(`"   "`)
 			}
 			var err error
 			record.Body, err = json.Marshal(body)
@@ -736,6 +738,7 @@ func TestNativeRestoreRejectsInvalidMemoryBeforePublicationAcrossStores(t *testi
 		{"memory-id-mismatch", "memory document ID differs"},
 		{"memory-blank-key", "memory key must be nonempty"},
 		{"memory-empty-content", "memory content must be nonempty"},
+		{"memory-blank-content", "memory content must be nonempty"},
 	} {
 		mutated := nativeMutatedArchive(t, data, scenario.name)
 		for _, engine := range []string{"memory", "sqlite", "postgres"} {
@@ -798,6 +801,9 @@ func TestNativeRestoreRequiresUnambiguousOntologySourceAcrossStores(t *testing.T
 	issue := conflicting.Types["issue"]
 	issue.Fields["title"] = ontology.Field{Type: "integer"}
 	conflicting.Types["issue"] = issue
+	if _, problems := ontology.Compile(conflicting, nil, nil); len(problems) != 0 {
+		t.Fatalf("second ontology source must compile independently: %+v", problems)
+	}
 	seedOntology("ontology/z", conflicting)
 	ambiguous, _, err := restore.Dump(source.ctx, source.store, "head")
 	if err != nil {
@@ -837,7 +843,7 @@ func TestNativeRestoreRequiresUnambiguousOntologySourceAcrossStores(t *testing.T
 			requireCode(t, err, "restore_violation")
 			var typed *model.Error
 			if !errors.As(err, &typed) || !strings.Contains(typed.Data.Hint, "native record ontology/z") || !strings.Contains(typed.Data.Hint, "multiple protected ontology sources") {
-				t.Fatalf("ambiguous ontology refusal did not name the second source: %+v %v", typed, err)
+				t.Fatalf("ambiguous ontology refusal did not name the second source: status=%+v data=%+v err=%v", status, typed.Data, err)
 			}
 			if status.State != "failed" || wrapped.writes != 0 {
 				t.Fatalf("ambiguous ontology reached publication: %+v writes=%d", status, wrapped.writes)
