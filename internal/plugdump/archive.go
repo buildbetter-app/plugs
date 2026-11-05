@@ -334,6 +334,10 @@ func validateRecordVersioned(record Record, projects []Project, counts map[strin
 			if edgeVersion != EdgeVersionTypedDependencies && edgeVersion != EdgeVersionLocalOpaque {
 				return fmt.Errorf("dependency %s requires edge registry version %d or %d", kind, EdgeVersionTypedDependencies, EdgeVersionLocalOpaque)
 			}
+		case "tracks":
+			if edgeVersion != EdgeVersionTypedDependencies && edgeVersion != EdgeVersionLocalOpaque {
+				return fmt.Errorf("dependency %s requires edge registry version %d or %d", kind, EdgeVersionTypedDependencies, EdgeVersionLocalOpaque)
+			}
 		default:
 			if edgeVersion != EdgeVersionLocalOpaque || !isValidLocalOpaqueDependencyKind(kind) || text(record.Body, "target_kind") != "depends_on_issue_id" {
 				return fmt.Errorf("unsupported dependency type")

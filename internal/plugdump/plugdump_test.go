@@ -72,6 +72,15 @@ func mustJSON(t *testing.T, value any) []byte {
 	return data
 }
 
+func jsonEqual(left, right any) bool {
+	a, err := marshal(left)
+	if err != nil {
+		return false
+	}
+	b, err := marshal(right)
+	return err == nil && bytes.Equal(a, b)
+}
+
 func archiveMembers(t *testing.T, data []byte) map[string][]byte {
 	t.Helper()
 	reader := tar.NewReader(bytes.NewReader(data))
@@ -350,7 +359,7 @@ func TestDumpDependencyKindsPreserveTypedEdges(t *testing.T) {
 		if record.Body["type"] != test.kind || record.Body["to"] != test.target || record.Body["target_kind"] != test.targetKind {
 			t.Fatalf("typed edge %s changed: body=%+v", test.id, record.Body)
 		}
-		if !reflect.DeepEqual(record.Body["metadata"], test.metadata) || !reflect.DeepEqual(record.Source.Fields["metadata"], test.metadata) {
+		if !jsonEqual(record.Body["metadata"], test.metadata) || !jsonEqual(record.Source.Fields["metadata"], test.metadata) {
 			t.Fatalf("metadata for %s changed: body=%#v source=%#v want=%#v", test.id, record.Body["metadata"], record.Source.Fields["metadata"], test.metadata)
 		}
 		for _, field := range []string{"created_at", "created_by", "thread_id", "issue_id", "type"} {
@@ -410,7 +419,7 @@ func TestDumpLocalOpaqueDependencyUsesV3AndPreservesStoredRow(t *testing.T) {
 	if record.Body["type"] != row["type"] || record.Body["to"] != row["depends_on_issue_id"] || record.Body["target_kind"] != "depends_on_issue_id" {
 		t.Fatalf("opaque edge target/type changed: body=%+v", record.Body)
 	}
-	if !reflect.DeepEqual(record.Body["metadata"], row["metadata"]) || !reflect.DeepEqual(record.Source.Fields["metadata"], row["metadata"]) {
+	if !jsonEqual(record.Body["metadata"], row["metadata"]) || !jsonEqual(record.Source.Fields["metadata"], row["metadata"]) {
 		t.Fatalf("opaque metadata changed: body=%#v source=%#v", record.Body["metadata"], record.Source.Fields["metadata"])
 	}
 	for _, field := range []string{"created_at", "created_by", "thread_id", "issue_id", "type", "depends_on_issue_id", "depends_on_wisp_id", "depends_on_external"} {
@@ -431,7 +440,7 @@ func TestDumpLocalOpaqueDependencyRefusals(t *testing.T) {
 		want      string
 	}{
 		{name: "empty kind", kind: "", targetKey: "depends_on_issue_id", target: "demo-8", want: "unsupported dependency type"},
-		{name: "invalid utf8", kind: string([]byte{0xff}), targetKey: "depends_on_issue_id", target: "demo-8", want: "unsupported dependency type"},
+		{name: "invalid utf8", kind: string([]byte{0xff}), targetKey: "depends_on_issue_id", target: "demo-8", want: "invalid UTF-8"},
 		{name: "over limit", kind: strings.Repeat("x", 33), targetKey: "depends_on_issue_id", target: "demo-8", want: "unsupported dependency type"},
 		{name: "unsupported well-known", kind: "duplicates", targetKey: "depends_on_issue_id", target: "demo-8", want: "unsupported dependency type"},
 		{name: "external target", kind: "custom-external", targetKey: "depends_on_external", target: "external:tracker:source", want: "unsupported dependency type"},
@@ -506,7 +515,7 @@ func TestDumpFaithfulWispFamiliesPreserveCollidingActiveRows(t *testing.T) {
 		if err := decodeJSON(line, &record); err != nil {
 			t.Fatal(err)
 		}
-		if record.ID == "demo-7" && reflect.DeepEqual(record.Source.Fields, issue) {
+		if record.ID == "demo-7" && jsonEqual(record.Source.Fields, issue) {
 			durable = true
 		}
 	}
@@ -515,7 +524,7 @@ func TestDumpFaithfulWispFamiliesPreserveCollidingActiveRows(t *testing.T) {
 		if err := decodeJSON(line, &record); err != nil {
 			t.Fatal(err)
 		}
-		if record.Source.Table == "wisps" && text(record.Source.Fields, "id") == "demo-7" && reflect.DeepEqual(record.Source.Fields, wisp) {
+		if record.Source.Table == "wisps" && text(record.Source.Fields, "id") == "demo-7" && jsonEqual(record.Source.Fields, wisp) {
 			active = true
 		}
 		if record.Source.Table == "wisp_labels" || record.Source.Table == "wisp_comments" || record.Source.Table == "wisp_events" || record.Source.Table == "wisp_child_counters" {
