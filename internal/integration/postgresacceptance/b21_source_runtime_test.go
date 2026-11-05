@@ -75,7 +75,52 @@ func b21Target(t *testing.T, engine string) *b21PrivateTarget {
 			_ = v.db.Close()
 		}
 	})
+	// PostgreSQL prepares lock placeholder rows on its reserved connection.
+	// Establish the private fixture's exact lock census before any physical
+	// conservation baseline; every table, including locks, remains compared.
+	for _, id := range []string{"pl-source-shadow", "pl-source-intervening"} {
+		tx, err := v.store.Write(ctx, v.lease)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Lock(ctx, b21CoreLocks(t, ref(id))); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Rollback(ctx); err != nil {
+			t.Fatal(err)
+		}
+		_ = tx.Close()
+	}
 	return v
+}
+
+func b21CoreLocks(t *testing.T, id model.Ref) []driver.LockRequest {
+	t.Helper()
+	bead, err := driver.NewBeadSentinel(id.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []driver.LockRequest{
+		{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &id}, Mode: driver.LockUpdate},
+		{Key: driver.LockKey{Kind: driver.LockSentinel, Sentinel: bead}, Mode: driver.LockUpdate},
+	}
+}
+
+// Workflow addresses have no ordinary bead sentinels. Observe the complete
+// ordinary graph, then independently inspect the actual typed version keys.
+func b21CoreImage(t *testing.T, store driver.Store) graphState {
+	t.Helper()
+	state := graph(t, store)
+	r := reader(t, store)
+	defer r.Close()
+	for _, id := range []string{"workflow:item/source-parent", "workflow:item/source-child"} {
+		page, err := r.Versions(context.Background(), ref(id), driver.PageReq{Limit: 1000})
+		if err != nil || page.NextCursor != nil {
+			t.Fatalf("active versions %s: %+v %v", id, page, err)
+		}
+		state.Versions[id] = page.Items
+	}
+	return state
 }
 
 func (v *b21PrivateTarget) acquire(t *testing.T) {
@@ -118,7 +163,7 @@ func (v *b21PrivateTarget) physical(t *testing.T) any {
 	return struct {
 		Graph      graphState
 		Checkpoint driver.Checkpoint
-	}{graph(t, v.store, "workflow:item/source-parent", "workflow:item/source-child"), cp}
+	}{b21CoreImage(t, v.store), cp}
 }
 
 func b21Profile(t *testing.T, f b21SourceFixture) driver.RestoreImportProfile {
@@ -141,8 +186,8 @@ func b21PreparePrivateRestore(t *testing.T, v *b21PrivateTarget, f b21SourceFixt
 		t.Fatal(err)
 	}
 	id := ref("pl-source-shadow")
-	lock := driver.LockKey{Kind: driver.LockRecord, Ref: &id}
-	if _, err := tx.Lock(ctx, []driver.LockRequest{{Key: lock, Mode: driver.LockUpdate}}); err != nil {
+	locks := b21CoreLocks(t, id)
+	if _, err := tx.Lock(ctx, locks); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tx.Head(ctx); err != nil {
@@ -168,11 +213,14 @@ func b21PreparePrivateRestore(t *testing.T, v *b21PrivateTarget, f b21SourceFixt
 	if err := tx.Put(ctx, driver.Record{Ref: id, Kind: "bead", Body: body}); err != nil {
 		t.Fatal(err)
 	}
+	if err := tx.BumpSentinels(ctx, []driver.Sentinel{locks[1].Key.Sentinel}); err != nil {
+		t.Fatal(err)
+	}
 	hash, err := profile.RequestHash()
 	if err != nil {
 		t.Fatal(err)
 	}
-	header := driver.ChangesetHeader{Incarnation: meta.Incarnation, Kind: model.ChangesetRestore, Time: clock, Principal: model.PrincipalRef{Kind: "system", ID: "plug-converter"}, Method: "offline.restore", IdempotencyKey: profile.IdempotencyKey, RequestHash: hash, Response: model.Commit{Revision: meta.Head, Results: []model.OpResult{}, Warnings: []model.Warning{}}, Changes: []model.ChangeRecord{{Ref: id, Op: model.OpCreate, FromRevision: model.Natural64(0), ChangedPaths: []string{"/"}}}, LockKeys: []driver.LockKey{lock}}
+	header := driver.ChangesetHeader{Incarnation: meta.Incarnation, Kind: model.ChangesetRestore, Time: clock, Principal: model.PrincipalRef{Kind: "system", ID: "plug-converter"}, Method: "offline.restore", IdempotencyKey: profile.IdempotencyKey, RequestHash: hash, Response: model.Commit{Revision: meta.Head, Results: []model.OpResult{}, Warnings: []model.Warning{}}, Changes: []model.ChangeRecord{{Ref: id, Op: model.OpCreate, FromRevision: model.Natural64(0), ChangedPaths: []string{"/"}}}, LockKeys: []driver.LockKey{locks[0].Key, locks[1].Key}}
 	return tx, meta, prepared, header
 }
 
@@ -373,7 +421,7 @@ func TestB21SourceRuntimePrivateAtomicCheckpointsThreeStores(t *testing.T) {
 			if err != nil || len(raw) != len(f.raw) {
 				t.Fatal("source raw origin retention changed")
 			}
-			state := graph(t, v.store, parent.ID, child.ID)
+			state := b21CoreImage(t, v.store)
 			if state.Meta.Head.String() != "1" || len(state.Changesets) != 1 || len(state.Versions[parent.ID]) != 0 || len(state.Versions[child.ID]) != 0 {
 				t.Fatalf("active operations created core history: %+v", state)
 			}
@@ -517,8 +565,8 @@ func TestB21SourcePreparedHeadConflictConservesAllStores(t *testing.T) {
 				t.Fatal(err)
 			}
 			id := ref("pl-source-intervening")
-			lock := driver.LockKey{Kind: driver.LockRecord, Ref: &id}
-			if _, err := tx.Lock(ctx, []driver.LockRequest{{Key: lock, Mode: driver.LockUpdate}}); err != nil {
+			locks := b21CoreLocks(t, id)
+			if _, err := tx.Lock(ctx, locks); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := tx.Head(ctx); err != nil {
@@ -527,7 +575,10 @@ func TestB21SourcePreparedHeadConflictConservesAllStores(t *testing.T) {
 			if err := tx.Put(ctx, driver.Record{Ref: id, Kind: "bead", Body: []byte(`{"id":"pl-source-intervening","type":"task","fields":{"title":"intervening","status":"open"}}`)}); err != nil {
 				t.Fatal(err)
 			}
-			header = driver.ChangesetHeader{Incarnation: initial.Binding.Origin.Incarnation, Kind: model.ChangesetWrite, Time: clock, Principal: b21SourceActor, Method: "private.ordinary.create", IdempotencyKey: key("head-winner"), RequestHash: key("head-winner-request"), LockKeys: []driver.LockKey{lock}, Changes: []model.ChangeRecord{{Ref: id, Op: model.OpCreate, FromRevision: model.Natural64(0), ChangedPaths: []string{"/"}}}, Response: model.Commit{Results: []model.OpResult{}, Warnings: []model.Warning{}}}
+			if err := tx.BumpSentinels(ctx, []driver.Sentinel{locks[1].Key.Sentinel}); err != nil {
+				t.Fatal(err)
+			}
+			header = driver.ChangesetHeader{Incarnation: initial.Binding.Origin.Incarnation, Kind: model.ChangesetWrite, Time: clock, Principal: b21SourceActor, Method: "private.ordinary.create", IdempotencyKey: key("head-winner"), RequestHash: key("head-winner-request"), LockKeys: []driver.LockKey{locks[0].Key, locks[1].Key}, Changes: []model.ChangeRecord{{Ref: id, Op: model.OpCreate, FromRevision: model.Natural64(0), ChangedPaths: []string{"/"}}}, Response: model.Commit{Results: []model.OpResult{}, Warnings: []model.Warning{}}}
 			if _, err := tx.Commit(ctx, header); err != nil {
 				t.Fatal(err)
 			}
