@@ -44,8 +44,8 @@ cannot prove that an operator's capture declarations are true.
 
 Registry entries are `{name,version,file,count}`. Legacy archives use version
 `1`; a fixed-kind successor archive uses edge version `2` for the typed
-`waits-for` and `conditional-blocks` contract while all other kinds remain
-version `1`. When a stored local dependency uses an opaque kind, the edge
+`waits-for`, `conditional-blocks` and `tracks` contract while all other kinds
+remain version `1`. When a stored local dependency uses an opaque kind, the edge
 registry uses version `3`, a strict superset of version `2`; fixed-only edge
 archives remain version `2`.
 

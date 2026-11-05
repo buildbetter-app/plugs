@@ -340,8 +340,14 @@ func TestDumpDependencyKindsPreserveTypedEdges(t *testing.T) {
 		source["dependencies"] = table
 	}
 	data := buildFixture(t, source, inventory)
-	if _, err := Validate(bytes.NewReader(data)); err != nil {
+	manifest, err := Validate(bytes.NewReader(data))
+	if err != nil {
 		t.Fatal(err)
+	}
+	for _, kind := range manifest.Kinds {
+		if kind.Name == "edge" && kind.Version != EdgeVersionTypedDependencies {
+			t.Fatalf("fixed tracks archive selected edge version %d, want %d", kind.Version, EdgeVersionTypedDependencies)
+		}
 	}
 	records := map[string]Record{}
 	for _, line := range bytes.Split(bytes.TrimSpace(archiveMembers(t, data)["records/edge.ndjson"]), []byte{'\n'}) {

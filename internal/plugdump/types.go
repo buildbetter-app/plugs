@@ -12,8 +12,8 @@ const BeadsReference = "9d6fff760b7a314b476539198504d77ce0959656"
 
 const (
 	// EdgeVersionTypedDependencies is the explicit successor producer
-	// contract. Format/schema/reference alone never enable local waits-for or
-	// conditional-blocks semantics.
+	// contract. Format/schema/reference alone never enable local waits-for,
+	// conditional-blocks or tracks semantics.
 	EdgeVersionTypedDependencies = 2
 	// EdgeVersionLocalOpaque is the strict successor of the typed dependency
 	// contract. It is selected only when a stored local dependency has a
