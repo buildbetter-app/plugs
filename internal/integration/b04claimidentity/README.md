@@ -22,4 +22,40 @@ The adopted identity boundary is intentionally explicit. `work.md` B04 keeps equ
 
 Any literal alias/pool implementation needs an S1-routed authoritative contract: a trusted alias-to-principal binding, exact pool membership/assignment facts, pre-image eligibility and atomic observation/locking, explicit refusal codes, and a compatible CP7 permission-bearing-assignment adapter. The authenticated boundary must never derive identity or grants by rewriting `_meta.agent`. No shared production hunk is applied or silently proposed as an adopted decision here.
 
-There is no native Beads capture, new reference vector, producer of ephemeral work, 200-agent contention run, deployment, or production qualification in this candidate. Existing B04 evidence and historical REDs remain separate. Full S1 stays `0/28`; E3 remains `5/5` bounded fixtures; native admission is `None`.
+The paragraphs above describe the retained ordinary fixture scope. The new
+manual `native_b04_recording` route is based on pinned main
+`7a43c3c625a5c08d3a4364a321cd47d6357ef30e` and its adopted R418 native
+admission. It requires its own same-run committed preparer and four matching
+exports; adding this source supplies no recording credit. The source contract
+distinguishes the admitted artifact digest from its executable member digest.
+
+The private native vector observes direct, same-owner, custom-active and
+foreign-holder claims, two distinct remaining ready winners and a terminal
+empty front. Claim responses must identify their actual native rows and match
+the stored owner/status/start/revision projection. Fresh start timestamps must
+fall inside the real command interval. Same-owner history and version rows
+(or the literal default-history-off refusal) remain unchanged. Full native
+SQL table rows, columns and commit log are retained and compared around
+same-owner, foreign-refusal, empty-front and readonly-export operations.
+
+The unchanged admitted c8eb exporter rejects nonempty custom statuses or live
+claims. The route preserves that real refusal, requires no archive and no
+source/sidecar change, and stops later capture, twin comparison, import,
+outcome replay and contention as `NOT_RUN`. It never clears source rows,
+changes history policy, fabricates an archive or substitutes a configured
+fixture for unavailable native input. A genuine initializer/configuration
+failure earlier in the route is likewise retained and stops downstream work.
+
+The later three-store outcome replay is an explicitly configured test
+fixture. It binds observed native IDs to returned Plug refs, checks direct,
+same-owner, custom-active, typed foreign errors and distinct claim-next
+winners, and requires the empty-front H+1 terminal receipt plus quiet replay
+and SQL reopen. It is not native archive import or imported protected
+authority. The present exporter refusal keeps this replay and its memory
+200-agent contention case unreachable. Full imported state/replay, native
+pool and alias handling, ephemeral record behavior, held-candidate race
+traversal, SQL contention and full-card qualification remain unproved.
+
+Earlier setup/source/product REDs and bounded fixture results remain separate.
+Full S1 stays `0/28`; adopted native admission authorizes a fresh preparation,
+not a PASS for this card. There is no deployment or production qualification.
