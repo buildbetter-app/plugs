@@ -533,6 +533,118 @@ func TestNativeB24ProbeObservationAcrossStores(t *testing.T) {
 			t.Fatal("duplicate physical column hid the absent column")
 		}
 	})
+	t.Run("reverse-source-null-representation", func(t *testing.T) {
+		declared := []string{"actor", "compaction_level", "current_revision", "no_history", "participation_generation", "sender"}
+		control := func() ([]byte, []dumpformat.Record) {
+			projection := nativeSemanticProjection{
+				Issues: map[string]map[string]any{"source-control": {
+					"title": "unchanged title", "metadata": map[string]any{"user-null": nil, "user-text": "unchanged"},
+				}},
+				Memories: map[string]any{"user-memory": "unchanged"}, Edges: []map[string]any{}, Comments: []map[string]any{},
+			}
+			ordinary, err := json.Marshal(projection)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fields := dumpformat.Row{
+				"actor": nil, "compaction_level": json.Number("0"), "current_revision": json.Number("9007199254740993"),
+				"no_history": false, "participation_generation": nil, "sender": "", "status": "open", "pinned": false,
+			}
+			for _, field := range dumpformat.OpaqueIssueFields() {
+				fields[field] = nil
+			}
+			return ordinary, []dumpformat.Record{{
+				Kind: "bead", ID: "source-control", Body: dumpformat.Row{"status_category": "unstarted"},
+				Source: dumpformat.Provenance{Table: "issues", Fields: fields},
+			}}
+		}
+		check := func(t *testing.T, ordinary []byte, records []dumpformat.Record, archiveText string) {
+			t.Helper()
+			before, err := json.Marshal(records)
+			if err != nil {
+				t.Fatal(err)
+			}
+			actual, err := nativeProjectPublicReverseExpectation(ordinary, records, declared)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, err := nativeDecodePublicProjection(ordinary)
+			if err != nil {
+				t.Fatal(err)
+			}
+			metadata := want.Issues["source-control"]["metadata"].(map[string]any)
+			for _, field := range dumpformat.OpaqueIssueFields() {
+				metadata["beads."+field] = nil
+			}
+			if archiveText != "" {
+				metadata["_plug_source_fields"] = archiveText
+			}
+			got, err := nativeDecodePublicProjection(actual)
+			if err != nil || !nativeEqualJSON(got, want) {
+				t.Fatalf("reverse representation changed keys, nulls, values or number precision: %s %v", actual, err)
+			}
+			after, err := json.Marshal(records)
+			if err != nil || string(before) != string(after) {
+				t.Fatal("reverse expectation changed complete source provenance")
+			}
+		}
+		t.Run("null-with-zero-false-empty-and-large-number", func(t *testing.T) {
+			ordinary, records := control()
+			check(t, ordinary, records, `{"compaction_level":0,"current_revision":9007199254740993,"no_history":false,"sender":""}`)
+		})
+		for _, textualPinned := range []bool{false, true} {
+			t.Run(fmt.Sprintf("all-null-textual-pinned-%t", textualPinned), func(t *testing.T) {
+				ordinary, records := control()
+				for _, field := range declared {
+					records[0].Source.Fields[field] = nil
+				}
+				archiveText := ""
+				if textualPinned {
+					records[0].Source.Fields["pinned"] = "0"
+					archiveText = `{"pinned":"0"}`
+				}
+				check(t, ordinary, records, archiveText)
+			})
+		}
+		for _, field := range declared {
+			t.Run("missing-declared-"+field, func(t *testing.T) {
+				ordinary, records := control()
+				delete(records[0].Source.Fields, field)
+				if _, err := nativeProjectPublicReverseExpectation(ordinary, records, declared); err == nil {
+					t.Fatal("absent source field was accepted as explicit null")
+				}
+			})
+		}
+		t.Run("missing-opaque-source-field", func(t *testing.T) {
+			ordinary, records := control()
+			delete(records[0].Source.Fields, dumpformat.OpaqueIssueFields()[0])
+			if _, err := nativeProjectPublicReverseExpectation(ordinary, records, declared); err == nil {
+				t.Fatal("absent opaque source field was accepted as explicit null")
+			}
+		})
+		for _, emptyArchive := range []bool{false, true} {
+			t.Run(fmt.Sprintf("reserved-key-with-empty-archive-%t", emptyArchive), func(t *testing.T) {
+				ordinary, records := control()
+				projection, err := nativeDecodePublicProjection(ordinary)
+				if err != nil {
+					t.Fatal(err)
+				}
+				projection.Issues["source-control"]["metadata"].(map[string]any)["_plug_source_fields"] = nil
+				ordinary, err = json.Marshal(projection)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if emptyArchive {
+					for _, field := range declared {
+						records[0].Source.Fields[field] = nil
+					}
+					check(t, ordinary, records, "")
+				} else if _, err := nativeProjectPublicReverseExpectation(ordinary, records, declared); err == nil {
+					t.Fatal("reverse source metadata overwrote an existing key")
+				}
+			})
+		}
+	})
 	t.Run("source-export-policy-correspondence", func(t *testing.T) {
 		control := func() (nativeHistoryOffObservation, []dumpformat.Disposition, map[string]any) {
 			return nativeHistoryOffObservation{

@@ -143,3 +143,17 @@ Unknown issue-column policies, other omissions, extra fields, and changed
 policies are refused. Ordinary positive/refusal controls do not qualify a
 native recording. The original RED and all remaining native proof gaps stay
 separate from the corrected child's gates and fresh recordings.
+
+The corrected source-image recording on `3de35d75` reached an independent
+reverse-expectation error before import: `participation_generation` is present
+and null in both the complete physical row and exported source fields. The
+existing reverse converter (`archivedSourceFields` and `convertBead`) retains
+only nonnull archivable values in reserved `_plug_source_fields` metadata and
+omits that metadata key when the archive is empty. The expectation follows this
+representation while requiring every declared source key to remain present.
+Complete physical/archive key, value, type, and null comparisons still precede
+it. Null opaque fields remain explicit reserved metadata values; zero, false,
+empty strings, and large integers remain nonnull archived values. Ordinary
+controls cover those distinctions, missing keys, and reserved-key collisions.
+The automatic Spot retry's actual RED and all unrun imports/reopen/pair proof
+remain separate from this source correction and its new gates.
