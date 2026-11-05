@@ -316,7 +316,7 @@ func lockKeySortKey(key LockKey) string {
 	case LockRecord:
 		rank = "0"
 		if key.Ref.IsID() {
-			value = fmt.Sprintf("id:%s:%s", key.Ref.ID, key.Ref.Branch.String())
+			value = "id:" + key.Ref.ID + ":" + key.Ref.Branch.String()
 		} else {
 			value = "key:" + key.Ref.Key
 		}

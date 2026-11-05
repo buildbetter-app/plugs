@@ -193,6 +193,19 @@ func (p *SourceProjectionPlan) Sentinels() []driver.Sentinel {
 }
 
 func (p *SourceProjectionPlan) LockKeys() []driver.LockKey {
+	keys := p.lockKeysUnsorted()
+	sort.Slice(keys, func(i, j int) bool {
+		a, _ := driver.EncodeLockKey(keys[i])
+		b, _ := driver.EncodeLockKey(keys[j])
+		return a < b
+	})
+	return keys
+}
+
+// The commit planner deduplicates and sorts the complete lock census once.
+// Keep LockKeys sorted for direct driver callers, but avoid sorting each
+// source's small subset again while preparing a large changeset.
+func (p *SourceProjectionPlan) lockKeysUnsorted() []driver.LockKey {
 	ref := p.record.Ref
 	keys := []driver.LockKey{{Kind: driver.LockRecord, Ref: &ref}}
 	for _, row := range p.keys {
@@ -202,11 +215,6 @@ func (p *SourceProjectionPlan) LockKeys() []driver.LockKey {
 	for _, sentinel := range p.Sentinels() {
 		keys = append(keys, driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel})
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		a, _ := driver.EncodeLockKey(keys[i])
-		b, _ := driver.EncodeLockKey(keys[j])
-		return a < b
-	})
 	return keys
 }
 
@@ -481,7 +489,7 @@ func (p *prepared) prepareProjections(ctx context.Context) error {
 			return err
 		}
 		delta.sources = append(delta.sources, plan)
-		for _, key := range plan.LockKeys() {
+		for _, key := range plan.lockKeysUnsorted() {
 			if err := addKey(key); err != nil {
 				return err
 			}
