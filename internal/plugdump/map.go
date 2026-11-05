@@ -571,30 +571,13 @@ func (m *mapping) issues(rows []Row) error {
 		if err != nil || id == "" || m.beads[id] != "" {
 			return fmt.Errorf("unknown project, empty or duplicate issue ID")
 		}
-		idBody := strings.TrimPrefix(id, project.Prefix+"-")
-		parts := strings.Split(idBody, ".")
-		if project.IDMode == "sequential" {
-			number, err := natural(parts[0])
-			if err != nil || number == 0 {
-				return fmt.Errorf("issue ID does not match sequential allocator")
-			}
-			project.LastID = max(project.LastID, number)
-		} else if !hashPattern.MatchString(parts[0]) || len(parts[0]) < project.HashLength {
-			return fmt.Errorf("issue ID does not match hash allocator")
+		top, parent, child, err := issueIDParts(id, *project)
+		if err != nil {
+			return err
 		}
-		if len(parts) > 1 {
-			for _, part := range parts[1:] {
-				number, err := natural(part)
-				if err != nil || number == 0 {
-					return fmt.Errorf("invalid child ID")
-				}
-			}
-			parent := id[:strings.LastIndex(id, ".")]
-			number, err := natural(parts[len(parts)-1])
-			if err != nil || number == 0 {
-				return fmt.Errorf("invalid child ID")
-			}
-			project.ChildCounters[parent] = max(project.ChildCounters[parent], number)
+		project.LastID = max(project.LastID, top)
+		if parent != "" {
+			project.ChildCounters[parent] = max(project.ChildCounters[parent], child)
 		}
 		priority, err := natural(row["priority"])
 		if strings.TrimSpace(text(row, "title")) == "" || err != nil || priority > 4 {

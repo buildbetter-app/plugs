@@ -62,11 +62,12 @@ type Inventory struct {
 }
 
 type Project struct {
-	Prefix        string            `json:"prefix"`
-	IDMode        string            `json:"id_mode"`
-	HashLength    int               `json:"hash_length"`
-	LastID        uint64            `json:"last_id"`
-	ChildCounters map[string]uint64 `json:"child_counters"`
+	Prefix         string            `json:"prefix"`
+	IDMode         string            `json:"id_mode"`
+	HashLength     int               `json:"hash_length"`
+	HashNamespaces []string          `json:"hash_namespaces,omitempty"`
+	LastID         uint64            `json:"last_id"`
+	ChildCounters  map[string]uint64 `json:"child_counters"`
 }
 
 // OntologyDirective is the closed-world map_type declaration used to admit a

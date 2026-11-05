@@ -143,6 +143,11 @@ func (f *nativeFixture) sqlClock(want time.Time) {
 
 func newNativeFixture(t *testing.T) *nativeFixture {
 	t.Helper()
+	return newNativeFixtureForProject(t, "native")
+}
+
+func newNativeFixtureForProject(t *testing.T, prefix string) *nativeFixture {
+	t.Helper()
 	root := bazeltest.OverrideRoot()
 	if root == "" {
 		t.Fatal("canonical Bazel runfiles required; no source-only substitute")
@@ -212,7 +217,7 @@ func newNativeFixture(t *testing.T) *nativeFixture {
 	// Leave BEADS_DIR unset: explicit workspace selection plus an external
 	// data root skips init's local metadata block. The isolated CWD owns the
 	// fresh workspace, so ordinary init must write its discovery metadata.
-	f.run(f.bd, "init", "--server", "--server-host", "127.0.0.1", "--server-port", strconv.Itoa(port), "--database", "capture", "--prefix", "native", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet")
+	f.run(f.bd, "init", "--server", "--server-host", "127.0.0.1", "--server-port", strconv.Itoa(port), "--database", "capture", "--prefix", prefix, "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet")
 	metadata, err := os.ReadFile(filepath.Join(f.work, ".beads", "metadata.json"))
 	if err != nil {
 		t.Fatalf("public init workspace metadata: %v", err)
@@ -462,6 +467,113 @@ func TestPublicControlledClockAndActiveFamilyCapture(t *testing.T) {
 	}
 	t.Logf("NATIVE_CAPTURE_CLOCK_SIDECAR sha256=%x bytes=%s", sha256.Sum256(sidecar), sidecar)
 	t.Logf("NATIVE_CAPTURE_ARCHIVE sha256=%x bytes=%d history=%s", sha256.Sum256(archive), len(archive), manifest.History)
+}
+
+// Both fixtures are fabricated from anonymous type/ID shapes. These archives
+// are bounded producer proof for the consumer's two-project merge/restore
+// tests, not real-source captures or rehearsal streak credit.
+func TestPublicNativeCustomTypesAndNamespacedHashes(t *testing.T) {
+	for _, prefix := range []string{"reprocody", "reprosignals"} {
+		t.Run(prefix, func(t *testing.T) {
+			f := newNativeFixtureForProject(t, prefix)
+			types := []string{"zzzzzzzz"}
+			roots := []string{"a1b", "c2d"}
+			if prefix == "reprosignals" {
+				types = []string{"aaaaa", "zzzzzzzz", "yyyyyyyy", "xxxxxxxxx"}
+				roots = []string{"abc-4de", "abc-45d", "abc-456", "abc-d4e", "abc-de4", "abc-def"}
+			}
+			f.run(f.bd, "config", "set", "types.custom", strings.Join(types, ","))
+			for i, root := range roots {
+				id := prefix + "-" + root
+				if got := f.create("synthetic shape control", "--id", id, "--type", types[i%len(types)]); got != id {
+					t.Fatalf("public create relabelled a synthetic ID: got %q want %q", got, id)
+				}
+			}
+			parent := prefix + "-" + roots[0]
+			child := parent + ".2"
+			if got := f.create("synthetic child control", "--id", child, "--parent", parent); got != child {
+				t.Fatal("public child create relabelled the synthetic source")
+			}
+			source, err := (plugdump.SQLSource{DB: f.db}).ReadTable(context.Background(), "issues")
+			if err != nil || len(source.Rows) != len(roots)+1 {
+				t.Fatalf("synthetic SQL issue census: %d %v", len(source.Rows), err)
+			}
+			wanted := map[string]string{}
+			for _, row := range source.Rows {
+				wanted[row["id"].(string)] = row["issue_type"].(string)
+			}
+			capture := privateDir(t)
+			inventoryPath, archivePath := filepath.Join(capture, "inventory.json"), filepath.Join(capture, "readback.tar")
+			f.run(f.bd, "--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "--output", inventoryPath)
+			inventoryBytes, err := os.ReadFile(inventoryPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			inventory, err := plugdump.ReadInventory(bytes.NewReader(inventoryBytes))
+			if err != nil || len(inventory.Projects) != 1 || inventory.Projects[0].Prefix != prefix || len(inventory.Ontology) != len(types) {
+				t.Fatalf("actual native project/type inventory: %+v %v", inventory, err)
+			}
+			if prefix == "reprosignals" {
+				if !reflect.DeepEqual(inventory.Projects[0].HashNamespaces, []string{"abc"}) || inventory.Projects[0].HashLength != 3 {
+					t.Fatalf("actual namespace/hash-length inventory: %+v", inventory.Projects)
+				}
+			} else if len(inventory.Projects[0].HashNamespaces) != 0 || bytes.Contains(inventoryBytes, []byte(`"hash_namespaces"`)) {
+				t.Fatal("bare-hash project acquired namespace metadata")
+			}
+			f.run(f.bd, "--readonly", "export", "--format", "plug-dump/1", "--plug-inventory", inventoryPath, "--output", archivePath)
+			archive, err := os.ReadFile(archivePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			manifest, err := plugdump.Validate(bytes.NewReader(archive))
+			if err != nil || len(manifest.Projects) != 1 || manifest.Projects[0].Prefix != prefix || manifest.Projects[0].ChildCounters[parent] != 2 || len(manifest.Ontology) != len(types) {
+				t.Fatalf("actual archive identity/ontology validation: %+v %v", manifest, err)
+			}
+			observed := map[string]string{}
+			reader := tar.NewReader(bytes.NewReader(archive))
+			for {
+				header, err := reader.Next()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if header.Name != "records/bead.ndjson" {
+					continue
+				}
+				decoder := json.NewDecoder(reader)
+				for {
+					var record plugdump.Record
+					if err := decoder.Decode(&record); err == io.EOF {
+						break
+					} else if err != nil {
+						t.Fatal(err)
+					}
+					id, ok := record.Source.Fields["id"].(string)
+					issueType, typeOK := record.Source.Fields["issue_type"].(string)
+					if !ok || !typeOK || record.ID != id || record.Project != prefix || record.Body["source_type"] != issueType {
+						t.Fatal("archive relabelled a source ID, project or type")
+					}
+					if _, duplicate := observed[id]; duplicate {
+						t.Fatal("duplicate archived source ID")
+					}
+					observed[id] = issueType
+				}
+			}
+			if !reflect.DeepEqual(observed, wanted) {
+				t.Fatalf("actual SQL/archive identity/type conservation: got %v want %v", observed, wanted)
+			}
+			output := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")
+			if output == "" {
+				t.Fatal("Bazel artifact directory required for independent consumer fixture")
+			}
+			if err := os.WriteFile(filepath.Join(output, prefix+"-synthetic.tar"), archive, 0600); err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("B1A_SYNTHETIC_EXPORT project=%s source_rows=%d archive_rows=%d ontology=%d namespaces=%q child_counter=%d sha256=%x bytes=%d", prefix, len(wanted), len(observed), len(manifest.Ontology), manifest.Projects[0].HashNamespaces, manifest.Projects[0].ChildCounters[parent], sha256.Sum256(archive), len(archive))
+		})
+	}
 }
 
 func TestCaptureExecutablesRefuseInvalidOptIn(t *testing.T) {

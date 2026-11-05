@@ -169,6 +169,17 @@ prefixes, unsupported ID modes, invalid child IDs and unresolved counter
 parents refuse. Hash collision/next-ID restore behavior remains a future
 restore test; this exporter does not allocate new IDs.
 
+An optional project `hash_namespaces` array declares the exact additional
+native `IDPrefix` namespaces observed before hash tokens. The array must be
+nonempty, sorted, unique, and used only with `id_mode: hash`. Each namespace
+has at most 32 ASCII letters, digits, underscores or hyphen-separated nonempty
+segments and starts with a letter. For example, project `repro` with namespace
+`abc` retains `repro-abc-4de` unchanged in that same project. `hash_length`
+constrains `4de`, not the namespace. An undeclared namespace, empty segment,
+invalid child suffix or counter still refuses. Omission retains the original
+bare-hash rules; null, empty arrays, noncanonical keys and unknown fields
+refuse. Readers must explicitly support this extension before importing it.
+
 `config_policy` must classify every database `config/<key>` and `metadata/<key>`
 as `public` or `secret`. Unclassified/extra entries refuse. Credential-like
 keys must be secret. Secret values become `{"$secret":"<table>/<key>"}`;
@@ -351,7 +362,13 @@ without reading engine contents. Public SQL measures ignore/nonlocal rules,
 working state, reachable commits, remotes and conflicts. This first producer
 requires one native hash-prefix project, a clean source, no Dolt remotes or
 conflicts, and supported source mappings. Custom ontology still requires an
-explicit operator inventory.
+explicit directive. Native public capture now emits one deterministic
+`map_type` directive for each observed non-built-in issue type, preserving its
+exact spelling in the directive and source row. It retains complete custom
+catalog/config rows and does not infer custom lifecycle semantics. Offline
+inventories still require explicit directives, and missing, overlapping or
+unused directives refuse. Native capture also records only observed hash
+namespaces; it never relabels an ID or splits a namespace into another project.
 
 The DB transaction does not make the filesystem atomic. External evidence is a
 capture of the resolved paths and process inputs, not a global filesystem,

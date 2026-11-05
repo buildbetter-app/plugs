@@ -255,6 +255,12 @@ func copyProjects(input []Project) ([]Project, error) {
 		if i > 0 && (p.Prefix == projects[i-1].Prefix || strings.HasPrefix(p.Prefix, projects[i-1].Prefix+"-")) {
 			return nil, fmt.Errorf("duplicate or ambiguous project prefix")
 		}
+		for j, namespace := range p.HashNamespaces {
+			if p.IDMode != "hash" || !validHashNamespace(namespace) || j > 0 && namespace <= p.HashNamespaces[j-1] {
+				return nil, fmt.Errorf("hash_namespaces requires sorted unique native namespaces in hash mode")
+			}
+		}
+		p.HashNamespaces = append([]string(nil), p.HashNamespaces...)
 		counters := map[string]uint64{}
 		for parent, count := range p.ChildCounters {
 			counters[parent] = count

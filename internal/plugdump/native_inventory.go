@@ -104,18 +104,37 @@ func (s SQLSource) NativeInventory(ctx context.Context, capture NativeCapture) (
 	// Import preserves older valid source IDs even when they are shorter than
 	// the native generator minimum. This inventory floor describes observed IDs;
 	// the actual generator settings remain unchanged in the archived config.
+	namespaces := map[string]bool{}
 	for _, row := range tables["issues"].Rows {
 		id := text(row, "id")
 		if !strings.HasPrefix(id, prefix+"-") {
 			return Inventory{}, nil, fmt.Errorf("native issue outside source prefix")
 		}
 		suffix, _, _ := strings.Cut(strings.TrimPrefix(id, prefix+"-"), ".")
-		if !hashPattern.MatchString(suffix) {
+		namespace, hash, ok := splitHashRoot(suffix)
+		if !ok {
 			return Inventory{}, nil, fmt.Errorf("unsupported native issue identity")
 		}
-		hashLength = min(hashLength, len(suffix))
+		if namespace != "" {
+			namespaces[namespace] = true
+		}
+		hashLength = min(hashLength, len(hash))
 	}
-	inventory.Projects = []Project{{Prefix: prefix, IDMode: "hash", HashLength: hashLength, ChildCounters: map[string]uint64{}}}
+	project := Project{Prefix: prefix, IDMode: "hash", HashLength: hashLength, ChildCounters: map[string]uint64{}}
+	for namespace := range namespaces {
+		project.HashNamespaces = append(project.HashNamespaces, namespace)
+	}
+	sort.Strings(project.HashNamespaces)
+	for _, row := range tables["issues"].Rows {
+		if _, _, _, err := issueIDParts(text(row, "id"), project); err != nil {
+			return Inventory{}, nil, fmt.Errorf("unsupported native issue identity")
+		}
+	}
+	inventory.Projects = []Project{project}
+	inventory.Ontology, err = nativeTypeDirectives(tables["issues"].Rows, project)
+	if err != nil {
+		return Inventory{}, nil, err
+	}
 	// The existing closed-world mapping remains authoritative for allocator,
 	// ontology, unsupported families and every stored business value.
 	observations := map[string]map[string]any{}
@@ -210,6 +229,39 @@ func (s SQLSource) NativeInventory(ctx context.Context, capture NativeCapture) (
 		return Inventory{}, nil, err
 	}
 	return inventory, sidecars, nil
+}
+
+// Public native capture explicitly records a map_type directive for every
+// observed non-built-in type. It does not rename the source type, interpret
+// its workflow, or relax the offline exporter's required-directive check.
+func nativeTypeDirectives(rows []Row, project Project) ([]OntologyDirective, error) {
+	seen := map[string]bool{}
+	directives := []OntologyDirective{}
+	for _, row := range rows {
+		issueType, err := requiredText(row, "issue_type")
+		if err != nil || !validCatalogTypeName(issueType) {
+			return nil, fmt.Errorf("unsupported native issue type")
+		}
+		if builtInIssueTypes[issueType] || seen[issueType] {
+			continue
+		}
+		seen[issueType] = true
+		// A digest avoids delimiter collisions and preserves arbitrary valid
+		// custom type spelling only in its explicit source/target fields.
+		identity, err := marshal([]string{project.Prefix, issueType})
+		if err != nil {
+			return nil, err
+		}
+		directives = append(directives, OntologyDirective{
+			ID: "native-map-type/" + digest(identity), Kind: "map_type",
+			Target: OntologyTarget{Project: project.Prefix, Type: issueType},
+			From:   issueType, To: "issue",
+		})
+	}
+	if len(directives) == 0 {
+		return directives, nil
+	}
+	return copyOntology(directives, []Project{project})
 }
 
 // uniqueNativePaths preserves the caller's first-seen order while preventing

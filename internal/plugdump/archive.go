@@ -447,6 +447,18 @@ func validateRecordVersioned(record Record, projects []Project, counts map[strin
 		return fmt.Errorf("source archive/config has an unsupported project binding")
 	}
 	if record.Kind == "bead" {
+		for _, project := range projects {
+			if project.Prefix != record.Project {
+				continue
+			}
+			top, parent, child, err := issueIDParts(record.ID, project)
+			if err != nil {
+				return err
+			}
+			if top > project.LastID || parent != "" && child > project.ChildCounters[parent] {
+				return fmt.Errorf("issue ID exceeds inventoried allocator counters")
+			}
+		}
 		labels, ok := record.Body["labels"].([]any)
 		if !ok {
 			return fmt.Errorf("missing bead label set")

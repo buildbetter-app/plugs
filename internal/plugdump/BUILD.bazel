@@ -7,6 +7,7 @@ go_library(
         "archive.go",
         "build.go",
         "catalog.go",
+        "identity.go",
         "map.go",
         "migration_hashes.go",
         "native_inventory.go",
@@ -32,6 +33,7 @@ go_test(
     srcs = [
         "native_clock_test.go",
         "native_inventory_test.go",
+        "identity_test.go",
         "plugdump_test.go",
         "source_history_sql_test.go",
         "source_history_test.go",
