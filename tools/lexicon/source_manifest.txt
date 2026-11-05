@@ -1099,6 +1099,8 @@ internal/storage/postgres/persistence_test.go
 internal/storage/postgres/query.go
 internal/storage/postgres/reader.go
 internal/storage/postgres/reader_batch_test.go
+internal/storage/postgres/reader_versions_batch_negative_test.go
+internal/storage/postgres/reader_versions_batch_test.go
 internal/storage/postgres/schema.go
 internal/storage/postgres/selection.go
 internal/storage/postgres/selection_test.go
