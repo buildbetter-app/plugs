@@ -47,6 +47,23 @@ type stagedState struct {
 	written          bool
 	loaded           bool
 	head             *driver.CoreSnapshotExpectation
+	namespace        *driver.CheckpointExpectation
+}
+
+// A staged decision uses the virtual image after prior ordered operations,
+// while its publication guard still binds the one original namespace image.
+// This method performs no base-state read, including under a held writer Head.
+func (s *stagedState) PrepareCheckpointExpectation(ctx context.Context, key string, expect pluginapi.Revision) (driver.CheckpointExpectation, error) {
+	if err := ctx.Err(); err != nil {
+		return driver.CheckpointExpectation{}, err
+	}
+	if s.namespace == nil {
+		return driver.CheckpointExpectation{}, driver.ErrUnsupported
+	}
+	if !s.loaded || key != s.key || expect != s.revision {
+		return driver.CheckpointExpectation{}, driver.ErrCheckpointConflict
+	}
+	return *s.namespace, nil
 }
 
 func (s *stagedState) Persistent() bool {
@@ -162,16 +179,20 @@ func (p *Provider) PrepareSourceOperations(ctx context.Context, apply func(*Prov
 	}
 	staged, state := p.staged()
 	snapshot, ok := p.state.(interface {
-		ReadSourceRuntime(context.Context) (json.RawMessage, pluginapi.Revision, driver.CoreSnapshotExpectation, error)
+		ReadSourceRuntimeCheckpoint(context.Context) (json.RawMessage, pluginapi.Revision, driver.CoreSnapshotExpectation, driver.CheckpointExpectation, error)
 	})
 	if !ok {
 		return PreparedState{}, driver.ErrUnsupported
 	}
-	logical, revision, head, err := snapshot.ReadSourceRuntime(ctx)
+	logical, revision, head, namespace, err := snapshot.ReadSourceRuntimeCheckpoint(ctx)
 	if err != nil {
 		return PreparedState{}, err
 	}
+	if namespace.StoreID != head.StoreID || namespace.Incarnation != head.Incarnation || namespace.Key != p.source.Provider.Namespace {
+		return PreparedState{}, driver.ErrCheckpointConflict
+	}
 	state.key, state.value, state.revision, state.loaded, state.head = stateKey, logical, revision, true, &head
+	state.namespace = &namespace
 	if err := apply(staged); err != nil {
 		return PreparedState{}, err
 	}

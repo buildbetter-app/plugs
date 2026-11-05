@@ -8,6 +8,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -110,15 +111,65 @@ func b21CoreLocks(t *testing.T, id model.Ref) []driver.LockRequest {
 // ordinary graph, then independently inspect the actual typed version keys.
 func b21CoreImage(t *testing.T, store driver.Store) graphState {
 	t.Helper()
-	state := graph(t, store)
+	ctx := context.Background()
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	r := reader(t, store)
 	defer r.Close()
-	for _, id := range []string{"workflow:item/source-parent", "workflow:item/source-child"} {
-		page, err := r.Versions(context.Background(), ref(id), driver.PageReq{Limit: 1000})
+	page, err := r.Query(ctx, driver.Query{Limit: 1000})
+	if err != nil || page.NextCursor != nil {
+		t.Fatalf("source core census: %+v %v", page, err)
+	}
+	var after *driver.Cursor
+	if !meta.HistoryFloor.IsZero() {
+		after = &driver.Cursor{Incarnation: meta.Incarnation, Revision: meta.HistoryFloor}
+	}
+	sets, err := r.Changesets(ctx, after, 1000)
+	if err != nil || len(sets) == 1000 {
+		t.Fatalf("retained source core history: %v", err)
+	}
+	if after != nil {
+		// Current-image restore has floor 1. The log API correctly refuses a
+		// cursor below that floor; retain the actual base entry via its receipt.
+		principal, err := driver.PrincipalKey(model.PrincipalRef{Kind: "system", ID: "plug-converter"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		base, err := r.ChangesetByKey(ctx, principal, "", "offline.restore", key("b21-private-profile"))
+		if err != nil || base == nil || meta.HistoryFloor.String() != "1" || base.Revision.String() != "1" || base.Kind != model.ChangesetRestore {
+			t.Fatalf("source restore base receipt: %+v %v", base, err)
+		}
+		sets = append([]model.Changeset{*base}, sets...)
+	}
+	state := graphState{Meta: meta, Records: page.Items, Changesets: sets, Versions: map[string][]driver.Version{}}
+	names := []string{"workflow:item/source-parent", "workflow:item/source-child"}
+	keys := []driver.LockKey{driver.GraphBlockingSentinelLock, driver.OntologySentinelLock, driver.PluginsSentinelLock}
+	for _, row := range page.Items {
+		names = append(names, row.Ref.ID)
+		id := row.Ref
+		bead, err := driver.NewBeadSentinel(id.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, driver.LockKey{Kind: driver.LockRecord, Ref: &id}, driver.LockKey{Kind: driver.LockSentinel, Sentinel: bead})
+	}
+	for _, id := range names {
+		page, err := r.Versions(ctx, ref(id), driver.PageReq{Limit: 1000})
 		if err != nil || page.NextCursor != nil {
 			t.Fatalf("active versions %s: %+v %v", id, page, err)
 		}
 		state.Versions[id] = page.Items
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		a, _ := driver.EncodeLockKey(keys[i])
+		b, _ := driver.EncodeLockKey(keys[j])
+		return a < b
+	})
+	state.Observations, err = r.Observe(ctx, keys)
+	if err != nil {
+		t.Fatal(err)
 	}
 	return state
 }
@@ -259,6 +310,12 @@ func b21StageNoop(t *testing.T, v *b21PrivateTarget, prepared workflowplugin.Pre
 	if err != nil {
 		return err
 	}
+	return b21CommitPreparedAtHead(t, v, tx, head, prepared)
+}
+
+func b21CommitPreparedAtHead(t *testing.T, v *b21PrivateTarget, tx driver.WriteTx, head model.Revision, prepared workflowplugin.PreparedState) error {
+	t.Helper()
+	ctx := context.Background()
 	meta, err := v.store.Meta(ctx)
 	if err != nil {
 		return err
@@ -531,6 +588,99 @@ func TestB21SourcePreparedNamespaceConflictConservesAllStores(t *testing.T) {
 			view, err := p.Get(ctx, b21SourceActor, parent, b21WriteMeta("winner-get", "bead.get"))
 			if err != nil || view.Title != "winner" {
 				t.Fatal("stale participant replaced winner")
+			}
+		})
+	}
+}
+
+func TestB21SourceStagedParentGuardsUnderHeldHeadThreeStores(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			v := b21Target(t, engine)
+			meta, err := v.store.Meta(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := b21Fixture(t, meta, v.cap.WorkflowCheckpointLifetime())
+			b21ChangeEdge(t, &f, 0, "parent-child")
+			logical := b21Logical(t, &f)
+			restore, _, initial, header := b21PreparePrivateRestore(t, v, f, logical)
+			if _, err := restore.Commit(ctx, header); err != nil {
+				t.Fatal(err)
+			}
+			_ = restore.Close()
+			p := b21Runtime(t, v, initial.Binding)
+			var tx driver.WriteTx
+			var heldHead model.Revision
+			defer func() {
+				if tx != nil {
+					_ = tx.Close()
+				}
+			}()
+			pending, err := p.PrepareSourceOperations(ctx, func(staged *workflowplugin.Provider) error {
+				// The source image and both guards are pinned before this Head.
+				// Any nested SQL snapshot writer here would block on this writer.
+				var err error
+				tx, err = v.store.Write(ctx, v.lease)
+				if err != nil {
+					return err
+				}
+				if _, err := tx.Lock(ctx, nil); err != nil {
+					return err
+				}
+				heldHead, err = tx.Head(ctx)
+				if err != nil {
+					return err
+				}
+				ids := []string{"pl-source-shadow"}
+				meta := b21WriteMeta("staged-parent-guard", "bead.claim")
+				facts, first, err := staged.OrdinaryParentSnapshot(ctx, b21SourceActor, ids, meta, nil)
+				if err != nil {
+					return err
+				}
+				fact := facts[ids[0]]
+				if fact.Parent == nil || fact.Parent.ID != "workflow:item/source-parent" || fact.Blocked || first.Key != initial.Mutation.Key || first.Expected != 1 || first.Incarnation != initial.Binding.Origin.Incarnation {
+					t.Fatalf("initial staged parent/guard: %+v %+v", fact, first)
+				}
+				if _, err := staged.Update(ctx, b21SourceActor, ref("workflow:item/source-parent"), map[string]any{"blocked": true}, b21WriteMeta("stage-parent-blocked", "bead.update")); err != nil {
+					return err
+				}
+				facts, after, err := staged.OrdinaryParentSnapshot(ctx, b21SourceActor, ids, meta, nil)
+				if err != nil {
+					return err
+				}
+				if !facts[ids[0]].Blocked || after != first {
+					t.Fatalf("ordered staged decision lost original guard: %+v %+v", facts, after)
+				}
+				_, blocker, err := staged.OrdinaryBlockerSnapshot(ctx, b21SourceActor, ids, meta)
+				if err != nil {
+					return err
+				}
+				if blocker != first {
+					t.Fatal("staged ordinary guards consumed different namespace generations")
+				}
+				return tx.(driver.CheckpointGuardTx).ExpectCheckpoint(ctx, first.Key, first.Expected)
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := b21CommitPreparedAtHead(t, v, tx, heldHead, pending); err != nil {
+				t.Fatal(err)
+			}
+			_ = tx.Close()
+			tx = nil
+			facts, _, err := p.OrdinaryParentSnapshot(ctx, b21SourceActor, []string{"pl-source-shadow"}, b21WriteMeta("after-stage-parent", "bead.ready"), nil)
+			if err != nil || !facts["pl-source-shadow"].Blocked {
+				t.Fatalf("published staged parent guard: %+v %v", facts, err)
+			}
+			checkpoint, err := v.cap.LoadCheckpoint(ctx, initial.Mutation.Key)
+			if err != nil || checkpoint.Generation != 2 {
+				t.Fatalf("guarded source stage was not one publication: %+v %v", checkpoint, err)
+			}
+			state := b21CoreImage(t, v.store)
+			if state.Meta.Head.String() != "1" || len(state.Changesets) != 1 {
+				t.Fatal("source-only guarded stage created core history")
 			}
 		})
 	}

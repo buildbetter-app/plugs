@@ -122,12 +122,21 @@ func (d *durableStateAccess) SourceRuntimeBinding() (driver.SourcePlaneProviderC
 // and its namespace revision from the very same pinned core observation.
 // Call before acquiring the ordinary writer's Head, never from inside it.
 func (d *durableAccess) ReadSourceRuntime(ctx context.Context) (json.RawMessage, pluginapi.Revision, driver.CoreSnapshotExpectation, error) {
-	_, namespace, head, err := d.loadSource(ctx)
+	logical, revision, head, _, err := d.ReadSourceRuntimeCheckpoint(ctx)
+	return logical, revision, head, err
+}
+
+// ReadSourceRuntimeCheckpoint carries both guards from the very same pinned
+// image. Staged ordinary guards must not reload the original provider after
+// their caller has acquired the writer Head.
+func (d *durableAccess) ReadSourceRuntimeCheckpoint(ctx context.Context) (json.RawMessage, pluginapi.Revision, driver.CoreSnapshotExpectation, driver.CheckpointExpectation, error) {
+	checkpoint, namespace, head, err := d.loadSource(ctx)
 	if err != nil {
-		return nil, "", driver.CoreSnapshotExpectation{}, err
+		return nil, "", driver.CoreSnapshotExpectation{}, driver.CheckpointExpectation{}, err
 	}
 	value := namespace.Values[sourceStateKey]
-	return append(json.RawMessage(nil), value.Value...), pluginapi.Natural64(value.Revision), head, nil
+	expectation := driver.CheckpointExpectation{StoreID: head.StoreID, Incarnation: head.Incarnation, Key: d.key, Expected: checkpoint.Generation}
+	return append(json.RawMessage(nil), value.Value...), pluginapi.Natural64(value.Revision), head, expectation, nil
 }
 
 func (d *durableStateAccess) ReadSourceRuntime(ctx context.Context) (json.RawMessage, pluginapi.Revision, driver.CoreSnapshotExpectation, error) {
@@ -137,6 +146,15 @@ func (d *durableStateAccess) ReadSourceRuntime(ctx context.Context) (json.RawMes
 	}
 	defer cancel()
 	return d.instance.durable.ReadSourceRuntime(ctx)
+}
+
+func (d *durableStateAccess) ReadSourceRuntimeCheckpoint(ctx context.Context) (json.RawMessage, pluginapi.Revision, driver.CoreSnapshotExpectation, driver.CheckpointExpectation, error) {
+	ctx, cancel, err := d.context(ctx, false)
+	if err != nil {
+		return nil, "", driver.CoreSnapshotExpectation{}, driver.CheckpointExpectation{}, err
+	}
+	defer cancel()
+	return d.instance.durable.ReadSourceRuntimeCheckpoint(ctx)
 }
 
 func sourceObject(data []byte) error {
