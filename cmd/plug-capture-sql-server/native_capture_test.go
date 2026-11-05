@@ -168,7 +168,7 @@ func newNativeFixture(t *testing.T) *nativeFixture {
 	f.clock = filepath.Join(privateDir(t), "clock.json")
 	f.env = append(f.env, "HOME="+home, "TZ=UTC", "XDG_CONFIG_HOME="+filepath.Join(home, ".config"), "DOLT_ROOT_PATH="+home,
 		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "BD_DISABLE_METRICS=1", "BD_DISABLE_EVENT_FLUSH=1", "BD_EVENTS_JOURNAL=false",
-		captureclock.FileEnv+"="+f.clock, captureclock.PublicEnv+"=1", "BEADS_DOLT_AUTO_START=0", "BEADS_DIR="+filepath.Join(f.work, ".beads"))
+		captureclock.FileEnv+"="+f.clock, captureclock.PublicEnv+"=1", "BEADS_DOLT_AUTO_START=0")
 	t0 := time.Date(2026, 11, 3, 12, 0, 0, 123456000, time.UTC)
 	f.step("initial-independent-inputs", t0, t0.Add(10*time.Second))
 	f.run("git", "init", "-b", "main")
@@ -209,7 +209,15 @@ func newNativeFixture(t *testing.T) *nativeFixture {
 	}
 	f.sqlClock(t0.Add(10 * time.Second))
 	f.env = append(f.env, "BEADS_DOLT_SERVER_MODE=1", "BEADS_DOLT_SERVER_HOST=127.0.0.1", "BEADS_DOLT_SERVER_PORT="+strconv.Itoa(port))
+	// Leave BEADS_DIR unset: explicit workspace selection plus an external
+	// data root skips init's local metadata block. The isolated CWD owns the
+	// fresh workspace, so ordinary init must write its discovery metadata.
 	f.run(f.bd, "init", "--server", "--server-host", "127.0.0.1", "--server-port", strconv.Itoa(port), "--database", "capture", "--prefix", "native", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet")
+	metadata, err := os.ReadFile(filepath.Join(f.work, ".beads", "metadata.json"))
+	if err != nil {
+		t.Fatalf("public init workspace metadata: %v", err)
+	}
+	t.Logf("NATIVE_CAPTURE_WORKSPACE_METADATA sha256=%x data=%s", sha256.Sum256(metadata), metadata)
 	// Observe the actual server-created database; never create a directory to
 	// stand in for the native inventory's storage observation.
 	for _, path := range []string{filepath.Join(dataDir, "capture"), filepath.Join(dataDir, "capture", ".dolt")} {

@@ -410,6 +410,9 @@ The companion uses the pinned upstream pre-start data-directory resolver before
 loading the server environment, as the upstream Dolt entrypoint does.
 For a fresh workspace, use a disposable server root outside `.beads` and set
 the existing `BEADS_DOLT_DATA_DIR` to that same root for every native process.
+Run public init from the disposable repository with `BEADS_DIR` unset so it
+writes local workspace metadata. Combining an explicit `BEADS_DIR` with an
+external data root skips that metadata block in the unchanged init command.
 Server configuration written before `bd init` then stays outside the workspace;
 the unchanged legacy-workspace guard still refuses an unversioned, nonempty
 `.beads/dolt` directory.
