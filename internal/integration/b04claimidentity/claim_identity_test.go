@@ -38,6 +38,68 @@ import (
 const a4Binding = "b04-a4-wasm-derive"
 const a4Observer = "b04-a4-observer"
 
+// Retain the actual timed host adapter and its exact return values. These
+// bounded test diagnostics explain refusals hidden by the public error catalog
+// without recording proposals, principals, credentials, or request bodies.
+type a4MutatorProbe struct {
+	mutator port.Mutator
+	timed   port.TimedMutator
+	mu      sync.Mutex
+	calls   int
+	counts  map[string]int
+	samples map[string]string
+}
+
+func (p *a4MutatorProbe) observe(ctx context.Context, patches []port.Patch, err error) ([]port.Patch, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls++
+	code := "success"
+	if err != nil {
+		code = fmt.Sprintf("%T", err)
+		var hostError *pluginhost.Error
+		if errors.As(err, &hostError) {
+			code = hostError.Code
+		}
+		if _, seen := p.samples[code]; !seen && len(p.samples) < 8 {
+			detail := err.Error()
+			if len(detail) > 2048 {
+				detail = detail[:2048]
+			}
+			p.samples[code] = detail
+		}
+	}
+	p.counts[code]++
+	if ctx.Err() != nil {
+		p.counts["parent_context_done"]++
+	}
+	return patches, err
+}
+
+func (p *a4MutatorProbe) Mutate(ctx context.Context, c port.ProposedChange, r port.SnapshotReader) ([]port.Patch, error) {
+	patches, err := p.mutator.Mutate(ctx, c, r)
+	return p.observe(ctx, patches, err)
+}
+
+func (p *a4MutatorProbe) MutateWithTimeout(ctx context.Context, timeout time.Duration, c port.ProposedChange, r port.SnapshotReader) ([]port.Patch, error) {
+	patches, err := p.timed.MutateWithTimeout(ctx, timeout, c, r)
+	return p.observe(ctx, patches, err)
+}
+
+func (p *a4MutatorProbe) snapshot() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	data, err := json.Marshal(struct {
+		Calls   int
+		Counts  map[string]int
+		Samples map[string]string
+	}{p.calls, p.counts, p.samples})
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}
+
 func (f *fixture) assignedWork(title, project string, assignment *model.ClaimAssignment) model.Ref {
 	f.t.Helper()
 	payload := map[string]any{"type": "issue", "fields": map[string]any{"title": title, "description": "typed durable preassignment", "priority": 0}, "assignment": assignment}
@@ -514,7 +576,10 @@ func TestB04A4TwoHundredSimultaneousPublicAgentsWithWASMMutator(t *testing.T) {
 		f.httpConfig.MaxConcurrentRequests = 200
 		collector := pipeline.NewCollector()
 		f.observer = collector
-		f.installMutators(f.a4Mutators(artifact)...)
+		bindings := f.a4Mutators(artifact)
+		probe := &a4MutatorProbe{mutator: bindings[0].Mutator, timed: bindings[0].Mutator.(port.TimedMutator), counts: map[string]int{}, samples: map[string]string{}}
+		bindings[0].Mutator = probe
+		f.installMutators(bindings...)
 		const agents = 200
 		callers := make([]credential, agents)
 		keys := make([]string, agents)
@@ -695,6 +760,7 @@ func TestB04A4TwoHundredSimultaneousPublicAgentsWithWASMMutator(t *testing.T) {
 		}
 		t.Logf("A4 engine=%s simultaneous_arrivals=%d initial_attempts=%d initial_failures=%d initial_codes=%v attempts=%d retry_starts=%d all_codes=%v write_conflict=%d final_failures=%d elapsed=%s actual_wasm=%s authz=authz/fixed no_http_semaphore=true retry_budget=%d request_deadline=5s callback_budget=250ms", e.name, arrived.Load(), agents, initialFailures, initialCodes, attempts, attempts-agents, allCodes, conflicts, failures, time.Since(began), artifact.ArtifactDigest(), retryBudget)
 		t.Logf("A4 refusal hints engine=%s histogram=%v", e.name, refusalHints)
+		t.Logf("A4 callback diagnostics engine=%s snapshot=%s", e.name, probe.snapshot())
 		metrics, err := json.Marshal(collector.Snapshot())
 		if err != nil {
 			t.Fatal(err)
