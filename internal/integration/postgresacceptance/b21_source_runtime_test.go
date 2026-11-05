@@ -72,7 +72,7 @@ func TestB21SourceReverseImageCurrentSnapshotWithoutPublication(t *testing.T) {
 			read := func() workflowplugin.SourceReverseImage {
 				t.Helper()
 				before := v.physical(t)
-				snapshot, err := v.cap.ReadSourcePlaneSnapshot(ctx, driver.View{}, []string{prepared.Mutation.Key})
+				snapshot, err := v.cap.ReadSourcePlaneSnapshot(ctx, driver.View{Incarnation: prepared.Binding.Origin.Incarnation}, []string{prepared.Mutation.Key})
 				if err != nil {
 					t.Fatal(err)
 				}
