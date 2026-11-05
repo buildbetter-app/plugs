@@ -335,6 +335,9 @@ func TestB04A4TwoHundredSimultaneousPublicAgentsWithWASMMutator(t *testing.T) {
 		f := newFixture(t, e)
 		f.a4Renewal()
 		ids := f.a4Queue(200)
+		// A4 explicitly exercises a 200-request host. Use the existing host
+		// capacity option; all execution and request deadlines stay unchanged.
+		f.httpConfig.MaxConcurrentRequests = 200
 		f.installMutators(f.a4Mutators(artifact)...)
 		const agents = 200
 		callers := make([]credential, agents)

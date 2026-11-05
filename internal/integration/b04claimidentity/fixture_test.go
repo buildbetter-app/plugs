@@ -48,21 +48,22 @@ type receiptScope struct {
 }
 
 type fixture struct {
-	t         *testing.T
-	ctx       context.Context
-	engine    engine
-	store     driver.Store
-	lease     driver.ActiveLease
-	keys      *authnapikey.Provider
-	app       *authzrpc.Composition
-	catalog   *wire.Catalog
-	facts     authzfixed.Facts
-	source    *authzrpc.MutableFacts
-	bootstrap http.Handler
-	work      map[string]model.Ref
-	queries   map[receiptScope]bool
-	writeKeys map[string]string
-	ontology  []byte
+	t          *testing.T
+	ctx        context.Context
+	engine     engine
+	store      driver.Store
+	lease      driver.ActiveLease
+	keys       *authnapikey.Provider
+	app        *authzrpc.Composition
+	catalog    *wire.Catalog
+	facts      authzfixed.Facts
+	source     *authzrpc.MutableFacts
+	bootstrap  http.Handler
+	work       map[string]model.Ref
+	queries    map[receiptScope]bool
+	writeKeys  map[string]string
+	ontology   []byte
+	httpConfig httpjson.Config
 }
 
 func newFixture(t *testing.T, e engine) *fixture {
@@ -199,6 +200,7 @@ func (f *fixture) installMutators(mutators ...pipeline.MutatorBinding) {
 		Store: f.store, Lease: f.lease, Provider: f.keys, Facts: source, Namespace: f.facts.Namespace, DefaultProject: poolA,
 		Audit:    service.NewTrackedOntologyAudit(service.StaticOntologySource(ref(ontologySourceID))),
 		Mutators: mutators,
+		HTTP:     f.httpConfig,
 	})
 	if err != nil {
 		f.t.Fatal(err)
