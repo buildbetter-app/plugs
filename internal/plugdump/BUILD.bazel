@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "plugdump",
     srcs = [
+        "native_clock.go",
         "archive.go",
         "build.go",
         "catalog.go",
@@ -19,6 +20,7 @@ go_library(
     importpath = "github.com/steveyegge/beads/internal/plugdump",
     visibility = ["//:__subpackages__"],
     deps = [
+        "//internal/captureclock",
         "//internal/config",
         "//internal/storage/issueops",
         "@in_gopkg_yaml_v3//:yaml_v3",
@@ -28,6 +30,7 @@ go_library(
 go_test(
     name = "plugdump_test",
     srcs = [
+        "native_clock_test.go",
         "native_inventory_test.go",
         "plugdump_test.go",
         "source_history_sql_test.go",
@@ -37,7 +40,9 @@ go_test(
     data = ["manifest.schema.json"] + glob(["testdata/**"]),
     embed = [":plugdump"],
     deps = [
+        "//internal/captureclock",
         "//internal/testutil",
+        "@com_github_data_dog_go_sqlmock//:go-sqlmock",
         "@com_github_go_sql_driver_mysql//:mysql",
         "@com_github_santhosh_tekuri_jsonschema_v6//:jsonschema",
     ],

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/beads/internal/captureclock"
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/timeparsing"
 	"github.com/steveyegge/beads/internal/types"
@@ -57,11 +58,11 @@ Examples:
 		var deferUntil *time.Time
 		untilStr, _ := cmd.Flags().GetString("until")
 		if untilStr != "" {
-			t, err := timeparsing.ParseRelativeTime(untilStr, time.Now())
+			t, err := timeparsing.ParseRelativeTime(untilStr, captureclock.Now())
 			if err != nil {
 				return HandleError("invalid --until format %q. %s", untilStr, deferUntilFormatHint)
 			}
-			if t.Before(time.Now()) && !jsonOutput {
+			if t.Before(captureclock.Now()) && !jsonOutput {
 				fmt.Fprintf(os.Stderr, "%s Defer date %q is in the past. Issue will appear in bd ready immediately.\n",
 					ui.RenderWarn("!"), t.Local().Format("2006-01-02 15:04"))
 				fmt.Fprintf(os.Stderr, "  Did you mean a future date? Use --until=+1h or --until=tomorrow\n")

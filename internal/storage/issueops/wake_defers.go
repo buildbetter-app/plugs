@@ -3,8 +3,8 @@ package issueops
 import (
 	"context"
 	"fmt"
-	"time"
 
+	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dberrors"
 	"github.com/steveyegge/beads/internal/types"
 )
@@ -106,7 +106,7 @@ func wakeExpiredDefersInTable(ctx context.Context, tx DBTX, table, eventsTable s
 	}
 
 	var woken []string
-	now := time.Now().UTC()
+	now := storage.CaptureNow().UTC()
 	for _, id := range expired {
 		// row_lock is rewritten so a concurrent claim/update conflicts at
 		// commit time instead of cell-merging with this write — the same

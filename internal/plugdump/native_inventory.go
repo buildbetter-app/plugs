@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/steveyegge/beads/internal/captureclock"
 	"github.com/steveyegge/beads/internal/storage/issueops"
 	"gopkg.in/yaml.v3"
 )
@@ -36,6 +37,10 @@ func (s SQLSource) NativeInventory(ctx context.Context, capture NativeCapture) (
 	}
 	if !capture.Public {
 		return Inventory{}, nil, fmt.Errorf("native inventory requires explicit --plug-capture-public")
+	}
+	clockInput, err := captureclock.Read()
+	if err != nil {
+		return Inventory{}, nil, err
 	}
 	for _, path := range []string{capture.StoreDir, capture.BeadsDir, capture.SidecarDir} {
 		if !filepath.IsAbs(path) {
@@ -129,6 +134,13 @@ func (s SQLSource) NativeInventory(ctx context.Context, capture NativeCapture) (
 		observations[family] = map[string]any{"observations": rows}
 	}
 	observations["environment-and-flags"] = map[string]any{"environment": nativePublicValues(capture.Environment), "flags": nativePublicValues(capture.Flags), "public_quiesced_disposable_declaration": true}
+	clockEvidence, err := s.observeNativeClock(ctx, clockInput)
+	if err != nil {
+		return Inventory{}, nil, err
+	}
+	if clockEvidence != nil {
+		observations["environment-and-flags"]["capture_clock"] = clockEvidence
+	}
 	queries := map[string]string{
 		"dolt-ignore":          "SELECT * FROM dolt_ignore",
 		"dolt-nonlocal-tables": "SELECT * FROM dolt_nonlocal_tables",
@@ -193,6 +205,9 @@ func (s SQLSource) NativeInventory(ctx context.Context, capture NativeCapture) (
 	}
 	if !equalJSON(log, finalLog) {
 		return Inventory{}, nil, fmt.Errorf("native source census changed")
+	}
+	if err := unchangedNativeClock(clockInput); err != nil {
+		return Inventory{}, nil, err
 	}
 	return inventory, sidecars, nil
 }

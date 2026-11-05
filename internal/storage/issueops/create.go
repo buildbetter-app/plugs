@@ -691,7 +691,7 @@ func PrepareIssueForInsert(issue *types.Issue, customStatuses, customTypes []str
 	}
 
 	// Normalize timestamps to UTC, defaulting to now.
-	now := time.Now().UTC()
+	now := storage.CaptureNow().UTC()
 	if issue.CreatedAt.IsZero() {
 		issue.CreatedAt = now
 	} else {
@@ -1057,7 +1057,7 @@ func PersistComments(ctx context.Context, tx DBTX, issue *types.Issue) (CreateIs
 			// newest comment when the clock second would collide. Otherwise
 			// several such comments in one create share a second and read back
 			// in content-digest order rather than the order they were listed.
-			stamped, err := NextLiveCommentTime(ctx, tx, commentTable, issue.ID, time.Now())
+			stamped, err := NextLiveCommentTime(ctx, tx, commentTable, issue.ID, storage.CaptureNow())
 			if err != nil {
 				return result, fmt.Errorf("failed to insert comment for %s: %w", issue.ID, err)
 			}
@@ -1197,7 +1197,7 @@ func PersistDependenciesWithOptionsResult(ctx context.Context, tx DBTX, issues [
 
 			createdAt := dep.CreatedAt
 			if createdAt.IsZero() {
-				createdAt = time.Now().UTC()
+				createdAt = storage.CaptureNow().UTC()
 			}
 			// Deterministic id from (issue_id, target) keeps bulk-imported edges
 			// merge-safe across clones — two clones importing the same JSONL get the

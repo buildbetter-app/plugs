@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/types"
 )
@@ -55,7 +56,7 @@ func BuildReadyWorkOrder(policy types.SortPolicy, createdCol, priorityCol string
 	case types.SortPolicyPriority:
 		return ReadyWorkOrder{SQL: fmt.Sprintf("ORDER BY %s ASC, %s ASC, id ASC", priorityCol, createdCol)}
 	case types.SortPolicyHybrid, "":
-		recentCutoff := time.Now().UTC().Add(-48 * time.Hour)
+		recentCutoff := storage.CaptureNow().UTC().Add(-48 * time.Hour)
 		return ReadyWorkOrder{
 			SQL: fmt.Sprintf(`ORDER BY
 			CASE WHEN %s >= ? THEN 0 ELSE 1 END ASC,

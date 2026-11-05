@@ -365,3 +365,73 @@ falling back to the durable issue image. Only an absent optional active plane or
 row permits fallback; active query or label errors remain errors. Export still
 retains both physical images when IDs collide. This lookup correction does not
 supply consumer restore, history, expiry, restart, or GC qualification.
+
+## Controlled public capture clocks and live active families
+
+The disposable capture opt-in is `BEADS_CAPTURE_CLOCK_PUBLIC=1` together with
+`BEADS_CAPTURE_CLOCK_FILE=/absolute/private/clock.json`. Ordinary commands with
+both variables absent keep their existing wall-clock behavior. A partial,
+empty, malformed or inaccessible opt-in refuses before the CLI executes. The
+input and its parent must be private (0600/0700), canonical, non-symlink paths.
+The bounded JSON object has exactly these four canonical, non-null fields:
+
+```json
+{"version":"beads-capture-clock/1","step":"named-step","go_time":"2026-11-03T12:00:00.123456Z","sql_time":"2026-11-03T12:00:00.123456Z"}
+```
+
+`go_time` supports nanoseconds; `sql_time` must be exactly representable in
+microseconds. The instants are independent inputs. Every observation reads the
+file again. Publish a new step by writing a private sibling and atomically
+renaming it over the input **only while commands and SQL queries are
+quiescent**. Keep that path and both opt-ins in the environment of each native
+CLI process, the HTTP server and the SQL companion for their entire lifetimes.
+An invalid later step fails the capture; it cannot fall back to ordinary time.
+The hook covers hybrid ready ordering, active deferred filtering, stale cutoff,
+expired-defer update stamps, public create/update wall-time stamps and relative
+due/defer parsing and warnings. It does not control elapsed-time deadlines,
+sleeps, transport timeouts, every audit timestamp or protected lease policy.
+
+The separate Bazel target
+`//cmd/plug-capture-sql-server:plug-capture-sql-server` wraps the unchanged Dolt
+SQL server from the existing pinned module. `--capture-version` prints its
+contract, upstream Dolt version and module versions; `--help` describes the
+capture invocation. Other arguments go unchanged to the upstream `dolt
+sql-server` parser. For example, start the companion in the native job with
+`--host 127.0.0.1 --port <port> --data-dir <disposable-directory> --user root`,
+then use the existing public `bd init --server --server-host 127.0.0.1
+--server-port <port> ...` route. The companion installs the engine's existing
+query-context clock hook around the server's entire lifetime, so persistent
+connections and later HTTP/CLI calls observe published steps. The normal Dolt
+release executable, driver, SQL predicates and command semantics are unchanged.
+This companion needs its own exact source/build/hash/size/mode/member binding
+in the same official artifact; it is never a relabeled release Dolt binary.
+The embedded driver overwrites query time, so **controlled embedded SQL is
+unsupported**. An opted-in native inventory whose real SQL time does not match
+its input refuses rather than claiming controlled time.
+
+With the opt-in present, the existing `environment-and-flags.json` sidecar adds
+`capture_clock`. It binds the exact input bytes, path, SHA256, step, actual Go
+hook observation, raw real `UTC_TIMESTAMP(6)` and `UTC_TIMESTAMP()` query
+results, session timezone/server version, and SQL metadata for the physical
+`issues`/`wisps` creation/update/defer columns. It explicitly records 1ns Go
+input resolution, 1us SQL clock input resolution and 1s default
+`UTC_TIMESTAMP()` expression resolution. The native DATETIME column precision
+is retained as observed metadata. It is not upgraded to nanoseconds. Native
+before/at/after points must name their actual representable boundaries;
+unchanged Plug nanosecond fixtures remain separate. The input hash is checked
+again before inventory publication. With no opt-in the additional queries and
+sidecar field are absent.
+
+The public capture control
+`//cmd/plug-capture-sql-server:native_capture_test` runs canonical `bd` and the
+companion in a disposable environment. It retains independent clock readback,
+real CLI/HTTP hybrid order at a native 48-hour boundary and limits 1/2/1000,
+native timed/indefinite defer behavior, and real active-family production via
+public create/parent/label/comment/dependency commands. The actual native
+inventory/archive goes through `Build`, encoding and self-`Validate`; fresh SQL
+multisets must match every row of all six nonempty active families, including
+all ten dependency columns and physical IDs. No empty family, injected source
+row or marker-only proof qualifies. This ordinary source gate does not admit
+an official artifact or prove consumer restore, reverse, native/full-card
+conservation or adoption. Those require their independently bound source and
+recordings.

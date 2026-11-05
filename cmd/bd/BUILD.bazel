@@ -393,6 +393,7 @@ go_library(
     importpath = "github.com/steveyegge/beads/cmd/bd",
     visibility = ["//visibility:private"],
     deps = [
+        "//internal/captureclock",
         "//:beads",
         "//backend/http",
         "//cmd/bd/doctor",

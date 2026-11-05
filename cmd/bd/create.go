@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/beads/internal/captureclock"
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/debug"
@@ -238,7 +239,7 @@ var createCmd = &cobra.Command{
 		var dueAt *time.Time
 		dueStr, _ := cmd.Flags().GetString("due")
 		if dueStr != "" {
-			t, err := timeparsing.ParseRelativeTime(dueStr, time.Now())
+			t, err := timeparsing.ParseRelativeTime(dueStr, captureclock.Now())
 			if err != nil {
 				return HandleError("invalid --due format %q. %s", dueStr, deferUntilFormatHint)
 			}
@@ -248,12 +249,12 @@ var createCmd = &cobra.Command{
 		var deferUntil *time.Time
 		deferStr, _ := cmd.Flags().GetString("defer")
 		if deferStr != "" {
-			t, err := timeparsing.ParseRelativeTime(deferStr, time.Now())
+			t, err := timeparsing.ParseRelativeTime(deferStr, captureclock.Now())
 			if err != nil {
 				return HandleError("invalid --defer format %q. %s", deferStr, deferUntilFormatHint)
 			}
 			// Warn if defer date is in the past (user probably meant future)
-			if t.Before(time.Now()) && !silent && !debug.IsQuiet() {
+			if t.Before(captureclock.Now()) && !silent && !debug.IsQuiet() {
 				fmt.Fprintf(os.Stderr, "%s Defer date %q is in the past. Issue will appear in bd ready immediately.\n",
 					ui.RenderWarn("!"), t.Local().Format("2006-01-02 15:04"))
 				fmt.Fprintf(os.Stderr, "  Did you mean a future date? Use --defer=+1h or --defer=tomorrow\n")
@@ -803,7 +804,7 @@ func buildCreateIssue(params createIssueParams) *types.Issue {
 	status := types.StatusOpen
 	if params.InitialStatus != "" {
 		status = types.Status(params.InitialStatus)
-	} else if params.DeferUntil != nil && params.DeferUntil.After(time.Now()) {
+	} else if params.DeferUntil != nil && params.DeferUntil.After(captureclock.Now()) {
 		status = types.StatusDeferred
 	}
 
