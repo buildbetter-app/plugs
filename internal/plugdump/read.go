@@ -381,7 +381,9 @@ func nativeYAMLCatalogValues(data []byte) ([]map[string]any, error) {
 	}
 	var result []map[string]any
 	for _, entry := range entries {
-		if entry.Values == nil {
+		// Engine census directories deliberately retain contents="not-read";
+		// only filesystem-source families contain traversable YAML observations.
+		if entry.Values == nil || !nativeFileFamily(entry.Input.Family) {
 			continue
 		}
 		observations, ok := entry.Values["observations"]

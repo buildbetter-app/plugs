@@ -489,6 +489,7 @@ func TestDumpAdditionalFixedKindsRetainPlaneAndTargetRefusals(t *testing.T) {
 					targetKind = "depends_on_wisp_id"
 				case "wisp-source":
 					tableName = "wisp_dependencies"
+					row["issue_id"] = wisp["id"]
 				}
 				table := source[tableName]
 				table.Rows = append(table.Rows, row)
@@ -767,6 +768,61 @@ func TestDumpProjectConfigDirectoryObservationPreservesEmptyYAMLObject(t *testin
 	data := buildFixture(t, source, inventory)
 	if !bytes.Contains(archiveMembers(t, data)["config/sources.json"], []byte(`"values":{}`)) {
 		t.Fatal("directory project-config lost nested empty YAML object")
+	}
+}
+
+func TestDumpCatalogYAMLProjectionPreservesNonFileCensus(t *testing.T) {
+	for _, family := range []string{"store-files-and-quiescence", "project-config"} {
+		t.Run(family, func(t *testing.T) {
+			source, inventory := fixture(t)
+			yaml := setCatalogYAML(t, &inventory, []byte("# original comment-only YAML\n"))
+			// NativeInventory records engine locations without reading their
+			// contents. This is a census, not an observeNativePath file tree.
+			values := map[string]any{
+				"observations":      []any{map[string]any{"path": t.TempDir(), "state": "directory", "mode": 0o700, "contents": "not-read"}},
+				"operator_quiesced": true, "sql_clean": true, "filesystem_atomicity": "not-verified",
+			}
+			for i := range inventory.External {
+				if inventory.External[i].Family == family {
+					inventory.External[i].State = "json-config"
+					if err := os.WriteFile(inventory.External[i].Path, mustJSON(t, values), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			data, err := Build(context.Background(), source, inventory)
+			if family == "project-config" {
+				if err == nil || len(data) != 0 || !strings.Contains(err.Error(), "directory observation must carry entries") {
+					t.Fatalf("malformed file observation accepted: data=%d err=%v", len(data), err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Validate(bytes.NewReader(data)); err != nil {
+				t.Fatal(err)
+			}
+			var entries []struct {
+				Input  ExternalInput  `json:"input"`
+				Values map[string]any `json:"values,omitempty"`
+			}
+			if err := decodeJSON(archiveMembers(t, data)["config/sources.json"], &entries); err != nil {
+				t.Fatal(err)
+			}
+			var censusKept, yamlKept bool
+			for _, entry := range entries {
+				if entry.Input.Family == family {
+					censusKept = jsonEqual(entry.Values, values)
+				}
+				if entry.Input.Family == "project-config" {
+					yamlKept = jsonEqual(entry.Values, map[string]any{"observations": []any{yaml}})
+				}
+			}
+			if !censusKept || !yamlKept {
+				t.Fatalf("source observations changed: census=%v YAML=%v", censusKept, yamlKept)
+			}
+		})
 	}
 }
 
