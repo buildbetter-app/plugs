@@ -20,6 +20,11 @@ type sourceWriteSlice struct {
 	projects map[string]authz.ProjectBinding
 }
 
+func (s *sourceWriteSlice) SourceBeadReference(ref model.Ref) bool {
+	_, found := s.projects[ref.ID]
+	return found && workflowItemRef(ref) && authz.CanonicalRef(ref) == nil
+}
+
 func (s *sourceWriteSlice) ProjectForBead(ctx context.Context, ref model.Ref) (authz.ProjectBinding, error) {
 	if project, ok := s.projects[ref.ID]; ok {
 		return project, ctx.Err()

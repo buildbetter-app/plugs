@@ -248,7 +248,7 @@ func prepare(ctx context.Context, s Slice, n Namespace, r CheckRequest) (bool, e
 	if CanonicalRef(r.Resource.Ref) != nil {
 		return false, nil
 	}
-	if r.Resource.Kind == Bead && strings.Contains(r.Resource.Ref.ID, "/") {
+	if r.Resource.Kind == Bead && !validBeadReference(s, r.Resource.Ref) {
 		return false, nil
 	}
 	for _, d := range []Dependency{ContextDependency(n), ACLDependency(n), {Kind: "sentinel", Key: "plugins"}, {Kind: "sentinel", Key: "ontology"}} {
@@ -281,9 +281,11 @@ func targetProject(ctx context.Context, s Slice, r Resource) (model.Ref, bool, e
 	if r.Kind != Bead {
 		return model.Ref{}, false, nil
 	}
-	for _, key := range []string{"bead/" + r.Ref.ID, "closure/" + r.Ref.ID} {
-		if err := s.Record(ctx, Dependency{"sentinel", key}); err != nil {
-			return model.Ref{}, false, err
+	if !sourceBeadReference(s, r.Ref) {
+		for _, key := range []string{"bead/" + r.Ref.ID, "closure/" + r.Ref.ID} {
+			if err := s.Record(ctx, Dependency{"sentinel", key}); err != nil {
+				return model.Ref{}, false, err
+			}
 		}
 	}
 	p, err := s.ProjectForBead(ctx, r.Ref)
