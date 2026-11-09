@@ -3,6 +3,7 @@ package model
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -48,13 +49,57 @@ const (
 )
 
 type CreateOp struct {
-	Kind    OpKind         `json:"kind"`
-	Key     string         `json:"key,omitempty"`
-	Type    string         `json:"type"`
-	Fields  map[string]any `json:"fields"`
-	Parent  *Ref           `json:"parent,omitempty"`
-	Project string         `json:"project,omitempty"`
+	Kind       OpKind           `json:"kind"`
+	Key        string           `json:"key,omitempty"`
+	Type       string           `json:"type"`
+	Fields     map[string]any   `json:"fields"`
+	Parent     *Ref             `json:"parent,omitempty"`
+	Project    string           `json:"project,omitempty"`
+	Assignment *ClaimAssignment `json:"assignment,omitempty"`
 }
+
+// ClaimAssignment records durable preassignment independently of a local
+// claim lease. Verified principal kinds/IDs and anonymous labels are exact;
+// a pool is a literal pseudo-assignee, never a membership or identity grant.
+type ClaimAssignment struct {
+	Kind string `json:"kind"`
+	ID   string `json:"id"`
+}
+
+func (a ClaimAssignment) Validate() error {
+	switch a.Kind {
+	case "user", "agent", "service", "plugin", "system", "anonymous", "pool":
+	default:
+		return fmt.Errorf("invalid assignment kind")
+	}
+	if a.ID == "" || strings.TrimSpace(a.ID) != a.ID || strings.ContainsRune(a.ID, '\x00') || !utf8.ValidString(a.ID) {
+		return fmt.Errorf("assignment requires a nonempty exact ID or label")
+	}
+	return nil
+}
+
+func (a ClaimAssignment) MarshalJSON() ([]byte, error) {
+	if err := a.Validate(); err != nil {
+		return nil, err
+	}
+	type wireAssignment ClaimAssignment
+	return json.Marshal(wireAssignment(a))
+}
+
+func (a *ClaimAssignment) UnmarshalJSON(data []byte) error {
+	type wireAssignment ClaimAssignment
+	var value wireAssignment
+	if err := decodeStrict(data, &value, "kind", "id"); err != nil {
+		return err
+	}
+	next := ClaimAssignment(value)
+	if err := next.Validate(); err != nil {
+		return err
+	}
+	*a = next
+	return nil
+}
+
 type PatchOp struct {
 	Kind   OpKind         `json:"kind"`
 	Target Ref            `json:"target"`
@@ -237,6 +282,11 @@ func requireNonNilMap(name string, value map[string]any) error {
 func validateCreate(value CreateOp) error {
 	if value.Kind != OpCreate {
 		return fmt.Errorf("create operation has kind %q", value.Kind)
+	}
+	if value.Assignment != nil {
+		if err := value.Assignment.Validate(); err != nil {
+			return err
+		}
 	}
 	return requireNonNilMap("fields", value.Fields)
 }

@@ -364,7 +364,7 @@ func (f *wasmFactory) ensureLocked(ctx context.Context) error {
 	}
 	// The factory owns this shared runtime. Its owner context is stable while
 	// the caller context still bounds setup, linking and compilation below.
-	runtime := wazero.NewRuntimeWithConfig(context.Background(), wazero.NewRuntimeConfigInterpreter().WithCloseOnContextDone(true).WithMemoryLimitPages(maxWASMPages))
+	runtime := wazero.NewRuntimeWithConfig(context.Background(), wazero.NewRuntimeConfig().WithCloseOnContextDone(true).WithMemoryLimitPages(maxWASMPages))
 	if _, err := wasi_snapshot_preview1.Instantiate(ctx, runtime); err != nil {
 		_ = runtime.Close(context.Background())
 		return failure(ErrManifest, "WASI runtime setup failed: %v", err)

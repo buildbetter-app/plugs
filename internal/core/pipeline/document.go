@@ -27,6 +27,7 @@ type Document struct {
 	Links       []Link                     `json:"links,omitempty"`
 	Attachments []model.Attachment         `json:"attachments,omitempty"`
 	Lease       *ClaimLease                `json:"lease,omitempty"`
+	Assignment  *model.ClaimAssignment     `json:"assignment,omitempty"`
 	// Core timestamps are outside ontology fields and cannot be patched by a
 	// request or subscriber. Missing values preserve legacy unknown instants.
 	CreatedAt *time.Time `json:"createdAt,omitempty"`

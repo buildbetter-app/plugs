@@ -338,6 +338,20 @@ func beadValue(row storedBead) (Bead, error) {
 	}
 	createdAt, _ := doc.CreationTime()
 	bead := Bead{ID: doc.ID, Type: doc.Type, Project: doc.Project, Revision: row.record.Revision, Status: state(doc).Status, Fields: doc.Fields, Metadata: metadata, Labels: append([]string(nil), doc.Labels...), Parent: parent, Blocked: doc.Fields["blocked"] == true, CreatedAt: createdAt}
+	if doc.Assignment != nil {
+		assignment := *doc.Assignment
+		bead.Assignment = &assignment
+		bead.Assignee = assignment.ID
+	} else if doc.Lease != nil {
+		assignment := model.ClaimAssignment{Kind: doc.Lease.Principal.Kind, ID: doc.Lease.Principal.ID}
+		if assignment.Kind == "anonymous" {
+			assignment.ID = doc.Lease.Agent
+		}
+		if assignment.ID != "" {
+			bead.Assignment = &assignment
+			bead.Assignee = assignment.ID
+		}
+	}
 	for _, link := range doc.Links {
 		bead.Links = append(bead.Links, workflowplugin.RelationView{From: doc.ID, To: link.To, Kind: link.Kind, Metadata: link.Metadata})
 	}

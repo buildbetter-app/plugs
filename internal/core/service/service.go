@@ -28,6 +28,7 @@ type Service struct {
 	events                 EventProvider
 	workflow               *workflowplugin.Provider
 	compaction             CompactionConfig
+	claimPools             map[string]bool
 }
 
 // claimNextConflictRestartBudget bounds only the extra full-walk restart used
@@ -38,6 +39,15 @@ type Service struct {
 const claimNextConflictRestartBudget = 1
 
 type Option func(*Service)
+
+// WithClaimPools shares the Writer's immutable exact pseudo-assignee list.
+func WithClaimPools(names ...string) Option {
+	pools := map[string]bool{}
+	for _, name := range names {
+		pools[name] = true
+	}
+	return func(s *Service) { s.claimPools = pools }
+}
 
 // WithOntology shares the same project ontology resolver used by the pipeline.
 func WithOntology(o *Ontology) Option       { return func(s *Service) { s.ontology = o } }
@@ -329,7 +339,7 @@ func (s *Service) create(ctx context.Context, by model.PrincipalRef, req CreateR
 			return port.WriteOutcome{}, err
 		}
 	}
-	cs := model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Type: req.Type, Fields: req.Fields, Parent: req.Parent, Project: meta.Project}}}}
+	cs := model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Type: req.Type, Fields: req.Fields, Parent: req.Parent, Project: meta.Project, Assignment: req.Assignment}}}}
 	return s.apply(ctx, by, "bead.create", cs, meta, outcomeRequired)
 }
 
@@ -546,7 +556,7 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 	repeatedConflictThisPass := false
 	conflictRestarts := 0
 	for {
-		page, err := s.ClaimNextReadyPage(ctx, by, ReadyRequest{Project: req.Project, Agent: meta.Agent, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position, ClaimNextSeed: selectionSeed})
+		page, err := s.ClaimNextReadyPage(ctx, by, ReadyRequest{Project: req.Project, Agent: meta.AgentLabel, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position, ClaimNextSeed: selectionSeed})
 		if err != nil {
 			return nil, err
 		}
@@ -587,7 +597,7 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 				repeatedConflictThisPass = false
 				continue
 			}
-			out, err := s.CommitClaimNextEmpty(ctx, by, req, meta, s.claimNextReadyProbe(by, req))
+			out, err := s.CommitClaimNextEmpty(ctx, by, req, meta, s.claimNextReadyProbe(by, req, meta.AgentLabel))
 			if err != nil {
 				if errors.Is(err, port.ErrClaimNextReady) {
 					if repeatedConflictThisPass {
@@ -615,9 +625,9 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 // claimNextReadyProbe observes the complete ready set on the transaction's
 // post-head snapshot. It is deliberately separate from the live walk so the
 // transaction can release and restart if a candidate appeared in between.
-func (s *Service) claimNextReadyProbe(by model.PrincipalRef, req ClaimNextRequest) port.ClaimNextReadyProbe {
+func (s *Service) claimNextReadyProbe(by model.PrincipalRef, req ClaimNextRequest, agent string) port.ClaimNextReadyProbe {
 	return func(ctx context.Context, reader driver.Reader) (bool, error) {
-		items, err := s.ReadyCandidates(ctx, by, ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter}, reader)
+		items, err := s.ReadyCandidates(ctx, by, ReadyRequest{Project: req.Project, Agent: agent, ViewID: req.ViewID, Filter: req.Filter}, reader)
 		return len(items) != 0, err
 	}
 }
@@ -724,7 +734,8 @@ func claimNextCandidateConflict(err error) bool {
 	if !errors.As(err, &value) || value.Data.Code != "write_conflict" {
 		return false
 	}
-	return value.Message == "snapshot changed during all four write attempts" || value.Data.Hint == "snapshot changed during all four write attempts"
+	return value.Message == "claimNext candidate is locked" || value.Data.Hint == "claimNext candidate is locked" ||
+		value.Message == "snapshot changed during all four write attempts" || value.Data.Hint == "snapshot changed during all four write attempts"
 }
 
 func (s *Service) claimWithMethod(ctx context.Context, by model.PrincipalRef, req ClaimRequest, meta model.WriteMeta, outcomeRequired bool, method string) (port.WriteOutcome, error) {

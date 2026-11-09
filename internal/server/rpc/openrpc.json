@@ -342,6 +342,9 @@
           },
           "workflowRunId": {
             "type": "string"
+          },
+          "assignment": {
+            "$ref": "#/components/schemas/ClaimAssignment"
           }
         },
         "required": [
@@ -562,6 +565,9 @@
           },
           "project": {
             "type": "string"
+          },
+          "assignment": {
+            "$ref": "#/components/schemas/ClaimAssignment"
           }
         },
         "required": [
@@ -4458,6 +4464,32 @@
           "external"
         ],
         "description": "Omission is local. Explicit external targets retain an exact nonempty branch-zero ID and are never resolved against local beads."
+      },
+      "ClaimAssignment": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "enum": [
+              "user",
+              "agent",
+              "service",
+              "plugin",
+              "system",
+              "anonymous",
+              "pool"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "kind",
+          "id"
+        ],
+        "additionalProperties": false,
+        "description": "Durable preassignment. Verified kind/ID and anonymous labels are exact; pool is an exact host-configured pseudo-assignee and grants no identity, membership or project access. Winning claims consume preassignment and retain their existing durable lease owner."
       }
     },
     "errors": {

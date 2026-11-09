@@ -491,6 +491,13 @@
           }
         },
         {
+          "name": "assignment",
+          "schema": {
+            "$ref": "#/components/schemas/ClaimAssignment"
+          },
+          "description": "Optional durable exact preassignment; omission means unassigned."
+        },
+        {
           "name": "_meta",
           "schema": {
             "$ref": "#/components/schemas/Meta"
@@ -7184,6 +7191,9 @@
           },
           "workflowRunId": {
             "type": "string"
+          },
+          "assignment": {
+            "$ref": "#/components/schemas/ClaimAssignment"
           }
         },
         "required": [
@@ -7404,6 +7414,9 @@
           },
           "project": {
             "type": "string"
+          },
+          "assignment": {
+            "$ref": "#/components/schemas/ClaimAssignment"
           }
         },
         "required": [
@@ -11284,6 +11297,32 @@
           "external"
         ],
         "description": "Omission is local. Explicit external targets retain an exact nonempty branch-zero ID and are never resolved against local beads."
+      },
+      "ClaimAssignment": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "enum": [
+              "user",
+              "agent",
+              "service",
+              "plugin",
+              "system",
+              "anonymous",
+              "pool"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "kind",
+          "id"
+        ],
+        "additionalProperties": false,
+        "description": "Durable preassignment. Verified kind/ID and anonymous labels are exact; pool is an exact host-configured pseudo-assignee and grants no identity, membership or project access. Winning claims consume preassignment and retain their existing durable lease owner."
       }
     },
     "errors": {
@@ -13921,7 +13960,7 @@
     "methodCount": 85,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
     "nameSha256": "e4cc1165f352268dd7412a50f2ec6ded5daa8a22c6f2ad3f4205ef382c423907",
-    "descriptorSha256": "2c3df724c4935e0d6f6934f46e3fbed779ef33eadad93954eab51a8d11bea32f",
+    "descriptorSha256": "8d7580848ee641ce1b1474b650851db481a1d1c24dc5ebd85bb20664c792e17b",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -14288,6 +14327,13 @@
             "name": "parent",
             "schema": {
               "$ref": "#/components/schemas/Ref"
+            }
+          },
+          {
+            "name": "assignment",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ClaimAssignment"
             }
           },
           {
