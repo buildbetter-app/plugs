@@ -357,14 +357,14 @@ func (f *b08CloseFixture) conservation(t *testing.T) b08Conservation {
 	for _, row := range state.Rows {
 		ref := row.Ref
 		addKey(driver.LockKey{Kind: driver.LockRecord, Ref: &ref})
-		for _, makeSentinel := range []func(string) (driver.Sentinel, error){driver.NewBeadSentinel, driver.NewClosureSentinel} {
-			sentinel, err := makeSentinel(ref.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			addKey(driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel})
-		}
 		if row.Kind == "bead" {
+			for _, makeSentinel := range []func(string) (driver.Sentinel, error){driver.NewBeadSentinel, driver.NewClosureSentinel} {
+				sentinel, err := makeSentinel(ref.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				addKey(driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel})
+			}
 			doc, err := pipeline.DecodeDocument(row.Body)
 			if err != nil {
 				t.Fatal(err)

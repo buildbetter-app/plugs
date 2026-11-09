@@ -362,7 +362,10 @@ func TestClaimNextDefaultsWithOptionalMutators(t *testing.T) {
 			} else if mode == "configured" {
 				bindings = hostMutators(t, &calls, false)
 			}
-			f := newFixture(t, bindings)
+			f := newFixtureWith(t, memory.New(), bindings, func(ctx context.Context, config authzrpc.Config) (*authzrpc.Composition, error) {
+				config.ClaimPolicy = &authzrpc.ClaimPolicyConfig{UseImmutableDefault: true}
+				return authzrpc.New(ctx, config)
+			})
 			by := worker("user:operator")
 			claimed := f.call(t, by, "bead.claimNext", map[string]any{}, 10)
 			success(t, claimed)

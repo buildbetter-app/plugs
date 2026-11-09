@@ -35,6 +35,6 @@
     "run-a",
     "run-b"
   ],
-  "scope": "Genuine durable public B06/B08 twins plus three-driver service replay. B05/B07 are not invoked. Blocking-only/parallel/unreadable and active-wisp source capability limits are retained, not replaced.",
+  "scope": "Genuine durable public B06/B08 twins plus three-driver service replay. B05/B07 are not invoked. Blocking-only/parallel/unreadable and active volatile object source capability limits are retained, not replaced.",
   "consumerSourceAttribution": "publicnative helper43 and B01 native_io utilities are source reuse only; no prior consumer/preparation/runtime result transfers."
 }
