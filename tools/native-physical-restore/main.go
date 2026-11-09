@@ -77,7 +77,7 @@ func run() (resultErr error) {
 	if err := physicalrestore.Restore(ctx, conn, manifest); err != nil {
 		return err
 	}
-	// This is a NEW snapshot commit. It is never labelled source-history replay.
+	// This is a NEW snapshot commit. It is never labeled source-history replay.
 	if _, err := conn.ExecContext(ctx, "CALL DOLT_ADD('.')"); err != nil {
 		return err
 	}

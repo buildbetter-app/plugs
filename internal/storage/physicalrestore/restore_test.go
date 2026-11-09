@@ -22,6 +22,7 @@ import (
 	"github.com/steveyegge/beads/internal/plugdump"
 	"github.com/steveyegge/beads/internal/storage/physicalcapture"
 	"github.com/steveyegge/beads/internal/storage/schema"
+	"github.com/steveyegge/beads/internal/testutil/bazeltest"
 )
 
 func restoreDB(t *testing.T, native bool) (*sql.DB, *sql.Conn, string, func() error) {
@@ -30,19 +31,23 @@ func restoreDB(t *testing.T, native bool) (*sql.DB, *sql.Conn, string, func() er
 	if err != nil {
 		t.Fatal(err)
 	}
-	db, closeDriver, err := physicalcapture.Open(directory, "restored")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(2)
-	conn, err := db.Conn(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	var db *sql.DB
+	var conn *sql.Conn
+	var closeDriver func() error
 	var releaseOnce sync.Once
 	var releaseErr error
 	release := func() error {
-		releaseOnce.Do(func() { releaseErr = errors.Join(conn.Close(), db.Close(), closeDriver()) })
+		releaseOnce.Do(func() {
+			if conn != nil {
+				releaseErr = errors.Join(releaseErr, conn.Close())
+			}
+			if db != nil {
+				releaseErr = errors.Join(releaseErr, db.Close())
+			}
+			if closeDriver != nil {
+				releaseErr = errors.Join(releaseErr, closeDriver())
+			}
+		})
 		return releaseErr
 	}
 	t.Cleanup(func() {
@@ -58,6 +63,15 @@ func restoreDB(t *testing.T, native bool) (*sql.DB, *sql.Conn, string, func() er
 			t.Error("public target not removed")
 		}
 	})
+	db, closeDriver, err = physicalcapture.Open(directory, "restored")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(2)
+	conn, err = db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	execSQL(t, conn, "CREATE DATABASE restored")
 	execSQL(t, conn, "USE restored")
 	if native {
@@ -611,12 +625,9 @@ func TestPhysicalRestoreManifestRefusals(t *testing.T) {
 }
 
 func TestPhysicalRestorePublicBinary(t *testing.T) {
-	binary := os.Getenv("BEADS_PHYSICAL_RESTORE_BINARY")
-	if binary == "" {
-		t.Fatal("public restore binary binding required")
-	}
-	// Bazel rootpaths are relative to the runfiles workspace.
-	binary, err := filepath.Abs(binary)
+	// Resolve the declared executable through Bazel runfiles, independently of
+	// the test package's current working directory.
+	binary, err := bazeltest.RunfileEnv("BEADS_PHYSICAL_RESTORE_BINARY")
 	if err != nil {
 		t.Fatal(err)
 	}

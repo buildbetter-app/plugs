@@ -14,11 +14,12 @@ go_test(
     srcs = ["restore_test.go"],
     embed = [":physicalrestore"],
     data = ["//tools/native-physical-restore"],
-    env = {"BEADS_PHYSICAL_RESTORE_BINARY": "$(rootpath //tools/native-physical-restore)"},
+    env = {"BEADS_PHYSICAL_RESTORE_BINARY": "$(rlocationpath //tools/native-physical-restore)"},
     deps = [
         "//internal/storage/physicalcapture",
         "//internal/plugdump",
         "//internal/storage/schema",
+        "//internal/testutil/bazeltest",
         "@com_github_dolthub_driver_v2//:driver",
     ],
 )
