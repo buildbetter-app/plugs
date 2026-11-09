@@ -89,6 +89,13 @@ func TestPublicNativePhysicalCapture(t *testing.T) {
 			if !reflect.DeepEqual(before, after) || !reflect.DeepEqual(before, copied) {
 				t.Fatal("public source bytes moved during capture copy")
 			}
+			workspace := privateDir(t)
+			beadsDir := filepath.Join(workspace, ".beads")
+			beadsSource := filepath.Join(f.work, ".beads")
+			beadsBefore := fingerprintPublicCapture(t, beadsSource, beadsDir)
+			if !reflect.DeepEqual(beadsBefore, fingerprintPublicCapture(t, beadsSource, "")) || !reflect.DeepEqual(beadsBefore, fingerprintPublicCapture(t, beadsDir, "")) {
+				t.Fatal("public source metadata moved during capture copy")
+			}
 			binary := filepath.Join(bazeltest.OverrideRoot(), os.Getenv("BEADS_PHYSICAL_CAPTURE_BINARY"))
 			binaryBytes, err := os.ReadFile(binary)
 			if err != nil {
@@ -96,6 +103,7 @@ func TestPublicNativePhysicalCapture(t *testing.T) {
 			}
 			output := privateDir(t)
 			toolFixture := *f
+			toolFixture.work = workspace
 			toolFixture.env = nil
 			for _, entry := range f.env {
 				key, _, _ := strings.Cut(entry, "=")
@@ -103,8 +111,8 @@ func TestPublicNativePhysicalCapture(t *testing.T) {
 					toolFixture.env = append(toolFixture.env, entry)
 				}
 			}
-			toolFixture.env = append(toolFixture.env, "BEADS_DIR="+filepath.Join(f.work, ".beads"))
-			toolFixture.run(binary, "--disposable", "--data-dir", copyDir, "--database", "capture", "--beads-dir", filepath.Join(f.work, ".beads"), "--output-dir", output)
+			toolFixture.env = append(toolFixture.env, "BEADS_DIR="+beadsDir)
+			toolFixture.run(binary, "--disposable", "--data-dir", copyDir, "--database", "capture", "--beads-dir", beadsDir, "--output-dir", output)
 			archive, err := os.ReadFile(filepath.Join(output, "capture.tar"))
 			if err != nil {
 				t.Fatal(err)

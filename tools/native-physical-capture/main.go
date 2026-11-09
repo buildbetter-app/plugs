@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,9 +15,9 @@ import (
 	"strings"
 	"time"
 
-	embedded "github.com/dolthub/driver/v2"
 	"github.com/steveyegge/beads/internal/formula"
 	"github.com/steveyegge/beads/internal/plugdump"
+	"github.com/steveyegge/beads/internal/storage/physicalcapture"
 )
 
 func main() {
@@ -66,17 +65,11 @@ func run() error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	params := url.Values{"database": {*database}, "commitname": {"Capture"}, "commitemail": {"capture@example.test"}, "disable_singleton_cache": {"true"}}
-	cfg, err := embedded.ParseDSN("file://" + *dataDir + "?" + params.Encode())
+	db, closeDriver, err := physicalcapture.Open(*dataDir, *database)
 	if err != nil {
 		return err
 	}
-	connector, err := embedded.NewConnector(cfg)
-	if err != nil {
-		return err
-	}
-	defer connector.Close()
-	db := sql.OpenDB(connector)
+	defer closeDriver()
 	defer db.Close()
 	// One stable current-source transaction plus a dedicated image connection.
 	db.SetMaxOpenConns(2)
@@ -140,7 +133,7 @@ func run() error {
 	if err := db.Close(); err != nil {
 		return err
 	}
-	if err := connector.Close(); err != nil {
+	if err := closeDriver(); err != nil {
 		return err
 	}
 	if err := writeExclusive(filepath.Join(*output, "inventory.json"), inventoryBytes); err != nil {

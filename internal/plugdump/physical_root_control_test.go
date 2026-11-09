@@ -132,6 +132,37 @@ func newNativePhysicalRootControlCandidate(t *testing.T, db *sql.DB, server *tes
 			t.Error(err)
 		}
 	})
+	t.Run("driver_readonly_scope_authenticated", func(t *testing.T) {
+		conn, err := copyDB.Conn(setup)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		image, err := embedded.ReadPhysicalCommit(setup, conn, originalGraph.Head)
+		if err != nil || !image.ReadOnlyScope {
+			t.Fatalf("actual readonly scope not authenticated: %v", err)
+		}
+		occupied, err := conn.BeginTx(setup, &sql.TxOptions{Isolation: sql.LevelSerializable})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, imageErr := embedded.ReadPhysicalCommit(setup, conn, originalGraph.Head)
+		var physical *embedded.PhysicalReadError
+		if !errors.As(imageErr, &physical) || physical.Kind != "occupied-transaction" {
+			t.Errorf("occupied transaction not refused: %v", imageErr)
+		}
+		var one int
+		if err := occupied.QueryRowContext(setup, "SELECT 1").Scan(&one); err != nil || one != 1 {
+			t.Errorf("caller scope changed: %v", err)
+		}
+		if err := occupied.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+		image, err = embedded.ReadPhysicalCommit(setup, conn, originalGraph.Head)
+		if err != nil || !image.ReadOnlyScope {
+			t.Fatalf("scope unavailable after caller rollback: %v", err)
+		}
+	})
 	read := source.ReadNativeSourceImage
 	candidate := nativePhysicalRootControlCandidate{
 		Name: "private-driver-immutable-physical-image", ReadImage: read,

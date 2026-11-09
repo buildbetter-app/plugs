@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "driver",
@@ -29,4 +29,12 @@ go_library(
         "@com_github_dolthub_vitess//go/vt/sqlparser",
         "@com_github_go_sql_driver_mysql//:mysql",
     ],
+)
+
+# Private boundary supplement; not a replacement for physical fixture execution.
+go_test(
+    name = "physical_commit_test",
+    srcs = ["physical_commit_test.go"],
+    embed = [":driver"],
+    tags = ["manual"],
 )

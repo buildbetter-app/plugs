@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	embedded "github.com/dolthub/driver/v2"
+	"github.com/steveyegge/beads/internal/storage/physicalcapture"
 )
 
 // PhysicalCommitSource is a private capture-spike adapter. Current rows, ignore
@@ -28,7 +28,7 @@ func (s PhysicalCommitSource) ReadNativeSourceImage(ctx context.Context, id stri
 		return nil, err
 	}
 	defer conn.Close()
-	physical, err := embedded.ReadPhysicalCommit(ctx, conn, id)
+	physical, err := physicalcapture.ReadCommit(ctx, conn, id)
 	if err != nil {
 		return nil, err
 	}
