@@ -1,8 +1,8 @@
 {
   "schema": "heartbeads-fixture-source/1",
-  "candidate": "d02499852ffa030a167a8d560196aa6b443fb041",
-  "tree": "e4e0386407cd929dea22af428854b0fc54c54d4d",
-  "parent": "ed6aa22a6d60276fedc71cee84b172b744479dab",
+  "candidate": "9273db5386da8c386f7fc974e7507f15e72549f2",
+  "tree": "7b2915bbfb9f1229e48e131394212bedaa9a83ed",
+  "parent": "d02499852ffa030a167a8d560196aa6b443fb041",
   "source_manifest": {
     "schema": "heartbeads-prepared-patch/1",
     "installed_preimage_root": "/home/dev/beads/heartbeads-app/node_modules/heartbeads",
@@ -60,8 +60,8 @@
       {
         "path": "app/page.tsx",
         "preimage_sha256": "5771d50d2593881f1f022ed077d932f2f04f78cf959bf03ece5d14c26c0bceb1",
-        "postimage_sha256": "05d0b51d9fb6c5f13ff649579db5facb183707196d323b1ffaad4841a799e540",
-        "bytes": 140551
+        "postimage_sha256": "f485f96d964d169e39004c3ae8a0c4c6cd2f9f05f270a3d25e2affc6aab10453",
+        "bytes": 140629
       },
       {
         "path": "components/ActivityItem.tsx",
@@ -214,10 +214,10 @@
         "bytes": 4147
       }
     ],
-    "patch_sha256": "6491dccd32478e0684e1d36ea312af48c63ab41628fd99d013095d0a6f9a9ada",
+    "patch_sha256": "b915398f72842a1e76df636c7a524c36f7559b308993cef42f218324ba797cbd",
     "adapter_sha256": "f927b29fa87fa38bf781aa2a16024dfbd29ee680b05520fc84c39f839ca9d3c7"
   },
-  "tar_sha256": "11eb597d180a3df3a7d56d9a8aa09653acc56c4043a935398dcd75bc398fbf14",
+  "tar_sha256": "e39e5e53a5085276468eef1d0cec3c5786e02ec8c2b525e59e683eb173ef563a",
   "ontology_source_sha256": "186163d6d618e2196b4e1fea9883b8cb2b3863ac171343d334ba18e076e05f6e",
   "auxiliary_source_files": [
     "app/api/auth/route.ts",

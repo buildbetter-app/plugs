@@ -94,14 +94,14 @@ async function recordRequest(url,method,body){const request=new Request(url,{met
 
 const roots=Object.fromEntries(Object.entries(binding.projects).map(([p,v])=>[p,v.legacy_ids.SHARED.id]));
 const ids={};
-let nextLog=''; let next, chrome, ws;
+let nextLog=''; let next, chrome, ws, cdp, evaluate;
 try {
   for (const project of Object.keys(binding.projects)) {
     const result=await rpc(project,'bead.create',{type:'task',fields:{title:'new child '+project,description:'new description',priority:2},...(project==='signals-v2'?{parent:{id:roots[project]}}:{})});
     ids[project]=result.results[0].ref.id;
     // Mixed transaction positions and a receipt for an imported bead must not
     // erase its original SHARED ID or mistake non-create ops for create refs.
-    const mixedParams={changeSet:{ops:[{kind:'patch',target:{id:ids[project]},fields:{description:'receipt child'}},{kind:'create',key:'extra',type:'task',fields:{title:'extra '+project,priority:3}}]}};
+    const mixedParams={changeSet:{ops:[{kind:'patch',target:{id:ids[project]},fields:{description:'receipt child'}},{kind:'create',key:'extra',type:'task',fields:{title:'extra '+project,description:'extra discussion '+project,priority:3}}]}};
     if(project==='signals-v2') {
       const bad=structuredClone(mixedParams);bad.changeSet.ops[1].fields.status='todo';
       const refusal=await rpc(project,'tx.apply',bad,true);assert.equal(refusal.error?.data?.code,'ontology_use_slot_verb');
@@ -273,7 +273,7 @@ try {
   const tabs=await (await fetch(`http://127.0.0.1:${devPort}/json/list`)).json();const tab=tabs.find(x=>x.type==='page');
   ws=new WebSocket(tab.webSocketDebuggerUrl);await new Promise((resolve,reject)=>{ws.onopen=resolve;ws.onerror=reject});
   let mid=0;const pending=new Map();
-  const cdp=(method,params={})=>new Promise((resolve,reject)=>{const id=++mid;pending.set(id,{resolve,reject});ws.send(JSON.stringify({id,method,params}));});
+  cdp=(method,params={})=>new Promise((resolve,reject)=>{const id=++mid;pending.set(id,{resolve,reject});ws.send(JSON.stringify({id,method,params}));});
   const fulfill=async(requestId,body,status=200)=>cdp('Fetch.fulfillRequest',{requestId,responseCode:status,responseHeaders:[{name:'content-type',value:'application/json'},{name:'access-control-allow-origin',value:'*'}],body:Buffer.from(typeof body==='string'?body:JSON.stringify(body)).toString('base64')});
   async function intercepted(p){
     const request=p.request;receipts.browserRequests.push({url:request.url,method:request.method,body:request.postData});
@@ -286,16 +286,18 @@ try {
   }
   ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.id){const p=pending.get(m.id);if(p){pending.delete(m.id);m.error?p.reject(Error(JSON.stringify(m.error))):p.resolve(m.result)}}else if(m.method==='Fetch.requestPaused'){void intercepted(m.params).catch(error=>{receipts.browserErrors.push({intercept:error.message});});}else if(m.method==='Runtime.exceptionThrown'){receipts.browserErrors.push(m.params);}};
 
-  const evaluate=async expression=>{const r=await cdp('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true});if(r.exceptionDetails)throw Error(JSON.stringify(r.exceptionDetails));return r.result.value;};
-  await cdp('Page.enable');await cdp('Runtime.enable');await cdp('Fetch.enable',{patterns:[{urlPattern:'*',requestStage:'Request'}]});
+  evaluate=async expression=>{const r=await cdp('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true});if(r.exceptionDetails)throw Error(JSON.stringify(r.exceptionDetails));return r.result.value;};
+  await cdp('Page.enable');await cdp('Runtime.enable');await cdp('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});await cdp('Fetch.enable',{patterns:[{urlPattern:'*',requestStage:'Request'}]});
   await cdp('Page.navigate',{url:nextUrl+'/?panel=tasks'});
   await until(async()=> (await evaluate('document.body.innerText')).includes('6 issues'),'browser two-project data');
   await save('browser-before.json',await evaluate('({text:document.body.innerText,status:document.querySelector("[data-testid=plug-freshness]")?.textContent})'));
   await type('input[placeholder="Search tasks..."]','SHARED');
   await until(async()=>await evaluate(`(()=>{const bs=[...document.querySelectorAll('[data-node-key]')];return bs.some(b=>b.textContent.includes('Imported root cody-ops'))&&bs.some(b=>b.textContent.includes('Imported root signals-v2'))})()`),'legacy-ID task search in both projects');
   assert.ok(first.graphData.nodes.filter(n=>n.id==='SHARED').every(n=>!n.title.includes('SHARED')));
-  await evaluate(`(()=>{const b=[...document.querySelectorAll('button')].find(x=>x.innerText.includes('Imported root cody-ops'));if(!b)throw Error('task button missing');b.click()})()`);
-  await until(async()=> (await evaluate('document.body.innerText')).includes('before'),'original description');
+  const codyRootKey=first.graphData.nodes.find(n=>n.project==='cody-ops'&&n.id==='SHARED').graphKey;
+  await evaluate(`(()=>{const b=[...document.querySelectorAll('button[data-node-key]')].find(x=>x.getAttribute('data-node-key')===${JSON.stringify(codyRootKey)});if(!b)throw Error('scoped task button missing');b.click()})()`);
+  await until(async()=>await evaluate(`Boolean(document.querySelector('button[title="Copy description"]'))`),'selected node description panel');
+  await pause(200);assert.ok(await evaluate(`Boolean(document.querySelector('button[title="Copy description"]'))`));
   check('browser selects cody SHARED independently of signals SHARED');
   await evaluate(`Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async(text)=>{window.__copied=text}}})`);
   await evaluate(`document.querySelector('button[title="Copy description"]').click()`);
@@ -344,6 +346,13 @@ try {
   const threadDOM=await evaluate(`(()=>{const paragraph=text=>[...document.querySelectorAll('p')].find(p=>p.textContent===text);const names=['old projectless comment','mixed scoped reply','mixed legacy deep reply','mixed scoped deepest reply'];const ps=names.map(paragraph);if(ps.some(p=>!p))throw Error('missing mixed reply');for(let i=1;i<ps.length;i++){const parentCard=ps[i-1].parentElement.parentElement;const replyCard=ps[i].parentElement.parentElement;if(!parentCard.contains(replyCard)||!replyCard.classList.contains('border-l'))throw Error('reply is not nested under its parent');}return {text:document.body.innerText,names}})()`);
   await save('browser-mixed-generation.json',threadDOM);
   check('browser issue UI renders old parent/new scoped/deeper mixed-generation replies in their actual nested cards');
+  await clickText('View in window');
+  await until(async()=>await evaluate(`document.querySelectorAll('button[title="Copy description"]').length===2`),'description window opens');
+  const modalThread=await evaluate(`(()=>{const modal=document.querySelector('[class~="z-[100]"]');if(!modal)throw Error('description window missing');const names=['old projectless comment','mixed scoped reply','mixed legacy deep reply','mixed scoped deepest reply'];for(const name of names){const ps=[...modal.querySelectorAll('p')].filter(p=>p.textContent===name);if(ps.length!==1)throw Error('description thread duplicate/missing '+name+':'+ps.length);}return {text:modal.innerText}})()`);
+  await save('browser-description-thread.json',modalThread);
+  await cdp('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape'});await cdp('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape'});
+  await until(async()=>await evaluate(`document.querySelectorAll('button[title="Copy description"]').length===1`),'description window closes');
+  check('browser description window shares exact roots without duplicated replies');
   await evaluate(`(()=>{const p=[...document.querySelectorAll('p')].find(p=>p.textContent==='old projectless comment');p.parentElement.querySelectorAll('button')[0].click()})()`);
   await until(()=>!externalRecords.has(`at://${did}/org.impactindexer.review.like/legacy-like`),'legacy unlike UI');
   await until(async()=>await evaluate(`(()=>{const p=[...document.querySelectorAll('p')].find(p=>p.textContent==='old projectless comment');return p?.parentElement.querySelector('button')?.textContent.trim()!=='1'})()`),'legacy unlike refresh');
@@ -433,6 +442,8 @@ try {
   check('complete actual import -> HTTP -> browser -> SSE fixture');
 } catch(error) {
   receipts.failure={message:error.message,stack:error.stack};console.error(error);process.exitCode=1;
+  if(evaluate)try{await save('browser-failure.json',await evaluate('({text:document.body.innerText,html:document.body.outerHTML,location:location.href})'));}catch{}
+  if(cdp)try{await save('browser-failure.png',Buffer.from((await cdp('Page.captureScreenshot',{format:'png'})).data,'base64'));}catch{}
 } finally {
   if(ws)ws.close();await save('next.log',nextLog);await save('e2e-results.json',receipts);
   for(const child of [...children])await stop(child);
