@@ -8,12 +8,12 @@ import (
 	"errors"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/readyorder"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
@@ -563,20 +563,15 @@ func combinedReadyItems(durable []Bead, durableKeys map[string]readyOrderKey, wo
 	}
 	sort.SliceStable(entries, func(i, j int) bool {
 		a, b := entries[i], entries[j]
-		if a.key.Bucket != b.key.Bucket {
-			return a.key.Bucket < b.key.Bucket
-		}
-		if a.key.Rank != b.key.Rank {
-			return a.key.Rank < b.key.Rank
-		}
-		if a.knownCreate != b.knownCreate {
+		ka, kb := readyOrderValue(a.key), readyOrderValue(b.key)
+		if ka.Bucket == kb.Bucket && ka.Rank == kb.Rank && a.knownCreate != b.knownCreate {
 			return a.knownCreate
 		}
-		if a.knownCreate && !a.key.CreatedAt.Equal(b.key.CreatedAt) {
-			return a.key.CreatedAt.Before(b.key.CreatedAt)
+		if !a.knownCreate && !b.knownCreate {
+			ka.CreatedAt, kb.CreatedAt = time.Time{}, time.Time{}
 		}
-		if a.item.ID != b.item.ID {
-			return a.item.ID < b.item.ID
+		if cmp := readyorder.Compare(ka, a.item.ID, kb, b.item.ID); cmp != 0 {
+			return cmp < 0
 		}
 		return a.plane < b.plane
 	})
@@ -628,7 +623,7 @@ func spreadClaimNextItemsObserved(ctx context.Context, items []Bead, seed string
 			same := priority == groupPriority
 			if len(order) != 0 {
 				a, b := order[0][ordered[start].ID], order[0][ordered[end].ID]
-				same = a.Bucket == b.Bucket && a.Rank == b.Rank && a.CreatedAt.Equal(b.CreatedAt)
+				same = readyorder.EqualGroup(readyOrderValue(a), readyOrderValue(b))
 			}
 			if !same {
 				break
@@ -636,8 +631,7 @@ func spreadClaimNextItemsObserved(ctx context.Context, items []Bead, seed string
 			end++
 		}
 		if end-start > 1 {
-			groupSeed := sha256.Sum256([]byte(seed + "\x00" + strconv.Itoa(groupPriority)))
-			offset := int(binary.BigEndian.Uint64(groupSeed[:8]) % uint64(end-start))
+			offset := int(readyorder.Pivot(seed, int64(groupPriority), uint64(end-start)))
 			if offset != 0 {
 				rotated := append([]Bead(nil), ordered[start+offset:end]...)
 				rotated = append(rotated, ordered[start:start+offset]...)

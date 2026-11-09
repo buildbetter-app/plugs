@@ -320,6 +320,8 @@ internal/core/pipeline/workflow_close_ref.go
 internal/core/port/BUILD.bazel
 internal/core/port/gate.go
 internal/core/port/pipeline.go
+internal/core/readyorder/BUILD.bazel
+internal/core/readyorder/order.go
 internal/core/restore/BUILD.bazel
 internal/core/restore/archive.go
 internal/core/restore/b17_connected_query_test.go

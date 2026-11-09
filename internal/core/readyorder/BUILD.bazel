@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "readyorder",
+    srcs = ["order.go"],
+    importpath = "github.com/buildbetter-app/plugs/internal/core/readyorder",
+    visibility = ["//:__subpackages__"],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
