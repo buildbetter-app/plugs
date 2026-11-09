@@ -236,6 +236,9 @@ func (r *workflowCoreResolver) IsParentBlocked(ctx context.Context, by model.Pri
 	if err != nil || blocked {
 		return blocked, err
 	}
+	if meta.Project != "" && r.graph[parent.ID].doc.Project != meta.Project {
+		return true, nil
+	}
 	return r.mixedParentBlocked(ctx, parent, mixed)
 }
 
