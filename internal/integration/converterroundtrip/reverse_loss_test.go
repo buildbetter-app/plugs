@@ -268,8 +268,20 @@ func rollbackAssertImportedAllocatorImages(t *testing.T, core []driver.Record) {
 			got[row.Ref.ID] = metadata.Target
 		}
 	}
-	if !sameReverseJSON(got, want) {
-		t.Fatal("fixture imported allocator images differ", got, want)
+	if len(got) != len(want) {
+		t.Fatal("fixture imported allocator census differs", got, want)
+	}
+	for key, expected := range want {
+		actual, present := got[key]
+		if !present {
+			t.Fatal("missing imported allocator image", key)
+		}
+		var actualFields, expectedFields map[string]any
+		decode(t, actual, &actualFields)
+		decode(t, expected, &expectedFields)
+		if !reflect.DeepEqual(actualFields, expectedFields) {
+			t.Fatalf("fixture imported allocator image %s differs: got %s want %s", key, actual, expected)
+		}
 	}
 }
 
