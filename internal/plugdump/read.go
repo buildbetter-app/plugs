@@ -135,6 +135,9 @@ func ReadInventory(reader io.Reader) (Inventory, error) {
 	if err := validateSourcePlaneMarker(data, inventory.SourcePlaneAddressContract); err != nil {
 		return Inventory{}, err
 	}
+	if err := validateStatusCategoryMarker(data, inventory.StatusCategoryContract, inventory.Projects); err != nil {
+		return Inventory{}, err
+	}
 	return inventory, nil
 }
 

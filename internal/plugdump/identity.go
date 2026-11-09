@@ -29,12 +29,18 @@ func (p *Project) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	for key := range fields {
+		if key != "statuses" && strings.EqualFold(key, "statuses") {
+			return fmt.Errorf("noncanonical statuses key")
+		}
 		if key != "hash_namespaces" && strings.EqualFold(key, "hash_namespaces") {
 			return fmt.Errorf("noncanonical hash_namespaces key")
 		}
 	}
 	if _, present := fields["hash_namespaces"]; present && len(value.HashNamespaces) == 0 {
 		return fmt.Errorf("hash_namespaces requires a nonempty array")
+	}
+	if _, present := fields["statuses"]; present && len(value.Statuses) == 0 {
+		return fmt.Errorf("statuses requires a nonempty array")
 	}
 	*p = Project(value)
 	return nil
@@ -86,4 +92,23 @@ func issueIDParts(id string, project Project) (top uint64, parent string, child 
 		parent = id[:strings.LastIndexByte(id, '.')]
 	}
 	return top, parent, child, nil
+}
+
+func (s *ProjectStatus) UnmarshalJSON(data []byte) error {
+	type plain ProjectStatus
+	var value plain
+	if err := decodeJSON(data, &value); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	for key := range fields {
+		if key != "name" && strings.EqualFold(key, "name") || key != "category" && strings.EqualFold(key, "category") {
+			return fmt.Errorf("noncanonical project status field")
+		}
+	}
+	*s = ProjectStatus(value)
+	return nil
 }

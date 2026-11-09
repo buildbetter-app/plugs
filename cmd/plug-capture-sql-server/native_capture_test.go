@@ -483,9 +483,19 @@ func TestPublicNativeCustomTypesAndNamespacedHashes(t *testing.T) {
 				roots = []string{"abc-4de", "abc-45d", "abc-456", "abc-d4e", "abc-de4", "abc-def"}
 			}
 			f.run(f.bd, "config", "set", "types.custom", strings.Join(types, ","))
+			statuses := []string{"todo", "done", "parked"}
+			categories := map[string]string{"todo": "active", "done": "done", "parked": "frozen"}
+			declarations := "todo:active,done:done,parked:frozen"
+			if prefix == "reprosignals" {
+				// Equal spellings across projects must retain their own category.
+				statuses = []string{"todo", "review", "done", "parked"}
+				categories["todo"], categories["review"] = "wip", "active"
+				declarations = "todo:wip,review:active,done:done,parked:frozen"
+			}
+			f.run(f.bd, "config", "set", "status.custom", declarations)
 			for i, root := range roots {
 				id := prefix + "-" + root
-				if got := f.create("synthetic shape control", "--id", id, "--type", types[i%len(types)]); got != id {
+				if got := f.create("synthetic shape control", "--id", id, "--type", types[i%len(types)], "--status", statuses[i%len(statuses)]); got != id {
 					t.Fatalf("public create relabelled a synthetic ID: got %q want %q", got, id)
 				}
 			}
@@ -493,7 +503,7 @@ func TestPublicNativeCustomTypesAndNamespacedHashes(t *testing.T) {
 			// The public CLI deliberately makes --id and --parent exclusive.
 			// Let its real child allocator preserve the complete namespaced parent.
 			child := parent + ".1"
-			if got := f.create("synthetic child control", "--parent", parent); got != child {
+			if got := f.create("synthetic child control", "--parent", parent, "--status", "parked"); got != child {
 				t.Fatal("public child create relabelled the synthetic source")
 			}
 			source, err := (plugdump.SQLSource{DB: f.db}).ReadTable(context.Background(), "issues")
@@ -501,8 +511,10 @@ func TestPublicNativeCustomTypesAndNamespacedHashes(t *testing.T) {
 				t.Fatalf("synthetic SQL issue census: %d %v", len(source.Rows), err)
 			}
 			wanted := map[string]string{}
+			wantedStatuses := map[string]string{}
 			for _, row := range source.Rows {
 				wanted[row["id"].(string)] = row["issue_type"].(string)
+				wantedStatuses[row["id"].(string)] = row["status"].(string)
 			}
 			capture := privateDir(t)
 			inventoryPath, archivePath := filepath.Join(capture, "inventory.json"), filepath.Join(capture, "readback.tar")
@@ -530,6 +542,14 @@ func TestPublicNativeCustomTypesAndNamespacedHashes(t *testing.T) {
 			manifest, err := plugdump.Validate(bytes.NewReader(archive))
 			if err != nil || len(manifest.Projects) != 1 || manifest.Projects[0].Prefix != prefix || manifest.Projects[0].ChildCounters[parent] != 1 || len(manifest.Ontology) != len(types) {
 				t.Fatalf("actual archive identity/ontology validation: %+v %v", manifest, err)
+			}
+			if manifest.StatusCategoryContract != plugdump.StatusCategoryContract || inventory.StatusCategoryContract != plugdump.StatusCategoryContract || len(manifest.Projects[0].Statuses) != 7+len(categories) {
+				t.Fatal("native project status/category catalog missing")
+			}
+			for _, status := range manifest.Projects[0].Statuses {
+				if category, custom := categories[status.Name]; custom && category != status.Category {
+					t.Fatal("native custom category changed")
+				}
 			}
 			observed := map[string]string{}
 			var history plugdump.SourceHistory
@@ -571,21 +591,38 @@ func TestPublicNativeCustomTypesAndNamespacedHashes(t *testing.T) {
 					if _, duplicate := observed[id]; duplicate {
 						t.Fatal("duplicate archived source ID")
 					}
+					if record.Source.Fields["status"] != wantedStatuses[id] || record.Body["status_category"] != categories[wantedStatuses[id]] {
+						t.Fatal("native status name/category changed")
+					}
 					observed[id] = issueType
 				}
 			}
 			if !reflect.DeepEqual(observed, wanted) {
 				t.Fatalf("actual SQL/archive identity/type conservation: got %v want %v", observed, wanted)
 			}
-			if !historySeen || history.Range.Status != "verified" || len(history.Range.Frames) == 0 || history.Range.Head != uint64(len(history.Commits)) {
-				t.Fatalf("native child history head not proven: status=%s reason=%s frames=%d", history.Range.Status, history.Range.Reason, len(history.Range.Frames))
-			}
+
 			output := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")
 			if output == "" {
 				t.Fatal("Bazel artifact directory required for independent consumer fixture")
 			}
 			if err := os.WriteFile(filepath.Join(output, prefix+"-synthetic.tar"), archive, 0600); err != nil {
 				t.Fatal(err)
+			}
+			if !historySeen || history.Range.Status != "verified" || len(history.Range.Frames) == 0 || history.Range.Head != uint64(len(history.Commits)) {
+				// This diagnostic reads only this fabricated public fixture. Keep
+				// exact native errors and the failed archive for causal follow-up.
+				port := plugdump.SQLSource{DB: f.db}
+				log, logErr := port.ReadSourceCommits(context.Background())
+				t.Logf("B1A_PUBLIC_HISTORY_DIAGNOSTIC commit_census_error=%v", logErr)
+				if logErr == nil {
+					image, imageErr := port.ReadSourceImage(context.Background(), log.Head)
+					t.Logf("B1A_PUBLIC_HISTORY_DIAGNOSTIC head_image_tables=%d error=%v", len(image), imageErr)
+					if imageErr == nil {
+						_, buildErr := plugdump.Build(context.Background(), publicImageSource(image), inventory)
+						t.Logf("B1A_PUBLIC_HISTORY_DIAGNOSTIC head_mapping_error=%v", buildErr)
+					}
+				}
+				t.Fatalf("native child history head not proven: status=%s reason=%s frames=%d", history.Range.Status, history.Range.Reason, len(history.Range.Frames))
 			}
 			t.Logf("B1A_SYNTHETIC_EXPORT project=%s source_rows=%d archive_rows=%d ontology=%d namespaces=%q child_counter=%d sha256=%x bytes=%d", prefix, len(wanted), len(observed), len(manifest.Ontology), manifest.Projects[0].HashNamespaces, manifest.Projects[0].ChildCounters[parent], sha256.Sum256(archive), len(archive))
 			t.Logf("B1A_SYNTHETIC_HISTORY project=%s status=%s complete=%t first=%d head=%d frames=%d gaps=%d", prefix, history.Range.Status, history.Range.Complete, history.Range.First, history.Range.Head, len(history.Range.Frames), len(history.Range.Gaps))
@@ -634,4 +671,20 @@ func TestCaptureExecutablesRefuseInvalidOptIn(t *testing.T) {
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("refused startup mutated disposable working directory: %v %v", entries, err)
 	}
+}
+
+// publicImageSource is used only for the fixed synthetic native fixture's
+// failure diagnostic; it deliberately has no SourceHistoryReader capability.
+type publicImageSource map[string]plugdump.Table
+
+func (s publicImageSource) Tables(context.Context) ([]string, error) {
+	names := make([]string, 0, len(s))
+	for name := range s {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+func (s publicImageSource) ReadTable(_ context.Context, name string) (plugdump.Table, error) {
+	return s[name], nil
 }

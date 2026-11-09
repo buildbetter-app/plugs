@@ -10,16 +10,17 @@ import (
 )
 
 type mapping struct {
-	sourcePlanes   bool
-	customStatuses map[string]bool
-	projects       []Project
-	beads          map[string]string
-	wisps          map[string]string
-	records        map[string][]Record
-	policy         map[string]string
-	usedPolicy     map[string]bool
-	ontology       []OntologyDirective
-	usedOntology   map[string]bool
+	statusCategories bool
+	sourcePlanes     bool
+	customStatuses   map[string]bool
+	projects         []Project
+	beads            map[string]string
+	wisps            map[string]string
+	records          map[string][]Record
+	policy           map[string]string
+	usedPolicy       map[string]bool
+	ontology         []OntologyDirective
+	usedOntology     map[string]bool
 }
 
 var builtInIssueTypes = map[string]bool{
@@ -175,6 +176,9 @@ func (m *mapping) wispRows(rows []Row) error {
 			return fmt.Errorf("unknown project, empty or duplicate wisp ID")
 		}
 		status, statusErr := requiredText(row, "status")
+		if m.statusCategories && projectStatusCategory(*project, status) == "" {
+			return fmt.Errorf("wisp status absent from project category catalog")
+		}
 		if statusErr != nil || !supportedSourceStatus(status) && !(m.sourcePlanes && m.customStatuses[status]) {
 			return fmt.Errorf("unsupported wisp status")
 		}
@@ -219,6 +223,10 @@ func validateCatalogUnion(statusRows, typeRows []Row, storedConfig map[string]an
 // return its declared status names for raw active-plane capture. It does not
 // select consumer workflow or lifetime semantics.
 func readCatalogUnion(statusRows, typeRows []Row, storedConfig map[string]any, yamlValues []map[string]any, customStatuses map[string]bool) error {
+	return readCatalogUnionCategories(statusRows, typeRows, storedConfig, yamlValues, customStatuses, nil)
+}
+
+func readCatalogUnionCategories(statusRows, typeRows []Row, storedConfig map[string]any, yamlValues []map[string]any, customStatuses map[string]bool, categories map[string]string) error {
 	if len(statusRows) > 50 {
 		return fmt.Errorf("too many custom statuses")
 	}
@@ -288,7 +296,10 @@ func readCatalogUnion(statusRows, typeRows []Row, storedConfig map[string]any, y
 			return err
 		}
 	}
-	for name := range statusCategories {
+	for name, category := range statusCategories {
+		if categories != nil {
+			categories[name] = category
+		}
 		if customStatuses != nil {
 			customStatuses[name] = true
 		}
@@ -584,17 +595,27 @@ func (m *mapping) issues(rows []Row) error {
 			return fmt.Errorf("issue requires a title and priority from 0 to 4")
 		}
 		category, result := "", ""
-		switch text(row, "status") {
-		case "open":
-			category = "unstarted"
-		case "in_progress", "hooked":
-			category = "started"
-		case "blocked", "deferred", "pinned", "frozen":
-			category = "backlog"
-		case "closed":
-			category, result = "completed", "success"
-		default:
-			return fmt.Errorf("unsupported source status; explicit overlay mapping required")
+		if m.statusCategories {
+			category = projectStatusCategory(*project, text(row, "status"))
+			if category == "" {
+				return fmt.Errorf("source status absent from project category catalog")
+			}
+			if category == "done" {
+				result = "success"
+			}
+		} else {
+			switch text(row, "status") {
+			case "open":
+				category = "unstarted"
+			case "in_progress", "hooked":
+				category = "started"
+			case "blocked", "deferred", "pinned", "frozen":
+				category = "backlog"
+			case "closed":
+				category, result = "completed", "success"
+			default:
+				return fmt.Errorf("unsupported source status; explicit overlay mapping required")
+			}
 		}
 		issueType := text(row, "issue_type")
 		if err := m.ontologyDirective(project.Prefix, issueType, id); err != nil {

@@ -533,3 +533,36 @@ func TestSourceParentCensusRequiresExplicitRootAndValidParents(t *testing.T) {
 		})
 	}
 }
+
+func TestStatusCategoryHistoryPreservesNamesAndRefusesChangedCatalog(t *testing.T) {
+	s, inventory := historyFixture(t)
+	inventory.SourcePlaneAddressContract = SourcePlaneAddressContract
+	inventory.StatusCategoryContract = StatusCategoryContract
+	inventory.Projects[0].Statuses = append(nativeBuiltInStatuses(), ProjectStatus{"todo", "active"})
+	apply := func(image map[string]Table) {
+		image["custom_statuses"] = Table{Columns: columnsFor("custom_statuses"), Rows: []Row{{"name": "todo", "category": "active"}}}
+		image["issues"].Rows[0]["status"] = "todo"
+	}
+	apply(s.fixtureSource)
+	for _, image := range s.images {
+		apply(image)
+	}
+	_, h := sourceCapture(t, buildFixture(t, s, inventory))
+	if h.Range.Status != "verified" || !h.Range.Complete {
+		t.Fatalf("status history not proven: %+v", h.Range)
+	}
+	for _, frame := range h.Range.Frames {
+		for _, record := range frame.Records {
+			if record.ID == "demo-7" && (record.Source.Fields["status"] != "todo" || record.Body["status_category"] != "active") {
+				t.Fatal("historical status normalized")
+			}
+		}
+	}
+	// The portable wire has no per-frame project catalog. A genuinely different
+	// older declaration must remain an explicit gap, never borrow today's one.
+	s.images[s.log.Commits[0].ID]["custom_statuses"].Rows[0]["category"] = "wip"
+	_, h = sourceCapture(t, buildFixture(t, s, inventory))
+	if h.Range.Status != "verified" || h.Range.Complete || len(h.Range.Gaps) == 0 {
+		t.Fatal("changed older category borrowed current semantics")
+	}
+}

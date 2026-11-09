@@ -18,6 +18,7 @@
     "history": {"enum": ["unavailable", "available-unverified", "verified"]},
     "source_fields_contract": {"const": "beads-issues-source-fields/1"},
     "source_plane_address_contract": {"const": "beads-source-planes/1"},
+    "status_category_contract": {"const": "beads-status-categories/1"},
     "projects": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/project"}},
     "ontology": {"type": "array", "items": {"$ref": "#/$defs/ontologyDirective"}},
     "kind_registry": {"type": "array", "items": {"$ref": "#/$defs/kind"}},
@@ -36,11 +37,13 @@
         "authz.verify": {"const": "not-run"},
         "derived": {"const": "not-run"},
         "plugin_lock": {"const": "not-produced"},
-        "ontology": {"const": "built-in status mapping; explicit map_type directives recorded in manifest"}
+        "ontology": {"enum": ["built-in status mapping; explicit map_type directives recorded in manifest", "native status names/categories retained per project; explicit map_type directives recorded in manifest"]}
       }
     }
   },
+  "allOf": [{"if":{"required":["status_category_contract"]},"then":{"properties":{"projects":{"items":{"required":["statuses"]}},"verification":{"properties":{"ontology":{"const":"native status names/categories retained per project; explicit map_type directives recorded in manifest"}}}}},"else":{"properties":{"projects":{"items":{"not":{"required":["statuses"]}}},"verification":{"properties":{"ontology":{"const":"built-in status mapping; explicit map_type directives recorded in manifest"}}}}}}],
   "$defs": {
+    "projectStatus": {"type":"object","additionalProperties":false,"required":["name","category"],"properties":{"name":{"type":"string","maxLength":64,"pattern":"^[a-z][a-z0-9_-]*$"},"category":{"enum":["active","wip","done","frozen"]}}},
     "natural": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
     "project": {
       "type": "object",
@@ -50,6 +53,7 @@
         "prefix": {"type": "string", "pattern": "^[a-zA-Z][a-zA-Z0-9_-]{0,31}$"},
         "id_mode": {"enum": ["hash", "sequential"]},
         "hash_length": {"type": "integer", "minimum": 0, "maximum": 64},
+        "statuses": {"type":"array","minItems":7,"maxItems":57,"items":{"$ref":"#/$defs/projectStatus"}},
         "hash_namespaces": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "maxLength": 32, "pattern": "^[a-zA-Z][a-zA-Z0-9_]*(-[a-zA-Z0-9_]+)*$"}},
         "last_id": {"$ref": "#/$defs/natural"},
         "child_counters": {"type": "object", "additionalProperties": {"$ref": "#/$defs/natural"}}

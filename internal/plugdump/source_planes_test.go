@@ -510,3 +510,222 @@ func TestSourcePlaneCaptureCannotPromoteUnrepresentablePortableHistory(t *testin
 		t.Fatal("source-plane head or event evidence dropped")
 	}
 }
+
+func statusCategoryFixture(t *testing.T) (fixtureSource, Inventory) {
+	t.Helper()
+	source, inventory := fixture(t)
+	inventory.SourcePlaneAddressContract = SourcePlaneAddressContract
+	inventory.StatusCategoryContract = StatusCategoryContract
+	source["custom_statuses"] = Table{Columns: columnsFor("custom_statuses"), Rows: []Row{{"name": "review", "category": "wip"}, {"name": "parked", "category": "frozen"}}}
+	config := source["config"]
+	config.Rows = append(config.Rows, Row{"key": "status.custom", "value": "todo:active,shipped:done"})
+	source["config"] = config
+	inventory.ConfigPolicy["config/status.custom"] = "public"
+	inventory.Projects[0].Statuses = []ProjectStatus{{"blocked", "wip"}, {"closed", "done"}, {"deferred", "frozen"}, {"hooked", "wip"}, {"in_progress", "wip"}, {"open", "active"}, {"parked", "frozen"}, {"pinned", "frozen"}, {"review", "wip"}, {"shipped", "done"}, {"todo", "active"}}
+	for i, name := range []string{"todo", "shipped", "review"} {
+		source["issues"].Rows[i]["status"] = name
+	}
+	return source, inventory
+}
+
+func TestStatusCategoryContractPreservesNativeNamesAndCategories(t *testing.T) {
+	source, inventory := statusCategoryFixture(t)
+	before := mustJSON(t, inventory)
+	archive := buildFixture(t, source, inventory)
+	manifest, err := Validate(bytes.NewReader(archive))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.StatusCategoryContract != StatusCategoryContract || !reflect.DeepEqual(manifest.Projects[0].Statuses, inventory.Projects[0].Statuses) || !bytes.Equal(before, mustJSON(t, inventory)) {
+		t.Fatal("status catalog lost or input inventory mutated")
+	}
+	want := map[string]string{"todo": "active", "review": "wip", "shipped": "done"}
+	for _, record := range sourcePlaneRecords(t, archiveMembers(t, archive)["records/bead.ndjson"]) {
+		name := text(record.Source.Fields, "status")
+		if record.Body["status_category"] != want[name] || record.Source.Fields["status"] != source["issues"].Rows[map[string]int{"demo-7": 0, "demo-8": 1, "demo-7.4": 2}[record.ID]]["status"] {
+			t.Fatal("native status was renamed or category changed")
+		}
+		if name == "shipped" && record.Body["result"] != "success" {
+			t.Fatal("native done category lost result")
+		}
+	}
+	source["issues"].Rows[0]["status"] = "parked"
+	frozen := buildFixture(t, source, inventory)
+	if _, err := Validate(bytes.NewReader(frozen)); err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range sourcePlaneRecords(t, archiveMembers(t, frozen)["records/bead.ndjson"]) {
+		if record.ID == "demo-7" && (record.Body["status_category"] != "frozen" || record.Source.Fields["status"] != "parked") {
+			t.Fatal("frozen category lost")
+		}
+	}
+	// An identical spelling on another project may carry a different declared
+	// category; record validation must use its own bound project's ontology.
+	other := Project{Prefix: "other", Statuses: []ProjectStatus{{Name: "todo", Category: "wip"}}}
+	record := Record{Project: "other", Body: Row{"status_category": "wip"}, Source: Provenance{Fields: Row{"status": "todo"}}}
+	if err := validateStatusRecord(record, append(manifest.Projects, other)); err != nil {
+		t.Fatal(err)
+	}
+	record.Body["status_category"] = "active"
+	if err := validateStatusRecord(record, append(manifest.Projects, other)); err == nil {
+		t.Fatal("cross-project category substitution admitted")
+	}
+}
+
+func TestStatusCategoryContractRefusesUnknownAndForgedDeclarations(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		change func(fixtureSource, *Inventory)
+	}{
+		{"unknown status", func(s fixtureSource, i *Inventory) { s["issues"].Rows[0]["status"] = "unknown" }},
+		{"undeclared frozen spelling", func(s fixtureSource, i *Inventory) { s["issues"].Rows[0]["status"] = "frozen" }},
+		{"catalog mismatch", func(s fixtureSource, i *Inventory) {
+			i.Projects[0].Statuses[len(i.Projects[0].Statuses)-1].Category = "wip"
+		}},
+		{"missing builtin", func(s fixtureSource, i *Inventory) { i.Projects[0].Statuses = i.Projects[0].Statuses[1:] }},
+		{"unspecified", func(s fixtureSource, i *Inventory) { s["custom_statuses"].Rows[0]["category"] = "unspecified" }},
+		{"conflicting union", func(s fixtureSource, i *Inventory) {
+			s["config"].Rows[len(s["config"].Rows)-1]["value"] = "review:active,todo:active,shipped:done"
+		}},
+		{"sorted duplicate", func(s fixtureSource, i *Inventory) {
+			i.Projects[0].Statuses = append(i.Projects[0].Statuses, ProjectStatus{"todo", "active"})
+		}},
+		{"without marker", func(s fixtureSource, i *Inventory) { i.StatusCategoryContract = "" }},
+		{"unknown marker", func(s fixtureSource, i *Inventory) { i.StatusCategoryContract = "beads-status-categories/2" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s, i := statusCategoryFixture(t)
+			test.change(s, &i)
+			if data, err := Build(context.Background(), s, i); err == nil || len(data) != 0 {
+				t.Fatal("unsupported native status emitted archive")
+			}
+		})
+	}
+	source, inventory := statusCategoryFixture(t)
+	data := buildFixture(t, source, inventory)
+	for _, test := range []struct {
+		name   string
+		change func(map[string][]byte)
+	}{
+		{"changed category", func(m map[string][]byte) {
+			m["records/bead.ndjson"] = bytes.Replace(m["records/bead.ndjson"], []byte(`"status_category":"active"`), []byte(`"status_category":"wip"`), 1)
+		}},
+		{"renamed native status", func(m map[string][]byte) {
+			m["records/bead.ndjson"] = bytes.ReplaceAll(m["records/bead.ndjson"], []byte(`"status":"todo"`), []byte(`"status":"open"`))
+		}},
+		{"done result lost", func(m map[string][]byte) {
+			m["records/bead.ndjson"] = bytes.Replace(m["records/bead.ndjson"], []byte(`"result":"success",`), nil, 1)
+		}},
+		{"marker removed", func(m map[string][]byte) {
+			var obj map[string]any
+			if err := decodeJSON(m["manifest.json"], &obj); err != nil {
+				t.Fatal(err)
+			}
+			delete(obj, "status_category_contract")
+			m["manifest.json"] = mustJSON(t, obj)
+		}},
+		{"marker and catalogs removed", func(m map[string][]byte) {
+			var manifest Manifest
+			if err := decodeJSON(m["manifest.json"], &manifest); err != nil {
+				t.Fatal(err)
+			}
+			manifest.StatusCategoryContract = ""
+			manifest.Verification = verificationLimits()
+			for i := range manifest.Projects {
+				manifest.Projects[i].Statuses = nil
+			}
+			m["manifest.json"] = mustJSON(t, manifest)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			m := archiveMembers(t, data)
+			test.change(m)
+			if _, err := Validate(bytes.NewReader(reframeSourcePlaneArchive(t, m))); err == nil {
+				t.Fatal("tampered status archive admitted")
+			}
+		})
+	}
+	for _, value := range []any{nil, "", "beads-status-categories/2", true} {
+		var obj map[string]any
+		if err := decodeJSON(mustJSON(t, inventory), &obj); err != nil {
+			t.Fatal(err)
+		}
+		obj["status_category_contract"] = value
+		if _, err := ReadInventory(bytes.NewReader(mustJSON(t, obj))); err == nil {
+			t.Fatal("invalid marker admitted")
+		}
+	}
+	var folded map[string]any
+	if err := decodeJSON(mustJSON(t, inventory), &folded); err != nil {
+		t.Fatal(err)
+	}
+	delete(folded, "status_category_contract")
+	folded["STATUS_CATEGORY_CONTRACT"] = StatusCategoryContract
+	if _, err := ReadInventory(bytes.NewReader(mustJSON(t, folded))); err == nil {
+		t.Fatal("folded marker admitted")
+	}
+}
+
+func TestStatusCategoryManifestPublishedSchemaCorrespondence(t *testing.T) {
+	source, inventory := statusCategoryFixture(t)
+	data := buildFixture(t, source, inventory)
+	var document, manifest any
+	schemaBytes, err := os.ReadFile("manifest.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := decodeJSON(schemaBytes, &document); err != nil {
+		t.Fatal(err)
+	}
+	if err := decodeJSON(archiveMembers(t, data)["manifest.json"], &manifest); err != nil {
+		t.Fatal(err)
+	}
+	compiler := jsonschema.NewCompiler()
+	const url = "https://plug.invalid/native-status-manifest.json"
+	if err := compiler.AddResource(url, document); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := compiler.Compile(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.Validate(manifest); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStatusCategoryCatalogIncludesCapturedYAML(t *testing.T) {
+	source, inventory := statusCategoryFixture(t)
+	path := t.TempDir() + "/config.yaml"
+	if err := os.WriteFile(path, []byte("status:\n  custom: yaml_done:done\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	observation, err := observeNativePath(path, 0, &nativeCaptureBudget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range inventory.External {
+		if inventory.External[i].Family == "project-config" {
+			inventory.External[i].State = "json-config"
+			if err := os.WriteFile(inventory.External[i].Path, mustJSON(t, map[string]any{"observations": []any{observation}}), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	inventory.Projects[0].Statuses = append(inventory.Projects[0].Statuses, ProjectStatus{"yaml_done", "done"})
+	source["issues"].Rows[0]["status"] = "yaml_done"
+	archive := buildFixture(t, source, inventory)
+	m, err := Validate(bytes.NewReader(archive))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projectStatusCategory(m.Projects[0], "yaml_done") != "done" {
+		t.Fatal("captured native YAML declaration omitted")
+	}
+	// Removing a declaration from the explicit catalog cannot hide a captured
+	// source-layer value, even when the captured bytes/checksums are intact.
+	inventory.Projects[0].Statuses = inventory.Projects[0].Statuses[:len(inventory.Projects[0].Statuses)-1]
+	if data, err := Build(context.Background(), source, inventory); err == nil || len(data) != 0 {
+		t.Fatal("incomplete explicit catalog admitted")
+	}
+}

@@ -28,6 +28,9 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 	if inventory.History != "unavailable" && inventory.History != "available-unverified" {
 		return nil, fmt.Errorf("history must explicitly report unavailable or available-unverified")
 	}
+	if err := validateStatusCategoryContract(inventory.StatusCategoryContract, inventory.Projects); err != nil {
+		return nil, err
+	}
 	projects, err := copyProjects(inventory.Projects)
 	if err != nil {
 		return nil, err
@@ -71,17 +74,23 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 			storedConfig[key] = row["value"]
 		}
 	}
+	if inventory.StatusCategoryContract == StatusCategoryContract {
+		if err := validateProjectStatusCatalogs(projects, tables["custom_statuses"].Rows, tables["custom_types"].Rows, storedConfig, yamlValues); err != nil {
+			return nil, err
+		}
+	}
 	mapper := mapping{
-		sourcePlanes:   inventory.SourcePlaneAddressContract == SourcePlaneAddressContract,
-		customStatuses: map[string]bool{},
-		projects:       projects,
-		beads:          map[string]string{},
-		wisps:          map[string]string{},
-		records:        map[string][]Record{},
-		policy:         inventory.ConfigPolicy,
-		usedPolicy:     map[string]bool{},
-		ontology:       ontology,
-		usedOntology:   map[string]bool{},
+		statusCategories: inventory.StatusCategoryContract == StatusCategoryContract,
+		sourcePlanes:     inventory.SourcePlaneAddressContract == SourcePlaneAddressContract,
+		customStatuses:   map[string]bool{},
+		projects:         projects,
+		beads:            map[string]string{},
+		wisps:            map[string]string{},
+		records:          map[string][]Record{},
+		policy:           inventory.ConfigPolicy,
+		usedPolicy:       map[string]bool{},
+		ontology:         ontology,
+		usedOntology:     map[string]bool{},
 	}
 	if mapper.sourcePlanes {
 		if err := readCatalogUnion(tables["custom_statuses"].Rows, tables["custom_types"].Rows, storedConfig, yamlValues, mapper.customStatuses); err != nil {
@@ -135,13 +144,14 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 		Disposition{"issues.row_lock", len(tables["issues"].Rows), "manifest/rebuild", "transient locks excluded"},
 		Disposition{"issues.is_blocked", len(tables["issues"].Rows), "manifest/rebuild", "derived blocking excluded; Plug must recompute"})
 	manifest := Manifest{
+		StatusCategoryContract:     inventory.StatusCategoryContract,
 		SourcePlaneAddressContract: inventory.SourcePlaneAddressContract,
 		Format:                     Format, Schema: 1, Reference: BeadsReference, StoreID: inventory.StoreID, Machine: inventory.Machine,
 		MainVersion: 72, IgnoredVersion: 28, Scope: "offline-head-and-source-archives", History: inventory.History,
 		SourceFieldsContract: IssueSourceFieldsContract,
 		Projects:             mapper.projects, Ontology: ontology, Sources: dispositions,
 		Warnings:     []string{"not a complete store migration or Plug restore certificate", "source history and attribution are unverified; no Plug versions, changesets or live leases invented"},
-		Verification: verificationLimits(),
+		Verification: verificationLimitsForStatus(inventory.StatusCategoryContract),
 	}
 	files := map[string][]byte{"config/sources.json": config}
 	history, err := captureSourceHistory(ctx, src, inventory, mapper.records, tables)
@@ -260,6 +270,7 @@ func copyProjects(input []Project) ([]Project, error) {
 				return nil, fmt.Errorf("hash_namespaces requires sorted unique native namespaces in hash mode")
 			}
 		}
+		p.Statuses = append([]ProjectStatus(nil), p.Statuses...)
 		p.HashNamespaces = append([]string(nil), p.HashNamespaces...)
 		counters := map[string]uint64{}
 		for parent, count := range p.ChildCounters {

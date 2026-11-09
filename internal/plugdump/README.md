@@ -474,3 +474,22 @@ row or marker-only proof qualifies. This ordinary source gate does not admit
 an official artifact or prove consumer restore, reverse, native/full-card
 conservation or adoption. Those require their independently bound source and
 recordings.
+
+
+### Preserve native custom statuses
+
+Native inventory now declares `status_category_contract: beads-status-categories/1`
+and a sorted `projects[].statuses` catalog. Export keeps native status names
+verbatim and emits their declared Beads categories (`active`, `wip`, `done`,
+`frozen`) in `body.status_category`; it never maps a custom name onto `open` or
+`closed`. Native builtins use `internal/types.BuiltInStatusCategory`. Every
+custom category must be explicitly declared in the strict SQL/config/YAML
+catalog union; unknown, unspecified or conflicting declarations refuse before
+any archive is written. Raw source catalog/config rows remain archived.
+
+Offline inventories opt into the same marker and must supply the complete
+matching project catalog. Archives without this marker retain legacy behavior.
+The consumer must install each catalog under its explicit target project;
+producer validation alone does not prove shared-store merge or restore.
+See [the identity contract](NATIVE-IDENTITY-CONTRACT.md#native-status-categories)
+for exact fields and historical-image limits.

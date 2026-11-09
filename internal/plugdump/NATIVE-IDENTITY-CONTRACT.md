@@ -81,3 +81,41 @@ counter rows and the final manifest remain authoritative; an insufficient final
 counter still refuses. A proven head image does not make an older unmappable
 schema complete: retain every source commit, explicit gap and range boundary,
 and require explicit consumer policy for any incomplete history.
+
+
+## Native status categories
+
+The optional canonical inventory/manifest marker `status_category_contract` is
+`beads-status-categories/1`. Under it, every project has a nonempty `statuses`
+array of `{name, category}` pairs, sorted and unique by exact native name. The
+array contains all seven native builtins and the strict union declared by
+`custom_statuses`, stored `status.custom` and captured native YAML. It includes
+unused declared statuses; an observed row cannot invent a catalog entry.
+
+Builtins call the native reference's `types.BuiltInStatusCategory`: `open` is
+`active`; `in_progress`, `blocked` and `hooked` are `wip`; `closed` is `done`;
+`deferred` and `pinned` are `frozen`. The spelling `frozen` itself is a custom
+name and requires an explicit declaration. Custom categories must be exactly
+`active`, `wip`, `done` or `frozen`. No `unspecified` category, conflicting
+catalog, unknown row status or built-in category replacement is accepted.
+
+`source.fields.status` retains the exact native name. `body.status_category`
+contains its literal Beads category, with `result: success` only for `done`.
+No new `body.status` field or map_status rename directive is emitted. A consumer
+installs each project catalog with unchanged status names; any disposition
+status pairs use identical from/to names. Equal names in separate projects
+remain scoped to their own catalog. Merge/restore installation belongs to B21.
+
+Omission retains legacy body-category behavior. Present null, empty, unknown
+or noncanonical markers, missing/empty project catalogs, noncanonical pair
+fields and catalogs without the marker refuse. Both builder and archive reader
+check catalog conservation against captured declarations and each bead's
+category/result. A source with one global catalog cannot claim different
+per-project declarations; independently captured stores keep separate catalogs.
+
+Historical base-table census reads each object's type at the named commit;
+derived views are not business tables. Unknown base tables and object kinds
+still refuse. A different older status catalog cannot borrow head semantics:
+its image remains an explicit unmappable gap in this portable history format.
+The native public fixtures retain the failed tar before assertions and report
+bounded synthetic-only diagnostics if their history head is not proven.

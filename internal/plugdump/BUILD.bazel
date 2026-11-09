@@ -24,6 +24,7 @@ go_library(
         "//internal/captureclock",
         "//internal/config",
         "//internal/storage/issueops",
+        "//internal/types",
         "@in_gopkg_yaml_v3//:yaml_v3",
     ],
 )

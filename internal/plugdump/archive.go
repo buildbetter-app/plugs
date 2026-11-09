@@ -190,7 +190,10 @@ func Validate(reader io.Reader) (Manifest, error) {
 	if len(manifest.Warnings) == 0 || len(manifest.Verification) == 0 {
 		return Manifest{}, fmt.Errorf("missing incomplete-conversion disclosures")
 	}
-	expectedVerification, _ := marshal(verificationLimits())
+	if err := validateStatusCategoryMarker(members["manifest.json"], manifest.StatusCategoryContract, manifest.Projects); err != nil {
+		return Manifest{}, err
+	}
+	expectedVerification, _ := marshal(verificationLimitsForStatus(manifest.StatusCategoryContract))
 	actualVerification, _ := marshal(manifest.Verification)
 	if !bytes.Equal(expectedVerification, actualVerification) {
 		return Manifest{}, fmt.Errorf("unsupported verification claim")
@@ -303,6 +306,11 @@ func Validate(reader io.Reader) (Manifest, error) {
 	customStatuses := map[string]bool{}
 	if err := readCatalogUnion(statusRows, typeRows, storedCatalogConfig, yamlCatalogs, customStatuses); err != nil {
 		return Manifest{}, err
+	}
+	if manifest.StatusCategoryContract == StatusCategoryContract {
+		if err := validateProjectStatusCatalogs(manifest.Projects, statusRows, typeRows, storedCatalogConfig, yamlCatalogs); err != nil {
+			return Manifest{}, err
+		}
 	}
 	if manifest.SourcePlaneAddressContract == SourcePlaneAddressContract {
 		if err := validateSourcePlanes(manifest.Projects, beadRecords, edgeRecords, activeRows, customStatuses); err != nil {
@@ -447,6 +455,9 @@ func validateRecordVersioned(record Record, projects []Project, counts map[strin
 		return fmt.Errorf("source archive/config has an unsupported project binding")
 	}
 	if record.Kind == "bead" {
+		if err := validateStatusRecord(record, projects); err != nil {
+			return err
+		}
 		for _, project := range projects {
 			if project.Prefix != record.Project {
 				continue

@@ -218,6 +218,29 @@ func (s SQLSource) NativeInventory(ctx context.Context, capture NativeCapture) (
 		}
 		inventory.External = append(inventory.External, ExternalInput{Family: family, Path: filepath.Join(capture.SidecarDir, name), State: "json-config", Precedence: precedence})
 	}
+	// Build the category catalog from the captured native files and SQL rows,
+	// never by guessing semantics from a status spelling.
+	yamlValues := []map[string]any{}
+	for family, paths := range capture.Paths {
+		if !nativeFileFamily(family) || len(paths) == 0 {
+			continue
+		}
+		if err := appendYAMLCatalogValues(observations[family]["observations"], &yamlValues); err != nil {
+			return Inventory{}, nil, err
+		}
+	}
+	storedConfig := map[string]any{}
+	for _, row := range tables["config"].Rows {
+		if key := text(row, "key"); key == "status.custom" || key == "types.custom" {
+			storedConfig[key] = row["value"]
+		}
+	}
+	statuses, err := declaredStatusCatalog(tables["custom_statuses"].Rows, tables["custom_types"].Rows, storedConfig, yamlValues)
+	if err != nil {
+		return Inventory{}, nil, err
+	}
+	inventory.StatusCategoryContract = StatusCategoryContract
+	inventory.Projects[0].Statuses = statuses
 	finalLog, err := s.ReadSourceCommits(ctx)
 	if err != nil {
 		return Inventory{}, nil, err

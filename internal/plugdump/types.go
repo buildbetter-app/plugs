@@ -25,6 +25,8 @@ const (
 	// SourcePlaneAddressContract enables physical dependency identities scoped
 	// by project and source table. Omission retains the legacy address rules.
 	SourcePlaneAddressContract = "beads-source-planes/1"
+	// StatusCategoryContract preserves native names and Beads lifecycle categories.
+	StatusCategoryContract = "beads-status-categories/1"
 )
 
 // Row retains every source column, including SQL NULL and lossless numbers.
@@ -47,6 +49,7 @@ type Source interface {
 // Inventory supplies the offline capture's identity and external-file census.
 // These declarations are operator evidence, never an independent freeze proof.
 type Inventory struct {
+	StatusCategoryContract     string              `json:"status_category_contract,omitempty"`
 	SourcePlaneAddressContract string              `json:"source_plane_address_contract,omitempty"`
 	Version                    string              `json:"version"`
 	StoreID                    string              `json:"store_id"`
@@ -61,7 +64,13 @@ type Inventory struct {
 	ConfigPolicy               map[string]string   `json:"config_policy"` // public or secret, every DB config/metadata key
 }
 
+type ProjectStatus struct {
+	Name     string `json:"name"`
+	Category string `json:"category"`
+}
+
 type Project struct {
+	Statuses       []ProjectStatus   `json:"statuses,omitempty"`
 	Prefix         string            `json:"prefix"`
 	IDMode         string            `json:"id_mode"`
 	HashLength     int               `json:"hash_length"`
@@ -133,6 +142,7 @@ type Disposition struct {
 }
 
 type Manifest struct {
+	StatusCategoryContract     string              `json:"status_category_contract,omitempty"`
 	SourcePlaneAddressContract string              `json:"source_plane_address_contract,omitempty"`
 	Format                     string              `json:"format"`
 	Schema                     int                 `json:"schema"`
