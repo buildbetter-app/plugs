@@ -135,6 +135,14 @@ func TestB07SQLWorkflowAuxiliaryEndpointsFenceCompletePublication(t *testing.T) 
 							return map[string]any{"template": "auxiliary-fence", "project": project, "mode": "ephemeral", "checklist": []workflowplugin.ChecklistItem{item, {Label: "plain", Title: "plain", Type: "issue"}}}
 						}
 						base := f.store
+						// A competing public writer uses its own provider mutex while
+						// sharing the real SQL store, lease and receipt census. Main's
+						// delete path now reads the workflow checkpoint; re-entering
+						// this provider from its publication barrier would deadlock.
+						peerFixture := *f.fixture
+						peer := *f
+						peer.fixture = &peerFixture
+						peer.install(t)
 						barrier := &b07EndpointFenceStore{Store: base, PersistentCheckpointStore: base.(driver.PersistentCheckpointStore), HeadGuardedCheckpointStore: base.(driver.HeadGuardedCheckpointStore)}
 						f.store = barrier
 						f.install(t)
@@ -142,9 +150,9 @@ func TestB07SQLWorkflowAuxiliaryEndpointsFenceCompletePublication(t *testing.T) 
 						var afterRace b08Conservation
 						barrier.beforeSave = func() {
 							if mutation == "delete" {
-								b08Commit(t, f.callB08(t, "tx.apply", "delete-auxiliary-endpoint", b08Batch(model.Op{Kind: model.OpDelete, Delete: &model.DeleteOp{Target: ordinary}})))
+								b08Commit(t, peer.callB08(t, "tx.apply", "delete-auxiliary-endpoint", b08Batch(model.Op{Kind: model.OpDelete, Delete: &model.DeleteOp{Target: ordinary}})))
 							} else {
-								b08Commit(t, f.callB08(t, "bead.update", "advance-auxiliary-endpoint", map[string]any{"id": ordinary, "fields": map[string]any{"title": "updated before publication"}}))
+								b08Commit(t, peer.callB08(t, "bead.update", "advance-auxiliary-endpoint", map[string]any{"id": ordinary, "fields": map[string]any{"title": "updated before publication"}}))
 							}
 							// Observe after the real competing public commit, before
 							// workflow checkpoint, indexes, audit or receipt publication.
