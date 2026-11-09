@@ -22,7 +22,7 @@ func TestCompileRejectsInvalidRules(t *testing.T) {
 		name string
 		edit func(*Document)
 	}{
-		{"category", func(d *Document) { s := d.Statuses["todo"]; s.Category = "active"; d.Statuses["todo"] = s }},
+		{"category", func(d *Document) { s := d.Statuses["todo"]; s.Category = "unknown-category"; d.Statuses["todo"] = s }},
 		{"outcome on nonterminal", func(d *Document) { s := d.Statuses["todo"]; s.Outcome = Success; d.Statuses["todo"] = s }},
 		{"unknown outcome", func(d *Document) { s := d.Statuses["done"]; s.Outcome = "unknown"; d.Statuses["done"] = s }},
 		{"wrong close outcome", func(d *Document) { d.Workflows["issue"].Slots[Close] = "failed" }},

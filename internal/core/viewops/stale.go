@@ -79,7 +79,7 @@ func (s *Service) staleCandidates(ctx context.Context, reader driver.Reader, can
 			if status != *filter.Status {
 				continue
 			}
-		} else if category != ontology.Unstarted && category != ontology.Started {
+		} else if !category.ReadyEligible() && !category.Started() {
 			continue
 		}
 		updated, err := latestPersistedUpdate(ctx, reader, row.record)

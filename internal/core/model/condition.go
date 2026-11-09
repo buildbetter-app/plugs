@@ -219,7 +219,7 @@ func (d ConditionDecision) Validate() error {
 	}
 	terminal, satisfied := false, false
 	switch d.Category {
-	case "triage", "backlog", "unstarted", "started":
+	case "triage", "backlog", "unstarted", "started", "active", "wip", "frozen":
 		if d.Outcome != "" {
 			return fmt.Errorf("nonterminal status has an outcome")
 		}
@@ -228,10 +228,13 @@ func (d ConditionDecision) Validate() error {
 		if d.Outcome != "" {
 			return fmt.Errorf("canceled status has an outcome")
 		}
-	case "completed":
+	case "completed", "done":
 		terminal = true
 		if d.Outcome != "success" && d.Outcome != "failure" {
 			return fmt.Errorf("completed status needs success or failure outcome")
+		}
+		if d.Category == "done" && d.Outcome != "success" {
+			return fmt.Errorf("native done category requires success")
 		}
 		satisfied = d.Outcome == "failure"
 	default:
