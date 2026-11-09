@@ -968,32 +968,6 @@ func (p *Provider) Invoke(ctx context.Context, by model.PrincipalRef, req Invoke
 	for index, id := range run.ItemIDs {
 		result.Items[index] = p.itemViewIn(value, value.Items[id])
 	}
-	// Maintain plugin-owned child counters and inbound relation indexes in the
-	// same checkpoint CAS as invocation. A missing durable target is retained as
-	// a mixed-plane edge; a missing workflow target is rejected before publish.
-	for _, id := range run.ItemIDs {
-		item := value.Items[id]
-		for _, link := range item.Links {
-			if target, ok := value.Items[link.To.ID]; ok {
-				if target.Owner != item.Owner {
-					return InvokeResult{}, fail("forbidden", "workflow target is outside the owner scope")
-				}
-				target.Inbound = append(target.Inbound, cloneRelation(link))
-				value.Items[target.ID] = target
-			} else if strings.HasPrefix(link.To.ID, ItemPrefix) {
-				return InvokeResult{}, fail("not_found", "workflow relation target was not found")
-			}
-		}
-		if item.Parent != nil {
-			if parent, ok := value.Items[item.Parent.ID]; ok {
-				parent.ChildCounter++
-				value.Items[parent.ID] = parent
-			}
-		}
-	}
-	for index, id := range run.ItemIDs {
-		result.Items[index] = p.itemViewIn(value, value.Items[id])
-	}
 	value.Runs[runID] = run
 	receipt, err := p.storeReceipt(value, by, meta, req, result, runID, "")
 	if err != nil {

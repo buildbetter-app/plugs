@@ -583,6 +583,62 @@ func TestB07SQLNamedWorkflowEdgesHaveCanonicalEndpointIdentity(t *testing.T) {
 	}
 }
 
+func TestB07SQLInvocationPublishesAuxiliaryIndexesOnce(t *testing.T) {
+	for _, engine := range []string{"sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			f := newB07SQLPlaneFixture(t, engine)
+			parent := b07InvokeSQLWorkflow(t, f, 1)[0]
+			params := map[string]any{
+				"template": "indexed-child", "project": project, "mode": "ephemeral",
+				"checklist": []workflowplugin.ChecklistItem{{Label: "child", Title: "child", Type: "issue", Parent: &parent, Links: []workflowplugin.RelationSpec{{To: parent, Kind: "related"}}}},
+			}
+			before := f.conservation(t)
+			invoked := f.callB08(t, "x.workflow.invoke", "indexed-child", params)
+			var result workflowplugin.InvokeResult
+			if invoked.Error != nil || json.Unmarshal(invoked.Result, &result) != nil || len(result.Items) != 1 {
+				t.Fatalf("indexed invocation refused: error=%+v result=%s", invoked.Error, invoked.Result)
+			}
+			child := model.RefByID(result.Items[0].ID, model.Natural64(0))
+			after := f.conservation(t)
+			b07RequireSameCoreState(t, before, after)
+			requireIndexes := func() {
+				t.Helper()
+				// Inspect the actual checkpoint arrays: public relation views
+				// deduplicate mirrors and can hide duplicate stored indexes.
+				checkpoint, err := f.store.(driver.CheckpointStore).LoadCheckpoint(f.ctx, "plugin/workflow/default/durable")
+				if err != nil {
+					t.Fatal(err)
+				}
+				var namespace struct {
+					Values map[string]struct{ Value json.RawMessage }
+				}
+				if err := json.Unmarshal(checkpoint.Payload, &namespace); err != nil {
+					t.Fatal(err)
+				}
+				var stored struct {
+					Items map[string]struct {
+						Parent         *model.Ref
+						ChildCounter   uint64
+						Links, Inbound []workflowplugin.RelationView
+					}
+				}
+				if err := json.Unmarshal(namespace.Values["workflow/state"].Value, &stored); err != nil {
+					t.Fatal(err)
+				}
+				p, c := stored.Items[parent.ID], stored.Items[child.ID]
+				want := []workflowplugin.RelationView{{From: child.ID, To: parent, Kind: "related"}}
+				if len(stored.Items) != 2 || p.ChildCounter != 1 || !reflect.DeepEqual(p.Inbound, want) || !reflect.DeepEqual(c.Links, want) || c.Parent == nil || *c.Parent != parent {
+					t.Fatalf("invocation duplicated or lost physical indexes: parent=%+v child=%+v", p, c)
+				}
+			}
+			requireIndexes()
+			b07SQLReplay(t, f, "x.workflow.invoke", "indexed-child", params, invoked)
+			requireIndexes()
+			b08SameConservation(t, after, f.conservation(t))
+		})
+	}
+}
+
 func TestB07SQLNamedOpaqueWorkflowEdgeCanJoinAtomicOrdinaryDelete(t *testing.T) {
 	for _, engine := range []string{"sqlite", "postgres"} {
 		for _, direction := range []string{"durable-to-workflow", "workflow-to-durable"} {
