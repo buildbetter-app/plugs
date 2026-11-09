@@ -44,6 +44,7 @@ func nativeHistoryFixture(t *testing.T, project, category string) []byte {
 			return
 		}
 		row.Source.Fields["status"], row.Source.Fields["storage_class"] = "shared", "versioned"
+		row.Source.Fields["ephemeral"], row.Source.Fields["no_history"] = json.Number("0"), json.Number("0")
 		row.Body["status_category"] = category
 		delete(row.Body, "result")
 		if category == "done" {
@@ -325,7 +326,7 @@ func TestStrictSourceHistoryRefusalRetainsOriginalNamedGap(t *testing.T) {
 	members := tarMembers(t, nativeHistoryFixture(t, "pl", "active"))
 	var history dumpformat.SourceHistory
 	decode(t, members[dumpformat.SourceHistoryMember], &history)
-	history.Range = dumpformat.SourceHistoryRange{Status: "unverified", Reason: "head-image-missing-families:config,issues"}
+	history.Range = dumpformat.SourceHistoryRange{Status: "unverified", Reason: "head-image-missing-families:config,issues", Baseline: []dumpformat.Record{}, BaselineEvents: []dumpformat.Row{}, Frames: []dumpformat.SourceHistoryFrame{}, Gaps: []dumpformat.HistoryGap{}}
 	members[dumpformat.SourceHistoryMember] = encode(t, history)
 	var manifest dumpformat.Manifest
 	decode(t, members["manifest.json"], &manifest)
