@@ -302,3 +302,30 @@ func TestFullSourceHistoryRefusedPublicationConservesCoreAndNamespace(t *testing
 		})
 	}
 }
+
+func TestStrictSourceHistoryRefusalRetainsOriginalNamedGap(t *testing.T) {
+	members := tarMembers(t, nativeHistoryFixture(t, "pl", "active"))
+	var history dumpformat.SourceHistory
+	decode(t, members[dumpformat.SourceHistoryMember], &history)
+	history.Range = dumpformat.SourceHistoryRange{Status: "unverified", Reason: "head-image-missing-families:config,issues"}
+	members[dumpformat.SourceHistoryMember] = encode(t, history)
+	var manifest dumpformat.Manifest
+	decode(t, members["manifest.json"], &manifest)
+	manifest.History = "available-unverified"
+	raw := members[dumpformat.SourceHistoryMember]
+	manifest.Files[dumpformat.SourceHistoryMember] = dumpformat.File{SHA256: hashBytes(raw), Size: int64(len(raw))}
+	members["manifest.json"] = encode(t, manifest)
+	a, err := dumpformat.Read(bytes.NewReader(writeTarMembers(t, members)))
+	if err != nil {
+		t.Fatal("declared unverified source", err)
+	}
+	err = validateArchiveHistoryPolicy(driver.RestoreHistoryModeFull, a)
+	var policy driver.ErrRestoreHistoryRefused
+	var gap dumpformat.IncompleteHistoryError
+	if !errors.As(err, &policy) || policy.Reason != driver.RestoreHistoryReasonAvailableUnverified || !errors.As(err, &gap) || gap.StoreID != manifest.StoreID || gap.Project != "pl" || gap.Reason != history.Range.Reason {
+		t.Fatal("strict policy lost its original named source gap", err)
+	}
+	if err := validateArchiveHistoryPolicy(driver.RestoreHistoryModeSnapshot, a); err != nil {
+		t.Fatal("explicit snapshot policy changed", err)
+	}
+}

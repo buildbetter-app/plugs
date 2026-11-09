@@ -73,13 +73,30 @@ func validateArchiveHistoryPolicy(mode driver.RestoreHistoryMode, a *dumpformat.
 	}
 	for _, scoped := range scopes {
 		if scoped.Range.Status != "verified" {
-			return driver.ValidateRestoreHistoryPolicy(mode, a.Manifest().History)
+			return sourceHistoryPolicyRefusal(scoped, driver.ValidateRestoreHistoryPolicy(mode, a.Manifest().History))
 		}
 		if mode == driver.RestoreHistoryModeFull && (!scoped.Range.Complete || scoped.Range.First != 1 || len(scoped.Range.Gaps) != 0 || len(scoped.Range.Baseline) != 0) {
-			return driver.ErrRestoreHistoryRefused{Mode: mode, History: a.Manifest().History, Reason: driver.RestoreHistoryReasonNonContiguous}
+			return sourceHistoryPolicyRefusal(scoped, driver.ErrRestoreHistoryRefused{Mode: mode, History: a.Manifest().History, Reason: driver.RestoreHistoryReasonNonContiguous})
 		}
 	}
 	return nil
+}
+
+func sourceHistoryPolicyRefusal(scope dumpformat.ProjectSourceHistory, policy error) error {
+	if policy == nil {
+		return nil
+	}
+	gap := dumpformat.IncompleteHistoryError{StoreID: scope.SourceStoreID, Project: scope.Project, Reason: scope.Range.Reason}
+	if len(scope.Range.Gaps) != 0 {
+		first := scope.Range.Gaps[0]
+		gap.First, gap.Last, gap.Reason = first.First, first.Last, first.Reason
+	} else if scope.Range.First > 1 {
+		gap.First, gap.Last, gap.Reason = 1, scope.Range.First-1, "history starts after source root"
+	} else if gap.Reason == "" {
+		gap.Reason = "complete source history unavailable"
+	}
+	// Keep the existing transport policy type and the exact typed source gap.
+	return fmt.Errorf("%w: %w", policy, gap)
 }
 
 func portableHistoryRecords(plan restorePlan) []driver.Record {
