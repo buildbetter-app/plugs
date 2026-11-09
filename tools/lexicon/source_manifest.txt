@@ -508,6 +508,7 @@ internal/integration/converterroundtrip/joint_exports_test.go
 internal/integration/converterroundtrip/label_projection_test.go
 internal/integration/converterroundtrip/labels.go
 internal/integration/converterroundtrip/memory_import_test.go
+internal/integration/converterroundtrip/native_history_test.go
 internal/integration/converterroundtrip/native_restore_test.go
 internal/integration/converterroundtrip/public_source_test.go
 internal/integration/converterroundtrip/repair_test.go

@@ -20,6 +20,11 @@ type derivedImage struct {
 	Value json.RawMessage     `json:"value"`
 }
 
+// ImportedOntologySourceID is the protected, branch-zero ontology source
+// installed only by an explicitly declared native status-category import.
+// A composed host can select it using service.StaticOntologySource.
+const ImportedOntologySourceID = "ontology/beads-import"
+
 // These profiles admit the built-in ontology or the validated strict-union
 // import document, with no authorization/plugin provider, cuts, templates or leases.
 // Every table participates in the digest, including empty tables. Its rows
@@ -103,13 +108,22 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 	if plan.migration != nil {
 		ontologyDocument = plan.migration.Document()
 	}
-	snapshot, problems := ontology.Compile(ontologyDocument, nil, nil)
+	var overlays map[string]ontology.Document
+	var ontologyImage any = ontologyDocument
+	if plan.nativeOntology != nil {
+		ontologyDocument, overlays = plan.nativeOntology.Base, plan.nativeOntology.Overlays
+		ontologyImage = plan.nativeOntology
+	}
+	snapshot, problems := ontology.Compile(ontologyDocument, overlays, nil)
 	if len(problems) != 0 {
 		return fmt.Errorf("invalid admitted restore ontology: %v", problems)
 	}
 	for _, id := range ids {
 		doc := docs[id]
 		effective := snapshot.Effective(doc.Project)
+		if _, known := effective.Status(stringValue(doc.Fields["status"])); !known {
+			return fmt.Errorf("restore bead %s has an undeclared status in project %s", id, doc.Project)
+		}
 		blocked, unresolvedScheduling := false, false
 		for _, link := range doc.Links {
 			if link.TargetKind == model.LinkTargetExternal {
@@ -166,7 +180,7 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 		}
 		plan.sentinels = append(plan.sentinels, ready, closure)
 	}
-	if err := add(driver.DerivedOntology, "builtin", ontologyDocument); err != nil {
+	if err := add(driver.DerivedOntology, "builtin", ontologyImage); err != nil {
 		return err
 	}
 	if err := add(driver.DerivedPlugins, "builtin", []string{}); err != nil {
@@ -223,6 +237,9 @@ func importedWaitsForSatisfied(link pipeline.Link, spawner pipeline.Document, do
 // encoding. Existing built-in digests and native restore profiles are unchanged.
 // The reverse adapter's existing profile guard remains closed to this profile.
 func derivedProfile(plan *restorePlan) string {
+	if plan.nativeOntology != nil {
+		return "beads-native-status-categories/1"
+	}
 	if plan.migration != nil {
 		return "beads-compat-union-head/1"
 	}

@@ -485,6 +485,12 @@ type incompleteSourceTx struct {
 func (t *incompleteSourceTx) PrepareSourcePlaneImport(ctx context.Context, p driver.RestoreImportProfile) (driver.Meta, error) {
 	return t.WriteTx.(driver.SourcePlaneRestoreTx).PrepareSourcePlaneImport(ctx, p)
 }
+func (t *incompleteSourceTx) PrepareSourcePlaneHistory(ctx context.Context, p driver.RestoreImportProfile, h driver.OfflineHistory, when time.Time) (driver.Meta, error) {
+	return t.WriteTx.(driver.SourcePlaneHistoryRestoreTx).PrepareSourcePlaneHistory(ctx, p, h, when)
+}
+func (t *incompleteSourceTx) PrepareOfflineHistory(ctx context.Context, p driver.RestoreImportProfile, h driver.OfflineHistory, when time.Time) (driver.Meta, error) {
+	return t.WriteTx.(driver.OfflineHistoryTx).PrepareOfflineHistory(ctx, p, h, when)
+}
 func (t *incompleteSourceTx) BindSourcePlaneImport(ctx context.Context, b driver.SourcePlaneCommitBindingV1) error {
 	if t.fault == "missing-binding" {
 		return nil
@@ -504,6 +510,14 @@ func (t *incompleteSourceTx) StageCheckpoint(ctx context.Context, key string, ex
 	return t.WriteTx.(driver.CheckpointWriteTx).StageCheckpoint(ctx, key, expected, payload)
 }
 func (t *incompleteSourceTx) Commit(ctx context.Context, h driver.ChangesetHeader) (model.Changeset, error) {
+	h = t.publicationHeader(h)
+	return t.WriteTx.Commit(ctx, h)
+}
+func (t *incompleteSourceTx) CommitOfflineHistory(ctx context.Context, h driver.ChangesetHeader) (model.Changeset, error) {
+	h = t.publicationHeader(h)
+	return t.WriteTx.(driver.OfflineHistoryTx).CommitOfflineHistory(ctx, h)
+}
+func (t *incompleteSourceTx) publicationHeader(h driver.ChangesetHeader) driver.ChangesetHeader {
 	if t.fault == "missing-receipt" {
 		var results []model.OpResult
 		for _, result := range h.Response.Results {
@@ -513,7 +527,7 @@ func (t *incompleteSourceTx) Commit(ctx context.Context, h driver.ChangesetHeade
 		}
 		h.Response.Results = results
 	}
-	return t.WriteTx.Commit(ctx, h)
+	return h
 }
 
 // Includes every application table, locks, leases, blobs, versions, caches,

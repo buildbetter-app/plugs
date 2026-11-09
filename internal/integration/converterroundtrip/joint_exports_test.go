@@ -9,7 +9,11 @@ import (
 
 // Test exports let the external composition controls use the same strictly
 // admitted archive and explicit plan without adding product fixture APIs.
-func JointFixtureForTest(t *testing.T) []byte { return jointSourceFixture(t) }
+func JointFixtureForTest(t *testing.T) []byte         { return jointSourceFixture(t) }
+func NativeHistoryFixtureForTest(t *testing.T) []byte { return mergedNativeHistory(t) }
+func NativeHistoryPlanForTest(t *testing.T, data []byte, store driver.Store, lease driver.ActiveLease) driver.SourcePlanePlanV1 {
+	return nativeHistoryPlan(t, data, store, lease)
+}
 func JointProfileForTest(t *testing.T, data []byte, store driver.Store, lease driver.ActiveLease, owner model.PrincipalRef) driver.RestoreImportProfile {
 	return jointOwnedProfile(t, data, jointProfile(t, data, store, lease), owner)
 }

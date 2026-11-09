@@ -123,3 +123,41 @@ func TestOfflineHistoryRetainsExplicitCommitWithoutInventingAnEventOrChange(t *t
 		t.Fatal("provenance-free empty source unit admitted")
 	}
 }
+
+func TestOfflineHistoryScopesOriginalSequencesEventsAndCommitsBySource(t *testing.T) {
+	fixture := func() OfflineHistory {
+		h := OfflineHistory{Source: "explicit-project-history", Verified: true, Complete: true, First: 1, Head: 2}
+		for i, project := range []string{"pl", "qa"} {
+			r := Record{Ref: model.RefByID("source/"+project, model.Natural64(0)), Kind: "config", Body: []byte(`{"value":"same"}`)}
+			h.Batches = append(h.Batches, SourceHistoryBatch{SourceStoreID: "store-" + project, Project: project, SourceSequence: 1, Sequence: uint64(i + 1), EventIDs: []string{"1"}, CommitIDs: []string{"same-raw-commit"}, Changes: []SourceHistoryChange{{After: &r}}})
+		}
+		return h
+	}
+	p := replayProfile(RestoreHistoryModeFull)
+	plan, err := BuildOfflineHistory(Meta{}, p, fixture(), time.Now(), nil)
+	if err != nil || len(plan.Evidence.Mapping) != 2 || len(plan.Records) != 3 {
+		t.Fatal("independent source IDs were deduplicated or refused", err)
+	}
+	for i, project := range []string{"pl", "qa"} {
+		mapping := plan.Evidence.Mapping[i]
+		if mapping.SourceStoreID != "store-"+project || mapping.Project != project || mapping.SourceSequence != 1 || mapping.Sequence != uint64(i+1) || mapping.EventIDs[0] != "1" || mapping.CommitIDs[0] != "same-raw-commit" {
+			t.Fatal("original source identity/sequence was rewritten", mapping)
+		}
+	}
+	for _, fault := range []string{"duplicate-event-within-source", "source-gap", "missing-store"} {
+		t.Run(fault, func(t *testing.T) {
+			h := fixture()
+			switch fault {
+			case "duplicate-event-within-source":
+				h.Batches[1].SourceStoreID, h.Batches[1].Project, h.Batches[1].SourceSequence = "store-pl", "pl", 2
+			case "source-gap":
+				h.Batches[1].SourceSequence = 2
+			case "missing-store":
+				h.Batches[1].SourceStoreID = ""
+			}
+			if _, err := BuildOfflineHistory(Meta{}, p, h, time.Now(), nil); err == nil {
+				t.Fatal("ambiguous or incomplete original source history admitted")
+			}
+		})
+	}
+}

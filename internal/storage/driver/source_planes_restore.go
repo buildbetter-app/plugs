@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"reflect"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 )
@@ -23,16 +24,39 @@ type SourcePlaneRestoreTx interface {
 	BindSourcePlaneImport(context.Context, SourcePlaneCommitBindingV1) error
 }
 
+// SourcePlaneHistoryRestoreTx joins complete verified core history with the
+// initial source namespaces in the same atomic publication and original receipt.
+type SourcePlaneHistoryRestoreTx interface {
+	SourcePlaneRestoreTx
+	OfflineHistoryTx
+	PrepareSourcePlaneHistory(context.Context, RestoreImportProfile, OfflineHistory, time.Time) (Meta, error)
+}
+
 // PrepareSourcePlaneImportProfile validates execution preconditions before
-// any new-incarnation or checkpoint staging. Source history remains inert;
-// the existing full/partial core-only replay adapters retain their refusals.
+// any new-incarnation or checkpoint staging. Snapshot is an explicit policy;
+// the full-history adapter has a separate preparation capability below.
 func PrepareSourcePlaneImportProfile(profile RestoreImportProfile, current Meta, lifetime CheckpointLifetime) (RestoreImportProfile, error) {
+	return prepareSourcePlaneProfile(profile, current, lifetime, false)
+}
+
+func PrepareSourcePlaneHistoryProfile(profile RestoreImportProfile, current Meta, lifetime CheckpointLifetime) (RestoreImportProfile, error) {
+	return prepareSourcePlaneProfile(profile, current, lifetime, true)
+}
+
+func prepareSourcePlaneProfile(profile RestoreImportProfile, current Meta, lifetime CheckpointLifetime, history bool) (RestoreImportProfile, error) {
 	p, err := profile.Detached()
 	if err != nil {
 		return RestoreImportProfile{}, err
 	}
-	if p.SourcePlanes == nil || p.HistoryMode != RestoreHistoryModeSnapshot || p.HistoryDigest != "" || p.HistoryTime != "" {
-		return RestoreImportProfile{}, sourcePlaneError("joint import requires the snapshot adapter")
+	if p.SourcePlanes == nil {
+		return RestoreImportProfile{}, sourcePlaneError("joint import requires the complete source plan")
+	}
+	if history {
+		if p.HistoryMode != RestoreHistoryModeFull || p.HistoryDigest == "" || p.HistoryTime == "" {
+			return RestoreImportProfile{}, sourcePlaneError("joint history requires full verified replay binding")
+		}
+	} else if p.HistoryMode != RestoreHistoryModeSnapshot || p.HistoryDigest != "" || p.HistoryTime != "" {
+		return RestoreImportProfile{}, sourcePlaneError("joint snapshot requires explicit snapshot policy")
 	}
 	plan, err := p.SourcePlanes.Plan()
 	if err != nil {
@@ -89,7 +113,10 @@ func (b SourcePlaneCommitBindingV1) Validate(profile RestoreImportProfile, meta 
 	if err != nil {
 		return err
 	}
-	if b.Version != SourcePlaneCommitVersionV1 || b.JointPlanDigest != profile.SourcePlanes.JointPlanDigest || b.RequestHash != request || b.StoreID != profile.SourceStoreID || b.StoreID != meta.StoreID || b.Incarnation != meta.Incarnation || b.Incarnation == plan.Target.Incarnation || b.Revision.String() != "1" || meta.Head.String() != "1" || meta.HistoryFloor.String() != "1" || len(b.Providers) != len(plan.Providers) {
+	if err := ValidateSourcePlaneRestoreMeta(profile, meta); err != nil {
+		return err
+	}
+	if b.Version != SourcePlaneCommitVersionV1 || b.JointPlanDigest != profile.SourcePlanes.JointPlanDigest || b.RequestHash != request || b.StoreID != profile.SourceStoreID || b.StoreID != meta.StoreID || b.Incarnation != meta.Incarnation || b.Incarnation == plan.Target.Incarnation || b.Revision != meta.Head || len(b.Providers) != len(plan.Providers) {
 		return sourcePlaneError("joint commit differs from prepared plan/target")
 	}
 	for i, entry := range b.Providers {
@@ -142,7 +169,7 @@ func (p *SourcePlaneImportPublication) Validate(header ChangesetHeader, checkpoi
 	}
 	for _, result := range header.Response.Results {
 		if result.Ref.ID == SourcePlaneCommitRecordID {
-			if !result.Ref.Branch.IsZero() || result.Revision != model.Natural64(1) || !bytes.Equal(result.Record, data) {
+			if !result.Ref.Branch.IsZero() || result.Revision != p.binding.Revision || !bytes.Equal(result.Record, data) {
 				return sourcePlaneError("joint evidence receipt differs")
 			}
 			receipted++
@@ -152,6 +179,23 @@ func (p *SourcePlaneImportPublication) Validate(header ChangesetHeader, checkpoi
 		return sourcePlaneError("joint evidence missing from stage/receipt")
 	}
 	return nil
+}
+
+// ValidateSourcePlaneRestoreMeta keeps snapshot revision/floor semantics exact
+// while admitting only a bound full-history final head with a zero floor.
+func ValidateSourcePlaneRestoreMeta(profile RestoreImportProfile, meta Meta) error {
+	switch profile.HistoryMode {
+	case RestoreHistoryModeSnapshot:
+		if profile.HistoryDigest == "" && profile.HistoryTime == "" && meta.Head == model.Natural64(1) && meta.HistoryFloor == model.Natural64(1) {
+			return nil
+		}
+	case RestoreHistoryModeFull:
+		head, err := meta.Head.Uint64()
+		if err == nil && head >= 2 && meta.HistoryFloor.IsZero() && profile.HistoryDigest != "" && profile.HistoryTime != "" {
+			return nil
+		}
+	}
+	return sourcePlaneError("joint restore revision/floor differs from explicit history policy")
 }
 
 // ValidateSourcePlaneInitialCheckpoint verifies the actual host envelope at

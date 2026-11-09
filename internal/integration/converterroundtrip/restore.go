@@ -233,7 +233,11 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		for _, r := range plan.records {
 			tail = append(tail, driver.Record{Ref: r.ref, Kind: r.kind, Body: r.body})
 		}
-		replay, err = driver.BuildOfflineHistory(meta, *profile, lowered, restoreTime, tail)
+		buildHistory := driver.BuildOfflineHistory
+		if sourceLogical != nil {
+			buildHistory = driver.BuildSourcePlaneHistory
+		}
+		replay, err = buildHistory(meta, *profile, lowered, restoreTime, tail)
 		if err != nil {
 			return report, err
 		}
@@ -264,7 +268,11 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		if err != nil {
 			return report, err
 		}
-		if _, err = driver.PrepareSourcePlaneImportProfile(*profile, meta, sourceCapability.WorkflowCheckpointLifetime()); err != nil {
+		prepareProfile := driver.PrepareSourcePlaneImportProfile
+		if history != nil {
+			prepareProfile = driver.PrepareSourcePlaneHistoryProfile
+		}
+		if _, err = prepareProfile(*profile, meta, sourceCapability.WorkflowCheckpointLifetime()); err != nil {
 			return report, err
 		}
 		// The final evidence has a new-incarnation-dependent body, but its complete
@@ -292,7 +300,15 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		if !historyOK {
 			return report, driver.ErrRestoreHistoryRefused{Mode: profile.HistoryMode, History: archive.Manifest().History, Reason: driver.RestoreHistoryReasonNotYetSupported}
 		}
-		restored, err = historyCapability.PrepareOfflineHistory(ctx, *profile, *history, restoreTime)
+		if sourceLogical != nil {
+			joint, ok := tx.(driver.SourcePlaneHistoryRestoreTx)
+			if !ok {
+				return report, driver.ErrUnsupported
+			}
+			restored, err = joint.PrepareSourcePlaneHistory(ctx, *profile, *history, restoreTime)
+		} else {
+			restored, err = historyCapability.PrepareOfflineHistory(ctx, *profile, *history, restoreTime)
+		}
 		if err == nil {
 			continuation, continuationOK := tx.(driver.AllocatorContinuation)
 			if !continuationOK {
@@ -358,6 +374,7 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		changes = append(changes, model.ChangeRecord{Ref: record.ref, Op: model.OpCreate, FromRevision: model.Natural64(0), ChangedPaths: []string{"/"}})
 		revision := model.Natural64(1)
 		if history != nil {
+			revision = restored.Head
 			for _, final := range replay.Records {
 				if final.Ref == record.ref {
 					revision = final.Revision
@@ -558,7 +575,7 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 		if sourceOK {
 			sourceOK = json.Unmarshal(rawSource, &source) == nil
 		}
-		if !ok || metadata.Project != project.SourceAllocator.Prefix || !reflect.DeepEqual(metadata.ImportProfile, bound) || !sourceOK || !reflect.DeepEqual(source, project.SourceAllocator) || !reflect.DeepEqual(metadata.TargetAllocator, project.TargetAllocator) {
+		if !ok || !reflect.DeepEqual(metadata.SourceIdentity, project.SourceIdentity) || metadata.Project != project.SourceAllocator.Prefix || !reflect.DeepEqual(metadata.ImportProfile, bound) || !sourceOK || !reflect.DeepEqual(source, project.SourceAllocator) || !reflect.DeepEqual(metadata.TargetAllocator, project.TargetAllocator) {
 			return Report{}, driver.ErrConflict
 		}
 	}
@@ -601,13 +618,14 @@ type restoreRecord struct {
 }
 
 type restorePlan struct {
-	migration     *dumpformat.ImportMigration
-	records       []restoreRecord
-	sentinels     []driver.Sentinel
-	derived       []derivedImage
-	derivedDigest string
-	blobs         map[string][]byte
-	allocators    []driver.OfflineAllocator
+	migration      *dumpformat.ImportMigration
+	nativeOntology *dumpformat.NativeStatusOntology
+	records        []restoreRecord
+	sentinels      []driver.Sentinel
+	derived        []derivedImage
+	derivedDigest  string
+	blobs          map[string][]byte
+	allocators     []driver.OfflineAllocator
 }
 
 // importBindingEvidence is an immutable, transaction-local copy of the full
@@ -622,11 +640,13 @@ type importBindingEvidence struct {
 }
 
 type importProjectBinding struct {
-	SourceAllocator dumpformat.Project      `json:"sourceAllocator"`
-	TargetAllocator driver.OfflineAllocator `json:"targetAllocator"`
+	SourceIdentity  *dumpformat.SourceIdentity `json:"sourceIdentity,omitempty"`
+	SourceAllocator dumpformat.Project         `json:"sourceAllocator"`
+	TargetAllocator driver.OfflineAllocator    `json:"targetAllocator"`
 }
 
 type importProjectMetadata struct {
+	SourceIdentity  *dumpformat.SourceIdentity  `json:"sourceIdentity,omitempty"`
 	Project         string                      `json:"project"`
 	ImportProfile   driver.RestoreImportProfile `json:"importProfile"`
 	Metadata        map[string]json.RawMessage  `json:"metadata"`
@@ -753,7 +773,11 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 	if entities != nil {
 		var durable []dumpformat.Record
 		for _, source := range beads {
-			if entities[driver.SourceEntityKey{Project: source.Project, Plane: source.Source.Table, ID: source.ID}].TargetKind == "bead" {
+			entity, present := entities[driver.SourceEntityKey{Project: source.Project, Plane: source.Source.Table, ID: source.ID}]
+			if !present {
+				return restorePlan{}, fmt.Errorf("%w: historical source entity lacks an explicit disposition: %s/%s/%s", ErrRestoreUnavailable, source.Project, source.Source.Table, source.ID)
+			}
+			if entity.TargetKind == "bead" {
 				durable = append(durable, source)
 			}
 		}
@@ -769,6 +793,13 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 			return restorePlan{}, fmt.Errorf("%w: source ID does not match the declared allocator", ErrRestoreUnavailable)
 		}
 		status, ok := targetStatus(stringValue(source.Source.Fields["status"]))
+		if manifest.StatusCategoryContract == dumpformat.StatusCategoryContract {
+			status = stringValue(source.Source.Fields["status"])
+			ok = false
+			for _, declared := range project.Statuses {
+				ok = ok || declared.Name == status
+			}
+		}
 		targetType := stringValue(source.Body["type"])
 		if migration != nil {
 			target, present := migration.Target(source.Project, source.ID)
@@ -841,6 +872,16 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 			return restorePlan{}, fmt.Errorf("bead %s source fields: %w", source.ID, err)
 		}
 		metadata["beads.source_fields"] = sourceFields
+		if key, scoped := source.SourceKey(); scoped {
+			metadata["beads.source_identity"], err = json.Marshal(source.Source.Identity)
+			if err != nil {
+				return restorePlan{}, err
+			}
+			metadata["beads.source_key"], err = json.Marshal(key)
+			if err != nil {
+				return restorePlan{}, err
+			}
+		}
 		if project, ok := projects[source.Project]; ok {
 			encoded, err := json.Marshal(project)
 			if err != nil {
@@ -1017,6 +1058,12 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		}
 	}
 
+	if source, native := archive.NativeStatusOntology(); native {
+		plan.nativeOntology = &source
+		if err := add(model.RefByID(ImportedOntologySourceID, model.Natural64(0)), "ontology", source); err != nil {
+			return restorePlan{}, err
+		}
+	}
 	if err := rebuildDerived(&plan, docs); err != nil {
 		return restorePlan{}, err
 	}
@@ -1035,13 +1082,22 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 				return restorePlan{}, err
 			}
 			targetAllocator := driver.NewRandomAllocator(project.Prefix)
+			var identity *dumpformat.SourceIdentity
+			for _, origin := range archive.SourceIdentities() {
+				if origin.Project == project.Prefix {
+					copy := origin
+					identity = &copy
+				}
+			}
 			binding.Projects = append(binding.Projects, importProjectBinding{
+				SourceIdentity:  identity,
 				SourceAllocator: project,
 				TargetAllocator: targetAllocator,
 			})
 			metadata := importProjectMetadata{
-				Project:       project.Prefix,
-				ImportProfile: *profile,
+				SourceIdentity: identity,
+				Project:        project.Prefix,
+				ImportProfile:  *profile,
 				Metadata: map[string]json.RawMessage{
 					"plug.restore.sourceAllocator": sourceRaw,
 				},

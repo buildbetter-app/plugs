@@ -156,6 +156,9 @@ func lowerSourceHistory(a *dumpformat.Archive, p driver.RestoreImportProfile, wh
 				return refuse()
 			}
 			batch := driver.SourceHistoryBatch{Sequence: frame.Sequence, CommitIDs: []string{frame.CommitID}, EventIDs: []string{}, Changes: historyDelta(before, after)}
+			if a.Manifest().SourceIdentityContract == dumpformat.SourceIdentityContract {
+				batch.SourceStoreID, batch.Project, batch.SourceSequence = scopes[0].SourceStoreID, scopes[0].Project, frame.Sequence
+			}
 			for _, e := range frame.Events {
 				id := dumpformat.SourceEventID(e)
 				if !previousEvents[id] {
@@ -170,7 +173,6 @@ func lowerSourceHistory(a *dumpformat.Archive, p driver.RestoreImportProfile, wh
 		return h, nil
 	}
 	var globalSequence uint64
-	sharedGlobals := map[string]driver.Record{}
 	for _, scoped := range scopes {
 		before := []driver.Record{}
 		previousEvents := map[string]bool{}
@@ -183,12 +185,9 @@ func lowerSourceHistory(a *dumpformat.Archive, p driver.RestoreImportProfile, wh
 			if err != nil {
 				return refuse()
 			}
-			afterRecords, err := omitAlreadyImportedSharedGlobals(portableHistoryRecords(beforePlan), sharedGlobals)
-			if err != nil {
-				return refuse()
-			}
+			afterRecords := portableHistoryRecords(beforePlan)
 			globalSequence++
-			batch := driver.SourceHistoryBatch{Project: scoped.Project, Sequence: globalSequence, CommitIDs: []string{frame.CommitID}, EventIDs: []string{}, Changes: historyDelta(before, afterRecords)}
+			batch := driver.SourceHistoryBatch{SourceStoreID: scoped.SourceStoreID, SourceSequence: frame.Sequence, Project: scoped.Project, Sequence: globalSequence, CommitIDs: []string{frame.CommitID}, EventIDs: []string{}, Changes: historyDelta(before, afterRecords)}
 			for _, e := range frame.Events {
 				id := dumpformat.SourceEventID(e)
 				if !previousEvents[id] {
@@ -206,26 +205,6 @@ func lowerSourceHistory(a *dumpformat.Archive, p driver.RestoreImportProfile, wh
 	return h, nil
 }
 
-func omitAlreadyImportedSharedGlobals(records []driver.Record, seen map[string]driver.Record) ([]driver.Record, error) {
-	result := make([]driver.Record, 0, len(records))
-	for _, record := range records {
-		if record.Kind != "config" && record.Kind != "memory" {
-			result = append(result, record)
-			continue
-		}
-		key := record.Kind + "\x00" + record.Ref.ID
-		if previous, ok := seen[key]; ok {
-			if previous.Kind != record.Kind || previous.Ref != record.Ref || !bytes.Equal(previous.Body, record.Body) {
-				return nil, fmt.Errorf("shared history record %s has conflicting project images", record.Ref.ID)
-			}
-			continue
-		}
-		seen[key] = record
-		result = append(result, record)
-	}
-	return result, nil
-}
-
 func restoreHistoryScopes(a *dumpformat.Archive) ([]dumpformat.ProjectSourceHistory, bool) {
 	history, ok := a.SourceHistory()
 	if !ok {
@@ -238,7 +217,7 @@ func restoreHistoryScopes(a *dumpformat.Archive) ([]dumpformat.ProjectSourceHist
 	if len(projects) != 1 {
 		return nil, false
 	}
-	return []dumpformat.ProjectSourceHistory{{Project: projects[0].Prefix, Commits: history.Commits, Events: history.Events, Range: history.Range}}, true
+	return []dumpformat.ProjectSourceHistory{{SourceStoreID: a.Manifest().StoreID, Project: projects[0].Prefix, Commits: history.Commits, Events: history.Events, Range: history.Range}}, true
 }
 
 func historyDelta(before, after []driver.Record) []driver.SourceHistoryChange {
@@ -324,53 +303,48 @@ func historyLockPlan(plan restorePlan, h driver.OfflineHistory) restorePlan {
 }
 
 func validateHistoryRecovery(ctx context.Context, r driver.Reader, p driver.RestoreImportProfile, evidence archiveEvidence, receipt *driver.IdempotencyRecord) error {
-	file, ok := evidence.Members[dumpformat.SourceHistoryMember]
-	if !ok || p.HistoryTime == "" {
+	if p.HistoryTime == "" || evidence.ArchiveSHA256 != p.ArchiveDigest {
 		return driver.ErrConflict
 	}
-	raw, err := r.Blob(ctx, driver.Hash(file.SHA256))
-	if err != nil || hashBytes(raw) != file.SHA256 || int64(len(raw)) != file.Size {
+	// Rebuild from the authenticated original envelope. A merged archive has
+	// independent ranges; the aggregate Range cannot stand in for any source.
+	raw, err := r.Blob(ctx, driver.Hash(evidence.ArchiveSHA256))
+	if err != nil || hashBytes(raw) != evidence.ArchiveSHA256 {
 		return driver.ErrConflict
 	}
-	var source dumpformat.SourceHistory
-	d := json.NewDecoder(bytes.NewReader(raw))
-	d.UseNumber()
-	if err = d.Decode(&source); err != nil || source.Range.Status != "verified" {
+	archive, err := dumpformat.Read(bytes.NewReader(raw))
+	if err != nil || archive.SHA256() != p.ArchiveDigest {
+		return driver.ErrConflict
+	}
+	when, err := time.Parse(time.RFC3339Nano, p.HistoryTime)
+	if err != nil {
+		return driver.ErrConflict
+	}
+	history, err := lowerSourceHistory(archive, p, when)
+	if err != nil {
+		return driver.ErrConflict
+	}
+	digest, err := driver.OfflineHistoryDigest(history)
+	if err != nil || digest != p.HistoryDigest {
 		return driver.ErrConflict
 	}
 	rows, err := r.Get(ctx, []model.Ref{model.RefByID(driver.OfflineHistoryEvidenceID, model.Natural64(0))})
-	if err != nil || len(rows) != 1 {
+	if err != nil || len(rows) != 1 || rows[0].Kind != "beads-archive" {
 		return driver.ErrConflict
 	}
 	var got driver.HistoryImportEvidence
 	if err = json.Unmarshal(rows[0].Body, &got); err != nil {
 		return driver.ErrConflict
 	}
-	want := driver.HistoryImportEvidence{Source: dumpformat.SourceHistoryFormat, Mode: p.HistoryMode, Complete: source.Range.Complete, First: source.Range.First, Head: source.Range.Head, Floor: model.Natural64(0), Gaps: []driver.SourceHistoryGap{}, Mapping: []driver.SourceImportRevision{}}
-	for _, gap := range source.Range.Gaps {
-		want.Gaps = append(want.Gaps, driver.SourceHistoryGap{First: gap.First, Last: gap.Last, Reason: gap.Reason})
-	}
+	want := driver.HistoryImportEvidence{Source: history.Source, Mode: p.HistoryMode, Complete: history.Complete, First: history.First, Head: history.Head, Floor: model.Natural64(0), Gaps: append([]driver.SourceHistoryGap{}, history.Gaps...), Mapping: []driver.SourceImportRevision{}}
 	var revision uint64
-	if source.Range.First > 1 {
+	if history.First > 1 {
 		revision = 1
 		want.Floor = model.Natural64(1)
 	}
-	previous := map[string]bool{}
-	for _, event := range source.Range.BaselineEvents {
-		previous[dumpformat.SourceEventID(event)] = true
-	}
-	for _, frame := range source.Range.Frames {
+	for _, batch := range history.Batches {
 		revision++
-		ids := []string{}
-		for _, event := range frame.Events {
-			id := dumpformat.SourceEventID(event)
-			if !previous[id] {
-				ids = append(ids, id)
-			}
-			previous[id] = true
-		}
-		sort.Strings(ids)
-		want.Mapping = append(want.Mapping, driver.SourceImportRevision{Sequence: frame.Sequence, Revision: model.Natural64(revision), EventIDs: ids, CommitIDs: []string{frame.CommitID}})
+		want.Mapping = append(want.Mapping, driver.SourceImportRevision{SourceStoreID: batch.SourceStoreID, SourceSequence: batch.SourceSequence, Project: batch.Project, Sequence: batch.Sequence, Revision: model.Natural64(revision), EventIDs: batch.EventIDs, CommitIDs: batch.CommitIDs})
 	}
 	revision++
 	left, _ := json.Marshal(got)
