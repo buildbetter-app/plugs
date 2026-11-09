@@ -92,13 +92,13 @@ func run() error {
 
 // The caller supplies a frozen copied backup. Refuse nonregular entries and
 // detect changes to its complete file census, not just the manifest or HEAD.
-func fingerprintBackup(root string) (map[string][32]byte, error) {
+func fingerprintBackup(root string) (files map[string][32]byte, resultErr error) {
 	backup, err := os.OpenRoot(root)
 	if err != nil {
 		return nil, err
 	}
-	defer backup.Close()
-	files := map[string][32]byte{}
+	defer func() { resultErr = errors.Join(resultErr, backup.Close()) }()
+	files = map[string][32]byte{}
 	err = fs.WalkDir(backup.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
