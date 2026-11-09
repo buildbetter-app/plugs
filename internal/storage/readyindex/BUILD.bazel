@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "readyindex",
+    srcs = glob(["*.go"], exclude = ["*_test.go"]),
+    importpath = "github.com/buildbetter-app/plugs/internal/storage/readyindex",
+    visibility = ["//:__subpackages__"],
+    deps = ["//internal/core/model", "//internal/storage/driver"],
+)
+
+go_test(
+    name = "readyindex_test",
+    srcs = glob(["*_test.go"]),
+    embed = [":readyindex"],
+    deps = ["//internal/core/model", "//internal/storage/conformance/readyorder", "//internal/storage/driver", "//internal/storage/memory", "//internal/storage/sqlite"],
+)

@@ -49,6 +49,12 @@ func (s *constructorFactsStore) Meta(ctx context.Context) (driver.Meta, error) {
 	return s.Store.Meta(ctx)
 }
 
+type nilFactsSource struct{}
+
+func (*nilFactsSource) Load(context.Context, authzrpc.Snapshot) (authzfixed.Facts, error) {
+	panic("nil facts source must be refused before loading")
+}
+
 func TestNewRejectsTypedNilFactsBeforeStorage(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()
@@ -71,6 +77,7 @@ func TestNewRejectsTypedNilFactsBeforeStorage(t *testing.T) {
 		{"nil_interface", nil},
 		{"nil_static_pointer", (*authzrpc.StaticFacts)(nil)},
 		{"nil_mutable_pointer", (*authzrpc.MutableFacts)(nil)},
+		{"nil_custom_pointer", (*nilFactsSource)(nil)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			observed := &constructorFactsStore{Store: store}

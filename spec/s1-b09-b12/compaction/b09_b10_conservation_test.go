@@ -194,10 +194,10 @@ func b09B10Equal(t *testing.T, label string, want, got any) {
 	}
 }
 
-// Compaction conserves every logical derived byte. Its changed source still
-// requires fresh provenance on exactly the five existing selected-child rows.
-// Build the complete expected inventory from the before image, changing only
-// those two source-binding fields; absent or altered annotations still fail.
+// Compaction conserves the full inventory. Exactly five selected-child rows
+// need fresh source provenance; its counting row also carries the canonical
+// Ready leaf, whose full semantic preimage includes source revision and fields.
+// All expectations start from the before image, never the published rows.
 func b09B10CompactedDerived(t *testing.T, before, after b09B10Image, selected string) map[driver.DerivedTable][]driver.DerivedRow {
 	t.Helper()
 	selectedRecord := func(image b09B10Image) driver.Record {
@@ -219,6 +219,31 @@ func b09B10CompactedDerived(t *testing.T, before, after b09B10Image, selected st
 	digest := func(body []byte) string {
 		sum := sha256.Sum256(body)
 		return hex.EncodeToString(sum[:])
+	}
+	membership := func(record driver.Record) string {
+		var doc struct {
+			ID, Type, Project string
+			Fields            map[string]any
+		}
+		decoder := json.NewDecoder(strings.NewReader(string(record.Body)))
+		decoder.UseNumber()
+		if err := decoder.Decode(&doc); err != nil {
+			t.Fatal(err)
+		}
+		status, _ := doc.Fields["status"].(string)
+		item := struct {
+			ID       string         `json:"id"`
+			Type     string         `json:"type"`
+			Project  string         `json:"project"`
+			Status   string         `json:"status"`
+			Revision model.Revision `json:"revision"`
+			Fields   map[string]any `json:"fields,omitempty"`
+		}{doc.ID, doc.Type, doc.Project, status, record.Revision, doc.Fields}
+		body, err := json.Marshal(item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return digest(body)
 	}
 	want := make(map[driver.DerivedTable][]driver.DerivedRow, len(before.Derived))
 	refreshed := map[driver.DerivedTable]int{}
@@ -244,6 +269,19 @@ func b09B10CompactedDerived(t *testing.T, before, after b09B10Image, selected st
 					t.Logf("selected source has exact canonical identity despite private reference metadata: annotation=%#v record=%#v", *index.Source.Key.Ref, oldSource.Ref)
 				}
 				index.Source.Revision, index.Source.Digest = source.Revision, digest(source.Body)
+				if index.Bead != nil {
+					if index.Bead.MembershipLeaf != membership(oldSource) {
+						t.Fatal("baseline counting leaf does not bind its exact source revision/body")
+					}
+					bead := *index.Bead
+					bead.MembershipLeaf = membership(source)
+					index.Bead = &bead
+					body, err := json.Marshal(bead)
+					if err != nil {
+						t.Fatal(err)
+					}
+					row.Value, index.ValueDigest = body, digest(body)
+				}
 				refreshed[table]++
 			}
 			want[table][i] = row

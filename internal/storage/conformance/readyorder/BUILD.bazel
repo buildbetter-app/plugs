@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "readyorder",
+    srcs = ["writer.go"],
+    importpath = "github.com/buildbetter-app/plugs/internal/storage/conformance/readyorder",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/storage/driver",
+        "//internal/storage/readyindex",
+    ],
+)

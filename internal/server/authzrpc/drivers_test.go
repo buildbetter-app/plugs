@@ -65,6 +65,176 @@ func TestFixedPermissionsAcrossDrivers(t *testing.T) {
 			t.Run("source_publication_failure", func(t *testing.T) { sourcePublicationFailure(t, open) })
 			t.Run("initial_source_publication", func(t *testing.T) { initialSourcePublication(t, open) })
 			t.Run("writer_boolean_presence_and_restamping", func(t *testing.T) { writerPublishesKernelBooleanAndSourceOnlyRestamps(t, open) })
+			t.Run("ready_facts_carry_forward", func(t *testing.T) { readyFactsCarryForward(t, open) })
+		})
+	}
+}
+
+func readyFactsCarryForward(t *testing.T, open storeFactory) {
+	for _, mode := range []string{"maintained", "unmaintained", "corrupt", "drift"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := context.Background()
+			store := &authorizationRaceStore{Store: open(t)}
+			t.Cleanup(func() { _ = store.Close() })
+			lease, err := store.Lease(ctx, "ready-facts", driver.LeaseTTL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = lease.Release(ctx) })
+			meta, err := store.Meta(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			base := authzfixed.Facts{Namespace: authz.Namespace{StoreID: string(meta.StoreID), Incarnation: meta.Incarnation, InstallationID: "fixed", Authority: model.RefByID("authority", model.Natural64(0))}}
+			facts, err := authzrpc.NewMutableFacts(base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			keys := authnapikey.New(authnapikey.Config{AuthorizationInstalled: func() bool { return true }})
+			if _, err := authzrpc.New(ctx, authzrpc.Config{Store: store, Lease: lease, Provider: keys, Facts: facts, Namespace: base.Namespace}); err != nil {
+				t.Fatal(err)
+			}
+			if err := facts.Replace(base); err != nil {
+				t.Fatal(err)
+			}
+			old, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer old.Close()
+			rows, err := old.DerivedRows(ctx, driver.DerivedReadyState, "")
+			if err != nil || len(rows) != 1 || rows[0].Key != "plug.ready.v2/coverage" {
+				t.Fatalf("empty initial publication lacks its exact Ready marker: %+v/%v", rows, err)
+			}
+			var marker struct {
+				Version     int
+				Incarnation string
+				Through     model.Revision
+				Unsafe      uint64
+			}
+			if err := json.Unmarshal(rows[0].Value, &marker); err != nil || marker.Version != 2 || marker.Incarnation != meta.Incarnation || marker.Through.String() != old.Snapshot().At.String() {
+				t.Fatal("initial Ready marker is not bound to the fact publication")
+			}
+			want := []driver.DerivedRow{rows[0].Clone()}
+			if mode == "unmaintained" || mode == "corrupt" {
+				tx, err := store.Write(ctx, lease)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Close()
+				var locks driver.LockSet
+				var sentinel driver.Sentinel
+				if mode == "corrupt" {
+					sentinel, err = driver.NewReadySentinel("*", "*")
+					if err != nil {
+						t.Fatal(err)
+					}
+					rowKey := driver.DerivedRowKey{Table: driver.DerivedReadyState, Key: rows[0].Key}
+					locks = driver.LockSet{{Key: driver.LockKey{Kind: driver.LockDerived, Derived: &rowKey}, Mode: driver.LockUpdate}, {Key: driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel}, Mode: driver.LockUpdate}}
+					sort.Slice(locks, func(i, j int) bool {
+						a, _ := driver.EncodeLockKey(locks[i].Key)
+						b, _ := driver.EncodeLockKey(locks[j].Key)
+						return a < b
+					})
+				}
+				if _, err := tx.Lock(ctx, locks); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.Head(ctx); err != nil {
+					t.Fatal(err)
+				}
+				if mode == "corrupt" {
+					want[0].Value = []byte("malformed optional Ready metadata")
+					if err := tx.PutDerived(ctx, driver.DerivedReadyState, nil, want); err != nil {
+						t.Fatal(err)
+					}
+					if err := tx.BumpSentinels(ctx, []driver.Sentinel{sentinel}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				lockKeys := make([]driver.LockKey, len(locks))
+				for i, lock := range locks {
+					lockKeys[i] = lock.Key
+				}
+				if _, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: meta.Incarnation, Kind: model.ChangesetDerived, Principal: model.PrincipalRef{Kind: "system", ID: "ready-gap"}, LockKeys: lockKeys}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := store.Meta(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var competing model.Revision
+			var competingRef model.Ref
+			var calls int
+			if mode == "drift" {
+				// The fact publisher has already pinned its Ready observations
+				// when Store.Write runs. Commit a real maintained source mutation
+				// before its lock census, without changing the ACL/source guards.
+				hook := func() error {
+					calls++
+					o := service.NewOntology(nil)
+					w := pipeline.New(store.Store, lease, pipeline.WithOntology(o))
+					svc := service.New(store.Store, lease, w, service.WithOntology(o))
+					commit, err := svc.MemorySave(ctx, model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}, service.MemorySaveRequest{Key: "ready-fact-drift", Content: "competing maintained source"}, model.WriteMeta{Project: "local", Agent: "ready-test", AgentLabel: "ready-test", IdempotencyKey: fmt.Sprintf("%064x", 1)})
+					if err != nil {
+						return err
+					}
+					if len(commit.Results) != 1 {
+						return errors.New("competing source did not return its record")
+					}
+					competingRef = commit.Results[0].Ref
+					current, err := store.Store.Meta(ctx)
+					competing = current.Head
+					return err
+				}
+				store.beforeWrite.Store(&hook)
+			}
+			if err := facts.Replace(base); err != nil {
+				t.Fatalf("optional Ready state refused an ordinary fact publication: %v", err)
+			}
+			after, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer after.Close()
+			n, _ := before.Head.Uint64()
+			if mode == "drift" {
+				if calls != 1 || competing.String() != model.Natural64(n+1).String() {
+					t.Fatalf("competing source did not commit exactly once: calls=%d head=%s before=%s", calls, competing, before.Head)
+				}
+				n++
+				records, err := after.Get(ctx, []model.Ref{competingRef})
+				if err != nil || len(records) != 1 || records[0].Revision.String() != competing.String() || !strings.Contains(string(records[0].Body), "competing maintained source") {
+					t.Fatalf("competing source was lost or restamped: %+v/%v", records, err)
+				}
+				marker.Through = competing
+				want[0].Value, err = json.Marshal(marker)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if after.Snapshot().At.String() != model.Natural64(n+1).String() {
+				t.Fatal("fact publication did not retain one durable H+1 commit")
+			}
+			if mode == "maintained" {
+				marker.Through = *after.Snapshot().At
+				want[0].Value, err = json.Marshal(marker)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := after.DerivedRows(ctx, driver.DerivedReadyState, "")
+			if err != nil || !reflect.DeepEqual(want, got) {
+				t.Fatalf("Ready carry-forward or fallback changed the wrong bytes: want%+v got%+v/%v", want, got, err)
+			}
+			pinned, err := old.DerivedRows(ctx, driver.DerivedReadyState, "")
+			if err != nil || !reflect.DeepEqual(rows, pinned) {
+				t.Fatal("fact maintenance rewrote a pinned Ready marker")
+			}
+			if _, err := facts.Load(ctx, after); err != nil {
+				t.Fatal("Ready maintenance lost durable fact/source/ACL binding", err)
+			}
 		})
 	}
 }
@@ -1378,6 +1548,12 @@ func initialSourcePublication(t *testing.T, open storeFactory) {
 			}
 			namespace := authz.Namespace{StoreID: string(before.StoreID), Incarnation: before.Incarnation, InstallationID: "fixed", Authority: model.RefByID("authority", model.Natural64(0))}
 			facts := authzfixed.Facts{Namespace: namespace}
+			sourceBytes, err := authzfixed.FactsSourceBytes(facts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stagedRows := initialPublicationRows(t, namespace, sourceBytes, model.Natural64(0), supportsSelection)
+			durableRows := initialPublicationRows(t, namespace, sourceBytes, model.Natural64(1), supportsSelection)
 			source, err := authzrpc.NewMutableFacts(facts)
 			if err != nil {
 				t.Fatal(err)
@@ -1403,7 +1579,7 @@ func initialSourcePublication(t *testing.T, open storeFactory) {
 			}
 			if mode != "success" {
 				var lost driver.ErrIndeterminate
-				if fault.commitCalls != 1 || fault.headCalls != 1 || len(fault.rows) != 4 || len(fault.bumped) != 1 || (fault.lostAck && !errors.As(err, &lost)) || (!fault.lostAck && !errors.Is(err, errBeforeFactsCommit)) {
+				if fault.commitCalls != 1 || fault.headCalls != 1 || !reflect.DeepEqual(fault.rows, stagedRows) || len(fault.bumped) != 1 || (fault.lostAck && !errors.As(err, &lost)) || (!fault.lostAck && !errors.Is(err, errBeforeFactsCommit)) {
 					t.Fatalf("initial fault did not follow complete source/fact/ACL staging: %+v error=%v", fault, err)
 				}
 			}
@@ -1416,12 +1592,14 @@ func initialSourcePublication(t *testing.T, open storeFactory) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				keys, _ := authzfixed.SelectionRows(namespace)
-				for _, key := range []driver.DerivedRowKey{keys.Source, keys.Grants, keys.Projects, keys.Teams} {
+				for key := range stagedRows {
 					states, err := r.Observe(ctx, []driver.LockKey{{Kind: driver.LockDerived, Derived: &key}})
 					if err != nil || len(states) != 1 || states[0].Present || !states[0].Revision.IsZero() {
 						t.Fatal("failed initialization leaked a projection")
 					}
+				}
+				if rows := publicationInventory(t, r); len(rows) != 0 {
+					t.Fatalf("failed initialization leaked derived inventory: %+v", rows)
 				}
 				_ = r.Close()
 			} else {
@@ -1456,6 +1634,14 @@ func initialSourcePublication(t *testing.T, open storeFactory) {
 					}
 				}
 			}
+			initial, err := store.Read(ctx, driver.View{Incarnation: namespace.Incarnation})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer initial.Close()
+			if mode != "before_commit" && !reflect.DeepEqual(publicationInventory(t, initial), durableRows) {
+				t.Fatal("initial publication lost exact complete source/fact/Ready inventory")
+			}
 			if _, err := authzrpc.New(ctx, config); err != nil {
 				t.Fatal("legitimate initial recovery/rebind failed:", err)
 			}
@@ -1481,8 +1667,71 @@ func initialSourcePublication(t *testing.T, open storeFactory) {
 			if err != nil || len(entries) != 1 || entries[0].Kind != model.ChangesetDerived {
 				t.Fatal("initial publication/recovery history is not exactly one commit")
 			}
+			if !reflect.DeepEqual(publicationInventory(t, r), durableRows) {
+				t.Fatal("initial recovery changed the exact five-row source/fact/Ready inventory")
+			}
+			pinned := publicationInventory(t, initial)
+			if mode == "before_commit" && len(pinned) != 0 || mode != "before_commit" && !reflect.DeepEqual(pinned, durableRows) {
+				t.Fatal("initial recovery rewrote its pinned inventory")
+			}
 		})
 	}
+}
+
+// Independently enumerate the complete empty authority publication: one raw
+// source, three explicit empty typed domains and the exact H+1 Ready marker.
+// This oracle does not call either publication producer.
+func initialPublicationRows(t *testing.T, namespace authz.Namespace, body []byte, sourceRevision model.Revision, typed bool) map[driver.DerivedRowKey]driver.DerivedRow {
+	t.Helper()
+	keys, err := authzfixed.SelectionRows(namespace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[driver.DerivedRowKey]driver.DerivedRow{keys.Source: {Key: keys.Source.Key, Value: append([]byte(nil), body...)}}
+	for i, key := range []driver.DerivedRowKey{keys.Grants, keys.Projects, keys.Teams} {
+		facts := driver.SelectionFacts{Kind: []driver.SelectionFactKind{driver.SelectionScopedGrantFact, driver.SelectionProjectFact, driver.SelectionTeamFact}[i], Rows: []driver.SelectionFact{}}
+		value, err := json.Marshal(facts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		row := driver.DerivedRow{Key: key.Key, Value: value}
+		if typed {
+			row.Index = &driver.SelectionIndex{Version: driver.SelectionIndexVersion, Row: key, Incarnation: namespace.Incarnation, Branch: model.Natural64(0), ValueDigest: driver.SelectionDigest(value), Source: driver.SelectionSource{Key: driver.LockKey{Kind: driver.LockDerived, Derived: &keys.Source}, Revision: sourceRevision, Present: true, Digest: driver.SelectionDigest(body)}, Facts: &facts}
+		}
+		// Own the expected annotation at the same boundary as driver reads and
+		// the fault capture; retain the explicit [] in the logical Value bytes.
+		want[key] = row.Clone()
+	}
+	marker, err := json.Marshal(struct {
+		Version     int
+		Incarnation string
+		Through     model.Revision
+		Unsafe      uint64
+	}{2, namespace.Incarnation, model.Natural64(1), 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want[driver.DerivedRowKey{Table: driver.DerivedReadyState, Key: "plug.ready.v2/coverage"}] = driver.DerivedRow{Key: "plug.ready.v2/coverage", Value: marker}
+	return want
+}
+
+func publicationInventory(t *testing.T, r driver.Reader) map[driver.DerivedRowKey]driver.DerivedRow {
+	t.Helper()
+	rows := map[driver.DerivedRowKey]driver.DerivedRow{}
+	for _, table := range []driver.DerivedTable{driver.DerivedReadyState, driver.DerivedAncestorClosure, driver.DerivedCutClosure, driver.DerivedAttribute, driver.DerivedSortKey, driver.DerivedReferenceIndex, driver.DerivedGrant, driver.DerivedOntology, driver.DerivedPlugins} {
+		values, err := r.DerivedRows(context.Background(), table, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range values {
+			key := driver.DerivedRowKey{Table: table, Key: row.Key}
+			if _, duplicate := rows[key]; duplicate {
+				t.Fatal("duplicate publication inventory row")
+			}
+			rows[key] = row.Clone()
+		}
+	}
+	return rows
 }
 
 func TestMutableFactsRejectsPublicationDriftBeforeHead(t *testing.T) {
@@ -1610,6 +1859,7 @@ func writerPublishesKernelBooleanAndSourceOnlyRestamps(t *testing.T, open storeF
 			t.Fatal("kernel did not publish the actual boolean template")
 		}
 		before := observe(r, ref)
+		beforeInventory := selectionFamilyInventory(t, r)
 		for _, state := range before {
 			index := state.Derived
 			if !state.Present || index == nil || index.Index == nil || index.Index.Source.Digest != driver.SelectionDigest(records[0].Body) || index.Index.Source.Revision.String() != created.Revision.String() {
@@ -1626,17 +1876,46 @@ func writerPublishesKernelBooleanAndSourceOnlyRestamps(t *testing.T, open storeF
 		}
 		afterReader := read(nil)
 		afterRecords, err := afterReader.Get(ctx, []model.Ref{ref})
-		if err != nil || len(afterRecords) != 1 {
+		if err != nil || len(afterRecords) != 1 || afterRecords[0].Revision.String() != changed.Revision.String() {
 			t.Fatal(err)
 		}
 		after := observe(afterReader, ref)
+		wantInventory := sourceRestampedInventory(t, beforeInventory, records[0], afterRecords[0])
+		afterInventory := selectionFamilyInventory(t, afterReader)
 		for j, state := range after {
-			row := state.Derived
-			if row == nil || row.Index == nil || !reflect.DeepEqual(row.Value, before[j].Derived.Value) || row.Index.Source.Revision.String() != changed.Revision.String() || row.Index.Source.Digest != driver.SelectionDigest(afterRecords[0].Body) || row.Index.Source.Digest == before[j].Derived.Index.Source.Digest {
-				t.Fatal("source-only change skipped annotation restamping")
+			want := before[j]
+			want.Revision = changed.Revision
+			key := *want.Key.Derived
+			row, ok := wantInventory[key]
+			if !ok {
+				t.Fatal("source-only expected inventory lost a selected row")
+			}
+			if key.Table == driver.DerivedAncestorClosure {
+				if state.Derived == nil {
+					t.Fatal("source-only restamp lost the selected ancestor row")
+				}
+				inventoryRow, ok := afterInventory[key]
+				if !ok {
+					t.Fatal("source-only inventory lost the selected ancestor row")
+				}
+				row = canonicalRestampAncestorOwners(t, row, afterRecords[0])
+				observedRow := canonicalRestampAncestorOwners(t, *state.Derived, afterRecords[0])
+				state.Derived = &observedRow
+				wantInventory[key] = row
+				afterInventory[key] = canonicalRestampAncestorOwners(t, inventoryRow, afterRecords[0])
+			}
+			want.Derived = &row
+			if !reflect.DeepEqual(state, want) {
+				wantJSON, _ := json.Marshal(want)
+				gotJSON, _ := json.Marshal(state)
+				t.Fatalf("source-only restamp changed fields outside exact provenance and semantic leaf: key=%+v want=%s got=%s expected_source_ref=%#v actual_source_ref=%#v", *want.Key.Derived, wantJSON, gotJSON, want.Derived.Index.Source.Key.Ref, state.Derived.Index.Source.Key.Ref)
 			}
 		}
-		if !reflect.DeepEqual(observe(read(&created.Revision), ref), before) {
+		if !reflect.DeepEqual(afterInventory, wantInventory) {
+			t.Fatal("source-only restamp changed an unselected row or the complete selection inventory")
+		}
+		pinned := read(&created.Revision)
+		if !reflect.DeepEqual(observe(pinned, ref), before) || !reflect.DeepEqual(selectionFamilyInventory(t, pinned), beforeInventory) {
 			t.Fatal("source-only update changed historical annotations")
 		}
 	}
@@ -1657,4 +1936,127 @@ func writerPublishesKernelBooleanAndSourceOnlyRestamps(t *testing.T, open storeF
 			}
 		}
 	}
+}
+
+// Ancestor owners borrow Record.Ref, whose private arm discriminator differs
+// between native literals and JSON-decoded records. On detached comparison
+// copies, canonicalize only the selected ancestor's two owner references after
+// validating their complete lock identity and exact public fields against the
+// committed source. All logical bytes, other annotations and rows remain exact.
+func canonicalRestampAncestorOwners(t *testing.T, row driver.DerivedRow, source driver.Record) driver.DerivedRow {
+	t.Helper()
+	row = row.Clone()
+	index := row.Index
+	if index == nil || index.Facts == nil || index.Facts.Kind != driver.SelectionAncestorFact || len(index.Facts.Rows) != 1 {
+		t.Fatal("selected ancestor has an incomplete typed owner annotation")
+	}
+	if err := index.Validate(driver.DerivedAncestorClosure, row); err != nil {
+		t.Fatal("selected ancestor annotation is invalid:", err)
+	}
+	if err := driver.ValidateHierarchyRef(source.Ref); err != nil {
+		t.Fatal("committed ancestor source identity is invalid:", err)
+	}
+	canonicalize := func(name string, ref *model.Ref) {
+		t.Helper()
+		if ref == nil {
+			t.Fatal("selected ancestor owner reference is missing:", name)
+		}
+		if err := driver.ValidateHierarchyRef(*ref); err != nil {
+			t.Fatal("selected ancestor owner reference is invalid:", name, err)
+		}
+		if !driver.SelectionSameRef(*ref, source.Ref) || ref.ID != source.Ref.ID || ref.Branch != source.Ref.Branch || ref.Key != source.Ref.Key {
+			t.Fatalf("selected ancestor %s differs from committed source: owner=%#v source=%#v", name, *ref, source.Ref)
+		}
+		canonical := model.RefByID(ref.ID, ref.Branch)
+		if !reflect.DeepEqual(*ref, canonical) {
+			t.Logf("selected ancestor %s canonical identity preserves public fields: before=%#v after=%#v", name, *ref, canonical)
+		}
+		*ref = canonical
+	}
+	canonicalize("Source.Key.Ref", index.Source.Key.Ref)
+	canonicalize("Facts.Rows[0].Ref", index.Facts.Rows[0].Ref)
+	return row
+}
+
+func selectionFamilyInventory(t *testing.T, r driver.Reader) map[driver.DerivedRowKey]driver.DerivedRow {
+	t.Helper()
+	rows := map[driver.DerivedRowKey]driver.DerivedRow{}
+	for _, table := range []driver.DerivedTable{driver.DerivedSortKey, driver.DerivedAttribute, driver.DerivedReferenceIndex, driver.DerivedAncestorClosure} {
+		values, err := r.DerivedRows(context.Background(), table, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range values {
+			key := driver.DerivedRowKey{Table: table, Key: row.Key}
+			if _, duplicate := rows[key]; duplicate {
+				t.Fatal("duplicate selection inventory identity")
+			}
+			rows[key] = row.Clone()
+		}
+	}
+	return rows
+}
+
+// Start with every before row. Only the selected source's exact provenance and
+// revision-bound semantic leaf may change; all other bytes and Index fields
+// remain part of the expected full inventory. Reconstruct the original Ready
+// JSON from actual source bytes, independently of the publication helpers.
+func sourceRestampedInventory(t *testing.T, before map[driver.DerivedRowKey]driver.DerivedRow, oldSource, source driver.Record) map[driver.DerivedRowKey]driver.DerivedRow {
+	t.Helper()
+	if !driver.SelectionSameRef(oldSource.Ref, source.Ref) || oldSource.Revision.String() == source.Revision.String() || string(oldSource.Body) == string(source.Body) {
+		t.Fatal("source-only control did not publish the selected changed source")
+	}
+	membership := func(record driver.Record) string {
+		var doc struct {
+			ID, Type, Project string
+			Fields            map[string]any
+		}
+		decoder := json.NewDecoder(strings.NewReader(string(record.Body)))
+		decoder.UseNumber()
+		if err := decoder.Decode(&doc); err != nil {
+			t.Fatal(err)
+		}
+		status, _ := doc.Fields["status"].(string)
+		body, err := json.Marshal(struct {
+			ID       string         `json:"id"`
+			Type     string         `json:"type"`
+			Project  string         `json:"project"`
+			Status   string         `json:"status"`
+			Revision model.Revision `json:"revision"`
+			Fields   map[string]any `json:"fields,omitempty"`
+		}{doc.ID, doc.Type, doc.Project, status, record.Revision, doc.Fields})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return driver.SelectionDigest(body)
+	}
+	want := make(map[driver.DerivedRowKey]driver.DerivedRow, len(before))
+	refreshed := map[driver.DerivedTable]int{}
+	for key, row := range before {
+		row = row.Clone()
+		index := row.Index
+		if index != nil && index.Source.Key.Kind == driver.LockRecord && index.Source.Key.Ref != nil && driver.SelectionSameRef(*index.Source.Key.Ref, oldSource.Ref) {
+			if index.Validate(key.Table, row) != nil || !index.Source.Present || index.Source.Revision.String() != oldSource.Revision.String() || index.Source.Digest != driver.SelectionDigest(oldSource.Body) {
+				t.Fatal("baseline selected annotation does not bind its exact old source")
+			}
+			index.Source.Revision, index.Source.Digest = source.Revision, driver.SelectionDigest(source.Body)
+			if index.Bead != nil {
+				if index.Bead.MembershipLeaf != membership(oldSource) {
+					t.Fatal("baseline selected leaf does not bind the exact source")
+				}
+				index.Bead.MembershipLeaf = membership(source)
+				body, err := json.Marshal(index.Bead)
+				if err != nil {
+					t.Fatal(err)
+				}
+				row.Value, index.ValueDigest = body, driver.SelectionDigest(body)
+			}
+			refreshed[key.Table]++
+		}
+		want[key] = row
+	}
+	if !reflect.DeepEqual(refreshed, map[driver.DerivedTable]int{driver.DerivedSortKey: 1, driver.DerivedAttribute: 1, driver.DerivedReferenceIndex: 1, driver.DerivedAncestorClosure: 1}) {
+		t.Fatalf("incomplete selected restamp census: %+v", refreshed)
+	}
+	return want
 }

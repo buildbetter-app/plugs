@@ -299,6 +299,9 @@ internal/core/pipeline/projections.go
 internal/core/pipeline/projections_test.go
 internal/core/pipeline/protected.go
 internal/core/pipeline/queue_projection_test.go
+internal/core/pipeline/ready_membership.go
+internal/core/pipeline/ready_membership_test.go
+internal/core/pipeline/ready_projection.go
 internal/core/pipeline/ready_sort.go
 internal/core/pipeline/ready_sort_test.go
 internal/core/pipeline/response.go
@@ -373,6 +376,7 @@ internal/core/service/queue_projection.go
 internal/core/service/queue_projection_test.go
 internal/core/service/reads.go
 internal/core/service/ready_order.go
+internal/core/service/ready_projection.go
 internal/core/service/rpc_reads.go
 internal/core/service/service.go
 internal/core/service/service_test.go
@@ -1034,6 +1038,8 @@ internal/storage/conformance/leases.go
 internal/storage/conformance/lifetimes.go
 internal/storage/conformance/locks.go
 internal/storage/conformance/noops.go
+internal/storage/conformance/readyorder/BUILD.bazel
+internal/storage/conformance/readyorder/writer.go
 internal/storage/conformance/responses.go
 internal/storage/conformance/selection.go
 internal/storage/conformance/selection_binding.go
@@ -1071,6 +1077,7 @@ internal/storage/driver/parent_counter_test.go
 internal/storage/driver/queue_projection.go
 internal/storage/driver/queue_projection_test.go
 internal/storage/driver/read_work.go
+internal/storage/driver/ready_order.go
 internal/storage/driver/receipt_contract_test.go
 internal/storage/driver/restore.go
 internal/storage/driver/restore_test.go
@@ -1106,6 +1113,7 @@ internal/storage/memory/offline_history.go
 internal/storage/memory/offline_restore.go
 internal/storage/memory/parent_counter.go
 internal/storage/memory/reader.go
+internal/storage/memory/ready_order.go
 internal/storage/memory/selection.go
 internal/storage/memory/selection_backfill.go
 internal/storage/memory/selection_backfill_test.go
@@ -1164,6 +1172,8 @@ internal/storage/postgres/reader.go
 internal/storage/postgres/reader_batch_test.go
 internal/storage/postgres/reader_versions_batch_negative_test.go
 internal/storage/postgres/reader_versions_batch_test.go
+internal/storage/postgres/ready_order.go
+internal/storage/postgres/ready_order_test.go
 internal/storage/postgres/schema.go
 internal/storage/postgres/selection.go
 internal/storage/postgres/selection_backfill.go
@@ -1186,6 +1196,11 @@ internal/storage/postgres/source_index.go
 internal/storage/postgres/source_link_schema_test.go
 internal/storage/postgres/store.go
 internal/storage/postgres/transaction.go
+internal/storage/readyindex/BUILD.bazel
+internal/storage/readyindex/dense_test.go
+internal/storage/readyindex/ready_order_test.go
+internal/storage/readyindex/select.go
+internal/storage/readyindex/tree.go
 internal/storage/sourceindex/BUILD.bazel
 internal/storage/sourceindex/backfill.go
 internal/storage/sourceindex/publication.go
@@ -1235,6 +1250,7 @@ internal/storage/sqlite/query_cursor_test.go
 internal/storage/sqlite/queue_projection.go
 internal/storage/sqlite/queue_projection_test.go
 internal/storage/sqlite/reader.go
+internal/storage/sqlite/ready_order.go
 internal/storage/sqlite/recordref_test.go
 internal/storage/sqlite/schema.go
 internal/storage/sqlite/selection.go
@@ -1246,7 +1262,10 @@ internal/storage/sqlite/selection_family.go
 internal/storage/sqlite/selection_family_publication.go
 internal/storage/sqlite/selection_family_verify.go
 internal/storage/sqlite/selection_parent_scope_test.go
+internal/storage/sqlite/selection_predicate_work_test.go
 internal/storage/sqlite/selection_publication.go
+internal/storage/sqlite/selection_publication_batch.go
+internal/storage/sqlite/selection_publication_batch_test.go
 internal/storage/sqlite/selection_query.go
 internal/storage/sqlite/selection_stage_work_test.go
 internal/storage/sqlite/selection_test.go

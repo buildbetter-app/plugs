@@ -265,6 +265,13 @@ func (p *SourceProjectionPlan) PublishInIncarnation(ctx context.Context, tx driv
 	if err != nil {
 		return err
 	}
+	revision, err := sourcePublicationRevision(tx)
+	if err != nil {
+		return err
+	}
+	if err := BindReadySelectionRows(*p.doc, revision, rows); err != nil {
+		return err
+	}
 	for i, row := range rows {
 		if err := PutSelectionDerived(ctx, tx, p.keys[i].Table, nil, []driver.DerivedRow{row}); err != nil {
 			return err
@@ -415,6 +422,9 @@ func (p *SourceProjectionPlan) SelectionRows(incarnation string, revision model.
 			row.Index = nil
 		}
 		rows[i] = row.Clone()
+	}
+	if err := BindReadySelectionRows(*doc, revision, rows); err != nil {
+		return nil, err
 	}
 	return rows, nil
 }

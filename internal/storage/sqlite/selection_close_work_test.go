@@ -40,7 +40,7 @@ func (w *selectionCloseWork) ExecContext(ctx context.Context, query string, args
 	return result, nil
 }
 
-func insertSelectionCloseImage(ctx context.Context, q selectionCloseExecutor, incarnation, row, record, start string, end any) error {
+func insertSelectionCloseImage(ctx context.Context, q selectionPublicationExecutor, incarnation, row, record, start string, end any) error {
 	_, err := q.ExecContext(ctx, `INSERT INTO selection_bead_history(
 		incarnation,branch,derived_key,record_key,start_revision,end_revision,
 		bead_id,bead_type,membership_leaf,revision_text,source_revision,source_digest)

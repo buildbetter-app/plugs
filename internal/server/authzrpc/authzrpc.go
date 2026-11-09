@@ -488,6 +488,51 @@ func observeFactsSource(ctx context.Context, snapshot Snapshot, namespace authz.
 	return states[0], nil
 }
 
+// Optional Ready maintenance observes the same pinned view as the fact source.
+// A changed optional row drops maintenance; it cannot refuse an ACL update.
+type readyFactsSnapshot struct {
+	driver.Reader
+	expected map[string]driver.LockState
+}
+
+func (r *readyFactsSnapshot) Observe(ctx context.Context, keys []driver.LockKey) ([]driver.LockState, error) {
+	states, err := r.Reader.Observe(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	if len(states) != len(keys) {
+		return nil, errors.New("Ready fact publication observation was incomplete")
+	}
+	for i, state := range states {
+		key, err := driver.EncodeLockKey(keys[i])
+		actual, actualErr := driver.EncodeLockKey(state.Key)
+		if err != nil || actualErr != nil || key != actual {
+			return nil, errors.New("Ready fact publication observation key changed")
+		}
+		r.expected[key] = state
+	}
+	return states, nil
+}
+
+func (r *readyFactsSnapshot) matches(states []driver.LockState) bool {
+	matched := 0
+	for _, state := range states {
+		key, err := driver.EncodeLockKey(state.Key)
+		if err != nil {
+			return false
+		}
+		old, ok := r.expected[key]
+		if !ok {
+			continue
+		}
+		if state.Present != old.Present || state.Revision.String() != old.Revision.String() || state.Present && (state.Derived == nil || old.Derived == nil || !bytes.Equal(state.Derived.Value, old.Derived.Value)) {
+			return false
+		}
+		matched++
+	}
+	return matched == len(r.expected)
+}
+
 func publishFacts(ctx context.Context, store driver.Store, lease driver.ActiveLease, before, after authzfixed.Facts, initial bool) (model.Revision, string, error) {
 	body, err := authzfixed.FactsSourceBytes(after)
 	if err != nil {
@@ -507,6 +552,12 @@ func publishFacts(ctx context.Context, store driver.Store, lease driver.ActiveLe
 		return model.Natural64(0), "", err
 	}
 	acl, err := observeACL(ctx, reader, after.Namespace)
+	if err != nil {
+		_ = reader.Close()
+		return model.Natural64(0), "", err
+	}
+	readySnapshot := &readyFactsSnapshot{Reader: reader, expected: map[string]driver.LockState{}}
+	ready, err := pipeline.PrepareReadyProjection(ctx, readySnapshot, nil, nil, nil)
 	_ = reader.Close()
 	if err != nil {
 		return model.Natural64(0), "", err
@@ -584,6 +635,13 @@ func publishFacts(ctx context.Context, store driver.Store, lease driver.ActiveLe
 			return model.Natural64(0), "", err
 		}
 	}
+	if ready.Available() {
+		for _, key := range ready.LockKeys() {
+			if err := add(key); err != nil {
+				return model.Natural64(0), "", err
+			}
+		}
+	}
 	ordered := make([]string, 0, len(byKey))
 	for key := range byKey {
 		ordered = append(ordered, key)
@@ -622,7 +680,9 @@ func publishFacts(ctx context.Context, store driver.Store, lease driver.ActiveLe
 			observed = state.Revision
 		}
 	}
-	if _, err := tx.Head(ctx); err != nil {
+	maintainReady := ready.Available() && readySnapshot.matches(states)
+	head, err := tx.Head(ctx)
+	if err != nil {
 		return model.Natural64(0), "", err
 	}
 	root := driver.DerivedRow{Key: keys.Source.Key, Value: body}
@@ -652,6 +712,23 @@ func publishFacts(ctx context.Context, store driver.Store, lease driver.ActiveLe
 	}
 	if err := tx.BumpReadFacts(ctx, []driver.ReadFact{fact}); err != nil {
 		return model.Natural64(0), "", err
+	}
+	if ready.Available() {
+		if !maintainReady {
+			// Optional metadata may drift after preparation. Keep the declared
+			// predicate bumps, but never stage stale Ready nodes or coverage.
+			if err := ready.Skip(ctx, tx); err != nil {
+				return model.Natural64(0), "", err
+			}
+		} else {
+			n, err := head.Uint64()
+			if err != nil || n == ^uint64(0) {
+				return model.Natural64(0), "", errors.New("authorization publication revision space is exhausted")
+			}
+			if _, err := ready.Publish(ctx, tx, model.Natural64(n+1)); err != nil {
+				return model.Natural64(0), "", err
+			}
+		}
 	}
 	entry, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: after.Namespace.Incarnation, Kind: model.ChangesetDerived, Time: time.Now().UTC(), Principal: model.PrincipalRef{Kind: "system", ID: "authzrpc"}, LockKeys: lockKeys})
 	if err != nil {
