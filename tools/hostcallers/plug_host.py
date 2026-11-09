@@ -459,7 +459,7 @@ class Writes:
     def update(self, original, fields):
         return self.job.mutate("bead.update", lambda: {"id": self.c.ref(original), "fields": fields, "expect": [expect(self.c.get(original))]})
 
-    def labels(self, originals, add=(), remove=()):
+    def labels(self, originals, add=(), remove=(), replace_prefix=None):
         if not originals:
             return
         def build():
@@ -467,7 +467,7 @@ class Writes:
             for original in originals:
                 bead = self.c.get(original)
                 old = bead.get("labels", bead.get("fields", {}).get("labels", [])) or []
-                labels = [x for x in old if x not in remove]
+                labels = [x for x in old if x not in remove and not (replace_prefix and x.startswith(replace_prefix))]
                 labels.extend(x for x in add if x not in labels)
                 ops.append({"kind": "patch", "target": self.c.ref(original), "fields": {"labels": labels}})
                 conditions.append(expect(bead))

@@ -96,7 +96,7 @@ def apply_body(w, plan, ids, change):
         if target not in items or items[target]["type"] != "milestone":
             raise AdapterError("unknown milestone target")
         old = items[key].get("milestone")
-        w.labels([ids[key]], add=[f"milestone:{target.lower()}"], remove=[f"milestone:{old.lower()}"] if old else [])
+        w.labels([ids[key]], add=[f"milestone:{target.lower()}"], replace_prefix="milestone:")
         if old:
             w.link(ids[old], ids[key], remove=True)
             items[old]["deps"].remove(key)
@@ -212,7 +212,7 @@ def restructure(c, payload):
         w = Writes(c, j)
         items = apply_body(w, plan, ids, change)
         for m in payload["milestones"]:
-            w.labels([ids[k] for k in m["members"]], add=[f"milestone:{m['key'].lower()}"])
+            w.labels([ids[k] for k in m["members"]], add=[f"milestone:{m['key'].lower()}"], replace_prefix="milestone:")
             for key in m["members"]:
                 items[key]["milestone"] = m["key"]
         j.finish({"plan.json": plan, "ids.json": ids})

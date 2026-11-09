@@ -88,6 +88,8 @@ prerequisites and child-before-parent constraints. Open/missing prerequisites or
 children and closure cycles are refused before creating anything. Core close
 guards remain enabled. Scoped create receipts are refreshed when another
 prepared caller has written the workspace journal.
+Milestone reassignment replaces existing `milestone:` labels while preserving
+unrelated labels; each CAS attempt recalculates this from the current record.
 
 Priority is a checked P0..P4 integer. The legacy seed's supported decimal
 strings "0" through "4" are converted deliberately; boolean, fractional,

@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 import urllib.error
 import urllib.request
+import uuid
 
 from fixture_test import HostCallerFixture
 import host_drivers as hd
@@ -79,7 +80,7 @@ class InstalledProjectCategories(unittest.TestCase):
     def test_native_plan_closure_order_and_milestone_progress(self):
         plan = {'doc': 'fixture.md', 'items': [
             dict(key='P', type='epic', priority=1, parent=None, deps=[], title='Parent', description='P', status='shipped'),
-            dict(key='A', type='task', priority=2, parent='P', deps=[], title='Prerequisite', description='A', status='shipped', labels=['milestone:m0']),
+            dict(key='A', type='task', priority=2, parent='P', deps=[], title='Prerequisite', description='A', status='shipped', labels=['keep', 'milestone:m0']),
             dict(key='B', type='task', priority=2, parent='P', deps=['A'], title='Dependent', description='B', status='shipped', labels=['milestone:m0']),
         ]}
         self.assertEqual(hd.closure_order(plan['items'], self.c.ontology()), ['A', 'B', 'P'])
@@ -99,15 +100,17 @@ class InstalledProjectCategories(unittest.TestCase):
         data = json.loads(self.run_script('milestone_view_server.py', '--static', static, '--data-once'))
         group = next(g for g in data['milestones'] if g['key'] == 'M1')
         self.assertEqual((group['total'], group['closed']), (2, 2))
+        self.assertEqual({label for label in self.c.get(ids['A'])['labels'] if label.startswith('milestone:')}, {'milestone:m1'})
+        self.assertIn('keep', self.c.get(ids['A'])['labels'])
         self.assertEqual(self.c.get(ids['A'])['status'], 'shipped')
         self.assertEqual(self.c.get(ids['B'])['status'], 'shipped')
 
     def test_actual_ready_uses_native_category_without_status_renaming(self):
         active = self.c.ref('Imported.Named.Closed')['id']
         working = self.create()
-        self.c.rpc('bead.claim', {'id': self.c.ref(working)}, 'fixture-claim-'+working)
+        self.c.rpc('bead.claim', {'id': self.c.ref(working)}, str(uuid.uuid4()))
         frozen = self.create()
-        self.c.rpc('bead.defer', {'id': self.c.ref(frozen)}, 'fixture-defer-'+frozen)
+        self.c.rpc('bead.defer', {'id': self.c.ref(frozen)}, str(uuid.uuid4()))
         terminal = self.create()
         HostCallerFixture.lifecycle(self, terminal)
         ready = {row['id'] for row in self.c.rpc('bead.ready', {'limit': 1000})['items']}
