@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -159,49 +160,15 @@ func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) (
 			return nil, err
 		}
 	}
-	// Placeholder rows carry no graph state. Check for already-created rows
-	// without taking a row lock, then prepare only missing rows on the driver's
-	// reserved lock connection. Asking the general pool for a second connection
-	// while every writer already owns one self-deadlocks under a wide probe, and
-	// repeatedly inserting existing rows would contend with the lock set itself.
-	missing := make([]string, 0, len(ids))
-	present := make(map[string]bool, len(ids))
-	keyBytes := make([][]byte, len(ids))
+	// A transaction-scoped advisory lock represents a key without adding a
+	// durable coordination row. In particular, a failed cold write leaves the
+	// locks table unchanged, and two cold LockShare holders can coexist.
+	// Derive the lock number from the lossless encoded key, not a JSON or text
+	// round trip; the namespace keeps it separate from other advisory uses.
+	lockIDs := make([]int64, len(ids))
 	for i, id := range ids {
-		keyBytes[i] = []byte(id)
-	}
-	if len(ids) != 0 {
-		rows, e := t.sql.QueryContext(ctx, `SELECT key FROM plug_postgres.locks WHERE key=ANY($1::bytea[])`, keyBytes)
-		if e != nil {
-			return nil, e
-		}
-		for rows.Next() {
-			var id []byte
-			if e = rows.Scan(&id); e != nil {
-				break
-			}
-			present[string(id)] = true
-		}
-		if e == nil {
-			e = rows.Err()
-		}
-		closeErr := rows.Close()
-		if e != nil {
-			return nil, e
-		}
-		if closeErr != nil {
-			return nil, closeErr
-		}
-	}
-	for _, id := range ids {
-		if !present[id] {
-			missing = append(missing, id)
-		}
-	}
-	if len(missing) != 0 {
-		if err = t.store.ensureLockKeys(ctx, missing); err != nil {
-			return nil, err
-		}
+		digest := sha256.Sum256([]byte("plug/postgres/record-lock/v1\x00" + id))
+		lockIDs[i] = int64(binary.BigEndian.Uint64(digest[:8]))
 	}
 	for {
 		if err = t.check(ctx); err != nil {
@@ -215,56 +182,54 @@ func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) (
 		selected := make(driver.LockSet, 0, len(requests))
 		busy := false
 		for i := 0; i < len(requests); {
-			request := requests[i]
+			mode := requests[i].Mode
 			end := i + 1
-			for end < len(requests) && requests[end].Mode == request.Mode {
+			for end < len(requests) && requests[end].Mode == mode {
 				end++
 			}
-			clause := " FOR UPDATE NOWAIT"
-			if request.Mode == driver.LockShare {
-				clause = " FOR SHARE NOWAIT"
-			} else if request.Mode == driver.LockSkipLocked {
-				clause = " FOR UPDATE SKIP LOCKED"
+			// PostgreSQL evaluates the volatile target expression after the
+			// ordinality sort. A failed try-lock never waits on another writer;
+			// rolling back this savepoint releases the complete acquired prefix.
+			query := `SELECT pg_try_advisory_xact_lock(id)
+			 FROM unnest($1::bigint[]) WITH ORDINALITY AS pending(id, ord) ORDER BY ord`
+			if mode == driver.LockShare {
+				query = `SELECT pg_try_advisory_xact_lock_shared(id)
+				 FROM unnest($1::bigint[]) WITH ORDINALITY AS pending(id, ord) ORDER BY ord`
 			}
-			// A batch contains only one contiguous mode run. PostgreSQL locks
-			// ORDER BY's bytea keys in the exact validated global key order;
-			// mode runs are never regrouped across an intervening request.
 			var rows *sql.Rows
-			rows, err = t.sql.QueryContext(ctx, `SELECT key FROM plug_postgres.locks
-			 WHERE key=ANY($1::bytea[]) ORDER BY key`+clause, keyBytes[i:end])
-			locked := map[string]bool{}
-			if err == nil {
-				for rows.Next() {
-					var id []byte
-					if err = rows.Scan(&id); err != nil {
-						break
-					}
-					locked[string(id)] = true
-				}
-				if err == nil {
-					err = rows.Err()
-				}
-				closeErr := rows.Close()
-				if err == nil {
-					err = closeErr
-				}
-				if err == nil && len(locked) != end-i && request.Mode != driver.LockSkipLocked {
-					err = sql.ErrNoRows
-				}
-			}
+			rows, err = t.sql.QueryContext(ctx, query, lockIDs[i:end])
 			if err != nil {
-				busy = sqlState(err) == "55P03"
 				break
 			}
-			for j := i; j < end; j++ {
-				if locked[ids[j]] {
-					selected = append(selected, requests[j])
+			seen := 0
+			for rows.Next() {
+				var granted bool
+				if err = rows.Scan(&granted); err != nil {
+					break
 				}
+				if granted {
+					selected = append(selected, requests[i+seen])
+				} else if mode != driver.LockSkipLocked {
+					busy = true
+				}
+				seen++
+			}
+			if err == nil {
+				err = rows.Err()
+			}
+			closeErr := rows.Close()
+			if err == nil {
+				err = closeErr
+			}
+			if err == nil && seen != end-i {
+				err = sql.ErrNoRows
+			}
+			if err != nil || busy {
+				break
 			}
 			i = end
 		}
-		if err != nil {
-			// NOWAIT avoids holding a prefix while another member is unavailable.
+		if err != nil || busy {
 			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			_, rollbackErr := t.sql.ExecContext(cleanup, "ROLLBACK TO SAVEPOINT complete_lock_set")
 			if rollbackErr == nil {
@@ -276,13 +241,13 @@ func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) (
 				if ctx.Err() != nil {
 					return nil, ctx.Err()
 				}
-				return nil, err
+				return nil, rollbackErr
 			}
 			if ctx.Err() != nil {
 				_ = t.finish()
 				return nil, ctx.Err()
 			}
-			if !busy {
+			if err != nil {
 				_ = t.finish()
 				return nil, err
 			}

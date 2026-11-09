@@ -21,13 +21,11 @@ import (
 // Store owns a connection pool and its readers, transactions and active leases.
 // Independent Open calls share only the durable state in the DSN's database.
 type Store struct {
-	db       *sql.DB
-	lockConn *sql.Conn
+	db *sql.DB
 	// renewConn is reserved from the pool so lease heartbeats cannot wait for
 	// request transactions to return a general-purpose connection.
 	renewConn *sql.Conn
 	renewMu   sync.Mutex
-	lockMu    sync.Mutex
 	mu        sync.Mutex
 	closed    bool
 	resources map[interface{ Close() error }]struct{}
@@ -57,21 +55,14 @@ func Open(ctx context.Context, cfg driver.Config) (*Store, error) {
 	}
 	db.SetMaxOpenConns(96)
 	db.SetMaxIdleConns(16)
-	lockConn, err := db.Conn(ctx)
-	if err != nil {
-		_ = db.Close()
-		return nil, err
-	}
 	renewConn, err := db.Conn(ctx)
 	if err != nil {
-		_ = lockConn.Close()
 		_ = db.Close()
 		return nil, err
 	}
-	s := &Store{db: db, lockConn: lockConn, renewConn: renewConn, resources: make(map[interface{ Close() error }]struct{}), leases: make(map[*activeLease]struct{})}
+	s := &Store{db: db, renewConn: renewConn, resources: make(map[interface{ Close() error }]struct{}), leases: make(map[*activeLease]struct{})}
 	if err := s.initialize(ctx); err != nil {
 		_ = renewConn.Close()
-		_ = lockConn.Close()
 		_ = db.Close()
 		return nil, err
 	}
@@ -203,33 +194,6 @@ func (s *Store) discardRenewConnLocked(conn *sql.Conn) {
 	_ = conn.Close()
 }
 
-// ensureLockKeys uses the connection reserved for lock-row preparation. Lock
-// acquisition itself holds one pooled writer connection; using the general
-// pool here would deadlock when all writers reach this boundary together.
-func (s *Store) ensureLockKeys(ctx context.Context, ids []string) error {
-	s.lockMu.Lock()
-	defer s.lockMu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if s.lockConn == nil {
-		return driver.ErrTxClosed
-	}
-	if len(ids) != 0 {
-		keys := make([][]byte, len(ids))
-		for i, id := range ids {
-			keys[i] = []byte(id)
-		}
-		if _, err := s.lockConn.ExecContext(ctx, `INSERT INTO plug_postgres.locks (key)
-		 SELECT key FROM unnest($1::bytea[]) AS pending(key) ORDER BY key ON CONFLICT DO NOTHING`, keys); err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			return err
-		}
-	}
-	return nil
-}
 func (s *Store) track(r interface{ Close() error }) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -312,12 +276,6 @@ func (s *Store) Close() error {
 	for _, l := range leases {
 		errs = append(errs, l.Release(ctx))
 	}
-	s.lockMu.Lock()
-	if s.lockConn != nil {
-		errs = append(errs, s.lockConn.Close())
-		s.lockConn = nil
-	}
-	s.lockMu.Unlock()
 	s.renewMu.Lock()
 	if s.renewConn != nil {
 		errs = append(errs, s.renewConn.Close())

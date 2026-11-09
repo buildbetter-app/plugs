@@ -1,7 +1,6 @@
 package postgres
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"sort"
@@ -55,9 +54,9 @@ func TestBatchedLocksKeepOpaqueRefIdentityAndOwnership(t *testing.T) {
 		t.Fatalf("opaque observations: states=%d want=%d error=%v", len(observed), len(keys), err)
 	}
 	for i, id := range ids {
-		var stored []byte
-		if err := s.db.QueryRowContext(ctx, `SELECT key FROM plug_postgres.locks WHERE key=$1`, []byte(id)).Scan(&stored); err != nil || !bytes.Equal(stored, []byte(id)) {
-			t.Fatalf("physical lock identity: want=%x got=%x error=%v", id, stored, err)
+		var rows int
+		if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM plug_postgres.locks WHERE key=$1`, []byte(id)).Scan(&rows); err != nil || rows != 0 {
+			t.Fatalf("cold lock added a durable placeholder: key=%x rows=%d error=%v", id, rows, err)
 		}
 		for _, state := range []driver.LockState{states[i], observed[i]} {
 			got, err := driver.EncodeLockKey(state.Key)
@@ -77,7 +76,83 @@ func TestBatchedLocksKeepOpaqueRefIdentityAndOwnership(t *testing.T) {
 			t.Fatalf("opaque observation aliases input: want=%x got=%x error=%v", id, got, err)
 		}
 	}
-	t.Log("OPAQUE_LOCK_IDENTITY raw_sql_bytes=true lock_and_observe_order=true caller_owned=true")
+	if err := tx.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Distinct raw encodings must remain independently lockable after the
+	// first writer closes, including invalid UTF-8 and its replacement rune.
+	owner, err := s.Write(ctx, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	if _, err := owner.Lock(ctx, driver.LockSet{{Key: keys[0], Mode: driver.LockUpdate}}); err != nil {
+		t.Fatal(err)
+	}
+	peer, err := s.Write(ctx, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peer.Close()
+	probeCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if _, err := peer.Lock(probeCtx, driver.LockSet{{Key: keys[1], Mode: driver.LockUpdate}}); err != nil {
+		t.Fatalf("distinct opaque key falsely conflicted: %v", err)
+	}
+	t.Log("OPAQUE_LOCK_IDENTITY raw_keys_distinct=true lock_and_observe_order=true caller_owned=true no_placeholder_rows=true")
+}
+
+func TestColdShareHoldersCoexistWithoutPlaceholderRows(t *testing.T) {
+	ctx := context.Background()
+	s := openTest(t, freshDSN(t))
+	lease := testLease(t, s)
+	key := testLock(testRef("cold-shared"))
+	share := driver.LockSet{{Key: key, Mode: driver.LockShare}}
+	first, err := s.Write(ctx, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	if _, err := first.Lock(ctx, share); err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.Write(ctx, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	bounded, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if _, err := second.Lock(bounded, share); err != nil {
+		t.Fatalf("compatible cold share waited for first writer: %v", err)
+	}
+	skipped, err := s.Write(ctx, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer skipped.Close()
+	states, err := skipped.Lock(bounded, driver.LockSet{{Key: key, Mode: driver.LockSkipLocked}})
+	if err != nil || len(states) != 0 {
+		t.Fatalf("cold update passed shared holders: states=%v error=%v", states, err)
+	}
+	if err := first.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	update, err := s.Write(ctx, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer update.Close()
+	if _, err := update.Lock(ctx, driver.LockSet{{Key: key, Mode: driver.LockUpdate}}); err != nil {
+		t.Fatalf("cold update remained blocked after shared rollback: %v", err)
+	}
+	var rows int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM plug_postgres.locks`).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("cold lock left coordination rows: rows=%d error=%v", rows, err)
+	}
 }
 
 func TestBatchedLocksPreserveMixedModesAndSkippedSubset(t *testing.T) {
