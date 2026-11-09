@@ -29,11 +29,16 @@ func (s *slice) Namespace() authz.Namespace { return s.facts.Namespace }
 
 func (s *slice) AuthorizationPreparation() *authz.Preparation { return &s.preparation }
 
+// projectBatchSlice opts bound checks into paired project observations. Keep
+// the batch port off slice so adapters overriding Record retain their own
+// dependency tracking contract.
+type projectBatchSlice struct{ *slice }
+
 // RecordSentinels records the complete ordered set before any project body
 // read. It only combines one snapshot operation; repeated calls still observe
 // every key and surface fresh failures, including for custom components.
-func (s *slice) RecordSentinels(ctx context.Context, names []string) error {
-	if s == nil || s.snapshot == nil {
+func (s *projectBatchSlice) RecordSentinels(ctx context.Context, names []string) error {
+	if s == nil || s.slice == nil || s.snapshot == nil {
 		return fmt.Errorf("authorization snapshot is unavailable")
 	}
 	keys := make([]driver.LockKey, len(names))

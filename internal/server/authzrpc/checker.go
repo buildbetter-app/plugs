@@ -137,7 +137,8 @@ func (b *BoundAuthorization) Check(ctx context.Context, refs []model.Ref) ([]boo
 	for i, ref := range refs {
 		resources[i] = authz.Resource{Kind: b.kind, Ref: ref}
 	}
-	decisions, err := b.checker.chain.CheckPrepared(ctx, b.slice, b.request.Checks(resources))
+	checkSlice := &projectBatchSlice{slice: b.slice}
+	decisions, err := b.checker.chain.CheckPrepared(ctx, checkSlice, b.request.Checks(resources))
 	if err != nil {
 		return nil, authzError(err)
 	}
