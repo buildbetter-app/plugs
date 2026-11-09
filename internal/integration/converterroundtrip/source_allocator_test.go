@@ -100,9 +100,9 @@ func TestJointSourceAllocatorReservesActiveAndTerminalAliasesAcrossThreeStores(t
 		}
 		return id
 	}
-	// The imported demo-8 is closed. Exercise child allocation under the
-	// unchanged, nonterminal imported child while retaining that closed guard.
-	const parentID = "demo-7.4"
+	// The imported parents are closed or blocked. Reserve the first child
+	// of the ordinary root this test will create without changing either guard.
+	parentID := candidate(2)
 	aliases := []string{candidate(0), candidate(1), parentID + ".1"}
 	data := jointAllocatorFixture(t, aliases)
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
@@ -157,6 +157,7 @@ func TestJointSourceAllocatorReservesActiveAndTerminalAliasesAcrossThreeStores(t
 			bad := model.ChangeSet{Ops: []model.Op{create, {Kind: model.OpPatch, Patch: &model.PatchOp{Target: ref("missing"), Fields: map[string]any{"title": "refused after allocation"}}}}}
 			sourcePublicCall(t, server, actor, "tx.apply", 602, map[string]any{"changeSet": bad}, "not_found")
 			sourcePublicCall(t, server, actor, "bead.create", 608, map[string]any{"type": "issue", "parent": ref("demo-8"), "fields": map[string]any{"title": "refused under closed parent"}}, "ontology_guard_failed")
+			sourcePublicCall(t, server, actor, "bead.create", 609, map[string]any{"type": "issue", "parent": ref("demo-7.4"), "fields": map[string]any{"title": "refused under blocked parent"}}, "ontology_guard_failed")
 			if !reflect.DeepEqual(before, savedLabelImport(t, store, report.Archive, p, "")) || !reflect.DeepEqual(sourceBefore, checkpoint()) {
 				t.Fatal("refused allocation changed records, history, receipts, blobs or source checkpoint")
 			}
