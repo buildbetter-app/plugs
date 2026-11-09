@@ -410,8 +410,19 @@ func TestJointImportedMemoriesPublicReadReverseAndConservationAllDrivers(t *test
 							values[key] = row["value"]
 						}
 					}
-					if len(values) != len(archive.Records("memory")) {
+					// Config rows have a separate, documented Beads memory namespace.
+					// Assert their exact keys/values as well as every source memory.
+					configValues := map[string]any{
+						"plug.config/github.token": `{"$secret":"config/github.token"}`,
+						"plug.config/project_id":   "synthetic-project",
+					}
+					if len(values) != len(archive.Records("memory"))+len(configValues) {
 						t.Fatalf("reverse memory census: %d", len(values))
+					}
+					for key, want := range configValues {
+						if got, present := values[key]; !present || !sameReverseJSON(got, want) {
+							t.Fatal("reverse changed config reference", key)
+						}
 					}
 					for _, source := range archive.Records("memory") {
 						if !sameReverseJSON(values[source.ID], source.Body["value"]) {

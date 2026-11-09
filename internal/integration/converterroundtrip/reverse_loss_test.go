@@ -225,6 +225,54 @@ func rollbackAssertLossAccounting(t *testing.T, report reverseconverter.Report, 
 	}
 }
 
+func rollbackAssertImportedAllocatorImages(t *testing.T, core []driver.Record) {
+	t.Helper()
+	// Main's admitted adaptive allocator replaces four six-field random images:
+	// two eight-field demo images and two seven-field empty images add six leaves.
+	// Pin each complete physical image independently of the allocator constructor
+	// and the loss report before asserting the new fixture total.
+	demo := json.RawMessage(`{"prefix":"demo","id_mode":"hash","hash_length":8,"min_hash_length":3,"max_hash_length":8,"max_collision_prob":0.25,"last_id":8,"child_counters":{"demo-7":4}}`)
+	empty := json.RawMessage(`{"prefix":"empty","id_mode":"hash","hash_length":8,"min_hash_length":3,"max_hash_length":8,"max_collision_prob":0.25,"last_id":1}`)
+	want := map[string]json.RawMessage{
+		"binding/demo": demo, "binding/empty": empty,
+		importProjectRecordID("demo"): demo, importProjectRecordID("empty"): empty,
+	}
+	got := map[string]json.RawMessage{}
+	for _, row := range core {
+		switch row.Ref.ID {
+		case importBindingRecordID:
+			var binding struct {
+				Projects []struct {
+					Source struct {
+						Prefix string `json:"prefix"`
+					} `json:"sourceAllocator"`
+					Target json.RawMessage `json:"targetAllocator"`
+				} `json:"projects"`
+			}
+			decode(t, row.Body, &binding)
+			for _, project := range binding.Projects {
+				key := "binding/" + project.Source.Prefix
+				if _, duplicate := got[key]; duplicate {
+					t.Fatal("duplicate imported allocator image", key)
+				}
+				got[key] = project.Target
+			}
+		case importProjectRecordID("demo"), importProjectRecordID("empty"):
+			var metadata struct {
+				Target json.RawMessage `json:"targetAllocator"`
+			}
+			decode(t, row.Body, &metadata)
+			if _, duplicate := got[row.Ref.ID]; duplicate {
+				t.Fatal("duplicate project allocator image", row.Ref.ID)
+			}
+			got[row.Ref.ID] = metadata.Target
+		}
+	}
+	if !sameReverseJSON(got, want) {
+		t.Fatal("fixture imported allocator images differ", got, want)
+	}
+}
+
 func TestJointSourceReverseReportsNamespaceLossesAcrossThreeStores(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		for _, ephemeral := range []bool{false, true} {
@@ -297,9 +345,10 @@ func TestJointSourceReverseReportsNamespaceLossesAcrossThreeStores(t *testing.T)
 					t.Fatal(err)
 				}
 				rollbackAssertLossAccounting(t, converted.Result.Report, physical, page.Items, ephemeral)
+				rollbackAssertImportedAllocatorImages(t, page.Items)
 				wantCore := []reverseconverter.StateLoss{
 					{Kind: "beads-archive", RecordCount: 108, FieldInstances: 1067, Disposition: "retained_source_provenance"},
-					{Kind: "instance_config", RecordCount: 4, FieldInstances: 119, Disposition: "retained_control_state"},
+					{Kind: "instance_config", RecordCount: 4, FieldInstances: 125, Disposition: "retained_control_state"},
 					{Kind: "restore-archive", RecordCount: 1, FieldInstances: 20, Disposition: "retained_control_state"},
 				}
 				if !reflect.DeepEqual(converted.Result.Report.CoreKindLosses, wantCore) {
