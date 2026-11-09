@@ -202,28 +202,21 @@ func TestNativeLiteralFrozenRequiresAnExplicitCustomCatalogEntry(t *testing.T) {
 	}
 }
 
-func TestActualNativeProducerMergeRetainsNamedIncompleteHistoryRefusal(t *testing.T) {
+func TestActualNativeProducerMergeRetainsDirtySourceAndIncompleteEvidence(t *testing.T) {
 	var archives []*Archive
 	for _, name := range []string{"reprocody", "reprosignals"} {
 		archive, err := Read(bytes.NewReader(nativeProducerArchive(t, name)))
 		if err != nil {
 			t.Fatal(err)
 		}
+		history, ok := archive.SourceHistory()
+		if !ok || history.Range.Status != "unverified" || history.Range.Complete || len(history.Range.Frames) != 0 || history.Range.Reason != "head-image-not-proven" {
+			t.Fatal("actual producer's incomplete-history evidence changed")
+		}
 		archives = append(archives, archive)
 	}
 	data, err := MergeArchives(archives...)
-	var refusal IncompleteHistoryError
-	if data != nil || !errors.As(err, &refusal) || refusal.Project == "" || refusal.StoreID == "" || refusal.Reason == "" {
-		t.Fatalf("actual incomplete native source must name its history gap: %v", err)
-	}
-	matched := false
-	for _, archive := range archives {
-		history, _ := archive.SourceHistory()
-		if refusal.StoreID == archive.Manifest().StoreID && refusal.Project == archive.Manifest().Projects[0].Prefix && refusal.Reason == history.Range.Reason {
-			matched = true
-		}
-	}
-	if !matched {
-		t.Fatal("refusal did not retain the actual source's named reason")
+	if data != nil || err == nil || err.Error() != `offline merge input 0: unmerged or dirty source family "dolt-conflicts"` {
+		t.Fatalf("actual dirty producer must refuse before history qualification: %v", err)
 	}
 }

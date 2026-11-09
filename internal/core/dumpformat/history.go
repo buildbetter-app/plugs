@@ -247,6 +247,22 @@ func (a *Archive) historyImageForProject(scoped ProjectSourceHistory, sequence u
 		return nil, ErrSourceHistory{Reason: "non-contiguous"}
 	}
 	image := &Archive{sha256: a.sha256, manifest: a.Manifest(), members: a.members, byKind: map[string][]Record{}}
+	if scoped.Project != "" {
+		image.manifest = scopedHistoryManifest(image.manifest, scoped.Project)
+	}
+	if scoped.SourceStoreID != "" {
+		image.manifest.StoreID = scoped.SourceStoreID
+		image.members = make(map[string][]byte, len(a.members))
+		for path, data := range a.members {
+			image.members[path] = data
+		}
+		config, err := sourceConfigForIdentity(a.members["config/sources.json"], SourceIdentity{StoreID: scoped.SourceStoreID, Project: scoped.Project})
+		if err != nil {
+			return nil, err
+		}
+		image.members["config/sources.json"] = config
+		image.manifest.Files["config/sources.json"] = File{SHA256: digest(config), Size: int64(len(config))}
+	}
 	for _, r := range rows {
 		image.byKind[r.Kind] = append(image.byKind[r.Kind], r)
 	}

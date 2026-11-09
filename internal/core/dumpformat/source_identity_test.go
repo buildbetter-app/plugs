@@ -17,8 +17,8 @@ func collidingProjectHistory(t *testing.T, project string) []byte {
 	f := newMergeFixture(t, project)
 	f.records["comment"][0].ID = "1"
 	f.records["comment"][0].Source.Fields["id"] = "1"
-	f.records["edge"][0].ID = "1"
-	f.records["edge"][0].Source.Fields["id"] = "1"
+	f.records["edge"][0].ID = "shared-edge"
+	f.records["edge"][0].Source.Fields["id"] = "shared-edge"
 	f.records["memory"][0].ID = "shared"
 	f.records["memory"][0].Body["key"] = "shared"
 	f.records["memory"][0].Body["value"] = project
@@ -82,6 +82,10 @@ func TestSourceIdentityMergePreservesCollidingProjectHistory(t *testing.T) {
 		image, err := a.HistoryImageForProject(scope.Project, 1)
 		if err != nil {
 			t.Fatal(err)
+		}
+		manifest := image.Manifest()
+		if manifest.StoreID != scope.SourceStoreID || len(manifest.Projects) != 1 || manifest.Projects[0].Prefix != scope.Project {
+			t.Fatal("historical image retained another project's manifest or store")
 		}
 		for _, kind := range knownKindNames() {
 			for _, record := range image.Records(kind) {
@@ -179,6 +183,21 @@ func TestSourceIdentityIncompleteHistoryNamesGap(t *testing.T) {
 	}
 }
 
+func TestSourceIdentityUnverifiedHistoryNamesMissingFamilies(t *testing.T) {
+	f, h := sourceHistoryFixture(t, false)
+	h.Range = SourceHistoryRange{Status: "unverified", Reason: "head-image-missing-families:config,events", Baseline: []Record{}, BaselineEvents: []Row{}, Frames: []SourceHistoryFrame{}, Gaps: []HistoryGap{}}
+	a := readMergeArchive(t, withSourceHistory(t, f, h))
+	before := a.TarBytes()
+	data, err := MergeArchives(a)
+	var gap IncompleteHistoryError
+	if data != nil || !errors.As(err, &gap) || gap.StoreID != "store-pl" || gap.Project != "pl" || gap.Reason != "head-image-missing-families:config,events" {
+		t.Fatalf("unverified history lost its actual missing-family reason: %v", err)
+	}
+	if !bytes.Equal(before, a.TarBytes()) {
+		t.Fatal("incomplete-history refusal altered retained source evidence")
+	}
+}
+
 func TestSourceIdentityReaderRefusesMisboundHistory(t *testing.T) {
 	input, err := Merge(bytes.NewReader(collidingProjectHistory(t, "pl")), bytes.NewReader(collidingProjectHistory(t, "qa")))
 	if err != nil {
@@ -258,5 +277,67 @@ func TestSourceIdentityReaderRequiresExplicitCompleteContract(t *testing.T) {
 				t.Fatal("incomplete or misbound source identity contract accepted")
 			}
 		})
+	}
+}
+
+func TestSourceIdentitySidecarsAndHistoryImagesKeepProjectScope(t *testing.T) {
+	merged, err := Merge(bytes.NewReader(collidingProjectHistory(t, "pl")), bytes.NewReader(collidingProjectHistory(t, "qa")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Declare a synthetic source-plane wire with no ephemeral entities. This
+	// exercises sidecar addressing without claiming native producer history.
+	a := readMergeArchive(t, merged)
+	files := map[string][]byte{}
+	for path := range a.Manifest().Files {
+		files[path], _ = a.Member(path)
+	}
+	m := a.Manifest()
+	m.SourcePlaneAddressContract = SourcePlaneAddressContract
+	for i := range m.Kinds {
+		if m.Kinds[i].Name == "edge" {
+			m.Kinds[i].Version = EdgeVersionTypedDependencies
+		}
+	}
+	for i := range m.Sources {
+		if sourcePlaneArchiveTable(m.Sources[i].Family) || m.Sources[i].Family == EphemeralDependencyTable {
+			m.Sources[i].Action = "archive"
+		}
+	}
+	files["manifest.json"] = fixtureJSON(t, m)
+	a = readMergeArchive(t, fixtureTar(t, files))
+	origins, err := a.SourcePlaneSidecarOrigins()
+	if err != nil || len(origins) != 2*len(externalFamilies) {
+		t.Fatalf("source sidecar census: %v", err)
+	}
+	seen := map[string]bool{}
+	previous := ""
+	for _, origin := range origins {
+		key := origin.Project + "\x00" + origin.ID + "\x00" + origin.Layer
+		if origin.Project == "" || seen[key] || previous != "" && key <= previous {
+			t.Fatal("source sidecar project identity aliased or unordered")
+		}
+		seen[key], previous = true, key
+	}
+	for _, project := range []string{"pl", "qa"} {
+		image, err := a.HistoryImageForProject(project, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		local, err := image.SourcePlaneSidecarOrigins()
+		if err != nil || len(local) != len(externalFamilies) {
+			t.Fatalf("historical source sidecars: %v", err)
+		}
+		for _, origin := range local {
+			matched := false
+			for _, original := range origins {
+				if original.Project == project && original.ID == origin.ID && original.Layer == origin.Layer && reflect.DeepEqual(original, origin) {
+					matched = true
+				}
+			}
+			if origin.Project != project || !matched {
+				t.Fatal("selected history sidecar borrowed another project or changed raw entry bytes")
+			}
+		}
 	}
 }

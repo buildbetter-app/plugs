@@ -282,6 +282,30 @@ func scopedHistoryManifest(manifest Manifest, project string) Manifest {
 	return manifest
 }
 
+func sourceConfigForIdentity(data []byte, identity SourceIdentity) ([]byte, error) {
+	var entries []json.RawMessage
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return nil, err
+	}
+	result := []byte{'['}
+	first := true
+	for _, raw := range entries {
+		var entry externalEntry
+		if err := decodeJSON(raw, &entry); err != nil {
+			return nil, err
+		}
+		if entry.Identity == nil || *entry.Identity != identity {
+			continue
+		}
+		if !first {
+			result = append(result, ',')
+		}
+		result = append(result, raw...)
+		first = false
+	}
+	return append(result, ']', '\n'), nil
+}
+
 func identityRecordKey(r Record) string {
 	key, _ := r.SourceKey()
 	encoded, _ := json.Marshal(key)
