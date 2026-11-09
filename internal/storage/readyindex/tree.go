@@ -288,7 +288,19 @@ func (t *tree) save(scope string, n *driver.ReadyOrderNode) error {
 	t.work.DigestBytes += n.DigestBytes()
 	key := nodeKey(scope, n.Prefix)
 	t.nodes[key] = n
-	return t.write(key, n)
+	if _, known := t.rows[key]; !known {
+		var ignored json.RawMessage
+		if _, err := t.read(key, &ignored); err != nil {
+			return err
+		}
+	}
+	// Subsequent radix edits read the typed node cache. Publish reseals and
+	// encodes every surviving dirty node after stamping allocated H+1; none of
+	// these intermediate persistence images are consumed. Keep the observed
+	// identity and live/removed bit here without repeatedly encoding the node.
+	t.rows[key] = &driver.DerivedRow{Key: key}
+	t.dirty[key] = true
+	return nil
 }
 func edge(n *driver.ReadyOrderNode) driver.ReadyOrderChild {
 	return driver.ReadyOrderChild{Prefix: n.Prefix, Commitment: n.Commitment}

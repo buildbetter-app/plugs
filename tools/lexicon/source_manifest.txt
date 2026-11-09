@@ -1197,10 +1197,13 @@ internal/storage/postgres/source_backend_test.go
 internal/storage/postgres/source_backfill.go
 internal/storage/postgres/source_index.go
 internal/storage/postgres/source_link_schema_test.go
+internal/storage/postgres/state_decode.go
+internal/storage/postgres/state_decode_test.go
 internal/storage/postgres/store.go
 internal/storage/postgres/transaction.go
 internal/storage/readyindex/BUILD.bazel
 internal/storage/readyindex/dense_test.go
+internal/storage/readyindex/final_image_test.go
 internal/storage/readyindex/initial_batch_test.go
 internal/storage/readyindex/ready_order_test.go
 internal/storage/readyindex/select.go
