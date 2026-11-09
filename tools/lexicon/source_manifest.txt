@@ -435,6 +435,9 @@ internal/integration/b03catalog/catalog_test.go
 internal/integration/b03catalog/composition_runtime_test.go
 internal/integration/b03catalog/engine_test.go
 internal/integration/b03catalog/fixture_test.go
+internal/integration/b03catalog/native_admission_record.json
+internal/integration/b03catalog/native_catalog_inputs.json
+internal/integration/b03catalog/native_catalog_recording_test.go
 internal/integration/b04claimidentity/BUILD.bazel
 internal/integration/b04claimidentity/README.md
 internal/integration/b04claimidentity/claim_identity_test.go
