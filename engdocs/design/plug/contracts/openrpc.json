@@ -9524,7 +9524,10 @@
                   "triage",
                   "backlog",
                   "unstarted",
-                  "started"
+                  "started",
+                  "active",
+                  "wip",
+                  "frozen"
                 ]
               },
               "outcome": {
@@ -9560,7 +9563,8 @@
               "category": {
                 "type": "string",
                 "enum": [
-                  "completed"
+                  "completed",
+                  "done"
                 ]
               },
               "outcome": {
@@ -9672,7 +9676,8 @@
               "category": {
                 "type": "string",
                 "enum": [
-                  "completed"
+                  "completed",
+                  "done"
                 ]
               },
               "outcome": {
