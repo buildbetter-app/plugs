@@ -150,6 +150,7 @@ internal/client/client_test.go
 internal/client/http.go
 internal/client/http_test.go
 internal/core/authz/BUILD.bazel
+internal/core/authz/binding_test.go
 internal/core/authz/chain.go
 internal/core/authz/chain_test.go
 internal/core/authz/doc.go
@@ -161,6 +162,9 @@ internal/core/authz/identity_test.go
 internal/core/authz/mutation.go
 internal/core/authz/mutation_test.go
 internal/core/authz/ontology.go
+internal/core/authz/prepared.go
+internal/core/authz/prepared_differential_test.go
+internal/core/authz/prepared_legacy_test.go
 internal/core/authz/types.go
 internal/core/dumpformat/BUILD.bazel
 internal/core/dumpformat/README.md
@@ -265,11 +269,13 @@ internal/core/pipeline/audit_test.go
 internal/core/pipeline/blocking_hierarchy.go
 internal/core/pipeline/callbacks.go
 internal/core/pipeline/callbacks_test.go
+internal/core/pipeline/checkpoint_mutation.go
 internal/core/pipeline/claim_recovery.go
 internal/core/pipeline/dependency.go
 internal/core/pipeline/document.go
 internal/core/pipeline/gate.go
 internal/core/pipeline/graph_validation.go
+internal/core/pipeline/graph_validation_test.go
 internal/core/pipeline/guard_override.go
 internal/core/pipeline/guard_test.go
 internal/core/pipeline/hierarchy.go
@@ -284,6 +290,7 @@ internal/core/pipeline/labels.go
 internal/core/pipeline/lease_overlay.go
 internal/core/pipeline/lifecycle.go
 internal/core/pipeline/lifecycle_test.go
+internal/core/pipeline/namespace_operations.go
 internal/core/pipeline/noop_test.go
 internal/core/pipeline/operations_test.go
 internal/core/pipeline/options.go
@@ -303,6 +310,7 @@ internal/core/pipeline/snapshot_get_test.go
 internal/core/pipeline/snapshot_hierarchy.go
 internal/core/pipeline/source_indexes.go
 internal/core/pipeline/source_indexes_test.go
+internal/core/pipeline/source_operations.go
 internal/core/pipeline/telemetry.go
 internal/core/pipeline/telemetry_test.go
 internal/core/pipeline/workflow_close_ref.go
@@ -313,6 +321,7 @@ internal/core/restore/BUILD.bazel
 internal/core/restore/archive.go
 internal/core/restore/b17_connected_query_test.go
 internal/core/restore/b17_data_test.go
+internal/core/restore/external_target_test.go
 internal/core/restore/fixture_test.go
 internal/core/restore/native_ancestor_restore_test.go
 internal/core/restore/native_hierarchy.go
@@ -341,6 +350,7 @@ internal/core/service/cycles.go
 internal/core/service/cycles_test.go
 internal/core/service/direct_blockers.go
 internal/core/service/direct_blockers_test.go
+internal/core/service/external_target_test.go
 internal/core/service/gate.go
 internal/core/service/graph.go
 internal/core/service/guard_override.go
@@ -356,6 +366,7 @@ internal/core/service/i1_acceptance_test.go
 internal/core/service/label_rename.go
 internal/core/service/lease.go
 internal/core/service/memories.go
+internal/core/service/native_restore.go
 internal/core/service/ontology.go
 internal/core/service/ordered_close.go
 internal/core/service/reads.go
@@ -365,11 +376,17 @@ internal/core/service/service.go
 internal/core/service/service_test.go
 internal/core/service/types.go
 internal/core/service/waits_for_consumer_test.go
+internal/core/service/workflow_bridge.go
+internal/core/service/workflow_delete.go
+internal/core/service/workflow_moves.go
 internal/core/service/workflow_permanent_test.go
 internal/core/service/workflow_refs.go
 internal/core/viewops/BUILD.bazel
+internal/core/viewops/after_expiry_test.go
 internal/core/viewops/epic_progress.go
+internal/core/viewops/external_target_test.go
 internal/core/viewops/label_predicate.go
+internal/core/viewops/mapping_test.go
 internal/core/viewops/parent_projection.go
 internal/core/viewops/revision_order.go
 internal/core/viewops/revision_order_test.go
@@ -402,6 +419,7 @@ internal/integration/b01readyorder/README.md
 internal/integration/b01readyorder/connected_test.go
 internal/integration/b01readyorder/fixture_test.go
 internal/integration/b01readyorder/ready_order_test.go
+internal/integration/b01readyorder/workflow_query_test.go
 internal/integration/b02publicnotices/BUILD.bazel
 internal/integration/b02publicnotices/README.md
 internal/integration/b02publicnotices/authority_concurrency_test.go
@@ -420,6 +438,10 @@ internal/integration/b04claimidentity/README.md
 internal/integration/b04claimidentity/claim_identity_test.go
 internal/integration/b04claimidentity/engine_test.go
 internal/integration/b04claimidentity/fixture_test.go
+internal/integration/b04claimidentity/native_b04_contract_test.go
+internal/integration/b04claimidentity/native_b04_inputs.json
+internal/integration/b04claimidentity/native_b04_io_test.go
+internal/integration/b04claimidentity/native_b04_recording_test.go
 internal/integration/b13memory/BUILD.bazel
 internal/integration/b13memory/README.md
 internal/integration/b13memory/fixture_test.go
@@ -453,6 +475,7 @@ internal/integration/batchsql/child_allocator_test.go
 internal/integration/batchsql/fixture_test.go
 internal/integration/batchsql/hierarchy_authorization_test.go
 internal/integration/batchsql/hierarchy_test.go
+internal/integration/batchsql/m03_combined_ready_test.go
 internal/integration/batchsql/native_allocator_restore_test.go
 internal/integration/batchsql/public_batch_guard_order_test.go
 internal/integration/batchsql/raw_workflow_close_refusal_test.go
@@ -495,6 +518,17 @@ internal/integration/converterroundtrip/testdata/public-partial-990eb800.tar
 internal/integration/converterroundtrip/testdata/public-source-990eb800.md
 internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar
 internal/integration/converterroundtrip/versioned_dependencies_test.go
+internal/integration/cp7latency/BUILD.bazel
+internal/integration/cp7latency/README.md
+internal/integration/cp7latency/correctness_test.go
+internal/integration/cp7latency/dense_summary_test.go
+internal/integration/cp7latency/fixture_test.go
+internal/integration/cp7latency/latency_test.go
+internal/integration/cp7latency/measurement_test.go
+internal/integration/cp7latency/semantics_test.go
+internal/integration/cp7latency/work_accounting_test.go
+internal/integration/cp7latency/work_counters_test.go
+internal/integration/cp7latency/workload.json
 internal/integration/cursorhttp/BUILD.bazel
 internal/integration/cursorhttp/cursor_test.go
 internal/integration/cursorhttp/fixture_test.go
@@ -527,9 +561,11 @@ internal/integration/gatecontract/authorization_test.go
 internal/integration/gatecontract/consumer_host_test.go
 internal/integration/gatecontract/consumer_test.go
 internal/integration/gatecontract/engine_test.go
+internal/integration/gatecontract/external_target_test.go
 internal/integration/gatecontract/fanout_test.go
 internal/integration/gatecontract/fixture_test.go
 internal/integration/gatecontract/metadata_test.go
+internal/integration/gatecontract/public_dump_restore_test.go
 internal/integration/graphacceptance/BUILD.bazel
 internal/integration/graphacceptance/README.md
 internal/integration/graphacceptance/fixture_test.go
@@ -610,6 +646,10 @@ internal/integration/postgresacceptance/atomic_test.go
 internal/integration/postgresacceptance/b15_comments_test.go
 internal/integration/postgresacceptance/b15_page_test.go
 internal/integration/postgresacceptance/b16_labels_test.go
+internal/integration/postgresacceptance/b25_delete_results_test.go
+internal/integration/postgresacceptance/b25_mixed_delete_test.go
+internal/integration/postgresacceptance/b26_lifecycle_test.go
+internal/integration/postgresacceptance/b26_move_body_test.go
 internal/integration/postgresacceptance/engine_test.go
 internal/integration/postgresacceptance/fixture_test.go
 internal/integration/postgresacceptance/history_test.go
@@ -705,6 +745,8 @@ internal/plugins/authzfixed/facts.go
 internal/plugins/authzfixed/facts_test.go
 internal/plugins/authzfixed/ontology.go
 internal/plugins/authzfixed/ontology_test.go
+internal/plugins/authzfixed/prepared_differential_test.go
+internal/plugins/authzfixed/prepared_legacy_test.go
 internal/plugins/authzfixed/rules.go
 internal/plugins/authzfixed/rules_test.go
 internal/publicnative/BUILD.bazel
@@ -725,6 +767,7 @@ internal/server/authzrpc/authzrpc.go
 internal/server/authzrpc/authzrpc_test.go
 internal/server/authzrpc/b04_error_bounds_test.go
 internal/server/authzrpc/b15_comments_page_test.go
+internal/server/authzrpc/binding_test.go
 internal/server/authzrpc/checker.go
 internal/server/authzrpc/claim.go
 internal/server/authzrpc/claim_authority.go
@@ -744,6 +787,9 @@ internal/server/authzrpc/history_authority_test.go
 internal/server/authzrpc/lifecycle.go
 internal/server/authzrpc/ontology.go
 internal/server/authzrpc/predicate_count_test.go
+internal/server/authzrpc/prepared_test.go
+internal/server/authzrpc/ready_compiled.go
+internal/server/authzrpc/ready_compiled_number_test.go
 internal/server/authzrpc/service.go
 internal/server/authzrpc/slice.go
 internal/server/authzrpc/workflow_boundary_test.go
@@ -751,6 +797,7 @@ internal/server/authzrpc/workflow_claimnext.go
 internal/server/authzrpc/workflow_claimnext_auth_test.go
 internal/server/authzrpc/workflow_claimnext_test.go
 internal/server/authzrpc/workflow_cursor_test.go
+internal/server/authzrpc/workflow_lifecycle.go
 internal/server/authzrpc/workflow_reads.go
 internal/server/authzrpc/workflow_reads_test.go
 internal/server/authzrpc/workflow_writes_test.go
@@ -1011,6 +1058,7 @@ internal/storage/driver/allocator_journal.go
 internal/storage/driver/allocator_snapshot.go
 internal/storage/driver/allocator_snapshot_test.go
 internal/storage/driver/audit_contract_test.go
+internal/storage/driver/checkpoint_mutation.go
 internal/storage/driver/driver.go
 internal/storage/driver/errors.go
 internal/storage/driver/errors_test.go
@@ -1023,6 +1071,7 @@ internal/storage/driver/offline_history_test.go
 internal/storage/driver/offline_restore.go
 internal/storage/driver/parent_counter.go
 internal/storage/driver/parent_counter_test.go
+internal/storage/driver/read_work.go
 internal/storage/driver/receipt_contract_test.go
 internal/storage/driver/restore.go
 internal/storage/driver/restore_test.go
@@ -1076,6 +1125,7 @@ internal/storage/postgres/b05_expired_renew_test.go
 internal/storage/postgres/b05_persisted_clock_test.go
 internal/storage/postgres/boundaries_test.go
 internal/storage/postgres/checkpoint_guard.go
+internal/storage/postgres/checkpoint_mutation.go
 internal/storage/postgres/clock_test.go
 internal/storage/postgres/commit.go
 internal/storage/postgres/commit_batch_test.go
@@ -1098,6 +1148,8 @@ internal/storage/postgres/persistence_test.go
 internal/storage/postgres/query.go
 internal/storage/postgres/reader.go
 internal/storage/postgres/reader_batch_test.go
+internal/storage/postgres/reader_versions_batch_negative_test.go
+internal/storage/postgres/reader_versions_batch_test.go
 internal/storage/postgres/schema.go
 internal/storage/postgres/selection.go
 internal/storage/postgres/selection_test.go
@@ -1120,6 +1172,7 @@ internal/storage/sqlite/allocator_snapshot.go
 internal/storage/sqlite/b05_persisted_clock_test.go
 internal/storage/sqlite/boundaries_test.go
 internal/storage/sqlite/checkpoint_guard.go
+internal/storage/sqlite/checkpoint_mutation.go
 internal/storage/sqlite/clock.go
 internal/storage/sqlite/clock_test.go
 internal/storage/sqlite/derived_prefix_test.go
@@ -1174,8 +1227,11 @@ pluginapi/types.go
 pluginapi/types_test.go
 plugins/plug/SKILL.md
 plugins/workflow/BUILD.bazel
+plugins/workflow/atomic.go
 plugins/workflow/manifest.json
 plugins/workflow/native.go
+plugins/workflow/ordinary_delete.go
+plugins/workflow/scheduling.go
 plugins/workflow/workflow.go
 plugins/workflow/workflow_test.go
 scripts/ci/BUILD.bazel
@@ -1273,8 +1329,12 @@ spec/s1-b01-b04/fixture_test.go
 spec/s1-b01-b04/manifest.json
 spec/s1-b01-b04/manifest_test.go
 spec/s1-b01-b04/native_contract_test.go
+spec/s1-b01-b04/native_exclusion_test.go
+spec/s1-b01-b04/native_hierarchy_test.go
 spec/s1-b01-b04/native_inputs.json
 spec/s1-b01-b04/native_io_test.go
+spec/s1-b01-b04/native_membership_test.go
+spec/s1-b01-b04/native_parent_compatibility_test.go
 spec/s1-b01-b04/native_projection_test.go
 spec/s1-b01-b04/native_recording.md
 spec/s1-b01-b04/native_recording_test.go
@@ -1300,6 +1360,8 @@ spec/s1-b05-b08/cycle_concurrency_test.go
 spec/s1-b05-b08/cycle_fence_test.go
 spec/s1-b05-b08/cycle_oracle_test.go
 spec/s1-b05-b08/cycle_rpc_test.go
+spec/s1-b05-b08/edge_contract_oracle_test.go
+spec/s1-b05-b08/edge_contract_test.go
 spec/s1-b05-b08/engines_test.go
 spec/s1-b05-b08/ephemeral_cycle_oracle_test.go
 spec/s1-b05-b08/ephemeral_cycle_test.go
@@ -1349,6 +1411,7 @@ spec/s1-b09-b12/compaction/publication_test.go
 spec/s1-b09-b12/compaction/selection_test.go
 spec/s1-b09-b12/extract_proxied_reference_packet.py
 spec/s1-b09-b12/extract_reference_packet.py
+spec/s1-b09-b12/postgres_fixture_test.go
 spec/s1-b09-b12/projection.py
 spec/s1-b09-b12/provenance.json
 spec/s1-b09-b12/proxied_capture_harness_test.go
@@ -1374,6 +1437,12 @@ spec/s1-b09-b12/reference_proxied_capture_test.go
 spec/s1-b09-b12/reference_test.go
 spec/s1-b09-b12/replay_test.go
 spec/s1-b09-b12/vectors.json
+spec/s1-b09-native/BUILD.bazel
+spec/s1-b09-native/README.md
+spec/s1-b09-native/conservation_test.go
+spec/s1-b09-native/native_inputs.json
+spec/s1-b09-native/paired_replay_test.go
+spec/s1-b09-native/recorder_test.go
 spec/s1-b13-b16/BUILD.bazel
 spec/s1-b13-b16/README.md
 spec/s1-b13-b16/capture_regressions_test.go
@@ -1421,6 +1490,14 @@ spec/s1-b21-b24/count-reference-first.json
 spec/s1-b21-b24/count-reference-repeat.json
 spec/s1-b21-b24/extract_ordinary_count_packet.py
 spec/s1-b21-b24/fixture_test.go
+spec/s1-b21-b24/native_history_probe_test.go
+spec/s1-b21-b24/native_recording_test.go
+spec/s1-b21-b24/native_replay_test.go
+spec/s1-b21-b24/native_support_test.go
+spec/s1-b21-b24/native_testdata/README.md
+spec/s1-b21-b24/native_testdata/profile.json
+spec/s1-b21-b24/native_testdata/protocol.json
+spec/s1-b21-b24/native_views_test.go
 spec/s1-b21-b24/ordinary_count_capture.py
 spec/s1-b21-b24/ordinary_count_capture_harness_test.go
 spec/s1-b21-b24/ordinary_count_capture_policy_test.go
@@ -1441,6 +1518,11 @@ spec/s1-b25-b28/BUILD.bazel
 spec/s1-b25-b28/README.md
 spec/s1-b25-b28/acceptance_test.go
 spec/s1-b25-b28/b26-deviation.json
+spec/s1-b25-b28/b26-positive-producer.json
+spec/s1-b25-b28/compare_native_pair.py
+spec/s1-b25-b28/compare_native_pair_test.py
+spec/s1-b25-b28/compare_r418_pair.py
+spec/s1-b25-b28/compare_r418_pair_test.py
 spec/s1-b25-b28/config_union_test.go
 spec/s1-b25-b28/converter_test.go
 spec/s1-b25-b28/provenance.py
@@ -1451,6 +1533,7 @@ spec/s1-b25-b28/relations_test.go
 spec/s1-b25-b28/subscribers_test.go
 spec/s1-b25-b28/testdata/existing-target.jsonl
 spec/s1-b25-b28/testdata/inputs.jsonl
+spec/s1-b25-b28/testdata/native-product-source-binding.json
 spec/s1-b25-b28/testdata/native-public-profile.json
 spec/s1-b25-b28/testdata/native-public-recording-fixture.json
 spec/s1-b25-b28/testdata/projection.json

@@ -81,10 +81,11 @@ const (
 // DirectBlockerEdge is the redacted, consumer-facing projection of one
 // producer edge. Project and raw status are intentionally absent.
 type DirectBlockerEdge struct {
-	Blocker model.Ref          `json:"blocker"`
-	Kind    string             `json:"kind"`
-	State   DirectBlockerState `json:"state"`
-	Reason  string             `json:"reason,omitempty"`
+	TargetKind model.LinkTargetKind `json:"targetKind,omitempty"`
+	Blocker    model.Ref            `json:"blocker"`
+	Kind       string               `json:"kind"`
+	State      DirectBlockerState   `json:"state"`
+	Reason     string               `json:"reason,omitempty"`
 }
 
 // DirectBlockerVerdict is the bounded verdict returned by a configured host

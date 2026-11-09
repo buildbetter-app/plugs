@@ -24,6 +24,22 @@ described in the [server guide](engdocs/plug-runtime/server.md). Use
 `plug --help` for the public CLI commands and
 [CLI connections](internal/cli/README.md) for server selection and JSON output.
 
+## External dependency targets
+
+`bead.link`, `bead.unlink`, and link/unlink operations in `tx.apply` accept an
+optional `targetKind` of `local` or `external`. Omission means local: a missing
+local endpoint returns `not_found`, regardless of its prefix. External targets
+require a nonempty ID reference on branch zero and retain the exact ID bytes.
+For example, link to an unresolved spawner with `"targetKind":"external"`
+and `"to":{"id":"missing-spawner"}`.
+
+Local and external IDs belong to separate identity domains, even when spelled
+the same. External scheduling edges stay unresolved and fail readiness closed;
+external association edges stay inert. They never bind to local graph members,
+indexes, child fanout, blocker authorization, or outcome notifications. Admitted
+archive restore and reverse conversion retain the external arm. Generated
+archive checks do not establish compatibility with a native Beads importer.
+
 ## Parent changes
 
 Moving or detaching a bead updates ancestor relationships for its entire

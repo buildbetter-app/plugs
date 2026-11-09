@@ -742,10 +742,11 @@ func (r *Runtime) bind(config Config) error {
 			out := viewops.DirectBlockerVerdict{Edges: make([]viewops.DirectBlockerEdge, 0, len(verdict.Edges))}
 			for _, edge := range verdict.Edges {
 				out.Edges = append(out.Edges, viewops.DirectBlockerEdge{
-					Blocker: edge.Blocker,
-					Kind:    edge.Kind,
-					State:   viewops.DirectBlockerState(edge.State),
-					Reason:  edge.Reason,
+					Blocker:    edge.Blocker,
+					TargetKind: edge.TargetKind,
+					Kind:       edge.Kind,
+					State:      viewops.DirectBlockerState(edge.State),
+					Reason:     edge.Reason,
 				})
 			}
 			return out, nil

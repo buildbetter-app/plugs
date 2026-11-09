@@ -18,6 +18,9 @@ go_test(
         "//internal/server/transport/httpjson",
         "//internal/storage/driver",
         "//internal/storage/postgres",
+        "//internal/storage/sqlite",
+        "//internal/storage/memory",
         "//plugins/workflow",
+        "//sdk/go:sdk_go",
     ],
 )

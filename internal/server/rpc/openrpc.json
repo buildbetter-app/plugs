@@ -151,6 +151,10 @@
           "viewId": {
             "type": "string",
             "description": "View membership for subscriptions and watches."
+          },
+          "includeEphemeral": {
+            "type": "boolean",
+            "description": "Include live ephemeral workflow items; defaults to true for backward-compatible ready reads."
           }
         },
         "additionalProperties": false
@@ -631,6 +635,9 @@
           "metadata": {
             "$ref": "#/components/schemas/LinkMetadata",
             "description": "Only valid for a waits-for link. Omission preserves existing metadata on re-add; explicit {} selects all-children without also_blocks."
+          },
+          "targetKind": {
+            "$ref": "#/components/schemas/LinkTargetKind"
           }
         },
         "required": [
@@ -1304,6 +1311,9 @@
           "reason": {
             "type": "string",
             "maxLength": 128
+          },
+          "targetKind": {
+            "$ref": "#/components/schemas/LinkTargetKind"
           }
         },
         "required": [
@@ -3890,6 +3900,33 @@
           },
           "type": {
             "type": "string"
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "parent": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowRelationSpec"
+            }
+          },
+          "blocked": {
+            "type": "boolean"
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": true
           }
         },
         "required": [
@@ -3991,6 +4028,37 @@
               "type": "object",
               "additionalProperties": true
             }
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "parent": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowRelationView"
+            }
+          },
+          "blocked": {
+            "type": "boolean"
+          },
+          "childCounter": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": true
           }
         },
         "required": [
@@ -4292,6 +4360,108 @@
           "asOf"
         ],
         "additionalProperties": false
+      },
+      "WorkflowRelationSpec": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "to",
+          "kind"
+        ],
+        "additionalProperties": false
+      },
+      "WorkflowRelationView": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "minLength": 1
+          },
+          "to": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "kind"
+        ],
+        "additionalProperties": false
+      },
+      "WorkflowPromoteResult": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "target": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "relations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowRelationView"
+            }
+          },
+          "childCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "source",
+          "target",
+          "generation"
+        ],
+        "additionalProperties": false
+      },
+      "WorkflowDemoteResult": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "$ref": "#/components/schemas/WorkflowRun"
+          },
+          "item": {
+            "$ref": "#/components/schemas/WorkflowItem"
+          }
+        },
+        "required": [
+          "run",
+          "item"
+        ],
+        "additionalProperties": false
+      },
+      "LinkTargetKind": {
+        "type": "string",
+        "enum": [
+          "local",
+          "external"
+        ],
+        "description": "Omission is local. Explicit external targets retain an exact nonempty branch-zero ID and are never resolved against local beads."
       }
     },
     "errors": {

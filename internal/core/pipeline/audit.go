@@ -32,7 +32,7 @@ type auditPlan struct {
 }
 
 func statusChanged(p *pending) bool {
-	if p.deleted || len(p.before) == 0 {
+	if p == nil || p.deleted || len(p.before) == 0 {
 		return false
 	}
 	before, err := DecodeDocument(p.before)
@@ -105,7 +105,7 @@ func (w *Writer) prepareAudit(ctx context.Context, p *prepared) error {
 	for id, row := range graph {
 		seen := map[string]bool{}
 		for _, link := range row.doc.Links {
-			if link.Kind != "conditional-blocks" || !blockers[link.To.ID] {
+			if link.TargetKind == model.LinkTargetExternal || link.Kind != "conditional-blocks" || !blockers[link.To.ID] {
 				continue
 			}
 			if !link.To.IsID() || !link.To.Branch.IsZero() || seen[link.To.ID] || id == link.To.ID {

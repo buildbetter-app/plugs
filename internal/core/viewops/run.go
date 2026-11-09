@@ -213,6 +213,8 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 	if err != nil {
 		return Result{}, err
 	}
+	typeSummary := len(definition.GroupBy) == 1 && definition.GroupBy[0] == "type" && definition.Fields != nil && len(definition.Fields) == 0
+	useBatchAuthorization := (req.CountOnly || typeSummary) && s.cfg.AuthorizeReadBatch != nil
 	// Cache current authorization on every request. For stale reads, the
 	// query/order stream is the paging coordinate: authorization is checked
 	// before any age or protected-ontology read, then only authorized rows are
@@ -228,7 +230,7 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 			}
 		}
 		sortStored(queryOrder, definition.Sort)
-		if req.CountOnly && s.cfg.AuthorizeReadBatch != nil {
+		if useBatchAuthorization {
 			refs := make([]model.ResourceRef, 0, len(queryOrder))
 			for _, row := range queryOrder {
 				refs = append(refs, model.ResourceRef{Kind: "bead", Ref: row.record.Ref})
@@ -265,7 +267,7 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 			candidates = append(candidates, stale...)
 		}
 	} else {
-		if req.CountOnly && s.cfg.AuthorizeReadBatch != nil {
+		if useBatchAuthorization {
 			refs := make([]model.ResourceRef, 0, len(rows))
 			for _, row := range rows {
 				if matches(row, filter, project, terms) {
@@ -311,7 +313,7 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 				if link.Kind != "blocks" && link.Kind != "conditional-blocks" {
 					continue
 				}
-				if !link.To.IsID() || !link.To.Branch.IsZero() {
+				if link.TargetKind == model.LinkTargetExternal || !link.To.IsID() || !link.To.Branch.IsZero() {
 					continue
 				}
 				target, exists := findStored(rows, link.To.ID)
@@ -330,7 +332,6 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 		}
 		sortStored(candidates, definition.Sort)
 	}
-	typeSummary := len(definition.GroupBy) == 1 && definition.GroupBy[0] == "type" && definition.Fields != nil && len(definition.Fields) == 0
 	cap := OrdinaryCandidateCap
 	if typeSummary {
 		cap = TypeSummaryCandidateCap
@@ -356,8 +357,13 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 		return Result{}, err
 	}
 	if typeSummary {
-		result, err := s.typeSummaryResult(candidates, rows, authorized, pending, definition, asOf)
+		result, err := s.typeSummaryResult(ctx, candidates, rows, authorized, pending, definition, asOf)
 		if err != nil {
+			return Result{}, err
+		}
+		// Summary rendering can finish after batch authorization returns. Fence
+		// the complete result against cancellation or lease loss before publish.
+		if err := s.admit(ctx, by); err != nil {
 			return Result{}, err
 		}
 		result.Projection = projection
@@ -397,7 +403,7 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 	}
 	result := Result{Items: make([]Bead, 0, len(pageRows)), AsOf: asOf, Projection: projection}
 	for _, row := range pageRows {
-		item, err := s.item(row, definition.Fields, rows, authorized, pending)
+		item, err := s.item(ctx, row, definition.Fields, rows, authorized, pending)
 		if err != nil {
 			return Result{}, err
 		}
@@ -413,7 +419,7 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 		result.NextCursor = s.nextCursor(by, req.Agent, req.ViewID, definitionDigest, asOf, index, cutoff, resume)
 	}
 	if len(definition.GroupBy) != 0 {
-		result.Groups, err = s.grouped(candidates, pageRows, remainingRows, definition.Fields, rows, authorized, pending)
+		result.Groups, err = s.grouped(ctx, candidates, pageRows, remainingRows, definition.Fields, rows, authorized, pending)
 		if err != nil {
 			return Result{}, err
 		}
@@ -548,9 +554,10 @@ func (s *Service) nextCursor(by model.PrincipalRef, agent, viewID, definitionDig
 	return &Cursor{Version: 1, Method: "view.run", PrincipalDigest: principal, DefinitionDigest: definitionDigest, ViewID: viewID, OntologyRevision: s.cfg.OntologyRevision, Incarnation: asOf.Incarnation, Revision: asOf.Revision, Index: index, StaleResumeDigest: staleResumeDigest, StaleCutoff: cutoff}
 }
 
-func (s *Service) typeSummaryResult(candidates, rows []stored, authorized map[string]bool, pending map[string]ReadinessState, definition Definition, asOf AsOf) (Result, error) {
+func (s *Service) typeSummaryResult(ctx context.Context, candidates, rows []stored, authorized map[string]bool, pending map[string]ReadinessState, definition Definition, asOf AsOf) (Result, error) {
 	groups := map[string][]stored{}
 	for _, row := range candidates {
+		driver.ReportReadWork(ctx, driver.ReadAggregateInputs, 1)
 		groups[row.doc.Type] = append(groups[row.doc.Type], row)
 	}
 	if len(groups) > MaxGroups {
@@ -566,7 +573,7 @@ func (s *Service) typeSummaryResult(candidates, rows []stored, authorized map[st
 		groupRows := groups[key]
 		items := make([]Bead, 0)
 		for _, row := range groupRows {
-			item, err := s.item(row, definition.Fields, rows, authorized, pending)
+			item, err := s.item(ctx, row, definition.Fields, rows, authorized, pending)
 			if err != nil {
 				return Result{}, err
 			}
@@ -575,14 +582,16 @@ func (s *Service) typeSummaryResult(candidates, rows []stored, authorized map[st
 				items = append(items, item)
 			}
 		}
+		driver.ReportReadWork(ctx, driver.ReadAggregateGroups, 1)
 		result.Groups = append(result.Groups, Group{Key: key, Count: len(groupRows), Items: items})
 	}
 	return result, nil
 }
 
-func (s *Service) grouped(candidates, pageRows, remainingRows []stored, fields []string, rows []stored, authorized map[string]bool, pending map[string]ReadinessState) ([]Group, error) {
+func (s *Service) grouped(ctx context.Context, candidates, pageRows, remainingRows []stored, fields []string, rows []stored, authorized map[string]bool, pending map[string]ReadinessState) ([]Group, error) {
 	groups := map[string][]stored{}
 	for _, row := range candidates {
+		driver.ReportReadWork(ctx, driver.ReadAggregateInputs, 1)
 		groups[row.doc.Type] = append(groups[row.doc.Type], row)
 	}
 	pageGroups := map[string][]stored{}
@@ -603,7 +612,7 @@ func (s *Service) grouped(candidates, pageRows, remainingRows []stored, fields [
 		all := groups[key]
 		group := Group{Key: key, Count: len(all), Items: []Bead{}}
 		for _, row := range pageGroups[key] {
-			item, err := s.item(row, fields, rows, authorized, pending)
+			item, err := s.item(ctx, row, fields, rows, authorized, pending)
 			if err != nil {
 				return nil, err
 			}
@@ -612,12 +621,14 @@ func (s *Service) grouped(candidates, pageRows, remainingRows []stored, fields [
 		if count := remaining[key]; count != 0 {
 			group.Elided = &Elision{Count: count, Reason: "output_budget"}
 		}
+		driver.ReportReadWork(ctx, driver.ReadAggregateGroups, 1)
 		result = append(result, group)
 	}
 	return result, nil
 }
 
-func (s *Service) item(row stored, fields []string, rows []stored, authorized map[string]bool, pending map[string]ReadinessState) (Bead, error) {
+func (s *Service) item(ctx context.Context, row stored, fields []string, rows []stored, authorized map[string]bool, pending map[string]ReadinessState) (Bead, error) {
+	driver.ReportReadWork(ctx, driver.ReadItemProjections, 1)
 	fieldsMap := cloneMap(row.doc.Fields)
 	metadata := cloneMetadata(row.doc.Metadata)
 	if fields != nil {
@@ -650,7 +661,7 @@ func (s *Service) item(row stored, fields []string, rows []stored, authorized ma
 		if target.Kind != "blocks" && target.Kind != "conditional-blocks" {
 			continue
 		}
-		if target.To.IsID() && target.To.Branch.IsZero() {
+		if target.TargetKind != model.LinkTargetExternal && target.To.IsID() && target.To.Branch.IsZero() {
 			if _, exists := findStored(rows, target.To.ID); exists && !authorized[target.To.ID] {
 				item.HiddenBlockers++
 			}
@@ -828,7 +839,7 @@ func (s *Service) projectDirectBlockers(ctx context.Context, by model.PrincipalR
 	refs := make([]model.Ref, 0, len(verdict.Edges))
 	seen := make(map[string]bool, len(verdict.Edges))
 	for _, edge := range verdict.Edges {
-		if !edge.Blocker.IsID() || !edge.Blocker.Branch.IsZero() || seen[edge.Blocker.ID] {
+		if edge.TargetKind == model.LinkTargetExternal || !edge.Blocker.IsID() || !edge.Blocker.Branch.IsZero() || seen[edge.Blocker.ID] {
 			continue
 		}
 		seen[edge.Blocker.ID] = true
@@ -860,11 +871,16 @@ func (s *Service) projectDirectBlockers(ctx context.Context, by model.PrincipalR
 		if edge.State != DirectBlockerSatisfied && edge.State != DirectBlockerUnsatisfied && edge.State != DirectBlockerUnknown {
 			return nil, failure("internal_error", "invalid direct blocker state")
 		}
+		targetKind, kindErr := edge.TargetKind.Normalized()
+		if kindErr != nil || model.ValidateLinkTarget(targetKind, edge.Blocker) != nil {
+			return nil, failure("internal_error", "invalid direct blocker target kind")
+		}
+		edge.TargetKind = targetKind
 		edge.State, edge.Reason = safeDirectBlockerVerdict(edge.State, edge.Reason)
 		// An unresolved or missing reference is an unknown link on a readable
 		// dependent. There is no target record/project to authorize.
 		target, exists := byID[edge.Blocker.ID]
-		if !edge.Blocker.IsID() || !edge.Blocker.Branch.IsZero() || !exists {
+		if edge.TargetKind == model.LinkTargetExternal || !edge.Blocker.IsID() || !edge.Blocker.Branch.IsZero() || !exists {
 			edge.State = DirectBlockerUnknown
 			if edge.Reason == "" {
 				edge.Reason = "blocker reference is unresolved or missing from the snapshot"
@@ -909,7 +925,7 @@ func safeDirectBlockerVerdict(state DirectBlockerState, reason string) (DirectBl
 func (s *Service) hiddenBlockers(ctx context.Context, by model.PrincipalRef, reader driver.Reader, row stored) (int, error) {
 	refs := make([]driver.Ref, 0, len(row.doc.Links))
 	for _, link := range row.doc.Links {
-		if (link.Kind == "blocks" || link.Kind == "conditional-blocks") && link.To.IsID() && link.To.Branch.IsZero() {
+		if link.TargetKind != model.LinkTargetExternal && (link.Kind == "blocks" || link.Kind == "conditional-blocks") && link.To.IsID() && link.To.Branch.IsZero() {
 			refs = append(refs, link.To)
 		}
 	}

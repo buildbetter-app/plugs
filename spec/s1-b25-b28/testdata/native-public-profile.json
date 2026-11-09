@@ -8,9 +8,9 @@
   "version_key": "bd_export_version",
   "go_module_sha256": "744bc17b41d8afec00b4e339540dea0d68e6677b9dcca5daef2e9e2725b774c2",
   "producer": {
-    "run_id": "41610284344",
-    "manifest_sha256": "4aa497bb1dfb70bf85371daa9e388b5b0ae84130f83f45a49816559d4698c0db",
-    "workflow_sha": "5b1546459abe9c21fc6045380ad2bb25df8cbf99",
-    "workflow_branch": "codex/b1c-native-producer-d70c-20261102"
+    "run_id": "41800330346",
+    "manifest_sha256": "ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a",
+    "workflow_sha": "d758fdf42a426e9e2a4b707dbcebb22ec68b264e",
+    "workflow_branch": "swarm/native-producer-census-control-c8eb-20261104"
   }
 }

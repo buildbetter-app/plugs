@@ -11,6 +11,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
 // Gate request/result names are re-exported from the core port so domain
@@ -150,11 +151,12 @@ func (s *WorkflowPageSnapshot) Equal(other *WorkflowPageSnapshot) bool {
 }
 
 type Filter struct {
-	Query     string
-	Resources []string
-	Types     []string
-	Events    []string
-	ViewID    string
+	Query            string
+	Resources        []string
+	Types            []string
+	Events           []string
+	ViewID           string
+	IncludeEphemeral *bool
 }
 
 // EventProvider is the transport-neutral seam used by the core service to
@@ -317,11 +319,12 @@ type ClaimNextRequest struct {
 // filter are equivalent.
 func ClaimNextRequestIdentity(req ClaimNextRequest) (string, error) {
 	type normalizedFilter struct {
-		Query     string   `json:"query"`
-		Resources []string `json:"resources"`
-		Types     []string `json:"types"`
-		Events    []string `json:"events"`
-		ViewID    string   `json:"viewId"`
+		Query            string   `json:"query"`
+		Resources        []string `json:"resources"`
+		Types            []string `json:"types"`
+		Events           []string `json:"events"`
+		ViewID           string   `json:"viewId"`
+		IncludeEphemeral bool     `json:"includeEphemeral"`
 	}
 	normalize := func(values []string) []string {
 		if len(values) == 0 {
@@ -339,12 +342,16 @@ func ClaimNextRequestIdentity(req ClaimNextRequest) (string, error) {
 		sort.Strings(out)
 		return out
 	}
-	value := normalizedFilter{}
+	value := normalizedFilter{IncludeEphemeral: true}
 	if req.Filter != nil {
+		includeEphemeral := true
+		if req.Filter.IncludeEphemeral != nil {
+			includeEphemeral = *req.Filter.IncludeEphemeral
+		}
 		value = normalizedFilter{
 			Query: req.Filter.Query, Resources: normalize(req.Filter.Resources),
 			Types: normalize(req.Filter.Types), Events: normalize(req.Filter.Events),
-			ViewID: req.Filter.ViewID,
+			ViewID: req.Filter.ViewID, IncludeEphemeral: includeEphemeral,
 		}
 	}
 	data, err := json.Marshal(struct {
@@ -371,11 +378,12 @@ type CloseRequest struct {
 // in a ChangeSet. Expect applies to the source bead, which is the only record
 // mutated by a dependency operation.
 type LinkRequest struct {
-	From     model.Ref
-	To       model.Ref
-	Kind     string
-	Metadata *model.LinkMetadata
-	Expect   []model.Precondition
+	TargetKind model.LinkTargetKind
+	From       model.Ref
+	To         model.Ref
+	Kind       string
+	Metadata   *model.LinkMetadata
+	Expect     []model.Precondition
 }
 
 // The named lifecycle requests intentionally share the close shape. Their
@@ -427,6 +435,9 @@ type Bead struct {
 	// When true the transport emits only parent:{exists:true}.
 	ParentHidden     bool
 	Labels           []string
+	Links            []workflowplugin.RelationView
+	Blocked          bool
+	ChildCounter     uint64
 	Assignee         string
 	HiddenBlockers   int
 	ReadinessPending bool

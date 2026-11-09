@@ -4,6 +4,7 @@ go_library(
     name = "driver",
     srcs = [
         "allocator.go",
+        "checkpoint_mutation.go",
         "allocator_snapshot.go",
         "allocator_journal.go",
         "parent_counter.go",
@@ -11,6 +12,7 @@ go_library(
         "errors.go",
         "hierarchy.go",
         "keys.go",
+        "read_work.go",
         "offline_restore.go",
         "offline_history.go",
         "restore.go",

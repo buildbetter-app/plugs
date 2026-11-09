@@ -226,3 +226,28 @@ func TestWorkflowWritesPublicationAuthorityFence(t *testing.T) {
 		}
 	}
 }
+
+func TestB26LifecycleDeniedProjectDoesNotPublish(t *testing.T) {
+	for _, method := range []string{"x.workflow.run.promote", "x.workflow.run.demote"} {
+		t.Run(method, func(t *testing.T) {
+			f := newWorkflowClaimNextFixture(t)
+			item := model.RefByID(f.invoke(t, 260, 1)[0].ID, model.Natural64(0))
+			before := workflowWriteCheckpoint(t, f)
+			f.revoke(t)
+			var err error
+			if method == "x.workflow.run.promote" {
+				_, err = f.app.Service.WorkflowPromote(context.Background(), f.by, workflowplugin.PromoteRequest{Item: item, Target: model.RefByID("ordinary-target", model.Natural64(0))}, workflowClaimNextMeta(method, 261))
+			} else {
+				_, err = f.app.Service.WorkflowDemote(context.Background(), f.by, workflowplugin.DemoteRequest{Source: model.RefByID("ordinary-source", model.Natural64(0)), Template: "demote", Label: "item"}, workflowClaimNextMeta(method, 261))
+			}
+			var denied *model.Error
+			if !errors.As(err, &denied) || denied.Data.Code != "forbidden" {
+				t.Fatalf("project denial=%v", err)
+			}
+			after := workflowWriteCheckpoint(t, f)
+			if before.Generation != after.Generation || !bytes.Equal(before.Payload, after.Payload) {
+				t.Fatal("denied lifecycle mutated namespace")
+			}
+		})
+	}
+}

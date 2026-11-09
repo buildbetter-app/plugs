@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -14,7 +15,10 @@ import (
 // Any graph publication which does not maintain it makes it stale automatically.
 // The version names the exact invariant set below; changing that set requires a
 // new fact, not accepting an older certificate under stronger semantics.
-const GraphValidityReadFact driver.ReadFact = "core/graph-validity/v1"
+// Version 2 validates the typed endpoint identity before excluding external
+// links from local graph membership and scheduling. A v1 certificate cannot
+// attest to a discriminator that its validator did not inspect.
+const GraphValidityReadFact driver.ReadFact = "core/graph-validity/v2"
 
 func GraphValidityLockKey() driver.LockKey {
 	return driver.LockKey{Kind: driver.LockReadFact, Fact: GraphValidityReadFact}
@@ -87,7 +91,14 @@ func ValidateGraphDocuments(ctx context.Context, docs map[string]Document) error
 			return failure("ontology_guard_failed", "invalid hierarchy source parent")
 		}
 		for _, link := range doc.Links {
-			if !validDependencyKind(link.Kind) || driver.ValidateHierarchyRef(link.To) != nil {
+			targetKind, err := link.TargetKind.Normalized()
+			if err != nil || !validDependencyKind(link.Kind) || model.ValidateLinkTarget(targetKind, link.To) != nil {
+				return failure("ontology_guard_failed", "invalid hierarchy source link")
+			}
+			if targetKind == model.LinkTargetExternal {
+				continue
+			}
+			if driver.ValidateHierarchyRef(link.To) != nil {
 				return failure("ontology_guard_failed", "invalid hierarchy source link")
 			}
 			if _, ok := docs[link.To.ID]; !ok {
@@ -114,7 +125,7 @@ func ValidateGraphDocuments(ctx context.Context, docs map[string]Document) error
 			}
 		}
 		for _, link := range docs[id].Links {
-			if dependencyIsScheduling(link.Kind) {
+			if link.TargetKind != model.LinkTargetExternal && dependencyIsScheduling(link.Kind) {
 				if err := walk(link.To.ID); err != nil {
 					return err
 				}
