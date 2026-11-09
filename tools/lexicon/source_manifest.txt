@@ -1252,6 +1252,7 @@ internal/storage/sqlite/selection_row_insert_batch.go
 internal/storage/sqlite/selection_row_insert_batch_test.go
 internal/storage/sqlite/selection_stage_work_test.go
 internal/storage/sqlite/selection_test.go
+internal/storage/sqlite/selection_validation_reuse_test.go
 internal/storage/sqlite/source_activation_test.go
 internal/storage/sqlite/source_backend_test.go
 internal/storage/sqlite/source_backfill.go
