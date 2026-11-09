@@ -94,10 +94,12 @@ func TestJointSourcePublicOrdinaryDeleteOrderingReplayAndConservation(t *testing
 			created := sourcePublicCall(t, server, actor, "bead.create", 301, map[string]any{"type": "issue", "fields": map[string]any{"title": "ordinary delete after source installation"}}, "")
 			var createdCommit model.Commit
 			decode(t, created.Result, &createdCommit)
-			if len(createdCommit.Results) != 1 {
+			if len(createdCommit.Results) != 1 || !createdCommit.Results[0].Ref.IsID() || !createdCommit.Results[0].Ref.Branch.IsZero() || createdCommit.Results[0].Ref.Key != "" || createdCommit.Results[0].Ref.ID == "" {
 				t.Fatal("ordinary create result", createdCommit)
 			}
-			victim := createdCommit.Results[0].Ref
+			// Create omits the default branch; explicit delete carries zero.
+			// Compare the same branch-zero identity, retaining the selected ID.
+			victim := ref(createdCommit.Results[0].Ref.ID)
 			ordinary := model.ChangeSet{Ops: []model.Op{remove(victim.ID)}}
 			policy.deny = true
 			refuse(actor, 302, ordinary, "forbidden")
@@ -120,8 +122,14 @@ func TestJointSourcePublicOrdinaryDeleteOrderingReplayAndConservation(t *testing
 			var deletedCommit model.Commit
 			decode(t, deleted.Result, &deletedCommit)
 			head, _ := beforeOrdinary.Meta.Head.Uint64()
-			if deleted.Meta.Replayed || deletedCommit.Revision != model.Natural64(head+1) || len(deletedCommit.Results) != 1 || deletedCommit.Results[0].Ref != victim || len(deletedCommit.Results[0].Record) != 0 || !reflect.DeepEqual(initial, checkpoint()) {
-				t.Fatal("ordinary delete did not publish once without changing source checkpoint", deletedCommit)
+			if deleted.Meta.Replayed || deletedCommit.Revision != model.Natural64(head+1) {
+				t.Fatalf("ordinary delete did not publish once: before=%s after=%s replayed=%v", beforeOrdinary.Meta.Head, deletedCommit.Revision, deleted.Meta.Replayed)
+			}
+			if len(deletedCommit.Results) != 1 || deletedCommit.Results[0].Ref != victim || len(deletedCommit.Results[0].Record) != 0 {
+				t.Fatalf("ordinary delete changed target identity or retained payload: want=%+v commit=%+v", victim, deletedCommit)
+			}
+			if after := checkpoint(); !reflect.DeepEqual(initial, after) {
+				t.Fatalf("ordinary-only deletion changed source checkpoint: before=%+v after=%+v", initial, after)
 			}
 			sourcePublicCall(t, server, actor, "bead.get", 0, map[string]any{"id": victim}, "not_found")
 			ordinaryState := savedLabelImport(t, store, report.Archive, p, fmt.Sprintf("%032d", 302))
