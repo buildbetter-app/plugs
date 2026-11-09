@@ -136,6 +136,7 @@ try {
   const adapter=await import(pathToFileURL(join(ui,'lib/plug-adapter.mjs')));
   const client=new adapter.PlugClient(await adapter.loadBinding(bindingPath));const store=new adapter.ProjectionStore(client);
   const first=await store.refresh();assert.equal(first.stats.total,6);assert.equal(first.graphData.nodes.filter(n=>n.id==='SHARED').length,2);
+  for(const node of first.graphData.nodes.filter(n=>n.id==='SHARED')){assert.equal(node.updatedAt,undefined);assert.ok(node.createdAt);}
   assert.equal(first.projects['cody-ops'].stats.actionable,2);assert.equal(first.projects['signals-v2'].stats.actionable,2);
   const exactTodo=first.graphData.nodes.filter(n=>n.status==='todo');
   assert.ok(exactTodo.some(n=>n.project==='cody-ops'&&n.statusCategory==='active'));
@@ -161,6 +162,7 @@ try {
   assert.equal(sig.issues.find(x=>x.id==='SHARED').comments?.[0]?.text,'signals-only fixture comment');
   assert.equal(ops.issues.length,3);assert.equal(sig.issues.length,3);assert.ok(ops.issues.every(n=>n.project==='cody-ops'));
   assert.equal(child.issue.blockers[0].title,'Imported root cody-ops');
+  assert.equal(Object.hasOwn(issue.issue,'updated_at'),false);assert.equal(Object.hasOwn(ops.issues.find(n=>n.id==='SHARED'),'updated_at'),false);
   assert.ok(ready.issues.length<=1);check('actual HTTP aggregate/project/ambiguous identity/filter/limit');
   for(const response of [all,ops,sig]) {
     assert.ok(!response.activity.some(e=>String(e.detail).includes('ambiguous')));
@@ -290,6 +292,7 @@ try {
   ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.id){const p=pending.get(m.id);if(p){pending.delete(m.id);m.error?p.reject(Error(JSON.stringify(m.error))):p.resolve(m.result)}}else if(m.method==='Fetch.requestPaused'){void intercepted(m.params).catch(error=>{receipts.browserErrors.push({intercept:error.message});});}else if(m.method==='Runtime.exceptionThrown'){receipts.browserErrors.push(m.params);}};
 
   evaluate=async expression=>{const r=await cdp('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true});if(r.exceptionDetails)throw Error(JSON.stringify(r.exceptionDetails));return r.result.value;};
+  const detailText=()=>evaluate("document.querySelector('aside')?.innerText || ''");
   await cdp('Page.enable');await cdp('Runtime.enable');await cdp('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});await cdp('Fetch.enable',{patterns:[{urlPattern:'*',requestStage:'Request'}]});
   await cdp('Page.navigate',{url:nextUrl+'/?panel=tasks'});
   await until(async()=> (await evaluate('document.body.innerText')).includes('6 issues'),'browser two-project data');
@@ -311,29 +314,34 @@ try {
   assert.ok(!(await evaluate('document.body.innerText')).includes('\0'));
   await cdp('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape'});await cdp('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape'});
   check('browser searches original ID absent from titles and copies public ID without NUL');
+  const missingTime=await evaluate(`(()=>{const detail=document.querySelector('aside');const row=[...detail.querySelectorAll('div')].find(el=>el.children.length===2&&el.children[0].textContent==='Updated');return {text:detail.innerText,updated:row?.innerText}})()`);
+  assert.ok(missingTime.updated.includes('Unavailable'));assert.ok(!missingTime.text.includes('Invalid Date'));await save('browser-missing-update-time.json',missingTime);
+  check('actual missing update time stays absent in HTTP and displays Unavailable without inventing a timestamp');
 
-  await until(async()=> (await evaluate('document.body.innerText')).includes('cody-only fixture comment'),'scoped comment load');
+  await until(async()=> (await detailText()).includes('cody-only fixture comment'),'scoped detail comment load');
   const indexerTraffic=receipts.browserRequests.filter(r=>r.url.includes('hypergoat'));
   assert.ok(indexerTraffic.some(r=>r.method==='OPTIONS'));
   assert.ok(indexerTraffic.some(r=>r.method==='POST'&&JSON.parse(r.body).variables.collection==='org.impactindexer.review.comment'));
   assert.ok(indexerTraffic.some(r=>r.method==='POST'&&JSON.parse(r.body).variables.collection==='org.impactindexer.review.like'));
-  await save('browser-indexer-preflight.json',{requests:indexerTraffic,text:await evaluate('document.body.innerText'),boundary:'all external-shaped indexer requests fulfilled locally; browser CORS enforcement retained'});
+  await save('browser-indexer-preflight.json',{requests:indexerTraffic,selectedDetail:await detailText(),text:await evaluate('document.body.innerText'),boundary:'all external-shaped indexer requests fulfilled locally; browser CORS enforcement retained'});
   check('browser indexer successful synthetic preflight dispatches actual comment/like POSTs and loads scoped comments');
-  assert.ok(!(await evaluate('document.body.innerText')).includes('signals-only fixture comment'));
+  assert.ok(!(await detailText()).includes('signals-only fixture comment'));
+  assert.ok((await evaluate('document.body.innerText')).includes('signals-only fixture comment')); // Global All Comments intentionally spans both projects.
+  check('selected cody detail isolates colliding-ID comments while the global panel retains both projects');
   assert.ok(!(await evaluate('document.body.innerText')).includes('ambiguous unqualified comment'));
   async function clickText(text){await evaluate(`(()=>{const b=[...document.querySelectorAll('button')].find(x=>x.textContent.trim()===${JSON.stringify(text)}&&!x.disabled);if(!b)throw Error('button missing: '+${JSON.stringify(text)});b.click()})()`);}
   async function type(selector,text){await evaluate(`document.querySelector(${JSON.stringify(selector)}).focus()`);await cdp('Input.insertText',{text});}
-  async function commentAction(index){await evaluate(`(()=>{const p=[...document.querySelectorAll('p')].find(x=>x.textContent==='cody-only fixture comment');if(!p)throw Error('comment missing');p.parentElement.querySelectorAll('button')[${index}].click()})()`);}
+  async function commentAction(index){await evaluate(`(()=>{const p=[...document.querySelector('aside').querySelectorAll('p')].find(x=>x.textContent==='cody-only fixture comment');if(!p)throw Error('comment missing');p.parentElement.querySelectorAll('button')[${index}].click()})()`);}
   await type('textarea[placeholder="Leave a comment..."]','browser new cody comment');await clickText('Comment');
   await until(()=>receipts.externalRecords.some(x=>x.entry?.value.text==='browser new cody comment'),'comment caller');
   await until(async()=> (await evaluate('document.body.innerText')).includes('browser new cody comment'),'comment refresh');
   await commentAction(0);await until(()=>receipts.externalRecords.some(x=>x.entry?.collection==='org.impactindexer.review.like'),'like caller');
-  await until(async()=>await evaluate(`(()=>{const p=[...document.querySelectorAll('p')].find(x=>x.textContent==='cody-only fixture comment');return p?.parentElement.querySelector('button')?.textContent.trim()==='1'})()`),'like refresh');
+  await until(async()=>await evaluate(`(()=>{const p=[...document.querySelector('aside').querySelectorAll('p')].find(x=>x.textContent==='cody-only fixture comment');return p?.parentElement.querySelector('button')?.textContent.trim()==='1'})()`),'like refresh');
   await commentAction(0);await until(()=>receipts.externalRecords.some(x=>x.method==='delete'&&x.uri.includes('review.like')),'unlike DELETE caller');
   await commentAction(1);await type('input[placeholder="Write a reply..."]','browser reply cody');await clickText('Reply');
   await until(()=>receipts.externalRecords.some(x=>x.entry?.value.text==='browser reply cody'&&x.entry.value.replyTo),'reply caller');
   await until(async()=> (await evaluate('document.body.innerText')).includes('browser reply cody'),'reply refresh');
-  await evaluate(`(()=>{const p=[...document.querySelectorAll('p')].find(x=>x.textContent==='browser new cody comment');p.parentElement.querySelectorAll('button')[2].click()})()`);
+  await evaluate(`(()=>{const p=[...document.querySelector('aside').querySelectorAll('p')].find(x=>x.textContent==='browser new cody comment');p.parentElement.querySelectorAll('button')[2].click()})()`);
   await until(()=>receipts.externalRecords.some(x=>x.method==='delete'&&x.uri.includes('review.comment/created-')),'comment DELETE caller');
   // Open the real graph context menu through its selected-node callback, then
   // use actual UI buttons for the claim/unclaim handlers. Canvas positions are
@@ -352,25 +360,25 @@ try {
   await evaluate(`(()=>{const b=[...document.querySelectorAll('button')].find(b=>b.textContent.includes('extra cody-ops')&&b.textContent.includes(${JSON.stringify(legacyId)}));b.click()})()`);
   await until(async()=> (await evaluate('document.body.innerText')).includes('old projectless comment'),'legacy projectless comment load');
   await until(async()=> (await evaluate('document.body.innerText')).includes('mixed scoped deepest reply'),'mixed-generation issue UI');
-  const threadDOM=await evaluate(`(()=>{const paragraph=text=>[...document.querySelectorAll('p')].find(p=>p.textContent===text);const names=['old projectless comment','mixed scoped reply','mixed legacy deep reply','mixed scoped deepest reply'];const ps=names.map(paragraph);if(ps.some(p=>!p))throw Error('missing mixed reply');for(let i=1;i<ps.length;i++){const parentCard=ps[i-1].parentElement.parentElement;const replyCard=ps[i].parentElement.parentElement;if(!parentCard.contains(replyCard)||!replyCard.classList.contains('border-l'))throw Error('reply is not nested under its parent');}return {text:document.body.innerText,names}})()`);
+  const threadDOM=await evaluate(`(()=>{const paragraph=text=>[...document.querySelector('aside').querySelectorAll('p')].find(p=>p.textContent===text);const names=['old projectless comment','mixed scoped reply','mixed legacy deep reply','mixed scoped deepest reply'];const ps=names.map(paragraph);if(ps.some(p=>!p))throw Error('missing mixed reply');for(let i=1;i<ps.length;i++){const parentCard=ps[i-1].parentElement.parentElement;const replyCard=ps[i].parentElement.parentElement;if(!parentCard.contains(replyCard)||!replyCard.classList.contains('border-l'))throw Error('reply is not nested under its parent');}return {text:document.body.innerText,names}})()`);
   await save('browser-mixed-generation.json',threadDOM);
   check('browser issue UI renders old parent/new scoped/deeper mixed-generation replies in their actual nested cards');
   await clickText('View in window');
-  await until(async()=>await evaluate(`document.querySelectorAll('button[title="Copy description"]').length===2`),'description window opens');
+  await until(async()=>await evaluate(`(()=>{const modal=document.querySelector('[class~="z-[100]"]');return Boolean(modal?.getClientRects().length&&modal.querySelector('button[title="Copy description"]'))})()`),'visible description window opens');
   const countThread=comments=>comments.reduce((sum,c)=>sum+1+countThread(c.replies),0);
   const expectedModalCount=countThread(mixedHTTP.issue.comments);
   const modalThread=await evaluate(`(()=>{const modal=document.querySelector('[class~="z-[100]"]');if(!modal)throw Error('description window missing');const names=['old projectless comment','mixed scoped reply','mixed legacy deep reply','mixed scoped deepest reply'];for(const name of names){const ps=[...modal.querySelectorAll('p')].filter(p=>p.textContent===name);if(ps.length!==1)throw Error('description thread duplicate/missing '+name+':'+ps.length);}const header=[...modal.querySelectorAll('h4')].find(h=>h.textContent.trim().startsWith('Comments'));const count=Number(header?.querySelector('span')?.textContent);if(count!==${expectedModalCount})throw Error('description thread count '+count+' expected '+${expectedModalCount});return {text:modal.innerText,count}})()`);
   await save('browser-description-thread.json',modalThread);
-  await cdp('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape'});await cdp('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape'});
-  await until(async()=>await evaluate(`document.querySelectorAll('button[title="Copy description"]').length===1`),'description window closes');
+  await evaluate(`document.querySelector('[class~="z-[100]"]').click()`); // Real modal backdrop close callback.
+  await until(async()=>await evaluate(`(()=>{const modal=document.querySelector('[class~="z-[100]"]');return !modal||modal.getClientRects().length===0})()`),'description window closes');
   check('browser description window shares exact roots without duplicated replies');
-  await evaluate(`(()=>{const p=[...document.querySelectorAll('p')].find(p=>p.textContent==='old projectless comment');p.parentElement.querySelectorAll('button')[0].click()})()`);
+  await evaluate(`(()=>{const p=[...document.querySelector('aside').querySelectorAll('p')].find(p=>p.textContent==='old projectless comment');p.parentElement.querySelectorAll('button')[0].click()})()`);
   await until(()=>!externalRecords.has(`at://${did}/org.impactindexer.review.like/legacy-like`),'legacy unlike UI');
-  await until(async()=>await evaluate(`(()=>{const p=[...document.querySelectorAll('p')].find(p=>p.textContent==='old projectless comment');return p?.parentElement.querySelector('button')?.textContent.trim()!=='1'})()`),'legacy unlike refresh');
-  await evaluate(`(()=>{const p=[...document.querySelectorAll('p')].find(p=>p.textContent==='old projectless comment');p.parentElement.querySelectorAll('button')[2].click()})()`);
+  await until(async()=>await evaluate(`(()=>{const p=[...document.querySelector('aside').querySelectorAll('p')].find(p=>p.textContent==='old projectless comment');return p?.parentElement.querySelector('button')?.textContent.trim()!=='1'})()`),'legacy unlike refresh');
+  await evaluate(`(()=>{const p=[...document.querySelector('aside').querySelectorAll('p')].find(p=>p.textContent==='old projectless comment');p.parentElement.querySelectorAll('button')[2].click()})()`);
   await until(()=>!externalRecords.has(`at://${did}/org.impactindexer.review.comment/legacy-comment`),'legacy DELETE UI');
   await until(async()=> (await evaluate('document.body.innerText')).includes('mixed scoped reply'),'orphan remains visible after parent deletion');
-  await evaluate(`(()=>{const p=[...document.querySelectorAll('p')].find(p=>p.textContent==='mixed scoped reply');p.parentElement.querySelectorAll('button')[2].click()})()`);
+  await evaluate(`(()=>{const p=[...document.querySelector('aside').querySelectorAll('p')].find(p=>p.textContent==='mixed scoped reply');p.parentElement.querySelectorAll('button')[2].click()})()`);
   await until(()=>!externalRecords.has(at(commentCollection,'mixed-scoped')),'owned orphan DELETE UI');
   await until(async()=> (await evaluate('document.body.innerText')).includes('mixed legacy deep reply'),'deeper orphan remains visible');
   await save('browser-orphan-cleanup.json',await evaluate('({text:document.body.innerText})'));

@@ -1,8 +1,8 @@
 {
   "schema": "heartbeads-fixture-source/1",
-  "candidate": "9273db5386da8c386f7fc974e7507f15e72549f2",
-  "tree": "7b2915bbfb9f1229e48e131394212bedaa9a83ed",
-  "parent": "d02499852ffa030a167a8d560196aa6b443fb041",
+  "candidate": "4f6673ed154f70bc7e8ce442d0c89095a9f035e1",
+  "tree": "40b47b89523ab721403b101badf1e1b08752cb70",
+  "parent": "9273db5386da8c386f7fc974e7507f15e72549f2",
   "source_manifest": {
     "schema": "heartbeads-prepared-patch/1",
     "installed_preimage_root": "/home/dev/beads/heartbeads-app/node_modules/heartbeads",
@@ -60,8 +60,8 @@
       {
         "path": "app/page.tsx",
         "preimage_sha256": "5771d50d2593881f1f022ed077d932f2f04f78cf959bf03ece5d14c26c0bceb1",
-        "postimage_sha256": "f485f96d964d169e39004c3ae8a0c4c6cd2f9f05f270a3d25e2affc6aab10453",
-        "bytes": 140629
+        "postimage_sha256": "fa3e0011391afcd0537f68a8efa757415d5ccb3276d45a5ea3aa7c6b5a9023ec",
+        "bytes": 140771
       },
       {
         "path": "components/ActivityItem.tsx",
@@ -90,8 +90,8 @@
       {
         "path": "components/BeadsGraph.tsx",
         "preimage_sha256": "8acda50a973adeb4012f49ea49f16d567ab053991dfe14ee1c3d70efee13547d",
-        "postimage_sha256": "0df0cb8b0cc4959746dbe19aa70414485d21914c0d1f33cd7a6c1483b546988c",
-        "bytes": 131673
+        "postimage_sha256": "52b9f90b78068e9afbfb2fd330f01cd15bff4d94e5b8c1fe14a2054517c080a0",
+        "bytes": 131676
       },
       {
         "path": "components/CommentTooltip.tsx",
@@ -114,8 +114,8 @@
       {
         "path": "components/NodeDetail.tsx",
         "preimage_sha256": "922d9d2be7c8d4ce511ead2e6e5ea189ae321b3d219be566cc1e464c837f57e8",
-        "postimage_sha256": "7ad0e7d7db27daddd207dd8d467be62811b7dd9ed741f5f7edc912718d94392a",
-        "bytes": 30648
+        "postimage_sha256": "364141d4be7bc25b1cea83498edff35a0cce686be27d8ea08632d62cce9f8057",
+        "bytes": 30758
       },
       {
         "path": "components/ProfilePanel.tsx",
@@ -174,8 +174,8 @@
       {
         "path": "lib/plug-adapter.mjs",
         "preimage_sha256": "ABSENT",
-        "postimage_sha256": "f927b29fa87fa38bf781aa2a16024dfbd29ee680b05520fc84c39f839ca9d3c7",
-        "bytes": 29736
+        "postimage_sha256": "309a55e90cadad798917931540b6ffa898f1de67e171a5bd3e11d0aca9c6aba9",
+        "bytes": 29743
       },
       {
         "path": "lib/timeline.ts",
@@ -186,8 +186,8 @@
       {
         "path": "lib/types.ts",
         "preimage_sha256": "ee7727fe019dbda8759bf3429c66bd4070ad8e1077a97fca90a1fa67a254eef5",
-        "postimage_sha256": "f35b1596c6d599bbc791228db64044a215e3ee1bd64ba834d6a90965c724b963",
-        "bytes": 12785
+        "postimage_sha256": "eba871f852bdf0881181447ef8ab206caf36e308f55f20f5fbf5879aa4b8d1f6",
+        "bytes": 12857
       },
       {
         "path": "lib/ui-projection.ts",
@@ -198,8 +198,8 @@
       {
         "path": "lib/utils.ts",
         "preimage_sha256": "5a49880bf26c67459c7a3e887a190a351c8ba2d3d1f015137e961df244abf309",
-        "postimage_sha256": "84e2c48e437904f8a71baf12ce19e08c0e6c4853c002be63f14563dc98f9944a",
-        "bytes": 1423
+        "postimage_sha256": "eea44f43fee2506dbc8725d02e2f8286abba2349d15a65a798e0fef9cc1d7195",
+        "bytes": 1526
       },
       {
         "path": "lib/watch-beads.ts",
@@ -214,10 +214,10 @@
         "bytes": 4147
       }
     ],
-    "patch_sha256": "b915398f72842a1e76df636c7a524c36f7559b308993cef42f218324ba797cbd",
-    "adapter_sha256": "f927b29fa87fa38bf781aa2a16024dfbd29ee680b05520fc84c39f839ca9d3c7"
+    "patch_sha256": "1facc028c71c64d464a1015aa0aa59fec5898edbac4e6a2235b78783fb4c599b",
+    "adapter_sha256": "309a55e90cadad798917931540b6ffa898f1de67e171a5bd3e11d0aca9c6aba9"
   },
-  "tar_sha256": "e39e5e53a5085276468eef1d0cec3c5786e02ec8c2b525e59e683eb173ef563a",
+  "tar_sha256": "68380b900574d95c053fc3f3514637c31b7d787a1cb1a4128e95ceeac911cb60",
   "ontology_source_sha256": "186163d6d618e2196b4e1fea9883b8cb2b3863ac171343d334ba18e076e05f6e",
   "auxiliary_source_files": [
     "app/api/auth/route.ts",
