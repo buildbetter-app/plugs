@@ -107,18 +107,29 @@ func readyMembershipPriority(item service.Bead) (int, error) {
 	return int(priority), nil
 }
 
-// readyMembershipV2 commits the complete authorized sequence, including the
-// numeric priority/ID tie inputs and the workflow tail. The v2 domain marker
-// is separate from the legacy length-prefixed digest; old signed cursors keep
-// using the latter until their normal expiry.
+// readyMembershipV2 retains the released plane-separated commitment for
+// continuations issued before the combined public Ready order. New cursors
+// use v3, which also binds the final interleaving of those two planes.
 func readyMembershipV2(items []service.Bead) (string, error) {
+	return readyMembershipVersion(items, false)
+}
+
+func readyMembershipV3(items []service.Bead) (string, error) {
+	return readyMembershipVersion(items, true)
+}
+
+func readyMembershipVersion(items []service.Bead, ordered bool) (string, error) {
 	core := sha256.New()
+	sequence := sha256.New()
 	workflow := make([][]byte, 0)
 	var coreCount uint64
 	for _, item := range items {
 		image, err := json.Marshal(readyMembershipImageOf(item))
 		if err != nil {
 			return "", err
+		}
+		if ordered {
+			writeReadyFrame(sequence, image)
 		}
 		if item.Kind == "workflow.item" {
 			workflow = append(workflow, image)
@@ -152,5 +163,17 @@ func readyMembershipV2(items []service.Bead) (string, error) {
 	for _, image := range workflow {
 		writeReadyFrame(membership, image)
 	}
-	return "v2:" + hex.EncodeToString(membership.Sum(nil)), nil
+	v2 := "v2:" + hex.EncodeToString(membership.Sum(nil))
+	if !ordered {
+		return v2, nil
+	}
+	// The v2 component keeps its semantic source and numeric-priority binding.
+	// Framing each authorized image in final public order makes a clock-only
+	// durable/workflow swap change the signed continuation even without a write.
+	v3 := sha256.New()
+	_, _ = v3.Write([]byte("plug.ready.membership.v3\x00"))
+	writeReadyFrame(v3, []byte(v2))
+	writeReadyCount(v3, uint64(len(items)))
+	_, _ = v3.Write(sequence.Sum(nil))
+	return "v3:" + hex.EncodeToString(v3.Sum(nil)), nil
 }

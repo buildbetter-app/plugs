@@ -866,17 +866,31 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 	}
 	membership := ""
 	if method == "bead.ready" {
-		// New finite compiled Ready pages use the versioned semantic
-		// commitment. Check-only pages and continuations carrying an older
-		// unprefixed digest stay on the legacy verifier for compatibility.
-		useV2 := !checkOnly && (position == nil || strings.HasPrefix(position.ReadyMembership, "v2:"))
-		if useV2 {
-			membership, err = readyMembershipV2(filtered)
-			if err != nil {
-				return service.BeadPage{}, &model.Error{Message: "ready membership commitment failed", Data: model.ErrorData{Code: "internal_error"}}
+		// New finite compiled pages bind the final cross-plane order. The
+		// released v2 verifier remains usable for a single plane; a mixed v2
+		// offset is ambiguous after interleaving and must restart. Check-only
+		// and unprefixed continuations retain the ordered legacy verifier.
+		switch {
+		case !checkOnly && (position == nil || strings.HasPrefix(position.ReadyMembership, "v3:")):
+			membership, err = readyMembershipV3(filtered)
+		case !checkOnly && strings.HasPrefix(position.ReadyMembership, "v2:"):
+			durable, workflow := false, false
+			for _, item := range filtered {
+				if item.Kind == "workflow.item" {
+					workflow = true
+				} else {
+					durable = true
+				}
 			}
-		} else {
+			if durable && workflow {
+				return service.BeadPage{}, &model.Error{Message: "mixed ready cursor needs a new ordering binding; restart paging", Data: model.ErrorData{Code: "cursor_invalid"}}
+			}
+			membership, err = readyMembershipV2(filtered)
+		default:
 			membership = readyMembershipDigest(filtered)
+		}
+		if err != nil {
+			return service.BeadPage{}, &model.Error{Message: "ready membership commitment failed", Data: model.ErrorData{Code: "internal_error"}}
 		}
 	}
 	if method == "bead.ready" && position != nil && position.ReadyMembership != membership {

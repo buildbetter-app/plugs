@@ -412,7 +412,7 @@ func TestWorkflowReadySignedRPCBindsCompiledWorkflowSnapshot(t *testing.T) {
 		if err := json.Unmarshal(body, &payload); err != nil {
 			t.Fatal(err)
 		}
-		if payload.Version != 2 || !strings.HasPrefix(payload.ReadyMembership, "v2:") {
+		if payload.Version != 3 || !strings.HasPrefix(payload.ReadyMembership, "v3:") {
 			t.Fatalf("signed Ready did not use the compiled membership binding: %+v", payload)
 		}
 		// The original signed token must reach the guarded compiled Ready path,
@@ -462,4 +462,84 @@ func TestWorkflowReadySignedRPCBindsCompiledWorkflowSnapshot(t *testing.T) {
 			t.Fatalf("fresh Ready did not preserve revision while changing only the deadline: first=%+v fresh=%+v err=%v", first.snapshot, fresh.snapshot, err)
 		}
 	})
+}
+
+func TestWorkflowReadySignedRPCRefusesClockOnlyCrossPlaneReorder(t *testing.T) {
+	f := newWorkflowCursorFixture(t)
+	base := f.now.UTC()
+	// Use the real SQLite store, provider and signed HTTP route. Only their
+	// shared ordering clock is controlled; no page or source image is replaced.
+	service.WithClock(func() time.Time { return f.now })(f.domain)
+	f.now = base.Add(-time.Hour)
+	workflow := workflowCursorIDs(f.invoke(t, 590, 1))
+	f.now = base
+
+	coreID := "00000000-0000-4000-8000-000000000099"
+	created := base.Add(-48*time.Hour + time.Second)
+	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{Time: base}, []conformance.FixtureChange{{
+		Ref: model.RefByID(coreID, model.Natural64(0)), Kind: "bead", Op: model.OpCreate,
+		Body: []byte(fmt.Sprintf(`{"id":%q,"type":"issue","project":"project","createdAt":%q,"fields":{"title":"cross-plane cutoff","status":"todo","priority":0}}`, coreID, created.Format(time.RFC3339Nano))),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	beforeMeta, err := f.store.Meta(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeCheckpoint := workflowWriteCheckpoint(t, f)
+
+	first, err := workflowCursorRead(t, f, "http", nil, 1, workflowContinuation{}, "project")
+	if err != nil || !slices.Equal(first.ids, []string{coreID}) || !first.next.more() || first.snapshot == nil || first.snapshot.ValidUntil != nil {
+		t.Fatalf("mixed signed first page=%+v err=%v", first, err)
+	}
+	version, membership := signedReadyPayload(t, first.next.token)
+	if version != 3 || !strings.HasPrefix(membership, "v3:") {
+		t.Fatalf("mixed signed page omitted ordered membership: version=%d membership=%q", version, membership)
+	}
+	stable, err := workflowCursorRead(t, f, "http", nil, 1, first.next, "project")
+	if err != nil || !slices.Equal(stable.ids, workflow) || stable.next.more() {
+		t.Fatalf("unchanged signed continuation=%+v err=%v", stable, err)
+	}
+
+	// The released v2 digest cannot distinguish the two interleavings. A
+	// mixed v2 continuation is safely refused even before the rank crossing.
+	full, err := f.app.Service.Ready(context.Background(), f.by, service.ReadyRequest{Project: "project", Limit: 100})
+	if err != nil || len(full.Items) != 2 {
+		t.Fatalf("complete authorized mixed domain=%+v err=%v", full, err)
+	}
+	oldMembership, err := readyMembershipV2(full.Items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstDirect, err := f.app.Service.Ready(context.Background(), f.by, service.ReadyRequest{Project: "project", Limit: 1})
+	if err != nil || firstDirect.Next == nil {
+		t.Fatalf("direct signed-position source=%+v err=%v", firstDirect, err)
+	}
+	oldPosition := *firstDirect.Next
+	oldPosition.ReadyMembership = oldMembership
+	_, err = f.app.Service.Ready(context.Background(), f.by, service.ReadyRequest{Project: "project", Limit: 1, Position: &oldPosition})
+	workflowCursorError(t, err, "cursor_invalid")
+
+	// Cross both the 48-hour boundary and any one-minute persisted-order lag.
+	// The same source, checkpoint and authority now yield [workflow, core].
+	f.now = base.Add(2 * time.Minute)
+	_, err = workflowCursorRead(t, f, "http", nil, 1, first.next, "project")
+	workflowCursorError(t, err, "cursor_invalid")
+	fresh, err := workflowCursorRead(t, f, "http", nil, 1, workflowContinuation{}, "project")
+	if err != nil || !slices.Equal(fresh.ids, workflow) || !fresh.next.more() || !first.snapshot.Equal(fresh.snapshot) {
+		t.Fatalf("fresh post-cutoff first page=%+v err=%v", fresh, err)
+	}
+	tail, err := workflowCursorRead(t, f, "http", nil, 1, fresh.next, "project")
+	if err != nil || !slices.Equal(tail.ids, []string{coreID}) || tail.next.more() {
+		t.Fatalf("fresh post-cutoff continuation omitted or duplicated a row: %+v err=%v", tail, err)
+	}
+	afterMeta, err := f.store.Meta(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterCheckpoint := workflowWriteCheckpoint(t, f)
+	if beforeMeta.Incarnation != afterMeta.Incarnation || beforeMeta.Head.String() != afterMeta.Head.String() ||
+		beforeCheckpoint.Generation != afterCheckpoint.Generation || !slices.Equal(beforeCheckpoint.Payload, afterCheckpoint.Payload) {
+		t.Fatal("clock-only order crossing changed the source head or workflow checkpoint")
+	}
 }
