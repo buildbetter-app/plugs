@@ -113,11 +113,11 @@ func TestRecordNativeIDStyleA9d6(t *testing.T) {
 	r.requireIDs(initial, ids...)
 	r.replayNative(initial)
 	// Actual public config changes select configured and count-driven lengths.
-	r.setConfig(w, "min_hash_length", "5")
+	r.setStyleAConfig(w, "min_hash_length", "5")
 	configured := r.create(w, "pinned-configured-five", "Configured width five")
 	r.requireIDLength(configured, 5)
-	r.setConfig(w, "min_hash_length", "3")
-	r.setConfig(w, "max_collision_prob", "0.000001")
+	r.setStyleAConfig(w, "min_hash_length", "3")
+	r.setStyleAConfig(w, "max_collision_prob", "0.000001")
 	adaptive := r.create(w, "pinned-adaptive-count-five", "Adaptive count width five")
 	r.requireIDLength(adaptive, 5) // Four roots cross the configured probability threshold.
 	// Explicit source children seed/repair counters, nested descendants count
@@ -160,6 +160,30 @@ func TestRecordNativeIDStyleA9d6(t *testing.T) {
 		"paired_next_child": pairedChild, "paired_adaptive_root": wantAdaptive,
 		"limits": []string{"public fixture evidence only; no real-store, official bundle admission or switch credit", "import collision route uses pinned legacy issueops at lengths 3 through 8; no beyond-eight oracle"},
 	})
+}
+
+// The pinned CLI warns for these documented allocator keys but still writes
+// them. Keep its raw warning and require both successful typed set and a new
+// public get invocation to return the exact persisted key/value.
+func (r *recorder) setStyleAConfig(w workspace, key, value string) {
+	r.t.Helper()
+	switch key {
+	case "min_hash_length", "max_hash_length", "max_collision_prob":
+	default:
+		r.t.Fatal("unsupported ID style A fixture configuration key")
+	}
+	for _, action := range []string{"set", "get"} {
+		args := []string{"config", action, key}
+		if action == "set" {
+			args = append(args, value)
+		}
+		args = append(args, "--json")
+		data := r.run(w, w.Name+"-"+action+"-"+key+"-"+value, r.binary, args, 0)
+		var response struct{ Key, Value string }
+		if json.Unmarshal(data, &response) != nil || response.Key != key || response.Value != value {
+			r.t.Fatalf("native config %s did not return exact persisted %s=%s: %s", action, key, value, data)
+		}
+	}
 }
 
 func (r *recorder) buildCanonicalSource(spec styleASource) string {
@@ -476,12 +500,12 @@ func (r *recorder) recordStyleADomainWidths() {
 	}
 	for _, width := range []int{9, 10} {
 		if width == 9 {
-			r.setConfig(w, "max_hash_length", "9")
-			r.setConfig(w, "min_hash_length", "9")
+			r.setStyleAConfig(w, "max_hash_length", "9")
+			r.setStyleAConfig(w, "min_hash_length", "9")
 		} else {
-			r.setConfig(w, "min_hash_length", "3")
-			r.setConfig(w, "max_hash_length", "10")
-			r.setConfig(w, "max_collision_prob", "0")
+			r.setStyleAConfig(w, "min_hash_length", "3")
+			r.setStyleAConfig(w, "max_hash_length", "10")
+			r.setStyleAConfig(w, "max_collision_prob", "0")
 		}
 		label := fmt.Sprintf("pinned-domain-width-%d", width)
 		before := r.capture(w, label+"-before", width-6)
