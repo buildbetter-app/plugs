@@ -24,9 +24,15 @@ func TestImportedSourceMemoryIsReadableWithoutLosingProvenance(t *testing.T) {
 			t.Run(name+"/"+engine, func(t *testing.T) {
 				ctx := context.Background()
 				store, lease, _ := openIdentityTarget(t, engine)
-				profile, archive := admittedImportProfile(t, data)
+				var profile driver.RestoreImportProfile
+				archive, err := dumpformat.Read(bytes.NewReader(data))
+				if err != nil {
+					t.Fatal(err)
+				}
 				if joint {
 					profile = jointProfile(t, data, store, lease)
+				} else {
+					profile, _ = admittedImportProfile(t, data)
 				}
 				// This public fixture explicitly opts into snapshot policy. It is
 				// a memory projection regression, not strict-history evidence.

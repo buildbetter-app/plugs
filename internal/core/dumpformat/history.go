@@ -384,10 +384,10 @@ func validateHistoryScope(a *Archive, scoped ProjectSourceHistory, seenCommits m
 		}
 	} else {
 		if r.Complete {
-			return fail("unmappable: baseline marked complete")
+			return fail("unmappable")
 		}
 		if err := validateHistoryImage(r.Baseline, a.manifest); err != nil {
-			return fail("unmappable: baseline: " + err.Error())
+			return fail("unmappable")
 		}
 		next := uint64(1)
 		for _, gap := range r.Gaps {
@@ -406,10 +406,10 @@ func validateHistoryScope(a *Archive, scoped ProjectSourceHistory, seenCommits m
 			return fail("non-contiguous")
 		}
 		if err := validateHistoryImage(frame.Records, a.manifest); err != nil {
-			return fail("unmappable: frame: " + err.Error())
+			return fail("unmappable")
 		}
 		if !extendsEvents(previous, frame.Events) {
-			return fail("unmappable: event image regressed")
+			return fail("unmappable")
 		}
 		previous = frame.Events
 	}
@@ -422,13 +422,13 @@ func validateHistoryScope(a *Archive, scoped ProjectSourceHistory, seenCommits m
 		}
 	}
 	if len(r.Frames) == 0 {
-		return fail("unmappable: no frames")
+		return fail("unmappable")
 	}
 	if !sameRecordImage(current, r.Frames[len(r.Frames)-1].Records) {
-		return fail("unmappable: current record image")
+		return fail("unmappable")
 	}
 	if !sameEventImage(scoped.Events, previous) {
-		return fail("unmappable: current event image")
+		return fail("unmappable")
 	}
 	return nil
 }
@@ -437,10 +437,9 @@ func sharedRecordBelongsToProject(record Record, project string) bool {
 	if record.Project != "" {
 		return record.Project == project
 	}
+	// A global memory key names a memory, not its owning project. Membership
+	// must never be inferred from an arbitrary kv.memory.<key> suffix.
 	key := stringValue(record.Source.Fields["key"])
-	if strings.HasPrefix(key, "kv.memory.") {
-		return strings.TrimPrefix(key, "kv.memory.") == project
-	}
 	if key == "issue_prefix" {
 		return stringValue(record.Source.Fields["value"]) == project
 	}
