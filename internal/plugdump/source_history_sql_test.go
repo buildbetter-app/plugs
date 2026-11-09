@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 	"github.com/steveyegge/beads/internal/testutil"
 )
 
@@ -282,6 +282,129 @@ func TestSQLSourceHistoricalCensusDistinguishesViewsFromBaseTables(t *testing.T)
 			}
 			if !test.refuse && (len(image) != 1 || len(image["issues"].Rows) != 1) {
 				t.Fatal("base image omitted or view read as business rows")
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestSQLNativeHistoryReadsLocalRowsBehindNonlocalAliases(t *testing.T) {
+	if os.Getenv("BEADS_TEST_SKIP") == "dolt" {
+		t.Skip("requires the explicit pinned Dolt source-history lane")
+	}
+	server := testutil.StartIsolatedDoltContainerHandle(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	db, err := sql.Open("mysql", fmt.Sprintf("root@tcp(127.0.0.1:%s)/beads_test?parseTime=true", server.Port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	exec := func(query string) {
+		t.Helper()
+		if _, err := db.ExecContext(ctx, query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commit := func(message string) string {
+		t.Helper()
+		exec("CALL DOLT_ADD('-A')")
+		exec("CALL DOLT_COMMIT('-m', '" + message + "')")
+		var id string
+		if err := db.QueryRowContext(ctx, "SELECT DOLT_HASHOF('HEAD')").Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	// Two identical keyless rows, NULL, binary bytes and an old-only column.
+	exec("CREATE TABLE archived_rows (id INT, old_column TEXT, opaque LONGBLOB)")
+	exec("INSERT INTO archived_rows VALUES (1, 'original', X'00FF'), (1, 'original', X'00FF'), (2, NULL, NULL)")
+	before := commit("public retained local rows")
+	exec("INSERT INTO dolt_nonlocal_tables (table_name,target_ref,options) VALUES ('archived_rows','main','immediate')")
+	exec("INSERT INTO dolt_nonlocal_tables (table_name,target_ref,ref_table,options) VALUES ('only_alias','main','later_rows','immediate')")
+	aliased := commit("public nonlocal aliases shadow retained local rows")
+	exec("DELETE FROM dolt_nonlocal_tables")
+	exec("ALTER TABLE archived_rows DROP COLUMN old_column, ADD COLUMN later_column TEXT")
+	exec("UPDATE archived_rows SET later_column='later', opaque=X'11'")
+	exec("CREATE TABLE later_rows (id INT)")
+	exec("INSERT INTO later_rows VALUES (999)")
+	commit("public later schema and target rows must not leak backwards")
+	port := SQLSource{DB: db}
+	for _, id := range []string{before, aliased} {
+		image, err := port.ReadNativeSourceImage(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		table := image["archived_rows"]
+		if !equalJSON(table.Columns, []string{"id", "old_column", "opaque"}) || len(table.Rows) != 3 {
+			t.Fatalf("retained old schema/row multiplicity: %+v", table)
+		}
+		original, nulls := 0, 0
+		for _, row := range table.Rows {
+			if fmt.Sprint(row["id"]) == "1" && row["old_column"] == "original" && equalJSON(row["opaque"], map[string]string{"$bytes": "AP8="}) {
+				original++
+			} else if fmt.Sprint(row["id"]) == "2" && row["old_column"] == nil && row["opaque"] == nil {
+				nulls++
+			} else {
+				t.Fatalf("current rows, history metadata or lossy conversion in old image: %+v", row)
+			}
+		}
+		if original != 2 || nulls != 1 {
+			t.Fatal("historical duplicate/NULL rows changed")
+		}
+		if _, present := image["only_alias"]; present {
+			t.Fatal("nonlocal target rows or a fabricated empty table became local history")
+		}
+		if _, present := image["later_rows"]; present {
+			t.Fatal("later physical table appeared in an earlier image")
+		}
+		if id == aliased && len(image["dolt_nonlocal_tables"].Rows) != 2 {
+			t.Fatal("the exact historical alias declarations were omitted")
+		}
+		t.Logf("PINNED_LOCAL_HISTORY commit=%s rows=%d duplicate_rows=%d null_rows=%d declarations=%d", id, len(table.Rows), original, nulls, len(image["dolt_nonlocal_tables"].Rows))
+	}
+}
+
+func TestSQLNativeHistoryAliasAbsenceRequiresTypedMissingPhysicalTable(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		declared bool
+		readErr  error
+		refuse   bool
+	}{
+		{"declared alias-only", true, &mysql.MySQLError{Number: 1146, Message: "missing physical history table"}, false},
+		{"ordinary missing table", false, &mysql.MySQLError{Number: 1146, Message: "missing table"}, true},
+		{"alias read permission failure", true, &mysql.MySQLError{Number: 1142, Message: "denied"}, true},
+		{"untyped missing-table text", true, fmt.Errorf("table not found"), true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			id := strings.Repeat("a", 32)
+			mock.ExpectQuery(regexp.QuoteMeta("SHOW FULL TABLES AS OF '" + id + "'")).WillReturnRows(sqlmock.NewRows([]string{"Tables_in_fixture", "Table_type"}).AddRow("wisps", "BASE TABLE"))
+			declarations := sqlmock.NewRows([]string{"table_name", "target_ref", "ref_table", "options"})
+			if test.declared {
+				declarations.AddRow("wisps", "main", nil, "immediate")
+			}
+			mock.ExpectQuery(regexp.QuoteMeta("SELECT * FROM dolt_nonlocal_tables AS OF '" + id + "'")).WillReturnRows(declarations)
+			query := "SELECT * FROM `wisps` AS OF '" + id + "'"
+			if test.declared {
+				query = "SELECT * FROM `dolt_history_wisps` AS OF '" + id + "' WHERE commit_hash = '" + id + "'"
+			}
+			mock.ExpectQuery(regexp.QuoteMeta(query)).WillReturnError(test.readErr)
+			image, err := (SQLSource{DB: db}).ReadNativeSourceImage(context.Background(), id)
+			if test.refuse != (err != nil) {
+				t.Fatalf("refuse=%t err=%v", test.refuse, err)
+			}
+			if !test.refuse {
+				if _, exists := image["wisps"]; exists {
+					t.Fatal("alias absence fabricated a table")
+				}
 			}
 			if err := mock.ExpectationsWereMet(); err != nil {
 				t.Fatal(err)

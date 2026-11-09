@@ -53,6 +53,29 @@ func nativeCapture(t *testing.T, data []byte) (Manifest, NativeHistory) {
 	return m, h
 }
 
+func TestNativeCaptureKeepsPortableProjectionVerificationIndependent(t *testing.T) {
+	for _, missing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("missing_image_%t", missing), func(t *testing.T) {
+			s, inventory := historyFixture(t)
+			inventory.SourceFamilyContract = SourceFamilyContract
+			if missing {
+				delete(s.images, s.log.Commits[1].ID)
+			}
+			port := nativeHistoryFixture{s, Table{Columns: []string{"pattern", "ignored"}, Rows: []Row{}}}
+			data := buildFixture(t, port, inventory)
+			_, native := nativeCapture(t, data)
+			_, portable := sourceCapture(t, data)
+			if !missing {
+				if !native.Complete || !portable.Range.Complete || portable.Range.Status != "verified" || len(portable.Range.Frames) != 4 {
+					t.Fatalf("portable projection incorrectly required a second native reader: %+v", portable.Range)
+				}
+			} else if native.Complete || portable.Range.Complete || len(native.Gaps) == 0 || len(portable.Range.Gaps) == 0 {
+				t.Fatal("missing actual historical image was upgraded or backfilled")
+			}
+		})
+	}
+}
+
 func TestNativeHistoryRetainsActualImagesAndCurrentUnversionedRows(t *testing.T) {
 	s, inventory := nativeHistoryFixtureForTest(t)
 	// Older categories/config and an obsolete schema belong to their own image.

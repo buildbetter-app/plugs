@@ -177,6 +177,24 @@ commit and merge-parent ordering is allowed; contradictions refuse with
 `native-portable-commit-census-mismatch`. Native completeness cannot erase
 ancestry still witnessed by the portable census.
 
+Migration 0040's historical `dolt_nonlocal_tables` declarations are retained
+in each raw image's `tables` under that exact name, including the driver's
+observed empty declaration table. A nonlocal alias is not evidence of local
+immutable rows. For a declared alias the SQL reader pins both
+`dolt_history_<name> AS OF '<commit>'` and `WHERE commit_hash = '<commit>'`;
+this reads the physical table and its original schema without following the
+alias to a later working set. Only the history table's three appended metadata
+columns are removed. Duplicate rows, NULL, binary cells and old-only columns
+remain intact. A typed server missing-table error for this declared alias
+establishes local absence; other read errors remain named gaps. An ordinary
+missing table has no such exception. A driver that cannot provide this SQL
+evidence refuses; no current rows are grafted into an earlier commit.
+
+The internal portable mapper clears only the native-family capture marker
+when projecting an already pinned frozen image. It still requires all ordinary
+portable schema, status/catalog and image checks. Independent native capture
+and cross-member commit-census validation remain mandatory on the outer export.
+
 Every SQL `sources` entry adds `history: "versioned"` or
 `"unversioned-in-beads-by-design"`, retaining its exact current `rows` count.
 A designation is checked against the actual immutable head and SQL ignore

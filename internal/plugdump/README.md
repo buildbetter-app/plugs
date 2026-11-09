@@ -318,6 +318,10 @@ the proven suffix with its gaps and floor; explicit snapshot imports only the
 current state with a new floor. Dolt commit images are explicit import units,
 not claims about individual SQL transactions or edits between commits. Audit
 rows and source authors are provenance, never verified Plug principals.
+Raw native capture also retains historical nonlocal-table declarations. For
+declared aliases, both schema and row reads are pinned to the same commit via
+the supported history SQL table; alias targets in today's working set cannot
+supply historical rows. Missing versioned evidence still remains a named gap.
 The complete opaque issue-field list is `agent_state`, `await_id`, `await_type`,
 `ephemeral`, `event_kind`, `hook_bead`, `is_template`, `mol_type`, `payload`,
 `role_bead`, `role_type`, `target`, `timeout_ns`, `waiters`, `wisp_type` and

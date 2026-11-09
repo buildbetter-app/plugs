@@ -247,6 +247,10 @@ func portableSourceImage(ctx context.Context, tables map[string]Table, inventory
 		issues = append(issues, Record{ID: id, Project: project.Prefix, Source: Provenance{Table: "issues", Fields: row}})
 	}
 	inventory.Ontology = applicableHistoryOntology(inventory.Ontology, issues)
+	// This is a portable projection of an already pinned image, not a second
+	// native capture. The frozen reader cannot enumerate an independent native
+	// commit census. Keep every portable/schema/status check enabled below.
+	inventory.SourceFamilyContract = ""
 	inventory.History = "unavailable"
 	if len(tables["issue_versions"].Rows)+len(tables["issue_snapshots"].Rows)+len(tables["compaction_snapshots"].Rows) > 0 {
 		inventory.History = "available-unverified"
