@@ -78,7 +78,9 @@ func TestOriginalSourceArchiveIsNotPostReimportReadback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	converted, err := reverseconverter.ConvertArchive(data)
+	// Keep the full source census so this control reaches field comparison
+	// rather than the pinned default's intentional Ephemeral omissions.
+	converted, err := reverseconverter.ConvertArchiveWithOptions(data, reverseconverter.Options{All: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,12 +156,25 @@ func TestPublicPostgresPartialSnapshotReverseAndMissingBeadsBoundary(t *testing.
 			if _, err := db.ExecContext(ctx, "CREATE DATABASE "+database); err != nil {
 				t.Fatal(err)
 			}
-			result := run([]string{"--input", "../../internal/integration/offlinehistory/testdata/dolt-source-partial.tar", "--output-dir", filepath.Join(root, mode), "--history-mode", mode, "--engine", "postgres", "--postgres-dsn", base + database + "?sslmode=disable"})
+			result := run([]string{"--input", "../../internal/integration/offlinehistory/testdata/dolt-source-partial.tar", "--output-dir", filepath.Join(root, mode), "--history-mode", mode, "--engine", "postgres", "--postgres-dsn", base + database + "?sslmode=disable", "--all"})
 			if result.Status != "WAIT" || result.Reason != "pinned_beads_artifact_required" || result.Claims != 1 || result.Writes != 1 || result.HistoryFloor != "1" || result.RestoredIncarnation == "" || result.ReverseIncarnation != result.RestoredIncarnation || result.ReverseAt == "" || result.SourceHistoryComplete || len(result.SourceHistoryGaps) != 2 || result.BeadsReimport != "WAIT" || result.BeadsReadback != "WAIT" {
 				t.Fatalf("public PostgreSQL boundary: %+v", result)
 			}
 			encoded, _ := json.Marshal(result)
 			t.Logf("PUBLIC_CONVERTER_OUTCOME %s", encoded)
+		})
+	}
+	for _, exercise := range []bool{true, false} {
+		name := "default-no-exercise"
+		if exercise {
+			name = "default-exercise"
+		}
+		t.Run(name, func(t *testing.T) {
+			database := "plug_roundtrip_" + strings.ReplaceAll(name, "-", "_")
+			if _, err := db.ExecContext(ctx, "CREATE DATABASE "+database); err != nil {
+				t.Fatal(err)
+			}
+			assertDefaultEphemeralOutcome(t, filepath.Join(root, name), []string{"--engine", "postgres", "--postgres-dsn", base + database + "?sslmode=disable"}, exercise)
 		})
 	}
 	for _, test := range publicProducerCases() {
@@ -169,6 +184,9 @@ func TestPublicPostgresPartialSnapshotReverseAndMissingBeadsBoundary(t *testing.
 				t.Fatal(err)
 			}
 			args := []string{"--input", "../../internal/integration/converterroundtrip/testdata/" + test.file, "--output-dir", filepath.Join(root, "producer-"+test.name), "--engine", "postgres", "--postgres-dsn", base + database + "?sslmode=disable"}
+			if !test.complete {
+				args = append(args, "--all")
+			}
 			if test.mode != "" {
 				args = append(args, "--history-mode", test.mode)
 			}

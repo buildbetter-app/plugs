@@ -536,6 +536,7 @@ func (r *recorder) replayStyleA(source captureReceipt, input driver.HashInput, w
 				SourceStoreID: inspection.SourceStoreID, Method: "offline.restore.import", IdempotencyKey: hashBytes([]byte(source.Label + engine)),
 				ArchiveDigest: inspection.ArchiveSHA256, DerivedDigest: inspection.DerivedSHA256, HistoryMode: driver.RestoreHistoryModeSnapshot,
 			}
+			profile = bindB09SourcePlan(t, data, target, profile)
 			if _, err := converterroundtrip.RestoreImportWithLease(ctx, bytes.NewReader(data), target.store, target.lease, profile); err != nil {
 				t.Fatal(err)
 			}
@@ -573,7 +574,7 @@ func (r *recorder) replayStyleA(source captureReceipt, input driver.HashInput, w
 				}
 				r.writeJSON(filepath.Join(target.output, "exhaustion-cause.json"), map[string]any{"error": cause.Error(), "unsupported": true})
 				after := target.stage("exhausted", source.BeadIDs, nil)
-				if before.Meta != after.Meta || !reflect.DeepEqual(before.Records, after.Records) || !reflect.DeepEqual(before.Versions, after.Versions) || !reflect.DeepEqual(before.Allocator, after.Allocator) || !reflect.DeepEqual(before.Changesets, after.Changesets) {
+				if before.Meta != after.Meta || !reflect.DeepEqual(before.Records, after.Records) || !reflect.DeepEqual(before.Versions, after.Versions) || !reflect.DeepEqual(before.Allocator, after.Allocator) || !reflect.DeepEqual(before.Changesets, after.Changesets) || !reflect.DeepEqual(before.Checkpoints, after.Checkpoints) {
 					t.Fatal("exhausted public request published allocator, records or history")
 				}
 				return
@@ -599,7 +600,7 @@ func (r *recorder) replayStyleA(source captureReceipt, input driver.HashInput, w
 			}
 			r.writeJSON(filepath.Join(target.output, "rpc-root-replayed.json"), map[string]any{"request": json.RawMessage(request), "response": json.RawMessage(replay)})
 			replayed := target.stage("root-replayed", source.BeadIDs, []string{wantRoot})
-			if committed.Meta != replayed.Meta || !reflect.DeepEqual(committed.Records, replayed.Records) || !reflect.DeepEqual(committed.Versions, replayed.Versions) || !reflect.DeepEqual(committed.Allocator, replayed.Allocator) || !reflect.DeepEqual(committed.Changesets, replayed.Changesets) {
+			if committed.Meta != replayed.Meta || !reflect.DeepEqual(committed.Records, replayed.Records) || !reflect.DeepEqual(committed.Versions, replayed.Versions) || !reflect.DeepEqual(committed.Allocator, replayed.Allocator) || !reflect.DeepEqual(committed.Changesets, replayed.Changesets) || !reflect.DeepEqual(committed.Checkpoints, replayed.Checkpoints) {
 				t.Fatal("reopen idempotent RPC replay changed allocator, records or history")
 			}
 			newIDs := []string{wantRoot}
@@ -620,6 +621,9 @@ func (r *recorder) replayStyleA(source captureReceipt, input driver.HashInput, w
 				newIDs = append(newIDs, wantChild)
 			}
 			after := target.stage("continued-after-reopen", source.BeadIDs, newIDs)
+			if !reflect.DeepEqual(before.Checkpoints, after.Checkpoints) {
+				t.Fatal("allocator continuation changed source checkpoint")
+			}
 			for id, record := range before.Records {
 				if !reflect.DeepEqual(record, after.Records[id]) {
 					t.Fatalf("new allocation changed restored record %s", id)

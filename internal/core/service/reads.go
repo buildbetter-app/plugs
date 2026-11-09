@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
@@ -39,20 +40,28 @@ func cloneMap(value map[string]any) map[string]any {
 }
 
 func (s *Service) Get(ctx context.Context, by model.PrincipalRef, req GetRequest) (GetResult, error) {
+	resolved, _, err := s.ResolveSourceAddress(ctx, by, req.Project, req.ID)
+	if err != nil {
+		return GetResult{}, err
+	}
+	req.ID = resolved
 	if workflowRef(req.ID) {
-		if err := validateWorkflowRef(req.ID); err != nil {
+		if err := validateWorkflowRef(req.ID); err != nil && !s.knownSourceWorkflowRef(req.Project, req.ID) {
 			return GetResult{}, err
 		}
-		if s.workflow != nil {
-			item, err := s.workflow.GetWithResolver(ctx, by, req.ID, workflowMeta(by, "bead.get", req.Project, req.Agent), s.workflowBlockerResolver(ctx, by, workflowMeta(by, "bead.get", req.Project, req.Agent)))
+		if s.workflowProvider() != nil {
+			item, err := s.workflowProvider().GetWithResolver(ctx, by, req.ID, workflowMeta(by, "bead.get", req.Project, req.Agent), s.workflowBlockerResolver(ctx, by, workflowMeta(by, "bead.get", req.Project, req.Agent)))
 			if err == nil {
 				if req.AsOf != nil {
 					return GetResult{}, failure("invalid_params", "workflow items have no historical asOf view")
 				}
-				return workflowGetResult(item), nil
+				return s.workflowGetResult(item)
 			}
 			var typed *model.Error
 			if !errors.As(err, &typed) || typed.Data.Code != "not_found" {
+				return GetResult{}, err
+			}
+			if s.knownSourceWorkflowRef(req.Project, req.ID) {
 				return GetResult{}, err
 			}
 		}
@@ -81,8 +90,8 @@ func (s *Service) Get(ctx context.Context, by model.PrincipalRef, req GetRequest
 		return GetResult{}, err
 	}
 	result := GetResult{Bead: bead, Attachments: doc.Attachments}
-	if s.workflow != nil && req.AsOf == nil {
-		links, err := s.workflow.Relations(ctx, by, req.ID, workflowMeta(by, "bead.get", req.Project, req.Agent))
+	if s.workflowProvider() != nil && req.AsOf == nil {
+		links, err := s.workflowProvider().Relations(ctx, by, req.ID, workflowMeta(by, "bead.get", req.Project, req.Agent))
 		if err != nil {
 			return GetResult{}, err
 		}
@@ -101,7 +110,7 @@ func (s *Service) Get(ctx context.Context, by model.PrincipalRef, req GetRequest
 			}
 			result.Bead.Parent = relation.To.ID
 		}
-		blocked, err := s.workflow.OrdinaryBlocked(ctx, by, []string{req.ID.ID}, workflowMeta(by, "bead.get", doc.Project, req.Agent))
+		blocked, err := s.workflowProvider().OrdinaryBlocked(ctx, by, []string{req.ID.ID}, workflowMeta(by, "bead.get", doc.Project, req.Agent))
 		if err != nil {
 			return GetResult{}, err
 		}
@@ -246,9 +255,9 @@ func (s *Service) readyItems(ctx context.Context, by model.PrincipalRef, req Rea
 	}
 	graphIDs := sortedIDs(graph)
 	workflowBlocked := map[string]bool{}
-	if s.workflow != nil {
+	if s.workflowProvider() != nil {
 		resolver := &workflowCoreResolver{service: s, principal: by, graph: graph}
-		facts, _, err := s.workflow.OrdinaryParentSnapshot(ctx, by, graphIDs, workflowMeta(by, "bead.ready", req.Project, req.Agent), resolver)
+		facts, _, err := s.workflowProvider().OrdinaryParentSnapshot(ctx, by, graphIDs, workflowMeta(by, "bead.ready", req.Project, req.Agent), resolver)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -356,8 +365,8 @@ func (s *Service) readyPage(ctx context.Context, by model.PrincipalRef, req Read
 	if req.Filter != nil && req.Filter.IncludeEphemeral != nil {
 		includeEphemeral = *req.Filter.IncludeEphemeral
 	}
-	if s.workflow != nil && includeEphemeral {
-		active, err := s.workflow.ActiveIDsFor(ctx, by, workflowMeta(by, "bead.ready", req.Project, req.Agent))
+	if s.workflowProvider() != nil && includeEphemeral {
+		active, err := s.workflowProvider().ActiveIDsFor(ctx, by, workflowMeta(by, "bead.ready", req.Project, req.Agent))
 		if err != nil {
 			return BeadPage{}, err
 		}
@@ -452,7 +461,7 @@ func (s *Service) readyCombinedSnapshot(ctx context.Context, by model.PrincipalR
 		includeEphemeral = *req.Filter.IncludeEphemeral
 	}
 	meta := workflowMeta(by, "bead.ready", req.Project, req.Agent)
-	provider, err := s.workflow.ReadySnapshotWithResolverAndCore(ctx, by, req.Project, types, meta, includeEphemeral, sortedIDs(graph), resolver)
+	provider, err := s.workflowProvider().ReadySnapshotWithResolverAndCore(ctx, by, req.Project, types, meta, includeEphemeral, sortedIDs(graph), resolver)
 	if err != nil {
 		return readyCombinedSnapshot{}, err
 	}
@@ -672,7 +681,7 @@ func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req 
 	if err := validatePosition(req.Position); err != nil {
 		return BeadPage{}, err
 	}
-	if s.workflow == nil {
+	if s.workflowProvider() == nil {
 		if req.Position != nil && (req.Position.Workflow || req.Position.WorkflowSnapshot != nil) {
 			return BeadPage{}, failure("cursor_invalid", "workflow provider is unavailable; restart paging")
 		}
@@ -712,7 +721,7 @@ func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req 
 	if req.Filter != nil && req.Filter.IncludeEphemeral != nil {
 		includeEphemeral = *req.Filter.IncludeEphemeral
 	}
-	snapshot, err := s.workflow.ReadySnapshotWithResolver(ctx, by, req.Project, types, workflowMeta(by, "bead.ready", req.Project, req.Agent), includeEphemeral, s.workflowBlockerResolver(ctx, by, workflowMeta(by, "bead.ready", req.Project, req.Agent)))
+	snapshot, err := s.workflowProvider().ReadySnapshotWithResolver(ctx, by, req.Project, types, workflowMeta(by, "bead.ready", req.Project, req.Agent), includeEphemeral, s.workflowBlockerResolver(ctx, by, workflowMeta(by, "bead.ready", req.Project, req.Agent)))
 	if err != nil {
 		return BeadPage{}, err
 	}
@@ -896,15 +905,27 @@ func refID(ref *model.Ref) string {
 	return ref.ID
 }
 
-func workflowGetResult(item workflowplugin.ItemView) GetResult {
+func (s *Service) workflowGetResult(item workflowplugin.ItemView) (GetResult, error) {
 	result := GetResult{Bead: workflowBead(item), Comments: []Comment{}}
 	if item.Claim != nil {
 		result.Lease = &Lease{Principal: item.Claim.Principal, Agent: item.Claim.Agent, ExpiresAt: item.Claim.ExpiresAt, TTL: workflowplugin.ClaimTTL, Epoch: item.Claim.Generation}
 	}
 	for _, comment := range item.Comments {
-		result.Comments = append(result.Comments, Comment{Body: comment.Body, Principal: comment.Principal, Time: comment.Time})
+		value := Comment{Body: comment.Body, Principal: comment.Principal, Time: comment.Time}
+		if comment.Source != nil {
+			source := s.source.Load()
+			if source == nil || source.active[item.ID] != item.Project || comment.Source.Project != item.Project {
+				return GetResult{}, failure("internal_error", "source comment has no admitted import binding")
+			}
+			imported, err := pipeline.NewImportedComment(source.profile, comment.Body, comment.Source.Author, comment.Time, source.restoreTime)
+			if err != nil {
+				return GetResult{}, failure("internal_error", "invalid imported workflow comment")
+			}
+			value = Comment{Body: imported.Body, Principal: imported.Principal, Time: imported.Time, Origin: imported.Origin, SourceAuthor: imported.SourceAuthor, SourceTime: imported.SourceTime}
+		}
+		result.Comments = append(result.Comments, value)
 	}
-	return result
+	return result, nil
 }
 
 // ClaimNextReadyPage is the queue-specific live pager. A revision change

@@ -121,6 +121,8 @@ func DefaultTreePolicy() TreePolicy {
 		BinarySHA256: map[string]string{
 			"spec/s1-b09-native/testdata/beads-446dbb.tar.gz":                                    "32034b6d242f252144f6353f0d9d2f8b7d50739faf7973d62de93cafe25f3959",
 			"spec/s1-b09-native/testdata/beads-9d6fff.tar.gz":                                    "8aa8d07655ec6903703a4c94a4b1aa12d4fb509ab647cd1958f73f8342d3fe6e",
+			"internal/core/dumpformat/testdata/producer-0f44-reprocody.tar":                      "fe136810685c5d7c438ea7ebc3b868caf130ace167be24f671816ef69f9889c8",
+			"internal/core/dumpformat/testdata/producer-0f44-reprosignals.tar":                   "09fa02c4f96ede9b2c4207064c9cfeed0c732958696d7c3841636a88f888d309",
 			"internal/integration/converterroundtrip/testdata/public-complete-root-990eb800.tar": "a2d933a7a54b53303d33a20d5b96eaac0a85c079c5b08cae553aa2a654d820b5",
 			"internal/integration/converterroundtrip/testdata/public-partial-990eb800.tar":       "2dd0bc5cb41ee5ae410659fdff91c4ee6b865098b371a2e1be9b819187271e53",
 			"internal/integration/offlinehistory/testdata/dolt-source-partial.tar":               "b56f1de4a36c22cca379647d5fe1b2962e4358d9976923e76007ea84b7712582",

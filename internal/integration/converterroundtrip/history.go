@@ -67,12 +67,17 @@ func validateArchiveHistoryPolicy(mode driver.RestoreHistoryMode, a *dumpformat.
 	if mode == driver.RestoreHistoryModeSnapshot {
 		return nil
 	}
-	h, ok := a.SourceHistory()
-	if !ok || h.Range.Status != "verified" {
+	scopes, ok := restoreHistoryScopes(a)
+	if !ok {
 		return driver.ValidateRestoreHistoryPolicy(mode, a.Manifest().History)
 	}
-	if mode == driver.RestoreHistoryModeFull && !h.Range.Complete {
-		return driver.ErrRestoreHistoryRefused{Mode: mode, History: a.Manifest().History, Reason: driver.RestoreHistoryReasonNonContiguous}
+	for _, scoped := range scopes {
+		if scoped.Range.Status != "verified" {
+			return driver.ValidateRestoreHistoryPolicy(mode, a.Manifest().History)
+		}
+		if mode == driver.RestoreHistoryModeFull && (!scoped.Range.Complete || scoped.Range.First != 1 || len(scoped.Range.Gaps) != 0 || len(scoped.Range.Baseline) != 0) {
+			return driver.ErrRestoreHistoryRefused{Mode: mode, History: a.Manifest().History, Reason: driver.RestoreHistoryReasonNonContiguous}
+		}
 	}
 	return nil
 }
@@ -89,18 +94,35 @@ func portableHistoryRecords(plan restorePlan) []driver.Record {
 }
 
 func lowerSourceHistory(a *dumpformat.Archive, p driver.RestoreImportProfile, when time.Time) (driver.OfflineHistory, error) {
-	source, ok := a.SourceHistory()
 	refuse := func() (driver.OfflineHistory, error) {
 		return driver.OfflineHistory{}, driver.ErrRestoreHistoryRefused{Mode: p.HistoryMode, History: a.Manifest().History, Reason: driver.RestoreHistoryReasonUnmappable}
 	}
-	if !ok || source.Range.Status != "verified" {
+	scopes, ok := restoreHistoryScopes(a)
+	if !ok || len(scopes) == 0 {
 		return refuse()
 	}
-	r := source.Range
-	h := driver.OfflineHistory{Source: dumpformat.SourceHistoryFormat, Verified: true, Complete: r.Complete, First: r.First, Head: r.Head,
-		BaselineVerified: r.First > 1, Baseline: []driver.Record{}, Gaps: []driver.SourceHistoryGap{}, Batches: []driver.SourceHistoryBatch{}}
-	for _, g := range r.Gaps {
-		h.Gaps = append(h.Gaps, driver.SourceHistoryGap{First: g.First, Last: g.Last, Reason: g.Reason})
+	if len(scopes) > 1 {
+		// Independent project histories have no source-defined cross-project
+		// revision order. Full histories can be imported in stable project order
+		// while retaining every source commit/event ID; partial histories retain
+		// independent floors and therefore refuse until the driver has a
+		// project-scoped floor contract.
+		for _, scoped := range scopes {
+			if scoped.Range.Status != "verified" || !scoped.Range.Complete || scoped.Range.First != 1 || len(scoped.Range.Gaps) != 0 || len(scoped.Range.Baseline) != 0 {
+				return refuse()
+			}
+		}
+		sort.Slice(scopes, func(i, j int) bool { return scopes[i].Project < scopes[j].Project })
+	}
+	first := scopes[0].Range.First
+	h := driver.OfflineHistory{Source: dumpformat.SourceHistoryFormat, Verified: true, Complete: true, First: first, Head: scopes[0].Range.Head,
+		BaselineVerified: first > 1, Baseline: []driver.Record{}, Gaps: []driver.SourceHistoryGap{}, Batches: []driver.SourceHistoryBatch{}}
+	if len(scopes) == 1 {
+		r := scopes[0].Range
+		h.Complete, h.First, h.Head, h.BaselineVerified = r.Complete, r.First, r.Head, r.First > 1
+		for _, g := range r.Gaps {
+			h.Gaps = append(h.Gaps, driver.SourceHistoryGap{First: g.First, Last: g.Last, Reason: g.Reason})
+		}
 	}
 	image := func(sequence uint64) ([]driver.Record, error) {
 		snapshot, err := a.HistoryImage(sequence)
@@ -113,37 +135,110 @@ func lowerSourceHistory(a *dumpformat.Archive, p driver.RestoreImportProfile, wh
 		}
 		return portableHistoryRecords(plan), nil
 	}
-	before := []driver.Record{}
-	if r.First > 1 {
-		var err error
-		before, err = image(r.First - 1)
-		if err != nil {
-			return refuse()
-		}
-		h.Baseline = before
-	}
-	previousEvents := map[string]bool{}
-	for _, e := range r.BaselineEvents {
-		previousEvents[dumpformat.SourceEventID(e)] = true
-	}
-	for _, frame := range r.Frames {
-		after, err := image(frame.Sequence)
-		if err != nil {
-			return refuse()
-		}
-		batch := driver.SourceHistoryBatch{Sequence: frame.Sequence, CommitIDs: []string{frame.CommitID}, EventIDs: []string{}, Changes: historyDelta(before, after)}
-		for _, e := range frame.Events {
-			id := dumpformat.SourceEventID(e)
-			if !previousEvents[id] {
-				batch.EventIDs = append(batch.EventIDs, id)
+	if len(scopes) == 1 {
+		r := scopes[0].Range
+		before := []driver.Record{}
+		if r.First > 1 {
+			var err error
+			before, err = image(r.First - 1)
+			if err != nil {
+				return refuse()
 			}
-			previousEvents[id] = true
+			h.Baseline = before
 		}
-		sort.Strings(batch.EventIDs)
-		h.Batches = append(h.Batches, batch)
-		before = after
+		previousEvents := map[string]bool{}
+		for _, e := range r.BaselineEvents {
+			previousEvents[dumpformat.SourceEventID(e)] = true
+		}
+		for _, frame := range r.Frames {
+			after, err := image(frame.Sequence)
+			if err != nil {
+				return refuse()
+			}
+			batch := driver.SourceHistoryBatch{Sequence: frame.Sequence, CommitIDs: []string{frame.CommitID}, EventIDs: []string{}, Changes: historyDelta(before, after)}
+			for _, e := range frame.Events {
+				id := dumpformat.SourceEventID(e)
+				if !previousEvents[id] {
+					batch.EventIDs = append(batch.EventIDs, id)
+				}
+				previousEvents[id] = true
+			}
+			sort.Strings(batch.EventIDs)
+			h.Batches = append(h.Batches, batch)
+			before = after
+		}
+		return h, nil
 	}
+	var globalSequence uint64
+	sharedGlobals := map[string]driver.Record{}
+	for _, scoped := range scopes {
+		before := []driver.Record{}
+		previousEvents := map[string]bool{}
+		for _, frame := range scoped.Range.Frames {
+			after, err := a.HistoryImageForProject(scoped.Project, frame.Sequence)
+			if err != nil {
+				return refuse()
+			}
+			beforePlan, err := buildPlanWithProfile(after, &p, when)
+			if err != nil {
+				return refuse()
+			}
+			afterRecords, err := omitAlreadyImportedSharedGlobals(portableHistoryRecords(beforePlan), sharedGlobals)
+			if err != nil {
+				return refuse()
+			}
+			globalSequence++
+			batch := driver.SourceHistoryBatch{Project: scoped.Project, Sequence: globalSequence, CommitIDs: []string{frame.CommitID}, EventIDs: []string{}, Changes: historyDelta(before, afterRecords)}
+			for _, e := range frame.Events {
+				id := dumpformat.SourceEventID(e)
+				if !previousEvents[id] {
+					batch.EventIDs = append(batch.EventIDs, id)
+				}
+				previousEvents[id] = true
+			}
+			sort.Strings(batch.EventIDs)
+			h.Batches = append(h.Batches, batch)
+			before = afterRecords
+		}
+	}
+	h.Head = globalSequence
+	h.First = 1
 	return h, nil
+}
+
+func omitAlreadyImportedSharedGlobals(records []driver.Record, seen map[string]driver.Record) ([]driver.Record, error) {
+	result := make([]driver.Record, 0, len(records))
+	for _, record := range records {
+		if record.Kind != "config" && record.Kind != "memory" {
+			result = append(result, record)
+			continue
+		}
+		key := record.Kind + "\x00" + record.Ref.ID
+		if previous, ok := seen[key]; ok {
+			if previous.Kind != record.Kind || previous.Ref != record.Ref || !bytes.Equal(previous.Body, record.Body) {
+				return nil, fmt.Errorf("shared history record %s has conflicting project images", record.Ref.ID)
+			}
+			continue
+		}
+		seen[key] = record
+		result = append(result, record)
+	}
+	return result, nil
+}
+
+func restoreHistoryScopes(a *dumpformat.Archive) ([]dumpformat.ProjectSourceHistory, bool) {
+	history, ok := a.SourceHistory()
+	if !ok {
+		return nil, false
+	}
+	if len(history.ProjectHistories) != 0 {
+		return append([]dumpformat.ProjectSourceHistory(nil), history.ProjectHistories...), true
+	}
+	projects := a.Manifest().Projects
+	if len(projects) != 1 {
+		return nil, false
+	}
+	return []dumpformat.ProjectSourceHistory{{Project: projects[0].Prefix, Commits: history.Commits, Events: history.Events, Range: history.Range}}, true
 }
 
 func historyDelta(before, after []driver.Record) []driver.SourceHistoryChange {

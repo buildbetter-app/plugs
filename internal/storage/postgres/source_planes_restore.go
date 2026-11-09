@@ -1,0 +1,137 @@
+package postgres
+
+import (
+	"bytes"
+	"context"
+	"database/sql"
+	"errors"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
+)
+
+// The caller already owns the complete lock set and Head. Core-only and
+// offline-history preparation deliberately keep their separate refusals.
+func (t *transaction) PrepareSourcePlaneImport(ctx context.Context, profile driver.RestoreImportProfile) (driver.Meta, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err := t.check(ctx); err != nil {
+		return driver.Meta{}, err
+	}
+	if len(t.checkpointWrites)+len(t.checkpointGuards) != 0 || t.offlineHistory != nil {
+		return driver.Meta{}, driver.ErrUnsupported
+	}
+	bound, err := driver.PrepareSourcePlaneImportProfile(profile, t.meta, driver.CheckpointLifetimeRestart)
+	if err != nil {
+		return driver.Meta{}, err
+	}
+	meta, err := t.prepareRestore(ctx, bound.SourceStoreID)
+	if err != nil {
+		return driver.Meta{}, err
+	}
+	t.importRestore = &bound
+	t.sourcePlaneImport = driver.NewSourcePlaneImportPublication(bound, meta)
+	return meta, nil
+}
+
+func (t *transaction) BindSourcePlaneImport(ctx context.Context, binding driver.SourcePlaneCommitBindingV1) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err := t.check(ctx); err != nil {
+		return err
+	}
+	return t.sourcePlaneImport.Bind(binding)
+}
+
+var _ driver.SourcePlaneRestoreTx = (*transaction)(nil)
+
+// ReadSourcePlaneSnapshot observes namespaces inside the very same SQL read
+// transaction that pins the core. Historical core cannot be paired with a
+// current namespace. Recovery needs no writer, lease acquisition or receipt.
+func (s *Store) ReadSourcePlaneSnapshot(ctx context.Context, view driver.View, keys []string) (driver.SourcePlaneSnapshot, error) {
+	if len(keys) > driver.SourcePlaneMaxListEntries {
+		return nil, driver.ErrUnsupported
+	}
+	for i, key := range keys {
+		if driver.ValidateCheckpointKey(key) != nil || i > 0 && keys[i-1] >= key {
+			return nil, driver.ErrCheckpointConflict
+		}
+	}
+	base, err := s.Read(ctx, view)
+	if err != nil {
+		return nil, err
+	}
+	r := base.(*reader)
+	keep := false
+	defer func() {
+		if !keep {
+			_ = r.Close()
+		}
+	}()
+	r.mu.Lock()
+	checkpoints, err := r.sourceCheckpoints(ctx, keys)
+	r.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	keep = true
+	return &sourcePlaneSnapshot{reader: r, checkpoints: checkpoints}, nil
+}
+func (r *reader) sourceCheckpoints(ctx context.Context, keys []string) (map[string]driver.Checkpoint, error) {
+	if err := r.check(ctx); err != nil {
+		return nil, err
+	}
+	head, err := r.meta.Head.Uint64()
+	if err != nil || r.at != head {
+		return nil, driver.ErrCheckpointConflict
+	}
+	checkpoints := make(map[string]driver.Checkpoint, len(keys))
+	for _, key := range keys {
+		cp, err := r.sourceCheckpoint(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		cp.Payload = bytes.Clone(cp.Payload)
+		checkpoints[key] = cp
+	}
+	return checkpoints, nil
+}
+func (r *reader) sourceCheckpoint(ctx context.Context, key string) (driver.Checkpoint, error) {
+	id, err := checkpointKey(key)
+	if err != nil {
+		return driver.Checkpoint{}, err
+	}
+	var generation string
+	var payload []byte
+	err = r.sql.QueryRowContext(ctx, `SELECT generation::text,payload FROM plug_postgres.checkpoints WHERE key=$1`, id).Scan(&generation, &payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return driver.Checkpoint{}, nil
+	}
+	if err != nil {
+		return driver.Checkpoint{}, err
+	}
+	n, err := parseCounter(generation)
+	return driver.Checkpoint{Generation: n, Payload: payload}, err
+}
+
+type sourcePlaneSnapshot struct {
+	*reader
+	checkpoints map[string]driver.Checkpoint
+}
+
+func (r *sourcePlaneSnapshot) SourcePlaneCheckpoint(key string) (driver.Checkpoint, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return driver.Checkpoint{}, driver.ErrTxClosed
+	}
+	cp, ok := r.checkpoints[key]
+	if !ok {
+		return driver.Checkpoint{}, driver.ErrUnsupported
+	}
+	cp.Payload = bytes.Clone(cp.Payload)
+	return cp, nil
+}
+func (s *Store) WorkflowCheckpointLifetime() driver.CheckpointLifetime {
+	return driver.CheckpointLifetimeRestart
+}
+
+var _ driver.WorkflowCheckpointStore = (*Store)(nil)

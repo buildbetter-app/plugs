@@ -103,3 +103,21 @@ the historical bundle descriptor, and forwarding these hosted variables:
 --test_env=GITHUB_SHA --test_env=GITHUB_WORKFLOW_REF
 --test_env=PLUG_ID_STYLE_A_REQUEST_SHA=<exact-candidate-sha>
 ```
+
+The source-plane composition uses the complete immutable consumer dependency
+from `312a6668b615ca25d7130c7b3e08cb0a5c211dcf`. That dependency is authored
+source; its prior evidence does not qualify this composition. For the declared
+single-project durable-task corpus, the manual fixture supplies an explicit
+`BindSourceImport` plan: exact source addresses and field/status dispositions,
+a fixture-owned principal, the selected target incarnation and checkpoint
+lifetime, all raw origins and all captured sidecars. The archive's source-plane,
+source-fields and history declarations stay intact. The unbound inspection
+digest is retained separately from the bound core projection digest.
+
+The full paired conservation sequence remains present. Its source-plane branch
+also checks the immutable commit binding against the admitted plan and actual
+checkpoint envelope/logical bytes. Every logical census pins core records and
+source checkpoints in one driver snapshot. Reopen, continuation, refusal and
+idempotent replay preserve those checkpoints exactly. These single-project
+snapshot controls provide no two-source history merge or runtime-authority
+qualification.

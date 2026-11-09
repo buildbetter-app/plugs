@@ -48,6 +48,7 @@ type SourceHistoryChange struct {
 // SourceHistoryBatch is an explicitly ordered import unit, not an assertion
 // about source SQL transactions. Event and commit IDs are untrusted provenance.
 type SourceHistoryBatch struct {
+	Project   string                `json:"project,omitempty"`
 	Sequence  uint64                `json:"sequence"`
 	EventIDs  []string              `json:"eventIds"`
 	CommitIDs []string              `json:"commitIds,omitempty"`
@@ -71,6 +72,7 @@ type OfflineHistory struct {
 }
 
 type SourceImportRevision struct {
+	Project   string         `json:"project,omitempty"`
 	Sequence  uint64         `json:"sequence"`
 	Revision  model.Revision `json:"revision"`
 	EventIDs  []string       `json:"eventIds"`
@@ -123,7 +125,7 @@ func BuildOfflineHistory(current Meta, profile RestoreImportProfile, input Offli
 	if !current.Head.IsZero() || !current.HistoryFloor.IsZero() {
 		return OfflineHistoryPlan{}, ErrRestoreTargetNotEmpty
 	}
-	p, err := profile.Detached()
+	p, err := profile.DetachedCoreOnly()
 	if err != nil {
 		return OfflineHistoryPlan{}, err
 	}
@@ -335,7 +337,7 @@ func BuildOfflineHistory(current Meta, profile RestoreImportProfile, input Offli
 		if err = emit(b.Changes, ""); err != nil {
 			return refuse(RestoreHistoryReasonUnmappable)
 		}
-		plan.Evidence.Mapping = append(plan.Evidence.Mapping, SourceImportRevision{Sequence: b.Sequence, Revision: model.Natural64(rev), EventIDs: b.EventIDs, CommitIDs: b.CommitIDs})
+		plan.Evidence.Mapping = append(plan.Evidence.Mapping, SourceImportRevision{Project: b.Project, Sequence: b.Sequence, Revision: model.Natural64(rev), EventIDs: b.EventIDs, CommitIDs: b.CommitIDs})
 	}
 	// Tail is the independently rebuilt head. Historical records must agree;
 	// non-historical records become explicit restore-time creates, never history.
@@ -406,7 +408,7 @@ func OfflineHistoryDigest(h OfflineHistory) (string, error) {
 }
 
 func PrepareOfflineHistoryBinding(current Meta, p RestoreImportProfile, h OfflineHistory, when time.Time) (*PreparedOfflineHistory, error) {
-	bound, err := p.Detached()
+	bound, err := p.DetachedCoreOnly()
 	if err != nil {
 		return nil, err
 	}

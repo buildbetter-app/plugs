@@ -182,7 +182,7 @@ func TestPublicDoltSourceRestoreHistoryAndLiveReverseAllDrivers(t *testing.T) {
 						assertPublicSourceAsOf(t, store, report.Restored, source, frame.Sequence, revision, p.Admission.Actor)
 					}
 				}
-				baseline, err := ReverseRestored(ctx, store)
+				baseline, err := reverseAllRestored(ctx, store)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -215,7 +215,7 @@ func TestPublicDoltSourceRestoreHistoryAndLiveReverseAllDrivers(t *testing.T) {
 					t.Fatalf("post-import write lost allocator baseline: %v", err)
 				}
 				before := reverseState(t, store)
-				live, err := ReverseRestored(ctx, store)
+				live, err := reverseAllRestored(ctx, store)
 				if err != nil || live.Snapshot.At == nil || live.Snapshot.At.String() != before.Meta.Head.String() || live.Snapshot.Incarnation != report.Restored.Incarnation || live.Result.Digest == baseline.Result.Digest {
 					t.Fatalf("live as-of boundary failed: %v", err)
 				}
@@ -224,7 +224,7 @@ func TestPublicDoltSourceRestoreHistoryAndLiveReverseAllDrivers(t *testing.T) {
 				if !reflect.DeepEqual(before, reverseState(t, store)) {
 					t.Fatal("reverse mutated the store")
 				}
-				captured, err := ReverseRestored(ctx, reverseReadHook{Store: store, afterRead: func() { edit("Concurrent later edit", "e") }})
+				captured, err := reverseAllRestored(ctx, reverseReadHook{Store: store, afterRead: func() { edit("Concurrent later edit", "e") }})
 				if err != nil || captured.Result.Digest != live.Result.Digest || captured.Snapshot.At == nil || *captured.Snapshot.At != *live.Snapshot.At {
 					t.Fatalf("reverse mixed live snapshots: %v", err)
 				}

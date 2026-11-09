@@ -139,7 +139,7 @@ func (d EventDescriptor) Validate() error {
 		if !sameAuditRef(d.Resource.Ref, d.Details.Dependent.Ref) {
 			return fmt.Errorf("notice resource must be the dependent")
 		}
-		if (d.Provenance.Slot != "close" || d.Details.After.Category != "completed") && (d.Provenance.Slot != "cancel" || d.Details.After.Category != "canceled") {
+		if (d.Provenance.Slot != "close" || d.Details.After.Category != "completed" && d.Details.After.Category != "done") && (d.Provenance.Slot != "cancel" || d.Details.After.Category != "canceled") {
 			return fmt.Errorf("condition decision/source slot mismatch")
 		}
 	} else if d.Details != nil {

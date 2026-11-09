@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "archive.go",
         "convert.go",
+        "source_planes.go",
         "types.go",
     ],
     importpath = "github.com/buildbetter-app/plugs/internal/core/reverseconverter",
@@ -17,7 +18,7 @@ go_library(
 
 go_test(
     name = "reverseconverter_test",
-    srcs = ["reverseconverter_test.go", "public_archive_test.go"],
+    srcs = ["reverseconverter_test.go", "public_archive_test.go", "source_planes_test.go"],
     data = [
         "//internal/integration/converterroundtrip:testdata/synthetic-plug-dump-1.tar",
         "//internal/integration/converterroundtrip:public_source_fixtures",

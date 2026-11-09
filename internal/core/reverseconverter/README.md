@@ -48,8 +48,8 @@ example, a `config/github.token` record becomes
 as `{"$secret":"config/github.token"}`. No secret provider is contacted and
 no credential bytes are written to JSONL or reports.
 
-Known source fields without a Beads JSONL column, such as `no_history`,
-`estimated_minutes`, and compaction/revision fields, are retained under the
+Known source fields without a Beads JSONL column, such as `estimated_minutes`
+and compaction/revision fields, are retained under the
 reserved issue metadata key `_plug_source_fields` as a canonical JSON string.
 This preserves large integers through the pinned importer's metadata
 normalization. `Report.ArchivedSourceFields` names every archived field.
@@ -60,14 +60,14 @@ whose key or value is empty.
 `Result.Projection` is the declared semantic readback projection: issue IDs,
 kinds, statuses, categories and outcomes; edge IDs/endpoints/types; comment
 IDs/owners; and memory key/value pairs. `Report` records intentional loss:
-head-state conversion cannot recreate complete post-switch history, archived
-source rows remain report-only, and archive rows identify blob/principal
+head-state conversion cannot recreate complete post-switch history, non-entity archived
+source history remains report-only, and archive rows identify blob/principal
 families. Warnings and configuration references are retained as well.
 
 Conversion refuses closed-world violations rather than dropping them. Examples
 include unknown archive members or kinds, malformed checksums or ordering,
-unsupported issue fields/types/statuses, active workflow or ephemeral rows,
-external or dangling links, invalid timestamps or typed values, duplicate
+unsupported issue fields/types/statuses, ambiguous physical-plane IDs,
+unmapped links, invalid timestamps or typed values, duplicate
 identities/keys, unclassified configuration, and malformed secret references.
 The refusal is a typed `*Refusal` carrying the same structured report that
 would accompany a successful result.
@@ -75,3 +75,19 @@ would accompany a successful result.
 The archive and Beads workspaces used for qualification must be disposable.
 The pinned Beads reference is recorded in `BeadsReference`; this package has no
 production or upstream repository access.
+
+The default conversion mirrors `bd export` at the pinned reference: every
+`ephemeral=true` row is omitted, with its full physical source tuple in
+`Report.OmittedEphemeralRows`. Physical active-plane placement alone does not
+exclude a row. `ConvertWithOptions(..., Options{All: true})` and
+`ConvertArchiveWithOptions` select the explicit `bd export --all` behavior.
+Active rows retain the pinned explicit plane marker and their original raw IDs.
+A raw ID present in both entity planes refuses with `source-plane-contract`
+because the JSONL importer cannot distinguish that endpoint identity.
+
+`converterroundtrip.ReverseRestoredWithOptions` applies the same selection to a
+restored joint image. It verifies the original receipt/archive/plan and immutable
+provider origin against current core and namespace data in one source-plane
+snapshot, then exports current supported fields and labels. It never rebuilds
+terminal item bodies from retained origin records. Existing limits on claims,
+unsupported fields, and changed comments/relationships remain explicit refusals.

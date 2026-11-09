@@ -29,7 +29,7 @@ func ordinaryDeleteKind(ref model.Ref) string {
 
 func (s *Service) ordinaryDeletePreparation(by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta, preview *map[int]model.OpResult) pipeline.SourcePreparation {
 	return func(ctx context.Context, reader driver.Reader, prepare func(pipeline.SourceOperationHandler) error) (pipeline.SourcePublication, error) {
-		planned, err := s.workflow.PrepareOrdinaryDelete(ctx, by, cs, meta, func(handle func(model.Op) (*workflowplugin.OrdinaryDeleteImage, error)) error {
+		planned, err := s.workflowProvider().PrepareOrdinaryDelete(ctx, by, cs, meta, func(handle func(model.Op) (*workflowplugin.OrdinaryDeleteImage, error)) error {
 			return prepare(func(_ context.Context, op model.Op, _ pipeline.SourceCoreImage) (model.Op, *pipeline.SourceOperation, error) {
 				image, err := handle(op)
 				if err != nil || image == nil {

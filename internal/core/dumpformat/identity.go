@@ -33,6 +33,12 @@ func (p *Project) UnmarshalJSON(data []byte) error {
 		if key != "hash_namespaces" && strings.EqualFold(key, "hash_namespaces") {
 			return fmt.Errorf("noncanonical hash_namespaces key")
 		}
+		if key != "statuses" && strings.EqualFold(key, "statuses") {
+			return fmt.Errorf("noncanonical statuses key")
+		}
+	}
+	if _, present := fields["statuses"]; present && len(value.Statuses) == 0 {
+		return fmt.Errorf("statuses requires a nonempty array")
 	}
 	if _, present := fields["hash_namespaces"]; present && len(value.HashNamespaces) == 0 {
 		return fmt.Errorf("hash_namespaces requires a nonempty array")
