@@ -102,6 +102,12 @@ type Config struct {
 	// Mutators optionally installs trusted host bindings on the same Writer as
 	// the fixed checker and event context. Callback resources remain caller-owned.
 	Mutators []pipeline.MutatorBinding
+	// Observer receives the Writer's existing bounded phase/outcome metrics.
+	// A nil observer leaves the ordinary composition unchanged.
+	Observer pipeline.Observer
+	// ClaimPools is the trusted host's literal pseudo-assignee registry.
+	// It grants no authentication, project access, or pool membership.
+	ClaimPools []string
 	// Hierarchy opts into the bounded EP2 create/reparent authorization adapter.
 	// It does not implement hierarchy storage/RPC or relax ordinary #18 writes.
 	// Keep false until the host installs the separately reviewed hierarchy Writer.
@@ -172,17 +178,21 @@ func newWithClock(ctx context.Context, config Config, now func() time.Time) (*Co
 		}
 	}
 	ontology := service.NewOntology(nil)
-	options := []pipeline.Option{pipeline.WithOntology(ontology), pipeline.WithAuthorizer(checker), pipeline.WithEventContext(checker), pipeline.WithClock(now)}
+	options := []pipeline.Option{pipeline.WithOntology(ontology), pipeline.WithAuthorizer(checker), pipeline.WithEventContext(checker), pipeline.WithClock(now), pipeline.WithClaimPools(config.ClaimPools...)}
 	if config.Audit != nil {
 		options = append(options, pipeline.WithOntologyAudit(config.Audit))
 	}
 	if len(config.Mutators) != 0 {
 		options = append(options, pipeline.WithMutators(config.Mutators...))
 	}
+	if config.Observer != nil {
+		options = append(options, pipeline.WithObserver(config.Observer))
+	}
 	writer := pipeline.New(config.Store, config.Lease, options...)
 	serviceOptions := []service.Option{
 		service.WithOntology(ontology),
 		service.WithClock(now),
+		service.WithClaimPools(config.ClaimPools...),
 		service.WithAuthorizationInstalled(func() bool { return true }),
 	}
 	if config.Workflow != nil {

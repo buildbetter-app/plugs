@@ -666,6 +666,39 @@ type Store interface {
 	// the store. Close is idempotent and never commits staged writes.
 	Close() error
 }
+
+type publicationAdmissionKey struct{}
+type preparationAdmissionKey struct{}
+
+// WithPreparationAdmission marks a bounded pipeline preparation snapshot.
+// Pooled drivers may admit it before reserving a connection; ordinary readers
+// remain independent. The snapshot must close before publication admission.
+func WithPreparationAdmission(ctx context.Context) context.Context {
+	return context.WithValue(ctx, preparationAdmissionKey{}, true)
+}
+
+// PreparationAdmission reports whether a pipeline snapshot requested resource
+// admission before reserving a pooled connection.
+func PreparationAdmission(ctx context.Context) bool {
+	marked, _ := ctx.Value(preparationAdmissionKey{}).(bool)
+	return marked
+}
+
+// WithPublicationAdmission marks a pipeline transaction that will serialize
+// through the publication head. A pooled driver may admit it before reserving
+// a connection. This is only a resource hint: all lease and lock checks remain
+// mandatory, and ordinary Write transactions retain independent admission.
+func WithPublicationAdmission(ctx context.Context) context.Context {
+	return context.WithValue(ctx, publicationAdmissionKey{}, true)
+}
+
+// PublicationAdmission reports whether a pipeline transaction requested
+// resource admission before reserving a pooled connection.
+func PublicationAdmission(ctx context.Context) bool {
+	marked, _ := ctx.Value(publicationAdmissionKey{}).(bool)
+	return marked
+}
+
 type ActiveLease interface {
 	Epoch() uint64
 	Renew(context.Context) error

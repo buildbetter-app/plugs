@@ -44,6 +44,10 @@ type Store struct {
 	closed   bool
 	children map[io.Closer]struct{}
 	leases   map[*activeLease]struct{}
+
+	// Bound only pipeline preparation snapshots before they retain pooled
+	// connections and wait for synchronous callback resources.
+	preparation chan struct{}
 }
 
 // Persistent reports that SQLite checkpoint bytes survive Store.Close and a
@@ -104,7 +108,7 @@ func (d Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, erro
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{clock: d.Clock, lockDir: path + ".plug-locks", children: make(map[io.Closer]struct{}), leases: make(map[*activeLease]struct{})}
+	s := &Store{clock: d.Clock, preparation: make(chan struct{}, 4), lockDir: path + ".plug-locks", children: make(map[io.Closer]struct{}), leases: make(map[*activeLease]struct{})}
 	if err = os.MkdirAll(s.lockDir, 0700); err != nil {
 		return nil, err
 	}

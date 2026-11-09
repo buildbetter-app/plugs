@@ -1498,6 +1498,72 @@ func TestClaimNextAdvancesPastRealCandidateLeaseRace(t *testing.T) {
 	}
 }
 
+type claimNextAttemptWriter struct {
+	*pipeline.Writer
+	targets []string
+}
+
+func (w *claimNextAttemptWriter) ApplyWithOutcome(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) (port.WriteOutcome, error) {
+	if meta.Method == "bead.claimNext" && len(cs.Ops) == 1 && cs.Ops[0].Patch != nil {
+		w.targets = append(w.targets, cs.Ops[0].Patch.Target.ID)
+	}
+	return w.Writer.ApplyWithOutcome(ctx, by, cs, meta)
+}
+
+func TestClaimNextRefreshesRacedPageBeforePreparingRetiredCandidates(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	for i := range 8 {
+		create(t, f, fmt.Sprintf("Candidate %d", i))
+	}
+	m := meta(t)
+	req := ClaimNextRequest{Project: "local"}
+	identity, err := ClaimNextRequestIdentity(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := f.svc.ClaimNextReadyPage(ctx, anonymous, ReadyRequest{Project: req.Project, Limit: 1000, ClaimNextSeed: ClaimNextSelectionSeed(identity, m.IdempotencyKey)})
+	if err != nil || len(page.Items) != 8 {
+		t.Fatalf("initial ready page: %+v %v", page, err)
+	}
+	other := model.PrincipalRef{Kind: "user", ID: "competing-worker"}
+	store := &claimNextRaceStore{Store: f.store, beforeWrite: func() {
+		for _, bead := range page.Items[:7] {
+			if _, err := f.svc.ClaimWithOutcome(ctx, other, ClaimRequest{ID: model.RefByID(bead.ID, model.Natural64(0))}, meta(t)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}}
+	svc := claimNextRaceService(f, store)
+	w := &claimNextAttemptWriter{Writer: svc.writer.(*pipeline.Writer)}
+	svc.writer = w
+	out, err := svc.ClaimNextWithOutcome(ctx, anonymous, req, m)
+	survivor := page.Items[7].ID
+	if err != nil || out == nil || out.NullResult || len(out.Commit.Results) != 1 || out.Commit.Results[0].Ref.ID != survivor {
+		t.Fatalf("fresh survivor was not claimed: %+v %v", out, err)
+	}
+	if !slices.Equal(w.targets, []string{page.Items[0].ID, survivor}) {
+		t.Fatalf("retired candidates were prepared from the obsolete page: %v", w.targets)
+	}
+	if out.Commit.Revision.String() != "16" {
+		t.Fatalf("competing claims and sole survivor write did not conserve the head: %+v", out.Commit)
+	}
+	replayed, err := svc.ClaimNextWithOutcome(ctx, anonymous, req, m)
+	if err != nil || replayed == nil || !replayed.Replayed || replayed.Commit.Revision.String() != out.Commit.Revision.String() {
+		t.Fatalf("survivor receipt did not replay: %+v %v", replayed, err)
+	}
+	reader, err := f.store.Read(ctx, driver.View{Incarnation: page.AsOf.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	principal, _ := driver.PrincipalKey(anonymous)
+	receipt, err := reader.IdempotencyByKey(ctx, principal, m.AgentLabel, "bead.claimNext", m.IdempotencyKey)
+	if err != nil || receipt == nil || len(receipt.Changeset.Changes) != 1 || receipt.Commit.Revision.String() != "16" || reader.Snapshot().At.String() != "16" {
+		t.Fatalf("page refresh or replay fabricated a receipt or extra write: receipt=%+v head=%s err=%v", receipt, reader.Snapshot().At, err)
+	}
+}
+
 func TestClaimNextAdvancesPastCandidateWriteConflict(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()

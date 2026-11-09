@@ -44,6 +44,25 @@ func TestAllOperationsAgainstOpenRPC(t *testing.T) {
 	}
 }
 
+func TestCreatePreassignmentAgainstOpenRPC(t *testing.T) {
+	for _, raw := range []string{
+		`{"ops":[{"kind":"create","type":"issue","fields":{},"assignment":{"kind":"agent","id":"agent:worker.primary"}}]}`,
+		`{"ops":[{"kind":"create","type":"issue","fields":{},"assignment":{"kind":"anonymous","id":"worker__primary"}}]}`,
+		`{"ops":[{"kind":"create","type":"issue","fields":{},"assignment":{"kind":"pool","id":"pool-alpha"}}]}`,
+	} {
+		var cs ChangeSet
+		roundtripComponent(t, "ChangeSet", raw, &cs)
+	}
+	for _, raw := range []string{
+		`{"ops":[{"kind":"create","type":"issue","fields":{},"assignment":null}]}`,
+		`{"ops":[{"kind":"create","type":"issue","fields":{},"assignment":{"kind":"pool","id":""}}]}`,
+		`{"ops":[{"kind":"create","type":"issue","fields":{},"assignment":{"kind":"future","id":"pool-alpha"}}]}`,
+		`{"ops":[{"kind":"create","type":"issue","fields":{},"assignment":{"kind":"pool","id":"pool-alpha","verified":true}}]}`,
+	} {
+		rejectComponent(t, "ChangeSet", raw, &ChangeSet{})
+	}
+}
+
 func TestInvalidOperationUnions(t *testing.T) {
 	cases := []string{
 		`{"ops":[{"kind":"close"}]}`,

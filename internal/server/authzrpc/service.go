@@ -546,8 +546,9 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 	var exhaustedConflict error
 	repeatedConflictThisPass := false
 	conflictRestarts := 0
+walk:
 	for {
-		page, err := s.claimPage(ctx, by, service.ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position, ClaimNextSeed: selectionSeed})
+		page, err := s.claimPage(ctx, by, service.ReadyRequest{Project: req.Project, Agent: meta.AgentLabel, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position, ClaimNextSeed: selectionSeed})
 		if err != nil {
 			return nil, err
 		}
@@ -596,6 +597,20 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 					}
 				}
 			}
+			// Refresh a raced page when competing commits changed its head.
+			// With an unchanged head, keep walking past locked candidates so
+			// a full front cannot hide a later permitted winner.
+			current, err := s.checker.store.Meta(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if current.Incarnation != page.AsOf.Incarnation {
+				return nil, driver.ErrIncarnationChanged{From: page.AsOf.Incarnation, To: current.Incarnation}
+			}
+			if current.Head.String() != page.AsOf.Revision.String() {
+				fresh, position, repeatedConflictThisPass = false, nil, false
+				continue walk
+			}
 		}
 		if page.Next == nil {
 			if !fresh {
@@ -613,7 +628,7 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 			if err != nil {
 				return nil, err
 			}
-			out, err := s.commitEmpty(ctx, by, req, meta, s.claimNextReadyProbe(by, req))
+			out, err := s.commitEmpty(ctx, by, req, meta, s.claimNextReadyProbe(by, req, meta.AgentLabel))
 			if err != nil {
 				if errors.Is(err, port.ErrClaimNextReady) {
 					if repeatedConflictThisPass {
@@ -656,12 +671,12 @@ func (s *GuardedService) claimPage(ctx context.Context, by model.PrincipalRef, r
 // walk, but reads through the transaction that already owns the head. An
 // unauthorized ready bead therefore does not keep an otherwise empty queue
 // from publishing its terminal null receipt.
-func (s *GuardedService) claimNextReadyProbe(by model.PrincipalRef, req service.ClaimNextRequest) port.ClaimNextReadyProbe {
+func (s *GuardedService) claimNextReadyProbe(by model.PrincipalRef, req service.ClaimNextRequest, agent string) port.ClaimNextReadyProbe {
 	return func(ctx context.Context, reader driver.Reader) (bool, error) {
 		if s.readyCandidates == nil {
 			return false, &model.Error{Message: "authorization service is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
 		}
-		items, err := s.readyCandidates(ctx, by, service.ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter}, reader)
+		items, err := s.readyCandidates(ctx, by, service.ReadyRequest{Project: req.Project, Agent: agent, ViewID: req.ViewID, Filter: req.Filter}, reader)
 		if err != nil {
 			return false, err
 		}
@@ -706,7 +721,8 @@ func claimNextCandidateConflict(err error) bool {
 	if !errors.As(err, &value) || value.Data.Code != "write_conflict" {
 		return false
 	}
-	return value.Message == "snapshot changed during all four write attempts" || value.Data.Hint == "snapshot changed during all four write attempts"
+	return value.Message == "claimNext candidate is locked" || value.Data.Hint == "claimNext candidate is locked" ||
+		value.Message == "snapshot changed during all four write attempts" || value.Data.Hint == "snapshot changed during all four write attempts"
 }
 func (s *GuardedService) CommentWithOutcome(ctx context.Context, by model.PrincipalRef, req service.CommentRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
 	if workflowItemRef(req.ID) {

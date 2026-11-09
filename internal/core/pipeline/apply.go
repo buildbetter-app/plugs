@@ -69,6 +69,11 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 	started := time.Now()
 	committed := false
 	defer func() {
+		// Admission, replay and stale-snapshot restarts share the same bounded
+		// preparation context. Its expiry is retryable even on an early return.
+		if !committed && errors.Is(retErr, context.DeadlineExceeded) && ctx.Err() == nil {
+			retErr = failure("busy", "write pre phases exceeded their deadline")
+		}
 		result := classifyOutcome(ctx, outcome, retErr, committed, meta.DryRun)
 		w.observeOutcome(result)
 		w.observePhaseResult(PhaseApply, time.Since(started), result)
@@ -128,8 +133,9 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 	if err != nil {
 		return port.WriteOutcome{}, failure("invalid_params", err.Error())
 	}
-	preCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	preCtx, cancel := context.WithTimeout(context.WithValue(ctx, preparationCallerKey{}, ctx), 2*time.Second)
 	defer cancel()
+	preCtx = driver.WithPreparationAdmission(preCtx)
 	for attempt := 0; attempt <= 3; attempt++ {
 		phaseStarted := time.Now()
 		reader, err := w.reader(preCtx)
@@ -217,6 +223,11 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 			commit.WouldCommit = err == nil && len(p.changed) > 0
 			return port.WriteOutcome{Commit: commit}, err
 		}
+		// Preparation has captured every read revision and the bound snapshot
+		// metadata. Release its SQL connection before requesting a write
+		// connection, and before another snapshot attempt can retain a reader.
+		// The read-set lock/check guard below remains authoritative at commit.
+		_ = reader.Close()
 		var commit model.Commit
 		if err == nil {
 			phaseStarted = time.Now()
@@ -251,9 +262,6 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 						return port.WriteOutcome{Commit: result, Replayed: found && e == nil}, e
 					}
 				}
-			}
-			if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
-				return port.WriteOutcome{}, failure("busy", "write pre phases exceeded their deadline")
 			}
 			return port.WriteOutcome{}, err
 		}
@@ -485,10 +493,20 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	}
 	allocatorKeys = append(allocatorKeys, p.readySort.locks()...)
 	locks, err := p.snapshot.locks(writes, sentinels, allocatorKeys...)
+	if meta.Method == "bead.claimNext" && len(writes) == 1 {
+		locks, err = p.snapshot.claimNextLocks(writes, sentinels, allocatorKeys...)
+	}
 	if err != nil {
 		return model.Commit{}, err
 	}
-	tx, err := w.store.Write(ctx, w.lease)
+	// The preparation reader is closed before entering transact. Publication
+	// admission belongs to the driver, including competing claims which arrive
+	// before this Write has opened its transaction. The sorted lock/check guard
+	// below fences every Writer and process without an additional Writer queue.
+	if err := ctx.Err(); err != nil {
+		return model.Commit{}, err
+	}
+	tx, err := w.store.Write(driver.WithPublicationAdmission(ctx), w.lease)
 	if err != nil {
 		return model.Commit{}, err
 	}
@@ -498,8 +516,8 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	if err != nil {
 		return model.Commit{}, err
 	}
-	if len(states) != len(locks) {
-		return model.Commit{}, fmt.Errorf("driver failed to acquire the complete lock set")
+	if err := checkSelectedLocks(locks, states); err != nil {
+		return model.Commit{}, err
 	}
 	if err := p.snapshot.check(states); err != nil {
 		return model.Commit{}, err

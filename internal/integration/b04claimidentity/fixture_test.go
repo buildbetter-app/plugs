@@ -48,21 +48,24 @@ type receiptScope struct {
 }
 
 type fixture struct {
-	t         *testing.T
-	ctx       context.Context
-	engine    engine
-	store     driver.Store
-	lease     driver.ActiveLease
-	keys      *authnapikey.Provider
-	app       *authzrpc.Composition
-	catalog   *wire.Catalog
-	facts     authzfixed.Facts
-	source    *authzrpc.MutableFacts
-	bootstrap http.Handler
-	work      map[string]model.Ref
-	queries   map[receiptScope]bool
-	writeKeys map[string]string
-	ontology  []byte
+	t          *testing.T
+	ctx        context.Context
+	engine     engine
+	store      driver.Store
+	lease      driver.ActiveLease
+	keys       *authnapikey.Provider
+	app        *authzrpc.Composition
+	catalog    *wire.Catalog
+	facts      authzfixed.Facts
+	source     *authzrpc.MutableFacts
+	bootstrap  http.Handler
+	work       map[string]model.Ref
+	queries    map[receiptScope]bool
+	writeKeys  map[string]string
+	ontology   []byte
+	httpConfig httpjson.Config
+	claimPools []string
+	observer   pipeline.Observer
 }
 
 func newFixture(t *testing.T, e engine) *fixture {
@@ -186,6 +189,10 @@ func (f *fixture) close() {
 }
 
 func (f *fixture) install() {
+	f.installMutators()
+}
+
+func (f *fixture) installMutators(mutators ...pipeline.MutatorBinding) {
 	f.t.Helper()
 	source, err := authzrpc.NewMutableFacts(f.facts)
 	if err != nil {
@@ -193,7 +200,11 @@ func (f *fixture) install() {
 	}
 	app, err := authzrpc.New(f.ctx, authzrpc.Config{
 		Store: f.store, Lease: f.lease, Provider: f.keys, Facts: source, Namespace: f.facts.Namespace, DefaultProject: poolA,
-		Audit: service.NewTrackedOntologyAudit(service.StaticOntologySource(ref(ontologySourceID))),
+		Audit:      service.NewTrackedOntologyAudit(service.StaticOntologySource(ref(ontologySourceID))),
+		Mutators:   mutators,
+		HTTP:       f.httpConfig,
+		ClaimPools: f.claimPools,
+		Observer:   f.observer,
 	})
 	if err != nil {
 		f.t.Fatal(err)
@@ -225,9 +236,10 @@ func (f *fixture) anonymousHandler() http.Handler {
 	ontology := service.NewOntology(nil)
 	writer := pipeline.New(f.store, f.lease,
 		pipeline.WithOntology(ontology),
+		pipeline.WithClaimPools(f.claimPools...),
 		pipeline.WithOntologyAudit(service.NewTrackedOntologyAudit(service.StaticOntologySource(ref(ontologySourceID)))),
 	)
-	domain := service.New(f.store, f.lease, writer, service.WithOntology(ontology))
+	domain := service.New(f.store, f.lease, writer, service.WithOntology(ontology), service.WithClaimPools(f.claimPools...))
 	registry, err := rpc.NewRegistry()
 	if err != nil {
 		f.t.Fatal(err)
@@ -299,13 +311,14 @@ func (f *fixture) remember(by credential, method, key, agent string) receiptScop
 }
 
 type reply struct {
-	raw      []byte
-	status   int
-	envelope map[string]json.RawMessage
-	code     string
-	error    *wire.Error
-	started  time.Time
-	finished time.Time
+	raw        []byte
+	status     int
+	envelope   map[string]json.RawMessage
+	code       string
+	error      *wire.Error
+	started    time.Time
+	finished   time.Time
+	retryAfter string
 }
 
 func (f *fixture) request(handler http.Handler, by credential, method, project, key, agent string, payload map[string]any) reply {
@@ -336,6 +349,11 @@ func (f *fixture) request(handler http.Handler, by credential, method, project, 
 	started := time.Now().UTC()
 	handler.ServeHTTP(recorder, req)
 	r := reply{raw: append([]byte(nil), recorder.Body.Bytes()...), status: recorder.Code, started: started, finished: time.Now().UTC()}
+	return f.checkedReply(r)
+}
+
+func (f *fixture) checkedReply(r reply) reply {
+	f.t.Helper()
 	if err := json.Unmarshal(r.raw, &r.envelope); err != nil {
 		f.t.Fatalf("invalid public response: %v", err)
 	}
@@ -423,11 +441,28 @@ func (f *fixture) state() durableState {
 		f.t.Fatal(err)
 	}
 	defer r.Close()
-	page, err := r.Query(f.ctx, driver.Query{Filter: map[string]any{"kind": "bead"}, Limit: 1000})
-	if err != nil || page.NextCursor != nil {
-		f.t.Fatalf("complete fixture rows: %v next=%v", err, page.NextCursor)
+	var cursor *driver.Cursor
+	seenRows := map[string]bool{}
+	for {
+		page, err := r.Query(f.ctx, driver.Query{Filter: map[string]any{"kind": "bead"}, Limit: 1000, Cursor: cursor})
+		if err != nil {
+			f.t.Fatalf("complete fixture rows: %v", err)
+		}
+		for _, row := range page.Items {
+			if seenRows[row.Ref.ID] {
+				f.t.Fatalf("fixture row repeated across pages: %s", row.Ref.ID)
+			}
+			seenRows[row.Ref.ID] = true
+			s.Records = append(s.Records, row)
+		}
+		if page.NextCursor == nil {
+			break
+		}
+		if len(page.Items) == 0 || reflect.DeepEqual(cursor, page.NextCursor) {
+			f.t.Fatal("fixture row cursor failed to advance")
+		}
+		cursor = page.NextCursor
 	}
-	s.Records = page.Items
 	sort.Slice(s.Records, func(i, j int) bool { return s.Records[i].Ref.ID < s.Records[j].Ref.ID })
 	checkpoints, ok := f.store.(driver.CheckpointStore)
 	if !ok {

@@ -43,6 +43,8 @@ type transaction struct {
 	allocated        map[string]bool
 	done             chan struct{}
 
+	releasePublication func()
+
 	checkpointGuards          map[string]uint64
 	checkpointWrites          map[string]driver.Checkpoint
 	sourceOverlay             sourceindex.Overlay
@@ -53,6 +55,23 @@ type transaction struct {
 }
 
 func (s *Store) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
+	if err := s.check(ctx); err != nil {
+		return nil, err
+	}
+	var release func()
+	if driver.PublicationAdmission(ctx) {
+		select {
+		case s.publication <- struct{}{}:
+			release = func() { <-s.publication }
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	defer func() {
+		if release != nil {
+			release()
+		}
+	}()
 	if err := s.check(ctx); err != nil {
 		return nil, err
 	}
@@ -92,6 +111,7 @@ func (s *Store) Write(ctx context.Context, lease driver.ActiveLease) (driver.Wri
 	r := &reader{store: s, sql: tx, meta: m, conn: conn, cleanupDone: cleanupDone}
 	r.at, _ = m.Head.Uint64()
 	t := &transaction{reader: r, lease: l, leasePrepared: true, records: make(map[string]*driver.Record), identities: make(map[string]driver.Record), derived: make(map[string]driver.LockState), blobs: make(map[driver.Hash][]byte), allocators: make(map[string]driver.OfflineAllocator), bumps: make(map[string]driver.LockKey), allocated: make(map[string]bool), done: make(chan struct{})}
+	t.releasePublication, release = release, nil
 	r.writer = t
 	if err = s.track(r); err != nil {
 		_ = r.finish()

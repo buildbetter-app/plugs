@@ -255,6 +255,7 @@ internal/core/ontologyops/service_test.go
 internal/core/ontologyops/source.go
 internal/core/ontologyops/types.go
 internal/core/pipeline/BUILD.bazel
+internal/core/pipeline/admission_deadline_test.go
 internal/core/pipeline/allocator_test.go
 internal/core/pipeline/ancestor.go
 internal/core/pipeline/apply.go
@@ -265,6 +266,7 @@ internal/core/pipeline/blocking_hierarchy.go
 internal/core/pipeline/callbacks.go
 internal/core/pipeline/callbacks_test.go
 internal/core/pipeline/checkpoint_mutation.go
+internal/core/pipeline/claim_audit_test.go
 internal/core/pipeline/claim_recovery.go
 internal/core/pipeline/dependency.go
 internal/core/pipeline/document.go
@@ -1123,6 +1125,7 @@ internal/storage/postgres/offline_restore.go
 internal/storage/postgres/parent_counter.go
 internal/storage/postgres/pending_test.go
 internal/storage/postgres/persistence_test.go
+internal/storage/postgres/publication_admission_test.go
 internal/storage/postgres/query.go
 internal/storage/postgres/reader.go
 internal/storage/postgres/reader_batch_test.go
@@ -1173,6 +1176,7 @@ internal/storage/sqlite/offline_history.go
 internal/storage/sqlite/offline_restore.go
 internal/storage/sqlite/parent_counter.go
 internal/storage/sqlite/pending_test.go
+internal/storage/sqlite/preparation_admission_test.go
 internal/storage/sqlite/process_test.go
 internal/storage/sqlite/publication_cancel_test.go
 internal/storage/sqlite/publication_lease_process_test.go

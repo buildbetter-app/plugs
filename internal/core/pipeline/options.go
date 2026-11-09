@@ -48,10 +48,21 @@ type config struct {
 	newAllocatorChildID func(driver.OfflineAllocator, string) (string, error)
 	hierarchyMaxDepth   int
 	claimTTL            time.Duration
+	claimPools          map[string]bool
 	observer            Observer
 }
 
 type Option func(*config)
+
+// WithClaimPools binds the host's exact immutable pseudo-assignee registry.
+// Names are copied without separator, case, whitespace or Unicode rewrites.
+func WithClaimPools(names ...string) Option {
+	pools := map[string]bool{}
+	for _, name := range names {
+		pools[name] = true
+	}
+	return func(c *config) { c.claimPools = pools }
+}
 
 func WithOntology(o port.Ontology) Option { return func(c *config) { c.ontology = o } }
 

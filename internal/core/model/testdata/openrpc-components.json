@@ -5,7 +5,9 @@
     "ErrorCode": "5322921149cd542890ae721448fc185f33cb543f0891f64d2b95a3b67bc7d8ba",
     "LinkOp": "d96d7dd03cd091f18d0436e45cf77a4783e0a9d29fa0cbd12611ef13e23ef1dc",
     "LinkTargetKind": "d96d7dd03cd091f18d0436e45cf77a4783e0a9d29fa0cbd12611ef13e23ef1dc",
-    "LinkMetadata": "d96d7dd03cd091f18d0436e45cf77a4783e0a9d29fa0cbd12611ef13e23ef1dc"
+    "LinkMetadata": "d96d7dd03cd091f18d0436e45cf77a4783e0a9d29fa0cbd12611ef13e23ef1dc",
+    "CreateOp": "fd19856f821dba091b61d0b406dced11b321f09983f1c34826a58a03358c78ad",
+    "ClaimAssignment": "fd19856f821dba091b61d0b406dced11b321f09983f1c34826a58a03358c78ad"
   },
   "sourceNote": "sourceSHA256 pins the historical baseline. schemaSourceSHA256 records full source-document hashes for individually refreshed schemas; all other schemas retain the historical baseline.",
   "schemas": {
@@ -80,6 +82,9 @@
         },
         "project": {
           "type": "string"
+        },
+        "assignment": {
+          "$ref": "#/components/schemas/ClaimAssignment"
         }
       },
       "required": [
@@ -1973,6 +1978,32 @@
         }
       },
       "additionalProperties": false
+    },
+    "ClaimAssignment": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "user",
+            "agent",
+            "service",
+            "plugin",
+            "system",
+            "anonymous",
+            "pool"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ],
+      "additionalProperties": false,
+      "description": "Durable preassignment. Verified kind/ID and anonymous labels are exact; pool is an exact host-configured pseudo-assignee and grants no identity, membership or project access. Winning claims consume preassignment and retain their existing durable lease owner."
     }
   }
 }
