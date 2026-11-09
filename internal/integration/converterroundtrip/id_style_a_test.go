@@ -254,6 +254,8 @@ func TestIDStyleATwoRestoredProjectsPreserveIDsAndIndependentCounters(t *testing
 			switch row["family"] {
 			case "issues", "issues.is_blocked", "issues.row_lock":
 				row["rows"] = 5
+			case "labels":
+				row["rows"] = 4 // The cloned parent retains both original labels.
 			}
 		}
 		for _, raw := range manifest["kind_registry"].([]any) {
