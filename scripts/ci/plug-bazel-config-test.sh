@@ -154,7 +154,7 @@ if missing:
     raise SystemExit("config: workflow is missing: " + ", ".join(missing))
 required_collector = {
     "//:lexicon_gate", "touched-targets.txt", "reverse-targets.txt",
-    "--lockfile_mode=error", "--nocache_test_results", "--test_timeout=900,900,900,9000",
+    "--lockfile_mode=error", "--nocache_test_results", "--flaky_test_attempts=1", "--test_timeout=900,900,900,9000",
     "--nosystem_rc", "--nohome_rc", "--noworkspace_rc", "--remote_cache=", "--remote_executor=",
     "--repo_contents_cache=", "--jobs=2", "--local_resources=memory=8192", "--test_env=GO_TEST_WRAP_TESTV=1",
 }
