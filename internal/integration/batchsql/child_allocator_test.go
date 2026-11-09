@@ -53,7 +53,7 @@ func seedChildSourceFixture(t *testing.T, f *fixture, profile *driver.OfflineAll
 			ids = []string{"demo-root", "demo-root.8", "demo-root.8.2"}
 		}
 		for i, id := range ids {
-			doc := pipeline.Document{ID: id, Type: "issue", Project: "demo", Fields: map[string]any{"title": id}}
+			doc := pipeline.Document{ID: id, Type: "issue", Project: "demo", Fields: map[string]any{"title": id, "status": "todo"}}
 			if i > 0 {
 				parent := model.Ref{ID: ids[i-1]}
 				doc.Parent = &parent

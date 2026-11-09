@@ -283,6 +283,7 @@ internal/core/pipeline/labels.go
 internal/core/pipeline/lease_overlay.go
 internal/core/pipeline/lifecycle.go
 internal/core/pipeline/lifecycle_test.go
+internal/core/pipeline/namespace_operations.go
 internal/core/pipeline/noop_test.go
 internal/core/pipeline/operations_test.go
 internal/core/pipeline/options.go
@@ -301,6 +302,7 @@ internal/core/pipeline/snapshot_get_test.go
 internal/core/pipeline/snapshot_hierarchy.go
 internal/core/pipeline/source_indexes.go
 internal/core/pipeline/source_indexes_test.go
+internal/core/pipeline/source_operations.go
 internal/core/pipeline/telemetry.go
 internal/core/pipeline/telemetry_test.go
 internal/core/pipeline/workflow_close_ref.go
@@ -354,6 +356,7 @@ internal/core/service/i1_acceptance_test.go
 internal/core/service/label_rename.go
 internal/core/service/lease.go
 internal/core/service/memories.go
+internal/core/service/native_restore.go
 internal/core/service/ontology.go
 internal/core/service/ordered_close.go
 internal/core/service/reads.go
@@ -364,6 +367,7 @@ internal/core/service/service_test.go
 internal/core/service/types.go
 internal/core/service/waits_for_consumer_test.go
 internal/core/service/workflow_bridge.go
+internal/core/service/workflow_delete.go
 internal/core/service/workflow_moves.go
 internal/core/service/workflow_permanent_test.go
 internal/core/service/workflow_refs.go
@@ -405,6 +409,7 @@ internal/integration/b01readyorder/README.md
 internal/integration/b01readyorder/connected_test.go
 internal/integration/b01readyorder/fixture_test.go
 internal/integration/b01readyorder/ready_order_test.go
+internal/integration/b01readyorder/workflow_query_test.go
 internal/integration/b02publicnotices/BUILD.bazel
 internal/integration/b02publicnotices/README.md
 internal/integration/b02publicnotices/authority_concurrency_test.go
@@ -630,6 +635,8 @@ internal/integration/postgresacceptance/atomic_test.go
 internal/integration/postgresacceptance/b15_comments_test.go
 internal/integration/postgresacceptance/b15_page_test.go
 internal/integration/postgresacceptance/b16_labels_test.go
+internal/integration/postgresacceptance/b25_delete_results_test.go
+internal/integration/postgresacceptance/b25_mixed_delete_test.go
 internal/integration/postgresacceptance/b26_lifecycle_test.go
 internal/integration/postgresacceptance/b26_move_body_test.go
 internal/integration/postgresacceptance/engine_test.go
@@ -1203,6 +1210,7 @@ plugins/workflow/BUILD.bazel
 plugins/workflow/atomic.go
 plugins/workflow/manifest.json
 plugins/workflow/native.go
+plugins/workflow/ordinary_delete.go
 plugins/workflow/scheduling.go
 plugins/workflow/workflow.go
 plugins/workflow/workflow_test.go

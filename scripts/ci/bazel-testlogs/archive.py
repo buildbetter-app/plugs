@@ -4,6 +4,9 @@
 The inventory describes bytes found after the test, including failed tests.
 It does not infer an expected sink, manufacture a transcript, or qualify the
 test result. Original outputs.zip containers and unzipped files are preserved.
+The convenience tree keeps its existing archive paths. Other Bazel
+configurations use _configurations/<configuration>/, with their prefixes
+recorded in testlog_roots so the same label cannot merge across configurations.
 """
 
 import argparse
@@ -23,6 +26,7 @@ import zlib
 
 INVENTORY = "undeclared-outputs.json"
 CAPTURE_ERROR = 86
+CONFIGURATIONS = "_configurations"
 
 
 def digest(data):
@@ -102,6 +106,53 @@ def inspect_zip(path, data, inventory):
         inventory["errors"].append({"path": path, "error": str(exc)})
 
 
+def testlog_sources(root, inventory):
+    if root is None:
+        return
+    roots = [(root, PurePosixPath())]
+    output_tree = root.parent.parent
+    # Incoming rule transitions (for example rules_go's gotags) put test
+    # results beside, rather than below, the convenience link's configuration.
+    # Discover only Bazel's direct configuration/testlogs layout, never an
+    # arbitrary ancestor of a supplied testlog directory.
+    if root.name == "testlogs" and output_tree.name == "bazel-out":
+        seen = {root}
+        try:
+            configurations = sorted(output_tree.iterdir())
+        except OSError as exc:
+            configurations = []
+            inventory["errors"].append({"path": CONFIGURATIONS, "error": str(exc)})
+        for configuration in configurations:
+            candidate = configuration / "testlogs"
+            try:
+                if not candidate.exists() and not candidate.is_symlink():
+                    continue
+                resolved = candidate.resolve(strict=True)
+                if (resolved.parent.parent != output_tree or resolved.name != "testlogs"
+                        or not resolved.is_dir()):
+                    raise ValueError("configured testlogs must remain inside the Bazel output tree")
+                if resolved in seen:
+                    continue
+                seen.add(resolved)
+                roots.append((resolved, PurePosixPath(CONFIGURATIONS) / resolved.parent.name))
+            except (OSError, ValueError, RuntimeError) as exc:
+                inventory["errors"].append({"path": CONFIGURATIONS + "/" + configuration.name, "error": str(exc)})
+        inventory["testlog_roots"] = [
+            {"configuration": directory.parent.name, "archive_prefix": "" if prefix == PurePosixPath() else prefix.as_posix()}
+            for directory, prefix in roots
+        ]
+    for directory, prefix in roots:
+        if directory.exists() and not directory.is_dir():
+            inventory["errors"].append({"path": prefix.as_posix(), "error": "testlogs is not a directory"})
+        try:
+            paths = sorted(directory.rglob("*")) if directory.is_dir() else []
+        except OSError as exc:
+            inventory["errors"].append({"path": prefix.as_posix(), "error": str(exc)})
+            continue
+        for source in paths:
+            yield directory, prefix, source
+
+
 def archive_testlogs(testlogs, output):
     # Bazel's workspace-level convenience symlink is the normal entry point.
     inventory = {"version": 1, "files": [], "outputs": [], "errors": []}
@@ -117,18 +168,17 @@ def archive_testlogs(testlogs, output):
         with temporary_path.open("wb") as raw_archive:
             with gzip.GzipFile(filename="", fileobj=raw_archive, mode="wb", mtime=0) as compressed:
                 with tarfile.open(fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT) as archive:
-                    if root is not None and root.exists() and not root.is_dir():
-                        inventory["errors"].append({"path": ".", "error": "testlogs is not a directory"})
-                    paths = sorted(root.rglob("*")) if root is not None and root.is_dir() else []
-                    for source in paths:
-                        relative = source.relative_to(root).as_posix()
+                    archived_paths = {INVENTORY}
+                    for root, prefix, source in testlog_sources(root, inventory):
+                        source_relative = source.relative_to(root).as_posix()
+                        relative = (prefix / source_relative).as_posix()
                         parts = PurePosixPath(relative).parts
                         try:
                             mode = source.lstat().st_mode
                             if stat.S_ISDIR(mode):
                                 continue
                             original_link = None
-                            read_path = relative
+                            read_path = source_relative
                             if stat.S_ISLNK(mode):
                                 target = source.resolve(strict=True)
                                 if not target.is_relative_to(root) or not target.is_file():
@@ -137,14 +187,17 @@ def archive_testlogs(testlogs, output):
                                 read_path = target.relative_to(root).as_posix()
                             elif not stat.S_ISREG(mode):
                                 raise ValueError("selected evidence is not a regular file")
+                            if relative in archived_paths:
+                                raise ValueError("duplicate configured archive path")
                             data, original_mode = read_regular(root, read_path)
                             member = tarfile.TarInfo("./" + relative)
                             member.size = len(data)
                             member.mode = original_mode
                             archive.addfile(member, io.BytesIO(data))
+                            archived_paths.add(relative)
                             file_record = {"path": relative, **digest(data)}
                             if original_link is not None:
-                                file_record.update(original_symlink=original_link, snapshot_source=read_path)
+                                file_record.update(original_symlink=original_link, snapshot_source=(prefix / read_path).as_posix())
                             inventory["files"].append(file_record)
                             location = output_location(relative)
                             if location is None:
