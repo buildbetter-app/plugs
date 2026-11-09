@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"maps"
 	"strconv"
-	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -122,7 +121,7 @@ func (p *Provider) PrepareOrdinaryDelete(ctx context.Context, by model.Principal
 		if err != nil {
 			return nil, err
 		}
-		relation := relationState{From: link.From.ID, To: link.To, Kind: strings.TrimSpace(link.LinkKind)}
+		relation := relationState{From: link.From.ID, To: link.To, Kind: link.LinkKind}
 		found := false
 		if fromWorkflow {
 			item.Links, found = removeDeleteRelations(item.Links, relation)

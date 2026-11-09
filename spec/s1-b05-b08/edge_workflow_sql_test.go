@@ -583,6 +583,50 @@ func TestB07SQLNamedWorkflowEdgesHaveCanonicalEndpointIdentity(t *testing.T) {
 	}
 }
 
+func TestB07SQLNamedOpaqueWorkflowEdgeCanJoinAtomicOrdinaryDelete(t *testing.T) {
+	for _, engine := range []string{"sqlite", "postgres"} {
+		for _, direction := range []string{"durable-to-workflow", "workflow-to-durable"} {
+			t.Run(engine+"/"+direction, func(t *testing.T) {
+				f := newB07SQLPlaneFixture(t, engine)
+				ordinary := f.createB08(t, "opaque-delete-endpoint", "issue", nil, nil)
+				item := b07InvokeSQLWorkflow(t, f, 1)[0]
+				from, to := ordinary, item
+				if direction == "workflow-to-durable" {
+					from, to = item, ordinary
+				}
+				const kind = "  opaque kind  "
+				b08Commit(t, f.callB08(t, "bead.link", "opaque-delete-link", map[string]any{"from": from, "to": to, "kind": kind}))
+				b07SQLRequireRelation(t, f, from, to, kind, nil, false)
+				batch := func(spelling string) map[string]any {
+					return b08Batch(
+						model.Op{Kind: model.OpUnlink, Link: &model.LinkOp{From: from, To: to, LinkKind: spelling}},
+						model.Op{Kind: model.OpDelete, Delete: &model.DeleteOp{Target: ordinary}},
+					)
+				}
+				// Wrong spelling must conserve both planes and leave the key free.
+				f.refuseB08(t, "tx.apply", "opaque-delete", batch(strings.TrimSpace(kind)), "not_found", "")
+				b07SQLRequireRelation(t, f, from, to, kind, nil, false)
+				params := batch(kind)
+				deleted := f.callB08(t, "tx.apply", "opaque-delete", params)
+				commit := b08Commit(t, deleted)
+				if len(commit.Results) != 2 || commit.Results[0].Ref != item || commit.Results[1].Ref != ordinary {
+					t.Fatalf("atomic unlink/delete lost ordered endpoint results: %+v", commit.Results)
+				}
+				b07SQLReplay(t, f, "tx.apply", "opaque-delete", params, deleted)
+				before := f.conservation(t)
+				missing := f.callB08(t, "bead.get", "opaque-deleted-endpoint", map[string]any{"id": ordinary})
+				b08RequireRefusal(t, "bead.get", missing, "not_found", "")
+				got := f.callB08(t, "bead.get", "opaque-retained-workflow", map[string]any{"id": item})
+				var result struct{ Bead workflowplugin.ItemView }
+				if got.Error != nil || json.Unmarshal(got.Result, &result) != nil || result.Bead.ID != item.ID || len(result.Bead.Links) != 0 {
+					t.Fatalf("atomic delete lost workflow item or retained the opaque relation: error=%+v result=%s", got.Error, got.Result)
+				}
+				b08SameConservation(t, before, f.conservation(t))
+			})
+		}
+	}
+}
+
 func TestB07SQLCoResidentWorkflowBatchRefusalsConserveBothPlanes(t *testing.T) {
 	for _, engine := range []string{"sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
