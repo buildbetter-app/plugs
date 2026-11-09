@@ -338,8 +338,12 @@ func TestSelectionPartialFamilyCertificate(t *testing.T) {
 	if _, err := w.Commit(ctx, h); err != nil {
 		t.Fatal(err)
 	}
-	if err := pipeline.BuildSourceIndexes(ctx, s, lease); err != nil {
+	var buildErr error
+	if err := pipeline.BuildSourceIndexes(ctx, pgStartupCaptureStore{Store: s, err: &buildErr}, lease); err != nil {
 		t.Fatal(err)
+	}
+	if buildErr != nil {
+		t.Fatalf("complete canonical rebuild refused after closure repair: %v", buildErr)
 	}
 	requireSelectionCertificate(t, pgStartupRead(t, s), true)
 	// Old snapshot authority and availability remain pinned to their revision.

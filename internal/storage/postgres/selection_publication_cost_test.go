@@ -756,8 +756,12 @@ CREATE TRIGGER w6_unexpected_source AFTER INSERT ON plug_postgres.states FOR EAC
 		requireSelectionCertificate(t, pgStartupRead(t, s), false)
 		// The injected statement changes no bytes. Canonical full startup can
 		// therefore rebuild the proof without repairing or hiding corruption.
-		if err := pipeline.BuildSourceIndexes(ctx, s, lease); err != nil {
+		var buildErr error
+		if err := pipeline.BuildSourceIndexes(ctx, pgStartupCaptureStore{Store: s, err: &buildErr}, lease); err != nil {
 			t.Fatal(err)
+		}
+		if buildErr != nil {
+			t.Fatalf("canonical rebuild refused after a no-byte mutation: %v", buildErr)
 		}
 		requireSelectionCertificate(t, pgStartupRead(t, s), true)
 	})
@@ -770,8 +774,12 @@ CREATE TRIGGER w6_unexpected_source AFTER INSERT ON plug_postgres.states FOR EAC
 			t.Fatal(err)
 		}
 		requireSelectionCertificate(t, pgStartupRead(t, s), false)
-		if err := pipeline.BuildSourceIndexes(ctx, s, lease); err != nil {
+		var buildErr error
+		if err := pipeline.BuildSourceIndexes(ctx, pgStartupCaptureStore{Store: s, err: &buildErr}, lease); err != nil {
 			t.Fatal(err)
+		}
+		if buildErr != nil {
+			t.Fatalf("canonical rebuild refused after raw generation: %v", buildErr)
 		}
 		requireSelectionCertificate(t, pgStartupRead(t, s), true)
 	})
