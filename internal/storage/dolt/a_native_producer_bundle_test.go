@@ -557,7 +557,7 @@ func TestNativeSourcePlaneContractFromStoredDoltRows(t *testing.T) {
 		t.Fatalf("legacy active-status refusal changed: bytes=%d err=%v", len(legacy), err)
 	}
 	for _, test := range []struct{ name, change, restore, want string }{
-		{"undeclared active status", `UPDATE wisps SET status='undeclared' WHERE id='test-abc'`, `UPDATE wisps SET status='review' WHERE id='test-abc'`, "unsupported wisp status"},
+		{"undeclared active status", `UPDATE wisps SET status='undeclared' WHERE id='test-abc'`, `UPDATE wisps SET status='review' WHERE id='test-abc'`, "wisp status absent from project category catalog"},
 		{"opaque active source", `UPDATE wisp_dependencies SET type='custom-kind',depends_on_wisp_id=NULL,depends_on_issue_id='test-def' WHERE id='shared-edge'`, `UPDATE wisp_dependencies SET type='waits-for',depends_on_wisp_id='test-ghi',depends_on_issue_id=NULL WHERE id='shared-edge'`, "durable issue source"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

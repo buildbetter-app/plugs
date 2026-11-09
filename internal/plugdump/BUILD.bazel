@@ -4,6 +4,7 @@ go_library(
     name = "plugdump",
     srcs = [
         "native_clock.go",
+        "physical_capture_spike.go",
         "native_history.go",
         "archive.go",
         "build.go",
@@ -25,6 +26,7 @@ go_library(
         "//internal/captureclock",
         "//internal/config",
         "//internal/storage/issueops",
+        "//internal/storage/physicalcapture",
         "//internal/types",
         "@com_github_go_sql_driver_mysql//:mysql",
         "@in_gopkg_yaml_v3//:yaml_v3",
@@ -64,7 +66,10 @@ go_test(
     srcs = ["physical_root_control_test.go"],
     embed = [":plugdump"],
     tags = ["manual"],
-    deps = ["//internal/testutil"],
+    deps = [
+        "//internal/testutil",
+        "@com_github_dolthub_driver_v2//:driver",
+    ],
 )
 
 filegroup(

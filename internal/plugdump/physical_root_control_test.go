@@ -3,13 +3,17 @@ package plugdump
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 
+	embedded "github.com/dolthub/driver/v2"
 	"github.com/steveyegge/beads/internal/testutil"
 )
 
@@ -23,16 +27,176 @@ type nativePhysicalRootControlCandidate struct {
 	ReadTable func(context.Context, string, string) (table Table, present bool, err error)
 }
 
-func newNativePhysicalRootControlCandidate(_ *testing.T, db *sql.DB, _ *testutil.IsolatedDoltContainer) nativePhysicalRootControlCandidate {
-	port := SQLSource{DB: db}
-	return nativePhysicalRootControlCandidate{
-		Name:      "current-as-of-reference",
-		ReadImage: port.ReadNativeSourceImage,
+func newNativePhysicalRootControlCandidate(t *testing.T, db *sql.DB, server *testutil.IsolatedDoltContainer) nativePhysicalRootControlCandidate {
+	// Option 3 follows actual option1 and option2b physical-control failures. Stop this
+	// owned public fixture before copying, and never check out its source store.
+	setup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	originalGraph, err := (SQLSource{DB: db}).ReadSourceCommits(setup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var absent int
+	if err := db.QueryRowContext(setup, "SELECT count(*) FROM dolt_log WHERE commit_hash = ?", strings.Repeat("a", 32)).Scan(&absent); err != nil || absent != 0 {
+		t.Fatalf("valid missing commit census: count=%d error=%v", absent, err)
+	}
+	code, directory, err := server.Exec(setup, []string{"pwd"})
+	if err != nil || code != 0 {
+		t.Fatalf("public fixture directory: code=%d error=%v", code, err)
+	}
+	if err := server.Stop(setup); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := os.MkdirTemp("/tmp", "native-physical-option3-snapshot-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(snapshot); err != nil {
+			t.Error(err)
+		}
+		_, err := os.Lstat(snapshot)
+		if !os.IsNotExist(err) {
+			t.Errorf("option3 public snapshot cleanup: %v", err)
+		}
+		t.Logf("OPTION3_CLEANUP snapshot_absent=%t", os.IsNotExist(err))
+	})
+	copyTree := func(src, dst string) error {
+		return filepath.WalkDir(src, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			rel, err := filepath.Rel(src, path)
+			if err != nil {
+				return err
+			}
+			target := filepath.Join(dst, rel)
+			if entry.IsDir() {
+				return os.MkdirAll(target, 0700)
+			}
+			if !entry.Type().IsRegular() {
+				return fmt.Errorf("nonregular public source entry")
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			return os.WriteFile(target, data, 0600)
+		})
+	}
+	if err := copyTree(filepath.Join(strings.TrimSpace(directory), "beads_test"), filepath.Join(snapshot, "beads_test")); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := embedded.ParseDSN("file://" + snapshot + "?database=beads_test&commitname=Capture&commitemail=capture%40example.test&disable_singleton_cache=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	connector, err := embedded.NewConnector(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyDB := sql.OpenDB(connector)
+	copyDB.SetMaxOpenConns(2)
+	t.Cleanup(func() {
+		if err := copyDB.Close(); err != nil {
+			t.Error(err)
+		}
+		if err := connector.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	currentConn, err := copyDB.Conn(setup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentTx, err := currentConn.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelSerializable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := PhysicalCommitSource{SQLSource: SQLSource{DB: currentTx}, PhysicalDB: copyDB}
+	t.Run("original_graph_parents_metadata_preserved", func(t *testing.T) {
+		copiedGraph, err := source.ReadSourceCommits(setup)
+		if err != nil || !reflect.DeepEqual(originalGraph, copiedGraph) {
+			t.Fatalf("original graph/parents/metadata differ: %v", err)
+		}
+	})
+	t.Cleanup(func() {
+		copiedGraph, err := source.ReadSourceCommits(context.Background())
+		if err != nil || !reflect.DeepEqual(originalGraph, copiedGraph) {
+			t.Errorf("graph/parents/metadata changed after physical reads: %v", err)
+		}
+		if err := currentTx.Rollback(); err != nil {
+			t.Error(err)
+		}
+		if err := currentConn.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	t.Run("driver_readonly_scope_authenticated", func(t *testing.T) {
+		conn, err := copyDB.Conn(setup)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		image, err := embedded.ReadPhysicalCommit(setup, conn, originalGraph.Head)
+		if err != nil || !image.ReadOnlyScope {
+			t.Fatalf("actual readonly scope not authenticated: %v", err)
+		}
+		occupied, err := conn.BeginTx(setup, &sql.TxOptions{Isolation: sql.LevelSerializable})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, imageErr := embedded.ReadPhysicalCommit(setup, conn, originalGraph.Head)
+		var physical *embedded.PhysicalReadError
+		if !errors.As(imageErr, &physical) || physical.Kind != "occupied-transaction" {
+			t.Errorf("occupied transaction not refused: %v", imageErr)
+		}
+		var one int
+		if err := occupied.QueryRowContext(setup, "SELECT 1").Scan(&one); err != nil || one != 1 {
+			t.Errorf("caller scope changed: %v", err)
+		}
+		if err := occupied.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+		image, err = embedded.ReadPhysicalCommit(setup, conn, originalGraph.Head)
+		if err != nil || !image.ReadOnlyScope {
+			t.Fatalf("scope unavailable after caller rollback: %v", err)
+		}
+	})
+	read := source.ReadNativeSourceImage
+	candidate := nativePhysicalRootControlCandidate{
+		Name: "private-driver-immutable-physical-image", ReadImage: read,
 		ReadTable: func(ctx context.Context, id, name string) (Table, bool, error) {
-			// This reference recognizes only the existing typed MySQL1146 path.
-			return port.readNativeLocalHistoryTable(ctx, name, id)
+			image, err := read(ctx, id)
+			if err != nil {
+				return Table{}, false, err
+			}
+			table, present := image[name]
+			return table, present, nil
 		},
 	}
+	t.Run("valid_missing_commit_is_error", func(t *testing.T) {
+		id := strings.Repeat("a", 32)
+		_, imageErr := candidate.ReadImage(setup, id)
+		_, present, tableErr := candidate.ReadTable(setup, id, "archived_rows")
+		for _, err := range []error{imageErr, tableErr} {
+			var physical *embedded.PhysicalReadError
+			if !errors.As(err, &physical) || physical.Kind != "resolve" {
+				t.Errorf("valid missing root must reach driver resolution: type=%T error=%v", err, err)
+			}
+		}
+		if present {
+			t.Error("valid missing immutable table root became present")
+		}
+	})
+	t.Run("canceled_read_is_error", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, present, err := candidate.ReadTable(ctx, strings.Repeat("a", 32), "never_existed"); err == nil || present {
+			t.Error("canceled operation became physical absence")
+		}
+	})
+	return candidate
 }
 
 func TestSQLNativePhysicalRootControls(t *testing.T) {
