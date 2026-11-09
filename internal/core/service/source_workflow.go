@@ -252,6 +252,19 @@ func (s *Service) sourcePreparation(source *sourceWorkflow, by model.PrincipalRe
 				}
 				resolver := &workflowCoreResolver{service: s, principal: by, graph: graph, head: driver.CoreSnapshotExpectation{StoreID: namespace.StoreID, Incarnation: reader.Snapshot().Incarnation, Head: *reader.Snapshot().At}}
 				if !workflowRef(target) {
+					if op.Kind == model.OpDelete {
+						// Preserve ordinary deletes on the installed source path, but
+						// reject incident active references against this staged image.
+						// Replacing the participant with the native provider would lose
+						// both the source address mapping and its snapshot fence.
+						_, err := staged.PrepareOrdinaryDelete(ctx, by, model.ChangeSet{Ops: []model.Op{op}}, meta, func(check func(model.Op) (*workflowplugin.OrdinaryDeleteImage, error)) error {
+							_, err := check(op)
+							return err
+						})
+						if err != nil {
+							return model.Op{}, nil, err
+						}
+					}
 					if original.Kind == model.OpLink || original.Kind == model.OpUnlink {
 						kind, err := original.Link.TargetKind.Normalized()
 						if err != nil {
@@ -387,54 +400,6 @@ func (s *Service) sourceOrdinaryGuard(ctx context.Context, staged *workflowplugi
 		}
 	}
 	return nil
-}
-
-// IsParentBlocked follows the pinned ordinary graph while using the supplied
-// lookup for typed active ancestors. The provider owns mixed cycle detection.
-func (r *workflowCoreResolver) IsParentBlocked(ctx context.Context, by model.PrincipalRef, meta model.WriteMeta, target model.Ref, lookup func(string) (workflowplugin.OrdinaryParentFact, error)) (bool, error) {
-	if r.graph == nil {
-		if _, err := r.IsBlocked(ctx, by, meta, target, "blocks", nil); err != nil {
-			return true, err
-		}
-	}
-	seen := map[string]bool{}
-	for id := target.ID; id != ""; {
-		if err := ctx.Err(); err != nil {
-			return true, err
-		}
-		if seen[id] {
-			return true, nil
-		}
-		seen[id] = true
-		row, ok := r.graph[id]
-		if !ok || row.doc.Project != meta.Project {
-			return true, nil
-		}
-		category, known := r.service.ontology.effective(row.doc.Project).Category(state(row.doc).Status)
-		if !known || category == "backlog" {
-			return true, nil
-		}
-		ready, err := r.service.ontology.noOpenBlockers(row.doc, r.graph)
-		if err != nil || !ready {
-			return true, err
-		}
-		fact, err := lookup(id)
-		if err != nil || fact.Blocked {
-			return true, err
-		}
-		if fact.Parent != nil {
-			return false, nil
-		} // same-image lookup already checked its active ancestry
-		parent, err := pipeline.HierarchyParent(row.doc)
-		if err != nil {
-			return true, err
-		}
-		if parent == nil {
-			return false, nil
-		}
-		id = parent.ID
-	}
-	return false, nil
 }
 
 var _ workflowplugin.ParentBlockerResolver = (*workflowCoreResolver)(nil)

@@ -11,6 +11,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/restore"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/integration/converterroundtrip"
 	"github.com/buildbetter-app/plugs/internal/server/composition"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -73,6 +74,45 @@ func TestJointSourceCompositionImportInstallAndStartupRecovery(t *testing.T) {
 				t.Fatal("bound HTTP handler missed newly installed provider", string(got))
 			}
 			converterroundtrip.JointAssertSourceCommentForTest(t, got, admitted, report)
+			for i, test := range []struct{ target, code string }{{"demo-7", "unsupported"}, {"demo-8", "ontology_guard_failed"}} {
+				// The composed runtime also owns a native default provider. A delete
+				// must not replace the installed source participant with that provider,
+				// even when a durable row has the same naked ID as an active source.
+				key := strings.Repeat(string(rune('d'+i)), 32)
+				before := sourceCompositionDeleteCensus(t, runtime.Store, owner, key)
+				change := model.ChangeSet{Ops: []model.Op{
+					{Kind: model.OpPatch, Patch: &model.PatchOp{Target: ref, Fields: map[string]any{"title": "discard source delete draft"}}},
+					{Kind: model.OpDelete, Delete: &model.DeleteOp{Target: model.RefByID(test.target, model.Natural64(0))}},
+				}}
+				_, err := runtime.Service.ApplyWithOutcome(ctx, owner, change, model.WriteMeta{Project: "demo", AgentLabel: owner.ID, IdempotencyKey: key})
+				var refused *model.Error
+				if !errors.As(err, &refused) || string(refused.Data.Code) != test.code {
+					t.Fatalf("delete bypassed the source participant for %s: %v", test.target, err)
+				}
+				if !reflect.DeepEqual(before, sourceCompositionDeleteCensus(t, runtime.Store, owner, key)) {
+					t.Fatal("refused source delete changed core, checkpoint, or receipt")
+				}
+			}
+			created, err := runtime.Service.Create(ctx, owner, service.CreateRequest{Type: "issue", Fields: map[string]any{"title": "ordinary source-path delete"}}, model.WriteMeta{Project: "demo", AgentLabel: owner.ID, IdempotencyKey: strings.Repeat("f", 32)})
+			if err != nil || len(created.Results) != 1 {
+				t.Fatalf("create ordinary delete control: %v", err)
+			}
+			ordinary := created.Results[0].Ref
+			change := model.ChangeSet{Ops: []model.Op{{Kind: model.OpDelete, Delete: &model.DeleteOp{Target: ordinary}}}}
+			deleteMeta := model.WriteMeta{Project: "demo", AgentLabel: owner.ID, IdempotencyKey: strings.Repeat("a", 32)}
+			deleted, err := runtime.Service.ApplyWithOutcome(ctx, owner, change, deleteMeta)
+			if err != nil {
+				t.Fatalf("ordinary source-path delete regressed: %v", err)
+			}
+			replayed, err := runtime.Service.ApplyWithOutcome(ctx, owner, change, deleteMeta)
+			if err != nil || !replayed.Replayed || !reflect.DeepEqual(deleted.Commit, replayed.Commit) {
+				t.Fatalf("ordinary source-path delete lost canonical replay: %v", err)
+			}
+			_, err = runtime.Service.Get(ctx, owner, service.GetRequest{ID: ordinary, Project: "demo"})
+			var missing *model.Error
+			if !errors.As(err, &missing) || missing.Data.Code != "not_found" {
+				t.Fatalf("ordinary source-path delete did not remove its target: %v", err)
+			}
 			converterroundtrip.JointHTTPForTest(t, runtime.HTTPHandler, "bead.update", 701, map[string]any{"id": ref, "fields": map[string]any{"title": "composed current source title"}})
 			request.SourcePlanes = nil
 			recovered, err := runtime.RestoreImport(ctx, owner, bytes.NewReader(data), request)
@@ -105,4 +145,47 @@ func TestJointSourceCompositionImportInstallAndStartupRecovery(t *testing.T) {
 			// closed and reopened. No restart persistence is claimed for memory.
 		})
 	}
+}
+
+func sourceCompositionDeleteCensus(t *testing.T, store driver.Store, owner model.PrincipalRef, key string) any {
+	t.Helper()
+	ctx := context.Background()
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := store.(driver.CheckpointInventoryStore).ReadCheckpointInventory(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inventory.Close()
+	rows, err := inventory.Query(ctx, driver.Query{Limit: 1000})
+	if err != nil || rows.NextCursor != nil || len(rows.Items) == 1000 {
+		t.Fatalf("incomplete source delete core census: %v", err)
+	}
+	keys, err := inventory.CheckpointKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoints := make([]driver.Checkpoint, 0, len(keys))
+	for _, key := range keys {
+		checkpoint, err := inventory.SourcePlaneCheckpoint(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		checkpoints = append(checkpoints, checkpoint)
+	}
+	principal, err := driver.PrincipalKey(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := inventory.IdempotencyByKey(ctx, principal, owner.ID, "tx.apply", key)
+	if err != nil || receipt != nil {
+		t.Fatalf("refused source delete retained a receipt: %v", err)
+	}
+	return struct {
+		Meta        driver.Meta
+		Records     []driver.Record
+		Checkpoints []driver.Checkpoint
+	}{meta, rows.Items, checkpoints}
 }

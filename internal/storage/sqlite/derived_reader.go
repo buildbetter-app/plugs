@@ -76,6 +76,8 @@ func (r *reader) DerivedRowsForPrefixes(ctx context.Context, table driver.Derive
 				if err := json.Unmarshal(raw, &state); err != nil {
 					return err
 				}
+				driver.ReportReadWork(ctx, driver.ReadPrefixStates, 1)
+				driver.ReportReadWork(ctx, driver.ReadPrefixBytes, int64(len(raw)))
 				if state.Present && state.Derived != nil {
 					byKey[state.Derived.Key] = *state.Derived
 				}

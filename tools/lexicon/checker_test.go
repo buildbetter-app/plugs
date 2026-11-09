@@ -180,6 +180,380 @@ func hasFindingClass(findings []Finding, class string) bool {
 	return false
 }
 
+func checkedInNativeFieldConfig(t *testing.T) (Config, string) {
+	t.Helper()
+	cfg, path := checkedInNativeManifestConfig(t)
+	want := map[string]struct {
+		path, field string
+		count       int
+	}{
+		"ready-types":              {b01NativeGoSource, "nativeExclusionTypes.return", 9},
+		"custom-types":             {b01NativeGoSource, "recordNativeExclusions.c.run.types.custom", 5},
+		"native-type-binding-json": {b01NativeJSONSource, "nativeTypeBoundary.defaultHidden", 7},
+		"catalog-sql-tables":       {b03CatalogJSONSource, "sqlTables", 1},
+	}
+	if len(cfg.NativeFieldLiterals) != len(want) {
+		t.Fatal("native field site set is incomplete")
+	}
+	for _, site := range cfg.NativeFieldLiterals {
+		binding, ok := want[site.ID]
+		if !ok || site.Path != binding.path || site.Field != binding.field || len(site.Values) != binding.count {
+			t.Fatalf("unexpected native field site: %+v", site)
+		}
+		delete(want, site.ID)
+		if site.ID == "catalog-sql-tables" && (!allowsPhysicalProtocolString(externalProtocolSource, site.Values[0], cfg.ExternalProtocolString) || len(strings.Fields(site.Values[0])) != 33) {
+			t.Fatal("JSON catalog differs from the complete existing physical census")
+		}
+	}
+	return cfg, path
+}
+
+func nativeFieldSite(t *testing.T, cfg Config, id string) NativeLiteralSite {
+	t.Helper()
+	for _, site := range cfg.NativeFieldLiterals {
+		if site.ID == id {
+			return site
+		}
+	}
+	t.Fatalf("missing native field site %q", id)
+	return NativeLiteralSite{}
+}
+
+func quotedNativeValues(values []string, quote func(string) string) string {
+	var literals []string
+	for _, value := range values {
+		literals = append(literals, quote(value))
+	}
+	return strings.Join(literals, ", ")
+}
+
+func nativeFieldGoFixture(t *testing.T, cfg Config, quote func(string) string) string {
+	t.Helper()
+	ready := quotedNativeValues(nativeFieldSite(t, cfg, "ready-types").Values, quote)
+	custom := quotedNativeValues(nativeFieldSite(t, cfg, "custom-types").Values, quote)
+	return "package recorder\nfunc nativeExclusionTypes() []string { return []string{" + ready + "} }\n" +
+		"func recordNativeExclusions() { c.run(" + custom + ") }\n"
+}
+
+func escapedNativeJSON(value string) string {
+	var encoded strings.Builder
+	encoded.WriteByte('"')
+	for _, r := range value {
+		fmt.Fprintf(&encoded, "\\u%04x", r)
+	}
+	encoded.WriteByte('"')
+	return encoded.String()
+}
+
+func nativeFieldJSONFixture(site NativeLiteralSite, quote func(string) string) string {
+	value := "[" + quotedNativeValues(site.Values, quote) + "]"
+	if site.ID == "catalog-sql-tables" {
+		return "{" + quote(site.Field) + ":" + quote(site.Values[0]) + "}"
+	}
+	return "{" + quote("nativeTypeBoundary") + ":{" + quote("defaultHidden") + ":" + value + "}}"
+}
+
+func requireNativeFieldRefusal(t *testing.T, cfg Config, path, source string) {
+	t.Helper()
+	findings, err := CheckFiles(map[string][]byte{path: []byte(source)}, cfg)
+	if err != nil || len(findings) == 0 {
+		t.Fatalf("native field lost refusal at %s: %#v, %v", path, findings, err)
+	}
+}
+
+func TestNativeFieldProtocolAdmitsCompleteValuesOnlyAtRealSites(t *testing.T) {
+	cfg, _ := checkedInNativeFieldConfig(t)
+	for name, quote := range map[string]func(string) string{
+		"quoted":  strconv.Quote,
+		"raw":     func(value string) string { return "`" + value + "`" },
+		"escaped": escapedProtocolString,
+	} {
+		t.Run("go/"+name, func(t *testing.T) {
+			source := nativeFieldGoFixture(t, cfg, quote)
+			findings, err := CheckFiles(map[string][]byte{b01NativeGoSource: []byte(source)}, cfg)
+			if err != nil || len(findings) != 0 {
+				t.Fatalf("actual complete Go vectors refused: %#v, %v", findings, err)
+			}
+		})
+	}
+	for _, id := range []string{"native-type-binding-json", "catalog-sql-tables"} {
+		site := nativeFieldSite(t, cfg, id)
+		for name, quote := range map[string]func(string) string{"quoted": strconv.Quote, "escaped_keys_and_values": escapedNativeJSON} {
+			t.Run(id+"/"+name, func(t *testing.T) {
+				source := nativeFieldJSONFixture(site, quote)
+				findings, err := CheckFiles(map[string][]byte{site.Path: []byte(source)}, cfg)
+				if err != nil || len(findings) != 0 {
+					t.Fatalf("actual complete JSON field refused: %#v, %v", findings, err)
+				}
+				spaced := "{\n\"prefix\": \"é世界\",\n" + strings.ReplaceAll(source[1:], ":", ": \n ")
+				findings, err = CheckFiles(map[string][]byte{site.Path: []byte(spaced)}, cfg)
+				if err != nil || len(findings) != 0 {
+					t.Fatalf("JSON field offsets changed with whitespace/UTF-8 prefix: %#v, %v", findings, err)
+				}
+			})
+		}
+	}
+}
+
+func TestNativeFieldGoProtocolRejectsContextCopiesAndChangedVectors(t *testing.T) {
+	cfg, _ := checkedInNativeFieldConfig(t)
+	source := nativeFieldGoFixture(t, cfg, strconv.Quote)
+	ready := nativeFieldSite(t, cfg, "ready-types").Values
+	custom := nativeFieldSite(t, cfg, "custom-types").Values
+	readyList := quotedNativeValues(ready, strconv.Quote)
+	customList := quotedNativeValues(custom, strconv.Quote)
+	reordered := append([]string{}, ready...)
+	reordered[0], reordered[1] = reordered[1], reordered[0]
+	product := cfg.Terms[2].Matches[0]
+	for _, test := range []struct{ name, path, source string }{
+		{"neighbor_path", "spec/s1-b01-b04/native_exclusion_other_test.go", source},
+		{"wildcard_path", "spec/s1-b01-b04/*.go", source},
+		{"other_protocol_path", externalProtocolSource, source},
+		{"wrong_function", b01NativeGoSource, strings.Replace(source, "nativeExclusionTypes()", "otherTypes()", 1)},
+		{"ready_parameter", b01NativeGoSource, strings.Replace(source, "nativeExclusionTypes()", "nativeExclusionTypes(x int)", 1)},
+		{"ready_other_element_type", b01NativeGoSource, strings.Replace(source, "return []string", "return []any", 1)},
+		{"ready_array_not_slice", b01NativeGoSource, strings.Replace(source, "return []string", "return [9]string", 1)},
+		{"ready_nested_closure", b01NativeGoSource, strings.Replace(source, "return []string{"+readyList+"}", "f := func() []string { return []string{"+readyList+"} }; return f()", 1)},
+		{"ready_duplicate_function", b01NativeGoSource, source + "func nativeExclusionTypes() []string { return []string{" + readyList + "} }"},
+		{"ready_reordered", b01NativeGoSource, strings.Replace(source, readyList, quotedNativeValues(reordered, strconv.Quote), 1)},
+		{"ready_missing_ordinary_value", b01NativeGoSource, strings.Replace(source, readyList, quotedNativeValues(ready[:len(ready)-1], strconv.Quote), 1)},
+		{"ready_extra_value", b01NativeGoSource, strings.Replace(source, readyList, readyList+`, "extra"`, 1)},
+		{"ready_duplicate_value", b01NativeGoSource, strings.Replace(source, readyList, readyList+", "+strconv.Quote(ready[0]), 1)},
+		{"ready_extra_token", b01NativeGoSource, strings.Replace(source, strconv.Quote(product), strconv.Quote(product+" extra"), 1)},
+		{"custom_wrong_function", b01NativeGoSource, strings.Replace(source, "recordNativeExclusions()", "otherRecorder()", 1)},
+		{"custom_wrong_receiver", b01NativeGoSource, strings.Replace(source, "c.run(", "other.run(", 1)},
+		{"custom_wrong_command", b01NativeGoSource, strings.Replace(source, strconv.Quote(custom[0]), strconv.Quote(custom[0]+"-extra"), 1)},
+		{"custom_wrong_key", b01NativeGoSource, strings.Replace(source, strconv.Quote(custom[3]), strconv.Quote(custom[3]+".extra"), 1)},
+		{"custom_extra_arg", b01NativeGoSource, strings.Replace(source, customList, customList+`, "extra"`, 1)},
+		{"custom_extra_token", b01NativeGoSource, strings.Replace(source, strconv.Quote(custom[4]), strconv.Quote(custom[4]+",extra"), 1)},
+		{"custom_nested_closure", b01NativeGoSource, strings.Replace(source, "c.run("+customList+")", "f := func() { c.run("+customList+") }; f()", 1)},
+		{"custom_duplicate_call", b01NativeGoSource, strings.Replace(source, "c.run("+customList+")", "c.run("+customList+"); c.run("+customList+")", 1)},
+		{"copied_literal", b01NativeGoSource, source + "var copy = " + strconv.Quote(product)},
+		{"source_shaped_string", b01NativeGoSource, "package recorder\nvar copy = " + escapedProtocolString(source)},
+		{"banned_comment", b01NativeGoSource, source + "// " + product},
+		{"banned_identifier", b01NativeGoSource, source + "var " + ready[3] + " = 1"},
+		{"plain_import", b01NativeGoSource, "package recorder\nimport " + strconv.Quote(product)},
+		{"escaped_import", b01NativeGoSource, "package recorder\nimport " + escapedProtocolString(product)},
+		{"invalid_go", b01NativeGoSource, "package recorder\nfunc ("},
+	} {
+		t.Run(test.name, func(t *testing.T) { requireNativeFieldRefusal(t, cfg, test.path, test.source) })
+	}
+}
+
+func TestNativeFieldJSONRejectsCopiesDuplicateKeysAndChangedValues(t *testing.T) {
+	cfg, _ := checkedInNativeFieldConfig(t)
+	product := cfg.Terms[2].Matches[0]
+	for _, id := range []string{"native-type-binding-json", "catalog-sql-tables"} {
+		site := nativeFieldSite(t, cfg, id)
+		source := nativeFieldJSONFixture(site, strconv.Quote)
+		key := strings.Split(site.Field, ".")
+		leaf := key[len(key)-1]
+		quotedKey := strconv.Quote(leaf)
+		value := "[" + quotedNativeValues(site.Values, strconv.Quote) + "]"
+		if id == "catalog-sql-tables" {
+			value = strconv.Quote(site.Values[0])
+		}
+		changed := site
+		changed.Values = append([]string{}, site.Values...)
+		changed.Values[0] += " extra"
+		tests := []struct{ name, path, source string }{
+			{"neighbor_path", site.Path + ".other.json", source},
+			{"wrong_root_field", site.Path, strings.Replace(source, strconv.Quote(key[0]), strconv.Quote(key[0]+"Extra"), 1)},
+			{"wrong_leaf_field", site.Path, strings.Replace(source, quotedKey, strconv.Quote(leaf+"Extra"), 1)},
+			{"wrong_case", site.Path, strings.Replace(source, quotedKey, strconv.Quote(strings.ToUpper(leaf)), 1)},
+			{"nested_copy", site.Path, `{"copy":` + source + `}`},
+			{"extra_token", site.Path, nativeFieldJSONFixture(changed, strconv.Quote)},
+			{"wrong_type", site.Path, strings.Replace(source, value, `{"copy":`+value+`}`, 1)},
+			{"duplicate_leaf", site.Path, strings.Replace(source, quotedKey+":"+value, quotedKey+":"+value+","+quotedKey+":"+value, 1)},
+			{"escaped_duplicate_leaf", site.Path, strings.Replace(source, quotedKey+":"+value, quotedKey+":"+value+","+escapedNativeJSON(leaf)+":"+value, 1)},
+			{"copy_in_other_field", site.Path, source[:len(source)-1] + `,"copy":` + value + `}`},
+			{"other_banned_value", site.Path, source[:len(source)-1] + `,"prose":` + strconv.Quote(product) + `}`},
+			{"escaped_banned_value", site.Path, source[:len(source)-1] + `,"prose":` + escapedNativeJSON(product) + `}`},
+			{"source_shaped_string", site.Path, `{"copy":` + escapedNativeJSON(source) + `}`},
+			{"malformed_json", site.Path, `{"incomplete":`},
+			{"extra_json_document", site.Path, source + `{}`},
+			{"prose_file", "docs/native-census.md", source},
+		}
+		if id == "native-type-binding-json" {
+			group := source[strings.Index(source, ":")+1 : len(source)-1]
+			tests = append(tests,
+				struct{ name, path, source string }{"duplicate_group", site.Path, source[:len(source)-1] + `,"nativeTypeBoundary":` + group + `}`},
+				struct{ name, path, source string }{"escaped_duplicate_group", site.Path, source[:len(source)-1] + "," + escapedNativeJSON("nativeTypeBoundary") + ":" + group + `}`},
+				struct{ name, path, source string }{"extra_element", site.Path, strings.Replace(source, value, value[:len(value)-1]+`, "extra"]`, 1)},
+				struct{ name, path, source string }{"missing_element", site.Path, strings.Replace(source, value, "["+quotedNativeValues(site.Values[:len(site.Values)-1], strconv.Quote)+"]", 1)},
+				struct{ name, path, source string }{"duplicate_element", site.Path, strings.Replace(source, value, value[:len(value)-1]+", "+strconv.Quote(site.Values[0])+"]", 1)},
+			)
+			reordered := site
+			reordered.Values = append([]string{}, site.Values...)
+			reordered.Values[0], reordered.Values[1] = reordered.Values[1], reordered.Values[0]
+			tests = append(tests, struct{ name, path, source string }{"reordered_elements", site.Path, nativeFieldJSONFixture(reordered, strconv.Quote)})
+		} else {
+			tables := strings.Fields(site.Values[0])
+			reordered := append([]string{}, tables...)
+			reordered[0], reordered[1] = reordered[1], reordered[0]
+			for name, replacement := range map[string]string{
+				"reordered_tables": strconv.Quote(strings.Join(reordered, " ")),
+				"missing_table":    strconv.Quote(strings.Join(tables[:len(tables)-1], " ")),
+				"duplicate_table":  strconv.Quote(site.Values[0] + " " + tables[0]),
+				"array_not_scalar": "[" + value + "]",
+				"prose_not_census": strconv.Quote("The census is " + site.Values[0]),
+			} {
+				tests = append(tests, struct{ name, path, source string }{name, site.Path, strings.Replace(source, value, replacement, 1)})
+			}
+		}
+		for _, test := range tests {
+			t.Run(id+"/"+test.name, func(t *testing.T) { requireNativeFieldRefusal(t, cfg, test.path, test.source) })
+		}
+	}
+}
+
+func TestNativeFieldAllowanceRequiresUnmodifiedCompleteConfiguration(t *testing.T) {
+	cfg, _ := checkedInNativeFieldConfig(t)
+	for _, mutate := range []struct {
+		name string
+		edit func([]NativeLiteralSite) []NativeLiteralSite
+	}{
+		{"absent", func(sites []NativeLiteralSite) []NativeLiteralSite { return nil }},
+		{"missing_site", func(sites []NativeLiteralSite) []NativeLiteralSite { return sites[:len(sites)-1] }},
+		{"changed_value", func(sites []NativeLiteralSite) []NativeLiteralSite { sites[0].Values[0] += " extra"; return sites }},
+		{"changed_path", func(sites []NativeLiteralSite) []NativeLiteralSite { sites[0].Path += ".other"; return sites }},
+		{"changed_field", func(sites []NativeLiteralSite) []NativeLiteralSite { sites[0].Field += ".other"; return sites }},
+		{"duplicate_site", func(sites []NativeLiteralSite) []NativeLiteralSite { sites[0] = sites[1]; return sites }},
+	} {
+		t.Run(mutate.name, func(t *testing.T) {
+			changed := cfg
+			changed.NativeFieldLiterals = nil
+			for _, site := range cfg.NativeFieldLiterals {
+				site.Values = append([]string{}, site.Values...)
+				changed.NativeFieldLiterals = append(changed.NativeFieldLiterals, site)
+			}
+			changed.NativeFieldLiterals = mutate.edit(changed.NativeFieldLiterals)
+			requireNativeFieldRefusal(t, changed, b01NativeGoSource, nativeFieldGoFixture(t, cfg, strconv.Quote))
+			for _, id := range []string{"native-type-binding-json", "catalog-sql-tables"} {
+				site := nativeFieldSite(t, cfg, id)
+				requireNativeFieldRefusal(t, changed, site.Path, nativeFieldJSONFixture(site, strconv.Quote))
+			}
+		})
+	}
+}
+
+func nativeFieldConfigSection(site NativeLiteralSite) string {
+	return "[[native_field_literal]]\nid = " + strconv.Quote(site.ID) + "\npath = " + strconv.Quote(site.Path) +
+		"\nfield = " + strconv.Quote(site.Field) + "\nvalues = [" + quotedNativeValues(site.Values, strconv.Quote) + "]"
+}
+
+func TestNativeFieldConfigurationRejectsBroadeningAndAmbiguity(t *testing.T) {
+	cfg, path := checkedInNativeFieldConfig(t)
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, site := range cfg.NativeFieldLiterals {
+		section := nativeFieldConfigSection(site)
+		if !strings.Contains(string(original), section) {
+			t.Fatalf("checked-in native site %s was not bound", site.ID)
+		}
+		idLine := "id = " + strconv.Quote(site.ID)
+		pathLine := "path = " + strconv.Quote(site.Path)
+		fieldLine := "field = " + strconv.Quote(site.Field)
+		valueLine := "values = [" + quotedNativeValues(site.Values, strconv.Quote) + "]"
+		changed := site
+		changed.Values = append([]string{}, site.Values...)
+		changed.Values[0] += " extra"
+		tests := []struct{ name, replacement string }{
+			{"unknown_id", strings.Replace(section, idLine, `id = "unknown"`, 1)},
+			{"missing_id", strings.Replace(section, idLine+"\n", "", 1)},
+			{"missing_path", strings.Replace(section, pathLine+"\n", "", 1)},
+			{"missing_field", strings.Replace(section, fieldLine+"\n", "", 1)},
+			{"missing_values", strings.Replace(section, valueLine, "", 1)},
+			{"neighbor_path", strings.Replace(section, pathLine, "path = "+strconv.Quote(site.Path+".other"), 1)},
+			{"wildcard_path", strings.Replace(section, pathLine, `path = "spec/*"`, 1)},
+			{"wrong_field", strings.Replace(section, fieldLine, "field = "+strconv.Quote(site.Field+".other"), 1)},
+			{"unknown_key", section + "\nprefix = \"extra\""},
+			{"duplicate_id_field", strings.Replace(section, idLine, idLine+"\n"+idLine, 1)},
+			{"duplicate_path_field", strings.Replace(section, pathLine, pathLine+"\n"+pathLine, 1)},
+			{"duplicate_value_field", strings.Replace(section, valueLine, valueLine+"\n"+valueLine, 1)},
+			{"changed_vector", nativeFieldConfigSection(changed)},
+			{"extra_element", strings.Replace(section, valueLine, valueLine[:len(valueLine)-1]+`, "extra"]`, 1)},
+			{"scalar_values", strings.Replace(section, valueLine, "values = "+strconv.Quote(site.Values[0]), 1)},
+			{"null_values", strings.Replace(section, valueLine, "values = null", 1)},
+			{"null_element", strings.Replace(section, valueLine, "values = [null]", 1)},
+			{"number_element", strings.Replace(section, valueLine, "values = [1]", 1)},
+			{"empty_array", strings.Replace(section, valueLine, "values = []", 1)},
+			{"malformed_array", strings.Replace(section, valueLine, "values = [", 1)},
+			{"array_path", strings.Replace(section, pathLine, "path = ["+strconv.Quote(site.Path)+"]", 1)},
+			{"tuple_separator_injection", strings.Replace(section, fieldLine, "field = "+strconv.Quote(site.Field+"\x00extra"), 1)},
+			{"duplicate_section", section + "\n" + section},
+			{"missing_section", ""},
+		}
+		if len(site.Values) > 1 {
+			changed.Values = append([]string{}, site.Values...)
+			changed.Values[0], changed.Values[1] = changed.Values[1], changed.Values[0]
+			tests = append(tests, struct{ name, replacement string }{"reordered_vector", nativeFieldConfigSection(changed)})
+			changed.Values = append([]string{}, site.Values[:len(site.Values)-1]...)
+			tests = append(tests, struct{ name, replacement string }{"incomplete_vector", nativeFieldConfigSection(changed)})
+		}
+		for _, test := range tests {
+			t.Run(site.ID+"/"+test.name, func(t *testing.T) {
+				file := filepath.Join(t.TempDir(), "lexicon.toml")
+				content := strings.Replace(string(original), section, test.replacement, 1)
+				if err := os.WriteFile(file, []byte(content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := LoadConfig(file); err == nil {
+					t.Fatal("malformed or broadened native field configuration was accepted")
+				}
+			})
+		}
+	}
+	without := string(original)
+	for _, site := range cfg.NativeFieldLiterals {
+		without = strings.Replace(without, nativeFieldConfigSection(site), "", 1)
+	}
+	file := filepath.Join(t.TempDir(), "lexicon.toml")
+	if err := os.WriteFile(file, []byte(without), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if parsed, err := LoadConfig(file); err != nil || len(parsed.NativeFieldLiterals) != 0 {
+		t.Fatalf("omitted optional field section should grant nothing: %+v, %v", parsed.NativeFieldLiterals, err)
+	}
+}
+
+func TestNativeFieldProtocolPreservesOutsidePathsAndCommentBaseline(t *testing.T) {
+	cfg, _ := checkedInNativeFieldConfig(t)
+	baseline := cfg
+	baseline.NativeFieldLiterals = nil
+	product := cfg.Terms[2].Matches[0]
+	ready := nativeFieldSite(t, cfg, "ready-types").Values
+	for _, path := range []string{"other/source.go", "docs/protocol.md", "other/inputs.json", externalProtocolSource, nativeManifestProtocolSource} {
+		for name, source := range map[string]string{
+			"quoted":             "package recorder\nvar copy = " + strconv.Quote(product),
+			"escaped":            "package recorder\nvar copy = " + escapedProtocolString(product),
+			"identifier_comment": "package recorder\n// " + ready[3],
+			"product_comment":    "package recorder\n// " + product,
+		} {
+			t.Run(path+"/"+name, func(t *testing.T) {
+				files := map[string][]byte{path: []byte(source)}
+				before, beforeErr := CheckFiles(files, baseline)
+				after, afterErr := CheckFiles(files, cfg)
+				if beforeErr != nil || afterErr != nil || !reflect.DeepEqual(before, after) {
+					t.Fatalf("native field policy changed outside baseline: before=%#v/%v after=%#v/%v", before, beforeErr, after, afterErr)
+				}
+			})
+		}
+	}
+	for i, value := range ready {
+		t.Run(fmt.Sprintf("native_comment%d", i), func(t *testing.T) {
+			files := map[string][]byte{b01NativeGoSource: []byte("package recorder\n// " + value)}
+			before, beforeErr := CheckFiles(files, baseline)
+			after, afterErr := CheckFiles(files, cfg)
+			if beforeErr != nil || afterErr != nil || !reflect.DeepEqual(before, after) {
+				t.Fatalf("native field policy changed comment baseline: before=%#v/%v after=%#v/%v", before, beforeErr, after, afterErr)
+			}
+		})
+	}
+}
+
 func TestExternalProtocolStringConfigurationRejectsBroadening(t *testing.T) {
 	cfg, path := checkedInExternalProtocolConfig(t)
 	original, err := os.ReadFile(path)
@@ -554,6 +928,353 @@ func TestPhysicalProtocolAllowancePreservesUnrelatedEscapedLiterals(t *testing.T
 				t.Fatalf("physical protocol allowance changed unrelated scan: before=%#v/%v after=%#v/%v", before, beforeErr, after, afterErr)
 			}
 		})
+	}
+}
+
+func checkedInNativeManifestConfig(t *testing.T) (Config, string) {
+	t.Helper()
+	cfg, path := checkedInPhysicalProtocolConfig(t)
+	want := map[string]bool{
+		"448bbf6c576972f4320475a0f2c84fc95020744752746eeb7bc440c488827ec7": true,
+		"189e26badd76744c7e096b1d22c566d77a483176d37748a42b5c8ea3301c09ea": true,
+		"8610e53a1800745f41cf493e7f8e05da1513988d330e48bffe2a65422300379e": true,
+		"28eb85035ca7f533164539df882ca0584982aaad9f833d341983a6bff0fd0d33": true,
+	}
+	if cfg.NativeManifestStrings.Path != nativeManifestProtocolSource || len(cfg.NativeManifestStrings.Values) != len(want) {
+		t.Fatal("checked-in native manifest path or set is incomplete")
+	}
+	for _, value := range cfg.NativeManifestStrings.Values {
+		digest := sha256.Sum256([]byte(value))
+		key := hex.EncodeToString(digest[:])
+		if !want[key] {
+			t.Fatal("checked-in native manifest literal changed or repeated")
+		}
+		delete(want, key)
+	}
+	return cfg, path
+}
+
+func TestNativeManifestProtocolAllowsOnlyExactDecodedLiterals(t *testing.T) {
+	cfg, _ := checkedInNativeManifestConfig(t)
+	for i, value := range cfg.NativeManifestStrings.Values {
+		for name, literal := range map[string]string{
+			"quoted": strconv.Quote(value), "raw": "`" + value + "`", "escaped": escapedProtocolString(value),
+		} {
+			t.Run(fmt.Sprintf("literal%d/%s", i, name), func(t *testing.T) {
+				source := "package recorder\nvar acceptedWireValue = " + literal
+				findings, err := CheckFiles(map[string][]byte{nativeManifestProtocolSource: []byte(source)}, cfg)
+				if err != nil || len(findings) != 0 {
+					t.Fatalf("exact native manifest literal refused: %#v, %v", findings, err)
+				}
+			})
+		}
+	}
+}
+
+func TestNativeManifestProtocolKeepsOtherRefusals(t *testing.T) {
+	cfg, _ := checkedInNativeManifestConfig(t)
+	identifier := cfg.Terms[3].Matches[len(cfg.Terms[3].Matches)-1]
+	productTerm := cfg.Terms[2].Matches[0]
+	for i, value := range cfg.NativeManifestStrings.Values {
+		assignment := "var acceptedWireValue = " + strconv.Quote(value)
+		for _, test := range []struct{ name, path, source string }{
+			{"neighbor_path", "spec/s1-b13-native/recording_other_test.go", "package recorder\n" + assignment},
+			{"wildcard_path", "spec/s1-b13-native/*.go", "package recorder\n" + assignment},
+			{"other_recorder", externalProtocolSource, "package recorder\n" + assignment},
+			{"wrong_path_raw", "other/recorder.go", "package recorder\nvar acceptedWireValue = `" + value + "`"},
+			{"changed_case", nativeManifestProtocolSource, "package recorder\nvar acceptedWireValue = " + strconv.Quote(strings.ToUpper(value))},
+			{"prefix", nativeManifestProtocolSource, "package recorder\nvar acceptedWireValue = " + strconv.Quote("other_"+value)},
+			{"suffix", nativeManifestProtocolSource, "package recorder\nvar acceptedWireValue = " + strconv.Quote(value+"_other")},
+			{"space", nativeManifestProtocolSource, "package recorder\nvar acceptedWireValue = " + strconv.Quote(value+" ")},
+			{"changed_escaped", nativeManifestProtocolSource, "package recorder\nvar acceptedWireValue = " + escapedProtocolString(value+"_other")},
+			{"extra_term", nativeManifestProtocolSource, "package recorder\nvar acceptedWireValue = " + strconv.Quote(value+" "+productTerm)},
+			{"other_literal", nativeManifestProtocolSource, "package recorder\n" + assignment + "\nvar other = " + strconv.Quote(productTerm)},
+			{"comment", nativeManifestProtocolSource, "package recorder\n// " + productTerm + "\n" + assignment},
+			{"identifier", nativeManifestProtocolSource, "package recorder\nvar " + identifier + " = 1\n" + assignment},
+			{"import", nativeManifestProtocolSource, "package recorder\nimport " + strconv.Quote(value) + "\n" + assignment},
+			{"import_escaped", nativeManifestProtocolSource, "package recorder\nimport " + escapedProtocolString(value) + "\n" + assignment},
+		} {
+			t.Run(fmt.Sprintf("literal%d/%s", i, test.name), func(t *testing.T) {
+				findings, err := CheckFiles(map[string][]byte{test.path: []byte(test.source)}, cfg)
+				if err != nil || !hasFindingClass(findings, "identifier") && !hasFindingClass(findings, "product-term") {
+					t.Fatalf("native manifest allowance lost ordinary refusal: %#v, %v", findings, err)
+				}
+			})
+		}
+		without := cfg
+		without.NativeManifestStrings = GoStringSetAllowance{}
+		findings, err := CheckFiles(map[string][]byte{nativeManifestProtocolSource: []byte("package recorder\n" + assignment)}, without)
+		if err != nil || len(findings) == 0 {
+			t.Fatalf("missing native manifest declaration passed: %#v, %v", findings, err)
+		}
+	}
+}
+
+func TestNativeManifestProtocolPreservesUnrelatedScan(t *testing.T) {
+	cfg, _ := checkedInNativeManifestConfig(t)
+	baseline := cfg
+	baseline.NativeManifestStrings = GoStringSetAllowance{}
+	literals := map[string]string{
+		"product":     escapedProtocolString(cfg.Terms[2].Matches[0]),
+		"unicode":     `"\U0001f600"`,
+		"environment": escapedProtocolString(cfg.ExternalProtocolString.Value),
+	}
+	for i, value := range cfg.NativeManifestStrings.Values {
+		literals[fmt.Sprintf("native%d", i)] = escapedProtocolString(value)
+	}
+	for _, path := range []string{"other/existing.go", "spec/s1-b13-native/recording_other_test.go", externalProtocolSource} {
+		for name, literal := range literals {
+			t.Run(path+"/"+name, func(t *testing.T) {
+				files := map[string][]byte{path: []byte("package existing\nvar retained = " + literal)}
+				before, beforeErr := CheckFiles(files, baseline)
+				after, afterErr := CheckFiles(files, cfg)
+				if beforeErr != nil || afterErr != nil || !reflect.DeepEqual(before, after) {
+					t.Fatalf("native manifest extension changed unrelated scan: before=%#v/%v after=%#v/%v", before, beforeErr, after, afterErr)
+				}
+			})
+		}
+	}
+	for i, value := range cfg.NativeManifestStrings.Values {
+		t.Run(fmt.Sprintf("comment%d", i), func(t *testing.T) {
+			files := map[string][]byte{nativeManifestProtocolSource: []byte("package existing\n// " + value)}
+			before, beforeErr := CheckFiles(files, baseline)
+			after, afterErr := CheckFiles(files, cfg)
+			if beforeErr != nil || afterErr != nil || !reflect.DeepEqual(before, after) {
+				t.Fatalf("native manifest extension changed comment scanning: before=%#v/%v after=%#v/%v", before, beforeErr, after, afterErr)
+			}
+		})
+	}
+}
+
+func TestNativeManifestProtocolConfigurationRejectsBroadening(t *testing.T) {
+	cfg, path := checkedInNativeManifestConfig(t)
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := cfg.NativeManifestStrings.Values
+	line := func(values []string) string {
+		var quoted []string
+		for _, value := range values {
+			quoted = append(quoted, strconv.Quote(value))
+		}
+		return "values = [" + strings.Join(quoted, ", ") + "]"
+	}
+	pathLine := "path = " + strconv.Quote(nativeManifestProtocolSource)
+	valuesLine := line(values)
+	section := "[native_manifest_strings]\n" + pathLine + "\n" + valuesLine
+	if !strings.Contains(string(original), section) {
+		t.Fatal("native manifest section was not bound")
+	}
+	for _, test := range []struct{ name, replacement string }{
+		{"neighbor_path", strings.Replace(section, nativeManifestProtocolSource, "spec/s1-b13-native/recording_other_test.go", 1)},
+		{"wildcard_path", strings.Replace(section, nativeManifestProtocolSource, "spec/s1-b13-native/*.go", 1)},
+		{"empty_path", strings.Replace(section, pathLine, `path = ""`, 1)},
+		{"path_array", strings.Replace(section, pathLine, "path = ["+strconv.Quote(nativeManifestProtocolSource)+"]", 1)},
+		{"missing_path", strings.Replace(section, pathLine+"\n", "", 1)},
+		{"missing_values", strings.Replace(section, "\n"+valuesLine, "", 1)},
+		{"empty_values", strings.Replace(section, valuesLine, line(nil), 1)},
+		{"missing_literal", strings.Replace(section, valuesLine, line(values[:3]), 1)},
+		{"duplicate_literal", strings.Replace(section, valuesLine, line([]string{values[0], values[1], values[2], values[2]}), 1)},
+		{"extra_literal", strings.Replace(section, valuesLine, line(append(append([]string{}, values...), "other")), 1)},
+		{"mutated_literal", strings.Replace(section, valuesLine, line([]string{values[0] + "_other", values[1], values[2], values[3]}), 1)},
+		{"literal_pattern", strings.Replace(section, valuesLine, line([]string{"*" + values[0] + "*", values[1], values[2], values[3]}), 1)},
+		{"scalar_values", strings.Replace(section, valuesLine, "values = "+strconv.Quote(values[0]), 1)},
+		{"unknown_key", section + "\npattern = \"*\""},
+		{"duplicate_path", section + "\n" + pathLine},
+		{"duplicate_values", section + "\n" + valuesLine},
+		{"duplicate_section", section + "\n" + section},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "lexicon.toml")
+			if err := os.WriteFile(file, []byte(strings.Replace(string(original), section, test.replacement, 1)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadConfig(file); err == nil {
+				t.Fatal("malformed or broadened native manifest configuration passed")
+			}
+		})
+	}
+}
+
+func checkedInNativeControlConfig(t *testing.T) (Config, string) {
+	t.Helper()
+	path := filepath.Join("..", "..", "engdocs", "style", "lexicon.toml")
+	if root := os.Getenv("TEST_SRCDIR"); root != "" {
+		path = filepath.Join(root, os.Getenv("TEST_WORKSPACE"), "engdocs", "style", "lexicon.toml")
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("checked-in native control config: %v", err)
+	}
+	if cfg.NativeRecordingLiterals.Path != nativeRecordingLiteralSource || len(cfg.NativeRecordingLiterals.Values) != len(nativeRecordingLiteralDigests) {
+		t.Fatalf("recording allowance is incomplete: %+v", cfg.NativeRecordingLiterals)
+	}
+	if cfg.NativeViewStrings.Path != nativeViewProtocolSource || len(cfg.NativeViewStrings.Values) != len(nativeViewProtocolDigests) {
+		t.Fatalf("view allowance is incomplete: %+v", cfg.NativeViewStrings)
+	}
+	return cfg, path
+}
+
+func escapedNativeLiteral(value string) string {
+	return "\"\\x" + hex.EncodeToString([]byte(value[:1])) + value[1:] + "\""
+}
+
+func TestNativeControlLiteralsAllowOnlyExactDecodedValues(t *testing.T) {
+	cfg, _ := checkedInNativeControlConfig(t)
+	for _, allowance := range []NativeControlAllowance{cfg.NativeRecordingLiterals, cfg.NativeViewStrings} {
+		for i, value := range allowance.Values {
+			for name, literal := range map[string]string{
+				"quoted":  strconv.Quote(value),
+				"raw":     "`" + value + "`",
+				"escaped": escapedNativeLiteral(value),
+			} {
+				t.Run(fmt.Sprintf("%s/value%d/%s", allowance.Path, i, name), func(t *testing.T) {
+					findings, err := CheckFiles(map[string][]byte{allowance.Path: []byte("package recorder\nvar externalValue = " + literal)}, cfg)
+					if err != nil || len(findings) != 0 {
+						t.Fatalf("exact decoded native control literal was not admitted: %#v, %v", findings, err)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestNativeControlLiteralsKeepOtherRefusals(t *testing.T) {
+	cfg, _ := checkedInNativeControlConfig(t)
+	productWord := string([]byte{119, 105, 115, 112})
+	for _, allowance := range []NativeControlAllowance{cfg.NativeRecordingLiterals, cfg.NativeViewStrings} {
+		for i, value := range allowance.Values {
+			assignment := "var externalValue = " + strconv.Quote(value)
+			for _, test := range []struct {
+				name, path, source string
+			}{
+				{"neighbor_path", strings.TrimSuffix(allowance.Path, ".go") + "_other.go", "package recorder\n" + assignment},
+				{"changed_value", allowance.Path, "package recorder\nvar externalValue = " + strconv.Quote(value+"_other")},
+				{"changed_escaped", allowance.Path, "package recorder\nvar externalValue = " + escapedNativeLiteral(value+"_other")},
+				{"comment", allowance.Path, "package recorder\n// " + productWord + " " + value},
+				{"identifier", allowance.Path, "package recorder\nvar " + productWord + " = 1\n" + assignment},
+				{"import", allowance.Path, "package recorder\nimport " + strconv.Quote(value) + "\n" + assignment},
+				{"escaped_import", allowance.Path, "package recorder\nimport " + escapedNativeLiteral(value) + "\n" + assignment},
+				{"structured_json", "spec/s1-b21-b24/native_testdata/protocol.json", "{\"value\":" + strconv.Quote(value) + ",\"other\":" + strconv.Quote(productWord) + "}"},
+			} {
+				t.Run(fmt.Sprintf("%s/value%d/%s", allowance.Path, i, test.name), func(t *testing.T) {
+					findings, err := CheckFiles(map[string][]byte{test.path: []byte(test.source)}, cfg)
+					if err != nil || len(findings) == 0 {
+						t.Fatalf("native control refusal was lost: %#v, %v", findings, err)
+					}
+				})
+			}
+		}
+	}
+	without := cfg
+	without.NativeRecordingLiterals = NativeControlAllowance{}
+	without.NativeViewStrings = NativeControlAllowance{}
+	for _, allowance := range []NativeControlAllowance{cfg.NativeRecordingLiterals, cfg.NativeViewStrings} {
+		for i, value := range allowance.Values {
+			source := []byte("package recorder\n// " + value)
+			before, beforeErr := CheckFiles(map[string][]byte{allowance.Path: source}, without)
+			after, afterErr := CheckFiles(map[string][]byte{allowance.Path: source}, cfg)
+			if beforeErr != nil || afterErr != nil || !reflect.DeepEqual(before, after) {
+				t.Fatalf("comment baseline changed for %s/value%d: before=%#v/%v after=%#v/%v", allowance.Path, i, before, beforeErr, after, afterErr)
+			}
+		}
+	}
+	for _, value := range cfg.NativeRecordingLiterals.Values {
+		if allowsNativeControlLiteral(nativeViewProtocolSource, value, cfg) {
+			continue
+		}
+		findings, err := CheckFiles(map[string][]byte{nativeViewProtocolSource: []byte("package recorder\nvar externalValue = " + strconv.Quote(value))}, cfg)
+		if err != nil || len(findings) == 0 {
+			t.Fatalf("recording-only literal leaked into the views allowance: %#v, %v", findings, err)
+		}
+	}
+}
+
+func TestNativeControlLiteralsPreserveOutsidePathBaseline(t *testing.T) {
+	cfg, _ := checkedInNativeControlConfig(t)
+	productValue := string([]byte{119, 105, 115, 112, 32, 111, 110, 108, 121})
+	without := cfg
+	without.NativeRecordingLiterals = NativeControlAllowance{}
+	without.NativeViewStrings = NativeControlAllowance{}
+	for _, path := range []string{
+		"other/existing.go",
+		"spec/s1-b21-b24/native_recording_other_test.go",
+		"spec/s1-b13-native/recording_test.go",
+		externalProtocolSource,
+	} {
+		files := map[string][]byte{path: []byte("package existing\nvar retained = " + escapedNativeLiteral(productValue))}
+		before, beforeErr := CheckFiles(files, without)
+		after, afterErr := CheckFiles(files, cfg)
+		if beforeErr != nil || afterErr != nil || !reflect.DeepEqual(before, after) {
+			t.Fatalf("allowance changed unrelated path %s: before=%#v/%v after=%#v/%v", path, before, beforeErr, after, afterErr)
+		}
+	}
+}
+
+func TestNativeControlLiteralConfigurationRejectsBroadening(t *testing.T) {
+	cfg, path := checkedInNativeControlConfig(t)
+	originalBytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := string(originalBytes)
+	for _, set := range []struct {
+		name, section string
+		allowance     NativeControlAllowance
+	}{
+		{"recording", "native_recording_literals", cfg.NativeRecordingLiterals},
+		{"views", "native_view_strings", cfg.NativeViewStrings},
+	} {
+		section := "[" + set.section + "]\npath = " + strconv.Quote(set.allowance.Path) + "\nvalues = ["
+		for i, value := range set.allowance.Values {
+			if i != 0 {
+				section += ", "
+			}
+			section += strconv.Quote(value)
+		}
+		section += "]"
+		if !strings.Contains(original, section) {
+			t.Fatalf("checked-in %s section was not found", set.name)
+		}
+		mutated := append([]string(nil), set.allowance.Values...)
+		mutated[0] += "_other"
+		duplicate := append([]string(nil), set.allowance.Values...)
+		duplicate[len(duplicate)-1] = duplicate[0]
+		line := func(values []string) string {
+			quoted := make([]string, 0, len(values))
+			for _, value := range values {
+				quoted = append(quoted, strconv.Quote(value))
+			}
+			return "values = [" + strings.Join(quoted, ", ") + "]"
+		}
+		for _, test := range []struct {
+			name, replacement string
+		}{
+			{"neighbor_path", strings.Replace(section, set.allowance.Path, strings.TrimSuffix(set.allowance.Path, ".go")+"_other.go", 1)},
+			{"wildcard_path", strings.Replace(section, set.allowance.Path, strings.TrimSuffix(set.allowance.Path, ".go")+"/*.go", 1)},
+			{"missing_path", strings.Replace(section, "path = "+strconv.Quote(set.allowance.Path)+"\n", "", 1)},
+			{"missing_values", strings.Replace(section, "\n"+line(set.allowance.Values), "", 1)},
+			{"missing_literal", strings.Replace(section, line(set.allowance.Values), line(set.allowance.Values[:len(set.allowance.Values)-1]), 1)},
+			{"duplicate_literal", strings.Replace(section, line(set.allowance.Values), line(duplicate), 1)},
+			{"extra_literal", strings.Replace(section, line(set.allowance.Values), line(append(append([]string(nil), set.allowance.Values...), "other")), 1)},
+			{"mutated_literal", strings.Replace(section, line(set.allowance.Values), line(mutated), 1)},
+			{"scalar_values", strings.Replace(section, line(set.allowance.Values), "values = "+strconv.Quote(set.allowance.Values[0]), 1)},
+			{"unknown_key", section + "\npattern = \"*\""},
+			{"duplicate_path", section + "\npath = " + strconv.Quote(set.allowance.Path)},
+			{"duplicate_values", section + "\n" + line(set.allowance.Values)},
+			{"duplicate_section", section + "\n" + section},
+		} {
+			t.Run(set.name+"/"+test.name, func(t *testing.T) {
+				file := filepath.Join(t.TempDir(), "lexicon.toml")
+				if err := os.WriteFile(file, []byte(strings.Replace(original, section, test.replacement, 1)), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := LoadConfig(file); err == nil {
+					t.Fatal("broadened or malformed native control configuration was accepted")
+				}
+			})
+		}
 	}
 }
 

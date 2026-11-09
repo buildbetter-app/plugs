@@ -136,6 +136,7 @@ type RunView struct {
 type ItemView struct {
 	ID           string         `json:"id"`
 	RunID        string         `json:"runId"`
+	CreatedAt    time.Time      `json:"-"`
 	Label        string         `json:"label"`
 	Title        string         `json:"title"`
 	Type         string         `json:"type"`
@@ -162,6 +163,15 @@ type ReadySnapshot struct {
 	Items      []ItemView
 	Revision   pluginapi.Revision
 	ValidUntil *time.Time
+	// OrderAt is the provider clock used for this checkpoint's readiness and
+	// claim-expiry decisions. The service uses it for the shared durable and
+	// workflow ordering tuple so controlled clocks cannot drift between planes.
+	OrderAt time.Time `json:"-"`
+	// These fields are service-internal observations from the same provider
+	// checkpoint as Items. They are omitted from wire projections.
+	BlockedOrdinary map[string]bool               `json:"-"`
+	ActiveIDs       map[string]struct{}           `json:"-"`
+	OrdinaryParents map[string]OrdinaryParentFact `json:"-"`
 }
 
 type ClaimView struct {
@@ -798,6 +808,26 @@ func (p *Provider) checkReplay(value persisted, by model.PrincipalRef, meta mode
 	if err := json.Unmarshal(receipt.Result, dst); err != nil {
 		return false, err
 	}
+	// Creation provenance is internal to the provider view and deliberately
+	// absent from receipt JSON. Recover it from this same checkpoint so a
+	// replay keeps the ordering metadata without changing any stored response.
+	hydrateCreatedAt := func(item *ItemView) {
+		if run, ok := value.Runs[item.RunID]; ok {
+			item.CreatedAt = run.CreatedAt.UTC()
+		}
+	}
+	switch result := dst.(type) {
+	case *InvokeResult:
+		for i := range result.Items {
+			hydrateCreatedAt(&result.Items[i])
+		}
+	case *ItemView:
+		hydrateCreatedAt(result)
+	case *claimNextResult:
+		hydrateCreatedAt(&result.Item)
+	case *DemoteResult:
+		hydrateCreatedAt(&result.Item)
+	}
 	return true, nil
 }
 
@@ -873,6 +903,9 @@ func (p *Provider) Invoke(ctx context.Context, by model.PrincipalRef, req Invoke
 	}
 	run := runState{ID: runID, Template: req.Template, Project: req.Project, Owner: ownerState{Principal: principal, Agent: agent, Project: req.Project}, State: "active", CreatedAt: p.now().UTC()}
 	result := InvokeResult{Plane: "ephemeral", Run: &RunView{ID: runID, Template: req.Template, Project: req.Project, Mode: req.Mode, State: run.State, Owner: principal, CreatedAt: run.CreatedAt}, Items: []ItemView{}}
+	// Keep the authoritative run timestamp available while constructing item
+	// views; the complete run (including ItemIDs) is published below.
+	value.Runs[runID] = run
 	seen := map[string]bool{}
 	for _, input := range req.Checklist {
 		seen[input.Label] = true
@@ -909,7 +942,8 @@ func (p *Provider) Invoke(ctx context.Context, by model.PrincipalRef, req Invoke
 		}
 		value.Items[itemID] = item
 		run.ItemIDs = append(run.ItemIDs, itemID)
-		result.Items = append(result.Items, p.itemView(item))
+		view := p.itemViewIn(value, item)
+		result.Items = append(result.Items, view)
 	}
 	// Maintain plugin-owned child counters and inbound relation indexes in the
 	// same checkpoint CAS as invocation. A missing durable target is retained as
@@ -959,6 +993,9 @@ func (p *Provider) itemView(item itemState) ItemView {
 
 func (p *Provider) itemViewIn(value persisted, item itemState) ItemView {
 	view := itemViewAt(item, p.now())
+	if run, ok := value.Runs[item.RunID]; ok {
+		view.CreatedAt = run.CreatedAt.UTC()
+	}
 	view.Blocked = itemBlocked(value, item)
 	return view
 }
@@ -1097,6 +1134,9 @@ func (p *Provider) readySnapshot(ctx context.Context, value persisted, revision 
 		}
 		if ready {
 			view := itemViewAt(item, now)
+			if run, ok := value.Runs[item.RunID]; ok {
+				view.CreatedAt = run.CreatedAt.UTC()
+			}
 			view.Blocked, err = itemBlockedWithResolver(ctx, value, item, by, meta, resolver)
 			if err != nil {
 				return ReadySnapshot{}, err
@@ -1151,20 +1191,63 @@ func (p *Provider) ReadySnapshot(ctx context.Context, by model.PrincipalRef, pro
 	if len(include) != 0 {
 		includeEphemeral = include[0]
 	}
-	return p.readySnapshot(ctx, value, revision, by, project, types, meta, p.now(), includeEphemeral, nil)
+	now := p.now().UTC()
+	snapshot, err := p.readySnapshot(ctx, value, revision, by, project, types, meta, now, includeEphemeral, nil)
+	if err != nil {
+		return ReadySnapshot{}, err
+	}
+	snapshot.OrderAt = now
+	return snapshot, nil
 }
 
 // ReadySnapshotWithResolver is the service-facing ready seam. Durable
 // blockers are resolved through the core ontology while workflow-owned
 // blockers remain evaluated against this checkpoint image.
 func (p *Provider) ReadySnapshotWithResolver(ctx context.Context, by model.PrincipalRef, project string, types []string, meta model.WriteMeta, includeEphemeral bool, resolver BlockerResolver) (ReadySnapshot, error) {
+	return p.readySnapshotWithResolverAndCoreAt(ctx, by, project, types, meta, includeEphemeral, nil, resolver, p.now().UTC())
+}
+
+// ReadySnapshotWithResolverAndCore binds provider ready items, ordinary
+// workflow blockers, and active-ID collisions to one loaded provider image.
+// The service supplies the complete core ID set and a resolver already bound
+// to its pinned reader, so no second provider or core eligibility read can be
+// spliced into an aggregate page.
+func (p *Provider) ReadySnapshotWithResolverAndCore(ctx context.Context, by model.PrincipalRef, project string, types []string, meta model.WriteMeta, includeEphemeral bool, ordinaryIDs []string, resolver BlockerResolver) (ReadySnapshot, error) {
+	return p.readySnapshotWithResolverAndCoreAt(ctx, by, project, types, meta, includeEphemeral, ordinaryIDs, resolver, p.now().UTC())
+}
+
+// ReadySnapshotWithResolverAndCoreAt is the same combined checkpoint read,
+// using the service's shared order clock for the 48-hour ready boundary.
+func (p *Provider) ReadySnapshotWithResolverAndCoreAt(ctx context.Context, by model.PrincipalRef, project string, types []string, meta model.WriteMeta, includeEphemeral bool, ordinaryIDs []string, resolver BlockerResolver, now time.Time) (ReadySnapshot, error) {
+	return p.readySnapshotWithResolverAndCoreAt(ctx, by, project, types, meta, includeEphemeral, ordinaryIDs, resolver, now)
+}
+
+func (p *Provider) readySnapshotWithResolverAndCoreAt(ctx context.Context, by model.PrincipalRef, project string, types []string, meta model.WriteMeta, includeEphemeral bool, ordinaryIDs []string, resolver BlockerResolver, now time.Time) (ReadySnapshot, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	value, revision, err := p.load(ctx)
 	if err != nil {
 		return ReadySnapshot{}, err
 	}
-	return p.readySnapshot(ctx, value, revision, by, project, types, meta, p.now(), includeEphemeral, resolver)
+	snapshot, err := p.readySnapshot(ctx, value, revision, by, project, types, meta, now.UTC(), includeEphemeral, resolver)
+	if err != nil {
+		return ReadySnapshot{}, err
+	}
+	snapshot.OrderAt = now.UTC()
+	snapshot.BlockedOrdinary = ordinaryBlocked(value, ordinaryIDs, meta)
+	snapshot.ActiveIDs = activeIDs(value, by, meta)
+	// Use the accepted typed-parent evaluator on the same checkpoint as Items.
+	// Calling OrdinaryParentSnapshot here would reload state under this mutex.
+	snapshot.OrdinaryParents = make(map[string]OrdinaryParentFact, len(ordinaryIDs))
+	parents := parentReadiness{ctx: ctx, value: value, by: by, meta: meta, resolver: resolver, visiting: map[string]bool{}, done: map[string]bool{}}
+	for _, id := range ordinaryIDs {
+		fact, err := parents.ordinary(id)
+		if err != nil {
+			return ReadySnapshot{}, err
+		}
+		snapshot.OrdinaryParents[id] = fact
+	}
+	return snapshot, nil
 }
 
 // OrdinaryBlocked reports ordinary dependents whose active workflow blocker
@@ -1947,6 +2030,7 @@ func (p *Provider) Demote(ctx context.Context, by model.PrincipalRef, req Demote
 		if target.Parent != nil && target.Parent.ID == req.Source.ID {
 			ref := model.RefByID(itemID, model.Natural64(0))
 			target.Parent = &ref
+			item.ChildCounter++
 		}
 		filtered := target.Inbound[:0]
 		for _, relation := range target.Inbound {
@@ -2429,6 +2513,14 @@ func (p *Provider) sanitizeTerminalReceipts(value persisted, runID string) {
 				item = ItemView{ID: receipt.ItemID, RunID: runID, Status: "closed", Plane: "ephemeral", Kind: "workflow.item", Plugin: Alias, Revision: item.Revision}
 				receipt.Result, _ = json.Marshal(item)
 			}
+		} else if receipt.Method == "tx.apply" {
+			var result model.OpResult
+			if json.Unmarshal(receipt.Result, &result) == nil {
+				result.Record = nil
+				receipt.Result, _ = json.Marshal(result)
+			} else {
+				receipt.Result = nil
+			}
 		} else if receipt.Method == "x.workflow.run.demote" {
 			var result DemoteResult
 			_ = json.Unmarshal(receipt.Result, &result)
@@ -2532,11 +2624,20 @@ func (p *Provider) ActiveIDsFor(ctx context.Context, by model.PrincipalRef, meta
 	if err != nil {
 		return nil, err
 	}
+	return activeIDs(value, by, meta), nil
+}
+
+func activeIDs(value persisted, by model.PrincipalRef, meta model.WriteMeta) map[string]struct{} {
 	ids := map[string]struct{}{}
+	principal, _, err := principalScope(by, effectiveAgent(by, meta))
+	if err != nil {
+		return ids
+	}
+	agent := effectiveAgent(by, meta)
 	for id, item := range value.Items {
-		if p.authorized(item, by, meta) == nil {
+		if item.Owner.Principal == principal && item.Owner.Agent == agent && (meta.Project == "" || item.Project == meta.Project) {
 			ids[id] = struct{}{}
 		}
 	}
-	return ids, nil
+	return ids
 }

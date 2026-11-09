@@ -29,6 +29,10 @@ type SourcePublication struct {
 	Head      driver.CoreSnapshotExpectation
 	Namespace driver.CheckpointExpectation
 	Mutation  *driver.CheckpointMutation
+	// FinalResults can replace external results after ordered preparation,
+	// when several operations share one endpoint's final image and revision.
+	// Ordinals and references must still identify the original operations.
+	FinalResults map[int]model.OpResult
 }
 
 // SourcePreparation runs only after canonical durable receipt replay misses,
@@ -79,6 +83,19 @@ func (w *Writer) prepareSourceOperations(ctx context.Context, reader driver.Read
 		copy.Payload = append([]byte(nil), mutation.Payload...)
 		publication.Mutation = &copy
 	}
+	for position, result := range publication.FinalResults {
+		active, exists := p.external[position]
+		if !exists || active.Result.Ref != result.Ref {
+			return nil, failure("internal_error", "final source result must preserve its operation reference")
+		}
+		detached, err := clone(result)
+		if err != nil {
+			return nil, err
+		}
+		active.Result = detached
+		p.external[position] = active
+	}
+	publication.FinalResults = nil
 	p.source = &publication
 	if p.checkpointReads == nil {
 		p.checkpointReads = map[string]uint64{}

@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "atomic.go",
         "native.go",
+        "ordinary_delete.go",
         "scheduling.go",
         "source_comments.go",
         "source_graph.go",

@@ -73,6 +73,21 @@ class AuditControls(unittest.TestCase):
             with self.assertRaises(ValueError):
                 pair.validate_runtime_summary(summary, binding)
 
+    def test_rejects_product_substitution_against_finite_dispatch_receipt(self):
+        binding, _ = fixture()
+        expected = copy.deepcopy(binding["product"])
+        for field, value in (
+            ("commit", "e" * 40),
+            ("tree", "f" * 40),
+            ("ordered_parents", ["0" * 40]),
+            ("raw_commit_sha256", "e" * 64),
+        ):
+            with self.subTest(field=field):
+                altered = copy.deepcopy(binding)
+                altered["product"][field] = value
+                with self.assertRaisesRegex(ValueError, "finite dispatch receipt"):
+                    pair.validate_binding(altered, expected)
+
     def test_rejects_runtime_identity_substitution(self):
         for key, value in (("run", "12346"), ("artifact_id", "67891"), ("workflow_head", "e" * 40)):
             binding, summary = fixture()

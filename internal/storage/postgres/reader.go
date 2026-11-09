@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -190,6 +192,9 @@ func (r *reader) recordAt(ctx context.Context, key string) (storedRecord, bool, 
 			if e != nil {
 				return result, false, e
 			}
+			if !deleted {
+				driver.ReportReadPayload(ctx, body)
+			}
 			return storedRecord{record: driver.Record{Ref: ref, Kind: kind, Revision: model.Natural64(n), Body: body}, deleted: deleted, count: c}, true, nil
 		}
 	} else {
@@ -259,13 +264,238 @@ func (r *reader) recordAt(ctx context.Context, key string) (storedRecord, bool, 
 	if !found {
 		return result, false, fmt.Errorf("postgres: historical version has no base")
 	}
+	driver.ReportReadPayload(ctx, result.record.Body)
 	return result, true, nil
 }
 
-// recordsAt batches current rows and their absences. Only rows newer than the
-// requested snapshot need the bounded historical reconstruction path. Current
-// rows retain tombstones, so a missing key has no history. Nothing survives this
-// call, including absence observations made before a writer acquires Head.
+type historicalBatchVersion struct {
+	revision string
+	base     bool
+	value    []byte
+}
+
+type historicalBatchKey struct {
+	key      string
+	latest   []byte
+	kind     sql.NullString
+	versions []historicalBatchVersion
+}
+
+// historicalRecordsAt resolves all current-row misses in one pinned query.
+// The latest row is selected at the reader snapshot, while the replay rows are
+// fetched without a snapshot cap and filtered against the decoded
+// Version.Revision just as recordAt does. The requested ordinal is retained so
+// decode and reconstruction errors follow caller order.
+func (r *reader) historicalRecordsAt(ctx context.Context, ids []string) (map[string]storedRecord, error) {
+	result := make(map[string]storedRecord, len(ids))
+	if len(ids) == 0 {
+		return result, nil
+	}
+	keys := make([][]byte, len(ids))
+	for i, id := range ids {
+		keys[i] = []byte(id)
+	}
+	rows, err := r.sql.QueryContext(ctx, `WITH requested(key,position) AS (
+			SELECT key,position
+			FROM unnest($1::bytea[]) WITH ORDINALITY AS request(key,position)
+		), latest AS (
+			SELECT DISTINCT ON (v.key) v.key,v.revision AS latest_revision,v.value AS latest_value
+			FROM plug_postgres.versions AS v
+			JOIN requested AS q ON q.key=v.key
+			WHERE v.revision<=$2
+			ORDER BY v.key,v.revision DESC
+		), selected AS (
+			SELECT l.key,q.position,l.latest_revision,l.latest_value
+			FROM latest AS l
+			JOIN requested AS q ON q.key=l.key
+		), history AS (
+			SELECT s.key,v.revision,v.is_base,v.value
+			FROM selected AS s
+			JOIN plug_postgres.versions AS v ON v.key=s.key
+		)
+		SELECT s.key,s.position,s.latest_value,h.revision::text,h.is_base,h.value,r.kind
+		FROM selected AS s
+		LEFT JOIN history AS h ON h.key=s.key
+		LEFT JOIN plug_postgres.records AS r ON r.key=s.key
+		ORDER BY s.position,h.revision`, keys, decimal(r.at))
+	if err != nil {
+		return nil, err
+	}
+	var current *historicalBatchKey
+	process := func() error {
+		if current == nil {
+			return nil
+		}
+		var last driver.Version
+		if err := decode(current.latest, &last); err != nil {
+			return err
+		}
+		// Kinds are immutable, including across deletion and recreation. Keep
+		// the scalar kind lookup's error precedence for malformed stores.
+		if !current.kind.Valid {
+			return sql.ErrNoRows
+		}
+		value := storedRecord{record: driver.Record{Ref: last.Ref, Kind: current.kind.String, Revision: last.Revision}, deleted: last.Deleted}
+		if last.Deleted {
+			result[current.key] = value
+			return nil
+		}
+		baseRevision := ""
+		for _, item := range current.versions {
+			atOrBefore, err := revisionAtOrBefore(item.revision, last.Revision)
+			if err != nil {
+				return err
+			}
+			if !atOrBefore || !item.base {
+				continue
+			}
+			if baseRevision == "" || decimalCompare(item.revision, baseRevision) > 0 {
+				baseRevision = item.revision
+			}
+		}
+		if baseRevision == "" {
+			return fmt.Errorf("postgres: historical version has no base")
+		}
+		patches := 0
+		found := false
+		for _, item := range current.versions {
+			atOrBefore, err := revisionAtOrBefore(item.revision, last.Revision)
+			if err != nil {
+				return err
+			}
+			if !atOrBefore || decimalCompare(item.revision, baseRevision) < 0 {
+				continue
+			}
+			var version driver.Version
+			if err := decode(item.value, &version); err != nil {
+				return err
+			}
+			found = true
+			switch {
+			case version.Deleted:
+				value.record.Body = nil
+			case version.Base:
+				value.record.Body = version.Body
+			default:
+				patches++
+				if patches >= driver.VersionBaseEvery {
+					return fmt.Errorf("postgres: stored version base cadence violated")
+				}
+				body, err := applyPatch(version.Patch)
+				if err != nil {
+					return err
+				}
+				value.record.Body = body
+			}
+		}
+		if !found {
+			return fmt.Errorf("postgres: historical version has no base")
+		}
+		driver.ReportReadPayload(ctx, value.record.Body)
+		result[current.key] = value
+		return nil
+	}
+	var processErr error
+	for rows.Next() {
+		var key []byte
+		var position int64
+		var latest []byte
+		var revision, kind sql.NullString
+		var isBase sql.NullBool
+		var raw []byte
+		if err := rows.Scan(&key, &position, &latest, &revision, &isBase, &raw, &kind); err != nil {
+			processErr = err
+			break
+		}
+		id := string(key)
+		if current == nil || current.key != id {
+			if processErr = process(); processErr != nil {
+				break
+			}
+			current = &historicalBatchKey{key: id, latest: bytes.Clone(latest), kind: kind}
+		}
+		if revision.Valid {
+			current.versions = append(current.versions, historicalBatchVersion{revision: revision.String, base: isBase.Bool, value: bytes.Clone(raw)})
+		}
+	}
+	if processErr == nil {
+		processErr = process()
+	}
+	if processErr == nil {
+		processErr = rows.Err()
+	}
+	// recordAt historically defers Close without promoting a close-only error.
+	// Preserve that precedence while still closing the cursor.
+	_ = rows.Close()
+	if processErr != nil {
+		return nil, processErr
+	}
+	return result, nil
+}
+
+// revisionAtOrBefore compares a database decimal revision with the decoded
+// Version.Revision bound used by recordAt. Natural accepts compact exponent
+// spellings, while PostgreSQL returns a plain decimal string. The database
+// revision is at most twenty digits, so an oversized exponent is compared
+// without expanding it.
+func revisionAtOrBefore(revision string, bound model.Natural) (bool, error) {
+	canonical, err := bound.Canonical()
+	if err != nil {
+		return false, err
+	}
+	revision = normalizeDecimal(revision)
+	if exponentAt := strings.IndexByte(canonical, 'e'); exponentAt >= 0 {
+		coefficient := normalizeDecimal(canonical[:exponentAt])
+		exponent, parseErr := strconv.ParseUint(canonical[exponentAt+1:], 10, 64)
+		if parseErr != nil {
+			return true, nil
+		}
+		if exponent > uint64(len(revision)) {
+			return true, nil
+		}
+		totalDigits := uint64(len(coefficient)) + exponent
+		if totalDigits > uint64(len(revision)) {
+			return true, nil
+		}
+		if totalDigits < uint64(len(revision)) {
+			return false, nil
+		}
+		return decimalCompare(revision, coefficient+strings.Repeat("0", int(exponent))) <= 0, nil
+	}
+	return decimalCompare(revision, canonical) <= 0, nil
+}
+
+func normalizeDecimal(value string) string {
+	value = strings.TrimLeft(value, "0")
+	if value == "" {
+		return "0"
+	}
+	return value
+}
+
+func decimalCompare(left, right string) int {
+	left, right = normalizeDecimal(left), normalizeDecimal(right)
+	if len(left) < len(right) {
+		return -1
+	}
+	if len(left) > len(right) {
+		return 1
+	}
+	return strings.Compare(left, right)
+}
+
+type currentBatchRecord struct {
+	raw      []byte
+	kind     string
+	revision string
+	body     []byte
+	deleted  bool
+	count    string
+}
+
+// recordsAt batches current rows and resolves newer-row history together.
+// Physical absences are omitted from the history list, while the caller's
+// order is retained for all decode and replay errors.
 func (r *reader) recordsAt(ctx context.Context, ids []string) (map[string]storedRecord, error) {
 	result := make(map[string]storedRecord, len(ids))
 	if len(ids) == 0 || r.at == 0 {
@@ -280,30 +510,17 @@ func (r *reader) recordsAt(ctx context.Context, ids []string) (map[string]stored
 	if err != nil {
 		return nil, err
 	}
-	var historical []string
+	current := make(map[string]currentBatchRecord, len(ids))
 	for rows.Next() {
 		var id, raw []byte
-		var value storedRecord
 		var revision, count string
-		if err = rows.Scan(&id, &raw, &value.record.Kind, &revision, &value.record.Body, &value.deleted, &count); err != nil {
+		var kind string
+		var body []byte
+		var deleted bool
+		if err = rows.Scan(&id, &raw, &kind, &revision, &body, &deleted, &count); err != nil {
 			break
 		}
-		var n uint64
-		if n, err = parseCounter(revision); err != nil {
-			break
-		}
-		if n > r.at {
-			historical = append(historical, string(id))
-			continue
-		}
-		if err = decode(raw, &value.record.Ref); err != nil {
-			break
-		}
-		value.record.Revision = model.Natural64(n)
-		if value.count, err = parseCounter(count); err != nil {
-			break
-		}
-		result[string(id)] = value
+		current[string(id)] = currentBatchRecord{raw: bytes.Clone(raw), kind: kind, revision: revision, body: bytes.Clone(body), deleted: deleted, count: count}
 	}
 	if err == nil {
 		err = rows.Err()
@@ -315,14 +532,43 @@ func (r *reader) recordsAt(ctx context.Context, ids []string) (map[string]stored
 	if closeErr != nil {
 		return nil, closeErr
 	}
-	for _, id := range historical {
-		value, exists, err := r.recordAt(ctx, id)
+	historical := make([]string, 0, len(current))
+	seen := make(map[string]struct{}, len(current))
+	for _, id := range ids {
+		row, exists := current[id]
+		if !exists {
+			continue
+		}
+		n, parseErr := parseCounter(row.revision)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		if n > r.at {
+			if _, already := seen[id]; !already {
+				seen[id] = struct{}{}
+				historical = append(historical, id)
+			}
+			continue
+		}
+		var ref driver.Ref
+		if err := decode(row.raw, &ref); err != nil {
+			return nil, err
+		}
+		count, err := parseCounter(row.count)
 		if err != nil {
 			return nil, err
 		}
-		if exists {
-			result[id] = value
+		if _, already := result[id]; !already && !row.deleted {
+			driver.ReportReadPayload(ctx, row.body)
 		}
+		result[id] = storedRecord{record: driver.Record{Ref: ref, Kind: row.kind, Revision: model.Natural64(n), Body: row.body}, deleted: row.deleted, count: count}
+	}
+	historicalValues, err := r.historicalRecordsAt(ctx, historical)
+	if err != nil {
+		return nil, err
+	}
+	for id, value := range historicalValues {
+		result[id] = value
 	}
 	return result, nil
 }
@@ -345,6 +591,7 @@ func (r *reader) get(ctx context.Context, refs []driver.Ref) ([]driver.Record, e
 		if r.writer != nil {
 			if v, ok := r.writer.records[key]; ok {
 				if v != nil {
+					driver.ReportReadPayload(ctx, v.Body)
 					values[key] = storedRecord{record: *v}
 				}
 				continue
@@ -370,6 +617,7 @@ func (r *reader) get(ctx context.Context, refs []driver.Ref) ([]driver.Record, e
 	return result, nil
 }
 func (r *reader) Get(ctx context.Context, refs []driver.Ref) ([]driver.Record, error) {
+	driver.ReportReadWork(ctx, driver.ReadGetCalls, 1)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := r.check(ctx); err != nil {
