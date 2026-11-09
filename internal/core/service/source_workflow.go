@@ -18,12 +18,13 @@ import (
 )
 
 type sourceWorkflow struct {
-	provider    *workflowplugin.Provider
-	digest      string
-	profile     driver.RestoreImportProfile
-	restoreTime time.Time
-	active      map[string]string // exact target -> project, retained after completion
-	addresses   map[sourceAddress]bool
+	provider     *workflowplugin.Provider
+	digest       string
+	profile      driver.RestoreImportProfile
+	restoreTime  time.Time
+	active       map[string]string // exact target -> project, retained after completion
+	addresses    map[sourceAddress]bool
+	allocatorIDs []string // global identity occupancy, retained after completion/deletion
 }
 type sourceAddress struct{ project, id string }
 
@@ -78,6 +79,7 @@ func (s *Service) InstallSourceWorkflow(ctx context.Context, provider *workflowp
 	installed := &sourceWorkflow{provider: provider, digest: commit.RequestHash, profile: bound, restoreTime: change.Time, active: map[string]string{}, addresses: map[sourceAddress]bool{}}
 	for _, entity := range plan.Entities {
 		installed.addresses[sourceAddress{entity.Source.Project, entity.Source.ID}] = true
+		installed.allocatorIDs = append(installed.allocatorIDs, entity.Source.ID, entity.TargetID)
 		if entity.TargetKind == "workflow:item" {
 			installed.active[entity.TargetID] = entity.Source.Project
 		}

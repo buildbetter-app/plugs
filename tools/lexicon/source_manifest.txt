@@ -276,6 +276,8 @@ internal/core/ontologyops/service_test.go
 internal/core/ontologyops/source.go
 internal/core/ontologyops/types.go
 internal/core/pipeline/BUILD.bazel
+internal/core/pipeline/allocator_reservations.go
+internal/core/pipeline/allocator_reservations_test.go
 internal/core/pipeline/allocator_test.go
 internal/core/pipeline/ancestor.go
 internal/core/pipeline/apply.go
@@ -533,6 +535,7 @@ internal/integration/converterroundtrip/restore.go
 internal/integration/converterroundtrip/reverse.go
 internal/integration/converterroundtrip/reverse_test.go
 internal/integration/converterroundtrip/roundtrip_test.go
+internal/integration/converterroundtrip/source_allocator_test.go
 internal/integration/converterroundtrip/source_authz_test.go
 internal/integration/converterroundtrip/source_checkpoint_test.go
 internal/integration/converterroundtrip/source_composition_test.go

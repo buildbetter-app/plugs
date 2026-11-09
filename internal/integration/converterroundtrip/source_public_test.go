@@ -39,11 +39,11 @@ func (p *sourcePublicPolicy) Authorize(_ context.Context, _ port.AuthorizationSt
 	return nil
 }
 
-func sourcePublicService(t *testing.T, store driver.Store, lease driver.ActiveLease, p driver.RestoreImportProfile, report Report, policy port.Authorizer) (*service.Service, *rpc.Server) {
+func sourcePublicService(t *testing.T, store driver.Store, lease driver.ActiveLease, p driver.RestoreImportProfile, report Report, policy port.Authorizer, options ...pipeline.Option) (*service.Service, *rpc.Server) {
 	t.Helper()
 	ctx := context.Background()
 	ontology := service.NewOntology(nil)
-	writer := pipeline.New(store, lease, pipeline.WithOntology(ontology), pipeline.WithAuthorizer(policy))
+	writer := pipeline.New(store, lease, append([]pipeline.Option{pipeline.WithOntology(ontology), pipeline.WithAuthorizer(policy)}, options...)...)
 	domain := service.New(store, lease, writer, service.WithOntology(ontology))
 	registry, err := rpc.NewRegistry()
 	if err != nil {

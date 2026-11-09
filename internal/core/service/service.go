@@ -140,6 +140,7 @@ func (s *Service) apply(ctx context.Context, by model.PrincipalRef, method strin
 	}
 	meta.Method = method
 	if source := s.source.Load(); source != nil {
+		ctx = pipeline.WithAllocatorReservations(ctx, source.allocatorIDs)
 		ctx = pipeline.WithSourceOperations(ctx, s.sourcePreparation(source, by, cs, meta), func(ref model.Ref) string {
 			if source.active[ref.ID] == meta.Project && ref.IsID() && ref.Branch.IsZero() {
 				return "workflow_item"
