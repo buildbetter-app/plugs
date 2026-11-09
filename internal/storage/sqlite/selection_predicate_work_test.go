@@ -12,7 +12,7 @@ import (
 )
 
 // Retain the original W5 family admission/refusal and real Commit controls.
-func TestSelectionPredicateFamilyIndexWorkAndCommit(t *testing.T) {
+func TestSelectionPredicateFamilyIndexWorkAndCommitRetained(t *testing.T) {
 	ready, err := driver.NewReadySentinel("project", "task")
 	if err != nil {
 		t.Fatal(err)

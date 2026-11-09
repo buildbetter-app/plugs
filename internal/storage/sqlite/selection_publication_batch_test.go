@@ -11,7 +11,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
-func TestSelectionSourceInvalidationBatchesAndRollsBack(t *testing.T) {
+func TestSelectionSourceInvalidationBatchWorkAndRollsBack(t *testing.T) {
 	ctx := context.Background()
 	s := selectionStore(t).(*Store)
 	t.Cleanup(func() { _ = s.Close() })
@@ -125,7 +125,7 @@ func TestSelectionSourceInvalidationBatchesAndRollsBack(t *testing.T) {
 // The thin source observation is a temporal envelope, including tombstones
 // and derived values. Both sides of a 128-row batch boundary must publish
 // together, and an error after the second batch must restore every interval.
-func TestSelectionSourceHistoryBatchesAndRollsBack(t *testing.T) {
+func TestSelectionSourceHistoryBatchWorkAndRollsBack(t *testing.T) {
 	ctx := context.Background()
 	s := selectionStore(t).(*Store)
 	t.Cleanup(func() { _ = s.Close() })
