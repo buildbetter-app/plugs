@@ -19,5 +19,6 @@ go_test(
         "//internal/storage/physicalcapture",
         "//internal/plugdump",
         "//internal/storage/schema",
+        "@com_github_dolthub_driver_v2//:driver",
     ],
 )

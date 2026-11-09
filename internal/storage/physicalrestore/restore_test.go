@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	embedded "github.com/dolthub/driver/v2"
 	"github.com/steveyegge/beads/internal/plugdump"
 	"github.com/steveyegge/beads/internal/storage/physicalcapture"
 	"github.com/steveyegge/beads/internal/storage/schema"
@@ -111,7 +113,10 @@ func captureTables(t *testing.T, db *sql.DB, conn *sql.Conn, names ...string) Ma
 		t.Fatal(err)
 	}
 	for _, name := range names {
-		exported, err := (plugdump.SQLSource{DB: conn}).ReadTable(context.Background(), name)
+		exported, err := readActualSQLTable(conn, name)
+		if name == "issues" {
+			exported, err = (plugdump.SQLSource{DB: conn}).ReadTable(context.Background(), name)
+		}
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -128,6 +133,59 @@ func captureTables(t *testing.T, db *sql.DB, conn *sql.Conn, names ...string) Ma
 		}
 	}
 	return manifest
+}
+
+// Direct ordinary SQL readback for public diagnostic tables. The production
+// SQLSource allowlist stays unchanged. This receives no expected cell values.
+func readActualSQLTable(conn *sql.Conn, name string) (plugdump.Table, error) {
+	rows, err := conn.QueryContext(context.Background(), "SELECT * FROM `"+name+"`")
+	if err != nil {
+		return plugdump.Table{}, err
+	}
+	defer rows.Close()
+	columns, err := rows.Columns()
+	if err != nil {
+		return plugdump.Table{}, err
+	}
+	types, err := rows.ColumnTypes()
+	if err != nil {
+		return plugdump.Table{}, err
+	}
+	table := plugdump.Table{Columns: columns, Rows: []plugdump.Row{}}
+	for rows.Next() {
+		values := make([]any, len(columns))
+		targets := make([]any, len(columns))
+		for i := range values {
+			targets[i] = &values[i]
+		}
+		if err := rows.Scan(targets...); err != nil {
+			return plugdump.Table{}, err
+		}
+		row := plugdump.Row{}
+		for ci, value := range values {
+			kind := strings.ToUpper(types[ci].DatabaseTypeName())
+			if binary, ok := value.([]byte); ok {
+				if strings.Contains(kind, "BLOB") || strings.Contains(kind, "BINARY") {
+					value = map[string]string{"$bytes": base64.StdEncoding.EncodeToString(binary)}
+				} else {
+					value = string(binary)
+				}
+			}
+			if stamp, ok := value.(time.Time); ok {
+				value = stamp.UTC().Format(time.RFC3339Nano)
+			}
+			if text, ok := value.(string); ok && kind == "JSON" {
+				decoder := json.NewDecoder(strings.NewReader(text))
+				decoder.UseNumber()
+				if err := decoder.Decode(&value); err != nil {
+					return plugdump.Table{}, err
+				}
+			}
+			row[columns[ci]] = value
+		}
+		table.Rows = append(table.Rows, row)
+	}
+	return table, rows.Err()
 }
 func saveEvidence(t *testing.T, name string, value any) {
 	t.Helper()
@@ -220,71 +278,176 @@ func TestPhysicalRestoreNativeRoundtrip(t *testing.T) {
 	saveEvidence(t, "native-target-reexport.json", table)
 }
 
-const boundaryDDL = `CREATE TABLE boundary_cells (id VARCHAR(255) PRIMARY KEY,agent_state VARCHAR(255),await_id VARCHAR(255),await_type VARCHAR(255),ephemeral VARCHAR(8),event_kind VARCHAR(255),hook_bead VARCHAR(255),is_template VARCHAR(8),mol_type VARCHAR(255),payload JSON,role_bead VARCHAR(255),role_type VARCHAR(255),target VARCHAR(255),timeout_ns BIGINT,waiters JSON,wisp_type VARCHAR(255),work_type VARCHAR(255),opaque VARBINARY(32))`
+const boundaryDDL = `CREATE TABLE complete_cells (id VARCHAR(255) PRIMARY KEY,agent_state VARCHAR(255),await_id VARCHAR(255),await_type VARCHAR(255),ephemeral VARCHAR(8),event_kind VARCHAR(255),hook_bead VARCHAR(255),is_template VARCHAR(8),mol_type VARCHAR(255),payload JSON,role_bead VARCHAR(255),role_type VARCHAR(255),target VARCHAR(255),timeout_ns BIGINT,waiters JSON,wisp_type VARCHAR(255),work_type VARCHAR(255),opaque VARBINARY(32))`
 
 func TestPhysicalRestorePublicLossShapes(t *testing.T) {
 	sourceDB, source, _, _ := restoreDB(t, false)
 	targetDB, target, _, _ := restoreDB(t, false)
-	execSQL(t, source, boundaryDDL)
-	execSQL(t, target, boundaryDDL)
-	execSQL(t, source, `INSERT INTO boundary_cells VALUES ('demo-42v',NULL,'','','0','',NULL,'0','',JSON_OBJECT('n',9007199254740992,'null',CAST('null' AS JSON)),NULL,NULL,'',9007199254740993,JSON_QUOTE(''),'','',?)`, []byte{0, 255, 1})
-	for _, id := range []string{"demo-7", "demo-7.4", "demo-8"} {
-		execSQL(t, source, `INSERT INTO boundary_cells VALUES (?,?,'approval/byte-for-byte','human','1',NULL,'demo-8','1','formula',JSON_OBJECT('n',9007199254740992,'null',CAST('null' AS JSON)),'demo-7','agent','demo-8',9007199254740993,JSON_ARRAY('demo-8',CAST('null' AS JSON)),'run','workflow',?)`, id, "waiting\x00opaque", []byte{})
+	completeDDL := strings.Replace(boundaryDDL, "waiters JSON", "waiters TEXT", 1)
+	partialDDL := strings.ReplaceAll(strings.Replace(boundaryDDL, "complete_cells", "partial_cells", 1), "VARCHAR(8)", "TINYINT")
+	for _, conn := range []*sql.Conn{source, target} {
+		execSQL(t, conn, completeDDL)
+		execSQL(t, conn, partialDDL)
 	}
-	manifest := captureTables(t, sourceDB, source, "boundary_cells")
+	execSQL(t, source, `INSERT INTO complete_cells VALUES ('demo-42v',NULL,'','','0','',NULL,'0','',JSON_OBJECT('n',9007199254740992,'null',CAST('null' AS JSON)),NULL,NULL,'',9007199254740993,'','','',?)`, []byte{0, 255, 1})
+	for _, id := range []string{"demo-7", "demo-7.4", "demo-8"} {
+		execSQL(t, source, `INSERT INTO partial_cells VALUES (?,?,'approval/byte-for-byte','human',1,NULL,'demo-8',1,'formula',JSON_OBJECT('n',9007199254740992,'null',CAST('null' AS JSON)),'demo-7','agent','demo-8',9007199254740993,JSON_ARRAY('demo-8',CAST('null' AS JSON)),'run','workflow',?)`, id, "waiting\x00opaque", []byte{})
+	}
+	manifest := captureTables(t, sourceDB, source, "complete_cells", "partial_cells")
 	if err := Restore(context.Background(), target, manifest); err != nil {
 		t.Fatal(err)
 	}
-	readback := captureTables(t, targetDB, target, "boundary_cells")
+	readback := captureTables(t, targetDB, target, "complete_cells", "partial_cells")
 	if !reflect.DeepEqual(manifest, readback) {
 		t.Fatal("four public records changed physical cell/type/NULL/binary")
 	}
 	for _, shape := range []string{"present_null_vs_empty", "sql_text_flags", "structured_payload", "partial_waiters", "binary_owned_cells", "all_four_public_records", "timeout_beyond_2pow53"} {
 		t.Run(shape, func(t *testing.T) {
-			if len(readback.Tables[0].Rows) != 4 {
-				t.Fatal("public rows missing")
+			if len(readback.Tables) != 2 || len(readback.Tables[0].Rows) != 1 || len(readback.Tables[1].Rows) != 3 {
+				t.Fatal("public records missing")
 			}
 			t.Logf("RESTORE_PUBLIC_SHAPE %s exact=true", shape)
 		})
+	}
+	for ti, table := range manifest.Tables {
+		for ci, column := range table.Columns {
+			if column.Name == "id" || column.Name == "opaque" {
+				continue
+			}
+			t.Run(table.Name+"/"+column.Name, func(t *testing.T) {
+				for ri, row := range table.Rows {
+					if !reflect.DeepEqual(row[ci], readback.Tables[ti].Rows[ri][ci]) {
+						t.Fatal("named physical cell changed")
+					}
+				}
+				t.Logf("RESTORE_PUBLIC_FIELD table=%s field=%s rows=%d exact=true", table.Name, column.Name, len(table.Rows))
+			})
+		}
 	}
 	saveEvidence(t, "public-loss-shapes-source.json", manifest)
 	saveEvidence(t, "public-loss-shapes-actual-root.json", readback)
 }
 
+func TestPhysicalRestoreSQLNullAndJSONNull(t *testing.T) {
+	sourceDB, source, _, _ := restoreDB(t, false)
+	targetDB, target, _, _ := restoreDB(t, false)
+	ddl := "CREATE TABLE json_cells (id INT PRIMARY KEY,metadata JSON)"
+	execSQL(t, source, ddl)
+	execSQL(t, target, ddl)
+	execSQL(t, source, `INSERT INTO json_cells VALUES (1,NULL),(2,CAST('null' AS JSON)),(3,JSON_OBJECT('nested',CAST('null' AS JSON))),(4,JSON_QUOTE(''))`)
+	var sqlNull, jsonNull bool
+	if err := source.QueryRowContext(context.Background(), "SELECT metadata IS NULL FROM json_cells WHERE id=1").Scan(&sqlNull); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.QueryRowContext(context.Background(), "SELECT metadata IS NULL FROM json_cells WHERE id=2").Scan(&jsonNull); err != nil {
+		t.Fatal(err)
+	}
+	if !sqlNull || jsonNull {
+		t.Fatal("actual SQL fixture does not distinguish SQL NULL/JSON null")
+	}
+	manifest := captureTables(t, sourceDB, source, "json_cells")
+	if cell := manifestCell(t, &manifest, 0, "metadata"); cell.Type != "null" {
+		t.Fatal("raw port lost SQL NULL")
+	}
+	if cell := manifestCell(t, &manifest, 1, "metadata"); cell.Type != "string" || cell.Data != "null" {
+		t.Fatal("raw port lost JSON null")
+	}
+	if err := Restore(context.Background(), target, manifest); err != nil {
+		t.Fatal(err)
+	}
+	actual := captureTables(t, targetDB, target, "json_cells")
+	if !reflect.DeepEqual(manifest, actual) {
+		t.Fatal("SQL NULL/JSON null/nested null/empty JSON string changed")
+	}
+	t.Log("RESTORE_NULL_TYPES SQL_NULL=null-tag JSON_null=string-null-tag exact=true")
+	saveEvidence(t, "json-null-source-manifest.json", manifest)
+	saveEvidence(t, "json-null-actual-root.json", actual)
+}
+
+func TestPhysicalRestoreCleanupErrorTree(t *testing.T) {
+	refusal, rollback := errors.New("native mismatch"), errors.New("native rollback failure")
+	original := &embedded.PhysicalRestoreError{Kind: "rollback-indeterminate", Row: -1, Cause: errors.Join(&embedded.PhysicalRestoreError{Kind: "physical-readback", Table: "cells", Column: "metadata", Row: 1, Cause: refusal}, rollback)}
+	translated := translateRestoreError(original)
+	var failure *Error
+	if !errors.As(translated, &failure) || failure.Kind != "rollback-indeterminate" || !errors.Is(translated, refusal) || !errors.Is(translated, rollback) {
+		t.Fatal("facade lost indeterminate cleanup/error tree")
+	}
+	var leaked *embedded.PhysicalRestoreError
+	if errors.As(translated, &leaked) {
+		t.Fatal("driver-specific restore error escaped facade")
+	}
+}
+
 func TestPhysicalRestoreExactMetadataBoundary(t *testing.T) {
 	db, conn, _, _ := restoreDB(t, false)
 	execSQL(t, conn, "CREATE TABLE metadata_cells (id INT PRIMARY KEY,metadata JSON)")
-	execSQL(t, conn, "INSERT INTO metadata_cells VALUES (1,?)", `{"beads.timeout_ns":9007199254740993}`)
-	var old string
-	if err := conn.QueryRowContext(context.Background(), "SELECT metadata FROM metadata_cells WHERE id=1").Scan(&old); err != nil {
+	const requested = `{"beads.timeout_ns":9007199254740993,"nested":{"array":[9007199254740993,null]}}`
+	// Both native representations are RECORDED from actual ordinary SQL. No
+	// hand-written rounded result decides native representability.
+	execSQL(t, conn, "INSERT INTO metadata_cells VALUES (1,?)", requested)
+	var ordinary string
+	if err := conn.QueryRowContext(context.Background(), "SELECT metadata FROM metadata_cells").Scan(&ordinary); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(old, "9007199254740993") {
-		t.Fatal("pinned old SQL normalization changed; reassess boundary")
-	}
-	t.Logf("OLD_FAILURE ordinary_SQL_large_metadata_exact=false readback=%s", old)
-	manifest := captureTables(t, db, conn, "metadata_cells")
+	nativeOrigin := captureTables(t, db, conn, "metadata_cells")
 	execSQL(t, conn, "DELETE FROM metadata_cells")
-	manifestCell(t, &manifest, 0, "metadata").Data = `{"beads.timeout_ns":9007199254740993}`
-	err := Restore(context.Background(), conn, manifest)
-	if err == nil {
-		actual := captureTables(t, db, conn, "metadata_cells")
-		if !strings.Contains(manifestCell(t, &actual, 0, "metadata").Data, "9007199254740993") {
-			t.Fatal("accepted lossy metadata")
+	t.Run("native_origin_successful_roundtrip", func(t *testing.T) {
+		if err := Restore(context.Background(), conn, nativeOrigin); err != nil {
+			t.Fatal(err)
 		}
-		t.Log("EXACT_METADATA_SQL_AND_CAPTURE_PASS")
-		saveEvidence(t, "exact-metadata-actual-root.json", actual)
-		return
+		actual := captureTables(t, db, conn, "metadata_cells")
+		if !reflect.DeepEqual(nativeOrigin, actual) {
+			t.Fatal("actual native-origin metadata changed")
+		}
+		saveEvidence(t, "native-origin-metadata-actual-root.json", actual)
+	})
+	execSQL(t, conn, "DELETE FROM metadata_cells")
+	execSQL(t, conn, `INSERT INTO metadata_cells VALUES (1,JSON_OBJECT('beads.timeout_ns',CAST(? AS SIGNED),'nested',JSON_OBJECT('array',JSON_ARRAY(CAST(? AS SIGNED),CAST('null' AS JSON)))))`, int64(9007199254740993), int64(9007199254740993))
+	var constructor string
+	if err := conn.QueryRowContext(context.Background(), "SELECT metadata FROM metadata_cells").Scan(&constructor); err != nil {
+		t.Fatal(err)
 	}
-	var failure *Error
-	if !errors.As(err, &failure) || failure.Kind != "physical-readback" {
-		t.Fatalf("unexpected refusal: %v", err)
+	nativeConstructor := captureTables(t, db, conn, "metadata_cells")
+	execSQL(t, conn, "DELETE FROM metadata_cells")
+	canonical := func(text string) string {
+		decoder := json.NewDecoder(strings.NewReader(text))
+		decoder.UseNumber()
+		var value any
+		if err := decoder.Decode(&value); err != nil {
+			t.Fatal(err)
+		}
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
 	}
-	if count := rowCount(t, conn, "metadata_cells"); count != 0 {
-		t.Fatalf("loss refusal left %d rows", count)
-	}
-	t.Log("BLOCKER_EXACT_METADATA_JSON_READBACK native SQL constructor plus capture normalizes >2^53; restore refused and rolled back; no successful exact-metadata credit")
-	saveEvidence(t, "exact-metadata-blocker.json", map[string]any{"required": "9007199254740993", "old_readback": old, "writer": failure.Kind, "target_rows_after_refusal": 0, "successful_exact_metadata_roundtrip": false})
+	nativeExact := canonical(constructor) == canonical(requested)
+	intended := cloneManifest(t, nativeOrigin)
+	manifestCell(t, &intended, 0, "metadata").Data = requested
+	t.Run("plug_created_value_matches_recorded_native_outcome", func(t *testing.T) {
+		err := Restore(context.Background(), conn, intended)
+		if nativeExact {
+			if err != nil {
+				t.Fatalf("native observed exact but writer refused: %v", err)
+			}
+			actual := captureTables(t, db, conn, "metadata_cells")
+			if canonical(manifestCell(t, &actual, 0, "metadata").Data) != canonical(requested) {
+				t.Fatal("writer accepted a changed requested value")
+			}
+			saveEvidence(t, "plug-created-metadata-actual-root.json", actual)
+		} else {
+			var failure *Error
+			if !errors.As(err, &failure) || failure.Kind != "physical-readback" || failure.Table != "metadata_cells" || failure.Column != "metadata" || failure.Row != 0 {
+				t.Fatalf("require exact field+row typed native refusal: %v", err)
+			}
+			if count := rowCount(t, conn, "metadata_cells"); count != 0 {
+				t.Fatalf("unrepresentable metadata refusal left %d rows", count)
+			}
+			t.Log("NATIVE_UNREPRESENTABLE requested exact JSON refused at field=metadata row=0; all writes rolled back")
+		}
+	})
+	saveEvidence(t, "recorded-native-metadata-oracle.json", map[string]any{"requested": json.RawMessage(requested), "ordinary_sql_readback": json.RawMessage(ordinary), "constructor_sql_readback": json.RawMessage(constructor), "constructor_immutable_root": nativeConstructor, "native_represents_requested_exactly": nativeExact, "engine_patch": "NONE; unchanged GMS/native semantics", "native_origin_roundtrip": "required PASS"})
 }
 
 func TestPhysicalRestoreAtomicRefusals(t *testing.T) {
@@ -405,8 +568,12 @@ func TestPhysicalRestoreManifestRefusals(t *testing.T) {
 		}
 	}
 	manifest := Manifest{Format: Format, HistoryMode: "snapshot", Tables: []Table{{Name: "cells", Columns: []Column{{Name: "metadata", SQLType: "json"}}, Rows: [][]Cell{{{Type: "null"}}}}}}
-	if err := Restore(context.Background(), nil, manifest); err == nil {
-		t.Fatal("ambiguous SQL NULL/JSON null accepted")
+	if _, err := decode(manifest); err != nil {
+		t.Fatalf("explicit typed SQL NULL refused: %v", err)
+	}
+	manifest.Tables[0].Rows[0][0] = Cell{Type: "string", Data: "null"}
+	if _, err := decode(manifest); err != nil {
+		t.Fatalf("explicit typed JSON null refused: %v", err)
 	}
 }
 
@@ -425,6 +592,9 @@ func TestPhysicalRestorePublicBinary(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("RESTORE_BINARY bytes=%d sha256=%x", len(bytes), sha256.Sum256(bytes))
+	if err := os.WriteFile(filepath.Join(os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR"), "native-physical-restore"), bytes, 0700); err != nil {
+		t.Fatal(err)
+	}
 	sourceDB, source, _, _ := restoreDB(t, false)
 	_, target, directory, release := restoreDB(t, false)
 	ddl := "CREATE TABLE binary_cells (id BIGINT PRIMARY KEY, nullable_text TEXT, opaque BLOB)"
@@ -466,4 +636,51 @@ func TestPhysicalRestorePublicBinary(t *testing.T) {
 	}
 	saveEvidence(t, "binary-source-manifest.json", manifest)
 	saveEvidence(t, "binary-actual-root-readback.json", actual)
+}
+
+func TestPhysicalRestoreKeylessAndUnsigned(t *testing.T) {
+	sourceDB, source, _, _ := restoreDB(t, false)
+	targetDB, target, _, _ := restoreDB(t, false)
+	ddl := "CREATE TABLE keyless_cells (id INT, old_column TEXT, opaque LONGBLOB, exact_unsigned BIGINT UNSIGNED)"
+	execSQL(t, source, ddl)
+	execSQL(t, target, ddl)
+	for i := 0; i < 2; i++ {
+		execSQL(t, source, "INSERT INTO keyless_cells VALUES (1,'original',?,18446744073709551615)", []byte{0, 255})
+	}
+	execSQL(t, source, "INSERT INTO keyless_cells VALUES (2,NULL,NULL,0)")
+	manifest := captureTables(t, sourceDB, source, "keyless_cells")
+	if err := Restore(context.Background(), target, manifest); err != nil {
+		t.Fatal(err)
+	}
+	actual := captureTables(t, targetDB, target, "keyless_cells")
+	if !reflect.DeepEqual(manifest, actual) || rowCount(t, target, "keyless_cells") != 3 {
+		t.Fatal("keyless multiplicity/NULL/binary/unsigned max changed")
+	}
+	t.Log("RESTORE_KEYLESS duplicate_multiplicity=2 rows=3 unsigned_max_exact=true")
+	saveEvidence(t, "keyless-unsigned-source.json", manifest)
+	saveEvidence(t, "keyless-unsigned-actual-root.json", actual)
+}
+
+func TestPhysicalRestoreNonlocalRefusal(t *testing.T) {
+	sourceDB, source, _, _ := restoreDB(t, false)
+	_, target, _, _ := restoreDB(t, false)
+	for _, conn := range []*sql.Conn{source, target} {
+		execSQL(t, conn, "CREATE TABLE alias_cells (id INT PRIMARY KEY)")
+	}
+	execSQL(t, source, "INSERT INTO alias_cells VALUES (1)")
+	manifest := captureTables(t, sourceDB, source, "alias_cells")
+	execSQL(t, target, "CALL DOLT_ADD('.')")
+	execSQL(t, target, "CALL DOLT_COMMIT('-Am','empty public alias target')")
+	execSQL(t, target, "INSERT INTO dolt_nonlocal_tables (table_name,target_ref,ref_table,options) VALUES ('alias_cells','HEAD','alias_cells',NULL)")
+	err := Restore(context.Background(), target, manifest)
+	var failure *Error
+	if !errors.As(err, &failure) || failure.Kind != "nonlocal-aliases" || failure.Table != "alias_cells" {
+		t.Fatalf("destination alias must refuse: %v", err)
+	}
+	// Remove only this public fixture declaration, then inspect the local target.
+	execSQL(t, target, "DELETE FROM dolt_nonlocal_tables WHERE table_name='alias_cells'")
+	if rowCount(t, target, "alias_cells") != 0 {
+		t.Fatal("nonlocal refusal wrote to destination")
+	}
+	t.Log("RESTORE_ALIAS typed_refusal=true local_target_rows=0")
 }

@@ -72,8 +72,12 @@ func RestorePhysicalSnapshot(ctx context.Context, conn *sql.Conn, tables []Physi
 		committed := false
 		defer func() {
 			if !committed {
-				if err := tx.Rollback(); err != nil {
-					resultErr = errors.Join(resultErr, restoreError("rollback", "", "", -1, err))
+				rollbackErr := tx.Rollback()
+				if rollbackErr == nil && d.gmsCtx.GetTransaction() != nil {
+					rollbackErr = errors.New("native transaction remains active after rollback")
+				}
+				if rollbackErr != nil {
+					resultErr = restoreError("rollback-indeterminate", "", "", -1, errors.Join(resultErr, rollbackErr))
 				}
 			}
 		}()
@@ -174,8 +178,11 @@ func RestorePhysicalSnapshot(ctx context.Context, conn *sql.Conn, tables []Physi
 				want = restored
 			}
 			got, ok := after[name]
-			if !ok || !equalRestoreTable(want, got) {
-				return restoreError("physical-readback", name, "", -1, errors.New("physical SQL types, cells or multiplicities differ"))
+			if !ok {
+				return restoreError("physical-readback", name, "*", 0, errors.New("physical table missing after insertion"))
+			}
+			if row, column, equal := restoreTableDifference(want, got); !equal {
+				return restoreError("physical-readback", name, column, row, errors.New("physical SQL type, cell or multiplicity differs"))
 			}
 		}
 		if err := ctx.Err(); err != nil {
@@ -254,9 +261,6 @@ func restoreExpression(value driver.Value, sqlType string, args *[]driver.NamedV
 		parsed, err := restoreJSON(text)
 		if err != nil {
 			return "", err
-		}
-		if parsed == nil {
-			return "", errors.New("top-level JSON null is ambiguous in the capture driver; unsupported")
 		}
 		if text, ok := parsed.(string); ok {
 			return "JSON_QUOTE(" + restoreBind(text, args) + ")", nil
@@ -403,39 +407,89 @@ func (d *DoltConn) restoreWorkingImage(ctx context.Context) (map[string]Physical
 	}
 	return result, nil
 }
-func equalRestoreTable(a, b PhysicalTable) bool {
-	if a.Name != b.Name || !reflect.DeepEqual(a.Columns, b.Columns) || len(a.Rows) != len(b.Rows) {
-		return false
+
+// Return the zero-based requested row and physical column for a mismatch.
+// Exact row matching is a multiset operation, retaining duplicate/keyless rows.
+// A nearest remaining physical row only locates a useful error field; it never
+// turns a mismatch into acceptance or supplies values to the read path.
+func restoreTableDifference(want, got PhysicalTable) (int, string, bool) {
+	if want.Name != got.Name || !reflect.DeepEqual(want.Columns, got.Columns) {
+		return 0, "*", false
 	}
-	// Sort detached encoded rows only for multiset comparison, preserving duplicate
-	// multiplicities, byte/scalar types and SQL NULL. Never sort caller buffers.
-	encode := func(table PhysicalTable) []string {
-		out := make([]string, len(table.Rows))
+	encode := func(table PhysicalTable) ([][]string, bool) {
+		out := make([][]string, len(table.Rows))
 		for ri, row := range table.Rows {
-			var data bytes.Buffer
+			if len(row) != len(table.Columns) {
+				return nil, false
+			}
+			out[ri] = make([]string, len(row))
 			for ci, value := range row {
 				if strings.EqualFold(table.Columns[ci].DatabaseTypeName, "json") && value != nil {
 					text, ok := value.(string)
 					if !ok {
-						return nil
+						return nil, false
 					}
 					parsed, err := restoreJSON(text)
 					if err != nil {
-						return nil
+						return nil, false
 					}
 					canonical, err := json.Marshal(parsed)
 					if err != nil {
-						return nil
+						return nil, false
 					}
 					value = string(canonical)
 				}
-				fmt.Fprintf(&data, "%T:%#v;", value, value)
+				var cell bytes.Buffer
+				fmt.Fprintf(&cell, "%T:%#v", value, value)
+				out[ri][ci] = cell.String()
 			}
-			out[ri] = data.String()
 		}
-		sort.Strings(out)
-		return out
+		return out, true
 	}
-	left, right := encode(a), encode(b)
-	return left != nil && right != nil && reflect.DeepEqual(left, right)
+	left, leftOK := encode(want)
+	right, rightOK := encode(got)
+	if !leftOK || !rightOK {
+		return 0, "*", false
+	}
+	used := make([]bool, len(right))
+	for ri, row := range left {
+		exact := -1
+		for gi, actual := range right {
+			if !used[gi] && reflect.DeepEqual(row, actual) {
+				exact = gi
+				break
+			}
+		}
+		if exact >= 0 {
+			used[exact] = true
+			continue
+		}
+		nearest, best := -1, -1
+		for gi, actual := range right {
+			if used[gi] {
+				continue
+			}
+			score := 0
+			for ci, cell := range row {
+				if cell == actual[ci] {
+					score++
+				}
+			}
+			if score > best {
+				nearest, best = gi, score
+			}
+		}
+		if nearest >= 0 {
+			for ci, cell := range row {
+				if cell != right[nearest][ci] {
+					return ri, want.Columns[ci].Name, false
+				}
+			}
+		}
+		return ri, "*", false
+	}
+	if len(left) != len(right) {
+		return len(left), "*", false
+	}
+	return -1, "", true
 }

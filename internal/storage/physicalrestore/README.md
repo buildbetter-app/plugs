@@ -26,8 +26,10 @@ The driver validates all expressions before the first insert, uses one SQL
 transaction, reads the actual physical working root independently of expected
 values, verifies every requested cell/type/multiplicity and every nonrequested
 table, and only then commits. A mismatch, insertion error or cancellation rolls
-back. A commit error is named `commit-indeterminate` and requires destination
-inspection before any retry. Ordinary JSON string binding is unchanged.
+back. A commit error is named `commit-indeterminate` and a failed rollback is
+`rollback-indeterminate`; both retain the complete error tree and require
+destination inspection before any retry. A cell mismatch names its physical
+column and zero-based requested row. Ordinary JSON string binding is unchanged.
 
 The optional `tools/native-physical-restore` executable requires explicit
 `--disposable-target`, owner-only canonical paths, a manifest and a fresh
@@ -35,23 +37,35 @@ The optional `tools/native-physical-restore` executable requires explicit
 physical root through the existing capture port. Its output contains actual
 observed cells. It does not replay or claim source history.
 
-## Boundaries requiring evidence
+## Completion contract and native oracle
 
-The pinned native JSON reader calls `ValueContext`/`ToInterface`, which decodes
-JSON using float64 before the producer's `UseNumber`. SQL JSON constructors are
-used by this writer to retain integer arguments, but they count as successful
-exact metadata restoration only if actual native/root readback retains the
-original integer. A typed physical-readback refusal is a blocker, not exact
-metadata success. The public `ExactMetadataBoundary` control records either the
-successful readback or this explicit blocker and verifies rollback.
+The native GMS dependency, its JSON semantics, driver reader and capture oracle
+remain unchanged under binding amendment 8376f857. Every requested cell is
+compared with actual physical readback before acceptance. Beads-origin cells
+roundtrip against the values actually captured from that engine. For a newly
+created value that native cannot retain exactly, the required native result is
+a typed `physical-readback` refusal naming table, field and requested row, with
+all writes rolled back. A refusal never counts as a successful exact write.
 
-The existing capture API conflates SQL NULL and top-level JSON null for JSON
-columns. Both ambiguous nil JSON cells and top-level JSON `null` are refused;
-nested JSON null values are supported. No existing capture oracle is changed.
+`ExactMetadataBoundary` records ordinary native SQL binding, native SQL JSON
+constructors and immutable physical-root output for the same >2^53 fixture. The
+recorded native result determines the expected writer outcome. It separately
+requires a successful native-origin roundtrip and either an exact requested
+readback or the matching typed refusal/rollback. No hand-written rounded number
+serves as the engine oracle, and no GMS patch/replacement is used.
+
+The original typed capture port distinguishes nil SQL NULL from string `null`
+JSON null. The writer preserves them with distinct tagged cells, as well as
+nested JSON null and empty strings. Only the later normalized `NativeTable`
+representation collapses this distinction and omits SQL types. It cannot by
+itself supply a writer manifest. Actual native public controls prove both NULL
+cases; no original reader or exporter assertion changes.
+
 Nonlocal declarations matching a destination, reserved Dolt tables, schema DDL,
 nondefault schemas, native source-history replay, and exact schema reconstruction
 from the names-only native archive are unsupported. Full/strict history requests
-refuse; the tool never silently selects snapshot mode for them.
+refuse; the tool never silently selects snapshot mode for them. Commit ancestry
+and source history cannot be claimed from the tool's new snapshot commit.
 
 Public fixture proof earns no real private-store reversal, cutover, official
 producer, trial/night, FullS1 or portable history qualification.

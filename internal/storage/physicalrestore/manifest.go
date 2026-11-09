@@ -140,13 +140,29 @@ func Restore(ctx context.Context, conn *sql.Conn, manifest Manifest) error {
 	if conn == nil {
 		return errors.New("physical restore connection required")
 	}
-	err = embedded.RestorePhysicalSnapshot(ctx, conn, tables)
-	var failure *embedded.PhysicalRestoreError
-	if errors.As(err, &failure) {
-		return &Error{failure.Kind, failure.Table, failure.Column, failure.Row, failure.Cause}
+	return translateRestoreError(embedded.RestorePhysicalSnapshot(ctx, conn, tables))
+}
+
+// Preserve the complete error tree, including joined rollback errors and the
+// explicit indeterminate boundary. Do not select and discard all but one cause.
+func translateRestoreError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if failure, ok := err.(*embedded.PhysicalRestoreError); ok {
+		return &Error{failure.Kind, failure.Table, failure.Column, failure.Row, translateRestoreError(failure.Cause)}
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		causes := joined.Unwrap()
+		translated := make([]error, len(causes))
+		for i, cause := range causes {
+			translated[i] = translateRestoreError(cause)
+		}
+		return errors.Join(translated...)
 	}
 	return err
 }
+
 func decode(manifest Manifest) ([]embedded.PhysicalTable, error) {
 	if manifest.Format != Format {
 		return nil, &Error{Kind: "format", Row: -1, Cause: errors.New("unsupported physical restore format")}
@@ -173,12 +189,10 @@ func decode(manifest Manifest) ([]embedded.PhysicalTable, error) {
 				if err != nil {
 					return nil, &Error{Kind: "cell-type", Table: table.Name, Column: table.Columns[ci].Name, Row: ri, Cause: err}
 				}
-				if strings.EqualFold(table.Columns[ci].SQLType, "json") {
-					// Existing capture's Value() conflates SQL NULL and top-level JSON null.
-					// Never pretend that the untyped nil determines the original distinction.
-					if value == nil {
-						return nil, &Error{Kind: "ambiguous-json-null", Table: table.Name, Column: table.Columns[ci].Name, Row: ri, Cause: errors.New("capture cannot distinguish SQL NULL from JSON null")}
-					}
+				// The ORIGINAL typed port retains nil SQL NULL separately
+				// from string "null" JSON null. Only the normalized names-only
+				// NativeTable representation loses that distinction.
+				if strings.EqualFold(table.Columns[ci].SQLType, "json") && value != nil {
 					text, ok := value.(string)
 					if !ok {
 						return nil, &Error{Kind: "cell-type", Table: table.Name, Column: table.Columns[ci].Name, Row: ri, Cause: errors.New("JSON column requires exact detached JSON text")}
