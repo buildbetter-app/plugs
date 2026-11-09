@@ -307,6 +307,12 @@ func captureNativeHistory(ctx context.Context, src Source, inventory Inventory, 
 	if !log.Clean {
 		return nil, ErrSourceHistoryUnavailable{Reason: "working-set-not-clean"}
 	}
+	// A family manifest requires an authenticated immutable HEAD. Preserve
+	// the actual capability/refusal cause instead of probing every commit and
+	// later replacing it with the generic missing-head classification error.
+	if _, err := port.ReadNativeSourceImage(ctx, log.Head); err != nil {
+		return nil, fmt.Errorf("native immutable HEAD: %w", err)
+	}
 	ignore, err := port.ReadSourceIgnore(ctx)
 	if err != nil {
 		return nil, err

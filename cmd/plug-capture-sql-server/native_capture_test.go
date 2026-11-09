@@ -392,7 +392,8 @@ func TestPublicControlledClockAndActiveFamilyCapture(t *testing.T) {
 	inventoryPath := filepath.Join(capture, "inventory.json")
 	archivePath := filepath.Join(capture, "readback.tar")
 	f.run(f.bd, "--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "--output", inventoryPath)
-	f.run(f.bd, "--readonly", "export", "--format", "plug-dump/1", "--plug-inventory", inventoryPath, "--output", archivePath)
+	f.assertStockSQLNativeRefusal(inventoryPath)
+	_, archivePath, _ = f.capturePhysical(privateDir(t))
 	archive, err := os.ReadFile(archivePath)
 	if err != nil {
 		t.Fatal(err)
@@ -471,8 +472,8 @@ func TestPublicControlledClockAndActiveFamilyCapture(t *testing.T) {
 }
 
 // Both fixtures are fabricated from anonymous type/ID shapes. These archives
-// use standalone physical capture for defaults and stock SQL for the explicitly
-// tracked portable suffixes. They are bounded proof for two-project merge/restore
+// use standalone physical capture while the explicitly tracked portable suffix
+// still uses the unchanged SQL image mapper. They are bounded proof for merge/restore
 // tests, not real-source captures or rehearsal streak credit.
 func TestPublicNativeCustomTypesAndNamespacedHashes(t *testing.T) {
 	for _, test := range []struct {
@@ -536,12 +537,8 @@ func TestPublicNativeCustomTypesAndNamespacedHashes(t *testing.T) {
 				wantedStatuses[row["id"].(string)] = row["status"].(string)
 			}
 			capture := privateDir(t)
-			inventoryPath, archivePath := filepath.Join(capture, "inventory.json"), filepath.Join(capture, "readback.tar")
-			if test.tracked {
-				f.run(f.bd, "--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "--output", inventoryPath)
-			} else {
-				inventoryPath, archivePath, _ = f.capturePhysical(capture)
-			}
+			inventoryPath := filepath.Join(capture, "inventory.json")
+			f.run(f.bd, "--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "--output", inventoryPath)
 			inventoryBytes, err := os.ReadFile(inventoryPath)
 			if err != nil {
 				t.Fatal(err)
@@ -557,9 +554,7 @@ func TestPublicNativeCustomTypesAndNamespacedHashes(t *testing.T) {
 			} else if len(inventory.Projects[0].HashNamespaces) != 0 || bytes.Contains(inventoryBytes, []byte(`"hash_namespaces"`)) {
 				t.Fatal("bare-hash project acquired namespace metadata")
 			}
-			if test.tracked {
-				f.run(f.bd, "--readonly", "export", "--format", "plug-dump/1", "--plug-inventory", inventoryPath, "--output", archivePath)
-			}
+			_, archivePath, _ := f.capturePhysical(privateDir(t))
 			archive, err := os.ReadFile(archivePath)
 			if err != nil {
 				t.Fatal(err)
@@ -787,15 +782,15 @@ func (f *nativeFixture) assertNativeDefaultHistoryBoundary(prefix string, invent
 			f.t.Fatalf("native immutable census at %s: %v", frame.CommitID, err)
 		}
 		for name, table := range actual {
-			if !reflect.DeepEqual(canonical(table), frame.Tables[name]) {
-				f.t.Fatalf("native immutable field/schema mismatch family=%s commit=%s", name, frame.CommitID)
+			if !equalPhysicalCaptureJSON(canonical(table), frame.Tables[name]) {
+				f.t.Fatalf("native immutable field/schema mismatch family=%s commit=%s actual=%s archived=%s", name, frame.CommitID, mustPhysicalCaptureJSON(f.t, canonical(table)), mustPhysicalCaptureJSON(f.t, frame.Tables[name]))
 			}
 		}
 	}
 	for _, designation := range manifest.Sources {
 		if classification, present := native.Current[designation.Family]; present {
 			actual, err := port.ReadTable(ctx, designation.Family)
-			if err != nil || !reflect.DeepEqual(canonical(actual), classification) || designation.Rows != len(actual.Rows) {
+			if err != nil || !equalPhysicalCaptureJSON(canonical(actual), classification) || designation.Rows != len(actual.Rows) {
 				f.t.Fatalf("current native family rows changed: %s %v", designation.Family, err)
 			}
 			_, inHead := image[designation.Family]
@@ -944,4 +939,43 @@ func (s publicImageSource) Tables(context.Context) ([]string, error) {
 }
 func (s publicImageSource) ReadTable(_ context.Context, name string) (plugdump.Table, error) {
 	return s[name], nil
+}
+
+// Stock transaction SQL cannot authenticate physical roots. It must refuse the
+// native-family contract without writing an archive or mutating the source.
+func (f *nativeFixture) assertStockSQLNativeRefusal(inventoryPath string) {
+	f.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	port := plugdump.SQLSource{DB: f.db}
+	before, err := port.ReadSourceCommits(ctx)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	output := filepath.Join(privateDir(f.t), "refused.tar")
+	cmd := exec.CommandContext(ctx, f.bd, "--readonly", "export", "--format", "plug-dump/1", "--plug-inventory", inventoryPath, "--output", output)
+	cmd.Dir, cmd.Env = f.work, f.env
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err = cmd.Run()
+	if err == nil || stdout.Len() != 0 || !strings.Contains(stderr.String(), "native-physical-root-capability-unavailable:stock-sql") {
+		f.t.Fatalf("stock physical capability did not typed-refuse: error=%v stdout=%s stderr=%s", err, stdout.Bytes(), stderr.Bytes())
+	}
+	if info, statErr := os.Stat(output); !os.IsNotExist(statErr) && (statErr != nil || info.Size() != 0) {
+		f.t.Fatalf("stock refusal published archive bytes: %v", statErr)
+	}
+	after, err := port.ReadSourceCommits(ctx)
+	if err != nil || !reflect.DeepEqual(before, after) {
+		f.t.Fatalf("refused stock export changed source graph: %v", err)
+	}
+	f.t.Logf("STOCK_SQL_NATIVE_CAPABILITY_REFUSAL cause=native-physical-root-capability-unavailable:stock-sql output_bytes=0 source_graph_unchanged=true stderr=%s", stderr.Bytes())
+}
+
+func mustPhysicalCaptureJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }

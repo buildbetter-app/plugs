@@ -49,9 +49,12 @@ The supported public route controls are selected by the canonical whole gate:
 ```
 
 The native target retains the original default full-history comparisons using
-standalone physical capture, while its configured tracked portable suffixes still
-use stock SQL export. It rereads every native image through a separate physical
-connection and keeps every source/current/status/type assertion. The external
+standalone physical capture for both default and configured tracked fixtures.
+Portable suffixes keep the unchanged SQL image mapper and their earlier gaps.
+The clock fixture also verifies the stock command's named capability refusal,
+empty output and unchanged source graph. The target rereads every native image
+through a separate physical connection and keeps every source/current/status/type
+assertion. The external
 `@com_github_dolthub_driver_v2//:physical_commit_test` is selected explicitly in
 the focus gate. The former combined native label remains an alias.
 

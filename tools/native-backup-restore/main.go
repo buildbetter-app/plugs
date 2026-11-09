@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -92,8 +93,13 @@ func run() error {
 // The caller supplies a frozen copied backup. Refuse nonregular entries and
 // detect changes to its complete file census, not just the manifest or HEAD.
 func fingerprintBackup(root string) (map[string][32]byte, error) {
+	backup, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	defer backup.Close()
 	files := map[string][32]byte{}
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+	err = fs.WalkDir(backup.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -103,7 +109,7 @@ func fingerprintBackup(root string) (map[string][32]byte, error) {
 		if !entry.Type().IsRegular() {
 			return fmt.Errorf("nonregular copied backup entry")
 		}
-		file, err := os.Open(path)
+		file, err := backup.Open(path)
 		if err != nil {
 			return err
 		}
@@ -112,13 +118,9 @@ func fingerprintBackup(root string) (map[string][32]byte, error) {
 		if err := errors.Join(readErr, file.Close()); err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
 		var sum [32]byte
 		copy(sum[:], hash.Sum(nil))
-		files[rel] = sum
+		files[path] = sum
 		return nil
 	})
 	return files, err
