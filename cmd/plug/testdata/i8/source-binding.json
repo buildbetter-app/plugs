@@ -1,0 +1,188 @@
+{
+  "schema": "heartbeads-fixture-source/1",
+  "candidate": "a24f1b6421908c1effb782c8099a38d81c0c7b5f",
+  "tree": "9dd97b240dbe0edd28f1862edfca2057ab3784cb",
+  "parent": "1c152ef8b64a43fdce4fa0febc5b0146222dfb28",
+  "source_manifest": {
+    "schema": "heartbeads-prepared-patch/1",
+    "installed_preimage_root": "/home/dev/beads/heartbeads-app/node_modules/heartbeads",
+    "plug_base": "bbd821827b90ecac63d1c70ec05fc5688af96792",
+    "plug_base_tree": "e195380ab7b3b420476f293625673b49aa97e0d4",
+    "files": [
+      {
+        "path": "app/api/beads/route.ts",
+        "preimage_sha256": "8e78f3086f501281ebd3aa67cefe04ba5c775ebe867004875db9abb7e3894f78",
+        "postimage_sha256": "95e5de95a33d33ef78bd65202add2e4805363d365df6f348895ec7b04b55b0a7",
+        "bytes": 826
+      },
+      {
+        "path": "app/api/beads/stream/route.ts",
+        "preimage_sha256": "93188e993a1c5fdada9e4900ecdbbc32001aa1d88f0bd50ac78d36b45902a2e6",
+        "postimage_sha256": "59aaca0cb2c27a3b1138bb0608ba0537b3d9e91350c925d986b00894e3000005",
+        "bytes": 2852
+      },
+      {
+        "path": "app/api/config/route.ts",
+        "preimage_sha256": "1d2c821410a0607ed65edd4ef452a28c212e80de1b049dba1b90eb92b773a4d8",
+        "postimage_sha256": "a0a4fe72f098dbd7ff2b6e48306b1387f38dc5283abfa7926db7948890e8ce5a",
+        "bytes": 478
+      },
+      {
+        "path": "app/api/docs/page.tsx",
+        "preimage_sha256": "577f0a094f9daa456f90740608844506c6b0e11af63fb60fed5a38a00263168f",
+        "postimage_sha256": "f3c92729970f901aee6268cfe24065ed9ae861dbf8350460f9639f05a4fc8a45",
+        "bytes": 25680
+      },
+      {
+        "path": "app/api/records/route.ts",
+        "preimage_sha256": "b7562fe53a15c3c08cff644c4c24614e794777d51c139cc35215d654fc55f2ae",
+        "postimage_sha256": "ae551ffe50ccc0eb9178a9b55acdbab0972f1f670711f69866ec99974b65775b",
+        "bytes": 7528
+      },
+      {
+        "path": "app/api/v1/graph/route.ts",
+        "preimage_sha256": "e8576fa4a04b385f0c4446210b3d56ac6fc1d6e3c90ae1effb49865c24e74ab0",
+        "postimage_sha256": "dec6c3cef05c11205a390f66e56e93c0dc29c5fa2181670c89996ae612526341",
+        "bytes": 10195
+      },
+      {
+        "path": "app/api/v1/issues/[id]/route.ts",
+        "preimage_sha256": "94cafb479e599db8cd896ab6b42366466d921920d6f98910decc5c68a01588f9",
+        "postimage_sha256": "410ec9e64e078c33c2501d56fa51880a66005f8ea89344e9785bb3bff631ad7b",
+        "bytes": 6244
+      },
+      {
+        "path": "app/api/v1/ready/route.ts",
+        "preimage_sha256": "66b0ad0bd824a0a28dc7f494bf64a6aa32a17830152cdeec1f56ba49ff3b3703",
+        "postimage_sha256": "0a1204ea73fd35eb4fafbe17a7ef3b2bedc8c39420c9d0f4e8d85cf58723abf3",
+        "bytes": 7075
+      },
+      {
+        "path": "app/page.tsx",
+        "preimage_sha256": "5771d50d2593881f1f022ed077d932f2f04f78cf959bf03ece5d14c26c0bceb1",
+        "postimage_sha256": "ee5553e34a521feb25d87f2a44257ddb51fcc4dc7d2e560cf174e764e7fc9b12",
+        "bytes": 140620
+      },
+      {
+        "path": "components/BeadTooltip.tsx",
+        "preimage_sha256": "6059e304e528769df8fe33bcb4aff89e666ecf92081bbac8869970f22be80e31",
+        "postimage_sha256": "44d121a5f4ad5a5e4f170515a3d54b0dbeab2c6a9d50ac780622cb17c838ea1f",
+        "bytes": 8375
+      },
+      {
+        "path": "components/BeadsGraph.tsx",
+        "preimage_sha256": "8acda50a973adeb4012f49ea49f16d567ab053991dfe14ee1c3d70efee13547d",
+        "postimage_sha256": "0df0cb8b0cc4959746dbe19aa70414485d21914c0d1f33cd7a6c1483b546988c",
+        "bytes": 131673
+      },
+      {
+        "path": "components/CommentTooltip.tsx",
+        "preimage_sha256": "1c9edcd340a29b8fa496e8f5bd683baef4ebede5c0caf49f1cfdd82cbed910f7",
+        "postimage_sha256": "2e7aea15f9d77252baf3d80ef12b492b9cbf1aa843d6c86990a68fb6adc478e8",
+        "bytes": 11744
+      },
+      {
+        "path": "components/DescriptionModal.tsx",
+        "preimage_sha256": "c0babf0bb74d2c2eab13db9b5566d2f6f5e0bc6271553b905ae06048d4e7f819",
+        "postimage_sha256": "0ac138707d1e2f4e10f3861edc9c2f2773a85679a1a0691264f3b1121dc1c167",
+        "bytes": 43033
+      },
+      {
+        "path": "components/MobileActionSheet.tsx",
+        "preimage_sha256": "afefac64533ddca28e2acaa1cd3938e63f9052b1edfa42cc9222d4cd16d6f148",
+        "postimage_sha256": "8b1095dfc988c777e1ff5fd61be719ef53b601336925b9f9d847a4a104198598",
+        "bytes": 9610
+      },
+      {
+        "path": "components/NodeDetail.tsx",
+        "preimage_sha256": "922d9d2be7c8d4ce511ead2e6e5ea189ae321b3d219be566cc1e464c837f57e8",
+        "postimage_sha256": "7ad0e7d7db27daddd207dd8d467be62811b7dd9ed741f5f7edc912718d94392a",
+        "bytes": 30648
+      },
+      {
+        "path": "components/StatusLegend.tsx",
+        "preimage_sha256": "d138d03797c05ef7191ede969af2884c1bfa658e6eb34f40e25374e98ee08a3a",
+        "postimage_sha256": "81d1add7479bbae82c598ef4f73102363f638374a88787c301ad07abdfd35aaa",
+        "bytes": 3467
+      },
+      {
+        "path": "components/TasksPanel.tsx",
+        "preimage_sha256": "d93f4cafb7785c085aa77b79c3e1b362da9e9a938d1d79d2f780ae40608c957b",
+        "postimage_sha256": "5307d7ae3426f03d897c5e5919c6ff2f8844167587b5914b73f9b3f93f5eb79c",
+        "bytes": 13106
+      },
+      {
+        "path": "lib/activity.ts",
+        "preimage_sha256": "18e9accfb1173deb49ad46cc2fceabfae11cda4b85d39c36143847461bcd78ed",
+        "postimage_sha256": "b316e1c8edb40c6f171b5972ed4a0cf7a20e1ee4f9bec61993d075bf550c7fd4",
+        "bytes": 12576
+      },
+      {
+        "path": "lib/comments.ts",
+        "preimage_sha256": "42dcce1534b3e742748aacf5892d45f64aa1929248a07493efe00f78222426d7",
+        "postimage_sha256": "8dfecae00088af5cc9d5eb2d84eb938d7c5c73655740c23aa8a5051a62e0d384",
+        "bytes": 12810
+      },
+      {
+        "path": "lib/diff-beads.ts",
+        "preimage_sha256": "f7d030f7d32aeb226c6b8a9c2144596d37b1decf253aa6db45274c8e15fd769e",
+        "postimage_sha256": "76fe41143da4307370496e099c23dec78065ebc6f647efa3b39f432e9f6345d0",
+        "bytes": 5189
+      },
+      {
+        "path": "lib/discover.ts",
+        "preimage_sha256": "61e0af31fa4e0e662e8badc2e43d1d79f957783ce9e7b78b57c503ea74ce87b7",
+        "postimage_sha256": "0f7f3abceee4ca4bd6ea50ef97127e2c6b257643984534add99b84e2e6a657da",
+        "bytes": 1295
+      },
+      {
+        "path": "lib/parse-beads.ts",
+        "preimage_sha256": "927f502eaa301d4dcd3149377e3e27ff6a7db5ff263736e8dcb81293dc83d70b",
+        "postimage_sha256": "00b0142ebc415fd6c2efedecbd9da7d80c12748573efa5e6eac9b13d58ce686c",
+        "bytes": 864
+      },
+      {
+        "path": "lib/plug-adapter.mjs",
+        "preimage_sha256": "ABSENT",
+        "postimage_sha256": "3dfdf31088e5bc0b430a5b8d0b0e2992eee31a888dc6164ddae87b1bba503b5d",
+        "bytes": 29798
+      },
+      {
+        "path": "lib/timeline.ts",
+        "preimage_sha256": "1359207d5be58cde4ca8b993f65a4214f46683c6c823fd243a59e36097226b3e",
+        "postimage_sha256": "e62c13aafed711b4794b3d2bd1507dfca699a40288adedca04fc69ebfbf029fa",
+        "bytes": 4018
+      },
+      {
+        "path": "lib/types.ts",
+        "preimage_sha256": "ee7727fe019dbda8759bf3429c66bd4070ad8e1077a97fca90a1fa67a254eef5",
+        "postimage_sha256": "f35b1596c6d599bbc791228db64044a215e3ee1bd64ba834d6a90965c724b963",
+        "bytes": 12785
+      },
+      {
+        "path": "lib/ui-projection.ts",
+        "preimage_sha256": "ABSENT",
+        "postimage_sha256": "a0497cb317a25ce4f5e9b506c4f56b9a547cd4b8b43370bf2d0d72afa6000f64",
+        "bytes": 1600
+      },
+      {
+        "path": "lib/watch-beads.ts",
+        "preimage_sha256": "e6f4302df03dc6cba61734d5b3bc7ee859b1b5740776daca00a72c9383fc9d01",
+        "postimage_sha256": "cf035230980cdfd5e94057697039c7b358bb1fafb052ebdbab82f20767347f6f",
+        "bytes": 607
+      },
+      {
+        "path": "bin/heartbeads.mjs",
+        "preimage_sha256": "9a6a163456423ebdf25001c4d36e7a05052b05c9b88862d124ad76f9e559a932",
+        "postimage_sha256": "d33f4d46d4a599de556221e92e75241d1f200577569b049c7c099211d2d16fd4",
+        "bytes": 4147
+      }
+    ],
+    "patch_sha256": "b643ea6da0e63169dc79073ccd517677b33dd5b1028004d9ee3c5e473ace9e62",
+    "adapter_sha256": "3dfdf31088e5bc0b430a5b8d0b0e2992eee31a888dc6164ddae87b1bba503b5d"
+  },
+  "category_donor": "0e3fcbe422135e9575a128bbbe6edc04ca2ffed7",
+  "composed_category_commit": "1bb232fc2",
+  "tar_sha256": "ba3a13fbef72a2e093d39a1dcc6a64483b0b758f0ab6b1d6b83ed1c7823311c9",
+  "fixture_boundary": "native head import from synthetic two-project source; no private stores or real Beads conversion/history qualification"
+}

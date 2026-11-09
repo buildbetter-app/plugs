@@ -1,0 +1,153 @@
+{
+  "base": {
+    "statuses": {
+      "todo": {
+        "name": "Todo",
+        "category": "active"
+      },
+      "doing": {
+        "name": "Doing",
+        "category": "wip"
+      },
+      "done": {
+        "name": "Done",
+        "category": "done",
+        "outcome": "success"
+      },
+      "shelved": {
+        "name": "Shelved",
+        "category": "frozen"
+      }
+    },
+    "workflows": {
+      "host": {
+        "statuses": [
+          "todo",
+          "doing",
+          "done",
+          "shelved"
+        ],
+        "initial": "todo",
+        "slots": {
+          "claim": "doing",
+          "close": "done",
+          "reopen": "todo",
+          "defer": "shelved"
+        },
+        "transitions": [
+          {
+            "to": "done",
+            "guards": [
+              {
+                "kind": "not_template"
+              },
+              {
+                "kind": "no_open_children"
+              },
+              {
+                "kind": "no_open_blockers"
+              },
+              {
+                "kind": "permission"
+              }
+            ]
+          },
+          {
+            "to": "doing",
+            "guards": [
+              {
+                "kind": "no_open_blockers"
+              }
+            ]
+          },
+          {
+            "to": "todo"
+          },
+          {
+            "to": "shelved"
+          }
+        ]
+      }
+    },
+    "types": {
+      "task": {
+        "name": "Task",
+        "workflow": "host",
+        "fields": {}
+      }
+    }
+  },
+  "overlays": {
+    "signals-v2": {
+      "statuses": {
+        "queued": {
+          "name": "Queued",
+          "category": "active"
+        },
+        "shipping": {
+          "name": "Shipping",
+          "category": "wip"
+        },
+        "resolved": {
+          "name": "Resolved",
+          "category": "done",
+          "outcome": "success"
+        },
+        "todo": {
+          "name": "Todo",
+          "category": "frozen"
+        }
+      },
+      "workflows": {
+        "host": {
+          "statuses": [
+            "queued",
+            "shipping",
+            "resolved",
+            "todo"
+          ],
+          "initial": "queued",
+          "slots": {
+            "claim": "shipping",
+            "close": "resolved",
+            "reopen": "queued",
+            "defer": "todo"
+          },
+          "transitions": [
+            {
+              "to": "resolved",
+              "guards": [
+                {
+                  "kind": "not_template"
+                },
+                {
+                  "kind": "no_open_children"
+                },
+                {
+                  "kind": "no_open_blockers"
+                },
+                {
+                  "kind": "permission"
+                }
+              ]
+            },
+            {
+              "to": "shipping",
+              "guards": [
+                {
+                  "kind": "no_open_blockers"
+                }
+              ]
+            },
+            {
+              "to": "queued"
+            },
+            {
+              "to": "todo"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

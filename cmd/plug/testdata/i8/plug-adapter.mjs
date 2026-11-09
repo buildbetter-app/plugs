@@ -12,6 +12,11 @@ import { isAbsolute } from "node:path";
 
 const PROJECT_NAMES = ["cody-ops", "signals-v2"];
 const DEFAULT_STALE_AFTER_MS = 30_000;
+// Literal categories admitted by the core category contract. Native names are
+// never converted; these sets only select lifecycle/display behavior.
+const CATEGORIES = ["active", "wip", "done", "frozen", "triage", "backlog", "unstarted", "started", "completed", "canceled"];
+const TERMINAL_CATEGORIES = new Set(["done", "completed", "canceled"]);
+const COMPLETED_CATEGORIES = new Set(["done", "completed"]);
 
 export class BindingError extends Error {
   constructor(message) {
@@ -74,7 +79,7 @@ function exactProjectMap(value) {
       throw new BindingError(`binding.projects.${name}.workspace must be absolute`);
     }
     const legacyIds = object(project.legacy_ids, `binding.projects.${name}.legacy_ids`);
-    const normalizedIds = {};
+    const normalizedIds = Object.create(null);
     for (const [legacy, ref] of Object.entries(legacyIds)) {
       if (typeof legacy !== "string" || legacy.length === 0) {
         throw new BindingError(`binding.projects.${name}.legacy_ids contains an empty ID`);
@@ -126,7 +131,8 @@ export function validateBinding(raw) {
   if (binding.token_env !== undefined) string(binding.token_env, "binding.token_env");
   return Object.freeze({
     schema: binding.schema,
-    endpoint: rpcEndpoint.toString(),
+    endpoint,
+    rpcEndpoint: rpcEndpoint.toString(),
     incarnation,
     principal,
     agent,
@@ -183,8 +189,8 @@ function graphKey(project, canonical) {
   return `${project}\u0000${canonical}`;
 }
 
-function lifecycleCloseReason(bead) {
-  if (bead?.status !== "closed") return undefined;
+function lifecycleCloseReason(bead, category) {
+  if (!COMPLETED_CATEGORIES.has(category)) return undefined;
   const value = bead?.metadata?.["i8.host.close_reason"];
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   if (value.schema !== "plug-host-close-reason/1" || typeof value.reason !== "string") return undefined;
@@ -221,7 +227,7 @@ export class PlugClient {
     if (token) headers.authorization = `Bearer ${token}`;
     let response;
     try {
-      response = await this.fetch(this.binding.endpoint, {
+      response = await this.fetch(this.binding.rpcEndpoint, {
         method: "POST",
         headers,
         body: JSON.stringify(body),
@@ -291,7 +297,7 @@ export class PlugClient {
       items.push(...result.items);
       cursor = result.nextCursor || "";
       if (!asOf) asOf = result.asOf;
-      else if (JSON.stringify(asOf) !== JSON.stringify(result.asOf)) {
+      else if (stableJson(asOf) !== stableJson(result.asOf)) {
         throw new AuthorityError(`${project} view pagination changed its pinned snapshot`);
       }
       pages++;
@@ -314,14 +320,10 @@ export class PlugClient {
     if (!raw || raw.schema !== "plug-host-journal/1" || !raw.jobs || typeof raw.jobs !== "object") {
       throw new AuthorityError(`${project} create receipt journal has an unknown schema`);
     }
-    const rawEndpoint = this.binding.endpoint.endsWith("/rpc/v1")
-      ? this.binding.endpoint.slice(0, -7)
-      : this.binding.endpoint;
-    const scopeInputs = [
-      { endpoint: rawEndpoint, incarnation: this.binding.incarnation, principal: this.binding.principal, project },
-      { endpoint: this.binding.endpoint, incarnation: this.binding.incarnation, principal: this.binding.principal, project },
-    ];
-    const scopes = new Set(scopeInputs.map((value) => sha256(value)));
+    // The retained producer hashes the exact original binding string.
+    // Keep origin slashes/default ports/host spelling instead of URL-normalizing
+    // the receipt scope; normalization is only for the HTTP request endpoint.
+    const scopes = new Set([sha256({ endpoint: this.binding.endpoint, incarnation: this.binding.incarnation, principal: this.binding.principal, project })]);
     const receipts = [];
     for (const job of Object.values(raw.jobs)) {
       if (!job || !scopes.has(job.scope) || !Array.isArray(job.calls)) continue;
@@ -332,12 +334,12 @@ export class PlugClient {
         const ops = call.method === "tx.apply" ? params?.changeSet?.ops : null;
         const refs = call.method === "bead.create"
           ? [call.result?.results?.[0]?.ref]
-          : Array.isArray(ops) ? ops.map((op, index) => op?.kind === "create" ? call.result?.results?.[index]?.ref : null) : [];
+          : Array.isArray(ops) ? ops.flatMap((op, index) => op?.kind === "create" ? [call.result?.results?.[index]?.ref] : []) : [];
         for (const ref of refs) {
           if (!ref || typeof ref.id !== "string" || ref.id.length === 0 || Object.keys(ref).some((key) => key !== "id")) {
             throw new AuthorityError(`${project} create receipt has an invalid canonical ref`);
           }
-          byCanonical.set(ref.id, ref.id);
+          if (!byCanonical.has(ref.id)) byCanonical.set(ref.id, ref.id);
           receipts.push(ref.id);
         }
       }
@@ -345,7 +347,43 @@ export class PlugClient {
     return { entries, byCanonical, receipts };
   }
 
+  async installedOntology(project) {
+    const result = await this.rpc(project, "ontology.get", {});
+    if (result?.drifted !== false || (result.problems != null && (!Array.isArray(result.problems) || result.problems.length))) {
+      throw new AuthorityError(`${project} installed ontology is drifted or malformed`);
+    }
+    const document = object(result.document, `${project} ontology.document`);
+    const statuses = object(document.statuses, `${project} ontology.statuses`);
+    const categories = Object.create(null);
+    for (const [name, definition] of Object.entries(statuses)) {
+      const category = definition?.category;
+      if (!CATEGORIES.includes(category)) {
+        throw new AuthorityError(`${project} installed status ${name} has unsupported category ${category}`);
+      }
+      categories[name] = category;
+    }
+    if (!Object.keys(categories).length) throw new AuthorityError(`${project} installed ontology has no statuses`);
+    return { categories, revision: result.revision, fingerprint: sha256({ document, revision: result.revision }) };
+  }
+
+  async readyAt(project, asOf) {
+    const ids = new Set();
+    let cursor;
+    let pages = 0;
+    do {
+      const result = await this.rpc(project, "bead.ready", { limit: 1000, ...(cursor ? { cursor } : {}) });
+      if (!Array.isArray(result?.items) || stableJson(result.asOf) !== stableJson(asOf)) {
+        throw new AuthorityError(`${project} readiness does not match the pinned bead snapshot`);
+      }
+      for (const item of result.items) ids.add(string(item?.id, `${project} ready bead.id`));
+      cursor = result.nextCursor || "";
+      if (++pages > 10000) throw new AuthorityError(`${project} readiness pagination exceeded the safety bound`);
+    } while (cursor);
+    return ids;
+  }
+
   async projectSnapshot(project) {
+    const ontology = await this.installedOntology(project);
     const { items, pages, asOf } = await this.page(project);
     const { byCanonical } = await this.receiptIndex(project);
     const nodes = [];
@@ -357,14 +395,16 @@ export class PlugClient {
       if (!legacy) throw new AuthorityError(`${project} bead ${canonical} has no lossless legacy_ids mapping`);
       const detail = await this.rpc(project, "bead.get", { id: { id: canonical }, asOf });
       const bead = object(detail?.bead, `${project} bead ${canonical}`);
-      if (bead.project && bead.project !== project) {
+      if (bead.id !== canonical || bead.project !== project) {
         throw new AuthorityError(`${project} bead ${canonical} resolved outside the bound project`);
       }
       detailByCanonical.set(canonical, bead);
       const fields = object(bead.fields || item.fields || {}, `${project} bead ${canonical}.fields`);
       const status = string(bead.status || item.status || fields.status, `${project} bead ${canonical}.status`);
-      if (!new Set(["open", "in_progress", "blocked", "closed"]).has(status)) {
-        throw new AuthorityError(`${project} bead ${canonical} has unsupported status ${status}; install an explicit host ontology mapping`);
+      const statusCategory = ontology.categories[status];
+      if (!statusCategory) throw new AuthorityError(`${project} bead ${canonical} has unknown installed ontology status ${status}`);
+      if (!Number.isInteger(fields.priority) || fields.priority < 0 || fields.priority > 4) {
+        throw new AuthorityError(`${project} bead ${canonical} priority must be an integer from 0 through 4`);
       }
       const labels = Array.isArray(bead.labels) ? bead.labels.slice() : (Array.isArray(item.labels) ? item.labels.slice() : (Array.isArray(fields.labels) ? fields.labels.slice() : []));
       const node = {
@@ -376,15 +416,16 @@ export class PlugClient {
         title: typeof fields.title === "string" ? fields.title : "",
         description: typeof fields.description === "string" ? fields.description : undefined,
         status,
-        priority: Number.isFinite(Number(fields.priority)) ? Number(fields.priority) : 0,
+        statusCategory,
+        priority: fields.priority,
         issueType: typeof bead.type === "string" ? bead.type : (typeof item.type === "string" ? item.type : (typeof fields.type === "string" ? fields.type : "issue")),
         owner: typeof fields.owner === "string" ? fields.owner : undefined,
         assignee: typeof bead.assignee === "string" ? bead.assignee : (typeof item.assignee === "string" ? item.assignee : (typeof fields.assignee === "string" ? fields.assignee : undefined)),
         createdBy: typeof fields.created_by === "string" ? fields.created_by : undefined,
         createdAt: bead.createdAt || item.createdAt || fields.created_at || "",
         updatedAt: bead.updatedAt || item.updatedAt || fields.updated_at || "",
-        closedAt: fields.closed_at,
-        closeReason: lifecycleCloseReason(bead),
+        closedAt: TERMINAL_CATEGORIES.has(statusCategory) ? fields.closed_at : undefined,
+        closeReason: lifecycleCloseReason(bead, statusCategory),
         acceptanceCriteria: fields.acceptance_criteria,
         estimatedMinutes: fields.estimated_minutes,
         // The binding keeps original IDs opaque.  Project is the stable
@@ -460,15 +501,21 @@ export class PlugClient {
       node.blockerCount = node.blockerIds.length;
       node.dependentCount = node.dependentIds.length;
     }
-    const open = new Set(nodes.filter((node) => node.status !== "closed").map((node) => node.graphKey));
+    const readyCanonical = await this.readyAt(project, asOf);
+    for (const id of readyCanonical) if (!nodeByCanonical.has(id)) throw new AuthorityError(`${project} ready result references an unreadable bead`);
+    for (const node of nodes) node.ready = readyCanonical.has(node.canonicalId);
+    const open = new Set(nodes.filter((node) => !TERMINAL_CATEGORIES.has(node.statusCategory)).map((node) => node.graphKey));
     const blocked = new Set(dependencies.filter((edge) => edge.type === "blocks" && open.has(edge.depends_on_key)).map((edge) => edge.issue_key));
-    const ready = nodes.filter((node) => (node.status === "open" || node.status === "in_progress") && !blocked.has(node.graphKey)).map((node) => node.id);
+    const ready = nodes.filter((node) => node.ready).map((node) => node.id);
     const stats = {
       total: nodes.length,
-      open: nodes.filter((node) => node.status === "open").length,
-      inProgress: nodes.filter((node) => node.status === "in_progress").length,
-      blocked: nodes.filter((node) => node.status === "blocked").length,
-      closed: nodes.filter((node) => node.status === "closed").length,
+      open: nodes.filter((node) => ["active", "unstarted"].includes(node.statusCategory)).length,
+      inProgress: nodes.filter((node) => ["wip", "started"].includes(node.statusCategory)).length,
+      blocked: blocked.size,
+      closed: nodes.filter((node) => TERMINAL_CATEGORIES.has(node.statusCategory)).length,
+      frozen: nodes.filter((node) => node.statusCategory === "frozen").length,
+      byStatus: Object.fromEntries(Object.keys(ontology.categories).map((status) => [status, nodes.filter((node) => node.status === status).length])),
+      byCategory: Object.fromEntries(CATEGORIES.map((category) => [category, nodes.filter((node) => node.statusCategory === category).length])),
       actionable: ready.length,
       edges: links.length,
       prefixes: [...new Set(nodes.map((node) => node.prefix))],
@@ -481,6 +528,8 @@ export class PlugClient {
       title: node.title,
       description: node.description,
       status: node.status,
+      status_category: node.statusCategory,
+      ready: node.ready,
       priority: node.priority,
       issue_type: node.issueType,
       owner: node.owner,
@@ -495,7 +544,13 @@ export class PlugClient {
       labels: node.labels,
       dependencies: dependencies.filter((edge) => edge.issue_key === node.graphKey).map(({ issue_key, depends_on_key, ...edge }) => edge),
     }));
-    return { project, nodes, issues, links, dependencies, stats, ready, pages, asOf };
+    // ontology.get has no historical selector. Refuse a publication if the
+    // project-effective document changes while its pinned bead view is read.
+    const latestOntology = await this.installedOntology(project);
+    if (latestOntology.fingerprint !== ontology.fingerprint) {
+      throw new AuthorityError(`${project} installed ontology changed during projection`);
+    }
+    return { project, nodes, issues, links, dependencies, stats, ready, pages, asOf, ontology: { revision: ontology.revision, statuses: ontology.categories } };
   }
 }
 
@@ -534,6 +589,7 @@ export class ProjectionStore {
             ready: project.ready,
             pages: project.pages,
             asOf: project.asOf,
+            ontology: project.ontology,
           }])),
           freshness: { state: "fresh", generated_at: now, stale_after_ms: this.staleAfterMs },
         };
@@ -581,7 +637,8 @@ let singleton;
 export async function projectionStore(bindingPath = process.env.HEARTBEADS_BINDING || process.env.PLUG_BINDING) {
   if (!singleton) {
     if (!bindingPath) throw new BindingError("HEARTBEADS_BINDING must name an absolute host binding");
-    singleton = new ProjectionStore(new PlugClient(await loadBinding(bindingPath)));
+    singleton = loadBinding(bindingPath).then((binding) => new ProjectionStore(new PlugClient(binding)));
+    singleton.catch(() => { singleton = undefined; });
   }
   return singleton;
 }

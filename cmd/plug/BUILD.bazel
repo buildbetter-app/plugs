@@ -10,11 +10,15 @@ go_binary(
 
 go_test(
     name = "plug_test",
-    srcs = ["i8_heartbeads_fixture_test.go", "integration_test.go", "remote_fixture_test.go", "remote_test.go", "server_integration_test.go"],
+    srcs = ["i8_heartbeads_e2e_test.go", "i8_heartbeads_fixture_test.go", "integration_test.go", "remote_fixture_test.go", "remote_test.go", "server_integration_test.go"],
     args = ["-test.v"],
-    data = [":plug", "testdata/i8/plug-adapter.mjs"],
+    data = [":plug"] + glob(["testdata/i8/**"]),
     env = {"I8_ADAPTER": "$(rootpath testdata/i8/plug-adapter.mjs)", "PLUG_BINARY": "$(rootpath :plug)"},
     deps = [
+        "//internal/storage/sqlite",
+        "//internal/storage/conformance",
+        "//internal/core/restore",
+        "//internal/core/ontology",
         "//internal/api/wire",
         "//internal/client",
         "//internal/core/model",

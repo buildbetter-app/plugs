@@ -1,0 +1,283 @@
+import assert from 'node:assert/strict';
+import { readFile, writeFile, mkdtemp, cp, mkdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createServer } from 'node:http';
+import { spawn } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
+import vm from 'node:vm';
+import { pathToFileURL } from 'node:url';
+
+const [bindingPath, fixtureRoot, outputs] = process.argv.slice(2);
+const binding = JSON.parse(await readFile(bindingPath, 'utf8'));
+const actualEndpoint = binding.endpoint;
+const temp = await mkdtemp(join(tmpdir(), 'i8-heartbeads-browser-'));
+const ui = join(temp, 'ui');
+const children = new Set(), servers = new Set();
+const receipts = { checks: [], calls: [], browserRequests: [], externalRecords: [], browserErrors: [], boundaries: ['synthetic per-project protected ontology, native names/categories preserved', 'native head import', 'synthetic ATProto session/agent only; real Plug core/transport'] };
+const save = async (name, value) => writeFile(join(outputs, name), typeof value === 'string' || Buffer.isBuffer(value) ? value : JSON.stringify(value, null, 2));
+const check = (name, detail = {}) => { receipts.checks.push({name, ...detail}); console.log('PASS ' + name + ' ' + JSON.stringify(detail)); };
+const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function until(fn, label, timeout = 25000) {
+  const deadline = Date.now() + timeout;
+  let last;
+  while (Date.now() < deadline) { try { const value = await fn(); if (value) return value; } catch (e) { last = e; } await pause(150); }
+  throw new Error('Timeout: ' + label, {cause:last});
+}
+async function listen(handler) {
+  const server = createServer((req, res) => { Promise.resolve(handler(req,res)).catch(e => { res.statusCode=500;res.end(String(e.stack)); }); });
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve)); servers.add(server);
+  return {server, url:`http://127.0.0.1:${server.address().port}`};
+}
+async function payload(req) { let text='';for await(const chunk of req) text+=chunk;return text; }
+function json(res, value, status=200) { res.writeHead(status, {'content-type':'application/json'}); res.end(JSON.stringify(value)); }
+function launch(command, args, cwd=ui, extra={}) {
+  const child=spawn(command,args,{cwd,env:{...process.env,PATH:'/tmp/plug-swarm/bin/worker-safe:'+process.env.PATH,...extra},stdio:['ignore','pipe','pipe']});
+  children.add(child); return child;
+}
+async function run(command,args,cwd=ui,extra={}) {
+  const child=launch(command,args,cwd,extra); let out='';child.stdout.on('data',b=>out+=b);child.stderr.on('data',b=>out+=b);
+  const code=await new Promise((resolve,reject)=>{child.on('exit',resolve);child.on('error',reject)});children.delete(child);
+  await save(command+'-'+args[0]+'.log',out); assert.equal(code,0,out.slice(-7000));
+}
+async function stop(child) {
+  if (!child || !children.has(child)) return;
+  const done=new Promise(resolve=>child.once('exit',resolve)); child.kill('SIGTERM');
+  await Promise.race([done,pause(5000).then(()=>child.kill('SIGKILL'))]); children.delete(child);
+}
+let fault='none', rpcCount=0;
+const rpcProxy=await listen(async(req,res)=>{
+  rpcCount++;
+  const body=await payload(req); const request=JSON.parse(body);receipts.calls.push(request);
+  if(fault==='outage'){res.writeHead(503);res.end('synthetic outage');return;}
+  if(fault==='malformed'){res.writeHead(200,{'content-type':'application/json'});res.end('{broken');return;}
+  const response=await fetch(actualEndpoint+'/rpc/v1',{method:'POST',headers:{'Content-Type':'application/json','Plug-RPC':'1'},body});
+  const data=await response.json();
+  if(fault==='incarnation' && request.method==='server.hello')data.result.incarnation='wrong-instance';
+  if(fault==='principal' && request.method==='agent.brief')data.result.whoami.principal.id='wrong-principal';
+  json(res,data,response.status);
+});
+binding.endpoint=rpcProxy.url+'/';
+await writeFile(bindingPath,JSON.stringify(binding));
+let sequence=0;
+async function rpc(project,method,params={},allowError=false) {
+  const response=await fetch(rpcProxy.url+'/rpc/v1',{method:'POST',headers:{'Content-Type':'application/json','Plug-RPC':'1'},body:JSON.stringify({jsonrpc:'2.0',id:++sequence,method,params:method==='server.hello'?params:{...params,_meta:{project,agent:binding.agent,...(!['bead.get','bead.ready','view.run','agent.brief','ontology.get'].includes(method)?{idempotencyKey:randomUUID()}: {})}}})});
+  const envelope=await response.json();if(!allowError)assert.ok(!envelope.error,JSON.stringify(envelope));return allowError?envelope:envelope.result;
+}
+const stable=value=>Array.isArray(value)?'['+value.map(stable).join(',')+']':value&&typeof value==='object'?'{'+Object.keys(value).sort().map(k=>JSON.stringify(k)+':'+stable(value[k])).join(',')+'}':JSON.stringify(value);
+async function journal(project,calls) {
+  const scope=createHash('sha256').update(stable({endpoint:binding.endpoint,incarnation:binding.incarnation,principal:binding.principal,project})).digest('hex');
+  await writeFile(join(binding.projects[project].workspace,'.plug-host-journal.json'),JSON.stringify({schema:'plug-host-journal/1',jobs:{e2e:{scope,calls}}}));
+}
+// External ATProto/indexer/auth are synthetic and remain outside Plug.
+const did='did:plc:i8fixtureauthor';
+const session={did,handle:'fixture.test',displayName:'Fixture author'};
+const externalRecords=new Map();let recordSequence=0;
+function putExternal(repo,collection,rkey,value){const uri=`at://${repo}/${collection}/${rkey}`;const entry={cid:'synthetic-cid-'+rkey,collection,did:repo,rkey,uri,value};externalRecords.set(uri,entry);return entry;}
+putExternal(did,'org.impactindexer.review.comment','seed-cody',{project:'cody-ops',subject:{uri:'beads:SHARED'},text:'cody-only fixture comment',createdAt:'2026-11-05T00:00:00Z'});
+putExternal('did:plc:i8other','org.impactindexer.review.comment','seed-signals',{project:'signals-v2',subject:{uri:'beads:SHARED'},text:'signals-only fixture comment',createdAt:'2026-11-05T00:00:00Z'});
+putExternal(did,'org.impactindexer.review.comment','ambiguous',{subject:{uri:'beads:SHARED'},text:'ambiguous unqualified comment',createdAt:'2026-11-05T00:00:00Z'});
+function indexed(body){const collection=JSON.parse(body||'{}').variables?.collection;return {data:{records:{edges:[...externalRecords.values()].filter(r=>r.collection===collection).map(node=>({node})),pageInfo:{hasNextPage:false}}}};}
+const externalAgent={com:{atproto:{repo:{
+  createRecord:async({repo,collection,rkey,record})=>{const entry=putExternal(repo,collection,rkey||'created-'+(++recordSequence),record);receipts.externalRecords.push({method:'create',entry});return {data:{uri:entry.uri,cid:entry.cid}}},
+  putRecord:async({repo,collection,rkey,record})=>{const entry=putExternal(repo,collection,rkey,record);receipts.externalRecords.push({method:'put',entry});return {data:{uri:entry.uri,cid:entry.cid}}},
+  getRecord:async({repo,collection,rkey})=>{const entry=externalRecords.get(`at://${repo}/${collection}/${rkey}`);if(!entry)throw Error('external fixture record missing');return {data:{value:entry.value,uri:entry.uri,cid:entry.cid}}},
+  deleteRecord:async({repo,collection,rkey})=>{const uri=`at://${repo}/${collection}/${rkey}`;externalRecords.delete(uri);receipts.externalRecords.push({method:'delete',uri});return {data:{}}}
+}}}};
+let recordModule;
+async function recordRequest(url,method,body){const request=new Request(url,{method,...(body?{body,headers:{'content-type':'application/json'}}:{})});const response=await recordModule.namespace[method](request);return {status:response.status,body:await response.text()};}
+
+const roots=Object.fromEntries(Object.entries(binding.projects).map(([p,v])=>[p,v.legacy_ids.SHARED.id]));
+const ids={};
+let nextLog=''; let next, chrome, ws;
+try {
+  for (const project of Object.keys(binding.projects)) {
+    const result=await rpc(project,'bead.create',{type:'task',fields:{title:'new child '+project,description:'new description',priority:2},...(project==='signals-v2'?{parent:{id:roots[project]}}:{})});
+    ids[project]=result.results[0].ref.id;
+    // Mixed transaction positions and a receipt for an imported bead must not
+    // erase its original SHARED ID or mistake non-create ops for create refs.
+    const mixedParams={changeSet:{ops:[{kind:'update',target:{id:ids[project]},fields:{description:'receipt child'}},{kind:'create',key:'extra',type:'task',fields:{title:'extra '+project,priority:3,status:'todo'}}]}};
+    const mixed=await rpc(project,'tx.apply',mixedParams); ids[project+'-extra']=mixed.results[1].ref.id;
+    await journal(project,[{method:'bead.create',attempts:[{params:{type:'task'}}],result},{method:'tx.apply',attempts:[{params:mixedParams}],result:mixed},{method:'bead.create',attempts:[{params:{type:'task'}}],result:{results:[{ref:{id:roots[project]}}]}}]);
+  }
+  await rpc('cody-ops','bead.link',{from:{id:ids['cody-ops']},to:{id:roots['cody-ops']},kind:'blocks'});
+  const guard=await rpc('cody-ops','bead.close',{id:{id:ids['cody-ops']}},true);
+  assert.ok(guard.error);check('real lifecycle guard refusal',{code:guard.error.data?.code});
+  await save('write-readback.json',{roots,ids,guard,beads:await Promise.all(Object.keys(binding.projects).map(p=>rpc(p,'bead.get',{id:{id:roots[p]}})))});
+
+  await mkdir(ui,{recursive:true});
+  await run('tar',['-xf',join(fixtureRoot,'heartbeads-source.tar'),'-C',ui],temp);
+  await run('npm',['ci','--no-audit','--no-fund','--ignore-scripts']);
+  const indexer=await listen(async(req,res)=>json(res,indexed(await payload(req))));
+  const networkGuard=join(temp,'network-guard.cjs');
+  await writeFile(networkGuard,`const realFetch=globalThis.fetch;globalThis.fetch=async(input,init)=>{const url=typeof input==='string'?input:input.url||String(input);if(url.startsWith('https://public.api.bsky.app/'))return Response.json({handle:'fixture.test',displayName:'Fixture profile'});if(!['127.0.0.1','localhost'].includes(new URL(url).hostname))throw Error('fixture blocked nonloopback fetch');return realFetch(input,init)};`);
+  const fixtureEnv={HEARTBEADS_BINDING:bindingPath,INDEXER_URL:indexer.url,COOKIE_SECRET:'synthetic-fixture-cookie-secret-at-least-32-chars',NEXT_TELEMETRY_DISABLED:'1'};
+  await run('npm',['run','build'],ui,fixtureEnv);
+  const portServer=await listen((req,res)=>res.end('')); const nextPort=portServer.server.address().port;await new Promise(resolve=>portServer.server.close(resolve));servers.delete(portServer.server);
+  const nextUrl=`http://127.0.0.1:${nextPort}`;
+  const startNext=()=>{ const child=launch('node',['--require',networkGuard,'node_modules/next/dist/bin/next','start','--hostname','127.0.0.1','--port',String(nextPort)],ui,fixtureEnv);child.stdout.on('data',b=>nextLog+=b);child.stderr.on('data',b=>nextLog+=b);return child;};
+  next=startNext();await until(async()=> (await fetch(nextUrl+'/api/config')).ok,'Next startup',45000);
+  const adapter=await import(pathToFileURL(join(ui,'lib/plug-adapter.mjs')));
+  const client=new adapter.PlugClient(await adapter.loadBinding(bindingPath));const store=new adapter.ProjectionStore(client);
+  const first=await store.refresh();assert.equal(first.stats.total,6);assert.equal(first.graphData.nodes.filter(n=>n.id==='SHARED').length,2);
+  assert.equal(first.projects['cody-ops'].stats.actionable,2);assert.equal(first.projects['signals-v2'].stats.actionable,2);
+  const exactTodo=first.graphData.nodes.filter(n=>n.status==='todo');
+  assert.ok(exactTodo.some(n=>n.project==='cody-ops'&&n.statusCategory==='active'));
+  assert.ok(exactTodo.some(n=>n.project==='signals-v2'&&n.statusCategory==='frozen'));
+  check('per-project installed category preserves identical native todo name');
+  assert.equal(new Set(first.graphData.nodes.map(n=>n.graphKey)).size,6);
+  const cody=first.graphData.links.find(l=>l.type==='blocks');assert.equal(cody.source,'SHARED');assert.equal(cody.target,ids['cody-ops']);
+  check('actual imported two-project IDs, receipt IDs, oriented graph and hierarchy readiness',{nodes:6});await save('direct-projection.json',first);
+  const paged=await client.page('cody-ops',{filter:{},fields:['fields','project','status','parent'],sort:['id'],budgetTokens:1});
+  assert.ok(paged.pages>=2);assert.equal(paged.items.length,3);check('actual pagination pins asOf',{pages:paged.pages,asOf:paged.asOf});
+
+  async function http(path,expected=200){const r=await fetch(nextUrl+path);const data=await r.json();assert.equal(r.status,expected,JSON.stringify(data));return data;}
+  const config=await http('/api/config');assert.deepEqual(config.repos,['cody-ops','signals-v2']);
+  const all=await http('/api/v1/graph?include=none');
+  const ops=await http('/api/v1/graph?project=cody-ops&include=comments');
+  const sig=await http('/api/v1/graph?project=signals-v2&include=comments');
+  const ambiguous=await http('/api/v1/issues/SHARED',409);
+  const issue=await http('/api/v1/issues/SHARED?project=cody-ops');
+  const child=await http('/api/v1/issues/'+encodeURIComponent(ids['cody-ops'])+'?project=cody-ops');
+  const ready=await http('/api/v1/ready?project=signals-v2&type=task&limit=1');
+  await save('http-responses.json',{config,all,ops,sig,ambiguous,issue,child,ready});
+  assert.equal(ops.issues.find(x=>x.id==='SHARED').comments?.[0]?.text,'cody-only fixture comment');
+  assert.equal(sig.issues.find(x=>x.id==='SHARED').comments?.[0]?.text,'signals-only fixture comment');
+  assert.equal(ops.issues.length,3);assert.equal(sig.issues.length,3);assert.ok(ops.issues.every(n=>n.project==='cody-ops'));
+  assert.equal(child.issue.blockers[0].title,'SHARED root cody-ops');
+  assert.ok(ready.issues.length<=1);check('actual HTTP aggregate/project/ambiguous identity/filter/limit');
+
+  // Cancellation during delayed initialization is driven from the exact route
+  // source with only the async initialization dependency held behind a promise.
+  const ts=await import(pathToFileURL(join(ui,'node_modules/typescript/lib/typescript.js')));
+  const recordCode=ts.default.transpileModule(await readFile(join(ui,'app/api/records/route.ts'),'utf8'),{compilerOptions:{target:99,module:99}}).outputText;
+  const recordContext=vm.createContext({Request,Response,console});
+  recordModule=new vm.SourceTextModule(recordCode,{context:recordContext});
+  const deps={
+    'next/server':{NextResponse:{json:(value,options)=>Response.json(value,options)}},
+    '@/lib/session':{getSession:async()=>session},
+    '@/lib/agent':{getAuthenticatedAgent:async()=>externalAgent},
+    '@/lib/plug-adapter.mjs':{loadProjection:()=>store.refresh()}
+  };
+  await recordModule.link(specifier=>{const values=deps[specifier];if(!values)throw Error('unexpected records dependency '+specifier);return new vm.SyntheticModule(Object.keys(values),function(){for(const [key,value]of Object.entries(values))this.setExport(key,value)},{context:recordContext});});await recordModule.evaluate();
+  const deletesBefore=receipts.externalRecords.filter(x=>x.method==='delete').length;
+  const wrongDid=await recordRequest(nextUrl+'/api/records?collection=org.impactindexer.review.comment&rkey=seed-cody&project=cody-ops&nodeId=SHARED&did=did:plc:wrong','DELETE');assert.equal(wrongDid.status,403);
+  const wrongProject=await recordRequest(nextUrl+'/api/records?collection=org.impactindexer.review.comment&rkey=seed-cody&project=signals-v2&nodeId=SHARED&did='+did,'DELETE');assert.notEqual(wrongProject.status,200);
+  assert.equal(receipts.externalRecords.filter(x=>x.method==='delete').length,deletesBefore);check('exact record handler refuses wrong owner and stored-project identity');
+  const streamCode=ts.default.transpileModule(await readFile(join(ui,'app/api/beads/stream/route.ts'),'utf8'),{compilerOptions:{target:99,module:99}}).outputText;
+  let resolveStore, watches=0,stops=0,intervals=new Set();
+  const context=vm.createContext({Request,Response,ReadableStream,TextEncoder,setInterval:(f,ms)=>{const t=setInterval(f,ms);intervals.add(t);return t},clearInterval:t=>{intervals.delete(t);clearInterval(t)}});
+  const module=new vm.SourceTextModule(streamCode,{context});
+  const dep=new vm.SyntheticModule(['projectionStore'],function(){this.setExport('projectionStore',()=>new Promise(resolve=>{resolveStore=resolve}));},{context});
+  await module.link(()=>dep);await module.evaluate();
+  const abort=new AbortController();const streamResponse=await module.namespace.GET(new Request(nextUrl+'/api/beads/stream',{signal:abort.signal}));
+  await streamResponse.body.cancel();abort.abort();resolveStore({watch:()=>{watches++;return()=>stops++}});await pause(10);
+  assert.equal(watches,0);assert.equal(intervals.size,0);check('cancel-before-initialization starts no watcher',{watches,activeIntervals:intervals.size});
+
+  // Fresh responses are always from the public Plug process. The proxy only
+  // injects explicit outage/result/authority faults for refusal checks.
+  fault='outage';const joined=await Promise.all([store.refresh(),store.refresh(),store.refresh()]);
+  assert.ok(joined.every(x=>x.freshness.state==='stale' && x.stats.total===6));check('concurrent transport failures share complete stale outcome');
+  fault='malformed';await assert.rejects(store.refresh(),adapter.AuthorityError);assert.equal(store.current,null);check('malformed JSON invalidates cache');
+  fault='none';await store.refresh();fault='principal';await assert.rejects(store.refresh(),adapter.AuthorityError);assert.equal(store.current,null);fault='none';check('principal refusal invalidates cache');
+
+  // Browser uses actual Next routes; unrelated external indexer/profile calls
+  // are refused by the CDP fixture, so no private or live dependency is used.
+  const profile=join(temp,'chrome');await mkdir(profile);
+  chrome=launch('google-chrome',['--headless=new','--no-sandbox','--disable-gpu','--disable-background-networking','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank'],temp);
+  chrome.stdout.resume();chrome.stderr.resume();
+  const devPort=await until(async()=>{const text=await readFile(join(profile,'DevToolsActivePort'),'utf8');return Number(text.split('\n')[0]);},'Chrome');
+  const tabs=await (await fetch(`http://127.0.0.1:${devPort}/json/list`)).json();const tab=tabs.find(x=>x.type==='page');
+  ws=new WebSocket(tab.webSocketDebuggerUrl);await new Promise((resolve,reject)=>{ws.onopen=resolve;ws.onerror=reject});
+  let mid=0;const pending=new Map();
+  const cdp=(method,params={})=>new Promise((resolve,reject)=>{const id=++mid;pending.set(id,{resolve,reject});ws.send(JSON.stringify({id,method,params}));});
+  const fulfill=async(requestId,body,status=200)=>cdp('Fetch.fulfillRequest',{requestId,responseCode:status,responseHeaders:[{name:'content-type',value:'application/json'},{name:'access-control-allow-origin',value:'*'}],body:Buffer.from(typeof body==='string'?body:JSON.stringify(body)).toString('base64')});
+  async function intercepted(p){
+    const request=p.request;receipts.browserRequests.push({url:request.url,method:request.method,body:request.postData});
+    if(request.url===nextUrl+'/api/status')return fulfill(p.requestId,session);
+    if(request.url.startsWith(nextUrl+'/api/records')){const result=await recordRequest(request.url,request.method,request.postData);return fulfill(p.requestId,result.body,result.status);}
+    if(request.url.startsWith('https://public.api.bsky.app/'))return fulfill(p.requestId,{handle:'fixture.test',displayName:'Fixture profile'});
+    if(request.url.includes('hypergoat')||request.url===indexer.url)return fulfill(p.requestId,indexed(request.postData));
+    const local=request.url.startsWith(nextUrl)||request.url.startsWith('http://127.0.0.1:')||request.url.startsWith('data:');
+    return cdp(local?'Fetch.continueRequest':'Fetch.failRequest',local?{requestId:p.requestId}:{requestId:p.requestId,errorReason:'BlockedByClient'});
+  }
+  ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.id){const p=pending.get(m.id);if(p){pending.delete(m.id);m.error?p.reject(Error(JSON.stringify(m.error))):p.resolve(m.result)}}else if(m.method==='Fetch.requestPaused'){void intercepted(m.params).catch(error=>{receipts.browserErrors.push({intercept:error.message});});}else if(m.method==='Runtime.exceptionThrown'){receipts.browserErrors.push(m.params);}};
+
+  const evaluate=async expression=>{const r=await cdp('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true});if(r.exceptionDetails)throw Error(JSON.stringify(r.exceptionDetails));return r.result.value;};
+  await cdp('Page.enable');await cdp('Runtime.enable');await cdp('Fetch.enable',{patterns:[{urlPattern:'*',requestStage:'Request'}]});
+  await cdp('Page.navigate',{url:nextUrl+'/?panel=tasks'});
+  await until(async()=> (await evaluate('document.body.innerText')).includes('6 issues'),'browser two-project data');
+  await save('browser-before.json',await evaluate('({text:document.body.innerText,status:document.querySelector("[data-testid=plug-freshness]")?.textContent})'));
+  await evaluate(`(()=>{const b=[...document.querySelectorAll('button')].find(x=>x.innerText.includes('SHARED root cody-ops'));if(!b)throw Error('task button missing');b.click()})()`);
+  await until(async()=> (await evaluate('document.body.innerText')).includes('before'),'original description');
+  check('browser selects cody SHARED independently of signals SHARED');
+  await until(async()=> (await evaluate('document.body.innerText')).includes('cody-only fixture comment'),'scoped comment load');
+  assert.ok(!(await evaluate('document.body.innerText')).includes('signals-only fixture comment'));
+  assert.ok(!(await evaluate('document.body.innerText')).includes('ambiguous unqualified comment'));
+  async function clickText(text){await evaluate(`(()=>{const b=[...document.querySelectorAll('button')].find(x=>x.textContent.trim()===${JSON.stringify(text)}&&!x.disabled);if(!b)throw Error('button missing: '+${JSON.stringify(text)});b.click()})()`);}
+  async function type(selector,text){await evaluate(`document.querySelector(${JSON.stringify(selector)}).focus()`);await cdp('Input.insertText',{text});}
+  async function commentAction(index){await evaluate(`(()=>{const p=[...document.querySelectorAll('p')].find(x=>x.textContent==='cody-only fixture comment');if(!p)throw Error('comment missing');p.parentElement.querySelectorAll('button')[${index}].click()})()`);}
+  await type('textarea[placeholder="Leave a comment..."]','browser new cody comment');await clickText('Comment');
+  await until(()=>receipts.externalRecords.some(x=>x.entry?.value.text==='browser new cody comment'),'comment caller');
+  await until(async()=> (await evaluate('document.body.innerText')).includes('browser new cody comment'),'comment refresh');
+  await commentAction(0);await until(()=>receipts.externalRecords.some(x=>x.entry?.collection==='org.impactindexer.review.like'),'like caller');
+  await until(async()=>await evaluate(`(()=>{const p=[...document.querySelectorAll('p')].find(x=>x.textContent==='cody-only fixture comment');return p?.parentElement.querySelector('button')?.textContent.trim()==='1'})()`),'like refresh');
+  await commentAction(0);await until(()=>receipts.externalRecords.some(x=>x.method==='delete'&&x.uri.includes('review.like')),'unlike DELETE caller');
+  await commentAction(1);await type('input[placeholder="Write a reply..."]','browser reply cody');await clickText('Reply');
+  await until(()=>receipts.externalRecords.some(x=>x.entry?.value.text==='browser reply cody'&&x.entry.value.replyTo),'reply caller');
+  await until(async()=> (await evaluate('document.body.innerText')).includes('browser reply cody'),'reply refresh');
+  await evaluate(`(()=>{const p=[...document.querySelectorAll('p')].find(x=>x.textContent==='browser new cody comment');p.parentElement.querySelectorAll('button')[2].click()})()`);
+  await until(()=>receipts.externalRecords.some(x=>x.method==='delete'&&x.uri.includes('review.comment/created-')),'comment DELETE caller');
+  // Open the real graph context menu through its selected-node callback, then
+  // use actual UI buttons for the claim/unclaim handlers. Canvas positions are
+  // simulation-dependent; no product API/auth bypass is added to the package.
+  async function graphMenu(){await evaluate(`(()=>{const all=[...document.querySelectorAll('*')];for(const el of all){const key=Object.keys(el).find(k=>k.startsWith('__reactFiber$'));let f=key&&el[key];while(f){const p=f.memoizedProps;if(p?.onNodeRightClick&&p?.nodes){const n=p.nodes.find(n=>n.project==='cody-ops'&&n.legacyId==='SHARED');p.onNodeRightClick(n,new MouseEvent('contextmenu',{clientX:250,clientY:250}));return;}f=f.return}}throw Error('graph callback missing')})()`);}
+  await graphMenu();await clickText('Claim task');await until(()=>receipts.externalRecords.some(x=>x.entry?.value.text==='@fixture.test'),'claim caller');
+  await until(async()=> (await evaluate('document.body.innerText')).includes('@fixture.test'),'claim refresh');
+  await graphMenu();await clickText('Unclaim task');await until(()=>!([...externalRecords.values()].some(x=>x.value.text==='@fixture.test')),'unclaim DELETE caller');
+  const browserWrites=receipts.browserRequests.filter(r=>r.url.startsWith(nextUrl+'/api/records'));
+  assert.ok(browserWrites.length>=7);assert.ok(browserWrites.filter(r=>r.method==='POST').every(r=>{const v=JSON.parse(r.body);return v.project==='cody-ops'&&v.nodeId==='SHARED'}));
+  check('browser comment/reply/like/unlike/delete/claim/unclaim callers preserve original ID and project',{requests:browserWrites.length,externalAuth:'synthetic only'});
+  await save('browser-records.json',{requests:browserWrites,records:receipts.externalRecords});
+
+
+  const ref={id:roots['cody-ops']};
+  async function close(reason){const current=await rpc('cody-ops','bead.get',{id:ref});return rpc('cody-ops','tx.apply',{changeSet:{expect:[{ref,revision:current.bead.revision}],ops:[{kind:'close',target:ref,reason},{kind:'setMeta',target:ref,key:'i8.host.close_reason',value:{schema:'plug-host-close-reason/1',reason}}]}});}
+  await close('original');await until(async()=> (await http('/api/beads')).graphData.nodes.find(n=>n.project==='cody-ops'&&n.id==='SHARED').closeReason==='original','first typed close');
+  const current=await rpc('cody-ops','bead.get',{id:ref});
+  await rpc('cody-ops','tx.apply',{changeSet:{expect:[{ref,revision:current.bead.revision}],ops:[{kind:'update',target:ref,fields:{description:'after fixture field'}},{kind:'setMeta',target:ref,key:'i8.host.close_reason',value:{schema:'plug-host-close-reason/1',reason:'amended'}}]}});
+  await until(async()=>{const text=await evaluate('document.body.innerText');return text.includes('after fixture field')&&text.includes('amended')},'browser field-only/amended reason');
+  await save('browser-amended.json',await evaluate('({text:document.body.innerText,status:document.querySelector("[data-testid=plug-freshness]")?.textContent})'));
+  await save('browser-amended.png',Buffer.from((await cdp('Page.captureScreenshot',{format:'png'})).data,'base64'));
+  check('browser publishes field-only/amended reason without lifecycle animation');
+
+  // Capture real HTTP framing, complete fresh/stale payloads and heartbeat.
+  const captureAbort=new AbortController();const feed=await fetch(nextUrl+'/api/beads/stream',{signal:captureAbort.signal});
+  const reader=feed.body.getReader();let text='';
+  const reading=(async()=>{try{for(;;){const {done,value}=await reader.read();if(done)break;text+=new TextDecoder().decode(value)}}catch{}})();
+  await until(()=>text.includes('"state":"fresh"'),'fresh stream');fault='outage';
+  await until(()=>text.includes('"state":"stale"'),'stale stream');await until(async()=> (await evaluate('document.querySelector("[data-testid=plug-freshness]")?.textContent || ""')).includes('Stale'),'browser stale status');
+  await save('browser-stale.json',await evaluate('({text:document.body.innerText,status:document.querySelector("[data-testid=plug-freshness]")?.textContent})'));
+  fault='none';await until(async()=> (await evaluate('document.querySelector("[data-testid=plug-freshness]")?.textContent || ""')).includes('snapshot fresh'),'browser freshness recovery');
+  await until(()=>text.includes(': heartbeat\n\n'),'heartbeat',35000);captureAbort.abort();await reading;await save('sse-framing.txt',text);
+  const frames=text.split('\n\n').filter(s=>s.startsWith('data: ')).map(s=>JSON.parse(s.slice(6)));assert.ok(frames.every(s=>s.graphData.nodes.length===6));
+  check('actual SSE fresh/stale/heartbeat and browser freshness recovery',{frames:frames.length});
+  await rpc('cody-ops','bead.reopen',{id:ref});const reopened=await http('/api/beads');assert.equal(reopened.graphData.nodes.find(n=>n.project==='cody-ops'&&n.id==='SHARED').closeReason,undefined);await save('reopened.json',reopened);check('actual reopen omits typed historical reason');
+
+  fault='incarnation';await until(async()=> (await evaluate('document.body.innerText')).includes('incarnation'),'browser authority error');await save('browser-error.json',await evaluate('({text:document.body.innerText})'));fault='none';
+  await until(async()=> (await evaluate('document.body.innerText')).includes('6 issues'),'browser parsed-error reconnect',45000);check('browser parsed-error bounded reconnect restores both projects');
+  await stop(next);await until(async()=> (await evaluate('document.body.innerText')).includes('disconnected'),'browser network error');next=startNext();
+  await until(async()=> (await evaluate('document.body.innerText')).includes('6 issues'),'browser network reconnect',45000);check('browser network reconnect restores both projects');
+  await cdp('Page.navigate',{url:'about:blank'});await pause(1700);const count=rpcCount;await pause(2200);assert.equal(rpcCount,count);check('actual HTTP disconnect stops polling',{afterDisconnectRPCs:rpcCount-count});
+  ws.close();ws=null;
+  await save('candidate-source.json',JSON.parse(await readFile(join(fixtureRoot,'source-binding.json'),'utf8')));
+  assert.deepEqual(receipts.browserErrors,[]);
+  check('complete actual import -> HTTP -> browser -> SSE fixture');
+} catch(error) {
+  receipts.failure={message:error.message,stack:error.stack};console.error(error);process.exitCode=1;
+} finally {
+  if(ws)ws.close();await save('next.log',nextLog);await save('e2e-results.json',receipts);
+  for(const child of [...children])await stop(child);
+  for(const server of servers)server.closeAllConnections();
+  await Promise.all([...servers].map(server=>new Promise(resolve=>server.close(resolve))));
+}
