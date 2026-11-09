@@ -274,13 +274,16 @@ try {
   ws=new WebSocket(tab.webSocketDebuggerUrl);await new Promise((resolve,reject)=>{ws.onopen=resolve;ws.onerror=reject});
   let mid=0;const pending=new Map();
   cdp=(method,params={})=>new Promise((resolve,reject)=>{const id=++mid;pending.set(id,{resolve,reject});ws.send(JSON.stringify({id,method,params}));});
-  const fulfill=async(requestId,body,status=200)=>cdp('Fetch.fulfillRequest',{requestId,responseCode:status,responseHeaders:[{name:'content-type',value:'application/json'},{name:'access-control-allow-origin',value:'*'}],body:Buffer.from(typeof body==='string'?body:JSON.stringify(body)).toString('base64')});
+  const fulfill=async(requestId,body,status=200)=>cdp('Fetch.fulfillRequest',{requestId,responseCode:status,responseHeaders:[{name:'content-type',value:'application/json'},{name:'access-control-allow-origin',value:'*'},{name:'access-control-allow-methods',value:'POST, OPTIONS'},{name:'access-control-allow-headers',value:'content-type'}],body:Buffer.from(typeof body==='string'?body:JSON.stringify(body)).toString('base64')});
   async function intercepted(p){
     const request=p.request;receipts.browserRequests.push({url:request.url,method:request.method,body:request.postData});
     if(request.url===nextUrl+'/api/status')return fulfill(p.requestId,session);
     if(request.url.startsWith(nextUrl+'/api/records')){const result=await recordRequest(request.url,request.method,request.postData);return fulfill(p.requestId,result.body,result.status);}
     if(request.url.startsWith('https://public.api.bsky.app/'))return fulfill(p.requestId,{handle:'fixture.test',displayName:'Fixture profile'});
-    if(request.url.includes('hypergoat')||request.url===indexer.url)return fulfill(p.requestId,indexed(request.postData));
+    if(request.url.includes('hypergoat')||request.url===indexer.url){
+      if(request.method==='OPTIONS')return fulfill(p.requestId,'',204);
+      assert.equal(request.method,'POST');return fulfill(p.requestId,indexed(request.postData));
+    }
     const local=request.url.startsWith(nextUrl)||request.url.startsWith('http://127.0.0.1:')||request.url.startsWith('data:');
     return cdp(local?'Fetch.continueRequest':'Fetch.failRequest',local?{requestId:p.requestId}:{requestId:p.requestId,errorReason:'BlockedByClient'});
   }
@@ -310,6 +313,12 @@ try {
   check('browser searches original ID absent from titles and copies public ID without NUL');
 
   await until(async()=> (await evaluate('document.body.innerText')).includes('cody-only fixture comment'),'scoped comment load');
+  const indexerTraffic=receipts.browserRequests.filter(r=>r.url.includes('hypergoat'));
+  assert.ok(indexerTraffic.some(r=>r.method==='OPTIONS'));
+  assert.ok(indexerTraffic.some(r=>r.method==='POST'&&JSON.parse(r.body).variables.collection==='org.impactindexer.review.comment'));
+  assert.ok(indexerTraffic.some(r=>r.method==='POST'&&JSON.parse(r.body).variables.collection==='org.impactindexer.review.like'));
+  await save('browser-indexer-preflight.json',{requests:indexerTraffic,text:await evaluate('document.body.innerText'),boundary:'all external-shaped indexer requests fulfilled locally; browser CORS enforcement retained'});
+  check('browser indexer successful synthetic preflight dispatches actual comment/like POSTs and loads scoped comments');
   assert.ok(!(await evaluate('document.body.innerText')).includes('signals-only fixture comment'));
   assert.ok(!(await evaluate('document.body.innerText')).includes('ambiguous unqualified comment'));
   async function clickText(text){await evaluate(`(()=>{const b=[...document.querySelectorAll('button')].find(x=>x.textContent.trim()===${JSON.stringify(text)}&&!x.disabled);if(!b)throw Error('button missing: '+${JSON.stringify(text)});b.click()})()`);}
