@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/readyorder"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -161,8 +162,24 @@ func Select(ctx context.Context, r Observer, p driver.ReadyOrderPlan) (result dr
 	if e != nil {
 		return result, e
 	}
-	if !present || coverage.Version != 2 || coverage.Incarnation != v.Incarnation || coverage.Through.String() != v.At.String() || coverage.Unsafe != 0 {
+	if !present || coverage.Version != 3 || coverage.Incarnation != v.Incarnation || coverage.Through.String() != v.At.String() || coverage.Unsafe != 0 {
 		return result, unavailable("source, lease, heartbeat or nonlocal coverage")
+	}
+	// With a common genuine creation instant inside the recent 48-hour
+	// bucket, main's (bucket, rank, creation, ID) order is exactly this
+	// priority/ID tree. A missing clock, mixed instants, or an aged source
+	// takes ordinary Ready instead of claiming an incompatible rank.
+	if p.OrderAt.IsZero() || coverage.OrderUnsafe || coverage.OrderCount > 0 &&
+		(coverage.OrderCreatedAt.IsZero() || p.OrderAt.Before(coverage.OrderCreatedAt) ||
+			readyorder.Classify(0, coverage.OrderCreatedAt, p.OrderAt).Bucket != 0) {
+		return result, unavailable("hybrid Ready order certificate")
+	}
+	global, e := t.node(scopeID(driver.ReadyOrderScope{}), "")
+	if e != nil {
+		return result, e
+	}
+	if global.Commitment.Count != coverage.OrderCount {
+		return result, unavailable("hybrid Ready order count")
 	}
 	scope := scopeID(p.Scope)
 	var header scopeHeader

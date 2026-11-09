@@ -5,7 +5,7 @@ go_library(
     srcs = glob(["*.go"], exclude = ["*_test.go"]),
     importpath = "github.com/buildbetter-app/plugs/internal/storage/readyindex",
     visibility = ["//:__subpackages__"],
-    deps = ["//internal/core/model", "//internal/storage/driver"],
+    deps = ["//internal/core/model", "//internal/core/readyorder", "//internal/storage/driver"],
 )
 
 go_test(

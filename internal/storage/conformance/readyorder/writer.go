@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
@@ -50,6 +51,7 @@ func selectWriterOrder(ctx context.Context, t *testing.T, r driver.Reader, p dri
 func runWriter(t *testing.T, factory func(*testing.T) driver.Store, metadataOnly bool) {
 	t.Helper()
 	t.Run("same_document_plugin_refresh", func(t *testing.T) { runPluginRefresh(t, factory, metadataOnly) })
+	t.Run("hybrid_order_boundaries", func(t *testing.T) { runHybridOrderBoundaries(t, factory, metadataOnly) })
 	ctx := context.Background()
 	s := factory(t)
 	lease, err := s.Lease(ctx, "ready-writer-regression", driver.LeaseTTL)
@@ -58,9 +60,11 @@ func runWriter(t *testing.T, factory func(*testing.T) driver.Store, metadataOnly
 	}
 	t.Cleanup(func() { _ = lease.Release(ctx) })
 	o := service.NewOntology(nil)
+	clockAt := time.Now().UTC().Truncate(time.Second)
+	clock := func() time.Time { return clockAt }
 	next := 0
-	w := pipeline.New(s, lease, pipeline.WithOntology(o), pipeline.WithIDGenerator(func() (string, error) { next++; return fmt.Sprintf("pl-ready-%03d", next), nil }))
-	svc := service.New(s, lease, w, service.WithOntology(o))
+	w := pipeline.New(s, lease, pipeline.WithOntology(o), pipeline.WithClock(clock), pipeline.WithIDGenerator(func() (string, error) { next++; return fmt.Sprintf("pl-ready-%03d", next), nil }))
+	svc := service.New(s, lease, w, service.WithOntology(o), service.WithClock(clock))
 	by := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
 	sequence := 0
 	meta := func() model.WriteMeta {
@@ -82,7 +86,7 @@ func runWriter(t *testing.T, factory func(*testing.T) driver.Store, metadataOnly
 			return driver.ReadyOrderResult{}, e
 		}
 		project := "local"
-		return selectWriterOrder(ctx, t, r, driver.ReadyOrderPlan{Incarnation: m.Incarnation, ContentRevision: m.Head, AuthorityRevision: m.Head, Scope: driver.ReadyOrderScope{Project: &project}, Eligibility: binding, UniformAuthorization: refs == nil, AuthorizedRefs: refs, RawRefs: raw, Seed: seed, Limit: 1000}, metadataOnly)
+		return selectWriterOrder(ctx, t, r, driver.ReadyOrderPlan{Incarnation: m.Incarnation, ContentRevision: m.Head, AuthorityRevision: m.Head, OrderAt: clock(), Scope: driver.ReadyOrderScope{Project: &project}, Eligibility: binding, UniformAuthorization: refs == nil, AuthorizedRefs: refs, RawRefs: raw, Seed: seed, Limit: 1000}, metadataOnly)
 	}
 	selectAt := func(refs []model.Ref) (driver.ReadyOrderResult, error) { return selectPlan(refs, nil, "") }
 	// Compare every thin key and full semantic leaf against public Ready and
@@ -326,6 +330,95 @@ func runWriter(t *testing.T, factory func(*testing.T) driver.Store, metadataOnly
 	}
 }
 
+// The priority radix can serve main's hybrid order only with a complete
+// common-creation/recent-bucket certificate. These are real Writer rows and
+// the public main order remains the oracle when the optional path refuses.
+func runHybridOrderBoundaries(t *testing.T, factory func(*testing.T) driver.Store, metadataOnly bool) {
+	for _, aged := range []bool{false, true} {
+		name := "distinct_creation"
+		if aged {
+			name = "aged_bucket"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			s := factory(t)
+			defer s.Close()
+			lease, err := s.Lease(ctx, "ready-hybrid-boundary", driver.LeaseTTL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer lease.Release(ctx)
+			clockAt := time.Now().UTC().Truncate(time.Second)
+			clock := func() time.Time { return clockAt }
+			next := 0
+			o := service.NewOntology(nil)
+			w := pipeline.New(s, lease, pipeline.WithOntology(o), pipeline.WithClock(clock), pipeline.WithIDGenerator(func() (string, error) {
+				next++
+				return fmt.Sprintf("pl-hybrid-%03d", next), nil
+			}))
+			svc := service.New(s, lease, w, service.WithOntology(o), service.WithClock(clock))
+			by := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+			create := func(n, priority int) {
+				t.Helper()
+				_, err := svc.Create(ctx, by, service.CreateRequest{Type: "issue", Fields: map[string]any{"title": fmt.Sprintf("hybrid%d", n), "priority": priority}}, model.WriteMeta{Project: "local", Agent: "hybrid", IdempotencyKey: fmt.Sprintf("%064x", n)})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			firstPriority := 0
+			if aged {
+				firstPriority = 4
+			}
+			create(1, firstPriority)
+			if !aged {
+				clockAt = clockAt.Add(time.Nanosecond)
+			}
+			create(2, 0)
+			if aged {
+				clockAt = clockAt.Add(48 * time.Hour)
+			}
+			meta, err := s.Meta(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r, err := s.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			binding, err := o.ReadyProjectionBinding("local")
+			if err != nil {
+				t.Fatal(err)
+			}
+			project := "local"
+			seed := "raw-a"
+			if aged {
+				seed = ""
+			}
+			plan := driver.ReadyOrderPlan{Incarnation: meta.Incarnation, ContentRevision: meta.Head, AuthorityRevision: meta.Head, OrderAt: clock(), Scope: driver.ReadyOrderScope{Project: &project}, Eligibility: binding, UniformAuthorization: true, Seed: seed, Limit: 2}
+			if aged {
+				atBoundary, e := selectWriterOrder(ctx, t, r, plan, metadataOnly)
+				if e != nil || len(atBoundary.Keys) != 2 || atBoundary.Keys[0].Ref.ID != "pl-hybrid-002" {
+					t.Fatalf("48-hour recent boundary lost priority order: %+v %v", atBoundary, e)
+				}
+				public, e := svc.ClaimNextReadyPage(ctx, by, service.ReadyRequest{Project: "local", ClaimNextSeed: seed, Limit: 2})
+				if e != nil || len(public.Items) != 2 || public.Items[0].ID != atBoundary.Keys[0].Ref.ID {
+					t.Fatalf("48-hour ordinary boundary disagrees: %+v %v", public, e)
+				}
+				clockAt = clockAt.Add(time.Nanosecond)
+				plan.OrderAt = clock()
+			}
+			if _, err = selectWriterOrder(ctx, t, r, plan, metadataOnly); !errors.Is(err, driver.ErrUnsupported) {
+				t.Fatalf("uncertified hybrid order accelerated: %v", err)
+			}
+			page, err := svc.ClaimNextReadyPage(ctx, by, service.ReadyRequest{Project: "local", ClaimNextSeed: seed, Limit: 2})
+			if err != nil || len(page.Items) != 2 || page.Items[0].ID != "pl-hybrid-001" || page.Items[1].ID != "pl-hybrid-002" {
+				t.Fatalf("ordinary hybrid order changed: %+v %v", page, err)
+			}
+		})
+	}
+}
+
 func runPluginRefresh(t *testing.T, factory func(*testing.T) driver.Store, metadataOnly bool) {
 	ctx := context.Background()
 	s := factory(t)
@@ -372,7 +465,7 @@ func runPluginRefresh(t *testing.T, factory func(*testing.T) driver.Store, metad
 			return driver.ReadyOrderResult{}, e
 		}
 		project := "local"
-		return selectWriterOrder(ctx, t, r, driver.ReadyOrderPlan{Incarnation: meta.Incarnation, ContentRevision: meta.Head, AuthorityRevision: meta.Head, Scope: driver.ReadyOrderScope{Project: &project}, Eligibility: binding, UniformAuthorization: true, Limit: 1}, metadataOnly)
+		return selectWriterOrder(ctx, t, r, driver.ReadyOrderPlan{Incarnation: meta.Incarnation, ContentRevision: meta.Head, AuthorityRevision: meta.Head, OrderAt: time.Now().UTC(), Scope: driver.ReadyOrderScope{Project: &project}, Eligibility: binding, UniformAuthorization: true, Limit: 1}, metadataOnly)
 	}
 	before, e := read()
 	if e != nil || before.Total != 1 {

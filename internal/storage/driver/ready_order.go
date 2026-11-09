@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/readyorder"
@@ -34,7 +35,10 @@ type ReadyOrderScope struct{ Project, Type *string }
 type ReadyOrderPlan struct {
 	Incarnation                        string
 	ContentRevision, AuthorityRevision model.Revision
-	Scope                              ReadyOrderScope
+	// OrderAt is the trusted caller's clock for the ordinary hybrid Ready
+	// order. An absent clock cannot certify the optional priority tree.
+	OrderAt time.Time
+	Scope   ReadyOrderScope
 	// Eligibility identifies the effective ontology used to maintain this scope.
 	Eligibility string
 	// Nil means unrestricted; a non-nil empty slice is the empty set. RawRefs
