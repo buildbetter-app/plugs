@@ -442,6 +442,243 @@ func nativeFieldConfigSection(site NativeLiteralSite) string {
 		"\nfield = " + strconv.Quote(site.Field) + "\nvalues = [" + quotedNativeValues(site.Values, strconv.Quote) + "]"
 }
 
+func checkedInB03NativeGoConfig(t *testing.T) (Config, string) {
+	t.Helper()
+	cfg, path := checkedInNativeFieldConfig(t)
+	want := map[string]string{
+		"catalog-go-tables":   "b03NativeTables.strings.Fields.arg0",
+		"catalog-go-artifact": "verifyB03PreparedArtifact.artifact.manifest.Artifacts.index",
+	}
+	if len(cfg.B03NativeGoLiterals) != len(want) {
+		t.Fatal("B03 Go site set is incomplete")
+	}
+	for _, site := range cfg.B03NativeGoLiterals {
+		field, ok := want[site.ID]
+		if !ok || site.Path != b03CatalogGoSource || site.Field != field || len(site.Values) != 1 {
+			t.Fatalf("unexpected B03 Go site: %+v", site)
+		}
+		delete(want, site.ID)
+		if site.ID == "catalog-go-tables" && site.Values[0] != nativeFieldSite(t, cfg, "catalog-sql-tables").Values[0] {
+			t.Fatal("Go census differs from the complete admitted JSON census")
+		}
+		if site.ID == "catalog-go-artifact" && !allowsNativeManifestString(nativeManifestProtocolSource, site.Values[0], cfg.NativeManifestStrings) {
+			t.Fatal("Go artifact key differs from the accepted manifest literal")
+		}
+	}
+	return cfg, path
+}
+
+func b03NativeGoFixture(t *testing.T, cfg Config, quote func(string) string) (source, census, artifact string) {
+	t.Helper()
+	for _, site := range cfg.B03NativeGoLiterals {
+		switch site.ID {
+		case "catalog-go-tables":
+			census = site.Values[0]
+		case "catalog-go-artifact":
+			artifact = site.Values[0]
+		}
+	}
+	if census == "" || artifact == "" {
+		t.Fatal("missing B03 Go fixture values")
+	}
+	source = "package recorder\nimport \"strings\"\nvar b03NativeTables = strings.Fields(" + quote(census) + ")\n" +
+		"func verifyB03PreparedArtifact() { artifact := manifest.Artifacts[" + quote(artifact) + "] }\n"
+	return source, census, artifact
+}
+
+func TestB03NativeGoProtocolAdmitsOnlyActualASTSites(t *testing.T) {
+	cfg, _ := checkedInB03NativeGoConfig(t)
+	for name, quote := range map[string]func(string) string{
+		"quoted":  strconv.Quote,
+		"raw":     func(value string) string { return "`" + value + "`" },
+		"escaped": escapedProtocolString,
+	} {
+		t.Run(name, func(t *testing.T) {
+			source, _, _ := b03NativeGoFixture(t, cfg, quote)
+			findings, err := CheckFiles(map[string][]byte{b03CatalogGoSource: []byte(source)}, cfg)
+			if err != nil || len(findings) != 0 {
+				t.Fatalf("actual B03 Go sites refused: %#v, %v", findings, err)
+			}
+		})
+	}
+}
+
+func TestB03NativeGoProtocolRejectsCopiesAndChangedContexts(t *testing.T) {
+	cfg, _ := checkedInB03NativeGoConfig(t)
+	source, census, artifact := b03NativeGoFixture(t, cfg, strconv.Quote)
+	call := "strings.Fields(" + strconv.Quote(census) + ")"
+	lookup := "artifact := manifest.Artifacts[" + strconv.Quote(artifact) + "]"
+	product := cfg.Terms[2].Matches[0]
+	tables := strings.Fields(census)
+	reordered := append([]string{}, tables...)
+	reordered[0], reordered[1] = reordered[1], reordered[0]
+	for _, test := range []struct{ name, path, source string }{
+		{"neighbor_path", b03CatalogGoSource + ".other.go", source},
+		{"wildcard_path", "internal/integration/b03catalog/*.go", source},
+		{"prose", "docs/catalog.md", source},
+		{"wrong_global", b03CatalogGoSource, strings.Replace(source, "var b03NativeTables", "var otherTables", 1)},
+		{"typed_global", b03CatalogGoSource, strings.Replace(source, "var b03NativeTables", "var b03NativeTables []string", 1)},
+		{"const_not_var", b03CatalogGoSource, strings.Replace(source, "var b03NativeTables", "const b03NativeTables", 1)},
+		{"local_copy", b03CatalogGoSource, strings.Replace(source, "var b03NativeTables = "+call, "func other() { b03NativeTables := "+call+" }", 1)},
+		{"duplicate_global", b03CatalogGoSource, source + "var b03NativeTables = " + call},
+		{"global_type_collision", b03CatalogGoSource, source + "type b03NativeTables int"},
+		{"wrong_call_receiver", b03CatalogGoSource, strings.Replace(source, call, strings.Replace(call, "strings.", "other.", 1), 1)},
+		{"wrong_call_member", b03CatalogGoSource, strings.Replace(source, call, strings.Replace(call, ".Fields(", ".Other(", 1), 1)},
+		{"extra_call_argument", b03CatalogGoSource, strings.Replace(source, call, "strings.Fields("+strconv.Quote(census)+`, "extra")`, 1)},
+		{"variadic_call", b03CatalogGoSource, strings.Replace(source, call, "strings.Fields("+strconv.Quote(census)+"...)", 1)},
+		{"expression_not_literal", b03CatalogGoSource, strings.Replace(source, call, "strings.Fields("+strconv.Quote(census)+` + "")`, 1)},
+		{"missing_table", b03CatalogGoSource, strings.Replace(source, strconv.Quote(census), strconv.Quote(strings.Join(tables[:len(tables)-1], " ")), 1)},
+		{"reordered_tables", b03CatalogGoSource, strings.Replace(source, strconv.Quote(census), strconv.Quote(strings.Join(reordered, " ")), 1)},
+		{"extra_table", b03CatalogGoSource, strings.Replace(source, strconv.Quote(census), strconv.Quote(census+" extra"), 1)},
+		{"duplicate_table", b03CatalogGoSource, strings.Replace(source, strconv.Quote(census), strconv.Quote(census+" "+tables[0]), 1)},
+		{"extra_census_space", b03CatalogGoSource, strings.Replace(source, strconv.Quote(census), strconv.Quote(census+" "), 1)},
+		{"wrong_function", b03CatalogGoSource, strings.Replace(source, "func verifyB03PreparedArtifact()", "func otherVerifier()", 1)},
+		{"method_not_function", b03CatalogGoSource, strings.Replace(source, "func verifyB03PreparedArtifact()", "func (r receiver) verifyB03PreparedArtifact()", 1)},
+		{"wrong_assignment_name", b03CatalogGoSource, strings.Replace(source, lookup, strings.Replace(lookup, "artifact :=", "copy :=", 1), 1)},
+		{"assignment_not_definition", b03CatalogGoSource, strings.Replace(source, lookup, strings.Replace(lookup, ":=", "=", 1), 1)},
+		{"wrong_manifest", b03CatalogGoSource, strings.Replace(source, lookup, strings.Replace(lookup, "manifest.", "other.", 1), 1)},
+		{"wrong_manifest_field", b03CatalogGoSource, strings.Replace(source, lookup, strings.Replace(lookup, ".Artifacts[", ".Other[", 1), 1)},
+		{"nested_lookup", b03CatalogGoSource, strings.Replace(source, lookup, "f := func() { "+lookup+" }; f()", 1)},
+		{"duplicate_lookup", b03CatalogGoSource, strings.Replace(source, lookup, lookup+"; "+lookup, 1)},
+		{"duplicate_function", b03CatalogGoSource, source + "func verifyB03PreparedArtifact() { " + lookup + " }"},
+		{"changed_artifact_key", b03CatalogGoSource, strings.Replace(source, strconv.Quote(artifact), strconv.Quote(artifact+"-extra"), 1)},
+		{"artifact_copy", b03CatalogGoSource, source + "var copy = " + strconv.Quote(artifact)},
+		{"census_copy", b03CatalogGoSource, source + "var copy = " + strconv.Quote(census)},
+		{"quoted_source_copy", b03CatalogGoSource, "package recorder\nvar copy = " + escapedProtocolString(source)},
+		{"product_comment", b03CatalogGoSource, source + "// " + product},
+		{"identifier", b03CatalogGoSource, source + "var " + cfg.Terms[3].Matches[len(cfg.Terms[3].Matches)-1] + " = 1"},
+		{"plain_import", b03CatalogGoSource, "package recorder\nimport " + strconv.Quote(artifact)},
+		{"escaped_import", b03CatalogGoSource, "package recorder\nimport " + escapedProtocolString(artifact)},
+		{"escaped_product_import", b03CatalogGoSource, "package recorder\nimport " + escapedProtocolString(product)},
+	} {
+		t.Run(test.name, func(t *testing.T) { requireNativeFieldRefusal(t, cfg, test.path, test.source) })
+	}
+}
+
+func TestB03NativeGoProtocolPreservesOtherPathsAndCommentRules(t *testing.T) {
+	cfg, _ := checkedInB03NativeGoConfig(t)
+	baseline := cfg
+	baseline.B03NativeGoLiterals = nil
+	_, census, artifact := b03NativeGoFixture(t, cfg, strconv.Quote)
+	for _, path := range []string{"other/existing.go", b01NativeGoSource, nativeManifestProtocolSource, externalProtocolSource} {
+		for i, value := range []string{census, artifact} {
+			for name, quote := range map[string]func(string) string{"quoted": strconv.Quote, "escaped": escapedProtocolString} {
+				t.Run(fmt.Sprintf("%s/literal%d/%s", path, i, name), func(t *testing.T) {
+					files := map[string][]byte{path: []byte("package recorder\nvar copy = " + quote(value))}
+					before, beforeErr := CheckFiles(files, baseline)
+					after, afterErr := CheckFiles(files, cfg)
+					if beforeErr != nil || afterErr != nil || !reflect.DeepEqual(before, after) {
+						t.Fatalf("B03 Go admission changed outside scan: before=%#v/%v after=%#v/%v", before, beforeErr, after, afterErr)
+					}
+				})
+			}
+		}
+	}
+	for i, value := range []string{census, artifact} {
+		t.Run(fmt.Sprintf("comment%d", i), func(t *testing.T) {
+			files := map[string][]byte{b03CatalogGoSource: []byte("package recorder\n// " + value)}
+			before, beforeErr := CheckFiles(files, baseline)
+			after, afterErr := CheckFiles(files, cfg)
+			if beforeErr != nil || afterErr != nil || !reflect.DeepEqual(before, after) {
+				t.Fatalf("B03 Go admission changed comment baseline: before=%#v/%v after=%#v/%v", before, beforeErr, after, afterErr)
+			}
+		})
+	}
+}
+
+func b03NativeGoConfigSection(site NativeLiteralSite) string {
+	return strings.Replace(nativeFieldConfigSection(site), "[[native_field_literal]]", "[[b03_native_go_literal]]", 1)
+}
+
+func TestB03NativeGoConfigurationRejectsBroadenedOrIncompleteSites(t *testing.T) {
+	cfg, path := checkedInB03NativeGoConfig(t)
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, site := range cfg.B03NativeGoLiterals {
+		section := b03NativeGoConfigSection(site)
+		if !strings.Contains(string(original), section) {
+			t.Fatalf("B03 Go site %s was not bound", site.ID)
+		}
+		idLine := "id = " + strconv.Quote(site.ID)
+		pathLine := "path = " + strconv.Quote(site.Path)
+		fieldLine := "field = " + strconv.Quote(site.Field)
+		valueLine := "values = [" + strconv.Quote(site.Values[0]) + "]"
+		for _, test := range []struct{ name, replacement string }{
+			{"unknown_id", strings.Replace(section, idLine, `id = "other"`, 1)},
+			{"wrong_path", strings.Replace(section, pathLine, "path = "+strconv.Quote(site.Path+".other"), 1)},
+			{"wrong_field", strings.Replace(section, fieldLine, "field = "+strconv.Quote(site.Field+".other"), 1)},
+			{"changed_value", strings.Replace(section, valueLine, "values = ["+strconv.Quote(site.Values[0]+" extra")+"]", 1)},
+			{"extra_value", strings.Replace(section, valueLine, valueLine[:len(valueLine)-1]+`, "extra"]`, 1)},
+			{"empty_values", strings.Replace(section, valueLine, "values = []", 1)},
+			{"scalar_values", strings.Replace(section, valueLine, "values = "+strconv.Quote(site.Values[0]), 1)},
+			{"array_path", strings.Replace(section, pathLine, "path = ["+strconv.Quote(site.Path)+"]", 1)},
+			{"missing_id", strings.Replace(section, idLine+"\n", "", 1)},
+			{"missing_path", strings.Replace(section, pathLine+"\n", "", 1)},
+			{"missing_field", strings.Replace(section, fieldLine+"\n", "", 1)},
+			{"missing_values", strings.Replace(section, valueLine, "", 1)},
+			{"duplicate_field", strings.Replace(section, fieldLine, fieldLine+"\n"+fieldLine, 1)},
+			{"unknown_field", section + "\nprefix = \"other\""},
+			{"duplicate_section", section + "\n" + section},
+			{"incomplete_set", ""},
+			{"tuple_separator_injection", strings.Replace(section, fieldLine, "field = "+strconv.Quote(site.Field+"\x00extra"), 1)},
+		} {
+			t.Run(site.ID+"/"+test.name, func(t *testing.T) {
+				file := filepath.Join(t.TempDir(), "lexicon.toml")
+				content := strings.Replace(string(original), section, test.replacement, 1)
+				if err := os.WriteFile(file, []byte(content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := LoadConfig(file); err == nil {
+					t.Fatal("broadened or incomplete B03 Go site accepted")
+				}
+			})
+		}
+	}
+	without := string(original)
+	for _, site := range cfg.B03NativeGoLiterals {
+		without = strings.Replace(without, b03NativeGoConfigSection(site), "", 1)
+	}
+	file := filepath.Join(t.TempDir(), "lexicon.toml")
+	if err := os.WriteFile(file, []byte(without), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := LoadConfig(file)
+	if err != nil || len(parsed.B03NativeGoLiterals) != 0 {
+		t.Fatalf("omitted optional B03 Go set should grant nothing: %+v, %v", parsed.B03NativeGoLiterals, err)
+	}
+	source, _, _ := b03NativeGoFixture(t, cfg, strconv.Quote)
+	requireNativeFieldRefusal(t, parsed, b03CatalogGoSource, source)
+}
+
+func TestB03NativeGoAllowanceRejectsMutatedInMemorySites(t *testing.T) {
+	cfg, _ := checkedInB03NativeGoConfig(t)
+	source, _, _ := b03NativeGoFixture(t, cfg, strconv.Quote)
+	for _, test := range []struct {
+		name string
+		edit func([]NativeLiteralSite) []NativeLiteralSite
+	}{
+		{"absent", func(sites []NativeLiteralSite) []NativeLiteralSite { return nil }},
+		{"incomplete", func(sites []NativeLiteralSite) []NativeLiteralSite { return sites[:1] }},
+		{"duplicate", func(sites []NativeLiteralSite) []NativeLiteralSite { sites[1] = sites[0]; return sites }},
+		{"wrong_path", func(sites []NativeLiteralSite) []NativeLiteralSite { sites[0].Path += ".other"; return sites }},
+		{"wrong_field", func(sites []NativeLiteralSite) []NativeLiteralSite { sites[0].Field += ".other"; return sites }},
+		{"wrong_value", func(sites []NativeLiteralSite) []NativeLiteralSite { sites[0].Values[0] += " extra"; return sites }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changed := cfg
+			changed.B03NativeGoLiterals = nil
+			for _, site := range cfg.B03NativeGoLiterals {
+				site.Values = append([]string{}, site.Values...)
+				changed.B03NativeGoLiterals = append(changed.B03NativeGoLiterals, site)
+			}
+			changed.B03NativeGoLiterals = test.edit(changed.B03NativeGoLiterals)
+			requireNativeFieldRefusal(t, changed, b03CatalogGoSource, source)
+		})
+	}
+}
+
 func TestNativeFieldConfigurationRejectsBroadeningAndAmbiguity(t *testing.T) {
 	cfg, path := checkedInNativeFieldConfig(t)
 	original, err := os.ReadFile(path)

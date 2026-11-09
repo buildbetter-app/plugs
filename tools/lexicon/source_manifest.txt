@@ -16,6 +16,7 @@
 .github/workflows/BUILD.bazel
 .github/workflows/plug-bazel.yml
 .github/workflows/plug-beads-bazel.yml
+.github/workflows/plug-cp7-latency.yml
 .github/workflows/plug-nightly-restore-diffs.yml
 .github/workflows/plug-public-bundle.yml
 .github/workflows/plug-remote-bazel.yml
@@ -424,6 +425,9 @@ internal/integration/b03catalog/catalog_test.go
 internal/integration/b03catalog/composition_runtime_test.go
 internal/integration/b03catalog/engine_test.go
 internal/integration/b03catalog/fixture_test.go
+internal/integration/b03catalog/native_admission_record.json
+internal/integration/b03catalog/native_catalog_inputs.json
+internal/integration/b03catalog/native_catalog_recording_test.go
 internal/integration/b04claimidentity/BUILD.bazel
 internal/integration/b04claimidentity/README.md
 internal/integration/b04claimidentity/claim_identity_test.go
