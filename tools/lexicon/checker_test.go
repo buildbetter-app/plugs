@@ -14,7 +14,9 @@ import (
 
 func TestNativeHTTPListenerAdmitsOnlyExactParsingSite(t *testing.T) {
 	cfg, _ := checkedInExternalProtocolConfig(t)
-	value := "bd serve: listening on http://"
+	identifier := string([]byte{98, 100})
+	productTerm := string([]byte{119, 105, 115, 112})
+	value := identifier + " serve: listening on http://"
 	source := func(literal string) string {
 		return "package recorder\nimport \"strings\"\nfunc (r *recorder) styleADomainCreate() { _, _ = strings.CutPrefix(line, " + literal + ") }\n"
 	}
@@ -38,8 +40,8 @@ func TestNativeHTTPListenerAdmitsOnlyExactParsingSite(t *testing.T) {
 		"duplicate-method": good + strings.TrimPrefix(good, "package recorder\nimport \"strings\"\n"),
 		"duplicate-call":   strings.Replace(good, " }", "; _, _ = strings.CutPrefix(line, "+strconv.Quote(value)+") }", 1),
 		"closure":          strings.Replace(good, "_, _ = strings.CutPrefix", "f := func() { _, _ = strings.CutPrefix", 1) + "}\n",
-		"other-identifier": good + "var bd = 1",
-		"other-term":       good + "var diagnostic = \"wisp\"",
+		"other-identifier": good + "var " + identifier + " = 1",
+		"other-term":       good + "var diagnostic = " + strconv.Quote(productTerm),
 	} {
 		t.Run(name, func(t *testing.T) {
 			findings, err := CheckFiles(map[string][]byte{nativeHTTPDomainSource: []byte(body)}, cfg)
