@@ -176,7 +176,7 @@ try {
   // source with only the async initialization dependency held behind a promise.
   const ts=await import(pathToFileURL(join(ui,'node_modules/typescript/lib/typescript.js')));
   const recordCode=ts.default.transpileModule(await readFile(join(ui,'app/api/records/route.ts'),'utf8'),{compilerOptions:{target:99,module:99}}).outputText;
-  const recordContext=vm.createContext({Request,Response,console});
+  const recordContext=vm.createContext({Request,Response,URL,console});
   recordModule=new vm.SourceTextModule(recordCode,{context:recordContext});
   const deps={
     'next/server':{NextResponse:{json:(value,options)=>Response.json(value,options)}},
@@ -200,6 +200,50 @@ try {
   const adoptedRecord=externalRecords.get(`at://${did}/org.impactindexer.review.comment/legacy-adopt`);assert.equal(adoptedRecord.value.project,'cody-ops');assert.equal(adoptedRecord.value.nodeId,legacyId);
   await save('record-refusals-and-adoption.json',{wrongDid,wrongProject,ambiguousDelete,ambiguousUnlike,crossLike,crossPut,crossReply,adopted,adoptedRecord});
   check('legacy PUT adoption and explicit ambiguous/cross-project record refusals before any external write');
+
+  const commentCollection='org.impactindexer.review.comment', likeCollection='org.impactindexer.review.like';
+  const at=(collection,rkey)=>`at://${did}/${collection}/${rkey}`;
+  const writeRecord=(method,collection,rkey,record,nodeId=legacyId,project='cody-ops')=>recordRequest(nextUrl+'/api/records',method,JSON.stringify({collection,rkey,record,nodeId,project}));
+  const deleteRecord=(collection,rkey,nodeId=legacyId,project='cody-ops',owner=did)=>recordRequest(nextUrl+`/api/records?collection=${collection}&rkey=${rkey}&nodeId=${encodeURIComponent(nodeId)}&project=${project}&did=${owner}`,'DELETE');
+  const replyValue=(parent,text)=>({subject:{uri:'beads:'+legacyId},replyTo:parent,text,createdAt:'2026-11-05T00:01:00Z'});
+  const mixedReply=await writeRecord('POST',commentCollection,'mixed-scoped',replyValue(oldComment.uri,'mixed scoped reply'));
+  assert.equal(mixedReply.status,200);
+  const oldDeep=putExternal(did,commentCollection,'mixed-legacy-deep',replyValue(at(commentCollection,'mixed-scoped'),'mixed legacy deep reply'));
+  const mixedDeep=await writeRecord('POST',commentCollection,'mixed-scoped-deep',replyValue(oldDeep.uri,'mixed scoped deepest reply'));
+  assert.equal(mixedDeep.status,200);
+  const mixedHTTP=await http('/api/v1/issues/'+encodeURIComponent(legacyId)+'?project=cody-ops');
+  const mixedGraph=await http('/api/v1/graph?project=cody-ops&include=comments,activity&limit=200');
+  const mixedReady=await http('/api/v1/ready?project=cody-ops');
+  for(const comments of [mixedHTTP.issue.comments,mixedGraph.issues.find(n=>n.id===legacyId).comments,mixedReady.issues.find(n=>n.id===legacyId).comments]) {
+    const parent=comments.find(c=>c.text==='old projectless comment');
+    assert.equal(parent.replies[0].text,'mixed scoped reply');
+    assert.equal(parent.replies[0].replies[0].text,'mixed legacy deep reply');
+    assert.equal(parent.replies[0].replies[0].replies[0].text,'mixed scoped deepest reply');
+    assert.ok(!comments.some(c=>c.text==='mixed scoped reply'));
+  }
+  await save('mixed-generation-http.json',{mixedReply,mixedDeep,mixedHTTP,mixedGraph,mixedReady});
+  check('actual issue/graph/ready HTTP rebuild mixed legacy/scoped/deeper reply trees');
+
+  const cleanupParent=await writeRecord('POST',commentCollection,'cleanup-parent',{subject:{uri:'beads:'+legacyId},text:'cleanup parent'});
+  assert.equal(cleanupParent.status,200);
+  const orphanValue=replyValue(at(commentCollection,'cleanup-parent'),'owned scoped orphan');
+  const cleanupReply=await writeRecord('POST',commentCollection,'cleanup-reply',orphanValue);assert.equal(cleanupReply.status,200);
+  const cleanupDelete=await deleteRecord(commentCollection,'cleanup-parent');assert.equal(cleanupDelete.status,200);
+  const orphanAdopt=await writeRecord('PUT',commentCollection,'cleanup-reply',{...orphanValue,text:'owned adopted orphan'});assert.equal(orphanAdopt.status,200);
+  const orphanLike=await writeRecord('POST',likeCollection,'cleanup-like',{subject:{uri:at(commentCollection,'cleanup-reply')}});assert.equal(orphanLike.status,200);
+  const orphanUnlike=await deleteRecord(likeCollection,'cleanup-like');assert.equal(orphanUnlike.status,200);
+  const orphanHTTP=await http('/api/v1/issues/'+encodeURIComponent(legacyId)+'?project=cody-ops');assert.ok(orphanHTTP.issue.comments.some(c=>c.text==='owned adopted orphan'));
+  const orphanDelete=await deleteRecord(commentCollection,'cleanup-reply');assert.equal(orphanDelete.status,200);
+  putExternal(did,likeCollection,'missing-target-like',{subject:{uri:at(commentCollection,'cleanup-parent')}});
+  const afterCleanup=receipts.externalRecords.length;
+  const missingLike=await deleteRecord(likeCollection,'missing-target-like');assert.equal(missingLike.status,403);
+  const missingNewReply=await writeRecord('POST',commentCollection,'missing-parent-reply',orphanValue);assert.equal(missingNewReply.status,403);
+  putExternal(did,commentCollection,'contradictory-orphan',{...orphanValue,project:'signals-v2',nodeId:legacyId});
+  const contradictoryOrphan=await deleteRecord(commentCollection,'contradictory-orphan');assert.equal(contradictoryOrphan.status,403);
+  const foreignOrphan=await deleteRecord(commentCollection,'cleanup-reply',legacyId,'cody-ops','did:plc:wrong');assert.equal(foreignOrphan.status,403);
+  assert.equal(receipts.externalRecords.length,afterCleanup);
+  await save('orphan-record-cleanup.json',{cleanupParent,cleanupReply,cleanupDelete,orphanAdopt,orphanLike,orphanUnlike,orphanHTTP,orphanDelete,missingLike,missingNewReply,contradictoryOrphan,foreignOrphan});
+  check('owned orphan PUT/like/unlike/delete succeed; missing/contradictory/foreign targets refuse before writes');
 
   const streamCode=ts.default.transpileModule(await readFile(join(ui,'app/api/beads/stream/route.ts'),'utf8'),{compilerOptions:{target:99,module:99}}).outputText;
   let resolveStore, watches=0,stops=0,intervals=new Set();
@@ -296,11 +340,21 @@ try {
   await until(async()=>await evaluate(`Boolean([...document.querySelectorAll('button')].find(b=>b.textContent.includes('extra cody-ops')&&b.textContent.includes(${JSON.stringify(legacyId)})))`),'legacy unique task search');
   await evaluate(`(()=>{const b=[...document.querySelectorAll('button')].find(b=>b.textContent.includes('extra cody-ops')&&b.textContent.includes(${JSON.stringify(legacyId)}));b.click()})()`);
   await until(async()=> (await evaluate('document.body.innerText')).includes('old projectless comment'),'legacy projectless comment load');
+  await until(async()=> (await evaluate('document.body.innerText')).includes('mixed scoped deepest reply'),'mixed-generation issue UI');
+  const threadDOM=await evaluate(`(()=>{const paragraph=text=>[...document.querySelectorAll('p')].find(p=>p.textContent===text);const names=['old projectless comment','mixed scoped reply','mixed legacy deep reply','mixed scoped deepest reply'];const ps=names.map(paragraph);if(ps.some(p=>!p))throw Error('missing mixed reply');for(let i=1;i<ps.length;i++){const parentCard=ps[i-1].parentElement.parentElement;const replyCard=ps[i].parentElement.parentElement;if(!parentCard.contains(replyCard)||!replyCard.classList.contains('border-l'))throw Error('reply is not nested under its parent');}return {text:document.body.innerText,names}})()`);
+  await save('browser-mixed-generation.json',threadDOM);
+  check('browser issue UI renders old parent/new scoped/deeper mixed-generation replies in their actual nested cards');
   await evaluate(`(()=>{const p=[...document.querySelectorAll('p')].find(p=>p.textContent==='old projectless comment');p.parentElement.querySelectorAll('button')[0].click()})()`);
   await until(()=>!externalRecords.has(`at://${did}/org.impactindexer.review.like/legacy-like`),'legacy unlike UI');
   await until(async()=>await evaluate(`(()=>{const p=[...document.querySelectorAll('p')].find(p=>p.textContent==='old projectless comment');return p?.parentElement.querySelector('button')?.textContent.trim()!=='1'})()`),'legacy unlike refresh');
   await evaluate(`(()=>{const p=[...document.querySelectorAll('p')].find(p=>p.textContent==='old projectless comment');p.parentElement.querySelectorAll('button')[2].click()})()`);
   await until(()=>!externalRecords.has(`at://${did}/org.impactindexer.review.comment/legacy-comment`),'legacy DELETE UI');
+  await until(async()=> (await evaluate('document.body.innerText')).includes('mixed scoped reply'),'orphan remains visible after parent deletion');
+  await evaluate(`(()=>{const p=[...document.querySelectorAll('p')].find(p=>p.textContent==='mixed scoped reply');p.parentElement.querySelectorAll('button')[2].click()})()`);
+  await until(()=>!externalRecords.has(at(commentCollection,'mixed-scoped')),'owned orphan DELETE UI');
+  await until(async()=> (await evaluate('document.body.innerText')).includes('mixed legacy deep reply'),'deeper orphan remains visible');
+  await save('browser-orphan-cleanup.json',await evaluate('({text:document.body.innerText})'));
+  check('browser parent deletion preserves orphan reply display and permits owned reply deletion');
   await graphMenu(legacyId);await clickText('Unclaim task');
   await until(()=>!externalRecords.has(`at://${did}/org.impactindexer.review.comment/legacy-claim`),'legacy unclaim UI');
   check('browser old projectless unique comment delete, old like unlike and old claim unclaim preserve ownership');
@@ -312,6 +366,35 @@ try {
 
 
 
+  await cdp('Page.navigate',{url:nextUrl+'/?panel=activity'});
+  await until(async()=> (await evaluate('document.body.innerText')).includes('6 issues'),'activity browser data');
+  const activityLink={from:{id:roots['cody-ops']},to:{id:ids['cody-ops-extra']},kind:'blocks'};
+  await rpc('cody-ops','bead.link',activityLink);
+  await until(async()=> (await evaluate('document.body.innerText')).includes('added a dependency on SHARED'),'public dependency add label');
+  const linkedProjection=await http('/api/beads');
+  await rpc('cody-ops','bead.unlink',activityLink);
+  await until(async()=> (await evaluate('document.body.innerText')).includes('removed dependency on SHARED'),'public dependency remove label');
+  await type('input[placeholder="Search activity..."]','SHARED');
+  const activityDOM=await evaluate('document.body.innerText');assert.ok(activityDOM.includes('added a dependency on SHARED'));assert.ok(activityDOM.includes('removed dependency on SHARED'));assert.ok(!activityDOM.includes('\0'));
+  await save('browser-dependency-labels.json',{text:activityDOM,publicTarget:'SHARED',canonicalTarget:roots['cody-ops']});
+  // An additional exact-source pure function control removes the target from
+  // the *new* frame, proving its old verified public identity is retained.
+  // It does not claim a native delete operation or replace browser transport.
+  const activityContext=vm.createContext({console});
+  const transpile=file=>ts.default.transpileModule(file,{compilerOptions:{target:99,module:99}}).outputText;
+  const diffModule=new vm.SourceTextModule(transpile(await readFile(join(ui,'lib/diff-beads.ts'),'utf8')),{context:activityContext});await diffModule.link(()=>{throw Error('unexpected diff import')});await diffModule.evaluate();
+  const activityModule=new vm.SourceTextModule(transpile(await readFile(join(ui,'lib/activity.ts'),'utf8')),{context:activityContext});await activityModule.link(name=>{assert.equal(name,'./diff-beads');return diffModule});await activityModule.evaluate();
+  const priorUI={...linkedProjection,graphData:{nodes:linkedProjection.graphData.nodes.map(n=>({...n,id:n.graphKey})),links:linkedProjection.graphData.links.map(l=>({...l,source:l.sourceKey,target:l.targetKey}))}};
+  const absentTarget={...priorUI,graphData:{nodes:priorUI.graphData.nodes.filter(n=>n.canonicalId!==roots['cody-ops']),links:[]}};
+  const removedEvents=activityModule.namespace.diffToActivityEvents(diffModule.namespace.diffBeadsData(priorUI,absentTarget),absentTarget.graphData.nodes,priorUI.graphData.nodes);
+  assert.ok(removedEvents.some(e=>e.type==='link-removed'&&e.meta.targetLegacyId==='SHARED'));
+  assert.ok(removedEvents.filter(e=>e.type==='link-removed').every(e=>!e.detail.includes('\0')));
+  await save('removed-target-activity-control.json',{removedEvents,boundary:'exact-source helper with prior actual projection and deliberately absent new-frame target, no native delete claimed'});
+  check('browser actual link/unlink renders and searches public target IDs; removed-target helper retains verified prior ID');
+  await evaluate(`document.querySelector('button[title="Search issues or profiles (Ctrl+F)"]').click()`);
+  await type('input[placeholder="Search issues or profiles..."]','SHARED');
+  await until(async()=>await evaluate(`Boolean([...document.querySelectorAll('button')].find(b=>b.textContent.includes('Imported root cody-ops')))`),'post-activity root search');
+  await evaluate(`(()=>{const b=[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Imported root cody-ops'));b.click()})()`);
   const ref={id:roots['cody-ops']};
   async function close(reason){const current=await rpc('cody-ops','bead.get',{id:ref});return rpc('cody-ops','tx.apply',{changeSet:{expect:[{ref,revision:current.bead.revision}],ops:[{kind:'close',target:ref,reason},{kind:'setMeta',target:ref,key:'i8.host.close_reason',value:{schema:'plug-host-close-reason/1',reason}}]}});}
   await close('original');await until(async()=> (await http('/api/beads')).graphData.nodes.find(n=>n.project==='cody-ops'&&n.id==='SHARED').closeReason==='original','first typed close');
