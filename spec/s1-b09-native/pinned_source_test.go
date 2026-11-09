@@ -476,7 +476,7 @@ func (r *recorder) recordStyleACollisions(input driver.HashInput) {
 		if exhausted {
 			r.requireConserved(before, after, "pinned native nonce exhaustion")
 		} else {
-			r.requireIDs(after, want)
+			r.requireIDs(after, append([]string{want}, before.BeadIDs...)...)
 		}
 		r.replayStyleA(before, input, want, "", "", exhausted)
 	}
@@ -522,7 +522,7 @@ func (r *recorder) recordStyleADomainWidths() {
 			r.t.Fatalf("native domain persisted tuple does not rederive ID: %s want=%s err=%v", issue.ID, want, err)
 		}
 		after := r.capture(w, label+"-after", width-5)
-		r.requireIDs(after, issue.ID)
+		r.requireIDs(after, append([]string{issue.ID}, before.BeadIDs...)...)
 		archive, err := dumpformat.ReadFile(after.ArchivePath)
 		if err != nil {
 			r.t.Fatal(err)
