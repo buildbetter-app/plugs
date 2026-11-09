@@ -61,6 +61,30 @@ func MergeArchives(archives ...*Archive) ([]byte, error) {
 		inputs = append(inputs, mergeInput{archive: archive, manifest: manifest, key: key, histories: histories})
 	}
 	sort.Slice(inputs, func(i, j int) bool { return inputs[i].key < inputs[j].key })
+	namespaced := false
+	for _, input := range inputs {
+		namespaced = namespaced || len(input.histories) != 0 || input.manifest.SourceIdentityContract != ""
+	}
+	if namespaced {
+		for _, input := range inputs {
+			if len(input.histories) != len(input.manifest.Projects) {
+				project := ""
+				if len(input.manifest.Projects) == 1 {
+					project = input.manifest.Projects[0].Prefix
+				}
+				return nil, IncompleteHistoryError{StoreID: input.manifest.StoreID, Project: project, Reason: "complete source project history unavailable"}
+			}
+			for _, scoped := range input.histories {
+				identity, err := mergeInputIdentity(input, scoped.Project)
+				if err != nil {
+					return nil, err
+				}
+				if err := requireCompleteSourceHistory(identity, scoped.Range); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
 
 	for i := 1; i < len(inputs); i++ {
 		if err := compatibleManifests(inputs[0].manifest, inputs[i].manifest); err != nil {
@@ -90,16 +114,31 @@ func MergeArchives(archives ...*Archive) ([]byte, error) {
 	for _, input := range inputs {
 		projects = append(projects, input.manifest.Projects...)
 		for _, directive := range input.manifest.Ontology {
-			if previous, present := directives[directive.ID]; present && !equalJSON(previous, directive) {
+			key := directive.ID
+			if namespaced {
+				key = directive.Target.Project + "\x00" + directive.ID
+			}
+			if previous, present := directives[key]; present && !equalJSON(previous, directive) {
 				return nil, HistoryMergeRefusal{Kind: "ontology directive", Project: directive.Target.Project, OtherProject: previous.Target.Project, ID: directive.ID, Reason: "directive identity overlaps"}
 			}
-			directives[directive.ID] = directive
+			directives[key] = directive
 		}
 		for _, scoped := range input.histories {
+			if namespaced {
+				identity, err := mergeInputIdentity(input, scoped.Project)
+				if err != nil {
+					return nil, err
+				}
+				scoped = namespaceHistory(scoped, identity)
+			}
 			if seenHistoryProjects[scoped.Project] {
 				return nil, HistoryMergeRefusal{Kind: "project", Project: scoped.Project, ID: scoped.Project, Reason: "project history is declared more than once"}
 			}
 			seenHistoryProjects[scoped.Project] = true
+			if namespaced {
+				historyScopes = append(historyScopes, scoped)
+				continue
+			}
 			for _, commit := range scoped.Commits {
 				if previous, ok := seenHistoryCommits[commit.ID]; ok && previous != scoped.Project {
 					return nil, HistoryMergeRefusal{Kind: "commit identity", Project: scoped.Project, OtherProject: previous, ID: commit.ID, Reason: "source revisions cannot be ordered across projects"}
@@ -135,8 +174,17 @@ func MergeArchives(archives ...*Archive) ([]byte, error) {
 		}
 		for _, kind := range knownKindNames() {
 			for _, record := range input.archive.Records(kind) {
+				if namespaced && record.Source.Identity == nil {
+					identity, err := mergeInputIdentity(input, record.Project)
+					if err != nil {
+						return nil, err
+					}
+					record = namespaceRecord(record, identity)
+				}
 				key := sourceRecordIdentity{Kind: recordIdentity(kind, record)}
-				if input.manifest.SourcePlaneAddressContract == SourcePlaneAddressContract {
+				if namespaced {
+					key = sourceRecordIdentity{Kind: identityRecordKey(record)}
+				} else if input.manifest.SourcePlaneAddressContract == SourcePlaneAddressContract {
 					key = sourceRecordIdentity{Kind: kind, Project: record.Project, ID: record.ID}
 					if kind == "edge" {
 						key.Table = record.Source.Table
@@ -170,7 +218,14 @@ func MergeArchives(archives ...*Archive) ([]byte, error) {
 			return nil, fmt.Errorf("archive %q configuration provenance: %w", input.manifest.StoreID, err)
 		}
 		for _, entry := range sourceEntries {
-			key := entry.Input.Family + "\x00" + entry.Input.Path
+			if namespaced && entry.Identity == nil {
+				identity, err := mergeInputIdentity(input, "")
+				if err != nil {
+					return nil, err
+				}
+				entry.Identity = &identity
+			}
+			key := externalEntryKey(entry)
 			if previous, ok := entries[key]; ok {
 				if !equalJSON(previous, entry) {
 					return nil, fmt.Errorf("conflicting configuration provenance %s", key)
@@ -211,14 +266,7 @@ func MergeArchives(archives ...*Archive) ([]byte, error) {
 		mergedEntries = append(mergedEntries, entry)
 	}
 	sort.Slice(mergedEntries, func(i, j int) bool {
-		left, right := mergedEntries[i].Input, mergedEntries[j].Input
-		if left.Precedence != right.Precedence {
-			return left.Precedence < right.Precedence
-		}
-		if left.Family != right.Family {
-			return left.Family < right.Family
-		}
-		return left.Path < right.Path
+		return compareExternalEntries(mergedEntries[i], mergedEntries[j]) < 0
 	})
 	config, err := json.Marshal(mergedEntries)
 	if err != nil {
@@ -251,12 +299,20 @@ func MergeArchives(archives ...*Archive) ([]byte, error) {
 	manifest.StoreID = "merge-" + mergeDigest(inputs)
 	manifest.Machine = "offline-merge"
 	manifest.History = history
+	if namespaced {
+		manifest.SourceIdentityContract = SourceIdentityContract
+	}
 	manifest.Projects = projects
 	manifest.Ontology = nil
 	for _, directive := range directives {
 		manifest.Ontology = append(manifest.Ontology, directive)
 	}
-	sort.Slice(manifest.Ontology, func(i, j int) bool { return manifest.Ontology[i].ID < manifest.Ontology[j].ID })
+	sort.Slice(manifest.Ontology, func(i, j int) bool {
+		if namespaced && manifest.Ontology[i].Target.Project != manifest.Ontology[j].Target.Project {
+			return manifest.Ontology[i].Target.Project < manifest.Ontology[j].Target.Project
+		}
+		return manifest.Ontology[i].ID < manifest.Ontology[j].ID
+	})
 	manifest.Sources = sources
 	manifest.Kinds = nil
 	for name, version := range versions {

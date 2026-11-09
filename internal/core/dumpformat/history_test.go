@@ -105,16 +105,13 @@ func TestSourceHistoryDoesNotPromoteRawCommitsToVerifiedReplay(t *testing.T) {
 		t.Fatal("raw source commits fabricated a replay image")
 	}
 	merged, err := MergeArchives(a)
-	if err != nil {
-		t.Fatal(err)
+	var refusal IncompleteHistoryError
+	if !errors.As(err, &refusal) || merged != nil || refusal.Project != "pl" || refusal.Reason != h.Range.Reason {
+		t.Fatalf("incomplete source merge must refuse without promoting history: %v", err)
 	}
-	mergedArchive := readMergeArchive(t, merged)
-	if mergedArchive.Manifest().History != "available-unverified" {
-		t.Fatalf("merge promoted unverified history: %s", mergedArchive.Manifest().History)
-	}
-	mergedHistory, ok := mergedArchive.SourceHistory()
-	if !ok || len(mergedHistory.ProjectHistories) != 1 || mergedHistory.ProjectHistories[0].Range.Status != "unverified" {
-		t.Fatal("merge did not retain the unverified project history")
+	retained, ok := a.SourceHistory()
+	if !ok || retained.Range.Status != "unverified" {
+		t.Fatal("merge mutated unverified source evidence")
 	}
 }
 
@@ -148,17 +145,20 @@ func TestMergePreservesDisjointProjectHistories(t *testing.T) {
 	}
 }
 
-func TestMergeRefusesOverlappingSourceRevisionIDsAtomically(t *testing.T) {
+func TestMergePreservesOverlappingSourceRevisionIDsAcrossProjects(t *testing.T) {
 	aFixture := newMergeFixture(t, "pl")
 	bFixture := newMergeFixture(t, "qa")
 	aHistory := sourceHistoryForFixture(t, aFixture, strings.Repeat("a", 32), strings.Repeat("b", 32), false)
 	bHistory := sourceHistoryForFixture(t, bFixture, strings.Repeat("a", 32), strings.Repeat("c", 32), false)
 	left := withSourceHistory(t, aFixture, aHistory)
 	right := withSourceHistory(t, bFixture, bHistory)
-	_, err := Merge(bytes.NewReader(left), bytes.NewReader(right))
-	var refusal HistoryMergeRefusal
-	if !errors.As(err, &refusal) || refusal.Kind != "commit identity" || refusal.ID != strings.Repeat("a", 32) || refusal.Project == refusal.OtherProject {
-		t.Fatalf("overlapping source revision was not named by typed refusal: %v", err)
+	merged, err := Merge(bytes.NewReader(left), bytes.NewReader(right))
+	if err != nil {
+		t.Fatal(err)
+	}
+	history, ok := readMergeArchive(t, merged).SourceHistory()
+	if !ok || len(history.ProjectHistories) != 2 || history.ProjectHistories[0].Commits[0].ID != strings.Repeat("a", 32) || history.ProjectHistories[1].Commits[0].ID != strings.Repeat("a", 32) || history.ProjectHistories[0].SourceStoreID == history.ProjectHistories[1].SourceStoreID {
+		t.Fatal("colliding raw revisions lost their independent source stores")
 	}
 }
 

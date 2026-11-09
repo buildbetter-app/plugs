@@ -141,6 +141,9 @@ func Read(reader io.Reader) (*Archive, error) {
 	if err := validateStatusCategoryMarker(manifestFields, manifest); err != nil {
 		return nil, err
 	}
+	if err := validateSourceIdentityMarker(manifestFields, manifest); err != nil {
+		return nil, err
+	}
 	if manifest.Scope == "plug-native-store" {
 		if manifest.SourceFieldsContract != "" || manifest.SourcePlaneAddressContract != "" || manifest.StatusCategoryContract != "" {
 			return nil, fmt.Errorf("Beads source fields contract requires offline source scope")
@@ -392,7 +395,19 @@ func validateManifest(manifest Manifest, members map[string][]byte) error {
 	if err := validateProjects(manifest.Projects); err != nil {
 		return err
 	}
-	if manifest.Verification["ontology"] == StrictUnionOntologyVerification {
+	if manifest.SourceIdentityContract == SourceIdentityContract {
+		for _, project := range manifest.Projects {
+			scoped := scopedHistoryManifest(manifest, project.Prefix)
+			if err := validateOntology(scoped.Ontology, scoped.Projects); err != nil {
+				return err
+			}
+		}
+		for _, directive := range manifest.Ontology {
+			if !projectInManifest(directive.Target.Project, manifest.Projects) {
+				return fmt.Errorf("undeclared ontology source project")
+			}
+		}
+	} else if manifest.Verification["ontology"] == StrictUnionOntologyVerification {
 		if err := validateMigrationDirectives(manifest.Ontology, manifest.Projects); err != nil {
 			return err
 		}
@@ -488,6 +503,31 @@ func validateRecords(manifest Manifest, members map[string][]byte) (map[string][
 		}
 	}
 	_, hasHistory := members[SourceHistoryMember]
+	if manifest.SourceIdentityContract == SourceIdentityContract {
+		if !hasHistory {
+			return nil, nil, ErrSourceHistory{Reason: "missing source project history"}
+		}
+		if err := validateScopedSourceRecords(manifest, byKind, members["config/sources.json"]); err != nil {
+			return nil, nil, err
+		}
+		return byKind, nil, nil
+	}
+	for _, rows := range byKind {
+		for _, r := range rows {
+			if r.Source.Identity != nil {
+				return nil, nil, fmt.Errorf("record source identity requires explicit contract")
+			}
+		}
+	}
+	var sourceEntries []externalEntry
+	if err := decodeJSON(members["config/sources.json"], &sourceEntries); err != nil {
+		return nil, nil, err
+	}
+	for _, e := range sourceEntries {
+		if e.Identity != nil {
+			return nil, nil, fmt.Errorf("configuration source identity requires explicit contract")
+		}
+	}
 	planes := manifest.SourcePlaneAddressContract == SourcePlaneAddressContract
 	var migration *ImportMigration
 	var err error
@@ -544,7 +584,12 @@ func validateRecords(manifest Manifest, members map[string][]byte) (map[string][
 	return byKind, migration, nil
 }
 
-func recordKey(record Record) string { return record.Project + "\x00" + record.ID }
+func recordKey(record Record) string {
+	if record.Source.Identity != nil {
+		return identityRecordKey(record)
+	}
+	return record.Project + "\x00" + record.ID
+}
 
 func stringValue(value any) string { result, _ := value.(string); return result }
 

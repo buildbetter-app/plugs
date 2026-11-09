@@ -130,6 +130,7 @@ type Manifest struct {
 	SourceFieldsContract       string              `json:"source_fields_contract,omitempty"`
 	SourcePlaneAddressContract string              `json:"source_plane_address_contract,omitempty"`
 	StatusCategoryContract     string              `json:"status_category_contract,omitempty"`
+	SourceIdentityContract     string              `json:"source_identity_contract,omitempty"`
 	// Native store fields are present only for archives produced by Plug's
 	// engine-neutral admin.dump path. The offline Beads exporter leaves these
 	// fields absent and continues to use the source census above.
@@ -156,8 +157,9 @@ func (m Manifest) EdgeVersion() int {
 }
 
 type Provenance struct {
-	Table  string `json:"table"`
-	Fields Row    `json:"fields"`
+	Table    string          `json:"table"`
+	Fields   Row             `json:"fields"`
+	Identity *SourceIdentity `json:"identity,omitempty"`
 }
 
 type Record struct {
@@ -257,6 +259,10 @@ func (a *Archive) Member(path string) ([]byte, bool) {
 func (a *Archive) Records(kind string) []Record {
 	rows := append([]Record(nil), a.byKind[kind]...)
 	for i := range rows {
+		if rows[i].Source.Identity != nil {
+			identity := *rows[i].Source.Identity
+			rows[i].Source.Identity = &identity
+		}
 		rows[i].Body = cloneRow(rows[i].Body)
 		rows[i].Source.Fields = cloneRow(rows[i].Source.Fields)
 	}

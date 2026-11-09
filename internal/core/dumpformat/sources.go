@@ -7,7 +7,8 @@ import (
 )
 
 type externalEntry struct {
-	Input struct {
+	Identity *SourceIdentity `json:"identity,omitempty"`
+	Input    struct {
 		Family     string `json:"family"`
 		Path       string `json:"path"`
 		State      string `json:"state"`
@@ -29,13 +30,12 @@ func validateConfigProvenance(data []byte) error {
 	for i := range entries {
 		entry := &entries[i]
 		input := entry.Input
-		key := input.Family + "\x00" + input.Path
+		key := externalEntryKey(*entry)
 		if !allowed[input.Family] || !path.IsAbs(input.Path) || strings.ContainsRune(input.Path, '\x00') || seen[key] || input.Precedence < 0 {
 			return fmt.Errorf("unknown, duplicate or inconsistent configuration input")
 		}
 		if previous != nil {
-			p := previous.Input
-			if input.Precedence < p.Precedence || input.Precedence == p.Precedence && (input.Family < p.Family || input.Family == p.Family && input.Path <= p.Path) {
+			if compareExternalEntries(*previous, *entry) >= 0 {
 				return fmt.Errorf("unordered configuration inputs")
 			}
 		}

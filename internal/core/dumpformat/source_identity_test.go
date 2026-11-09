@@ -1,0 +1,262 @@
+package dumpformat
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"io"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+// These are declared synthetic, complete histories. The collisions represent
+// independent stores, never recordings or native/rehearsal qualification.
+func collidingProjectHistory(t *testing.T, project string) []byte {
+	t.Helper()
+	f := newMergeFixture(t, project)
+	f.records["comment"][0].ID = "1"
+	f.records["comment"][0].Source.Fields["id"] = "1"
+	f.records["edge"][0].ID = "1"
+	f.records["edge"][0].Source.Fields["id"] = "1"
+	f.records["memory"][0].ID = "shared"
+	f.records["memory"][0].Body["key"] = "shared"
+	f.records["memory"][0].Body["value"] = project
+	f.records["memory"][0].Source.Fields["key"] = "kv.memory.shared"
+	f.records["memory"][0].Source.Fields["value"] = project
+	for i := range f.config {
+		f.config[i].Input.Path = "/synthetic/common/" + f.config[i].Input.Family
+	}
+	event := Row{}
+	for _, column := range strings.Fields(tableColumns["events"]) {
+		event[column] = nil
+	}
+	event["id"], event["issue_id"] = json.Number("1"), project+"-1"
+	f.addArchive(t, "events", event)
+	h := sourceHistoryForFixture(t, f, strings.Repeat("a", 32), strings.Repeat("b", 32), false)
+	h.Events = []Row{event}
+	for i := range h.Range.Frames {
+		h.Range.Frames[i].Events = []Row{event}
+	}
+	return withSourceHistory(t, f, h)
+}
+
+func TestSourceIdentityMergePreservesCollidingProjectHistory(t *testing.T) {
+	left, right := collidingProjectHistory(t, "pl"), collidingProjectHistory(t, "qa")
+	merged, err := Merge(bytes.NewReader(left), bytes.NewReader(right))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := readMergeArchive(t, merged)
+	if a.Manifest().SourceIdentityContract != SourceIdentityContract {
+		t.Fatal("merge omitted the explicit source identity contract")
+	}
+	counts := map[SourceIdentity]int{}
+	for _, kind := range knownKindNames() {
+		for _, record := range a.Records(kind) {
+			if record.Source.Identity == nil {
+				t.Fatalf("unscoped %s/%s", kind, record.ID)
+			}
+			counts[*record.Source.Identity]++
+		}
+	}
+	for _, original := range [][]byte{left, right} {
+		input := readMergeArchive(t, original)
+		identity := SourceIdentity{StoreID: input.Manifest().StoreID, Project: input.Manifest().Projects[0].Prefix}
+		want := 0
+		for _, kind := range knownKindNames() {
+			want += len(input.Records(kind))
+		}
+		if counts[identity] != want {
+			t.Fatalf("source %v retained %d records, want %d", identity, counts[identity], want)
+		}
+	}
+	h, ok := a.SourceHistory()
+	if !ok || len(h.ProjectHistories) != 2 {
+		t.Fatal("project histories lost")
+	}
+	for _, scope := range h.ProjectHistories {
+		if scope.SourceStoreID != "store-"+scope.Project || scope.Commits[0].ID != strings.Repeat("a", 32) || SourceEventID(scope.Events[0]) != "1" {
+			t.Fatal("source revision/event ID was changed or lost its owning store")
+		}
+		image, err := a.HistoryImageForProject(scope.Project, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, kind := range knownKindNames() {
+			for _, record := range image.Records(kind) {
+				if record.Source.Identity == nil || record.Source.Identity.Project != scope.Project {
+					t.Fatalf("%s image leaked another project's %s", scope.Project, kind)
+				}
+			}
+		}
+		memory := image.Records("memory")
+		if len(memory) != 1 || memory[0].ID != "shared" || memory[0].Body["value"] != scope.Project {
+			t.Fatal("colliding memory content aliased across projects")
+		}
+	}
+	var entries []externalEntry
+	config, _ := a.Member("config/sources.json")
+	if err := decodeJSON(config, &entries); err != nil || len(entries) != 2*len(externalFamilies) {
+		t.Fatalf("source config provenance collapsed: %v, entries=%d", err, len(entries))
+	}
+	for _, e := range entries {
+		if e.Identity == nil || e.Identity.StoreID != "store-"+e.Identity.Project {
+			t.Fatal("configuration path lacks its source namespace")
+		}
+	}
+	// The exact same content-hash rows must survive twice, once per source.
+	if len(a.Records("beads-archive")) != 2*len(readMergeArchive(t, left).Records("beads-archive")) {
+		t.Fatal("shared migration hashes were deduplicated across projects")
+	}
+	// Source keys are suitable for legacy-ID maps without ambiguous delimiters.
+	keys := map[SourceRecordKey]bool{}
+	for _, r := range a.Records("comment") {
+		key, ok := r.SourceKey()
+		if !ok || key.ID != "1" || keys[key] {
+			t.Fatal("legacy source key collapsed or rewrote a raw ID")
+		}
+		encoded, err := json.Marshal(key)
+		var decoded SourceRecordKey
+		if err != nil || json.Unmarshal(encoded, &decoded) != nil || decoded != key {
+			t.Fatal("legacy source tuple did not round trip")
+		}
+		keys[key] = true
+	}
+	if len(keys) != 2 {
+		t.Fatal("legacy source map lost a project")
+	}
+	for _, readers := range [][]io.Reader{{bytes.NewReader(right), bytes.NewReader(left)}} {
+		again, err := Merge(readers...)
+		if err != nil || !bytes.Equal(again, merged) {
+			t.Fatalf("source identity merge is nondeterministic: %v", err)
+		}
+	}
+}
+
+func TestSourceIdentityNestedMergeRetainsOriginalStores(t *testing.T) {
+	left, right, third := collidingProjectHistory(t, "pl"), collidingProjectHistory(t, "qa"), collidingProjectHistory(t, "zz")
+	first, err := Merge(bytes.NewReader(left), bytes.NewReader(right))
+	if err != nil {
+		t.Fatal(err)
+	}
+	combined, err := Merge(bytes.NewReader(first), bytes.NewReader(third))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := readMergeArchive(t, combined)
+	h, _ := a.SourceHistory()
+	if len(h.ProjectHistories) != 3 {
+		t.Fatal("nested merge lost history")
+	}
+	for _, scope := range h.ProjectHistories {
+		if scope.SourceStoreID != "store-"+scope.Project {
+			t.Fatal("nested merge replaced original source identity with merge identity")
+		}
+	}
+}
+
+func TestSourceIdentitySameProjectOverlapRefusesAtomically(t *testing.T) {
+	input := collidingProjectHistory(t, "pl")
+	a := readMergeArchive(t, input)
+	before := a.TarBytes()
+	data, err := MergeArchives(a, a)
+	var refusal HistoryMergeRefusal
+	if !errors.As(err, &refusal) || refusal.Project != "pl" || data != nil {
+		t.Fatalf("ambiguous source overlap not refused atomically: %v", err)
+	}
+	if !bytes.Equal(a.TarBytes(), before) {
+		t.Fatal("refused merge mutated its input")
+	}
+}
+
+func TestSourceIdentityIncompleteHistoryNamesGap(t *testing.T) {
+	f, h := sourceHistoryFixture(t, true)
+	data, err := Merge(bytes.NewReader(withSourceHistory(t, f, h)))
+	var gap IncompleteHistoryError
+	if !errors.As(err, &gap) || data != nil || gap.StoreID != "store-pl" || gap.Project != "pl" || gap.First != 1 || gap.Last != 1 || gap.Reason != "not-retained" {
+		t.Fatalf("incomplete source history did not name its gap: %v", err)
+	}
+}
+
+func TestSourceIdentityReaderRefusesMisboundHistory(t *testing.T) {
+	input, err := Merge(bytes.NewReader(collidingProjectHistory(t, "pl")), bytes.NewReader(collidingProjectHistory(t, "qa")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := readMergeArchive(t, input)
+	before, _ := a.SourceHistory()
+	detached, _ := a.SourceHistory()
+	detached.ProjectHistories[0].Range.Frames[0].Records[0].Source.Identity.Project = "qa"
+	fresh, _ := a.SourceHistory()
+	if !reflect.DeepEqual(before, fresh) {
+		t.Fatal("source identity accessor aliases validated state")
+	}
+	for _, change := range []func(*SourceHistory){
+		func(h *SourceHistory) { h.ProjectHistories[0].SourceStoreID = "wrong-store" },
+		func(h *SourceHistory) { h.ProjectHistories[0].Range.Frames[0].Records[0].Source.Identity = nil },
+		func(h *SourceHistory) { h.ProjectHistories = h.ProjectHistories[:1] },
+	} {
+		history, _ := a.SourceHistory()
+		change(&history)
+		files := map[string][]byte{}
+		for path := range a.Manifest().Files {
+			files[path], _ = a.Member(path)
+		}
+		files[SourceHistoryMember] = fixtureJSON(t, history)
+		m := a.Manifest()
+		m.Files[SourceHistoryMember] = File{Size: int64(len(files[SourceHistoryMember])), SHA256: digest(files[SourceHistoryMember])}
+		files["manifest.json"] = fixtureJSON(t, m)
+		if _, err := Read(bytes.NewReader(fixtureTar(t, files))); err == nil {
+			t.Fatal("misbound or missing project history accepted")
+		}
+	}
+}
+
+func TestSourceIdentityReaderRequiresExplicitCompleteContract(t *testing.T) {
+	merged, err := Merge(bytes.NewReader(collidingProjectHistory(t, "pl")), bytes.NewReader(collidingProjectHistory(t, "qa")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := readMergeArchive(t, merged)
+	for _, policy := range []string{"missing-marker", "unknown-marker", "missing-record-identity", "wrong-record-project", "missing-config-identity"} {
+		t.Run(policy, func(t *testing.T) {
+			files := map[string][]byte{}
+			for path := range a.Manifest().Files {
+				files[path], _ = a.Member(path)
+			}
+			m := a.Manifest()
+			switch policy {
+			case "missing-marker":
+				m.SourceIdentityContract = ""
+			case "unknown-marker":
+				m.SourceIdentityContract = "unknown/1"
+			case "missing-record-identity", "wrong-record-project":
+				rows := a.Records("comment")
+				if policy == "missing-record-identity" {
+					rows[0].Source.Identity = nil
+				} else {
+					rows[0].Source.Identity.Project = "qa"
+				}
+				files["records/comment.ndjson"] = nil
+				for _, row := range rows {
+					files["records/comment.ndjson"] = append(files["records/comment.ndjson"], fixtureJSON(t, row)...)
+				}
+			case "missing-config-identity":
+				var entries []externalEntry
+				if err := decodeJSON(files["config/sources.json"], &entries); err != nil {
+					t.Fatal(err)
+				}
+				entries[0].Identity = nil
+				files["config/sources.json"] = fixtureJSON(t, entries)
+			}
+			for path, data := range files {
+				m.Files[path] = File{Size: int64(len(data)), SHA256: digest(data)}
+			}
+			files["manifest.json"] = fixtureJSON(t, m)
+			if _, err := Read(bytes.NewReader(fixtureTar(t, files))); err == nil {
+				t.Fatal("incomplete or misbound source identity contract accepted")
+			}
+		})
+	}
+}

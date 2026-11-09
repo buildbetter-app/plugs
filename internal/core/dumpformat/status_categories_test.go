@@ -202,7 +202,7 @@ func TestNativeLiteralFrozenRequiresAnExplicitCustomCatalogEntry(t *testing.T) {
 	}
 }
 
-func TestActualNativeProducerMergeRetainsNamedOverlapRefusal(t *testing.T) {
+func TestActualNativeProducerMergeRetainsNamedIncompleteHistoryRefusal(t *testing.T) {
 	var archives []*Archive
 	for _, name := range []string{"reprocody", "reprosignals"} {
 		archive, err := Read(bytes.NewReader(nativeProducerArchive(t, name)))
@@ -212,8 +212,18 @@ func TestActualNativeProducerMergeRetainsNamedOverlapRefusal(t *testing.T) {
 		archives = append(archives, archive)
 	}
 	data, err := MergeArchives(archives...)
-	var refusal HistoryMergeRefusal
-	if len(data) != 0 || !errors.As(err, &refusal) || refusal.ID == "" || refusal.Project == "" || refusal.OtherProject == "" || refusal.Project == refusal.OtherProject {
-		t.Fatalf("actual native overlap must name both source projects and the identity: %v", err)
+	var refusal IncompleteHistoryError
+	if data != nil || !errors.As(err, &refusal) || refusal.Project == "" || refusal.StoreID == "" || refusal.Reason == "" {
+		t.Fatalf("actual incomplete native source must name its history gap: %v", err)
+	}
+	matched := false
+	for _, archive := range archives {
+		history, _ := archive.SourceHistory()
+		if refusal.StoreID == archive.Manifest().StoreID && refusal.Project == archive.Manifest().Projects[0].Prefix && refusal.Reason == history.Range.Reason {
+			matched = true
+		}
+	}
+	if !matched {
+		t.Fatal("refusal did not retain the actual source's named reason")
 	}
 }

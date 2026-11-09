@@ -15,6 +15,9 @@ type sourceRecordIdentity struct{ Kind, Project, Table, ID string }
 // The explicit capability compares physical edge components independently.
 // In particular NUL within a physical ID is data, never a tuple delimiter.
 func compareSourceRecords(a, b Record, contract string) int {
+	if a.Source.Identity != nil || b.Source.Identity != nil {
+		return strings.Compare(recordKey(a), recordKey(b))
+	}
 	if contract != SourcePlaneAddressContract || a.Kind != "edge" || b.Kind != "edge" {
 		return strings.Compare(recordKey(a), recordKey(b))
 	}
