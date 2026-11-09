@@ -120,7 +120,9 @@ func execSQL(t *testing.T, conn *sql.Conn, query string, args ...any) {
 func captureTables(t *testing.T, db *sql.DB, conn *sql.Conn, names ...string) Manifest {
 	t.Helper()
 	execSQL(t, conn, "CALL DOLT_ADD('.')")
-	execSQL(t, conn, "CALL DOLT_COMMIT('-Am', 'public physical restore snapshot')")
+	// Re-restoring a native-origin row on this same public store can produce
+	// exactly HEAD again. Still make a new, actual immutable capture commit.
+	execSQL(t, conn, "CALL DOLT_COMMIT('--allow-empty', '-Am', 'public physical restore snapshot')")
 	var root string
 	if err := conn.QueryRowContext(context.Background(), "SELECT DOLT_HASHOF('HEAD')").Scan(&root); err != nil {
 		t.Fatal(err)
@@ -492,6 +494,47 @@ func TestPhysicalRestoreExactMetadataBoundary(t *testing.T) {
 		}
 	})
 	saveEvidence(t, "recorded-native-metadata-oracle.json", map[string]any{"requested": json.RawMessage(requested), "ordinary_sql_readback": json.RawMessage(ordinary), "constructor_sql_readback": json.RawMessage(constructor), "constructor_immutable_root": nativeConstructor, "native_represents_requested_exactly": nativeExact, "engine_patch": "NONE; unchanged GMS/native semantics", "native_origin_roundtrip": "required PASS"})
+}
+
+// A representable native JSON integer can exceed 2^53. Record its actual
+// ordinary native value, then require the successful restore and independent
+// immutable-root recapture to retain those same positive and negative digits.
+func TestPhysicalRestoreRepresentableNativeMetadata(t *testing.T) {
+	sourceDB, source, _, _ := restoreDB(t, false)
+	targetDB, target, _, _ := restoreDB(t, false)
+	ddl := "CREATE TABLE representable_metadata (id INT PRIMARY KEY,metadata JSON)"
+	execSQL(t, source, ddl)
+	execSQL(t, target, ddl)
+	const requested = `{"beads.timeout_ns":9007199254740994,"nested":{"negative":-9007199254740994}}`
+	execSQL(t, source, "INSERT INTO representable_metadata VALUES (1,?)", requested)
+	var ordinary string
+	if err := source.QueryRowContext(context.Background(), "SELECT metadata FROM representable_metadata").Scan(&ordinary); err != nil {
+		t.Fatal(err)
+	}
+	var recorded struct {
+		Timeout json.Number `json:"beads.timeout_ns"`
+		Nested  struct {
+			Negative json.Number `json:"negative"`
+		} `json:"nested"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(ordinary))
+	decoder.UseNumber()
+	if err := decoder.Decode(&recorded); err != nil {
+		t.Fatal(err)
+	}
+	if recorded.Timeout.String() != "9007199254740994" || recorded.Nested.Negative.String() != "-9007199254740994" {
+		t.Fatal("actual native representable fixture changed its requested integers")
+	}
+	manifest := captureTables(t, sourceDB, source, "representable_metadata")
+	if err := Restore(context.Background(), target, manifest); err != nil {
+		t.Fatal(err)
+	}
+	actual := captureTables(t, targetDB, target, "representable_metadata")
+	if !reflect.DeepEqual(manifest, actual) {
+		t.Fatal("representable native metadata changed in physical roundtrip")
+	}
+	t.Log("RESTORE_NATIVE_REPRESENTABLE_METADATA positive=9007199254740994 negative=-9007199254740994 exact=true")
+	saveEvidence(t, "representable-native-metadata-oracle.json", map[string]any{"requested": json.RawMessage(requested), "ordinary_sql_readback": json.RawMessage(ordinary), "source_physical_root": manifest, "target_physical_root": actual, "engine_patch": "NONE"})
 }
 
 func TestPhysicalRestoreAtomicRefusals(t *testing.T) {
