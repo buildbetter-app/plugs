@@ -68,10 +68,11 @@ hooks also run through concrete WriteTx readers. Product composition receives
 the raw store, preserving every optional reader/transaction/store capability.
 SQL executor visits, Observe/Lock state decoding, and historical patch replay
 bytes remain UNMEASURED. Logical reconstructed body bytes are not replay bytes.
-PostgreSQL current bodies newer than the requested snapshot, including repeat
-fetches during historical fallback, are also UNMEASURED by these original
-hooks. Complete body-work accounting remains OPEN pending the separate W11
-accounting correction; callback counts do not prove physical SQL work.
+PostgreSQL reports each successfully scanned live current body before snapshot
+filtering, including bodies discarded by historical fallback. Reconstructed
+historical bodies and repeated fetches are counted at their actual boundaries;
+batched reads do not invent repeated current-row scans. Callback counts do not
+prove physical SQL work.
 
 The explicit raw-group Q5 regression distinguishes the correct winner from
 rotation over authorized members alone. The Ready regression changes an
