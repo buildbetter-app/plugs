@@ -28,6 +28,12 @@ type OfflineHistoryTx interface {
 
 const OfflineHistoryEvidenceID = "plug-restore-history"
 
+// NativeTableHistorySource identifies independently verified immutable SQL
+// table images. Their historical records are inert source evidence; portable
+// business records are created only in the final restore changeset.
+const NativeTableHistorySource = "beads-native-tables/1"
+const NativeTableHistoryRecordPrefix = "source/native-history/"
+
 // SourceHistoryGap is an inclusive unavailable source sequence range. A partial
 // replay retains a contiguous suffix; every earlier sequence is accounted for
 // explicitly, including known history deliberately left outside that suffix.
@@ -153,6 +159,10 @@ func buildOfflineHistory(current Meta, profile RestoreImportProfile, input Offli
 	}
 	refuse := func(reason RestoreHistoryReason) (OfflineHistoryPlan, error) {
 		return OfflineHistoryPlan{}, ErrRestoreHistoryRefused{Mode: p.HistoryMode, History: RestoreHistoryAvailableUnverified, Reason: reason}
+	}
+	nativeTables := input.Source == NativeTableHistorySource
+	if nativeTables && (!joint || p.HistoryMode != RestoreHistoryModeFull) {
+		return refuse(RestoreHistoryReasonUnmappable)
 	}
 	if p.HistoryMode == RestoreHistoryModeSnapshot {
 		return refuse(RestoreHistoryReasonUnmappable)
@@ -330,6 +340,9 @@ func buildOfflineHistory(current Meta, profile RestoreImportProfile, input Offli
 			return refuse(RestoreHistoryReasonNonContiguous)
 		}
 		origin := scope{b.SourceStoreID, b.Project}
+		if nativeTables && (b.SourceStoreID == "" || b.Project == "" || b.SourceSequence == 0 || len(b.CommitIDs) != 1 || len(b.EventIDs) != 0) {
+			return refuse(RestoreHistoryReasonUnmappable)
+		}
 		if b.SourceStoreID != "" || b.SourceSequence != 0 {
 			if b.SourceStoreID == "" || b.Project == "" || strings.TrimSpace(b.SourceStoreID) != b.SourceStoreID || strings.TrimSpace(b.Project) != b.Project || strings.ContainsRune(b.SourceStoreID+b.Project, '\x00') {
 				return refuse(RestoreHistoryReasonUnmappable)
@@ -372,6 +385,13 @@ func buildOfflineHistory(current Meta, profile RestoreImportProfile, input Offli
 			if r == nil {
 				return refuse(RestoreHistoryReasonUnmappable)
 			}
+			if nativeTables {
+				for _, image := range []*Record{c.Before, c.After} {
+					if image != nil && (image.Kind != "beads-archive" || !strings.HasPrefix(image.Ref.ID, NativeTableHistoryRecordPrefix)) {
+						return refuse(RestoreHistoryReasonUnmappable)
+					}
+				}
+			}
 			id, e := historyRecordKey(*r)
 			if e != nil || id == evidenceKey {
 				return refuse(RestoreHistoryReasonUnmappable)
@@ -397,7 +417,7 @@ func buildOfflineHistory(current Meta, profile RestoreImportProfile, input Offli
 				return refuse(RestoreHistoryReasonUnmappable)
 			}
 		} else {
-			if _, known := last[id]; known || r.Kind == "bead" || r.Kind == "memory" {
+			if _, known := last[id]; known || !nativeTables && (r.Kind == "bead" || r.Kind == "memory") {
 				return refuse(RestoreHistoryReasonUnmappable)
 			}
 			extra = append(extra, SourceHistoryChange{After: &tail[i]})

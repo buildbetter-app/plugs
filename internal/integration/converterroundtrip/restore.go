@@ -43,6 +43,7 @@ type Report struct {
 	Recovered      bool
 	SourcePlanes   *driver.SourcePlaneCommitBindingV1
 	Receipt        *driver.IdempotencyRecord
+	NativeFamilies []NativeFamilyReport
 }
 
 // Verification is a trusted offline comparison, bound to the exact tar bytes.
@@ -211,6 +212,7 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 	if err != nil {
 		return report, err
 	}
+	report.NativeFamilies = append([]NativeFamilyReport(nil), plan.nativeFamilies...)
 	if profile != nil && len(checks) == 0 {
 		checks = []Verification{{ArchiveSHA256: profile.ArchiveDigest, DerivedSHA256: profile.DerivedDigest}}
 	}
@@ -442,6 +444,7 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		}
 		report.Restored, report.Recovered = recovered.Restored, true
 		report.SourcePlanes, report.Receipt = recovered.SourcePlanes, recovered.Receipt
+		report.NativeFamilies = recovered.NativeFamilies
 		return report, nil
 	}
 	if commit.Kind != model.ChangesetRestore || commit.Incarnation != restored.Incarnation || commit.Revision != restored.Head || history == nil && len(commit.Changes) != len(plan.records) {
@@ -608,7 +611,11 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 			return Report{}, driver.ErrConflict
 		}
 	}
-	return Report{Restored: meta, IdempotencyKey: bound.IdempotencyKey, RequestHash: request, Recovered: true, Receipt: receipt}, nil
+	families, err := recoverNativeFamilies(ctx, r, bound, evidence, receipt)
+	if err != nil {
+		return Report{}, driver.ErrConflict
+	}
+	return Report{Restored: meta, IdempotencyKey: bound.IdempotencyKey, RequestHash: request, Recovered: true, Receipt: receipt, NativeFamilies: families}, nil
 }
 
 type restoreRecord struct {
@@ -620,6 +627,7 @@ type restoreRecord struct {
 type restorePlan struct {
 	migration      *dumpformat.ImportMigration
 	nativeOntology *dumpformat.NativeStatusOntology
+	nativeFamilies []NativeFamilyReport
 	records        []restoreRecord
 	sentinels      []driver.Sentinel
 	derived        []derivedImage
@@ -674,7 +682,7 @@ func compareImportBinding(ctx context.Context, r driver.Reader, evidence archive
 		if err = driver.ValidateRestoreHistoryPolicy(binding.Profile.HistoryMode, manifest.History); err != nil {
 			return err
 		}
-	} else if binding.Profile.HistoryTime == "" || binding.Profile.HistoryMode == driver.RestoreHistoryModeFull && manifest.History != "verified" || binding.Profile.HistoryMode == driver.RestoreHistoryModePartial && manifest.History != "verified" && manifest.History != "available-unverified" {
+	} else if binding.Profile.HistoryTime == "" || binding.Profile.HistoryMode == driver.RestoreHistoryModeFull && manifest.History != "verified" && manifest.SourceFamilyContract != "beads-source-families/1" || binding.Profile.HistoryMode == driver.RestoreHistoryModePartial && manifest.History != "verified" && manifest.History != "available-unverified" {
 		return driver.ErrConflict
 	}
 	if len(binding.Projects) != len(manifest.Projects) {
@@ -734,6 +742,7 @@ func buildPlanForInspection(archive *dumpformat.Archive) (restorePlan, error) {
 
 func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportProfile, restoreTime time.Time, mode planMode) (restorePlan, error) {
 	manifest := archive.Manifest()
+	nativeTables := len(archive.NativeSourceHistories()) != 0
 	migration, _ := archive.ImportMigration()
 	if mode == planLegacy && migration != nil {
 		// A missing import profile cannot opt a newly strict migration into
@@ -1048,6 +1057,15 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 	}
 	for _, kind := range []string{"edge", "comment", "memory", "config", "beads-archive"} {
 		for _, source := range archive.Records(kind) {
+			if source.Source.Table == "leases" && nativeTables && mode == planImport {
+				keep, err := nativeLeaseUnexpired(source.Source.Fields, restoreTime)
+				if err != nil {
+					return restorePlan{}, err
+				}
+				if !keep {
+					continue
+				}
+			}
 			body, err := sourceMirrorBody(source, entities != nil)
 			if err != nil {
 				return restorePlan{}, err
@@ -1055,6 +1073,25 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 			if err := add(model.RefByID(sourcePlaneMirrorID(source, entities != nil), model.Natural64(0)), kind, body); err != nil {
 				return restorePlan{}, err
 			}
+		}
+	}
+	if nativeTables && mode == planImport {
+		if profile.SourcePlanes == nil || profile.HistoryMode != driver.RestoreHistoryModeFull {
+			return restorePlan{}, fmt.Errorf("%w: native table publication requires bound full source-plane restore", driver.ErrUnsupported)
+		}
+		current, families, err := nativeCurrentRecords(archive, restoreTime)
+		if err != nil {
+			return restorePlan{}, err
+		}
+		for _, row := range current {
+			if err := add(row.Ref, row.Kind, json.RawMessage(row.Body)); err != nil {
+				return restorePlan{}, err
+			}
+		}
+		plan.nativeFamilies = families
+		accounting := nativeFamilyEvidence{Contract: manifest.SourceFamilyContract, RestoreTime: restoreTime.UTC().Format(time.RFC3339Nano), Families: families}
+		if err := add(model.RefByID(NativeFamilyReportID, model.Natural64(0)), "instance_config", accounting); err != nil {
+			return restorePlan{}, err
 		}
 	}
 

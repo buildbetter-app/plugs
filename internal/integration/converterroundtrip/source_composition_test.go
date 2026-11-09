@@ -111,6 +111,16 @@ func TestJointSourceCompositionImportInstallAndStartupRecovery(t *testing.T) {
 
 func TestNativeCatalogFullHistoryInstalledRPCReadyAndRestart(t *testing.T) {
 	data := converterroundtrip.NativeHistoryFixtureForTest(t)
+	assertNativeCatalogFullHistoryInstalledRPCReadyAndRestart(t, data, false)
+}
+
+func TestNativeTablesFullHistoryInstalledRPCReadyAndRestart(t *testing.T) {
+	data := converterroundtrip.NativeTableHistoryFixtureForTest(t)
+	assertNativeCatalogFullHistoryInstalledRPCReadyAndRestart(t, data, true)
+}
+
+func assertNativeCatalogFullHistoryInstalledRPCReadyAndRestart(t *testing.T, data []byte, nativeTables bool) {
+	t.Helper()
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			ctx := context.Background()
@@ -148,6 +158,9 @@ func TestNativeCatalogFullHistoryInstalledRPCReadyAndRestart(t *testing.T) {
 			if err != nil {
 				t.Fatal("actual composed full native import", err)
 			}
+			if nativeTables && len(report.NativeFamilies) != 66 {
+				t.Fatal("composed native import omitted scoped current-family accounting")
+			}
 			for pass := 0; pass < 2; pass++ {
 				for project, category := range map[string]string{"pl": "active", "qa": "done"} {
 					raw := converterroundtrip.JointHTTPForTest(t, runtime.HTTPHandler, "ontology.get", 0, map[string]any{"project": project})
@@ -172,7 +185,7 @@ func TestNativeCatalogFullHistoryInstalledRPCReadyAndRestart(t *testing.T) {
 				}
 				request.SourcePlanes = nil
 				recovered, err := runtime.RestoreImport(ctx, owner, bytes.NewReader(data), request)
-				if err != nil || !reflect.DeepEqual(report.Receipt, recovered.Receipt) {
+				if err != nil || !reflect.DeepEqual(report.Receipt, recovered.Receipt) || !reflect.DeepEqual(report.NativeFamilies, recovered.NativeFamilies) {
 					t.Fatal("composed original full receipt recovery", err)
 				}
 				if pass == 0 && engine != "memory" {

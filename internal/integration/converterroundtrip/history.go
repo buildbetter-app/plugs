@@ -64,6 +64,17 @@ func historyReadError(mode driver.RestoreHistoryMode, err error) error {
 }
 
 func validateArchiveHistoryPolicy(mode driver.RestoreHistoryMode, a *dumpformat.Archive) error {
+	if native := a.NativeSourceHistories(); len(native) != 0 {
+		if mode != driver.RestoreHistoryModeFull {
+			return driver.ErrRestoreHistoryRefused{Mode: mode, History: a.Manifest().History, Reason: driver.RestoreHistoryReasonNotYetSupported}
+		}
+		for _, scope := range native {
+			if err := nativePolicyRefusal(mode, a, scope); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	if mode == driver.RestoreHistoryModeSnapshot {
 		return nil
 	}
@@ -111,6 +122,9 @@ func portableHistoryRecords(plan restorePlan) []driver.Record {
 }
 
 func lowerSourceHistory(a *dumpformat.Archive, p driver.RestoreImportProfile, when time.Time) (driver.OfflineHistory, error) {
+	if len(a.NativeSourceHistories()) != 0 {
+		return lowerNativeTableHistory(a, p)
+	}
 	refuse := func() (driver.OfflineHistory, error) {
 		return driver.OfflineHistory{}, driver.ErrRestoreHistoryRefused{Mode: p.HistoryMode, History: a.Manifest().History, Reason: driver.RestoreHistoryReasonUnmappable}
 	}

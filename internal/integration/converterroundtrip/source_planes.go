@@ -31,6 +31,15 @@ func BindSourceImport(ctx context.Context, input io.Reader, profile driver.Resto
 	if err != nil {
 		return driver.RestoreImportProfile{}, err
 	}
+	// Bind one trusted restore clock before lowering current state. In
+	// particular, source lease eligibility must agree with history/recovery.
+	when := time.Now().UTC()
+	if profile.HistoryTime != "" {
+		when, err = time.Parse(time.RFC3339Nano, profile.HistoryTime)
+		if err != nil || when.IsZero() {
+			return driver.RestoreImportProfile{}, fmt.Errorf("%w: invalid bound restore time", driver.ErrUnsupported)
+		}
+	}
 	if len(plan.Providers) != 1 {
 		return driver.RestoreImportProfile{}, driver.ErrUnsupported
 	}
@@ -69,7 +78,7 @@ func BindSourceImport(ctx context.Context, input io.Reader, profile driver.Resto
 		return driver.RestoreImportProfile{}, err
 	}
 	profile.SourcePlanes = &binding
-	core, err := buildPlanWithProfile(archive, &profile, time.Now().UTC())
+	core, err := buildPlanWithProfile(archive, &profile, when)
 	if err != nil {
 		return driver.RestoreImportProfile{}, err
 	}
@@ -78,13 +87,6 @@ func BindSourceImport(ctx context.Context, input io.Reader, profile driver.Resto
 	}
 	profile.DerivedDigest = core.derivedDigest
 	if profile.HistoryMode != driver.RestoreHistoryModeSnapshot {
-		when := time.Now().UTC()
-		if profile.HistoryTime != "" {
-			when, err = time.Parse(time.RFC3339Nano, profile.HistoryTime)
-			if err != nil {
-				return driver.RestoreImportProfile{}, err
-			}
-		}
 		return BindHistoryImport(ctx, bytes.NewReader(archive.TarBytes()), profile, when)
 	}
 	return profile.Detached()
@@ -104,7 +106,7 @@ func prepareSourceArchive(ctx context.Context, archive *dumpformat.Archive, prof
 	}
 	switch profile.HistoryMode {
 	case driver.RestoreHistoryModeSnapshot:
-		if profile.HistoryDigest != "" || profile.HistoryTime != "" {
+		if profile.HistoryDigest != "" || profile.HistoryTime != "" || len(archive.NativeSourceHistories()) != 0 {
 			return empty, driver.ErrUnsupported
 		}
 	case driver.RestoreHistoryModeFull:
