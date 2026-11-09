@@ -549,7 +549,7 @@ type restorePlan struct {
 // admitted import binding. Source allocator declarations are retained as
 // dumpformat projects, because their widths are provenance (and may be below
 // the live allocator's continuation minimum). Target allocators are the exact
-// seeded Plug random profiles that recovery must observe.
+// seeded Beads profiles from which recovery must observe continuation.
 type importBindingEvidence struct {
 	Profile     driver.RestoreImportProfile `json:"profile"`
 	RequestHash string                      `json:"request_hash"`
@@ -611,7 +611,7 @@ func compareImportBinding(ctx context.Context, r driver.Reader, evidence archive
 			return driver.ErrConflict
 		}
 		actual, err := allocators.LoadAllocator(ctx, found.TargetAllocator.Prefix)
-		if err != nil || !reflect.DeepEqual(actual, found.TargetAllocator) {
+		if err != nil || !allocatorContinues(found.TargetAllocator, actual) {
 			return driver.ErrConflict
 		}
 	}
@@ -867,7 +867,11 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 	plan := restorePlan{migration: migration}
 	if profile != nil {
 		for _, project := range manifest.Projects {
-			plan.allocators = append(plan.allocators, driver.NewRandomAllocator(project.Prefix))
+			allocator, err := importedAllocator(archive, project)
+			if err != nil {
+				return restorePlan{}, err
+			}
+			plan.allocators = append(plan.allocators, allocator)
 		}
 	}
 	seen := map[string]bool{}
@@ -925,12 +929,12 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 			return restorePlan{}, err
 		}
 		binding := importBindingEvidence{Profile: *profile, RequestHash: requestHash}
-		for _, project := range manifest.Projects {
+		for i, project := range manifest.Projects {
 			sourceRaw, err := json.Marshal(project)
 			if err != nil {
 				return restorePlan{}, err
 			}
-			targetAllocator := driver.NewRandomAllocator(project.Prefix)
+			targetAllocator := plan.allocators[i].Clone()
 			binding.Projects = append(binding.Projects, importProjectBinding{
 				SourceAllocator: project,
 				TargetAllocator: targetAllocator,

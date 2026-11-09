@@ -153,31 +153,32 @@ type SourceAllocatorProvenance struct {
 	ChildCounters map[string]uint64 `json:"child_counters,omitempty"`
 }
 
-type TargetRandomAllocator struct {
-	Prefix         string `json:"prefix"`
-	IDMode         string `json:"id_mode"`         // random
-	RandomBytes    uint32 `json:"random_bytes"`    // 16
-	SuffixEncoding string `json:"suffix_encoding"` // lower-hex
-	TopLevelShape  string `json:"top_level_shape"` // prefix-random
-	ChildShape     string `json:"child_shape"`     // parent-random
+type TargetHashAllocator struct {
+	Prefix           string            `json:"prefix"`
+	IDMode           string            `json:"id_mode"` // hash
+	HashLength       uint32            `json:"hash_length"`
+	MinHashLength    uint32            `json:"min_hash_length"`
+	MaxHashLength    uint32            `json:"max_hash_length"`
+	MaxCollisionProb float64           `json:"max_collision_prob"`
+	LastID           uint64            `json:"last_id"`
+	ChildCounters    map[string]uint64 `json:"child_counters,omitempty"`
 }
 
 type RestoreAllocatorProfile struct {
 	SourceAllocator SourceAllocatorProvenance `json:"sourceAllocator"`
-	TargetAllocator TargetRandomAllocator     `json:"targetAllocator"`
+	TargetAllocator TargetHashAllocator     `json:"targetAllocator"`
 }
 ```
 
-The target emits `${prefix}-${32 lowercase hex}` for top-level IDs and
-`${parent}.${32 lowercase hex}` for direct driver children. A candidate is
-previewed and consumed once, checked against every existing, source and staged
-ID (including 32-wide source IDs), and seeded through `RestoreAllocators` under
-the complete allocator lock set in the guarded restore transaction and replay.
-Source hash continuation remains unsupported. The historical #18 fixed-authz
-boundary denied parented create, reparent and project moves; the post-stop
-parent/child section below conditionally supersedes only the parented
-create/reparent part for a future separately admitted implementation. Current
-runtime support is not claimed, and project moves remain denied.
+The target emits Beads adaptive base36 hashes and `${parent}.N` children.
+The source config selects min/max length and collision probability; absent
+settings use 3, 8 and 0.25. Each length gets ten nonce attempts before advancing.
+Restore seeds counters from both stored and observed direct-child maxima.
+Candidates are checked against every existing, restored and staged ID in the
+store, including other kinds and projects. Consumption, counter changes,
+records and receipts commit together under the complete lock set. Rollback
+consumes nothing. The original source allocator declaration and IDs remain
+unchanged in source provenance; they do not replace the adaptive config.
 
 The prepared import profile is host-private and transaction-local. It binds the
 trusted admission to the restore operation and recovery:
