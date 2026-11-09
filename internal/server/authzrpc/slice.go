@@ -29,6 +29,25 @@ func (s *slice) Namespace() authz.Namespace { return s.facts.Namespace }
 
 func (s *slice) AuthorizationPreparation() *authz.Preparation { return &s.preparation }
 
+// RecordSentinels records the complete ordered set before any project body
+// read. It only combines one snapshot operation; repeated calls still observe
+// every key and surface fresh failures, including for custom components.
+func (s *slice) RecordSentinels(ctx context.Context, names []string) error {
+	if s == nil || s.snapshot == nil {
+		return fmt.Errorf("authorization snapshot is unavailable")
+	}
+	keys := make([]driver.LockKey, len(names))
+	for i, name := range names {
+		value, err := driver.NewSentinel(name)
+		if err != nil {
+			return err
+		}
+		keys[i] = driver.LockKey{Kind: driver.LockSentinel, Sentinel: value}
+	}
+	_, err := s.snapshot.Observe(ctx, keys)
+	return err
+}
+
 func (s *slice) Record(ctx context.Context, dep authz.Dependency) error {
 	if s == nil || s.snapshot == nil {
 		return fmt.Errorf("authorization snapshot is unavailable")

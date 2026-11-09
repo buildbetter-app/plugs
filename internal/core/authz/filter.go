@@ -281,9 +281,21 @@ func targetProject(ctx context.Context, s Slice, r Resource) (model.Ref, bool, e
 	if r.Kind != Bead {
 		return model.Ref{}, false, nil
 	}
-	for _, key := range []string{"bead/" + r.Ref.ID, "closure/" + r.Ref.ID} {
-		if err := s.Record(ctx, Dependency{"sentinel", key}); err != nil {
+	keys := []string{"bead/" + r.Ref.ID, "closure/" + r.Ref.ID}
+	// A host may observe these two sentinels together in the same snapshot.
+	// Both must be recorded before reading the body; no fact or observation is
+	// cached. Slices without the batch port retain their ordered scalar reads.
+	if recorder, ok := s.(interface {
+		RecordSentinels(context.Context, []string) error
+	}); ok {
+		if err := recorder.RecordSentinels(ctx, keys); err != nil {
 			return model.Ref{}, false, err
+		}
+	} else {
+		for _, key := range keys {
+			if err := s.Record(ctx, Dependency{"sentinel", key}); err != nil {
+				return model.Ref{}, false, err
+			}
 		}
 	}
 	p, err := s.ProjectForBead(ctx, r.Ref)

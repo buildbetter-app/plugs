@@ -243,6 +243,47 @@ type bindingErrorSlice struct {
 	deps    []Dependency
 }
 
+type projectDependencySlice struct {
+	chainSlice
+	deps       []Dependency
+	failKey    string
+	bodyReads  int
+	projectErr error
+}
+
+func (s *projectDependencySlice) Record(_ context.Context, dep Dependency) error {
+	s.deps = append(s.deps, dep)
+	if dep.Key == s.failKey {
+		return errors.New("sentinel observation failed")
+	}
+	return nil
+}
+
+func (s *projectDependencySlice) ProjectForBead(context.Context, model.Ref) (ProjectBinding, error) {
+	s.bodyReads++
+	return ProjectBinding{Name: "project", Ref: ref("project"), Found: true}, s.projectErr
+}
+
+func TestProjectDependencyFallbackKeepsOrderAndStopsBeforeBody(t *testing.T) {
+	resource := Resource{Kind: Bead, Ref: ref("target")}
+	for _, fail := range []string{"bead/target", "closure/target", ""} {
+		t.Run(fail, func(t *testing.T) {
+			s := &projectDependencySlice{failKey: fail}
+			_, found, err := targetProject(context.Background(), s, resource)
+			want := []Dependency{{Kind: "sentinel", Key: "bead/target"}}
+			if fail != "bead/target" {
+				want = append(want, Dependency{Kind: "sentinel", Key: "closure/target"})
+			}
+			if !reflect.DeepEqual(s.deps, want) || (err != nil) != (fail != "") || found != (fail == "") {
+				t.Fatalf("dependencies=%v error=%v found=%v", s.deps, err, found)
+			}
+			if (s.bodyReads == 1) != (fail == "") {
+				t.Fatalf("read body after dependency failure: reads=%d failure=%q", s.bodyReads, fail)
+			}
+		})
+	}
+}
+
 func (s *bindingErrorSlice) Record(_ context.Context, dep Dependency) error {
 	s.deps = append(s.deps, dep)
 	if s.failure == "record" {

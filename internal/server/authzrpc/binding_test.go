@@ -138,6 +138,86 @@ func bindingProjectFixture(t *testing.T) (*Checker, *bindingFactsSource, *atomic
 	return checker, source, verifications, principal, snapshot
 }
 
+type projectObservationSnapshot struct {
+	*bindingRecordSnapshot
+	groups      [][]driver.LockKey
+	projectFail error
+	unguarded   bool
+}
+
+func (s *projectObservationSnapshot) Observe(ctx context.Context, keys []driver.LockKey) ([]driver.LockState, error) {
+	s.groups = append(s.groups, append([]driver.LockKey(nil), keys...))
+	if len(keys) == 2 && keys[0].Sentinel == "bead/allowed" {
+		if s.projectFail != nil {
+			return nil, s.projectFail
+		}
+		if keys[1].Kind != driver.LockSentinel || keys[1].Sentinel != "closure/allowed" {
+			return nil, errors.New("project dependency pair is incomplete")
+		}
+	}
+	return s.bindingRecordSnapshot.Observe(ctx, keys)
+}
+
+func (s *projectObservationSnapshot) Get(ctx context.Context, refs []model.Ref) ([]driver.Record, error) {
+	if len(s.groups) == 0 {
+		s.unguarded = true
+	} else {
+		keys := s.groups[len(s.groups)-1]
+		if len(keys) != 2 || keys[0].Kind != driver.LockSentinel || keys[0].Sentinel != "bead/allowed" || keys[1].Kind != driver.LockSentinel || keys[1].Sentinel != "closure/allowed" {
+			s.unguarded = true
+		}
+	}
+	return s.bindingRecordSnapshot.Get(ctx, refs)
+}
+
+func TestBoundProjectReadsBatchBothDependenciesWithoutCaching(t *testing.T) {
+	checker, _, _, principal, rows := bindingProjectFixture(t)
+	snapshot := &projectObservationSnapshot{bindingRecordSnapshot: rows}
+	ctx := context.Background()
+	binding, err := checker.BindAuthorization(ctx, snapshot, principal, authz.Modify, authz.Bead, "bead.claimNext")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := model.RefByID("allowed", model.Natural64(0))
+	check := func(want bool) {
+		t.Helper()
+		before := snapshot.reads
+		allowed, err := binding.Check(ctx, []model.Ref{ref})
+		if err != nil || len(allowed) != 1 || allowed[0] != want || snapshot.reads <= before || snapshot.unguarded {
+			t.Fatalf("allowed=%v/%v body reads=%d/%d unguarded=%v", allowed, err, snapshot.reads, before, snapshot.unguarded)
+		}
+	}
+	check(true)
+	// Every actual project lookup observed the same two dependencies in one
+	// snapshot operation, before loading its stored body. No scalar project
+	// observation is left behind in the public Checker path.
+	for _, keys := range snapshot.groups {
+		for _, key := range keys {
+			if key.Sentinel == "bead/allowed" || key.Sentinel == "closure/allowed" {
+				if len(keys) != 2 {
+					t.Fatalf("project dependency used a separate snapshot read: %v", keys)
+				}
+			}
+		}
+	}
+	// A subsequent failure cannot reuse successful observations, and must
+	// prevent the body read. The same binding still retries each dependency.
+	snapshot.projectFail = errors.New("later project observation failed")
+	before := snapshot.reads
+	_, err = binding.Check(ctx, []model.Ref{ref})
+	var refusal *model.Error
+	if !errors.As(err, &refusal) || refusal.Data.Code != "authz_unavailable" || snapshot.reads != before {
+		t.Fatalf("dependency failure hidden or body read: error=%v reads=%d/%d", err, snapshot.reads, before)
+	}
+	snapshot.projectFail = nil
+	check(true)
+	// Neither the project body nor a prior authorization result is cached.
+	row := snapshot.rows[ref.ID]
+	row.Body = []byte(`{"id":"allowed","project":"unregistered","type":"issue","fields":{"title":"item"}}`)
+	snapshot.rows[ref.ID] = row
+	check(false)
+}
+
 func TestBoundAuthorizationRebindsSamePointerAndGenerations(t *testing.T) {
 	checker, source, verifications, principal, snapshot := bindingProjectFixture(t)
 	ctx := context.Background()
