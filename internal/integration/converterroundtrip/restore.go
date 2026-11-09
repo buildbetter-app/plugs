@@ -1070,6 +1070,31 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 					continue
 				}
 			}
+			if profile != nil && entities == nil && kind == "memory" {
+				// Preserve main's legacy public-memory contract. Source-plane plans
+				// retain their separately bound mirror identity and raw envelope.
+				if value, ok := source.Body["value"].(string); source.Body["classification"] == "public" && ok {
+					key := strings.TrimSpace(stringValue(source.Body["key"]))
+					if key == "" {
+						return restorePlan{}, fmt.Errorf("imported memory %s has an empty public key", source.ID)
+					}
+					ref := model.RefByID("source/memory/"+source.ID, model.Natural64(0))
+					body := pipeline.MemoryDocument{ID: ref.ID, Key: key, Content: value, Metadata: map[string]any{
+						"plug.restore.source_id": source.ID, "plug.restore.source_table": source.Source.Table,
+						"plug.restore.source": cloneRow(source.Source.Fields), "plug.restore.archive_sha256": archive.SHA256(),
+					}}
+					if err := add(ref, kind, body); err != nil {
+						return restorePlan{}, err
+					}
+				} else {
+					body := cloneRow(source.Body)
+					body["source_id"], body["source_table"], body["source"] = source.ID, source.Source.Table, cloneRow(source.Source.Fields)
+					if err := add(model.RefByID("source/memory/"+source.ID, model.Natural64(0)), kind, body); err != nil {
+						return restorePlan{}, err
+					}
+				}
+				continue
+			}
 			body, err := sourceMirrorBody(source, entities != nil)
 			if err != nil {
 				return restorePlan{}, err

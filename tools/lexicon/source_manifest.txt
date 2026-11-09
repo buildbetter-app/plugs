@@ -16,6 +16,7 @@
 .github/workflows/BUILD.bazel
 .github/workflows/plug-bazel.yml
 .github/workflows/plug-beads-bazel.yml
+.github/workflows/plug-cp7-latency.yml
 .github/workflows/plug-nightly-restore-diffs.yml
 .github/workflows/plug-public-bundle.yml
 .github/workflows/plug-remote-bazel.yml
@@ -450,6 +451,9 @@ internal/integration/b03catalog/catalog_test.go
 internal/integration/b03catalog/composition_runtime_test.go
 internal/integration/b03catalog/engine_test.go
 internal/integration/b03catalog/fixture_test.go
+internal/integration/b03catalog/native_admission_record.json
+internal/integration/b03catalog/native_catalog_inputs.json
+internal/integration/b03catalog/native_catalog_recording_test.go
 internal/integration/b04claimidentity/BUILD.bazel
 internal/integration/b04claimidentity/README.md
 internal/integration/b04claimidentity/claim_identity_test.go
@@ -521,6 +525,7 @@ internal/integration/converterroundtrip/id_style_a_test.go
 internal/integration/converterroundtrip/identity_counters_test.go
 internal/integration/converterroundtrip/image.go
 internal/integration/converterroundtrip/import_test.go
+internal/integration/converterroundtrip/imported_memory_public_test.go
 internal/integration/converterroundtrip/joint_exports_test.go
 internal/integration/converterroundtrip/label_projection_test.go
 internal/integration/converterroundtrip/labels.go
@@ -1502,6 +1507,10 @@ spec/s1-b13-b16/comment_page_test.go
 spec/s1-b13-b16/record_reference.py
 spec/s1-b13-b16/reference_capture.py
 spec/s1-b13-b16/slice_test.go
+spec/s1-b13-native/BUILD.bazel
+spec/s1-b13-native/README.md
+spec/s1-b13-native/oracle_test.go
+spec/s1-b13-native/recording_test.go
 spec/s1-b17-b20/BUILD.bazel
 spec/s1-b17-b20/README.md
 spec/s1-b17-b20/b17_test.go

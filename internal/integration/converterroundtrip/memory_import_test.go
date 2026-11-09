@@ -52,6 +52,10 @@ func TestImportedSourceMemoryIsReadableWithoutLosingProvenance(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer reader.Close()
+				retained, err := reader.Blob(ctx, driver.Hash(archive.SHA256()))
+				if err != nil || !bytes.Equal(retained, data) {
+					t.Fatal("memory projection changed retained raw archive", err)
+				}
 				for _, source := range archive.Records("memory") {
 					ref := model.RefByID(sourcePlaneMirrorID(source, joint), model.Natural64(0))
 					got, err := domain.MemoryGet(ctx, actor, service.MemoryGetRequest{ID: ref})
@@ -64,8 +68,19 @@ func TestImportedSourceMemoryIsReadableWithoutLosingProvenance(t *testing.T) {
 					}
 					var body map[string]any
 					decode(t, rows[0].Body, &body)
-					if !sameReverseJSON(body["source"], source.Source.Fields) || !sameReverseJSON(body["value"], source.Body["value"]) || body["classification"] != source.Body["classification"] {
-						t.Fatal("canonical projection changed raw memory value or source")
+					if joint {
+						if !sameReverseJSON(body["source"], source.Source.Fields) || !sameReverseJSON(body["value"], source.Body["value"]) || body["classification"] != source.Body["classification"] {
+							t.Fatal("canonical projection changed raw memory value or source")
+						}
+					} else {
+						metadata := map[string]any{
+							"plug.restore.source_id": source.ID, "plug.restore.source_table": source.Source.Table,
+							"plug.restore.source": source.Source.Fields, "plug.restore.archive_sha256": archive.SHA256(),
+						}
+						want := map[string]any{"id": ref.ID, "key": source.Body["key"], "content": source.Body["value"], "metadata": metadata}
+						if !sameReverseJSON(body, want) || !sameReverseJSON(got.Metadata, metadata) {
+							t.Fatal("public memory document changed exact source value or provenance")
+						}
 					}
 				}
 				brief, err := domain.Brief(ctx, actor, service.BriefRequest{})
