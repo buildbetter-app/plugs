@@ -1,0 +1,75 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+_COMMON = ["fixture_test.go", "measurement_test.go", "work_counters_test.go"]
+_DEPS = [
+    "//internal/core/authz",
+    "//internal/core/model",
+    "//internal/core/pipeline",
+    "//internal/core/port",
+    "//internal/core/service",
+    "//internal/core/viewops",
+    "//internal/plugins/authnapikey",
+    "//internal/plugins/authzfixed",
+    "//internal/server/authzrpc",
+    "//internal/storage/conformance",
+    "//internal/storage/driver",
+    "//internal/storage/postgres",
+    "//internal/storage/sqlite",
+]
+
+go_test(
+    name = "cp7_correctness_test",
+    srcs = _COMMON + ["correctness_test.go", "semantics_test.go", "work_accounting_test.go"],
+    data = ["workload.json"],
+    embedsrcs = ["workload.json"],
+    deps = _DEPS,
+)
+
+# Dense semantic completions are separate from the unchanged timed matrix.
+go_test(
+    name = "cp7_dense_semantics_test",
+    srcs = _COMMON + ["dense_summary_test.go"],
+    args = ["-test.timeout=150m"],
+    data = ["workload.json"],
+    embedsrcs = ["workload.json"],
+    size = "enormous",
+    timeout = "eternal",
+    deps = _DEPS,
+)
+
+# These two tests always execute all three fractions and all three operations.
+# Their explicit timeouts cover 24 attempts/case at the unchanged 30s request
+# bound, plus real corpus setup. Run them explicitly for latency qualification;
+# ordinary //... retains correctness and the separate dense semantic controls.
+[
+    go_test(
+        name = "cp7_latency_" + engine + "_test",
+        srcs = _COMMON + ["latency_test.go"],
+        args = ["-test.timeout=150m"],
+        data = ["workload.json"],
+        embedsrcs = ["workload.json"],
+        env = {"CP7_LATENCY_ENGINE": engine},
+        size = "enormous",
+        tags = ["manual"],
+        timeout = "eternal",
+        deps = _DEPS,
+    )
+    for engine in ["sqlite", "postgres"]
+]
+
+test_suite(
+    name = "cp7_latency_test",
+    tags = ["manual"],
+    tests = [
+        ":cp7_correctness_test",
+        ":cp7_dense_semantics_test",
+        ":cp7_latency_postgres_test",
+        ":cp7_latency_sqlite_test",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
