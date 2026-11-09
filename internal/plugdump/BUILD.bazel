@@ -57,6 +57,16 @@ go_test(
     ],
 )
 
+# Candidate adapters share this exact public fixture and assertion body.
+# Manual keeps the diagnostic reference separate from canonical product gates.
+go_test(
+    name = "physical_root_control_test",
+    srcs = ["physical_root_control_test.go"],
+    embed = [":plugdump"],
+    tags = ["manual"],
+    deps = ["//internal/testutil"],
+)
+
 filegroup(
     name = "synthetic_source",
     srcs = ["testdata/source.json"],
