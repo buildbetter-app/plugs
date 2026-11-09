@@ -1248,6 +1248,8 @@ internal/storage/sqlite/selection_family_verify.go
 internal/storage/sqlite/selection_parent_scope_test.go
 internal/storage/sqlite/selection_publication.go
 internal/storage/sqlite/selection_query.go
+internal/storage/sqlite/selection_row_insert_batch.go
+internal/storage/sqlite/selection_row_insert_batch_test.go
 internal/storage/sqlite/selection_stage_work_test.go
 internal/storage/sqlite/selection_test.go
 internal/storage/sqlite/source_activation_test.go

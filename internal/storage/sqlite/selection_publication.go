@@ -278,6 +278,26 @@ func (t *transaction) publishSelection(ctx context.Context, c *sql.Conn, current
 		return err
 	}
 	phase.next(CommitPhaseSelectionInsert, len(derived))
+	if err = publishSelectionRows(ctx, c, incarnation, next, derived); err != nil {
+		return err
+	}
+	// Coverage is published after all rows in this same fenced SQL transaction.
+	// Each family retains its prior historical interval if this commit cannot
+	// prove a complete delta, and new typed-first readiness starts only here.
+	phase.next(CommitPhaseSelectionCoverage, len(familyDecisions))
+	return publishSelectionFamilyCoverage(ctx, c, incarnation, revKey(mustUint(current.Head)), next, familyDecisions, parentScope)
+}
+
+func publishSelectionRows(ctx context.Context, c *sql.Conn, incarnation, next string, derived map[string]driver.LockState) (err error) {
+	rows := newSelectionRowInsertBatch(c)
+	defer func() {
+		if closeErr := rows.Close(); err == nil {
+			err = closeErr
+		}
+	}()
+	// Preserve every scalar statement boundary. Buffered multi-row execution
+	// changes statement-sensitive triggers and immediate-FK error precedence.
+	// Flushing at the original execution positions still reuses three handles.
 	for id, state := range derived {
 		if !state.Present || state.Derived == nil || state.Derived.Index == nil {
 			continue
@@ -308,9 +328,10 @@ func (t *transaction) publishSelection(ctx context.Context, c *sql.Conn, current
 			if b.Parent != nil {
 				parent = keyID(driver.LockKey{Kind: driver.LockRecord, Ref: b.Parent})
 			}
-			_, err = c.ExecContext(ctx, `INSERT INTO selection_bead_history(
-			 incarnation,branch,derived_key,record_key,start_revision,bead_id,bead_type,project,status,title,template,parent_key,priority,membership_leaf,revision_text,source_revision,source_digest)
-				 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, incarnation, revKey(0), id, keyID(index.Source.Key), next, b.Ref.ID, b.Type, project, status, title, template, parent, priority, b.MembershipLeaf, index.Source.Revision.String(), revKey(mustUint(index.Source.Revision)), index.Source.Digest)
+			err = rows.AddBead(ctx, incarnation, revKey(0), id, keyID(index.Source.Key), next, b.Ref.ID, b.Type, project, status, title, template, parent, priority, b.MembershipLeaf, index.Source.Revision.String(), revKey(mustUint(index.Source.Revision)), index.Source.Digest)
+			if err == nil {
+				err = rows.Flush(ctx)
+			}
 			if err != nil {
 				return err
 			}
@@ -321,9 +342,10 @@ func (t *transaction) publishSelection(ctx context.Context, c *sql.Conn, current
 		if index.Source.Present {
 			present = 1
 		}
-		_, err = c.ExecContext(ctx, `INSERT INTO selection_fact_sets(
-		 incarnation,branch,row_key,row_table,kind,start_revision,source_key,source_revision,source_present,source_digest)
-		 VALUES(?,?,?,?,?,?,?,?,?,?)`, incarnation, revKey(0), id, string(index.Row.Table), string(f.Kind), next, keyID(index.Source.Key), revKey(mustUint(index.Source.Revision)), present, index.Source.Digest)
+		err = rows.AddFactSet(ctx, incarnation, revKey(0), id, string(index.Row.Table), string(f.Kind), next, keyID(index.Source.Key), revKey(mustUint(index.Source.Revision)), present, index.Source.Digest)
+		if err == nil {
+			err = rows.Flush(ctx)
+		}
 		if err != nil {
 			return err
 		}
@@ -350,19 +372,16 @@ func (t *transaction) publishSelection(ctx context.Context, c *sql.Conn, current
 					projectName = *fact.ProjectName
 				}
 			}
-			_, err = c.ExecContext(ctx, `INSERT INTO selection_facts(
-			 incarnation,branch,row_key,start_revision,ordinal,kind,ref_key,target_key,link_kind,subject,scope,role,scope_kind,project_name,name,value,active,depth)
-			 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, incarnation, revKey(0), id, next, ordinal, string(fact.Kind), ref, target, link, fact.Subject, fact.Scope, fact.Role, scopeKind, projectName, fact.Name, fact.Value, active, int64(fact.Depth))
+			err = rows.AddFact(ctx, incarnation, revKey(0), id, next, ordinal, string(fact.Kind), ref, target, link, fact.Subject, fact.Scope, fact.Role, scopeKind, projectName, fact.Name, fact.Value, active, int64(fact.Depth))
+			if err == nil {
+				err = rows.Flush(ctx)
+			}
 			if err != nil {
 				return err
 			}
 		}
 	}
-	// Coverage is published after all rows in this same fenced SQL transaction.
-	// Each family retains its prior historical interval if this commit cannot
-	// prove a complete delta, and new typed-first readiness starts only here.
-	phase.next(CommitPhaseSelectionCoverage, len(familyDecisions))
-	return publishSelectionFamilyCoverage(ctx, c, incarnation, revKey(mustUint(current.Head)), next, familyDecisions, parentScope)
+	return nil
 }
 
 func (t *transaction) publishSelectionSources(ctx context.Context, c *sql.Conn, incarnation, next string, changedSources map[string]bool) (err error) {
