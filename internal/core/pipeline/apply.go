@@ -45,6 +45,24 @@ func PreparationContext(ctx context.Context) (context.Context, context.CancelFun
 	return context.WithDeadline(ctx, deadline)
 }
 
+// PreparationDeadlineExceeded also recognizes transport timeout wrappers from
+// SQL connection setup when that preparation context has reached its deadline.
+// A timeout before the budget expires, or a different error, remains literal.
+func PreparationDeadlineExceeded(ctx context.Context, err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	if ctx == nil || err == nil {
+		return false
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok || time.Now().Before(deadline) {
+		return false
+	}
+	var timeout interface{ Timeout() bool }
+	return errors.As(err, &timeout) && timeout.Timeout()
+}
+
 func validKey(key string) bool {
 	if keyPattern.MatchString(key) {
 		return true
@@ -90,10 +108,11 @@ func (w *Writer) ApplyClaimNextEmpty(ctx context.Context, by model.PrincipalRef,
 func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta, release *claimReleaseMode, terminalProbe port.ClaimNextReadyProbe) (outcome port.WriteOutcome, retErr error) {
 	started := time.Now()
 	committed := false
+	var preCtx context.Context
 	defer func() {
 		// Admission, replay and stale-snapshot restarts share the same bounded
 		// preparation context. Its expiry is retryable even on an early return.
-		if !committed && errors.Is(retErr, context.DeadlineExceeded) && ctx.Err() == nil {
+		if !committed && PreparationDeadlineExceeded(preCtx, retErr) && ctx.Err() == nil {
 			retErr = failure("busy", "write pre phases exceeded their deadline")
 		}
 		result := classifyOutcome(ctx, outcome, retErr, committed, meta.DryRun)

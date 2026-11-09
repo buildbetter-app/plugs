@@ -482,7 +482,7 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 	deadline, _ := selectionCtx.Deadline()
 	ctx = pipeline.WithPreparationDeadline(ctx, deadline)
 	defer func() {
-		if outcome == nil && errors.Is(retErr, context.DeadlineExceeded) && selectionCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+		if outcome == nil && pipeline.PreparationDeadlineExceeded(selectionCtx, retErr) && selectionCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
 			retErr = failure("busy", "claimNext pre phases exceeded their deadline")
 		}
 	}()

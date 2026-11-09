@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -27,7 +29,9 @@ type admissionDeadlineStore struct {
 
 type sharedPreparationDeadlineStore struct {
 	*memory.Store
-	observed time.Time
+	observed    time.Time
+	failure     error
+	returnEarly bool
 }
 
 func (s *sharedPreparationDeadlineStore) Meta(ctx context.Context) (driver.Meta, error) {
@@ -36,8 +40,60 @@ func (s *sharedPreparationDeadlineStore) Meta(ctx context.Context) (driver.Meta,
 		return driver.Meta{}, errors.New("preparation omitted its deadline")
 	}
 	s.observed = deadline
-	<-ctx.Done()
+	if !s.returnEarly {
+		<-ctx.Done()
+	}
+	if s.failure != nil {
+		return driver.Meta{}, s.failure
+	}
 	return driver.Meta{}, ctx.Err()
+}
+
+func TestPreparationConnectTimeoutRequiresExpiredBudgetAndPreservesRetry(t *testing.T) {
+	connectTimeout := fmt.Errorf("connection setup: %w", &net.OpError{Op: "dial", Net: "tcp", Err: os.ErrDeadlineExceeded})
+	unrelated := errors.New("unrelated storage failure")
+	for _, test := range []struct {
+		name        string
+		failure     error
+		returnEarly bool
+		wantBusy    bool
+	}{
+		{name: "expired connection timeout", failure: connectTimeout, wantBusy: true},
+		{name: "early connection timeout", failure: connectTimeout, returnEarly: true},
+		{name: "unrelated error after expiry", failure: unrelated},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := setup(t)
+			w := h.writer()
+			w.store = &sharedPreparationDeadlineStore{Store: h.store, failure: test.failure, returnEarly: test.returnEarly}
+			caller, stop := context.WithTimeout(context.Background(), 5*time.Second)
+			defer stop()
+			ctx := WithPreparationDeadline(caller, time.Now().Add(100*time.Millisecond))
+			cs, m := model.ChangeSet{Ops: []model.Op{create("")}}, meta(711)
+			_, err := w.Apply(ctx, by, cs, m)
+			if test.wantBusy {
+				code(t, err, "busy")
+			} else if !errors.Is(err, test.failure) {
+				t.Fatalf("preparation changed an unrelated or early error: got=%v want=%v", err, test.failure)
+			}
+			if caller.Err() != nil {
+				t.Fatalf("preparation consumed response budget: %v", caller.Err())
+			}
+			r := h.read(t)
+			changes, readErr := r.Changesets(caller, nil, 100)
+			principal, _ := driver.PrincipalKey(by)
+			entry, receiptErr := r.IdempotencyByKey(caller, principal, "", m.Method, m.IdempotencyKey)
+			if readErr != nil || receiptErr != nil || !r.Snapshot().At.IsZero() || len(changes) != 0 || entry != nil {
+				t.Fatalf("connection failure published state: head=%s changes=%v receipt=%v errors=%v/%v", r.Snapshot().At, changes, entry, readErr, receiptErr)
+			}
+			_ = r.Close()
+			w.store = h.store
+			first := apply(t, w, cs, m)
+			replayed := apply(t, w, cs, m)
+			assertSameResponses(t, applyResult{commit: first}, applyResult{commit: replayed})
+			assertSingleGraphWrite(t, h, first)
+		})
+	}
 }
 
 func TestSharedPreparationDeadlinePreservesCallerAndRetry(t *testing.T) {

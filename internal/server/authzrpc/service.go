@@ -504,7 +504,7 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 	deadline, _ := selectionCtx.Deadline()
 	ctx = pipeline.WithPreparationDeadline(ctx, deadline)
 	defer func() {
-		if outcome == nil && errors.Is(retErr, context.DeadlineExceeded) && selectionCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+		if outcome == nil && pipeline.PreparationDeadlineExceeded(selectionCtx, retErr) && selectionCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
 			retErr = &model.Error{Data: model.ErrorData{Code: "busy", Hint: "claimNext pre phases exceeded their deadline", Retryable: true}}
 		}
 	}()
@@ -567,10 +567,16 @@ walk:
 		if err != nil {
 			return nil, err
 		}
-		for _, bead := range page.Items {
-			if err := selectionCtx.Err(); err != nil {
+		for offset := 0; offset < len(page.Items); {
+			candidate, err := s.nextClaimNextCandidate(selectionCtx, by, page, offset)
+			if err != nil {
 				return nil, err
 			}
+			if candidate == len(page.Items) {
+				break
+			}
+			bead := page.Items[candidate]
+			offset = candidate + 1
 			ref := model.RefByID(bead.ID, model.Natural64(0))
 			if workflowItemRef(ref) {
 				candidateMeta := meta
@@ -582,18 +588,6 @@ walk:
 				if !claimNextRace(claimErr) {
 					return nil, claimErr
 				}
-				continue
-			}
-			_, snapshot, closeReader, err := s.current(selectionCtx, &service.AsOf{Revision: page.AsOf.Revision, Incarnation: page.AsOf.Incarnation})
-			if err != nil {
-				return nil, err
-			}
-			allowed, decisionErr := s.checker.modifyDecision(selectionCtx, snapshot, by, "bead.claimNext", ref)
-			closeReader()
-			if decisionErr != nil {
-				return nil, decisionErr
-			}
-			if !allowed {
 				continue
 			}
 			candidateMeta := meta
@@ -676,6 +670,48 @@ walk:
 		}
 		position = page.Next
 	}
+}
+
+// nextClaimNextCandidate reuses one caller/facts binding while skipping denied
+// rows in a page. Each resource still has its own policy check. The snapshot
+// closes before any selected candidate enters the Writer, which independently
+// reauthorizes the actual write against current authority.
+func (s *GuardedService) nextClaimNextCandidate(ctx context.Context, by model.PrincipalRef, page service.BeadPage, start int) (int, error) {
+	var binding *BoundAuthorization
+	var closeReader func()
+	defer func() {
+		if closeReader != nil {
+			closeReader()
+		}
+	}()
+	for i := start; i < len(page.Items); i++ {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		ref := model.RefByID(page.Items[i].ID, model.Natural64(0))
+		if workflowItemRef(ref) {
+			return i, nil
+		}
+		if binding == nil {
+			_, snapshot, closeSnapshot, err := s.current(ctx, &service.AsOf{Revision: page.AsOf.Revision, Incarnation: page.AsOf.Incarnation})
+			if err != nil {
+				return 0, err
+			}
+			closeReader = closeSnapshot
+			binding, err = s.checker.BindAuthorization(ctx, snapshot, by, authz.Modify, authz.Bead, "bead.claimNext")
+			if err != nil {
+				return 0, err
+			}
+		}
+		allowed, err := binding.Check(ctx, []model.Ref{ref})
+		if err != nil {
+			return 0, err
+		}
+		if allowed[0] {
+			return i, nil
+		}
+	}
+	return len(page.Items), nil
 }
 
 func (s *GuardedService) claimPage(ctx context.Context, by model.PrincipalRef, req service.ReadyRequest) (service.BeadPage, error) {
