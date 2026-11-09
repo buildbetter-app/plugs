@@ -367,6 +367,9 @@ func TestClaimNextDefaultsWithOptionalMutators(t *testing.T) {
 				return authzrpc.New(ctx, config)
 			})
 			by := worker("user:operator")
+			// This positive caller must admit the claim transition as well as the
+			// ordinary write; the generic fixture remains restricted to modify.
+			by.Caveats["actions"] = []string{"modify", "transition"}
 			claimed := f.call(t, by, "bead.claimNext", map[string]any{}, 10)
 			success(t, claimed)
 			var result map[string]json.RawMessage
