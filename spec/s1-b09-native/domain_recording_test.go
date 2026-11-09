@@ -82,12 +82,12 @@ func (r *recorder) styleADomainCreate(w workspace, label, title string) []byte {
 			case <-done:
 			case <-time.After(15 * time.Second):
 				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-				r.t.Error("native bd serve exceeded graceful shutdown budget")
+				r.t.Error("native HTTP server exceeded graceful shutdown budget")
 				select {
 				case <-done:
 				case <-time.After(5 * time.Second):
 					r.writeJSON(filepath.Join(root, "serve-process.json"), map[string]any{"argv": cmd.Args, "directory": w.Dir, "pid": cmd.Process.Pid, "reaped": false})
-					r.t.Error("native bd serve did not reap after SIGKILL")
+					r.t.Error("native HTTP server did not reap after SIGKILL")
 					return
 				}
 			}
@@ -106,7 +106,7 @@ func (r *recorder) styleADomainCreate(w workspace, label, title string) []byte {
 				if errors.As(waitErr, &childErr) {
 					exit = childErr.ExitCode()
 				}
-				r.t.Errorf("native bd serve shutdown: %v", waitErr)
+				r.t.Errorf("native HTTP server shutdown: %v", waitErr)
 			}
 			typ, result := typedReturn(stdout)
 			errType, errResult := typedReturn(stderr)
@@ -136,12 +136,12 @@ func (r *recorder) styleADomainCreate(w workspace, label, title string) []byte {
 		}
 		select {
 		case <-done:
-			r.t.Fatalf("native bd serve exited before readiness: %v", waitErr)
+			r.t.Fatalf("native HTTP server exited before readiness: %v", waitErr)
 		case <-time.After(20 * time.Millisecond):
 		}
 	}
 	if address == "" {
-		r.t.Fatal("native bd serve did not announce its listener")
+		r.t.Fatal("native HTTP server did not announce its listener")
 	}
 	body, err := json.Marshal(map[string]any{"title": title, "description": "Actual native domain tuple", "issue_type": "task", "actor": styleAActor})
 	if err != nil {
