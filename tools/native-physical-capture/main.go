@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -27,7 +28,7 @@ func main() {
 	}
 }
 
-func run() error {
+func run() (resultErr error) {
 	dataDir := flag.String("data-dir", "", "owned disposable Dolt data directory")
 	database := flag.String("database", "", "exact database name")
 	beadsDir := flag.String("beads-dir", "", "owned copied .beads directory")
@@ -69,7 +70,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	defer closeDriver()
+	defer func() { resultErr = errors.Join(resultErr, closeDriver()) }()
 	defer db.Close()
 	// One stable current-source transaction plus a dedicated image connection.
 	db.SetMaxOpenConns(2)
@@ -149,8 +150,13 @@ func run() error {
 	return json.NewEncoder(os.Stdout).Encode(map[string]any{"capture": "published-validated", "source_family_contract": manifest.SourceFamilyContract, "families": counts, "scope": "capture-only; portable/native completeness separate"})
 }
 
-func writeExclusive(path string, data []byte) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+func writeExclusive(path string, data []byte) (resultErr error) {
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer func() { resultErr = errors.Join(resultErr, root.Close()) }()
+	file, err := root.OpenFile(filepath.Base(path), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return err
 	}
