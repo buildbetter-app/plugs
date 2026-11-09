@@ -49,6 +49,7 @@ type Source interface {
 // Inventory supplies the offline capture's identity and external-file census.
 // These declarations are operator evidence, never an independent freeze proof.
 type Inventory struct {
+	SourceFamilyContract       string              `json:"source_family_contract,omitempty"`
 	StatusCategoryContract     string              `json:"status_category_contract,omitempty"`
 	SourcePlaneAddressContract string              `json:"source_plane_address_contract,omitempty"`
 	Version                    string              `json:"version"`
@@ -135,13 +136,15 @@ type File struct {
 }
 
 type Disposition struct {
-	Family string `json:"family"`
-	Rows   int    `json:"rows"`
-	Action string `json:"action"`
-	Reason string `json:"reason"`
+	Family  string `json:"family"`
+	Rows    int    `json:"rows"`
+	Action  string `json:"action"`
+	Reason  string `json:"reason"`
+	History string `json:"history,omitempty"`
 }
 
 type Manifest struct {
+	SourceFamilyContract       string              `json:"source_family_contract,omitempty"`
 	StatusCategoryContract     string              `json:"status_category_contract,omitempty"`
 	SourcePlaneAddressContract string              `json:"source_plane_address_contract,omitempty"`
 	Format                     string              `json:"format"`

@@ -66,6 +66,9 @@ func (s SQLSource) NativeInventory(ctx context.Context, capture NativeCapture) (
 	}
 	inventory := Inventory{Version: "beads-inventory/1", StoreID: "native/" + digest([]byte(capture.StoreDir)), Machine: capture.Machine, Quiesced: true, RemotesMerged: true, WorkingSetClean: true, History: "unavailable", Projects: []Project{}, Ontology: []OntologyDirective{}, External: []ExternalInput{}, ConfigPolicy: map[string]string{}}
 	inventory.SourcePlaneAddressContract = capture.SourcePlaneAddressContract
+	if capture.SourcePlaneAddressContract == SourcePlaneAddressContract {
+		inventory.SourceFamilyContract = SourceFamilyContract
+	}
 	if len(tables["issue_versions"].Rows)+len(tables["issue_snapshots"].Rows)+len(tables["compaction_snapshots"].Rows) > 0 {
 		inventory.History = "available-unverified"
 	}

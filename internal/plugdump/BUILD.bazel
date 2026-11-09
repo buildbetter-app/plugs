@@ -4,6 +4,7 @@ go_library(
     name = "plugdump",
     srcs = [
         "native_clock.go",
+        "native_history.go",
         "archive.go",
         "build.go",
         "catalog.go",
@@ -33,6 +34,7 @@ go_test(
     name = "plugdump_test",
     srcs = [
         "native_clock_test.go",
+        "native_history_test.go",
         "native_inventory_test.go",
         "identity_test.go",
         "plugdump_test.go",
@@ -40,7 +42,10 @@ go_test(
         "source_history_test.go",
         "source_planes_test.go",
     ],
-    data = ["manifest.schema.json"] + glob(["testdata/**"]),
+    data = [
+        "manifest.schema.json",
+        "native-history.schema.json",
+    ] + glob(["testdata/**"]),
     embed = [":plugdump"],
     deps = [
         "//internal/captureclock",

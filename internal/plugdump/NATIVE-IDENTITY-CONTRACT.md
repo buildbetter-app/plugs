@@ -149,3 +149,59 @@ archived, without assigning unversioned events to commits. Strict full-history
 restore still refuses. The native-default public control separately records
 the complete working/immutable SQL family counts, exact durable issue-head
 equality and absent audit evidence; it does not recover native edit history.
+
+## Retained native tables and deliberate unversioned families
+
+`source_family_contract: "beads-source-families/1"` is an optional inventory
+and manifest capability. Native inventory enables it together with the source
+plane contract. It requires the separately versioned, checksum-bound member
+`history/native-tables.json`, format `beads-native-tables/1`; it does not change
+`history/source.json` portable replay into proof. The executable and
+`native-history.schema.json` define its exact wire shape.
+
+The member binds `store_id`, sorted source project prefixes, the actual `head`
+and parent-before-child reachable `commits`, the observed SQL `ignore` table,
+`current` tables, and `images[{sequence,commit_id,tables}]`. Each table contains
+sorted actual `columns` and canonically ordered exact `rows`. SQL NULL, numeric
+precision, binary envelopes, and the existing credential-reference rules remain
+in force. Duplicate rows are retained. This is data/column evidence, not a claim
+that SQL types, indexes or constraints have been reproduced. Each image retains
+its own historical schema, config and category catalogs; current YAML/catalogs
+are never copied into earlier commits. The raw reader uses the existing scoped
+`RawDBTxAccessor`/`Queryer` port and immutable `AS OF` reads, with no engine
+introspection, storage retry, writer change or new driver API.
+
+Every SQL `sources` entry adds `history: "versioned"` or
+`"unversioned-in-beads-by-design"`, retaining its exact current `rows` count.
+A designation is checked against the actual immutable head and SQL ignore
+policy. Only the thirteen families named by the binding rule can be absent by
+design: bd_events_journal, bd_events_seq, events, ignored_schema_migrations,
+leases, local_metadata, repo_mtimes, wisp_child_counters, wisp_comments,
+wisp_dependencies, wisp_events, wisp_labels, wisps. An ignored pattern alone
+cannot exempt a versioned business family. Exact-name overrides win; ambiguous
+wildcard overrides refuse. If any of these tables is actually retained at the
+head it is treated as versioned there. Every historical table that is present
+is retained, including pre-0062 events. Current audit rows are conserved
+row-for-row and never assigned to earlier commits.
+
+`complete` is true only when every actual reachable commit has one immutable
+image. An unavailable image is represented by an exact `gaps` entry containing
+sequence, commit ID, reason and the family when the read identifies it. Missing
+versioned head families and head/current mismatches refuse with
+`head-image-missing-versioned-family:<name>` and
+`head-image-differs-versioned-family:<name>`. Missing ancestry refuses with its
+actual commit ID. A strict importer must refuse any native `gaps`; raw native
+completeness does not promote an unmappable portable range or prove consumer
+restore/publication. In this capability a portable mapping failure is explicitly
+labeled `portable-image-not-supported; native history is separately retained`.
+
+The producer preserves all current machine-local rows and leases, with exact
+counts; it does not guess an import clock or filter expiry. The consumer may
+exclude only local_metadata, repo_mtimes and ignored_schema_migrations, reporting
+each family/count, and must retain only leases unexpired at its explicitly
+supplied restore time. Those import choices are not producer history rewrites.
+
+Historical logical identity is the enclosing source store plus the component
+tuple `(project, kind, source table, original raw ID)`. Equal dependency/comment
+IDs remain distinct; an exact typed duplicate still refuses. No physical ID is
+rewritten. The consumer applies the matching SourceKey contract in its own lane.

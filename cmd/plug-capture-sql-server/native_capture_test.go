@@ -570,6 +570,7 @@ func TestPublicNativeCustomTypesAndNamespacedHashes(t *testing.T) {
 			}
 			observed := map[string]string{}
 			var history plugdump.SourceHistory
+			var nativeHistory plugdump.NativeHistory
 			historySeen := false
 			reader := tar.NewReader(bytes.NewReader(archive))
 			for {
@@ -579,6 +580,14 @@ func TestPublicNativeCustomTypesAndNamespacedHashes(t *testing.T) {
 				}
 				if err != nil {
 					t.Fatal(err)
+				}
+				if header.Name == plugdump.NativeHistoryMember {
+					decoder := json.NewDecoder(reader)
+					decoder.UseNumber()
+					if err := decoder.Decode(&nativeHistory); err != nil {
+						t.Fatal(err)
+					}
+					continue
 				}
 				if header.Name == plugdump.SourceHistoryMember {
 					decoder := json.NewDecoder(reader)
@@ -632,7 +641,7 @@ func TestPublicNativeCustomTypesAndNamespacedHashes(t *testing.T) {
 				if !historySeen || history.Range.Status != "unverified" || history.Range.Complete || len(history.Range.Frames) != 0 {
 					t.Fatal("default ignored history acquired invented replay proof")
 				}
-				f.assertNativeDefaultHistoryBoundary(prefix, inventory, history)
+				f.assertNativeDefaultHistoryBoundary(prefix, inventory, history, manifest, nativeHistory)
 			} else if !historySeen || history.Range.Status != "verified" || history.Range.Complete || len(history.Range.Gaps) == 0 || len(history.Range.Frames) == 0 || history.Range.Head != uint64(len(history.Commits)) {
 				// This diagnostic reads only this fabricated public fixture. Keep
 				// exact native errors and the failed archive for causal follow-up.
@@ -684,7 +693,7 @@ func TestPublicNativeCustomTypesAndNamespacedHashes(t *testing.T) {
 // Read both censuses from the quiesced public fixture. This records the native
 // source-data boundary without force-staging, inferring audit chronology or
 // borrowing an absent historical family from the current working set.
-func (f *nativeFixture) assertNativeDefaultHistoryBoundary(prefix string, inventory plugdump.Inventory, history plugdump.SourceHistory) {
+func (f *nativeFixture) assertNativeDefaultHistoryBoundary(prefix string, inventory plugdump.Inventory, history plugdump.SourceHistory, manifest plugdump.Manifest, native plugdump.NativeHistory) {
 	f.t.Helper()
 	ctx := context.Background()
 	port := plugdump.SQLSource{DB: f.db}
@@ -737,7 +746,7 @@ func (f *nativeFixture) assertNativeDefaultHistoryBoundary(prefix string, invent
 		}
 	}
 	sort.Strings(missing)
-	wantReason := "head-image-missing-families:" + strings.Join(missing, ",")
+	wantReason := "portable-image-not-supported; native history is separately retained"
 	_, hasHistoricalEvents := image["events"]
 	if hasHistoricalEvents || workingRows["events"] == 0 || workingRows["events"] != len(history.Events) || history.Range.Reason != wantReason {
 		f.t.Fatalf("native audit absence or named gap not preserved: historical=%t working=%d archived=%d reason=%s want=%s", hasHistoricalEvents, workingRows["events"], len(history.Events), history.Range.Reason, wantReason)
@@ -745,6 +754,50 @@ func (f *nativeFixture) assertNativeDefaultHistoryBoundary(prefix string, invent
 	_, buildErr := plugdump.Build(ctx, publicImageSource(image), inventory)
 	if buildErr == nil || !strings.HasPrefix(buildErr.Error(), "unaccounted table family ") {
 		f.t.Fatalf("incomplete immutable head acquired a complete portable image: %v", buildErr)
+	}
+	// Independently read every retained native image, not just aggregate counts
+	// or the final portable business projection. Migration-era schemas are read
+	// through the raw SQL port and compared field-for-field, without head grafts.
+	if manifest.SourceFamilyContract != plugdump.SourceFamilyContract || native.Format != plugdump.NativeHistoryFormat || !native.Complete || len(native.Gaps) != 0 || len(native.Images) != len(log.Commits) || native.Head != log.Head {
+		f.t.Fatalf("actual native history incomplete: complete=%t images=%d commits=%d gaps=%+v", native.Complete, len(native.Images), len(log.Commits), native.Gaps)
+	}
+	canonical := func(table plugdump.Table) plugdump.NativeTable {
+		columns := append([]string{}, table.Columns...)
+		sort.Strings(columns)
+		rows := append([]plugdump.Row{}, table.Rows...)
+		sort.Slice(rows, func(i, j int) bool {
+			a, _ := json.Marshal(rows[i])
+			b, _ := json.Marshal(rows[j])
+			return string(a) < string(b)
+		})
+		return plugdump.NativeTable{Columns: columns, Rows: rows}
+	}
+	for _, frame := range native.Images {
+		actual, err := port.ReadNativeSourceImage(ctx, frame.CommitID)
+		if err != nil || len(actual) != len(frame.Tables) {
+			f.t.Fatalf("native immutable census at %s: %v", frame.CommitID, err)
+		}
+		for name, table := range actual {
+			if !reflect.DeepEqual(canonical(table), frame.Tables[name]) {
+				f.t.Fatalf("native immutable field/schema mismatch family=%s commit=%s", name, frame.CommitID)
+			}
+		}
+	}
+	for _, designation := range manifest.Sources {
+		if classification, present := native.Current[designation.Family]; present {
+			actual, err := port.ReadTable(ctx, designation.Family)
+			if err != nil || !reflect.DeepEqual(canonical(actual), classification) || designation.Rows != len(actual.Rows) {
+				f.t.Fatalf("current native family rows changed: %s %v", designation.Family, err)
+			}
+			_, inHead := image[designation.Family]
+			expected := plugdump.FamilyVersioned
+			if !inHead {
+				expected = plugdump.FamilyUnversioned
+			}
+			if designation.History != expected {
+				f.t.Fatalf("native family classification differs: %+v", designation)
+			}
+		}
 	}
 	finalLog, err := port.ReadSourceCommits(ctx)
 	if err != nil || !reflect.DeepEqual(log, finalLog) {
@@ -755,8 +808,10 @@ func (f *nativeFixture) assertNativeDefaultHistoryBoundary(prefix string, invent
 		"working_rows": workingRows, "immutable_rows": immutableRows, "absent_families": missing,
 		"working_audit_rows": workingRows["events"], "archived_audit_rows": len(history.Events),
 		"history_range": history.Range, "head_build_error": buildErr.Error(),
+		"native_complete": native.Complete, "native_images": len(native.Images), "native_gaps": native.Gaps,
+		"family_designations":      manifest.Sources,
 		"durable_issue_head_exact": true,
-		"scope":                    "Actual native-default SQL census in fabricated public fixture only; audit/clone-local history absent, no reconstruction or real-store credit",
+		"scope":                    "Actual native-default SQL census in fabricated public fixture only; all retained immutable table images independently compared, intentional unversioned families preserved at current only; no portable replay or real-store credit",
 	}, "", "  ")
 	if err != nil {
 		f.t.Fatal(err)

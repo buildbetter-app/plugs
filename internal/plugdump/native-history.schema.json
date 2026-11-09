@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:beads-native-tables:1",
+  "title": "Exact retained native table evidence; separate from portable replay",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "store_id",
+    "projects",
+    "head",
+    "commits",
+    "ignore",
+    "current",
+    "images",
+    "complete",
+    "gaps"
+  ],
+  "properties": {
+    "format": {
+      "const": "beads-native-tables/1"
+    },
+    "store_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "projects": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "head": {
+      "$ref": "#/$defs/commitID"
+    },
+    "commits": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "parents",
+          "metadata"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/$defs/commitID"
+          },
+          "parents": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/$defs/commitID"
+            }
+          },
+          "metadata": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "ignore": {
+      "$ref": "#/$defs/table"
+    },
+    "current": {
+      "$ref": "#/$defs/tables"
+    },
+    "images": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sequence",
+          "commit_id",
+          "tables"
+        ],
+        "properties": {
+          "sequence": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "commit_id": {
+            "$ref": "#/$defs/commitID"
+          },
+          "tables": {
+            "$ref": "#/$defs/tables"
+          }
+        }
+      }
+    },
+    "complete": {
+      "type": "boolean"
+    },
+    "gaps": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sequence",
+          "commit_id",
+          "reason"
+        ],
+        "properties": {
+          "sequence": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "commit_id": {
+            "$ref": "#/$defs/commitID"
+          },
+          "family": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "commitID": {
+      "type": "string",
+      "pattern": "^[0-9a-v]{32}$"
+    },
+    "table": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "columns",
+        "rows"
+      ],
+      "properties": {
+        "columns": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-zA-Z_][a-zA-Z0-9_]{0,127}$"
+          },
+          "minItems": 1
+        },
+        "rows": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "tables": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-zA-Z_][a-zA-Z0-9_]{0,127}$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/table"
+      }
+    }
+  }
+}

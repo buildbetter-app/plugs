@@ -143,7 +143,7 @@ func Validate(reader io.Reader) (Manifest, error) {
 		if header.Typeflag != tar.TypeReg || header.Size < 0 || header.Size > MaxArchiveBytes || header.Mode != 0o600 || header.Uid != 0 || header.Gid != 0 || header.Linkname != "" || len(header.PAXRecords) != 0 || header.Format != tar.FormatUSTAR || !header.ModTime.Equal(time.Unix(0, 0)) {
 			return Manifest{}, fmt.Errorf("noncanonical tar member")
 		}
-		if header.Name != "manifest.json" && header.Name != "config/sources.json" && header.Name != SourceHistoryMember && !(strings.HasPrefix(header.Name, "records/") && strings.HasSuffix(header.Name, ".ndjson") && knownKinds[strings.TrimSuffix(strings.TrimPrefix(header.Name, "records/"), ".ndjson")]) {
+		if header.Name != "manifest.json" && header.Name != "config/sources.json" && header.Name != SourceHistoryMember && header.Name != NativeHistoryMember && !(strings.HasPrefix(header.Name, "records/") && strings.HasSuffix(header.Name, ".ndjson") && knownKinds[strings.TrimSuffix(strings.TrimPrefix(header.Name, "records/"), ".ndjson")]) {
 			return Manifest{}, fmt.Errorf("unknown archive member")
 		}
 		if _, ok := members[header.Name]; ok {
@@ -177,6 +177,9 @@ func Validate(reader io.Reader) (Manifest, error) {
 	}
 	if _, present := manifestFields["source_fields_contract"]; present && manifest.SourceFieldsContract != IssueSourceFieldsContract {
 		return Manifest{}, fmt.Errorf("unsupported source fields contract")
+	}
+	if err := validateSourceFamilyMarker(members["manifest.json"], manifest.SourceFamilyContract); err != nil {
+		return Manifest{}, err
 	}
 	if err := validateSourcePlaneMarker(members["manifest.json"], manifest.SourcePlaneAddressContract); err != nil {
 		return Manifest{}, err
@@ -255,7 +258,7 @@ func Validate(reader io.Reader) (Manifest, error) {
 			if err := decodeJSON(line, &record); err != nil || record.Kind != kind.Name || record.ID == "" || record.Source.Table == "" || record.Source.Fields == nil || record.Body == nil || (i > 0 && compareRecords(last, record, manifest.SourcePlaneAddressContract) >= 0) {
 				return Manifest{}, fmt.Errorf("invalid, duplicate or unordered typed record")
 			}
-			if err := validateRecordVersioned(record, manifest.Projects, counts, kind.Version); err != nil {
+			if err := validateRecordVersioned(record, manifest.Projects, counts, kind.Version, manifest.SourceFamilyContract); err != nil {
 				return Manifest{}, err
 			}
 			switch record.Source.Table {
@@ -317,7 +320,7 @@ func Validate(reader io.Reader) (Manifest, error) {
 			return Manifest{}, err
 		}
 	}
-	if err := validateDispositions(manifest.Sources, counts); err != nil {
+	if err := validateDispositions(manifest.Sources, counts, manifest.SourceFamilyContract); err != nil {
 		return Manifest{}, err
 	}
 	if err := validateEdgeEndpoints(edgeRecords, beadIDs, wispIDs); err != nil {
@@ -331,6 +334,9 @@ func Validate(reader io.Reader) (Manifest, error) {
 		return Manifest{}, fmt.Errorf("history declaration does not match archived source rows")
 	}
 	if err := validateSourceHistory(manifest, members); err != nil {
+		return Manifest{}, err
+	}
+	if err := validateNativeHistory(manifest, members); err != nil {
 		return Manifest{}, err
 	}
 	return manifest, nil
@@ -371,7 +377,11 @@ func validateRecord(record Record, projects []Project, counts map[string]int) er
 	return validateRecordVersioned(record, projects, counts, 1)
 }
 
-func validateRecordVersioned(record Record, projects []Project, counts map[string]int, edgeVersion int) error {
+func validateRecordVersioned(record Record, projects []Project, counts map[string]int, edgeVersion int, familyContracts ...string) error {
+	familyContract := ""
+	if len(familyContracts) > 0 {
+		familyContract = familyContracts[0]
+	}
 	if record.Kind == "edge" {
 		kind, _ := record.Body["type"].(string)
 		switch kind {
@@ -408,10 +418,14 @@ func validateRecordVersioned(record Record, projects []Project, counts map[strin
 		if table == "config" && strings.HasPrefix(text(record.Source.Fields, "key"), "kv.memory.") {
 			expectedKind = "memory"
 		}
-	case "labels", "repo_mtimes", "leases":
-		return fmt.Errorf("operational or normalized family cannot have source archive records")
+	case "labels":
+		return fmt.Errorf("normalized family cannot have source archive records")
+	case "repo_mtimes", "leases":
+		if familyContract != SourceFamilyContract {
+			return fmt.Errorf("operational family requires source family contract")
+		}
 	}
-	action, _ := actionFor(table)
+	action, _ := familyAction(table, familyContract)
 	if record.Kind != expectedKind || action == "refuse-if-nonempty" {
 		return fmt.Errorf("unsupported kind/source mapping")
 	}
@@ -608,7 +622,11 @@ func validateConfigProvenance(data []byte) error {
 	return nil
 }
 
-func validateDispositions(sources []Disposition, counts map[string]int) error {
+func validateDispositions(sources []Disposition, counts map[string]int, familyContracts ...string) error {
+	familyContract := ""
+	if len(familyContracts) > 0 {
+		familyContract = familyContracts[0]
+	}
 	seen := map[string]bool{}
 	allowed := map[string]bool{"issues.row_lock": true, "issues.is_blocked": true}
 	for name := range tableColumns {
@@ -630,8 +648,8 @@ func validateDispositions(sources []Disposition, counts map[string]int) error {
 			return fmt.Errorf("unsupported nonempty source disposition")
 		}
 		if _, isTable := tableColumns[source.Family]; isTable {
-			expectedAction, _ := actionFor(source.Family)
-			if seen[source.Family] || source.Action != expectedAction || (source.Family != "repo_mtimes" && source.Rows != counts[source.Family]) {
+			expectedAction, _ := familyAction(source.Family, familyContract)
+			if seen[source.Family] || source.Action != expectedAction || ((source.Family != "repo_mtimes" || familyContract == SourceFamilyContract) && source.Rows != counts[source.Family]) {
 				return fmt.Errorf("source disposition/count does not match archived records")
 			}
 		}

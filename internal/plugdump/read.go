@@ -132,6 +132,9 @@ func ReadInventory(reader io.Reader) (Inventory, error) {
 	if err := decodeJSON(data, &inventory); err != nil {
 		return Inventory{}, err
 	}
+	if err := validateSourceFamilyMarker(data, inventory.SourceFamilyContract); err != nil {
+		return Inventory{}, err
+	}
 	if err := validateSourcePlaneMarker(data, inventory.SourcePlaneAddressContract); err != nil {
 		return Inventory{}, err
 	}
@@ -227,7 +230,7 @@ func readExternal(inputs []ExternalInput) ([]byte, []Disposition, error) {
 				return nil, nil, fmt.Errorf("external family %s is present or unreadable; absent declaration refused", input.Family)
 			}
 			config = append(config, map[string]any{"input": input})
-			dispositions = append(dispositions, Disposition{input.Family, 0, "manifest/rebuild", "requested source absent at declared path"})
+			dispositions = append(dispositions, Disposition{Family: input.Family, Rows: 0, Action: "manifest/rebuild", Reason: "requested source absent at declared path"})
 		case "json-config":
 			if err != nil || !info.Mode().IsRegular() || info.Size() > 4<<20 {
 				return nil, nil, fmt.Errorf("external family %s must be a regular JSON file <=4 MiB", input.Family)
@@ -247,7 +250,7 @@ func readExternal(inputs []ExternalInput) ([]byte, []Disposition, error) {
 				return nil, nil, fmt.Errorf("external family %s: %w", input.Family, err)
 			}
 			config = append(config, map[string]any{"input": input, "values": values})
-			dispositions = append(dispositions, Disposition{input.Family, len(values), "archive", "explicit JSON config; secrets are references; precedence retained, effective config not inferred"})
+			dispositions = append(dispositions, Disposition{Family: input.Family, Rows: len(values), Action: "archive", Reason: "explicit JSON config; secrets are references; precedence retained, effective config not inferred"})
 		default:
 			return nil, nil, fmt.Errorf("external family %s has unsupported input state", input.Family)
 		}

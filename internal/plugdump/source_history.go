@@ -112,7 +112,9 @@ func captureSourceHistory(ctx context.Context, src Source, inventory Inventory, 
 						missing = append(missing, name)
 					}
 				}
-				if len(missing) > 0 {
+				if inventory.SourceFamilyContract == SourceFamilyContract {
+					headFailureReason = "portable-image-not-supported; native history is separately retained"
+				} else if len(missing) > 0 {
 					sort.Strings(missing)
 					headFailureReason = "head-image-missing-families:" + strings.Join(missing, ",")
 				}
@@ -296,7 +298,7 @@ func portableSourceImage(ctx context.Context, tables map[string]Table, inventory
 			records = append(records, record)
 		}
 	}
-	sort.Slice(records, func(i, j int) bool { return recordKey(records[i]) < recordKey(records[j]) })
+	sort.Slice(records, func(i, j int) bool { return historyRecordKey(records[i]) < historyRecordKey(records[j]) })
 	if inventory.SourcePlaneAddressContract == SourcePlaneAddressContract {
 		// Source-plane capture does not extend the separate portable history
 		// contract. Keep every raw head row, but mark an unrepresentable commit

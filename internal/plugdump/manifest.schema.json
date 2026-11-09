@@ -18,6 +18,7 @@
     "history": {"enum": ["unavailable", "available-unverified", "verified"]},
     "source_fields_contract": {"const": "beads-issues-source-fields/1"},
     "source_plane_address_contract": {"const": "beads-source-planes/1"},
+    "source_family_contract": {"const": "beads-source-families/1"},
     "status_category_contract": {"const": "beads-status-categories/1"},
     "projects": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/project"}},
     "ontology": {"type": "array", "items": {"$ref": "#/$defs/ontologyDirective"}},
@@ -41,7 +42,7 @@
       }
     }
   },
-  "allOf": [{"if":{"required":["status_category_contract"]},"then":{"properties":{"projects":{"items":{"required":["statuses"]}},"verification":{"properties":{"ontology":{"const":"native status names/categories retained per project; explicit map_type directives recorded in manifest"}}}}},"else":{"properties":{"projects":{"items":{"not":{"required":["statuses"]}}},"verification":{"properties":{"ontology":{"const":"built-in status mapping; explicit map_type directives recorded in manifest"}}}}}}],
+  "allOf": [{"if":{"required":["status_category_contract"]},"then":{"properties":{"projects":{"items":{"required":["statuses"]}},"verification":{"properties":{"ontology":{"const":"native status names/categories retained per project; explicit map_type directives recorded in manifest"}}}}},"else":{"properties":{"projects":{"items":{"not":{"required":["statuses"]}}},"verification":{"properties":{"ontology":{"const":"built-in status mapping; explicit map_type directives recorded in manifest"}}}}}},{"if":{"required":["source_family_contract"]},"then":{"required":["source_plane_address_contract"]},"else":{"properties":{"sources":{"items":{"not":{"required":["history"]}}}}}}],
   "$defs": {
     "projectStatus": {"type":"object","additionalProperties":false,"required":["name","category"],"properties":{"name":{"type":"string","maxLength":64,"pattern":"^[a-z][a-z0-9_-]*$"},"category":{"enum":["active","wip","done","frozen"]}}},
     "natural": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
@@ -116,7 +117,8 @@
         "family": {"type": "string", "minLength": 1},
         "rows": {"type": "integer", "minimum": 0},
         "action": {"enum": ["carry", "archive", "manifest/rebuild", "refuse-if-nonempty"]},
-        "reason": {"type": "string", "minLength": 1}
+        "reason": {"type": "string", "minLength": 1},
+        "history": {"enum": ["versioned", "unversioned-in-beads-by-design"]}
       }
     }
   }

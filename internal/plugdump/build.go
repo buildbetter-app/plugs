@@ -16,6 +16,9 @@ var hashPattern = regexp.MustCompile(`^[a-zA-Z0-9]+$`)
 // Build gathers and validates the whole read set before serializing any output.
 // No partial success is possible after a source read or mapping failure.
 func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error) {
+	if inventory.SourceFamilyContract != "" && (inventory.SourceFamilyContract != SourceFamilyContract || inventory.SourcePlaneAddressContract != SourcePlaneAddressContract) {
+		return nil, fmt.Errorf("unsupported source family contract")
+	}
 	if err := validateSourcePlaneContract(inventory.SourcePlaneAddressContract); err != nil {
 		return nil, err
 	}
@@ -63,7 +66,7 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 	}
 	for name, table := range tables {
 		action, _ := actionFor(name)
-		if len(table.Rows) != 0 && (action == "refuse-if-nonempty" || name == "leases") {
+		if len(table.Rows) != 0 && (action == "refuse-if-nonempty" || name == "leases" && inventory.SourceFamilyContract == "") {
 			return nil, fmt.Errorf("unsupported nonempty family %s (live claims must be resolved)", name)
 		}
 	}
@@ -121,9 +124,9 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 	}
 	for _, name := range sortedNames(tables) {
 		table := tables[name]
-		action, reason := actionFor(name)
-		dispositions = append(dispositions, Disposition{name, len(table.Rows), action, reason})
-		if name == "issues" || name == "labels" || name == "repo_mtimes" || name == "leases" {
+		action, reason := familyAction(name, inventory.SourceFamilyContract)
+		dispositions = append(dispositions, Disposition{Family: name, Rows: len(table.Rows), Action: action, Reason: reason})
+		if name == "issues" || name == "labels" || (name == "repo_mtimes" || name == "leases") && inventory.SourceFamilyContract == "" {
 			continue
 		}
 		for _, row := range table.Rows {
@@ -141,9 +144,10 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 		return nil, err
 	}
 	dispositions = append(dispositions,
-		Disposition{"issues.row_lock", len(tables["issues"].Rows), "manifest/rebuild", "transient locks excluded"},
-		Disposition{"issues.is_blocked", len(tables["issues"].Rows), "manifest/rebuild", "derived blocking excluded; Plug must recompute"})
+		Disposition{Family: "issues.row_lock", Rows: len(tables["issues"].Rows), Action: "manifest/rebuild", Reason: "transient locks excluded"},
+		Disposition{Family: "issues.is_blocked", Rows: len(tables["issues"].Rows), Action: "manifest/rebuild", Reason: "derived blocking excluded; Plug must recompute"})
 	manifest := Manifest{
+		SourceFamilyContract:       inventory.SourceFamilyContract,
 		StatusCategoryContract:     inventory.StatusCategoryContract,
 		SourcePlaneAddressContract: inventory.SourcePlaneAddressContract,
 		Format:                     Format, Schema: 1, Reference: BeadsReference, StoreID: inventory.StoreID, Machine: inventory.Machine,
@@ -164,6 +168,19 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 			manifest.History = "verified"
 		}
 		files[SourceHistoryMember], err = marshal(history)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if inventory.SourceFamilyContract == SourceFamilyContract {
+		native, err := captureNativeHistory(ctx, src, inventory, tables)
+		if err != nil {
+			return nil, err
+		}
+		if err := classifyNativeSources(manifest.Sources, *native); err != nil {
+			return nil, err
+		}
+		files[NativeHistoryMember], err = marshal(native)
 		if err != nil {
 			return nil, err
 		}

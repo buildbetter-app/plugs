@@ -493,3 +493,14 @@ The consumer must install each catalog under its explicit target project;
 producer validation alone does not prove shared-store merge or restore.
 See [the identity contract](NATIVE-IDENTITY-CONTRACT.md#native-status-categories)
 for exact fields and historical-image limits.
+
+Native inventories now bind `beads-source-families/1` and preserve exact
+current rows plus every readable immutable native table image in
+`history/native-tables.json` (`beads-native-tables/1`). Family classifications,
+counts, actual historical catalogs and named missing-version gaps are explicit;
+unversioned audit/wisp rows are never backfilled into commits. This evidence is
+separate from portable replay and consumer restore qualification. See
+[NATIVE-IDENTITY-CONTRACT.md](NATIVE-IDENTITY-CONTRACT.md) and
+[native-history.schema.json](native-history.schema.json). The producer preserves
+lease rows; import-time expiry and the three permitted machine-local exclusions
+must be accounted for by the consumer at its supplied restore time.
