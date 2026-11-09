@@ -610,8 +610,12 @@ func TestStatusCategoryContractRefusesUnknownAndForgedDeclarations(t *testing.T)
 		{"changed category", func(m map[string][]byte) {
 			m["records/bead.ndjson"] = bytes.Replace(m["records/bead.ndjson"], []byte(`"status_category":"active"`), []byte(`"status_category":"wip"`), 1)
 		}},
-		{"renamed native status", func(m map[string][]byte) {
-			m["records/bead.ndjson"] = bytes.ReplaceAll(m["records/bead.ndjson"], []byte(`"status":"todo"`), []byte(`"status":"open"`))
+		{"renamed status with mismatched category", func(m map[string][]byte) {
+			// Both todo and open are declared active. A self-consistent source
+			// archive cannot authenticate one same-category spelling against
+			// another. Conservation is checked against SQL in the positive
+			// controls; this negative must actually violate the catalog.
+			m["records/bead.ndjson"] = bytes.ReplaceAll(m["records/bead.ndjson"], []byte(`"status":"todo"`), []byte(`"status":"review"`))
 		}},
 		{"done result lost", func(m map[string][]byte) {
 			m["records/bead.ndjson"] = bytes.Replace(m["records/bead.ndjson"], []byte(`"result":"success",`), nil, 1)

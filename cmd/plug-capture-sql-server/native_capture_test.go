@@ -473,8 +473,19 @@ func TestPublicControlledClockAndActiveFamilyCapture(t *testing.T) {
 // are bounded producer proof for the consumer's two-project merge/restore
 // tests, not real-source captures or rehearsal streak credit.
 func TestPublicNativeCustomTypesAndNamespacedHashes(t *testing.T) {
-	for _, prefix := range []string{"reprocody", "reprosignals"} {
-		t.Run(prefix, func(t *testing.T) {
+	for _, test := range []struct {
+		prefix  string
+		tracked bool
+	}{
+		{"reprocody", false}, {"reprosignals", false},
+		{"reprocody", true}, {"reprosignals", true},
+	} {
+		name := test.prefix
+		if test.tracked {
+			name += "-tracked"
+		}
+		t.Run(name, func(t *testing.T) {
+			prefix := test.prefix
 			f := newNativeFixtureForProject(t, prefix)
 			types := []string{"zzzzzzzz"}
 			roots := []string{"a1b", "c2d"}
@@ -499,12 +510,18 @@ func TestPublicNativeCustomTypesAndNamespacedHashes(t *testing.T) {
 					t.Fatalf("public create relabelled a synthetic ID: got %q want %q", got, id)
 				}
 			}
+			if test.tracked {
+				f.recordPublicHistoryImage("before-child")
+			}
 			parent := prefix + "-" + roots[0]
 			// The public CLI deliberately makes --id and --parent exclusive.
 			// Let its real child allocator preserve the complete namespaced parent.
 			child := parent + ".1"
 			if got := f.create("synthetic child control", "--parent", parent, "--status", "parked"); got != child {
 				t.Fatal("public child create relabelled the synthetic source")
+			}
+			if test.tracked {
+				f.recordPublicHistoryImage("after-child")
 			}
 			source, err := (plugdump.SQLSource{DB: f.db}).ReadTable(context.Background(), "issues")
 			if err != nil || len(source.Rows) != len(roots)+1 {
@@ -605,10 +622,17 @@ func TestPublicNativeCustomTypesAndNamespacedHashes(t *testing.T) {
 			if output == "" {
 				t.Fatal("Bazel artifact directory required for independent consumer fixture")
 			}
-			if err := os.WriteFile(filepath.Join(output, prefix+"-synthetic.tar"), archive, 0600); err != nil {
+			if err := os.WriteFile(filepath.Join(output, name+"-synthetic.tar"), archive, 0600); err != nil {
 				t.Fatal(err)
 			}
-			if !historySeen || history.Range.Status != "verified" || len(history.Range.Frames) == 0 || history.Range.Head != uint64(len(history.Commits)) {
+			if !test.tracked {
+				// Native defaults deliberately exclude clone-local and event
+				// tables from immutable commits. Preserve this actual refusal;
+				// no historical table or event is synthesized from head state.
+				if !historySeen || history.Range.Status != "unverified" || history.Range.Reason != "head-image-not-proven" || history.Range.Complete || len(history.Range.Frames) != 0 {
+					t.Fatal("default ignored history acquired invented replay proof")
+				}
+			} else if !historySeen || history.Range.Status != "verified" || history.Range.Complete || len(history.Range.Gaps) == 0 || len(history.Range.Frames) == 0 || history.Range.Head != uint64(len(history.Commits)) {
 				// This diagnostic reads only this fabricated public fixture. Keep
 				// exact native errors and the failed archive for causal follow-up.
 				port := plugdump.SQLSource{DB: f.db}
@@ -624,10 +648,91 @@ func TestPublicNativeCustomTypesAndNamespacedHashes(t *testing.T) {
 				}
 				t.Fatalf("native child history head not proven: status=%s reason=%s frames=%d", history.Range.Status, history.Range.Reason, len(history.Range.Frames))
 			}
-			t.Logf("B1A_SYNTHETIC_EXPORT project=%s source_rows=%d archive_rows=%d ontology=%d namespaces=%q child_counter=%d sha256=%x bytes=%d", prefix, len(wanted), len(observed), len(manifest.Ontology), manifest.Projects[0].HashNamespaces, manifest.Projects[0].ChildCounters[parent], sha256.Sum256(archive), len(archive))
-			t.Logf("B1A_SYNTHETIC_HISTORY project=%s status=%s complete=%t first=%d head=%d frames=%d gaps=%d", prefix, history.Range.Status, history.Range.Complete, history.Range.First, history.Range.Head, len(history.Range.Frames), len(history.Range.Gaps))
+			if test.tracked {
+				seenBefore, seenAfter := false, false
+				images := [][]plugdump.Record{history.Range.Baseline}
+				for _, frame := range history.Range.Frames {
+					images = append(images, frame.Records)
+				}
+				for _, image := range images {
+					rows, hasChild := 0, false
+					for _, record := range image {
+						if record.Kind != "bead" {
+							continue
+						}
+						rows++
+						id := record.Source.Fields["id"]
+						if record.ID != id || record.Project != prefix || record.Source.Fields["status"] != wantedStatuses[record.ID] || record.Body["status_category"] != categories[wantedStatuses[record.ID]] {
+							t.Fatal("tracked history relabelled native identity/status/category")
+						}
+						hasChild = hasChild || record.ID == child
+					}
+					seenBefore = seenBefore || !hasChild && rows == len(roots)
+					seenAfter = seenAfter || hasChild && rows == len(roots)+1
+				}
+				if !seenBefore || !seenAfter {
+					t.Fatal("tracked suffix did not preserve before/after real child allocation")
+				}
+			}
+			t.Logf("B1A_SYNTHETIC_EXPORT fixture=%s project=%s source_rows=%d archive_rows=%d ontology=%d namespaces=%q child_counter=%d sha256=%x bytes=%d", name, prefix, len(wanted), len(observed), len(manifest.Ontology), manifest.Projects[0].HashNamespaces, manifest.Projects[0].ChildCounters[parent], sha256.Sum256(archive), len(archive))
+			t.Logf("B1A_SYNTHETIC_HISTORY fixture=%s project=%s status=%s complete=%t first=%d head=%d frames=%d gaps=%d", name, prefix, history.Range.Status, history.Range.Complete, history.Range.First, history.Range.Head, len(history.Range.Frames), len(history.Range.Gaps))
 		})
 	}
+}
+
+// recordPublicHistoryImage is confined to the fabricated two-project fixture.
+// Explicit exact-name ignore overrides and force-staging record the actual
+// complete SQL census, including clone-local/event rows native defaults omit.
+// This is an opt-in synthetic store configuration, not the native default. It
+// does not recover earlier edits or alter Beads'
+// command semantics; the resulting range must retain its explicit prefix gaps.
+func (f *nativeFixture) recordPublicHistoryImage(stage string) {
+	f.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	names, err := (plugdump.SQLSource{DB: f.db}).Tables(ctx)
+	if err != nil || len(names) == 0 {
+		f.t.Fatalf("synthetic history census: %v", err)
+	}
+	sort.Strings(names)
+	// Exact-name false overrides are supported by native Dolt matching and
+	// the native migration opener. They keep this public fixture's captured
+	// ignored cursor/events tracked during the real CLI child allocation.
+	for _, name := range names {
+		if _, err := f.db.ExecContext(ctx, "REPLACE INTO dolt_ignore VALUES (?, false)", name); err != nil {
+			f.t.Fatal(err)
+		}
+	}
+	args := []any{"-f", "dolt_ignore"}
+	marks := []string{"?", "?"}
+	for _, name := range names {
+		args = append(args, name)
+		marks = append(marks, "?")
+	}
+	drain := func(query string, args ...any) {
+		f.t.Helper()
+		rows, err := f.db.QueryContext(ctx, query, args...)
+		if err != nil {
+			f.t.Fatalf("synthetic history %s: %v", stage, err)
+		}
+		defer rows.Close()
+		for {
+			for rows.Next() {
+			}
+			if err := rows.Err(); err != nil {
+				f.t.Fatal(err)
+			}
+			if !rows.NextResultSet() {
+				break
+			}
+		}
+		if err := rows.Err(); err != nil {
+			f.t.Fatal(err)
+		}
+	}
+	drain("CALL DOLT_ADD("+strings.Join(marks, ",")+")", args...)
+	drain("CALL DOLT_COMMIT('-m', ?, '--author', 'Synthetic capture <capture@example.invalid>')", "synthetic explicit complete image: "+stage)
+	f.t.Logf("B1A_PUBLIC_TRACKED_HISTORY stage=%s tables=%q; explicitly captured public fixture only, earlier default history remains unavailable", stage, names)
 }
 
 func TestCaptureExecutablesRefuseInvalidOptIn(t *testing.T) {

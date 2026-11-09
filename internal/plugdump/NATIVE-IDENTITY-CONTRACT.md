@@ -119,3 +119,13 @@ still refuse. A different older status catalog cannot borrow head semantics:
 its image remains an explicit unmappable gap in this portable history format.
 The native public fixtures retain the failed tar before assertions and report
 bounded synthetic-only diagnostics if their history head is not proven.
+
+
+The public two-project controls distinguish native-default stores from explicitly
+tracked synthetic stores. Defaults keep their actual unverified historical head
+when clone-local or event tables were never committed. The `-tracked` fixtures
+set exact native Dolt ignore overrides and record their actual SQL tables before
+and after the real CLI child allocation. They prove only the resulting contiguous
+suffix and retain all earlier gaps. They do not reconstruct missing native
+history, change a real store, or provide real rehearsal credit. Consumers must
+choose explicit incomplete-history policy for these bounded fixture suffixes.
