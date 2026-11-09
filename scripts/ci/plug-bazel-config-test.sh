@@ -35,9 +35,13 @@ bash -n "$delivery_tests"
 python3 - "$workflow" "$targets" "$collector" "$remote_workflow" "$nightly_workflow" "$public_workflow" <<'PYTHON'
 from pathlib import Path
 import ast
+import json
+import os
 import re
+import subprocess
 import sys
 import tempfile
+import textwrap
 
 workflow = Path(sys.argv[1]).read_text(encoding="utf-8")
 remote_workflow = Path(sys.argv[4]).read_text(encoding="utf-8")
@@ -150,7 +154,7 @@ if missing:
     raise SystemExit("config: workflow is missing: " + ", ".join(missing))
 required_collector = {
     "//:lexicon_gate", "touched-targets.txt", "reverse-targets.txt",
-    "--lockfile_mode=error", "--nocache_test_results", "--test_timeout=900,900,900,9000",
+    "--lockfile_mode=error", "--nocache_test_results", "--flaky_test_attempts=1", "--test_timeout=900,900,900,9000",
     "--nosystem_rc", "--nohome_rc", "--noworkspace_rc", "--remote_cache=", "--remote_executor=",
     "--repo_contents_cache=", "--jobs=2", "--local_resources=memory=8192", "--test_env=GO_TEST_WRAP_TESTV=1",
 }
@@ -424,6 +428,77 @@ if not (remote_code.index("- name: Run remote Bazel command")
 remote_actions = re.findall(r"uses: (\S+)", remote_code)
 if len(remote_actions) != 6 or any(not re.fullmatch(r"(?:actions|runs-on)/[a-z/-]+@[0-9a-f]{40}", action) for action in remote_actions):
     raise SystemExit("config: every remote Bazel action must retain its full immutable pin")
+
+# Replay representative original CP7 markers through the workflow's actual
+# preservation program. This is parser validation, never new latency evidence.
+cp7_path = Path(".github/workflows/plug-cp7-latency.yml")
+if cp7_path.exists():
+    preservation = cp7_path.read_text().split("- name: Preserve raw measurements and XML evidence", 1)[1]
+    program = textwrap.dedent(preservation.split("python3 - <<'PY'\n", 1)[1].split("\n          PY\n", 1)[0])
+    # Latency: PR260 real run 41382713895, focused-final/bazel.log:281,305.
+    # Dense: main run 42031345994, CP7 test.log:43,47 (Go-format counters).
+    real_markers = {'CP7_CASE': '    latency_test.go:41: CP7_CASE {"engine":"sqlite","fraction_divisor":1,"operation":"Q4Ready","workload_sha256":"bac34d24657ee49bc1ec3659706a4870bcc9e87f574c1ebb9d7e95b4e1337116","corpus_sha256":"f1b2e7c76c581119829123a7f34d8a1441078c77f6b3f279169b4d5041073ff8","corpus":100000,"expected_authorized":100000,"cold_first_request":{"engine":"sqlite","fraction_divisor":1,"corpus":100000,"expected_authorized":100000,"operation":"Q4Ready","phase":"cold","index":0,"elapsed_ms":30000.077,"status":"request_deadline","error":"context deadline exceeded","reader_api":{"query_calls":17,"query_rows_returned":16000,"get_calls":0,"observed_keys":0},"target_ms":50,"target_pass":false,"validation_ms":0.096,"reset_ms":0},"warmups":3,"samples":20,"outcomes":{"request_deadline":20},"response_p95_ms":30003.836,"successful_latency_p95_ms":null,"target_ms":50,"target_pass":false,"status":"RED"}', 'CP7_SAMPLE': '    latency_test.go:81: CP7_SAMPLE {"engine":"sqlite","fraction_divisor":1,"corpus":100000,"expected_authorized":100000,"operation":"Q4Ready","phase":"cold","index":0,"elapsed_ms":30000.077,"status":"request_deadline","error":"context deadline exceeded","reader_api":{"query_calls":17,"query_rows_returned":16000,"get_calls":0,"observed_keys":0},"target_ms":50,"target_pass":false,"validation_ms":0.096,"reset_ms":0}', 'CP7_DENSE_ORDINARY': '    dense_summary_test.go:60: CP7_DENSE_ORDINARY authorized_inputs=100000 cap=20000 outcome=scope_too_large performance=RED', 'CP7_DENSE_TYPE_SUMMARY': '    dense_summary_test.go:84: CP7_DENSE_TYPE_SUMMARY fields_present=true fields_empty=true group_by=type finite_cp7=true authorized_inputs=100000 groups=1 corpus_sha256=7490011f3cd049ec7b254b35100f06896823f7eebd77bfc6979ad5e4e4a878cf executed_work={Payloads:10100000 PayloadBytes:2474499394 SelectorKeys:10000000 PrefixStates:0 PrefixBytes:0 AggregateInputs:100000 AggregateGroups:1 Projections:100000} performance=UNMEASURED'}
+    case = json.loads(real_markers["CP7_CASE"].split("CP7_CASE ", 1)[1])
+    ordinary = real_markers["CP7_DENSE_ORDINARY"].split("CP7_DENSE_ORDINARY ", 1)[1]
+    summary = real_markers["CP7_DENSE_TYPE_SUMMARY"].split("CP7_DENSE_TYPE_SUMMARY ", 1)[1]
+
+    def replay_cp7(engine, name, latency_lines, dense_lines, exit_code="0", xml='<testsuite><testcase name="control"/></testsuite>'):
+        with tempfile.TemporaryDirectory(prefix="plug-cp7-parser.") as temporary:
+            root = Path(temporary)
+            evidence = root / "cp7-evidence"
+            for target, lines in (("latency", latency_lines), ("dense_semantics", dense_lines)):
+                target_dir = evidence / "test-results" / f"cp7_{target}_{engine}_test"
+                target_dir.mkdir(parents=True)
+                (target_dir / "test.log").write_text("\n".join(lines) + "\n")
+                (target_dir / "test.xml").write_text(xml)
+            (evidence / "exit_code").write_text(exit_code)
+            result = subprocess.run([sys.executable, "-c", program], text=True, capture_output=True,
+                                    env=dict(os.environ, RUNNER_TEMP=str(root), CP7_ENGINE=engine,
+                                             GITHUB_STEP_SUMMARY=str(root / "step-summary")))
+            accounting_path = evidence / "case-accounting.json"
+            accounting = json.loads(accounting_path.read_text()) if accounting_path.exists() else None
+            print(f"plug-cp7-parser: {engine} {name} exit={result.returncode}")
+            return result, accounting
+
+    dense_lines = [real_markers[kind] for kind in ("CP7_DENSE_ORDINARY", "CP7_DENSE_TYPE_SUMMARY")]
+    for engine in ("sqlite", "postgres"):
+        # Real marker replay stays partial: one original case/sample is no
+        # 9/216 measurement matrix, and RED/UNMEASURED remain literal.
+        result, accounting = replay_cp7(engine, "real-marker-partial", [real_markers["CP7_CASE"], real_markers["CP7_SAMPLE"]], dense_lines, "3")
+        assert result.returncode == 0, result.stderr
+        assert accounting["latency"]["raw_cases"] == 1 and accounting["latency"]["raw_samples"] == 1
+        assert accounting["latency"]["cases"] == [case]
+        assert case["status"] == "RED" and case["target_pass"] is False
+        assert accounting["dense"]["ordinary"] == [ordinary]
+        assert accounting["dense"]["type_summary"] == [summary]
+        assert ordinary.endswith("performance=RED") and summary.endswith("performance=UNMEASURED")
+        assert "PayloadBytes:2474499394" in summary and "AggregateInputs:100000" in summary
+        assert accounting["dense"]["raw_ordinary_markers"] == accounting["dense"]["raw_summary_markers"] == 1
+
+        # Repetition below is a synthetic count fixture, not a measured matrix.
+        matrix = [real_markers["CP7_CASE"]] * 9 + [real_markers["CP7_SAMPLE"]] * 216
+        result, accounting = replay_cp7(engine, "synthetic-count-matrix", matrix, dense_lines)
+        assert result.returncode == 0, result.stderr
+        assert accounting["latency"]["raw_cases"] == accounting["latency"]["expected_cases"] == 9
+        assert accounting["latency"]["raw_samples"] == accounting["latency"]["expected_samples"] == 216
+        assert all(record == case for record in accounting["latency"]["cases"])
+        for name, latency_input, dense_input, expected_error in (
+            ("missing-json-markers", [], dense_lines, "declared 9/216 matrix"),
+            ("missing-dense-summary", matrix, dense_lines[:1], "both semantic controls"),
+            ("duplicate-dense-marker", matrix, dense_lines + dense_lines[:1], "both semantic controls"),
+        ):
+            result, accounting = replay_cp7(engine, name, latency_input, dense_input)
+            assert result.returncode != 0 and expected_error in result.stderr
+            assert accounting is not None  # Counts survive a failed completeness check.
+        for kind in ("CP7_CASE", "CP7_SAMPLE"):
+            result, accounting = replay_cp7(engine, "malformed-" + kind, matrix + [kind + " {broken"], dense_lines)
+            assert result.returncode != 0 and "JSONDecodeError" in result.stderr
+        result, accounting = replay_cp7(engine, "outer-xml-failure", matrix, dense_lines,
+                                       xml='<testsuite><testcase name="control"><failure/></testcase></testsuite>')
+        assert result.returncode != 0 and "passing outer XML" in result.stderr
+        assert accounting["dense"]["xml"]["failures"] == 1
+    print("plug-cp7-parser: real JSON, raw dense counters, literal RED/UNMEASURED and malformed/missing controls passed")
+
 check_workflow_inventory(Path(".github/workflows"))
 print("plug-ci-config: workflow, permissions, cache, lock, targets, and retirement checks passed")
 PYTHON

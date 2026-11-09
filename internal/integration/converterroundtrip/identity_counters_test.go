@@ -28,7 +28,7 @@ import (
 )
 
 // A positive decimal child with leading zeroes is admitted by the source ID
-// contract, and its 32 lower-hex digits also inhabit the target random profile.
+// contract. Keep that spelling while advancing its numeric child counter.
 // Re-key every exact JSON identity/reference in a detached synthetic snapshot;
 // the source counter remains 4. This fixture claims no verified source history.
 func identityCounterCollisionFixture(t *testing.T) ([]byte, string) {
@@ -123,32 +123,19 @@ func exerciseImportedIdentityWrites(t *testing.T, engine string, data []byte, so
 			return "", fmt.Errorf("restored project allocator was bypassed")
 		}),
 	}
-	draws := 0
-	freshChild := parent.ID + "." + strings.Repeat("b", 32)
-	secondChild := parent.ID + "." + strings.Repeat("c", 32)
 	if collision != "" {
 		if _, exists := prior[collision]; !exists || parent.ID != "demo-7" {
 			t.Fatal("collision control is not an actual restored child identity")
 		}
-		options = append(options, pipeline.WithAllocatorChildGenerator(func(a driver.OfflineAllocator, requestedParent string) (string, error) {
-			if !reflect.DeepEqual(a, driver.NewRandomAllocator("demo")) || requestedParent != parent.ID {
-				return "", fmt.Errorf("wrong restored child allocation profile: %+v parent=%q", a, requestedParent)
-			}
-			draws++
-			switch draws {
-			case 1:
-				return collision, nil
-			case 2:
-				return freshChild, nil
-			case 3:
-				return freshChild, nil // Collide with the child retained across reopen.
-			case 4:
-				return secondChild, nil
-			default:
-				return "", fmt.Errorf("unexpected child entropy draw %d", draws)
-			}
-		}))
 	}
+	seedCounter := uint64(0)
+	for _, project := range source.Manifest().Projects {
+		if project.Prefix == "demo" {
+			seedCounter = project.ChildCounters[parent.ID]
+		}
+	}
+	freshChild := fmt.Sprintf("%s.%d", parent.ID, seedCounter+1)
+	secondChild := fmt.Sprintf("%s.%d", parent.ID, seedCounter+2)
 	writer := pipeline.New(store, lease, options...)
 	created := 0
 	assertPreserved := func() {
@@ -171,7 +158,7 @@ func exerciseImportedIdentityWrites(t *testing.T, engine string, data []byte, so
 		}
 	}
 	// Exercise every declared prefix, including the zero-row source project in
-	// the snapshot. Root IDs use the normal production random generator.
+	// the snapshot. Root IDs use the production adaptive hash allocator.
 	for _, project := range source.Manifest().Projects {
 		commit, err := writer.Apply(ctx, p.Admission.Actor, model.ChangeSet{Ops: []model.Op{{
 			Kind: model.OpCreate, Create: &model.CreateOp{Type: "issue", Project: project.Prefix, Fields: map[string]any{"title": "created after import"}},
@@ -181,8 +168,8 @@ func exerciseImportedIdentityWrites(t *testing.T, engine string, data []byte, so
 		}
 		id := commit.Results[0].Ref.ID
 		suffix, ok := strings.CutPrefix(id, project.Prefix+"-")
-		if !ok || len(suffix) != 32 || strings.Trim(suffix, "0123456789abcdef") != "" {
-			t.Fatalf("restored prefix did not use the live random profile: %q", id)
+		if !ok || len(suffix) < 3 || len(suffix) > 8 || strings.Trim(suffix, "0123456789abcdefghijklmnopqrstuvwxyz") != "" {
+			t.Fatalf("restored prefix did not use the live adaptive hash profile: %q", id)
 		}
 		if _, reused := prior[id]; reused {
 			t.Fatalf("public root create reused restored ID %q", id)
@@ -199,12 +186,11 @@ func exerciseImportedIdentityWrites(t *testing.T, engine string, data []byte, so
 		t.Fatalf("public child create under restored parent: %+v %v", commit, err)
 	}
 	child := commit.Results[0].Ref.ID
-	suffix, ok := strings.CutPrefix(child, parent.ID+".")
-	if !ok || len(suffix) != 32 || strings.Trim(suffix, "0123456789abcdef") != "" {
-		t.Fatalf("restored-parent child has wrong identity: %q", child)
+	if child != freshChild {
+		t.Fatalf("restored-parent counter did not advance: got=%q want=%q", child, freshChild)
 	}
-	if _, reused := prior[child]; reused || (collision != "" && (draws != 2 || child != freshChild)) {
-		t.Fatalf("restored-child collision did not retry exactly once: child=%q draws=%d", child, draws)
+	if _, reused := prior[child]; reused {
+		t.Fatalf("restored child identity reused: %q", child)
 	}
 	created++
 	assertPreserved()
@@ -223,8 +209,8 @@ func exerciseImportedIdentityWrites(t *testing.T, engine string, data []byte, so
 		t.Fatal("public child create did not persist its returned identity")
 	}
 	replay, err := writer.ApplyWithOutcome(ctx, p.Admission.Actor, changes, meta)
-	if err != nil || !replay.Replayed || !reflect.DeepEqual(replay.Commit, commit) || !reflect.DeepEqual(beforeReplay, reverseState(t, store)) || (collision != "" && draws != 2) {
-		t.Fatalf("child replay consumed another identity or changed restored state: %+v %v draws=%d", replay, err, draws)
+	if err != nil || !replay.Replayed || !reflect.DeepEqual(replay.Commit, commit) || !reflect.DeepEqual(beforeReplay, reverseState(t, store)) {
+		t.Fatalf("child replay consumed another identity or changed restored state: %+v %v", replay, err)
 	}
 	store, lease = reopen()
 	if !reflect.DeepEqual(beforeReplay, reverseState(t, store)) {
@@ -232,20 +218,19 @@ func exerciseImportedIdentityWrites(t *testing.T, engine string, data []byte, so
 	}
 	writer = pipeline.New(store, lease, options...)
 	replay, err = writer.ApplyWithOutcome(ctx, p.Admission.Actor, changes, meta)
-	if err != nil || !replay.Replayed || !reflect.DeepEqual(replay.Commit, commit) || !reflect.DeepEqual(beforeReplay, reverseState(t, store)) || (collision != "" && draws != 2) {
-		t.Fatalf("reopened writer did not retain child replay: %+v %v draws=%d", replay, err, draws)
+	if err != nil || !replay.Replayed || !reflect.DeepEqual(replay.Commit, commit) || !reflect.DeepEqual(beforeReplay, reverseState(t, store)) {
+		t.Fatalf("reopened writer did not retain child replay: %+v %v", replay, err)
 	}
 	second, err := writer.Apply(ctx, p.Admission.Actor, changes, model.WriteMeta{Method: "tx.apply", Project: "demo", IdempotencyKey: hashBytes([]byte("identity-child-after-reopen"))})
 	if err != nil || len(second.Results) != 1 {
 		t.Fatalf("public second child after reopen: %+v %v", second, err)
 	}
 	next := second.Results[0].Ref.ID
-	suffix, ok = strings.CutPrefix(next, parent.ID+".")
-	if !ok || len(suffix) != 32 || strings.Trim(suffix, "0123456789abcdef") != "" || next == child {
-		t.Fatalf("second child reused or lost its restored-parent identity: %q", next)
+	if next != secondChild || next == child {
+		t.Fatalf("second child reused or lost its restored-parent counter: got=%q want=%q", next, secondChild)
 	}
-	if _, reused := prior[next]; reused || (collision != "" && (draws != 4 || next != secondChild)) {
-		t.Fatalf("reopened writer did not retry the persisted child collision: child=%q draws=%d", next, draws)
+	if _, reused := prior[next]; reused {
+		t.Fatalf("reopened writer reused a restored child: %q", next)
 	}
 	created++
 	assertPreserved()
@@ -268,7 +253,7 @@ func exerciseImportedIdentityWrites(t *testing.T, engine string, data []byte, so
 	if engine == "memory" {
 		lifecycle = "same-store-lease-writer-refresh"
 	}
-	t.Logf("IDENTITY_CONTINUITY engine=%s lifecycle=%s mode=%s archive=%s restored_head=%s final_head=%s prefixes=%d creates=%d collision_draws=%d original_records=%d history=%s", engine, lifecycle, p.HistoryMode, source.SHA256(), before.Meta.Head, after.Meta.Head, len(source.Manifest().Projects), created, draws, len(prior), source.Manifest().History)
+	t.Logf("IDENTITY_CONTINUITY engine=%s lifecycle=%s mode=%s archive=%s restored_head=%s final_head=%s prefixes=%d creates=%d source_collision=%t original_records=%d history=%s", engine, lifecycle, p.HistoryMode, source.SHA256(), before.Meta.Head, after.Meta.Head, len(source.Manifest().Projects), created, collision != "", len(prior), source.Manifest().History)
 }
 
 // Persistent engines really close and reopen their file/database. Memory has
@@ -419,13 +404,14 @@ func assertImportedIdentityEvidence(t *testing.T, store driver.Store, source *du
 	}
 	for _, project := range source.Manifest().Projects {
 		actual, err := r.(driver.AllocatorReader).LoadAllocator(ctx, project.Prefix)
+		wantAllocator, seedErr := importedAllocator(source, project)
 		var saved importProjectMetadata
-		if err != nil || !reflect.DeepEqual(actual, driver.NewRandomAllocator(project.Prefix)) || json.Unmarshal(rows[importProjectRecordID(project.Prefix)].Body, &saved) != nil {
+		if err != nil || seedErr != nil || !allocatorContinues(wantAllocator, actual) || json.Unmarshal(rows[importProjectRecordID(project.Prefix)].Body, &saved) != nil {
 			t.Fatalf("restored project allocator/evidence missing: %s %v", project.Prefix, err)
 		}
 		want, err := json.Marshal(project)
-		if err != nil || saved.Project != project.Prefix || !bytes.Equal(saved.Metadata["plug.restore.sourceAllocator"], want) || !reflect.DeepEqual(saved.TargetAllocator, actual) {
-			t.Fatalf("source prefix/counters were changed or made live: %s", project.Prefix)
+		if err != nil || saved.Project != project.Prefix || !bytes.Equal(saved.Metadata["plug.restore.sourceAllocator"], want) || !reflect.DeepEqual(saved.TargetAllocator, wantAllocator) {
+			t.Fatalf("source prefix/counters or admitted target profile changed: %s", project.Prefix)
 		}
 	}
 	for _, archived := range source.Records("beads-archive") {

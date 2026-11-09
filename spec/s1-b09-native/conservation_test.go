@@ -139,7 +139,7 @@ func assertB09Source(t *testing.T, archive *dumpformat.Archive, profile driver.R
 	})
 	projects := []any{}
 	for _, project := range manifest.Projects {
-		allocator := driver.NewRandomAllocator(project.Prefix)
+		allocator := driver.NewHashAllocator(project.Prefix, 3, 8, 0.25)
 		projects = append(projects, map[string]any{"sourceAllocator": project, "targetAllocator": allocator})
 		add("instance_config/restore-import/project/"+project.Prefix, "instance_config", map[string]any{
 			"project": project.Prefix, "importProfile": profile,

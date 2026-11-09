@@ -1289,6 +1289,19 @@ func assertNativePlugImportRows(t *testing.T, image map[string]any, rows map[str
 				body[key] = value
 			}
 			body["source_id"], body["source_table"], body["source"] = source.ID, source.Source.Table, source.Source.Fields
+			if content, eligible := source.Body["value"].(string); kind.Name == "memory" && source.Body["classification"] == "public" && eligible {
+				key, ok := source.Body["key"].(string)
+				if !ok || strings.TrimSpace(key) == "" {
+					t.Fatal("public source memory lacks its admitted key")
+				}
+				body = map[string]any{
+					"id": id, "key": strings.TrimSpace(key), "content": content,
+					"metadata": map[string]any{
+						"plug.restore.source_id": source.ID, "plug.restore.source_table": source.Source.Table,
+						"plug.restore.source": source.Source.Fields, "plug.restore.archive_sha256": archive.SHA256(),
+					},
+				}
+			}
 			if kind.Name == "beads-archive" {
 				body["read_only"], body["redactable"] = true, true
 			}
