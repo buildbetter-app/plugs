@@ -151,7 +151,7 @@ func TestSelectionAcquiredMembershipKeepsFreshSourceValidation(t *testing.T) {
 	key := driver.DerivedRowKey{Table: driver.DerivedReferenceIndex, Key: "fresh-source-control"}
 	tx, header := beginTest(t, s, lease, testLock(ref), driver.LockKey{Kind: driver.LockDerived, Derived: &key})
 	records, err := tx.Get(ctx, []model.Ref{ref})
-	if err != nil || len(records) != 1 || records[0] == nil {
+	if err != nil || len(records) != 1 {
 		t.Fatalf("source preimage: %#v %v", records, err)
 	}
 	body := []byte(`{"complete":"links"}`)
@@ -163,7 +163,7 @@ func TestSelectionAcquiredMembershipKeepsFreshSourceValidation(t *testing.T) {
 	if err = writer.PutSelectionDerived(ctx, key.Table, nil, []driver.DerivedRow{row}); err != nil {
 		t.Fatal(err)
 	}
-	replacement := *records[0]
+	replacement := records[0]
 	replacement.Body = []byte(`{"source":"replaced at the same token"}`)
 	if err = tx.Put(ctx, replacement); err != nil {
 		t.Fatal(err)
