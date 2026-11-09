@@ -348,7 +348,9 @@ try {
   check('browser issue UI renders old parent/new scoped/deeper mixed-generation replies in their actual nested cards');
   await clickText('View in window');
   await until(async()=>await evaluate(`document.querySelectorAll('button[title="Copy description"]').length===2`),'description window opens');
-  const modalThread=await evaluate(`(()=>{const modal=document.querySelector('[class~="z-[100]"]');if(!modal)throw Error('description window missing');const names=['old projectless comment','mixed scoped reply','mixed legacy deep reply','mixed scoped deepest reply'];for(const name of names){const ps=[...modal.querySelectorAll('p')].filter(p=>p.textContent===name);if(ps.length!==1)throw Error('description thread duplicate/missing '+name+':'+ps.length);}return {text:modal.innerText}})()`);
+  const countThread=comments=>comments.reduce((sum,c)=>sum+1+countThread(c.replies),0);
+  const expectedModalCount=countThread(mixedHTTP.issue.comments);
+  const modalThread=await evaluate(`(()=>{const modal=document.querySelector('[class~="z-[100]"]');if(!modal)throw Error('description window missing');const names=['old projectless comment','mixed scoped reply','mixed legacy deep reply','mixed scoped deepest reply'];for(const name of names){const ps=[...modal.querySelectorAll('p')].filter(p=>p.textContent===name);if(ps.length!==1)throw Error('description thread duplicate/missing '+name+':'+ps.length);}const header=[...modal.querySelectorAll('h4')].find(h=>h.textContent.trim().startsWith('Comments'));const count=Number(header?.querySelector('span')?.textContent);if(count!==${expectedModalCount})throw Error('description thread count '+count+' expected '+${expectedModalCount});return {text:modal.innerText,count}})()`);
   await save('browser-description-thread.json',modalThread);
   await cdp('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape'});await cdp('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape'});
   await until(async()=>await evaluate(`document.querySelectorAll('button[title="Copy description"]').length===1`),'description window closes');
