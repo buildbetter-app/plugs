@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile, writeFile, mkdtemp, cp, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createServer } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import vm from 'node:vm';
@@ -14,7 +14,7 @@ const actualEndpoint = binding.endpoint;
 const temp = await mkdtemp(join(tmpdir(), 'i8-heartbeads-browser-'));
 const ui = join(temp, 'ui');
 const children = new Set(), servers = new Set();
-const receipts = { checks: [], calls: [], responses: [], browserRequests: [], externalRecords: [], browserErrors: [], boundaries: ['synthetic per-project protected ontology, native names/categories preserved', 'native head import', 'synthetic ATProto session/agent only; real Plug core/transport'] };
+const receipts = { checks: [], calls: [], responses: [], browserRequests: [], externalRecords: [], browserErrors: [], browserInterceptionFailures: [], browserNetworkFailures: [], boundaries: ['synthetic per-project protected ontology, native names/categories preserved', 'native head import', 'synthetic ATProto session/agent only; real Plug core/transport'] };
 const save = async (name, value) => writeFile(join(outputs, name), typeof value === 'string' || Buffer.isBuffer(value) ? value : JSON.stringify(value, null, 2));
 const check = (name, detail = {}) => { receipts.checks.push({name, ...detail}); console.log('PASS ' + name + ' ' + JSON.stringify(detail)); };
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -289,11 +289,12 @@ try {
     const local=request.url.startsWith(nextUrl)||request.url.startsWith('http://127.0.0.1:')||request.url.startsWith('data:');
     return cdp(local?'Fetch.continueRequest':'Fetch.failRequest',local?{requestId:p.requestId}:{requestId:p.requestId,errorReason:'BlockedByClient'});
   }
-  ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.id){const p=pending.get(m.id);if(p){pending.delete(m.id);m.error?p.reject(Error(JSON.stringify(m.error))):p.resolve(m.result)}}else if(m.method==='Fetch.requestPaused'){void intercepted(m.params).catch(error=>{receipts.browserErrors.push({intercept:error.message});});}else if(m.method==='Runtime.exceptionThrown'){receipts.browserErrors.push(m.params);}};
+  let closingBrowser=false;
+  ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.id){const p=pending.get(m.id);if(p){pending.delete(m.id);m.error?p.reject(Error(JSON.stringify(m.error))):p.resolve(m.result)}}else if(m.method==='Fetch.requestPaused'){void intercepted(m.params).catch(error=>{receipts.browserInterceptionFailures.push({intercept:error.message,url:m.params.request.url,networkId:m.params.networkId,duringBrowserClose:closingBrowser});});}else if(m.method==='Network.loadingFailed'){receipts.browserNetworkFailures.push(m.params);}else if(m.method==='Runtime.exceptionThrown'){receipts.browserErrors.push(m.params);}};
 
   evaluate=async expression=>{const r=await cdp('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true});if(r.exceptionDetails)throw Error(JSON.stringify(r.exceptionDetails));return r.result.value;};
   const detailText=()=>evaluate("document.querySelector('aside')?.innerText || ''");
-  await cdp('Page.enable');await cdp('Runtime.enable');await cdp('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});await cdp('Fetch.enable',{patterns:[{urlPattern:'*',requestStage:'Request'}]});
+  await cdp('Page.enable');await cdp('Runtime.enable');await cdp('Network.enable');await cdp('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});await cdp('Fetch.enable',{patterns:[{urlPattern:'*',requestStage:'Request'}]});
   await cdp('Page.navigate',{url:nextUrl+'/?panel=tasks'});
   await until(async()=> (await evaluate('document.body.innerText')).includes('6 issues'),'browser two-project data');
   await save('browser-before.json',await evaluate('({text:document.body.innerText,status:document.querySelector("[data-testid=plug-freshness]")?.textContent})'));
@@ -459,10 +460,39 @@ try {
   const canceledBefore=await rpc('cody-ops','bead.get',{id:canceledRef});
   await rpc('cody-ops','tx.apply',{changeSet:{expect:[{ref:canceledRef,revision:canceledBefore.bead.revision}],ops:[{kind:'setMeta',target:canceledRef,key:'i8.host.close_reason',value:{schema:'plug-host-close-reason/1',reason:'canceled fixture reason'}}]}});
   await rpc('cody-ops','bead.cancel',{id:canceledRef});const canceled=await http('/api/beads');const canceledNode=canceled.graphData.nodes.find(n=>n.canonicalId===canceledRef.id);assert.equal(canceledNode.status,'abandoned');assert.equal(canceledNode.statusCategory,'canceled');assert.equal(canceledNode.closeReason,'canceled fixture reason');await save('canceled-reason.json',canceledNode);check('actual canceled terminal category retains typed reason');
-  await cdp('Page.navigate',{url:'about:blank'});await pause(1700);const count=rpcCount;await pause(2200);assert.equal(rpcCount,count);check('actual HTTP disconnect stops polling',{afterDisconnectRPCs:rpcCount-count});
-  ws.close();ws=null;
+  await save('browser-complete-before-disconnect.json',await evaluate('({text:document.body.innerText,html:document.body.outerHTML,status:document.querySelector("[data-testid=plug-freshness]")?.textContent})'));
+  await save('browser-complete-before-disconnect.png',Buffer.from((await cdp('Page.captureScreenshot',{format:'png'})).data,'base64'));
   await save('candidate-source.json',JSON.parse(await readFile(join(fixtureRoot,'source-binding.json'),'utf8')));
-  assert.deepEqual(receipts.browserErrors,[]);
+  // Navigation may retain the prior document/connection. Record it without
+  // relabeling it an HTTP disconnect; the assertions below close real clients.
+  await cdp('Page.navigate',{url:'about:blank'});await pause(1700);const navigationCount=rpcCount;await pause(2200);
+  const teardown={navigation:{before:navigationCount,after:rpcCount,delta:rpcCount-navigationCount,boundary:'navigation only; no socket-close inference'}};
+  closingBrowser=true;ws.close();ws=null;evaluate=null;cdp=null;
+  await stop(chrome);await pause(1700);const closedBrowserCount=rpcCount;await pause(2200);
+  teardown.browserProcessClose={before:closedBrowserCount,after:rpcCount,delta:rpcCount-closedBrowserCount};await save('actual-disconnect-cleanup.json',teardown);
+  assert.equal(rpcCount,closedBrowserCount);check('actual browser process disconnect stops polling',{afterDisconnectRPCs:rpcCount-closedBrowserCount});
+
+  let directText='',directResponse,directSocket,intentionalClose=false;const directErrors=[];
+  let directClosed;
+  const directClose=new Promise(resolve=>{directClosed=resolve;});
+  const directRequest=httpRequest(nextUrl+'/api/beads/stream',{agent:false},response=>{
+    directResponse=response;directSocket=response.socket;response.setEncoding('utf8');response.on('data',chunk=>directText+=chunk);
+    response.on('error',error=>{if(!intentionalClose)directErrors.push(error.message);});response.on('close',directClosed);
+  });
+  directRequest.on('error',error=>{if(!intentionalClose)directErrors.push(error.message);});directRequest.end();
+  await until(()=>directText.includes('"state":"fresh"'),'direct HTTP SSE fresh before socket cancel');
+  assert.equal(directResponse.statusCode,200);intentionalClose=true;directRequest.destroy();await directClose;assert.ok(directSocket.destroyed);
+  await pause(1700);const closedSocketCount=rpcCount;await pause(2200);
+  teardown.directSocketClose={destroyed:directSocket.destroyed,before:closedSocketCount,after:rpcCount,delta:rpcCount-closedSocketCount,errors:directErrors};
+  await save('actual-disconnect-cleanup.json',teardown);await save('direct-canceled-sse.txt',directText);
+  assert.deepEqual(directErrors,[]);assert.equal(rpcCount,closedSocketCount);check('actual HTTP SSE socket cancellation stops polling',{afterDisconnectRPCs:rpcCount-closedSocketCount});
+  const unexpectedInterceptions=receipts.browserInterceptionFailures.filter(record=>{
+    let parsed;try{parsed=JSON.parse(record.intercept);}catch{return true;}
+    const canceled=record.duringBrowserClose||receipts.browserNetworkFailures.some(f=>f.requestId===record.networkId&&f.canceled===true);
+    return !(parsed.code===-32602&&parsed.message==='Invalid InterceptionId.'&&canceled);
+  });
+  await save('browser-interception-outcomes.json',{all:receipts.browserInterceptionFailures,networkFailures:receipts.browserNetworkFailures,unexpected:unexpectedInterceptions});
+  assert.deepEqual(unexpectedInterceptions,[]);assert.deepEqual(receipts.browserErrors,[]);
   check('complete actual import -> HTTP -> browser -> SSE fixture');
 } catch(error) {
   receipts.failure={message:error.message,stack:error.stack};console.error(error);process.exitCode=1;
