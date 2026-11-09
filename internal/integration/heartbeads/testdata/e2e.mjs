@@ -14,7 +14,7 @@ const actualEndpoint = binding.endpoint;
 const temp = await mkdtemp(join(tmpdir(), 'i8-heartbeads-browser-'));
 const ui = join(temp, 'ui');
 const children = new Set(), servers = new Set();
-const receipts = { checks: [], calls: [], browserRequests: [], externalRecords: [], browserErrors: [], boundaries: ['synthetic per-project protected ontology, native names/categories preserved', 'native head import', 'synthetic ATProto session/agent only; real Plug core/transport'] };
+const receipts = { checks: [], calls: [], responses: [], browserRequests: [], externalRecords: [], browserErrors: [], boundaries: ['synthetic per-project protected ontology, native names/categories preserved', 'native head import', 'synthetic ATProto session/agent only; real Plug core/transport'] };
 const save = async (name, value) => writeFile(join(outputs, name), typeof value === 'string' || Buffer.isBuffer(value) ? value : JSON.stringify(value, null, 2));
 const check = (name, detail = {}) => { receipts.checks.push({name, ...detail}); console.log('PASS ' + name + ' ' + JSON.stringify(detail)); };
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -52,7 +52,9 @@ const rpcProxy=await listen(async(req,res)=>{
   if(fault==='outage'){res.writeHead(503);res.end('synthetic outage');return;}
   if(fault==='malformed'){res.writeHead(200,{'content-type':'application/json'});res.end('{broken');return;}
   const response=await fetch(actualEndpoint+'/rpc/v1',{method:'POST',headers:{'Content-Type':'application/json','Plug-RPC':'1'},body});
-  const data=await response.json();
+  const data=await response.json();receipts.responses.push({requestId:request.id,method:request.method,httpStatus:response.status,envelope:structuredClone(data)});
+  if(fault==='envelope')data.jsonrpc='invalid-envelope';
+  if(fault==='ontology' && request.method==='ontology.get')data.result.document.statuses.todo.category='unknown-future-category';
   if(fault==='incarnation' && request.method==='server.hello')data.result.incarnation='wrong-instance';
   if(fault==='principal' && request.method==='agent.brief')data.result.whoami.principal.id='wrong-principal';
   json(res,data,response.status);
@@ -77,6 +79,9 @@ function putExternal(repo,collection,rkey,value){const uri=`at://${repo}/${colle
 putExternal(did,'org.impactindexer.review.comment','seed-cody',{project:'cody-ops',subject:{uri:'beads:SHARED'},text:'cody-only fixture comment',createdAt:'2026-11-05T00:00:00Z'});
 putExternal('did:plc:i8other','org.impactindexer.review.comment','seed-signals',{project:'signals-v2',subject:{uri:'beads:SHARED'},text:'signals-only fixture comment',createdAt:'2026-11-05T00:00:00Z'});
 putExternal(did,'org.impactindexer.review.comment','ambiguous',{subject:{uri:'beads:SHARED'},text:'ambiguous unqualified comment',createdAt:'2026-11-05T00:00:00Z'});
+putExternal(did,'org.impactindexer.review.comment','ambiguous-claim',{subject:{uri:'beads:SHARED'},text:'@ambiguous.fixture.test',createdAt:'2026-11-05T00:00:01Z'});
+putExternal(did,'org.impactindexer.review.like','ambiguous-like',{subject:{uri:`at://${did}/org.impactindexer.review.comment/ambiguous`},createdAt:'2026-11-05T00:00:02Z'});
+putExternal(did,'org.impactindexer.review.like','contradictory-like',{project:'cody-ops',nodeId:'SHARED',subject:{uri:'at://did:plc:i8other/org.impactindexer.review.comment/seed-signals'},createdAt:'2026-11-05T00:00:03Z'});
 function indexed(body){const collection=JSON.parse(body||'{}').variables?.collection;return {data:{records:{edges:[...externalRecords.values()].filter(r=>r.collection===collection).map(node=>({node})),pageInfo:{hasNextPage:false}}}};}
 const externalAgent={com:{atproto:{repo:{
   createRecord:async({repo,collection,rkey,record})=>{const entry=putExternal(repo,collection,rkey||'created-'+(++recordSequence),record);receipts.externalRecords.push({method:'create',entry});return {data:{uri:entry.uri,cid:entry.cid}}},
@@ -96,10 +101,15 @@ try {
     ids[project]=result.results[0].ref.id;
     // Mixed transaction positions and a receipt for an imported bead must not
     // erase its original SHARED ID or mistake non-create ops for create refs.
-    const mixedParams={changeSet:{ops:[{kind:'update',target:{id:ids[project]},fields:{description:'receipt child'}},{kind:'create',key:'extra',type:'task',fields:{title:'extra '+project,priority:3,status:'todo'}}]}};
+    const mixedParams={changeSet:{ops:[{kind:'patch',target:{id:ids[project]},fields:{description:'receipt child'}},{kind:'create',key:'extra',type:'task',fields:{title:'extra '+project,priority:3,status:'todo'}}]}};
     const mixed=await rpc(project,'tx.apply',mixedParams); ids[project+'-extra']=mixed.results[1].ref.id;
     await journal(project,[{method:'bead.create',attempts:[{params:{type:'task'}}],result},{method:'tx.apply',attempts:[{params:mixedParams}],result:mixed},{method:'bead.create',attempts:[{params:{type:'task'}}],result:{results:[{ref:{id:roots[project]}}]}}]);
   }
+  const legacyId=ids['cody-ops-extra'];
+  const oldComment=putExternal(did,'org.impactindexer.review.comment','legacy-comment',{subject:{uri:'beads:'+legacyId},text:'old projectless comment',createdAt:'2026-11-05T00:00:04Z'});
+  putExternal(did,'org.impactindexer.review.comment','legacy-claim',{subject:{uri:'beads:'+legacyId},text:'@legacy.fixture.test',createdAt:'2026-11-05T00:00:05Z'});
+  putExternal(did,'org.impactindexer.review.like','legacy-like',{subject:{uri:oldComment.uri},createdAt:'2026-11-05T00:00:06Z'});
+  putExternal(did,'org.impactindexer.review.comment','legacy-adopt',{subject:{uri:'beads:'+legacyId},text:'old adoption comment',createdAt:'2026-11-05T00:00:07Z'});
   await rpc('cody-ops','bead.link',{from:{id:ids['cody-ops']},to:{id:roots['cody-ops']},kind:'blocks'});
   const guard=await rpc('cody-ops','bead.close',{id:{id:ids['cody-ops']}},true);
   assert.ok(guard.error);check('real lifecycle guard refusal',{code:guard.error.data?.code});
@@ -133,9 +143,9 @@ try {
 
   async function http(path,expected=200){const r=await fetch(nextUrl+path);const data=await r.json();assert.equal(r.status,expected,JSON.stringify(data));return data;}
   const config=await http('/api/config');assert.deepEqual(config.repos,['cody-ops','signals-v2']);
-  const all=await http('/api/v1/graph?include=none');
-  const ops=await http('/api/v1/graph?project=cody-ops&include=comments');
-  const sig=await http('/api/v1/graph?project=signals-v2&include=comments');
+  const all=await http('/api/v1/graph?include=comments,activity&limit=200');
+  const ops=await http('/api/v1/graph?project=cody-ops&include=comments,activity&limit=200');
+  const sig=await http('/api/v1/graph?project=signals-v2&include=comments,activity&limit=200');
   const ambiguous=await http('/api/v1/issues/SHARED',409);
   const issue=await http('/api/v1/issues/SHARED?project=cody-ops');
   const child=await http('/api/v1/issues/'+encodeURIComponent(ids['cody-ops'])+'?project=cody-ops');
@@ -144,8 +154,17 @@ try {
   assert.equal(ops.issues.find(x=>x.id==='SHARED').comments?.[0]?.text,'cody-only fixture comment');
   assert.equal(sig.issues.find(x=>x.id==='SHARED').comments?.[0]?.text,'signals-only fixture comment');
   assert.equal(ops.issues.length,3);assert.equal(sig.issues.length,3);assert.ok(ops.issues.every(n=>n.project==='cody-ops'));
-  assert.equal(child.issue.blockers[0].title,'SHARED root cody-ops');
+  assert.equal(child.issue.blockers[0].title,'Imported root cody-ops');
   assert.ok(ready.issues.length<=1);check('actual HTTP aggregate/project/ambiguous identity/filter/limit');
+  for(const response of [all,ops,sig]) {
+    assert.ok(!response.activity.some(e=>String(e.detail).includes('ambiguous')));
+    assert.ok(!response.activity.some(e=>e.type==='like-added' && e.issue_id==='SHARED'));
+  }
+  assert.ok(ops.activity.some(e=>e.detail==='cody-only fixture comment'&&e.project==='cody-ops'));
+  assert.equal(sig.issues.find(n=>n.id==='SHARED').comments[0].likes,0);
+  assert.ok(!JSON.stringify([ops.issues,sig.issues]).includes('@ambiguous.fixture.test'));
+  check('globally ambiguous comment/claim/like omitted from aggregate and each project activity; contradictory like omitted');
+
 
   // Cancellation during delayed initialization is driven from the exact route
   // source with only the async initialization dependency held behind a promise.
@@ -164,6 +183,18 @@ try {
   const wrongDid=await recordRequest(nextUrl+'/api/records?collection=org.impactindexer.review.comment&rkey=seed-cody&project=cody-ops&nodeId=SHARED&did=did:plc:wrong','DELETE');assert.equal(wrongDid.status,403);
   const wrongProject=await recordRequest(nextUrl+'/api/records?collection=org.impactindexer.review.comment&rkey=seed-cody&project=signals-v2&nodeId=SHARED&did='+did,'DELETE');assert.notEqual(wrongProject.status,200);
   assert.equal(receipts.externalRecords.filter(x=>x.method==='delete').length,deletesBefore);check('exact record handler refuses wrong owner and stored-project identity');
+  const writesBefore=receipts.externalRecords.length;
+  const ambiguousDelete=await recordRequest(nextUrl+'/api/records?collection=org.impactindexer.review.comment&rkey=ambiguous&project=cody-ops&nodeId=SHARED&did='+did,'DELETE');assert.equal(ambiguousDelete.status,403);
+  const ambiguousUnlike=await recordRequest(nextUrl+'/api/records?collection=org.impactindexer.review.like&rkey=ambiguous-like&project=cody-ops&nodeId=SHARED&did='+did,'DELETE');assert.equal(ambiguousUnlike.status,403);
+  const crossLike=await recordRequest(nextUrl+'/api/records','POST',JSON.stringify({collection:'org.impactindexer.review.like',project:'cody-ops',nodeId:'SHARED',record:{subject:{uri:'at://did:plc:i8other/org.impactindexer.review.comment/seed-signals'},createdAt:new Date().toISOString()}}));assert.equal(crossLike.status,403);
+  const crossPut=await recordRequest(nextUrl+'/api/records','PUT',JSON.stringify({collection:'org.impactindexer.review.like',rkey:'contradictory-like',project:'cody-ops',nodeId:'SHARED',record:{subject:{uri:'at://did:plc:i8other/org.impactindexer.review.comment/seed-signals'}}}));assert.equal(crossPut.status,403);
+  const crossReply=await recordRequest(nextUrl+'/api/records','POST',JSON.stringify({collection:'org.impactindexer.review.comment',project:'cody-ops',nodeId:'SHARED',record:{subject:{uri:'beads:SHARED'},replyTo:'at://did:plc:i8other/org.impactindexer.review.comment/seed-signals',text:'wrong-project reply',createdAt:new Date().toISOString()}}));assert.equal(crossReply.status,403);
+  assert.equal(receipts.externalRecords.length,writesBefore);
+  const adopted=await recordRequest(nextUrl+'/api/records','PUT',JSON.stringify({collection:'org.impactindexer.review.comment',rkey:'legacy-adopt',project:'cody-ops',nodeId:legacyId,record:{subject:{uri:'beads:'+legacyId},text:'adopted legacy comment',createdAt:new Date().toISOString()}}));assert.equal(adopted.status,200);
+  const adoptedRecord=externalRecords.get(`at://${did}/org.impactindexer.review.comment/legacy-adopt`);assert.equal(adoptedRecord.value.project,'cody-ops');assert.equal(adoptedRecord.value.nodeId,legacyId);
+  await save('record-refusals-and-adoption.json',{wrongDid,wrongProject,ambiguousDelete,ambiguousUnlike,crossLike,crossPut,crossReply,adopted,adoptedRecord});
+  check('legacy PUT adoption and explicit ambiguous/cross-project record refusals before any external write');
+
   const streamCode=ts.default.transpileModule(await readFile(join(ui,'app/api/beads/stream/route.ts'),'utf8'),{compilerOptions:{target:99,module:99}}).outputText;
   let resolveStore, watches=0,stops=0,intervals=new Set();
   const context=vm.createContext({Request,Response,ReadableStream,TextEncoder,setInterval:(f,ms)=>{const t=setInterval(f,ms);intervals.add(t);return t},clearInterval:t=>{intervals.delete(t);clearInterval(t)}});
@@ -179,6 +210,8 @@ try {
   fault='outage';const joined=await Promise.all([store.refresh(),store.refresh(),store.refresh()]);
   assert.ok(joined.every(x=>x.freshness.state==='stale' && x.stats.total===6));check('concurrent transport failures share complete stale outcome');
   fault='malformed';await assert.rejects(store.refresh(),adapter.AuthorityError);assert.equal(store.current,null);check('malformed JSON invalidates cache');
+  fault='none';await store.refresh();fault='envelope';await assert.rejects(store.refresh(),adapter.AuthorityError);assert.equal(store.current,null);check('malformed envelope invalidates cache');
+  fault='none';await store.refresh();fault='ontology';await assert.rejects(store.refresh(),adapter.AuthorityError);assert.equal(store.current,null);check('unknown installed category typed-refuses and invalidates cache');
   fault='none';await store.refresh();fault='principal';await assert.rejects(store.refresh(),adapter.AuthorityError);assert.equal(store.current,null);fault='none';check('principal refusal invalidates cache');
 
   // Browser uses actual Next routes; unrelated external indexer/profile calls
@@ -208,9 +241,22 @@ try {
   await cdp('Page.navigate',{url:nextUrl+'/?panel=tasks'});
   await until(async()=> (await evaluate('document.body.innerText')).includes('6 issues'),'browser two-project data');
   await save('browser-before.json',await evaluate('({text:document.body.innerText,status:document.querySelector("[data-testid=plug-freshness]")?.textContent})'));
-  await evaluate(`(()=>{const b=[...document.querySelectorAll('button')].find(x=>x.innerText.includes('SHARED root cody-ops'));if(!b)throw Error('task button missing');b.click()})()`);
+  await type('input[placeholder="Search tasks..."]','SHARED');
+  await until(async()=>await evaluate(`(()=>{const bs=[...document.querySelectorAll('[data-node-key]')];return bs.some(b=>b.textContent.includes('Imported root cody-ops'))&&bs.some(b=>b.textContent.includes('Imported root signals-v2'))})()`),'legacy-ID task search in both projects');
+  assert.ok(first.graphData.nodes.filter(n=>n.id==='SHARED').every(n=>!n.title.includes('SHARED')));
+  await evaluate(`(()=>{const b=[...document.querySelectorAll('button')].find(x=>x.innerText.includes('Imported root cody-ops'));if(!b)throw Error('task button missing');b.click()})()`);
   await until(async()=> (await evaluate('document.body.innerText')).includes('before'),'original description');
   check('browser selects cody SHARED independently of signals SHARED');
+  await evaluate(`Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async(text)=>{window.__copied=text}}})`);
+  await evaluate(`document.querySelector('button[title="Copy description"]').click()`);
+  const copied=await until(async()=>await evaluate('window.__copied'),'legacy description copy');assert.ok(copied.includes('SHARED'));assert.ok(!copied.includes('\0'));await save('browser-copy.json',{copied});
+  await evaluate(`document.querySelector('button[title="Search issues or profiles (Ctrl+F)"]').click()`);
+  await type('input[placeholder="Search issues or profiles..."]','SHARED');
+  await until(async()=>{const body=await evaluate('document.body.innerText');return body.includes('Imported root cody-ops')&&body.includes('Imported root signals-v2')},'legacy-ID global search in both projects');
+  assert.ok(!(await evaluate('document.body.innerText')).includes('\0'));
+  await cdp('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape'});await cdp('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape'});
+  check('browser searches original ID absent from titles and copies public ID without NUL');
+
   await until(async()=> (await evaluate('document.body.innerText')).includes('cody-only fixture comment'),'scoped comment load');
   assert.ok(!(await evaluate('document.body.innerText')).includes('signals-only fixture comment'));
   assert.ok(!(await evaluate('document.body.innerText')).includes('ambiguous unqualified comment'));
@@ -231,7 +277,7 @@ try {
   // Open the real graph context menu through its selected-node callback, then
   // use actual UI buttons for the claim/unclaim handlers. Canvas positions are
   // simulation-dependent; no product API/auth bypass is added to the package.
-  async function graphMenu(){await evaluate(`(()=>{const all=[...document.querySelectorAll('*')];for(const el of all){const key=Object.keys(el).find(k=>k.startsWith('__reactFiber$'));let f=key&&el[key];while(f){const p=f.memoizedProps;if(p?.onNodeRightClick&&p?.nodes){const n=p.nodes.find(n=>n.project==='cody-ops'&&n.legacyId==='SHARED');p.onNodeRightClick(n,new MouseEvent('contextmenu',{clientX:250,clientY:250}));return;}f=f.return}}throw Error('graph callback missing')})()`);}
+  async function graphMenu(publicId='SHARED'){await evaluate(`(()=>{const all=[...document.querySelectorAll('*')];for(const el of all){const key=Object.keys(el).find(k=>k.startsWith('__reactFiber$'));let f=key&&el[key];while(f){const p=f.memoizedProps;if(p?.onNodeRightClick&&p?.nodes){const n=p.nodes.find(n=>n.project==='cody-ops'&&n.legacyId===${JSON.stringify(publicId)});p.onNodeRightClick(n,new MouseEvent('contextmenu',{clientX:250,clientY:250}));return;}f=f.return}}throw Error('graph callback missing')})()`);}
   await graphMenu();await clickText('Claim task');await until(()=>receipts.externalRecords.some(x=>x.entry?.value.text==='@fixture.test'),'claim caller');
   await until(async()=> (await evaluate('document.body.innerText')).includes('@fixture.test'),'claim refresh');
   await graphMenu();await clickText('Unclaim task');await until(()=>!([...externalRecords.values()].some(x=>x.value.text==='@fixture.test')),'unclaim DELETE caller');
@@ -239,13 +285,32 @@ try {
   assert.ok(browserWrites.length>=7);assert.ok(browserWrites.filter(r=>r.method==='POST').every(r=>{const v=JSON.parse(r.body);return v.project==='cody-ops'&&v.nodeId==='SHARED'}));
   check('browser comment/reply/like/unlike/delete/claim/unclaim callers preserve original ID and project',{requests:browserWrites.length,externalAuth:'synthetic only'});
   await save('browser-records.json',{requests:browserWrites,records:receipts.externalRecords});
+  await evaluate(`document.querySelector('button[title="Search issues or profiles (Ctrl+F)"]').click()`);
+  await type('input[placeholder="Search issues or profiles..."]',legacyId);
+  await until(async()=>await evaluate(`Boolean([...document.querySelectorAll('button')].find(b=>b.textContent.includes('extra cody-ops')&&b.textContent.includes(${JSON.stringify(legacyId)})))`),'legacy unique task search');
+  await evaluate(`(()=>{const b=[...document.querySelectorAll('button')].find(b=>b.textContent.includes('extra cody-ops')&&b.textContent.includes(${JSON.stringify(legacyId)}));b.click()})()`);
+  await until(async()=> (await evaluate('document.body.innerText')).includes('old projectless comment'),'legacy projectless comment load');
+  await evaluate(`(()=>{const p=[...document.querySelectorAll('p')].find(p=>p.textContent==='old projectless comment');p.parentElement.querySelectorAll('button')[0].click()})()`);
+  await until(()=>!externalRecords.has(`at://${did}/org.impactindexer.review.like/legacy-like`),'legacy unlike UI');
+  await until(async()=>await evaluate(`(()=>{const p=[...document.querySelectorAll('p')].find(p=>p.textContent==='old projectless comment');return p?.parentElement.querySelector('button')?.textContent.trim()!=='1'})()`),'legacy unlike refresh');
+  await evaluate(`(()=>{const p=[...document.querySelectorAll('p')].find(p=>p.textContent==='old projectless comment');p.parentElement.querySelectorAll('button')[2].click()})()`);
+  await until(()=>!externalRecords.has(`at://${did}/org.impactindexer.review.comment/legacy-comment`),'legacy DELETE UI');
+  await graphMenu(legacyId);await clickText('Unclaim task');
+  await until(()=>!externalRecords.has(`at://${did}/org.impactindexer.review.comment/legacy-claim`),'legacy unclaim UI');
+  check('browser old projectless unique comment delete, old like unlike and old claim unclaim preserve ownership');
+  await evaluate(`document.querySelector('button[title="Search issues or profiles (Ctrl+F)"]').click()`);
+  await type('input[placeholder="Search issues or profiles..."]','SHARED');
+  await until(async()=>await evaluate(`Boolean([...document.querySelectorAll('button')].find(b=>b.textContent.includes('Imported root cody-ops')))`),'root search restore');
+  await evaluate(`(()=>{const b=[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Imported root cody-ops'));b.click()})()`);
+  await save('browser-legacy-records.json',{requests:receipts.browserRequests.filter(r=>r.url.startsWith(nextUrl+'/api/records')),records:receipts.externalRecords});
+
 
 
   const ref={id:roots['cody-ops']};
   async function close(reason){const current=await rpc('cody-ops','bead.get',{id:ref});return rpc('cody-ops','tx.apply',{changeSet:{expect:[{ref,revision:current.bead.revision}],ops:[{kind:'close',target:ref,reason},{kind:'setMeta',target:ref,key:'i8.host.close_reason',value:{schema:'plug-host-close-reason/1',reason}}]}});}
   await close('original');await until(async()=> (await http('/api/beads')).graphData.nodes.find(n=>n.project==='cody-ops'&&n.id==='SHARED').closeReason==='original','first typed close');
   const current=await rpc('cody-ops','bead.get',{id:ref});
-  await rpc('cody-ops','tx.apply',{changeSet:{expect:[{ref,revision:current.bead.revision}],ops:[{kind:'update',target:ref,fields:{description:'after fixture field'}},{kind:'setMeta',target:ref,key:'i8.host.close_reason',value:{schema:'plug-host-close-reason/1',reason:'amended'}}]}});
+  await rpc('cody-ops','tx.apply',{changeSet:{expect:[{ref,revision:current.bead.revision}],ops:[{kind:'patch',target:ref,fields:{description:'after fixture field'}},{kind:'setMeta',target:ref,key:'i8.host.close_reason',value:{schema:'plug-host-close-reason/1',reason:'amended'}}]}});
   await until(async()=>{const text=await evaluate('document.body.innerText');return text.includes('after fixture field')&&text.includes('amended')},'browser field-only/amended reason');
   await save('browser-amended.json',await evaluate('({text:document.body.innerText,status:document.querySelector("[data-testid=plug-freshness]")?.textContent})'));
   await save('browser-amended.png',Buffer.from((await cdp('Page.captureScreenshot',{format:'png'})).data,'base64'));
@@ -268,6 +333,10 @@ try {
   await until(async()=> (await evaluate('document.body.innerText')).includes('6 issues'),'browser parsed-error reconnect',45000);check('browser parsed-error bounded reconnect restores both projects');
   await stop(next);await until(async()=> (await evaluate('document.body.innerText')).includes('disconnected'),'browser network error');next=startNext();
   await until(async()=> (await evaluate('document.body.innerText')).includes('6 issues'),'browser network reconnect',45000);check('browser network reconnect restores both projects');
+  const canceledRef={id:ids['cody-ops-extra']};
+  const canceledBefore=await rpc('cody-ops','bead.get',{id:canceledRef});
+  await rpc('cody-ops','tx.apply',{changeSet:{expect:[{ref:canceledRef,revision:canceledBefore.bead.revision}],ops:[{kind:'setMeta',target:canceledRef,key:'i8.host.close_reason',value:{schema:'plug-host-close-reason/1',reason:'canceled fixture reason'}}]}});
+  await rpc('cody-ops','bead.cancel',{id:canceledRef});const canceled=await http('/api/beads');const canceledNode=canceled.graphData.nodes.find(n=>n.canonicalId===canceledRef.id);assert.equal(canceledNode.status,'abandoned');assert.equal(canceledNode.statusCategory,'canceled');assert.equal(canceledNode.closeReason,'canceled fixture reason');await save('canceled-reason.json',canceledNode);check('actual canceled terminal category retains typed reason');
   await cdp('Page.navigate',{url:'about:blank'});await pause(1700);const count=rpcCount;await pause(2200);assert.equal(rpcCount,count);check('actual HTTP disconnect stops polling',{afterDisconnectRPCs:rpcCount-count});
   ws.close();ws=null;
   await save('candidate-source.json',JSON.parse(await readFile(join(fixtureRoot,'source-binding.json'),'utf8')));

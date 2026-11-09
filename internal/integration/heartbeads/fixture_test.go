@@ -34,7 +34,7 @@ func TestI8HeartbeadsImportedSQLiteBrowser(t *testing.T) {
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256(raw)
-	if hex.EncodeToString(digest[:]) != "801b32a7548eaa98ba86e6d88dfac8355dd5aa33483203e5eb7f470b86ca78ad" {
+	if hex.EncodeToString(digest[:]) != "186163d6d618e2196b4e1fea9883b8cb2b3863ac171343d334ba18e076e05f6e" {
 		t.Fatal("synthetic per-project ontology source drift")
 	}
 	installed, err := service.DecodeOntologySource(raw)
@@ -67,7 +67,7 @@ func TestI8HeartbeadsImportedSQLiteBrowser(t *testing.T) {
 	roots := map[string]string{}
 	for _, project := range []string{"cody-ops", "signals-v2"} {
 		seedKey := sha256.Sum256([]byte("i8-heartbeads-seed-" + project))
-		commit, err := domain.Create(ctx, principal, service.CreateRequest{Type: "task", Fields: map[string]any{"title": "SHARED root " + project, "description": "before", "priority": 1}}, model.WriteMeta{Project: project, AgentLabel: "i8-heartbeads-fixture", Method: "bead.create", IdempotencyKey: hex.EncodeToString(seedKey[:])})
+		commit, err := domain.Create(ctx, principal, service.CreateRequest{Type: "task", Fields: map[string]any{"title": "Imported root " + project, "description": "before", "priority": 1}}, model.WriteMeta{Project: project, AgentLabel: "i8-heartbeads-fixture", Method: "bead.create", IdempotencyKey: hex.EncodeToString(seedKey[:])})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -133,11 +133,28 @@ func TestI8HeartbeadsImportedSQLiteBrowser(t *testing.T) {
 	}
 	binding := map[string]any{"schema": "plug-host-binding/1", "endpoint": server.endpoint, "incarnation": helloValue["incarnation"], "principal": principal, "agent": "i8-heartbeads-fixture", "projects": map[string]any{}}
 	projects := binding["projects"].(map[string]any)
+	readbacks := map[string]json.RawMessage{}
 	for project, id := range roots {
 		read := i8FixtureRPC(t, server.endpoint, project, "bead.get", map[string]any{"id": map[string]any{"id": id}}, "")
 		if read.Error != nil {
-			t.Fatalf("import readback=%+v", read.Error)
+			t.Fatalf("import readback=%#v", read.Error)
 		}
+		var value struct {
+			Bead struct {
+				ID      string `json:"id"`
+				Project string `json:"project"`
+				Status  string `json:"status"`
+			} `json:"bead"`
+		}
+		if err := json.Unmarshal(read.Result, &value); err != nil {
+			t.Fatal(err)
+		}
+		initial, ok := snapshot.Effective(project).InitialStatus("task")
+		if !ok || value.Bead.ID != id || value.Bead.Project != project || value.Bead.Status != initial {
+			t.Fatalf("imported identity/status drift: %+v initial=%s", value, initial)
+		}
+		readbacks[project] = read.Result
+		t.Logf("IMPORTED_ROOT_READBACK project=%s id=%s status=%s", project, id, initial)
 		workspace := filepath.Join(dir, project)
 		if err := os.Mkdir(workspace, 0700); err != nil {
 			t.Fatal(err)
@@ -153,8 +170,14 @@ func TestI8HeartbeadsImportedSQLiteBrowser(t *testing.T) {
 	if outputs == "" {
 		outputs = t.TempDir()
 	}
-	if err := os.WriteFile(filepath.Join(outputs, "import-receipt.json"), []byte(`{"archive_sha256":"`+hex.EncodeToString(sum[:])+`","manifest_sha256":"`+manifestHash+`","state":"complete","projects":["cody-ops","signals-v2"],"colliding_legacy_id":"SHARED","ontology_sha256":"`+hex.EncodeToString(digest[:])+`"}`), 0600); err != nil {
+	receipt, err := json.MarshalIndent(map[string]any{"archive_sha256": hex.EncodeToString(sum[:]), "manifest_sha256": manifestHash, "state": "complete", "projects": []string{"cody-ops", "signals-v2"}, "colliding_legacy_id": "SHARED", "ontology_sha256": hex.EncodeToString(digest[:]), "readbacks": readbacks}, "", "  ")
+	if err != nil {
 		t.Fatal(err)
+	}
+	for name, content := range map[string][]byte{"import-receipt.json": receipt, "native-head.dump": archive, "native-head-manifest.json": manifestBytes} {
+		if err := os.WriteFile(filepath.Join(outputs, name), content, 0600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	runCtx, cancel := context.WithTimeout(ctx, 13*time.Minute)
 	defer cancel()
