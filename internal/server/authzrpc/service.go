@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
@@ -27,7 +28,7 @@ type GuardedService struct {
 	lease           driver.ActiveLease
 	commitEmpty     func(context.Context, model.PrincipalRef, service.ClaimNextRequest, model.WriteMeta, port.ClaimNextReadyProbe) (port.WriteOutcome, error)
 	claimNextPage   func(context.Context, model.PrincipalRef, service.ReadyRequest) (service.BeadPage, error)
-	readyCandidates func(context.Context, service.ReadyRequest, driver.Reader) ([]service.Bead, error)
+	readyCandidates func(context.Context, model.PrincipalRef, service.ReadyRequest, driver.Reader) ([]service.Bead, error)
 }
 
 var _ rpc.Service = (*GuardedService)(nil)
@@ -170,32 +171,94 @@ func (s *countReadSlice) Record(ctx context.Context, dep authz.Dependency) error
 	return s.slice.Record(ctx, dep)
 }
 
+// readySnapshotFacts uses the existing batch dependency adapter only within
+// this immutable read snapshot. Register every common dependency against the
+// real reader first; per-item Match and the final fresh authority fence still
+// run. No effective grant, decision or cross-request state is retained.
+func readySnapshotFacts(ctx context.Context, authority *slice) (*countReadSlice, error) {
+	facts := &countReadSlice{slice: authority, dependencies: [4]authz.Dependency{
+		authz.ContextDependency(authority.Namespace()),
+		authz.ACLDependency(authority.Namespace()),
+		{Kind: "sentinel", Key: "plugins"},
+		{Kind: "sentinel", Key: "ontology"},
+	}}
+	for _, dep := range facts.dependencies {
+		if err := authority.Record(ctx, dep); err != nil {
+			return nil, &model.Error{Message: "authorization dependency unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
+		}
+	}
+	return facts, nil
+}
+
 func (s *GuardedService) Ready(ctx context.Context, by model.PrincipalRef, req service.ReadyRequest) (service.BeadPage, error) {
 	if s == nil || s.delegate == nil || s.checker == nil {
 		return service.BeadPage{}, &model.Error{Message: "authorization service is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
 	}
-	// Ask the real service for a complete bounded candidate page, then apply
-	// the compiled fixed filter before pagination. A truncated candidate set is
-	// refused; it never becomes a short page or an uncounted hidden tail.
+	if page, err := s.compiledReady(ctx, by, req); !errors.Is(err, driver.ErrUnsupported) {
+		return page, err
+	}
+	return s.readyFallback(ctx, by, req)
+}
+
+func (s *GuardedService) readyFallback(ctx context.Context, by model.PrincipalRef, req service.ReadyRequest) (service.BeadPage, error) {
+	readyFilter, compiled, err := s.compiledReadyFilter(ctx, by, req.Project)
+	if err != nil {
+		return service.BeadPage{}, err
+	}
+	return s.collectReady(ctx, by, req, readyFilter, compiled)
+}
+
+func (s *GuardedService) collectReady(ctx context.Context, by model.PrincipalRef, req service.ReadyRequest, readyFilter service.ReadyAuthorizer, compiled bool) (service.BeadPage, error) {
+	// Compiled finite permissions are pushed through the domain service's
+	// snapshot-aware filter before pageResult. The 20,000 candidate cap remains
+	// only for genuinely check-only predicates that require post-filtering.
 	full := req
 	full.Limit = 1000
 	full.Cursor = ""
 	full.Position = nil
-	page, err := s.delegate.Ready(ctx, by, full)
+	var page service.BeadPage
+	filteredDelegate, supportsFiltered := s.delegate.(interface {
+		ReadyWithFilter(context.Context, model.PrincipalRef, service.ReadyRequest, service.ReadyAuthorizer) (service.BeadPage, error)
+	})
+	readPage := func() (service.BeadPage, error) {
+		if supportsFiltered {
+			// The trusted capability also supplies complete source-order metadata
+			// for the bounded check-only path, whose authorizer remains nil.
+			return filteredDelegate.ReadyWithFilter(ctx, by, full, readyFilter)
+		}
+		candidate, err := s.delegate.Ready(ctx, by, full)
+		if err == nil {
+			for _, item := range candidate.Items {
+				if item.Kind != "workflow.item" {
+					return service.BeadPage{}, &model.Error{Message: "bound ready source is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
+				}
+			}
+		}
+		return candidate, err
+	}
+	page, err := readPage()
 	if err != nil {
 		return service.BeadPage{}, err
 	}
 	items := append([]service.Bead(nil), page.Items...)
 	workflowSnapshot := page.WorkflowSnapshot
+	durableSnapshot := page.AsOf
+	coreMembership := page.ReadyMembership
 	for page.Next != nil {
-		if len(items) >= listPostfilterCap {
+		if !compiled && len(items) >= listPostfilterCap {
 			return service.BeadPage{}, postfilterCap()
 		}
 		position := *page.Next
 		full.Position = &position
-		page, err = s.delegate.Ready(ctx, by, full)
+		page, err = readPage()
 		if err != nil {
 			return service.BeadPage{}, err
+		}
+		// Plain-core Ready offsets intentionally remain live. A guarded
+		// aggregate cannot sign a sequence spliced across durable snapshots or
+		// a same-revision no-write change to the complete core ready order.
+		if page.AsOf.Incarnation != durableSnapshot.Incarnation || page.AsOf.Revision.String() != durableSnapshot.Revision.String() || page.ReadyMembership != coreMembership {
+			return service.BeadPage{}, &model.Error{Message: "durable ready source changed while collecting candidates; restart paging", Data: model.ErrorData{Code: "cursor_invalid"}}
 		}
 		if workflowSnapshot != nil && !workflowSnapshot.Equal(page.WorkflowSnapshot) {
 			return service.BeadPage{}, &model.Error{Message: "workflow ready membership changed while collecting candidates", Data: model.ErrorData{Code: "cursor_invalid"}}
@@ -203,13 +266,70 @@ func (s *GuardedService) Ready(ctx context.Context, by model.PrincipalRef, req s
 		workflowSnapshot = page.WorkflowSnapshot
 		items = append(items, page.Items...)
 	}
-	if len(items) > listPostfilterCap {
+	if !compiled && len(items) > listPostfilterCap {
 		return service.BeadPage{}, postfilterCap()
 	}
 	page.Items = items
 	page.Next = nil
 	page.WorkflowSnapshot = workflowSnapshot
 	return s.filterPage(ctx, by, "bead.ready", req.Project, req.Limit, req.Position, page, false)
+}
+
+func (s *GuardedService) compiledReadyFilter(ctx context.Context, by model.PrincipalRef, project string) (service.ReadyAuthorizer, bool, error) {
+	_, snapshot, closeReader, err := s.current(ctx, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	caller, _, template, err := s.readyProjectFilter(ctx, by, snapshot, project, "bead.ready", authz.Read)
+	closeReader()
+	if errors.Is(err, authz.ErrCheckOnly) || errors.Is(err, driver.ErrUnsupported) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, authzError(err)
+	}
+	var authorizationRevision model.Revision
+	var authorizationBound bool
+	var boundIncarnation, boundRevision string
+	var facts *countReadSlice
+	var boundReader driver.Reader
+	return func(ctx context.Context, reader driver.Reader, bead service.Bead) (bool, error) {
+		view := reader.Snapshot()
+		revision := "0"
+		if view.At != nil {
+			revision = view.At.String()
+		}
+		if facts == nil || !sameReadyReader(boundReader, reader) || boundIncarnation != view.Incarnation || boundRevision != revision {
+			loaded, err := s.checker.load(ctx, reader, caller)
+			if err != nil {
+				return false, &model.Error{Message: "authorization facts unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
+			}
+			if authorizationBound && authorizationRevision.String() != loaded.authorizationRevision.String() {
+				return false, &model.Error{Message: "authorization facts changed while collecting ready candidates", Data: model.ErrorData{Code: "cursor_invalid"}}
+			}
+			authorizationRevision = loaded.authorizationRevision
+			authorizationBound = true
+			facts, err = readySnapshotFacts(ctx, loaded)
+			if err != nil {
+				return false, err
+			}
+			boundReader = reader
+			boundIncarnation, boundRevision = view.Incarnation, revision
+		}
+		allowed, err := template.Match(ctx, facts, authz.Resource{Kind: authz.Bead, Ref: model.RefByID(bead.ID, model.Natural64(0))})
+		if err != nil {
+			return false, authzError(err)
+		}
+		return allowed, nil
+	}, true, nil
+}
+
+// A read snapshot owns its reader lifetime, even at an unchanged revision.
+// Production readers are pointer instances. Value adapters cannot prove the
+// same lifetime, so they conservatively reload rather than reuse source facts.
+func sameReadyReader(a, b driver.Reader) bool {
+	left, right := reflect.ValueOf(a), reflect.ValueOf(b)
+	return left.IsValid() && right.IsValid() && left.Kind() == reflect.Pointer && right.Kind() == reflect.Pointer && left.Type() == right.Type() && left.Pointer() == right.Pointer()
 }
 
 func (s *GuardedService) History(ctx context.Context, by model.PrincipalRef, req service.HistoryRequest) (service.BeadPage, error) {
@@ -249,15 +369,80 @@ func (s *GuardedService) CreateWithOutcome(ctx context.Context, by model.Princip
 	return s.delegate.CreateWithOutcome(ctx, by, req, meta)
 }
 func (s *GuardedService) UpdateWithOutcome(ctx context.Context, by model.PrincipalRef, req service.UpdateRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	if workflowItemRef(req.ID) {
+		return s.workflowWrite(ctx, by, meta.Project, func() (port.WriteOutcome, error) {
+			return s.delegate.UpdateWithOutcome(ctx, by, req, meta)
+		})
+	}
 	return s.delegate.UpdateWithOutcome(ctx, by, req, meta)
 }
 func (s *GuardedService) ApplyWithOutcome(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) (port.WriteOutcome, error) {
 	return s.delegate.ApplyWithOutcome(ctx, by, cs, meta)
 }
 func (s *GuardedService) LinkWithOutcome(ctx context.Context, by model.PrincipalRef, req service.LinkRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	kind, err := req.TargetKind.Normalized()
+	if err != nil {
+		return port.WriteOutcome{}, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
+	}
+	if err := model.ValidateLinkTarget(kind, req.To); err != nil {
+		return port.WriteOutcome{}, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
+	}
+	req.TargetKind = kind
+	if kind == model.LinkTargetExternal {
+		return s.delegate.LinkWithOutcome(ctx, by, req, meta)
+	}
+	if workflowItemRef(req.From) || workflowItemRef(req.To) {
+		return s.workflowWrite(ctx, by, meta.Project, func() (port.WriteOutcome, error) {
+			if !workflowItemRef(req.From) {
+				if allowed, err := s.checkRead(ctx, by, "bead.get", req.From); err != nil {
+					return port.WriteOutcome{}, err
+				} else if !allowed {
+					return port.WriteOutcome{}, &model.Error{Data: model.ErrorData{Code: "forbidden"}}
+				}
+			}
+			if !workflowItemRef(req.To) {
+				if allowed, err := s.checkRead(ctx, by, "bead.get", req.To); err != nil {
+					return port.WriteOutcome{}, err
+				} else if !allowed {
+					return port.WriteOutcome{}, &model.Error{Data: model.ErrorData{Code: "forbidden"}}
+				}
+			}
+			return s.delegate.LinkWithOutcome(ctx, by, req, meta)
+		})
+	}
 	return s.delegate.LinkWithOutcome(ctx, by, req, meta)
 }
 func (s *GuardedService) UnlinkWithOutcome(ctx context.Context, by model.PrincipalRef, req service.LinkRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	kind, err := req.TargetKind.Normalized()
+	if err != nil {
+		return port.WriteOutcome{}, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
+	}
+	if err := model.ValidateLinkTarget(kind, req.To); err != nil {
+		return port.WriteOutcome{}, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
+	}
+	req.TargetKind = kind
+	if kind == model.LinkTargetExternal {
+		return s.delegate.UnlinkWithOutcome(ctx, by, req, meta)
+	}
+	if workflowItemRef(req.From) || workflowItemRef(req.To) {
+		return s.workflowWrite(ctx, by, meta.Project, func() (port.WriteOutcome, error) {
+			if !workflowItemRef(req.From) {
+				if allowed, err := s.checkRead(ctx, by, "bead.get", req.From); err != nil {
+					return port.WriteOutcome{}, err
+				} else if !allowed {
+					return port.WriteOutcome{}, &model.Error{Data: model.ErrorData{Code: "forbidden"}}
+				}
+			}
+			if !workflowItemRef(req.To) {
+				if allowed, err := s.checkRead(ctx, by, "bead.get", req.To); err != nil {
+					return port.WriteOutcome{}, err
+				} else if !allowed {
+					return port.WriteOutcome{}, &model.Error{Data: model.ErrorData{Code: "forbidden"}}
+				}
+			}
+			return s.delegate.UnlinkWithOutcome(ctx, by, req, meta)
+		})
+	}
 	return s.delegate.UnlinkWithOutcome(ctx, by, req, meta)
 }
 func (s *GuardedService) ClaimWithOutcome(ctx context.Context, by model.PrincipalRef, req service.ClaimRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
@@ -476,7 +661,7 @@ func (s *GuardedService) claimNextReadyProbe(by model.PrincipalRef, req service.
 		if s.readyCandidates == nil {
 			return false, &model.Error{Message: "authorization service is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
 		}
-		items, err := s.readyCandidates(ctx, service.ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter}, reader)
+		items, err := s.readyCandidates(ctx, by, service.ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter}, reader)
 		if err != nil {
 			return false, err
 		}
@@ -615,7 +800,13 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 	if position != nil && (!position.AuthorizationBound || !authorization.authorizationBound || position.AuthorizationRevision.String() != authorization.authorizationRevision.String()) {
 		return service.BeadPage{}, &model.Error{Message: "authorization facts changed since cursor issuance", Data: model.ErrorData{Code: "cursor_invalid"}}
 	}
-	facts := authorization
+	var facts authz.Slice = authorization
+	if method == "bead.ready" {
+		facts, err = readySnapshotFacts(ctx, authorization)
+		if err != nil {
+			return service.BeadPage{}, err
+		}
+	}
 	// History visibility is current bead read authorization; fixed CP7's
 	// history resource does not create a second permission vocabulary.
 	resourceKind := authz.Bead
@@ -624,7 +815,8 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 		compiledMethod = "bead.get"
 	}
 	template, err := s.checker.chain.Compile(authz.ListRequest{Caller: caller, Action: authz.Read, ResourceKind: resourceKind, Method: compiledMethod})
-	if err != nil {
+	checkOnly := method == "bead.ready" && errors.Is(err, authz.ErrCheckOnly)
+	if err != nil && !checkOnly {
 		return service.BeadPage{}, authzError(err)
 	}
 	filtered := make([]service.Bead, 0, len(page.Items))
@@ -646,7 +838,21 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 			}
 			continue
 		}
-		ok, err := template.Match(ctx, facts, authz.Resource{Kind: authz.Bead, Ref: model.RefByID(bead.ID, model.Natural64(0))})
+		resource := authz.Resource{Kind: authz.Bead, Ref: model.RefByID(bead.ID, model.Natural64(0))}
+		var ok bool
+		if checkOnly {
+			// Ready already refused an over-cap unfiltered set atomically. A
+			// genuine under-cap check-only predicate must now run the complete
+			// installed chain rather than attempt the unavailable compiler again.
+			decisions, checkErr := s.checker.chain.Check(ctx, facts, []authz.CheckRequest{{Caller: caller, Action: authz.Read, Resource: resource, Method: compiledMethod}})
+			err = checkErr
+			if err == nil && len(decisions) != 1 {
+				return service.BeadPage{}, &model.Error{Message: "invalid authorization result cardinality", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
+			}
+			ok = err == nil && decisions[0].Effect == authz.Allow
+		} else {
+			ok, err = template.Match(ctx, facts, resource)
+		}
 		if err != nil {
 			return service.BeadPage{}, authzError(err)
 		}
@@ -656,7 +862,18 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 	}
 	membership := ""
 	if method == "bead.ready" {
-		membership = readyMembershipDigest(filtered)
+		// New finite compiled Ready pages use the versioned semantic
+		// commitment. Check-only pages and continuations carrying an older
+		// unprefixed digest stay on the legacy verifier for compatibility.
+		useV2 := !checkOnly && (position == nil || strings.HasPrefix(position.ReadyMembership, "v2:"))
+		if useV2 {
+			membership, err = readyMembershipV2(filtered)
+			if err != nil {
+				return service.BeadPage{}, &model.Error{Message: "ready membership commitment failed", Data: model.ErrorData{Code: "internal_error"}}
+			}
+		} else {
+			membership = readyMembershipDigest(filtered)
+		}
 	}
 	if method == "bead.ready" && position != nil && position.ReadyMembership != membership {
 		return service.BeadPage{}, &model.Error{Message: "ready membership changed since cursor issuance; restart paging", Data: model.ErrorData{Code: "cursor_invalid"}}

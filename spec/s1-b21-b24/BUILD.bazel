@@ -8,9 +8,16 @@ go_test(
         "clock_boundary_test.go",
         "close_contract_test.go",
         "fixture_test.go",
+        "ordinary_count_test.go",
         "reference_test.go",
+        "revision_order_test.go",
+        "stale_clock_test.go",
+        "view_remaining_test.go",
     ],
     embedsrcs = [
+        "count-reference-first.json",
+        "count-reference-repeat.json",
+        "record_ordinary_count.py",
         "reference-a.json",
         "reference-b.json",
         "record_reference.py",
@@ -19,6 +26,7 @@ go_test(
     tags = ["local", "requires-network"],
     deps = [
         "//internal/core/model",
+        "//internal/core/ontology",
         "//internal/core/pipeline",
         "//internal/core/port",
         "//internal/core/service",
@@ -26,6 +34,7 @@ go_test(
         "//internal/server/rpc",
         "//internal/server/viewrpc",
         "//internal/storage/driver",
+        "//internal/storage/conformance",
         "//internal/storage/memory",
         "//internal/storage/postgres",
         "//internal/storage/sqlite",
@@ -33,8 +42,103 @@ go_test(
     ],
 )
 
+# The acceptance twins come from the separately reviewed managed-proxied
+# capture route. Keeping the manual capture target separate prevents //...
+# from executing the public reference engine.
+_ORDINARY_COUNT_CAPTURE_EMBEDS = [
+    "extract_ordinary_count_packet.py",
+    "ordinary_count_capture.py",
+    "ordinary_count_capture_policy_test.py",
+    "ordinary_count_profile.py",
+    "record_ordinary_count.py",
+]
+
+go_test(
+    name = "ordinary_count_capture_policy_test",
+    srcs = [
+        "ordinary_count_capture_harness_test.go",
+        "ordinary_count_capture_policy_test.go",
+        "ordinary_count_runtime.go",
+    ],
+    embedsrcs = _ORDINARY_COUNT_CAPTURE_EMBEDS,
+    args = ["-test.v"],
+)
+
+go_test(
+    name = "ordinary_count_capture_test",
+    srcs = [
+        "ordinary_count_capture_harness_test.go",
+        "ordinary_count_capture_test.go",
+        "ordinary_count_runtime.go",
+    ],
+    embedsrcs = _ORDINARY_COUNT_CAPTURE_EMBEDS,
+    args = ["-test.v"],
+    tags = ["local", "manual"],
+    size = "large",
+    timeout = "long",
+)
+
 filegroup(
     name = "lexicon_files",
     srcs = glob(["**"]),
     visibility = ["//visibility:public"],
+)
+
+_NATIVE_ACCEPTANCE_SRCS = [
+    "fixture_test.go",
+    "native_history_probe_test.go",
+    "native_recording_test.go",
+    "native_replay_test.go",
+    "native_support_test.go",
+    "native_views_test.go",
+]
+
+_NATIVE_ACCEPTANCE_DEPS = [
+    "//internal/core/dumpformat",
+    "//internal/core/model",
+    "//internal/core/ontology",
+    "//internal/core/pipeline",
+    "//internal/core/port",
+    "//internal/core/service",
+    "//internal/core/viewops",
+    "//internal/integration/converterroundtrip",
+    "//internal/publicnative",
+    "//internal/server/rpc",
+    "//internal/server/viewrpc",
+    "//internal/storage/driver",
+    "//internal/storage/memory",
+    "//internal/storage/postgres",
+    "//internal/storage/sqlite",
+    "//internal/testclock",
+]
+
+# Compile the B24 canonical recorder and its source dependencies in ordinary
+# gates, executing only real-store observer controls. The independent B23 count
+# matrix is outside this B24 port. No native process or recording is used.
+go_test(
+    name = "native_probe_policy_test",
+    srcs = _NATIVE_ACCEPTANCE_SRCS,
+    args = ["-test.v", "-test.run=^TestNativeB24ProbeObservationAcrossStores$$"],
+    tags = ["local", "requires-network"],
+    deps = _NATIVE_ACCEPTANCE_DEPS,
+)
+
+# Separate accepted418 native workload; never included by ordinary //....
+# Each invocation must supply its own recording ID and trusted preparation.
+go_test(
+    name = "native_acceptance_test",
+    size = "large",
+    srcs = _NATIVE_ACCEPTANCE_SRCS,
+    args = ["-test.v"],
+    data = [
+        "native_testdata/profile.json",
+        "native_testdata/protocol.json",
+        "//internal/publicnative:dolt_runtime",
+    ],
+    env = {
+        "PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)",
+    },
+    tags = ["local", "manual", "requires-network"],
+    timeout = "long",
+    deps = _NATIVE_ACCEPTANCE_DEPS,
 )

@@ -343,10 +343,14 @@ func replayAcceptedDependency(t *testing.T, engine string, run acceptedRun) map[
 	}
 }
 
-func TestAcceptedReferenceReplayAcrossMemoryAndSQLite(t *testing.T) {
+func TestAcceptedReferenceReplayAcrossStores(t *testing.T) {
 	for _, pair := range acceptedPairs(t) {
 		t.Run(pair.Card, func(t *testing.T) {
-			for _, engine := range []string{"memory", "sqlite"} {
+			engines := []string{"memory", "sqlite"}
+			if pair.Card == "B11" {
+				engines = append(engines, "postgres")
+			}
+			for _, engine := range engines {
 				t.Run(engine, func(t *testing.T) {
 					for i, run := range []acceptedRun{pair.First, pair.Repeat} {
 						t.Run([]string{"first", "repeat"}[i], func(t *testing.T) {
@@ -379,7 +383,7 @@ func TestAcceptedReferenceReplayAcrossMemoryAndSQLite(t *testing.T) {
 // Refused batches leave records, histories, counters and receipts untouched;
 // an ordered unlink/link in one ChangeSet is the explicit type-change path.
 func TestB11AtomicEndpointTypeReplacementAcrossStores(t *testing.T) {
-	for _, engine := range []string{"memory", "sqlite"} {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			f := newAcceptedReplay(t, engine, "b11")
 			w := f.writer("b11-source", "b11-target", "b11-other")

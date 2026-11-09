@@ -60,12 +60,47 @@ func mapped(err error) error {
 		return nil
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		// A cancellation match in one branch must not erase another cause.
+		// Preserve the original tree when its leaves disagree or include a
+		// separate failure; callers still need that failure's identity.
+		if cancellationCause(err) == nil {
+			return err
+		}
 		return failure("busy", "view read was canceled or exceeded its deadline")
 	}
 	if code, details, ok := driver.ErrorMapping(err); ok {
 		return &model.Error{Data: model.ErrorData{Code: code, Details: details}}
 	}
 	return err
+}
+
+// cancellationCause retains a linear wrapper's context classification, which
+// can normalize its underlying network timeout. Every branch of a joined error
+// must independently carry that same cause; wrapping cannot hide another error.
+func cancellationCause(err error) error {
+	canceled, deadline := errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded)
+	if canceled == deadline {
+		return nil
+	}
+	kind := context.DeadlineExceeded
+	if canceled {
+		kind = context.Canceled
+	}
+	for cause := err; cause != nil; cause = errors.Unwrap(cause) {
+		if joined, ok := cause.(interface{ Unwrap() []error }); ok {
+			branches := joined.Unwrap()
+			if len(branches) == 0 {
+				return nil
+			}
+			for _, branch := range branches {
+				if cancellationCause(branch) != kind {
+					return nil
+				}
+			}
+			return kind
+		}
+	}
+	return kind
 }
 
 func (s *Service) admit(ctx context.Context, by model.PrincipalRef) error {
@@ -439,7 +474,7 @@ func supportedSort(key string) bool {
 }
 
 func supportedField(field string) bool {
-	if field == "id" || field == "type" || field == "project" || field == "status" || field == "revision" || field == "parent" || field == "fields" || field == "metadata" {
+	if field == "id" || field == "type" || field == "project" || field == "status" || field == "revision" || field == "parent" || field == "labels" || field == "fields" || field == "metadata" {
 		return true
 	}
 	if strings.HasPrefix(field, "fields.") {
@@ -453,7 +488,7 @@ func supportedField(field string) bool {
 	return false
 }
 
-func (s *Service) effectiveDigest(def Definition, project, viewID string) (string, error) {
+func (s *Service) effectiveDigest(def Definition, project, viewID string, stale *StaleFilter) (string, error) {
 	var fields *[]string
 	if def.Fields != nil {
 		copy := append([]string{}, def.Fields...)
@@ -472,7 +507,8 @@ func (s *Service) effectiveDigest(def Definition, project, viewID string) (strin
 		BudgetTokens *model.Natural `json:"budgetTokens,omitempty"`
 		Project      string         `json:"project,omitempty"`
 		ViewID       string         `json:"viewId,omitempty"`
-	}{def.Name, filter, fields, def.GroupBy, def.Sort, def.BudgetTokens, project, viewID})
+		Stale        *StaleFilter   `json:"stale,omitempty"`
+	}{def.Name, filter, fields, def.GroupBy, def.Sort, def.BudgetTokens, project, viewID, stale})
 }
 
 func principalDigest(by model.PrincipalRef, agent string) (string, error) {
@@ -491,12 +527,29 @@ func digest(value any) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-func (s *Service) validateCursor(cursor *Cursor, by model.PrincipalRef, agent, viewID, definitionDigest, incarnation string) error {
+func (s *Service) validateCursor(cursor *Cursor, by model.PrincipalRef, agent, viewID, definitionDigest, incarnation string, stale *StaleFilter) error {
 	if cursor == nil {
 		return nil
 	}
 	if cursor.Version != 1 || cursor.Method != "view.run" || cursor.Incarnation == "" || cursor.Incarnation != incarnation || cursor.ViewID != viewID || cursor.DefinitionDigest != definitionDigest || cursor.Revision.Validate() != nil || cursor.Revision.String() == "<invalid integer>" {
 		return failure("cursor_invalid", "cursor does not match the view request")
+	}
+	if (stale == nil) != (cursor.StaleCutoff == nil) || cursor.StaleCutoff != nil && cursor.StaleCutoff.IsZero() {
+		return failure("cursor_invalid", "cursor does not match the age query")
+	}
+	if stale != nil {
+		// Stale cursors are keyset cursors. A numeric index would reveal how
+		// many denied rows preceded the page and would be unsafe to replay after
+		// current authority changes.
+		if cursor.Index != 0 || len(cursor.StaleResumeDigest) != sha256.Size*2 {
+			return failure("cursor_invalid", "age-query cursor lacks a visible resume key")
+		}
+		decoded, err := hex.DecodeString(cursor.StaleResumeDigest)
+		if err != nil || hex.EncodeToString(decoded) != cursor.StaleResumeDigest {
+			return failure("cursor_invalid", "age-query cursor has a noncanonical resume key")
+		}
+	} else if cursor.StaleResumeDigest != "" {
+		return failure("cursor_invalid", "non-age cursor carries a stale resume key")
 	}
 	wantPrincipal, err := principalDigest(by, agent)
 	if err != nil || cursor.PrincipalDigest != wantPrincipal {
@@ -538,13 +591,17 @@ func sortStored(rows []stored, sortKeys []string) {
 			desc := strings.HasPrefix(raw, "-")
 			key := strings.TrimPrefix(raw, "-")
 			left, right := sortValue(rows[i], key), sortValue(rows[j], key)
-			if left == right {
+			order := strings.Compare(left, right)
+			if key == "revision" {
+				order = compareRevisionValues(rows[i].record.Revision, rows[j].record.Revision)
+			}
+			if order == 0 {
 				continue
 			}
 			if desc {
-				return left > right
+				return order > 0
 			}
-			return left < right
+			return order < 0
 		}
 		return rows[i].doc.ID < rows[j].doc.ID
 	})

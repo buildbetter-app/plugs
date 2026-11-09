@@ -1,5 +1,7 @@
 package pipeline
 
+import "github.com/buildbetter-app/plugs/internal/core/model"
+
 // Scheduling-cycle detection cannot reject a redundant child-to-ancestor
 // blocker: that edge points in the same direction as the hierarchy. B06 also
 // forbids blocking either way between relatives, independently of cycles.
@@ -18,7 +20,7 @@ func checkBlockingHierarchy(docs map[string]Document) error {
 			parents = append(parents, parent.ID)
 		}
 		for _, edge := range docs[id].Links {
-			if edge.Kind == "parent-child" {
+			if edge.TargetKind != model.LinkTargetExternal && edge.Kind == "parent-child" {
 				parents = append(parents, edge.To.ID)
 			}
 		}
@@ -32,7 +34,7 @@ func checkBlockingHierarchy(docs map[string]Document) error {
 	}
 	for id, doc := range docs {
 		for _, edge := range doc.Links {
-			if dependencyIsBlocking(edge.Kind) && (collect(id)[edge.To.ID] || collect(edge.To.ID)[id]) {
+			if edge.TargetKind != model.LinkTargetExternal && dependencyIsBlocking(edge.Kind) && (collect(id)[edge.To.ID] || collect(edge.To.ID)[id]) {
 				return failure("ontology_guard_failed", "blocking link cannot join an ancestor and descendant")
 			}
 		}

@@ -22,10 +22,11 @@ func BuildSourceIndexes(ctx context.Context, store driver.Store, lease driver.Ac
 		if err != nil || doc.ID != record.Ref.ID {
 			return driver.GraphSourceMetadata{}, fmt.Errorf("%w: invalid core source document during index activation", driver.ErrUnsupported)
 		}
-		metadata := driver.GraphSourceMetadata{Parent: doc.Parent, Links: make([]driver.SourceLink, len(doc.Links))}
-		for i, link := range doc.Links {
-			metadata.Links[i] = driver.SourceLink{Kind: link.Kind, To: link.To}
+		links, err := localSourceLinks(doc.Links)
+		if err != nil {
+			return driver.GraphSourceMetadata{}, err
 		}
+		metadata := driver.GraphSourceMetadata{Parent: doc.Parent, Links: links}
 		return metadata, nil
 	})
 }

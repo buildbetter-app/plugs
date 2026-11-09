@@ -280,7 +280,8 @@ func TestPairedCensusReadsActualMemoryAndReopenedSQLite(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	const derived = "f170bf742699fb0bbc577c57b19e7907872e2ea99a34a94fda5e0659197f20ed"
+	// Historical pre-B26 ontology image: f170bf742699fb0bbc577c57b19e7907872e2ea99a34a94fda5e0659197f20ed
+	const derived = "6f1b59b29636cf665d447b1a4d49c1b5670af05f9d0170cf2c548ff1e51d62ab"
 	check := converterroundtrip.Verification{ArchiveSHA256: bytesDigest(data), DerivedSHA256: derived}
 	var first []Metric
 	for _, engine := range []string{"memory", "sqlite"} {
@@ -547,7 +548,7 @@ func TestCensusBlobRefusalIsReadOnlyAndClosesReader(t *testing.T) {
 	}
 	store := memory.New()
 	defer store.Close()
-	if _, e = converterroundtrip.Restore(context.Background(), bytes.NewReader(data), store, converterroundtrip.Verification{ArchiveSHA256: bytesDigest(data), DerivedSHA256: "f170bf742699fb0bbc577c57b19e7907872e2ea99a34a94fda5e0659197f20ed"}); e != nil {
+	if _, e = converterroundtrip.Restore(context.Background(), bytes.NewReader(data), store, converterroundtrip.Verification{ArchiveSHA256: bytesDigest(data), DerivedSHA256: "6f1b59b29636cf665d447b1a4d49c1b5670af05f9d0170cf2c548ff1e51d62ab"}); e != nil {
 		t.Fatal(e)
 	}
 	wrapped := &observedCensusStore{Store: store, failBlob: true}

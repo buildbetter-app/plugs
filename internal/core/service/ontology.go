@@ -19,14 +19,19 @@ import (
 type Ontology struct {
 	mu      sync.RWMutex
 	resolve func(string) ontology.Effective
+	// defaultOnly is true only for the built-in, project-independent resolver
+	// installed by NewOntology(nil). Configured resolvers are never advertised
+	// as an immutable no-plugin source.
+	defaultOnly bool
 }
 
 func NewOntology(resolve func(string) ontology.Effective) *Ontology {
+	defaultOnly := resolve == nil
 	if resolve == nil {
 		base := ontology.Default()
 		resolve = func(string) ontology.Effective { return base }
 	}
-	return &Ontology{resolve: resolve}
+	return &Ontology{resolve: resolve, defaultOnly: defaultOnly}
 }
 
 // Refresh atomically replaces the compiled ontology used by all subsequent
@@ -36,7 +41,24 @@ func NewOntology(resolve func(string) ontology.Effective) *Ontology {
 func (o *Ontology) Refresh(snapshot ontology.Snapshot) {
 	o.mu.Lock()
 	o.resolve = snapshot.Effective
+	o.defaultOnly = false
 	o.mu.Unlock()
+}
+
+// ImmutableDefault returns the same built-in ontology used by this instance's
+// writer and service while it remains in no-plugin mode. A view continuation
+// must refuse after Refresh instead of applying new category membership to its
+// earlier content snapshot.
+func (o *Ontology) ImmutableDefault() (ontology.Effective, bool) {
+	if o == nil {
+		return ontology.Effective{}, false
+	}
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	if !o.defaultOnly {
+		return ontology.Effective{}, false
+	}
+	return o.resolve(""), true
 }
 
 func (o *Ontology) effective(project string) ontology.Effective {

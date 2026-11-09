@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "b01readyorder_test",
+    srcs = glob(["*_test.go"]),
+    args = ["-test.v"],
+    tags = ["exclusive", "local", "requires-network"],
+    deps = [
+        "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/core/pipeline",
+        "//internal/core/port",
+        "//internal/core/service",
+        "//internal/server/pluginhost",
+        "//internal/server/rpc",
+        "//internal/server/transport/inprocess",
+        "//internal/storage/conformance",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/postgres",
+        "//internal/storage/sqlite",
+        "//internal/testclock",
+        "//plugins/workflow",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

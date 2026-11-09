@@ -30,7 +30,7 @@ func DefaultDocument() Document {
 		Types: map[string]Type{
 			"issue": {Name: "Issue", Workflow: "issue", Fields: map[string]Field{
 				"title": {Type: "string"}, "description": {Type: "string"},
-				"labels": {Type: "strings"},
+				"labels": {Type: "strings"}, "blocked": {Type: "boolean"},
 			}},
 		},
 	}

@@ -97,7 +97,7 @@ func TestStrictConfigUnionCompleteRawAndEffectiveImage(t *testing.T) {
 		t.Fatalf("incomplete union document: %+v", doc)
 	}
 	for _, name := range []string{"issue", "decision", "proposal", "incident"} {
-		if typ, ok := doc.Types[name]; !ok || typ.Workflow != "issue" || len(typ.Fields) != 3 || typ.Fields["labels"].Type != "strings" {
+		if typ, ok := doc.Types[name]; !ok || typ.Workflow != "issue" || len(typ.Fields) != 4 || typ.Fields["labels"].Type != "strings" || !reflect.DeepEqual(typ.Fields["blocked"], ontology.Field{Type: "boolean"}) {
 			t.Fatalf("missing effective type %s: %+v", name, typ)
 		}
 	}
