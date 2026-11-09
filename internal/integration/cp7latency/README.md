@@ -114,3 +114,18 @@ not qualify product authorization races, terminal claims, the 200-agent runtime
 or a durable SLO.
 D productization requires a later independently reviewed PR against this
 harness. The reviewed D fixture and rejected split-lock variants are unchanged.
+
+W11 current-main controls are in `cp7_qualification_test`: complete grouped
+pagination at 1,000 bodies/all three fractions, a real publication during the
+pinned readiness callback on both engines, and strict measurement/refusal
+validation. They exercise the existing public fallback composition. PR388's
+compiled Selection/final-authority/terminal tests and six timed summary cases
+remain separate, unadopted dependency-bound work; these controls supply none
+of their qualification. The original 18-case workload and deadlines stay intact.
+
+The accounting regressions exercise real PostgreSQL current/historical/staged
+reads, absent/deleted keys, duplicate output, repeated fetches and observer
+parity, including refusal precedence. The stored-row scan and reconstructed
+historical-body boundaries are measured separately from emitted output clones
+and from SQL executor physical work. W3's returned-clone observations are a
+separate composition; this child does not adopt them.

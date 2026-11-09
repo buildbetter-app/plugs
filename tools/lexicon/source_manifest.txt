@@ -512,6 +512,7 @@ internal/integration/cp7latency/dense_summary_test.go
 internal/integration/cp7latency/fixture_test.go
 internal/integration/cp7latency/latency_test.go
 internal/integration/cp7latency/measurement_test.go
+internal/integration/cp7latency/qualification_test.go
 internal/integration/cp7latency/semantics_test.go
 internal/integration/cp7latency/work_accounting_test.go
 internal/integration/cp7latency/work_counters_test.go

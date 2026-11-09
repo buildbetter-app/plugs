@@ -154,6 +154,14 @@ func summarize(engine string, divisor int, op, corpusHash string, cold sample, o
 		if s.Status == "correctness_error" {
 			return r, errors.New("correctness error cannot be summarized as valid baseline")
 		}
+		if math.IsNaN(s.ElapsedMS) || math.IsInf(s.ElapsedMS, 0) || s.ElapsedMS < 0 {
+			return r, errors.New("sample elapsed time is not a finite nonnegative observation")
+		}
+		switch s.Status {
+		case "success", "cap_refusal", "request_deadline", "write_pre_deadline":
+		default:
+			return r, errors.New("unknown sample outcome")
+		}
 		r.Outcomes[s.Status]++
 		values = append(values, s.ElapsedMS)
 	}
@@ -272,7 +280,7 @@ func (f *fixture) observe(t *testing.T, engine string, divisor int, op, phase st
 		if errors.As(err, &typed) {
 			s.ErrorData = &typed.Data
 		}
-		if len(ready.Items) != 0 || ready.Next != nil || outcome != nil || len(grouped.Items) != 0 || len(grouped.Groups) != 0 || grouped.NextCursor != nil {
+		if refusedOutput(ready, outcome, grouped) {
 			s.Status = "correctness_error"
 			t.Fatal("refused request published a partial result")
 		}
@@ -312,4 +320,8 @@ func (f *fixture) observe(t *testing.T, engine string, divisor int, op, phase st
 		t.Fatalf("unexpected product error retained above: %v", err)
 	}
 	return s
+}
+
+func refusedOutput(ready service.BeadPage, outcome *port.WriteOutcome, grouped viewops.Result) bool {
+	return len(ready.Items) != 0 || ready.Next != nil || outcome != nil || len(grouped.Items) != 0 || len(grouped.Groups) != 0 || grouped.NextCursor != nil || grouped.Count != nil
 }
