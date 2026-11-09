@@ -172,6 +172,8 @@ internal/core/dumpformat/edge_metadata.go
 internal/core/dumpformat/edge_version_test.go
 internal/core/dumpformat/history.go
 internal/core/dumpformat/history_test.go
+internal/core/dumpformat/identity.go
+internal/core/dumpformat/identity_test.go
 internal/core/dumpformat/json.go
 internal/core/dumpformat/merge.go
 internal/core/dumpformat/merge_fixture_test.go
@@ -492,6 +494,7 @@ internal/integration/converterroundtrip/BUILD.bazel
 internal/integration/converterroundtrip/external_target_test.go
 internal/integration/converterroundtrip/hierarchy_import_test.go
 internal/integration/converterroundtrip/history.go
+internal/integration/converterroundtrip/history_merge_test.go
 internal/integration/converterroundtrip/identity_counters_test.go
 internal/integration/converterroundtrip/image.go
 internal/integration/converterroundtrip/import_test.go
