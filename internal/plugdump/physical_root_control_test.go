@@ -27,7 +27,7 @@ type nativePhysicalRootControlCandidate struct {
 }
 
 func newNativePhysicalRootControlCandidate(t *testing.T, db *sql.DB, server *testutil.IsolatedDoltContainer) nativePhysicalRootControlCandidate {
-	// Option 3 is reached after exact option1 and option2 runtime failures. Stop this
+	// Option 3 follows actual option1 and option2b physical-control failures. Stop this
 	// owned public fixture before copying, and never check out its source store.
 	setup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -82,7 +82,7 @@ func newNativePhysicalRootControlCandidate(t *testing.T, db *sql.DB, server *tes
 	if err := copyTree(filepath.Join(strings.TrimSpace(directory), "beads_test"), filepath.Join(snapshot, "beads_test")); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := embedded.ParseDSN("file://" + snapshot + "?database=beads_test&disable_singleton_cache=true")
+	cfg, err := embedded.ParseDSN("file://" + snapshot + "?database=beads_test&commitname=Capture&commitemail=capture%40example.test&disable_singleton_cache=true")
 	if err != nil {
 		t.Fatal(err)
 	}
