@@ -69,11 +69,30 @@ func (r hierarchyLifecycleMembership) Eval(ctx context.Context, s authz.Slice, r
 	mapped := append([]authz.CheckRequest(nil), requests...)
 	for i := range mapped {
 		if mapped[i].Method == "tx.apply" || mapped[i].Method == "bead.close" {
-			// This installed test policy grants a transition only when the
-			// same current project membership also permits the underlying
-			// write. The production fixed policy grants neither action here.
+			// A create followed by close has no stored bead assignment yet.
+			// This explicit test policy uses the Writer's trusted transition
+			// project and its current registry binding, then checks the same
+			// current project membership. It invents no bead or project row.
 			if mapped[i].Action == authz.Transition {
+				if !authz.ValidID(mapped[i].Transition.Project) || !authz.ValidID(mapped[i].Transition.Type) ||
+					!authz.ValidID(mapped[i].Transition.FromStatus) || !authz.ValidID(mapped[i].Transition.ToStatus) {
+					continue
+				}
+				var project model.Ref
+				var found bool
+				switch current := s.(type) {
+				case *slice:
+					project, found = current.projectByName(mapped[i].Transition.Project)
+				case *hierarchySlice:
+					project, found = current.projectByName(mapped[i].Transition.Project)
+				}
+				if !found {
+					continue
+				}
 				mapped[i].Action = authz.Modify
+				mapped[i].Resource = authz.Resource{Kind: authz.Project, Ref: project}
+				mapped[i].Method = ""
+				continue
 			}
 			mapped[i].Method = "bead.update"
 			if mapped[i].Resource.Kind == authz.Project {
