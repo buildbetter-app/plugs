@@ -399,7 +399,7 @@ func (d *DoltConn) restoreWorkingImage(ctx context.Context) (map[string]Physical
 		if err != nil {
 			return nil, err
 		}
-		physical, err := readPhysicalTable(q, locked, name)
+		physical, err := readRestorePhysicalTable(q, locked, name)
 		if err != nil {
 			return nil, err
 		}
@@ -407,6 +407,92 @@ func (d *DoltConn) restoreWorkingImage(ctx context.Context) (map[string]Physical
 	}
 	return result, nil
 }
+
+// Keep the existing driver conversion unchanged, but run it at a known
+// physical field/row so a conversion or unsupported-cell error can be refused
+// with that identity. The capture reader and its oracle remain untouched.
+func readRestorePhysicalTable(ctx *gms.Context, table gms.Table, name string) (out PhysicalTable, resultErr error) {
+	out.Name = name
+	schema := table.Schema(ctx)
+	for _, column := range schema {
+		out.Columns = append(out.Columns, PhysicalColumn{column.Name, column.Type.String()})
+	}
+	fail := func(column string, err error) error {
+		return restoreError("physical-readback", name, column, len(out.Rows), err)
+	}
+	partitions, err := table.Partitions(ctx)
+	if err != nil {
+		return out, fail("*", err)
+	}
+	defer func() {
+		if err := partitions.Close(ctx); err != nil {
+			resultErr = errors.Join(resultErr, fail("*", err))
+		}
+	}()
+	for {
+		if err := ctx.Err(); err != nil {
+			return out, fail("*", err)
+		}
+		partition, err := partitions.Next(ctx)
+		if err == io.EOF {
+			return out, nil
+		}
+		if err != nil {
+			return out, fail("*", err)
+		}
+		rows, err := table.PartitionRows(ctx, partition)
+		if err != nil {
+			return out, fail("*", err)
+		}
+		rowErr := func() error {
+			for {
+				row, err := rows.Next(ctx)
+				if err == io.EOF {
+					return nil
+				}
+				if err != nil {
+					return fail("*", err)
+				}
+				if len(row) != len(schema) {
+					return fail("*", errors.New("native physical row width differs"))
+				}
+				owned := make([]driver.Value, len(row))
+				for ci, value := range row {
+					converted := doltRows{sch: schema[ci : ci+1], rowIter: &restoreCellIter{row: gms.Row{value}}, gmsCtx: ctx}
+					cell := make([]driver.Value, 1)
+					if err := converted.Next(cell); err != nil {
+						return fail(schema[ci].Name, errors.New("native physical cell conversion refused"))
+					}
+					detached, err := physicalCell(cell[0])
+					if err != nil {
+						return fail(schema[ci].Name, errors.New("unsupported detached native physical cell"))
+					}
+					owned[ci] = detached
+				}
+				out.Rows = append(out.Rows, owned)
+			}
+		}()
+		closeErr := rows.Close(ctx)
+		if rowErr != nil || closeErr != nil {
+			if closeErr != nil {
+				closeErr = fail("*", closeErr)
+			}
+			return out, errors.Join(rowErr, closeErr)
+		}
+	}
+}
+
+type restoreCellIter struct{ row gms.Row }
+
+func (r *restoreCellIter) Next(*gms.Context) (gms.Row, error) {
+	if r.row == nil {
+		return nil, io.EOF
+	}
+	row := r.row
+	r.row = nil
+	return row, nil
+}
+func (r *restoreCellIter) Close(*gms.Context) error { return nil }
 
 // Return the zero-based requested row and physical column for a mismatch.
 // Exact row matching is a multiset operation, retaining duplicate/keyless rows.

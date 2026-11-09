@@ -490,6 +490,9 @@ func TestPhysicalRestoreAtomicRefusals(t *testing.T) {
 			if test.kind == "insert" && failure.Row != 1 {
 				t.Fatal("second actual insertion was not reached")
 			}
+			if test.kind == "physical-readback" && (failure.Column != "id" || failure.Row != 1) {
+				t.Fatal("actual mismatching field/requested row was not identified")
+			}
 			t.Logf("RESTORE_REFUSAL kind=%s native_insert_row=%d remaining_rows=0", failure.Kind, failure.Row)
 		})
 	}
@@ -525,6 +528,36 @@ func TestPhysicalRestoreAtomicRefusals(t *testing.T) {
 		}
 	})
 }
+
+// TIME exercises a native scalar that the current detached capture contract
+// cannot carry. Record the actual SQL value/type, then require the real native
+// readback error to identify its field/row and roll back the inserted row.
+func TestPhysicalRestoreNativeReadbackTypeRefusal(t *testing.T) {
+	db, conn, _, _ := restoreDB(t, false)
+	execSQL(t, conn, "CREATE TABLE readback_cells (id INT PRIMARY KEY,duration TIME(6))")
+	execSQL(t, conn, "INSERT INTO readback_cells VALUES (1,'01:02:03.123456')")
+	var native any
+	if err := conn.QueryRowContext(context.Background(), "SELECT duration FROM readback_cells").Scan(&native); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := encodeCell(native); err == nil {
+		t.Fatalf("native TIME fixture must expose its unsupported detached type; observed %T", native)
+	}
+	execSQL(t, conn, "DELETE FROM readback_cells")
+	manifest := captureTables(t, db, conn, "readback_cells")
+	manifest.Tables[0].Rows = [][]Cell{{{Type: "int32", Data: "1"}, {Type: "string", Data: "01:02:03.123456"}}}
+	err := Restore(context.Background(), conn, manifest)
+	var failure *Error
+	if !errors.As(err, &failure) || failure.Kind != "physical-readback" || failure.Table != "readback_cells" || failure.Column != "duration" || failure.Row != 0 {
+		t.Fatalf("actual native unsupported-cell readback must name field+row: %v", err)
+	}
+	if rowCount(t, conn, "readback_cells") != 0 {
+		t.Fatal("native readback error left accepted rows")
+	}
+	t.Logf("RESTORE_NATIVE_READBACK_ERROR sql_value_type=%T field=duration row=0 remaining_rows=0", native)
+	saveEvidence(t, "native-readback-type-refusal.json", map[string]any{"ordinary_sql_value_type": fmt.Sprintf("%T", native), "ordinary_sql_value": fmt.Sprint(native), "refusal_kind": failure.Kind, "field": failure.Column, "row": failure.Row, "remaining_rows": 0})
+}
+
 func TestPhysicalRestoreCancellationDuringNativeInserts(t *testing.T) {
 	db, conn, _, _ := restoreDB(t, false)
 	execSQL(t, conn, "CREATE TABLE cancellation_cells (id BIGINT PRIMARY KEY)")

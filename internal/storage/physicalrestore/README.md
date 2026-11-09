@@ -29,7 +29,10 @@ table, and only then commits. A mismatch, insertion error or cancellation rolls
 back. A commit error is named `commit-indeterminate` and a failed rollback is
 `rollback-indeterminate`; both retain the complete error tree and require
 destination inspection before any retry. A cell mismatch names its physical
-column and zero-based requested row. Ordinary JSON string binding is unchanged.
+column and zero-based requested row. Native cell conversion errors name the
+actual physical field and readback row; row/partition failures use `*` for the
+unavailable field instead of inventing one. The restore-only reader reuses the
+unchanged driver cell conversion. Ordinary JSON string binding is unchanged.
 
 The optional `tools/native-physical-restore` executable requires explicit
 `--disposable-target`, owner-only canonical paths, a manifest and a fresh
