@@ -1,7 +1,7 @@
 # Real CP7 product latency baseline
 
-Done = existing PR260 is merged by the train after exact-head independent
-source review and focused/whole RunsOn originals. The original 100k matrix,
+Done = existing PR260 is handed to the train after exact-head independent
+source review and focused/ordinary whole RunsOn originals. The original 100k matrix,
 including cold first requests, three warmups and 20 measurements per case,
 remains the baseline before optimization. Historical latency REDs remain RED.
 
@@ -68,6 +68,10 @@ hooks also run through concrete WriteTx readers. Product composition receives
 the raw store, preserving every optional reader/transaction/store capability.
 SQL executor visits, Observe/Lock state decoding, and historical patch replay
 bytes remain UNMEASURED. Logical reconstructed body bytes are not replay bytes.
+PostgreSQL current bodies newer than the requested snapshot, including repeat
+fetches during historical fallback, are also UNMEASURED by these original
+hooks. Complete body-work accounting remains OPEN pending the separate W11
+accounting correction; callback counts do not prove physical SQL work.
 
 The explicit raw-group Q5 regression distinguishes the correct winner from
 rotation over authorized members alone. The Ready regression changes an
@@ -84,23 +88,29 @@ claim. The original timed Q6 and cold/3/20 matrix are unchanged. Accounting
 explicitly exposes existing summary item construction even though its output
 contains no payload rows.
 
-Run all declared cases through the approved remote wrapper:
+Run the complete manual latency qualification explicitly through the approved
+remote wrapper:
 
 ```sh
-remote-bazel "$PWD" HEAD cp7-focused -- test \
+/tmp/plug-swarm/bin/remote-bazel "$PWD" HEAD cp7-qualification -- test \
   //internal/integration/cp7latency:cp7_latency_test \
-  --nocache_test_results --test_output=all --test_arg=-test.v \
-  --test_timeout=900,900,900,9000
+  --cache_test_results=no --flaky_test_attempts=1 \
+  --test_env=GO_TEST_WRAP_TESTV=1 --test_output=all \
+  --test_timeout=900,900,900,9000 --jobs=2 --local_resources=memory=8192
 ```
 
-The final whole-tree command uses the same options with `//...`. Only these
-new tests declare the eternal timeout class at the frozen base; existing test
-budgets remain 900s. The scheduled workflow gives each engine its own RunsOn
-job. A combined whole-tree run may execute the two stores concurrently, so its
-measurements also record that broader workload context. No test is manual,
-filtered out or skipped to make the whole gate pass.
+The ordinary whole-tree command uses the same options with `//...`. It includes
+`cp7_correctness_test` and the real 100k `cp7_dense_semantics_test`. Both timed
+engine targets and their enclosing suite carry the manual tag, so ordinary
+whole-tree expansion excludes latency qualification. Explicit suite execution
+retains all 18 cases, cold requests, three warmups and 20 measured attempts per
+case, with every existing assertion, cap and deadline unchanged. The scheduled
+workflow also names each engine target explicitly. Running the full suite may
+execute the two stores concurrently; measurements retain that workload context.
+An ordinary whole PASS does not qualify latency or erase historical REDs.
 
-Full S1 remains 0/28 and E3 is 5/5 bounded. This baseline does not qualify product
-authorization races, terminal claims, the 200-agent runtime or a durable SLO.
+Full S1 remains 0/28 and E3 remains 4/5 until actual proof. This baseline does
+not qualify product authorization races, terminal claims, the 200-agent runtime
+or a durable SLO.
 D productization requires a later independently reviewed PR against this
 harness. The reviewed D fixture and rejected split-lock variants are unchanged.

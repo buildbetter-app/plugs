@@ -15,7 +15,7 @@ import (
 // the historical fallback to one query.
 func TestBatchedHistoricalRecordReadsPreserveDecodedRevisionAheadOfSQLLatest(t *testing.T) {
 	ctx := context.Background()
-	s, lease := openCommitQueryTest(t)
+	s, lease := openReaderQueryTest(t)
 	ref := testRef("versions-batch-decoded-revision-ahead")
 	key := testLock(ref)
 
@@ -100,7 +100,7 @@ func TestBatchedHistoricalRecordReadsPreserveDecodedRevisionAheadOfSQLLatest(t *
 // order from PostgreSQL.
 func TestBatchedHistoricalRecordReadsPreserveCallerErrorOrder(t *testing.T) {
 	ctx := context.Background()
-	s, lease := openCommitQueryTest(t)
+	s, lease := openReaderQueryTest(t)
 	refA, refB := testRef("versions-batch-error-order-a"), testRef("versions-batch-error-order-b")
 	keyA, err := recordKey(refA)
 	if err != nil {
@@ -184,7 +184,7 @@ func TestBatchedHistoricalRecordReadsPreserveCallerErrorOrder(t *testing.T) {
 // the historical path instead of parsing an oversized/negative counter in Go.
 func TestBatchedCurrentRecordReadsPreserveScalarErrorPrecedence(t *testing.T) {
 	ctx := context.Background()
-	s, lease := openCommitQueryTest(t)
+	s, lease := openReaderQueryTest(t)
 	ref := testRef("versions-batch-current-error-precedence")
 	key, err := recordKey(ref)
 	if err != nil {

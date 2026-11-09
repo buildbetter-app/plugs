@@ -5,18 +5,100 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 )
+
+// These observations cover admitted current rows and reconstructed historical
+// bodies. Too-new current bodies and SQL executor work remain unmeasured.
+type readerPayloadWork struct {
+	gets, payloads, bytes atomic.Int64
+}
+
+func (w *readerPayloadWork) ObserveReadWork(kind driver.ReadWorkKind, amount int64) {
+	switch kind {
+	case driver.ReadGetCalls:
+		w.gets.Add(amount)
+	case driver.ReadPayloadRecords:
+		w.payloads.Add(amount)
+	case driver.ReadPayloadBytes:
+		w.bytes.Add(amount)
+	}
+}
+
+type readerQueryCaptureKey struct{}
+type readerQueryEventKey struct{}
+
+type readerQueryEvent struct {
+	sql       string
+	completed bool
+	err       error
+}
+
+type readerQueryCapture struct {
+	mu     sync.Mutex
+	events []*readerQueryEvent
+}
+
+type readerQueryTracer struct{}
+
+func (readerQueryTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	capture, _ := ctx.Value(readerQueryCaptureKey{}).(*readerQueryCapture)
+	if capture == nil {
+		return ctx
+	}
+	sql := strings.Join(strings.Fields(data.SQL), " ")
+	if (!strings.HasPrefix(sql, "SELECT ") && !strings.HasPrefix(sql, "WITH ")) ||
+		(!strings.Contains(sql, "FROM plug_postgres.records") && !strings.Contains(sql, "FROM plug_postgres.versions")) {
+		return ctx
+	}
+	event := &readerQueryEvent{sql: sql}
+	capture.mu.Lock()
+	capture.events = append(capture.events, event)
+	capture.mu.Unlock()
+	return context.WithValue(ctx, readerQueryEventKey{}, event)
+}
+
+func (readerQueryTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
+	event, _ := ctx.Value(readerQueryEventKey{}).(*readerQueryEvent)
+	if event == nil {
+		return
+	}
+	capture, _ := ctx.Value(readerQueryCaptureKey{}).(*readerQueryCapture)
+	if capture == nil {
+		return
+	}
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	event.err = data.Err
+	event.completed = true
+}
+
+func openReaderQueryTest(t *testing.T) (*Store, driver.ActiveLease) {
+	t.Helper()
+	config, err := pgx.ParseConfig(freshDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.Tracer = readerQueryTracer{}
+	dsn := stdlib.RegisterConnConfig(config)
+	t.Cleanup(func() { stdlib.UnregisterConnConfig(dsn) })
+	s := openTest(t, dsn)
+	return s, testLease(t, s)
+}
 
 // This is a public-reader equivalence control: each scalar read establishes
 // the expected historical image, while the traced batch read must return the
 // same image and preserve the caller's order and duplicates.
 func TestBatchedHistoricalRecordReadsPreserveScalarImagesAndRoundTrips(t *testing.T) {
 	ctx := context.Background()
-	s, lease := openCommitQueryTest(t)
+	s, lease := openReaderQueryTest(t)
 	const count = 64
 	refs := make([]driver.Ref, count)
 	keys := make([]driver.LockKey, count)
@@ -66,13 +148,15 @@ func TestBatchedHistoricalRecordReadsPreserveScalarImagesAndRoundTrips(t *testin
 	if !ok {
 		t.Fatalf("scalar reader type=%T", scalar)
 	}
+	var scalarWork readerPayloadWork
+	scalarCtx := driver.WithReadWorkObserver(ctx, &scalarWork)
 	want := make(map[string]driver.Record, len(refs))
 	for _, ref := range refs {
 		key, err := recordKey(ref)
 		if err != nil {
 			t.Fatal(err)
 		}
-		value, exists, err := scalarReader.recordAt(ctx, key)
+		value, exists, err := scalarReader.recordAt(scalarCtx, key)
 		if err != nil || !exists || value.deleted {
 			t.Fatalf("scalar historical read %s: exists=%v deleted=%v err=%v", ref.ID, exists, value.deleted, err)
 		}
@@ -90,8 +174,34 @@ func TestBatchedHistoricalRecordReadsPreserveScalarImagesAndRoundTrips(t *testin
 		}
 	}
 	batched := testRead(t, s, &second.Revision)
-	capture := &commitQueryCapture{}
-	readCtx := context.WithValue(ctx, commitQueryCaptureKey{}, capture)
+	// Keep the original admitted-body conservation check at the reconstruction
+	// boundary. Public Get additionally clones every returned position, including
+	// duplicates; those materializations have a separate additive oracle below.
+	batchReader, ok := batched.(*reader)
+	if !ok {
+		t.Fatalf("batch reader type=%T", batched)
+	}
+	ids := make([]string, len(request))
+	for i, ref := range request {
+		ids[i], err = recordKey(ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var admittedWork readerPayloadWork
+	admitted, err := batchReader.recordsAt(driver.WithReadWorkObserver(ctx, &admittedWork), ids)
+	if err != nil || len(admitted) != count {
+		t.Fatalf("admitted historical images=%d want=%d err=%v", len(admitted), count, err)
+	}
+	for _, ref := range refs {
+		key, _ := recordKey(ref)
+		if !reflect.DeepEqual(admitted[key].record, want[ref.ID]) {
+			t.Fatalf("admitted image differs from scalar: %s", ref.ID)
+		}
+	}
+	capture := &readerQueryCapture{}
+	var batchWork readerPayloadWork
+	readCtx := context.WithValue(driver.WithReadWorkObserver(ctx, &batchWork), readerQueryCaptureKey{}, capture)
 	got, err := batched.Get(readCtx, request)
 	if err != nil {
 		t.Fatal(err)
@@ -105,12 +215,44 @@ func TestBatchedHistoricalRecordReadsPreserveScalarImagesAndRoundTrips(t *testin
 			t.Fatalf("batched row %d=%+v want scalar=%+v", i, row, wantRow)
 		}
 	}
+	// The batch path replaces scalar recordAt reconstruction, but must retain
+	// its live-body observations once per distinct key, plus the public Get
+	// output clones. Nil instrumentation must preserve the image.
+	plain, err := batched.Get(driver.WithReadWorkObserver(ctx, nil), request)
+	if err != nil || !reflect.DeepEqual(plain, got) {
+		t.Fatalf("nil observer changed historical batch: rows=%d err=%v", len(plain), err)
+	}
+	wantBytes := int64(count * len(`{"revision":2}`))
+	if scalarWork.payloads.Load() != count || scalarWork.bytes.Load() != wantBytes ||
+		admittedWork.payloads.Load() != count || admittedWork.bytes.Load() != wantBytes {
+		t.Fatalf("admitted body conservation: scalar=%d/%d batch=%d/%d want=%d/%d",
+			scalarWork.payloads.Load(), scalarWork.bytes.Load(), admittedWork.payloads.Load(), admittedWork.bytes.Load(), count, wantBytes)
+	}
+	wantMaterializations := int64(count + len(request))
+	if batchWork.gets.Load() != 1 || batchWork.payloads.Load() != wantMaterializations ||
+		batchWork.bytes.Load() != wantMaterializations*int64(len(`{"revision":2}`)) {
+		t.Fatalf("historical payload observations: scalar=%d/%d batch_gets=%d batch=%d/%d want=%d/%d",
+			scalarWork.payloads.Load(), scalarWork.bytes.Load(), batchWork.gets.Load(), batchWork.payloads.Load(), batchWork.bytes.Load(), count, wantBytes)
+	}
+	current := testRead(t, s, nil)
+	var currentWork readerPayloadWork
+	currentRows, currentErr := current.Get(driver.WithReadWorkObserver(ctx, &currentWork), request)
+	if currentErr != nil || len(currentRows) != len(request) || currentWork.gets.Load() != 1 ||
+		currentWork.payloads.Load() != wantMaterializations || currentWork.bytes.Load() != wantMaterializations*int64(len(`{"revision":3}`)) {
+		t.Fatalf("current payload observations: rows=%d gets=%d payloads=%d bytes=%d err=%v",
+			len(currentRows), currentWork.gets.Load(), currentWork.payloads.Load(), currentWork.bytes.Load(), currentErr)
+	}
+	if err := current.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("admitted-body observations PASS: current=%d historical=%d/%d nil_observer_parity=true discarded_current_and_sql_work=UNMEASURED",
+		currentWork.payloads.Load(), batchWork.payloads.Load(), batchWork.bytes.Load())
 	if err := batched.Close(); err != nil {
 		t.Fatal(err)
 	}
 
 	capture.mu.Lock()
-	events := append([]*commitQueryEvent(nil), capture.events...)
+	events := append([]*readerQueryEvent(nil), capture.events...)
 	capture.mu.Unlock()
 	versions, records := 0, 0
 	for _, event := range events {
@@ -135,7 +277,7 @@ func TestBatchedHistoricalRecordReadsPreserveScalarImagesAndRoundTrips(t *testin
 
 func TestBatchedHistoricalRecordReadsHonorDecodedRevisionBound(t *testing.T) {
 	ctx := context.Background()
-	s, lease := openCommitQueryTest(t)
+	s, lease := openReaderQueryTest(t)
 	ref := testRef("versions-batch-revision-bound")
 	key := testLock(ref)
 	firstTx, firstHeader := beginTest(t, s, lease, key)

@@ -198,10 +198,21 @@ func (s *GuardedService) Ready(ctx context.Context, by model.PrincipalRef, req s
 	if s == nil || s.delegate == nil || s.checker == nil {
 		return service.BeadPage{}, &model.Error{Message: "authorization service is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
 	}
-	readyFilter, compiled, err := s.compiledReadyFilter(ctx, by)
+	if page, err := s.compiledReady(ctx, by, req); !errors.Is(err, driver.ErrUnsupported) {
+		return page, err
+	}
+	return s.readyFallback(ctx, by, req)
+}
+
+func (s *GuardedService) readyFallback(ctx context.Context, by model.PrincipalRef, req service.ReadyRequest) (service.BeadPage, error) {
+	readyFilter, compiled, err := s.compiledReadyFilter(ctx, by, req.Project)
 	if err != nil {
 		return service.BeadPage{}, err
 	}
+	return s.collectReady(ctx, by, req, readyFilter, compiled)
+}
+
+func (s *GuardedService) collectReady(ctx context.Context, by model.PrincipalRef, req service.ReadyRequest, readyFilter service.ReadyAuthorizer, compiled bool) (service.BeadPage, error) {
 	// Compiled finite permissions are pushed through the domain service's
 	// snapshot-aware filter before pageResult. The 20,000 candidate cap remains
 	// only for genuinely check-only predicates that require post-filtering.
@@ -229,7 +240,7 @@ func (s *GuardedService) Ready(ctx context.Context, by model.PrincipalRef, req s
 		}
 		return candidate, err
 	}
-	page, err = readPage()
+	page, err := readPage()
 	if err != nil {
 		return service.BeadPage{}, err
 	}
@@ -268,16 +279,17 @@ func (s *GuardedService) Ready(ctx context.Context, by model.PrincipalRef, req s
 	return s.filterPage(ctx, by, "bead.ready", req.Project, req.Limit, req.Position, page, false)
 }
 
-func (s *GuardedService) compiledReadyFilter(ctx context.Context, by model.PrincipalRef) (service.ReadyAuthorizer, bool, error) {
-	caller, err := s.checker.callerFor(ctx, by)
+func (s *GuardedService) compiledReadyFilter(ctx context.Context, by model.PrincipalRef, project string) (service.ReadyAuthorizer, bool, error) {
+	_, snapshot, closeReader, err := s.current(ctx, nil)
 	if err != nil {
-		return nil, false, authzError(err)
+		return nil, false, err
 	}
-	template, err := s.checker.chain.Compile(authz.ListRequest{Caller: caller, Action: authz.Read, ResourceKind: authz.Bead, Method: "bead.ready"})
+	caller, _, template, err := s.readyProjectFilter(ctx, by, snapshot, project, "bead.ready", authz.Read)
+	closeReader()
+	if errors.Is(err, authz.ErrCheckOnly) || errors.Is(err, driver.ErrUnsupported) {
+		return nil, false, nil
+	}
 	if err != nil {
-		if errors.Is(err, authz.ErrCheckOnly) {
-			return nil, false, nil
-		}
 		return nil, false, authzError(err)
 	}
 	var authorizationRevision model.Revision
@@ -854,7 +866,18 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 	}
 	membership := ""
 	if method == "bead.ready" {
-		membership = readyMembershipDigest(filtered)
+		// New finite compiled Ready pages use the versioned semantic
+		// commitment. Check-only pages and continuations carrying an older
+		// unprefixed digest stay on the legacy verifier for compatibility.
+		useV2 := !checkOnly && (position == nil || strings.HasPrefix(position.ReadyMembership, "v2:"))
+		if useV2 {
+			membership, err = readyMembershipV2(filtered)
+			if err != nil {
+				return service.BeadPage{}, &model.Error{Message: "ready membership commitment failed", Data: model.ErrorData{Code: "internal_error"}}
+			}
+		} else {
+			membership = readyMembershipDigest(filtered)
+		}
 	}
 	if method == "bead.ready" && position != nil && position.ReadyMembership != membership {
 		return service.BeadPage{}, &model.Error{Message: "ready membership changed since cursor issuance; restart paging", Data: model.ErrorData{Code: "cursor_invalid"}}

@@ -391,9 +391,10 @@ func compileOntology(t *testing.T, base ontology.Document, overlays map[string]o
 }
 
 type postgresHarness struct {
-	name    string
-	address string
-	seq     int
+	databaseMu sync.Mutex
+	name       string
+	address    string
+	seq        int
 }
 
 func docker(args ...string) ([]byte, error) {
@@ -435,6 +436,8 @@ func newPostgresHarness(t *testing.T) *postgresHarness {
 
 func (h *postgresHarness) dsn(t *testing.T) string {
 	t.Helper()
+	h.databaseMu.Lock()
+	defer h.databaseMu.Unlock()
 	h.seq++
 	database := fmt.Sprintf("s1_%d", h.seq)
 	if output, err := docker("exec", h.name, "createdb", "-h", "127.0.0.1", "-U", "postgres", database); err != nil {

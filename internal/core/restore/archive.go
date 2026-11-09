@@ -1167,6 +1167,13 @@ func restoreRecords(archive *dumpformat.Archive) ([]driver.Record, error) {
 				return nil, fmt.Errorf("native record has invalid revision")
 			}
 		}
+		// Native publication bypasses the ordinary Writer, so apply the same
+		// document/ontology field rules before apply can open a transaction or
+		// mutate allocator state. The validator names the offending record and
+		// the caller maps it to the typed restore_violation envelope.
+		if err := service.ValidateNativeRestoreRecords(records); err != nil {
+			return nil, err
+		}
 		return records, nil
 	}
 	var result []driver.Record

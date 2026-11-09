@@ -897,6 +897,9 @@ func (f *fixture) checkGrouped(t *testing.T, result viewops.Result, divisor int)
 
 func validateGrouped(result viewops.Result, n, divisor int) error {
 	population := n / divisor
+	if result.Count != nil {
+		return fmt.Errorf("ordinary grouped result emitted countOnly output")
+	}
 	if population > viewops.OrdinaryCandidateCap {
 		return fmt.Errorf("ordinary count bypassed candidate cap")
 	}
@@ -908,6 +911,9 @@ func validateGrouped(result viewops.Result, n, divisor int) error {
 	}
 	g := result.Groups[0]
 	wantItems := min(population, viewops.DefaultOutputBudget)
+	if result.NextCursor != nil && result.NextCursor.Index != uint64(wantItems) {
+		return fmt.Errorf("grouped cursor index differs from emitted prefix")
+	}
 	if len(g.Items) != wantItems {
 		return fmt.Errorf("grouped payload cardinality=%d want=%d", len(g.Items), wantItems)
 	}
@@ -930,7 +936,7 @@ func validateGrouped(result viewops.Result, n, divisor int) error {
 		}
 	}
 	if population > wantItems {
-		if g.Elided == nil || g.Elided.Count != population-wantItems {
+		if g.Elided == nil || g.Elided.Count != population-wantItems || g.Elided.ContinueIndex != uint64(wantItems) {
 			return fmt.Errorf("grouped count excludes elided authorized tail")
 		}
 	} else if g.Elided != nil {
