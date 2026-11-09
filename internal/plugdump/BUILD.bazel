@@ -64,7 +64,10 @@ go_test(
     srcs = ["physical_root_control_test.go"],
     embed = [":plugdump"],
     tags = ["manual"],
-    deps = ["//internal/testutil"],
+    deps = [
+        "//internal/testutil",
+        "@com_github_dolthub_driver_v2//:driver",
+    ],
 )
 
 filegroup(

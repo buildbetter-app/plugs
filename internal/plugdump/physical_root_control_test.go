@@ -25,11 +25,15 @@ type nativePhysicalRootControlCandidate struct {
 	ReadTable func(context.Context, string, string) (table Table, present bool, err error)
 }
 
-func newNativePhysicalRootControlCandidate(t *testing.T, _ *sql.DB, server *testutil.IsolatedDoltContainer) nativePhysicalRootControlCandidate {
+func newNativePhysicalRootControlCandidate(t *testing.T, db *sql.DB, server *testutil.IsolatedDoltContainer) nativePhysicalRootControlCandidate {
 	// Option 2 is reached only after the exact option-1 runtime RED. Stop this
 	// owned public fixture before copying, and never check out its source store.
 	setup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	var absent int
+	if err := db.QueryRowContext(setup, "SELECT count(*) FROM dolt_log WHERE commit_hash = ?", strings.Repeat("a", 32)).Scan(&absent); err != nil || absent != 0 {
+		t.Fatalf("valid missing commit census: count=%d error=%v", absent, err)
+	}
 	code, directory, err := server.Exec(setup, []string{"pwd"})
 	if err != nil || code != 0 {
 		t.Fatalf("public fixture directory: code=%d error=%v", code, err)
