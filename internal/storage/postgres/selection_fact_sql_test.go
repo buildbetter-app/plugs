@@ -59,6 +59,22 @@ func seedSelectionSQLFacts(t *testing.T, s *Store, lease driver.ActiveLease, set
 	return keys
 }
 
+func TestSelectionAncestorAnnotationRetainsCanonicalRefs(t *testing.T) {
+	s := openTest(t, freshDSN(t))
+	lease := testLease(t, s)
+	child, parent := testRef("pl-child"), testRef("pl-parent")
+	facts := driver.SelectionFacts{Kind: driver.SelectionAncestorFact, Rows: []driver.SelectionFact{
+		{Kind: driver.SelectionAncestorFact, Ref: &child, Target: &child},
+		{Kind: driver.SelectionAncestorFact, Ref: &child, Target: &parent, Depth: 1},
+	}}
+	key := seedSelectionSQLFacts(t, s, lease, map[driver.DerivedTable]driver.SelectionFacts{driver.DerivedAncestorClosure: facts})[driver.DerivedAncestorClosure]
+	r := testRead(t, s, nil)
+	rows, err := r.DerivedRows(context.Background(), key.Table, key.Key)
+	if err != nil || len(rows) != 1 || rows[0].Index == nil || !reflect.DeepEqual(rows[0].Index.Facts, &facts) {
+		t.Fatalf("persisted ancestor annotation=%+v %v; want %#v", rows, err, facts)
+	}
+}
+
 func TestSelectionSparseFactsAndBothClosureDirectionsExecutorEvidence(t *testing.T) {
 	const population = 4096
 	for _, allowed := range []int{1000, 100} {
@@ -215,10 +231,6 @@ func TestSelectionScopedGrantMetadataAndFreshCommittedDomain(t *testing.T) {
 		if got == nil || got.Validate() != nil || !got.IsID() || got.ID != want.ScopeRef.ID || got.Branch != want.ScopeRef.Branch || got.Key != want.ScopeRef.Key {
 			t.Fatalf("scope reference round trip=%#v; want %#v", got, want.ScopeRef)
 		}
-		// Gob preserves every public reference field but not model.Ref's private
-		// constructor discriminator. Compare its validated public arm above,
-		// then retain exact byte/presence comparisons for all remaining metadata.
-		actual.Rows[i].ScopeRef = want.ScopeRef
 	}
 	if !reflect.DeepEqual(actual, &facts) {
 		t.Fatalf("scoped metadata/opaque bytes round trip=%#v; want %#v", actual, facts)

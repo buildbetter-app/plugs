@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"sort"
 	"testing"
 	"time"
@@ -108,6 +109,57 @@ func queueRequire(t *testing.T, r driver.QueueProjectionReader, ids ...string) d
 		}
 	}
 	return got
+}
+
+func TestQueueProjectionRetainsCanonicalRefs(t *testing.T) {
+	s, lease := queueTestStore(t)
+	ctx := context.Background()
+	parent := queueDocument("queue-parent", "parent")
+	ref := testRef("queue-child")
+	external := model.RefByID("external/project:7", model.Natural64(0))
+	created := time.Date(2026, time.November, 9, 0, 0, 0, 123, time.UTC)
+	metadata := &model.LinkMetadata{Gate: "any-children", AlsoBlocks: true}
+	doc := pipeline.Document{ID: ref.ID, Type: "issue", Project: "queue-project", Parent: &parent.Ref, CreatedAt: &created,
+		Fields: map[string]any{"title": "child", "status": "todo", "template": false, "priority": 0},
+		Links:  []pipeline.Link{{Kind: "waits-for", To: parent.Ref, Metadata: metadata}, {Kind: "related", TargetKind: "external", To: external}},
+	}
+	body, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := driver.Record{Ref: ref, Kind: "bead", Body: body}
+	tx, header := queueStage(t, s, lease, parent, child)
+	committed := commitSourceTest(t, tx, header)
+	r := sourceReader(t, s, nil)
+	defer r.Close()
+	want := driver.QueueBead{
+		Bead:   driver.SelectionBead{Ref: ref, Parent: &parent.Ref, Project: &doc.Project, Type: "issue", Status: "todo", Title: "child"},
+		Source: driver.SelectionSource{Key: testLock(ref), Revision: committed.Revision, Present: true, Digest: driver.SelectionDigest(body)},
+		Facts: driver.QueueFacts{Version: driver.QueueFactsVersion, CreatedAt: created, Links: []driver.QueueLink{
+			{Kind: "waits-for", To: parent.Ref, Metadata: metadata}, {Kind: "related", TargetKind: "external", To: external},
+		}},
+	}
+	got := queueRequire(t, r, ref.ID, parent.Ref.ID).Beads[0]
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("persisted queue refs/metadata=%#v; want %#v", got, want)
+	}
+	// The ordinary annotation read takes a separate decode path and must agree
+	// with the same source, including every reference's selected arm.
+	rows, err := r.DerivedRows(ctx, driver.DerivedSortKey, ref.ID)
+	if err != nil || len(rows) != 1 || rows[0].Index == nil {
+		t.Fatalf("ordinary annotation=%+v %v", rows, err)
+	}
+	index := rows[0].Index
+	if !reflect.DeepEqual(index.Source, want.Source) || !reflect.DeepEqual(index.Bead, &want.Bead) || !reflect.DeepEqual(index.Queue, &want.Facts) {
+		t.Fatalf("ordinary annotation lost canonical refs: %#v", index)
+	}
+	rows, err = r.DerivedRows(ctx, driver.DerivedReferenceIndex, ref.ID)
+	wantFacts := &driver.SelectionFacts{Kind: driver.SelectionLinkFact, Rows: []driver.SelectionFact{
+		{Kind: driver.SelectionLinkFact, Ref: &ref, Link: &driver.SourceLink{Kind: "waits-for", To: parent.Ref}},
+	}}
+	if err != nil || len(rows) != 1 || rows[0].Index == nil || !reflect.DeepEqual(rows[0].Index.Facts, wantFacts) {
+		t.Fatalf("ordinary link annotation=%+v %v; want %#v", rows, err, wantFacts)
+	}
 }
 
 func TestQueueProjectionCoverageAcrossReadyRankPublication(t *testing.T) {
