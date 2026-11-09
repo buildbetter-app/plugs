@@ -547,6 +547,16 @@ func TestHierarchyMalformedDescendantClosureRefusesAcrossStores(t *testing.T) {
 
 func hierarchyRawRows(t *testing.T, f *fixture, id string, remove, add []driver.DerivedRow) {
 	t.Helper()
+	// This deliberately corrupts logical rows through the ordinary API. Typed
+	// annotations belong to the trusted publication arm, and are not deletions.
+	logical := func(rows []driver.DerivedRow) []driver.DerivedRow {
+		result := make([]driver.DerivedRow, len(rows))
+		for i, row := range rows {
+			result[i] = driver.DerivedRow{Key: row.Key, Value: append([]byte(nil), row.Value...)}
+		}
+		return result
+	}
+	remove, add = logical(remove), logical(add)
 	tx, err := f.store.Write(f.ctx, f.lease)
 	if err != nil {
 		t.Fatal(err)
@@ -745,7 +755,18 @@ func TestHierarchyClosure5000And5001AcrossStores(t *testing.T) {
 			if !reflect.DeepEqual(rows, hierarchyRows(t, f)) || f.receipt(t, m) != nil {
 				t.Fatal("5001 refusal published a partial rewrite")
 			}
-			commit := hierarchyApply(t, f, hierarchyMove(subtree, &destination))
+			beforeMove := metrics.Snapshot()
+			commit, err := f.writer.Apply(f.ctx, batchPrincipal, model.ChangeSet{Ops: []model.Op{hierarchyMove(subtree, &destination)}}, f.meta("hierarchy"))
+			moveMillis := map[pipeline.Phase]float64{}
+			for phase, results := range metrics.Snapshot().LaneMillis {
+				for result, millis := range results {
+					moveMillis[phase] += millis - beforeMove.LaneMillis[phase][result]
+				}
+			}
+			t.Logf("%s unchanged 5000-row hierarchy move phase times (ms): %v", engine, moveMillis)
+			if err != nil {
+				t.Fatal(err)
+			}
 			got := verifyHierarchy(t, f)
 			if len(got)-len(rows) != 5000 {
 				t.Fatalf("expected exactly 5000 added rows, got %d", len(got)-len(rows))
@@ -771,6 +792,9 @@ func TestHierarchyDerivedReaderOverlayAcrossStores(t *testing.T) {
 			defer tx.Close()
 			sentinel, _ := driver.NewClosureSentinel(id)
 			locks := []driver.LockRequest{{Key: driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel}, Mode: driver.LockUpdate}, {Key: driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAncestorClosure, Key: row.Key}}, Mode: driver.LockUpdate}}
+			// Restoring a typed annotation also attests its acquired source.
+			ref := seed.Results[0].Ref
+			locks = append(locks, driver.LockRequest{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &ref}, Mode: driver.LockShare})
 			sort.Slice(locks, func(i, j int) bool {
 				a, _ := driver.EncodeLockKey(locks[i].Key)
 				b, _ := driver.EncodeLockKey(locks[j].Key)
@@ -793,7 +817,9 @@ func TestHierarchyDerivedReaderOverlayAcrossStores(t *testing.T) {
 			if err != nil || len(visible) != 1 {
 				t.Fatalf("uncommitted removal leaked: %+v %v", visible, err)
 			}
-			if err := tx.PutDerived(f.ctx, driver.DerivedAncestorClosure, nil, []driver.DerivedRow{row}); err != nil {
+			// Restore the exact committed image, including its typed annotation.
+			// Reconstructing only Key/Value would be a raw untyped replacement.
+			if err := pipeline.PutSelectionDerived(f.ctx, tx, driver.DerivedAncestorClosure, nil, visible); err != nil {
 				t.Fatal(err)
 			}
 			staged, err = tx.DerivedRows(f.ctx, driver.DerivedAncestorClosure, prefix)
