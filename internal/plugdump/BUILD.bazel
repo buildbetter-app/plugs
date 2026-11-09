@@ -38,6 +38,7 @@ go_test(
     srcs = [
         "native_clock_test.go",
         "native_history_test.go",
+        "native_history_capability_test.go",
         "native_inventory_test.go",
         "identity_test.go",
         "plugdump_test.go",
@@ -59,16 +60,40 @@ go_test(
     ],
 )
 
-# Candidate adapters share this exact public fixture and assertion body.
-# Manual keeps the diagnostic reference separate from canonical product gates.
+# Supported physical route, with the original public assertion body unchanged.
 go_test(
     name = "physical_root_control_test",
     srcs = ["physical_root_control_test.go"],
     embed = [":plugdump"],
-    tags = ["manual"],
     deps = [
         "//internal/testutil",
         "@com_github_dolthub_driver_v2//:driver",
+    ],
+)
+
+# Rejected AS OF/history-helper reader and original assertions remain runnable.
+go_test(
+    name = "sql_native_reference_test",
+    srcs = ["sql_native_reference_test.go"],
+    embed = [":plugdump"],
+    tags = ["manual"],
+    deps = [
+        "//internal/testutil",
+        "@com_github_data_dog_go_sqlmock//:go-sqlmock",
+        "@com_github_go_sql_driver_mysql//:mysql",
+    ],
+)
+
+# Rejected option-1 capability reference, preserved with its original assertions.
+# This diagnostic intentionally remains RED on the pinned revision SQL route.
+go_test(
+    name = "revision_database_reference_test",
+    srcs = ["revision_database_reference_test.go"],
+    embed = [":plugdump"],
+    tags = ["manual"],
+    deps = [
+        "//internal/testutil",
+        "@com_github_go_sql_driver_mysql//:mysql",
     ],
 )
 

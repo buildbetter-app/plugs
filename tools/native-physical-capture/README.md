@@ -41,16 +41,26 @@ inputs and outputs local, report only counts/categories, and clean up disposable
 copies under the owning capture procedure. This executable changes no stock
 `bd` command or Beads behavior.
 
-The public route controls are selected explicitly because their targets are
-manual:
+The supported public route controls are selected by the canonical whole gate:
 
 ```text
 //internal/plugdump:physical_root_control_test
-//cmd/plug-capture-sql-server:native_physical_capture_test
-@com_github_dolthub_driver_v2//:physical_commit_test
+//cmd/plug-capture-sql-server:native_capture_test
 ```
 
-Run them through the authorized remote Bazel wrapper with the native lane's
-environment. Run `//internal/plugdump:plugdump_test` and the canonical whole gate
-on the same revision. Public controls prove their fixture route only; source,
-focused, whole, real-store delivery and official qualification remain separate.
+The native target retains the original default full-history comparisons using
+standalone physical capture, while its configured tracked portable suffixes still
+use stock SQL export. It rereads every native image through a separate physical
+connection and keeps every source/current/status/type assertion. The external
+`@com_github_dolthub_driver_v2//:physical_commit_test` is selected explicitly in
+the focus gate. The former combined native label remains an alias.
+
+Stock SQL refuses native physical-root capability before querying; it cannot
+turn a redirected declaration census into immutable evidence. Failed AS OF and
+revision-database experiments retain their original assertions in explicit manual
+`sql_native_reference_test` and `revision_database_reference_test` targets. Their
+old RED receipts remain unchanged and do not qualify the supported route.
+
+Run all gates through the authorized remote Bazel wrapper. Public controls prove
+their fixture route only; source, focused, whole, real-store delivery and official
+qualification remain separate.

@@ -10,6 +10,8 @@ Only replace `newNativePhysicalRootControlCandidate` in the spike's isolated wor
 
 The original 80386182 adapter was explicitly `current-as-of-reference` and remains an expected RED reference at the historical declaration/rooting boundary. The integrated adapter adopts the reviewed private immutable-physical-image operation through `internal/storage/physicalcapture`, preserving the original assertion body. It also checks a syntactically valid, independently absent commit, read-only lifetime and detached cells. Original reference runs remain sealed separately; integration requires its own source and runtime evidence. The disposable capture companion is documented in `tools/native-physical-capture/README.md`.
 
+The rejected revision-database option remains independently runnable as `//internal/plugdump:revision_database_reference_test`. It preserves `TestNativePhysicalRootRevisionDatabaseControls` byte-for-byte under explicit manual selection. Its expected RED self-census observations are historical capability evidence, not regressions of the supported physical driver route or an exception to a product assertion. The ordinary SQL history and native export controls remain selected by their existing targets and retain their literal unresolved results.
+
 Run only through remote-bazel, preserving the standard public native flags:
 
 ```sh
@@ -18,3 +20,13 @@ export PATH=/tmp/plug-swarm/bin/worker-safe:$PATH
 ```
 
 Retain exact adapter/source/tree/parent, server/driver identity and actual SQL errors, all named RUN/PASS/FAIL/SKIP/XML plus receipts. Preserve each candidate's terminal outcome. A passing physical-root suite is bounded public route evidence; producer integration, default migration history coverage, raw/portable graph checks, current-row retention, final focused/whole/reviewed revision and the one official bundle remain separate prerequisites. Private data stays local only and official budget remains UNSPENT.
+
+The correcting product route fails closed for `SQLSource.ReadNativeSourceImage`
+with `native-physical-root-capability-unavailable:stock-sql`. The old reader and
+its original local-row/helper/typed-absence assertions are retained only in
+`//internal/plugdump:sql_native_reference_test` for explicit reference execution;
+they do not supply product evidence. Supported physical-root controls now run in
+the ordinary whole selection with their original 803 assertion suffix unchanged.
+The native default controls use the standalone companion and independently compare
+every captured image, leaving tracked portable SQL suffixes unchanged. Prior SQL
+five-gap and revision-probe REDs are historical receipts, never rewritten.

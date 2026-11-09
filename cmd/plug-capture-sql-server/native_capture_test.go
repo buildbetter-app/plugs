@@ -32,6 +32,7 @@ type nativeFixture struct {
 	work, clock, bd, companion string
 	env                        []string
 	db                         *sql.DB
+	physicalDB                 *sql.DB
 }
 
 func privateDir(t *testing.T) string {
@@ -470,7 +471,8 @@ func TestPublicControlledClockAndActiveFamilyCapture(t *testing.T) {
 }
 
 // Both fixtures are fabricated from anonymous type/ID shapes. These archives
-// are bounded producer proof for the consumer's two-project merge/restore
+// use standalone physical capture for defaults and stock SQL for the explicitly
+// tracked portable suffixes. They are bounded proof for two-project merge/restore
 // tests, not real-source captures or rehearsal streak credit.
 func TestPublicNativeCustomTypesAndNamespacedHashes(t *testing.T) {
 	for _, test := range []struct {
@@ -535,7 +537,11 @@ func TestPublicNativeCustomTypesAndNamespacedHashes(t *testing.T) {
 			}
 			capture := privateDir(t)
 			inventoryPath, archivePath := filepath.Join(capture, "inventory.json"), filepath.Join(capture, "readback.tar")
-			f.run(f.bd, "--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "--output", inventoryPath)
+			if test.tracked {
+				f.run(f.bd, "--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "--output", inventoryPath)
+			} else {
+				inventoryPath, archivePath, _ = f.capturePhysical(capture)
+			}
 			inventoryBytes, err := os.ReadFile(inventoryPath)
 			if err != nil {
 				t.Fatal(err)
@@ -551,7 +557,9 @@ func TestPublicNativeCustomTypesAndNamespacedHashes(t *testing.T) {
 			} else if len(inventory.Projects[0].HashNamespaces) != 0 || bytes.Contains(inventoryBytes, []byte(`"hash_namespaces"`)) {
 				t.Fatal("bare-hash project acquired namespace metadata")
 			}
-			f.run(f.bd, "--readonly", "export", "--format", "plug-dump/1", "--plug-inventory", inventoryPath, "--output", archivePath)
+			if test.tracked {
+				f.run(f.bd, "--readonly", "export", "--format", "plug-dump/1", "--plug-inventory", inventoryPath, "--output", archivePath)
+			}
 			archive, err := os.ReadFile(archivePath)
 			if err != nil {
 				t.Fatal(err)
@@ -757,7 +765,7 @@ func (f *nativeFixture) assertNativeDefaultHistoryBoundary(prefix string, invent
 	}
 	// Independently read every retained native image, not just aggregate counts
 	// or the final portable business projection. Migration-era schemas are read
-	// through the raw SQL port and compared field-for-field, without head grafts.
+	// through the physical driver port and compared field-for-field, without head grafts.
 	if manifest.SourceFamilyContract != plugdump.SourceFamilyContract || native.Format != plugdump.NativeHistoryFormat || !native.Complete || len(native.Gaps) != 0 || len(native.Images) != len(log.Commits) || native.Head != log.Head {
 		f.t.Fatalf("actual native history incomplete: complete=%t images=%d commits=%d gaps=%+v", native.Complete, len(native.Images), len(log.Commits), native.Gaps)
 	}
@@ -772,8 +780,9 @@ func (f *nativeFixture) assertNativeDefaultHistoryBoundary(prefix string, invent
 		})
 		return plugdump.NativeTable{Columns: columns, Rows: rows}
 	}
+	physicalPort := plugdump.PhysicalCommitSource{SQLSource: port, PhysicalDB: f.physicalDB}
 	for _, frame := range native.Images {
-		actual, err := port.ReadNativeSourceImage(ctx, frame.CommitID)
+		actual, err := physicalPort.ReadNativeSourceImage(ctx, frame.CommitID)
 		if err != nil || len(actual) != len(frame.Tables) {
 			f.t.Fatalf("native immutable census at %s: %v", frame.CommitID, err)
 		}

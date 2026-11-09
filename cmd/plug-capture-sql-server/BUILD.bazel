@@ -18,21 +18,29 @@ go_binary(
 go_test(
     name = "native_capture_test",
     size = "large",
-    srcs = ["native_capture_test.go"],
+    srcs = ["native_capture_test.go", "physical_capture_test.go"],
     data = [
         ":plug-capture-sql-server",
         "//cmd/bd:bd",
+        "//tools/native-physical-capture",
     ],
     env = {
         "BEADS_CAPTURE_BD_BINARY": "$(rootpath //cmd/bd:bd)",
         "BEADS_CAPTURE_SQL_BINARY": "$(rootpath :plug-capture-sql-server)",
+        "BEADS_PHYSICAL_CAPTURE_BINARY": "$(rootpath //tools/native-physical-capture)",
     },
     deps = [
         "//internal/captureclock",
         "//internal/plugdump",
+        "//internal/storage/physicalcapture",
         "//internal/testutil/bazeltest",
         "@com_github_go_sql_driver_mysql//:mysql",
     ],
+)
+# Compatibility label for the supported route, now selected by //....
+alias(
+    name = "native_physical_capture_test",
+    actual = ":native_capture_test",
 )
 
 # --- begin repo_files (managed by tools/bazel/go_srcs.py; run `make bazel-sync`) ---
@@ -95,27 +103,3 @@ filegroup(
 )
 
 # --- end repo_files ---
-
-# Private capture-spike binary/public fixtures; original native lane unchanged.
-go_test(
-    name = "native_physical_capture_test",
-    size = "large",
-    srcs = ["native_capture_test.go", "physical_capture_test.go"],
-    tags = ["manual"],
-    data = [
-        ":plug-capture-sql-server",
-        "//cmd/bd:bd",
-        "//tools/native-physical-capture",
-    ],
-    env = {
-        "BEADS_CAPTURE_BD_BINARY": "$(rootpath //cmd/bd:bd)",
-        "BEADS_CAPTURE_SQL_BINARY": "$(rootpath :plug-capture-sql-server)",
-        "BEADS_PHYSICAL_CAPTURE_BINARY": "$(rootpath //tools/native-physical-capture)",
-    },
-    deps = [
-        "//internal/captureclock",
-        "//internal/plugdump",
-        "//internal/testutil/bazeltest",
-        "@com_github_go_sql_driver_mysql//:mysql",
-    ],
-)
