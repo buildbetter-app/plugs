@@ -632,7 +632,13 @@ func TestB07SQLInvocationPublishesAuxiliaryIndexesOnce(t *testing.T) {
 				}
 			}
 			requireIndexes()
-			b07SQLReplay(t, f, "x.workflow.invoke", "indexed-child", params, invoked)
+			f.reopenB08(t)
+			b08SameConservation(t, after, f.conservation(t))
+			replayed := f.callB08(t, "x.workflow.invoke", "indexed-child", params)
+			var replay workflowplugin.InvokeResult
+			if replayed.Error != nil || json.Unmarshal(replayed.Result, &replay) != nil || !reflect.DeepEqual(invoked.Result, replayed.Result) || !reflect.DeepEqual(result, replay) {
+				t.Fatalf("invocation did not replay exactly after SQL reopen: error=%+v first=%s replay=%s", replayed.Error, invoked.Result, replayed.Result)
+			}
 			requireIndexes()
 			b08SameConservation(t, after, f.conservation(t))
 		})
