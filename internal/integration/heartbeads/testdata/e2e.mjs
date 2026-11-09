@@ -308,11 +308,10 @@ try {
   await evaluate(`Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async(text)=>{window.__copied=text}}})`);
   await evaluate(`document.querySelector('button[title="Copy description"]').click()`);
   const copied=await until(async()=>await evaluate('window.__copied'),'legacy description copy');assert.ok(copied.includes('SHARED'));assert.ok(!copied.includes('\0'));await save('browser-copy.json',{copied});
-  await evaluate(`document.querySelector('button[title="Search issues or profiles (Ctrl+F)"]').click()`);
-  await type('input[placeholder="Search issues or profiles..."]','SHARED');
+  await searchFor('SHARED');
   await until(async()=>{const body=await evaluate('document.body.innerText');return body.includes('Imported root cody-ops')&&body.includes('Imported root signals-v2')},'legacy-ID global search in both projects');
   assert.ok(!(await evaluate('document.body.innerText')).includes('\0'));
-  await cdp('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape'});await cdp('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape'});
+  await closeSearch();
   check('browser searches original ID absent from titles and copies public ID without NUL');
   const missingTime=await evaluate(`(()=>{const detail=document.querySelector('aside');const row=[...detail.querySelectorAll('div')].find(el=>el.children.length===2&&el.children[0].textContent==='Updated');return {text:detail.innerText,updated:row?.innerText}})()`);
   assert.ok(missingTime.updated.includes('Unavailable'));assert.ok(!missingTime.text.includes('Invalid Date'));await save('browser-missing-update-time.json',missingTime);
@@ -330,7 +329,16 @@ try {
   check('selected cody detail isolates colliding-ID comments while the global panel retains both projects');
   assert.ok(!(await evaluate('document.body.innerText')).includes('ambiguous unqualified comment'));
   async function clickText(text){await evaluate(`(()=>{const b=[...document.querySelectorAll('button')].find(x=>x.textContent.trim()===${JSON.stringify(text)}&&!x.disabled);if(!b)throw Error('button missing: '+${JSON.stringify(text)});b.click()})()`);}
-  async function type(selector,text){await evaluate(`document.querySelector(${JSON.stringify(selector)}).focus()`);await cdp('Input.insertText',{text});}
+  async function type(selector,text){await evaluate(`(()=>{const input=document.querySelector(${JSON.stringify(selector)});input.focus();input.select?.()})()`);await cdp('Input.insertText',{text});}
+  async function searchFor(query){
+    await evaluate(`(()=>{if(!document.querySelector('input[placeholder="Search issues or profiles..."]'))document.querySelector('button[title="Search issues or profiles (Ctrl+F)"]').click()})()`);
+    await until(async()=>await evaluate(`Boolean(document.querySelector('input[placeholder="Search issues or profiles..."]')?.getClientRects().length)`),'search input opens');
+    await type('input[placeholder="Search issues or profiles..."]',query);
+  }
+  async function closeSearch(){
+    await evaluate(`(()=>{const input=document.querySelector('input[placeholder="Search issues or profiles..."]');if(input)input.parentElement.querySelector('button').click()})()`);
+    await until(async()=>await evaluate(`!document.querySelector('input[placeholder="Search issues or profiles..."]')`),'search input closes');
+  }
   async function commentAction(index){await evaluate(`(()=>{const p=[...document.querySelector('aside').querySelectorAll('p')].find(x=>x.textContent==='cody-only fixture comment');if(!p)throw Error('comment missing');p.parentElement.querySelectorAll('button')[${index}].click()})()`);}
   await type('textarea[placeholder="Leave a comment..."]','browser new cody comment');await clickText('Comment');
   await until(()=>receipts.externalRecords.some(x=>x.entry?.value.text==='browser new cody comment'),'comment caller');
@@ -354,8 +362,7 @@ try {
   assert.ok(browserWrites.length>=7);assert.ok(browserWrites.filter(r=>r.method==='POST').every(r=>{const v=JSON.parse(r.body);return v.project==='cody-ops'&&v.nodeId==='SHARED'}));
   check('browser comment/reply/like/unlike/delete/claim/unclaim callers preserve original ID and project',{requests:browserWrites.length,externalAuth:'synthetic only'});
   await save('browser-records.json',{requests:browserWrites,records:receipts.externalRecords});
-  await evaluate(`document.querySelector('button[title="Search issues or profiles (Ctrl+F)"]').click()`);
-  await type('input[placeholder="Search issues or profiles..."]',legacyId);
+  await searchFor(legacyId);
   await until(async()=>await evaluate(`Boolean([...document.querySelectorAll('button')].find(b=>b.textContent.includes('extra cody-ops')&&b.textContent.includes(${JSON.stringify(legacyId)})))`),'legacy unique task search');
   await evaluate(`(()=>{const b=[...document.querySelectorAll('button')].find(b=>b.textContent.includes('extra cody-ops')&&b.textContent.includes(${JSON.stringify(legacyId)}));b.click()})()`);
   await until(async()=> (await evaluate('document.body.innerText')).includes('old projectless comment'),'legacy projectless comment load');
@@ -386,8 +393,7 @@ try {
   await graphMenu(legacyId);await clickText('Unclaim task');
   await until(()=>!externalRecords.has(`at://${did}/org.impactindexer.review.comment/legacy-claim`),'legacy unclaim UI');
   check('browser old projectless unique comment delete, old like unlike and old claim unclaim preserve ownership');
-  await evaluate(`document.querySelector('button[title="Search issues or profiles (Ctrl+F)"]').click()`);
-  await type('input[placeholder="Search issues or profiles..."]','SHARED');
+  await searchFor('SHARED');
   await until(async()=>await evaluate(`Boolean([...document.querySelectorAll('button')].find(b=>b.textContent.includes('Imported root cody-ops')))`),'root search restore');
   await evaluate(`(()=>{const b=[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Imported root cody-ops'));b.click()})()`);
   await save('browser-legacy-records.json',{requests:receipts.browserRequests.filter(r=>r.url.startsWith(nextUrl+'/api/records')),records:receipts.externalRecords});
@@ -419,8 +425,7 @@ try {
   assert.ok(removedEvents.filter(e=>e.type==='link-removed').every(e=>!e.detail.includes('\0')));
   await save('removed-target-activity-control.json',{removedEvents,boundary:'exact-source helper with prior actual projection and deliberately absent new-frame target, no native delete claimed'});
   check('browser actual link/unlink renders and searches public target IDs; removed-target helper retains verified prior ID');
-  await evaluate(`document.querySelector('button[title="Search issues or profiles (Ctrl+F)"]').click()`);
-  await type('input[placeholder="Search issues or profiles..."]','SHARED');
+  await searchFor('SHARED');
   await until(async()=>await evaluate(`Boolean([...document.querySelectorAll('button')].find(b=>b.textContent.includes('Imported root cody-ops')))`),'post-activity root search');
   await evaluate(`(()=>{const b=[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Imported root cody-ops'));b.click()})()`);
   const ref={id:roots['cody-ops']};
