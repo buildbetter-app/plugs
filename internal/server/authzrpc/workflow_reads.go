@@ -47,7 +47,7 @@ func (s *GuardedService) getWorkflow(ctx context.Context, by model.PrincipalRef,
 	}
 	var allowed bool
 	if s.sourceRuntimeInstalled() {
-		allowed, err = s.sourceRead(ctx, caller, authority, req.ID, req.Project)
+		allowed, err = s.sourceRead(ctx, caller, authority, req.ID, req.Project, "bead.get")
 	} else {
 		allowed, err = s.checker.workflowRead(ctx, caller, authority, "bead.get", req.Project)
 	}

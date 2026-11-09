@@ -835,14 +835,23 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 			if method != "bead.ready" || bead.Project != project {
 				continue
 			}
-			if !workflowChecked {
-				workflowAllowed, err = s.checker.workflowRead(ctx, caller, authorization, method, project)
-				if err != nil {
-					return service.BeadPage{}, err
+			allowed := false
+			if s.sourceRuntimeInstalled() {
+				// Imported items use their verified per-item source binding and the
+				// original Bead method policy, as on the source Get path. Native
+				// workflow project authority cannot authorize this separate plane.
+				allowed, err = s.sourceRead(ctx, caller, authorization, model.RefByID(bead.ID, model.Natural64(0)), project, method)
+			} else {
+				if !workflowChecked {
+					workflowAllowed, err = s.checker.workflowRead(ctx, caller, authorization, method, project)
+					workflowChecked = true
 				}
-				workflowChecked = true
+				allowed = workflowAllowed
 			}
-			if workflowAllowed {
+			if err != nil {
+				return service.BeadPage{}, err
+			}
+			if allowed {
 				filtered = append(filtered, bead)
 			}
 			continue

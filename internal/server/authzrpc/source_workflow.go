@@ -84,7 +84,7 @@ func (s *GuardedService) InstallSourceWorkflow(ctx context.Context, provider *wo
 	return host.InstallSourceWorkflow(ctx, provider, profile, commit, receipt)
 }
 
-func (s *GuardedService) sourceRead(ctx context.Context, caller authz.Caller, authority *slice, ref model.Ref, project string) (bool, error) {
+func (s *GuardedService) sourceRead(ctx context.Context, caller authz.Caller, authority *slice, ref model.Ref, project, method string) (bool, error) {
 	host, ok := s.delegate.(interface {
 		SourceWorkflowProject(model.Ref) (string, bool)
 	})
@@ -100,7 +100,7 @@ func (s *GuardedService) sourceRead(ctx context.Context, caller authz.Caller, au
 		return false, nil
 	}
 	facts := &sourceWriteSlice{Slice: authority, projects: map[string]authz.ProjectBinding{ref.ID: {Name: bound, Ref: registry, Found: true}}}
-	decisions, err := s.checker.chain.Check(ctx, facts, []authz.CheckRequest{{Caller: caller, Action: authz.Read, Resource: authz.Resource{Kind: authz.Bead, Ref: ref}, Method: "bead.get"}})
+	decisions, err := s.checker.chain.Check(ctx, facts, []authz.CheckRequest{{Caller: caller, Action: authz.Read, Resource: authz.Resource{Kind: authz.Bead, Ref: ref}, Method: method}})
 	if err != nil {
 		return false, authzError(err)
 	}
