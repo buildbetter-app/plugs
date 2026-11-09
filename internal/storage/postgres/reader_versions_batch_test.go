@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -13,6 +14,23 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 )
+
+// These observations cover admitted current rows and reconstructed historical
+// bodies. Too-new current bodies and SQL executor work remain unmeasured.
+type readerPayloadWork struct {
+	gets, payloads, bytes atomic.Int64
+}
+
+func (w *readerPayloadWork) ObserveReadWork(kind driver.ReadWorkKind, amount int64) {
+	switch kind {
+	case driver.ReadGetCalls:
+		w.gets.Add(amount)
+	case driver.ReadPayloadRecords:
+		w.payloads.Add(amount)
+	case driver.ReadPayloadBytes:
+		w.bytes.Add(amount)
+	}
+}
 
 type readerQueryCaptureKey struct{}
 type readerQueryEventKey struct{}
@@ -130,13 +148,15 @@ func TestBatchedHistoricalRecordReadsPreserveScalarImagesAndRoundTrips(t *testin
 	if !ok {
 		t.Fatalf("scalar reader type=%T", scalar)
 	}
+	var scalarWork readerPayloadWork
+	scalarCtx := driver.WithReadWorkObserver(ctx, &scalarWork)
 	want := make(map[string]driver.Record, len(refs))
 	for _, ref := range refs {
 		key, err := recordKey(ref)
 		if err != nil {
 			t.Fatal(err)
 		}
-		value, exists, err := scalarReader.recordAt(ctx, key)
+		value, exists, err := scalarReader.recordAt(scalarCtx, key)
 		if err != nil || !exists || value.deleted {
 			t.Fatalf("scalar historical read %s: exists=%v deleted=%v err=%v", ref.ID, exists, value.deleted, err)
 		}
@@ -155,7 +175,8 @@ func TestBatchedHistoricalRecordReadsPreserveScalarImagesAndRoundTrips(t *testin
 	}
 	batched := testRead(t, s, &second.Revision)
 	capture := &readerQueryCapture{}
-	readCtx := context.WithValue(ctx, readerQueryCaptureKey{}, capture)
+	var batchWork readerPayloadWork
+	readCtx := context.WithValue(driver.WithReadWorkObserver(ctx, &batchWork), readerQueryCaptureKey{}, capture)
 	got, err := batched.Get(readCtx, request)
 	if err != nil {
 		t.Fatal(err)
@@ -169,6 +190,32 @@ func TestBatchedHistoricalRecordReadsPreserveScalarImagesAndRoundTrips(t *testin
 			t.Fatalf("batched row %d=%+v want scalar=%+v", i, row, wantRow)
 		}
 	}
+	// The batch path replaces scalar recordAt reconstruction, but must retain
+	// its live-body observations once per distinct key, including duplicates
+	// in the caller's output. Nil instrumentation must preserve the image.
+	plain, err := batched.Get(driver.WithReadWorkObserver(ctx, nil), request)
+	if err != nil || !reflect.DeepEqual(plain, got) {
+		t.Fatalf("nil observer changed historical batch: rows=%d err=%v", len(plain), err)
+	}
+	wantBytes := int64(count * len(`{"revision":2}`))
+	if scalarWork.payloads.Load() != count || scalarWork.bytes.Load() != wantBytes ||
+		batchWork.gets.Load() != 1 || batchWork.payloads.Load() != count || batchWork.bytes.Load() != wantBytes {
+		t.Fatalf("historical payload observations: scalar=%d/%d batch_gets=%d batch=%d/%d want=%d/%d",
+			scalarWork.payloads.Load(), scalarWork.bytes.Load(), batchWork.gets.Load(), batchWork.payloads.Load(), batchWork.bytes.Load(), count, wantBytes)
+	}
+	current := testRead(t, s, nil)
+	var currentWork readerPayloadWork
+	currentRows, currentErr := current.Get(driver.WithReadWorkObserver(ctx, &currentWork), request)
+	if currentErr != nil || len(currentRows) != len(request) || currentWork.gets.Load() != 1 ||
+		currentWork.payloads.Load() != count || currentWork.bytes.Load() != int64(count*len(`{"revision":3}`)) {
+		t.Fatalf("current payload observations: rows=%d gets=%d payloads=%d bytes=%d err=%v",
+			len(currentRows), currentWork.gets.Load(), currentWork.payloads.Load(), currentWork.bytes.Load(), currentErr)
+	}
+	if err := current.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("admitted-body observations PASS: current=%d historical=%d/%d nil_observer_parity=true discarded_current_and_sql_work=UNMEASURED",
+		currentWork.payloads.Load(), batchWork.payloads.Load(), batchWork.bytes.Load())
 	if err := batched.Close(); err != nil {
 		t.Fatal(err)
 	}
