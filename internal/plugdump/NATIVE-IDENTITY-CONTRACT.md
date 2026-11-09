@@ -137,3 +137,15 @@ the head. Head filesystem YAML cannot fill an older missing declaration. A
 changing catalog, YAML-only historical declaration or missing SQL evidence
 remains an explicit gap or unverified range, even when the current head exports
 successfully. No historical name/category is reinterpreted from current YAML.
+
+A successful immutable head census that lacks required SQL families retains
+`range.status: unverified` and names the sorted absent families in
+`range.reason: head-image-missing-families:<comma-separated-family-names>`.
+This uses the existing reason field; frames, baseline and range boundaries stay
+empty. It describes missing evidence, never an empty historical table or a
+recoverable range. Other unlocalized head mismatches retain
+`head-image-not-proven`. Current raw audit rows and commit provenance remain
+archived, without assigning unversioned events to commits. Strict full-history
+restore still refuses. The native-default public control separately records
+the complete working/immutable SQL family counts, exact durable issue-head
+equality and absent audit evidence; it does not recover native edit history.

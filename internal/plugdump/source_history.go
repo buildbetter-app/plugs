@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 )
 
 // SourceCommitLog is a driver read of the actual reachable graph and working
@@ -73,6 +74,7 @@ func captureSourceHistory(ctx context.Context, src Source, inventory Inventory, 
 	reasons := make([]string, len(chain))
 	cut := 0
 	total := 0
+	headFailureReason := "head-image-not-proven"
 	for i, c := range chain {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -99,6 +101,22 @@ func captureSourceHistory(ctx context.Context, src Source, inventory Inventory, 
 		}
 		if imageErr != nil {
 			reasons[i], cut = "unmappable", i+1
+			if i == len(chain)-1 && image != nil {
+				// A successful census may prove that the native commit lacks
+				// families required by the portable history contract. Name that
+				// evidence gap; never fill it from the working set or with empty
+				// tables. Read failures and other mismatches remain unlocalized.
+				missing := []string{}
+				for name := range tableColumns {
+					if _, present := image[name]; !present {
+						missing = append(missing, name)
+					}
+				}
+				if len(missing) > 0 {
+					sort.Strings(missing)
+					headFailureReason = "head-image-missing-families:" + strings.Join(missing, ",")
+				}
+			}
 			continue
 		}
 		frame := SourceHistoryFrame{Sequence: uint64(i + 1), CommitID: c.ID, Records: records, Events: events}
@@ -134,7 +152,7 @@ func captureSourceHistory(ctx context.Context, src Source, inventory Inventory, 
 		currentImage = append(currentImage, current[kind]...)
 	}
 	if frames[last].CommitID == "" || !sameRecordImage(currentImage, frames[last].Records) || !sameEventImage(h.Events, frames[last].Events) {
-		return unverified("head-image-not-proven")
+		return unverified(headFailureReason)
 	}
 	if cut >= len(chain)-1 && cut != 0 {
 		return unverified("verified-baseline-unavailable")

@@ -343,6 +343,36 @@ func TestExportSourceHistoryCannotPromoteUnprovenRanges(t *testing.T) {
 	}
 }
 
+func TestExportSourceHistoryNamesMissingHeadFamiliesWithoutBackfill(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		missing []string
+		reason  string
+	}{
+		{"audit", []string{"events"}, "head-image-missing-families:events"},
+		{"native-planes", []string{"wisps", "ignored_schema_migrations", "events"}, "head-image-missing-families:events,ignored_schema_migrations,wisps"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s, inventory := historyFixture(t)
+			image := s.images[s.log.Head]
+			for _, name := range test.missing {
+				delete(image, name)
+			}
+			beforeImage, beforeHead := mustJSON(t, image), mustJSON(t, s.fixtureSource)
+			m, h := sourceCapture(t, buildFixture(t, s, inventory))
+			if m.History != "available-unverified" || h.Range.Status != "unverified" || h.Range.Reason != test.reason || h.Range.Complete || h.Range.First != 0 || h.Range.Head != 0 || len(h.Range.Frames)+len(h.Range.Baseline)+len(h.Range.BaselineEvents)+len(h.Range.Gaps) != 0 {
+				t.Fatalf("missing historical families were not explicitly refused: %+v", h.Range)
+			}
+			if len(h.Commits) != 4 || !sameEventImage(h.Events, s.fixtureSource["events"].Rows) {
+				t.Fatal("gap reporting discarded actual commit or working-set audit evidence")
+			}
+			if !bytes.Equal(beforeImage, mustJSON(t, image)) || !bytes.Equal(beforeHead, mustJSON(t, s.fixtureSource)) {
+				t.Fatal("missing historical family was backfilled or source head mutated")
+			}
+		})
+	}
+}
+
 func TestExportOpaqueIssueFieldsSurviveEveryHistoryImage(t *testing.T) {
 	s, inventory := historyFixture(t)
 	opaque := Row{

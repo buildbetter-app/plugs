@@ -629,9 +629,10 @@ func TestPublicNativeCustomTypesAndNamespacedHashes(t *testing.T) {
 				// Native defaults deliberately exclude clone-local and event
 				// tables from immutable commits. Preserve this actual refusal;
 				// no historical table or event is synthesized from head state.
-				if !historySeen || history.Range.Status != "unverified" || history.Range.Reason != "head-image-not-proven" || history.Range.Complete || len(history.Range.Frames) != 0 {
+				if !historySeen || history.Range.Status != "unverified" || history.Range.Complete || len(history.Range.Frames) != 0 {
 					t.Fatal("default ignored history acquired invented replay proof")
 				}
+				f.assertNativeDefaultHistoryBoundary(prefix, inventory, history)
 			} else if !historySeen || history.Range.Status != "verified" || history.Range.Complete || len(history.Range.Gaps) == 0 || len(history.Range.Frames) == 0 || history.Range.Head != uint64(len(history.Commits)) {
 				// This diagnostic reads only this fabricated public fixture. Keep
 				// exact native errors and the failed archive for causal follow-up.
@@ -678,6 +679,93 @@ func TestPublicNativeCustomTypesAndNamespacedHashes(t *testing.T) {
 			t.Logf("B1A_SYNTHETIC_HISTORY fixture=%s project=%s status=%s complete=%t first=%d head=%d frames=%d gaps=%d", name, prefix, history.Range.Status, history.Range.Complete, history.Range.First, history.Range.Head, len(history.Range.Frames), len(history.Range.Gaps))
 		})
 	}
+}
+
+// Read both censuses from the quiesced public fixture. This records the native
+// source-data boundary without force-staging, inferring audit chronology or
+// borrowing an absent historical family from the current working set.
+func (f *nativeFixture) assertNativeDefaultHistoryBoundary(prefix string, inventory plugdump.Inventory, history plugdump.SourceHistory) {
+	f.t.Helper()
+	ctx := context.Background()
+	port := plugdump.SQLSource{DB: f.db}
+	log, err := port.ReadSourceCommits(ctx)
+	if err != nil || !log.Clean || len(history.Commits) == 0 || log.Head != history.Commits[len(history.Commits)-1].ID {
+		f.t.Fatalf("native default source head unavailable or changed: %+v %v", log, err)
+	}
+	image, err := port.ReadSourceImage(ctx, log.Head)
+	if err != nil || image == nil {
+		f.t.Fatalf("actual native immutable head census: %v", err)
+	}
+	names, err := port.Tables(ctx)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	workingRows, immutableRows := map[string]int{}, map[string]int{}
+	missing := []string{}
+	for name, table := range image {
+		immutableRows[name] = len(table.Rows)
+	}
+	for _, name := range names {
+		table, err := port.ReadTable(ctx, name)
+		if err != nil {
+			f.t.Fatalf("actual native working family %s: %v", name, err)
+		}
+		workingRows[name] = len(table.Rows)
+		if _, present := image[name]; !present {
+			missing = append(missing, name)
+		}
+		if name == "issues" {
+			// Prove the actual durable issue head independently of the absent
+			// audit/clone-local planes; row counts alone would not establish it.
+			byID := map[string]plugdump.Row{}
+			for _, row := range image[name].Rows {
+				id, ok := row["id"].(string)
+				if !ok || byID[id] != nil {
+					f.t.Fatal("invalid immutable native issue identity")
+				}
+				byID[id] = row
+			}
+			if len(byID) != len(table.Rows) {
+				f.t.Fatal("native committed issue head count differs")
+			}
+			for _, row := range table.Rows {
+				id, _ := row["id"].(string)
+				if !reflect.DeepEqual(row, byID[id]) {
+					f.t.Fatal("native committed issue head fields differ")
+				}
+			}
+		}
+	}
+	sort.Strings(missing)
+	wantReason := "head-image-missing-families:" + strings.Join(missing, ",")
+	_, hasHistoricalEvents := image["events"]
+	if hasHistoricalEvents || workingRows["events"] == 0 || workingRows["events"] != len(history.Events) || history.Range.Reason != wantReason {
+		f.t.Fatalf("native audit absence or named gap not preserved: historical=%t working=%d archived=%d reason=%s want=%s", hasHistoricalEvents, workingRows["events"], len(history.Events), history.Range.Reason, wantReason)
+	}
+	_, buildErr := plugdump.Build(ctx, publicImageSource(image), inventory)
+	if buildErr == nil || !strings.HasPrefix(buildErr.Error(), "unaccounted table family ") {
+		f.t.Fatalf("incomplete immutable head acquired a complete portable image: %v", buildErr)
+	}
+	finalLog, err := port.ReadSourceCommits(ctx)
+	if err != nil || !reflect.DeepEqual(log, finalLog) {
+		f.t.Fatalf("native head moved during boundary census: %v", err)
+	}
+	evidence, err := json.MarshalIndent(map[string]any{
+		"fixture": prefix, "head": log.Head, "commits": len(history.Commits),
+		"working_rows": workingRows, "immutable_rows": immutableRows, "absent_families": missing,
+		"working_audit_rows": workingRows["events"], "archived_audit_rows": len(history.Events),
+		"history_range": history.Range, "head_build_error": buildErr.Error(),
+		"durable_issue_head_exact": true,
+		"scope":                    "Actual native-default SQL census in fabricated public fixture only; audit/clone-local history absent, no reconstruction or real-store credit",
+	}, "", "  ")
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	path := filepath.Join(os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR"), prefix+"-native-default-history-boundary.json")
+	if err := os.WriteFile(path, evidence, 0600); err != nil {
+		f.t.Fatal(err)
+	}
+	f.t.Logf("B1A_NATIVE_DEFAULT_HISTORY_BOUNDARY sha256=%x evidence=%s", sha256.Sum256(evidence), evidence)
 }
 
 // recordPublicHistoryImage is confined to the fabricated two-project fixture.
