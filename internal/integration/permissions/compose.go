@@ -25,6 +25,9 @@ type Config struct {
 	DefaultProject string
 	HTTP           httpjson.Config
 	Audit          port.OntologyAudit
+	// ClaimPolicy is an explicit host installation. Nil retains the fixed
+	// chain's absence of a distinct claim-slot Transition grant.
+	ClaimPolicy *authzrpc.ClaimPolicyConfig
 }
 
 // New borrows the store, lease and key ring. Keys are provisioned by the host;
@@ -37,6 +40,7 @@ func New(ctx context.Context, config Config) (*authzrpc.Composition, error) {
 		Store: config.Store, Lease: config.Lease, Provider: config.Keys,
 		Facts: config.Facts, Namespace: config.Namespace, Caller: config.Caller,
 		DefaultProject: config.DefaultProject, HTTP: config.HTTP, Audit: config.Audit,
+		ClaimPolicy: config.ClaimPolicy,
 	})
 }
 
