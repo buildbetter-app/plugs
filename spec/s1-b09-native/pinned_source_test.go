@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/integration/converterroundtrip"
@@ -93,12 +94,15 @@ func TestRecordNativeIDStyleA9d6(t *testing.T) {
 	})
 	r.binary = r.buildCanonicalSource(styleABehaviorSource)
 	r.exporter = r.buildCanonicalSource(styleAExporterSource) // Export capture only; never the behavior oracle.
-	w := r.styleAWorkspace("pinned-native")
-	versionBytes := r.run(w, "pinned-version", r.binary, []string{"version", "--json"}, 0)
-	var version struct{ Commit, Build string }
-	if json.Unmarshal(versionBytes, &version) != nil || version.Commit != styleAPin || version.Build != "id-style-a-fixture-"+styleAPin {
-		t.Fatalf("executed behavior binary version mismatch: %+v", version)
+	versions := r.newWorkspace("canonical-binary-versions")
+	for _, item := range []struct{ name, binary, commit string }{{"behavior", r.binary, styleAPin}, {"exporter", r.exporter, styleAExporterSource.Commit}} {
+		versionBytes := r.run(versions, item.name+"-version", item.binary, []string{"version", "--json"}, 0)
+		var version struct{ Commit, Build string }
+		if json.Unmarshal(versionBytes, &version) != nil || version.Commit != item.commit || version.Build != "id-style-a-fixture-"+item.commit {
+			t.Fatalf("executed %s binary version mismatch: %+v", item.name, version)
+		}
 	}
+	w := r.styleAWorkspace("pinned-native")
 	var ids []string
 	for i := 0; i < 3; i++ {
 		id := r.create(w, fmt.Sprintf("pinned-default-%d", i), fmt.Sprintf("Pinned default %d", i))
@@ -150,7 +154,7 @@ func TestRecordNativeIDStyleA9d6(t *testing.T) {
 	}
 	r.writeJSON(filepath.Join(root, "native-id-style-a.json"), map[string]any{
 		"status": "RECORDED_BOUNDED", "behavior_pin": styleAPin,
-		"default_capture": initial, "final_capture": final,
+		"default_capture": initial, "final_capture": final, "captures": r.captures,
 		"configured_id": configured, "adaptive_id": adaptive,
 		"explicit_child": explicit, "next_child": child, "grandchild": grandchild, "next_after_close": next,
 		"paired_next_child": pairedChild, "paired_adaptive_root": wantAdaptive,
@@ -220,6 +224,7 @@ func (r *recorder) buildCanonicalSource(spec styleASource) string {
 	if got := strings.TrimSpace(string(r.buildCommand(source, spec.Name+"-bazel-version", bazel, []string{outputBase, "version", "--gnu_format"}))); got != "Bazelisk v1.29.0\nbazel 9.3.0" {
 		r.t.Fatalf("Bazel version=%q", got)
 	}
+	defer r.buildCommand(source, spec.Name+"-bazel-shutdown", bazel, []string{outputBase, "shutdown"})
 	settings := []string{"--repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1", "--extra_execution_platforms=//platforms:rbe_worker", "--incompatible_strict_action_env", "--@rules_go//go/config:tags=gms_pure_go", "--@rules_go//go/config:gc_linkopts=-X=main.Commit=" + spec.Commit + ",-X=main.Build=id-style-a-fixture-" + spec.Commit}
 	config := append([]string{outputBase, "build", "--jobs=2", "--local_resources=memory=8192", "--run_validations", "--lockfile_mode=error"}, settings...)
 	config = append(config, r.inputs.ExporterLabel)
@@ -244,6 +249,13 @@ func (r *recorder) buildCanonicalSource(spec styleASource) string {
 	closeErr := output.Close()
 	if copyErr != nil || closeErr != nil {
 		r.t.Fatalf("retain actual canonical binary: %v %v", copyErr, closeErr)
+	}
+	if err := os.Chmod(binary, 0755); err != nil {
+		r.t.Fatal(err)
+	}
+	mode, err := os.Lstat(binary)
+	if err != nil || !mode.Mode().IsRegular() || mode.Mode().Perm() != 0755 {
+		r.t.Fatalf("canonical binary mode/type mismatch: %v", err)
 	}
 	sha, size, err := hashFile(binary)
 	if err != nil {
@@ -284,7 +296,7 @@ func (r *recorder) buildCanonicalSource(spec styleASource) string {
 		"commit": spec.Commit, "tree": spec.Tree, "parent": spec.Parent,
 		"source_archive_sha256": archiveSHA, "source_archive_size": archiveSize,
 		"plain_git_manifest_sha256": spec.ManifestSHA, "source_entries": len(entries),
-		"binary_path": binary, "binary_sha256": sha, "binary_size": size, "binary_mode": "0755", "target": r.inputs.ExporterLabel,
+		"binary_path": binary, "binary_sha256": sha, "binary_size": size, "binary_mode": fmt.Sprintf("%04o", mode.Mode().Perm()), "target": r.inputs.ExporterLabel,
 		"build_argv":    append([]string{bazel}, config...),
 		"bazel_version": "9.3.0", "go_version": info.GoVersion, "go_build_info": info,
 		"wrapper_sha256": hashBytes(wrapper), "rc_sha256": hashBytes(rc), "canonical_validations": true,
@@ -411,6 +423,14 @@ func (r *recorder) recordStyleACollisions(input driver.HashInput) {
 	}
 }
 
+type styleANativeIssue struct {
+	ID          string    `json:"id"`
+	Title       string    `json:"title"`
+	Description string    `json:"description"`
+	Creator     string    `json:"created_by"`
+	Timestamp   time.Time `json:"created_at"`
+}
+
 // The modern public create route permits lengths beyond the legacy import
 // ceiling. Derive its hash tuple from its actual returned/stored creation
 // timestamp, then use that tuple on the same pre-create archive in Plug.
@@ -432,13 +452,7 @@ func (r *recorder) recordStyleADomainWidths() {
 		before := r.capture(w, label+"-before", width-6)
 		title := fmt.Sprintf("Native domain width %d", width)
 		data := r.run(w, label+"-create", r.binary, []string{"create", "--title", title, "--description", "Actual native domain tuple", "--type", "task", "--json"}, 0)
-		var issue struct {
-			ID          string    `json:"id"`
-			Title       string    `json:"title"`
-			Description string    `json:"description"`
-			Creator     string    `json:"created_by"`
-			Timestamp   time.Time `json:"created_at"`
-		}
+		var issue styleANativeIssue
 		if err := json.Unmarshal(data, &issue); err != nil || issue.Title != title || issue.Creator != styleAActor || issue.Timestamp.IsZero() {
 			r.t.Fatalf("native domain tuple incomplete: %s err=%v", data, err)
 		}
@@ -450,6 +464,28 @@ func (r *recorder) recordStyleADomainWidths() {
 		}
 		after := r.capture(w, label+"-after", width-5)
 		r.requireIDs(after, issue.ID)
+		archive, err := dumpformat.ReadFile(after.ArchivePath)
+		if err != nil {
+			r.t.Fatal(err)
+		}
+		found := false
+		for _, row := range archive.Records("bead") {
+			if row.ID != issue.ID {
+				continue
+			}
+			fields, err := json.Marshal(row.Source.Fields)
+			if err != nil {
+				r.t.Fatal(err)
+			}
+			var persisted styleANativeIssue
+			if err := json.Unmarshal(fields, &persisted); err != nil || !reflect.DeepEqual(issue, persisted) {
+				r.t.Fatalf("returned native creation tuple differs from actual source row: %+v -> %+v err=%v", issue, persisted, err)
+			}
+			found = true
+		}
+		if !found {
+			r.t.Fatal("actual native source row missing for domain create")
+		}
 		r.writeJSON(filepath.Join(r.root, label+"-tuple.json"), map[string]any{"native_id": issue.ID, "input": input, "width": width, "nonce": 0, "before_archive": before.ArchiveSHA256, "after_archive": after.ArchiveSHA256})
 		r.replayStyleA(before, input, issue.ID, "", "", false)
 	}

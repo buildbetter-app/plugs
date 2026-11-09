@@ -1,11 +1,13 @@
 package converterroundtrip
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"reflect"
 	"sort"
 	"sync"
@@ -207,5 +209,121 @@ func putIdentityOccupants(t *testing.T, store driver.Store, lease driver.ActiveL
 	}
 	if _, err = tx.Commit(ctx, driver.ChangesetHeader{Incarnation: meta.Incarnation, Kind: model.ChangesetWrite, Principal: restorePrincipal, LockKeys: keys, Changes: changes}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// This is a detached synthetic snapshot with two nonempty source projects.
+// It checks allocator composition only; it does not replace native history
+// merge evidence, which remains owned by the retained consumer lane.
+func TestIDStyleATwoRestoredProjectsPreserveIDsAndIndependentCounters(t *testing.T) {
+	admitted := admittedFixtureBytes(t)
+	data := rewriteData(t, func(members map[string][]byte) {
+		reader := tar.NewReader(bytes.NewReader(admitted))
+		for {
+			header, err := reader.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			members[header.Name], err = io.ReadAll(reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		var manifest map[string]any
+		decode(t, members["manifest.json"], &manifest)
+		second := manifest["projects"].([]any)[1].(map[string]any)
+		second["last_id"] = 7
+		second["child_counters"] = map[string]any{"empty-7": 4}
+		original := bytes.Split(bytes.TrimSuffix(members["records/bead.ndjson"], []byte{'\n'}), []byte{'\n'})
+		for _, line := range original {
+			var record map[string]any
+			decode(t, line, &record)
+			if record["id"] != "demo-7" && record["id"] != "demo-7.4" {
+				continue
+			}
+			cloned := bytes.ReplaceAll(line, []byte("demo-"), []byte("empty-"))
+			decode(t, cloned, &record)
+			record["project"] = "empty"
+			members["records/bead.ndjson"] = append(members["records/bead.ndjson"], encode(t, record)...)
+		}
+		for _, raw := range manifest["sources"].([]any) {
+			row := raw.(map[string]any)
+			if row["family"] == "issues" {
+				row["rows"] = 5
+			}
+		}
+		for _, raw := range manifest["kind_registry"].([]any) {
+			row := raw.(map[string]any)
+			if row["name"] == "bead" {
+				row["count"] = 5
+			}
+		}
+		members["manifest.json"] = encode(t, manifest)
+	})
+	profile, source := admittedImportProfile(t, data)
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			store, lease, reopen := openIdentityTarget(t, engine)
+			if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile); err != nil {
+				t.Fatal(err)
+			}
+			initial := reverseState(t, store)
+			now := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
+			creator, err := driver.PrincipalKey(profile.Admission.Actor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := driver.HashInput{Title: "Two restored projects", Creator: creator, Timestamp: now}
+			options := []pipeline.Option{pipeline.WithClock(func() time.Time { return now }), pipeline.WithOntology(service.NewOntology(nil))}
+			writer := pipeline.New(store, lease, options...)
+			saved := map[string]model.Commit{}
+			for _, project := range []string{"demo", "empty"} {
+				changes := model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Type: "issue", Project: project, Fields: map[string]any{"title": input.Title}}}}}
+				meta := model.WriteMeta{Method: "tx.apply", Project: project, IdempotencyKey: hashBytes([]byte("two-project-root-" + project))}
+				commit, err := writer.Apply(ctx, profile.Admission.Actor, changes, meta)
+				want, _ := driver.HashCandidate(project, input, 3, 0)
+				if err != nil || len(commit.Results) != 1 || commit.Results[0].Ref.ID != want {
+					t.Fatalf("%s root=%+v want=%s err=%v", project, commit, want, err)
+				}
+				saved[project] = commit
+				parent := model.RefByID(project+"-7", model.Natural64(0))
+				child, err := writer.Apply(ctx, profile.Admission.Actor, model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Type: "issue", Project: project, Parent: &parent, Fields: map[string]any{"title": "Independent restored child"}}}}}, model.WriteMeta{Method: "tx.apply", Project: project, IdempotencyKey: hashBytes([]byte("two-project-child-" + project))})
+				if err != nil || len(child.Results) != 1 || child.Results[0].Ref.ID != project+"-7.5" {
+					t.Fatalf("%s counter=%+v err=%v", project, child, err)
+				}
+			}
+			committed := reverseState(t, store)
+			for _, original := range initial.Records {
+				found := false
+				for _, actual := range committed.Records {
+					if reflect.DeepEqual(original, actual) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Fatalf("new allocation changed restored record %s", original.Ref.ID)
+				}
+			}
+			store, lease = reopen()
+			if !reflect.DeepEqual(committed, reverseState(t, store)) {
+				t.Fatal("two-project reopen changed committed state")
+			}
+			writer = pipeline.New(store, lease, options...)
+			for _, project := range []string{"demo", "empty"} {
+				outcome, err := writer.ApplyWithOutcome(ctx, profile.Admission.Actor, model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Type: "issue", Project: project, Fields: map[string]any{"title": input.Title}}}}}, model.WriteMeta{Method: "tx.apply", Project: project, IdempotencyKey: hashBytes([]byte("two-project-root-" + project))})
+				if err != nil || !outcome.Replayed || !reflect.DeepEqual(saved[project], outcome.Commit) {
+					t.Fatalf("%s reopened replay=%+v err=%v", project, outcome, err)
+				}
+			}
+			if !reflect.DeepEqual(committed, reverseState(t, store)) {
+				t.Fatal("replayed project allocation changed state")
+			}
+			assertImportedIdentityEvidence(t, store, source)
+		})
 	}
 }
