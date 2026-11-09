@@ -65,6 +65,9 @@ root. This supplies the old root/steps/id_mapping shape deliberately. It does no
 claim x.workflow.invoke output is a Beads molecule. Runtime close guards are
 mandatory. Source template parity against private store contents remains a
 switch-day verification requirement.
+The seven exact migration files retaining native type/sidecar vocabulary and
+old patch text are listed as lexicon provenance paths. This grants no new
+package-wide exemption and does not rename the installed native type.
 
 Topology preparation: one authoritative Plug server/store with two projects,
 clients use that endpoint. No Dolt remote or refs/dolt/data push/pull. No sync.run
