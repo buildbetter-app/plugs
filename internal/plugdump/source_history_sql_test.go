@@ -311,7 +311,7 @@ func TestSQLNativeHistoryReadsLocalRowsBehindNonlocalAliases(t *testing.T) {
 	commit := func(message string) string {
 		t.Helper()
 		exec("CALL DOLT_ADD('-A')")
-		exec("CALL DOLT_COMMIT('-m', '" + message + "')")
+		exec("CALL DOLT_COMMIT('-m', '" + message + "', '--author', 'Synthetic source <source@example.test>')")
 		var id string
 		if err := db.QueryRowContext(ctx, "SELECT DOLT_HASHOF('HEAD')").Scan(&id); err != nil {
 			t.Fatal(err)
@@ -333,6 +333,20 @@ func TestSQLNativeHistoryReadsLocalRowsBehindNonlocalAliases(t *testing.T) {
 	commit("public later schema and target rows must not leak backwards")
 	port := SQLSource{DB: db}
 	for _, id := range []string{before, aliased} {
+		if id == aliased {
+			// Public-only capability evidence: retain the actual server error,
+			// rather than guessing its class from the port's named refusal.
+			for _, name := range []string{"archived_rows", "only_alias"} {
+				rows, queryErr := db.QueryContext(ctx, "SELECT * FROM `dolt_history_"+name+"` AS OF '"+id+"' WHERE commit_hash = '"+id+"'")
+				if queryErr != nil {
+					t.Logf("PUBLIC_PINNED_HISTORY_CAPABILITY table=%s error_type=%T error=%v", name, queryErr, queryErr)
+				} else {
+					columns, columnsErr := rows.Columns()
+					t.Logf("PUBLIC_PINNED_HISTORY_CAPABILITY table=%s columns=%v error=%v", name, columns, columnsErr)
+					rows.Close()
+				}
+			}
+		}
 		image, err := port.ReadNativeSourceImage(ctx, id)
 		if err != nil {
 			t.Fatal(err)
@@ -409,6 +423,59 @@ func TestSQLNativeHistoryAliasAbsenceRequiresTypedMissingPhysicalTable(t *testin
 			if err := mock.ExpectationsWereMet(); err != nil {
 				t.Fatal(err)
 			}
+		})
+	}
+}
+
+func TestSQLNativeHistoryRefusesNonlocalHelperSchemaRedirection(t *testing.T) {
+	if os.Getenv("BEADS_TEST_SKIP") == "dolt" {
+		t.Skip("requires the explicit pinned Dolt source-history lane")
+	}
+	for _, pattern := range []string{"dolt_history_archived_rows", "dolt_history_*", "dolt_nonlocal_tables"} {
+		t.Run(pattern, func(t *testing.T) {
+			server := testutil.StartIsolatedDoltContainerHandle(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+			defer cancel()
+			db, err := sql.Open("mysql", fmt.Sprintf("root@tcp(127.0.0.1:%s)/beads_test?parseTime=true", server.Port))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			exec := func(query string) {
+				t.Helper()
+				if _, err := db.ExecContext(ctx, query); err != nil {
+					t.Fatal(err)
+				}
+			}
+			exec("CREATE TABLE archived_rows (id INT, old_column TEXT, opaque LONGBLOB)")
+			exec("INSERT INTO archived_rows VALUES (1,'original',X'00FF'),(1,'original',X'00FF'),(2,NULL,NULL)")
+			exec("INSERT INTO dolt_nonlocal_tables (table_name,target_ref,options) VALUES ('archived_rows','main','immediate')")
+			if _, err := db.ExecContext(ctx, "INSERT INTO dolt_nonlocal_tables (table_name,target_ref,options) VALUES (?,'main','immediate')", pattern); err != nil {
+				t.Fatal(err)
+			}
+			exec("CALL DOLT_ADD('-A')")
+			exec("CALL DOLT_COMMIT('-m','public helper alias','--author','Synthetic source <source@example.test>')")
+			var id string
+			if err := db.QueryRowContext(ctx, "SELECT DOLT_HASHOF('HEAD')").Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			exec("DELETE FROM dolt_nonlocal_tables")
+			exec("ALTER TABLE archived_rows DROP COLUMN old_column, ADD COLUMN later_column TEXT")
+			exec("UPDATE archived_rows SET later_column='later',opaque=X'11'")
+			exec("CALL DOLT_ADD('-A')")
+			exec("CALL DOLT_COMMIT('-m','public later schema','--author','Synthetic source <source@example.test>')")
+			port := SQLSource{DB: db}
+			declarations, censusErr := port.historyTable(ctx, "SELECT * FROM dolt_nonlocal_tables AS OF '"+id+"'")
+			t.Logf("PUBLIC_NONLOCAL_CENSUS_CAPABILITY pattern=%s commit=%s expected_stored_rows=2 observed_rows=%d columns=%v error=%v", pattern, id, len(declarations.Rows), declarations.Columns, censusErr)
+			_, err = port.ReadNativeSourceImage(ctx, id)
+			reason := "historical-history-helper-shadowed:archived_rows"
+			if pattern == "dolt_nonlocal_tables" {
+				reason = "historical-nonlocal-census-shadowed"
+			}
+			if typed, ok := err.(ErrSourceHistoryUnavailable); !ok || typed.Reason != reason {
+				t.Fatalf("helper schema redirection must name refusal %s: %v", reason, err)
+			}
+			t.Logf("PUBLIC_HELPER_ALIAS_REFUSAL pattern=%s commit=%s reason=%s", pattern, id, reason)
 		})
 	}
 }

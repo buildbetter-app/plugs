@@ -182,13 +182,18 @@ in each raw image's `tables` under that exact name, including the driver's
 observed empty declaration table. A nonlocal alias is not evidence of local
 immutable rows. For a declared alias the SQL reader pins both
 `dolt_history_<name> AS OF '<commit>'` and `WHERE commit_hash = '<commit>'`;
-this reads the physical table and its original schema without following the
-alias to a later working set. Only the history table's three appended metadata
-columns are removed. Duplicate rows, NULL, binary cells and old-only columns
-remain intact. A typed server missing-table error for this declared alias
-establishes local absence; other read errors remain named gaps. An ordinary
-missing table has no such exception. A driver that cannot provide this SQL
-evidence refuses; no current rows are grafted into an earlier commit.
+observed declarations that redirect this helper refuse with
+`historical-history-helper-shadowed:<name>`. An observed self-alias on the
+declaration relation refuses with `historical-nonlocal-census-shadowed`.
+These guards do not independently authenticate a declaration relation that
+has itself been redirected to different rows. The public SQL controls retain
+that capability boundary; this path is not accepted as complete native history
+until the auxiliary census is independently rooted at the requested commit.
+Only the history table's three appended metadata columns are removed. Duplicate
+rows, NULL, binary cells and old-only columns must remain intact. Only typed
+MySQL 1146 for a declared alias is treated as physical absence; other read errors
+remain named gaps. An ordinary missing table has no such exception. No current
+rows are grafted into an earlier commit.
 
 The internal portable mapper clears only the native-family capture marker
 when projecting an already pinned frozen image. It still requires all ordinary

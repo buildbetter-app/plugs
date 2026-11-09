@@ -58,6 +58,7 @@ func TestNativeCaptureKeepsPortableProjectionVerificationIndependent(t *testing.
 		t.Run(fmt.Sprintf("missing_image_%t", missing), func(t *testing.T) {
 			s, inventory := historyFixture(t)
 			inventory.SourceFamilyContract = SourceFamilyContract
+			inventory.SourcePlaneAddressContract = SourcePlaneAddressContract
 			if missing {
 				delete(s.images, s.log.Commits[1].ID)
 			}

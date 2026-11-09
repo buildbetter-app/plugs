@@ -319,9 +319,12 @@ current state with a new floor. Dolt commit images are explicit import units,
 not claims about individual SQL transactions or edits between commits. Audit
 rows and source authors are provenance, never verified Plug principals.
 Raw native capture also retains historical nonlocal-table declarations. For
-declared aliases, both schema and row reads are pinned to the same commit via
-the supported history SQL table; alias targets in today's working set cannot
-supply historical rows. Missing versioned evidence still remains a named gap.
+declared aliases, the history SQL query requests the same commit for its schema
+and row partition. Observed aliases on the helper or declaration relation
+receive named refusals. A redirected declaration census is not independently
+authenticated by these guards, so complete native history remains unqualified
+until the scoped driver supplies that evidence. Public controls retain actual
+capability failures. Missing versioned evidence remains a named gap.
 The complete opaque issue-field list is `agent_state`, `await_id`, `await_type`,
 `ephemeral`, `event_kind`, `hook_bead`, `is_template`, `mol_type`, `payload`,
 `role_bead`, `role_type`, `target`, `timeout_ns`, `waiters`, `wisp_type` and

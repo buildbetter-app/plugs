@@ -118,6 +118,9 @@ func (s SQLSource) ReadNativeSourceImage(ctx context.Context, id string) (map[st
 	if err != nil {
 		return nil, ErrSourceHistoryUnavailable{Reason: "historical-nonlocal-census-unavailable"}
 	}
+	if shadowed, err := nativeNonlocalAlias("dolt_nonlocal_tables", nonlocal); err != nil || shadowed {
+		return nil, ErrSourceHistoryUnavailable{Reason: "historical-nonlocal-census-shadowed"}
+	}
 	result := map[string]Table{"dolt_nonlocal_tables": nonlocal}
 	seen := map[string]bool{}
 	for _, row := range names.Rows {
@@ -137,6 +140,12 @@ func (s SQLSource) ReadNativeSourceImage(ctx context.Context, id string) (map[st
 			return nil, err
 		}
 		if alias {
+			// The resolver checks nonlocal rules before recognizing the
+			// dolt_history prefix. Its own redirection would use a later schema.
+			shadowed, err := nativeNonlocalAlias("dolt_history_"+name, nonlocal)
+			if err != nil || shadowed {
+				return nil, ErrSourceHistoryUnavailable{Reason: "historical-history-helper-shadowed:" + name}
+			}
 			table, present, err := s.readNativeLocalHistoryTable(ctx, name, id)
 			if err != nil {
 				return nil, err
@@ -183,6 +192,8 @@ func (s SQLSource) readNativeLocalHistoryTable(ctx context.Context, name, id str
 	// commit. Unqualified dolt_history uses the current schema and is lossy for
 	// old/dropped columns. This supported SQL table resolves the physical base
 	// table at the pinned root without following that base table's aliases.
+	// Observed aliases on this auxiliary name refuse at the caller. This does
+	// not independently authenticate a redirected declaration relation.
 	table, err := s.historyTable(ctx, "SELECT * FROM `dolt_history_"+name+"` AS OF '"+id+"' WHERE commit_hash = '"+id+"'")
 	if err != nil {
 		var server *mysql.MySQLError
