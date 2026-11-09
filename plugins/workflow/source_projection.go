@@ -20,8 +20,12 @@ func sourceItem(entity driver.SourcePlaneEntityV1, disposition driver.SourcePlan
 	if err != nil {
 		return empty, time.Time{}, err
 	}
-	storage, err := sourceText(fields["storage_class"])
-	if err != nil {
+	storageRaw, storagePresent := fields["storage_class"]
+	var storage any
+	if !storagePresent {
+		return empty, time.Time{}, sourceRefusal("source storage_class column absent")
+	}
+	if err := decodeWorkflowJSON(storageRaw, &storage); err != nil {
 		return empty, time.Time{}, err
 	}
 	ephemeral, err := sourceBool(fields["ephemeral"])
@@ -32,7 +36,7 @@ func sourceItem(entity driver.SourcePlaneEntityV1, disposition driver.SourcePlan
 	if err != nil {
 		return empty, time.Time{}, err
 	}
-	if disposition.SourceType != typ || disposition.StorageClass != storage || disposition.Ephemeral != ephemeral || disposition.NoHistory != noHistory || disposition.SinkKind != "workflow:item" || disposition.Schema != SourceStateSchema || disposition.RefusalPolicy != "exact-only" {
+	if disposition.SourceType != typ || !disposition.MatchesStorageClass(storage, storagePresent) || disposition.Ephemeral != ephemeral || disposition.NoHistory != noHistory || disposition.SinkKind != "workflow:item" || disposition.Schema != SourceStateSchema || disposition.RefusalPolicy != "exact-only" {
 		return empty, time.Time{}, sourceRefusal("source type/storage/flags have no exact disposition")
 	}
 	if disposition.Lifetime != "process" && disposition.Lifetime != "restart" {

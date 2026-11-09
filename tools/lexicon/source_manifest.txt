@@ -526,6 +526,7 @@ internal/integration/converterroundtrip/source_planes_reverse_test.go
 internal/integration/converterroundtrip/source_planes_test.go
 internal/integration/converterroundtrip/source_poststage_test.go
 internal/integration/converterroundtrip/source_public_test.go
+internal/integration/converterroundtrip/source_storage_test.go
 internal/integration/converterroundtrip/testdata/native-built-in-statuses.json
 internal/integration/converterroundtrip/testdata/public-complete-root-990eb800.tar
 internal/integration/converterroundtrip/testdata/public-partial-990eb800.tar

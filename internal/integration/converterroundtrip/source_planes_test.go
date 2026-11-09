@@ -203,6 +203,16 @@ func jointProfile(t *testing.T, data []byte, store driver.Store, lease driver.Ac
 
 func jointProfileWithPlan(t *testing.T, data []byte, store driver.Store, lease driver.ActiveLease, adjust func(*driver.SourcePlanePlanV1)) driver.RestoreImportProfile {
 	t.Helper()
+	p, plan := jointUnboundProfileWithPlan(t, data, store, lease, adjust)
+	p, err := BindSourceImport(context.Background(), bytes.NewReader(data), p, plan)
+	if err != nil {
+		t.Fatal("complete explicit preparation", err)
+	}
+	return p
+}
+
+func jointUnboundProfileWithPlan(t *testing.T, data []byte, store driver.Store, lease driver.ActiveLease, adjust func(*driver.SourcePlanePlanV1)) (driver.RestoreImportProfile, driver.SourcePlanePlanV1) {
+	t.Helper()
 	ctx := context.Background()
 	archive, err := dumpformat.Read(bytes.NewReader(data))
 	if err != nil {
@@ -319,11 +329,7 @@ func jointProfileWithPlan(t *testing.T, data []byte, store driver.Store, lease d
 		adjust(&plan)
 	}
 	p := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: actor, Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: driver.StoreID(archive.Manifest().StoreID), Method: "offline.restore.import", IdempotencyKey: strings.Repeat("b", 32), ArchiveDigest: archive.SHA256(), HistoryMode: driver.RestoreHistoryModeSnapshot}
-	p, err = BindSourceImport(ctx, bytes.NewReader(data), p, plan)
-	if err != nil {
-		t.Fatal("complete explicit preparation", err)
-	}
-	return p
+	return p, plan
 }
 
 func TestJointSourceImportPublishesAndRecoversAcrossThreeStores(t *testing.T) {
