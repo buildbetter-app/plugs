@@ -209,6 +209,7 @@ internal/core/model/events.go
 internal/core/model/history.go
 internal/core/model/json.go
 internal/core/model/link_target_test.go
+internal/core/model/native_category_test.go
 internal/core/model/natural.go
 internal/core/model/natural_test.go
 internal/core/model/precondition.go
@@ -227,6 +228,7 @@ internal/core/ontology/decode.go
 internal/core/ontology/default.go
 internal/core/ontology/gate.go
 internal/core/ontology/gate_test.go
+internal/core/ontology/native_categories_test.go
 internal/core/ontology/ontology_test.go
 internal/core/ontology/plan.go
 internal/core/ontology/runtime.go
