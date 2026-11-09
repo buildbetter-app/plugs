@@ -306,9 +306,13 @@ func (b *selectionBackfill) activate(ctx context.Context, q sourceindex.SQL) err
 	if err = b.tx.reader.requireSelectionProofGeneration(ctx, generation, statements); err != nil {
 		return err
 	}
+	// A mixed rebuild can repair the last unavailable family while the other
+	// families already have ready coverage. All four were audited above; do not
+	// require every family to have been rebuilt in this activation.
 	complete := true
 	for _, family := range selectionFamilies() {
-		complete = complete && b.families[family]
+		_, included := b.families[family]
+		complete = complete && included && valid[family]
 	}
 	if complete {
 		if err = b.tx.reader.certifySelectionProof(ctx, valid); err != nil {
