@@ -150,7 +150,7 @@ func (g *NativeHistoryGap) UnmarshalJSON(data []byte) error {
 var nativeSQLName = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]{0,127}$`)
 
 var nativeUnversioned = map[string]bool{
-	"bd_events_journal": true, "bd_events_seq": true, "events": true,
+	SourceEventJournalTable: true, SourceEventSequenceTable: true, "events": true,
 	"ignored_schema_migrations": true, "leases": true, "local_metadata": true,
 	"repo_mtimes": true, EphemeralChildCounterTable: true, EphemeralCommentTable: true,
 	EphemeralDependencyTable: true, EphemeralEventTable: true, EphemeralLabelTable: true, EphemeralEntityTable: true,
