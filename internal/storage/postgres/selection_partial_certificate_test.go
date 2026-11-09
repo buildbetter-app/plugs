@@ -124,12 +124,14 @@ func publishSelectionPartialBatch(t *testing.T, s *Store, lease driver.ActiveLea
 	t.Helper()
 	ctx := context.Background()
 	plans := make([]*pipeline.SourceProjectionPlan, count)
+	docs := make([]pipeline.Document, count)
 	records := make([]driver.Record, count)
 	keys := map[string]driver.LockKey{}
 	sentinels := map[driver.Sentinel]bool{}
 	for i := range records {
 		ref := testRef(fmt.Sprintf("pl-partial-%06d", offset+i))
-		body, err := json.Marshal(pipeline.Document{ID: ref.ID, Type: "issue", Fields: map[string]any{}})
+		docs[i] = pipeline.Document{ID: ref.ID, Type: "issue", Fields: map[string]any{}}
+		body, err := json.Marshal(docs[i])
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -152,6 +154,14 @@ func publishSelectionPartialBatch(t *testing.T, s *Store, lease driver.ActiveLea
 	}
 	w, h := beginTest(t, s, lease, locks...)
 	defer w.Close()
+	if w.Snapshot().At == nil {
+		t.Fatal("partial publication has no bound Head")
+	}
+	at, err := w.Snapshot().At.Uint64()
+	if err != nil || at == ^uint64(0) {
+		t.Fatal("partial publication revision unavailable", err)
+	}
+	publicationRevision := model.Natural64(at + 1)
 	add := map[driver.DerivedTable][]driver.DerivedRow{}
 	for i, record := range records {
 		if err := w.(driver.GraphSourceWriter).PutGraphRecord(ctx, record, nil, nil); err != nil {
@@ -160,6 +170,9 @@ func publishSelectionPartialBatch(t *testing.T, s *Store, lease driver.ActiveLea
 		rows, err := plans[i].SelectionRows(h.Incarnation, model.Natural64(0))
 		if err != nil || len(rows) != 3 {
 			t.Fatalf("ordinary core projection=%d: %v", len(rows), err)
+		}
+		if err := pipeline.BindReadySelectionRows(docs[i], publicationRevision, rows); err != nil {
+			t.Fatal(err)
 		}
 		rowKeys, err := pipeline.SourceSelectionRows(record.Ref)
 		if err != nil {
