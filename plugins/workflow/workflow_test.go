@@ -1225,20 +1225,109 @@ func TestB26RelationsRetainDistinctMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	from, to := model.RefByID(run.Items[0].ID, model.Natural64(0)), model.RefByID(run.Items[1].ID, model.Natural64(0))
-	for _, gate := range []string{"all-children", "any-children"} {
-		if _, err := p.Link(ctx, by, LinkRequest{From: from, To: to, Kind: "waits-for", Metadata: &model.LinkMetadata{Gate: gate, AlsoBlocks: true}}, meta("bead.link", gate)); err != nil {
-			t.Fatal(err)
-		}
+	// Invocation and whole-body update retain their full relation identity.
+	// Named Link/Unlink use the canonical endpoint identity tested separately.
+	relations := []RelationSpec{
+		{To: to, Kind: "waits-for", Metadata: &model.LinkMetadata{Gate: "all-children", AlsoBlocks: true}},
+		{To: to, Kind: "waits-for", Metadata: &model.LinkMetadata{Gate: "any-children", AlsoBlocks: true}},
+	}
+	invoked, err := p.Invoke(ctx, by, InvokeRequest{Template: "metadata-body", Project: "project", Mode: "ephemeral", Checklist: []ChecklistItem{{Label: "source", Title: "source", Links: relations}}}, meta("x.workflow.invoke", "invoke-with-metadata"))
+	if err != nil || len(invoked.Items) != 1 || len(invoked.Items[0].Links) != 2 {
+		t.Fatalf("invocation metadata collapsed: %+v %v", invoked, err)
+	}
+	if _, err := p.Update(ctx, by, from, map[string]any{"links": relations}, meta("bead.update", "set-metadata")); err != nil {
+		t.Fatal(err)
 	}
 	got, err := p.Get(ctx, by, from, meta("bead.get", "read"))
-	if err != nil || len(got.Links) != 2 {
+	if err != nil || len(got.Links) != 2 || !reflect.DeepEqual(got.Links[0].Metadata, relations[0].Metadata) || !reflect.DeepEqual(got.Links[1].Metadata, relations[1].Metadata) {
 		t.Fatalf("metadata collapsed: %+v %v", got, err)
 	}
-	if _, err := p.Unlink(ctx, by, LinkRequest{From: from, To: to, Kind: "waits-for", Metadata: &model.LinkMetadata{Gate: "all-children", AlsoBlocks: true}}, meta("bead.unlink", "remove-one")); err != nil {
+	if _, err := p.Update(ctx, by, from, map[string]any{"links": relations[1:]}, meta("bead.update", "remove-one")); err != nil {
 		t.Fatal(err)
 	}
 	got, err = p.Get(ctx, by, from, meta("bead.get", "read-again"))
 	if err != nil || len(got.Links) != 1 || got.Links[0].Metadata.Gate != "any-children" {
-		t.Fatalf("metadata unlink removed sibling: %+v %v", got, err)
+		t.Fatalf("whole-body replacement lost retained metadata: %+v %v", got, err)
+	}
+}
+
+func TestB07NamedRelationsReplacePredicateAndUnlinkWithoutMetadata(t *testing.T) {
+	ctx := context.Background()
+	state := &testDurableState{}
+	p, err := New(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+	meta := func(method, key string) model.WriteMeta {
+		return model.WriteMeta{Method: method, Project: "project", Agent: "owner", AgentLabel: "owner", IdempotencyKey: key}
+	}
+	run, err := p.Invoke(ctx, by, InvokeRequest{Template: "named-metadata", Project: "project", Mode: "ephemeral", Checklist: []ChecklistItem{{Label: "from", Title: "from"}, {Label: "to", Title: "to"}}}, meta("x.workflow.invoke", "invoke"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	from, to := model.RefByID(run.Items[0].ID, model.Natural64(0)), model.RefByID(run.Items[1].ID, model.Natural64(0))
+	read := func(ref model.Ref) ItemView {
+		t.Helper()
+		item, err := p.Get(ctx, by, ref, meta("bead.get", "read"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return item
+	}
+	requireMirrors := func(metadata *model.LinkMetadata) {
+		t.Helper()
+		for _, ref := range []model.Ref{from, to} {
+			got := read(ref)
+			if metadata == nil {
+				if len(got.Links) != 0 {
+					t.Fatalf("unlink retained relation mirror: %+v", got.Links)
+				}
+				continue
+			}
+			want := []RelationView{{From: from.ID, To: to, Kind: "waits-for", Metadata: metadata}}
+			if !reflect.DeepEqual(got.Links, want) {
+				t.Fatalf("named relation identity/predicate/mirror: got=%+v want=%+v", got.Links, want)
+			}
+		}
+	}
+	var latest model.Commit
+	for _, gate := range []string{"all-children", "any-children"} {
+		predicate := &model.LinkMetadata{Gate: gate, AlsoBlocks: true}
+		beforeRevision := state.rev
+		latest, err = p.Link(ctx, by, LinkRequest{From: from, To: to, Kind: "waits-for", Metadata: predicate}, meta("bead.link", gate))
+		if err != nil || state.rev != beforeRevision+1 {
+			t.Fatalf("named predicate must publish one checkpoint CAS: %v", err)
+		}
+		requireMirrors(predicate)
+	}
+	beforeFrom, beforeTo := read(from), read(to)
+	beforeRevision := state.rev
+	omitted := LinkRequest{From: from, To: to, Kind: "waits-for"}
+	noOp, err := p.Link(ctx, by, omitted, meta("bead.link", "omitted"))
+	if err != nil || !reflect.DeepEqual(latest, noOp) || !reflect.DeepEqual(beforeFrom, read(from)) || !reflect.DeepEqual(beforeTo, read(to)) || state.rev != beforeRevision+1 {
+		t.Fatalf("omission changed endpoint body/generation or failed to record its receipt: %v", err)
+	}
+	requireMirrors(&model.LinkMetadata{Gate: "any-children", AlsoBlocks: true})
+	beforeBytes, beforeRevision := append([]byte(nil), state.value...), state.rev
+	replay, err := p.Link(ctx, by, omitted, meta("bead.link", "omitted"))
+	if err != nil || !reflect.DeepEqual(noOp, replay) || !bytes.Equal(beforeBytes, state.value) || state.rev != beforeRevision {
+		t.Fatalf("named no-op replay republished checkpoint state: %v", err)
+	}
+	_, err = p.Unlink(ctx, by, LinkRequest{From: from, To: to, Kind: "waits-for", Metadata: &model.LinkMetadata{Gate: "any-children", AlsoBlocks: true}}, meta("bead.unlink", "remove"))
+	var failure *model.Error
+	if !errors.As(err, &failure) || failure.Data.Code != "invalid_params" || !bytes.Equal(beforeBytes, state.value) || state.rev != beforeRevision {
+		t.Fatalf("unlink metadata was not refused atomically: %v", err)
+	}
+	// The refused key remains available for the canonical metadata-free unlink.
+	removed, err := p.Unlink(ctx, by, omitted, meta("bead.unlink", "remove"))
+	if err != nil || state.rev != beforeRevision+1 {
+		t.Fatalf("metadata-free unlink must publish one checkpoint CAS: %v", err)
+	}
+	requireMirrors(nil)
+	beforeBytes, beforeRevision = append([]byte(nil), state.value...), state.rev
+	replayedRemoval, err := p.Unlink(ctx, by, omitted, meta("bead.unlink", "remove"))
+	if err != nil || !reflect.DeepEqual(removed, replayedRemoval) || !bytes.Equal(beforeBytes, state.value) || state.rev != beforeRevision {
+		t.Fatalf("metadata-free unlink replay changed checkpoint state: %v", err)
 	}
 }

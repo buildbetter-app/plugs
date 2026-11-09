@@ -57,10 +57,11 @@ type RelationSpec struct {
 }
 
 type RelationView struct {
-	From     string              `json:"from"`
-	To       model.Ref           `json:"to"`
-	Kind     string              `json:"kind"`
-	Metadata *model.LinkMetadata `json:"metadata,omitempty"`
+	From       string               `json:"from"`
+	To         model.Ref            `json:"to"`
+	Kind       string               `json:"kind"`
+	Metadata   *model.LinkMetadata  `json:"metadata,omitempty"`
+	TargetKind model.LinkTargetKind `json:"targetKind,omitempty"`
 }
 
 // LinkRequest is the public typed relation seam used by the standard service
@@ -71,6 +72,9 @@ type LinkRequest struct {
 	To       model.Ref           `json:"to"`
 	Kind     string              `json:"kind"`
 	Metadata *model.LinkMetadata `json:"metadata,omitempty"`
+	// CoreHead is supplied only by the trusted service after validating an
+	// ordinary endpoint. It is neither wire input nor part of replay identity.
+	CoreHead *driver.CoreSnapshotExpectation `json:"-"`
 }
 
 // PromoteRequest names the active workflow item and the ordinary bead that the
@@ -121,6 +125,8 @@ type InvokeRequest struct {
 	Project   string          `json:"project"`
 	Mode      string          `json:"mode"`
 	Checklist []ChecklistItem `json:"checklist"`
+	// CoreHead is trusted host context, excluded from wire and replay identity.
+	CoreHead *driver.CoreSnapshotExpectation `json:"-"`
 }
 
 type RunView struct {
@@ -700,13 +706,20 @@ func (p *Provider) saveWithResolver(ctx context.Context, value persisted, revisi
 	if !observed {
 		return p.save(ctx, value, revision)
 	}
+	return p.saveAtHead(ctx, value, revision, &head)
+}
+
+func (p *Provider) saveAtHead(ctx context.Context, value persisted, revision pluginapi.Revision, head *driver.CoreSnapshotExpectation) error {
+	if head == nil {
+		return p.save(ctx, value, revision)
+	}
 	guarded, ok := p.state.(interface {
 		PutAtHead(context.Context, string, any, pluginapi.Revision, driver.CoreSnapshotExpectation) (pluginapi.Revision, error)
 	})
 	if !ok {
 		return fail("unsupported", "durable state cannot atomically fence core blocker observations")
 	}
-	_, err := guarded.PutAtHead(ctx, stateKey, value, revision, head)
+	_, err := guarded.PutAtHead(ctx, stateKey, value, revision, *head)
 	return err
 }
 
@@ -961,7 +974,7 @@ func (p *Provider) Invoke(ctx context.Context, by model.PrincipalRef, req Invoke
 		return InvokeResult{}, err
 	}
 	p.appendAudit(&value, "workflow.run.created", receipt)
-	if err := p.mapSaveError(p.save(ctx, value, revision)); err != nil {
+	if err := p.mapSaveError(p.saveAtHead(ctx, value, revision, req.CoreHead)); err != nil {
 		return InvokeResult{}, err
 	}
 	return result, nil
@@ -1612,6 +1625,13 @@ func (p *Provider) applyAuxiliary(value *persisted, old, next itemState) error {
 // image and all relation/parent targets before publishing one checkpoint CAS;
 // a failed target lookup therefore leaves the previous image untouched.
 func (p *Provider) Update(ctx context.Context, by model.PrincipalRef, id model.Ref, fields map[string]any, meta model.WriteMeta) (model.Commit, error) {
+	return p.UpdateAtHead(ctx, by, id, fields, meta, nil)
+}
+
+// UpdateAtHead carries trusted host endpoint observations through the same
+// checkpoint transaction as the auxiliary fields, mirrors, audit and receipt.
+// The snapshot is publication context and never changes the replay request.
+func (p *Provider) UpdateAtHead(ctx context.Context, by model.PrincipalRef, id model.Ref, fields map[string]any, meta model.WriteMeta, head *driver.CoreSnapshotExpectation) (model.Commit, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if err := validateRef(id); err != nil || !workflowTarget(id) {
@@ -1656,7 +1676,7 @@ func (p *Provider) Update(ctx context.Context, by model.PrincipalRef, id model.R
 		return model.Commit{}, err
 	}
 	p.appendAudit(&value, "workflow.update", receipt)
-	if err := p.mapSaveError(p.save(ctx, value, revision)); err != nil {
+	if err := p.mapSaveError(p.saveAtHead(ctx, value, revision, head)); err != nil {
 		return model.Commit{}, err
 	}
 	return commit, nil
@@ -1666,19 +1686,22 @@ func (p *Provider) relationMutation(ctx context.Context, by model.PrincipalRef, 
 	if err := validateRef(req.From); err != nil {
 		return model.Commit{}, err
 	}
-	if err := validateRef(req.To); err != nil || strings.TrimSpace(req.Kind) == "" {
+	if err := validateRef(req.To); err != nil || req.Kind == "" || len(req.Kind) > 32 || !utf8.ValidString(req.Kind) {
 		return model.Commit{}, fail("invalid_params", "workflow relations require branch-zero IDs and a kind")
 	}
 	if req.From.ID == req.To.ID {
 		return model.Commit{}, fail("invalid_params", "workflow item cannot relate to itself")
 	}
+	var metadata *model.LinkMetadata
 	if req.Metadata != nil {
-		if req.Kind != "waits-for" {
+		if unlink || req.Kind != "waits-for" {
 			return model.Commit{}, fail("invalid_params", "relation metadata is only valid on waits-for")
 		}
-		if _, err := req.Metadata.Normalized(); err != nil {
+		normalized, err := req.Metadata.Normalized()
+		if err != nil {
 			return model.Commit{}, fail("invalid_params", err.Error())
 		}
+		metadata = &normalized
 	}
 	fromWorkflow, toWorkflow := workflowTarget(req.From), workflowTarget(req.To)
 	if !fromWorkflow && !toWorkflow {
@@ -1728,19 +1751,49 @@ func (p *Provider) relationMutation(ctx context.Context, by model.PrincipalRef, 
 			return model.Commit{}, err
 		}
 	}
-	relation := relationState{From: req.From.ID, To: req.To, Kind: strings.TrimSpace(req.Kind), Metadata: req.Metadata}
-	changed := false
+	relation := relationState{From: req.From.ID, To: req.To, Kind: req.Kind, Metadata: metadata}
+	// B07 endpoint identity spans dependency kinds. Keep relationKey's full
+	// body identity for migration, mirrors and replay; match named mutations
+	// by endpoints so metadata omission preserves the stored predicate and
+	// unlink does not require the caller to repeat that predicate.
+	values := endpoint.Inbound
 	if fromWorkflow {
-		if unlink {
-			if !hasRelation(endpoint.Links, relation) {
-				return model.Commit{}, fail("not_found", "workflow relation was not found")
-			}
-			endpoint.Links = removeRelation(endpoint.Links, relation)
-			changed = true
-		} else if !hasRelation(endpoint.Links, relation) {
-			endpoint.Links = append(endpoint.Links, cloneRelation(relation))
-			changed = true
+		values = endpoint.Links
+	}
+	found := -1
+	for i, stored := range values {
+		if stored.From != relation.From || stored.To.ID != relation.To.ID || stored.To.Branch.String() != relation.To.Branch.String() {
+			continue
 		}
+		if stored.Kind == relation.Kind {
+			found = i
+		} else if !unlink {
+			return model.Commit{}, fail("ontology_guard_failed", "dependency endpoints already have another link kind")
+		}
+	}
+	if unlink && found < 0 {
+		return model.Commit{}, fail("not_found", "workflow relation was not found")
+	}
+	var previous relationState
+	changed := true
+	if found >= 0 {
+		previous = values[found]
+		if unlink {
+			values = removeRelation(values, previous)
+		} else {
+			if metadata == nil {
+				relation.Metadata = previous.Metadata
+			}
+			changed = relationKey(previous) != relationKey(relation)
+			if changed {
+				values[found] = cloneRelation(relation)
+			}
+		}
+	} else {
+		values = append(values, cloneRelation(relation))
+	}
+	if fromWorkflow {
+		endpoint.Links = values
 		if toWorkflow {
 			target, ok := value.Items[req.To.ID]
 			if !ok {
@@ -1749,11 +1802,14 @@ func (p *Provider) relationMutation(ctx context.Context, by model.PrincipalRef, 
 			if err := p.authorized(target, by, meta); err != nil {
 				return model.Commit{}, err
 			}
-			if unlink {
-				target.Inbound = removeRelation(target.Inbound, relation)
-			} else {
-				target.Inbound = append(target.Inbound, cloneRelation(relation))
-				target.Inbound = dedupeRelations(target.Inbound)
+			if changed {
+				if found >= 0 {
+					target.Inbound = removeRelation(target.Inbound, previous)
+				}
+				if !unlink {
+					target.Inbound = append(target.Inbound, cloneRelation(relation))
+					target.Inbound = dedupeRelations(target.Inbound)
+				}
 			}
 			value.Items[target.ID] = target
 		}
@@ -1765,17 +1821,7 @@ func (p *Provider) relationMutation(ctx context.Context, by model.PrincipalRef, 
 		// A durable source has no plugin body to mutate. Its mixed-plane edge is
 		// indexed on the workflow target, so reads and promotion can preserve it
 		// without manufacturing a core version or lease row.
-		if unlink {
-			if !hasRelation(endpoint.Inbound, relation) {
-				return model.Commit{}, fail("not_found", "workflow relation was not found")
-			}
-			endpoint.Inbound = removeRelation(endpoint.Inbound, relation)
-			changed = true
-		} else if !hasRelation(endpoint.Inbound, relation) {
-			endpoint.Inbound = append(endpoint.Inbound, cloneRelation(relation))
-			endpoint.Inbound = dedupeRelations(endpoint.Inbound)
-			changed = true
-		}
+		endpoint.Inbound = values
 		if changed {
 			endpoint.Generation++
 			value.Items[endpoint.ID] = endpoint
@@ -1787,7 +1833,7 @@ func (p *Provider) relationMutation(ctx context.Context, by model.PrincipalRef, 
 		return model.Commit{}, err
 	}
 	p.appendAudit(&value, "workflow.relation", receipt)
-	if err := p.mapSaveError(p.save(ctx, value, revision)); err != nil {
+	if err := p.mapSaveError(p.saveAtHead(ctx, value, revision, req.CoreHead)); err != nil {
 		return model.Commit{}, err
 	}
 	return commit, nil

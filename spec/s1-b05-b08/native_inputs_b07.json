@@ -1,0 +1,40 @@
+{
+  "format": "plug.s1.b07.native-inputs.v1",
+  "helperSource": "43c0f2410ccb24062b8bd1bd073aeb29ef21288f",
+  "helperTree": "05153e1c051b1887fa875b53739adc036ae8cf16",
+  "source": "c8eb3ba7d4177e111a6f5c8aebe06b5d0b1d5724",
+  "sourceTree": "930405e863284a3955cbd35e73a6097b606b91a5",
+  "sourceManifest": "e01a584042b4a2c32ea3cbcbdd55069f7c23bc2b853f8734857c5082e828f15d",
+  "sourceEntries": 5141,
+  "binarySHA256": "b734da8ba8b6f50d7fd32239e405b8f8ed9d171b7be5fbbccb63a923d257a123",
+  "binaryBytes": 161299592,
+  "buildRun": "41800330346",
+  "profile": "plug-public-native/1",
+  "manifestSHA256": "ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a",
+  "workflowSHA": "d758fdf42a426e9e2a4b707dbcebb22ec68b264e",
+  "descriptor": "41800330346:13307042737:ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a",
+  "clockScope": "Raw wall-clock command windows only; native Go time.Now and SQL UTC_TIMESTAMP are uncontrolled. No expiry/wake/48h/B05/full-card claim.",
+  "workflowBranch": "swarm/native-producer-census-control-c8eb-20261104",
+  "label": "native-census-c8eb-20261104",
+  "artifactDigest": "sha256:28609d7c072c281a748cb53a361d9a3ffada826d6f2e8866a3b1e62b23d5ffc4",
+  "artifactSize": 111646601,
+  "trustedPreparation": {
+    "control": "2d2164ba3d8e456c9aba15fbeb8cae4edc755997",
+    "controlTree": "ae226eed2e9a85d4da19958db7a3520ebfe9cf05",
+    "controlBranch": "swarm/native-preparer-c8eb-rebind-20261104",
+    "helperSource": "70230ccd92597a96000f90223c5d89b103e25426",
+    "helperSHA256": "6a84191fd016ddcb637cb5a470e88727176a70e8b5c6e8e6c69f33db6a1559eb",
+    "readinessReviewSHA256": "d860d82915eb728aa8ee2b33bbadfb7f5e33df59369ff7de24d430aad58eeba6",
+    "scope": "Fixed reviewed control only. Each consumer invocation must supply its own preparation and four matching exports. publicnative helper43 attribution remains separate."
+  },
+  "cards": [
+    "B07"
+  ],
+  "runs": [
+    "run-a",
+    "run-b"
+  ],
+  "scope": "Own genuine B07 full-vocabulary public protocol, intact exporter/import receiver, physical SQLite/Postgres HTTP mutations, rollback/replay/reopen and subscriber delivery. No B05 or another card is invoked; no preparation or runtime transfers.",
+  "consumerSourceAttribution": "publicnative helper43 and PR366 native_io utilities are source reuse only. Four accepted418 values are read unchanged; no expected-pin override or corpus filtering.",
+  "consumerBase": "b2b18c25ff66377490f34fe46bc9206e8ef2650f"
+}

@@ -17,21 +17,67 @@ import (
 // Permission is inert without an authorization provider; gate decisions use
 // the canonical pure evaluator and remain within the single Writer proposal.
 type Ontology struct {
-	mu      sync.RWMutex
-	resolve func(string) ontology.Effective
-	// defaultOnly is true only for the built-in, project-independent resolver
-	// installed by NewOntology(nil). Configured resolvers are never advertised
-	// as an immutable no-plugin source.
+	mu                   sync.RWMutex
+	resolve              func(string) ontology.Effective
+	permissionObserver   TransitionPermissionObserver
+	permissionConfigured bool
+	// Configured resolvers are never advertised as immutable no-plugin sources.
 	defaultOnly bool
 }
 
-func NewOntology(resolve func(string) ontology.Effective) *Ontology {
+// TransitionPermissionRequest carries the existing A3 permission guard's
+// action and actual target status to a trusted host source. It is never RPC
+// input and does not map transition onto an ordinary write permission.
+type TransitionPermissionRequest struct {
+	Principal            model.PrincipalRef
+	Resource             model.ResourceRef
+	Project, Type        string
+	Method, Action       string
+	FromStatus, ToStatus string
+}
+
+// TransitionPermissionObservation is one installation/decision observation
+// from the same tracked snapshot. An installed chain with no permission
+// observation denies; absence of an authorization plugin allows (AZ9).
+type TransitionPermissionObservation struct {
+	AuthzInstalled bool
+	Permission     *bool
+}
+
+// TransitionPermissionSource is the distinct capability of an installed
+// write authority. Generic modify authorization cannot supply this decision.
+type TransitionPermissionSource interface {
+	ObserveTransitionPermission(context.Context, TransitionPermissionRequest, port.SnapshotReader) (TransitionPermissionObservation, error)
+}
+
+type TransitionPermissionObserver func(context.Context, TransitionPermissionRequest, port.SnapshotReader) (TransitionPermissionObservation, error)
+
+type OntologyOption func(*Ontology)
+
+// WithTransitionPermissionObserver binds only trusted composition state. The
+// source must record installation and authority reads on the supplied reader.
+// Explicit nil means authorization is installed but its transition adapter is
+// unavailable, so permission guards fail closed. Omitting the option retains
+// the explicit no-authorization composition.
+func WithTransitionPermissionObserver(observer TransitionPermissionObserver) OntologyOption {
+	return func(o *Ontology) {
+		o.permissionObserver, o.permissionConfigured = observer, true
+	}
+}
+
+func NewOntology(resolve func(string) ontology.Effective, options ...OntologyOption) *Ontology {
 	defaultOnly := resolve == nil
 	if resolve == nil {
 		base := ontology.Default()
 		resolve = func(string) ontology.Effective { return base }
 	}
-	return &Ontology{resolve: resolve, defaultOnly: defaultOnly}
+	o := &Ontology{resolve: resolve, defaultOnly: defaultOnly}
+	for _, option := range options {
+		if option != nil {
+			option(o)
+		}
+	}
+	return o
 }
 
 // Refresh atomically replaces the compiled ontology used by all subsequent
@@ -396,7 +442,7 @@ func (o *Ontology) validate(ctx context.Context, proposal port.ProposedChange, r
 			v := state(old)
 			before = &v
 		}
-		facts := ontology.GuardFacts{SetBy: change.SetBy}
+		facts := ontology.GuardFacts{SetBy: change.SetBy, OverridePolicy: proposal.ForcesClose(change)}
 		for path := range change.SetBy {
 			facts.Touched = append(facts.Touched, path)
 		}
@@ -437,6 +483,9 @@ func (o *Ontology) validate(ctx context.Context, proposal port.ProposedChange, r
 			single.Changes = []port.Change{change}
 			closeSettlement = o.closeSettlement(single)
 		}
+		if err := o.observeTransitionGuards(ctx, proposal, change, before, after, effectiveMethod, closeSettlement, graph, reader, &facts); err != nil {
+			return err
+		}
 		var violations []ontology.Violation
 		if closeSettlement {
 			violations = ontology.ValidateCloseSettlement(o.effective(doc.Project), before, &after, facts)
@@ -448,6 +497,122 @@ func (o *Ontology) validate(ctx context.Context, proposal port.ProposedChange, r
 		}
 	}
 	return o.validateHierarchyParents(proposal, graph)
+}
+
+func (o *Ontology) observeTransitionGuards(ctx context.Context, proposal port.ProposedChange, change port.Change, before *ontology.BeadState, after ontology.BeadState, method string, settlement bool, graph map[string]storedBead, reader port.SnapshotReader, facts *ontology.GuardFacts) error {
+	if before == nil {
+		return nil
+	}
+	guardMethod := method
+	if isGateMethod(guardMethod) {
+		guardMethod = gateLifecycleMethod(pipeline.Document{Fields: after.Fields})
+	}
+	if _, lifecycle := ontology.SlotForMethod(guardMethod); !lifecycle {
+		return nil
+	}
+	effective := o.effective(after.Project)
+	guards, _ := effective.Guards(after.Type, before.Status, after.Status)
+	if settlement {
+		// Ordinary Guards deliberately rejects same-status transitions. Close
+		// settlement instead evaluates every applicable broad/source rule, as
+		// ValidateCloseSettlement does, without inventing a transition.
+		document := effective.Document()
+		workflow := document.Workflows[document.Types[after.Type].Workflow]
+		for _, rule := range workflow.Transitions {
+			if rule.To != after.Status {
+				continue
+			}
+			matches := len(rule.From) == 0
+			for _, source := range rule.From {
+				matches = matches || source == before.Status
+			}
+			if matches {
+				guards = append(guards, rule.Guards...)
+			}
+		}
+	}
+	gateKinds := map[string]bool{}
+	permission := false
+	for _, guard := range guards {
+		switch guard.Kind {
+		case ontology.GatesResolved:
+			for _, kind := range guard.Kinds {
+				gateKinds[kind] = true
+			}
+		case ontology.Permission:
+			permission = true
+		}
+	}
+	if len(gateKinds) != 0 {
+		facts.Gates = o.resolvedGateFacts(change, gateKinds, graph)
+	}
+	if !permission {
+		return nil
+	}
+	o.mu.RLock()
+	observer, configured := o.permissionObserver, o.permissionConfigured
+	o.mu.RUnlock()
+	if !configured {
+		return nil
+	}
+	facts.AuthzInstalled = true
+	if observer == nil {
+		return nil
+	}
+	if reader == nil {
+		return failure("authz_unavailable", "transition permission snapshot is unavailable")
+	}
+	observation, err := observer(ctx, TransitionPermissionRequest{
+		Principal: proposal.Principal, Resource: change.Resource,
+		Project: after.Project, Type: after.Type, Method: guardMethod, Action: "transition",
+		FromStatus: before.Status, ToStatus: after.Status,
+	}, reader)
+	if err != nil {
+		return err
+	}
+	facts.AuthzInstalled = observation.AuthzInstalled
+	if observation.Permission != nil {
+		permission := *observation.Permission
+		facts.Permission = &permission
+	}
+	return nil
+}
+
+// Gates are actual direct blocking nodes in the already guarded prefix/final
+// graph, not fields or request-supplied booleans on the transitioning bead.
+// Every linked gate of a required kind must be resolved successfully; a missing
+// kind has no observation and fails closed. Each gate uses its own project's
+// active definition and status category/outcome. This adds no separate scan.
+func (o *Ontology) resolvedGateFacts(change port.Change, required map[string]bool, graph map[string]storedBead) map[string]bool {
+	facts := map[string]bool{}
+	doc, err := decodeDocument(change.After)
+	if err != nil {
+		return facts
+	}
+	for _, link := range doc.Links {
+		if link.TargetKind == model.LinkTargetExternal || link.Kind != "blocks" || !link.To.IsID() || !link.To.Branch.IsZero() {
+			continue
+		}
+		row, present := graph[link.To.ID]
+		if !present {
+			continue
+		}
+		kind, validKind := row.doc.Fields[gateKindField].(string)
+		if !validKind || !required[kind] {
+			continue
+		}
+		effective := o.effective(row.doc.Project)
+		_, active := effective.Gate(kind)
+		gate, decodeErr := decodeGateState(row.doc)
+		status, known := effective.Status(state(row.doc).Status)
+		resolved := active && decodeErr == nil && gate.State == ontology.GateStateResolved && known &&
+			status.Category == ontology.Completed && status.Outcome == ontology.Success
+		if previous, seen := facts[kind]; seen {
+			resolved = previous && resolved
+		}
+		facts[kind] = resolved
+	}
+	return facts
 }
 
 // Recognize only the named empty slot patch and optional same-target reason.

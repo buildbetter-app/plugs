@@ -13,6 +13,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/port"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -27,6 +28,8 @@ type Checker struct {
 	lease     driver.ActiveLease
 	hierarchy bool
 	now       func() time.Time
+	lifecycle bool
+	ontology  *service.Ontology
 }
 
 var _ port.Authorizer = (*Checker)(nil)
@@ -137,7 +140,20 @@ func (b *BoundAuthorization) Check(ctx context.Context, refs []model.Ref) ([]boo
 	for i, ref := range refs {
 		resources[i] = authz.Resource{Kind: b.kind, Ref: ref}
 	}
-	decisions, err := b.checker.chain.CheckPrepared(ctx, b.slice, b.request.Checks(resources))
+	checks := b.request.Checks(resources)
+	request := b.request.Request()
+	if b.checker.lifecycle && b.kind == authz.Bead && request.Method == "bead.close" {
+		requests := make([]authz.CheckRequest, len(refs))
+		for i, ref := range refs {
+			transition, err := b.checker.closeContext(ctx, b.slice.snapshot, ref)
+			if err != nil {
+				return nil, authzError(err)
+			}
+			requests[i] = authz.CheckRequest{Caller: request.Caller, Action: request.Action, Resource: resources[i], Method: request.Method, Transition: transition}
+		}
+		checks = authz.PrepareChecks(requests)
+	}
+	decisions, err := b.checker.chain.CheckPrepared(ctx, b.slice, checks)
 	if err != nil {
 		return nil, authzError(err)
 	}
@@ -256,6 +272,33 @@ func (c *Checker) Authorize(ctx context.Context, stage port.AuthorizationStage, 
 		requests = append(requests, authz.CheckRequest{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Project, Ref: project}, Method: ""})
 	}
 	chain := c.chain
+	if c.lifecycle && !claimMaintenance {
+		closeRefs := make(map[model.Ref]bool)
+		for _, change := range proposal.Changes {
+			if proposal.Meta.Method == "bead.close" || change.Op.Kind == model.OpClose {
+				closeRefs[change.Resource.Ref] = true
+			}
+		}
+		for i := range requests {
+			if closeRefs[requests[i].Resource.Ref] {
+				requests[i].Transition, err = c.closeContext(ctx, reader, requests[i].Resource.Ref)
+				if err != nil {
+					return authzError(err)
+				}
+			}
+		}
+		// Receipt replay must obtain current transition authority too. The
+		// original publication's decision is never a reusable grant.
+		if stage == port.AuthorizeReplay {
+			for ref := range closeRefs {
+				transition, err := c.closeContext(ctx, reader, ref)
+				if err != nil {
+					return authzError(err)
+				}
+				requests = append(requests, authz.CheckRequest{Caller: caller, Action: authz.Transition, Resource: authz.Resource{Kind: authz.Bead, Ref: ref}, Method: "bead.close", Transition: transition})
+			}
+		}
+	}
 	var checkSlice authz.Slice = s
 	if claimMaintenance {
 		chain = c.claimMaintenanceChain()
@@ -328,6 +371,9 @@ func (c *Checker) validateExistingWrite(ctx context.Context, reader Snapshot, pr
 	if err != nil {
 		return forbidden("invalid proposed bead image")
 	}
+	if c.lifecycle && (proposal.Meta.Method == "bead.close" || change.Op.Kind == model.OpClose) {
+		return validateLifecycleImage(before, after, proposal.Principal, caller, change.SetBy)
+	}
 	method := proposal.Meta.Method
 	if method == "bead.heartbeat" || method == "bead.release" {
 		// The chain already evaluated the actual protected method. This
@@ -388,15 +434,20 @@ func (c *Checker) modifyDecision(ctx context.Context, snapshot Snapshot, p model
 // Visible keeps discovery from advertising methods that the fixed component
 // can never permit. Resource-level authorization still happens in the service
 // and Writer boundaries, so this is only a non-leaking method inventory.
-func (c *Checker) Visible(_ context.Context, p model.PrincipalRef, d wire.MethodDesc) (bool, error) {
+func (c *Checker) Visible(ctx context.Context, p model.PrincipalRef, d wire.MethodDesc) (bool, error) {
 	if d.Permission == "none" || d.Name == "server.hello" || strings.HasPrefix(d.Name, "rpc.") {
 		return true, nil
 	}
 	if d.Permission == "read" {
 		return p.Kind == "user", nil
 	}
+	if d.Permission == "admin" && d.Name == "ontology.apply" {
+		return c.ontologyManagementVisible(ctx, p)
+	}
 	if d.Permission == "write" {
 		switch d.Name {
+		case "bead.close", "tx.apply":
+			return c.lifecycle && p.Kind == "user", nil
 		case "bead.claim", "bead.claimNext", "bead.update", "bead.heartbeat", "bead.release":
 			return p.Kind == "agent" && p.Sponsor != nil && p.Sponsor.Kind == "user", nil
 		case "x.workflow.invoke":

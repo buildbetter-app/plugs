@@ -112,41 +112,51 @@ func (r *workflowCoreResolver) IsBlocked(ctx context.Context, principal model.Pr
 	return !satisfied, nil
 }
 
-// validateWorkflowEndpoints rejects absent or cross-project ordinary endpoints
-// before any provider CAS. Workflow endpoint ownership is checked by Provider.
-func (s *Service) validateWorkflowEndpoints(ctx context.Context, by model.PrincipalRef, project string, refs ...model.Ref) error {
+// workflowEndpointHead binds ordinary endpoint validation to checkpoint
+// publication. All auxiliary endpoints in an invocation share this snapshot.
+// Workflow-only relations do not consume a core snapshot; the Provider checks
+// their ownership and checkpoint CAS.
+func (s *Service) workflowEndpointHead(ctx context.Context, by model.PrincipalRef, project string, refs ...model.Ref) (*driver.CoreSnapshotExpectation, error) {
 	var ordinary []model.Ref
 	for _, ref := range refs {
 		if workflowRef(ref) {
 			continue
 		}
 		if err := namedRef(ref); err != nil {
-			return err
+			return nil, err
 		}
 		ordinary = append(ordinary, ref)
 	}
 	if len(ordinary) == 0 {
-		return nil
+		return nil, nil
 	}
 	reader, err := s.reader(ctx, by, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer reader.Close()
 	graph, err := scanBeads(ctx, reader)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, ref := range ordinary {
 		row, ok := graph[ref.ID]
 		if !ok {
-			return failure("not_found", "workflow ordinary endpoint was not found")
+			return nil, failure("not_found", "workflow ordinary endpoint was not found")
 		}
 		if row.doc.Project != project {
-			return failure("forbidden", "workflow ordinary endpoint is outside the project")
+			return nil, failure("forbidden", "workflow ordinary endpoint is outside the project")
 		}
 	}
-	return nil
+	snapshot := reader.Snapshot()
+	meta, err := s.store.Meta(ctx)
+	if err != nil {
+		return nil, mapped(err)
+	}
+	if snapshot.Incarnation != meta.Incarnation {
+		return nil, mapped(driver.ErrIncarnationChanged{From: snapshot.Incarnation, To: meta.Incarnation})
+	}
+	return &driver.CoreSnapshotExpectation{StoreID: meta.StoreID, Incarnation: snapshot.Incarnation, Head: *snapshot.At}, nil
 }
 
 func workflowAuxiliaryRefs(parent *model.Ref, links []workflowplugin.RelationSpec) []model.Ref {

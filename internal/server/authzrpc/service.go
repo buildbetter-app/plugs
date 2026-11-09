@@ -29,6 +29,7 @@ type GuardedService struct {
 	commitEmpty     func(context.Context, model.PrincipalRef, service.ClaimNextRequest, model.WriteMeta, port.ClaimNextReadyProbe) (port.WriteOutcome, error)
 	claimNextPage   func(context.Context, model.PrincipalRef, service.ReadyRequest) (service.BeadPage, error)
 	readyCandidates func(context.Context, model.PrincipalRef, service.ReadyRequest, driver.Reader) ([]service.Bead, error)
+	claimEligible   func(context.Context, model.PrincipalRef, model.Ref, driver.Reader) (bool, error)
 }
 
 var _ rpc.Service = (*GuardedService)(nil)
@@ -70,6 +71,11 @@ func (s *GuardedService) Get(ctx context.Context, by model.PrincipalRef, req ser
 		return service.GetResult{}, err
 	}
 	projectBeadParent(&result.Bead, parents.Parents[req.ID.ID])
+	projected := []service.Bead{result.Bead}
+	if err := s.projectLinkTargets(ctx, by, projected); err != nil {
+		return service.GetResult{}, err
+	}
+	result.Bead = projected[0]
 	if err := s.checker.ValidateReadAuthorityBinding(ctx, by, parents.PolicyBinding); err != nil {
 		return service.GetResult{}, err
 	}
@@ -565,11 +571,14 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 				}
 				continue
 			}
-			_, snapshot, closeReader, err := s.current(ctx, &service.AsOf{Revision: page.AsOf.Revision, Incarnation: page.AsOf.Incarnation})
+			reader, snapshot, closeReader, err := s.current(ctx, &service.AsOf{Revision: page.AsOf.Revision, Incarnation: page.AsOf.Incarnation})
 			if err != nil {
 				return nil, err
 			}
 			allowed, decisionErr := s.checker.modifyDecision(ctx, snapshot, by, "bead.claimNext", ref)
+			if decisionErr == nil && allowed {
+				allowed, decisionErr = s.claimCandidateEligible(ctx, by, ref, reader)
+			}
 			closeReader()
 			if decisionErr != nil {
 				return nil, decisionErr
@@ -652,7 +661,7 @@ func (s *GuardedService) claimPage(ctx context.Context, by model.PrincipalRef, r
 	return s.delegate.Ready(ctx, by, req)
 }
 
-// claimNextReadyProbe applies the same per-candidate modify permit as the live
+// claimNextReadyProbe applies the same modify permit and transition guards as the live
 // walk, but reads through the transaction that already owns the head. An
 // unauthorized ready bead therefore does not keep an otherwise empty queue
 // from publishing its terminal null receipt.
@@ -666,16 +675,27 @@ func (s *GuardedService) claimNextReadyProbe(by model.PrincipalRef, req service.
 			return false, err
 		}
 		for _, bead := range items {
-			allowed, decisionErr := s.checker.modifyDecision(ctx, reader, by, "bead.claimNext", model.RefByID(bead.ID, model.Natural64(0)))
+			ref := model.RefByID(bead.ID, model.Natural64(0))
+			allowed, decisionErr := s.checker.modifyDecision(ctx, reader, by, "bead.claimNext", ref)
 			if decisionErr != nil {
 				return false, decisionErr
 			}
 			if allowed {
-				return true, nil
+				eligible, err := s.claimCandidateEligible(ctx, by, ref, reader)
+				if err != nil || eligible {
+					return eligible, err
+				}
 			}
 		}
 		return false, nil
 	}
+}
+
+func (s *GuardedService) claimCandidateEligible(ctx context.Context, by model.PrincipalRef, ref model.Ref, reader driver.Reader) (bool, error) {
+	if s.claimEligible == nil {
+		return false, &model.Error{Data: model.ErrorData{Code: "authz_unavailable", Retryable: true, Hint: "claim transition eligibility is unavailable"}}
+	}
+	return s.claimEligible(ctx, by, ref, reader)
 }
 
 func claimNextRace(err error) bool {
@@ -706,7 +726,8 @@ func claimNextCandidateConflict(err error) bool {
 	if !errors.As(err, &value) || value.Data.Code != "write_conflict" {
 		return false
 	}
-	return value.Message == "snapshot changed during all four write attempts" || value.Data.Hint == "snapshot changed during all four write attempts"
+	return value.Message == "claimNext candidate is locked" || value.Data.Hint == "claimNext candidate is locked" ||
+		value.Message == "snapshot changed during all four write attempts" || value.Data.Hint == "snapshot changed during all four write attempts"
 }
 func (s *GuardedService) CommentWithOutcome(ctx context.Context, by model.PrincipalRef, req service.CommentRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
 	if workflowItemRef(req.ID) {
@@ -923,6 +944,9 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 	}
 	for i := range out.Items {
 		projectBeadParent(&out.Items[i], parents[out.Items[i].ID])
+	}
+	if err := s.projectLinkTargets(ctx, by, out.Items); err != nil {
+		return service.BeadPage{}, err
 	}
 	if end < len(filtered) {
 		out.Next = &service.PagePosition{

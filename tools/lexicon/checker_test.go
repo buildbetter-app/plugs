@@ -1087,6 +1087,134 @@ func TestNativeControlLiteralConfigurationRejectsBroadening(t *testing.T) {
 	}
 }
 
+func checkedInNativeB07SQL(t *testing.T) (Config, string, string) {
+	t.Helper()
+	cfg, path := checkedInNativeControlConfig(t)
+	if cfg.NativeB07SQL.Path != nativeB07SQLSource || len(cfg.NativeB07SQL.Values) != 1 {
+		t.Fatalf("B07 SQL allowance is not one exact site: %+v", cfg.NativeB07SQL)
+	}
+	value := cfg.NativeB07SQL.Values[0]
+	if protocolLiteralDigest(value) != "05f7070262ef8957384053d4a068544ffcd926410dee503ae28d17946367d419" {
+		t.Fatal("B07 SQL decoded digest changed")
+	}
+	return cfg, path, value
+}
+
+func TestNativeB07SQLAllowsOnlyTheCompleteLiteral(t *testing.T) {
+	cfg, _, value := checkedInNativeB07SQL(t)
+	without := cfg
+	without.NativeB07SQL = NativeControlAllowance{}
+	for name, literal := range map[string]string{
+		"quoted": strconv.Quote(value), "raw": "`" + value + "`", "escaped": escapedNativeLiteral(value),
+	} {
+		t.Run(name, func(t *testing.T) {
+			files := map[string][]byte{nativeB07SQLSource: []byte("package recorder\nvar query = " + literal)}
+			before, err := CheckFiles(files, without)
+			if err != nil || len(before) == 0 {
+				t.Fatalf("B07 control lacks its blocking baseline: %#v, %v", before, err)
+			}
+			after, err := CheckFiles(files, cfg)
+			if err != nil || len(after) != 0 {
+				t.Fatalf("exact B07 SQL was not admitted: %#v, %v", after, err)
+			}
+		})
+	}
+}
+
+func TestNativeB07SQLKeepsOtherRefusals(t *testing.T) {
+	cfg, _, value := checkedInNativeB07SQL(t)
+	productWord := string([]byte{119, 105, 115, 112})
+	quoted := strconv.Quote(value)
+	changed := strings.Replace(value, "DependsOnVolatile", "DependsOnOther", 1)
+	if changed == value {
+		t.Fatal("changed-query control is ineffective")
+	}
+	split := strings.IndexByte(value, ',')
+	if split < 0 {
+		t.Fatal("split-query control lacks its delimiter")
+	}
+	for _, test := range []struct{ name, path, source string }{
+		{"neighbor", strings.TrimSuffix(nativeB07SQLSource, ".go") + "_other.go", "package recorder\nvar query = " + quoted},
+		{"recording_path", nativeRecordingLiteralSource, "package recorder\nvar query = " + quoted},
+		{"view_path", nativeViewProtocolSource, "package recorder\nvar query = " + quoted},
+		{"manifest_path", nativeManifestProtocolSource, "package recorder\nvar query = " + quoted},
+		{"changed_alias", nativeB07SQLSource, "package recorder\nvar query = " + strconv.Quote(changed)},
+		{"changed_escaped", nativeB07SQLSource, "package recorder\nvar query = " + escapedNativeLiteral(changed)},
+		{"split", nativeB07SQLSource, "package recorder\nvar query = " + strconv.Quote(value[:split]) + " + " + strconv.Quote(value[split:])},
+		{"comment", nativeB07SQLSource, "package recorder\n// " + value},
+		{"identifier", nativeB07SQLSource, "package recorder\nvar " + productWord + " = " + quoted},
+		{"import", nativeB07SQLSource, "package recorder\nimport " + quoted},
+		{"escaped_import", nativeB07SQLSource, "package recorder\nimport " + escapedNativeLiteral(value)},
+		{"other_literal", nativeB07SQLSource, "package recorder\nvar query = " + quoted + "\nvar other = " + strconv.Quote(productWord)},
+		{"json", "spec/s1-b05-b08/native_testdata/query.json", "{\"query\":" + quoted + "}"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			findings, err := CheckFiles(map[string][]byte{test.path: []byte(test.source)}, cfg)
+			if err != nil || len(findings) == 0 {
+				t.Fatalf("B07 SQL refusal was lost: %#v, %v", findings, err)
+			}
+		})
+	}
+	without := cfg
+	without.NativeB07SQL = NativeControlAllowance{}
+	for _, path := range []string{nativeRecordingLiteralSource, nativeViewProtocolSource, externalProtocolSource, "other/existing.go"} {
+		files := map[string][]byte{path: []byte("package recorder\nvar query = " + quoted)}
+		before, beforeErr := CheckFiles(files, without)
+		after, afterErr := CheckFiles(files, cfg)
+		if beforeErr != nil || afterErr != nil || !reflect.DeepEqual(before, after) {
+			t.Fatalf("B07 allowance changed another path %s: %#v/%v versus %#v/%v", path, before, beforeErr, after, afterErr)
+		}
+	}
+	for _, allowance := range []NativeControlAllowance{cfg.NativeRecordingLiterals, cfg.NativeViewStrings} {
+		for _, other := range allowance.Values {
+			if allowsNativeControlLiteral(nativeB07SQLSource, other, cfg) {
+				t.Fatal("another native control literal leaked into B07 SQL")
+			}
+		}
+	}
+}
+
+func TestNativeB07SQLConfigRefusesBroadening(t *testing.T) {
+	cfg, path, value := checkedInNativeB07SQL(t)
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := string(content)
+	pathLine := "path = " + strconv.Quote(cfg.NativeB07SQL.Path)
+	valueLine := "value = " + strconv.Quote(value)
+	section := "[native_b07_sql]\n" + pathLine + "\n" + valueLine
+	if strings.Count(original, section) != 1 {
+		t.Fatal("exact B07 SQL section not found once")
+	}
+	for _, test := range []struct{ name, replacement string }{
+		{"missing_path", "[native_b07_sql]\n" + valueLine},
+		{"missing_value", "[native_b07_sql]\n" + pathLine},
+		{"empty_section", "[native_b07_sql]"},
+		{"neighbor_path", strings.Replace(section, cfg.NativeB07SQL.Path, cfg.NativeB07SQL.Path+"_other", 1)},
+		{"wildcard_path", strings.Replace(section, cfg.NativeB07SQL.Path, "spec/s1-b05-b08/*.go", 1)},
+		{"recording_path", strings.Replace(section, cfg.NativeB07SQL.Path, nativeRecordingLiteralSource, 1)},
+		{"path_array", strings.Replace(section, pathLine, "path = ["+strconv.Quote(cfg.NativeB07SQL.Path)+"]", 1)},
+		{"value_array", strings.Replace(section, valueLine, "value = ["+strconv.Quote(value)+"]", 1)},
+		{"changed_value", strings.Replace(section, valueLine, "value = "+strconv.Quote(value+" "), 1)},
+		{"duplicate_path", section + "\n" + pathLine},
+		{"duplicate_value", section + "\n" + valueLine},
+		{"duplicate_section", section + "\n" + section},
+		{"unknown_key", section + "\npattern = \"*\""},
+		{"wrong_section", strings.Replace(section, "[native_b07_sql]", "[native_recording_literals]", 1)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "lexicon.toml")
+			if err := os.WriteFile(file, []byte(strings.Replace(original, section, test.replacement, 1)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadConfig(file); err == nil {
+				t.Fatal("broadened B07 SQL configuration passed")
+			}
+		})
+	}
+}
+
 func TestCheckFilesBlocksTermsAndImports(t *testing.T) {
 	cfg := testConfig()
 	files := map[string][]byte{

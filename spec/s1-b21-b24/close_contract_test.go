@@ -152,7 +152,7 @@ func TestS1B21CloseGuardsUseOperationPrefix(t *testing.T) {
 
 func TestS1B21CloseLateRefusalsLeaveNoHistoryOrReceipt(t *testing.T) {
 	for _, engine := range transactionEngines() {
-		for _, kind := range []string{"template", "hash", "revision-after-write", "status-patch", "forward-alias", "unknown-force"} {
+		for _, kind := range []string{"template", "hash", "revision-after-write", "status-patch", "forward-alias", "unknown-override"} {
 			t.Run(engine+"/"+kind, func(t *testing.T) {
 				f := newFixture(t, engine)
 				target, _ := f.create(t, "refused-target", "target")
@@ -174,8 +174,8 @@ func TestS1B21CloseLateRefusalsLeaveNoHistoryOrReceipt(t *testing.T) {
 					want = "ontology_use_slot_verb"
 				case "forward-alias":
 					ops = []any{closeOp(model.RefByKey("later"), ""), map[string]any{"kind": "create", "key": "later", "type": "issue", "fields": map[string]any{"title": "later"}}}
-				case "unknown-force":
-					ops = []any{map[string]any{"kind": "close", "target": target, "force": true}}
+				case "unknown-override":
+					ops = []any{map[string]any{"kind": "close", "target": target, "override_guard": true}}
 				}
 				closeRefusal(t, f, "refused-"+kind, batchParams(ops...), want)
 			})

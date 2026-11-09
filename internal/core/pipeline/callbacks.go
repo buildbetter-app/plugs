@@ -247,6 +247,10 @@ func (w *Writer) authorize(ctx context.Context, stage port.AuthorizationStage, p
 		// invariant work, including receipt replay, and never enters the chain.
 		return nil
 	}
+	targets := forcedCloseTargets(proposal)
+	if len(targets) != 0 && proposal.Principal.Kind != "user" && (w.cfg.authorizer != nil || proposal.Principal.Kind != "anonymous") {
+		return failure("forbidden", "guard override requires a user when authenticated")
+	}
 	if w.cfg.authorizer == nil {
 		return nil
 	}
@@ -255,7 +259,17 @@ func (w *Writer) authorize(ctx context.Context, stage port.AuthorizationStage, p
 		return err
 	}
 	_, err = invoke(ctx, 100*time.Millisecond, func(call context.Context) (struct{}, error) {
-		return struct{}{}, w.cfg.authorizer.Authorize(call, stage, proposal, reader)
+		if err := w.cfg.authorizer.Authorize(call, stage, proposal, reader); err != nil {
+			return struct{}{}, err
+		}
+		if len(targets) != 0 {
+			override, ok := w.cfg.authorizer.(port.GuardOverrideAuthorizer)
+			if !ok {
+				return struct{}{}, failure("authz_unavailable", "override_guard authorization is unavailable")
+			}
+			return struct{}{}, override.AuthorizeGuardOverride(call, stage, proposal.Principal, targets, reader)
+		}
+		return struct{}{}, nil
 	})
 	if err == context.DeadlineExceeded {
 		return failure("authz_unavailable", "authorization deadline exceeded")

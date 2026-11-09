@@ -240,6 +240,14 @@ func (s *Service) WorkflowDemote(ctx context.Context, by model.PrincipalRef, req
 				return image, failure("unsupported", "demoting a durable parent requires a cross-plane hierarchy bridge")
 			}
 			for _, edge := range other.doc.Links {
+				if edge.TargetKind == model.LinkTargetExternal {
+					if id == req.Source.ID {
+						return image, failure("unsupported", "workflow storage does not support external dependency targets")
+					}
+					// An opaque external ID does not identify the source being
+					// demoted, even when the byte spelling matches exactly.
+					continue
+				}
 				if id != req.Source.ID && edge.To.ID != req.Source.ID {
 					continue
 				}

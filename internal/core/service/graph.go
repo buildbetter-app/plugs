@@ -337,9 +337,9 @@ func beadValue(row storedBead) (Bead, error) {
 		parent = doc.Parent.ID
 	}
 	createdAt, _ := doc.CreationTime()
-	bead := Bead{ID: doc.ID, Type: doc.Type, Project: doc.Project, Revision: row.record.Revision, Status: state(doc).Status, Fields: doc.Fields, Metadata: metadata, Labels: append([]string(nil), doc.Labels...), Parent: parent, Blocked: doc.Fields["blocked"] == true, CreatedAt: createdAt}
+	bead := Bead{ID: doc.ID, Type: doc.Type, Project: doc.Project, Revision: row.record.Revision, Status: state(doc).Status, Fields: doc.Fields, Metadata: metadata, Labels: append([]string(nil), doc.Labels...), Parent: parent, CreatedAt: createdAt, Blocked: doc.Fields["blocked"] == true}
 	for _, link := range doc.Links {
-		bead.Links = append(bead.Links, workflowplugin.RelationView{From: doc.ID, To: link.To, Kind: link.Kind, Metadata: link.Metadata})
+		bead.Links = append(bead.Links, workflowplugin.RelationView{From: doc.ID, To: link.To, Kind: link.Kind, Metadata: link.Metadata, TargetKind: link.TargetKind})
 	}
 	return bead, nil
 }

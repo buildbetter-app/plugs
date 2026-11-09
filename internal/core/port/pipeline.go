@@ -202,3 +202,20 @@ const (
 type Authorizer interface {
 	Authorize(context.Context, AuthorizationStage, ProposedChange, SnapshotReader) error
 }
+
+// GuardOverrideAuthorizer checks the distinct override_guard action for the
+// exact close targets on the supplied tracked snapshot, including replay.
+// An installed Authorizer without this capability cannot admit a forced close.
+// Ordinary write and transition permission remain independent requirements.
+type GuardOverrideAuthorizer interface {
+	AuthorizeGuardOverride(context.Context, AuthorizationStage, model.PrincipalRef, []model.ResourceRef, SnapshotReader) error
+}
+
+// ForcesClose binds a policy override to its own close operation. An override
+// on one tx.apply member never changes another member's guard evaluation.
+func (p ProposedChange) ForcesClose(change Change) bool {
+	if p.Meta.Method == "bead.close" {
+		return p.Meta.ForceClose
+	}
+	return p.Meta.Method == "tx.apply" && change.Op.Kind == model.OpClose && change.Op.Close != nil && change.Op.Close.Force
+}

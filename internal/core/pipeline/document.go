@@ -112,6 +112,13 @@ func DecodeDocument(body []byte) (Document, error) {
 	if err != nil {
 		return d, err
 	}
+	for i := range d.Links {
+		link := &d.Links[i]
+		if err := model.ValidateLinkTarget(link.TargetKind, link.To); err != nil {
+			return d, err
+		}
+		link.TargetKind, _ = link.TargetKind.Normalized()
+	}
 	d.Parent = parent
 	for _, comment := range d.Comments {
 		if err := comment.Validate(); err != nil {

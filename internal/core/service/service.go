@@ -236,10 +236,14 @@ func (s *Service) WorkflowInvoke(ctx context.Context, by model.PrincipalRef, req
 		}
 		meta.Method = "x.workflow.invoke"
 		meta.Project = req.Project
+		var refs []model.Ref
 		for _, item := range req.Checklist {
-			if err := s.validateWorkflowEndpoints(ctx, by, req.Project, workflowAuxiliaryRefs(item.Parent, item.Links)...); err != nil {
-				return workflowplugin.InvokeResult{}, err
-			}
+			refs = append(refs, workflowAuxiliaryRefs(item.Parent, item.Links)...)
+		}
+		var err error
+		req.CoreHead, err = s.workflowEndpointHead(ctx, by, req.Project, refs...)
+		if err != nil {
+			return workflowplugin.InvokeResult{}, err
 		}
 		return s.workflow.Invoke(ctx, by, req, meta)
 	}
@@ -354,10 +358,11 @@ func (s *Service) update(ctx context.Context, by model.PrincipalRef, req UpdateR
 		if err != nil {
 			return port.WriteOutcome{}, err
 		}
-		if err := s.validateWorkflowEndpoints(ctx, by, meta.Project, refs...); err != nil {
+		head, err := s.workflowEndpointHead(ctx, by, meta.Project, refs...)
+		if err != nil {
 			return port.WriteOutcome{}, err
 		}
-		commit, err := s.workflow.Update(ctx, by, req.ID, req.Fields, meta)
+		commit, err := s.workflow.UpdateAtHead(ctx, by, req.ID, req.Fields, meta, head)
 		return port.WriteOutcome{Commit: commit}, err
 	}
 	if err := namedRef(req.ID); err != nil {
@@ -724,7 +729,8 @@ func claimNextCandidateConflict(err error) bool {
 	if !errors.As(err, &value) || value.Data.Code != "write_conflict" {
 		return false
 	}
-	return value.Message == "snapshot changed during all four write attempts" || value.Data.Hint == "snapshot changed during all four write attempts"
+	return value.Message == "claimNext candidate is locked" || value.Data.Hint == "claimNext candidate is locked" ||
+		value.Message == "snapshot changed during all four write attempts" || value.Data.Hint == "snapshot changed during all four write attempts"
 }
 
 func (s *Service) claimWithMethod(ctx context.Context, by model.PrincipalRef, req ClaimRequest, meta model.WriteMeta, outcomeRequired bool, method string) (port.WriteOutcome, error) {
@@ -796,6 +802,9 @@ func (s *Service) Close(ctx context.Context, by model.PrincipalRef, req CloseReq
 
 func (s *Service) CloseWithOutcome(ctx context.Context, by model.PrincipalRef, req CloseRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
 	if workflowRef(req.ID) {
+		if req.Force {
+			return port.WriteOutcome{}, failure("unsupported", "workflow force close is not supported")
+		}
 		if err := validateWorkflowWrite(req.ID, req.Expect, meta); err != nil {
 			return port.WriteOutcome{}, err
 		}
@@ -819,6 +828,7 @@ func workflowClaimCommit(item workflowplugin.ItemView) model.Commit {
 }
 
 func (s *Service) close(ctx context.Context, by model.PrincipalRef, req CloseRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
+	meta.ForceClose = req.Force
 	return s.lifecycle(ctx, by, "bead.close", req.ID, req.Reason, req.Expect, meta, outcomeRequired)
 }
 
@@ -976,7 +986,8 @@ func (s *Service) LinkWithOutcome(ctx context.Context, by model.PrincipalRef, re
 		if err := validateWorkflowWrite(req.To, req.Expect, meta); err != nil && workflowRef(req.To) {
 			return port.WriteOutcome{}, err
 		}
-		if err := s.validateWorkflowEndpoints(ctx, by, meta.Project, req.From, req.To); err != nil {
+		workflowReq.CoreHead, err = s.workflowEndpointHead(ctx, by, meta.Project, req.From, req.To)
+		if err != nil {
 			return port.WriteOutcome{}, err
 		}
 		commit, err := s.workflow.Link(ctx, by, workflowReq, meta)
@@ -1021,7 +1032,8 @@ func (s *Service) UnlinkWithOutcome(ctx context.Context, by model.PrincipalRef, 
 		if err := validateWorkflowWrite(req.To, req.Expect, meta); err != nil && workflowRef(req.To) {
 			return port.WriteOutcome{}, err
 		}
-		if err := s.validateWorkflowEndpoints(ctx, by, meta.Project, req.From, req.To); err != nil {
+		workflowReq.CoreHead, err = s.workflowEndpointHead(ctx, by, meta.Project, req.From, req.To)
+		if err != nil {
 			return port.WriteOutcome{}, err
 		}
 		commit, err := s.workflow.Unlink(ctx, by, workflowReq, meta)

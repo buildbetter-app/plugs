@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
@@ -779,6 +780,52 @@ func TestB07ExternalParentChildDoesNotJoinLocalWaitsForMembership(t *testing.T) 
 	}
 }
 
+// B06/B08 author authorized reuse of its public fixture without editing the
+// close suites. Only GatesResolved guards this issue claim, so an unrelated
+// ordinary blocker refusal cannot conceal target-domain fact conflation.
+func TestB07ExternalIdentityCannotSupplyResolvedGateFacts(t *testing.T) {
+	for _, engine := range testEngines {
+		for _, producer := range []string{"bead.link", "tx.apply"} {
+			t.Run(engine+"/"+producer, func(t *testing.T) {
+				doc := b08ContractOntology()
+				workflow := doc.Workflows["issue"]
+				workflow.Transitions = append([]ontology.Rule(nil), workflow.Transitions...)
+				replaced := 0
+				for i := range workflow.Transitions {
+					if workflow.Transitions[i].To == workflow.Slots[ontology.Claim] {
+						workflow.Transitions[i].Guards = []ontology.Guard{{Kind: ontology.GatesResolved, Kinds: []string{"review"}}}
+						replaced++
+					}
+				}
+				if replaced != 1 {
+					t.Fatalf("claim guard fixture replaced %d rules, want exactly one", replaced)
+				}
+				doc.Workflows["issue"] = workflow
+				f := newB08CloseFixture(t, engine, doc)
+				externalTarget := f.createB08(t, "external-review-target", "issue", nil, nil)
+				localTarget := f.createB08(t, "local-review-control", "issue", nil, nil)
+				gate := f.createB08(t, "real-local-review-gate", "gate", map[string]any{"gate_kind": "review"}, nil)
+				approved := f.callB08(t, "gate.approve", "external-review-approve", map[string]any{"id": gate})
+				if approved.Error != nil || f.document(t, gate).Fields["gate_state"] != "resolved" {
+					t.Fatalf("public local gate did not resolve: %+v", approved)
+				}
+				b08Commit(t, f.callB08(t, producer, "external-review-link", edgeTypedLinkParams(producer, model.OpLink, externalTarget, gate, "blocks", model.LinkTargetExternal)))
+				b08Commit(t, f.callB08(t, producer, "local-review-link", edgeTypedLinkParams(producer, model.OpLink, localTarget, gate, "blocks", "")))
+				f.refuseB08(t, "bead.claim", "external-review-claim", map[string]any{"id": externalTarget}, "ontology_guard_failed", ontology.GatesResolved)
+				b08Commit(t, f.callB08(t, "bead.claim", "local-review-claim", map[string]any{"id": localTarget}))
+				if f.document(t, localTarget).Fields["status"] != b08Started || f.document(t, externalTarget).Fields["status"] != b08Unstarted {
+					t.Fatal("external identity supplied a local gate fact or local success control failed")
+				}
+				final := f.conservation(t)
+				f.reopenB08(t)
+				b08SameConservation(t, final, f.conservation(t))
+				f.refuseB08(t, "bead.claim", "external-review-claim", map[string]any{"id": externalTarget}, "ontology_guard_failed", ontology.GatesResolved)
+				b08SameConservation(t, final, f.conservation(t))
+			})
+		}
+	}
+}
+
 func TestB07WaitsForMetadataParityAcrossPublicAndTxApply(t *testing.T) {
 	cases := []struct {
 		name, gate string
@@ -954,10 +1001,10 @@ func TestB07NamedEdgeMethodsKeepUnsupportedWorkflowReferencesAtomic(t *testing.T
 }
 
 // The ordinary workflow-ID matrix above proves the early durable boundary,
-// while this case binds it to a real ephemeral producer. Persistent workflow
-// items are created by the actual provider and then presented to both durable
-// edge producers in both directions. Neither producer may manufacture a
-// durable edge, receipt, graph revision, or workflow checkpoint mutation.
+// while this case presents real workflow IDs to an independent ordinary-only
+// service. Named methods refuse the unavailable provider with not_found;
+// tx.apply refuses workflow references at core admission. This is not proof
+// of co-resident planes; edge_workflow_sql_test.go owns that SQL proof.
 func TestB07DurableEdgesRefuseActualEphemeralWorkflowItemsAtomically(t *testing.T) {
 	for _, engine := range testEngines {
 		t.Run(engine, func(t *testing.T) {
