@@ -141,7 +141,8 @@ func TestJointSourcePublicOrdinaryDeleteOrderingReplayAndConservation(t *testing
 			// its durable collision. Other active references require ordered unlink.
 			refuse(actor, 303, model.ChangeSet{Ops: []model.Op{remove("demo-7")}}, "invalid_params")
 			refuse(actor, 304, model.ChangeSet{Ops: []model.Op{remove("demo-8")}}, "ontology_guard_failed")
-			mixedUnlink := unlink("demo-7", "demo-8", "related")
+			// Source related edges are projected as canonical relates-to links.
+			mixedUnlink := unlink("demo-7", "demo-8", "relates-to")
 			refuse(actor, 305, model.ChangeSet{Ops: []model.Op{remove("demo-8"), mixedUnlink}}, "ontology_guard_failed")
 			mixed := model.ChangeSet{Ops: []model.Op{mixedUnlink, remove("demo-8")}}
 			refuse(model.PrincipalRef{Kind: "user", ID: "user:foreign-delete"}, 306, mixed, "forbidden")
@@ -190,7 +191,7 @@ func TestJointSourcePublicOrdinaryDeleteOrderingReplayAndConservation(t *testing
 			}
 			// A same-key rewritten request must fail. Replay is bound to the raw
 			// alias request, rather than the resolved workflow target operation.
-			refuse(actor, 309, model.ChangeSet{Ops: []model.Op{unlink("workflow:item/restored", "demo-8", "related"), remove("demo-8")}}, "idempotency_key_reused")
+			refuse(actor, 309, model.ChangeSet{Ops: []model.Op{unlink("workflow:item/restored", "demo-8", "relates-to"), remove("demo-8")}}, "idempotency_key_reused")
 			replayed := sourcePublicCall(t, server, actor, "tx.apply", 309, map[string]any{"changeSet": mixed}, "")
 			if !replayed.Meta.Replayed || !bytes.Equal(joined.Result, replayed.Result) || !reflect.DeepEqual(joinedState, savedLabelImport(t, store, report.Archive, p, fmt.Sprintf("%032d", 309))) || !reflect.DeepEqual(afterCheckpoint, checkpoint()) {
 				t.Fatal("mixed delete replay changed result/core/checkpoint")
