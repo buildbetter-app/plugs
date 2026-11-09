@@ -298,7 +298,7 @@ func rejectUnmerged(manifest Manifest) error {
 
 func compatibleManifests(base, other Manifest) error {
 	if base.Format != other.Format || base.Schema != other.Schema || base.Reference != other.Reference ||
-		base.MainVersion != other.MainVersion || base.IgnoredVersion != other.IgnoredVersion || base.Scope != other.Scope || base.SourcePlaneAddressContract != other.SourcePlaneAddressContract {
+		base.MainVersion != other.MainVersion || base.IgnoredVersion != other.IgnoredVersion || base.Scope != other.Scope || base.SourcePlaneAddressContract != other.SourcePlaneAddressContract || base.StatusCategoryContract != other.StatusCategoryContract {
 		return fmt.Errorf("format, reference, scope or schema version differs")
 	}
 	if !equalJSON(base.Warnings, other.Warnings) || !equalJSON(base.Verification, other.Verification) {

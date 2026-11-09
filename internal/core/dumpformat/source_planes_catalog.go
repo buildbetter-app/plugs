@@ -9,6 +9,22 @@ import (
 // This validates raw catalog conservation only. No catalog category chooses
 // a workflow status, target kind, principal or lifetime for an active entity.
 func validateSourcePlaneCatalog(rows map[string][]Record, config []byte) (map[string]bool, error) {
+	categories, err := sourcePlaneCatalogCategories(rows, config)
+	if err != nil {
+		return nil, err
+	}
+	statuses := make(map[string]bool, len(categories))
+	for name := range categories {
+		statuses[name] = true
+	}
+	return statuses, nil
+}
+
+func sourcePlaneCatalogCategories(rows map[string][]Record, config []byte) (map[string]string, error) {
+	return sourcePlaneCatalogCategoriesFor(rows, config, false)
+}
+
+func sourcePlaneCatalogCategoriesFor(rows map[string][]Record, config []byte, native bool) (map[string]string, error) {
 	var declarations []ConfigDeclaration
 	seenStatus, seenType := map[string]bool{}, map[string]bool{}
 	stored := map[string]any{}
@@ -85,7 +101,14 @@ func validateSourcePlaneCatalog(rows map[string][]Record, config []byte) (map[st
 			}
 			continue
 		}
-		if !declarationName.MatchString(decl.Name) || len(decl.Name) > 64 || builtInSourceStatus(decl.Name) {
+		builtin := builtInSourceStatus(decl.Name)
+		if native {
+			builtin = false
+			for _, status := range nativeBuiltInStatuses() {
+				builtin = builtin || decl.Name == status.Name
+			}
+		}
+		if !declarationName.MatchString(decl.Name) || len(decl.Name) > 64 || builtin {
 			return nil, fmt.Errorf("invalid raw catalog status")
 		}
 		switch decl.Category {
@@ -101,7 +124,7 @@ func validateSourcePlaneCatalog(rows map[string][]Record, config []byte) (map[st
 	if len(statuses) > 50 {
 		return nil, fmt.Errorf("too many raw catalog statuses")
 	}
-	return statuses, nil
+	return categories, nil
 }
 
 func sourcePlaneCatalogValues(values map[string]any, origin string) ([]ConfigDeclaration, error) {

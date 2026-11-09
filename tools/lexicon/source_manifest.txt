@@ -191,6 +191,10 @@ internal/core/dumpformat/source_planes_sidecars.go
 internal/core/dumpformat/source_planes_sidecars_test.go
 internal/core/dumpformat/source_planes_test.go
 internal/core/dumpformat/sources.go
+internal/core/dumpformat/status_categories.go
+internal/core/dumpformat/status_categories_test.go
+internal/core/dumpformat/testdata/producer-0f44-reprocody.tar
+internal/core/dumpformat/testdata/producer-0f44-reprosignals.tar
 internal/core/dumpformat/types.go
 internal/core/dumpformat/validate.go
 internal/core/dumpformat/validate_test.go

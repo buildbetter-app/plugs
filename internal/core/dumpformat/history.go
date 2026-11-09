@@ -503,6 +503,18 @@ func validateHistoryImage(rows []Record, manifest Manifest) error {
 			}
 		}
 	}
+	if manifest.StatusCategoryContract == StatusCategoryContract {
+		// Head-only filesystem/YAML and archived catalog census cannot witness
+		// an older image. Require its own complete stored declarations; a
+		// missing or changed historical catalog remains unmappable.
+		byKind := map[string][]Record{}
+		for _, record := range rows {
+			byKind[record.Kind] = append(byKind[record.Kind], record)
+		}
+		if err := validateNativeStatusCatalogConservation(manifest, byKind, []byte("[]")); err != nil {
+			return err
+		}
+	}
 	return validateIssueOntology(manifest.Ontology, beadRows, false)
 }
 

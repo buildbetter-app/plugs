@@ -28,6 +28,7 @@ const (
 	// row image. Recognition is separate from native SQL import capability.
 	IssueSourceFieldsContract  = "beads-issues-source-fields/1"
 	SourcePlaneAddressContract = "beads-source-planes/1"
+	StatusCategoryContract     = "beads-status-categories/1"
 )
 
 var canonicalEdgeTypes = map[string]struct{}{
@@ -80,8 +81,14 @@ type Project struct {
 	IDMode         string            `json:"id_mode"`
 	HashLength     int               `json:"hash_length"`
 	HashNamespaces []string          `json:"hash_namespaces,omitempty"`
+	Statuses       []ProjectStatus   `json:"statuses,omitempty"`
 	LastID         uint64            `json:"last_id"`
 	ChildCounters  map[string]uint64 `json:"child_counters"`
+}
+
+type ProjectStatus struct {
+	Name     string `json:"name"`
+	Category string `json:"category"`
 }
 
 type Kind struct {
@@ -122,6 +129,7 @@ type Manifest struct {
 	Verification               map[string]string   `json:"verification"`
 	SourceFieldsContract       string              `json:"source_fields_contract,omitempty"`
 	SourcePlaneAddressContract string              `json:"source_plane_address_contract,omitempty"`
+	StatusCategoryContract     string              `json:"status_category_contract,omitempty"`
 	// Native store fields are present only for archives produced by Plug's
 	// engine-neutral admin.dump path. The offline Beads exporter leaves these
 	// fields absent and continues to use the source census above.
@@ -219,6 +227,7 @@ func (a *Archive) Manifest() Manifest {
 	m.Projects = append([]Project{}, m.Projects...)
 	for i := range m.Projects {
 		m.Projects[i].HashNamespaces = append([]string(nil), m.Projects[i].HashNamespaces...)
+		m.Projects[i].Statuses = append([]ProjectStatus(nil), m.Projects[i].Statuses...)
 		c := make(map[string]uint64, len(m.Projects[i].ChildCounters))
 		for key, value := range m.Projects[i].ChildCounters {
 			c[key] = value

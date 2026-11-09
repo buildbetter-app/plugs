@@ -138,8 +138,11 @@ func Read(reader io.Reader) (*Archive, error) {
 	if _, present := manifestFields["source_plane_address_contract"]; present && manifest.SourcePlaneAddressContract != SourcePlaneAddressContract {
 		return nil, fmt.Errorf("unsupported source plane address contract")
 	}
+	if err := validateStatusCategoryMarker(manifestFields, manifest); err != nil {
+		return nil, err
+	}
 	if manifest.Scope == "plug-native-store" {
-		if manifest.SourceFieldsContract != "" || manifest.SourcePlaneAddressContract != "" {
+		if manifest.SourceFieldsContract != "" || manifest.SourcePlaneAddressContract != "" || manifest.StatusCategoryContract != "" {
 			return nil, fmt.Errorf("Beads source fields contract requires offline source scope")
 		}
 		if err := validateNativeArchive(manifest, members, paths); err != nil {
@@ -350,6 +353,9 @@ func validateNativeLines(data []byte, want int, label string) error {
 }
 
 func validateManifest(manifest Manifest, members map[string][]byte) error {
+	if err := validateStatusCategoryContract(manifest); err != nil {
+		return err
+	}
 	if manifest.SourcePlaneAddressContract != "" && manifest.SourcePlaneAddressContract != SourcePlaneAddressContract {
 		return fmt.Errorf("unsupported source plane address contract")
 	}
@@ -371,7 +377,9 @@ func validateManifest(manifest Manifest, members map[string][]byte) error {
 	for key, value := range verificationLimits {
 		expectedVerification[key] = value
 	}
-	if declaration := manifest.Verification["ontology"]; declaration == explicitOntologyVerification || declaration == StrictUnionOntologyVerification {
+	if manifest.StatusCategoryContract == StatusCategoryContract {
+		expectedVerification["ontology"] = NativeStatusOntologyVerification
+	} else if declaration := manifest.Verification["ontology"]; declaration == explicitOntologyVerification || declaration == StrictUnionOntologyVerification {
 		expectedVerification["ontology"] = declaration
 	} else if len(manifest.Ontology) != 0 {
 		return fmt.Errorf("explicit ontology directives require their verification disclosure")
@@ -485,7 +493,19 @@ func validateRecords(manifest Manifest, members map[string][]byte) (map[string][
 	var err error
 	var statuses map[string]bool
 	if planes {
-		statuses, err = validateSourcePlaneCatalog(byKind, members["config/sources.json"])
+		if manifest.StatusCategoryContract == StatusCategoryContract {
+			var categories map[string]string
+			categories, err = sourcePlaneCatalogCategoriesFor(byKind, members["config/sources.json"], true)
+			statuses = make(map[string]bool, len(categories))
+			for name := range categories {
+				statuses[name] = true
+			}
+		} else {
+			statuses, err = validateSourcePlaneCatalog(byKind, members["config/sources.json"])
+		}
+	}
+	if err == nil && manifest.StatusCategoryContract == StatusCategoryContract {
+		err = validateNativeStatusCatalogConservation(manifest, byKind, members["config/sources.json"])
 	}
 	if err == nil && (!planes || manifest.Verification["ontology"] == StrictUnionOntologyVerification) {
 		migration, err = compileImportMigration(manifest, byKind, members["config/sources.json"], hasHistory)

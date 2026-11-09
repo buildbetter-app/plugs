@@ -97,6 +97,12 @@ func validateSourcePlaneRecord(r Record, m Manifest, counts map[string]int, stat
 			status, statusOK := fields["status"].(string)
 			priority, err := natural(fields["priority"])
 			_, builtIn := sourceStatusTarget(status)
+			if m.StatusCategoryContract == StatusCategoryContract {
+				project, projectErr := sourcePhysicalProject(id, m.Projects)
+				if projectErr != nil || projectStatusCategory(findProject(project, m.Projects), status) == "" {
+					return migrationRefusal("unknown-native-status", status, project)
+				}
+			}
 			if !idOK || id == "" || !statusOK || !builtIn && !statuses[status] || strings.TrimSpace(stringValue(fields["title"])) == "" || err != nil || priority > 4 {
 				return fmt.Errorf("invalid active source identity/status/title/priority")
 			}
