@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -36,7 +37,7 @@ func jointStorageFixture(t *testing.T, mode string) []byte {
 			}
 		}
 		for _, name := range []string{"records/bead.ndjson", "records/beads-archive.ndjson"} {
-			var data []byte
+			var records []dumpformat.Record
 			for _, line := range bytes.Split(bytes.TrimSpace(members[name]), []byte{'\n'}) {
 				if len(line) == 0 {
 					continue
@@ -61,7 +62,20 @@ func jointStorageFixture(t *testing.T, mode string) []byte {
 					default:
 						t.Fatal("unknown fixture storage mode")
 					}
+					if record.Kind == "beads-archive" {
+						record.ID = record.Source.Table + "/" + digestBytes(encode(t, record.Source.Fields))
+					}
 				}
+				records = append(records, record)
+			}
+			sort.SliceStable(records, func(i, j int) bool {
+				if records[i].Project != records[j].Project {
+					return records[i].Project < records[j].Project
+				}
+				return records[i].ID < records[j].ID
+			})
+			var data []byte
+			for _, record := range records {
 				data = append(data, encode(t, record)...)
 			}
 			members[name] = data
