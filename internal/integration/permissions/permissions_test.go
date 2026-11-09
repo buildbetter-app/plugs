@@ -534,8 +534,9 @@ func TestRealHTTPClaimTransitionInstallationAndCaveatBounds(t *testing.T) {
 				t.Fatalf("claim admission: %s", got.body)
 			}
 			if tc.allowed {
-				if result(t, got)["leaseTtlMs"] == nil {
-					t.Fatalf("installed claim did not produce a lease: %s", got.body)
+				value, ok := got.value["result"].(map[string]any)
+				if !ok || value["leaseTtlMs"] == nil {
+					t.Fatalf("installed claim did not produce a lease: response=%s first_candidate=%s", got.body, rows[0].Body)
 				}
 			} else if value, ok := got.value["result"]; !ok || value != nil {
 				t.Fatalf("missing transition authority claimed a candidate: %s", got.body)
@@ -551,6 +552,10 @@ func TestRealHTTPClaimTransitionInstallationAndCaveatBounds(t *testing.T) {
 			if replay.value["error"] != nil || !reflect.DeepEqual(got.value["result"], replay.value["result"]) || !ok || metadata["replayed"] != true {
 				t.Fatalf("receipt replay changed: %s", replay.body)
 			}
+			replayed, replayRows := read()
+			if replayed.Head.String() != after.Head.String() || !reflect.DeepEqual(afterRows, replayRows) {
+				t.Fatal("receipt replay published candidate state")
+			}
 			r, err := f.store.Read(ctx, driver.View{Incarnation: after.Incarnation})
 			if err != nil {
 				t.Fatal(err)
@@ -564,10 +569,17 @@ func TestRealHTTPClaimTransitionInstallationAndCaveatBounds(t *testing.T) {
 			if err := f.facts.Replace(facts); err != nil {
 				t.Fatal(err)
 			}
+			// Replacing installed facts is itself a real ACL publication. Keep
+			// that commit distinct from the denied replay's state boundary.
+			revoked, revokedRows := read()
+			revokedHead, _ := revoked.Head.Uint64()
+			if revokedHead != afterHead+1 || !reflect.DeepEqual(afterRows, revokedRows) {
+				t.Fatal("grant revocation did not publish exactly one ACL-only revision")
+			}
 			wantCode(t, f.call(t, key.Token, "bead.claimNext", params), "forbidden")
 			final, finalRows := read()
-			if final.Head.String() != after.Head.String() || !reflect.DeepEqual(afterRows, finalRows) {
-				t.Fatal("replay or revoked membership published candidate state")
+			if final.Head.String() != revoked.Head.String() || !reflect.DeepEqual(revokedRows, finalRows) {
+				t.Fatal("revoked replay published candidate state")
 			}
 		})
 	}
