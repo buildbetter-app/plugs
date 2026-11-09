@@ -46,6 +46,10 @@ func TestPublicBeadsArtifactReimportThreeEngines(t *testing.T) {
 				output := filepath.Join(root, engine+"-"+test.name)
 				args := []string{"--input", "../../internal/integration/converterroundtrip/testdata/" + test.file, "--output-dir", output, "--engine", engine, "--history-mode", test.mode,
 					"--beads-binary", options.Binary, "--beads-sha256", options.SHA256, "--beads-build-run", options.BuildRun}
+				// Every bead in the partial fixture is explicitly ephemeral.
+				if !test.complete {
+					args = append(args, "--all")
+				}
 				if engine == "postgres" {
 					database := "plug_roundtrip_" + strings.ReplaceAll(test.name, "-", "_")
 					if _, err := postgres.db.ExecContext(context.Background(), "CREATE DATABASE "+database); err != nil {
