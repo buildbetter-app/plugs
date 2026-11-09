@@ -5,11 +5,13 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 
+	_ "github.com/dolthub/driver/v2"
 	"github.com/steveyegge/beads/internal/testutil"
 )
 
@@ -23,86 +25,163 @@ type nativePhysicalRootControlCandidate struct {
 	ReadTable func(context.Context, string, string) (table Table, present bool, err error)
 }
 
-func newNativePhysicalRootControlCandidate(t *testing.T, db *sql.DB, _ *testutil.IsolatedDoltContainer) nativePhysicalRootControlCandidate {
-	// A dedicated connection and read-only transaction keep USE, schema,
-	// declarations and cells in the same revision-database session.
-	read := func(ctx context.Context, id string, body func(SQLSource) (map[string]Table, error)) (map[string]Table, error) {
+func newNativePhysicalRootControlCandidate(t *testing.T, _ *sql.DB, server *testutil.IsolatedDoltContainer) nativePhysicalRootControlCandidate {
+	// Option 2 is reached only after the exact option-1 runtime RED. Stop this
+	// owned public fixture before copying, and never check out its source store.
+	setup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	code, directory, err := server.Exec(setup, []string{"pwd"})
+	if err != nil || code != 0 {
+		t.Fatalf("public fixture directory: code=%d error=%v", code, err)
+	}
+	if err := server.Stop(setup); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := os.MkdirTemp("/tmp", "native-physical-option2-snapshot-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(snapshot); err != nil {
+			t.Error(err)
+		}
+		_, err := os.Lstat(snapshot)
+		if !os.IsNotExist(err) {
+			t.Errorf("option2 public snapshot cleanup: %v", err)
+		}
+		t.Logf("OPTION2_CLEANUP snapshot_absent=%t", os.IsNotExist(err))
+	})
+	copyTree := func(src, dst string) error {
+		return filepath.WalkDir(src, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			rel, err := filepath.Rel(src, path)
+			if err != nil {
+				return err
+			}
+			target := filepath.Join(dst, rel)
+			if entry.IsDir() {
+				return os.MkdirAll(target, 0700)
+			}
+			if !entry.Type().IsRegular() {
+				return fmt.Errorf("nonregular public source entry")
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			return os.WriteFile(target, data, 0600)
+		})
+	}
+	if err := copyTree(filepath.Join(strings.TrimSpace(directory), "beads_test"), filepath.Join(snapshot, "beads_test")); err != nil {
+		t.Fatal(err)
+	}
+	read := func(ctx context.Context, id string) (map[string]Table, error) {
 		if !validCommitID(id) {
 			return nil, fmt.Errorf("invalid immutable revision")
 		}
-		conn, err := db.Conn(ctx)
+		root, err := os.MkdirTemp("/tmp", "native-physical-option2-read-")
 		if err != nil {
 			return nil, err
 		}
-		defer conn.Close()
-		tx, err := conn.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelSerializable})
+		defer func() {
+			if err := os.RemoveAll(root); err != nil {
+				t.Error(err)
+			}
+			_, err := os.Lstat(root)
+			if !os.IsNotExist(err) {
+				t.Errorf("option2 read copy cleanup: %v", err)
+			}
+			t.Logf("OPTION2_CLEANUP read_copy_absent=%t", os.IsNotExist(err))
+		}()
+		dbdir := filepath.Join(root, "beads_test")
+		if err := copyTree(filepath.Join(snapshot, "beads_test"), dbdir); err != nil {
+			return nil, err
+		}
+		code, out, err := server.Exec(ctx, []string{"sh", "-c", `cd "$1" && exec dolt checkout --detach "$2"`, "spike-detached-checkout", dbdir, id})
+		t.Logf("OPTION2_DETACHED commit=%s code=%d error_type=%T error=%v output=%s", id, code, err, err, out)
+		if err != nil || code != 0 {
+			// Probe the other documented-looking commit form as well; an
+			// unsupported flag alone must not be called an exhaustive failure.
+			plainCode, plainOut, plainErr := server.Exec(ctx, []string{"sh", "-c", `cd "$1" && exec dolt checkout "$2"`, "spike-commit-checkout", dbdir, id})
+			t.Logf("OPTION2_COMMIT_FORM commit=%s code=%d error_type=%T error=%v output=%s", id, plainCode, plainErr, plainErr, plainOut)
+			return nil, fmt.Errorf("detached checkout unavailable: flag code=%d error=%v; commit form code=%d error=%v", code, err, plainCode, plainErr)
+		}
+		copyDB, err := sql.Open("dolt", "file://"+root+"?database=beads_test&disable_singleton_cache=true")
+		if err != nil {
+			return nil, err
+		}
+		defer copyDB.Close()
+		copyDB.SetMaxOpenConns(1)
+		port := SQLSource{DB: copyDB}
+		declarations, err := port.historyTable(ctx, "SELECT * FROM dolt_nonlocal_tables")
+		if err != nil {
+			return nil, err
+		}
+		// Only the disposable working set is changed, without a Dolt commit.
+		if _, err := copyDB.ExecContext(ctx, "DELETE FROM dolt_nonlocal_tables"); err != nil {
+			return nil, err
+		}
+		var observed string
+		if err := copyDB.QueryRowContext(ctx, "SELECT DOLT_HASHOF('HEAD')").Scan(&observed); err != nil {
+			return nil, err
+		}
+		if observed != id {
+			return nil, fmt.Errorf("detached immutable identity changed")
+		}
+		tx, err := copyDB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelSerializable})
 		if err != nil {
 			return nil, err
 		}
 		defer tx.Rollback()
-		rows, err := tx.QueryContext(ctx, "USE `beads_test/"+id+"`")
+		port = SQLSource{DB: tx}
+		names, err := port.historyTable(ctx, "SHOW FULL TABLES")
 		if err != nil {
 			return nil, err
 		}
-		rows.Close()
-		return body(SQLSource{DB: tx})
-	}
-	tableAtRoot := func(ctx context.Context, port SQLSource, id, name string) (Table, bool, error) {
-		if !nativeSQLName.MatchString(name) {
-			return Table{}, false, fmt.Errorf("invalid physical name")
+		if len(names.Columns) != 2 {
+			return nil, fmt.Errorf("invalid physical census")
 		}
-		// As in the original producer's local-history route, use the history
-		// relation to avoid following aliases on the base name. Here both its
-		// schema and declaration lookup are scoped to the revision database.
-		return port.readNativeLocalHistoryTable(ctx, name, id)
+		image := map[string]Table{"dolt_nonlocal_tables": declarations}
+		for _, row := range names.Rows {
+			name := historyText(row[names.Columns[0]])
+			if historyText(row[names.Columns[1]]) == "VIEW" || name == "dolt_nonlocal_tables" {
+				continue
+			}
+			if !nativeSQLName.MatchString(name) {
+				return nil, fmt.Errorf("invalid physical table name")
+			}
+			table, err := port.historyTable(ctx, "SELECT * FROM `"+name+"`")
+			if err != nil {
+				return nil, err
+			}
+			image[name] = table
+		}
+		return image, nil
 	}
-	return nativePhysicalRootControlCandidate{
-		Name: "revision-database-scoped-use",
-		ReadImage: func(ctx context.Context, id string) (map[string]Table, error) {
-			return read(ctx, id, func(port SQLSource) (map[string]Table, error) {
-				names, err := port.historyTable(ctx, "SHOW FULL TABLES")
-				if err != nil {
-					return nil, err
-				}
-				if len(names.Columns) != 2 {
-					return nil, fmt.Errorf("invalid revision census")
-				}
-				declarations, err := port.historyTable(ctx, "SELECT * FROM dolt_nonlocal_tables")
-				if err != nil {
-					return nil, err
-				}
-				t.Logf("OPTION1_SCOPED_DECLARATIONS commit=%s columns=%v rows=%v", id, declarations.Columns, declarations.Rows)
-				result := map[string]Table{"dolt_nonlocal_tables": declarations}
-				for _, row := range names.Rows {
-					name := historyText(row[names.Columns[0]])
-					if historyText(row[names.Columns[1]]) == "VIEW" || name == "dolt_nonlocal_tables" {
-						continue
-					}
-					table, present, err := tableAtRoot(ctx, port, id, name)
-					if err != nil {
-						return nil, err
-					}
-					if present {
-						result[name] = table
-					}
-				}
-				return result, nil
-			})
-		},
+	candidate := nativePhysicalRootControlCandidate{
+		Name:      "disposable-copy-detached-checkout",
+		ReadImage: read,
 		ReadTable: func(ctx context.Context, id, name string) (Table, bool, error) {
-			present := false
-			var table Table
-			_, err := read(ctx, id, func(port SQLSource) (map[string]Table, error) {
-				var readErr error
-				table, present, readErr = tableAtRoot(ctx, port, id, name)
-				return nil, readErr
-			})
+			image, err := read(ctx, id)
 			if err != nil {
 				return Table{}, false, err
 			}
+			table, present := image[name]
 			return table, present, nil
 		},
 	}
+	t.Run("valid_missing_commit_is_error", func(t *testing.T) {
+		id := strings.Repeat("a", 32)
+		if _, err := candidate.ReadImage(setup, id); err == nil {
+			t.Error("valid missing immutable image did not refuse")
+		}
+		if _, present, err := candidate.ReadTable(setup, id, "archived_rows"); err == nil || present {
+			t.Error("valid missing immutable table root became absence")
+		}
+	})
+	return candidate
 }
 
 func TestSQLNativePhysicalRootControls(t *testing.T) {
