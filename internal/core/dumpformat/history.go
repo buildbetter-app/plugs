@@ -56,10 +56,11 @@ type SourceHistoryRange struct {
 // projects; the merge and restore seams establish a deterministic import
 // order without rewriting any source commit or event ID.
 type ProjectSourceHistory struct {
-	Project string             `json:"project"`
-	Commits []SourceCommit     `json:"commits"`
-	Events  []Row              `json:"events"`
-	Range   SourceHistoryRange `json:"range"`
+	SourceStoreID string             `json:"source_store_id,omitempty"`
+	Project       string             `json:"project"`
+	Commits       []SourceCommit     `json:"commits"`
+	Events        []Row              `json:"events"`
+	Range         SourceHistoryRange `json:"range"`
 }
 
 func (h ProjectSourceHistory) MarshalJSON() ([]byte, error) {
@@ -246,12 +247,32 @@ func (a *Archive) historyImageForProject(scoped ProjectSourceHistory, sequence u
 		return nil, ErrSourceHistory{Reason: "non-contiguous"}
 	}
 	image := &Archive{sha256: a.sha256, manifest: a.Manifest(), members: a.members, byKind: map[string][]Record{}}
+	if scoped.Project != "" {
+		image.manifest = scopedHistoryManifest(image.manifest, scoped.Project)
+	}
+	if scoped.SourceStoreID != "" {
+		image.manifest.StoreID = scoped.SourceStoreID
+		image.members = make(map[string][]byte, len(a.members))
+		for path, data := range a.members {
+			image.members[path] = data
+		}
+		config, err := sourceConfigForIdentity(a.members["config/sources.json"], SourceIdentity{StoreID: scoped.SourceStoreID, Project: scoped.Project})
+		if err != nil {
+			return nil, err
+		}
+		image.members["config/sources.json"] = config
+		image.manifest.Files["config/sources.json"] = File{SHA256: digest(config), Size: int64(len(config))}
+	}
 	for _, r := range rows {
 		image.byKind[r.Kind] = append(image.byKind[r.Kind], r)
 	}
 	// Read-only census/provenance is retained at restore time; it is never used
 	// to fill missing historical business fields.
-	image.byKind["beads-archive"] = a.Records("beads-archive")
+	for _, record := range a.Records("beads-archive") {
+		if record.Source.Identity == nil || record.Source.Identity.Project == scoped.Project {
+			image.byKind["beads-archive"] = append(image.byKind["beads-archive"], record)
+		}
+	}
 	return image, nil
 }
 
@@ -281,6 +302,10 @@ func validateSourceHistory(a *Archive) error {
 	seenProjects := map[string]bool{}
 	seenCommits := map[string]string{}
 	seenEvents := map[string]string{}
+	namespaced := a.manifest.SourceIdentityContract == SourceIdentityContract
+	if namespaced && len(scopes) != len(a.manifest.Projects) {
+		return fail("missing source project history")
+	}
 	allVerified := true
 	for _, scoped := range scopes {
 		if scoped.Project == "" || seenProjects[scoped.Project] {
@@ -289,6 +314,25 @@ func validateSourceHistory(a *Archive) error {
 		seenProjects[scoped.Project] = true
 		if !projectInManifest(scoped.Project, a.manifest.Projects) {
 			return fail("unmappable")
+		}
+		if namespaced {
+			identity := SourceIdentity{StoreID: scoped.SourceStoreID, Project: scoped.Project}
+			if !validSourceIdentity(identity) {
+				return fail("missing source store/project identity")
+			}
+			if err := requireCompleteSourceHistory(identity, scoped.Range); err != nil && a.manifest.SourceFamilyContract != SourceFamilyContract {
+				return err
+			}
+			for _, rows := range a.byKind {
+				for _, record := range rows {
+					if record.Source.Identity.Project == scoped.Project && *record.Source.Identity != identity {
+						return fail("history source store differs from record source")
+					}
+				}
+			}
+			seenCommits, seenEvents = map[string]string{}, map[string]string{}
+		} else if scoped.SourceStoreID != "" {
+			return fail("source store identity requires explicit contract")
 		}
 		if err := validateHistoryScope(a, scoped, seenCommits, seenEvents); err != nil {
 			return err
@@ -347,6 +391,24 @@ func projectInManifest(project string, projects []Project) bool {
 
 func validateHistoryScope(a *Archive, scoped ProjectSourceHistory, seenCommits map[string]string, seenEvents map[string]string) error {
 	fail := func(reason string) error { return ErrSourceHistory{Reason: reason} }
+	namespaced := a.manifest.SourceIdentityContract == SourceIdentityContract
+	manifest := a.manifest
+	if namespaced {
+		manifest = scopedHistoryManifest(manifest, scoped.Project)
+	}
+	checkImage := func(rows []Record) error {
+		for _, record := range rows {
+			if namespaced {
+				identity := SourceIdentity{StoreID: scoped.SourceStoreID, Project: scoped.Project}
+				if record.Source.Identity == nil || *record.Source.Identity != identity || record.Project != "" && record.Project != scoped.Project {
+					return fail("historical record source identity mismatch")
+				}
+			} else if record.Source.Identity != nil {
+				return fail("historical source identity requires explicit contract")
+			}
+		}
+		return validateHistoryImage(rows, manifest)
+	}
 	for _, event := range scoped.Events {
 		if err := validateSecretReferences(map[string]any(event)); err != nil {
 			return err
@@ -403,7 +465,7 @@ func validateHistoryScope(a *Archive, scoped ProjectSourceHistory, seenCommits m
 		if r.Complete {
 			return fail("unmappable")
 		}
-		if err := validateHistoryImage(r.Baseline, a.manifest); err != nil {
+		if err := checkImage(r.Baseline); err != nil {
 			return fail("unmappable")
 		}
 		next := uint64(1)
@@ -422,7 +484,7 @@ func validateHistoryScope(a *Archive, scoped ProjectSourceHistory, seenCommits m
 		if frame.Sequence != r.First+uint64(i) || frame.CommitID != scoped.Commits[frame.Sequence-1].ID {
 			return fail("non-contiguous")
 		}
-		if err := validateHistoryImage(frame.Records, a.manifest); err != nil {
+		if err := checkImage(frame.Records); err != nil {
 			return fail("unmappable")
 		}
 		if !extendsEvents(previous, frame.Events) {
@@ -443,6 +505,9 @@ func validateHistoryScope(a *Archive, scoped ProjectSourceHistory, seenCommits m
 	current := []Record{}
 	for _, kind := range historyKinds {
 		for _, record := range a.byKind[kind] {
+			if namespaced && record.Source.Identity.Project != scoped.Project {
+				continue
+			}
 			if record.Project == scoped.Project || record.Project == "" && (len(a.manifest.Projects) == 1 || globalMembership[record.Kind+"\x00"+recordKey(record)]) {
 				current = append(current, record)
 			}
@@ -467,6 +532,9 @@ func currentEventsForProject(a *Archive, project string) []Row {
 		if record.Source.Table != "events" {
 			continue
 		}
+		if record.Source.Identity != nil && record.Source.Identity.Project != project {
+			continue
+		}
 		issueID := stringValue(record.Source.Fields["issue_id"])
 		if beadProjects[issueID] == project || beadProjects[issueID] == "" && len(a.manifest.Projects) == 1 {
 			events = append(events, record.Source.Fields)
@@ -487,15 +555,36 @@ func validCommitID(id string) bool {
 	return true
 }
 
+// A legacy image is already scoped by its enclosing source history. Its raw
+// IDs are independent across kinds and physical tables, just like head rows.
+func historyRecordKey(r Record) SourceRecordKey {
+	if key, ok := r.SourceKey(); ok {
+		return key
+	}
+	return SourceRecordKey{Project: r.Project, Kind: r.Kind, Table: r.Source.Table, ID: r.ID}
+}
+
+func lessHistoryRecord(a, b Record) bool {
+	x, y := historyRecordKey(a), historyRecordKey(b)
+	left := [...]string{x.StoreID, x.Project, x.Kind, x.Table, x.ID}
+	right := [...]string{y.StoreID, y.Project, y.Kind, y.Table, y.ID}
+	for i := range left {
+		if left[i] != right[i] {
+			return left[i] < right[i]
+		}
+	}
+	return false
+}
+
 func validateHistoryImage(rows []Record, manifest Manifest) error {
-	seen, beads := map[string]bool{}, map[string]string{}
+	seen, beads := map[SourceRecordKey]bool{}, map[string]string{}
 	counts := map[string]int{}
 	beadRows := []Record{}
 	for _, r := range rows {
-		if r.Kind == "beads-archive" || !knownKinds[r.Kind] || seen[recordKey(r)] {
+		if r.Kind == "beads-archive" || !knownKinds[r.Kind] || seen[historyRecordKey(r)] {
 			return fmt.Errorf("duplicate or nonportable history record")
 		}
-		seen[recordKey(r)] = true
+		seen[historyRecordKey(r)] = true
 		if err := validateVersionedRecord(r, manifest.Projects, counts, nil, manifest.EdgeVersion()); err != nil {
 			return err
 		}
@@ -532,7 +621,7 @@ func validateHistoryImage(rows []Record, manifest Manifest) error {
 func sameRecordImage(a, b []Record) bool {
 	canonical := func(rows []Record) []Record {
 		copy := append([]Record{}, rows...)
-		sort.Slice(copy, func(i, j int) bool { return recordKey(copy[i]) < recordKey(copy[j]) })
+		sort.Slice(copy, func(i, j int) bool { return lessHistoryRecord(copy[i], copy[j]) })
 		return copy
 	}
 	return equalJSON(canonical(a), canonical(b))

@@ -104,10 +104,12 @@ type File struct {
 }
 
 type Disposition struct {
-	Family string `json:"family"`
-	Rows   int    `json:"rows"`
-	Action string `json:"action"`
-	Reason string `json:"reason"`
+	Identity *SourceIdentity `json:"identity,omitempty"`
+	Family   string          `json:"family"`
+	Rows     int             `json:"rows"`
+	Action   string          `json:"action"`
+	Reason   string          `json:"reason"`
+	History  string          `json:"history,omitempty"`
 }
 
 type Manifest struct {
@@ -130,6 +132,8 @@ type Manifest struct {
 	SourceFieldsContract       string              `json:"source_fields_contract,omitempty"`
 	SourcePlaneAddressContract string              `json:"source_plane_address_contract,omitempty"`
 	StatusCategoryContract     string              `json:"status_category_contract,omitempty"`
+	SourceIdentityContract     string              `json:"source_identity_contract,omitempty"`
+	SourceFamilyContract       string              `json:"source_family_contract,omitempty"`
 	// Native store fields are present only for archives produced by Plug's
 	// engine-neutral admin.dump path. The offline Beads exporter leaves these
 	// fields absent and continues to use the source census above.
@@ -156,8 +160,9 @@ func (m Manifest) EdgeVersion() int {
 }
 
 type Provenance struct {
-	Table  string `json:"table"`
-	Fields Row    `json:"fields"`
+	Table    string          `json:"table"`
+	Fields   Row             `json:"fields"`
+	Identity *SourceIdentity `json:"identity,omitempty"`
 }
 
 type Record struct {
@@ -171,14 +176,15 @@ type Record struct {
 // Archive owns validated data. Accessors return detached copies; a caller
 // cannot turn a validated record into an unchecked restore request.
 type Archive struct {
-	sha256    string
-	tarBytes  []byte
-	manifest  Manifest
-	members   map[string][]byte
-	byKind    map[string][]Record
-	native    bool
-	history   *SourceHistory
-	migration *ImportMigration
+	sha256          string
+	tarBytes        []byte
+	manifest        Manifest
+	members         map[string][]byte
+	byKind          map[string][]Record
+	native          bool
+	history         *SourceHistory
+	nativeHistories []NativeHistory
+	migration       *ImportMigration
 }
 
 // ImportMigration returns the admitted non-native head migration, when its
@@ -237,6 +243,12 @@ func (a *Archive) Manifest() Manifest {
 	m.Kinds = append([]Kind{}, m.Kinds...)
 	m.Ontology = append([]OntologyDirective(nil), m.Ontology...)
 	m.Sources = append([]Disposition{}, m.Sources...)
+	for i := range m.Sources {
+		if identity := m.Sources[i].Identity; identity != nil {
+			copy := *identity
+			m.Sources[i].Identity = &copy
+		}
+	}
 	m.Warnings = append([]string{}, m.Warnings...)
 	m.Files = make(map[string]File, len(a.manifest.Files))
 	for key, value := range a.manifest.Files {
@@ -257,6 +269,10 @@ func (a *Archive) Member(path string) ([]byte, bool) {
 func (a *Archive) Records(kind string) []Record {
 	rows := append([]Record(nil), a.byKind[kind]...)
 	for i := range rows {
+		if rows[i].Source.Identity != nil {
+			identity := *rows[i].Source.Identity
+			rows[i].Source.Identity = &identity
+		}
 		rows[i].Body = cloneRow(rows[i].Body)
 		rows[i].Source.Fields = cloneRow(rows[i].Source.Fields)
 	}

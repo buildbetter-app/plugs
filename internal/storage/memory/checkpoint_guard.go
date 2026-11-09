@@ -48,7 +48,7 @@ func (t *transaction) StageCheckpoint(ctx context.Context, key string, expected 
 	if err := t.check(ctx); err != nil {
 		return err
 	}
-	if t.offlineHistory != nil {
+	if t.offlineHistory != nil && t.sourcePlaneImport == nil {
 		return fmt.Errorf("%w: offline history does not publish checkpoint stages", driver.ErrUnsupported)
 	}
 	if err := driver.ValidateCheckpointKey(key); err != nil {

@@ -45,7 +45,11 @@ func (s *Service) InstallSourceWorkflow(ctx context.Context, provider *workflowp
 	if err != nil {
 		return err
 	}
-	initial := driver.Meta{StoreID: meta.StoreID, Incarnation: meta.Incarnation, Head: model.Natural64(1), HistoryFloor: model.Natural64(1)}
+	floor := model.Natural64(1)
+	if bound.HistoryMode == driver.RestoreHistoryModeFull {
+		floor = model.Natural64(0)
+	}
+	initial := driver.Meta{StoreID: meta.StoreID, Incarnation: meta.Incarnation, Head: receipt.Commit.Revision, HistoryFloor: floor}
 	if provider == nil || meta.Head.IsZero() || commit.Validate(bound, initial) != nil || len(commit.Providers) != 1 || len(plan.Providers) != 1 {
 		return driver.ErrConflict
 	}

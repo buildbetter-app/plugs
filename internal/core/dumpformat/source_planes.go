@@ -15,6 +15,9 @@ type sourceRecordIdentity struct{ Kind, Project, Table, ID string }
 // The explicit capability compares physical edge components independently.
 // In particular NUL within a physical ID is data, never a tuple delimiter.
 func compareSourceRecords(a, b Record, contract string) int {
+	if a.Source.Identity != nil || b.Source.Identity != nil {
+		return strings.Compare(recordKey(a), recordKey(b))
+	}
 	if contract != SourcePlaneAddressContract || a.Kind != "edge" || b.Kind != "edge" {
 		return strings.Compare(recordKey(a), recordKey(b))
 	}
@@ -35,8 +38,15 @@ func sourcePlaneArchiveTable(table string) bool {
 	return false
 }
 
+func nativeOperationalTable(table string, familyContract string) bool {
+	return familyContract == SourceFamilyContract && (table == "leases" || table == "repo_mtimes")
+}
+
 func validateSourcePlaneRecord(r Record, m Manifest, counts map[string]int, statuses map[string]bool) error {
 	table, fields := r.Source.Table, r.Source.Fields
+	if (table == "leases" || table == "repo_mtimes") && m.SourceFamilyContract != SourceFamilyContract {
+		return fmt.Errorf("operational source rows require source family contract")
+	}
 	columns, ok := tableColumns[table]
 	if !ok || len(fields) != len(strings.Fields(columns)) {
 		return fmt.Errorf("source plane record schema drift")

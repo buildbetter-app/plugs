@@ -285,7 +285,7 @@ func prepareSourceOrigins(ctx context.Context, value *persisted, plan driver.Sou
 		if err != nil {
 			return err
 		}
-		if wire.Source.Table != origin.Table || wire.ID != origin.ID || wire.Project != "" && wire.Project != origin.Project {
+		if wire.Source.Table != origin.Table || wire.ID != origin.ID || !wire.matchesProject(origin.Project) {
 			return sourceRefusal("origin record address differs")
 		}
 		if err := sourceFieldCensus(wire.Source.Fields, origin.Fields); err != nil {

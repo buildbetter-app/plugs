@@ -182,9 +182,13 @@ internal/core/dumpformat/migration.go
 internal/core/dumpformat/migration_hashes.go
 internal/core/dumpformat/migration_sources.go
 internal/core/dumpformat/migration_test.go
+internal/core/dumpformat/native_history.go
+internal/core/dumpformat/native_history_test.go
 internal/core/dumpformat/ontology.go
 internal/core/dumpformat/ontology_test.go
 internal/core/dumpformat/records.go
+internal/core/dumpformat/source_identity.go
+internal/core/dumpformat/source_identity_test.go
 internal/core/dumpformat/source_planes.go
 internal/core/dumpformat/source_planes_catalog.go
 internal/core/dumpformat/source_planes_sidecars.go
@@ -193,8 +197,10 @@ internal/core/dumpformat/source_planes_test.go
 internal/core/dumpformat/sources.go
 internal/core/dumpformat/status_categories.go
 internal/core/dumpformat/status_categories_test.go
+internal/core/dumpformat/testdata/native-tables-synthetic.tar
 internal/core/dumpformat/testdata/producer-0f44-reprocody.tar
 internal/core/dumpformat/testdata/producer-0f44-reprosignals.tar
+internal/core/dumpformat/testdata/producer-e615-reprocody-gap.tar
 internal/core/dumpformat/types.go
 internal/core/dumpformat/validate.go
 internal/core/dumpformat/validate_test.go
@@ -517,7 +523,10 @@ internal/integration/converterroundtrip/joint_exports_test.go
 internal/integration/converterroundtrip/label_projection_test.go
 internal/integration/converterroundtrip/labels.go
 internal/integration/converterroundtrip/memory_import_test.go
+internal/integration/converterroundtrip/native_history_test.go
 internal/integration/converterroundtrip/native_restore_test.go
+internal/integration/converterroundtrip/native_tables.go
+internal/integration/converterroundtrip/native_tables_test.go
 internal/integration/converterroundtrip/public_source_test.go
 internal/integration/converterroundtrip/repair_test.go
 internal/integration/converterroundtrip/restore.go
@@ -536,6 +545,7 @@ internal/integration/converterroundtrip/source_planes_test.go
 internal/integration/converterroundtrip/source_poststage_test.go
 internal/integration/converterroundtrip/source_public_test.go
 internal/integration/converterroundtrip/source_storage_test.go
+internal/integration/converterroundtrip/testdata/native-built-in-statuses.json
 internal/integration/converterroundtrip/testdata/public-complete-root-990eb800.tar
 internal/integration/converterroundtrip/testdata/public-partial-990eb800.tar
 internal/integration/converterroundtrip/testdata/public-source-990eb800.md
