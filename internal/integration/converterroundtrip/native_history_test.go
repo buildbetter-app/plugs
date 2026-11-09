@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"reflect"
 	"sort"
 	"strings"
@@ -27,7 +28,15 @@ func nativeHistoryFixture(t *testing.T, project, category string) []byte {
 	decode(t, members["manifest.json"], &m)
 	m.SourcePlaneAddressContract = dumpformat.SourcePlaneAddressContract
 	m.StatusCategoryContract = dumpformat.StatusCategoryContract
-	m.Projects[0].Statuses = []dumpformat.ProjectStatus{{Name: "blocked", Category: "wip"}, {Name: "closed", Category: "done"}, {Name: "deferred", Category: "frozen"}, {Name: "hooked", Category: "wip"}, {Name: "in_progress", Category: "wip"}, {Name: "open", Category: "active"}, {Name: "pinned", Category: "frozen"}, {Name: "shared", Category: category}}
+	m.Verification["ontology"] = dumpformat.NativeStatusOntologyVerification
+	// Keep the external builtin catalog as explicit fixture data, with every
+	// native name/category visible and unchanged.
+	catalog, err := os.ReadFile("testdata/native-built-in-statuses.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	decode(t, catalog, &m.Projects[0].Statuses)
+	m.Projects[0].Statuses = append(m.Projects[0].Statuses, dumpformat.ProjectStatus{Name: "shared", Category: category})
 	value := "shared:" + category
 	config := dumpformat.Record{Kind: "config", ID: "config/status.custom", Body: dumpformat.Row{"key": "config/status.custom", "value": value, "classification": "public"}, Source: dumpformat.Provenance{Table: "config", Fields: dumpformat.Row{"key": "status.custom", "value": value}}}
 	convert := func(row *dumpformat.Record) {
