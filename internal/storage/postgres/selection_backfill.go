@@ -91,13 +91,22 @@ func selectionOwnedDBRow(id string, row driver.DerivedRow) (selectionDBRow, erro
 	if err = gob.NewEncoder(&encoded).Encode(row.Index); err != nil {
 		return result, err
 	}
-	result.Annotation = selectionHex(encoded.String())
+	result.Annotation = encoded.Bytes()
 	return result, nil
 }
 func writeSelectionRows(ctx context.Context, q sourceindex.SQL, incarnation string, at model.Revision, rows []selectionDBRow, facts []selectionDBFact) error {
 	for start := 0; start < len(rows); start += publicationBatchRows {
 		end := min(start+publicationBatchRows, len(rows))
-		if _, err := q.ExecContext(ctx, `INSERT INTO plug_postgres.selection_rows(incarnation,start_revision,`+selectionColumns+`,annotation) SELECT $1,$2,`+selectionJSONColumns+`,decode(annotation,'hex') FROM jsonb_to_recordset($3::jsonb) AS p(`+selectionJSONLayout+`)`, incarnation, at.String(), selectionJSON(rows[start:end])); err != nil {
+		// Binary annotations dominate large closure publications. Transport the
+		// exact existing Gob bytes directly, outside the scalar JSON recordset.
+		// WITH ORDINALITY binds each bytea to its original JSON array element;
+		// both slices have the same bounded length and no identity join can drop
+		// or multiply a row. All semantic columns and SQL triggers are unchanged.
+		annotations := make([][]byte, end-start)
+		for i, row := range rows[start:end] {
+			annotations[i] = row.Annotation
+		}
+		if _, err := q.ExecContext(ctx, `INSERT INTO plug_postgres.selection_rows(incarnation,start_revision,`+selectionColumns+`,annotation) SELECT $1,$2,`+selectionJSONColumns+`,($4::bytea[])[p.ordinality::int] FROM ROWS FROM (jsonb_to_recordset($3::jsonb) AS (`+selectionJSONLayout+`)) WITH ORDINALITY AS p`, incarnation, at.String(), selectionJSON(rows[start:end]), annotations); err != nil {
 			return err
 		}
 	}

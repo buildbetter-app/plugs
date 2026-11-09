@@ -125,7 +125,7 @@ func (t *transaction) writeSelection(ctx context.Context, revision model.Revisio
 		if err := gob.NewEncoder(&annotation).Encode(x); err != nil {
 			return err
 		}
-		row.Annotation = selectionHex(annotation.String())
+		row.Annotation = annotation.Bytes()
 		indexes = append(indexes, row)
 		if x.Facts != nil {
 			facts = append(facts, selectionFactsRows(id, x.Facts)...)
@@ -187,17 +187,8 @@ func (t *transaction) writeSelection(ctx context.Context, revision model.Revisio
 			return err
 		}
 	}
-	for start := 0; start < len(indexes); start += publicationBatchRows {
-		end := min(start+publicationBatchRows, len(indexes))
-		if _, err := t.sql.ExecContext(ctx, `INSERT INTO plug_postgres.selection_rows(incarnation,start_revision,`+selectionColumns+`,annotation) SELECT $1,$2,`+selectionJSONColumns+`,decode(annotation,'hex') FROM jsonb_to_recordset($3::jsonb) AS p(`+selectionJSONLayout+`)`, inc, revision.String(), selectionJSON(indexes[start:end])); err != nil {
-			return err
-		}
-	}
-	for start := 0; start < len(facts); start += publicationBatchRows {
-		end := min(start+publicationBatchRows, len(facts))
-		if _, err := t.sql.ExecContext(ctx, `INSERT INTO plug_postgres.selection_facts(incarnation,start_revision,`+selectionFactColumns+`) SELECT $1,$2,`+selectionFactJSONColumns+` FROM jsonb_to_recordset($3::jsonb) AS f(`+selectionFactJSONLayout+`)`, inc, revision.String(), selectionJSON(facts[start:end])); err != nil {
-			return err
-		}
+	if err := writeSelectionRows(ctx, t.sql, inc, revision, indexes, facts); err != nil {
+		return err
 	}
 	return t.writeSelectionCoverage(ctx, revision, inc)
 }

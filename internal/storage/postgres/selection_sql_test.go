@@ -64,6 +64,127 @@ func TestSelectionAnnotationDecodePreservesRefRefusal(t *testing.T) {
 	}
 }
 
+// Compare the complete physical rows against the prior transport in the same
+// real SQL transaction, including NULL/empty scalar fields, opaque bytes and a
+// second publication batch. No logical decoder can hide a transport mismatch.
+func TestSelectionAnnotationBinaryPublicationMatchesLegacy(t *testing.T) {
+	ctx := context.Background()
+	s := openTest(t, freshDSN(t))
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `CREATE TEMP TABLE annotation_transport_legacy (LIKE plug_postgres.selection_rows INCLUDING DEFAULTS) ON COMMIT DROP`); err != nil {
+		t.Fatal(err)
+	}
+	const count = publicationBatchRows + 3
+	rows := make([]selectionDBRow, count)
+	legacy := make([]map[string]json.RawMessage, count)
+	for i := range rows {
+		ref := testRef(fmt.Sprintf("pl-binary-%04d", i))
+		project, parent := "", testRef("pl-parent")
+		bead := &driver.SelectionBead{Ref: ref, Type: "issue", Status: "todo", Title: "opaque\x00\xff", Priority: int64(i % 5), Project: &project, Parent: &parent}
+		if i%2 == 0 {
+			bead.Project, bead.Parent = nil, nil
+			bead.Absent = []driver.SelectionColumn{driver.SelectionTitle, driver.SelectionTemplate, driver.SelectionPriority}
+		}
+		key := driver.DerivedRowKey{Table: driver.DerivedSortKey, Key: fmt.Sprintf("binary-%04d", i)}
+		row := driver.DerivedRow{Key: key.Key, Value: []byte(`{"transport":true}`), Index: &driver.SelectionIndex{Version: driver.SelectionIndexVersion, Row: key, Incarnation: "transport", Branch: model.Natural64(0),
+			Source: driver.SelectionSource{Key: testLock(ref), Revision: model.Natural64(0), Present: true, Digest: "source\x00\xff"}, Bead: bead,
+		}}
+		row.Index.ValueDigest = driver.SelectionDigest(row.Value)
+		id, err := keyID(driver.LockKey{Kind: driver.LockDerived, Derived: &key})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows[i], err = selectionOwnedDBRow(id, row)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = json.Unmarshal([]byte(selectionJSON(rows[i])), &legacy[i]); err != nil {
+			t.Fatal(err)
+		}
+		// Literal predecessor representation: Gob bytes hex-expanded into JSON.
+		legacy[i]["annotation"], err = json.Marshal(selectionHex(string(rows[i].Annotation)))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO annotation_transport_legacy(incarnation,start_revision,`+selectionColumns+`,annotation) SELECT $1,$2,`+selectionJSONColumns+`,decode(annotation,'hex') FROM jsonb_to_recordset($3::jsonb) AS p(`+selectionJSONLayout+`)`, "transport", "1", selectionJSON(legacy)); err != nil {
+		t.Fatal(err)
+	}
+	if err = writeSelectionRows(ctx, tx, "transport", model.Natural64(1), rows, nil); err != nil {
+		t.Fatal(err)
+	}
+	var actual, differences int
+	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM plug_postgres.selection_rows WHERE incarnation='transport'`).Scan(&actual); err != nil || actual != count {
+		t.Fatalf("binary publication rows=%d want=%d: %v", actual, count, err)
+	}
+	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM ((SELECT * FROM plug_postgres.selection_rows WHERE incarnation='transport' EXCEPT ALL SELECT * FROM annotation_transport_legacy) UNION ALL (SELECT * FROM annotation_transport_legacy EXCEPT ALL SELECT * FROM plug_postgres.selection_rows WHERE incarnation='transport')) AS differences`).Scan(&differences); err != nil || differences != 0 {
+		t.Fatalf("complete binary/legacy physical row differences=%d: %v", differences, err)
+	}
+}
+
+func TestSelectionAnnotationReuseStillReadsAndValidatesCurrentImage(t *testing.T) {
+	ctx := context.Background()
+	s := openTest(t, freshDSN(t))
+	lease := testLease(t, s)
+	ref := testRef("pl-annotation-current")
+	facts := driver.SelectionFacts{Kind: driver.SelectionAncestorFact, Rows: []driver.SelectionFact{{Kind: driver.SelectionAncestorFact, Ref: &ref, Target: &ref}}}
+	key := seedSelectionSQLFacts(t, s, lease, map[driver.DerivedTable]driver.SelectionFacts{driver.DerivedAncestorClosure: facts})[driver.DerivedAncestorClosure]
+	lock := driver.LockKey{Kind: driver.LockDerived, Derived: &key}
+	tx, _ := beginTest(t, s, lease, lock)
+	defer tx.Close()
+	writer := tx.(*transaction)
+	id, _ := keyID(lock)
+	read := func() driver.LockState {
+		t.Helper()
+		states, err := tx.Observe(ctx, []driver.LockKey{lock})
+		if err != nil || len(states) != 1 || states[0].Derived == nil {
+			t.Fatalf("actual annotation observation=%+v: %v", states, err)
+		}
+		return states[0]
+	}
+	first := read()
+	if first.Derived.Index == nil {
+		t.Fatal("committed annotation absent")
+	}
+	want := first.Derived.Clone()
+	first.Derived.Index.Facts.Rows[0].Ref.ID = "caller-mutated"
+	first.Derived.Index.Source.Key.Derived.Key = "caller-mutated"
+	if next := read(); !reflect.DeepEqual(*next.Derived, want) {
+		t.Fatalf("caller changed repeated SQL observation: %#v; want %#v", next.Derived, want)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := tx.Observe(cancelled, []driver.LockKey{lock}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cached annotation bypassed cancelled read: %v", err)
+	}
+	// A same-token logical replacement must be validated against the freshly
+	// read state even though its separately stored annotation bytes did not move.
+	state := read()
+	state.Derived.Value = append(state.Derived.Value, ' ')
+	raw, err := encode(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = writer.sql.ExecContext(ctx, `UPDATE plug_postgres.states SET value=$2 WHERE key=$1 AND revision=$3`, []byte(id), raw, state.Revision.String()); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got.Derived.Index != nil || !bytes.Equal(got.Derived.Value, state.Derived.Value) {
+		t.Fatalf("old annotation attached to replacement logical bytes: %#v", got.Derived)
+	}
+	// Same row/revision, different physical annotation: perform the read and
+	// retain the original malformed-binary refusal instead of returning a hit.
+	if _, err = writer.sql.ExecContext(ctx, `UPDATE plug_postgres.selection_rows SET annotation=$2 WHERE row_key=$1`, []byte(id), []byte("malformed annotation")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Observe(ctx, []driver.LockKey{lock}); err == nil {
+		t.Fatal("annotation reuse hid malformed same-token SQL replacement")
+	}
+}
+
 // These are trusted adapter fixtures with independently specified semantic
 // fields. They exercise the public driver API, not a native producer claim.
 func seedSelectionSQL(t *testing.T, s *Store, l driver.ActiveLease, beads []driver.SelectionBead) {

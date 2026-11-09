@@ -22,7 +22,7 @@ type selectionDBRow struct {
 	SourceTable                          string  `json:"source_table"`
 	ValueDigest                          string  `json:"value_digest"`
 	Layout                               int     `json:"layout"`
-	Annotation                           string  `json:"annotation,omitempty"`
+	Annotation                           []byte  `json:"-"`
 	RowKey                               string  `json:"row_key"`
 	SourceKey                            string  `json:"source_key"`
 	SourceRevision                       string  `json:"source_revision"`
@@ -84,6 +84,35 @@ func decodeSelectionAnnotation(raw []byte) (driver.SelectionIndex, error) {
 		}
 	}
 	return index, nil
+}
+
+// Cache only decoding, never a database observation. Every caller still reads
+// the current SQL image and validates the annotation against that logical row.
+// Exact binary keys also work for ReadCommitted writers and same-token physical
+// replacements; neither row identity nor a revision alone may authorize reuse.
+// Keep the optional optimization bounded for long-lived, large-domain readers.
+const selectionAnnotationCacheBytes = 4 << 20
+const selectionAnnotationCacheEntries = 4096
+
+func (r *reader) decodedSelectionAnnotation(raw []byte) (driver.SelectionIndex, error) {
+	index, ok := r.annotationCache[string(raw)]
+	if !ok {
+		var err error
+		index, err = decodeSelectionAnnotation(raw)
+		if err != nil {
+			return driver.SelectionIndex{}, err
+		}
+		if len(r.annotationCache) < selectionAnnotationCacheEntries && len(raw) <= selectionAnnotationCacheBytes-r.annotationCacheBytes {
+			if r.annotationCache == nil {
+				r.annotationCache = make(map[string]driver.SelectionIndex)
+			}
+			r.annotationCache[string(raw)] = index
+			r.annotationCacheBytes += len(raw)
+		}
+	}
+	// The cache owns every nested pointer/slice. Caller mutation must not alter
+	// a subsequent read even when the database returned the same encoded bytes.
+	return *(driver.DerivedRow{Index: &index}).Clone().Index, nil
 }
 
 func selectionRow(id string, row driver.DerivedRow) (selectionDBRow, error) {
@@ -281,7 +310,7 @@ func (r *reader) selectionAnnotations(ctx context.Context, values []driver.Deriv
 		if err = rows.Scan(&id, &raw); err != nil {
 			return err
 		}
-		x, err := decodeSelectionAnnotation(raw)
+		x, err := r.decodedSelectionAnnotation(raw)
 		if err != nil {
 			return err
 		}

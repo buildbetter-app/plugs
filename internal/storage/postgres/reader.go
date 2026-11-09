@@ -24,6 +24,9 @@ type reader struct {
 	at             uint64
 	closed         bool
 	writer         *transaction
+
+	annotationCache      map[string]driver.SelectionIndex
+	annotationCacheBytes int
 	// Writers reserve their connection so cancellation cleanup can wait for
 	// pgx's asynchronous server termination before another lock probe starts.
 	conn        *sql.Conn
@@ -94,6 +97,8 @@ func (r *reader) finish() error {
 	}
 	r.closed = true
 	r.allocatorImage = nil
+	r.annotationCache = nil
+	r.annotationCacheBytes = 0
 	err := r.sql.Rollback()
 	if errors.Is(err, sql.ErrTxDone) {
 		err = nil
