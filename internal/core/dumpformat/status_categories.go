@@ -12,7 +12,7 @@ import (
 const NativeStatusOntologyVerification = "native status names/categories retained per project; explicit map_type directives recorded in manifest"
 
 // NativeStatusOntology is the protected source body installed by restore. An
-// empty base prevents undeclared legacy statuses from entering native projects.
+// base contains only shared native builtins; project overlays add exact catalogs.
 type NativeStatusOntology struct {
 	Base     ontology.Document            `json:"base"`
 	Overlays map[string]ontology.Document `json:"overlays"`
@@ -25,7 +25,7 @@ func nativeBuiltInStatuses() []ProjectStatus {
 // UnmarshalJSON refuses aliases and missing members instead of accepting
 // encoding/json's case-insensitive field matching for this typed contract.
 func (s *ProjectStatus) UnmarshalJSON(data []byte) error {
-	var fields map[string]json.RawMessage
+	var fields map[string]any
 	if err := decodeJSON(data, &fields); err != nil {
 		return err
 	}
@@ -119,36 +119,40 @@ func (a *Archive) NativeStatusOntology() (NativeStatusOntology, bool) {
 	if a == nil || a.manifest.StatusCategoryContract != StatusCategoryContract {
 		return NativeStatusOntology{}, false
 	}
-	result := NativeStatusOntology{Overlays: map[string]ontology.Document{}}
+	result := NativeStatusOntology{Base: nativeStatusDocument(nativeBuiltInStatuses()), Overlays: map[string]ontology.Document{}}
 	for _, project := range a.manifest.Projects {
-		doc := ontology.DefaultDocument()
-		doc.Statuses = map[string]ontology.Status{}
-		workflow := ontology.Workflow{Initial: "open", Slots: map[ontology.Slot]string{ontology.Claim: "in_progress", ontology.Close: "closed", ontology.Reopen: "open", ontology.Defer: "deferred"}}
-		var active []string
-		for _, status := range project.Statuses {
-			if status.Category == "active" {
-				active = append(active, status.Name)
-			}
-		}
-		for _, status := range project.Statuses {
-			entry := ontology.Status{Name: status.Name, Category: ontology.Category(status.Category)}
-			if status.Category == "done" {
-				entry.Outcome = ontology.Success
-			}
-			doc.Statuses[status.Name] = entry
-			workflow.Statuses = append(workflow.Statuses, status.Name)
-			rule := ontology.Rule{To: status.Name, Guards: []ontology.Guard{{Kind: ontology.Permission}}}
-			switch status.Category {
-			case "wip":
-				rule.From = append([]string{}, active...)
-				rule.Guards = []ontology.Guard{{Kind: ontology.NotTemplate}, {Kind: ontology.NoOpenBlockers}, {Kind: ontology.Permission}}
-			case "done":
-				rule.Guards = []ontology.Guard{{Kind: ontology.NotTemplate}, {Kind: ontology.NoOpenChildren}, {Kind: ontology.NoOpenBlockers}, {Kind: ontology.Permission}}
-			}
-			workflow.Transitions = append(workflow.Transitions, rule)
-		}
-		doc.Workflows["issue"] = workflow
-		result.Overlays[project.Prefix] = doc
+		result.Overlays[project.Prefix] = nativeStatusDocument(project.Statuses)
 	}
 	return result, true
+}
+
+func nativeStatusDocument(statuses []ProjectStatus) ontology.Document {
+	doc := ontology.DefaultDocument()
+	doc.Statuses = map[string]ontology.Status{}
+	workflow := ontology.Workflow{Initial: "open", Slots: map[ontology.Slot]string{ontology.Claim: "in_progress", ontology.Close: "closed", ontology.Reopen: "open", ontology.Defer: "deferred"}}
+	var active []string
+	for _, status := range statuses {
+		if status.Category == "active" {
+			active = append(active, status.Name)
+		}
+	}
+	for _, status := range statuses {
+		entry := ontology.Status{Name: status.Name, Category: ontology.Category(status.Category)}
+		if status.Category == "done" {
+			entry.Outcome = ontology.Success
+		}
+		doc.Statuses[status.Name] = entry
+		workflow.Statuses = append(workflow.Statuses, status.Name)
+		rule := ontology.Rule{To: status.Name, Guards: []ontology.Guard{{Kind: ontology.Permission}}}
+		switch status.Category {
+		case "wip":
+			rule.From = append([]string{}, active...)
+			rule.Guards = []ontology.Guard{{Kind: ontology.NotTemplate}, {Kind: ontology.NoOpenBlockers}, {Kind: ontology.Permission}}
+		case "done":
+			rule.Guards = []ontology.Guard{{Kind: ontology.NotTemplate}, {Kind: ontology.NoOpenChildren}, {Kind: ontology.NoOpenBlockers}, {Kind: ontology.Permission}}
+		}
+		workflow.Transitions = append(workflow.Transitions, rule)
+	}
+	doc.Workflows["issue"] = workflow
+	return doc
 }

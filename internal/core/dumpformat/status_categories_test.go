@@ -156,7 +156,7 @@ func TestNativeStatusRecordsRefuseUnknownNameAndForgedCategory(t *testing.T) {
 	}
 }
 
-func TestNativeHistoricalCatalogNeedsIndependentStoredWitness(t *testing.T) {
+func TestNativeHistoricalCatalogNeedsIndependentStoredEvidence(t *testing.T) {
 	a, err := Read(bytes.NewReader(nativeProducerArchive(t, "reprocody")))
 	if err != nil {
 		t.Fatal(err)
@@ -166,7 +166,7 @@ func TestNativeHistoricalCatalogNeedsIndependentStoredWitness(t *testing.T) {
 		records = append(records, a.Records(kind)...)
 	}
 	if err := validateHistoryImage(records, a.Manifest()); err != nil {
-		t.Fatal("stored catalog witness refused", err)
+		t.Fatal("stored catalog evidence refused", err)
 	}
 	for _, policy := range []string{"missing", "changed"} {
 		t.Run(policy, func(t *testing.T) {
@@ -185,7 +185,7 @@ func TestNativeHistoricalCatalogNeedsIndependentStoredWitness(t *testing.T) {
 				image = append(image, record)
 			}
 			if err := validateHistoryImage(image, a.Manifest()); err == nil {
-				t.Fatal("head catalog authenticated an unwitnessed or changed older image")
+				t.Fatal("head catalog authenticated an unproven or changed older image")
 			}
 		})
 	}
@@ -197,8 +197,8 @@ func TestNativeLiteralFrozenRequiresAnExplicitCustomCatalogEntry(t *testing.T) {
 	if err != nil || catalog["frozen"] != "frozen" {
 		t.Fatal("explicit native frozen category refused", err)
 	}
-	if _, err := sourcePlaneCatalogCategories(rows, []byte("[]")); err == nil {
-		t.Fatal("markerless legacy builtin guard changed")
+	if builtInSourceStatus("frozen") {
+		t.Fatal("literal frozen was invented as a native builtin")
 	}
 }
 
