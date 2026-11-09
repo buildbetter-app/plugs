@@ -94,7 +94,7 @@ func (r *claimRuleSet) effective(ctx context.Context, s *slice, project string) 
 	if err != nil {
 		return ontology.Effective{}, err
 	}
-	if len(rows) != 1 || rows[0].Ref != ref || rows[0].Kind != "ontology" || rows[0].Revision.IsZero() {
+	if len(rows) != 1 || !sameClaimSourceRef(rows[0].Ref, ref) || rows[0].Kind != "ontology" || rows[0].Revision.IsZero() {
 		return ontology.Effective{}, fmt.Errorf("claim ontology source unavailable")
 	}
 	source, err := service.DecodeOntologySource(rows[0].Body)
@@ -125,7 +125,7 @@ func (r *claimRuleSet) Eval(ctx context.Context, source authz.Slice, requests []
 		if err != nil {
 			return nil, err
 		}
-		if len(rows) != 1 || rows[0].Ref != q.Resource.Ref || rows[0].Kind != "bead" {
+		if len(rows) != 1 || !sameClaimSourceRef(rows[0].Ref, q.Resource.Ref) || rows[0].Kind != "bead" {
 			continue
 		}
 		doc, err := pipeline.DecodeDocument(rows[0].Body)
@@ -163,6 +163,13 @@ func (r *claimRuleSet) Eval(ctx context.Context, source authz.Slice, requests []
 		}
 	}
 	return out, nil
+}
+
+// The Ref union's private arm marker and Natural's zero representation are
+// construction details. Compare validated branch-zero ID identities, including
+// records created through the Writer and later addressed through wire refs.
+func sameClaimSourceRef(a, b model.Ref) bool {
+	return authz.CanonicalRef(a) == nil && authz.CanonicalRef(b) == nil && a.ID == b.ID
 }
 
 var _ authz.RuleSet = (*claimRuleSet)(nil)

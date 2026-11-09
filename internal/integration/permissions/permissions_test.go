@@ -28,15 +28,16 @@ import (
 )
 
 type fixture struct {
-	store  *memory.Store
-	lease  driver.ActiveLease
-	seed   *service.Service
-	guard  *authzrpc.GuardedService
-	keys   *authnapikey.Provider
-	facts  *authzrpc.MutableFacts
-	url    string
-	client *http.Client
-	nextID atomic.Uint64
+	store   *memory.Store
+	lease   driver.ActiveLease
+	seed    *service.Service
+	guard   *authzrpc.GuardedService
+	checker *authzrpc.Checker
+	keys    *authnapikey.Provider
+	facts   *authzrpc.MutableFacts
+	url     string
+	client  *http.Client
+	nextID  atomic.Uint64
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -110,6 +111,7 @@ func newFixtureWithClaimPolicy(t *testing.T, wrap func(*memory.Store) driver.Sto
 		t.Fatal(err)
 	}
 	f.guard = composition.Service
+	f.checker = composition.Checker
 	server, err := composition.Handler.Listen(ctx, "127.0.0.1:0", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -481,6 +483,64 @@ func claimPermissionWorker(id string) model.PrincipalRef {
 	by := permissionWorker(id)
 	by.Caveats["actions"] = []string{"modify", "transition"}
 	return by
+}
+
+type claimSourceRefReader struct {
+	driver.Reader
+	ref model.Ref
+}
+
+func (r claimSourceRefReader) Get(ctx context.Context, refs []model.Ref) ([]driver.Record, error) {
+	rows, err := r.Reader.Get(ctx, refs)
+	if err != nil {
+		return nil, err
+	}
+	rows = append([]driver.Record(nil), rows...)
+	for i := range rows {
+		rows[i].Ref = r.ref
+	}
+	return rows, nil
+}
+
+func TestClaimPolicyBindsCanonicalBranchZeroSourceReferences(t *testing.T) {
+	f := newFixtureWithClaimPolicy(t, nil, &authzrpc.ClaimPolicyConfig{UseImmutableDefault: true})
+	ctx := context.Background()
+	ready, err := f.seed.Ready(ctx, model.PrincipalRef{Kind: "user", ID: "user:seed"}, service.ReadyRequest{Project: "project"})
+	if err != nil || len(ready.Items) != 3 {
+		t.Fatalf("real seeded candidates: %+v %v", ready, err)
+	}
+	id := ready.Items[0].ID
+	meta, err := f.store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := f.store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	for _, tc := range []struct {
+		name    string
+		stored  model.Ref
+		request model.Ref
+		allowed bool
+	}{
+		{"literal-source-wire-request", model.Ref{ID: id}, model.RefByID(id, model.Natural64(0)), true},
+		{"wire-source-literal-request", model.RefByID(id, model.Natural64(0)), model.Ref{ID: id}, true},
+		{"different-source-id", model.RefByID("different", model.Natural64(0)), model.RefByID(id, model.Natural64(0)), false},
+		{"source-key-arm", model.RefByKey(id), model.RefByID(id, model.Natural64(0)), false},
+		{"source-nonzero-branch", model.RefByID(id, model.Natural64(1)), model.RefByID(id, model.Natural64(0)), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			observation, err := f.checker.ObserveTransitionPermission(ctx, service.TransitionPermissionRequest{
+				Principal: claimPermissionWorker("agent:reference-bounds"), Resource: model.ResourceRef{Kind: "bead", Ref: tc.request},
+				Project: "project", Type: "issue", FromStatus: "todo", ToStatus: "in_progress", Method: "bead.claimNext", Action: "transition",
+			}, claimSourceRefReader{Reader: r, ref: tc.stored})
+			if err != nil || !observation.AuthzInstalled || observation.Permission == nil || *observation.Permission != tc.allowed {
+				t.Fatalf("source reference permission allowed=%t: observation=%+v err=%v", tc.allowed, observation, err)
+			}
+		})
+	}
 }
 
 func TestRealHTTPClaimTransitionInstallationAndCaveatBounds(t *testing.T) {
