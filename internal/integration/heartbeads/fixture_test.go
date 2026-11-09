@@ -66,7 +66,8 @@ func TestI8HeartbeadsImportedSQLiteBrowser(t *testing.T) {
 	principal := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
 	roots := map[string]string{}
 	for _, project := range []string{"cody-ops", "signals-v2"} {
-		commit, err := domain.Create(ctx, principal, service.CreateRequest{Type: "task", Fields: map[string]any{"title": "SHARED root " + project, "description": "before", "priority": 1}}, model.WriteMeta{Project: project, AgentLabel: "i8-heartbeads-fixture", Method: "bead.create"})
+		seedKey := sha256.Sum256([]byte("i8-heartbeads-seed-" + project))
+		commit, err := domain.Create(ctx, principal, service.CreateRequest{Type: "task", Fields: map[string]any{"title": "SHARED root " + project, "description": "before", "priority": 1}}, model.WriteMeta{Project: project, AgentLabel: "i8-heartbeads-fixture", Method: "bead.create", IdempotencyKey: hex.EncodeToString(seedKey[:])})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -106,7 +107,7 @@ func TestI8HeartbeadsImportedSQLiteBrowser(t *testing.T) {
 	if _, err := mgr.Chunk(ctx, begun.RestoreID, 0, archive, hex.EncodeToString(sum[:]), presence); err != nil {
 		t.Fatal(err)
 	}
-	imported, err := mgr.Finish(ctx, begun.RestoreID, manifestHash, principal, model.WriteMeta{AgentLabel: "i8-heartbeads-fixture", Method: "admin.restore.finish"}, presence)
+	imported, err := mgr.Finish(ctx, begun.RestoreID, manifestHash, principal, model.WriteMeta{AgentLabel: "i8-heartbeads-fixture", Method: "admin.restore.finish", IdempotencyKey: manifestHash}, presence)
 	if err != nil || imported.State != "complete" {
 		t.Fatalf("restore=%+v err=%v", imported, err)
 	}
