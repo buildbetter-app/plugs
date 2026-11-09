@@ -6,6 +6,7 @@ import { createServer, request as httpRequest } from 'node:http';
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import vm from 'node:vm';
+import { observeDependencyRemoval } from './activity-observer.mjs';
 import { pathToFileURL } from 'node:url';
 
 const [bindingPath, fixtureRoot, outputs] = process.argv.slice(2);
@@ -404,11 +405,42 @@ try {
   await cdp('Page.navigate',{url:nextUrl+'/?panel=activity'});
   await until(async()=> (await evaluate('document.body.innerText')).includes('6 issues'),'activity browser data');
   const activityLink={from:{id:roots['cody-ops']},to:{id:ids['cody-ops-extra']},kind:'blocks'};
+  const observedDependency={project:'cody-ops',sourceKey:'cody-ops\0'+ids['cody-ops-extra'],targetKey:'cody-ops\0'+roots['cody-ops'],publicTarget:'SHARED',label:'removed dependency on SHARED'};
+  await evaluate('void(window.__i8DependencyObservation=('+observeDependencyRemoval.toString()+')('+JSON.stringify(observedDependency)+'))');
+  async function assertSingleRemoval(stage,requireStale=false){
+    const observation=await evaluate('window.__i8DependencyObservation.read()');
+    await save('dependency-removal-sequence.json',{stage,...observation});
+    assert.deepEqual(observation.errors,[]);
+    const populated=observation.samples.filter(sample=>sample.activityPresent&&sample.events.length);
+    assert.ok(populated.length>0,'actual removal event observed');
+    const ids=new Set(populated.flatMap(sample=>sample.events.map(event=>event.id)));
+    assert.equal(ids.size,1,'one actual unlink must keep one event identity');
+    assert.ok(populated.every(sample=>sample.events.length===1),'no repeated removal events');
+    assert.ok(populated.every(sample=>sample.desktopRemovalLabels===1),'one desktop removal label');
+    const animationTimes=new Set(observation.samples.flatMap(sample=>sample.renderedLinks.map(link=>link.removeTime)).filter(time=>time!==null));
+    assert.equal(animationTimes.size,1,'exit animation starts once');
+    const [removeTime]=animationTimes;
+    const expired=observation.samples.filter(sample=>sample.graphPresent&&sample.observedAt>removeTime+1100);
+    assert.ok(expired.length>=10,'observe frames after animation expiry');
+    assert.ok(expired.every(sample=>sample.renderedLinks.length===0),'no phantom or restarted removed edge');
+    const generations=new Set(populated.filter(sample=>sample.freshness?.state==='fresh').map(sample=>sample.freshness.generated_at));
+    assert.ok(generations.size>=3,'several unchanged fresh generations observed');
+    if(requireStale){
+      const stale=populated.filter(sample=>sample.freshness?.state==='stale');
+      assert.ok(stale.length>0,'stale snapshots observed with the same removal');
+      assert.ok(populated.some(sample=>sample.observedAt>stale[0].observedAt&&sample.freshness?.state==='fresh'),'fresh recovery retains the same removal');
+    }
+    const unlinks=receipts.calls.filter(call=>call.method==='bead.unlink');
+    assert.equal(unlinks.length,1,'exactly one real Plug unlink');
+    return {samples:observation.samples.length,removalEventIds:[...ids],animationTimes:[...animationTimes],freshGenerations:generations.size,unlinks:unlinks.length};
+  }
+
   await rpc('cody-ops','bead.link',activityLink);
   await until(async()=> (await evaluate('document.body.innerText')).includes('added a dependency on SHARED'),'public dependency add label');
   const linkedProjection=await http('/api/beads');
   await rpc('cody-ops','bead.unlink',activityLink);
   await until(async()=> (await evaluate('document.body.innerText')).includes('removed dependency on SHARED'),'public dependency remove label');
+  await pause(3400);await assertSingleRemoval('unchanged-fresh-frames');
   await type('input[placeholder="Search activity..."]','SHARED');
   const activityDOM=await evaluate('document.body.innerText');assert.ok(activityDOM.includes('added a dependency on SHARED'));assert.ok(activityDOM.includes('removed dependency on SHARED'));assert.ok(!activityDOM.includes('\0'));
   await save('browser-dependency-labels.json',{text:activityDOM,publicTarget:'SHARED',canonicalTarget:roots['cody-ops']});
@@ -460,6 +492,9 @@ try {
   const canceledBefore=await rpc('cody-ops','bead.get',{id:canceledRef});
   await rpc('cody-ops','tx.apply',{changeSet:{expect:[{ref:canceledRef,revision:canceledBefore.bead.revision}],ops:[{kind:'setMeta',target:canceledRef,key:'i8.host.close_reason',value:{schema:'plug-host-close-reason/1',reason:'canceled fixture reason'}}]}});
   await rpc('cody-ops','bead.cancel',{id:canceledRef});const canceled=await http('/api/beads');const canceledNode=canceled.graphData.nodes.find(n=>n.canonicalId===canceledRef.id);assert.equal(canceledNode.status,'abandoned');assert.equal(canceledNode.statusCategory,'canceled');assert.equal(canceledNode.closeReason,'canceled fixture reason');await save('canceled-reason.json',canceledNode);check('actual canceled terminal category retains typed reason');
+  const removalEvidence=await assertSingleRemoval('fresh-stale-recovery-and-reconnect',true);
+  await save('dependency-removal-sequence.json',await evaluate('window.__i8DependencyObservation.stop()'));
+  check('one actual unlink yields one removal event and one expiring animation across unchanged fresh/stale/recovery snapshots',removalEvidence);
   await save('browser-complete-before-disconnect.json',await evaluate('({text:document.body.innerText,html:document.body.outerHTML,status:document.querySelector("[data-testid=plug-freshness]")?.textContent})'));
   await save('browser-complete-before-disconnect.png',Buffer.from((await cdp('Page.captureScreenshot',{format:'png'})).data,'base64'));
   await save('candidate-source.json',JSON.parse(await readFile(join(fixtureRoot,'source-binding.json'),'utf8')));
@@ -496,6 +531,7 @@ try {
   check('complete actual import -> HTTP -> browser -> SSE fixture');
 } catch(error) {
   receipts.failure={message:error.message,stack:error.stack};console.error(error);process.exitCode=1;
+  if(evaluate)try{const observation=await evaluate('window.__i8DependencyObservation?.stop() || null');if(observation)await save('dependency-removal-sequence.json',observation);}catch{}
   if(evaluate)try{await save('browser-failure.json',await evaluate('({text:document.body.innerText,html:document.body.outerHTML,location:location.href})'));}catch{}
   if(cdp)try{await save('browser-failure.png',Buffer.from((await cdp('Page.captureScreenshot',{format:'png'})).data,'base64'));}catch{}
 } finally {
