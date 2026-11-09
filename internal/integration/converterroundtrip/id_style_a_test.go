@@ -251,7 +251,8 @@ func TestIDStyleATwoRestoredProjectsPreserveIDsAndIndependentCounters(t *testing
 		}
 		for _, raw := range manifest["sources"].([]any) {
 			row := raw.(map[string]any)
-			if row["family"] == "issues" {
+			switch row["family"] {
+			case "issues", "issues.is_blocked", "issues.row_lock":
 				row["rows"] = 5
 			}
 		}
