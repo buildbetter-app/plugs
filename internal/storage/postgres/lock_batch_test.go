@@ -155,6 +155,83 @@ func TestColdShareHoldersCoexistWithoutPlaceholderRows(t *testing.T) {
 	}
 }
 
+func TestNativeRestoreBarrierCoversDisjointColdKeysWithoutRows(t *testing.T) {
+	ctx := context.Background()
+	s := openTest(t, freshDSN(t))
+	lease := testLease(t, s)
+	fence, err := driver.NativeAllocatorRestoreLock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoreKey := testLock(testRef("restore-cold-key"))
+	ordinaryKey := testLock(testRef("unrelated-cold-key"))
+	restoreSet := driver.LockSet{{Key: fence, Mode: driver.LockUpdate}, {Key: restoreKey, Mode: driver.LockUpdate}}
+	sort.Slice(restoreSet, func(i, j int) bool {
+		a, _ := driver.EncodeLockKey(restoreSet[i].Key)
+		b, _ := driver.EncodeLockKey(restoreSet[j].Key)
+		return a < b
+	})
+	restore, err := s.Write(ctx, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restore.Close()
+	states, err := restore.Lock(ctx, restoreSet)
+	if err != nil || len(states) != len(restoreSet) {
+		t.Fatalf("restore did not acquire its complete set: states=%d err=%v", len(states), err)
+	}
+	skipped, err := s.Write(ctx, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer skipped.Close()
+	states, err = skipped.Lock(ctx, driver.LockSet{{Key: ordinaryKey, Mode: driver.LockSkipLocked}})
+	if err != nil || len(states) != 0 {
+		t.Fatalf("ordinary cold key escaped restore barrier: states=%d err=%v", len(states), err)
+	}
+	waiting, err := s.Write(ctx, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer waiting.Close()
+	deadline, cancel := context.WithTimeout(ctx, 150*time.Millisecond)
+	_, err = waiting.Lock(deadline, driver.LockSet{{Key: ordinaryKey, Mode: driver.LockUpdate}})
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ordinary update did not wait for restore: %v", err)
+	}
+	if err := restore.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ordinary, err := s.Write(ctx, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ordinary.Close()
+	states, err = ordinary.Lock(ctx, driver.LockSet{{Key: ordinaryKey, Mode: driver.LockShare}})
+	if err != nil || len(states) != 1 || states[0].Present {
+		t.Fatalf("ordinary cold share after restore: states=%+v err=%v", states, err)
+	}
+	blocked, err := s.Write(ctx, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocked.Close()
+	deadline, cancel = context.WithTimeout(ctx, 150*time.Millisecond)
+	_, err = blocked.Lock(deadline, restoreSet)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("restore did not wait for an ordinary share: %v", err)
+	}
+	if err := ordinary.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var rows int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM plug_postgres.locks`).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("barrier left durable coordination rows: rows=%d err=%v", rows, err)
+	}
+}
+
 func TestBatchedLocksPreserveMixedModesAndSkippedSubset(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

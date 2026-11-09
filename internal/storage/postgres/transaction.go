@@ -154,21 +154,48 @@ func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) (
 	}
 	requests = owned
 	ids := make([]string, len(requests))
+	restoreFence, err := driver.NativeAllocatorRestoreLock()
+	if err != nil {
+		return nil, err
+	}
+	restoreFenceID, err := keyID(restoreFence)
+	if err != nil {
+		return nil, err
+	}
+	hasRestoreFence, allUpdate := false, true
 	for i, request := range requests {
 		ids[i], err = keyID(request.Key)
 		if err != nil {
 			return nil, err
 		}
+		if ids[i] == restoreFenceID {
+			hasRestoreFence = true
+		}
+		if request.Mode != driver.LockUpdate {
+			allUpdate = false
+		}
 	}
+	wideRestore := hasRestoreFence && allUpdate
+	// A native restore declares its exclusive allocator fence in the complete
+	// update set. It can contain tens of thousands of record and sentinel keys:
+	// taking an advisory lock for every key would exhaust PostgreSQL's shared
+	// lock table. The exclusive restore barrier instead covers that entire set.
+	// Ordinary transactions hold the compatible shared barrier until they end,
+	// before acquiring any individual key, so the restore still excludes every
+	// concurrent writer and reader of those keys. The two-int advisory namespace
+	// is disjoint from the per-key bigint namespace.
+	const restoreBarrier = "(1347179847,1381192786)"
 	// A transaction-scoped advisory lock represents a key without adding a
 	// durable coordination row. In particular, a failed cold write leaves the
 	// locks table unchanged, and two cold LockShare holders can coexist.
 	// Derive the lock number from the lossless encoded key, not a JSON or text
 	// round trip; the namespace keeps it separate from other advisory uses.
 	lockIDs := make([]int64, len(ids))
-	for i, id := range ids {
-		digest := sha256.Sum256([]byte("plug/postgres/record-lock/v1\x00" + id))
-		lockIDs[i] = int64(binary.BigEndian.Uint64(digest[:8]))
+	if !wideRestore {
+		for i, id := range ids {
+			digest := sha256.Sum256([]byte("plug/postgres/record-lock/v1\x00" + id))
+			lockIDs[i] = int64(binary.BigEndian.Uint64(digest[:8]))
+		}
 	}
 	for {
 		if err = t.check(ctx); err != nil {
@@ -181,7 +208,26 @@ func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) (
 		}
 		selected := make(driver.LockSet, 0, len(requests))
 		busy := false
-		for i := 0; i < len(requests); {
+		barrierQuery := "SELECT pg_try_advisory_xact_lock_shared" + restoreBarrier
+		if wideRestore {
+			barrierQuery = "SELECT pg_try_advisory_xact_lock" + restoreBarrier
+		}
+		var barrierGranted bool
+		err = t.sql.QueryRowContext(ctx, barrierQuery).Scan(&barrierGranted)
+		if err == nil && !barrierGranted {
+			// During a restore every ordinary key is busy. A pure SkipLocked
+			// request therefore observes the empty subset without waiting.
+			for _, request := range requests {
+				if request.Mode != driver.LockSkipLocked {
+					busy = true
+					break
+				}
+			}
+		}
+		if err == nil && barrierGranted && wideRestore {
+			selected = append(selected, requests...)
+		}
+		for i := 0; err == nil && barrierGranted && !wideRestore && i < len(requests); {
 			mode := requests[i].Mode
 			end := i + 1
 			for end < len(requests) && requests[end].Mode == mode {
