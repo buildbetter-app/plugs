@@ -425,7 +425,7 @@ func TestJointImportedMemoriesPublicReadReverseAndConservationAllDrivers(t *test
 						}
 					}
 					for _, source := range archive.Records("memory") {
-						if !sameReverseJSON(values[source.ID], source.Body["value"]) {
+						if got, present := values[source.ID]; !present || !sameReverseJSON(got, source.Body["value"]) {
 							t.Fatal("reverse changed exact memory JSON type/value", source.ID)
 						}
 					}
