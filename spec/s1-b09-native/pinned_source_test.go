@@ -215,10 +215,10 @@ func (r *recorder) buildCanonicalSource(spec styleASource) string {
 	if !filepath.IsAbs(bazel) {
 		r.t.Fatal("trusted RunsOn Bazel binary path required")
 	}
-	if got := strings.TrimSpace(string(r.buildCommand(source, spec.Name+"-bazel-version", bazel, []string{"--version"}))); got != "bazel 9.3.0" {
+	outputBase := "--output_base=" + filepath.Join(r.t.TempDir(), "bazel")
+	if got := strings.TrimSpace(string(r.buildCommand(source, spec.Name+"-bazel-version", bazel, []string{outputBase, "version", "--gnu_format"}))); got != "bazel 9.3.0" {
 		r.t.Fatalf("Bazel version=%q", got)
 	}
-	outputBase := "--output_base=" + filepath.Join(r.t.TempDir(), "bazel")
 	settings := []string{"--repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1", "--extra_execution_platforms=//platforms:rbe_worker", "--incompatible_strict_action_env", "--@rules_go//go/config:tags=gms_pure_go", "--@rules_go//go/config:gc_linkopts=-X=main.Commit=" + spec.Commit + ",-X=main.Build=id-style-a-fixture-" + spec.Commit}
 	config := append([]string{outputBase, "build", "--jobs=2", "--local_resources=memory=8192", "--run_validations", "--lockfile_mode=error"}, settings...)
 	config = append(config, r.inputs.ExporterLabel)
@@ -500,12 +500,26 @@ func (r *recorder) replayStyleA(source captureReceipt, input driver.HashInput, w
 			if len(reply.Error) != 0 || len(reply.Result.Results) != 1 || reply.Result.Results[0].Ref.ID != wantRoot {
 				t.Fatalf("native/Plug ID mismatch: %s native=%s", response, wantRoot)
 			}
+			committed := target.stage("root-committed", source.BeadIDs, []string{wantRoot})
 			if err := target.reopen(); err != nil {
 				t.Fatal(err)
 			}
 			server = styleARPC(t, target)
-			if replay := server.Dispatch(callCtx, request); !bytes.Equal(response, replay) {
-				t.Fatalf("reopen RPC replay changed result: %s -> %s", response, replay)
+			replay := server.Dispatch(callCtx, request)
+			var replayReply struct {
+				Result model.Commit    `json:"result"`
+				Error  json.RawMessage `json:"error"`
+				Meta   struct {
+					Replayed bool `json:"replayed"`
+				} `json:"_meta"`
+			}
+			if err := json.Unmarshal(replay, &replayReply); err != nil || len(replayReply.Error) != 0 || !replayReply.Meta.Replayed || !reflect.DeepEqual(reply.Result, replayReply.Result) {
+				t.Fatalf("reopen RPC replay changed commit or omitted replay flag: %s -> %s err=%v", response, replay, err)
+			}
+			r.writeJSON(filepath.Join(target.output, "rpc-root-replayed.json"), map[string]any{"request": json.RawMessage(request), "response": json.RawMessage(replay)})
+			replayed := target.stage("root-replayed", source.BeadIDs, []string{wantRoot})
+			if committed.Meta != replayed.Meta || !reflect.DeepEqual(committed.Records, replayed.Records) || !reflect.DeepEqual(committed.Versions, replayed.Versions) || !reflect.DeepEqual(committed.Allocator, replayed.Allocator) || !reflect.DeepEqual(committed.Changesets, replayed.Changesets) {
+				t.Fatal("reopen idempotent RPC replay changed allocator, records or history")
 			}
 			newIDs := []string{wantRoot}
 			if parent != "" {
@@ -548,7 +562,7 @@ func styleARPC(t *testing.T, target *b09ReplayTarget) *rpc.Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, err := rpc.New(registry, rpc.Config{Incarnation: meta.Incarnation, DefaultProject: "b09", CursorKey: bytes.Repeat([]byte{0x51}, 32)})
+	server, err := rpc.New(registry, rpc.Config{Incarnation: meta.Incarnation, AuthMode: "authenticated", DefaultProject: "b09", CursorKey: bytes.Repeat([]byte{0x51}, 32)})
 	if err != nil {
 		t.Fatal(err)
 	}
