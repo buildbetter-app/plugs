@@ -29,15 +29,14 @@ func (s *Service) queueReadyItems(ctx context.Context, req ReadyRequest, reader 
 }
 
 // queueReadyItemsBy is the integration seam for the main queue caller. The
-// caller supplies the workflow provider's OrdinaryBlocked operation for the
-// same pinned candidate IDs; a nil callback preserves standalone core
-// behavior. Keeping the principal and callback together prevents a caller
-// from evaluating provider blocking for a different request identity.
-func (s *Service) queueReadyItemsBy(ctx context.Context, by model.PrincipalRef, req ReadyRequest, reader driver.Reader, ordinaryBlocked func(context.Context, model.PrincipalRef, []string) (map[string]bool, error)) ([]Bead, *driver.QueueProjection, error) {
+// caller evaluates workflow parent/dependency facts against the complete thin
+// graph from this pinned projection. A nil callback preserves standalone core
+// behavior; the principal, IDs and graph belong to the same request.
+func (s *Service) queueReadyItemsBy(ctx context.Context, by model.PrincipalRef, req ReadyRequest, reader driver.Reader, ordinaryBlocked func(context.Context, model.PrincipalRef, []string, map[string]storedBead) (map[string]bool, error)) ([]Bead, *driver.QueueProjection, error) {
 	return s.queueReadyItemsWithBlocked(ctx, req, reader, by, ordinaryBlocked)
 }
 
-func (s *Service) queueReadyItemsWithBlocked(ctx context.Context, req ReadyRequest, reader driver.Reader, by model.PrincipalRef, ordinaryBlocked func(context.Context, model.PrincipalRef, []string) (map[string]bool, error)) ([]Bead, *driver.QueueProjection, error) {
+func (s *Service) queueReadyItemsWithBlocked(ctx context.Context, req ReadyRequest, reader driver.Reader, by model.PrincipalRef, ordinaryBlocked func(context.Context, model.PrincipalRef, []string, map[string]storedBead) (map[string]bool, error)) ([]Bead, *driver.QueueProjection, error) {
 	queue, ok := reader.(driver.QueueProjectionReader)
 	if !ok {
 		return nil, nil, nil
@@ -103,7 +102,7 @@ func (s *Service) queueReadyItemsWithBlocked(ctx context.Context, req ReadyReque
 	blocked := map[string]bool{}
 	if ordinaryBlocked != nil {
 		var err error
-		blocked, err = ordinaryBlocked(ctx, by, append([]string(nil), ids...))
+		blocked, err = ordinaryBlocked(ctx, by, append([]string(nil), ids...), graph)
 		if err != nil {
 			return nil, nil, err
 		}

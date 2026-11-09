@@ -42,8 +42,11 @@ func TestQueueReadyItemsByUsesTypedBlockedAndHybridOrder(t *testing.T) {
 	s := New(nil, nil, nil, WithClock(func() time.Time { return created }))
 	var gotBy model.PrincipalRef
 	var gotIDs []string
-	blocked := func(_ context.Context, by model.PrincipalRef, ids []string) (map[string]bool, error) {
+	blocked := func(_ context.Context, by model.PrincipalRef, ids []string, graph map[string]storedBead) (map[string]bool, error) {
 		gotBy, gotIDs = by, append([]string(nil), ids...)
+		if len(graph) != len(beads) || graph["blocked"].doc.ID != "blocked" || !graph["old"].doc.CreatedAt.Equal(created.Add(-49*time.Hour)) {
+			t.Fatal("workflow callback lost the complete pinned typed graph")
+		}
 		return map[string]bool{"blocked": true}, nil
 	}
 	by := model.PrincipalRef{Kind: "user", ID: "queue-owner"}
