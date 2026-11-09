@@ -73,3 +73,11 @@ prefix, or assigning every row to one target project does not satisfy this
 requirement. The consumer owner supplies the exact supported merge/import
 invocation and any refusal for conflicting bindings; producer fixtures alone
 do not demonstrate it.
+
+Historical images use allocator counters derived from that image's actual rows
+when validating dotted children. The input native inventory has not yet derived
+those counters and cannot stand in for the mapped image. Source IDs, child
+counter rows and the final manifest remain authoritative; an insufficient final
+counter still refuses. A proven head image does not make an older unmappable
+schema complete: retain every source commit, explicit gap and range boundary,
+and require explicit consumer policy for any incomplete history.

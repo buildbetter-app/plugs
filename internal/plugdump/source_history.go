@@ -221,6 +221,7 @@ func portableSourceImage(ctx context.Context, tables map[string]Table, inventory
 	}
 	reader := tar.NewReader(bytes.NewReader(data))
 	records := []Record{}
+	var manifest Manifest
 	for {
 		header, err := reader.Next()
 		if err == io.EOF {
@@ -228,6 +229,16 @@ func portableSourceImage(ctx context.Context, tables map[string]Table, inventory
 		}
 		if err != nil {
 			return nil, nil, err
+		}
+		if header.Name == "manifest.json" {
+			body, err := io.ReadAll(reader)
+			if err != nil {
+				return nil, nil, err
+			}
+			if err := decodeJSON(body, &manifest); err != nil {
+				return nil, nil, err
+			}
+			continue
 		}
 		portable := false
 		for _, kind := range historyKinds {
@@ -256,7 +267,10 @@ func portableSourceImage(ctx context.Context, tables map[string]Table, inventory
 		// Source-plane capture does not extend the separate portable history
 		// contract. Keep every raw head row, but mark an unrepresentable commit
 		// image unmappable rather than publishing a verified partial history.
-		if err := validateHistoryImage(records, Manifest{Projects: inventory.Projects, Ontology: inventory.Ontology}); err != nil {
+		// Build derives allocator counters from this image's actual rows. The
+		// native inventory has not derived them yet; using it here would reject
+		// valid sequential IDs and dotted children before comparing the head.
+		if err := validateHistoryImage(records, manifest); err != nil {
 			return nil, nil, fmt.Errorf("source image is outside the portable history contract: %w", err)
 		}
 	}

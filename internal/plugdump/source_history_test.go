@@ -91,6 +91,69 @@ func TestExportSourceHistoryFullUsesActualCommitImages(t *testing.T) {
 	}
 }
 
+func TestSourcePlaneHistoryUsesMappedImageAllocatorCounters(t *testing.T) {
+	for _, mode := range []string{"sequential", "hash", "namespaced-hash"} {
+		t.Run(mode, func(t *testing.T) {
+			s, inventory := historyFixture(t)
+			inventory.SourcePlaneAddressContract = SourcePlaneAddressContract
+			inventory.Projects[0].LastID = 0
+			inventory.Projects[0].ChildCounters = map[string]uint64{}
+			parent := "demo-7"
+			if mode != "sequential" {
+				inventory.Projects[0].IDMode = "hash"
+				inventory.Projects[0].HashLength = 1
+			}
+			if mode == "namespaced-hash" {
+				inventory.Projects[0].HashNamespaces = []string{"abc"}
+				parent = "demo-abc-a7b"
+				replace := strings.NewReplacer(`"demo-7"`, `"demo-abc-a7b"`, `"demo-8"`, `"demo-abc-c8d"`, `"demo-7.4"`, `"demo-abc-a7b.4"`)
+				remap := func(image fixtureSource) fixtureSource {
+					var mapped fixtureSource
+					if err := decodeJSON([]byte(replace.Replace(string(mustJSON(t, image)))), &mapped); err != nil {
+						t.Fatal(err)
+					}
+					return mapped
+				}
+				s.fixtureSource = remap(s.fixtureSource)
+				for id, image := range s.images {
+					s.images[id] = remap(image)
+				}
+			}
+			// The older image has its own smaller observed child counter. No
+			// source field or allocator value may be filled from the head.
+			first := s.images[s.log.Commits[0].ID]
+			first["issues"].Rows[2]["id"] = parent + ".2"
+			first["dependencies"].Rows[0]["issue_id"] = parent + ".2"
+			first["child_counters"].Rows[0]["last_child"] = 1
+			original := mustJSON(t, inventory)
+			data := buildFixture(t, s, inventory)
+			manifest, h := sourceCapture(t, data)
+			if manifest.History != "verified" || h.Range.Status != "verified" || !h.Range.Complete || len(h.Range.Frames) != 4 {
+				t.Fatalf("mapped allocator image lost: status=%s reason=%s frames=%d", h.Range.Status, h.Range.Reason, len(h.Range.Frames))
+			}
+			if manifest.Projects[0].ChildCounters[parent] != 4 || !bytes.Equal(original, mustJSON(t, inventory)) {
+				t.Fatal("mapped source counters were lost or input inventory was mutated")
+			}
+			seen := map[string]bool{}
+			for _, record := range h.Range.Frames[0].Records {
+				if record.Kind == "bead" {
+					seen[record.ID] = true
+				}
+			}
+			if !seen[parent+".2"] || seen[parent+".4"] {
+				t.Fatal("older child identity borrowed current source state")
+			}
+			// The reader must still reject a history whose actual child ID
+			// exceeds the final manifest's explicitly bound allocator counter.
+			manifest.Projects[0].ChildCounters[parent] = 3
+			var refusal ErrSourceHistory
+			if err := validateSourceHistory(manifest, archiveMembers(t, data)); !errors.As(err, &refusal) || refusal.Reason != "unmappable" {
+				t.Fatalf("history validation lost the child-counter refusal: %v", err)
+			}
+		})
+	}
+}
+
 func TestExportSourceHistoryProvesEmptyRoot(t *testing.T) {
 	s, inventory := historyFixture(t)
 	root := s.log.Commits[0].ID

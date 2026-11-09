@@ -532,6 +532,8 @@ func TestPublicNativeCustomTypesAndNamespacedHashes(t *testing.T) {
 				t.Fatalf("actual archive identity/ontology validation: %+v %v", manifest, err)
 			}
 			observed := map[string]string{}
+			var history plugdump.SourceHistory
+			historySeen := false
 			reader := tar.NewReader(bytes.NewReader(archive))
 			for {
 				header, err := reader.Next()
@@ -540,6 +542,15 @@ func TestPublicNativeCustomTypesAndNamespacedHashes(t *testing.T) {
 				}
 				if err != nil {
 					t.Fatal(err)
+				}
+				if header.Name == plugdump.SourceHistoryMember {
+					decoder := json.NewDecoder(reader)
+					decoder.UseNumber()
+					if err := decoder.Decode(&history); err != nil {
+						t.Fatal(err)
+					}
+					historySeen = true
+					continue
 				}
 				if header.Name != "records/bead.ndjson" {
 					continue
@@ -566,6 +577,9 @@ func TestPublicNativeCustomTypesAndNamespacedHashes(t *testing.T) {
 			if !reflect.DeepEqual(observed, wanted) {
 				t.Fatalf("actual SQL/archive identity/type conservation: got %v want %v", observed, wanted)
 			}
+			if !historySeen || history.Range.Status != "verified" || len(history.Range.Frames) == 0 || history.Range.Head != uint64(len(history.Commits)) {
+				t.Fatalf("native child history head not proven: status=%s reason=%s frames=%d", history.Range.Status, history.Range.Reason, len(history.Range.Frames))
+			}
 			output := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")
 			if output == "" {
 				t.Fatal("Bazel artifact directory required for independent consumer fixture")
@@ -574,6 +588,7 @@ func TestPublicNativeCustomTypesAndNamespacedHashes(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Logf("B1A_SYNTHETIC_EXPORT project=%s source_rows=%d archive_rows=%d ontology=%d namespaces=%q child_counter=%d sha256=%x bytes=%d", prefix, len(wanted), len(observed), len(manifest.Ontology), manifest.Projects[0].HashNamespaces, manifest.Projects[0].ChildCounters[parent], sha256.Sum256(archive), len(archive))
+			t.Logf("B1A_SYNTHETIC_HISTORY project=%s status=%s complete=%t first=%d head=%d frames=%d gaps=%d", prefix, history.Range.Status, history.Range.Complete, history.Range.First, history.Range.Head, len(history.Range.Frames), len(history.Range.Gaps))
 		})
 	}
 }
