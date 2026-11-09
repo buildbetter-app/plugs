@@ -142,7 +142,7 @@ class HostCallerFixture(unittest.TestCase):
             dict(key="B",type="task",priority=1,parent="P",deps=["A"],title="Closed dependent",description="B close",status="closed"),
         ]}
         self.write('plan.json', plan)
-        self.assertEqual(hd.closure_order(plan['items']), ['A','B','P'])
+        self.assertEqual(hd.closure_order(plan['items'], self.c.ontology()), ['A','B','P'])
         self.run_script('load_plan.py', self.signals/'plan.json')
         ids=ph.read_json(self.signals/'ids.json')
         for key in ('A','B','P'):
@@ -152,7 +152,7 @@ class HostCallerFixture(unittest.TestCase):
         self.run_script('load_plan.py', self.signals/'plan.json')
         invalid=copy.deepcopy(plan['items'])
         invalid[1]['status']='open'
-        with self.assertRaises(ph.AdapterError): hd.closure_order(invalid)
+        with self.assertRaises(ph.AdapterError): hd.closure_order(invalid, self.c.ontology())
 
     def test_binding_cwd_env_principal_and_incarnation(self):
         with self.assertRaises(ph.AdapterError):

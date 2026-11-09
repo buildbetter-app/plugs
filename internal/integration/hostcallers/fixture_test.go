@@ -15,10 +15,11 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
-	"github.com/buildbetter-app/plugs/internal/core/ontology"
+	"github.com/buildbetter-app/plugs/internal/core/ontologyops"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/core/viewops"
+	"github.com/buildbetter-app/plugs/internal/server/ontologyrpc"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/server/viewrpc"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -30,6 +31,15 @@ import (
 // Only transport identity is a trusted fixture principal; no authentication or
 // private restore/cutover qualification is claimed by this bounded target.
 func TestSixHostCallersSQLiteEndToEnd(t *testing.T) {
+	runHostFixture(t, false)
+}
+
+func TestInstalledProjectOntologyDumpRestoreRPC(t *testing.T) {
+	runHostFixture(t, true)
+}
+
+func runHostFixture(t *testing.T, imported bool) {
+	t.Helper()
 	root := os.Getenv("PLUG_SOURCE_MODULE_ROOT")
 	if root == "" {
 		t.Fatal("PLUG_SOURCE_MODULE_ROOT required; run through remote-bazel")
@@ -72,18 +82,7 @@ func TestSixHostCallersSQLiteEndToEnd(t *testing.T) {
 			t.Errorf("fixture lease renewal: %v", err)
 		}
 	}()
-	raw, err := os.ReadFile(filepath.Join(root, "tools/hostcallers/host-ontology.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	document, err := ontology.Decode(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	snapshot, problems := ontology.Compile(document, nil, nil)
-	if len(problems) != 0 {
-		t.Fatalf("prepared ontology: %+v", problems)
-	}
+	sourceRef, snapshot := prepareInstalledHostOntology(t, root, store, lease, imported)
 	rules := service.NewOntology(snapshot.Effective)
 	writer := pipeline.New(store, lease, pipeline.WithOntology(rules))
 	domain := service.New(store, lease, writer, service.WithOntology(rules))
@@ -108,6 +107,13 @@ func TestSixHostCallersSQLiteEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := viewrpc.Bind(registry, views); err != nil {
+		t.Fatal(err)
+	}
+	ontologyService, err := ontologyops.New(store, lease, ontologyops.Config{Source: service.StaticOntologySource(sourceRef)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ontologyrpc.Bind(registry, ontologyService); err != nil {
 		t.Fatal(err)
 	}
 	meta, err := store.Meta(ctx)
@@ -147,7 +153,11 @@ func TestSixHostCallersSQLiteEndToEnd(t *testing.T) {
 		_, _ = w.Write(dispatcher.Dispatch(rpc.WithPrincipal(r.Context(), model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}), raw))
 	}))
 	defer host.Close()
-	cmd := exec.Command("python3", filepath.Join(root, "tools/hostcallers/fixture_test.py"), "-v")
+	fixture := "fixture_test.py"
+	if imported {
+		fixture = "category_fixture_test.py"
+	}
+	cmd := exec.Command("python3", filepath.Join(root, "tools/hostcallers", fixture), "-v")
 	cmd.Env = append(os.Environ(), "I8_TEST_ENDPOINT="+host.URL, "I8_TEST_INCARNATION="+meta.Incarnation,
 		"PYTHONDONTWRITEBYTECODE=1")
 	output, err := cmd.CombinedOutput()

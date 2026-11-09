@@ -11,7 +11,7 @@ via the binding's named `token_env`; it is never saved in journal/diagnostics.
 
 Commands/RPC: `server.hello`, `agent.brief`, `bead.get`, `bead.create`,
 `bead.update`, `bead.link`, `bead.unlink`, `bead.close`, `bead.reopen`, `tx.apply`,
-`view.run`. Mutation responses use Commit.results[i].ref, never stdout parsing.
+`view.run`, `ontology.get`. Mutation responses use Commit.results[i].ref, never stdout parsing.
 All project requests carry `_meta.project` and `_meta.agent` (server.hello has no metadata member); writes have durable random
 idempotency keys. Principal comes from transport and must match agent.brief.whoami.
 
@@ -22,12 +22,28 @@ Unmapped sidecar IDs are refused; no direct-ID identity fallback is guessed. IDs
 Dependency direction: dependent -> prerequisite, kind `blocks`. Parent is
 child -> parent. Graph targets must resolve in the same bound project.
 
-The field vocabulary is the imported ontology vocabulary: type is a separate
+The field vocabulary is the installed project ontology vocabulary: type is a separate
 create member; title/description/priority/labels/design/acceptance_criteria,
-assignee/due_at/external_ref are fields. Open/closed map through the explicitly
-prepared host ontology slots, not arbitrary default Plug type names. An ontology
-prepared with this packet must be installed by the separate restore/host lane;
-these callers never apply ontology or restore a store.
+assignee/due_at/external_ref are fields. Native status names are preserved exactly.
+Every caller reads `ontology.get` with explicit project metadata and obtains
+`result.document.statuses[exact_name].category`. No status normalization, fixed
+status list, category rewriting or name-based classification is permitted.
+Literal native categories `active`, `wip`, `done`, `frozen` coexist with existing
+Plug categories `triage`, `backlog`, `unstarted`, `started`, `completed`, `canceled`.
+Unknown status/category, invalid document or ontology drift produces typed refusal.
+Category `done` and existing Plug terminal categories `completed`/`canceled`
+drive terminal projection and close-reason visibility. Canonical lifecycle
+verbs still use the installed type's slots and kernel guards. Sidecars obtain
+post-lifecycle native status from the durable Commit record rather than writing
+`open`/`closed`. Terminal plan inputs close in graph order and retain their exact
+requested terminal name in the guarded transaction.
+
+Restore must install each real store's actual ontology/categories per project;
+`host-ontology.json` is a historical synthetic specimen only. Literal native
+category runtime/import parity is pending the separately owned B21 successor.
+Callers never install ontology or restore a live store. Two ontology reads around
+pinned bead content detect observed source changes only: head-only ontology.get
+has no asOf, so atomic ontology/content snapshot consistency remains unproven.
 
 Sidecar protocol: one workspace flock; intent journal fsynced before each RPC;
 exact key/request replay after an unknown result; frozen initial sidecar image;
@@ -54,7 +70,7 @@ project visibility before the 15-second disk reuse decision. Only a typed
 transport outage can return marked stale data; an authority/result refusal
 invalidates the cache. An ordinary close is a canonical CloseOp plus typed
 metadata i8.host.close_reason in one tx.apply revision, preserving the current
-reason without inferring lifecycle meaning from arbitrary comments. Reopen
+reason without inferring lifecycle meaning from arbitrary comments. Nonterminal
 projections omit the old reason. Other close-producing adapters should use the
 same metadata convention; arbitrary external closes have no typed core reason
 slot in the pinned read envelope. Completed and recovered pours return the
@@ -69,3 +85,9 @@ prepared caller has written the workspace journal.
 Priority is a checked P0..P4 integer. The legacy seed's supported decimal
 strings "0" through "4" are converted deliberately; boolean, fractional,
 null, out-of-range and other string values refuse before their create RPC.
+
+Category successor completion: preserve native statuses across all prepared
+scripts, project-aware projection, lifecycle sidecars and milestone counts,
+proven by new remote public import/RPC fixtures plus retained independent review.
+Historical synthetic PASS and reader-only native-category fixtures do not qualify
+Beads-converter/import parity, real host ontology, private restore or cutover.

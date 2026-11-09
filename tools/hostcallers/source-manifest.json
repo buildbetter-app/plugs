@@ -42,8 +42,8 @@
   {
     "path": "/home/dev/beads/scripts/milestone_view_server.py",
     "source_sha256": "ae690e970f14e3d7c2d63dc911e0d435f6b860fa9275942bd56896e769a7ce68",
-    "prepared_full_post_sha256": "16655a868e7ea90e6c8b316922fe439db9bfe26b387676c252e6359848812a7f",
-    "patch_sha256": "30f87fe70b66f5f58d7818744c001cd67e47c349af0dab721b85c70711d800c6",
+    "prepared_full_post_sha256": "75f8b9234a70866bc51550e42bc9241073641c7105695f8406c77a7bb87ba81b",
+    "patch_sha256": "80f9b33881be31e33b953b0ccac8f1af92d808e2e24042bee9d64f0c9543e91e",
     "private_payload_copied_to_disk": false,
     "fixture_payload": "generic source"
   }

@@ -14,6 +14,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from host_drivers import main
 '''
 manifest = []
+original_manifest = json.loads((ROOT/'source-manifest.json').read_text())
+expected_sources = {Path(row['path']).name: row['source_sha256'] for row in original_manifest}
+for name in NAMES:
+    if hashlib.sha256((HOST/name).read_bytes()).hexdigest() != expected_sources[name]:
+        raise RuntimeError('named host source changed; preserve prior patches and inspect exact source delta: '+name)
 for name in NAMES:
     raw = (HOST / name).read_bytes()
     before = raw.decode()
@@ -77,6 +82,8 @@ projection = Projection(client)
         right = after.index('\ndef build_data():', left)
         after = after[:left] + 'def fresh_export():\n    return projection.fresh()\n\n' + after[right:]
         after = after.replace('"generatedAt": time.strftime', '"projectionStale": projection.stale, "generatedAt": time.strftime')
+        after = after.replace('"status": issue["status"],', '"status": issue["status"], "statusCategory": issue["status_category"], "isClosed": issue["status_terminal"],')
+        after = after.replace('n["status"] == "closed"', 'n["isClosed"]')
         after = after.replace('except FileNotFoundError:', 'except (FileNotFoundError, TypeError):')
         left = after.index('if __name__ == "__main__":')
         after = after[:left] + '''if __name__ == "__main__":

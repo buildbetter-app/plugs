@@ -1,13 +1,13 @@
 --- /dev/null
 +++ b/scripts/projection.py
-@@ -0,0 +1,87 @@
+@@ -0,0 +1,96 @@
 +"""Scoped legacy JSONL projection for the prepared milestone view."""
 +import json
 +import os
 +from pathlib import Path
 +import tempfile
 +import time
-+from plug_host import AdapterError, Client, TransportError
++from plug_host import AdapterError, Client, OntologyError, TransportError
 +
 +
 +class Projection:
@@ -20,7 +20,14 @@
 +        try:
 +            # Authority is checked before reuse, including the 15-second window.
 +            self.c.verify_identity()
-+            rows = [self.row(b) for b in self.c.snapshot()]
++            ontology = self.c.ontology()
++            beads = self.c.snapshot()
++            # Detect observed source changes around the bead page chain.
++            # Head-only ontology.get supplies no historical/same-snapshot
++            # ontology binding; this check must not be advertised as one.
++            if ontology.signature != self.c.ontology().signature:
++                raise OntologyError("ontology_changed_during_projection")
++            rows = [self.row(b, ontology) for b in beads]
 +            content = ''.join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows)
 +            try:
 +                if time.time() - self.path.stat().st_mtime < 15 and self.path.read_text() == content:
@@ -51,17 +58,19 @@
 +            self.path.unlink(missing_ok=True)
 +            raise
 +
-+    def row(self, bead):
++    def row(self, bead, ontology=None):
 +        if bead.get("project") != self.c.project:
 +            raise AdapterError("foreign project in projection")
 +        fields = bead.get("fields", {})
 +        status = bead["status"]
-+        if status not in {"open", "in_progress", "closed", "blocked", "deferred", "pinned", "frozen"}:
-+            raise AdapterError("unmapped imported status in projection")
-+        row = {"id": self.c.original(bead["id"]), "issue_type": bead["type"], "status": status, **fields}
++        ontology = ontology or self.c.ontology()
++        category = ontology.category(status, bead["type"])
++        row = {**fields, "id": self.c.original(bead["id"]), "issue_type": bead["type"],
++               "status": status, "status_category": category,
++               "status_terminal": ontology.terminal(status, bead["type"])}
 +        row["labels"] = bead.get("labels", fields.get("labels", []))
 +        reason = bead.get("metadata", {}).get("i8.host.close_reason")
-+        if status != "closed":
++        if not row["status_terminal"]:
 +            row["close_reason"] = None
 +        elif reason is not None:
 +            if reason.get("schema") != "plug-host-close-reason/1" or not isinstance(reason.get("reason"), str):

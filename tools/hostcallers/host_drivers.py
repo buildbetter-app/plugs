@@ -11,7 +11,7 @@ from plug_host import AdapterError, Client, Job, Writes, created_ref, expect, fi
 DEFAULTS = {"plan.json": None, "ids.json": {}, "linear-pending.json": []}
 
 
-def create_items(writes, plan, ids, additions):
+def create_items(writes, plan, ids, additions, ontology):
     items = {x["key"]: x for x in plan["items"]}
     pending = copy.deepcopy(additions)
     if len({x["key"] for x in pending}) != len(pending) or any(x["key"] in items for x in pending):
@@ -22,8 +22,16 @@ def create_items(writes, plan, ids, additions):
             raise AdapterError("unknown/cyclic create parents")
         for item in ready:
             typ, fields = fields_for(item, plan["doc"], writes.c.project)
+            status = item.get("status", ontology.initial(typ))
+            category = ontology.category(status, typ)
+            # Terminal imports close after graph creation, in guarded order.
+            if ontology.terminal(status, typ):
+                fields.pop("status", None)
+            else:
+                fields["status"] = status
             parent = ids[item["parent"]] if item.get("parent") else None
             ids[item["key"]] = writes.create(typ, fields, parent)
+            item.update(status=status, status_category=category)
             item.setdefault("deps", [])
             plan["items"].append(item)
             items[item["key"]] = item
@@ -33,6 +41,11 @@ def create_items(writes, plan, ids, additions):
 
 def apply_body(w, plan, ids, change):
     additions = change.get("create", [])
+    ontology = w.c.ontology()
+    for item in additions:
+        typ, _ = fields_for(item, plan["doc"], w.c.project)
+        if ontology.terminal(item.get("status", ontology.initial(typ)), typ) and item["key"] not in change.get("close", {}):
+            raise AdapterError("terminal create requires its explicit close reason")
     known = {x["key"] for x in plan["items"]} | {x["key"] for x in additions}
     for item in additions:
         if any(dep not in known for dep in item.get("deps", [])):
@@ -40,7 +53,7 @@ def apply_body(w, plan, ids, change):
     for section in ("update", "dep_add", "dep_remove", "move", "close", "reopen"):
         if any(key not in known for key in change.get(section, {})):
             raise AdapterError("unknown change key")
-    items = create_items(w, plan, ids, additions)
+    items = create_items(w, plan, ids, additions, ontology)
     for key, patch in change.get("update", {}).items():
         if set(patch) - {"title", "description", "priority", "design", "acceptance", "acceptance_criteria"}:
             raise AdapterError("unsupported update field")
@@ -87,19 +100,26 @@ def apply_body(w, plan, ids, change):
             items[target]["deps"].append(key)
         items[key]["milestone"] = target
     for key in change.get("reopen", []):
-        w.lifecycle(ids[key], close=False)
-        items[key]["status"] = "open"
+        commit = w.lifecycle(ids[key], close=False)
+        items[key].update(w.c.committed_state(commit, ids[key]))
         items[key].pop("resolution", None)
     for key, reason in change.get("close", {}).items():
-        w.lifecycle(ids[key], reason=reason)
-        items[key].update(status="closed", resolution=reason)
+        desired = items[key].get("status") if key in {item["key"] for item in additions} else None
+        if desired is not None and not ontology.terminal(desired):
+            desired = None
+        commit = w.lifecycle(ids[key], reason=reason, status=desired)
+        items[key].update(w.c.committed_state(commit, ids[key]), resolution=reason)
     return items
 
 
-def closure_order(items):
+def closure_order(items, ontology):
     """Prerequisites first and children before parents; retain all core guards."""
     by_key = {item["key"]: item for item in items}
-    closed = {k for k, item in by_key.items() if item.get("status") == "closed"}
+    closed = set()
+    for key, item in by_key.items():
+        typ = "decision" if "decision" in item.get("labels", []) else item["type"]
+        if ontology.terminal(item.get("status", ontology.initial(typ)), typ):
+            closed.add(key)
     children = {k: [i["key"] for i in items if i.get("parent") == k] for k in by_key}
     dependencies = {}
     for key in closed:
@@ -130,7 +150,8 @@ def load_plan(c, plan_path):
     if plan_path.parent != c.workspace:
         raise AdapterError("plan must belong to the explicitly bound workspace")
     plan = read_json(plan_path)
-    close_order = closure_order(plan["items"])
+    ontology = c.ontology()
+    close_order = closure_order(plan["items"], ontology)
     with Job(c, "load_plan", plan, {"ids.json": {}}) as j:
         if j.done:
             return
@@ -139,13 +160,15 @@ def load_plan(c, plan_path):
             raise AdapterError("load_plan requires empty ids.json; import mappings must be retained")
         w = Writes(c, j)
         working = {"doc": plan["doc"], "items": []}
-        create_items(w, working, ids, plan["items"])
+        create_items(w, working, ids, plan["items"], ontology)
         for item in plan["items"]:
             for dep in item.get("deps", []):
                 w.link(ids[item["key"]], ids[dep])
         by_key = {item["key"]: item for item in plan["items"]}
         for key in close_order:
-            w.lifecycle(ids[key], reason=by_key[key]["description"])
+            item = by_key[key]
+            typ, _ = fields_for(item, plan["doc"], c.project)
+            w.lifecycle(ids[key], reason=item["description"], status=item.get("status", ontology.initial(typ)))
         j.finish({"ids.json": ids})
 
 
@@ -187,6 +210,11 @@ def restructure(c, payload):
 
 
 def seed(c, items, resume=None):
+    ontology = c.ontology()
+    for it in items:
+        typ, fields = fields_for(it, project=c.project)
+        if ontology.terminal(fields.get("status", ontology.initial(typ)), typ) and not it.get("closed"):
+            raise AdapterError("terminal seed requires its explicit close reason")
     with Job(c, "seed", {"items": items, "resume": resume}, {"ids.json": {}}) as j:
         if j.done:
             return
@@ -195,6 +223,8 @@ def seed(c, items, resume=None):
         for it in sorted(items, key=lambda x: x["type"] != "epic"):
             if it["key"] not in ids:
                 typ, fields = fields_for(it, project=c.project)
+                if ontology.terminal(fields.get("status", ontology.initial(typ)), typ):
+                    fields.pop("status", None)
                 ids[it["key"]] = w.create(typ, fields, ids[it["parent"]] if it.get("parent") else None)
             else:
                 c.get(ids[it["key"]])
@@ -206,7 +236,7 @@ def seed(c, items, resume=None):
                 # Plug link is structurally idempotent; no string-matching of errors.
                 w.link(ids[it["key"]], ids[blocker])
             if it.get("closed"):
-                w.lifecycle(ids[it["key"]], reason=it["closed"])
+                w.lifecycle(ids[it["key"]], reason=it["closed"], status=it.get("status"))
         j.finish({"ids.json": ids})
 
 
@@ -226,6 +256,9 @@ def pour(c, chunk, keys):
         if not keys or len(set(keys)) != len(keys) or any(k not in ids for k in keys) or chunk in mols:
             raise AdapterError("unknown/duplicate keys or chunk already poured")
         def build():
+            ontology = c.ontology()
+            ontology.initial("molecule")
+            ontology.initial("task")
             conditions = [expect(c.get(ids[k])) for k in keys]
             ops = [{"kind": "create", "key": "root", "type": "molecule", "project": c.project,
                     "fields": {"title": chunk, "labels": [c.project], "priority": 2}}]

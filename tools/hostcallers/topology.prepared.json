@@ -6,7 +6,9 @@
   "client_transport": "same explicitly bound HTTP(S) RPC origin",
   "instance_identity": "must equal restored server.hello incarnation",
   "identity_check": "agent.brief.whoami.principal must equal configured transport principal",
-  "ontology": "host-ontology.json is a fixture/preparation specimen, not proof of the real restored ontology",
+  "ontology": "ontology.get selects the installed per-project native-name/category document; restore must supply actual categories, never normalize names; host-ontology.json is historical synthetic preparation only",
+  "native_category_dependency": "B21 same-lane literal active/wip/done/frozen schema/runtime/import successor PENDING",
+  "ontology_content_snapshot": "UNPROVEN: ontology.get is head-only; before/after reads detect observed drift but do not establish atomic ontology/content consistency",
   "import_maps": "per-project lossless original-ID -> canonical Ref; never prefix resolution",
   "sync": {
     "normal_host_operation": "all callers use the single authoritative instance; no separate per-project replica",

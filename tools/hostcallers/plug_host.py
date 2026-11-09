@@ -30,12 +30,77 @@ class RPCError(AdapterError):
         super().__init__(f"Plug RPC refused: {code}")
 
 
+class OntologyError(AdapterError):
+    """A typed refusal; no name-based or category-based status substitution."""
+    def __init__(self, code):
+        self.code = code
+        super().__init__(f"Installed project ontology refused: {code}")
+
+
 def encoded(value):
     return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
 
 
 def digest(value):
     return hashlib.sha256(encoded(value)).hexdigest()
+
+
+class InstalledOntology:
+    """The project-effective ontology.get result, never a binding-file guess."""
+    CATEGORIES = frozenset({"active", "wip", "done", "frozen", "triage", "backlog",
+                            "unstarted", "started", "completed", "canceled"})
+    TERMINAL = frozenset({"done", "completed", "canceled"})
+
+    def __init__(self, result):
+        if (not isinstance(result, dict) or result.get("drifted") is not False
+                or result.get("problems") not in (None, [])
+                or not isinstance(result.get("document"), dict)):
+            raise OntologyError("ontology_invalid")
+        revision = result.get("revision")
+        if not isinstance(revision, str) or not revision.isascii() or not revision.isdigit():
+            raise OntologyError("ontology_revision_invalid")
+        self.document = copy.deepcopy(result["document"])
+        if any(not isinstance(self.document.get(key), dict) for key in ("statuses", "types", "workflows")):
+            raise OntologyError("ontology_document_invalid")
+        self.signature = digest({"revision": revision, "document": self.document})
+
+    def category(self, status, typ=None):
+        if not isinstance(status, str) or not status:
+            raise OntologyError("ontology_status_unknown")
+        definition = self.document["statuses"].get(status)
+        if not isinstance(definition, dict):
+            raise OntologyError("ontology_status_unknown")
+        category = definition.get("category")
+        if not isinstance(category, str) or category not in self.CATEGORIES:
+            raise OntologyError("ontology_category_unsupported")
+        if typ is not None and status not in self.workflow(typ).get("statuses", []):
+            raise OntologyError("ontology_status_outside_workflow")
+        return category
+
+    def workflow(self, typ):
+        definition = self.document["types"].get(typ)
+        if not isinstance(definition, dict):
+            raise OntologyError("ontology_type_unknown")
+        workflow = self.document["workflows"].get(definition.get("workflow"))
+        if not isinstance(workflow, dict):
+            raise OntologyError("ontology_workflow_unknown")
+        return workflow
+
+    def initial(self, typ):
+        status = self.workflow(typ).get("initial")
+        self.category(status, typ)
+        return status
+
+    def terminal(self, status, typ=None):
+        return self.category(status, typ) in self.TERMINAL
+
+    def slot(self, typ, verb):
+        status = self.workflow(typ).get("slots", {}).get(verb)
+        required = {"claim": {"wip", "started"}, "close": {"done", "completed"},
+                    "reopen": {"active", "unstarted"}, "defer": {"frozen", "backlog"}}
+        if verb not in required or self.category(status, typ) not in required[verb]:
+            raise OntologyError("ontology_slot_category_invalid")
+        return status
 
 
 def read_json(path, default=None):
@@ -197,6 +262,22 @@ class Client:
     def original(self, canonical):
         return self.reverse_ids.get(canonical, canonical)
 
+    def ontology(self):
+        return InstalledOntology(self.rpc("ontology.get", {}))
+
+    def committed_state(self, commit, original):
+        target = self.ref(original)
+        for result in reversed(commit.get("results", [])):
+            if result.get("ref") != target or not isinstance(result.get("record"), dict):
+                continue
+            record = result["record"]
+            if record.get("id") != target["id"] or record.get("project") != self.project:
+                raise OntologyError("ontology_result_project_mismatch")
+            status = record.get("fields", {}).get("status")
+            category = self.ontology().category(status, record.get("type"))
+            return {"status": status, "status_category": category}
+        raise OntologyError("ontology_commit_status_absent")
+
     def snapshot(self):
         # view.run supplies a pinned page chain; point reads use that exact asOf.
         params = {"definition": {"filter": {}, "fields": ["id"], "budgetTokens": 1000}}
@@ -346,6 +427,10 @@ class Writes:
 
     def create(self, typ, fields, parent=None):
         def build():
+            ontology = self.c.ontology()
+            status = fields.get("status", ontology.initial(typ))
+            if ontology.terminal(status, typ):
+                raise OntologyError("ontology_terminal_create_requires_guarded_close")
             p = {"type": typ, "fields": fields}
             if parent is not None:
                 self.c.get(parent)
@@ -379,17 +464,32 @@ class Writes:
             return {"from": self.c.ref(dependent), "to": self.c.ref(prerequisite), "kind": "blocks", "expect": [expect(source), expect(target)]}
         return self.job.mutate("bead.unlink" if remove else "bead.link", build)
 
-    def lifecycle(self, original, close=True, reason=""):
+    def lifecycle(self, original, close=True, reason="", status=None):
         if not close:
-            return self.job.mutate("bead.reopen", lambda: {"id": self.c.ref(original), "reason": reason, "expect": [expect(self.c.get(original))]})
+            def build_reopen():
+                bead = self.c.get(original)
+                ontology = self.c.ontology()
+                ontology.category(bead["status"], bead["type"])
+                ontology.slot(bead["type"], "reopen")
+                return {"id": self.c.ref(original), "reason": reason, "expect": [expect(bead)]}
+            return self.job.mutate("bead.reopen", build_reopen)
         def build():
             bead = self.c.get(original)
             target = self.c.ref(original)
-            return {"changeSet": {"ops": [
-                {"kind": "close", "target": target, "reason": reason},
-                {"kind": "setMeta", "target": target, "key": "i8.host.close_reason",
-                 "value": {"schema": "plug-host-close-reason/1", "reason": reason}},
-            ], "expect": [expect(bead)]}}
+            ontology = self.c.ontology()
+            ontology.category(bead["status"], bead["type"])
+            close_status = ontology.slot(bead["type"], "close")
+            ops = [{"kind": "close", "target": target, "reason": reason}]
+            if status is not None:
+                if not ontology.terminal(status, bead["type"]):
+                    raise OntologyError("ontology_close_category_invalid")
+                if status != close_status:
+                    # Retain the requested terminal name. The canonical CloseOp
+                    # still runs first, and both transitions keep kernel guards.
+                    ops.append({"kind": "patch", "target": target, "fields": {"status": status}})
+            ops.append({"kind": "setMeta", "target": target, "key": "i8.host.close_reason",
+                        "value": {"schema": "plug-host-close-reason/1", "reason": reason}})
+            return {"changeSet": {"ops": ops, "expect": [expect(bead)]}}
         return self.job.mutate("tx.apply", build)
 
 
@@ -409,6 +509,8 @@ def fields_for(item, doc=None, project="signals-v2"):
         raise AdapterError("priority must be an integer P0 through P4 or a seed decimal string")
     fields = {"title": item["title"], "description": description,
               "priority": priority, "labels": labels}
+    if "status" in item:
+        fields["status"] = item["status"]
     for src, dst in [("design", "design"), ("acceptance", "acceptance_criteria"), ("acceptance_criteria", "acceptance_criteria"),
                      ("owner", "assignee"), ("ext", "external_ref")]:
         if item.get(src) is not None:

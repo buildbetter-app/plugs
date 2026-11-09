@@ -83,7 +83,7 @@ def build_data():
             "design": issue.get("design") or None,
             "acceptance": issue.get("acceptance_criteria") or issue.get("acceptance") or None,
             "notes": issue.get("notes") or None,
-            "id": issue["id"], "key": key, "title": issue["title"], "status": issue["status"],
+            "id": issue["id"], "key": key, "title": issue["title"], "status": issue["status"], "statusCategory": issue["status_category"], "isClosed": issue["status_terminal"],
             "type": issue["issue_type"], "priority": issue.get("priority"), "milestone": milestone,
             "isMilestone": is_milestone, "parent": parent_of.get(issue["id"]),
             "linear": f"https://linear.app/buildbetter/issue/{linear[key]}" if key in linear else None,
@@ -106,7 +106,7 @@ def build_data():
         members = [n for n in nodes if n["milestone"] == key and not n["isMilestone"] and n["type"] != "epic" and not n["stepOf"]]
         title = next((n["title"] for n in nodes if n["isMilestone"] and n["key"] == key), "Unscheduled")
         groups.append({"key": key, "title": title, "total": len(members),
-                       "closed": sum(n["status"] == "closed" for n in members)})
+                       "closed": sum(n["isClosed"] for n in members)})
     return {"projectionStale": projection.stale, "generatedAt": time.strftime("%Y-%m-%d %H:%M:%S %Z"), "nodes": nodes, "edges": edges,
             "milestones": groups, "partitionSafe": not backward,
             "backwardEdges": [f'{key_of.get(e["source"])} -> {key_of.get(e["target"])}' for e in backward]}

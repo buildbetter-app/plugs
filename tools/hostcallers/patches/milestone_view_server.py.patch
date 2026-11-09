@@ -56,8 +56,13 @@
 -    except (subprocess.SubprocessError, OSError):
 -        return EXPORT
 +    return projection.fresh()
-@@ -118 +110 @@
+@@ -94 +86 @@
+-            "id": issue["id"], "key": key, "title": issue["title"], "status": issue["status"],
++            "id": issue["id"], "key": key, "title": issue["title"], "status": issue["status"], "statusCategory": issue["status_category"], "isClosed": issue["status_terminal"],
+@@ -117,2 +109,2 @@
+-                       "closed": sum(n["status"] == "closed" for n in members)})
 -    return {"generatedAt": time.strftime("%Y-%m-%d %H:%M:%S %Z"), "nodes": nodes, "edges": edges,
++                       "closed": sum(n["isClosed"] for n in members)})
 +    return {"projectionStale": projection.stale, "generatedAt": time.strftime("%Y-%m-%d %H:%M:%S %Z"), "nodes": nodes, "edges": edges,
 @@ -138 +130 @@
 -            except FileNotFoundError:
