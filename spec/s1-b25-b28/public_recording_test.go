@@ -1289,6 +1289,19 @@ func assertNativePlugImportRows(t *testing.T, image map[string]any, rows map[str
 				body[key] = value
 			}
 			body["source_id"], body["source_table"], body["source"] = source.ID, source.Source.Table, source.Source.Fields
+			if kind.Name == "memory" {
+				content, text := source.Body["value"].(string)
+				encoding := "text"
+				if !text {
+					encoded, err := json.Marshal(source.Body["value"])
+					if err != nil {
+						t.Fatal(err)
+					}
+					content, encoding = string(encoded), "json"
+				}
+				body["id"], body["content"] = id, content
+				body["metadata"] = map[string]any{"beads.memory.value_encoding": encoding, "beads.classification": source.Body["classification"]}
+			}
 			if kind.Name == "beads-archive" {
 				body["read_only"], body["redactable"] = true, true
 			}
