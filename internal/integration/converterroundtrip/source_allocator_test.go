@@ -110,14 +110,27 @@ func TestJointSourceAllocatorReservesActiveAndTerminalAliasesAcrossThreeStores(t
 			ctx := context.Background()
 			store, lease, reopen := openIdentityTarget(t, engine)
 			p := jointProfileWithPlan(t, data, store, lease, func(plan *driver.SourcePlanePlanV1) {
+				terminalRun := plan.Runs[0]
+				terminalRun.Key += "-terminal"
+				terminalRun.TargetID += "-terminal"
+				terminalRun.Members = nil
 				for i := range plan.Entities {
 					e := &plan.Entities[i]
 					if e.TargetKind == "workflow:item" && e.Source.ID != "demo-7" {
 						e.TargetID = fmt.Sprintf("workflow:item/reserved-%d", i)
 						e.Route.ActiveTargetID, e.Route.DurableTargetID = e.TargetID, ""
-						plan.Runs[0].Members = append(plan.Runs[0].Members, e.Source)
+						if e.Source.ID == aliases[0] {
+							e.RunKey = terminalRun.Key
+							terminalRun.Members = append(terminalRun.Members, e.Source)
+						} else {
+							plan.Runs[0].Members = append(plan.Runs[0].Members, e.Source)
+						}
 					}
 				}
+				if len(terminalRun.Members) != 1 {
+					t.Fatal("terminal alias must be the sole member of its fixture run")
+				}
+				plan.Runs = append(plan.Runs, terminalRun)
 			})
 			report, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, p)
 			if err != nil {
@@ -183,8 +196,8 @@ func TestJointSourceAllocatorReservesActiveAndTerminalAliasesAcrossThreeStores(t
 			if len(childCommit.Results) != 1 || childCommit.Results[0].Ref.ID != parentID+".2" || !reflect.DeepEqual(sourceBefore, checkpoint()) {
 				t.Fatal("active child alias was reused or ordinary allocation changed source state", childCommit)
 			}
-			// Completion removes the current active target, but its original
-			// source address must continue to reserve its naked identity.
+			// Completing the dedicated singleton run removes its active target,
+			// but the original source address still reserves its naked identity.
 			sourcePublicCall(t, server, actor, "bead.close", 606, map[string]any{"id": ref(aliases[0]), "reason": "terminal identity remains reserved"}, "")
 			sourcePublicCall(t, server, actor, "bead.get", 0, map[string]any{"id": ref(aliases[0])}, "not_found")
 			second := sourcePublicCall(t, server, actor, "tx.apply", 607, map[string]any{"changeSet": rootOnly}, "")
