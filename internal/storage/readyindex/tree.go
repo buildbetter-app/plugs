@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -27,12 +28,19 @@ type marker struct {
 	Incarnation string
 	Through     model.Revision
 	Unsafe      uint64
+	// The priority radix is exact for the ordinary hybrid order only while
+	// every eligible source has this same creation instant. Mixed instants
+	// poison the certificate until the eligible set becomes empty.
+	OrderCreatedAt time.Time
+	OrderCount     uint64
+	OrderUnsafe    bool
 }
 type scopeHeader struct{ Bindings map[string]uint64 }
 type source struct {
 	Project, Type, Binding string
 	Local                  bool
 	Leaf                   *driver.ReadyOrderLeaf
+	CreatedAt              time.Time
 }
 
 // Mutation is a trusted, final core source image. A nil Item denotes deletion;
@@ -43,6 +51,7 @@ type Mutation struct {
 	Priority               int64
 	Project, Type, Binding string
 	Eligible, Local        bool
+	CreatedAt              time.Time
 }
 type tree struct {
 	ctx   context.Context
@@ -270,9 +279,9 @@ func Prepare(ctx context.Context, r Observer, mutations []Mutation) (*Delta, err
 		if !v.At.IsZero() {
 			return d, nil
 		}
-		d.coverage = marker{Version: 2, Incarnation: v.Incarnation, Through: model.Natural64(0)}
+		d.coverage = marker{Version: 3, Incarnation: v.Incarnation, Through: model.Natural64(0)}
 	}
-	if d.coverage.Version != 2 || d.coverage.Incarnation != v.Incarnation || d.coverage.Through.String() != v.At.String() {
+	if d.coverage.Version != 3 || d.coverage.Incarnation != v.Incarnation || d.coverage.Through.String() != v.At.String() {
 		return d, nil
 	}
 	d.valid = true
@@ -310,7 +319,7 @@ func Prepare(ctx context.Context, r Observer, mutations []Mutation) (*Delta, err
 		if m.Binding == "" || m.Item.ID != m.Ref.ID || m.Item.Project != m.Project || m.Item.Type != m.Type {
 			return nil, unavailable("incomplete mutation")
 		}
-		s := source{Project: m.Project, Type: m.Type, Binding: m.Binding, Local: m.Local}
+		s := source{Project: m.Project, Type: m.Type, Binding: m.Binding, Local: m.Local, CreatedAt: m.CreatedAt.UTC()}
 		if m.Eligible {
 			item := *m.Item
 			item.Revision = model.Natural64(0)
@@ -333,6 +342,27 @@ func Prepare(ctx context.Context, r Observer, mutations []Mutation) (*Delta, err
 	return d, nil
 }
 func (d *Delta) adjust(s source, direction int) error {
+	if s.Leaf != nil {
+		if direction < 0 {
+			if d.coverage.OrderCount == 0 {
+				return unavailable("hybrid order count underflow")
+			}
+			d.coverage.OrderCount--
+			if d.coverage.OrderCount == 0 {
+				d.coverage.OrderCreatedAt = time.Time{}
+				d.coverage.OrderUnsafe = false
+			}
+		} else {
+			if s.CreatedAt.IsZero() {
+				d.coverage.OrderUnsafe = true
+			} else if d.coverage.OrderCount == 0 {
+				d.coverage.OrderCreatedAt = s.CreatedAt
+			} else if !d.coverage.OrderCreatedAt.Equal(s.CreatedAt) {
+				d.coverage.OrderUnsafe = true
+			}
+			d.coverage.OrderCount++
+		}
+	}
 	project := s.Project
 	if project == "" {
 		project = "*"

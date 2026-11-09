@@ -8,11 +8,11 @@ import (
 	"errors"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/readyorder"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
@@ -621,7 +621,7 @@ func spreadClaimNextItems(items []Bead, seed string, order ...map[string]readyOr
 			same := priority == groupPriority
 			if len(order) != 0 {
 				a, b := order[0][ordered[start].ID], order[0][ordered[end].ID]
-				same = a.Bucket == b.Bucket && a.Rank == b.Rank && a.CreatedAt.Equal(b.CreatedAt)
+				same = readyorder.EqualGroup(readyOrderValue(a), readyOrderValue(b))
 			}
 			if !same {
 				break
@@ -629,8 +629,7 @@ func spreadClaimNextItems(items []Bead, seed string, order ...map[string]readyOr
 			end++
 		}
 		if end-start > 1 {
-			groupSeed := sha256.Sum256([]byte(seed + "\x00" + strconv.Itoa(groupPriority)))
-			offset := int(binary.BigEndian.Uint64(groupSeed[:8]) % uint64(end-start))
+			offset := int(readyorder.Pivot(seed, int64(groupPriority), uint64(end-start)))
 			if offset != 0 {
 				rotated := append([]Bead(nil), ordered[start+offset:end]...)
 				rotated = append(rotated, ordered[start:start+offset]...)

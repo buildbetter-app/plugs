@@ -21,9 +21,11 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
 )
 
+var testOrderAt = time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+
 func sourceMutation(id, project string, priority int64) readyindex.Mutation {
 	item := driver.ReadyMembershipItem{ID: id, Type: "issue", Project: project, Status: "open", Revision: model.Natural64(0), Fields: map[string]any{"priority": json.Number(strconv.FormatInt(priority, 10)), "status": "open", "title": id}}
-	return readyindex.Mutation{Ref: model.RefByID(id, model.Natural64(0)), Item: &item, Priority: priority, Project: project, Type: "issue", Binding: "ontology", Eligible: true, Local: true}
+	return readyindex.Mutation{Ref: model.RefByID(id, model.Natural64(0)), Item: &item, Priority: priority, Project: project, Type: "issue", Binding: "ontology", Eligible: true, Local: true, CreatedAt: testOrderAt}
 }
 func maintain(t *testing.T, s driver.Store, lease driver.ActiveLease, mutations []readyindex.Mutation, rollback bool) (driver.ReadyOrderWork, model.Revision) {
 	t.Helper()
@@ -149,7 +151,7 @@ func selectOrder(t *testing.T, s driver.Store, metadataOnly bool, modify func(*d
 		t.Fatal(e)
 	}
 	defer r.Close()
-	p := driver.ReadyOrderPlan{Incarnation: m.Incarnation, ContentRevision: m.Head, AuthorityRevision: m.Head, Eligibility: "ontology", UniformAuthorization: true, Limit: 1000}
+	p := driver.ReadyOrderPlan{Incarnation: m.Incarnation, ContentRevision: m.Head, AuthorityRevision: m.Head, OrderAt: testOrderAt, Eligibility: "ontology", UniformAuthorization: true, Limit: 1000}
 	if modify != nil {
 		modify(&p)
 	}

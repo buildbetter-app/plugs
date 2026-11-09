@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -43,6 +44,7 @@ func (r *pointImage) Observe(ctx context.Context, keys []driver.LockKey) ([]driv
 }
 func TestCountedStructure100000BoundedReads(t *testing.T) {
 	const count = 100000
+	orderAt := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	leaves := make([]driver.ReadyOrderLeaf, count)
 	r := &pointImage{rows: map[string]driver.DerivedRow{}}
 	put := func(key string, value any) {
@@ -61,7 +63,7 @@ func TestCountedStructure100000BoundedReads(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		put(sourceKey(id), source{Project: "project", Type: "issue", Binding: "ontology", Local: true, Leaf: &leaves[i]})
+		put(sourceKey(id), source{Project: "project", Type: "issue", Binding: "ontology", Local: true, Leaf: &leaves[i], CreatedAt: orderAt})
 	}
 	nodes, err := driver.BuildReadyOrderNodes(leaves)
 	if err != nil {
@@ -70,9 +72,9 @@ func TestCountedStructure100000BoundedReads(t *testing.T) {
 	for p, node := range nodes {
 		put(nodeKey(scope, p), node)
 	}
-	put(markerKey, marker{Version: 2, Incarnation: "dense", Through: model.Natural64(1)})
+	put(markerKey, marker{Version: 3, Incarnation: "dense", Through: model.Natural64(1), OrderCreatedAt: orderAt, OrderCount: count})
 	put(headerKey(scope), scopeHeader{Bindings: map[string]uint64{"ontology": count}})
-	p := driver.ReadyOrderPlan{Incarnation: "dense", ContentRevision: model.Natural64(1), AuthorityRevision: model.Natural64(1), Eligibility: "ontology", UniformAuthorization: true, Limit: 100}
+	p := driver.ReadyOrderPlan{Incarnation: "dense", ContentRevision: model.Natural64(1), AuthorityRevision: model.Natural64(1), OrderAt: orderAt, Eligibility: "ontology", UniformAuthorization: true, Limit: 100}
 	for _, offset := range []uint64{0, 50000, 99900} {
 		p.Offset = offset
 		r.reads = 0

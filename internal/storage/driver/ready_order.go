@@ -8,10 +8,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/readyorder"
 )
 
 // ReadyOrderReader is an optional, uncapped, exact Ready primitive. The trusted
@@ -34,7 +35,10 @@ type ReadyOrderScope struct{ Project, Type *string }
 type ReadyOrderPlan struct {
 	Incarnation                        string
 	ContentRevision, AuthorityRevision model.Revision
-	Scope                              ReadyOrderScope
+	// OrderAt is the trusted caller's clock for the ordinary hybrid Ready
+	// order. An absent clock cannot certify the optional priority tree.
+	OrderAt time.Time
+	Scope   ReadyOrderScope
 	// Eligibility identifies the effective ontology used to maintain this scope.
 	Eligibility string
 	// Nil means unrestricted; a non-nil empty slice is the empty set. RawRefs
@@ -105,11 +109,7 @@ func ReadyOrderKey(priority int64, id string) string {
 	return hex.EncodeToString(p[:]) + hex.EncodeToString([]byte(id))
 }
 func ReadyOrderPivot(seed string, priority int64, count uint64) uint64 {
-	if seed == "" || count < 2 {
-		return 0
-	}
-	h := sha256.Sum256([]byte(seed + "\x00" + strconv.FormatInt(priority, 10)))
-	return binary.BigEndian.Uint64(h[:8]) % count
+	return readyorder.Pivot(seed, priority, count)
 }
 func ReadyOrderLeafFor(item ReadyMembershipItem, priority int64) (ReadyOrderLeaf, error) {
 	if item.ID == "" || item.Revision.Validate() != nil {
