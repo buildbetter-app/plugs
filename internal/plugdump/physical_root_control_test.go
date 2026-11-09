@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -31,6 +32,10 @@ func newNativePhysicalRootControlCandidate(t *testing.T, db *sql.DB, server *tes
 	// owned public fixture before copying, and never check out its source store.
 	setup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	originalGraph, err := (SQLSource{DB: db}).ReadSourceCommits(setup)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var absent int
 	if err := db.QueryRowContext(setup, "SELECT count(*) FROM dolt_log WHERE commit_hash = ?", strings.Repeat("a", 32)).Scan(&absent); err != nil || absent != 0 {
 		t.Fatalf("valid missing commit census: count=%d error=%v", absent, err)
@@ -91,7 +96,7 @@ func newNativePhysicalRootControlCandidate(t *testing.T, db *sql.DB, server *tes
 		t.Fatal(err)
 	}
 	copyDB := sql.OpenDB(connector)
-	copyDB.SetMaxOpenConns(1)
+	copyDB.SetMaxOpenConns(2)
 	t.Cleanup(func() {
 		if err := copyDB.Close(); err != nil {
 			t.Error(err)
@@ -100,46 +105,34 @@ func newNativePhysicalRootControlCandidate(t *testing.T, db *sql.DB, server *tes
 			t.Error(err)
 		}
 	})
-	read := func(ctx context.Context, id string) (map[string]Table, error) {
-		conn, err := copyDB.Conn(ctx)
-		if err != nil {
-			return nil, err
-		}
-		defer conn.Close()
-		physical, err := embedded.ReadPhysicalCommit(ctx, conn, id)
-		if err != nil {
-			return nil, err
-		}
-		if physical.CommitID != id {
-			return nil, fmt.Errorf("physical commit identity differs")
-		}
-		image := map[string]Table{}
-		for _, source := range physical.Tables {
-			table := Table{}
-			for _, column := range source.Columns {
-				table.Columns = append(table.Columns, column.Name)
-			}
-			for _, values := range source.Rows {
-				if len(values) != len(source.Columns) {
-					return nil, fmt.Errorf("physical row width differs")
-				}
-				row := Row{}
-				for i, value := range values {
-					v, err := sqlValue(value, source.Columns[i].DatabaseTypeName)
-					if err != nil {
-						return nil, err
-					}
-					row[source.Columns[i].Name] = v
-				}
-				table.Rows = append(table.Rows, row)
-			}
-			if _, duplicate := image[source.Name]; duplicate {
-				return nil, fmt.Errorf("duplicate physical table name")
-			}
-			image[source.Name] = table
-		}
-		return image, nil
+	currentConn, err := copyDB.Conn(setup)
+	if err != nil {
+		t.Fatal(err)
 	}
+	currentTx, err := currentConn.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelSerializable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := PhysicalCommitSource{SQLSource: SQLSource{DB: currentTx}, PhysicalDB: copyDB}
+	t.Run("original_graph_parents_metadata_preserved", func(t *testing.T) {
+		copiedGraph, err := source.ReadSourceCommits(setup)
+		if err != nil || !reflect.DeepEqual(originalGraph, copiedGraph) {
+			t.Fatalf("original graph/parents/metadata differ: %v", err)
+		}
+	})
+	t.Cleanup(func() {
+		copiedGraph, err := source.ReadSourceCommits(context.Background())
+		if err != nil || !reflect.DeepEqual(originalGraph, copiedGraph) {
+			t.Errorf("graph/parents/metadata changed after physical reads: %v", err)
+		}
+		if err := currentTx.Rollback(); err != nil {
+			t.Error(err)
+		}
+		if err := currentConn.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	read := source.ReadNativeSourceImage
 	candidate := nativePhysicalRootControlCandidate{
 		Name: "private-driver-immutable-physical-image", ReadImage: read,
 		ReadTable: func(ctx context.Context, id, name string) (Table, bool, error) {

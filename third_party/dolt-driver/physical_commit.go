@@ -10,6 +10,7 @@ import (
 	"io"
 	"regexp"
 	"sort"
+	"time"
 
 	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb"
 	"github.com/dolthub/dolt/go/libraries/doltcore/sqle"
@@ -27,8 +28,9 @@ type PhysicalTable struct {
 	Rows    [][]driver.Value
 }
 type PhysicalImage struct {
-	CommitID string
-	Tables   []PhysicalTable
+	CommitID      string
+	ReadOnlyScope bool
+	Tables        []PhysicalTable
 }
 
 // PhysicalReadError distinguishes resolution, permission, schema, decoding and
@@ -54,33 +56,52 @@ func physicalReadError(kind, id, name string, err error) error {
 	return &PhysicalReadError{kind, id, name, translateError(err)}
 }
 
-// ReadPhysicalCommit owns one serializable read-only transaction on the supplied
-// dedicated connection. It resolves the hash exactly once and materializes all
-// values before rolling back and leaving Raw. It performs no SQL table lookup,
-// nonlocal resolution, schema override, checkout, commit, or working-set write.
+// ReadPhysicalCommit owns a read-only transaction inside one dedicated Raw
+// connection scope. The pinned BeginTx ignores its ReadOnly argument, so this
+// operation explicitly starts READ ONLY and authenticates the actual engine
+// transaction. It refuses an occupied connection rather than committing an
+// existing scope. Every value is detached before rollback and leaving Raw.
 func ReadPhysicalCommit(ctx context.Context, conn *sql.Conn, id string) (image PhysicalImage, resultErr error) {
 	if !physicalCommitID.MatchString(id) {
 		return image, &PhysicalReadError{Kind: "invalid-commit", CommitID: id, Cause: errors.New("expected exact immutable commit hash")}
 	}
-	tx, err := conn.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelSerializable})
-	if err != nil {
-		return image, physicalReadError("transaction", id, "", err)
-	}
-	defer func() {
-		err := tx.Rollback()
-		if resultErr == nil && err != nil && !errors.Is(err, sql.ErrTxDone) {
-			image = PhysicalImage{}
-			resultErr = physicalReadError("rollback", id, "", err)
-		}
-	}()
-	resultErr = conn.Raw(func(raw any) error {
+	resultErr = conn.Raw(func(raw any) (scopeErr error) {
 		d, ok := raw.(*DoltConn)
 		if !ok {
 			return &PhysicalReadError{Kind: "unsupported-driver", CommitID: id, Cause: errors.New("embedded Dolt connection required")}
 		}
-		var err error
-		image, err = d.readPhysicalCommit(ctx, id)
-		return err
+		if d.gmsCtx.GetTransaction() != nil {
+			return &PhysicalReadError{Kind: "occupied-transaction", CommitID: id, Cause: errors.New("dedicated idle connection required")}
+		}
+		query, _, rows, err := d.queryWithBindings(ctx, "START TRANSACTION READ ONLY", nil)
+		if err != nil {
+			return physicalReadError("transaction", id, "", err)
+		}
+		// Preserve the driver's ordinary transaction implementation and rollback
+		// context; no database/sql transaction exists outside this Raw lifetime.
+		rollback := doltTx{ctx: d.gmsCtx.Context, conn: d}
+		defer func() {
+			rollbackErr := rollback.Rollback()
+			if rollbackErr == nil && d.gmsCtx.GetTransaction() != nil {
+				rollbackErr = errors.New("physical transaction remains active after rollback")
+			}
+			if rollbackErr != nil {
+				image = PhysicalImage{}
+				scopeErr = physicalReadError("rollback", id, "", rollbackErr)
+			}
+		}()
+		if err := rows.Close(query); err != nil {
+			return physicalReadError("transaction", id, "", err)
+		}
+		transaction := d.gmsCtx.GetTransaction()
+		if transaction == nil || !transaction.IsReadOnly() {
+			return &PhysicalReadError{Kind: "transaction", CommitID: id, Cause: errors.New("actual read-only transaction not established")}
+		}
+		image, scopeErr = d.readPhysicalCommit(ctx, id)
+		if scopeErr == nil {
+			image.ReadOnlyScope = true
+		}
+		return scopeErr
 	})
 	if resultErr != nil {
 		image = PhysicalImage{}
@@ -227,14 +248,32 @@ func readPhysicalTable(ctx *gms.Context, table gms.Table, name string) (out Phys
 				return out, err
 			}
 			for i, value := range values {
-				if binary, ok := value.([]byte); ok {
-					values[i] = append([]byte(nil), binary...)
+				detached, err := physicalCell(value)
+				if err != nil {
+					_ = converted.Close()
+					return out, err
 				}
+				values[i] = detached
 			}
 			out.Rows = append(out.Rows, values)
 		}
 		if err := converted.Close(); err != nil {
 			return out, err
 		}
+	}
+}
+
+// driver.Value is an interface, so enumerate concrete detached scalar types.
+// Numeric widths and uint64 remain exact; unsupported engine/custom values
+// fail decoding rather than escaping Raw or becoming physical absence.
+func physicalCell(value driver.Value) (driver.Value, error) {
+	switch cell := value.(type) {
+	case nil, bool, string, time.Time,
+		int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+		return cell, nil
+	case []byte:
+		return append([]byte{}, cell...), nil
+	default:
+		return nil, fmt.Errorf("unsupported physical cell type %T", value)
 	}
 }
