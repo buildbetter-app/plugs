@@ -197,7 +197,7 @@ func publishSelectionPartialBatch(t *testing.T, s *Store, lease driver.ActiveLea
 	}
 	started := time.Now()
 	timing := newSelectionCommitTiming(lease.(*activeLease), started)
-	_, err := w.Commit(context.WithValue(ctx, selectionCommitTimingKey{}, timing), h)
+	_, err = w.Commit(context.WithValue(ctx, selectionCommitTimingKey{}, timing), h)
 	timing.log(t, offset, time.Since(started), err)
 	if err != nil {
 		t.Fatalf("ordinary three-family Commit offset=%d count=%d: %v", offset, count, err)

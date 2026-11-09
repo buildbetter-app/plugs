@@ -296,7 +296,7 @@ func publishSelectionCensusBatch(t *testing.T, s *Store, lease driver.ActiveLeas
 		timing = newSelectionCommitTiming(lease.(*activeLease), started)
 		commitCtx = context.WithValue(ctx, selectionCommitTimingKey{}, timing)
 	}
-	_, err := tx.Commit(commitCtx, h)
+	_, err = tx.Commit(commitCtx, h)
 	elapsed := time.Since(started)
 	if timing != nil {
 		// Observe and log after Commit even on failure, before Fatal exits this
