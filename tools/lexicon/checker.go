@@ -67,6 +67,7 @@ type Config struct {
 	NativeFieldLiterals     []NativeLiteralSite
 	NativeRecordingLiterals NativeControlAllowance
 	NativeViewStrings       NativeControlAllowance
+	NativeB07SQL            NativeControlAllowance
 }
 
 const externalProtocolSource = "spec/s1-b25-b28/public_recording_test.go"
@@ -77,6 +78,7 @@ const b03CatalogJSONSource = "internal/integration/b03catalog/native_catalog_inp
 
 const nativeRecordingLiteralSource = "spec/s1-b21-b24/native_recording_test.go"
 const nativeViewProtocolSource = "spec/s1-b21-b24/native_views_test.go"
+const nativeB07SQLSource = "spec/s1-b05-b08/native_recording_b07_test.go"
 
 const externalEnvironmentDigest = "1b48d14732a1b4689f7af2d622235e53ddf1703e7043985592e66b0d1ecf4eff"
 
@@ -114,6 +116,10 @@ var nativeViewProtocolDigests = map[string]bool{
 	"93602e05a1bff1bd127187c713caaeab338848eb4a6cba051123440a912cdf26": true,
 }
 
+var nativeB07SQLDigests = map[string]bool{
+	"05f7070262ef8957384053d4a068544ffcd926410dee503ae28d17946367d419": true,
+}
+
 func protocolLiteralDigest(value string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(value)))
 }
@@ -148,6 +154,8 @@ func nativeControlAllowance(path string, cfg Config) (NativeControlAllowance, ma
 		return cfg.NativeRecordingLiterals, nativeRecordingLiteralDigests, true
 	case nativeViewProtocolSource:
 		return cfg.NativeViewStrings, nativeViewProtocolDigests, true
+	case nativeB07SQLSource:
+		return cfg.NativeB07SQL, nativeB07SQLDigests, true
 	default:
 		return NativeControlAllowance{}, nil, false
 	}
@@ -203,6 +211,7 @@ func LoadConfig(path string) (Config, error) {
 	var manifestSection, manifestPath, manifestValues bool
 	var recordingSection, recordingPath, recordingValues bool
 	var viewSection, viewPath, viewValues bool
+	var b07Section, b07Path, b07Value bool
 	var nativeSite *NativeLiteralSite
 	var nativeFields map[string]bool
 	for _, line := range strings.Split(string(b), "\n") {
@@ -242,6 +251,14 @@ func LoadConfig(path string) (Config, error) {
 			}
 			viewSection = true
 			section = "native_view_strings"
+			current = nil
+			continue
+		case "[native_b07_sql]":
+			if b07Section {
+				return Config{}, errors.New("duplicate native B07 SQL section")
+			}
+			b07Section = true
+			section = "native_b07_sql"
 			current = nil
 			continue
 		case "[native_manifest_strings]":
@@ -296,6 +313,28 @@ func LoadConfig(path string) (Config, error) {
 		values, err := quotedValues(value)
 		if err != nil {
 			return Config{}, fmt.Errorf("lexicon %s: %w", key, err)
+		}
+		if section == "native_b07_sql" {
+			if !strings.HasPrefix(value, "\"") || len(values) != 1 {
+				return Config{}, errors.New("native B07 SQL fields require one quoted scalar")
+			}
+			switch key {
+			case "path":
+				if b07Path || values[0] != nativeB07SQLSource {
+					return Config{}, errors.New("native B07 SQL requires its exact source path")
+				}
+				b07Path = true
+				cfg.NativeB07SQL.Path = values[0]
+			case "value":
+				if b07Value || !nativeB07SQLDigests[protocolLiteralDigest(values[0])] {
+					return Config{}, errors.New("native B07 SQL requires its exact decoded literal")
+				}
+				b07Value = true
+				cfg.NativeB07SQL.Values = values
+			default:
+				return Config{}, fmt.Errorf("unknown native B07 SQL key: %s", key)
+			}
+			continue
 		}
 		if section == "zones" && key == "provenance" {
 			cfg.Provenance = values
@@ -441,6 +480,9 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if recordingSection && (!recordingPath || !recordingValues) || viewSection && (!viewPath || !viewValues) {
 		return Config{}, errors.New("native control literals lack their exact path or complete set")
+	}
+	if b07Section && (!b07Path || !b07Value) {
+		return Config{}, errors.New("native B07 SQL lacks its exact path or literal")
 	}
 	if manifestSection && (!manifestPath || !manifestValues) {
 		return Config{}, errors.New("native manifest strings lack their exact path or literal set")
