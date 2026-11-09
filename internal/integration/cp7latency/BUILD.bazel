@@ -34,17 +34,39 @@ go_test(
     deps = _DEPS,
 )
 
-# Dense semantic completions are separate from the unchanged timed matrix.
+# Keep the semantic/correctness controls in ordinary //... at the smallest
+# corpus that still proves the ordinary 20k candidate cap. The full 100k
+# version remains an explicit manual lane below; it is the heavy dense work
+# that previously stretched every ordinary main-CI run.
 go_test(
     name = "cp7_dense_semantics_test",
     srcs = _COMMON + ["dense_summary_test.go"],
-    args = ["-test.timeout=150m"],
     data = ["workload.json"],
     embedsrcs = ["workload.json"],
-    size = "enormous",
-    timeout = "eternal",
+    env = {"CP7_DENSE_CORPUS_SIZE": "20001"},
+    size = "large",
     deps = _DEPS,
 )
+
+# The original full-density semantic controls are retained unchanged and run
+# by the scheduled/on-demand latency workflow. One target per engine keeps the
+# selection evidence explicit and prevents a manual target from being pulled
+# into ordinary //... expansion.
+[
+    go_test(
+        name = "cp7_dense_semantics_" + engine + "_test",
+        srcs = _COMMON + ["dense_summary_test.go"],
+        args = ["-test.timeout=150m"],
+        data = ["workload.json"],
+        embedsrcs = ["workload.json"],
+        env = {"CP7_DENSE_CORPUS_SIZE": "100000", "CP7_DENSE_ENGINE": engine},
+        size = "enormous",
+        tags = ["manual"],
+        timeout = "eternal",
+        deps = _DEPS,
+    )
+    for engine in ["sqlite", "postgres"]
+]
 
 # These two tests always execute all three fractions and all three operations.
 # Their explicit timeouts cover 24 attempts/case at the unchanged 30s request
@@ -72,6 +94,8 @@ test_suite(
     tests = [
         ":cp7_correctness_test",
         ":cp7_dense_semantics_test",
+        ":cp7_dense_semantics_postgres_test",
+        ":cp7_dense_semantics_sqlite_test",
         ":cp7_latency_postgres_test",
         ":cp7_latency_sqlite_test",
     ],
