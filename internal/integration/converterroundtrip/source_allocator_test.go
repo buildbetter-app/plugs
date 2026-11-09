@@ -100,7 +100,10 @@ func TestJointSourceAllocatorReservesActiveAndTerminalAliasesAcrossThreeStores(t
 		}
 		return id
 	}
-	aliases := []string{candidate(0), candidate(1), "demo-8.1"}
+	// The imported demo-8 is closed. Exercise child allocation under the
+	// unchanged, nonterminal imported child while retaining that closed guard.
+	const parentID = "demo-7.4"
+	aliases := []string{candidate(0), candidate(1), parentID + ".1"}
 	data := jointAllocatorFixture(t, aliases)
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
@@ -153,6 +156,7 @@ func TestJointSourceAllocatorReservesActiveAndTerminalAliasesAcrossThreeStores(t
 			policy.deny = false
 			bad := model.ChangeSet{Ops: []model.Op{create, {Kind: model.OpPatch, Patch: &model.PatchOp{Target: ref("missing"), Fields: map[string]any{"title": "refused after allocation"}}}}}
 			sourcePublicCall(t, server, actor, "tx.apply", 602, map[string]any{"changeSet": bad}, "not_found")
+			sourcePublicCall(t, server, actor, "bead.create", 608, map[string]any{"type": "issue", "parent": ref("demo-8"), "fields": map[string]any{"title": "refused under closed parent"}}, "ontology_guard_failed")
 			if !reflect.DeepEqual(before, savedLabelImport(t, store, report.Archive, p, "")) || !reflect.DeepEqual(sourceBefore, checkpoint()) {
 				t.Fatal("refused allocation changed records, history, receipts, blobs or source checkpoint")
 			}
@@ -171,11 +175,11 @@ func TestJointSourceAllocatorReservesActiveAndTerminalAliasesAcrossThreeStores(t
 			if len(rootCommit.Results) != 2 || rootCommit.Results[0].Ref.ID != candidate(2) {
 				t.Fatalf("active-only source identities did not advance the hash nonce: %+v", rootCommit)
 			}
-			parent := ref("demo-8")
+			parent := ref(parentID)
 			child := sourcePublicCall(t, server, actor, "bead.create", 605, map[string]any{"type": "issue", "parent": parent, "fields": map[string]any{"title": "child after restored alias"}}, "")
 			var childCommit model.Commit
 			decode(t, child.Result, &childCommit)
-			if len(childCommit.Results) != 1 || childCommit.Results[0].Ref.ID != "demo-8.2" || !reflect.DeepEqual(sourceBefore, checkpoint()) {
+			if len(childCommit.Results) != 1 || childCommit.Results[0].Ref.ID != parentID+".2" || !reflect.DeepEqual(sourceBefore, checkpoint()) {
 				t.Fatal("active child alias was reused or ordinary allocation changed source state", childCommit)
 			}
 			// Completion removes the current active target, but its original
