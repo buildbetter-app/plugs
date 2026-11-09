@@ -168,11 +168,24 @@ func importedIneligibleMemory(record driver.Record) bool {
 	var raw map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(record.Body))
 	decoder.UseNumber()
-	if decoder.Decode(&raw) != nil || !errors.Is(decoder.Decode(new(any)), io.EOF) || len(raw) != 6 || record.Kind != "memory" {
+	if decoder.Decode(&raw) != nil || !errors.Is(decoder.Decode(new(any)), io.EOF) || record.Kind != "memory" {
 		return false
 	}
 	id, ok := raw["source_id"].(string)
-	if !ok || id == "" || raw["key"] != id || raw["source_table"] != "config" || record.Ref.ID != "source/memory/"+id || !record.Ref.Branch.IsZero() {
+	if !ok || id == "" || raw["key"] != id || raw["source_table"] != "config" || !record.Ref.Branch.IsZero() {
+		return false
+	}
+	wantID := "source/memory/" + id
+	if project, present := raw["source_project"]; present {
+		name, ok := project.(string)
+		if !ok || len(raw) != 7 {
+			return false
+		}
+		wantID = driver.SourcePlaneMirrorIDV1("memory", name, "config", id)
+	} else if len(raw) != 6 {
+		return false
+	}
+	if record.Ref.ID != wantID {
 		return false
 	}
 	source, ok := raw["source"].(map[string]any)

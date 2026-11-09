@@ -18,6 +18,15 @@ const (
 	sourcePlaneDigestDomain   = "plug.restore.source-planes.joint-plan/1"
 )
 
+// SourcePlaneMirrorIDV1 identifies a retained auxiliary source record using
+// all physical identity components. It does not change the source address.
+// Restore and public readers share this framing, including an empty project.
+func SourcePlaneMirrorIDV1(kind, project, table, id string) string {
+	key, _ := json.Marshal([]string{kind, project, table, id})
+	sum := sha256.Sum256(key)
+	return "source/" + kind + "/" + hex.EncodeToString(sum[:])
+}
+
 // EncodeSourcePlanePlanV1 encodes only the closed SourcePlanePlanV1 schema,
 // in declaration order. Strings are valid UTF-8, not normalized. Byte strings
 // are length-delimited and every list count is uint64 big endian. Optional

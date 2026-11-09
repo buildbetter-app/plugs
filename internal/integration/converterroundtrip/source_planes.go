@@ -193,8 +193,7 @@ func sourcePlaneMirrorID(source dumpformat.Record, joint bool) string {
 	if !joint {
 		return "source/" + source.Kind + "/" + source.ID
 	}
-	key, _ := json.Marshal([]string{source.Kind, source.Project, source.Source.Table, source.ID})
-	return "source/" + source.Kind + "/" + hashBytes(key)
+	return driver.SourcePlaneMirrorIDV1(source.Kind, source.Project, source.Source.Table, source.ID)
 }
 
 func validateSourceCoreMappings(archive *dumpformat.Archive, plan driver.SourcePlanePlanV1) error {
