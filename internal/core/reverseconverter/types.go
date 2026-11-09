@@ -121,7 +121,7 @@ type CommentProjection struct {
 
 type MemoryProjection struct {
 	Key   string `json:"key"`
-	Value string `json:"value"`
+	Value any    `json:"value"`
 }
 
 // TypeMapping records an explicit ontology map_type directive that authorized

@@ -496,6 +496,7 @@ internal/integration/converterroundtrip/history.go
 internal/integration/converterroundtrip/identity_counters_test.go
 internal/integration/converterroundtrip/image.go
 internal/integration/converterroundtrip/import_test.go
+internal/integration/converterroundtrip/imported_memory_public_test.go
 internal/integration/converterroundtrip/label_projection_test.go
 internal/integration/converterroundtrip/labels.go
 internal/integration/converterroundtrip/native_restore_test.go
@@ -1423,6 +1424,10 @@ spec/s1-b13-b16/comment_page_test.go
 spec/s1-b13-b16/record_reference.py
 spec/s1-b13-b16/reference_capture.py
 spec/s1-b13-b16/slice_test.go
+spec/s1-b13-native/BUILD.bazel
+spec/s1-b13-native/README.md
+spec/s1-b13-native/oracle_test.go
+spec/s1-b13-native/recording_test.go
 spec/s1-b17-b20/BUILD.bazel
 spec/s1-b17-b20/README.md
 spec/s1-b17-b20/b17_test.go

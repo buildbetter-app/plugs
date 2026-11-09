@@ -161,12 +161,14 @@ func projectLiveDump(ctx context.Context, reader driver.Reader, dump *reversecon
 		return ReverseRefusal{"invalid_source_evidence"}
 	}
 	delete(live, "restore/archive")
+	imported := false
 	if binding, ok := live[importBindingRecordID]; ok {
 		var evidence importBindingEvidence
 		if binding.Kind != "instance_config" || json.Unmarshal(binding.Body, &evidence) != nil ||
 			evidence.Profile.ArchiveDigest != archiveBinding.ArchiveSHA256 || string(evidence.Profile.SourceStoreID) != dump.Manifest.StoreID {
 			return ReverseRefusal{"invalid_import_binding"}
 		}
+		imported = true
 		if evidence.Profile.HistoryDigest != "" {
 			marker, ok := live[driver.OfflineHistoryEvidenceID]
 			if !ok || marker.Kind != "beads-archive" || validateReverseHistory(ctx, reader, evidence, archiveBinding, marker) != nil {
@@ -207,6 +209,16 @@ func projectLiveDump(ctx context.Context, reader driver.Reader, dump *reversecon
 			}
 			want := cloneRow(source.Body)
 			want["source_id"], want["source_table"], want["source"] = source.ID, source.Source.Table, source.Source.Fields
+			// The public imported-memory view is canonical, while the retained
+			// source row remains authoritative for lossless reverse conversion.
+			if imported && kind == "memory" && source.Body["classification"] == "public" {
+				if content, ok := source.Body["value"].(string); ok {
+					want = map[string]any{"id": id, "key": strings.TrimSpace(stringValue(source.Body["key"])), "content": content, "metadata": map[string]any{
+						"plug.restore.source_id": source.ID, "plug.restore.source_table": source.Source.Table, "plug.restore.source": source.Source.Fields,
+						"plug.restore.archive_sha256": archiveBinding.ArchiveSHA256,
+					}}
+				}
+			}
 			var got map[string]any
 			if decodeReverseJSON(row.Body, &got) != nil || !sameReverseJSON(want, got) {
 				return ReverseRefusal{"changed_source_mirror"}
