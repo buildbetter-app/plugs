@@ -160,7 +160,12 @@ func (s *Service) apply(ctx context.Context, by model.PrincipalRef, method strin
 			return port.WriteOutcome{}, failure("unsupported", "writer lacks atomic workflow delete capability")
 		}
 		var preview map[int]model.OpResult
-		v, err := writer.ApplyWithSourceOperations(ctx, by, cs, meta, s.ordinaryDeletePreparation(by, cs, meta, &preview), ordinaryDeleteKind)
+		v, err := writer.ApplyWithSourceOperations(ctx, by, cs, meta, s.ordinaryDeletePreparation(by, cs, meta, &preview), func(ref model.Ref) string {
+			if s.source.Load() != nil && workflowRef(ref) {
+				return "workflow_item"
+			}
+			return ordinaryDeleteKind(ref)
+		})
 		if err == nil {
 			if meta.DryRun {
 				for position, result := range preview {

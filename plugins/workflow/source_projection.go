@@ -397,6 +397,10 @@ func (p *Provider) ResolveSourceRef(ctx context.Context, by model.PrincipalRef, 
 	if err != nil {
 		return model.Ref{}, false, err
 	}
+	return p.resolveSourceRefIn(value, by, project, sourceID, meta)
+}
+
+func (p *Provider) resolveSourceRefIn(value persisted, by model.PrincipalRef, project, sourceID string, meta model.WriteMeta) (model.Ref, bool, error) {
 	if value.Source == nil || value.Source.Schema != SourceStateSchema {
 		return model.Ref{}, false, sourceRefusal("missing restored source image")
 	}

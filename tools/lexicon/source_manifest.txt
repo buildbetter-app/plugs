@@ -527,6 +527,7 @@ internal/integration/converterroundtrip/roundtrip_test.go
 internal/integration/converterroundtrip/source_authz_test.go
 internal/integration/converterroundtrip/source_checkpoint_test.go
 internal/integration/converterroundtrip/source_composition_test.go
+internal/integration/converterroundtrip/source_delete_test.go
 internal/integration/converterroundtrip/source_planes.go
 internal/integration/converterroundtrip/source_planes_recovery.go
 internal/integration/converterroundtrip/source_planes_reverse.go
