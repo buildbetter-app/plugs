@@ -23,6 +23,28 @@ var errStale = errors.New("pipeline stale snapshot")
 var keyPattern = regexp.MustCompile(`(?i)^(?:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|[0-7][0-9A-HJKMNP-TV-Z]{25})$`)
 var uuidLike = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
+type preparationDeadlineKey struct{}
+
+// WithPreparationDeadline lets a selection operation share one preparation
+// budget across candidate writes. It only narrows the Writer's existing budget;
+// the caller context still owns response delivery after publication.
+func WithPreparationDeadline(ctx context.Context, deadline time.Time) context.Context {
+	if current, ok := ctx.Value(preparationDeadlineKey{}).(time.Time); ok && current.Before(deadline) {
+		return ctx
+	}
+	return context.WithValue(ctx, preparationDeadlineKey{}, deadline)
+}
+
+// PreparationContext bounds selection and Writer preparation by the same
+// deadline, including when a guarded service delegates to the core service.
+func PreparationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	deadline := time.Now().Add(2 * time.Second)
+	if shared, ok := ctx.Value(preparationDeadlineKey{}).(time.Time); ok && shared.Before(deadline) {
+		deadline = shared
+	}
+	return context.WithDeadline(ctx, deadline)
+}
+
 func validKey(key string) bool {
 	if keyPattern.MatchString(key) {
 		return true
@@ -133,7 +155,7 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 	if err != nil {
 		return port.WriteOutcome{}, failure("invalid_params", err.Error())
 	}
-	preCtx, cancel := context.WithTimeout(context.WithValue(ctx, preparationCallerKey{}, ctx), 2*time.Second)
+	preCtx, cancel := PreparationContext(context.WithValue(ctx, preparationCallerKey{}, ctx))
 	defer cancel()
 	preCtx = driver.WithPreparationAdmission(preCtx)
 	for attempt := 0; attempt <= 3; attempt++ {

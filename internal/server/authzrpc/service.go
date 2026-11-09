@@ -12,6 +12,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
@@ -484,7 +485,7 @@ func workflowItemRef(ref model.Ref) bool {
 // ClaimNextWithOutcome keeps queue candidates visible to an Agent by applying
 // the modify permit to each ready bead. Guarded Ready intentionally uses read
 // authorization and therefore cannot be reused for this write operation.
-func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRef, req service.ClaimNextRequest, meta model.WriteMeta) (*port.WriteOutcome, error) {
+func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRef, req service.ClaimNextRequest, meta model.WriteMeta) (outcome *port.WriteOutcome, retErr error) {
 	if s == nil || s.delegate == nil || s.checker == nil {
 		return nil, &model.Error{Message: "authorization service is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
 	}
@@ -496,6 +497,17 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 	meta.Method = "bead.claimNext"
 	meta.Project = req.Project
 	selectionSeed := service.ClaimNextSelectionSeed(identity, meta.IdempotencyKey)
+	// Authorization reads and candidate races share the Writer's preparation
+	// budget. Keep the caller context for committed responses and replay fences.
+	selectionCtx, cancelSelection := pipeline.PreparationContext(ctx)
+	defer cancelSelection()
+	deadline, _ := selectionCtx.Deadline()
+	ctx = pipeline.WithPreparationDeadline(ctx, deadline)
+	defer func() {
+		if outcome == nil && errors.Is(retErr, context.DeadlineExceeded) && selectionCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+			retErr = &model.Error{Data: model.ErrorData{Code: "busy", Hint: "claimNext pre phases exceeded their deadline", Retryable: true}}
+		}
+	}()
 	if by.Kind != "anonymous" {
 		meta.AgentLabel = ""
 	} else if meta.AgentLabel == "" {
@@ -506,11 +518,11 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 		if err != nil {
 			return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params"}}
 		}
-		reader, _, closeReader, err := s.current(ctx, nil)
+		reader, _, closeReader, err := s.current(selectionCtx, nil)
 		if err != nil {
 			return nil, err
 		}
-		entry, lookupErr := reader.IdempotencyByKey(ctx, principal, meta.AgentLabel, "bead.claimNext", meta.IdempotencyKey)
+		entry, lookupErr := reader.IdempotencyByKey(selectionCtx, principal, meta.AgentLabel, "bead.claimNext", meta.IdempotencyKey)
 		if lookupErr != nil {
 			closeReader()
 			return nil, lookupErr
@@ -548,11 +560,17 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 	conflictRestarts := 0
 walk:
 	for {
-		page, err := s.claimPage(ctx, by, service.ReadyRequest{Project: req.Project, Agent: meta.AgentLabel, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position, ClaimNextSeed: selectionSeed})
+		if err := selectionCtx.Err(); err != nil {
+			return nil, err
+		}
+		page, err := s.claimPage(selectionCtx, by, service.ReadyRequest{Project: req.Project, Agent: meta.AgentLabel, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position, ClaimNextSeed: selectionSeed})
 		if err != nil {
 			return nil, err
 		}
 		for _, bead := range page.Items {
+			if err := selectionCtx.Err(); err != nil {
+				return nil, err
+			}
 			ref := model.RefByID(bead.ID, model.Natural64(0))
 			if workflowItemRef(ref) {
 				candidateMeta := meta
@@ -566,11 +584,11 @@ walk:
 				}
 				continue
 			}
-			_, snapshot, closeReader, err := s.current(ctx, &service.AsOf{Revision: page.AsOf.Revision, Incarnation: page.AsOf.Incarnation})
+			_, snapshot, closeReader, err := s.current(selectionCtx, &service.AsOf{Revision: page.AsOf.Revision, Incarnation: page.AsOf.Incarnation})
 			if err != nil {
 				return nil, err
 			}
-			allowed, decisionErr := s.checker.modifyDecision(ctx, snapshot, by, "bead.claimNext", ref)
+			allowed, decisionErr := s.checker.modifyDecision(selectionCtx, snapshot, by, "bead.claimNext", ref)
 			closeReader()
 			if decisionErr != nil {
 				return nil, decisionErr
@@ -600,7 +618,7 @@ walk:
 			// Refresh a raced page when competing commits changed its head.
 			// With an unchanged head, keep walking past locked candidates so
 			// a full front cannot hide a later permitted winner.
-			current, err := s.checker.store.Meta(ctx)
+			current, err := s.checker.store.Meta(selectionCtx)
 			if err != nil {
 				return nil, err
 			}

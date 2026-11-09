@@ -14,6 +14,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/plugins/authnapikey"
 	"github.com/buildbetter-app/plugs/internal/plugins/authzfixed"
@@ -84,6 +85,69 @@ func newWorkflowClaimNextFixture(t *testing.T) *workflowClaimNextFixture {
 
 func workflowClaimNextMeta(method string, key int) model.WriteMeta {
 	return model.WriteMeta{Method: method, Project: "project", Agent: "client-label", IdempotencyKey: fmt.Sprintf("%032x", key)}
+}
+
+func TestGuardedClaimNextSelectionBudgetPreservesRetryAndCaller(t *testing.T) {
+	for _, inherited := range []bool{false, true} {
+		t.Run(fmt.Sprintf("inherited=%t", inherited), func(t *testing.T) {
+			f := newWorkflowClaimNextFixture(t)
+			items := f.invoke(t, 910, 1)
+			before, err := json.Marshal(workflowWriteCheckpoint(t, f))
+			if err != nil {
+				t.Fatal(err)
+			}
+			caller, stop := context.WithTimeout(context.Background(), 5*time.Second)
+			defer stop()
+			ctx := caller
+			var shared time.Time
+			if inherited {
+				shared = time.Now().Add(time.Second)
+				ctx = pipeline.WithPreparationDeadline(ctx, shared)
+			}
+			page := f.app.Service.claimNextPage
+			var observed time.Time
+			f.app.Service.claimNextPage = func(ctx context.Context, _ model.PrincipalRef, _ service.ReadyRequest) (service.BeadPage, error) {
+				observed, _ = ctx.Deadline()
+				<-ctx.Done()
+				return service.BeadPage{}, ctx.Err()
+			}
+			meta := workflowClaimNextMeta("bead.claimNext", 911)
+			req := service.ClaimNextRequest{Project: "project"}
+			out, err := f.app.Service.ClaimNextWithOutcome(ctx, f.by, req, meta)
+			var typed *model.Error
+			after, marshalErr := json.Marshal(workflowWriteCheckpoint(t, f))
+			callerDeadline, _ := caller.Deadline()
+			if out != nil || !errors.As(err, &typed) || typed.Data.Code != "busy" || !typed.Data.Retryable || caller.Err() != nil || !observed.Before(callerDeadline) || marshalErr != nil || !bytes.Equal(before, after) {
+				t.Fatalf("guarded selection lost bounded retry/conservation: outcome=%v error=%v caller=%v preparation=%s checkpointError=%v", out, err, caller.Err(), observed, marshalErr)
+			}
+			if inherited && !observed.Equal(shared) {
+				t.Fatalf("guarded selection restarted inherited budget: got=%s want=%s", observed, shared)
+			}
+			f.app.Service.claimNextPage = page
+			first, err := f.app.Service.ClaimNextWithOutcome(caller, f.by, req, meta)
+			if err != nil || first == nil || first.Replayed || len(first.Commit.Results) != 1 || first.Commit.Results[0].Ref.ID != items[0].ID {
+				t.Fatalf("busy response prevented same-key retry: outcome=%v error=%v", first, err)
+			}
+			replayed, err := f.app.Service.ClaimNextWithOutcome(caller, f.by, req, meta)
+			if err != nil || replayed == nil || !replayed.Replayed || len(replayed.Commit.Results) != 1 || replayed.Commit.Results[0].Ref.ID != first.Commit.Results[0].Ref.ID {
+				t.Fatalf("same-key retry lost its single winner: outcome=%v error=%v", replayed, err)
+			}
+		})
+	}
+}
+
+func TestGuardedClaimNextPreparationDoesNotMaskCallerExpiry(t *testing.T) {
+	f := newWorkflowClaimNextFixture(t)
+	f.app.Service.claimNextPage = func(ctx context.Context, _ model.PrincipalRef, _ service.ReadyRequest) (service.BeadPage, error) {
+		<-ctx.Done()
+		return service.BeadPage{}, ctx.Err()
+	}
+	caller, stop := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer stop()
+	out, err := f.app.Service.ClaimNextWithOutcome(caller, f.by, service.ClaimNextRequest{Project: "project"}, workflowClaimNextMeta("bead.claimNext", 912))
+	if out != nil || !errors.Is(err, context.DeadlineExceeded) || caller.Err() != context.DeadlineExceeded {
+		t.Fatalf("preparation masked the caller's actual deadline: outcome=%v error=%v caller=%v", out, err, caller.Err())
+	}
 }
 
 func (f *workflowClaimNextFixture) invoke(t *testing.T, key int, count int) []workflowplugin.ItemView {

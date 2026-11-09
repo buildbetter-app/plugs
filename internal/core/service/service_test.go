@@ -31,6 +31,58 @@ type fixture struct {
 	now    time.Time
 }
 
+type claimNextSelectionDeadlineStore struct {
+	driver.Store
+	reads   int
+	blocked bool
+}
+
+func (s *claimNextSelectionDeadlineStore) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
+	s.reads++
+	if s.reads == 2 {
+		s.blocked = true
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return s.Store.Read(ctx, view)
+}
+
+func TestClaimNextSelectionBudgetReturnsBusyBeforeCallerExpiryAndReplays(t *testing.T) {
+	f := setup(t)
+	_, _ = create(t, f, "claim preparation budget")
+	before, err := f.store.Meta(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &claimNextSelectionDeadlineStore{Store: f.store}
+	f.svc.store = store
+	caller, stop := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stop()
+	m := meta(t)
+	req := ClaimNextRequest{Project: "local"}
+	out, err := f.svc.ClaimNextWithOutcome(caller, anonymous, req, m)
+	wantCode(t, err, "busy")
+	var typed *model.Error
+	after, metaErr := f.store.Meta(context.Background())
+	if out != nil || !store.blocked || caller.Err() != nil || !errors.As(err, &typed) || !typed.Data.Retryable || metaErr != nil || after.Head != before.Head {
+		t.Fatalf("selection budget lost bounded retry/conservation: outcome=%v blocked=%t caller=%v error=%v head=%s/%s meta=%v", out, store.blocked, caller.Err(), err, before.Head, after.Head, metaErr)
+	}
+	f.svc.store = f.store
+	first, err := f.svc.ClaimNextWithOutcome(caller, anonymous, req, m)
+	if err != nil || first == nil || len(first.Commit.Results) != 1 {
+		t.Fatalf("bounded refusal prevented same-key claim retry: outcome=%v error=%v", first, err)
+	}
+	replayed, err := f.svc.ClaimNextWithOutcome(caller, anonymous, req, m)
+	if err != nil || replayed == nil || !replayed.Replayed || replayed.Commit.Revision != first.Commit.Revision {
+		t.Fatalf("same-key claim retry did not replay one winner: outcome=%v error=%v", replayed, err)
+	}
+	after, err = f.store.Meta(context.Background())
+	n, _ := before.Head.Uint64()
+	if err != nil || after.Head != model.Natural64(n+1) {
+		t.Fatalf("bounded retry/replay published more than one claim: head=%s error=%v", after.Head, err)
+	}
+}
+
 func setup(t *testing.T, options ...pipeline.Option) *fixture {
 	t.Helper()
 	f := &fixture{store: memory.New(), now: time.Date(2026, 10, 29, 9, 0, 0, 0, time.UTC)}

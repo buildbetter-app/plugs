@@ -456,7 +456,7 @@ func (s *Service) claim(ctx context.Context, by model.PrincipalRef, req ClaimReq
 // lose its claim race while the queue is being walked; those ordinary races
 // advance to the next candidate. NullResult retains the cataloged JSON-null
 // outcome and its replay metadata when the ready set is empty at commit.
-func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRef, req ClaimNextRequest, meta model.WriteMeta) (*port.WriteOutcome, error) {
+func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRef, req ClaimNextRequest, meta model.WriteMeta) (outcome *port.WriteOutcome, retErr error) {
 	if err := s.admit(ctx, by); err != nil {
 		return nil, err
 	}
@@ -474,6 +474,18 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 	meta.Method = "bead.claimNext"
 	meta.Project = req.Project
 	selectionSeed := ClaimNextSelectionSeed(identity, meta.IdempotencyKey)
+	// Candidate races must not restart the preparation budget. Keep selection
+	// and every candidate's Writer preparation inside the same two seconds,
+	// while retaining the original caller context for a committed response.
+	selectionCtx, cancelSelection := pipeline.PreparationContext(ctx)
+	defer cancelSelection()
+	deadline, _ := selectionCtx.Deadline()
+	ctx = pipeline.WithPreparationDeadline(ctx, deadline)
+	defer func() {
+		if outcome == nil && errors.Is(retErr, context.DeadlineExceeded) && selectionCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+			retErr = failure("busy", "claimNext pre phases exceeded their deadline")
+		}
+	}()
 	if by.Kind != "anonymous" {
 		meta.AgentLabel = ""
 	} else if meta.AgentLabel == "" {
@@ -488,11 +500,11 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 		if err != nil {
 			return nil, failure("invalid_params", "invalid principal")
 		}
-		reader, err := s.reader(ctx, by, nil)
+		reader, err := s.reader(selectionCtx, by, nil)
 		if err != nil {
 			return nil, err
 		}
-		entry, lookupErr := reader.IdempotencyByKey(ctx, principal, meta.AgentLabel, "bead.claimNext", meta.IdempotencyKey)
+		entry, lookupErr := reader.IdempotencyByKey(selectionCtx, principal, meta.AgentLabel, "bead.claimNext", meta.IdempotencyKey)
 		_ = reader.Close()
 		if lookupErr != nil {
 			return nil, mapped(lookupErr)
@@ -532,11 +544,17 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 	conflictRestarts := 0
 walk:
 	for {
-		page, err := s.ClaimNextReadyPage(ctx, by, ReadyRequest{Project: req.Project, Agent: meta.AgentLabel, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position, ClaimNextSeed: selectionSeed})
+		if err := selectionCtx.Err(); err != nil {
+			return nil, err
+		}
+		page, err := s.ClaimNextReadyPage(selectionCtx, by, ReadyRequest{Project: req.Project, Agent: meta.AgentLabel, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position, ClaimNextSeed: selectionSeed})
 		if err != nil {
 			return nil, err
 		}
 		for _, bead := range page.Items {
+			if err := selectionCtx.Err(); err != nil {
+				return nil, err
+			}
 			candidateMeta := meta
 			candidateMeta.Method = "bead.claimNext"
 			var out port.WriteOutcome
@@ -565,7 +583,7 @@ walk:
 			// A race may retire many candidates from this fetched page. Once
 			// its head changes, use the live pager's existing revision restart
 			// instead of preparing the remaining obsolete candidates one by one.
-			current, err := s.store.Meta(ctx)
+			current, err := s.store.Meta(selectionCtx)
 			if err != nil {
 				return nil, mapped(err)
 			}

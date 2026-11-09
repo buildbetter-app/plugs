@@ -25,6 +25,56 @@ type admissionDeadlineStore struct {
 	opened, closed int
 }
 
+type sharedPreparationDeadlineStore struct {
+	*memory.Store
+	observed time.Time
+}
+
+func (s *sharedPreparationDeadlineStore) Meta(ctx context.Context) (driver.Meta, error) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return driver.Meta{}, errors.New("preparation omitted its deadline")
+	}
+	s.observed = deadline
+	<-ctx.Done()
+	return driver.Meta{}, ctx.Err()
+}
+
+func TestSharedPreparationDeadlinePreservesCallerAndRetry(t *testing.T) {
+	h := setup(t)
+	w := h.writer()
+	store := &sharedPreparationDeadlineStore{Store: h.store}
+	w.store = store
+	caller, stop := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stop()
+	deadline := time.Now().Add(time.Second)
+	ctx := WithPreparationDeadline(caller, deadline)
+	ctx = WithPreparationDeadline(ctx, deadline.Add(time.Hour))
+	callerDeadline, _ := caller.Deadline()
+	if got, _ := ctx.Deadline(); !got.Equal(callerDeadline) {
+		t.Fatal("preparation annotation changed the caller response deadline")
+	}
+	cs, m := model.ChangeSet{Ops: []model.Op{create("")}}, meta(710)
+	_, err := w.Apply(ctx, by, cs, m)
+	code(t, err, "busy")
+	if !store.observed.Equal(deadline) || caller.Err() != nil {
+		t.Fatalf("preparation restarted or consumed caller budget: observed=%s shared=%s caller=%v", store.observed, deadline, caller.Err())
+	}
+	r := h.read(t)
+	changes, readErr := r.Changesets(caller, nil, 100)
+	principal, _ := driver.PrincipalKey(by)
+	entry, receiptErr := r.IdempotencyByKey(caller, principal, "", m.Method, m.IdempotencyKey)
+	if readErr != nil || receiptErr != nil || !r.Snapshot().At.IsZero() || len(changes) != 0 || entry != nil {
+		t.Fatalf("shared-budget expiry published state: head=%s changes=%v receipt=%v errors=%v/%v", r.Snapshot().At, changes, entry, readErr, receiptErr)
+	}
+	_ = r.Close()
+	w.store = h.store
+	first := apply(t, w, cs, m)
+	replayed := apply(t, w, cs, m)
+	assertSameResponses(t, applyResult{commit: first}, applyResult{commit: replayed})
+	assertSingleGraphWrite(t, h, first)
+}
+
 func (s *admissionDeadlineStore) Meta(ctx context.Context) (driver.Meta, error) {
 	if s.stage == "metadata" {
 		return driver.Meta{}, fmt.Errorf("metadata admission: %w", s.failure)
