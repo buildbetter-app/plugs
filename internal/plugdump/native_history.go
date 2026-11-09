@@ -162,8 +162,18 @@ func nativeTable(table Table, family string, policy map[string]string) (NativeTa
 			return result, err
 		}
 		values := map[string]any(row)
-		if family == "local_metadata" {
-			values = map[string]any{text(row, "key"): row["value"]}
+		if family == "config" || family == "metadata" || family == "local_metadata" {
+			// `key` names a SQL column, not a credential. Inspect the stored
+			// setting name and its value, as the ordinary source reader does.
+			if err := validateSecretReferences(map[string]any{text(row, "key"): row["value"]}); err != nil {
+				return result, err
+			}
+			values = map[string]any{}
+			for column, value := range row {
+				if column != "key" && column != "value" {
+					values[column] = value
+				}
+			}
 		}
 		if err := validateSecretReferences(values); err != nil {
 			return result, err

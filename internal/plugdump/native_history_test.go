@@ -171,6 +171,38 @@ func TestNativeHistoryConservesLeasesAndMachineLocalRows(t *testing.T) {
 	}
 }
 
+func TestNativeRawKeyValueCredentialPolicyIsPreserved(t *testing.T) {
+	for _, family := range []string{"config", "metadata", "local_metadata"} {
+		t.Run(family, func(t *testing.T) {
+			public := Row{"key": "public_setting", "value": "public value"}
+			ref := Row{"key": "api_token", "value": map[string]any{"$secret": family + "/api_token"}}
+			for _, row := range []Row{public, ref} {
+				got, err := nativeTable(Table{Columns: []string{"key", "value"}, Rows: []Row{row}}, family, nil)
+				if err != nil || !equalJSON(got.Rows, []Row{row}) {
+					t.Fatalf("stored setting/reference changed: %v", err)
+				}
+			}
+			// Reinterpreting the structural SQL column must not exempt nested
+			// credential names or malformed explicit references from validation.
+			for _, value := range []any{
+				map[string]any{"api_token": "plaintext"},
+				map[string]any{"$secret": "public/ref", "extra": "plaintext"},
+			} {
+				row := Row{"key": "public_setting", "value": value}
+				if _, err := nativeTable(Table{Columns: []string{"key", "value"}, Rows: []Row{row}}, family, nil); err == nil {
+					t.Fatal("raw SQL credential policy was bypassed")
+				}
+			}
+			// Raw historical schemas may carry additional columns; they keep
+			// their ordinary credential checks rather than inheriting an exemption.
+			row := Row{"key": "public_setting", "value": "public value", "api_token": "plaintext"}
+			if _, err := nativeTable(Table{Columns: []string{"key", "value", "api_token"}, Rows: []Row{row}}, family, nil); err == nil {
+				t.Fatal("additional historical SQL column bypassed credential checks")
+			}
+		})
+	}
+}
+
 func TestNativeHistoryReaderChecksDesignationAndRawImageIntegrity(t *testing.T) {
 	s, inventory := nativeHistoryFixtureForTest(t)
 	data := buildFixture(t, s, inventory)
