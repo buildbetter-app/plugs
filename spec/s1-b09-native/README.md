@@ -81,9 +81,16 @@ length-3-through-8 exhaustion using real public CLI JSONL input. Supplying
 `created_at` through the public import command makes the native hash tuple
 repeatable without changing its generator or clock. Each same-run capture is
 restored in snapshot mode and continued through real RPC on memory, SQLite and
-PostgreSQL, preserving source records and replaying after reopen. The separate modern create route records widths 9 and 10 from its actual
-persisted creation tuple, including a configured zero collision budget, and
-replays those same tuples after restore. The legacy import oracle covers
+PostgreSQL, preserving source records and replaying after reopen. The separate
+public HTTP domain route records widths 9 and 10 from its actual returned and
+stored creation tuple, including a configured zero collision budget, and
+replays those same tuples after restore. It uses the same exact production
+9d6 executable's `bd serve` command over the existing pinned, owned Dolt runtime.
+Every HTTP request and response and the server's original process streams and
+shutdown are retained; each server stops before the following source capture.
+The embedded CLI uses a fixed eight-character ceiling even when public config
+persists a larger value; those CLI calls do not qualify widths 9 and 10.
+The legacy import oracle covers
 lengths 3 through 8 only. Pipeline cause receipts identify
 exhaustion; the RPC layer currently returns its ordinary internal error.
 

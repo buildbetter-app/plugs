@@ -3,9 +3,10 @@ load("@rules_go//go:def.bzl", "go_test")
 # Separate public fixture qualification, never an official producer bundle.
 go_test(
     name = "record_id_style_a_native_test",
-    srcs = ["conservation_test.go", "paired_replay_test.go", "source_plan_test.go", "pinned_source_test.go", "recorder_test.go"],
+    srcs = ["conservation_test.go", "domain_recording_test.go", "paired_replay_test.go", "source_plan_test.go", "pinned_source_test.go", "recorder_test.go"],
     embedsrcs = ["native_inputs.json"],
-    data = ["testdata/beads-9d6fff.tar.gz", "testdata/beads-9d6fff.git-tree", "testdata/beads-446dbb.tar.gz", "testdata/beads-446dbb.git-tree"],
+    data = ["testdata/beads-9d6fff.tar.gz", "testdata/beads-9d6fff.git-tree", "testdata/beads-446dbb.tar.gz", "testdata/beads-446dbb.git-tree", "//internal/publicnative:dolt_runtime"],
+    env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
     args = ["-test.v", "-b09-native-recording", "-test.run=^TestRecordNativeIDStyleA9d6$$"],
     deps = [
         "//internal/core/dumpformat",
@@ -13,6 +14,7 @@ go_test(
         "//internal/core/pipeline",
         "//internal/core/service",
         "//internal/integration/converterroundtrip",
+        "//internal/publicnative",
         "//internal/server/rpc",
         "//internal/storage/driver",
         "//internal/storage/memory",

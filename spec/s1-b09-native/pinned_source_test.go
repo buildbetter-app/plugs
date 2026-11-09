@@ -505,11 +505,11 @@ type styleANativeIssue struct {
 	Timestamp   time.Time `json:"created_at"`
 }
 
-// The modern public create route permits lengths beyond the legacy import
-// ceiling. Derive its hash tuple from its actual returned/stored creation
-// timestamp, then use that tuple on the same pre-create archive in Plug.
+// The public HTTP domain route permits lengths beyond the embedded CLI's
+// eight-character ceiling. Derive its tuple from the actual returned/stored
+// creation timestamp, then use it on the same pre-create archive in Plug.
 func (r *recorder) recordStyleADomainWidths() {
-	w := r.styleAWorkspace("pinned-domain-widths")
+	w := r.styleADomainWorkspace("pinned-domain-widths")
 	for i := 0; i < 3; i++ {
 		r.create(w, fmt.Sprintf("pinned-domain-seed-%d", i), "Domain adaptive seed")
 	}
@@ -525,7 +525,7 @@ func (r *recorder) recordStyleADomainWidths() {
 		label := fmt.Sprintf("pinned-domain-width-%d", width)
 		before := r.capture(w, label+"-before", width-6)
 		title := fmt.Sprintf("Native domain width %d", width)
-		data := r.run(w, label+"-create", r.binary, []string{"create", "--title", title, "--description", "Actual native domain tuple", "--type", "task", "--json"}, 0)
+		data := r.styleADomainCreate(w, label+"-create", title)
 		var issue styleANativeIssue
 		if err := json.Unmarshal(data, &issue); err != nil || issue.Title != title || issue.Creator != styleAActor || issue.Timestamp.IsZero() {
 			r.t.Fatalf("native domain tuple incomplete: %s err=%v", data, err)

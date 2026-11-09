@@ -1479,6 +1479,7 @@ spec/s1-b09-b12/vectors.json
 spec/s1-b09-native/BUILD.bazel
 spec/s1-b09-native/README.md
 spec/s1-b09-native/conservation_test.go
+spec/s1-b09-native/domain_recording_test.go
 spec/s1-b09-native/native_inputs.json
 spec/s1-b09-native/paired_replay_test.go
 spec/s1-b09-native/pinned_source_test.go
