@@ -69,6 +69,12 @@ func (r hierarchyLifecycleMembership) Eval(ctx context.Context, s authz.Slice, r
 	mapped := append([]authz.CheckRequest(nil), requests...)
 	for i := range mapped {
 		if mapped[i].Method == "tx.apply" || mapped[i].Method == "bead.close" {
+			// This installed test policy grants a transition only when the
+			// same current project membership also permits the underlying
+			// write. The production fixed policy grants neither action here.
+			if mapped[i].Action == authz.Transition {
+				mapped[i].Action = authz.Modify
+			}
 			mapped[i].Method = "bead.update"
 			if mapped[i].Resource.Kind == authz.Project {
 				mapped[i].Method = ""
