@@ -80,8 +80,10 @@ length-3-through-8 exhaustion using real public CLI JSONL input. Supplying
 `created_at` through the public import command makes the native hash tuple
 repeatable without changing its generator or clock. Each same-run capture is
 restored in snapshot mode and continued through real RPC on memory, SQLite and
-PostgreSQL, preserving source records and replaying after reopen. The legacy
-import oracle covers lengths 3 through 8 only. Pipeline cause receipts identify
+PostgreSQL, preserving source records and replaying after reopen. The separate modern create route records widths 9 and 10 from its actual
+persisted creation tuple, including a configured zero collision budget, and
+replays those same tuples after restore. The legacy import oracle covers
+lengths 3 through 8 only. Pipeline cause receipts identify
 exhaustion; the RPC layer currently returns its ordinary internal error.
 
 Two-source native composition remains a separate dependency: the current

@@ -143,6 +143,7 @@ func TestRecordNativeIDStyleA9d6(t *testing.T) {
 	r.importStyleARows(w, "pinned-paired-adaptive", []map[string]any{styleAIssue(input, "")}, 0, wantAdaptive)
 	r.replayStyleA(final, input, wantAdaptive, parentID, pairedChild, false)
 	r.recordStyleACollisions(input)
+	r.recordStyleADomainWidths()
 	r.recordStyleANamespaces(input)
 	if t.Failed() {
 		t.Fatal("native/Plug paired controls failed; no completed native receipt")
@@ -216,7 +217,7 @@ func (r *recorder) buildCanonicalSource(spec styleASource) string {
 		r.t.Fatal("trusted RunsOn Bazel binary path required")
 	}
 	outputBase := "--output_base=" + filepath.Join(r.t.TempDir(), "bazel")
-	if got := strings.TrimSpace(string(r.buildCommand(source, spec.Name+"-bazel-version", bazel, []string{outputBase, "version", "--gnu_format"}))); got != "bazel 9.3.0" {
+	if got := strings.TrimSpace(string(r.buildCommand(source, spec.Name+"-bazel-version", bazel, []string{outputBase, "version", "--gnu_format"}))); got != "Bazelisk v1.29.0\nbazel 9.3.0" {
 		r.t.Fatalf("Bazel version=%q", got)
 	}
 	settings := []string{"--repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1", "--extra_execution_platforms=//platforms:rbe_worker", "--incompatible_strict_action_env", "--@rules_go//go/config:tags=gms_pure_go", "--@rules_go//go/config:gc_linkopts=-X=main.Commit=" + spec.Commit + ",-X=main.Build=id-style-a-fixture-" + spec.Commit}
@@ -227,7 +228,7 @@ func (r *recorder) buildCanonicalSource(spec styleASource) string {
 	query = append(query, "--output=files", r.inputs.ExporterLabel)
 	outputs := strings.Fields(string(r.buildCommand(source, spec.Name+"-canonical-cquery", bazel, query)))
 	if len(outputs) != 1 {
-		r.t.Fatalf("canonical bd outputs=%v", outputs)
+		r.t.Fatalf("canonical executable outputs=%v", outputs)
 	}
 	input, err := os.Open(filepath.Join(source, outputs[0]))
 	if err != nil {
@@ -407,6 +408,50 @@ func (r *recorder) recordStyleACollisions(input driver.HashInput) {
 			r.requireIDs(after, want)
 		}
 		r.replayStyleA(before, input, want, "", "", exhausted)
+	}
+}
+
+// The modern public create route permits lengths beyond the legacy import
+// ceiling. Derive its hash tuple from its actual returned/stored creation
+// timestamp, then use that tuple on the same pre-create archive in Plug.
+func (r *recorder) recordStyleADomainWidths() {
+	w := r.styleAWorkspace("pinned-domain-widths")
+	for i := 0; i < 3; i++ {
+		r.create(w, fmt.Sprintf("pinned-domain-seed-%d", i), "Domain adaptive seed")
+	}
+	for _, width := range []int{9, 10} {
+		if width == 9 {
+			r.setConfig(w, "max_hash_length", "9")
+			r.setConfig(w, "min_hash_length", "9")
+		} else {
+			r.setConfig(w, "min_hash_length", "3")
+			r.setConfig(w, "max_hash_length", "10")
+			r.setConfig(w, "max_collision_prob", "0")
+		}
+		label := fmt.Sprintf("pinned-domain-width-%d", width)
+		before := r.capture(w, label+"-before", width-6)
+		title := fmt.Sprintf("Native domain width %d", width)
+		data := r.run(w, label+"-create", r.binary, []string{"create", "--title", title, "--description", "Actual native domain tuple", "--type", "task", "--json"}, 0)
+		var issue struct {
+			ID          string    `json:"id"`
+			Title       string    `json:"title"`
+			Description string    `json:"description"`
+			Creator     string    `json:"created_by"`
+			Timestamp   time.Time `json:"created_at"`
+		}
+		if err := json.Unmarshal(data, &issue); err != nil || issue.Title != title || issue.Creator != styleAActor || issue.Timestamp.IsZero() {
+			r.t.Fatalf("native domain tuple incomplete: %s err=%v", data, err)
+		}
+		r.requireIDLength(issue.ID, width)
+		input := driver.HashInput{Title: issue.Title, Description: issue.Description, Creator: issue.Creator, Timestamp: issue.Timestamp}
+		want, err := driver.HashCandidate("b09", input, uint32(width), 0)
+		if err != nil || want != issue.ID {
+			r.t.Fatalf("native domain persisted tuple does not rederive ID: %s want=%s err=%v", issue.ID, want, err)
+		}
+		after := r.capture(w, label+"-after", width-5)
+		r.requireIDs(after, issue.ID)
+		r.writeJSON(filepath.Join(r.root, label+"-tuple.json"), map[string]any{"native_id": issue.ID, "input": input, "width": width, "nonce": 0, "before_archive": before.ArchiveSHA256, "after_archive": after.ArchiveSHA256})
+		r.replayStyleA(before, input, issue.ID, "", "", false)
 	}
 }
 
