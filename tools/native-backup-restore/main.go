@@ -3,10 +3,12 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -62,12 +64,21 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	before, err := fingerprintBackup(*backup)
+	if err != nil {
+		return fmt.Errorf("copied backup fingerprint: %w", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 	// Restore into a new database without --force. No current database is
 	// selected; all filesystem changes stay in the empty scratch root.
-	if err := restore(ctx, *scratch, url, *database); err != nil {
-		return err
+	restoreErr := restore(ctx, *scratch, url, *database)
+	after, fingerprintErr := fingerprintBackup(*backup)
+	if fingerprintErr != nil || !equalFingerprint(before, after) {
+		return errors.Join(restoreErr, fmt.Errorf("copied backup changed during restore"), fingerprintErr)
+	}
+	if restoreErr != nil {
+		return restoreErr
 	}
 	if err := verify(ctx, *scratch, *database); err != nil {
 		return fmt.Errorf("restored database verification: %w", err)
@@ -76,6 +87,53 @@ func run() error {
 		"format": "beads-native-backup-restore/1", "restored": true,
 		"immutable_head_verified": true, "working_set_completeness": "not-inferred",
 	})
+}
+
+// The caller supplies a frozen copied backup. Refuse nonregular entries and
+// detect changes to its complete file census, not just the manifest or HEAD.
+func fingerprintBackup(root string) (map[string][32]byte, error) {
+	files := map[string][32]byte{}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("nonregular copied backup entry")
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		hash := sha256.New()
+		_, readErr := io.Copy(hash, file)
+		if err := errors.Join(readErr, file.Close()); err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		var sum [32]byte
+		copy(sum[:], hash.Sum(nil))
+		files[rel] = sum
+		return nil
+	})
+	return files, err
+}
+
+func equalFingerprint(before, after map[string][32]byte) bool {
+	if len(before) != len(after) {
+		return false
+	}
+	for path, sum := range before {
+		if got, present := after[path]; !present || got != sum {
+			return false
+		}
+	}
+	return true
 }
 
 func restore(ctx context.Context, dataDir, url, database string) (resultErr error) {
