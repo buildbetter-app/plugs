@@ -15,8 +15,8 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 )
 
-// These observations cover admitted current rows and reconstructed historical
-// bodies. Too-new current bodies and SQL executor work remain unmeasured.
+// These observations cover materialized current and reconstructed historical
+// bodies, including discarded current rows. SQL executor work is unmeasured.
 type readerPayloadWork struct {
 	gets, payloads, bytes atomic.Int64
 }
@@ -197,11 +197,12 @@ func TestBatchedHistoricalRecordReadsPreserveScalarImagesAndRoundTrips(t *testin
 	if err != nil || !reflect.DeepEqual(plain, got) {
 		t.Fatalf("nil observer changed historical batch: rows=%d err=%v", len(plain), err)
 	}
-	wantBytes := int64(count * len(`{"revision":2}`))
-	if scalarWork.payloads.Load() != count || scalarWork.bytes.Load() != wantBytes ||
-		batchWork.gets.Load() != 1 || batchWork.payloads.Load() != count || batchWork.bytes.Load() != wantBytes {
+	wantPayloads := int64(2 * count) // one discarded current and one historical body per key
+	wantBytes := int64(count * (len(`{"revision":3}`) + len(`{"revision":2}`)))
+	if scalarWork.payloads.Load() != wantPayloads || scalarWork.bytes.Load() != wantBytes ||
+		batchWork.gets.Load() != 1 || batchWork.payloads.Load() != wantPayloads || batchWork.bytes.Load() != wantBytes {
 		t.Fatalf("historical payload observations: scalar=%d/%d batch_gets=%d batch=%d/%d want=%d/%d",
-			scalarWork.payloads.Load(), scalarWork.bytes.Load(), batchWork.gets.Load(), batchWork.payloads.Load(), batchWork.bytes.Load(), count, wantBytes)
+			scalarWork.payloads.Load(), scalarWork.bytes.Load(), batchWork.gets.Load(), batchWork.payloads.Load(), batchWork.bytes.Load(), wantPayloads, wantBytes)
 	}
 	current := testRead(t, s, nil)
 	var currentWork readerPayloadWork
@@ -214,7 +215,7 @@ func TestBatchedHistoricalRecordReadsPreserveScalarImagesAndRoundTrips(t *testin
 	if err := current.Close(); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("admitted-body observations PASS: current=%d historical=%d/%d nil_observer_parity=true discarded_current_and_sql_work=UNMEASURED",
+	t.Logf("materialized-body observations: current=%d historical_work=%d/%d nil_observer_parity=true discarded_current_accounted=true sql_executor_work=UNMEASURED",
 		currentWork.payloads.Load(), batchWork.payloads.Load(), batchWork.bytes.Load())
 	if err := batched.Close(); err != nil {
 		t.Fatal(err)
@@ -300,4 +301,33 @@ func TestBatchedHistoricalRecordReadsHonorDecodedRevisionBound(t *testing.T) {
 		t.Fatalf("batched malformed bound error=%v scalar=%v", batchErr, scalarErr)
 	}
 	t.Logf("decoded revision-bound parity PASS: error=%q", batchErr)
+}
+
+func TestScalarHistoricalReadWorkCountsEveryRepeatedFetch(t *testing.T) {
+	ctx := context.Background()
+	s := openTest(t, freshDSN(t))
+	lease := testLease(t, s)
+	first := seedTest(t, s, lease, "repeat-history", `{"value":1}`)
+	seedTest(t, s, lease, "repeat-history", `{"value":222}`)
+	r := testRead(t, s, &first.Revision).(*reader)
+	key, err := recordKey(testRef("repeat-history"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, present, err := r.recordAt(ctx, key)
+	if err != nil || !present || string(plain.record.Body) != `{"value":1}` {
+		t.Fatalf("scalar historical control: %+v %v", plain, err)
+	}
+	var work readerPayloadWork
+	for repeat := int64(1); repeat <= 2; repeat++ {
+		got, present, err := r.recordAt(driver.WithReadWorkObserver(ctx, &work), key)
+		if err != nil || !present || !reflect.DeepEqual(plain, got) {
+			t.Fatalf("scalar historical observer changed result: %+v %v", got, err)
+		}
+		wantBytes := repeat * int64(len(`{"value":222}`)+len(`{"value":1}`))
+		if work.payloads.Load() != repeat*2 || work.bytes.Load() != wantBytes {
+			t.Fatalf("scalar repeated fetch omitted real bodies: repeat=%d payloads=%d bytes=%d want=%d/%d", repeat, work.payloads.Load(), work.bytes.Load(), repeat*2, wantBytes)
+		}
+		t.Logf("POSTGRES_SCALAR_HISTORICAL_WORK repeat=%d current_bodies=%d historical_bodies=%d payloads=%d bytes=%d", repeat, repeat, repeat, work.payloads.Load(), work.bytes.Load())
+	}
 }
