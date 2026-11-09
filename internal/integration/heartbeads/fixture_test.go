@@ -1,4 +1,4 @@
-package main
+package heartbeads
 
 import (
 	"context"
@@ -28,7 +28,7 @@ import (
 func TestI8HeartbeadsImportedSQLiteBrowser(t *testing.T) {
 	ctx := context.Background()
 	t.Setenv("PATH", "/tmp/plug-swarm/bin/worker-safe:"+os.Getenv("PATH"))
-	fixtureRoot := filepath.Join(os.Getenv("PLUG_SOURCE_MODULE_ROOT"), "cmd/plug/testdata/i8")
+	fixtureRoot := filepath.Join(os.Getenv("PLUG_SOURCE_MODULE_ROOT"), "internal/integration/heartbeads/testdata")
 	raw, err := os.ReadFile(filepath.Join(fixtureRoot, "native-ontology-source.json"))
 	if err != nil {
 		t.Fatal(err)
