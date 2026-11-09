@@ -23,14 +23,84 @@ type nativePhysicalRootControlCandidate struct {
 	ReadTable func(context.Context, string, string) (table Table, present bool, err error)
 }
 
-func newNativePhysicalRootControlCandidate(_ *testing.T, db *sql.DB, _ *testutil.IsolatedDoltContainer) nativePhysicalRootControlCandidate {
-	port := SQLSource{DB: db}
+func newNativePhysicalRootControlCandidate(t *testing.T, db *sql.DB, _ *testutil.IsolatedDoltContainer) nativePhysicalRootControlCandidate {
+	// A dedicated connection and read-only transaction keep USE, schema,
+	// declarations and cells in the same revision-database session.
+	read := func(ctx context.Context, id string, body func(SQLSource) (map[string]Table, error)) (map[string]Table, error) {
+		if !validCommitID(id) {
+			return nil, fmt.Errorf("invalid immutable revision")
+		}
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer conn.Close()
+		tx, err := conn.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelSerializable})
+		if err != nil {
+			return nil, err
+		}
+		defer tx.Rollback()
+		rows, err := tx.QueryContext(ctx, "USE `beads_test/"+id+"`")
+		if err != nil {
+			return nil, err
+		}
+		rows.Close()
+		return body(SQLSource{DB: tx})
+	}
+	tableAtRoot := func(ctx context.Context, port SQLSource, id, name string) (Table, bool, error) {
+		if !nativeSQLName.MatchString(name) {
+			return Table{}, false, fmt.Errorf("invalid physical name")
+		}
+		// As in the original producer's local-history route, use the history
+		// relation to avoid following aliases on the base name. Here both its
+		// schema and declaration lookup are scoped to the revision database.
+		return port.readNativeLocalHistoryTable(ctx, name, id)
+	}
 	return nativePhysicalRootControlCandidate{
-		Name:      "current-as-of-reference",
-		ReadImage: port.ReadNativeSourceImage,
+		Name: "revision-database-scoped-use",
+		ReadImage: func(ctx context.Context, id string) (map[string]Table, error) {
+			return read(ctx, id, func(port SQLSource) (map[string]Table, error) {
+				names, err := port.historyTable(ctx, "SHOW FULL TABLES")
+				if err != nil {
+					return nil, err
+				}
+				if len(names.Columns) != 2 {
+					return nil, fmt.Errorf("invalid revision census")
+				}
+				declarations, err := port.historyTable(ctx, "SELECT * FROM dolt_nonlocal_tables")
+				if err != nil {
+					return nil, err
+				}
+				t.Logf("OPTION1_SCOPED_DECLARATIONS commit=%s columns=%v rows=%v", id, declarations.Columns, declarations.Rows)
+				result := map[string]Table{"dolt_nonlocal_tables": declarations}
+				for _, row := range names.Rows {
+					name := historyText(row[names.Columns[0]])
+					if historyText(row[names.Columns[1]]) == "VIEW" || name == "dolt_nonlocal_tables" {
+						continue
+					}
+					table, present, err := tableAtRoot(ctx, port, id, name)
+					if err != nil {
+						return nil, err
+					}
+					if present {
+						result[name] = table
+					}
+				}
+				return result, nil
+			})
+		},
 		ReadTable: func(ctx context.Context, id, name string) (Table, bool, error) {
-			// This reference recognizes only the existing typed MySQL1146 path.
-			return port.readNativeLocalHistoryTable(ctx, name, id)
+			present := false
+			var table Table
+			_, err := read(ctx, id, func(port SQLSource) (map[string]Table, error) {
+				var readErr error
+				table, present, readErr = tableAtRoot(ctx, port, id, name)
+				return nil, readErr
+			})
+			if err != nil {
+				return Table{}, false, err
+			}
+			return table, present, nil
 		},
 	}
 }
