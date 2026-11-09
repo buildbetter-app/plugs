@@ -39,8 +39,9 @@ post-lifecycle native status from the durable Commit record rather than writing
 requested terminal name in the guarded transaction.
 
 Restore must install each real store's actual ontology/categories per project;
-`host-ontology.json` is a historical synthetic specimen only. Literal native
-category runtime/import parity is pending the separately owned B21 successor.
+`host-ontology.json` is a historical synthetic specimen only. The public fixture
+composes exact B21 core0e3fcbe4 with a native head archive carrying per-project
+literal categories; Beads-converter and real-store parity remain unqualified.
 Callers never install ontology or restore a live store. Two ontology reads around
 pinned bead content detect observed source changes only: head-only ontology.get
 has no asOf, so atomic ontology/content snapshot consistency remains unproven.

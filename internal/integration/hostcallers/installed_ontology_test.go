@@ -21,8 +21,8 @@ import (
 )
 
 // This is a public synthetic native Plug head-archive boundary, not a Beads
-// converter fixture. Categories here are already admitted Plug categories.
-// Literal Beads categories still require the independently owned B21 successor.
+// converter fixture. Literal native categories use the exact delivered B21 core;
+// this does not qualify the Beads converter, private ontology or source history.
 func prepareInstalledHostOntology(t *testing.T, root string, target driver.Store, targetLease driver.ActiveLease, imported bool) (model.Ref, ontology.Snapshot) {
 	t.Helper()
 	ctx := context.Background()
@@ -143,17 +143,17 @@ func prepareInstalledHostOntology(t *testing.T, root string, target driver.Store
 func categoryProjectFixture(t *testing.T, base ontology.Document, project string) ontology.Document {
 	t.Helper()
 	statuses := map[string]ontology.Status{
-		"todo":     {Name: "Todo", Category: ontology.Unstarted},
-		"working":  {Name: "Working", Category: ontology.Started},
-		"shipped":  {Name: "Shipped", Category: ontology.Completed, Outcome: ontology.Success},
-		"paused":   {Name: "Paused", Category: ontology.Backlog},
-		"closed":   {Name: "Name does not imply terminal", Category: ontology.Unstarted},
-		"accepted": {Name: "Another terminal name", Category: ontology.Completed, Outcome: ontology.Success},
+		"todo":     {Name: "Todo", Category: ontology.Active},
+		"working":  {Name: "Working", Category: ontology.WIP},
+		"shipped":  {Name: "Shipped", Category: ontology.Done, Outcome: ontology.Success},
+		"paused":   {Name: "Paused", Category: ontology.Frozen},
+		"closed":   {Name: "Name does not imply terminal", Category: ontology.Active},
+		"accepted": {Name: "Another terminal name", Category: ontology.Done, Outcome: ontology.Success},
 	}
 	initial, terminal := "todo", "shipped"
 	if project == "cody-ops" {
-		statuses["todo"] = ontology.Status{Name: "Todo is terminal in this project", Category: ontology.Completed, Outcome: ontology.Success}
-		statuses["queued"] = ontology.Status{Name: "Queued", Category: ontology.Unstarted}
+		statuses["todo"] = ontology.Status{Name: "Todo is terminal in this project", Category: ontology.Done, Outcome: ontology.Success}
+		statuses["queued"] = ontology.Status{Name: "Queued", Category: ontology.Active}
 		initial, terminal = "queued", "todo"
 	}
 	workflow := base.Workflows["host"]

@@ -1,8 +1,8 @@
 """Public synthetic native Plug dump/restore -> SQLite/RPC -> prepared scripts.
 
-The restored runtime uses currently admitted Plug categories. Reader-only cases
-also exercise the literal Beads category contract pending B21 composition.
-Neither is a private-store or Beads-converter parity qualification.
+The restored runtime uses literal native categories from the delivered B21 core.
+Neither this native archive nor reader fault injections qualify private-store,
+Beads-converter or source-history parity.
 """
 import copy
 import json
@@ -31,7 +31,7 @@ class InstalledProjectCategories(unittest.TestCase):
         self.oc = ph.Client(self.binding, 'cody-ops')
 
     def test_imported_project_categories_preserve_same_native_name(self):
-        for client, category, terminal in ((self.c, 'unstarted', False), (self.oc, 'completed', True)):
+        for client, category, terminal in ((self.c, 'active', False), (self.oc, 'done', True)):
             bead = client.get('Imported.Exact/İD')
             self.assertEqual(bead['status'], 'todo')
             row = Projection(client).row(bead)
@@ -46,7 +46,7 @@ class InstalledProjectCategories(unittest.TestCase):
         self.write('close.json', {'close': {'K': 'native reason'}})
         self.run_script('apply_change.py', self.signals, self.signals/'close.json')
         plan = ph.read_json(self.signals/'plan.json')
-        self.assertEqual((plan['items'][0]['status'], plan['items'][0]['status_category']), ('shipped', 'completed'))
+        self.assertEqual((plan['items'][0]['status'], plan['items'][0]['status_category']), ('shipped', 'done'))
         ident = ph.read_json(self.signals/'ids.json')['K']
         row = Projection(self.c).row(self.c.get(ident))
         self.assertEqual(row['status'], 'shipped')
@@ -54,13 +54,13 @@ class InstalledProjectCategories(unittest.TestCase):
         self.write('reopen.json', {'reopen': ['K']})
         self.run_script('apply_change.py', self.signals, self.signals/'reopen.json')
         plan = ph.read_json(self.signals/'plan.json')
-        self.assertEqual((plan['items'][0]['status'], plan['items'][0]['status_category']), ('todo', 'unstarted'))
+        self.assertEqual((plan['items'][0]['status'], plan['items'][0]['status_category']), ('todo', 'active'))
         self.assertIsNone(Projection(self.c).row(self.c.get(ident))['close_reason'])
 
     def test_nonterminal_named_closed_retains_name_and_hides_old_reason(self):
         ident = self.create(status='closed', close_reason='old imported reason')
         row = Projection(self.c).row(self.c.get(ident))
-        self.assertEqual((row['status'], row['status_category'], row['status_terminal']), ('closed', 'unstarted', False))
+        self.assertEqual((row['status'], row['status_category'], row['status_terminal']), ('closed', 'active', False))
         self.assertIsNone(row['close_reason'])
 
     def test_native_plan_closure_order_and_milestone_progress(self):
@@ -81,7 +81,25 @@ class InstalledProjectCategories(unittest.TestCase):
         group = next(g for g in data['milestones'] if g['key'] == 'M0')
         self.assertEqual((group['total'], group['closed']), (2, 2))
         by_key = {row['key']: row for row in data['nodes']}
-        self.assertEqual((by_key['A']['status'], by_key['A']['statusCategory'], by_key['A']['isClosed']), ('accepted', 'completed', True))
+        self.assertEqual((by_key['A']['status'], by_key['A']['statusCategory'], by_key['A']['isClosed']), ('accepted', 'done', True))
+        self.run_script('restructure_milestones.py', self.signals)
+        data = json.loads(self.run_script('milestone_view_server.py', '--static', static, '--data-once'))
+        group = next(g for g in data['milestones'] if g['key'] == 'M1')
+        self.assertEqual((group['total'], group['closed']), (2, 2))
+        self.assertEqual(self.c.get(ids['A'])['status'], 'accepted')
+        self.assertEqual(self.c.get(ids['B'])['status'], 'shipped')
+
+    def test_actual_ready_uses_native_category_without_status_renaming(self):
+        active = self.create(status='closed')
+        working = self.create(status='working')
+        frozen = self.create(status='paused')
+        terminal = self.create()
+        HostCallerFixture.lifecycle(self, terminal)
+        ready = {row['id'] for row in self.c.rpc('bead.ready', {'limit': 1000})['items']}
+        self.assertIn(active, ready)
+        self.assertTrue({working, frozen, terminal}.isdisjoint(ready))
+        self.assertEqual(self.c.get(active)['status'], 'closed')
+        self.assertEqual(self.c.get(terminal)['status'], 'shipped')
 
     def test_project_seed_and_molecule_keep_guards_and_scoped_ids(self):
         self.run_script('cody-ops-seed.py')
