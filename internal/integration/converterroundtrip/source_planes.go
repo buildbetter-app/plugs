@@ -248,10 +248,10 @@ func validateSourceCoreMappings(archive *dumpformat.Archive, plan driver.SourceP
 			continue
 		}
 		d := dispositions[e.DispositionKey]
-		storage, storageOK := source.Source.Fields["storage_class"].(string)
+		storage, storagePresent := source.Source.Fields["storage_class"]
 		ephemeral, ephemeralOK := sourceSourceFlag(source.Source.Fields["ephemeral"])
 		noHistory, noHistoryOK := sourceSourceFlag(source.Source.Fields["no_history"])
-		if !storageOK || !ephemeralOK || !noHistoryOK || d.SourceType != stringValue(source.Source.Fields["issue_type"]) || d.StorageClass != storage || d.Ephemeral != ephemeral || d.NoHistory != noHistory || d.SinkKind != "bead" || d.Schema != "bead/1" || d.Lifetime != "core" || d.RefusalPolicy != "exact-only" {
+		if !d.MatchesStorageClass(storage, storagePresent) || !ephemeralOK || !noHistoryOK || d.SourceType != stringValue(source.Source.Fields["issue_type"]) || d.Ephemeral != ephemeral || d.NoHistory != noHistory || d.SinkKind != "bead" || d.Schema != "bead/1" || d.Lifetime != "core" || d.RefusalPolicy != "exact-only" {
 			return fmt.Errorf("%w: core type/storage/flags lack exact disposition", driver.ErrUnsupported)
 		}
 		status, known := targetStatus(stringValue(source.Source.Fields["status"]))

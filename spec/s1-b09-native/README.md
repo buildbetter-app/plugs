@@ -114,6 +114,13 @@ lifetime, all raw origins and all captured sidecars. The archive's source-plane,
 source-fields and history declarations stay intact. The unbound inspection
 digest is retained separately from the bound core projection digest.
 
+The pinned task rows retain their actual SQL `NULL` storage class. In the
+unchanged V1 plan layout, an empty disposition StorageClass denotes a present
+SQL `NULL`; nonempty values denote exact source text. Missing columns and raw
+empty strings refuse. Raw null field bytes and their presence/hash commitments
+remain part of the plan and physical source evidence. This is separate from
+memory's process lifetime, which remains truthful after source installation.
+
 The full paired conservation sequence remains present. Its source-plane branch
 also checks the immutable commit binding against the admitted plan and actual
 checkpoint envelope/logical bytes. Every logical census pins core records and

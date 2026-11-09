@@ -202,18 +202,21 @@ func TestNativeLiteralFrozenRequiresAnExplicitCustomCatalogEntry(t *testing.T) {
 	}
 }
 
-func TestActualNativeProducerMergeRetainsNamedOverlapRefusal(t *testing.T) {
+func TestActualNativeProducerMergeRetainsDirtySourceAndIncompleteEvidence(t *testing.T) {
 	var archives []*Archive
 	for _, name := range []string{"reprocody", "reprosignals"} {
 		archive, err := Read(bytes.NewReader(nativeProducerArchive(t, name)))
 		if err != nil {
 			t.Fatal(err)
 		}
+		history, ok := archive.SourceHistory()
+		if !ok || history.Range.Status != "unverified" || history.Range.Complete || len(history.Range.Frames) != 0 || history.Range.Reason != "head-image-not-proven" {
+			t.Fatal("actual producer's incomplete-history evidence changed")
+		}
 		archives = append(archives, archive)
 	}
 	data, err := MergeArchives(archives...)
-	var refusal HistoryMergeRefusal
-	if len(data) != 0 || !errors.As(err, &refusal) || refusal.ID == "" || refusal.Project == "" || refusal.OtherProject == "" || refusal.Project == refusal.OtherProject {
-		t.Fatalf("actual native overlap must name both source projects and the identity: %v", err)
+	if data != nil || err == nil || err.Error() != `offline merge input 0: unmerged or dirty source family "dolt-conflicts"` {
+		t.Fatalf("actual dirty producer must refuse before history qualification: %v", err)
 	}
 }

@@ -151,6 +151,11 @@ func TestSourcePlaneCanonicalPlanBoundsAndRefusals(t *testing.T) {
 		"duplicate namespace":       func(p *SourcePlanePlanV1) { p.Providers = append(p.Providers, p.Providers[0]) },
 		"nonzero generation":        func(p *SourcePlanePlanV1) { p.Providers[0].ExpectedGeneration = 1 },
 		"invalid UTF8":              func(p *SourcePlanePlanV1) { p.SourceStoreID = string([]byte{255}) },
+		"duplicate null storage tuple": func(p *SourcePlanePlanV1) {
+			p.Dispositions[0].StorageClass = ""
+			p.Dispositions[1].StorageClass = ""
+			p.Dispositions[1].Ephemeral, p.Dispositions[1].NoHistory = false, false
+		},
 	}
 	for name, change := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -178,6 +183,7 @@ func TestSourcePlaneRequestHashBindsEveryLogicalComponent(t *testing.T) {
 	changes := map[string]func(*SourcePlanePlanV1){
 		"target precondition": func(p *SourcePlanePlanV1) { p.Target.Incarnation = "other" },
 		"disposition":         func(p *SourcePlanePlanV1) { p.Dispositions[0].RefusalPolicy = "exact-only/2" },
+		"null storage class":  func(p *SourcePlanePlanV1) { p.Dispositions[0].StorageClass = "" },
 		"status":              func(p *SourcePlanePlanV1) { p.Dispositions[0].Statuses[0].To = "in-progress" },
 		"principal":           func(p *SourcePlanePlanV1) { p.Principals[0].PrincipalJSON = []byte(`{"kind":"user","id":"other"}`) },
 		"run":                 func(p *SourcePlanePlanV1) { p.Runs[0].Template = "other" },

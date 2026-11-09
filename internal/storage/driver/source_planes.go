@@ -58,6 +58,10 @@ type SourcePlaneRecordV1 struct {
 type SourcePlaneStringPairV1 struct{ From, To string }
 type SourcePlaneFieldRuleV1 struct{ Source, Target, Disposition string }
 type SourcePlaneDispositionV1 struct {
+	// Empty StorageClass explicitly means a present SQL NULL. Nonempty values
+	// match exact source text. Missing columns and raw empty strings refuse;
+	// the source field commitments retain the original null/text bytes. This
+	// uses the existing V1 string slot without changing its canonical layout.
 	Key, SourceType, StorageClass string
 	Ephemeral, NoHistory          bool
 	SinkKind, Schema, Lifetime    string

@@ -220,7 +220,42 @@ func (r *recorder) buildCanonicalSource(spec styleASource) string {
 	if !filepath.IsAbs(bazel) {
 		r.t.Fatal("trusted RunsOn Bazel binary path required")
 	}
-	outputBase := "--output_base=" + filepath.Join(r.t.TempDir(), "bazel")
+	outputPath := filepath.Join(r.t.TempDir(), "bazel")
+	outputBase := "--output_base=" + outputPath
+	// Bazel materializes read-only output directories. After the dedicated
+	// server has shut down, restore owner access only on directories inside
+	// this private output base so testing.TempDir can remove them. WalkDir
+	// never follows symlinks into the shared repository cache; retained source
+	// archives, executable bytes and build evidence are not modified.
+	r.t.Cleanup(func() {
+		changed := 0
+		err := filepath.WalkDir(outputPath, func(path string, entry os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if !entry.IsDir() {
+				return nil
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			if info.Mode().Perm()&0700 != 0700 {
+				if err := os.Chmod(path, info.Mode().Perm()|0700); err != nil {
+					return err
+				}
+				changed++
+			}
+			return nil
+		})
+		if errors.Is(err, os.ErrNotExist) {
+			err = nil
+		}
+		r.writeJSON(filepath.Join(r.root, spec.Name+"-outputbase-cleanup.json"), map[string]any{"output_base": outputPath, "directories_made_owner_writable": changed, "error": fmt.Sprint(err), "follows_symlinks": false})
+		if err != nil {
+			r.t.Errorf("private Bazel output-base cleanup: %v", err)
+		}
+	})
 	if got := strings.TrimSpace(string(r.buildCommand(source, spec.Name+"-bazel-version", bazel, []string{outputBase, "version", "--gnu_format"}))); got != "Bazelisk v1.29.0\nbazel 9.3.0" {
 		r.t.Fatalf("Bazel version=%q", got)
 	}

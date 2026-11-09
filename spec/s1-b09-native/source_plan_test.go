@@ -52,7 +52,7 @@ func bindB09SourcePlan(t *testing.T, data []byte, target *b09ReplayTarget, profi
 		Target:       driver.SourcePlaneTargetV1{StoreID: string(meta.StoreID), Incarnation: meta.Incarnation, RequireEmpty: true, Lifetime: capability.WorkflowCheckpointLifetime(), RuntimeContract: driver.SourcePlaneRuntimeContractV1},
 		Principals:   []driver.SourcePlanePrincipalV1{{Key: "owner", Source: "explicit public fixture owner", Authority: "trusted-explicit/1", PrincipalJSON: principal}},
 		Providers:    []driver.SourcePlaneProviderV1{{Alias: "workflow", Instance: "default", Namespace: "plugin/workflow/default/durable", Schema: workflowplugin.SourceStateSchema, Codec: "workflow/json/1", RuntimeContract: driver.SourcePlaneRuntimeContractV1, Lifetime: capability.WorkflowCheckpointLifetime(), OriginAdapter: "beads-workflow-origins/1"}},
-		Dispositions: []driver.SourcePlaneDispositionV1{{Key: "durable", SourceType: "task", StorageClass: "versioned", SinkKind: "bead", Schema: "bead/1", Lifetime: "core", Statuses: []driver.SourcePlaneStringPairV1{{From: "closed", To: "done"}, {From: "in_progress", To: "in_progress"}, {From: "open", To: "todo"}}, RefusalPolicy: "exact-only"}},
+		Dispositions: []driver.SourcePlaneDispositionV1{{Key: "durable", SourceType: "task", StorageClass: "", SinkKind: "bead", Schema: "bead/1", Lifetime: "core", Statuses: []driver.SourcePlaneStringPairV1{{From: "closed", To: "done"}, {From: "in_progress", To: "in_progress"}, {From: "open", To: "todo"}}, RefusalPolicy: "exact-only"}},
 	}
 	records, err := archive.SourcePlaneRecords()
 	if err != nil {
@@ -60,13 +60,16 @@ func bindB09SourcePlan(t *testing.T, data []byte, target *b09ReplayTarget, profi
 	}
 	for _, record := range records {
 		var row dumpformat.Record
-		if err := json.Unmarshal(record.Raw, &row); err != nil {
+		decoder := json.NewDecoder(bytes.NewReader(record.Raw))
+		decoder.UseNumber()
+		if err := decoder.Decode(&row); err != nil {
 			t.Fatal(err)
 		}
 		fields := b09SourceFields(t, record.Raw)
 		origin := b09SourceBytes(record.Raw, "object")
 		if record.Table == dumpformat.DurableEntityTable {
-			if record.Project != "b09" || row.Source.Fields["issue_type"] != "task" || row.Source.Fields["storage_class"] != "versioned" {
+			storage, storagePresent := row.Source.Fields["storage_class"]
+			if record.Project != "b09" || row.Source.Fields["issue_type"] != "task" || !plan.Dispositions[0].MatchesStorageClass(storage, storagePresent) || row.Source.Fields["ephemeral"] != json.Number("0") || row.Source.Fields["no_history"] != json.Number("0") {
 				t.Fatal("unmapped entity outside the durable-task public fixture policy")
 			}
 			key := driver.SourceEntityKey{Project: record.Project, Plane: record.Table, ID: row.ID}
