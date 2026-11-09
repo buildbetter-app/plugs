@@ -161,7 +161,7 @@ type fixture struct {
 	closed   bool
 }
 
-func newFixture(t *testing.T, engine string) *fixture {
+func newFixture(t *testing.T, engine string, configure ...func(*fixture)) *fixture {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	t.Cleanup(cancel)
@@ -171,6 +171,9 @@ func newFixture(t *testing.T, engine string) *fixture {
 	}
 	if engine == "postgres" {
 		f.dsn = freshPostgresDSN(t)
+	}
+	for _, option := range configure {
+		option(f)
 	}
 	f.open(t)
 	t.Cleanup(func() { f.close(t) })

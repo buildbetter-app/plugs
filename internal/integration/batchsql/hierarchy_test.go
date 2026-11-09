@@ -2,10 +2,13 @@ package batchsql_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,6 +20,8 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 // This wrapper keeps the real SQL queue capability while refusing a graph
@@ -846,10 +851,107 @@ func TestHierarchyThousandOperationBoundaryAcrossStores(t *testing.T) {
 	}
 }
 
+type hierarchyQueryTraceKey struct{}
+type hierarchyQuerySpanKey struct{}
+
+type hierarchyQuerySpan struct {
+	query     string
+	started   time.Time
+	elapsed   time.Duration
+	completed bool
+	failed    bool
+	rows      int64
+}
+
+type hierarchyQueryTrace struct {
+	mu    sync.Mutex
+	spans []*hierarchyQuerySpan
+}
+
+func (trace *hierarchyQueryTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if ctx.Value(hierarchyQueryTraceKey{}) != trace {
+		return ctx
+	}
+	span := &hierarchyQuerySpan{query: data.SQL, started: time.Now()}
+	trace.mu.Lock()
+	trace.spans = append(trace.spans, span)
+	trace.mu.Unlock()
+	return context.WithValue(ctx, hierarchyQuerySpanKey{}, span)
+}
+
+func (trace *hierarchyQueryTrace) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
+	span, _ := ctx.Value(hierarchyQuerySpanKey{}).(*hierarchyQuerySpan)
+	if span == nil {
+		return
+	}
+	elapsed := time.Since(span.started)
+	trace.mu.Lock()
+	span.elapsed, span.completed, span.failed, span.rows = elapsed, true, data.Err != nil, data.CommandTag.RowsAffected()
+	trace.mu.Unlock()
+}
+
+// These are driver query boundaries, including row consumption, not executor
+// CPU timings. Record no bind values. Formatting happens after the unchanged
+// Apply deadline and all queries continue through the actual pgx connection.
+func (trace *hierarchyQueryTrace) report(t *testing.T) {
+	t.Helper()
+	trace.mu.Lock()
+	defer trace.mu.Unlock()
+	type sample struct {
+		SQLSHA256, SQLPrefix string
+		Calls, Ends, Failed  int
+		ElapsedNS, MaxNS     int64
+		Rows                 int64
+	}
+	groups := map[string]*sample{}
+	for _, span := range trace.spans {
+		group := groups[span.query]
+		if group == nil {
+			prefix := strings.Join(strings.Fields(span.query), " ")
+			group = &sample{SQLSHA256: fmt.Sprintf("%x", sha256.Sum256([]byte(span.query))), SQLPrefix: prefix[:min(len(prefix), 300)]}
+			groups[span.query] = group
+		}
+		group.Calls++
+		if span.completed {
+			group.Ends++
+		}
+		if span.failed {
+			group.Failed++
+		}
+		group.ElapsedNS += span.elapsed.Nanoseconds()
+		group.MaxNS = max(group.MaxNS, span.elapsed.Nanoseconds())
+		group.Rows += span.rows
+	}
+	ordered := make([]*sample, 0, len(groups))
+	for _, group := range groups {
+		ordered = append(ordered, group)
+	}
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].ElapsedNS > ordered[j].ElapsedNS })
+	for _, group := range ordered {
+		raw, err := json.Marshal(group)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("W3_HIERARCHY_MOVE_PG_QUERY %s", raw)
+	}
+}
+
 func TestHierarchyClosure5000And5001AcrossStores(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
-			f := newFixture(t, engine)
+			trace := &hierarchyQueryTrace{}
+			f := newFixture(t, engine, func(f *fixture) {
+				if engine != "postgres" {
+					return
+				}
+				config, err := pgx.ParseConfig(f.dsn)
+				if err != nil {
+					t.Fatal(err)
+				}
+				config.Tracer = trace
+				f.dsn = stdlib.RegisterConnConfig(config)
+				t.Cleanup(func() { stdlib.UnregisterConnConfig(f.dsn) })
+			})
 			writer, metrics := pipeline.NewWithTelemetry(f.store, f.lease, pipeline.WithOntology(f.ontology), pipeline.WithClock(f.now), pipeline.WithIDGenerator(f.nextID), pipeline.WithHierarchyMaxDepth(10))
 			f.writer = writer
 			ops := []model.Op{hierarchyCreate("subtree", nil, "work"), hierarchyCreate("extra", nil, "work")}
@@ -884,7 +986,8 @@ func TestHierarchyClosure5000And5001AcrossStores(t *testing.T) {
 				t.Fatal("5001 refusal published a partial rewrite")
 			}
 			beforeMove := metrics.Snapshot()
-			commit, err := f.writer.Apply(f.ctx, batchPrincipal, model.ChangeSet{Ops: []model.Op{hierarchyMove(subtree, &destination)}}, f.meta("hierarchy"))
+			moveCtx := context.WithValue(f.ctx, hierarchyQueryTraceKey{}, trace)
+			commit, err := f.writer.Apply(moveCtx, batchPrincipal, model.ChangeSet{Ops: []model.Op{hierarchyMove(subtree, &destination)}}, f.meta("hierarchy"))
 			moveMillis := map[pipeline.Phase]float64{}
 			for phase, results := range metrics.Snapshot().LaneMillis {
 				for result, millis := range results {
@@ -892,6 +995,7 @@ func TestHierarchyClosure5000And5001AcrossStores(t *testing.T) {
 				}
 			}
 			t.Logf("%s unchanged 5000-row hierarchy move phase times (ms): %v", engine, moveMillis)
+			trace.report(t)
 			if err != nil {
 				t.Fatal(err)
 			}
