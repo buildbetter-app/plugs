@@ -1,6 +1,7 @@
 package authzrpc
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -8,12 +9,15 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
+	"github.com/buildbetter-app/plugs/internal/core/viewops"
+	"github.com/buildbetter-app/plugs/internal/plugins/authzfixed"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
@@ -862,17 +866,31 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 	}
 	membership := ""
 	if method == "bead.ready" {
-		// New finite compiled Ready pages use the versioned semantic
-		// commitment. Check-only pages and continuations carrying an older
-		// unprefixed digest stay on the legacy verifier for compatibility.
-		useV2 := !checkOnly && (position == nil || strings.HasPrefix(position.ReadyMembership, "v2:"))
-		if useV2 {
-			membership, err = readyMembershipV2(filtered)
-			if err != nil {
-				return service.BeadPage{}, &model.Error{Message: "ready membership commitment failed", Data: model.ErrorData{Code: "internal_error"}}
+		// New finite compiled pages bind the final cross-plane order. The
+		// released v2 verifier remains usable for a single plane; a mixed v2
+		// offset is ambiguous after interleaving and must restart. Check-only
+		// and unprefixed continuations retain the ordered legacy verifier.
+		switch {
+		case !checkOnly && (position == nil || strings.HasPrefix(position.ReadyMembership, "v3:")):
+			membership, err = readyMembershipV3(filtered)
+		case !checkOnly && strings.HasPrefix(position.ReadyMembership, "v2:"):
+			durable, workflow := false, false
+			for _, item := range filtered {
+				if item.Kind == "workflow.item" {
+					workflow = true
+				} else {
+					durable = true
+				}
 			}
-		} else {
+			if durable && workflow {
+				return service.BeadPage{}, &model.Error{Message: "mixed ready cursor needs a new ordering binding; restart paging", Data: model.ErrorData{Code: "cursor_invalid"}}
+			}
+			membership, err = readyMembershipV2(filtered)
+		default:
 			membership = readyMembershipDigest(filtered)
+		}
+		if err != nil {
+			return service.BeadPage{}, &model.Error{Message: "ready membership commitment failed", Data: model.ErrorData{Code: "internal_error"}}
 		}
 	}
 	if method == "bead.ready" && position != nil && position.ReadyMembership != membership {
@@ -983,4 +1001,384 @@ func readyMembershipDigest(items []service.Bead) string {
 
 func postfilterCap() error {
 	return &model.Error{Message: "authorization post-filter candidate cap exceeded", Data: model.ErrorData{Code: "authz_postfilter_cap"}}
+}
+
+// ViewSelection is the chain-only view adapter. An additional viewops
+// AuthorizeRead callback remains a separate restriction and disables storage
+// acceleration. No function identity or policy subset is used as certification.
+func (s *GuardedService) ViewSelection() *viewops.SelectionConfig {
+	return &viewops.SelectionConfig{Bind: s.PrepareViewSelection, AuthorizeRead: func(ctx context.Context, by model.PrincipalRef, resource model.ResourceRef, _ string) error {
+		if resource.Kind != "bead" {
+			return notFound()
+		}
+		allowed, err := s.checkRead(ctx, by, "bead.get", resource.Ref)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return notFound()
+		}
+		return nil
+	}}
+}
+
+// PrepareViewSelection binds CURRENT authority before any content candidate
+// reads. W2 owns caller/filter preparation; this adapter only lowers complete
+// finite read expressions and records their actual current source witnesses.
+func (s *GuardedService) PrepareViewSelection(ctx context.Context, by model.PrincipalRef, inlineBinding string) (*viewops.SelectionAuthority, error) {
+	reader, _, closeReader, err := s.current(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	keep := false
+	defer func() {
+		if !keep {
+			closeReader()
+		}
+	}()
+	snapshot := &viewSelectionSnapshot{Reader: reader, sources: map[string]driver.SelectionSource{}}
+	bound, err := s.checker.BindAuthorization(ctx, snapshot, by, authz.Read, authz.Bead, "bead.get")
+	if err != nil {
+		return nil, err
+	}
+	filter, err := bound.Filter()
+	if err != nil && !errors.Is(err, authz.ErrCheckOnly) {
+		return nil, err
+	}
+	caller := bound.request.Request().Caller
+	for _, dep := range []authz.Dependency{authz.ContextDependency(s.checker.chain.Namespace), authz.ACLDependency(s.checker.chain.Namespace), {Kind: "sentinel", Key: "plugins"}, {Kind: "sentinel", Key: "ontology"}} {
+		if err := bound.slice.Record(ctx, dep); err != nil {
+			return nil, authzError(err)
+		}
+	}
+	binding, err := s.checker.readAuthorityBinding(ctx, caller, bound.slice, snapshot)
+	if err != nil {
+		return nil, err
+	}
+	out := &viewops.SelectionAuthority{Reader: reader, Binding: binding}
+	out.Check = func(ctx context.Context, refs []model.Ref) ([]bool, error) {
+		// Check-only preserves the existing per-resource component budget. It
+		// cannot turn a large view into one oversized policy invocation.
+		decisions := make([]bool, len(refs))
+		for i, ref := range refs {
+			decision, err := bound.Check(ctx, []model.Ref{ref})
+			if err != nil {
+				return nil, err
+			}
+			decisions[i] = decision[0]
+		}
+		rows, err := reader.Get(ctx, refs)
+		if err != nil {
+			return nil, err
+		}
+		present := map[string]bool{}
+		for _, row := range rows {
+			if row.Kind == "bead" {
+				present[row.Ref.ID] = true
+			}
+		}
+		for i, ref := range refs {
+			decisions[i] = decisions[i] && present[ref.ID]
+		}
+		return decisions, nil
+	}
+	sourceMatches, err := viewSelectionFactsMatch(ctx, snapshot, bound.slice.facts)
+	if err != nil {
+		return nil, err
+	}
+	if inlineBinding != "" && filter != nil && finiteViewCaller(caller) && sourceMatches {
+		description := filter.Description()
+		permit, p := lowerViewFilter(description.Permit, description.Request.Caller, description.Namespace)
+		forbid, f := lowerViewFilter(description.Forbid, description.Request.Caller, description.Namespace)
+		refs, r := lowerViewCallerRefs(description.Request.Caller)
+		args := []driver.SelectionExpr{{Op: driver.SelectionResourceExists}, permit, {Op: driver.SelectionNot, Args: []driver.SelectionExpr{forbid}}, refs}
+		// The no-plugin schema admits only authorization=true. It cannot
+		// encode this adapter's current-existence check, so retain check_only.
+		complete := p && f && r && !description.NoPlugins
+		for _, restriction := range description.Restrictions {
+			expr, ok := lowerViewFilter(restriction, description.Request.Caller, description.Namespace)
+			complete = complete && ok
+			args = append(args, expr)
+		}
+		if complete {
+			preparedBinding, err := filter.Binding()
+			if err != nil {
+				return nil, err
+			}
+			expression := driver.SelectionExpr{Op: driver.SelectionAll, Args: args}
+			view := reader.Snapshot()
+			// A valid policy can exceed the storage AST budget. Retain its
+			// complete ordinary Check/Fence instead of aborting binding or
+			// narrowing the policy to fit. Other boundary errors still fail.
+			if viewSelectionExpressionBudget(expression) {
+				out.Boundary, err = driver.PrepareSelectionBoundary(driver.SelectionBoundarySpec{Version: 1, PreparedBinding: preparedBinding, Incarnation: view.Incarnation, Branch: view.Branch, AuthorityRevision: *view.At, Sources: snapshot.observations(), Chain: driver.SelectionChainCompiled, Authorization: expression, Host: driver.SelectionHostAbsent, InlineViewBinding: inlineBinding})
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+	// Rebind reacquires the real caller, facts and verification. Comparing both
+	// the complete authority binding and source bytes also fences empty counts.
+	out.Fence = func(ctx context.Context) error {
+		fresh, _, closeFresh, err := s.current(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer closeFresh()
+		rebound, err := bound.Rebind(ctx, fresh)
+		if err != nil {
+			return err
+		}
+		now, err := s.checker.readAuthorityBinding(ctx, rebound.request.Request().Caller, rebound.slice, fresh)
+		if err != nil {
+			return err
+		}
+		if now != binding {
+			return hierarchyUnavailable()
+		}
+		for _, source := range snapshot.observations() {
+			states, err := fresh.Observe(ctx, []driver.LockKey{source.Key})
+			if err != nil {
+				return err
+			}
+			if len(states) != 1 || !sameViewSelectionSource(source, states[0]) {
+				return hierarchyUnavailable()
+			}
+		}
+		return nil
+	}
+	keep = true
+	return out, nil
+}
+
+// This admission check classifies only the closed expression size limits.
+// Boundary construction remains responsible for every other validation error.
+func viewSelectionExpressionBudget(expression driver.SelectionExpr) bool {
+	nodes := 0
+	var within func(driver.SelectionExpr, int) bool
+	within = func(expr driver.SelectionExpr, depth int) bool {
+		nodes++
+		if depth > driver.SelectionMaxDepth || nodes > driver.SelectionMaxNodes {
+			return false
+		}
+		for _, child := range expr.Args {
+			if !within(child, depth+1) {
+				return false
+			}
+		}
+		return true
+	}
+	return within(expression, 0)
+}
+
+func finiteViewCaller(c authz.Caller) bool {
+	if !authz.ValidID(c.VerificationID) || c.CapturedEpoch.Validate() != nil {
+		return false
+	}
+	p := c.Principal
+	if !authz.ValidID(p.ID) {
+		return false
+	}
+	switch p.Kind {
+	case "anonymous", "user", "agent", "service", "plugin", "system":
+	default:
+		return false
+	}
+	if p.Sponsor != nil && (p.Kind != "agent" || p.Sponsor.Sponsor != nil || !authz.ValidID(p.Sponsor.ID) || (p.Sponsor.Kind != "user" && p.Sponsor.Kind != "service")) {
+		return false
+	}
+	return true
+}
+
+// lowerViewCallerRefs consumes the JSON-normalized prepared caller. It adds
+// every principal and sponsor restriction to the full policy conjunction;
+// refs never replace a permit, forbid, host restriction or current-source proof.
+// Other caveat forms deliberately retain ordinary Check/Fence in this child.
+func lowerViewCallerRefs(c authz.Caller) (driver.SelectionExpr, bool) {
+	args := []driver.SelectionExpr{}
+	for principal := &c.Principal; principal != nil; principal = principal.Sponsor {
+		for name, value := range principal.Caveats {
+			if name != "refs" {
+				return driver.SelectionExpr{}, false
+			}
+			data, err := json.Marshal(value)
+			if err != nil || string(data) == "null" {
+				return driver.SelectionExpr{}, false
+			}
+			var refs []model.Ref
+			if json.Unmarshal(data, &refs) != nil || len(refs) > driver.SelectionMaxNodes {
+				return driver.SelectionExpr{}, false
+			}
+			for _, ref := range refs {
+				// The authorization Ref domain is wider than SelectionRefs.
+				// Preserve ordinary checks for any storage-unrepresentable ID,
+				// including one beside a matching canonical reference.
+				if authz.CanonicalRef(ref) != nil || driver.ValidateHierarchyRef(ref) != nil {
+					return driver.SelectionExpr{}, false
+				}
+			}
+			// An explicitly empty vector is a denying membership predicate.
+			// Omitted refs contribute no restriction to the conjunction.
+			args = append(args, driver.SelectionExpr{Op: driver.SelectionRefs, Refs: refs})
+		}
+	}
+	return driver.SelectionExpr{Op: driver.SelectionAll, Args: args}, true
+}
+
+// No data-dependent simplification may remove an unsupported policy arm.
+// TeamInvolvement and Modify remain check_only in full. Caller refs are lowered
+// separately and ANDed only after every configured policy arm is complete.
+func lowerViewFilter(f authz.FilterExpr, caller authz.Caller, ns authz.Namespace) (driver.SelectionExpr, bool) {
+	constant := func(v bool) driver.SelectionExpr {
+		if v {
+			return driver.SelectionExpr{Op: driver.SelectionTrue}
+		}
+		return driver.SelectionExpr{Op: driver.SelectionFalse}
+	}
+	switch f.Op {
+	case authz.True:
+		return constant(true), true
+	case authz.False:
+		return constant(false), true
+	case authz.PrincipalKind:
+		return constant(caller.Principal.Kind == f.Kind), true
+	case authz.SponsorKind:
+		return constant(caller.Principal.Sponsor != nil && caller.Principal.Sponsor.Kind == f.Kind), true
+	case authz.All, authz.Any:
+		op := driver.SelectionAll
+		if f.Op == authz.Any {
+			op = driver.SelectionAny
+		}
+		args := []driver.SelectionExpr{}
+		complete := true
+		for _, child := range f.Args {
+			e, ok := lowerViewFilter(child, caller, ns)
+			args = append(args, e)
+			complete = complete && ok
+		}
+		return driver.SelectionExpr{Op: op, Args: args}, complete
+	case authz.GrantExists:
+		keys, err := authzfixed.SelectionRows(ns)
+		if err != nil {
+			return driver.SelectionExpr{}, false
+		}
+		principal := &caller.Principal
+		if f.Subject == authz.SponsorSubject {
+			principal = principal.Sponsor
+		}
+		if principal == nil || principal.Kind != "user" {
+			return constant(false), true
+		}
+		subject := driver.SelectionString(authzfixed.SelectionSubject(authz.SubjectRef{Kind: "user", ID: principal.ID}))
+		role := driver.SelectionString(f.Role)
+		tests := []driver.SelectionFactTest{{Column: driver.SelectionFactSubject, Value: &subject}, {Column: driver.SelectionFactRole, Value: &role}}
+		switch f.Scope {
+		case authz.AuthorityBinding:
+			scope, err := authzfixed.SelectionScope(ns, authz.Scope{Kind: authz.AuthorityScope, Ref: ns.Authority})
+			if err != nil {
+				return driver.SelectionExpr{}, false
+			}
+			v := driver.SelectionString(scope)
+			tests = append(tests, driver.SelectionFactTest{Column: driver.SelectionFactScope, Value: &v})
+		case authz.ProjectBindingScope:
+			v := driver.SelectionString(string(driver.SelectionProjectScope))
+			tests = append(tests, driver.SelectionFactTest{Column: driver.SelectionFactScopeKind, Value: &v}, driver.SelectionFactTest{Column: driver.SelectionFactProjectName, Candidate: driver.SelectionProject})
+		default:
+			return driver.SelectionExpr{}, false
+		}
+		return driver.SelectionExpr{Op: driver.SelectionExistsOp, Exists: &driver.SelectionExists{Row: keys.Grants, Kind: driver.SelectionScopedGrantFact, Tests: tests}}, true
+	case authz.ActiveProject:
+		keys, err := authzfixed.SelectionRows(ns)
+		if err != nil {
+			return driver.SelectionExpr{}, false
+		}
+		active := driver.SelectionBool(true)
+		return driver.SelectionExpr{Op: driver.SelectionExistsOp, Exists: &driver.SelectionExists{Row: keys.Projects, Kind: driver.SelectionProjectFact, Tests: []driver.SelectionFactTest{{Column: driver.SelectionFactName, Candidate: driver.SelectionProject}, {Column: driver.SelectionFactActive, Value: &active}}}}, true
+	default:
+		return driver.SelectionExpr{}, false
+	}
+}
+
+// FactsSource sees the real pinned reader through this observer. Misses,
+// tombstones and exact raw logical bytes all become source witnesses.
+type viewSelectionSnapshot struct {
+	driver.Reader
+	sources map[string]driver.SelectionSource
+}
+
+func (s *viewSelectionSnapshot) Observe(ctx context.Context, keys []driver.LockKey) ([]driver.LockState, error) {
+	states, err := s.Reader.Observe(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	if len(states) != len(keys) {
+		return nil, hierarchyUnavailable()
+	}
+	for i, state := range states {
+		key, err := driver.EncodeLockKey(keys[i])
+		if err != nil {
+			return nil, err
+		}
+		digest := viewSelectionSourceDigest(state)
+		if state.Present && (keys[i].Kind == driver.LockRecord || keys[i].Kind == driver.LockDerived) && digest == "" {
+			return nil, hierarchyUnavailable()
+		}
+		s.sources[key] = driver.SelectionSource{Key: keys[i], Revision: state.Revision, Present: state.Present, Digest: digest}
+	}
+	return states, nil
+}
+func (s *viewSelectionSnapshot) Get(ctx context.Context, refs []model.Ref) ([]driver.Record, error) {
+	keys := make([]driver.LockKey, len(refs))
+	for i := range refs {
+		ref := refs[i]
+		keys[i] = driver.LockKey{Kind: driver.LockRecord, Ref: &ref}
+	}
+	if _, err := s.Observe(ctx, keys); err != nil {
+		return nil, err
+	}
+	return s.Reader.Get(ctx, refs)
+}
+func (s *viewSelectionSnapshot) observations() []driver.SelectionSource {
+	keys := make([]string, 0, len(s.sources))
+	for key := range s.sources {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := make([]driver.SelectionSource, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, s.sources[key])
+	}
+	return out
+}
+func viewSelectionSourceDigest(state driver.LockState) string {
+	if !state.Present {
+		return ""
+	}
+	if state.Record != nil {
+		return driver.SelectionDigest(state.Record.Body)
+	}
+	if state.Derived != nil {
+		return driver.SelectionDigest(state.Derived.Value)
+	}
+	return ""
+}
+func sameViewSelectionSource(source driver.SelectionSource, state driver.LockState) bool {
+	return source.Present == state.Present && source.Revision.String() == state.Revision.String() && source.Digest == viewSelectionSourceDigest(state)
+}
+
+func viewSelectionFactsMatch(ctx context.Context, snapshot *viewSelectionSnapshot, facts authzfixed.Facts) (bool, error) {
+	keys, err := authzfixed.SelectionRows(facts.Namespace)
+	if err != nil {
+		return false, err
+	}
+	states, err := snapshot.Observe(ctx, []driver.LockKey{{Kind: driver.LockDerived, Derived: &keys.Source}})
+	if err != nil {
+		return false, err
+	}
+	canonical, err := authzfixed.FactsSourceBytes(facts)
+	if err != nil {
+		return false, err
+	}
+	return len(states) == 1 && states[0].Present && states[0].Derived != nil && bytes.Equal(states[0].Derived.Value, canonical), nil
 }

@@ -16,7 +16,135 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
+
+// This wrapper keeps the real SQL queue capability while refusing a graph
+// scan or point-read fallback. The ordinary public Ready oracle uses the same
+// committed records independently.
+type mixedParentQueueReader struct {
+	driver.Reader
+	queue               driver.QueueProjectionReader
+	projections, images int
+	queries, gets       int
+}
+
+func (r *mixedParentQueueReader) QueueProjection(ctx context.Context) (driver.QueueProjection, error) {
+	r.projections++
+	return r.queue.QueueProjection(ctx)
+}
+
+func (r *mixedParentQueueReader) QueueProjectionImages(ctx context.Context, view driver.View, refs []model.Ref) ([]driver.Record, error) {
+	r.images++
+	return r.queue.QueueProjectionImages(ctx, view, refs)
+}
+
+func (r *mixedParentQueueReader) Query(context.Context, driver.Query) (driver.Page[driver.Record], error) {
+	r.queries++
+	return driver.Page[driver.Record]{}, errors.New("mixed-parent queue fell back to a source scan")
+}
+
+func (r *mixedParentQueueReader) Get(context.Context, []model.Ref) ([]driver.Record, error) {
+	r.gets++
+	return nil, errors.New("mixed-parent queue fell back to source point reads")
+}
+
+func TestQueueReadyCandidatesMixedParentSnapshotAndReopen(t *testing.T) {
+	for _, engine := range []string{"sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			f := newFixture(t, engine)
+			svc := m03ReadyService(t, f)
+			child := model.RefByID(m03CreateDurable(t, f, 0), model.Natural64(0))
+			grandchild := model.RefByID(m03CreateDurable(t, f, 1), model.Natural64(0))
+			free := m03CreateDurable(t, f, 2)
+			meta := f.meta("queue-mixed-parent-invoke")
+			meta.Method = "x.workflow.invoke"
+			result, err := svc.WorkflowInvoke(f.ctx, m03ReadyPrincipal, workflowplugin.InvokeRequest{
+				Template: "queue-mixed-parents", Project: "batch-local", Mode: "ephemeral",
+				Checklist: []workflowplugin.ChecklistItem{{Label: "parent", Title: "blocked parent", Type: "task", Blocked: true}},
+			}, meta)
+			if err != nil || len(result.Items) != 1 {
+				t.Fatalf("mixed parent invocation: result=%+v err=%v", result, err)
+			}
+			parent := model.RefByID(result.Items[0].ID, model.Natural64(0))
+			for i, request := range []service.LinkRequest{
+				{From: child, To: parent, Kind: "parent-child"},
+				{From: grandchild, To: child, Kind: "parent-child"},
+			} {
+				meta := f.meta(fmt.Sprintf("queue-mixed-parent-link-%d", i))
+				meta.Method = "bead.link"
+				if _, err := svc.Link(f.ctx, m03ReadyPrincipal, request, meta); err != nil {
+					t.Fatal(err)
+				}
+			}
+			includeEphemeral := false
+			req := service.ReadyRequest{Project: "batch-local", Limit: 10, Filter: &service.Filter{
+				Resources: []string{child.ID, grandchild.ID, free}, IncludeEphemeral: &includeEphemeral,
+			}}
+			for _, stage := range []string{"blocked", "blocked_reopened", "unblocked", "unblocked_reopened"} {
+				t.Run(stage, func(t *testing.T) {
+					if stage == "blocked_reopened" || stage == "unblocked_reopened" {
+						f.reopen(t)
+						svc = m03ReadyService(t, f)
+					}
+					if stage == "unblocked" {
+						meta := f.meta("queue-mixed-parent-unblock")
+						meta.Method = "bead.update"
+						if _, err := svc.Update(f.ctx, m03ReadyPrincipal, service.UpdateRequest{ID: parent, Fields: map[string]any{"blocked": false}}, meta); err != nil {
+							t.Fatal(err)
+						}
+					}
+					want := []string{free}
+					if stage == "unblocked" || stage == "unblocked_reopened" {
+						want = []string{child.ID, grandchild.ID, free}
+					}
+					ordinary, err := svc.Ready(f.ctx, m03ReadyPrincipal, req)
+					if err != nil || ordinary.Next != nil || !reflect.DeepEqual(m03ReadyIDs(ordinary), want) {
+						t.Fatalf("ordinary mixed-parent oracle: page=%+v err=%v want=%v", ordinary, err, want)
+					}
+					probe := func(t *testing.T, reader driver.Reader) {
+						t.Helper()
+						queue, ok := reader.(driver.QueueProjectionReader)
+						if !ok {
+							t.Fatal("real SQL reader lost its queue capability")
+						}
+						bound := &mixedParentQueueReader{Reader: reader, queue: queue}
+						items, err := svc.ReadyCandidates(f.ctx, m03ReadyPrincipal, req, bound)
+						ids := m03ReadyIDs(service.BeadPage{Items: items})
+						if err != nil || !reflect.DeepEqual(ids, m03ReadyIDs(ordinary)) {
+							t.Fatalf("typed queue differs from same-record ordinary Ready: got=%v want=%v err=%v", ids, m03ReadyIDs(ordinary), err)
+						}
+						if bound.projections != 1 || bound.images != 0 || bound.queries != 0 || bound.gets != 0 {
+							t.Fatalf("queue did not use one complete thin graph: projections=%d images=%d queries=%d gets=%d", bound.projections, bound.images, bound.queries, bound.gets)
+						}
+					}
+					t.Run("reader", func(t *testing.T) {
+						reader := hierarchyReader(t, f)
+						defer reader.Close()
+						probe(t, reader)
+					})
+					t.Run("terminal_transaction", func(t *testing.T) {
+						tx, err := f.store.Write(f.ctx, f.lease)
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer tx.Close()
+						if _, err := tx.Lock(f.ctx, []driver.LockRequest{{Key: driver.GraphBlockingSentinelLock, Mode: driver.LockShare}}); err != nil {
+							t.Fatal(err)
+						}
+						if _, err := tx.Head(f.ctx); err != nil {
+							t.Fatal(err)
+						}
+						probe(t, tx)
+						if err := tx.Rollback(f.ctx); err != nil {
+							t.Fatal(err)
+						}
+					})
+				})
+			}
+		})
+	}
+}
 
 func hierarchyCreate(key string, parent *model.Ref, project string) model.Op {
 	op := createOp(key, key, project)
@@ -547,6 +675,16 @@ func TestHierarchyMalformedDescendantClosureRefusesAcrossStores(t *testing.T) {
 
 func hierarchyRawRows(t *testing.T, f *fixture, id string, remove, add []driver.DerivedRow) {
 	t.Helper()
+	// This deliberately corrupts logical rows through the ordinary API. Typed
+	// annotations belong to the trusted publication arm, and are not deletions.
+	logical := func(rows []driver.DerivedRow) []driver.DerivedRow {
+		result := make([]driver.DerivedRow, len(rows))
+		for i, row := range rows {
+			result[i] = driver.DerivedRow{Key: row.Key, Value: append([]byte(nil), row.Value...)}
+		}
+		return result
+	}
+	remove, add = logical(remove), logical(add)
 	tx, err := f.store.Write(f.ctx, f.lease)
 	if err != nil {
 		t.Fatal(err)
@@ -745,7 +883,18 @@ func TestHierarchyClosure5000And5001AcrossStores(t *testing.T) {
 			if !reflect.DeepEqual(rows, hierarchyRows(t, f)) || f.receipt(t, m) != nil {
 				t.Fatal("5001 refusal published a partial rewrite")
 			}
-			commit := hierarchyApply(t, f, hierarchyMove(subtree, &destination))
+			beforeMove := metrics.Snapshot()
+			commit, err := f.writer.Apply(f.ctx, batchPrincipal, model.ChangeSet{Ops: []model.Op{hierarchyMove(subtree, &destination)}}, f.meta("hierarchy"))
+			moveMillis := map[pipeline.Phase]float64{}
+			for phase, results := range metrics.Snapshot().LaneMillis {
+				for result, millis := range results {
+					moveMillis[phase] += millis - beforeMove.LaneMillis[phase][result]
+				}
+			}
+			t.Logf("%s unchanged 5000-row hierarchy move phase times (ms): %v", engine, moveMillis)
+			if err != nil {
+				t.Fatal(err)
+			}
 			got := verifyHierarchy(t, f)
 			if len(got)-len(rows) != 5000 {
 				t.Fatalf("expected exactly 5000 added rows, got %d", len(got)-len(rows))
@@ -771,6 +920,9 @@ func TestHierarchyDerivedReaderOverlayAcrossStores(t *testing.T) {
 			defer tx.Close()
 			sentinel, _ := driver.NewClosureSentinel(id)
 			locks := []driver.LockRequest{{Key: driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel}, Mode: driver.LockUpdate}, {Key: driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAncestorClosure, Key: row.Key}}, Mode: driver.LockUpdate}}
+			// Restoring a typed annotation also attests its acquired source.
+			ref := seed.Results[0].Ref
+			locks = append(locks, driver.LockRequest{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &ref}, Mode: driver.LockShare})
 			sort.Slice(locks, func(i, j int) bool {
 				a, _ := driver.EncodeLockKey(locks[i].Key)
 				b, _ := driver.EncodeLockKey(locks[j].Key)
@@ -793,7 +945,9 @@ func TestHierarchyDerivedReaderOverlayAcrossStores(t *testing.T) {
 			if err != nil || len(visible) != 1 {
 				t.Fatalf("uncommitted removal leaked: %+v %v", visible, err)
 			}
-			if err := tx.PutDerived(f.ctx, driver.DerivedAncestorClosure, nil, []driver.DerivedRow{row}); err != nil {
+			// Restore the exact committed image, including its typed annotation.
+			// Reconstructing only Key/Value would be a raw untyped replacement.
+			if err := pipeline.PutSelectionDerived(f.ctx, tx, driver.DerivedAncestorClosure, nil, visible); err != nil {
 				t.Fatal(err)
 			}
 			staged, err = tx.DerivedRows(f.ctx, driver.DerivedAncestorClosure, prefix)

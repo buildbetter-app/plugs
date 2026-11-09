@@ -162,3 +162,9 @@ func (r readyProjectionReader) Observe(ctx context.Context, keys []driver.LockKe
 	}
 	return r.isolated.observe(ctx, keys)
 }
+
+// Initial Ready candidates use the same budget and isolated optimistic read
+// set as scalar preparation. Every returned observation joins the lock census.
+func (r readyProjectionReader) ObserveInitialReadyOrder(ctx context.Context, keys []driver.LockKey) ([]driver.LockState, error) {
+	return r.Observe(ctx, keys)
+}

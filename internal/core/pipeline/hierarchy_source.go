@@ -12,6 +12,9 @@ import (
 // passed to storage. Callers still own graph validation, locks and publication;
 // this adapter does not repair hierarchy state or certify a populated store.
 // Drivers without the optional typed writer retain ordinary unindexed writes.
+// This graph-only adapter does not certify selection. Owners maintaining
+// selection use PrepareSourceRecord and its pre-Head lock census; a graph-only
+// rewrite leaves any old source-bound selection annotation unavailable.
 func PutSourceRecord(ctx context.Context, tx driver.WriteTx, record driver.Record) error {
 	if record.Kind != "bead" {
 		return tx.Put(ctx, record)
@@ -19,17 +22,36 @@ func PutSourceRecord(ctx context.Context, tx driver.WriteTx, record driver.Recor
 	if err := driver.ValidateHierarchyRef(record.Ref); err != nil {
 		return failure("ontology_guard_failed", "invalid hierarchy source reference")
 	}
-	doc, err := DecodeDocument(record.Body)
-	if err != nil || doc.ID != record.Ref.ID {
-		return failure("ontology_guard_failed", "invalid hierarchy source document")
-	}
-	if err := driver.ValidateHierarchyRecord(record, doc.Parent); err != nil {
-		return failure("ontology_guard_failed", "invalid hierarchy source parent")
-	}
-	links, err := localSourceLinks(doc.Links)
+	doc, links, err := decodeGraphSource(record)
 	if err != nil {
 		return err
 	}
+	return putDecodedGraphSource(ctx, tx, record, doc, links)
+}
+
+func decodeGraphSource(record driver.Record) (Document, []driver.SourceLink, error) {
+	doc, err := DecodeDocument(record.Body)
+	if err != nil {
+		return Document{}, nil, failure("ontology_guard_failed", "invalid hierarchy source document")
+	}
+	return graphSourceMetadata(record, doc)
+}
+
+func graphSourceMetadata(record driver.Record, doc Document) (Document, []driver.SourceLink, error) {
+	if doc.ID != record.Ref.ID {
+		return Document{}, nil, failure("ontology_guard_failed", "invalid hierarchy source document")
+	}
+	if err := driver.ValidateHierarchyRecord(record, doc.Parent); err != nil {
+		return Document{}, nil, failure("ontology_guard_failed", "invalid hierarchy source parent")
+	}
+	links, err := localSourceLinks(doc.Links)
+	if err != nil {
+		return Document{}, nil, err
+	}
+	return doc, links, nil
+}
+
+func putDecodedGraphSource(ctx context.Context, tx driver.WriteTx, record driver.Record, doc Document, links []driver.SourceLink) error {
 	if writer, ok := tx.(driver.GraphSourceWriter); ok {
 		return writer.PutGraphRecord(ctx, record, doc.Parent, links)
 	}

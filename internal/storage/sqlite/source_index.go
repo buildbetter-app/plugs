@@ -113,6 +113,7 @@ func (t *transaction) putSourceRecord(ctx context.Context, record driver.Record,
 	t.sourceIdentities[id] = driver.Record{Ref: record.Ref, Kind: record.Kind}
 	t.records[id] = &record
 	t.sourceOverlay.Replace(id, declaration)
+	t.selectionSourceStaged(id)
 	return nil
 }
 

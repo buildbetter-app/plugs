@@ -33,6 +33,7 @@ go_test(
         "//internal/storage/memory",
         "//internal/storage/sqlite",
         "//internal/server/events",
+        "//internal/server/pluginhost",
         "//plugins/workflow",
     ],
 )

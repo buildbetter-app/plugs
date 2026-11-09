@@ -8,7 +8,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
-func (s *Store) BuildGraphSourceIndexes(ctx context.Context, lease driver.ActiveLease, decode driver.GraphSourceDecoder) error {
+func (s *Store) buildGraphSourceIndexes(ctx context.Context, lease driver.ActiveLease, decode driver.GraphSourceDecoder) error {
 	if decode == nil {
 		return fmt.Errorf("source index backfill requires a core decoder")
 	}

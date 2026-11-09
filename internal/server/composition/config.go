@@ -72,6 +72,10 @@ type StoreFactory func(context.Context, string, driver.Config) (driver.Store, er
 // provider or its session semantics with a parallel implementation.
 type OIDCFactory func(authnoidc.Config) (*authnoidc.Provider, error)
 
+// SelectionFactory binds a trusted view authority adapter to this runtime's
+// selected store and active lease. It owns no store or lease lifetime.
+type SelectionFactory func(context.Context, driver.Store, driver.ActiveLease) (*viewops.SelectionConfig, error)
+
 // OntologyConfig installs the durable ontology source used by the composed
 // runtime. Source is resolved per project and is read again by ontologyops
 // through the same store snapshot for every decision. The optional callbacks
@@ -149,6 +153,13 @@ type Config struct {
 	Readiness          viewops.ReadinessReader
 	AuthorizeRead      viewops.AuthorizeRead
 	AuthorizeReadBatch viewops.AuthorizeReadBatch
+	// Selection supplies the complete current-authority view adapter. The
+	// factory is an alternative for adapters that require the opened store and
+	// lease. Unsupported stores keep bound Check/Fence and cursor authority;
+	// only their storage acceleration is disabled. Coverage is checked against
+	// each request's actual content and authority revisions.
+	Selection        *viewops.SelectionConfig
+	SelectionFactory SelectionFactory
 	// EventAuthorization evaluates current policy for list/watch/dispatch.
 	// A configured policy without this capability does not expose event.list.
 	EventAuthorization EventAuthorization
@@ -312,6 +323,7 @@ func (a runtimeEventAuthorization) ReadResource(ctx context.Context, by model.Pr
 
 func eventAuthorizationRequired(config Config, authConfig authn.Config) bool {
 	return config.AuthorizeRead != nil || config.AuthorizeReadBatch != nil ||
+		config.Selection != nil || config.SelectionFactory != nil ||
 		(authConfig.AuthorizationInstalled != nil && authConfig.AuthorizationInstalled()) ||
 		(config.Ontology != nil && (config.Ontology.AuthorizeRead != nil || config.Ontology.Authorizer != nil))
 }
@@ -407,6 +419,9 @@ func normalizeConfig(config Config) (Config, error) {
 	if config.OIDCFactory != nil && config.OIDC == nil {
 		return Config{}, errors.New("composition: OIDC factory requires OIDC configuration")
 	}
+	if config.Selection != nil && config.SelectionFactory != nil {
+		return Config{}, errors.New("composition: supply selection or its factory, not both")
+	}
 	if config.AuthMode == "anonymous" && !loopbackAddress(config.Address) {
 		return Config{}, errors.New("composition: anonymous server must bind a loopback address")
 	}
@@ -486,13 +501,14 @@ func (r *Runtime) bind(config Config) error {
 	var ontologySnapshot ontology.Snapshot
 	var ontologyReadAuthorize ontologyops.AuthorizeRead
 	var ontologyApplyEnabled bool
+	selectionPolicyConfigured := config.Selection != nil || config.SelectionFactory != nil
 	if config.Ontology != nil {
 		readAuthorize := config.Ontology.AuthorizeRead
 		if readAuthorize == nil && config.AuthorizeRead != nil {
 			readAuthorize = ontologyops.AuthorizeRead(config.AuthorizeRead)
 		}
 		installed := func() bool {
-			return config.Ontology.Authorizer != nil ||
+			return selectionPolicyConfigured || config.Ontology.Authorizer != nil ||
 				(authConfig.AuthorizationInstalled != nil && authConfig.AuthorizationInstalled())
 		}
 		if readAuthorize == nil && (installed() || config.AuthorizeReadBatch != nil || config.EventAuthorization != nil) {
@@ -501,7 +517,7 @@ func (r *Runtime) bind(config Config) error {
 		// A nil callback is the canonical absence of an authorization chain in
 		// ontologyops migration facts. Do not manufacture an installed chain for
 		// an explicit no-policy host merely to guard a nonexistent callback.
-		if readAuthorize != nil || authConfig.AuthorizationInstalled != nil || config.Ontology.Authorizer != nil {
+		if readAuthorize != nil || authConfig.AuthorizationInstalled != nil || config.Ontology.Authorizer != nil || selectionPolicyConfigured {
 			ontologyReadAuthorize = func(ctx context.Context, by model.PrincipalRef, resource model.ResourceRef, project string) error {
 				if readAuthorize != nil {
 					return readAuthorize(ctx, by, resource, project)
@@ -515,7 +531,7 @@ func (r *Runtime) bind(config Config) error {
 		// ApplyProtected has no installed-authorizer revalidation capability.
 		// Ordinary Writer authorization cannot grant this distinct operation.
 		// A declared dynamic chain also keeps apply unavailable from startup.
-		ontologyApplyEnabled = authConfig.AuthorizationInstalled == nil &&
+		ontologyApplyEnabled = !selectionPolicyConfigured && authConfig.AuthorizationInstalled == nil &&
 			config.Ontology.Authorizer == nil && readAuthorize == nil && config.AuthorizeReadBatch == nil && config.EventAuthorization == nil
 		ontologyLocator, ontologySnapshot, err = loadConfiguredOntology(r.ctx, r.Store, meta, config.Project, config.Ontology)
 		if err != nil {
@@ -724,7 +740,7 @@ func (r *Runtime) bind(config Config) error {
 			return out, nil
 		}
 	}
-	r.Views, err = viewops.New(r.Store, r.Lease, viewops.Config{
+	viewConfig := viewops.Config{
 		Views:                config.ViewReader,
 		Readiness:            config.Readiness,
 		AuthorizeRead:        config.AuthorizeRead,
@@ -737,7 +753,11 @@ func (r *Runtime) bind(config Config) error {
 		ProjectionStatus:     r.ProjectionStatus,
 		ProjectionBinding:    viewBinding,
 		OntologyRevision:     model.Natural64(1),
-	})
+	}
+	if err := r.bindViewSelection(config, &viewConfig); err != nil {
+		return fmt.Errorf("composition: bind view selection: %w", err)
+	}
+	r.Views, err = viewops.New(r.Store, r.Lease, viewConfig)
 	if err != nil {
 		return fmt.Errorf("composition: create view service: %w", err)
 	}
@@ -791,6 +811,66 @@ func (r *Runtime) bind(config Config) error {
 		if err != nil {
 			return fmt.Errorf("composition: create web UI: %w", err)
 		}
+	}
+	return nil
+}
+
+func (r *Runtime) bindViewSelection(config Config, views *viewops.Config) error {
+	selection := config.Selection
+	if config.SelectionFactory != nil {
+		var err error
+		selection, err = config.SelectionFactory(r.ctx, r.Store, r.Lease)
+		if err != nil {
+			return err
+		}
+		if selection == nil {
+			return errors.New("selection factory returned a nil authority adapter")
+		}
+	}
+	if selection == nil {
+		return nil
+	}
+	if selection.Bind == nil || selection.AuthorizeRead == nil {
+		return errors.New("selection requires current authority and ordinary read authorization")
+	}
+	if views.AuthorizeReadBatch != nil && views.AuthorizeRead == nil {
+		return errors.New("batch read authorization requires the ordinary read authorizer")
+	}
+	copy := *selection
+	selection = &copy
+	views.Selection = selection
+	_, coverage := r.Store.(driver.GraphSourceIndexBuilder)
+	if coverage {
+		meta, err := r.Store.Meta(r.ctx)
+		if err != nil {
+			return err
+		}
+		reader, err := r.Store.Read(r.ctx, driver.View{Incarnation: meta.Incarnation})
+		if err != nil {
+			return err
+		}
+		_, supported := reader.(driver.SelectionReader)
+		if err := reader.Close(); err != nil {
+			return err
+		}
+		if supported {
+			// Capability is not coverage. The existing selector checks both
+			// content and authority ranges before executing the complete plan.
+			return nil
+		}
+	}
+	// Unsupported storage remains check_only. Keep the request's current
+	// authority snapshot, complete Check, final Fence and cursor binding; a
+	// per-resource callback alone cannot fence an empty count or continuation.
+	bind := selection.Bind
+	selection.Bind = func(ctx context.Context, by model.PrincipalRef, inline string) (*viewops.SelectionAuthority, error) {
+		authority, err := bind(ctx, by, inline)
+		if err != nil || authority == nil {
+			return authority, err
+		}
+		copy := *authority
+		copy.Boundary = nil
+		return &copy, nil
 	}
 	return nil
 }

@@ -22,6 +22,13 @@ func New(store ReadStore, lease driver.ActiveLease, cfg Config) (*Service, error
 	if store == nil || lease == nil {
 		return nil, fmt.Errorf("view operations require a read store and active lease")
 	}
+	if cfg.Selection != nil {
+		if cfg.Selection.Bind == nil || cfg.Selection.AuthorizeRead == nil {
+			return nil, fmt.Errorf("view selection requires current authority, read authorization and a final fence")
+		}
+		copy := *cfg.Selection
+		cfg.Selection = &copy
+	}
 	if cfg.AuthorizeReadBatch != nil && cfg.AuthorizeRead == nil {
 		return nil, fmt.Errorf("batch read authorization requires the ordinary read authorizer")
 	}
@@ -29,7 +36,7 @@ func New(store ReadStore, lease driver.ActiveLease, cfg Config) (*Service, error
 		return nil, fmt.Errorf("invalid ontology revision: %w", err)
 	}
 	if cfg.EpicProgress != nil {
-		if cfg.EpicProgress.AnonymousOnly && (cfg.AuthorizeRead != nil || cfg.ParentProjection != nil || cfg.EpicProgress.ParentProjection != nil) {
+		if cfg.EpicProgress.AnonymousOnly && (cfg.AuthorizeRead != nil || cfg.Selection != nil || cfg.ParentProjection != nil || cfg.EpicProgress.ParentProjection != nil) {
 			return nil, fmt.Errorf("anonymous epic progress cannot be combined with read authorization")
 		}
 		if cfg.EpicProgress.ValidateAuthority == nil || cfg.EpicProgress.AuthorizeScope == nil || cfg.EpicProgress.OntologySource == nil {
@@ -159,6 +166,7 @@ type stored struct {
 func scan(ctx context.Context, r driver.Reader) ([]stored, error) {
 	var cursor *driver.Cursor
 	rows := make([]stored, 0)
+	seen := map[string]driver.Record{}
 	for {
 		page, err := r.Query(ctx, driver.Query{Filter: map[string]any{"kind": "bead"}, Cursor: cursor, Limit: 1000})
 		if err != nil {
@@ -175,6 +183,13 @@ func scan(ctx context.Context, r driver.Reader) ([]stored, error) {
 			if err != nil || doc.ID != record.Ref.ID {
 				return nil, failure("internal_error", "invalid persisted bead document")
 			}
+			if previous, exists := seen[record.Ref.ID]; exists {
+				if !sameRevision(previous.Revision, record.Revision) || string(previous.Body) != string(record.Body) {
+					return nil, failure("internal_error", "driver returned conflicting duplicate bead images")
+				}
+				continue
+			}
+			seen[record.Ref.ID] = record
 			rows = append(rows, stored{record: record, doc: doc})
 		}
 		if page.NextCursor == nil {
@@ -211,6 +226,14 @@ func isDenied(err error) bool {
 }
 
 func (s *Service) authorize(ctx context.Context, by model.PrincipalRef, row stored) (bool, error) {
+	if s.cfg.Selection != nil {
+		if err := s.cfg.Selection.AuthorizeRead(ctx, by, model.ResourceRef{Kind: "bead", Ref: row.record.Ref}, row.doc.Project); err != nil {
+			if isDenied(err) {
+				return false, nil
+			}
+			return false, err
+		}
+	}
 	if s.cfg.AuthorizeRead == nil {
 		return true, nil
 	}
@@ -627,4 +650,95 @@ func sortValue(row stored, key string) string {
 		return row.record.Revision.String()
 	}
 	return ""
+}
+
+// compileMembership lowers the complete admitted predicate. A missing closed
+// operand is check_only, never a weaker storage predicate followed by paging.
+func compileMembership(filter Filter, project string, terms []queryTerm) (driver.SelectionExpr, bool) {
+	args := []driver.SelectionExpr{}
+	if project != "" {
+		args = append(args, selectionEquals(driver.SelectionProject, project))
+	}
+	if len(filter.Resources) != 0 {
+		ids := append([]string(nil), filter.Resources...)
+		sort.Strings(ids)
+		ids = compactStrings(ids)
+		parts := []driver.SelectionExpr{}
+		for len(ids) != 0 {
+			n := len(ids)
+			if n > driver.SelectionMaxNodes {
+				n = driver.SelectionMaxNodes
+			}
+			refs := make([]model.Ref, n)
+			for i, id := range ids[:n] {
+				refs[i] = model.RefByID(id, model.Natural64(0))
+				if driver.ValidateHierarchyRef(refs[i]) != nil {
+					return driver.SelectionExpr{}, false
+				}
+			}
+			parts = append(parts, driver.SelectionExpr{Op: driver.SelectionRefs, Refs: refs})
+			ids = ids[n:]
+		}
+		args = append(args, driver.SelectionExpr{Op: driver.SelectionAny, Args: parts})
+	}
+	if len(filter.Types) != 0 {
+		parts := []driver.SelectionExpr{}
+		for _, typ := range filter.Types {
+			parts = append(parts, selectionEquals(driver.SelectionType, typ))
+		}
+		args = append(args, driver.SelectionExpr{Op: driver.SelectionAny, Args: parts})
+	}
+	for _, term := range terms {
+		if term.labels != nil {
+			if len(filter.Resources) == 0 {
+				return driver.SelectionExpr{}, false
+			}
+			ids := append([]string(nil), filter.Resources...)
+			sort.Strings(ids)
+			ids = compactStrings(ids)
+			parts := []driver.SelectionExpr{}
+			for _, id := range ids {
+				parts = append(parts, driver.SelectionExpr{Op: driver.SelectionAll, Args: []driver.SelectionExpr{selectionEquals(driver.SelectionID, id), term.labels.selection(id)}})
+			}
+			args = append(args, driver.SelectionExpr{Op: driver.SelectionAny, Args: parts})
+			continue
+		}
+		expr := selectionEquals(driver.SelectionColumn(term.key), term.value)
+		if term.key == "title" {
+			expr.Compare.Op = "contains"
+		}
+		args = append(args, expr)
+	}
+	expression := driver.SelectionExpr{Op: driver.SelectionAll, Args: args}
+	return expression, selectionExpressionBudget(expression)
+}
+
+// Oversized but otherwise supported definitions keep the exact ordinary path.
+// They cannot acquire the summary allowance or fail as an invalid driver plan.
+func selectionExpressionBudget(expressions ...driver.SelectionExpr) bool {
+	nodes := 0
+	var within func(driver.SelectionExpr, int) bool
+	within = func(expr driver.SelectionExpr, depth int) bool {
+		nodes++
+		if depth > driver.SelectionMaxDepth || nodes > driver.SelectionMaxNodes || len(expr.Refs) > driver.SelectionMaxNodes {
+			return false
+		}
+		for _, child := range expr.Args {
+			if !within(child, depth+1) {
+				return false
+			}
+		}
+		return true
+	}
+	for _, expr := range expressions {
+		if !within(expr, 0) {
+			return false
+		}
+	}
+	return true
+}
+
+func selectionEquals(column driver.SelectionColumn, value string) driver.SelectionExpr {
+	v := driver.SelectionString(value)
+	return driver.SelectionExpr{Op: driver.SelectionCompareOp, Compare: &driver.SelectionCompare{Column: column, Op: "eq", Value: &v}}
 }

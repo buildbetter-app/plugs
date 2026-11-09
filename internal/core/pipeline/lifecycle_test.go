@@ -115,6 +115,9 @@ func TestLifecycleDocumentRejectsMalformedOrZeroInstants(t *testing.T) {
 				if _, err := DecodeDocument(body); err == nil {
 					t.Fatalf("malformed lifecycle instant accepted: %s", body)
 				}
+				if _, err := PrepareSourceRecord(driver.Record{Ref: model.RefByID("pl-malformed", model.Natural64(0)), Kind: "bead", Body: body}); err == nil {
+					t.Fatalf("projection decoder admitted malformed lifecycle instant: %s", body)
+				}
 			})
 		}
 	}

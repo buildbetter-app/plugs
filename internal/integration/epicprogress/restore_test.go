@@ -7,18 +7,22 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/restore"
 	"github.com/buildbetter-app/plugs/internal/core/service"
+	"github.com/buildbetter-app/plugs/internal/plugins/authzfixed"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
+	"github.com/buildbetter-app/plugs/internal/server/authzrpc"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/server/transport/httpjson"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -219,6 +223,7 @@ func TestEpicProgressSurvivesNativeRestoreAndSQLiteReopen(t *testing.T) {
 	// essential: no in-memory parent/count/authority cache may satisfy this read.
 	reopened := newFixtureMode(t, "sqlite", path, true, false)
 	requireAllocatorBytes(t, restoredAllocators, persistedAllocatorSnapshot(t, reopened.store))
+	requireReadOnlyRestoredFacts(t, reopened, []model.Ref{g.parent, g.open, g.done, g.secret, g.grandchild, g.unrelated})
 	if !reflect.DeepEqual(persistedImages(t, reopened.store), beforeImages) {
 		t.Fatal("physical reopen changed restored source images")
 	}
@@ -261,6 +266,133 @@ func TestEpicProgressSurvivesNativeRestoreAndSQLiteReopen(t *testing.T) {
 	durableRead := durable.viewer(t, epics, visible)
 	inspectProgress(t, durable.api.call(t, durableRead, "view.run", progressParams(g.parent, epics)), map[string]int{"total": 2, "status:todo": 2}, 1)
 	t.Logf("EP6 native head restore, physical SQLite close/reopen, current policy, cycle refusal, and count refresh proven at restored incarnation %s", incarnation)
+}
+
+// A native restore intentionally has no current-incarnation host facts source.
+// New must leave that absence intact while ordinary current authorization works.
+// Explicit startup establishes core selection coverage, then an explicit Replace
+// establishes the independently complete authority domain in its own transaction.
+func requireReadOnlyRestoredFacts(t *testing.T, f *fixture, refs []model.Ref) {
+	t.Helper()
+	ctx := context.Background()
+	keys, err := authzfixed.SelectionRows(f.base.Namespace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := func() driver.Reader {
+		t.Helper()
+		r, err := f.store.Read(ctx, driver.View{Incarnation: f.base.Namespace.Incarnation})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = r.Close() })
+		return r
+	}
+	ordinary := func(r driver.Reader) []bool {
+		t.Helper()
+		binding, err := f.app.Checker.BindAuthorization(ctx, r, model.PrincipalRef{Kind: "user", ID: "restored-reader"}, authz.Read, authz.Bead, "bead.list")
+		if err != nil {
+			t.Fatal(err)
+		}
+		allowed, err := binding.Check(ctx, refs)
+		if err != nil || len(allowed) != len(refs) {
+			t.Fatal("ordinary restored authorization unavailable:", err)
+		}
+		for _, allow := range allowed {
+			if !allow {
+				t.Fatal("ordinary unscoped user read changed after restore")
+			}
+		}
+		return allowed
+	}
+	r := read()
+	for _, key := range []driver.DerivedRowKey{keys.Source, keys.Grants, keys.Projects, keys.Teams} {
+		states, err := r.Observe(ctx, []driver.LockKey{{Kind: driver.LockDerived, Derived: &key}})
+		if err != nil || len(states) != 1 || states[0].Present || !states[0].Revision.IsZero() {
+			t.Fatal("New published absent restored facts selection domain:", err)
+		}
+	}
+	before := ordinary(r)
+	_ = r.Close()
+	if err := pipeline.BuildSourceIndexes(ctx, f.store, f.lease); err != nil {
+		t.Fatal("explicit restored core startup:", err)
+	}
+	probe := func(r driver.Reader, domain bool) (driver.SelectionResult, error) {
+		t.Helper()
+		// The real fixed read policy for an uncaveated User is true. Membership
+		// independently probes the complete grants domain, including its emptiness.
+		binding, err := f.app.Checker.BindAuthorization(ctx, r, model.PrincipalRef{Kind: "user", ID: "restored-reader"}, authz.Read, authz.Bead, "bead.list")
+		if err != nil {
+			t.Fatal(err)
+		}
+		filter, err := binding.Filter()
+		if err != nil {
+			t.Fatal(err)
+		}
+		identity, err := filter.Binding()
+		if err != nil {
+			t.Fatal(err)
+		}
+		acl, err := driver.NewReadFact(authz.ACLDependency(f.base.Namespace).Key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		states, err := r.Observe(ctx, []driver.LockKey{{Kind: driver.LockDerived, Derived: &keys.Source}})
+		if err != nil || len(states) != 1 {
+			t.Fatal("restored source observation:", err)
+		}
+		controls, err := r.Observe(ctx, []driver.LockKey{{Kind: driver.LockReadFact, Fact: acl}})
+		if err != nil || len(controls) != 1 {
+			t.Fatal("restored ACL observation:", err)
+		}
+		states = append(states, controls...)
+		sources := make([]driver.SelectionSource, len(states))
+		for i, state := range states {
+			sources[i] = driver.SelectionSource{Key: state.Key, Revision: state.Revision, Present: state.Present}
+			if state.Present && state.Derived != nil {
+				sources[i].Digest = driver.SelectionDigest(state.Derived.Value)
+			}
+		}
+		at := *r.Snapshot().At
+		truth := driver.SelectionExpr{Op: driver.SelectionTrue}
+		plan := driver.SelectionPlan{Incarnation: f.base.Namespace.Incarnation, Branch: model.Natural64(0), ContentRevision: at, AuthorityRevision: at, ContentCommitted: true, Membership: truth, Authorization: truth, Mode: driver.SelectionCountMode}
+		if domain {
+			plan.Membership = driver.SelectionExpr{Op: driver.SelectionExistsOp, Exists: &driver.SelectionExists{Row: keys.Grants, Kind: driver.SelectionScopedGrantFact}}
+		}
+		plan.Boundary, err = driver.PrepareSelectionBoundary(driver.SelectionBoundarySpec{Version: 1, PreparedBinding: identity, Incarnation: plan.Incarnation, Branch: plan.Branch, AuthorityRevision: at, Sources: sources, Chain: driver.SelectionChainCompiled, Authorization: truth, Host: driver.SelectionHostAbsent})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r.(driver.SelectionReader).Select(ctx, plan)
+	}
+	r = read()
+	if got, err := probe(r, false); err != nil || got.Total != uint64(len(refs)) {
+		t.Fatalf("explicit startup did not establish independent core coverage: %+v %v", got, err)
+	}
+	if _, err := probe(r, true); !errors.Is(err, driver.ErrSelectionUnavailable) {
+		t.Fatal("absent facts domain was certified for selection:", err)
+	}
+	_ = r.Close()
+	if err := f.facts.Replace(f.base); err != nil {
+		t.Fatal("explicit restored authority publication:", err)
+	}
+	r = read()
+	if got, err := probe(r, true); err != nil || got.Total != uint64(len(refs)) {
+		t.Fatalf("explicit Replace did not establish facts selection: %+v %v", got, err)
+	}
+	if !reflect.DeepEqual(before, ordinary(r)) {
+		t.Fatal("explicit facts publication changed ordinary authorization")
+	}
+	_ = r.Close()
+	current := persistedAllocatorSnapshot(t, f.store)
+	fresh, err := authzrpc.NewMutableFacts(f.base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authzrpc.New(ctx, authzrpc.Config{Store: f.store, Lease: f.lease, Provider: f.keys, Facts: fresh, Namespace: f.base.Namespace, DefaultProject: epics, Hierarchy: true}); err != nil {
+		t.Fatal(err)
+	}
+	requireAllocatorBytes(t, current, persistedAllocatorSnapshot(t, f.store))
 }
 
 // TestEpicProgressNativeRestoreReopenDetachUsesIndexedHierarchy exercises the

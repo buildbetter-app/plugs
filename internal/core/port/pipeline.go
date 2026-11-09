@@ -74,6 +74,11 @@ type HierarchySnapshotReader interface {
 // must track every consumed source/control and absence plus predicate scopes,
 // preserving callback budgets. W3 defines this seam but enables no callers or
 // forwarding through the Writer; an untracked driver selector is insufficient.
+// Complete read authority is represented by driver.SelectionBoundary. Its
+// constructor is a schema/ownership boundary, not permission to omit an
+// installed host callback: the owning host must admit the plan from its
+// actual immutable composition or return bounded check-only. Source/control
+// witnesses and the view revision remain part of the final publication fence.
 type SelectionSnapshotReader interface {
 	SnapshotReader
 	driver.SelectionReader
