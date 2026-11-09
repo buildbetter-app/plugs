@@ -99,7 +99,7 @@ func TestImportedSourceMemoryIsReadableWithoutLosingProvenance(t *testing.T) {
 func TestSourceMemoryJSONProjectionPreservesNumbersAndSecretReferences(t *testing.T) {
 	for _, value := range []any{json.Number("9007199254740993"), map[string]any{"$secret": "config/kv.memory.token"}, nil} {
 		source := dumpformat.Record{Kind: "memory", ID: "fixture", Body: dumpformat.Row{"key": "fixture", "value": value, "classification": "public"}}
-		body, err := sourceMirrorBody(source, false)
+		body, err := sourceMirrorBody(source, true)
 		if err != nil {
 			t.Fatal(err)
 		}

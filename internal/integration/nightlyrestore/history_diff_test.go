@@ -136,18 +136,6 @@ func checkSourceImage(t *testing.T, rows map[string]driver.Record, a *dumpformat
 					want[key] = value
 				}
 				want["source_id"], want["source_table"], want["source"] = source.ID, source.Source.Table, source.Source.Fields
-				if kind.Name == "memory" {
-					// The live memory API requires content and identity alongside
-					// the exact retained source value. Derive them independently
-					// from this checked archive image, including JSON numbers/null.
-					value, text := source.Body["value"].(string)
-					encoding := "text"
-					if !text {
-						value, encoding = string(jsonBytes(t, source.Body["value"])), "json"
-					}
-					want["id"], want["content"] = id, value
-					want["metadata"] = map[string]any{"beads.memory.value_encoding": encoding, "beads.classification": source.Body["classification"]}
-				}
 				sameJSON(t, "portable source row "+id, json.RawMessage(row.Body), want)
 				continue
 			}

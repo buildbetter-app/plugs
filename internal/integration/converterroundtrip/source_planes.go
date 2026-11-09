@@ -229,10 +229,10 @@ func sourcePlaneMirrorID(source dumpformat.Record, joint bool) string {
 	return "source/" + source.Kind + "/" + hashBytes(key)
 }
 
-// sourceMirrorBody keeps the exact source mirror while giving imported memories
-// the canonical live memory envelope consumed by memory.get/list and agent.brief.
-// Non-text JSON values retain their exact JSON representation in content; the
-// original value and provenance remain present for lossless reverse/readback.
+// sourceMirrorBody keeps the exact source mirror. Only an explicitly bound
+// source-plane import adds its live memory envelope; ordinary restore retains
+// the legacy raw schema. Admitted legacy imports use their separate public
+// string projection in buildPlan. Source-plane JSON values also remain raw.
 func sourceMirrorBody(source dumpformat.Record, joint bool) (map[string]any, error) {
 	body := cloneRow(source.Body)
 	body["source_id"], body["source_table"], body["source"] = source.ID, source.Source.Table, cloneRow(source.Source.Fields)
@@ -248,7 +248,7 @@ func sourceMirrorBody(source dumpformat.Record, joint bool) (map[string]any, err
 	if source.Kind == "beads-archive" {
 		body["read_only"], body["redactable"] = true, true
 	}
-	if source.Kind == "memory" {
+	if source.Kind == "memory" && joint {
 		content, text := source.Body["value"].(string)
 		encoding := "text"
 		if !text {
