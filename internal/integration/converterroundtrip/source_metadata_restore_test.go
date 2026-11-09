@@ -11,7 +11,6 @@ import (
 	"sort"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -50,7 +49,6 @@ func TestRestoreSourceSQLMetadataAndOntologyConserveAllSQLTables(t *testing.T) {
 		t.Run(engine, func(t *testing.T) {
 			ctx := context.Background()
 			store, lease, db, reopen := openDependencySQLTarget(t, engine)
-			prepareDependencySQLLocks(t, store, lease, db, engine, archive, profile)
 			before := dependencySQLCensus(t, db, engine, false)
 			failure, hit := errors.New("injected protected source lineage failure"), false
 			wrapped := &observedTarget{Store: store, wrap: func(tx driver.WriteTx) driver.WriteTx {
@@ -90,63 +88,6 @@ func TestRestoreSourceSQLMetadataAndOntologyConserveAllSQLTables(t *testing.T) {
 			t.Logf("SOURCE_SQL_METADATA engine=%s all_application_tables=%d physical_reopens=2 staging_rollback=true raw_metadata_preserved=true native_recording=false", engine, len(before))
 		})
 	}
-}
-
-// PostgreSQL creates missing lock placeholders on its reserved connection,
-// independently of the publishing transaction. Establish the exact snapshot
-// import lock set before measuring staging rollback; all application tables,
-// including these lock rows, still participate in every refusal comparison.
-func prepareDependencySQLLocks(t *testing.T, store driver.Store, lease driver.ActiveLease, db *sql.DB, engine string, archive *dumpformat.Archive, profile driver.RestoreImportProfile) {
-	t.Helper()
-	if profile.HistoryMode != driver.RestoreHistoryModeSnapshot {
-		t.Fatal("snapshot rollback fixture requires an explicit snapshot profile")
-	}
-	ctx := context.Background()
-	plan, err := buildPlanWithProfile(archive, &profile, time.Date(2026, 10, 30, 19, 0, 0, 0, time.UTC))
-	if err != nil {
-		t.Fatal(err)
-	}
-	requests := lockRequests(plan)
-	before := dependencySQLCensus(t, db, engine, false)
-	tx, err := store.Write(ctx, lease)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Close()
-	if states, err := tx.Lock(ctx, requests); err != nil || len(states) != len(requests) {
-		t.Fatalf("prepare exact import locks: states=%d want=%d err=%v", len(states), len(requests), err)
-	}
-	if err := tx.Close(); err != nil {
-		t.Fatal(err)
-	}
-	want := before
-	if engine == "postgres" {
-		rows := map[string]bool{}
-		for _, row := range before["locks"][1:] {
-			rows[row] = true
-		}
-		for _, request := range requests {
-			key, err := driver.EncodeLockKey(request.Key)
-			if err != nil {
-				t.Fatal(err)
-			}
-			raw, err := json.Marshal([]any{[]byte(key)})
-			if err != nil {
-				t.Fatal(err)
-			}
-			rows[string(raw)] = true
-		}
-		values := make([]string, 0, len(rows))
-		for row := range rows {
-			values = append(values, row)
-		}
-		sort.Strings(values)
-		want["locks"] = append(append([]string(nil), before["locks"][:1]...), values...)
-	}
-	if got := dependencySQLCensus(t, db, engine, false); !reflect.DeepEqual(want, got) {
-		t.Fatalf("lock preparation changed more than its exact placeholders: %s", dependencySQLDifference(want, got))
-	}
-	t.Logf("prepared exact snapshot import coordination locks=%d engine=%s without staging or publishing", len(requests), engine)
 }
 
 // Preserve the complete comparison and expose every changed table on failure.

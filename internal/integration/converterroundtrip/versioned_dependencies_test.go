@@ -215,7 +215,6 @@ func TestVersionedDependencyStagingFailureConservesAllSQLAndReopens(t *testing.T
 		t.Run(engine, func(t *testing.T) {
 			ctx := context.Background()
 			store, lease, db, reopen := openDependencySQLTarget(t, engine)
-			prepareDependencySQLLocks(t, store, lease, db, engine, archive, profile)
 			before := dependencySQLCensus(t, db, engine, false)
 			failure, hit := errors.New("injected v2 lineage staging failure"), false
 			target := &observedTarget{Store: store, wrap: func(tx driver.WriteTx) driver.WriteTx {
