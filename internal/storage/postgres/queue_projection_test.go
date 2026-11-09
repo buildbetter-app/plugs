@@ -132,8 +132,21 @@ func TestQueueProjectionRetainsCanonicalRefs(t *testing.T) {
 	committed := commitSourceTest(t, tx, header)
 	r := sourceReader(t, s, nil)
 	defer r.Close()
+	// The expected leaf comes from this exact authored source and allocated
+	// revision, independently of both queue and ordinary annotation read paths.
+	leaf, err := json.Marshal(struct {
+		ID       string         `json:"id"`
+		Type     string         `json:"type"`
+		Project  string         `json:"project"`
+		Status   string         `json:"status"`
+		Revision model.Revision `json:"revision"`
+		Fields   map[string]any `json:"fields,omitempty"`
+	}{doc.ID, doc.Type, doc.Project, "todo", committed.Revision, doc.Fields})
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := driver.QueueBead{
-		Bead:   driver.SelectionBead{Ref: ref, Parent: &parent.Ref, Project: &doc.Project, Type: "issue", Status: "todo", Title: "child"},
+		Bead:   driver.SelectionBead{Ref: ref, Parent: &parent.Ref, Project: &doc.Project, Type: "issue", Status: "todo", Title: "child", MembershipLeaf: driver.SelectionDigest(leaf)},
 		Source: driver.SelectionSource{Key: testLock(ref), Revision: committed.Revision, Present: true, Digest: driver.SelectionDigest(body)},
 		Facts: driver.QueueFacts{Version: driver.QueueFactsVersion, CreatedAt: created, Links: []driver.QueueLink{
 			{Kind: "waits-for", To: parent.Ref, Metadata: metadata}, {Kind: "related", TargetKind: "external", To: external},

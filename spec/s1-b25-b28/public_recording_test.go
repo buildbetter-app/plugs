@@ -1582,7 +1582,24 @@ func assertNativeReadySortDelta(t *testing.T, before, after map[string]any, targ
 	if err := decoder.Decode(&projectionDoc); err != nil {
 		t.Fatal(err)
 	}
-	bead := driver.SelectionBead{Ref: ref, Type: projectionDoc.Type, Parent: projectionDoc.Parent}
+	// Hash the independently conserved source fields in the declared Ready leaf
+	// wire order; never copy a digest from the observed derived postimage.
+	membershipStatus, _ := projectionDoc.Fields["status"].(string)
+	membershipValue, err := json.Marshal(struct {
+		ID       string         `json:"id"`
+		Type     string         `json:"type"`
+		Project  string         `json:"project"`
+		Status   string         `json:"status"`
+		Revision model.Revision `json:"revision"`
+		Fields   map[string]any `json:"fields,omitempty"`
+	}{
+		ID: projectionDoc.ID, Type: projectionDoc.Type, Project: projectionDoc.Project,
+		Status: membershipStatus, Revision: target.Revision, Fields: projectionDoc.Fields,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bead := driver.SelectionBead{Ref: ref, Type: projectionDoc.Type, Parent: projectionDoc.Parent, MembershipLeaf: hashBytes(membershipValue)}
 	if project, present := object["project"]; present {
 		name, ok := project.(string)
 		if !ok {

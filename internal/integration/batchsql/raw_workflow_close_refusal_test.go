@@ -435,6 +435,9 @@ func rawWorkflowExpectedPublication(t *testing.T, record driver.Record, incarnat
 		t.Fatalf("Writer fixture is not canonical: %v", err)
 	}
 	ref := model.RefByID(record.Ref.ID, model.Natural64(0))
+	if err := driver.ValidateHierarchyRef(record.Ref); err != nil || !driver.SelectionSameRef(record.Ref, ref) {
+		t.Fatal("ordinary publication source reference changed its exact ID arm")
+	}
 	project := "batch-local"
 	bead := driver.SelectionBead{Ref: ref, Project: &project, Type: "issue", Status: status, Title: title, Priority: 2}
 	if template, present := doc.Fields["template"]; !present {
@@ -445,6 +448,13 @@ func rawWorkflowExpectedPublication(t *testing.T, record driver.Record, incarnat
 	source := driver.SelectionSource{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &ref}, Revision: record.Revision, Present: true, Digest: driver.SelectionDigest(record.Body)}
 	annotate := func(table driver.DerivedTable, key string, value []byte, bead *driver.SelectionBead, facts *driver.SelectionFacts) driver.DerivedRow {
 		index := &driver.SelectionIndex{Version: driver.SelectionIndexVersion, Row: driver.DerivedRowKey{Table: table, Key: key}, Incarnation: incarnation, Branch: model.Natural64(0), ValueDigest: driver.SelectionDigest(value), Source: source, Bead: bead, Facts: facts}
+		if table == driver.DerivedAncestorClosure {
+			// Ancestor owners borrow the source Record.Ref; the ancestor target
+			// uses the explicit ID constructor. Preserve the engine's source
+			// representation as well as every public reference field.
+			owner := record.Ref
+			index.Source.Key.Ref = &owner
+		}
 		if bead != nil {
 			index.Queue = &driver.QueueFacts{Version: driver.QueueFactsVersion, CreatedAt: at.UTC()}
 		}
@@ -458,9 +468,20 @@ func rawWorkflowExpectedPublication(t *testing.T, record driver.Record, incarnat
 		}
 		return body
 	}
+	// Bind the literal semantic Ready item to the actual source revision,
+	// independently of both projection and maintained-tree producers.
+	bead.MembershipLeaf = driver.SelectionDigest(marshal(struct {
+		ID       string         `json:"id"`
+		Type     string         `json:"type"`
+		Project  string         `json:"project"`
+		Status   string         `json:"status"`
+		Revision model.Revision `json:"revision"`
+		Fields   map[string]any `json:"fields,omitempty"`
+	}{doc.ID, doc.Type, doc.Project, status, record.Revision, doc.Fields}))
 	labels := driver.SelectionFacts{Kind: driver.SelectionLabelFact, Rows: []driver.SelectionFact{}}
 	links := driver.SelectionFacts{Kind: driver.SelectionLinkFact, Rows: []driver.SelectionFact{}}
-	self := driver.SelectionFacts{Kind: driver.SelectionAncestorFact, Rows: []driver.SelectionFact{{Kind: driver.SelectionAncestorFact, Ref: &ref, Target: &ref, Depth: 0}}}
+	owner := record.Ref
+	self := driver.SelectionFacts{Kind: driver.SelectionAncestorFact, Rows: []driver.SelectionFact{{Kind: driver.SelectionAncestorFact, Ref: &owner, Target: &ref, Depth: 0}}}
 	encoded := base64.RawURLEncoding.EncodeToString([]byte(ref.ID))
 	return map[driver.DerivedTable][]driver.DerivedRow{
 		driver.DerivedSortKey:         {annotate(driver.DerivedSortKey, ref.ID, marshal(bead), &bead, nil), rawWorkflowExpectedRank(t, ref.ID, record.Revision, at)},

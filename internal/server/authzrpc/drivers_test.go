@@ -107,12 +107,15 @@ func readyFactsCarryForward(t *testing.T, open storeFactory) {
 				t.Fatalf("empty initial publication lacks its exact Ready marker: %+v/%v", rows, err)
 			}
 			var marker struct {
-				Version     int
-				Incarnation string
-				Through     model.Revision
-				Unsafe      uint64
+				Version        int
+				Incarnation    string
+				Through        model.Revision
+				Unsafe         uint64
+				OrderCreatedAt time.Time
+				OrderCount     uint64
+				OrderUnsafe    bool
 			}
-			if err := json.Unmarshal(rows[0].Value, &marker); err != nil || marker.Version != 2 || marker.Incarnation != meta.Incarnation || marker.Through.String() != old.Snapshot().At.String() {
+			if err := json.Unmarshal(rows[0].Value, &marker); err != nil || marker.Version != 3 || marker.Incarnation != meta.Incarnation || marker.Through.String() != old.Snapshot().At.String() || marker.Unsafe != 0 || !marker.OrderCreatedAt.IsZero() || marker.OrderCount != 0 || marker.OrderUnsafe {
 				t.Fatal("initial Ready marker is not bound to the fact publication")
 			}
 			want := []driver.DerivedRow{rows[0].Clone()}
@@ -1703,11 +1706,14 @@ func initialPublicationRows(t *testing.T, namespace authz.Namespace, body []byte
 		want[key] = row.Clone()
 	}
 	marker, err := json.Marshal(struct {
-		Version     int
-		Incarnation string
-		Through     model.Revision
-		Unsafe      uint64
-	}{2, namespace.Incarnation, model.Natural64(1), 0})
+		Version        int
+		Incarnation    string
+		Through        model.Revision
+		Unsafe         uint64
+		OrderCreatedAt time.Time
+		OrderCount     uint64
+		OrderUnsafe    bool
+	}{3, namespace.Incarnation, model.Natural64(1), 0, time.Time{}, 0, false})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1870,7 +1876,9 @@ func writerPublishesKernelBooleanAndSourceOnlyRestamps(t *testing.T, open storeF
 			}
 		}
 		m.Method, m.IdempotencyKey = "tx.apply", fmt.Sprintf("%032x", i+11)
+		rankStart := time.Now().UTC()
 		changed, err := writer.Apply(ctx, principal, model.ChangeSet{Ops: []model.Op{{Kind: model.OpSetMeta, SetMeta: &model.SetMetaOp{Target: ref, Key: "note", Value: json.RawMessage(`"changed source only"`)}}}}, m)
+		rankEnd := time.Now().UTC()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1880,8 +1888,8 @@ func writerPublishesKernelBooleanAndSourceOnlyRestamps(t *testing.T, open storeF
 			t.Fatal(err)
 		}
 		after := observe(afterReader, ref)
-		wantInventory := sourceRestampedInventory(t, beforeInventory, records[0], afterRecords[0])
 		afterInventory := selectionFamilyInventory(t, afterReader)
+		wantInventory := sourceRestampedInventory(t, beforeInventory, afterInventory, records[0], afterRecords[0], [2]time.Time{rankStart, rankEnd})
 		for j, state := range after {
 			want := before[j]
 			want.Revision = changed.Revision
@@ -1998,10 +2006,11 @@ func selectionFamilyInventory(t *testing.T, r driver.Reader) map[driver.DerivedR
 }
 
 // Start with every before row. Only the selected source's exact provenance and
-// revision-bound semantic leaf may change; all other bytes and Index fields
-// remain part of the expected full inventory. Reconstruct the original Ready
-// JSON from actual source bytes, independently of the publication helpers.
-func sourceRestampedInventory(t *testing.T, before map[driver.DerivedRowKey]driver.DerivedRow, oldSource, source driver.Record) map[driver.DerivedRowKey]driver.DerivedRow {
+// revision-bound semantic leaf may change. The selected legacy rank is also
+// republished at the actual write time and revision. All other bytes and Index
+// fields remain exact. Only the rank's clock is read from its postimage, bounded
+// by the actual Apply interval; its complete value comes from conserved source.
+func sourceRestampedInventory(t *testing.T, before, after map[driver.DerivedRowKey]driver.DerivedRow, oldSource, source driver.Record, rankInterval [2]time.Time) map[driver.DerivedRowKey]driver.DerivedRow {
 	t.Helper()
 	if !driver.SelectionSameRef(oldSource.Ref, source.Ref) || oldSource.Revision.String() == source.Revision.String() || string(oldSource.Body) == string(source.Body) {
 		t.Fatal("source-only control did not publish the selected changed source")
@@ -2030,10 +2039,50 @@ func sourceRestampedInventory(t *testing.T, before map[driver.DerivedRowKey]driv
 		}
 		return driver.SelectionDigest(body)
 	}
+	rankRow := func(record driver.Record, stamp time.Time) driver.DerivedRow {
+		var doc pipeline.Document
+		decoder := json.NewDecoder(strings.NewReader(string(record.Body)))
+		decoder.UseNumber()
+		if err := decoder.Decode(&doc); err != nil || doc.ID != record.Ref.ID || doc.CreatedAt == nil || doc.CreatedAt.IsZero() {
+			t.Fatal("selected rank source lacks its exact creation identity")
+		}
+		priority, ok := doc.Fields["priority"].(json.Number)
+		if !ok {
+			t.Fatal("selected rank source lacks an integer priority")
+		}
+		p, err := priority.Int64()
+		if err != nil || p < 0 || p > 4 {
+			t.Fatal("selected rank source priority is outside the declared domain")
+		}
+		bucket, rank := 0, int(p)
+		if doc.CreatedAt.Before(stamp.Add(-48 * time.Hour)) {
+			bucket, rank = 1, 999
+		}
+		value, err := json.Marshal(pipeline.ReadySortKey{Bucket: bucket, Rank: rank, CreatedAt: doc.CreatedAt.UTC(), RankedAt: stamp, Revision: record.Revision})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return driver.DerivedRow{Key: "ready/" + record.Ref.ID, Value: value}
+	}
 	want := make(map[driver.DerivedRowKey]driver.DerivedRow, len(before))
 	refreshed := map[driver.DerivedTable]int{}
+	ranks := 0
 	for key, row := range before {
 		row = row.Clone()
+		if key.Table == driver.DerivedSortKey && key.Key == "ready/"+oldSource.Ref.ID {
+			_, previous, err := pipeline.DecodeReadySortKey(row)
+			if err != nil || !reflect.DeepEqual(row, rankRow(oldSource, previous.RankedAt)) {
+				t.Fatal("baseline selected legacy rank does not bind its exact source")
+			}
+			current, present := after[key]
+			_, ranked, err := pipeline.DecodeReadySortKey(current)
+			if !present || err != nil || rankInterval[0].IsZero() || rankInterval[1].Before(rankInterval[0]) || ranked.RankedAt.Before(rankInterval[0]) || ranked.RankedAt.After(rankInterval[1]) {
+				t.Fatal("selected legacy rank clock is outside the actual write interval")
+			}
+			want[key] = rankRow(source, ranked.RankedAt)
+			ranks++
+			continue
+		}
 		index := row.Index
 		if index != nil && index.Source.Key.Kind == driver.LockRecord && index.Source.Key.Ref != nil && driver.SelectionSameRef(*index.Source.Key.Ref, oldSource.Ref) {
 			if index.Validate(key.Table, row) != nil || !index.Source.Present || index.Source.Revision.String() != oldSource.Revision.String() || index.Source.Digest != driver.SelectionDigest(oldSource.Body) {
@@ -2055,7 +2104,7 @@ func sourceRestampedInventory(t *testing.T, before map[driver.DerivedRowKey]driv
 		}
 		want[key] = row
 	}
-	if !reflect.DeepEqual(refreshed, map[driver.DerivedTable]int{driver.DerivedSortKey: 1, driver.DerivedAttribute: 1, driver.DerivedReferenceIndex: 1, driver.DerivedAncestorClosure: 1}) {
+	if ranks != 1 || !reflect.DeepEqual(refreshed, map[driver.DerivedTable]int{driver.DerivedSortKey: 1, driver.DerivedAttribute: 1, driver.DerivedReferenceIndex: 1, driver.DerivedAncestorClosure: 1}) {
 		t.Fatalf("incomplete selected restamp census: %+v", refreshed)
 	}
 	return want
