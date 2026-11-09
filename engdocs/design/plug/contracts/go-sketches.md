@@ -149,6 +149,7 @@ type SourceAllocatorProvenance struct {
 	Prefix        string            `json:"prefix"`
 	IDMode        string            `json:"id_mode"` // sequential or hash
 	HashLength    uint32            `json:"hash_length"` // 1..64 for hash, 0..64 for sequential
+	HashNamespaces []string          `json:"hash_namespaces,omitempty"`
 	LastID        uint64            `json:"last_id"`
 	ChildCounters map[string]uint64 `json:"child_counters,omitempty"`
 }

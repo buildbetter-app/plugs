@@ -110,6 +110,7 @@ type recorder struct {
 	t        *testing.T
 	root     string
 	binary   string
+	exporter string
 	inputs   nativeInputs
 	commands []commandReceipt
 	captures []captureReceipt
@@ -552,6 +553,10 @@ func (r *recorder) requireIDLength(id string, length int) {
 
 func (r *recorder) capture(w workspace, label string, wantBeads int) captureReceipt {
 	r.t.Helper()
+	exporter := r.exporter
+	if exporter == "" {
+		exporter = r.binary
+	}
 	root := filepath.Join(r.root, "captures", label)
 	if err := os.MkdirAll(root, 0700); err != nil {
 		r.t.Fatal(err)
@@ -560,7 +565,7 @@ func (r *recorder) capture(w workspace, label string, wantBeads int) captureRece
 		r.t.Fatal(err)
 	}
 	inventoryPath := filepath.Join(root, "inventory.json")
-	r.run(w, label+"-inventory", r.binary, []string{"--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "--output", inventoryPath}, 0)
+	r.run(w, label+"-inventory", exporter, []string{"--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "--output", inventoryPath}, 0)
 	inventoryInfo, err := os.Lstat(inventoryPath)
 	if err != nil || !inventoryInfo.Mode().IsRegular() || inventoryInfo.Mode().Perm() != 0600 {
 		r.t.Fatalf("native inventory is not a private regular file: %v", err)
@@ -619,7 +624,7 @@ func (r *recorder) capture(w workspace, label string, wantBeads int) captureRece
 		r.t.Fatalf("native family census omitted %v", wantFamilies)
 	}
 	archivePath := filepath.Join(root, "raw-plug-dump.tar")
-	r.run(w, label+"-dump", r.binary, []string{"--readonly", "export", "--format", "plug-dump/1", "--plug-inventory", inventoryPath, "--output", archivePath}, 0)
+	r.run(w, label+"-dump", exporter, []string{"--readonly", "export", "--format", "plug-dump/1", "--plug-inventory", inventoryPath, "--output", archivePath}, 0)
 	archiveInfo, err := os.Lstat(archivePath)
 	if err != nil || !archiveInfo.Mode().IsRegular() || archiveInfo.Mode().Perm() != 0600 {
 		r.t.Fatalf("native raw archive is not a private regular file: %v", err)

@@ -3664,6 +3664,17 @@
                   "type": "integer",
                   "minimum": 0
                 }
+              },
+              "hash_namespaces": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "maxLength": 32,
+                  "pattern": "^[a-zA-Z][a-zA-Z0-9_]*(?:-[a-zA-Z0-9_]+)*$"
+                },
+                "description": "Sorted exact source namespace inventory; each namespace is separate from the root hash token."
               }
             },
             "required": [

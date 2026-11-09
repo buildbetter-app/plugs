@@ -55,3 +55,49 @@ export PATH=/tmp/plug-swarm/bin/worker-safe:$PATH
   --test_output=all --test_timeout=900,900,900,9000 --jobs=2 \
   --local_resources=memory=8192
 ```
+
+## Exact 9d6 ID style A fixture
+
+`record_id_style_a_native_test` is a separate manual public fixture. It builds
+production `//cmd/bd:bd` from the declared exact
+`9d6fff760b7a314b476539198504d77ce0959656` source archive, checks all 5087
+Git blobs and modes, and retains the canonical Bazel 9.3.0 / Go 1.26.10 build,
+validation, executable bytes and hashes. Its request SHA must equal the actual
+checked-out candidate. Run, attempt and workflow fields bind the commands and
+retained outputs to the hosted request.
+
+Capture alone uses a separately built, declared
+`446dbbdaf978385099aeb8625e08016889fffccf` exporter source. Its 5158-entry
+manifest, build configuration and executable are retained independently.
+Every init, configuration change, create, child allocation, import and close
+uses the exact 9d6 behavior executable. The historical c8eb recorder and old
+Go-built 9d6 reference keep their original labels. This fixture neither invokes
+nor admits an official producer bundle.
+
+The corpus records default and configured adaptive lengths, explicit and closed
+child counters, nested and segmented parents, ten-nonce retry, and complete
+length-3-through-8 exhaustion using real public CLI JSONL input. Supplying
+`created_at` through the public import command makes the native hash tuple
+repeatable without changing its generator or clock. Each same-run capture is
+restored in snapshot mode and continued through real RPC on memory, SQLite and
+PostgreSQL, preserving source records and replaying after reopen. The legacy
+import oracle covers lengths 3 through 8 only. Pipeline cause receipts identify
+exhaustion; the RPC layer currently returns its ordinary internal error.
+
+Two-source native composition remains a separate dependency: the current
+`MergeArchives` refuses `SourceHistory`, and the retained B21 owner has not
+delivered a supported strict or snapshot merge invocation. Do not remove source
+history or relabel these single-project recordings as two-project proof,
+real-source rehearsal, official admission, a switch or FullS1.
+
+Invoke through `remote-bazel` with the exact candidate SHA and the seven controls
+shown above, replacing the target with `record_id_style_a_native_test`, omitting
+the historical bundle descriptor, and forwarding these hosted variables:
+
+```text
+--test_env=BAZEL_BIN --test_env=BAZEL_RC
+--test_env=BAZELISK_HOME --test_env=BAZELISK_VERIFY_SHA256
+--test_env=GITHUB_RUN_ID --test_env=GITHUB_RUN_ATTEMPT
+--test_env=GITHUB_SHA --test_env=GITHUB_WORKFLOW_REF
+--test_env=PLUG_ID_STYLE_A_REQUEST_SHA=<exact-candidate-sha>
+```

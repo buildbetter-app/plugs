@@ -1412,7 +1412,12 @@ spec/s1-b09-native/README.md
 spec/s1-b09-native/conservation_test.go
 spec/s1-b09-native/native_inputs.json
 spec/s1-b09-native/paired_replay_test.go
+spec/s1-b09-native/pinned_source_test.go
 spec/s1-b09-native/recorder_test.go
+spec/s1-b09-native/testdata/beads-446dbb.git-tree
+spec/s1-b09-native/testdata/beads-446dbb.tar.gz
+spec/s1-b09-native/testdata/beads-9d6fff.git-tree
+spec/s1-b09-native/testdata/beads-9d6fff.tar.gz
 spec/s1-b13-b16/BUILD.bazel
 spec/s1-b13-b16/README.md
 spec/s1-b13-b16/capture_regressions_test.go
