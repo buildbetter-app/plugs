@@ -326,6 +326,17 @@ func TestStrictSourceHistoryRefusalRetainsOriginalNamedGap(t *testing.T) {
 	members := tarMembers(t, nativeHistoryFixture(t, "pl", "active"))
 	var history dumpformat.SourceHistory
 	decode(t, members[dumpformat.SourceHistoryMember], &history)
+	// An unverified capture retains the current audit table exactly. The
+	// portable fixture's independently rewritten event payloads are not that
+	// census and cannot stand in for the archived current SQL cells.
+	history.Events = []dumpformat.Row{}
+	for _, line := range bytes.Split(bytes.TrimSpace(members["records/beads-archive.ndjson"]), []byte{'\n'}) {
+		var record dumpformat.Record
+		decode(t, line, &record)
+		if record.Source.Table == "events" {
+			history.Events = append(history.Events, record.Source.Fields)
+		}
+	}
 	history.Range = dumpformat.SourceHistoryRange{Status: "unverified", Reason: "head-image-missing-families:config,issues", Baseline: []dumpformat.Record{}, BaselineEvents: []dumpformat.Row{}, Frames: []dumpformat.SourceHistoryFrame{}, Gaps: []dumpformat.HistoryGap{}}
 	members[dumpformat.SourceHistoryMember] = encode(t, history)
 	var manifest dumpformat.Manifest
