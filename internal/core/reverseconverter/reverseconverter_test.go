@@ -626,12 +626,12 @@ func TestConvertRefusesUnsupportedAndDuplicateInputs(t *testing.T) {
 			want: "duplicate edge",
 		},
 		{
-			name: "external link",
+			name: "external arm with mismatched local source",
 			edit: func(d *Dump) {
 				d.Records["edge"][0].Body["target_kind"] = "depends_on_external"
 				d.Records["edge"][0].Body["to"] = "external:tracker/1"
 			},
-			want: "unsupported external target",
+			want: "source target mismatch",
 		},
 	}
 	for _, test := range tests {
@@ -1218,5 +1218,44 @@ func TestProjectionIsJSONStable(t *testing.T) {
 	}
 	if len(encoded) == 0 {
 		t.Fatal("unreachable")
+	}
+}
+
+// Typed output retention is distinct from native importer qualification.
+func TestReverseRetainsExplicitExternalTargetBeforeLocalLookup(t *testing.T) {
+	for _, target := range []string{"external:tracker/1", "demo-1"} {
+		t.Run(target, func(t *testing.T) {
+			dump := fixtureDump()
+			edge := &dump.Records["edge"][0]
+			edge.Body["target_kind"], edge.Body["to"] = "depends_on_external", target
+			delete(edge.Source.Fields, "depends_on_issue_id")
+			edge.Source.Fields["depends_on_external"] = target
+			result, err := Convert(dump)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Projection.Edges) != 1 || result.Projection.Edges[0].TargetKind != "depends_on_external" || result.Projection.Edges[0].To != target {
+				t.Fatalf("typed identity lost: %+v", result.Projection.Edges)
+			}
+			var dependency map[string]any
+			for _, line := range bytes.Split(result.JSONL, []byte{'\n'}) {
+				if len(line) == 0 {
+					continue
+				}
+				var row map[string]any
+				if err := json.Unmarshal(line, &row); err != nil {
+					t.Fatal(err)
+				}
+				if deps, ok := row["dependencies"].([]any); ok && len(deps) != 0 {
+					dependency = deps[0].(map[string]any)
+				}
+			}
+			if dependency["depends_on_external"] != target {
+				t.Fatalf("external field not retained: %v", dependency)
+			}
+			if _, flattened := dependency["depends_on_id"]; flattened {
+				t.Fatal("external identity flattened into local target")
+			}
+		})
 	}
 }

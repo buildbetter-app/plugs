@@ -82,6 +82,9 @@ type prepared struct {
 	graphValidated    bool
 	graphPreserved    bool
 	checkpointReads   map[string]uint64
+	readySort         readySortPlan
+	source            *SourcePublication
+	external          map[int]SourceOperation
 }
 
 func failure(code model.ErrorCode, message string) error {
@@ -185,7 +188,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 	aliases := map[string]model.Ref{}
 	for _, op := range cs.Ops {
 		if op.Kind == model.OpClose {
-			if meta.Method != "tx.apply" {
+			if meta.Method != "tx.apply" && !(meta.Method == "bead.close" && ctx.Value(sourceHandlerKey{}) != nil) {
 				return nil, failure("invalid_params", "close operation requires tx.apply")
 			}
 			p.closes = map[string]bool{}
@@ -197,7 +200,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 		if meta.Method != "bead.claimNext" {
 			return nil, failure("invalid_params", "empty change set is only valid for claimNext")
 		}
-	} else if isSlot(meta.Method) {
+	} else if isSlot(meta.Method) && !(meta.Method == "bead.close" && len(cs.Ops) == 1 && cs.Ops[0].Kind == model.OpClose && ctx.Value(sourceHandlerKey{}) != nil) {
 		// A method is host-supplied lowering context, not a batch-wide bypass.
 		if len(cs.Ops) < 1 || cs.Ops[0].Kind != model.OpPatch {
 			return nil, failure("invalid_params", "slot method requires a patch first")
@@ -216,6 +219,25 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 		var current *pending
 		var before json.RawMessage
 		var err error
+		if handle, _ := ctx.Value(sourceHandlerKey{}).(SourceOperationHandler); handle != nil {
+			var active *SourceOperation
+			op, active, err = handle(ctx, op, p.sourceCoreImage)
+			if err != nil {
+				return nil, err
+			}
+			if active != nil {
+				if p.external == nil {
+					p.external = map[int]SourceOperation{}
+				}
+				p.external[len(p.refs)] = *active
+				p.refs = append(p.refs, active.Result.Ref)
+				p.proposal.Changes = append(p.proposal.Changes, active.Change)
+				if p.closes != nil {
+					p.ordered = append(p.ordered, active.Change)
+				}
+				continue
+			}
+		}
 		if op.Kind == model.OpCreate {
 			c := op.Create
 			if protectedName(c.Type) {
@@ -310,6 +332,9 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			if err != nil {
 				return nil, err
 			}
+			if (op.Kind == model.OpLink || op.Kind == model.OpUnlink) && strings.HasPrefix(target.ID, "workflow:") {
+				return nil, failure("invalid_params", "workflow references require a supported workflow item operation")
+			}
 			if op.Kind == model.OpClose && canonicalWorkflowCloseTarget(target) {
 				return nil, failure(model.CodeUnsupported, "workflow items cannot participate in durable close changesets")
 			}
@@ -358,6 +383,11 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				if e != nil {
 					return nil, e
 				}
+				next := current.doc
+				next.Parent = parent
+				if _, e := HierarchyParent(next); e != nil {
+					return nil, e
+				}
 				op.Reparent.Target, op.Reparent.Parent = target, parent
 				current.doc.Parent = parent
 				current.setBy["parent"] = "request"
@@ -389,21 +419,46 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				if !validDependencyKind(kind) {
 					return nil, failure("invalid_params", "unsupported link kind")
 				}
-				to, e := p.resolve(op.Link.To, aliases)
+				targetKind, e := op.Link.TargetKind.Normalized()
 				if e != nil {
-					return nil, e
+					return nil, failure("invalid_params", e.Error())
 				}
-				if to.ID == target.ID {
+				to := op.Link.To
+				if targetKind != model.LinkTargetExternal {
+					to, e = p.resolve(to, aliases)
+					if e != nil {
+						return nil, e
+					}
+				}
+				if e := model.ValidateLinkTarget(targetKind, to); e != nil {
+					return nil, failure("invalid_params", e.Error())
+				}
+				op.Link.TargetKind = targetKind
+				if targetKind != model.LinkTargetExternal && to.ID == target.ID {
 					return nil, failure("ontology_guard_failed", "self-links are refused")
 				}
-				if _, e := p.load(ctx, to); e != nil {
+				if e := p.loadLinkTarget(ctx, to, targetKind); e != nil {
 					return nil, e
+				}
+				localParentChild := kind == "parent-child" && targetKind != model.LinkTargetExternal
+				if localParentChild && op.Kind == model.OpLink {
+					parent, e := HierarchyParent(current.doc)
+					if e != nil {
+						return nil, e
+					}
+					if parent != nil && parent.ID != to.ID {
+						return nil, failure("invalid_params", "conflicting parent representations")
+					}
 				}
 				// The endpoint is read, not written, unless another op targets it.
 				found := -1
 				conflictingKind := ""
 				for i, link := range current.doc.Links {
-					if link.To.ID != to.ID {
+					storedTargetKind, e := link.TargetKind.Normalized()
+					if e != nil {
+						return nil, failure("ontology_guard_failed", "invalid stored link target kind")
+					}
+					if storedTargetKind != targetKind || link.To.ID != to.ID {
 						continue
 					}
 					if link.Kind == kind {
@@ -411,7 +466,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 						continue
 					}
 					conflictingKind = link.Kind
-					// All dependency kinds share one endpoint identity (B07/B11).
+					// All dependency kinds share one typed endpoint identity (B07/B11).
 					// A type change requires an explicit unlink before the link;
 					// nonblocking kinds still retain their independent graph effects.
 					if op.Kind == model.OpLink {
@@ -434,7 +489,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				}
 				if op.Kind == model.OpLink {
 					if found < 0 {
-						current.doc.Links = append(current.doc.Links, Link{To: to, Kind: kind, Metadata: metadata})
+						current.doc.Links = append(current.doc.Links, Link{To: to, Kind: kind, Metadata: metadata, TargetKind: targetKind})
 					} else if metadata != nil {
 						// Omission preserves the stored predicate. An explicit
 						// replacement participates in ordinary final-image CAS,
@@ -443,7 +498,35 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 					}
 				}
 				if op.Kind == model.OpUnlink && found >= 0 {
-					current.doc.Links = append(current.doc.Links[:found], current.doc.Links[found+1:]...)
+					if localParentChild {
+						// Remove every matching legacy copy before detaching Parent.
+						links := current.doc.Links[:0]
+						for _, link := range current.doc.Links {
+							storedTargetKind, e := link.TargetKind.Normalized()
+							if e != nil {
+								return nil, failure("ontology_guard_failed", "invalid stored link target kind")
+							}
+							if storedTargetKind != targetKind || link.Kind != kind || link.To.ID != to.ID {
+								links = append(links, link)
+							}
+						}
+						current.doc.Links = links
+					} else {
+						current.doc.Links = append(current.doc.Links[:found], current.doc.Links[found+1:]...)
+					}
+				}
+				if localParentChild {
+					if op.Kind == model.OpLink {
+						parent, e := p.resolveParent(ctx, &to, aliases, target.ID)
+						if e != nil {
+							return nil, e
+						}
+						current.doc.Parent = parent
+					} else if parentID(current.doc.Parent) == to.ID {
+						current.doc.Parent = nil
+					}
+					current.setBy["parent"] = "request"
+					p.hierarchyEdits = append(p.hierarchyEdits, hierarchyEdit{id: target.ID, parent: parentID(current.doc.Parent)})
 				}
 				current.setBy["links"] = "request"
 			case model.OpDelete:
@@ -545,6 +628,31 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 		return nil, err
 	}
 	return p, nil
+}
+
+// loadLinkTarget reads only local endpoints. An explicitly external target
+// never aliases a same-spelled local bead or a local deletion in this batch.
+// Missing local targets remain not_found; workflow references retain their
+// separate typed admission boundary.
+func (p *prepared) loadLinkTarget(ctx context.Context, ref model.Ref, kind model.LinkTargetKind) error {
+	if kind == model.LinkTargetExternal {
+		return nil
+	}
+	if prior, ok := p.writes[ref.ID]; ok && prior.deleted {
+		return failure("not_found", "record was deleted in this batch")
+	}
+	if _, err := p.load(ctx, ref); err == nil {
+		return nil
+	} else {
+		var typed *model.Error
+		if !errors.As(err, &typed) || typed == nil || typed.Data.Code != "not_found" {
+			return err
+		}
+		if strings.HasPrefix(ref.ID, "workflow:") {
+			return failure("invalid_params", "workflow references require a supported workflow item operation")
+		}
+		return err
+	}
 }
 
 // prepareMemory lowers memory.save/delete into the same prepared transaction
@@ -1045,6 +1153,9 @@ func applyFields(p *pending, fields map[string]any, setter string) error {
 
 func (p *prepared) refresh() error {
 	for i := range p.proposal.Changes {
+		if _, active := p.external[i]; active {
+			continue
+		}
 		c := &p.proposal.Changes[i]
 		pending := p.writes[c.Resource.Ref.ID]
 		// All operations on a record describe the same atomic transition.

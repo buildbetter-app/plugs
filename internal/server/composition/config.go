@@ -165,6 +165,10 @@ type Config struct {
 	// runtime. When absent, the legacy process-local default remains in use and
 	// ontology management methods are not advertised.
 	Ontology *OntologyConfig
+	// StaleOntologySource is an optional protected ontology source for read-only
+	// age/status selection. Without it, view.run uses the same immutable
+	// built-in ontology instance installed on the Writer and Service.
+	StaleOntologySource service.OntologySourceLocator
 
 	// ProjectionBindings are the effective projection bindings owned by this
 	// composition. Their durable state is read through the checkpoint adapter;
@@ -689,6 +693,13 @@ func (r *Runtime) bind(config Config) error {
 	if viewBinding == "" {
 		viewBinding = "core"
 	}
+	staleOntologySource := config.StaleOntologySource
+	if staleOntologySource == nil {
+		staleOntologySource = config.DirectBlockerOntology
+	}
+	if staleOntologySource == nil && config.EpicProgress != nil {
+		staleOntologySource = config.EpicProgress.OntologySource
+	}
 	var directBlockers viewops.DirectBlockerSource
 	if config.DirectBlockerOntology != nil {
 		directBlockers = func(ctx context.Context, reader driver.Reader, dependent model.Ref, limit int) (viewops.DirectBlockerVerdict, error) {
@@ -703,26 +714,29 @@ func (r *Runtime) bind(config Config) error {
 			out := viewops.DirectBlockerVerdict{Edges: make([]viewops.DirectBlockerEdge, 0, len(verdict.Edges))}
 			for _, edge := range verdict.Edges {
 				out.Edges = append(out.Edges, viewops.DirectBlockerEdge{
-					Blocker: edge.Blocker,
-					Kind:    edge.Kind,
-					State:   viewops.DirectBlockerState(edge.State),
-					Reason:  edge.Reason,
+					Blocker:    edge.Blocker,
+					TargetKind: edge.TargetKind,
+					Kind:       edge.Kind,
+					State:      viewops.DirectBlockerState(edge.State),
+					Reason:     edge.Reason,
 				})
 			}
 			return out, nil
 		}
 	}
 	r.Views, err = viewops.New(r.Store, r.Lease, viewops.Config{
-		Views:              config.ViewReader,
-		Readiness:          config.Readiness,
-		AuthorizeRead:      config.AuthorizeRead,
-		AuthorizeReadBatch: config.AuthorizeReadBatch,
-		EpicProgress:       config.EpicProgress,
-		ParentProjection:   config.ParentProjection,
-		DirectBlockers:     directBlockers,
-		ProjectionStatus:   r.ProjectionStatus,
-		ProjectionBinding:  viewBinding,
-		OntologyRevision:   model.Natural64(1),
+		Views:                config.ViewReader,
+		Readiness:            config.Readiness,
+		AuthorizeRead:        config.AuthorizeRead,
+		AuthorizeReadBatch:   config.AuthorizeReadBatch,
+		EpicProgress:         config.EpicProgress,
+		ParentProjection:     config.ParentProjection,
+		DirectBlockers:       directBlockers,
+		StaleOntologySource:  staleOntologySource,
+		StaleDefaultOntology: ontology,
+		ProjectionStatus:     r.ProjectionStatus,
+		ProjectionBinding:    viewBinding,
+		OntologyRevision:     model.Natural64(1),
 	})
 	if err != nil {
 		return fmt.Errorf("composition: create view service: %w", err)

@@ -23,10 +23,15 @@ func New(n authz.Namespace) (*RuleSet, error) {
 // stored/prepared images and retain ontology, setter and transaction guards.
 // Empty Method exposes only the three exact CP7 action/resource pairs.
 func (r *RuleSet) Compile(req authz.ListRequest) (authz.FilterTemplate, error) {
-	req, err := authz.FreezeList(req)
+	prepared, err := authz.PrepareRequest(req)
 	if err != nil {
 		return authz.FilterTemplate{}, err
 	}
+	return r.CompilePrepared(prepared)
+}
+
+func (r *RuleSet) CompilePrepared(prepared *authz.PreparedRequest) (authz.FilterTemplate, error) {
+	req := prepared.Request()
 	f := authz.FilterExpr{Op: authz.False}
 	user := authz.FilterExpr{Op: authz.PrincipalKind, Kind: "user"}
 	switch {
@@ -41,7 +46,7 @@ func (r *RuleSet) Compile(req authz.ListRequest) (authz.FilterTemplate, error) {
 		))
 	}
 	t := authz.FilterTemplate{Namespace: r.namespace, Request: req, Permit: f, Forbid: authz.FilterExpr{Op: authz.False}}
-	return t, t.Validate()
+	return prepared.Filter(t)
 }
 
 func readMethod(m string) bool {
@@ -56,23 +61,38 @@ func writeMethod(m string) bool {
 }
 
 func (r *RuleSet) Eval(ctx context.Context, s authz.Slice, reqs []authz.CheckRequest) ([]authz.Decision, error) {
-	out := make([]authz.Decision, len(reqs))
-	for i, q := range reqs {
-		t, err := r.Compile(authz.ListRequest{Caller: q.Caller, Action: q.Action, ResourceKind: q.Resource.Kind, Method: q.Method})
+	return r.EvalPrepared(ctx, s, authz.PrepareChecks(reqs))
+}
+
+func (r *RuleSet) EvalPrepared(ctx context.Context, s authz.Slice, batch *authz.PreparedChecks) ([]authz.Decision, error) {
+	out := make([]authz.Decision, batch.Len())
+	filters := map[*authz.PreparedRequest]authz.FilterTemplate{}
+	for i := range out {
+		binding, err := batch.Binding(i)
 		if err != nil {
 			return nil, err
 		}
-		ok, err := t.Match(ctx, s, q.Resource)
+		t, found := filters[binding]
+		if !found {
+			t, err = r.CompilePrepared(binding)
+			if err != nil {
+				return nil, err
+			}
+			filters[binding] = t
+		}
+		ok, err := batch.Match(ctx, s, i, t)
 		if err != nil {
 			return nil, err
 		}
 		out[i].Effect = authz.NoDecision
 		if ok {
 			out[i].Effect = authz.Allow
-			out[i].Reasons = []string{"cp7." + string(q.Action)}
+			out[i].Reasons = []string{"cp7." + string(t.Request.Action)}
 		}
 	}
 	return out, nil
 }
 
 var _ authz.RuleSet = (*RuleSet)(nil)
+var _ authz.PreparedRuleSet = (*RuleSet)(nil)
+var _ authz.PreparedCompiler = (*RuleSet)(nil)

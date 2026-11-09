@@ -374,7 +374,15 @@ func checkLiveRelationsAndComments(id string, doc pipeline.Document, dump revers
 			continue
 		}
 		kind := stringValue(edge.Body["type"])
-		if kind == "parent-child" {
+		var targetKind model.LinkTargetKind
+		switch stringValue(edge.Body["target_kind"]) {
+		case "depends_on_issue_id":
+		case "depends_on_external":
+			targetKind = model.LinkTargetExternal
+		default:
+			return ReverseRefusal{"changed_source_relationships"}
+		}
+		if kind == "parent-child" && targetKind != model.LinkTargetExternal {
 			if parent != nil {
 				return ReverseRefusal{"changed_source_relationships"}
 			}
@@ -385,7 +393,10 @@ func checkLiveRelationsAndComments(id string, doc pipeline.Document, dump revers
 		if kind == "related" {
 			kind = "relates-to"
 		}
-		link := pipeline.Link{To: model.RefByID(stringValue(edge.Body["to"]), model.Natural64(0)), Kind: kind}
+		link := pipeline.Link{To: model.RefByID(stringValue(edge.Body["to"]), model.Natural64(0)), Kind: kind, TargetKind: targetKind}
+		if err := model.ValidateLinkTarget(targetKind, link.To); err != nil {
+			return ReverseRefusal{"changed_source_relationships"}
+		}
 		edgeVersion := 1
 		for _, entry := range dump.Manifest.Kinds {
 			if entry.Name == "edge" {
@@ -398,6 +409,12 @@ func checkLiveRelationsAndComments(id string, doc pipeline.Document, dump revers
 			if err != nil {
 				return ReverseRefusal{"invalid_source_relationship_metadata"}
 			}
+		} else {
+			var err error
+			link, err = importedSourceLink(edge.Body, kind, targetKind)
+			if err != nil {
+				return ReverseRefusal{"changed_source_relationships"}
+			}
 		}
 		links = append(links, link)
 	}
@@ -405,7 +422,7 @@ func checkLiveRelationsAndComments(id string, doc pipeline.Document, dump revers
 		return ReverseRefusal{"changed_source_relationships"}
 	}
 	key := func(link pipeline.Link) string {
-		return fmt.Sprintf("%s/%s/%s", link.Kind, link.To.Branch.String(), link.To.ID)
+		return fmt.Sprintf("%s/%s/%s/%s", link.Kind, link.TargetKind, link.To.Branch.String(), link.To.ID)
 	}
 	sort.Slice(links, func(i, j int) bool { return key(links[i]) < key(links[j]) })
 	current := append([]pipeline.Link{}, doc.Links...)

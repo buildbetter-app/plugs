@@ -66,6 +66,10 @@ func TestHierarchyCreateAndMalformedImages(t *testing.T) {
 	if _, err := ValidateHierarchyWrite(model.OpCreate, nil, after, caller.Principal, caller); err != nil {
 		t.Fatal(err)
 	}
+	after.Body["createdAt"] = "2026-11-03T00:00:00.000000001Z"
+	if _, err := ValidateHierarchyWrite(model.OpCreate, nil, after, caller.Principal, caller); err != nil {
+		t.Fatalf("valid core creation instant refused: %v", err)
+	}
 	for _, mutate := range []func(*model.Record){
 		func(r *model.Record) { r.Body["id"] = "other" },
 		func(r *model.Record) { delete(r.Body, "project") },
@@ -75,6 +79,13 @@ func TestHierarchyCreateAndMalformedImages(t *testing.T) {
 		func(r *model.Record) { r.Body["parent"] = model.RefByKey("future") },
 		func(r *model.Record) { r.Body["parent"] = model.RefByID("parent", model.Natural64(1)) },
 		func(r *model.Record) { r.Body["parent"] = map[string]any{"id": "parent", "unknown": "secret"} },
+		func(r *model.Record) { r.Body["createdAt"] = nil },
+		func(r *model.Record) { r.Body["createdAt"] = 1 },
+		func(r *model.Record) { r.Body["createdAt"] = "not-an-instant" },
+		func(r *model.Record) { r.Body["createdAt"] = "0001-01-01T00:00:00Z" },
+		func(r *model.Record) { r.Body["unknown"] = true },
+		func(r *model.Record) { r.Body["startedAt"] = "2026-11-03T00:00:00Z" },
+		func(r *model.Record) { r.Body["closedAt"] = "2026-11-03T00:00:00Z" },
 		func(r *model.Record) { r.Body["owner"] = "operator" },
 		func(r *model.Record) { r.Body["labels"] = []string{"private"} },
 		func(r *model.Record) { r.Kind = "memory" },

@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 )
@@ -250,7 +251,11 @@ func validateVersionedRecord(record Record, projects []Project, counts map[strin
 		case "blocks", "parent-child", "related", "discovered-from":
 		default:
 			kind := stringValue(fields["type"])
-			if edgeVersion != EdgeVersionTypedDependencies || (kind != "waits-for" && kind != "conditional-blocks") {
+			versionedType := edgeVersion == EdgeVersionTypedDependencies && (kind == "waits-for" || kind == "conditional-blocks")
+			// The external vocabulary added to v1 does not widen the closed
+			// successor contract for typed local dependencies.
+			externalType := edgeVersion == 1 && targetKind == "depends_on_external" && kind != "" && len(kind) <= 32 && utf8.ValidString(kind)
+			if !versionedType && !externalType {
 				return fmt.Errorf("unsupported dependency type")
 			}
 		}

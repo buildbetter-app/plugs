@@ -11,6 +11,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
 // Gate request/result names are re-exported from the core port so domain
@@ -123,6 +124,9 @@ type PagePosition struct {
 	// ReadyMembership binds guarded aggregate paging to the complete
 	// post-authorization order, including ordinary core rows.
 	ReadyMembership string
+	// A trusted internal Ready drain may reuse decoded source bytes. The
+	// guarded public position is built separately and never carries this state.
+	readyGraph *readyGraphSelection
 }
 
 // WorkflowPageSnapshot identifies one atomic provider ready observation. Its
@@ -151,11 +155,12 @@ func (s *WorkflowPageSnapshot) Equal(other *WorkflowPageSnapshot) bool {
 }
 
 type Filter struct {
-	Query     string
-	Resources []string
-	Types     []string
-	Events    []string
-	ViewID    string
+	Query            string
+	Resources        []string
+	Types            []string
+	Events           []string
+	ViewID           string
+	IncludeEphemeral *bool
 }
 
 // EventProvider is the transport-neutral seam used by the core service to
@@ -259,7 +264,21 @@ type ReadyRequest struct {
 	// from the wire; claimNext derives it from the selector and request key so
 	// equal-priority candidates can spread without changing bead.ready order.
 	ClaimNextSeed string
+	// authorizationFilter is a composition-root capability used by the guarded
+	// RPC adapter. The core service applies it to each complete ready candidate
+	// before cutting a page; it is never populated from wire input.
+	authorizationFilter ReadyAuthorizer
+	// Only the trusted guarded capability requests complete internal order metadata.
+	readySourceBinding bool
+	readyGraph         *readyGraphSelection
 }
+
+// ReadyAuthorizer is the narrow host-to-core read seam for a compiled finite
+// authorization predicate. The reader is the exact snapshot used to build
+// the ready graph, so an adapter can join its fact reads to that snapshot.
+// Check-only authorization deliberately leaves this nil and uses the guarded
+// post-filter cap instead.
+type ReadyAuthorizer func(context.Context, driver.Reader, Bead) (bool, error)
 
 type CreateRequest struct {
 	Type   string
@@ -304,11 +323,12 @@ type ClaimNextRequest struct {
 // filter are equivalent.
 func ClaimNextRequestIdentity(req ClaimNextRequest) (string, error) {
 	type normalizedFilter struct {
-		Query     string   `json:"query"`
-		Resources []string `json:"resources"`
-		Types     []string `json:"types"`
-		Events    []string `json:"events"`
-		ViewID    string   `json:"viewId"`
+		Query            string   `json:"query"`
+		Resources        []string `json:"resources"`
+		Types            []string `json:"types"`
+		Events           []string `json:"events"`
+		ViewID           string   `json:"viewId"`
+		IncludeEphemeral bool     `json:"includeEphemeral"`
 	}
 	normalize := func(values []string) []string {
 		if len(values) == 0 {
@@ -326,12 +346,16 @@ func ClaimNextRequestIdentity(req ClaimNextRequest) (string, error) {
 		sort.Strings(out)
 		return out
 	}
-	value := normalizedFilter{}
+	value := normalizedFilter{IncludeEphemeral: true}
 	if req.Filter != nil {
+		includeEphemeral := true
+		if req.Filter.IncludeEphemeral != nil {
+			includeEphemeral = *req.Filter.IncludeEphemeral
+		}
 		value = normalizedFilter{
 			Query: req.Filter.Query, Resources: normalize(req.Filter.Resources),
 			Types: normalize(req.Filter.Types), Events: normalize(req.Filter.Events),
-			ViewID: req.Filter.ViewID,
+			ViewID: req.Filter.ViewID, IncludeEphemeral: includeEphemeral,
 		}
 	}
 	data, err := json.Marshal(struct {
@@ -357,11 +381,12 @@ type CloseRequest struct {
 // in a ChangeSet. Expect applies to the source bead, which is the only record
 // mutated by a dependency operation.
 type LinkRequest struct {
-	From     model.Ref
-	To       model.Ref
-	Kind     string
-	Metadata *model.LinkMetadata
-	Expect   []model.Precondition
+	TargetKind model.LinkTargetKind
+	From       model.Ref
+	To         model.Ref
+	Kind       string
+	Metadata   *model.LinkMetadata
+	Expect     []model.Precondition
 }
 
 // The named lifecycle requests intentionally share the close shape. Their
@@ -413,6 +438,9 @@ type Bead struct {
 	// When true the transport emits only parent:{exists:true}.
 	ParentHidden     bool
 	Labels           []string
+	Links            []workflowplugin.RelationView
+	Blocked          bool
+	ChildCounter     uint64
 	Assignee         string
 	HiddenBlockers   int
 	ReadinessPending bool

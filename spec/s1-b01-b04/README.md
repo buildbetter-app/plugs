@@ -22,11 +22,15 @@ three kinds of evidence in one reviewable package:
 The pinned source is Beads `9d6fff760b7a314b476539198504d77ce0959656` with
 tree `cde121d6e4119e454857ad1c3ca293e2791be840`. The executable is the retained
 pure-Go reference build with SHA-256
-`33cdadbe3bd7a82e2c3c40f4b5da4403d822acc00d544a321df24e277c0836a3`.
+`3c6bbb888431751adce98dfebc8cbeeb5869300698e8b069a4d7438fabfb3af4`.
 
 The card projections retain the old/reference outcome and the adopted Plug
-outcome side by side. B01/B02 use `A3/D3/P74` and `A3/P22` respectively for
-category and stored-order differences. B03 uses `P10/P41/D24/A3`; B04 keeps
+outcome side by side. Their historical B01/B02 metadata uses `A3/D3/P74` and
+`A3/P22` respectively for category and stored-order differences. P74 permits
+ordering lag only. The separately adopted indefinite-parent membership deviation
+is recorded in [the B01 hierarchy disposition](b01-hierarchy-deviation.md) and
+`b01-hierarchy-vectors.json`, without rewriting historical metadata or captures.
+B03 uses `P10/P41/D24/A3`; B04 keeps
 claim semantics with `A4/P60`. The decisions are data in the manifest, not
 comments hidden in assertions. Timestamps, generated revisions, random leases,
 and Dolt commit IDs are omitted only where the manifest names them. The retained
@@ -70,6 +74,59 @@ Run the focused targets through the RunsOn wrapper:
 
 The whole-tree exact-head gate remains separate. This package does not certify
 latency, 200-agent contention rates, or unrelated cards.
+
+`//spec/s1-b01-b04:reference_recording` is an explicit, manual capture target.
+Invoke it only through the prepared public-reference RunsOn route. Missing
+archive, source, manifest, or producer-run inputs fail the test; they never
+produce a skipped success. Ordinary whole-tree tests do not execute this
+environment-dependent recorder. Two fresh matching captures remain required
+for complete paired reference evidence.
+
+The prepared pure-Go executable cannot open embedded Dolt. Explicit captures
+use its supported `--proxied-server` mode with the public Dolt 2.2.0 Linux/amd64
+release pinned by the reference source's `tools/bazel/dolt.bzl`. The target
+checks the archive digest before extracting an executable, verifies its version,
+and records its actual digest and runtime mode. Before its strict version check,
+the target uses public `dolt config --global --add versioncheck.disabled true`
+only under the disposable `HOME`/`DOLT_ROOT_PATH`, after disabling metrics in
+the same private configuration. `DOLT_DISABLE_EVENT_FLUSH=1` prevents detached
+metrics children, following the pinned source's test environment. The packet
+retains that source, the actual private configuration bytes/modes, and complete
+configuration/version argv, exits and stream bytes/digests in
+`runtime-commands.jsonl`. Setup diagnostics remain unmodified. Each disposable store is stopped
+through the public CLI before removal. The raw command stdout/stderr bytes and
+exit codes are retained separately, including on recorder failure. This runtime
+packet is also emitted as `S1_B01_B04_RAW_PACKET_BEGIN`/`END` framed JSON in the
+test log. Both literal header and footer bind the exact canonical JSON payload
+length and SHA-256; file entries bind size, base64 bytes, digest, presence, and
+read/copy errors. Source, declared profile, actual runtime and command streams
+remain separate. A failed or incomplete producer is explicitly `BLOCK`. The trusted RunsOn collector archives logs and XML rather than
+undeclared output files, so both successful and failed capture packets survive
+that route. File read, copy, or log-write failures fail the test.
+`extract_reference_packet.py` independently rejects partial, duplicated,
+noncanonical, altered or malformed frames and mismatched file digests. Its
+normal extraction refuses `BLOCK` before creating output; `--retain-block`
+explicitly preserves diagnostic bytes with an unqualified label. A successfully
+extracted raw capture still needs the separate paired semantic/clock proof.
+
+This runtime
+profile does not certify embedded-mode behavior, controlled reference clocks,
+or full-card parity. The historical twins remain unchanged and are not rebound
+to the new runtime or current recorder bytes.
+
+The private setup also explicitly configures the proxy server's source-default
+identity, `beads <beads@localhost>`, before recording. The pinned proxy's
+`DoltServer.doltConfigure` would otherwise add those keys during public init,
+changing the prepared configuration. Its complete source and digest are retained;
+the independent extractor still requires the final configuration to match the
+prepared bytes exactly. The first configured capture at `7bdeea0c` passed the
+runtime test but failed that independent binding check; its original archived
+packet remains unaccepted, and no unchanged repeat substitutes for the repair.
+
+The B02 replay also checks that public `bead.link` and `bead.fail` release a
+conditional dependent through the configured failure slot on memory, SQLite
+(including reopen), and PostgreSQL. This adopted outcome check does not extend
+the retained Beads traces or qualify the rest of the B02 card.
 
 ## B04 public claim assertions
 

@@ -102,6 +102,15 @@ func dumpHead(t *testing.T, e *endpoint) ([]byte, *dumpformat.Archive) {
 
 func restoreHead(t *testing.T, e *endpoint, data []byte, archive *dumpformat.Archive) string {
 	t.Helper()
+	// Keep the public envelope unchanged while retaining the exact failed
+	// phase in test.log before result's caller-level fatal attribution.
+	call := func(phase, method string, params map[string]any) map[string]any {
+		t.Helper()
+		t.Logf("NATIVE_RESTORE_RPC phase=%s boundary=begin method=%s", phase, method)
+		reply := e.call(t, "", method, params)
+		t.Logf("NATIVE_RESTORE_RPC phase=%s boundary=returned method=%s http=%d reply=%s", phase, method, reply.status, reply.raw)
+		return result(t, reply)
+	}
 	raw, err := json.Marshal(archive.Manifest())
 	if err != nil {
 		t.Fatal(err)
@@ -115,7 +124,7 @@ func restoreHead(t *testing.T, e *endpoint, data []byte, archive *dumpformat.Arc
 	meta := func(n int) map[string]any {
 		return map[string]any{"project": epics, "idempotencyKey": fmt.Sprintf("ep6-restore-%032x", n)}
 	}
-	begin := result(t, e.call(t, "", "admin.restore.begin", map[string]any{"manifest": manifest, "history": "head", "humanPresence": presence, "_meta": meta(0)}))
+	begin := call("begin", "admin.restore.begin", map[string]any{"manifest": manifest, "history": "head", "humanPresence": presence, "_meta": meta(0)})
 	id := begin["restoreId"].(string)
 	for page, offset := 0, 0; offset < len(data); page++ {
 		end := offset + 65536
@@ -124,11 +133,11 @@ func restoreHead(t *testing.T, e *endpoint, data []byte, archive *dumpformat.Arc
 		}
 		chunk := data[offset:end]
 		sum := sha256.Sum256(chunk)
-		result(t, e.call(t, "", "admin.restore.chunk", map[string]any{"restoreId": id, "page": page, "data": base64.StdEncoding.EncodeToString(chunk), "sha256": hex.EncodeToString(sum[:]), "humanPresence": presence, "_meta": meta(page + 1)}))
+		call(fmt.Sprintf("chunk/%d", page), "admin.restore.chunk", map[string]any{"restoreId": id, "page": page, "data": base64.StdEncoding.EncodeToString(chunk), "sha256": hex.EncodeToString(sum[:]), "humanPresence": presence, "_meta": meta(page + 1)})
 		offset = end
 	}
 	sum := sha256.Sum256(raw)
-	finish := result(t, e.call(t, "", "admin.restore.finish", map[string]any{"restoreId": id, "manifestSha256": hex.EncodeToString(sum[:]), "humanPresence": presence, "_meta": meta(1000000)}))
+	finish := call("finish", "admin.restore.finish", map[string]any{"restoreId": id, "manifestSha256": hex.EncodeToString(sum[:]), "humanPresence": presence, "_meta": meta(1000000)})
 	if finish["state"] != "complete" {
 		t.Fatalf("restore incomplete: %v", finish)
 	}
@@ -271,16 +280,11 @@ func TestEpicProgressNativeRestoreReopenDetachUsesIndexedHierarchy(t *testing.T)
 	source.close(t)
 
 	path := filepath.Join(dir, "restored-large.db")
-	target, lease := openStore(t, "sqlite", path)
+	target, lease, closeTarget := openRenewingTarget(t, "sqlite", path)
 	targetAdmin := admin(t, target, lease)
 	incarnation := restoreHead(t, targetAdmin, data, archive)
 	targetAdmin.close(t)
-	if err := lease.Release(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := target.Close(); err != nil {
-		t.Fatal(err)
-	}
+	closeTarget()
 
 	reopened := newFixtureMode(t, "sqlite", path, true, false)
 	reads := reopened.reads
@@ -321,11 +325,7 @@ func TestEpicProgressNativeRestoreDetachUsesIndexedHierarchyAcrossBackends(t *te
 			sourceAdmin.close(t)
 			source.close(t)
 
-			target, lease := openStore(t, backend, filepath.Join(dir, "restored-large.db"))
-			t.Cleanup(func() {
-				_ = lease.Release(context.Background())
-				_ = target.Close()
-			})
+			target, lease, closeTarget := openRenewingTarget(t, backend, filepath.Join(dir, "restored-large.db"))
 			targetAdmin := admin(t, target, lease)
 			incarnation := restoreHead(t, targetAdmin, data, archive)
 			targetAdmin.close(t)
@@ -333,12 +333,7 @@ func TestEpicProgressNativeRestoreDetachUsesIndexedHierarchyAcrossBackends(t *te
 			var targetStore driver.Store = target
 			var targetLease driver.ActiveLease = lease
 			if backend == "sqlite" {
-				if err := lease.Release(context.Background()); err != nil {
-					t.Fatal(err)
-				}
-				if err := target.Close(); err != nil {
-					t.Fatal(err)
-				}
+				closeTarget()
 				reopened := newFixtureMode(t, backend, filepath.Join(dir, "restored-large.db"), true, false)
 				targetStore, targetLease = reopened.store, reopened.lease
 			}

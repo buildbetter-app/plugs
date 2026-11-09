@@ -309,7 +309,10 @@ func (p *prepared) hierarchyIndexed(ctx context.Context) error {
 			break
 		}
 	}
-	before := parentGraph(s.stored)
+	before, err := parentGraph(s.stored)
+	if err != nil {
+		return err
+	}
 	after := make(map[string]string, len(s.parents))
 	for id, parent := range s.parents {
 		if !s.deleted[id] {

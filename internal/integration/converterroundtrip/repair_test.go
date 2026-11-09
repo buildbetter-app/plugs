@@ -3,8 +3,10 @@ package converterroundtrip
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -23,9 +25,12 @@ const (
 	idA = "pl-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	idB = "pl-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	idC = "pl-cccccccccccccccccccccccccccccccc"
-	// Fixed digest of an independently constructed 20-row, nine-table
-	// builtin-head/1 image with canonical self-ancestor keys and scalar zero.
-	supportedDerived = "f170bf742699fb0bbc577c57b19e7907872e2ea99a34a94fda5e0659197f20ed"
+	// Fixed 20-row, nine-table image. The archive is unchanged; only the
+	// default ontology row gains the adopted blocked:boolean declaration.
+	// TestB26BuiltinDerivedGoldenRetainsLegacyAndAddsOnlyBlocked independently
+	// reconstructs both complete images without the restore/ontology builders.
+	legacySupportedDerived = "f170bf742699fb0bbc577c57b19e7907872e2ea99a34a94fda5e0659197f20ed"
+	supportedDerived       = "6f1b59b29636cf665d447b1a4d49c1b5670af05f9d0170cf2c548ff1e51d62ab"
 )
 
 // This is a separately constructed head-only input, NOT the pinned exporter
@@ -177,15 +182,6 @@ func TestRestoreRefusesUnsupportedSemanticsBeforeWrite(t *testing.T) {
 				changeRecord(t, m, "edge", func(r map[string]any) { source(r)["type"] = "parent-child"; body(r)["type"] = "parent-child" })
 			})
 		}, "relation type parent-child"},
-		{"external target even when ID matches a bead", func(t *testing.T) []byte {
-			return supportedBytes(t, func(m map[string][]byte) {
-				changeRecord(t, m, "edge", func(r map[string]any) {
-					source(r)["depends_on_issue_id"] = nil
-					source(r)["depends_on_external"] = idA
-					body(r)["target_kind"] = "depends_on_external"
-				})
-			})
-		}, "external relation"},
 		{"sequential allocator", func(t *testing.T) []byte {
 			return supportedBytes(t, func(m map[string][]byte) {
 				for name, data := range m {
@@ -796,5 +792,81 @@ func TestOfflineRestoreDriverCapabilityRequiresHeadAndRecoveryHeader(t *testing.
 				t.Fatal("invalid/rolled-back capability changed target")
 			}
 		})
+	}
+}
+
+// This frozen normative ontology image and the explicit rows below are an
+// independent expected image, not a production-computed digest approval.
+// Keeping the old hash live proves the current change is exactly the one
+// admitted boolean declaration, with every other row and table conserved.
+const legacySupportedOntologyJSON = `{"statuses":{"backlog":{"name":"Backlog","category":"backlog"},"canceled":{"name":"Canceled","category":"canceled"},"done":{"name":"Done","category":"completed","outcome":"success"},"failed":{"name":"Failed","category":"completed","outcome":"failure"},"in_progress":{"name":"In progress","category":"started"},"todo":{"name":"Todo","category":"unstarted"}},"workflows":{"issue":{"statuses":["todo","in_progress","done","failed","canceled","backlog"],"initial":"todo","slots":{"cancel":"canceled","claim":"in_progress","close":"done","defer":"backlog","fail":"failed","reopen":"todo"},"transitions":[{"from":["todo"],"to":"in_progress","guards":[{"kind":"not_template"},{"kind":"no_open_blockers"},{"kind":"permission"}]},{"to":"done","guards":[{"kind":"not_template"},{"kind":"no_open_children"},{"kind":"no_open_blockers"},{"kind":"permission"}]},{"to":"failed","guards":[{"kind":"no_open_children"},{"kind":"permission"}]},{"to":"canceled","guards":[{"kind":"permission"}]},{"to":"todo","guards":[{"kind":"permission"}]},{"to":"backlog","guards":[{"kind":"permission"}]}]}},"types":{"issue":{"name":"Issue","workflow":"issue","fields":{"description":{"type":"string"},"labels":{"type":"strings"},"title":{"type":"string"}}}}}`
+
+func TestB26BuiltinDerivedGoldenRetainsLegacyAndAddsOnlyBlocked(t *testing.T) {
+	row := func(table driver.DerivedTable, key, value string) derivedImage {
+		return derivedImage{Table: table, Key: key, Value: json.RawMessage(value)}
+	}
+	var rows []derivedImage
+	for _, id := range []string{idA, idB, idC} {
+		self := base64.RawURLEncoding.EncodeToString([]byte(id))
+		ready, links := `{"blocked":false,"ready":false}`, `[]`
+		if id == idA {
+			ready = `{"blocked":false,"ready":true}`
+		}
+		if id == idB {
+			ready = `{"blocked":true,"ready":false}`
+			// Natural is a JSON integer even though its Go backing type is string.
+			links = fmt.Sprintf(`[{"to":{"id":%q,"branch":0},"kind":"blocks"}]`, idA)
+		}
+		rows = append(rows,
+			row(driver.DerivedAncestorClosure, self+"."+self, `0`),
+			row(driver.DerivedCutClosure, id, `[]`),
+			row(driver.DerivedAttribute, id, `{}`),
+			row(driver.DerivedReadyState, id, ready),
+			row(driver.DerivedReferenceIndex, id, links),
+			row(driver.DerivedSortKey, id, fmt.Sprintf(`{"id":%q,"priority":2}`, id)),
+		)
+	}
+	rows = append(rows, row(driver.DerivedOntology, "builtin", legacySupportedOntologyJSON), row(driver.DerivedPlugins, "builtin", `[]`))
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Table != rows[j].Table {
+			return rows[i].Table < rows[j].Table
+		}
+		return rows[i].Key < rows[j].Key
+	})
+	for _, current := range []bool{false, true} {
+		wantDigest := legacySupportedDerived
+		if current {
+			wantDigest = supportedDerived
+			for i := range rows {
+				if rows[i].Table == driver.DerivedOntology {
+					rows[i].Value = json.RawMessage(strings.Replace(legacySupportedOntologyJSON, `"fields":{"description"`, `"fields":{"blocked":{"type":"boolean"},"description"`, 1))
+				}
+			}
+		}
+		image := struct {
+			Profile string                `json:"profile"`
+			Tables  []driver.DerivedTable `json:"tables"`
+			Rows    []derivedImage        `json:"rows"`
+		}{"builtin-head/1", []driver.DerivedTable{"ancestor_closure", "cut_closure", "derived_attribute", "grant", "ontology", "plugins", "ready_state", "reference_index", "sort_key"}, rows}
+		data, err := json.Marshal(image)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := digestBytes(data); got != wantDigest {
+			t.Fatalf("independent complete image current=%v: got %s want %s; bytes=%s", current, got, wantDigest, data)
+		}
+		if current {
+			archive, err := dumpformat.Read(bytes.NewReader(supportedBytes(t, nil)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, err := buildPlan(archive)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.derived) != 20 || plan.derivedDigest != wantDigest || !reflect.DeepEqual(plan.derived, rows) {
+				t.Fatal("restore differs from the independently fixed 20-row current image")
+			}
+		}
 	}
 }

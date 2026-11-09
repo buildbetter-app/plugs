@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/ontologymigration"
@@ -47,14 +48,15 @@ const (
 )
 
 type dependencyLine struct {
-	ID          string `json:"id,omitempty"`
-	IssueID     string `json:"issue_id"`
-	DependsOnID string `json:"depends_on_id"`
-	Type        string `json:"type"`
-	CreatedAt   string `json:"created_at,omitempty"`
-	CreatedBy   string `json:"created_by,omitempty"`
-	Metadata    string `json:"metadata,omitempty"`
-	ThreadID    string `json:"thread_id,omitempty"`
+	ID                string `json:"id,omitempty"`
+	IssueID           string `json:"issue_id"`
+	DependsOnID       string `json:"depends_on_id,omitempty"`
+	DependsOnExternal string `json:"depends_on_external,omitempty"`
+	Type              string `json:"type"`
+	CreatedAt         string `json:"created_at,omitempty"`
+	CreatedBy         string `json:"created_by,omitempty"`
+	Metadata          string `json:"metadata,omitempty"`
+	ThreadID          string `json:"thread_id,omitempty"`
 }
 
 type commentLine struct {
@@ -348,6 +350,9 @@ func ConvertWithDirectives(dump Dump, directives []ontologymigration.Directive) 
 		issue := working[id]
 		sort.Slice(issue.Line.Dependencies, func(i, j int) bool {
 			a, b := issue.Line.Dependencies[i], issue.Line.Dependencies[j]
+			if a.DependsOnExternal != b.DependsOnExternal {
+				return a.DependsOnExternal < b.DependsOnExternal
+			}
 			if a.DependsOnID != b.DependsOnID {
 				return a.DependsOnID < b.DependsOnID
 			}
@@ -362,7 +367,11 @@ func ConvertWithDirectives(dump Dump, directives []ontologymigration.Directive) 
 		out.WriteByte('\n')
 		projection.Issues = append(projection.Issues, IssueProjection{ID: id, Kind: issue.Line.IssueType, Status: issue.Line.Status, Category: issue.Category, Outcome: issue.Outcome})
 		for _, dependency := range issue.Line.Dependencies {
-			projection.Edges = append(projection.Edges, EdgeProjection{ID: dependency.ID, From: dependency.IssueID, To: dependency.DependsOnID, Type: dependency.Type})
+			edge := EdgeProjection{ID: dependency.ID, From: dependency.IssueID, To: dependency.DependsOnID, Type: dependency.Type}
+			if dependency.DependsOnExternal != "" {
+				edge.To, edge.TargetKind = dependency.DependsOnExternal, "depends_on_external"
+			}
+			projection.Edges = append(projection.Edges, edge)
 		}
 		for _, comment := range issue.Line.Comments {
 			projection.Comments = append(projection.Comments, CommentProjection{ID: comment.ID, IssueID: comment.IssueID})
@@ -728,16 +737,18 @@ func convertEdge(record Record, issues map[string]*workingIssue, edgeVersion int
 			reasons = append(reasons, fmt.Sprintf("edge %q has missing target %q", record.ID, to))
 		}
 	} else if targetKind == "depends_on_external" {
-		// Beads JSONL dependencies are issue-to-issue rows. There is no
-		// stable external-target column in the pinned importer, so accepting
-		// this would silently drop the link during readback.
-		reasons = append(reasons, fmt.Sprintf("edge %q has unsupported external target", record.ID))
+		// Retain the census arm explicitly. Native importer support requires
+		// independent producer/readback evidence for this typed JSONL field.
+		if edgeVersion == dumpformat.EdgeVersionTypedDependencies {
+			reasons = append(reasons, fmt.Sprintf("edge %q has unsupported external target for edge version %d", record.ID, edgeVersion))
+		}
 	} else {
 		reasons = append(reasons, fmt.Sprintf("edge %q has unsupported target kind %q", record.ID, targetKind))
 	}
 	var metadataProjection dumpformat.EdgeMetadataProjection
 	versionedType := edgeVersion == dumpformat.EdgeVersionTypedDependencies && (edgeType == "waits-for" || edgeType == "conditional-blocks")
-	if !supportedEdgeTypes[edgeType] && !versionedType {
+	externalType := edgeVersion == 1 && targetKind == "depends_on_external" && edgeType != "" && len(edgeType) <= 32 && utf8.ValidString(edgeType)
+	if targetKind == "depends_on_external" && !externalType || targetKind != "depends_on_external" && !supportedEdgeTypes[edgeType] && !versionedType {
 		reasons = append(reasons, fmt.Sprintf("edge %q has unsupported type %q", record.ID, edgeType))
 	}
 	if edgeVersion == dumpformat.EdgeVersionTypedDependencies {
@@ -831,6 +842,9 @@ func convertEdge(record Record, issues map[string]*workingIssue, edgeVersion int
 		return []string{fmt.Sprintf("edge %q metadata: %v", record.ID, err)}
 	}
 	dependency := dependencyLine{ID: record.ID, IssueID: from, DependsOnID: to, Type: edgeType, Metadata: metadata, ThreadID: text(body["thread_id"]), CreatedAt: timestamp(record.Source.Fields["created_at"]), CreatedBy: text(record.Source.Fields["created_by"])}
+	if targetKind == "depends_on_external" {
+		dependency.DependsOnID, dependency.DependsOnExternal = "", to
+	}
 	issues[from].Line.Dependencies = append(issues[from].Line.Dependencies, dependency)
 	return nil
 }

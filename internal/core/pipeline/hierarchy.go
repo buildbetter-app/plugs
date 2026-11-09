@@ -32,11 +32,62 @@ func parentID(parent *model.Ref) string {
 	return parent.ID
 }
 
+// HierarchyParent resolves Parent and a single legacy parent-child link without
+// rewriting stored bytes. Both forms may be present when they name the same
+// validated canonical parent. Explicit external edges never enter hierarchy.
+func HierarchyParent(doc Document) (*model.Ref, error) {
+	parent := doc.Parent
+	if err := validateParent(parent); err != nil {
+		return nil, failure("invalid_params", "invalid hierarchy parent")
+	}
+	legacyParentSeen := false
+	for _, link := range doc.Links {
+		if link.Kind != "parent-child" {
+			continue
+		}
+		targetKind, err := link.TargetKind.Normalized()
+		if err != nil {
+			return nil, failure("invalid_params", err.Error())
+		}
+		if targetKind == model.LinkTargetExternal {
+			continue
+		}
+		if err := validateParent(&link.To); err != nil {
+			return nil, failure("invalid_params", "invalid legacy hierarchy parent")
+		}
+		if legacyParentSeen {
+			return nil, failure("invalid_params", "multiple legacy hierarchy parents")
+		}
+		legacyParentSeen = true
+		if parent != nil && parent.ID != link.To.ID {
+			return nil, failure("invalid_params", "conflicting parent representations")
+		}
+		if parent == nil {
+			value := link.To
+			parent = &value
+		}
+	}
+	return parent, nil
+}
+
 // Resolve through the same ordered pending graph used by all other operations.
 // In particular, an alias cannot grant existence to a later create, and a
 // transient descendant cycle is not rescued by a later operation in the batch.
 func (p *prepared) resolveParent(ctx context.Context, parent *model.Ref, aliases map[string]model.Ref, child string) (*model.Ref, error) {
 	if parent == nil {
+		// A detach is an explicit edit, not legacy-only stored input. Require
+		// unlinking a retained legacy relation before removing its parent.
+		if child != "" {
+			node, err := p.load(ctx, model.Ref{ID: child})
+			if err != nil {
+				return nil, err
+			}
+			for _, link := range node.doc.Links {
+				if link.Kind == "parent-child" && (link.TargetKind == "" || link.TargetKind == model.LinkTargetLocal) {
+					return nil, failure("invalid_params", "detach conflicts with retained legacy parent")
+				}
+			}
+		}
 		return nil, nil
 	}
 	ref, err := p.resolve(*parent, aliases)
@@ -56,7 +107,11 @@ func (p *prepared) resolveParent(ctx context.Context, parent *model.Ref, aliases
 		if err != nil {
 			return nil, err
 		}
-		id = parentID(node.doc.Parent)
+		parent, err := HierarchyParent(node.doc)
+		if err != nil {
+			return nil, err
+		}
+		id = parentID(parent)
 	}
 	return &ref, nil
 }
@@ -89,12 +144,16 @@ func (p *prepared) documents(ctx context.Context) (map[string]Document, error) {
 	}
 }
 
-func parentGraph(docs map[string]Document) map[string]string {
+func parentGraph(docs map[string]Document) (map[string]string, error) {
 	parents := make(map[string]string, len(docs))
 	for id, doc := range docs {
-		parents[id] = parentID(doc.Parent)
+		parent, err := HierarchyParent(doc)
+		if err != nil {
+			return nil, err
+		}
+		parents[id] = parentID(parent)
 	}
-	return parents
+	return parents, nil
 }
 
 func checkParentGraph(parents map[string]string) error {
@@ -275,11 +334,17 @@ func (p *prepared) hierarchy(ctx context.Context) (map[string]Document, error) {
 			return nil, err
 		}
 	}
-	before := parentGraph(stored)
+	before, err := parentGraph(stored)
+	if err != nil {
+		return nil, err
+	}
 	if err := checkParentGraph(before); err != nil {
 		return nil, err
 	}
-	staged := parentGraph(stored)
+	staged, err := parentGraph(stored)
+	if err != nil {
+		return nil, err
+	}
 	affected, err := p.hierarchyAffected(staged)
 	if err != nil {
 		return nil, err
@@ -295,7 +360,10 @@ func (p *prepared) hierarchy(ctx context.Context) (map[string]Document, error) {
 			final[id] = pending.doc
 		}
 	}
-	after := parentGraph(final)
+	after, err := parentGraph(final)
+	if err != nil {
+		return nil, err
+	}
 	if err := checkParentGraph(after); err != nil {
 		return nil, err
 	}

@@ -3,6 +3,8 @@ package pipeline
 import (
 	"context"
 
+	"github.com/buildbetter-app/plugs/internal/core/model"
+
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -24,12 +26,9 @@ func PutSourceRecord(ctx context.Context, tx driver.WriteTx, record driver.Recor
 	if err := driver.ValidateHierarchyRecord(record, doc.Parent); err != nil {
 		return failure("ontology_guard_failed", "invalid hierarchy source parent")
 	}
-	links := make([]driver.SourceLink, len(doc.Links))
-	for i, link := range doc.Links {
-		if !validDependencyKind(link.Kind) || driver.ValidateHierarchyRef(link.To) != nil {
-			return failure("ontology_guard_failed", "invalid hierarchy source link")
-		}
-		links[i] = driver.SourceLink{Kind: link.Kind, To: link.To}
+	links, err := localSourceLinks(doc.Links)
+	if err != nil {
+		return err
 	}
 	if writer, ok := tx.(driver.GraphSourceWriter); ok {
 		return writer.PutGraphRecord(ctx, record, doc.Parent, links)
@@ -38,4 +37,22 @@ func PutSourceRecord(ctx context.Context, tx driver.WriteTx, record driver.Recor
 		return writer.PutHierarchyRecord(ctx, record, doc.Parent)
 	}
 	return tx.Put(ctx, record)
+}
+
+// External edges remain in the exact source body, outside local inverse facts.
+func localSourceLinks(links []Link) ([]driver.SourceLink, error) {
+	local := make([]driver.SourceLink, 0, len(links))
+	for _, link := range links {
+		if !validDependencyKind(link.Kind) || model.ValidateLinkTarget(link.TargetKind, link.To) != nil {
+			return nil, failure("ontology_guard_failed", "invalid hierarchy source link")
+		}
+		if link.TargetKind == model.LinkTargetExternal {
+			continue
+		}
+		if driver.ValidateHierarchyRef(link.To) != nil {
+			return nil, failure("ontology_guard_failed", "invalid hierarchy source link")
+		}
+		local = append(local, driver.SourceLink{Kind: link.Kind, To: link.To})
+	}
+	return local, nil
 }

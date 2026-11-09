@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -277,6 +278,13 @@ func TestHierarchyEnabledMixedLifecyclePreservesHierarchyAuthorityAndRollback(t 
 			fields, _ := freshBody["fields"].(map[string]any)
 			if fields["status"] != "done" {
 				t.Fatalf("created-and-closed row status=%v", fields["status"])
+			}
+			for _, member := range []string{"createdAt", "closedAt"} {
+				stamp, ok := freshBody[member].(string)
+				at, err := time.Parse(time.RFC3339Nano, stamp)
+				if !ok || err != nil || at.IsZero() {
+					t.Fatalf("created-and-closed row lost its core %s: %v", member, freshBody[member])
+				}
 			}
 			childRow, err := f.snapshot(t).Get(context.Background(), []model.Ref{child})
 			if err != nil || len(childRow) != 1 {

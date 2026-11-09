@@ -124,7 +124,7 @@
       },
       "Filter": {
         "type": "object",
-        "description": "The shared filter envelope is unchanged. The opt-in epic-progress view uses exactly query=parent=\u003cbare branch-zero bead ID\u003e with no additional query clauses, resources, types or events; it selects canonical direct children only, across their own projects.",
+        "description": "The shared filter envelope is unchanged. The opt-in epic-progress view uses exactly query=parent=<bare branch-zero bead ID> with no additional query clauses, resources, types or events; it selects canonical direct children only, across their own projects.",
         "properties": {
           "query": {
             "type": "string",
@@ -151,6 +151,10 @@
           "viewId": {
             "type": "string",
             "description": "View membership for subscriptions and watches."
+          },
+          "includeEphemeral": {
+            "type": "boolean",
+            "description": "Include live ephemeral workflow items; defaults to true for backward-compatible ready reads."
           }
         },
         "additionalProperties": false
@@ -631,6 +635,9 @@
           "metadata": {
             "$ref": "#/components/schemas/LinkMetadata",
             "description": "Only valid for a waits-for link. Omission preserves existing metadata on re-add; explicit {} selects all-children without also_blocks."
+          },
+          "targetKind": {
+            "$ref": "#/components/schemas/LinkTargetKind"
           }
         },
         "required": [
@@ -1115,7 +1122,7 @@
           "filter"
         ],
         "additionalProperties": false,
-        "description": "The trusted epic-progress capability admits groupBy=[\"epic-progress\"], explicitly present fields=[], and exactly filter.query=\"parent=\u003cbare bead ID\u003e\". No sort or additional filters are admitted. budgetTokens must be absent or zero: this complete count is not token-budgeted or paged. The ordinary authorized input cap is 20,000, never the 100,000 type-summary exception; at most 100 groups including total are returned. Refusals return no partial counts."
+        "description": "The trusted epic-progress capability admits groupBy=[\"epic-progress\"], explicitly present fields=[], and exactly filter.query=\"parent=<bare bead ID>\". No sort or additional filters are admitted. budgetTokens must be absent or zero: this complete count is not token-budgeted or paged. The ordinary authorized input cap is 20,000, never the 100,000 type-summary exception; at most 100 groups including total are returned. Refusals return no partial counts."
       },
       "View": {
         "type": "object",
@@ -1221,7 +1228,7 @@
             "items": {
               "$ref": "#/components/schemas/ViewGroup"
             },
-            "description": "Existing grouped output. Epic progress returns key=total with the visible direct-child count and status:\u003ccanonical status ID\u003e groups counting visible children only; every items array is empty. Keys identify statuses in the ontology read from the same asOf content snapshot; they do not infer labels, readiness or completion policy. Only total may carry authorization elision. MaxGroups=100 includes total; incomplete or over-limit results refuse without truncation."
+            "description": "Existing grouped output. Epic progress returns key=total with the visible direct-child count and status:<canonical status ID> groups counting visible children only; every items array is empty. Keys identify statuses in the ontology read from the same asOf content snapshot; they do not infer labels, readiness or completion policy. Only total may carry authorization elision. MaxGroups=100 includes total; incomplete or over-limit results refuse without truncation."
           },
           "projection": {
             "$ref": "#/components/schemas/ProjectionStatus"
@@ -1304,6 +1311,9 @@
           "reason": {
             "type": "string",
             "maxLength": 128
+          },
+          "targetKind": {
+            "$ref": "#/components/schemas/LinkTargetKind"
           }
         },
         "required": [
@@ -3206,7 +3216,7 @@
           "details"
         ],
         "additionalProperties": false,
-        "x-validation": "resource is bead/\u003cdependent ID\u003e; revision equals blockerAfter.revision. No mutation of the dependent is implied. Current read authorization and redaction cover dependent, blocker, ontology and optional blocker project; suppress the entire notice on any denial."
+        "x-validation": "resource is bead/<dependent ID>; revision equals blockerAfter.revision. No mutation of the dependent is implied. Current read authorization and redaction cover dependent, blocker, ontology and optional blocker project; suppress the entire notice on any denial."
       },
       "OrdinaryEventDescriptor": {
         "type": "object",
@@ -3886,6 +3896,33 @@
           },
           "type": {
             "type": "string"
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "parent": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowRelationSpec"
+            }
+          },
+          "blocked": {
+            "type": "boolean"
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": true
           }
         },
         "required": [
@@ -3987,6 +4024,37 @@
               "type": "object",
               "additionalProperties": true
             }
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "parent": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowRelationView"
+            }
+          },
+          "blocked": {
+            "type": "boolean"
+          },
+          "childCounter": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": true
           }
         },
         "required": [
@@ -4288,6 +4356,108 @@
           "asOf"
         ],
         "additionalProperties": false
+      },
+      "WorkflowRelationSpec": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "to",
+          "kind"
+        ],
+        "additionalProperties": false
+      },
+      "WorkflowRelationView": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "minLength": 1
+          },
+          "to": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "kind"
+        ],
+        "additionalProperties": false
+      },
+      "WorkflowPromoteResult": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "target": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "relations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowRelationView"
+            }
+          },
+          "childCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "source",
+          "target",
+          "generation"
+        ],
+        "additionalProperties": false
+      },
+      "WorkflowDemoteResult": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "$ref": "#/components/schemas/WorkflowRun"
+          },
+          "item": {
+            "$ref": "#/components/schemas/WorkflowItem"
+          }
+        },
+        "required": [
+          "run",
+          "item"
+        ],
+        "additionalProperties": false
+      },
+      "LinkTargetKind": {
+        "type": "string",
+        "enum": [
+          "local",
+          "external"
+        ],
+        "description": "Omission is local. Explicit external targets retain an exact nonempty branch-zero ID and are never resolved against local beads."
       },
       "AsOfSelector": {
         "description": "Input selector: exactly one revision address or RFC3339 instant. An instant resolves to the highest committed revision at or before it in one complete pinned changeset snapshot; returned addresses remain concrete revisions. Incomplete retained history refuses history_gone. Current read permission applies.",

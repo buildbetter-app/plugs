@@ -20,8 +20,12 @@ func TestEdgeV2ReaderKeepsFrozenExternalCustomRefusal(t *testing.T) {
 			t.Fatalf("existing typed external source arm changed under version %d: %v", version, err)
 		}
 		edge.Body["type"], edge.Source.Fields["type"] = "custom", "custom"
-		if _, err := Read(bytes.NewReader(edgeVersionFixture(t, fixture, version))); err == nil {
+		_, err := Read(bytes.NewReader(edgeVersionFixture(t, fixture, version)))
+		if version == EdgeVersionTypedDependencies && err == nil {
 			t.Fatalf("version %d relaxed this source's frozen external custom refusal", version)
+		}
+		if version == 1 && err != nil {
+			t.Fatalf("main's v1 external custom vocabulary was refused: %v", err)
 		}
 	}
 }

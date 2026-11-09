@@ -130,12 +130,14 @@ func workflowCursorIDs(items []workflowplugin.ItemView) []string {
 func workflowCursorCore(t *testing.T, f *workflowClaimNextFixture) []string {
 	t.Helper()
 	ids := []string{"00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"}
+	// These core items are created at the fixture's declared clock.
+	createdAt := f.now.UTC()
 	changes := make([]conformance.FixtureChange, len(ids))
 	for i, id := range ids {
 		changes[i] = conformance.FixtureChange{Ref: model.RefByID(id, model.Natural64(0)), Kind: "bead", Op: model.OpCreate,
-			Body: []byte(fmt.Sprintf(`{"id":%q,"type":"issue","project":"project","fields":{"title":"core item","status":"todo","priority":0}}`, id))}
+			Body: []byte(fmt.Sprintf(`{"id":%q,"type":"issue","project":"project","createdAt":%q,"fields":{"title":"core item","status":"todo","priority":0}}`, id, createdAt.Format(time.RFC3339Nano)))}
 	}
-	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, changes); err != nil {
+	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{Time: createdAt}, changes); err != nil {
 		t.Fatal(err)
 	}
 	return ids
@@ -281,7 +283,7 @@ func TestWorkflowReadyDomainRejectsUnboundAndInvalidPhase(t *testing.T) {
 	f := newWorkflowCursorFixture(t)
 	f.invoke(t, 530, 3)
 	first, err := f.domain.Ready(context.Background(), f.by, service.ReadyRequest{Project: "project", Limit: 1})
-	if err != nil || first.Next == nil || !first.Next.Workflow {
+	if err != nil || first.Next == nil || first.Next.Workflow || first.Next.WorkflowSnapshot == nil || first.Next.ReadyMembership == "" {
 		t.Fatalf("first page=%+v err=%v", first, err)
 	}
 	for _, invalid := range []string{"unbound", "negative", "past-end", "incarnation", "revision", "deadline", "limit"} {
@@ -352,9 +354,10 @@ func TestWorkflowReadyGuardedRetainsBindingAcrossProviderPages(t *testing.T) {
 func TestWorkflowGuardedCursorRefusesCoreMembershipChange(t *testing.T) {
 	f := newWorkflowCursorFixture(t)
 	coreID := "00000000-0000-4000-8000-000000000009"
-	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{
+	createdAt := f.now.UTC()
+	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{Time: createdAt}, []conformance.FixtureChange{{
 		Ref: model.RefByID(coreID, model.Natural64(0)), Kind: "bead", Op: model.OpCreate,
-		Body: []byte(fmt.Sprintf(`{"id":%q,"type":"issue","project":"project","fields":{"title":"core item","status":"todo","priority":0}}`, coreID)),
+		Body: []byte(fmt.Sprintf(`{"id":%q,"type":"issue","project":"project","createdAt":%q,"fields":{"title":"core item","status":"todo","priority":0}}`, coreID, createdAt.Format(time.RFC3339Nano))),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -365,9 +368,9 @@ func TestWorkflowGuardedCursorRefusesCoreMembershipChange(t *testing.T) {
 	}
 	// Change only fixture content. This is a read-pagination regression;
 	// the read-only caller and fixed CP7 policy do not permit bead.close.
-	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{
+	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{Time: createdAt}, []conformance.FixtureChange{{
 		Ref: model.RefByID(coreID, model.Natural64(0)), Kind: "bead", Op: model.OpPatch,
-		Body: []byte(fmt.Sprintf(`{"id":%q,"type":"issue","project":"project","fields":{"title":"core item","status":"done","priority":0}}`, coreID)),
+		Body: []byte(fmt.Sprintf(`{"id":%q,"type":"issue","project":"project","createdAt":%q,"fields":{"title":"core item","status":"done","priority":0}}`, coreID, createdAt.Format(time.RFC3339Nano))),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -384,4 +387,79 @@ func TestWorkflowGuardedCursorRefusesCoreMembershipChange(t *testing.T) {
 	if err != nil || !slices.Equal(last.ids, workflow[1:]) || last.next.more() {
 		t.Fatalf("fresh traversal lost the final workflow item: page=%+v err=%v", last, err)
 	}
+}
+
+func TestWorkflowReadySignedRPCBindsCompiledWorkflowSnapshot(t *testing.T) {
+	t.Run("non-nil revision change", func(t *testing.T) {
+		f := newWorkflowCursorFixture(t)
+		ids := workflowCursorIDs(f.invoke(t, 570, 3))
+		filter := &service.Filter{Types: []string{"task"}}
+		first, err := workflowCursorRead(t, f, "http", filter, 1, workflowContinuation{}, "project")
+		if err != nil || len(first.ids) != 1 || first.snapshot == nil || !first.next.more() {
+			t.Fatalf("signed first page=%+v err=%v", first, err)
+		}
+		if first.snapshot.Revision.IsZero() {
+			t.Fatal("signed Ready omitted its nonnil workflow revision")
+		}
+		body, err := base64.RawURLEncoding.DecodeString(strings.Split(first.next.token, ".")[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload struct {
+			Version         int    `json:"version"`
+			ReadyMembership string `json:"readyMembership"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Version != 2 || !strings.HasPrefix(payload.ReadyMembership, "v2:") {
+			t.Fatalf("signed Ready did not use the compiled membership binding: %+v", payload)
+		}
+		// The original signed token must reach the guarded compiled Ready path,
+		// not merely be accepted by the transport codec.
+		last, err := workflowCursorRead(t, f, "http", filter, 2, first.next, "project")
+		if err != nil || !slices.Equal(last.ids, ids[1:]) || last.next.more() {
+			t.Fatalf("valid signed continuation=%+v err=%v", last, err)
+		}
+
+		_, err = f.domain.CommentWithOutcome(context.Background(), f.by, service.CommentRequest{
+			ID: model.RefByID(ids[0], model.Natural64(0)), Body: "revision changed",
+		}, workflowClaimNextMeta("bead.comment", 571))
+		if err != nil {
+			t.Fatal(err)
+		}
+		fresh, err := workflowCursorRead(t, f, "http", filter, 1, workflowContinuation{}, "project")
+		if err != nil || fresh.snapshot == nil || fresh.snapshot.Revision.IsZero() || fresh.snapshot.Revision.String() == first.snapshot.Revision.String() {
+			t.Fatalf("fresh signed Ready did not bind a new nonnil workflow revision: first=%+v fresh=%+v err=%v", first.snapshot, fresh.snapshot, err)
+		}
+		_, err = workflowCursorRead(t, f, "http", filter, 1, first.next, "project")
+		workflowCursorError(t, err, "cursor_invalid")
+	})
+
+	t.Run("clock-only ValidUntil expiry", func(t *testing.T) {
+		f := newWorkflowCursorFixture(t)
+		ids := workflowCursorIDs(f.invoke(t, 580, 3))
+		if _, err := f.domain.ClaimWithOutcome(context.Background(), f.by, service.ClaimRequest{
+			ID: model.RefByID(ids[0], model.Natural64(0)),
+		}, workflowClaimNextMeta("bead.claim", 581)); err != nil {
+			t.Fatal(err)
+		}
+		before := workflowWriteCheckpoint(t, f)
+		filter := &service.Filter{Types: []string{"task"}}
+		first, err := workflowCursorRead(t, f, "http", filter, 1, workflowContinuation{}, "project")
+		if err != nil || first.snapshot == nil || first.snapshot.ValidUntil == nil || !first.next.more() {
+			t.Fatalf("signed Ready did not bind the excluded claim deadline: %+v err=%v", first, err)
+		}
+		f.now = f.now.Add(2 * workflowplugin.ClaimTTL)
+		_, err = workflowCursorRead(t, f, "http", filter, 1, first.next, "project")
+		workflowCursorError(t, err, "cursor_invalid")
+		after := workflowWriteCheckpoint(t, f)
+		if before.Generation != after.Generation || !slices.Equal(before.Payload, after.Payload) {
+			t.Fatal("clock-only cursor expiry changed the durable workflow checkpoint")
+		}
+		fresh, err := workflowCursorRead(t, f, "http", filter, 1, workflowContinuation{}, "project")
+		if err != nil || fresh.snapshot == nil || fresh.snapshot.Revision.String() != first.snapshot.Revision.String() || fresh.snapshot.Equal(first.snapshot) {
+			t.Fatalf("fresh Ready did not preserve revision while changing only the deadline: first=%+v fresh=%+v err=%v", first.snapshot, fresh.snapshot, err)
+		}
+	})
 }

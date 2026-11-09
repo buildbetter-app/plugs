@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"sort"
 	"testing"
@@ -10,6 +11,73 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+func TestMissingRecordReadsDoNotProbeVersionHistory(t *testing.T) {
+	ctx := context.Background()
+	s := openTest(t, freshDSN(t))
+	lease := testLease(t, s)
+	first := seedTest(t, s, lease, "present", `{"value":1}`)
+	r := testRead(t, s, nil).(*reader)
+	historyScans := func(r *reader) int64 {
+		t.Helper()
+		var scans int64
+		if err := r.sql.QueryRowContext(ctx, `SELECT seq_scan+coalesce(idx_scan,0) FROM pg_stat_xact_user_tables WHERE relid='plug_postgres.versions'::regclass`).Scan(&scans); err != nil {
+			t.Fatal(err)
+		}
+		return scans
+	}
+	refs := []model.Ref{testRef("present")}
+	keys := []driver.LockKey{testLock(refs[0])}
+	for i := 0; i < 512; i++ {
+		ref := testRef(fmt.Sprintf("absent-%04d", i))
+		refs = append(refs, ref)
+		keys = append(keys, testLock(ref))
+	}
+	refs = append(refs, refs[0])
+	sort.Slice(keys, func(i, j int) bool { a, _ := keyID(keys[i]); b, _ := keyID(keys[j]); return a < b })
+	before := historyScans(r)
+	rows, err := r.Get(ctx, refs)
+	if err != nil || len(rows) != 2 || rows[0].Ref.ID != "present" || rows[1].Ref.ID != "present" {
+		t.Fatalf("current batch lost hits, misses or duplicate order: %+v %v", rows, err)
+	}
+	states, err := r.Observe(ctx, keys)
+	if err != nil || len(states) != len(keys) {
+		t.Fatalf("current batch observations: %+v %v", states, err)
+	}
+	for _, state := range states {
+		if state.Key.Ref.ID == "present" {
+			if !state.Present || state.Record == nil || state.Revision != first.Revision {
+				t.Fatalf("current hit lost its revision: %+v", state)
+			}
+		} else if state.Present || state.Record != nil || !state.Revision.IsZero() {
+			t.Fatalf("current absence acquired a record or revision: %+v", state)
+		}
+	}
+	missingKey, err := recordKey(testRef("single-absent"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists, err := r.recordAt(ctx, missingKey); err != nil || exists {
+		t.Fatalf("single physical absence: exists=%t error=%v", exists, err)
+	}
+	if got := historyScans(r) - before; got != 0 {
+		t.Fatalf("physical absences performed %d version-history scans, want none", got)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	seedTest(t, s, lease, "future", `{"value":2}`)
+	past := testRead(t, s, &first.Revision).(*reader)
+	before = historyScans(past)
+	rows, err = past.Get(ctx, []model.Ref{testRef("future"), testRef("present")})
+	if err != nil || len(rows) != 1 || rows[0].Ref.ID != "present" || rows[0].Revision != first.Revision {
+		t.Fatalf("historical read disclosed a future row or lost its hit: %+v %v", rows, err)
+	}
+	if got := historyScans(past) - before; got == 0 {
+		t.Fatal("a newer physical row did not use historical reconstruction")
+	}
+}
 
 func TestBatchedReaderPreservesHistoryMissesAndStagedOverlays(t *testing.T) {
 	ctx := context.Background()

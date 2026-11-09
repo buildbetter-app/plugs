@@ -119,6 +119,7 @@ func validReadyMembership(value string) bool {
 	if value == "" {
 		return true
 	}
+	value = strings.TrimPrefix(value, "v2:")
 	if len(value) != sha256.Size*2 {
 		return false
 	}
@@ -152,7 +153,13 @@ func (c *pageCodec) decode(call Call, p serviceParams) (*service.PagePosition, e
 		return nil, cursorInvalid()
 	}
 	var payload cursorPayload
-	if err = wire.DecodeInto(body, &payload); err != nil || payload.Version != 1 || payload.Offset < 0 {
+	if err = wire.DecodeInto(body, &payload); err != nil || (payload.Version != 1 && payload.Version != 2) || payload.Offset < 0 {
+		return nil, cursorInvalid()
+	}
+	// Version two is reserved for the domain-separated compiled Ready
+	// commitment. Version-one tokens retain the original digest verifier so
+	// existing signed cursors continue to work until normal expiry.
+	if (payload.Version == 2) != strings.HasPrefix(payload.ReadyMembership, "v2:") {
 		return nil, cursorInvalid()
 	}
 	// Check scope under the authenticated token's own generation before
@@ -233,6 +240,9 @@ func (c *pageCodec) encode(call Call, p serviceParams, position service.PagePosi
 		Workflow:              position.Workflow,
 		WorkflowSnapshot:      position.WorkflowSnapshot,
 		ReadyMembership:       position.ReadyMembership,
+	}
+	if strings.HasPrefix(position.ReadyMembership, "v2:") {
+		payload.Version = 2
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
