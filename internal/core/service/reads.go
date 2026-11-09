@@ -562,20 +562,15 @@ func combinedReadyItems(durable []Bead, durableKeys map[string]readyOrderKey, wo
 	}
 	sort.SliceStable(entries, func(i, j int) bool {
 		a, b := entries[i], entries[j]
-		if a.key.Bucket != b.key.Bucket {
-			return a.key.Bucket < b.key.Bucket
-		}
-		if a.key.Rank != b.key.Rank {
-			return a.key.Rank < b.key.Rank
-		}
-		if a.knownCreate != b.knownCreate {
+		ka, kb := readyOrderValue(a.key), readyOrderValue(b.key)
+		if ka.Bucket == kb.Bucket && ka.Rank == kb.Rank && a.knownCreate != b.knownCreate {
 			return a.knownCreate
 		}
-		if a.knownCreate && !a.key.CreatedAt.Equal(b.key.CreatedAt) {
-			return a.key.CreatedAt.Before(b.key.CreatedAt)
+		if !a.knownCreate && !b.knownCreate {
+			ka.CreatedAt, kb.CreatedAt = time.Time{}, time.Time{}
 		}
-		if a.item.ID != b.item.ID {
-			return a.item.ID < b.item.ID
+		if cmp := readyorder.Compare(ka, a.item.ID, kb, b.item.ID); cmp != 0 {
+			return cmp < 0
 		}
 		return a.plane < b.plane
 	})
