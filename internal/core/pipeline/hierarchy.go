@@ -21,6 +21,7 @@ type hierarchyEdit struct {
 
 type hierarchyDelta struct {
 	remove, add []driver.DerivedRow
+	complete    []driver.DerivedRow // complete final rows of the affected sources
 	locks       []driver.LockKey
 	sentinels   []driver.Sentinel
 }
@@ -441,6 +442,9 @@ func (p *prepared) finishHierarchy(ctx context.Context, before, after map[string
 		return err
 	}
 	delta := &hierarchyDelta{}
+	for _, row := range newRows {
+		delta.complete = append(delta.complete, row)
+	}
 	changed := map[string]driver.LockKey{}
 	for key, row := range oldRows {
 		if next, exists := newRows[key]; !exists || !bytes.Equal(row.Value, next.Value) {

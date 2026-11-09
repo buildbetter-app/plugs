@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -18,8 +19,10 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
+	"github.com/buildbetter-app/plugs/internal/plugins/authnapikey"
 	"github.com/buildbetter-app/plugs/internal/plugins/authzfixed"
 	"github.com/buildbetter-app/plugs/internal/server/authzrpc"
 	"github.com/buildbetter-app/plugs/internal/storage/conformance"
@@ -60,6 +63,8 @@ func TestFixedPermissionsAcrossDrivers(t *testing.T) {
 			t.Run("post_image", func(t *testing.T) { postImage(t, open) })
 			t.Run("authorization_races", func(t *testing.T) { authorizationRaces(t, open) })
 			t.Run("source_publication_failure", func(t *testing.T) { sourcePublicationFailure(t, open) })
+			t.Run("initial_source_publication", func(t *testing.T) { initialSourcePublication(t, open) })
+			t.Run("writer_boolean_presence_and_restamping", func(t *testing.T) { writerPublishesKernelBooleanAndSourceOnlyRestamps(t, open) })
 		})
 	}
 }
@@ -914,9 +919,13 @@ type factsPublicationStore struct {
 
 type factsPublicationFault struct {
 	lostAck     bool
+	beforeLock  func()
+	headCalls   int
 	commitCalls int
 	bumped      []driver.ReadFact
 	committed   model.Changeset
+	rows        map[driver.DerivedRowKey]driver.DerivedRow
+	typed       bool
 }
 
 func (s *factsPublicationStore) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
@@ -926,12 +935,62 @@ func (s *factsPublicationStore) Write(ctx context.Context, lease driver.ActiveLe
 	}
 	fault := s.next
 	s.next = nil
+	_, fault.typed = tx.(driver.SelectionIndexWriter)
+	fault.rows = map[driver.DerivedRowKey]driver.DerivedRow{}
 	return &factsPublicationTx{WriteTx: tx, fault: fault}, nil
 }
 
 type factsPublicationTx struct {
 	driver.WriteTx
 	fault *factsPublicationFault
+}
+
+func (tx *factsPublicationTx) Lock(ctx context.Context, locks []driver.LockRequest) ([]driver.LockState, error) {
+	if tx.fault.beforeLock != nil {
+		f := tx.fault.beforeLock
+		tx.fault.beforeLock = nil
+		f()
+	}
+	return tx.WriteTx.Lock(ctx, locks)
+}
+
+func (tx *factsPublicationTx) Head(ctx context.Context) (model.Revision, error) {
+	tx.fault.headCalls++
+	return tx.WriteTx.Head(ctx)
+}
+
+// Preserve the optional typed writer on the wrapped real transaction. The
+// injection must fire after actual indexed delta staging, not on capability
+// loss before reaching the tested transaction boundary.
+func (tx *factsPublicationTx) PutSelectionDerived(ctx context.Context, table driver.DerivedTable, del, add []driver.DerivedRow) error {
+	if typed, ok := tx.WriteTx.(driver.SelectionIndexWriter); ok {
+		if err := typed.PutSelectionDerived(ctx, table, del, add); err != nil {
+			return err
+		}
+	} else {
+		copy := make([]driver.DerivedRow, len(add))
+		for i, row := range add {
+			copy[i] = driver.DerivedRow{Key: row.Key, Value: append([]byte(nil), row.Value...)}
+		}
+		if err := tx.WriteTx.PutDerived(ctx, table, del, copy); err != nil {
+			return err
+		}
+		add = copy
+	}
+	for _, row := range add {
+		tx.fault.rows[driver.DerivedRowKey{Table: table, Key: row.Key}] = row.Clone()
+	}
+	return nil
+}
+
+func (tx *factsPublicationTx) PutDerived(ctx context.Context, table driver.DerivedTable, del, add []driver.DerivedRow) error {
+	if err := tx.WriteTx.PutDerived(ctx, table, del, add); err != nil {
+		return err
+	}
+	for _, row := range add {
+		tx.fault.rows[driver.DerivedRowKey{Table: table, Key: row.Key}] = row.Clone()
+	}
+	return nil
 }
 
 func (tx *factsPublicationTx) BumpReadFacts(ctx context.Context, facts []driver.ReadFact) error {
@@ -980,6 +1039,39 @@ func publicationState(t *testing.T, store driver.Store, namespace authz.Namespac
 	return meta.Head, states[0]
 }
 
+func publicationProjections(t *testing.T, store driver.Store, namespace authz.Namespace) []driver.LockState {
+	t.Helper()
+	rows, err := authzfixed.SelectionRows(namespace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := []driver.LockKey{}
+	for _, row := range []driver.DerivedRowKey{rows.Source, rows.Grants, rows.Projects, rows.Teams} {
+		row := row
+		keys = append(keys, driver.LockKey{Kind: driver.LockDerived, Derived: &row})
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		a, _ := driver.EncodeLockKey(keys[i])
+		b, _ := driver.EncodeLockKey(keys[j])
+		return a < b
+	})
+	r, err := store.Read(context.Background(), driver.View{Incarnation: namespace.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	states, err := r.Observe(context.Background(), keys)
+	if err != nil || len(states) != 4 {
+		t.Fatalf("durable projection observation: %+v %v", states, err)
+	}
+	for _, state := range states {
+		if !state.Present || state.Derived == nil {
+			t.Fatalf("missing explicit complete fact domain: %+v", state)
+		}
+	}
+	return states
+}
+
 func sourcePublicationFailure(t *testing.T, open storeFactory) {
 	for _, mode := range []string{"before_commit", "commit_lost_ack"} {
 		t.Run(mode, func(t *testing.T) {
@@ -1001,6 +1093,7 @@ func sourcePublicationFailure(t *testing.T, open storeFactory) {
 				t.Fatalf("committed protected fixture: %v", err)
 			}
 			beforeHead, beforeACL := publicationState(t, store.Store, f.base.Namespace)
+			beforeProjection := publicationProjections(t, store.Store, f.base.Namespace)
 			if !beforeACL.Present || beforeACL.Revision.IsZero() || beforeACL.Revision.String() == beforeHead.String() {
 				t.Fatal("fixture must distinguish committed ACL generation from current head")
 			}
@@ -1016,7 +1109,25 @@ func sourcePublicationFailure(t *testing.T, open storeFactory) {
 			if fault.commitCalls != 1 || !reflect.DeepEqual(fault.bumped, []driver.ReadFact{beforeACL.Key.Fact}) || store.next != nil {
 				t.Fatalf("fault did not reach Commit after real ACL staging: %+v", fault)
 			}
+			keys, err := authzfixed.SelectionRows(next.Namespace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sourceBytes, err := authzfixed.FactsSourceBytes(next)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(fault.rows) != 4 || !reflect.DeepEqual(fault.rows[keys.Source].Value, sourceBytes) {
+				t.Fatalf("failure occurred before complete source/index staging: %+v", fault.rows)
+			}
+			for _, key := range []driver.DerivedRowKey{keys.Grants, keys.Projects, keys.Teams} {
+				row := fault.rows[key]
+				if row.Key != key.Key || fault.typed && (row.Index == nil || row.Index.Source.Digest != driver.SelectionDigest(sourceBytes) || row.Index.Facts == nil) {
+					t.Fatalf("missing actually staged fact domain: %+v", row)
+				}
+			}
 			afterHead, afterACL := publicationState(t, store.Store, f.base.Namespace)
+			afterProjection := publicationProjections(t, store.Store, f.base.Namespace)
 			entries, err := f.reader(t).Changesets(ctx, &driver.Cursor{Incarnation: f.base.Namespace.Incarnation, Revision: beforeHead}, 10)
 			if err != nil {
 				t.Fatal(err)
@@ -1024,6 +1135,18 @@ func sourcePublicationFailure(t *testing.T, open storeFactory) {
 			if fault.lostAck {
 				if afterHead.String() == beforeHead.String() || !afterACL.Present || afterACL.Revision.String() != afterHead.String() || fault.committed.Revision.String() != afterHead.String() || len(entries) != 1 || !reflect.DeepEqual(entries[0], fault.committed) || entries[0].Kind != model.ChangesetDerived || entries[0].Principal.Kind != "system" || entries[0].Principal.ID != "authzrpc" || len(entries[0].Changes) != 0 {
 					t.Fatalf("lost acknowledgement lacked a real atomic ACL commit: head=%s ACL=%+v entries=%+v", afterHead, afterACL, entries)
+				}
+				for _, state := range afterProjection {
+					if state.Revision.String() != afterHead.String() {
+						t.Fatal("lost acknowledgement split source/index/ACL publication")
+					}
+					if *state.Key.Derived == keys.Source {
+						if !reflect.DeepEqual(state.Derived.Value, sourceBytes) {
+							t.Fatal("lost acknowledgement omitted source bytes")
+						}
+					} else if fault.typed && (state.Derived.Index == nil || state.Derived.Index.Source.Revision.String() != afterHead.String() || state.Derived.Index.Source.Digest != driver.SelectionDigest(sourceBytes)) {
+						t.Fatal("committed fact index lost its final source binding")
+					}
 				}
 				loaded, err := f.facts.Load(ctx, f.reader(t))
 				if err == nil || !reflect.DeepEqual(loaded, authzfixed.Facts{}) {
@@ -1034,7 +1157,7 @@ func sourcePublicationFailure(t *testing.T, open storeFactory) {
 					t.Fatalf("uncertain source allowed a protected read: %+v", got)
 				}
 			} else {
-				if afterHead.String() != beforeHead.String() || !reflect.DeepEqual(afterACL, beforeACL) || len(entries) != 0 || !fault.committed.Revision.IsZero() {
+				if afterHead.String() != beforeHead.String() || !reflect.DeepEqual(afterACL, beforeACL) || !reflect.DeepEqual(beforeProjection, afterProjection) || len(entries) != 0 || !fault.committed.Revision.IsZero() {
 					t.Fatal("failed commit published an ACL generation or changeset")
 				}
 				loaded, err := f.facts.Load(ctx, f.reader(t))
@@ -1157,5 +1280,381 @@ func postgresDSNFactory(t *testing.T) func(*testing.T) string {
 			t.Fatalf("owned test database: %v %s", err, out)
 		}
 		return "postgres://postgres@" + address + "/" + database + "?sslmode=disable"
+	}
+}
+
+func TestMutableFactsBindsCanonicalDurableSource(t *testing.T) {
+	f := newFixture(t, nil)
+	beforeHead, _ := publicationState(t, f.store, f.base.Namespace)
+	before := publicationProjections(t, f.store, f.base.Namespace)
+	for _, mismatch := range []bool{false, true} {
+		facts := f.base
+		facts.Grants = append([]authz.Grant(nil), facts.Grants...)
+		if mismatch {
+			facts.Grants = nil
+		} else {
+			for i, j := 0, len(facts.Grants)-1; i < j; i, j = i+1, j-1 {
+				facts.Grants[i], facts.Grants[j] = facts.Grants[j], facts.Grants[i]
+			}
+		}
+		source, err := authzrpc.NewMutableFacts(facts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = authzrpc.New(context.Background(), authzrpc.Config{Store: f.store, Lease: f.lease, Provider: f.keys, Facts: source, Namespace: f.base.Namespace, DefaultProject: "project"})
+		if mismatch && err == nil || !mismatch && err != nil {
+			t.Fatalf("fresh bind mismatch=%t: %v", mismatch, err)
+		}
+		afterHead, _ := publicationState(t, f.store, f.base.Namespace)
+		if afterHead.String() != beforeHead.String() || !reflect.DeepEqual(before, publicationProjections(t, f.store, f.base.Namespace)) {
+			t.Fatal("fresh source binding changed durable authority")
+		}
+	}
+}
+
+func TestMutableFactsRejectsStaleRegistryPublication(t *testing.T) {
+	f := newFixture(t, nil)
+	stale, err := authzrpc.NewMutableFacts(f.base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = authzrpc.New(context.Background(), authzrpc.Config{Store: f.store, Lease: f.lease, Provider: f.keys, Facts: stale, Namespace: f.base.Namespace, DefaultProject: "project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := f.base
+	next.Projects = append(append([]authzfixed.Project(nil), next.Projects...), authzfixed.Project{Ref: model.RefByID("new-project", model.Natural64(0)), InstallationID: "fixed", Name: "new-project", Active: true})
+	if err := f.facts.Replace(next); err != nil {
+		t.Fatal(err)
+	}
+	beforeHead, beforeACL := publicationState(t, f.store, next.Namespace)
+	before := publicationProjections(t, f.store, next.Namespace)
+	if err := stale.Replace(f.base); err == nil {
+		t.Fatal("stale source deleted an actually installed project registry binding")
+	}
+	afterHead, afterACL := publicationState(t, f.store, next.Namespace)
+	if afterHead.String() != beforeHead.String() || !reflect.DeepEqual(beforeACL, afterACL) || !reflect.DeepEqual(before, publicationProjections(t, f.store, next.Namespace)) {
+		t.Fatal("stale replacement changed durable source/index/ACL")
+	}
+	if _, err := stale.Load(context.Background(), f.reader(t)); err == nil {
+		t.Fatal("stale source retained authorization after competing publication")
+	}
+	// Recovery must retain the actual durable registry, including after an
+	// uncertain acknowledgement. It is not limited to the stale local copy.
+	if err := stale.Replace(next); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stale.Load(context.Background(), f.reader(t)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Explicit initial Replace is a real H+1 authority publication. A failed commit
+// keeps the target empty; a lost acknowledgement is durably occupied and is
+// recovered by exact rebind without a second initialization commit.
+func initialSourcePublication(t *testing.T, open storeFactory) {
+	for _, mode := range []string{"success", "before_commit", "commit_lost_ack"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := context.Background()
+			store := &factsPublicationStore{Store: open(t)}
+			t.Cleanup(func() { _ = store.Close() })
+			lease, err := store.Lease(ctx, "initial-facts", driver.LeaseTTL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = lease.Release(ctx) })
+			probe, err := store.Store.Write(ctx, lease)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, supportsSelection := probe.(driver.SelectionIndexWriter)
+			_ = probe.Close()
+			if _, memoryEngine := store.Store.(*memory.Store); memoryEngine && !supportsSelection {
+				t.Fatal("W3 memory optional typed writer is required for this positive oracle")
+			}
+			before, err := store.Meta(ctx)
+			if err != nil || !before.Head.IsZero() {
+				t.Fatalf("nonempty initial fixture: %+v %v", before, err)
+			}
+			namespace := authz.Namespace{StoreID: string(before.StoreID), Incarnation: before.Incarnation, InstallationID: "fixed", Authority: model.RefByID("authority", model.Natural64(0))}
+			facts := authzfixed.Facts{Namespace: namespace}
+			source, err := authzrpc.NewMutableFacts(facts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			provider := authnapikey.New(authnapikey.Config{AuthorizationInstalled: func() bool { return true }})
+			config := authzrpc.Config{Store: store, Lease: lease, Facts: source, Provider: provider, Namespace: namespace, DefaultProject: "project"}
+			var fault *factsPublicationFault
+			if mode != "success" {
+				fault = &factsPublicationFault{lostAck: mode == "commit_lost_ack"}
+				store.next = fault
+			}
+			composition, err := authzrpc.New(ctx, config)
+			if err != nil || composition == nil {
+				t.Fatal(err)
+			}
+			constructed, constructedACL := publicationState(t, store.Store, namespace)
+			if constructed.String() != before.Head.String() || constructedACL.Present || !constructedACL.Revision.IsZero() || fault != nil && (fault.headCalls != 0 || fault.commitCalls != 0) {
+				t.Fatal("host construction published initial authority")
+			}
+			err = source.Replace(facts)
+			if mode == "success" && err != nil {
+				t.Fatal(err)
+			}
+			if mode != "success" {
+				var lost driver.ErrIndeterminate
+				if fault.commitCalls != 1 || fault.headCalls != 1 || len(fault.rows) != 4 || len(fault.bumped) != 1 || (fault.lostAck && !errors.As(err, &lost)) || (!fault.lostAck && !errors.Is(err, errBeforeFactsCommit)) {
+					t.Fatalf("initial fault did not follow complete source/fact/ACL staging: %+v error=%v", fault, err)
+				}
+			}
+			after, acl := publicationState(t, store.Store, namespace)
+			if mode == "before_commit" {
+				if !after.IsZero() || acl.Present || !acl.Revision.IsZero() {
+					t.Fatal("failed initialization occupied the empty target")
+				}
+				r, err := store.Read(ctx, driver.View{Incarnation: namespace.Incarnation})
+				if err != nil {
+					t.Fatal(err)
+				}
+				keys, _ := authzfixed.SelectionRows(namespace)
+				for _, key := range []driver.DerivedRowKey{keys.Source, keys.Grants, keys.Projects, keys.Teams} {
+					states, err := r.Observe(ctx, []driver.LockKey{{Kind: driver.LockDerived, Derived: &key}})
+					if err != nil || len(states) != 1 || states[0].Present || !states[0].Revision.IsZero() {
+						t.Fatal("failed initialization leaked a projection")
+					}
+				}
+				_ = r.Close()
+			} else {
+				if after.String() != "1" || !acl.Present || acl.Revision.String() != after.String() {
+					t.Fatal("initial publication did not atomically advance head and ACL")
+				}
+				keys, _ := authzfixed.SelectionRows(namespace)
+				sourceBytes, err := authzfixed.FactsSourceBytes(facts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, state := range publicationProjections(t, store.Store, namespace) {
+					if state.Revision.String() != after.String() {
+						t.Fatal("initial source/domain publication split")
+					}
+					if *state.Key.Derived == keys.Source {
+						if state.Derived.Index != nil || string(state.Derived.Value) != string(sourceBytes) {
+							t.Fatal("initial root source bytes were not preserved")
+						}
+						continue
+					}
+					index := state.Derived.Index
+					if !supportsSelection {
+						if index != nil {
+							t.Fatal("unsupported writer certified initial facts")
+						}
+						continue
+					}
+					kind := map[driver.DerivedRowKey]driver.SelectionFactKind{keys.Grants: driver.SelectionScopedGrantFact, keys.Projects: driver.SelectionProjectFact, keys.Teams: driver.SelectionTeamFact}[*state.Key.Derived]
+					if index == nil || index.Facts == nil || kind == "" || index.Facts.Kind != kind || len(index.Facts.Rows) != 0 || index.Source.Key.Kind != driver.LockDerived || index.Source.Key.Derived == nil || *index.Source.Key.Derived != keys.Source || !index.Source.Present || index.Source.Revision.String() != after.String() || index.Source.Digest != driver.SelectionDigest(sourceBytes) || index.Incarnation != namespace.Incarnation || index.Validate(state.Key.Derived.Table, *state.Derived) != nil {
+						t.Fatal("capable writer lost explicit complete empty domain/source binding")
+					}
+				}
+			}
+			if _, err := authzrpc.New(ctx, config); err != nil {
+				t.Fatal("legitimate initial recovery/rebind failed:", err)
+			}
+			if mode == "before_commit" {
+				if err := source.Replace(facts); err != nil {
+					t.Fatal("explicit initial publication after rollback:", err)
+				}
+			}
+			finalHead, finalACL := publicationState(t, store.Store, namespace)
+			if finalHead.String() != "1" || finalACL.Revision.String() != "1" {
+				t.Fatal("initial recovery/rebind published twice")
+			}
+			r, err := store.Read(ctx, driver.View{Incarnation: namespace.Incarnation})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			loaded, err := source.Load(ctx, r)
+			if err != nil || loaded.Namespace != namespace || len(loaded.Grants)+len(loaded.Projects)+len(loaded.Teams) != 0 {
+				t.Fatal("rebound initial source unavailable:", err)
+			}
+			entries, err := r.Changesets(ctx, nil, 10)
+			if err != nil || len(entries) != 1 || entries[0].Kind != model.ChangesetDerived {
+				t.Fatal("initial publication/recovery history is not exactly one commit")
+			}
+		})
+	}
+}
+
+func TestMutableFactsRejectsPublicationDriftBeforeHead(t *testing.T) {
+	store := &factsPublicationStore{Store: memory.New()}
+	f := newFixtureOn(t, store, nil)
+	competitor, err := authzrpc.NewMutableFacts(f.base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authzrpc.New(context.Background(), authzrpc.Config{Store: store, Lease: f.lease, Provider: f.keys, Facts: competitor, Namespace: f.base.Namespace, DefaultProject: "project"}); err != nil {
+		t.Fatal(err)
+	}
+	next := f.base
+	next.Grants = nil
+	var winningHead model.Revision
+	var winningACL driver.LockState
+	var winningRows []driver.LockState
+	fault := &factsPublicationFault{beforeLock: func() {
+		if err := competitor.Replace(next); err != nil {
+			t.Fatal(err)
+		}
+		winningHead, winningACL = publicationState(t, store.Store, f.base.Namespace)
+		winningRows = publicationProjections(t, store.Store, f.base.Namespace)
+	}}
+	store.next = fault
+	if err := f.facts.Replace(f.base); err == nil {
+		t.Fatal("publication ignored source/ACL drift after census")
+	}
+	if fault.beforeLock != nil || fault.headCalls != 0 || fault.commitCalls != 0 || len(fault.rows) != 0 {
+		t.Fatal("stale authority reached Head or staged projections")
+	}
+	head, acl := publicationState(t, store.Store, f.base.Namespace)
+	if head.String() != winningHead.String() || !reflect.DeepEqual(acl, winningACL) || !reflect.DeepEqual(publicationProjections(t, store.Store, f.base.Namespace), winningRows) {
+		t.Fatal("losing publication changed the winning source/index/ACL")
+	}
+	if _, err := f.facts.Load(context.Background(), f.reader(t)); err == nil {
+		t.Fatal("stale binding remained usable after competing commit")
+	}
+	if _, err := competitor.Load(context.Background(), f.reader(t)); err != nil {
+		t.Fatal("winning binding unavailable:", err)
+	}
+}
+
+// This producer control runs the real fixed-kernel service ontology through
+// Writer.Apply. Missing template on a new create is normalized to BOOLEAN false;
+// a legacy source's absent template stays absent on an ordinary body-only write.
+func TestWriterPublishesKernelBooleanAndSourceOnlyRestamps(t *testing.T) {
+	writerPublishesKernelBooleanAndSourceOnlyRestamps(t, func(*testing.T) driver.Store { return memory.New() })
+}
+
+func writerPublishesKernelBooleanAndSourceOnlyRestamps(t *testing.T, open storeFactory) {
+	t.Helper()
+	ctx := context.Background()
+	store := open(t)
+	defer store.Close()
+	lease, err := store.Lease(ctx, "real-projection-writer", driver.LeaseTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release(ctx)
+	writer := pipeline.New(store, lease, pipeline.WithOntology(service.NewOntology(nil)))
+	principal := model.PrincipalRef{Kind: "user", ID: "projection-owner"}
+	read := func(at *model.Revision) driver.Reader {
+		t.Helper()
+		meta, err := store.Meta(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation, At: at})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = r.Close() })
+		return r
+	}
+	observe := func(r driver.Reader, ref model.Ref) []driver.LockState {
+		t.Helper()
+		rows, err := pipeline.SourceSelectionRows(ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		closure, err := pipeline.AncestorRow(ref.ID, ref.ID, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows = append(rows, driver.DerivedRowKey{Table: driver.DerivedAncestorClosure, Key: closure.Key})
+		keys := make([]driver.LockKey, len(rows))
+		for i, row := range rows {
+			row := row
+			keys[i] = driver.LockKey{Kind: driver.LockDerived, Derived: &row}
+		}
+		sort.Slice(keys, func(i, j int) bool {
+			a, _ := driver.EncodeLockKey(keys[i])
+			b, _ := driver.EncodeLockKey(keys[j])
+			return a < b
+		})
+		states, err := r.Observe(ctx, keys)
+		if err != nil || len(states) != 4 {
+			t.Fatal("real Writer projection observations:", err)
+		}
+		return states
+	}
+	for i, input := range []any{nil, false, true} {
+		fields := map[string]any{"title": "real boolean", "priority": 2}
+		if input != nil {
+			fields["template"] = input
+		}
+		m := model.WriteMeta{Method: "bead.create", Project: "test", IdempotencyKey: fmt.Sprintf("%032x", i+1)}
+		created, err := writer.Apply(ctx, principal, model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Type: "issue", Fields: fields}}}}, m)
+		if err != nil || len(created.Results) != 1 {
+			t.Fatal("real ontology create:", err)
+		}
+		ref := created.Results[0].Ref
+		r := read(nil)
+		records, err := r.Get(ctx, []model.Ref{ref})
+		if err != nil || len(records) != 1 {
+			t.Fatal(err)
+		}
+		doc, err := pipeline.DecodeDocument(records[0].Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := input == true
+		if value, ok := doc.Fields["template"].(bool); !ok || value != want {
+			t.Fatal("kernel did not publish the actual boolean template")
+		}
+		before := observe(r, ref)
+		for _, state := range before {
+			index := state.Derived
+			if !state.Present || index == nil || index.Index == nil || index.Index.Source.Digest != driver.SelectionDigest(records[0].Body) || index.Index.Source.Revision.String() != created.Revision.String() {
+				t.Fatal("real Writer did not publish complete source-bound projection")
+			}
+			if state.Key.Derived.Table == driver.DerivedSortKey && (index.Index.Bead == nil || index.Index.Bead.Template != want || len(index.Index.Bead.Absent) != 0) {
+				t.Fatal("real boolean producer annotation mismatch")
+			}
+		}
+		m.Method, m.IdempotencyKey = "tx.apply", fmt.Sprintf("%032x", i+11)
+		changed, err := writer.Apply(ctx, principal, model.ChangeSet{Ops: []model.Op{{Kind: model.OpSetMeta, SetMeta: &model.SetMetaOp{Target: ref, Key: "note", Value: json.RawMessage(`"changed source only"`)}}}}, m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		afterReader := read(nil)
+		afterRecords, err := afterReader.Get(ctx, []model.Ref{ref})
+		if err != nil || len(afterRecords) != 1 {
+			t.Fatal(err)
+		}
+		after := observe(afterReader, ref)
+		for j, state := range after {
+			row := state.Derived
+			if row == nil || row.Index == nil || !reflect.DeepEqual(row.Value, before[j].Derived.Value) || row.Index.Source.Revision.String() != changed.Revision.String() || row.Index.Source.Digest != driver.SelectionDigest(afterRecords[0].Body) || row.Index.Source.Digest == before[j].Derived.Index.Source.Digest {
+				t.Fatal("source-only change skipped annotation restamping")
+			}
+		}
+		if !reflect.DeepEqual(observe(read(&created.Revision), ref), before) {
+			t.Fatal("source-only update changed historical annotations")
+		}
+	}
+	legacyRef := model.RefByID("pl-legacy-absent-template", model.Natural64(0))
+	legacyBody := []byte(`{"id":"pl-legacy-absent-template","type":"issue","project":"test","fields":{"title":"unchanged legacy","status":"todo","priority":0}}`)
+	if _, err := conformance.Seed(ctx, store, lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: legacyRef, Kind: "bead", Op: model.OpCreate, Body: legacyBody, Graph: &conformance.FixtureGraphSource{}}}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = writer.Apply(ctx, principal, model.ChangeSet{Ops: []model.Op{{Kind: model.OpSetMeta, SetMeta: &model.SetMetaOp{Target: legacyRef, Key: "note", Value: json.RawMessage(`"body only"`)}}}}, model.WriteMeta{Method: "tx.apply", Project: "test", IdempotencyKey: strings.Repeat("b", 32)})
+	if err != nil {
+		t.Fatal("real Writer rejected supported absent template:", err)
+	}
+	states := observe(read(nil), legacyRef)
+	for _, state := range states {
+		if state.Key.Derived.Table == driver.DerivedSortKey {
+			if state.Derived == nil || state.Derived.Index == nil || state.Derived.Index.Bead == nil || !reflect.DeepEqual(state.Derived.Index.Bead.Absent, []driver.SelectionColumn{driver.SelectionTemplate}) || state.Derived.Index.Bead.Template {
+				t.Fatal("real Writer conflated absent template with present false")
+			}
+		}
 	}
 }

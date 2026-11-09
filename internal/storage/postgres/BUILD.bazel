@@ -18,10 +18,13 @@ go_test(
     srcs = glob(["*_test.go"]),
     embed = [":postgres"],
     deps = [
+        "//internal/core/authz",
         "//internal/core/model",
         "//internal/core/pipeline:pipeline",
         "//internal/core/port",
         "//internal/core/service",
+        "//internal/core/viewops",
+        "//internal/plugins/authzfixed",
         "//internal/storage/driver",
         "//internal/storage/sourceindex",
         "//internal/storage/conformance",

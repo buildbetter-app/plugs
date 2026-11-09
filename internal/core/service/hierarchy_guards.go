@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -87,14 +88,16 @@ func proposedImage(raw []byte) (proposalImage, error) {
 	return image, nil
 }
 
-func (o *Ontology) noOpenChildren(parent pipeline.Document, graph map[string]storedBead) bool {
+func (o *Ontology) noOpenChildren(parent pipeline.Document, graph map[string]storedBead, work ...context.Context) bool {
 	for _, child := range graph {
+		readinessVisit(work)
 		linked := false
 		if child.doc.Parent != nil && child.doc.Parent.ID == parent.ID {
 			linked = true
 		}
 		if !linked {
 			for _, edge := range child.doc.Links {
+				readinessVisit(work)
 				if edge.TargetKind != model.LinkTargetExternal && edge.Kind == "parent-child" && edge.To.ID == parent.ID {
 					linked = true
 					break

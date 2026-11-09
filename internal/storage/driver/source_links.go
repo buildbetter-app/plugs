@@ -2,6 +2,7 @@ package driver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"unicode/utf8"
 
@@ -74,8 +75,9 @@ type GraphSourceWriter interface {
 // GraphSourceMetadata is the complete source declaration decoded by trusted
 // core from an exact current record. Storage does not interpret document JSON.
 type GraphSourceMetadata struct {
-	Parent *model.Ref
-	Links  []SourceLink
+	Parent    *model.Ref
+	Links     []SourceLink
+	Selection []DerivedSelectionRow
 }
 
 type GraphSourceDecoder func(Record) (GraphSourceMetadata, error)
@@ -91,10 +93,70 @@ type GraphSourceDecoder func(Record) (GraphSourceMetadata, error)
 // their historical coverage; stale/incompatible coverage
 // fails closed. Newly built coverage starts at the pinned current Head, never
 // claims imported/unknown historical coverage, and is not a write-budget bypass.
+// Selection projections are independent optional work. Their unavailable or
+// unsupported preparation/page/activation leaves selection uncertified and
+// cannot undo or block valid Parent/Links activation. Graph errors and unsafe
+// transaction/fence failures remain fatal.
+// An optional refusal returned AFTER graph activation commits carries the
+// direct SelectionBackfillRefused result. A raw or joined unavailable error
+// alone never proves graph completion; callers must preserve fatal failures.
 // Call before serving requests, with ordinary lease renewal running. The decoder
 // must not call back into storage. Drivers without this port keep failing closed.
 type GraphSourceIndexBuilder interface {
-	BuildGraphSourceIndexes(context.Context, ActiveLease, GraphSourceDecoder) error
+	BuildGraphSourceIndexes(context.Context, ActiveLease, GraphSourceDecoder, ...GraphSourceProjection) error
+}
+
+// IsSelectionBackfillUnavailable classifies optional selection operations,
+// never graph errors. Every branch of a joined error must be optional. SQL
+// savepoint errors retain their fatal origin through SelectionBackfillFatal.
+func IsSelectionBackfillUnavailable(err error) bool {
+	if _, fatal := err.(interface{ SelectionBackfillFatal() }); fatal {
+		return false
+	}
+	if err == ErrSelectionUnavailable || err == ErrUnsupported {
+		return true
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		if len(children) == 0 {
+			return false
+		}
+		for _, child := range children {
+			if !IsSelectionBackfillUnavailable(child) {
+				return false
+			}
+		}
+		return true
+	}
+	if cause := errors.Unwrap(err); cause != nil {
+		return IsSelectionBackfillUnavailable(cause)
+	}
+	return false
+}
+
+// SelectionBackfillRefused carries an optional refusal with completed graph
+// work. Low-level SQL helpers create it only after graph activation succeeds;
+// the owning adapter must still publish successfully before returning it from
+// GraphSourceIndexBuilder. Unsafe failures must never receive this result.
+type SelectionBackfillRefused struct{ cause error }
+
+func (e *SelectionBackfillRefused) Error() string { return e.cause.Error() }
+func (e *SelectionBackfillRefused) Unwrap() error { return e.cause }
+
+// NewSelectionBackfillRefused preserves unsafe errors unchanged. The caller
+// is responsible for proving graph completion and successful publication.
+func NewSelectionBackfillRefused(cause error) error {
+	if !IsSelectionBackfillUnavailable(cause) {
+		return cause
+	}
+	return &SelectionBackfillRefused{cause: cause}
+}
+
+// IsSelectionBackfillRefused requires the direct completion result. A wrapped
+// or joined result cannot authorize commit or suppress a sibling failure.
+func IsSelectionBackfillRefused(err error) bool {
+	refused, ok := err.(*SelectionBackfillRefused)
+	return ok && refused != nil && IsSelectionBackfillUnavailable(refused.cause)
 }
 
 // InverseSourceLinksReader selects source Records with at least one outgoing

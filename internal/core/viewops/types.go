@@ -100,7 +100,28 @@ type DirectBlockerSource func(context.Context, driver.Reader, model.Ref, int) (D
 
 const DirectBlockerExplainLimit = 100
 
+// SelectionConfig binds the complete current chain on every Run. A separate
+// AuthorizeRead callback is an additional host restriction and forces the exact
+// ordinary fallback; it can never be certified by this chain-only adapter.
+type SelectionConfig struct {
+	Bind          func(context.Context, model.PrincipalRef, string) (*SelectionAuthority, error)
+	AuthorizeRead AuthorizeRead
+}
+
+// SelectionAuthority lives for one request. Reader is CURRENT authority, while
+// payloads and membership use the separately pinned content reader. A nil
+// Boundary explicitly means check_only. Check and Fence remain mandatory even
+// for unavailable acceleration, empty results and historical content.
+type SelectionAuthority struct {
+	Reader   driver.Reader
+	Boundary *driver.SelectionBoundary
+	Binding  string
+	Check    func(context.Context, []model.Ref) ([]bool, error)
+	Fence    func(context.Context) error
+}
+
 type Config struct {
+	Selection          *SelectionConfig
 	AuthorizeRead      AuthorizeRead
 	AuthorizeReadBatch AuthorizeReadBatch
 	Views              ViewReader
@@ -210,6 +231,7 @@ type Cursor struct {
 	Incarnation      string         `json:"incarnation"`
 	Revision         model.Revision `json:"revision"`
 	Index            uint64         `json:"index"`
+	AuthorityBinding string         `json:"authority,omitempty"`
 	// StaleResumeDigest identifies the last emitted visible row by a fixed-size
 	// digest of its ID. The signed definition and snapshot recover its sort
 	// position without embedding unbounded sort values or denied-row indexes.

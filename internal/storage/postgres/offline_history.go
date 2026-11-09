@@ -128,7 +128,7 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 			return fail(err)
 		}
 	}
-	if _, err = t.sql.ExecContext(ctx, `UPDATE plug_postgres.meta SET store_id=$1,incarnation=$2,head=$3,history_floor=$4 WHERE singleton`, string(plan.Meta.StoreID), plan.Meta.Incarnation, plan.Meta.Head.String(), plan.Meta.HistoryFloor.String()); err != nil {
+	if _, err = t.sql.ExecContext(ctx, `UPDATE plug_postgres.meta SET store_id=$1,incarnation=$2,head=$3,history_floor=$4,selection_virgin=false WHERE singleton`, string(plan.Meta.StoreID), plan.Meta.Incarnation, plan.Meta.Head.String(), plan.Meta.HistoryFloor.String()); err != nil {
 		return fail(err)
 	}
 	response, err := responseAt(h.Response, plan.Meta.Head)

@@ -325,8 +325,7 @@ func (r *reader) observe(ctx context.Context, key driver.LockKey) (driver.LockSt
 			state.Present = v.Present
 			state.Derived = nil
 			if v.Derived != nil {
-				value := *v.Derived
-				value.Value = bytes.Clone(value.Value)
+				value := v.Derived.Clone()
 				state.Derived = &value
 			}
 		}

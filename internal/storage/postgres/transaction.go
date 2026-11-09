@@ -50,6 +50,12 @@ type transaction struct {
 	sourceCoverageHead        model.Revision
 	sourceCoverageIncarnation string
 	sourceCoverageValid       bool
+	selectionVirgin           bool
+	selectionProofCarry       bool
+	selectionProofFamilies    uint8
+	selectionProofSeed        bool
+	selectionProofRoots       [][]byte
+	selectionProofOld         [][]byte
 }
 
 func (s *Store) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
@@ -480,25 +486,34 @@ func (t *transaction) PutDerived(ctx context.Context, table driver.DerivedTable,
 	}
 	for _, rows := range [][]driver.DerivedRow{del, add} {
 		for _, row := range rows {
-			if row.Index != nil {
-				return fmt.Errorf("%w: PostgreSQL selection indexes are not implemented", driver.ErrUnsupported)
+			if err := row.Index.Validate(table, row); err != nil {
+				return err
 			}
-			if err := t.writable(driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: table, Key: row.Key}}); err != nil {
+			key := driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: table, Key: row.Key}}
+			if err := t.writable(key); err != nil {
 				return err
 			}
 		}
 	}
+	proposed := make(map[string]driver.LockState, len(t.derived)+len(add)+len(del))
+	for id, s := range t.derived {
+		proposed[id] = s
+	}
 	for _, row := range del {
 		key := driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: table, Key: row.Key}}
 		id, _ := keyID(key)
-		t.derived[id] = driver.LockState{Key: key, Revision: model.Natural64(0)}
+		proposed[id] = driver.LockState{Key: key, Revision: model.Natural64(0)}
 	}
 	for _, row := range add {
 		key := driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: table, Key: row.Key}}
 		id, _ := keyID(key)
-		copy := driver.DerivedRow{Key: row.Key, Value: bytes.Clone(row.Value)}
-		t.derived[id] = driver.LockState{Key: key, Revision: model.Natural64(0), Derived: &copy, Present: true}
+		owned := row.Clone()
+		proposed[id] = driver.LockState{Key: key, Revision: model.Natural64(0), Present: true, Derived: &owned}
 	}
+	if err := t.validateSelectionWrites(ctx, proposed); err != nil {
+		return err
+	}
+	t.derived = proposed
 	return nil
 }
 func (t *transaction) bump(ctx context.Context, keys []driver.LockKey) error {

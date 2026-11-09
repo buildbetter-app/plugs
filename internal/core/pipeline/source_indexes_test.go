@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -12,6 +13,47 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
 )
+
+type sourceIndexResultStore struct {
+	driver.Store
+	result error
+}
+
+func (s sourceIndexResultStore) BuildGraphSourceIndexes(context.Context, driver.ActiveLease, driver.GraphSourceDecoder, ...driver.GraphSourceProjection) error {
+	return s.result
+}
+
+func TestSourceIndexStartupRequiresDirectGraphCompletion(t *testing.T) {
+	store := memory.New()
+	defer store.Close()
+	safe := driver.NewSelectionBackfillRefused(fmt.Errorf("selection: %w", driver.ErrSelectionUnavailable))
+	for _, test := range []struct {
+		name     string
+		err      error
+		optional bool
+	}{
+		{"success", nil, true},
+		{"completed_unavailable", safe, true},
+		{"completed_unsupported", driver.NewSelectionBackfillRefused(driver.ErrUnsupported), true},
+		{"raw_graph_unavailable", driver.ErrSelectionUnavailable, false},
+		{"raw_graph_unsupported", driver.ErrUnsupported, false},
+		{"mixed_cancellation", errors.Join(driver.ErrSelectionUnavailable, context.Canceled), false},
+		{"mixed_fence", errors.Join(driver.ErrSelectionUnavailable, driver.ErrFenced{}), false},
+		{"wrapped_completion", fmt.Errorf("unconfirmed outer operation: %w", safe), false},
+		{"joined_completion", errors.Join(safe, errors.New("SQL cleanup failed")), false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := BuildSourceIndexes(context.Background(), sourceIndexResultStore{Store: store, result: test.err}, nil)
+			if test.optional {
+				if err != nil {
+					t.Fatalf("completed graph lost optional fallback: %v", err)
+				}
+			} else if err != test.err {
+				t.Fatalf("public startup suppressed or changed a fatal result: want=%v got=%v", test.err, err)
+			}
+		})
+	}
+}
 
 func TestSourceIndexStartupRejectsMismatchedCoreDocument(t *testing.T) {
 	ctx := context.Background()

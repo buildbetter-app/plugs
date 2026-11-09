@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
@@ -603,17 +604,23 @@ func combinedReadyMembership(items []Bead) string {
 // the live queue always supplies the complete keys from its pinned snapshot.
 // The ordinary bead.ready path never calls this.
 func spreadClaimNextItems(items []Bead, seed string, order ...map[string]readyOrderKey) ([]Bead, error) {
+	return spreadClaimNextItemsObserved(context.Background(), items, seed, order...)
+}
+
+func spreadClaimNextItemsObserved(ctx context.Context, items []Bead, seed string, order ...map[string]readyOrderKey) ([]Bead, error) {
 	if len(items) < 2 || seed == "" {
 		return items, nil
 	}
 	ordered := append([]Bead(nil), items...)
 	for start := 0; start < len(ordered); {
+		driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
 		groupPriority, err := beadPriority(ordered[start])
 		if err != nil {
 			return nil, err
 		}
 		end := start + 1
 		for end < len(ordered) {
+			driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
 			priority, err := beadPriority(ordered[end])
 			if err != nil {
 				return nil, err
@@ -635,6 +642,7 @@ func spreadClaimNextItems(items []Bead, seed string, order ...map[string]readyOr
 				rotated := append([]Bead(nil), ordered[start+offset:end]...)
 				rotated = append(rotated, ordered[start:start+offset]...)
 				copy(ordered[start:end], rotated)
+				driver.ReportReadWork(ctx, driver.ReadSelectorKeys, int64(2*(end-start)))
 			}
 		}
 		start = end
@@ -672,11 +680,15 @@ func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req 
 	if err := validatePosition(req.Position); err != nil {
 		return BeadPage{}, err
 	}
+	corePage := s.readyPage
+	if restartOnRevision {
+		corePage = s.queueReadyPage
+	}
 	if s.workflow == nil {
 		if req.Position != nil && (req.Position.Workflow || req.Position.WorkflowSnapshot != nil) {
 			return BeadPage{}, failure("cursor_invalid", "workflow provider is unavailable; restart paging")
 		}
-		return s.readyPage(ctx, by, req, restartOnRevision)
+		return corePage(ctx, by, req, restartOnRevision)
 	}
 	workflowPhase := req.Position != nil && req.Position.Workflow
 	if req.Position != nil && !workflowPhase && req.Position.WorkflowSnapshot == nil && req.Position.ReadyMembership != "" {
@@ -692,7 +704,7 @@ func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req 
 	if !workflowPhase && (req.Position == nil || req.Position.WorkflowSnapshot != nil) {
 		return s.readyCombinedPage(ctx, by, coreReq, limit, restartOnRevision)
 	}
-	page, err := s.readyPage(ctx, by, coreReq, restartOnRevision)
+	page, err := corePage(ctx, by, coreReq, restartOnRevision)
 	if err != nil {
 		return BeadPage{}, err
 	}
@@ -923,8 +935,93 @@ func (s *Service) ReadyCandidates(ctx context.Context, by model.PrincipalRef, re
 	if reader == nil {
 		return nil, failure("internal_error", "ready probe reader is unavailable")
 	}
-	items, _, err := s.readyItems(ctx, by, req, reader)
+	items, _, _, err := s.queueReadyCandidates(ctx, by, req, reader)
 	return items, err
+}
+
+// queueReadyCandidates binds the typed queue interpreter to the same workflow
+// identity and persisted rank policy as ordinary Ready. Only unknown legacy
+// projections use the existing full-graph interpreter.
+func (s *Service) queueReadyCandidates(ctx context.Context, by model.PrincipalRef, req ReadyRequest, reader driver.Reader) ([]Bead, map[string]readyOrderKey, *driver.QueueProjection, error) {
+	var blocked func(context.Context, model.PrincipalRef, []string) (map[string]bool, error)
+	if s.workflow != nil {
+		blocked = func(ctx context.Context, by model.PrincipalRef, ids []string) (map[string]bool, error) {
+			return s.workflow.OrdinaryBlocked(ctx, by, ids, workflowMeta(by, "bead.ready", req.Project, req.Agent))
+		}
+	}
+	// Membership and rank freshness share one instant, without changing the
+	// clock installed on the shared service.
+	now := s.now().UTC()
+	bound := *s
+	bound.now = func() time.Time { return now }
+	items, projection, err := bound.queueReadyItemsBy(ctx, by, req, reader, blocked)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if projection == nil {
+		items, keys, err := s.readyItems(ctx, by, req, reader)
+		return items, keys, nil, err
+	}
+	if req.authorizationFilter != nil {
+		// An internal authorizer receives complete candidate images, just as
+		// it does on ordinary Ready; the public queue never supplies a filter.
+		byID := make(map[string]driver.QueueBead, len(projection.Beads))
+		for _, source := range projection.Beads {
+			driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
+			byID[source.Bead.Ref.ID] = source
+		}
+		sources := make([]driver.QueueBead, len(items))
+		for i, item := range items {
+			driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
+			sources[i] = byID[item.ID]
+		}
+		if len(sources) != 0 {
+			rows, err := queueImages(ctx, reader.(driver.QueueProjectionReader), projection, sources)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			items = items[:0]
+			for _, row := range rows {
+				item, err := beadValue(row)
+				if err != nil {
+					return nil, nil, nil, err
+				}
+				allowed, err := req.authorizationFilter(ctx, reader, item)
+				if err != nil {
+					return nil, nil, nil, err
+				}
+				if allowed {
+					items = append(items, item)
+				}
+			}
+		}
+	}
+	eligible := make(map[string]storedBead, len(items))
+	for _, item := range items {
+		driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
+		createdAt := item.CreatedAt
+		eligible[item.ID] = storedBead{
+			record: driver.Record{Revision: item.Revision},
+			doc: pipeline.Document{ID: item.ID, Type: item.Type, Project: item.Project,
+				Fields: item.Fields, CreatedAt: &createdAt},
+		}
+	}
+	keys, err := readyOrderKeys(ctx, reader, eligible, now)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	ids := sortedIDs(eligible)
+	sortReadyIDs(ids, keys)
+	byID := make(map[string]Bead, len(items))
+	for _, item := range items {
+		driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
+		byID[item.ID] = item
+	}
+	for i, id := range ids {
+		driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
+		items[i] = byID[id]
+	}
+	return items, keys, projection, nil
 }
 
 func (s *Service) History(ctx context.Context, by model.PrincipalRef, req HistoryRequest) (BeadPage, error) {

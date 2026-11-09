@@ -177,34 +177,38 @@ func (r *reader) recordAt(ctx context.Context, key string) (storedRecord, bool, 
 	var rev, count string
 	var kind string
 	var deleted bool
-	err := r.sql.QueryRowContext(ctx, `SELECT ref,kind,revision::text,body,deleted,version_count::text FROM plug_postgres.records WHERE key=$1`, []byte(key)).Scan(&raw, &kind, &rev, &body, &deleted, &count)
+	err := r.sql.QueryRowContext(ctx, `SELECT ref,kind,revision::text,body,deleted,version_count::text FROM plug_postgres.records WHERE key=$1 AND revision<=$2`, []byte(key), decimal(r.at)).Scan(&raw, &kind, &rev, &body, &deleted, &count)
 	if err == nil {
+		var ref driver.Ref
+		if err = decode(raw, &ref); err != nil {
+			return result, false, err
+		}
 		n, e := parseCounter(rev)
 		if e != nil {
 			return result, false, e
 		}
-		if n <= r.at {
-			var ref driver.Ref
-			if err = decode(raw, &ref); err != nil {
-				return result, false, err
-			}
-			c, e := parseCounter(count)
-			if e != nil {
-				return result, false, e
-			}
-			if !deleted {
-				driver.ReportReadPayload(ctx, body)
-			}
-			return storedRecord{record: driver.Record{Ref: ref, Kind: kind, Revision: model.Natural64(n), Body: body}, deleted: deleted, count: c}, true, nil
+		c, e := parseCounter(count)
+		if e != nil {
+			return result, false, e
 		}
-	} else {
-		// Current rows retain tombstones, so physical absence also proves
-		// absence at every earlier revision. Only a newer current row needs
-		// historical reconstruction.
-		if errors.Is(err, sql.ErrNoRows) {
-			return result, false, nil
+		if !deleted {
+			driver.ReportReadPayload(ctx, body)
 		}
+		return storedRecord{record: driver.Record{Ref: ref, Kind: kind, Revision: model.Natural64(n), Body: body}, deleted: deleted, count: c}, true, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
 		return result, false, err
+	}
+	// The bounded current-row read conflates a physical absence with a row
+	// newer than this snapshot. Distinguish them before probing versions so a
+	// true absence keeps the zero-history-scan guarantee while a newer row
+	// still follows the retained scalar historical path.
+	var present bool
+	if err = r.sql.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM plug_postgres.records WHERE key=$1)`, []byte(key)).Scan(&present); err != nil {
+		return result, false, err
+	}
+	if !present {
+		return result, false, nil
 	}
 	err = r.sql.QueryRowContext(ctx, `SELECT value FROM plug_postgres.versions WHERE key=$1 AND revision<=$2 ORDER BY revision DESC LIMIT 1`, []byte(key), decimal(r.at)).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -485,6 +489,7 @@ func decimalCompare(left, right string) int {
 }
 
 type currentBatchRecord struct {
+	eligible bool
 	raw      []byte
 	kind     string
 	revision string
@@ -505,8 +510,8 @@ func (r *reader) recordsAt(ctx context.Context, ids []string) (map[string]stored
 	for i, id := range ids {
 		keys[i] = []byte(id)
 	}
-	rows, err := r.sql.QueryContext(ctx, `SELECT key,ref,kind,revision::text,body,deleted,version_count::text
-	 FROM plug_postgres.records WHERE key=ANY($1::bytea[])`, keys)
+	rows, err := r.sql.QueryContext(ctx, `SELECT key,ref,kind,revision::text,body,deleted,version_count::text,revision<=$2
+	 FROM plug_postgres.records WHERE key=ANY($1::bytea[])`, keys, decimal(r.at))
 	if err != nil {
 		return nil, err
 	}
@@ -516,11 +521,11 @@ func (r *reader) recordsAt(ctx context.Context, ids []string) (map[string]stored
 		var revision, count string
 		var kind string
 		var body []byte
-		var deleted bool
-		if err = rows.Scan(&id, &raw, &kind, &revision, &body, &deleted, &count); err != nil {
+		var deleted, eligible bool
+		if err = rows.Scan(&id, &raw, &kind, &revision, &body, &deleted, &count, &eligible); err != nil {
 			break
 		}
-		current[string(id)] = currentBatchRecord{raw: bytes.Clone(raw), kind: kind, revision: revision, body: bytes.Clone(body), deleted: deleted, count: count}
+		current[string(id)] = currentBatchRecord{eligible: eligible, raw: bytes.Clone(raw), kind: kind, revision: revision, body: bytes.Clone(body), deleted: deleted, count: count}
 	}
 	if err == nil {
 		err = rows.Err()
@@ -539,11 +544,7 @@ func (r *reader) recordsAt(ctx context.Context, ids []string) (map[string]stored
 		if !exists {
 			continue
 		}
-		n, parseErr := parseCounter(row.revision)
-		if parseErr != nil {
-			return nil, parseErr
-		}
-		if n > r.at {
+		if !row.eligible {
 			if _, already := seen[id]; !already {
 				seen[id] = struct{}{}
 				historical = append(historical, id)
@@ -552,6 +553,10 @@ func (r *reader) recordsAt(ctx context.Context, ids []string) (map[string]stored
 		}
 		var ref driver.Ref
 		if err := decode(row.raw, &ref); err != nil {
+			return nil, err
+		}
+		n, err := parseCounter(row.revision)
+		if err != nil {
 			return nil, err
 		}
 		count, err := parseCounter(row.count)
@@ -591,7 +596,6 @@ func (r *reader) get(ctx context.Context, refs []driver.Ref) ([]driver.Record, e
 		if r.writer != nil {
 			if v, ok := r.writer.records[key]; ok {
 				if v != nil {
-					driver.ReportReadPayload(ctx, v.Body)
 					values[key] = storedRecord{record: *v}
 				}
 				continue
@@ -611,6 +615,7 @@ func (r *reader) get(ctx context.Context, refs []driver.Ref) ([]driver.Record, e
 		if value, exists := values[id]; exists && !value.deleted {
 			row := value.record
 			row.Body = bytes.Clone(row.Body)
+			driver.ReportReadPayload(ctx, row.Body)
 			result = append(result, row)
 		}
 	}
@@ -734,13 +739,29 @@ func (r *reader) observeKeys(ctx context.Context, keys []driver.LockKey) ([]driv
 				states[i].Present = staged.Present
 				states[i].Derived = nil
 				if staged.Derived != nil {
-					row, err := copied(*staged.Derived)
-					if err != nil {
-						return nil, err
-					}
+					row := staged.Derived.Clone()
 					states[i].Derived = &row
 				}
 			}
+		}
+	}
+	// Restore binary-owned annotations without changing ordinary opaque states.
+	byTable := map[driver.DerivedTable][]int{}
+	for i, s := range states {
+		if s.Present && s.Derived != nil && s.Key.Derived != nil {
+			byTable[s.Key.Derived.Table] = append(byTable[s.Key.Derived.Table], i)
+		}
+	}
+	for table, positions := range byTable {
+		values := make([]driver.DerivedRow, 0, len(positions))
+		for _, i := range positions {
+			values = append(values, *states[i].Derived)
+		}
+		if err := r.selectionAnnotations(ctx, values, table); err != nil {
+			return nil, err
+		}
+		for j, i := range positions {
+			states[i].Derived = &values[j]
 		}
 	}
 	return states, nil

@@ -71,6 +71,10 @@ func (t *transaction) header(h driver.ChangesetHeader) ([]byte, error) {
 }
 
 func (t *transaction) validateChanges(ctx context.Context, changes []model.ChangeRecord) error {
+	return t.validateChangesWithPreimages(ctx, changes, nil)
+}
+
+func (t *transaction) validateChangesWithPreimages(ctx context.Context, changes []model.ChangeRecord, preimages map[string]commitPreimage) error {
 	seen := make(map[string]bool, len(changes))
 	for _, change := range changes {
 		if err := change.Op.Validate(); err != nil {
@@ -88,20 +92,22 @@ func (t *transaction) validateChanges(ctx context.Context, changes []model.Chang
 		if (value == nil) != (change.Op == model.OpDelete) {
 			return fmt.Errorf("postgres: deletion and operation disagree")
 		}
-		previous, ok, err := t.recordAt(ctx, id)
-		if err != nil {
-			return err
-		}
-		revision := model.Natural64(0)
-		if ok {
-			revision = previous.record.Revision
+		revision := preimages[id].revision
+		if preimages == nil {
+			// Offline-history validation retains its existing read path.
+			previous, exists, err := t.recordAt(ctx, id)
+			if err != nil {
+				return err
+			}
+			if exists {
+				revision, _ = previous.record.Revision.Uint64()
+			}
 		}
 		from, err := change.FromRevision.Uint64()
 		if err != nil {
 			return err
 		}
-		n, _ := revision.Uint64()
-		if from != n {
+		if from != revision {
 			return driver.ErrConflict
 		}
 	}
@@ -264,7 +270,11 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 	if err = t.publishCheckpoints(ctx); err != nil {
 		return zero, err
 	}
-	if err = t.validateChanges(ctx, h.Changes); err != nil {
+	preimages, err := t.commitPreimages(ctx)
+	if err != nil {
+		return zero, err
+	}
+	if err = t.validateChangesWithPreimages(ctx, h.Changes, preimages); err != nil {
 		return zero, err
 	}
 	if err = t.validatePredicates(ctx); err != nil {
@@ -318,7 +328,7 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		_ = t.finish()
 		return zero, err
 	}
-	if err = t.writeRecords(ctx, entry); err != nil {
+	if err = t.writeRecords(ctx, entry, preimages); err != nil {
 		_ = t.finish()
 		return zero, err
 	}
@@ -402,6 +412,7 @@ func (t *transaction) writeStates(ctx context.Context, revision model.Revision) 
 	}
 	appendState := func(id string, state driver.LockState) error {
 		state.Revision = revision
+		state = t.committedSelectionState(state, revision)
 		raw, err := encode(state)
 		if err != nil {
 			return err
@@ -423,7 +434,10 @@ func (t *transaction) writeStates(ctx context.Context, revision model.Revision) 
 			return err
 		}
 	}
-	return flush()
+	if err := flush(); err != nil {
+		return err
+	}
+	return t.writeSelection(ctx, revision)
 }
 
 func (t *transaction) writeState(ctx context.Context, id string, state driver.LockState) error {
@@ -438,7 +452,66 @@ func (t *transaction) writeState(ctx context.Context, id string, state driver.Lo
 // Bound record and version publication within the existing fenced transaction.
 const publicationBatchRows = 256
 
-func (t *transaction) writeRecords(ctx context.Context, entry model.Changeset) error {
+type commitPreimage struct {
+	revision, count uint64
+	deleted         bool
+}
+
+// Head holds the metadata row FOR UPDATE until publication ends, so current
+// rows (including tombstones) are the committed preimages at t.at. A missing
+// current key is absent at this head; it needs no historical reconstruction.
+// Load only the metadata used by validation and version writing, once, in
+// bounded batches. The result belongs to this Commit attempt, never the reader
+// or transaction, so validation retries and staging cannot retain stale values.
+func (t *transaction) commitPreimages(ctx context.Context) (map[string]commitPreimage, error) {
+	if !t.hasHead {
+		return nil, fmt.Errorf("postgres: commit preimages require Head")
+	}
+	result := make(map[string]commitPreimage, len(t.records))
+	if t.at == 0 {
+		return result, nil
+	}
+	keys := make([][]byte, 0, len(t.records))
+	for id := range t.records {
+		keys = append(keys, []byte(id))
+	}
+	for start := 0; start < len(keys); start += publicationBatchRows {
+		end := min(start+publicationBatchRows, len(keys))
+		rows, err := t.sql.QueryContext(ctx, `SELECT key,revision::text,deleted,version_count::text
+		 FROM plug_postgres.records WHERE key=ANY($1::bytea[]) AND revision<=$2`, keys[start:end], decimal(t.at))
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id []byte
+			var value commitPreimage
+			var revision, count string
+			if err = rows.Scan(&id, &revision, &value.deleted, &count); err != nil {
+				break
+			}
+			if value.revision, err = parseCounter(revision); err != nil {
+				break
+			}
+			if value.count, err = parseCounter(count); err != nil {
+				break
+			}
+			result[string(id)] = value
+		}
+		if err == nil {
+			err = rows.Err()
+		}
+		closeErr := rows.Close()
+		if err != nil {
+			return nil, err
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+	}
+	return result, nil
+}
+
+func (t *transaction) writeRecords(ctx context.Context, entry model.Changeset, preimages map[string]commitPreimage) error {
 	keys := make([][]byte, 0, publicationBatchRows)
 	refs := make([][]byte, 0, publicationBatchRows)
 	kinds := make([]string, 0, publicationBatchRows)
@@ -466,10 +539,7 @@ func (t *transaction) writeRecords(ctx context.Context, entry model.Changeset) e
 		return nil
 	}
 	for id, record := range t.records {
-		previous, exists, err := t.recordAt(ctx, id)
-		if err != nil {
-			return err
-		}
+		previous, exists := preimages[id]
 		count := previous.count
 		if count == math.MaxUint64 {
 			return fmt.Errorf("%w: postgres record version counter exhausted", driver.ErrUnsupported)
@@ -483,6 +553,7 @@ func (t *transaction) writeRecords(ctx context.Context, entry model.Changeset) e
 			ref, kind = t.identities[id].Ref, t.identities[id].Kind
 		}
 		version := driver.Version{Ref: ref, Revision: entry.Revision, CreatedAt: entry.Time, Principal: entry.Principal, Deleted: record == nil, Base: count%driver.VersionBaseEvery == 0 || exists && previous.deleted}
+		var err error
 		if record != nil {
 			if version.Base {
 				version.Body = body

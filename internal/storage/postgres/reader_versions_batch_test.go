@@ -174,6 +174,31 @@ func TestBatchedHistoricalRecordReadsPreserveScalarImagesAndRoundTrips(t *testin
 		}
 	}
 	batched := testRead(t, s, &second.Revision)
+	// Keep the original admitted-body conservation check at the reconstruction
+	// boundary. Public Get additionally clones every returned position, including
+	// duplicates; those materializations have a separate additive oracle below.
+	batchReader, ok := batched.(*reader)
+	if !ok {
+		t.Fatalf("batch reader type=%T", batched)
+	}
+	ids := make([]string, len(request))
+	for i, ref := range request {
+		ids[i], err = recordKey(ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var admittedWork readerPayloadWork
+	admitted, err := batchReader.recordsAt(driver.WithReadWorkObserver(ctx, &admittedWork), ids)
+	if err != nil || len(admitted) != count {
+		t.Fatalf("admitted historical images=%d want=%d err=%v", len(admitted), count, err)
+	}
+	for _, ref := range refs {
+		key, _ := recordKey(ref)
+		if !reflect.DeepEqual(admitted[key].record, want[ref.ID]) {
+			t.Fatalf("admitted image differs from scalar: %s", ref.ID)
+		}
+	}
 	capture := &readerQueryCapture{}
 	var batchWork readerPayloadWork
 	readCtx := context.WithValue(driver.WithReadWorkObserver(ctx, &batchWork), readerQueryCaptureKey{}, capture)
@@ -191,15 +216,21 @@ func TestBatchedHistoricalRecordReadsPreserveScalarImagesAndRoundTrips(t *testin
 		}
 	}
 	// The batch path replaces scalar recordAt reconstruction, but must retain
-	// its live-body observations once per distinct key, including duplicates
-	// in the caller's output. Nil instrumentation must preserve the image.
+	// its live-body observations once per distinct key, plus the public Get
+	// output clones. Nil instrumentation must preserve the image.
 	plain, err := batched.Get(driver.WithReadWorkObserver(ctx, nil), request)
 	if err != nil || !reflect.DeepEqual(plain, got) {
 		t.Fatalf("nil observer changed historical batch: rows=%d err=%v", len(plain), err)
 	}
 	wantBytes := int64(count * len(`{"revision":2}`))
 	if scalarWork.payloads.Load() != count || scalarWork.bytes.Load() != wantBytes ||
-		batchWork.gets.Load() != 1 || batchWork.payloads.Load() != count || batchWork.bytes.Load() != wantBytes {
+		admittedWork.payloads.Load() != count || admittedWork.bytes.Load() != wantBytes {
+		t.Fatalf("admitted body conservation: scalar=%d/%d batch=%d/%d want=%d/%d",
+			scalarWork.payloads.Load(), scalarWork.bytes.Load(), admittedWork.payloads.Load(), admittedWork.bytes.Load(), count, wantBytes)
+	}
+	wantMaterializations := int64(count + len(request))
+	if batchWork.gets.Load() != 1 || batchWork.payloads.Load() != wantMaterializations ||
+		batchWork.bytes.Load() != wantMaterializations*int64(len(`{"revision":2}`)) {
 		t.Fatalf("historical payload observations: scalar=%d/%d batch_gets=%d batch=%d/%d want=%d/%d",
 			scalarWork.payloads.Load(), scalarWork.bytes.Load(), batchWork.gets.Load(), batchWork.payloads.Load(), batchWork.bytes.Load(), count, wantBytes)
 	}
@@ -207,7 +238,7 @@ func TestBatchedHistoricalRecordReadsPreserveScalarImagesAndRoundTrips(t *testin
 	var currentWork readerPayloadWork
 	currentRows, currentErr := current.Get(driver.WithReadWorkObserver(ctx, &currentWork), request)
 	if currentErr != nil || len(currentRows) != len(request) || currentWork.gets.Load() != 1 ||
-		currentWork.payloads.Load() != count || currentWork.bytes.Load() != int64(count*len(`{"revision":3}`)) {
+		currentWork.payloads.Load() != wantMaterializations || currentWork.bytes.Load() != wantMaterializations*int64(len(`{"revision":3}`)) {
 		t.Fatalf("current payload observations: rows=%d gets=%d payloads=%d bytes=%d err=%v",
 			len(currentRows), currentWork.gets.Load(), currentWork.payloads.Load(), currentWork.bytes.Load(), currentErr)
 	}

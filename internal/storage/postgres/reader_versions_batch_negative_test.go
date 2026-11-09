@@ -179,8 +179,9 @@ func TestBatchedHistoricalRecordReadsPreserveCallerErrorOrder(t *testing.T) {
 	t.Logf("caller error-order parity PASS: first=%q second=%q", batchErr, aErr)
 }
 
-// Eligible current rows retain the scalar counter/decode error precedence, and
-// newer rows stay on the historical path instead of being parsed as current.
+// Eligible current rows retain the scalar decode-before-counter error
+// precedence. The SQL eligibility projection must also leave a newer row on
+// the historical path instead of parsing an oversized/negative counter in Go.
 func TestBatchedCurrentRecordReadsPreserveScalarErrorPrecedence(t *testing.T) {
 	ctx := context.Background()
 	s, lease := openReaderQueryTest(t)
@@ -216,7 +217,7 @@ func TestBatchedCurrentRecordReadsPreserveScalarErrorPrecedence(t *testing.T) {
 		t.Fatal(err)
 	}
 	if batchErr == nil || batchErr.Error() != scalarErr.Error() {
-		t.Fatalf("batched current error=%v; want scalar error=%v", batchErr, scalarErr)
+		t.Fatalf("batched current error=%v; want scalar decode-first error=%v", batchErr, scalarErr)
 	}
 	t.Logf("current decode/counter precedence PASS: error=%q", batchErr)
 }

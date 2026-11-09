@@ -4,6 +4,7 @@
 package authzrpc
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"sync"
 	"time"
 
@@ -102,6 +104,9 @@ type Config struct {
 	// Mutators optionally installs trusted host bindings on the same Writer as
 	// the fixed checker and event context. Callback resources remain caller-owned.
 	Mutators []pipeline.MutatorBinding
+	// WriterObserver receives the same bounded, non-durable phase telemetry as
+	// pipeline.WithObserver. It must be concurrency-safe and return without I/O.
+	WriterObserver pipeline.Observer
 	// Hierarchy opts into the bounded EP2 create/reparent authorization adapter.
 	// It does not implement hierarchy storage/RPC or relax ordinary #18 writes.
 	// Keep false until the host installs the separately reviewed hierarchy Writer.
@@ -130,7 +135,7 @@ func New(ctx context.Context, config Config) (*Composition, error) {
 // newWithClock keeps controlled time at construction, outside RPC and server
 // configuration. The test build exposes this seam for real-store assertions.
 func newWithClock(ctx context.Context, config Config, now func() time.Time) (*Composition, error) {
-	if nilValue(config.Store) || nilValue(config.Lease) || config.Provider == nil || config.Facts == nil || now == nil {
+	if nilValue(config.Store) || nilValue(config.Lease) || config.Provider == nil || nilValue(config.Facts) || now == nil {
 		return nil, fmt.Errorf("authzrpc: store, lease, provider and facts are required")
 	}
 	meta, err := config.Store.Meta(ctx)
@@ -173,6 +178,9 @@ func newWithClock(ctx context.Context, config Config, now func() time.Time) (*Co
 	}
 	ontology := service.NewOntology(nil)
 	options := []pipeline.Option{pipeline.WithOntology(ontology), pipeline.WithAuthorizer(checker), pipeline.WithEventContext(checker), pipeline.WithClock(now)}
+	if config.WriterObserver != nil {
+		options = append(options, pipeline.WithObserver(config.WriterObserver))
+	}
 	if config.Audit != nil {
 		options = append(options, pipeline.WithOntologyAudit(config.Audit))
 	}
@@ -254,13 +262,16 @@ func cloneFacts(in authzfixed.Facts) (authzfixed.Facts, error) {
 // deliberately explicit: updates replace the complete validated source and do
 // not expose a grant mutation RPC or a permission cache.
 type MutableFacts struct {
-	mu           sync.RWMutex
-	facts        authzfixed.Facts
-	store        driver.Store
-	lease        driver.ActiveLease
-	namespace    authz.Namespace
-	factRevision model.Revision
-	bound        bool
+	mu             sync.RWMutex
+	facts          authzfixed.Facts
+	store          driver.Store
+	lease          driver.ActiveLease
+	namespace      authz.Namespace
+	factRevision   model.Revision
+	sourceRevision model.Revision
+	sourceDigest   string
+	sourcePresent  bool
+	bound          bool
 }
 
 func NewMutableFacts(facts authzfixed.Facts) (*MutableFacts, error) {
@@ -277,6 +288,7 @@ func (s *MutableFacts) Load(ctx context.Context, snapshot Snapshot) (authzfixed.
 	s.mu.RLock()
 	facts, err := cloneFacts(s.facts)
 	expected, bound, namespace := s.factRevision, s.bound, s.namespace
+	sourceRevision, sourceDigest, sourcePresent := s.sourceRevision, s.sourceDigest, s.sourcePresent
 	s.mu.RUnlock()
 	if err != nil {
 		return authzfixed.Facts{}, err
@@ -290,6 +302,15 @@ func (s *MutableFacts) Load(ctx context.Context, snapshot Snapshot) (authzfixed.
 	}
 	if bound && state.Revision.String() != expected.String() {
 		return authzfixed.Facts{}, fmt.Errorf("authorization facts changed after the pinned snapshot")
+	}
+	if bound {
+		source, err := observeFactsSource(ctx, snapshot, namespace)
+		if err != nil {
+			return authzfixed.Facts{}, err
+		}
+		if source.Present != sourcePresent || source.Revision.String() != sourceRevision.String() || sourcePresent && (source.Derived == nil || driver.SelectionDigest(source.Derived.Value) != sourceDigest) {
+			return authzfixed.Facts{}, errors.New("authorization source binding changed after the pinned snapshot")
+		}
 	}
 	return facts, nil
 }
@@ -310,42 +331,15 @@ func (s *MutableFacts) Replace(facts authzfixed.Facts) error {
 	if err := authzfixed.ValidateRegistryUpdate(s.facts, copy); err != nil {
 		return err
 	}
-	ctx := context.Background()
-	fact, err := driver.NewReadFact(authz.ACLDependency(s.namespace).Key)
+	revision, digest, err := publishFacts(context.Background(), s.store, s.lease, s.facts, copy, !s.sourcePresent)
 	if err != nil {
 		return err
 	}
-	tx, err := s.store.Write(ctx, s.lease)
-	if err != nil {
-		return err
-	}
-	defer tx.Close()
-	defer tx.Rollback(context.Background())
-	lock := driver.LockKey{Kind: driver.LockReadFact, Fact: fact}
-	states, err := tx.Lock(ctx, []driver.LockRequest{{Key: lock, Mode: driver.LockUpdate}})
-	if err != nil {
-		return err
-	}
-	if len(states) != 1 {
-		return errors.New("authorization fact lock was not acquired")
-	}
-	if _, err := tx.Head(ctx); err != nil {
-		return err
-	}
-	if err := tx.BumpReadFacts(ctx, []driver.ReadFact{fact}); err != nil {
-		return err
-	}
-	entry, err := tx.Commit(ctx, driver.ChangesetHeader{
-		Incarnation: s.namespace.Incarnation,
-		Kind:        model.ChangesetDerived,
-		Time:        time.Now().UTC(),
-		Principal:   model.PrincipalRef{Kind: "system", ID: "authzrpc"},
-		LockKeys:    []driver.LockKey{lock},
-	})
-	if err != nil {
-		return err
-	}
-	s.factRevision = entry.Revision
+	// Only an acknowledged commit installs process-local facts. A lost commit
+	// acknowledgement leaves the old binding, which Load refuses against the
+	// genuinely advanced durable source/ACL until a legitimate Replace.
+	s.factRevision, s.sourceRevision, s.sourceDigest = revision, revision, digest
+	s.sourcePresent = true
 	s.facts = copy
 	return nil
 }
@@ -374,11 +368,34 @@ func (s *MutableFacts) bind(ctx context.Context, store driver.Store, lease drive
 		return err
 	}
 	state, err := observeACL(ctx, reader, namespace)
+	if err != nil {
+		_ = reader.Close()
+		return err
+	}
+	source, err := observeFactsSource(ctx, reader, namespace)
 	_ = reader.Close()
 	if err != nil {
 		return err
 	}
-	s.store, s.lease, s.namespace, s.factRevision, s.bound = store, lease, namespace, state.Revision, true
+	body, err := authzfixed.FactsSourceBytes(s.facts)
+	if err != nil {
+		return err
+	}
+	digest := driver.SelectionDigest(body)
+	revision, sourceRevision := state.Revision, source.Revision
+	if source.Present {
+		if source.Derived == nil || !bytes.Equal(source.Derived.Value, body) || source.Revision.String() != state.Revision.String() {
+			return errors.New("installed authorization source does not match durable source binding")
+		}
+	} else {
+		// Construction binds the ordinary host facts without writing. Absent
+		// durable authority cannot certify optional selection; only an explicit
+		// Replace may atomically establish its source, domains and ACL generation.
+		digest = ""
+	}
+	s.store, s.lease, s.namespace, s.factRevision, s.bound = store, lease, namespace, revision, true
+	s.sourceRevision, s.sourceDigest = sourceRevision, digest
+	s.sourcePresent = source.Present
 	return nil
 }
 
@@ -454,4 +471,191 @@ func authzError(err error) error {
 		}
 	}
 	return err
+}
+
+func observeFactsSource(ctx context.Context, snapshot Snapshot, namespace authz.Namespace) (driver.LockState, error) {
+	rows, err := authzfixed.SelectionRows(namespace)
+	if err != nil {
+		return driver.LockState{}, err
+	}
+	states, err := snapshot.Observe(ctx, []driver.LockKey{{Kind: driver.LockDerived, Derived: &rows.Source}})
+	if err != nil {
+		return driver.LockState{}, err
+	}
+	if len(states) != 1 {
+		return driver.LockState{}, errors.New("authorization source observation was incomplete")
+	}
+	return states[0], nil
+}
+
+func publishFacts(ctx context.Context, store driver.Store, lease driver.ActiveLease, before, after authzfixed.Facts, initial bool) (model.Revision, string, error) {
+	body, err := authzfixed.FactsSourceBytes(after)
+	if err != nil {
+		return model.Natural64(0), "", err
+	}
+	keys, err := authzfixed.SelectionRows(after.Namespace)
+	if err != nil {
+		return model.Natural64(0), "", err
+	}
+	reader, err := store.Read(ctx, driver.View{Incarnation: after.Namespace.Incarnation})
+	if err != nil {
+		return model.Natural64(0), "", err
+	}
+	expectedSource, err := observeFactsSource(ctx, reader, after.Namespace)
+	if err != nil {
+		_ = reader.Close()
+		return model.Natural64(0), "", err
+	}
+	acl, err := observeACL(ctx, reader, after.Namespace)
+	_ = reader.Close()
+	if err != nil {
+		return model.Natural64(0), "", err
+	}
+	if initial {
+		if expectedSource.Present || !expectedSource.Revision.IsZero() {
+			return model.Natural64(0), "", errors.New("authorization source changed during installation")
+		}
+	} else {
+		if !expectedSource.Present || expectedSource.Derived == nil || expectedSource.Revision.String() != acl.Revision.String() {
+			return model.Natural64(0), "", errors.New("durable authorization source binding is unavailable")
+		}
+		var durable authzfixed.Facts
+		if err := json.Unmarshal(expectedSource.Derived.Value, &durable); err != nil {
+			return model.Natural64(0), "", err
+		}
+		canonical, err := authzfixed.FactsSourceBytes(durable)
+		if err != nil || !bytes.Equal(canonical, expectedSource.Derived.Value) {
+			return model.Natural64(0), "", errors.New("durable authorization source is not canonical")
+		}
+		if err := authzfixed.ValidateRegistryUpdate(durable, after); err != nil {
+			return model.Natural64(0), "", err
+		}
+		before = durable
+	}
+	fact, err := driver.NewReadFact(authz.ACLDependency(after.Namespace).Key)
+	if err != nil {
+		return model.Natural64(0), "", err
+	}
+	byKey := map[string]driver.LockRequest{}
+	add := func(key driver.LockKey) error {
+		encoded, err := driver.EncodeLockKey(key)
+		if err == nil {
+			byKey[encoded] = driver.LockRequest{Key: key, Mode: driver.LockUpdate}
+		}
+		return err
+	}
+	if err := add(driver.LockKey{Kind: driver.LockReadFact, Fact: fact}); err != nil {
+		return model.Natural64(0), "", err
+	}
+	for _, key := range []driver.DerivedRowKey{keys.Source, keys.Grants, keys.Projects, keys.Teams} {
+		key := key
+		if err := add(driver.LockKey{Kind: driver.LockDerived, Derived: &key}); err != nil {
+			return model.Natural64(0), "", err
+		}
+	}
+	sentinels := map[driver.Sentinel]bool{keys.AttributeScope: true}
+	// Declare old AND new semantic grant scopes, including explicit empty
+	// domains, before Head. Opaque scope components retain all identity kinds.
+	for _, facts := range []authzfixed.Facts{before, after} {
+		scopes := []authz.Scope{{Kind: authz.AuthorityScope, Ref: facts.Namespace.Authority}}
+		for _, grant := range facts.Grants {
+			scopes = append(scopes, grant.Scope)
+		}
+		for _, project := range facts.Projects {
+			scopes = append(scopes, authz.Scope{Kind: authz.ProjectScope, Ref: project.Ref})
+		}
+		for _, team := range facts.Teams {
+			scopes = append(scopes, authz.Scope{Kind: authz.TeamScope, Ref: team.Ref})
+		}
+		for _, scope := range scopes {
+			dep, err := authz.GrantDependency(facts.Namespace, scope)
+			if err != nil {
+				return model.Natural64(0), "", err
+			}
+			sentinel, err := driver.NewSentinel(dep.Key)
+			if err != nil {
+				return model.Natural64(0), "", err
+			}
+			sentinels[sentinel] = true
+		}
+	}
+	for sentinel := range sentinels {
+		if err := add(driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel}); err != nil {
+			return model.Natural64(0), "", err
+		}
+	}
+	ordered := make([]string, 0, len(byKey))
+	for key := range byKey {
+		ordered = append(ordered, key)
+	}
+	sort.Strings(ordered)
+	locks, lockKeys := make(driver.LockSet, 0, len(ordered)), make([]driver.LockKey, 0, len(ordered))
+	for _, key := range ordered {
+		locks = append(locks, byKey[key])
+		lockKeys = append(lockKeys, byKey[key].Key)
+	}
+	if err := driver.ValidateLockSet(locks); err != nil {
+		return model.Natural64(0), "", err
+	}
+	tx, err := store.Write(ctx, lease)
+	if err != nil {
+		return model.Natural64(0), "", err
+	}
+	defer tx.Close()
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	states, err := tx.Lock(ctx, locks)
+	if err != nil {
+		return model.Natural64(0), "", err
+	}
+	if len(states) != len(locks) {
+		return model.Natural64(0), "", errors.New("authorization publication lock census was incomplete")
+	}
+	var observed model.Revision
+	for _, state := range states {
+		if state.Key.Kind == driver.LockReadFact && state.Key.Fact == fact && (state.Present != acl.Present || state.Revision.String() != acl.Revision.String()) {
+			return model.Natural64(0), "", errors.New("authorization generation changed during publication")
+		}
+		if state.Key.Kind == driver.LockDerived && state.Key.Derived != nil && *state.Key.Derived == keys.Source {
+			if state.Present != expectedSource.Present || state.Revision.String() != expectedSource.Revision.String() || state.Present && (state.Derived == nil || expectedSource.Derived == nil || !bytes.Equal(state.Derived.Value, expectedSource.Derived.Value)) {
+				return model.Natural64(0), "", errors.New("authorization source changed during publication")
+			}
+			observed = state.Revision
+		}
+	}
+	if _, err := tx.Head(ctx); err != nil {
+		return model.Natural64(0), "", err
+	}
+	root := driver.DerivedRow{Key: keys.Source.Key, Value: body}
+	if err := tx.PutDerived(ctx, keys.Source.Table, nil, []driver.DerivedRow{root}); err != nil {
+		return model.Natural64(0), "", err
+	}
+	digest := driver.SelectionDigest(body)
+	source := driver.SelectionSource{Key: driver.LockKey{Kind: driver.LockDerived, Derived: &keys.Source}, Revision: observed, Present: true, Digest: digest}
+	rows, err := authzfixed.SelectionProjection(after, source)
+	if err != nil {
+		return model.Natural64(0), "", err
+	}
+	for i, key := range []driver.DerivedRowKey{keys.Grants, keys.Projects, keys.Teams} {
+		row := rows[i]
+		err := pipeline.PutSelectionDerived(ctx, tx, key.Table, nil, []driver.DerivedRow{row})
+		if err != nil {
+			return model.Natural64(0), "", err
+		}
+	}
+	bumps := make([]driver.Sentinel, 0, len(sentinels))
+	for sentinel := range sentinels {
+		bumps = append(bumps, sentinel)
+	}
+	sort.Slice(bumps, func(i, j int) bool { return bumps[i] < bumps[j] })
+	if err := tx.BumpSentinels(ctx, bumps); err != nil {
+		return model.Natural64(0), "", err
+	}
+	if err := tx.BumpReadFacts(ctx, []driver.ReadFact{fact}); err != nil {
+		return model.Natural64(0), "", err
+	}
+	entry, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: after.Namespace.Incarnation, Kind: model.ChangesetDerived, Time: time.Now().UTC(), Principal: model.PrincipalRef{Kind: "system", ID: "authzrpc"}, LockKeys: lockKeys})
+	if err != nil {
+		return model.Natural64(0), "", err
+	}
+	return entry.Revision, digest, nil
 }

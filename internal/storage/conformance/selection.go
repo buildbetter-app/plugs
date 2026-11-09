@@ -16,6 +16,13 @@ import (
 // RunSelection exercises a real store implementing the reference contract.
 // These finite semantic oracles do not qualify SQL execution or performance.
 func RunSelection(t *testing.T, factory Factory) {
+	t.Run("optional_presence_boolean_template_numeric_order", func(t *testing.T) { selectionOptionalPresence(t, factory) })
+	t.Run("sealed_current_source_observations", func(t *testing.T) { selectionBoundaryControls(t, factory) })
+	t.Run("atomic_typed_writes_and_fresh_committed_exists", func(t *testing.T) { selectionAtomicAndFresh(t, factory) })
+	t.Run("existing_source_relation_differential", func(t *testing.T) { selectionSourceDifferential(t, factory) })
+	t.Run("independent_parent_only_source_domain", func(t *testing.T) { selectionParentOnlyDomain(t, factory) })
+	t.Run("versioned_scoped_grant_domain", func(t *testing.T) { selectionScopedGrantDomain(t, factory) })
+	t.Run("existing_authorization_interpreter_differential", func(t *testing.T) { selectionAuthorizationDifferential(t, factory) })
 	t.Run("unique_membership_pages_groups_and_cap", func(t *testing.T) { selectionMembership(t, factory) })
 	t.Run("presence_case_and_existing_order", func(t *testing.T) { selectionOrder(t, factory) })
 	t.Run("historical_content_current_authority", func(t *testing.T) { selectionHistory(t, factory) })
@@ -28,6 +35,8 @@ type selectionImage struct {
 	bead          driver.SelectionBead
 	body          []byte
 	deleted, omit bool
+	parentOnly    bool
+	links         []driver.SourceLink
 }
 type selectionFactWrite struct {
 	table   driver.DerivedTable
@@ -63,6 +72,9 @@ func selectionStage(t *testing.T, ctx context.Context, s driver.Store, l driver.
 	keys := map[string]driver.LockKey{}
 	add := func(k driver.LockKey) { keys[selectionEncode(k)] = k }
 	sentinels := map[driver.Sentinel]bool{}
+	if len(images) != 0 {
+		sentinels[driver.SentinelGraphBlocking] = true
+	}
 	for _, im := range images {
 		r := im.bead.Ref
 		add(driver.LockKey{Kind: driver.LockRecord, Ref: &r})
@@ -143,7 +155,19 @@ func selectionStage(t *testing.T, ctx context.Context, s driver.Store, l driver.
 			op = model.OpDelete
 			err = tx.Delete(ctx, r)
 		} else {
-			err = tx.Put(ctx, driver.Record{Ref: r, Kind: "bead", Body: im.body})
+			if im.parentOnly {
+				parentWriter, ok := tx.(driver.HierarchySourceWriter)
+				if !ok {
+					t.Fatal("selection fixture requires real typed parent publication")
+				}
+				err = parentWriter.PutHierarchyRecord(ctx, driver.Record{Ref: r, Kind: "bead", Body: im.body}, im.bead.Parent)
+			} else {
+				writer, ok := tx.(driver.GraphSourceWriter)
+				if !ok {
+					t.Fatal("selection fixture requires real typed graph publication")
+				}
+				err = writer.PutGraphRecord(ctx, driver.Record{Ref: r, Kind: "bead", Body: im.body}, im.bead.Parent, im.links)
+			}
 		}
 		if err != nil {
 			t.Fatal(err)
@@ -171,8 +195,8 @@ func selectionStage(t *testing.T, ctx context.Context, s driver.Store, l driver.
 		body, _ := json.Marshal(im.bead)
 		r := im.bead.Ref
 		sk := driver.LockKey{Kind: driver.LockRecord, Ref: &r}
-		row := driver.DerivedRow{Key: k.Key, Value: body, Index: &driver.SelectionIndex{Version: 1, Row: k, Incarnation: m.Incarnation, Branch: model.Natural64(0), ValueDigest: driver.SelectionDigest(body), Source: driver.SelectionSource{Key: sk, Revision: states[selectionEncode(sk)].Revision, Present: true, Digest: driver.SelectionDigest(im.body)}, Bead: &im.bead}}
-		if err = tx.PutDerived(ctx, k.Table, nil, []driver.DerivedRow{row}); err != nil {
+		row := driver.DerivedRow{Key: k.Key, Value: body, Index: &driver.SelectionIndex{Version: driver.SelectionIndexVersion, Row: k, Incarnation: m.Incarnation, Branch: model.Natural64(0), ValueDigest: driver.SelectionDigest(body), Source: driver.SelectionSource{Key: sk, Revision: states[selectionEncode(sk)].Revision, Present: true, Digest: driver.SelectionDigest(im.body)}, Bead: &im.bead}}
+		if err = tx.(driver.SelectionIndexWriter).PutSelectionDerived(ctx, k.Table, nil, []driver.DerivedRow{row}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -192,8 +216,8 @@ func selectionStage(t *testing.T, ctx context.Context, s driver.Store, l driver.
 			source = *f.source
 			source.Revision = states[selectionEncode(source.Key)].Revision
 		}
-		row := driver.DerivedRow{Key: k.Key, Value: data, Index: &driver.SelectionIndex{Version: 1, Row: k, Incarnation: m.Incarnation, Branch: model.Natural64(0), ValueDigest: driver.SelectionDigest(data), Source: source, Facts: &set}}
-		if err = tx.PutDerived(ctx, k.Table, nil, []driver.DerivedRow{row}); err != nil {
+		row := driver.DerivedRow{Key: k.Key, Value: data, Index: &driver.SelectionIndex{Version: driver.SelectionIndexVersion, Row: k, Incarnation: m.Incarnation, Branch: model.Natural64(0), ValueDigest: driver.SelectionDigest(data), Source: source, Facts: &set}}
+		if err = tx.(driver.SelectionIndexWriter).PutSelectionDerived(ctx, k.Table, nil, []driver.DerivedRow{row}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -207,6 +231,17 @@ func selectionSeed(t *testing.T, ctx context.Context, s driver.Store, l driver.A
 		t.Fatal(err)
 	}
 	return e.Revision
+}
+
+// Parent-only fixtures intentionally publish no outgoing-link declaration.
+// They exercise the independent hierarchy coverage domain instead of making
+// the graph writer's complete Links envelope a hidden prerequisite.
+func selectionSeedParentOnly(t *testing.T, ctx context.Context, s driver.Store, l driver.ActiveLease, images []selectionImage, facts []selectionFactWrite) model.Revision {
+	t.Helper()
+	for i := range images {
+		images[i].parentOnly = true
+	}
+	return selectionSeed(t, ctx, s, l, images, facts)
 }
 func selectionOpen(t *testing.T, ctx context.Context, s driver.Store) (driver.Reader, driver.SelectionPlan) {
 	t.Helper()
@@ -222,7 +257,27 @@ func selectionOpen(t *testing.T, ctx context.Context, s driver.Store) (driver.Re
 	return r, selectionPlan(r.Snapshot())
 }
 func selectionPlan(v driver.View) driver.SelectionPlan {
-	return driver.SelectionPlan{Incarnation: v.Incarnation, Branch: v.Branch, ContentRevision: *v.At, AuthorityRevision: *v.At, Membership: driver.SelectionExpr{Op: driver.SelectionTrue}, Authorization: driver.SelectionExpr{Op: driver.SelectionTrue}, Mode: driver.SelectionPageMode, Page: &driver.SelectionPage{Limit: 100}}
+	p := driver.SelectionPlan{Incarnation: v.Incarnation, Branch: v.Branch, ContentRevision: *v.At, AuthorityRevision: *v.At, Membership: driver.SelectionExpr{Op: driver.SelectionTrue}, Authorization: driver.SelectionExpr{Op: driver.SelectionTrue}, Mode: driver.SelectionPageMode, Page: &driver.SelectionPage{Limit: 100}}
+	control := model.RefByKey("selection-conformance-control")
+	p.Boundary, _ = driver.PrepareSelectionBoundary(driver.SelectionBoundarySpec{Version: 1, PreparedBinding: driver.SelectionDigest([]byte("selection-conformance/compiled-fixture-v1")), Incarnation: p.Incarnation, Branch: p.Branch, AuthorityRevision: p.AuthorityRevision, Chain: driver.SelectionChainCompiled, Authorization: p.Authorization, Host: driver.SelectionHostAbsent, Sources: []driver.SelectionSource{{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &control}, Revision: model.Natural64(0)}}})
+	return p
+}
+
+// These fixture helpers act as trusted compilation and seal the deliberately
+// chosen test policy. Boundary substitution tests call Select directly instead.
+func selectionSeal(p driver.SelectionPlan) driver.SelectionPlan {
+	if p.Boundary == nil {
+		return p
+	}
+	spec, err := p.Boundary.Description()
+	if err != nil {
+		return p
+	}
+	spec.Authorization = p.Authorization
+	if boundary, err := driver.PrepareSelectionBoundary(spec); err == nil {
+		p.Boundary = boundary
+	}
+	return p
 }
 func selectionSelect(t *testing.T, ctx context.Context, r any, p driver.SelectionPlan) driver.SelectionResult {
 	t.Helper()
@@ -230,7 +285,7 @@ func selectionSelect(t *testing.T, ctx context.Context, r any, p driver.Selectio
 	if !ok {
 		t.Fatal("missing SelectionReader")
 	}
-	got, err := capability.Select(ctx, p)
+	got, err := capability.Select(ctx, selectionSeal(p))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +309,7 @@ func selectionExists(table driver.DerivedTable, key string, kind driver.Selectio
 }
 func selectionZeroError(t *testing.T, ctx context.Context, r any, p driver.SelectionPlan) {
 	t.Helper()
-	got, err := r.(driver.SelectionReader).Select(ctx, p)
+	got, err := r.(driver.SelectionReader).Select(ctx, selectionSeal(p))
 	if err == nil || !reflect.DeepEqual(got, driver.SelectionResult{}) {
 		t.Fatalf("expected refusal with zero result, got=%+v error=%v", got, err)
 	}
@@ -329,7 +384,7 @@ func selectionMembership(t *testing.T, factory Factory) {
 func selectionOrder(t *testing.T, factory Factory) {
 	ctx, s, l, _ := setup(t, factory)
 	a, b := selectionImageOf("a", "bug", "<absent>", "Fix_%", 10), selectionImageOf("b", "task", "", "fix_%", 2)
-	selectionSeed(t, ctx, s, l, nil, []selectionFactWrite{{table: driver.DerivedGrant, key: "clock", kind: driver.SelectionGrantFact}})
+	selectionSeed(t, ctx, s, l, []selectionImage{a}, []selectionFactWrite{{table: driver.DerivedGrant, key: "clock", kind: driver.SelectionGrantFact}})
 	selectionSeed(t, ctx, s, l, []selectionImage{a}, nil)
 	for i := 3; i <= 10; i++ {
 		selectionSeed(t, ctx, s, l, []selectionImage{b}, nil)
@@ -420,7 +475,7 @@ func selectionStaging(t *testing.T, factory Factory) {
 	row.Index.Source.Digest = driver.SelectionDigest(a.body)
 	row.Value, _ = json.Marshal(row.Index.Bead)
 	row.Index.ValueDigest = driver.SelectionDigest(row.Value)
-	if err = tx.PutDerived(ctx, driver.DerivedSortKey, nil, []driver.DerivedRow{row}); err != nil {
+	if err = tx.(driver.SelectionIndexWriter).PutSelectionDerived(ctx, driver.DerivedSortKey, nil, []driver.DerivedRow{row}); err != nil {
 		t.Fatal(err)
 	}
 	p.Authorization = selectionCompare(driver.SelectionTitle, "eq", driver.SelectionString("new"))
@@ -429,7 +484,7 @@ func selectionStaging(t *testing.T, factory Factory) {
 	p.Membership = selectionCompare(driver.SelectionTitle, "eq", driver.SelectionString("old"))
 	selectionWant(t, selectionSelect(t, ctx, tx, p), 1, "a")
 	// Source changed after annotation staging: Commit must recheck final bytes.
-	if err = tx.Put(ctx, driver.Record{Ref: a.bead.Ref, Kind: "bead", Body: []byte(`{"title":"after"}`)}); err != nil {
+	if err = tx.(driver.GraphSourceWriter).PutGraphRecord(ctx, driver.Record{Ref: a.bead.Ref, Kind: "bead", Body: []byte(`{"title":"after"}`)}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = tx.Commit(ctx, header); !errors.Is(err, driver.ErrUnsupported) {
@@ -536,7 +591,7 @@ func selectionCoverage(t *testing.T, factory Factory) {
 		t.Fatalf("staged annotation: %v %+v", err, staged)
 	}
 	input := staged[0]
-	if err = tx.PutDerived(ctx, k.Table, nil, []driver.DerivedRow{input}); err != nil {
+	if err = tx.(driver.SelectionIndexWriter).PutSelectionDerived(ctx, k.Table, nil, []driver.DerivedRow{input}); err != nil {
 		t.Fatal(err)
 	}
 	input.Index.Bead.Title = "mutated input"
@@ -573,7 +628,7 @@ func selectionSummaryCaps(t *testing.T, factory Factory) {
 	p.Mode = driver.SelectionTypeSummary
 	p.GroupBy = driver.SelectionGroupType
 	p.Page = nil
-	got, err := r.(driver.SelectionReader).Select(ctx, p)
+	got, err := r.(driver.SelectionReader).Select(ctx, selectionSeal(p))
 	var cap driver.ErrSelectionCap
 	if !errors.As(err, &cap) || !cap.Groups || !reflect.DeepEqual(got, driver.SelectionResult{}) {
 		t.Fatalf("101 groups must refuse: %+v %v", got, err)
@@ -652,7 +707,7 @@ func RunSelectionRefusal(t *testing.T, factory Factory) {
 	}
 	_ = tx2.Rollback(ctx)
 	r, p := selectionOpen(t, ctx, s)
-	got, err := r.(driver.SelectionReader).Select(ctx, p)
+	got, err := r.(driver.SelectionReader).Select(ctx, selectionSeal(p))
 	if !errors.Is(err, driver.ErrUnsupported) || !reflect.DeepEqual(got, driver.SelectionResult{}) {
 		t.Fatalf("SQL reader selection: %+v %v", got, err)
 	}
