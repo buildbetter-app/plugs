@@ -506,8 +506,10 @@ type styleANativeIssue struct {
 }
 
 // The public HTTP domain route permits lengths beyond the embedded CLI's
-// eight-character ceiling. Derive its tuple from the actual returned/stored
-// creation timestamp, then use it on the same pre-create archive in Plug.
+// eight-character ceiling. Derive its tuple from the actual returned creation
+// timestamp, then use it on the same pre-create archive in Plug. The native
+// DATETIME column rounds that timestamp to seconds; retain and check the
+// independently captured persisted tuple without substituting it for input.
 func (r *recorder) recordStyleADomainWidths() {
 	w := r.styleADomainWorkspace("pinned-domain-widths")
 	for i := 0; i < 3; i++ {
@@ -534,7 +536,7 @@ func (r *recorder) recordStyleADomainWidths() {
 		input := driver.HashInput{Title: issue.Title, Description: issue.Description, Creator: issue.Creator, Timestamp: issue.Timestamp}
 		want, err := driver.HashCandidate("b09", input, uint32(width), 0)
 		if err != nil || want != issue.ID {
-			r.t.Fatalf("native domain persisted tuple does not rederive ID: %s want=%s err=%v", issue.ID, want, err)
+			r.t.Fatalf("native domain returned tuple does not rederive ID: %s want=%s err=%v", issue.ID, want, err)
 		}
 		after := r.capture(w, label+"-after", width-5)
 		r.requireIDs(after, append([]string{issue.ID}, before.BeadIDs...)...)
@@ -543,6 +545,7 @@ func (r *recorder) recordStyleADomainWidths() {
 			r.t.Fatal(err)
 		}
 		found := false
+		var persisted styleANativeIssue
 		for _, row := range archive.Records("bead") {
 			if row.ID != issue.ID {
 				continue
@@ -551,16 +554,22 @@ func (r *recorder) recordStyleADomainWidths() {
 			if err != nil {
 				r.t.Fatal(err)
 			}
-			var persisted styleANativeIssue
-			if err := json.Unmarshal(fields, &persisted); err != nil || !reflect.DeepEqual(issue, persisted) {
-				r.t.Fatalf("returned native creation tuple differs from actual source row: %+v -> %+v err=%v", issue, persisted, err)
+			expectedStored := issue
+			expectedStored.Timestamp = issue.Timestamp.Round(time.Second)
+			if err := json.Unmarshal(fields, &persisted); err != nil || !reflect.DeepEqual(expectedStored, persisted) {
+				r.t.Fatalf("actual native source tuple differs beyond DATETIME second rounding: returned=%+v expected=%+v actual=%+v err=%v", issue, expectedStored, persisted, err)
 			}
 			found = true
 		}
 		if !found {
 			r.t.Fatal("actual native source row missing for domain create")
 		}
-		r.writeJSON(filepath.Join(r.root, label+"-tuple.json"), map[string]any{"native_id": issue.ID, "input": input, "width": width, "nonce": 0, "before_archive": before.ArchiveSHA256, "after_archive": after.ArchiveSHA256})
+		persistedInput := driver.HashInput{Title: persisted.Title, Description: persisted.Description, Creator: persisted.Creator, Timestamp: persisted.Timestamp}
+		persistedCandidate, err := driver.HashCandidate("b09", persistedInput, uint32(width), 0)
+		if err != nil {
+			r.t.Fatal(err)
+		}
+		r.writeJSON(filepath.Join(r.root, label+"-tuple.json"), map[string]any{"native_id": issue.ID, "input": input, "returned_tuple": issue, "persisted_tuple": persisted, "persisted_candidate": persistedCandidate, "storage_clock": "DATETIME/seconds-rounded", "width": width, "nonce": 0, "before_archive": before.ArchiveSHA256, "after_archive": after.ArchiveSHA256})
 		r.replayStyleA(before, input, issue.ID, "", "", false)
 	}
 }

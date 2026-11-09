@@ -82,9 +82,14 @@ length-3-through-8 exhaustion using real public CLI JSONL input. Supplying
 repeatable without changing its generator or clock. Each same-run capture is
 restored in snapshot mode and continued through real RPC on memory, SQLite and
 PostgreSQL, preserving source records and replaying after reopen. The separate
-public HTTP domain route records widths 9 and 10 from its actual returned and
-stored creation tuple, including a configured zero collision budget, and
-replays those same tuples after restore. It uses the same exact production
+public HTTP domain route records widths 9 and 10 from its actual returned
+creation tuple, including a configured zero collision budget, and replays
+those exact hash inputs after restore. It separately retains the actual
+captured source tuple: native SQL `DATETIME` rounds the timestamp to seconds,
+while the public create response retains the timestamp used to mint the ID.
+The test requires that precise clock conversion and exact equality of every
+other tuple field. Both tuples and the independently rederived persisted
+candidate remain in the receipt. It uses the same exact production
 9d6 executable's `bd serve` command over the existing pinned, owned Dolt runtime.
 Every HTTP request and response and the server's original process streams and
 shutdown are retained; each server stops before the following source capture.
