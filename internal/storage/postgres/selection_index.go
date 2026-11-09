@@ -192,12 +192,11 @@ func (t *transaction) validateSelectionWrites(ctx context.Context, proposed map[
 		if err != nil {
 			return err
 		}
-		i := sort.Search(len(t.acquired), func(i int) bool { k, _ := keyID(t.acquired[i].Key); return k >= id })
-		if i == len(t.acquired) {
-			return selectionUnsupported("source absent from lock census")
+		acquired, err := t.selectionSourceAcquired(id)
+		if err != nil {
+			return err
 		}
-		got, _ := keyID(t.acquired[i].Key)
-		if got != id {
+		if !acquired {
 			return selectionUnsupported("source absent from lock census")
 		}
 		keys[id] = x.Source.Key
@@ -262,6 +261,28 @@ func (t *transaction) validateSelectionWrites(ctx context.Context, proposed map[
 	}
 	return nil
 }
+
+// The complete Lock call owns a fixed acquired subset until Close, including
+// only successful skip-locked requests. Encode that census once rather than
+// re-encoding O(log N) keys for every staged/final source check. This stores
+// membership only: the fresh source observations and all validation above
+// still run on every call. Caller requests/results never own these bytes.
+func (t *transaction) selectionSourceAcquired(id string) (bool, error) {
+	if t.selectionAcquiredKeys == nil {
+		keys := make(map[string]struct{}, len(t.acquired))
+		for _, request := range t.acquired {
+			key, err := keyID(request.Key)
+			if err != nil {
+				return false, err
+			}
+			keys[key] = struct{}{}
+		}
+		t.selectionAcquiredKeys = keys
+	}
+	_, ok := t.selectionAcquiredKeys[id]
+	return ok, nil
+}
+
 func (t *transaction) selectionSourceChanged(k driver.LockKey) bool {
 	id, _ := keyID(k)
 	_, a := t.records[id]

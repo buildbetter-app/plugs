@@ -56,6 +56,7 @@ type transaction struct {
 	selectionProofSeed        bool
 	selectionProofRoots       [][]byte
 	selectionProofOld         [][]byte
+	selectionAcquiredKeys     map[string]struct{}
 }
 
 func (s *Store) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {

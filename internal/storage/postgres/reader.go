@@ -129,6 +129,7 @@ func (r *reader) finish() error {
 		r.writer.bumps = nil
 		r.writer.allocated = nil
 		r.writer.acquired = nil
+		r.writer.selectionAcquiredKeys = nil
 		close(r.writer.done)
 	}
 	return err

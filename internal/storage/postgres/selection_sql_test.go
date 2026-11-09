@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +17,180 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+// Only successfully acquired source locks authorize typed publication. These
+// real lock probes distinguish read ownership, skipped requests and opaque
+// byte identities before any source image is admitted.
+func TestSelectionPublicationUsesOnlyAcquiredSourceKeys(t *testing.T) {
+	for _, name := range []string{"share", "update", "missing", "skip_locked", "opaque_owned", "opaque_neighbor"} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			s := openTest(t, freshDSN(t))
+			lease := testLease(t, s)
+			ref := testRef("pl-source")
+			if name == "opaque_neighbor" || name == "opaque_owned" {
+				ref = testRef("pl-source-\xff")
+			}
+			source := testLock(ref)
+			key := driver.DerivedRowKey{Table: driver.DerivedReferenceIndex, Key: "source-lock-control"}
+			requests := driver.LockSet{{Key: driver.LockKey{Kind: driver.LockDerived, Derived: &key}, Mode: driver.LockUpdate}}
+			if name != "missing" {
+				mode := driver.LockShare
+				if name == "update" {
+					mode = driver.LockUpdate
+				} else if name == "skip_locked" {
+					// Hold only the source row, not Head, so the other transaction
+					// can acquire its complete surviving subset and publish.
+					owner, err := s.Write(ctx, lease)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer owner.Close()
+					if _, err = owner.Lock(ctx, driver.LockSet{{Key: source, Mode: driver.LockUpdate}}); err != nil {
+						t.Fatal(err)
+					}
+					mode = driver.LockSkipLocked
+				}
+				requests = append(requests, driver.LockRequest{Key: source, Mode: mode})
+			}
+			sort.Slice(requests, func(i, j int) bool {
+				a, _ := driver.EncodeLockKey(requests[i].Key)
+				b, _ := driver.EncodeLockKey(requests[j].Key)
+				return a < b
+			})
+			tx, err := s.Write(ctx, lease)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Close()
+			states, err := tx.Lock(ctx, requests)
+			wantLocks := len(requests)
+			if name == "skip_locked" {
+				wantLocks--
+			}
+			if err != nil || len(states) != wantLocks {
+				t.Fatalf("actual acquired subset=%d want=%d: %v", len(states), wantLocks, err)
+			}
+			if _, err = tx.Head(ctx); err != nil {
+				t.Fatal(err)
+			}
+			declared := make([]driver.LockKey, len(states))
+			for i, state := range states {
+				declared[i] = copyLockKey(state.Key)
+			}
+			if name == "opaque_neighbor" {
+				// JSON would collapse both identities to the replacement rune.
+				source = testLock(testRef("pl-source-\xfe"))
+			}
+			body := []byte(`{"complete":"links"}`)
+			row := driver.DerivedRow{Key: key.Key, Value: body, Index: &driver.SelectionIndex{
+				Version: driver.SelectionIndexVersion, Row: key, Incarnation: tx.Snapshot().Incarnation, Branch: model.Natural64(0), ValueDigest: driver.SelectionDigest(body),
+				Source: driver.SelectionSource{Key: source, Revision: model.Natural64(0)}, Facts: &driver.SelectionFacts{Kind: driver.SelectionLinkFact},
+			}}
+			writer := tx.(driver.SelectionIndexWriter)
+			err = writer.PutSelectionDerived(ctx, key.Table, nil, []driver.DerivedRow{row})
+			if name != "share" && name != "update" && name != "opaque_owned" {
+				if !errors.Is(err, driver.ErrSelectionUnavailable) || !strings.Contains(err.Error(), "source absent from lock census") {
+					t.Fatalf("unacquired source authorized publication: %v", err)
+				}
+				if rows, err := tx.DerivedRows(ctx, key.Table, key.Key); err != nil || len(rows) != 0 {
+					t.Fatalf("refused source left a partial row: %#v %v", rows, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Warm membership cannot turn caller-owned request/result mutation
+			// into ownership of another source or lose the original source.
+			for i := range requests {
+				if requests[i].Key.Ref != nil {
+					requests[i].Key.Ref.ID = "changed-request"
+				}
+			}
+			for i := range states {
+				if states[i].Key.Ref != nil {
+					states[i].Key.Ref.ID = "changed-result"
+				}
+			}
+			for _, id := range []string{"changed-request", "changed-result"} {
+				forged := row.Clone()
+				forged.Index.Source.Key = testLock(testRef(id))
+				if err = writer.PutSelectionDerived(ctx, key.Table, nil, []driver.DerivedRow{forged}); !errors.Is(err, driver.ErrSelectionUnavailable) || !strings.Contains(err.Error(), "source absent from lock census") {
+					t.Fatalf("caller mutation granted source ownership for %q: %v", id, err)
+				}
+			}
+			row.Index.Source.Key = testLock(ref)
+			if err = writer.PutSelectionDerived(ctx, key.Table, nil, []driver.DerivedRow{row}); err != nil {
+				t.Fatalf("caller mutation changed acquired ownership: %v", err)
+			}
+			cancelled, cancel := context.WithCancel(ctx)
+			cancel()
+			if err = writer.PutSelectionDerived(cancelled, key.Table, nil, []driver.DerivedRow{row}); !errors.Is(err, context.Canceled) {
+				t.Fatalf("warm ownership bypassed cancellation: %v", err)
+			}
+			h := driver.ChangesetHeader{Incarnation: tx.Snapshot().Incarnation, Kind: model.ChangesetWrite, Principal: model.PrincipalRef{Kind: "system", ID: "source-lock-test"}, LockKeys: declared}
+			if _, err = tx.Commit(ctx, h); err != nil {
+				t.Fatal(err)
+			}
+			r := testRead(t, s, nil)
+			rows, err := r.DerivedRows(ctx, key.Table, key.Key)
+			if err != nil || len(rows) != 1 || rows[0].Index == nil || !reflect.DeepEqual(rows[0].Index.Source, row.Index.Source) || !bytes.Equal(rows[0].Value, body) {
+				t.Fatalf("committed source-bound row differs: %#v %v", rows, err)
+			}
+		})
+	}
+}
+
+func TestSelectionAcquiredMembershipKeepsFreshSourceValidation(t *testing.T) {
+	ctx := context.Background()
+	s := openTest(t, freshDSN(t))
+	lease := testLease(t, s)
+	ref := testRef("pl-current-source")
+	initial := seedTest(t, s, lease, ref.ID, `{"source":"original"}`)
+	key := driver.DerivedRowKey{Table: driver.DerivedReferenceIndex, Key: "fresh-source-control"}
+	tx, header := beginTest(t, s, lease, testLock(ref), driver.LockKey{Kind: driver.LockDerived, Derived: &key})
+	records, err := tx.Get(ctx, []model.Ref{ref})
+	if err != nil || len(records) != 1 || records[0] == nil {
+		t.Fatalf("source preimage: %#v %v", records, err)
+	}
+	body := []byte(`{"complete":"links"}`)
+	row := driver.DerivedRow{Key: key.Key, Value: body, Index: &driver.SelectionIndex{
+		Version: driver.SelectionIndexVersion, Row: key, Incarnation: header.Incarnation, Branch: model.Natural64(0), ValueDigest: driver.SelectionDigest(body),
+		Source: driver.SelectionSource{Key: testLock(ref), Revision: records[0].Revision, Present: true, Digest: driver.SelectionDigest(records[0].Body)}, Facts: &driver.SelectionFacts{Kind: driver.SelectionLinkFact},
+	}}
+	writer := tx.(driver.SelectionIndexWriter)
+	if err = writer.PutSelectionDerived(ctx, key.Table, nil, []driver.DerivedRow{row}); err != nil {
+		t.Fatal(err)
+	}
+	replacement := *records[0]
+	replacement.Body = []byte(`{"source":"replaced at the same token"}`)
+	if err = tx.Put(ctx, replacement); err != nil {
+		t.Fatal(err)
+	}
+	observed, err := tx.Observe(ctx, []driver.LockKey{testLock(ref)})
+	if err != nil || len(observed) != 1 || observed[0].Revision.String() != row.Index.Source.Revision.String() || observed[0].Record == nil || !bytes.Equal(observed[0].Record.Body, replacement.Body) {
+		t.Fatalf("same-token staged replacement missing: %#v %v", observed, err)
+	}
+	if err = writer.PutSelectionDerived(ctx, key.Table, nil, []driver.DerivedRow{row}); !errors.Is(err, driver.ErrSelectionUnavailable) || !strings.Contains(err.Error(), "source bytes changed") {
+		t.Fatalf("warm ownership reused old source bytes at staging: %v", err)
+	}
+	header.Changes = []model.ChangeRecord{{Ref: ref, Op: model.OpPatch, FromRevision: initial.Revision}}
+	if _, err = tx.Commit(ctx, header); !errors.Is(err, driver.ErrSelectionUnavailable) || !strings.Contains(err.Error(), "source bytes changed") {
+		t.Fatalf("warm ownership reused old source bytes at Commit: %v", err)
+	}
+	if err = tx.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r := testRead(t, s, nil)
+	got, err := r.Get(ctx, []model.Ref{ref})
+	if err != nil || !reflect.DeepEqual(got, records) || r.Snapshot().At.String() != initial.Revision.String() {
+		t.Fatalf("refused publication changed durable source/head: %#v %v", got, err)
+	}
+	if rows, err := r.DerivedRows(ctx, key.Table, key.Key); err != nil || len(rows) != 0 {
+		t.Fatalf("refused publication left durable projection: %#v %v", rows, err)
+	}
+}
 
 func TestSelectionAnnotationDecodePreservesRefRefusal(t *testing.T) {
 	for name, ref := range map[string]model.Ref{
