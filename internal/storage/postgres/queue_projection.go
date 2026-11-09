@@ -1,9 +1,7 @@
 package postgres
 
 import (
-	"bytes"
 	"context"
-	"encoding/gob"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -98,8 +96,8 @@ func (r *reader) QueueProjection(ctx context.Context) (driver.QueueProjection, e
 		case "index":
 			driver.ReportReadWork(ctx, driver.ReadPrefixStates, 1)
 			driver.ReportReadWork(ctx, driver.ReadPrefixBytes, int64(len(raw)))
-			var index driver.SelectionIndex
-			if err := gob.NewDecoder(bytes.NewReader(raw)).Decode(&index); err != nil {
+			index, err := decodeSelectionAnnotation(raw)
+			if err != nil {
 				return driver.QueueProjection{}, err
 			}
 			id, err := keyID(driver.LockKey{Kind: driver.LockDerived, Derived: &index.Row})

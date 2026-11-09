@@ -1,7 +1,9 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
+	"encoding/gob"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +16,53 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+func TestSelectionAnnotationDecodePreservesRefRefusal(t *testing.T) {
+	for name, ref := range map[string]model.Ref{
+		"conflicting_arms": {ID: "pl-source", Key: "conflict"},
+		"missing_arm":      {},
+		"key_arm":          model.RefByKey("source"),
+		"invalid_branch":   {ID: "pl-source", Branch: model.Natural("-1")},
+		"nonzero_branch":   model.RefByID("pl-source", model.Natural64(1)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			key := driver.DerivedRowKey{Table: driver.DerivedSortKey, Key: "annotation"}
+			row := driver.DerivedRow{Key: key.Key, Value: []byte(`{}`)}
+			index := driver.SelectionIndex{Version: driver.SelectionIndexVersion, Incarnation: "test", Row: key, ValueDigest: driver.SelectionDigest(row.Value),
+				Source: driver.SelectionSource{Key: testLock(ref), Present: true, Digest: driver.SelectionDigest([]byte(`{}`))},
+				Bead:   &driver.SelectionBead{Ref: ref},
+			}
+			var raw bytes.Buffer
+			if err := gob.NewEncoder(&raw).Encode(index); err != nil {
+				t.Fatal(err)
+			}
+			var before driver.SelectionIndex
+			if err := gob.NewDecoder(bytes.NewReader(raw.Bytes())).Decode(&before); err != nil {
+				t.Fatal(err)
+			}
+			if err := before.Validate(key.Table, row); err == nil {
+				t.Fatal("control unexpectedly accepted malformed/unresolved annotation")
+			}
+			got, err := decodeSelectionAnnotation(raw.Bytes())
+			if err != nil || got.Validate(key.Table, row) == nil {
+				t.Fatalf("decode repaired a refused annotation: %#v %v", got, err)
+			}
+			if got.Bead.Ref.ID != ref.ID || got.Bead.Ref.Branch != ref.Branch || got.Bead.Ref.Key != ref.Key {
+				t.Fatalf("decode rewrote reference fields: %#v; want %#v", got.Bead.Ref, ref)
+			}
+		})
+	}
+	// The binary transport must also retain opaque bytes without JSON coercion.
+	ref := model.RefByID("opaque\x00\xff", model.Natural("0e0"))
+	var raw bytes.Buffer
+	if err := gob.NewEncoder(&raw).Encode(driver.SelectionIndex{Bead: &driver.SelectionBead{Ref: ref}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := decodeSelectionAnnotation(raw.Bytes())
+	if err != nil || !reflect.DeepEqual(got.Bead.Ref, ref) {
+		t.Fatalf("decode changed opaque identity/branch bytes: %#v %v", got, err)
+	}
+}
 
 // These are trusted adapter fixtures with independently specified semantic
 // fields. They exercise the public driver API, not a native producer claim.

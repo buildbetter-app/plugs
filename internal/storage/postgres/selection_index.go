@@ -47,6 +47,45 @@ func selectionUnsupported(reason string) error {
 	return fmt.Errorf("%w: PostgreSQL selection %s", driver.ErrSelectionUnavailable, reason)
 }
 func selectionJSON(v any) string { b, _ := json.Marshal(v); return string(b) }
+
+// Gob preserves Ref's public fields but omits its private arm discriminator.
+// Restore valid ID refs to the same representation as canonical source/JSON
+// reads, without changing opaque identity bytes or repairing malformed refs.
+// The callers still validate the entire annotation against its logical row.
+func decodeSelectionAnnotation(raw []byte) (driver.SelectionIndex, error) {
+	var index driver.SelectionIndex
+	if err := gob.NewDecoder(bytes.NewReader(raw)).Decode(&index); err != nil {
+		return driver.SelectionIndex{}, err
+	}
+	restore := func(ref *model.Ref) {
+		if ref != nil && ref.Validate() == nil && ref.IsID() {
+			*ref = model.RefByID(ref.ID, ref.Branch)
+		}
+	}
+	restore(index.Source.Key.Ref)
+	if index.Bead != nil {
+		restore(&index.Bead.Ref)
+		restore(index.Bead.Parent)
+	}
+	if index.Facts != nil {
+		for i := range index.Facts.Rows {
+			fact := &index.Facts.Rows[i]
+			restore(fact.Ref)
+			restore(fact.Target)
+			restore(fact.ScopeRef)
+			if fact.Link != nil {
+				restore(&fact.Link.To)
+			}
+		}
+	}
+	if index.Queue != nil {
+		for i := range index.Queue.Links {
+			restore(&index.Queue.Links[i].To)
+		}
+	}
+	return index, nil
+}
+
 func selectionRow(id string, row driver.DerivedRow) (selectionDBRow, error) {
 	x := row.Index
 	s := selectionDBRow{RowKey: selectionHex(id), SourceRevision: x.Source.Revision.String(), SourcePresent: x.Source.Present, SourceDigest: selectionHex(x.Source.Digest)}
@@ -242,8 +281,8 @@ func (r *reader) selectionAnnotations(ctx context.Context, values []driver.Deriv
 		if err = rows.Scan(&id, &raw); err != nil {
 			return err
 		}
-		var x driver.SelectionIndex
-		if err = gob.NewDecoder(bytes.NewReader(raw)).Decode(&x); err != nil {
+		x, err := decodeSelectionAnnotation(raw)
+		if err != nil {
 			return err
 		}
 		pos, ok := positions[string(id)]
