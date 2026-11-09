@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
@@ -17,6 +19,35 @@ import (
 	"github.com/buildbetter-app/plugs/internal/server/authzrpc"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+const ordinaryDenseCorpusSize = viewops.OrdinaryCandidateCap + 1
+
+func denseCorpusSize(t *testing.T) int {
+	t.Helper()
+	raw := os.Getenv("CP7_DENSE_CORPUS_SIZE")
+	if raw == "" {
+		return ordinaryDenseCorpusSize
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		t.Fatalf("invalid CP7_DENSE_CORPUS_SIZE %q: %v", raw, err)
+	}
+	if n != ordinaryDenseCorpusSize && n != corpusSize {
+		t.Fatalf("unsupported CP7_DENSE_CORPUS_SIZE %d", n)
+	}
+	return n
+}
+
+func denseEngines(t *testing.T) []string {
+	t.Helper()
+	if engine := os.Getenv("CP7_DENSE_ENGINE"); engine != "" {
+		if engine != "sqlite" && engine != "postgres" {
+			t.Fatalf("unsupported CP7_DENSE_ENGINE %q", engine)
+		}
+		return []string{engine}
+	}
+	return []string{"sqlite", "postgres"}
+}
 
 func checkCompiledSummaryPlan(t *testing.T, f *fixture, plans []driver.SelectionPlan) {
 	t.Helper()
@@ -98,9 +129,15 @@ func TestDenseOrdinaryQ6RefusalAndSeparateDecision20TypeSummary(t *testing.T) {
 	if viewops.OrdinaryCandidateCap != 20000 || viewops.TypeSummaryCandidateCap != 100000 || viewops.MaxGroups != 100 {
 		t.Fatal("decision #20 bounds changed")
 	}
-	for _, engine := range []string{"sqlite", "postgres"} {
+	n := denseCorpusSize(t)
+	if n != ordinaryDenseCorpusSize && n != corpusSize {
+		t.Fatalf("dense semantic corpus must be cap control or full corpus, got %d", n)
+	}
+	engines := denseEngines(t)
+	t.Logf("CP7_DENSE_SELECTION corpus=%d engines=%v ordinary_control_corpus=%d full_manual_corpus=%d", n, engines, ordinaryDenseCorpusSize, corpusSize)
+	for _, engine := range engines {
 		t.Run(engine, func(t *testing.T) {
-			f := newFixture(t, engine, corpusSize)
+			f := newFixture(t, engine, n)
 			var plans []driver.SelectionPlan
 			f.viewPlan = func(plan driver.SelectionPlan) { plans = append(plans, plan) }
 			f.compose(t)
@@ -136,7 +173,7 @@ func TestDenseOrdinaryQ6RefusalAndSeparateDecision20TypeSummary(t *testing.T) {
 				if len(got.Items) != 0 || len(got.Groups) != 0 || got.NextCursor != nil || got.Count != nil {
 					t.Fatal("dense ordinary refusal emitted partial output")
 				}
-				t.Log("CP7_DENSE_ORDINARY authorized_inputs=100000 cap=20000 outcome=scope_too_large performance=RED")
+				t.Logf("CP7_DENSE_ORDINARY authorized_inputs=%d cap=20000 outcome=scope_too_large performance=RED", n)
 			})
 			t.Run("Decision20ExplicitEmptyFieldsDenseTypeSummary", func(t *testing.T) {
 				plans = nil
@@ -156,7 +193,7 @@ func TestDenseOrdinaryQ6RefusalAndSeparateDecision20TypeSummary(t *testing.T) {
 					t.Fatal(err)
 				}
 				checkCompiledSummaryPlan(t, f, plans)
-				if len(got.Items) != 0 || got.NextCursor != nil || got.Count != nil || len(got.Groups) != 1 || got.Groups[0].Key != "issue" || got.Groups[0].Count != corpusSize || len(got.Groups[0].Items) != 0 || got.Groups[0].Elided != nil {
+				if len(got.Items) != 0 || got.NextCursor != nil || got.Count != nil || len(got.Groups) != 1 || got.Groups[0].Key != "issue" || got.Groups[0].Count != n || len(got.Groups[0].Items) != 0 || got.Groups[0].Elided != nil {
 					t.Fatalf("dense summary differs from independent corpus population: %+v", got)
 				}
 				// SQL input visits are not observer events. The plan and independent
@@ -164,16 +201,18 @@ func TestDenseOrdinaryQ6RefusalAndSeparateDecision20TypeSummary(t *testing.T) {
 				if counts.value().Queries != 0 || counts.value().Gets != 0 || counts.work().AggregateInputs != 0 || counts.work().Projections != 0 || counts.work().AggregateGroups != 1 {
 					t.Fatalf("dense summary used ordinary payload/aggregation work: api=%+v work=%+v", counts.value(), counts.work())
 				}
-				t.Logf("CP7_DENSE_TYPE_SUMMARY fields_present=true fields_empty=true group_by=type finite_cp7=true authorized_inputs=%d groups=1 corpus_sha256=%s executed_work=%+v sql_executor_input_visits=UNMEASURED performance=UNMEASURED", corpusSize, f.corpusHash, counts.work())
+				t.Logf("CP7_DENSE_TYPE_SUMMARY fields_present=true fields_empty=true group_by=type finite_cp7=true authorized_inputs=%d groups=1 corpus_sha256=%s executed_work=%+v sql_executor_input_visits=UNMEASURED performance=UNMEASURED", n, f.corpusHash, counts.work())
 			})
 			after, err := f.store.Meta(ctx)
 			if err != nil || before.Head.String() != after.Head.String() {
 				t.Fatalf("dense read changed head: %v", err)
 			}
-			// Reuse the already certified full fixture, after both original
-			// dense read controls. This is qualification, not another timed
-			// sample or a change to the cold/3/20 latency matrix.
-			t.Run("CertifiedIndexedGuardClaimWork", func(t *testing.T) { checkCertifiedIndexedClaimWork(t, f) })
+			// The full-size indexed claim control remains in each explicit
+			// 100k manual target. The ordinary cap+1 control cannot qualify
+			// that full-size claim or the unchanged cold/3/20 latency matrix.
+			if n == corpusSize {
+				t.Run("CertifiedIndexedGuardClaimWork", func(t *testing.T) { checkCertifiedIndexedClaimWork(t, f) })
+			}
 		})
 	}
 }
