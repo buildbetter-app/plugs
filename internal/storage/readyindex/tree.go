@@ -23,6 +23,13 @@ type Observer interface {
 	Snapshot() driver.View
 	Observe(context.Context, []driver.LockKey) ([]driver.LockState, error)
 }
+
+// BatchObserver is an optional physical preparation capability. Every key is
+// still observed and joins the caller's optimistic read set. Ordinary readers
+// without this capability retain scalar observations.
+type BatchObserver interface {
+	ObserveInitialReadyOrder(context.Context, []driver.LockKey) ([]driver.LockState, error)
+}
 type marker struct {
 	Version     int
 	Incarnation string
@@ -54,16 +61,17 @@ type Mutation struct {
 	CreatedAt              time.Time
 }
 type tree struct {
-	ctx   context.Context
-	r     Observer
-	rows  map[string]*driver.DerivedRow
-	nodes map[string]*driver.ReadyOrderNode
-	dirty map[string]bool
-	work  driver.ReadyOrderWork
+	ctx        context.Context
+	r          Observer
+	rows       map[string]*driver.DerivedRow
+	prefetched map[string]driver.LockState
+	nodes      map[string]*driver.ReadyOrderNode
+	dirty      map[string]bool
+	work       driver.ReadyOrderWork
 }
 
 func newTree(ctx context.Context, r Observer) *tree {
-	return &tree{ctx: ctx, r: r, rows: map[string]*driver.DerivedRow{}, nodes: map[string]*driver.ReadyOrderNode{}, dirty: map[string]bool{}}
+	return &tree{ctx: ctx, r: r, rows: map[string]*driver.DerivedRow{}, prefetched: map[string]driver.LockState{}, nodes: map[string]*driver.ReadyOrderNode{}, dirty: map[string]bool{}}
 }
 func lock(key string) driver.LockKey {
 	return driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedReadyState, Key: key}}
@@ -87,18 +95,29 @@ func unavailable(reason string) error {
 func (t *tree) read(key string, out any) (bool, error) {
 	row, known := t.rows[key]
 	if !known {
-		states, err := t.r.Observe(t.ctx, []driver.LockKey{lock(key)})
-		if err != nil {
-			return false, err
+		original, prefetched := t.prefetched[key]
+		if prefetched {
+			// This is a former scalar observation boundary even when the
+			// physical page completed before cancellation arrived.
+			if err := t.ctx.Err(); err != nil {
+				return false, err
+			}
 		}
-		if len(states) != 1 {
-			return false, unavailable("incomplete point observation")
+		if !prefetched {
+			states, err := t.r.Observe(t.ctx, []driver.LockKey{lock(key)})
+			if err != nil {
+				return false, err
+			}
+			if len(states) != 1 {
+				return false, unavailable("incomplete point observation")
+			}
+			original = states[0]
 		}
-		if states[0].Present {
-			if states[0].Derived == nil || states[0].Derived.Key != key {
+		if original.Present {
+			if original.Derived == nil || original.Derived.Key != key {
 				return false, unavailable("missing node bytes")
 			}
-			v := *states[0].Derived
+			v := original.Derived.Clone()
 			row = &v
 		}
 		t.rows[key] = row
@@ -111,6 +130,97 @@ func (t *tree) read(key string, out any) (bool, error) {
 		return false, unavailable("malformed metadata")
 	}
 	return true, nil
+}
+
+const initialReadBatch = 256
+
+// prefetchInitial observes only candidate paths, never assumes they are empty.
+// A pre-existing or malformed physical row therefore has the same result as
+// the scalar path when the tree consumes it. Unknown paths still use read's
+// ordinary point observation.
+func (t *tree) prefetchInitial(observer BatchObserver, keys []string) error {
+	for start := 0; start < len(keys); start += initialReadBatch {
+		end := min(start+initialReadBatch, len(keys))
+		requests := make([]driver.LockKey, end-start)
+		for i, key := range keys[start:end] {
+			requests[i] = lock(key)
+		}
+		states, err := observer.ObserveInitialReadyOrder(t.ctx, requests)
+		if err != nil {
+			return err
+		}
+		if len(states) != len(requests) {
+			return unavailable("incomplete initial observation")
+		}
+		for i, key := range keys[start:end] {
+			expected, _ := driver.EncodeLockKey(requests[i])
+			actual, err := driver.EncodeLockKey(states[i].Key)
+			if err != nil || actual != expected {
+				return unavailable("wrong initial observation key")
+			}
+			t.prefetched[key] = states[i]
+		}
+	}
+	return nil
+}
+
+// A new compressed radix tree has a leaf at every full sort key and an
+// internal node at the common prefix of each adjacent pair in a scope. This
+// computes read candidates without trusting that Head zero implies physical
+// absence. Invalid mutations use the original scalar path and its original
+// validation order.
+func initialReadKeys(mutations []Mutation) ([]string, bool) {
+	paths := map[string]bool{}
+	byScope := map[string][]string{}
+	seen := map[string]bool{}
+	for _, m := range mutations {
+		if driver.ValidateHierarchyRef(m.Ref) != nil || m.Priority < 0 || m.Priority > 4 || seen[m.Ref.ID] {
+			return nil, false
+		}
+		seen[m.Ref.ID] = true
+		paths[sourceKey(m.Ref.ID)] = true
+		if m.Item == nil {
+			continue
+		}
+		if m.Binding == "" || m.Item.ID != m.Ref.ID || m.Item.Project != m.Project || m.Item.Type != m.Type {
+			return nil, false
+		}
+		source := source{Project: m.Project, Type: m.Type}
+		for _, scope := range scopes(source) {
+			paths[headerKey(scope)] = true
+		}
+		if !m.Eligible {
+			continue
+		}
+		item := *m.Item
+		item.Revision = model.Natural64(0)
+		if _, err := driver.ReadyOrderLeafFor(item, m.Priority); err != nil {
+			return nil, false
+		}
+		key := driver.ReadyOrderKey(m.Priority, m.Ref.ID)
+		for _, scope := range scopes(source) {
+			byScope[scope] = append(byScope[scope], key)
+		}
+	}
+	for scope, keys := range byScope {
+		paths[nodeKey(scope, "")] = true
+		sort.Strings(keys)
+		for i, key := range keys {
+			paths[nodeKey(scope, key)] = true
+			if i != 0 {
+				paths[nodeKey(scope, driver.CommonReadyPrefix(keys[i-1], key))] = true
+			}
+		}
+	}
+	global := scopeID(driver.ReadyOrderScope{})
+	paths[nodeKey(global, "")] = true
+	paths[headerKey(global)] = true
+	keys := make([]string, 0, len(paths))
+	for key := range paths {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys, true
 }
 func (t *tree) write(key string, value any) error {
 	if _, known := t.rows[key]; !known {
@@ -285,6 +395,15 @@ func Prepare(ctx context.Context, r Observer, mutations []Mutation) (*Delta, err
 		return d, nil
 	}
 	d.valid = true
+	// Initial candidates are identities, never an assumption of physical
+	// absence. Keep the marker check first and bound each point-read page.
+	if batch, ok := r.(BatchObserver); ok && !present && len(mutations) >= 64 {
+		if keys, valid := initialReadKeys(mutations); valid {
+			if err := t.prefetchInitial(batch, keys); err != nil {
+				return nil, err
+			}
+		}
+	}
 	// The literal global scope guards coverage/control metadata. It is a
 	// canonical predicate key, not a wildcard-matching rule in the driver.
 	global, err := driver.NewReadySentinel("*", "*")

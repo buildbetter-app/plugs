@@ -25,6 +25,10 @@ func (t *transaction) validateSelectionWrites(ctx context.Context, proposed map[
 // rows may be only the changed annotations and their affected dependents;
 // observations always use the complete proposed t.derived overlay.
 func (t *transaction) validateSelectionRows(ctx context.Context, rows map[string]driver.LockState) error {
+	// The mutex, pinned SQL snapshot and proposed overlay are stable for this
+	// call. Many ancestor rows share one source; materialize it once here, but
+	// never retain an observation across staging calls or into Commit.
+	sources := make(map[string]driver.LockState)
 	for _, state := range rows {
 		if !state.Present || state.Derived == nil || state.Derived.Index == nil {
 			continue
@@ -42,9 +46,17 @@ func (t *transaction) validateSelectionRows(ctx context.Context, rows map[string
 		if i == len(t.acquired) || keyID(t.acquired[i].Key) != id {
 			return fmt.Errorf("%w: SQLite selection source absent from lock census", driver.ErrUnsupported)
 		}
-		source, err := t.observe(ctx, index.Source.Key)
-		if err != nil {
+		if err := ctx.Err(); err != nil {
 			return err
+		}
+		source, observed := sources[id]
+		if !observed {
+			var err error
+			source, err = t.observe(ctx, index.Source.Key)
+			if err != nil {
+				return err
+			}
+			sources[id] = source
 		}
 		if source.Present != index.Source.Present || source.Revision.String() != index.Source.Revision.String() {
 			return fmt.Errorf("%w: SQLite selection source observation changed", driver.ErrUnsupported)

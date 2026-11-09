@@ -302,6 +302,7 @@ internal/core/pipeline/queue_projection_test.go
 internal/core/pipeline/ready_membership.go
 internal/core/pipeline/ready_membership_test.go
 internal/core/pipeline/ready_projection.go
+internal/core/pipeline/ready_projection_batch_test.go
 internal/core/pipeline/ready_sort.go
 internal/core/pipeline/ready_sort_test.go
 internal/core/pipeline/response.go
@@ -1200,6 +1201,7 @@ internal/storage/postgres/store.go
 internal/storage/postgres/transaction.go
 internal/storage/readyindex/BUILD.bazel
 internal/storage/readyindex/dense_test.go
+internal/storage/readyindex/initial_batch_test.go
 internal/storage/readyindex/ready_order_test.go
 internal/storage/readyindex/select.go
 internal/storage/readyindex/tree.go
@@ -1273,6 +1275,7 @@ internal/storage/sqlite/selection_row_insert_batch.go
 internal/storage/sqlite/selection_row_insert_batch_test.go
 internal/storage/sqlite/selection_stage_work_test.go
 internal/storage/sqlite/selection_test.go
+internal/storage/sqlite/selection_validation_reuse_test.go
 internal/storage/sqlite/source_activation_test.go
 internal/storage/sqlite/source_backend_test.go
 internal/storage/sqlite/source_backfill.go
