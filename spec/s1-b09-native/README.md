@@ -75,7 +75,8 @@ Go-built 9d6 reference keep their original labels. This fixture neither invokes
 nor admits an official producer bundle.
 
 The corpus records default and configured adaptive lengths, explicit and closed
-child counters, nested and segmented parents, ten-nonce retry, and complete
+child counters, continuation after deleting the highest child before restore,
+nested and segmented parents, ten-nonce retry, and complete
 length-3-through-8 exhaustion using real public CLI JSONL input. Supplying
 `created_at` through the public import command makes the native hash tuple
 repeatable without changing its generator or clock. Each same-run capture is

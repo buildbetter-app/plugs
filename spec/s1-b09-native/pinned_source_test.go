@@ -146,6 +146,20 @@ func TestRecordNativeIDStyleA9d6(t *testing.T) {
 	wantAdaptive, _ := driver.HashCandidate("b09", input, 5, 0)
 	r.importStyleARows(w, "pinned-paired-adaptive", []map[string]any{styleAIssue(input, "")}, 0, wantAdaptive)
 	r.replayStyleA(final, input, wantAdaptive, parentID, pairedChild, false)
+	// Delete the highest allocated child before capture. The surviving direct
+	// children stop at .10, but the restored native counter must continue .12.
+	r.run(w, "pinned-delete-highest-child", r.binary, []string{"delete", pairedChild, "--force", "--json"}, 0)
+	deleted := r.capture(w, "pinned-deleted-child-high-water", 10)
+	r.requireIDs(deleted, append([]string{wantAdaptive}, final.BeadIDs...)...)
+	afterDeleteChild := r.createArgs(w, "pinned-next-twelve-after-delete", []string{"create", "--parent", parentID, "--title", "Child after deleted high-water", "--type", "task", "--json"})
+	if afterDeleteChild != parentID+".12" {
+		t.Fatalf("native reused deleted highest child: %s", afterDeleteChild)
+	}
+	deletedInput := input
+	deletedInput.Title = "Paired root after deleted highest child"
+	wantAfterDelete, _ := driver.HashCandidate("b09", deletedInput, 5, 0)
+	r.importStyleARows(w, "pinned-paired-after-delete", []map[string]any{styleAIssue(deletedInput, "")}, 0, wantAfterDelete)
+	r.replayStyleA(deleted, deletedInput, wantAfterDelete, parentID, afterDeleteChild, false)
 	r.recordStyleACollisions(input)
 	r.recordStyleADomainWidths()
 	r.recordStyleANamespaces(input)
@@ -158,6 +172,7 @@ func TestRecordNativeIDStyleA9d6(t *testing.T) {
 		"configured_id": configured, "adaptive_id": adaptive,
 		"explicit_child": explicit, "next_child": child, "grandchild": grandchild, "next_after_close": next,
 		"paired_next_child": pairedChild, "paired_adaptive_root": wantAdaptive,
+		"deleted_highest_child": pairedChild, "deleted_child_capture": deleted, "next_after_delete": afterDeleteChild,
 		"limits": []string{"public fixture evidence only; no real-store, official bundle admission or switch credit", "import collision route uses pinned legacy issueops at lengths 3 through 8; no beyond-eight oracle"},
 	})
 }
