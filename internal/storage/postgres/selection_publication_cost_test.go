@@ -204,13 +204,15 @@ func publishSelectionCensusBatch(t *testing.T, s *Store, lease driver.ActiveLeas
 	t.Helper()
 	ctx := context.Background()
 	plans := make([]*pipeline.SourceProjectionPlan, 1000)
+	docs := make([]pipeline.Document, 1000)
 	records := make([]driver.Record, 1000)
 	closures := make([]driver.DerivedRow, 1000)
 	keys := map[string]driver.LockKey{}
 	sentinels := map[driver.Sentinel]bool{}
 	for i := range records {
 		ref := testRef(fmt.Sprintf("pl-census-%04d", offset+i))
-		body, err := json.Marshal(pipeline.Document{ID: ref.ID, Type: "issue", Fields: map[string]any{}})
+		docs[i] = pipeline.Document{ID: ref.ID, Type: "issue", Fields: map[string]any{}}
+		body, err := json.Marshal(docs[i])
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -239,6 +241,14 @@ func publishSelectionCensusBatch(t *testing.T, s *Store, lease driver.ActiveLeas
 		locks = append(locks, key)
 	}
 	tx, h := beginTest(t, s, lease, locks...)
+	if tx.Snapshot().At == nil {
+		t.Fatal("census publication has no bound Head")
+	}
+	at, err := tx.Snapshot().At.Uint64()
+	if err != nil || at == ^uint64(0) {
+		t.Fatal("census publication revision unavailable", err)
+	}
+	publicationRevision := model.Natural64(at + 1)
 	add := map[driver.DerivedTable][]driver.DerivedRow{}
 	for i, record := range records {
 		if err := tx.(driver.GraphSourceWriter).PutGraphRecord(ctx, record, nil, nil); err != nil {
@@ -247,6 +257,11 @@ func publishSelectionCensusBatch(t *testing.T, s *Store, lease driver.ActiveLeas
 		rows, err := plans[i].SelectionRows(h.Incarnation, model.Natural64(0))
 		if err != nil || len(rows) != 3 {
 			t.Fatalf("core projection rows=%d err=%v", len(rows), err)
+		}
+		// The producer stages source observations at the old Head, then binds
+		// Ready semantics to the allocated H+1 revision before Commit.
+		if err := pipeline.BindReadySelectionRows(docs[i], publicationRevision, rows); err != nil {
+			t.Fatal(err)
 		}
 		rowKeys, err := pipeline.SourceSelectionRows(record.Ref)
 		if err != nil {
@@ -281,7 +296,7 @@ func publishSelectionCensusBatch(t *testing.T, s *Store, lease driver.ActiveLeas
 		timing = newSelectionCommitTiming(lease.(*activeLease), started)
 		commitCtx = context.WithValue(ctx, selectionCommitTimingKey{}, timing)
 	}
-	_, err := tx.Commit(commitCtx, h)
+	_, err = tx.Commit(commitCtx, h)
 	elapsed := time.Since(started)
 	if timing != nil {
 		// Observe and log after Commit even on failure, before Fatal exits this
@@ -756,8 +771,12 @@ CREATE TRIGGER w6_unexpected_source AFTER INSERT ON plug_postgres.states FOR EAC
 		requireSelectionCertificate(t, pgStartupRead(t, s), false)
 		// The injected statement changes no bytes. Canonical full startup can
 		// therefore rebuild the proof without repairing or hiding corruption.
-		if err := pipeline.BuildSourceIndexes(ctx, s, lease); err != nil {
+		var buildErr error
+		if err := pipeline.BuildSourceIndexes(ctx, pgStartupCaptureStore{Store: s, err: &buildErr}, lease); err != nil {
 			t.Fatal(err)
+		}
+		if buildErr != nil {
+			t.Fatalf("canonical rebuild refused after a no-byte mutation: %v", buildErr)
 		}
 		requireSelectionCertificate(t, pgStartupRead(t, s), true)
 	})
@@ -770,8 +789,12 @@ CREATE TRIGGER w6_unexpected_source AFTER INSERT ON plug_postgres.states FOR EAC
 			t.Fatal(err)
 		}
 		requireSelectionCertificate(t, pgStartupRead(t, s), false)
-		if err := pipeline.BuildSourceIndexes(ctx, s, lease); err != nil {
+		var buildErr error
+		if err := pipeline.BuildSourceIndexes(ctx, pgStartupCaptureStore{Store: s, err: &buildErr}, lease); err != nil {
 			t.Fatal(err)
+		}
+		if buildErr != nil {
+			t.Fatalf("canonical rebuild refused after raw generation: %v", buildErr)
 		}
 		requireSelectionCertificate(t, pgStartupRead(t, s), true)
 	})
