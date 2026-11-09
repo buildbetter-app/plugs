@@ -197,6 +197,22 @@ func linearSourceCommits(log SourceCommitLog) ([]SourceCommit, bool) {
 // Reuse the current closed-world mapper for each independently read image.
 // It cannot borrow a missing business field or row from the current head.
 func portableSourceImage(ctx context.Context, tables map[string]Table, inventory Inventory) ([]Record, []Row, error) {
+	if inventory.StatusCategoryContract == StatusCategoryContract {
+		// Filesystem YAML is captured only at export head. It cannot witness
+		// the category of an older source image. The actual SQL catalog/config
+		// at this commit must independently establish the entire head catalog;
+		// otherwise the portable format has no per-image catalog to carry it.
+		stored := map[string]any{}
+		for _, row := range tables["config"].Rows {
+			key := text(row, "key")
+			if key == "status.custom" || key == "types.custom" {
+				stored[key] = row["value"]
+			}
+		}
+		if err := validateProjectStatusCatalogs(inventory.Projects, tables["custom_statuses"].Rows, tables["custom_types"].Rows, stored, nil); err != nil {
+			return nil, nil, fmt.Errorf("historical SQL status catalog not proven: %w", err)
+		}
+	}
 	// A head directive may be unused before that type existed. Select only
 	// declarations used by this image; the same mapper still requires exactly
 	// one correctly scoped declaration for every custom historical issue type.

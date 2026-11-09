@@ -129,3 +129,11 @@ and after the real CLI child allocation. They prove only the resulting contiguou
 suffix and retain all earlier gaps. They do not reconstruct missing native
 history, change a real store, or provide real rehearsal credit. Consumers must
 choose explicit incomplete-history policy for these bounded fixture suffixes.
+
+The legacy portable frame has no per-image project catalog. Under
+`beads-status-categories/1`, each retained image's actual SQL catalog and stored
+configuration must independently establish the same complete status catalog as
+the head. Head filesystem YAML cannot fill an older missing declaration. A
+changing catalog, YAML-only historical declaration or missing SQL evidence
+remains an explicit gap or unverified range, even when the current head exports
+successfully. No historical name/category is reinterpreted from current YAML.

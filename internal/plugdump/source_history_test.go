@@ -535,6 +535,46 @@ func TestSourceParentCensusRequiresExplicitRootAndValidParents(t *testing.T) {
 }
 
 func TestStatusCategoryHistoryPreservesNamesAndRefusesChangedCatalog(t *testing.T) {
+	for _, mode := range []string{"YAML only", "SQL and YAML agree", "older SQL declaration absent"} {
+		t.Run(mode, func(t *testing.T) {
+			source, inventory := historyFixture(t)
+			inventory.SourcePlaneAddressContract = SourcePlaneAddressContract
+			inventory.StatusCategoryContract = StatusCategoryContract
+			inventory.Projects[0].Statuses = append(nativeBuiltInStatuses(), ProjectStatus{"todo", "active"})
+			setCatalogYAML(t, &inventory, []byte("status:\n  custom: [todo:active]\n"))
+			images := []map[string]Table{source.fixtureSource}
+			for _, image := range source.images {
+				images = append(images, image)
+			}
+			for _, image := range images {
+				image["issues"].Rows[0]["status"] = "todo"
+				rows := []Row{}
+				if mode != "YAML only" {
+					rows = append(rows, Row{"name": "todo", "category": "active"})
+				}
+				image["custom_statuses"] = Table{Columns: columnsFor("custom_statuses"), Rows: rows}
+			}
+			if mode == "older SQL declaration absent" {
+				image := source.images[source.log.Commits[0].ID]
+				image["custom_statuses"] = Table{Columns: columnsFor("custom_statuses")}
+			}
+			_, history := sourceCapture(t, buildFixture(t, source, inventory))
+			switch mode {
+			case "YAML only":
+				if history.Range.Status != "unverified" || history.Range.Reason != "head-image-not-proven" || len(history.Range.Frames) != 0 {
+					t.Fatal("head-only YAML invented historical status declarations")
+				}
+			case "older SQL declaration absent":
+				if history.Range.Status != "verified" || history.Range.Complete || len(history.Range.Gaps) == 0 {
+					t.Fatal("head YAML filled an older missing SQL catalog")
+				}
+			case "SQL and YAML agree":
+				if history.Range.Status != "verified" || !history.Range.Complete {
+					t.Fatalf("actual SQL declaration became unavailable: %+v", history.Range)
+				}
+			}
+		})
+	}
 	s, inventory := historyFixture(t)
 	inventory.SourcePlaneAddressContract = SourcePlaneAddressContract
 	inventory.StatusCategoryContract = StatusCategoryContract
