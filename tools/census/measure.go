@@ -301,6 +301,24 @@ func (c *Capture) checkRecords(ctx context.Context, r driver.Reader, target map[
 			delete(body, "source")
 			delete(body, "source_id")
 			delete(body, "source_table")
+			if source.Kind == "memory" {
+				content, text := source.Body["value"].(string)
+				encoding := "text"
+				if !text {
+					encoded, err := json.Marshal(source.Body["value"])
+					if err != nil {
+						return nil, refused(TargetDiffers)
+					}
+					content, encoding = string(encoded), "json"
+				}
+				metadata := map[string]any{"beads.memory.value_encoding": encoding, "beads.classification": source.Body["classification"]}
+				if body["id"] != id || body["content"] != content || !sameJSON(body["metadata"], metadata) {
+					return nil, refused(TargetDiffers)
+				}
+				delete(body, "id")
+				delete(body, "content")
+				delete(body, "metadata")
+			}
 			measured.Body = body
 		}
 		if !sameJSON(source, measured) {
