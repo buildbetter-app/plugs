@@ -83,6 +83,7 @@ const b03CatalogJSONSource = "internal/integration/b03catalog/native_catalog_inp
 
 const nativeRecordingLiteralSource = "spec/s1-b21-b24/native_recording_test.go"
 const nativeViewProtocolSource = "spec/s1-b21-b24/native_views_test.go"
+const nativeHTTPDomainSource = "spec/s1-b09-native/domain_recording_test.go"
 const sourcePlaneProtocolSource = "internal/storage/driver/source_planes_validate.go"
 const sourcePlaneFixtureSource = "internal/storage/driver/source_planes_test.go"
 
@@ -124,6 +125,80 @@ var nativeViewProtocolDigests = map[string]bool{
 
 func protocolLiteralDigest(value string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(value)))
+}
+
+// Admit the native listener announcement only at its unique parsing call.
+// The path, receiver, method, call and entire decoded literal are fixed; a
+// copied diagnostic, adjacent file, import or duplicate call gains nothing.
+func nativeHTTPListenerOffset(path string, content []byte) (int, bool) {
+	if path != nativeHTTPDomainSource {
+		return 0, false
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, content, 0)
+	if err != nil {
+		return 0, false
+	}
+	var function *ast.FuncDecl
+	for _, declaration := range file.Decls {
+		if candidate, ok := declaration.(*ast.FuncDecl); ok && candidate.Name.Name == "styleADomainCreate" {
+			if function != nil {
+				return 0, false
+			}
+			function = candidate
+		}
+	}
+	if function == nil || function.Body == nil || function.Recv == nil || len(function.Recv.List) != 1 {
+		return 0, false
+	}
+	pointer, ok := function.Recv.List[0].Type.(*ast.StarExpr)
+	if !ok {
+		return 0, false
+	}
+	receiver, ok := pointer.X.(*ast.Ident)
+	if !ok || receiver.Name != "recorder" {
+		return 0, false
+	}
+	matches, offset := 0, 0
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if _, closure := node.(*ast.FuncLit); closure {
+			return false
+		}
+		call, ok := node.(*ast.CallExpr)
+		if !ok || call.Ellipsis.IsValid() || len(call.Args) != 2 {
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || selector.Sel.Name != "CutPrefix" {
+			return true
+		}
+		name, ok := selector.X.(*ast.Ident)
+		if !ok || name.Name != "strings" {
+			return true
+		}
+		literal, ok := call.Args[1].(*ast.BasicLit)
+		if !ok || literal.Kind != token.STRING {
+			return true
+		}
+		value, err := strconv.Unquote(literal.Value)
+		if err == nil && protocolLiteralDigest(value) == "d56ebf9119cfd53f6690d8ec4111275a19c16b5c1c89123d3ff99499b81586cd" {
+			matches++
+			offset = fset.Position(literal.Pos()).Offset
+		}
+		return true
+	})
+	return offset, matches == 1
+}
+
+func protocolFieldLiteralOffsets(path string, content []byte, sites []NativeLiteralSite) map[int]bool {
+	offsets := nativeFieldLiteralOffsets(path, content, sites)
+	if offset, ok := nativeHTTPListenerOffset(path, content); ok {
+		if offsets == nil {
+			offsets = make(map[int]bool)
+		}
+		offsets[offset] = true
+	}
+	return offsets
 }
 
 func validSourcePlaneConstants(allowances []GoConstantAllowance) bool {
@@ -973,8 +1048,8 @@ func scanFile(path string, content []byte, cfg Config, provenance bool) []Findin
 	if (path == b01NativeJSONSource || path == b03CatalogJSONSource) && !json.Valid(content) {
 		return []Finding{{Path: path, Line: 1, Class: "invalid-json", Term: "parse"}}
 	}
-	fieldOffsets := nativeFieldLiteralOffsets(path, content, cfg.NativeFieldLiterals)
-	if path == externalProtocolSource && len(cfg.ExternalProtocolString.PhysicalValues) != 0 || path == nativeManifestProtocolSource && len(cfg.NativeManifestStrings.Values) != 0 || path == b01NativeGoSource || path == b01NativeJSONSource || path == b03CatalogJSONSource || hasNativeControlAllowance(path, cfg) || path == sourcePlaneProtocolSource || path == sourcePlaneFixtureSource {
+	fieldOffsets := protocolFieldLiteralOffsets(path, content, cfg.NativeFieldLiterals)
+	if path == externalProtocolSource && len(cfg.ExternalProtocolString.PhysicalValues) != 0 || path == nativeManifestProtocolSource && len(cfg.NativeManifestStrings.Values) != 0 || path == b01NativeGoSource || path == b01NativeJSONSource || path == b03CatalogJSONSource || path == nativeHTTPDomainSource || hasNativeControlAllowance(path, cfg) || path == sourcePlaneProtocolSource || path == sourcePlaneFixtureSource {
 		masked := append([]byte(nil), content...)
 		sourceLiterals := goStringLiterals(path, content)
 		if path == b01NativeJSONSource || path == b03CatalogJSONSource {
@@ -1099,7 +1174,7 @@ func goStringLiterals(path string, content []byte) []goStringLiteral {
 
 func scanGoIdentifiers(path string, content []byte, term Term, cfg Config) []Finding {
 	allowance := cfg.ExternalProtocolString
-	fieldOffsets := nativeFieldLiteralOffsets(path, content, cfg.NativeFieldLiterals)
+	fieldOffsets := protocolFieldLiteralOffsets(path, content, cfg.NativeFieldLiterals)
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, content, parser.ParseComments)
 	if err != nil {
@@ -1123,7 +1198,7 @@ func scanGoIdentifiers(path string, content []byte, term Term, cfg Config) []Fin
 					findings = append(findings, Finding{Path: path, Line: fset.Position(node.Pos()).Line, Class: "invalid-go", Term: "string"})
 					return true
 				}
-				if path == externalProtocolSource || path == nativeManifestProtocolSource || path == b01NativeGoSource || hasNativeControlAllowance(path, cfg) {
+				if path == externalProtocolSource || path == nativeManifestProtocolSource || path == b01NativeGoSource || path == nativeHTTPDomainSource || hasNativeControlAllowance(path, cfg) {
 					if !imports[n.Pos()] && (fieldOffsets[fset.Position(n.Pos()).Offset] || path == externalProtocolSource && allowance.Path == path && decoded == allowance.Value && protocolLiteralDigest(decoded) == externalEnvironmentDigest || allowsPhysicalProtocolString(path, decoded, allowance) || allowsNativeManifestString(path, decoded, cfg.NativeManifestStrings) || allowsNativeControlLiteral(path, decoded, cfg)) {
 						return true
 					}
