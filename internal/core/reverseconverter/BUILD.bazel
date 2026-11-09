@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "archive.go",
         "convert.go",
+        "registry.go",
         "representability.go",
         "types.go",
     ],

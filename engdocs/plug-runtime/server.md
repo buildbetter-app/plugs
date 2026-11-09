@@ -76,17 +76,19 @@ disabled for ordinary operation. On switch day, the operator prepares the
 configuration with `rollback_window: true` before admitting switch traffic;
 this branch only documents that change and never activates it. After the
 prepared rollback window closes, the operator prepares the matching
-`rollback_window: false` configuration and restarts or reloads through the
+`rollback_window: false` configuration and restarts through the
 normal host control plane. The setting does not change authorization, CAS,
 lifecycle, transaction atomicity, or receipt/audit admission.
 
-Hosts that compose native content provide the trusted
-`composition.Config.RollbackKindRegistry` from the same canonical reverse/export
-registry used for rollback. YAML cannot install a callback or add an example
-allowlist: when this field is nil, only the reverse converter's built-in
-canonical record vocabulary is representable. The mapping is passed unchanged
-to both the common Writer and native provider creation guard, so a kind becomes
-allowed only when the configured reverse path can actually represent it.
+Hosts with additional reverse mappings supply `composition.Config.ReverseConverter`.
+This concrete converter requires executable record transformations to canonical
+Beads content; a kind label cannot authorize a write. Composition shares it
+with both write guards and `Runtime.ConvertReverse` for detached inventory
+conversion. A nil converter
+uses the canonical built-ins, and native workflow runs/items remain refused
+while the window is enabled. YAML and RPC cannot register conversions. Custom
+mappings still undergo source census and canonical output validation; they do
+not broaden the archive loader or restore contract.
 
 For example, a persistent SQLite server can use:
 

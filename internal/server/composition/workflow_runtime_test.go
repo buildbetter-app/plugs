@@ -15,7 +15,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/client"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/restore"
-	"github.com/buildbetter-app/plugs/internal/core/reverseconverter"
+	"github.com/buildbetter-app/plugs/internal/core/reverseconverter/reversetest"
 	"github.com/buildbetter-app/plugs/internal/plugins/authnapikey"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
 	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
@@ -25,16 +25,14 @@ import (
 
 func TestRollbackWindowCompositionUsesConfiguredReverseRegistry(t *testing.T) {
 	ctx := context.Background()
-	registry := reverseconverter.KindRegistryFunc(func(kind string) (string, bool) {
-		if kind == workflowplugin.RunKind || kind == workflowplugin.ItemKind {
-			return "bead", true
-		}
-		return "", false
-	})
+	converter, err := reversetest.Converter(workflowplugin.RunKind, workflowplugin.ItemKind)
+	if err != nil {
+		t.Fatal(err)
+	}
 	runtime, err := Open(ctx, Config{
 		Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "rollback-window.db"),
 		Project: "rollback-window", Address: DefaultAddress, RollbackWindow: true,
-		RollbackKindRegistry: registry,
+		ReverseConverter: converter,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -51,6 +49,53 @@ func TestRollbackWindowCompositionUsesConfiguredReverseRegistry(t *testing.T) {
 	if err != nil || len(result.Items) != 1 || result.Items[0].Kind != workflowplugin.ItemKind {
 		t.Fatalf("configured reverse registry did not admit native write: result=%+v err=%v", result, err)
 	}
+	if runtime.reverseConverter != converter {
+		t.Fatal("composition split admission from reverse conversion")
+	}
+	checkpoint, err := runtime.Store.(driver.CheckpointStore).LoadCheckpoint(ctx, "plugin/workflow/default/durable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dump, err := reversetest.WorkflowDump(checkpoint.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	converted, err := runtime.ConvertReverse(dump)
+	if err != nil || len(converted.Projection.Memories) != 2 {
+		t.Fatalf("configured reverse converter output=%+v err=%v", converted, err)
+	}
+	expected := map[string]string{}
+	for kind, records := range dump.Records {
+		for _, record := range records {
+			encoded, err := json.Marshal(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			expected[kind+"/"+record.ID] = string(encoded)
+		}
+	}
+	lines := bytes.Split(bytes.TrimSpace(converted.JSONL), []byte("\n"))
+	if len(lines) != 3 {
+		t.Fatalf("configured reverse JSONL=%s", converted.JSONL)
+	}
+	for _, line := range lines[1:] {
+		var memory struct {
+			Kind  string `json:"_type"`
+			Key   string `json:"key"`
+			Value string `json:"value"`
+		}
+		if err := json.Unmarshal(line, &memory); err != nil {
+			t.Fatal(err)
+		}
+		if memory.Kind != "memory" || expected[memory.Key] == "" || expected[memory.Key] != memory.Value {
+			t.Fatalf("configured reverse output lost persisted content: %s", line)
+		}
+		delete(expected, memory.Key)
+	}
+	if len(expected) != 0 {
+		t.Fatalf("configured reverse output omitted content: %v", expected)
+	}
+
 }
 
 func TestMemoryRuntimeKeepsOrdinaryWorkflowToolsAndRefusesEphemeral(t *testing.T) {

@@ -17,7 +17,7 @@ func (w *Writer) checkRollbackWindow(p *prepared) error {
 		if change.Op.Kind != model.OpCreate {
 			continue
 		}
-		classification := reverseconverter.ClassifyKindWithMapping(change.Resource.Kind, w.cfg.reverseKindMapping)
+		classification := w.cfg.reverseConverter.ClassifyKind(change.Resource.Kind)
 		if classification.Disposition == reverseconverter.KindUnrepresentable {
 			return reverseconverter.RollbackWindowRefusal(change.Resource.Kind)
 		}

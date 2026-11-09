@@ -22,6 +22,7 @@ go_test(
         "//internal/core/pipeline:pipeline",
         "//internal/core/port",
         "//internal/core/reverseconverter",
+        "//internal/core/reverseconverter/reversetest",
         "//internal/core/service",
         "//internal/server/pluginhost",
         "//internal/storage/driver",

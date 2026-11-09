@@ -73,6 +73,7 @@ go_test(
         "//internal/core/port",
         "//internal/core/restore",
         "//internal/core/reverseconverter",
+        "//internal/core/reverseconverter/reversetest",
         "//internal/core/service",
         "//internal/core/viewops",
         "//internal/integration/converterroundtrip",

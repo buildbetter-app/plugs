@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/reverseconverter"
+	"github.com/buildbetter-app/plugs/internal/core/reverseconverter/reversetest"
 	coreservice "github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -20,16 +22,16 @@ import (
 var rollbackPostgresPrincipal = model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
 
 type rollbackPostgresRuntime struct {
-	store    *Store
-	lease    driver.ActiveLease
-	service  *coreservice.Service
-	ontology *coreservice.Ontology
-	mapping  reverseconverter.KindMapping
-	enabled  bool
-	provider *workflowplugin.Provider
+	store     *Store
+	lease     driver.ActiveLease
+	service   *coreservice.Service
+	ontology  *coreservice.Ontology
+	converter *reverseconverter.Converter
+	enabled   bool
+	provider  *workflowplugin.Provider
 }
 
-func newRollbackPostgresRuntime(t *testing.T, enabled bool, mapping reverseconverter.KindMapping) *rollbackPostgresRuntime {
+func newRollbackPostgresRuntime(t *testing.T, enabled bool, converter *reverseconverter.Converter) *rollbackPostgresRuntime {
 	t.Helper()
 	ctx := context.Background()
 	store, err := Open(ctx, driver.Config{DSN: freshDSN(t)})
@@ -43,7 +45,7 @@ func newRollbackPostgresRuntime(t *testing.T, enabled bool, mapping reverseconve
 	}
 	t.Cleanup(func() { _ = lease.Release(context.Background()) })
 	ot := coreservice.NewOntology(nil)
-	runtime := &rollbackPostgresRuntime{store: store, lease: lease, ontology: ot, mapping: mapping, enabled: enabled}
+	runtime := &rollbackPostgresRuntime{store: store, lease: lease, ontology: ot, converter: converter, enabled: enabled}
 	state := pluginhost.NewDurableState(store, lease, workflowplugin.Alias, "default")
 	provider, err := workflowplugin.New(state)
 	if err != nil {
@@ -63,12 +65,12 @@ func (r *rollbackPostgresRuntime) setWindow(enabled bool) {
 	writer := pipeline.New(r.store, r.lease,
 		pipeline.WithOntology(r.ontology),
 		pipeline.WithRollbackWindow(enabled),
-		pipeline.WithRollbackKindMapping(r.mapping),
+		pipeline.WithReverseConverter(r.converter),
 	)
 	options := []coreservice.Option{
 		coreservice.WithOntology(r.ontology),
 		coreservice.WithRollbackWindow(enabled),
-		coreservice.WithRollbackKindMapping(r.mapping),
+		coreservice.WithReverseConverter(r.converter),
 	}
 	if r.provider != nil {
 		options = append(options, coreservice.WithWorkflow(r.provider))
@@ -85,15 +87,6 @@ func rollbackPostgresWorkflowRequest() workflowplugin.InvokeRequest {
 			{Label: "first", Title: "first native item"},
 			{Label: "second", Title: "second native item"},
 		},
-	}
-}
-
-func rollbackPostgresMapping(kind string) (string, bool) {
-	switch kind {
-	case "workflow.run", "workflow.item":
-		return "bead", true
-	default:
-		return "", false
 	}
 }
 
@@ -197,7 +190,49 @@ func TestRollbackWindowRealWritePathPostgreSQL(t *testing.T) {
 		t.Fatalf("operational receipt was not retained: receipt=%+v receiptErr=%v changes=%+v changesErr=%v", receipt, receiptErr, changes, changesErr)
 	}
 
-	runtime.mapping = rollbackPostgresMapping
+	// Exercise the staged move through the real PostgreSQL Writer: refusal
+	// cannot delete the source or publish native content, history or receipts.
+	demoteHead := meta.Head
+	demoteChanges := rollbackPostgresChangesets(t, runtime.store)
+	demoteCheckpoint := rollbackPostgresCheckpoint(t, runtime.store)
+	_, err = runtime.service.WorkflowDemote(ctx, rollbackPostgresPrincipal, workflowplugin.DemoteRequest{Source: commit.Results[0].Ref}, rollbackPostgresMeta(5))
+	if !errors.As(err, &typed) || typed.Data.Code != model.CodeUnsupported || typed.Data.Details["kind"] != workflowplugin.RunKind {
+		t.Fatalf("demote refusal=%T %+v", err, err)
+	}
+	afterDemote, err := runtime.store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained, readErr := runtime.service.Get(ctx, rollbackPostgresPrincipal, coreservice.GetRequest{ID: commit.Results[0].Ref, Project: "local"})
+	if readErr != nil || retained.Bead.Fields["title"] != "window bead" || afterDemote.Head != demoteHead || !reflect.DeepEqual(rollbackPostgresChangesets(t, runtime.store), demoteChanges) || !reflect.DeepEqual(rollbackPostgresCheckpoint(t, runtime.store), demoteCheckpoint) {
+		t.Fatalf("denied atomic demote changed source, history or checkpoint: read=%+v err=%v", retained, readErr)
+	}
+
+	// A mapping for the run alone must still refuse the actual item kind,
+	// without publishing either half of the operation.
+	runtime.converter, err = reversetest.Converter(workflowplugin.RunKind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.setWindow(true)
+	partialMeta := rollbackPostgresMeta(7)
+	partialMeta.Project = "local"
+	_, err = runtime.service.WorkflowInvoke(ctx, rollbackPostgresPrincipal, rollbackPostgresWorkflowRequest(), partialMeta)
+	if !errors.As(err, &typed) || typed.Data.Code != model.CodeUnsupported || typed.Data.Details["kind"] != workflowplugin.ItemKind {
+		t.Fatalf("partially mapped native refusal=%T %+v", err, err)
+	}
+	partialHead, err := runtime.store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if partialHead.Head != demoteHead || !reflect.DeepEqual(rollbackPostgresChangesets(t, runtime.store), demoteChanges) || !reflect.DeepEqual(rollbackPostgresCheckpoint(t, runtime.store), demoteCheckpoint) {
+		t.Fatal("partially mapped native refusal changed history or checkpoint")
+	}
+
+	runtime.converter, err = reversetest.Converter(workflowplugin.RunKind, workflowplugin.ItemKind)
+	if err != nil {
+		t.Fatal(err)
+	}
 	runtime.setWindow(true)
 	mapped, err := runtime.service.WorkflowInvoke(ctx, rollbackPostgresPrincipal, rollbackPostgresWorkflowRequest(), rollbackPostgresMeta(3))
 	if err != nil || len(mapped.Items) != 2 {
@@ -218,12 +253,83 @@ func TestRollbackWindowRealWritePathPostgreSQL(t *testing.T) {
 		t.Fatalf("operational workflow metadata missing: receipts=%d audit=%d", receipts, audit)
 	}
 
+	// Admission and reverse output use the same executable registry. The
+	// complete persisted record, including every native field, must survive.
+	dump, err := reversetest.WorkflowDump(checkpoint.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reverseconverter.Convert(dump); err == nil {
+		t.Fatal("default reverse converter unexpectedly accepted unmapped native kinds")
+	}
+	converted, err := runtime.converter.Convert(dump)
+	if err != nil || len(converted.Projection.Memories) != 3 {
+		t.Fatalf("registered reverse conversion=%+v err=%v", converted, err)
+	}
+	expected := map[string]string{}
+	for kind, records := range dump.Records {
+		for _, record := range records {
+			encoded, err := json.Marshal(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			expected[kind+"/"+record.ID] = string(encoded)
+		}
+	}
+	lines := bytes.Split(bytes.TrimSpace(converted.JSONL), []byte("\n"))
+	if len(lines) != len(expected)+1 {
+		t.Fatalf("reverse JSONL=%s", converted.JSONL)
+	}
+	for _, line := range lines[1:] {
+		var memory struct {
+			Kind  string `json:"_type"`
+			Key   string `json:"key"`
+			Value string `json:"value"`
+		}
+		if err := json.Unmarshal(line, &memory); err != nil {
+			t.Fatal(err)
+		}
+		if memory.Kind != "memory" || expected[memory.Key] == "" || memory.Value != expected[memory.Key] {
+			t.Fatalf("reverse output lost native payload: %s", line)
+		}
+		delete(expected, memory.Key)
+	}
+	if len(expected) != 0 {
+		t.Fatalf("reverse output omitted native records: %v", expected)
+	}
+
 	// Switch off on the same PostgreSQL store and prove the previously refused
 	// native kind can be written without a mapping.
+	runtime.converter = nil
+	runtime.setWindow(true)
+	// Existing content updates still publish new operational receipts/audit
+	// with no native mapping, while creation remains refused below.
+	beforeReceipts, beforeAudit := rollbackPostgresWorkflowState(t, rollbackPostgresCheckpoint(t, runtime.store))
+	operationalMeta := rollbackPostgresMeta(8)
+	operationalMeta.Project = "local"
+	_, err = runtime.service.Update(ctx, rollbackPostgresPrincipal, coreservice.UpdateRequest{ID: model.RefByID(mapped.Items[0].ID, model.Natural64(0)), Fields: map[string]any{"title": "updated existing native item"}}, operationalMeta)
+	if err != nil {
+		t.Fatalf("existing native update with operational metadata: %v", err)
+	}
+	afterReceipts, afterAudit := rollbackPostgresWorkflowState(t, rollbackPostgresCheckpoint(t, runtime.store))
+	if afterReceipts <= beforeReceipts || afterAudit <= beforeAudit {
+		t.Fatal("window refused new operational receipts/audit on existing content")
+	}
+	reenabledCheckpoint := rollbackPostgresCheckpoint(t, runtime.store)
+	_, err = runtime.service.WorkflowInvoke(ctx, rollbackPostgresPrincipal, rollbackPostgresWorkflowRequest(), rollbackPostgresMeta(6))
+	if !errors.As(err, &typed) || typed.Data.Code != model.CodeUnsupported || typed.Data.Details["kind"] != workflowplugin.RunKind || !reflect.DeepEqual(rollbackPostgresCheckpoint(t, runtime.store), reenabledCheckpoint) {
+		t.Fatalf("unmapped write with window enabled=%T %+v", err, err)
+	}
 	runtime.setWindow(false)
 	off, err := runtime.service.WorkflowInvoke(ctx, rollbackPostgresPrincipal, rollbackPostgresWorkflowRequest(), rollbackPostgresMeta(4))
 	if err != nil || len(off.Items) != 2 {
 		t.Fatalf("disabled native write=%+v err=%v", off, err)
+	}
+	for _, item := range off.Items {
+		got, err := runtime.service.Get(ctx, rollbackPostgresPrincipal, coreservice.GetRequest{ID: model.RefByID(item.ID, model.Natural64(0)), Project: "local", Agent: "test-agent"})
+		if err != nil || got.Bead.ID != item.ID {
+			t.Fatalf("disabled write readback=%+v err=%v", got, err)
+		}
 	}
 	if rollbackPostgresCheckpoint(t, runtime.store).Generation <= checkpoint.Generation {
 		t.Fatal("disabled native write did not advance its PostgreSQL checkpoint")

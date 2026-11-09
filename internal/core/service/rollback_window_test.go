@@ -7,12 +7,12 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/reverseconverter"
+	"github.com/buildbetter-app/plugs/internal/core/reverseconverter/reversetest"
 	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
@@ -32,14 +32,14 @@ type rollbackPersistentCheckpointStore struct {
 func (rollbackPersistentCheckpointStore) Persistent() bool { return true }
 
 type rollbackWindowRuntime struct {
-	store    driver.Store
-	lease    driver.ActiveLease
-	service  *Service
-	ontology *Ontology
-	mapping  reverseconverter.KindMapping
+	store     driver.Store
+	lease     driver.ActiveLease
+	service   *Service
+	ontology  *Ontology
+	converter *reverseconverter.Converter
 }
 
-func newRollbackWindowRuntime(t *testing.T, engine string, enabled bool, mapping reverseconverter.KindMapping) *rollbackWindowRuntime {
+func newRollbackWindowRuntime(t *testing.T, engine string, enabled bool, converter *reverseconverter.Converter) *rollbackWindowRuntime {
 	t.Helper()
 	ctx := context.Background()
 	var store driver.Store
@@ -62,8 +62,8 @@ func newRollbackWindowRuntime(t *testing.T, engine string, enabled bool, mapping
 	}
 	t.Cleanup(func() { _ = lease.Release(context.Background()) })
 	ot := NewOntology(nil)
-	runtime := &rollbackWindowRuntime{store: store, lease: lease, ontology: ot, mapping: mapping}
-	runtime.service = New(store, lease, nil, WithOntology(ot), WithRollbackWindow(enabled), WithRollbackKindMapping(mapping))
+	runtime := &rollbackWindowRuntime{store: store, lease: lease, ontology: ot, converter: converter}
+	runtime.service = New(store, lease, nil, WithOntology(ot), WithRollbackWindow(enabled), WithReverseConverter(converter))
 	runtime.setWindow(enabled)
 	runtime.installWorkflow(t)
 	return runtime
@@ -71,11 +71,11 @@ func newRollbackWindowRuntime(t *testing.T, engine string, enabled bool, mapping
 
 func (r *rollbackWindowRuntime) setWindow(enabled bool) {
 	r.service.rollbackWindow = enabled
-	r.service.reverseKindMapping = r.mapping
+	r.service.reverseConverter = r.converter
 	r.service.writer = pipeline.New(r.store, r.lease,
 		pipeline.WithOntology(r.ontology),
 		pipeline.WithRollbackWindow(enabled),
-		pipeline.WithRollbackKindMapping(r.mapping),
+		pipeline.WithReverseConverter(r.converter),
 	)
 }
 
@@ -100,7 +100,7 @@ func (r *rollbackWindowRuntime) installWorkflow(t *testing.T) {
 	r.service = New(r.store, r.lease, r.service.writer,
 		WithOntology(r.ontology),
 		WithRollbackWindow(r.service.rollbackWindow),
-		WithRollbackKindMapping(r.mapping),
+		WithReverseConverter(r.converter),
 		WithWorkflow(provider.WithIdentity(workflowplugin.Alias, "default", meta.Incarnation)),
 	)
 }
@@ -114,18 +114,6 @@ func rollbackWorkflowRequest() workflowplugin.InvokeRequest {
 			{Label: "first", Title: "first native item"},
 			{Label: "second", Title: "second native item"},
 		},
-	}
-}
-
-func rollbackMapping(kind string) (string, bool) {
-	switch kind {
-	case "workflow.run", "workflow.item":
-		// This callback models a trusted mapping added by the canonical reverse
-		// path. It is deliberately outside client input and returns only the
-		// canonical Beads record kind.
-		return "bead", true
-	default:
-		return "", false
 	}
 }
 
@@ -239,10 +227,51 @@ func TestRollbackWindowRealWritePathsMemoryAndSQLite(t *testing.T) {
 				t.Fatalf("operational receipt was not retained: receipt=%+v receiptErr=%v changes=%+v changesErr=%v", receipt, receiptErr, changes, changesErr)
 			}
 
-			// A trusted reverse mapping admits the formerly native kinds. The same
-			// provider writes real checkpoint bytes and the service reads the item
-			// back through its native path.
-			runtime.mapping = rollbackMapping
+			// Demote stages an ordinary deletion and a native checkpoint in the
+			// real common Writer transaction. A native refusal must preserve both.
+			demoteHead := readerMeta.Head
+			demoteChanges := rollbackChangesets(t, runtime.store)
+			demoteCheckpoint := rollbackCheckpoint(t, runtime.store)
+			demoteMeta := meta(t)
+			demoteMeta.Project = "local"
+			_, err = runtime.service.WorkflowDemote(ctx, anonymous, workflowplugin.DemoteRequest{Source: commit.Results[0].Ref}, demoteMeta)
+			if !errors.As(err, &typed) || typed.Data.Code != model.CodeUnsupported || typed.Data.Details["kind"] != workflowplugin.RunKind {
+				t.Fatalf("demote refusal=%T %+v", err, err)
+			}
+			afterDemote, err := runtime.store.Meta(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			retained, readErr := runtime.service.Get(ctx, anonymous, GetRequest{ID: commit.Results[0].Ref, Project: "local"})
+			if readErr != nil || retained.Bead.Fields["title"] != "window bead" || afterDemote.Head != demoteHead || !reflect.DeepEqual(rollbackChangesets(t, runtime.store), demoteChanges) || !reflect.DeepEqual(rollbackCheckpoint(t, runtime.store), demoteCheckpoint) {
+				t.Fatalf("denied atomic demote changed source, history or checkpoint: read=%+v err=%v", retained, readErr)
+			}
+
+			// A mapping for the run alone must still refuse the actual item kind,
+			// without publishing either half of the operation.
+			runtime.converter, err = reversetest.Converter(workflowplugin.RunKind)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runtime.setWindow(true)
+			partialMeta := meta(t)
+			partialMeta.Project = "local"
+			_, err = runtime.service.WorkflowInvoke(ctx, anonymous, rollbackWorkflowRequest(), partialMeta)
+			if !errors.As(err, &typed) || typed.Data.Code != model.CodeUnsupported || typed.Data.Details["kind"] != workflowplugin.ItemKind {
+				t.Fatalf("partially mapped native refusal=%T %+v", err, err)
+			}
+			partialHead, err := runtime.store.Meta(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if partialHead.Head != demoteHead || !reflect.DeepEqual(rollbackChangesets(t, runtime.store), demoteChanges) || !reflect.DeepEqual(rollbackCheckpoint(t, runtime.store), demoteCheckpoint) {
+				t.Fatal("partially mapped native refusal changed history or checkpoint")
+			}
+
+			runtime.converter, err = reversetest.Converter(workflowplugin.RunKind, workflowplugin.ItemKind)
+			if err != nil {
+				t.Fatal(err)
+			}
 			runtime.setWindow(true)
 			mappedMeta := meta(t)
 			mappedMeta.Project = "local"
@@ -265,9 +294,75 @@ func TestRollbackWindowRealWritePathsMemoryAndSQLite(t *testing.T) {
 				t.Fatalf("operational workflow metadata missing: receipts=%d audit=%d", len(receipts), len(audit))
 			}
 
+			// Admission and reverse output use the same executable registry. The
+			// complete persisted record, including every native field, must survive.
+			dump, err := reversetest.WorkflowDump(checkpoint.Payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := reverseconverter.Convert(dump); err == nil {
+				t.Fatal("default reverse converter unexpectedly accepted unmapped native kinds")
+			}
+			converted, err := runtime.converter.Convert(dump)
+			if err != nil || len(converted.Projection.Memories) != 3 {
+				t.Fatalf("registered reverse conversion=%+v err=%v", converted, err)
+			}
+			expected := map[string]string{}
+			for kind, records := range dump.Records {
+				for _, record := range records {
+					encoded, err := json.Marshal(record)
+					if err != nil {
+						t.Fatal(err)
+					}
+					expected[kind+"/"+record.ID] = string(encoded)
+				}
+			}
+			lines := bytes.Split(bytes.TrimSpace(converted.JSONL), []byte("\n"))
+			if len(lines) != len(expected)+1 {
+				t.Fatalf("reverse JSONL=%s", converted.JSONL)
+			}
+			for _, line := range lines[1:] {
+				var memory struct {
+					Kind  string `json:"_type"`
+					Key   string `json:"key"`
+					Value string `json:"value"`
+				}
+				if err := json.Unmarshal(line, &memory); err != nil {
+					t.Fatal(err)
+				}
+				if memory.Kind != "memory" || expected[memory.Key] == "" || memory.Value != expected[memory.Key] {
+					t.Fatalf("reverse output lost native payload: %s", line)
+				}
+				delete(expected, memory.Key)
+			}
+			if len(expected) != 0 {
+				t.Fatalf("reverse output omitted native records: %v", expected)
+			}
+
 			// Disabling the setting on the same stores permits the native write even
 			// without the trusted mapping, proving the switch is reversible.
-			runtime.mapping = nil
+			runtime.converter = nil
+			runtime.setWindow(true)
+			// Existing content updates still publish new operational receipts/audit
+			// with no native mapping, while creation remains refused below.
+			beforeReceipts, beforeAudit := rollbackWorkflowState(t, rollbackCheckpoint(t, runtime.store))
+			operationalMeta := meta(t)
+			operationalMeta.Project = "local"
+			_, err = runtime.service.Update(ctx, anonymous, UpdateRequest{ID: model.RefByID(mapped.Items[0].ID, model.Natural64(0)), Fields: map[string]any{"title": "updated existing native item"}}, operationalMeta)
+			if err != nil {
+				t.Fatalf("existing native update with operational metadata: %v", err)
+			}
+			afterReceipts, afterAudit := rollbackWorkflowState(t, rollbackCheckpoint(t, runtime.store))
+			if len(afterReceipts) <= len(beforeReceipts) || len(afterAudit) <= len(beforeAudit) {
+				t.Fatal("window refused new operational receipts/audit on existing content")
+			}
+			reenabledCheckpoint := rollbackCheckpoint(t, runtime.store)
+			reenabledMeta := meta(t)
+			reenabledMeta.Project = "local"
+			_, err = runtime.service.WorkflowInvoke(ctx, anonymous, rollbackWorkflowRequest(), reenabledMeta)
+			if !errors.As(err, &typed) || typed.Data.Code != model.CodeUnsupported || typed.Data.Details["kind"] != workflowplugin.RunKind || !reflect.DeepEqual(rollbackCheckpoint(t, runtime.store), reenabledCheckpoint) {
+				t.Fatalf("unmapped write with window enabled=%T %+v", err, err)
+			}
 			runtime.setWindow(false)
 			offMeta := meta(t)
 			offMeta.Project = "local"
@@ -275,24 +370,15 @@ func TestRollbackWindowRealWritePathsMemoryAndSQLite(t *testing.T) {
 			if err != nil || len(off.Items) != 2 {
 				t.Fatalf("disabled native write=%+v err=%v", off, err)
 			}
+			for _, item := range off.Items {
+				got, err := runtime.service.Get(ctx, anonymous, GetRequest{ID: model.RefByID(item.ID, model.Natural64(0)), Project: "local", Agent: "test-agent"})
+				if err != nil || got.Bead.ID != item.ID {
+					t.Fatalf("disabled write readback=%+v err=%v", got, err)
+				}
+			}
 			if rollbackCheckpoint(t, runtime.store).Generation <= checkpoint.Generation {
 				t.Fatal("disabled native write did not advance its durable checkpoint")
 			}
 		})
-	}
-}
-
-func TestRollbackWindowMappingDoesNotAdmitNonCanonicalBeadsKind(t *testing.T) {
-	classification := reverseconverter.ClassifyKindWithMapping("workflow.item", func(string) (string, bool) {
-		return "issue", true
-	})
-	if classification.Disposition != reverseconverter.KindUnrepresentable || classification.BeadsKind != "" {
-		t.Fatalf("noncanonical mapping admitted: %+v", classification)
-	}
-	if !bytes.Contains([]byte(classification.Disposition), []byte("unrepresentable")) {
-		t.Fatal("classification lost its typed disposition")
-	}
-	if strings.TrimSpace(string(classification.Kind)) != "workflow.item" {
-		t.Fatalf("classification lost offending kind: %+v", classification)
 	}
 }

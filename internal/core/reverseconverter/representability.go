@@ -22,42 +22,6 @@ const (
 	KindUnrepresentable KindDisposition = "unrepresentable"
 )
 
-// KindMapping resolves an actual, already-admitted reverse mapping. Callers
-// must source this callback from the same reverse/export contract used for
-// rollback; it is intentionally not a free-form example allowlist. The
-// returned value is a canonical reverse-converter record kind (for example,
-// "bead" or "memory").
-type KindMapping func(kind string) (beadsKind string, ok bool)
-
-// KindRegistry is the trusted reverse/export registry owned by a composed
-// host. It answers from the same canonical mapping used to emit Beads records;
-// it is never populated from request data or a UI setting.
-type KindRegistry interface {
-	ReverseKind(kind string) (beadsKind string, ok bool)
-}
-
-// KindRegistryFunc adapts a host registry callback without weakening the
-// registry boundary. Production hosts normally expose a concrete registry;
-// tests may use this adapter to exercise the same composition seam.
-type KindRegistryFunc func(kind string) (beadsKind string, ok bool)
-
-func (f KindRegistryFunc) ReverseKind(kind string) (string, bool) {
-	if f == nil {
-		return "", false
-	}
-	return f(kind)
-}
-
-// MappingFromRegistry returns the classifier callback for a trusted registry.
-// A nil registry deliberately leaves only the converter's built-in vocabulary
-// available.
-func MappingFromRegistry(registry KindRegistry) KindMapping {
-	if registry == nil {
-		return nil
-	}
-	return registry.ReverseKind
-}
-
 // KindClassification is the detached result of ClassifyKind. BeadsKind is set
 // when the kind has an actual canonical mapping; it is empty for operational or
 // refused user-content kinds.
@@ -71,22 +35,14 @@ type KindClassification struct {
 // supportedKinds table is the same table used by archive validation and
 // conversion, so adding a real reverse mapping updates both paths together.
 func ClassifyKind(kind string) KindClassification {
-	return ClassifyKindWithMapping(kind, nil)
+	return (*Converter)(nil).ClassifyKind(kind)
 }
 
-// ClassifyKindWithMapping first consults an actual host-supplied reverse
-// mapping, then falls back to the converter's canonical record-kind table.
-// Mappings to a noncanonical Beads record kind are ignored and remain a typed
-// refusal; this prevents a frozen example allowlist from weakening admission.
-func ClassifyKindWithMapping(kind string, mapping KindMapping) KindClassification {
+// ClassifyKind derives admission from this converter's executable mappings.
+// A kind label alone cannot register a mapping. A nil converter uses only the
+// canonical vocabulary; native workflow kinds have no default mapping.
+func (c *Converter) ClassifyKind(kind string) KindClassification {
 	classification := KindClassification{Kind: kind, Disposition: KindUnrepresentable}
-	if mapping != nil {
-		if beadsKind, ok := mapping(kind); ok && supportedKinds[beadsKind] {
-			classification.BeadsKind = beadsKind
-			classification.Disposition = KindRepresentable
-			return classification
-		}
-	}
 	if operationalKind(kind) {
 		classification.Disposition = KindOperational
 		return classification
@@ -94,6 +50,11 @@ func ClassifyKindWithMapping(kind string, mapping KindMapping) KindClassificatio
 	if supportedKinds[kind] {
 		classification.BeadsKind = kind
 		classification.Disposition = KindRepresentable
+	} else if c != nil {
+		if mapping, ok := c.mappings[kind]; ok {
+			classification.BeadsKind = mapping.BeadsKind
+			classification.Disposition = KindRepresentable
+		}
 	}
 	return classification
 }

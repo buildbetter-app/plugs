@@ -114,13 +114,12 @@ type Config struct {
 	// actual canonical reverse Beads mapping. It defaults to false and is a
 	// prepared switch-day control; it is never enabled by a live action here.
 	RollbackWindow bool
-	// RollbackKindRegistry is the trusted reverse/export registry for native
-	// user-content kinds. Composition passes its canonical mapping to the common
-	// Writer and native service guard; it is never supplied over RPC or YAML.
-	// Nil uses reverseconverter's built-in canonical record vocabulary.
-	RollbackKindRegistry reverseconverter.KindRegistry
-	AuthMode            string
-	Auth                authn.Config
+	// ReverseConverter owns executable reverse mappings. The same instance is
+	// used by Runtime.ConvertReverse and both write guards.
+	// Nil selects canonical built-ins; YAML/RPC cannot register a mapping.
+	ReverseConverter *reverseconverter.Converter
+	AuthMode         string
+	Auth             authn.Config
 	// OIDC enables the existing OIDC provider. Its SessionStore is owned by
 	// composition and is replaced with the selected SQLite/PostgreSQL store;
 	// the typed config is not parsed from .plug/config.yaml yet.
@@ -208,6 +207,7 @@ type Runtime struct {
 	Projections      *coreevents.ProjectionRegistry
 	Dispatcher       *coreevents.Dispatcher
 	ProjectionStatus coreevents.ProjectionStatusReader
+	reverseConverter *reverseconverter.Converter
 	restoreImport    *restoreImportAdapter
 	restoredWASI     *restoredWASI
 
@@ -221,6 +221,12 @@ type Runtime struct {
 	closed    bool
 	once      sync.Once
 	closeErr  error
+}
+
+// ConvertReverse uses the same immutable converter that controls this runtime's
+// write admission. The default converter refuses native workflow content.
+func (r *Runtime) ConvertReverse(dump reverseconverter.Dump) (reverseconverter.Result, error) {
+	return r.reverseConverter.Convert(dump)
 }
 
 // Open builds one core, registry, collaboration manager and watch manager.
@@ -541,11 +547,11 @@ func (r *Runtime) bind(config Config) error {
 	ontology := ontologyRuntime
 	eventProvider := &runtimeEventProvider{}
 	nativeValidatorCount := 0
-	rollbackKindMapping := reverseconverter.MappingFromRegistry(config.RollbackKindRegistry)
+	r.reverseConverter = config.ReverseConverter
 	writerOptions := []pipeline.Option{
 		pipeline.WithOntology(ontology),
 		pipeline.WithRollbackWindow(config.RollbackWindow),
-		pipeline.WithRollbackKindMapping(rollbackKindMapping),
+		pipeline.WithReverseConverter(r.reverseConverter),
 	}
 	if config.Ontology != nil {
 		writerOptions = append(writerOptions, pipeline.WithOntologyAudit(service.NewOntologyAudit(ontologyLocator)))
@@ -587,7 +593,7 @@ func (r *Runtime) bind(config Config) error {
 	serviceOptions := []service.Option{
 		service.WithOntology(ontology),
 		service.WithRollbackWindow(config.RollbackWindow),
-		service.WithRollbackKindMapping(rollbackKindMapping),
+		service.WithReverseConverter(r.reverseConverter),
 	}
 	if config.EventAuthorization != nil || !eventAuthorization.required() {
 		serviceOptions = append(serviceOptions, service.WithEventProvider(eventProvider))

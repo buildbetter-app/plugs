@@ -297,6 +297,7 @@ internal/core/pipeline/ready_sort.go
 internal/core/pipeline/ready_sort_test.go
 internal/core/pipeline/response.go
 internal/core/pipeline/response_test.go
+internal/core/pipeline/rollback_window.go
 internal/core/pipeline/snapshot.go
 internal/core/pipeline/snapshot_get_test.go
 internal/core/pipeline/snapshot_hierarchy.go
@@ -324,7 +325,12 @@ internal/core/reverseconverter/README.md
 internal/core/reverseconverter/archive.go
 internal/core/reverseconverter/convert.go
 internal/core/reverseconverter/public_archive_test.go
+internal/core/reverseconverter/registry.go
+internal/core/reverseconverter/representability.go
+internal/core/reverseconverter/representability_test.go
 internal/core/reverseconverter/reverseconverter_test.go
+internal/core/reverseconverter/reversetest/BUILD.bazel
+internal/core/reverseconverter/reversetest/mapping.go
 internal/core/reverseconverter/types.go
 internal/core/service/BUILD.bazel
 internal/core/service/audit.go
@@ -360,6 +366,7 @@ internal/core/service/ontology.go
 internal/core/service/ordered_close.go
 internal/core/service/reads.go
 internal/core/service/ready_order.go
+internal/core/service/rollback_window_test.go
 internal/core/service/rpc_reads.go
 internal/core/service/service.go
 internal/core/service/service_test.go
@@ -1123,6 +1130,7 @@ internal/storage/postgres/reader.go
 internal/storage/postgres/reader_batch_test.go
 internal/storage/postgres/reader_versions_batch_negative_test.go
 internal/storage/postgres/reader_versions_batch_test.go
+internal/storage/postgres/rollback_window_test.go
 internal/storage/postgres/schema.go
 internal/storage/postgres/selection.go
 internal/storage/postgres/selection_test.go

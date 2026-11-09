@@ -29,7 +29,7 @@ type Service struct {
 	events                 EventProvider
 	workflow               *workflowplugin.Provider
 	rollbackWindow         bool
-	reverseKindMapping     reverseconverter.KindMapping
+	reverseConverter       *reverseconverter.Converter
 	compaction             CompactionConfig
 }
 
@@ -99,11 +99,10 @@ func WithRollbackWindow(enabled bool) Option {
 	return func(s *Service) { s.rollbackWindow = enabled }
 }
 
-// WithRollbackKindMapping supplies a trusted canonical reverse mapping for a
-// kind that has gained a Beads representation. Client input cannot provide
-// this callback.
-func WithRollbackKindMapping(mapping reverseconverter.KindMapping) Option {
-	return func(s *Service) { s.reverseKindMapping = mapping }
+// WithReverseConverter shares the actual reverse converter with the native
+// creation guard. A kind is admitted only through an executable conversion.
+func WithReverseConverter(converter *reverseconverter.Converter) Option {
+	return func(s *Service) { s.reverseConverter = converter }
 }
 
 // New never opens a transaction or storage driver. The composition root owns
@@ -161,7 +160,7 @@ func (s *Service) rollbackWindowKind(kind string) error {
 	if !s.rollbackWindow {
 		return nil
 	}
-	classification := reverseconverter.ClassifyKindWithMapping(kind, s.reverseKindMapping)
+	classification := s.reverseConverter.ClassifyKind(kind)
 	if classification.Disposition == reverseconverter.KindUnrepresentable {
 		return reverseconverter.RollbackWindowRefusal(kind)
 	}

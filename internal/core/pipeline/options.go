@@ -50,7 +50,7 @@ type config struct {
 	hierarchyMaxDepth   int
 	claimTTL            time.Duration
 	rollbackWindow      bool
-	reverseKindMapping  reverseconverter.KindMapping
+	reverseConverter    *reverseconverter.Converter
 	observer            Observer
 }
 
@@ -117,11 +117,10 @@ func WithRollbackWindow(enabled bool) Option {
 	return func(c *config) { c.rollbackWindow = enabled }
 }
 
-// WithRollbackKindMapping supplies the trusted reverse mapping used for kinds
-// that have gained an actual Beads representation. The callback must come from
-// the host's canonical reverse/export path, never from client input.
-func WithRollbackKindMapping(mapping reverseconverter.KindMapping) Option {
-	return func(c *config) { c.reverseKindMapping = mapping }
+// WithReverseConverter shares the actual reverse converter with the admission
+// guard. Its executable mappings, never client input, define representability.
+func WithReverseConverter(converter *reverseconverter.Converter) Option {
+	return func(c *config) { c.reverseConverter = converter }
 }
 
 // WithObserver replaces the default bounded in-process collector. Hosts may

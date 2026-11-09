@@ -216,8 +216,11 @@ func Convert(dump Dump) (Result, error) {
 // migration plan; this converter deliberately preserves the original Beads
 // issue_type in its JSONL output.
 func ConvertWithDirectives(dump Dump, directives []ontologymigration.Directive) (Result, error) {
-	report := Report{InputDigest: digestDump(dump), Warnings: append([]string(nil), dump.Manifest.Warnings...)}
-	if err := validateDumpShape(dump, &report); err != nil {
+	return (*Converter)(nil).ConvertWithDirectives(dump, directives)
+}
+
+func convertCanonical(dump Dump, directives []ontologymigration.Directive, report Report) (Result, error) {
+	if err := validateDumpShape(dump, &report, nil); err != nil {
 		normalizeReport(&report)
 		return Result{Report: report}, withReport(err, report)
 	}
@@ -432,7 +435,7 @@ func withReport(err error, report Report) error {
 	return err
 }
 
-func validateDumpShape(dump Dump, report *Report) error {
+func validateDumpShape(dump Dump, report *Report, converter *Converter) error {
 	m := dump.Manifest
 	if m.Format != PlugDumpFormat || m.Schema != 1 || m.Reference != BeadsReference || m.MainVersion != 72 || m.IgnoredVersion != 28 || m.StoreID == "" || m.Machine == "" || m.Scope != "offline-head-and-source-archives" {
 		return refusal("unsupported plug-dump manifest")
@@ -445,8 +448,8 @@ func validateDumpShape(dump Dump, report *Report) error {
 	}
 	registered := map[string]bool{}
 	for i, kind := range m.Kinds {
-		if !supportedKinds[kind.Name] || kind.Version != 1 || kind.File != "records/"+kind.Name+".ndjson" || kind.Count < 1 || registered[kind.Name] || i > 0 && m.Kinds[i-1].Name >= kind.Name {
-			if !supportedKinds[kind.Name] && kind.Name != "" {
+		if !converter.supports(kind.Name) || kind.Version != 1 || kind.File != "records/"+kind.Name+".ndjson" || kind.Count < 1 || registered[kind.Name] || i > 0 && m.Kinds[i-1].Name >= kind.Name {
+			if !converter.supports(kind.Name) && kind.Name != "" {
 				addUnique(&report.PlugOnlyKinds, kind.Name)
 				addUnique(&report.UnsupportedFields, "kind/"+kind.Name)
 			}
@@ -458,7 +461,7 @@ func validateDumpShape(dump Dump, report *Report) error {
 		}
 	}
 	for kind := range dump.Records {
-		if !supportedKinds[kind] {
+		if !converter.supports(kind) {
 			addUnique(&report.PlugOnlyKinds, kind)
 			addUnique(&report.UnsupportedFields, "kind/"+kind)
 			return refusal("unregistered or unsupported record kind %q", kind)
