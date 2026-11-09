@@ -65,6 +65,15 @@ func nativeHistoryFixture(t *testing.T, project, category string) []byte {
 		if m.Sources[i].Family == "config" {
 			m.Sources[i].Rows = 1
 		}
+		// The source-plane marker archives these families even when empty.
+		// Keep the declared disposition consistent with that explicit contract.
+		switch m.Sources[i].Family {
+		case dumpformat.EphemeralEntityTable, dumpformat.EphemeralDependencyTable,
+			dumpformat.EphemeralLabelTable, dumpformat.EphemeralCommentTable,
+			dumpformat.EphemeralEventTable, dumpformat.EphemeralChildCounterTable,
+			"custom_statuses", "custom_types":
+			m.Sources[i].Action = "archive"
+		}
 	}
 	var h dumpformat.SourceHistory
 	decode(t, members[dumpformat.SourceHistoryMember], &h)
