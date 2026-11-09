@@ -74,6 +74,7 @@ func DefaultTreePolicy() TreePolicy {
 			".github/workflows/BUILD.bazel":                        {},
 			".github/workflows/plug-beads-bazel.yml":               {},
 			".github/workflows/plug-bazel.yml":                     {},
+			".github/workflows/plug-cp7-latency.yml":               {},
 			".github/workflows/plug-nightly-restore-diffs.yml":     {},
 			".github/workflows/plug-public-bundle.yml":             {},
 			".github/workflows/plug-runs-on-smoke.yml":             {},
