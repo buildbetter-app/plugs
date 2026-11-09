@@ -212,7 +212,7 @@ jobs:
                   for line in path.read_text(errors="replace").splitlines():
                       marker = kind + " "
                       if marker in line:
-                          records.append(json.loads(line.split(marker, 1)[1]))
+                          records.append(line.split(marker, 1)[1])
               return records
 
           def xml_counts(path):
@@ -228,8 +228,8 @@ jobs:
                   "skipped": sum(x.find("skipped") is not None for x in cases),
               }
 
-          latency_cases = markers(latency / "test.log", "CP7_CASE")
-          latency_samples = markers(latency / "test.log", "CP7_SAMPLE")
+          latency_cases = [json.loads(raw) for raw in markers(latency / "test.log", "CP7_CASE")]
+          latency_samples = [json.loads(raw) for raw in markers(latency / "test.log", "CP7_SAMPLE")]
           dense_ordinary = markers(dense / "test.log", "CP7_DENSE_ORDINARY")
           dense_summary = markers(dense / "test.log", "CP7_DENSE_TYPE_SUMMARY")
           accounting = {
@@ -249,6 +249,8 @@ jobs:
                   "expected_ordinary_markers": 1,
                   "expected_summary_markers": 1,
                   "xml": xml_counts(dense / "test.xml"),
+                  "ordinary": dense_ordinary,
+                  "type_summary": dense_summary,
               },
               "meaning": "raw CP7 markers and outer XML are retained separately; nested Go observation failures, if any, remain literal child evidence",
           }
