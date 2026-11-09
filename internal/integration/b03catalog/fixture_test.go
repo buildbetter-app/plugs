@@ -246,7 +246,7 @@ func (f *fixture) result(t *testing.T, method string, params any, into any) resp
 	t.Helper()
 	out := f.call(t, method, params)
 	if out.Error != nil {
-		t.Fatalf("%s refused: %+v; data=%+v", method, out.Error, out.Error.Data)
+		t.Fatalf("%s refused: %s", method, marshal(t, out.Error))
 	}
 	if into != nil {
 		if err := json.Unmarshal(out.Result, into); err != nil {

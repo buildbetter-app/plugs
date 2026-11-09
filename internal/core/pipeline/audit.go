@@ -32,7 +32,7 @@ type auditPlan struct {
 }
 
 func statusChanged(p *pending) bool {
-	if p.deleted || len(p.before) == 0 {
+	if p == nil || p.deleted || len(p.before) == 0 {
 		return false
 	}
 	before, err := DecodeDocument(p.before)

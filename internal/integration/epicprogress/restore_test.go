@@ -280,16 +280,11 @@ func TestEpicProgressNativeRestoreReopenDetachUsesIndexedHierarchy(t *testing.T)
 	source.close(t)
 
 	path := filepath.Join(dir, "restored-large.db")
-	target, lease := openStore(t, "sqlite", path)
+	target, lease, closeTarget := openRenewingTarget(t, "sqlite", path)
 	targetAdmin := admin(t, target, lease)
 	incarnation := restoreHead(t, targetAdmin, data, archive)
 	targetAdmin.close(t)
-	if err := lease.Release(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := target.Close(); err != nil {
-		t.Fatal(err)
-	}
+	closeTarget()
 
 	reopened := newFixtureMode(t, "sqlite", path, true, false)
 	reads := reopened.reads
@@ -330,11 +325,7 @@ func TestEpicProgressNativeRestoreDetachUsesIndexedHierarchyAcrossBackends(t *te
 			sourceAdmin.close(t)
 			source.close(t)
 
-			target, lease := openStore(t, backend, filepath.Join(dir, "restored-large.db"))
-			t.Cleanup(func() {
-				_ = lease.Release(context.Background())
-				_ = target.Close()
-			})
+			target, lease, closeTarget := openRenewingTarget(t, backend, filepath.Join(dir, "restored-large.db"))
 			targetAdmin := admin(t, target, lease)
 			incarnation := restoreHead(t, targetAdmin, data, archive)
 			targetAdmin.close(t)
@@ -342,12 +333,7 @@ func TestEpicProgressNativeRestoreDetachUsesIndexedHierarchyAcrossBackends(t *te
 			var targetStore driver.Store = target
 			var targetLease driver.ActiveLease = lease
 			if backend == "sqlite" {
-				if err := lease.Release(context.Background()); err != nil {
-					t.Fatal(err)
-				}
-				if err := target.Close(); err != nil {
-					t.Fatal(err)
-				}
+				closeTarget()
 				reopened := newFixtureMode(t, backend, filepath.Join(dir, "restored-large.db"), true, false)
 				targetStore, targetLease = reopened.store, reopened.lease
 			}

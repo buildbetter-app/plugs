@@ -19,6 +19,22 @@ type Chain struct {
 }
 
 func (c Chain) installed() bool { return len(c.Links)+len(c.Rules) > 0 }
+
+func (c Chain) finitePreparation() bool {
+	if len(c.Links) != 0 {
+		return false
+	}
+	for _, rules := range c.Rules {
+		if _, ok := rules.(PreparedRuleSet); !ok {
+			return false
+		}
+		if _, ok := rules.(PreparedCompiler); !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func (c Chain) budget() (time.Duration, error) {
 	if c.Budget < 0 || c.Budget > 100*time.Millisecond {
 		return 0, errors.New("authorization budget exceeds 100 ms ceiling")
@@ -92,11 +108,8 @@ func scoped(r CheckRequest) bool {
 }
 
 func (c Chain) Check(ctx context.Context, s Slice, reqs []CheckRequest) ([]Decision, error) {
-	out := make([]Decision, len(reqs))
-	for i := range out {
-		out[i] = Decision{Effect: NoDecision}
-	}
 	if !c.installed() {
+		out := make([]Decision, len(reqs))
 		for i, r := range reqs {
 			if scoped(r) {
 				return nil, &Error{Code: "authz_not_installed"}
@@ -109,19 +122,63 @@ func (c Chain) Check(ctx context.Context, s Slice, reqs []CheckRequest) ([]Decis
 	if err != nil {
 		return nil, unavailable(err)
 	}
-	reqs, err = freezeChecks(reqs)
+	return c.checkPrepared(ctx, s, PrepareChecks(reqs), b)
+}
+
+// CheckPrepared reuses immutable request parsing, not authority. The supplied
+// Slice owns this invocation's snapshot and common observations. Ordinary
+// components still receive isolated inputs and their existing deadlines.
+func (c Chain) CheckPrepared(ctx context.Context, s Slice, batch *PreparedChecks) ([]Decision, error) {
+	if batch == nil {
+		return nil, unavailable(errors.New("prepared checks are nil"))
+	}
+	if !c.installed() {
+		out := make([]Decision, batch.Len())
+		for i := range out {
+			if batch.scoped[i] {
+				return nil, &Error{Code: "authz_not_installed"}
+			}
+			out[i].Effect = Allow
+		}
+		return out, nil
+	}
+	b, err := c.budget()
 	if err != nil {
 		return nil, unavailable(err)
 	}
+	return c.checkPrepared(ctx, s, batch, b)
+}
+
+func (c Chain) checkPrepared(ctx context.Context, s Slice, batch *PreparedChecks, b time.Duration) ([]Decision, error) {
+	reqs, err := batch.frozen()
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	out := make([]Decision, len(reqs))
+	for i := range out {
+		out[i] = Decision{Effect: NoDecision}
+	}
 	valid := make([]bool, len(reqs))
 	restrictions := make([][]FilterExpr, len(reqs))
+	// Custom components retain fresh first-touch observations for each Check
+	// invocation. Only a completely finite chain shares the snapshot's common
+	// preparation across calls; immutable parsing is still shared in either case.
+	if !c.finitePreparation() {
+		// The marker also reaches finite Eval called by an ordinary component,
+		// without changing the Slice or hiding its optional host capabilities.
+		ctx = context.WithValue(ctx, freshPreparationKey{}, true)
+	}
+	state := snapshotPreparation(ctx, s)
+	if state == nil {
+		state = &Preparation{}
+	}
 	for i, r := range reqs {
-		valid[i], err = prepare(ctx, s, c.Namespace, r)
+		valid[i], err = batch.bindings[i].prepare(ctx, s, c.Namespace, r.Resource, state)
 		if err != nil {
 			return nil, err
 		}
 		if valid[i] {
-			valid[i], err = caveatsAllow(ctx, s, r)
+			valid[i], err = batch.bindings[i].caveatsAllow(ctx, s, r.Resource)
 			if err != nil {
 				return nil, err
 			}
@@ -131,10 +188,7 @@ func (c Chain) Check(ctx context.Context, s Slice, reqs []CheckRequest) ([]Decis
 		}
 	}
 	for j, l := range c.Links {
-		input, e := freezeChecks(reqs)
-		if e != nil {
-			return nil, unavailable(e)
-		}
+		input := batch.isolated()
 		steps, e := bounded(ctx, b, func(call context.Context) ([]Step, error) { return l.Check(call, s, input) })
 		if e != nil {
 			return nil, unavailable(e)
@@ -166,11 +220,17 @@ func (c Chain) Check(ctx context.Context, s Slice, reqs []CheckRequest) ([]Decis
 		}
 	}
 	for _, rules := range c.Rules {
-		input, e := freezeChecks(reqs)
-		if e != nil {
-			return nil, unavailable(e)
+		prepared, finite := rules.(PreparedRuleSet)
+		var input []CheckRequest
+		if !finite {
+			input = batch.isolated()
 		}
-		ds, e := bounded(ctx, b, func(call context.Context) ([]Decision, error) { return rules.Eval(call, s, input) })
+		ds, e := bounded(ctx, b, func(call context.Context) ([]Decision, error) {
+			if finite {
+				return prepared.EvalPrepared(call, s, batch)
+			}
+			return rules.Eval(call, s, input)
+		})
 		if e != nil {
 			return nil, unavailable(e)
 		}
@@ -252,16 +312,41 @@ func (c Chain) Compile(r ListRequest) (FilterTemplate, error) {
 	if err != nil {
 		return FilterTemplate{}, unavailable(err)
 	}
-	r, err = FreezeList(r)
+	prepared, err := PrepareRequest(r)
 	if err != nil {
 		return FilterTemplate{}, unavailable(err)
 	}
+	return c.compilePrepared(prepared, b)
+}
+
+// CompilePrepared retains this chain's complete compile/error rules while
+// avoiding another principal normalization. It never mutates its input.
+func (c Chain) CompilePrepared(prepared *PreparedRequest) (FilterTemplate, error) {
+	if prepared == nil {
+		return FilterTemplate{}, unavailable(errors.New("prepared request is nil"))
+	}
+	if !c.installed() {
+		return c.Compile(prepared.Request())
+	}
+	b, err := c.budget()
+	if err != nil {
+		return FilterTemplate{}, unavailable(err)
+	}
+	return c.compilePrepared(prepared, b)
+}
+
+func (c Chain) compilePrepared(prepared *PreparedRequest, b time.Duration) (FilterTemplate, error) {
+	// Reusing a binding in a custom chain cannot change eligibility in another
+	// compiled filter or race with a finite CheckPrepared using that binding.
+	if !c.finitePreparation() && !prepared.freshObservations {
+		owned := *prepared
+		owned.freshObservations = true
+		prepared = &owned
+	}
+	r := prepared.Request()
 	t := FilterTemplate{Namespace: c.Namespace, Request: r, Permit: FilterExpr{Op: False}, Forbid: FilterExpr{Op: False}}
 	for j, l := range c.Links {
-		input, err := FreezeList(r)
-		if err != nil {
-			return FilterTemplate{}, err
-		}
+		input := prepared.Request()
 		f, err := bounded(context.Background(), b, func(context.Context) (FilterExpr, error) { return l.Filter(input) })
 		if err != nil {
 			return FilterTemplate{}, compileError(err)
@@ -274,10 +359,7 @@ func (c Chain) Compile(r ListRequest) (FilterTemplate, error) {
 		if !ok {
 			return FilterTemplate{}, ErrCheckOnly
 		}
-		input, err = FreezeList(r)
-		if err != nil {
-			return FilterTemplate{}, err
-		}
+		input = prepared.Request()
 		allow, err := bounded(context.Background(), b, func(context.Context) (FilterExpr, error) { return terminal.AllowFilter(input) })
 		if err != nil {
 			return FilterTemplate{}, compileError(err)
@@ -295,11 +377,13 @@ func (c Chain) Compile(r ListRequest) (FilterTemplate, error) {
 		}
 	}
 	for _, rules := range c.Rules {
-		input, err := FreezeList(r)
-		if err != nil {
-			return FilterTemplate{}, err
-		}
-		f, err := bounded(context.Background(), b, func(context.Context) (FilterTemplate, error) { return rules.Compile(input) })
+		input := prepared.Request()
+		f, err := bounded(context.Background(), b, func(context.Context) (FilterTemplate, error) {
+			if compiler, ok := rules.(PreparedCompiler); ok {
+				return compiler.CompilePrepared(prepared)
+			}
+			return rules.Compile(input)
+		})
 		if err != nil {
 			return FilterTemplate{}, compileError(err)
 		}
@@ -313,7 +397,7 @@ func (c Chain) Compile(r ListRequest) (FilterTemplate, error) {
 		t.Forbid = Or(t.Forbid, f.Forbid)
 		t.Restrictions = append(t.Restrictions, f.Restrictions...)
 	}
-	return t, t.Validate()
+	return prepared.Filter(t)
 }
 
 func compileError(err error) error {

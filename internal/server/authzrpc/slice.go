@@ -3,6 +3,7 @@ package authzrpc
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
@@ -16,13 +17,17 @@ type slice struct {
 	snapshot              Snapshot
 	facts                 authzfixed.Facts
 	expected              authz.Caller
+	expectedNormalized    bool
 	authorizationRevision model.Revision
 	authorizationBound    bool
+	preparation           authz.Preparation
 }
 
 var _ authz.Slice = (*slice)(nil)
 
 func (s *slice) Namespace() authz.Namespace { return s.facts.Namespace }
+
+func (s *slice) AuthorizationPreparation() *authz.Preparation { return &s.preparation }
 
 func (s *slice) Record(ctx context.Context, dep authz.Dependency) error {
 	if s == nil || s.snapshot == nil {
@@ -62,7 +67,11 @@ func (s *slice) CheckContext(_ context.Context, caller authz.Caller) (bool, erro
 	if s == nil {
 		return false, fmt.Errorf("authorization slice is nil")
 	}
-	return samePrincipal(s.expected.Principal, caller.Principal) &&
+	principalMatches := s.expectedNormalized && reflect.DeepEqual(s.expected.Principal, caller.Principal)
+	if !principalMatches {
+		principalMatches = samePrincipal(s.expected.Principal, caller.Principal)
+	}
+	return principalMatches &&
 		s.expected.VerificationID == caller.VerificationID &&
 		s.expected.CapturedEpoch.String() == caller.CapturedEpoch.String(), nil
 }

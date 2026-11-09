@@ -153,7 +153,7 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 		if memoryMethod(meta.Method) {
 			p, err = w.prepareMemory(preCtx, reader, by, cs, meta)
 		} else {
-			p, err = w.prepare(preCtx, reader, by, cs, meta, release)
+			p, err = w.prepareSourceOperations(preCtx, reader, by, cs, meta, release)
 			if err == nil {
 				err = p.preserveWorkflowComments(preCtx)
 			}
@@ -364,6 +364,11 @@ func (w *Writer) replayReceipt(ctx context.Context, reader driver.Reader, entry 
 		if memoryMethod(meta.Method) {
 			kind = "memory"
 		}
+		if source, _ := ctx.Value(sourceOperationsKey{}).(sourceOperations); source.kind != nil {
+			if selected := source.kind(result.Ref); selected != "" {
+				kind = selected
+			}
+		}
 		p.Changes = append(p.Changes, port.Change{Resource: model.ResourceRef{Kind: kind, Ref: result.Ref}, Op: cs.Ops[i], After: result.Record, SetBy: result.SetBy})
 	}
 	snapshot := &snapshotReader{reader: reader, reads: &readSet{states: map[string]driver.LockState{}}}
@@ -415,7 +420,18 @@ func replayExpectations(cs model.ChangeSet, results []model.OpResult) []model.Pr
 
 func (p *prepared) response(revision model.Revision, meta model.WriteMeta) (model.Commit, error) {
 	commit := model.Commit{Revision: revision, Results: []model.OpResult{}, Warnings: append([]model.Warning{}, p.warnings...)}
-	for _, ref := range p.refs {
+	for i, ref := range p.refs {
+		if active, ok := p.external[i]; ok {
+			result := active.Result
+			if meta.Return == "minimal" {
+				result.Record = nil
+			}
+			commit.Results = append(commit.Results, result)
+			if active.LeaseExpiresAt != nil {
+				commit.LeaseExpiresAt, commit.LeaseTtlMs = active.LeaseExpiresAt, active.LeaseTtlMs
+			}
+			continue
+		}
 		pending := p.writes[ref.ID]
 		result := model.OpResult{Ref: ref, Revision: revision, SetBy: cloneMap(pending.setBy)}
 		if !p.changed[ref.ID] {
@@ -508,6 +524,19 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	if err := p.snapshot.check(states); err != nil {
 		return model.Commit{}, err
 	}
+	if p.source != nil && p.source.Mutation != nil {
+		staged, ok := tx.(driver.CheckpointWriteTx)
+		if !ok {
+			return model.Commit{}, driver.ErrUnsupported
+		}
+		mutation := p.source.Mutation
+		if err := staged.StageCheckpoint(ctx, mutation.Key, mutation.Expected, mutation.Payload); err != nil {
+			if errors.Is(err, driver.ErrCheckpointConflict) {
+				return model.Commit{}, errStale
+			}
+			return model.Commit{}, err
+		}
+	}
 	if mutation, ok := ctx.Value(checkpointMutationKey{}).(driver.CheckpointMutation); ok {
 		if mutation.Incarnation != p.snapshot.Snapshot().Incarnation {
 			return model.Commit{}, driver.ErrConflict
@@ -524,6 +553,9 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	if err != nil {
 		return model.Commit{}, err
 	}
+	if p.source != nil && head.String() != p.source.Head.Head.String() {
+		return model.Commit{}, errStale
+	}
 	if len(p.checkpointReads) != 0 {
 		guard, ok := tx.(driver.CheckpointGuardTx)
 		if !ok {
@@ -536,6 +568,9 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 		sort.Strings(keys)
 		for _, key := range keys {
 			if err := guard.ExpectCheckpoint(ctx, key, p.checkpointReads[key]); err != nil {
+				if errors.Is(err, driver.ErrCheckpointConflict) {
+					return model.Commit{}, errStale
+				}
 				return model.Commit{}, err
 			}
 		}

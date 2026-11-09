@@ -2,13 +2,191 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+func TestRenewRemainsIndependentOfBlockedPublication(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	dsn := freshDSN(t)
+	s, standby := openTest(t, dsn), openTest(t, dsn)
+	if _, err := s.db.ExecContext(ctx, `CREATE FUNCTION plug_postgres.renewable_publication() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN PERFORM pg_advisory_xact_lock(330078); RETURN NEW; END$$; CREATE TRIGGER renewable_publication BEFORE INSERT ON plug_postgres.checkpoints FOR EACH ROW EXECUTE FUNCTION plug_postgres.renewable_publication()`); err != nil {
+		t.Fatal(err)
+	}
+	gate, err := s.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gate.Close()
+	if _, err = gate.ExecContext(ctx, `SELECT pg_advisory_lock(330078)`); err != nil {
+		t.Fatal(err)
+	}
+	gateHeld := true
+	active, err := s.Lease(ctx, "renewable-publisher", 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := active.(*activeLease)
+	defer func() {
+		cleanup, done := context.WithTimeout(context.Background(), 2*time.Second)
+		defer done()
+		if gateHeld {
+			_, _ = gate.ExecContext(cleanup, `SELECT pg_advisory_unlock(330078)`)
+		}
+		_ = l.Release(cleanup)
+	}()
+	l.mu.Lock()
+	originalExpiry := l.timerDeadline
+	l.mu.Unlock()
+	published := make(chan error, 1)
+	go func() {
+		_, err := s.SaveCheckpoint(ctx, l, "renewable", 0, []byte("renewed holder"))
+		published <- err
+	}()
+	for {
+		var waiting bool
+		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' AND database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND objid=330078 AND NOT granted)`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(time.Millisecond):
+		}
+	}
+	// A normal standby contender must not queue a stronger row lock ahead of
+	// the current holder's heartbeat while its publication is still gated.
+	contenderCtx, stopContender := context.WithCancel(ctx)
+	defer stopContender()
+	contended := make(chan error, 1)
+	go func() {
+		next, err := standby.Lease(contenderCtx, "waiting-contender", driver.LeaseTTL)
+		if err == nil {
+			_ = next.Release(context.Background())
+		}
+		contended <- err
+	}()
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for i := 0; i < 4; i++ {
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-ticker.C:
+		}
+		renewCtx, done := context.WithTimeout(ctx, 500*time.Millisecond)
+		started := time.Now()
+		err := l.Renew(renewCtx)
+		done()
+		if err != nil {
+			t.Fatalf("heartbeat %d queued behind the holder or its contender: %v", i, err)
+		}
+		t.Logf("blocked publisher heartbeat=%d elapsed=%s", i, time.Since(started))
+		select {
+		case err := <-published:
+			t.Fatalf("publication passed its SQL gate early: %v", err)
+		case err := <-contended:
+			t.Fatalf("standby displaced a renewed holder: %v", err)
+		default:
+		}
+	}
+	if time.Now().Before(originalExpiry) || l.ended() {
+		t.Fatal("publication was not held beyond its original TTL with live renewal")
+	}
+	stopContender()
+	select {
+	case err := <-contended:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("waiting contender cancellation: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if _, err := gate.ExecContext(ctx, `SELECT pg_advisory_unlock(330078)`); err != nil {
+		t.Fatal(err)
+	}
+	gateHeld = false
+	select {
+	case err := <-published:
+		if err != nil {
+			t.Fatalf("renewed publication failed its final fence: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if cp, err := s.LoadCheckpoint(ctx, "renewable"); err != nil || cp.Generation != 1 || string(cp.Payload) != "renewed holder" {
+		t.Fatalf("renewed publication missing: %+v %v", cp, err)
+	}
+}
+
+// Pause only after the real lease-row query has completed. This reproduces
+// renewal between the old row read and its separate clock query without
+// replacing SQL rows or the holder's renewal path.
+type leaseCheckBoundary struct {
+	querier
+	afterRow func()
+}
+
+func (q leaseCheckBoundary) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	row := q.querier.QueryRowContext(ctx, query, args...)
+	if strings.HasPrefix(query, "SELECT epoch::text,owner,") {
+		q.afterRow()
+	}
+	return row
+}
+
+func TestLeaseCheckDoesNotFenceRenewedExpiry(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	s := openTest(t, freshDSN(t))
+	active, err := s.Lease(ctx, "expiry-boundary", 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := active.(*activeLease)
+	defer l.Release(ctx)
+	l.mu.Lock()
+	oldExpiry := l.timerDeadline
+	l.mu.Unlock()
+	select {
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	case <-time.After(time.Second):
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	boundary := leaseCheckBoundary{querier: tx, afterRow: func() {
+		renewCtx, done := context.WithTimeout(ctx, 500*time.Millisecond)
+		defer done()
+		if err := l.Renew(renewCtx); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(time.Until(oldExpiry) + 25*time.Millisecond):
+		}
+	}}
+	if _, err := s.checkLease(ctx, boundary, l, true); err != nil {
+		t.Fatalf("successful concurrent renewal was checked against stale expiry: %v", err)
+	}
+	if l.ended() {
+		t.Fatal("lease check closed a successfully renewed holder")
+	}
+}
 
 func TestIndependentTakeoverDuringEveryPublication(t *testing.T) {
 	for _, operation := range []string{"graph", "noop", "checkpoint", "finalizer"} {
@@ -233,9 +411,20 @@ func TestRenewWaitingOnExpiringPublication(t *testing.T) {
 		}
 	}
 	waitFor(`SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' AND database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND objid=330077 AND NOT granted)`, "publication SQL gate")
+	// External contention can still prevent a heartbeat. It must expire and
+	// cancel promptly; the publisher's compatible ownership fence does not
+	// itself manufacture that contention.
+	blocker, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Rollback()
+	if _, err := blocker.ExecContext(ctx, `SELECT epoch FROM plug_postgres.lease WHERE singleton FOR NO KEY UPDATE`); err != nil {
+		t.Fatal(err)
+	}
 	go func() { renewed <- l.Renew(renewCtx) }()
 	waitFor(`SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE 'UPDATE plug_postgres.lease SET expires=%')`, "renewal waiting for publication's lease row")
-	t.Log("checkpoint holds lease row FOR SHARE; renewal is waiting on that row before expiry")
+	t.Log("external NO KEY UPDATE holds expiry; renewal waits before expiry while publication remains gated")
 
 	// A second heartbeat must honor cancellation even while the first waits.
 	queuedCtx, queuedCancel := context.WithCancel(ctx)
@@ -266,6 +455,9 @@ func TestRenewWaitingOnExpiringPublication(t *testing.T) {
 		}
 	case <-time.After(300 * time.Millisecond):
 		t.Error("expired renewal remained blocked on the publication row")
+	}
+	if err := blocker.Rollback(); err != nil {
+		t.Fatal(err)
 	}
 	if _, err = gate.ExecContext(ctx, `SELECT pg_advisory_unlock(330077)`); err != nil {
 		t.Fatal(err)

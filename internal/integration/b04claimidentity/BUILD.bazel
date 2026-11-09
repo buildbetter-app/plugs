@@ -2,7 +2,11 @@ load("@rules_go//go:def.bzl", "go_test")
 
 go_test(
     name = "b04claimidentity_test",
-    srcs = glob(["*_test.go"]),
+    srcs = [
+        "claim_identity_test.go",
+        "engine_test.go",
+        "fixture_test.go",
+    ],
     deps = [
         "//internal/api/wire",
         "//internal/core/authz",
@@ -24,6 +28,59 @@ go_test(
     ],
     size = "large",
     tags = ["local", "requires-network"],
+)
+
+# The source packet is safe for ordinary gates, but the manual target below is
+# the only target allowed to start the admitted native producer. Keeping the
+# two targets explicit prevents a focused/whole package run from silently
+# consuming a native claim or database.
+go_test(
+    name = "native_b04_contract_test",
+    srcs = [
+        "native_b04_contract_test.go",
+        "native_b04_io_test.go",
+    ],
+    embedsrcs = ["native_b04_inputs.json"],
+    args = ["-test.v"],
+)
+
+go_test(
+    name = "native_b04_recording",
+    srcs = [
+        "engine_test.go",
+        "fixture_test.go",
+        "native_b04_contract_test.go",
+        "native_b04_io_test.go",
+        "native_b04_recording_test.go",
+    ],
+    embedsrcs = ["native_b04_inputs.json"],
+    args = ["-test.v"],
+    data = ["//internal/publicnative:dolt_runtime"],
+    env = {
+        "PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)",
+    },
+    deps = [
+        "//internal/api/wire",
+        "//internal/core/authz",
+        "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/plugins/authnapikey",
+        "//internal/plugins/authzfixed",
+        "//internal/publicnative",
+        "//internal/server/authn",
+        "//internal/server/authzrpc",
+        "//internal/server/rpc",
+        "//internal/server/transport/httpjson",
+        "//internal/storage/conformance",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/postgres",
+        "//internal/storage/sqlite",
+    ],
+    tags = ["manual", "local", "requires-network"],
+    timeout = "long",
 )
 
 filegroup(
