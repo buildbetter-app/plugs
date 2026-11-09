@@ -13,7 +13,6 @@ import (
 	"io"
 	"reflect"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -1036,6 +1035,9 @@ func targetStatus(source string) (string, bool) {
 }
 
 func validSourceID(id string, project dumpformat.Project, imported bool) bool {
+	if imported {
+		return dumpformat.ValidSourceID(id, project)
+	}
 	prefix := project.Prefix + "-"
 	if !strings.HasPrefix(id, prefix) || strings.ContainsRune(id, '\x00') {
 		return false
@@ -1043,18 +1045,6 @@ func validSourceID(id string, project dumpformat.Project, imported bool) bool {
 	parts := strings.Split(strings.TrimPrefix(id, prefix), ".")
 	if len(parts) == 0 || parts[0] == "" || len(parts[0]) < project.HashLength {
 		return false
-	}
-	if imported {
-		if strings.Trim(parts[0], "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") != "" {
-			return false
-		}
-		for _, child := range parts[1:] {
-			n, err := strconv.ParseUint(child, 10, 64)
-			if err != nil || n == 0 {
-				return false
-			}
-		}
-		return true
 	}
 	if len(parts) != 1 {
 		return false

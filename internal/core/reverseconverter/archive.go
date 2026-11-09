@@ -47,11 +47,12 @@ func adaptArchive(archive *dumpformat.Archive) (Dump, error) {
 	}
 	for _, project := range source.Projects {
 		manifest.Projects = append(manifest.Projects, Project{
-			Prefix:        project.Prefix,
-			IDMode:        project.IDMode,
-			HashLength:    project.HashLength,
-			LastID:        project.LastID,
-			ChildCounters: cloneUintMap(project.ChildCounters),
+			Prefix:         project.Prefix,
+			IDMode:         project.IDMode,
+			HashLength:     project.HashLength,
+			HashNamespaces: append([]string(nil), project.HashNamespaces...),
+			LastID:         project.LastID,
+			ChildCounters:  cloneUintMap(project.ChildCounters),
 		})
 	}
 	for _, kind := range source.Kinds {
