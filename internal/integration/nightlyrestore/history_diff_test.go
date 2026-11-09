@@ -292,7 +292,8 @@ func currentHistoryCensus(t *testing.T, r driver.Reader, rows map[string]driver.
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := driver.NewRandomAllocator(source.Prefix)
+		want := driver.NewHashAllocator(source.Prefix, 3, 8, 0.25)
+		want.LastID, want.Children = source.LastID, source.ChildCounters
 		sameJSON(t, "target allocator policy", actual, want)
 		sameJSON(t, "retained source counters and target allocator", json.RawMessage(rows[id].Body), map[string]any{
 			"project": source.Prefix, "importProfile": p, "metadata": map[string]any{"plug.restore.sourceAllocator": source}, "targetAllocator": actual,

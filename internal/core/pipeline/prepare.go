@@ -264,6 +264,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			var id, allocatorPrefix, allocatorExpected, allocatorChild string
 			var allocatorHash *driver.HashInput
 			var e error
+			createdAt := w.cfg.now().UTC()
 			if parent != nil {
 				id, allocatorPrefix, allocatorExpected, allocatorChild, e = p.nextChildAllocatorID(ctx, project, parent.ID, w.cfg.newID, w.cfg.newAllocatorChildID)
 			} else {
@@ -271,7 +272,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				if principalErr != nil {
 					return nil, failure("invalid_params", principalErr.Error())
 				}
-				input := driver.HashInput{Title: hashField(c.Fields, "title"), Description: hashField(c.Fields, "description"), Creator: creator, Timestamp: w.cfg.now().UTC()}
+				input := driver.HashInput{Title: hashField(c.Fields, "title"), Description: hashField(c.Fields, "description"), Creator: creator, Timestamp: createdAt}
 				id, allocatorPrefix, allocatorExpected, allocatorHash, e = p.nextAllocatorID(ctx, project, input, w.cfg.newID, w.cfg.newAllocatorID)
 			}
 			if e != nil {
@@ -292,7 +293,6 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			if snapshot.reads.states[key].Present {
 				return nil, errStale
 			}
-			createdAt := w.cfg.now().UTC()
 			current = &pending{ref: target, kind: "bead", doc: Document{ID: id, Type: c.Type, Project: project, Parent: parent, Fields: map[string]any{}, CreatedAt: &createdAt}, setBy: map[string]string{"createdAt": "core"}, allocatorPrefix: allocatorPrefix, allocatorExpected: allocatorExpected, allocatorChild: allocatorChild, allocatorHash: allocatorHash}
 			p.writes[id] = current
 			if parent != nil {

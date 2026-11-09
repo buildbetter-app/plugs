@@ -487,10 +487,17 @@ type HashAllocatorContinuation interface {
 	AllocateHashTopLevel(context.Context, string, HashInput, string) error
 }
 
-// MarshalJSON keeps historical source/sequential encodings intact while live
-// random state uses exactly the target profile, without source counters.
+// MarshalJSON keeps historical encodings intact. Configured hash profiles
+// always emit their probability, including an explicit zero; random profiles
+// omit source counters.
 func (a OfflineAllocator) MarshalJSON() ([]byte, error) {
 	type plain OfflineAllocator
+	if a.Mode == AllocatorHash && (a.MinHashLength != 0 || a.MaxHashLength != 0) {
+		return json.Marshal(struct {
+			plain
+			Probability float64 `json:"max_collision_prob"`
+		}{plain(a), a.MaxCollisionProb})
+	}
 	if a.Mode != AllocatorRandom {
 		return json.Marshal(plain(a))
 	}

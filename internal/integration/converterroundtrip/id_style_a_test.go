@@ -183,7 +183,14 @@ func putIdentityOccupants(t *testing.T, store driver.Store, lease driver.ActiveL
 	for _, id := range ids {
 		ref := model.RefByID(id, model.Natural64(0))
 		op := model.OpCreate
+		from := model.Natural64(0)
 		if deleted {
+			rows, readErr := tx.Get(ctx, []model.Ref{ref})
+			if readErr != nil || len(rows) != 1 {
+				t.Fatalf("existing collision occupant: %+v %v", rows, readErr)
+			}
+			ref = rows[0].Ref
+			from = rows[0].Revision
 			err = tx.Delete(ctx, ref)
 			op = model.OpDelete
 		} else {
@@ -193,7 +200,7 @@ func putIdentityOccupants(t *testing.T, store driver.Store, lease driver.ActiveL
 		if err != nil {
 			t.Fatal(err)
 		}
-		changes = append(changes, model.ChangeRecord{Ref: ref, Op: op, FromRevision: model.Natural64(0), ChangedPaths: []string{"/"}})
+		changes = append(changes, model.ChangeRecord{Ref: ref, Op: op, FromRevision: from, ChangedPaths: []string{"/"}})
 	}
 	if err = tx.BumpSentinels(ctx, []driver.Sentinel{driver.SentinelGraphBlocking}); err != nil {
 		t.Fatal(err)

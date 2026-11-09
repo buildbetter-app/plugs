@@ -243,7 +243,8 @@ func collect(t *testing.T, store driver.Store, archive *dumpformat.Archive, p dr
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := driver.NewRandomAllocator(source.Prefix)
+		want := driver.NewHashAllocator(source.Prefix, 3, 8, 0.25)
+		want.LastID, want.Children = source.LastID, source.ChildCounters
 		same(t, "explicit target allocator policy", actual, want)
 		same(t, "protected target allocator", body.Target, actual)
 		got.Target = append(got.Target, actual)
