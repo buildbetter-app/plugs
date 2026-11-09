@@ -101,8 +101,14 @@ try {
     ids[project]=result.results[0].ref.id;
     // Mixed transaction positions and a receipt for an imported bead must not
     // erase its original SHARED ID or mistake non-create ops for create refs.
-    const mixedParams={changeSet:{ops:[{kind:'patch',target:{id:ids[project]},fields:{description:'receipt child'}},{kind:'create',key:'extra',type:'task',fields:{title:'extra '+project,priority:3,status:'todo'}}]}};
+    const mixedParams={changeSet:{ops:[{kind:'patch',target:{id:ids[project]},fields:{description:'receipt child'}},{kind:'create',key:'extra',type:'task',fields:{title:'extra '+project,priority:3}}]}};
+    if(project==='signals-v2') {
+      const bad=structuredClone(mixedParams);bad.changeSet.ops[1].fields.status='todo';
+      const refusal=await rpc(project,'tx.apply',bad,true);assert.equal(refusal.error?.data?.code,'ontology_use_slot_verb');
+      const unchanged=await rpc(project,'bead.get',{id:{id:ids[project]}});assert.equal(unchanged.bead.fields.description,'new description');check('actual noninitial create refusal preserves atomic patch');
+    }
     const mixed=await rpc(project,'tx.apply',mixedParams); ids[project+'-extra']=mixed.results[1].ref.id;
+    if(project==='signals-v2')await rpc(project,'bead.defer',{id:{id:ids[project+'-extra']}});
     await journal(project,[{method:'bead.create',attempts:[{params:{type:'task'}}],result},{method:'tx.apply',attempts:[{params:mixedParams}],result:mixed},{method:'bead.create',attempts:[{params:{type:'task'}}],result:{results:[{ref:{id:roots[project]}}]}}]);
   }
   const legacyId=ids['cody-ops-extra'];
