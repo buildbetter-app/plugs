@@ -27,6 +27,8 @@ type reader struct {
 
 	annotationCache      map[string]driver.SelectionIndex
 	annotationCacheBytes int
+	stateDecodeCache     map[observedStateDecodeKey]driver.LockState
+	stateDecodeBytes     int
 	// Writers reserve their connection so cancellation cleanup can wait for
 	// pgx's asynchronous server termination before another lock probe starts.
 	conn        *sql.Conn
@@ -99,6 +101,8 @@ func (r *reader) finish() error {
 	r.allocatorImage = nil
 	r.annotationCache = nil
 	r.annotationCacheBytes = 0
+	r.stateDecodeCache = nil
+	r.stateDecodeBytes = 0
 	err := r.sql.Rollback()
 	if errors.Is(err, sql.ErrTxDone) {
 		err = nil
@@ -714,9 +718,12 @@ func (r *reader) observeKeys(ctx context.Context, keys []driver.LockKey) ([]driv
 			if err := rows.Scan(&id, &raw); err != nil {
 				return nil, err
 			}
-			if err := decode(raw, &states[indexes[string(id)]]); err != nil {
+			position := indexes[string(id)]
+			state, err := r.decodeObservedState(raw, states[position].Key)
+			if err != nil {
 				return nil, err
 			}
+			states[position] = state
 		}
 		if err := rows.Err(); err != nil {
 			return nil, err
