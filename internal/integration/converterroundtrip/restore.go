@@ -1007,16 +1007,9 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 	}
 	for _, kind := range []string{"edge", "comment", "memory", "config", "beads-archive"} {
 		for _, source := range archive.Records(kind) {
-			body := cloneRow(source.Body)
-			body["source_id"] = source.ID
-			body["source_table"] = source.Source.Table
-			body["source"] = cloneRow(source.Source.Fields)
-			if kind == "beads-archive" {
-				body["read_only"] = true
-				body["redactable"] = true
-			}
-			if entities != nil {
-				body["source_project"] = source.Project
+			body, err := sourceMirrorBody(source, entities != nil)
+			if err != nil {
+				return restorePlan{}, err
 			}
 			if err := add(model.RefByID(sourcePlaneMirrorID(source, entities != nil), model.Natural64(0)), kind, body); err != nil {
 				return restorePlan{}, err

@@ -235,8 +235,10 @@ func projectLiveDump(ctx context.Context, reader driver.Reader, dump *reversecon
 				dump.Records[kind][i] = current
 				continue
 			}
-			want := cloneRow(source.Body)
-			want["source_id"], want["source_table"], want["source"] = source.ID, source.Source.Table, source.Source.Fields
+			want, err := sourceMirrorBody(reverseSourceRecord(source), false)
+			if err != nil {
+				return ReverseRefusal{"changed_source_mirror"}
+			}
 			var got map[string]any
 			if decodeReverseJSON(row.Body, &got) != nil || !sameReverseJSON(want, got) {
 				return ReverseRefusal{"changed_source_mirror"}

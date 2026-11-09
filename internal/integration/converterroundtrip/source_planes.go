@@ -197,6 +197,35 @@ func sourcePlaneMirrorID(source dumpformat.Record, joint bool) string {
 	return "source/" + source.Kind + "/" + hashBytes(key)
 }
 
+// sourceMirrorBody keeps the exact source mirror while giving imported memories
+// the canonical live memory envelope consumed by memory.get/list and agent.brief.
+// Non-text JSON values retain their exact JSON representation in content; the
+// original value and provenance remain present for lossless reverse/readback.
+func sourceMirrorBody(source dumpformat.Record, joint bool) (map[string]any, error) {
+	body := cloneRow(source.Body)
+	body["source_id"], body["source_table"], body["source"] = source.ID, source.Source.Table, cloneRow(source.Source.Fields)
+	if joint {
+		body["source_project"] = source.Project
+	}
+	if source.Kind == "beads-archive" {
+		body["read_only"], body["redactable"] = true, true
+	}
+	if source.Kind == "memory" {
+		content, text := source.Body["value"].(string)
+		encoding := "text"
+		if !text {
+			raw, err := json.Marshal(source.Body["value"])
+			if err != nil {
+				return nil, fmt.Errorf("source memory %s: %w", source.ID, err)
+			}
+			content, encoding = string(raw), "json"
+		}
+		body["id"], body["content"] = sourcePlaneMirrorID(source, joint), content
+		body["metadata"] = map[string]any{"beads.memory.value_encoding": encoding, "beads.classification": source.Body["classification"]}
+	}
+	return body, nil
+}
+
 func validateSourceCoreMappings(archive *dumpformat.Archive, plan driver.SourcePlanePlanV1) error {
 	dispositions := map[string]driver.SourcePlaneDispositionV1{}
 	for _, d := range plan.Dispositions {

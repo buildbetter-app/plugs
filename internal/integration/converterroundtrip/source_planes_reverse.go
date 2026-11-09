@@ -200,10 +200,9 @@ func projectJointReverseDump(ctx context.Context, bound driver.RestoreImportProf
 				return ReverseRefusal{"missing_source_mirror"}
 			}
 			delete(live, mirrorID)
-			want := cloneRow(source.Body)
-			want["source_id"], want["source_table"], want["source"], want["source_project"] = source.ID, source.Source.Table, source.Source.Fields, source.Project
-			if kind == "beads-archive" {
-				want["read_only"], want["redactable"] = true, true
+			want, err := sourceMirrorBody(reverseSourceRecord(source), true)
+			if err != nil {
+				return ReverseRefusal{"changed_source_mirror"}
 			}
 			var got map[string]any
 			if decodeReverseJSON(row.Body, &got) != nil || !sameReverseJSON(want, got) {
