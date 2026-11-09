@@ -33,6 +33,7 @@ go_test(
     name = "driver_test",
     srcs = [
         "allocator_contract_test.go",
+        "allocator_hash_test.go",
         "allocator_snapshot_test.go",
         "parent_counter_test.go",
         "audit_contract_test.go",

@@ -31,7 +31,7 @@ import (
 
 const b09PostgresImage = "postgres@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3"
 
-var b09NativeID = regexp.MustCompile(`^b09-[0-9a-f]{32}$`)
+var b09NativeID = regexp.MustCompile(`^b09-[0-9a-z]{3}$`)
 
 type b09ReplayStage struct {
 	Name             string                               `json:"name"`
@@ -192,8 +192,8 @@ func runB09Replay(t *testing.T, engine string, data []byte, inspection converter
 	if len(initial.ChangesetRevs) != 0 {
 		t.Fatalf("%s snapshot restore exposed fabricated source history: %+v", engine, initial.ChangesetRevs)
 	}
-	if len(initial.Allocator.Inventory.Projects) != 1 || !reflect.DeepEqual(initial.Allocator.Inventory.Projects[0], driver.NewRandomAllocator("b09")) {
-		t.Fatalf("%s restore did not install the admitted live random allocator: %+v", engine, initial.Allocator.Inventory.Projects)
+	if len(initial.Allocator.Inventory.Projects) != 1 || !reflect.DeepEqual(initial.Allocator.Inventory.Projects[0], driver.NewHashAllocator("b09", 3, 8, 0.25)) {
+		t.Fatalf("%s restore did not install the source adaptive hash allocator: %+v", engine, initial.Allocator.Inventory.Projects)
 	}
 
 	// A real close and a provider-backed compaction append ordinary Plug history.
