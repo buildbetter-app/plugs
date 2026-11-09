@@ -112,12 +112,29 @@ func TestJointSourceNullStorageClassExactPolicyAcrossThreeStores(t *testing.T) {
 			for _, mode := range []string{"empty-text", "absent", "active-empty-text", "active-absent"} {
 				t.Run(mode, func(t *testing.T) {
 					changed := jointStorageFixture(t, mode)
+					if strings.HasSuffix(mode, "absent") {
+						// Missing mandatory columns are refused by the reader,
+						// before a valid import plan can be constructed.
+						reason := "source record schema drift"
+						if mode == "active-absent" {
+							reason = "source plane record schema drift"
+						}
+						if _, err := dumpformat.Read(bytes.NewReader(changed)); err == nil || !strings.Contains(err.Error(), reason) {
+							t.Fatal("missing storage column did not retain its reader refusal", err)
+						}
+						target := &jointTargetAccess{Store: store}
+						if _, err := RestoreImportWithLease(ctx, bytes.NewReader(changed), target, lease, p); err == nil || !strings.Contains(err.Error(), reason) {
+							t.Fatal("restore lost the missing-column reader refusal", err)
+						}
+						if target.metaReads != 0 || target.writes != 0 {
+							t.Fatal("missing storage column reached target store")
+						}
+						return
+					}
 					profile, plan := jointUnboundProfileWithPlan(t, changed, store, lease, nullPolicy)
 					reason := "core type/storage/flags"
 					if mode == "active-empty-text" {
 						reason = "source type/storage/flags"
-					} else if mode == "active-absent" {
-						reason = "source storage_class column absent"
 					}
 					if _, err := BindSourceImport(ctx, bytes.NewReader(changed), profile, plan); !errors.Is(err, driver.ErrUnsupported) || !strings.Contains(err.Error(), reason) {
 						t.Fatal("raw empty/absent storage column aliased SQL NULL or refused at unrelated boundary", err)
