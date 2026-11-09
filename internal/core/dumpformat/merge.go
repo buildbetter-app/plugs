@@ -79,6 +79,8 @@ func MergeArchives(archives ...*Archive) ([]byte, error) {
 
 	projects := make([]Project, 0)
 	records := map[string]map[sourceRecordIdentity]Record{}
+	recordOwners := map[string]map[sourceRecordIdentity]string{}
+	directives := map[string]OntologyDirective{}
 	entries := map[string]externalEntry{}
 	historyScopes := make([]ProjectSourceHistory, 0)
 	seenHistoryProjects := map[string]bool{}
@@ -87,6 +89,12 @@ func MergeArchives(archives ...*Archive) ([]byte, error) {
 	seenHistoryRecords := map[string]Record{}
 	for _, input := range inputs {
 		projects = append(projects, input.manifest.Projects...)
+		for _, directive := range input.manifest.Ontology {
+			if previous, present := directives[directive.ID]; present && !equalJSON(previous, directive) {
+				return nil, HistoryMergeRefusal{Kind: "ontology directive", Project: directive.Target.Project, OtherProject: previous.Target.Project, ID: directive.ID, Reason: "directive identity overlaps"}
+			}
+			directives[directive.ID] = directive
+		}
 		for _, scoped := range input.histories {
 			if seenHistoryProjects[scoped.Project] {
 				return nil, HistoryMergeRefusal{Kind: "project", Project: scoped.Project, ID: scoped.Project, Reason: "project history is declared more than once"}
@@ -134,16 +142,22 @@ func MergeArchives(archives ...*Archive) ([]byte, error) {
 						key.Table = record.Source.Table
 					}
 				}
+				owner := record.Project
+				if owner == "" && len(input.manifest.Projects) == 1 {
+					owner = input.manifest.Projects[0].Prefix
+				}
 				if previous, ok := records[kind][key]; ok {
 					if !equalJSON(previous, record) {
-						return nil, fmt.Errorf("conflicting %s record %q", kind, record.ID)
+						return nil, HistoryMergeRefusal{Kind: "record identity", Project: owner, OtherProject: recordOwners[kind][key], ID: record.ID, Reason: "conflicting " + kind + " record"}
 					}
 					continue
 				}
 				if records[kind] == nil {
 					records[kind] = map[sourceRecordIdentity]Record{}
+					recordOwners[kind] = map[sourceRecordIdentity]string{}
 				}
 				records[kind][key] = record
+				recordOwners[kind][key] = owner
 			}
 		}
 
@@ -238,6 +252,11 @@ func MergeArchives(archives ...*Archive) ([]byte, error) {
 	manifest.Machine = "offline-merge"
 	manifest.History = history
 	manifest.Projects = projects
+	manifest.Ontology = nil
+	for _, directive := range directives {
+		manifest.Ontology = append(manifest.Ontology, directive)
+	}
+	sort.Slice(manifest.Ontology, func(i, j int) bool { return manifest.Ontology[i].ID < manifest.Ontology[j].ID })
 	manifest.Sources = sources
 	manifest.Kinds = nil
 	for name, version := range versions {

@@ -201,3 +201,19 @@ func TestNativeLiteralFrozenRequiresAnExplicitCustomCatalogEntry(t *testing.T) {
 		t.Fatal("markerless legacy builtin guard changed")
 	}
 }
+
+func TestActualNativeProducerMergeRetainsNamedOverlapRefusal(t *testing.T) {
+	var archives []*Archive
+	for _, name := range []string{"reprocody", "reprosignals"} {
+		archive, err := Read(bytes.NewReader(nativeProducerArchive(t, name)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		archives = append(archives, archive)
+	}
+	data, err := MergeArchives(archives...)
+	var refusal HistoryMergeRefusal
+	if len(data) != 0 || !errors.As(err, &refusal) || refusal.ID == "" || refusal.Project == "" || refusal.OtherProject == "" || refusal.Project == refusal.OtherProject {
+		t.Fatalf("actual native overlap must name both source projects and the identity: %v", err)
+	}
+}

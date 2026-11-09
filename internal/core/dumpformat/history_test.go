@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -219,6 +221,60 @@ func TestSourceHistoryChecksTypeDirectivesInEveryImage(t *testing.T) {
 					t.Fatalf("historical type escaped directive scope: %v", err)
 				}
 			})
+		}
+	}
+}
+
+func TestProjectHistoryMembershipDoesNotInferProjectFromMemoryName(t *testing.T) {
+	var inputs []io.Reader
+	for i, prefix := range []string{"pl", "qa"} {
+		fixture := newMergeFixture(t, prefix)
+		key := "notes-" + strconv.Itoa(i)
+		fixture.records["memory"][0].ID = key
+		fixture.records["memory"][0].Body["key"] = key
+		fixture.records["memory"][0].Source.Fields["key"] = "kv.memory." + key
+		history := sourceHistoryForFixture(t, fixture, strings.Repeat(string(rune('a'+2*i)), 32), strings.Repeat(string(rune('b'+2*i)), 32), false)
+		inputs = append(inputs, bytes.NewReader(withSourceHistory(t, fixture, history)))
+	}
+	merged, err := Merge(inputs...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := readMergeArchive(t, merged)
+	for i, project := range []string{"pl", "qa"} {
+		image, err := archive.HistoryImageForProject(project, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows := image.Records("memory")
+		if len(rows) != 1 || rows[0].ID != "notes-"+strconv.Itoa(i) {
+			t.Fatal("memory crossed the explicit history project boundary")
+		}
+	}
+}
+
+func TestMergeRetainsTypeDirectivesFromEachProject(t *testing.T) {
+	var inputs []io.Reader
+	for i, prefix := range []string{"pl", "qa"} {
+		fixture := newMergeFixture(t, prefix)
+		row := &fixture.records["bead"][0]
+		row.Source.Fields["issue_type"], row.Body["source_type"] = "decision", "decision"
+		fixture.manifest.Ontology = []OntologyDirective{{ID: prefix + "-decision", Kind: "map_type", Target: OntologyTarget{Project: prefix, Type: "decision", ID: row.ID}, From: "decision", To: "issue"}}
+		fixture.manifest.Verification["ontology"] = explicitOntologyVerification
+		history := sourceHistoryForFixture(t, fixture, strings.Repeat(string(rune('a'+2*i)), 32), strings.Repeat(string(rune('b'+2*i)), 32), false)
+		inputs = append(inputs, bytes.NewReader(withSourceHistory(t, fixture, history)))
+	}
+	merged, err := Merge(inputs...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := readMergeArchive(t, merged)
+	if len(archive.Manifest().Ontology) != 2 {
+		t.Fatal("merge discarded a project's explicit type directive")
+	}
+	for _, project := range []string{"pl", "qa"} {
+		if _, err := archive.HistoryImageForProject(project, 1); err != nil {
+			t.Fatal(err)
 		}
 	}
 }

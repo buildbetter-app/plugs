@@ -297,6 +297,23 @@ func validateSourceHistory(a *Archive) error {
 			allVerified = false
 		}
 	}
+	if allVerified && len(scopes) > 1 {
+		// Global rows retain Project="". The explicit project history envelope
+		// owns their membership, independently of user-chosen config keys.
+		witnessed := map[string]bool{}
+		for _, scope := range scopes {
+			for _, record := range scope.Range.Frames[len(scope.Range.Frames)-1].Records {
+				witnessed[record.Kind+"\x00"+recordKey(record)] = true
+			}
+		}
+		for _, kind := range historyKinds {
+			for _, record := range a.byKind[kind] {
+				if record.Project == "" && !witnessed[record.Kind+"\x00"+recordKey(record)] {
+					return fail("unmappable")
+				}
+			}
+		}
+	}
 	if allVerified && a.manifest.History != "verified" || !allVerified && a.manifest.History != "available-unverified" {
 		return fail("non-contiguous")
 	}
@@ -413,16 +430,23 @@ func validateHistoryScope(a *Archive, scoped ProjectSourceHistory, seenCommits m
 		}
 		previous = frame.Events
 	}
+	if len(r.Frames) == 0 {
+		return fail("unmappable")
+	}
+	globalMembership := map[string]bool{}
+	for _, record := range r.Frames[len(r.Frames)-1].Records {
+		if record.Project != "" && record.Project != scoped.Project {
+			return fail("unmappable")
+		}
+		globalMembership[record.Kind+"\x00"+recordKey(record)] = true
+	}
 	current := []Record{}
 	for _, kind := range historyKinds {
 		for _, record := range a.byKind[kind] {
-			if record.Project == scoped.Project || record.Project == "" && sharedRecordBelongsToProject(record, scoped.Project) {
+			if record.Project == scoped.Project || record.Project == "" && (len(a.manifest.Projects) == 1 || globalMembership[record.Kind+"\x00"+recordKey(record)]) {
 				current = append(current, record)
 			}
 		}
-	}
-	if len(r.Frames) == 0 {
-		return fail("unmappable")
 	}
 	if !sameRecordImage(current, r.Frames[len(r.Frames)-1].Records) {
 		return fail("unmappable")
@@ -431,19 +455,6 @@ func validateHistoryScope(a *Archive, scoped ProjectSourceHistory, seenCommits m
 		return fail("unmappable")
 	}
 	return nil
-}
-
-func sharedRecordBelongsToProject(record Record, project string) bool {
-	if record.Project != "" {
-		return record.Project == project
-	}
-	// A global memory key names a memory, not its owning project. Membership
-	// must never be inferred from an arbitrary kv.memory.<key> suffix.
-	key := stringValue(record.Source.Fields["key"])
-	if key == "issue_prefix" {
-		return stringValue(record.Source.Fields["value"]) == project
-	}
-	return true
 }
 
 func currentEventsForProject(a *Archive, project string) []Row {
