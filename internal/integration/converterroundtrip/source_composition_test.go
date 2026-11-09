@@ -74,6 +74,19 @@ func TestJointSourceCompositionImportInstallAndStartupRecovery(t *testing.T) {
 				t.Fatal("bound HTTP handler missed newly installed provider", string(got))
 			}
 			converterroundtrip.JointAssertSourceCommentForTest(t, got, admitted, report)
+			ready, err := runtime.Service.ReadyWithFilter(ctx, owner, service.ReadyRequest{Project: "demo", Limit: 1000}, nil)
+			if err != nil {
+				t.Fatalf("composed source Ready selected the native provider: %v", err)
+			}
+			matched := 0
+			for _, item := range ready.Items {
+				if item.ID == "workflow:item/restored" && item.Fields["title"] == "Exact active collision" && item.Kind == "workflow.item" {
+					matched++
+				}
+			}
+			if matched != 1 || ready.Next != nil || ready.WorkflowSnapshot == nil || ready.ReadyMembership == "" {
+				t.Fatalf("composed Ready lost its source item or snapshot: %+v", ready)
+			}
 			for i, test := range []struct{ target, code string }{{"demo-7", "unsupported"}, {"demo-8", "ontology_guard_failed"}} {
 				// The composed runtime also owns a native default provider. A delete
 				// must not replace the installed source participant with that provider,

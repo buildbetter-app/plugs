@@ -461,7 +461,7 @@ func (s *Service) readyCombinedSnapshot(ctx context.Context, by model.PrincipalR
 		includeEphemeral = *req.Filter.IncludeEphemeral
 	}
 	meta := workflowMeta(by, "bead.ready", req.Project, req.Agent)
-	provider, err := s.workflow.ReadySnapshotWithResolverAndCore(ctx, by, req.Project, types, meta, includeEphemeral, sortedIDs(graph), resolver)
+	provider, err := s.workflowProvider().ReadySnapshotWithResolverAndCore(ctx, by, req.Project, types, meta, includeEphemeral, sortedIDs(graph), resolver)
 	if err != nil {
 		return readyCombinedSnapshot{}, err
 	}

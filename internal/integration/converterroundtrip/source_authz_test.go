@@ -139,6 +139,23 @@ func TestJointSourceInstalledAuthenticationAndFixedAuthorization(t *testing.T) {
 					t.Fatal(err)
 				}
 				if kind == "user" {
+					ready := sourceHTTPCall(t, installed.Handler, keys, owner, "bead.ready", 0, map[string]any{"limit": 1000, "filter": map[string]any{"includeEphemeral": true}}, "")
+					var page struct {
+						Items []struct {
+							ID, Kind string
+							Fields   map[string]any
+						}
+					}
+					decode(t, ready.Result, &page)
+					matched := 0
+					for _, item := range page.Items {
+						if item.ID == "workflow:item/restored" && item.Kind == "workflow.item" && item.Fields["title"] == "Exact active collision" {
+							matched++
+						}
+					}
+					if matched != 1 {
+						t.Fatalf("guarded Ready omitted or substituted the installed source collision: %s", ready.Result)
+					}
 					got := sourceHTTPCall(t, installed.Handler, keys, owner, "bead.get", 0, map[string]any{"id": ref}, "")
 					if !bytes.Contains(got.Result, []byte("Exact active collision")) {
 						t.Fatal("installed user read missed source", string(got.Result))
