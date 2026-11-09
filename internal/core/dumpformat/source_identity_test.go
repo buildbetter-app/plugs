@@ -160,6 +160,67 @@ func TestSourceIdentityNestedMergeRetainsOriginalStores(t *testing.T) {
 	}
 }
 
+func TestSourceIdentityHistoryPreservesEqualRawIDsAcrossKinds(t *testing.T) {
+	inputs := []io.Reader{}
+	for _, project := range []string{"pl", "qa"} {
+		f := newMergeFixture(t, project)
+		for _, kind := range []string{"edge", "comment"} {
+			f.records[kind][0].ID = "1"
+			f.records[kind][0].Source.Fields["id"] = "1"
+		}
+		h := sourceHistoryForFixture(t, f, strings.Repeat("a", 32), strings.Repeat("b", 32), false)
+		for i := range h.Range.Frames {
+			// SQL image order must not affect head parity when different kinds
+			// share a raw ID. Neither record may be renamed or discarded.
+			rows := append([]Record{}, h.Range.Frames[i].Records...)
+			for j, k := 0, len(rows)-1; j < k; j, k = j+1, k-1 {
+				rows[j], rows[k] = rows[k], rows[j]
+			}
+			h.Range.Frames[i].Records = rows
+		}
+		data := withSourceHistory(t, f, h)
+		readMergeArchive(t, data)
+		inputs = append(inputs, bytes.NewReader(data))
+	}
+	data, err := Merge(inputs...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := readMergeArchive(t, data)
+	h, _ := a.SourceHistory()
+	keys := map[SourceRecordKey]bool{}
+	for _, scope := range h.ProjectHistories {
+		for _, frame := range scope.Range.Frames {
+			image, err := a.HistoryImageForProject(scope.Project, frame.Sequence)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, kind := range []string{"edge", "comment"} {
+				rows := image.Records(kind)
+				if len(rows) != 1 || rows[0].ID != "1" || rows[0].Source.Fields["id"] != "1" {
+					t.Fatalf("%s/%s raw identity changed or was dropped", scope.Project, kind)
+				}
+				key, ok := rows[0].SourceKey()
+				if !ok || key.StoreID != "store-"+scope.Project || key.Project != scope.Project || key.Kind != kind || key.Table != rows[0].Source.Table || key.ID != "1" {
+					t.Fatal("historical source key lost a tuple component")
+				}
+				keys[key] = true
+			}
+		}
+	}
+	if len(keys) != 4 {
+		t.Fatalf("equal raw IDs collapsed across source/kind/table: %d keys", len(keys))
+	}
+}
+
+func TestSourceIdentityHistoryRejectsDuplicateTypedRecord(t *testing.T) {
+	f, h := sourceHistoryFixture(t, false)
+	h.Range.Frames[0].Records = append(h.Range.Frames[0].Records, f.records["edge"][0])
+	if _, err := Read(bytes.NewReader(withSourceHistory(t, f, h))); err == nil {
+		t.Fatal("duplicate source/project/kind/table/raw ID accepted in one image")
+	}
+}
+
 func TestSourceIdentitySameProjectOverlapRefusesAtomically(t *testing.T) {
 	input := collidingProjectHistory(t, "pl")
 	a := readMergeArchive(t, input)
@@ -185,12 +246,12 @@ func TestSourceIdentityIncompleteHistoryNamesGap(t *testing.T) {
 
 func TestSourceIdentityUnverifiedHistoryNamesMissingFamilies(t *testing.T) {
 	f, h := sourceHistoryFixture(t, false)
-	h.Range = SourceHistoryRange{Status: "unverified", Reason: "head-image-missing-families:config,events", Baseline: []Record{}, BaselineEvents: []Row{}, Frames: []SourceHistoryFrame{}, Gaps: []HistoryGap{}}
+	h.Range = SourceHistoryRange{Status: "unverified", Reason: "head-image-missing-families:config,issues", Baseline: []Record{}, BaselineEvents: []Row{}, Frames: []SourceHistoryFrame{}, Gaps: []HistoryGap{}}
 	a := readMergeArchive(t, withSourceHistory(t, f, h))
 	before := a.TarBytes()
 	data, err := MergeArchives(a)
 	var gap IncompleteHistoryError
-	if data != nil || !errors.As(err, &gap) || gap.StoreID != "store-pl" || gap.Project != "pl" || gap.Reason != "head-image-missing-families:config,events" {
+	if data != nil || !errors.As(err, &gap) || gap.StoreID != "store-pl" || gap.Project != "pl" || gap.Reason != "head-image-missing-families:config,issues" {
 		t.Fatalf("unverified history lost its actual missing-family reason: %v", err)
 	}
 	if !bytes.Equal(before, a.TarBytes()) {

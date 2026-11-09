@@ -555,15 +555,36 @@ func validCommitID(id string) bool {
 	return true
 }
 
+// A legacy image is already scoped by its enclosing source history. Its raw
+// IDs are independent across kinds and physical tables, just like head rows.
+func historyRecordKey(r Record) SourceRecordKey {
+	if key, ok := r.SourceKey(); ok {
+		return key
+	}
+	return SourceRecordKey{Project: r.Project, Kind: r.Kind, Table: r.Source.Table, ID: r.ID}
+}
+
+func lessHistoryRecord(a, b Record) bool {
+	x, y := historyRecordKey(a), historyRecordKey(b)
+	left := [...]string{x.StoreID, x.Project, x.Kind, x.Table, x.ID}
+	right := [...]string{y.StoreID, y.Project, y.Kind, y.Table, y.ID}
+	for i := range left {
+		if left[i] != right[i] {
+			return left[i] < right[i]
+		}
+	}
+	return false
+}
+
 func validateHistoryImage(rows []Record, manifest Manifest) error {
-	seen, beads := map[string]bool{}, map[string]string{}
+	seen, beads := map[SourceRecordKey]bool{}, map[string]string{}
 	counts := map[string]int{}
 	beadRows := []Record{}
 	for _, r := range rows {
-		if r.Kind == "beads-archive" || !knownKinds[r.Kind] || seen[recordKey(r)] {
+		if r.Kind == "beads-archive" || !knownKinds[r.Kind] || seen[historyRecordKey(r)] {
 			return fmt.Errorf("duplicate or nonportable history record")
 		}
-		seen[recordKey(r)] = true
+		seen[historyRecordKey(r)] = true
 		if err := validateVersionedRecord(r, manifest.Projects, counts, nil, manifest.EdgeVersion()); err != nil {
 			return err
 		}
@@ -600,7 +621,7 @@ func validateHistoryImage(rows []Record, manifest Manifest) error {
 func sameRecordImage(a, b []Record) bool {
 	canonical := func(rows []Record) []Record {
 		copy := append([]Record{}, rows...)
-		sort.Slice(copy, func(i, j int) bool { return recordKey(copy[i]) < recordKey(copy[j]) })
+		sort.Slice(copy, func(i, j int) bool { return lessHistoryRecord(copy[i], copy[j]) })
 		return copy
 	}
 	return equalJSON(canonical(a), canonical(b))
