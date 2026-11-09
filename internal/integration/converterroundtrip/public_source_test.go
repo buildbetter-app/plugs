@@ -129,8 +129,9 @@ func TestPublicDoltSourceRestoreHistoryAndLiveReverseAllDrivers(t *testing.T) {
 				}
 				for _, project := range source.Manifest().Projects {
 					got, err := allocators.LoadAllocator(ctx, project.Prefix)
-					if err != nil || !reflect.DeepEqual(got, driver.NewRandomAllocator(project.Prefix)) {
-						t.Fatalf("source allocator became live identity: %+v %v", got, err)
+					wantAllocator, seedErr := importedAllocator(source, project)
+					if err != nil || seedErr != nil || !reflect.DeepEqual(got, wantAllocator) {
+						t.Fatalf("source allocator was not seeded losslessly: %+v %v", got, err)
 					}
 					rows, err := r.Get(ctx, []model.Ref{model.RefByID(importProjectRecordID(project.Prefix), model.Natural64(0))})
 					var saved importProjectMetadata

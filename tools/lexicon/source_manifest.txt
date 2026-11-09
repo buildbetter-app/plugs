@@ -171,6 +171,8 @@ internal/core/dumpformat/README.md
 internal/core/dumpformat/catalog.go
 internal/core/dumpformat/history.go
 internal/core/dumpformat/history_test.go
+internal/core/dumpformat/identity.go
+internal/core/dumpformat/identity_test.go
 internal/core/dumpformat/json.go
 internal/core/dumpformat/merge.go
 internal/core/dumpformat/merge_fixture_test.go
@@ -490,9 +492,11 @@ internal/integration/collabwatch/BUILD.bazel
 internal/integration/collabwatch/integration_test.go
 internal/integration/collabwatch/reconnect_acceptance_test.go
 internal/integration/converterroundtrip/BUILD.bazel
+internal/integration/converterroundtrip/allocator.go
 internal/integration/converterroundtrip/external_target_test.go
 internal/integration/converterroundtrip/hierarchy_import_test.go
 internal/integration/converterroundtrip/history.go
+internal/integration/converterroundtrip/id_style_a_test.go
 internal/integration/converterroundtrip/identity_counters_test.go
 internal/integration/converterroundtrip/image.go
 internal/integration/converterroundtrip/import_test.go
@@ -1413,7 +1417,12 @@ spec/s1-b09-native/README.md
 spec/s1-b09-native/conservation_test.go
 spec/s1-b09-native/native_inputs.json
 spec/s1-b09-native/paired_replay_test.go
+spec/s1-b09-native/pinned_source_test.go
 spec/s1-b09-native/recorder_test.go
+spec/s1-b09-native/testdata/beads-446dbb.git-tree
+spec/s1-b09-native/testdata/beads-446dbb.tar.gz
+spec/s1-b09-native/testdata/beads-9d6fff.git-tree
+spec/s1-b09-native/testdata/beads-9d6fff.tar.gz
 spec/s1-b13-b16/BUILD.bazel
 spec/s1-b13-b16/README.md
 spec/s1-b13-b16/capture_regressions_test.go
