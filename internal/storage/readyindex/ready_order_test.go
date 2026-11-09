@@ -352,7 +352,7 @@ func TestReadyOrderRealStoresMaintenanceAndSemantics(t *testing.T) {
 					t.Fatal(e)
 				}
 				view := tx.Snapshot()
-				p := driver.ReadyOrderPlan{Incarnation: view.Incarnation, ContentRevision: *view.At, AuthorityRevision: *view.At, Eligibility: "ontology", UniformAuthorization: true, Limit: 1}
+				p := driver.ReadyOrderPlan{Incarnation: view.Incarnation, ContentRevision: *view.At, AuthorityRevision: *view.At, OrderAt: testOrderAt, Eligibility: "ontology", UniformAuthorization: true, Limit: 1}
 				if _, e = tx.(driver.ReadyOrderReader).SelectReadyOrder(ctx, p); !errors.Is(e, driver.ErrUnsupported) {
 					t.Fatalf("stale staged source returned: delete=%t err=%v", remove, e)
 				}
