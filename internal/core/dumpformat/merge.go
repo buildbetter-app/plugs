@@ -61,11 +61,37 @@ func MergeArchives(archives ...*Archive) ([]byte, error) {
 		inputs = append(inputs, mergeInput{archive: archive, manifest: manifest, key: key, histories: histories})
 	}
 	sort.Slice(inputs, func(i, j int) bool { return inputs[i].key < inputs[j].key })
-	namespaced := false
+	namespaced, nativeHistory := false, false
 	for _, input := range inputs {
-		namespaced = namespaced || len(input.histories) != 0 || input.manifest.SourceIdentityContract != ""
+		nativeHistory = nativeHistory || input.manifest.SourceFamilyContract == SourceFamilyContract
+		namespaced = namespaced || len(input.histories) != 0 || len(input.archive.nativeHistories) != 0 || input.manifest.SourceIdentityContract != ""
 	}
-	if namespaced {
+	nativeMembers := map[string][]byte{}
+	if nativeHistory {
+		for _, input := range inputs {
+			if input.manifest.SourceFamilyContract != SourceFamilyContract || len(input.archive.nativeHistories) != len(input.manifest.Projects) {
+				return nil, HistoryMergeRefusal{Kind: "native history", Reason: "every input requires explicit original native project history"}
+			}
+			for _, h := range input.archive.nativeHistories {
+				if len(h.Projects) != 1 {
+					return nil, HistoryMergeRefusal{Kind: "source identity", Reason: "raw native globals have ambiguous project ownership"}
+				}
+				if err := requireCompleteNativeHistory(h); err != nil {
+					return nil, err
+				}
+				path := nativeHistoryPath(h.Projects[0])
+				if _, exists := nativeMembers[path]; exists {
+					return nil, HistoryMergeRefusal{Kind: "project", Project: h.Projects[0], ID: h.Projects[0], Reason: "native project history is declared more than once"}
+				}
+				originalPath := path
+				if input.manifest.SourceIdentityContract == "" {
+					originalPath = NativeHistoryMember
+				}
+				nativeMembers[path] = append([]byte(nil), input.archive.members[originalPath]...)
+			}
+		}
+	}
+	if namespaced && !nativeHistory {
 		for _, input := range inputs {
 			if len(input.histories) != len(input.manifest.Projects) {
 				project := ""
@@ -328,7 +354,7 @@ func MergeArchives(archives ...*Archive) ([]byte, error) {
 		}
 		historyMember = append(historyMember, '\n')
 	}
-	return encodeArchive(manifest, mergedRecords, append(config, '\n'), historyMember)
+	return encodeArchive(manifest, mergedRecords, append(config, '\n'), historyMember, nativeMembers)
 }
 
 type mergeInput struct {
@@ -373,7 +399,7 @@ func rejectUnmerged(manifest Manifest) error {
 
 func compatibleManifests(base, other Manifest) error {
 	if base.Format != other.Format || base.Schema != other.Schema || base.Reference != other.Reference ||
-		base.MainVersion != other.MainVersion || base.IgnoredVersion != other.IgnoredVersion || base.Scope != other.Scope || base.SourcePlaneAddressContract != other.SourcePlaneAddressContract || base.StatusCategoryContract != other.StatusCategoryContract {
+		base.MainVersion != other.MainVersion || base.IgnoredVersion != other.IgnoredVersion || base.Scope != other.Scope || base.SourcePlaneAddressContract != other.SourcePlaneAddressContract || base.StatusCategoryContract != other.StatusCategoryContract || base.SourceFamilyContract != other.SourceFamilyContract {
 		return fmt.Errorf("format, reference, scope or schema version differs")
 	}
 	if !equalJSON(base.Warnings, other.Warnings) || !equalJSON(base.Verification, other.Verification) {
@@ -384,6 +410,11 @@ func compatibleManifests(base, other Manifest) error {
 		if otherVersion, ok := otherKinds[name]; ok && otherVersion != version {
 			return fmt.Errorf("kind %q has incompatible version", name)
 		}
+	}
+	if base.SourceFamilyContract == SourceFamilyContract {
+		// Each source's independently validated designation and census survive;
+		// versioned and deliberately unversioned families may differ by source.
+		return nil
 	}
 	return compatibleSourceContracts(base.Sources, other.Sources)
 }
@@ -427,6 +458,32 @@ func isDatabaseDisposition(family string) bool {
 }
 
 func mergeSources(inputs []mergeInput, records map[string][]Record, entries []externalEntry) ([]Disposition, error) {
+	if inputs[0].manifest.SourceFamilyContract == SourceFamilyContract {
+		sources := []Disposition{}
+		for _, input := range inputs {
+			for _, source := range input.manifest.Sources {
+				if source.Identity == nil {
+					identity, err := mergeInputIdentity(input, "")
+					if err != nil {
+						return nil, err
+					}
+					source.Identity = &identity
+				}
+				sources = append(sources, source)
+			}
+		}
+		sort.SliceStable(sources, func(i, j int) bool {
+			a, b := sources[i], sources[j]
+			if a.Identity.Project != b.Identity.Project {
+				return a.Identity.Project < b.Identity.Project
+			}
+			if a.Family != b.Family {
+				return a.Family < b.Family
+			}
+			return a.Reason < b.Reason
+		})
+		return sources, nil
+	}
 	templates := map[string]Disposition{}
 	for _, input := range inputs {
 		for _, source := range input.manifest.Sources {
@@ -534,13 +591,26 @@ func mergeDigest(inputs []mergeInput) string {
 	return fmt.Sprintf("%x", sum[:])
 }
 
-func encodeArchive(manifest Manifest, records map[string][]Record, config, history []byte) ([]byte, error) {
+func encodeArchive(manifest Manifest, records map[string][]Record, config, history []byte, extraMembers ...map[string][]byte) ([]byte, error) {
 	if len(config) == 0 {
 		return nil, fmt.Errorf("merged archive configuration provenance is empty")
 	}
 	files := map[string][]byte{"config/sources.json": append([]byte(nil), config...)}
 	if len(history) != 0 {
 		files[SourceHistoryMember] = append([]byte(nil), history...)
+	}
+	for _, members := range extraMembers {
+		for path, data := range members {
+			if path != NativeHistoryMember {
+				if _, ok := scopedNativeMember(path); !ok {
+					return nil, fmt.Errorf("unsupported native history member %s", path)
+				}
+			}
+			if _, exists := files[path]; exists {
+				return nil, fmt.Errorf("duplicate native history member %s", path)
+			}
+			files[path] = append([]byte(nil), data...)
+		}
 	}
 	versions := kindVersions(manifest.Kinds)
 	manifest.Kinds = nil

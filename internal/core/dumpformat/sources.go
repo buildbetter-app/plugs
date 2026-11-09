@@ -78,7 +78,8 @@ func validateMigratedDispositions(sources []Disposition, counts map[string]int, 
 	return validateBoundDispositions(sources, counts, config, migration, false)
 }
 
-func validateBoundDispositions(sources []Disposition, counts map[string]int, config []byte, migration *ImportMigration, planes bool) error {
+func validateBoundDispositions(sources []Disposition, counts map[string]int, config []byte, migration *ImportMigration, planes bool, familyContracts ...string) error {
+	native := len(familyContracts) != 0 && familyContracts[0] == SourceFamilyContract
 	var entries []externalEntry
 	if err := decodeJSON(config, &entries); err != nil {
 		return err
@@ -98,6 +99,9 @@ func validateBoundDispositions(sources []Disposition, counts map[string]int, con
 	seen := map[string]bool{}
 	lastFamily, lastReason := "", ""
 	for _, source := range sources {
+		if source.Identity != nil || !native && source.History != "" {
+			return fmt.Errorf("source disposition requires explicit scoped native contract")
+		}
 		if source.Rows < 0 || source.Reason == "" || source.Family < lastFamily || source.Family == lastFamily && source.Reason < lastReason {
 			return fmt.Errorf("invalid or unordered source disposition")
 		}
@@ -111,7 +115,13 @@ func validateBoundDispositions(sources []Disposition, counts map[string]int, con
 					action = "archive"
 				}
 			}
-			if seen[source.Family] || source.Action != action || source.Family != "repo_mtimes" && source.Rows != counts[source.Family] || (source.Action == "refuse-if-nonempty" || source.Family == "leases") && source.Rows != 0 {
+			if native && (source.Family == "leases" || source.Family == "repo_mtimes") {
+				action = "archive"
+			}
+			if native && source.History != FamilyVersioned && source.History != FamilyUnversioned {
+				return fmt.Errorf("missing native family history designation")
+			}
+			if seen[source.Family] || source.Action != action || (source.Family != "repo_mtimes" || native) && source.Rows != counts[source.Family] || (source.Action == "refuse-if-nonempty" || source.Family == "leases" && !native) && source.Rows != 0 {
 				return fmt.Errorf("source disposition/action/count mismatch")
 			}
 			seen[source.Family] = true

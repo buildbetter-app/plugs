@@ -65,15 +65,24 @@ func (r Record) SourceKey() (SourceRecordKey, bool) {
 // IncompleteHistoryError names the actual retained gap. No snapshot or
 // fabricated history is produced when a history-bearing merge returns it.
 type IncompleteHistoryError struct {
-	StoreID string
-	Project string
-	First   uint64
-	Last    uint64
-	Reason  string
+	StoreID  string
+	Project  string
+	First    uint64
+	Last     uint64
+	Reason   string
+	CommitID string
+	Family   string
 }
 
 func (e IncompleteHistoryError) Error() string {
-	return fmt.Sprintf("incomplete source history: store=%s project=%s gap=%d..%d: %s", e.StoreID, e.Project, e.First, e.Last, e.Reason)
+	message := fmt.Sprintf("incomplete source history: store=%s project=%s gap=%d..%d: %s", e.StoreID, e.Project, e.First, e.Last, e.Reason)
+	if e.CommitID != "" {
+		message += " commit=" + e.CommitID
+	}
+	if e.Family != "" {
+		message += " family=" + e.Family
+	}
+	return message
 }
 
 func requireCompleteSourceHistory(identity SourceIdentity, r SourceHistoryRange) error {
@@ -110,6 +119,11 @@ func namespaceHistory(h ProjectSourceHistory, identity SourceIdentity) ProjectSo
 }
 
 func mergeInputIdentity(input mergeInput, project string) (SourceIdentity, error) {
+	for _, h := range input.archive.nativeHistories {
+		if len(h.Projects) == 1 && (project == h.Projects[0] || project == "" && len(input.manifest.Projects) == 1) {
+			return SourceIdentity{StoreID: h.StoreID, Project: h.Projects[0]}, nil
+		}
+	}
 	for _, h := range input.histories {
 		if h.Project != project && project != "" {
 			continue
@@ -160,7 +174,7 @@ func validateSourceIdentityMarker(fields map[string]json.RawMessage, manifest Ma
 	if _, present := fields["source_identity_contract"]; present && manifest.SourceIdentityContract != SourceIdentityContract {
 		return fmt.Errorf("unsupported source identity contract")
 	}
-	if manifest.SourceIdentityContract != "" && (manifest.Scope != Scope || manifest.History != "verified") {
+	if manifest.SourceIdentityContract != "" && (manifest.Scope != Scope || manifest.History != "verified" && manifest.SourceFamilyContract != SourceFamilyContract) {
 		return fmt.Errorf("source identity contract requires complete offline source history")
 	}
 	return nil
@@ -204,8 +218,20 @@ func validateScopedSourceRecords(m Manifest, rows map[string][]Record, config []
 	}
 	counts := map[string]int{}
 	planes := m.SourcePlaneAddressContract == SourcePlaneAddressContract
+	native := m.SourceFamilyContract == SourceFamilyContract
+	if native {
+		for _, s := range m.Sources {
+			if s.Identity == nil || owners[s.Identity.Project] != *s.Identity {
+				return fmt.Errorf("source disposition lacks declared original identity")
+			}
+		}
+	}
 	for _, project := range m.Projects {
 		identity := owners[project.Prefix]
+		localCounts := counts
+		if native {
+			localCounts = map[string]int{}
+		}
 		scopedRows := bySource[identity]
 		scoped := m
 		scoped.Projects = []Project{project}
@@ -250,10 +276,10 @@ func validateScopedSourceRecords(m Manifest, rows map[string][]Record, config []
 		for _, kind := range sortedRecordKinds(scopedRows) {
 			for _, r := range scopedRows[kind] {
 				var err error
-				if planes && (r.Kind == "edge" || sourcePlaneArchiveTable(r.Source.Table)) {
-					err = validateSourcePlaneRecord(r, scoped, counts, statuses)
+				if planes && (r.Kind == "edge" || sourcePlaneArchiveTable(r.Source.Table) || nativeOperationalTable(r.Source.Table, m.SourceFamilyContract)) {
+					err = validateSourcePlaneRecord(r, scoped, localCounts, statuses)
 				} else {
-					err = validateVersionedRecord(r, scoped.Projects, counts, nil, m.EdgeVersion())
+					err = validateVersionedRecord(r, scoped.Projects, localCounts, nil, m.EdgeVersion())
 				}
 				if err != nil {
 					return err
@@ -266,6 +292,21 @@ func validateScopedSourceRecords(m Manifest, rows map[string][]Record, config []
 		if err := validateIssueOntology(scoped.Ontology, scopedRows["bead"], true); err != nil {
 			return err
 		}
+		if native {
+			localSources := []Disposition{}
+			for _, s := range m.Sources {
+				if *s.Identity == identity {
+					s.Identity = nil
+					localSources = append(localSources, s)
+				}
+			}
+			if err := validateBoundDispositions(localSources, localCounts, localConfig, nil, planes, m.SourceFamilyContract); err != nil {
+				return err
+			}
+		}
+	}
+	if native {
+		return nil
 	}
 	return validateBoundDispositions(m.Sources, counts, config, nil, planes)
 }

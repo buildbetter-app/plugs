@@ -115,8 +115,10 @@ func DefaultTreePolicy() TreePolicy {
 			"engdocs/design/plug/spike-ux-decision.md":             {},
 		},
 		BinarySHA256: map[string]string{
+			"internal/core/dumpformat/testdata/native-tables-synthetic.tar":                      "5afe9a2225a573000d1d5cd6245ee58ac07e4ff4b928f2b174df2ff99ef9a68e",
 			"internal/core/dumpformat/testdata/producer-0f44-reprocody.tar":                      "fe136810685c5d7c438ea7ebc3b868caf130ace167be24f671816ef69f9889c8",
 			"internal/core/dumpformat/testdata/producer-0f44-reprosignals.tar":                   "09fa02c4f96ede9b2c4207064c9cfeed0c732958696d7c3841636a88f888d309",
+			"internal/core/dumpformat/testdata/producer-e615-reprocody-gap.tar":                  "9f82b8405d44acab48649f7815a69027238dccea0ae4c9ddb2a871b8a1a8c8ff",
 			"internal/integration/converterroundtrip/testdata/public-complete-root-990eb800.tar": "a2d933a7a54b53303d33a20d5b96eaac0a85c079c5b08cae553aa2a654d820b5",
 			"internal/integration/converterroundtrip/testdata/public-partial-990eb800.tar":       "2dd0bc5cb41ee5ae410659fdff91c4ee6b865098b371a2e1be9b819187271e53",
 			"internal/integration/offlinehistory/testdata/dolt-source-partial.tar":               "b56f1de4a36c22cca379647d5fe1b2962e4358d9976923e76007ea84b7712582",

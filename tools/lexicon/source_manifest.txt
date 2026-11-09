@@ -182,6 +182,8 @@ internal/core/dumpformat/migration.go
 internal/core/dumpformat/migration_hashes.go
 internal/core/dumpformat/migration_sources.go
 internal/core/dumpformat/migration_test.go
+internal/core/dumpformat/native_history.go
+internal/core/dumpformat/native_history_test.go
 internal/core/dumpformat/ontology.go
 internal/core/dumpformat/ontology_test.go
 internal/core/dumpformat/records.go
@@ -195,8 +197,10 @@ internal/core/dumpformat/source_planes_test.go
 internal/core/dumpformat/sources.go
 internal/core/dumpformat/status_categories.go
 internal/core/dumpformat/status_categories_test.go
+internal/core/dumpformat/testdata/native-tables-synthetic.tar
 internal/core/dumpformat/testdata/producer-0f44-reprocody.tar
 internal/core/dumpformat/testdata/producer-0f44-reprosignals.tar
+internal/core/dumpformat/testdata/producer-e615-reprocody-gap.tar
 internal/core/dumpformat/types.go
 internal/core/dumpformat/validate.go
 internal/core/dumpformat/validate_test.go

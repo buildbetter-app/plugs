@@ -320,7 +320,7 @@ func validateSourceHistory(a *Archive) error {
 			if !validSourceIdentity(identity) {
 				return fail("missing source store/project identity")
 			}
-			if err := requireCompleteSourceHistory(identity, scoped.Range); err != nil {
+			if err := requireCompleteSourceHistory(identity, scoped.Range); err != nil && a.manifest.SourceFamilyContract != SourceFamilyContract {
 				return err
 			}
 			for _, rows := range a.byKind {
