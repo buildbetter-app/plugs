@@ -171,6 +171,12 @@ are never copied into earlier commits. The raw reader uses the existing scoped
 `RawDBTxAccessor`/`Queryer` port and immutable `AS OF` reads, with no engine
 introspection, storage retry, writer change or new driver API.
 
+The native and portable members must retain the same commit IDs, parent sets
+and metadata, including when portable business replay is unverified. Equivalent
+commit and merge-parent ordering is allowed; contradictions refuse with
+`native-portable-commit-census-mismatch`. Native completeness cannot erase
+ancestry still witnessed by the portable census.
+
 Every SQL `sources` entry adds `history: "versioned"` or
 `"unversioned-in-beads-by-design"`, retaining its exact current `rows` count.
 A designation is checked against the actual immutable head and SQL ignore

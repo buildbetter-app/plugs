@@ -465,6 +465,27 @@ func validateNativeHistory(manifest Manifest, members map[string][]byte) error {
 	if !equalJSON(ordered, h.Commits) {
 		return fmt.Errorf("unordered native commit graph")
 	}
+	// Both members describe the same retained source graph, even when the
+	// portable business projection is unmappable. Neither census may erase
+	// ancestry or alter metadata contradicted by the other member.
+	censusMismatch := ErrSourceHistoryUnavailable{Reason: "native-portable-commit-census-mismatch"}
+	var portable SourceHistory
+	if err := decodeJSON(members[SourceHistoryMember], &portable); err != nil {
+		return censusMismatch
+	}
+	portableOrder, err := nativeCommitOrder(SourceCommitLog{Head: h.Head, Commits: portable.Commits})
+	if err != nil || len(portableOrder) != len(ordered) {
+		return censusMismatch
+	}
+	for i, commit := range ordered {
+		other := portableOrder[i]
+		parents, otherParents := append([]string{}, commit.Parents...), append([]string{}, other.Parents...)
+		sort.Strings(parents)
+		sort.Strings(otherParents)
+		if commit.ID != other.ID || !equalJSON(parents, otherParents) || !equalJSON(commit.Metadata, other.Metadata) {
+			return censusMismatch
+		}
+	}
 	validateTables := func(tables map[string]NativeTable) error {
 		if tables == nil {
 			return fmt.Errorf("missing native table census")

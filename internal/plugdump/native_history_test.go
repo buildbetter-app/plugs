@@ -307,6 +307,71 @@ func TestNativeHistoryGraphKeepsMergeParentsAndMissingAncestryRefuses(t *testing
 	}
 }
 
+func TestNativeHistoryBindsPortableCommitCensus(t *testing.T) {
+	for _, mode := range []string{"native-truncation", "portable-truncation", "portable-parent", "portable-metadata"} {
+		t.Run(mode, func(t *testing.T) {
+			s, inventory := nativeHistoryFixtureForTest(t)
+			members := archiveMembers(t, buildFixture(t, s, inventory))
+			var native NativeHistory
+			var portable SourceHistory
+			if err := decodeJSON(members[NativeHistoryMember], &native); err != nil {
+				t.Fatal(err)
+			}
+			if err := decodeJSON(members[SourceHistoryMember], &portable); err != nil {
+				t.Fatal(err)
+			}
+			switch mode {
+			case "native-truncation":
+				last := native.Commits[len(native.Commits)-1]
+				last.Parents = []string{}
+				native.Commits = []SourceCommit{last}
+				image := native.Images[len(native.Images)-1]
+				image.Sequence = 1
+				native.Images = []NativeHistoryImage{image}
+				// The forged census still claims complete, with no named gaps.
+			case "portable-truncation":
+				last := portable.Commits[len(portable.Commits)-1]
+				last.Parents = []string{}
+				portable.Commits = []SourceCommit{last}
+			case "portable-parent":
+				portable.Commits[len(portable.Commits)-1].Parents = []string{}
+			case "portable-metadata":
+				portable.Commits[0].Metadata["message"] = "conflicting retained metadata"
+			}
+			members[NativeHistoryMember] = mustJSON(t, native)
+			members[SourceHistoryMember] = mustJSON(t, portable)
+			_, err := Validate(bytes.NewReader(reframeSourcePlaneArchive(t, members)))
+			if err == nil || !strings.Contains(err.Error(), "native-portable-commit-census-mismatch") {
+				t.Fatalf("contradictory %s was not named: %v", mode, err)
+			}
+		})
+	}
+}
+
+func TestNativeHistoryEquivalentMergeCensusesAllowDifferentOrdering(t *testing.T) {
+	s, inventory := nativeHistoryFixtureForTest(t)
+	s.log.Commits[2].Parents = []string{s.log.Commits[0].ID}
+	s.log.Commits[3].Parents = []string{s.log.Commits[2].ID, s.log.Commits[1].ID}
+	members := archiveMembers(t, buildFixture(t, s, inventory))
+	var portable SourceHistory
+	if err := decodeJSON(members[SourceHistoryMember], &portable); err != nil {
+		t.Fatal(err)
+	}
+	for i, j := 0, len(portable.Commits)-1; i < j; i, j = i+1, j-1 {
+		portable.Commits[i], portable.Commits[j] = portable.Commits[j], portable.Commits[i]
+	}
+	for i := range portable.Commits {
+		parents := portable.Commits[i].Parents
+		for j, k := 0, len(parents)-1; j < k; j, k = j+1, k-1 {
+			parents[j], parents[k] = parents[k], parents[j]
+		}
+	}
+	members[SourceHistoryMember] = mustJSON(t, portable)
+	if _, err := Validate(bytes.NewReader(reframeSourcePlaneArchive(t, members))); err != nil {
+		t.Fatalf("equivalent actual merge graph refused: %v", err)
+	}
+}
+
 func TestNativeFamilyManifestAndHistoryAgreeWithPublishedSchemas(t *testing.T) {
 	s, inventory := nativeHistoryFixtureForTest(t)
 	members := archiveMembers(t, buildFixture(t, s, inventory))
