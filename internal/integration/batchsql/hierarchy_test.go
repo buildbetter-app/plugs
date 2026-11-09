@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
+	"runtime/pprof"
 	"sort"
 	"strings"
 	"sync"
@@ -19,6 +22,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -936,6 +940,40 @@ func (trace *hierarchyQueryTrace) report(t *testing.T) {
 	}
 }
 
+// This optional profile brackets only the actual move. File setup and profile
+// finalization happen outside Apply and its unchanged request deadline. The
+// profile samples this Go process, not the PostgreSQL server's executor CPU.
+func hierarchyMoveCPUProfile(t *testing.T, engine string) func() {
+	t.Helper()
+	if os.Getenv("PLUG_W3_PROFILE_HIERARCHY_MOVE") != "1" || engine == "memory" {
+		return func() {}
+	}
+	directory := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")
+	if directory == "" {
+		directory = t.TempDir()
+	}
+	path := filepath.Join(directory, "w3-hierarchy-move-"+engine+".pprof")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = pprof.StartCPUProfile(file); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			pprof.StopCPUProfile()
+			if err := file.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	t.Cleanup(stop)
+	return stop
+}
+
 func TestHierarchyClosure5000And5001AcrossStores(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
@@ -987,7 +1025,17 @@ func TestHierarchyClosure5000And5001AcrossStores(t *testing.T) {
 			}
 			beforeMove := metrics.Snapshot()
 			moveCtx := context.WithValue(f.ctx, hierarchyQueryTraceKey{}, trace)
+			var sqliteTrace *sqlite.CommitTrace
+			if engine == "sqlite" && os.Getenv("PLUG_W3_PROFILE_HIERARCHY_MOVE") == "1" {
+				sqliteTrace = &sqlite.CommitTrace{}
+				moveCtx = sqlite.WithCommitTrace(moveCtx, sqliteTrace)
+			}
+			stopProfile := hierarchyMoveCPUProfile(t, engine)
 			commit, err := f.writer.Apply(moveCtx, batchPrincipal, model.ChangeSet{Ops: []model.Op{hierarchyMove(subtree, &destination)}}, f.meta("hierarchy"))
+			stopProfile()
+			for _, sample := range sqliteTrace.Snapshot() {
+				t.Logf("W3_HIERARCHY_MOVE_SQLITE_PHASE phase=%s elapsed=%s staged=%d failed=%t", sample.Phase, sample.Duration, sample.Staged, sample.Failed)
+			}
 			moveMillis := map[pipeline.Phase]float64{}
 			for phase, results := range metrics.Snapshot().LaneMillis {
 				for result, millis := range results {
