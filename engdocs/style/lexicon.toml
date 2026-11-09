@@ -65,6 +65,19 @@ path = "internal/integration/b03catalog/native_catalog_inputs.json"
 field = "sqlTables"
 values = ["schema_migrations ignored_schema_migrations issues wisps dependencies wisp_dependencies labels wisp_labels comments wisp_comments events wisp_events config metadata local_metadata child_counters wisp_child_counters issue_counter issue_snapshots compaction_snapshots repo_mtimes routes interactions federation_peers custom_statuses custom_types provenance_events bd_events_journal bd_events_seq issue_versions store_epoch epoch_minted_addresses leases"]
 
+# The same complete census and accepted artifact key at two actual Go AST sites.
+[[b03_native_go_literal]]
+id = "catalog-go-tables"
+path = "internal/integration/b03catalog/native_catalog_recording_test.go"
+field = "b03NativeTables.strings.Fields.arg0"
+values = ["schema_migrations ignored_schema_migrations issues wisps dependencies wisp_dependencies labels wisp_labels comments wisp_comments events wisp_events config metadata local_metadata child_counters wisp_child_counters issue_counter issue_snapshots compaction_snapshots repo_mtimes routes interactions federation_peers custom_statuses custom_types provenance_events bd_events_journal bd_events_seq issue_versions store_epoch epoch_minted_addresses leases"]
+
+[[b03_native_go_literal]]
+id = "catalog-go-artifact"
+path = "internal/integration/b03catalog/native_catalog_recording_test.go"
+field = "verifyB03PreparedArtifact.artifact.manifest.Artifacts.index"
+values = ["bin/bd-export"]
+
 [[term]]
 regex = "[\\x{2600}-\\x{27BF}\\x{2B00}-\\x{2BFF}\\x{1F000}-\\x{1FAFF}\\x{FE0F}]"
 class = "ban"

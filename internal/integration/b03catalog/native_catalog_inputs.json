@@ -1,0 +1,69 @@
+{
+  "format": "plug.s1.b03.native-catalog-inputs.v2",
+  "consumer": "7a43c3c625a5c08d3a4364a321cd47d6357ef30e",
+  "consumerTree": "be93a595dc4c44ef4d94d2333060788fd344dca0",
+  "trustedPreparationControl": {
+    "consumerRef": "refs/heads/main",
+    "consumerCommit": "7a43c3c625a5c08d3a4364a321cd47d6357ef30e",
+    "consumerTree": "be93a595dc4c44ef4d94d2333060788fd344dca0",
+    "preparerPath": "scripts/ci/prepare-public-bundle.py",
+    "preparerCommit": "70230ccd92597a96000f90223c5d89b103e25426",
+    "preparerTree": "79e63be5f688d589c1080e9bfa5e6cd59bac8393",
+    "preparerSHA256": "6a84191fd016ddcb637cb5a470e88727176a70e8b5c6e8e6c69f33db6a1559eb",
+    "workflowSHA": "d758fdf42a426e9e2a4b707dbcebb22ec68b264e",
+    "workflowBranch": "swarm/native-producer-census-control-c8eb-20261104",
+    "workflowLabel": "native-census-c8eb-20261104",
+    "readinessReviewRecord": "/tmp/plug-swarm/reports/S1-controller-20261104-2000/native-admission-main7a43-orchestrator2345.json",
+    "readinessReviewSHA256": "e85537f5246ad0d7a5b7decfa8ebbb76665b7e92f0f1525c7dd79f8f22f792cd",
+    "readinessReviewFixture": "internal/integration/b03catalog/native_admission_record.json"
+  },
+  "helperSource": "70230ccd92597a96000f90223c5d89b103e25426",
+  "helperSHA256": "6a84191fd016ddcb637cb5a470e88727176a70e8b5c6e8e6c69f33db6a1559eb",
+  "source": "c8eb3ba7d4177e111a6f5c8aebe06b5d0b1d5724",
+  "sourceTree": "930405e863284a3955cbd35e73a6097b606b91a5",
+  "sourceManifest": "e01a584042b4a2c32ea3cbcbdd55069f7c23bc2b853f8734857c5082e828f15d",
+  "sourceEntries": 5141,
+  "binarySHA256": "b734da8ba8b6f50d7fd32239e405b8f8ed9d171b7be5fbbccb63a923d257a123",
+  "binaryBytes": 161299592,
+  "buildRun": "41800330346",
+  "profile": "plug-public-native/1",
+  "manifestSHA256": "ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a",
+  "workflowSHA": "d758fdf42a426e9e2a4b707dbcebb22ec68b264e",
+  "workflowBranch": "swarm/native-producer-census-control-c8eb-20261104",
+  "label": "native-census-c8eb-20261104",
+  "descriptor": "41800330346:13307042737:ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a",
+  "artifactDigest": "sha256:28609d7c072c281a748cb53a361d9a3ffada826d6f2e8866a3b1e62b23d5ffc4",
+  "artifactSize": 111646601,
+  "catalog": {
+    "status": "awaiting_review:active,qa_testing:wip,on_hold:frozen,archived:done",
+    "type": "delivery"
+  },
+  "stores": [
+    {
+      "id": "native-a",
+      "database": "b03_native_catalog_a",
+      "prefix": "b03a",
+      "rootID": "b03a-1"
+    },
+    {
+      "id": "native-b",
+      "database": "b03_native_catalog_b",
+      "prefix": "b03b",
+      "rootID": "b03b-1"
+    },
+    {
+      "id": "native-c",
+      "database": "b03_native_catalog_c",
+      "prefix": "b03c",
+      "rootID": "b03c-1"
+    },
+    {
+      "id": "native-d",
+      "database": "b03_native_catalog_d",
+      "prefix": "b03d",
+      "rootID": "b03d-1"
+    }
+  ],
+  "sqlTables": "schema_migrations ignored_schema_migrations issues wisps dependencies wisp_dependencies labels wisp_labels comments wisp_comments events wisp_events config metadata local_metadata child_counters wisp_child_counters issue_counter issue_snapshots compaction_snapshots repo_mtimes routes interactions federation_peers custom_statuses custom_types provenance_events bd_events_journal bd_events_seq issue_versions store_epoch epoch_minted_addresses leases",
+  "qualification": "AUTHORED_NOT_RUN until a fresh same-run preparation, four physical exports, exact SQL census, and memory/SQLite/PostgreSQL replay all pass; no B01 evidence is reused."
+}
