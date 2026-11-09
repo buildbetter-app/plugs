@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/scripts/host_drivers.py
-@@ -0,0 +1,313 @@
+@@ -0,0 +1,329 @@
 +"""Prepared six host script implementations; all data paths come from binding."""
 +import argparse
 +import copy
@@ -47,8 +47,13 @@
 +    ontology = w.c.ontology()
 +    for item in additions:
 +        typ, _ = fields_for(item, plan["doc"], w.c.project)
-+        if ontology.terminal(item.get("status", ontology.initial(typ)), typ) and item["key"] not in change.get("close", {}):
-+            raise AdapterError("terminal create requires its explicit close reason")
++        status = item.get("status", ontology.initial(typ))
++        if ontology.terminal(status, typ):
++            ontology.close_target(typ, status)
++            if item["key"] not in change.get("close", {}):
++                raise AdapterError("terminal create requires its explicit close reason")
++        else:
++            ontology.create_status(typ, status)
 +    known = {x["key"] for x in plan["items"]} | {x["key"] for x in additions}
 +    for item in additions:
 +        if any(dep not in known for dep in item.get("deps", [])):
@@ -121,8 +126,12 @@
 +    closed = set()
 +    for key, item in by_key.items():
 +        typ = "decision" if "decision" in item.get("labels", []) else item["type"]
-+        if ontology.terminal(item.get("status", ontology.initial(typ)), typ):
++        status = item.get("status", ontology.initial(typ))
++        if ontology.terminal(status, typ):
++            ontology.close_target(typ, status)
 +            closed.add(key)
++        else:
++            ontology.create_status(typ, status)
 +    children = {k: [i["key"] for i in items if i.get("parent") == k] for k in by_key}
 +    dependencies = {}
 +    for key in closed:
@@ -216,8 +225,15 @@
 +    ontology = c.ontology()
 +    for it in items:
 +        typ, fields = fields_for(it, project=c.project)
-+        if ontology.terminal(fields.get("status", ontology.initial(typ)), typ) and not it.get("closed"):
-+            raise AdapterError("terminal seed requires its explicit close reason")
++        status = fields.get("status", ontology.initial(typ))
++        if it.get("closed"):
++            ontology.close_target(typ, it.get("status", ontology.slot(typ, "close")))
++        if ontology.terminal(status, typ):
++            ontology.close_target(typ, status)
++            if not it.get("closed"):
++                raise AdapterError("terminal seed requires its explicit close reason")
++        else:
++            ontology.create_status(typ, status)
 +    with Job(c, "seed", {"items": items, "resume": resume}, {"ids.json": {}}) as j:
 +        if j.done:
 +            return

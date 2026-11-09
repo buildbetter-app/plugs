@@ -38,8 +38,11 @@ Category `done` and existing Plug terminal categories `completed`/`canceled`
 drive terminal projection and close-reason visibility. Canonical lifecycle
 verbs still use the installed type's slots and kernel guards. Sidecars obtain
 post-lifecycle native status from the durable Commit record rather than writing
-`open`/`closed`. Terminal plan inputs close in graph order and retain their exact
-requested terminal name in the guarded transaction.
+`open`/`closed`. Terminal plan inputs close in graph order at the exact installed
+close slot. Noninitial create targets and terminal names outside that selected
+slot typed-refuse before plan/seed writes. The delivered core has no exact-target
+lifecycle request seam; no status patch or name substitution bypasses its guards.
+Imported native statuses remain readable even when they are not slot targets.
 
 Restore must install each real store's actual ontology/categories per project;
 `host-ontology.json` is a historical synthetic specimen only. The public fixture
@@ -90,8 +93,9 @@ Priority is a checked P0..P4 integer. The legacy seed's supported decimal
 strings "0" through "4" are converted deliberately; boolean, fractional,
 null, out-of-range and other string values refuse before their create RPC.
 
-Category successor completion: preserve native statuses across all prepared
-scripts, project-aware projection, lifecycle sidecars and milestone counts,
+Category successor completion: preserve supported native statuses across all
+prepared scripts, project-aware projection, lifecycle sidecars and milestone counts,
 proven by new remote public import/RPC fixtures plus retained independent review.
 Historical synthetic PASS and reader-only native-category fixtures do not qualify
 Beads-converter/import parity, real host ontology, private restore or cutover.
+Arbitrary exact-target lifecycle writes remain a concrete same-core-owner gap.

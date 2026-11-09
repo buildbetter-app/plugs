@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/scripts/plug_host.py
-@@ -0,0 +1,527 @@
+@@ -0,0 +1,536 @@
 +"""Typed, explicitly bound Plug host adapter. No Beads subprocess or discovery."""
 +import contextlib
 +import copy
@@ -98,6 +98,21 @@
 +
 +    def terminal(self, status, typ=None):
 +        return self.category(status, typ) in self.TERMINAL
++
++    def create_status(self, typ, status):
++        self.category(status, typ)
++        if status != self.initial(typ):
++            raise OntologyError("ontology_noninitial_create_unsupported")
++        if self.terminal(status, typ):
++            raise OntologyError("ontology_terminal_create_requires_guarded_close")
++        return status
++
++    def close_target(self, typ, status):
++        if not self.terminal(status, typ):
++            raise OntologyError("ontology_close_category_invalid")
++        if status != self.slot(typ, "close"):
++            raise OntologyError("ontology_terminal_target_unsupported")
++        return status
 +
 +    def slot(self, typ, verb):
 +        status = self.workflow(typ).get("slots", {}).get(verb)
@@ -434,8 +449,7 @@
 +        def build():
 +            ontology = self.c.ontology()
 +            status = fields.get("status", ontology.initial(typ))
-+            if ontology.terminal(status, typ):
-+                raise OntologyError("ontology_terminal_create_requires_guarded_close")
++            ontology.create_status(typ, status)
 +            p = {"type": typ, "fields": fields}
 +            if parent is not None:
 +                self.c.get(parent)
@@ -483,15 +497,10 @@
 +            target = self.c.ref(original)
 +            ontology = self.c.ontology()
 +            ontology.category(bead["status"], bead["type"])
-+            close_status = ontology.slot(bead["type"], "close")
++            ontology.slot(bead["type"], "close")
 +            ops = [{"kind": "close", "target": target, "reason": reason}]
 +            if status is not None:
-+                if not ontology.terminal(status, bead["type"]):
-+                    raise OntologyError("ontology_close_category_invalid")
-+                if status != close_status:
-+                    # Retain the requested terminal name. The canonical CloseOp
-+                    # still runs first, and both transitions keep kernel guards.
-+                    ops.append({"kind": "patch", "target": target, "fields": {"status": status}})
++                ontology.close_target(bead["type"], status)
 +            ops.append({"kind": "setMeta", "target": target, "key": "i8.host.close_reason",
 +                        "value": {"schema": "plug-host-close-reason/1", "reason": reason}})
 +            return {"changeSet": {"ops": ops, "expect": [expect(bead)]}}

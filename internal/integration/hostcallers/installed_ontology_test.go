@@ -62,6 +62,14 @@ func prepareInstalledHostOntology(t *testing.T, root string, target driver.Store
 			}
 			changes = append(changes, conformance.FixtureChange{Ref: model.Ref{ID: id}, Kind: "bead", Op: model.OpCreate, Body: body, Graph: &conformance.FixtureGraphSource{}})
 		}
+		for _, row := range []struct{ id, status string }{{"fixture_named_closed", "closed"}, {"fixture_alternate_done", "accepted"}} {
+			body, err := json.Marshal(pipeline.Document{ID: row.id, Project: "signals-v2", Type: "task", CreatedAt: &createdAt,
+				Fields: map[string]any{"title": "Public exact native status", "status": row.status, "priority": 2, "close_reason": "Public imported reason"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			changes = append(changes, conformance.FixtureChange{Ref: model.Ref{ID: row.id}, Kind: "bead", Op: model.OpCreate, Body: body, Graph: &conformance.FixtureGraphSource{}})
+		}
 		publicSource := memory.New()
 		defer publicSource.Close()
 		lease, err := publicSource.Lease(ctx, "i8-public-native-source", driver.LeaseTTL)

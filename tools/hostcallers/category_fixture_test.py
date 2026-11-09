@@ -26,7 +26,10 @@ class InstalledProjectCategories(unittest.TestCase):
 
     def setUp(self):
         HostCallerFixture.setUp(self)
-        self.cfg['projects']['signals-v2']['legacy_ids'] = {'Imported.Exact/İD': {'id': 'fixture_import_signals'}}
+        self.cfg['projects']['signals-v2']['legacy_ids'] = {
+            'Imported.Exact/İD': {'id': 'fixture_import_signals'},
+            'Imported.Named.Closed': {'id': 'fixture_named_closed'},
+            'Imported.Alternate.Done': {'id': 'fixture_alternate_done'}}
         self.cfg['projects']['cody-ops']['legacy_ids'] = {'Imported.Exact/İD': {'id': 'fixture_import_ops'}}
         self.write_binding()
         self.c = ph.Client(self.binding, 'signals-v2')
@@ -69,22 +72,21 @@ class InstalledProjectCategories(unittest.TestCase):
         self.assertIsNone(Projection(self.c).row(self.c.get(ident))['close_reason'])
 
     def test_nonterminal_named_closed_retains_name_and_hides_old_reason(self):
-        ident = self.create(status='closed', close_reason='old imported reason')
-        row = Projection(self.c).row(self.c.get(ident))
+        row = Projection(self.c).row(self.c.get('Imported.Named.Closed'))
         self.assertEqual((row['status'], row['status_category'], row['status_terminal']), ('closed', 'active', False))
         self.assertIsNone(row['close_reason'])
 
     def test_native_plan_closure_order_and_milestone_progress(self):
         plan = {'doc': 'fixture.md', 'items': [
             dict(key='P', type='epic', priority=1, parent=None, deps=[], title='Parent', description='P', status='shipped'),
-            dict(key='A', type='task', priority=2, parent='P', deps=[], title='Prerequisite', description='A', status='accepted', labels=['milestone:m0']),
+            dict(key='A', type='task', priority=2, parent='P', deps=[], title='Prerequisite', description='A', status='shipped', labels=['milestone:m0']),
             dict(key='B', type='task', priority=2, parent='P', deps=['A'], title='Dependent', description='B', status='shipped', labels=['milestone:m0']),
         ]}
         self.assertEqual(hd.closure_order(plan['items'], self.c.ontology()), ['A', 'B', 'P'])
         self.write('plan.json', plan)
         self.run_script('load_plan.py', self.signals/'plan.json')
         ids = ph.read_json(self.signals/'ids.json')
-        self.assertEqual(self.c.get(ids['A'])['status'], 'accepted')
+        self.assertEqual(self.c.get(ids['A'])['status'], 'shipped')
         self.assertEqual(self.c.get(ids['B'])['status'], 'shipped')
         self.write('linear-map.json', {})
         static = self.root/'static'; static.mkdir()
@@ -92,25 +94,53 @@ class InstalledProjectCategories(unittest.TestCase):
         group = next(g for g in data['milestones'] if g['key'] == 'M0')
         self.assertEqual((group['total'], group['closed']), (2, 2))
         by_key = {row['key']: row for row in data['nodes']}
-        self.assertEqual((by_key['A']['status'], by_key['A']['statusCategory'], by_key['A']['isClosed']), ('accepted', 'done', True))
+        self.assertEqual((by_key['A']['status'], by_key['A']['statusCategory'], by_key['A']['isClosed']), ('shipped', 'done', True))
         self.run_script('restructure_milestones.py', self.signals)
         data = json.loads(self.run_script('milestone_view_server.py', '--static', static, '--data-once'))
         group = next(g for g in data['milestones'] if g['key'] == 'M1')
         self.assertEqual((group['total'], group['closed']), (2, 2))
-        self.assertEqual(self.c.get(ids['A'])['status'], 'accepted')
+        self.assertEqual(self.c.get(ids['A'])['status'], 'shipped')
         self.assertEqual(self.c.get(ids['B'])['status'], 'shipped')
 
     def test_actual_ready_uses_native_category_without_status_renaming(self):
-        active = self.create(status='closed')
-        working = self.create(status='working')
-        frozen = self.create(status='paused')
+        active = self.c.ref('Imported.Named.Closed')['id']
+        working = self.create()
+        self.c.rpc('bead.claim', {'id': self.c.ref(working)}, 'fixture-claim-'+working)
+        frozen = self.create()
+        self.c.rpc('bead.defer', {'id': self.c.ref(frozen)}, 'fixture-defer-'+frozen)
         terminal = self.create()
         HostCallerFixture.lifecycle(self, terminal)
         ready = {row['id'] for row in self.c.rpc('bead.ready', {'limit': 1000})['items']}
         self.assertIn(active, ready)
         self.assertTrue({working, frozen, terminal}.isdisjoint(ready))
-        self.assertEqual(self.c.get(active)['status'], 'closed')
+        self.assertEqual(self.c.get('Imported.Named.Closed')['status'], 'closed')
         self.assertEqual(self.c.get(terminal)['status'], 'shipped')
+
+    def test_non_slot_targets_refuse_before_plan_writes_and_imported_names_survive(self):
+        before = {bead['id'] for bead in self.c.snapshot()}
+        for status, code in (('accepted', 'ontology_terminal_target_unsupported'),
+                             ('closed', 'ontology_noninitial_create_unsupported')):
+            with self.subTest(status=status):
+                plan = {'doc': 'fixture.md', 'items': [dict(key='UNSUPPORTED', type='task',
+                    title='Exact target', description='No normalization', priority=2, status=status, deps=[])]}
+                self.write('plan.json', plan)
+                with self.assertRaises(ph.OntologyError) as error:
+                    hd.load_plan(self.c, self.signals/'plan.json')
+                self.assertEqual(error.exception.code, code)
+                with self.assertRaises(ph.OntologyError) as error:
+                    hd.seed(self.c, [dict(plan['items'][0], closed='reason' if status == 'accepted' else None)])
+                self.assertEqual(error.exception.code, code)
+                with ph.Job(self.c, 'fixture-preflight', status, {}) as job:
+                    with self.assertRaises(ph.OntologyError) as error:
+                        hd.apply_body(ph.Writes(self.c, job), {'doc': 'fixture.md', 'items': []}, {},
+                                      {'create': plan['items'], 'close': {'UNSUPPORTED': 'reason'}})
+                    self.assertEqual(error.exception.code, code)
+                    self.assertEqual(job.state['calls'], [])
+                    job.finish({})
+                self.assertFalse((self.signals/'ids.json').exists())
+                self.assertEqual({bead['id'] for bead in self.c.snapshot()}, before)
+        row = Projection(self.c).row(self.c.get('Imported.Alternate.Done'))
+        self.assertEqual((row['status'], row['status_category'], row['status_terminal']), ('accepted', 'done', True))
 
     def test_project_seed_and_molecule_keep_guards_and_scoped_ids(self):
         self.run_script('cody-ops-seed.py')
