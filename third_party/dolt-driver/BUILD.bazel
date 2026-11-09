@@ -1,0 +1,32 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "driver",
+    srcs = glob(["*.go"], exclude = ["*_test.go"]),
+    importpath = "github.com/dolthub/driver/v2",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_github_cenkalti_backoff_v4//:backoff",
+        "@com_github_dolthub_dolt_go//cmd/dolt/commands",
+        "@com_github_dolthub_dolt_go//cmd/dolt/commands/engine",
+        "@com_github_dolthub_dolt_go//cmd/dolt/doltversion",
+        "@com_github_dolthub_dolt_go//cmd/dolt/errhand",
+        "@com_github_dolthub_dolt_go//libraries/doltcore/dbfactory",
+        "@com_github_dolthub_dolt_go//libraries/doltcore/doltdb",
+        "@com_github_dolthub_dolt_go//libraries/doltcore/env",
+        "@com_github_dolthub_dolt_go//libraries/doltcore/sqle",
+        "@com_github_dolthub_dolt_go//libraries/doltcore/sqle/dsess",
+        "@com_github_dolthub_dolt_go//libraries/doltcore/table/editor",
+        "@com_github_dolthub_dolt_go//libraries/events",
+        "@com_github_dolthub_dolt_go//libraries/utils/config",
+        "@com_github_dolthub_dolt_go//libraries/utils/filesys",
+        "@com_github_dolthub_dolt_go//store/nbs",
+        "@com_github_dolthub_eventsapi_schema//dolt/services/eventsapi/v1alpha1",
+        "@com_github_dolthub_go_mysql_server//sql",
+        "@com_github_dolthub_go_mysql_server//sql/types",
+        "@com_github_dolthub_vitess//go/mysql",
+        "@com_github_dolthub_vitess//go/sqltypes",
+        "@com_github_dolthub_vitess//go/vt/sqlparser",
+        "@com_github_go_sql_driver_mysql//:mysql",
+    ],
+)

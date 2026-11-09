@@ -3,6 +3,7 @@ package plugdump
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/dolthub/driver/v2"
+	embedded "github.com/dolthub/driver/v2"
 	"github.com/steveyegge/beads/internal/testutil"
 )
 
@@ -26,7 +27,7 @@ type nativePhysicalRootControlCandidate struct {
 }
 
 func newNativePhysicalRootControlCandidate(t *testing.T, db *sql.DB, server *testutil.IsolatedDoltContainer) nativePhysicalRootControlCandidate {
-	// Option 2 is reached only after the exact option-1 runtime RED. Stop this
+	// Option 3 is reached after exact option1 and option2 runtime failures. Stop this
 	// owned public fixture before copying, and never check out its source store.
 	setup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -41,7 +42,7 @@ func newNativePhysicalRootControlCandidate(t *testing.T, db *sql.DB, server *tes
 	if err := server.Stop(setup); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := os.MkdirTemp("/tmp", "native-physical-option2-snapshot-")
+	snapshot, err := os.MkdirTemp("/tmp", "native-physical-option3-snapshot-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,9 +52,9 @@ func newNativePhysicalRootControlCandidate(t *testing.T, db *sql.DB, server *tes
 		}
 		_, err := os.Lstat(snapshot)
 		if !os.IsNotExist(err) {
-			t.Errorf("option2 public snapshot cleanup: %v", err)
+			t.Errorf("option3 public snapshot cleanup: %v", err)
 		}
-		t.Logf("OPTION2_CLEANUP snapshot_absent=%t", os.IsNotExist(err))
+		t.Logf("OPTION3_CLEANUP snapshot_absent=%t", os.IsNotExist(err))
 	})
 	copyTree := func(src, dst string) error {
 		return filepath.WalkDir(src, func(path string, entry os.DirEntry, walkErr error) error {
@@ -81,92 +82,66 @@ func newNativePhysicalRootControlCandidate(t *testing.T, db *sql.DB, server *tes
 	if err := copyTree(filepath.Join(strings.TrimSpace(directory), "beads_test"), filepath.Join(snapshot, "beads_test")); err != nil {
 		t.Fatal(err)
 	}
+	cfg, err := embedded.ParseDSN("file://" + snapshot + "?database=beads_test&disable_singleton_cache=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	connector, err := embedded.NewConnector(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyDB := sql.OpenDB(connector)
+	copyDB.SetMaxOpenConns(1)
+	t.Cleanup(func() {
+		if err := copyDB.Close(); err != nil {
+			t.Error(err)
+		}
+		if err := connector.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	read := func(ctx context.Context, id string) (map[string]Table, error) {
-		if !validCommitID(id) {
-			return nil, fmt.Errorf("invalid immutable revision")
-		}
-		root, err := os.MkdirTemp("/tmp", "native-physical-option2-read-")
+		conn, err := copyDB.Conn(ctx)
 		if err != nil {
 			return nil, err
 		}
-		defer func() {
-			if err := os.RemoveAll(root); err != nil {
-				t.Error(err)
-			}
-			_, err := os.Lstat(root)
-			if !os.IsNotExist(err) {
-				t.Errorf("option2 read copy cleanup: %v", err)
-			}
-			t.Logf("OPTION2_CLEANUP read_copy_absent=%t", os.IsNotExist(err))
-		}()
-		dbdir := filepath.Join(root, "beads_test")
-		if err := copyTree(filepath.Join(snapshot, "beads_test"), dbdir); err != nil {
-			return nil, err
-		}
-		code, out, err := server.Exec(ctx, []string{"sh", "-c", `cd "$1" && exec dolt checkout --detach "$2"`, "spike-detached-checkout", dbdir, id})
-		t.Logf("OPTION2_DETACHED commit=%s code=%d error_type=%T error=%v output=%s", id, code, err, err, out)
-		if err != nil || code != 0 {
-			// Probe the other documented-looking commit form as well; an
-			// unsupported flag alone must not be called an exhaustive failure.
-			plainCode, plainOut, plainErr := server.Exec(ctx, []string{"sh", "-c", `cd "$1" && exec dolt checkout "$2"`, "spike-commit-checkout", dbdir, id})
-			t.Logf("OPTION2_COMMIT_FORM commit=%s code=%d error_type=%T error=%v output=%s", id, plainCode, plainErr, plainErr, plainOut)
-			return nil, fmt.Errorf("detached checkout unavailable: flag code=%d error=%v; commit form code=%d error=%v", code, err, plainCode, plainErr)
-		}
-		copyDB, err := sql.Open("dolt", "file://"+root+"?database=beads_test&disable_singleton_cache=true")
+		defer conn.Close()
+		physical, err := embedded.ReadPhysicalCommit(ctx, conn, id)
 		if err != nil {
 			return nil, err
 		}
-		defer copyDB.Close()
-		copyDB.SetMaxOpenConns(1)
-		port := SQLSource{DB: copyDB}
-		declarations, err := port.historyTable(ctx, "SELECT * FROM dolt_nonlocal_tables")
-		if err != nil {
-			return nil, err
+		if physical.CommitID != id {
+			return nil, fmt.Errorf("physical commit identity differs")
 		}
-		// Only the disposable working set is changed, without a Dolt commit.
-		if _, err := copyDB.ExecContext(ctx, "DELETE FROM dolt_nonlocal_tables"); err != nil {
-			return nil, err
-		}
-		var observed string
-		if err := copyDB.QueryRowContext(ctx, "SELECT DOLT_HASHOF('HEAD')").Scan(&observed); err != nil {
-			return nil, err
-		}
-		if observed != id {
-			return nil, fmt.Errorf("detached immutable identity changed")
-		}
-		tx, err := copyDB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelSerializable})
-		if err != nil {
-			return nil, err
-		}
-		defer tx.Rollback()
-		port = SQLSource{DB: tx}
-		names, err := port.historyTable(ctx, "SHOW FULL TABLES")
-		if err != nil {
-			return nil, err
-		}
-		if len(names.Columns) != 2 {
-			return nil, fmt.Errorf("invalid physical census")
-		}
-		image := map[string]Table{"dolt_nonlocal_tables": declarations}
-		for _, row := range names.Rows {
-			name := historyText(row[names.Columns[0]])
-			if historyText(row[names.Columns[1]]) == "VIEW" || name == "dolt_nonlocal_tables" {
-				continue
+		image := map[string]Table{}
+		for _, source := range physical.Tables {
+			table := Table{}
+			for _, column := range source.Columns {
+				table.Columns = append(table.Columns, column.Name)
 			}
-			if !nativeSQLName.MatchString(name) {
-				return nil, fmt.Errorf("invalid physical table name")
+			for _, values := range source.Rows {
+				if len(values) != len(source.Columns) {
+					return nil, fmt.Errorf("physical row width differs")
+				}
+				row := Row{}
+				for i, value := range values {
+					v, err := sqlValue(value, source.Columns[i].DatabaseTypeName)
+					if err != nil {
+						return nil, err
+					}
+					row[source.Columns[i].Name] = v
+				}
+				table.Rows = append(table.Rows, row)
 			}
-			table, err := port.historyTable(ctx, "SELECT * FROM `"+name+"`")
-			if err != nil {
-				return nil, err
+			if _, duplicate := image[source.Name]; duplicate {
+				return nil, fmt.Errorf("duplicate physical table name")
 			}
-			image[name] = table
+			image[source.Name] = table
 		}
 		return image, nil
 	}
 	candidate := nativePhysicalRootControlCandidate{
-		Name:      "disposable-copy-detached-checkout",
-		ReadImage: read,
+		Name: "private-driver-immutable-physical-image", ReadImage: read,
 		ReadTable: func(ctx context.Context, id, name string) (Table, bool, error) {
 			image, err := read(ctx, id)
 			if err != nil {
@@ -178,11 +153,23 @@ func newNativePhysicalRootControlCandidate(t *testing.T, db *sql.DB, server *tes
 	}
 	t.Run("valid_missing_commit_is_error", func(t *testing.T) {
 		id := strings.Repeat("a", 32)
-		if _, err := candidate.ReadImage(setup, id); err == nil {
-			t.Error("valid missing immutable image did not refuse")
+		_, imageErr := candidate.ReadImage(setup, id)
+		_, present, tableErr := candidate.ReadTable(setup, id, "archived_rows")
+		for _, err := range []error{imageErr, tableErr} {
+			var physical *embedded.PhysicalReadError
+			if !errors.As(err, &physical) || physical.Kind != "resolve" {
+				t.Errorf("valid missing root must reach driver resolution: type=%T error=%v", err, err)
+			}
 		}
-		if _, present, err := candidate.ReadTable(setup, id, "archived_rows"); err == nil || present {
-			t.Error("valid missing immutable table root became absence")
+		if present {
+			t.Error("valid missing immutable table root became present")
+		}
+	})
+	t.Run("canceled_read_is_error", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, present, err := candidate.ReadTable(ctx, strings.Repeat("a", 32), "never_existed"); err == nil || present {
+			t.Error("canceled operation became physical absence")
 		}
 	})
 	return candidate
