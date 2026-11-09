@@ -57,7 +57,9 @@ class InstalledOntology:
                 or not isinstance(result.get("document"), dict)):
             raise OntologyError("ontology_invalid")
         revision = result.get("revision")
-        if not isinstance(revision, str) or not revision.isascii() or not revision.isdigit():
+        # model.Revision marshals a nonnegative JSON integer, not a string.
+        # Python int preserves its wire precision; bool/float coercion is refused.
+        if type(revision) is not int or revision < 0:
             raise OntologyError("ontology_revision_invalid")
         self.document = copy.deepcopy(result["document"])
         if any(not isinstance(self.document.get(key), dict) for key in ("statuses", "types", "workflows")):
@@ -206,7 +208,7 @@ class Client:
             params["_meta"]["idempotencyKey"] = key
         request_id = str(uuid.uuid4())
         request = {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json", "Accept": "application/json", "Plug-RPC": "1"}
         token_env = self.binding.get("token_env")
         if token_env:
             token = os.environ.get(token_env)

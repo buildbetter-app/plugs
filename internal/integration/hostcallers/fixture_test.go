@@ -2,8 +2,6 @@ package hostcallers_test
 
 import (
 	"context"
-	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,8 +17,10 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/core/viewops"
+	"github.com/buildbetter-app/plugs/internal/server/authn"
 	"github.com/buildbetter-app/plugs/internal/server/ontologyrpc"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
+	"github.com/buildbetter-app/plugs/internal/server/transport/httpjson"
 	"github.com/buildbetter-app/plugs/internal/server/viewrpc"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
@@ -28,8 +28,8 @@ import (
 
 // The Python callers use real HTTP JSON-RPC, real SQLite and the actual writer,
 // lifecycle guards, CAS, ID allocation, idempotency and pinned view readers.
-// Only transport identity is a trusted fixture principal; no authentication or
-// private restore/cutover qualification is claimed by this bounded target.
+// Actual HTTP admission uses anonymous loopback identity. Credential providers
+// and private restore/cutover are not qualified by this bounded target.
 func TestSixHostCallersSQLiteEndToEnd(t *testing.T) {
 	runHostFixture(t, false)
 }
@@ -124,6 +124,14 @@ func runHostFixture(t *testing.T, imported bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	authenticator, err := authn.New(authn.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := httpjson.New(dispatcher, authenticator, httpjson.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	host := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/fixture-visibility" {
 			mode, err := strconv.Atoi(r.URL.Query().Get("mode"))
@@ -135,22 +143,7 @@ func runHostFixture(t *testing.T, imported bool) {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		if r.URL.Path != "/rpc/v1" {
-			http.NotFound(w, r)
-			return
-		}
-		raw, err := io.ReadAll(io.LimitReader(r.Body, 4<<20))
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		var envelope map[string]any
-		if err := json.Unmarshal(raw, &envelope); err != nil {
-			t.Error(err)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(dispatcher.Dispatch(rpc.WithPrincipal(r.Context(), model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}), raw))
+		handler.ServeHTTP(w, r)
 	}))
 	defer host.Close()
 	fixture := "fixture_test.py"

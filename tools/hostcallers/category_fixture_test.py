@@ -9,6 +9,8 @@ import json
 from pathlib import Path
 import unittest
 from unittest.mock import patch
+import urllib.error
+import urllib.request
 
 from fixture_test import HostCallerFixture
 import host_drivers as hd
@@ -38,6 +40,15 @@ class InstalledProjectCategories(unittest.TestCase):
             self.assertEqual((row['id'], row['status'], row['status_category'], row['status_terminal']),
                              ('Imported.Exact/İD', 'todo', category, terminal))
         self.assertNotEqual(self.c.ontology().signature, self.oc.ontology().signature)
+
+    def test_actual_http_admission_requires_marker(self):
+        request = urllib.request.Request(self.cfg['endpoint']+'/rpc/v1', data=ph.encoded(
+            {'jsonrpc': '2.0', 'id': 'unadmitted', 'method': 'server.hello', 'params': {}}),
+            headers={'Content-Type': 'application/json'})
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request, timeout=10)
+        self.assertEqual(error.exception.code, 403)
+        self.c.verify_identity()  # The same endpoint admits the actual typed caller.
 
     def test_actual_script_close_reopen_uses_commit_native_status(self):
         item = dict(key='K', type='task', title='Native lifecycle', description='Public fixture', priority=2, deps=[])
@@ -137,12 +148,25 @@ class InstalledProjectCategories(unittest.TestCase):
             projection.row(bead)
         self.assertEqual(error.exception.code, 'ontology_status_unknown')
         projection.fresh()
-        other = copy.deepcopy(result); other['revision'] = str(int(result['revision'])+1)
+        other = copy.deepcopy(result); other['revision'] += 1
         with patch.object(self.c, 'ontology', side_effect=[ph.InstalledOntology(result), ph.InstalledOntology(other)]):
             with self.assertRaises(ph.OntologyError) as error:
                 projection.fresh()
         self.assertEqual(error.exception.code, 'ontology_changed_during_projection')
         self.assertFalse(path.exists())
+
+    def test_ontology_revision_is_lossless_json_integer(self):
+        result = self.c.rpc('ontology.get', {})
+        self.assertIs(type(result['revision']), int)
+        for invalid in (True, False, 1.5, '1', None, -1):
+            with self.subTest(revision=invalid):
+                result['revision'] = invalid
+                with self.assertRaises(ph.OntologyError) as error:
+                    ph.InstalledOntology(result)
+                self.assertEqual(error.exception.code, 'ontology_revision_invalid')
+        result['revision'] = 18446744073709551615
+        schema = ph.InstalledOntology(json.loads(ph.encoded(result)))
+        self.assertEqual(schema.signature, ph.InstalledOntology(result).signature)
 
     def test_reader_contract_literal_beads_categories_without_mapping(self):
         result = self.c.rpc('ontology.get', {})

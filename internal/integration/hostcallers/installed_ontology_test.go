@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
@@ -48,13 +49,14 @@ func prepareInstalledHostOntology(t *testing.T, root string, target driver.Store
 	}
 	changes := []conformance.FixtureChange{{Ref: ref, Kind: "ontology", Op: model.OpCreate, Body: body}}
 	if imported {
+		createdAt := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
 		for _, project := range []string{"cody-ops", "signals-v2"} {
 			status := "todo"
 			id := "fixture_import_ops"
 			if project == "signals-v2" {
 				id = "fixture_import_signals"
 			}
-			body, err := json.Marshal(pipeline.Document{ID: id, Project: project, Type: "task", Fields: map[string]any{"title": "Public synthetic imported row", "status": status, "priority": 2}})
+			body, err := json.Marshal(pipeline.Document{ID: id, Project: project, Type: "task", CreatedAt: &createdAt, Fields: map[string]any{"title": "Public synthetic imported row", "status": status, "priority": 2}})
 			if err != nil {
 				t.Fatal(err)
 			}

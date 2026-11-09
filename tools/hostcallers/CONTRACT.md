@@ -14,6 +14,9 @@ Commands/RPC: `server.hello`, `agent.brief`, `bead.get`, `bead.create`,
 `view.run`, `ontology.get`. Mutation responses use Commit.results[i].ref, never stdout parsing.
 All project requests carry `_meta.project` and `_meta.agent` (server.hello has no metadata member); writes have durable random
 idempotency keys. Principal comes from transport and must match agent.brief.whoami.
+HTTP requests carry required `Plug-RPC: 1` and JSON Content-Type/Accept headers.
+The public fixture uses actual httpjson/authn admission on anonymous loopback;
+it does not qualify credential-provider or live authority configuration.
 
 Legacy original IDs remain byte-for-byte Python strings in sidecars and JSONL;
 the per-project mapping determines the canonical ref. New IDs use the returned
