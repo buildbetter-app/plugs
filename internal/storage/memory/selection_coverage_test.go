@@ -271,6 +271,88 @@ func TestSelectionCoverageAdmission(t *testing.T) {
 	})
 }
 
+func TestSelectionCoverageAcrossDisjointReadyRanks(t *testing.T) {
+	for _, tc := range []struct {
+		name, key                              string
+		shadow, deleteSource, unbuilt, covered bool
+	}{
+		{name: "disjoint_ready", key: "ready/coverage-source", covered: true},
+		{name: "ordinary_untyped", key: "other/coverage-source"},
+		{name: "malformed_ready", key: "ready/coverage/source"},
+		{name: "typed_shadow", key: "ready/coverage-source", shadow: true},
+		{name: "typed_shadow_source_deleted", key: "ready/coverage-source", shadow: true, deleteSource: true},
+		{name: "unbuilt_stays_unbuilt", key: "ready/coverage-source", unbuilt: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			s := New()
+			defer s.Close()
+			lease := sourceLease(t, s)
+			ref := sourceRef("coverage-source")
+			key := driver.DerivedRowKey{Table: driver.DerivedSortKey, Key: tc.key}
+			lock := driver.LockKey{Kind: driver.LockDerived, Derived: &key}
+			if tc.shadow {
+				record := sourceRecord(ref.ID, `{"source":"typed-ready-owner"}`)
+				tx, header := beginSourceTestWithLocks(t, s, lease, []driver.LockKey{lock}, true, ref)
+				if err := tx.PutGraphRecord(ctx, record, nil, nil); err != nil {
+					t.Fatal(err)
+				}
+				row := startupBeadRow(record, header.Incarnation).Row
+				row.Key, row.Index.Row = key.Key, key
+				if err := tx.PutSelectionDerived(ctx, key.Table, nil, []driver.DerivedRow{row}); err != nil {
+					t.Fatal(err)
+				}
+				commitSourceTest(t, tx, header)
+			} else if !tc.unbuilt {
+				admissionPublish(t, s, lease, true)
+			}
+			pinned := sourceReader(t, s, nil)
+			pinnedPlan := admissionPlan(t, pinned)
+			if tc.unbuilt {
+				admissionUnavailable(t, pinned, pinnedPlan)
+			} else {
+				admissionCount(t, pinned, pinnedPlan, 1)
+			}
+			extra := []driver.LockKey{lock}
+			var refs []model.Ref
+			if tc.deleteSource {
+				closure, err := driver.NewClosureSentinel(ref.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				extra = append(extra, driver.LockKey{Kind: driver.LockSentinel, Sentinel: closure})
+				refs = append(refs, ref)
+			}
+			tx, header := beginSourceTestWithLocks(t, s, lease, extra, true, refs...)
+			if tc.deleteSource {
+				if err := tx.Delete(ctx, ref); err != nil {
+					t.Fatal(err)
+				}
+			}
+			raw := driver.DerivedRow{Key: key.Key, Value: []byte(`{"rank":2}`)}
+			if err := tx.PutDerived(ctx, key.Table, nil, []driver.DerivedRow{raw}); err != nil {
+				t.Fatal(err)
+			}
+			commitSourceTest(t, tx, header)
+			current := sourceReader(t, s, nil)
+			states, err := current.Observe(ctx, []driver.LockKey{lock})
+			if err != nil || len(states) != 1 || !states[0].Present || !reflect.DeepEqual(states[0].Derived, &raw) {
+				t.Fatalf("accepted raw rank changed: %+v / %v", states, err)
+			}
+			if tc.covered {
+				admissionCount(t, current, admissionPlan(t, current), 1)
+			} else {
+				admissionUnavailable(t, current, admissionPlan(t, current))
+			}
+			if tc.unbuilt {
+				admissionUnavailable(t, pinned, pinnedPlan)
+			} else {
+				admissionCount(t, pinned, pinnedPlan, 1)
+			}
+		})
+	}
+}
+
 func admissionFamilyPlanes(t *testing.T, sortFamily, family driver.SelectionProjectionFamily) {
 	s := New()
 	defer s.Close()

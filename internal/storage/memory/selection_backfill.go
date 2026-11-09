@@ -298,12 +298,14 @@ func (t *transaction) prepareSelectionCoverage(next *state) map[driver.Selection
 	v := selectionView{state: next}
 	v.at, _ = next.meta.Head.Uint64()
 	for id, changed := range t.derived {
-		if old, ok := p.owners.get(id); ok {
+		old, owned := p.owners.get(id)
+		if owned {
 			require(old.source, old.family)
 			p.removeOwner(id, before.keys[id])
 		}
-		if old, ok := t.selectionBuildDeletedOwner(id); ok {
-			require(old.source, old.family)
+		buildOwner, buildOwned := t.selectionBuildDeletedOwner(id)
+		if buildOwned {
+			require(buildOwner.source, buildOwner.family)
 		}
 		if !changed.Present {
 			continue
@@ -315,6 +317,20 @@ func (t *transaction) prepareSelectionCoverage(next *state) map[driver.Selection
 				// A different admitted complete domain sharing this table does
 				// not change the source-built family.
 				continue
+			}
+			// Public ready-order rows occupy a separate untyped namespace. A
+			// disjoint rank publication cannot invalidate selection membership,
+			// but a raw replacement of a typed owner must still leave a gap,
+			// including when that owner's source is deleted in this commit.
+			previous := before.keys[id]
+			hadAnnotation := previous.Present && previous.Derived != nil && previous.Derived.Index != nil
+			if !owned && !buildOwned && !hadAnnotation && changed.Key.Derived != nil && changed.Key.Derived.Table == driver.DerivedSortKey {
+				bead, ready := strings.CutPrefix(changed.Key.Derived.Key, "ready/")
+				if ready && bead != "" {
+					if _, err := driver.NewBeadSentinel(bead); err == nil {
+						continue
+					}
+				}
 			}
 			for _, family := range selectionFamilies() {
 				if changed.Key.Derived != nil && changed.Key.Derived.Table == family.Table {
