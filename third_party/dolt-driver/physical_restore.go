@@ -246,6 +246,28 @@ func ownRestoreTables(tables []PhysicalTable) ([]PhysicalTable, error) {
 }
 
 func restoreBind(value driver.Value, args *[]driver.NamedValue) string {
+	// Raw driver calls bypass database/sql's default parameter conversion.
+	// Vitess binds only int64/uint64/float64 for these scalar families. Widen
+	// losslessly for SQL, keeping the original typed cell in owned for the
+	// independent physical readback comparison against the destination column.
+	switch v := value.(type) {
+	case int8:
+		value = int64(v)
+	case int16:
+		value = int64(v)
+	case int32:
+		value = int64(v)
+	case uint:
+		value = uint64(v)
+	case uint8:
+		value = uint64(v)
+	case uint16:
+		value = uint64(v)
+	case uint32:
+		value = uint64(v)
+	case float32:
+		value = float64(v)
+	}
 	*args = append(*args, driver.NamedValue{Ordinal: len(*args) + 1, Value: value})
 	return "?"
 }

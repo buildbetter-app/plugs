@@ -63,6 +63,29 @@ func restoreDB(t *testing.T, native bool) (*sql.DB, *sql.Conn, string, func() er
 			t.Error("public target not removed")
 		}
 	})
+	if native {
+		// Use the existing production CLI bundle to initialize a real native
+		// schema. MigrateUp's server multi-statement path is not implemented by
+		// this embedded fixture connection; no schema/migration bytes change.
+		nativeDir := filepath.Join(directory, "restored")
+		if err := os.MkdirAll(nativeDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		run := func(args ...string) {
+			t.Helper()
+			cmd := exec.Command("dolt", args...)
+			cmd.Dir = nativeDir
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("native fixture dolt %v: %v: %s", args, err, output)
+			}
+		}
+		run("init", "--name", "public-restore", "--email", "restore@example.test")
+		bundle := filepath.Join(directory, "native-schema.sql")
+		if err := os.WriteFile(bundle, []byte(schema.AllMigrationsSQL()), 0600); err != nil {
+			t.Fatal(err)
+		}
+		run("sql", "-f", bundle)
+	}
 	db, closeDriver, err = physicalcapture.Open(directory, "restored")
 	if err != nil {
 		t.Fatal(err)
@@ -72,12 +95,19 @@ func restoreDB(t *testing.T, native bool) (*sql.DB, *sql.Conn, string, func() er
 	if err != nil {
 		t.Fatal(err)
 	}
-	execSQL(t, conn, "CREATE DATABASE restored")
+	if !native {
+		execSQL(t, conn, "CREATE DATABASE restored")
+	}
 	execSQL(t, conn, "USE restored")
 	if native {
-		if _, err := schema.MigrateUp(context.Background(), conn); err != nil {
+		var latest int
+		if err := conn.QueryRowContext(context.Background(), "SELECT MAX(version) FROM schema_migrations").Scan(&latest); err != nil {
 			t.Fatal(err)
 		}
+		if latest != schema.LatestVersion() {
+			t.Fatalf("native fixture schema version %d, want %d", latest, schema.LatestVersion())
+		}
+		t.Logf("RESTORE_NATIVE_SCHEMA actual_version=%d bundle=AllMigrationsSQL engine=unchanged", latest)
 	}
 	return db, conn, directory, release
 }
@@ -580,13 +610,13 @@ func TestPhysicalRestoreCancellationDuringNativeInserts(t *testing.T) {
 	manifest := captureTables(t, db, conn, "cancellation_cells")
 	execSQL(t, conn, "DELETE FROM cancellation_cells")
 	template := manifest.Tables[0].Rows[0][0]
-	manifest.Tables[0].Rows = make([][]Cell, 5000)
+	manifest.Tables[0].Rows = make([][]Cell, 50000)
 	for i := range manifest.Tables[0].Rows {
 		cell := template
 		cell.Data = fmt.Sprint(i + 1)
 		manifest.Tables[0].Rows[i] = []Cell{cell}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	err := Restore(ctx, conn, manifest)
 	var failure *Error
