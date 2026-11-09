@@ -84,6 +84,8 @@ type prepared struct {
 	graphPreserved    bool
 	checkpointReads   map[string]uint64
 	readySort         readySortPlan
+	source            *SourcePublication
+	external          map[int]SourceOperation
 }
 
 func failure(code model.ErrorCode, message string) error {
@@ -187,7 +189,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 	aliases := map[string]model.Ref{}
 	for _, op := range cs.Ops {
 		if op.Kind == model.OpClose {
-			if meta.Method != "tx.apply" {
+			if meta.Method != "tx.apply" && !(meta.Method == "bead.close" && ctx.Value(sourceHandlerKey{}) != nil) {
 				return nil, failure("invalid_params", "close operation requires tx.apply")
 			}
 			p.closes = map[string]bool{}
@@ -199,7 +201,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 		if meta.Method != "bead.claimNext" {
 			return nil, failure("invalid_params", "empty change set is only valid for claimNext")
 		}
-	} else if isSlot(meta.Method) {
+	} else if isSlot(meta.Method) && !(meta.Method == "bead.close" && len(cs.Ops) == 1 && cs.Ops[0].Kind == model.OpClose && ctx.Value(sourceHandlerKey{}) != nil) {
 		// A method is host-supplied lowering context, not a batch-wide bypass.
 		if len(cs.Ops) < 1 || cs.Ops[0].Kind != model.OpPatch {
 			return nil, failure("invalid_params", "slot method requires a patch first")
@@ -218,6 +220,25 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 		var current *pending
 		var before json.RawMessage
 		var err error
+		if handle, _ := ctx.Value(sourceHandlerKey{}).(SourceOperationHandler); handle != nil {
+			var active *SourceOperation
+			op, active, err = handle(ctx, op, p.sourceCoreImage)
+			if err != nil {
+				return nil, err
+			}
+			if active != nil {
+				if p.external == nil {
+					p.external = map[int]SourceOperation{}
+				}
+				p.external[len(p.refs)] = *active
+				p.refs = append(p.refs, active.Result.Ref)
+				p.proposal.Changes = append(p.proposal.Changes, active.Change)
+				if p.closes != nil {
+					p.ordered = append(p.ordered, active.Change)
+				}
+				continue
+			}
+		}
 		if op.Kind == model.OpCreate {
 			c := op.Create
 			if protectedName(c.Type) {
@@ -1133,6 +1154,9 @@ func applyFields(p *pending, fields map[string]any, setter string) error {
 
 func (p *prepared) refresh() error {
 	for i := range p.proposal.Changes {
+		if _, active := p.external[i]; active {
+			continue
+		}
 		c := &p.proposal.Changes[i]
 		pending := p.writes[c.Resource.Ref.ID]
 		// All operations on a record describe the same atomic transition.
