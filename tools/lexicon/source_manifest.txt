@@ -1199,6 +1199,9 @@ internal/storage/driver/hierarchy_contract_test.go
 internal/storage/driver/keys.go
 internal/storage/driver/keys_test.go
 internal/storage/driver/offline_history.go
+internal/storage/driver/offline_history_stream.go
+internal/storage/driver/offline_history_stream_consume.go
+internal/storage/driver/offline_history_stream_test.go
 internal/storage/driver/offline_history_test.go
 internal/storage/driver/offline_restore.go
 internal/storage/driver/parent_counter.go
