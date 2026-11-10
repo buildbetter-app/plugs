@@ -207,6 +207,30 @@ func TestPublicGenuineShallowHistoryBoundaryRetainsVerifiedCellsAndEvents(t *tes
 	}
 	// The clone procedure registers origin. Keep the capture's existing
 	// no-remotes guard and prove it before preparing this disposable source.
+	// Own-version reads open separate connections. Reopen the prepared clone
+	// with an explicit database so every connection uses the same real source.
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := closeDriver(); err != nil {
+		t.Fatal(err)
+	}
+	db, closeDriver, err = physicalcapture.Open(cloneDir, "public_commit_history")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err = db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	var scopedDatabase string
+	if err := conn.QueryRowContext(ctx, "SELECT DATABASE()").Scan(&scopedDatabase); err != nil || scopedDatabase != "public_commit_history" {
+		t.Fatal("shallow guard probe database differs")
+	}
 	var remoteName, remoteAddress string
 	if err := conn.QueryRowContext(ctx, "SELECT name, url FROM dolt_remotes").Scan(&remoteName, &remoteAddress); err != nil || remoteName != "origin" || remoteAddress != remoteURL {
 		t.Fatal("actual shallow clone remote differs")
@@ -214,7 +238,7 @@ func TestPublicGenuineShallowHistoryBoundaryRetainsVerifiedCellsAndEvents(t *tes
 	refusalCapture := plugdump.NativeCapture{SourcePlaneAddressContract: plugdump.SourcePlaneAddressContract, Public: true, StoreDir: filepath.Join(cloneDir, "public_commit_history"), BeadsDir: diagnosticDir(t), SidecarDir: filepath.Join(diagnosticDir(t), "unpublished"), Machine: "public"}
 	refusedInventory, refusedSidecars, refusalErr := (plugdump.OwnVersionCommitSource{PhysicalCommitSource: plugdump.PhysicalCommitSource{SQLSource: plugdump.SQLSource{DB: conn}, PhysicalDB: db}}).NativeInventory(ctx, refusalCapture)
 	if refusalErr == nil || refusalErr.Error() != "native dolt-remotes must be empty" || refusedInventory.Version != "" || len(refusedSidecars) != 0 {
-		t.Fatalf("actual configured-remote inventory guard changed: %T", refusalErr)
+		t.Fatalf("actual configured-remote inventory guard changed: %T %v", refusalErr, refusalErr)
 	}
 	ownVersionExec(t, ctx, conn, "CALL DOLT_REMOTE('remove','origin')")
 	var remoteCount int
