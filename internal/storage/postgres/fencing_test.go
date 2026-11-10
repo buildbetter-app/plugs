@@ -10,7 +10,155 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 )
+
+type waitingLeaseContextKey struct{}
+type waitingLeaseQueryKey struct{}
+
+// Observe a real NOWAIT conflict before stopping the next attempt inside pgx,
+// after database/sql has checked the context but before pgx sends the query.
+// Cancellation here is safe to retry at the transport layer, which stdlib
+// reports as driver.ErrBadConn rather than the caller's context error.
+type waitingLeaseCancellationTracer struct {
+	conflicted bool
+	waiting    chan struct{}
+	queryError chan error
+}
+
+func (q *waitingLeaseCancellationTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if ctx.Value(waitingLeaseContextKey{}) == nil || !strings.HasPrefix(data.SQL, "SELECT epoch::text,owner='' OR expires<=clock_timestamp()") {
+		return ctx
+	}
+	if q.conflicted {
+		close(q.waiting)
+		<-ctx.Done()
+	}
+	return context.WithValue(ctx, waitingLeaseQueryKey{}, true)
+}
+
+func (q *waitingLeaseCancellationTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
+	if ctx.Value(waitingLeaseQueryKey{}) == nil {
+		return
+	}
+	if sqlState(data.Err) == "55P03" {
+		q.conflicted = true
+	} else {
+		q.queryError <- data.Err
+	}
+}
+
+func TestWaitingLeaseCancellationPreservesContextAndConnection(t *testing.T) {
+	for _, deadline := range []bool{false, true} {
+		name, want := "cancel", context.Canceled
+		if deadline {
+			name, want = "deadline", context.DeadlineExceeded
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+			defer cancel()
+			dsn := freshDSN(t)
+			holderStore := openTest(t, dsn)
+			active, err := holderStore.Lease(ctx, "cancellation-holder", driver.LeaseTTL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer active.Release(context.Background())
+			publication, err := holderStore.db.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer publication.Rollback()
+			if _, err := holderStore.checkLease(ctx, publication, active, true); err != nil {
+				t.Fatal(err)
+			}
+
+			tracer := &waitingLeaseCancellationTracer{waiting: make(chan struct{}), queryError: make(chan error, 1)}
+			config, err := pgx.ParseConfig(dsn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			config.Tracer = tracer
+			registered := stdlib.RegisterConnConfig(config)
+			defer stdlib.UnregisterConnConfig(registered)
+			standby := openTest(t, registered)
+			// Two reserved handles leave exactly one general-purpose connection.
+			// A leaked contender transaction would prevent all later pool work.
+			standby.db.SetMaxOpenConns(3)
+			standby.db.SetMaxIdleConns(1)
+			contenderCtx := context.WithValue(ctx, waitingLeaseContextKey{}, true)
+			var stop context.CancelFunc
+			if deadline {
+				contenderCtx, stop = context.WithTimeout(contenderCtx, 2*time.Second)
+			} else {
+				contenderCtx, stop = context.WithCancel(contenderCtx)
+			}
+			defer stop()
+			contended := make(chan error, 1)
+			go func() {
+				next, err := standby.Lease(contenderCtx, "cancelled-contender", driver.LeaseTTL)
+				if err == nil {
+					_ = next.Release(context.Background())
+				}
+				contended <- err
+			}()
+			select {
+			case <-tracer.waiting:
+			case err := <-contended:
+				t.Fatalf("contender returned before the synchronized cancellation boundary: %v", err)
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			renewCtx, done := context.WithTimeout(ctx, 500*time.Millisecond)
+			err = active.Renew(renewCtx)
+			done()
+			if err != nil {
+				t.Fatalf("renewal blocked by waiting contender: %v", err)
+			}
+			if !deadline {
+				stop()
+			}
+			select {
+			case err := <-contended:
+				if !errors.Is(err, want) {
+					t.Fatalf("waiting contender cancellation: got %v, want %v", err, want)
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			select {
+			case err := <-tracer.queryError:
+				if !errors.Is(err, want) {
+					t.Fatalf("pgx query did not observe synchronized cancellation: %v", err)
+				}
+				t.Logf("real NOWAIT conflict followed by pgx cancellation: %v", err)
+			default:
+				t.Fatal("contender did not execute the cancelled pgx query")
+			}
+			if _, err := standby.Meta(ctx); err != nil {
+				t.Fatalf("pool unusable after waiting contender cancellation: %v", err)
+			}
+			if err := publication.Rollback(); err != nil {
+				t.Fatal(err)
+			}
+			if err := active.Release(ctx); err != nil {
+				t.Fatal(err)
+			}
+			next, err := standby.Lease(ctx, "after-cancellation", driver.LeaseTTL)
+			if err != nil {
+				t.Fatalf("lease acquisition after cancellation: %v", err)
+			}
+			defer next.Release(context.Background())
+			if next.Epoch() <= active.Epoch() {
+				t.Fatal("subsequent lease did not advance its epoch")
+			}
+			if err := next.Renew(ctx); err != nil {
+				t.Fatalf("subsequent holder renewal: %v", err)
+			}
+		})
+	}
+}
 
 func TestRenewRemainsIndependentOfBlockedPublication(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
