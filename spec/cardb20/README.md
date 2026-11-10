@@ -108,6 +108,28 @@ the trusted RunsOn variables `BAZEL_BIN`, `BAZEL_RC`, `BAZELISK_HOME`,
 `GITHUB_WORKFLOW_REF`, and `PLUG_B20_REQUEST_SHA=<exact-candidate-sha>` forwarded
 as test environment. The runner supplies its own checkout root.
 
+The ancillary physical-row precision successor is based on saved landed main
+`2902006beaf1f271dfc86237dd5f3bdcc64f1f89`. SQL rows now retain JSON numbers
+as their exact original numeric spellings rather than binary64 values. Strict
+decoding refuses duplicate fields (including nested and escaped equivalents),
+malformed/trailing documents and non-object rows. Ordinary `current_test`
+and whole-tree execution cover large integers, decimals/exponents, zero,
+null/string/number distinctions, missing cells and corruption refusals.
+
+After writing each `recording.json` and aggregate `native-twins.json`, the
+recorder reads the completed file back, discovers all original SQL checkpoint
+streams, checks every family/row/cell and numeric spelling against original
+stdout, and checks the raw digest against both the saved image and original
+command receipt. Separate conservation outputs bind the actual saved-file,
+raw-stream and derived-row hashes and counts. Equally rounded derivatives
+refuse against those raw originals. Native commands/output, build helper and
+pins, selected journal/audit projections and CLI/caps are preserved. Only the
+selected SQL/CLI scalar comparison bridges `json.Number` and the unchanged
+CLI decoder's small numeric sequence values by their JSON bytes; numeric
+strings remain distinct. These controls do not add native admission, history
+or full-card qualification. The predecessor's 12 rounded ancillary cells and
+all original RED/PASS packets remain historical evidence.
+
 The unchanged canonical whole command is:
 
 ```text

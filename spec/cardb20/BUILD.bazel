@@ -1,6 +1,6 @@
 load("@rules_go//go:def.bzl", "go_test")
 
-COMMON = ["current_test.go", "postgres_test.go", "runtime_test.go", "policy_test.go", "caller_test.go"]
+COMMON = ["current_test.go", "postgres_test.go", "runtime_test.go", "policy_test.go", "caller_test.go", "sql_rows_test.go"]
 DEPS = [
     "//internal/cli",
     "//internal/client",

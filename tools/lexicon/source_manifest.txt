@@ -1371,6 +1371,7 @@ spec/cardb20/native_recording_test.go
 spec/cardb20/policy_test.go
 spec/cardb20/postgres_test.go
 spec/cardb20/runtime_test.go
+spec/cardb20/sql_rows_test.go
 spec/cardb28/BUILD.bazel
 spec/cardb28/README.md
 spec/cardb28/cardb28_test.go
