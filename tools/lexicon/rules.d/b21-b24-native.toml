@@ -1,0 +1,8 @@
+[native_recording_literals]
+path = "spec/s1-b21-b24/native_recording_test.go"
+values = ["bd serve: listening on http://", "bd_events_journal", "bd_events_seq", "wisp_dependencies", "B21-metadata-delta-despite-changed-false-and-wisp", "wisp only", "unsupported nonempty family wisp"]
+
+
+[native_view_strings]
+path = "spec/s1-b21-b24/native_views_test.go"
+values = ["bd_events_journal", "bd_events_seq"]

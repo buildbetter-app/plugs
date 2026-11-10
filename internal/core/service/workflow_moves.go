@@ -69,11 +69,11 @@ func (s *Service) WorkflowPromote(ctx context.Context, by model.PrincipalRef, re
 	if err := namedRef(req.Target); err != nil {
 		return workflowplugin.PromoteResult{}, err
 	}
-	if s.workflow == nil {
+	if s.workflowProvider() == nil {
 		return workflowplugin.PromoteResult{}, failure("plugin_durable_state_unavailable", "ephemeral workflows require persistent checkpoint storage")
 	}
 	meta.Method = "x.workflow.run.promote"
-	return s.workflow.PromoteAtomic(ctx, by, req, meta, func(item workflowplugin.ItemView, result workflowplugin.PromoteResult, prepared workflowplugin.PreparedState) error {
+	return s.workflowProvider().PromoteAtomic(ctx, by, req, meta, func(item workflowplugin.ItemView, result workflowplugin.PromoteResult, prepared workflowplugin.PreparedState) error {
 		if item.Claim != nil {
 			return failure("busy", "release the workflow operational claim before promotion")
 		}
@@ -95,7 +95,7 @@ func (s *Service) WorkflowPromote(ctx context.Context, by model.PrincipalRef, re
 		}
 		effective := s.ontology.effective(item.Project)
 		category, known := effective.Category(state(target.doc).Status)
-		compatible := known && (item.Status == "open" || item.Status == "claimed") && category == ontology.Unstarted
+		compatible := known && (item.Status == "open" || item.Status == "claimed") && category.ReadyEligible()
 		if item.Status == "closed" {
 			closeStatus, ok := effective.SlotStatus(item.Type, ontology.Close)
 			compatible = ok && state(target.doc).Status == closeStatus
@@ -170,12 +170,12 @@ func (s *Service) WorkflowDemote(ctx context.Context, by model.PrincipalRef, req
 	if strings.TrimSpace(meta.Project) == "" {
 		return workflowplugin.DemoteResult{}, failure("project_required", "supply a project")
 	}
-	if s.workflow == nil {
+	if s.workflowProvider() == nil {
 		return workflowplugin.DemoteResult{}, failure("plugin_durable_state_unavailable", "ephemeral workflows require persistent checkpoint storage")
 	}
 	meta.Method = "x.workflow.run.demote"
 	var cs model.ChangeSet
-	return s.workflow.DemoteAtomic(ctx, by, req, meta, func() (workflowplugin.DemoteRequest, error) {
+	return s.workflowProvider().DemoteAtomic(ctx, by, req, meta, func() (workflowplugin.DemoteRequest, error) {
 		reader, err := s.reader(ctx, by, nil)
 		if err != nil {
 			return workflowplugin.DemoteRequest{}, err
@@ -208,11 +208,11 @@ func (s *Service) WorkflowDemote(ctx context.Context, by model.PrincipalRef, req
 			return image, failure("invalid_params", "demotion source has no canonical status category")
 		}
 		switch category {
-		case ontology.Unstarted, ontology.Started:
+		case ontology.Unstarted, ontology.Started, ontology.Active, ontology.WIP:
 			// Unleased live work becomes an unclaimed workflow task. No core
 			// lease or concrete ontology status is imported into plugin state.
 			image.Status = "open"
-		case ontology.Completed, ontology.Canceled:
+		case ontology.Completed, ontology.Canceled, ontology.Done:
 			image.Status = "closed"
 		default:
 			return image, failure("unsupported", "demotion of deferred or triage work requires a workflow scheduling bridge")

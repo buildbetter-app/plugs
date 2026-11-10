@@ -50,6 +50,11 @@ func (t *transaction) validateHeader(ctx context.Context, h driver.ChangesetHead
 				}
 			}
 		}
+		if t.sourcePlaneImport != nil {
+			if err := t.sourcePlaneImport.Validate(h, t.checkpointWrites, t.records); err != nil {
+				return err
+			}
+		}
 		expected = t.restore.Incarnation
 	}
 	if h.Incarnation != expected {

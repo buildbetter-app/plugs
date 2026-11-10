@@ -14,10 +14,20 @@ const (
 	Started   Category = "started"
 	Completed Category = "completed"
 	Canceled  Category = "canceled"
+	// Native Beads categories retain their original wire spelling. Their
+	// behavior is shared with the corresponding kernel category, never inferred
+	// from a status name.
+	Active Category = "active"
+	WIP    Category = "wip"
+	Done   Category = "done"
+	Frozen Category = "frozen"
 )
 
-func (c Category) Terminal() bool      { return c == Completed || c == Canceled }
-func (c Category) ReadyEligible() bool { return c == Unstarted }
+func (c Category) Terminal() bool      { return c.Completed() || c == Canceled }
+func (c Category) ReadyEligible() bool { return c == Unstarted || c == Active }
+func (c Category) Started() bool       { return c == Started || c == WIP }
+func (c Category) Completed() bool     { return c == Completed || c == Done }
+func (c Category) Backlog() bool       { return c == Backlog || c == Frozen }
 
 type Outcome string
 

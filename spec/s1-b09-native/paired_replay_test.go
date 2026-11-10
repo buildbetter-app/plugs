@@ -31,9 +31,10 @@ import (
 
 const b09PostgresImage = "postgres@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3"
 
-var b09NativeID = regexp.MustCompile(`^b09-[0-9a-f]{32}$`)
+var b09NativeID = regexp.MustCompile(`^b09-[0-9a-z]{3}$`)
 
 type b09ReplayStage struct {
+	Checkpoints      map[string]driver.Checkpoint         `json:"checkpoints,omitempty"`
 	Name             string                               `json:"name"`
 	Meta             driver.Meta                          `json:"meta"`
 	BeadIDs          []string                             `json:"bead_ids"`
@@ -77,6 +78,7 @@ type b09ReplayReceipt struct {
 }
 
 type b09ReplayTarget struct {
+	sourcePlan  *driver.SourcePlaneImportBindingV1
 	t           *testing.T
 	engine      string
 	path        string
@@ -129,19 +131,25 @@ func (r *recorder) replayNative(source captureReceipt) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		results = append(results, runB09Replay(r.t, engine, data, inspection, archive, sourceIDs, filepath.Join(r.root, "paired", engine)))
 	}
+	for _, result := range results {
+		if result.DerivedSHA256 != results[0].DerivedSHA256 {
+			r.t.Fatal("joint core derived digest differs between engines")
+		}
+	}
 	r.writeJSON(filepath.Join(r.root, "paired-replay.json"), map[string]any{
-		"schema":               "plug-s1-b09-native-paired-replay/1",
-		"source_capture":       source.Label,
-		"archive_path":         source.ArchivePath,
-		"archive_sha256":       source.ArchiveSHA256,
-		"archive_size":         len(data),
-		"derived_sha256":       inspection.DerivedSHA256,
-		"source_store_id":      inspection.SourceStoreID,
-		"source_config_path":   source.SourceConfigPath,
-		"source_config_bytes":  source.SourceConfigBytes,
-		"source_config_sha256": source.SourceConfigSHA256,
-		"history_mode":         string(driver.RestoreHistoryModeSnapshot),
-		"engines":              results,
+		"schema":                            "plug-s1-b09-native-paired-replay/1",
+		"source_capture":                    source.Label,
+		"archive_path":                      source.ArchivePath,
+		"archive_sha256":                    source.ArchiveSHA256,
+		"archive_size":                      len(data),
+		"derived_sha256":                    results[0].DerivedSHA256,
+		"unbound_inspection_derived_sha256": inspection.DerivedSHA256,
+		"source_store_id":                   inspection.SourceStoreID,
+		"source_config_path":                source.SourceConfigPath,
+		"source_config_bytes":               source.SourceConfigBytes,
+		"source_config_sha256":              source.SourceConfigSHA256,
+		"history_mode":                      string(driver.RestoreHistoryModeSnapshot),
+		"engines":                           results,
 	})
 }
 
@@ -163,6 +171,8 @@ func runB09Replay(t *testing.T, engine string, data []byte, inspection converter
 	if profile.SourceStoreID != driver.StoreID(archive.Manifest().StoreID) {
 		t.Fatalf("%s source store identity changed between inspection and archive", engine)
 	}
+	profile = bindB09SourcePlan(t, data, target, profile)
+	inspection.DerivedSHA256 = profile.DerivedDigest
 	restoreStarted := time.Now().UTC()
 	report, err := converterroundtrip.RestoreImportWithLease(ctx, bytes.NewReader(data), target.store, target.lease, profile)
 	restoreFinished := time.Now().UTC()
@@ -192,8 +202,8 @@ func runB09Replay(t *testing.T, engine string, data []byte, inspection converter
 	if len(initial.ChangesetRevs) != 0 {
 		t.Fatalf("%s snapshot restore exposed fabricated source history: %+v", engine, initial.ChangesetRevs)
 	}
-	if len(initial.Allocator.Inventory.Projects) != 1 || !reflect.DeepEqual(initial.Allocator.Inventory.Projects[0], driver.NewRandomAllocator("b09")) {
-		t.Fatalf("%s restore did not install the admitted live random allocator: %+v", engine, initial.Allocator.Inventory.Projects)
+	if len(initial.Allocator.Inventory.Projects) != 1 || !reflect.DeepEqual(initial.Allocator.Inventory.Projects[0], driver.NewHashAllocator("b09", 3, 8, 0.25)) {
+		t.Fatalf("%s restore did not install the source adaptive hash allocator: %+v", engine, initial.Allocator.Inventory.Projects)
 	}
 
 	// A real close and a provider-backed compaction append ordinary Plug history.
@@ -373,7 +383,38 @@ func (r *b09ReplayTarget) stage(name string, sourceIDs, extraIDs []string) b09Re
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	reader, err := r.store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	var reader driver.Reader
+	var checkpoints map[string]driver.Checkpoint
+	if r.sourcePlan != nil {
+		plan, planErr := r.sourcePlan.Plan()
+		if planErr != nil {
+			r.t.Fatal(planErr)
+		}
+		capability, capErr := driver.RequireWorkflowCheckpointStore(r.store, r.lease)
+		if capErr != nil {
+			r.t.Fatal(capErr)
+		}
+		var namespaces []string
+		for _, provider := range plan.Providers {
+			namespaces = append(namespaces, provider.Namespace)
+		}
+		var snapshot driver.SourcePlaneSnapshot
+		snapshot, err = capability.ReadSourcePlaneSnapshot(ctx, driver.View{Incarnation: meta.Incarnation}, namespaces)
+		if err == nil {
+			reader = snapshot
+			checkpoints = make(map[string]driver.Checkpoint, len(namespaces))
+			for _, namespace := range namespaces {
+				cp, readErr := snapshot.SourcePlaneCheckpoint(namespace)
+				if readErr != nil {
+					snapshot.Close()
+					r.t.Fatal(readErr)
+				}
+				checkpoints[namespace] = cp
+			}
+		}
+	} else {
+		reader, err = r.store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	}
 	if err != nil {
 		r.t.Fatal(err)
 	}
@@ -446,7 +487,7 @@ func (r *b09ReplayTarget) stage(name string, sourceIDs, extraIDs []string) b09Re
 		}
 		receipts[name] = receipt
 	}
-	stage := b09ReplayStage{Name: name, Meta: meta, BeadIDs: ids, VersionRevisions: versions, ChangesetRevs: changeRevs, Allocator: allocation, AllocatorSHA256: hashBytes(encoded), Records: records, Versions: fullVersions, Changesets: changesets, Receipts: receipts, LeaseEpoch: r.lease.Epoch()}
+	stage := b09ReplayStage{Checkpoints: checkpoints, Name: name, Meta: meta, BeadIDs: ids, VersionRevisions: versions, ChangesetRevs: changeRevs, Allocator: allocation, AllocatorSHA256: hashBytes(encoded), Records: records, Versions: fullVersions, Changesets: changesets, Receipts: receipts, LeaseEpoch: r.lease.Epoch()}
 	if r.engine != "memory" {
 		stage.SQL = r.sqlCensus()
 	}
