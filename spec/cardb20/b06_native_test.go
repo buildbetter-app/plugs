@@ -21,9 +21,12 @@ import (
 )
 
 type b06NativeWorkspace struct {
-	dir            string
-	env            []string
-	ephemeralTable string
+	dir                   string
+	env                   []string
+	ephemeralTable        string
+	ephemeralDependencies string
+	ephemeralEvents       string
+	targetColumns         []string
 }
 type b06NativeRecorder struct {
 	*nativeRecorder
@@ -102,27 +105,91 @@ func (r *b06NativeRecorder) workspace(binary string, server *publicnative.Server
 	}
 	r.command(w, "init", binary, []string{"init", "--server", "--external", "--server-host", "127.0.0.1", "--server-port", strconv.Itoa(server.Port), "--database", database, "--prefix", "b06", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet"}, false)
 	server.RequireDatabaseDir(r.t, database)
-	// Bind the native source family through its actual dependency foreign key.
-	// Keep that raw catalog identity for images and later damaged-row controls.
-	query := "SELECT referenced_table_name AS source_table FROM information_schema.key_column_usage WHERE table_schema = DATABASE() AND table_name = 'wisp_dependencies' AND column_name = 'issue_id' AND referenced_table_name IS NOT NULL"
-	rows := r.rows(w, binary, database+"-source-table", query)
-	if len(rows) != 1 {
-		r.t.Fatalf("native dependency source binding is not unique: %+v", rows)
+	// Bind native graph roles from actual schema metadata. The canonical names
+	// remain intact in requests and raw results, including both target planes.
+	foreignQuery := "SELECT table_name AS family, column_name AS field, referenced_table_name AS source_family FROM information_schema.key_column_usage WHERE table_schema = DATABASE() AND referenced_table_name IS NOT NULL AND table_name IN (SELECT table_name FROM information_schema.columns WHERE table_schema = DATABASE() AND column_name = 'depends_on_issue_id') ORDER BY table_name, column_name"
+	foreignRows := r.rows(w, binary, database+"-source-foreign-keys", foreignQuery)
+	foreign := map[string]map[string]string{}
+	text := func(row map[string]any, name string) string {
+		for key, value := range row {
+			if strings.EqualFold(key, name) {
+				if value, ok := value.(string); ok && value != "" {
+					return value
+				}
+			}
+		}
+		r.t.Fatalf("missing native catalog field %s: %+v", name, row)
+		return ""
 	}
-	for key, value := range rows[0] {
-		if strings.EqualFold(key, "source_table") {
-			w.ephemeralTable, _ = value.(string)
+	for _, row := range foreignRows {
+		family, field, source := text(row, "family"), text(row, "field"), text(row, "source_family")
+		if foreign[family] == nil {
+			foreign[family] = map[string]string{}
+		}
+		if foreign[family][field] != "" {
+			r.t.Fatalf("ambiguous native foreign key: %+v", row)
+		}
+		foreign[family][field] = source
+	}
+	columnQuery := "SELECT table_name AS family, column_name AS field FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name NOT LIKE 'dolt_%' AND (column_name LIKE 'depends_on_%' OR column_name = 'event_type') ORDER BY table_name, ordinal_position"
+	columnRows := r.rows(w, binary, database+"-source-columns", columnQuery)
+	targets, events := map[string][]string{}, map[string]bool{}
+	for _, row := range columnRows {
+		family, field := text(row, "family"), text(row, "field")
+		if field == "event_type" {
+			events[family] = true
+		} else if foreign[family]["issue_id"] != "" {
+			targets[family] = append(targets[family], field)
 		}
 	}
-	if w.ephemeralTable == "" {
-		r.t.Fatal("native dependency source table is absent")
+	if len(targets) != 2 || foreign["dependencies"]["issue_id"] != "issues" || len(targets["dependencies"]) != 3 || len(events) != 2 || !events["events"] {
+		r.t.Fatal("native graph/event catalog does not identify the two canonical planes")
 	}
-	for _, c := range w.ephemeralTable {
-		if c != '_' && (c < 'a' || c > 'z') {
-			r.t.Fatal("unsafe native catalog source identifier")
+	w.targetColumns = targets["dependencies"]
+	for family, fields := range targets {
+		if family == "dependencies" {
+			continue
+		}
+		if !reflect.DeepEqual(fields, w.targetColumns) {
+			r.t.Fatal("native dependency target arms differ between planes")
+		}
+		w.ephemeralDependencies, w.ephemeralTable = family, foreign[family]["issue_id"]
+	}
+	for family := range events {
+		if family != "events" {
+			w.ephemeralEvents = family
 		}
 	}
-	r.writeJSON(filepath.Join(r.root, database+"-source-table-binding.json"), map[string]any{"lookup": query, "raw_catalog_rows": rows, "source_table": w.ephemeralTable})
+	otherTargets := 0
+	for _, field := range w.targetColumns {
+		if field != "depends_on_issue_id" && field != "depends_on_external" {
+			otherTargets++
+			if foreign[w.ephemeralDependencies][field] != w.ephemeralTable {
+				r.t.Fatal("native ephemeral target lacks its actual source foreign key")
+			}
+		}
+	}
+	if otherTargets != 1 || w.ephemeralTable == "issues" {
+		r.t.Fatal("native target planes are not distinct")
+	}
+	families := map[string]bool{}
+	for _, family := range []string{"issues", w.ephemeralTable, "dependencies", w.ephemeralDependencies, "events", w.ephemeralEvents} {
+		if families[family] {
+			r.t.Fatal("native six graph/audit families are not distinct")
+		}
+		families[family] = true
+	}
+	for _, name := range append([]string{w.ephemeralTable, w.ephemeralDependencies, w.ephemeralEvents}, w.targetColumns...) {
+		if name == "" {
+			r.t.Fatal("native graph family is absent")
+		}
+		for _, c := range name {
+			if c != '_' && (c < 'a' || c > 'z') {
+				r.t.Fatal("unsafe native catalog identifier")
+			}
+		}
+	}
+	r.writeJSON(filepath.Join(r.root, database+"-source-table-binding.json"), map[string]any{"foreign_query": foreignQuery, "column_query": columnQuery, "raw_foreign_keys": foreignRows, "raw_columns": columnRows, "source_table": w.ephemeralTable, "dependency_table": w.ephemeralDependencies, "event_table": w.ephemeralEvents, "target_columns": w.targetColumns})
 	return w
 }
 
@@ -154,7 +221,7 @@ func (r *b06NativeRecorder) rows(w b06NativeWorkspace, binary, label, query stri
 
 func (r *b06NativeRecorder) image(w b06NativeWorkspace, binary, label string) map[string][]map[string]any {
 	image := map[string][]map[string]any{}
-	for _, table := range []string{"issues", w.ephemeralTable, "dependencies", "wisp_dependencies", "events", "wisp_events"} {
+	for _, table := range []string{"issues", w.ephemeralTable, "dependencies", w.ephemeralDependencies, "events", w.ephemeralEvents} {
 		image[table] = r.rows(w, binary, label+"-"+table, "SELECT * FROM "+table+" ORDER BY id")
 	}
 	r.writeJSON(filepath.Join(r.root, label+"-image.json"), image)
@@ -302,10 +369,10 @@ func (r *b06NativeRecorder) requireEdges(w b06NativeWorkspace, binary, label str
 	r.t.Helper()
 	image := r.image(w, binary, label+"-edge-census")
 	actual := []b06Edge{}
-	for _, table := range []string{"dependencies", "wisp_dependencies"} {
+	for _, table := range []string{"dependencies", w.ephemeralDependencies} {
 		for _, row := range image[table] {
 			var target string
-			for _, key := range []string{"depends_on_issue_id", "depends_on_wisp_id", "depends_on_external"} {
+			for _, key := range w.targetColumns {
 				if row[key] != nil {
 					if target != "" {
 						r.t.Fatal("native raw edge has multiple target arms")
@@ -341,7 +408,7 @@ func (r *b06NativeRecorder) missing(binary string, server *publicnative.Server) 
 	// Drop only dependency-family FKs in this explicit damaged-database control,
 	// so absent hydration and preserved edges are independently observable.
 	constraint := regexp.MustCompile("CONSTRAINT `([^`]+)` FOREIGN KEY")
-	for _, table := range []string{"dependencies", "wisp_dependencies"} {
+	for _, table := range []string{"dependencies", w.ephemeralDependencies} {
 		rows := r.rows(w, binary, "missing-schema-"+table, "SHOW CREATE TABLE "+table)
 		var ddl string
 		for _, row := range rows {
@@ -362,7 +429,7 @@ func (r *b06NativeRecorder) missing(binary string, server *publicnative.Server) 
 	for _, victim := range []struct{ table, id string }{{"issues", "b06-missing-a"}, {w.ephemeralTable, "b06-missing-b"}} {
 		r.command(w, "diagnostic-delete-"+victim.id, binary, []string{"sql", "DELETE FROM " + victim.table + " WHERE id='" + victim.id + "'", "--json"}, false)
 		after := r.image(w, binary, "missing-"+victim.id)
-		for _, table := range []string{"dependencies", "wisp_dependencies"} {
+		for _, table := range []string{"dependencies", w.ephemeralDependencies} {
 			if !reflect.DeepEqual(before[table], after[table]) {
 				r.t.Fatal("diagnostic deletion did not preserve source edges")
 			}
@@ -398,7 +465,7 @@ func (r *b06NativeRecorder) missing(binary string, server *publicnative.Server) 
 		}
 	}
 	r.writeJSON(filepath.Join(r.root, "missing-counterpart-boundary.json"), map[string]any{"native": "actual durable and ephemeral rows physically removed; both dependency families preserved and reported with original IDs/positions", "plug": "physical-missing topology OPEN: durable cycle input only includes extant bead documents; denied-member placeholders are separately tested", "positive_mixed_plane": "OPEN: combined-Ready owner must supply same-image complete graph snapshot", "setup": "public disposable SQL damaged-database diagnostic; not ordinary deletion admission"})
-	r.t.Log("B06_NATIVE mixed_plane=observed durable_missing=1 wisp_missing=1 full_members=3 partial=true plug_physical_missing=OPEN plug_mixed_plane=OPEN")
+	r.t.Log("B06_NATIVE mixed_plane=observed durable_missing=1 ephemeral_missing=1 full_members=3 partial=true plug_physical_missing=OPEN plug_mixed_plane=OPEN")
 }
 
 func TestB06CanonicalNativeCycles(t *testing.T) {

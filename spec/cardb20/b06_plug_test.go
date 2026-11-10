@@ -473,10 +473,10 @@ func (f *b06PlugFixture) deniedMember() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	by := model.PrincipalRef{Kind: "user", ID: "b06-limited", Caveats: map[string]any{"refs": []model.Ref{model.RefByID("b06-parallel-a", model.Natural64(0))}}}
+	by := model.PrincipalRef{Kind: "user", ID: "user:b06-limited", Caveats: map[string]any{"refs": []model.Ref{model.RefByID("b06-parallel-a", model.Natural64(0))}}}
 	key, err := keys.Issue(by, time.Now().Add(time.Hour))
 	if err != nil {
-		f.t.Fatal(err)
+		f.t.Fatalf("scoped User API-key issuance: %v", err)
 	}
 	before := f.image("before-policy-redaction")
 	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"bead.cycles","params":{"_meta":{"project":"b06"}}}`)
@@ -487,6 +487,7 @@ func (f *b06PlugFixture) deniedMember() {
 	req.Header.Set("Authorization", "Bearer "+key.Token)
 	out := httptest.NewRecorder()
 	app.Handler.ServeHTTP(out, req)
+	b06Retain(f.t, "policy-redaction.json", map[string]any{"request": json.RawMessage(body), "response": json.RawMessage(out.Body.Bytes()), "http_status": out.Code, "principal": by, "condition": "existing row denied by actual installed fixed policy; not physically missing", "native_difference": "native missing-row diagnostics retain raw ID; Plug denies identity and retains a placeholder"})
 	var envelope b06Envelope
 	if err := json.Unmarshal(out.Body.Bytes(), &envelope); err != nil {
 		f.t.Fatal(err)
@@ -499,7 +500,6 @@ func (f *b06PlugFixture) deniedMember() {
 	if !c.Partial || c.MemberCount.String() != "2" || c.UnreadableCount.String() != "1" || !c.Path[1].Unreadable || c.Path[1].Ref != nil {
 		f.t.Fatalf("redacted member disappeared %+v", c)
 	}
-	b06Retain(f.t, "policy-redaction.json", map[string]any{"request": json.RawMessage(body), "response": json.RawMessage(out.Body.Bytes()), "condition": "existing row denied by actual installed fixed policy; not physically missing", "native_difference": "native missing-row diagnostics retain raw ID; Plug denies identity and retains a placeholder"})
 	if !bytes.Equal(before, f.image("after-policy-redaction")) {
 		f.t.Fatal("guarded read changed state")
 	}
