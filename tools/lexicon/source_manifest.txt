@@ -471,6 +471,10 @@ internal/integration/b03catalog/native_admission_record.json
 internal/integration/b03catalog/native_catalog_inputs.json
 internal/integration/b03catalog/native_catalog_recording_test.go
 internal/integration/b03catalog/native_categories_test.go
+internal/integration/b03publiccatalog/BUILD.bazel
+internal/integration/b03publiccatalog/README.md
+internal/integration/b03publiccatalog/catalog_test.go
+internal/integration/b03publiccatalog/native_recording_test.go
 internal/integration/b04claimidentity/BUILD.bazel
 internal/integration/b04claimidentity/README.md
 internal/integration/b04claimidentity/claim_identity_test.go
@@ -1362,11 +1366,8 @@ spec/cardb19/testdata/recording-1/export.jsonl
 spec/cardb19/testdata/recording-1/imported.json
 spec/cardb19/testdata/recording-2/export.jsonl
 spec/cardb19/testdata/recording-2/imported.json
-spec/cardb20/B03-CATALOG.md
 spec/cardb20/BUILD.bazel
 spec/cardb20/README.md
-spec/cardb20/b03_catalog_controls_test.go
-spec/cardb20/b03_catalog_recording_test.go
 spec/cardb20/caller_test.go
 spec/cardb20/current_test.go
 spec/cardb20/native_build_test.go

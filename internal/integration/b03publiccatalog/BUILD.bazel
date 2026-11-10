@@ -1,0 +1,53 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+# Card-specific B03 controls. Existing B20 support is compiled unchanged inside the internal visibility boundary.
+B03_DEPS = [
+    "//internal/core/model",
+    "//internal/core/ontology",
+    "//internal/core/ontologyops",
+    "//internal/core/pipeline",
+    "//internal/core/service",
+    "//internal/server/ontologyrpc",
+    "//internal/server/rpc",
+    "//internal/server/transport/inprocess",
+    "//internal/storage/conformance",
+    "//internal/storage/driver",
+    "//internal/storage/memory",
+    "//internal/storage/postgres",
+    "//internal/storage/sqlite",
+]
+
+go_test(
+    name = "b03_catalog_controls_test",
+    srcs = ["catalog_test.go", "//spec/cardb20:native_postgres_support"],
+    args = ["-test.v"],
+    deps = B03_DEPS,
+    size = "large",
+    tags = ["local", "requires-network"],
+    timeout = "long",
+)
+
+# Explicit canonical public operational recording; no official producer action.
+# It pairs the actual source-built native CLI with ordinary Plug byte RPC.
+go_test(
+    name = "record_b03_catalog_test",
+    srcs = [
+        "catalog_test.go",
+        "native_recording_test.go",
+        "//spec/cardb20:native_build_support",
+        "//spec/cardb20:native_postgres_support",
+    ],
+    data = ["//spec/s1-b09-native:lexicon_files", "//internal/publicnative:dolt_runtime"],
+    env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
+    args = ["-test.v", "-test.run=^TestB03CanonicalNativeNonemptyCatalog$$"],
+    deps = B03_DEPS + ["//internal/publicnative"],
+    size = "enormous",
+    tags = ["local", "manual", "requires-network"],
+    timeout = "eternal",
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

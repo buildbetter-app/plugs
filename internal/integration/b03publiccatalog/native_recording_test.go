@@ -175,8 +175,16 @@ func TestB03CanonicalNativeNonemptyCatalog(t *testing.T) {
 		if got := r.b03Statuses(w, binary, label+"-catalog"); len(got) != 0 {
 			t.Fatalf("empty native catalog retained rows: %+v", got)
 		}
+		r.b03Command(w, label+"-config", binary, []string{"config", "get", "status.custom", "--json"}, false)
+		r.b03Command(w, label+"-custom-use", binary, []string{"create", "--id", "b03-empty-custom", "--title", "must refuse absent catalog", "--status", b03Active, "--json"}, true)
+		id := fmt.Sprintf("b03-empty-%d", i)
+		r.b03Command(w, label+"-builtin-use", binary, []string{"create", "--id", id, "--title", "valid default catalog", "--json"}, false)
+		if got := r.b03Show(w, binary, id, label+"-builtin-readback"); got.Status != "open" {
+			t.Fatal("empty custom catalog changed valid built-in status")
+		}
 	}
 	set("b03-config-restore", b03Catalog, false)
+	r.b03Command(w, "b03-create-catalog-anchor", binary, []string{"create", "--id", "b03-anchor", "--title", "effective catalog use", "--status", b03Active, "--json"}, false)
 	malformed := []struct{ name, value string }{
 		{"unknown-category", "bad:unknown"}, {"category-case", "bad:ACTIVE"}, {"trailing-colon", "bad:"},
 		{"blank-name", ":active"}, {"space-name", "bad name:active"}, {"duplicate", "duplicate:active,duplicate:frozen"},
@@ -190,6 +198,10 @@ func TestB03CanonicalNativeNonemptyCatalog(t *testing.T) {
 			after := child.b03Command(w, "b03-"+tc.name+"-after-config", binary, []string{"config", "get", "status.custom", "--json"}, false)
 			if !bytes.Equal(before, after) || !reflect.DeepEqual(child.b03Statuses(w, binary, "b03-"+tc.name+"-catalog"), catalog) {
 				t.Fatal("refused native config altered effective literal catalog")
+			}
+			child.b03Command(w, "b03-"+tc.name+"-valid-use", binary, []string{"update", "b03-anchor", "--status", b03Active, "--json"}, false)
+			if got := child.b03Show(w, binary, "b03-anchor", "b03-"+tc.name+"-use-readback"); got.Status != b03Active {
+				t.Fatal("refused config changed accepted normal status use")
 			}
 		})
 	}
@@ -207,7 +219,12 @@ func TestB03CanonicalNativeNonemptyCatalog(t *testing.T) {
 		t.Fatal("native exact 50 not installed")
 	}
 	before51 := r.b03Command(w, "b03-boundary-51-before-config", binary, []string{"config", "get", "status.custom", "--json"}, false)
+	r.b03Command(w, "b03-boundary-50-use", binary, []string{"create", "--id", "b03-limit", "--title", "fiftieth status use", "--status", "catalog_49", "--json"}, false)
 	set("b03-boundary-51", strings.Join(names, ","), true)
+	r.b03Command(w, "b03-boundary-51-use-refusal", binary, []string{"update", "b03-limit", "--status", "catalog_50", "--json"}, true)
+	if got := r.b03Show(w, binary, "b03-limit", "b03-boundary-refusal-use-readback"); got.Status != "catalog_49" {
+		t.Fatal("native 51 refusal changed fiftieth-status row")
+	}
 	after51 := r.b03Command(w, "b03-boundary-51-after-config", binary, []string{"config", "get", "status.custom", "--json"}, false)
 	if !bytes.Equal(before51, after51) {
 		t.Fatal("native refused51 changed accepted config string")

@@ -1,6 +1,6 @@
 B03 canonical public nonempty catalog controls
 
-`//spec/cardb20:record_b03_catalog_test` compiles the unchanged B20 canonical
+`//internal/integration/b03publiccatalog:record_b03_catalog_test` compiles the unchanged B20 canonical
 build helper and PostgreSQL support. It builds the accepted 9d6fff source from
 the existing B09 archive and 5087-path Git manifest, records the actual ELF,
 version, build/request binding, command argv, curated environment, raw stdout,
@@ -19,7 +19,7 @@ the same owned physical store. No fallback is repaired or hidden.
 
 The same recording target executes the normal Plug Writer/service/byte-RPC
 counterparts on memory, SQLite and mandatory disposable PostgreSQL. The ordinary
-`//spec/cardb20:b03_catalog_controls_test` also runs these in canonical whole.
+`//internal/integration/b03publiccatalog:b03_catalog_controls_test` also runs these in canonical whole.
 They install catalogs through ontology.plan/apply, read exact installed categories,
 exercise four initial category states, close/repeat-close/reopen/defer, check
 creation/first-close/reopen timestamp relations and reconstruct SQL stores from
