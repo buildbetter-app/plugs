@@ -58,7 +58,7 @@ type NativeHistory struct {
 	SchemaProfile   *NativeSchemaProfile   `json:"schema_profile,omitempty"`
 	HistoryCoverage *NativeHistoryCoverage `json:"history_coverage,omitempty"`
 	Sources         []Disposition          `json:"-"`
-	deltaVerified   bool
+	deltaVerified   bool                   `json:"-"`
 }
 
 func nativeObject(data []byte, required string, optional string) (map[string]any, error) {

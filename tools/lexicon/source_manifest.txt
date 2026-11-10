@@ -582,6 +582,7 @@ internal/integration/converterroundtrip/native_boundary_receiving_test.go
 internal/integration/converterroundtrip/native_commit_fixture_test.go
 internal/integration/converterroundtrip/native_commit_receiving_test.go
 internal/integration/converterroundtrip/native_delta.go
+internal/integration/converterroundtrip/native_delta_receiving_test.go
 internal/integration/converterroundtrip/native_delta_test.go
 internal/integration/converterroundtrip/native_history_test.go
 internal/integration/converterroundtrip/native_receiving_executable_test.go
