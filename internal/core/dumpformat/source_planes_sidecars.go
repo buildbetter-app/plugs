@@ -40,6 +40,9 @@ func (a *Archive) SourcePlaneSidecarOrigins() ([]driver.SourcePlaneOriginV1, err
 			return nil, err
 		}
 		origin := driver.SourcePlaneOriginV1{Table: "config/sources.json", ID: value.Input.Path, Action: "origin-only", Raw: sourcePlaneByteCommitment(entry), Path: value.Input.Path, Mode: value.Input.State, Layer: value.Input.Family, Precedence: []string{strconv.Itoa(value.Input.Precedence)}, Parsed: driver.SourcePlaneBytesV1{Presence: "absent"}}
+		if value.Identity != nil {
+			origin.Project = value.Identity.Project
+		}
 		for key, bytes := range fields {
 			origin.Fields = append(origin.Fields, driver.SourcePlaneFieldV1{Name: key, Value: sourcePlaneByteCommitment(bytes)})
 		}
@@ -51,6 +54,9 @@ func (a *Archive) SourcePlaneSidecarOrigins() ([]driver.SourcePlaneOriginV1, err
 	}
 	sort.Slice(origins, func(i, j int) bool {
 		a, b := origins[i], origins[j]
+		if a.Project != b.Project {
+			return a.Project < b.Project
+		}
 		if a.ID != b.ID {
 			return a.ID < b.ID
 		}

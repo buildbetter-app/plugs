@@ -313,7 +313,7 @@ func (o *Ontology) readyAncestors(doc pipeline.Document, graph map[string]stored
 		// and their live blockers suppress the entire subtree, using each
 		// ancestor's own project ontology from the same complete snapshot.
 		category, known := o.effective(row.doc.Project).Category(state(row.doc).Status)
-		if !known || category == ontology.Backlog {
+		if !known || category.Backlog() {
 			return false, nil
 		}
 		unblocked, err := o.noOpenBlockers(row.doc, graph, work...)

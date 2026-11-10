@@ -99,7 +99,7 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 	var receiptBytes []byte
 	for _, result := range report.Receipt.Commit.Results {
 		if result.Ref.ID == driver.SourcePlaneCommitRecordID {
-			if receiptBytes != nil || !result.Ref.Branch.IsZero() || result.Revision.String() != "1" {
+			if receiptBytes != nil || !result.Ref.Branch.IsZero() || result.Revision != report.Receipt.Commit.Revision {
 				return Report{}, nil, driver.ErrConflict
 			}
 			receiptBytes = result.Record
@@ -108,7 +108,11 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 	if len(receiptBytes) == 0 || json.Unmarshal(receiptBytes, &binding) != nil {
 		return Report{}, nil, driver.ErrConflict
 	}
-	initial := driver.Meta{StoreID: meta.StoreID, Incarnation: meta.Incarnation, Head: model.Natural64(1), HistoryFloor: model.Natural64(1)}
+	floor := model.Natural64(1)
+	if bound.HistoryMode == driver.RestoreHistoryModeFull {
+		floor = model.Natural64(0)
+	}
+	initial := driver.Meta{StoreID: meta.StoreID, Incarnation: meta.Incarnation, Head: report.Receipt.Commit.Revision, HistoryFloor: floor}
 	if err := binding.Validate(bound, initial); err != nil {
 		return Report{}, nil, driver.ErrConflict
 	}

@@ -14,6 +14,7 @@ go_library(
 
 go_test(
     name = "dumpformat_test",
+    data = glob(["testdata/*.tar"]),
     srcs = glob(["*_test.go"]),
     embed = [":dumpformat"],
     deps = ["//internal/core/ontology"],
@@ -24,3 +25,5 @@ filegroup(
     srcs = glob(["**"]),
     visibility = ["//visibility:public"],
 )
+
+exports_files(glob(["testdata/*.tar"]), visibility = ["//:__subpackages__"])

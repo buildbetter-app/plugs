@@ -75,14 +75,27 @@ Go-built 9d6 reference keep their original labels. This fixture neither invokes
 nor admits an official producer bundle.
 
 The corpus records default and configured adaptive lengths, explicit and closed
-child counters, nested and segmented parents, ten-nonce retry, and complete
+child counters, continuation after deleting the highest child before restore,
+nested and segmented parents, ten-nonce retry, and complete
 length-3-through-8 exhaustion using real public CLI JSONL input. Supplying
 `created_at` through the public import command makes the native hash tuple
 repeatable without changing its generator or clock. Each same-run capture is
 restored in snapshot mode and continued through real RPC on memory, SQLite and
-PostgreSQL, preserving source records and replaying after reopen. The separate modern create route records widths 9 and 10 from its actual
-persisted creation tuple, including a configured zero collision budget, and
-replays those same tuples after restore. The legacy import oracle covers
+PostgreSQL, preserving source records and replaying after reopen. The separate
+public HTTP domain route records widths 9 and 10 from its actual returned
+creation tuple, including a configured zero collision budget, and replays
+those exact hash inputs after restore. It separately retains the actual
+captured source tuple: native SQL `DATETIME` rounds the timestamp to seconds,
+while the public create response retains the timestamp used to mint the ID.
+The test requires that precise clock conversion and exact equality of every
+other tuple field. Both tuples and the independently rederived persisted
+candidate remain in the receipt. It uses the same exact production
+9d6 executable's `bd serve` command over the existing pinned, owned Dolt runtime.
+Every HTTP request and response and the server's original process streams and
+shutdown are retained; each server stops before the following source capture.
+The embedded CLI uses a fixed eight-character ceiling even when public config
+persists a larger value; those CLI calls do not qualify widths 9 and 10.
+The legacy import oracle covers
 lengths 3 through 8 only. Pipeline cause receipts identify
 exhaustion; the RPC layer currently returns its ordinary internal error.
 
@@ -103,3 +116,28 @@ the historical bundle descriptor, and forwarding these hosted variables:
 --test_env=GITHUB_SHA --test_env=GITHUB_WORKFLOW_REF
 --test_env=PLUG_ID_STYLE_A_REQUEST_SHA=<exact-candidate-sha>
 ```
+
+The source-plane composition uses the complete immutable consumer dependency
+from `312a6668b615ca25d7130c7b3e08cb0a5c211dcf`. That dependency is authored
+source; its prior evidence does not qualify this composition. For the declared
+single-project durable-task corpus, the manual fixture supplies an explicit
+`BindSourceImport` plan: exact source addresses and field/status dispositions,
+a fixture-owned principal, the selected target incarnation and checkpoint
+lifetime, all raw origins and all captured sidecars. The archive's source-plane,
+source-fields and history declarations stay intact. The unbound inspection
+digest is retained separately from the bound core projection digest.
+
+The pinned task rows retain their actual SQL `NULL` storage class. In the
+unchanged V1 plan layout, an empty disposition StorageClass denotes a present
+SQL `NULL`; nonempty values denote exact source text. Missing columns and raw
+empty strings refuse. Raw null field bytes and their presence/hash commitments
+remain part of the plan and physical source evidence. This is separate from
+memory's process lifetime, which remains truthful after source installation.
+
+The full paired conservation sequence remains present. Its source-plane branch
+also checks the immutable commit binding against the admitted plan and actual
+checkpoint envelope/logical bytes. Every logical census pins core records and
+source checkpoints in one driver snapshot. Reopen, continuation, refusal and
+idempotent replay preserve those checkpoints exactly. These single-project
+snapshot controls provide no two-source history merge or runtime-authority
+qualification.

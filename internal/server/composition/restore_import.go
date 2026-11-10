@@ -55,13 +55,14 @@ func (a *restoreImportAdapter) Import(ctx context.Context, restoreID string, pri
 }
 
 type restoreImportAdapter struct {
-	store         driver.Store
-	lease         driver.ActiveLease
-	authMode      string
-	presence      restore.PresenceVerifier
-	planner       RestoreImportPlanner
-	sourcePlanner RestoreSourcePlanner
-	installSource func(context.Context, driver.RestoreImportProfile, converterroundtrip.Report) error
+	store          driver.Store
+	lease          driver.ActiveLease
+	authMode       string
+	presence       restore.PresenceVerifier
+	planner        RestoreImportPlanner
+	sourcePlanner  RestoreSourcePlanner
+	installSource  func(context.Context, driver.RestoreImportProfile, converterroundtrip.Report) error
+	nativeOntology bool
 }
 
 func newRestoreImportAdapter(store driver.Store, lease driver.ActiveLease, authMode string, presence restore.PresenceVerifier, planner RestoreImportPlanner) *restoreImportAdapter {

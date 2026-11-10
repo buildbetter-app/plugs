@@ -450,7 +450,7 @@ func TestJointImportedMemoriesPublicReadReverseAndConservationAllDrivers(t *test
 					}
 				}
 			}
-			for _, control := range []string{"public-project", "public-source", "public-extra", "raw-project", "raw-missing-project", "raw-extra"} {
+			for _, control := range []string{"public-project", "public-source", "public-extra", "raw-project", "raw-missing-project", "raw-extra", "raw-missing-metadata", "raw-missing-source-id", "raw-classification-shape"} {
 				t.Run(control, func(t *testing.T) {
 					id := "fixture"
 					if control[:3] == "raw" {
@@ -461,15 +461,22 @@ func TestJointImportedMemoriesPublicReadReverseAndConservationAllDrivers(t *test
 					decode(t, row.Body, &body)
 					switch control {
 					case "public-project":
-						body["metadata"].(map[string]any)["plug.restore.source_project"] = "wrong"
+						body["source_project"] = "wrong"
 					case "public-source":
-						body["metadata"].(map[string]any)["plug.restore.source"].(map[string]any)["value"] = "wrong"
+						body["source"].(map[string]any)["value"] = "wrong"
 					case "public-extra", "raw-extra":
 						body["extra"] = true
 					case "raw-project":
 						body["source_project"] = "wrong"
 					case "raw-missing-project":
 						delete(body, "source_project")
+					case "raw-missing-metadata":
+						delete(body, "metadata")
+					case "raw-missing-source-id":
+						delete(body, "source_id")
+					case "raw-classification-shape":
+						body["classification"] = map[string]any{"unexpected": true}
+						body["metadata"].(map[string]any)["beads.classification"] = map[string]any{"unexpected": true}
 					}
 					mutated := row
 					mutated.Body = encode(t, body)

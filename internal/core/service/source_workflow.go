@@ -18,12 +18,13 @@ import (
 )
 
 type sourceWorkflow struct {
-	provider    *workflowplugin.Provider
-	digest      string
-	profile     driver.RestoreImportProfile
-	restoreTime time.Time
-	active      map[string]string // exact target -> project, retained after completion
-	addresses   map[sourceAddress]bool
+	provider     *workflowplugin.Provider
+	digest       string
+	profile      driver.RestoreImportProfile
+	restoreTime  time.Time
+	active       map[string]string // exact target -> project, retained after completion
+	addresses    map[sourceAddress]bool
+	allocatorIDs []string // global identity occupancy, retained after completion/deletion
 }
 type sourceAddress struct{ project, id string }
 
@@ -45,7 +46,11 @@ func (s *Service) InstallSourceWorkflow(ctx context.Context, provider *workflowp
 	if err != nil {
 		return err
 	}
-	initial := driver.Meta{StoreID: meta.StoreID, Incarnation: meta.Incarnation, Head: model.Natural64(1), HistoryFloor: model.Natural64(1)}
+	floor := model.Natural64(1)
+	if bound.HistoryMode == driver.RestoreHistoryModeFull {
+		floor = model.Natural64(0)
+	}
+	initial := driver.Meta{StoreID: meta.StoreID, Incarnation: meta.Incarnation, Head: receipt.Commit.Revision, HistoryFloor: floor}
 	if provider == nil || meta.Head.IsZero() || commit.Validate(bound, initial) != nil || len(commit.Providers) != 1 || len(plan.Providers) != 1 {
 		return driver.ErrConflict
 	}
@@ -74,6 +79,7 @@ func (s *Service) InstallSourceWorkflow(ctx context.Context, provider *workflowp
 	installed := &sourceWorkflow{provider: provider, digest: commit.RequestHash, profile: bound, restoreTime: change.Time, active: map[string]string{}, addresses: map[sourceAddress]bool{}}
 	for _, entity := range plan.Entities {
 		installed.addresses[sourceAddress{entity.Source.Project, entity.Source.ID}] = true
+		installed.allocatorIDs = append(installed.allocatorIDs, entity.Source.ID, entity.TargetID)
 		if entity.TargetKind == "workflow:item" {
 			installed.active[entity.TargetID] = entity.Source.Project
 		}
@@ -190,6 +196,32 @@ func sourceOpWithTarget(op model.Op, target model.Ref) model.Op {
 		op.Link = &v
 	}
 	return op
+}
+
+// Source edits need the general source participant, which stages each operation
+// in request order. The joined delete participant handles ordinary operations
+// and explicit incident unlinks; it must not replace a source edit with a core
+// operation. Use immutable import bindings so absent aliases cannot fall through.
+func sourceDeleteBatchHasSourceEdits(source *sourceWorkflow, cs model.ChangeSet, project string) bool {
+	if source == nil {
+		return false
+	}
+	for _, op := range cs.Ops {
+		if err := op.Validate(); err != nil {
+			return true // The canonical writer reports malformed operations.
+		}
+		if op.Kind == model.OpDelete || op.Kind == model.OpUnlink {
+			continue
+		}
+		target := sourceOpTarget(op)
+		if workflowRef(target) || source.addresses[sourceAddress{project, target.ID}] {
+			return true
+		}
+		if op.Kind == model.OpLink && op.Link != nil && (workflowRef(op.Link.To) || source.addresses[sourceAddress{project, op.Link.To.ID}]) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) sourcePreparation(source *sourceWorkflow, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) pipeline.SourcePreparation {

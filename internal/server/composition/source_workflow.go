@@ -12,6 +12,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/integration/converterroundtrip"
 	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -39,6 +40,20 @@ func (r *Runtime) installSourceWorkflow(ctx context.Context, profile driver.Rest
 	if err != nil {
 		return err
 	}
+	if r.nativeImportOntology {
+		if report.Archive == nil || report.Archive.Manifest().StatusCategoryContract != dumpformat.StatusCategoryContract || r.ontologyRuntime == nil {
+			return driver.ErrUnsupported
+		}
+		meta, err := r.Store.Meta(ctx)
+		if err != nil {
+			return err
+		}
+		_, snapshot, err := loadConfiguredOntology(ctx, r.Store, meta, "", &OntologyConfig{Source: service.StaticOntologySource(model.RefByID(converterroundtrip.ImportedOntologySourceID, model.Natural64(0)))})
+		if err != nil {
+			return err
+		}
+		r.ontologyRuntime.Refresh(snapshot)
+	}
 	return r.Service.InstallSourceWorkflow(ctx, provider, profile, *report.SourcePlanes, *report.Receipt)
 }
 
@@ -56,6 +71,9 @@ func sourceAdmissionDigest(base, joint string) string {
 }
 
 func (a *restoreImportAdapter) importSourceArchive(ctx context.Context, principal model.PrincipalRef, data []byte, request RestoreImportRequest, archive *dumpformat.Archive) (converterroundtrip.Report, error) {
+	if (archive.Manifest().StatusCategoryContract == dumpformat.StatusCategoryContract) != a.nativeOntology {
+		return converterroundtrip.Report{}, driver.ErrUnsupported
+	}
 	if a.installSource == nil {
 		return converterroundtrip.Report{}, converterroundtrip.ErrRestoreUnavailable
 	}

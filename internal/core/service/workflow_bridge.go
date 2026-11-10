@@ -237,7 +237,7 @@ func (r *workflowCoreResolver) IsParentBlocked(ctx context.Context, by model.Pri
 		return blocked, err
 	}
 	return r.mixedParentBlocked(ctx, parent, func(id string) (workflowplugin.OrdinaryParentFact, error) {
-		if row, exists := r.graph[id]; !exists || row.doc.Project != meta.Project {
+		if row, exists := r.graph[id]; !exists || meta.Project != "" && row.doc.Project != meta.Project {
 			return workflowplugin.OrdinaryParentFact{Blocked: true}, nil
 		}
 		return mixed(id)

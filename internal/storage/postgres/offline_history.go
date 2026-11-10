@@ -57,6 +57,14 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 	for _, k := range t.bumps {
 		bumps = append(bumps, k)
 	}
+
+	if t.sourcePlaneImport != nil {
+		if err := t.sourcePlaneImport.Validate(h, t.checkpointWrites, t.records); err != nil {
+			return zero, err
+		}
+	} else if len(t.checkpointWrites)+len(t.checkpointGuards) != 0 {
+		return zero, driver.ErrUnsupported
+	}
 	plan, err := t.offlineHistory.Finalize(h, tail, t.acquired, bumps)
 	if err != nil {
 		return zero, err
@@ -66,6 +74,9 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 	fail := func(err error) (model.Changeset, error) { _ = t.finish(); return zero, err }
 	if err = t.fence(ctx); err != nil {
 		return zero, err
+	}
+	if err := t.checkCheckpointGuards(ctx); err != nil {
+		return fail(err)
 	}
 	if err := t.publishAllocatorJournal(ctx, t.sql, plan.Meta, true); err != nil {
 		return fail(err)
@@ -145,6 +156,9 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 	}
 	entry := plan.Entries[len(plan.Entries)-1]
 	if err = t.saveReceipt(ctx, scope, h, response, entry); err != nil {
+		return fail(err)
+	}
+	if err = t.publishCheckpoints(ctx); err != nil {
 		return fail(err)
 	}
 	if err = t.publish(ctx, h.IdempotencyKey); err != nil {
