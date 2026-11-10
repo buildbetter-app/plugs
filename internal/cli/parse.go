@@ -53,7 +53,9 @@ Commands:
   ontology diff --from REVISION --to REVISION [--project PROJECT]
   history get ID --as-of REVISION
   history diff ID --from REVISION --to REVISION
-  events [--event TYPE] [--resource REF] [--limit N] [--after TOKEN]
+  events [--event TYPE] [--resource REF] [--limit N|all] [--after TOKEN]
+  events all [--page-size N] [--after TOKEN]
+  events export [--page-size N] [--after TOKEN]  Export all events as JSONL
   health
   dump --output FILE [--history full|head] [--page-size N]
   restore FILE [--history full|head]
@@ -84,9 +86,11 @@ type Options struct {
 }
 
 type Command struct {
-	Method string
-	Params map[string]any
-	Key    string
+	Method       string
+	Params       map[string]any
+	Key          string
+	AllEvents    bool
+	ExportEvents bool
 }
 
 // Parse separates the connection/session configuration from one named command.
@@ -129,6 +133,9 @@ func ParseCommand(args []string) (Command, error) {
 		return Command{}, fmt.Errorf("command is required")
 	}
 	name := args[0]
+	if name == "events" {
+		return parseEventsCommand(args[1:])
+	}
 	if name == "brief" || name == "claim-next" || name == "memory" {
 		return parseAgentCommand(args)
 	}
@@ -146,14 +153,12 @@ func ParseCommand(args []string) (Command, error) {
 		name = "history.get"
 	} else if name == "history-diff" {
 		name = "history.diff"
-	} else if name == "events" && len(commandArgs) > 0 && commandArgs[0] == "tail" {
-		commandArgs = commandArgs[1:]
 	}
-	allowed := map[string]bool{"ready": true, "get": true, "create": true, "claim": true, "update": true, "comment": true, "close": true, "reopen": true, "defer": true, "cancel": true, "fail": true, "link": true, "unlink": true, "batch": true, "history": true, "history.get": true, "history.diff": true, "events": true, "health": true, "dump": true, "restore": true}
+	allowed := map[string]bool{"ready": true, "get": true, "create": true, "claim": true, "update": true, "comment": true, "close": true, "reopen": true, "defer": true, "cancel": true, "fail": true, "link": true, "unlink": true, "batch": true, "history": true, "history.get": true, "history.diff": true, "health": true, "dump": true, "restore": true}
 	if !allowed[name] {
 		return Command{}, fmt.Errorf("unsupported command %q", name)
 	}
-	var title, typ, fields, body, reason, asOf, expect, id, key, cursor, after, eventType, resource, from, to, kind, changeset, output, history string
+	var title, typ, fields, body, reason, asOf, expect, id, key, cursor, from, to, kind, changeset, output, history string
 	var limit int
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -208,12 +213,6 @@ func ParseCommand(args []string) (Command, error) {
 		add(&to, "to")
 		fs.StringVar(&from, "from-revision", "", "from revision")
 		fs.StringVar(&to, "to-revision", "", "to revision")
-	case "events":
-		add(&eventType, "event")
-		add(&resource, "resource")
-		add(&after, "after")
-		add(&cursor, "cursor")
-		fs.IntVar(&limit, "limit", 1000, "limit")
 	case "health":
 	}
 	write := name == "create" || name == "update" || name == "claim" || name == "comment" || name == "close" || name == "reopen" || name == "defer" || name == "cancel" || name == "fail" || name == "link" || name == "unlink" || name == "batch"
@@ -380,27 +379,6 @@ func ParseCommand(args []string) (Command, error) {
 			return c, fmt.Errorf("--to: %w", err)
 		}
 		p["fromRevision"], p["toRevision"] = fromValue, toValue
-	}
-	if name == "events" {
-		c.Method = "event.list"
-		if after == "" && cursor != "" {
-			after = cursor
-		}
-		if after != "" {
-			p["after"] = after
-		}
-		if limit < 1 || limit > 1000 {
-			return c, fmt.Errorf("--limit must be between 1 and 1000")
-		}
-		p["limit"] = limit
-		f := map[string]any{}
-		if eventType != "" {
-			f["events"] = []string{eventType}
-		}
-		if resource != "" {
-			f["resources"] = []string{resource}
-		}
-		p["filter"] = f
 	}
 	if name == "health" {
 		c.Method = "admin.health"

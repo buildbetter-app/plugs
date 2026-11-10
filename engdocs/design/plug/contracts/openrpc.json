@@ -3779,6 +3779,16 @@
           }
         },
         {
+          "name": "typeMappings",
+          "schema": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MapTypeDirective"
+            }
+          },
+          "description": "Existing changed-key map_type directives against original project/type selectors; preserves all fields."
+        },
+        {
           "name": "_meta",
           "schema": {
             "$ref": "#/components/schemas/Meta"
@@ -6856,6 +6866,91 @@
         },
         {
           "$ref": "#/components/errors/PluginDurableStateUnavailable"
+        }
+      ],
+      "x-effect": "read",
+      "x-idempotency": "none",
+      "x-permission": "read",
+      "x-agent-core": true,
+      "x-stability": "v1"
+    },
+    {
+      "name": "gate.list",
+      "summary": "List exact installed gates in canonical default query order.",
+      "description": "Includes templates, pinned-status and ephemeral gates by default. All includes closed gates alongside open gates. Exclude templates before the selected gate limit; limit zero is unlimited. Merge both planes and order by priority ascending, creation time descending, then ID ascending before the limit. Await type filtering follows that limit: empty or all matches every type, gh matches gh: prefixes, other values match exactly. Query failures propagate; missing issue rows are dropped.",
+      "tags": [
+        {
+          "name": "core"
+        }
+      ],
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "all",
+          "schema": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        {
+          "name": "excludeTemplates",
+          "schema": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        {
+          "name": "limit",
+          "schema": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775807,
+            "default": 0
+          }
+        },
+        {
+          "name": "awaitType",
+          "schema": {
+            "type": "string",
+            "default": ""
+          }
+        },
+        {
+          "name": "_meta",
+          "schema": {
+            "$ref": "#/components/schemas/Meta"
+          },
+          "description": "Transport metadata; not an application actor field."
+        }
+      ],
+      "result": {
+        "name": "result",
+        "description": "Result",
+        "schema": {
+          "$ref": "#/components/schemas/BeadPage"
+        }
+      },
+      "errors": [
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/Unsupported"
+        },
+        {
+          "$ref": "#/components/errors/Forbidden"
+        },
+        {
+          "$ref": "#/components/errors/Busy"
+        },
+        {
+          "$ref": "#/components/errors/ProjectRequired"
+        },
+        {
+          "$ref": "#/components/errors/CursorInvalid"
+        },
+        {
+          "$ref": "#/components/errors/IncarnationChanged"
         }
       ],
       "x-effect": "read",
@@ -11386,6 +11481,56 @@
         ],
         "additionalProperties": false,
         "description": "Live Beads adaptive base36 hash policy, with ten nonce attempts per length through the configured maximum and monotonic parent.N child counters. Source IDs remain unchanged."
+      },
+      "MapTypeDirective": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "const": "map_type"
+          },
+          "target": {
+            "type": "object",
+            "properties": {
+              "project": {
+                "type": "string",
+                "minLength": 1
+              },
+              "type": {
+                "type": "string",
+                "minLength": 1
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "project",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          "from": {
+            "type": "string",
+            "minLength": 1
+          },
+          "to": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "target",
+          "from",
+          "to"
+        ],
+        "additionalProperties": false
       }
     },
     "errors": {
@@ -14020,10 +14165,10 @@
     "format": "plug-method-registry/1",
     "status": "bounded-contract-artifact",
     "purpose": "Human-maintained bounded contract artifact, read independently of methods at validation time; validates the closed method inventory, descriptor fields and wire inventories before an implementation generator exists.",
-    "methodCount": 85,
+    "methodCount": 86,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
-    "nameSha256": "e4cc1165f352268dd7412a50f2ec6ded5daa8a22c6f2ad3f4205ef382c423907",
-    "descriptorSha256": "b803f470082ce3b2ecd3e007b6f0dac9b6ac811ed8e000febb4da98a888ad672",
+    "nameSha256": "bedf3c904d90b0d30d8f2f3292dc48d2124bcddc0f984aa3ed5f829d62420c06",
+    "descriptorSha256": "56d9787a9119cee6a034b849a9c79510bd6a9d9b026d6081fb13f50d124fba4e",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -16446,6 +16591,16 @@
             }
           },
           {
+            "name": "typeMappings",
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/MapTypeDirective"
+              }
+            },
+            "description": "Existing changed-key map_type directives against original project/type selectors; preserves all fields."
+          },
+          {
             "name": "_meta",
             "schema": {
               "$ref": "#/components/schemas/Meta"
@@ -18448,6 +18603,65 @@
           "#/components/errors/IncarnationChanged",
           "#/components/errors/InternalError",
           "#/components/errors/PluginDurableStateUnavailable"
+        ]
+      },
+      {
+        "name": "gate.list",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": true,
+        "params": [
+          {
+            "name": "all",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "excludeTemplates",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "limit",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807,
+              "default": 0
+            }
+          },
+          {
+            "name": "awaitType",
+            "schema": {
+              "type": "string",
+              "default": ""
+            }
+          },
+          {
+            "name": "_meta",
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            },
+            "description": "Transport metadata; not an application actor field."
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/BeadPage"
+        },
+        "errors": [
+          "#/components/errors/InvalidParams",
+          "#/components/errors/Unsupported",
+          "#/components/errors/Forbidden",
+          "#/components/errors/Busy",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/CursorInvalid",
+          "#/components/errors/IncarnationChanged"
         ]
       }
     ],

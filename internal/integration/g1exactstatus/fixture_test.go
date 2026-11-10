@@ -83,9 +83,8 @@ func nativeDocument() ontology.Document {
 	return d
 }
 
-func compiled(t *testing.T) (ontology.Snapshot, service.OntologySource) {
+func compiledDocument(t *testing.T, d ontology.Document) (ontology.Snapshot, service.OntologySource) {
 	t.Helper()
-	d := nativeDocument()
 	// The same exact status is frozen in a second project. A target selector
 	// must use the bead's bound project, never a global or caller status table.
 	overlay := ontology.Document{Statuses: map[string]ontology.Status{"native-ready-alt": {Name: "Other project frozen", Category: ontology.Frozen}}}
@@ -130,6 +129,11 @@ func eachFixture(t *testing.T, run func(*testing.T, *fixture)) {
 
 func eachConfiguredFixture(t *testing.T, mode string, run func(*testing.T, *fixture)) {
 	t.Helper()
+	eachDocumentFixture(t, mode, nativeDocument(), run)
+}
+
+func eachDocumentFixture(t *testing.T, mode string, document ontology.Document, run func(*testing.T, *fixture)) {
+	t.Helper()
 	// The default product configuration has no permission plugin. Every exact
 	// status workload runs there; installed-policy controls use a separate User
 	// configuration and assert the policy's actual supported/refused actions.
@@ -137,7 +141,7 @@ func eachConfiguredFixture(t *testing.T, mode string, run func(*testing.T, *fixt
 		engines(t, func(t *testing.T, e engine) {
 			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 			t.Cleanup(cancel)
-			snap, src := compiled(t)
+			snap, src := compiledDocument(t, document)
 			f := &fixture{t: t, ctx: ctx, engine: e, snapshot: snap, actor: model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}}
 			f.open()
 			t.Cleanup(f.close)

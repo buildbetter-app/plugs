@@ -1,0 +1,52 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+COMMON = ["current_test.go", "postgres_test.go", "runtime_test.go", "policy_test.go", "caller_test.go"]
+DEPS = [
+    "//internal/cli",
+    "//internal/client",
+    "//internal/core/authz",
+    "//internal/plugins/authnapikey",
+    "//internal/plugins/authzfixed",
+    "//internal/server/authzrpc",
+    "//internal/core/events",
+    "//internal/core/model",
+    "//internal/core/pipeline",
+    "//internal/core/service",
+    "//internal/server/events",
+    "//internal/server/rpc",
+    "//internal/server/watch",
+    "//internal/server/watchhttp",
+    "//internal/storage/driver",
+    "//internal/storage/memory",
+    "//internal/storage/postgres",
+    "//internal/storage/sqlite",
+]
+
+go_test(
+    name = "current_test",
+    srcs = COMMON,
+    args = ["-test.v"],
+    deps = DEPS,
+    size = "large",
+    tags = ["local", "requires-network"],
+    timeout = "long",
+)
+
+# Explicit public source-built reference recordings; no official producer action.
+go_test(
+    name = "record_native_test",
+    srcs = COMMON + ["native_build_test.go", "native_recording_test.go"],
+    data = ["//spec/s1-b09-native:lexicon_files", "//internal/publicnative:dolt_runtime"],
+    env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
+    args = ["-test.v", "-test.run=^TestB20FreshNativeCurrentWorkingSetTwins$$"],
+    deps = DEPS + ["//internal/publicnative"],
+    size = "enormous",
+    tags = ["local", "manual"],
+    timeout = "eternal",
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
