@@ -94,12 +94,12 @@ func TestSourceInventoryScansListedPackagesDocsAndHiddenPaths(t *testing.T) {
 		"[[term]]\nmatch = [" + strconv.Quote(productTerm) + "]\nclass = \"product-term\"\n" +
 		"[zones]\nprovenance = [\"NOTICE.md\"]\n"
 	manifest := writeSourceInventory(t, map[string][]byte{
-		"engdocs/style/lexicon.toml": []byte(config),
-		"new/BUILD.bazel":            []byte("# package\n"),
-		"new/main.go":                []byte("package main\nconst inherited = " + strconv.Quote(identifier) + "\n"),
-		"docs/nested/guide.md":       []byte(productTerm + "\n"),
-		".hidden/note.md":            []byte(productTerm + "\n"),
-		"internal/source_/note.md":   []byte(productTerm + "\n"),
+		rulesDirectory + "/rules.toml": []byte(config),
+		"new/BUILD.bazel":              []byte("# package\n"),
+		"new/main.go":                  []byte("package main\nconst inherited = " + strconv.Quote(identifier) + "\n"),
+		"docs/nested/guide.md":         []byte(productTerm + "\n"),
+		".hidden/note.md":              []byte(productTerm + "\n"),
+		"internal/source_/note.md":     []byte(productTerm + "\n"),
 	})
 	findings, err := CheckSourceInventory(manifest)
 	if err != nil {
