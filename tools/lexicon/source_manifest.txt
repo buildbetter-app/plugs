@@ -1342,6 +1342,14 @@ spec/cardb19/testdata/recording-1/export.jsonl
 spec/cardb19/testdata/recording-1/imported.json
 spec/cardb19/testdata/recording-2/export.jsonl
 spec/cardb19/testdata/recording-2/imported.json
+spec/cardb20/BUILD.bazel
+spec/cardb20/README.md
+spec/cardb20/current_test.go
+spec/cardb20/native_build_test.go
+spec/cardb20/native_recording_test.go
+spec/cardb20/policy_test.go
+spec/cardb20/postgres_test.go
+spec/cardb20/runtime_test.go
 spec/cardb28/BUILD.bazel
 spec/cardb28/README.md
 spec/cardb28/cardb28_test.go

@@ -1,0 +1,421 @@
+package cardb20
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/buildbetter-app/plugs/internal/publicnative"
+)
+
+type nativeWorkspace struct {
+	dir string
+	env []string
+}
+type nativeImage struct {
+	Rows      map[string][]map[string]any `json:"rows"`
+	RawSHA256 map[string]string           `json:"raw_sha256"`
+}
+type nativeTwin struct {
+	Name       string                 `json:"name"`
+	Projection []stableEvent          `json:"journal_projection"`
+	Audit      []map[string]any       `json:"audit_projection"`
+	Images     map[string]nativeImage `json:"current_images"`
+	Delivery   []map[string]any       `json:"follow_delivery"`
+}
+
+func TestB20FreshNativeCurrentWorkingSetTwins(t *testing.T) {
+	root := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")
+	if !filepath.IsAbs(root) {
+		t.Fatal("absolute declared output directory required")
+	}
+	r := &nativeRecorder{t: t, root: root}
+	checkout := os.Getenv("PLUG_SOURCE_MODULE_ROOT")
+	for _, key := range []string{"PLUG_B20_REQUEST_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_SHA", "GITHUB_WORKFLOW_REF"} {
+		if os.Getenv(key) == "" {
+			t.Fatalf("missing exact request/run binding %s", key)
+		}
+	}
+	if !filepath.IsAbs(checkout) {
+		t.Fatal("actual checked-out candidate root required")
+	}
+	actual := strings.TrimSpace(string(r.buildCommand(checkout, "candidate-head", "/usr/bin/git", []string{"rev-parse", "HEAD"})))
+	if actual != os.Getenv("PLUG_B20_REQUEST_SHA") {
+		t.Fatal("candidate request/checkout mismatch")
+	}
+	input, err := os.ReadFile(filepath.Join(checkout, "spec/s1-b09-native/native_inputs.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hashBytes(input) != "a7ddd9047eb94e54cdaa138b1adf756c5088a50bc01605ee2c6eafbfb9d0d9c2" {
+		t.Fatal("existing canonical build protocol changed")
+	}
+	var protocol struct {
+		ExporterLabel string `json:"exporter_label"`
+	}
+	if err := json.Unmarshal(input, &protocol); err != nil || protocol.ExporterLabel == "" {
+		t.Fatal("missing canonical production executable label")
+	}
+	r.target = protocol.ExporterLabel
+	manifest, err := os.ReadFile(filepath.Join(checkout, "tools/lexicon/source_manifest.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "candidate-source-manifest.txt"), manifest, 0600); err != nil {
+		t.Fatal(err)
+	}
+	r.writeJSON(filepath.Join(root, "request-run-binding.json"), map[string]any{"candidate": actual, "target": os.Getenv("TEST_TARGET"), "run": os.Getenv("GITHUB_RUN_ID"), "attempt": os.Getenv("GITHUB_RUN_ATTEMPT"), "workflow_sha": os.Getenv("GITHUB_SHA"), "workflow_ref": os.Getenv("GITHUB_WORKFLOW_REF"), "source_manifest_sha256": hashBytes(manifest), "native_source": pinnedSource, "qualification": "PUBLIC_SOURCE_BUILT_FIXTURE_ONLY", "official_bundle_admission": "UNRUN"})
+	binary := r.buildCanonicalSource(pinnedSource)
+	var twins []nativeTwin
+	for _, name := range []string{"a", "b"} {
+		if !t.Run("independent_"+name, func(t *testing.T) {
+			dir := filepath.Join(root, "native-"+name)
+			if err := os.Mkdir(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			twin := (&nativeRecorder{t: t, root: dir, target: r.target}).recordTwin(binary, name)
+			twins = append(twins, twin)
+		}) {
+			t.Fatal("fresh native twin incomplete; no parity credit")
+		}
+	}
+	if len(twins) != 2 || !reflect.DeepEqual(twins[0].Projection, twins[1].Projection) || !reflect.DeepEqual(twins[0].Audit, twins[1].Audit) {
+		t.Fatal("independent non-temporal reference projections diverged")
+	}
+	r.writeJSON(filepath.Join(root, "native-twins.json"), twins)
+	for _, engine := range engines {
+		t.Run("paired_"+engine, func(t *testing.T) {
+			plug := replayCurrent(t, engine)
+			native := append([]stableEvent(nil), twins[0].Projection...)
+			// A4/P6 adopts total-order Plug changesets and ontology statuses.
+			// Only this explicit semantic projection is compared: native sequence
+			// is never restored as a Plug revision or manufactured history.
+			for i := range native {
+				native[i].Actor = "cardb20-reader"
+				switch native[i].Status {
+				case "open":
+					native[i].Status = "todo"
+				case "closed":
+					native[i].Status = "done"
+				default:
+					t.Fatalf("unadopted native status %q", native[i].Status)
+				}
+			}
+			if !reflect.DeepEqual(plug, native) {
+				t.Fatalf("actual native/Plug current projection mismatch: native=%+v plug=%+v", native, plug)
+			}
+			retain(t, "comparison-"+engine+".json", map[string]any{"native_raw_projection": twins[0].Projection, "native_adopted_projection": native, "actual_plug_projection": plug, "verdict": "PASS_BOUNDED_CURRENT_WORKING_SET", "adopted_deviations": []string{"A4/P6 always-on changesets versus opt-in source journal", "ontology open/closed to todo/done", "fixture principals remain separately attributed"}})
+		})
+	}
+}
+
+func (r *nativeRecorder) command(w nativeWorkspace, label, binary string, args []string, wantFailure bool) []byte {
+	r.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd.Dir = w.dir
+	cmd.Env = append([]string(nil), w.env...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	exit := 0
+	if err != nil {
+		exit = -2
+		var e *exec.ExitError
+		if errors.As(err, &e) {
+			exit = e.ExitCode()
+		}
+	}
+	for suffix, data := range map[string][]byte{"stdout": stdout.Bytes(), "stderr": stderr.Bytes()} {
+		if err := os.WriteFile(filepath.Join(r.root, label+"."+suffix), data, 0600); err != nil {
+			r.t.Fatal(err)
+		}
+	}
+	r.writeJSON(filepath.Join(r.root, label+".request.json"), map[string]any{"argv": cmd.Args, "directory": w.dir, "environment": w.env, "exit": exit, "error": fmt.Sprint(err), "stdout_sha256": hashBytes(stdout.Bytes()), "stderr_sha256": hashBytes(stderr.Bytes())})
+	if ctx.Err() != nil || exit < 0 || (!wantFailure && exit != 0) || (wantFailure && exit == 0) {
+		r.t.Fatalf("%s exit=%d: %v\n%s", label, exit, err, stderr.Bytes())
+	}
+	return stdout.Bytes()
+}
+
+func (r *nativeRecorder) recordTwin(binary, name string) nativeTwin {
+	t := r.t
+	workRoot := "/tmp/plug-swarm/work"
+	if err := os.MkdirAll(workRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := os.MkdirTemp(workRoot, "b20-native-"+name+"-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(workspace); err != nil {
+			t.Error(err)
+		}
+	})
+	home := filepath.Join(workspace, "home")
+	dir := filepath.Join(workspace, "project")
+	for _, p := range []string{home, dir, filepath.Join(workspace, "tmp")} {
+		if err := os.Mkdir(p, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	server := publicnative.StartDolt(t, r.root)
+	base := []string{"PATH=/usr/bin:/bin", "HOME=" + home, "USER=b20-native", "TZ=UTC", "LC_ALL=C", "NO_COLOR=1", "CI=true", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=B20 Public", "GIT_AUTHOR_EMAIL=b20@example.invalid", "GIT_COMMITTER_NAME=B20 Public", "GIT_COMMITTER_EMAIL=b20@example.invalid", "TMPDIR=" + filepath.Join(workspace, "tmp"), "BEADS_ACTOR=b20-recorder", "BEADS_NO_DAEMON=1"}
+	w := nativeWorkspace{dir: dir, env: server.ChildEnv(base)}
+	// ChildEnv intentionally drops these activation variables. Add the real
+	// supported flags afterwards; also persist and read back actual CLI config.
+	w.env = append(w.env, "BD_EVENTS_JOURNAL=1", "BD_EVENTS_JOURNAL_AUTO_PRUNE=0")
+	r.command(w, "git-init", "/usr/bin/git", []string{"-c", "core.hooksPath=/dev/null", "init", "--quiet", "--template="}, false)
+	r.command(w, "version", binary, []string{"version", "--json"}, false)
+	r.command(w, "init", binary, []string{"init", "--server", "--external", "--server-host", "127.0.0.1", "--server-port", strconv.Itoa(server.Port), "--database", "b20_current", "--prefix", "b20", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet"}, false)
+	server.RequireDatabaseDir(t, "b20_current")
+	for _, kv := range [][2]string{{"events-journal", "true"}, {"events-journal-auto-prune", "false"}} {
+		r.command(w, "config-set-"+kv[0], binary, []string{"config", "set", kv[0], kv[1], "--json"}, false)
+		data := r.command(w, "config-get-"+kv[0], binary, []string{"config", "get", kv[0], "--json"}, false)
+		var got struct{ Key, Value string }
+		if json.Unmarshal(data, &got) != nil || got.Key != kv[0] || got.Value != kv[1] {
+			t.Fatalf("effective journal config differs: %s", data)
+		}
+	}
+	twin := nativeTwin{Name: name, Images: map[string]nativeImage{}}
+	twin.Images["empty"] = r.image(w, binary, "empty")
+	if len(twin.Images["empty"].Rows["events"]) != 0 || len(twin.Images["empty"].Rows["bd_events_journal"]) != 0 {
+		t.Fatal("fresh public workspace was not empty")
+	}
+	follow := r.startFollow(w, binary)
+	r.command(w, "create", binary, []string{"create", "--id", "b20-1", "--title", "journal anchor", "--json"}, false)
+	twin.Delivery = append(twin.Delivery, follow.next(t))
+	twin.Images["create"] = r.image(w, binary, "create")
+	r.command(w, "update", binary, []string{"update", "b20-1", "--title", "journal edited", "--json"}, false)
+	twin.Delivery = append(twin.Delivery, follow.next(t))
+	twin.Images["update"] = r.image(w, binary, "update")
+	r.command(w, "same-value-update", binary, []string{"update", "b20-1", "--title", "journal edited", "--json"}, false)
+	twin.Images["no-op"] = r.image(w, binary, "no-op")
+	if !reflect.DeepEqual(twin.Images["update"].Rows, twin.Images["no-op"].Rows) {
+		t.Fatal("same-value native update changed current event families")
+	}
+	batch := filepath.Join(workspace, "abort.txt")
+	batchBytes := []byte("update b20-1 title=rollback\nupdate b20-missing title=missing\n")
+	if err := os.WriteFile(batch, batchBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(r.root, "abort.txt"), batchBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	failure := r.command(w, "abort-batch", binary, []string{"batch", "--file", batch, "--json"}, true)
+	if !bytes.Contains(failure, []byte("line 2")) {
+		t.Fatalf("batch did not reach the second operation: %s", failure)
+	}
+	twin.Images["abort"] = r.image(w, binary, "abort")
+	if !reflect.DeepEqual(twin.Images["no-op"].Rows, twin.Images["abort"].Rows) {
+		t.Fatal("aborted native batch changed current event families or sequence")
+	}
+	r.command(w, "close-after-abort", binary, []string{"close", "b20-1", "--reason", "complete", "--json"}, false)
+	twin.Delivery = append(twin.Delivery, follow.next(t))
+	follow.stop(t)
+	twin.Images["final"] = r.image(w, binary, "final")
+	journalRaw := r.command(w, "export-current-journal", binary, []string{"events", "export", "--json"}, false)
+	journal := decodeLines(t, journalRaw)
+	if !reflect.DeepEqual(journal, twin.Delivery) {
+		t.Fatal("original follow delivery differs from committed journal export order or rows")
+	}
+	if len(journal) != 3 {
+		t.Fatalf("post-abort native journal has%d rows, want3", len(journal))
+	}
+	for i, row := range journal {
+		if fmt.Sprint(row["seq"]) != fmt.Sprint(i+1) {
+			t.Fatalf("native sequence burned after rollback: %+v", journal)
+		}
+		issue, ok := row["issue"].(map[string]any)
+		if !ok {
+			t.Fatal("journal issue image missing")
+		}
+		twin.Projection = append(twin.Projection, stableEvent{fmt.Sprint(row["seq"]), fmt.Sprint(row["op"]), fmt.Sprint(row["issue_id"]), fmt.Sprint(row["actor"]), fmt.Sprint(issue["title"]), fmt.Sprint(issue["status"])})
+	}
+	for _, row := range twin.Images["final"].Rows["events"] {
+		selected := map[string]any{}
+		for _, key := range []string{"issue_id", "event_type", "actor", "old_value", "new_value", "comment"} {
+			selected[key] = row[key]
+		}
+		twin.Audit = append(twin.Audit, selected)
+	}
+	if len(twin.Audit) == 0 {
+		t.Fatal("actual current audit rows absent")
+	}
+	seq := twin.Images["final"].Rows["bd_events_seq"]
+	if len(seq) != 1 || fmt.Sprint(seq[0]["id"]) != "0" || fmt.Sprint(seq[0]["next_seq"]) != "3" {
+		t.Fatalf("actual native sequence singleton=%+v", seq)
+	}
+	if len(twin.Images["final"].Rows["bd_events_journal"]) != len(journal) {
+		t.Fatal("SQL journal and CLI journal counts differ")
+	}
+	page := decodeLines(t, r.command(w, "since-exclusive-page", binary, []string{"events", "tail", "--since", "1", "--limit", "1", "--json"}, false))
+	if len(page) != 1 || !reflect.DeepEqual(page[0], journal[1]) {
+		t.Fatal("native since-exclusive bounded page differs")
+	}
+	if raw := r.command(w, "caught-up", binary, []string{"events", "tail", "--since", "3", "--limit", "1", "--json"}, false); len(bytes.TrimSpace(raw)) != 0 {
+		t.Fatalf("caught-up native page=%s", raw)
+	}
+	if err := server.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	r.writeJSON(filepath.Join(r.root, "recording.json"), twin)
+	return twin
+}
+
+func (r *nativeRecorder) image(w nativeWorkspace, binary, label string) nativeImage {
+	result := nativeImage{Rows: map[string][]map[string]any{}, RawSHA256: map[string]string{}}
+	for _, q := range []struct{ name, order string }{{"events", "created_at,id"}, {"bd_events_journal", "seq"}, {"bd_events_seq", "id"}, {"issues", "id"}} {
+		data := r.command(w, label+"-"+q.name, binary, []string{"--readonly", "sql", "SELECT * FROM " + q.name + " ORDER BY " + q.order, "--json"}, false)
+		var rows []map[string]any
+		if err := json.Unmarshal(data, &rows); err != nil {
+			r.t.Fatalf("actual current SQL%s: %v: %s", q.name, err, data)
+		}
+		result.Rows[q.name] = rows
+		result.RawSHA256[q.name] = hashBytes(data)
+	}
+	return result
+}
+func decodeLines(t *testing.T, data []byte) []map[string]any {
+	t.Helper()
+	var result []map[string]any
+	s := bufio.NewScanner(bytes.NewReader(data))
+	s.Buffer(make([]byte, 4096), 8<<20)
+	for s.Scan() {
+		var row map[string]any
+		if err := json.Unmarshal(s.Bytes(), &row); err != nil {
+			t.Fatalf("journal line: %v: %s", err, s.Bytes())
+		}
+		result = append(result, row)
+	}
+	if err := s.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+type follower struct {
+	rows           chan map[string]any
+	done           chan error
+	stdin          *os.File
+	once           sync.Once
+	r              *nativeRecorder
+	cmd            *exec.Cmd
+	stdout, stderr *os.File
+}
+
+func (r *nativeRecorder) startFollow(w nativeWorkspace, binary string) *follower {
+	t := r.t
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := os.OpenFile(filepath.Join(r.root, "follow.stdout"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	errFile, err := os.OpenFile(filepath.Join(r.root, "follow.stderr"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(binary, "events", "tail", "--since", "0", "--follow", "--exit-on-stdin-eof", "--json")
+	cmd.Dir = w.dir
+	cmd.Env = w.env
+	cmd.Stdin = read
+	cmd.Stderr = errFile
+	pipe, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := read.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f := &follower{rows: make(chan map[string]any, 16), done: make(chan error, 1), stdin: write, r: r, cmd: cmd, stdout: out, stderr: errFile}
+	go func() {
+		s := bufio.NewScanner(pipe)
+		s.Buffer(make([]byte, 4096), 8<<20)
+		var scanErr error
+		for s.Scan() {
+			line := append(append([]byte(nil), s.Bytes()...), '\n')
+			if _, err := out.Write(line); err != nil {
+				scanErr = err
+				break
+			}
+			var row map[string]any
+			if err := json.Unmarshal(s.Bytes(), &row); err != nil {
+				scanErr = err
+				break
+			}
+			select {
+			case f.rows <- row:
+			default:
+				scanErr = errors.New("native follow exceeded bounded queue")
+			}
+			if scanErr != nil {
+				break
+			}
+		}
+		if scanErr == nil {
+			scanErr = s.Err()
+		}
+		f.done <- errors.Join(scanErr, cmd.Wait())
+	}()
+	t.Cleanup(func() { f.stop(t) })
+	r.writeJSON(filepath.Join(r.root, "follow-start.json"), map[string]any{"argv": cmd.Args, "directory": w.dir, "environment": w.env, "pid": cmd.Process.Pid})
+	return f
+}
+func (f *follower) next(t *testing.T) map[string]any {
+	t.Helper()
+	select {
+	case row := <-f.rows:
+		return row
+	case err := <-f.done:
+		t.Fatalf("native follow exited before delivery: %v", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("native follow delivery timed out")
+	}
+	return nil
+}
+func (f *follower) stop(t *testing.T) {
+	t.Helper()
+	f.once.Do(func() {
+		closeErr := f.stdin.Close()
+		var waitErr error
+		reaped := false
+		select {
+		case waitErr = <-f.done:
+			reaped = true
+		case <-time.After(10 * time.Second):
+			_ = f.cmd.Process.Kill()
+			select {
+			case waitErr = <-f.done:
+				reaped = true
+			case <-time.After(5 * time.Second):
+			}
+			t.Error("native follow exceeded graceful exit budget")
+		}
+		streamErr := errors.Join(f.stdout.Close(), f.stderr.Close())
+		f.r.writeJSON(filepath.Join(f.r.root, "follow-stop.json"), map[string]any{"pid": f.cmd.Process.Pid, "reaped": reaped, "wait_error": fmt.Sprint(waitErr), "close_error": fmt.Sprint(errors.Join(closeErr, streamErr))})
+		if waitErr != nil || closeErr != nil || streamErr != nil {
+			t.Errorf("native follow shutdown: %v", errors.Join(waitErr, closeErr, streamErr))
+		}
+	})
+}
