@@ -196,7 +196,9 @@ func assertPublicNativeCaptureReadback(t *testing.T, options beadsOptions, outpu
 		}
 	}
 	policies := map[string]bool{}
-	for _, row := range archive.Records("config") {
+	// The exporter keeps config/kv.memory.* source rows in the memory kind.
+	// Both kinds belong to the same complete raw config/metadata policy census.
+	for _, row := range append(archive.Records("config"), archive.Records("memory")...) {
 		key, ok := row.Source.Fields["key"].(string)
 		qualified := row.Source.Table + "/" + key
 		if !ok || key == "" || policies[qualified] || inventory.ConfigPolicy[qualified] == "" || row.Body["classification"] != inventory.ConfigPolicy[qualified] {
