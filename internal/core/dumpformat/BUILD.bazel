@@ -14,7 +14,7 @@ go_library(
 
 go_test(
     name = "dumpformat_test",
-    data = glob(["testdata/*.tar"]),
+    data = glob(["testdata/*.tar", "testdata/*.json"]),
     srcs = glob(["*_test.go"]),
     embed = [":dumpformat"],
     deps = ["//internal/core/ontology"],

@@ -191,6 +191,9 @@ func allowedMember(name string) bool {
 	if _, ok := scopedNativeMember(name); ok {
 		return true
 	}
+	if _, ok := scopedNativeSourceAttachment(name); ok {
+		return true
+	}
 	if name == "records/native.ndjson" || name == "versions.ndjson" || name == "changesets.ndjson" || name == NativeAllocatorMember {
 		return true
 	}
@@ -374,8 +377,14 @@ func validateManifest(manifest Manifest, members map[string][]byte) error {
 	if manifest.SourceFieldsContract != "" && manifest.SourceFieldsContract != IssueSourceFieldsContract {
 		return fmt.Errorf("unsupported source fields contract")
 	}
-	if manifest.Format != Format || manifest.Schema != 1 || manifest.Reference != BeadsReference ||
-		manifest.MainVersion != 72 || manifest.IgnoredVersion != 28 || manifest.StoreID == "" ||
+	if manifest.SourceFamilyContract == SourceFamilyContract {
+		if _, err := NativeSchemaForVersion(manifest.MainVersion, manifest.IgnoredVersion); err != nil {
+			return err
+		}
+	} else if manifest.MainVersion != 72 || manifest.IgnoredVersion != 28 {
+		return NativeSchemaError{manifest.MainVersion, manifest.IgnoredVersion, "own-version import requires native source evidence"}
+	}
+	if manifest.Format != Format || manifest.Schema != 1 || manifest.Reference != BeadsReference || manifest.StoreID == "" ||
 		manifest.Machine == "" || manifest.Scope != Scope {
 		return fmt.Errorf("unsupported manifest schema, source or scope")
 	}
@@ -570,12 +579,12 @@ func validateRecords(manifest Manifest, members map[string][]byte) (map[string][
 				}
 				continue
 			}
-			if err := validateVersionedRecord(record, manifest.Projects, counts, migration, manifest.EdgeVersion()); err != nil {
+			if err := validateVersionedRecord(record, manifest.Projects, counts, migration, manifest.EdgeVersion(), manifest.MainVersion); err != nil {
 				return nil, nil, err
 			}
 		}
 	}
-	if err := validateBoundDispositions(manifest.Sources, counts, members["config/sources.json"], migration, planes, manifest.SourceFamilyContract); err != nil {
+	if err := validateBoundDispositionsForVersion(manifest.Sources, counts, members["config/sources.json"], migration, planes, manifest.MainVersion, manifest.SourceFamilyContract); err != nil {
 		return nil, nil, err
 	}
 	if migration == nil {

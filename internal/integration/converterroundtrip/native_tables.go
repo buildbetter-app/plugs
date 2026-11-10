@@ -28,9 +28,38 @@ type NativeFamilyReport struct {
 }
 
 type nativeFamilyEvidence struct {
-	Contract    string               `json:"contract"`
-	RestoreTime string               `json:"restore_time"`
-	Families    []NativeFamilyReport `json:"families"`
+	Contract    string                `json:"contract"`
+	RestoreTime string                `json:"restore_time"`
+	Families    []NativeFamilyReport  `json:"families"`
+	Schemas     []NativeSchemaReport  `json:"source_schemas,omitempty"`
+	Histories   []NativeHistoryReport `json:"source_histories,omitempty"`
+}
+
+// NativeHistoryReport separates genuine source incompleteness from complete
+// verification of every image actually imported. Events stay a current source
+// attachment, never an invented event-to-commit assignment.
+type NativeHistoryReport struct {
+	Source              dumpformat.SourceIdentity         `json:"source"`
+	Complete            bool                              `json:"complete"`
+	VerifiedCommitCount uint64                            `json:"verified_commit_count"`
+	Coverage            *dumpformat.NativeHistoryCoverage `json:"history_coverage,omitempty"`
+}
+
+func nativeHistoryAccounting(archive *dumpformat.Archive) []NativeHistoryReport {
+	scopes := archive.NativeSourceHistories()
+	bounded := false
+	for _, scope := range scopes {
+		bounded = bounded || scope.HistoryCoverage != nil
+	}
+	if !bounded {
+		// Preserve original complete-archive report/receipt bytes.
+		return nil
+	}
+	reports := make([]NativeHistoryReport, 0, len(scopes))
+	for _, scope := range scopes {
+		reports = append(reports, NativeHistoryReport{Source: dumpformat.SourceIdentity{StoreID: scope.StoreID, Project: scope.Projects[0]}, Complete: scope.Complete, VerifiedCommitCount: uint64(len(scope.Images)), Coverage: scope.HistoryCoverage})
+	}
+	return reports
 }
 
 type nativeTableBody struct {
@@ -54,6 +83,12 @@ func nativePolicyRefusal(mode driver.RestoreHistoryMode, archive *dumpformat.Arc
 		return err
 	}
 	if scope.Complete && len(scope.Gaps) == 0 && len(scope.Images) != 0 && len(scope.Images) == len(scope.Commits) {
+		return nil
+	}
+	if scope.HistoryCoverage != nil {
+		if err := dumpformat.RequireVerifiedNativeHistory(scope); err != nil {
+			return fmt.Errorf("%w: %w", driver.ErrRestoreHistoryRefused{Mode: mode, History: archive.Manifest().History, Reason: driver.RestoreHistoryReasonAvailableUnverified}, err)
+		}
 		return nil
 	}
 	gap := dumpformat.IncompleteHistoryError{StoreID: identity.StoreID, Project: identity.Project, Reason: "native immutable history incomplete"}
@@ -125,6 +160,10 @@ func lowerNativeTableHistory(archive *dumpformat.Archive, profile driver.Restore
 		identity, err := nativeTableIdentity(scope)
 		if err != nil {
 			return driver.OfflineHistory{}, err
+		}
+		if scope.HistoryCoverage != nil {
+			history.Complete = false
+			history.NativeBoundaries = append(history.NativeBoundaries, driver.NativeHistoryBoundary{SourceStoreID: identity.StoreID, Project: identity.Project, VerifiedCommitCount: uint64(len(scope.Images)), BoundarySHA256: dumpformat.NativeHistoryCoverageSHA256(*scope.HistoryCoverage)})
 		}
 		before := []driver.Record{}
 		for _, image := range scope.Images {
@@ -232,32 +271,40 @@ func nativeCurrentRecords(archive *dumpformat.Archive, when time.Time) ([]driver
 // Recovery recomputes accounting from the authenticated original envelope and
 // the admitted restore clock. Neither a stored report nor a caller's new clock
 // can change which source leases were eligible in the committed import.
-func recoverNativeFamilies(ctx context.Context, reader driver.Reader, profile driver.RestoreImportProfile, evidence archiveEvidence, receipt *driver.IdempotencyRecord) ([]NativeFamilyReport, error) {
+func recoverNativeFamilies(ctx context.Context, reader driver.Reader, profile driver.RestoreImportProfile, evidence archiveEvidence, receipt *driver.IdempotencyRecord) ([]NativeFamilyReport, []NativeSchemaReport, []NativeHistoryReport, error) {
 	if profile.SourcePlanes == nil || profile.HistoryMode != driver.RestoreHistoryModeFull {
-		return nil, nil
+		return nil, nil, nil, nil
 	}
 	raw, err := reader.Blob(ctx, driver.Hash(evidence.ArchiveSHA256))
 	if err != nil || hashBytes(raw) != profile.ArchiveDigest {
-		return nil, driver.ErrConflict
+		return nil, nil, nil, driver.ErrConflict
 	}
 	archive, err := dumpformat.Read(bytes.NewReader(raw))
 	if err != nil {
-		return nil, driver.ErrConflict
+		return nil, nil, nil, driver.ErrConflict
 	}
 	if len(archive.NativeSourceHistories()) == 0 {
-		return nil, nil
+		return nil, nil, nil, nil
 	}
 	when, err := time.Parse(time.RFC3339Nano, profile.HistoryTime)
 	if err != nil {
-		return nil, driver.ErrConflict
+		return nil, nil, nil, driver.ErrConflict
 	}
 	_, reports, err := nativeCurrentRecords(archive, when)
 	if err != nil {
-		return nil, driver.ErrConflict
+		return nil, nil, nil, driver.ErrConflict
 	}
-	want, err := json.Marshal(nativeFamilyEvidence{Contract: archive.Manifest().SourceFamilyContract, RestoreTime: when.UTC().Format(time.RFC3339Nano), Families: reports})
+	var schemas []NativeSchemaReport
+	if archive.Manifest().MainVersion != 72 {
+		plan, planErr := buildPlanWithProfile(archive, &profile, when)
+		if planErr != nil {
+			return nil, nil, nil, driver.ErrConflict
+		}
+		schemas = plan.nativeSchemas
+	}
+	want, err := json.Marshal(nativeFamilyEvidence{Contract: archive.Manifest().SourceFamilyContract, RestoreTime: when.UTC().Format(time.RFC3339Nano), Families: reports, Schemas: schemas, Histories: nativeHistoryAccounting(archive)})
 	if err != nil {
-		return nil, driver.ErrConflict
+		return nil, nil, nil, driver.ErrConflict
 	}
 	var committed json.RawMessage
 	for _, result := range receipt.Commit.Results {
@@ -267,7 +314,7 @@ func recoverNativeFamilies(ctx context.Context, reader driver.Reader, profile dr
 	}
 	rows, err := reader.Get(ctx, []model.Ref{model.RefByID(NativeFamilyReportID, model.Natural64(0))})
 	if err != nil || len(rows) != 1 || rows[0].Kind != "instance_config" || !bytes.Equal(rows[0].Body, want) || !bytes.Equal(committed, want) {
-		return nil, driver.ErrConflict
+		return nil, nil, nil, driver.ErrConflict
 	}
-	return reports, nil
+	return reports, schemas, nativeHistoryAccounting(archive), nil
 }

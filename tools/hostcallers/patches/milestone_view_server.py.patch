@@ -1,0 +1,82 @@
+--- a/scripts/milestone_view_server.py
++++ b/scripts/milestone_view_server.py
+@@ -1,12 +1,20 @@
+-"""Serve the signals-v2 milestone view on this box's Tailscale address.
+-
+-Static files come from /home/dev/beads/milestone-view; /data.json is rebuilt from the beads export on every request,
+-so the page always shows the current beads. Read-only.
+-Run: setsid -f nohup python3 -I milestone_view_server.py > /home/dev/beads/logs/milestone-view.log 2>&1 < /dev/null
+-"""
+-import functools, http.server, json, os, subprocess, time
+-
+-WORKSPACE = "/home/dev/beads/signals-v2"
+-STATIC = "/home/dev/beads/milestone-view"
+-EXPORT = os.path.join(WORKSPACE, ".beads", "issues.jsonl")
+-PORT = 3001
++"""Prepared explicitly bound Plug milestone view; no Beads export/store access."""
++import argparse, functools, http.server, json, os, time
++import sys
++from pathlib import Path
++sys.path.insert(0, str(Path(__file__).resolve().parent))
++from plug_host import Client
++from projection import Projection
++parser = argparse.ArgumentParser()
++parser.add_argument("--binding", required=True)
++parser.add_argument("--static", required=True)
++parser.add_argument("--spec", default=None)
++parser.add_argument("--listen", default="127.0.0.1")
++parser.add_argument("--port", type=int, default=3001)
++parser.add_argument("--data-once", action="store_true")
++args = parser.parse_args()
++client = Client(args.binding, "signals-v2")
++WORKSPACE = str(client.workspace)
++STATIC = str(Path(args.static).resolve())
++PORT = args.port
++projection = Projection(client)
+@@ -15 +23 @@
+-SPEC_PATH = "/home/dev/.claude/worktrees/signal-sets/docs/specs/2026-10-23-signal-sets-spec.md"
++SPEC_PATH = args.spec
+@@ -25,3 +32,0 @@
+-FRESH = "/home/dev/beads/tmp/view-export.jsonl"
+-
+-
+@@ -29,14 +34 @@
+-    """bd's auto-export lags behind label and dependency edits, so export directly, at most every 15 seconds."""
+-    try:
+-        if time.time() - os.path.getmtime(FRESH) < 15:
+-            return FRESH
+-    except OSError:
+-        pass
+-    env = dict(os.environ, BEADS_DIR=os.path.join(WORKSPACE, ".beads"))
+-    tmp = FRESH + ".tmp"
+-    try:
+-        subprocess.run(["bd", "export", "-o", tmp], env=env, cwd=WORKSPACE, capture_output=True, timeout=60, check=True)
+-        os.replace(tmp, FRESH)
+-        return FRESH
+-    except (subprocess.SubprocessError, OSError):
+-        return EXPORT
++    return projection.fresh()
+@@ -94 +86 @@
+-            "id": issue["id"], "key": key, "title": issue["title"], "status": issue["status"],
++            "id": issue["id"], "key": key, "title": issue["title"], "status": issue["status"], "statusCategory": issue["status_category"], "isClosed": issue["status_terminal"],
+@@ -117,2 +109,2 @@
+-                       "closed": sum(n["status"] == "closed" for n in members)})
+-    return {"generatedAt": time.strftime("%Y-%m-%d %H:%M:%S %Z"), "nodes": nodes, "edges": edges,
++                       "closed": sum(n["isClosed"] for n in members)})
++    return {"projectionStale": projection.stale, "generatedAt": time.strftime("%Y-%m-%d %H:%M:%S %Z"), "nodes": nodes, "edges": edges,
+@@ -138 +130 @@
+-            except FileNotFoundError:
++            except (FileNotFoundError, TypeError):
+@@ -159,5 +151,7 @@
+-    host = subprocess.run(["tailscale", "ip", "-4"], capture_output=True, text=True, check=True).stdout.split()[0]
+-    handler = functools.partial(Handler, directory=STATIC)
+-    with http.server.ThreadingHTTPServer((host, PORT), handler) as server:
+-        print(f"milestone view on http://{host}:{PORT}", flush=True)
+-        server.serve_forever()
++    if args.data_once:
++        print(json.dumps(build_data()))
++    else:
++        handler = functools.partial(Handler, directory=STATIC)
++        with http.server.ThreadingHTTPServer((args.listen, PORT), handler) as server:
++            print("milestone view port", server.server_port, flush=True)
++            server.serve_forever()

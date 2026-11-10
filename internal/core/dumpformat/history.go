@@ -585,7 +585,7 @@ func validateHistoryImage(rows []Record, manifest Manifest) error {
 			return fmt.Errorf("duplicate or nonportable history record")
 		}
 		seen[historyRecordKey(r)] = true
-		if err := validateVersionedRecord(r, manifest.Projects, counts, nil, manifest.EdgeVersion()); err != nil {
+		if err := validateVersionedRecord(r, manifest.Projects, counts, nil, manifest.EdgeVersion(), manifest.MainVersion); err != nil {
 			return err
 		}
 		if r.Kind == "bead" {

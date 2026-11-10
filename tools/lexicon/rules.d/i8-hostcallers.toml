@@ -1,0 +1,4 @@
+# Exact prepared migration bridge files retain native type/sidecar vocabulary
+# and removed caller text. New files do not inherit this provenance admission.
+[zones]
+provenance = ["tools/hostcallers/CONTRACT.md", "tools/hostcallers/category_fixture_test.py", "tools/hostcallers/fixtures/milestone_view_server.py", "tools/hostcallers/host-ontology.json", "tools/hostcallers/host_drivers.py", "tools/hostcallers/patches/host_drivers.py.patch", "tools/hostcallers/patches/pour_step.py.patch"]
