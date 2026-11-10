@@ -51,11 +51,12 @@ func (s SQLSource) NativeInventory(ctx context.Context, capture NativeCapture) (
 	if err != nil {
 		return Inventory{}, nil, err
 	}
-	if err := checkMigrations(tables["schema_migrations"], "main"); err != nil {
+	profile, err := sourceSchemaProfile(tables)
+	if err != nil {
 		return Inventory{}, nil, err
 	}
-	if err := checkMigrations(tables["ignored_schema_migrations"], "ignored"); err != nil {
-		return Inventory{}, nil, err
+	if profile.MainVersion == 66 && capture.SourcePlaneAddressContract != SourcePlaneAddressContract {
+		return Inventory{}, nil, fmt.Errorf("own-version capture requires native source family contract")
 	}
 	log, err := s.ReadSourceCommits(ctx)
 	if err != nil {

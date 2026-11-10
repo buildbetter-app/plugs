@@ -12,8 +12,8 @@
     "beads_reference": {"const": "9d6fff760b7a314b476539198504d77ce0959656"},
     "store_id": {"type": "string", "minLength": 1},
     "machine": {"type": "string", "minLength": 1},
-    "main_version": {"const": 72},
-    "ignored_version": {"const": 28},
+    "main_version": {"enum": [66, 72]},
+    "ignored_version": {"enum": [26, 28]},
     "scope": {"const": "offline-head-and-source-archives"},
     "history": {"enum": ["unavailable", "available-unverified", "verified"]},
     "source_fields_contract": {"const": "beads-issues-source-fields/1"},
@@ -42,7 +42,7 @@
       }
     }
   },
-  "allOf": [{"if":{"required":["status_category_contract"]},"then":{"properties":{"projects":{"items":{"required":["statuses"]}},"verification":{"properties":{"ontology":{"const":"native status names/categories retained per project; explicit map_type directives recorded in manifest"}}}}},"else":{"properties":{"projects":{"items":{"not":{"required":["statuses"]}}},"verification":{"properties":{"ontology":{"const":"built-in status mapping; explicit map_type directives recorded in manifest"}}}}}},{"if":{"required":["source_family_contract"]},"then":{"required":["source_plane_address_contract"]},"else":{"properties":{"sources":{"items":{"not":{"required":["history"]}}}}}}],
+  "allOf": [{"if":{"required":["status_category_contract"]},"then":{"properties":{"projects":{"items":{"required":["statuses"]}},"verification":{"properties":{"ontology":{"const":"native status names/categories retained per project; explicit map_type directives recorded in manifest"}}}}},"else":{"properties":{"projects":{"items":{"not":{"required":["statuses"]}}},"verification":{"properties":{"ontology":{"const":"built-in status mapping; explicit map_type directives recorded in manifest"}}}}}},{"if":{"required":["source_family_contract"]},"then":{"required":["source_plane_address_contract"]},"else":{"properties":{"sources":{"items":{"not":{"required":["history"]}}}}}},{"if":{"properties":{"main_version":{"const":66}}},"then":{"required":["source_family_contract"],"properties":{"ignored_version":{"const":26},"source_family_contract":{"const":"beads-source-families/1"}}},"else":{"properties":{"ignored_version":{"const":28}}}}],
   "$defs": {
     "projectStatus": {"type":"object","additionalProperties":false,"required":["name","category"],"properties":{"name":{"type":"string","maxLength":64,"pattern":"^[a-z][a-z0-9_-]*$"},"category":{"enum":["active","wip","done","frozen"]}}},
     "natural": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},

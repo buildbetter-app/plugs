@@ -2,8 +2,9 @@ package plugdump
 
 import "strings"
 
-// CaptureSchemaVersion is the literal main cursor required by the current
-// inventory and projection. It does not claim support for an older schema.
+// CaptureSchemaVersion is the latest main cursor in the public schema registry.
+// Own-version support is separately checked by CaptureSchemaSupported and the
+// full paired migration/schema profile validation.
 func CaptureSchemaVersion() uint64 { return uint64(len(migrationHashes["main"])) }
 
 // PublicCaptureIdentifiers releases only identifiers in the public, closed

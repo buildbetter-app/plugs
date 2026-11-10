@@ -45,16 +45,17 @@ type NativeHistoryGap struct {
 // reachable immutable image was read, not that an old schema can be interpreted
 // as today's Plug business model. No unversioned row is assigned to a commit.
 type NativeHistory struct {
-	Format   string                 `json:"format"`
-	StoreID  string                 `json:"store_id"`
-	Projects []string               `json:"projects"`
-	Head     string                 `json:"head"`
-	Commits  []SourceCommit         `json:"commits"`
-	Ignore   NativeTable            `json:"ignore"`
-	Current  map[string]NativeTable `json:"current"`
-	Images   []NativeHistoryImage   `json:"images"`
-	Complete bool                   `json:"complete"`
-	Gaps     []NativeHistoryGap     `json:"gaps"`
+	SchemaProfile *NativeSchemaProfile   `json:"schema_profile,omitempty"`
+	Format        string                 `json:"format"`
+	StoreID       string                 `json:"store_id"`
+	Projects      []string               `json:"projects"`
+	Head          string                 `json:"head"`
+	Commits       []SourceCommit         `json:"commits"`
+	Ignore        NativeTable            `json:"ignore"`
+	Current       map[string]NativeTable `json:"current"`
+	Images        []NativeHistoryImage   `json:"images"`
+	Complete      bool                   `json:"complete"`
+	Gaps          []NativeHistoryGap     `json:"gaps"`
 }
 
 // NativeSourceHistoryReader uses the same scoped read transaction as Source.
@@ -326,6 +327,13 @@ func captureNativeHistory(ctx context.Context, src Source, inventory Inventory, 
 		return nil, err
 	}
 	h := &NativeHistory{Format: NativeHistoryFormat, StoreID: inventory.StoreID, Projects: []string{}, Head: log.Head, Commits: commits, Ignore: ignored, Current: current, Images: []NativeHistoryImage{}, Complete: true, Gaps: []NativeHistoryGap{}}
+	profile, err := sourceSchemaProfile(tables)
+	if err != nil {
+		return nil, err
+	}
+	if profile.MainVersion != 72 {
+		h.SchemaProfile = &profile
+	}
 	for _, project := range inventory.Projects {
 		h.Projects = append(h.Projects, project.Prefix)
 	}
@@ -436,6 +444,10 @@ func validateNativeHistory(manifest Manifest, members map[string][]byte) error {
 	if err := decodeJSON(raw, &h); err != nil {
 		return fmt.Errorf("native history shape: %w", err)
 	}
+	profile, err := validateSchemaProfile(h.SchemaProfile, manifest.MainVersion, manifest.IgnoredVersion)
+	if err != nil {
+		return err
+	}
 	projects := []string{}
 	for _, p := range manifest.Projects {
 		projects = append(projects, p.Prefix)
@@ -496,15 +508,16 @@ func validateNativeHistory(manifest Manifest, members map[string][]byte) error {
 	if err := validateTables(h.Current); err != nil {
 		return err
 	}
-	if len(h.Current) != len(tableColumns) {
-		return fmt.Errorf("incomplete native current census")
+	currentTables := make(map[string]Table, len(h.Current))
+	for name, table := range h.Current {
+		currentTables[name] = Table{Columns: table.Columns, Rows: table.Rows}
 	}
-	for name := range tableColumns {
-		columns := columnsFor(name)
-		sort.Strings(columns)
-		if !equalJSON(h.Current[name].Columns, columns) {
-			return fmt.Errorf("native current schema drift in %s", name)
-		}
+	if err := validateCurrentSchema(currentTables, profile); err != nil {
+		return err
+	}
+	observed, err := sourceSchemaProfile(currentTables)
+	if err != nil || !equalJSON(observed, profile) {
+		return fmt.Errorf("native current schema cursors disagree with profile")
 	}
 	covered := map[uint64]bool{}
 	last := uint64(0)

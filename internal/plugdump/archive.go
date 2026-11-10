@@ -184,8 +184,12 @@ func Validate(reader io.Reader) (Manifest, error) {
 	if err := validateSourcePlaneMarker(members["manifest.json"], manifest.SourcePlaneAddressContract); err != nil {
 		return Manifest{}, err
 	}
-	if manifest.Format != Format || manifest.Schema != 1 || manifest.Reference != BeadsReference || manifest.MainVersion != 72 || manifest.IgnoredVersion != 28 || manifest.StoreID == "" || manifest.Machine == "" || manifest.Scope != "offline-head-and-source-archives" {
+	profile, profileErr := schemaProfile(uint64(manifest.MainVersion), uint64(manifest.IgnoredVersion))
+	if profileErr != nil || manifest.Format != Format || manifest.Schema != 1 || manifest.Reference != BeadsReference || manifest.StoreID == "" || manifest.Machine == "" || manifest.Scope != "offline-head-and-source-archives" {
 		return Manifest{}, fmt.Errorf("unsupported manifest schema, source or scope")
+	}
+	if profile.MainVersion == 66 && manifest.SourceFamilyContract != SourceFamilyContract {
+		return Manifest{}, fmt.Errorf("own-version capture requires native source family contract")
 	}
 	if manifest.History != "unavailable" && manifest.History != "available-unverified" && manifest.History != "verified" {
 		return Manifest{}, fmt.Errorf("unsupported history claim")
@@ -258,7 +262,7 @@ func Validate(reader io.Reader) (Manifest, error) {
 			if err := decodeJSON(line, &record); err != nil || record.Kind != kind.Name || record.ID == "" || record.Source.Table == "" || record.Source.Fields == nil || record.Body == nil || (i > 0 && compareRecords(last, record, manifest.SourcePlaneAddressContract) >= 0) {
 				return Manifest{}, fmt.Errorf("invalid, duplicate or unordered typed record")
 			}
-			if err := validateRecordVersioned(record, manifest.Projects, counts, kind.Version, manifest.SourceFamilyContract); err != nil {
+			if err := validateRecordAtProfile(record, manifest.Projects, counts, kind.Version, manifest.SourceFamilyContract, profile); err != nil {
 				return Manifest{}, err
 			}
 			switch record.Source.Table {
@@ -320,7 +324,7 @@ func Validate(reader io.Reader) (Manifest, error) {
 			return Manifest{}, err
 		}
 	}
-	if err := validateDispositions(manifest.Sources, counts, manifest.SourceFamilyContract); err != nil {
+	if err := validateDispositionsAtProfile(manifest.Sources, counts, manifest.SourceFamilyContract, profile); err != nil {
 		return Manifest{}, err
 	}
 	if err := validateEdgeEndpoints(edgeRecords, beadIDs, wispIDs); err != nil {
@@ -382,6 +386,11 @@ func validateRecordVersioned(record Record, projects []Project, counts map[strin
 	if len(familyContracts) > 0 {
 		familyContract = familyContracts[0]
 	}
+	profile, _ := schemaProfile(72, 28)
+	return validateRecordAtProfile(record, projects, counts, edgeVersion, familyContract, profile)
+}
+
+func validateRecordAtProfile(record Record, projects []Project, counts map[string]int, edgeVersion int, familyContract string, profile NativeSchemaProfile) error {
 	if record.Kind == "edge" {
 		kind, _ := record.Body["type"].(string)
 		switch kind {
@@ -402,7 +411,8 @@ func validateRecordVersioned(record Record, projects []Project, counts map[strin
 		}
 	}
 	table := record.Source.Table
-	if _, ok := tableColumns[table]; !ok {
+	columns, ok := profile.tables()[table]
+	if !ok {
 		return fmt.Errorf("unknown record source table")
 	}
 	expectedKind := "beads-archive"
@@ -429,7 +439,6 @@ func validateRecordVersioned(record Record, projects []Project, counts map[strin
 	if record.Kind != expectedKind || action == "refuse-if-nonempty" {
 		return fmt.Errorf("unsupported kind/source mapping")
 	}
-	columns := columnsFor(table)
 	if table == "issues" {
 		var filtered []string
 		for _, column := range columns {
@@ -627,9 +636,15 @@ func validateDispositions(sources []Disposition, counts map[string]int, familyCo
 	if len(familyContracts) > 0 {
 		familyContract = familyContracts[0]
 	}
+	profile, _ := schemaProfile(72, 28)
+	return validateDispositionsAtProfile(sources, counts, familyContract, profile)
+}
+
+func validateDispositionsAtProfile(sources []Disposition, counts map[string]int, familyContract string, profile NativeSchemaProfile) error {
+	tables := profile.tables()
 	seen := map[string]bool{}
 	allowed := map[string]bool{"issues.row_lock": true, "issues.is_blocked": true}
-	for name := range tableColumns {
+	for name := range tables {
 		allowed[name] = true
 	}
 	for _, name := range externalFamilies {
@@ -647,7 +662,7 @@ func validateDispositions(sources []Disposition, counts map[string]int, familyCo
 		if source.Action == "refuse-if-nonempty" && source.Rows != 0 {
 			return fmt.Errorf("unsupported nonempty source disposition")
 		}
-		if _, isTable := tableColumns[source.Family]; isTable {
+		if _, isTable := tables[source.Family]; isTable {
 			expectedAction, _ := familyAction(source.Family, familyContract)
 			if seen[source.Family] || source.Action != expectedAction || ((source.Family != "repo_mtimes" || familyContract == SourceFamilyContract) && source.Rows != counts[source.Family]) {
 				return fmt.Errorf("source disposition/count does not match archived records")

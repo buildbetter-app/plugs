@@ -102,7 +102,7 @@ func TestPublicCaptureSchemaProbeOwnVersionBeforeReader(t *testing.T) {
 		name    string
 		version int
 	}{
-		{"actual_old_schema_66", 66}, {"actual_current_schema_72", 72}, {"missing_schema_cursor", 0},
+		{"actual_old_schema_66", 66}, {"actual_unsupported_schema_65", 65}, {"actual_current_schema_72", 72}, {"missing_schema_cursor", 0},
 	} {
 		t.Run(fixture.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -202,12 +202,12 @@ func TestPublicCaptureSchemaProbeOwnVersionBeforeReader(t *testing.T) {
 					t.Fatalf("actual numeric schema evidence differs: %+v", reports)
 				}
 			}
-			if fixture.version == 66 {
+			if fixture.version == 65 {
 				stdout, stderr, readerErr := invoke(false)
 				t.Logf("PUBLIC_OWN_VERSION_REFUSAL stdout=%s stderr=%s exit_error_type=%T", stdout, stderr, readerErr)
 				reports := decodeSafeReports(t, stderr)
-				if readerErr == nil || len(stdout) != 0 || len(reports) != 2 || reports[1].Stage != stageSchema || *reports[1].Schema.FoundVersion != 66 || !reflect.DeepEqual(reports[1].GoErrorTypes, []string{"*main.captureFailure", "*errors.joinError", "*main.unsupportedCaptureSchema"}) {
-					t.Fatal("strict current projection did not retain typed old-schema refusal")
+				if readerErr == nil || len(stdout) != 0 || len(reports) != 2 || reports[1].Stage != stageSchema || *reports[1].Schema.FoundVersion != 65 || !reflect.DeepEqual(reports[1].GoErrorTypes, []string{"*main.captureFailure", "*errors.joinError", "*main.unsupportedCaptureSchema"}) {
+					t.Fatal("unsupported own-version schema did not retain typed refusal")
 				}
 			}
 			entries, err := os.ReadDir(output)

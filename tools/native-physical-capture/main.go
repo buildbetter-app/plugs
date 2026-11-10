@@ -76,7 +76,7 @@ func run() (resultErr error) {
 	if err != nil || cwd != filepath.Dir(*beadsDir) {
 		return fmt.Errorf("capture must run in copied source workspace")
 	}
-	for _, name := range []string{"inventory.json", "inventory.json.sources", "capture.tar"} {
+	for _, name := range []string{"inventory.json", "inventory.json.sources", "capture.tar", "physical-evidence.json"} {
 		if _, err := os.Lstat(filepath.Join(*output, name)); !os.IsNotExist(err) {
 			return fmt.Errorf("capture refuses existing output")
 		}
@@ -101,7 +101,7 @@ func run() (resultErr error) {
 	if err != nil {
 		return err
 	}
-	// Record the actual restored version before entering the strict v72
+	// Record the actual restored version before entering the own-version
 	// inventory/history reader. This never runs a migration or alters a cursor.
 	report := safeCaptureReport{Format: "beads-capture-diagnostic/1", Stage: stageSchema, Schema: observation}
 	if *schemaOnly {
@@ -110,7 +110,7 @@ func run() (resultErr error) {
 	if err := json.NewEncoder(os.Stderr).Encode(report); err != nil {
 		return err
 	}
-	if *observation.FoundVersion != observation.ExpectedVersion {
+	if !plugdump.CaptureSchemaSupported(*observation.FoundVersion) {
 		return &unsupportedCaptureSchema{}
 	}
 	stage = stageOpen
@@ -126,6 +126,15 @@ func run() (resultErr error) {
 	stage = stageHistory
 	originalLog, err := current.ReadSourceCommits(ctx)
 	if err != nil {
+		return err
+	}
+	evidenceConn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	working, workingErr := physicalcapture.ReadWorkingRoot(ctx, evidenceConn, originalLog.Head)
+	closeEvidenceErr := evidenceConn.Close()
+	if err := errors.Join(workingErr, closeEvidenceErr); err != nil {
 		return err
 	}
 	stage = stageCensus
@@ -165,6 +174,15 @@ func run() (resultErr error) {
 	if err != nil {
 		return fmt.Errorf("archive validation: %w", err)
 	}
+	native, err := archiveNativeHistory(archive)
+	if err != nil {
+		return err
+	}
+	stage = stageHistory
+	physicalEvidence, err := readPhysicalEvidence(ctx, db, native, working, archive)
+	if err != nil {
+		return err
+	}
 	inventoryBytes, err := plugdump.MarshalNativeInventory(inventory)
 	if err != nil {
 		return err
@@ -187,6 +205,9 @@ func run() (resultErr error) {
 		return err
 	}
 	if err := writeExclusive(filepath.Join(*output, "capture.tar"), archive); err != nil {
+		return err
+	}
+	if err := writeExclusive(filepath.Join(*output, "physical-evidence.json"), physicalEvidence); err != nil {
 		return err
 	}
 	counts := map[string]int{}

@@ -128,6 +128,69 @@
           }
         }
       }
+    },
+    "schema_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "main_version",
+        "ignored_version",
+        "absences"
+      ],
+      "properties": {
+        "main_version": {
+          "enum": [
+            66,
+            72
+          ]
+        },
+        "ignored_version": {
+          "enum": [
+            26,
+            28
+          ]
+        },
+        "absences": {
+          "type": "array",
+          "maxItems": 7,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "family",
+              "introduced_in",
+              "reason"
+            ],
+            "properties": {
+              "family": {
+                "enum": [
+                  "epoch_minted_addresses",
+                  "issue_versions",
+                  "issues",
+                  "store_epoch",
+                  "wisps"
+                ]
+              },
+              "column": {
+                "enum": [
+                  "current_revision",
+                  "participation_generation"
+                ]
+              },
+              "introduced_in": {
+                "enum": [
+                  67,
+                  70,
+                  72
+                ]
+              },
+              "reason": {
+                "const": "absent-by-source-schema"
+              }
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {

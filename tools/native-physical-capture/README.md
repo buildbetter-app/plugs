@@ -25,11 +25,11 @@ permissions and contain no symlink components. The working directory must be the
 copied workspace containing the selected `.beads` directory. Set HOME and XDG
 configuration paths to an isolated disposable home before invocation; inventory
 captures environment and configuration from those locations. The output directory
-must contain none of `inventory.json`, `inventory.json.sources` or `capture.tar`.
+must contain none of `inventory.json`, `inventory.json.sources` `capture.tar` or `physical-evidence.json`.
 The default deadline is 20 minutes; `--timeout` accepts a Go duration.
 
 On success, the tool publishes the validated `capture.tar`, `inventory.json` and
-`inventory.json.sources/` sidecars, then reports current-family row counts. Retain
+`inventory.json.sources/` sidecars and `physical-evidence.json`, then reports current-family row counts. Retain
 the actual manifest and history ranges: complete native physical history does not
 upgrade portable history that could not be mapped. Errors retain their typed
 driver cause; they do not establish physical-table absence. A failed invocation
@@ -53,8 +53,10 @@ Before inventory or history, the reader observes the restored database's actual
 `schema_migrations` cursor. Add `--schema-only` to the invocation above to emit
 that observation on stdout and stop without reading inventory/history or
 publishing files. A missing cursor is a typed error, never inferred version zero.
-The current projection requires main schema 72 and ignored schema 28; an older
-actual cursor is observed and refused without migrating it. The physical image
+Full capture accepts only authenticated main/ignored prefixes 72/28 or 66/26.
+All migration content hashes and the entire current table/column census must
+match the selected profile; the main cursor alone never proves wisp absences.
+Other versions are observed and typed-refused without migration. The physical image
 operation itself reads older immutable schemas independently of that projection.
 Any future migration fallback must be explicitly labeled because it adds commits.
 
@@ -84,3 +86,23 @@ old RED receipts remain unchanged and do not qualify the supported route.
 Run all gates through the authorized remote Bazel wrapper. Public controls prove
 their fixture route only; source, focused, whole, real-store delivery and official
 qualification remain separate.
+
+For v66, `beads-native-tables/1` includes `schema_profile` with actual
+`main_version`, `ignored_version` and ordered `absences` entries. Each entry
+names `family`, optional `column`, `introduced_in` and the exact reason
+`absent-by-source-schema`. The source-pinned delta comprises three absent tables
+(`epoch_minted_addresses`, `issue_versions`, `store_epoch`) and four absent
+columns (`current_revision` and `participation_generation` on both `issues` and
+`wisps`). No empty table, NULL cell or default is synthesized. Immutable images
+retain their original schemas independently. Legacy v72 omits this profile.
+
+The separate `beads-physical-evidence/1` sidecar binds the exact archive SHA256,
+store/project tuple, complete typed working-root identity and every retained
+immutable commit image. Columns carry their actual SQL type strings; detached
+cells carry explicit kind tags and string payloads, preserving SQL NULL versus
+JSON-column `"null"`, integer widths, binary bytes and float bits. Native JSON
+text is retained exactly as read from the unchanged engine. This artifact is
+source evidence, not a names-only type inference or a restore certificate.
+`sql_defaults: "not-captured"` explicitly leaves SQL default/index/constraint
+measurements unproved. It contains source values and obeys the same private
+output handling as the archive.

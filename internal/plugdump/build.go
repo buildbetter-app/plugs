@@ -54,11 +54,12 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 	if err != nil {
 		return nil, err
 	}
-	if err := checkMigrations(tables["schema_migrations"], "main"); err != nil {
+	profile, err := sourceSchemaProfile(tables)
+	if err != nil {
 		return nil, err
 	}
-	if err := checkMigrations(tables["ignored_schema_migrations"], "ignored"); err != nil {
-		return nil, err
+	if profile.MainVersion == 66 && inventory.SourceFamilyContract != SourceFamilyContract {
+		return nil, fmt.Errorf("own-version capture requires native source family contract")
 	}
 	hasHistory := len(tables["issue_versions"].Rows)+len(tables["issue_snapshots"].Rows)+len(tables["compaction_snapshots"].Rows) != 0
 	if hasHistory != (inventory.History == "available-unverified") {
@@ -151,7 +152,7 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 		StatusCategoryContract:     inventory.StatusCategoryContract,
 		SourcePlaneAddressContract: inventory.SourcePlaneAddressContract,
 		Format:                     Format, Schema: 1, Reference: BeadsReference, StoreID: inventory.StoreID, Machine: inventory.Machine,
-		MainVersion: 72, IgnoredVersion: 28, Scope: "offline-head-and-source-archives", History: inventory.History,
+		MainVersion: profile.MainVersion, IgnoredVersion: profile.IgnoredVersion, Scope: "offline-head-and-source-archives", History: inventory.History,
 		SourceFieldsContract: IssueSourceFieldsContract,
 		Projects:             mapper.projects, Ontology: ontology, Sources: dispositions,
 		Warnings:     []string{"not a complete store migration or Plug restore certificate", "source history and attribution are unverified; no Plug versions, changesets or live leases invented"},
@@ -214,22 +215,7 @@ func readTables(ctx context.Context, src Source) (map[string]Table, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read complete family %s: %w", name, err)
 		}
-		expected := columnsFor(name)
-		columns := append([]string(nil), table.Columns...)
-		sort.Strings(expected)
-		sort.Strings(columns)
-		if strings.Join(expected, "\x00") != strings.Join(columns, "\x00") {
-			return nil, fmt.Errorf("schema drift in %s", name)
-		}
 		for _, row := range table.Rows {
-			if len(row) != len(expected) {
-				return nil, fmt.Errorf("missing or unknown source fields in %s", name)
-			}
-			for _, column := range expected {
-				if _, ok := row[column]; !ok {
-					return nil, fmt.Errorf("missing source field in %s", name)
-				}
-			}
 			values := map[string]any(row)
 			if name == "local_metadata" {
 				// "key" is a SQL column name, not the configuration key.
@@ -244,25 +230,31 @@ func readTables(ctx context.Context, src Source) (map[string]Table, error) {
 		}
 		tables[name] = table
 	}
-	for name := range tableColumns {
-		if _, ok := tables[name]; !ok {
-			return nil, fmt.Errorf("unaccounted table family %s", name)
-		}
+	profile, err := sourceSchemaProfile(tables)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateCurrentSchema(tables, profile); err != nil {
+		return nil, err
 	}
 	return tables, nil
 }
 
 func checkMigrations(table Table, lane string) error {
+	return checkMigrationPrefix(table, lane, len(migrationHashes[lane]))
+}
+
+func checkMigrationPrefix(table Table, lane string, limit int) error {
 	known := migrationHashes[lane]
 	seen := map[uint64]bool{}
 	for _, row := range table.Rows {
 		version, err := natural(row["version"])
-		if err != nil || version > uint64(len(known)) || version == 0 || seen[version] || text(row, "content_hash") != known[int(version)] {
+		if err != nil || version > uint64(limit) || version == 0 || seen[version] || text(row, "content_hash") != known[int(version)] {
 			return fmt.Errorf("unknown, duplicate, missing-hash or altered %s schema migration", lane)
 		}
 		seen[version] = true
 	}
-	if len(seen) != len(known) {
+	if len(seen) != limit {
 		return fmt.Errorf("incomplete %s migration series", lane)
 	}
 	return nil
