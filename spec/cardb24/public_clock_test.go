@@ -19,7 +19,6 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/viewops"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/server/viewrpc"
-	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/testclock"
 )
 
