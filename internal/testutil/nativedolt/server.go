@@ -48,7 +48,9 @@ func StartIsolatedDoltContainerHandle(t *testing.T) *IsolatedDoltContainer {
 	if err := os.Mkdir(store, 0700); err != nil {
 		t.Fatal(err)
 	}
-	env := append(os.Environ(), "HOME="+directory, "DOLT_ROOT_PATH="+directory, "DOLT_METRICS_DISABLED=1")
+	// The CLI otherwise starts an unawaited send-metrics child on server exit.
+	// Disable that flush so cmd.Wait also bounds writes to the disposable home.
+	env := append(os.Environ(), "HOME="+directory, "DOLT_ROOT_PATH="+directory, "DOLT_METRICS_DISABLED=1", "DOLT_DISABLE_EVENT_FLUSH=1")
 	init := exec.Command(binary, "init", "--name", "Public source", "--email", "source@example.test")
 	init.Dir, init.Env = store, env
 	if data, err := init.CombinedOutput(); err != nil {
