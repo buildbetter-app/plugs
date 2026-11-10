@@ -107,6 +107,7 @@ func RestoreImport(ctx context.Context, input io.Reader, target driver.Store, pr
 
 // RestoreImportWithLease is RestoreImport for a caller that already owns the
 // target lease. It shares the same preparation, allocator and commit path.
+// The caller remains responsible for renewal through the entire operation.
 func RestoreImportWithLease(ctx context.Context, input io.Reader, target driver.Store, lease driver.ActiveLease, profile driver.RestoreImportProfile, verification ...Verification) (Report, error) {
 	if err := ctx.Err(); err != nil {
 		return Report{}, err
@@ -262,11 +263,12 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 
 	lease := supplied
 	if lease == nil {
-		lease, err = target.Lease(ctx, "plug-converter-restore", driver.LeaseTTL)
+		var release func() error
+		ctx, lease, release, err = HoldRestoreLease(ctx, target, "plug-converter-restore")
 		if err != nil {
 			return report, err
 		}
-		defer func() { _ = lease.Release(context.WithoutCancel(ctx)) }()
+		defer func() { _ = release() }()
 	}
 	var sourceCapability driver.WorkflowCheckpointStore
 	if sourceLogical != nil {
