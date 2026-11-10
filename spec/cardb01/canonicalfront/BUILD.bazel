@@ -1,6 +1,6 @@
 load("@rules_go//go:def.bzl", "go_test")
 
-COMMON = ["controls_test.go", "public_fixture_test.go"]
+COMMON = ["controls_test.go", "public_fixture_test.go", "parent_test.go"]
 DEPS = [
     "//internal/core/model",
     "//internal/core/ontology",

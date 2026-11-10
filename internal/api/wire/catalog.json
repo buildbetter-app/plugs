@@ -6966,8 +6966,19 @@
       },
       "Filter": {
         "type": "object",
-        "description": "The shared filter envelope is unchanged. The opt-in epic-progress view uses exactly query=parent=\u003cbare branch-zero bead ID\u003e with no additional query clauses, resources, types or events; it selects canonical direct children only, across their own projects.",
+        "description": "Parent selects transitive descendants before pagination. The separate opt-in epic-progress view uses exactly query=parent=\u003cbare branch-zero bead ID\u003e with no additional query clauses, resources, types or events; it selects canonical direct children only, across their own projects.",
         "properties": {
+          "parent": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Transitive descendants of this branch-zero bead ID, excluding the root; applied before pagination."
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4,
+            "description": "Exact priority intersected with the other membership filters before pagination."
+          },
           "query": {
             "type": "string",
             "description": "The query grammar string."

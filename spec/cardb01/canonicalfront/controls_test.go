@@ -48,6 +48,19 @@ func frontCases() []frontCase {
 			{"recent-p2", "open", "task", 2, 45 * time.Minute, false},
 			{"urgent", "open", "task", 0, 30 * time.Minute, false},
 		}},
+		{Name: "parent_selection", Nodes: []frontNode{
+			{"free", "open", "task", 0, 2 * time.Hour, false},
+			{"other-root", "open", "task", 0, time.Hour, false},
+			{"other-child", "open", "task", 0, time.Hour, false},
+			{"parent", "open", "task", 1, time.Hour, false},
+			{"blocked-child", "open", "task", 0, time.Hour, false},
+			{"hidden-child", "open", "agent", 0, time.Hour, false},
+			{"child", "open", "task", 1, time.Hour, false},
+			{"grandchild", "open", "task", 1, time.Hour, false},
+			{"greatgrandchild", "open", "task", 2, time.Hour, false},
+			{"priority-only", "open", "task", 2, time.Hour, false},
+			{"blocker", "in_progress", "task", 0, time.Hour, false},
+		}},
 		hierarchyCase("durable_durable", false, false),
 		hierarchyCase("durable_wisp", false, true),
 		hierarchyCase("wisp_durable", true, false),
@@ -69,6 +82,10 @@ func hierarchyCase(name string, parentWisp, childWisp bool) frontCase {
 func frontWant(name, phase string) frontVector {
 	if name == "category_and_blocked_front" {
 		return frontVector{[]string{"custom", "open"}, []string{"custom", "open"}, []string{"custom", "open"}}
+	}
+	if name == "parent_selection" {
+		a := []string{"free", "other-child", "other-root", "child", "grandchild", "parent", "greatgrandchild", "priority-only"}
+		return frontVector{a, a, a}
 	}
 	if name == "priority_created_id" {
 		return frontVector{
@@ -95,7 +112,7 @@ func frontWant(name, phase string) frontVector {
 	}
 }
 func frontPhases(c frontCase) []string {
-	if c.Name == "category_and_blocked_front" || c.Name == "priority_created_id" {
+	if c.Name == "category_and_blocked_front" || c.Name == "priority_created_id" || c.Name == "parent_selection" {
 		return []string{"baseline"}
 	}
 	return []string{"open", "blocked", "unblocked", "indefinite", "timed"}
@@ -123,4 +140,34 @@ func frontEqual(t testing.TB, label string, got, want []string) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("%s literal ordered membership got %v want %v", label, got, want)
 	}
+}
+
+func frontParentWant(phase string) frontVector {
+	switch phase {
+	case "open", "unblocked":
+		a := []string{"child", "grandchild"}
+		return frontVector{a, a, a}
+	case "blocked":
+		a := []string{}
+		return frontVector{a, a, a}
+	case "indefinite":
+		a := []string{"child", "grandchild"}
+		return frontVector{a, a, []string{}}
+	case "timed":
+		a := []string{"grandchild"}
+		return frontVector{a, a, []string{}}
+	default:
+		panic("undeclared parent phase")
+	}
+}
+
+// Explicit source relations, independent of IDs or insertion order.
+func frontParentEdges(c frontCase) [][2]string {
+	if c.Name == "parent_selection" {
+		return [][2]string{{"child", "parent"}, {"grandchild", "child"}, {"greatgrandchild", "grandchild"}, {"priority-only", "parent"}, {"blocked-child", "parent"}, {"hidden-child", "parent"}, {"other-child", "other-root"}}
+	}
+	if len(frontPhases(c)) > 1 {
+		return [][2]string{{"child", "parent"}, {"grandchild", "child"}}
+	}
+	return nil
 }

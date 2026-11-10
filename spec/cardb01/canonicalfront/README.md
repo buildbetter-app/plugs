@@ -2,8 +2,8 @@
 
 This is new B01 operational acceptance based on saved landed main
 `2902006beaf1f271dfc86237dd5f3bdcc64f1f89`. The closed `0d4e24b2` public and
-hosted unit remains separate. Nothing here changes ready production code,
-allocator code, claims, leases, authorization, or protected fixtures.
+hosted unit remains separate. The new parent and exact-priority selectors extend the existing ready/list filter
+contract; the closed unit remains separate.
 
 The required controls compare real canonical Beads public `ready` output with
 the corresponding normal Plug `bead.ready` byte-RPC results on memory, SQLite,
@@ -41,10 +41,17 @@ Native `no_history` rows are imported into and read back from `wisps`; every
 parent/child dependency table and target plane is checked from actual SQL.
 The corresponding Plug scenarios intentionally use ordinary durable documents:
 this proves their public semantic counterpart, not a raw native-plane import.
-The public `service.Filter` has no parent field; the native transitive parent
-filter is recorded separately and the Plug capability refusal is retained.
+The public `service.Filter.parent` now selects transitive descendants through
+the existing certified storage hierarchy index before ordering and pagination.
+Native and Plug parent vectors are compared, with
+exact priority/type/resource intersections, positive limits, complete page counts,
+unknown roots, parent/priority-bound cursor refusals and actual SQL reopen.
+The dedicated parent corpus includes a great-grandchild, a separate unrelated tree,
+an outside-subtree blocker, and high-priority blocked/hidden descendants. Native
+`list --sort id` is compared with the receiver's existing `history.query` snapshot
+list order; ready priority/hybrid/P74 vectors remain distinct.
 Memory offers no persistent ephemeral-workflow checkpoint capability. No
-emulated filter, substitute plane, automatic timed wake, background rank-worker
+substitute plane, automatic timed wake, background rank-worker
 SLA or full B01 qualification is claimed.
 
 `canonical_public_test` executes the new three-engine public controls.
@@ -52,3 +59,23 @@ SLA or full B01 qualification is claimed.
 `//spec/cardb20:native_build_support`, records two fresh native stores, and
 compares their literal vectors with the named public outcomes. It is manual
 because canonical source build is explicit public operational recording.
+
+Parent membership is compiled using certified same-snapshot storage hierarchy
+reads. The root is excluded; unknown roots are empty. Missing index coverage,
+cycles and indexed traversal bounds refuse without a partial membership/count.
+Mixed durable/ephemeral provider parent filtering still requires a complete
+same-snapshot capability and refuses explicitly; ordinary durable parent parity
+is proven separately on all three engines. No protected writer is changed.
+
+Done = supported ordinary durable parent/priority membership and complete ordered
+pages match actual canonical public observations and the declared adopted
+vectors on all three engines, proven by independently reviewed exact source
+and original focused/canonical whole receipts plus source/ELF/request/raw bindings;
+source-only, parser or predecessor results do not count.
+
+The saved SQL SelectionReader deliberately refuses all plans. This change reuses
+the storage-owned certified hierarchy index to compile a bounded descendant
+set before the existing service orders/pages complete candidates; it does not
+create a second SQL selection executor or change index publication. All errors
+and bounds return no partial set. Standalone total-count RPC is unavailable;
+complete concatenated page cardinalities and every prefix are asserted instead.

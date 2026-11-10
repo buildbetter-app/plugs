@@ -400,6 +400,7 @@ internal/core/service/memories.go
 internal/core/service/native_restore.go
 internal/core/service/ontology.go
 internal/core/service/ordered_close.go
+internal/core/service/parent_filter.go
 internal/core/service/reads.go
 internal/core/service/ready_order.go
 internal/core/service/rollback_window_test.go
@@ -1120,6 +1121,8 @@ internal/storage/driver/allocator_snapshot.go
 internal/storage/driver/allocator_snapshot_test.go
 internal/storage/driver/audit_contract_test.go
 internal/storage/driver/checkpoint_mutation.go
+internal/storage/driver/descendant_filter.go
+internal/storage/driver/descendant_filter_test.go
 internal/storage/driver/driver.go
 internal/storage/driver/errors.go
 internal/storage/driver/errors_test.go
@@ -1350,6 +1353,7 @@ spec/cardb01/canonicalfront/BUILD.bazel
 spec/cardb01/canonicalfront/README.md
 spec/cardb01/canonicalfront/controls_test.go
 spec/cardb01/canonicalfront/native_test.go
+spec/cardb01/canonicalfront/parent_test.go
 spec/cardb01/canonicalfront/public_fixture_test.go
 spec/cardb01/canonicalfront/public_test.go
 spec/cardb01/fixture_test.go

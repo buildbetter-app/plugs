@@ -27,7 +27,7 @@ type nativeFrontOutcome struct {
 	Case         frontCase
 	Anchor       time.Time
 	Phases       map[string]frontVector
-	ParentFilter []string
+	ParentFilter map[string][]string
 }
 
 func (n *nativeFront) command(label string, args ...string) []byte {
@@ -77,8 +77,9 @@ func (n *nativeFront) ready(label string, want []string, extra ...string) []stri
 	frontEqual(n.r.t, label, got, want)
 	return got
 }
-func (n *nativeFront) limited(label string, want []string, limit int) {
-	raw := n.command(label, "ready", "--json", "--limit", strconv.Itoa(limit))
+func (n *nativeFront) limited(label string, want []string, limit int, extra ...string) {
+	args := append([]string{"ready", "--json", "--limit", strconv.Itoa(limit)}, extra...)
+	raw := n.command(label, args...)
 	var rows []struct{ ID string }
 	if err := json.Unmarshal(raw, &rows); err != nil {
 		n.r.t.Fatal(err)
@@ -93,7 +94,29 @@ func (n *nativeFront) limited(label string, want []string, limit int) {
 	}
 	frontEqual(n.r.t, label, got, want[:count])
 }
-func (n *nativeFront) image(label string, c frontCase, phase string) map[string][]map[string]any {
+func (n *nativeFront) list(label string, want []string, limit int, extra ...string) []string {
+	args := append([]string{"list", "--json", "--limit", strconv.Itoa(limit), "--sort", "id"}, extra...)
+	raw := n.command(label, args...)
+	var items []struct{ ID string }
+	if json.Unmarshal(raw, &items) != nil || items == nil {
+		n.r.t.Fatalf("native list array missing: %s", raw)
+	}
+	got := make([]string, len(items))
+	for i, item := range items {
+		if !strings.HasPrefix(item.ID, "b01-") {
+			n.r.t.Fatal("unexpected native list ID", item.ID)
+		}
+		got[i] = strings.TrimPrefix(item.ID, "b01-")
+	}
+	count := len(want)
+	if limit > 0 && limit < count {
+		count = limit
+	}
+	frontEqual(n.r.t, label, got, want[:count])
+	return got
+}
+
+func (n *nativeFront) image(label string, c frontCase, phase string, anchor time.Time) map[string][]map[string]any {
 	result := map[string][]map[string]any{}
 	for _, table := range []string{"issues", "wisps", "dependencies", "wisp_dependencies"} {
 		raw := n.command(label+"-"+table, "--readonly", "sql", "SELECT * FROM "+table+" ORDER BY 1,2", "--json")
@@ -124,30 +147,52 @@ func (n *nativeFront) image(label string, c frontCase, phase string) map[string]
 		if actual["b01-"+node.Role] != want {
 			n.r.t.Fatalf("%s physical placement=%s want%s", node.Role, actual["b01-"+node.Role], want)
 		}
+		for _, row := range result[want] {
+			if row["id"] != "b01-"+node.Role {
+				continue
+			}
+			status := node.Status
+			if status == "pinned" {
+				status = "open"
+			}
+			if node.Role == "blocker" && (phase == "unblocked" || phase == "indefinite" || phase == "timed") {
+				status = "closed"
+			}
+			if node.Role == "parent" && (phase == "indefinite" || phase == "timed") {
+				status = "deferred"
+			}
+			if row["status"] != status || row["issue_type"] != node.Kind || row["priority"] != float64(node.Priority) {
+				n.r.t.Fatalf("actual source values differ for %s: %+v", node.Role, row)
+			}
+			created, ok := row["created_at"].(string)
+			parsed := false
+			for _, layout := range []string{time.RFC3339Nano, "2006-01-02 15:04:05.999999999", "2006-01-02 15:04:05.999999999 -0700 MST"} {
+				at, err := time.Parse(layout, created)
+				if err == nil && at.Equal(anchor.Add(-node.Age)) {
+					parsed = true
+				}
+			}
+			if !ok || !parsed {
+				n.r.t.Fatalf("actual source creation time mismatch for %s: %+v", node.Role, row["created_at"])
+			}
+		}
+
 	}
 	// Bind every actual parent edge to the source's own dependency table.
-	if len(frontPhases(c)) > 1 {
-		for _, edge := range []struct {
-			Child, Parent string
-			Wisp          bool
-		}{{"child", "parent", c.ChildWisp}, {"grandchild", "child", !c.ChildWisp}} {
+	if len(frontParentEdges(c)) != 0 {
+		for _, edge := range frontParentEdges(c) {
 			table := "dependencies"
-			if edge.Wisp {
+			if actual["b01-"+edge[0]] == "wisps" {
 				table = "wisp_dependencies"
 			}
 			found := false
 			for _, row := range result[table] {
-				if row["issue_id"] != "b01-"+edge.Child || row["type"] != "parent-child" {
-					continue
-				}
-				for _, value := range row {
-					if value == "b01-"+edge.Parent {
-						found = true
-					}
+				if row["issue_id"] == "b01-"+edge[0] && row["depends_on_id"] == "b01-"+edge[1] && row["type"] == "parent-child" {
+					found = true
 				}
 			}
 			if !found {
-				n.r.t.Fatalf("actual parent edge %s->%s absent in %s", edge.Child, edge.Parent, table)
+				n.r.t.Fatalf("actual parent edge %s->%s absent in %s", edge[0], edge[1], table)
 			}
 		}
 		for _, row := range result[actual["b01-parent"]] {
@@ -226,11 +271,13 @@ func recordNativeFront(t *testing.T, r *nativeRecorder, server *publicnative.Ser
 	if c.Name == "category_and_blocked_front" {
 		n.command("block-front", "dep", "add", "b01-blocked", "b01-blocker", "--type", "blocks", "--json")
 	}
-	if len(frontPhases(c)) > 1 {
-		n.command("parent-child", "dep", "add", "b01-child", "b01-parent", "--type", "parent-child", "--json")
-		n.command("child-grandchild", "dep", "add", "b01-grandchild", "b01-child", "--type", "parent-child", "--json")
+	for _, edge := range frontParentEdges(c) {
+		n.command("parent-"+edge[0]+"-"+edge[1], "dep", "add", "b01-"+edge[0], "b01-"+edge[1], "--type", "parent-child", "--json")
 	}
-	outcome := nativeFrontOutcome{Case: c, Anchor: anchor, Phases: map[string]frontVector{}}
+	if c.Name == "parent_selection" {
+		n.command("block-descendant-outside-subtree", "dep", "add", "b01-blocked-child", "b01-blocker", "--type", "blocks", "--json")
+	}
+	outcome := nativeFrontOutcome{Case: c, Anchor: anchor, Phases: map[string]frontVector{}, ParentFilter: map[string][]string{}}
 	for _, phase := range frontPhases(c) {
 		switch phase {
 		case "blocked":
@@ -242,7 +289,7 @@ func recordNativeFront(t *testing.T, r *nativeRecorder, server *publicnative.Ser
 		case "timed":
 			n.command("timed-parent", "defer", "b01-parent", "--until", anchor.Add(7*24*time.Hour).Format(time.RFC3339), "--reason", "distinct future timed vector", "--json")
 		}
-		before := n.image(phase+"-before-ready", c, phase)
+		before := n.image(phase+"-before-ready", c, phase, anchor)
 		want := frontWant(c.Name, phase)
 		gotDefault := n.ready(phase+"-literal-default", want.Default)
 		n.ready(phase+"-repeat-default", want.Default)
@@ -250,10 +297,34 @@ func recordNativeFront(t *testing.T, r *nativeRecorder, server *publicnative.Ser
 		n.ready(phase+"-repeat-hybrid", want.Hybrid, "--sort", "hybrid")
 		n.limited(phase+"-limit1", want.Default, 1)
 		n.limited(phase+"-limit2", want.Default, 2)
-		if phase == "open" {
-			outcome.ParentFilter = n.ready("transitive-parent-filter", []string{"child", "grandchild"}, "--parent", "b01-parent")
+		if c.Name == "parent_selection" {
+			outcome.ParentFilter["baseline"] = n.ready("parent-selection", []string{"child", "grandchild", "greatgrandchild", "priority-only"}, "--parent", "b01-parent")
+			outcome.ParentFilter["priority1"] = n.ready("parent-priority1", []string{"child", "grandchild"}, "--parent", "b01-parent", "--priority", "1")
+			outcome.ParentFilter["priority2"] = n.ready("parent-priority2", []string{"greatgrandchild", "priority-only"}, "--parent", "b01-parent", "--priority", "2")
+			n.ready("parent-blocked-hidden-priority0", []string{}, "--parent", "b01-parent", "--priority", "0")
+			n.ready("parent-other-tree", []string{"other-child"}, "--parent", "b01-other-root")
+			n.ready("parent-unknown", []string{}, "--parent", "b01-missing")
+			listWant := []string{"blocked-child", "child", "grandchild", "greatgrandchild", "priority-only"}
+			outcome.ParentFilter["list"] = n.list("list-parent-all-task-descendants", listWant, 0, "--parent", "b01-parent", "--type", "task")
+			outcome.ParentFilter["list-priority2"] = n.list("list-parent-priority2", []string{"greatgrandchild", "priority-only"}, 0, "--parent", "b01-parent", "--priority", "2")
+			n.list("list-unknown-parent", []string{}, 0, "--parent", "b01-missing")
+			for _, limit := range []int{1, 2} {
+				n.limited(fmt.Sprintf("parent-prefix-limit%d", limit), outcome.ParentFilter["baseline"], limit, "--parent", "b01-parent")
+				n.limited(fmt.Sprintf("parent-priority-prefix-limit%d", limit), outcome.ParentFilter["priority2"], limit, "--parent", "b01-parent", "--priority", "2")
+				n.list(fmt.Sprintf("list-parent-prefix-limit%d", limit), listWant, limit, "--parent", "b01-parent", "--type", "task")
+			}
 		}
-		after := n.image(phase+"-after-ready", c, phase)
+		if phase != "baseline" {
+			parentWant := frontParentWant(phase).Default
+			outcome.ParentFilter[phase] = n.ready(phase+"-transitive-parent-filter", parentWant, "--parent", "b01-parent")
+			n.ready(phase+"-parent-filter-hybrid", frontParentWant(phase).Hybrid, "--parent", "b01-parent", "--sort", "hybrid")
+			n.limited(phase+"-parent-limit1", parentWant, 1, "--parent", "b01-parent")
+			n.limited(phase+"-parent-limit2", parentWant, 2, "--parent", "b01-parent")
+			n.ready(phase+"-parent-filter-priority1", parentWant, "--parent", "b01-parent", "--priority", "1")
+			n.ready(phase+"-parent-filter-type", parentWant, "--parent", "b01-parent", "--type", "task")
+			n.ready(phase+"-unknown-parent", []string{}, "--parent", "b01-missing")
+		}
+		after := n.image(phase+"-after-ready", c, phase, anchor)
 		if !reflect.DeepEqual(before, after) {
 			t.Fatal("native ready changed actual issues/wisps/dependency rows")
 		}
@@ -328,7 +399,12 @@ func TestB01CanonicalNativeReadyAndPublicCounterparts(t *testing.T) {
 						frontEqual(t, "actual native explicit hybrid counterpart "+phase, actualPublic[phase], native.Phases[phase].Hybrid)
 					}
 				}
-				frontSave(t, dir, "paired-comparison.json", frontJSON(t, map[string]any{"native": native, "public_actual": actualPublic, "native_default_preserved": true, "native_explicit_hybrid_compared": true, "adopted_indefinite_and_timed_transitive_vectors_separate": true, "native_wisp_mapped_to_ordinary_public_durable_semantics": true, "plug_ephemeral_plane_qualification": "NOT_CLAIMED", "parent_filter_public_capability": "NO_PARENT_FIELD_IN_SERVICE_FILTER_NOT_EMULATED", "clock_expiry_or_background_rank_SLA": "NOT_CLAIMED"}))
+				for key, actualNative := range native.ParentFilter {
+					if key != "indefinite" && key != "timed" {
+						frontEqual(t, "actual native/public parent "+key, actualPublic["parent:"+key], actualNative)
+					}
+				}
+				frontSave(t, dir, "paired-comparison.json", frontJSON(t, map[string]any{"native": native, "public_actual": actualPublic, "native_default_preserved": true, "native_explicit_hybrid_compared": true, "adopted_indefinite_and_timed_transitive_vectors_separate": true, "native_wisp_mapped_to_ordinary_public_durable_semantics": true, "plug_ephemeral_plane_qualification": "NOT_CLAIMED", "parent_filter_public_capability": "TRANSITIVE_STORAGE_INDEX_BEFORE_ORDER_AND_PAGINATION", "clock_expiry_or_background_rank_SLA": "NOT_CLAIMED"}))
 			})
 		}
 	}

@@ -46,12 +46,25 @@ func newPublicFront(t *testing.T, engine, root string, start time.Time) *publicF
 	t.Cleanup(cancel)
 	f := &publicFront{t: t, ctx: ctx, engine: engine, root: root, clock: testclock.New(t, start), ids: map[string]string{}}
 	doc := ontology.DefaultDocument()
-	doc.Statuses["b01active"] = ontology.Status{Name: "Custom active", Category: ontology.Unstarted}
+	doc.Statuses["b01active"] = ontology.Status{Name: "Custom active", Category: ontology.Active}
 	w := doc.Workflows["issue"]
 	w.Statuses = append(w.Statuses, "b01active")
 	doc.Workflows["issue"] = w
+	active := w
+	active.Initial = "b01active"
+	doc.Workflows["b01_active"] = active
+	started := w
+	started.Initial = "in_progress"
+	doc.Workflows["b01_started"] = started
+	issue := doc.Types["issue"]
+	customType := issue
+	customType.Workflow = "b01_active"
+	doc.Types["b01_active"] = customType
+	startedType := issue
+	startedType.Workflow = "b01_started"
+	doc.Types["b01_started"] = startedType
 	no := false
-	doc.Types["infrastructure"] = ontology.Type{Name: "Hidden infrastructure", Workflow: "issue", ReadyEligible: &no}
+	doc.Types["infrastructure"] = ontology.Type{Name: "Hidden infrastructure", Workflow: "issue", Fields: issue.Fields, ReadyEligible: &no}
 	compiled, problems := ontology.Compile(doc, nil, nil)
 	if len(problems) != 0 {
 		t.Fatal(problems)
@@ -138,6 +151,12 @@ func (f *publicFront) at(at time.Time) {
 	f.bind()
 }
 func (f *publicFront) call(label, method string, params map[string]any) json.RawMessage {
+	return f.exchange(label, method, params, "")
+}
+func (f *publicFront) refuse(label, method string, params map[string]any, code string) {
+	f.exchange(label, method, params, code)
+}
+func (f *publicFront) exchange(label, method string, params map[string]any, expectedCode string) json.RawMessage {
 	f.t.Helper()
 	f.seq++
 	params["_meta"] = map[string]any{"project": frontProject, "agent": "b01-public-recorder", "idempotencyKey": evidenceHash([]byte(fmt.Sprintf("%s/%d/%s", f.root, f.seq, method)))}
@@ -156,6 +175,13 @@ func (f *publicFront) call(label, method string, params map[string]any) json.Raw
 	}
 	if err = json.Unmarshal(raw, &out); err != nil {
 		f.t.Fatal(err)
+	}
+	if expectedCode != "" {
+		var refusal struct{ Data struct{ Code string } }
+		if json.Unmarshal(out.Error, &refusal) != nil || refusal.Data.Code != expectedCode || len(out.Result) != 0 {
+			f.t.Fatalf("%s expected %s refusal: %s", method, expectedCode, raw)
+		}
+		return out.Error
 	}
 	if len(out.Error) != 0 && string(out.Error) != "null" {
 		f.t.Fatalf("%s public refusal %s", method, out.Error)
@@ -176,6 +202,12 @@ func (f *publicFront) populate(c frontCase, anchor time.Time) {
 		f.nextID = "pl-b01-" + n.Role
 		f.ids[n.Role] = f.nextID
 		kind := "issue"
+		if n.Status == "b01active" {
+			kind = "b01_active"
+		}
+		if n.Status == "in_progress" {
+			kind = "b01_started"
+		}
 		if n.Kind == "agent" {
 			kind = "infrastructure"
 		}
@@ -185,9 +217,22 @@ func (f *publicFront) populate(c frontCase, anchor time.Time) {
 		if err := json.Unmarshal(raw, &commit); err != nil || len(commit.Results) != 1 || commit.Results[0].Ref.ID != f.ids[n.Role] {
 			f.t.Fatalf("actual created ref mismatch %s: %s %v", n.Role, raw, err)
 		}
+		created := f.call("created-readback-"+n.Role, "bead.get", map[string]any{"id": f.ref(n.Role)})
+		var readback struct {
+			Bead struct {
+				ID, Type, Status string
+				CreatedAt        time.Time
+				Fields           struct{ Priority int }
+			}
+		}
+		initial := "todo"
+		if n.Status == "b01active" || n.Status == "in_progress" {
+			initial = n.Status
+		}
+		if json.Unmarshal(created, &readback) != nil || readback.Bead.ID != f.ids[n.Role] || readback.Bead.Type != kind || readback.Bead.Status != initial || readback.Bead.Fields.Priority != n.Priority || !readback.Bead.CreatedAt.Equal(anchor.Add(-n.Age)) {
+			f.t.Fatalf("actual ordinary-create counterpart differs for %s: %s", n.Role, created)
+		}
 		switch n.Status {
-		case "b01active", "in_progress":
-			f.call("status-"+n.Role, "bead.update", map[string]any{"id": f.ref(n.Role), "fields": map[string]any{"status": n.Status}})
 		case "pinned":
 			f.call("pin-as-backlog-"+n.Role, "bead.defer", map[string]any{"id": f.ref(n.Role), "reason": "explicit native pinned to adopted backlog category"})
 		case "closed":
@@ -198,9 +243,11 @@ func (f *publicFront) populate(c frontCase, anchor time.Time) {
 	if c.Name == "category_and_blocked_front" {
 		f.call("block-front", "bead.link", map[string]any{"from": f.ref("blocked"), "to": f.ref("blocker"), "kind": "blocks"})
 	}
-	if len(frontPhases(c)) > 1 {
-		f.call("parent-child", "bead.link", map[string]any{"from": f.ref("child"), "to": f.ref("parent"), "kind": "parent-child"})
-		f.call("child-grandchild", "bead.link", map[string]any{"from": f.ref("grandchild"), "to": f.ref("child"), "kind": "parent-child"})
+	for _, edge := range frontParentEdges(c) {
+		f.call("parent-"+edge[0]+"-"+edge[1], "bead.link", map[string]any{"from": f.ref(edge[0]), "to": f.ref(edge[1]), "kind": "parent-child"})
+	}
+	if c.Name == "parent_selection" {
+		f.call("block-descendant-outside-subtree", "bead.link", map[string]any{"from": f.ref("blocked-child"), "to": f.ref("blocker"), "kind": "blocks"})
 	}
 }
 
@@ -225,17 +272,29 @@ func (f *publicFront) roles(items []string) []string {
 	return out
 }
 func (f *publicFront) pages(label string, want []string) []string {
+	return f.pagesWithFilter(label, nil, want)
+}
+func (f *publicFront) pagesWithFilter(label string, filter map[string]any, want []string) []string {
+	return f.pageMethod(label, "bead.ready", filter, nil, want)
+}
+func (f *publicFront) pageMethod(label, method string, filter map[string]any, asOf map[string]any, want []string) []string {
 	before := f.snapshot()
 	var observed []string
 	for _, limit := range []int{1, 2, 1000} {
 		params := map[string]any{"limit": limit}
+		if filter != nil {
+			params["filter"] = filter
+		}
+		if asOf != nil {
+			params["asOf"] = asOf
+		}
 		got := []string{}
 		seen := map[string]bool{}
 		for pageNo := 0; ; pageNo++ {
 			if pageNo > len(want)+1 {
 				f.t.Fatal("cursor failed to terminate")
 			}
-			raw := f.call(fmt.Sprintf("%s-limit%d-page%d", label, limit, pageNo), "bead.ready", params)
+			raw := f.call(fmt.Sprintf("%s-limit%d-page%d", label, limit, pageNo), method, params)
 			var page frontPage
 			if err := json.Unmarshal(raw, &page); err != nil || page.Items == nil || page.AsOf.Incarnation == "" || page.AsOf.Revision.Validate() != nil {
 				f.t.Fatalf("invalid page %s %v", raw, err)
@@ -250,6 +309,10 @@ func (f *publicFront) pages(label string, want []string) []string {
 				seen[item.ID] = true
 				got = append(got, item.ID)
 			}
+			if len(got) > len(want) {
+				f.t.Fatal("page exceeded complete expected membership", got)
+			}
+			frontEqual(f.t, label+"-page-prefix", f.roles(got), want[:len(got)])
 			if page.Next == nil {
 				break
 			}
@@ -353,34 +416,33 @@ func runPublicFront(t *testing.T, engine, root string, c frontCase, anchor time.
 			// Plug deliberately has no automatic timed defer. Keep parent deferred;
 			// paired timed native vector remains separately recorded, never equalized.
 		}
-		if phase == "open" {
-			f.parentFilterCapability()
+		if c.Name == "parent_selection" {
+			for key, vector := range f.parentSelectionControls("parent-selection") {
+				out["parent:"+key] = vector
+			}
+		}
+		if phase != "baseline" {
+			parentWant := frontParentWant(phase).Plug
+			out["parent:"+phase] = f.pagesWithFilter(phase+"-parent", map[string]any{"parent": f.ids["parent"]}, parentWant)
+			f.pagesWithFilter(phase+"-parent-and-priority", map[string]any{"parent": f.ids["parent"], "priority": 1}, parentWant)
+			f.pagesWithFilter(phase+"-parent-and-type", map[string]any{"parent": f.ids["parent"], "types": []string{"issue"}}, parentWant)
+			selected := []string{}
+			if phase == "open" || phase == "unblocked" {
+				selected = []string{"grandchild"}
+			}
+			f.pagesWithFilter(phase+"-parent-and-resources", map[string]any{"parent": f.ids["parent"], "resources": []string{f.ids["grandchild"], f.ids["free"]}}, selected)
+			f.pagesWithFilter(phase+"-unknown-parent", map[string]any{"parent": "pl-b01-missing"}, []string{})
 		}
 		out[phase] = f.pages(phase, frontWant(c.Name, phase).Plug)
 		f.reopen(phase)
 		f.pages(phase+"-after-reopen", frontWant(c.Name, phase).Plug)
+		if c.Name == "parent_selection" {
+			f.parentSelectionControls("parent-selection-after-reopen")
+		}
+		if phase != "baseline" {
+			f.pagesWithFilter(phase+"-parent-after-reopen", map[string]any{"parent": f.ids["parent"]}, frontParentWant(phase).Plug)
+		}
 	}
 	frontSave(t, root, "actual-public-vectors.json", frontJSON(t, map[string]any{"engine": engine, "case": c, "vectors": out, "clock": anchor, "native_wisp_to_public_durable_projection": true, "ephemeral_plane_parity": "NOT_CLAIMED", "timed_expiry": "NOT_CLAIMED"}))
 	return out
-}
-
-func (f *publicFront) parentFilterCapability() {
-	before := f.snapshot()
-	request := frontJSON(f.t, map[string]any{"jsonrpc": "2.0", "id": "parent-capability", "method": "bead.ready", "params": map[string]any{"limit": 1, "filter": map[string]any{"parent": f.ref("parent")}, "_meta": map[string]any{"project": frontProject, "agent": "b01-public-recorder", "idempotencyKey": evidenceHash([]byte("parent-capability"))}}})
-	raw, err := f.transport.RoundTrip(f.ctx, request)
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	frontSave(f.t, f.root, "unsupported-parent-filter.request.json", request)
-	frontSave(f.t, f.root, "unsupported-parent-filter.response.json", raw)
-	var response struct {
-		Error  *struct{ Data struct{ Code string } }
-		Result json.RawMessage
-	}
-	if json.Unmarshal(raw, &response) != nil || response.Error == nil || response.Error.Data.Code != "invalid_params" || !strings.Contains(string(raw), "parent") || len(response.Result) != 0 {
-		f.t.Fatalf("unsupported parent filter must be refused, not emulated: %s", raw)
-	}
-	if after := f.snapshot(); !reflect.DeepEqual(before, after) {
-		f.t.Fatal("parent filter refusal changed durable state")
-	}
 }
