@@ -235,12 +235,13 @@ func TestImportedMemoryWritesPreserveSourceEnvelopesAllDrivers(t *testing.T) {
 							sourcePublicCall(t, server, actor, "history.get", 0, map[string]any{"ref": model.RefByID(idFor(key), model.Natural64(0)), "asOf": map[string]any{"revision": original.Meta.Head}}, "not_found")
 						})
 					}
-					for _, key := range []string{"fixture", "unicode"} {
+					for i, key := range []string{"fixture", "unicode"} {
 						t.Run("visible-source-noop-"+key, func(t *testing.T) {
 							var memory service.Memory
 							decode(t, sourcePublicCall(t, server, actor, "memory.get", 0, map[string]any{"id": idFor(key)}, "").Result, &memory)
+							scopes = append(scopes, importedMemoryWriteScope{"memory.save", 81 + i})
 							before := snapshot()
-							sourcePublicCall(t, server, actor, "memory.save", 81+len(key), map[string]any{"key": key, "content": memory.Content}, "")
+							sourcePublicCall(t, server, actor, "memory.save", 81+i, map[string]any{"key": key, "content": memory.Content}, "")
 							after := snapshot()
 							if !reflect.DeepEqual(before.Records, after.Records) || !reflect.DeepEqual(before.Versions, after.Versions) || !reflect.DeepEqual(before.Changes, after.Changes) || before.Meta != after.Meta {
 								t.Fatal("same imported value rewrote source/history")

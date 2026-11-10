@@ -107,6 +107,46 @@ func b13Retain(t *testing.T, engine, label string, value any) {
 	}
 }
 
+// Quiet receipts contain a literal zero Changeset instead of a published log
+// entry. Its empty enum cannot use the public Changeset JSON encoder. Preserve
+// every field explicitly, including that empty kind, in the evidence DTO.
+func b13MemoryEvidence(state importedMemoryWriteState) map[string]any {
+	receipts := map[string]any{}
+	for key, receipt := range state.Receipts {
+		if receipt == nil {
+			receipts[key] = nil
+			continue
+		}
+		entry := receipt.Changeset
+		receipts[key] = map[string]any{"RequestHash": receipt.RequestHash, "Commit": receipt.Commit, "ResponsePending": receipt.ResponsePending,
+			"Changeset": map[string]any{"Revision": entry.Revision, "Branch": entry.Branch, "Incarnation": entry.Incarnation, "Kind": string(entry.Kind), "Time": entry.Time, "Principal": map[string]any{"kind": entry.Principal.Kind, "id": entry.Principal.ID, "sponsor": entry.Principal.Sponsor, "caveats": entry.Principal.Caveats}, "Chain": entry.Chain, "IdempotencyKey": entry.IdempotencyKey, "Mutators": entry.Mutators, "Changes": entry.Changes, "Events": entry.Events}}
+	}
+	return map[string]any{"Meta": state.Meta, "Records": state.Records, "Versions": state.Versions, "Changes": state.Changes, "Derived": state.Derived, "Receipts": receipts, "Checkpoints": state.Checkpoints}
+}
+
+func b13StableSQL(t *testing.T, image map[string][]string) map[string][]string {
+	t.Helper()
+	data := map[string][]string{}
+	for table, rows := range image {
+		if table != "lease" && table != "active_lease" {
+			data[table] = rows
+			continue
+		}
+		data[table] = nil
+		for _, row := range rows {
+			var cells []json.RawMessage
+			decode(t, []byte(row), &cells)
+			if len(cells) != 5 {
+				t.Fatal("unexpected physical lease schema")
+			}
+			// The live fixture renews expiry asynchronously. Compare all four
+			// ownership/fencing cells and retain full literal images separately.
+			data[table] = append(data[table], string(encode(t, cells[:4])))
+		}
+	}
+	return data
+}
+
 // The decided overlay is exercised through the ordinary Writer and byte RPC.
 // Source evidence and provider namespaces remain immutable throughout.
 func TestB13JointSourceCoreProjectionAndConservation(t *testing.T) {
@@ -213,6 +253,26 @@ func TestB13JointSourceCoreProjectionAndConservation(t *testing.T) {
 					for _, row := range reverseState(t, store).Records {
 						refs = append(refs, row.Ref)
 					}
+					// PostgreSQL retains lock placeholders outside the rolled-back
+					// write. Establish this exact fixture's census before conservation
+					// baselines, as the existing joint import controls do.
+					primePlan := restorePlan{sentinels: []driver.Sentinel{driver.SentinelGraphBlocking}}
+					for _, ref := range refs {
+						primePlan.records = append(primePlan.records, restoreRecord{ref: ref})
+					}
+					prime, err := store.Write(ctx, lease)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := prime.Lock(ctx, lockRequests(primePlan)); err != nil {
+						t.Fatal(err)
+					}
+					if err := prime.Rollback(ctx); err != nil {
+						t.Fatal(err)
+					}
+					if err := prime.Close(); err != nil {
+						t.Fatal(err)
+					}
 					var namespaces []string
 					if report.SourcePlanes != nil {
 						for _, provider := range report.SourcePlanes.Providers {
@@ -274,7 +334,7 @@ func TestB13JointSourceCoreProjectionAndConservation(t *testing.T) {
 						if db != nil {
 							physical = jointPhysicalSQL(t, db, engine)
 						}
-						b13Retain(t, mode+"-"+engine, label, map[string]any{"state": after, "physical_SQL": physical, "retained_archive_sha256": hashBytes(blob)})
+						b13Retain(t, mode+"-"+engine, label, map[string]any{"state": b13MemoryEvidence(after), "physical_SQL": physical, "retained_archive_sha256": hashBytes(blob)})
 					}
 					sourceValue, sourcePresent, emptyPresent := b13SourceBody, true, true
 					views := func(core string) {
@@ -379,7 +439,13 @@ func TestB13JointSourceCoreProjectionAndConservation(t *testing.T) {
 							physical = jointPhysicalSQL(t, db, engine)
 						}
 						call(method, params, key, code)
-						if !reflect.DeepEqual(before, snapshot()) || db != nil && !reflect.DeepEqual(physical, jointPhysicalSQL(t, db, engine)) {
+						after := snapshot()
+						var afterSQL map[string][]string
+						if db != nil {
+							afterSQL = jointPhysicalSQL(t, db, engine)
+						}
+						b13Retain(t, mode+"-"+engine, fmt.Sprintf("refusal-%d-%s-%d", len(frames), method, key), map[string]any{"before": b13MemoryEvidence(before), "after": b13MemoryEvidence(after), "before_SQL": physical, "after_SQL": afterSQL, "expected_code": code})
+						if !reflect.DeepEqual(before, after) || db != nil && !reflect.DeepEqual(b13StableSQL(t, physical), b13StableSQL(t, afterSQL)) {
 							t.Fatal("refusal changed current/history/receipt/source/SQL state")
 						}
 					}
