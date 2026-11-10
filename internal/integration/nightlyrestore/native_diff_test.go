@@ -515,7 +515,13 @@ func TestNightlyNativePresentHistoryContradictionsRefuseNoWrites(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				p := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "n1-test-restore-admin"}, Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: driver.StoreID(a.Manifest().StoreID), Method: "offline.restore.import", IdempotencyKey: strings.Repeat("b", 32), ArchiveDigest: digest(damaged), HistoryMode: driver.RestoreHistoryModeFull}
+				// A syntactically valid admission reaches the parser. The sentinel
+				// derived digest grants no publication: malformed input must fail
+				// before any derived-state or history binding can be evaluated.
+				p := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "n1-test-restore-admin"}, Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: driver.StoreID(a.Manifest().StoreID), Method: "offline.restore.import", IdempotencyKey: strings.Repeat("b", 32), ArchiveDigest: digest(damaged), DerivedDigest: strings.Repeat("c", 64), HistoryMode: driver.RestoreHistoryModeFull}
+				if _, err := p.Detached(); err != nil {
+					t.Fatal("negative fixture admission cannot reach the parser", err)
+				}
 				_, err = converterroundtrip.RestoreImport(ctx, bytes.NewReader(damaged), store, p)
 				var refused dumpformat.IncompleteHistoryError
 				if !errors.As(err, &refused) {
