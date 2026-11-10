@@ -1,6 +1,7 @@
 package lexicon
 
 import (
+	"encoding/json"
 	"flag"
 	"os"
 	"path/filepath"
@@ -22,6 +23,19 @@ func TestLexiconTreeGate(t *testing.T) {
 	findings, err := CheckSourceInventory(filepath.Join(os.Getenv("TEST_SRCDIR"), filepath.FromSlash(*sourceInventory)))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if findings == nil {
+		findings = []Finding{}
+	}
+	complete, err := json.Marshal(findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("complete lexicon findings: %s", complete)
+	if output := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR"); output != "" {
+		if err := os.WriteFile(filepath.Join(output, "lexicon-findings.json"), append(complete, '\n'), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := CheckError(findings); err != nil {
 		t.Fatal(err)

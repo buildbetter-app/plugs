@@ -154,9 +154,9 @@ func testConfig() Config {
 
 func checkedInExternalProtocolConfig(t *testing.T) (Config, string) {
 	t.Helper()
-	path := filepath.Join("..", "..", "engdocs", "style", "lexicon.toml")
+	path := filepath.Join("..", "..", filepath.FromSlash(rulesDirectory))
 	if root := os.Getenv("TEST_SRCDIR"); root != "" {
-		path = filepath.Join(root, os.Getenv("TEST_WORKSPACE"), "engdocs", "style", "lexicon.toml")
+		path = filepath.Join(root, os.Getenv("TEST_WORKSPACE"), filepath.FromSlash(rulesDirectory))
 	}
 	cfg, err := LoadConfig(path)
 	if err != nil || cfg.ExternalProtocolString.Path != externalProtocolSource || cfg.ExternalProtocolString.Value == "" {
@@ -638,7 +638,7 @@ func b03NativeGoConfigSection(site NativeLiteralSite) string {
 
 func TestB03NativeGoConfigurationRejectsBroadenedOrIncompleteSites(t *testing.T) {
 	cfg, path := checkedInB03NativeGoConfig(t)
-	original, err := os.ReadFile(path)
+	original, err := readConfigDocument(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -727,7 +727,7 @@ func TestB03NativeGoAllowanceRejectsMutatedInMemorySites(t *testing.T) {
 
 func TestNativeFieldConfigurationRejectsBroadeningAndAmbiguity(t *testing.T) {
 	cfg, path := checkedInNativeFieldConfig(t)
-	original, err := os.ReadFile(path)
+	original, err := readConfigDocument(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -839,7 +839,7 @@ func TestNativeFieldProtocolPreservesOutsidePathsAndCommentBaseline(t *testing.T
 
 func TestExternalProtocolStringConfigurationRejectsBroadening(t *testing.T) {
 	cfg, path := checkedInExternalProtocolConfig(t)
-	original, err := os.ReadFile(path)
+	original, err := readConfigDocument(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1143,7 +1143,7 @@ func TestPhysicalProtocolStringsKeepOtherRefusals(t *testing.T) {
 
 func TestPhysicalProtocolConfigurationRejectsBroadening(t *testing.T) {
 	cfg, path := checkedInPhysicalProtocolConfig(t)
-	original, err := os.ReadFile(path)
+	original, err := readConfigDocument(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1331,7 +1331,7 @@ func TestNativeManifestProtocolPreservesUnrelatedScan(t *testing.T) {
 
 func TestNativeManifestProtocolConfigurationRejectsBroadening(t *testing.T) {
 	cfg, path := checkedInNativeManifestConfig(t)
-	original, err := os.ReadFile(path)
+	original, err := readConfigDocument(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1382,9 +1382,9 @@ func TestNativeManifestProtocolConfigurationRejectsBroadening(t *testing.T) {
 
 func checkedInNativeControlConfig(t *testing.T) (Config, string) {
 	t.Helper()
-	path := filepath.Join("..", "..", "engdocs", "style", "lexicon.toml")
+	path := filepath.Join("..", "..", filepath.FromSlash(rulesDirectory))
 	if root := os.Getenv("TEST_SRCDIR"); root != "" {
-		path = filepath.Join(root, os.Getenv("TEST_WORKSPACE"), "engdocs", "style", "lexicon.toml")
+		path = filepath.Join(root, os.Getenv("TEST_WORKSPACE"), filepath.FromSlash(rulesDirectory))
 	}
 	cfg, err := LoadConfig(path)
 	if err != nil {
@@ -1497,7 +1497,7 @@ func TestNativeControlLiteralsPreserveOutsidePathBaseline(t *testing.T) {
 
 func TestNativeControlLiteralConfigurationRejectsBroadening(t *testing.T) {
 	cfg, path := checkedInNativeControlConfig(t)
-	originalBytes, err := os.ReadFile(path)
+	originalBytes, err := readConfigDocument(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1636,11 +1636,11 @@ func TestCheckFilesFailsClosedOnInvalidUTF8(t *testing.T) {
 
 func TestCheckTreeFailsClosedOutsideGit(t *testing.T) {
 	root := t.TempDir()
-	path := filepath.Join(root, "engdocs/style")
+	path := filepath.Join(root, rulesDirectory)
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(path, "lexicon.toml"), []byte("[[term]]\nmatch = [\"x\"]\nclass = \"ban\"\n[zones]\nprovenance = [\"NOTICE.md\"]\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(path, "rules.toml"), []byte("[[term]]\nmatch = [\"x\"]\nclass = \"ban\"\n[zones]\nprovenance = [\"NOTICE.md\"]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := CheckTree(root); err == nil {
