@@ -89,7 +89,9 @@ func b03Document(extra int) ontology.Document {
 		workflow := "b03-" + key
 		d.Types[workflow] = ontology.Type{Name: workflow, Workflow: workflow, Fields: map[string]ontology.Field{"title": {Type: "string"}}}
 		d.Workflows[workflow] = ontology.Workflow{Statuses: []string{b03Active, b03WIP, b03Done, b03Frozen}, Initial: key,
-			Slots: map[ontology.Slot]string{ontology.Close: b03Done, ontology.Reopen: b03Active, ontology.Defer: b03Frozen},
+			// Ready-eligible types require this catalog slot. It is never invoked
+			// by these ordinary category/lifecycle controls.
+			Slots: map[ontology.Slot]string{ontology.Claim: b03WIP, ontology.Close: b03Done, ontology.Reopen: b03Active, ontology.Defer: b03Frozen},
 			Transitions: []ontology.Rule{
 				{To: b03Done, Guards: []ontology.Guard{{Kind: ontology.NotTemplate}, {Kind: ontology.NoOpenChildren}, {Kind: ontology.NoOpenBlockers}, {Kind: ontology.Permission}}},
 				{To: b03Active, Guards: []ontology.Guard{{Kind: ontology.Permission}}},

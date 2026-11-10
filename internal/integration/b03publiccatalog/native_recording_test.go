@@ -73,6 +73,16 @@ func (r *nativeRecorder) b03Command(w b03NativeWorkspace, label, binary string, 
 	if ctx.Err() != nil || exit < 0 || wantFailure && exit == 0 || !wantFailure && exit != 0 {
 		r.t.Fatalf("%s exit=%d wantFailure=%t error=%v stderr=%s", label, exit, wantFailure, err, stderr.Bytes())
 	}
+	if wantFailure {
+		diagnostic := strings.ToLower(stdout.String() + "\n" + stderr.String())
+		if label == "b03-unknown-absent" {
+			if !strings.Contains(diagnostic, "b03-unknown") || !(strings.Contains(diagnostic, "not found") || strings.Contains(diagnostic, "no issue") || strings.Contains(diagnostic, "does not exist")) {
+				r.t.Fatalf("%s did not report the intended missing item: %s", label, diagnostic)
+			}
+		} else if !strings.Contains(diagnostic, "status") {
+			r.t.Fatalf("%s did not report the intended status refusal: %s", label, diagnostic)
+		}
+	}
 	return stdout.Bytes()
 }
 func (r *nativeRecorder) b03Statuses(w b03NativeWorkspace, binary, label string) []b03NativeCatalog {
