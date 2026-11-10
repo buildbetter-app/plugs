@@ -98,6 +98,19 @@ func b13ImportedMemoryFixture(t *testing.T, mode string) []byte {
 		for _, row := range rows {
 			members["records/memory.ndjson"] = append(members["records/memory.ndjson"], encode(t, row)...)
 		}
+		// Config-kind records also retain metadata-table rows. The disposition
+		// counts physical config rows, rather than every row in that member.
+		configRows := len(rows)
+		for _, line := range bytes.Split(bytes.TrimSpace(members["records/config.ndjson"]), []byte{'\n'}) {
+			if len(line) == 0 {
+				continue
+			}
+			var row map[string]any
+			decode(t, line, &row)
+			if row["source"].(map[string]any)["table"] == "config" {
+				configRows++
+			}
+		}
 		changeManifest(t, members, func(manifest map[string]any) {
 			for _, entry := range manifest["kind_registry"].([]any) {
 				kind := entry.(map[string]any)
@@ -108,7 +121,7 @@ func b13ImportedMemoryFixture(t *testing.T, mode string) []byte {
 			for _, entry := range manifest["sources"].([]any) {
 				source := entry.(map[string]any)
 				if source["family"] == "config" {
-					source["rows"] = len(rows) + bytes.Count(members["records/config.ndjson"], []byte{'\n'})
+					source["rows"] = configRows
 				}
 			}
 		})
