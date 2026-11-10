@@ -1,9 +1,10 @@
 --- /dev/null
 +++ b/scripts/host_drivers.py
-@@ -0,0 +1,329 @@
+@@ -0,0 +1,387 @@
 +"""Prepared six host script implementations; all data paths come from binding."""
 +import argparse
 +import copy
++import heapq
 +import json
 +from pathlib import Path
 +import sys
@@ -12,6 +13,59 @@
 +
 +
 +DEFAULTS = {"plan.json": None, "ids.json": {}, "linear-pending.json": []}
++
++
++def selected_close_order(writes, ids, keys):
++    """Order selected live local requirements; the kernel checks every guard."""
++    keys = list(keys)
++    saved = writes.job.state.get("selected_close_order")
++    if saved is not None:
++        if not isinstance(saved, list) or len(saved) != len(keys) or set(saved) != set(keys):
++            raise AdapterError("journal close selection changed")
++        return saved
++    by_id, beads = {}, {}
++    for key in keys:
++        bead = writes.c.get(ids[key])
++        if bead["id"] in by_id:
++            raise AdapterError("close selection aliases the same canonical ID")
++        by_id[bead["id"]] = key
++        beads[key] = bead
++    required = {key: set() for key in keys}
++    for key, bead in beads.items():
++        for link in bead.get("links", []):
++            if (link.get("from") != bead["id"] or link.get("kind") != "blocks"
++                    or link.get("targetKind", "local") != "local"):
++                continue
++            target = link.get("to")
++            if not Client.valid_ref(target):
++                raise AdapterError("unsupported close dependency reference")
++            if target["id"] in by_id:
++                required[key].add(by_id[target["id"]])
++        parent = bead.get("parent")
++        if isinstance(parent, str) and parent in by_id:
++            required[by_id[parent]].add(key)
++    positions = {key: i for i, key in enumerate(keys)}
++    dependents = {key: [] for key in keys}
++    for key in keys:
++        for prerequisite in required[key]:
++            dependents[prerequisite].append(key)
++    ready = [(positions[key], key) for key in keys if not required[key]]
++    heapq.heapify(ready)
++    ordered = []
++    while ready:
++        _, key = heapq.heappop(ready)
++        ordered.append(key)
++        for dependent in dependents[key]:
++            required[dependent].remove(key)
++            if not required[dependent]:
++                heapq.heappush(ready, (positions[dependent], dependent))
++    if len(ordered) != len(keys):
++        raise AdapterError("selected close constraints contain a cycle")
++    # Freeze before the first close. A resumed job must replay the same call
++    # positions even when earlier lifecycle writes or graph edits are visible.
++    writes.job.state["selected_close_order"] = ordered
++    writes.job.save()
++    return ordered
 +
 +
 +def create_items(writes, plan, ids, additions, ontology):
@@ -111,7 +165,9 @@
 +        commit = w.lifecycle(ids[key], close=False)
 +        items[key].update(w.c.committed_state(commit, ids[key]))
 +        items[key].pop("resolution", None)
-+    for key, reason in change.get("close", {}).items():
++    closes = change.get("close", {})
++    for key in selected_close_order(w, ids, closes):
++        reason = closes[key]
 +        desired = items[key].get("status") if key in {item["key"] for item in additions} else None
 +        if desired is not None and not ontology.terminal(desired):
 +            desired = None
@@ -254,8 +310,10 @@
 +            for blocker in it.get("blocked_by", []):
 +                # Plug link is structurally idempotent; no string-matching of errors.
 +                w.link(ids[it["key"]], ids[blocker])
-+            if it.get("closed"):
-+                w.lifecycle(ids[it["key"]], reason=it["closed"], status=it.get("status"))
++        closes = {it["key"]: it for it in items[start:] if it.get("closed")}
++        for key in selected_close_order(w, ids, closes):
++            it = closes[key]
++            w.lifecycle(ids[key], reason=it["closed"], status=it.get("status"))
 +        j.finish({"ids.json": ids})
 +
 +

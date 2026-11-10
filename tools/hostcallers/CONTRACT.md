@@ -91,6 +91,11 @@ prerequisites and child-before-parent constraints. Open/missing prerequisites or
 children and closure cycles are refused before creating anything. Core close
 guards remain enabled. Scoped create receipts are refreshed when another
 prepared caller has written the workspace journal.
+Apply/seed close batches order selected current-server dependencies and children;
+seed establishes its relevant links before any close. The selected order is
+saved before the first lifecycle write and retained for exact journal replay.
+Unselected open requirements still fail the kernel guards; batch ordering does
+not grant a closure or a transaction across the entire batch.
 Milestone reassignment replaces existing `milestone:` labels while preserving
 unrelated labels; each CAS attempt recalculates this from the current record.
 

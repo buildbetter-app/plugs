@@ -18,6 +18,14 @@ import host_drivers as hd
 from projection import Projection
 
 
+def batch_close_plan():
+    return {'doc': 'fixture.md', 'items': [
+        dict(key='P', type='epic', priority=1, parent=None, deps=[], title='Parent', description='P'),
+        dict(key='B', type='task', priority=2, parent='P', deps=[], title='Dependent', description='B'),
+        dict(key='A', type='task', priority=2, parent='P', deps=[], title='Prerequisite', description='A'),
+    ]}
+
+
 class HostCallerFixture(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="plug-i8-fixture-")
@@ -66,6 +74,98 @@ class HostCallerFixture(unittest.TestCase):
         with self.assertRaises(ph.RPCError) as e:
             self.lifecycle(ident)
         self.assertEqual(e.exception.code, 'ontology_guard_failed')
+
+    def test_apply_batch_closes_current_graph_before_parent(self):
+        self.write('plan.json', batch_close_plan())
+        self.run_script('load_plan.py', self.signals/'plan.json')
+        ids = ph.read_json(self.signals/'ids.json')
+        # The persisted plan has no dependency: ordering must read the server.
+        with ph.Job(self.c, 'fixture-live-link', 'B-before-A', {}) as job:
+            ph.Writes(self.c, job).link(ids['B'], ids['A'])
+            job.finish({})
+        self.assert_refused(ids['B'])
+        self.assert_refused(ids['P'])
+        self.write('close.json', {'close': {'P': 'parent reason', 'B': 'B reason', 'A': 'A reason'}})
+        self.run_script('apply_change.py', self.signals, self.signals/'close.json')
+        for key, reason in [('P', 'parent reason'), ('B', 'B reason'), ('A', 'A reason')]:
+            row = Projection(self.c).row(self.c.get(ids[key]))
+            self.assertTrue(row['status_terminal'])
+            self.assertEqual(row['close_reason'], reason)
+        saved = ph.read_json(self.signals/'.plug-host-journal.json')
+        orders = [job['selected_close_order'] for job in saved['jobs'].values()
+                  if 'selected_close_order' in job]
+        self.assertEqual(orders, [['A', 'B', 'P']])
+
+    def test_seed_links_all_selected_items_before_graph_ordered_closes(self):
+        client = ph.Client(self.binding, 'cody-ops')
+        items = [
+            dict(key='P', type='epic', title='Seed parent', closed='parent reason'),
+            dict(key='B', type='task', parent='P', blocked_by=['A'], title='Seed dependent', closed='B reason'),
+            dict(key='A', type='task', parent='P', title='Seed prerequisite', closed='A reason'),
+        ]
+        hd.seed(client, items)
+        ids = ph.read_json(self.ops/'ids.json')
+        for item in items:
+            row = Projection(client).row(client.get(ids[item['key']]))
+            self.assertTrue(row['status_terminal'])
+            self.assertEqual(row['close_reason'], item['closed'])
+        jobs = list(ph.read_json(self.ops/'.plug-host-journal.json')['jobs'].values())
+        self.assertEqual(jobs[0]['selected_close_order'], ['A', 'B', 'P'])
+        # Completed replay retains both imported/created identities and receipts.
+        hd.seed(client, items)
+        self.assertEqual(ph.read_json(self.ops/'ids.json'), ids)
+
+    def test_batch_close_replays_frozen_order_after_lost_response(self):
+        self.write('plan.json', batch_close_plan())
+        self.run_script('load_plan.py', self.signals/'plan.json')
+        ids = ph.read_json(self.signals/'ids.json')
+        with ph.Job(self.c, 'fixture-recovery-link', 'B-before-A', {}) as job:
+            ph.Writes(self.c, job).link(ids['B'], ids['A'])
+            job.finish({})
+        path = self.signals/'recover-close.json'
+        self.write(path.name, {'close': {'P': 'P reason', 'B': 'B reason', 'A': 'A reason'}})
+        rpc, dropped = self.c.rpc, False
+        def dropping(method, params, key=None):
+            nonlocal dropped
+            result = rpc(method, params, key)
+            if method == 'tx.apply' and params['changeSet']['ops'][0]['kind'] == 'close' and not dropped:
+                dropped = True
+                raise ph.TransportError('public fixture lost committed close response')
+            return result
+        with patch.object(self.c, 'rpc', dropping):
+            with self.assertRaises(ph.TransportError):
+                hd.apply_change(self.c, path)
+        book = ph.read_json(self.signals/'.plug-host-journal.json')
+        pending = book['jobs'][book['active']]
+        self.assertEqual(pending['selected_close_order'], ['A', 'B', 'P'])
+        first_key = pending['calls'][0]['attempts'][0]['key']
+        self.assertNotIn('result', pending['calls'][0])
+        self.assertTrue(self.c.ontology().terminal(self.c.get(ids['A'])['status'], 'task'))
+        hd.apply_change(self.c, path)
+        book = ph.read_json(self.signals/'.plug-host-journal.json')
+        self.assertIsNone(book['active'])
+        completed = next(job for job in book['jobs'].values() if job.get('selected_close_order') == ['A', 'B', 'P'])
+        self.assertEqual(len(completed['calls']), 3)
+        self.assertEqual(completed['calls'][0]['attempts'][0]['key'], first_key)
+        self.assertTrue(all(len(call['attempts']) == 1 for call in completed['calls']))
+        for key in ids:
+            self.assertTrue(Projection(self.c).row(self.c.get(ids[key]))['status_terminal'])
+
+    def test_batch_close_keeps_unselected_open_requirement_guard(self):
+        self.write('plan.json', batch_close_plan())
+        self.run_script('load_plan.py', self.signals/'plan.json')
+        ids = ph.read_json(self.signals/'ids.json')
+        with ph.Job(self.c, 'fixture-unselected-link', 'B-before-A', {}) as job:
+            ph.Writes(self.c, job).link(ids['B'], ids['A'])
+            job.finish({})
+        self.write('refuse-close.json', {'close': {'B': 'must refuse'}})
+        plan_before = (self.signals/'plan.json').read_bytes()
+        with self.assertRaises(ph.RPCError) as error:
+            hd.apply_change(self.c, self.signals/'refuse-close.json')
+        self.assertEqual(error.exception.code, 'ontology_guard_failed')
+        self.assertEqual((self.signals/'plan.json').read_bytes(), plan_before)
+        self.assertFalse(Projection(self.c).row(self.c.get(ids['B']))['status_terminal'])
+        self.assert_refused(ids['P'])
 
     def test_six_prepared_scripts_real_rpc(self):
         plan={'doc':'fixture.md','items':[

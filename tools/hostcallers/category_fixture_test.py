@@ -24,6 +24,12 @@ class InstalledProjectCategories(unittest.TestCase):
     write_binding = HostCallerFixture.write_binding
     write = HostCallerFixture.write
     create = HostCallerFixture.create
+    assert_refused = HostCallerFixture.assert_refused
+    lifecycle = HostCallerFixture.lifecycle
+    test_apply_batch_closes_current_graph_before_parent = HostCallerFixture.test_apply_batch_closes_current_graph_before_parent
+    test_seed_links_all_selected_items_before_graph_ordered_closes = HostCallerFixture.test_seed_links_all_selected_items_before_graph_ordered_closes
+    test_batch_close_replays_frozen_order_after_lost_response = HostCallerFixture.test_batch_close_replays_frozen_order_after_lost_response
+    test_batch_close_keeps_unselected_open_requirement_guard = HostCallerFixture.test_batch_close_keeps_unselected_open_requirement_guard
 
     def setUp(self):
         HostCallerFixture.setUp(self)
