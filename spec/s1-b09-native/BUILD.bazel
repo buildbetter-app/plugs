@@ -1,5 +1,12 @@
 load("@rules_go//go:def.bzl", "go_test")
 
+# The original capture-only source is shared without another fixture builder.
+filegroup(
+    name = "public_capture_source",
+    srcs = ["testdata/beads-446dbb.tar.gz", "testdata/beads-446dbb.git-tree"],
+    visibility = ["//visibility:public"],
+)
+
 # Separate public fixture qualification, never an official producer bundle.
 go_test(
     name = "record_id_style_a_native_test",

@@ -92,13 +92,21 @@ func TestPublicBeadsPreparedSourcePinRefusals(t *testing.T) {
 }
 
 // Called once for each original three-engine/history runtime leaf. All bytes
-// come from the real hash-pinned executable and its fresh imported workspace.
-// No extra capture, executable factory, preparer, descriptor or pin is added.
+// come from the real hash-pinned importer and the separate declared capture
+// component observing that same fresh workspace. No preparer pin is changed.
 func assertPublicNativeCaptureReadback(t *testing.T, options beadsOptions, output string, got outcome) {
 	t.Helper()
 	pinned := publicNativePrivateFile(t, filepath.Join(output, "beads-pinned"), 0500)
 	if hash(pinned) != options.SHA256 || got.BeadsBinarySHA256 != options.SHA256 || got.BeadsBuildRun != options.BuildRun {
 		t.Fatal("executed private copy is not bound to the delivered bytes/build")
+	}
+	capture := publicNativePrivateFile(t, filepath.Join(output, "beads-capture-pinned"), 0500)
+	if hash(capture) != options.CaptureSHA256 || got.BeadsCaptureBinarySHA256 != options.CaptureSHA256 || got.BeadsCaptureBuildRun != options.CaptureBuildRun || got.BeadsCaptureCommit != publicCaptureCommit || got.BeadsCaptureTree != publicCaptureTree {
+		t.Fatal("actual separate capture executable/source/build differs")
+	}
+	var captureVersion struct{ Commit, Build string }
+	if err := json.Unmarshal(publicNativePrivateFile(t, filepath.Join(output, "beads-4.stdout"), 0600), &captureVersion); err != nil || captureVersion.Commit != publicCaptureCommit || captureVersion.Build != "id-style-a-fixture-"+publicCaptureCommit {
+		t.Fatalf("actual separate capture version differs: %+v %v", captureVersion, err)
 	}
 	var version struct {
 		Commit string `json:"commit"`
@@ -113,10 +121,12 @@ func assertPublicNativeCaptureReadback(t *testing.T, options beadsOptions, outpu
 		t.Fatal("raw exporter did not consume the exact real fresh-target inventory")
 	}
 	var inventory struct {
-		Version         string `json:"version"`
-		Quiesced        bool   `json:"quiesced"`
-		RemotesMerged   bool   `json:"remotes_merged"`
-		WorkingSetClean bool   `json:"working_set_clean"`
+		Version         string            `json:"version"`
+		StoreID         string            `json:"store_id"`
+		Quiesced        bool              `json:"quiesced"`
+		RemotesMerged   bool              `json:"remotes_merged"`
+		WorkingSetClean bool              `json:"working_set_clean"`
+		ConfigPolicy    map[string]string `json:"config_policy"`
 		External        []struct {
 			Family string `json:"family"`
 			State  string `json:"state"`
@@ -158,6 +168,46 @@ func assertPublicNativeCaptureReadback(t *testing.T, options beadsOptions, outpu
 	if err != nil || hash(readback) != got.BeadsReadbackSHA256 || archive.SHA256() != got.BeadsReadbackSHA256 {
 		t.Fatalf("actual raw readback archive/digest differs: %v", err)
 	}
+	// The declared capture hashes its actual StoreLocator path, and retains
+	// both directory observations. Bind those physical observations to this
+	// importer's owned embedded target and to the resulting raw archive.
+	var storage struct {
+		Observations []struct {
+			Path, State, Contents string
+			Mode                  uint32
+		} `json:"observations"`
+		Quiesced  bool   `json:"operator_quiesced"`
+		Clean     bool   `json:"sql_clean"`
+		Atomicity string `json:"filesystem_atomicity"`
+	}
+	storageBytes := publicNativePrivateFile(t, filepath.Join(sidecars, "store-files-and-quiescence.json"), 0600)
+	if err := json.Unmarshal(storageBytes, &storage); err != nil || len(storage.Observations) != 2 || !storage.Quiesced || !storage.Clean || storage.Atomicity != "not-verified" {
+		t.Fatalf("actual native physical-root observations are incomplete: %v", err)
+	}
+	beadsDir := filepath.Join(physical, "beads-target", ".beads")
+	storeDir := storage.Observations[1].Path
+	if storage.Observations[0].Path != beadsDir || filepath.Dir(storeDir) != filepath.Join(beadsDir, "embeddeddolt") || inventory.StoreID != "native/"+hash([]byte(storeDir)) || archive.Manifest().StoreID != inventory.StoreID {
+		t.Fatal("inventory/raw archive is not bound to this fresh embedded import target")
+	}
+	for _, observation := range storage.Observations {
+		info, err := os.Lstat(observation.Path)
+		if err != nil || !info.IsDir() || observation.State != "directory" || observation.Contents != "not-read" || uint32(info.Mode().Perm()) != observation.Mode {
+			t.Fatalf("actual owned storage directory differs from capture observation: %+v %v", observation, err)
+		}
+	}
+	policies := map[string]bool{}
+	for _, row := range archive.Records("config") {
+		key, ok := row.Source.Fields["key"].(string)
+		qualified := row.Source.Table + "/" + key
+		if !ok || key == "" || policies[qualified] || inventory.ConfigPolicy[qualified] == "" || row.Body["classification"] != inventory.ConfigPolicy[qualified] {
+			t.Fatal("actual raw configuration row differs from captured policy census")
+		}
+		policies[qualified] = true
+	}
+	if len(policies) == 0 || len(policies) != len(inventory.ConfigPolicy) {
+		t.Fatal("captured configuration policy census has missing or unmeasured keys")
+	}
+	t.Logf("PUBLIC_BEADS_NATIVE_TARGET store_id=%s store_dir=%s beads_dir=%s config_keys=%d physical_atomicity=%s", inventory.StoreID, storeDir, beadsDir, len(policies), storage.Atomicity)
 	live := publicNativePrivateFile(t, filepath.Join(output, "reverse-live.jsonl"), 0600)
 	if hash(live) != got.ReverseSHA256 || got.BaselineSHA256 == got.ReverseSHA256 {
 		t.Fatal("readback expectation is not the changed production Writer image")

@@ -798,6 +798,7 @@ internal/plugins/authzfixed/rules_test.go
 internal/publicnative/BUILD.bazel
 internal/publicnative/server_linux.go
 internal/publicnative/server_linux_test.go
+internal/publicnative/source.go
 internal/server/authn/BUILD.bazel
 internal/server/authn/authn.go
 internal/server/authn/authn_test.go

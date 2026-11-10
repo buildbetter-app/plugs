@@ -54,12 +54,20 @@ new target's actual config/external census; missing schema, source families or
 policies refuse through the exporter. No native-head export adapter is added.
 Embedded `bd sql` is unsupported at this pin and is not used as a fallback.
 
-For disposable public targets, `--beads-capture-public` runs the same verified
-executable's `--readonly export --format beads-inventory/1
---plug-capture-public --output beads-generated-inventory.json` after import.
-That actual fresh-target inventory and its external sidecars feed the raw
-readback exporter. It cannot be combined with a supplied `--beads-inventory`.
-The default without either option keeps the inventory-required WAIT boundary.
+A distinct disposable public fixture uses `--beads-capture-public` together
+with `--beads-capture-binary`, `--beads-capture-sha256` and
+`--beads-capture-build-run`. It preserves the admitted importer above and uses
+the separately declared capture-only source
+`446dbbdaf978385099aeb8625e08016889fffccf`, tree
+`64f0d22c8622c2a20da2bfe8c3ad49458fd12b06`. This component verifies its own
+version and captures the actual fresh imported target with `--readonly export
+--format beads-inventory/1 --plug-capture-public --output
+beads-generated-inventory.json`, then raw-exports that same target. Both
+executable identities, hashes, build receipts and command streams remain
+separate. This fixture does not supply the admitted importer's missing capture
+capability or native admission. It cannot be combined with a supplied
+`--beads-inventory`. The default without either option keeps the original
+inventory-required WAIT boundary.
 
 Independent readback compares raw stored issue fields, metadata, labels,
 timestamps, dependency envelopes, comments and memories against the submitted
@@ -86,7 +94,11 @@ It checks `PLUG_PUBLIC_BEADS_BINARY`, `PLUG_PUBLIC_BEADS_SHA256`,
 `PLUG_PUBLIC_BEADS_BUILD_RUN` and `PLUG_PUBLIC_BEADS_MANIFEST` against the
 manifest's source pin, canonical exporter target, build identity, executable
 size/mode and digest. The production path then verifies the copied bytes and
-reported runtime commit before any init/import. No artifact is built by tests.
+reported runtime commit before any init/import. The importer is never built by
+tests. The distinct capture fixture reuses the single canonical B09 public
+source builder and its unchanged declared archive/complete manifest. Its actual
+build, validations, executable, toolchain and source provenance are retained
+under the current test's output directory.
 
 After the trusted preparation workflow has landed, select the runtime target
 explicitly through `remote-bazel` and provide exactly one
@@ -101,13 +113,18 @@ fixtures in full/partial/snapshot modes across memory, SQLite and disposable
 PostgreSQL, with the normal claim/release and live-edit workload. It uses
 explicit `--all` export for the partial fixture's three ephemeral beads; the
 complete fixture uses default export. The default-omission controls stay separate.
-It requires five actual successful Beads subprocesses for each admitted case:
-version, init, import, fresh-target public inventory capture and raw readback
-export. Each case invokes the independent raw capture verifier and requires the
+It requires six actual successful subprocesses for each case: importer version,
+init and import, then separate capture version, fresh-target public inventory
+capture and raw readback export. Every command records its executable digest,
+working directory and isolated environment. Each case invokes the independent
+raw capture verifier and requires the
 existing native field comparison to pass. Original live-workload, provenance,
 history and import-count assertions remain. Raw streams, both inventory files,
 all captured sidecars, the raw archive and submitted live JSONL are retained in
-the test outputs, including on failure. An additional real missing-inventory
+the test outputs, including on failure. Physical directory observations bind
+the inventory store ID and raw archive to the actual imported embedded target;
+the configuration policy census must cover every raw stored key. The capture's
+literal filesystem atomicity limitation remains unchanged. An additional real missing-inventory
 control retains the three-command reimport-PASS/readback-WAIT boundary. These
 public fixtures provide no strict two-source history, private-store or official
 native-admission qualification.

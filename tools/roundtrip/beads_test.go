@@ -35,6 +35,36 @@ func TestPublicCaptureCannotUseACallerInventory(t *testing.T) {
 	}
 }
 
+func TestPublicCaptureRequiresSeparateExplicitArtifact(t *testing.T) {
+	for _, captureArgs := range [][]string{{"--beads-capture-public"}, {"--beads-capture-binary", "/not-opened"}} {
+		output := filepath.Join(t.TempDir(), "not-created")
+		got := run(append([]string{"--input", "not-opened", "--output-dir", output}, captureArgs...))
+		if got.Status != "BLOCK" || got.Stage != "arguments" || got.Reason != "explicit_public_capture_artifact_required" || got.BeadsReimport != "WAIT" || got.BeadsReadback != "WAIT" {
+			t.Fatalf("incomplete capture provenance accepted: %+v", got)
+		}
+		if _, err := os.Stat(output); !os.IsNotExist(err) {
+			t.Fatal("incomplete capture created a target")
+		}
+	}
+}
+
+func TestPublicCaptureDigestMismatchCannotExecuteOrReplaceImporter(t *testing.T) {
+	root := t.TempDir()
+	binary := filepath.Join(root, "not-executable")
+	if err := os.WriteFile(binary, []byte("untrusted capture bytes"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pinPublicCapture(beadsOptions{CaptureBinary: binary, CaptureSHA256: hash([]byte("different")), CaptureBuildRun: "1"}, root); err == nil {
+		t.Fatal("unverified capture bytes were accepted")
+	}
+	if _, err := os.Stat(filepath.Join(root, "beads-capture-pinned")); !os.IsNotExist(err) {
+		t.Fatal("unverified capture copy retained")
+	}
+	if _, err := os.Stat(filepath.Join(root, "beads-target")); !os.IsNotExist(err) {
+		t.Fatal("unverified capture created a target")
+	}
+}
+
 func TestBeadsDigestMismatchStopsBeforeAnyProcessOrTarget(t *testing.T) {
 	root := t.TempDir()
 	binary := filepath.Join(root, "untrusted-artifact")

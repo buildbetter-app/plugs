@@ -35,15 +35,18 @@ go_test(
 
 go_test(
     name = "public_beads_runtime_test",
-    size = "large",
+    size = "enormous",
+    timeout = "eternal",
     srcs = ["main.go", "beads.go", "beads_runtime_test.go", "beads_native_regression_test.go"],
     args = ["-public-beads-runtime"],
     data = [
         "testdata/public-companion-profile.json",
         "//spec/s1-b25-b28:public_recording_protocol",
+        "//spec/s1-b09-native:public_capture_source",
         "//internal/integration/converterroundtrip:public_source_fixtures",
         "//internal/integration/offlinehistory:lexicon_files",
     ],
     tags = ["local", "manual", "requires-network"],
-    deps = _DEPS,
+    env_inherit = ["BAZEL_BIN", "BAZEL_RC", "BAZELISK_HOME", "BAZELISK_VERIFY_SHA256", "GITHUB_RUN_ID"],
+    deps = _DEPS + ["//internal/publicnative"],
 )
