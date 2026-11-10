@@ -10,8 +10,15 @@ func TestParseConfigSupportsFlatAndNestedAliases(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Driver != "sqlite" || config.DSN != "/tmp/plug.db#durable" || config.Address != "127.0.0.1:0" || config.Project != "demo" || config.UI || config.AuthMode != "anonymous" {
+	if config.Driver != "sqlite" || config.DSN != "/tmp/plug.db#durable" || config.Address != "127.0.0.1:0" || config.Project != "demo" || config.UI || config.RollbackWindow || config.AuthMode != "anonymous" {
 		t.Fatalf("parsed config=%+v", config)
+	}
+	window, err := ParseConfig([]byte("server:\n  rollback_window: true\n"))
+	if err != nil || !window.RollbackWindow {
+		t.Fatalf("rollback window config=%+v err=%v", window, err)
+	}
+	if disabled, err := ParseConfig([]byte("rollback_window: false\n")); err != nil || disabled.RollbackWindow {
+		t.Fatalf("disabled rollback window config=%+v err=%v", disabled, err)
 	}
 
 	flat, err := ParseConfig([]byte("driver: memory\naddress: 127.0.0.1:0\nproject: local\nui: true\n"))
@@ -41,6 +48,8 @@ func TestParseConfigRejectsUnknownDuplicateAndMalformedValues(t *testing.T) {
 		{"empty section", "storage:\n", "config section"},
 		{"bad bool", "ui: maybe\n", "must be true or false"},
 		{"quoted bool", "ui: \"true\"\n", "must be true or false"},
+		{"rollback bad bool", "rollback_window: maybe\n", "must be true or false"},
+		{"rollback quoted bool", "rollback_window: \"true\"\n", "must be true or false"},
 		{"bad indentation", "driver: memory\n  dsn: secret\n", "invalid indentation"},
 		{"flow value", "storage: {driver: sqlite}\n", "unsupported config key"},
 	}
