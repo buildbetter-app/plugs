@@ -113,6 +113,10 @@ func requestedStatus(proposal port.ProposedChange, change port.Change) *string {
 	return nil
 }
 
+func statusResource(resource model.ResourceRef) [3]string {
+	return [3]string{resource.Kind, resource.Ref.ID, resource.Ref.Branch.String()}
+}
+
 func operationMethod(proposal port.ProposedChange, change port.Change) string {
 	if proposal.Meta.Method == "tx.apply" && change.Op.Kind == model.OpClose {
 		return "bead.close"
@@ -128,8 +132,20 @@ func (o *Ontology) Normalize(ctx context.Context, proposal port.ProposedChange, 
 		return nil, failure("invalid_params", "gate method requires trusted gate lowering context")
 	}
 	patches := []port.Patch{}
-	for _, change := range proposal.Changes {
+	// Atomic images already contain every ordered operation. Only the last
+	// close may select their final status; ValidateOrdered separately evaluates
+	// every captured prefix, including earlier targets and their guards.
+	lastClose := map[[3]string]int{}
+	for i, change := range proposal.Changes {
+		if change.Op.Kind == model.OpClose {
+			lastClose[statusResource(change.Resource)] = i
+		}
+	}
+	for i, change := range proposal.Changes {
 		if change.Resource.Kind != "bead" || !hasDocument(change.After) {
+			continue
+		}
+		if change.Op.Kind == model.OpClose && lastClose[statusResource(change.Resource)] != i {
 			continue
 		}
 		doc, err := decodeDocument(change.After)
@@ -336,8 +352,15 @@ func (o *Ontology) validate(ctx context.Context, proposal port.ProposedChange, r
 		method = "bead.update"
 	}
 	settlement := o.closeSettlement(proposal)
+	// All changes for a new resource share its absent committed pre-image.
+	// Preserve its typed create selector across later ordinary operations; a
+	// different resource or a generic fields.status patch supplies no authority.
+	createTargets := map[[3]string]*string{}
 	_, lifecycle := ontology.SlotForMethod(proposal.Meta.Method)
 	for _, change := range proposal.Changes {
+		if change.Op.Create != nil {
+			createTargets[statusResource(change.Resource)] = change.Op.Create.TargetStatus
+		}
 		if change.Op.Kind == model.OpClose || change.Op.Create != nil && change.Op.Create.TargetStatus != nil {
 			lifecycle = true
 		}
@@ -420,6 +443,9 @@ func (o *Ontology) validate(ctx context.Context, proposal port.ProposedChange, r
 			before = &v
 		}
 		facts := ontology.GuardFacts{SetBy: change.SetBy, TargetStatus: requestedStatus(proposal, change)}
+		if before == nil && change.Op.Create == nil && change.Op.Close == nil {
+			facts.TargetStatus = createTargets[statusResource(change.Resource)]
+		}
 		for path := range change.SetBy {
 			facts.Touched = append(facts.Touched, path)
 		}
@@ -427,6 +453,9 @@ func (o *Ontology) validate(ctx context.Context, proposal port.ProposedChange, r
 		// value. Final-image comparison alone would let direct status edits pass.
 		if change.Op.Patch != nil {
 			for name := range change.Op.Patch.Fields {
+				if before == nil && name == "status" {
+					return failure("ontology_use_slot_verb", "status must be changed through a lifecycle verb")
+				}
 				facts.Touched = append(facts.Touched, "fields."+name)
 			}
 		}

@@ -213,6 +213,122 @@ func TestG1OrderedExactTargetsKeepGraphGuardsAndAtomicRollback(t *testing.T) {
 		t.Log("G1 actual tx.apply exact create+close: backward aliases, ordered children/dependencies, required/schema/template/CAS guards, prefix/create rollback, exact reason/metadata/principal, one revision/version and replay")
 	})
 }
+
+func TestG1RepeatedExactClosesKeepLastTargetAndEveryPrefixGuard(t *testing.T) {
+	eachFixture(t, func(t *testing.T, f *fixture) {
+		for _, targets := range [][2]string{{"native-done", "native-done-alt"}, {"native-done-alt", "native-done"}} {
+			label := targets[0] + "-then-" + targets[1]
+			id := f.create(project, "native-ready-alt", label+"-create")
+			params := tx(typedClose(id, targets[0], "first exact reason"),
+				map[string]any{"kind": "patch", "target": id, "fields": map[string]any{"title": "between closes"}},
+				typedClose(id, targets[1], "last exact reason"),
+				map[string]any{"kind": "setMeta", "target": id, "key": "i8.host.close_reason", "value": "last exact reason"})
+			r := f.call(actor, project, "tx.apply", params, label)
+			c := accepted(t, r, false)
+			f.status(id, targets[1])
+			d := f.document(id)
+			if d.Fields["title"] != "between closes" || len(d.Comments) != 2 || d.Comments[0].Body != "first exact reason" || d.Comments[1].Body != "last exact reason" || !d.Comments[1].Time.After(d.Comments[0].Time) || string(d.Metadata["i8.host.close_reason"]) != `"last exact reason"` {
+				t.Fatalf("repeated close ordering/final image: %+v", d)
+			}
+			for _, comment := range d.Comments {
+				if comment.Principal.ID != actor.ID {
+					t.Fatal("repeated close lost reason principal")
+				}
+			}
+			reader, err := f.store.Read(f.ctx, driver.View{Incarnation: f.facts.Namespace.Incarnation})
+			if err != nil {
+				t.Fatal(err)
+			}
+			versions, err := reader.Versions(f.ctx, id, driver.PageReq{Limit: 1000})
+			reader.Close()
+			if err != nil || len(versions.Items) != 2 {
+				t.Fatalf("repeated closes must commit one additional version: %+v %v", versions, err)
+			}
+			found := false
+			for _, version := range versions.Items {
+				found = found || version.Revision.String() == c.Revision.String()
+			}
+			if !found {
+				t.Fatal("repeated close version does not match commit")
+			}
+			before := f.capture(actor, "tx.apply", label)
+			replay := f.call(actor, project, "tx.apply", params, label)
+			accepted(t, replay, true)
+			if !bytes.Equal(r.Result, replay.Result) || before != f.capture(actor, "tx.apply", label) {
+				t.Fatal("repeated close replay changed state or receipt")
+			}
+		}
+		// The final target does not require proof. The earlier target does, so
+		// selecting the last target must not skip the earlier close's guard.
+		noProof := f.write("bead.create", map[string]any{"type": nativeType, "fields": map[string]any{"title": "earlier guard"}}, "repeated-no-proof").Results[0].Ref
+		f.refuse(actor, project, "tx.apply", tx(typedClose(noProof, "native-done-alt", "must roll back"), typedClose(noProof, "native-done", "must also roll back")), "earlier-close-guard", "ontology_guard_failed")
+		f.refuse(actor, project, "tx.apply", tx(typedClose(noProof, "native-done-no-route", "must roll back"), typedClose(noProof, "native-done", "must also roll back")), "earlier-close-transition", "invalid_params")
+		f.status(noProof, "native-open")
+		t.Log("G1 repeated exact closes in both target orders: last target, both ordered reasons/principals, one version, replay, and earlier guard/transition atomic refusal")
+	})
+}
+
+func TestG1ExactCreateIntentSurvivesOrdinaryFollowupOperations(t *testing.T) {
+	eachFixture(t, func(t *testing.T, f *fixture) {
+		for _, kind := range []string{"patch", "comment", "setMeta", "combined"} {
+			created := model.RefByKey("new")
+			ops := []any{map[string]any{"kind": "create", "key": "new", "type": nativeType, "targetStatus": "native-ready-alt", "fields": map[string]any{"title": "initial", "proof": "checked"}}}
+			if kind == "patch" || kind == "combined" {
+				ops = append(ops, map[string]any{"kind": "patch", "target": created, "fields": map[string]any{"title": "updated"}})
+			}
+			if kind == "comment" || kind == "combined" {
+				ops = append(ops, map[string]any{"kind": "comment", "target": created, "body": "ordinary reason"})
+			}
+			if kind == "setMeta" || kind == "combined" {
+				ops = append(ops, map[string]any{"kind": "setMeta", "target": created, "key": "i8.host.close_reason", "value": "ordinary metadata"})
+			}
+			// Other new resources keep their own omitted or different explicit
+			// selector, even when their follow-up operations share this batch.
+			ops = append(ops,
+				map[string]any{"kind": "create", "key": "default", "type": nativeType, "fields": map[string]any{"title": "default"}},
+				map[string]any{"kind": "patch", "target": model.RefByKey("default"), "fields": map[string]any{"title": "default updated"}},
+				map[string]any{"kind": "create", "key": "frozen", "type": nativeType, "targetStatus": "native-frozen", "fields": map[string]any{"title": "frozen"}},
+				map[string]any{"kind": "setMeta", "target": model.RefByKey("frozen"), "key": "fixture", "value": "frozen metadata"})
+			params := tx(ops...)
+			label := "create-followup-" + kind
+			r := f.call(actor, project, "tx.apply", params, label)
+			c := accepted(t, r, false)
+			if len(c.Results) != len(ops) {
+				t.Fatalf("create/follow-up results: %+v", c)
+			}
+			id := c.Results[0].Ref
+			f.status(id, "native-ready-alt")
+			f.status(c.Results[len(c.Results)-4].Ref, "native-open")
+			f.status(c.Results[len(c.Results)-2].Ref, "native-frozen")
+			d := f.document(id)
+			if (kind == "patch" || kind == "combined") && d.Fields["title"] != "updated" {
+				t.Fatal("create selector lost ordinary title update")
+			}
+			if (kind == "comment" || kind == "combined") && (len(d.Comments) != 1 || d.Comments[0].Body != "ordinary reason" || d.Comments[0].Principal.ID != actor.ID) {
+				t.Fatal("create selector lost ordinary reason/principal")
+			}
+			if (kind == "setMeta" || kind == "combined") && string(d.Metadata["i8.host.close_reason"]) != `"ordinary metadata"` {
+				t.Fatal("create selector lost ordinary metadata")
+			}
+			before := f.capture(actor, "tx.apply", label)
+			replay := f.call(actor, project, "tx.apply", params, label)
+			accepted(t, replay, true)
+			if !bytes.Equal(r.Result, replay.Result) || before != f.capture(actor, "tx.apply", label) {
+				t.Fatal("create/follow-up replay changed state or receipt")
+			}
+		}
+		for _, target := range []string{"native-open", "native-ready-alt"} {
+			f.refuse(actor, project, "tx.apply", tx(
+				map[string]any{"kind": "create", "key": "invalid", "type": nativeType, "targetStatus": "native-ready-alt", "fields": map[string]any{"title": "must roll back"}},
+				map[string]any{"kind": "patch", "target": model.RefByKey("invalid"), "fields": map[string]any{"status": target}}), "new-generic-status-"+target, "ontology_use_slot_verb")
+		}
+		f.refuse(actor, project, "tx.apply", tx(
+			map[string]any{"kind": "create", "key": "invalid-schema", "type": nativeType, "targetStatus": "native-ready-alt", "fields": map[string]any{"title": "must roll back"}},
+			map[string]any{"kind": "patch", "target": model.RefByKey("invalid-schema"), "fields": map[string]any{"proof": true}}), "create-followup-schema", "invalid_params")
+		t.Log("G1 exact noninitial create plus no-close patch/comment/metadata: per-resource selectors, omitted default, reasons/principals, metadata, replay, schema and generic-status rollback")
+	})
+}
+
 func mustJSON(t *testing.T, v any) []byte {
 	t.Helper()
 	raw, err := json.Marshal(v)
