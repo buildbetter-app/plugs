@@ -1439,6 +1439,7 @@ spec/s1-b17-b20/testdata/recording-2/imported.json
 spec/s1-b21-b24/BUILD.bazel
 spec/s1-b21-b24/README.md
 spec/s1-b21-b24/acceptance_test.go
+spec/s1-b21-b24/b24_independent_clock_test.go
 spec/s1-b21-b24/cas_contract_test.go
 spec/s1-b21-b24/clock_boundary_test.go
 spec/s1-b21-b24/close_contract_test.go
