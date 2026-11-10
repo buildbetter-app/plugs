@@ -645,3 +645,59 @@ func TestPhysicalUndoPublicationFailureIsPostCommitIndeterminate(t *testing.T) {
 	saveEvidence(t, "undo-postcommit-publication-actual-root.json", actual)
 	t.Log("UNDO_POSTCOMMIT_PUBLICATION actual_commit_present=true real_reopen=true status=post-commit-indeterminate publication_cause_retained=true")
 }
+
+func TestPhysicalUndoCLIRefusesOutputsInsidePreservedSource(t *testing.T) {
+	_, source, release, request := undoFixture(t)
+	if err := release(); err != nil {
+		t.Fatal(err)
+	}
+	original, err := InventoryPreservedStore(context.Background(), source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary, err := bazeltest.RunfileEnv("BEADS_PHYSICAL_RESTORE_BINARY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binaryBytes, err := os.ReadFile(binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var commands []map[string]any
+	for _, name := range []string{"readback", "loss", "receipt"} {
+		t.Run(name, func(t *testing.T) {
+			work := undoWork(t)
+			target, input := filepath.Join(work, "copy"), filepath.Join(work, "request.json")
+			data, err := json.Marshal(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(input, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			outputs := map[string]string{"readback": filepath.Join(work, "actual.json"), "loss": filepath.Join(work, "loss.json"), "receipt": filepath.Join(work, "receipt.json")}
+			forbidden := filepath.Join(source, "forbidden-"+name+".json")
+			outputs[name] = forbidden
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, binary, "--undo-preserved-copy", "--disposable-target", "--preserved-data-dir", source, "--data-dir", target, "--database", "restored", "--undo-request", input, "--readback-output", outputs["readback"], "--loss-report-output", outputs["loss"], "--undo-receipt-output", outputs["receipt"])
+			result, runErr := cmd.CombinedOutput()
+			if runErr == nil || !strings.Contains(string(result), "preserved-source-overlap") {
+				t.Fatalf("expected explicit pre-copy preserved-source refusal: %v %s", runErr, result)
+			}
+			for _, path := range []string{target, outputs["readback"], outputs["loss"], outputs["receipt"]} {
+				if _, err := os.Lstat(path); !os.IsNotExist(err) {
+					t.Fatalf("refusal created target/output: %v", err)
+				}
+			}
+			unchanged, err := InventoryPreservedStore(context.Background(), source)
+			if err != nil || unchanged.SHA256 != original.SHA256 {
+				t.Fatalf("refusal changed original preserved bytes: %v", err)
+			}
+			commands = append(commands, map[string]any{"output": name, "argv": cmd.Args, "stderr": string(result), "binary_sha256": fmt.Sprintf("%x", sha256.Sum256(binaryBytes)), "original_sha256": original.SHA256, "after_sha256": unchanged.SHA256, "target_absent": true, "outputs_absent": true, "status": "preserved-source-overlap"})
+			t.Logf("UNDO_OUTPUT_OVERLAP output=%s explicit_refusal=true copy_absent=true original_bytes_exact=true all_outputs_absent=true", name)
+		})
+	}
+	saveEvidence(t, "undo-preserved-output-overlap-commands.json", commands)
+	saveEvidence(t, "undo-preserved-output-overlap-original-files.json", original)
+}

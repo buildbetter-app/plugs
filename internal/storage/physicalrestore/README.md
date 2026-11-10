@@ -92,6 +92,8 @@ the undo, closes and reopens the target, then verifies the actual graph, immutab
 versioned cells and complete working cells. Any failure after commit is explicitly
 indeterminate and retains all causes, including close and publication failures.
 Precommit refusal or cancellation rolls back all user-table changes.
+Every target, readback, loss and receipt path must be disjoint from the preserved
+source; overlap refuses before copying or opening the destination engine.
 
 `reverse_report` carries the existing converter Report without reclassification.
 Optional `reverse_report_bytes` carries its original file bytes, including file

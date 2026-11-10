@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/steveyegge/beads/internal/storage/physicalcapture"
@@ -48,6 +49,14 @@ func runUndo(preserved, target, database, input, readback, loss, receiptOutput s
 	}
 	if readback == loss || readback == target || loss == target || receiptOutput == target || receiptOutput == readback || receiptOutput == loss {
 		return errors.New("distinct undo outputs required")
+	}
+	// No output may modify the preserved original, even after its byte census.
+	// Parents were resolved above, so this check covers canonical descendants
+	// without relying on a prefix which could also match a sibling directory.
+	for _, output := range []string{target, readback, loss, receiptOutput} {
+		if output == preserved || strings.HasPrefix(output, preserved+string(os.PathSeparator)) || strings.HasPrefix(preserved, output+string(os.PathSeparator)) {
+			return &physicalrestore.Error{Kind: "preserved-source-overlap", Row: -1, Cause: errors.New("every undo target and output must be disjoint from the preserved source")}
+		}
 	}
 	if info, err := os.Stat(filepath.Join(preserved, database, ".dolt")); err != nil || !info.IsDir() {
 		return errors.New("existing preserved native database required; undo performs no initialization")
