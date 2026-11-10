@@ -6,6 +6,7 @@ go_library(
         "archive.go",
         "convert.go",
         "loss.go",
+        "physical.go",
         "source_planes.go",
         "types.go",
     ],
@@ -19,7 +20,7 @@ go_library(
 
 go_test(
     name = "reverseconverter_test",
-    srcs = ["reverseconverter_test.go", "public_archive_test.go", "source_planes_test.go"],
+    srcs = ["reverseconverter_test.go", "public_archive_test.go", "source_planes_test.go", "physical_test.go"],
     data = [
         "//internal/integration/converterroundtrip:testdata/synthetic-plug-dump-1.tar",
         "//internal/integration/converterroundtrip:public_source_fixtures",

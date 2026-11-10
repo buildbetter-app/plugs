@@ -359,6 +359,8 @@ internal/core/reverseconverter/README.md
 internal/core/reverseconverter/archive.go
 internal/core/reverseconverter/convert.go
 internal/core/reverseconverter/loss.go
+internal/core/reverseconverter/physical.go
+internal/core/reverseconverter/physical_test.go
 internal/core/reverseconverter/public_archive_test.go
 internal/core/reverseconverter/reverseconverter_test.go
 internal/core/reverseconverter/source_planes.go
@@ -559,6 +561,7 @@ internal/integration/converterroundtrip/restore.go
 internal/integration/converterroundtrip/reverse.go
 internal/integration/converterroundtrip/reverse_loss.go
 internal/integration/converterroundtrip/reverse_loss_test.go
+internal/integration/converterroundtrip/reverse_physical_test.go
 internal/integration/converterroundtrip/reverse_test.go
 internal/integration/converterroundtrip/rollback_rehearsal_fixture_test.go
 internal/integration/converterroundtrip/roundtrip_test.go
