@@ -1689,6 +1689,7 @@ tools/rehearsal/metrics.go
 tools/rehearsal/metrics_completeness_test.go
 tools/rehearsal/metrics_test.go
 tools/rehearsal/rollback_fault_test.go
+tools/rehearsal/rollback_snapshot_test.go
 tools/rehearsal/three_rehearsals.sh
 tools/rehearsal/transcript.go
 tools/rehearsal/transcript_consumer.go
