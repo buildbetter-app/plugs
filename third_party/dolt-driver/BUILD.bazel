@@ -35,6 +35,7 @@ go_library(
     ],
 )
 
+# manual: explicitly selected alongside native physical fixtures.
 # Private boundary supplement; not a replacement for physical fixture execution.
 go_test(
     name = "physical_commit_test",

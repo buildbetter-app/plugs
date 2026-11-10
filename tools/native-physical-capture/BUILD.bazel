@@ -14,6 +14,7 @@ go_library(
     ],
 )
 
+# manual: capture-only tool selected explicitly by native physical fixture targets.
 go_binary(
     name = "native-physical-capture",
     gotags = ["gms_pure_go"],
