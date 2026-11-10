@@ -32,6 +32,17 @@ type NativeCapture struct {
 // NativeInventory reads through the same scoped SQL port as the dump exporter.
 // It returns data only; the command publishes sidecars before the inventory.
 func (s SQLSource) NativeInventory(ctx context.Context, capture NativeCapture) (Inventory, map[string][]byte, error) {
+	return s.nativeInventory(ctx, capture, s)
+}
+
+// NativeInventory keeps the current SQL scope and authenticates both source
+// censuses through the same own-version reader used to build the archive.
+// The SQL-only entry point retains its existing complete-census requirement.
+func (s OwnVersionCommitSource) NativeInventory(ctx context.Context, capture NativeCapture) (Inventory, map[string][]byte, error) {
+	return s.SQLSource.nativeInventory(ctx, capture, s)
+}
+
+func (s SQLSource) nativeInventory(ctx context.Context, capture NativeCapture, history SourceHistoryReader) (Inventory, map[string][]byte, error) {
 	if err := validateSourcePlaneContract(capture.SourcePlaneAddressContract); err != nil {
 		return Inventory{}, nil, err
 	}
@@ -58,7 +69,7 @@ func (s SQLSource) NativeInventory(ctx context.Context, capture NativeCapture) (
 	if profile.MainVersion == 66 && capture.SourcePlaneAddressContract != SourcePlaneAddressContract {
 		return Inventory{}, nil, fmt.Errorf("own-version capture requires native source family contract")
 	}
-	log, err := s.ReadSourceCommits(ctx)
+	log, err := history.ReadSourceCommits(ctx)
 	if err != nil {
 		return Inventory{}, nil, err
 	}
@@ -245,7 +256,7 @@ func (s SQLSource) NativeInventory(ctx context.Context, capture NativeCapture) (
 	}
 	inventory.StatusCategoryContract = StatusCategoryContract
 	inventory.Projects[0].Statuses = statuses
-	finalLog, err := s.ReadSourceCommits(ctx)
+	finalLog, err := history.ReadSourceCommits(ctx)
 	if err != nil {
 		return Inventory{}, nil, err
 	}

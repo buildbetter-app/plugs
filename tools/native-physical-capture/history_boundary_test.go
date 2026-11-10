@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -161,6 +162,13 @@ func TestPublicGenuineShallowHistoryBoundaryRetainsVerifiedCellsAndEvents(t *tes
 	missing, missingErr := physicalcapture.ReadCommit(ctx, conn, frontier)
 	if missingErr == nil || physicalcapture.UnavailableReason(missingErr) != "ghost_parent" || missing.CommitID != "" || missing.ReadOnlyScope || len(missing.Tables) != 0 {
 		t.Fatal("shallow parent was not an actual unreadable ghost")
+	}
+	// SQL-only census still refuses this genuinely shallow source. Inventory
+	// must explicitly use the authenticated physical reader, as Build does.
+	_, sqlCensusErr := (plugdump.SQLSource{DB: conn}).ReadSourceCommits(ctx)
+	var sqlUnavailable plugdump.ErrSourceHistoryUnavailable
+	if !errors.As(sqlCensusErr, &sqlUnavailable) || sqlUnavailable.Reason != "ancestry-unavailable" && sqlUnavailable.Reason != "commit-census-unavailable" {
+		t.Fatalf("SQL-only shallow refusal changed: %T", sqlCensusErr)
 	}
 	fullByID := map[string]plugdump.SourceCommit{}
 	for _, c := range fullLog.Commits {

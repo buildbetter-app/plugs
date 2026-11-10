@@ -339,6 +339,14 @@ checks, including source-principal attribution, remain unperformed.
 
 ## Native public inventory
 
+The private own-version capture caller uses
+`OwnVersionCommitSource.NativeInventory` so its initial and final inventory
+censuses use the same authenticated physical history reader as archive creation.
+This permits a genuine typed source boundary while retaining every readable
+image, exact frontier edges and the current events attachment. The SQL-only
+`SQLSource.NativeInventory` entry point keeps its existing census requirements;
+a failed SQL census alone never establishes a history boundary.
+
 For a quiesced, disposable public native workspace, the supported `bd` executable
 can measure the inventory needed for raw readback without a fixture census:
 

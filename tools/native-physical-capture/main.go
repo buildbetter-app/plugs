@@ -143,7 +143,7 @@ func run() (resultErr error) {
 	if err != nil {
 		return err
 	}
-	inventory, sidecars, err := current.NativeInventory(ctx, capture)
+	inventory, sidecars, err := source.NativeInventory(ctx, capture)
 	if err != nil {
 		return fmt.Errorf("native inventory: %w", err)
 	}
