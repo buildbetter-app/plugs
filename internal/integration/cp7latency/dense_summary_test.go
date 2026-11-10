@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
@@ -14,6 +16,35 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
+const ordinaryDenseCorpusSize = viewops.OrdinaryCandidateCap + 1
+
+func denseCorpusSize(t *testing.T) int {
+	t.Helper()
+	raw := os.Getenv("CP7_DENSE_CORPUS_SIZE")
+	if raw == "" {
+		return ordinaryDenseCorpusSize
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		t.Fatalf("invalid CP7_DENSE_CORPUS_SIZE %q: %v", raw, err)
+	}
+	if n != ordinaryDenseCorpusSize && n != corpusSize {
+		t.Fatalf("unsupported CP7_DENSE_CORPUS_SIZE %d", n)
+	}
+	return n
+}
+
+func denseEngines(t *testing.T) []string {
+	t.Helper()
+	if engine := os.Getenv("CP7_DENSE_ENGINE"); engine != "" {
+		if engine != "sqlite" && engine != "postgres" {
+			t.Fatalf("unsupported CP7_DENSE_ENGINE %q", engine)
+		}
+		return []string{engine}
+	}
+	return []string{"sqlite", "postgres"}
+}
+
 // These are semantic completions, like the original correctness checks using
 // Background. They are not timed benchmark samples. The original Q6 request,
 // 30s measurement deadline, fractions and cold/3/20 matrix remain unchanged.
@@ -22,9 +53,15 @@ func TestDenseOrdinaryQ6RefusalAndSeparateDecision20TypeSummary(t *testing.T) {
 	if viewops.OrdinaryCandidateCap != 20000 || viewops.TypeSummaryCandidateCap != 100000 || viewops.MaxGroups != 100 {
 		t.Fatal("decision #20 bounds changed")
 	}
-	for _, engine := range []string{"sqlite", "postgres"} {
+	n := denseCorpusSize(t)
+	if n != ordinaryDenseCorpusSize && n != corpusSize {
+		t.Fatalf("dense semantic corpus must be cap control or full corpus, got %d", n)
+	}
+	engines := denseEngines(t)
+	t.Logf("CP7_DENSE_SELECTION corpus=%d engines=%v ordinary_control_corpus=%d full_manual_corpus=%d", n, engines, ordinaryDenseCorpusSize, corpusSize)
+	for _, engine := range engines {
 		t.Run(engine, func(t *testing.T) {
-			f := newFixture(t, engine, corpusSize)
+			f := newFixture(t, engine, n)
 			ctx := context.Background()
 			p := f.user(1)
 			// Prove finite compiler eligibility with the actual installed CP7
@@ -57,7 +94,7 @@ func TestDenseOrdinaryQ6RefusalAndSeparateDecision20TypeSummary(t *testing.T) {
 				if len(got.Items) != 0 || len(got.Groups) != 0 || got.NextCursor != nil || got.Count != nil {
 					t.Fatal("dense ordinary refusal emitted partial output")
 				}
-				t.Log("CP7_DENSE_ORDINARY authorized_inputs=100000 cap=20000 outcome=scope_too_large performance=RED")
+				t.Logf("CP7_DENSE_ORDINARY authorized_inputs=%d cap=20000 outcome=scope_too_large performance=RED", n)
 			})
 			t.Run("Decision20ExplicitEmptyFieldsDenseTypeSummary", func(t *testing.T) {
 				// Decode an actually present fields=[] member, distinct from
@@ -75,13 +112,13 @@ func TestDenseOrdinaryQ6RefusalAndSeparateDecision20TypeSummary(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if len(got.Items) != 0 || got.NextCursor != nil || got.Count != nil || len(got.Groups) != 1 || got.Groups[0].Key != "issue" || got.Groups[0].Count != corpusSize || len(got.Groups[0].Items) != 0 || got.Groups[0].Elided != nil {
+				if len(got.Items) != 0 || got.NextCursor != nil || got.Count != nil || len(got.Groups) != 1 || got.Groups[0].Key != "issue" || got.Groups[0].Count != n || len(got.Groups[0].Items) != 0 || got.Groups[0].Elided != nil {
 					t.Fatalf("dense summary differs from independent corpus population: %+v", got)
 				}
-				if counts.work().AggregateInputs != corpusSize || counts.work().AggregateGroups != 1 {
+				if counts.work().AggregateInputs != int64(n) || counts.work().AggregateGroups != 1 {
 					t.Fatalf("dense summary aggregate work hidden: %+v", counts.work())
 				}
-				t.Logf("CP7_DENSE_TYPE_SUMMARY fields_present=true fields_empty=true group_by=type finite_cp7=true authorized_inputs=%d groups=1 corpus_sha256=%s executed_work=%+v performance=UNMEASURED", corpusSize, f.corpusHash, counts.work())
+				t.Logf("CP7_DENSE_TYPE_SUMMARY fields_present=true fields_empty=true group_by=type finite_cp7=true authorized_inputs=%d groups=1 corpus_sha256=%s executed_work=%+v performance=UNMEASURED", n, f.corpusHash, counts.work())
 			})
 			after, err := f.store.Meta(ctx)
 			if err != nil || before.Head.String() != after.Head.String() {

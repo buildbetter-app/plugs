@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -108,155 +109,6 @@ func cloneDump(input Dump) Dump {
 		}
 	}
 	return output
-}
-
-// A detached source variant exercises contract selection; it is not a native
-// capture or evidence of an accepted producer capability.
-func versionedDependencyDump(kind string, metadata any) Dump {
-	dump := cloneDump(fixtureDump())
-	for i := range dump.Manifest.Kinds {
-		if dump.Manifest.Kinds[i].Name == "edge" {
-			dump.Manifest.Kinds[i].Version = dumpformat.EdgeVersionTypedDependencies
-		}
-	}
-	edge := &dump.Records["edge"][0]
-	edge.Body["type"], edge.Source.Fields["type"] = kind, kind
-	edge.Body["metadata"], edge.Source.Fields["metadata"] = metadata, metadata
-	edge.Source.Fields["thread_id"] = edge.Body["thread_id"]
-	return dump
-}
-
-func TestConvertVersionedDependenciesKeepRawMetadataAndOneEnvelope(t *testing.T) {
-	const sql = " {\"gate\":\"any-children\",\"also_blocks\":true,\"spawner_id\":\"demo-1\",\"opaque\":{\"large\":9007199254740993,\"literal\":1.0}} \n"
-	const existing = " {\"_plug_edge_id\":\"edge-1\",\"_plug_metadata\":\" {\\\"gate\\\":\\\"any-children\\\",\\\"opaque\\\":9007199254740993} \\n\"} \n"
-	for _, test := range []struct {
-		name     string
-		kind     string
-		raw      any
-		envelope bool
-	}{
-		{"legacy NULL", "waits-for", nil, false},
-		{"explicit empty", "waits-for", map[string]any{}, false},
-		{"SQL text", "waits-for", sql, false},
-		{"typed object", "waits-for", map[string]any{"gate": "all-children", "also_blocks": false, "spawner_id": "demo-1", "opaque": json.Number("9007199254740993")}, false},
-		{"conditional array", "conditional-blocks", []any{json.Number("9007199254740993"), json.Number("1.0"), nil}, false},
-		{"conditional SQL", "conditional-blocks", ` {"opaque":[9007199254740993,1.0,null]} `, false},
-		{"existing SQL envelope", "waits-for", existing, true},
-		{"existing typed envelope", "waits-for", map[string]any{"_plug_edge_id": "edge-1", "_plug_metadata": map[string]any{"gate": "any-children", "opaque": json.Number("9007199254740993")}}, true},
-		{"existing ID-only envelope", "waits-for", ` {"_plug_edge_id":"edge-1"} `, true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			dump := versionedDependencyDump(test.kind, test.raw)
-			before := cloneDump(dump)
-			result, err := Convert(dump)
-			if err != nil {
-				t.Fatal(err)
-			}
-			found := false
-			for _, raw := range bytes.Split(bytes.TrimSpace(result.JSONL), []byte{'\n'}) {
-				var issue issueLine
-				if json.Unmarshal(raw, &issue) != nil || issue.ID != "demo-2" {
-					continue
-				}
-				if len(issue.Dependencies) != 1 || issue.Dependencies[0].Type != test.kind || issue.Dependencies[0].ID != "edge-1" || issue.Dependencies[0].ThreadID != "thread-1" {
-					t.Fatalf("dependency identity/type/thread changed: %#v", issue.Dependencies)
-				}
-				encoded := issue.Dependencies[0].Metadata
-				if test.envelope {
-					want, ok := test.raw.(string)
-					if !ok {
-						want, err = canonicalJSON(test.raw)
-						if err != nil {
-							t.Fatal(err)
-						}
-					}
-					if encoded != want {
-						t.Fatalf("existing flat envelope changed: %q want %q", encoded, want)
-					}
-				} else {
-					var envelope map[string]any
-					decoder := json.NewDecoder(strings.NewReader(encoded))
-					decoder.UseNumber()
-					if err := decoder.Decode(&envelope); err != nil || envelope["_plug_edge_id"] != "edge-1" {
-						t.Fatalf("invalid identity envelope: %#v %v", envelope, err)
-					}
-					payload, present := envelope["_plug_metadata"]
-					if present != (test.raw != nil) || !reflect.DeepEqual(payload, test.raw) {
-						t.Fatalf("source payload type/value changed: %#v want %#v", payload, test.raw)
-					}
-				}
-				found = true
-			}
-			if !found || !reflect.DeepEqual(dump, before) {
-				t.Fatal("conversion omitted dependency or mutated retained raw source")
-			}
-		})
-	}
-}
-
-func TestConvertVersionedDependenciesRetainRefusalBoundaries(t *testing.T) {
-	for _, test := range []struct {
-		name   string
-		mutate func(*Dump)
-	}{
-		{"v1 waits", func(d *Dump) { d.Manifest.Kinds[4].Version = 1 }},
-		{"v1 conditional", func(d *Dump) {
-			d.Manifest.Kinds[4].Version = 1
-			d.Records["edge"][0].Body["type"] = "conditional-blocks"
-			d.Records["edge"][0].Source.Fields["type"] = "conditional-blocks"
-		}},
-		{"unknown edge version", func(d *Dump) { d.Manifest.Kinds[4].Version = 3 }},
-		{"zero edge version", func(d *Dump) { d.Manifest.Kinds[4].Version = 0 }},
-		{"other kind version", func(d *Dump) { d.Manifest.Kinds[0].Version = 2 }},
-		{"custom kind", func(d *Dump) {
-			d.Records["edge"][0].Body["type"] = "custom"
-			d.Records["edge"][0].Source.Fields["type"] = "custom"
-		}},
-		{"external", func(d *Dump) {
-			e := &d.Records["edge"][0]
-			e.Body["target_kind"] = "depends_on_external"
-			e.Body["to"] = "external:demo"
-			delete(e.Source.Fields, "depends_on_issue_id")
-			e.Source.Fields["depends_on_external"] = "external:demo"
-		}},
-		{"wisp", func(d *Dump) { d.Records["edge"][0].Body["target_kind"] = "depends_on_wisp_id" }},
-		{"dangling", func(d *Dump) {
-			d.Records["edge"][0].Body["to"] = "demo-missing"
-			d.Records["edge"][0].Source.Fields["depends_on_issue_id"] = "demo-missing"
-		}},
-		{"multiple target arms", func(d *Dump) { d.Records["edge"][0].Source.Fields["depends_on_external"] = "external:demo" }},
-		{"missing raw column", func(d *Dump) { delete(d.Records["edge"][0].Body, "metadata") }},
-		{"missing source column", func(d *Dump) { delete(d.Records["edge"][0].Source.Fields, "metadata") }},
-		{"source metadata changed", func(d *Dump) { d.Records["edge"][0].Source.Fields["metadata"] = map[string]any{"gate": "any-children"} }},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			dump := versionedDependencyDump("waits-for", nil)
-			test.mutate(&dump)
-			result, err := Convert(dump)
-			var refusal *Refusal
-			if !errors.As(err, &refusal) || len(result.JSONL) != 0 {
-				t.Fatalf("invalid versioned dependency emitted output: %v", err)
-			}
-		})
-	}
-	for _, metadata := range []any{
-		`{"gate":"all-children","gate":"any-children"}`, `{} {}`, `{"x":"\ud800"}`,
-		map[string]any{"gate": nil}, map[string]any{"gate": ""}, map[string]any{"gate": "other"},
-		map[string]any{"also_blocks": nil}, map[string]any{"also_blocks": json.Number("1")},
-		map[string]any{"spawner_id": json.Number("1")},
-		map[string]any{"_plug_edge_id": "wrong", "_plug_metadata": map[string]any{}},
-		map[string]any{"_plug_metadata": map[string]any{}},
-		map[string]any{"_plug_edge_id": "edge-1", "_plug_metadata": nil},
-		map[string]any{"_plug_edge_id": "edge-1", "extra": true},
-		map[string]any{"opaque": map[string]any{"_plug_edge_id": "nested"}},
-		map[string]any{"_plug_edge_id": "edge-1", "_plug_metadata": map[string]any{"_plug_edge_id": "edge-1"}},
-	} {
-		dump := versionedDependencyDump("waits-for", metadata)
-		result, err := Convert(dump)
-		if err == nil || len(result.JSONL) != 0 {
-			t.Fatalf("ambiguous versioned metadata emitted output: %#v %v", metadata, err)
-		}
-	}
 }
 
 func TestConvertIsDeterministicAndReportsLoss(t *testing.T) {
@@ -450,7 +302,7 @@ func TestConvertPreservesEveryOpaqueIssueFieldByteForByte(t *testing.T) {
 	for field, value := range want {
 		dump.Records["bead"][0].Source.Fields[field] = value
 	}
-	result, err := Convert(dump)
+	result, err := ConvertWithOptions(dump, Options{All: true})
 	if err != nil {
 		t.Fatalf("opaque fields were refused: %v", err)
 	}
@@ -480,49 +332,6 @@ func TestConvertPreservesEveryOpaqueIssueFieldByteForByte(t *testing.T) {
 		}
 		if containsString(result.Report.UnsupportedFields, "bead/demo-3/"+field) || containsString(result.Report.ArchivedSourceFields, "bead/demo-3/source/"+field) {
 			t.Fatalf("opaque field %s was classified as loss: %+v", field, result.Report)
-		}
-	}
-}
-
-func TestConvertPreservesSQLTextMetadataNumbersWithoutChangingSource(t *testing.T) {
-	const raw = " {\"large\":9007199254740993,\"literal\":1.0,\"null\":null,\"nested\":{\"value\":[1,null]}} \n"
-	dump := cloneDump(fixtureDump())
-	dump.Records["bead"][0].Body["metadata"] = raw
-	dump.Records["bead"][0].Source.Fields["metadata"] = raw
-	before := cloneDump(dump)
-	result, err := Convert(dump)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, line := range bytes.Split(bytes.TrimSpace(result.JSONL), []byte{'\n'}) {
-		var issue struct {
-			ID       string                     `json:"id"`
-			Metadata map[string]json.RawMessage `json:"metadata"`
-		}
-		if json.Unmarshal(line, &issue) != nil || issue.ID != dump.Records["bead"][0].ID {
-			continue
-		}
-		for key, want := range map[string]string{"large": "9007199254740993", "literal": "1.0", "null": "null", "nested": `{"value":[1,null]}`} {
-			if string(issue.Metadata[key]) != want {
-				t.Fatalf("SQL metadata %s=%s want %s", key, issue.Metadata[key], want)
-			}
-		}
-		if !reflect.DeepEqual(dump, before) {
-			t.Fatal("JSONL conversion changed the retained SQL metadata text")
-		}
-		return
-	}
-	t.Fatal("SQL metadata issue was not emitted")
-}
-
-func TestConvertRefusesMalformedSQLTextMetadataWithoutOutput(t *testing.T) {
-	for _, raw := range []string{"null", "[]", "1", `{"nested":{"x":1,"x":2}}`, "{} {}", `{"x":"\ud800"}`} {
-		dump := cloneDump(fixtureDump())
-		dump.Records["bead"][0].Body["metadata"] = raw
-		dump.Records["bead"][0].Source.Fields["metadata"] = raw
-		result, err := Convert(dump)
-		if err == nil || len(result.JSONL) != 0 {
-			t.Fatalf("malformed SQL metadata emitted a partial result: %q %v", raw, err)
 		}
 	}
 }
@@ -1059,94 +868,6 @@ func canonicalFixtureBytes(t *testing.T) []byte {
 	return data
 }
 
-// This rewrites a detached contract control, never a native producer capture.
-func TestReverseArchiveRetainsSeparatePhysicalSourceContract(t *testing.T) {
-	original := canonicalFixtureBytes(t)
-	baseline, err := ConvertArchive(original)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, test := range []struct {
-		name   string
-		marker any
-		valid  bool
-	}{
-		{"known", dumpformat.IssueSourceFieldsContract, true},
-		{"unknown", "beads-issues-source-fields/2", false},
-		{"empty", "", false},
-		{"null", nil, false},
-		{"number", json.Number("1"), false},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			var output bytes.Buffer
-			reader, writer := tar.NewReader(bytes.NewReader(original)), tar.NewWriter(&output)
-			for {
-				header, err := reader.Next()
-				if err == io.EOF {
-					break
-				}
-				if err != nil {
-					t.Fatal(err)
-				}
-				member, err := io.ReadAll(reader)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if header.Name == "manifest.json" {
-					var manifest map[string]any
-					decoder := json.NewDecoder(bytes.NewReader(member))
-					decoder.UseNumber()
-					if err := decoder.Decode(&manifest); err != nil {
-						t.Fatal(err)
-					}
-					manifest["source_fields_contract"] = test.marker
-					member, err = json.Marshal(manifest)
-					if err != nil {
-						t.Fatal(err)
-					}
-					member = append(member, '\n')
-					header.Size = int64(len(member))
-				}
-				if err := writer.WriteHeader(header); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := writer.Write(member); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if err := writer.Close(); err != nil {
-				t.Fatal(err)
-			}
-			dump, err := ReadBytes(output.Bytes())
-			if !test.valid {
-				if err == nil {
-					t.Fatal("invalid source contract admitted")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if dump.Manifest.SourceFieldsContract != dumpformat.IssueSourceFieldsContract || manifestEdgeVersion(dump.Manifest) != 1 {
-				t.Fatal("source-field contract lost or conflated with edge version")
-			}
-			result, err := Convert(dump)
-			if err != nil || !bytes.Equal(result.JSONL, baseline.JSONL) {
-				t.Fatalf("marker alone changed ordinary JSONL projection: %v", err)
-			}
-		})
-	}
-}
-
-func TestReverseDetachedUnknownPhysicalSourceContractRefuses(t *testing.T) {
-	dump := fixtureDump()
-	dump.Manifest.SourceFieldsContract = "beads-issues-source-fields/2"
-	result, err := Convert(dump)
-	if err == nil || len(result.JSONL) != 0 {
-		t.Fatal("unknown detached physical contract returned output")
-	}
-}
-
 func makeArchive(t *testing.T, records []byte, mode int64, typeflag byte, kind string) []byte {
 	t.Helper()
 	fileDigest := sha256.Sum256(records)
@@ -1257,5 +978,499 @@ func TestReverseRetainsExplicitExternalTargetBeforeLocalLookup(t *testing.T) {
 				t.Fatal("external identity flattened into local target")
 			}
 		})
+	}
+}
+
+func versionedDependencyDump(kind string, metadata any) Dump {
+	dump := cloneDump(fixtureDump())
+	for i := range dump.Manifest.Kinds {
+		if dump.Manifest.Kinds[i].Name == "edge" {
+			dump.Manifest.Kinds[i].Version = dumpformat.EdgeVersionTypedDependencies
+		}
+	}
+	edge := &dump.Records["edge"][0]
+	edge.Body["type"], edge.Source.Fields["type"] = kind, kind
+	edge.Body["metadata"], edge.Source.Fields["metadata"] = metadata, metadata
+	edge.Source.Fields["thread_id"] = edge.Body["thread_id"]
+	return dump
+}
+
+func TestReverseFixed19LocalKindsPreserveAllDependencyFields(t *testing.T) {
+	kinds := []string{"blocks", "parent-child", "conditional-blocks", "waits-for", "related", "discovered-from", "replies-to", "relates-to", "duplicates", "supersedes", "authored-by", "assigned-to", "approved-by", "attests", "tracks", "until", "caused-by", "validates", "delegated-from"}
+	for _, kind := range kinds {
+		for _, version := range []int{dumpformat.EdgeVersionTypedDependencies, dumpformat.EdgeVersionLocalOpaque} {
+			t.Run(fmt.Sprintf("%s/v%d", kind, version), func(t *testing.T) {
+				const raw = " {\"gate\":\"all-children\",\"also_blocks\":true,\"opaque\":[9007199254740993,1.0,null]} \n"
+				dump := versionedDependencyDump(kind, raw)
+				dump.Manifest.Kinds[4].Version = version
+				edge := &dump.Records["edge"][0]
+				edge.Source.Fields["depends_on_wisp_id"], edge.Source.Fields["depends_on_external"] = nil, nil
+				before := cloneDump(dump)
+				result, err := Convert(dump)
+				if err != nil {
+					t.Fatal(err)
+				}
+				found := false
+				for _, line := range bytes.Split(bytes.TrimSpace(result.JSONL), []byte{'\n'}) {
+					var issue issueLine
+					if err := json.Unmarshal(line, &issue); err != nil {
+						t.Fatal(err)
+					}
+					if issue.ID != "demo-2" {
+						continue
+					}
+					if len(issue.Dependencies) != 1 {
+						t.Fatal("fixed dependency omitted or duplicated")
+					}
+					got := issue.Dependencies[0]
+					if got.ID != edge.ID || got.IssueID != edge.Body["from"] || got.DependsOnID != edge.Body["to"] || got.DependsOnExternal != "" || got.Type != kind || got.ThreadID != edge.Body["thread_id"] || got.CreatedAt != edge.Source.Fields["created_at"] || got.CreatedBy != edge.Source.Fields["created_by"] {
+						t.Fatalf("fixed dependency fields changed: %+v", got)
+					}
+					var envelope map[string]any
+					if err := json.Unmarshal([]byte(got.Metadata), &envelope); err != nil || envelope["_plug_edge_id"] != edge.ID || envelope["_plug_metadata"] != raw {
+						t.Fatalf("fixed dependency lost its identity envelope or SQL-text bytes: %#v %v", envelope, err)
+					}
+					found = true
+				}
+				if !found || !reflect.DeepEqual(dump, before) {
+					t.Fatal("fixed dependency reverse mutated or omitted source")
+				}
+				if kind != "blocks" && kind != "parent-child" && kind != "related" && kind != "discovered-from" {
+					dump.Manifest.Kinds[4].Version = 1
+					got, err := Convert(dump)
+					var refusal *Refusal
+					if !errors.As(err, &refusal) || len(got.JSONL) != 0 {
+						t.Fatal("legacy v1 emitted a newly typed fixed local dependency")
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestConvertVersionedDependenciesKeepRawMetadataAndOneEnvelope(t *testing.T) {
+	const sql = " {\"gate\":\"any-children\",\"also_blocks\":true,\"spawner_id\":\"demo-1\",\"opaque\":{\"large\":9007199254740993,\"literal\":1.0}} \n"
+	const existing = " {\"_plug_edge_id\":\"edge-1\",\"_plug_metadata\":\" {\\\"gate\\\":\\\"any-children\\\",\\\"opaque\\\":9007199254740993} \\n\"} \n"
+	for _, test := range []struct {
+		name     string
+		kind     string
+		raw      any
+		envelope bool
+	}{
+		{"legacy NULL", "waits-for", nil, false},
+		{"explicit empty", "waits-for", map[string]any{}, false},
+		{"empty gate object", "waits-for", map[string]any{"gate": ""}, false},
+		{"empty gate SQL", "waits-for", " {\"gate\":\"\"} \n", false},
+		{"empty gate object envelope", "waits-for", map[string]any{"_plug_edge_id": "edge-1", "_plug_metadata": map[string]any{"gate": ""}}, true},
+		{"empty gate SQL envelope", "waits-for", " {\"_plug_edge_id\":\"edge-1\",\"_plug_metadata\":\" {\\\"gate\\\":\\\"\\\"} \\n\"} \n", true},
+		{"SQL text", "waits-for", sql, false},
+		{"typed object", "waits-for", map[string]any{"gate": "all-children", "also_blocks": false, "spawner_id": "demo-1", "opaque": json.Number("9007199254740993")}, false},
+		{"conditional array", "conditional-blocks", []any{json.Number("9007199254740993"), json.Number("1.0"), nil}, false},
+		{"conditional SQL", "conditional-blocks", ` {"opaque":[9007199254740993,1.0,null]} `, false},
+		{"fixed tracks", "tracks", map[string]any{"opaque": json.Number("9007199254740993")}, false},
+		{"existing SQL envelope", "waits-for", existing, true},
+		{"existing typed envelope", "waits-for", map[string]any{"_plug_edge_id": "edge-1", "_plug_metadata": map[string]any{"gate": "any-children", "opaque": json.Number("9007199254740993")}}, true},
+		{"existing ID-only envelope", "waits-for", ` {"_plug_edge_id":"edge-1"} `, true},
+	} {
+		for _, version := range []int{dumpformat.EdgeVersionTypedDependencies, dumpformat.EdgeVersionLocalOpaque} {
+			t.Run(fmt.Sprintf("%s/v%d", test.name, version), func(t *testing.T) {
+				dump := versionedDependencyDump(test.kind, test.raw)
+				dump.Manifest.Kinds[4].Version = version
+				before := cloneDump(dump)
+				result, err := Convert(dump)
+				if err != nil {
+					t.Fatal(err)
+				}
+				found := false
+				for _, raw := range bytes.Split(bytes.TrimSpace(result.JSONL), []byte{'\n'}) {
+					var issue issueLine
+					if json.Unmarshal(raw, &issue) != nil || issue.ID != "demo-2" {
+						continue
+					}
+					if len(issue.Dependencies) != 1 || issue.Dependencies[0].Type != test.kind || issue.Dependencies[0].ID != "edge-1" || issue.Dependencies[0].ThreadID != "thread-1" {
+						t.Fatalf("dependency identity/type/thread changed: %#v", issue.Dependencies)
+					}
+					encoded := issue.Dependencies[0].Metadata
+					if test.envelope {
+						want, ok := test.raw.(string)
+						if !ok {
+							want, err = canonicalJSON(test.raw)
+							if err != nil {
+								t.Fatal(err)
+							}
+						}
+						if encoded != want {
+							t.Fatalf("existing flat envelope changed: %q want %q", encoded, want)
+						}
+					} else {
+						var envelope map[string]any
+						decoder := json.NewDecoder(strings.NewReader(encoded))
+						decoder.UseNumber()
+						if err := decoder.Decode(&envelope); err != nil || envelope["_plug_edge_id"] != "edge-1" {
+							t.Fatalf("invalid identity envelope: %#v %v", envelope, err)
+						}
+						payload, present := envelope["_plug_metadata"]
+						if present != (test.raw != nil) || !reflect.DeepEqual(payload, test.raw) {
+							t.Fatalf("source payload type/value changed: %#v want %#v", payload, test.raw)
+						}
+					}
+					found = true
+				}
+				if !found || !reflect.DeepEqual(dump, before) {
+					t.Fatal("conversion omitted dependency or mutated retained raw source")
+				}
+			})
+		}
+	}
+}
+
+func TestConvertVersionedDependenciesRetainRefusalBoundaries(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*Dump)
+	}{
+		{"v1 waits", func(d *Dump) { d.Manifest.Kinds[4].Version = 1 }},
+		{"v1 conditional", func(d *Dump) {
+			d.Manifest.Kinds[4].Version = 1
+			d.Records["edge"][0].Body["type"] = "conditional-blocks"
+			d.Records["edge"][0].Source.Fields["type"] = "conditional-blocks"
+		}},
+		{"v1 tracks", func(d *Dump) {
+			d.Manifest.Kinds[4].Version = 1
+			d.Records["edge"][0].Body["type"] = "tracks"
+			d.Records["edge"][0].Source.Fields["type"] = "tracks"
+		}},
+		{"unknown edge version", func(d *Dump) { d.Manifest.Kinds[4].Version = 4 }},
+		{"zero edge version", func(d *Dump) { d.Manifest.Kinds[4].Version = 0 }},
+		{"other kind version", func(d *Dump) { d.Manifest.Kinds[0].Version = 2 }},
+		{"custom kind", func(d *Dump) {
+			d.Records["edge"][0].Body["type"] = "custom"
+			d.Records["edge"][0].Source.Fields["type"] = "custom"
+		}},
+		{"wisp", func(d *Dump) { d.Records["edge"][0].Body["target_kind"] = "depends_on_wisp_id" }},
+		{"dangling", func(d *Dump) {
+			d.Records["edge"][0].Body["to"] = "demo-missing"
+			d.Records["edge"][0].Source.Fields["depends_on_issue_id"] = "demo-missing"
+		}},
+		{"multiple target arms", func(d *Dump) { d.Records["edge"][0].Source.Fields["depends_on_external"] = "external:demo" }},
+		{"missing raw column", func(d *Dump) { delete(d.Records["edge"][0].Body, "metadata") }},
+		{"missing source column", func(d *Dump) { delete(d.Records["edge"][0].Source.Fields, "metadata") }},
+		{"source metadata changed", func(d *Dump) { d.Records["edge"][0].Source.Fields["metadata"] = map[string]any{"gate": "any-children"} }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dump := versionedDependencyDump("waits-for", nil)
+			test.mutate(&dump)
+			result, err := Convert(dump)
+			var refusal *Refusal
+			if !errors.As(err, &refusal) || len(result.JSONL) != 0 {
+				t.Fatalf("invalid versioned dependency emitted output: %v", err)
+			}
+		})
+	}
+	for i, metadata := range []any{
+		`{"gate":"all-children","gate":"any-children"}`, `{} {}`, `{"x":"\ud800"}`,
+		map[string]any{"gate": nil}, map[string]any{"gate": " "}, map[string]any{"gate": "other"},
+		map[string]any{"gate": true}, map[string]any{"gate": json.Number("1")},
+		map[string]any{"also_blocks": nil}, map[string]any{"also_blocks": json.Number("1")},
+		map[string]any{"spawner_id": json.Number("1")},
+		map[string]any{"_plug_edge_id": "wrong", "_plug_metadata": map[string]any{}},
+		map[string]any{"_plug_metadata": map[string]any{}},
+		map[string]any{"_plug_edge_id": "edge-1", "_plug_metadata": nil},
+		map[string]any{"_plug_edge_id": "edge-1", "extra": true},
+		map[string]any{"opaque": map[string]any{"_plug_edge_id": "nested"}},
+		map[string]any{"_plug_edge_id": "edge-1", "_plug_metadata": map[string]any{"_plug_edge_id": "edge-1"}},
+	} {
+		for _, version := range []int{dumpformat.EdgeVersionTypedDependencies, dumpformat.EdgeVersionLocalOpaque} {
+			t.Run(fmt.Sprintf("invalid_metadata/v%d/%d", version, i), func(t *testing.T) {
+				dump := versionedDependencyDump("waits-for", metadata)
+				dump.Manifest.Kinds[4].Version = version
+				result, err := Convert(dump)
+				var refusal *Refusal
+				if !errors.As(err, &refusal) || len(result.JSONL) != 0 {
+					t.Fatalf("ambiguous versioned metadata emitted output: %#v %v", metadata, err)
+				}
+			})
+		}
+	}
+}
+
+func TestConvertPreservesSQLTextMetadataNumbersWithoutChangingSource(t *testing.T) {
+	const raw = " {\"large\":9007199254740993,\"literal\":1.0,\"null\":null,\"nested\":{\"value\":[1,null]}} \n"
+	dump := cloneDump(fixtureDump())
+	dump.Records["bead"][0].Body["metadata"] = raw
+	dump.Records["bead"][0].Source.Fields["metadata"] = raw
+	before := cloneDump(dump)
+	result, err := Convert(dump)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range bytes.Split(bytes.TrimSpace(result.JSONL), []byte{'\n'}) {
+		var issue struct {
+			ID       string                     `json:"id"`
+			Metadata map[string]json.RawMessage `json:"metadata"`
+		}
+		if json.Unmarshal(line, &issue) != nil || issue.ID != dump.Records["bead"][0].ID {
+			continue
+		}
+		for key, want := range map[string]string{"large": "9007199254740993", "literal": "1.0", "null": "null", "nested": `{"value":[1,null]}`} {
+			if string(issue.Metadata[key]) != want {
+				t.Fatalf("SQL metadata %s=%s want %s", key, issue.Metadata[key], want)
+			}
+		}
+		if !reflect.DeepEqual(dump, before) {
+			t.Fatal("JSONL conversion changed the retained SQL metadata text")
+		}
+		return
+	}
+	t.Fatal("SQL metadata issue was not emitted")
+}
+
+func TestConvertRefusesMalformedSQLTextMetadataWithoutOutput(t *testing.T) {
+	for _, raw := range []string{"null", "[]", "1", `{"nested":{"x":1,"x":2}}`, "{} {}", `{"x":"\ud800"}`} {
+		dump := cloneDump(fixtureDump())
+		dump.Records["bead"][0].Body["metadata"] = raw
+		dump.Records["bead"][0].Source.Fields["metadata"] = raw
+		result, err := Convert(dump)
+		if err == nil || len(result.JSONL) != 0 {
+			t.Fatalf("malformed SQL metadata emitted a partial result: %q %v", raw, err)
+		}
+	}
+}
+
+func TestReverseArchiveRetainsSeparatePhysicalSourceContract(t *testing.T) {
+	original := canonicalFixtureBytes(t)
+	baseline, err := ConvertArchive(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name   string
+		marker any
+		valid  bool
+	}{
+		{"known", dumpformat.IssueSourceFieldsContract, true},
+		{"unknown", "beads-issues-source-fields/2", false},
+		{"empty", "", false},
+		{"null", nil, false},
+		{"number", json.Number("1"), false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			reader, writer := tar.NewReader(bytes.NewReader(original)), tar.NewWriter(&output)
+			for {
+				header, err := reader.Next()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				member, err := io.ReadAll(reader)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if header.Name == "manifest.json" {
+					var manifest map[string]any
+					decoder := json.NewDecoder(bytes.NewReader(member))
+					decoder.UseNumber()
+					if err := decoder.Decode(&manifest); err != nil {
+						t.Fatal(err)
+					}
+					manifest["source_fields_contract"] = test.marker
+					member, err = json.Marshal(manifest)
+					if err != nil {
+						t.Fatal(err)
+					}
+					member = append(member, '\n')
+					header.Size = int64(len(member))
+				}
+				if err := writer.WriteHeader(header); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := writer.Write(member); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			dump, err := ReadBytes(output.Bytes())
+			if !test.valid {
+				if err == nil {
+					t.Fatal("invalid source contract admitted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if dump.Manifest.SourceFieldsContract != dumpformat.IssueSourceFieldsContract || manifestEdgeVersion(dump.Manifest) != 1 {
+				t.Fatal("source-field contract lost or conflated with edge version")
+			}
+			result, err := Convert(dump)
+			if err != nil || !bytes.Equal(result.JSONL, baseline.JSONL) {
+				t.Fatalf("marker alone changed ordinary JSONL projection: %v", err)
+			}
+		})
+	}
+}
+
+func TestReverseDetachedUnknownPhysicalSourceContractRefuses(t *testing.T) {
+	dump := fixtureDump()
+	dump.Manifest.SourceFieldsContract = "beads-issues-source-fields/2"
+	result, err := Convert(dump)
+	if err == nil || len(result.JSONL) != 0 {
+		t.Fatal("unknown detached physical contract returned output")
+	}
+}
+
+func TestVersionedReverseKeepsCurrentTypedExternalTarget(t *testing.T) {
+	for _, test := range []struct {
+		kind string
+		raw  any
+	}{
+		{"waits-for", map[string]any{"gate": "any-children", "also_blocks": true}},
+		{"conditional-blocks", `{"opaque":9007199254740993}`},
+		{"custom-external", []any{json.Number("9007199254740993"), nil}},
+	} {
+		t.Run(test.kind, func(t *testing.T) {
+			dump := versionedDependencyDump(test.kind, test.raw)
+			edge := &dump.Records["edge"][0]
+			// Deliberately collide with a real local issue ID: the typed arm
+			// must remain external before any local lookup or scheduling.
+			edge.Body["target_kind"], edge.Body["to"] = "depends_on_external", "demo-1"
+			delete(edge.Source.Fields, "depends_on_issue_id")
+			edge.Source.Fields["depends_on_external"] = "demo-1"
+			result, err := Convert(dump)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Projection.Edges) != 1 || result.Projection.Edges[0].TargetKind != "depends_on_external" || result.Projection.Edges[0].To != "demo-1" {
+				t.Fatal("versioned reverse changed typed external projection")
+			}
+			decoder := json.NewDecoder(bytes.NewReader(result.JSONL))
+			found := false
+			for {
+				var issue issueLine
+				if err := decoder.Decode(&issue); err == io.EOF {
+					break
+				} else if err != nil {
+					t.Fatal(err)
+				}
+				if issue.ID != "demo-2" {
+					continue
+				}
+				if len(issue.Dependencies) != 1 || issue.Dependencies[0].DependsOnID != "" || issue.Dependencies[0].DependsOnExternal != "demo-1" || issue.Dependencies[0].Type != test.kind {
+					t.Fatalf("external JSONL arm changed: %#v", issue.Dependencies)
+				}
+				var envelope map[string]any
+				metadata := json.NewDecoder(strings.NewReader(issue.Dependencies[0].Metadata))
+				metadata.UseNumber()
+				if err := metadata.Decode(&envelope); err != nil {
+					t.Fatal(err)
+				}
+				if envelope["_plug_edge_id"] != "edge-1" || !reflect.DeepEqual(envelope["_plug_metadata"], test.raw) {
+					t.Fatal("external metadata source representation changed")
+				}
+				found = true
+			}
+			if !found {
+				t.Fatal("external dependency owner omitted")
+			}
+		})
+	}
+}
+
+func TestConvertV3LocalOpaqueDependencyKeepsIdentityAndRawMetadata(t *testing.T) {
+	const raw = " {\"large\":9007199254740993,\"literal\":1.0,\"null\":null} "
+	dump := versionedDependencyDump("local-opaque", raw)
+	for i := range dump.Manifest.Kinds {
+		if dump.Manifest.Kinds[i].Name == "edge" {
+			dump.Manifest.Kinds[i].Version = dumpformat.EdgeVersionLocalOpaque
+		}
+	}
+	before := cloneDump(dump)
+	result, err := Convert(dump)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(result.JSONL))
+	decoder.UseNumber()
+	found := false
+	for {
+		var issue issueLine
+		if err := decoder.Decode(&issue); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		if issue.ID != "demo-2" {
+			continue
+		}
+		if len(issue.Dependencies) != 1 || issue.Dependencies[0].Type != "local-opaque" || issue.Dependencies[0].DependsOnID != "demo-1" || issue.Dependencies[0].DependsOnExternal != "" || issue.Dependencies[0].ThreadID != "thread-1" {
+			t.Fatalf("local opaque dependency changed wire identity: %#v", issue.Dependencies)
+		}
+		var envelope map[string]any
+		metadata := json.NewDecoder(strings.NewReader(issue.Dependencies[0].Metadata))
+		metadata.UseNumber()
+		if err := metadata.Decode(&envelope); err != nil || envelope["_plug_edge_id"] != "edge-1" || envelope["_plug_metadata"] != raw {
+			t.Fatalf("local opaque metadata envelope changed: %#v %v", envelope, err)
+		}
+		found = true
+	}
+	if !found || !reflect.DeepEqual(dump, before) {
+		t.Fatal("v3 conversion omitted the edge or mutated source values")
+	}
+}
+
+func TestConvertV3LocalOpaqueRetainsNegativeAndExternalBoundaries(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*Dump)
+	}{
+		{"v2-local-custom", func(d *Dump) { d.Manifest.Kinds[4].Version = dumpformat.EdgeVersionTypedDependencies }},
+		{"unknown-version", func(d *Dump) { d.Manifest.Kinds[4].Version = 4 }},
+		{"v1-fixed-local-kind", func(d *Dump) {
+			d.Manifest.Kinds[4].Version = 1
+			d.Records["edge"][0].Body["type"] = "replies-to"
+			d.Records["edge"][0].Source.Fields["type"] = "replies-to"
+		}},
+		{"malformed-metadata", func(d *Dump) {
+			d.Records["edge"][0].Body["metadata"] = "{} {}"
+			d.Records["edge"][0].Source.Fields["metadata"] = "{} {}"
+		}},
+		{"wisp-target", func(d *Dump) { d.Records["edge"][0].Body["target_kind"] = "depends_on_wisp_id" }},
+		{"dangling-local-target", func(d *Dump) {
+			d.Records["edge"][0].Body["to"] = "demo-missing"
+			d.Records["edge"][0].Source.Fields["depends_on_issue_id"] = "demo-missing"
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dump := versionedDependencyDump("local-opaque", map[string]any{"opaque": true})
+			for i := range dump.Manifest.Kinds {
+				if dump.Manifest.Kinds[i].Name == "edge" {
+					dump.Manifest.Kinds[i].Version = dumpformat.EdgeVersionLocalOpaque
+				}
+			}
+			test.mutate(&dump)
+			result, err := Convert(dump)
+			var refusal *Refusal
+			if !errors.As(err, &refusal) || len(result.JSONL) != 0 {
+				t.Fatalf("invalid v3 local opaque row emitted output: %v", err)
+			}
+		})
+	}
+	dump := versionedDependencyDump("external-opaque", []any{json.Number("9007199254740993"), nil})
+	for i := range dump.Manifest.Kinds {
+		if dump.Manifest.Kinds[i].Name == "edge" {
+			dump.Manifest.Kinds[i].Version = dumpformat.EdgeVersionLocalOpaque
+		}
+	}
+	edge := &dump.Records["edge"][0]
+	delete(edge.Source.Fields, "depends_on_issue_id")
+	edge.Source.Fields["depends_on_external"], edge.Body["target_kind"], edge.Body["to"] = "demo-1", "depends_on_external", "demo-1"
+	result, err := Convert(dump)
+	if err != nil || len(result.Projection.Edges) != 1 || result.Projection.Edges[0].TargetKind != "depends_on_external" {
+		t.Fatalf("v3 external arm changed: %v", err)
 	}
 }

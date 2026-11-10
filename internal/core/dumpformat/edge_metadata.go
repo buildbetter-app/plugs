@@ -41,7 +41,7 @@ func InspectSourceEdgeMetadata(version int, edgeID, kind string, value any) (Edg
 		}
 		return result, nil
 	}
-	if version != EdgeVersionTypedDependencies {
+	if !IsTypedEdgeVersion(version) {
 		return EdgeMetadataProjection{}, fmt.Errorf("unsupported edge metadata version %d", version)
 	}
 	if value == nil {
@@ -97,10 +97,17 @@ func InspectSourceEdgeMetadata(version int, edgeID, kind string, value any) (Edg
 	metadata := model.LinkMetadata{Gate: "all-children"}
 	if raw, present := object["gate"]; present {
 		gate, ok := raw.(string)
-		if !ok || gate != "all-children" && gate != "any-children" {
+		if !ok {
 			return EdgeMetadataProjection{}, fmt.Errorf("waits-for gate must be all-children or any-children")
 		}
-		metadata.Gate = gate
+		// The producer also admits an explicit empty gate. Apply the existing
+		// canonical default only to the predicate; Value and both raw mirrors
+		// retain the original empty string and its source representation.
+		predicate, err := (model.LinkMetadata{Gate: gate}).Normalized()
+		if err != nil {
+			return EdgeMetadataProjection{}, fmt.Errorf("waits-for gate must be all-children or any-children")
+		}
+		metadata.Gate = predicate.Gate
 	}
 	if raw, present := object["also_blocks"]; present {
 		alsoBlocks, ok := raw.(bool)

@@ -10,7 +10,7 @@ go_library(
 
 go_test(
     name = "ontology_test",
-    srcs = ["compile_test.go", "gate_test.go", "ontology_test.go", "runtime_test.go", "schema_test.go"],
+    srcs = ["compile_test.go", "gate_test.go", "native_categories_test.go", "ontology_test.go", "runtime_test.go", "schema_test.go"],
     embed = [":ontology"],
 )
 

@@ -126,6 +126,12 @@ type Config struct {
 	// RestoreImportPlanner is converter-owned inspection of the exact archive;
 	// composition never derives or accepts a caller-supplied derived digest.
 	RestoreImportPlanner RestoreImportPlanner
+	RestoreSourcePlanner RestoreSourcePlanner
+	// NativeImportOntology enables the canonical installed native catalog at
+	// converterroundtrip.ImportedOntologySourceID. An empty target may start
+	// without that record; only a successful native import installs the resolver.
+	// ontology.get uses the same protected source before and after restart.
+	NativeImportOntology bool
 	// NativePlugins and NativeBindings configure trusted compiled-in callbacks
 	// at the same composition root as the store, lease and Writer. They are
 	// host configuration, never client-supplied code or grants.
@@ -181,25 +187,27 @@ type Config struct {
 // Runtime is the composition owner. HTTP, sessions and watches are optional
 // handles into the same lifetime; callers must close Runtime exactly once.
 type Runtime struct {
-	Store            driver.Store
-	Lease            driver.ActiveLease
-	Service          *service.Service
-	RPC              *rpc.Server
-	Metrics          *pipeline.Collector
-	Authenticator    *authn.Authenticator
-	OIDC             *authnoidc.Provider
-	NativeHost       *pluginhost.Host
-	HTTPHandler      *httpjson.Handler
-	UIHandler        *webui.Handler
-	WatchHTTP        *watchhttp.Adapter
-	Sessions         *collab.Manager
-	Watches          *watch.Manager
-	Views            *viewops.Service
-	Projections      *coreevents.ProjectionRegistry
-	Dispatcher       *coreevents.Dispatcher
-	ProjectionStatus coreevents.ProjectionStatusReader
-	restoreImport    *restoreImportAdapter
-	restoredWASI     *restoredWASI
+	Store                driver.Store
+	Lease                driver.ActiveLease
+	Service              *service.Service
+	RPC                  *rpc.Server
+	Metrics              *pipeline.Collector
+	Authenticator        *authn.Authenticator
+	OIDC                 *authnoidc.Provider
+	NativeHost           *pluginhost.Host
+	HTTPHandler          *httpjson.Handler
+	UIHandler            *webui.Handler
+	WatchHTTP            *watchhttp.Adapter
+	Sessions             *collab.Manager
+	Watches              *watch.Manager
+	Views                *viewops.Service
+	Projections          *coreevents.ProjectionRegistry
+	Dispatcher           *coreevents.Dispatcher
+	ProjectionStatus     coreevents.ProjectionStatusReader
+	restoreImport        *restoreImportAdapter
+	restoredWASI         *restoredWASI
+	ontologyRuntime      *service.Ontology
+	nativeImportOntology bool
 
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -486,6 +494,15 @@ func (r *Runtime) bind(config Config) error {
 	var ontologySnapshot ontology.Snapshot
 	var ontologyReadAuthorize ontologyops.AuthorizeRead
 	var ontologyApplyEnabled bool
+	if config.NativeImportOntology {
+		installed := OntologyConfig{}
+		if config.Ontology != nil {
+			installed = *config.Ontology
+		}
+		installed.Source = service.StaticOntologySource(model.RefByID(converterroundtrip.ImportedOntologySourceID, model.Natural64(0)))
+		config.Ontology = &installed
+		r.nativeImportOntology = true
+	}
 	if config.Ontology != nil {
 		readAuthorize := config.Ontology.AuthorizeRead
 		if readAuthorize == nil && config.AuthorizeRead != nil {
@@ -517,18 +534,23 @@ func (r *Runtime) bind(config Config) error {
 		// A declared dynamic chain also keeps apply unavailable from startup.
 		ontologyApplyEnabled = authConfig.AuthorizationInstalled == nil &&
 			config.Ontology.Authorizer == nil && readAuthorize == nil && config.AuthorizeReadBatch == nil && config.EventAuthorization == nil
-		ontologyLocator, ontologySnapshot, err = loadConfiguredOntology(r.ctx, r.Store, meta, config.Project, config.Ontology)
-		if err != nil {
-			return err
+		if config.NativeImportOntology && meta.Head.IsZero() {
+			ontologyLocator = config.Ontology.Source
+		} else {
+			ontologyLocator, ontologySnapshot, err = loadConfiguredOntology(r.ctx, r.Store, meta, config.Project, config.Ontology)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	var ontologyRuntime *service.Ontology
-	if config.Ontology == nil {
+	if config.Ontology == nil || config.NativeImportOntology && meta.Head.IsZero() {
 		ontologyRuntime = service.NewOntology(nil)
 	} else {
 		ontologyRuntime = service.NewOntology(ontologySnapshot.Effective)
 	}
 	ontology := ontologyRuntime
+	r.ontologyRuntime = ontologyRuntime
 	eventProvider := &runtimeEventProvider{}
 	nativeValidatorCount := 0
 	writerOptions := []pipeline.Option{pipeline.WithOntology(ontology)}
@@ -585,6 +607,9 @@ func (r *Runtime) bind(config Config) error {
 		serviceOptions = append(serviceOptions, service.WithCompaction(*config.Compaction))
 	}
 	r.Service = service.New(r.Store, r.Lease, writer, serviceOptions...)
+	if err := r.recoverSourceWorkflow(r.ctx); err != nil {
+		return fmt.Errorf("composition: recover source workflow: %w", err)
+	}
 	var ontologyService *ontologyops.Service
 	if config.Ontology != nil {
 		pre := config.Ontology.ValidatingPre
@@ -627,6 +652,9 @@ func (r *Runtime) bind(config Config) error {
 		}
 	}
 	r.restoreImport = newRestoreImportAdapter(r.Store, r.Lease, config.AuthMode, config.RestorePresence, planner)
+	r.restoreImport.sourcePlanner = config.RestoreSourcePlanner
+	r.restoreImport.installSource = r.installSourceWorkflow
+	r.restoreImport.nativeOntology = config.NativeImportOntology
 	manager := restore.NewManager(r.Store, r.Lease, config.RestorePresence)
 	manager.SetImportHook(r.restoreImport.Import)
 	if err := rpc.BindAdmin(registry, manager); err != nil {

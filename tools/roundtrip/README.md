@@ -117,7 +117,10 @@ artifact-backed runtime coverage must also name it explicitly.
 
 The runtime target imports the unchanged public complete-root and partial
 fixtures in full/partial/snapshot modes across memory, SQLite and disposable
-PostgreSQL, with the normal claim/release and live-edit workload. It requires
+PostgreSQL, with the normal claim/release and live-edit workload. It uses
+explicit `--all` export for the partial fixture's three ephemeral beads; the
+complete fixture uses default export. The default-omission controls stay separate.
+It requires
 five actual successful Beads subprocesses for each admitted case when using
 `--beads-inventory auto`, including the native census, and retains their raw
 output in the test log. The raw exporter then reads that truthful target census

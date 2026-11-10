@@ -20,6 +20,11 @@ type derivedImage struct {
 	Value json.RawMessage     `json:"value"`
 }
 
+// ImportedOntologySourceID is the protected, branch-zero ontology source
+// installed only by an explicitly declared native status-category import.
+// A composed host can select it using service.StaticOntologySource.
+const ImportedOntologySourceID = "ontology/beads-import"
+
 // These profiles admit the built-in ontology or the validated strict-union
 // import document, with no authorization/plugin provider, cuts, templates or leases.
 // Every table participates in the digest, including empty tables. Its rows
@@ -49,7 +54,7 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 			}
 		}
 		for _, link := range docs[id].Links {
-			if link.TargetKind != model.LinkTargetExternal && link.Kind == "blocks" {
+			if link.TargetKind != model.LinkTargetExternal && (link.Kind == "blocks" || link.Kind == "conditional-blocks") {
 				if err := walk(link.To.ID); err != nil {
 					return err
 				}
@@ -86,7 +91,7 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 	}
 	for id, doc := range docs {
 		for _, link := range doc.Links {
-			if link.TargetKind != model.LinkTargetExternal && link.Kind == "blocks" && (ancestors[id][link.To.ID] > 0 || ancestors[link.To.ID][id] > 0) {
+			if link.TargetKind != model.LinkTargetExternal && (link.Kind == "blocks" || link.Kind == "conditional-blocks") && (ancestors[id][link.To.ID] > 0 || ancestors[link.To.ID][id] > 0) {
 				return fmt.Errorf("restore blocking link cannot join an ancestor and descendant")
 			}
 		}
@@ -103,13 +108,22 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 	if plan.migration != nil {
 		ontologyDocument = plan.migration.Document()
 	}
-	snapshot, problems := ontology.Compile(ontologyDocument, nil, nil)
+	var overlays map[string]ontology.Document
+	var ontologyImage any = ontologyDocument
+	if plan.nativeOntology != nil {
+		ontologyDocument, overlays = plan.nativeOntology.Base, plan.nativeOntology.Overlays
+		ontologyImage = plan.nativeOntology
+	}
+	snapshot, problems := ontology.Compile(ontologyDocument, overlays, nil)
 	if len(problems) != 0 {
 		return fmt.Errorf("invalid admitted restore ontology: %v", problems)
 	}
 	for _, id := range ids {
 		doc := docs[id]
 		effective := snapshot.Effective(doc.Project)
+		if _, known := effective.Status(stringValue(doc.Fields["status"])); !known {
+			return fmt.Errorf("restore bead %s has an undeclared status in project %s", id, doc.Project)
+		}
 		blocked, unresolvedScheduling := false, false
 		for _, link := range doc.Links {
 			if link.TargetKind == model.LinkTargetExternal {
@@ -117,8 +131,15 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 				unresolvedScheduling = unresolvedScheduling || link.Kind == "parent-child"
 				continue
 			}
-			if blocker := docs[link.To.ID]; link.Kind == "blocks" && !snapshot.Effective(blocker.Project).SatisfiesBlocks(stringValue(blocker.Fields["status"])) {
-				blocked = true
+			blocker := docs[link.To.ID]
+			blockerOntology := snapshot.Effective(blocker.Project)
+			switch link.Kind {
+			case "blocks":
+				blocked = blocked || !blockerOntology.SatisfiesBlocks(stringValue(blocker.Fields["status"]))
+			case "conditional-blocks":
+				blocked = blocked || !blockerOntology.SatisfiesConditionalBlocks(stringValue(blocker.Fields["status"]))
+			case "waits-for":
+				blocked = blocked || !importedWaitsForSatisfied(link, blocker, docs, snapshot)
 			}
 		}
 		priority, violations := ontology.Priority(ontology.BeadState{Fields: doc.Fields})
@@ -159,7 +180,7 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 		}
 		plan.sentinels = append(plan.sentinels, ready, closure)
 	}
-	if err := add(driver.DerivedOntology, "builtin", ontologyDocument); err != nil {
+	if err := add(driver.DerivedOntology, "builtin", ontologyImage); err != nil {
 		return err
 	}
 	if err := add(driver.DerivedPlugins, "builtin", []string{}); err != nil {
@@ -185,10 +206,40 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 	return nil
 }
 
+// Use the same waits predicate as the live ontology: absent metadata keeps
+// the terminal-spawner fallback; explicit metadata gates on direct children.
+// No other dependency kind, including tracks and local opaque kinds, enters it.
+func importedWaitsForSatisfied(link pipeline.Link, spawner pipeline.Document, docs map[string]pipeline.Document, snapshot ontology.Snapshot) bool {
+	terminal := func(doc pipeline.Document) bool {
+		return snapshot.Effective(doc.Project).SatisfiesBlocks(stringValue(doc.Fields["status"]))
+	}
+	if link.Metadata == nil && terminal(spawner) {
+		return true
+	}
+	if link.Metadata != nil && link.Metadata.AlsoBlocks && !terminal(spawner) {
+		return false
+	}
+	openChild, terminalChild := false, false
+	for _, child := range docs {
+		if child.Parent == nil || child.Parent.ID != spawner.ID {
+			continue
+		}
+		if terminal(child) {
+			terminalChild = true
+		} else {
+			openChild = true
+		}
+	}
+	return !openChild || link.Metadata != nil && link.Metadata.Gate == "any-children" && terminalChild
+}
+
 // The strict profile binds the admitted document in the same canonical image
 // encoding. Existing built-in digests and native restore profiles are unchanged.
 // The reverse adapter's existing profile guard remains closed to this profile.
 func derivedProfile(plan *restorePlan) string {
+	if plan.nativeOntology != nil {
+		return "beads-native-status-categories/1"
+	}
 	if plan.migration != nil {
 		return "beads-compat-union-head/1"
 	}

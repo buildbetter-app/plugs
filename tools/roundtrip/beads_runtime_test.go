@@ -35,19 +35,25 @@ func TestPublicBeadsArtifactReimportThreeEngines(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		for _, test := range []struct {
 			name, file, mode, head, floor string
-			complete                      bool
+			complete, all                 bool
 			first, sourceHead             uint64
 			gaps                          int
 		}{
-			{"complete", "public-complete-root-990eb800.tar", "full", "8", "0", true, 1, 7, 0},
-			{"complete-snapshot", "public-complete-root-990eb800.tar", "snapshot", "1", "1", true, 1, 7, 0},
-			{"partial", "public-partial-990eb800.tar", "partial", "3", "1", false, 4, 4, 3},
-			{"partial-snapshot", "public-partial-990eb800.tar", "snapshot", "1", "1", false, 4, 4, 3},
+			{"complete", "public-complete-root-990eb800.tar", "full", "8", "0", true, false, 1, 7, 0},
+			{"complete-snapshot", "public-complete-root-990eb800.tar", "snapshot", "1", "1", true, false, 1, 7, 0},
+			{"partial", "public-partial-990eb800.tar", "partial", "3", "1", false, true, 4, 4, 3},
+			{"partial-snapshot", "public-partial-990eb800.tar", "snapshot", "1", "1", false, true, 4, 4, 3},
 		} {
 			t.Run(engine+"/"+test.name, func(t *testing.T) {
 				output := filepath.Join(root, engine+"-"+test.name)
 				args := []string{"--input", "../../internal/integration/converterroundtrip/testdata/" + test.file, "--output-dir", output, "--engine", engine, "--history-mode", test.mode,
 					"--beads-binary", options.Binary, "--beads-sha256", options.SHA256, "--beads-build-run", options.BuildRun, "--beads-inventory", autoBeadsInventory}
+				// The partial fixture's three beads are all Ephemeral=true.
+				// Its edit/reimport workload requires the explicit all export;
+				// the complete fixture continues to exercise the default.
+				if test.all {
+					args = append(args, "--all")
+				}
 				if engine == "postgres" {
 					database := "plug_roundtrip_" + strings.ReplaceAll(test.name, "-", "_")
 					if _, err := postgres.db.ExecContext(context.Background(), "CREATE DATABASE "+database); err != nil {

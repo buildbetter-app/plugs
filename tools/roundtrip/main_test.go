@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
+	"github.com/buildbetter-app/plugs/internal/core/reverseconverter"
 )
 
 func TestHarnessHistoryModesAndPrivateOutput(t *testing.T) {
@@ -25,7 +26,7 @@ func TestHarnessHistoryModesAndPrivateOutput(t *testing.T) {
 		for _, mode := range []string{"full", "partial", "snapshot"} {
 			t.Run(engine+"/"+mode, func(t *testing.T) {
 				output := filepath.Join(root, engine+"-"+mode)
-				result := run([]string{"--input", "../../internal/integration/offlinehistory/testdata/dolt-source-partial.tar", "--output-dir", output, "--history-mode", mode, "--engine", engine})
+				result := run([]string{"--input", "../../internal/integration/offlinehistory/testdata/dolt-source-partial.tar", "--output-dir", output, "--history-mode", mode, "--engine", engine, "--all"})
 				if mode == "full" {
 					if result.Status != "BLOCK" || result.Stage != "history" || result.Reason != "history_non-contiguous" {
 						t.Fatalf("strict incomplete history: %+v", result)
@@ -52,6 +53,65 @@ func TestHarnessHistoryModesAndPrivateOutput(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestHarnessDefaultExportDoesNotExerciseOmittedBeads(t *testing.T) {
+	root, err := os.MkdirTemp("/tmp", "plug-roundtrip-default-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(root)
+	for _, engine := range []string{"memory", "sqlite"} {
+		for _, exercise := range []bool{true, false} {
+			name := "no-exercise"
+			if exercise {
+				name = "exercise"
+			}
+			t.Run(engine+"/"+name, func(t *testing.T) {
+				output := filepath.Join(root, engine+"-"+name)
+				assertDefaultEphemeralOutcome(t, output, []string{"--engine", engine}, exercise)
+			})
+		}
+	}
+}
+
+func assertDefaultEphemeralOutcome(t *testing.T, output string, args []string, exercise bool) {
+	t.Helper()
+	args = append(args, "--input", "../../internal/integration/offlinehistory/testdata/dolt-source-partial.tar", "--output-dir", output, "--history-mode", "partial")
+	if !exercise {
+		args = append(args, "--exercise=false")
+	}
+	result := run(args)
+	if result.Claims != 0 || result.Writes != 0 || result.BaselineSHA256 == "" {
+		t.Fatalf("default omission performed a workload: %+v", result)
+	}
+	if exercise {
+		if result.Status != "BLOCK" || result.Stage != "workload" || result.Reason != "workload_requires_exported_bead" || result.ReverseSHA256 != "" {
+			t.Fatalf("omitted workload was not refused: %+v", result)
+		}
+		if _, err := os.Stat(filepath.Join(output, "reverse-live.jsonl")); !os.IsNotExist(err) {
+			t.Fatal("refused workload published a live reverse")
+		}
+		return
+	}
+	if result.Status != "WAIT" || result.Stage != "beads_artifact" || result.Reason != "pinned_beads_artifact_required" || result.ReverseSHA256 != result.BaselineSHA256 || result.ReverseIncarnation != result.RestoredIncarnation || result.ReverseAt == "" {
+		t.Fatalf("default read-only reverse: %+v", result)
+	}
+	data, err := os.ReadFile(filepath.Join(output, "reverse-live.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var line map[string]any
+		if json.Unmarshal([]byte(raw), &line) != nil || line["_type"] == "issue" {
+			t.Fatal("default export emitted an omitted bead")
+		}
+	}
+	data, err = os.ReadFile(filepath.Join(output, "reverse-report.json"))
+	var report reverseconverter.Report
+	if err != nil || json.Unmarshal(data, &report) != nil || len(report.OmittedEphemeralRows) != 3 {
+		t.Fatal("default export lost its explicit omissions")
 	}
 }
 
@@ -153,6 +213,9 @@ func TestHarnessGenuinePublicCompleteAndPartialProducerControls(t *testing.T) {
 		for _, test := range publicProducerCases() {
 			t.Run(engine+"/"+test.name, func(t *testing.T) {
 				args := []string{"--input", "../../internal/integration/converterroundtrip/testdata/" + test.file, "--output-dir", filepath.Join(root, engine+"-"+test.name), "--engine", engine}
+				if !test.complete {
+					args = append(args, "--all")
+				}
 				if test.mode != "" {
 					args = append(args, "--history-mode", test.mode)
 				}

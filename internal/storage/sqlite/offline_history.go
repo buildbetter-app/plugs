@@ -57,12 +57,23 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 	for _, k := range t.bumps {
 		bumps = append(bumps, k)
 	}
+
+	if t.sourcePlaneImport != nil {
+		if err := t.sourcePlaneImport.Validate(h, t.checkpointWrites, t.records); err != nil {
+			return zero, err
+		}
+	} else if len(t.checkpointWrites)+len(t.checkpointGuards) != 0 {
+		return zero, driver.ErrUnsupported
+	}
 	plan, err := t.offlineHistory.Finalize(h, tail, t.acquired, bumps)
 	if err != nil {
 		return zero, err
 	}
 	entry := plan.Entries[len(plan.Entries)-1]
 	err = t.store.immediate(ctx, t.lease, func(c *sql.Conn) error {
+		if err := t.checkCheckpointGuards(ctx, c); err != nil {
+			return err
+		}
 		if err := restoreEmpty(ctx, c); err != nil {
 			return err
 		}
@@ -142,6 +153,9 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 		}
 		if _, e := c.ExecContext(ctx, `UPDATE meta SET store_id=?,incarnation=?,head=?,history_floor=? WHERE singleton=1`, string(plan.Meta.StoreID), plan.Meta.Incarnation, revKey(mustUint(plan.Meta.Head)), revKey(mustUint(plan.Meta.HistoryFloor))); e != nil {
 			return e
+		}
+		if err := t.publishCheckpoints(ctx, c); err != nil {
+			return err
 		}
 		return t.store.saveReplay(ctx, c, h, plan.Meta.Head, final)
 	})

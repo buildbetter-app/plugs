@@ -335,7 +335,9 @@ func TestPostgresAllocatorChildDetachedAndOverflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = tx.Lock(ctx, driver.LockSet{{Key: key, Mode: driver.LockUpdate}}); err != nil {
+	child := model.RefByID("demo-8.4", model.Natural64(0))
+	childKey := driver.LockKey{Kind: driver.LockRecord, Ref: &child}
+	if _, err = tx.Lock(ctx, driver.LockSet{{Key: childKey, Mode: driver.LockUpdate}, {Key: key, Mode: driver.LockUpdate}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = tx.Head(ctx); err != nil {
@@ -349,7 +351,7 @@ func TestPostgresAllocatorChildDetachedAndOverflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = tx.Commit(ctx, driver.ChangesetHeader{Incarnation: meta.Incarnation, Kind: model.ChangesetWrite, Principal: model.PrincipalRef{Kind: "system", ID: "allocator-test"}, LockKeys: []driver.LockKey{key}}); err != nil {
+	if _, err = tx.Commit(ctx, driver.ChangesetHeader{Incarnation: meta.Incarnation, Kind: model.ChangesetWrite, Principal: model.PrincipalRef{Kind: "system", ID: "allocator-test"}, LockKeys: []driver.LockKey{childKey, key}}); err != nil {
 		t.Fatal(err)
 	}
 	if err = tx.Close(); err != nil {

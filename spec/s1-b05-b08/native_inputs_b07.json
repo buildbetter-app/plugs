@@ -1,0 +1,40 @@
+{
+  "format": "plug.s1.b07.native-inputs.v1",
+  "helperSource": "scripts/ci/prepare-public-bundle.py@7a43c3c625a5c08d3a4364a321cd47d6357ef30e",
+  "helperTree": "be93a595dc4c44ef4d94d2333060788fd344dca0",
+  "source": "c8eb3ba7d4177e111a6f5c8aebe06b5d0b1d5724",
+  "sourceTree": "930405e863284a3955cbd35e73a6097b606b91a5",
+  "sourceManifest": "e01a584042b4a2c32ea3cbcbdd55069f7c23bc2b853f8734857c5082e828f15d",
+  "sourceEntries": 5141,
+  "binarySHA256": "b734da8ba8b6f50d7fd32239e405b8f8ed9d171b7be5fbbccb63a923d257a123",
+  "binaryBytes": 161299592,
+  "buildRun": "41800330346",
+  "profile": "plug-public-native/1",
+  "manifestSHA256": "ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a",
+  "workflowSHA": "d758fdf42a426e9e2a4b707dbcebb22ec68b264e",
+  "descriptor": "41800330346:13307042737:ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a",
+  "clockScope": "Raw wall-clock command windows only; native Go time.Now and SQL UTC_TIMESTAMP are uncontrolled. No expiry/wake/48h/B05/full-card claim.",
+  "workflowBranch": "swarm/native-producer-census-control-c8eb-20261104",
+  "label": "native-census-c8eb-20261104",
+  "artifactDigest": "sha256:28609d7c072c281a748cb53a361d9a3ffada826d6f2e8866a3b1e62b23d5ffc4",
+  "artifactSize": 111646601,
+  "trustedPreparation": {
+    "control": "7a43c3c625a5c08d3a4364a321cd47d6357ef30e",
+    "controlTree": "be93a595dc4c44ef4d94d2333060788fd344dca0",
+    "controlBranch": "origin/main",
+    "helperSource": "scripts/ci/prepare-public-bundle.py",
+    "helperSHA256": "6a84191fd016ddcb637cb5a470e88727176a70e8b5c6e8e6c69f33db6a1559eb",
+    "scope": "Committed main preparer with admitted c8eb native metadata; each consumer invocation performs its own fresh preparation and receives exactly four matching exports."
+  },
+  "cards": [
+    "B07"
+  ],
+  "runs": [
+    "run-a",
+    "run-b"
+  ],
+  "scope": "Own genuine B07 full-vocabulary public protocol, intact exporter/import receiver, physical SQLite/Postgres HTTP mutations, rollback/replay/reopen and subscriber delivery. No B05 or another card is invoked; no preparation or runtime transfers.",
+  "consumerSourceAttribution": "Current main B07 native consumer files plus existing internal/publicnative utilities; the four accepted c8eb preparation values are read unchanged, with no expected-pin override or corpus filtering.",
+  "consumerBase": "7a43c3c625a5c08d3a4364a321cd47d6357ef30e",
+  "consumerTree": "be93a595dc4c44ef4d94d2333060788fd344dca0"
+}

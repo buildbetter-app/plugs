@@ -346,6 +346,7 @@ func TestPairedCensusReadsActualMemoryAndReopenedSQLite(t *testing.T) {
 			}
 			writeSanitized(t, "synthetic-"+engine+"-census.json", s)
 			checkCensusLabelProjections(t, capture, store, s)
+			checkCensusMemoryProjections(t, capture, store, s)
 			// An actual ordinary Writer update leaves source provenance intact.
 			// A provenance-only census would miss this changed live description.
 			lease, e = store.Lease(ctx, "census-edit", 10*time.Second)
@@ -384,6 +385,78 @@ func TestPairedCensusReadsActualMemoryAndReopenedSQLite(t *testing.T) {
 			}
 			if observed.reads != observed.closes {
 				t.Fatal("history measurement leaked a reader")
+			}
+		})
+	}
+}
+
+func checkCensusMemoryProjections(t *testing.T, capture *Capture, store driver.Store, want Snapshot) {
+	t.Helper()
+	sources := capture.archive.Records("memory")
+	if len(sources) != 1 {
+		t.Fatal("public fixture must have one memory for the exact projection controls")
+	}
+	id := "source/memory/" + sources[0].ID
+	ctx := context.Background()
+	before, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceBefore := capture.Summary()
+	for _, test := range []struct {
+		name   string
+		change func(map[string]any)
+	}{
+		{name: "canonical"},
+		{name: "wrong-source-id", change: func(body map[string]any) { body["source_id"] = "other" }},
+		{name: "missing-source-id", change: func(body map[string]any) { delete(body, "source_id") }},
+		{name: "wrong-value", change: func(body map[string]any) { body["value"] = "damaged live content" }},
+		{name: "null-value", change: func(body map[string]any) { body["value"] = nil }},
+		{name: "missing-value", change: func(body map[string]any) { delete(body, "value") }},
+		{name: "wrong-value-type", change: func(body map[string]any) { body["value"] = map[string]any{"text": body["value"]} }},
+		{name: "wrong-classification", change: func(body map[string]any) { body["classification"] = "other" }},
+		{name: "extra-source-field", change: func(body map[string]any) { body["source"].(map[string]any)["extra"] = true }},
+		{name: "null-source", change: func(body map[string]any) { body["source"] = nil }},
+		{name: "missing-original-value", change: func(body map[string]any) { delete(body["source"].(map[string]any), "value") }},
+		{name: "damaged-original-source", change: func(body map[string]any) { body["source"].(map[string]any)["value"] = "damaged source value" }},
+		{name: "unknown-field", change: func(body map[string]any) { body["unexpected-census-field"] = true }},
+	} {
+		t.Run("memory-projection/"+test.name, func(t *testing.T) {
+			changed := 0
+			observed := &observedCensusStore{Store: store, changeRecord: func(row driver.Record) driver.Record {
+				if row.Kind != "memory" || row.Ref.ID != id {
+					return row
+				}
+				changed++
+				if test.change != nil {
+					var body map[string]any
+					mustDecode(t, row.Body, &body)
+					test.change(body)
+					row.Body = mustEncode(t, body)
+				}
+				return row
+			}}
+			got, err := capture.MeasureStore(ctx, observed, 7)
+			if changed != 1 || observed.reads != 1 || observed.closes != 1 || observed.writes != 0 || observed.leases != 0 {
+				t.Fatal("memory projection did not use one complete read-only snapshot")
+			}
+			if test.change == nil {
+				if err != nil || !reflect.DeepEqual(got, want) {
+					t.Fatalf("canonical live memory projection changed the measurement: %v", err)
+				}
+			} else {
+				var refusal CensusError
+				if !errors.As(err, &refusal) || refusal.Code != TargetDiffers || !reflect.DeepEqual(got, Snapshot{}) {
+					t.Fatalf("damaged memory returned a measurement or another refusal: %+v %v", got, err)
+				}
+			}
+			after, err := store.Meta(ctx)
+			if err != nil || !reflect.DeepEqual(before, after) || !reflect.DeepEqual(sourceBefore, capture.Summary()) {
+				t.Fatal("memory projection control changed original store/source state")
+			}
+			unchanged, err := capture.MeasureStore(ctx, store, 7)
+			if err != nil || !reflect.DeepEqual(unchanged, want) {
+				t.Fatal("memory projection control changed underlying rows or history")
 			}
 		})
 	}

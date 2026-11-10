@@ -12,7 +12,11 @@ import (
 // Binding parsed YAML to those bytes is the producer's capture responsibility;
 // this reader checks the envelope and consumes its declared parsed values.
 func declarationsFromSource(values map[string]any, family, origin string) ([]ConfigDeclaration, error) {
-	result, err := declarationsFromValues(values, origin)
+	return declarationsFromSourceWith(values, family, origin, declarationsFromValues, false)
+}
+
+func declarationsFromSourceWith(values map[string]any, family, origin string, project func(map[string]any, string) ([]ConfigDeclaration, error), yamlOnly bool) ([]ConfigDeclaration, error) {
+	result, err := project(values, origin)
 	if err != nil {
 		return nil, err
 	}
@@ -87,20 +91,24 @@ func declarationsFromSource(values map[string]any, family, origin string) ([]Con
 			}
 			parsed, present := row["values"]
 			ext := strings.ToLower(path.Ext(name))
+			if yamlOnly && ext != ".yaml" && ext != ".yml" {
+				return nil
+			}
 			if !present && ext != ".yaml" && ext != ".yml" && ext != ".json" {
 				return nil
 			}
 			// The native initializer writes a comments-only YAML template. Its
 			// capture has no parsed map; verify the retained, byte-bound content
 			// contains no configuration before admitting that exact empty case.
-			if !present && (ext == ".yaml" || ext == ".yml") && commentOnlyYAML(data) {
+			// The native catalog projection still requires its parsed map.
+			if !present && !yamlOnly && (ext == ".yaml" || ext == ".yml") && commentOnlyYAML(data) {
 				return nil
 			}
 			object, ok := parsed.(map[string]any)
 			if !ok {
 				return migrationRefusal("malformed-declaration", name, entry, "missing parsed configuration")
 			}
-			decls, err := declarationsFromValues(object, entry)
+			decls, err := project(object, entry)
 			if err != nil {
 				return err
 			}

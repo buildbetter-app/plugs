@@ -143,6 +143,7 @@ elif command == "query":
     print("\n".join(result))
 elif command == "test":
     assert "--test_env=GO_TEST_WRAP_TESTV=1" in args
+    assert [arg for arg in args if arg.startswith("--flaky_test_attempts=")] == ["--flaky_test_attempts=1"], args
     assert [arg for arg in args if arg.startswith("--test_timeout=")] == ["--test_timeout=900,900,900,9000"], args
     assert not any(arg.startswith(("--test_tag_filters", "--test_size_filters", "--test_timeout_filters", "--test_filter", "--build_tag_filters")) for arg in args), args
     if cp7:
@@ -428,7 +429,7 @@ runpy.run_path(script, run_name="__main__")
     assert accounting["executed_xml_skips"] == 1
     assert len(list((out / "tests").glob("*/test.xml"))) == 4
     args = json.loads((out / "commands/tests/argv.json").read_text())
-    assert all(flag in args for flag in ("--nocache_test_results", "--lockfile_mode=error",
+    assert all(flag in args for flag in ("--nocache_test_results", "--lockfile_mode=error", "--flaky_test_attempts=1",
                "--jobs=2", "--test_timeout=900,900,900,9000", "--local_resources=memory=8192", "--test_env=GO_TEST_WRAP_TESTV=1"))
     (out / "tests.json").write_text("tampered")
     phase("verify", out, 86)

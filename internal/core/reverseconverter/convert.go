@@ -97,12 +97,15 @@ type issueLine struct {
 	Dependencies       []dependencyLine `json:"dependencies,omitempty"`
 	Comments           []commentLine    `json:"comments,omitempty"`
 	Pinned             bool             `json:"pinned,omitempty"`
+	Ephemeral          bool             `json:"ephemeral,omitempty"`
+	NoHistory          bool             `json:"no_history,omitempty"`
+	SourcePlane        string           `json:"-"`
 }
 
 type memoryLine struct {
 	RecordType string `json:"_type"`
 	Key        string `json:"key"`
-	Value      string `json:"value"`
+	Value      any    `json:"value"`
 }
 
 type headerLine struct {
@@ -115,6 +118,8 @@ type workingIssue struct {
 	Category   string
 	Outcome    string
 	SourceStat string
+	Plane      string
+	Omitted    bool
 }
 
 type typeDirective struct {
@@ -207,7 +212,7 @@ func prepareTypeDirectives(directives []ontologymigration.Directive) (typeDirect
 // source issue types require an explicit map_type directive; the source type is
 // retained in the JSONL rather than silently rewritten to a built-in type.
 func Convert(dump Dump) (Result, error) {
-	return ConvertWithDirectives(dump, nil)
+	return ConvertWithOptions(dump, Options{})
 }
 
 // ConvertWithDirectives is Convert with explicit ontology map_type directives
@@ -216,6 +221,13 @@ func Convert(dump Dump) (Result, error) {
 // migration plan; this converter deliberately preserves the original Beads
 // issue_type in its JSONL output.
 func ConvertWithDirectives(dump Dump, directives []ontologymigration.Directive) (Result, error) {
+	return ConvertWithOptions(dump, Options{Directives: directives})
+}
+
+// ConvertWithOptions mirrors the pinned export's default Ephemeral filter.
+// All explicitly retains every physical entity plane, matching bd export --all.
+func ConvertWithOptions(dump Dump, options Options) (Result, error) {
+	directives := options.Directives
 	report := Report{InputDigest: digestDump(dump), Warnings: append([]string(nil), dump.Manifest.Warnings...)}
 	if err := validateDumpShape(dump, &report); err != nil {
 		normalizeReport(&report)
@@ -235,35 +247,65 @@ func ConvertWithDirectives(dump Dump, directives []ontologymigration.Directive) 
 	}
 	working := make(map[string]*workingIssue)
 	var reasons []string
-	edgeIDs := make(map[string]bool)
-	commentIDs := make(map[string]bool)
-	for _, record := range sortedRecords(dump.Records["bead"]) {
+	edgeIDs := make(map[[2]string]bool)
+	commentIDs := make(map[[2]string]bool)
+	entities, edges, comments, physicalReasons := physicalExportRecords(dump)
+	reasons = append(reasons, physicalReasons...)
+	planes := make(map[string]string)
+	for _, record := range entities {
+		if prior, exists := planes[record.ID]; exists && prior != record.Source.Table {
+			normalizeReport(&report)
+			return Result{Report: report}, withReport(refusal("%s", collisionReason(record.ID, prior, record.Source.Table)), report)
+		}
+		planes[record.ID] = record.Source.Table
+	}
+	for _, record := range sortedRecords(entities) {
+		ephemeral, flagOK := sourceFlag(record.Source.Fields, "ephemeral")
+		if !flagOK {
+			reasons = append(reasons, fmt.Sprintf("bead %q has invalid ephemeral flag", record.ID))
+			continue
+		}
+		if !options.All && ephemeral {
+			report.OmittedEphemeralRows = append(report.OmittedEphemeralRows, omissionLine(record))
+			if prior := working[record.ID]; prior != nil {
+				reasons = append(reasons, collisionReason(record.ID, prior.Plane, record.Source.Table))
+			} else {
+				working[record.ID] = &workingIssue{Line: issueLine{ID: record.ID}, Plane: record.Source.Table, Omitted: true}
+			}
+			continue
+		}
 		issue, issueReasons := convertBead(record, &report, &typeSet)
 		reasons = append(reasons, issueReasons...)
 		if issue != nil {
 			if _, exists := working[issue.Line.ID]; exists {
-				reasons = append(reasons, fmt.Sprintf("duplicate bead id %q", issue.Line.ID))
+				reasons = append(reasons, collisionReason(issue.Line.ID, working[issue.Line.ID].Plane, record.Source.Table))
 			} else {
 				working[issue.Line.ID] = issue
 			}
 		}
 	}
-	for _, record := range sortedRecords(dump.Records["edge"]) {
+	for _, record := range sortedRecords(edges) {
+		if from := working[text(record.Body["from"])]; from != nil && from.Omitted {
+			continue
+		}
 		if record.ID != "" {
-			if edgeIDs[record.ID] {
+			if edgeIDs[[2]string{record.Source.Table, record.ID}] {
 				reasons = append(reasons, fmt.Sprintf("duplicate edge id %q", record.ID))
 			} else {
-				edgeIDs[record.ID] = true
+				edgeIDs[[2]string{record.Source.Table, record.ID}] = true
 			}
 		}
 		reasons = append(reasons, convertEdge(record, working, manifestEdgeVersion(dump.Manifest), &report)...)
 	}
-	for _, record := range sortedRecords(dump.Records["comment"]) {
+	for _, record := range sortedRecords(comments) {
+		if from := working[text(record.Body["issue_id"])]; from != nil && from.Omitted {
+			continue
+		}
 		if record.ID != "" {
-			if commentIDs[record.ID] {
+			if commentIDs[[2]string{record.Source.Table, record.ID}] {
 				reasons = append(reasons, fmt.Sprintf("duplicate comment id %q", record.ID))
 			} else {
-				commentIDs[record.ID] = true
+				commentIDs[[2]string{record.Source.Table, record.ID}] = true
 			}
 		}
 		reasons = append(reasons, convertComment(record, working, &report)...)
@@ -296,6 +338,9 @@ func ConvertWithDirectives(dump Dump, directives []ontologymigration.Directive) 
 	for _, record := range sortedRecords(dump.Records["beads-archive"]) {
 		report.ArchiveRows++
 		table := record.Source.Table
+		if table == dumpformat.EphemeralEntityTable || table == dumpformat.EphemeralCommentTable || table == dumpformat.EphemeralLabelTable {
+			continue
+		}
 		if table == "" {
 			table = "unknown"
 		}
@@ -331,7 +376,10 @@ func ConvertWithDirectives(dump Dump, directives []ontologymigration.Directive) 
 	}
 
 	ids := make([]string, 0, len(working))
-	for id := range working {
+	for id, issue := range working {
+		if issue.Omitted {
+			continue
+		}
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
@@ -339,7 +387,15 @@ func ConvertWithDirectives(dump Dump, directives []ontologymigration.Directive) 
 		if memories[i].Key != memories[j].Key {
 			return memories[i].Key < memories[j].Key
 		}
-		return memories[i].Value < memories[j].Value
+		// Preserve the established byte ordering for every string-only case.
+		left, leftString := memories[i].Value.(string)
+		right, rightString := memories[j].Value.(string)
+		if leftString && rightString {
+			return left < right
+		}
+		a, _ := canonicalJSON(memories[i].Value)
+		b, _ := canonicalJSON(memories[j].Value)
+		return a < b
 	})
 	projection := Projection{}
 	var out bytes.Buffer
@@ -417,6 +473,16 @@ func ConvertArchive(data []byte) (Result, error) {
 }
 
 // ConvertArchiveWithDirectives is ConvertWithDirectives for a canonical archive.
+// ConvertArchiveWithOptions validates the retained archive before applying
+// the same default or explicit All selection as ConvertWithOptions.
+func ConvertArchiveWithOptions(data []byte, options Options) (Result, error) {
+	dump, err := ReadBytes(data)
+	if err != nil {
+		return Result{}, err
+	}
+	return ConvertWithOptions(dump, options)
+}
+
 func ConvertArchiveWithDirectives(data []byte, directives []ontologymigration.Directive) (Result, error) {
 	dump, err := ReadBytes(data)
 	if err != nil {
@@ -445,6 +511,9 @@ func manifestEdgeVersion(manifest Manifest) int {
 
 func validateDumpShape(dump Dump, report *Report) error {
 	m := dump.Manifest
+	if m.SourcePlaneAddressContract != "" && m.SourcePlaneAddressContract != dumpformat.SourcePlaneAddressContract {
+		return refusal("unsupported physical source address contract")
+	}
 	if m.SourceFieldsContract != "" && m.SourceFieldsContract != dumpformat.IssueSourceFieldsContract {
 		return refusal("unsupported physical source fields contract")
 	}
@@ -459,7 +528,7 @@ func validateDumpShape(dump Dump, report *Report) error {
 	}
 	registered := map[string]bool{}
 	for i, kind := range m.Kinds {
-		if !supportedKinds[kind.Name] || (kind.Version != 1 && (kind.Name != "edge" || kind.Version != dumpformat.EdgeVersionTypedDependencies)) || kind.File != "records/"+kind.Name+".ndjson" || kind.Count < 1 || registered[kind.Name] || i > 0 && m.Kinds[i-1].Name >= kind.Name {
+		if !supportedKinds[kind.Name] || (kind.Version != 1 && (kind.Name != "edge" || !dumpformat.IsTypedEdgeVersion(kind.Version))) || kind.File != "records/"+kind.Name+".ndjson" || kind.Count < 1 || registered[kind.Name] || i > 0 && m.Kinds[i-1].Name >= kind.Name {
 			if !supportedKinds[kind.Name] && kind.Name != "" {
 				addUnique(&report.PlugOnlyKinds, kind.Name)
 				addUnique(&report.UnsupportedFields, "kind/"+kind.Name)
@@ -483,7 +552,7 @@ func validateDumpShape(dump Dump, report *Report) error {
 	}
 	for kind, records := range dump.Records {
 		for i, record := range records {
-			if record.Kind != kind || strings.TrimSpace(record.ID) != record.ID || strings.ContainsRune(record.ID, '\x00') || record.ID == "" || record.Body == nil || record.Source.Table == "" || record.Source.Fields == nil {
+			if record.Kind != kind || strings.TrimSpace(record.ID) != record.ID || (strings.ContainsRune(record.ID, '\x00') && !(kind == "edge" && m.SourcePlaneAddressContract == dumpformat.SourcePlaneAddressContract)) || record.ID == "" || record.Body == nil || record.Source.Table == "" || record.Source.Fields == nil {
 				return refusal("kind %q record %d has incomplete identity or provenance", kind, i)
 			}
 		}
@@ -496,7 +565,7 @@ func convertBead(record Record, report *Report, directives *typeDirectives) (*wo
 	var reasons []string
 	reasons = append(reasons, unsupportedSourceFields(record, report)...)
 	archivedSource := archivedSourceFields(record, report)
-	if record.Source.Table != "issues" {
+	if record.Source.Table != dumpformat.DurableEntityTable && record.Source.Table != dumpformat.EphemeralEntityTable {
 		reasons = append(reasons, fmt.Sprintf("bead %q has source table %q, want issues", record.ID, record.Source.Table))
 	}
 	for key := range body {
@@ -596,7 +665,7 @@ func convertBead(record Record, report *Report, directives *typeDirectives) (*wo
 	} else if outcome != "" {
 		reasons = append(reasons, fmt.Sprintf("bead %q has outcome on non-completed status", record.ID))
 	}
-	if class := text(record.Source.Fields["storage_class"]); class != "" && class != "versioned" {
+	if class := text(record.Source.Fields["storage_class"]); class != "" && class != "versioned" && class != "ephemeral" {
 		report.UnsupportedFields = append(report.UnsupportedFields, "bead/"+record.ID+"/storage_class")
 		reasons = append(reasons, fmt.Sprintf("bead %q has unsupported storage class %q", record.ID, class))
 	}
@@ -696,7 +765,17 @@ func convertBead(record Record, report *Report, directives *typeDirectives) (*wo
 	line.ExternalRef, line.Pinned = copyString("external_ref"), pinned
 	line.CloseReason, line.ClosedBySession = text(record.Source.Fields["close_reason"]), text(record.Source.Fields["closed_by_session"])
 	line.SourceSystem = text(record.Source.Fields["source_system"])
-	return &workingIssue{Line: line, Category: category, Outcome: outcome, SourceStat: text(record.Source.Fields["status"])}, nil
+	var flagOK bool
+	line.Ephemeral, flagOK = sourceFlag(record.Source.Fields, "ephemeral")
+	if !flagOK {
+		return nil, []string{fmt.Sprintf("bead %q has invalid ephemeral flag", record.ID)}
+	}
+	line.NoHistory, flagOK = sourceFlag(record.Source.Fields, "no_history")
+	if !flagOK {
+		return nil, []string{fmt.Sprintf("bead %q has invalid no_history flag", record.ID)}
+	}
+	line.SourcePlane = record.Source.Table
+	return &workingIssue{Line: line, Category: category, Outcome: outcome, SourceStat: text(record.Source.Fields["status"]), Plane: record.Source.Table}, nil
 }
 
 const (
@@ -707,7 +786,7 @@ func convertEdge(record Record, issues map[string]*workingIssue, edgeVersion int
 	body := record.Body
 	var reasons []string
 	reasons = append(reasons, unsupportedSourceFields(record, report)...)
-	if record.Source.Table != "dependencies" {
+	if record.Source.Table != dumpformat.DurableDependencyTable && record.Source.Table != dumpformat.EphemeralDependencyTable {
 		reasons = append(reasons, fmt.Sprintf("edge %q has source table %q, want dependencies", record.ID, record.Source.Table))
 	}
 	for key := range body {
@@ -732,26 +811,45 @@ func convertEdge(record Record, issues map[string]*workingIssue, edgeVersion int
 	if issues[from] == nil {
 		reasons = append(reasons, fmt.Sprintf("edge %q has missing source %q", record.ID, from))
 	}
-	if targetKind == "depends_on_issue_id" {
+	if targetKind == "depends_on_issue_id" || targetKind == dumpformat.EphemeralDependencyTargetField {
 		if issues[to] == nil {
 			reasons = append(reasons, fmt.Sprintf("edge %q has missing target %q", record.ID, to))
 		}
 	} else if targetKind == "depends_on_external" {
 		// Retain the census arm explicitly. Native importer support requires
 		// independent producer/readback evidence for this typed JSONL field.
-		if edgeVersion == dumpformat.EdgeVersionTypedDependencies {
-			reasons = append(reasons, fmt.Sprintf("edge %q has unsupported external target for edge version %d", record.ID, edgeVersion))
-		}
 	} else {
 		reasons = append(reasons, fmt.Sprintf("edge %q has unsupported target kind %q", record.ID, targetKind))
 	}
+	if issue := issues[from]; issue != nil {
+		plane := dumpformat.DurableEntityTable
+		if record.Source.Table == dumpformat.EphemeralDependencyTable {
+			plane = dumpformat.EphemeralEntityTable
+		}
+		if issue.Plane != plane {
+			reasons = append(reasons, fmt.Sprintf("edge %q source plane mismatch", record.ID))
+		}
+	}
+	if targetKind != "depends_on_external" {
+		plane := dumpformat.DurableEntityTable
+		if targetKind == dumpformat.EphemeralDependencyTargetField {
+			plane = dumpformat.EphemeralEntityTable
+		}
+		if issue := issues[to]; issue != nil && issue.Plane != plane {
+			reasons = append(reasons, fmt.Sprintf("edge %q target plane mismatch", record.ID))
+		}
+	}
 	var metadataProjection dumpformat.EdgeMetadataProjection
-	versionedType := edgeVersion == dumpformat.EdgeVersionTypedDependencies && (edgeType == "waits-for" || edgeType == "conditional-blocks")
-	externalType := edgeVersion == 1 && targetKind == "depends_on_external" && edgeType != "" && len(edgeType) <= 32 && utf8.ValidString(edgeType)
-	if targetKind == "depends_on_external" && !externalType || targetKind != "depends_on_external" && !supportedEdgeTypes[edgeType] && !versionedType {
+	versionedType := dumpformat.IsVersionedLocalKnownEdgeType(edgeVersion, targetKind, edgeType) || (dumpformat.IsTypedEdgeVersion(edgeVersion) && targetKind == dumpformat.EphemeralDependencyTargetField && dumpformat.IsCanonicalEdgeType(edgeType))
+	localOpaque := dumpformat.IsLocalOpaqueEdgeType(edgeVersion, targetKind, edgeType)
+	if targetKind != "depends_on_external" {
+		if !supportedEdgeTypes[edgeType] && !versionedType && !localOpaque {
+			reasons = append(reasons, fmt.Sprintf("edge %q has unsupported type %q", record.ID, edgeType))
+		}
+	} else if edgeType == "" || len(edgeType) > 32 || !utf8.ValidString(edgeType) {
 		reasons = append(reasons, fmt.Sprintf("edge %q has unsupported type %q", record.ID, edgeType))
 	}
-	if edgeVersion == dumpformat.EdgeVersionTypedDependencies {
+	if dumpformat.IsTypedEdgeVersion(edgeVersion) {
 		if _, present := body["metadata"]; !present {
 			reasons = append(reasons, fmt.Sprintf("edge %q lacks metadata column", record.ID))
 		}
@@ -805,8 +903,17 @@ func convertEdge(record Record, issues map[string]*workingIssue, edgeVersion int
 	if sourceValue, present := record.Source.Fields["thread_id"]; present && !jsonEquivalent(sourceValue, body["thread_id"]) {
 		reasons = append(reasons, fmt.Sprintf("edge %q source thread mismatch", record.ID))
 	}
-	for _, sourceTarget := range []string{"depends_on_issue_id", "depends_on_" + "wi" + "sp" + "_id", "depends_on_external"} {
-		if value, present := record.Source.Fields[sourceTarget]; present && value != nil && text(value) != "" {
+	for _, sourceTarget := range []string{"depends_on_issue_id", dumpformat.EphemeralDependencyTargetField, "depends_on_external"} {
+		if value, present := record.Source.Fields[sourceTarget]; present && value != nil {
+			if dumpformat.IsTypedEdgeVersion(edgeVersion) {
+				if _, ok := value.(string); !ok {
+					reasons = append(reasons, fmt.Sprintf("edge %q source %s is not a string", record.ID, sourceTarget))
+					continue
+				}
+			}
+			if text(value) == "" {
+				continue
+			}
 			if sourceTarget != targetKind || text(value) != to {
 				reasons = append(reasons, fmt.Sprintf("edge %q source target mismatch", record.ID))
 			}
@@ -853,7 +960,7 @@ func convertComment(record Record, issues map[string]*workingIssue, report *Repo
 	body := record.Body
 	var reasons []string
 	reasons = append(reasons, unsupportedSourceFields(record, report)...)
-	if record.Source.Table != "comments" {
+	if record.Source.Table != "comments" && record.Source.Table != dumpformat.EphemeralCommentTable {
 		reasons = append(reasons, fmt.Sprintf("comment %q has source table %q, want comments", record.ID, record.Source.Table))
 	}
 	for key := range body {
@@ -870,6 +977,15 @@ func convertComment(record Record, issues map[string]*workingIssue, report *Repo
 	issueID := text(body["issue_id"])
 	if record.ID == "" || issueID == "" || issues[issueID] == nil {
 		reasons = append(reasons, fmt.Sprintf("comment %q has missing issue %q", record.ID, issueID))
+	}
+	if issue := issues[issueID]; issue != nil {
+		plane := dumpformat.DurableEntityTable
+		if record.Source.Table == dumpformat.EphemeralCommentTable {
+			plane = dumpformat.EphemeralEntityTable
+		}
+		if issue.Plane != plane {
+			reasons = append(reasons, fmt.Sprintf("comment %q owner plane mismatch", record.ID))
+		}
 	}
 	if text(body["id"]) != record.ID {
 		reasons = append(reasons, fmt.Sprintf("comment %q body/source identity mismatch", record.ID))
@@ -932,7 +1048,7 @@ func convertMemory(record Record, config bool, report *Report) (memoryLine, erro
 	} else if _, ok := classification.(string); !ok {
 		return memoryLine{}, fmt.Errorf("%s %q classification is not a string", record.Kind, record.ID)
 	}
-	if value, present := record.Body["value"]; !present || value == nil {
+	if value, present := record.Body["value"]; !present || value == nil && record.Kind != "memory" {
 		return memoryLine{}, fmt.Errorf("%s %q has null value", record.Kind, record.ID)
 	} else if stringValue, ok := value.(string); ok && stringValue == "" {
 		addUnique(&report.UnsupportedFields, fmt.Sprintf("%s/%s/value", record.Kind, record.ID))
@@ -951,18 +1067,25 @@ func convertMemory(record Record, config bool, report *Report) (memoryLine, erro
 		return memoryLine{}, fmt.Errorf("%s %q source key is not a string", record.Kind, record.ID)
 	}
 	if record.Kind == "memory" {
-		if record.Source.Table != "config" || !strings.HasPrefix(sourceKey, "kv.memory.") || record.ID != strings.TrimPrefix(sourceKey, "kv.memory.") || bodyKey != record.ID {
+		if record.Source.Table != "config" || len(record.Source.Fields) != 2 || len(record.Body) != 3 || !strings.HasPrefix(sourceKey, "kv.memory.") || record.ID != strings.TrimPrefix(sourceKey, "kv.memory.") || bodyKey != record.ID {
 			return memoryLine{}, fmt.Errorf("memory %q identity does not match kv.memory source key", record.ID)
 		}
-		if text(record.Body["classification"]) != "public" {
+		classification := text(record.Body["classification"])
+		if classification != "public" && classification != "secret" {
 			return memoryLine{}, fmt.Errorf("memory %q has unsupported classification %q", record.ID, text(record.Body["classification"]))
 		}
 		if sourceValue, ok := record.Source.Fields["value"]; !ok || !jsonEquivalent(sourceValue, valueFromBody(record.Body)) {
 			return memoryLine{}, fmt.Errorf("memory %q source/body value mismatch", record.ID)
 		}
-		value, err := memoryValue(valueFromBody(record.Body), record)
-		if err != nil {
-			return memoryLine{}, err
+		value := valueFromBody(record.Body)
+		if classification == "secret" {
+			ref, ok := value.(map[string]any)
+			if !ok || len(ref) != 1 || ref["$secret"] != "config/"+sourceKey {
+				return memoryLine{}, fmt.Errorf("memory %q secret value is not its canonical reference", record.ID)
+			}
+		}
+		if err := validateSecretReferences(value); err != nil {
+			return memoryLine{}, fmt.Errorf("memory %q value: %w", record.ID, err)
 		}
 		return memoryLine{RecordType: "memory", Key: record.ID, Value: value}, nil
 	} else if record.Kind == "config" {
@@ -1049,7 +1172,7 @@ func representedSourceFields(kind string) map[string]bool {
 		for _, name := range []string{"created_at", "created_by", "depends_on_external", "depends_on_issue_id", "id", "issue_id", "metadata", "thread_id", "type"} {
 			fields[name] = true
 		}
-		fields["depends_on_"+"wi"+"sp_id"] = true
+		fields[dumpformat.EphemeralDependencyTargetField] = true
 	case "comment":
 		for _, name := range []string{"author", "created_at", "id", "issue_id", "text"} {
 			fields[name] = true
@@ -1173,7 +1296,10 @@ func sortedRecords(records []Record) []Record {
 		if result[i].ID != result[j].ID {
 			return result[i].ID < result[j].ID
 		}
-		return result[i].Project < result[j].Project
+		if result[i].Project != result[j].Project {
+			return result[i].Project < result[j].Project
+		}
+		return result[i].Source.Table < result[j].Source.Table
 	})
 	return result
 }
