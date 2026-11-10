@@ -773,14 +773,15 @@ func scanFile(path string, content []byte, cfg Config, provenance bool) []Findin
 	}
 	fieldOffsets := protocolFieldLiteralOffsets(path, content, cfg.NativeFieldLiterals)
 	b03Offsets := b03NativeGoLiteralOffsets(path, content, cfg.B03NativeGoLiterals)
-	if path == externalProtocolSource && len(cfg.ExternalProtocolString.PhysicalValues) != 0 || path == nativeManifestProtocolSource && len(cfg.NativeManifestStrings.Values) != 0 || path == b01NativeGoSource || path == b01NativeJSONSource || path == b03CatalogJSONSource || path == b03CatalogGoSource || path == nativeHTTPDomainSource || hasNativeControlAllowance(path, cfg) || path == sourcePlaneProtocolSource || path == sourcePlaneFixtureSource {
+	b02Offsets := b02RecordingLiteralOffsets(path, content)
+	if path == externalProtocolSource && len(cfg.ExternalProtocolString.PhysicalValues) != 0 || path == nativeManifestProtocolSource && len(cfg.NativeManifestStrings.Values) != 0 || path == b01NativeGoSource || path == b01NativeJSONSource || path == b03CatalogJSONSource || path == b03CatalogGoSource || path == nativeHTTPDomainSource || hasNativeControlAllowance(path, cfg) || path == sourcePlaneProtocolSource || path == sourcePlaneFixtureSource || path == b02NativeRecordingSource {
 		masked := append([]byte(nil), content...)
 		sourceLiterals := goStringLiterals(path, content)
 		if path == b01NativeJSONSource || path == b03CatalogJSONSource {
 			sourceLiterals = jsonStringLiterals(content)
 		}
 		for _, literal := range sourceLiterals {
-			if !literal.imported && (sourcePlaneAllowed && literal.start == sourcePlaneOffset || fieldOffsets[literal.start] || b03Offsets[literal.start] || allowsConfiguredLiteral(path, literal.value, cfg) || allowsNativeManifestString(path, literal.value, cfg.NativeManifestStrings)) {
+			if !literal.imported && (sourcePlaneAllowed && literal.start == sourcePlaneOffset || fieldOffsets[literal.start] || b03Offsets[literal.start] || b02Offsets[literal.start] || allowsConfiguredLiteral(path, literal.value, cfg) || allowsNativeManifestString(path, literal.value, cfg.NativeManifestStrings)) {
 				for i := literal.start; i < literal.end; i++ {
 					if masked[i] != '\n' && masked[i] != '\r' {
 						masked[i] = ' '
@@ -900,6 +901,7 @@ func scanGoIdentifiers(path string, content []byte, term Term, cfg Config) []Fin
 	allowance := cfg.ExternalProtocolString
 	fieldOffsets := protocolFieldLiteralOffsets(path, content, cfg.NativeFieldLiterals)
 	b03Offsets := b03NativeGoLiteralOffsets(path, content, cfg.B03NativeGoLiterals)
+	b02Offsets := b02RecordingLiteralOffsets(path, content)
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, content, parser.ParseComments)
 	if err != nil {
@@ -921,6 +923,9 @@ func scanGoIdentifiers(path string, content []byte, term Term, cfg Config) []Fin
 				decoded, err := strconv.Unquote(n.Value)
 				if err != nil {
 					findings = append(findings, Finding{Path: path, Line: fset.Position(node.Pos()).Line, Class: "invalid-go", Term: "string"})
+					return true
+				}
+				if !imports[n.Pos()] && b02Offsets[fset.Position(n.Pos()).Offset] {
 					return true
 				}
 				if path == externalProtocolSource || path == nativeManifestProtocolSource || path == b01NativeGoSource || path == b03CatalogGoSource || path == nativeHTTPDomainSource || hasNativeControlAllowance(path, cfg) {

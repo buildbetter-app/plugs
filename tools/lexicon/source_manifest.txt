@@ -1687,6 +1687,8 @@ tools/census/paired_test.go
 tools/census/testdata/census.json
 tools/lexicon/BUILD.bazel
 tools/lexicon/README.md
+tools/lexicon/b02_recording_literals.go
+tools/lexicon/b02_recording_literals_test.go
 tools/lexicon/checker.go
 tools/lexicon/checker_test.go
 tools/lexicon/cmd/lexicon_check/main.go
