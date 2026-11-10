@@ -2,6 +2,9 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "driver",
+    # Also visible as //third_party/dolt-driver:driver in this checkout.
+    # Tests and binaries compile it under their gms_pure_go transition.
+    tags = ["manual"],
     srcs = glob(["*.go"], exclude = ["*_test.go"]),
     importpath = "github.com/dolthub/driver/v2",
     visibility = ["//visibility:public"],
