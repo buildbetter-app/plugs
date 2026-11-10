@@ -1238,6 +1238,8 @@ internal/storage/postgres/selection_fact_transport.go
 internal/storage/postgres/selection_fact_transport_test.go
 internal/storage/postgres/selection_fresh.go
 internal/storage/postgres/selection_header_probe_test.go
+internal/storage/postgres/selection_header_transport.go
+internal/storage/postgres/selection_header_transport_test.go
 internal/storage/postgres/selection_index.go
 internal/storage/postgres/selection_partial_certificate_test.go
 internal/storage/postgres/selection_publication.go

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/gob"
-	"encoding/json"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -174,12 +173,8 @@ func (t *transaction) writeSelection(ctx context.Context, revision model.Revisio
 		if _, err := t.sql.ExecContext(ctx, `UPDATE plug_postgres.selection_sources SET end_revision=$2 WHERE incarnation=$1 AND end_revision IS NULL AND key=ANY($3::bytea[])`, inc, revision.String(), sourceKeys); err != nil {
 			return err
 		}
-		for start := 0; start < len(headers); start += publicationBatchRows {
-			end := min(start+publicationBatchRows, len(headers))
-			raw, _ := json.Marshal(headers[start:end])
-			if _, err := t.sql.ExecContext(ctx, `INSERT INTO plug_postgres.selection_sources(incarnation,key,start_revision,revision,present,digest,kind) SELECT $1,decode(key,'hex'),$2,revision::numeric,present,decode(digest,'hex'),kind FROM jsonb_to_recordset($3::jsonb) AS s(key text,revision text,present boolean,digest text,kind text)`, inc, revision.String(), string(raw)); err != nil {
-				return err
-			}
+		if err := writeSelectionSourceHeaders(ctx, t.sql, inc, revision, headers); err != nil {
+			return err
 		}
 	}
 	if len(rowKeys) > 0 {
