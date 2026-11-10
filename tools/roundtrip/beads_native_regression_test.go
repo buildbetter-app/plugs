@@ -16,6 +16,51 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 )
 
+// This control runs before the original mandatory native-equality assertion.
+// Passing it proves refusal evidence only; the leaf must still fail unless
+// the actual native readback equals the intended data.
+func assertPublicReadbackRefusalEvidence(t *testing.T, output string, got outcome) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(output, "beads-readback-refusal.json"))
+	if err != nil || got.BeadsRefusalSHA256 == "" || hash(data) != got.BeadsRefusalSHA256 {
+		t.Fatal("actual readback refusal evidence missing or unbound")
+	}
+	info, err := os.Stat(filepath.Join(output, "beads-readback-refusal.json"))
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatal("actual readback refusal evidence is not private")
+	}
+	var refusal beadsReadbackRefusal
+	if decodeNumberJSON(data, &refusal) != nil || refusal.Schema != "plug-public-readback-refusal/1" || refusal.Reason != got.Reason || refusal.SourceSHA256 != got.ArchiveSHA256 || refusal.SubmittedSHA256 != got.ReverseSHA256 || refusal.ImporterCommit != got.BeadsCommit || refusal.ImporterTree != got.BeadsTree || refusal.ImporterBinarySHA256 != got.BeadsBinarySHA256 || refusal.ImporterBuildRun != got.BeadsBuildRun || refusal.CaptureCommit != got.BeadsCaptureCommit || refusal.CaptureTree != got.BeadsCaptureTree || refusal.CaptureBinarySHA256 != got.BeadsCaptureBinarySHA256 || refusal.CaptureBuildRun != got.BeadsCaptureBuildRun {
+		t.Fatal("actual refusal source/import/capture bindings changed")
+	}
+	raw, err := os.ReadFile(filepath.Join(output, "beads-raw-readback.tar"))
+	if err != nil || hash(raw) != refusal.ProducedSHA256 {
+		t.Fatal("actual refusal lost its original produced bytes")
+	}
+	if got.BeadsReadbackSHA256 == "" {
+		if refusal.Validation != "FAIL" || refusal.NativeComparison != "NOT_MEASURED" || refusal.AcceptedSHA256 != "" || len(refusal.CellRefusals) != 0 || len(refusal.FieldRows) != 0 || refusal.Identity == nil || refusal.Identity.Code != "edge_metadata_identity_mismatch" || refusal.Identity.Table != "wisp_dependencies" || refusal.Identity.RawID != "f589ea2e-9ce6-5427-abb0-e7ff1c64eb6b" || refusal.Identity.Envelope.Value != "edge-fixture" || refusal.ValidationError != "source plane dependency metadata: edge metadata envelope identity mismatch" {
+			t.Fatal("rejected native archive acquired equality or lost its exact identity refusal")
+		}
+	} else {
+		if refusal.Validation != "PASS" || refusal.NativeComparison != "MEASURED" || refusal.AcceptedSHA256 != got.BeadsReadbackSHA256 || refusal.AcceptedSHA256 != refusal.ProducedSHA256 || refusal.Identity != nil || len(refusal.CellRefusals) != 9 || len(refusal.FieldRows) != 9 {
+			t.Fatal("measured native refusal lost row/cell evidence")
+		}
+		fields := map[string]bool{}
+		for _, cell := range refusal.CellRefusals {
+			if cell.Row != "demo-42v" || !cell.Expected.Present || !cell.Actual.Present {
+				t.Fatal("actual refusal lost its measured row/presence")
+			}
+			fields[cell.Domain+"/"+cell.Field] = true
+		}
+		for _, field := range []string{"native/agent_state", "native/ephemeral", "native/hook_bead", "native/is_template", "native/payload", "native/role_bead", "native/role_type", "native/timeout_ns", "metadata/beads.timeout_ns"} {
+			if !fields[field] {
+				t.Fatal("actual refusal concealed a measured native/metadata field")
+			}
+		}
+	}
+	t.Logf("PUBLIC_READBACK_REFUSAL_CONTROL PASS validation=%s native=%s cells=%d sha256=%s", refusal.Validation, refusal.NativeComparison, len(refusal.CellRefusals), got.BeadsRefusalSHA256)
+}
+
 // The child is the consumer's own test process, solely to observe a fatal
 // manifest refusal. It never impersonates bd or supplies a capable exporter.
 func TestPublicBeadsPreparedSourcePinRefusals(t *testing.T) {

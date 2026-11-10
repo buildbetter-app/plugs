@@ -296,7 +296,24 @@ func runBeads(ctx context.Context, options beadsOptions, output string, source *
 		result.Status, result.Reason, result.BeadsReadback = "BLOCK", "beads_raw_export_refused", "FAIL"
 		return
 	}
-	actual, err := dumpformat.ReadFile(readback)
+	assessBeadsReadback(output, source, live.JSONL, result)
+}
+
+// Assessment is also exercised against immutable, originally executed public
+// outputs. Replaying those bytes is a parser/refusal control, not a native run.
+func assessBeadsReadback(output string, source *dumpformat.Archive, submitted []byte, result *outcome) {
+	readback, err := os.ReadFile(filepath.Join(output, "beads-raw-readback.tar"))
+	var actual *dumpformat.Archive
+	if err == nil {
+		actual, err = dumpformat.Read(bytes.NewReader(readback))
+	}
+	// Write the refusal after deciding the ordinary outcome, so a metadata
+	// mismatch cannot conceal independently measured opaque cell differences.
+	defer func() {
+		if result.BeadsReadback == "FAIL" {
+			retainBeadsReadbackRefusal(output, source, submitted, readback, actual, err, result)
+		}
+	}()
 	if err != nil {
 		result.Status, result.Reason, result.BeadsReadback = "BLOCK", "beads_raw_readback_invalid", "FAIL"
 		// Preserve the actual decoder refusal without granting an invalid
@@ -308,7 +325,7 @@ func runBeads(ctx context.Context, options beadsOptions, output string, source *
 	}
 	result.BeadsReadbackSHA256 = actual.SHA256()
 	result.SourceFieldLosses = nativeOpaqueLosses(source, actual)
-	if reason := compareRawReadback(live.JSONL, actual); reason != "" {
+	if reason := compareRawReadback(submitted, actual); reason != "" {
 		result.Status, result.Reason, result.BeadsReadback = "BLOCK", reason, "FAIL"
 		return
 	}

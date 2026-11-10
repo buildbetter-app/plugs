@@ -5,12 +5,53 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 )
+
+func TestSourcePlaneEnvelopeIdentityRefusalRetainsTableAndRawIdentityGuards(t *testing.T) {
+	for _, mutation := range []string{"matching", "envelope", "raw-id", "source-id"} {
+		t.Run(mutation, func(t *testing.T) {
+			fixture := sourcePlaneReaderFixture(t, "pl")
+			for i := range fixture.records["edge"] {
+				edge := &fixture.records["edge"][i]
+				envelope := map[string]any{"_plug_edge_id": edge.ID, "_plug_metadata": map[string]any{"gate": "all-children"}}
+				edge.Body["metadata"], edge.Source.Fields["metadata"] = envelope, envelope
+			}
+			edge := &fixture.records["edge"][0]
+			switch mutation {
+			case "envelope":
+				edge.Source.Fields["metadata"].(map[string]any)["_plug_edge_id"] = "edge-fixture"
+			case "raw-id":
+				edge.ID = "tampered"
+			case "source-id":
+				edge.Source.Fields["id"] = "tampered"
+			}
+			archive, err := Read(bytes.NewReader(sourcePlaneReaderBytes(t, fixture)))
+			if mutation == "matching" {
+				if err != nil || archive == nil {
+					t.Fatalf("matching identities were refused: %v", err)
+				}
+				return
+			}
+			if err == nil || archive != nil {
+				t.Fatal("tampered identity acquired an accepted archive")
+			}
+			var refusal *EdgeMetadataIdentityError
+			if mutation == "envelope" {
+				if !errors.As(err, &refusal) || refusal.SourceTable != DurableDependencyTable || refusal.EdgeID != "same\x00edge" || refusal.EnvelopeID != "edge-fixture" || !refusal.EnvelopePresent {
+					t.Fatalf("typed source-plane refusal lost its context: %v", err)
+				}
+			} else if errors.As(err, &refusal) || !strings.Contains(err.Error(), "invalid source plane dependency identity/type") {
+				t.Fatalf("raw/source ID guard was bypassed: %v", err)
+			}
+		})
+	}
+}
 
 // Disposable wire controls bind the actual bc32707d producer contract. They
 // are neither stored producer output nor public/native runtime evidence.

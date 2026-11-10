@@ -15,7 +15,7 @@ _DEPS = [
 
 go_binary(
     name = "roundtrip",
-    srcs = ["main.go", "beads.go"],
+    srcs = ["main.go", "beads.go", "beads_refusal.go"],
     importpath = "github.com/buildbetter-app/plugs/tools/roundtrip",
     visibility = ["//visibility:public"],
     deps = _DEPS,
@@ -25,11 +25,11 @@ go_test(
     name = "roundtrip_test",
     size = "large",
     tags = ["local", "requires-network"],
-    srcs = ["main.go", "beads.go", "main_test.go", "beads_test.go"],
+    srcs = ["main.go", "beads.go", "beads_refusal.go", "main_test.go", "beads_test.go", "beads_refusal_test.go"],
     data = [
         "//internal/integration/converterroundtrip:public_source_fixtures",
         "//internal/integration/offlinehistory:lexicon_files",
-    ],
+    ] + glob(["testdata/readback-8f19/*"]),
     deps = _DEPS,
 )
 
@@ -37,7 +37,7 @@ go_test(
     name = "public_beads_runtime_test",
     size = "enormous",
     timeout = "eternal",
-    srcs = ["main.go", "beads.go", "beads_runtime_test.go", "beads_native_regression_test.go"],
+    srcs = ["main.go", "beads.go", "beads_refusal.go", "beads_runtime_test.go", "beads_native_regression_test.go"],
     args = ["-public-beads-runtime"],
     data = [
         "testdata/public-companion-profile.json",

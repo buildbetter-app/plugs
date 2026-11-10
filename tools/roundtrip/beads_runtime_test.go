@@ -74,6 +74,9 @@ func TestPublicBeadsArtifactReimportThreeEngines(t *testing.T) {
 				}
 				t.Logf("PUBLIC_BEADS_REIMPORT_OUTCOME %s", encoded)
 				commands := logPublicBeadsCommands(t, output)
+				if got.BeadsRefusalSHA256 != "" || got.Reason == "beads_raw_readback_invalid" || got.Reason == "beads_raw_field_changed" || got.Reason == "beads_native_opaque_fields_changed" {
+					assertPublicReadbackRefusalEvidence(t, output, got)
+				}
 				if got.BeadsReadbackSHA256 != "" {
 					assertPublicNativeCaptureReadback(t, options, output, got)
 				}

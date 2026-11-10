@@ -50,6 +50,7 @@ type outcome struct {
 	BeadsCaptureBinarySHA256 string                  `json:"beads_capture_binary_sha256,omitempty"`
 	BeadsCaptureBuildRun     string                  `json:"beads_capture_build_run,omitempty"`
 	BeadsReadbackSHA256      string                  `json:"beads_readback_sha256,omitempty"`
+	BeadsRefusalSHA256       string                  `json:"beads_refusal_sha256,omitempty"`
 	Engine                   string                  `json:"engine"`
 	RestoredIncarnation      string                  `json:"restored_incarnation,omitempty"`
 	ReverseIncarnation       string                  `json:"reverse_incarnation,omitempty"`

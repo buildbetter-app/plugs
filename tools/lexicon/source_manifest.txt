@@ -1699,8 +1699,17 @@ tools/roundtrip/BUILD.bazel
 tools/roundtrip/README.md
 tools/roundtrip/beads.go
 tools/roundtrip/beads_native_regression_test.go
+tools/roundtrip/beads_refusal.go
+tools/roundtrip/beads_refusal_test.go
 tools/roundtrip/beads_runtime_test.go
 tools/roundtrip/beads_test.go
 tools/roundtrip/main.go
 tools/roundtrip/main_test.go
 tools/roundtrip/testdata/public-companion-profile.json
+tools/roundtrip/testdata/readback-8f19/memory-complete-beads-raw-readback.tar
+tools/roundtrip/testdata/readback-8f19/memory-complete-outcome.json
+tools/roundtrip/testdata/readback-8f19/memory-complete-reverse-live.jsonl
+tools/roundtrip/testdata/readback-8f19/memory-partial-beads-raw-readback.tar
+tools/roundtrip/testdata/readback-8f19/memory-partial-outcome.json
+tools/roundtrip/testdata/readback-8f19/memory-partial-reverse-live.jsonl
+tools/roundtrip/testdata/readback-8f19/provenance.json
