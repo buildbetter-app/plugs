@@ -496,6 +496,13 @@ func validateRecords(manifest Manifest, members map[string][]byte) (map[string][
 			if err := decodeJSON(line, &record); err != nil {
 				return nil, nil, fmt.Errorf("invalid %s record: %w", kind.Name, err)
 			}
+			if record.Kind == "edge" {
+				tokens, err := CaptureNativeEdgeTokens(line)
+				if err != nil {
+					return nil, nil, fmt.Errorf("invalid edge tokens: %w", err)
+				}
+				record.NativeEdgeTokens = tokens
+			}
 			if record.Kind != kind.Name || record.ID == "" || record.Source.Table == "" || record.Source.Fields == nil || record.Body == nil {
 				return nil, nil, fmt.Errorf("invalid typed record in %s", kind.Name)
 			}

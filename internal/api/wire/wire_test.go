@@ -29,7 +29,7 @@ func TestBoundedCatalogParity(t *testing.T) {
 	if got := len(c.ErrorCatalog()); got != 63 {
 		t.Fatalf("error inventory = %d", got)
 	}
-	if digest(catalogJSON) != "547f805171975b99a9991e4372e5eee392e6c7cc31d3559c30d8f7913add333b" {
+	if digest(catalogJSON) != "a70d648992ad14f3ad23ac64dee7a5f543883a6a5654f099a8b5d7504c822f0c" {
 		t.Fatal("bounded source snapshot changed; reconcile approved contract")
 	}
 	// These changes affect one of two independent descriptor representations.

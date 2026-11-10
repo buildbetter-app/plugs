@@ -172,6 +172,7 @@ internal/core/authz/types.go
 internal/core/dumpformat/BUILD.bazel
 internal/core/dumpformat/README.md
 internal/core/dumpformat/catalog.go
+internal/core/dumpformat/edge_extensions.go
 internal/core/dumpformat/edge_metadata.go
 internal/core/dumpformat/edge_version_test.go
 internal/core/dumpformat/history.go
@@ -227,6 +228,7 @@ internal/core/model/codes.go
 internal/core/model/commit.go
 internal/core/model/condition.go
 internal/core/model/doc.go
+internal/core/model/edge_extensions_test.go
 internal/core/model/encodings_test.go
 internal/core/model/events.go
 internal/core/model/history.go
@@ -355,6 +357,7 @@ internal/core/reverseconverter/BUILD.bazel
 internal/core/reverseconverter/README.md
 internal/core/reverseconverter/archive.go
 internal/core/reverseconverter/convert.go
+internal/core/reverseconverter/edge_extensions.go
 internal/core/reverseconverter/loss.go
 internal/core/reverseconverter/public_archive_test.go
 internal/core/reverseconverter/registry.go
@@ -1351,6 +1354,14 @@ spec/cardb01/record_reference.py
 spec/cardb01/reference-run-1.json
 spec/cardb01/reference-run-2.json
 spec/cardb01/reference_test.go
+spec/cardb07/BUILD.bazel
+spec/cardb07/README.md
+spec/cardb07/cases_test.go
+spec/cardb07/fixture_test.go
+spec/cardb07/mixed_test.go
+spec/cardb07/native_test.go
+spec/cardb07/opaque_test.go
+spec/cardb07/public_test.go
 spec/cardb19/BUILD.bazel
 spec/cardb19/README.md
 spec/cardb19/archive_test.go

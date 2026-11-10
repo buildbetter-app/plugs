@@ -232,6 +232,21 @@ func prepareSourceRelations(ctx context.Context, value *persisted, plan driver.S
 		if string(canonical) != string(relation.PredicateJSON) {
 			return sourceRefusal("detached predicate differs from physical metadata")
 		}
+		opaque := map[string]string{}
+		for field, raw := range fields {
+			if dumpformat.NativeEdgeField(field) {
+				opaque["beads."+field] = string(raw)
+			}
+		}
+		if err := model.ValidateNativeExtensions(opaque); err != nil {
+			return err
+		}
+		if len(opaque) != 0 {
+			if predicate == nil {
+				predicate = &model.LinkMetadata{}
+			}
+			predicate.NativeExtensions = opaque
+		}
 		used[relation.Origin.SHA256] = true
 		// External endpoints retain complete inert origins. The canonical
 		// workflow relation model contains only local branch-zero references.

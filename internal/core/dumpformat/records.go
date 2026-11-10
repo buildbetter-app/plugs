@@ -136,7 +136,7 @@ func validateVersionedRecord(record Record, projects []Project, counts map[strin
 		}
 		names = append(names, column)
 	}
-	if len(names) != len(fields) {
+	if len(names) != len(fields) && expectedKind != "edge" {
 		return fmt.Errorf("source record schema drift")
 	}
 	for _, column := range names {

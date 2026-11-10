@@ -7476,7 +7476,7 @@
           },
           "metadata": {
             "$ref": "#/components/schemas/LinkMetadata",
-            "description": "Only valid for a waits-for link. Omission preserves existing metadata on re-add; explicit {} selects all-children without also_blocks."
+            "description": "Typed predicates apply only to waits-for; opaque nativeExtensions apply to every kind. Omission preserves existing metadata on re-add; explicit {} selects all-children without also_blocks."
           },
           "targetKind": {
             "$ref": "#/components/schemas/LinkTargetKind"
@@ -11120,6 +11120,16 @@
           },
           "also_blocks": {
             "type": "boolean"
+          },
+          "nativeExtensions": {
+            "type": "object",
+            "propertyNames": {
+              "pattern": "^beads\\..+$"
+            },
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Opaque native field JSON token text, preserved byte-exact. Absent keys retain prior values; null is the token string null. These values have no scheduling or thread semantics."
           }
         },
         "additionalProperties": false

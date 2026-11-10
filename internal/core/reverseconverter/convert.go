@@ -48,15 +48,16 @@ const (
 )
 
 type dependencyLine struct {
-	ID                string `json:"id,omitempty"`
-	IssueID           string `json:"issue_id"`
-	DependsOnID       string `json:"depends_on_id,omitempty"`
-	DependsOnExternal string `json:"depends_on_external,omitempty"`
-	Type              string `json:"type"`
-	CreatedAt         string `json:"created_at,omitempty"`
-	CreatedBy         string `json:"created_by,omitempty"`
-	Metadata          string `json:"metadata,omitempty"`
-	ThreadID          string `json:"thread_id,omitempty"`
+	NativeExtensions  map[string]string `json:"-"`
+	ID                string            `json:"id,omitempty"`
+	IssueID           string            `json:"issue_id"`
+	DependsOnID       string            `json:"depends_on_id,omitempty"`
+	DependsOnExternal string            `json:"depends_on_external,omitempty"`
+	Type              string            `json:"type"`
+	CreatedAt         string            `json:"created_at,omitempty"`
+	CreatedBy         string            `json:"created_by,omitempty"`
+	Metadata          string            `json:"metadata,omitempty"`
+	ThreadID          string            `json:"thread_id,omitempty"`
 }
 
 type commentLine struct {
@@ -421,7 +422,10 @@ func convertCanonical(dump Dump, options Options, report Report) (Result, error)
 			return a.ID < b.ID
 		})
 		sort.Slice(issue.Line.Comments, func(i, j int) bool { return issue.Line.Comments[i].ID < issue.Line.Comments[j].ID })
-		line, _ := json.Marshal(issue.Line)
+		line, err := marshalNativeIssue(issue.Line)
+		if err != nil {
+			return Result{Report: report}, refusal("native edge serialization: %v", err)
+		}
 		out.Write(line)
 		out.WriteByte('\n')
 		projection.Issues = append(projection.Issues, IssueProjection{ID: id, Kind: issue.Line.IssueType, Status: issue.Line.Status, Category: issue.Category, Outcome: issue.Outcome})
@@ -786,7 +790,10 @@ const (
 func convertEdge(record Record, issues map[string]*workingIssue, edgeVersion int, report *Report) []string {
 	body := record.Body
 	var reasons []string
-	reasons = append(reasons, unsupportedSourceFields(record, report)...)
+	extensions, extensionErr := dumpformat.NativeEdgeExtensions(dumpformat.Record{Kind: record.Kind, ID: record.ID, Body: record.Body, Source: dumpformat.Provenance{Table: record.Source.Table, Fields: record.Source.Fields}, NativeEdgeTokens: record.NativeEdgeTokens})
+	if extensionErr != nil {
+		reasons = append(reasons, fmt.Sprintf("edge %q: %v", record.ID, extensionErr))
+	}
 	if record.Source.Table != dumpformat.DurableDependencyTable && record.Source.Table != dumpformat.EphemeralDependencyTable {
 		reasons = append(reasons, fmt.Sprintf("edge %q has source table %q, want dependencies", record.ID, record.Source.Table))
 	}
@@ -944,12 +951,17 @@ func convertEdge(record Record, issues map[string]*workingIssue, edgeVersion int
 			metadata, err = canonicalJSON(body["metadata"])
 		}
 	} else {
-		metadata, err = canonicalJSON(envelope)
+		if token, present := extensions["beads.metadata"]; present && body["metadata"] != nil {
+			id, _ := json.Marshal(record.ID)
+			metadata = "{\"_plug_edge_id\":" + string(id) + ",\"_plug_metadata\":" + token + "}"
+		} else {
+			metadata, err = canonicalJSON(envelope)
+		}
 	}
 	if err != nil {
 		return []string{fmt.Sprintf("edge %q metadata: %v", record.ID, err)}
 	}
-	dependency := dependencyLine{ID: record.ID, IssueID: from, DependsOnID: to, Type: edgeType, Metadata: metadata, ThreadID: text(body["thread_id"]), CreatedAt: timestamp(record.Source.Fields["created_at"]), CreatedBy: text(record.Source.Fields["created_by"])}
+	dependency := dependencyLine{NativeExtensions: extensions, ID: record.ID, IssueID: from, DependsOnID: to, Type: edgeType, Metadata: metadata, ThreadID: text(body["thread_id"]), CreatedAt: timestamp(record.Source.Fields["created_at"]), CreatedBy: text(record.Source.Fields["created_by"])}
 	if targetKind == "depends_on_external" {
 		dependency.DependsOnID, dependency.DependsOnExternal = "", to
 	}

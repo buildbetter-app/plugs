@@ -16,17 +16,19 @@ import (
 // Document is the stored bead body. Fields are ontology data; Metadata is
 // separate plugin data. Parent, lease, comments, links and attachments are core owned.
 type Document struct {
-	ID          string                     `json:"id"`
-	Type        string                     `json:"type"`
-	Project     string                     `json:"project,omitempty"`
-	Parent      *model.Ref                 `json:"parent,omitempty"`
-	Fields      map[string]any             `json:"fields"`
-	Metadata    map[string]json.RawMessage `json:"metadata,omitempty"`
-	Labels      []string                   `json:"labels,omitempty"`
-	Comments    []Comment                  `json:"comments,omitempty"`
-	Links       []Link                     `json:"links,omitempty"`
-	Attachments []model.Attachment         `json:"attachments,omitempty"`
-	Lease       *ClaimLease                `json:"lease,omitempty"`
+	ID      string     `json:"id"`
+	Type    string     `json:"type"`
+	Project string     `json:"project,omitempty"`
+	Parent  *model.Ref `json:"parent,omitempty"`
+	// Imported hierarchy has one parent edge, without a duplicate generic link.
+	ParentMetadata *model.LinkMetadata        `json:"parentMetadata,omitempty"`
+	Fields         map[string]any             `json:"fields"`
+	Metadata       map[string]json.RawMessage `json:"metadata,omitempty"`
+	Labels         []string                   `json:"labels,omitempty"`
+	Comments       []Comment                  `json:"comments,omitempty"`
+	Links          []Link                     `json:"links,omitempty"`
+	Attachments    []model.Attachment         `json:"attachments,omitempty"`
+	Lease          *ClaimLease                `json:"lease,omitempty"`
 	// Core timestamps are outside ontology fields and cannot be patched by a
 	// request or subscriber. Missing values preserve legacy unknown instants.
 	CreatedAt *time.Time `json:"createdAt,omitempty"`

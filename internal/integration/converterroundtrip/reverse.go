@@ -417,6 +417,7 @@ func projectLiveBead(source reverseconverter.Record, row driver.Record, dump rev
 func checkLiveRelationsAndComments(id string, doc pipeline.Document, dump reverseconverter.Dump) error {
 	links := []pipeline.Link{}
 	var parent *model.Ref
+	var parentMetadata *model.LinkMetadata
 	edgeVersion := 1
 	for _, kind := range dump.Manifest.Kinds {
 		if kind.Name == "edge" {
@@ -442,18 +443,23 @@ func checkLiveRelationsAndComments(id string, doc pipeline.Document, dump revers
 			}
 			ref := model.RefByID(stringValue(edge.Body["to"]), model.Natural64(0))
 			parent = &ref
+			metadata, err := dumpformat.SourceLinkMetadata(edgeVersion, reverseSourceRecord(edge), kind)
+			if err != nil {
+				return ReverseRefusal{"changed_source_relationships"}
+			}
+			parentMetadata = metadata
 			continue
 		}
 		if kind == "related" {
 			kind = "relates-to"
 		}
-		link, err := importedVersionedSourceLink(dumpformat.Record{ID: edge.ID, Body: dumpformat.Row(edge.Body)}, kind, targetKind, edgeVersion)
+		link, err := importedVersionedSourceLink(reverseSourceRecord(edge), kind, targetKind, edgeVersion)
 		if err != nil {
 			return ReverseRefusal{"changed_source_relationships"}
 		}
 		links = append(links, link)
 	}
-	if !reflect.DeepEqual(parent, doc.Parent) {
+	if !reflect.DeepEqual(parent, doc.Parent) || !reflect.DeepEqual(parentMetadata, doc.ParentMetadata) {
 		return ReverseRefusal{"changed_source_relationships"}
 	}
 	key := func(link pipeline.Link) string {

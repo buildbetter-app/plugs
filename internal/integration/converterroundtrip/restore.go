@@ -1002,6 +1002,11 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 			}
 			parent := model.RefByID(to, model.Natural64(0))
 			doc.Parent = &parent
+			metadata, err := dumpformat.SourceLinkMetadata(manifest.EdgeVersion(), source, kind)
+			if err != nil {
+				return restorePlan{}, fmt.Errorf("%w: parent metadata: %v", ErrRestoreUnavailable, err)
+			}
+			doc.ParentMetadata = metadata
 			docs[from] = doc
 			continue
 		default:
@@ -1333,7 +1338,7 @@ func importedVersionedSourceLink(source dumpformat.Record, kind string, targetKi
 	if err := model.ValidateLinkTarget(targetKind, link.To); err != nil {
 		return pipeline.Link{}, err
 	}
-	metadata, err := dumpformat.SourceEdgeMetadata(edgeVersion, source.ID, kind, source.Body["metadata"])
+	metadata, err := dumpformat.SourceLinkMetadata(edgeVersion, source, kind)
 	if err != nil {
 		return pipeline.Link{}, err
 	}

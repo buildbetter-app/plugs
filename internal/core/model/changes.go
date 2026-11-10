@@ -3,6 +3,8 @@ package model
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -77,33 +79,106 @@ type ReparentOp struct {
 	Project string `json:"project,omitempty"`
 }
 
-// LinkMetadata is the optional waits-for fanout predicate. The edge's To
-// remains the spawner; metadata never introduces another endpoint.
+// LinkMetadata carries the optional waits-for predicate and uninterpreted
+// native edge fields. NativeExtensions stores JSON token TEXT, not RawMessage:
+// outer JSON encoders must not compact or rewrite a captured native token.
+// Absence is an absent key; explicit null is the string "null".
 type LinkMetadata struct {
-	Gate       string `json:"gate,omitempty"`
-	AlsoBlocks bool   `json:"also_blocks,omitempty"`
+	Gate             string            `json:"gate,omitempty"`
+	AlsoBlocks       bool              `json:"also_blocks,omitempty"`
+	NativeExtensions map[string]string `json:"nativeExtensions,omitempty"`
 }
 
-// Normalized returns a detached all-children/false default for explicit {}.
+// HasPredicate separates opaque-only metadata from an explicit waits predicate.
+// In particular, adding a native thread must not change legacy waits semantics.
+func (m *LinkMetadata) HasPredicate() bool {
+	return m != nil && (m.Gate != "" || m.AlsoBlocks)
+}
+
+func (m LinkMetadata) Clone() LinkMetadata {
+	m.NativeExtensions = maps.Clone(m.NativeExtensions)
+	return m
+}
+
+// ValidateNativeExtensions validates without decoding or normalizing payloads.
+func ValidateNativeExtensions(values map[string]string) error {
+	for key, token := range values {
+		if !strings.HasPrefix(key, "beads.") || len(key) == len("beads.") || !utf8.ValidString(key) {
+			return fmt.Errorf("nativeExtensions[%q] requires a nonempty beads.<field> key", key)
+		}
+		switch strings.TrimPrefix(key, "beads.") {
+		case "id", "issue_id", "depends_on_id", "depends_on_issue_id", "depends_on_external", "type", "created_at", "created_by":
+			return fmt.Errorf("nativeExtensions[%q] cannot override a represented edge field", key)
+		}
+		if !utf8.ValidString(token) || !json.Valid([]byte(token)) {
+			return fmt.Errorf("nativeExtensions[%q] requires one valid UTF-8 JSON token", key)
+		}
+	}
+	return nil
+}
+
+// Normalized preserves the historical explicit {} waits default while an
+// opaque-only value remains predicate-free. Returned maps are detached.
 func (m LinkMetadata) Normalized() (LinkMetadata, error) {
-	if m.Gate == "" {
+	if err := ValidateNativeExtensions(m.NativeExtensions); err != nil {
+		return LinkMetadata{}, err
+	}
+	m = m.Clone()
+	if m.Gate == "" && (m.AlsoBlocks || len(m.NativeExtensions) == 0) {
 		m.Gate = "all-children"
 	}
-	if m.Gate != "all-children" && m.Gate != "any-children" {
+	if m.Gate != "" && m.Gate != "all-children" && m.Gate != "any-children" {
 		return LinkMetadata{}, fmt.Errorf("unsupported waits-for gate %q", m.Gate)
 	}
 	return m, nil
 }
 
+// ForKind accepts opaque extensions on every edge without giving those values
+// any meaning. Typed scheduling members remain exclusive to waits-for.
+func (m LinkMetadata) ForKind(kind string) (LinkMetadata, error) {
+	if kind == "waits-for" {
+		return m.Normalized()
+	}
+	if m.HasPredicate() || len(m.NativeExtensions) == 0 {
+		return LinkMetadata{}, fmt.Errorf("predicate metadata is only valid on a waits-for link")
+	}
+	if err := ValidateNativeExtensions(m.NativeExtensions); err != nil {
+		return LinkMetadata{}, err
+	}
+	return m.Clone(), nil
+}
+
+// Retaining merges only explicitly supplied opaque keys. Omitted fields and
+// an omitted typed predicate conserve the original edge representation.
+func (m LinkMetadata) Retaining(previous *LinkMetadata) LinkMetadata {
+	next := m.Clone()
+	if previous == nil {
+		return next
+	}
+	if !next.HasPredicate() {
+		next.Gate, next.AlsoBlocks = previous.Gate, previous.AlsoBlocks
+	}
+	if len(previous.NativeExtensions) != 0 {
+		next.NativeExtensions = maps.Clone(previous.NativeExtensions)
+		maps.Copy(next.NativeExtensions, m.NativeExtensions)
+	}
+	return next
+}
+
 func (m *LinkMetadata) UnmarshalJSON(data []byte) error {
 	var value struct {
-		Gate       *string `json:"gate,omitempty"`
-		AlsoBlocks bool    `json:"also_blocks,omitempty"`
+		Gate             *string           `json:"gate,omitempty"`
+		AlsoBlocks       *bool             `json:"also_blocks,omitempty"`
+		NativeExtensions map[string]string `json:"nativeExtensions,omitempty"`
 	}
 	if err := decodeStrict(data, &value); err != nil {
 		return err
 	}
-	next := LinkMetadata{Gate: "all-children", AlsoBlocks: value.AlsoBlocks}
+	next := LinkMetadata{NativeExtensions: value.NativeExtensions}
+	if value.AlsoBlocks != nil {
+		next.AlsoBlocks = *value.AlsoBlocks
+		next.Gate = "all-children"
+	}
 	if value.Gate != nil {
 		next.Gate = *value.Gate
 		if next.Gate == "" {
@@ -270,10 +345,10 @@ func validateLink(value LinkOp) error {
 		return fmt.Errorf("link operation has kind %q", value.Kind)
 	}
 	if value.Metadata != nil {
-		if value.Kind != OpLink || value.LinkKind != "waits-for" {
-			return fmt.Errorf("metadata is only valid on a waits-for link")
+		if value.Kind != OpLink {
+			return fmt.Errorf("metadata is only valid on a link")
 		}
-		_, err := value.Metadata.Normalized()
+		_, err := value.Metadata.ForKind(value.LinkKind)
 		return err
 	}
 	return nil
