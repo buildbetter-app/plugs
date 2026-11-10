@@ -73,6 +73,9 @@ func (s *Store) Lease(ctx context.Context, holder string, ttl time.Duration) (dr
 		}
 		tx, e := s.db.BeginTx(ctx, nil)
 		if e != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
 			return nil, e
 		}
 		var epoch string
@@ -91,6 +94,12 @@ func (s *Store) Lease(ctx context.Context, holder string, ttl time.Duration) (dr
 		}
 		if e != nil {
 			_ = tx.Rollback()
+			// pgx can translate cancellation before sending the query into
+			// driver.ErrBadConn. Keep transaction cleanup, then report the
+			// caller's cancellation rather than that transport retry signal.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
 			return nil, e
 		}
 		n, e := parseCounter(epoch)
@@ -121,6 +130,9 @@ func (s *Store) Lease(ctx context.Context, holder string, ttl time.Duration) (dr
 			_ = tx.Rollback()
 		}
 		if e != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
 			return nil, e
 		}
 		l := &activeLease{store: s, owner: owner, epoch: n + 1, ttl: ttl, renewing: make(chan struct{}, 1), lost: make(chan struct{})}
