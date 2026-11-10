@@ -22,98 +22,6 @@ import (
 	"unicode/utf8"
 )
 
-// Term is one lexicon rule.
-type Term struct {
-	Matches []string
-	Pattern string
-	Class   string
-	Allow   map[rune]bool
-}
-
-// GoStringAllowance admits exact decoded external-protocol strings at one path.
-type GoStringAllowance struct {
-	Path           string
-	Value          string
-	PhysicalValues []string
-}
-
-// GoStringSetAllowance binds a finite decoded protocol set at one source path.
-type GoStringSetAllowance struct {
-	Path   string
-	Values []string
-}
-
-// NativeControlAllowance binds a complete finite set of decoded Go string
-// literals to one exact native source path. No family or prefix matching is
-// supported, and imports are never admitted by this allowance.
-type NativeControlAllowance struct {
-	Path   string
-	Values []string
-}
-
-// NativeLiteralSite binds a complete decoded vector to one source field.
-// Go sites require their actual function/argv context; JSON requires its field.
-type NativeLiteralSite struct {
-	ID, Path, Field string
-	Values          []string
-}
-
-// Config is the small TOML subset used by the repository lexicon.
-type Config struct {
-	Terms                   []Term
-	Provenance              []string
-	ExternalProtocolString  GoStringAllowance
-	NativeManifestStrings   GoStringSetAllowance
-	NativeFieldLiterals     []NativeLiteralSite
-	NativeRecordingLiterals NativeControlAllowance
-	NativeViewStrings       NativeControlAllowance
-}
-
-const externalProtocolSource = "spec/s1-b25-b28/public_recording_test.go"
-const nativeManifestProtocolSource = "spec/s1-b13-native/recording_test.go"
-const b01NativeGoSource = "spec/s1-b01-b04/native_exclusion_test.go"
-const b01NativeJSONSource = "spec/s1-b01-b04/native_source_bindings.json"
-const b03CatalogJSONSource = "internal/integration/b03catalog/native_catalog_inputs.json"
-
-const nativeRecordingLiteralSource = "spec/s1-b21-b24/native_recording_test.go"
-const nativeViewProtocolSource = "spec/s1-b21-b24/native_views_test.go"
-
-const externalEnvironmentDigest = "1b48d14732a1b4689f7af2d622235e53ddf1703e7043985592e66b0d1ecf4eff"
-
-// These decoded-string digests bind the accepted physical catalog, its two
-// journal/cursor names and one dependency column. Config cannot add a family
-// of names or substitute another literal, even at the authorized source path.
-var physicalProtocolDigests = map[string]bool{
-	"39d6e7ef1121f5ac563d8c278431a6a19f9d420534e9cbe38d2f9f41d9912502": true,
-	"93602e05a1bff1bd127187c713caaeab338848eb4a6cba051123440a912cdf26": true,
-	"91f880d51578af7df6289315f0b8e9e7e5c44e86b33f48900c26f031a0cc6f75": true,
-	"7853d42458d77d5bd188bd1a1bba51e87257cbe5ec12826168bc639f95bb0a72": true,
-}
-
-// Accepted manifest keys, artifact/target and build package suffix are fixed
-// wire values; this set cannot admit a package or command family.
-var nativeManifestProtocolDigests = map[string]bool{
-	"448bbf6c576972f4320475a0f2c84fc95020744752746eeb7bc440c488827ec7": true,
-	"189e26badd76744c7e096b1d22c566d77a483176d37748a42b5c8ea3301c09ea": true,
-	"8610e53a1800745f41cf493e7f8e05da1513988d330e48bffe2a65422300379e": true,
-	"28eb85035ca7f533164539df882ca0584982aaad9f833d341983a6bff0fd0d33": true,
-}
-
-var nativeRecordingLiteralDigests = map[string]bool{
-	"d56ebf9119cfd53f6690d8ec4111275a19c16b5c1c89123d3ff99499b81586cd": true,
-	"91f880d51578af7df6289315f0b8e9e7e5c44e86b33f48900c26f031a0cc6f75": true,
-	"93602e05a1bff1bd127187c713caaeab338848eb4a6cba051123440a912cdf26": true,
-	"a250fe4bfeccf35cd1f34c8eb7625ef05127294cdeb6884a04adea45796adebc": true,
-	"bb4a56c556282d591f27cc54e1f06ac5a3de17e1aed41e0ac387b2b71fe30f91": true,
-	"c7e69eb7c0bdafa652aa9539c60152fb468d0ac0ddc4f71bb90469ec8747caf8": true,
-	"d29f73f45d1bb46a0ca4f641e919fcb6964b2aedeb3db5205118b50627c725fc": true,
-}
-
-var nativeViewProtocolDigests = map[string]bool{
-	"91f880d51578af7df6289315f0b8e9e7e5c44e86b33f48900c26f031a0cc6f75": true,
-	"93602e05a1bff1bd127187c713caaeab338848eb4a6cba051123440a912cdf26": true,
-}
-
 func protocolLiteralDigest(value string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(value)))
 }
@@ -187,280 +95,129 @@ func (f Finding) String() string {
 	return fmt.Sprintf("%s:%d: %s term %q", f.Path, f.Line, f.Class, f.Term)
 }
 
-// LoadConfig reads the checked-in lexicon without adding a parser dependency.
-func LoadConfig(path string) (Config, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return Config{}, fmt.Errorf("read lexicon: %w", err)
+func validB03NativeGoLiterals(sites []NativeLiteralSite) bool {
+	want := siteDigests(canonicalRules.B03NativeGoLiterals)
+	if len(sites) != len(want) {
+		return false
 	}
-	if !utf8.Valid(b) {
-		return Config{}, errors.New("lexicon is not valid UTF-8")
-	}
-	var cfg Config
-	section := ""
-	var current *Term
-	var externalSection, externalPath, externalValue, externalPhysical bool
-	var manifestSection, manifestPath, manifestValues bool
-	var recordingSection, recordingPath, recordingValues bool
-	var viewSection, viewPath, viewValues bool
-	var nativeSite *NativeLiteralSite
-	var nativeFields map[string]bool
-	for _, line := range strings.Split(string(b), "\n") {
-		line = strings.TrimSpace(strings.SplitN(line, "#", 2)[0])
-		if line == "" {
-			continue
-		}
-		switch line {
-		case "[[term]]":
-			cfg.Terms = append(cfg.Terms, Term{})
-			current = &cfg.Terms[len(cfg.Terms)-1]
-			section = "term"
-			continue
-		case "[zones]":
-			section = "zones"
-			current = nil
-			continue
-		case "[external_protocol_string]":
-			if externalSection {
-				return Config{}, errors.New("duplicate external protocol string section")
-			}
-			externalSection = true
-			section = "external_protocol_string"
-			current = nil
-			continue
-		case "[native_recording_literals]":
-			if recordingSection {
-				return Config{}, errors.New("duplicate native recording literal section")
-			}
-			recordingSection = true
-			section = "native_recording_literals"
-			current = nil
-			continue
-		case "[native_view_strings]":
-			if viewSection {
-				return Config{}, errors.New("duplicate native view string section")
-			}
-			viewSection = true
-			section = "native_view_strings"
-			current = nil
-			continue
-		case "[native_manifest_strings]":
-			if manifestSection {
-				return Config{}, errors.New("duplicate native manifest string section")
-			}
-			manifestSection = true
-			section = "native_manifest_strings"
-			current = nil
-			continue
-		case "[[native_field_literal]]":
-			cfg.NativeFieldLiterals = append(cfg.NativeFieldLiterals, NativeLiteralSite{})
-			nativeSite = &cfg.NativeFieldLiterals[len(cfg.NativeFieldLiterals)-1]
-			nativeFields = make(map[string]bool)
-			section, current = "native_field_literal", nil
-			continue
-		}
-		key, value, ok := strings.Cut(line, "=")
+	for _, site := range sites {
+		digest, ok := want[site.ID]
 		if !ok {
-			return Config{}, fmt.Errorf("invalid lexicon line %q", line)
+			return false
 		}
-		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
-		if section == "native_field_literal" {
-			if nativeFields[key] {
-				return Config{}, fmt.Errorf("duplicate native field literal field: %s", key)
+		fields := append([]string{site.Path, site.Field}, site.Values...)
+		for _, field := range fields {
+			if strings.ContainsRune(field, '\x00') {
+				return false
 			}
-			nativeFields[key] = true
-			switch key {
-			case "id", "path", "field":
-				decoded, err := strconv.Unquote(value)
-				if err != nil || !strings.HasPrefix(value, "\"") {
-					return Config{}, errors.New("native field literal fields require a quoted scalar")
-				}
-				switch key {
-				case "id":
-					nativeSite.ID = decoded
-				case "path":
-					nativeSite.Path = decoded
-				case "field":
-					nativeSite.Field = decoded
-				}
-			case "values":
-				// JSON's quoted-array subset also preserves commas inside argv.
-				if !strings.HasPrefix(value, "[") || json.Unmarshal([]byte(value), &nativeSite.Values) != nil || len(nativeSite.Values) == 0 {
-					return Config{}, errors.New("native field literal values require a nonempty quoted array")
-				}
-			default:
-				return Config{}, fmt.Errorf("unknown native field literal field: %s", key)
+		}
+		if protocolLiteralDigest(strings.Join(fields, "\x00")) != digest {
+			return false
+		}
+		delete(want, site.ID)
+	}
+	return true
+}
+
+func nativeSelectorIs(expression ast.Expr, receiver, member string) bool {
+	selector, ok := expression.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != member {
+		return false
+	}
+	name, ok := selector.X.(*ast.Ident)
+	return ok && name.Name == receiver
+}
+
+// Only the actual top-level census initializer and the direct manifest lookup
+// in its named verification function can admit these two complete values.
+func b03NativeGoLiteralOffsets(path string, content []byte, sites []NativeLiteralSite) map[int]bool {
+	if path != b03CatalogGoSource || !validB03NativeGoLiterals(sites) {
+		return nil
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, content, 0)
+	if err != nil {
+		return nil
+	}
+	names := make(map[string]int)
+	var table *ast.ValueSpec
+	var tableKind token.Token
+	var verifier *ast.FuncDecl
+	for _, declaration := range file.Decls {
+		switch node := declaration.(type) {
+		case *ast.FuncDecl:
+			names[node.Name.Name]++
+			if node.Name.Name == "verifyB03PreparedArtifact" {
+				verifier = node
 			}
-			continue
-		}
-		values, err := quotedValues(value)
-		if err != nil {
-			return Config{}, fmt.Errorf("lexicon %s: %w", key, err)
-		}
-		if section == "zones" && key == "provenance" {
-			cfg.Provenance = values
-			continue
-		}
-		if section == "native_manifest_strings" {
-			switch key {
-			case "path":
-				if manifestPath || !strings.HasPrefix(value, "\"") || len(values) != 1 || values[0] != nativeManifestProtocolSource {
-					return Config{}, errors.New("native manifest strings require their exact source path")
-				}
-				manifestPath = true
-				cfg.NativeManifestStrings.Path = values[0]
-			case "values":
-				if manifestValues || !strings.HasPrefix(value, "[") || len(values) != len(nativeManifestProtocolDigests) {
-					return Config{}, errors.New("native manifest strings require one complete exact literal set")
-				}
-				manifestValues = true
-				seen := make(map[string]bool)
-				for _, value := range values {
-					digest := protocolLiteralDigest(value)
-					if !nativeManifestProtocolDigests[digest] || seen[digest] {
-						return Config{}, errors.New("native manifest string is unlisted or duplicated")
+		case *ast.GenDecl:
+			for _, spec := range node.Specs {
+				switch spec := spec.(type) {
+				case *ast.ValueSpec:
+					for _, name := range spec.Names {
+						names[name.Name]++
+						if name.Name == "b03NativeTables" {
+							table, tableKind = spec, node.Tok
+						}
 					}
-					seen[digest] = true
-				}
-				cfg.NativeManifestStrings.Values = values
-			default:
-				return Config{}, fmt.Errorf("unknown native manifest string key: %s", key)
-			}
-			continue
-		}
-		if section == "external_protocol_string" {
-			if key != "physical_values" && len(values) != 1 {
-				return Config{}, errors.New("external protocol string fields require one value")
-			}
-			switch key {
-			case "path":
-				if externalPath {
-					return Config{}, errors.New("duplicate external protocol string path")
-				}
-				externalPath = true
-				cfg.ExternalProtocolString.Path = values[0]
-			case "value":
-				if externalValue {
-					return Config{}, errors.New("duplicate external protocol string value")
-				}
-				externalValue = true
-				cfg.ExternalProtocolString.Value = values[0]
-			case "physical_values":
-				if externalPhysical || len(values) != len(physicalProtocolDigests) {
-					return Config{}, errors.New("physical protocol strings require one complete exact literal set")
-				}
-				externalPhysical = true
-				seen := make(map[string]bool)
-				for _, value := range values {
-					digest := protocolLiteralDigest(value)
-					if !physicalProtocolDigests[digest] || seen[digest] {
-						return Config{}, errors.New("physical protocol string is unlisted or duplicated")
-					}
-					seen[digest] = true
-				}
-				cfg.ExternalProtocolString.PhysicalValues = values
-			default:
-				return Config{}, fmt.Errorf("unknown external protocol string key: %s", key)
-			}
-			continue
-		}
-		if section == "native_recording_literals" || section == "native_view_strings" {
-			allowance := &cfg.NativeRecordingLiterals
-			source := nativeRecordingLiteralSource
-			digests := nativeRecordingLiteralDigests
-			pathSeen, valuesSeen := &recordingPath, &recordingValues
-			if section == "native_view_strings" {
-				allowance = &cfg.NativeViewStrings
-				source = nativeViewProtocolSource
-				digests = nativeViewProtocolDigests
-				pathSeen, valuesSeen = &viewPath, &viewValues
-			}
-			switch key {
-			case "path":
-				if *pathSeen || !strings.HasPrefix(value, "\"") || len(values) != 1 || values[0] != source {
-					return Config{}, errors.New("native control literals require their exact source path")
-				}
-				*pathSeen = true
-				allowance.Path = values[0]
-			case "values":
-				if *valuesSeen || !strings.HasPrefix(value, "[") || len(values) != len(digests) {
-					return Config{}, errors.New("native control literals require one complete exact set")
-				}
-				*valuesSeen = true
-				seen := make(map[string]bool)
-				for _, literal := range values {
-					digest := protocolLiteralDigest(literal)
-					if !digests[digest] || seen[digest] {
-						return Config{}, errors.New("native control literal is unlisted or duplicated")
-					}
-					seen[digest] = true
-				}
-				allowance.Values = values
-			default:
-				return Config{}, fmt.Errorf("unknown native control literal key: %s", key)
-			}
-			continue
-		}
-		if current == nil {
-			return Config{}, fmt.Errorf("lexicon key outside a section: %s", key)
-		}
-		switch key {
-		case "match":
-			current.Matches = values
-		case "regex":
-			if len(values) != 1 {
-				return Config{}, errors.New("regex must have one value")
-			}
-			current.Pattern = values[0]
-		case "class":
-			if len(values) != 1 {
-				return Config{}, errors.New("class must have one value")
-			}
-			current.Class = values[0]
-		case "allow":
-			current.Allow = make(map[rune]bool)
-			for _, value := range values {
-				for _, r := range value {
-					current.Allow[r] = true
+				case *ast.TypeSpec:
+					names[spec.Name.Name]++
 				}
 			}
-		default:
-			return Config{}, fmt.Errorf("unknown lexicon key: %s", key)
 		}
 	}
-	if len(cfg.Terms) == 0 || len(cfg.Provenance) == 0 {
-		return Config{}, errors.New("lexicon has no terms or provenance zones")
-	}
-	for i := range cfg.Terms {
-		if cfg.Terms[i].Class == "" || (len(cfg.Terms[i].Matches) == 0 && cfg.Terms[i].Pattern == "") {
-			return Config{}, fmt.Errorf("lexicon term %d is incomplete", i)
+	offsets := make(map[int]bool)
+	for _, site := range sites {
+		var literals []*ast.BasicLit
+		switch site.ID {
+		case "catalog-go-tables":
+			if names["b03NativeTables"] != 1 || tableKind != token.VAR || table == nil || table.Type != nil || len(table.Names) != 1 || len(table.Values) != 1 {
+				continue
+			}
+			call, ok := table.Values[0].(*ast.CallExpr)
+			if !ok || call.Ellipsis.IsValid() || !nativeSelectorIs(call.Fun, "strings", "Fields") {
+				continue
+			}
+			literals = nativeStringExpressions(call.Args, site.Values)
+		case "catalog-go-artifact":
+			if names["verifyB03PreparedArtifact"] != 1 || verifier == nil || verifier.Recv != nil || verifier.Body == nil {
+				continue
+			}
+			matches := 0
+			for _, statement := range verifier.Body.List {
+				assignment, ok := statement.(*ast.AssignStmt)
+				if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 {
+					continue
+				}
+				name, ok := assignment.Lhs[0].(*ast.Ident)
+				if !ok || name.Name != "artifact" {
+					continue
+				}
+				index, ok := assignment.Rhs[0].(*ast.IndexExpr)
+				if !ok || !nativeSelectorIs(index.X, "manifest", "Artifacts") {
+					continue
+				}
+				if candidate := nativeStringExpressions([]ast.Expr{index.Index}, site.Values); candidate != nil {
+					matches++
+					literals = candidate
+				}
+			}
+			if matches != 1 {
+				continue
+			}
+		}
+		for _, literal := range literals {
+			offsets[fset.Position(literal.Pos()).Offset] = true
 		}
 	}
-	if externalSection && (!externalPath || !externalValue || cfg.ExternalProtocolString.Path != externalProtocolSource || protocolLiteralDigest(cfg.ExternalProtocolString.Value) != externalEnvironmentDigest) {
-		return Config{}, errors.New("external protocol string must bind the exact source path and environment literal")
-	}
-	if recordingSection && (!recordingPath || !recordingValues) || viewSection && (!viewPath || !viewValues) {
-		return Config{}, errors.New("native control literals lack their exact path or complete set")
-	}
-	if manifestSection && (!manifestPath || !manifestValues) {
-		return Config{}, errors.New("native manifest strings lack their exact path or literal set")
-	}
-	if len(cfg.NativeFieldLiterals) != 0 && !validNativeFieldLiterals(cfg.NativeFieldLiterals) {
-		return Config{}, errors.New("native field literals require all four exact path/field/value sites")
-	}
-	return cfg, nil
+	return offsets
 }
 
 // The fixed digests bind every field and the complete ordered decoded vector.
 // Delimiters cannot be injected to repartition a tuple; config alone cannot
 // introduce another source field or value. An absent/invalid set grants nothing.
 func validNativeFieldLiterals(sites []NativeLiteralSite) bool {
-	want := map[string]string{
-		"ready-types":              "3519f1cfb20fa24cfca6c77869671a5d9a1411785d0d3081ed32d12b20d5f361",
-		"custom-types":             "ec901e9a98f01ac8fd80e4d987682abcf07f06543bb41996e5f0196e0d495b3b",
-		"native-type-binding-json": "704769d0bfe4c9bf675c4e547811c87d194f5a5789d89618911f496b48de9361",
-		"catalog-sql-tables":       "abece64033a685f3ad2c353f60c392e56cae472cf16427fbb62c3427f2dc064c",
-	}
+	want := siteDigests(canonicalRules.NativeFieldLiterals)
 	if len(sites) != len(want) {
 		return false
 	}
@@ -775,7 +532,10 @@ func checkFiles(files map[string][]byte, cfg Config, policy *TreePolicy) ([]Find
 		if !utf8.Valid(content) {
 			return nil, fmt.Errorf("%s: content is not valid UTF-8", path)
 		}
-		if path == "engdocs/style/lexicon.toml" {
+		if digest, consumed := cfg.ruleSources[path]; consumed {
+			if sha256.Sum256(content) != digest {
+				return nil, fmt.Errorf("lexicon rule %s changed after loading", path)
+			}
 			continue
 		}
 		provenance := isProvenance(path, cfg.Provenance)
@@ -803,7 +563,7 @@ func CheckTree(root string) ([]Finding, error) {
 	if info, err := os.Stat(root); err != nil || !info.IsDir() {
 		return nil, fmt.Errorf("repository root is not a directory: %s", root)
 	}
-	cfg, err := LoadConfig(filepath.Join(root, "engdocs/style/lexicon.toml"))
+	cfg, err := LoadConfig(filepath.Join(root, rulesDirectory))
 	if err != nil {
 		return nil, err
 	}
@@ -848,14 +608,15 @@ func scanFile(path string, content []byte, cfg Config, provenance bool) []Findin
 		return []Finding{{Path: path, Line: 1, Class: "invalid-json", Term: "parse"}}
 	}
 	fieldOffsets := nativeFieldLiteralOffsets(path, content, cfg.NativeFieldLiterals)
-	if path == externalProtocolSource && len(cfg.ExternalProtocolString.PhysicalValues) != 0 || path == nativeManifestProtocolSource && len(cfg.NativeManifestStrings.Values) != 0 || path == b01NativeGoSource || path == b01NativeJSONSource || path == b03CatalogJSONSource || hasNativeControlAllowance(path, cfg) {
+	b03Offsets := b03NativeGoLiteralOffsets(path, content, cfg.B03NativeGoLiterals)
+	if path == externalProtocolSource && len(cfg.ExternalProtocolString.PhysicalValues) != 0 || path == nativeManifestProtocolSource && len(cfg.NativeManifestStrings.Values) != 0 || path == b01NativeGoSource || path == b01NativeJSONSource || path == b03CatalogJSONSource || path == b03CatalogGoSource || hasNativeControlAllowance(path, cfg) {
 		masked := append([]byte(nil), content...)
 		sourceLiterals := goStringLiterals(path, content)
 		if path == b01NativeJSONSource || path == b03CatalogJSONSource {
 			sourceLiterals = jsonStringLiterals(content)
 		}
 		for _, literal := range sourceLiterals {
-			if !literal.imported && (fieldOffsets[literal.start] || allowsConfiguredLiteral(path, literal.value, cfg) || allowsNativeManifestString(path, literal.value, cfg.NativeManifestStrings)) {
+			if !literal.imported && (fieldOffsets[literal.start] || b03Offsets[literal.start] || allowsConfiguredLiteral(path, literal.value, cfg) || allowsNativeManifestString(path, literal.value, cfg.NativeManifestStrings)) {
 				for i := literal.start; i < literal.end; i++ {
 					if masked[i] != '\n' && masked[i] != '\r' {
 						masked[i] = ' '
@@ -971,6 +732,7 @@ func goStringLiterals(path string, content []byte) []goStringLiteral {
 func scanGoIdentifiers(path string, content []byte, term Term, cfg Config) []Finding {
 	allowance := cfg.ExternalProtocolString
 	fieldOffsets := nativeFieldLiteralOffsets(path, content, cfg.NativeFieldLiterals)
+	b03Offsets := b03NativeGoLiteralOffsets(path, content, cfg.B03NativeGoLiterals)
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, content, parser.ParseComments)
 	if err != nil {
@@ -994,8 +756,8 @@ func scanGoIdentifiers(path string, content []byte, term Term, cfg Config) []Fin
 					findings = append(findings, Finding{Path: path, Line: fset.Position(node.Pos()).Line, Class: "invalid-go", Term: "string"})
 					return true
 				}
-				if path == externalProtocolSource || path == nativeManifestProtocolSource || path == b01NativeGoSource || hasNativeControlAllowance(path, cfg) {
-					if !imports[n.Pos()] && (fieldOffsets[fset.Position(n.Pos()).Offset] || path == externalProtocolSource && allowance.Path == path && decoded == allowance.Value && protocolLiteralDigest(decoded) == externalEnvironmentDigest || allowsPhysicalProtocolString(path, decoded, allowance) || allowsNativeManifestString(path, decoded, cfg.NativeManifestStrings) || allowsNativeControlLiteral(path, decoded, cfg)) {
+				if path == externalProtocolSource || path == nativeManifestProtocolSource || path == b01NativeGoSource || path == b03CatalogGoSource || hasNativeControlAllowance(path, cfg) {
+					if !imports[n.Pos()] && (fieldOffsets[fset.Position(n.Pos()).Offset] || b03Offsets[fset.Position(n.Pos()).Offset] || path == externalProtocolSource && allowance.Path == path && decoded == allowance.Value && protocolLiteralDigest(decoded) == externalEnvironmentDigest || allowsPhysicalProtocolString(path, decoded, allowance) || allowsNativeManifestString(path, decoded, cfg.NativeManifestStrings) || allowsNativeControlLiteral(path, decoded, cfg)) {
 						return true
 					}
 					text = decoded

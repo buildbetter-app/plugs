@@ -68,25 +68,30 @@ hooks also run through concrete WriteTx readers. Product composition receives
 the raw store, preserving every optional reader/transaction/store capability.
 SQL executor visits, Observe/Lock state decoding, and historical patch replay
 bytes remain UNMEASURED. Logical reconstructed body bytes are not replay bytes.
-PostgreSQL current bodies newer than the requested snapshot, including repeat
-fetches during historical fallback, are also UNMEASURED by these original
-hooks. Complete body-work accounting remains OPEN pending the separate W11
-accounting correction; callback counts do not prove physical SQL work.
+PostgreSQL reports each successfully scanned live current body before snapshot
+filtering, including bodies discarded by historical fallback. Reconstructed
+historical bodies and repeated fetches are counted at their actual boundaries;
+batched reads do not invent repeated current-row scans. Callback counts do not
+prove physical SQL work.
 
 The explicit raw-group Q5 regression distinguishes the correct winner from
 rotation over authorized members alone. The Ready regression changes an
 authorized tail beyond the first page, preserving that page and authorization
 generation while requiring the membership-specific cursor refusal.
 
-The separate `cp7_dense_semantics_test` completes the unchanged ordinary Q6 at
-100k and requires `scope_too_large` under the 20k cap. It also completes a
-separately named positive summary decoded from present `fields=[]` and
-`groupBy=["type"]`, after proving finite CP7 compiler eligibility, with 100k
-inputs and one group. Like the existing correctness checks, these semantic
-calls use Background; they supply no benchmark latency or deadline-success
-claim. The original timed Q6 and cold/3/20 matrix are unchanged. Accounting
-explicitly exposes existing summary item construction even though its output
-contains no payload rows.
+The ordinary `cp7_dense_semantics_test` keeps both semantic controls in `//...`
+with a 20,001-row corpus, the smallest real corpus that still proves the
+20,000 ordinary candidate cap. It requires the original nonempty Q6 to return
+`scope_too_large` and checks the positive `fields=[]`, `groupBy=["type"]`
+summary, including its aggregate work and no-payload-row result. The
+engine-specific `cp7_dense_semantics_sqlite_test` and
+`cp7_dense_semantics_postgres_test` are tagged `manual`; each repeats those
+same controls against the unchanged 100,000-row corpus. The daily and
+on-demand workflow selects both manual targets explicitly. Like the existing
+correctness checks, these semantic calls use Background; they supply no
+benchmark latency or deadline-success claim. The original timed Q6 and
+cold/3/20 matrix are unchanged. Accounting explicitly exposes existing
+summary item construction even though its output contains no payload rows.
 
 Run the complete manual latency qualification explicitly through the approved
 remote wrapper:
@@ -99,18 +104,48 @@ remote wrapper:
   --test_timeout=900,900,900,9000 --jobs=2 --local_resources=memory=8192
 ```
 
+The scheduled/on-demand workflow uses the same wrapper-equivalent Bazel
+selection explicitly, once for each engine:
+
+```sh
+engine=sqlite # or postgres
+/tmp/plug-swarm/bin/remote-bazel "$PWD" HEAD cp7-dense-$engine -- test \
+  //internal/integration/cp7latency:cp7_latency_${engine}_test \
+  //internal/integration/cp7latency:cp7_dense_semantics_${engine}_test \
+  //tools/lexicon:lexicon_gate \
+  --lockfile_mode=error --jobs=2 --local_test_jobs=1 --local_resources=memory=8192 \
+  --nocache_test_results --test_env=GO_TEST_WRAP_TESTV=1 --test_output=all \
+  --test_timeout=900,900,900,9000
+```
+
 The ordinary whole-tree command uses the same options with `//...`. It includes
-`cp7_correctness_test` and the real 100k `cp7_dense_semantics_test`. Both timed
-engine targets and their enclosing suite carry the manual tag, so ordinary
-whole-tree expansion excludes latency qualification. Explicit suite execution
-retains all 18 cases, cold requests, three warmups and 20 measured attempts per
-case, with every existing assertion, cap and deadline unchanged. The scheduled
-workflow also names each engine target explicitly. Running the full suite may
-execute the two stores concurrently; measurements retain that workload context.
-An ordinary whole PASS does not qualify latency or erase historical REDs.
+`cp7_correctness_test` and the 20,001-row `cp7_dense_semantics_test`, while the
+two full-density semantic targets and both timed engine targets carry the
+`manual` tag and stay out of automatic expansion. Explicit suite execution
+retains the ordinary controls plus both 100k semantic targets, all 18 timed
+cases, cold requests, three warmups and 20 measured attempts per timed case,
+with every existing assertion, cap and deadline unchanged. Running the full
+suite may execute the two stores concurrently; measurements retain that
+workload context. An ordinary whole PASS does not qualify latency or erase
+historical REDs.
 
 Full S1 remains 0/28 and E3 remains 4/5 until actual proof. This baseline does
 not qualify product authorization races, terminal claims, the 200-agent runtime
 or a durable SLO.
 D productization requires a later independently reviewed PR against this
 harness. The reviewed D fixture and rejected split-lock variants are unchanged.
+
+W11 current-main controls are in `cp7_qualification_test`: complete grouped
+pagination at 1,000 bodies/all three fractions, a real publication during the
+pinned readiness callback on both engines, and strict measurement/refusal
+validation. They exercise the existing public fallback composition. PR388's
+compiled Selection/final-authority/terminal tests and six timed summary cases
+remain separate, unadopted dependency-bound work; these controls supply none
+of their qualification. The original 18-case workload and deadlines stay intact.
+
+The accounting regressions exercise real PostgreSQL current/historical/staged
+reads, absent/deleted keys, duplicate output, repeated fetches and observer
+parity, including refusal precedence. The stored-row scan and reconstructed
+historical-body boundaries are measured separately from emitted output clones
+and from SQL executor physical work. W3's returned-clone observations are a
+separate composition; this child does not adopt them.

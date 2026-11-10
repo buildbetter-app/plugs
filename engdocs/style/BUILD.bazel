@@ -1,7 +1,5 @@
-exports_files(["lexicon.toml"])
-
 filegroup(
     name = "lexicon_files",
-    srcs = ["BUILD.bazel", "lexicon.toml"],
+    srcs = ["BUILD.bazel"],
     visibility = ["//visibility:public"],
 )

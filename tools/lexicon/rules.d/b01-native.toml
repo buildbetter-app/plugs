@@ -1,0 +1,17 @@
+[[native_field_literal]]
+id = "ready-types"
+path = "spec/s1-b01-b04/native_exclusion_test.go"
+field = "nativeExclusionTypes.return"
+values = ["merge-request", "gate", "molecule", "rig", "agent", "role", "message", "bug", "task"]
+
+[[native_field_literal]]
+id = "custom-types"
+path = "spec/s1-b01-b04/native_exclusion_test.go"
+field = "recordNativeExclusions.c.run.types.custom"
+values = ["exclusions-type-config", "config", "set", "types.custom", "merge-request,rig,agent,role"]
+
+[[native_field_literal]]
+id = "native-type-binding-json"
+path = "spec/s1-b01-b04/native_source_bindings.json"
+field = "nativeTypeBoundary.defaultHidden"
+values = ["merge-request", "gate", "molecule", "rig", "agent", "role", "message"]

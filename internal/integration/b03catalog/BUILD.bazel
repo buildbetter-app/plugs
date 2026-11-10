@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_test")
 go_test(
     name = "b03catalog_test",
     size = "large",
-    srcs = glob(["*_test.go"]),
+    srcs = glob(["*_test.go"], exclude = ["native_catalog_recording_test.go"]),
     args = ["-test.v"],
     tags = ["exclusive", "local", "requires-network"],
     deps = [
@@ -23,6 +23,44 @@ go_test(
         "//internal/storage/memory",
         "//internal/storage/postgres",
         "//internal/storage/sqlite",
+    ],
+)
+
+# The native producer recording is an explicitly dispatched RunsOn lane.  It
+# must never enter ordinary B03 or literal-whole inputs: the target owns the
+# admitted public executable, an isolated Dolt server, and four physical
+# stores.  The input manifest is a reviewed source binding, not a fixture.
+go_test(
+    name = "b03catalog_native_test",
+    size = "large",
+    srcs = ["native_catalog_recording_test.go"],
+    args = ["-test.v"],
+    data = [
+        "native_catalog_inputs.json",
+        "native_admission_record.json",
+        "//internal/publicnative:dolt_runtime",
+    ],
+    env = {
+        "PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)",
+    },
+    tags = ["manual", "exclusive", "local", "requires-network"],
+    deps = [
+        "//internal/core/dumpformat",
+        "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/core/ontologyops",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/integration/converterroundtrip",
+        "//internal/publicnative",
+        "//internal/server/composition",
+        "//internal/server/transport/inprocess",
+        "//internal/storage/conformance",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/postgres",
+        "//internal/storage/sqlite",
+        "//internal/testclock",
     ],
 )
 
