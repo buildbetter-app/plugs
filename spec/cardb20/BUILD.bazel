@@ -50,3 +50,10 @@ filegroup(
     srcs = glob(["**"]),
     visibility = ["//visibility:public"],
 )
+
+# Reuse the unchanged canonical source-build recipe in card-specific targets.
+filegroup(
+    name = "native_build_support",
+    srcs = ["native_build_test.go"],
+    visibility = ["//visibility:public"],
+)
