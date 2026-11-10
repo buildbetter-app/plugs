@@ -348,25 +348,59 @@ image, exact frontier edges and the current events attachment. The SQL-only
 a failed SQL census alone never establishes a history boundary.
 
 For a quiesced, disposable public native workspace, the supported `bd` executable
-can measure the inventory needed for raw readback without a fixture census:
+can measure an inventory without a fixture census:
 
 ```sh
 mkdir -m 700 capture
 bd --readonly export --format beads-inventory/1 --plug-capture-public -o capture/inventory.json
-bd --readonly export --format plug-dump/1 --plug-inventory capture/inventory.json -o capture/readback.tar
 ```
 
 `--plug-capture-public` explicitly declares the target disposable and quiesced
 and all unclassified source values public. Config and DB metadata policy keys
 come from the actual complete driver read set; recognized credentials remain
-secret references. The first command requires a fresh inventory destination in
+secret references. This command requires a fresh inventory destination in
 an existing private directory, writes private normalized source JSON sidecars,
-and publishes the existing `beads-inventory/1` file last. Both reads use the
+and publishes the existing `beads-inventory/1` file last. Its SQL reads use the
 supported read-only Serializable driver scope. No database handle escapes.
 Sidecar paths are absolute, under the resolved physical
 `<inventory-path>.sources` directory. Keep the inventory and that directory in
-place: the later dump export reads those exact sidecars, without re-observing
-the original filesystem paths.
+place as the measured source evidence.
+
+Stock `bd` cannot authenticate immutable native images through its SQL source.
+The following archive command is expected to refuse with
+`native-physical-root-capability-unavailable:stock-sql` and leave the archive
+path absent:
+
+```sh
+bd --readonly export --format plug-dump/1 --plug-inventory capture/inventory.json -o capture/readback.tar
+```
+
+For the validated archive, use the standalone physical companion built from the
+same source against that quiesced disposable public workspace:
+
+```sh
+cd /absolute/disposable/workspace
+BEADS_DIR=/absolute/disposable/workspace/.beads \
+  /absolute/path/native-physical-capture \
+  --disposable \
+  --data-dir=/absolute/disposable/workspace/.beads/embeddeddolt \
+  --database=exact_database \
+  --beads-dir=/absolute/disposable/workspace/.beads \
+  --output-dir=/absolute/disposable/physical-capture
+```
+
+Select the actual data root and exact database name from the copied workspace's
+configuration; `.beads/embeddeddolt` above is the embedded layout. The data,
+Beads and output directories must already exist with owner-only permissions and
+canonical paths without symlink components. Use an isolated disposable HOME and
+XDG configuration, and a fresh output directory. The companion measures its own
+inventory and sidecars rather than consuming the separate inventory above. On
+success it publishes validated `capture.tar`, `inventory.json`,
+`inventory.json.sources/` and `physical-evidence.json`. Keep their actual
+manifest, schema profiles and history ranges: this route does not certify
+portable-history completeness, consumer restore, real-store admission or an
+official artifact. See [the companion instructions](../../tools/native-physical-capture/README.md)
+for build, output and schema limits.
 
 All 26 external families have actual normalized observations. Present YAML,
 JSON, hooks and formula paths retain file bytes and hashes; directories retain
