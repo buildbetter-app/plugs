@@ -13,7 +13,6 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/core/viewops"
-	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -212,9 +211,9 @@ func TestPendingProducerKeepsHistoricalBodiesPinnedDuringPublication(t *testing.
 					if err != nil {
 						t.Fatal(err)
 					}
-					if _, err := conformance.Seed(context.Background(), f.store.Store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: beadRef(1), Kind: "bead", Op: model.OpPatch, Body: encoded, ChangedPaths: []string{"/fields/title"}}}); err != nil {
-						t.Fatal(err)
-					}
+					// Preserve the unchanged graph/closure while refreshing the
+					// exact source-bound annotations used by fresh authorization.
+					f.patchSource(t, "pending_producer_publication", beadRef(1), encoded, []string{"/fields/title"})
 				}
 				rows, err := r.Get(ctx, refs)
 				if err != nil || len(rows) != f.n {
