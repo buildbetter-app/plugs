@@ -176,6 +176,29 @@ type OfflineHistoryStreamCompletion struct {
 	Stats         OfflineHistoryStreamStats
 }
 
+// OfflineHistoryStreamPublication is issued only for one in-flight Publish
+// callback after complete validation and source cleanup. The adapter MUST Claim
+// it against its exact Begin binding before any durable effect. Copies share a
+// single claim and all expire when that callback returns, including on failure.
+// Informational Completion values cannot construct or substitute for this proof.
+type OfflineHistoryStreamPublication struct{ session *offlineHistoryStreamSession }
+
+func (p OfflineHistoryStreamPublication) Claim(binding OfflineHistoryStreamBinding) (OfflineHistoryStreamCompletion, error) {
+	s := p.session
+	if s == nil || !s.publishing || s.claimed {
+		return OfflineHistoryStreamCompletion{}, streamError("unissued, consumed or expired publication proof")
+	}
+	request, err := binding.Profile.RequestHash()
+	if err != nil {
+		return OfflineHistoryStreamCompletion{}, err
+	}
+	if binding.Current != s.binding.Current || binding.Meta != s.binding.Meta || binding.Header != s.binding.Header || binding.Lifetime != s.binding.Lifetime || !binding.When.Equal(s.binding.When) || request != s.completion.RequestHash {
+		return OfflineHistoryStreamCompletion{}, streamError("publication proof belongs to a different prepared binding")
+	}
+	s.claimed = true
+	return s.completion, nil
+}
+
 // Stage owns bounded PRIVATE staging, never visible head/versions/changesets or
 // a receipt. Begin rechecks the actual empty target/lifetime under admission,
 // complete locks and Head. Stage consumes its borrowed frame before returning;
@@ -188,7 +211,8 @@ type OfflineHistoryStreamCompletion struct {
 // Profile.ArchiveDigest; final equality is also bound to Profile.DerivedDigest.
 // They are never fabricated from consecutive imported revisions or source audit.
 //
-// Publish rechecks target lifetime, lease, full record/sentinel locks, all
+// Publish first claims its opaque proof, then rechecks target lifetime, lease,
+// full record/sentinel locks, all
 // staged proofs and original receipt correspondence, then publishes versions,
 // changesets, current records, final head, floor, exact gaps/mappings/native
 // boundaries, source-plane participants and keyed final receipt atomically, or
@@ -203,7 +227,7 @@ type OfflineHistoryStreamCompletion struct {
 type OfflineHistoryStreamStage interface {
 	Begin(context.Context, OfflineHistoryStreamBinding) error
 	Stage(context.Context, model.Revision, OfflineHistoryStreamFrame) error
-	Publish(context.Context, OfflineHistoryStreamCompletion, ChangesetHeader) (model.Changeset, error)
+	Publish(context.Context, OfflineHistoryStreamPublication, ChangesetHeader) (model.Changeset, error)
 	Abort() error
 }
 
@@ -224,6 +248,8 @@ type offlineHistoryStreamSession struct {
 	binding    OfflineHistoryStreamBinding
 	completion OfflineHistoryStreamCompletion
 	finished   bool
+	publishing bool
+	claimed    bool
 }
 
 func (p *PreparedOfflineHistoryStream) Completion() (OfflineHistoryStreamCompletion, error) {
@@ -257,9 +283,26 @@ func (p *PreparedOfflineHistoryStream) Commit(ctx context.Context, h ChangesetHe
 	if err != nil {
 		return model.Changeset{}, errors.Join(err, s.stage.Abort())
 	}
-	entry, err := s.stage.Publish(ctx, s.completion, h)
+	entry, err := s.publish(ctx, h)
+	if err == nil && !s.claimed {
+		err = streamError("staging adapter did not claim its publication proof")
+	}
 	if err != nil {
-		return model.Changeset{}, errors.Join(err, s.stage.Abort())
+		cleanup := s.stage.Abort()
+		var unknown ErrIndeterminate
+		var unknownPointer *ErrIndeterminate
+		if cleanup != nil && (errors.As(err, &unknown) || errors.As(err, &unknownPointer)) {
+			// An uncertain commit cannot become a cancellation/fencing rejection
+			// merely because unpublished-resource cleanup also failed.
+			return model.Changeset{}, fmt.Errorf("%w; private staging cleanup failed: %v", err, cleanup)
+		}
+		return model.Changeset{}, errors.Join(err, cleanup)
 	}
 	return entry, nil
+}
+
+func (s *offlineHistoryStreamSession) publish(ctx context.Context, h ChangesetHeader) (model.Changeset, error) {
+	s.publishing = true
+	defer func() { s.publishing = false }()
+	return s.stage.Publish(ctx, OfflineHistoryStreamPublication{session: s}, h)
 }

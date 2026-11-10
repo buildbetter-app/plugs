@@ -128,6 +128,12 @@ single-use publication handle. Errors, cancellation or cleanup failure abort
 private staging and release no handle. The caller must commit or close a
 successful handle; copies share the same consumed state.
 
+The adapter's `Publish` requires a separate opaque publication proof. Its
+`Claim` getter validates the exact prepared binding and can succeed once during
+that single callback. Retained/copied proofs expire as soon as the callback
+returns, including on failure. Constructed informational completion metadata
+cannot authorize publication after a terminal or cleanup error.
+
 Staging adapters must validate exact JSON, replay preimages, source proofs,
 duplicate provenance, final-image equality and all atomic participants with
 bounded pages or spooling. Independently verified HEAD/current checkpoints bind
@@ -139,6 +145,8 @@ lifetime, lease, complete locks and stage/receipt correspondence before atomic
 publication of versions, changesets, current head, gaps/boundaries/mappings,
 source-plane participants and receipt. An indeterminate publication retains the
 original receipt key for recovery; abort discards only unpublished resources.
+Cleanup failure remains diagnostic and cannot classify an indeterminate commit
+as a cancellation or fencing rejection.
 
 Core statistics report actual converted image bytes and peak observed
 frame/chunk sizes. They do not report allocations or process RSS; receiving

@@ -207,6 +207,9 @@ type streamingStageFixture struct {
 	source                         *streamingFixture
 	staged, aborted, published     int
 	beginErr, stageErr, publishErr error
+	abortErr                       error
+	savedProof                     OfflineHistoryStreamPublication
+	duplicateClaim                 error
 	beforeStage                    func(OfflineHistoryStreamFrame)
 	active                         *OfflineHistoryStreamTable
 	hashes                         [2]hash.Hash
@@ -269,7 +272,13 @@ func (s *streamingStageFixture) Stage(_ context.Context, revision model.Revision
 	return nil
 }
 
-func (s *streamingStageFixture) Publish(_ context.Context, completion OfflineHistoryStreamCompletion, h ChangesetHeader) (model.Changeset, error) {
+func (s *streamingStageFixture) Publish(_ context.Context, proof OfflineHistoryStreamPublication, h ChangesetHeader) (model.Changeset, error) {
+	s.savedProof = proof
+	completion, err := proof.Claim(s.binding)
+	if err != nil {
+		return model.Changeset{}, err
+	}
+	_, s.duplicateClaim = proof.Claim(s.binding)
 	if s.source != nil && s.source.closed != 1 {
 		return model.Changeset{}, errors.New("publication before source cleanup")
 	}
@@ -277,7 +286,7 @@ func (s *streamingStageFixture) Publish(_ context.Context, completion OfflineHis
 	return model.Changeset{Revision: completion.Meta.Head, Time: h.Time, Principal: h.Principal}, s.publishErr
 }
 
-func (s *streamingStageFixture) Abort() error { s.aborted++; return nil }
+func (s *streamingStageFixture) Abort() error { s.aborted++; return s.abortErr }
 
 func fixtureRequest(t *testing.T, commits uint64) OfflineHistoryStreamRequest {
 	t.Helper()
@@ -795,6 +804,71 @@ func TestOfflineHistoryStreamRejectsOriginalInvalidUTF8WithBoundTranscript(t *te
 			p, err := PrepareOfflineHistoryStream(context.Background(), r, source, stage)
 			if !errors.Is(err, ErrOfflineHistoryStream) || p != nil || stage.aborted != 1 || stage.published != 0 || source.closed != 1 || field != "header" && !strings.Contains(err.Error(), "UTF-8") {
 				t.Fatalf("raw identity normalized before validation: field=%s token=%v err=%v", field, p, err)
+			}
+		})
+	}
+}
+
+func TestOfflineHistoryStreamPublicationProofIsBoundSingleUseAndExpires(t *testing.T) {
+	var unissued OfflineHistoryStreamPublication
+	stage := &streamingStageFixture{}
+	if _, err := stage.Publish(context.Background(), unissued, ChangesetHeader{}); !errors.Is(err, ErrOfflineHistoryStream) || stage.published != 0 {
+		t.Fatal("unissued proof authorized direct publication", err)
+	}
+	for _, outcome := range []string{"success", "failure", "wrong-binding"} {
+		t.Run(outcome, func(t *testing.T) {
+			r := fixtureRequest(t, 1)
+			source := &streamingFixture{commits: 1}
+			stage := &streamingStageFixture{source: source}
+			p, err := PrepareOfflineHistoryStream(context.Background(), r, source, stage)
+			if err != nil {
+				t.Fatal(err)
+			}
+			h := streamReceipt(t, p, r)
+			failure := errors.New("atomic publication refused")
+			switch outcome {
+			case "failure":
+				stage.publishErr = failure
+			case "wrong-binding":
+				stage.binding.Current.Incarnation = "another-empty-target"
+			}
+			_, err = p.Commit(context.Background(), h)
+			if outcome == "success" && err != nil || outcome == "failure" && !errors.Is(err, failure) || outcome == "wrong-binding" && !errors.Is(err, ErrOfflineHistoryStream) {
+				t.Fatal("publication proof lost its exact prepared binding/outcome", err)
+			}
+			if outcome != "wrong-binding" && !errors.Is(stage.duplicateClaim, ErrOfflineHistoryStream) {
+				t.Fatal("copied proof authorized a second in-flight claim", stage.duplicateClaim)
+			}
+			copyOfProof := stage.savedProof
+			if _, err := copyOfProof.Claim(stage.binding); !errors.Is(err, ErrOfflineHistoryStream) {
+				t.Fatal("saved proof remained live after callback return", err)
+			}
+			published := stage.published
+			if _, err := stage.Publish(context.Background(), copyOfProof, h); !errors.Is(err, ErrOfflineHistoryStream) || stage.published != published {
+				t.Fatal("saved proof republished outside original callback", err)
+			}
+		})
+	}
+}
+
+func TestOfflineHistoryStreamIndeterminateCleanupCannotBecomeRejection(t *testing.T) {
+	for _, cleanup := range []error{context.Canceled, ErrFenced{ExpectedEpoch: 1, ObservedEpoch: 2}} {
+		t.Run(cleanup.Error(), func(t *testing.T) {
+			r := fixtureRequest(t, 1)
+			source := &streamingFixture{commits: 1}
+			stage := &streamingStageFixture{source: source, publishErr: ErrIndeterminate{IdempotencyKey: r.Profile.IdempotencyKey}, abortErr: cleanup}
+			p, err := PrepareOfflineHistoryStream(context.Background(), r, source, stage)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = p.Commit(context.Background(), streamReceipt(t, p, r))
+			var unknown ErrIndeterminate
+			var fenced ErrFenced
+			if !errors.As(err, &unknown) || unknown.IdempotencyKey != r.Profile.IdempotencyKey || errors.Is(err, context.Canceled) || errors.As(err, &fenced) || !strings.Contains(err.Error(), cleanup.Error()) || stage.aborted != 1 || stage.published != 1 {
+				t.Fatal("cleanup changed uncertain commit to a retryable rejection", err)
+			}
+			if _, err := stage.savedProof.Claim(stage.binding); !errors.Is(err, ErrOfflineHistoryStream) {
+				t.Fatal("uncertain publication retained a usable proof", err)
 			}
 		})
 	}
