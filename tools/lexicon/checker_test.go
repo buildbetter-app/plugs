@@ -999,7 +999,7 @@ func sourcePlaneConfigSection(a GoConstantAllowance) string {
 
 func TestSourcePlaneConstantConfigurationRejectsOverrides(t *testing.T) {
 	cfg, path := checkedInSourcePlaneConstants(t)
-	original, err := os.ReadFile(path)
+	original, err := readConfigDocument(path)
 	if err != nil {
 		t.Fatal(err)
 	}
