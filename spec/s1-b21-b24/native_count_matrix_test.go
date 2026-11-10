@@ -769,6 +769,14 @@ func TestB23HistoricalCapCurrentAuthorizationAcrossStores(t *testing.T) {
 				}
 				return nil
 			})
+			// The full public workload outlives the SQL host lease TTL. Use
+			// the existing keeper and drain it before each physical reopen.
+			o := &nativePostObserver{leaseRoot: t.TempDir()}
+			if outputs := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR"); outputs != "" {
+				o.leaseRoot = outputs
+			}
+			o.startHostLease(t, f)
+			t.Cleanup(func() { o.stopHostLease(t) })
 			f.ids = make([]string, 20001)
 			for i := range f.ids {
 				f.ids[i] = fmt.Sprintf("b23-public-%05d", i)
@@ -804,7 +812,9 @@ func TestB23HistoricalCapCurrentAuthorizationAcrossStores(t *testing.T) {
 			}
 			nativeB23HistoricalCap(t, f, "b23-public-live", historical, ref, &denied)
 			sameState(t, capBefore, nativeImportedState(t, f))
+			o.stopHostLease(t)
 			f.reopen(t)
+			o.startHostLease(t, f)
 			nativeB23HistoricalCap(t, f, "b23-public-reopened", historical, ref, &denied)
 			sameState(t, capBefore, nativeImportedState(t, f))
 			t.Logf("B23 public historical cap PASS: engine=%s current=20001 historical=20000 current-denial=20000/19999; regrant refusal and full reader state conserved", engine)
