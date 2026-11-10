@@ -106,7 +106,7 @@ func TestAreaConfigDoesNotContinueSectionsAcrossFiles(t *testing.T) {
 
 func TestAreaConfigRejectsDuplicateCrossFileAllowances(t *testing.T) {
 	files := checkedInRuleFiles(t)
-	for _, area := range []string{"b13-native", "b21-b24-native", "b25-b28-public", "b01-native", "b03-native"} {
+	for _, area := range []string{"b13-native", "b21-b24-native", "b25-b28-public", "b01-native", "b03-native", "source-planes"} {
 		t.Run(area, func(t *testing.T) {
 			files[rulesDirectory+"/zz-duplicate.toml"] = files[rulesDirectory+"/"+area+".toml"]
 			defer delete(files, rulesDirectory+"/zz-duplicate.toml")

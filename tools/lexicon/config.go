@@ -28,6 +28,11 @@ type GoStringAllowance struct {
 	PhysicalValues []string
 }
 
+// GoConstantAllowance binds one complete decoded value to a named declaration.
+type GoConstantAllowance struct {
+	Path, Name, Value string
+}
+
 // GoStringSetAllowance binds a finite decoded protocol set at one source path.
 type GoStringSetAllowance struct {
 	Path   string
@@ -51,6 +56,7 @@ type NativeLiteralSite struct {
 
 // Config is the small TOML subset used by the repository lexicon.
 type Config struct {
+	SourcePlaneConstants    []GoConstantAllowance
 	ruleSources             map[string][32]byte
 	Terms                   []Term
 	Provenance              []string
@@ -133,6 +139,8 @@ func parseConfigSources(sources []configSource, validateBindings bool) (Config, 
 		var current *Term
 		var nativeSite *NativeLiteralSite
 		var nativeFields map[string]bool
+		var sourcePlaneFields map[string]bool
+		var sourcePlaneConstant *GoConstantAllowance
 		for _, line := range strings.Split(string(source.data), "\n") {
 			line = strings.TrimSpace(strings.SplitN(line, "#", 2)[0])
 			if line == "" {
@@ -180,6 +188,12 @@ func parseConfigSources(sources []configSource, validateBindings bool) (Config, 
 				section = "native_manifest_strings"
 				current = nil
 				continue
+			case "[[source_plane_constant]]":
+				cfg.SourcePlaneConstants = append(cfg.SourcePlaneConstants, GoConstantAllowance{})
+				sourcePlaneConstant = &cfg.SourcePlaneConstants[len(cfg.SourcePlaneConstants)-1]
+				sourcePlaneFields = make(map[string]bool)
+				section, current = "source_plane_constant", nil
+				continue
 			case "[[native_field_literal]]":
 				cfg.NativeFieldLiterals = append(cfg.NativeFieldLiterals, NativeLiteralSite{})
 				nativeSite = &cfg.NativeFieldLiterals[len(cfg.NativeFieldLiterals)-1]
@@ -198,6 +212,27 @@ func parseConfigSources(sources []configSource, validateBindings bool) (Config, 
 				return Config{}, fmt.Errorf("invalid lexicon line %q", line)
 			}
 			key, value = strings.TrimSpace(key), strings.TrimSpace(value)
+			if section == "source_plane_constant" {
+				if sourcePlaneFields[key] {
+					return Config{}, fmt.Errorf("duplicate source plane constant field: %s", key)
+				}
+				sourcePlaneFields[key] = true
+				decoded, err := strconv.Unquote(value)
+				if err != nil || !strings.HasPrefix(value, "\"") {
+					return Config{}, errors.New("source plane constant fields require quoted scalars")
+				}
+				switch key {
+				case "path":
+					sourcePlaneConstant.Path = decoded
+				case "name":
+					sourcePlaneConstant.Name = decoded
+				case "value":
+					sourcePlaneConstant.Value = decoded
+				default:
+					return Config{}, fmt.Errorf("unknown source plane constant field: %s", key)
+				}
+				continue
+			}
 			if section == "native_field_literal" || section == "b03_native_go_literal" {
 				if nativeFields[key] {
 					return Config{}, fmt.Errorf("duplicate native field literal field: %s", key)
@@ -379,6 +414,9 @@ func parseConfigSources(sources []configSource, validateBindings bool) (Config, 
 	}
 	if manifestSection && (!manifestPath || !manifestValues) {
 		return Config{}, errors.New("native manifest strings lack their exact path or literal set")
+	}
+	if validateBindings && len(cfg.SourcePlaneConstants) != 0 && !validSourcePlaneConstants(cfg.SourcePlaneConstants) {
+		return Config{}, errors.New("source plane constants require both exact path, name and value bindings")
 	}
 	if validateBindings && len(cfg.NativeFieldLiterals) != 0 && !validNativeFieldLiterals(cfg.NativeFieldLiterals) {
 		return Config{}, errors.New("native field literals require all four exact path/field/value sites")
