@@ -104,11 +104,11 @@ func MigrateUp(ctx context.Context, conn *sql.Conn) (int, error) {
 
 func seed(ctx context.Context, conn *sql.Conn, source migrationSource, limit int) (int, error) {
 	if _, err := conn.ExecContext(ctx, source.bootstrapSQL()); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("creating frozen fixture cursor %s: %w", source.cursorTable, err)
 	}
 	var current int
-	if err := conn.QueryRowContext(ctx, "SELECT COALESCE(MAX(version),0) FROM "+source.cursorTable).Scan(&current); err != nil {
-		return 0, err
+	if err := conn.QueryRowContext(ctx, "SELECT COALESCE(MAX(version),0) FROM "+source.cursorTable).Scan(&current); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return 0, fmt.Errorf("reading frozen fixture cursor %s: %w", source.cursorTable, err)
 	}
 	count := 0
 	for _, file := range source.list() {
@@ -124,7 +124,7 @@ func seed(ctx context.Context, conn *sql.Conn, source migrationSource, limit int
 		}
 		sum := sha256.Sum256(data)
 		if _, err := conn.ExecContext(ctx, "INSERT IGNORE INTO "+source.cursorTable+" (version,content_hash) VALUES (?,?)", file.version, hex.EncodeToString(sum[:])); err != nil {
-			return count, err
+			return count, fmt.Errorf("recording frozen fixture %s in %s: %w", file.name, source.cursorTable, err)
 		}
 		count++
 	}
