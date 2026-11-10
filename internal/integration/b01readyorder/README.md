@@ -175,13 +175,14 @@ This test advances application time nearly 48 hours while the original receipt
 stays live, then expires that receipt by advancing only driver time while a
 one-nanosecond-old public rank still governs order. Application time at60s
 retains that rank; at60s+1ns ready recomputes without a write. The writer lease
-is released before the driver-time advance; no lease-race behavior is tested.
+is released before each driver-time advance and reacquired afterward, with the
+public service rebound to the valid lease; no lease-race behavior is tested.
 
 These new assertions are AUTHORED_NOT_RUN until their exact changed-head remote
 terminal. They close only a Plug-side independent-clock acceptance gap. The
 producer lane confirmed that an accepted official capture companion/control
-with genuine independent Go/SQL clock and active-wisp fixtures has not been
-delivered; bb314 source precision facts and other public producer captures are
+with genuine independent Go/SQL clock and active transient-record fixtures has
+not been delivered; bb314 source precision facts and other public producer captures are
 separate scopes. Native correspondence and FullB01 remain held on that actual
 executable/input adoption. R418/702/2d, ChildEnv and all old recordings/pins stay
 unchanged; no native or FullS1 qualification follows from this test.

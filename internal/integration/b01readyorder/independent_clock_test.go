@@ -73,13 +73,18 @@ func TestB01IndependentDriverClockCannotAgePublicReadyRanks(t *testing.T) {
 			})
 			application.Advance(t, time.Nanosecond)
 
-			// No more writes are needed. Release the fixture's writer lease
-			// before advancing driver time, so this remains an ordering test.
-			if err := f.lease.Release(f.ctx); err != nil {
-				t.Fatal(err)
+			// Rebind the public service to a valid fixture lease after each
+			// driver-clock advance. The released lease cannot admit reads.
+			advanceDriver := func(delta time.Duration) {
+				t.Helper()
+				if err := f.lease.Release(f.ctx); err != nil {
+					t.Fatal(err)
+				}
+				f.lease = nil
+				storage.Advance(t, delta)
+				f.acquire(t)
 			}
-			f.lease = nil
-			storage.Advance(t, driver.IdempotencyWindow-tick)
+			advanceDriver(driver.IdempotencyWindow - tick)
 			for _, point := range []string{"before-driver-24h", "at-driver-24h", "after-driver-24h"} {
 				t.Run(point, func(t *testing.T) {
 					wantStorage := base.Add(7*time.Hour + driver.IdempotencyWindow)
@@ -103,7 +108,7 @@ func TestB01IndependentDriverClockCannotAgePublicReadyRanks(t *testing.T) {
 					f.unchanged(t, func() { f.pages(t, nil, agingRef.ID, recentRef.ID) })
 				})
 				if point != "after-driver-24h" {
-					storage.Advance(t, tick)
+					advanceDriver(tick)
 				}
 			}
 
