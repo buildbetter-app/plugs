@@ -136,3 +136,74 @@ frames: project ownership and custom historical ontology must not be guessed.
 `Archive.ImportMigration` exposes detached declarations, the compiled document
 and exact per-record targets for the non-native restore adapter. It grants no
 native runtime, history, public recorder or production qualification.
+
+
+Native source schema profiles
+-----------------------------
+
+`beads-native-tables/1` accepts the original 72/28 cursor pair without a
+`schema_profile`. An explicit profile binds `main_version`, `ignored_version`
+and the exact ordered `absences` list. The additional 66/26 profile names three
+absent families and four absent columns with the reason
+`absent-by-source-schema` and the introducing main migration ordinal. Both
+migration series must contain the exact hash-verified prefix. Every remaining
+family, column, source record and current row stays mandatory. Other cursor
+pairs refuse with `NativeSchemaError`; a missing family is never a schema
+absence unless the exact accepted profile declares it.
+
+Historical native images retain their own observed columns and cells. The
+profile does not create tables, source fields, portable frames or version rows,
+and never clears a retained history gap. Offline merge still requires matching
+cursor pairs and preserves each original native member byte for byte.
+
+The receiving report's `NativeSchemas` binds each original source identity to
+its profile, actual `PlugDefaults` and counted `TargetOmissions`. These columns
+have no modeled Plug field, so `SchemaDefaultCount` is zero; each admitted
+entity omission is counted separately. The existing target allocator
+initializer is reported separately with its exact committed value. Raw source
+NULL, empty and present cells stay distinct from absence facts and destination
+defaults. The accounting is persisted with the import receipt and recomputed
+from the retained archive on recovery. The original 72/28 report encoding is
+unchanged. Synthetic profile fixtures are not actual native capture proof.
+
+Per-commit native schema facts
+------------------------------
+
+Each original native source may annotate every `images[]` entry with optional
+`schema_profile` in `beads-commit-schema/1`, scoped to `immutable-commit-root`.
+Within one source every image must be annotated or every image must use the
+legacy unannotated wire. Original sources may retain different annotation
+modes in the existing source-scoped assembly.
+
+The exact producer ff8006bf registry is retained as
+`testdata/commit-schema-registry-ff8006bf.json`, SHA-256
+`cf71387bc62853dd48aa9e7e96dfe67cf1126cdd47c920758d1d4234b80cd253`.
+Each physically present main prefix supports 0 through 72, and each ignored
+prefix supports 0 through 28 independently. Every row and hash must match the
+pinned prefix. A cursor value of zero authenticates an empty migration table;
+JSON null means the cursor table is physically absent. The corrected producer
+c8ab0ce7 registry is also retained as `testdata/commit-schema-registry-c8ab0ce7.json`,
+SHA-256 `900320651fedf60f29686f928c4febba7513f0cb802c8f85399526d058b3aa44`.
+It preserves the comparison census and all pinned prefix hashes, and admits
+null main only for a complete physical root that is empty or contains only
+`dolt_ignore` with exactly the columns `ignored` and `pattern`, with no ignored
+cursor. This authenticates the supplied complete image census; immutable
+read provenance remains the producer's separate public evidence. No cursor
+inherits from the current head or from the other migration lane.
+
+The ordered `absences` list contains `family`, optional `column`, and
+`reason: "absent-by-source-schema"`. It is observed against the exact public
+comparison census, including removed shipped columns, without `introduced_in`
+guesses. An absent family has one family-only entry. Extra old tables and
+columns, reshaped rows, SQL NULL, decimal tokens and duplicate cells remain
+literal source evidence. These absences do not create history gaps or clear
+existing gaps. Contradictions and unsupported prefixes return a typed
+`NativeCommitSchemaError` with numeric cursor/ordinal coordinates.
+
+The current top-level profile remains the existing 66/26 or 72/28 contract.
+Native member bytes and per-image annotations survive detached access,
+source-scoped assembly and retained-archive recovery. The request, current
+profile file, idempotency encoding and receiving receipt formats are unchanged.
+The receiving verifier also checks zero rows for declared absent families at
+each original image's pinned revision. Public constructed controls of these
+rules do not qualify a genuine multi-version archive or a new executable.

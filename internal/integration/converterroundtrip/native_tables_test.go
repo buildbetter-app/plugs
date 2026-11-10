@@ -232,9 +232,10 @@ func assertNativeTablesReadback(t *testing.T, store driver.Store, profile driver
 			decode(t, row.Body, &ontology)
 		}
 	}
-	if evidence.Source != driver.NativeTableHistorySource || !evidence.Complete || ontology.Overlays["pl"].Statuses["shared"].Category != "active" || ontology.Overlays["qa"].Statuses["shared"].Category != "done" {
+	if evidence.Source != driver.NativeTableHistorySource || ontology.Overlays["pl"].Statuses["shared"].Category != "active" || ontology.Overlays["qa"].Statuses["shared"].Category != "done" {
 		t.Fatal("native source proof or per-project installed catalog lost")
 	}
+	assertNativeHistoryCoverageReadback(t, store, report.Archive, report, evidence)
 	for _, family := range report.NativeFamilies {
 		if family.History == "unversioned-in-beads-by-design" && family.Family == "events" && (family.SourceRows != 4 || family.ImportedRows != 4 || family.ExpiredRows != 0) {
 			t.Fatal("current audit rows were dropped or assigned to history", family)
@@ -262,6 +263,7 @@ func assertNativeTablesReadback(t *testing.T, store driver.Store, profile driver
 			if err != nil {
 				t.Fatal(err)
 			}
+			assertNativeMissingImageTables(t, pinned, identity, scope, image)
 			for table, value := range image.Tables {
 				want, err := nativeTableRecord(identity, table, "retained-native-commit", value)
 				if err != nil {
@@ -312,6 +314,43 @@ func assertNativeTablesReadback(t *testing.T, store driver.Store, profile driver
 	_, recovered, found, err := RecoverBoundSourceImport(ctx, store)
 	if err != nil || !found || !reflect.DeepEqual(recovered.NativeFamilies, report.NativeFamilies) || profile.HistoryTime != nativeFixtureTime.Format(time.RFC3339Nano) {
 		t.Fatal("bound native clock/accounting recovery differs", err)
+	}
+}
+
+func assertNativeMissingImageTables(t *testing.T, reader driver.Reader, identity dumpformat.SourceIdentity, scope dumpformat.NativeHistory, image dumpformat.NativeHistoryImage) {
+	t.Helper()
+	absent := []model.Ref{}
+	names := map[string]dumpformat.NativeTable{}
+	for _, other := range scope.Images {
+		for name, value := range other.Tables {
+			names[name] = value
+		}
+		if other.SchemaProfile != nil {
+			for _, absence := range other.SchemaProfile.Absences {
+				if absence.Column == "" {
+					// This value is used only to derive the checked source/table
+					// reference. No absent table body is written or returned.
+					names[absence.Family] = dumpformat.NativeTable{}
+				}
+			}
+		}
+	}
+	for name, value := range names {
+		if _, present := image.Tables[name]; present {
+			continue
+		}
+		row, err := nativeTableRecord(identity, name, "retained-native-commit", value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		absent = append(absent, row.Ref)
+	}
+	if len(absent) == 0 {
+		return
+	}
+	rows, err := reader.Get(context.Background(), absent)
+	if err != nil || len(rows) != 0 {
+		t.Fatal("native table absent at this commit leaked from another source image", image.Sequence, err)
 	}
 }
 
