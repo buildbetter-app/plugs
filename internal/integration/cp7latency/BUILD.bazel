@@ -33,6 +33,15 @@ go_test(
     deps = _DEPS,
 )
 
+# Independent public fallback controls; this does not certify compiled W3 paths.
+go_test(
+    name = "cp7_qualification_test",
+    srcs = _COMMON + ["qualification_test.go"],
+    data = ["workload.json"],
+    embedsrcs = ["workload.json"],
+    deps = _DEPS,
+)
+
 # Keep the semantic/correctness controls in ordinary //... at the smallest
 # corpus that still proves the ordinary 20k candidate cap. The full 100k
 # version remains an explicit manual lane below; it is the heavy dense work

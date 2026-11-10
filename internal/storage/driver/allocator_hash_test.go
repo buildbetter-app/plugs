@@ -1,11 +1,34 @@
 package driver
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestConfiguredHashProfilePreservesZeroProbabilityJSON(t *testing.T) {
+	a := NewHashAllocator("demo", 3, 8, 0.25)
+	a.MaxCollisionProb = 0
+	data, err := json.Marshal(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil || string(fields["max_collision_prob"]) != "0" {
+		t.Fatalf("explicit zero probability omitted: %s %v", data, err)
+	}
+	var decoded OfflineAllocator
+	if err := json.Unmarshal(data, &decoded); err != nil || decoded.MaxCollisionProb != 0 {
+		t.Fatalf("zero profile round trip: %+v %v", decoded, err)
+	}
+	// A nonempty store with a zero collision budget uses the maximum width.
+	id, err := decoded.MintHashID(HashInput{Title: "zero probability"}, 1, func(string) (bool, error) { return false, nil })
+	if err != nil || len(strings.TrimPrefix(id, "demo-")) != 8 {
+		t.Fatalf("zero policy lost after serialization: %s %v", id, err)
+	}
+}
 
 func TestHashCandidateMatchesPinnedJiraVector(t *testing.T) {
 	input := HashInput{
