@@ -141,6 +141,7 @@ func (s *Service) apply(ctx context.Context, by model.PrincipalRef, method strin
 	meta.Method = method
 	source := s.source.Load()
 	if source != nil {
+		ctx = pipeline.WithAllocatorReservations(ctx, source.allocatorIDs)
 		ctx = pipeline.WithSourceOperations(ctx, s.sourcePreparation(source, by, cs, meta), func(ref model.Ref) string {
 			if source.active[ref.ID] == meta.Project && ref.IsID() && ref.Branch.IsZero() {
 				return "workflow_item"
@@ -149,7 +150,7 @@ func (s *Service) apply(ctx context.Context, by model.PrincipalRef, method strin
 		})
 	}
 	deletes := ordinaryDeletes(cs)
-	jointDelete := method == "tx.apply" && source == nil && s.workflow != nil && len(deletes) != 0
+	jointDelete := method == "tx.apply" && s.workflowProvider() != nil && len(deletes) != 0 && !sourceDeleteBatchHasSourceEdits(source, cs, meta.Project)
 	if s.workflowProvider() != nil && (method == "bead.claim" || method == "bead.claimNext" || method == "bead.close" || method == "tx.apply") {
 		ctx = pipeline.WithWorkflowGuard(ctx, s.workflowWriteGuard)
 	}
@@ -161,14 +162,19 @@ func (s *Service) apply(ctx context.Context, by model.PrincipalRef, method strin
 			return port.WriteOutcome{}, failure("unsupported", "writer lacks atomic workflow delete capability")
 		}
 		var preview map[int]model.OpResult
-		v, err := writer.ApplyWithSourceOperations(ctx, by, cs, meta, s.ordinaryDeletePreparation(by, cs, meta, &preview), ordinaryDeleteKind)
+		v, err := writer.ApplyWithSourceOperations(ctx, by, cs, meta, s.ordinaryDeletePreparation(by, cs, meta, &preview), func(ref model.Ref) string {
+			if s.source.Load() != nil && workflowRef(ref) {
+				return "workflow_item"
+			}
+			return ordinaryDeleteKind(ref)
+		})
 		if err == nil {
 			if meta.DryRun {
 				for position, result := range preview {
 					v.Commit.Results[position] = result
 				}
 			} else {
-				v.Commit, err = s.workflow.ProjectOrdinaryDeleteResults(ctx, by, cs, meta, v.Commit)
+				v.Commit, err = s.workflowProvider().ProjectOrdinaryDeleteResults(ctx, by, cs, meta, v.Commit)
 			}
 		}
 		if err != nil {

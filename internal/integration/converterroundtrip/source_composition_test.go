@@ -3,6 +3,7 @@ package converterroundtrip_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"reflect"
@@ -156,6 +157,101 @@ func TestJointSourceCompositionImportInstallAndStartupRecovery(t *testing.T) {
 			}
 			// Memory retained this one process-local store; only persistent stores were
 			// closed and reopened. No restart persistence is claimed for memory.
+		})
+	}
+}
+
+func TestNativeCatalogFullHistoryInstalledRPCReadyAndRestart(t *testing.T) {
+	data := converterroundtrip.NativeHistoryFixtureForTest(t)
+	assertNativeCatalogFullHistoryInstalledRPCReadyAndRestart(t, data, false)
+}
+
+func TestNativeTablesFullHistoryInstalledRPCReadyAndRestart(t *testing.T) {
+	data := converterroundtrip.NativeTableHistoryFixtureForTest(t)
+	assertNativeCatalogFullHistoryInstalledRPCReadyAndRestart(t, data, true)
+}
+
+func assertNativeCatalogFullHistoryInstalledRPCReadyAndRestart(t *testing.T, data []byte, nativeTables bool) {
+	t.Helper()
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			dsn := ""
+			if engine == "sqlite" {
+				dsn = filepath.Join(t.TempDir(), "native-catalog.db")
+			}
+			if engine == "postgres" {
+				dsn = converterroundtrip.JointPostgresDSNForTest(t)
+			}
+			config := composition.Config{Driver: engine, DSN: dsn, Project: "pl", AuthMode: "anonymous", NativeImportOntology: true, RestorePresence: restore.PresenceVerifierFunc(func(ctx context.Context, method, digest string, p restore.Presence) error {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				if method != "admin.restore.begin" || len(digest) != 64 || p["proof"] != "public-native-catalog" {
+					return errors.New("unbound public restore presence")
+				}
+				return nil
+			})}
+			runtime, err := composition.Open(ctx, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if runtime != nil {
+					if err := runtime.Close(ctx); err != nil {
+						t.Error(err)
+					}
+				}
+			}()
+			plan := converterroundtrip.NativeHistoryPlanForTest(t, data, runtime.Store, runtime.Lease)
+			owner := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+			request := composition.RestoreImportRequest{IdempotencyKey: strings.Repeat("c", 32), HistoryMode: driver.RestoreHistoryModeFull, Presence: restore.Presence{"proof": "public-native-catalog"}, SourcePlanes: &plan}
+			report, err := runtime.RestoreImport(ctx, owner, bytes.NewReader(data), request)
+			if err != nil {
+				t.Fatal("actual composed full native import", err)
+			}
+			if nativeTables && len(report.NativeFamilies) != 66 {
+				t.Fatal("composed native import omitted scoped current-family accounting")
+			}
+			for pass := 0; pass < 2; pass++ {
+				for project, category := range map[string]string{"pl": "active", "qa": "done"} {
+					raw := converterroundtrip.JointHTTPForTest(t, runtime.HTTPHandler, "ontology.get", 0, map[string]any{"project": project})
+					var result struct {
+						Document struct {
+							Statuses map[string]struct {
+								Category string `json:"category"`
+							} `json:"statuses"`
+						} `json:"document"`
+					}
+					if err := json.Unmarshal(raw, &result); err != nil || result.Document.Statuses["shared"].Category != category {
+						t.Fatalf("installed %s ontology.get: %s: %v", project, raw, err)
+					}
+					ready, err := runtime.Service.Ready(ctx, owner, service.ReadyRequest{Project: project})
+					want := 0
+					if category == "active" {
+						want = 1
+					}
+					if err != nil || len(ready.Items) != want {
+						t.Fatalf("installed %s live category Ready: %d, want %d: %v", project, len(ready.Items), want, err)
+					}
+				}
+				request.SourcePlanes = nil
+				recovered, err := runtime.RestoreImport(ctx, owner, bytes.NewReader(data), request)
+				if err != nil || !reflect.DeepEqual(report.Receipt, recovered.Receipt) || !reflect.DeepEqual(report.NativeFamilies, recovered.NativeFamilies) {
+					t.Fatal("composed original full receipt recovery", err)
+				}
+				if pass == 0 && engine != "memory" {
+					if err := runtime.Close(ctx); err != nil {
+						t.Fatal(err)
+					}
+					runtime = nil
+					runtime, err = composition.Open(ctx, config)
+					if err != nil {
+						t.Fatal("native catalog full history restart", err)
+					}
+				}
+			}
+			// Memory repeats within its process lifetime; durable drivers reopen.
 		})
 	}
 }

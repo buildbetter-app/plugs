@@ -9,3 +9,6 @@ value = "wisp_dependencies"
 path = "internal/storage/driver/source_planes_test.go"
 name = "sourcePlaneFixtureActiveEventTable"
 value = "wisp_events"
+
+[zones]
+provenance = ["internal/core/dumpformat/status_categories.go"]

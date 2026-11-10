@@ -55,6 +55,19 @@ func sourcePlaneNames(values ...string) bool {
 	}
 	return true
 }
+
+// MatchesStorageClass distinguishes SQL NULL from a missing column or empty
+// source text. Neither origin bytes nor the canonical V1 layout are rewritten.
+func (d SourcePlaneDispositionV1) MatchesStorageClass(value any, present bool) bool {
+	if !present {
+		return false
+	}
+	if value == nil {
+		return d.StorageClass == ""
+	}
+	text, ok := value.(string)
+	return ok && text != "" && text == d.StorageClass
+}
 func (v CheckpointLifetime) Validate() error {
 	if v != CheckpointLifetimeProcess && v != CheckpointLifetimeRestart {
 		return sourcePlaneError("unsupported checkpoint lifetime")
@@ -150,7 +163,7 @@ func (p SourcePlanePlanV1) Validate() error {
 		ephemeral, noHistory bool
 	}]bool)
 	for _, d := range p.Dispositions {
-		if !sourcePlaneNames(d.Key, d.SourceType, d.StorageClass, d.SinkKind, d.Schema, d.Lifetime, d.RefusalPolicy) {
+		if !sourcePlaneNames(d.Key, d.SourceType, d.SinkKind, d.Schema, d.Lifetime, d.RefusalPolicy) || !utf8.ValidString(d.StorageClass) {
 			return sourcePlaneError("incomplete disposition")
 		}
 		key := struct {

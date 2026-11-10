@@ -375,7 +375,7 @@ func TestConditionFactsRefuseContradictions(t *testing.T) {
 	for name, mutate := range map[string]func(*ConditionUnmetDetails){
 		"failure satisfies":              func(d *ConditionUnmetDetails) { d.After.Outcome = "failure"; d.After.Satisfied = true },
 		"nonterminal false":              func(d *ConditionUnmetDetails) { d.After = ConditionDecision{Status: "todo", Category: "unstarted"} },
-		"unknown category":               func(d *ConditionUnmetDetails) { d.After.Category = "done" },
+		"unknown category":               func(d *ConditionUnmetDetails) { d.After.Category = "future-category" },
 		"unknown outcome":                func(d *ConditionUnmetDetails) { d.After.Outcome = "future" },
 		"false terminal":                 func(d *ConditionUnmetDetails) { d.After.Terminal = false },
 		"false condition assertion":      func(d *ConditionUnmetDetails) { d.Before.Satisfied = true },

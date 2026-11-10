@@ -327,12 +327,14 @@ func b21Profile(t *testing.T, f b21SourceFixture) driver.RestoreImportProfile {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: b21SourceActor, Authority: "restore-admin", AdmissionDigest: strings.Repeat("b", 64)}, SourceStoreID: driver.StoreID(f.plan.SourceStoreID), Method: "offline.restore.import", IdempotencyKey: key("b21-private-profile"), ArchiveDigest: f.plan.ArchiveSHA256, DerivedDigest: strings.Repeat("c", 64), SourcePlanes: &binding}
+	// This private fixture stages one snapshot with PrepareOfflineRestore.
+	// The omitted public policy means full history and must keep refusing it.
+	return driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: b21SourceActor, Authority: "restore-admin", AdmissionDigest: strings.Repeat("b", 64)}, SourceStoreID: driver.StoreID(f.plan.SourceStoreID), Method: "offline.restore.import", IdempotencyKey: key("b21-private-profile"), ArchiveDigest: f.plan.ArchiveSHA256, DerivedDigest: strings.Repeat("c", 64), HistoryMode: driver.RestoreHistoryModeSnapshot, SourcePlanes: &binding}
 }
 
-// This uses the real private OfflineRestoreTx to exercise the host participant
-// in the same transaction as new Meta. It deliberately does not call the
-// still-core-only public joint importer, or claim accepted archive evidence.
+// This uses the private snapshot OfflineRestoreTx to exercise the host
+// participant in the same transaction as new Meta, without archive admission.
+// Public joined full-history import has separate end-to-end controls.
 func b21PreparePrivateRestore(t *testing.T, v *b21PrivateTarget, f b21SourceFixture, logical []byte) (driver.WriteTx, driver.Meta, driver.PreparedSourcePlaneCheckpoint, driver.ChangesetHeader) {
 	t.Helper()
 	ctx := context.Background()
@@ -620,6 +622,21 @@ func TestB21HostSourceCheckpointPreparationRefusesWithoutPublication(t *testing.
 			}
 			if !reflect.DeepEqual(frozen, v.physical(t)) {
 				t.Fatal("data-only host preparation published")
+			}
+			for _, mode := range []driver.RestoreHistoryMode{"", driver.RestoreHistoryModeFull} {
+				name := "explicit-full-snapshot-meta"
+				if mode == "" {
+					name = "strict-default-full-snapshot-meta"
+				}
+				t.Run(name, func(t *testing.T) {
+					strict := profile
+					strict.HistoryMode = mode
+					_, err := host.PrepareRestoreCheckpoint(ctx, meta, strict, f.plan.Providers[0], logical)
+					var changed driver.ErrIncarnationChanged
+					if !errors.As(err, &changed) || !reflect.DeepEqual(frozen, v.physical(t)) {
+						t.Fatalf("full-history policy accepted snapshot metadata or changed the target: %v", err)
+					}
+				})
 			}
 			for name, change := range map[string]func(*driver.Meta, *driver.SourcePlaneProviderV1, *[]byte){
 				"old incarnation":       func(m *driver.Meta, _ *driver.SourcePlaneProviderV1, _ *[]byte) { m.Incarnation = current.Incarnation },
