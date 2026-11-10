@@ -2,7 +2,7 @@ load("@rules_go//go:def.bzl", "go_library")
 
 go_library(
     name = "physicalcapture",
-    srcs = ["capture.go"],
+    srcs = ["capture.go", "diagnostics.go"],
     importpath = "github.com/steveyegge/beads/internal/storage/physicalcapture",
     visibility = ["//:__subpackages__"],
     deps = ["@com_github_dolthub_driver_v2//:driver"],

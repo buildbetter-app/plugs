@@ -3,6 +3,7 @@ package main_test
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -28,6 +29,31 @@ func ownedDir(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+// Read this fixture's fixed custom SQL schema directly, without relaxing the
+// production Beads allowlist or skipping its current cells/multiplicity.
+func publicArchivedRows(t *testing.T, ctx context.Context, conn *sql.Conn) [][]any {
+	t.Helper()
+	rows, err := conn.QueryContext(ctx, "SELECT id,later_column,opaque FROM archived_rows ORDER BY id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var result [][]any
+	for rows.Next() {
+		var id int64
+		var later sql.NullString
+		var opaque []byte
+		if err := rows.Scan(&id, &later, &opaque); err != nil {
+			t.Fatal(err)
+		}
+		result = append(result, []any{id, later, append([]byte(nil), opaque...)})
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return result
 }
 
 func TestPublicNativeBackupRestoreAndPhysicalCapture(t *testing.T) {
@@ -94,6 +120,7 @@ func TestPublicNativeBackupRestoreAndPhysicalCapture(t *testing.T) {
 	if err != nil || len(events.Rows) != 2 {
 		t.Fatalf("public current audit rows: %+v %v", events, err)
 	}
+	currentArchivedRows := publicArchivedRows(t, ctx, conn)
 	url, err := versioncontrolops.DirToFileURL(backupDir)
 	if err != nil {
 		t.Fatal(err)
@@ -178,6 +205,14 @@ func TestPublicNativeBackupRestoreAndPhysicalCapture(t *testing.T) {
 	}
 	currentRows := map[string]int{}
 	for _, name := range names {
+		if name == "archived_rows" {
+			actual := publicArchivedRows(t, ctx, readbackConn)
+			if !reflect.DeepEqual(currentArchivedRows, actual) {
+				t.Fatal("public current archived schema/cells/multiplicity changed")
+			}
+			currentRows[name] = len(actual)
+			continue
+		}
 		table, err := readbackPort.ReadTable(ctx, name)
 		if err != nil {
 			t.Fatal(err)

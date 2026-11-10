@@ -41,6 +41,23 @@ inputs and outputs local, report only counts/categories, and clean up disposable
 copies under the owning capture procedure. This executable changes no stock
 `bd` command or Beads behavior.
 
+The source-bound successor reports failures as `beads-capture-diagnostic/1`
+JSON. It emits only a fixed stage (`open`, `schema-probe`, `census`,
+`history-walk`, `cell-read`), Go error type names, numeric SQL/Dolt codes,
+numeric found/expected schema versions and a migration-row count class. Table
+and column names pass through the explicit public Beads schema registry.
+Unknown identifiers, error messages, cell values, paths and commit references
+are omitted. Argument parser errors use this same report.
+
+Before inventory or history, the reader observes the restored database's actual
+`schema_migrations` cursor. Add `--schema-only` to the invocation above to emit
+that observation on stdout and stop without reading inventory/history or
+publishing files. A missing cursor is a typed error, never inferred version zero.
+The current projection requires main schema 72 and ignored schema 28; an older
+actual cursor is observed and refused without migrating it. The physical image
+operation itself reads older immutable schemas independently of that projection.
+Any future migration fallback must be explicitly labeled because it adds commits.
+
 The supported public route controls are selected by the canonical whole gate:
 
 ```text

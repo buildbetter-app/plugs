@@ -9,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -23,20 +24,36 @@ import (
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		writeSafeReport(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
 func run() (resultErr error) {
-	dataDir := flag.String("data-dir", "", "owned disposable Dolt data directory")
-	database := flag.String("database", "", "exact database name")
-	beadsDir := flag.String("beads-dir", "", "owned copied .beads directory")
-	output := flag.String("output-dir", "", "fresh owner-only output directory")
-	disposable := flag.Bool("disposable", false, "declare this source quiesced and disposable")
-	timeout := flag.Duration("timeout", 20*time.Minute, "capture deadline")
-	flag.Parse()
-	if flag.NArg() != 0 || !*disposable || !regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]{0,127}$`).MatchString(*database) {
+	stage := stageOpen
+	observation := schemaObservation{ExpectedVersion: plugdump.CaptureSchemaVersion(), RowCountClass: "unmeasured"}
+	defer func() {
+		if resultErr == nil {
+			return
+		}
+		var staged *captureFailure
+		if !errors.As(resultErr, &staged) {
+			resultErr = &captureFailure{stage: stage, schema: observation, cause: resultErr}
+		}
+	}()
+	flags := flag.NewFlagSet("native-physical-capture", flag.ContinueOnError)
+	flags.SetOutput(io.Discard) // Flag errors can contain private argument values.
+	dataDir := flags.String("data-dir", "", "owned disposable Dolt data directory")
+	database := flags.String("database", "", "exact database name")
+	beadsDir := flags.String("beads-dir", "", "owned copied .beads directory")
+	output := flags.String("output-dir", "", "fresh owner-only output directory")
+	disposable := flags.Bool("disposable", false, "declare this source quiesced and disposable")
+	timeout := flags.Duration("timeout", 20*time.Minute, "capture deadline")
+	schemaOnly := flags.Bool("schema-only", false, "measure schema cursor without inventory, history or output files")
+	if err := flags.Parse(os.Args[1:]); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || !*disposable || !regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]{0,127}$`).MatchString(*database) {
 		return fmt.Errorf("explicit disposable source and database required")
 	}
 	for _, path := range []string{*dataDir, *beadsDir, *output} {
@@ -79,16 +96,39 @@ func run() (resultErr error) {
 		return err
 	}
 	defer conn.Close()
+	stage = stageSchema
+	observation, err = probeSchema(ctx, conn)
+	if err != nil {
+		return err
+	}
+	// Record the actual restored version before entering the strict v72
+	// inventory/history reader. This never runs a migration or alters a cursor.
+	report := safeCaptureReport{Format: "beads-capture-diagnostic/1", Stage: stageSchema, Schema: observation}
+	if *schemaOnly {
+		return json.NewEncoder(os.Stdout).Encode(report)
+	}
+	if err := json.NewEncoder(os.Stderr).Encode(report); err != nil {
+		return err
+	}
+	if *observation.FoundVersion != observation.ExpectedVersion {
+		return &unsupportedCaptureSchema{}
+	}
+	stage = stageOpen
 	tx, err := conn.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelSerializable})
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 	current := plugdump.SQLSource{DB: tx}
+	if err := preflightCurrent(ctx, current, observation); err != nil {
+		return err
+	}
+	stage = stageHistory
 	originalLog, err := current.ReadSourceCommits(ctx)
 	if err != nil {
 		return err
 	}
+	stage = stageCensus
 	capture, err := nativeCapture(*dataDir, *database, *beadsDir, *output)
 	if err != nil {
 		return err
@@ -108,14 +148,19 @@ func run() (resultErr error) {
 			return err
 		}
 	}
-	archive, err := plugdump.Build(ctx, plugdump.PhysicalCommitSource{SQLSource: current, PhysicalDB: db}, inventory)
+	stage = stageHistory
+	archive, err := plugdump.Build(ctx, observedNativeSource{PhysicalCommitSource: plugdump.PhysicalCommitSource{SQLSource: current, PhysicalDB: db}, schema: observation}, inventory)
 	if err != nil {
 		return fmt.Errorf("native build: %w", err)
 	}
 	finalLog, err := current.ReadSourceCommits(ctx)
-	if err != nil || !reflect.DeepEqual(originalLog, finalLog) {
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(originalLog, finalLog) {
 		return fmt.Errorf("original commit graph/parents/metadata changed")
 	}
+	stage = stageCensus
 	manifest, err := plugdump.Validate(bytes.NewReader(archive))
 	if err != nil {
 		return fmt.Errorf("archive validation: %w", err)
@@ -125,6 +170,7 @@ func run() (resultErr error) {
 		return err
 	}
 	// Release every source resource before publishing the complete capture.
+	stage = stageOpen
 	if err := tx.Rollback(); err != nil {
 		return err
 	}

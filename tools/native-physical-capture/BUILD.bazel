@@ -1,14 +1,15 @@
-load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 
 go_library(
     name = "native-physical-capture_lib",
-    srcs = ["main.go"],
+    srcs = ["diagnostics.go", "main.go"],
     importpath = "github.com/steveyegge/beads/tools/native-physical-capture",
     visibility = ["//visibility:private"],
     deps = [
         "//internal/formula",
         "//internal/plugdump",
         "//internal/storage/physicalcapture",
+        "@com_github_go_sql_driver_mysql//:mysql",
     ],
 )
 
@@ -17,6 +18,24 @@ go_binary(
     embed = [":native-physical-capture_lib"],
     tags = ["manual"],
     visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "safe_diagnostics_test",
+    size = "large",
+    srcs = ["diagnostics_test.go", "schema_probe_test.go"],
+    data = [":native-physical-capture"],
+    embed = [":native-physical-capture_lib"],
+    env = {"BEADS_PHYSICAL_CAPTURE_BINARY": "$(rootpath :native-physical-capture)"},
+    deps = [
+        "//internal/plugdump",
+        "//internal/storage/physicalcapture",
+        "//internal/storage/schema",
+        "//internal/storage/versioncontrolops",
+        "//internal/testutil/bazeltest",
+        "@com_github_dolthub_driver_v2//:driver",
+        "@com_github_go_sql_driver_mysql//:mysql",
+    ],
 )
 
 # --- begin repo_files (managed by tools/bazel/go_srcs.py; run `make bazel-sync`) ---
