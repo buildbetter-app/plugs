@@ -499,7 +499,7 @@ func TestB20SavedSQLRecordingsConserveAuthoritativeCells(t *testing.T) {
 
 func TestB20SavedSQLRecordingsRefuseCorruption(t *testing.T) {
 	for _, aggregate := range []bool{false, true} {
-		for _, mutation := range []string{"rounded_rows", "number_string", "zero_null", "missing_null", "extra_cell", "missing_family", "missing_checkpoint", "hash_forgery", "raw_corruption", "command_hash", "command_exit", "duplicate_field", "malformed", "missing_twin"} {
+		for _, mutation := range []string{"rounded_rows", "number_string", "zero_null", "missing_null", "extra_cell", "missing_family", "extra_family", "missing_checkpoint", "missing_raw_family", "missing_raw_checkpoint", "extra_sql_checkpoint", "hash_forgery", "raw_corruption", "command_hash", "command_exit", "duplicate_field", "malformed", "missing_twin"} {
 			t.Run(fmt.Sprintf("aggregate_%t/%s", aggregate, mutation), func(t *testing.T) {
 				path, roots, document := b20SQLConservationControl(t, aggregate)
 				twin := document
@@ -523,8 +523,32 @@ func TestB20SavedSQLRecordingsRefuseCorruption(t *testing.T) {
 					cells["extra"] = nil
 				case "missing_family":
 					delete(rows, "issues")
+				case "extra_family":
+					rows["unexpected"] = nil
 				case "missing_checkpoint":
 					delete(images, "final")
+				case "missing_raw_family":
+					if err := os.Remove(filepath.Join(roots["a"], "final-issues.stdout")); err != nil {
+						t.Fatal(err)
+					}
+				case "missing_raw_checkpoint":
+					for _, family := range []string{"events", "issues", "journal", "sequence"} {
+						if err := os.Remove(filepath.Join(roots["a"], "final-"+family+".stdout")); err != nil {
+							t.Fatal(err)
+						}
+					}
+				case "extra_sql_checkpoint":
+					for _, family := range []string{"events", "issues", "journal", "sequence"} {
+						for _, suffix := range []string{".stdout", ".request.json"} {
+							data, err := os.ReadFile(filepath.Join(roots["a"], "final-"+family+suffix))
+							if err != nil {
+								t.Fatal(err)
+							}
+							if err := os.WriteFile(filepath.Join(roots["a"], "additional-"+family+suffix), data, 0600); err != nil {
+								t.Fatal(err)
+							}
+						}
+					}
 				case "hash_forgery":
 					image["raw_sha256"].(map[string]any)["issues"] = strings.Repeat("0", 64)
 				case "raw_corruption":

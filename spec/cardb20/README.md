@@ -133,7 +133,7 @@ all original RED/PASS packets remain historical evidence.
 The unchanged canonical whole command is:
 
 ```text
-test //... --cache_test_results=no --flaky_test_attempts=1 --test_env=GO_TEST_WRAP_TESTV=1 --test_output=all --test_timeout=900,900,900,9000 --jobs=2 --local_resources=memory=8192
+test //... --cache_test_results=no --flaky_test_attempts=1 --test_env=GO_TEST_WRAP_TESTV=1 --test_output=all --test_timeout=900,900,900,9000 --jobs=2 --local_resources=memory=8192 --lockfile_mode=error
 ```
 
 Runtime recordings and comparisons are retained in original test output
