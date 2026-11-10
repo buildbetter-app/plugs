@@ -73,7 +73,7 @@ func AllMigrationsSQL() string {
 	b.WriteString(mainSource.bootstrapSQL())
 	b.WriteString(";\n")
 	for _, f := range mainSource.list() {
-		data, err := mainSource.files.ReadFile(mainSource.dir + "/" + f.name)
+		data, err := fs.ReadFile(mainSource.files, mainSource.dir+"/"+f.name)
 		if err != nil {
 			panic(err)
 		}
@@ -115,7 +115,7 @@ func seed(ctx context.Context, conn *sql.Conn, source migrationSource, limit int
 		if file.version <= current || limit > 0 && file.version > limit {
 			continue
 		}
-		data, err := source.files.ReadFile(source.dir + "/" + file.name)
+		data, err := fs.ReadFile(source.files, source.dir+"/"+file.name)
 		if err != nil {
 			return count, err
 		}
