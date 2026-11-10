@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import vm from 'node:vm';
 import { observeDependencyRemoval } from './activity-observer.mjs';
+import { verifyWatchLifecycle } from './watch-lifecycle.mjs';
 import { pathToFileURL } from 'node:url';
 
 const [bindingPath, fixtureRoot, outputs] = process.argv.slice(2);
@@ -46,10 +47,21 @@ async function stop(child) {
   const done=new Promise(resolve=>child.once('exit',resolve)); child.kill('SIGTERM');
   await Promise.race([done,pause(5000).then(()=>child.kill('SIGKILL'))]); children.delete(child);
 }
-let fault='none', rpcCount=0;
+let fault='none', rpcCount=0, helloGate;
+function armHelloGate() {
+  let release;
+  const gate = { wait: new Promise(resolve => { release = resolve; }), release: () => release() };
+  helloGate = gate;
+  return gate;
+}
 const rpcProxy=await listen(async(req,res)=>{
   rpcCount++;
   const body=await payload(req); const request=JSON.parse(body);receipts.calls.push(request);
+  if (helloGate && request.method === 'server.hello') {
+    const gate = helloGate; helloGate = undefined;
+    gate.request = structuredClone(request);
+    await gate.wait;
+  }
   if(fault==='outage'){res.writeHead(503);res.end('synthetic outage');return;}
   if(fault==='malformed'){res.writeHead(200,{'content-type':'application/json'});res.end('{broken');return;}
   const response=await fetch(actualEndpoint+'/rpc/v1',{method:'POST',headers:{'Content-Type':'application/json','Plug-RPC':'1'},body});
@@ -135,6 +147,11 @@ try {
   const startNext=()=>{ const child=launch('node',['--require',networkGuard,'node_modules/next/dist/bin/next','start','--hostname','127.0.0.1','--port',String(nextPort)],ui,fixtureEnv);child.stdout.on('data',b=>nextLog+=b);child.stderr.on('data',b=>nextLog+=b);return child;};
   next=startNext();await until(async()=> (await fetch(nextUrl+'/api/config')).ok,'Next startup',45000);
   const adapter=await import(pathToFileURL(join(ui,'lib/plug-adapter.mjs')));
+  const fixtureSource = JSON.parse(await readFile(join(fixtureRoot,'source-binding.json'),'utf8'));
+  const parentSource = await readFile(join(fixtureRoot,'watch-parent.mjs'));
+  assert.equal(createHash('sha256').update(parentSource).digest('hex'), fixtureSource.watch_regression.parent_adapter_sha256);
+  const parentAdapter = await import(pathToFileURL(join(fixtureRoot,'watch-parent.mjs')));
+  await verifyWatchLifecycle({ adapter, parentAdapter, binding, armHelloGate, setFault: value => { fault = value; }, receipts, pause, until, save, check });
   const client=new adapter.PlugClient(await adapter.loadBinding(bindingPath));const store=new adapter.ProjectionStore(client);
   const first=await store.refresh();assert.equal(first.stats.total,6);assert.equal(first.graphData.nodes.filter(n=>n.id==='SHARED').length,2);
   for(const node of first.graphData.nodes.filter(n=>n.id==='SHARED')){assert.equal(node.updatedAt,undefined);assert.ok(node.createdAt);}

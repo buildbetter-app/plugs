@@ -1,8 +1,8 @@
 {
   "schema": "heartbeads-fixture-source/1",
-  "candidate": "e85668a875fc6fd6b374eaea9460ec72a40dab23",
-  "tree": "ecc82ddcad4a6f4198159c231f8b8ebe98c3bc6b",
-  "parent": "4f6673ed154f70bc7e8ce442d0c89095a9f035e1",
+  "candidate": "1823eb8762fb842e8da7b0622a06d08858c93f0a",
+  "tree": "a0f839e29c039a19324643684b399a5f78480dc2",
+  "parent": "e85668a875fc6fd6b374eaea9460ec72a40dab23",
   "source_manifest": {
     "schema": "heartbeads-prepared-patch/1",
     "installed_preimage_root": "/home/dev/beads/heartbeads-app/node_modules/heartbeads",
@@ -174,8 +174,8 @@
       {
         "path": "lib/plug-adapter.mjs",
         "preimage_sha256": "ABSENT",
-        "postimage_sha256": "309a55e90cadad798917931540b6ffa898f1de67e171a5bd3e11d0aca9c6aba9",
-        "bytes": 29743
+        "postimage_sha256": "7bee4abdf839421ea2d43dfcfe8ece8e4ab227377dfa925d9588663d25d081bf",
+        "bytes": 30003
       },
       {
         "path": "lib/timeline.ts",
@@ -214,10 +214,10 @@
         "bytes": 4147
       }
     ],
-    "patch_sha256": "5efde44f5710efc80b52f8ccd4638bb13ee3691635d7737132424041f7a27593",
-    "adapter_sha256": "309a55e90cadad798917931540b6ffa898f1de67e171a5bd3e11d0aca9c6aba9"
+    "patch_sha256": "8e3edc43a20fe1510107d98b7f80df4cdc08f953818df33be8b2d66ca2a89b4d",
+    "adapter_sha256": "7bee4abdf839421ea2d43dfcfe8ece8e4ab227377dfa925d9588663d25d081bf"
   },
-  "tar_sha256": "f922f5e7292bb85a64bcc2a513c6a7a2a91e4f717549860f87431998a57b28ff",
+  "tar_sha256": "81c30981b245f5516d94486ba8a5d7bc6f008f749b00ea5e1ae3dff548967690",
   "ontology_source_sha256": "186163d6d618e2196b4e1fea9883b8cb2b3863ac171343d334ba18e076e05f6e",
   "auxiliary_source_files": [
     "app/api/auth/route.ts",
@@ -266,5 +266,14 @@
     "scripts/generate-jwk.js",
     "tailwind.config.ts",
     "tsconfig.json"
-  ]
+  ],
+  "watch_regression": {
+    "schema": "heartbeads-watch-lifecycle-regression/1",
+    "parent_candidate": "e85668a875fc6fd6b374eaea9460ec72a40dab23",
+    "parent_adapter_file": "watch-parent.mjs",
+    "parent_adapter_sha256": "309a55e90cadad798917931540b6ffa898f1de67e171a5bd3e11d0aca9c6aba9",
+    "driver_file": "watch-lifecycle.mjs",
+    "driver_sha256": "123098d32fe326e66a38fc54bc327cf232c7f9ae6df084e960f61b4a8da1f5af",
+    "driver_boundary": "holds actual HTTP handshakes; exact parent/child adapters; no refresh/watch/timer/callback replacement"
+  }
 }
