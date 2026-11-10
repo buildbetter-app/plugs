@@ -1208,11 +1208,11 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 			// Single-source native archives retain the original store/project
 			// in their validated history scope, without rewriting each record
 			// into the merged-source identity encoding.
-			metadata, err := archive.NativeSourceHistoryMetadata()
+			nativeMetadata, err := archive.NativeSourceHistoryMetadata()
 			if err != nil {
 				return restorePlan{}, err
 			}
-			for _, scope := range metadata {
+			for _, scope := range nativeMetadata {
 				for _, prefix := range scope.Projects {
 					if prefix != project.Prefix {
 						continue
