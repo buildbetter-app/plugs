@@ -12,7 +12,7 @@ import (
 )
 
 func TestExecContextPreservesConcreteMySQLErrorAfterStatementClose(t *testing.T) {
-	connector, err := NewConnector(&Config{Directory: t.TempDir(), CommitName: "Public fixture", CommitEmail: "fixture@example.test"})
+	connector, err := NewConnector(Config{Directory: t.TempDir(), CommitName: "Public fixture", CommitEmail: "fixture@example.test"})
 	if err != nil {
 		t.Fatal(err)
 	}

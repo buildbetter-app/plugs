@@ -189,13 +189,23 @@ linters:
           # "**/*.go" even when negated, which would match every file
           # (including these two) and make the rule apply nowhere.
           files:
-            - "/internal/metrics/flusher.go"
             - "/internal/metrics/metrics.go"
           allow:
             - github.com/dolthub/eventkit$
           deny:
             - pkg: github.com/dolthub
               desc: "Dolt engine access is restricted to the storage adapter packages (internal/storage, internal/doltserver) - see engdocs/PROJECT_CHARTER.md 'Storage Boundary'"
+        # The existing GA4 transport import belongs only to the flusher.
+        dolt-storage-boundary-metrics-flusher-exception:
+          list-mode: lax
+          files:
+            - "/internal/metrics/flusher.go"
+          allow:
+            - github.com/dolthub/eventkit$
+            - github.com/dolthub/eventkit/transport/ga4$
+          deny:
+            - pkg: github.com/dolthub
+              desc: "metrics retain only their pinned file/import tuples"
         # internal/workapi is the work-query contract shared by every bd
         # frontend, so it must be callable from a cobra command and from an
         # HTTP handler alike - which means it can depend on neither. Same

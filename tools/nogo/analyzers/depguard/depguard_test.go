@@ -131,6 +131,46 @@ func TestPinnedLegacyAdapterImportsRemainAllowed(t *testing.T) {
 	}
 }
 
+func TestPinnedMetricsImportsRemainAllowed(t *testing.T) {
+	for file, imports := range map[string][]string{
+		"metrics.go": {"github.com/dolthub/eventkit"},
+		"flusher.go": {"github.com/dolthub/eventkit", "github.com/dolthub/eventkit/transport/ga4"},
+	} {
+		t.Run(file, func(t *testing.T) {
+			for _, imp := range imports {
+				got := analyzertest.RunInRepo(t, depguard.Analyzer, "internal/metrics", map[string]string{
+					file: "package metrics\n\nimport _ \"" + imp + "\"\n",
+				})
+				analyzertest.Equal(t, got, nil)
+			}
+		})
+	}
+}
+
+func TestMetricsExceptionsRefuseUnpinnedImportsAndFiles(t *testing.T) {
+	for _, tc := range []struct{ dir, file, imp string }{
+		{"internal/metrics", "metrics.go", "github.com/dolthub/eventkit/transport/ga4"},
+		{"internal/metrics", "flusher.go", "github.com/dolthub/eventkit/transport/ga4/nested"},
+		{"internal/metrics", "flusher.go", "github.com/dolthub/eventkit/transport/ga4lookalike"},
+		{"internal/metrics", "flusher.go", "github.com/dolthub/dolt/go/libraries/doltcore/doltdb"},
+		{"internal/metrics", "metrics.go", "github.com/dolthub/driver/v2"},
+		{"internal/metrics", "new.go", "github.com/dolthub/eventkit"},
+		{"internal/metrics", "flusher_extra.go", "github.com/dolthub/eventkit/transport/ga4"},
+		{"internal/metrics/nested", "flusher.go", "github.com/dolthub/eventkit/transport/ga4"},
+		{"prefix/internal/metrics", "flusher.go", "github.com/dolthub/eventkit/transport/ga4"},
+		{"internal/plugdump", "flusher.go", "github.com/dolthub/eventkit/transport/ga4"},
+	} {
+		t.Run(tc.dir+"/"+tc.file+"/"+tc.imp, func(t *testing.T) {
+			got := analyzertest.RunInRepo(t, depguard.Analyzer, tc.dir, map[string]string{
+				tc.file: "package metrics\n\nimport _ \"" + tc.imp + "\"\n",
+			})
+			if len(got) != 1 || !strings.Contains(got[0].Message, "'dolt-storage-boundary") {
+				t.Fatalf("diagnostics = %+v, want an unpinned metrics import denial", got)
+			}
+		})
+	}
+}
+
 func TestLegacyAdaptersRefuseNewImports(t *testing.T) {
 	for _, dir := range []string{
 		"internal/doltserver",
