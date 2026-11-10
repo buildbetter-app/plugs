@@ -237,6 +237,7 @@ internal/core/model/ref.go
 internal/core/model/response.go
 internal/core/model/runtime.go
 internal/core/model/schema_test.go
+internal/core/model/target_status_test.go
 internal/core/model/testdata/openrpc-components.json
 internal/core/model/unsupported_error_test.go
 internal/core/ontology/BUILD.bazel
@@ -330,6 +331,7 @@ internal/core/pipeline/snapshot_hierarchy.go
 internal/core/pipeline/source_indexes.go
 internal/core/pipeline/source_indexes_test.go
 internal/core/pipeline/source_operations.go
+internal/core/pipeline/target_status_test.go
 internal/core/pipeline/telemetry.go
 internal/core/pipeline/telemetry_test.go
 internal/core/pipeline/workflow_close_ref.go
@@ -614,6 +616,11 @@ internal/integration/epicprogress/fixture_test.go
 internal/integration/epicprogress/restore_test.go
 internal/integration/eventsqlpaging/BUILD.bazel
 internal/integration/eventsqlpaging/integration_test.go
+internal/integration/g1exactstatus/BUILD.bazel
+internal/integration/g1exactstatus/engine_test.go
+internal/integration/g1exactstatus/fixture_test.go
+internal/integration/g1exactstatus/installed_user_test.go
+internal/integration/g1exactstatus/lifecycle_test.go
 internal/integration/gatecontract/BUILD.bazel
 internal/integration/gatecontract/README.md
 internal/integration/gatecontract/authorization_test.go
@@ -823,6 +830,7 @@ internal/server/authn/session_test.go
 internal/server/authzrpc/BUILD.bazel
 internal/server/authzrpc/README.md
 internal/server/authzrpc/atomic_close_test.go
+internal/server/authzrpc/authority.go
 internal/server/authzrpc/authzrpc.go
 internal/server/authzrpc/authzrpc_test.go
 internal/server/authzrpc/b04_error_bounds_test.go
@@ -841,6 +849,7 @@ internal/server/authzrpc/hierarchy_lifecycle_times_test.go
 internal/server/authzrpc/hierarchy_read.go
 internal/server/authzrpc/hierarchy_test.go
 internal/server/authzrpc/history_authority_test.go
+internal/server/authzrpc/lifecycle.go
 internal/server/authzrpc/predicate_count_test.go
 internal/server/authzrpc/prepared_test.go
 internal/server/authzrpc/ready_compiled.go

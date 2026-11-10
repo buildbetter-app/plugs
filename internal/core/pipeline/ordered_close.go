@@ -17,13 +17,25 @@ type closeSlots interface {
 	CloseSlots(project, beadType string) (initial, target string, ok bool)
 }
 
+// Explicit create targets are selected before later in-batch lifecycle ops.
+// The ontology phase validates both the initial prefix and the final image.
+type exactCloseStatuses interface {
+	CloseStatuses(project, beadType string, requested *string) (initial, target string, ok bool)
+}
+
+type createStatuses interface {
+	CreateStatus(project, beadType string, requested *string) (string, bool)
+}
+
 type orderedCloseOntology interface {
 	ValidateOrdered(context.Context, []port.Change, port.ProposedChange, port.SnapshotReader) error
 }
 
 func (w *Writer) prepareClose(ctx context.Context, p *prepared, current *pending, op *model.CloseOp, aliases map[string]model.Ref) (json.RawMessage, error) {
 	initial, target, ok := "", "", false
-	if slots, supported := w.cfg.ontology.(closeSlots); supported {
+	if slots, supported := w.cfg.ontology.(exactCloseStatuses); supported {
+		initial, target, ok = slots.CloseStatuses(current.doc.Project, current.doc.Type, op.TargetStatus)
+	} else if slots, supported := w.cfg.ontology.(closeSlots); supported && op.TargetStatus == nil {
 		initial, target, ok = slots.CloseSlots(current.doc.Project, current.doc.Type)
 	}
 	if !ok && p.refusal == nil {

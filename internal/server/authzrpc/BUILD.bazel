@@ -2,7 +2,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "authzrpc",
-    srcs = ["authzrpc.go", "checker.go", "claim.go", "cycles.go", "hierarchy.go", "hierarchy_read.go", "ready_compiled.go", "service.go", "source_workflow.go", "slice.go", "workflow_claimnext.go", "workflow_lifecycle.go", "workflow_reads.go"],
+    srcs = ["authority.go", "authzrpc.go", "checker.go", "claim.go", "cycles.go", "hierarchy.go", "hierarchy_read.go", "lifecycle.go", "ready_compiled.go", "service.go", "source_workflow.go", "slice.go", "workflow_claimnext.go", "workflow_lifecycle.go", "workflow_reads.go"],
     importpath = "github.com/buildbetter-app/plugs/internal/server/authzrpc",
     visibility = ["//:__subpackages__"],
     deps = [
