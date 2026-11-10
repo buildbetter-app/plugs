@@ -29,25 +29,44 @@ func ordinaryDeleteKind(ref model.Ref) string {
 
 func (s *Service) ordinaryDeletePreparation(by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta, preview *map[int]model.OpResult) pipeline.SourcePreparation {
 	return func(ctx context.Context, reader driver.Reader, prepare func(pipeline.SourceOperationHandler) error) (pipeline.SourcePublication, error) {
-		planned, err := s.workflow.PrepareOrdinaryDelete(ctx, by, cs, meta, func(handle func(model.Op) (*workflowplugin.OrdinaryDeleteImage, error)) error {
-			return prepare(func(_ context.Context, op model.Op, _ pipeline.SourceCoreImage) (model.Op, *pipeline.SourceOperation, error) {
-				image, err := handle(op)
+		provider := s.workflowProvider()
+		sourceAware := s.source.Load() != nil
+		run := func(handle workflowplugin.SourceOrdinaryDeleteHandler) error {
+			return prepare(func(_ context.Context, original model.Op, _ pipeline.SourceCoreImage) (model.Op, *pipeline.SourceOperation, error) {
+				op, image, err := handle(original)
 				if err != nil || image == nil {
 					return op, nil, err
 				}
-				// The core receipt keeps identity only for ephemeral endpoints.
-				// Full results come from the atomically joined plugin receipts.
+				kind := "workflow:item"
+				if sourceAware {
+					kind = "workflow_item"
+				}
 				return op, &pipeline.SourceOperation{
-					Change: port.Change{Resource: model.ResourceRef{Kind: "workflow:item", Ref: image.Ref}, Op: op, Before: image.Before, After: image.After, SetBy: map[string]string{"links": "request"}},
+					Change: port.Change{Resource: model.ResourceRef{Kind: kind, Ref: image.Ref}, Op: op, Before: image.Before, After: image.After, SetBy: map[string]string{"links": "request"}},
 					Result: model.OpResult{Ref: image.Ref, Revision: image.Generation, SetBy: map[string]string{"links": "request"}},
 				}, nil
 			})
-		})
+		}
+		var planned workflowplugin.OrdinaryDeletePreparation
+		var err error
+		if sourceAware {
+			planned, err = provider.PrepareSourceOrdinaryDelete(ctx, by, cs, meta, run)
+		} else {
+			planned, err = provider.PrepareOrdinaryDelete(ctx, by, cs, meta, func(handle func(model.Op) (*workflowplugin.OrdinaryDeleteImage, error)) error {
+				return run(func(op model.Op) (model.Op, *workflowplugin.OrdinaryDeleteImage, error) {
+					image, err := handle(op)
+					return op, image, err
+				})
+			})
+		}
 		if err != nil {
 			return pipeline.SourcePublication{}, err
 		}
 		*preview = planned.Results
 		publication := pipeline.SourcePublication{Head: driver.CoreSnapshotExpectation{StoreID: planned.Namespace.StoreID, Incarnation: reader.Snapshot().Incarnation, Head: *reader.Snapshot().At}, Namespace: planned.Namespace}
+		if planned.Head != nil && *planned.Head != publication.Head {
+			return pipeline.SourcePublication{}, driver.ErrConflict
+		}
 		publication.FinalResults = make(map[int]model.OpResult, len(planned.Results))
 		for position, result := range planned.Results {
 			result.Record = nil

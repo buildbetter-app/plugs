@@ -472,7 +472,7 @@ def run(capture):
         raise ValueError("toolchain and selection phase must precede run")
     bazel = bazel_command()
     selected = capture.state["selected_targets"]
-    args = [*bazel, "test", *selected, "--lockfile_mode=error", "--nocache_test_results",
+    args = [*bazel, "test", *selected, "--lockfile_mode=error", "--nocache_test_results", "--flaky_test_attempts=1",
             # rules_go needs verbose wrapper events to emit passing/skipped
             # test cases in XML rather than an empty <testsuites> stub.
             "--test_env=GO_TEST_WRAP_TESTV=1",

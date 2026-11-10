@@ -61,3 +61,97 @@ func TestNoPluginAllowsWithoutFacts(t *testing.T) {
 		t.Fatal("scoped token must refuse without authz")
 	}
 }
+
+type sourceReferenceSlice struct {
+	chainSlice
+	declared string
+	deps     []Dependency
+}
+
+func (s *sourceReferenceSlice) SourceBeadReference(target model.Ref) bool {
+	return target.ID == s.declared
+}
+func (s *sourceReferenceSlice) Record(_ context.Context, dep Dependency) error {
+	s.deps = append(s.deps, dep)
+	return nil
+}
+func (s *sourceReferenceSlice) ProjectForBead(_ context.Context, target model.Ref) (ProjectBinding, error) {
+	return ProjectBinding{Name: "demo", Ref: ref("project"), Found: target.ID == s.declared}, nil
+}
+func (s *sourceReferenceSlice) ProjectActive(_ context.Context, project model.Ref) (bool, error) {
+	return project.ID == "project", nil
+}
+
+func TestSourceBeadIdentityRequiresHostBindingAndRetainsPolicy(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		target  model.Ref
+		host    bool
+		context bool
+		caveats map[string]any
+		forbid  bool
+		want    bool
+	}{
+		{name: "ordinary-slice-refuses-source", target: ref("workflow:item/declared"), context: true},
+		{name: "bound-source", target: ref("workflow:item/declared"), host: true, context: true, want: true},
+		{name: "unknown-source", target: ref("workflow:item/unknown"), host: true, context: true},
+		{name: "nonzero-branch", target: model.RefByID("workflow:item/declared", model.Natural64(1)), host: true, context: true},
+		{name: "expired-context", target: ref("workflow:item/declared"), host: true},
+		{name: "empty-action-caveat", target: ref("workflow:item/declared"), host: true, context: true, caveats: map[string]any{"actions": []string{}}},
+		{name: "different-ref-caveat", target: ref("workflow:item/declared"), host: true, context: true, caveats: map[string]any{"refs": []model.Ref{ref("ordinary")}}},
+		{name: "exact-ref-caveat", target: ref("workflow:item/declared"), host: true, context: true, caveats: map[string]any{"refs": []model.Ref{ref("workflow:item/declared")}}, want: true},
+		{name: "policy-forbid", target: ref("workflow:item/declared"), host: true, context: true, forbid: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			bound := &sourceReferenceSlice{chainSlice: chainSlice{test.context}, declared: "workflow:item/declared"}
+			var facts Slice = chainSlice{test.context}
+			if test.host {
+				facts = bound
+			}
+			q := request()
+			q.Resource.Ref, q.Caller.Principal.Caveats = test.target, test.caveats
+			chain := Chain{Namespace: namespace(), Rules: []RuleSet{permit()}}
+			if test.forbid {
+				chain.Rules = append(chain.Rules, forbid())
+			}
+			checks := []CheckRequest{q}
+			for _, api := range []string{"check", "prepared", "filter", "sealed"} {
+				var allowed bool
+				var err error
+				if api == "check" || api == "prepared" {
+					var decisions []Decision
+					if api == "check" {
+						decisions, err = chain.Check(ctx, facts, checks)
+					} else {
+						decisions, err = chain.CheckPrepared(ctx, facts, PrepareChecks(checks))
+					}
+					allowed = len(decisions) == 1 && decisions[0].Effect == Allow
+				} else {
+					var filter FilterTemplate
+					filter, err = chain.Compile(ListRequest{Caller: q.Caller, Action: q.Action, ResourceKind: q.Resource.Kind, Method: q.Method})
+					// Exercise the real project lookup without constructing a core
+					// bead/closure sentinel for a separately guarded source target.
+					filter.Permit = And(filter.Permit, FilterExpr{Op: ActiveProject})
+					if err == nil && api == "filter" {
+						allowed, err = filter.Match(ctx, facts, q.Resource)
+					} else if err == nil {
+						var sealed *PreparedFilter
+						sealed, err = filter.Prepare()
+						if err == nil {
+							allowed, err = sealed.Match(ctx, facts, q.Resource)
+						}
+					}
+				}
+				if err != nil || allowed != test.want {
+					t.Fatalf("%s allowed=%v want=%v error=%v", api, allowed, test.want, err)
+				}
+			}
+			for _, dep := range bound.deps {
+				if dep.Kind == "sentinel" && (strings.HasPrefix(dep.Key, "bead/") || strings.HasPrefix(dep.Key, "closure/")) {
+					t.Fatalf("source identity invented an ordinary record guard: %+v", dep)
+				}
+			}
+		})
+	}
+}

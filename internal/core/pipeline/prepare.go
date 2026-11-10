@@ -264,6 +264,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			var id, allocatorPrefix, allocatorExpected, allocatorChild string
 			var allocatorHash *driver.HashInput
 			var e error
+			createdAt := w.cfg.now().UTC()
 			if parent != nil {
 				id, allocatorPrefix, allocatorExpected, allocatorChild, e = p.nextChildAllocatorID(ctx, project, parent.ID, w.cfg.newID, w.cfg.newAllocatorChildID)
 			} else {
@@ -271,7 +272,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				if principalErr != nil {
 					return nil, failure("invalid_params", principalErr.Error())
 				}
-				input := driver.HashInput{Title: hashField(c.Fields, "title"), Description: hashField(c.Fields, "description"), Creator: creator, Timestamp: w.cfg.now().UTC()}
+				input := driver.HashInput{Title: hashField(c.Fields, "title"), Description: hashField(c.Fields, "description"), Creator: creator, Timestamp: createdAt}
 				id, allocatorPrefix, allocatorExpected, allocatorHash, e = p.nextAllocatorID(ctx, project, input, w.cfg.newID, w.cfg.newAllocatorID)
 			}
 			if e != nil {
@@ -292,7 +293,6 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			if snapshot.reads.states[key].Present {
 				return nil, errStale
 			}
-			createdAt := w.cfg.now().UTC()
 			current = &pending{ref: target, kind: "bead", doc: Document{ID: id, Type: c.Type, Project: project, Parent: parent, Fields: map[string]any{}, CreatedAt: &createdAt}, setBy: map[string]string{"createdAt": "core"}, allocatorPrefix: allocatorPrefix, allocatorExpected: allocatorExpected, allocatorChild: allocatorChild, allocatorHash: allocatorHash}
 			p.writes[id] = current
 			if parent != nil {
@@ -935,7 +935,7 @@ func (p *prepared) allocatorObservations(ctx context.Context, prefix, parent str
 			return nil
 		}
 		occupied[id] = true
-		if prefix != "" && project == prefix && strings.HasPrefix(id, prefix+"-") {
+		if prefix != "" && strings.HasPrefix(id, prefix+"-") {
 			tail := strings.TrimPrefix(id, prefix+"-")
 			if tail != "" && !strings.ContainsRune(tail, '.') {
 				count++
@@ -944,6 +944,9 @@ func (p *prepared) allocatorObservations(ctx context.Context, prefix, parent str
 		return nil
 	}
 	for _, record := range p.beads {
+		if _, replaced := p.writes[record.Ref.ID]; replaced {
+			continue
+		}
 		doc, err := DecodeDocument(record.Body)
 		if err != nil {
 			return 0, nil, 0, err
@@ -961,6 +964,24 @@ func (p *prepared) allocatorObservations(ctx context.Context, prefix, parent str
 		}
 	}
 	return count, occupied, maxChild, nil
+}
+
+// Candidate identity is global, including other kinds/projects and tombstones.
+// Observe also puts a miss in the read set, so a concurrent insert invalidates
+// preparation before the allocator or any records can commit.
+func (p *prepared) allocatorOccupied(ctx context.Context, id string) (bool, error) {
+	if allocatorReserved(ctx, id) {
+		return true, nil
+	}
+	if _, staged := p.writes[id]; staged {
+		return true, nil
+	}
+	ref := model.RefByID(id, model.Natural64(0))
+	states, err := p.snapshot.observe(ctx, []driver.LockKey{{Kind: driver.LockRecord, Ref: &ref}})
+	if err != nil {
+		return false, err
+	}
+	return states[0].Present || !states[0].Revision.IsZero(), nil
 }
 
 func (p *prepared) fallbackChildID(ctx context.Context, parent string) (string, error) {
@@ -986,7 +1007,20 @@ func (p *prepared) fallbackChildID(ctx context.Context, parent string) (string, 
 	if err != nil {
 		return "", err
 	}
-	return state.Next(observed)
+	for {
+		id, err := state.Next(observed)
+		if err != nil {
+			return "", err
+		}
+		used, err := p.allocatorOccupied(ctx, id)
+		if err != nil || !used {
+			return id, err
+		}
+		state, err = state.Consume(id)
+		if err != nil {
+			return "", err
+		}
+	}
 }
 
 // nextAllocatorID previews a restored allocator on the immutable preparation
@@ -1046,7 +1080,7 @@ func (p *prepared) nextAllocatorID(ctx context.Context, project string, input dr
 					return true, nil
 				}
 			}
-			return false, nil
+			return p.allocatorOccupied(ctx, candidate)
 		})
 		if err != nil {
 			return "", "", "", nil, err
@@ -1123,12 +1157,21 @@ func (p *prepared) nextChildAllocatorID(ctx context.Context, project, parent str
 	if current == ^uint64(0) {
 		return "", "", "", "", fmt.Errorf("%w: child counter exhausted", driver.ErrUnsupported)
 	}
-	next := current + 1
-	id := fmt.Sprintf("%s.%d", parent, next)
-	if occupied[id] {
-		return "", "", "", "", errStale
+	for current < ^uint64(0) {
+		current++
+		id := fmt.Sprintf("%s.%d", parent, current)
+		used := occupied[id]
+		if !used {
+			used, err = p.allocatorOccupied(ctx, id)
+			if err != nil {
+				return "", "", "", "", err
+			}
+		}
+		if !used {
+			return id, project, id, parent, nil
+		}
 	}
-	return id, project, id, parent, nil
+	return "", "", "", "", fmt.Errorf("%w: child counter exhausted", driver.ErrUnsupported)
 }
 
 func applyFields(p *pending, fields map[string]any, setter string) error {

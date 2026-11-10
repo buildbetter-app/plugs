@@ -60,8 +60,19 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 	for _, k := range t.bumps {
 		bumps = append(bumps, k)
 	}
+
+	if t.sourcePlaneImport != nil {
+		if err := t.sourcePlaneImport.Validate(h, t.checkpointWrites, t.records); err != nil {
+			return zero, err
+		}
+	} else if len(t.checkpointWrites)+len(t.checkpointGuards) != 0 {
+		return zero, driver.ErrUnsupported
+	}
 	plan, err := t.offlineHistory.Finalize(h, tail, t.acquired, bumps)
 	if err != nil {
+		return zero, err
+	}
+	if err := t.checkCheckpointGuards(); err != nil {
 		return zero, err
 	}
 	next := s.state.fork()
@@ -124,7 +135,9 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 	if err := t.check(ctx); err != nil {
 		return zero, err
 	}
+	checkpoints := t.prepareCheckpointPublication()
 	s.state = next
+	s.checkpoints = checkpoints
 	t.finish()
 	return cloneJSON(entry)
 }
