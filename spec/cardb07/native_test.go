@@ -126,6 +126,14 @@ func (n *b07Native) requireReady(label string, want []string) {
 }
 func (n *b07Native) edge(image b07NativeImage, from, to string) map[string]json.RawMessage {
 	n.t.Helper()
+	match := n.findEdge(image, from, to)
+	if match == nil {
+		n.t.Fatal("native edge absent")
+	}
+	return match
+}
+func (n *b07Native) findEdge(image b07NativeImage, from, to string) map[string]json.RawMessage {
+	n.t.Helper()
 	var match map[string]json.RawMessage
 	for _, rows := range image {
 		for _, row := range rows {
@@ -151,9 +159,6 @@ func (n *b07Native) edge(image b07NativeImage, from, to string) map[string]json.
 			}
 			match = row
 		}
-	}
-	if match == nil {
-		n.t.Fatal("native edge absent")
 	}
 	return match
 }
@@ -443,6 +448,9 @@ func (n *b07Native) externalAndMetadata() {
 		n.edge(n.image("external-after"), id, target)
 		n.requireReady("external-inert-ready", ready)
 		n.command("external-remove", false, "dep", "remove", id, target, "--json")
+		if n.findEdge(n.image("external-removed-after"), id, target) != nil {
+			n.t.Fatal("native external removal retained the edge")
+		}
 		n.requireReady("external-removed-ready", ready)
 	}
 	n.create("b07-970")

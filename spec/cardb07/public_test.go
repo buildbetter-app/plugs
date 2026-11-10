@@ -181,6 +181,9 @@ func b07Public(t *testing.T, engine string) []b07Observation {
 			h.quiet(before, "external-repeat-"+targetID, h.call("bead.link", "external-repeat-"+targetID, params))
 			h.reopen()
 			b07Success(t, h.call("bead.unlink", "external-remove-"+targetID, params))
+			h.noLinks(from)
+			h.reopen()
+			h.noLinks(from)
 			h.requireReady(ready)
 		}
 	}) {

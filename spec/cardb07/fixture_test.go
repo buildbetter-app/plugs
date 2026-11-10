@@ -399,6 +399,20 @@ func (h *b07Host) linkValue(from, to model.Ref, kind string) {
 	h.t.Fatal("source row absent")
 }
 
+func (h *b07Host) noLinks(from model.Ref) {
+	h.t.Helper()
+	for _, row := range h.snapshot().Rows {
+		if row.Ref.ID == from.ID {
+			doc, err := pipeline.DecodeDocument(row.Body)
+			if err != nil || len(doc.Links) != 0 {
+				h.t.Fatal("external removal retained an edge or damaged its source", err)
+			}
+			return
+		}
+	}
+	h.t.Fatal("external removal lost the source row")
+}
+
 func b07Postgres(t *testing.T, root string) string {
 	t.Helper()
 	const image = "postgres@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3"
