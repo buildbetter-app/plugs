@@ -128,6 +128,7 @@ func DefaultTreePolicy() TreePolicy {
 			"engdocs/design/plug/spike-ux-decision.md":             {},
 		},
 		BinarySHA256: map[string]string{
+			"tools/roundtrip/testdata/typed-reader/beads-e25cf4.tar.gz":                     "89d43f0bc3e8f0ed58393d8982bbd5f290739c9af1228683c5338c08efa36fb6",
 			"tools/roundtrip/testdata/readback-8f19/memory-complete-beads-raw-readback.tar": "dc58689a485ec1c37a85afef956c05d07f328e51062bd4112e14db20e669abae",
 			"tools/roundtrip/testdata/readback-8f19/memory-partial-beads-raw-readback.tar":  "cb51c880fe8cbc69a562799a4eabf1993f18ce6eb4ecda9dea035fdd6299b91c",
 

@@ -1744,6 +1744,8 @@ func TestPolicyRejectsInvalidUTF8OutsideDeclaredBinary(t *testing.T) {
 
 func TestDefaultPolicyBindsOriginalPublicReadbackReferences(t *testing.T) {
 	for _, name := range []string{
+		"tools/roundtrip/testdata/typed-reader/beads-e25cf4.tar.gz",
+		"tools/roundtrip/testdata/typed-reader/beads-e25cf4.git-tree",
 		"tools/roundtrip/testdata/readback-8f19/memory-complete-beads-raw-readback.tar",
 		"tools/roundtrip/testdata/readback-8f19/memory-partial-beads-raw-readback.tar",
 		"tools/roundtrip/testdata/readback-8f19/memory-complete-reverse-live.jsonl",

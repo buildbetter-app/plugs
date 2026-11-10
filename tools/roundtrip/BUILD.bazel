@@ -16,6 +16,8 @@ _DEPS = [
 filegroup(
     name = "readback_reference_fixtures",
     srcs = [
+        "testdata/typed-reader/beads-e25cf4.tar.gz",
+        "testdata/typed-reader/beads-e25cf4.git-tree",
         "testdata/readback-8f19/memory-complete-beads-raw-readback.tar",
         "testdata/readback-8f19/memory-complete-reverse-live.jsonl",
         "testdata/readback-8f19/memory-partial-beads-raw-readback.tar",
