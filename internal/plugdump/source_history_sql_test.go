@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/go-sql-driver/mysql"
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/steveyegge/beads/internal/testutil"
 )
 
@@ -378,52 +378,6 @@ func TestSQLNativeHistoryReadsLocalRowsBehindNonlocalAliases(t *testing.T) {
 			t.Fatal("the exact historical alias declarations were omitted")
 		}
 		t.Logf("PINNED_LOCAL_HISTORY commit=%s rows=%d duplicate_rows=%d null_rows=%d declarations=%d", id, len(table.Rows), original, nulls, len(image["dolt_nonlocal_tables"].Rows))
-	}
-}
-
-func TestSQLNativeHistoryAliasAbsenceRequiresTypedMissingPhysicalTable(t *testing.T) {
-	for _, test := range []struct {
-		name     string
-		declared bool
-		readErr  error
-		refuse   bool
-	}{
-		{"declared alias-only", true, &mysql.MySQLError{Number: 1146, Message: "missing physical history table"}, false},
-		{"ordinary missing table", false, &mysql.MySQLError{Number: 1146, Message: "missing table"}, true},
-		{"alias read permission failure", true, &mysql.MySQLError{Number: 1142, Message: "denied"}, true},
-		{"untyped missing-table text", true, fmt.Errorf("table not found"), true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			db, mock, err := sqlmock.New()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer db.Close()
-			id := strings.Repeat("a", 32)
-			mock.ExpectQuery(regexp.QuoteMeta("SHOW FULL TABLES AS OF '" + id + "'")).WillReturnRows(sqlmock.NewRows([]string{"Tables_in_fixture", "Table_type"}).AddRow("wisps", "BASE TABLE"))
-			declarations := sqlmock.NewRows([]string{"table_name", "target_ref", "ref_table", "options"})
-			if test.declared {
-				declarations.AddRow("wisps", "main", nil, "immediate")
-			}
-			mock.ExpectQuery(regexp.QuoteMeta("SELECT * FROM dolt_nonlocal_tables AS OF '" + id + "'")).WillReturnRows(declarations)
-			query := "SELECT * FROM `wisps` AS OF '" + id + "'"
-			if test.declared {
-				query = "SELECT * FROM `dolt_history_wisps` AS OF '" + id + "' WHERE commit_hash = '" + id + "'"
-			}
-			mock.ExpectQuery(regexp.QuoteMeta(query)).WillReturnError(test.readErr)
-			image, err := (SQLSource{DB: db}).ReadNativeSourceImage(context.Background(), id)
-			if test.refuse != (err != nil) {
-				t.Fatalf("refuse=%t err=%v", test.refuse, err)
-			}
-			if !test.refuse {
-				if _, exists := image["wisps"]; exists {
-					t.Fatal("alias absence fabricated a table")
-				}
-			}
-			if err := mock.ExpectationsWereMet(); err != nil {
-				t.Fatal(err)
-			}
-		})
 	}
 }
 

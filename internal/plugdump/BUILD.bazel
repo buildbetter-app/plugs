@@ -43,6 +43,7 @@ go_test(
         "native_clock_test.go",
         "native_history_test.go",
         "native_history_capability_test.go",
+        "native_history_alias_mock_test.go",
         "native_inventory_test.go",
         "identity_test.go",
         "plugdump_test.go",
