@@ -26,7 +26,7 @@ All ordinary files are source, even ignored or untracked files. Only the root
 `.git` metadata entry and actual Bazel convenience symlinks are omitted.
 
 The pinned public companion's config-list command needs one external
-environment assignment. `engdocs/style/lexicon.toml` records its exact decoded
+environment assignment. `tools/lexicon/rules.d/b25-b28-public.toml` records its exact decoded
 Go string and the single recorder source path. The checker admits that string
 literal only at that path; identifiers, imports, other literals, and all other
 lexicon findings in the same file remain subject to the ordinary gate. This
@@ -73,3 +73,16 @@ when both the path and bytes match. A changed reference or an additional path
 under that prefix fails closed. The current recorded package admits only the
 exact `spec/recorded/goldens.json` path; its validator source remains an
 ordinary scanned file, so new product vocabulary there is still rejected.
+
+Area rules live in `rules.d/*.toml` and load in lexical filename order. Each
+file starts its own TOML section; terms and provenance scopes combine across
+files, while repeated singleton allowances and duplicate native sites fail
+closed. `00-vocabulary.toml` holds the global term list. Provenance scopes live in
+`provenance.toml`, `migration.toml` and `offline-history.toml`; each native
+recorder area owns its exact protocol data.
+The same reviewed files are embedded in the checker to bind accepted paths,
+complete literal sets and context tuples. Changing a runtime copy cannot
+broaden those bindings. Only the exact rule bytes consumed by the loader are
+exempt from vocabulary scanning; the complete source inventory and all other
+files still pass through the existing tree policy. The standalone command and
+hermetic gate use the same loader, including the gate's flat runfile mapping.

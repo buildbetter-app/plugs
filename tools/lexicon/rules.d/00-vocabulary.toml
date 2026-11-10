@@ -1,0 +1,21 @@
+[[term]]
+match = ["gas town", "gastown", "gascity", "steampunk"]
+class = "ban"
+
+[[term]]
+match = ["gastownhall", "steveyegge/beads"]
+class = "upstream-infra"
+
+[[term]]
+match = ["molecule", "wisp", "polecat", "mayor", "convoy", "refinery", "deacon"]
+class = "product-term"
+
+[[term]]
+match = ["witness", "crew", "rig", "sling", "hooked", "formula", "bd"]
+class = "identifier"
+
+
+[[term]]
+regex = "[\\x{2600}-\\x{27BF}\\x{2B00}-\\x{2BFF}\\x{1F000}-\\x{1FAFF}\\x{FE0F}]"
+class = "ban"
+allow = ["✓", "✗", "⚠", "❄"]
