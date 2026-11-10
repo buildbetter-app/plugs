@@ -4,9 +4,12 @@ go_library(
     name = "checker",
     srcs = [
         "checker.go",
+        "config.go",
         "inventory.go",
         "policy.go",
+        "rules.go",
     ],
+    embedsrcs = glob(["rules.d/*.toml"]),
     importpath = "github.com/buildbetter-app/plugs/tools/lexicon",
     visibility = ["//visibility:public"],
 )
@@ -14,7 +17,7 @@ go_library(
 go_binary(
     name = "lexicon_check",
     srcs = ["cmd/lexicon_check/main.go"],
-    data = ["//engdocs/style:lexicon.toml"],
+    data = [":rule_files"],
     importpath = "github.com/buildbetter-app/plugs/tools/lexicon/cmd/lexicon_check",
     visibility = ["//visibility:public"],
     deps = [":checker"],
@@ -24,9 +27,10 @@ go_test(
     name = "checker_test",
     srcs = [
         "checker_test.go",
+        "config_test.go",
         "inventory_test.go",
     ],
-    data = ["//engdocs/style:lexicon.toml"],
+    data = [":rule_files"],
     embed = [":checker"],
 )
 
@@ -46,4 +50,9 @@ go_test(
     ],
     embed = [":checker"],
     visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "rule_files",
+    srcs = glob(["rules.d/*.toml"]),
 )

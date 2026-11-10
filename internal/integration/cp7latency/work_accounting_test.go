@@ -438,9 +438,12 @@ func TestPostgresHistoricalReadCountsDiscardedCurrentBodies(t *testing.T) {
 	originalOne, originalTwo := body(t, 1), body(t, 2)
 	currentOne := append(append([]byte(nil), originalOne...), ' ')
 	at := f.seededAt.Revision
+	// Ref1 remains a root without links; ref2's existing parent is ref1.
+	// Declare the exact graph metadata and graph lock for this single commit
+	// so certified stores retain their normal source-publication checks.
 	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{
-		{Ref: beadRef(1), Kind: "bead", Op: model.OpPatch, Body: currentOne, ChangedPaths: []string{"/fields/title"}},
-		{Ref: beadRef(2), Kind: "bead", Op: model.OpDelete},
+		{Ref: beadRef(1), Kind: "bead", Op: model.OpPatch, Body: currentOne, ChangedPaths: []string{"/fields/title"}, Graph: &conformance.FixtureGraphSource{}},
+		{Ref: beadRef(2), Kind: "bead", Op: model.OpDelete, Graph: &conformance.FixtureGraphSource{Parent: refPointer(beadRef(1))}},
 	}); err != nil {
 		t.Fatal(err)
 	}

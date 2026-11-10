@@ -9,7 +9,7 @@ module and its review boundary.
 | `LICENSE`, `NOTICE.md` | Carries the MIT terms and required attribution. |
 | `.gitignore`, `go.mod`, `MODULE.bazel`, `BUILD.bazel`, `doc.go` | Defines the new module, ignores generated outputs, and provides its empty buildable root. |
 | `OWNERS.toml` | Provides neutral package ownership until contracts exist. |
-| `engdocs/style/lexicon.toml` | Declares vocabulary and provenance zones. |
+| `tools/lexicon/rules.d/` | Declares vocabulary, area allowances and provenance zones. |
 | `tools/lexicon/` | Implements the fail-closed tree check and focused tests. |
 | `cmd/plug/`, `pluginapi/`, `sdk/go/`, `internal/` | Empty package seams for later contract work. |
 | `engdocs/adr/0005-plug-design-decisions.md` | Retains the scrubbed ADR decision record used as stable provenance; source recordings and transcripts are excluded. |
