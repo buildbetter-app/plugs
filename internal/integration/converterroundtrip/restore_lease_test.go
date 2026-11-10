@@ -179,6 +179,7 @@ func restoreLeasePublicationControl(t *testing.T, engine, mode string) {
 	if delayed.lease == nil || delayed.commits != 1 || delayed.lease.active.Load() != 0 || delayed.lease.releases.Load() != 1 {
 		t.Fatal("lease control did not reach exactly one publication and drain/release its owner", delayed.commits)
 	}
+	emptyTargetUnchanged := false
 	switch mode {
 	case "renewed", "caller-renewed":
 		if err != nil || delayed.elapsed <= driver.LeaseTTL || delayed.lease.renewals.Load() < 2 {
@@ -196,6 +197,7 @@ func restoreLeasePublicationControl(t *testing.T, engine, mode string) {
 		if report.Receipt != nil || !reflect.DeepEqual(before, savedEmptyJointTarget(t, store, archive, profile)) {
 			t.Fatal("fenced import published core/history/derived/blobs/receipt state")
 		}
+		emptyTargetUnchanged = true
 	case "renewal-loss", "caller-renewal-loss":
 		if !errors.Is(err, context.Canceled) || !errors.Is(err, errRestoreLeaseRenewal) || delayed.elapsed >= delayed.wait || delayed.lease.renewals.Load() != 1 {
 			t.Fatal("renewal rejection did not cancel publication and stop the loop", err, delayed.elapsed, delayed.lease.renewals.Load())
@@ -203,6 +205,7 @@ func restoreLeasePublicationControl(t *testing.T, engine, mode string) {
 		if report.Receipt != nil || !reflect.DeepEqual(before, savedEmptyJointTarget(t, store, archive, profile)) {
 			t.Fatal("cancelled renewal-loss import published core/history/derived/blobs/receipt state")
 		}
+		emptyTargetUnchanged = true
 	case "caller-cancelled":
 		if !errors.Is(err, context.Canceled) || delayed.elapsed >= delayed.wait {
 			t.Fatal("caller cancellation did not stop publication and drain the loop", err, delayed.elapsed)
@@ -210,13 +213,14 @@ func restoreLeasePublicationControl(t *testing.T, engine, mode string) {
 		if report.Receipt != nil || !reflect.DeepEqual(before, savedEmptyJointTarget(t, store, archive, profile)) {
 			t.Fatal("caller cancellation published core/history/derived/blobs/receipt state")
 		}
+		emptyTargetUnchanged = true
 	default:
 		t.Fatal("unknown restore lease control mode", mode)
 	}
 	if out := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR"); out != "" {
 		evidence := map[string]any{"engine": engine, "mode": mode, "lease_ttl_ns": int64(driver.LeaseTTL),
 			"publication_delay_ns": int64(delayed.elapsed), "operation_elapsed_ns": int64(operationElapsed),
-			"publication_succeeded": err == nil, "empty_target_unchanged": reflect.DeepEqual(before, savedEmptyJointTarget(t, store, archive, profile)),
+			"publication_succeeded": err == nil, "empty_target_unchanged": emptyTargetUnchanged,
 			"renewal_attempts": delayed.lease.renewals.Load(),
 			"active_renewals_after_return": delayed.lease.active.Load(), "release_calls": delayed.lease.releases.Load(),
 			"publication_attempts": delayed.commits, "operation_error": fmt.Sprint(err), "source_scope": "declared-synthetic-public-control"}
