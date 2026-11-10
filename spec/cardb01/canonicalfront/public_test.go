@@ -2,12 +2,14 @@ package cardb20
 
 import (
 	"encoding/json"
-	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 func TestB01CanonicalPublicReadyCounterparts(t *testing.T) {
