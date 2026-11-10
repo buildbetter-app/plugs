@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -42,6 +43,55 @@ type frontBoundImage struct {
 	Meta                               driver.Meta
 	Rows                               int
 	RowsSHA256, LogSHA256, RanksSHA256 string
+}
+
+// These source publications and full images exceed the production lease TTL.
+// Maintain the ordinary fixture holder throughout them, without changing the
+// TTL, controlled Go/SQL clocks, storage bounds, or production lease behavior.
+func frontMaintainBoundLease(t *testing.T, f *publicFront, label string) func() {
+	t.Helper()
+	lease, ctx := f.lease, f.ctx
+	stop, done := make(chan struct{}), make(chan struct{})
+	var renewals int
+	var renewalErr error
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(driver.LeaseRenewEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				renewCtx, cancel := context.WithTimeout(ctx, driver.LeaseRenewEvery)
+				renewalErr = lease.Renew(renewCtx)
+				cancel()
+				if renewalErr != nil {
+					return
+				}
+				renewals++
+			}
+		}
+	}()
+	var once sync.Once
+	finish := func() {
+		once.Do(func() {
+			close(stop)
+			<-done
+			frontSave(t, f.root, label+"-fixture-lease-maintenance.json", frontJSON(t, map[string]any{
+				"renewals": renewals, "renewal_error": fmt.Sprint(renewalErr),
+				"TTL": driver.LeaseTTL.String(), "interval": driver.LeaseRenewEvery.String(),
+				"scope": "ordinary setup maintenance only; lease behavior qualification NOT_CLAIMED",
+			}))
+			if renewalErr != nil {
+				t.Errorf("bound fixture lease maintenance: %v", renewalErr)
+			}
+		})
+	}
+	t.Cleanup(finish)
+	return finish
 }
 
 // Unlike the small public-corpus snapshot, this walks all source pages. It
@@ -148,13 +198,17 @@ func frontRequireBound(t *testing.T, f *publicFront, indexed driver.HierarchyChi
 	return trace.Calls
 }
 
-func frontPublicBound(t *testing.T, f *publicFront, parent model.Ref, limit int, label string) {
+func frontPublicBound(t *testing.T, f *publicFront, parent model.Ref, limit int, label string, includeDirectList bool) {
 	t.Helper()
 	m, err := f.store.Meta(f.ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, method := range []string{"bead.ready", "history.query"} {
+	methods := []string{"bead.ready"}
+	if includeDirectList {
+		methods = append(methods, "history.query")
+	}
+	for _, method := range methods {
 		params := map[string]any{"filter": map[string]any{"parent": parent.ID}, "limit": 1}
 		if method == "history.query" {
 			params["asOf"] = map[string]any{"revision": m.Head, "incarnation": m.Incarnation}
@@ -174,6 +228,55 @@ func frontPublicBound(t *testing.T, f *publicFront, parent model.Ref, limit int,
 	}
 }
 
+// A transitive 20010-descendant refusal must not become a list refusal: that
+// same root has only 2001 direct children. Read every actual list page and
+// its first limit-one prefix from the same snapshot, excluding all leaves.
+func frontListBoundTree(t *testing.T, f *publicFront, parent model.Ref, children []model.Ref, label string) {
+	t.Helper()
+	m, err := f.store.Meta(f.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asOf := map[string]any{"revision": m.Head, "incarnation": m.Incarnation}
+	params := map[string]any{"filter": map[string]any{"parent": parent.ID}, "asOf": asOf, "limit": 1000}
+	got := []string{}
+	for pageNo := 0; ; pageNo++ {
+		if pageNo > len(children)/1000 {
+			t.Fatal("direct-child list failed to terminate")
+		}
+		var page frontPage
+		if err := json.Unmarshal(f.call(fmt.Sprintf("%s-page%d", label, pageNo), "history.query", params), &page); err != nil || page.Items == nil || len(page.Items) > 1000 {
+			t.Fatal("invalid direct-child page", err)
+		}
+		if page.AsOf.Revision.String() != m.Head.String() || page.AsOf.Incarnation != m.Incarnation {
+			t.Fatal("direct-child list changed snapshot")
+		}
+		for _, row := range page.Items {
+			if len(got) >= len(children) || row.ID != children[len(got)].ID {
+				t.Fatal("direct-child list included leaf, lost order or duplicated row", row.ID)
+			}
+			got = append(got, row.ID)
+		}
+		if page.Next == nil {
+			break
+		}
+		if len(page.Items) != 1000 || *page.Next == "" {
+			t.Fatal("short nonterminal direct-child page")
+		}
+		params["cursor"] = *page.Next
+	}
+	if len(got) != len(children) {
+		t.Fatal("direct-child count was truncated", len(got), len(children))
+	}
+	delete(params, "cursor")
+	params["limit"] = 1
+	var first frontPage
+	if json.Unmarshal(f.call(label+"-limit1", "history.query", params), &first) != nil || len(first.Items) != 1 || first.Items[0].ID != children[0].ID || first.Next == nil {
+		t.Fatal("direct-child positive-limit prefix differs")
+	}
+	frontSave(t, f.root, label+".json", frontJSON(t, map[string]any{"membership": got, "count": len(got), "descendant_count": 20010, "semantics": "native JSON list direct children; ready transitive bound remains refused", "snapshot": asOf}))
+}
+
 func TestB01ParentBoundsAcrossActualEngines(t *testing.T) {
 	root := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")
 	if !filepath.IsAbs(root) {
@@ -185,6 +288,7 @@ func TestB01ParentBoundsAcrossActualEngines(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 			defer cancel()
 			f.ctx = ctx
+			stopLease := frontMaintainBoundLease(t, f, "initial")
 			// Independent literal dimensions pin the existing production bounds.
 			if driver.HierarchyMaxParents != 1024 || driver.HierarchyMaxLimit != 10000 || driver.SelectionOrdinaryCap != 20000 {
 				t.Fatal("production bounds changed")
@@ -238,7 +342,7 @@ func TestB01ParentBoundsAcrossActualEngines(t *testing.T) {
 			if err := r.Close(); err != nil {
 				t.Fatal(err)
 			}
-			frontPublicBound(t, f, wide, 10000, "10001-children-public")
+			frontPublicBound(t, f, wide, 10000, "10001-children-public", true)
 			if after := frontBoundsImage(t, f); !reflect.DeepEqual(before, after) {
 				t.Fatal("bound reads/refusals changed durable source/history")
 			}
@@ -272,11 +376,13 @@ func TestB01ParentBoundsAcrossActualEngines(t *testing.T) {
 				}
 			}
 			checkTotal("20010-total-refusal")
-			frontPublicBound(t, f, total, 20000, "20010-total-public")
+			frontPublicBound(t, f, total, 20000, "20010-total-public", false)
+			frontListBoundTree(t, f, total, parents, "direct-2001-list")
 			if after := frontBoundsImage(t, f); !reflect.DeepEqual(before, after) {
 				t.Fatal("total-bound refusals changed durable source/history")
 			}
 			if engine != "memory" {
+				stopLease()
 				if err := f.lease.Release(f.ctx); err != nil {
 					t.Fatal(err)
 				}
@@ -285,12 +391,15 @@ func TestB01ParentBoundsAcrossActualEngines(t *testing.T) {
 					t.Fatal(err)
 				}
 				f.open()
+				stopLease = frontMaintainBoundLease(t, f, "SQL-reopen")
 				if after := frontBoundsImage(t, f); !reflect.DeepEqual(before, after) {
 					t.Fatal("actual SQL reopen changed bound fixture")
 				}
 				checkTotal("20010-total-refusal-after-SQL-reopen")
+				frontListBoundTree(t, f, total, parents, "direct-2001-list-after-SQL-reopen")
 			}
-			frontSave(t, f.root, "bound-source-image.json", frontJSON(t, map[string]any{"engine": engine, "complete_image": before, "fixture_path": "real typed driver publication via conformance.Seed; ordinary Writer/native NOT_CLAIMED", "service_layer": "public ready/history.query reach typed parent bound before page result", "compiled_SQL_executor": "NOT_QUALIFIED_SEPARATE_020", "persistent_reopen": engine != "memory"}))
+			stopLease()
+			frontSave(t, f.root, "bound-source-image.json", frontJSON(t, map[string]any{"engine": engine, "complete_image": before, "fixture_path": "real typed driver publication via conformance.Seed; ordinary Writer/native NOT_CLAIMED", "service_layer": "ready transitive refusal; direct list 10001 lookahead refusal and complete 2001-child pagination", "compiled_SQL_executor": "NOT_QUALIFIED_SEPARATE_020", "persistent_reopen": engine != "memory"}))
 		})
 	}
 }

@@ -124,7 +124,7 @@
       },
       "Filter": {
         "type": "object",
-        "description": "Parent selects transitive descendants before pagination. The separate opt-in epic-progress view uses exactly query=parent=\u003cbare branch-zero bead ID\u003e with no additional query clauses, resources, types or events; it selects canonical direct children only, across their own projects.",
+        "description": "Parent selects transitive descendants for ready and direct children for the snapshot list, before pagination. The separate opt-in epic-progress view uses exactly query=parent=\u003cbare branch-zero bead ID\u003e with no additional query clauses, resources, types or events; it selects canonical direct children only, across their own projects.",
         "properties": {
           "parent": {
             "type": "string",

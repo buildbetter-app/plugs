@@ -23,8 +23,8 @@ func (f *publicFront) parentSelectionControls(label string) map[string][]string 
 	asOf := map[string]any{"revision": meta.Head, "incarnation": meta.Incarnation}
 	// history.query is this receiver's list-like public method. Its stable ID
 	// order is compared with native list --sort id, separately from ready order.
-	out["list"] = f.pageMethod(label+"-list", "history.query", map[string]any{"parent": parent, "types": []string{"issue"}}, asOf, []string{"blocked-child", "child", "grandchild", "greatgrandchild", "priority-only"})
-	out["list-priority2"] = f.pageMethod(label+"-list-priority2", "history.query", map[string]any{"parent": parent, "priority": 2}, asOf, []string{"greatgrandchild", "priority-only"})
+	out["list"] = f.pageMethod(label+"-list", "history.query", map[string]any{"parent": parent, "types": []string{"issue"}}, asOf, []string{"blocked-child", "child", "priority-only"})
+	out["list-priority2"] = f.pageMethod(label+"-list-priority2", "history.query", map[string]any{"parent": parent, "priority": 2}, asOf, []string{"priority-only"})
 	f.pageMethod(label+"-list-unknown", "history.query", map[string]any{"parent": "pl-b01-missing"}, asOf, []string{})
 	for _, method := range []string{"bead.ready", "history.query"} {
 		params := map[string]any{"filter": map[string]any{"parent": parent}, "limit": 1}
@@ -44,7 +44,8 @@ func (f *publicFront) parentSelectionControls(label string) map[string][]string 
 	f.refuse(label+"-invalid-priority", "bead.ready", map[string]any{"filter": map[string]any{"parent": parent, "priority": 5}}, "invalid_params")
 	frontSave(f.t, f.root, label+"-count-contract.json", frontJSON(f.t, map[string]any{
 		"ready_descendant_count": 4, "priority1_count": 2, "priority2_count": 2,
-		"list_task_descendant_count": 5, "query_limits": []int{1, 2, 1000},
+		"list_task_direct_child_count": 3, "query_limits": []int{1, 2, 1000},
+		"native_command_membership":  "ready transitive descendants; JSON list direct children",
 		"counts":                     "exact concatenated public pages checked against complete literal membership",
 		"standalone_total_count_api": "NOT_AVAILABLE_IN_SAVED_RECEIVER",
 		"source":                     fmt.Sprint(meta.Head),

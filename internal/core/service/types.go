@@ -151,7 +151,8 @@ func (s *WorkflowPageSnapshot) Equal(other *WorkflowPageSnapshot) bool {
 }
 
 type Filter struct {
-	// Parent selects transitive descendants, excluding the root itself.
+	// Parent selects transitive descendants in ready and direct children in
+	// history's snapshot list, excluding the root itself in both methods.
 	Parent           string
 	Priority         *int
 	Query            string

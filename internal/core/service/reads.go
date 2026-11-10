@@ -287,7 +287,7 @@ func (s *Service) readyItems(ctx context.Context, by model.PrincipalRef, req Rea
 // path after collecting both facts from one provider checkpoint, so no later
 // eligibility call can silently observe a different plane.
 func (s *Service) readyItemsFromGraph(ctx context.Context, by model.PrincipalRef, req ReadyRequest, r driver.Reader, graph map[string]storedBead, workflowBlocked map[string]bool, now time.Time) ([]Bead, map[string]readyOrderKey, error) {
-	parents, err := s.parentFilter(ctx, r, req.Filter)
+	parents, err := s.parentFilter(ctx, r, req.Filter, true)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -984,7 +984,7 @@ func (s *Service) History(ctx context.Context, by model.PrincipalRef, req Histor
 	if err != nil {
 		return BeadPage{}, err
 	}
-	parents, err := s.parentFilter(ctx, r, req.Filter)
+	parents, err := s.parentFilter(ctx, r, req.Filter, false)
 	if err != nil {
 		return BeadPage{}, err
 	}

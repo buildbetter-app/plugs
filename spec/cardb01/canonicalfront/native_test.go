@@ -317,9 +317,9 @@ func recordNativeFront(t *testing.T, r *nativeRecorder, server *publicnative.Ser
 			n.ready("parent-blocked-hidden-priority0", []string{}, "--parent", "b01-parent", "--priority", "0")
 			n.ready("parent-other-tree", []string{"other-child"}, "--parent", "b01-other-root")
 			n.ready("parent-unknown", []string{}, "--parent", "b01-missing")
-			listWant := []string{"blocked-child", "child", "grandchild", "greatgrandchild", "priority-only"}
-			outcome.ParentFilter["list"] = n.list("list-parent-all-task-descendants", listWant, 0, "--parent", "b01-parent", "--type", "task")
-			outcome.ParentFilter["list-priority2"] = n.list("list-parent-priority2", []string{"greatgrandchild", "priority-only"}, 0, "--parent", "b01-parent", "--priority", "2")
+			listWant := []string{"blocked-child", "child", "priority-only"}
+			outcome.ParentFilter["list"] = n.list("list-parent-direct-task-children", listWant, 0, "--parent", "b01-parent", "--type", "task")
+			outcome.ParentFilter["list-priority2"] = n.list("list-parent-priority2", []string{"priority-only"}, 0, "--parent", "b01-parent", "--priority", "2")
 			n.list("list-unknown-parent", []string{}, 0, "--parent", "b01-missing")
 			for _, limit := range []int{1, 2} {
 				n.limited(fmt.Sprintf("parent-prefix-limit%d", limit), outcome.ParentFilter["baseline"], limit, "--parent", "b01-parent")

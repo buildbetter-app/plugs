@@ -41,15 +41,19 @@ Native `no_history` rows are imported into and read back from `wisps`; every
 parent/child dependency table and target plane is checked from actual SQL.
 The corresponding Plug scenarios intentionally use ordinary durable documents:
 this proves their public semantic counterpart, not a raw native-plane import.
-The public `service.Filter.parent` now selects transitive descendants through
-the existing certified storage hierarchy index before ordering and pagination.
+The public `service.Filter.parent` selects transitive descendants for ready and
+direct children for the history snapshot list, matching the two native commands.
+Both use the certified storage hierarchy index before ordering and pagination.
 Native and Plug parent vectors are compared, with
 exact priority/type/resource intersections, positive limits, complete page counts,
 unknown roots, parent/priority-bound cursor refusals and actual SQL reopen.
 The dedicated parent corpus includes a great-grandchild, a separate unrelated tree,
 an outside-subtree blocker, and high-priority blocked/hidden descendants. Native
 `list --sort id` is compared with the receiver's existing `history.query` snapshot
-list order; ready priority/hybrid/P74 vectors remain distinct.
+list order and direct-child membership; ready priority/hybrid/P74 vectors remain
+distinct. The actual `4ade` native twins disproved the earlier assumption that
+JSON list selected all descendants. The binding correction preserves the
+transitive ready oracle and changes list's oracle to the observed direct set.
 Memory offers no persistent ephemeral-workflow checkpoint capability. No
 substitute plane, automatic timed wake, background rank-worker
 SLA or full B01 qualification is claimed.
@@ -60,9 +64,10 @@ SLA or full B01 qualification is claimed.
 compares their literal vectors with the named public outcomes. It is manual
 because canonical source build is explicit public operational recording.
 
-Parent membership is compiled using certified same-snapshot storage hierarchy
-reads. The root is excluded; unknown roots are empty. Missing index coverage,
-cycles and indexed traversal bounds refuse without a partial membership/count.
+Parent membership is selected using certified same-snapshot storage hierarchy
+reads. Ready traverses descendants; list reads direct children once. The root is
+excluded; unknown roots are empty in both commands. Missing index coverage,
+cycles and indexed bounds refuse without a partial membership/count.
 Mixed durable/ephemeral provider parent filtering still requires a complete
 same-snapshot capability and refuses explicitly; ordinary durable parent parity
 is proven separately on all three engines. No protected writer is changed.
@@ -91,6 +96,12 @@ while a complete 2001-parent frontier succeeds through 1024/977 batching.
 A real 10001-child lookup exposes More and the descendant filter refuses with
 filter_too_broad(limit=10000). A distinct 20010-descendant tree keeps every
 lookup below 10000 and refuses with limit=20000, returning no partial set.
-Both overflow paths also reach normal ready/history.query byte-RPC errors
-with no result/page/count, and SQL reopen retains the actual total refusal.
-Exact source/journal/rank digests before and after reads remain equal.
+Both overflow paths reach normal ready byte-RPC errors with no result/page/count.
+The 10001 direct children also exceed list's single-lookup bound. The separate
+20010-descendant tree has 2001 direct children: list returns that exact complete
+set across 1000/1000/1 pages and preserves its limit-one prefix. SQL reopen retains
+the transitive total refusal and complete direct list. The large fixture maintains
+its normal 10-second lease with the existing 3-second renewal interval, joins the
+renewal lifecycle before release/reopen, and records any renewal error. Production
+bounds, TTL and controlled Go/SQL clocks are unchanged. Exact source/journal/rank
+digests before and after reads remain equal.

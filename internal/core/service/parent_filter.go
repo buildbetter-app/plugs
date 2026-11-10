@@ -8,10 +8,10 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
-// parentFilter resolves the storage-owned transitive predicate on the same
-// snapshot used for other membership facts. Ready must retain the complete
-// dependency graph, but only matching descendants enter its ordered page.
-func (s *Service) parentFilter(ctx context.Context, r driver.Reader, filter *Filter) (map[string]bool, error) {
+// parentFilter resolves membership on the same certified source snapshot as
+// the other filters. Native ready selects transitive descendants; native JSON
+// list selects direct children. Neither selection prunes ready's blocker graph.
+func (s *Service) parentFilter(ctx context.Context, r driver.Reader, filter *Filter, transitive bool) (map[string]bool, error) {
 	if filter == nil {
 		return nil, nil
 	}
@@ -29,9 +29,36 @@ func (s *Service) parentFilter(ctx context.Context, r driver.Reader, filter *Fil
 	if !ok {
 		return nil, failure("unsupported", "parent filtering requires indexed hierarchy storage")
 	}
-	selected, err := driver.DescendantFilter(ctx, indexed, ref)
+	var selected map[string]bool
+	var err error
+	if transitive {
+		selected, err = driver.DescendantFilter(ctx, indexed, ref)
+	} else {
+		selected, err = directParentChildren(ctx, indexed, ref)
+	}
 	if errors.Is(err, driver.ErrUnsupported) {
 		return nil, failure("unsupported", "parent-filter hierarchy index coverage is unavailable")
 	}
 	return selected, mapped(err)
+}
+
+func directParentChildren(ctx context.Context, indexed driver.HierarchyChildrenReader, parent model.Ref) (map[string]bool, error) {
+	rows, more, err := indexed.HierarchyChildren(ctx, []model.Ref{parent}, driver.HierarchyMaxLimit)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if more {
+		return nil, driver.ErrDescendantFilterLimit{Limit: driver.HierarchyMaxLimit}
+	}
+	selected := map[string]bool{}
+	for _, row := range rows {
+		if row.Kind != "bead" || driver.ValidateHierarchyRef(row.Ref) != nil || row.Ref.ID == parent.ID || selected[row.Ref.ID] {
+			return nil, driver.ErrUnsupported
+		}
+		selected[row.Ref.ID] = true
+	}
+	return selected, nil
 }
