@@ -67,7 +67,62 @@ func b02GraphPlans() []b02GraphPlan {
 			{Name: "parent-unlinked", Action: "unlink", Role: "parent", Target: "blocker", NativeReady: []string{"blocker", "parent", "child", "grandchild", "direct"}, PlugReady: []string{"blocker", "parent", "child", "grandchild", "direct"}, NativeBlocked: map[string][]string{}},
 		},
 	}
-	return append([]b02GraphPlan{chain, diamond, parent}, b02CategoryAndWaitPlans()...)
+	// Independent durable controls are explicitly named as such. They provide
+	// ordinary three-engine graph outcomes, never a replacement for memory's
+	// refused ephemeral invocation or positive mixed-plane SQL observations.
+	return append([]b02GraphPlan{b02DurablePlan(chain, "durable-transitive"), b02DurablePlan(diamond, "durable-diamond"), chain, diamond, parent}, b02CategoryAndWaitPlans()...)
+}
+
+func b02DurablePlan(source b02GraphPlan, name string) b02GraphPlan {
+	plan := source
+	plan.Name = name
+	plan.Nodes = append([]b02GraphNode{}, source.Nodes...)
+	for i := range plan.Nodes {
+		plan.Nodes[i].Ephemeral = false
+	}
+	plan.Steps = append([]b02GraphStep{}, source.Steps...)
+	for i := range plan.Steps {
+		plan.Steps[i].AdoptedDifference = "Separate ordinary durable graph; no memory mixed-plane capability or evidence transfer"
+	}
+	return plan
+}
+
+// These expectations describe the actual public get projection, not the
+// complement of ready and not native's returned reason list. Ordinary get's
+// blocked field is the explicit stored flag plus active workflow dependency
+// facts; it does not enumerate/evaluate ordinary core link reasons. Every
+// all-durable control therefore expects false while separately requiring its
+// exact adjacency, statuses and independently authored ready membership.
+func b02ExpectedPublicBlocked(plan b02GraphPlan, phase string) map[string]bool {
+	want := map[string]bool{}
+	for _, node := range plan.Nodes {
+		want[node.Role] = false
+	}
+	var blocked []string
+	switch plan.Name {
+	case "mixed-transitive":
+		blocked = map[string][]string{
+			"initial":       {"middle", "tail", "last"},
+			"root-closed":   {"tail", "last"},
+			"middle-closed": {"last"},
+			"tail-closed":   {},
+		}[phase]
+	case "mixed-diamond":
+		blocked = map[string][]string{
+			"initial":           {"left", "join", "tail"},
+			"root-closed":       {"join", "tail"},
+			"root-reopened":     {"left", "join", "tail"},
+			"left-unlinked":     {"join", "tail"},
+			"root-closed-again": {"join", "tail"},
+			"left-closed":       {"join", "tail"},
+			"right-closed":      {"tail"},
+			"join-closed":       {},
+		}[phase]
+	}
+	for _, role := range blocked {
+		want[role] = true
+	}
+	return want
 }
 
 func b02CategoryAndWaitPlans() []b02GraphPlan {

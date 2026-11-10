@@ -427,6 +427,7 @@ func (r *b02PublicRuntime) observe(plan b02GraphPlan, step b02GraphStep) map[str
 	before := r.snapshot()
 	read := func(label string) map[string]any {
 		gets := map[string]any{}
+		blockedExpectation := b02ExpectedPublicBlocked(plan, step.Name)
 		for _, node := range plan.Nodes {
 			role := node.Role
 			if r.removed[role] {
@@ -436,21 +437,25 @@ func (r *b02PublicRuntime) observe(plan b02GraphPlan, step b02GraphStep) map[str
 			}
 			var got struct {
 				Bead struct {
-					ID, Status, Plane, Kind, Parent string
-					Links                           []workflowplugin.RelationView
-					Fields                          map[string]any
-					Blocked                         bool
+					ID, Status, Plane, Kind, Parent, Type string
+					Links                                 []workflowplugin.RelationView
+					Fields                                map[string]any
+					Blocked                               bool
 				}
 			}
 			raw := r.call(label+"-get-"+role, "bead.get", map[string]any{"id": r.refs[role]}, false, "")
 			if err := json.Unmarshal(raw, &got); err != nil {
 				t.Fatal(err)
 			}
-			if got.Bead.ID != r.refs[role].ID || got.Bead.Status != r.statuses[role] || got.Bead.Fields["title"] != "B02 "+role {
+			if got.Bead.ID != r.refs[role].ID || got.Bead.Status != r.statuses[role] || got.Bead.Fields["title"] != "B02 "+role || got.Bead.Type != "issue" {
 				t.Fatalf("public %s identity/status/body mismatch: %s", role, raw)
 			}
 			if node.Ephemeral && (got.Bead.Plane != "ephemeral" || got.Bead.Kind != "workflow.item") {
 				t.Fatal("mixed counterpart lost its actual public plane")
+			}
+			wantBlocked, known := blockedExpectation[role]
+			if !known || got.Bead.Blocked != wantBlocked {
+				t.Fatalf("literal public blocked field %s/%s/%s=%t want=%t; not a ready complement or returned reason enumeration", plan.Name, step.Name, role, got.Bead.Blocked, wantBlocked)
 			}
 			wantParent := ""
 			if node.Parent != "" {
@@ -537,7 +542,7 @@ func (r *b02PublicRuntime) observe(plan b02GraphPlan, step b02GraphStep) map[str
 		}
 	}
 	b02Save(t, filepath.Join(r.output, step.Name+"-state.json"), before)
-	result := map[string]any{"plan": plan.Name, "phase": step.Name, "engine": r.engine, "public": first, "sql_physically_reopened": reopened, "adopted_difference": step.AdoptedDifference, "native_returned_reasons": "separate native observation; not synthesized from public ready", "public_blocked_field": "literal API projection, not inferred reason enumeration"}
+	result := map[string]any{"plan": plan.Name, "phase": step.Name, "engine": r.engine, "public": first, "sql_physically_reopened": reopened, "adopted_difference": step.AdoptedDifference, "native_returned_reasons": "separate native observation; not synthesized from public ready", "public_blocked_field_expectation": b02ExpectedPublicBlocked(plan, step.Name), "public_blocked_field_limit": "ordinary get projects stored flag plus workflow facts; ordinary core reason enumeration is NOT_EXPOSED"}
 	b02Save(t, filepath.Join(r.output, step.Name+"-observed.json"), result)
 	t.Logf("B02_PUBLIC_GRAPH engine=%s plan=%s phase=%s ready=%v sql_reopen=%t conserved=true", r.engine, plan.Name, step.Name, first["ready_roles"], reopened)
 	return result

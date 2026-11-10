@@ -24,6 +24,10 @@ ephemeral flag alone is insufficient. Independent expected ready identities,
 blocked subjects, direct reasons, parent fallback and reason counts are
 asserted separately. Raw default-plane explain answers remain distinct from
 the explicit inclusive ready query. Native custom status names are preserved.
+Native rows retain their actual `task` type; public Plug controls use the
+explicitly installed `issue` workflow. This is a graph-role comparison, not a
+type-name normalization or native type-catalog equivalence claim. Both actual
+returned type names are asserted and their raw answering bytes are preserved.
 
 Plug graph construction uses the real Writer/service and byte-RPC adapters.
 Persistent workflow invocation supplies actual `workflow:item/…` identities;
@@ -40,6 +44,9 @@ waits-for, subject/category/outcome controls remain positive. There is no
 durable substitute for its missing positive mixed-plane capability, no skip
 standing in for such proof, and no claim of positive three-engine mixed-plane
 or full-card completion.
+Separately named `durable-transitive` and `durable-diamond` plans exercise
+ordinary durable graph progression on all three engines and the native CLI.
+Their output never serves as a memory mixed-plane counterpart.
 
 Native close retains a closed ephemeral row; Option C removes the completed live item,
 its run and incident edges. The tests preserve both original observations and
@@ -55,6 +62,14 @@ waits-for metadata row. It proves stored-state evaluation, not a native public
 writer. Its Plug counterpart uses normal typed public unlink/link metadata.
 Public link adjacency, ready results and literal `blocked` projections are
 retained; no returned Plug reason list is manufactured from ready membership.
+Independent phase tables assert each live public `blocked` boolean too.
+The ordinary `bead.get` projection (`service/graph.go`'s `beadValue`, augmented
+by `service/reads.go` workflow facts) exposes the explicit stored flag and
+workflow dependencies. It does not expose an ordinary core computed-reason
+enumerator. Thus an ordinary subject may have `blocked` omitted/false while
+its exact link graph keeps it out of ready. Ordinary subject controls assert
+that literal limitation alongside exact status, adjacency and ready results;
+they do not claim a returned native-equivalent blocked subject/reason list.
 
 Run both named targets through `remote-bazel` with all seven required controls
 and `--lockfile_mode=error`; pass the frozen candidate SHA in

@@ -219,9 +219,10 @@ func b02ObserveNative(t *testing.T, r *nativeRecorder, w nativeWorkspace, binary
 		raw := r.command(w, label+"-show-"+node.Role, binary, []string{"show", b02NativeID(node.Role), "--json"}, false)
 		var rows []struct {
 			ID, Title, Status string
+			Type              string `json:"issue_type"`
 			Parent            *string
 		}
-		if err := json.Unmarshal(raw, &rows); err != nil || len(rows) != 1 || rows[0].ID != b02NativeID(node.Role) || rows[0].Title != "B02 "+node.Role || rows[0].Status != statuses[node.Role] {
+		if err := json.Unmarshal(raw, &rows); err != nil || len(rows) != 1 || rows[0].ID != b02NativeID(node.Role) || rows[0].Title != "B02 "+node.Role || rows[0].Status != statuses[node.Role] || rows[0].Type != "task" {
 			t.Fatalf("native original identity/status %s: %s %v", node.Role, raw, err)
 		}
 		parent := ""
