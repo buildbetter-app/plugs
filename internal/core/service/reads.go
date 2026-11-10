@@ -956,7 +956,12 @@ func (s *Service) History(ctx context.Context, by model.PrincipalRef, req Histor
 	if err := validatePosition(req.Position); err != nil {
 		return BeadPage{}, err
 	}
-	if req.Position != nil && (req.Position.AsOf.Revision.String() != req.AsOf.Revision.String() || (req.AsOf.Incarnation != "" && req.Position.AsOf.Incarnation != req.AsOf.Incarnation)) {
+	if err := ValidateAsOf(req.AsOf); err != nil {
+		return BeadPage{}, err
+	}
+	// RPC binds an instant cursor to the original selector; the trusted domain
+	// position carries its resolved revision so continuation never re-resolves.
+	if req.Position != nil && ((req.AsOf.Instant == nil && req.Position.AsOf.Revision.String() != req.AsOf.Revision.String()) || (req.AsOf.Incarnation != "" && req.Position.AsOf.Incarnation != req.AsOf.Incarnation)) {
 		return BeadPage{}, failure("cursor_invalid", "history page does not match requested asOf")
 	}
 	if req.Position != nil {

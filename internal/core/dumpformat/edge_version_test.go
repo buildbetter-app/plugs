@@ -10,6 +10,36 @@ import (
 )
 
 // These are detached contract controls, not accepted native producer output.
+// This retains PR370's external/local separation under main's explicit v2/v3
+// contract. Its old external-custom v2 refusal predates that accepted contract.
+func TestEdgeV2ReaderKeepsCurrentExternalAndLocalCustomContracts(t *testing.T) {
+	for _, version := range []int{1, EdgeVersionTypedDependencies, EdgeVersionLocalOpaque} {
+		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
+			fixture := newMergeFixture(t, "pl")
+			edge := &fixture.records["edge"][0]
+			edge.Source.Fields["depends_on_issue_id"] = nil
+			edge.Source.Fields["depends_on_external"] = "external:pl-2"
+			edge.Body["target_kind"], edge.Body["to"] = "depends_on_external", "external:pl-2"
+			if _, err := Read(bytes.NewReader(edgeVersionFixture(t, fixture, version))); err != nil {
+				t.Fatalf("existing typed external source arm changed under version %d: %v", version, err)
+			}
+			edge.Body["type"], edge.Source.Fields["type"] = "custom", "custom"
+			data := edgeVersionFixture(t, fixture, version)
+			archive, err := Read(bytes.NewReader(data))
+			if err != nil || !reflect.DeepEqual(archive.Records("edge")[0], *edge) || !bytes.Equal(archive.TarBytes(), data) {
+				t.Fatalf("external custom source lost admission or exact retained values at version %d: %v", version, err)
+			}
+			edge.Source.Fields["depends_on_external"] = nil
+			edge.Source.Fields["depends_on_issue_id"] = "pl-2"
+			edge.Body["target_kind"], edge.Body["to"] = "depends_on_issue_id", "pl-2"
+			_, err = Read(bytes.NewReader(edgeVersionFixture(t, fixture, version)))
+			if version == EdgeVersionLocalOpaque && err != nil || version != EdgeVersionLocalOpaque && err == nil {
+				t.Fatalf("external admission widened the wrong local dependency contract at version %d: %v", version, err)
+			}
+		})
+	}
+}
+
 func edgeVersionFixture(t *testing.T, f *mergeFixture, version int) []byte {
 	t.Helper()
 	return f.bytes(t, func(m *Manifest, _ map[string][]byte) {

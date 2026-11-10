@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 )
 
 var publicBeadsRuntime = flag.Bool("public-beads-runtime", false, "Require the independently delivered public Beads artifact")
@@ -45,7 +47,7 @@ func TestPublicBeadsArtifactReimportThreeEngines(t *testing.T) {
 			t.Run(engine+"/"+test.name, func(t *testing.T) {
 				output := filepath.Join(root, engine+"-"+test.name)
 				args := []string{"--input", "../../internal/integration/converterroundtrip/testdata/" + test.file, "--output-dir", output, "--engine", engine, "--history-mode", test.mode,
-					"--beads-binary", options.Binary, "--beads-sha256", options.SHA256, "--beads-build-run", options.BuildRun}
+					"--beads-binary", options.Binary, "--beads-sha256", options.SHA256, "--beads-build-run", options.BuildRun, "--beads-inventory", autoBeadsInventory}
 				// The partial fixture's three beads are all Ephemeral=true.
 				// Its edit/reimport workload requires the explicit all export;
 				// the complete fixture continues to exercise the default.
@@ -66,18 +68,50 @@ func TestPublicBeadsArtifactReimportThreeEngines(t *testing.T) {
 				}
 				t.Logf("PUBLIC_BEADS_REIMPORT_OUTCOME %s", encoded)
 				commands := logPublicBeadsCommands(t, output)
-				if got.Status != "WAIT" || got.Stage != "beads_inventory" || got.Reason != "beads_inventory_required" || got.BeadsReimport != "PASS" || got.BeadsReadback != "WAIT" || got.BeadsReadbackSHA256 != "" {
-					t.Fatalf("actual import and unqualified readback: %+v", got)
+				if got.Reason == "beads_raw_readback_invalid" {
+					// Retain the actual reader refusal before the owned workspace
+					// is removed, without exposing it through the public CLI.
+					_, readErr := dumpformat.ReadFile(filepath.Join(output, "beads-raw-readback.tar"))
+					t.Logf("PUBLIC_BEADS_RAW_READBACK_REFUSAL %v", readErr)
+				}
+				if got.BeadsReadbackSHA256 != "" {
+					// Inspect the actual readable archive before a generic outcome
+					// refusal hides the differing field and deletes the workspace.
+					assertPublicNativeCaptureReadback(t, options, output, got)
+				}
+				if got.Status != "PASS" || got.Stage != "public_snapshot_roundtrip_complete" || got.Reason != "" || got.BeadsReimport != "PASS" || got.BeadsReadback != "PASS" || got.BeadsReadbackSHA256 == "" {
+					t.Fatalf("actual import and native readback: %+v", got)
 				}
 				if got.BeadsCommit != beadsCommit || got.BeadsTree != beadsTree || got.BeadsBinarySHA256 != options.SHA256 || got.BeadsBuildRun != options.BuildRun || got.Claims != 1 || got.Writes != 1 || got.HistoryMode != test.mode || got.RestoredHead != test.head || got.HistoryFloor != test.floor || got.SourceHistoryComplete != test.complete || got.SourceHistoryFirst != test.first || got.SourceHistoryHead != test.sourceHead || len(got.SourceHistoryGaps) != test.gaps || got.RestoredIncarnation == "" || got.RestoredIncarnation != got.ReverseIncarnation || got.ReverseAt == "" || got.BaselineSHA256 == got.ReverseSHA256 || got.HistoryLossItems == 0 {
 					t.Fatalf("actual import changed provenance or restore/workload assertions: %+v", got)
 				}
-				if len(commands) != 3 || len(commands[0].Args) != 2 || commands[0].Args[0] != "version" || commands[0].Args[1] != "--json" || len(commands[1].Args) == 0 || commands[1].Args[0] != "init" || len(commands[2].Args) != 3 || commands[2].Args[0] != "import" || commands[2].Args[1] != filepath.Join(output, "reverse-live.jsonl") || commands[2].Args[2] != "--json" {
-					t.Fatal("actual version/init/import command evidence is incomplete")
+				if len(commands) != 5 || len(commands[0].Args) != 2 || commands[0].Args[0] != "version" || commands[0].Args[1] != "--json" || len(commands[1].Args) == 0 || commands[1].Args[0] != "init" || len(commands[2].Args) != 3 || commands[2].Args[0] != "import" || commands[2].Args[1] != filepath.Join(output, "reverse-live.jsonl") || commands[2].Args[2] != "--json" || len(commands[3].Args) != 7 || commands[3].Args[0] != "--readonly" || commands[3].Args[1] != "export" || commands[3].Args[2] != "--format" || commands[3].Args[3] != "beads-inventory/1" || commands[3].Args[4] != "--plug-capture-public" || commands[3].Args[5] != "--output" || commands[3].Args[6] != filepath.Join(output, "beads-generated-inventory.json") || len(commands[4].Args) != 8 || commands[4].Args[0] != "--readonly" || commands[4].Args[1] != "export" || commands[4].Args[2] != "--format" || commands[4].Args[3] != "plug-dump/1" || commands[4].Args[4] != "--plug-inventory" || commands[4].Args[5] != filepath.Join(output, "beads-inventory.json") || commands[4].Args[6] != "--output" || commands[4].Args[7] != filepath.Join(output, "beads-raw-readback.tar") {
+					t.Fatal("actual version/init/import/inventory/raw-export command evidence is incomplete")
 				}
 				for _, command := range commands {
 					if command.Exit != 0 {
 						t.Fatal("a required real Beads command failed")
+					}
+				}
+				inventoryData, err := os.ReadFile(filepath.Join(output, "beads-inventory.json"))
+				var inventory struct {
+					Version  string `json:"version"`
+					External []struct {
+						Family string `json:"family"`
+						Path   string `json:"path"`
+						State  string `json:"state"`
+					} `json:"external"`
+					ConfigPolicy map[string]string `json:"config_policy"`
+				}
+				if err != nil || json.Unmarshal(inventoryData, &inventory) != nil || inventory.Version != "beads-inventory/1" || len(inventory.External) != 26 || len(inventory.ConfigPolicy) == 0 {
+					t.Fatalf("auto inventory census is incomplete: %v %s", err, inventoryData)
+				}
+				for _, input := range inventory.External {
+					if input.Family == "" || input.State != "json-config" || input.Path == "" {
+						t.Fatalf("auto inventory external entry is incomplete: %+v", input)
+					}
+					if info, err := os.Stat(input.Path); err != nil || !info.Mode().IsRegular() {
+						t.Fatalf("auto inventory sidecar is unavailable: %+v %v", input, err)
 					}
 				}
 				var imported struct {
@@ -130,7 +164,9 @@ func deliveredPublicBeads(t *testing.T) beadsOptions {
 		t.Fatal("verified public artifact manifest is unavailable or invalid")
 	}
 	// External manifest wire names are source-controlled protocol data.
-	profileData, err := os.ReadFile("testdata/public-companion-profile.json")
+	profileData := publicNativeProtocolInput(t,
+		"tools/roundtrip/testdata/native-public-profile.json",
+		"67491cd9ce55d652ee99ce80144298648ce60af4c93d35f266ccf7a6fbfd739d")
 	var profile struct {
 		Schema   string `json:"schema"`
 		Exporter struct {
@@ -140,8 +176,8 @@ func deliveredPublicBeads(t *testing.T) beadsOptions {
 		} `json:"exporter"`
 		VersionKey string `json:"version_key"`
 	}
-	if err != nil || json.Unmarshal(profileData, &profile) != nil || profile.Schema == "" || profile.Exporter.TargetKey == "" || profile.Exporter.Label == "" || profile.Exporter.Binary == "" || profile.VersionKey == "" {
-		t.Fatal("public companion protocol data is unavailable or invalid")
+	if json.Unmarshal(profileData, &profile) != nil || profile.Schema != "plug-public-native/1" || profile.Exporter.TargetKey == "" || profile.Exporter.Label == "" || profile.Exporter.Binary == "" || profile.VersionKey == "" {
+		t.Fatal("public native protocol data is unavailable or invalid")
 	}
 	var identity struct {
 		Schema string `json:"schema"`
@@ -206,6 +242,22 @@ func logPublicBeadsCommands(t *testing.T, output string) []commandEvidence {
 			}
 			t.Logf("PUBLIC_BEADS_RAW command=%d stream=%s bytes=%q", i+1, stream, data)
 		}
+	}
+	data, err = os.ReadFile(filepath.Join(output, "beads-workspace-init.json"))
+	var initialized commandEvidence
+	if err != nil || json.Unmarshal(data, &initialized) != nil || initialized.Exit != 0 || strings.Join(initialized.Args, " ") != "git init --quiet --template=" {
+		t.Fatalf("actual isolated Git workspace evidence is incomplete: %v %s", err, data)
+	}
+	t.Logf("PUBLIC_BEADS_WORKSPACE_INIT %s", data)
+	for stream, digest := range map[string]string{"stdout": initialized.StdoutSHA256, "stderr": initialized.StderrSHA256} {
+		raw, err := os.ReadFile(filepath.Join(output, "beads-workspace-init."+stream))
+		if err != nil || hash(raw) != digest {
+			t.Fatal("actual Git workspace initialization output is incomplete")
+		}
+		t.Logf("PUBLIC_BEADS_WORKSPACE_RAW stream=%s bytes=%q", stream, raw)
+	}
+	if info, err := os.Lstat(filepath.Join(output, "beads-target", ".git")); err != nil || !info.IsDir() {
+		t.Fatal("actual owned Git repository is missing")
 	}
 	return commands
 }

@@ -30,7 +30,7 @@ with tempfile.TemporaryDirectory(prefix="plug-bazel-delivery-test.") as temporar
     # collector before its fixture commit; never claim official bytes or pins.
     public_payload = b"fixture public exporter\n"
     public_manifest = {
-        "schema": "plug-public-companion/1", "build": {"run_id": "123"},
+        "schema": "plug-public-native/1", "build": {"run_id": "123"},
         "workflow": {"sha": "a" * 40},
         "source": {"beads": {"commit": "1" * 40}, "plug": {"commit": "2" * 40}},
         "targets": {"beads_exporter": {"label": "//cmd/bd:bd", "binary": "bin/bd-export"}},
@@ -377,7 +377,7 @@ runpy.run_path(script, run_name="__main__")
                 elif public_mode == "receipt-workflow":
                     receipt["producer_workflow_sha"] = "b" * 40
                 elif public_mode == "receipt-schema":
-                    receipt["schema"] = "plug-public-native/1"
+                    receipt["schema"] = "plug-public-companion/1"
                 elif public_mode == "receipt-digest":
                     receipt["artifact_digest"] = "invalid"
                 elif public_mode == "receipt-descriptor":

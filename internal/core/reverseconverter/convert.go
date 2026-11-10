@@ -498,6 +498,8 @@ func withReport(err error, report Report) error {
 	return err
 }
 
+// manifestEdgeVersion uses only the validated, retained source registry.
+// No environment or converter option can select a newer dependency contract.
 func manifestEdgeVersion(manifest Manifest) int {
 	for _, kind := range manifest.Kinds {
 		if kind.Name == "edge" {

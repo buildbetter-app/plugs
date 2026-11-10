@@ -80,7 +80,7 @@ func run(args []string) outcome {
 	flags.StringVar(&beads.Binary, "beads-binary", "", "Remotely built pinned public Beads executable")
 	flags.StringVar(&beads.SHA256, "beads-sha256", "", "Independently verified Beads executable SHA256")
 	flags.StringVar(&beads.BuildRun, "beads-build-run", "", "Independently verified RunsOn build receipt ID")
-	flags.StringVar(&beads.Inventory, "beads-inventory", "", "Actual disposable Beads target inventory for supported raw export")
+	flags.StringVar(&beads.Inventory, "beads-inventory", "", "Actual disposable Beads target inventory path, or auto to census the fresh target")
 	exercise := flags.Bool("exercise", true, "Exercise claim/release and an idempotent live edit")
 	all := flags.Bool("all", false, "Include Ephemeral=true source rows for the explicit all-planes export")
 	if flags.Parse(args) != nil || flags.NArg() != 0 || *input == "" || *output == "" {

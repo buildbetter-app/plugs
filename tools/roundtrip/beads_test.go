@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"os/exec"
@@ -15,6 +17,101 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/reverseconverter"
 )
+
+func TestBeadsGitWorkspaceIsRealAndIgnoresAmbientRedirection(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "target")
+	childHome := filepath.Join(workspace, "home")
+	if err := os.MkdirAll(childHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ambient := filepath.Join(root, "ambient.git")
+	t.Setenv("GIT_DIR", ambient)
+	t.Setenv("GIT_WORK_TREE", root)
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(root, "unavailable-global-config"))
+	t.Setenv("GIT_TEMPLATE_DIR", filepath.Join(root, "unavailable-template"))
+	if err := initializeBeadsGitWorkspace(context.Background(), root, workspace, childHome); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	cmd.Dir = workspace
+	cmd.Env = beadsChildEnv(workspace, childHome)
+	resolved, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data, err := cmd.Output(); err != nil || strings.TrimSpace(string(data)) != resolved {
+		t.Fatalf("actual Git root=%q err=%v", data, err)
+	}
+	if _, err := os.Stat(ambient); !os.IsNotExist(err) {
+		t.Fatalf("ambient Git redirection affected initialization: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "beads-workspace-init.json"))
+	var got commandEvidence
+	if err != nil || json.Unmarshal(data, &got) != nil || got.Exit != 0 {
+		t.Fatalf("actual Git initialization receipt=%s err=%v", data, err)
+	}
+	for stream, digest := range map[string]string{"stdout": got.StdoutSHA256, "stderr": got.StderrSHA256} {
+		raw, err := os.ReadFile(filepath.Join(root, "beads-workspace-init."+stream))
+		if err != nil || hash(raw) != digest {
+			t.Fatalf("actual Git %s receipt is incomplete: %v", stream, err)
+		}
+	}
+}
+
+func TestBeadsGitWorkspaceFailureRetainsActualReceipt(t *testing.T) {
+	root := t.TempDir()
+	if err := initializeBeadsGitWorkspace(context.Background(), root, filepath.Join(root, "missing-target"), root); err == nil {
+		t.Fatal("missing target was accepted as a Git repository")
+	}
+	data, err := os.ReadFile(filepath.Join(root, "beads-workspace-init.json"))
+	var got commandEvidence
+	if err != nil || json.Unmarshal(data, &got) != nil || got.Exit == 0 {
+		t.Fatalf("actual initialization failure was lost: %s %v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "missing-target")); !os.IsNotExist(err) {
+		t.Fatalf("failed initialization created a target: %v", err)
+	}
+}
+
+func TestAutoInventoryUsesRealProducerCommandAndPrivateCopy(t *testing.T) {
+	root := t.TempDir()
+	want := []byte(`{"version":"beads-inventory/1","external":[]}`)
+	var got []string
+	path, err := captureAutoInventory(root, func(args ...string) ([]byte, error) {
+		got = append([]string(nil), args...)
+		if len(args) != 7 || args[0] != "--readonly" || args[1] != "export" || args[2] != "--format" || args[3] != "beads-inventory/1" || args[4] != "--plug-capture-public" || args[5] != "--output" {
+			t.Fatalf("auto inventory command=%q", args)
+		}
+		if err := os.WriteFile(args[6], want, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return nil, nil
+	})
+	if err != nil || path != filepath.Join(root, "beads-inventory.json") || len(got) != 7 {
+		t.Fatalf("auto inventory capture path=%q command=%q err=%v", path, got, err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(data, want) {
+		t.Fatalf("private inventory copy=%q err=%v", data, err)
+	}
+	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("private inventory mode=%v err=%v", info, err)
+	}
+}
+
+func TestAutoInventoryProducerFailureDoesNotPublishCopy(t *testing.T) {
+	root := t.TempDir()
+	path, err := captureAutoInventory(root, func(args ...string) ([]byte, error) {
+		return nil, errors.New("producer refused")
+	})
+	if err == nil || path != "" {
+		t.Fatalf("producer refusal was certified: path=%q err=%v", path, err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "beads-inventory.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("producer refusal published inventory: %v", statErr)
+	}
+}
 
 func TestMissingPinnedBeadsCannotPassOrUsePATH(t *testing.T) {
 	result := outcome{BeadsReimport: "WAIT", BeadsReadback: "WAIT"}

@@ -70,7 +70,7 @@ type serviceParams struct {
 	TargetKind   model.LinkTargetKind           `json:"targetKind"`
 	ID           json.RawMessage                `json:"id"`
 	Ref          model.Ref                      `json:"ref"`
-	AsOf         *asOf                          `json:"asOf"`
+	AsOf         *asOfSelector                  `json:"asOf"`
 	Project      string                         `json:"project"`
 	ViewID       string                         `json:"viewId"`
 	Filter       *filter                        `json:"filter"`
@@ -122,11 +122,27 @@ type filter struct {
 	IncludeEphemeral *bool    `json:"includeEphemeral,omitempty"`
 }
 
-func (p *asOf) domain() *service.AsOf {
+// asOf remains the concrete revision result/cursor shape. Inputs additionally
+// accept the instant arm without making response addresses ambiguous.
+type asOfSelector struct {
+	Revision    *model.Revision `json:"revision,omitempty"`
+	Incarnation string          `json:"incarnation,omitempty"`
+	Instant     *time.Time      `json:"instant,omitempty"`
+}
+
+func (p *asOfSelector) domain() *service.AsOf {
 	if p == nil {
 		return nil
 	}
-	return &service.AsOf{Revision: p.Revision, Incarnation: p.Incarnation}
+	out := &service.AsOf{Incarnation: p.Incarnation}
+	if p.Revision != nil {
+		out.Revision = *p.Revision
+	}
+	if p.Instant != nil {
+		instant := p.Instant.UTC()
+		out.Instant = &instant
+	}
+	return out
 }
 func (p *filter) domain() *service.Filter {
 	if p == nil {

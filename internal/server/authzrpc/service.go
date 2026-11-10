@@ -345,7 +345,16 @@ func (s *GuardedService) History(ctx context.Context, by model.PrincipalRef, req
 	if s == nil || s.delegate == nil || s.checker == nil {
 		return service.BeadPage{}, &model.Error{Message: "authorization service is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
 	}
+	if err := service.ValidateAsOf(req.AsOf); err != nil {
+		return service.BeadPage{}, err
+	}
 	full := req
+	// RPC validates the original selector against the signed cursor scope.
+	// Position is trusted domain state; retain its concrete snapshot before
+	// restarting the full postfilter walk from offset zero.
+	if req.AsOf.Instant != nil && req.Position != nil {
+		full.AsOf = req.Position.AsOf
+	}
 	full.Limit = 1000
 	full.Cursor = ""
 	full.Position = nil
@@ -766,21 +775,7 @@ func (s *GuardedService) current(ctx context.Context, asOf *service.AsOf) (drive
 		return nil, nil, func() {}, &model.Error{Data: model.ErrorData{Code: "busy", Retryable: true, Hint: "active storage lease was lost"}}
 	default:
 	}
-	meta, err := s.checker.store.Meta(ctx)
-	if err != nil {
-		return nil, nil, func() {}, err
-	}
-	view := driver.View{Incarnation: meta.Incarnation}
-	if asOf != nil {
-		if err := asOf.Revision.Validate(); err != nil {
-			return nil, nil, func() {}, &model.Error{Message: "invalid asOf revision", Data: model.ErrorData{Code: "invalid_params"}}
-		}
-		view.At = &asOf.Revision
-		if asOf.Incarnation != "" {
-			view.Incarnation = asOf.Incarnation
-		}
-	}
-	reader, err := s.checker.store.Read(ctx, view)
+	reader, err := service.ReadAsOf(ctx, s.checker.store, asOf)
 	if err != nil {
 		return nil, nil, func() {}, err
 	}

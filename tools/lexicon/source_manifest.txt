@@ -187,8 +187,10 @@ internal/core/dumpformat/native_history_test.go
 internal/core/dumpformat/ontology.go
 internal/core/dumpformat/ontology_test.go
 internal/core/dumpformat/records.go
+internal/core/dumpformat/source_fields_contract_test.go
 internal/core/dumpformat/source_identity.go
 internal/core/dumpformat/source_identity_test.go
+internal/core/dumpformat/source_metadata_test.go
 internal/core/dumpformat/source_planes.go
 internal/core/dumpformat/source_planes_catalog.go
 internal/core/dumpformat/source_planes_sidecars.go
@@ -1518,6 +1520,9 @@ spec/s1-b13-native/recording_test.go
 spec/s1-b17-b20/BUILD.bazel
 spec/s1-b17-b20/README.md
 spec/s1-b17-b20/b17_test.go
+spec/s1-b17-b20/b18_guarded_test.go
+spec/s1-b17-b20/b18_instant_test.go
+spec/s1-b17-b20/b18_metadata_history_test.go
 spec/s1-b17-b20/b18_test.go
 spec/s1-b17-b20/b19_archive_test.go
 spec/s1-b17-b20/b19_fixture_test.go
@@ -1527,6 +1532,8 @@ spec/s1-b17-b20/b20_journal_log_test.go
 spec/s1-b17-b20/b20_source_compile.sh
 spec/s1-b17-b20/b20_test.go
 spec/s1-b17-b20/i6_test.go
+spec/s1-b17-b20/paired_fixture_test.go
+spec/s1-b17-b20/paired_replay_test.go
 spec/s1-b17-b20/reference/b18/record.py
 spec/s1-b17-b20/reference/b18/recording.json
 spec/s1-b17-b20/reference/b18/run-a.json
@@ -1538,6 +1545,7 @@ spec/s1-b17-b20/reference/b20/beads-run-a.json
 spec/s1-b17-b20/reference/b20/beads-run-b.json
 spec/s1-b17-b20/reference/b20/provenance.json
 spec/s1-b17-b20/reference/b20/record_reference.py
+spec/s1-b17-b20/source_compile.sh
 spec/s1-b17-b20/testdata/recording-1/export.jsonl
 spec/s1-b17-b20/testdata/recording-1/imported.json
 spec/s1-b17-b20/testdata/recording-2/export.jsonl
@@ -1697,9 +1705,12 @@ tools/rehearsal/transcript_test.go
 tools/roundtrip/BUILD.bazel
 tools/roundtrip/README.md
 tools/roundtrip/beads.go
+tools/roundtrip/beads_inventory_refusal_test.go
 tools/roundtrip/beads_native_regression_test.go
 tools/roundtrip/beads_runtime_test.go
 tools/roundtrip/beads_test.go
 tools/roundtrip/main.go
 tools/roundtrip/main_test.go
+tools/roundtrip/testdata/native-public-profile.json
+tools/roundtrip/testdata/native-public-recording-fixture.json
 tools/roundtrip/testdata/public-companion-profile.json

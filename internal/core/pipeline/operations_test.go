@@ -290,17 +290,61 @@ func metadataReceipt(t *testing.T, h *harness, m model.WriteMeta) *driver.Idempo
 	return receipt
 }
 
+func TestMetadataCASPreservesNumericLiteralTokens(t *testing.T) {
+	for _, tc := range []struct{ name, stored, canonical, other string }{
+		{"fraction", `1.0`, `1.0`, `1`},
+		{"nested", `{"z":[2.00,1e0,-0.00],"a":1}`, `{"a":1,"z":[2.00,1e0,-0.00]}`, `{"a":1,"z":[2,1,0]}`},
+		{"large", `9007199254740993123456789.12345678901234567890`, `9007199254740993123456789.12345678901234567890`, `9007199254740993123456789.1234567890123456789`},
+		{"negative-zero", `-0.00`, `-0.00`, `0`},
+		{"exponent", `1.25e-2`, `1.25e-2`, `0.0125`},
+		{"large-exponent", `10e999999999999999999999999999`, `10e999999999999999999999999999`, `1e1000000000000000000000000000`},
+		{"private", `{"secret":"private-cas-value","value":1.0}`, `{"secret":"private-cas-value","value":1.0}`, `{"secret":"private-cas-value","value":1}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := setup(t)
+			ref := apply(t, h.writer(), model.ChangeSet{Ops: []model.Op{create("")}}, meta(1)).Results[0].Ref
+			apply(t, h.writer(), model.ChangeSet{Ops: []model.Op{metadataOp(ref, "literal", tc.stored), metadataOp(ref, "sibling", `true`)}}, meta(2))
+			before := metadataGraph(t, h)
+			wrong := model.ChangeSet{Ops: []model.Op{metadataOp(ref, "literal", `false`), patch(ref, map[string]any{"title": "must not land"})}, Expect: []model.Precondition{model.PreconditionByHash(ref, "metadata.literal", metadataDigest(tc.other))}}
+			_, err := h.writer().Apply(context.Background(), by, wrong, meta(3))
+			var typed *model.Error
+			if !errors.As(err, &typed) || typed.Data.Code != "precondition_failed" || typed.Data.Details["reason"] != "hash" {
+				t.Fatalf("B17 distinct numeric token %s matched stored %s: %v", tc.other, tc.stored, err)
+			}
+			failure, err := json.Marshal(typed)
+			if err != nil || bytes.Contains(failure, []byte("private-cas-value")) || metadataReceipt(t, h, meta(3)) != nil || !reflect.DeepEqual(before, metadataGraph(t, h)) {
+				t.Fatal("numeric-token refusal leaked content or published a row, derived state, history or receipt")
+			}
+			matching := model.ChangeSet{Ops: []model.Op{metadataOp(ref, "literal", `false`)}, Expect: []model.Precondition{model.PreconditionByHash(ref, "metadata.literal", metadataDigest(tc.canonical))}}
+			request, err := json.Marshal(matching)
+			if err != nil {
+				t.Fatal(err)
+			}
+			commit := apply(t, h.writer(), matching, meta(4))
+			after := metadataGraph(t, h)
+			if len(after.Log) != len(before.Log)+1 || len(after.Versions[ref.ID]) != len(before.Versions[ref.ID])+1 || metadataReceipt(t, h, meta(4)) == nil {
+				t.Fatal("matching literal did not publish exactly one atomic history entry and receipt")
+			}
+			replayed := apply(t, h.writer(), matching, meta(4))
+			unchanged, err := json.Marshal(matching)
+			if err != nil || !bytes.Equal(request, unchanged) || !reflect.DeepEqual(commit, replayed) || !reflect.DeepEqual(after, metadataGraph(t, h)) {
+				t.Fatal("replayed literal CAS changed caller input, stored commit or durable state")
+			}
+		})
+	}
+}
+
 func TestMetadataFieldHashCASUsesCanonicalCommittedValue(t *testing.T) {
 	for _, tc := range []struct{ name, stored, canonical string }{
 		{"object", ` {"b":2,"a":1} `, `{"a":1,"b":2}`},
-		{"numeric", `1.0`, `1`},
-		{"nested", `{"z":[{"b":2.00,"a":1e0},"1",true,null,[3,2]],"a":-1.2500}`, `{"a":-1.25,"z":[{"a":1,"b":2},"1",true,null,[3,2]]}`},
-		{"large", `9007199254740993123456789.12345678901234567890`, `9007199254740993123456789.1234567890123456789`},
-		{"integerZeros", `100.00`, `100`},
-		{"negativeZero", `-0.00e999999999999999999999999999`, `0`},
-		{"fractionExponent", `1.25e-2`, `0.0125`},
-		{"largeExponent", `10e999999999999999999999999999`, `1e1000000000000000000000000000`},
-		{"tinyExponent", `10e-1000000000000000000000000001`, `1e-1000000000000000000000000000`},
+		{"numeric", `1.0`, `1.0`},
+		{"nested", `{"z":[{"b":2.00,"a":1e0},"1",true,null,[3,2]],"a":-1.2500}`, `{"a":-1.2500,"z":[{"a":1e0,"b":2.00},"1",true,null,[3,2]]}`},
+		{"large", `9007199254740993123456789.12345678901234567890`, `9007199254740993123456789.12345678901234567890`},
+		{"integerZeros", `100.00`, `100.00`},
+		{"negativeZero", `-0.00e999999999999999999999999999`, `-0.00e999999999999999999999999999`},
+		{"fractionExponent", `1.25e-2`, `1.25e-2`},
+		{"largeExponent", `10e999999999999999999999999999`, `10e999999999999999999999999999`},
+		{"tinyExponent", `10e-1000000000000000000000000001`, `10e-1000000000000000000000000001`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := setup(t)
@@ -312,7 +356,7 @@ func TestMetadataFieldHashCASUsesCanonicalCommittedValue(t *testing.T) {
 			apply(t, w, model.ChangeSet{Ops: []model.Op{patch(ref, map[string]any{"description": "disjoint"})}}, meta(3))
 			before := metadataGraph(t, h)
 			hash := metadataDigest(tc.canonical)
-			if tc.name == "object" && hash != "43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777" || tc.name == "numeric" && hash != "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b" {
+			if tc.name == "object" && hash != "43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777" || tc.name == "numeric" && hash != "d0ff5974b6aa52cf562bea5921840c032a860a91a3512f7fe8f768f6bbe005f6" {
 				t.Fatal("binding digest vector drifted")
 			}
 			cs := model.ChangeSet{Ops: []model.Op{patch(ref, map[string]any{"title": "atomic"}), metadataOp(ref, key, `{"next":true}`)}, Expect: []model.Precondition{model.PreconditionByHash(ref, "metadata."+key, hash)}}

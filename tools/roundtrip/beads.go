@@ -28,12 +28,14 @@ import (
 // These identify the supported importer/exporter interface inspected for this
 // integration. The archive's older beads_reference is its schema pin, not the
 // executable's build provenance. A future executable requires a new review.
-const beadsCommit = "682ca798dab448803ea9b74f7da3715c21d8c3ae"
-const beadsTree = "9d026de307ee915953b247cf42758d0c53303574"
+const beadsCommit = "c8eb3ba7d4177e111a6f5c8aebe06b5d0b1d5724"
+const beadsTree = "930405e863284a3955cbd35e73a6097b606b91a5"
 
 type beadsOptions struct {
 	Binary, SHA256, BuildRun, Inventory string
 }
+
+const autoBeadsInventory = "auto"
 
 type commandEvidence struct {
 	Args         []string `json:"args"`
@@ -43,6 +45,64 @@ type commandEvidence struct {
 }
 
 func hash(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
+
+func beadsChildEnv(workspace, childHome string) []string {
+	return []string{"PATH=/usr/bin:/bin", "HOME=" + childHome, "XDG_CONFIG_HOME=" + filepath.Join(childHome, ".config"), "BEADS_DIR=" + filepath.Join(workspace, ".beads"), "DO_NOT_TRACK=1", "GIT_CONFIG_NOSYSTEM=1", "GIT_AUTHOR_NAME=Public roundtrip", "GIT_AUTHOR_EMAIL=public@example.invalid", "GIT_COMMITTER_NAME=Public roundtrip", "GIT_COMMITTER_EMAIL=public@example.invalid"}
+}
+
+// Native inventory resolves the actual Git hooks directory. Initialize an
+// empty repository in the owned target, without ambient templates or config.
+func initializeBeadsGitWorkspace(ctx context.Context, output, workspace, childHome string) error {
+	args := []string{"git", "init", "--quiet", "--template="}
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	cmd.Dir = workspace
+	cmd.Env = beadsChildEnv(workspace, childHome)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	runErr := cmd.Run()
+	exit := 0
+	if runErr != nil {
+		exit = -1
+		if cmd.ProcessState != nil {
+			exit = cmd.ProcessState.ExitCode()
+		}
+	}
+	evidence := commandEvidence{Args: args, Exit: exit, StdoutSHA256: hash(stdout.Bytes()), StderrSHA256: hash(stderr.Bytes())}
+	data, err := json.Marshal(evidence)
+	if err != nil {
+		return err
+	}
+	for name, raw := range map[string][]byte{"json": data, "stdout": stdout.Bytes(), "stderr": stderr.Bytes()} {
+		if err := writePrivate(output, "beads-workspace-init."+name, raw); err != nil {
+			return err
+		}
+	}
+	return runErr
+}
+
+// captureAutoInventory asks the verified Beads executable to census the target
+// it just initialized and imported. The producer writes sidecars next to its
+// inventory; those paths remain valid while the output directory is retained
+// as private runtime evidence. The copied inventory gives the roundtrip output
+// a stable, private record of the exact census consumed by the raw exporter.
+func captureAutoInventory(output string, run func(...string) ([]byte, error)) (string, error) {
+	generated := filepath.Join(output, "beads-generated-inventory.json")
+	if _, err := run("--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "--output", generated); err != nil {
+		return "", err
+	}
+	info, err := os.Lstat(generated)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
+		return "", fmt.Errorf("generated beads inventory unavailable")
+	}
+	data, err := os.ReadFile(generated)
+	if err != nil || len(data) > 1<<20 {
+		return "", fmt.Errorf("generated beads inventory unreadable")
+	}
+	if err := writePrivate(output, "beads-inventory.json", data); err != nil {
+		return "", err
+	}
+	return filepath.Join(output, "beads-inventory.json"), nil
+}
 
 // runBeads has no build, download, workflow or PATH fallback. It consumes an
 // independently delivered, hash-pinned public executable on the runtime host.
@@ -115,7 +175,7 @@ func runBeads(ctx context.Context, options beadsOptions, output string, source *
 		cmd := exec.CommandContext(ctx, binary, args...)
 		cmd.Dir = workspace
 		// Do not inherit a user's workspace, credentials, config or plugins.
-		cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + childHome, "XDG_CONFIG_HOME=" + filepath.Join(childHome, ".config"), "BEADS_DIR=" + filepath.Join(workspace, ".beads"), "DO_NOT_TRACK=1", "GIT_CONFIG_NOSYSTEM=1", "GIT_AUTHOR_NAME=Public roundtrip", "GIT_AUTHOR_EMAIL=public@example.invalid", "GIT_COMMITTER_NAME=Public roundtrip", "GIT_COMMITTER_EMAIL=public@example.invalid"}
+		cmd.Env = beadsChildEnv(workspace, childHome)
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &stdout, &stderr
 		err := cmd.Run()
@@ -150,6 +210,11 @@ func runBeads(ctx context.Context, options beadsOptions, output string, source *
 		result.Status, result.Reason = "BLOCK", "beads_executable_pin_mismatch"
 		return
 	}
+	result.Stage = "beads_workspace"
+	if err := initializeBeadsGitWorkspace(ctx, output, workspace, childHome); err != nil {
+		result.Status, result.Reason = "BLOCK", "beads_workspace_init_refused"
+		return
+	}
 	result.Stage = "beads_init"
 	if _, err = run("init", "--prefix", projects[0].Prefix, "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet"); err != nil {
 		result.Status, result.Reason = "BLOCK", "beads_init_refused"
@@ -168,21 +233,30 @@ func runBeads(ctx context.Context, options beadsOptions, output string, source *
 	if options.Inventory == "" {
 		return
 	}
-	inventory, err := filepath.Abs(options.Inventory)
-	if err != nil {
-		result.Status = "BLOCK"
-		return
+	var inventory string
+	if options.Inventory == autoBeadsInventory {
+		inventory, err = captureAutoInventory(output, run)
+		if err != nil {
+			result.Status, result.Reason = "BLOCK", "beads_inventory_capture_refused"
+			return
+		}
+	} else {
+		inventory, err = filepath.Abs(options.Inventory)
+		if err != nil {
+			result.Status = "BLOCK"
+			return
+		}
+		if stat, statErr := os.Lstat(inventory); statErr != nil || !stat.Mode().IsRegular() || stat.Size() > 1<<20 {
+			result.Status = "BLOCK"
+			return
+		}
+		inventoryBytes, readErr := os.ReadFile(inventory)
+		if readErr != nil || len(inventoryBytes) > 1<<20 || writePrivate(output, "beads-inventory.json", inventoryBytes) != nil {
+			result.Status = "BLOCK"
+			return
+		}
+		inventory = filepath.Join(output, "beads-inventory.json")
 	}
-	if stat, err := os.Stat(inventory); err != nil || !stat.Mode().IsRegular() || stat.Size() > 1<<20 {
-		result.Status = "BLOCK"
-		return
-	}
-	inventoryBytes, err := os.ReadFile(inventory)
-	if err != nil || len(inventoryBytes) > 1<<20 || writePrivate(output, "beads-inventory.json", inventoryBytes) != nil {
-		result.Status = "BLOCK"
-		return
-	}
-	inventory = filepath.Join(output, "beads-inventory.json")
 	result.Stage = "beads_readback"
 	readback := filepath.Join(output, "beads-raw-readback.tar")
 	if _, err = run("--readonly", "export", "--format", "plug-dump/1", "--plug-inventory", inventory, "--output", readback); err != nil {

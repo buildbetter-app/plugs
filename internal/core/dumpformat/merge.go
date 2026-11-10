@@ -398,6 +398,9 @@ func rejectUnmerged(manifest Manifest) error {
 }
 
 func compatibleManifests(base, other Manifest) error {
+	if base.SourceFieldsContract != other.SourceFieldsContract {
+		return fmt.Errorf("source fields contracts differ")
+	}
 	if base.Format != other.Format || base.Schema != other.Schema || base.Reference != other.Reference ||
 		base.MainVersion != other.MainVersion || base.IgnoredVersion != other.IgnoredVersion || base.Scope != other.Scope || base.SourcePlaneAddressContract != other.SourcePlaneAddressContract || base.StatusCategoryContract != other.StatusCategoryContract || base.SourceFamilyContract != other.SourceFamilyContract {
 		return fmt.Errorf("format, reference, scope or schema version differs")

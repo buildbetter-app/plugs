@@ -47,6 +47,7 @@ func TestPublicBeadsPreparedSourcePinRefusals(t *testing.T) {
 		{"version-commit", []string{"resolution", versionKey, "commit"}, strings.Repeat("0", 40)},
 		{"version-build", []string{"resolution", versionKey, "build"}, "unadmitted-build"},
 		{"profile", []string{"schema"}, "unadmitted-public-profile"},
+		{"companion-profile", []string{"schema"}, "plug-public-companion/1"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var manifest map[string]any
@@ -191,12 +192,12 @@ func assertPublicNativeCaptureReadback(t *testing.T, options beadsOptions, outpu
 			t.Fatalf("raw target has an extra or duplicate issue %s", row.ID)
 		}
 		delete(expected, row.ID)
-		for _, field := range []string{"id", "title", "description", "status", "priority", "issue_type", "metadata"} {
+		for _, field := range []string{"id", "title", "description", "design", "acceptance_criteria", "notes", "spec_id", "status", "priority", "issue_type", "assignee", "owner", "created_by", "external_ref", "source_system", "close_reason", "closed_by_session", "metadata"} {
 			if value, present := want[field]; present {
 				a, errA := json.Marshal(value)
 				b, errB := json.Marshal(row.Source.Fields[field])
 				if errA != nil || errB != nil || !bytes.Equal(a, b) {
-					t.Fatalf("independent raw target %s field %s differs from submitted bytes", row.ID, field)
+					t.Fatalf("independent raw target %s field %s differs from submitted bytes: expected_type=%T expected_sha256=%s expected=%q actual_type=%T actual_sha256=%s actual=%q marshal_errors=%v/%v", row.ID, field, value, hash(a), a, row.Source.Fields[field], hash(b), b, errA, errB)
 				}
 			}
 		}
@@ -215,14 +216,14 @@ func assertPublicNativeCaptureReadback(t *testing.T, options beadsOptions, outpu
 func publicNativeProtocolVersionKey(t *testing.T) string {
 	t.Helper()
 	data := publicNativeProtocolInput(t,
-		"tools/roundtrip/testdata/public-companion-profile.json",
-		"9389b60ccf64dd755a16b00367318b78866455cb0c1493a0b0c0532e1a6aae40")
+		"tools/roundtrip/testdata/native-public-profile.json",
+		"67491cd9ce55d652ee99ce80144298648ce60af4c93d35f266ccf7a6fbfd739d")
 	var profile struct {
 		Schema     string `json:"schema"`
 		VersionKey string `json:"version_key"`
 	}
-	if err := json.Unmarshal(data, &profile); err != nil || profile.Schema != "plug-public-companion/1" || strings.TrimSpace(profile.VersionKey) == "" {
-		t.Fatal("pinned public companion protocol data is invalid")
+	if err := json.Unmarshal(data, &profile); err != nil || profile.Schema != "plug-public-native/1" || strings.TrimSpace(profile.VersionKey) == "" {
+		t.Fatal("pinned public native protocol data is invalid")
 	}
 	return profile.VersionKey
 }
@@ -230,15 +231,15 @@ func publicNativeProtocolVersionKey(t *testing.T) string {
 func publicNativeProtocolFamilies(t *testing.T) []string {
 	t.Helper()
 	data := publicNativeProtocolInput(t,
-		"spec/s1-b25-b28/testdata/public-recording-fixture.json",
-		"ecd42d10e57cbac6156ce2cf962494ffc7c205cd6599055c5e21a6292dd91570")
+		"tools/roundtrip/testdata/native-public-recording-fixture.json",
+		"5cb91bc8b5f6612d1907202c7210fc2532d9711d1fd23c7e5fb977b6d6e575b0")
 	var fixture struct {
 		Schema           string   `json:"schema"`
 		SourceCommit     string   `json:"source_commit"`
 		SourceTree       string   `json:"source_tree"`
 		ExternalFamilies []string `json:"external_families"`
 	}
-	if err := json.Unmarshal(data, &fixture); err != nil || fixture.Schema != "plug-s1-b25-b28-public-recording/1" || fixture.SourceCommit != beadsCommit || fixture.SourceTree != beadsTree || len(fixture.ExternalFamilies) != 26 {
+	if err := json.Unmarshal(data, &fixture); err != nil || fixture.Schema != "plug-s1-b25-b27-native-recording/2" || fixture.SourceCommit != beadsCommit || fixture.SourceTree != beadsTree || len(fixture.ExternalFamilies) != 26 {
 		t.Fatal("pinned public family declaration is invalid")
 	}
 	seen := map[string]bool{}
