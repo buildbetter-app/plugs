@@ -184,7 +184,12 @@ func checkSourceImage(t *testing.T, rows map[string]driver.Record, a *dumpformat
 					if relation == "related" {
 						relation = "relates-to"
 					}
-					links = append(links, pipeline.Link{To: model.RefByID(fmt.Sprint(edge.Body["to"]), model.Natural64(0)), Kind: relation})
+					link := pipeline.Link{To: model.RefByID(fmt.Sprint(edge.Body["to"]), model.Natural64(0)), Kind: relation}
+					if len(edge.NativeEdgeTokens) != 0 {
+						// Compare captured source token spellings, independently of the converted document.
+						link.Metadata = &model.LinkMetadata{NativeExtensions: edge.NativeEdgeTokens}
+					}
+					links = append(links, link)
 				}
 			}
 			sameJSON(t, "source dependencies "+id, append([]pipeline.Link{}, doc.Links...), links)
