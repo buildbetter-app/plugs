@@ -30,11 +30,13 @@ OWNERS.toml
 README.md
 SKELETON.md
 cmd/plug/BUILD.bazel
+cmd/plug/i8_heartbeads_fixture_test.go
 cmd/plug/integration_test.go
 cmd/plug/main.go
 cmd/plug/remote_fixture_test.go
 cmd/plug/remote_test.go
 cmd/plug/server_integration_test.go
+cmd/plug/testdata/i8/plug-adapter.mjs
 doc.go
 engdocs/adr/0005-plug-design-decisions.md
 engdocs/design/plug/adversarial-review-2026-10-28.md
@@ -170,8 +172,6 @@ internal/core/dumpformat/README.md
 internal/core/dumpformat/catalog.go
 internal/core/dumpformat/history.go
 internal/core/dumpformat/history_test.go
-internal/core/dumpformat/identity.go
-internal/core/dumpformat/identity_test.go
 internal/core/dumpformat/json.go
 internal/core/dumpformat/merge.go
 internal/core/dumpformat/merge_fixture_test.go
@@ -490,7 +490,6 @@ internal/integration/converterroundtrip/BUILD.bazel
 internal/integration/converterroundtrip/external_target_test.go
 internal/integration/converterroundtrip/hierarchy_import_test.go
 internal/integration/converterroundtrip/history.go
-internal/integration/converterroundtrip/history_merge_test.go
 internal/integration/converterroundtrip/identity_counters_test.go
 internal/integration/converterroundtrip/image.go
 internal/integration/converterroundtrip/import_test.go
@@ -560,6 +559,16 @@ internal/integration/graphacceptance/README.md
 internal/integration/graphacceptance/fixture_test.go
 internal/integration/graphacceptance/graph_test.go
 internal/integration/graphacceptance/unsupported_test.go
+internal/integration/heartbeads/BUILD.bazel
+internal/integration/heartbeads/fixture_test.go
+internal/integration/heartbeads/process_test.go
+internal/integration/heartbeads/testdata/activity-observer.mjs
+internal/integration/heartbeads/testdata/e2e.mjs
+internal/integration/heartbeads/testdata/heartbeads-source.tar
+internal/integration/heartbeads/testdata/native-ontology-source.json
+internal/integration/heartbeads/testdata/source-binding.json
+internal/integration/heartbeads/testdata/watch-lifecycle.mjs
+internal/integration/heartbeads/testdata/watch-parent.mjs
 internal/integration/historysql/BUILD.bazel
 internal/integration/historysql/README.md
 internal/integration/historysql/fixture_test.go
