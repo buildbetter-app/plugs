@@ -12,6 +12,28 @@ import (
 func reverseLossCensus(r driver.CheckpointInventory, live map[string]driver.Record, plan *driver.SourcePlanePlanV1, options reverseconverter.Options) ([]reverseconverter.StateLoss, []reverseconverter.NamespaceLoss, error) {
 	core := map[string]reverseconverter.StateLoss{}
 	for _, row := range live {
+		if row.Kind == "memory" {
+			var body map[string]any
+			if decodeReverseJSON(row.Body, &body) != nil {
+				return nil, nil, ReverseRefusal{"invalid_memory_loss_census"}
+			}
+			if overlay, present := body["sourceOverlay"]; present {
+				loss := core["memory/sourceOverlay"]
+				loss.Kind, loss.Family, loss.Disposition = "memory", "source_overlay_attribution", "effective_memory_representation"
+				loss.RecordCount++
+				loss.FieldInstances += reverseconverter.CountFieldInstances(overlay)
+				core["memory/sourceOverlay"] = loss
+			}
+			if metadata, present := body["metadata"]; present && body["source_id"] == nil && !strings.HasPrefix(row.Ref.ID, "source/memory/") {
+				loss := core["memory/metadata"]
+				loss.Kind, loss.Family, loss.Disposition = "memory", "metadata", "memory_metadata"
+				loss.RecordCount++
+				loss.FieldInstances += reverseconverter.CountFieldInstances(metadata)
+				core["memory/metadata"] = loss
+			}
+			continue
+		}
+
 		if row.Kind != "instance_config" && row.Kind != "restore-archive" && row.Kind != "beads-archive" {
 			continue // Other unmapped core records already refuse projection.
 		}

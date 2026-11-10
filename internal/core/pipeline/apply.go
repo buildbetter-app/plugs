@@ -356,6 +356,7 @@ func (w *Writer) replay(ctx context.Context, reader driver.Reader, principal str
 
 func (w *Writer) replayReceipt(ctx context.Context, reader driver.Reader, entry *driver.IdempotencyRecord, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) (model.Commit, error) {
 	p := port.ProposedChange{RequestID: meta.IdempotencyKey, Principal: by, Meta: meta, BaseRevision: *reader.Snapshot().At, Changes: []port.Change{}, Expect: replayExpectations(cs, entry.Commit.Results)}
+	snapshot := &snapshotReader{reader: reader, reads: &readSet{states: map[string]driver.LockState{}}}
 	for i, result := range entry.Commit.Results {
 		if i >= len(cs.Ops) {
 			return model.Commit{}, failure("internal_error", "stored response does not match original request")
@@ -370,8 +371,14 @@ func (w *Writer) replayReceipt(ctx context.Context, reader driver.Reader, entry 
 			}
 		}
 		p.Changes = append(p.Changes, port.Change{Resource: model.ResourceRef{Kind: kind, Ref: result.Ref}, Op: cs.Ops[i], After: result.Record, SetBy: result.SetBy})
+		if memoryMethod(meta.Method) {
+			guards, err := memoryReplayGuards(ctx, snapshot, result.Ref, meta.Method)
+			if err != nil {
+				return model.Commit{}, err
+			}
+			p.Changes = append(p.Changes, guards...)
+		}
 	}
-	snapshot := &snapshotReader{reader: reader, reads: &readSet{states: map[string]driver.LockState{}}}
 	if err := w.authorize(ctx, port.AuthorizeReplay, p, snapshot); err != nil {
 		return model.Commit{}, err
 	}
@@ -424,7 +431,7 @@ func (p *prepared) response(revision model.Revision, meta model.WriteMeta) (mode
 		if !p.changed[ref.ID] {
 			result.Revision = pending.revision
 		}
-		if !pending.deleted && meta.Return != "minimal" {
+		if !pending.deleted && !(pending.memory != nil && pending.memory.Overlay != nil && pending.memory.Overlay.Deleted) && meta.Return != "minimal" {
 			body, err := pending.body()
 			if err != nil {
 				return model.Commit{}, err
@@ -730,6 +737,14 @@ func (p *prepared) changeRecords() []model.ChangeRecord {
 		}
 		if pending.deleted {
 			kind = model.OpDelete
+		} else if pending.memory != nil && pending.memory.Overlay != nil {
+			// An overlay tombstone is a retained physical row. Driver change
+			// operations describe that actual create/patch; memory.deleted is
+			// emitted separately from the effective public operation.
+			kind = model.OpPatch
+			if len(pending.before) == 0 {
+				kind = model.OpCreate
+			}
 		} else if kind != model.OpCreate && pending.kind != "memory" && len(pending.before) != 0 {
 			before, err := DecodeDocument(pending.before)
 			if err == nil && parentID(before.Parent) != parentID(pending.doc.Parent) {
