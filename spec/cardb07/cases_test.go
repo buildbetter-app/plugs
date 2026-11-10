@@ -2,7 +2,20 @@
 // through a separate B07-only Bazel target. No general builder is introduced.
 package cardb20
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+func b07Text(t *testing.T, value json.RawMessage) string {
+	t.Helper()
+	var s string
+	if e := json.Unmarshal(value, &s); e != nil {
+		t.Fatal(e)
+	}
+	return s
+}
 
 // Declared in the pinned 9d6fff native DependencyType constants, in their source
 // order. Native observations are retained independently from Plug projections.

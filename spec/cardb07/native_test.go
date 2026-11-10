@@ -124,14 +124,6 @@ func (n *b07Native) requireReady(label string, want []string) {
 		n.t.Fatalf("native ready got=%v want=%v", got, want)
 	}
 }
-func b07Text(t *testing.T, value json.RawMessage) string {
-	t.Helper()
-	var s string
-	if e := json.Unmarshal(value, &s); e != nil {
-		t.Fatal(e)
-	}
-	return s
-}
 func (n *b07Native) edge(image b07NativeImage, from, to string) map[string]json.RawMessage {
 	n.t.Helper()
 	var match map[string]json.RawMessage
