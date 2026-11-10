@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"regexp"
 	"sort"
 	"strings"
@@ -145,6 +144,19 @@ func (s *Service) authorizeMemory(ctx context.Context, by model.PrincipalRef, me
 		return false, failure("authz_unavailable", "authorization installation changed during read")
 	}
 	return allowed, nil
+}
+
+// History authorization uses the same persisted-envelope checks and visibility
+// boundary as public memory reads before it can return any historical body.
+func decodeMemoryRecord(record driver.Record) (Memory, error) {
+	document, source, err := pipeline.DecodeMemoryRecord(record)
+	if err != nil {
+		return Memory{}, failure("internal_error", "invalid persisted memory")
+	}
+	if source != nil && !source.Visible {
+		return Memory{}, historyMemoryNotFound()
+	}
+	return memoryValue(record, document)
 }
 
 // readPublicMemory projects a validated retained source envelope without

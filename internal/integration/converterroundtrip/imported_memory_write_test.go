@@ -232,6 +232,7 @@ func TestImportedMemoryWritesPreserveSourceEnvelopesAllDrivers(t *testing.T) {
 							refuse(t, "memory.save", map[string]any{"key": key, "content": "must not become public"}, "invalid_params")
 							refuse(t, "memory.delete", map[string]any{"id": idFor(key)}, "not_found")
 							sourcePublicCall(t, server, actor, "memory.get", 0, map[string]any{"id": idFor(key)}, "not_found")
+							sourcePublicCall(t, server, actor, "history.get", 0, map[string]any{"ref": model.RefByID(idFor(key), model.Natural64(0)), "asOf": map[string]any{"revision": original.Meta.Head}}, "not_found")
 						})
 					}
 					if mode == "joint" {
