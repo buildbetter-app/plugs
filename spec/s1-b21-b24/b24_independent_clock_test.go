@@ -101,7 +101,7 @@ func b24ReadSnapshot(t *testing.T, f *fixture) b24ReadImage {
 	query := `SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`
 	if f.engine == "postgres" {
 		name, dsn = "pgx", f.dsn
-		query = `SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname='public' ORDER BY tablename`
+		query = `SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname='plug_postgres' ORDER BY tablename`
 	}
 	db, err := sql.Open(name, dsn)
 	if err != nil {
@@ -133,7 +133,7 @@ func b24ReadSnapshot(t *testing.T, f *fixture) b24ReadImage {
 	for _, table := range tables {
 		qualified := `"` + strings.ReplaceAll(table, `"`, `""`) + `"`
 		if f.engine == "postgres" {
-			qualified = `public.` + qualified
+			qualified = `plug_postgres.` + qualified
 		}
 		rows, err := db.QueryContext(context.Background(), "SELECT * FROM "+qualified)
 		if err != nil {
