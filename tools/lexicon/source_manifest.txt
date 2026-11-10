@@ -1188,6 +1188,7 @@ internal/storage/memory/transaction.go
 internal/storage/memory/transaction_reader.go
 internal/storage/postgres/BUILD.bazel
 internal/storage/postgres/README.md
+internal/storage/postgres/acquired_census_test.go
 internal/storage/postgres/allocator.go
 internal/storage/postgres/allocator_snapshot.go
 internal/storage/postgres/allocator_test.go
@@ -1217,6 +1218,7 @@ internal/storage/postgres/offline_restore.go
 internal/storage/postgres/parent_counter.go
 internal/storage/postgres/pending_test.go
 internal/storage/postgres/persistence_test.go
+internal/storage/postgres/predicate_bumps_test.go
 internal/storage/postgres/query.go
 internal/storage/postgres/queue_projection.go
 internal/storage/postgres/queue_projection_test.go
@@ -1232,6 +1234,8 @@ internal/storage/postgres/selection_backfill.go
 internal/storage/postgres/selection_backfill_test.go
 internal/storage/postgres/selection_coverage.go
 internal/storage/postgres/selection_fact_sql_test.go
+internal/storage/postgres/selection_fact_transport.go
+internal/storage/postgres/selection_fact_transport_test.go
 internal/storage/postgres/selection_fresh.go
 internal/storage/postgres/selection_header_probe_test.go
 internal/storage/postgres/selection_index.go
@@ -1268,6 +1272,7 @@ internal/storage/sourceindex/selection_optional_test.go
 internal/storage/sourceindex/source.go
 internal/storage/sqlite/BUILD.bazel
 internal/storage/sqlite/README.md
+internal/storage/sqlite/acquired_census_test.go
 internal/storage/sqlite/allocator.go
 internal/storage/sqlite/allocator_snapshot.go
 internal/storage/sqlite/b05_persisted_clock_test.go

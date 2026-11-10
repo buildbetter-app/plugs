@@ -262,25 +262,12 @@ func (t *transaction) validateSelectionWrites(ctx context.Context, proposed map[
 	return nil
 }
 
-// The complete Lock call owns a fixed acquired subset until Close, including
-// only successful skip-locked requests. Encode that census once rather than
-// re-encoding O(log N) keys for every staged/final source check. This stores
-// membership only: the fresh source observations and all validation above
-// still run on every call. Caller requests/results never own these bytes.
+// Source membership accepts every acquired mode; writable separately requires
+// update ownership. Neither lookup retains a source observation or proof:
+// every fresh source read and validation above still runs on every call.
 func (t *transaction) selectionSourceAcquired(id string) (bool, error) {
-	if t.selectionAcquiredKeys == nil {
-		keys := make(map[string]struct{}, len(t.acquired))
-		for _, request := range t.acquired {
-			key, err := keyID(request.Key)
-			if err != nil {
-				return false, err
-			}
-			keys[key] = struct{}{}
-		}
-		t.selectionAcquiredKeys = keys
-	}
-	_, ok := t.selectionAcquiredKeys[id]
-	return ok, nil
+	_, ok, err := t.acquiredLockIndex(id)
+	return ok, err
 }
 
 func (t *transaction) selectionSourceChanged(k driver.LockKey) bool {

@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -31,6 +30,7 @@ type transaction struct {
 	importRestore      *driver.RestoreImportProfile
 	sourcePlaneImport  *driver.SourcePlaneImportPublication
 	acquired           driver.LockSet
+	acquiredIndex      map[string]int
 	files              []*os.File
 	guards             []guardHandle
 	done               chan struct{}
@@ -110,6 +110,7 @@ func (t *transaction) finish() {
 	t.selectionAnnotated = false
 	t.selectionDependents = nil
 	t.selectionRecheck = nil
+	t.acquiredIndex = nil
 	t.store.untrack(t)
 	close(t.done)
 }
@@ -318,14 +319,29 @@ func (t *transaction) Head(ctx context.Context) (model.Revision, error) {
 	t.hasHead = true
 	return t.meta.Head, nil
 }
+
+// The successful Lock subset is immutable until Close and owns every key.
+// Reuse one identity census for write modes, source membership and record refs;
+// observations and staged-source validation remain fresh on each operation.
+func (t *transaction) acquiredLockIndex(id string) (int, bool) {
+	if t.acquiredIndex == nil {
+		index := make(map[string]int, len(t.acquired))
+		for i, request := range t.acquired {
+			index[keyID(request.Key)] = i
+		}
+		t.acquiredIndex = index
+	}
+	i, ok := t.acquiredIndex[id]
+	return i, ok
+}
+
 func (t *transaction) writable(key driver.LockKey) error {
 	if !t.locked {
 		return fmt.Errorf("sqlite: mutation requires complete lock set")
 	}
 	id := keyID(key)
-	// Lock keeps a sorted subset even when skip-locked keys are omitted.
-	i := sort.Search(len(t.acquired), func(i int) bool { return keyID(t.acquired[i].Key) >= id })
-	if i < len(t.acquired) && keyID(t.acquired[i].Key) == id && t.acquired[i].Mode != driver.LockShare {
+	i, ok := t.acquiredLockIndex(id)
+	if ok && t.acquired[i].Mode != driver.LockShare {
 		return nil
 	}
 	return fmt.Errorf("sqlite: missing update lock for %s", id)
@@ -483,13 +499,9 @@ func (t *transaction) BumpReadFacts(ctx context.Context, values []driver.ReadFac
 	return t.bump(ctx, keys)
 }
 func (t *transaction) recordRef(id string) driver.Ref {
-	// Lock retains the globally encoded-key-sorted acquired subset, including
-	// mixed modes and skip-locked omissions. Use the same lower-bound lookup as
-	// writable; recordRef deliberately accepts every lock mode.
-	i := sort.Search(len(t.acquired), func(i int) bool {
-		return keyID(t.acquired[i].Key) >= id
-	})
-	if i < len(t.acquired) && keyID(t.acquired[i].Key) == id && t.acquired[i].Key.Ref != nil {
+	// Record identity accepts every acquired mode, including shared reads.
+	i, ok := t.acquiredLockIndex(id)
+	if ok && t.acquired[i].Key.Ref != nil {
 		return *t.acquired[i].Key.Ref
 	}
 	panic("sqlite: record missing validated lock")

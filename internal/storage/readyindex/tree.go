@@ -555,18 +555,28 @@ func (d *Delta) Locks() []driver.LockKey {
 	if !d.Available() {
 		return nil
 	}
-	keys := make([]driver.LockKey, 0, len(d.t.rows))
+	type encodedLock struct {
+		key driver.LockKey
+		id  string
+	}
+	entries := make([]encodedLock, 0, len(d.t.rows)+len(d.sentinels))
+	add := func(key driver.LockKey) {
+		id, _ := driver.EncodeLockKey(key)
+		entries = append(entries, encodedLock{key: key, id: id})
+	}
 	for key := range d.t.rows {
-		keys = append(keys, lock(key))
+		add(lock(key))
 	}
 	for sentinel := range d.sentinels {
-		keys = append(keys, driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel})
+		add(driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel})
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		a, _ := driver.EncodeLockKey(keys[i])
-		b, _ := driver.EncodeLockKey(keys[j])
-		return a < b
-	})
+	// Every generated key joins the same census. Encode each identity once;
+	// sorting a wide Ready tree must not revalidate it at every comparison.
+	sort.Slice(entries, func(i, j int) bool { return entries[i].id < entries[j].id })
+	keys := make([]driver.LockKey, len(entries))
+	for i, entry := range entries {
+		keys[i] = entry.key
+	}
 	return keys
 }
 

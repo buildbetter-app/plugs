@@ -155,6 +155,7 @@ The accounting regressions exercise real PostgreSQL current/historical/staged
 reads, absent/deleted keys, duplicate output, repeated fetches and observer
 parity, including refusal precedence. The stored-row scan and reconstructed
 historical-body boundaries are measured separately from emitted output clones
-and from SQL executor physical work. Get charges each returned-position clone;
-Query charges candidate clones before filtering; Observe retains decoded records
+and from SQL executor physical work. This cumulative composition retains W3's
+returned-clone observations: Get charges each returned-position clone; Query
+charges candidate clones before filtering; Observe retains decoded records
 without an additional clone.

@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -57,7 +56,7 @@ type transaction struct {
 	selectionProofSeed        bool
 	selectionProofRoots       [][]byte
 	selectionProofOld         [][]byte
-	selectionAcquiredKeys     map[string]struct{}
+	acquiredIndex             map[string]int
 }
 
 func (s *Store) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
@@ -355,6 +354,26 @@ func (t *transaction) Head(ctx context.Context) (model.Revision, error) {
 	t.hasHead = true
 	return m.Head, nil
 }
+
+// Lock owns one fixed, validated subset until Close. Share membership and
+// write authorization use this same census without re-encoding acquired keys
+// for every row. Modes still come from the actual successful acquisition.
+func (t *transaction) acquiredLockIndex(id string) (int, bool, error) {
+	if t.acquiredIndex == nil {
+		index := make(map[string]int, len(t.acquired))
+		for i, request := range t.acquired {
+			key, err := keyID(request.Key)
+			if err != nil {
+				return 0, false, err
+			}
+			index[key] = i
+		}
+		t.acquiredIndex = index
+	}
+	i, ok := t.acquiredIndex[id]
+	return i, ok, nil
+}
+
 func (t *transaction) writable(key driver.LockKey) error {
 	if !t.locked {
 		return fmt.Errorf("postgres: write requires complete lock set")
@@ -363,13 +382,12 @@ func (t *transaction) writable(key driver.LockKey) error {
 	if err != nil {
 		return err
 	}
-	// ValidateLockSet and skip-locked selection retain EncodeLockKey order.
-	i := sort.Search(len(t.acquired), func(i int) bool { id, _ := keyID(t.acquired[i].Key); return id >= want })
-	if i < len(t.acquired) {
-		id, _ := keyID(t.acquired[i].Key)
-		if id == want && t.acquired[i].Mode != driver.LockShare {
-			return nil
-		}
+	i, ok, err := t.acquiredLockIndex(want)
+	if err != nil {
+		return err
+	}
+	if ok && t.acquired[i].Mode != driver.LockShare {
+		return nil
 	}
 	return fmt.Errorf("postgres: missing update lock for %s", want)
 }
