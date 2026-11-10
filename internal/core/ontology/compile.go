@@ -298,7 +298,7 @@ func compileEffective(doc Document, plugins PluginCatalog, prefix string, add fu
 			field := t.Fields[name]
 			fp := path + ".fields." + name
 			checkKey(name, fp, add)
-			if contains([]string{"status", "type", "project", "template", "priority", "metadata", "id"}, name) {
+			if contains([]string{"status", "type", "project", "template", "priority", "metadata", "id"}, name) || isAwaitMember(name) {
 				add(fp, "kernel field cannot be redefined as a typed field")
 			}
 			switch field.Type {

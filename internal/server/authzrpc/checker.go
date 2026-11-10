@@ -13,6 +13,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/port"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -27,6 +28,8 @@ type Checker struct {
 	lease     driver.ActiveLease
 	hierarchy bool
 	now       func() time.Time
+	lifecycle bool
+	ontology  *service.Ontology
 }
 
 var _ port.Authorizer = (*Checker)(nil)
@@ -80,6 +83,7 @@ type BoundAuthorization struct {
 	slice      *slice
 	request    *authz.PreparedRequest
 	kind       authz.ResourceKind
+	method     string
 	filterOnce sync.Once
 	filter     *authz.PreparedFilter
 	filterErr  error
@@ -113,7 +117,7 @@ func (c *Checker) BindAuthorization(ctx context.Context, snapshot Snapshot, prin
 	// inputs need no second JSON codec pass during context checks. Other input
 	// representations retain the existing exact samePrincipal comparison.
 	s.expectedNormalized = true
-	return &BoundAuthorization{checker: c, slice: s, request: prepared, kind: kind}, nil
+	return &BoundAuthorization{checker: c, slice: s, request: prepared, kind: kind, method: method}, nil
 }
 
 // Rebind always reloads authority, including a new caller-source verification.
@@ -137,7 +141,22 @@ func (b *BoundAuthorization) Check(ctx context.Context, refs []model.Ref) ([]boo
 	for i, ref := range refs {
 		resources[i] = authz.Resource{Kind: b.kind, Ref: ref}
 	}
-	decisions, err := b.checker.chain.CheckPrepared(ctx, b.slice, b.request.Checks(resources))
+	checks := b.request.Checks(resources)
+	if b.checker.lifecycle && b.kind == authz.Bead && b.method == "bead.close" {
+		// The immutable caller binding is shared, but each close target has
+		// its own current transition on this exact authority snapshot.
+		request := b.request.Request()
+		requests := make([]authz.CheckRequest, len(resources))
+		for i, resource := range resources {
+			transition, err := b.checker.closeContext(ctx, b.slice.snapshot, resource.Ref)
+			if err != nil {
+				return nil, authzError(err)
+			}
+			requests[i] = authz.CheckRequest{Caller: request.Caller, Action: request.Action, Resource: resource, Method: request.Method, Transition: transition}
+		}
+		checks = authz.PrepareChecks(requests)
+	}
+	decisions, err := b.checker.chain.CheckPrepared(ctx, b.slice, checks)
 	if err != nil {
 		return nil, authzError(err)
 	}
@@ -216,6 +235,10 @@ func (c *Checker) Authorize(ctx context.Context, stage port.AuthorizationStage, 
 	if err != nil {
 		return &model.Error{Message: "authorization facts unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
 	}
+	sourceSlice, err := sourceAuthorizationSlice(s, stage, proposal)
+	if err != nil {
+		return err
+	}
 	requests := make([]authz.CheckRequest, 0, len(proposal.Changes)+len(proposal.Expect)+1)
 	for _, change := range proposal.Changes {
 		requests = append(requests, authz.CheckRequest{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Bead, Ref: change.Resource.Ref}, Method: proposal.Meta.Method})
@@ -236,7 +259,7 @@ func (c *Checker) Authorize(ctx context.Context, stage port.AuthorizationStage, 
 	// refusal remains authoritative, including receipt replay.
 	for _, change := range proposal.Changes {
 		if change.Op.Kind == model.OpClose {
-			if proposal.Meta.Method != "tx.apply" {
+			if proposal.Meta.Method != "tx.apply" && proposal.Meta.Method != "bead.close" {
 				return forbidden("close operation requires tx.apply")
 			}
 			requests = append(requests, authz.CheckRequest{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Bead, Ref: change.Resource.Ref}, Method: "bead.close"})
@@ -256,7 +279,49 @@ func (c *Checker) Authorize(ctx context.Context, stage port.AuthorizationStage, 
 		requests = append(requests, authz.CheckRequest{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Project, Ref: project}, Method: ""})
 	}
 	chain := c.chain
-	var checkSlice authz.Slice = s
+	if c.lifecycle && !claimMaintenance {
+		closeRefs := make(map[model.Ref]bool)
+		for _, change := range proposal.Changes {
+			if proposal.Meta.Method == "bead.close" || change.Op.Kind == model.OpClose {
+				// The existing installed policy binds CloseSlots. An explicit
+				// selector has no compatible policy context in this installation;
+				// refuse it rather than authorize against a different target.
+				if proposal.Meta.TargetStatus != nil || change.Op.Close != nil && change.Op.Close.TargetStatus != nil {
+					return forbidden("exact close target is not supported by the installed lifecycle policy")
+				}
+				switch change.Resource.Kind {
+				case "bead":
+					closeRefs[change.Resource.Ref] = true
+				case "workflow_item":
+					// The provider admitted this source operation and the source
+					// slice binds its current project/method policy above. Its
+					// lifecycle is not an ordinary stored bead's ontology slot.
+				default:
+					return forbidden("unsupported close resource")
+				}
+			}
+		}
+		for i := range requests {
+			if closeRefs[requests[i].Resource.Ref] {
+				requests[i].Transition, err = c.closeContext(ctx, reader, requests[i].Resource.Ref)
+				if err != nil {
+					return authzError(err)
+				}
+			}
+		}
+		// Receipt replay must obtain current transition authority too. The
+		// original publication's decision is never a reusable grant.
+		if stage == port.AuthorizeReplay {
+			for ref := range closeRefs {
+				transition, err := c.closeContext(ctx, reader, ref)
+				if err != nil {
+					return authzError(err)
+				}
+				requests = append(requests, authz.CheckRequest{Caller: caller, Action: authz.Transition, Resource: authz.Resource{Kind: authz.Bead, Ref: ref}, Method: "bead.close", Transition: transition})
+			}
+		}
+	}
+	var checkSlice authz.Slice = sourceSlice
 	if claimMaintenance {
 		chain = c.claimMaintenanceChain()
 		checkSlice = &claimMaintenanceSlice{Slice: s, recorded: make(map[authz.Dependency]struct{})}
@@ -272,7 +337,7 @@ func (c *Checker) Authorize(ctx context.Context, stage port.AuthorizationStage, 
 		if decision.Effect != authz.Allow {
 			return forbidden(strings.Join(decision.Reasons, ","))
 		}
-		if stage == port.AuthorizeAfter && i < changeCount && !heartbeat {
+		if stage == port.AuthorizeAfter && i < changeCount && !heartbeat && proposal.Changes[i].Resource.Kind == "bead" {
 			if err := c.validateExistingWrite(ctx, reader, proposal, proposal.Changes[i], caller); err != nil {
 				return err
 			}
@@ -327,6 +392,9 @@ func (c *Checker) validateExistingWrite(ctx context.Context, reader Snapshot, pr
 	after, err := recordImage(rows[0], change.After)
 	if err != nil {
 		return forbidden("invalid proposed bead image")
+	}
+	if c.lifecycle && (proposal.Meta.Method == "bead.close" || change.Op.Kind == model.OpClose) {
+		return validateLifecycleImage(before, after, proposal.Principal, caller, change.SetBy)
 	}
 	method := proposal.Meta.Method
 	if method == "bead.heartbeat" || method == "bead.release" {
@@ -397,6 +465,8 @@ func (c *Checker) Visible(_ context.Context, p model.PrincipalRef, d wire.Method
 	}
 	if d.Permission == "write" {
 		switch d.Name {
+		case "bead.close", "tx.apply":
+			return c.lifecycle && p.Kind == "user", nil
 		case "bead.claim", "bead.claimNext", "bead.update", "bead.heartbeat", "bead.release":
 			return p.Kind == "agent" && p.Sponsor != nil && p.Sponsor.Kind == "user", nil
 		case "x.workflow.invoke":

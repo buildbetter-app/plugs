@@ -64,17 +64,50 @@ func historyReadError(mode driver.RestoreHistoryMode, err error) error {
 }
 
 func validateArchiveHistoryPolicy(mode driver.RestoreHistoryMode, a *dumpformat.Archive) error {
+	if native := a.NativeSourceHistories(); len(native) != 0 {
+		if mode != driver.RestoreHistoryModeFull {
+			return driver.ErrRestoreHistoryRefused{Mode: mode, History: a.Manifest().History, Reason: driver.RestoreHistoryReasonNotYetSupported}
+		}
+		for _, scope := range native {
+			if err := nativePolicyRefusal(mode, a, scope); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	if mode == driver.RestoreHistoryModeSnapshot {
 		return nil
 	}
-	h, ok := a.SourceHistory()
-	if !ok || h.Range.Status != "verified" {
+	scopes, ok := restoreHistoryScopes(a)
+	if !ok {
 		return driver.ValidateRestoreHistoryPolicy(mode, a.Manifest().History)
 	}
-	if mode == driver.RestoreHistoryModeFull && !h.Range.Complete {
-		return driver.ErrRestoreHistoryRefused{Mode: mode, History: a.Manifest().History, Reason: driver.RestoreHistoryReasonNonContiguous}
+	for _, scoped := range scopes {
+		if scoped.Range.Status != "verified" {
+			return sourceHistoryPolicyRefusal(scoped, driver.ValidateRestoreHistoryPolicy(mode, a.Manifest().History))
+		}
+		if mode == driver.RestoreHistoryModeFull && (!scoped.Range.Complete || scoped.Range.First != 1 || len(scoped.Range.Gaps) != 0 || len(scoped.Range.Baseline) != 0) {
+			return sourceHistoryPolicyRefusal(scoped, driver.ErrRestoreHistoryRefused{Mode: mode, History: a.Manifest().History, Reason: driver.RestoreHistoryReasonNonContiguous})
+		}
 	}
 	return nil
+}
+
+func sourceHistoryPolicyRefusal(scope dumpformat.ProjectSourceHistory, policy error) error {
+	if policy == nil {
+		return nil
+	}
+	gap := dumpformat.IncompleteHistoryError{StoreID: scope.SourceStoreID, Project: scope.Project, Reason: scope.Range.Reason}
+	if len(scope.Range.Gaps) != 0 {
+		first := scope.Range.Gaps[0]
+		gap.First, gap.Last, gap.Reason = first.First, first.Last, first.Reason
+	} else if scope.Range.First > 1 {
+		gap.First, gap.Last, gap.Reason = 1, scope.Range.First-1, "history starts after source root"
+	} else if gap.Reason == "" {
+		gap.Reason = "complete source history unavailable"
+	}
+	// Keep the existing transport policy type and the exact typed source gap.
+	return fmt.Errorf("%w: %w", policy, gap)
 }
 
 func portableHistoryRecords(plan restorePlan) []driver.Record {
@@ -89,18 +122,38 @@ func portableHistoryRecords(plan restorePlan) []driver.Record {
 }
 
 func lowerSourceHistory(a *dumpformat.Archive, p driver.RestoreImportProfile, when time.Time) (driver.OfflineHistory, error) {
-	source, ok := a.SourceHistory()
+	if len(a.NativeSourceHistories()) != 0 {
+		return lowerNativeTableHistory(a, p)
+	}
 	refuse := func() (driver.OfflineHistory, error) {
 		return driver.OfflineHistory{}, driver.ErrRestoreHistoryRefused{Mode: p.HistoryMode, History: a.Manifest().History, Reason: driver.RestoreHistoryReasonUnmappable}
 	}
-	if !ok || source.Range.Status != "verified" {
+	scopes, ok := restoreHistoryScopes(a)
+	if !ok || len(scopes) == 0 {
 		return refuse()
 	}
-	r := source.Range
-	h := driver.OfflineHistory{Source: dumpformat.SourceHistoryFormat, Verified: true, Complete: r.Complete, First: r.First, Head: r.Head,
-		BaselineVerified: r.First > 1, Baseline: []driver.Record{}, Gaps: []driver.SourceHistoryGap{}, Batches: []driver.SourceHistoryBatch{}}
-	for _, g := range r.Gaps {
-		h.Gaps = append(h.Gaps, driver.SourceHistoryGap{First: g.First, Last: g.Last, Reason: g.Reason})
+	if len(scopes) > 1 {
+		// Independent project histories have no source-defined cross-project
+		// revision order. Full histories can be imported in stable project order
+		// while retaining every source commit/event ID; partial histories retain
+		// independent floors and therefore refuse until the driver has a
+		// project-scoped floor contract.
+		for _, scoped := range scopes {
+			if scoped.Range.Status != "verified" || !scoped.Range.Complete || scoped.Range.First != 1 || len(scoped.Range.Gaps) != 0 || len(scoped.Range.Baseline) != 0 {
+				return refuse()
+			}
+		}
+		sort.Slice(scopes, func(i, j int) bool { return scopes[i].Project < scopes[j].Project })
+	}
+	first := scopes[0].Range.First
+	h := driver.OfflineHistory{Source: dumpformat.SourceHistoryFormat, Verified: true, Complete: true, First: first, Head: scopes[0].Range.Head,
+		BaselineVerified: first > 1, Baseline: []driver.Record{}, Gaps: []driver.SourceHistoryGap{}, Batches: []driver.SourceHistoryBatch{}}
+	if len(scopes) == 1 {
+		r := scopes[0].Range
+		h.Complete, h.First, h.Head, h.BaselineVerified = r.Complete, r.First, r.Head, r.First > 1
+		for _, g := range r.Gaps {
+			h.Gaps = append(h.Gaps, driver.SourceHistoryGap{First: g.First, Last: g.Last, Reason: g.Reason})
+		}
 	}
 	image := func(sequence uint64) ([]driver.Record, error) {
 		snapshot, err := a.HistoryImage(sequence)
@@ -113,37 +166,89 @@ func lowerSourceHistory(a *dumpformat.Archive, p driver.RestoreImportProfile, wh
 		}
 		return portableHistoryRecords(plan), nil
 	}
-	before := []driver.Record{}
-	if r.First > 1 {
-		var err error
-		before, err = image(r.First - 1)
-		if err != nil {
-			return refuse()
-		}
-		h.Baseline = before
-	}
-	previousEvents := map[string]bool{}
-	for _, e := range r.BaselineEvents {
-		previousEvents[dumpformat.SourceEventID(e)] = true
-	}
-	for _, frame := range r.Frames {
-		after, err := image(frame.Sequence)
-		if err != nil {
-			return refuse()
-		}
-		batch := driver.SourceHistoryBatch{Sequence: frame.Sequence, CommitIDs: []string{frame.CommitID}, EventIDs: []string{}, Changes: historyDelta(before, after)}
-		for _, e := range frame.Events {
-			id := dumpformat.SourceEventID(e)
-			if !previousEvents[id] {
-				batch.EventIDs = append(batch.EventIDs, id)
+	if len(scopes) == 1 {
+		r := scopes[0].Range
+		before := []driver.Record{}
+		if r.First > 1 {
+			var err error
+			before, err = image(r.First - 1)
+			if err != nil {
+				return refuse()
 			}
-			previousEvents[id] = true
+			h.Baseline = before
 		}
-		sort.Strings(batch.EventIDs)
-		h.Batches = append(h.Batches, batch)
-		before = after
+		previousEvents := map[string]bool{}
+		for _, e := range r.BaselineEvents {
+			previousEvents[dumpformat.SourceEventID(e)] = true
+		}
+		for _, frame := range r.Frames {
+			after, err := image(frame.Sequence)
+			if err != nil {
+				return refuse()
+			}
+			batch := driver.SourceHistoryBatch{Sequence: frame.Sequence, CommitIDs: []string{frame.CommitID}, EventIDs: []string{}, Changes: historyDelta(before, after)}
+			if a.Manifest().SourceIdentityContract == dumpformat.SourceIdentityContract {
+				batch.SourceStoreID, batch.Project, batch.SourceSequence = scopes[0].SourceStoreID, scopes[0].Project, frame.Sequence
+			}
+			for _, e := range frame.Events {
+				id := dumpformat.SourceEventID(e)
+				if !previousEvents[id] {
+					batch.EventIDs = append(batch.EventIDs, id)
+				}
+				previousEvents[id] = true
+			}
+			sort.Strings(batch.EventIDs)
+			h.Batches = append(h.Batches, batch)
+			before = after
+		}
+		return h, nil
 	}
+	var globalSequence uint64
+	for _, scoped := range scopes {
+		before := []driver.Record{}
+		previousEvents := map[string]bool{}
+		for _, frame := range scoped.Range.Frames {
+			after, err := a.HistoryImageForProject(scoped.Project, frame.Sequence)
+			if err != nil {
+				return refuse()
+			}
+			beforePlan, err := buildPlanWithProfile(after, &p, when)
+			if err != nil {
+				return refuse()
+			}
+			afterRecords := portableHistoryRecords(beforePlan)
+			globalSequence++
+			batch := driver.SourceHistoryBatch{SourceStoreID: scoped.SourceStoreID, SourceSequence: frame.Sequence, Project: scoped.Project, Sequence: globalSequence, CommitIDs: []string{frame.CommitID}, EventIDs: []string{}, Changes: historyDelta(before, afterRecords)}
+			for _, e := range frame.Events {
+				id := dumpformat.SourceEventID(e)
+				if !previousEvents[id] {
+					batch.EventIDs = append(batch.EventIDs, id)
+				}
+				previousEvents[id] = true
+			}
+			sort.Strings(batch.EventIDs)
+			h.Batches = append(h.Batches, batch)
+			before = afterRecords
+		}
+	}
+	h.Head = globalSequence
+	h.First = 1
 	return h, nil
+}
+
+func restoreHistoryScopes(a *dumpformat.Archive) ([]dumpformat.ProjectSourceHistory, bool) {
+	history, ok := a.SourceHistory()
+	if !ok {
+		return nil, false
+	}
+	if len(history.ProjectHistories) != 0 {
+		return append([]dumpformat.ProjectSourceHistory(nil), history.ProjectHistories...), true
+	}
+	projects := a.Manifest().Projects
+	if len(projects) != 1 {
+		return nil, false
+	}
+	return []dumpformat.ProjectSourceHistory{{SourceStoreID: a.Manifest().StoreID, Project: projects[0].Prefix, Commits: history.Commits, Events: history.Events, Range: history.Range}}, true
 }
 
 func historyDelta(before, after []driver.Record) []driver.SourceHistoryChange {
@@ -229,53 +334,49 @@ func historyLockPlan(plan restorePlan, h driver.OfflineHistory) restorePlan {
 }
 
 func validateHistoryRecovery(ctx context.Context, r driver.Reader, p driver.RestoreImportProfile, evidence archiveEvidence, receipt *driver.IdempotencyRecord) error {
-	file, ok := evidence.Members[dumpformat.SourceHistoryMember]
-	if !ok || p.HistoryTime == "" {
+	if p.HistoryTime == "" || evidence.ArchiveSHA256 != p.ArchiveDigest {
 		return driver.ErrConflict
 	}
-	raw, err := r.Blob(ctx, driver.Hash(file.SHA256))
-	if err != nil || hashBytes(raw) != file.SHA256 || int64(len(raw)) != file.Size {
+	// Rebuild from the authenticated original envelope. A merged archive has
+	// independent ranges; the aggregate Range cannot stand in for any source.
+	raw, err := r.Blob(ctx, driver.Hash(evidence.ArchiveSHA256))
+	if err != nil || hashBytes(raw) != evidence.ArchiveSHA256 {
 		return driver.ErrConflict
 	}
-	var source dumpformat.SourceHistory
-	d := json.NewDecoder(bytes.NewReader(raw))
-	d.UseNumber()
-	if err = d.Decode(&source); err != nil || source.Range.Status != "verified" {
+	archive, err := dumpformat.Read(bytes.NewReader(raw))
+	if err != nil || archive.SHA256() != p.ArchiveDigest {
+		return driver.ErrConflict
+	}
+	when, err := time.Parse(time.RFC3339Nano, p.HistoryTime)
+	if err != nil {
+		return driver.ErrConflict
+	}
+	history, err := lowerSourceHistory(archive, p, when)
+	if err != nil {
+		return driver.ErrConflict
+	}
+	digest, err := driver.OfflineHistoryDigest(history)
+	if err != nil || digest != p.HistoryDigest {
 		return driver.ErrConflict
 	}
 	rows, err := r.Get(ctx, []model.Ref{model.RefByID(driver.OfflineHistoryEvidenceID, model.Natural64(0))})
-	if err != nil || len(rows) != 1 {
+	if err != nil || len(rows) != 1 || rows[0].Kind != "beads-archive" {
 		return driver.ErrConflict
 	}
 	var got driver.HistoryImportEvidence
 	if err = json.Unmarshal(rows[0].Body, &got); err != nil {
 		return driver.ErrConflict
 	}
-	want := driver.HistoryImportEvidence{Source: dumpformat.SourceHistoryFormat, Mode: p.HistoryMode, Complete: source.Range.Complete, First: source.Range.First, Head: source.Range.Head, Floor: model.Natural64(0), Gaps: []driver.SourceHistoryGap{}, Mapping: []driver.SourceImportRevision{}}
-	for _, gap := range source.Range.Gaps {
-		want.Gaps = append(want.Gaps, driver.SourceHistoryGap{First: gap.First, Last: gap.Last, Reason: gap.Reason})
-	}
+	want := driver.HistoryImportEvidence{Source: history.Source, Mode: p.HistoryMode, Complete: history.Complete, First: history.First, Head: history.Head, Floor: model.Natural64(0), Gaps: append([]driver.SourceHistoryGap{}, history.Gaps...), Mapping: []driver.SourceImportRevision{}}
+	want.NativeBoundaries = append([]driver.NativeHistoryBoundary(nil), history.NativeBoundaries...)
 	var revision uint64
-	if source.Range.First > 1 {
+	if history.First > 1 {
 		revision = 1
 		want.Floor = model.Natural64(1)
 	}
-	previous := map[string]bool{}
-	for _, event := range source.Range.BaselineEvents {
-		previous[dumpformat.SourceEventID(event)] = true
-	}
-	for _, frame := range source.Range.Frames {
+	for _, batch := range history.Batches {
 		revision++
-		ids := []string{}
-		for _, event := range frame.Events {
-			id := dumpformat.SourceEventID(event)
-			if !previous[id] {
-				ids = append(ids, id)
-			}
-			previous[id] = true
-		}
-		sort.Strings(ids)
-		want.Mapping = append(want.Mapping, driver.SourceImportRevision{Sequence: frame.Sequence, Revision: model.Natural64(revision), EventIDs: ids, CommitIDs: []string{frame.CommitID}})
+		want.Mapping = append(want.Mapping, driver.SourceImportRevision{SourceStoreID: batch.SourceStoreID, SourceSequence: batch.SourceSequence, Project: batch.Project, Sequence: batch.Sequence, Revision: model.Natural64(revision), EventIDs: batch.EventIDs, CommitIDs: batch.CommitIDs})
 	}
 	revision++
 	left, _ := json.Marshal(got)

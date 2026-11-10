@@ -7,7 +7,8 @@ import (
 )
 
 type externalEntry struct {
-	Input struct {
+	Identity *SourceIdentity `json:"identity,omitempty"`
+	Input    struct {
 		Family     string `json:"family"`
 		Path       string `json:"path"`
 		State      string `json:"state"`
@@ -29,13 +30,12 @@ func validateConfigProvenance(data []byte) error {
 	for i := range entries {
 		entry := &entries[i]
 		input := entry.Input
-		key := input.Family + "\x00" + input.Path
+		key := externalEntryKey(*entry)
 		if !allowed[input.Family] || !path.IsAbs(input.Path) || strings.ContainsRune(input.Path, '\x00') || seen[key] || input.Precedence < 0 {
 			return fmt.Errorf("unknown, duplicate or inconsistent configuration input")
 		}
 		if previous != nil {
-			p := previous.Input
-			if input.Precedence < p.Precedence || input.Precedence == p.Precedence && (input.Family < p.Family || input.Family == p.Family && input.Path <= p.Path) {
+			if compareExternalEntries(*previous, *entry) >= 0 {
 				return fmt.Errorf("unordered configuration inputs")
 			}
 		}
@@ -75,6 +75,16 @@ func migrationAction(table string, migration *ImportMigration) string {
 }
 
 func validateMigratedDispositions(sources []Disposition, counts map[string]int, config []byte, migration *ImportMigration) error {
+	return validateBoundDispositions(sources, counts, config, migration, false)
+}
+
+func validateBoundDispositions(sources []Disposition, counts map[string]int, config []byte, migration *ImportMigration, planes bool, familyContracts ...string) error {
+	return validateBoundDispositionsForVersion(sources, counts, config, migration, planes, 72, familyContracts...)
+}
+
+func validateBoundDispositionsForVersion(sources []Disposition, counts map[string]int, config []byte, migration *ImportMigration, planes bool, mainVersion int, familyContracts ...string) error {
+	columns := sourceTableColumns(mainVersion)
+	native := len(familyContracts) != 0 && familyContracts[0] == SourceFamilyContract
 	var entries []externalEntry
 	if err := decodeJSON(config, &entries); err != nil {
 		return err
@@ -94,12 +104,29 @@ func validateMigratedDispositions(sources []Disposition, counts map[string]int, 
 	seen := map[string]bool{}
 	lastFamily, lastReason := "", ""
 	for _, source := range sources {
+		if source.Identity != nil || !native && source.History != "" {
+			return fmt.Errorf("source disposition requires explicit scoped native contract")
+		}
 		if source.Rows < 0 || source.Reason == "" || source.Family < lastFamily || source.Family == lastFamily && source.Reason < lastReason {
 			return fmt.Errorf("invalid or unordered source disposition")
 		}
 		lastFamily, lastReason = source.Family, source.Reason
-		if _, table := tableColumns[source.Family]; table {
-			if seen[source.Family] || source.Action != migrationAction(source.Family, migration) || source.Family != "repo_mtimes" && source.Rows != counts[source.Family] || (source.Action == "refuse-if-nonempty" || source.Family == "leases") && source.Rows != 0 {
+		if _, table := columns[source.Family]; table {
+			action := migrationAction(source.Family, migration)
+			if planes {
+				if source.Family == EphemeralDependencyTable {
+					action = "archive"
+				} else if sourcePlaneArchiveTable(source.Family) {
+					action = "archive"
+				}
+			}
+			if native && (source.Family == "leases" || source.Family == "repo_mtimes") {
+				action = "archive"
+			}
+			if native && source.History != FamilyVersioned && source.History != FamilyUnversioned {
+				return fmt.Errorf("missing native family history designation")
+			}
+			if seen[source.Family] || source.Action != action || (source.Family != "repo_mtimes" || native) && source.Rows != counts[source.Family] || (source.Action == "refuse-if-nonempty" || source.Family == "leases" && !native) && source.Rows != 0 {
 				return fmt.Errorf("source disposition/action/count mismatch")
 			}
 			seen[source.Family] = true
@@ -115,7 +142,7 @@ func validateMigratedDispositions(sources []Disposition, counts map[string]int, 
 			expected[source]--
 		}
 	}
-	if len(seen) != len(tableColumns)+2 {
+	if len(seen) != len(columns)+2 {
 		return fmt.Errorf("unaccounted database disposition")
 	}
 	for _, count := range expected {

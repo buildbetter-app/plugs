@@ -26,6 +26,8 @@ const (
 	Read              Action = "read"
 	Modify            Action = "modify"
 	ImportBulkHistory Action = "importBulkHistory"
+	Transition        Action = "transition"
+	OverrideGuard     Action = "override_guard"
 )
 
 type ResourceKind string
@@ -120,6 +122,14 @@ type CheckRequest struct {
 	Action   Action
 	Resource Resource
 	Method   string
+	// Transition is trusted host context, never RPC input. Strings are values,
+	// so freezing a request also detaches this exact target-status binding.
+	Transition TransitionContext
+}
+
+type TransitionContext struct {
+	Project, Type        string
+	FromStatus, ToStatus string
 }
 type ListRequest struct {
 	Caller       Caller
@@ -160,6 +170,23 @@ type Slice interface {
 	TeamActive(context.Context, model.Ref) (bool, error)
 	ProjectActive(context.Context, model.Ref) (bool, error)
 	ProjectForBead(context.Context, model.Ref) (ProjectBinding, error)
+}
+
+// SourceBeadSlice is an optional trusted-host identity binding for targets in a
+// separately guarded source namespace. It admits only exact installed targets;
+// the host must retain the provider's presence/ownership and namespace fences.
+// It supplies no policy permit. Ordinary slices retain slash-free bead IDs.
+type SourceBeadSlice interface {
+	SourceBeadReference(model.Ref) bool
+}
+
+func sourceBeadReference(s Slice, ref model.Ref) bool {
+	bound, ok := s.(SourceBeadSlice)
+	return ok && bound.SourceBeadReference(ref)
+}
+
+func validBeadReference(s Slice, ref model.Ref) bool {
+	return !strings.Contains(ref.ID, "/") || sourceBeadReference(s, ref)
 }
 
 type ProjectBinding struct {

@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
-	"io"
 	"regexp"
 	"sort"
 	"strings"
@@ -148,17 +146,62 @@ func (s *Service) authorizeMemory(ctx context.Context, by model.PrincipalRef, me
 	return allowed, nil
 }
 
+// History authorization uses the same persisted-envelope checks and visibility
+// boundary as public memory reads before it can return any historical body.
 func decodeMemoryRecord(record driver.Record) (Memory, error) {
-	decoder := json.NewDecoder(bytes.NewReader(record.Body))
-	decoder.UseNumber()
-	var document pipeline.MemoryDocument
-	if err := decoder.Decode(&document); err != nil {
+	document, source, err := pipeline.DecodeMemoryRecord(record)
+	if err != nil {
 		return Memory{}, failure("internal_error", "invalid persisted memory")
 	}
-	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
-		return Memory{}, failure("internal_error", "invalid persisted memory")
+	if source != nil && !source.Visible {
+		return Memory{}, historyMemoryNotFound()
 	}
 	return memoryValue(record, document)
+}
+
+// readPublicMemory projects a validated retained source envelope without
+// changing its persisted schema. Writes use the same strict classifier.
+func readPublicMemory(ctx context.Context, r driver.Reader, record driver.Record) (Memory, bool, error) {
+	document, source, err := pipeline.DecodeMemoryRecord(record)
+	if err != nil {
+		return Memory{}, false, failure("internal_error", "invalid persisted memory")
+	}
+	if source == nil {
+		memory, err := memoryValue(record, document)
+		return memory, true, err
+	}
+	if !source.Visible {
+		return Memory{}, false, nil
+	}
+	invalid := func() (Memory, bool, error) {
+		return Memory{}, false, failure("internal_error", "invalid joint source memory")
+	}
+	// The archive digest belongs to the admitted profile, not the mutable raw
+	// mirror. Bind it on the same core snapshot rather than adding stored fields.
+	bindingRef := model.RefByID("instance_config/restore-import/binding", model.Natural64(0))
+	rows, err := r.Get(ctx, []model.Ref{bindingRef})
+	if err != nil {
+		return Memory{}, false, mapped(err)
+	}
+	if len(rows) != 1 || rows[0].Kind != "instance_config" {
+		return invalid()
+	}
+	var binding struct {
+		Profile     driver.RestoreImportProfile `json:"profile"`
+		RequestHash string                      `json:"request_hash"`
+	}
+	if json.Unmarshal(rows[0].Body, &binding) != nil || binding.Profile.SourcePlanes == nil {
+		return invalid()
+	}
+	request, err := binding.Profile.RequestHash()
+	if err != nil || request != binding.RequestHash {
+		return invalid()
+	}
+	memory := Memory{ID: document.ID, Key: document.Key, Content: document.Content, Revision: record.Revision, Metadata: map[string]any{
+		"plug.restore.source_id": document.Key, "plug.restore.source_table": "config", "plug.restore.source": source.Fields,
+		"plug.restore.source_project": source.Project, "plug.restore.archive_sha256": binding.Profile.ArchiveDigest,
+	}}
+	return memory, true, nil
 }
 
 func (s *Service) MemoryGet(ctx context.Context, by model.PrincipalRef, req MemoryGetRequest) (Memory, error) {
@@ -180,9 +223,12 @@ func (s *Service) MemoryGet(ctx context.Context, by model.PrincipalRef, req Memo
 	if len(rows) != 1 || rows[0].Kind != "memory" {
 		return Memory{}, failure("not_found", "memory was not found")
 	}
-	memory, err := decodeMemoryRecord(rows[0])
+	memory, eligible, err := readPublicMemory(ctx, r, rows[0])
 	if err != nil {
 		return Memory{}, err
+	}
+	if !eligible {
+		return Memory{}, failure("not_found", "memory was not found")
 	}
 	allowed, err := s.authorizeMemory(ctx, by, memory)
 	if err != nil {
@@ -248,9 +294,12 @@ func (s *Service) MemoryList(ctx context.Context, by model.PrincipalRef, req Mem
 			return MemoryPage{}, mapped(err)
 		}
 		for _, record := range page.Items {
-			memory, err := decodeMemoryRecord(record)
+			memory, eligible, err := readPublicMemory(ctx, r, record)
 			if err != nil {
 				return MemoryPage{}, err
+			}
+			if !eligible {
+				continue
 			}
 			if needle != "" && !strings.Contains(strings.ToLower(memory.Key), needle) && !strings.Contains(strings.ToLower(memory.Content), needle) {
 				continue

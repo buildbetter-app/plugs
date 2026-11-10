@@ -1,0 +1,120 @@
+--- a/scripts/restructure_milestones.py
++++ b/scripts/restructure_milestones.py
+@@ -1,31 +1,5 @@
+-"""Add milestones M0-M7 to the signals-v2 beads, plus the decisions and tasks that custom signals need.
+-
+-Applies the change set to plan.json (the source breakdown) and to the bd database, then saves ids.json.
+-Run once: python3 -I restructure_milestones.py /home/dev/beads/signals-v2
+-"""
+-import json, os, shutil, subprocess, sys, time
+-
+-workspace = sys.argv[1]
+-plan_path = os.path.join(workspace, "plan.json")
+-ids_path = os.path.join(workspace, "ids.json")
+-plan = json.load(open(plan_path))
+-ids = json.load(open(ids_path))
+-items = {item["key"]: item for item in plan["items"]}
+-doc = plan["doc"]
+-
+-stamp = time.strftime("%Y%m%d-%H%M%S")
+-shutil.copy(plan_path, f"{plan_path}.{stamp}.bak")
+-shutil.copy(ids_path, f"{ids_path}.{stamp}.bak")
+-
+-
+-def bd(*args):
+-    result = subprocess.run(["bd", *args], capture_output=True, text=True)
+-    if result.returncode != 0:
+-        raise SystemExit(f"bd {' '.join(args[:3])} ... failed: {result.stderr.strip()[:500]}")
+-    return result.stdout.strip()
+-
+-
+-def footer(key, description):
+-    return f"{description}\n\nPlan key: {key}. Design doc: {doc}"
+-
+-
++import sys
++from pathlib import Path
++sys.path.insert(0, str(Path(__file__).resolve().parent))
++from host_drivers import main
++
+@@ -137,76 +111,4 @@
+-
+-# Sanity checks before touching anything.
+-keys_after = set(items) | {item["key"] for item in new_items}
+-for item in new_items:
+-    assert item["key"] not in items, f"{item['key']} already exists"
+-    for dep in item["deps"]:
+-        assert dep in keys_after, f"{item['key']} depends on unknown {dep}"
+-for key, (remove, add) in dep_changes.items():
+-    for dep in remove:
+-        assert dep in items[key]["deps"], f"{key} has no dep {dep} to remove"
+-    for dep in add:
+-        assert dep in keys_after, f"{key} adds unknown dep {dep}"
+-member_of = {}
+-for m in milestones:
+-    for member in m["members"]:
+-        assert member in keys_after, f"{m['key']} lists unknown {member}"
+-        assert member not in member_of, f"{member} is in {member_of[member]} and {m['key']}"
+-        member_of[member] = m["key"]
+-
+-# 1. Create new beads: epics first so children can reference them.
+-for item in sorted(new_items, key=lambda i: i["type"] != "epic"):
+-    labels = item.get("labels", [])
+-    issue_type = "decision" if "decision" in labels else item["type"]
+-    args = ["create", item["title"], "-t", issue_type, "-p", str(item["priority"]),
+-            "-d", footer(item["key"], item["description"]), "--silent"]
+-    if item["parent"]:
+-        args += ["--parent", ids[item["parent"]]]
+-    args += ["-l", ",".join([l for l in labels if l != "decision"] + ["signals-v2"])]
+-    ids[item["key"]] = bd(*args).splitlines()[-1].strip()
+-    plan["items"].append(item)
+-    items[item["key"]] = item
+-    print("created", item["key"], ids[item["key"]])
+-
+-for m in milestones:
+-    description = f"{m['description']}\n\n{HOLDS_NO_WORK}"
+-    ids[m["key"]] = bd("create", m["title"], "-t", "milestone", "-p", str(m["priority"]),
+-                       "-d", footer(m["key"], description), "--silent",
+-                       "-l", "milestone,signals-v2").splitlines()[-1].strip()
+-    entry = dict(key=m["key"], type="milestone", priority=m["priority"], parent=None,
+-                 deps=m["chain"] + m["members"], title=m["title"], description=description)
+-    plan["items"].append(entry)
+-    items[m["key"]] = entry
+-    print("created", m["key"], ids[m["key"]])
+-
+-# 2. Retitles and priority changes on existing beads.
+-for key, (title, description) in retitles.items():
+-    bd("update", ids[key], "--title", title, "-d", footer(key, description))
+-    items[key]["title"], items[key]["description"] = title, description
+-for key, priority in priority_changes.items():
+-    bd("update", ids[key], "-p", str(priority))
+-    items[key]["priority"] = priority
+-
+-# 3. Dependencies: removals, then additions for changed, new and milestone beads.
+-for key, (remove, add) in dep_changes.items():
+-    for dep in remove:
+-        bd("dep", "remove", ids[key], ids[dep])
+-        items[key]["deps"].remove(dep)
+-    for dep in add:
+-        bd("dep", "add", ids[key], "--blocked-by", ids[dep])
+-        items[key]["deps"].append(dep)
+-for item in new_items:
+-    for dep in item["deps"]:
+-        bd("dep", "add", ids[item["key"]], "--blocked-by", ids[dep])
+-for m in milestones:
+-    for dep in m["chain"] + m["members"]:
+-        bd("dep", "add", ids[m["key"]], "--blocked-by", ids[dep])
+-
+-# 4. Milestone labels on members, and the milestone field in plan.json.
+-for m in milestones:
+-    bd("label", "add", *[ids[member] for member in m["members"]], f"milestone:{m['key'].lower()}")
+-    for member in m["members"]:
+-        items[member]["milestone"] = m["key"]
+-
+-json.dump(plan, open(plan_path, "w"), indent=2)
+-json.dump(ids, open(ids_path, "w"), indent=2)
+-print("done; plan items:", len(plan["items"]))
++
++main("restructure", dict(new_items=new_items, milestones=milestones,
++    retitles=retitles, priority_changes=priority_changes, dep_changes=dep_changes,
++    holds_no_work=HOLDS_NO_WORK))

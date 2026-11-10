@@ -28,6 +28,12 @@ type OfflineHistoryTx interface {
 
 const OfflineHistoryEvidenceID = "plug-restore-history"
 
+// NativeTableHistorySource identifies independently verified immutable SQL
+// table images. Their historical records are inert source evidence; portable
+// business records are created only in the final restore changeset.
+const NativeTableHistorySource = "beads-native-tables/1"
+const NativeTableHistoryRecordPrefix = "source/native-history/"
+
 // SourceHistoryGap is an inclusive unavailable source sequence range. A partial
 // replay retains a contiguous suffix; every earlier sequence is accounted for
 // explicitly, including known history deliberately left outside that suffix.
@@ -48,10 +54,24 @@ type SourceHistoryChange struct {
 // SourceHistoryBatch is an explicitly ordered import unit, not an assertion
 // about source SQL transactions. Event and commit IDs are untrusted provenance.
 type SourceHistoryBatch struct {
-	Sequence  uint64                `json:"sequence"`
-	EventIDs  []string              `json:"eventIds"`
-	CommitIDs []string              `json:"commitIds,omitempty"`
-	Changes   []SourceHistoryChange `json:"changes"`
+	SourceStoreID  string                `json:"sourceStoreId,omitempty"`
+	SourceSequence uint64                `json:"sourceSequence,omitempty"`
+	Project        string                `json:"project,omitempty"`
+	Sequence       uint64                `json:"sequence"`
+	EventIDs       []string              `json:"eventIds"`
+	CommitIDs      []string              `json:"commitIds,omitempty"`
+	Changes        []SourceHistoryChange `json:"changes"`
+}
+
+// NativeHistoryBoundary binds a source's genuinely unavailable prefix to the
+// authenticated archive descriptor. It does not invent a count of missing
+// source commits or a baseline before the earliest verified image. Imported
+// sequence numbers still describe only the verified images actually supplied.
+type NativeHistoryBoundary struct {
+	SourceStoreID       string `json:"sourceStoreId"`
+	Project             string `json:"project"`
+	VerifiedCommitCount uint64 `json:"verifiedCommitCount"`
+	BoundarySHA256      string `json:"boundarySha256"`
 }
 
 // OfflineHistory is trusted source verification output, never an RPC authority
@@ -59,32 +79,37 @@ type SourceHistoryBatch struct {
 // verifier, not an operator flag. Baseline is a complete converted state just
 // before First; it is required for a partial suffix and is never synthesized.
 type OfflineHistory struct {
-	Source           string               `json:"source"`
-	Verified         bool                 `json:"verified"`
-	Complete         bool                 `json:"complete"`
-	First            uint64               `json:"first"`
-	Head             uint64               `json:"head"`
-	BaselineVerified bool                 `json:"baselineVerified"`
-	Baseline         []Record             `json:"baseline,omitempty"`
-	Gaps             []SourceHistoryGap   `json:"gaps"`
-	Batches          []SourceHistoryBatch `json:"batches"`
+	Source           string                  `json:"source"`
+	Verified         bool                    `json:"verified"`
+	Complete         bool                    `json:"complete"`
+	First            uint64                  `json:"first"`
+	Head             uint64                  `json:"head"`
+	BaselineVerified bool                    `json:"baselineVerified"`
+	Baseline         []Record                `json:"baseline,omitempty"`
+	Gaps             []SourceHistoryGap      `json:"gaps"`
+	Batches          []SourceHistoryBatch    `json:"batches"`
+	NativeBoundaries []NativeHistoryBoundary `json:"nativeBoundaries,omitempty"`
 }
 
 type SourceImportRevision struct {
-	Sequence  uint64         `json:"sequence"`
-	Revision  model.Revision `json:"revision"`
-	EventIDs  []string       `json:"eventIds"`
-	CommitIDs []string       `json:"commitIds,omitempty"`
+	SourceStoreID  string         `json:"sourceStoreId,omitempty"`
+	SourceSequence uint64         `json:"sourceSequence,omitempty"`
+	Project        string         `json:"project,omitempty"`
+	Sequence       uint64         `json:"sequence"`
+	Revision       model.Revision `json:"revision"`
+	EventIDs       []string       `json:"eventIds"`
+	CommitIDs      []string       `json:"commitIds,omitempty"`
 }
 type HistoryImportEvidence struct {
-	Source   string                 `json:"source"`
-	Mode     RestoreHistoryMode     `json:"mode"`
-	Complete bool                   `json:"complete"`
-	First    uint64                 `json:"first"`
-	Head     uint64                 `json:"head"`
-	Floor    model.Revision         `json:"floor"`
-	Gaps     []SourceHistoryGap     `json:"gaps"`
-	Mapping  []SourceImportRevision `json:"mapping"`
+	Source           string                  `json:"source"`
+	Mode             RestoreHistoryMode      `json:"mode"`
+	Complete         bool                    `json:"complete"`
+	First            uint64                  `json:"first"`
+	Head             uint64                  `json:"head"`
+	Floor            model.Revision          `json:"floor"`
+	Gaps             []SourceHistoryGap      `json:"gaps"`
+	Mapping          []SourceImportRevision  `json:"mapping"`
+	NativeBoundaries []NativeHistoryBoundary `json:"nativeBoundaries,omitempty"`
 }
 
 // OfflineHistoryPlan is detached validation output. Drivers build it again
@@ -101,6 +126,32 @@ type OfflineHistoryPlan struct {
 	Versions []Version
 	Entries  []model.Changeset
 	Evidence HistoryImportEvidence
+}
+
+func validNativeHistoryBoundaries(h OfflineHistory) bool {
+	type source struct{ store, project string }
+	counts := map[source]uint64{}
+	for _, batch := range h.Batches {
+		counts[source{batch.SourceStoreID, batch.Project}]++
+	}
+	var previous source
+	for i, boundary := range h.NativeBoundaries {
+		key := source{boundary.SourceStoreID, boundary.Project}
+		if key.store == "" || key.project == "" || boundary.VerifiedCommitCount == 0 || counts[key] != boundary.VerifiedCommitCount {
+			return false
+		}
+		if i > 0 && (key.store < previous.store || key.store == previous.store && key.project <= previous.project) {
+			return false
+		}
+		if len(boundary.BoundarySHA256) != sha256.Size*2 || strings.ToLower(boundary.BoundarySHA256) != boundary.BoundarySHA256 {
+			return false
+		}
+		if _, err := hex.DecodeString(boundary.BoundarySHA256); err != nil {
+			return false
+		}
+		previous = key
+	}
+	return true
 }
 
 func historyRecordKey(r Record) (string, error) {
@@ -120,15 +171,37 @@ func sameHistoryRecord(a, b Record) bool {
 // before allocating any driver state. All principals/times are the admitted
 // restore actor/time; source attribution stays in the retained source archive.
 func BuildOfflineHistory(current Meta, profile RestoreImportProfile, input OfflineHistory, when time.Time, tail []Record) (OfflineHistoryPlan, error) {
+	return buildOfflineHistory(current, profile, input, when, tail, false)
+}
+
+// BuildSourcePlaneHistory is the joined, full-history adapter. It retains the
+// complete source plan in the admission hash; the core-only API still refuses
+// source namespaces. Target lifetime is checked again by transaction preparation.
+func BuildSourcePlaneHistory(current Meta, profile RestoreImportProfile, input OfflineHistory, when time.Time, tail []Record) (OfflineHistoryPlan, error) {
+	if profile.SourcePlanes == nil || profile.HistoryMode != RestoreHistoryModeFull {
+		return OfflineHistoryPlan{}, sourcePlaneError("joint history requires full policy and a complete source plan")
+	}
+	return buildOfflineHistory(current, profile, input, when, tail, true)
+}
+
+func buildOfflineHistory(current Meta, profile RestoreImportProfile, input OfflineHistory, when time.Time, tail []Record, joint bool) (OfflineHistoryPlan, error) {
 	if !current.Head.IsZero() || !current.HistoryFloor.IsZero() {
 		return OfflineHistoryPlan{}, ErrRestoreTargetNotEmpty
 	}
-	p, err := profile.Detached()
+	detach := profile.DetachedCoreOnly
+	if joint {
+		detach = profile.Detached
+	}
+	p, err := detach()
 	if err != nil {
 		return OfflineHistoryPlan{}, err
 	}
 	refuse := func(reason RestoreHistoryReason) (OfflineHistoryPlan, error) {
 		return OfflineHistoryPlan{}, ErrRestoreHistoryRefused{Mode: p.HistoryMode, History: RestoreHistoryAvailableUnverified, Reason: reason}
+	}
+	nativeTables := input.Source == NativeTableHistorySource
+	if nativeTables && (!joint || p.HistoryMode != RestoreHistoryModeFull) {
+		return refuse(RestoreHistoryReasonUnmappable)
 	}
 	if p.HistoryMode == RestoreHistoryModeSnapshot {
 		return refuse(RestoreHistoryReasonUnmappable)
@@ -155,10 +228,19 @@ func BuildOfflineHistory(current Meta, profile RestoreImportProfile, input Offli
 		return refuse(RestoreHistoryReasonNonContiguous)
 	}
 	partial := h.First > 1
-	if p.HistoryMode == RestoreHistoryModeFull && (!h.Complete || partial || len(h.Gaps) != 0 || len(h.Baseline) != 0) {
+	boundedNative := len(h.NativeBoundaries) != 0
+	if boundedNative {
+		if !nativeTables || !joint || p.HistoryMode != RestoreHistoryModeFull || h.Complete || partial || h.BaselineVerified || len(h.Gaps) != 0 || len(h.Baseline) != 0 {
+			return refuse(RestoreHistoryReasonNonContiguous)
+		}
+		if !validNativeHistoryBoundaries(h) {
+			return refuse(RestoreHistoryReasonNonContiguous)
+		}
+	}
+	if p.HistoryMode == RestoreHistoryModeFull && ((!h.Complete && !boundedNative) || partial || len(h.Gaps) != 0 || len(h.Baseline) != 0) {
 		return refuse(RestoreHistoryReasonNonContiguous)
 	}
-	if !partial && (!h.Complete || len(h.Gaps) != 0 || len(h.Baseline) != 0) {
+	if !partial && ((!h.Complete && !boundedNative) || len(h.Gaps) != 0 || len(h.Baseline) != 0) {
 		return refuse(RestoreHistoryReasonNonContiguous)
 	}
 	if partial {
@@ -182,6 +264,7 @@ func BuildOfflineHistory(current Meta, profile RestoreImportProfile, input Offli
 	}
 	meta.HistoryFloor = model.Natural64(0)
 	plan := OfflineHistoryPlan{Meta: meta, Evidence: HistoryImportEvidence{Source: h.Source, Mode: p.HistoryMode, Complete: h.Complete, First: h.First, Head: h.Head, Gaps: append([]SourceHistoryGap{}, h.Gaps...), Mapping: []SourceImportRevision{}}}
+	plan.Evidence.NativeBoundaries = append([]NativeHistoryBoundary(nil), h.NativeBoundaries...)
 	state := map[string]Record{}
 	counts := map[string]int{}
 	last := map[string]model.Revision{}
@@ -294,10 +377,33 @@ func BuildOfflineHistory(current Meta, profile RestoreImportProfile, input Offli
 		}
 		plan.Meta.HistoryFloor = model.Natural64(1)
 	}
-	seenEvents := map[string]bool{}
+	type scope struct{ store, project string }
+	type eventKey struct {
+		scope
+		id string
+	}
+	seenEvents := map[eventKey]bool{}
+	sourceSequences := map[scope]uint64{}
 	for i, b := range h.Batches {
 		if b.Sequence != h.First+uint64(i) {
 			return refuse(RestoreHistoryReasonNonContiguous)
+		}
+		origin := scope{b.SourceStoreID, b.Project}
+		if nativeTables && (b.SourceStoreID == "" || b.Project == "" || b.SourceSequence == 0 || len(b.CommitIDs) != 1 || len(b.EventIDs) != 0) {
+			return refuse(RestoreHistoryReasonUnmappable)
+		}
+		if b.SourceStoreID != "" || b.SourceSequence != 0 {
+			if b.SourceStoreID == "" || b.Project == "" || strings.TrimSpace(b.SourceStoreID) != b.SourceStoreID || strings.TrimSpace(b.Project) != b.Project || strings.ContainsRune(b.SourceStoreID+b.Project, '\x00') {
+				return refuse(RestoreHistoryReasonUnmappable)
+			}
+			previous, present := sourceSequences[origin]
+			if !present {
+				previous = h.First - 1
+			}
+			if b.SourceSequence != previous+1 {
+				return refuse(RestoreHistoryReasonNonContiguous)
+			}
+			sourceSequences[origin] = b.SourceSequence
 		}
 		// A captured Dolt commit may contain no source audit event or no
 		// portable business change. Preserve that explicit source unit without
@@ -307,10 +413,11 @@ func BuildOfflineHistory(current Meta, profile RestoreImportProfile, input Offli
 			return refuse(RestoreHistoryReasonUnmappable)
 		}
 		for _, id := range b.EventIDs {
-			if id == "" || strings.TrimSpace(id) != id || strings.ContainsRune(id, '\x00') || seenEvents[id] {
+			key := eventKey{origin, id}
+			if id == "" || strings.TrimSpace(id) != id || strings.ContainsRune(id, '\x00') || seenEvents[key] {
 				return refuse(RestoreHistoryReasonUnmappable)
 			}
-			seenEvents[id] = true
+			seenEvents[key] = true
 		}
 		for _, id := range b.CommitIDs {
 			if id == "" || strings.TrimSpace(id) != id || strings.ContainsRune(id, '\x00') {
@@ -327,6 +434,13 @@ func BuildOfflineHistory(current Meta, profile RestoreImportProfile, input Offli
 			if r == nil {
 				return refuse(RestoreHistoryReasonUnmappable)
 			}
+			if nativeTables {
+				for _, image := range []*Record{c.Before, c.After} {
+					if image != nil && (image.Kind != "beads-archive" || !strings.HasPrefix(image.Ref.ID, NativeTableHistoryRecordPrefix)) {
+						return refuse(RestoreHistoryReasonUnmappable)
+					}
+				}
+			}
 			id, e := historyRecordKey(*r)
 			if e != nil || id == evidenceKey {
 				return refuse(RestoreHistoryReasonUnmappable)
@@ -335,7 +449,7 @@ func BuildOfflineHistory(current Meta, profile RestoreImportProfile, input Offli
 		if err = emit(b.Changes, ""); err != nil {
 			return refuse(RestoreHistoryReasonUnmappable)
 		}
-		plan.Evidence.Mapping = append(plan.Evidence.Mapping, SourceImportRevision{Sequence: b.Sequence, Revision: model.Natural64(rev), EventIDs: b.EventIDs, CommitIDs: b.CommitIDs})
+		plan.Evidence.Mapping = append(plan.Evidence.Mapping, SourceImportRevision{SourceStoreID: b.SourceStoreID, SourceSequence: b.SourceSequence, Project: b.Project, Sequence: b.Sequence, Revision: model.Natural64(rev), EventIDs: b.EventIDs, CommitIDs: b.CommitIDs})
 	}
 	// Tail is the independently rebuilt head. Historical records must agree;
 	// non-historical records become explicit restore-time creates, never history.
@@ -352,7 +466,7 @@ func BuildOfflineHistory(current Meta, profile RestoreImportProfile, input Offli
 				return refuse(RestoreHistoryReasonUnmappable)
 			}
 		} else {
-			if _, known := last[id]; known || r.Kind == "bead" || r.Kind == "memory" {
+			if _, known := last[id]; known || !nativeTables && (r.Kind == "bead" || r.Kind == "memory") {
 				return refuse(RestoreHistoryReasonUnmappable)
 			}
 			extra = append(extra, SourceHistoryChange{After: &tail[i]})
@@ -394,6 +508,7 @@ type PreparedOfflineHistory struct {
 	profile RestoreImportProfile
 	history OfflineHistory
 	when    time.Time
+	joint   bool
 }
 
 func OfflineHistoryDigest(h OfflineHistory) (string, error) {
@@ -406,7 +521,26 @@ func OfflineHistoryDigest(h OfflineHistory) (string, error) {
 }
 
 func PrepareOfflineHistoryBinding(current Meta, p RestoreImportProfile, h OfflineHistory, when time.Time) (*PreparedOfflineHistory, error) {
-	bound, err := p.Detached()
+	return prepareOfflineHistoryBinding(current, p, h, when, false)
+}
+
+// PrepareSourcePlaneHistoryBinding verifies the real empty target and provider
+// lifetime before binding full replay. No partial or snapshot fallback exists.
+func PrepareSourcePlaneHistoryBinding(current Meta, p RestoreImportProfile, h OfflineHistory, when time.Time, lifetime CheckpointLifetime) (*PreparedOfflineHistory, error) {
+	bound, err := PrepareSourcePlaneHistoryProfile(p, current, lifetime)
+	if err != nil {
+		return nil, err
+	}
+	return prepareOfflineHistoryBinding(current, bound, h, when, true)
+}
+
+func prepareOfflineHistoryBinding(current Meta, p RestoreImportProfile, h OfflineHistory, when time.Time, joint bool) (*PreparedOfflineHistory, error) {
+	detach := p.DetachedCoreOnly
+	build := BuildOfflineHistory
+	if joint {
+		detach, build = p.Detached, BuildSourcePlaneHistory
+	}
+	bound, err := detach()
 	if err != nil {
 		return nil, err
 	}
@@ -428,11 +562,11 @@ func PrepareOfflineHistoryBinding(current Meta, p RestoreImportProfile, h Offlin
 	if err = json.Unmarshal(raw, &detached); err != nil {
 		return nil, err
 	}
-	plan, err := BuildOfflineHistory(current, bound, detached, when, nil)
+	plan, err := build(current, bound, detached, when, nil)
 	if err != nil {
 		return nil, err
 	}
-	return &PreparedOfflineHistory{current: current, meta: plan.Meta, profile: bound, history: detached, when: when}, nil
+	return &PreparedOfflineHistory{current: current, meta: plan.Meta, profile: bound, history: detached, when: when, joint: joint}, nil
 }
 func (b *PreparedOfflineHistory) Meta() Meta { return b.meta }
 func (b *PreparedOfflineHistory) Finalize(h ChangesetHeader, tail []Record, locks LockSet, bumps []LockKey) (OfflineHistoryPlan, error) {
@@ -445,7 +579,11 @@ func (b *PreparedOfflineHistory) Finalize(h ChangesetHeader, tail []Record, lock
 	if err := ValidateHeaderLocks(h.LockKeys, locks); err != nil {
 		return OfflineHistoryPlan{}, err
 	}
-	plan, err := BuildOfflineHistory(b.current, b.profile, b.history, b.when, tail)
+	build := BuildOfflineHistory
+	if b.joint {
+		build = BuildSourcePlaneHistory
+	}
+	plan, err := build(b.current, b.profile, b.history, b.when, tail)
 	if err != nil {
 		return OfflineHistoryPlan{}, err
 	}

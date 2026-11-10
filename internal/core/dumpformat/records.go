@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/buildbetter-app/plugs/internal/core/model"
 )
 
 // UnresolvedDependencyError identifies a source dependency whose endpoint is
@@ -32,13 +34,82 @@ func (e *UnresolvedDependencyError) Error() string {
 
 var hashPattern = regexp.MustCompile(`^[a-zA-Z0-9]+$`)
 
+// EphemeralDependencyTargetField names the physical exporter column used by
+// SQL conservation checks and the archive reader's explicit target refusal.
+const EphemeralDependencyTargetField = "depends_on_wisp_id"
+
+// SourceMetadataObject reads a source JSON object or its SQL JSON-text cell
+// without changing that source value. SQL NULL (nil) is absent metadata;
+// explicit {} is a non-nil empty object. Text must encode exactly one object:
+// null, arrays, scalars, duplicate keys and trailing data are refused. Callers
+// retain the original value separately; this detached object is a projection.
+// Presence of the metadata column is checked by the record schema validator.
+func SourceMetadataObject(value any) (map[string]any, error) {
+	if value == nil {
+		return nil, nil
+	}
+	var data []byte
+	if text, ok := value.(string); ok {
+		data = []byte(text)
+	} else {
+		var err error
+		data, err = json.Marshal(value)
+		if err != nil {
+			return nil, fmt.Errorf("source metadata: %w", err)
+		}
+	}
+	var object map[string]any
+	if err := decodeJSON(data, &object); err != nil {
+		return nil, fmt.Errorf("source metadata must be a JSON object: %w", err)
+	}
+	return object, nil
+}
+
+// SourceWaitsForMetadata projects only the canonical waits predicate. The
+// original JSON value remains in Body and Source.Fields. Absence selects the
+// legacy predicate; explicit {} selects all-children without also_blocks.
+func SourceWaitsForMetadata(value any) (*model.LinkMetadata, error) {
+	object, err := SourceMetadataObject(value)
+	if err != nil || object == nil {
+		return nil, err
+	}
+	metadata := model.LinkMetadata{Gate: "all-children"}
+	for key, raw := range object {
+		switch key {
+		case "gate":
+			gate, ok := raw.(string)
+			if !ok || gate != "all-children" && gate != "any-children" {
+				return nil, fmt.Errorf("waits-for gate must be all-children or any-children")
+			}
+			metadata.Gate = gate
+		case "also_blocks":
+			alsoBlocks, ok := raw.(bool)
+			if !ok {
+				return nil, fmt.Errorf("waits-for also_blocks must be boolean")
+			}
+			metadata.AlsoBlocks = alsoBlocks
+		default:
+			return nil, fmt.Errorf("unsupported waits-for metadata member %q", key)
+		}
+	}
+	return &metadata, nil
+}
+
 func validateRecord(record Record, projects []Project, counts map[string]int) error {
 	return validateMigratedRecord(record, projects, counts, nil)
 }
 
 func validateMigratedRecord(record Record, projects []Project, counts map[string]int, migration *ImportMigration) error {
+	return validateVersionedRecord(record, projects, counts, migration, 1)
+}
+
+func validateVersionedRecord(record Record, projects []Project, counts map[string]int, migration *ImportMigration, edgeVersion int, mainVersions ...int) error {
 	table, fields := record.Source.Table, record.Source.Fields
-	columns, ok := tableColumns[table]
+	main := 72
+	if len(mainVersions) != 0 {
+		main = mainVersions[0]
+	}
+	columns, ok := sourceTableColumns(main)[table]
 	if !ok {
 		return fmt.Errorf("unknown record source table")
 	}
@@ -107,6 +178,14 @@ func validateMigratedRecord(record Record, projects []Project, counts map[string
 				return migrationRefusal("undeclared-entry", record.ID, record.Project)
 			}
 			category, result, targetType = string(status.Category), string(status.Outcome), target.Type
+		} else if len(p.Statuses) != 0 {
+			category = projectStatusCategory(p, stringValue(fields["status"]))
+			if category == "" {
+				return migrationRefusal("unknown-native-status", stringValue(fields["status"]), record.Project)
+			}
+			if category == "done" {
+				result = "success"
+			}
 		} else {
 			switch stringValue(fields["status"]) {
 			case "open":
@@ -163,7 +242,12 @@ func validateMigratedRecord(record Record, projects []Project, counts map[string
 		}
 	case "edge":
 		target, targetKind := "", ""
-		for _, key := range []string{"depends_on_issue_id", "depends_on_wisp_id", "depends_on_external"} {
+		for _, key := range []string{"depends_on_issue_id", EphemeralDependencyTargetField, "depends_on_external"} {
+			if IsTypedEdgeVersion(edgeVersion) && fields[key] != nil {
+				if _, ok := fields[key].(string); !ok {
+					return fmt.Errorf("typed edge target %s must be text or null", key)
+				}
+			}
 			if value := stringValue(fields[key]); value != "" {
 				if target != "" {
 					return fmt.Errorf("multiple typed edge targets")
@@ -171,8 +255,8 @@ func validateMigratedRecord(record Record, projects []Project, counts map[string
 				target, targetKind = value, key
 			}
 		}
-		if target == "" || targetKind == "depends_on_wisp_id" {
-			if target != "" && targetKind == "depends_on_wisp_id" {
+		if target == "" || targetKind == EphemeralDependencyTargetField {
+			if target != "" && targetKind == EphemeralDependencyTargetField {
 				return fmt.Errorf("unsupported or missing edge target: %w", &UnresolvedDependencyError{
 					EdgeID: record.ID, Project: record.Project, Source: stringValue(fields["issue_id"]), Target: target, TargetKind: targetKind,
 				})
@@ -183,8 +267,15 @@ func validateMigratedRecord(record Record, projects []Project, counts map[string
 		case "blocks", "parent-child", "related", "discovered-from":
 		default:
 			kind := stringValue(fields["type"])
-			if targetKind != "depends_on_external" || kind == "" || len(kind) > 32 || !utf8.ValidString(kind) {
+			localSuccessor := IsVersionedLocalKnownEdgeType(edgeVersion, targetKind, kind)
+			localOpaque := IsLocalOpaqueEdgeType(edgeVersion, targetKind, kind)
+			if !localSuccessor && !localOpaque && (targetKind != "depends_on_external" || kind == "" || len(kind) > 32 || !utf8.ValidString(kind)) {
 				return fmt.Errorf("unsupported dependency type")
+			}
+		}
+		if IsTypedEdgeVersion(edgeVersion) {
+			if _, err := SourceEdgeMetadata(edgeVersion, record.ID, stringValue(fields["type"]), fields["metadata"]); err != nil {
+				return fmt.Errorf("edge %s metadata: %w", record.ID, err)
 			}
 		}
 		body = Row{"from": fields["issue_id"], "to": target, "target_kind": targetKind, "type": fields["type"], "metadata": fields["metadata"], "thread_id": fields["thread_id"]}
@@ -275,8 +366,18 @@ func checkID(id string, p Project) error {
 		if err != nil || n == 0 || n > p.LastID {
 			return fmt.Errorf("source ID exceeds sequential allocator")
 		}
-	} else if !hashPattern.MatchString(parts[0]) || len(parts[0]) < p.HashLength {
-		return fmt.Errorf("invalid source hash ID")
+	} else {
+		namespace, hash, ok := splitHashRoot(parts[0])
+		declared := namespace == ""
+		for _, candidate := range p.HashNamespaces {
+			if namespace == candidate {
+				declared = true
+				break
+			}
+		}
+		if !ok || !declared || len(hash) < p.HashLength {
+			return fmt.Errorf("invalid source hash ID")
+		}
 	}
 	for i := 1; i < len(parts); i++ {
 		n, err := natural(parts[i])
@@ -294,6 +395,10 @@ func checkID(id string, p Project) error {
 }
 
 func validateRelations(projects []Project, records map[string][]Record) error {
+	return validateRelationsForVersion(projects, records, 72, 28)
+}
+
+func validateRelationsForVersion(projects []Project, records map[string][]Record, main, ignored int) error {
 	beads := map[string]string{}
 	for _, record := range records["bead"] {
 		if beads[record.ID] != "" {
@@ -346,18 +451,22 @@ func validateRelations(projects []Project, records map[string][]Record) error {
 		}
 	}
 	for lane, table := range map[string]string{"main": "schema_migrations", "ignored": "ignored_schema_migrations"} {
+		cursor := main
+		if lane == "ignored" {
+			cursor = ignored
+		}
 		seen := map[uint64]bool{}
 		for _, record := range records["beads-archive"] {
 			if record.Source.Table != table {
 				continue
 			}
 			version, err := natural(record.Source.Fields["version"])
-			if err != nil || version == 0 || version > uint64(len(migrationHashes[lane])) || seen[version] || record.Source.Fields["content_hash"] != migrationHashes[lane][int(version)] {
+			if err != nil || version == 0 || version > uint64(cursor) || seen[version] || record.Source.Fields["content_hash"] != migrationHashes[lane][int(version)] {
 				return fmt.Errorf("unknown or altered migration series")
 			}
 			seen[version] = true
 		}
-		if len(seen) != len(migrationHashes[lane]) {
+		if len(seen) != cursor {
 			return fmt.Errorf("incomplete migration series")
 		}
 	}

@@ -62,8 +62,13 @@ snapshot is staged and digest checked, then activated with one relative-symlink
 rename while the previous service is stopped. The real running executable checks
 its own digest and edition. The orchestrator inspects the running image ID,
 restores the exact native head snapshot through public authenticated admin RPC
-into fresh empty data, and compares public ready/memory contents. Prompt canaries
-parse the installed commands through the existing CLI and call the public RPC.
+into fresh empty data, and compares public ready/memory contents.
+Restore consumes the installed generation's `data.dump` and checks the exact
+bytes against its pinned digest before admitting a restore. Changes to the
+original bundle source after activation cannot change the restored data;
+missing or changed installed bytes refuse while the runtime remains empty.
+Prompt canaries parse the installed commands through the existing CLI and call
+the public RPC.
 The native `authn.apikey` plugin supplies real process-local service keys. The
 candidate adds the actual MCP transport module; initialized tool discovery and
 unauthenticated refusal prove it is mounted. Old and restored-old profiles must

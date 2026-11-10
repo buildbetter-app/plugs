@@ -77,7 +77,7 @@ func TestWorkflowSecurityContract(t *testing.T) {
 		{"extra-trigger", "  workflow_call:", "  push:\n  workflow_call:"},
 		{"write-permission", "contents: read", "contents: write"},
 		{"secret", "jobs:", "env:\n  TOKEN: ${{ secrets.TOKEN }}\njobs:"},
-		{"mutable-action", "runs-on/action@284bff869d4a825f778ac7c38e50f1e31ef198fd", "runs-on/action@v2"},
+		{"mutable-action", "runs-on/action@13fbb6a39310a0dac9ab4716da2c4e74a3326dfc", "runs-on/action@v2"},
 		{"persist-token", "persist-credentials: false", "persist-credentials: true"},
 		{"mutable-source", "ref: ${{ github.event.pull_request.head.sha }}", "ref: beads"},
 		{"mutable-harness", "ref: ${{ inputs.harness_sha }}", "ref: main"},

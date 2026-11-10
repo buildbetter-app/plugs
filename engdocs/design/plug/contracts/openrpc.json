@@ -491,6 +491,14 @@
           }
         },
         {
+          "name": "targetStatus",
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Exact declared nonterminal status for this project/type; omission selects the workflow initial status. Noninitial targets require an allowed transition from initial and all its guards. Terminal loading uses create followed by guarded close."
+        },
+        {
           "name": "_meta",
           "schema": {
             "$ref": "#/components/schemas/Meta"
@@ -1015,6 +1023,14 @@
           }
         },
         {
+          "name": "targetStatus",
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Exact declared successful terminal status for this project/type; omission selects the close slot. All transition, permission, graph and child guards remain in force. Active workflow providers that cannot honor the selector refuse it."
+        },
+        {
           "name": "_meta",
           "schema": {
             "$ref": "#/components/schemas/Meta"
@@ -1307,6 +1323,14 @@
               "$ref": "#/components/schemas/Expect"
             }
           }
+        },
+        {
+          "name": "targetStatus",
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Exact declared ready-eligible status for this project/type; omission selects the reopen slot. All transition and permission guards remain in force."
         },
         {
           "name": "_meta",
@@ -3753,6 +3777,16 @@
               "$ref": "#/components/schemas/Expect"
             }
           }
+        },
+        {
+          "name": "typeMappings",
+          "schema": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MapTypeDirective"
+            }
+          },
+          "description": "Existing changed-key map_type directives against original project/type selectors; preserves all fields."
         },
         {
           "name": "_meta",
@@ -6839,6 +6873,91 @@
       "x-permission": "read",
       "x-agent-core": true,
       "x-stability": "v1"
+    },
+    {
+      "name": "gate.list",
+      "summary": "List exact installed gates in canonical default query order.",
+      "description": "Includes templates, pinned-status and ephemeral gates by default. All includes closed gates alongside open gates. Exclude templates before the selected gate limit; limit zero is unlimited. Merge both planes and order by priority ascending, creation time descending, then ID ascending before the limit. Await type filtering follows that limit: empty or all matches every type, gh matches gh: prefixes, other values match exactly. Query failures propagate; missing issue rows are dropped.",
+      "tags": [
+        {
+          "name": "core"
+        }
+      ],
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "all",
+          "schema": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        {
+          "name": "excludeTemplates",
+          "schema": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        {
+          "name": "limit",
+          "schema": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775807,
+            "default": 0
+          }
+        },
+        {
+          "name": "awaitType",
+          "schema": {
+            "type": "string",
+            "default": ""
+          }
+        },
+        {
+          "name": "_meta",
+          "schema": {
+            "$ref": "#/components/schemas/Meta"
+          },
+          "description": "Transport metadata; not an application actor field."
+        }
+      ],
+      "result": {
+        "name": "result",
+        "description": "Result",
+        "schema": {
+          "$ref": "#/components/schemas/BeadPage"
+        }
+      },
+      "errors": [
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/Unsupported"
+        },
+        {
+          "$ref": "#/components/errors/Forbidden"
+        },
+        {
+          "$ref": "#/components/errors/Busy"
+        },
+        {
+          "$ref": "#/components/errors/ProjectRequired"
+        },
+        {
+          "$ref": "#/components/errors/CursorInvalid"
+        },
+        {
+          "$ref": "#/components/errors/IncarnationChanged"
+        }
+      ],
+      "x-effect": "read",
+      "x-idempotency": "none",
+      "x-permission": "read",
+      "x-agent-core": true,
+      "x-stability": "v1"
     }
   ],
   "components": {
@@ -7404,6 +7523,11 @@
           },
           "project": {
             "type": "string"
+          },
+          "targetStatus": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Exact declared nonterminal status for this project/type; omission selects the workflow initial status. Noninitial targets require an allowed transition from initial and all its guards. Terminal loading uses create followed by guarded close."
           }
         },
         "required": [
@@ -10369,6 +10493,17 @@
                   "type": "integer",
                   "minimum": 0
                 }
+              },
+              "hash_namespaces": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "maxLength": 32,
+                  "pattern": "^[a-zA-Z][a-zA-Z0-9_]*(?:-[a-zA-Z0-9_]+)*$"
+                },
+                "description": "Sorted exact source namespace inventory; each namespace is separate from the root hash token."
               }
             },
             "required": [
@@ -10428,7 +10563,7 @@
             "$ref": "#/components/schemas/SourceAllocatorProvenance"
           },
           "targetAllocator": {
-            "$ref": "#/components/schemas/TargetRandomAllocator"
+            "$ref": "#/components/schemas/TargetHashAllocator"
           }
         },
         "required": [
@@ -10563,7 +10698,7 @@
       },
       "CloseOp": {
         "type": "object",
-        "description": "Enter the canonical close slot at this operation position in tx.apply; reuse bead.close guards, permission, reason and provenance. Any refusal rolls back the whole ChangeSet. No force or status shortcut.",
+        "description": "Enter the close slot or an explicit declared successful terminal status at this operation position in tx.apply; reuse bead.close guards, permission, reason and provenance. Any refusal rolls back the whole ChangeSet. No force or generic status shortcut.",
         "properties": {
           "kind": {
             "const": "close"
@@ -10580,6 +10715,11 @@
             "items": {
               "$ref": "#/components/schemas/Expect"
             }
+          },
+          "targetStatus": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Exact declared successful terminal status for this project/type; omission selects the close slot. All transition, permission, graph and child guards remain in force. Active workflow providers that cannot honor the selector refuse it."
           }
         },
         "required": [
@@ -11289,6 +11429,108 @@
           "external"
         ],
         "description": "Omission is local. Explicit external targets retain an exact nonempty branch-zero ID and are never resolved against local beads."
+      },
+      "TargetHashAllocator": {
+        "type": "object",
+        "properties": {
+          "prefix": {
+            "type": "string",
+            "minLength": 1
+          },
+          "id_mode": {
+            "type": "string",
+            "const": "hash"
+          },
+          "hash_length": {
+            "type": "integer",
+            "minimum": 3
+          },
+          "min_hash_length": {
+            "type": "integer",
+            "minimum": 3
+          },
+          "max_hash_length": {
+            "type": "integer",
+            "minimum": 3
+          },
+          "max_collision_prob": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "last_id": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "child_counters": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "required": [
+          "prefix",
+          "id_mode",
+          "hash_length",
+          "min_hash_length",
+          "max_hash_length",
+          "max_collision_prob",
+          "last_id"
+        ],
+        "additionalProperties": false,
+        "description": "Live Beads adaptive base36 hash policy, with ten nonce attempts per length through the configured maximum and monotonic parent.N child counters. Source IDs remain unchanged."
+      },
+      "MapTypeDirective": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "const": "map_type"
+          },
+          "target": {
+            "type": "object",
+            "properties": {
+              "project": {
+                "type": "string",
+                "minLength": 1
+              },
+              "type": {
+                "type": "string",
+                "minLength": 1
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "project",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          "from": {
+            "type": "string",
+            "minLength": 1
+          },
+          "to": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "target",
+          "from",
+          "to"
+        ],
+        "additionalProperties": false
       }
     },
     "errors": {
@@ -13923,10 +14165,10 @@
     "format": "plug-method-registry/1",
     "status": "bounded-contract-artifact",
     "purpose": "Human-maintained bounded contract artifact, read independently of methods at validation time; validates the closed method inventory, descriptor fields and wire inventories before an implementation generator exists.",
-    "methodCount": 85,
+    "methodCount": 86,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
-    "nameSha256": "e4cc1165f352268dd7412a50f2ec6ded5daa8a22c6f2ad3f4205ef382c423907",
-    "descriptorSha256": "2c3df724c4935e0d6f6934f46e3fbed779ef33eadad93954eab51a8d11bea32f",
+    "nameSha256": "bedf3c904d90b0d30d8f2f3292dc48d2124bcddc0f984aa3ed5f829d62420c06",
+    "descriptorSha256": "56d9787a9119cee6a034b849a9c79510bd6a9d9b026d6081fb13f50d124fba4e",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -14296,6 +14538,13 @@
             }
           },
           {
+            "name": "targetStatus",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
             "name": "_meta",
             "schema": {
               "$ref": "#/components/schemas/Meta"
@@ -14602,6 +14851,13 @@
             }
           },
           {
+            "name": "targetStatus",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
             "name": "_meta",
             "schema": {
               "$ref": "#/components/schemas/Meta"
@@ -14773,6 +15029,13 @@
               "items": {
                 "$ref": "#/components/schemas/Expect"
               }
+            }
+          },
+          {
+            "name": "targetStatus",
+            "schema": {
+              "type": "string",
+              "minLength": 1
             }
           },
           {
@@ -16326,6 +16589,16 @@
                 "$ref": "#/components/schemas/Expect"
               }
             }
+          },
+          {
+            "name": "typeMappings",
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/MapTypeDirective"
+              }
+            },
+            "description": "Existing changed-key map_type directives against original project/type selectors; preserves all fields."
           },
           {
             "name": "_meta",
@@ -18331,6 +18604,65 @@
           "#/components/errors/InternalError",
           "#/components/errors/PluginDurableStateUnavailable"
         ]
+      },
+      {
+        "name": "gate.list",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": true,
+        "params": [
+          {
+            "name": "all",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "excludeTemplates",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "limit",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807,
+              "default": 0
+            }
+          },
+          {
+            "name": "awaitType",
+            "schema": {
+              "type": "string",
+              "default": ""
+            }
+          },
+          {
+            "name": "_meta",
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            },
+            "description": "Transport metadata; not an application actor field."
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/BeadPage"
+        },
+        "errors": [
+          "#/components/errors/InvalidParams",
+          "#/components/errors/Unsupported",
+          "#/components/errors/Forbidden",
+          "#/components/errors/Busy",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/CursorInvalid",
+          "#/components/errors/IncarnationChanged"
+        ]
       }
     ],
     "wireInventory": {
@@ -18698,11 +19030,11 @@
     "allocator": {
       "profileSchema": "#/components/schemas/RestoreAllocatorProfile",
       "source": "Keep source IDs and sourceAllocator provenance exactly; never reinterpret source hash state as live target state.",
-      "target": "Seed explicit Plug random mode through RestoreAllocators under allocator locks in the guarded restore transaction and replay.",
-      "topLevelId": "{prefix}-{32 lowercase hexadecimal characters from 16 random bytes}",
-      "childId": "{parent}.{32 lowercase hexadecimal characters from 16 random bytes}; driver child allocation only where parented creation is already admitted",
+      "target": "Seed the source adaptive Beads hash policy and reconciled child counters through RestoreAllocators under allocator locks in the guarded restore transaction and replay.",
+      "topLevelId": "{prefix}-{Beads adaptive base36 hash}",
+      "childId": "{parent}.{next positive decimal counter}; reconcile stored counters and observed direct children without changing source IDs",
       "collision": "Check every generated ID against all existing, source and staged IDs regardless of source width.",
-      "hashContinuation": "Unsupported Beads hash continuation remains refused.",
+      "hashContinuation": "Use source-configured min_hash_length, max_hash_length and max_collision_prob, with Beads defaults 3, 8 and 0.25 when absent; ten nonce attempts per length.",
       "prefixBinding": "targetAllocator.prefix must equal sourceAllocator.prefix; mismatch refuses before staging.",
       "sourcePersistence": "Persist sourceAllocator unchanged in the restore receipt and project metadata key plug.restore.sourceAllocator."
     },

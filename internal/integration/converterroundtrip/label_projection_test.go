@@ -499,6 +499,27 @@ type labelProjectionStore struct {
 	change func(map[string]any)
 }
 
+func (s labelProjectionStore) ReadCheckpointInventory(ctx context.Context, view driver.View) (driver.CheckpointInventory, error) {
+	capability, ok := s.Store.(driver.CheckpointInventoryStore)
+	if !ok {
+		return nil, driver.ErrUnsupported
+	}
+	r, err := capability.ReadCheckpointInventory(ctx, view)
+	if err != nil {
+		return nil, err
+	}
+	return labelProjectionInventory{CheckpointInventory: r, change: s.change}, nil
+}
+
+type labelProjectionInventory struct {
+	driver.CheckpointInventory
+	change func(map[string]any)
+}
+
+func (r labelProjectionInventory) Query(ctx context.Context, q driver.Query) (driver.Page[driver.Record], error) {
+	return (labelProjectionReader{Reader: r.CheckpointInventory, change: r.change}).Query(ctx, q)
+}
+
 func (s labelProjectionStore) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
 	r, err := s.Store.Read(ctx, view)
 	if err != nil {

@@ -1,0 +1,50 @@
+[
+  {
+    "path": "/home/dev/beads/scripts/apply_change.py",
+    "source_sha256": "237a33a9fea2d191636239c620e23b6940bc74f5c9fcb6d304d94fffaeb7b7d1",
+    "prepared_full_post_sha256": "bdab15bc66b3f74c3e19a56b23b16b284a64f3a79dc05d709a85251710ce328d",
+    "patch_sha256": "50da4e1133dca9f7e9d0156fc182df748a1b87110594ead4727fd15123d9934f",
+    "private_payload_copied_to_disk": false,
+    "fixture_payload": "generic source"
+  },
+  {
+    "path": "/home/dev/beads/scripts/load_plan.py",
+    "source_sha256": "87683557bf30eaffd82179aa391b771f53bf04d69407014ea6e6e87b6ec2054c",
+    "prepared_full_post_sha256": "d7b8d2cecd1a6f769b828353bfe4924f5fd71d9f8aff756b7e043819901cd8f6",
+    "patch_sha256": "fdf93168f94a6906430672b83c9bd219bb3c6c6db6dd6e65e264b380d88da12d",
+    "private_payload_copied_to_disk": false,
+    "fixture_payload": "generic source"
+  },
+  {
+    "path": "/home/dev/beads/scripts/restructure_milestones.py",
+    "source_sha256": "bb31766376a7a13a31f91a1e345c668f7d1533fa52be89ee939c3a1869f883c5",
+    "prepared_full_post_sha256": "b736c5e776130dde6a0d916fc4094aa2e68b9f610db5c572b3fbdaa884d2a8cb",
+    "patch_sha256": "d435877ad8c6c34e4b8ccfb84f90e553bc74deccbf41efcb3d5f41696f6a3fb4",
+    "private_payload_copied_to_disk": false,
+    "fixture_payload": "synthetic replacement"
+  },
+  {
+    "path": "/home/dev/beads/scripts/cody-ops-seed.py",
+    "source_sha256": "9079dd499e2af5ffa14fe518c9680a3670be026310edd26970bd7d3b477728bb",
+    "prepared_full_post_sha256": "96b8ba2dfeb301ec36660e047a2313a2a0c191652eb641d6c30252ab487b09fa",
+    "patch_sha256": "3300f71b59c8b2cc6c6c3ee939093eb73b25511f559938bda7928438bc714755",
+    "private_payload_copied_to_disk": false,
+    "fixture_payload": "synthetic replacement"
+  },
+  {
+    "path": "/home/dev/beads/scripts/pour_step.py",
+    "source_sha256": "fb173d144ef5fc19917ef58f8ca81a1957cd59f4a7f9c4db265860025f4a22a7",
+    "prepared_full_post_sha256": "f0e20d0d776841c23e49252305acf0357124afa4524226800f2c939000882658",
+    "patch_sha256": "16b2189bcf88de44aa7f051404e5ea9caf1a8b828e798fc3830deddef4539ae3",
+    "private_payload_copied_to_disk": false,
+    "fixture_payload": "generic source"
+  },
+  {
+    "path": "/home/dev/beads/scripts/milestone_view_server.py",
+    "source_sha256": "ae690e970f14e3d7c2d63dc911e0d435f6b860fa9275942bd56896e769a7ce68",
+    "prepared_full_post_sha256": "75f8b9234a70866bc51550e42bc9241073641c7105695f8406c77a7bb87ba81b",
+    "patch_sha256": "80f9b33881be31e33b953b0ccac8f1af92d808e2e24042bee9d64f0c9543e91e",
+    "private_payload_copied_to_disk": false,
+    "fixture_payload": "generic source"
+  }
+]

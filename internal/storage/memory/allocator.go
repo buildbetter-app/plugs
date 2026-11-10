@@ -181,6 +181,12 @@ func (t *transaction) AllocateChild(ctx context.Context, parent, expected string
 		return fmt.Errorf("%w: allocator child counter already consumed %s", driver.ErrConflict, expected)
 	}
 	ref := model.Ref{ID: expected}
+	if _, _, err := t.allocatorWritable(value.Prefix); err != nil {
+		return err
+	}
+	if err := t.writable(driver.LockKey{Kind: driver.LockRecord, Ref: &ref}); err != nil {
+		return err
+	}
 	id, err := recordKey(ref)
 	if err != nil {
 		return err
@@ -196,11 +202,14 @@ func (t *transaction) AllocateChild(ctx context.Context, parent, expected string
 		value.Children = make(map[string]uint64)
 	}
 	value.Children[parent] = child
+	if err := t.stageAllocator(prefix, value); err != nil {
+		return err
+	}
 	if t.allocated == nil {
 		t.allocated = make(map[string]bool)
 	}
 	t.allocated[id] = true
-	return t.stageAllocator(prefix, value)
+	return nil
 }
 
 func (t *transaction) AllocateHashTopLevel(ctx context.Context, prefix string, input driver.HashInput, expected string) error {
@@ -224,6 +233,12 @@ func (t *transaction) AllocateHashTopLevel(ctx context.Context, prefix string, i
 		return err
 	}
 	ref := model.Ref{ID: expected}
+	if _, _, err := t.allocatorWritable(value.Prefix); err != nil {
+		return err
+	}
+	if err := t.writable(driver.LockKey{Kind: driver.LockRecord, Ref: &ref}); err != nil {
+		return err
+	}
 	id, err := recordKey(ref)
 	if err != nil {
 		return err
@@ -234,14 +249,17 @@ func (t *transaction) AllocateHashTopLevel(ctx context.Context, prefix string, i
 	if _, exists := t.base.kinds[id]; exists {
 		return fmt.Errorf("%w: allocator candidate already exists", driver.ErrConflict)
 	}
+	// Hash allocators have no monotonic counter, but advancing the allocator
+	// fact still serializes candidate consumption and records the exact
+	// configured policy in the same commit.
+	if err := t.stageAllocator(prefix, value); err != nil {
+		return err
+	}
 	if t.allocated == nil {
 		t.allocated = make(map[string]bool)
 	}
 	t.allocated[id] = true
-	// Hash allocators have no monotonic counter, but advancing the allocator
-	// fact still serializes candidate consumption and records the exact
-	// configured policy in the same commit.
-	return t.stageAllocator(prefix, value)
+	return nil
 }
 
 var _ driver.AllocatorReader = (*reader)(nil)

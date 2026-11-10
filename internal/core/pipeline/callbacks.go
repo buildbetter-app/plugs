@@ -94,6 +94,14 @@ func invokeTimedPost(ctx context.Context, timeout time.Duration, fn func(context
 }
 
 func (w *Writer) pre(ctx context.Context, p *prepared) error {
+	var sourceBodies map[string][]byte
+	if len(p.external) != 0 {
+		var err error
+		sourceBodies, err = p.sourceCoreBodies()
+		if err != nil {
+			return err
+		}
+	}
 	if err := w.authorize(ctx, port.AuthorizeBefore, p.proposal, p.snapshot); err != nil {
 		return err
 	}
@@ -138,7 +146,7 @@ func (w *Writer) pre(ctx context.Context, p *prepared) error {
 		}
 		p.mutators = append(p.mutators, binding.ID)
 	}
-	proposal, err := clone(p.proposal)
+	proposal, err := clone(p.ontologyProposal())
 	if err != nil {
 		return err
 	}
@@ -154,7 +162,7 @@ func (w *Writer) pre(ctx context.Context, p *prepared) error {
 	if err := p.patches(patches, "request", nil); err != nil {
 		return err
 	}
-	proposal, err = clone(p.proposal)
+	proposal, err = clone(p.ontologyProposal())
 	if err != nil {
 		return err
 	}
@@ -166,7 +174,13 @@ func (w *Writer) pre(ctx context.Context, p *prepared) error {
 		if !ok {
 			return failure("invalid_params", "ontology does not support ordered close validation")
 		}
-		images, err := clone(p.ordered)
+		ordinary := make([]port.Change, 0, len(p.ordered))
+		for _, image := range p.ordered {
+			if image.Resource.Kind == "bead" {
+				ordinary = append(ordinary, image)
+			}
+		}
+		images, err := clone(ordinary)
 		if err != nil {
 			return err
 		}
@@ -177,6 +191,9 @@ func (w *Writer) pre(ctx context.Context, p *prepared) error {
 		return err
 	}
 	if err := w.authorize(ctx, port.AuthorizeAfter, p.proposal, p.snapshot); err != nil {
+		return err
+	}
+	if err := p.checkSourceCoreBodies(sourceBodies); err != nil {
 		return err
 	}
 	type validation struct {
@@ -216,6 +233,9 @@ func (w *Writer) pre(ctx context.Context, p *prepared) error {
 		if !result.verdict.Allow {
 			return &model.Error{Message: "pre validator rejected the write", Data: model.ErrorData{Code: "ontology_guard_failed", Details: map[string]any{"binding": binding.ID, "violations": result.verdict.Violations}}}
 		}
+	}
+	if err := w.checkRollbackWindow(p); err != nil {
+		return err
 	}
 	return ctx.Err()
 }

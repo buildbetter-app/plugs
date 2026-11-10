@@ -20,7 +20,7 @@ func TestBoundedCatalogParity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := len(c.Descriptors()); got != 85 {
+	if got := len(c.Descriptors()); got != 86 {
 		t.Fatalf("method inventory = %d", got)
 	}
 	if _, ok := c.Descriptor("bead.comments"); ok {
@@ -29,14 +29,14 @@ func TestBoundedCatalogParity(t *testing.T) {
 	if got := len(c.ErrorCatalog()); got != 63 {
 		t.Fatalf("error inventory = %d", got)
 	}
-	if digest(catalogJSON) != "e2336634dbd90eb31ca81cbfedb1617429b96589337cae0924b5bd5a4f3cfef6" {
+	if digest(catalogJSON) != "6e7efb7fd7dc22bdb112d83080110611a21b2605b73a496b871129c760fb5719" {
 		t.Fatal("bounded source snapshot changed; reconcile approved contract")
 	}
 	// These changes affect one of two independent descriptor representations.
 	for _, change := range []struct{ before, after string }{
 		{`"x-agent-core": true`, `"x-agent-core": false`},
-		{`"methodCount": 85`, `"methodCount": 84`},
-		{`"nameSha256": "e4cc1165`, `"nameSha256": "f4cc1165`},
+		{`"methodCount": 86`, `"methodCount": 85`},
+		{`"nameSha256": "bedf3c90`, `"nameSha256": "f4cc1165`},
 		{`"stability": "v1"`, `"stability": ""`},
 		{`"#/components/errors/RateLimited"`, `"#/components/errors/NotARealError"`},
 	} {
@@ -65,7 +65,7 @@ func TestBoundedCatalogParity(t *testing.T) {
 	if err = json.Unmarshal(generated, &document); err != nil {
 		t.Fatal(err)
 	}
-	if len(document.Methods) != 85 {
+	if len(document.Methods) != 86 {
 		t.Fatal("generator dropped inventory methods")
 	}
 	for _, method := range document.Methods {
@@ -648,7 +648,11 @@ func TestRestoreImportAllocatorAndProfileContract(t *testing.T) {
 	validate("#/components/schemas/SourceAllocatorProvenance", `{"prefix":"pl","id_mode":"hash","last_id":0}`, false)
 	validate("#/components/schemas/TargetRandomAllocator", target, true)
 	validate("#/components/schemas/TargetRandomAllocator", `{"prefix":"pl","id_mode":"hash","random_bytes":16,"suffix_encoding":"lower-hex","top_level_shape":"prefix-random","child_shape":"parent-random"}`, false)
-	validate("#/components/schemas/RestoreAllocatorProfile", `{"sourceAllocator":`+source+`,"targetAllocator":`+target+`}`, true)
+	validate("#/components/schemas/RestoreAllocatorProfile", `{"sourceAllocator":`+source+`,"targetAllocator":`+target+`}`, false)
+	hashTarget := `{"prefix":"pl","id_mode":"hash","hash_length":8,"min_hash_length":3,"max_hash_length":8,"max_collision_prob":0.25,"last_id":0,"child_counters":{"pl-a":2}}`
+	validate("#/components/schemas/TargetHashAllocator", hashTarget, true)
+	validate("#/components/schemas/RestoreAllocatorProfile", `{"sourceAllocator":`+source+`,"targetAllocator":`+hashTarget+`}`, true)
+	validate("#/components/schemas/TargetHashAllocator", strings.Replace(hashTarget, `"min_hash_length":3`, `"min_hash_length":2`, 1), false)
 
 	admission := `{"mode":"authenticated","actor":{"kind":"user","id":"admin"},"scope":"","authority":"restore-admin","admissionDigest":"` + strings.Repeat("a", 64) + `"}`
 	profile := `{"admission":` + admission + `,"sourceStoreId":"store-1","method":"offline.restore.import","idempotencyKey":"0123456789abcdef","archiveDigest":"` + strings.Repeat("b", 64) + `","derivedDigest":"` + strings.Repeat("c", 64) + `"}`

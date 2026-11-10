@@ -28,8 +28,13 @@ import (
 const (
 	Alias      = "workflow"
 	ItemPrefix = "workflow:item/"
-	stateKey   = "workflow/state"
-	claimTTL   = 30 * time.Minute
+	// RunKind and ItemKind are the provider's durable user-content kinds. The
+	// native creation guard receives these from the actual create paths; it does
+	// not classify method names or a service-side example allowlist.
+	RunKind  = "workflow.run"
+	ItemKind = "workflow.item"
+	stateKey = "workflow/state"
+	claimTTL = 30 * time.Minute
 	// ClaimTTL is the original duration recorded in workflow claim responses.
 	// Replays retain that duration instead of recomputing a remaining lease.
 	ClaimTTL = claimTTL
@@ -182,9 +187,10 @@ type ClaimView struct {
 }
 
 type CommentView struct {
-	Body      string             `json:"body"`
-	Principal model.PrincipalRef `json:"principal"`
-	Time      time.Time          `json:"time"`
+	Body      string               `json:"body"`
+	Principal model.PrincipalRef   `json:"principal"`
+	Time      time.Time            `json:"time"`
+	Source    *SourceCommentOrigin `json:"source,omitempty"`
 }
 
 type InvokeResult struct {
@@ -200,8 +206,20 @@ type Provider struct {
 	plugin      string
 	instance    string
 	incarnation string
-	mu          sync.Mutex
+	source      *driver.SourcePlaneProviderCommitV1
+	// userContentGuard is installed by the trusted service composition. The
+	// provider calls it with the complete set of user-content kinds it is about
+	// to create, immediately before mutating its checkpoint image. Receipts,
+	// audit entries and other operational state are deliberately not included.
+	userContentGuard func([]string) error
+	mu               sync.Mutex
 }
+
+// UserContentGuard is the common rollback-window admission seam for native
+// provider writes. The callback receives actual provider-created kinds rather
+// than a service-side allowlist, so a future provider creation path must name
+// every user-content record it publishes before its checkpoint CAS.
+type UserContentGuard func([]string) error
 
 // BlockerResolver bridges a workflow dependency to the canonical core
 // ontology. The workflow provider owns the active endpoint and invokes this
@@ -511,6 +529,7 @@ type persisted struct {
 	Items    map[string]itemState    `json:"items"`
 	Receipts map[string]receiptState `json:"receipts"`
 	Audit    []auditState            `json:"audit,omitempty"`
+	Source   *sourceState            `json:"source,omitempty"`
 }
 type ownerState struct {
 	Principal string `json:"principal"`
@@ -561,9 +580,10 @@ type claimState struct {
 	Generation uint64             `json:"generation"`
 }
 type commentState struct {
-	Body      string             `json:"body"`
-	Principal model.PrincipalRef `json:"principal"`
-	Time      time.Time          `json:"time"`
+	Body      string               `json:"body"`
+	Principal model.PrincipalRef   `json:"principal"`
+	Time      time.Time            `json:"time"`
+	Source    *SourceCommentOrigin `json:"source,omitempty"`
 }
 type receiptState struct {
 	Principal     string          `json:"principal"`
@@ -607,6 +627,15 @@ func New(state pluginapi.DurableState) (*Provider, error) {
 	if state == nil {
 		return nil, errors.New("workflow: durable state is required")
 	}
+	if selected, ok := state.(interface {
+		SourceRuntimeBinding() (driver.SourcePlaneProviderCommitV1, error)
+	}); ok {
+		if binding, err := selected.SourceRuntimeBinding(); err == nil {
+			return NewSourceRuntime(state, binding)
+		} else if !errors.Is(err, driver.ErrUnsupported) {
+			return nil, err
+		}
+	}
 	persistent := false
 	if marker, ok := state.(persistentState); ok {
 		persistent = marker.Persistent()
@@ -619,6 +648,20 @@ func (p *Provider) WithClock(now func() time.Time) *Provider {
 		p.now = now
 	}
 	return p
+}
+
+// WithUserContentGuard installs the trusted host guard for native user-content
+// creation. A nil guard restores the default (window disabled) behavior.
+func (p *Provider) WithUserContentGuard(guard UserContentGuard) *Provider {
+	p.userContentGuard = guard
+	return p
+}
+
+func (p *Provider) guardUserContent(kinds ...string) error {
+	if p.userContentGuard == nil || len(kinds) == 0 {
+		return nil
+	}
+	return p.userContentGuard(append([]string(nil), kinds...))
 }
 
 // WithIdentity binds receipts to the plugin instance and store incarnation.
@@ -652,6 +695,9 @@ func (p *Provider) readState(ctx context.Context) (persisted, pluginapi.Revision
 	}
 	if value.Receipts == nil {
 		value.Receipts = map[string]receiptState{}
+	}
+	if p.source != nil && (value.Source == nil || value.Source.Schema != SourceStateSchema) {
+		return persisted{}, "", sourceRefusal("missing source-restored image")
 	}
 	return value, revision, nil
 }
@@ -864,7 +910,7 @@ func (p *Provider) Invoke(ctx context.Context, by model.PrincipalRef, req Invoke
 	if err := ValidateInvokeRequest(req); err != nil {
 		return InvokeResult{}, err
 	}
-	if !p.persistent {
+	if !p.persistent || p.source != nil {
 		return InvokeResult{}, fail("plugin_durable_state_unavailable", "ephemeral workflows require persistent checkpoint storage")
 	}
 	value, revision, err := p.load(ctx)
@@ -883,6 +929,9 @@ func (p *Provider) Invoke(ctx context.Context, by model.PrincipalRef, req Invoke
 	}
 	runID, err := newID("workflow:run/")
 	if err != nil {
+		return InvokeResult{}, err
+	}
+	if err := p.guardUserContent(RunKind, ItemKind); err != nil {
 		return InvokeResult{}, err
 	}
 	run := runState{ID: runID, Template: req.Template, Project: req.Project, Owner: ownerState{Principal: principal, Agent: agent, Project: req.Project}, State: "active", CreatedAt: p.now().UTC()}
@@ -987,7 +1036,7 @@ func (p *Provider) itemViewIn(value persisted, item itemState) ItemView {
 func itemViewAt(item itemState, now time.Time) ItemView {
 	view := ItemView{
 		ID: item.ID, RunID: item.RunID, Label: item.Label, Title: item.Title, Type: item.Type,
-		Project: item.Project, Status: item.Status, Plane: "ephemeral", Kind: "workflow.item",
+		Project: item.Project, Status: item.Status, Plane: "ephemeral", Kind: ItemKind,
 		Plugin: Alias, Revision: model.Natural64(item.Generation), Fields: cloneMetadata(item.Fields), Labels: append([]string(nil), item.Labels...),
 		Metadata: cloneMetadata(item.Metadata), Parent: cloneRef(item.Parent), Blocked: item.Blocked, ChildCounter: item.ChildCounter,
 	}
@@ -998,7 +1047,7 @@ func itemViewAt(item itemState, now time.Time) ItemView {
 		view.Claim = &ClaimView{Principal: item.Claim.Principal, Agent: item.Claim.Agent, ExpiresAt: item.Claim.ExpiresAt, Generation: model.Natural64(item.Claim.Generation)}
 	}
 	for _, comment := range item.Comments {
-		view.Comments = append(view.Comments, CommentView{Body: comment.Body, Principal: comment.Principal, Time: comment.Time})
+		view.Comments = append(view.Comments, CommentView{Body: comment.Body, Principal: comment.Principal, Time: comment.Time, Source: cloneCommentOrigin(comment.Source)})
 	}
 	return view
 }
@@ -1254,7 +1303,7 @@ func (p *Provider) OrdinaryBlockerSnapshot(ctx context.Context, by model.Princip
 	defer p.mu.Unlock()
 	// No persistent capability means no active workflow facts can exist. This
 	// is not a memory checkpoint substitute; ephemeral invocation still refuses.
-	if !p.persistent {
+	if !p.persistent && p.source == nil {
 		return map[string]bool{}, driver.CheckpointExpectation{}, nil
 	}
 	// An ordinary pre-publication guard must never garbage collect or publish
@@ -1284,7 +1333,7 @@ func (p *Provider) OrdinaryParentSnapshot(ctx context.Context, by model.Principa
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	facts := make(map[string]OrdinaryParentFact, len(ids))
-	if !p.persistent {
+	if !p.persistent && p.source == nil {
 		return facts, driver.CheckpointExpectation{}, nil
 	}
 	value, revision, err := p.readState(ctx)
@@ -1951,7 +2000,7 @@ func (p *Provider) Demote(ctx context.Context, by model.PrincipalRef, req Demote
 			return DemoteResult{}, err
 		}
 	}
-	if !p.persistent {
+	if !p.persistent || p.source != nil {
 		return DemoteResult{}, fail("plugin_durable_state_unavailable", "ephemeral workflows require persistent checkpoint storage")
 	}
 	if meta.Method == "" {
@@ -1989,6 +2038,9 @@ func (p *Provider) Demote(ctx context.Context, by model.PrincipalRef, req Demote
 	if req.Status != "" {
 		item.Status = req.Status
 	}
+	if err := p.guardUserContent(RunKind, ItemKind); err != nil {
+		return DemoteResult{}, err
+	}
 	item.Blocked, item.ChildCounter = req.Blocked, req.ChildCounter
 	for _, comment := range req.Comments {
 		item.Comments = append(item.Comments, commentState{Body: comment.Body, Principal: comment.Principal, Time: comment.Time})
@@ -2014,6 +2066,7 @@ func (p *Provider) Demote(ctx context.Context, by model.PrincipalRef, req Demote
 		if target.Parent != nil && target.Parent.ID == req.Source.ID {
 			ref := model.RefByID(itemID, model.Natural64(0))
 			target.Parent = &ref
+			item.ChildCounter++
 		}
 		filtered := target.Inbound[:0]
 		for _, relation := range target.Inbound {
@@ -2488,20 +2541,28 @@ func (p *Provider) sanitizeTerminalReceipts(value persisted, runID string) {
 				}
 			}
 			result.Found = receipt.ItemID != ""
-			result.Item = ItemView{ID: receipt.ItemID, RunID: runID, Status: "closed", Plane: "ephemeral", Kind: "workflow.item", Plugin: Alias, Revision: result.Item.Revision}
+			result.Item = ItemView{ID: receipt.ItemID, RunID: runID, Status: "closed", Plane: "ephemeral", Kind: ItemKind, Plugin: Alias, Revision: result.Item.Revision}
 			receipt.Result, _ = json.Marshal(result)
 		} else if receipt.Method == "bead.claim" {
 			var item ItemView
 			if json.Unmarshal(receipt.Result, &item) == nil {
-				item = ItemView{ID: receipt.ItemID, RunID: runID, Status: "closed", Plane: "ephemeral", Kind: "workflow.item", Plugin: Alias, Revision: item.Revision}
+				item = ItemView{ID: receipt.ItemID, RunID: runID, Status: "closed", Plane: "ephemeral", Kind: ItemKind, Plugin: Alias, Revision: item.Revision}
 				receipt.Result, _ = json.Marshal(item)
+			}
+		} else if receipt.Method == "tx.apply" {
+			var result model.OpResult
+			if json.Unmarshal(receipt.Result, &result) == nil {
+				result.Record = nil
+				receipt.Result, _ = json.Marshal(result)
+			} else {
+				receipt.Result = nil
 			}
 		} else if receipt.Method == "x.workflow.run.demote" {
 			var result DemoteResult
 			_ = json.Unmarshal(receipt.Result, &result)
 			result = DemoteResult{
 				Run:  RunView{ID: runID, Mode: "ephemeral", State: "completed"},
-				Item: ItemView{ID: receipt.ItemID, RunID: runID, Status: "closed", Plane: "ephemeral", Kind: "workflow.item", Plugin: Alias, Revision: result.Item.Revision},
+				Item: ItemView{ID: receipt.ItemID, RunID: runID, Status: "closed", Plane: "ephemeral", Kind: ItemKind, Plugin: Alias, Revision: result.Item.Revision},
 			}
 			receipt.Result, _ = json.Marshal(result)
 		} else if receipt.Method == "x.workflow.run.promote" {
