@@ -3,6 +3,7 @@ package dolt
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,10 @@ import (
 
 	"github.com/steveyegge/beads/internal/plugdump"
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/embeddeddolt"
+	"github.com/steveyegge/beads/internal/storage/issueops"
+	"github.com/steveyegge/beads/internal/storage/physicalcapture"
+	"github.com/steveyegge/beads/internal/storage/schema"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -357,13 +362,12 @@ func TestNativeProducerBundleFromStoredDoltRows(t *testing.T) {
 // source-plane contract. This is a disposable producer control; it does not
 // establish consumer workflow mapping, public replay or official delivery.
 func TestNativeSourcePlaneContractFromStoredDoltRows(t *testing.T) {
-	store, cleanup := setupConcurrentTestStore(t)
-	defer cleanup()
 	ctx, cancel := testContext(t)
 	defer cancel()
+	db, dataDir, beadsDir := nativeSourcePlaneFixture(t, ctx)
 	exec := func(t *testing.T, query string, args ...any) {
 		t.Helper()
-		if _, err := store.db.ExecContext(ctx, query, args...); err != nil {
+		if _, err := db.ExecContext(ctx, query, args...); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -372,10 +376,22 @@ func TestNativeSourcePlaneContractFromStoredDoltRows(t *testing.T) {
 		exec(t, `CALL DOLT_ADD('-A')`)
 		exec(t, `CALL DOLT_COMMIT('-m', 'disposable physical source-plane control')`)
 	}
+	createTx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer createTx.Rollback()
+	batch, err := issueops.NewBatchContext(ctx, createTx, storage.BatchCreateOptions{SkipPrefixValidation: true})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, id := range []string{"test-abc", "test-def"} {
-		if err := store.CreateIssue(ctx, &types.Issue{ID: id, Title: "durable " + id, Status: types.StatusOpen, Priority: 2, IssueType: types.TypeTask}, "plane-control"); err != nil {
+		if err := issueops.CreateIssueInTx(ctx, createTx, batch, &types.Issue{ID: id, Title: "durable " + id, Status: types.StatusOpen, Priority: 2, IssueType: types.TypeTask}, "plane-control"); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := createTx.Commit(); err != nil {
+		t.Fatal(err)
 	}
 	at := time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC)
 	for _, id := range []string{"test-abc", "test-ghi"} {
@@ -384,12 +400,7 @@ func TestNativeSourcePlaneContractFromStoredDoltRows(t *testing.T) {
 	}
 	exec(t, `INSERT INTO custom_statuses (name,category) VALUES ('review','active')`)
 	exec(t, `INSERT INTO custom_types (name) VALUES ('gate')`)
-	if err := store.SetConfig(ctx, "status.custom", "review:active"); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SetConfig(ctx, "types.custom", "gate"); err != nil {
-		t.Fatal(err)
-	}
+	exec(t, "INSERT INTO config (`key`,value) VALUES ('status.custom','review:active'),('types.custom','gate') ON DUPLICATE KEY UPDATE value=VALUES(value)")
 	exec(t, `INSERT INTO dependencies (id,issue_id,depends_on_issue_id,type,created_at,created_by,metadata,thread_id)
 		VALUES ('shared-edge','test-abc','test-def','waits-for',?,'plane-control',?,'durable-thread')`, at, `{"gate":"","n":9007199254740993}`)
 	exec(t, `INSERT INTO wisp_dependencies (id,issue_id,depends_on_wisp_id,type,created_at,created_by,metadata,thread_id)
@@ -412,6 +423,7 @@ func TestNativeSourcePlaneContractFromStoredDoltRows(t *testing.T) {
 	}
 	retained := []string{"issues", "wisps", "dependencies", "wisp_dependencies", "wisp_labels", "wisp_comments", "wisp_events", "wisp_child_counters", "custom_statuses", "custom_types"}
 	var before map[string]plugdump.Table
+	checkStockRefusal := true
 	build := func(t *testing.T, contract string) ([]byte, error) {
 		t.Helper()
 		sidecarDir := t.TempDir()
@@ -421,9 +433,14 @@ func TestNativeSourcePlaneContractFromStoredDoltRows(t *testing.T) {
 		}
 		paths["project-config"], paths["beads-dir-config"] = []string{configPath}, []string{configPath}
 		var data []byte
-		err := store.WithRawDBTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelSerializable}, func(tx *sql.Tx) error {
+		tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelSerializable})
+		if err != nil {
+			return nil, err
+		}
+		defer tx.Rollback()
+		err = func() error {
 			source := plugdump.SQLSource{DB: tx}
-			inventory, sidecars, err := source.NativeInventory(ctx, plugdump.NativeCapture{Public: true, StoreDir: store.cfg.Path, BeadsDir: store.cfg.Path, Machine: "stored-plane-control", SidecarDir: sidecarDir, Paths: paths, SourcePlaneAddressContract: contract})
+			inventory, sidecars, err := source.NativeInventory(ctx, plugdump.NativeCapture{Public: true, StoreDir: filepath.Join(dataDir, "public_plane"), BeadsDir: beadsDir, Machine: "stored-plane-control", SidecarDir: sidecarDir, Paths: paths, SourcePlaneAddressContract: contract})
 			if err != nil {
 				return err
 			}
@@ -451,9 +468,19 @@ func TestNativeSourcePlaneContractFromStoredDoltRows(t *testing.T) {
 				}
 				before[family] = table
 			}
-			data, err = plugdump.Build(ctx, source, inventory)
+			if checkStockRefusal {
+				stock, stockErr := plugdump.Build(ctx, source, inventory)
+				var unavailable plugdump.ErrSourceHistoryUnavailable
+				if len(stock) != 0 || !errors.As(stockErr, &unavailable) || unavailable.Reason != "native-physical-root-capability-unavailable:stock-sql" {
+					t.Fatalf("stock SQL immutable-image refusal changed: bytes=%d err=%v", len(stock), stockErr)
+				}
+				checkStockRefusal = false
+			}
+			// The current-row snapshot remains SQL. Immutable images come only
+			// from the supported driver operation on this owned physical store.
+			data, err = plugdump.Build(ctx, plugdump.PhysicalCommitSource{SQLSource: source, PhysicalDB: db}, inventory)
 			return err
-		})
+		}()
 		return data, err
 	}
 	data, err := build(t, plugdump.SourcePlaneAddressContract)
@@ -572,4 +599,58 @@ func TestNativeSourcePlaneContractFromStoredDoltRows(t *testing.T) {
 			t.Logf("stored source refusal: %v", err)
 		})
 	}
+}
+
+// Build the real schema in a fresh, public physical store. No running server's
+// files are copied or opened, and no engine types cross the facade boundary.
+func nativeSourcePlaneFixture(t *testing.T, ctx context.Context) (*sql.DB, string, string) {
+	t.Helper()
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	dataDir := filepath.Join(beadsDir, "embeddeddolt")
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The existing adapter enables multi-statement migration SQL only while
+	// initializing this fresh database, then closes before the capture opens.
+	admin, closeAdmin, err := embeddeddolt.OpenSQL(ctx, dataDir, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := errors.Join(admin.Close(), closeAdmin()); err != nil {
+			t.Error(err)
+		}
+	})
+	conn, err := admin.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	for _, query := range []string{"CREATE DATABASE public_plane", "USE public_plane"} {
+		if _, err := conn.ExecContext(ctx, query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := schema.MigrateUp(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(ctx, "INSERT INTO config (`key`,value) VALUES ('issue_prefix','test') ON DUPLICATE KEY UPDATE value=VALUES(value)"); err != nil {
+		t.Fatal(err)
+	}
+	if err := errors.Join(conn.Close(), admin.Close(), closeAdmin()); err != nil {
+		t.Fatal(err)
+	}
+	db, closeDriver, err := physicalcapture.Open(dataDir, "public_plane")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A current-row transaction holds one connection while immutable reads
+	// acquire the other; both select the same explicit disposable database.
+	db.SetMaxOpenConns(2)
+	t.Cleanup(func() {
+		if err := errors.Join(db.Close(), closeDriver()); err != nil {
+			t.Error(err)
+		}
+	})
+	return db, dataDir, beadsDir
 }

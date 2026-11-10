@@ -129,6 +129,8 @@ func TestDoltServerConfig_SuppressesCLIAutoStartWithConfiguredPort(t *testing.T)
 }
 
 func TestDoltServerConfig_EnablesCLIAutoStartWithoutConfiguredPort(t *testing.T) {
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
+	t.Setenv("BEADS_DOLT_PORT", "")
 	t.Setenv("BEADS_TEST_MODE", "")
 	t.Setenv("BEADS_DOLT_AUTO_START", "")
 	t.Setenv("BEADS_DOLT_SERVER_MODE", "")

@@ -1,12 +1,31 @@
 package embedded
 
 import (
+	"database/sql"
 	"io"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/go-sql-driver/mysql"
 )
+
+func TestExecContextPreservesConcreteMySQLErrorAfterStatementClose(t *testing.T) {
+	connector, err := NewConnector(&Config{Directory: t.TempDir(), CommitName: "Public fixture", CommitEmail: "fixture@example.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := sql.OpenDB(connector)
+	t.Cleanup(func() { _ = db.Close(); _ = connector.Close() })
+	_, err = db.ExecContext(t.Context(), "USE landing_missing_database")
+	// Clients use the concrete error to inspect the wire-compatible code.
+	// A nil statement-close result must not replace it with a join wrapper.
+	mysqlErr, ok := err.(*mysql.MySQLError)
+	if !ok || mysqlErr.Number != 1049 {
+		t.Fatalf("missing database error = %T %v; want concrete MySQLError 1049", err, err)
+	}
+}
 
 func TestQuerySplitterPreservesQuotedAndNestedSemicolons(t *testing.T) {
 	splitter := NewQuerySplitter("SELECT 'a;b', (1 + 2); SELECT `x;y`; SELECT \"c;d\"")

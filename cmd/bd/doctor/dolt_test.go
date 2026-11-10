@@ -15,6 +15,12 @@ import (
 // (bd-yqpwy)
 
 func TestRunDoltHealthChecks_DoltBackendNoServer(t *testing.T) {
+	// TestMain supplies both aliases for its shared disposable server. This
+	// fixture intentionally represents an owned workspace with no server.
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
+	t.Setenv("BEADS_DOLT_PORT", "")
+	t.Setenv("BEADS_DOLT_SERVER_MODE", "")
+	t.Setenv("BEADS_DOLT_SHARED_SERVER", "")
 	// GH#2722: In owned/embedded mode (non-external), when no server is
 	// running, server-dependent checks should be skipped gracefully (StatusOK)
 	// instead of reporting false errors. The embedded SharedStore checks

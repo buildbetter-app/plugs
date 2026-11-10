@@ -214,7 +214,11 @@ func (d *DoltConn) ExecContext(ctx context.Context, query string, args []driver.
 	if err != nil {
 		return nil, err
 	}
-	defer func() { resultErr = errors.Join(resultErr, stmt.Close()) }()
+	defer func() {
+		if err := stmt.Close(); err != nil {
+			resultErr = errors.Join(resultErr, err)
+		}
+	}()
 	return stmt.(driver.StmtExecContext).ExecContext(ctx, args)
 }
 

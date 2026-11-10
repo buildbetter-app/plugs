@@ -45,6 +45,7 @@ go_test(
     srcs = ["landing_lint_test.go"],
     embed = [":driver"],
     gotags = ["gms_pure_go"],
+    deps = ["@com_github_go_sql_driver_mysql//:mysql"],
 )
 
 # --- begin repo_files (managed by tools/bazel/go_srcs.py; run `make bazel-sync`) ---
