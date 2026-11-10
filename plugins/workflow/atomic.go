@@ -153,7 +153,7 @@ func (s *stagedState) List(context.Context, string, int) ([]pluginapi.DurableEnt
 }
 func (p *Provider) staged() (*Provider, *stagedState) {
 	state := &stagedState{base: p.state}
-	return &Provider{state: state, now: p.now, persistent: p.persistent, plugin: p.plugin, instance: p.instance, incarnation: p.incarnation, source: p.source}, state
+	return &Provider{state: state, now: p.now, persistent: p.persistent, plugin: p.plugin, instance: p.instance, incarnation: p.incarnation, source: p.source, userContentGuard: p.userContentGuard}, state
 }
 func (s *stagedState) prepared() PreparedState {
 	var head *driver.CoreSnapshotExpectation

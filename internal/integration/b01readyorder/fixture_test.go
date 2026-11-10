@@ -47,6 +47,7 @@ type fixture struct {
 	onto   *service.Ontology
 	serial int
 	posts  atomic.Uint64
+	sqlDSN string
 }
 
 type publicationProbe struct{ calls *atomic.Uint64 }
@@ -65,17 +66,33 @@ func eachStore(t *testing.T, run func(*testing.T, *fixture)) {
 
 func newFixture(t *testing.T, engine string) *fixture {
 	t.Helper()
+	return newFixtureWithClocks(t, engine, testclock.New(t, time.Date(2026, 11, 3, 12, 0, 0, 123456000, time.UTC)), nil)
+}
+
+// A nil storage clock preserves the original fixture's clocks. An explicit
+// storage clock is independent of the Writer/service clock, including the
+// real SQL function reached by PostgreSQL's unchanged driver.
+func newFixtureWithClocks(t *testing.T, engine string, application, storage *testclock.Clock) *fixture {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	t.Cleanup(cancel)
-	f := &fixture{ctx: ctx, clock: testclock.New(t, time.Date(2026, 11, 3, 12, 0, 0, 123456000, time.UTC))}
+	f := &fixture{ctx: ctx, clock: application}
+	driverClock := application
+	if storage != nil {
+		driverClock = storage
+	}
 	var err error
 	switch engine {
 	case "memory":
-		f.store, err = memory.NewWithOptions(memory.Options{Clock: f.clock.Now})
+		f.store, err = memory.NewWithOptions(memory.Options{Clock: driverClock.Now})
 	case "sqlite_wal":
-		f.store, err = (sqlite.Driver{Clock: f.clock.Now}).Open(ctx, driver.Config{DSN: filepath.Join(t.TempDir(), "ready.db")})
+		f.store, err = (sqlite.Driver{Clock: driverClock.Now}).Open(ctx, driver.Config{DSN: filepath.Join(t.TempDir(), "ready.db")})
 	case "postgres":
-		f.store, err = (postgres.Driver{}).Open(ctx, driver.Config{DSN: testclock.PostgresDSN(t)})
+		f.sqlDSN = testclock.PostgresDSN(t)
+		if storage != nil {
+			f.sqlDSN = storage.BindPostgres(t, f.sqlDSN)
+		}
+		f.store, err = (postgres.Driver{}).Open(ctx, driver.Config{DSN: f.sqlDSN})
 	default:
 		t.Fatalf("unknown B01 storage engine %q", engine)
 	}

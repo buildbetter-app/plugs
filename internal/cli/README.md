@@ -62,3 +62,13 @@ The read surfaces are available as `events`
 same opaque cursors, pinned revisions, bounded JSON Patch results, and
 read-only health response as their JSON-RPC methods. This slice makes no full
 behavior-card or performance acceptance claim.
+
+`events --limit 0`, `events --limit all`, and `events all` read to completion
+through bounded `event.list` calls. `events export` streams the same sequence
+as one canonical event per JSON line. Use `--page-size 1..1000` to select the
+batch size and `--after TOKEN` to resume exclusively; event/resource filters
+are preserved on every call. Empty filtered pages can advance the cursor, so
+completion requires an empty page with an unchanged cursor. These are
+successive reads until caught up, not a snapshot across concurrent writes.
+Wire `event.list` still rejects nonpositive limits. Plug retains audit history
+and has no client event-prune command.

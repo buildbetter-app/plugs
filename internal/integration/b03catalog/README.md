@@ -58,6 +58,9 @@ Active definition replacement and free-text display-name edits remain valid.
 | `TestMalformedCatalogAndMixedBatchRefuseAtomically` | Unknown categories/members, duplicate definitions, null configuration and unsupported directives refuse. A valid update/create/comment batch prefix cannot survive an invalid status suffix. A malformed protected source refuses reads, plan, retained apply and connected reload without replacing durable bytes or the prior runtime. |
 | `TestCatalogApplySQLPublicationRollbackAndRetry` | Database-side publication faults exercise actual SQLite/PostgreSQL transactions. Failed public apply preserves source, rows, versions, log/head, derived rows, observations, allocators and every receipt. The same key succeeds after fault removal and remains durable after close/open. |
 | `TestPublicCatalogApplyDryRunEventLimitParity` | Real public batches create 999 rows; dry-run and real apply accept exactly 1,000 source-plus-row descriptors. A no-op dry-run publishes nothing. With 1,000 rows plus changed source, both dry-run and real apply refuse `scope_too_large` and conserve complete paginated records, histories, events, derived state, receipts and views on all three engines. |
+| `TestPublicNativeCategoryCatalogLifecycleAndSQLReopen` | Public plan/apply retains exact `awaiting_review` / `qa_testing` / `archived` / `on_hold` keys, native `active` / `wip` / `done` / `frozen` categories and a custom type. Ordinary public lifecycle, readiness, first-close and reopen timestamps correspond on all three engines; actual SQL reopen preserves the complete durable snapshot and create receipt. |
+| `TestPublicNativeCategoryOverlaysUseProjectCategoryAndKeepExactKeys` | The same exact native status key is ready in base and non-ready with project-local `wip` or `frozen` categories. Public claim refusal and reopen follow each project's installed category and slots; exact definitions and rows survive SQL reopen. |
+| `TestPublicMalformedNativeCategoryCatalogRefusesWithoutMutation` | Unknown/case-changed native categories, incompatible native outcomes, a claim slot pointing at `active` and an absent close-slot status refuse through public planning. A valid batch prefix followed by a status patch refuses atomically, conserving all existing durable snapshot planes. |
 | `TestConfiguredRuntimeLoadsCatalogAndAuditsOnEveryEngine` | Real `LoadConfigFile` -> `composition.Open` and public byte RPC on memory, SQLite and PostgreSQL load the installed source (SQL uses production `openStore`; preseeded memory uses StoreFactory), bind catalog methods, refresh the shared ontology after `ontology.apply`, apply the new workflow to an ordinary create, and pin the refreshed revision and digest in the durable audit/event stream. |
 
 The bootstrap inserts only the built-in ontology. Custom catalogs, project
@@ -86,6 +89,13 @@ presence, all issued-key receipt/changeset lookups, and ordinary current/ready
 views. Missing inventory or engine capabilities fail the test. PostgreSQL is an
 owned disposable pinned image; unavailable Docker/PostgreSQL fails the target.
 The target's `exclusive` tag isolates this engine-owning proof only.
+
+The native-category public tests retain reversible, exact request/response byte
+strings and lifecycle checkpoint documents in `*.public-catalog.json` test
+outputs, plus a named memory/SQLite/PostgreSQL correspondence vector. These
+inputs are public catalog fixtures. They do not replace the native recorder's
+accepted executable, physical stores, canonical exports or importer evidence;
+native producer and full-card qualification remain separate.
 
 ## Exact-source verification
 

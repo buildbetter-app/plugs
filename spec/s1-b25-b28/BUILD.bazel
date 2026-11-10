@@ -17,6 +17,7 @@ go_test(
         "acceptance_test.go",
         "config_union_test.go",
         "converter_test.go",
+        "lease_import_test.go",
         "reference_test.go",
         "relations_test.go",
         "subscribers_test.go",

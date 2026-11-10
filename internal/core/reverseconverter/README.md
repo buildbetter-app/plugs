@@ -12,6 +12,18 @@ dump, err := reverseconverter.Read(input)
 result, err := reverseconverter.Convert(dump)
 ```
 
+`ClassifyKind` uses this same canonical converter vocabulary for rollback-window
+write admission. Optional host mappings require `NewConverter` with executable
+`RecordMapping` transformations; its `ClassifyKind` and `Convert` methods share
+one immutable registry. Registration requires a canonical content target and
+cannot override built-ins or disguise user content as archive/control loss.
+Conversion validates the original inventory census, executes the mapping on
+detached records, and validates the complete canonical output. A failed mapping
+returns a typed refusal with the original input digest and no partial JSONL.
+Native workflow kinds have no default mapping. The test-only memory mapping
+preserves synthetic checkpoint records as JSON; it does not enable production
+workflow admission or expand the canonical archive loader.
+
 The converter preserves issue IDs, supported issue kinds (`task`, `bug`,
 `feature`, `epic`, `chore`), Beads statuses and their Plug status categories,
 text fields, labels, metadata, comments, timestamps, issue-to-issue links,
@@ -84,6 +96,10 @@ exclude a row. `ConvertWithOptions(..., Options{All: true})` and
 Active rows retain the pinned explicit plane marker and their original raw IDs.
 A raw ID present in both entity planes refuses with `source-plane-contract`
 because the JSONL importer cannot distinguish that endpoint identity.
+An executable `Converter` exposes the same `ConvertWithOptions` contract,
+including ontology directives and explicit `All` selection. Mapping native
+records preserves existing canonical edge versions and source-plane validation;
+the report's input digest continues to identify the original inventory.
 
 `converterroundtrip.ReverseRestoredWithOptions` applies the same selection to a
 restored joint image. It verifies the original receipt/archive/plan and immutable

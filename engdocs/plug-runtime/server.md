@@ -49,6 +49,7 @@ level. The supported settings are:
 | `listen`/`address` or `server.listen`/`server.address` | A literal host and port. The default is `127.0.0.1:0`, which selects an ephemeral loopback port. |
 | `project` or `server.project` | The default project for requests; the default is `default`. |
 | `ui` or `server.ui` | `true` or `false`; the default is `true`. Set `false` to omit the embedded UI route. |
+| `rollback_window` or `server.rollback_window` | `true` or `false`; the default is `false`. When enabled, the common write boundary refuses newly created user-content kinds that have no actual reverse Beads mapping, naming the offending kind in a typed `unsupported` error. Canonically mapped kinds remain allowed, and operational receipts/audit metadata remains allowed and is reported as rollback loss. |
 | `ontology.source` | An existing protected branch-zero ontology ID such as `ontology/workspace`. Startup validates the installed source before admitting RPCs. |
 | `auth.mode` | `anonymous` by default. The standalone CLI has no provider configuration for `authenticated` mode, so it refuses that mode rather than starting without authentication. |
 
@@ -69,6 +70,25 @@ does not grant protected apply. Hosts exposing event reads under policy must
 supply `composition.Config.EventAuthorization`, covering ordinary images and
 all condition-notice resources. Missing capability with configured policy
 keeps `event.list` unadvertised.
+
+`rollback_window` is a server-wide, common write-admission control. Leave it
+disabled for ordinary operation. On switch day, the operator prepares the
+configuration with `rollback_window: true` before admitting switch traffic;
+this branch only documents that change and never activates it. After the
+prepared rollback window closes, the operator prepares the matching
+`rollback_window: false` configuration and restarts through the
+normal host control plane. The setting does not change authorization, CAS,
+lifecycle, transaction atomicity, or receipt/audit admission.
+
+Hosts with additional reverse mappings supply `composition.Config.ReverseConverter`.
+This concrete converter requires executable record transformations to canonical
+Beads content; a kind label cannot authorize a write. Composition shares it
+with both write guards and `Runtime.ConvertReverse` for detached inventory
+conversion. A nil converter
+uses the canonical built-ins, and native workflow runs/items remain refused
+while the window is enabled. YAML and RPC cannot register conversions. Custom
+mappings still undergo source census and canonical output validation; they do
+not broaden the archive loader or restore contract.
 
 For example, a persistent SQLite server can use:
 

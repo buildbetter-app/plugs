@@ -133,6 +133,8 @@ internal/cli/agent_test.go
 internal/cli/archive_test.go
 internal/cli/config.go
 internal/cli/config_test.go
+internal/cli/events.go
+internal/cli/events_test.go
 internal/cli/gate.go
 internal/cli/gate_test.go
 internal/cli/local.go
@@ -147,6 +149,8 @@ internal/cli/session.go
 internal/client/BUILD.bazel
 internal/client/client.go
 internal/client/client_test.go
+internal/client/events.go
+internal/client/events_test.go
 internal/client/http.go
 internal/client/http_test.go
 internal/core/authz/BUILD.bazel
@@ -250,6 +254,8 @@ internal/core/model/schema_test.go
 internal/core/model/testdata/openrpc-components.json
 internal/core/model/unsupported_error_test.go
 internal/core/ontology/BUILD.bazel
+internal/core/ontology/await_members.go
+internal/core/ontology/await_members_test.go
 internal/core/ontology/check.go
 internal/core/ontology/compile.go
 internal/core/ontology/compile_test.go
@@ -331,6 +337,7 @@ internal/core/pipeline/ready_sort.go
 internal/core/pipeline/ready_sort_test.go
 internal/core/pipeline/response.go
 internal/core/pipeline/response_test.go
+internal/core/pipeline/rollback_window.go
 internal/core/pipeline/snapshot.go
 internal/core/pipeline/snapshot_get_test.go
 internal/core/pipeline/snapshot_hierarchy.go
@@ -362,13 +369,20 @@ internal/core/reverseconverter/loss.go
 internal/core/reverseconverter/physical.go
 internal/core/reverseconverter/physical_test.go
 internal/core/reverseconverter/public_archive_test.go
+internal/core/reverseconverter/registry.go
+internal/core/reverseconverter/registry_options_test.go
+internal/core/reverseconverter/representability.go
+internal/core/reverseconverter/representability_test.go
 internal/core/reverseconverter/reverseconverter_test.go
+internal/core/reverseconverter/reversetest/BUILD.bazel
+internal/core/reverseconverter/reversetest/mapping.go
 internal/core/reverseconverter/source_planes.go
 internal/core/reverseconverter/source_planes_test.go
 internal/core/reverseconverter/types.go
 internal/core/service/BUILD.bazel
 internal/core/service/audit.go
 internal/core/service/audit_test.go
+internal/core/service/await_members.go
 internal/core/service/canonical_claim_slot_audit_test.go
 internal/core/service/claim_recovery.go
 internal/core/service/claim_recovery_integration_test.go
@@ -400,6 +414,7 @@ internal/core/service/ontology.go
 internal/core/service/ordered_close.go
 internal/core/service/reads.go
 internal/core/service/ready_order.go
+internal/core/service/rollback_window_test.go
 internal/core/service/rpc_reads.go
 internal/core/service/service.go
 internal/core/service/service_test.go
@@ -448,6 +463,7 @@ internal/integration/b01readyorder/BUILD.bazel
 internal/integration/b01readyorder/README.md
 internal/integration/b01readyorder/connected_test.go
 internal/integration/b01readyorder/fixture_test.go
+internal/integration/b01readyorder/independent_clock_test.go
 internal/integration/b01readyorder/ready_order_test.go
 internal/integration/b01readyorder/workflow_query_test.go
 internal/integration/b02publicnotices/BUILD.bazel
@@ -466,6 +482,7 @@ internal/integration/b03catalog/fixture_test.go
 internal/integration/b03catalog/native_admission_record.json
 internal/integration/b03catalog/native_catalog_inputs.json
 internal/integration/b03catalog/native_catalog_recording_test.go
+internal/integration/b03catalog/native_categories_test.go
 internal/integration/b04claimidentity/BUILD.bazel
 internal/integration/b04claimidentity/README.md
 internal/integration/b04claimidentity/claim_identity_test.go
@@ -538,6 +555,7 @@ internal/integration/converterroundtrip/identity_counters_test.go
 internal/integration/converterroundtrip/image.go
 internal/integration/converterroundtrip/import_test.go
 internal/integration/converterroundtrip/imported_memory_public_test.go
+internal/integration/converterroundtrip/imported_memory_write_test.go
 internal/integration/converterroundtrip/joint_exports_test.go
 internal/integration/converterroundtrip/label_projection_test.go
 internal/integration/converterroundtrip/labels.go
@@ -629,6 +647,7 @@ internal/integration/eventsqlpaging/integration_test.go
 internal/integration/gatecontract/BUILD.bazel
 internal/integration/gatecontract/README.md
 internal/integration/gatecontract/authorization_test.go
+internal/integration/gatecontract/await_members_test.go
 internal/integration/gatecontract/consumer_host_test.go
 internal/integration/gatecontract/consumer_test.go
 internal/integration/gatecontract/engine_test.go
@@ -1229,6 +1248,7 @@ internal/storage/postgres/reader.go
 internal/storage/postgres/reader_batch_test.go
 internal/storage/postgres/reader_versions_batch_negative_test.go
 internal/storage/postgres/reader_versions_batch_test.go
+internal/storage/postgres/rollback_window_test.go
 internal/storage/postgres/schema.go
 internal/storage/postgres/selection.go
 internal/storage/postgres/selection_test.go
@@ -1370,6 +1390,15 @@ spec/cardb19/testdata/recording-1/export.jsonl
 spec/cardb19/testdata/recording-1/imported.json
 spec/cardb19/testdata/recording-2/export.jsonl
 spec/cardb19/testdata/recording-2/imported.json
+spec/cardb20/BUILD.bazel
+spec/cardb20/README.md
+spec/cardb20/caller_test.go
+spec/cardb20/current_test.go
+spec/cardb20/native_build_test.go
+spec/cardb20/native_recording_test.go
+spec/cardb20/policy_test.go
+spec/cardb20/postgres_test.go
+spec/cardb20/runtime_test.go
 spec/cardb28/BUILD.bazel
 spec/cardb28/README.md
 spec/cardb28/cardb28_test.go
@@ -1407,12 +1436,19 @@ spec/s1-b01-b04/BUILD.bazel
 spec/s1-b01-b04/README.md
 spec/s1-b01-b04/b01-hierarchy-deviation.md
 spec/s1-b01-b04/b01-hierarchy-vectors.json
+spec/s1-b01-b04/b02_public_outcomes_test.go
+spec/s1-b01-b04/b02_public_support_test.go
 spec/s1-b01-b04/claim_acceptance_test.go
 spec/s1-b01-b04/clock_boundary_test.go
 spec/s1-b01-b04/extract_reference_packet.py
 spec/s1-b01-b04/fixture_test.go
 spec/s1-b01-b04/manifest.json
 spec/s1-b01-b04/manifest_test.go
+spec/s1-b01-b04/native_b02_contract_test.go
+spec/s1-b01-b04/native_b02_inputs.json
+spec/s1-b01-b04/native_b02_recording.md
+spec/s1-b01-b04/native_b02_recording_test.go
+spec/s1-b01-b04/native_b02_replay_test.go
 spec/s1-b01-b04/native_contract_test.go
 spec/s1-b01-b04/native_exclusion_test.go
 spec/s1-b01-b04/native_hierarchy_test.go
@@ -1573,6 +1609,7 @@ spec/s1-b17-b20/testdata/recording-2/imported.json
 spec/s1-b21-b24/BUILD.bazel
 spec/s1-b21-b24/README.md
 spec/s1-b21-b24/acceptance_test.go
+spec/s1-b21-b24/b24_independent_clock_test.go
 spec/s1-b21-b24/cas_contract_test.go
 spec/s1-b21-b24/clock_boundary_test.go
 spec/s1-b21-b24/close_contract_test.go
@@ -1615,6 +1652,7 @@ spec/s1-b25-b28/compare_r418_pair.py
 spec/s1-b25-b28/compare_r418_pair_test.py
 spec/s1-b25-b28/config_union_test.go
 spec/s1-b25-b28/converter_test.go
+spec/s1-b25-b28/lease_import_test.go
 spec/s1-b25-b28/provenance.py
 spec/s1-b25-b28/public_recording_test.go
 spec/s1-b25-b28/record_reference.py
@@ -1724,6 +1762,7 @@ tools/rehearsal/metrics.go
 tools/rehearsal/metrics_completeness_test.go
 tools/rehearsal/metrics_test.go
 tools/rehearsal/rollback_fault_test.go
+tools/rehearsal/rollback_snapshot_test.go
 tools/rehearsal/three_rehearsals.sh
 tools/rehearsal/transcript.go
 tools/rehearsal/transcript_consumer.go
