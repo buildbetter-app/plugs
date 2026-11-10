@@ -42,12 +42,16 @@ make an ordinary subject into a gate.
 
 `TestB14PublicAwaitMemberBoundsAndWholeListReplacement`,
 `TestB14PublicAwaitMemberTypedRefusalsWriteNothing`, and
-`TestB14PublicAwaitMemberInvalidBatchRollsBack` require memory, file SQLite,
+`TestB14PublicAwaitMemberInvalidBatchRollsBack`, and
+`TestB14PublicAwaitWholeListOrderAndInvalidSuffix` require memory, file SQLite,
 and disposable PostgreSQL through the existing public RPC/Writer fixture.
 They cover boundary creates, ordered replacement and clearing, omitted members,
 physical SQL reopen, multibyte/escaped JSON sizes, exact maximum-timeout storage,
 typed refusal without a receipt, unchanged content/history after refusal, and
 rollback of valid preceding operations when one batch member is invalid.
+Ordered null/list replacements and invalid final lists are checked both on
+existing IDs and on subjects created through an in-request key. A null prefix
+cannot hide an invalid later list or replace a later valid whole list.
 `TestAwaitMemberSchemaAndKernelReservation` checks schema bounds and rejects
 custom redefinition. The original tests and their attribution remain unchanged.
 

@@ -156,3 +156,49 @@ func TestB14PublicAwaitMemberInvalidBatchRollsBack(t *testing.T) {
 		}
 	})
 }
+
+func TestB14PublicAwaitWholeListOrderAndInvalidSuffix(t *testing.T) {
+	eachStore(t, func(t *testing.T, f *fixture) {
+		id, _ := f.create(map[string]any{"title": "ordered member control", "waiters": []string{"old"}}, "")
+		patch := func(target map[string]any, value any) map[string]any {
+			return map[string]any{"kind": "patch", "target": target, "fields": map[string]any{"waiters": value}}
+		}
+		apply := func(ops ...any) map[string]any {
+			return f.call("tx.apply", map[string]any{"changeSet": map[string]any{"ops": ops}}, true, "")
+		}
+		check := func(subject string, want []string) {
+			t.Helper()
+			got, err := json.Marshal(f.currentBody(subject)["fields"].(map[string]any)["waiters"])
+			expected, _ := json.Marshal(want)
+			if err != nil || string(got) != string(expected) {
+				t.Fatalf("ordered replacement=%s want=%s err=%v", got, expected, err)
+			}
+		}
+		apply(patch(ref(id), nil), patch(ref(id), []string{"later", "later"}))
+		check(id, []string{"later", "later"})
+		apply(patch(ref(id), []string{"earlier", "earlier"}), patch(ref(id), nil))
+		check(id, []string{})
+		before, history := f.currentBody(id), f.historyCount()
+		f.refuse("tx.apply", map[string]any{"changeSet": map[string]any{"ops": []any{
+			patch(ref(id), nil), patch(ref(id), []any{"valid", false}),
+		}}}, "invalid_params")
+		if !reflect.DeepEqual(f.currentBody(id), before) || f.historyCount() != history {
+			t.Fatal("null prefix masked an invalid final list or published a prefix")
+		}
+		alias := map[string]any{"key": "await-subject"}
+		create := func(value any) map[string]any {
+			return map[string]any{"kind": "create", "key": "await-subject", "type": "issue", "fields": map[string]any{"title": "ordered alias", "waiters": value}}
+		}
+		created := apply(create(nil), patch(alias, []string{"alias", "alias"}))
+		check(resultID(created, 0), []string{"alias", "alias"})
+		created = apply(create([]string{"alias", "alias"}), patch(alias, nil))
+		check(resultID(created, 0), []string{})
+		history = f.historyCount()
+		f.refuse("tx.apply", map[string]any{"changeSet": map[string]any{"ops": []any{
+			create(nil), patch(alias, []any{"valid", false}),
+		}}}, "invalid_params")
+		if f.historyCount() != history {
+			t.Fatal("invalid alias suffix published its create")
+		}
+	})
+}

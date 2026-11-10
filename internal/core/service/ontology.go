@@ -113,7 +113,7 @@ func (o *Ontology) Normalize(ctx context.Context, proposal port.ProposedChange, 
 		if err != nil {
 			return nil, err
 		}
-		if patch, selected := normalizeAwaitWaiters(change); selected {
+		if patch, selected := normalizeAwaitWaiters(change, doc.Fields); selected {
 			doc.Fields["waiters"] = []any{}
 			patches = append(patches, patch)
 		}
