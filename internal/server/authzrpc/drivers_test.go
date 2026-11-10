@@ -2006,10 +2006,10 @@ func selectionFamilyInventory(t *testing.T, r driver.Reader) map[driver.DerivedR
 }
 
 // Start with every before row. Only the selected source's exact provenance and
-// revision-bound semantic leaf may change. The selected legacy rank is also
-// republished at the actual write time and revision. All other bytes and Index
-// fields remain exact. Only the rank's clock is read from its postimage, bounded
-// by the actual Apply interval; its complete value comes from conserved source.
+// revision-bound semantic leaf may change. A metadata-only restamp preserves
+// the optional legacy rank cache byte-for-byte; its old source revision makes
+// readers recompute from the new source. All other bytes and Index fields
+// remain exact.
 func sourceRestampedInventory(t *testing.T, before, after map[driver.DerivedRowKey]driver.DerivedRow, oldSource, source driver.Record, rankInterval [2]time.Time) map[driver.DerivedRowKey]driver.DerivedRow {
 	t.Helper()
 	if !driver.SelectionSameRef(oldSource.Ref, source.Ref) || oldSource.Revision.String() == source.Revision.String() || string(oldSource.Body) == string(source.Body) {
@@ -2076,10 +2076,10 @@ func sourceRestampedInventory(t *testing.T, before, after map[driver.DerivedRowK
 			}
 			current, present := after[key]
 			_, ranked, err := pipeline.DecodeReadySortKey(current)
-			if !present || err != nil || rankInterval[0].IsZero() || rankInterval[1].Before(rankInterval[0]) || ranked.RankedAt.Before(rankInterval[0]) || ranked.RankedAt.After(rankInterval[1]) {
-				t.Fatal("selected legacy rank clock is outside the actual write interval")
+			if !present || err != nil || rankInterval[0].IsZero() || rankInterval[1].Before(rankInterval[0]) || !ranked.RankedAt.Before(rankInterval[0]) || ranked.Revision.String() != oldSource.Revision.String() || !reflect.DeepEqual(current, row) {
+				t.Fatal("metadata-only restamp changed the optional legacy rank cache")
 			}
-			want[key] = rankRow(source, ranked.RankedAt)
+			want[key] = row
 			ranks++
 			continue
 		}
