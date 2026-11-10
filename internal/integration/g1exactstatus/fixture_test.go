@@ -369,7 +369,7 @@ func (f *fixture) refuse(by model.PrincipalRef, p, method string, params map[str
 	f.t.Helper()
 	before := f.capture(by, method, label)
 	r := f.call(by, p, method, params, label)
-	if r.Error == nil || r.Error.Data.Code != model.ErrorCode(code) || len(r.Result) != 0 || r.Meta.Replayed {
+	if r.Error == nil || r.Error.Data.Code != code || len(r.Result) != 0 || r.Meta.Replayed {
 		f.t.Fatalf("want %s: error=%+v result=%s replay=%v", code, r.Error, r.Result, r.Meta.Replayed)
 	}
 	if after := f.capture(by, method, label); after != before {
