@@ -84,7 +84,7 @@ func (b *NativeHistoryBoundary) UnmarshalJSON(raw []byte) error {
 
 func nativeBoundaryReason(reason string) bool {
 	switch reason {
-	case "ghost_parent", "missing_root_chunk", "missing_table_chunk", "unreadable_schema", "other":
+	case "ghost_parent", "missing_root_chunk", "missing_table_chunk", "missing_archive_chunk", "unreadable_schema", "other":
 		return true
 	}
 	return false

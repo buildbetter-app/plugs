@@ -59,7 +59,7 @@ func TestNativeHistoryBoundaryGraphAndExactEventsAttachment(t *testing.T) {
 }
 
 func TestNativeHistoryBoundaryOptionalSchemaAndClosedReasons(t *testing.T) {
-	for _, reason := range []string{"ghost_parent", "missing_root_chunk", "missing_table_chunk", "unreadable_schema", "other"} {
+	for _, reason := range []string{"ghost_parent", "missing_root_chunk", "missing_table_chunk", "missing_archive_chunk", "unreadable_schema", "other"} {
 		t.Run(reason, func(t *testing.T) {
 			raw := editNativeFixture(t, syntheticNativeBoundary(t, "pl", false), func(h *NativeHistory) {
 				boundary := &h.HistoryCoverage.Boundaries[0]

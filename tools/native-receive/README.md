@@ -327,9 +327,10 @@ Every boundary has `commit_id` string, sorted unique `child_commit_ids`
 strings, positive `commit_ordinal_from_head` uint64, optional
 `commit_schema_version` *uint64, `reason` string, and optional `sql_dolt_codes`
 []uint16. Reasons are closed to `ghost_parent`, `missing_root_chunk`,
-`missing_table_chunk`, `unreadable_schema`, and `other`. SQL codes are sorted,
-unique and nonzero, and omitted when absent. A missing schema stays omitted;
-the current schema is never substituted. Unknown or null fields refuse.
+`missing_table_chunk`, `missing_archive_chunk`, `unreadable_schema`, and `other`.
+SQL codes are sorted, unique and nonzero, and omitted when absent. A missing
+schema stays omitted; the current schema is never substituted. Unknown or null
+fields refuse.
 The exact producer contract also refuses any schema claim for a `ghost_parent`.
 The source contract is pinned to producer
 `4d0282cef9523d2fbf3de776f05e63a8ccd7b90c`, tree
