@@ -47,17 +47,18 @@ type NativeHistoryGap struct {
 // reachable immutable image was read, not that an old schema can be interpreted
 // as today's Plug business model. No unversioned row is assigned to a commit.
 type NativeHistory struct {
-	SchemaProfile *NativeSchemaProfile   `json:"schema_profile,omitempty"`
-	Format        string                 `json:"format"`
-	StoreID       string                 `json:"store_id"`
-	Projects      []string               `json:"projects"`
-	Head          string                 `json:"head"`
-	Commits       []SourceCommit         `json:"commits"`
-	Ignore        NativeTable            `json:"ignore"`
-	Current       map[string]NativeTable `json:"current"`
-	Images        []NativeHistoryImage   `json:"images"`
-	Complete      bool                   `json:"complete"`
-	Gaps          []NativeHistoryGap     `json:"gaps"`
+	HistoryCoverage *NativeHistoryCoverage `json:"history_coverage,omitempty"`
+	SchemaProfile   *NativeSchemaProfile   `json:"schema_profile,omitempty"`
+	Format          string                 `json:"format"`
+	StoreID         string                 `json:"store_id"`
+	Projects        []string               `json:"projects"`
+	Head            string                 `json:"head"`
+	Commits         []SourceCommit         `json:"commits"`
+	Ignore          NativeTable            `json:"ignore"`
+	Current         map[string]NativeTable `json:"current"`
+	Images          []NativeHistoryImage   `json:"images"`
+	Complete        bool                   `json:"complete"`
+	Gaps            []NativeHistoryGap     `json:"gaps"`
 }
 
 // NativeSourceHistoryReader uses the same scoped read transaction as Source.
@@ -303,7 +304,7 @@ func captureNativeHistory(ctx context.Context, src Source, inventory Inventory, 
 	if err != nil {
 		return nil, err
 	}
-	commits, err := nativeCommitOrder(log)
+	commits, err := historyCommitOrder(log)
 	if err != nil {
 		return nil, err
 	}
@@ -333,6 +334,10 @@ func captureNativeHistory(ctx context.Context, src Source, inventory Inventory, 
 		return nil, err
 	}
 	h := &NativeHistory{Format: NativeHistoryFormat, StoreID: inventory.StoreID, Projects: []string{}, Head: log.Head, Commits: commits, Ignore: ignored, Current: current, Images: []NativeHistoryImage{}, Complete: true, Gaps: []NativeHistoryGap{}}
+	if len(log.Boundaries) > 0 {
+		h.Complete = false
+		h.HistoryCoverage = &NativeHistoryCoverage{Format: NativeHistoryCoverageFormat, Status: "verified-to-boundary", VerifiedCommitCount: uint64(len(commits)), Boundaries: log.Boundaries}
+	}
 	profile, err := sourceSchemaProfile(tables)
 	if err != nil {
 		return nil, err
@@ -351,12 +356,15 @@ func captureNativeHistory(ctx context.Context, src Source, inventory Inventory, 
 		}
 		image, err := port.ReadNativeSourceImage(ctx, c.ID)
 		if err != nil {
+			if h.HistoryCoverage != nil {
+				return nil, locatedCommitFailure(err, historyCommitOrdinal(log, c.ID))
+			}
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
 			var failure *NativeCommitFailure
 			if errors.As(err, &failure) {
-				return nil, &NativeCommitFailure{SchemaVersion: failure.SchemaVersion, OrdinalFromHead: uint64(len(commits) - i), Cause: err}
+				return nil, &NativeCommitFailure{SchemaVersion: failure.SchemaVersion, OrdinalFromHead: historyCommitOrdinal(log, c.ID), Cause: err}
 			}
 			reason := "historical-image-unavailable"
 			if typed, ok := err.(ErrSourceHistoryUnavailable); ok {
@@ -374,14 +382,14 @@ func captureNativeHistory(ctx context.Context, src Source, inventory Inventory, 
 		if profiler, ok := src.(NativeCommitSchemaReader); ok {
 			observed, err := profiler.ProfileNativeSourceImage(image)
 			if err != nil {
-				return nil, &NativeCommitFailure{SchemaVersion: observed.MainVersion, OrdinalFromHead: uint64(len(commits) - i), Cause: err}
+				return nil, &NativeCommitFailure{SchemaVersion: observed.MainVersion, OrdinalFromHead: historyCommitOrdinal(log, c.ID), Cause: err}
 			}
 			commitProfile = &observed
 		}
 		value, err := nativeTables(image, inventory.ConfigPolicy)
 		if err != nil {
 			if commitProfile != nil {
-				return nil, &NativeCommitFailure{SchemaVersion: commitProfile.MainVersion, OrdinalFromHead: uint64(len(commits) - i), Cause: err}
+				return nil, &NativeCommitFailure{SchemaVersion: commitProfile.MainVersion, OrdinalFromHead: historyCommitOrdinal(log, c.ID), Cause: err}
 			}
 			return nil, err
 		}
@@ -400,8 +408,8 @@ func captureNativeHistory(ctx context.Context, src Source, inventory Inventory, 
 	if err != nil {
 		return nil, err
 	}
-	ordered, err := nativeCommitOrder(final)
-	if err != nil || !final.Clean || final.Head != log.Head || !equalJSON(commits, ordered) {
+	ordered, err := historyCommitOrder(final)
+	if err != nil || !final.Clean || final.Head != log.Head || !equalJSON(commits, ordered) || !equalJSON(log.Boundaries, final.Boundaries) {
 		return nil, ErrSourceHistoryUnavailable{Reason: "source-census-changed"}
 	}
 	return h, nil
@@ -465,6 +473,9 @@ func validateNativeHistory(manifest Manifest, members map[string][]byte) error {
 	if err := decodeJSON(raw, &h); err != nil {
 		return fmt.Errorf("native history shape: %w", err)
 	}
+	if err := validateHistoryCoverageShape(raw); err != nil {
+		return err
+	}
 	profile, err := validateSchemaProfile(h.SchemaProfile, manifest.MainVersion, manifest.IgnoredVersion)
 	if err != nil {
 		return err
@@ -477,7 +488,11 @@ func validateNativeHistory(manifest Manifest, members map[string][]byte) error {
 	if h.Format != NativeHistoryFormat || h.StoreID != manifest.StoreID || !equalJSON(projects, h.Projects) || h.Current == nil || h.Images == nil || h.Gaps == nil {
 		return fmt.Errorf("native history source identity or shape mismatch")
 	}
-	ordered, err := nativeCommitOrder(SourceCommitLog{Head: h.Head, Clean: true, Commits: h.Commits})
+	log := SourceCommitLog{Head: h.Head, Clean: true, Commits: h.Commits}
+	if h.HistoryCoverage != nil {
+		log.Boundaries = h.HistoryCoverage.Boundaries
+	}
+	ordered, err := historyCommitOrder(log)
 	if err != nil {
 		return err
 	}
@@ -492,7 +507,9 @@ func validateNativeHistory(manifest Manifest, members map[string][]byte) error {
 	if err := decodeJSON(members[SourceHistoryMember], &portable); err != nil {
 		return censusMismatch
 	}
-	portableOrder, err := nativeCommitOrder(SourceCommitLog{Head: h.Head, Commits: portable.Commits})
+	portableLog := log
+	portableLog.Commits = portable.Commits
+	portableOrder, err := historyCommitOrder(portableLog)
 	if err != nil || len(portableOrder) != len(ordered) {
 		return censusMismatch
 	}
@@ -504,6 +521,9 @@ func validateNativeHistory(manifest Manifest, members map[string][]byte) error {
 		if commit.ID != other.ID || !equalJSON(parents, otherParents) || !equalJSON(commit.Metadata, other.Metadata) {
 			return censusMismatch
 		}
+	}
+	if err := validateHistoryCoverage(h, members[SourceHistoryMember], portable); err != nil {
+		return err
 	}
 	validateTables := func(tables map[string]NativeTable) error {
 		if tables == nil {
@@ -572,7 +592,7 @@ func validateNativeHistory(manifest Manifest, members map[string][]byte) error {
 		last = gap.Sequence
 		covered[last] = true
 	}
-	if len(covered) != len(ordered) || h.Complete != (len(h.Gaps) == 0) {
+	if len(covered) != len(ordered) || h.HistoryCoverage == nil && h.Complete != (len(h.Gaps) == 0) {
 		return fmt.Errorf("native image census incomplete without named gap")
 	}
 	head := nativeHead(h)

@@ -124,7 +124,8 @@ func run() (resultErr error) {
 		return err
 	}
 	stage = stageHistory
-	originalLog, err := current.ReadSourceCommits(ctx)
+	source := observedNativeSource{OwnVersionCommitSource: plugdump.OwnVersionCommitSource{PhysicalCommitSource: plugdump.PhysicalCommitSource{SQLSource: current, PhysicalDB: db}}, schema: observation}
+	originalLog, err := source.ReadSourceCommits(ctx)
 	if err != nil {
 		return err
 	}
@@ -169,11 +170,11 @@ func run() (resultErr error) {
 		}
 	}
 	stage = stageHistory
-	archive, err := plugdump.Build(ctx, observedNativeSource{OwnVersionCommitSource: plugdump.OwnVersionCommitSource{PhysicalCommitSource: plugdump.PhysicalCommitSource{SQLSource: current, PhysicalDB: db}}, schema: observation}, inventory)
+	archive, err := plugdump.Build(ctx, source, inventory)
 	if err != nil {
 		return fmt.Errorf("native build: %w", err)
 	}
-	finalLog, err := current.ReadSourceCommits(ctx)
+	finalLog, err := source.ReadSourceCommits(ctx)
 	if err != nil {
 		return err
 	}
@@ -228,7 +229,27 @@ func run() (resultErr error) {
 	for _, source := range manifest.Sources {
 		counts[source.Family] = source.Rows
 	}
-	return json.NewEncoder(os.Stdout).Encode(map[string]any{"capture": "published-validated", "source_family_contract": manifest.SourceFamilyContract, "families": counts, "scope": "capture-only; portable/native completeness separate"})
+	summary := map[string]any{"capture": "published-validated", "source_family_contract": manifest.SourceFamilyContract, "families": counts, "scope": "capture-only; portable/native completeness separate"}
+	if coverage := native.HistoryCoverage; coverage != nil {
+		summary["verified_commit_count"] = coverage.VerifiedCommitCount
+		boundaries := []map[string]any{}
+		for _, b := range coverage.Boundaries {
+			report := safeReport(&captureFailure{stage: stageHistory, schema: observation, cause: plugdump.ErrSourceHistoryUnavailable{Reason: "native-history-boundary", BoundaryReason: b.Reason, SchemaVersion: b.CommitSchemaVersion, OrdinalFromHead: b.CommitOrdinalFromHead, VerifiedCommitCount: &coverage.VerifiedCommitCount, SQLCodes: b.SQLDoltCodes}})
+			if err := json.NewEncoder(os.Stderr).Encode(report); err != nil {
+				return err
+			}
+			boundary := map[string]any{"history_boundary_reason": b.Reason, "commit_ordinal_from_head": b.CommitOrdinalFromHead}
+			if b.CommitSchemaVersion != nil {
+				boundary["commit_schema_version"] = *b.CommitSchemaVersion
+			}
+			if len(b.SQLDoltCodes) > 0 {
+				boundary["sql_dolt_codes"] = b.SQLDoltCodes
+			}
+			boundaries = append(boundaries, boundary)
+		}
+		summary["history_boundaries"] = boundaries
+	}
+	return json.NewEncoder(os.Stdout).Encode(summary)
 }
 
 func writeExclusive(path string, data []byte) (resultErr error) {

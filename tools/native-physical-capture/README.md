@@ -32,9 +32,7 @@ On success, the tool publishes the validated `capture.tar`, `inventory.json` and
 `inventory.json.sources/` sidecars and `physical-evidence.json`, then reports current-family row counts. Retain
 the actual manifest and history ranges: complete native physical history does not
 upgrade portable history that could not be mapped. Errors retain their typed
-driver cause; they do not establish physical-table absence. A failed invocation
-may leave sidecars; discard its disposable output rather than treating it as a
-completed capture.
+driver cause; they do not establish physical-table absence. A refused invocation removes its own unpublished output files and sidecars; any cleanup error remains a failure.
 
 Capture includes source contents and is not a redaction mechanism. Keep private
 inputs and outputs local, report only counts/categories, and clean up disposable
@@ -147,3 +145,52 @@ the versioned-to-ignored events transition. It compares every original typed
 image and current root after real reopen, and proves an actual historical73
 refusal with HEAD still66. Existing same-version66/26 and72/28 assertions
 remain separate and unchanged.
+
+
+A genuine unavailable-history frontier is retained with optional
+`history_coverage` in both `history/native-tables.json` and the typed physical
+evidence file. The object has format `beads-native-history-coverage/1`, status
+`verified-to-boundary`, `verified_commit_count`, `boundaries` and
+`events_attachment`. Existing complete captures omit it. A boundary capture
+keeps `complete:false`, an empty `gaps` array, readable HEAD and at least one
+fully verified immutable image. Every present image, cursor, table and cell
+is still verified; corruption, contradictory edges, unsupported schemas and
+falsely complete or missing-image claims refuse. Original named-gap captures
+retain their earlier semantics and do not acquire boundary admission.
+
+Each boundary retains its actual `commit_id`, sorted unique
+`child_commit_ids`, `commit_ordinal_from_head`, optional observed
+`commit_schema_version`, closed `reason`, and optional sorted unique nonzero
+`sql_dolt_codes` (uint16). Reasons are `ghost_parent`, `missing_root_chunk`,
+`missing_table_chunk`, `unreadable_schema` and `other`; arbitrary error text
+does not establish any boundary. Each external parent edge is covered exactly
+once. Multiple DAG frontiers are supported. Ordinal is one-based reverse
+canonical parent-before-child DFS, extending the graph only with frontier IDs
+as terminal leaves, with sorted parents. HEAD is 1. No frontier metadata,
+parents or image is invented. A linear frontier follows its N verified
+commits at ordinal N+1. Missing HEAD still refuses.
+
+`events_attachment` names `history/source.json`, hashes its exact member bytes
+with SHA256, and counts the original current events. Portable events, native
+current events and archive source rows must agree. Portable history remains
+unverified with reason `native-history-boundary`; current events are never
+assigned to immutable commits. Historical event tables that physically existed
+remain in their own images. SQL defaults, indexes and constraints are still
+not captured.
+
+Successful publication emits the original schema observation, then one safe
+`beads-capture-diagnostic/1` history-walk record per boundary with
+`history_boundary_reason`, `verified_commit_count`, boundary ordinal, schema
+where readable and actual numeric codes. The final `published-validated`
+summary adds `verified_commit_count` and `history_boundaries`, whose entries
+contain only the same safe reason/ordinal/optional schema/code fields. These
+records contain no commit IDs, hashes, values, raw error text or paths. The
+caller must validate the entire stream and published archive/sidecar together.
+
+The public control uses the pinned `DOLT_CLONE('--depth','3',file_url,name)`
+procedure and authenticates the actual ghost parent independently. It checks
+every retained physical cell, current events, graph, count, ordinal, exact
+events-member hash, safe diagnostic stream and source conservation after
+close/reopen. The existing populated multiversion fixture and its historical
+73 refusal remain separate required controls. Public fixture PASS alone does
+not complete the separately owned two-store policyv2 capture/import unit.

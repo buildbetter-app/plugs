@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"reflect"
+	"sort"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/steveyegge/beads/internal/plugdump"
@@ -65,6 +66,8 @@ func probeSchema(ctx context.Context, conn *sql.Conn) (schemaObservation, error)
 }
 
 type safeCaptureReport struct {
+	HistoryBoundaryReason string            `json:"history_boundary_reason,omitempty"`
+	VerifiedCommitCount   *uint64           `json:"verified_commit_count,omitempty"`
 	InnermostGoErrorType  string            `json:"innermost_go_error_type,omitempty"`
 	CommitSchemaVersion   *uint64           `json:"commit_schema_version,omitempty"`
 	CommitOrdinalFromHead *uint64           `json:"commit_ordinal_from_head,omitempty"`
@@ -136,6 +139,19 @@ func safeReport(err error) safeCaptureReport {
 		}
 	}
 	walk(err, 0)
+	var boundary plugdump.ErrSourceHistoryUnavailable
+	if errors.As(err, &boundary) && boundary.BoundaryReason != "" {
+		report.Stage = stageHistory
+		report.HistoryBoundaryReason = boundary.BoundaryReason
+		report.CommitSchemaVersion = boundary.SchemaVersion
+		if boundary.OrdinalFromHead > 0 {
+			ordinal := boundary.OrdinalFromHead
+			report.CommitOrdinalFromHead = &ordinal
+		}
+		report.VerifiedCommitCount = boundary.VerifiedCommitCount
+		report.SQLCodes = append([]uint16{}, boundary.SQLCodes...)
+	}
+	sort.Slice(report.SQLCodes, func(i, j int) bool { return report.SQLCodes[i] < report.SQLCodes[j] })
 	return report
 }
 
@@ -181,7 +197,7 @@ func (s observedNativeSource) ReadTable(ctx context.Context, name string) (plugd
 }
 
 func (s observedNativeSource) ReadSourceCommits(ctx context.Context) (plugdump.SourceCommitLog, error) {
-	log, err := s.SQLSource.ReadSourceCommits(ctx)
+	log, err := s.OwnVersionCommitSource.ReadSourceCommits(ctx)
 	return log, s.failure(stageHistory, "", err)
 }
 

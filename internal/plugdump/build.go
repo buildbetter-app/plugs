@@ -2,6 +2,7 @@ package plugdump
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -180,6 +181,15 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 		}
 		if err := classifyNativeSources(manifest.Sources, *native); err != nil {
 			return nil, err
+		}
+		if native.HistoryCoverage != nil {
+			if history == nil {
+				return nil, fmt.Errorf("boundary history requires events attachment")
+			}
+			native.HistoryCoverage.EventsAttachment = NativeEventsAttachment{Member: SourceHistoryMember, SHA256: fmt.Sprintf("%x", sha256.Sum256(files[SourceHistoryMember])), Rows: uint64(len(history.Events))}
+			if err := validateHistoryCoverage(*native, files[SourceHistoryMember], *history); err != nil {
+				return nil, err
+			}
 		}
 		files[NativeHistoryMember], err = marshal(native)
 		if err != nil {

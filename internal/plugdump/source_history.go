@@ -13,9 +13,10 @@ import (
 // SourceCommitLog is a driver read of the actual reachable graph and working
 // set. Clean is measured by the source reader, never copied from Inventory.
 type SourceCommitLog struct {
-	Head    string
-	Clean   bool
-	Commits []SourceCommit
+	Head       string
+	Clean      bool
+	Commits    []SourceCommit
+	Boundaries []NativeHistoryBoundary
 }
 
 // SourceHistoryReader is optional. Every image is a complete data-only census
@@ -26,7 +27,14 @@ type SourceHistoryReader interface {
 	ReadSourceImage(context.Context, string) (map[string]Table, error)
 }
 
-type ErrSourceHistoryUnavailable struct{ Reason string }
+type ErrSourceHistoryUnavailable struct {
+	Reason              string
+	BoundaryReason      string
+	SchemaVersion       *uint64
+	OrdinalFromHead     uint64
+	VerifiedCommitCount *uint64
+	SQLCodes            []uint16
+}
 
 func (e ErrSourceHistoryUnavailable) Error() string { return "source history unavailable: " + e.Reason }
 
@@ -61,6 +69,21 @@ func captureSourceHistory(ctx context.Context, src Source, inventory Inventory, 
 		if err := validateSecretReferences(map[string]any(c.Metadata)); err != nil {
 			return nil, err
 		}
+	}
+	if len(log.Boundaries) > 0 {
+		ordered, err := historyCommitOrder(log)
+		if err != nil {
+			return nil, err
+		}
+		final, err := port.ReadSourceCommits(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if !log.Clean || !equalJSON(log, final) {
+			return nil, ErrSourceHistoryUnavailable{Reason: "source-census-changed"}
+		}
+		h.Commits = ordered
+		return unverified("native-history-boundary")
 	}
 	chain, ok := linearSourceCommits(log)
 	if !ok {

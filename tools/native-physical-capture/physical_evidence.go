@@ -43,7 +43,8 @@ type commitEvidenceImage struct {
 }
 type commitPhysicalEvidence struct {
 	physicalcapture.Evidence
-	Images []commitEvidenceImage `json:"images"`
+	HistoryCoverage *plugdump.NativeHistoryCoverage `json:"history_coverage,omitempty"`
+	Images          []commitEvidenceImage           `json:"images"`
 }
 
 func readPhysicalEvidence(ctx context.Context, db *sql.DB, native plugdump.NativeHistory, original physicalcapture.WorkingImage, archive []byte) (result []byte, resultErr error) {
@@ -58,26 +59,26 @@ func readPhysicalEvidence(ctx context.Context, db *sql.DB, native plugdump.Nativ
 	}
 	evidence := physicalcapture.Evidence{Format: "beads-physical-evidence/1", ArchiveSHA256: fmt.Sprintf("%x", sha256.Sum256(archive)), StoreID: native.StoreID, Projects: append([]string{}, native.Projects...), SQLDefaults: "not-captured",
 		Working: physicalcapture.EvidenceWorkingRoot{Format: original.Format, Database: original.Database, HeadCommitID: original.HeadCommitID, WorkingRootHash: original.WorkingRootHash, ReadOnlyScope: original.ReadOnlyScope, Complete: original.Complete, Tables: tables}, Images: []physicalcapture.EvidenceImage{}}
-	if !native.Complete || len(native.Gaps) != 0 {
-		return nil, fmt.Errorf("typed physical evidence requires complete native history")
+	if !native.Complete && native.HistoryCoverage == nil || len(native.Gaps) != 0 {
+		return nil, fmt.Errorf("typed physical evidence requires verified native history")
 	}
-	versioned := commitPhysicalEvidence{Evidence: evidence, Images: []commitEvidenceImage{}}
+	versioned := commitPhysicalEvidence{Evidence: evidence, Images: []commitEvidenceImage{}, HistoryCoverage: native.HistoryCoverage}
 	profiles := map[string]*plugdump.NativeCommitSchemaProfile{}
 	for _, image := range native.Images {
 		profiles[image.CommitID] = image.SchemaProfile
 	}
-	for i, commit := range native.Commits {
+	for _, commit := range native.Commits {
 		image, err := physicalcapture.ReadCommit(ctx, conn, commit.ID)
 		if err != nil {
 			var version *uint64
 			if p := profiles[commit.ID]; p != nil {
 				version = p.MainVersion
 			}
-			return nil, &plugdump.NativeCommitFailure{SchemaVersion: version, OrdinalFromHead: uint64(len(native.Commits) - i), Cause: err}
+			return nil, &plugdump.NativeCommitFailure{SchemaVersion: version, OrdinalFromHead: plugdump.NativeCommitOrdinal(native, commit.ID), Cause: err}
 		}
 		profile, err := plugdump.PhysicalCommitSchemaProfile(image)
 		if err != nil {
-			return nil, &plugdump.NativeCommitFailure{SchemaVersion: profile.MainVersion, OrdinalFromHead: uint64(len(native.Commits) - i), Cause: err}
+			return nil, &plugdump.NativeCommitFailure{SchemaVersion: profile.MainVersion, OrdinalFromHead: plugdump.NativeCommitOrdinal(native, commit.ID), Cause: err}
 		}
 		if expected := profiles[commit.ID]; expected != nil {
 			a, aErr := json.Marshal(profile)

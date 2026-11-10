@@ -53,7 +53,11 @@ func physicalReadError(kind, id, name string, err error) error {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return &PhysicalReadError{kind, id, name, err}
 	}
-	return &PhysicalReadError{kind, id, name, translateError(err)}
+	cause := error(translateError(err))
+	if reason := missingPhysicalHistory(kind, err); reason != "" {
+		cause = &PhysicalHistoryUnavailable{Reason: reason, Cause: cause, SQLCodes: physicalHistorySQLCodes(err)}
+	}
+	return &PhysicalReadError{kind, id, name, cause}
 }
 
 // ReadPhysicalCommit owns a read-only transaction inside one dedicated Raw
