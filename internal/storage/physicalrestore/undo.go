@@ -28,6 +28,10 @@ type UndoRequest struct {
 	Source        SourceBinding   `json:"source"`
 	Current       Manifest        `json:"current"`
 	ReverseReport json.RawMessage `json:"reverse_report"`
+	// Optional original file bytes retain leading/trailing whitespace through a
+	// JSON transport. The object and original bytes must agree; no classification
+	// or numeric coercion is performed. Byte encoding is only for this loss file.
+	ReverseReportBytes []byte `json:"reverse_report_bytes,omitempty"`
 }
 
 type UndoReceipt struct {
@@ -73,13 +77,17 @@ func validateUndo(request UndoRequest) error {
 	}
 	// Keep the loss-accounting owner’s complete JSON object. Unknown additive
 	// report fields are preserved. This route does not grant converter admission.
-	decoder := json.NewDecoder(bytes.NewReader(request.ReverseReport))
+	report, err := undoReportBytes(request)
+	if err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(report))
 	decoder.UseNumber()
 	if err := checkValue(decoder); err != nil {
 		return &Error{Kind: "reverse-report", Row: -1, Cause: err}
 	}
 	var object map[string]json.RawMessage
-	if err := json.Unmarshal(request.ReverseReport, &object); err != nil || object == nil {
+	if err := json.Unmarshal(report, &object); err != nil || object == nil {
 		return &Error{Kind: "reverse-report", Row: -1, Cause: errors.New("existing reverse converter report object required")}
 	}
 	if _, err := decoder.Token(); err != io.EOF {
@@ -98,6 +106,11 @@ func Undo(ctx context.Context, conn *sql.Conn, request UndoRequest) (UndoReceipt
 	}
 	if conn == nil {
 		return UndoReceipt{}, errors.New("dedicated undo connection required")
+	}
+	// Freeze detached original report bytes before any storage mutation.
+	report, err := undoReportBytes(request)
+	if err != nil {
+		return UndoReceipt{}, err
 	}
 	originalImage, err := physicalcapture.ReadCommit(ctx, conn, request.Source.CommitID)
 	if err != nil {
@@ -122,8 +135,8 @@ func Undo(ctx context.Context, conn *sql.Conn, request UndoRequest) (UndoReceipt
 	if err != nil {
 		return UndoReceipt{}, translateRestoreError(err)
 	}
-	sum := sha256.Sum256(request.ReverseReport)
-	receipt := UndoReceipt{Format: UndoFormat, SourcePort: request.Source.Port, SourceSHA256: request.Source.SHA256, OriginalCommit: result.BaseCommit, SwitchBackCommit: result.CommitID, OriginalGraphSHA256: result.OriginalGraphSHA256, OriginalCommits: result.PriorCommits, CurrentCommits: result.CurrentCommits, DeletedRows: result.DeletedRows, WrittenRows: result.WrittenRows, ReverseReport: append(json.RawMessage{}, request.ReverseReport...), ReverseReportSHA256: hex.EncodeToString(sum[:]), HistoryDisposition: "original native history retained; exactly one switch-back commit; Plug-created history not replayed; converter loss classifications copied without inventing history counts"}
+	sum := sha256.Sum256(report)
+	receipt := UndoReceipt{Format: UndoFormat, SourcePort: request.Source.Port, SourceSHA256: request.Source.SHA256, OriginalCommit: result.BaseCommit, SwitchBackCommit: result.CommitID, OriginalGraphSHA256: result.OriginalGraphSHA256, OriginalCommits: result.PriorCommits, CurrentCommits: result.CurrentCommits, DeletedRows: result.DeletedRows, WrittenRows: result.WrittenRows, ReverseReport: append(json.RawMessage{}, report...), ReverseReportSHA256: hex.EncodeToString(sum[:]), HistoryDisposition: "original native history retained; exactly one switch-back commit; Plug-created history not replayed; converter loss classifications copied without inventing history counts"}
 	if _, err := VerifyUndo(ctx, conn, request, receipt); err != nil {
 		return UndoReceipt{}, &Error{Kind: "post-commit-indeterminate", Row: -1, Cause: err}
 	}
@@ -137,8 +150,11 @@ func VerifyUndo(ctx context.Context, conn *sql.Conn, request UndoRequest, receip
 	if err := validateUndo(request); err != nil {
 		return Manifest{}, err
 	}
-	if receipt.Format != UndoFormat || receipt.SourceSHA256 != request.Source.SHA256 || receipt.OriginalCommit != request.Source.CommitID || receipt.CurrentCommits != receipt.OriginalCommits+1 {
+	if receipt.Format != UndoFormat || receipt.SourcePort != request.Source.Port || receipt.SourceSHA256 != request.Source.SHA256 || receipt.OriginalCommit != request.Source.CommitID || receipt.CurrentCommits != receipt.OriginalCommits+1 {
 		return Manifest{}, &Error{Kind: "undo-receipt", Row: -1, Cause: errors.New("undo identity/one-commit receipt mismatch")}
+	}
+	if err := embedded.VerifyPhysicalUndo(ctx, conn, embedded.PhysicalUndoReceipt{BaseCommit: receipt.OriginalCommit, CommitID: receipt.SwitchBackCommit, OriginalGraphSHA256: receipt.OriginalGraphSHA256, PriorCommits: receipt.OriginalCommits, CurrentCommits: receipt.CurrentCommits}); err != nil {
+		return Manifest{}, translateRestoreError(err)
 	}
 	var head, parent string
 	if err := conn.QueryRowContext(ctx, "SELECT DOLT_HASHOF('HEAD'), DOLT_HASHOF('HEAD~1')").Scan(&head, &parent); err != nil {
@@ -304,4 +320,25 @@ func compareManifests(want, got Manifest) error {
 		return &Error{Kind: "physical-readback", Table: name, Column: "*", Row: -1, Cause: errors.New("extra physical table")}
 	}
 	return nil
+}
+
+// UndoReportBytes returns owned, exact original converter Report bytes when
+// supplied, preserving whitespace and number spellings in the standalone file.
+// The JSON object is retained for compatibility and must match those bytes.
+func UndoReportBytes(request UndoRequest) ([]byte, error) { return undoReportBytes(request) }
+func undoReportBytes(request UndoRequest) ([]byte, error) {
+	report := []byte(request.ReverseReport)
+	if len(request.ReverseReportBytes) != 0 {
+		report = request.ReverseReportBytes
+		if len(request.ReverseReport) != 0 {
+			var a, b bytes.Buffer
+			if err := json.Compact(&a, report); err != nil {
+				return nil, &Error{Kind: "reverse-report", Row: -1, Cause: errors.New("invalid original converter Report bytes")}
+			}
+			if err := json.Compact(&b, request.ReverseReport); err != nil || !bytes.Equal(a.Bytes(), b.Bytes()) {
+				return nil, &Error{Kind: "reverse-report", Row: -1, Cause: errors.New("original Report bytes disagree with envelope object")}
+			}
+		}
+	}
+	return append([]byte{}, report...), nil
 }

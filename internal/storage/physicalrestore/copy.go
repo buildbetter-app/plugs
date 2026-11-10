@@ -28,13 +28,17 @@ type CopyReceipt struct {
 // InventoryPreservedStore hashes regular files without opening a native engine.
 // The caller must have closed/quiesced its explicitly selected preserved copy.
 // Symlinks, sockets and devices refuse; no private/live path is discovered.
-func InventoryPreservedStore(ctx context.Context, directory string) (CopyReceipt, error) {
-	var receipt CopyReceipt
+func InventoryPreservedStore(ctx context.Context, directory string) (receipt CopyReceipt, resultErr error) {
 	root, err := os.OpenRoot(directory)
 	if err != nil {
 		return receipt, err
 	}
-	defer root.Close()
+	defer func() {
+		resultErr = errors.Join(resultErr, root.Close())
+		if resultErr != nil {
+			receipt = CopyReceipt{}
+		}
+	}()
 	err = fs.WalkDir(root.FS(), ".", func(name string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -54,8 +58,7 @@ func InventoryPreservedStore(ctx context.Context, directory string) (CopyReceipt
 		}
 		info, err := file.Stat()
 		if err != nil {
-			_ = file.Close()
-			return err
+			return errors.Join(err, file.Close())
 		}
 		hash := sha256.New()
 		size, readErr := io.Copy(hash, file)
@@ -114,20 +117,21 @@ func CopyPreservedStore(ctx context.Context, source, destination string) (receip
 	}
 	copied := false
 	defer func() {
-		if !copied {
+		if !copied || resultErr != nil {
 			resultErr = errors.Join(resultErr, os.RemoveAll(destination))
+			receipt = CopyReceipt{}
 		}
 	}()
 	src, err := os.OpenRoot(source)
 	if err != nil {
 		return receipt, err
 	}
-	defer src.Close()
+	defer func() { resultErr = errors.Join(resultErr, src.Close()) }()
 	dst, err := os.OpenRoot(destination)
 	if err != nil {
 		return receipt, err
 	}
-	defer dst.Close()
+	defer func() { resultErr = errors.Join(resultErr, dst.Close()) }()
 	err = fs.WalkDir(src.FS(), ".", func(name string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -150,8 +154,7 @@ func CopyPreservedStore(ctx context.Context, source, destination string) (receip
 		}
 		out, err := dst.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		if err != nil {
-			_ = in.Close()
-			return err
+			return errors.Join(err, in.Close())
 		}
 		_, copyErr := io.Copy(out, in)
 		syncErr := out.Sync()

@@ -15,6 +15,16 @@ import (
 )
 
 func runUndo(preserved, target, database, input, readback, loss, receiptOutput string, disposable bool, timeout time.Duration) (resultErr error) {
+	// Once storage accepted the switch-back commit, every later failure (close,
+	// reopen, verification, source census or output) is explicitly indeterminate.
+	// Preserve all joined causes; never describe that state as atomic refusal.
+	accepted := false
+	defer func() {
+		if accepted && resultErr != nil {
+			resultErr = &physicalrestore.Error{Kind: "post-commit-indeterminate", Row: -1, Cause: resultErr}
+		}
+	}()
+
 	if flag.NArg() != 0 || !disposable || !regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`).MatchString(database) {
 		return errors.New("explicit disposable preserved-copy undo and exact database required")
 	}
@@ -42,12 +52,16 @@ func runUndo(preserved, target, database, input, readback, loss, receiptOutput s
 	if info, err := os.Stat(filepath.Join(preserved, database, ".dolt")); err != nil || !info.IsDir() {
 		return errors.New("existing preserved native database required; undo performs no initialization")
 	}
-	file, err := os.Open(input)
+	inputRoot, err := os.OpenRoot(filepath.Dir(input))
 	if err != nil {
 		return err
 	}
+	file, err := inputRoot.Open(filepath.Base(input))
+	if err != nil {
+		return errors.Join(err, inputRoot.Close())
+	}
 	request, readErr := physicalrestore.ReadUndo(file)
-	if err := errors.Join(readErr, file.Close()); err != nil {
+	if err := errors.Join(readErr, file.Close(), inputRoot.Close()); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -65,6 +79,7 @@ func runUndo(preserved, target, database, input, readback, loss, receiptOutput s
 		return errors.Join(err, db.Close(), closeDriver())
 	}
 	receipt, operationErr := physicalrestore.Undo(ctx, conn, request)
+	accepted = operationErr == nil
 	closeErr := errors.Join(conn.Close(), db.Close(), closeDriver())
 	if err := errors.Join(operationErr, closeErr); err != nil {
 		return err
@@ -102,10 +117,14 @@ func runUndo(preserved, target, database, input, readback, loss, receiptOutput s
 	if err != nil {
 		return err
 	}
+	reportBytes, err := physicalrestore.UndoReportBytes(request)
+	if err != nil {
+		return err
+	}
 	for _, out := range []struct {
 		path string
 		data []byte
-	}{{readback, readbackBytes}, {loss, request.ReverseReport}, {receiptOutput, receiptBytes}} {
+	}{{readback, readbackBytes}, {loss, reportBytes}, {receiptOutput, receiptBytes}} {
 		if err := publishUndoOutput(out.path, out.data); err != nil {
 			return &physicalrestore.Error{Kind: "receipt-publication-after-commit", Row: -1, Cause: err}
 		}

@@ -437,3 +437,94 @@ func ownUndoOriginal(tables []PhysicalTable) ([]PhysicalTable, error) {
 	}
 	return out, nil
 }
+
+// VerifyPhysicalUndo authenticates the actual reopened graph and refs in a
+// read-only scope. Reconstruct only the prior graph's identity by removing the
+// one new child and moving its active-branch pointer back, then compare the
+// original graph digest. No expected data is supplied to a native read path.
+func VerifyPhysicalUndo(ctx context.Context, conn *sql.Conn, receipt PhysicalUndoReceipt) error {
+	if conn == nil {
+		return restoreError("undo-graph", "", "*", -1, errors.New("dedicated native connection required"))
+	}
+	return conn.Raw(func(raw any) (resultErr error) {
+		d, ok := raw.(*DoltConn)
+		if !ok {
+			return restoreError("unsupported-driver", "", "*", -1, errors.New("embedded native driver required"))
+		}
+		if d.gmsCtx.GetTransaction() != nil {
+			return restoreError("occupied-transaction", "", "*", -1, errors.New("dedicated idle connection required"))
+		}
+		q, _, rows, err := d.queryWithBindings(ctx, "START TRANSACTION READ ONLY", nil)
+		if err != nil {
+			return err
+		}
+		rollback := doltTx{ctx: d.gmsCtx.Context, conn: d}
+		defer func() {
+			rollbackErr := rollback.Rollback()
+			if rollbackErr == nil && d.gmsCtx.GetTransaction() != nil {
+				rollbackErr = errors.New("graph read transaction remains active")
+			}
+			if rollbackErr != nil {
+				resultErr = restoreError("rollback-indeterminate", "", "*", -1, errors.Join(resultErr, rollbackErr))
+			}
+		}()
+		if err := rows.Close(q); err != nil {
+			return err
+		}
+		if d.gmsCtx.GetTransaction() == nil || !d.gmsCtx.GetTransaction().IsReadOnly() {
+			return restoreError("undo-graph", "", "*", -1, errors.New("authenticated read-only graph scope required"))
+		}
+		current, err := d.undoGraph(ctx)
+		if err != nil {
+			return err
+		}
+		if current.Head != receipt.CommitID || len(current.Log.Rows) != receipt.CurrentCommits || receipt.CurrentCommits != receipt.PriorCommits+1 {
+			return restoreError("undo-graph", "", "*", -1, errors.New("actual reopened graph identity/count differs"))
+		}
+		parent, err := d.undoQuery(ctx, "SELECT DOLT_HASHOF('HEAD~1')")
+		if err != nil {
+			return err
+		}
+		if len(parent.Rows) != 1 || len(parent.Rows[0]) != 1 || parent.Rows[0][0] != receipt.BaseCommit {
+			return restoreError("undo-graph", "", "*", -1, errors.New("actual reopened parent differs"))
+		}
+		prior := current
+		prior.Head = receipt.BaseCommit
+		prior.Log.Rows = make([][]driver.Value, 0, len(current.Log.Rows)-1)
+		removed := 0
+		for _, row := range current.Log.Rows {
+			if len(row) != 0 && row[0] == receipt.CommitID {
+				removed++
+				continue
+			}
+			prior.Log.Rows = append(prior.Log.Rows, row)
+		}
+		if removed != 1 {
+			return restoreError("undo-graph", "", "*", -1, errors.New("one actual switch-back commit required"))
+		}
+		prior.Branches.Rows = make([][]driver.Value, len(current.Branches.Rows))
+		active := 0
+		for i, row := range current.Branches.Rows {
+			prior.Branches.Rows[i] = append([]driver.Value{}, row...)
+			if len(row) == 2 && row[0] == current.Branch {
+				if row[1] != receipt.CommitID {
+					return restoreError("undo-graph", "", "*", -1, errors.New("actual active branch differs"))
+				}
+				prior.Branches.Rows[i][1] = receipt.BaseCommit
+				active++
+			}
+		}
+		if active != 1 {
+			return restoreError("undo-graph", "", "*", -1, errors.New("one actual active branch required"))
+		}
+		data, err := json.Marshal(prior)
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(data)
+		if hex.EncodeToString(sum[:]) != receipt.OriginalGraphSHA256 {
+			return restoreError("undo-graph", "", "*", -1, errors.New("original graph metadata/parents/other refs differ after reopen"))
+		}
+		return nil
+	})
+}

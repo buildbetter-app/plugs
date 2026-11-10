@@ -72,3 +72,33 @@ and source history cannot be claimed from the tool's new snapshot commit.
 
 Public fixture proof earns no real private-store reversal, cutover, official
 producer, trial/night, FullS1 or portable history qualification.
+
+## Undo on a preserved-store copy
+
+The separate `beads-physical-undo/1` request requires `history_mode: switch-back`.
+`BindWorkingSource` binds both the original immutable347 capture and the distinct
+complete typed working-root capture. The latter includes ignored current tables;
+neither port may be inferred from normalized `NativeTable` rows. Every physical
+user table needs explicit replacement rows, including empty tables. The driver
+authenticates the original database, HEAD, working root, schemas and cells before
+deletion, retains reserved tables, and uses one transaction for child-first
+deletion, parent-first insertion and every-cell readback. One native switch-back
+commit advances the active branch; original commit metadata, parents, other
+branches and tags must remain intact. Strict history replay is refused.
+
+The command's `--undo-preserved-copy` mode requires a closed preserved source and
+an absent disposable target. It hashes and copies the original files, performs
+the undo, closes and reopens the target, then verifies the actual graph, immutable
+versioned cells and complete working cells. Any failure after commit is explicitly
+indeterminate and retains all causes, including close and publication failures.
+Precommit refusal or cancellation rolls back all user-table changes.
+
+`reverse_report` carries the existing converter Report without reclassification.
+Optional `reverse_report_bytes` carries its original file bytes, including file
+whitespace, through JSON transport; when both are present their compact JSON must
+agree exactly. This byte field is only for the loss file, never metadata cells.
+`UndoReportBytes` returns owned original bytes. The loss output preserves them and
+the undo receipt binds their SHA256. Native public fixtures test this transport;
+an actual Plug snapshot/project/source-plane binding and measured post-switch
+changeset/checkpoint census must still come from their owners. Explanation
+strings and historical fixture counts cannot supply that missing census.

@@ -146,7 +146,7 @@ func undoCheckUnchanged(t *testing.T, conn *sql.Conn, request UndoRequest) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		table := undoTable(t, &request.Source.Image, name)
+		table := undoTable(t, &request.Source.Working.Image, name)
 		if len(got.Rows) != len(table.Rows) {
 			t.Fatalf("refusal changed %s working rows", name)
 		}
@@ -289,6 +289,7 @@ func TestPhysicalUndoAtomicRefusals(t *testing.T) {
 			}
 			r.Source.SHA256, _ = bindingDigest(r.Source)
 		}},
+		{"report_bytes_disagree", "reverse-report", func(r *UndoRequest) { r.ReverseReportBytes = []byte("{}") }},
 		{"strict_history_replay", "history-replay-refused", func(r *UndoRequest) { r.HistoryMode = "full" }},
 		{"tampered_source", "source-binding", func(r *UndoRequest) { r.Source.Image.Tables[0].Columns[0].SQLType = "text" }},
 		{"wrong_source_head", "source-binding", func(r *UndoRequest) {
@@ -369,6 +370,8 @@ func TestPhysicalUndoPublicBinaryCopyReopenLossReceipt(t *testing.T) {
 	if err := release(); err != nil {
 		t.Fatal(err)
 	}
+	request.ReverseReportBytes = append([]byte(" \n"), request.ReverseReport...)
+	request.ReverseReportBytes = append(request.ReverseReportBytes, '\n')
 	binary, err := bazeltest.RunfileEnv("BEADS_PHYSICAL_RESTORE_BINARY")
 	if err != nil {
 		t.Fatal(err)
@@ -410,7 +413,7 @@ func TestPhysicalUndoPublicBinaryCopyReopenLossReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(lossBytes, []byte(request.ReverseReport)) {
+	if !reflect.DeepEqual(lossBytes, request.ReverseReportBytes) {
 		t.Fatal("original converter report bytes changed")
 	}
 	receiptBytes, err := os.ReadFile(receiptFile)
@@ -423,6 +426,9 @@ func TestPhysicalUndoPublicBinaryCopyReopenLossReceipt(t *testing.T) {
 	}
 	if err := json.Unmarshal(receiptBytes, &envelope); err != nil {
 		t.Fatal(err)
+	}
+	if envelope.Undo.ReverseReportSHA256 != fmt.Sprintf("%x", sha256.Sum256(lossBytes)) {
+		t.Fatal("loss report hash does not bind original bytes")
 	}
 	if !envelope.Undo.Reopened || !envelope.Undo.PhysicalReadbackVerified || envelope.Undo.CurrentCommits != envelope.Undo.OriginalCommits+1 {
 		t.Fatal("actual receipt missing reopen/graph/loss binding")
@@ -553,4 +559,89 @@ func TestPhysicalUndoActualNativeSchemaWorkingFamilies(t *testing.T) {
 	saveEvidence(t, "undo-native-schema-actual-immutable-root.json", immutable)
 	saveEvidence(t, "undo-native-schema-receipt.json", receipt)
 	t.Logf("UNDO_NATIVE_SCHEMA complete_working_tables=%d actual_immutable_tables=%d ignored_wisp_replaced=true ignored_history_grafted=false new_commits=%d", len(actual.Tables), len(immutable.Tables), receipt.CurrentCommits-receipt.OriginalCommits)
+}
+
+func TestPhysicalUndoPublicationFailureIsPostCommitIndeterminate(t *testing.T) {
+	_, source, release, request := undoFixture(t)
+	if err := release(); err != nil {
+		t.Fatal(err)
+	}
+	binary, err := bazeltest.RunfileEnv("BEADS_PHYSICAL_RESTORE_BINARY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	work := undoWork(t)
+	parent := filepath.Join(work, "publication")
+	if err := os.Mkdir(parent, 0700); err != nil {
+		t.Fatal(err)
+	}
+	target, input := filepath.Join(work, "copy"), filepath.Join(work, "request.json")
+	data, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(input, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, "--undo-preserved-copy", "--disposable-target", "--preserved-data-dir", source, "--data-dir", target, "--database", "restored", "--undo-request", input, "--readback-output", filepath.Join(parent, "actual.json"), "--loss-report-output", filepath.Join(parent, "loss.json"), "--undo-receipt-output", filepath.Join(parent, "receipt.json"))
+	// Destination mkdir occurs only after all path/input preflights. Remove this
+	// test-owned output parent then: a real filesystem failure after the native
+	// operation must never be described as precommit atomic refusal.
+	removed := make(chan error, 1)
+	go func() {
+		timer := time.NewTicker(2 * time.Millisecond)
+		defer timer.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				removed <- ctx.Err()
+				return
+			case <-timer.C:
+				if _, err := os.Stat(target); err == nil {
+					removed <- os.RemoveAll(parent)
+					return
+				}
+			}
+		}
+	}()
+	result, runErr := cmd.CombinedOutput()
+	if err := <-removed; err != nil {
+		t.Fatal(err)
+	}
+	if runErr == nil || !strings.Contains(string(result), "post-commit-indeterminate") || !strings.Contains(string(result), "receipt-publication-after-commit") {
+		t.Fatalf("must retain actual postcommit publication error: %v %s", runErr, result)
+	}
+	conn, closeCopy := undoOpen(t, target)
+	head := undoHead(t, conn)
+	var parentHash string
+	if err := conn.QueryRowContext(context.Background(), "SELECT DOLT_HASHOF('HEAD~1')").Scan(&parentHash); err != nil || parentHash != request.Source.CommitID || head == parentHash {
+		t.Fatalf("actual accepted switchback must remain explicit: %s %s %v", head, parentHash, err)
+	}
+	working, err := physicalcapture.ReadWorkingRoot(context.Background(), conn, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual, err := FromWorkingImage(working)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := cloneManifest(t, request.Source.Working.Image)
+	for i, table := range expected.Tables {
+		for _, replacement := range request.Current.Tables {
+			if replacement.Name == table.Name {
+				expected.Tables[i] = replacement
+			}
+		}
+	}
+	if err := compareManifests(expected, actual); err != nil {
+		t.Fatal(err)
+	}
+	if err := closeCopy(); err != nil {
+		t.Fatal(err)
+	}
+	saveEvidence(t, "undo-postcommit-publication-failure.json", map[string]any{"argv": cmd.Args, "stderr": string(result), "original_commit": request.Source.CommitID, "actual_head": head, "actual_parent": parentHash, "status": "post-commit-indeterminate", "atomic_refusal": false})
+	saveEvidence(t, "undo-postcommit-publication-actual-root.json", actual)
+	t.Log("UNDO_POSTCOMMIT_PUBLICATION actual_commit_present=true real_reopen=true status=post-commit-indeterminate publication_cause_retained=true")
 }
