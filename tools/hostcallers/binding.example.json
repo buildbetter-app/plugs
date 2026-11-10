@@ -1,0 +1,21 @@
+{
+  "schema": "plug-host-binding/1",
+  "endpoint": "http://127.0.0.1:REQUIRED_PORT",
+  "incarnation": "REQUIRED_FROM_RESTORED_INSTANCE",
+  "principal": {
+    "kind": "user",
+    "id": "REQUIRED_TRANSPORT_PRINCIPAL"
+  },
+  "agent": "cody",
+  "token_env": "PLUG_HOST_TOKEN",
+  "projects": {
+    "cody-ops": {
+      "workspace": "/home/dev/beads/cody-ops",
+      "legacy_ids": {}
+    },
+    "signals-v2": {
+      "workspace": "/home/dev/beads/signals-v2",
+      "legacy_ids": {}
+    }
+  }
+}

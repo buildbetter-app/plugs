@@ -387,6 +387,9 @@ func TestNativeTablesIncompleteJoinedPublicationConservesCoreAndNamespace(t *tes
 			}
 			for _, fault := range []string{"missing-binding", "missing-checkpoint", "changed-envelope", "missing-receipt"} {
 				t.Run(fault, func(t *testing.T) {
+					if err := lease.Renew(ctx); err != nil {
+						t.Fatal("renew native refusal test lease", err)
+					}
 					broken := &incompleteSourceStore{Store: store, WorkflowCheckpointStore: capability, fault: fault}
 					if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), broken, lease, p); !errors.Is(err, driver.ErrUnsupported) {
 						t.Fatal("native publication accepted incomplete joined state", err)
@@ -396,6 +399,9 @@ func TestNativeTablesIncompleteJoinedPublicationConservesCoreAndNamespace(t *tes
 						t.Fatal("native publication refusal changed core/history/blobs/receipt/namespace", err)
 					}
 				})
+			}
+			if err := lease.Renew(ctx); err != nil {
+				t.Fatal("renew native publication test lease", err)
 			}
 			if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, p); err != nil {
 				t.Fatal("valid native publication failed after atomic refusals", err)

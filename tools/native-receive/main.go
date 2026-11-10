@@ -217,7 +217,7 @@ func run(ctx context.Context, args []string) (out receipt, runErr error) {
 		defer func() {
 			if err := session.close(); err != nil {
 				out = zero
-				runErr = fmt.Errorf("rehearsal cleanup failed: %w", err)
+				runErr = errors.Join(runErr, fmt.Errorf("rehearsal cleanup failed: %w", err))
 			}
 		}()
 	}
@@ -232,7 +232,7 @@ func run(ctx context.Context, args []string) (out receipt, runErr error) {
 	var release func() error
 	defer func() {
 		if release != nil {
-			_ = release()
+			runErr = errors.Join(runErr, release())
 		}
 		if store != nil {
 			_ = store.Close()
@@ -373,30 +373,5 @@ func opener(ctx context.Context, engine, target string) (func() (driver.Store, e
 }
 
 func hold(ctx context.Context, store driver.Store) (context.Context, driver.ActiveLease, func() error, error) {
-	lease, err := store.Lease(ctx, "native-receive", driver.LeaseTTL)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	op, cancel := context.WithCancel(ctx)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		ticker := time.NewTicker(driver.LeaseTTL / 3)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-op.Done():
-				return
-			case <-lease.Lost():
-				cancel()
-				return
-			case <-ticker.C:
-				if lease.Renew(op) != nil {
-					cancel()
-					return
-				}
-			}
-		}
-	}()
-	return op, lease, func() error { cancel(); <-done; return lease.Release(context.Background()) }, nil
+	return converterroundtrip.HoldRestoreLease(ctx, store, "native-receive")
 }
