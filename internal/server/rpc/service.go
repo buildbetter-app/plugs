@@ -80,6 +80,7 @@ type serviceParams struct {
 	FromRevision model.Revision                 `json:"fromRevision"`
 	ToRevision   model.Revision                 `json:"toRevision"`
 	Type         string                         `json:"type"`
+	TargetStatus *string                        `json:"targetStatus"`
 	Label        string                         `json:"label"`
 	Title        string                         `json:"title"`
 	Fields       map[string]any                 `json:"fields"`
@@ -394,7 +395,7 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 		v, err := memory.MemoryDeleteWithOutcome(ctx, c.Principal, service.MemoryDeleteRequest{ID: id, Expect: p.Expect}, meta)
 		return writeOutcome(v), err
 	case "bead.create":
-		v, err := svc.CreateWithOutcome(ctx, c.Principal, service.CreateRequest{Type: p.Type, Fields: p.Fields, Parent: p.Parent}, meta)
+		v, err := svc.CreateWithOutcome(ctx, c.Principal, service.CreateRequest{Type: p.Type, Fields: p.Fields, Parent: p.Parent, TargetStatus: p.TargetStatus}, meta)
 		return writeOutcome(v), err
 	case "bead.update":
 		id, err := p.refID()
@@ -415,14 +416,14 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 		if err != nil {
 			return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
 		}
-		v, err := svc.CloseWithOutcome(ctx, c.Principal, service.CloseRequest{ID: id, Reason: p.Reason, Expect: p.Expect}, meta)
+		v, err := svc.CloseWithOutcome(ctx, c.Principal, service.CloseRequest{ID: id, Reason: p.Reason, Expect: p.Expect, TargetStatus: p.TargetStatus}, meta)
 		return writeOutcome(v), err
 	case "bead.reopen":
 		id, err := p.refID()
 		if err != nil {
 			return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
 		}
-		v, err := svc.ReopenWithOutcome(ctx, c.Principal, service.ReopenRequest{ID: id, Reason: p.Reason, Expect: p.Expect}, meta)
+		v, err := svc.ReopenWithOutcome(ctx, c.Principal, service.ReopenRequest{ID: id, Reason: p.Reason, Expect: p.Expect, TargetStatus: p.TargetStatus}, meta)
 		return writeOutcome(v), err
 	case "bead.defer":
 		id, err := p.refID()
