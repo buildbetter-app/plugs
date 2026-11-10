@@ -155,7 +155,7 @@ func restoreArchive(ctx context.Context, archive *dumpformat.Archive, target dri
 	return restoreArchiveWithProfile(ctx, archive, target, supplied, nil, checks)
 }
 
-func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive, target driver.Store, supplied driver.ActiveLease, profile *driver.RestoreImportProfile, checks []Verification) (Report, error) {
+func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive, target driver.Store, supplied driver.ActiveLease, profile *driver.RestoreImportProfile, checks []Verification) (result Report, restoreErr error) {
 	if archive == nil || target == nil {
 		return Report{Archive: archive}, fmt.Errorf("restore requires an archive and target store")
 	}
@@ -268,7 +268,7 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		if err != nil {
 			return report, err
 		}
-		defer func() { _ = release() }()
+		defer func() { restoreErr = errors.Join(restoreErr, release()) }()
 	}
 	var sourceCapability driver.WorkflowCheckpointStore
 	if sourceLogical != nil {

@@ -232,7 +232,7 @@ func run(ctx context.Context, args []string) (out receipt, runErr error) {
 	var release func() error
 	defer func() {
 		if release != nil {
-			_ = release()
+			runErr = errors.Join(runErr, release())
 		}
 		if store != nil {
 			_ = store.Close()
