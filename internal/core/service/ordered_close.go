@@ -163,7 +163,7 @@ func (o *Ontology) ValidateOrdered(ctx context.Context, images []port.Change, fi
 		}
 		validated = append(validated, *change)
 	}
-	// Select one final validation image per resource. A genuine close slot
+	// Select one final validation image per resource. The last genuine close
 	// supplies its ordered pre-image even when the record was created earlier
 	// in this batch or a later comment/patch shares its atomic final image.
 	checks := map[string]port.Change{}
@@ -174,7 +174,7 @@ func (o *Ontology) ValidateOrdered(ctx context.Context, images []port.Change, fi
 		if !seen {
 			order = append(order, id)
 		}
-		if !seen || previous.Op.Kind != model.OpClose && previous.Op.Kind != model.OpCreate || change.Op.Kind == model.OpClose && previous.Op.Kind != model.OpClose {
+		if !seen || change.Op.Kind == model.OpClose || previous.Op.Kind != model.OpClose && previous.Op.Kind != model.OpCreate {
 			checks[id] = change
 		}
 	}

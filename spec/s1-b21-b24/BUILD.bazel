@@ -143,3 +143,37 @@ go_test(
     timeout = "long",
     deps = _NATIVE_ACCEPTANCE_DEPS,
 )
+
+# B23 owns the independent count/cap/import matrix. Keep it out of the B24
+# acceptance target, while compiling against the exact shared recorder,
+# replay, support, views and history probe sources above.
+go_test(
+    name = "native_b23_count_test",
+    size = "large",
+    srcs = _NATIVE_ACCEPTANCE_SRCS + ["native_count_matrix_test.go"],
+    args = ["-test.v", "-test.run=^TestNativeB23CountMatrix$$"],
+    data = [
+        "native_testdata/profile.json",
+        "native_testdata/protocol.json",
+        "//internal/publicnative:dolt_runtime",
+    ],
+    env = {
+        "PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)",
+    },
+    tags = ["local", "manual", "requires-network"],
+    timeout = "long",
+    deps = _NATIVE_ACCEPTANCE_DEPS,
+)
+
+# Ordinary public Plug boundary control; the exact selector never enters the
+# native recorder. The native B23 matrix also runs these historical oracles on
+# its own real imported archive, without transferring this control's credit.
+go_test(
+    name = "b23_historical_cap_test",
+    size = "large",
+    srcs = _NATIVE_ACCEPTANCE_SRCS + ["native_count_matrix_test.go"],
+    args = ["-test.v", "-test.run=^TestB23HistoricalCapCurrentAuthorizationAcrossStores$$"],
+    tags = ["local", "requires-network"],
+    timeout = "long",
+    deps = _NATIVE_ACCEPTANCE_DEPS,
+)

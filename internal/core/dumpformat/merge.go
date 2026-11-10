@@ -76,7 +76,7 @@ func MergeArchives(archives ...*Archive) ([]byte, error) {
 				if len(h.Projects) != 1 {
 					return nil, HistoryMergeRefusal{Kind: "source identity", Reason: "raw native globals have ambiguous project ownership"}
 				}
-				if err := requireCompleteNativeHistory(h); err != nil {
+				if err := RequireVerifiedNativeHistory(h); err != nil {
 					return nil, err
 				}
 				path := nativeHistoryPath(h.Projects[0])
@@ -88,6 +88,13 @@ func MergeArchives(archives ...*Archive) ([]byte, error) {
 					originalPath = NativeHistoryMember
 				}
 				nativeMembers[path] = append([]byte(nil), input.archive.members[originalPath]...)
+				if h.HistoryCoverage != nil {
+					raw, err := nativeAttachmentBytes(input.archive, h, input.manifest.SourceIdentityContract == SourceIdentityContract)
+					if err != nil {
+						return nil, err
+					}
+					nativeMembers[nativeSourceAttachmentPath(h.Projects[0])] = append([]byte(nil), raw...)
+				}
 			}
 		}
 	}
@@ -398,6 +405,9 @@ func rejectUnmerged(manifest Manifest) error {
 }
 
 func compatibleManifests(base, other Manifest) error {
+	if base.SourceFieldsContract != other.SourceFieldsContract {
+		return fmt.Errorf("source fields contracts differ")
+	}
 	if base.Format != other.Format || base.Schema != other.Schema || base.Reference != other.Reference ||
 		base.MainVersion != other.MainVersion || base.IgnoredVersion != other.IgnoredVersion || base.Scope != other.Scope || base.SourcePlaneAddressContract != other.SourcePlaneAddressContract || base.StatusCategoryContract != other.StatusCategoryContract || base.SourceFamilyContract != other.SourceFamilyContract {
 		return fmt.Errorf("format, reference, scope or schema version differs")
@@ -603,7 +613,9 @@ func encodeArchive(manifest Manifest, records map[string][]Record, config, histo
 		for path, data := range members {
 			if path != NativeHistoryMember {
 				if _, ok := scopedNativeMember(path); !ok {
-					return nil, fmt.Errorf("unsupported native history member %s", path)
+					if _, attachment := scopedNativeSourceAttachment(path); !attachment {
+						return nil, fmt.Errorf("unsupported native history member %s", path)
+					}
 				}
 			}
 			if _, exists := files[path]; exists {

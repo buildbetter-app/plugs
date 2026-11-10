@@ -18,6 +18,12 @@ func checkShape(value any, typ reflect.Type) error {
 	if value == nil {
 		return fmt.Errorf("null typed JSON member")
 	}
+	// Per-commit migration cursors have explicitly nullable slots. Their custom
+	// decoder enforces uint64 values after this exact required-field shape;
+	// all other typed fields keep the existing null refusal.
+	if typ == reflect.TypeOf(NativeCommitSchemaProfile{}) {
+		typ = reflect.TypeOf(nativeCommitSchemaWire{})
+	}
 	switch typ.Kind() {
 	case reflect.Struct:
 		object, ok := value.(map[string]any)

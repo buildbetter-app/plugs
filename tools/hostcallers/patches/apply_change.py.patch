@@ -1,0 +1,160 @@
+--- a/scripts/apply_change.py
++++ b/scripts/apply_change.py
+@@ -1,151 +1,6 @@
+-"""Apply one change batch to the signals-v2 beads, plan.json and ids.json, and queue the matching Linear ops.
+-
+-Usage: python3 -I apply_change.py <workspace> <change.json>
+-
+-change.json keys (all optional):
+-  create:     [{key, type, priority, parent, deps, labels?, title, description, milestone?}]
+-  update:     {key: {title?, description?, priority?}}
+-  dep_add:    {key: [dep keys]}
+-  dep_remove: {key: [dep keys]}
+-  move:       {key: milestone key}   (moves an item to another milestone)
+-  reopen:     [keys]                  (runs before close, so a key can be reopened and closed with a new reason)
+-  close:      {key: reason}
+-Every batch is appended to <workspace>/linear-pending.json for the Linear mirror.
+-"""
+-import json, os, shutil, subprocess, sys, time
+-
+-workspace, change_path = sys.argv[1], sys.argv[2]
+-plan_path = os.path.join(workspace, "plan.json")
+-ids_path = os.path.join(workspace, "ids.json")
+-pending_path = os.path.join(workspace, "linear-pending.json")
+-plan = json.load(open(plan_path))
+-ids = json.load(open(ids_path))
+-change = json.load(open(change_path))
+-items = {item["key"]: item for item in plan["items"]}
+-doc = plan["doc"]
+-
+-stamp = time.strftime("%Y%m%d-%H%M%S")
+-shutil.copy(plan_path, f"{plan_path}.{stamp}.bak")
+-shutil.copy(ids_path, f"{ids_path}.{stamp}.bak")
+-
+-
+-def bd(*args):
+-    result = subprocess.run(["bd", *args], capture_output=True, text=True)
+-    if result.returncode != 0:
+-        raise SystemExit(f"bd {' '.join(args[:3])} ... failed: {result.stderr.strip()[:500]}")
+-    return result.stdout.strip()
+-
+-
+-def footer(key, description):
+-    return f"{description}\n\nPlan key: {key}. Design doc: {doc}"
+-
+-
+-creates = change.get("create", [])
+-known = set(items) | {item["key"] for item in creates}
+-for item in creates:
+-    assert item["key"] not in items, f"{item['key']} already exists"
+-    assert item.get("parent") is None or item["parent"] in known, f"unknown parent for {item['key']}"
+-    for dep in item.get("deps", []):
+-        assert dep in known, f"{item['key']} depends on unknown {dep}"
+-    if item.get("milestone"):
+-        target = items.get(item["milestone"]) or next((c for c in creates if c["key"] == item["milestone"]), None)
+-        assert target and target["type"] == "milestone", f"unknown milestone {item['milestone']}"
+-for key in list(change.get("update", {})) + list(change.get("close", {})) + list(change.get("dep_add", {})):
+-    assert key in known, f"unknown key {key}"
+-for key, deps in change.get("dep_remove", {}).items():
+-    for dep in deps:
+-        assert dep in items[key]["deps"], f"{key} has no dep {dep}"
+-for key, deps in change.get("dep_add", {}).items():
+-    for dep in deps:
+-        # bd refuses to block a parent on its own descendant (the block would cascade to the child).
+-        assert not dep.startswith(key + "."), f"{key} cannot be blocked by its descendant {dep}"
+-
+-creates = sorted(creates, key=lambda i: i["type"] != "milestone")
+-for item in creates:
+-    labels = item.get("labels", [])
+-    issue_type = "decision" if "decision" in labels else item["type"]
+-    args = ["create", item["title"], "-t", issue_type, "-p", str(item["priority"]),
+-            "-d", footer(item["key"], item["description"]), "--silent"]
+-    if item.get("parent"):
+-        args += ["--parent", ids[item["parent"]]]
+-    args += ["-l", ",".join([l for l in labels if l != "decision"] + ["signals-v2"])]
+-    if item.get("design"):
+-        args += ["--design", item["design"]]
+-    if item.get("acceptance"):
+-        args += ["--acceptance", item["acceptance"]]
+-    ids[item["key"]] = bd(*args).splitlines()[-1].strip()
+-    entry = {k: v for k, v in item.items()}
+-    entry.setdefault("deps", [])
+-    plan["items"].append(entry)
+-    items[item["key"]] = entry
+-    print("created", item["key"], ids[item["key"]])
+-
+-for key, fields in change.get("update", {}).items():
+-    args = ["update", ids[key]]
+-    if "title" in fields:
+-        args += ["--title", fields["title"]]
+-        items[key]["title"] = fields["title"]
+-    if "description" in fields:
+-        args += ["-d", footer(key, fields["description"])]
+-        items[key]["description"] = fields["description"]
+-    if "priority" in fields:
+-        args += ["-p", str(fields["priority"])]
+-        items[key]["priority"] = fields["priority"]
+-    # ExecPlan fields: design (behavior, files, approach) and acceptance (commands, expected result, evidence).
+-    if "design" in fields:
+-        args += ["--design", fields["design"]]
+-        items[key]["design"] = fields["design"]
+-    if "acceptance" in fields:
+-        args += ["--acceptance", fields["acceptance"]]
+-        items[key]["acceptance"] = fields["acceptance"]
+-    bd(*args)
+-
+-for key, deps in change.get("dep_remove", {}).items():
+-    for dep in deps:
+-        bd("dep", "remove", ids[key], ids[dep])
+-        items[key]["deps"].remove(dep)
+-for item in creates:
+-    for dep in item.get("deps", []):
+-        bd("dep", "add", ids[item["key"]], "--blocked-by", ids[dep])
+-for key, deps in change.get("dep_add", {}).items():
+-    for dep in deps:
+-        bd("dep", "add", ids[key], "--blocked-by", ids[dep])
+-        items[key]["deps"].append(dep)
+-
+-for item in creates:
+-    milestone = item.get("milestone")
+-    if milestone:
+-        bd("label", "add", ids[item["key"]], f"milestone:{milestone.lower()}")
+-        bd("dep", "add", ids[milestone], "--blocked-by", ids[item["key"]])
+-        items[milestone]["deps"].append(item["key"])
+-
+-for key, target in change.get("move", {}).items():
+-    old = items[key].get("milestone")
+-    assert items[target]["type"] == "milestone", target
+-    if old:
+-        bd("label", "remove", ids[key], f"milestone:{old.lower()}")
+-        bd("dep", "remove", ids[old], ids[key])
+-        items[old]["deps"].remove(key)
+-    bd("label", "add", ids[key], f"milestone:{target.lower()}")
+-    bd("dep", "add", ids[target], "--blocked-by", ids[key])
+-    items[target]["deps"].append(key)
+-    items[key]["milestone"] = target
+-
+-for key in change.get("reopen", []):
+-    bd("reopen", ids[key])
+-    items[key]["status"] = "open"
+-    items[key].pop("resolution", None)
+-
+-for key, reason in change.get("close", {}).items():
+-    bd("close", ids[key], "--reason", reason)
+-    items[key]["status"] = "closed"
+-    items[key]["resolution"] = reason
+-
+-json.dump(plan, open(plan_path, "w"), indent=2)
+-json.dump(ids, open(ids_path, "w"), indent=2)
+-
+-pending = json.load(open(pending_path)) if os.path.exists(pending_path) else []
+-pending.append({"applied_at": stamp, "change": change,
+-                "beads": {item["key"]: ids[item["key"]] for item in creates}})
+-json.dump(pending, open(pending_path, "w"), indent=2)
+-print("applied", os.path.basename(change_path))
++# Prepared Plug caller; explicit --binding is mandatory.
++import sys
++from pathlib import Path
++sys.path.insert(0, str(Path(__file__).resolve().parent))
++from host_drivers import main
++main('apply')
