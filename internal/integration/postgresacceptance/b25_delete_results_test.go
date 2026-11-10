@@ -116,12 +116,11 @@ func b25DeleteResultControls(t *testing.T, h *b26HTTP, db *sql.DB, engine string
 			item := b26Invoke(t, h, secret, 1)[0].ID
 			b26OK(t, h.call(t, "bead.comment", map[string]any{"id": ref(item), "body": secret + "-comment"}, label+"-comment"))
 			victim := h.create(t, label+"-victim")
-			secondTarget := h.create(t, label+"-second-target")
 			b25Link(t, h, item, victim, "relates-to", label+"-link")
-			b25Link(t, h, item, secondTarget, "blocks", label+"-second-link")
+			b25Link(t, h, victim, item, "blocks", label+"-second-link")
 			generation := b25Items(t, h)[item].Generation
 			finalRevision := model.Natural64(generation + 2)
-			params := map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{b25Unlink(item, victim, "relates-to"), b25Unlink(item, secondTarget, "blocks"), b25Delete(victim)}}}
+			params := map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{b25Unlink(item, victim, "relates-to"), b25Unlink(victim, item, "blocks"), b25Delete(victim)}}}
 			meta := map[string]any{}
 			if format != "default" {
 				meta["return"] = format
