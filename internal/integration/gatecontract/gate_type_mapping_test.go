@@ -16,6 +16,11 @@ func TestB14PublicGateTypeInstallMapTypePreservesLiteralMembers(t *testing.T) {
 		f.refuse("bead.create", map[string]any{"type": "gate", "fields": map[string]any{"title": "not installed"}}, "invalid_params")
 		id := gateCreate(f, "legacy_gate", "gh:run", map[string]any{"await_id": "opaque", "timeout": 0, "waiters": []string{"", "b", "a", "b"}})
 		before := f.currentBody(id)
+		beforeFields := before["fields"].(map[string]any)
+		beforeStatus, ok := beforeFields["status"].(string)
+		if !ok || beforeStatus == "" {
+			t.Fatalf("created history body lacks a literal status: %v", before)
+		}
 		candidate := ontology.DefaultDocument()
 		candidate.Types["legacy_gate"] = initial.Types["legacy_gate"]
 		plan := gatePlan(f, candidate, []any{typeMapping("legacy_gate", "gate", id)}, 1)
@@ -25,7 +30,7 @@ func TestB14PublicGateTypeInstallMapTypePreservesLiteralMembers(t *testing.T) {
 		}
 		gateApply(f, plan, 1)
 		after := f.currentBody(id)
-		if after["type"] != "gate" || after["id"] != id || after["project"] != before["project"] || after["status"] != before["status"] || !reflect.DeepEqual(after["fields"], before["fields"]) {
+		if after["type"] != "gate" || after["id"] != id || after["project"] != before["project"] || !reflect.DeepEqual(after["fields"], beforeFields) {
 			t.Fatalf("type mapping lost literal record members: %v -> %v", before, after)
 		}
 		created := gateCreate(f, "gate", "timer", nil)
@@ -39,8 +44,9 @@ func TestB14PublicGateTypeInstallMapTypePreservesLiteralMembers(t *testing.T) {
 			if schema["properties"] == nil {
 				t.Fatalf("installed gate schema absent: %v", schema)
 			}
-			if f.bead(id)["status"] != before["status"] || !reflect.DeepEqual(f.currentBody(id)["fields"], before["fields"]) {
-				t.Fatal("durable map_type readback drift")
+			bead, body := f.bead(id), f.currentBody(id)
+			if bead["status"] != beforeStatus || !reflect.DeepEqual(body["fields"], beforeFields) {
+				t.Fatalf("durable map_type readback drift: bead=%v body=%v want status=%q fields=%v", bead, body, beforeStatus, beforeFields)
 			}
 		}
 		check()
