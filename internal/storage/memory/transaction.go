@@ -36,6 +36,8 @@ type transaction struct {
 	records                 map[string]*driver.Record
 	derived                 map[string]driver.LockState
 	selectionAnnotated      bool
+	selectionBuildDeletes   map[string]selectionBuildDeletion
+	selectionBuildRawDelete bool
 	blobs                   map[driver.Hash][]byte
 	bumps                   map[string]driver.LockKey
 	allocators              map[string]driver.OfflineAllocator
@@ -92,6 +94,8 @@ func (t *transaction) finish() {
 	t.acquired = nil
 	t.records = nil
 	t.derived = nil
+	t.selectionBuildDeletes = nil
+	t.selectionBuildRawDelete = false
 	t.blobs = nil
 	t.bumps = nil
 	t.allocators = nil
@@ -332,7 +336,7 @@ func (t *transaction) PutDerived(ctx context.Context, table driver.DerivedTable,
 		annotated = annotated || row.Index != nil
 	}
 	proposed := t.derived
-	if annotated {
+	if annotated || s.selectionBuild != nil {
 		proposed = make(map[string]driver.LockState, len(t.derived)+len(add)+len(del))
 		for id, value := range t.derived {
 			proposed[id] = value
@@ -352,6 +356,7 @@ func (t *transaction) PutDerived(ctx context.Context, table driver.DerivedTable,
 			return err
 		}
 	}
+	t.recordSelectionBuildDeletes(table, del, add)
 	t.derived = proposed
 	t.selectionAnnotated = annotated
 	return nil
@@ -606,6 +611,7 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 	if err := t.publishSourceIndexes(next); err != nil {
 		return model.Changeset{}, err
 	}
+	selectionDelta := t.prepareSelectionCoverage(next)
 	next.log = append(append([]model.Changeset(nil), next.log...), entry)
 	if header.IdempotencyKey != "" {
 		next.replays[key] = replay{value: driver.IdempotencyRecord{RequestHash: header.RequestHash, Commit: response, Changeset: entry, ResponsePending: header.ResponsePending}, at: s.now()}
@@ -623,6 +629,7 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 	if err := t.check(ctx); err != nil {
 		return model.Changeset{}, err
 	}
+	t.publishSelectionBuildChanges(next, selectionDelta)
 	s.state = next
 	s.checkpoints = checkpoints
 	t.finish()

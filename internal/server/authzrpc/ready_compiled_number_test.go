@@ -96,7 +96,7 @@ func TestCompiledReadyUsesPersistedIntegralJSONPriorityNumbers(t *testing.T) {
 	}
 
 	page, err := f.app.Service.Ready(context.Background(), f.by, service.ReadyRequest{Project: "project", Limit: 1})
-	if err != nil || len(page.Items) != 1 || page.Next == nil || !strings.HasPrefix(page.ReadyMembership, "v2:") {
+	if err != nil || len(page.Items) != 1 || page.Next == nil || !strings.HasPrefix(page.ReadyMembership, "v3:") {
 		t.Fatalf("guarded finite Ready rejected persisted integral numbers: page=%+v err=%v", page, err)
 	}
 	if page.Items[0].ID != ids[0] {
@@ -108,8 +108,8 @@ func TestCompiledReadyUsesPersistedIntegralJSONPriorityNumbers(t *testing.T) {
 		t.Fatalf("signed finite Ready rejected persisted integral numbers: page=%+v err=%v", signed, err)
 	}
 	version, membership := signedReadyPayload(t, signed.next.token)
-	if version != 2 || !strings.HasPrefix(membership, "v2:") {
-		t.Fatalf("signed Ready did not carry compiled v2 membership: version=%d membership=%q", version, membership)
+	if version != 3 || !strings.HasPrefix(membership, "v3:") {
+		t.Fatalf("signed Ready did not carry compiled ordered membership: version=%d membership=%q", version, membership)
 	}
 }
 

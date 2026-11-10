@@ -13,8 +13,6 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/service"
-	"github.com/buildbetter-app/plugs/internal/storage/conformance"
-	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 func TestQ5RawGroupSeededRotationBeforeAuthorization(t *testing.T) {
@@ -91,9 +89,7 @@ func TestReadyCursorBindsAuthorizedTailBeyondFirstPage(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := conformance.Seed(ctx, f.store.Store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: beadRef(220), Kind: "bead", Op: model.OpPatch, Body: encoded, ChangedPaths: []string{"/fields/title"}}}); err != nil {
-				t.Fatal(err)
-			}
+			f.patchSource(t, "ready_tail", beadRef(220), encoded, []string{"/fields/title"})
 			req.Position = nil
 			fresh, err := f.app.Service.Ready(ctx, p, req)
 			if err != nil || fresh.Next == nil {

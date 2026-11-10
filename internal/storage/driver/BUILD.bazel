@@ -23,10 +23,14 @@ go_library(
         "source_planes_restore.go",
         "source_planes_validate.go",
         "selection.go",
+        "selection_boundary.go",
+        "selection_source.go",
+        "queue_projection.go",
+        "ready_order.go",
     ],
     importpath = "github.com/buildbetter-app/plugs/internal/storage/driver",
     visibility = ["//:__subpackages__"],
-    deps = ["//internal/core/model"],
+    deps = ["//internal/core/model", "//internal/core/readyorder"],
 )
 
 go_test(
@@ -46,6 +50,9 @@ go_test(
         "source_planes_test.go",
         "source_planes_restore_test.go",
         "selection_contract_test.go",
+        "selection_binding_contract_test.go",
+        "selection_source_contract_test.go",
+        "queue_projection_test.go",
         "offline_history_test.go",
     ],
     embed = [":driver"],

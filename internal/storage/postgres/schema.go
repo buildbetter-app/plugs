@@ -12,6 +12,9 @@ CREATE TABLE IF NOT EXISTS plug_postgres.meta (
  head numeric(20,0) NOT NULL CHECK (head BETWEEN 0 AND 18446744073709551615),
  history_floor numeric(20,0) NOT NULL CHECK (history_floor BETWEEN 0 AND head)
 );
+-- Existing installations have no virgin-lifetime proof. Only the new-meta
+-- INSERT explicitly sets this flag; emptiness never recreates it.
+ALTER TABLE plug_postgres.meta ADD COLUMN IF NOT EXISTS selection_virgin boolean NOT NULL DEFAULT false;
 CREATE TABLE IF NOT EXISTS plug_postgres.lease (
  singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
  epoch numeric(20,0) NOT NULL CHECK (epoch BETWEEN 0 AND 18446744073709551615),
@@ -156,6 +159,163 @@ CREATE TABLE IF NOT EXISTS plug_postgres.graph_link_history (
 );
 CREATE INDEX IF NOT EXISTS graph_link_history_incoming
  ON plug_postgres.graph_link_history(incarnation, branch, target_key, link_kind, source_key, start_revision);
+
+-- Physical projections of existing typed sort_key/fact rows. These tables do
+-- not certify an upgraded or restored store. Coverage is published with the
+-- triggering transaction and is monotonically invalidated by untyped writes.
+-- Scalar strings are bytea: NUL/non-UTF8 values retain Go bytewise semantics.
+-- Byte-string overload of literal strpos; no wildcard/pattern interpretation.
+CREATE OR REPLACE FUNCTION plug_postgres.strpos(bytea,bytea) RETURNS integer
+ LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS 'SELECT position($2 in $1)';
+CREATE TABLE IF NOT EXISTS plug_postgres.selection_coverage (
+ incarnation text NOT NULL, start_revision numeric(20,0) NOT NULL CHECK (start_revision BETWEEN 0 AND 18446744073709551615),
+ end_revision numeric(20,0) CHECK (end_revision > start_revision AND end_revision <= 18446744073709551615), built_from numeric(20,0) NOT NULL,
+ ready boolean NOT NULL, format integer NOT NULL DEFAULT 0,
+ PRIMARY KEY (incarnation,start_revision)
+);
+CREATE TABLE IF NOT EXISTS plug_postgres.selection_sources (
+ incarnation text NOT NULL, key bytea NOT NULL,
+ start_revision numeric(20,0) NOT NULL CHECK (start_revision BETWEEN 0 AND 18446744073709551615), end_revision numeric(20,0) CHECK (end_revision > start_revision AND end_revision <= 18446744073709551615),
+ revision numeric(20,0) NOT NULL CHECK (revision BETWEEN 0 AND start_revision), present boolean NOT NULL,
+ digest bytea NOT NULL, kind text NOT NULL,
+ PRIMARY KEY (incarnation,key,start_revision)
+);
+CREATE TABLE IF NOT EXISTS plug_postgres.selection_rows (
+ incarnation text NOT NULL, row_key bytea NOT NULL,
+ start_revision numeric(20,0) NOT NULL CHECK (start_revision BETWEEN 0 AND 18446744073709551615), end_revision numeric(20,0) CHECK (end_revision > start_revision AND end_revision <= 18446744073709551615),
+ source_key bytea NOT NULL, source_revision numeric(20,0) NOT NULL CHECK (source_revision BETWEEN 0 AND start_revision),
+ source_present boolean NOT NULL, source_digest bytea NOT NULL,
+ bead_key bytea, ref bytea, bead_id bytea, bead_type bytea,
+ project bytea, parent_key bytea, status bytea, title bytea,
+ template_value boolean, priority bigint, leaf bytea, fact_kind text, annotation bytea NOT NULL,
+ PRIMARY KEY (incarnation,row_key,start_revision)
+);
+-- Old draft layouts never receive version-2 certification by upgrade.
+ALTER TABLE plug_postgres.selection_coverage ADD COLUMN IF NOT EXISTS format integer NOT NULL DEFAULT 0;
+ALTER TABLE plug_postgres.selection_rows ADD COLUMN IF NOT EXISTS template_value boolean;
+-- Legacy global markers retain their bytes but cannot satisfy any family.
+ALTER TABLE plug_postgres.selection_coverage ADD COLUMN IF NOT EXISTS family_table text NOT NULL DEFAULT '';
+ALTER TABLE plug_postgres.selection_coverage ADD COLUMN IF NOT EXISTS fact_kind text NOT NULL DEFAULT '';
+ALTER TABLE plug_postgres.selection_coverage ADD COLUMN IF NOT EXISTS branch numeric(20,0) NOT NULL DEFAULT 0;
+ALTER TABLE plug_postgres.selection_coverage ADD COLUMN IF NOT EXISTS certified_through numeric(20,0);
+ALTER TABLE plug_postgres.selection_coverage DROP CONSTRAINT IF EXISTS selection_coverage_pkey;
+ALTER TABLE plug_postgres.selection_coverage ADD PRIMARY KEY (incarnation,branch,family_table,fact_kind,format,start_revision);
+ALTER TABLE plug_postgres.selection_rows ADD COLUMN IF NOT EXISTS family_table text NOT NULL DEFAULT '';
+ALTER TABLE plug_postgres.selection_rows ADD COLUMN IF NOT EXISTS source_kind text NOT NULL DEFAULT '';
+ALTER TABLE plug_postgres.selection_rows ADD COLUMN IF NOT EXISTS source_table text NOT NULL DEFAULT '';
+ALTER TABLE plug_postgres.selection_rows ADD COLUMN IF NOT EXISTS value_digest bytea;
+ALTER TABLE plug_postgres.selection_rows ADD COLUMN IF NOT EXISTS layout integer NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS selection_rows_family
+ ON plug_postgres.selection_rows(incarnation,family_table,fact_kind,start_revision);
+
+CREATE INDEX IF NOT EXISTS selection_rows_bead
+ ON plug_postgres.selection_rows(incarnation,bead_key,start_revision)
+ WHERE bead_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS selection_rows_source
+ ON plug_postgres.selection_rows(incarnation,source_key,start_revision);
+CREATE INDEX IF NOT EXISTS selection_rows_priority
+ ON plug_postgres.selection_rows(incarnation,priority,bead_id,start_revision)
+ WHERE bead_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS selection_rows_type
+ ON plug_postgres.selection_rows(incarnation,bead_type,bead_id,start_revision)
+ WHERE bead_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS selection_rows_project
+ ON plug_postgres.selection_rows(incarnation,project,bead_id,start_revision)
+ WHERE bead_key IS NOT NULL;
+CREATE TABLE IF NOT EXISTS plug_postgres.selection_facts (
+ incarnation text NOT NULL, row_key bytea NOT NULL,
+ start_revision numeric(20,0) NOT NULL CHECK (start_revision BETWEEN 0 AND 18446744073709551615), ordinal integer NOT NULL,
+ ref_key bytea, target_key bytea, subject bytea, scope bytea,
+ scope_kind bytea, project_name bytea,
+ role bytea, name bytea, value bytea, active boolean NOT NULL,
+ depth bigint NOT NULL, link_kind bytea,
+ PRIMARY KEY (incarnation,row_key,start_revision,ordinal),
+ FOREIGN KEY (incarnation,row_key,start_revision)
+ REFERENCES plug_postgres.selection_rows(incarnation,row_key,start_revision)
+);
+-- A separate fact kind certifies scoped metadata; adding columns never
+-- upgrades generic grant rows, including complete empty generic domains.
+ALTER TABLE plug_postgres.selection_facts ADD COLUMN IF NOT EXISTS scope_kind bytea;
+ALTER TABLE plug_postgres.selection_facts ADD COLUMN IF NOT EXISTS project_name bytea;
+CREATE INDEX IF NOT EXISTS selection_facts_ref
+ ON plug_postgres.selection_facts(incarnation,row_key,ref_key,start_revision);
+CREATE INDEX IF NOT EXISTS selection_facts_target
+ ON plug_postgres.selection_facts(incarnation,row_key,target_key,ref_key,start_revision);
+CREATE INDEX IF NOT EXISTS selection_facts_grant
+ ON plug_postgres.selection_facts(incarnation,row_key,subject,scope,role,start_revision);
+CREATE INDEX IF NOT EXISTS selection_facts_scoped_grant
+ ON plug_postgres.selection_facts(incarnation,row_key,subject,scope_kind,project_name,role,start_revision);
+CREATE INDEX IF NOT EXISTS selection_facts_name
+ ON plug_postgres.selection_facts(incarnation,row_key,name,start_revision);
+
+-- A prior thin proof may be carried only while every physical mutation is
+-- accounted for. BEFORE STATEMENT also fences empty DML and TRUNCATE, and
+-- takes the same row lock before a raw writer can change any watched row.
+-- This counter is transactional: failed writes and rollback restore it.
+CREATE TABLE IF NOT EXISTS plug_postgres.selection_mutation_fence (
+ singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+ generation numeric NOT NULL DEFAULT 0 CHECK (generation>=0),
+ certified_generation numeric, incarnation text, head numeric(20,0), format integer,
+ untracked boolean NOT NULL DEFAULT false
+);
+-- Legacy certified tokens could only prove all four families. A NULL or
+-- mismatched certified generation still grants no bits on upgraded stores.
+ALTER TABLE plug_postgres.selection_mutation_fence ADD COLUMN IF NOT EXISTS proven_families integer NOT NULL DEFAULT 15 CHECK (proven_families BETWEEN 0 AND 15);
+INSERT INTO plug_postgres.selection_mutation_fence(singleton) VALUES(true) ON CONFLICT DO NOTHING;
+CREATE TABLE IF NOT EXISTS plug_postgres.selection_mutation_keys (key bytea PRIMARY KEY);
+CREATE OR REPLACE FUNCTION plug_postgres.selection_mutated() RETURNS trigger
+ LANGUAGE plpgsql AS $selection_mutated$
+ BEGIN
+  UPDATE plug_postgres.selection_mutation_fence SET generation=generation+1,untracked=untracked OR TG_OP='TRUNCATE' WHERE singleton;
+  IF NOT FOUND THEN RAISE EXCEPTION 'selection mutation fence missing'; END IF;
+  RETURN NULL;
+ END;
+ $selection_mutated$;
+-- Journal only opaque identities, without converting/copying a document or
+-- logical-state payload. OLD and NEW owners both survive replacement/deletion.
+CREATE OR REPLACE FUNCTION plug_postgres.selection_mutated_key() RETURNS trigger
+ LANGUAGE plpgsql AS $selection_mutated_key$
+ DECLARE old_key bytea; new_key bytea;
+ BEGIN
+  IF TG_TABLE_NAME IN ('records','versions','states','selection_sources') THEN
+   IF TG_OP<>'INSERT' THEN old_key:=OLD.key; END IF;
+   IF TG_OP<>'DELETE' THEN new_key:=NEW.key; END IF;
+  ELSIF TG_TABLE_NAME IN ('hierarchy_source_current','hierarchy_source_history') THEN
+   IF TG_OP<>'INSERT' THEN old_key:=OLD.child_key; END IF;
+   IF TG_OP<>'DELETE' THEN new_key:=NEW.child_key; END IF;
+  ELSIF TG_TABLE_NAME='selection_facts' THEN
+   IF TG_OP<>'INSERT' THEN
+    SELECT source_key INTO STRICT old_key FROM plug_postgres.selection_rows WHERE incarnation=OLD.incarnation AND row_key=OLD.row_key AND start_revision=OLD.start_revision;
+   END IF;
+   IF TG_OP<>'DELETE' THEN
+    SELECT source_key INTO STRICT new_key FROM plug_postgres.selection_rows WHERE incarnation=NEW.incarnation AND row_key=NEW.row_key AND start_revision=NEW.start_revision;
+   END IF;
+  ELSE
+   IF TG_OP<>'INSERT' THEN old_key:=OLD.source_key; END IF;
+   IF TG_OP<>'DELETE' THEN new_key:=NEW.source_key; END IF;
+  END IF;
+  INSERT INTO plug_postgres.selection_mutation_keys(key) SELECT old_key WHERE old_key IS NOT NULL UNION SELECT new_key WHERE new_key IS NOT NULL ON CONFLICT DO NOTHING;
+  IF TG_OP='DELETE' THEN RETURN OLD; END IF;
+  RETURN NEW;
+ END;
+ $selection_mutated_key$;
+DO $selection_triggers$
+DECLARE watched text;
+BEGIN
+ FOREACH watched IN ARRAY ARRAY['records','versions','states','selection_sources','selection_rows','selection_facts','selection_coverage','hierarchy_index_coverage','hierarchy_source_current','hierarchy_source_history','graph_link_index_coverage','graph_link_source_current','graph_link_current','graph_link_source_history','graph_link_history'] LOOP
+  EXECUTE format('CREATE OR REPLACE TRIGGER selection_mutated BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON plug_postgres.%I FOR EACH STATEMENT EXECUTE FUNCTION plug_postgres.selection_mutated()',watched);
+  EXECUTE format('ALTER TABLE plug_postgres.%I ENABLE ALWAYS TRIGGER selection_mutated',watched);
+  IF watched NOT IN ('selection_coverage','hierarchy_index_coverage','graph_link_index_coverage') THEN
+   EXECUTE format('CREATE OR REPLACE TRIGGER selection_mutated_key BEFORE INSERT OR UPDATE OR DELETE ON plug_postgres.%I FOR EACH ROW EXECUTE FUNCTION plug_postgres.selection_mutated_key()',watched);
+   EXECUTE format('ALTER TABLE plug_postgres.%I ENABLE ALWAYS TRIGGER selection_mutated_key',watched);
+  END IF;
+ END LOOP;
+END;
+$selection_triggers$;
+-- Reverse closure probes must drive by target, not by every owner's row key.
+CREATE INDEX IF NOT EXISTS selection_facts_affected_target
+ ON plug_postgres.selection_facts(incarnation,target_key,row_key,start_revision);
+
 `
 
 // allocator_states is intentionally additive to schema version 1. initialize

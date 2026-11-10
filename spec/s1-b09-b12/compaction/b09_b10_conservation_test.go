@@ -2,7 +2,9 @@ package compaction_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -190,6 +192,108 @@ func b09B10Equal(t *testing.T, label string, want, got any) {
 		b, _ := json.Marshal(got)
 		t.Fatalf("%s changed:\nwant %s\n got %s", label, a, b)
 	}
+}
+
+// Compaction conserves the full inventory. Exactly five selected-child rows
+// need fresh source provenance; its counting row also carries the canonical
+// Ready leaf, whose full semantic preimage includes source revision and fields.
+// All expectations start from the before image, never the published rows.
+func b09B10CompactedDerived(t *testing.T, before, after b09B10Image, selected string) map[driver.DerivedTable][]driver.DerivedRow {
+	t.Helper()
+	selectedRecord := func(image b09B10Image) driver.Record {
+		var found []driver.Record
+		for _, record := range image.Records {
+			if record.Ref.ID == selected {
+				found = append(found, record)
+			}
+		}
+		if len(found) != 1 || found[0].Kind != "bead" {
+			t.Fatalf("selected source inventory is incomplete: %+v", found)
+		}
+		return found[0]
+	}
+	oldSource, source := selectedRecord(before), selectedRecord(after)
+	if after.View.At == nil || source.Revision.String() != after.View.At.String() || source.Ref != oldSource.Ref || string(source.Body) == string(oldSource.Body) {
+		t.Fatal("compaction did not publish the selected changed source at its committed revision")
+	}
+	digest := func(body []byte) string {
+		sum := sha256.Sum256(body)
+		return hex.EncodeToString(sum[:])
+	}
+	membership := func(record driver.Record) string {
+		var doc struct {
+			ID, Type, Project string
+			Fields            map[string]any
+		}
+		decoder := json.NewDecoder(strings.NewReader(string(record.Body)))
+		decoder.UseNumber()
+		if err := decoder.Decode(&doc); err != nil {
+			t.Fatal(err)
+		}
+		status, _ := doc.Fields["status"].(string)
+		item := struct {
+			ID       string         `json:"id"`
+			Type     string         `json:"type"`
+			Project  string         `json:"project"`
+			Status   string         `json:"status"`
+			Revision model.Revision `json:"revision"`
+			Fields   map[string]any `json:"fields,omitempty"`
+		}{doc.ID, doc.Type, doc.Project, status, record.Revision, doc.Fields}
+		body, err := json.Marshal(item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return digest(body)
+	}
+	want := make(map[driver.DerivedTable][]driver.DerivedRow, len(before.Derived))
+	refreshed := map[driver.DerivedTable]int{}
+	for table, rows := range before.Derived {
+		if rows == nil {
+			want[table] = nil
+			continue
+		}
+		want[table] = make([]driver.DerivedRow, len(rows))
+		for i, row := range rows {
+			row = row.Clone()
+			index := row.Index
+			if index != nil && index.Source.Key.Kind == driver.LockRecord && index.Source.Key.Ref != nil && index.Source.Key.Ref.ID == selected {
+				// PostgreSQL stores annotations with gob, which omits Ref's
+				// private JSON-arm discriminator. The complete canonical lock
+				// identity still includes the reference arm, ID and branch.
+				sameRef := driver.SelectionSameRef(*index.Source.Key.Ref, oldSource.Ref)
+				validationErr := index.Validate(table, row)
+				if validationErr != nil || !sameRef || !index.Source.Present || index.Source.Revision.String() != oldSource.Revision.String() || index.Source.Digest != digest(oldSource.Body) {
+					t.Fatalf("baseline selected annotation does not bind its exact source: table=%s key=%s validation=%v canonical_ref=%t present=%t revision=%s/%s digest=%s/%s", table, row.Key, validationErr, sameRef, index.Source.Present, index.Source.Revision.String(), oldSource.Revision.String(), index.Source.Digest, digest(oldSource.Body))
+				}
+				if *index.Source.Key.Ref != oldSource.Ref && table == driver.DerivedSortKey {
+					t.Logf("selected source has exact canonical identity despite private reference metadata: annotation=%#v record=%#v", *index.Source.Key.Ref, oldSource.Ref)
+				}
+				index.Source.Revision, index.Source.Digest = source.Revision, digest(source.Body)
+				if index.Bead != nil {
+					if index.Bead.MembershipLeaf != membership(oldSource) {
+						t.Fatal("baseline counting leaf does not bind its exact source revision/body")
+					}
+					bead := *index.Bead
+					bead.MembershipLeaf = membership(source)
+					index.Bead = &bead
+					body, err := json.Marshal(bead)
+					if err != nil {
+						t.Fatal(err)
+					}
+					row.Value, index.ValueDigest = body, digest(body)
+				}
+				refreshed[table]++
+			}
+			want[table][i] = row
+		}
+	}
+	b09B10Equal(t, "complete selected annotation census", map[driver.DerivedTable]int{
+		driver.DerivedAncestorClosure: 2,
+		driver.DerivedAttribute:       1,
+		driver.DerivedReferenceIndex:  1,
+		driver.DerivedSortKey:         1,
+	}, refreshed)
+	return want
 }
 
 // SQL is an independent connection to the real disposable database. Include

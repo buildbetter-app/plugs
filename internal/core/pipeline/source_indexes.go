@@ -2,7 +2,6 @@ package pipeline
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
@@ -17,16 +16,18 @@ func BuildSourceIndexes(ctx context.Context, store driver.Store, lease driver.Ac
 	if !ok {
 		return nil
 	}
-	return builder.BuildGraphSourceIndexes(ctx, lease, func(record driver.Record) (driver.GraphSourceMetadata, error) {
-		doc, err := DecodeDocument(record.Body)
-		if err != nil || doc.ID != record.Ref.ID {
-			return driver.GraphSourceMetadata{}, fmt.Errorf("%w: invalid core source document during index activation", driver.ErrUnsupported)
-		}
-		links, err := localSourceLinks(doc.Links)
-		if err != nil {
-			return driver.GraphSourceMetadata{}, err
-		}
-		metadata := driver.GraphSourceMetadata{Parent: doc.Parent, Links: links}
-		return metadata, nil
-	})
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		return err
+	}
+	decode, projection := sourceSelectionDecoder(meta.Incarnation)
+	err = builder.BuildGraphSourceIndexes(ctx, lease, decode, projection)
+	// Selection is optional. A legacy graph with no provable closure can still
+	// activate its graph domains; its independent selection range stays unbuilt.
+	// Only the explicit result proves graph completion. An unavailable cause
+	// may also occur inside a fatal SQL/fence/cancellation failure.
+	if driver.IsSelectionBackfillRefused(err) {
+		return nil
+	}
+	return err
 }

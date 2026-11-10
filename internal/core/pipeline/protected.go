@@ -296,6 +296,70 @@ func (w *Writer) applyProtectedOnce(ctx context.Context, by model.PrincipalRef, 
 	}
 	recordChanges := protectedRecordChanges(req)
 	locks := protectedLocks(req)
+	plans := make([]*SourceProjectionPlan, 0, len(recordChanges))
+	closureRows := []driver.DerivedRow{}
+	byKey := map[string]driver.LockRequest{}
+	for _, lock := range locks {
+		encoded, _ := driver.EncodeLockKey(lock.Key)
+		byKey[encoded] = lock
+	}
+	sentinelSet := map[driver.Sentinel]bool{}
+	for _, sentinel := range protectedSentinels(req) {
+		sentinelSet[sentinel] = true
+	}
+	for _, change := range recordChanges {
+		plan, err := PrepareSourceRecord(driver.Record{Ref: change.Ref, Kind: change.Kind, Body: change.After})
+		if err != nil {
+			return model.Commit{}, err
+		}
+		plans = append(plans, plan)
+		for _, key := range plan.LockKeys() {
+			encoded, _ := driver.EncodeLockKey(key)
+			byKey[encoded] = driver.LockRequest{Key: key, Mode: driver.LockUpdate}
+		}
+		for _, sentinel := range plan.Sentinels() {
+			sentinelSet[sentinel] = true
+		}
+		if change.Kind == "bead" {
+			prefix, err := AncestorPrefix(change.Ref.ID)
+			if err != nil {
+				return model.Commit{}, err
+			}
+			rows, err := reader.DerivedRows(ctx, driver.DerivedAncestorClosure, prefix)
+			if err != nil {
+				if ctx.Err() != nil {
+					return model.Commit{}, ctx.Err()
+				}
+				// Source replacement invalidates any unavailable old annotation;
+				// optional projection coverage must not refuse a valid migration.
+				continue
+			}
+			// These exact old bytes/revision are checked under the source
+			// lock below. Refresh eligibility is shared with ordinary writes.
+			before := driver.Record{Ref: change.Ref, Kind: change.Kind, Revision: change.FromRevision, Body: change.Before}
+			for _, row := range rows {
+				if !canRefreshAncestorProjection(row, before, reader.Snapshot()) {
+					continue
+				}
+				key := ancestorLock(row.Key)
+				encoded, _ := driver.EncodeLockKey(key)
+				byKey[encoded] = driver.LockRequest{Key: key, Mode: driver.LockUpdate}
+				closureRows = append(closureRows, row)
+			}
+		}
+	}
+	ordered := make([]string, 0, len(byKey))
+	for key := range byKey {
+		ordered = append(ordered, key)
+	}
+	sort.Strings(ordered)
+	locks = make(driver.LockSet, 0, len(ordered))
+	for _, key := range ordered {
+		locks = append(locks, byKey[key])
+	}
+	if err := driver.ValidateLockSet(locks); err != nil {
+		return model.Commit{}, err
+	}
 	changes := protectedChangeRecords(recordChanges)
 	tx, err := w.store.Write(ctx, w.lease)
 	if err != nil {
@@ -351,8 +415,8 @@ func (w *Writer) applyProtectedOnce(ctx context.Context, by model.PrincipalRef, 
 		return model.Commit{}, err
 	}
 	response := model.Commit{Revision: revision, Results: []model.OpResult{}, Warnings: []model.Warning{}}
-	for _, change := range recordChanges {
-		if err := PutSourceRecord(ctx, tx, driver.Record{Ref: change.Ref, Kind: change.Kind, Body: append([]byte(nil), change.After...)}); err != nil {
+	for i, change := range recordChanges {
+		if err := plans[i].Publish(ctx, tx); err != nil {
 			return model.Commit{}, err
 		}
 		result := model.OpResult{Ref: change.Ref, Revision: revision}
@@ -361,7 +425,16 @@ func (w *Writer) applyProtectedOnce(ctx context.Context, by model.PrincipalRef, 
 		}
 		response.Results = append(response.Results, result)
 	}
-	sentinels := protectedSentinels(req)
+	if len(closureRows) != 0 {
+		if err := PutAncestorProjections(ctx, tx, nil, closureRows); err != nil {
+			return model.Commit{}, err
+		}
+	}
+	sentinels := make([]driver.Sentinel, 0, len(sentinelSet))
+	for sentinel := range sentinelSet {
+		sentinels = append(sentinels, sentinel)
+	}
+	sort.Slice(sentinels, func(i, j int) bool { return sentinels[i] < sentinels[j] })
 	if err := tx.BumpSentinels(ctx, sentinels); err != nil {
 		return model.Commit{}, err
 	}

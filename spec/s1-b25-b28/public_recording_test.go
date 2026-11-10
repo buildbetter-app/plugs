@@ -1336,7 +1336,8 @@ func assertNativePlugImportRows(t *testing.T, image map[string]any, rows map[str
 // The four declared scalar/label updates have no hierarchy edits or mutators.
 // Conserve every captured plane, permitting only the requested target body,
 // one revision/version/legacy changeset and that operation's finalized receipt.
-// The current Writer also publishes exactly the touched bead's ready sort key.
+// The current Writer also publishes the touched bead's rank, source-selection
+// rows and eligible ancestor annotations at that same revision.
 func assertNativePlugWriteDelta(t *testing.T, store driver.Store, before, after map[string]any, req service.UpdateRequest, meta model.WriteMeta, actor model.PrincipalRef, commit model.Commit, receiptKey string, interval [2]time.Time) {
 	t.Helper()
 	oldRows, newRows := nativePlugImageRows(t, before), nativePlugImageRows(t, after)
@@ -1505,9 +1506,9 @@ func assertNativePlugWriteDelta(t *testing.T, store driver.Store, before, after 
 	}
 }
 
-// The post-PR393 base includes the Writer's ready/<id> projection. Validate
-// its one exact source-defined delta, including the full observed Index,
-// without exempting the sort table or learning expected payloads from it.
+// Validate the Writer's complete source-defined projection delta, including
+// full annotations and observed revisions. Expectations come from the already
+// conserved target body and the preimage, never from the new derived payloads.
 func assertNativeReadySortDelta(t *testing.T, before, after map[string]any, target driver.Record, interval [2]time.Time, committedAt time.Time) {
 	t.Helper()
 	key := "ready/" + target.Ref.ID
@@ -1565,32 +1566,233 @@ func assertNativeReadySortDelta(t *testing.T, before, after map[string]any, targ
 		t.Fatal(err)
 	}
 	wantRow := driver.DerivedRow{Key: key, Value: value}
-	wantState := driver.LockState{Key: driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedSortKey, Key: key}}, Revision: target.Revision, Derived: &wantRow, Present: true}
+	updates := map[driver.DerivedTable]map[string]driver.DerivedRow{}
+	add := func(table driver.DerivedTable, row driver.DerivedRow) {
+		if updates[table] == nil {
+			updates[table] = map[string]driver.DerivedRow{}
+		}
+		if _, duplicate := updates[table][row.Key]; duplicate {
+			t.Fatalf("native-origin duplicate expected projection: %s/%s", table, row.Key)
+		}
+		updates[table][row.Key] = row
+	}
+	add(driver.DerivedSortKey, wantRow) // The legacy rank remains unannotated.
+	incarnation := before["meta"].(driver.Meta).Incarnation
+	ref := model.RefByID(target.Ref.ID, model.Natural64(0))
+	indexFor := func(table driver.DerivedTable, row driver.DerivedRow, source driver.Record) *driver.SelectionIndex {
+		return &driver.SelectionIndex{
+			Version: driver.SelectionIndexVersion, Row: driver.DerivedRowKey{Table: table, Key: row.Key},
+			Incarnation: incarnation, Branch: model.Natural64(0), ValueDigest: hashBytes(row.Value),
+			Source: driver.SelectionSource{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &ref}, Revision: source.Revision, Present: true, Digest: hashBytes(source.Body)},
+		}
+	}
+	// Build the three logical source rows directly from the conserved document.
+	// Decode the literal envelope without inferring a legacy parent or filling
+	// an omitted link targetKind; those source spellings remain observable.
+	var projectionDoc pipeline.Document
+	decoder := json.NewDecoder(bytes.NewReader(target.Body))
+	decoder.UseNumber()
+	if err := decoder.Decode(&projectionDoc); err != nil {
+		t.Fatal(err)
+	}
+	// Hash the independently conserved source fields in the declared Ready leaf
+	// wire order; never copy a digest from the observed derived postimage.
+	membershipStatus, _ := projectionDoc.Fields["status"].(string)
+	membershipValue, err := json.Marshal(struct {
+		ID       string         `json:"id"`
+		Type     string         `json:"type"`
+		Project  string         `json:"project"`
+		Status   string         `json:"status"`
+		Revision model.Revision `json:"revision"`
+		Fields   map[string]any `json:"fields,omitempty"`
+	}{
+		ID: projectionDoc.ID, Type: projectionDoc.Type, Project: projectionDoc.Project,
+		Status: membershipStatus, Revision: target.Revision, Fields: projectionDoc.Fields,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bead := driver.SelectionBead{Ref: ref, Type: projectionDoc.Type, Parent: projectionDoc.Parent, MembershipLeaf: hashBytes(membershipValue)}
+	if project, present := object["project"]; present {
+		name, ok := project.(string)
+		if !ok {
+			t.Fatal("native-origin projection project is not a declared string")
+		}
+		bead.Project = &name
+	}
+	for _, column := range []driver.SelectionColumn{driver.SelectionStatus, driver.SelectionTitle, driver.SelectionTemplate, driver.SelectionPriority} {
+		field, present := fields[string(column)]
+		if !present {
+			bead.Absent = append(bead.Absent, column)
+			continue
+		}
+		valid := false
+		switch column {
+		case driver.SelectionStatus:
+			bead.Status, valid = field.(string)
+		case driver.SelectionTitle:
+			bead.Title, valid = field.(string)
+		case driver.SelectionTemplate:
+			bead.Template, valid = field.(bool)
+		case driver.SelectionPriority:
+			bead.Priority, valid = int64(p), true
+		}
+		if !valid {
+			t.Fatalf("native-origin projection has an undeclared %s value", column)
+		}
+	}
+	labels := driver.SelectionFacts{Kind: driver.SelectionLabelFact, Rows: []driver.SelectionFact{}}
+	for _, label := range projectionDoc.Labels {
+		labels.Rows = append(labels.Rows, driver.SelectionFact{Kind: driver.SelectionLabelFact, Ref: &ref, Name: label, Value: label})
+	}
+	links := driver.SelectionFacts{Kind: driver.SelectionLinkFact, Rows: []driver.SelectionFact{}}
+	for _, link := range projectionDoc.Links {
+		if link.TargetKind == model.LinkTargetExternal {
+			continue
+		}
+		local := driver.SourceLink{Kind: link.Kind, To: link.To}
+		links.Rows = append(links.Rows, driver.SelectionFact{Kind: driver.SelectionLinkFact, Ref: &ref, Link: &local})
+	}
+	for _, projection := range []struct {
+		table driver.DerivedTable
+		value any
+		facts *driver.SelectionFacts
+	}{
+		{driver.DerivedSortKey, bead, nil},
+		{driver.DerivedAttribute, labels, &labels},
+		{driver.DerivedReferenceIndex, links, &links},
+	} {
+		logical, err := json.Marshal(projection.value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		row := driver.DerivedRow{Key: target.Ref.ID, Value: logical}
+		row.Index = indexFor(projection.table, row, target)
+		if projection.facts != nil {
+			facts := *projection.facts
+			// The logical JSON retains Rows:[], while storage-owned empty
+			// annotation slices are nil. Keep their expectations separate.
+			if len(facts.Rows) == 0 {
+				facts.Rows = nil
+			}
+			row.Index.Facts = &facts
+		} else {
+			row.Index.Bead = &bead
+			canonical, err := json.Marshal(projectionDoc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Equal(canonical, target.Body) {
+				queue := &driver.QueueFacts{Version: driver.QueueFactsVersion, CreatedAt: projectionDoc.CreatedAt.UTC(), LeasePresent: projectionDoc.Lease != nil}
+				if blocked, present := fields["blocked"]; present {
+					var ok bool
+					queue.Blocked, ok = blocked.(bool)
+					if !ok {
+						t.Fatal("native-origin queue blocked field is not boolean")
+					}
+				}
+				for _, link := range projectionDoc.Links {
+					queue.Links = append(queue.Links, driver.QueueLink{Kind: link.Kind, TargetKind: string(link.TargetKind), To: link.To, Metadata: link.Metadata})
+				}
+				row.Index.Queue = queue
+			}
+		}
+		add(projection.table, row)
+	}
+	// Scalar/label writes keep the entire target ancestor chain unchanged. Prove
+	// that chain from the preimage source records before expecting its refresh;
+	// a stale or malformed annotation must never become an accepted new baseline.
+	preimage := nativePlugImageRows(t, before)
+	oldTarget := preimage[target.Ref.ID]
+	chain := map[string]driver.DerivedRow{}
+	seen := map[string]bool{}
+	for ancestor, depth := ref, uint64(0); ; depth++ {
+		if seen[ancestor.ID] {
+			t.Fatal("native-origin preimage ancestor chain is cyclic")
+		}
+		seen[ancestor.ID] = true
+		source, present := preimage[ancestor.ID]
+		if !present || source.Kind != "bead" || !reflect.DeepEqual(source.Ref, ancestor) {
+			t.Fatal("native-origin preimage ancestor source is missing or misbound")
+		}
+		row, err := pipeline.AncestorRow(ref.ID, ancestor.ID, depth)
+		if err != nil {
+			t.Fatal(err)
+		}
+		row.Index = indexFor(driver.DerivedAncestorClosure, row, oldTarget)
+		row.Index.Facts = &driver.SelectionFacts{Kind: driver.SelectionAncestorFact, Rows: []driver.SelectionFact{{Kind: driver.SelectionAncestorFact, Ref: &ref, Target: &source.Ref, Depth: depth}}}
+		chain[row.Key] = row
+		parent, err := pipeline.DecodeDocument(source.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if parent.Parent == nil {
+			break
+		}
+		ancestor = model.RefByID(parent.Parent.ID, model.Natural64(0))
+	}
+	for _, state := range oldStates[driver.DerivedAncestorClosure] {
+		if state.Derived == nil {
+			t.Fatal("native-origin ancestor observation lacks its complete row")
+		}
+		row := *state.Derived
+		descendant, _, _, err := pipeline.DecodeAncestorRow(row)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if descendant != ref.ID {
+			continue
+		}
+		expected, present := chain[row.Key]
+		if !present || !bytes.Equal(row.Value, expected.Value) || row.Index != nil && !reflect.DeepEqual(row.Index, expected.Index) {
+			t.Fatal("native-origin preimage ancestor is not the complete exact old-source projection")
+		}
+		delete(chain, row.Key)
+		expected.Index.Source.Revision, expected.Index.Source.Digest = target.Revision, hashBytes(target.Body)
+		add(driver.DerivedAncestorClosure, expected)
+	}
+	if len(chain) != 0 {
+		t.Fatal("native-origin preimage is missing target ancestor rows")
+	}
+	if len(oldRows) != len(newRows) || len(oldStates) != len(newStates) || len(oldRows) != len(oldStates) {
+		t.Fatal("native-origin projection changed the complete derived-table census")
+	}
 	for table, previous := range oldRows {
-		if table != driver.DerivedSortKey {
+		if _, present := newRows[table]; !present {
+			t.Fatalf("native-origin projection dropped derived table %s", table)
+		}
+		if _, present := newStates[table]; !present {
+			t.Fatalf("native-origin projection dropped observations for %s", table)
+		}
+		affected := updates[table]
+		if len(affected) == 0 {
 			if !reflect.DeepEqual(previous, newRows[table]) || !reflect.DeepEqual(oldStates[table], newStates[table]) {
-				t.Fatalf("native-origin ready sort publication changed another derived table: %s", table)
+				t.Fatalf("native-origin projection changed a conserved derived table: %s", table)
 			}
 			continue
 		}
-		wantRows := make([]driver.DerivedRow, 0, len(previous)+1)
-		wantStates := make([]driver.LockState, 0, len(oldStates[table])+1)
+		wantRows := make([]driver.DerivedRow, 0, len(previous)+len(affected))
+		wantStates := make([]driver.LockState, 0, len(oldStates[table])+len(affected))
 		for _, row := range previous {
-			if row.Key != key {
+			if _, changed := affected[row.Key]; !changed {
 				wantRows = append(wantRows, row)
 			}
 		}
 		for _, state := range oldStates[table] {
-			if state.Key.Derived.Key != key {
+			if _, changed := affected[state.Key.Derived.Key]; !changed {
 				wantStates = append(wantStates, state)
 			}
 		}
-		wantRows = append(wantRows, wantRow)
-		wantStates = append(wantStates, wantState)
+		for _, row := range affected {
+			wantRows = append(wantRows, row)
+			key := driver.DerivedRowKey{Table: table, Key: row.Key}
+			copy := row
+			wantStates = append(wantStates, driver.LockState{Key: driver.LockKey{Kind: driver.LockDerived, Derived: &key}, Revision: target.Revision, Derived: &copy, Present: true})
+		}
 		sort.Slice(wantRows, func(i, j int) bool { return wantRows[i].Key < wantRows[j].Key })
 		sort.Slice(wantStates, func(i, j int) bool { return wantStates[i].Key.Derived.Key < wantStates[j].Key.Derived.Key })
 		if !reflect.DeepEqual(wantRows, newRows[table]) || !reflect.DeepEqual(wantStates, newStates[table]) {
-			t.Fatal("native-origin ready sort publication changed more than its exact target payload/index/revision")
+			t.Fatalf("native-origin projection differs from its complete expected rows/indexes/revisions: %s", table)
 		}
 	}
 }

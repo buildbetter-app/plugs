@@ -3,6 +3,8 @@ package rpc_test
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -16,6 +18,75 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 )
+
+func TestReadyMembershipTransportVersionsAndSignedMapping(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		membership string
+		version    int
+	}{
+		{"released-unprefixed", strings.Repeat("a", 64), 1},
+		{"released-v2", "v2:" + strings.Repeat("b", 64), 2},
+		{"combined-order-v3", "v3:" + strings.Repeat("c", 64), 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			at := service.AsOf{Revision: model.Natural64(9), Incarnation: "inc"}
+			binding := &service.WorkflowPageSnapshot{Revision: model.Natural64(12)}
+			calls := 0
+			probe := &incarnationService{readyPage: func(_ context.Context, req service.ReadyRequest) (service.BeadPage, error) {
+				calls++
+				if req.Position == nil {
+					return service.BeadPage{Items: []service.Bead{{ID: "first", Type: "task"}}, AsOf: at, WorkflowSnapshot: binding, ReadyMembership: tc.membership,
+						Next: &service.PagePosition{Offset: 1, AsOf: at, WorkflowSnapshot: binding, ReadyMembership: tc.membership}}, nil
+				}
+				if req.Position.Offset != 1 || req.Position.ReadyMembership != tc.membership || !binding.Equal(req.Position.WorkflowSnapshot) {
+					t.Fatalf("signed membership/snapshot changed at service: %+v", req.Position)
+				}
+				return service.BeadPage{Items: []service.Bead{{ID: "second", Type: "task"}}, AsOf: at, WorkflowSnapshot: binding, ReadyMembership: tc.membership}, nil
+			}}
+			config := pagingConfig()
+			s := pagingServer(t, probe, config)
+			params := pageParams("bead.ready")
+			first := result(t, call(t, s, context.Background(), "bead.ready", paramsJSON(t, params)))
+			token, ok := first["nextCursor"].(string)
+			if !ok || token == "" {
+				t.Fatalf("version %d did not issue a signed continuation: %+v", tc.version, first)
+			}
+			body, err := base64.RawURLEncoding.DecodeString(strings.Split(token, ".")[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload["version"] != float64(tc.version) || payload["readyMembership"] != tc.membership {
+				t.Fatalf("signed transport mapping=%v want version=%d membership=%q", payload, tc.version, tc.membership)
+			}
+			params["cursor"] = token
+			last := result(t, call(t, s, context.Background(), "bead.ready", paramsJSON(t, params)))
+			if calls != 2 || last["nextCursor"] != nil || last["items"].([]any)[0].(map[string]any)["id"] != "second" {
+				t.Fatalf("signed continuation failed: calls=%d last=%v", calls, last)
+			}
+
+			// Even a correctly authenticated body cannot claim another format's
+			// transport version and reach the service with that position.
+			wrong := tc.version%3 + 1
+			payload["version"] = wrong
+			changed, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mac := hmac.New(sha256.New, config.CursorKey)
+			_, _ = mac.Write(changed)
+			params["cursor"] = base64.RawURLEncoding.EncodeToString(changed) + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+			requireCode(t, call(t, s, context.Background(), "bead.ready", paramsJSON(t, params)), "cursor_invalid")
+			if calls != 2 {
+				t.Fatal("mismatched authenticated version reached the service")
+			}
+		})
+	}
+}
 
 func TestWorkflowCursorCarriesSnapshotAcrossPhaseTransition(t *testing.T) {
 	deadline := time.Date(2026, 11, 3, 1, 0, 0, 0, time.UTC)

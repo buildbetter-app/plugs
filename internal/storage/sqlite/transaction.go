@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -22,25 +21,31 @@ import (
 
 type transaction struct {
 	*reader
-	lease             *activeLease
-	locked, hasHead   bool
-	restore           *driver.Meta
-	offlineHistory    *driver.PreparedOfflineHistory
-	nativeRestore     *driver.NativeRestoreProfile
-	nativeAllocators  bool
-	importRestore     *driver.RestoreImportProfile
-	sourcePlaneImport *driver.SourcePlaneImportPublication
-	acquired          driver.LockSet
-	files             []*os.File
-	guards            []guardHandle
-	done              chan struct{}
-	records           map[string]*driver.Record
-	derived           map[string]driver.LockState
-	blobs             map[driver.Hash][]byte
-	bumps             map[string]driver.LockKey
-	allocators        map[string]driver.OfflineAllocator
-	parentCounters    map[string]driver.ParentCounter
-	allocated         map[string]bool
+	lease              *activeLease
+	locked, hasHead    bool
+	restore            *driver.Meta
+	offlineHistory     *driver.PreparedOfflineHistory
+	nativeRestore      *driver.NativeRestoreProfile
+	nativeAllocators   bool
+	importRestore      *driver.RestoreImportProfile
+	sourcePlaneImport  *driver.SourcePlaneImportPublication
+	acquired           driver.LockSet
+	acquiredIndex      map[string]int
+	files              []*os.File
+	guards             []guardHandle
+	done               chan struct{}
+	records            map[string]*driver.Record
+	derived            map[string]driver.LockState
+	blobs              map[driver.Hash][]byte
+	bumps              map[string]driver.LockKey
+	allocators         map[string]driver.OfflineAllocator
+	parentCounters     map[string]driver.ParentCounter
+	allocated          map[string]bool
+	selectionAnnotated bool
+	// Reverse edges identify annotations affected by a later staged source
+	// change. Complete validation still runs against the final overlay at Commit.
+	selectionDependents map[string]map[string]bool
+	selectionRecheck    map[string]bool
 
 	checkpointGuards          map[string]uint64
 	checkpointWrites          map[string]driver.Checkpoint
@@ -102,6 +107,10 @@ func (t *transaction) finish() {
 	t.allocators = nil
 	t.parentCounters = nil
 	t.allocated = nil
+	t.selectionAnnotated = false
+	t.selectionDependents = nil
+	t.selectionRecheck = nil
+	t.acquiredIndex = nil
 	t.store.untrack(t)
 	close(t.done)
 }
@@ -310,14 +319,29 @@ func (t *transaction) Head(ctx context.Context) (model.Revision, error) {
 	t.hasHead = true
 	return t.meta.Head, nil
 }
+
+// The successful Lock subset is immutable until Close and owns every key.
+// Reuse one identity census for write modes, source membership and record refs;
+// observations and staged-source validation remain fresh on each operation.
+func (t *transaction) acquiredLockIndex(id string) (int, bool) {
+	if t.acquiredIndex == nil {
+		index := make(map[string]int, len(t.acquired))
+		for i, request := range t.acquired {
+			index[keyID(request.Key)] = i
+		}
+		t.acquiredIndex = index
+	}
+	i, ok := t.acquiredIndex[id]
+	return i, ok
+}
+
 func (t *transaction) writable(key driver.LockKey) error {
 	if !t.locked {
 		return fmt.Errorf("sqlite: mutation requires complete lock set")
 	}
 	id := keyID(key)
-	// Lock keeps a sorted subset even when skip-locked keys are omitted.
-	i := sort.Search(len(t.acquired), func(i int) bool { return keyID(t.acquired[i].Key) >= id })
-	if i < len(t.acquired) && keyID(t.acquired[i].Key) == id && t.acquired[i].Mode != driver.LockShare {
+	i, ok := t.acquiredLockIndex(id)
+	if ok && t.acquired[i].Mode != driver.LockShare {
 		return nil
 	}
 	return fmt.Errorf("sqlite: missing update lock for %s", id)
@@ -367,6 +391,7 @@ func (t *transaction) Delete(ctx context.Context, ref driver.Ref) error {
 	t.sourceIdentities[id] = driver.Record{Ref: ref, Kind: record.Kind}
 	t.records[id] = nil
 	t.sourceOverlay.Replace(id, nil)
+	t.selectionSourceStaged(id)
 	return nil
 }
 func (t *transaction) PutBlob(ctx context.Context, data []byte) (driver.Hash, error) {
@@ -384,6 +409,18 @@ func (t *transaction) PutBlob(ctx context.Context, data []byte) (driver.Hash, er
 	return id, nil
 }
 func (t *transaction) PutDerived(ctx context.Context, table driver.DerivedTable, del, add []driver.DerivedRow) error {
+	return t.putDerived(ctx, table, del, add, false)
+}
+
+// PutSelectionDerived is the optional trusted typed-publication capability.
+// Ordinary PutDerived keeps its existing logical-write contract and cannot
+// supply annotations. Both entrypoints validate the complete batch before
+// any staged row changes.
+func (t *transaction) PutSelectionDerived(ctx context.Context, table driver.DerivedTable, del, add []driver.DerivedRow) error {
+	return t.putDerived(ctx, table, del, add, true)
+}
+
+func (t *transaction) putDerived(ctx context.Context, table driver.DerivedTable, del, add []driver.DerivedRow, indexed bool) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if err := t.check(ctx); err != nil {
@@ -392,10 +429,13 @@ func (t *transaction) PutDerived(ctx context.Context, table driver.DerivedTable,
 	if err := (driver.DerivedRowKey{Table: table, Key: "validation"}).Validate(); err != nil {
 		return err
 	}
-	for _, rows := range [][]driver.DerivedRow{del, add} {
+	for which, rows := range [][]driver.DerivedRow{del, add} {
 		for _, row := range rows {
-			if row.Index != nil {
-				return fmt.Errorf("%w: SQLite selection indexes are not implemented", driver.ErrUnsupported)
+			if which == 0 && row.Index != nil || !indexed && row.Index != nil || indexed && which == 1 && row.Index == nil {
+				return fmt.Errorf("%w: invalid SQLite selection publication arm", driver.ErrUnsupported)
+			}
+			if err := row.Index.Validate(table, row); err != nil {
+				return err
 			}
 			key := driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: table, Key: row.Key}}
 			if err := key.Validate(); err != nil {
@@ -406,15 +446,22 @@ func (t *transaction) PutDerived(ctx context.Context, table driver.DerivedTable,
 			}
 		}
 	}
+	proposed := make(map[string]driver.LockState, len(add)+len(del))
+	annotated := t.selectionAnnotated
 	for _, row := range del {
 		key := driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: table, Key: row.Key}}
-		t.derived[keyID(key)] = driver.LockState{Key: key, Revision: model.Natural64(0)}
+		proposed[keyID(key)] = driver.LockState{Key: key, Revision: model.Natural64(0)}
 	}
 	for _, row := range add {
 		key := driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: table, Key: row.Key}}
-		row.Value = bytes.Clone(row.Value)
-		t.derived[keyID(key)] = driver.LockState{Key: key, Derived: &row, Present: true, Revision: model.Natural64(0)}
+		copy := row.Clone()
+		proposed[keyID(key)] = driver.LockState{Key: key, Derived: &copy, Present: true, Revision: model.Natural64(0)}
+		annotated = annotated || copy.Index != nil
 	}
+	if err := t.stageSelectionDelta(ctx, proposed, annotated); err != nil {
+		return err
+	}
+	t.selectionAnnotated = annotated
 	return nil
 }
 func (t *transaction) bump(ctx context.Context, keys []driver.LockKey) error {
@@ -433,6 +480,7 @@ func (t *transaction) bump(ctx context.Context, keys []driver.LockKey) error {
 	}
 	for _, key := range keys {
 		t.bumps[keyID(key)] = copyKey(key)
+		t.selectionSourceStaged(keyID(key))
 	}
 	return nil
 }
@@ -451,31 +499,36 @@ func (t *transaction) BumpReadFacts(ctx context.Context, values []driver.ReadFac
 	return t.bump(ctx, keys)
 }
 func (t *transaction) recordRef(id string) driver.Ref {
-	// Lock retains the globally encoded-key-sorted acquired subset, including
-	// mixed modes and skip-locked omissions. Use the same lower-bound lookup as
-	// writable; recordRef deliberately accepts every lock mode.
-	i := sort.Search(len(t.acquired), func(i int) bool {
-		return keyID(t.acquired[i].Key) >= id
-	})
-	if i < len(t.acquired) && keyID(t.acquired[i].Key) == id && t.acquired[i].Key.Ref != nil {
+	// Record identity accepts every acquired mode, including shared reads.
+	i, ok := t.acquiredLockIndex(id)
+	if ok && t.acquired[i].Key.Ref != nil {
 		return *t.acquired[i].Key.Ref
 	}
 	panic("sqlite: record missing validated lock")
 }
 func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (model.Changeset, error) {
+	trace := commitTraceFromContext(ctx)
+	started := traceStart(trace)
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	trace.record(CommitPhaseTxLock, started, 0, nil)
 	if t.offlineHistory != nil {
 		return model.Changeset{}, fmt.Errorf("prepared history requires CommitOfflineHistory")
 	}
 	if t.nativeRestore != nil && !t.nativeAllocators {
 		return model.Changeset{}, driver.NewNativeAllocatorSnapshotError(driver.NativeAllocatorBindingRequired, nil)
 	}
+	started = traceStart(trace)
 	if err := t.validateHeader(ctx, h); err != nil {
+		trace.record(CommitPhaseValidate, started, len(t.records), err)
 		return model.Changeset{}, err
 	}
+	trace.record(CommitPhaseValidate, started, len(t.records), nil)
 	var result model.Changeset
-	err := t.store.immediate(ctx, t.lease, func(c *sql.Conn) error {
+	err := t.store.immediate(ctx, t.lease, func(c *sql.Conn) (phaseErr error) {
+		phase := commitPhaseTracker{trace: trace}
+		phase.next(CommitPhaseReplay, 0)
+		defer func() { phase.finish(phaseErr) }()
 		if t.restore != nil {
 			if err := restoreEmpty(ctx, c); err != nil {
 				return err
@@ -492,6 +545,7 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 			result = replay.Changeset
 			return nil
 		}
+		phase.next(CommitPhaseGuards, len(t.records)+len(t.derived))
 		if err := t.checkCheckpointGuards(ctx, c); err != nil {
 			return err
 		}
@@ -503,6 +557,11 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		}
 		if err = t.validatePredicates(ctx); err != nil {
 			return err
+		}
+		if t.selectionAnnotated {
+			if err = t.validateSelectionWrites(ctx, t.derived); err != nil {
+				return err
+			}
 		}
 		meta, err := readMeta(ctx, c)
 		if err != nil {
@@ -524,6 +583,7 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		if err := entry.ValidateEvents(); err != nil {
 			return fmt.Errorf("sqlite: event plan: %w", err)
 		}
+		phase.next(CommitPhaseEncode, len(h.Changes))
 		data, err := json.Marshal(entry)
 		if err != nil {
 			return err
@@ -532,7 +592,12 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		if err = json.Unmarshal(data, &result); err != nil {
 			return err
 		}
+		phase.next(CommitPhasePrepareSource, len(t.records))
 		sourcePlan, err := t.prepareSourcePublication(ctx, c, meta, revision)
+		if err != nil {
+			return err
+		}
+		parentScope, err := t.prepareSelectionParentProof(ctx, c, meta, sourcePlan.ParentActive && sourcePlan.Parent.Ready)
 		if err != nil {
 			return err
 		}
@@ -543,9 +608,11 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		}
 		// Allocator journals, records, counters and source indexes all publish
 		// inside this immediate transaction and roll back together on failure.
+		phase.next(CommitPhaseAllocatorJournal, len(t.allocators)+len(t.parentCounters))
 		if err = t.publishAllocatorJournal(ctx, c, target, t.restore != nil); err != nil {
 			return err
 		}
+		phase.next(CommitPhaseRecords, len(t.records))
 		for id, record := range t.records {
 			ref := t.recordRef(id)
 			v := driver.Version{Ref: ref, Revision: revision, CreatedAt: when, Principal: h.Principal, Deleted: record == nil}
@@ -602,15 +669,26 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 				return err
 			}
 		}
+		phase.next(CommitPhaseSourcePublish, len(t.records))
 		if err = sourcePlan.Publish(ctx, c); err != nil {
 			return err
 		}
-		for _, v := range t.derived {
+		// Rebind changed source annotations only in this commit-local overlay.
+		// If any later publication statement fails, t.derived remains bound to
+		// the observed prepublication source token for a safe retry/rollback.
+		derived := t.reboundSelectionSources(revision)
+		phase.next(CommitPhaseDerivedKeys, len(derived))
+		for _, v := range derived {
 			v.Revision = revision
 			if err = publishKey(ctx, c, v); err != nil {
 				return err
 			}
 		}
+		phase.next(CommitPhaseSelection, len(derived))
+		if err = t.publishSelection(ctx, c, meta, revision, derived, parentScope); err != nil {
+			return err
+		}
+		phase.next(CommitPhaseTail, len(t.bumps)+len(t.allocators)+len(t.parentCounters)+len(t.blobs))
 		for _, key := range t.bumps {
 			if err = publishKey(ctx, c, driver.LockState{Key: key, Revision: revision, Present: true}); err != nil {
 				return err
@@ -650,17 +728,23 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		return t.store.saveReplay(ctx, c, h, revision, data)
 	})
 	if err == nil {
+		started = traceStart(trace)
 		t.finish()
+		trace.record(CommitPhaseFinish, started, 0, nil)
 		return result, nil
 	}
 	var uncertain commitError
 	if errors.As(err, &uncertain) {
+		started = traceStart(trace)
 		t.finish()
+		trace.record(CommitPhaseFinish, started, 0, nil)
 		return model.Changeset{}, driver.ErrIndeterminate{IdempotencyKey: h.IdempotencyKey}
 	}
 	var fenced driver.ErrFenced
 	if errors.As(err, &fenced) {
+		started = traceStart(trace)
 		t.finish()
+		trace.record(CommitPhaseFinish, started, 0, nil)
 	}
 	return model.Changeset{}, err
 }
