@@ -46,8 +46,8 @@ collisions between rows in one batch must be considered; a creator, timestamp,
 or nonce change changes its digest. The separate helper has no creator or nonce
 and is classified independently.
 
-**Plug disposition.** **Deviate from the legacy clamp:** Plug's single
-allocator contract follows the domain path's configured maximum, including the
+**Plug disposition.** **Keep the native domain allocator:** Plug's single
+allocator contract follows that path's configured maximum, including the
 pinned `max_hash_length=10` example, and preserves that adaptive setting across
 restore (A1/P44). It does not promise byte-identical behavior with the legacy
 issueops/Dolt allocator above length 8; for lengths 3 through 8 it keeps the

@@ -68,10 +68,11 @@ hooks also run through concrete WriteTx readers. Product composition receives
 the raw store, preserving every optional reader/transaction/store capability.
 SQL executor visits, Observe/Lock state decoding, and historical patch replay
 bytes remain UNMEASURED. Logical reconstructed body bytes are not replay bytes.
-PostgreSQL current bodies newer than the requested snapshot, including repeat
-fetches during historical fallback, are also UNMEASURED by these original
-hooks. Complete body-work accounting remains OPEN pending the separate W11
-accounting correction; callback counts do not prove physical SQL work.
+PostgreSQL reports each successfully scanned live current body before snapshot
+filtering, including bodies discarded by historical fallback. Reconstructed
+historical bodies and repeated fetches are counted at their actual boundaries;
+batched reads do not invent repeated current-row scans. Callback counts do not
+prove physical SQL work.
 
 The explicit raw-group Q5 regression distinguishes the correct winner from
 rotation over authorized members alone. The Ready regression changes an
@@ -141,3 +142,18 @@ not qualify product authorization races, terminal claims, the 200-agent runtime
 or a durable SLO.
 D productization requires a later independently reviewed PR against this
 harness. The reviewed D fixture and rejected split-lock variants are unchanged.
+
+W11 current-main controls are in `cp7_qualification_test`: complete grouped
+pagination at 1,000 bodies/all three fractions, a real publication during the
+pinned readiness callback on both engines, and strict measurement/refusal
+validation. They exercise the existing public fallback composition. PR388's
+compiled Selection/final-authority/terminal tests and six timed summary cases
+remain separate, unadopted dependency-bound work; these controls supply none
+of their qualification. The original 18-case workload and deadlines stay intact.
+
+The accounting regressions exercise real PostgreSQL current/historical/staged
+reads, absent/deleted keys, duplicate output, repeated fetches and observer
+parity, including refusal precedence. The stored-row scan and reconstructed
+historical-body boundaries are measured separately from emitted output clones
+and from SQL executor physical work. W3's returned-clone observations are a
+separate composition; this child does not adopt them.

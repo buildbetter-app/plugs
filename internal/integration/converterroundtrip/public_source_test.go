@@ -129,8 +129,9 @@ func TestPublicDoltSourceRestoreHistoryAndLiveReverseAllDrivers(t *testing.T) {
 				}
 				for _, project := range source.Manifest().Projects {
 					got, err := allocators.LoadAllocator(ctx, project.Prefix)
-					if err != nil || !reflect.DeepEqual(got, driver.NewRandomAllocator(project.Prefix)) {
-						t.Fatalf("source allocator became live identity: %+v %v", got, err)
+					wantAllocator, seedErr := importedAllocator(source, project)
+					if err != nil || seedErr != nil || !reflect.DeepEqual(got, wantAllocator) {
+						t.Fatalf("source allocator was not seeded losslessly: %+v %v", got, err)
 					}
 					rows, err := r.Get(ctx, []model.Ref{model.RefByID(importProjectRecordID(project.Prefix), model.Natural64(0))})
 					var saved importProjectMetadata
@@ -293,6 +294,30 @@ func assertPublicStoredImage(t *testing.T, r driver.Reader, source *dumpformat.A
 	for _, kind := range []string{"edge", "comment", "memory", "config"} {
 		for _, row := range source.Records(kind) {
 			got, err := r.Get(ctx, []model.Ref{model.RefByID("source/"+kind+"/"+row.ID, model.Natural64(0))})
+			if kind == "memory" && row.Body["classification"] == "public" {
+				if content, eligible := row.Body["value"].(string); eligible {
+					key, ok := row.Body["key"].(string)
+					if !ok || strings.TrimSpace(key) == "" {
+						t.Fatal("public source memory lacks its admitted key")
+					}
+					want := map[string]any{
+						"id": "source/memory/" + row.ID, "key": strings.TrimSpace(key), "content": content,
+						"metadata": map[string]any{
+							"plug.restore.source_id": row.ID, "plug.restore.source_table": row.Source.Table,
+							"plug.restore.source": row.Source.Fields, "plug.restore.archive_sha256": source.SHA256(),
+						},
+					}
+					if err != nil || len(got) != 1 {
+						t.Fatalf("public memory source missing: %v", err)
+					}
+					var actual map[string]any
+					decode(t, got[0].Body, &actual)
+					if !sameReverseJSON(actual, want) {
+						t.Fatal("complete public memory source/provenance changed")
+					}
+					continue
+				}
+			}
 			var body struct {
 				Source json.RawMessage `json:"source"`
 			}

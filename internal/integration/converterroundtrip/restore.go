@@ -13,7 +13,6 @@ import (
 	"io"
 	"reflect"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -549,7 +548,7 @@ type restorePlan struct {
 // admitted import binding. Source allocator declarations are retained as
 // dumpformat projects, because their widths are provenance (and may be below
 // the live allocator's continuation minimum). Target allocators are the exact
-// seeded Plug random profiles that recovery must observe.
+// seeded Beads profiles from which recovery must observe continuation.
 type importBindingEvidence struct {
 	Profile     driver.RestoreImportProfile `json:"profile"`
 	RequestHash string                      `json:"request_hash"`
@@ -611,7 +610,7 @@ func compareImportBinding(ctx context.Context, r driver.Reader, evidence archive
 			return driver.ErrConflict
 		}
 		actual, err := allocators.LoadAllocator(ctx, found.TargetAllocator.Prefix)
-		if err != nil || !reflect.DeepEqual(actual, found.TargetAllocator) {
+		if err != nil || !allocatorContinues(found.TargetAllocator, actual) {
 			return driver.ErrConflict
 		}
 	}
@@ -867,7 +866,11 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 	plan := restorePlan{migration: migration}
 	if profile != nil {
 		for _, project := range manifest.Projects {
-			plan.allocators = append(plan.allocators, driver.NewRandomAllocator(project.Prefix))
+			allocator, err := importedAllocator(archive, project)
+			if err != nil {
+				return restorePlan{}, err
+			}
+			plan.allocators = append(plan.allocators, allocator)
 		}
 	}
 	seen := map[string]bool{}
@@ -899,6 +902,29 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 	}
 	for _, kind := range []string{"edge", "comment", "memory", "config", "beads-archive"} {
 		for _, source := range archive.Records(kind) {
+			// Imported Beads memories retain their source row in the archive, but
+			// only public string values are eligible for the live Plug memory view.
+			// The projection uses the exact target Ref.ID and preserves the value
+			// byte-for-byte; secret and non-string rows keep their raw storage body.
+			if profile != nil && kind == "memory" && source.Body["classification"] == "public" {
+				if value, ok := source.Body["value"].(string); ok {
+					key := strings.TrimSpace(stringValue(source.Body["key"]))
+					if key == "" {
+						return restorePlan{}, fmt.Errorf("imported memory %s has an empty public key", source.ID)
+					}
+					ref := model.RefByID("source/memory/"+source.ID, model.Natural64(0))
+					body := pipeline.MemoryDocument{ID: ref.ID, Key: key, Content: value, Metadata: map[string]any{
+						"plug.restore.source_id":      source.ID,
+						"plug.restore.source_table":   source.Source.Table,
+						"plug.restore.source":         cloneRow(source.Source.Fields),
+						"plug.restore.archive_sha256": archive.SHA256(),
+					}}
+					if err := add(ref, kind, body); err != nil {
+						return restorePlan{}, err
+					}
+					continue
+				}
+			}
 			body := cloneRow(source.Body)
 			body["source_id"] = source.ID
 			body["source_table"] = source.Source.Table
@@ -925,12 +951,12 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 			return restorePlan{}, err
 		}
 		binding := importBindingEvidence{Profile: *profile, RequestHash: requestHash}
-		for _, project := range manifest.Projects {
+		for i, project := range manifest.Projects {
 			sourceRaw, err := json.Marshal(project)
 			if err != nil {
 				return restorePlan{}, err
 			}
-			targetAllocator := driver.NewRandomAllocator(project.Prefix)
+			targetAllocator := plan.allocators[i].Clone()
 			binding.Projects = append(binding.Projects, importProjectBinding{
 				SourceAllocator: project,
 				TargetAllocator: targetAllocator,
@@ -1032,6 +1058,9 @@ func targetStatus(source string) (string, bool) {
 }
 
 func validSourceID(id string, project dumpformat.Project, imported bool) bool {
+	if imported {
+		return dumpformat.ValidSourceID(id, project)
+	}
 	prefix := project.Prefix + "-"
 	if !strings.HasPrefix(id, prefix) || strings.ContainsRune(id, '\x00') {
 		return false
@@ -1039,18 +1068,6 @@ func validSourceID(id string, project dumpformat.Project, imported bool) bool {
 	parts := strings.Split(strings.TrimPrefix(id, prefix), ".")
 	if len(parts) == 0 || parts[0] == "" || len(parts[0]) < project.HashLength {
 		return false
-	}
-	if imported {
-		if strings.Trim(parts[0], "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") != "" {
-			return false
-		}
-		for _, child := range parts[1:] {
-			n, err := strconv.ParseUint(child, 10, 64)
-			if err != nil || n == 0 {
-				return false
-			}
-		}
-		return true
 	}
 	if len(parts) != 1 {
 		return false

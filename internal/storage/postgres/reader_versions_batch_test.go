@@ -15,8 +15,8 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 )
 
-// These observations cover admitted current rows and reconstructed historical
-// bodies. Too-new current bodies and SQL executor work remain unmeasured.
+// These observations cover materialized current and reconstructed historical
+// bodies, including discarded current rows. SQL executor work is unmeasured.
 type readerPayloadWork struct {
 	gets, payloads, bytes atomic.Int64
 }
@@ -340,4 +340,36 @@ func TestBatchedHistoricalRecordReadsHonorDecodedRevisionBound(t *testing.T) {
 		t.Fatalf("batched malformed bound error=%v scalar=%v", batchErr, scalarErr)
 	}
 	t.Logf("decoded revision-bound parity PASS: error=%q", batchErr)
+}
+
+func TestScalarHistoricalReadWorkCountsEveryRepeatedFetch(t *testing.T) {
+	ctx := context.Background()
+	s := openTest(t, freshDSN(t))
+	lease := testLease(t, s)
+	first := seedTest(t, s, lease, "repeat-history", `{"value":1}`)
+	seedTest(t, s, lease, "repeat-history", `{"value":222}`)
+	r := testRead(t, s, &first.Revision).(*reader)
+	key, err := recordKey(testRef("repeat-history"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, present, err := r.recordAt(ctx, key)
+	if err != nil || !present || string(plain.record.Body) != `{"value":1}` {
+		t.Fatalf("scalar historical control: %+v %v", plain, err)
+	}
+	var work readerPayloadWork
+	for repeat := int64(1); repeat <= 2; repeat++ {
+		got, present, err := r.recordAt(driver.WithReadWorkObserver(ctx, &work), key)
+		if err != nil || !present || !reflect.DeepEqual(plain, got) {
+			t.Fatalf("scalar historical observer changed result: %+v %v", got, err)
+		}
+		// The retained scalar SQL revision predicate excludes the newer body
+		// before Scan. Only the reconstructed historical body materializes;
+		// the batch control above separately requires every discarded body.
+		wantBytes := repeat * int64(len(`{"value":1}`))
+		if work.payloads.Load() != repeat || work.bytes.Load() != wantBytes {
+			t.Fatalf("scalar repeated fetch omitted real bodies: repeat=%d payloads=%d bytes=%d want=%d/%d", repeat, work.payloads.Load(), work.bytes.Load(), repeat, wantBytes)
+		}
+		t.Logf("POSTGRES_SCALAR_HISTORICAL_WORK repeat=%d current_bodies=0 historical_bodies=%d payloads=%d bytes=%d", repeat, repeat, work.payloads.Load(), work.bytes.Load())
+	}
 }
