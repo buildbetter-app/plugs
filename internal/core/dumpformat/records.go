@@ -144,7 +144,10 @@ func validateVersionedRecord(record Record, projects []Project, counts map[strin
 			return fmt.Errorf("missing source column")
 		}
 	}
-	if strings.ContainsRune(record.ID, '\x00') || strings.TrimSpace(record.ID) != record.ID {
+	// Explicit memory keys are native user data, including surrounding space.
+	// They must name something; other record identities keep their strict form.
+	trimmedID := strings.TrimSpace(record.ID)
+	if strings.ContainsRune(record.ID, '\x00') || expectedKind == "memory" && trimmedID == "" || expectedKind != "memory" && trimmedID != record.ID {
 		return fmt.Errorf("invalid record identity")
 	}
 	if expectedKind == "bead" || expectedKind == "edge" || expectedKind == "comment" {

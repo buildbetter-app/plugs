@@ -353,11 +353,14 @@ func TestB13JointSourceCoreProjectionAndConservation(t *testing.T) {
 						}
 						b13Retain(t, mode+"-"+engine, label, map[string]any{"state": b13MemoryEvidence(after), "physical_SQL": physical, "retained_archive_sha256": hashBytes(blob)})
 					}
-					sourceValue, sourcePresent, emptyPresent := b13SourceBody, true, true
+					sourceValue, sourcePresent, emptyPresent, neighborPresent := b13SourceBody, true, true, true
 					views := func(core string) {
 						t.Helper()
 						before := snapshot()
-						want := map[string]string{b13TrimmedNeighborKey: b13TrimmedNeighborBody}
+						want := map[string]string{}
+						if neighborPresent {
+							want[b13TrimmedNeighborKey] = b13TrimmedNeighborBody
+						}
 						if emptyPresent {
 							want["fixture"] = ""
 						}
@@ -557,6 +560,9 @@ func TestB13JointSourceCoreProjectionAndConservation(t *testing.T) {
 						}
 						if !emptyPresent {
 							delete(want, "fixture")
+						}
+						if !neighborPresent {
+							delete(want, b13TrimmedNeighborKey)
 						}
 						if coreValue != "" {
 							want["Core Ω"] = coreValue
@@ -808,6 +814,21 @@ func TestB13JointSourceCoreProjectionAndConservation(t *testing.T) {
 							})
 						}
 						conserve("malformed-overlay-controls")
+					})
+					t.Run("empty-effective-list-and-normal-brief-through-reopen", func(t *testing.T) {
+						for i, key := range []string{b13SourceKey, b13TrimmedNeighborKey} {
+							idempotency := 711 + i
+							scopes = append(scopes, importedMemoryWriteScope{"memory.delete", idempotency})
+							call("memory.delete", map[string]any{"id": idFor(key)}, idempotency, "")
+							call("memory.get", map[string]any{"id": idFor(key)}, 0, "not_found")
+						}
+						sourcePresent, neighborPresent = false, false
+						views("")
+						reverse("all-forgotten")
+						refresh("all-forgotten")
+						views("")
+						reverse("all-forgotten-reopened")
+						conserve("all-forgotten")
 					})
 
 				})

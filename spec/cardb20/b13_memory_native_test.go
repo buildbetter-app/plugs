@@ -140,12 +140,24 @@ func (n *b13Reference) image(label string) map[string]any {
 
 func (n *b13Reference) view(label string, want map[string]string) {
 	n.r.t.Helper()
-	var got map[string]string
-	b13Decode(n.r.t, n.call(label+"-memories", []string{"--json", "memories"}, 0), &got)
-	if got == nil {
-		n.r.t.Fatal("native memories returned null")
+	var wire map[string]any
+	b13Decode(n.r.t, n.call(label+"-memories", []string{"--json", "memories"}, 0), &wire)
+	if wire == nil || wire["schema_version"] != json.Number("1") {
+		n.r.t.Fatal("native memories missing schema_version=1")
+	}
+	got := map[string]string{}
+	for key, value := range wire {
+		if key == "schema_version" {
+			continue // Checked native wire metadata, not a memory value.
+		}
+		text, ok := value.(string)
+		if !ok {
+			n.r.t.Fatal("native memory value is not a string")
+		}
+		got[key] = text
 	}
 	b13Same(n.r.t, got, want)
+	n.r.writeJSON(filepath.Join(n.r.root, label+"-memory-wire-and-projection.json"), map[string]any{"literal_native_wire": wire, "actual_memory_values": got, "wire_metadata": map[string]any{"schema_version": json.Number("1")}})
 	n.projections[label] = got
 }
 
@@ -288,6 +300,21 @@ func TestB13CanonicalPublicMemoryCounterparts(t *testing.T) {
 				want[vector.effective] = vector.content
 			}
 			n.view("fidelity", want)
+		})
+		t.Run("empty-corpus-keeps-settings", func(t *testing.T) {
+			var keys []string
+			for key := range n.projections["fidelity"] {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for i, key := range keys {
+				var got map[string]any
+				b13Decode(t, n.call(fmt.Sprintf("forget-all-%d", i), []string{"--json", "forget", key}, 0), &got)
+				b13Same(t, got, map[string]any{"schema_version": json.Number("1"), "key": key, "deleted": "true"})
+			}
+			n.view("empty-corpus", map[string]string{})
+			settings := n.sql("empty-corpus-settings-survive", "SELECT `key`,value FROM config WHERE `key` IN ('kv.b13-generic','b13.setting') ORDER BY `key`")
+			b13Same(t, settings, []map[string]any{{"key": "b13.setting", "value": "settings survivor"}, {"key": "kv.b13-generic", "value": "generic survivor"}})
 		})
 
 		projection = n.projections
@@ -512,7 +539,7 @@ func b13ComparePlug(t *testing.T, root, engine string, native map[string]map[str
 		t.Helper()
 		before := b13PlugImage(t, store)
 		got := map[string]string{}
-		var items []service.Memory
+		items := []service.Memory{}
 		cursor := ""
 		for pages := 0; ; pages++ {
 			if pages > 32 {
@@ -679,6 +706,21 @@ func b13ComparePlug(t *testing.T, root, engine string, native map[string]map[str
 		view("fidelity")
 		reopen("key-fidelity")
 		view("fidelity")
+	})
+	t.Run("empty-corpus-and-normal-brief-through-sql-reopen", func(t *testing.T) {
+		var keys []string
+		for key := range native["fidelity"] {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for i, key := range keys {
+			call("forget-all", "memory.delete", map[string]any{"id": ids[key]}, 761+i, "")
+			call("forgotten-get", "memory.get", map[string]any{"id": ids[key]}, 0, "not_found")
+		}
+		view("empty-corpus")
+		reopen("empty-corpus")
+		view("empty-corpus")
+		conserve()
 	})
 
 }
