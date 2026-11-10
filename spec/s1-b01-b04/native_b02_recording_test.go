@@ -101,7 +101,7 @@ func b02Plans() []b02Plan {
 			Steps: []b02Step{
 				{Name: "pinned-backlog", Action: "status", Role: "blocker", NativeStatus: "pinned", PlugMethod: "bead.defer", NativeReady: []string{"ordinary", "conditional"}, PlugReady: []string{}, Deviation: "A3/P22: native pinned satisfies both edges; Plug backlog satisfies neither"},
 				{Name: "open-again", Action: "reopen", Role: "blocker", PlugMethod: "bead.reopen", NativeReady: []string{"blocker"}, PlugReady: []string{"blocker"}},
-				{Name: "custom-active", Action: "status", Role: "blocker", NativeStatus: "b02active", PlugMethod: "bead.reopen", NativeReady: []string{"blocker"}, PlugReady: []string{"blocker"}},
+				{Name: "custom-active", Action: "status", Role: "blocker", NativeStatus: "b02active", PlugMethod: "bead.reopen", PlugRefusal: "invalid_params", NativeReady: []string{"blocker"}, PlugReady: []string{"blocker"}, Deviation: "Native changes the active status name; Plug is already queued and its reopen slot refuses without mutation"},
 				{Name: "custom-done", Action: "status", Role: "blocker", NativeStatus: "b02done", PlugMethod: "bead.close", NativeReady: []string{}, PlugReady: []string{"ordinary"}, Deviation: "A3: native blocker satisfaction uses literal closed/pinned; Plug completed-success satisfies ordinary blocks only"},
 				{Name: "custom-frozen", Action: "status", Role: "blocker", NativeStatus: "b02frozen", PlugMethod: "bead.defer", NativeReady: []string{}, PlugReady: []string{}},
 				{Name: "closed-success", Action: "close", Role: "blocker", PlugMethod: "bead.close", NativeReady: []string{"ordinary", "conditional"}, PlugReady: []string{"ordinary"}, Deviation: "A3: success emits dependency.conditionUnmet and leaves the conditional dependent blocked"},
@@ -505,7 +505,7 @@ func b02OwnerRow(t *testing.T, image b02DatabaseImage, id string) (string, map[s
 	for name, rows := range image.Rows {
 		// The complete census includes derived projections such as
 		// ready_issues. Only the native owner planes carry the authoritative
-		// issue/wisp row; a projection with the same id is not a second owner.
+		// source row; a projection with the same id is not a second owner.
 		if name != "issues" && name != "wisps" {
 			continue
 		}

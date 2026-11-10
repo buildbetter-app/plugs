@@ -53,13 +53,16 @@ func TestB02PublicConditionalOutcomeReplayAndReopenAcrossStores(t *testing.T) {
 				}, r.refs[edge.role].ID)
 			}
 			r.refuse("blocked-dependent-close", "bead.close", map[string]any{"id": r.refs["conditional"]}, "ontology_guard_failed")
+			// Lifecycle slots require a transition into the selected status;
+			// reopening an already open record is a refusal, not a quiet write.
+			r.refuse("already-open-reopen", "bead.reopen", map[string]any{"id": r.refs["blocker"]}, "invalid_params")
 			b02ObservePublicOutcome(t, r, "initial", roles, []string{"blocker", "unrelated"})
 			steps := []struct {
 				name, method, status string
 				ready                []string
 				terminal             bool
 			}{
-				{"already-open-noop", "bead.reopen", "queued", []string{"blocker", "unrelated"}, false},
+				{"unchanged-title-noop", "bead.update", "queued", []string{"blocker", "unrelated"}, false},
 				{"success", "bead.close", "finished", []string{"ordinary", "unrelated"}, true},
 				{"reopen-success", "bead.reopen", "queued", []string{"blocker", "unrelated"}, false},
 				{"failure", "bead.fail", "broken", []string{"ordinary", "conditional", "unrelated"}, true},
@@ -74,9 +77,20 @@ func TestB02PublicConditionalOutcomeReplayAndReopenAcrossStores(t *testing.T) {
 				if !t.Run(step.name, func(t *testing.T) {
 					r.f.t = t
 					defer func() { r.f.t = parent }()
-					commit := r.write(step.name, step.method, map[string]any{
+					params := map[string]any{
 						"id": r.refs["blocker"], "reason": "B02 public " + step.name,
-					}, r.refs["blocker"].ID)
+					}
+					beforeHead := r.f.metaSnapshot().Head
+					if step.method == "bead.update" {
+						params = map[string]any{"id": r.refs["blocker"], "fields": map[string]any{"title": "B02 public blocker"}}
+					}
+					commit := r.write(step.name, step.method, params, r.refs["blocker"].ID)
+					if step.method == "bead.update" && (commit.Revision != beforeHead || r.f.metaSnapshot().Head != beforeHead) {
+						// With this required quiet head, r.write also requires all
+						// source/history/derived/facts conserved and exactly one
+						// completed receipt with a zero driver Changeset.
+						t.Fatal("unchanged-title public update published a revision instead of a quiet receipt")
+					}
 					r.statuses["blocker"] = step.status
 					if step.terminal {
 						r.assertTerminalEvents(step.name, step.method, commit)

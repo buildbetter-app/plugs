@@ -8,6 +8,13 @@ are public acceptance only; all seven real native plans, 78 primary
 observations plus two stale rereads, and 30-store/198-phase paired replay
 requirements below remain separate and unchanged.
 
+The public target retains the actual typed refusal when `bead.reopen` is
+called on an already queued record. The native category plan's `custom-active`
+phase reaches this same public state after `open-again`: it retains the native
+status-name change beside the conserved Plug refusal. A separate same-title
+`bead.update` exercises a true zero-Changeset receipt and requires the head to
+remain unchanged. Neither operation fabricates a native outcome.
+
 Done = the private recorder follows the canonical B02 native flow and preserves
 complete real before/after, refusal, replay and producer evidence, proven by
 its exact committed source and independent source review; B01 checker passes
