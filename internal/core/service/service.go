@@ -14,6 +14,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/port"
+	"github.com/buildbetter-app/plugs/internal/core/reverseconverter"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
@@ -28,6 +29,8 @@ type Service struct {
 	authorizationInstalled func() bool
 	events                 EventProvider
 	workflow               *workflowplugin.Provider
+	rollbackWindow         bool
+	reverseConverter       *reverseconverter.Converter
 	source                 atomic.Pointer[sourceWorkflow]
 	compaction             CompactionConfig
 }
@@ -67,7 +70,41 @@ func WithEventProvider(provider EventProvider) Option {
 // The service keeps the standard bead tools as the public adapter while the
 // provider owns only its unversioned active-run state.
 func WithWorkflow(provider *workflowplugin.Provider) Option {
-	return func(s *Service) { s.workflow = provider }
+	return func(s *Service) {
+		s.workflow = provider
+		if provider != nil {
+			// The provider owns the native checkpoint mutation. Install the same
+			// classifier used by the common Writer at that boundary so every
+			// provider-created user-content kind is checked immediately before
+			// publication. The closure reads the service's live switch/mapping so
+			// host-owned tests and reload seams retain ordinary toggle semantics.
+			provider.WithUserContentGuard(func(kinds []string) error {
+				if !s.rollbackWindow {
+					return nil
+				}
+				for _, kind := range kinds {
+					if err := s.rollbackWindowKind(kind); err != nil {
+						return err
+					}
+				}
+				return nil
+			})
+		}
+	}
+}
+
+// WithRollbackWindow enables the server-wide admission guard for newly
+// created user-content kinds that the canonical reverse path cannot represent.
+// It is disabled by default and is intended for the prepared switch-day
+// rollback window only.
+func WithRollbackWindow(enabled bool) Option {
+	return func(s *Service) { s.rollbackWindow = enabled }
+}
+
+// WithReverseConverter shares the actual reverse converter with the native
+// creation guard. A kind is admitted only through an executable conversion.
+func WithReverseConverter(converter *reverseconverter.Converter) Option {
+	return func(s *Service) { s.reverseConverter = converter }
 }
 
 // New never opens a transaction or storage driver. The composition root owns
@@ -119,6 +156,17 @@ func (s *Service) admit(ctx context.Context, by model.PrincipalRef) error {
 	default:
 		return nil
 	}
+}
+
+func (s *Service) rollbackWindowKind(kind string) error {
+	if !s.rollbackWindow {
+		return nil
+	}
+	classification := s.reverseConverter.ClassifyKind(kind)
+	if classification.Disposition == reverseconverter.KindUnrepresentable {
+		return reverseconverter.RollbackWindowRefusal(kind)
+	}
+	return nil
 }
 
 func namedRef(ref model.Ref) error {

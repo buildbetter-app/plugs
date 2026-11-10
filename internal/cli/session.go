@@ -59,6 +59,9 @@ func (s *Session) Run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if cmd.AllEvents {
+		return s.allEvents(ctx, cmd)
+	}
 	if cmd.Method == "ontology.schema" {
 		if _, exists := cmd.Params["project"]; !exists {
 			cmd.Params["project"] = s.Client.Project()
