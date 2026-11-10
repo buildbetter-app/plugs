@@ -41,6 +41,7 @@ go_test(
         "native_clock_test.go",
         "native_history_test.go",
         "native_history_capability_test.go",
+        "native_history_alias_mock_test.go",
         "native_inventory_test.go",
         "schema_profile_test.go",
         "identity_test.go",
@@ -77,7 +78,10 @@ go_test(
 # Rejected AS OF/history-helper reader and original assertions remain runnable.
 go_test(
     name = "sql_native_reference_test",
-    srcs = ["sql_native_reference_test.go"],
+    srcs = [
+        "native_history_alias_mock_test.go",
+        "sql_native_reference_test.go",
+    ],
     embed = [":plugdump"],
     tags = ["manual"],
     deps = [
