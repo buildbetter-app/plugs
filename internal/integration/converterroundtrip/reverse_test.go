@@ -360,6 +360,30 @@ type reverseReadHook struct {
 	mode      string
 }
 
+func (s reverseReadHook) ReadCheckpointInventory(ctx context.Context, view driver.View) (driver.CheckpointInventory, error) {
+	capability, ok := s.Store.(driver.CheckpointInventoryStore)
+	if !ok {
+		return nil, driver.ErrUnsupported
+	}
+	r, err := capability.ReadCheckpointInventory(ctx, view)
+	if err != nil {
+		return nil, err
+	}
+	if s.afterRead != nil {
+		s.afterRead()
+	}
+	return reverseInventoryQueryHook{CheckpointInventory: r, mode: s.mode}, nil
+}
+
+type reverseInventoryQueryHook struct {
+	driver.CheckpointInventory
+	mode string
+}
+
+func (r reverseInventoryQueryHook) Query(ctx context.Context, q driver.Query) (driver.Page[driver.Record], error) {
+	return (reverseQueryHook{Reader: r.CheckpointInventory, mode: r.mode}).Query(ctx, q)
+}
+
 func (s reverseReadHook) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
 	r, err := s.Store.Read(ctx, view)
 	if err != nil {

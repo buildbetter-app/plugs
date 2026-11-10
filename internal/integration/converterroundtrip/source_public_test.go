@@ -152,6 +152,21 @@ func TestJointSourcePublicRoutingBatchReplayAndReopen(t *testing.T) {
 			policy := &sourcePublicPolicy{}
 			domain, server := sourcePublicService(t, store, lease, p, report, policy)
 			actor := p.Admission.Actor
+			// This service has no native provider. Combined Ready must select the
+			// installed source provider, including the active/durable alias collision.
+			for _, filtered := range []bool{false, true} {
+				request := service.ReadyRequest{Project: "demo", Limit: 1000}
+				var ready service.BeadPage
+				if filtered {
+					ready, err = domain.ReadyWithFilter(ctx, actor, request, nil)
+				} else {
+					ready, err = domain.Ready(ctx, actor, request)
+				}
+				if err != nil {
+					t.Fatalf("source-only combined Ready: %v", err)
+				}
+				assertSourceReady(t, ready)
+			}
 			get := sourcePublicCall(t, server, actor, "bead.get", 0, map[string]any{"id": model.RefByID("demo-7", model.Natural64(0))}, "")
 			if !bytes.Contains(get.Result, []byte("workflow:item/restored")) || !bytes.Contains(get.Result, []byte("Exact active collision")) {
 				t.Fatalf("source route did not reach active item: %s", get.Result)
@@ -271,6 +286,25 @@ func TestJointSourcePublicRoutingBatchReplayAndReopen(t *testing.T) {
 				t.Fatal("failed draft escaped into recovered receipt")
 			}
 		})
+	}
+}
+
+func assertSourceReady(t *testing.T, page service.BeadPage) {
+	t.Helper()
+	if page.Next != nil || page.WorkflowSnapshot == nil || page.ReadyMembership == "" {
+		t.Fatal("source Ready lost its complete combined snapshot")
+	}
+	matched := 0
+	for _, item := range page.Items {
+		if item.ID == "workflow:item/restored" {
+			matched++
+			if item.Fields["title"] != "Exact active collision" || item.Kind != "workflow.item" || item.Project != "demo" {
+				t.Fatalf("source Ready substituted a native or durable collision: %+v", item)
+			}
+		}
+	}
+	if matched != 1 {
+		t.Fatalf("source Ready must include the exact active target once: %+v", page.Items)
 	}
 }
 

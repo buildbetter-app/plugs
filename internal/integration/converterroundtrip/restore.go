@@ -1078,11 +1078,14 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 					if key == "" {
 						return restorePlan{}, fmt.Errorf("imported memory %s has an empty public key", source.ID)
 					}
-					ref := model.RefByID("source/memory/"+source.ID, model.Natural64(0))
+					ref := model.RefByID(sourcePlaneMirrorID(source, entities != nil), model.Natural64(0))
 					body := pipeline.MemoryDocument{ID: ref.ID, Key: key, Content: value, Metadata: map[string]any{
 						"plug.restore.source_id": source.ID, "plug.restore.source_table": source.Source.Table,
 						"plug.restore.source": cloneRow(source.Source.Fields), "plug.restore.archive_sha256": archive.SHA256(),
 					}}
+					if entities != nil {
+						body.Metadata["plug.restore.source_project"] = source.Project
+					}
 					if err := add(ref, kind, body); err != nil {
 						return restorePlan{}, err
 					}

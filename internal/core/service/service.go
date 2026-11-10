@@ -139,7 +139,8 @@ func (s *Service) apply(ctx context.Context, by model.PrincipalRef, method strin
 		return port.WriteOutcome{}, failure("project_required", "supply a project")
 	}
 	meta.Method = method
-	if source := s.source.Load(); source != nil {
+	source := s.source.Load()
+	if source != nil {
 		ctx = pipeline.WithAllocatorReservations(ctx, source.allocatorIDs)
 		ctx = pipeline.WithSourceOperations(ctx, s.sourcePreparation(source, by, cs, meta), func(ref model.Ref) string {
 			if source.active[ref.ID] == meta.Project && ref.IsID() && ref.Branch.IsZero() {
@@ -149,7 +150,7 @@ func (s *Service) apply(ctx context.Context, by model.PrincipalRef, method strin
 		})
 	}
 	deletes := ordinaryDeletes(cs)
-	jointDelete := method == "tx.apply" && s.workflowProvider() != nil && len(deletes) != 0
+	jointDelete := method == "tx.apply" && s.workflowProvider() != nil && len(deletes) != 0 && !sourceDeleteBatchHasSourceEdits(source, cs, meta.Project)
 	if s.workflowProvider() != nil && (method == "bead.claim" || method == "bead.claimNext" || method == "bead.close" || method == "tx.apply") {
 		ctx = pipeline.WithWorkflowGuard(ctx, s.workflowWriteGuard)
 	}

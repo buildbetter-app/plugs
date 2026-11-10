@@ -12,7 +12,7 @@ import (
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
-func reverseSourceRestored(ctx context.Context, store driver.Store, meta driver.Meta, profile driver.RestoreImportProfile, options reverseconverter.Options) (LiveReverse, error) {
+func reverseSourceRestored(ctx context.Context, r driver.CheckpointInventory, meta driver.Meta, profile driver.RestoreImportProfile, options reverseconverter.Options) (LiveReverse, error) {
 	bound, err := profile.Detached()
 	if err != nil || bound.SourcePlanes == nil {
 		return LiveReverse{}, ReverseRefusal{"invalid_import_binding"}
@@ -25,15 +25,6 @@ func reverseSourceRestored(ctx context.Context, store driver.Store, meta driver.
 	if err != nil {
 		return LiveReverse{}, err
 	}
-	capability, ok := store.(driver.SourcePlaneSnapshotStore)
-	if !ok {
-		return LiveReverse{}, ReverseRefusal{"source_plane_snapshot_unavailable"}
-	}
-	r, err := capability.ReadSourcePlaneSnapshot(ctx, driver.View{Incarnation: meta.Incarnation}, []string{plan.Providers[0].Namespace})
-	if err != nil {
-		return LiveReverse{}, err
-	}
-	defer r.Close()
 	report, logical, err := recoverSourceImportReader(ctx, r, meta, bound, Verification{ArchiveSHA256: bound.ArchiveDigest, DerivedSHA256: bound.DerivedDigest}, plan, request)
 	if err != nil {
 		return LiveReverse{}, ReverseRefusal{"source_receipt_archive_or_origin_mismatch"}
@@ -58,12 +49,17 @@ func reverseSourceRestored(ctx context.Context, store driver.Store, meta driver.
 	if err != nil {
 		return LiveReverse{}, err
 	}
+	coreLosses, namespaceLosses, err := reverseLossCensus(r, live, &plan, options)
+	if err != nil {
+		return LiveReverse{}, err
+	}
 	if err := projectJointReverseDump(ctx, bound, plan, &dump, live, initial, current, options); err != nil {
 		return LiveReverse{}, err
 	}
 	converted, err := reverseconverter.ConvertWithOptions(dump, options)
+	attachReverseLossCensus(&converted, err, coreLosses, namespaceLosses)
 	if err != nil {
-		return LiveReverse{}, err
+		return LiveReverse{Snapshot: r.Snapshot(), Result: converted}, err
 	}
 	return LiveReverse{Snapshot: r.Snapshot(), Result: converted}, nil
 }
@@ -203,6 +199,17 @@ func projectJointReverseDump(ctx context.Context, bound driver.RestoreImportProf
 			want, err := sourceMirrorBody(reverseSourceRecord(source), true)
 			if err != nil {
 				return ReverseRefusal{"changed_source_mirror"}
+			}
+			// Public strings use the canonical memory view, with the same framed
+			// joint identity and complete provenance as their retained source row.
+			if kind == "memory" && source.Body["classification"] == "public" {
+				if content, ok := source.Body["value"].(string); ok {
+					want = map[string]any{"id": mirrorID, "key": strings.TrimSpace(stringValue(source.Body["key"])), "content": content, "metadata": map[string]any{
+						"plug.restore.source_id": source.ID, "plug.restore.source_table": source.Source.Table,
+						"plug.restore.source": source.Source.Fields, "plug.restore.source_project": source.Project,
+						"plug.restore.archive_sha256": bound.ArchiveDigest,
+					}}
+				}
 			}
 			var got map[string]any
 			if decodeReverseJSON(row.Body, &got) != nil || !sameReverseJSON(want, got) {

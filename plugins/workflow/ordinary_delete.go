@@ -80,7 +80,7 @@ func (p *Provider) PrepareSourceOrdinaryDelete(ctx context.Context, by model.Pri
 func (p *Provider) prepareOrdinaryDelete(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta, sourceAware bool, apply func(SourceOrdinaryDeleteHandler) error) (OrdinaryDeletePreparation, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !p.persistent && (!sourceAware || p.source == nil) {
+	if !p.persistent && p.source == nil {
 		return OrdinaryDeletePreparation{}, fail("plugin_durable_state_unavailable", "ephemeral workflows require persistent checkpoint storage")
 	}
 	value, revision, err := p.readState(ctx)

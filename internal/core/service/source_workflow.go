@@ -198,6 +198,32 @@ func sourceOpWithTarget(op model.Op, target model.Ref) model.Op {
 	return op
 }
 
+// Source edits need the general source participant, which stages each operation
+// in request order. The joined delete participant handles ordinary operations
+// and explicit incident unlinks; it must not replace a source edit with a core
+// operation. Use immutable import bindings so absent aliases cannot fall through.
+func sourceDeleteBatchHasSourceEdits(source *sourceWorkflow, cs model.ChangeSet, project string) bool {
+	if source == nil {
+		return false
+	}
+	for _, op := range cs.Ops {
+		if err := op.Validate(); err != nil {
+			return true // The canonical writer reports malformed operations.
+		}
+		if op.Kind == model.OpDelete || op.Kind == model.OpUnlink {
+			continue
+		}
+		target := sourceOpTarget(op)
+		if workflowRef(target) || source.addresses[sourceAddress{project, target.ID}] {
+			return true
+		}
+		if op.Kind == model.OpLink && op.Link != nil && (workflowRef(op.Link.To) || source.addresses[sourceAddress{project, op.Link.To.ID}]) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Service) sourcePreparation(source *sourceWorkflow, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) pipeline.SourcePreparation {
 	cs.Expect = append([]model.Precondition(nil), cs.Expect...)
 	return func(ctx context.Context, reader driver.Reader, prepare func(pipeline.SourceOperationHandler) error) (pipeline.SourcePublication, error) {
@@ -258,6 +284,19 @@ func (s *Service) sourcePreparation(source *sourceWorkflow, by model.PrincipalRe
 				}
 				resolver := &workflowCoreResolver{service: s, principal: by, graph: graph, head: driver.CoreSnapshotExpectation{StoreID: namespace.StoreID, Incarnation: reader.Snapshot().Incarnation, Head: *reader.Snapshot().At}}
 				if !workflowRef(target) {
+					if op.Kind == model.OpDelete {
+						// Preserve ordinary deletes on the installed source path, but
+						// reject incident active references against this staged image.
+						// Replacing the participant with the native provider would lose
+						// both the source address mapping and its snapshot fence.
+						_, err := staged.PrepareOrdinaryDelete(ctx, by, model.ChangeSet{Ops: []model.Op{op}}, meta, func(check func(model.Op) (*workflowplugin.OrdinaryDeleteImage, error)) error {
+							_, err := check(op)
+							return err
+						})
+						if err != nil {
+							return model.Op{}, nil, err
+						}
+					}
 					if original.Kind == model.OpLink || original.Kind == model.OpUnlink {
 						kind, err := original.Link.TargetKind.Normalized()
 						if err != nil {

@@ -142,20 +142,22 @@ type TypeMapping struct {
 // as *Refusal and includes this same report, so callers never receive a silent
 // partial import.
 type Report struct {
-	OmittedEphemeralRows  []string      `json:"omitted_ephemeral_rows,omitempty"`
-	InputDigest           string        `json:"input_digest"`
-	OutputDigest          string        `json:"output_digest,omitempty"`
-	LostPostSwitchHistory []string      `json:"lost_post_switch_history,omitempty"`
-	PlugOnlyKinds         []string      `json:"plug_only_kinds,omitempty"`
-	TypeMappings          []TypeMapping `json:"type_mappings,omitempty"`
-	Blobs                 []string      `json:"blobs,omitempty"`
-	Principals            []string      `json:"principals,omitempty"`
-	Warnings              []string      `json:"warnings,omitempty"`
-	UnsupportedFields     []string      `json:"unsupported_fields,omitempty"`
-	ArchivedSourceFields  []string      `json:"archived_source_fields,omitempty"`
-	ConfigReferences      []string      `json:"config_references,omitempty"`
-	ArchiveRows           int           `json:"archive_rows,omitempty"`
-	ConfigAsMemories      int           `json:"config_as_memories,omitempty"`
+	CoreKindLosses        []StateLoss     `json:"core_kind_losses,omitempty"`
+	NamespaceLosses       []NamespaceLoss `json:"namespace_losses,omitempty"`
+	OmittedEphemeralRows  []string        `json:"omitted_ephemeral_rows,omitempty"`
+	InputDigest           string          `json:"input_digest"`
+	OutputDigest          string          `json:"output_digest,omitempty"`
+	LostPostSwitchHistory []string        `json:"lost_post_switch_history,omitempty"`
+	PlugOnlyKinds         []string        `json:"plug_only_kinds,omitempty"`
+	TypeMappings          []TypeMapping   `json:"type_mappings,omitempty"`
+	Blobs                 []string        `json:"blobs,omitempty"`
+	Principals            []string        `json:"principals,omitempty"`
+	Warnings              []string        `json:"warnings,omitempty"`
+	UnsupportedFields     []string        `json:"unsupported_fields,omitempty"`
+	ArchivedSourceFields  []string        `json:"archived_source_fields,omitempty"`
+	ConfigReferences      []string        `json:"config_references,omitempty"`
+	ArchiveRows           int             `json:"archive_rows,omitempty"`
+	ConfigAsMemories      int             `json:"config_as_memories,omitempty"`
 }
 
 // Result is a complete conversion. JSONL always ends in a newline when there

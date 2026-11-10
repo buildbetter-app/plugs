@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -59,6 +60,14 @@ type sourcePlaneSnapshot struct {
 // holding the SAME publication mutex. Historical core plus current provider
 // state is unsupported, including at a repeated zero graph head.
 func (s *Store) ReadSourcePlaneSnapshot(ctx context.Context, view driver.View, keys []string) (driver.SourcePlaneSnapshot, error) {
+	return s.readCheckpointSnapshot(ctx, view, keys, false)
+}
+
+func (s *Store) ReadCheckpointInventory(ctx context.Context, view driver.View) (driver.CheckpointInventory, error) {
+	return s.readCheckpointSnapshot(ctx, view, nil, true)
+}
+
+func (s *Store) readCheckpointSnapshot(ctx context.Context, view driver.View, keys []string, all bool) (*sourcePlaneSnapshot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(keys) > driver.SourcePlaneMaxListEntries {
@@ -70,7 +79,18 @@ func (s *Store) ReadSourcePlaneSnapshot(ctx context.Context, view driver.View, k
 	if view.At != nil && view.At.String() != s.state.meta.Head.String() {
 		return nil, driver.ErrCheckpointConflict
 	}
+	if all {
+		if len(s.checkpoints) > driver.SourcePlaneMaxListEntries {
+			return nil, driver.ErrUnsupported
+		}
+		keys = make([]string, 0, len(s.checkpoints))
+		for key := range s.checkpoints {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+	}
 	checkpoints := make(map[string]driver.Checkpoint, len(keys))
+	totalBytes := 0
 	for i, key := range keys {
 		if err := driver.ValidateCheckpointKey(key); err != nil {
 			return nil, err
@@ -79,6 +99,10 @@ func (s *Store) ReadSourcePlaneSnapshot(ctx context.Context, view driver.View, k
 			return nil, driver.ErrCheckpointConflict
 		}
 		value := s.checkpoints[key]
+		totalBytes += len(value.Payload)
+		if all && totalBytes > driver.SourcePlaneMaxPlanBytes {
+			return nil, driver.ErrUnsupported
+		}
 		value.Payload = bytes.Clone(value.Payload)
 		checkpoints[key] = value
 	}
@@ -90,6 +114,23 @@ func (s *Store) ReadSourcePlaneSnapshot(ctx context.Context, view driver.View, k
 		return nil, err
 	}
 	return &sourcePlaneSnapshot{reader: r, checkpoints: checkpoints}, nil
+}
+
+func (r *sourcePlaneSnapshot) CheckpointKeys() ([]string, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.state == nil {
+		return nil, driver.ErrTxClosed
+	}
+	if err := r.check(context.Background()); err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(r.checkpoints))
+	for key := range r.checkpoints {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys, nil
 }
 
 func (r *sourcePlaneSnapshot) SourcePlaneCheckpoint(key string) (driver.Checkpoint, error) {
@@ -116,6 +157,7 @@ func (r *sourcePlaneSnapshot) Close() error {
 }
 
 var _ driver.WorkflowCheckpointStore = (*Store)(nil)
+var _ driver.CheckpointInventoryStore = (*Store)(nil)
 
 func (s *Store) SaveCheckpointIfRecord(ctx context.Context, lease driver.ActiveLease, key string, expected uint64, payload []byte, ref driver.Ref, revision model.Revision, incarnation string) (driver.Checkpoint, error) {
 	s.mu.Lock()

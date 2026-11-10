@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "archive.go",
         "convert.go",
+        "loss.go",
         "source_planes.go",
         "types.go",
     ],

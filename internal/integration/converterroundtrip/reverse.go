@@ -52,7 +52,11 @@ func ReverseRestoredWithOptions(ctx context.Context, store driver.Store, options
 	if err != nil {
 		return LiveReverse{}, err
 	}
-	r, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	capability, ok := store.(driver.CheckpointInventoryStore)
+	if !ok {
+		return LiveReverse{}, ReverseRefusal{"checkpoint_inventory_unavailable"}
+	}
+	r, err := capability.ReadCheckpointInventory(ctx, driver.View{Incarnation: meta.Incarnation})
 	if err != nil {
 		return LiveReverse{}, err
 	}
@@ -67,10 +71,7 @@ func ReverseRestoredWithOptions(ctx context.Context, store driver.Store, options
 			return LiveReverse{}, ReverseRefusal{"invalid_import_binding"}
 		}
 		if binding.Profile.SourcePlanes != nil {
-			if err := r.Close(); err != nil {
-				return LiveReverse{}, err
-			}
-			return reverseSourceRestored(ctx, store, meta, binding.Profile, options)
+			return reverseSourceRestored(ctx, r, meta, binding.Profile, options)
 		}
 	}
 	dump, err := retainedReverseDump(ctx, r)
@@ -81,12 +82,17 @@ func ReverseRestoredWithOptions(ctx context.Context, store driver.Store, options
 	if err != nil {
 		return LiveReverse{}, err
 	}
+	coreLosses, namespaceLosses, err := reverseLossCensus(r, live, nil, options)
+	if err != nil {
+		return LiveReverse{}, err
+	}
 	if err := projectLiveDump(ctx, r, &dump, live); err != nil {
 		return LiveReverse{}, err
 	}
 	converted, err := reverseconverter.ConvertWithOptions(dump, options)
+	attachReverseLossCensus(&converted, err, coreLosses, namespaceLosses)
 	if err != nil {
-		return LiveReverse{}, err
+		return LiveReverse{Snapshot: r.Snapshot(), Result: converted}, err
 	}
 	return LiveReverse{Snapshot: r.Snapshot(), Result: converted}, nil
 }
