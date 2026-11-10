@@ -1,0 +1,65 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+_PUBLIC_SRCS = [
+    "public_clock_test.go",
+    "public_counterpart_test.go",
+    "public_fixture_test.go",
+    "public_view_test.go",
+]
+
+_PUBLIC_DEPS = [
+    "//internal/core/model",
+    "//internal/core/pipeline",
+    "//internal/core/service",
+    "//internal/core/viewops",
+    "//internal/server/rpc",
+    "//internal/server/viewrpc",
+    "//internal/storage/driver",
+    "//internal/storage/memory",
+    "//internal/storage/postgres",
+    "//internal/storage/sqlite",
+    "//internal/testclock",
+]
+
+go_test(
+    name = "public_counterpart_test",
+    srcs = _PUBLIC_SRCS,
+    args = ["-test.v"],
+    size = "large",
+    tags = ["local", "requires-network"],
+    timeout = "long",
+    deps = _PUBLIC_DEPS,
+)
+
+# The only source build support is the unchanged B20 recipe exported by its
+# retained owner. No second builder, producer or clock shim exists here.
+go_test(
+    name = "canonical_native_test",
+    srcs = _PUBLIC_SRCS + [
+        "native_recording_test.go",
+        "//spec/cardb20:native_build_support",
+    ],
+    data = [
+        "//internal/publicnative:dolt_runtime",
+        "//spec/s1-b09-native:lexicon_files",
+    ],
+    env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
+    # The unchanged B20 recipe consumes the trusted RunsOn wrapper and rc.
+    env_inherit = [
+        "BAZEL_BIN",
+        "BAZEL_RC",
+        "BAZELISK_HOME",
+        "BAZELISK_VERIFY_SHA256",
+    ],
+    args = ["-test.v", "-test.run=^TestB24CanonicalNativePublicStaleDeferWake$$"],
+    size = "enormous",
+    tags = ["local", "manual", "requires-network"],
+    timeout = "eternal",
+    deps = _PUBLIC_DEPS + ["//internal/publicnative"],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
