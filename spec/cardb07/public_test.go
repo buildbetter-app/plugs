@@ -131,28 +131,58 @@ func b07Public(t *testing.T, engine string) []b07Observation {
 			t.Fatal("public vocabulary control incomplete")
 		}
 	}
+	if !t.Run("opaque_cycle_and_kind_omission", func(t *testing.T) {
+		old := h.t
+		h.t = t
+		defer func() { h.t = old }()
+		a, b := h.create("opaque-loop-a", nil), h.create("opaque-loop-b", nil)
+		ready := h.ready()
+		before := h.snapshot()
+		omitted := h.call("bead.link", "kind-omitted", map[string]any{"from": a, "to": b})
+		if omitted.Error == nil || omitted.Error.Data.Code != "invalid_params" {
+			t.Fatal("public link kind omission must be explicit refusal", omitted.Error)
+		}
+		h.same(before)
+		for i, pair := range [][2]model.Ref{{a, b}, {b, a}} {
+			key := []string{"opaque-loop-forward", "opaque-loop-reverse"}[i]
+			b07Success(t, h.call("bead.link", key, map[string]any{"from": pair[0], "to": pair[1], "kind": "custom kind"}))
+			h.linkValue(pair[0], pair[1], "custom kind")
+			h.requireReady(ready)
+		}
+		h.reopen()
+		h.requireReady(ready)
+		b07Success(t, h.call("bead.close", "opaque-loop-close-a", map[string]any{"id": a}))
+		h.requireReady(b07Without(ready, a.ID))
+		b07Success(t, h.call("bead.close", "opaque-loop-close-b", map[string]any{"id": b}))
+		h.requireReady(b07Without(b07Without(ready, a.ID), b.ID))
+		b07JSON(t, filepath.Join(h.root, "opaque-loop-kind-default.json"), map[string]any{"custom_cycle": "accepted, readiness and close guards inert", "public_omitted_kind": "invalid_params", "native_omitted_batch_kind": "separately recorded CLI default; public RPC requires an explicit kind"})
+	}) {
+		t.Fatal("opaque cycle or kind omission control incomplete")
+	}
 	if !t.Run("external_and_missing_local", func(t *testing.T) {
 		old := h.t
 		h.t = t
 		defer func() { h.t = old }()
 		from := h.create("external-source", nil)
-		target := model.RefByID("external:tracker:ticket-1", model.Natural64(0))
 		before := h.snapshot()
 		r := h.call("bead.link", "absent-local", map[string]any{"from": from, "to": model.RefByID("b07-absent", model.Natural64(0)), "kind": "related"})
 		if r.Error == nil || r.Error.Data.Code != "not_found" {
 			t.Fatalf("missing local=%+v", r)
 		}
 		h.same(before)
-		ready := h.ready()
-		params := map[string]any{"from": from, "to": target, "kind": "related", "targetKind": "external"}
-		b07Success(t, h.call("bead.link", "external-add", params))
-		h.linkValue(from, target, "related")
-		h.requireReady(ready)
-		before = h.snapshot()
-		h.quiet(before, "external-repeat", h.call("bead.link", "external-repeat", params))
-		h.reopen()
-		b07Success(t, h.call("bead.unlink", "external-remove", params))
-		h.requireReady(ready)
+		for _, targetID := range []string{"external:tracker:ticket-1", "remote-1"} {
+			target := model.RefByID(targetID, model.Natural64(0))
+			ready := h.ready()
+			params := map[string]any{"from": from, "to": target, "kind": "related", "targetKind": "external"}
+			b07Success(t, h.call("bead.link", "external-add-"+targetID, params))
+			h.linkValue(from, target, "related")
+			h.requireReady(ready)
+			before = h.snapshot()
+			h.quiet(before, "external-repeat-"+targetID, h.call("bead.link", "external-repeat-"+targetID, params))
+			h.reopen()
+			b07Success(t, h.call("bead.unlink", "external-remove-"+targetID, params))
+			h.requireReady(ready)
+		}
 	}) {
 		t.Fatal("external control incomplete")
 	}

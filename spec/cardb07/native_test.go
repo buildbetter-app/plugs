@@ -432,6 +432,8 @@ func (n *b07Native) externalAndMetadata() {
 	before := n.image("narrow-custom-before")
 	n.command("standalone-custom-refusal", true, "dep", "add", "b07-950", "b07-901", "--type", "custom kind", "--json")
 	n.equal(before, "narrow-custom-after")
+	n.command("missing-local-refusal", true, "dep", "add", "b07-950", "b07-absent", "--type", "related", "--json")
+	n.equal(before, "missing-local-after")
 	for i, target := range []string{"external:tracker:ticket-1", "remote-1"} {
 		id := fmt.Sprintf("b07-%d", 951+i)
 		n.create(id)
@@ -443,6 +445,33 @@ func (n *b07Native) externalAndMetadata() {
 		n.command("external-remove", false, "dep", "remove", id, target, "--json")
 		n.requireReady("external-removed-ready", ready)
 	}
+	n.create("b07-970")
+	n.create("b07-971")
+	loopReady := n.ready("opaque-loop-before-ready")
+	n.batch("opaque-loop-forward", "dep add b07-970 b07-971 \"custom kind\"\n", false)
+	n.batch("opaque-loop-reverse", "dep add b07-971 b07-970 \"custom kind\"\n", false)
+	loopImage := n.image("opaque-loop-after")
+	for _, pair := range [][2]string{{"b07-970", "b07-971"}, {"b07-971", "b07-970"}} {
+		if b07Text(n.t, n.edge(loopImage, pair[0], pair[1])["type"]) != "custom kind" {
+			n.t.Fatal("native custom loop changed edge identity")
+		}
+	}
+	n.requireReady("opaque-loop-ready", loopReady)
+	n.command("opaque-loop-close-a", false, "close", "b07-970", "--json")
+	n.requireReady("opaque-loop-one-closed", b07Without(loopReady, "b07-970"))
+	n.command("opaque-loop-close-b", false, "close", "b07-971", "--json")
+	n.requireReady("opaque-loop-closed", b07Without(b07Without(loopReady, "b07-970"), "b07-971"))
+	n.create("b07-972")
+	n.create("b07-973")
+	defaultReady := n.ready("omitted-kind-before-ready")
+	n.batch("omitted-kind-default", "dep add b07-972 b07-973\n", false)
+	defaultImage := n.image("omitted-kind-after")
+	if b07Text(n.t, n.edge(defaultImage, "b07-972", "b07-973")["type"]) != "blocks" {
+		n.t.Fatal("native omitted batch kind differs from its literal default")
+	}
+	n.requireReady("omitted-kind-blocks-ready", b07Without(defaultReady, "b07-972"))
+	n.command("omitted-kind-guard", true, "close", "b07-972", "--json")
+	n.equal(defaultImage, "omitted-kind-guard-after")
 	// Public JSONL import is the source's generic metadata-bearing write route.
 	// SQL is used only to observe the stored bytes; no table is seeded directly.
 	importMetadata := func(label, metadata string) {
