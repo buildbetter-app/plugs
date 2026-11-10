@@ -2008,9 +2008,15 @@ func restoreAndReadRuntime(ctx context.Context, h *ownedRuntime, b RuntimeBundle
 	if !errors.As(denied, &remote) || remote.Data.Code != "human_presence_required" {
 		return observation, fmt.Errorf("runtime service-key admin boundary failed")
 	}
-	data, err := os.ReadFile(b.DataPath)
+	// Restore the installed generation, not a bundle source that may have
+	// changed since activation. Check these exact bytes before admitting any
+	// restore work so bootstrap-time validation cannot mask later corruption.
+	data, err := os.ReadFile(filepath.Join(h.root, "current", runtimeDataName))
 	if err != nil {
-		return observation, err
+		return observation, fmt.Errorf("installed native snapshot unavailable")
+	}
+	if digestBytes(data) != b.DataDigest {
+		return observation, fmt.Errorf("installed native snapshot digest mismatch")
 	}
 	archive, err := dumpformat.Read(bytes.NewReader(data))
 	if err != nil {

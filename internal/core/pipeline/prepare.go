@@ -748,9 +748,15 @@ func (w *Writer) prepareMemory(ctx context.Context, reader driver.Reader, by mod
 		if len(rows) != 1 || rows[0].Kind != "memory" {
 			return nil, failure("not_found", "memory was not found")
 		}
-		doc, err := DecodeMemoryDocument(rows[0].Body)
+		doc, source, err := DecodeMemoryRecord(rows[0])
 		if err != nil || doc.ID != rows[0].Ref.ID {
 			return nil, failure("internal_error", "invalid persisted memory")
+		}
+		if source != nil {
+			if !source.Visible {
+				return nil, failure("not_found", "memory was not found")
+			}
+			return nil, failure("invalid_params", "imported source memory is read-only")
 		}
 		pendingRecord := &pending{ref: ref, kind: "memory", memory: &doc, before: append(json.RawMessage(nil), rows[0].Body...), revision: rows[0].Revision, deleted: true, setBy: map[string]string{}}
 		p.writes[ref.ID], p.refs = pendingRecord, append(p.refs, ref)
@@ -841,11 +847,14 @@ func findMemoryByKey(ctx context.Context, snapshot *snapshotReader, key string) 
 			return nil, failure("scope_too_large", "memory key scan exceeds 20000 records")
 		}
 		for _, record := range page.Items {
-			document, err := DecodeMemoryDocument(record.Body)
+			document, source, err := DecodeMemoryRecord(record)
 			if err != nil {
 				return nil, failure("internal_error", "invalid persisted memory")
 			}
 			if record.Kind == "memory" && document.Key == key {
+				if source != nil {
+					return nil, failure("invalid_params", "imported source memory is read-only")
+				}
 				found = append(found, record)
 			}
 		}

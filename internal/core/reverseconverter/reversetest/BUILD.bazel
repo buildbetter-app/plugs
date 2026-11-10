@@ -1,0 +1,10 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "reversetest",
+    testonly = True,
+    srcs = ["mapping.go"],
+    importpath = "github.com/buildbetter-app/plugs/internal/core/reverseconverter/reversetest",
+    visibility = ["//:__subpackages__"],
+    deps = ["//internal/core/reverseconverter"],
+)
