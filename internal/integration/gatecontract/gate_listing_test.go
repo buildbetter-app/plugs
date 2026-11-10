@@ -176,11 +176,20 @@ func TestB14PublicGateListingBothPlanesAndDurableReopen(t *testing.T) {
 	eachStore(t, func(t *testing.T, f *fixture) {
 		bindGateHost(t, f, f.store, false, true)
 		ordinary := gateCreate(f, "gate", "timer", map[string]any{"priority": 4})
-		invoked := f.call("x.workflow.invoke", map[string]any{"template": "b14-gate-list", "project": "local", "mode": "ephemeral", "checklist": []any{
+		invocation := map[string]any{"template": "b14-gate-list", "project": "local", "mode": "ephemeral", "checklist": []any{
 			map[string]any{"label": "open", "title": "ephemeral gate", "type": "gate", "fields": map[string]any{"await_type": "gh:run", "priority": 0}},
 			map[string]any{"label": "closed", "title": "closed ephemeral gate", "type": "gate", "fields": map[string]any{"priority": 1}},
 			map[string]any{"label": "ordinary", "title": "not a gate", "type": "issue", "fields": map[string]any{"await_type": "gh:run"}},
-		}}, true, "")
+		}}
+		if f.engine == "memory" {
+			f.refuse("x.workflow.invoke", invocation, "plugin_durable_state_unavailable")
+			if got := gateIDs(f.call("gate.list", map[string]any{}, false, "")); !reflect.DeepEqual(got, []string{ordinary}) {
+				t.Fatalf("ordinary memory listing after durable refusal=%v", got)
+			}
+			t.Log("memory: durable invocation refused without a receipt; ordinary gate listing passed; no ephemeral-positive credit")
+			return
+		}
+		invoked := f.call("x.workflow.invoke", invocation, true, "")
 		items := invoked["items"].([]any)
 		open, closed := items[0].(map[string]any)["id"].(string), items[1].(map[string]any)["id"].(string)
 		f.call("bead.close", map[string]any{"id": closed}, true, "")
@@ -218,11 +227,13 @@ func TestB14PublicGateListingGlobalPriorityCreationAndIDOrder(t *testing.T) {
 			result := f.call("x.workflow.invoke", map[string]any{"template": "b14-order-" + label, "project": "local", "mode": "ephemeral", "checklist": []any{map[string]any{"label": label, "title": label, "type": "gate", "fields": map[string]any{"priority": priority}}}}, true, "")
 			return result["items"].([]any)[0].(map[string]any)["id"].(string)
 		}
-		high := invoke("priority-winner", 0)
+		// Every engine proves ordinary priority, creation and ID ordering.
+		// SQL engines additionally prove the combined provider/ordinary order.
+		high := gateCreate(f, "gate", "timer", map[string]any{"priority": 0})
 		now = now.Add(time.Hour)
 		older := gateCreate(f, "gate", "timer", map[string]any{"priority": 2})
 		now = now.Add(time.Hour)
-		newer := invoke("created-winner", 2)
+		newer := gateCreate(f, "gate", "timer", map[string]any{"priority": 2})
 		tieA := gateCreate(f, "gate", "timer", map[string]any{"priority": 2})
 		tieB := gateCreate(f, "gate", "timer", map[string]any{"priority": 2})
 		ties := []string{newer, tieA, tieB}
@@ -230,14 +241,38 @@ func TestB14PublicGateListingGlobalPriorityCreationAndIDOrder(t *testing.T) {
 		want := append([]string{high}, ties...)
 		want = append(want, older, low)
 		meta := map[string]any{"agent": "gate-contract"}
-		for _, test := range []struct {
-			limit int
-			want  []string
-		}{{0, want}, {1, []string{high}}, {4, want[:4]}} {
-			if got := gateIDs(f.call("gate.list", map[string]any{"limit": test.limit, "_meta": meta}, false, "")); !reflect.DeepEqual(got, test.want) {
-				t.Fatalf("global order limit%d=%v want=%v", test.limit, got, test.want)
+		check := func(plane string, order []string, boundary int) {
+			t.Helper()
+			before, history := f.meta(), f.historyCount()
+			for _, test := range []struct {
+				limit int
+				want  []string
+			}{{0, order}, {1, order[:1]}, {boundary, order[:boundary]}} {
+				if got := gateIDs(f.call("gate.list", map[string]any{"limit": test.limit, "_meta": meta}, false, "")); !reflect.DeepEqual(got, test.want) {
+					t.Fatalf("%s order limit%d=%v want=%v", plane, test.limit, got, test.want)
+				}
+			}
+			if !reflect.DeepEqual(before, f.meta()) || history != f.historyCount() {
+				t.Fatal("ordered gate read wrote state/history")
 			}
 		}
+		check("ordinary", want, 4)
+		if f.engine == "memory" {
+			f.refuse("x.workflow.invoke", map[string]any{"template": "b14-order-refusal", "project": "local", "mode": "ephemeral", "checklist": []any{map[string]any{"label": "unavailable", "title": "unavailable", "type": "gate"}}}, "plugin_durable_state_unavailable")
+			check("ordinary-after-durable-refusal", want, 4)
+			t.Log("memory: ordinary order positive and durable invocation refusal; no both-plane-positive credit")
+			return
+		}
+		now = now.Add(time.Hour)
+		ephemeralHigh := invoke("priority-winner", 0)
+		ephemeralNewer := invoke("created-winner", 2)
+		crossPlaneTie := gateCreate(f, "gate", "timer", map[string]any{"priority": 2})
+		crossPlaneTies := []string{ephemeralNewer, crossPlaneTie}
+		sort.Strings(crossPlaneTies)
+		combined := append([]string{ephemeralHigh, high}, crossPlaneTies...)
+		combined = append(combined, ties...)
+		combined = append(combined, older, low)
+		check("both-planes", combined, 4)
 	})
 }
 
@@ -249,7 +284,7 @@ func TestB14PublicGateListingNoQuerierUnsupported(t *testing.T) {
 	if err := rpc.BindService(reg, service.New(nil, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
-	server, err := rpc.New(reg, rpc.Config{DefaultProject: "local"})
+	server, err := rpc.New(reg, rpc.Config{DefaultProject: "local", Incarnation: "b14-no-query-source"})
 	if err != nil {
 		t.Fatal(err)
 	}

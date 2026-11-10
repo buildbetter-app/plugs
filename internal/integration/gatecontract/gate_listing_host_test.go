@@ -72,12 +72,16 @@ func bindGateHost(t *testing.T, f *fixture, store driver.Store, storedOntology, 
 	}
 	writer := pipeline.New(store, f.lease, writerOptions...)
 	options := []service.Option{service.WithOntology(runtime)}
-	if workflow {
+	// A memory core cannot install the durable workflow provider. Keep that
+	// actual capability boundary; the public invoke method returns its typed
+	// refusal and ordinary gate reads continue without a provider plane.
+	persistent, hasPersistence := f.store.(driver.PersistentCheckpointStore)
+	if workflow && hasPersistence && persistent.Persistent() {
 		checkpoints, ok := f.store.(driver.CheckpointStore)
 		if !ok {
 			t.Fatal("real engine lacks durable workflow checkpoints")
 		}
-		state := pluginhost.NewDurableStateWithPersistence(checkpoints, f.lease, workflowplugin.Alias, "default", true)
+		state := pluginhost.NewDurableState(checkpoints, f.lease, workflowplugin.Alias, "default")
 		provider, err := workflowplugin.New(state)
 		if err != nil {
 			t.Fatal(err)

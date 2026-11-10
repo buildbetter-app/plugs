@@ -81,7 +81,9 @@ host catalog can install the type and literal statuses through
 only closed `map_type` objects with an ID, original project/type selector, and
 different `from`/`to` keys. The existing migration planner retains these inputs
 in its digested report, requires a known original type and active destination,
-and preserves every other row member. Legacy importer directives are unchanged.
+and preserves every other row member. Invalid mappings return the planner's
+actual typed `invalid_params` refusal, including its pre-inventory no-op check,
+without retaining an applicable plan. Legacy importer directives are unchanged.
 
 `gate.list` returns exact gate types in the native default query order: priority
 ascending, creation time descending, then ID ascending. It merges both complete
@@ -110,7 +112,13 @@ The new `TestB14PublicGateTypeInstallMapTypePreservesLiteralMembers`,
 `TestB14PublicGateListingBothPlanesAndDurableReopen`,
 `TestB14PublicGateListingGlobalPriorityCreationAndIDOrder`, and
 `TestB14PublicGateListingComposedReadVisibilityBeforeLimit` each require memory,
-SQLite and PostgreSQL. Only the initial catalog in the installation fixture is
+SQLite and PostgreSQL. Ordinary gate filters, ordering, mapping and refusals
+are positive controls on all three engines. Both-plane positives and durable
+reopen run on SQLite and PostgreSQL. Memory truthfully lacks durable workflow
+storage: both workflow cases require typed invocation refusal with no receipt,
+then prove ordinary listing/order still works. Those memory cells receive no
+ephemeral or both-plane positive credit, and no persistence marker is faked.
+Only the initial catalog in the installation fixture is
 seeded; its installation/mapping and all bead/checkpoint changes use public
 RPC. The read visibility fixture installs an explicit test rule through the
 existing composition chain; it does not expand the production finite policy.

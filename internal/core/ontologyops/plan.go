@@ -88,6 +88,16 @@ func (s *Service) Plan(ctx context.Context, by model.PrincipalRef, req PlanReque
 	if err != nil {
 		return PlanResult{}, mapped(err)
 	}
+	// The narrow public mapping input uses the planner's own refusal. Invalid
+	// directives can refuse before row inventory exists; do not present those
+	// input errors as a stale retained plan. No refused plan can be retained.
+	if len(req.TypeMappings) != 0 {
+		for _, refusal := range plan.Report().Refusals {
+			if refusal.Code == "invalid_params" {
+				return PlanResult{}, failure("invalid_params", refusal.Message)
+			}
+		}
+	}
 	artifact := PlannedRevision{StoreID: meta.StoreID, Incarnation: r.Snapshot().Incarnation, BaseRevision: *r.Snapshot().At, Principal: by, Project: req.Project, Source: current.guard, Document: candidate, Expect: req.Expect, Migration: plan.Report(), Ready: plan.Ready()}
 	if artifact.Expect == nil {
 		artifact.Expect = []model.Precondition{}

@@ -29,8 +29,10 @@ objects with an ID, original project/type selector, and different source and
 destination type keys. It uses the existing planner: the original type must be
 known, the candidate destination active, and every selected row keeps its other
 members. The selected mappings remain in the retained, digested plan report.
-Other directive kinds and the legacy top-level `directives` input still refuse.
-Useful
+Invalid mappings surface the planner's actual `invalid_params` refusal without
+retaining an applicable plan, including refusals before row inventory exists.
+They do not become an unrelated inventory-staleness error. Other directive
+kinds and the legacy top-level `directives` input still refuse. Useful
 additions and defaults are planned against every actual stored bead row;
 violating candidates return real findings rather than write anything.
 

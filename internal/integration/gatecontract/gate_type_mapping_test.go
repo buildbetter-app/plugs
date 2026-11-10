@@ -35,7 +35,7 @@ func TestB14PublicGateTypeInstallMapTypePreservesLiteralMembers(t *testing.T) {
 			if !reflect.DeepEqual(got, []string{created, id}) {
 				t.Fatalf("installed gate listing: %v", got)
 			}
-			schema := f.call("ontology.schema", map[string]any{"type": "gate"}, false, "")
+			schema := f.call("ontology.schema", map[string]any{"project": "local", "type": "gate"}, false, "")
 			if schema["properties"] == nil {
 				t.Fatalf("installed gate schema absent: %v", schema)
 			}
@@ -60,6 +60,7 @@ func TestB14PublicGateTypeMappingsRefuseWithoutWrites(t *testing.T) {
 		seedGateCatalog(t, f, initial)
 		id := gateCreate(f, "legacy_gate", "opaque", map[string]any{"waiters": []string{"preserve"}})
 		before, history, meta := f.currentBody(id), f.historyCount(), f.meta()
+		source := f.call("ontology.get", map[string]any{"project": ""}, false, "")
 		for _, test := range []struct {
 			name      string
 			mappings  []any
@@ -72,11 +73,14 @@ func TestB14PublicGateTypeMappingsRefuseWithoutWrites(t *testing.T) {
 			{"conflicting", []any{typeMapping("legacy_gate", "gate", id), secondTypeMapping("legacy_gate", "issue", id)}, initial},
 		} {
 			t.Run(test.name, func(t *testing.T) {
+				previous := f.t
+				f.t = t
+				defer func() { f.t = previous }()
 				// Keep existing keys so the refusal belongs to the selected map.
 				test.candidate.Types["legacy_gate"] = initial.Types["legacy_gate"]
-				plan := gatePlan(f, test.candidate, test.mappings, 1)
-				if plan["changes"].(map[string]any)["ready"] != false || len(plan["violations"].([]any)) == 0 {
-					t.Fatalf("invalid mapping admitted: %v", plan)
+				response := f.call("ontology.plan", map[string]any{"project": "", "document": test.candidate, "typeMappings": test.mappings, "expect": expect(gateOntologyRef.ID, 1)}, false, "invalid_params")
+				if test.name == "identity" && response["error"].(map[string]any)["data"].(map[string]any)["hint"] != "mapping must change its key" {
+					t.Fatalf("identity mapping lost the actual planner refusal: %v", response)
 				}
 			})
 		}
@@ -85,10 +89,7 @@ func TestB14PublicGateTypeMappingsRefuseWithoutWrites(t *testing.T) {
 		gate := archived.Types["gate"]
 		gate.Archived = true
 		archived.Types["gate"] = gate
-		plan := gatePlan(f, archived, []any{typeMapping("legacy_gate", "gate", id)}, 1)
-		if plan["changes"].(map[string]any)["ready"] != false {
-			t.Fatal("archived mapping target admitted")
-		}
+		f.call("ontology.plan", map[string]any{"project": "", "document": archived, "typeMappings": []any{typeMapping("legacy_gate", "gate", id)}, "expect": expect(gateOntologyRef.ID, 1)}, false, "invalid_params")
 		for _, mapping := range []map[string]any{
 			{"id": "invalid", "kind": "map_status", "target": map[string]any{"project": "local", "type": "legacy_gate"}, "from": "legacy_gate", "to": "gate"},
 			{"id": "invalid", "kind": "map_type", "target": map[string]any{"type": "legacy_gate"}, "from": "legacy_gate", "to": "gate"},
@@ -100,6 +101,9 @@ func TestB14PublicGateTypeMappingsRefuseWithoutWrites(t *testing.T) {
 		f.call("ontology.plan", map[string]any{"project": "", "document": initial, "directives": []any{}}, false, "invalid_params")
 		if !reflect.DeepEqual(meta, f.meta()) || history != f.historyCount() || !reflect.DeepEqual(before, f.currentBody(id)) {
 			t.Fatal("refused planning changed data, source, receipts or history")
+		}
+		if current := f.call("ontology.get", map[string]any{"project": ""}, false, ""); !reflect.DeepEqual(source, current) {
+			t.Fatal("refused mappings changed the public source catalog")
 		}
 	})
 }
