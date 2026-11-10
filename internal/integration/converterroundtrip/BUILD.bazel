@@ -33,6 +33,8 @@ go_test(
     deps = [
         "//internal/core/dumpformat",
         "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/core/ontologyops",
         "//internal/core/pipeline",
         "//internal/core/reverseconverter",
         "//internal/core/service",

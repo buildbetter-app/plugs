@@ -756,7 +756,8 @@ func claimNextCandidateConflict(err error) bool {
 	if !errors.As(err, &value) || value.Data.Code != "write_conflict" {
 		return false
 	}
-	return value.Message == "snapshot changed during all four write attempts" || value.Data.Hint == "snapshot changed during all four write attempts"
+	return value.Message == "claimNext candidate is locked" || value.Data.Hint == "claimNext candidate is locked" ||
+		value.Message == "snapshot changed during all four write attempts" || value.Data.Hint == "snapshot changed during all four write attempts"
 }
 
 func (s *Service) claimWithMethod(ctx context.Context, by model.PrincipalRef, req ClaimRequest, meta model.WriteMeta, outcomeRequired bool, method string) (port.WriteOutcome, error) {
@@ -834,6 +835,9 @@ func (s *Service) CloseWithOutcome(ctx context.Context, by model.PrincipalRef, r
 		return s.close(ctx, by, req, meta, true)
 	}
 	if workflowRef(req.ID) {
+		if req.Force {
+			return port.WriteOutcome{}, failure("unsupported", "workflow force close is not supported")
+		}
 		if err := validateWorkflowWrite(req.ID, req.Expect, meta); err != nil {
 			return port.WriteOutcome{}, err
 		}
@@ -857,6 +861,7 @@ func workflowClaimCommit(item workflowplugin.ItemView) model.Commit {
 }
 
 func (s *Service) close(ctx context.Context, by model.PrincipalRef, req CloseRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
+	meta.ForceClose = req.Force
 	if s.SourceRuntimeInstalled() {
 		return s.apply(ctx, by, "bead.close", model.ChangeSet{Ops: []model.Op{{Kind: model.OpClose, Close: &model.CloseOp{Target: req.ID, Reason: req.Reason}}}, Expect: req.Expect}, meta, outcomeRequired)
 	}

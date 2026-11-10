@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,6 +61,59 @@ func testRead(t *testing.T, s driver.Store, at *model.Revision) driver.Reader {
 func testRef(id string) driver.Ref { return model.RefByID(id, model.Natural64(0)) }
 func testLock(ref driver.Ref) driver.LockKey {
 	return driver.LockKey{Kind: driver.LockRecord, Ref: &ref}
+}
+
+// snapshotSQLApplicationRows reads every physical application table, including
+// locks, so a failed cold write cannot hide coordination rows behind a clean
+// public snapshot.
+func snapshotSQLApplicationRows(t *testing.T, s *Store) map[string][]string {
+	t.Helper()
+	ctx := context.Background()
+	rows, err := s.db.QueryContext(ctx, `SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname='plug_postgres' ORDER BY tablename`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tables []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		tables = append(tables, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(tables) == 0 {
+		t.Fatal("missing PostgreSQL application tables")
+	}
+	snapshot := make(map[string][]string, len(tables))
+	for _, name := range tables {
+		quoted := `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+		values, err := s.db.QueryContext(ctx, `SELECT to_jsonb(t)::text FROM plug_postgres.`+quoted+` AS t ORDER BY 1`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var contents []string
+		for values.Next() {
+			var row string
+			if err := values.Scan(&row); err != nil {
+				t.Fatal(err)
+			}
+			contents = append(contents, row)
+		}
+		if err := values.Err(); err != nil {
+			t.Fatal(err)
+		}
+		if err := values.Close(); err != nil {
+			t.Fatal(err)
+		}
+		snapshot[name] = contents
+	}
+	return snapshot
 }
 
 func beginTest(t *testing.T, s *Store, l driver.ActiveLease, keys ...driver.LockKey) (driver.WriteTx, driver.ChangesetHeader) {
@@ -217,12 +271,14 @@ func TestPersistenceAcrossHandlesAndReopen(t *testing.T) {
 
 func TestSQLFailureAfterStagingRollsBackEveryFamily(t *testing.T) {
 	ctx := context.Background()
-	s := openTest(t, freshDSN(t))
+	dsn := freshDSN(t)
+	s := openTest(t, dsn)
 	lease := testLease(t, s)
 	_, err := s.db.ExecContext(ctx, `CREATE FUNCTION plug_postgres.reject_log() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'synthetic late publication failure'; END$$; CREATE TRIGGER reject_log BEFORE INSERT ON plug_postgres.changesets FOR EACH ROW EXECUTE FUNCTION plug_postgres.reject_log()`)
 	if err != nil {
 		t.Fatal(err)
 	}
+	beforeRows := snapshotSQLApplicationRows(t, s)
 	ref := testRef("pl-rollback")
 	fact := driver.LockKey{Kind: driver.LockReadFact, Fact: "rollback/predicate"}
 	derived := driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedSortKey, Key: "rank"}}
@@ -273,6 +329,13 @@ func TestSQLFailureAfterStagingRollsBackEveryFamily(t *testing.T) {
 	receipt, err := r.IdempotencyByKey(ctx, "system:postgres-test", "", h.Method, h.IdempotencyKey)
 	if err != nil || receipt != nil {
 		t.Fatalf("late failure leaked receipt: %v %v", receipt, err)
+	}
+	if got := snapshotSQLApplicationRows(t, s); !reflect.DeepEqual(got, beforeRows) {
+		t.Fatalf("failed cold publication changed SQL application rows: before=%v after=%v", beforeRows, got)
+	}
+	reopened := openTest(t, dsn)
+	if got := snapshotSQLApplicationRows(t, reopened); !reflect.DeepEqual(got, beforeRows) {
+		t.Fatalf("failed cold publication survived reopen: before=%v after=%v", beforeRows, got)
 	}
 	if _, err = s.db.ExecContext(ctx, `DROP TRIGGER reject_log ON plug_postgres.changesets; DROP FUNCTION plug_postgres.reject_log()`); err != nil {
 		t.Fatal(err)

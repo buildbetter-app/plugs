@@ -162,6 +162,9 @@ type BeadState struct {
 // Gates map kind -> observed satisfied; a missing kind is unobserved/unsatisfied.
 // The permission result must be for action transition and the target status.
 type GuardFacts struct {
+	// OverridePolicy is a close-only request already admitted by core and the
+	// separate override_guard action. It never supplies a permission fact.
+	OverridePolicy bool
 	NoOpenChildren *bool
 	NoOpenBlockers *bool
 	Evidence       map[string]bool

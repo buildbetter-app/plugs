@@ -2,6 +2,7 @@ package sqliteacceptance_test
 
 import (
 	"bytes"
+	"errors"
 	"reflect"
 	"slices"
 	"testing"
@@ -159,13 +160,17 @@ func TestUnsupportedCardRemainderRefusesWithoutWrites(t *testing.T) {
 	f.code(t, f.call(t, "bead.create", writeParams(t, map[string]any{"type": "issue", "fields": map[string]any{"title": "parented"}, "parent": model.RefByKey("unresolved-parent")})), "invalid_params")
 	f.code(t, f.call(t, "bead.update", writeParams(t, map[string]any{"id": ref, "fields": map[string]any{"title": "must not land", "status": "done"}})), "ontology_use_slot_verb")
 	f.code(t, f.call(t, "bead.update", writeParams(t, map[string]any{"id": ref, "fields": map[string]any{"title": "must not land", "unrecognized": true}})), "ontology_unknown_field")
-	for _, op := range []model.Op{
+	// The valid attachment and title patch must be discarded when the later
+	// cross-project reparent refuses the entire ordered batch.
+	_, err := f.writer.Apply(f.ctx, anonymous, model.ChangeSet{Ops: []model.Op{
+		patchOp(ref, map[string]any{"title": "must not land"}),
 		{Kind: model.OpAttach, Attach: &model.AttachOp{Target: ref, Attachment: model.Attachment{Kind: "link", URI: "https://example.invalid/evidence", MediaType: "text/plain", Summary: "unsupported"}}},
 		{Kind: model.OpReparent, Reparent: &model.ReparentOp{Target: ref, Project: "other"}},
-	} {
-		_, err := f.writer.Apply(f.ctx, anonymous, model.ChangeSet{Ops: []model.Op{patchOp(ref, map[string]any{"title": "must not land"}), op}}, writeMeta(t))
-		domainCode(t, err, "invalid_params")
+	}}, writeMeta(t))
+	var refusal *model.Error
+	if !errors.As(err, &refusal) || refusal.Data.Code != "invalid_params" || refusal.Message != "reparent cannot move a bead between projects" {
+		t.Fatalf("want the late cross-project reparent refusal, got %T %v", err, err)
 	}
 	requireSameState(t, before, f.state(t))
-	t.Log("unbound public heartbeat/remaining-history/restore/view methods, missing B12 host capabilities, malformed named parents and unsupported attach/project-move/status/unknown-field writes explicitly refused")
+	t.Log("unbound public heartbeat/remaining-history/restore/view methods, missing B12 host capabilities, malformed named parents and status/unknown-field writes explicitly refused; late cross-project reparent conserved state after staged title and valid attachment")
 }

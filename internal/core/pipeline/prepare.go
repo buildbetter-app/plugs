@@ -323,7 +323,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			case model.OpSetMeta:
 				target = op.SetMeta.Target
 			case model.OpAttach:
-				return nil, failure("invalid_params", "attach is unsupported by this pipeline slice")
+				target = op.Attach.Target
 			case model.OpReparent:
 				target = op.Reparent.Target
 			default:
@@ -393,6 +393,10 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				current.doc.Parent = parent
 				current.setBy["parent"] = "request"
 				p.hierarchyEdits = append(p.hierarchyEdits, hierarchyEdit{id: target.ID, parent: parentID(parent)})
+			case model.OpAttach:
+				op.Attach.Target = target
+				current.doc.Attachments = append(current.doc.Attachments, op.Attach.Attachment)
+				current.setBy["attachments"] = "request"
 			case model.OpPatch:
 				if err = applyFields(current, op.Patch.Fields, "request"); err != nil {
 					return nil, err
@@ -406,6 +410,16 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			case model.OpComment:
 				if strings.TrimSpace(op.Comment.Body) == "" {
 					return nil, failure("invalid_params", "comment body must not be empty")
+				}
+				if meta.Method == "bead.close" {
+					if slots, supported := w.cfg.ontology.(closeSlots); supported {
+						_, closeTarget, ok := slots.CloseSlots(current.doc.Project, current.doc.Type)
+						if ok && current.doc.Fields["status"] == closeTarget {
+							// Retain the original request and guarded proposal. Only
+							// its reason mutation is absent on a close settlement.
+							break
+						}
+					}
 				}
 				stamp := w.cfg.now().UTC()
 				for _, comment := range current.doc.Comments {

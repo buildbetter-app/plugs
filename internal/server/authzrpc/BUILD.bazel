@@ -2,13 +2,14 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "authzrpc",
-    srcs = ["authzrpc.go", "checker.go", "claim.go", "cycles.go", "hierarchy.go", "hierarchy_read.go", "ready_compiled.go", "service.go", "source_workflow.go", "slice.go", "workflow_claimnext.go", "workflow_lifecycle.go", "workflow_reads.go"],
+    srcs = ["authority.go", "authzrpc.go", "checker.go", "claim.go", "claim_authority.go", "cycles.go", "guard_override.go", "hierarchy.go", "hierarchy_read.go", "lifecycle.go", "ontology.go", "ready_compiled.go", "service.go", "slice.go", "source_workflow.go", "workflow_claimnext.go", "workflow_lifecycle.go", "workflow_reads.go"],
     importpath = "github.com/buildbetter-app/plugs/internal/server/authzrpc",
     visibility = ["//:__subpackages__"],
     deps = [
         "//internal/api/wire",
         "//internal/core/authz",
         "//internal/core/model",
+        "//internal/core/ontology",
         "//internal/core/pipeline",
         "//internal/core/port",
         "//internal/core/service",
@@ -30,6 +31,7 @@ go_test(
         "//internal/core/authz",
         "//internal/core/model",
         "//internal/core/port",
+        "//internal/core/service",
         "//internal/plugins/authzfixed",
         "//internal/storage/driver",
     ],
@@ -39,7 +41,7 @@ go_test(
 go_test(
     name = "authzrpc_test",
     size = "large",
-    srcs = ["authzrpc_test.go", "b04_error_bounds_test.go", "b15_comments_page_test.go", "claim_test.go", "drivers_test.go", "export_test.go", "history_authority_test.go", "predicate_count_test.go"],
+    srcs = ["authzrpc_test.go", "b04_error_bounds_test.go", "b15_comments_page_test.go", "claim_test.go", "claim_eligibility_test.go", "drivers_test.go", "export_test.go", "history_authority_test.go", "predicate_count_test.go"],
     embed = [":authzrpc"],
     tags = ["exclusive"],
     deps = [

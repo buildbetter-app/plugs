@@ -32,6 +32,183 @@ class ReferenceAdmissionTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
 
+    def b06_vector(self, reports=None, human=None):
+        """Authored transcript fixtures only; no native executable is run."""
+        paths = [["b06-alpha", "b06-middle", "b06-zulu"], ["b06-beta", "b06-november", "b06-yankee"]]
+        expanded = [{"partial": False, "members": [{"id": item, "issue": {"id": item, "title": item}} for item in path]} for path in paths]
+        reports = copy.deepcopy(reports if reports is not None else [[], [], [], expanded, expanded, expanded, expanded])
+        reports = iter(reports)
+
+        def rendering(shown):
+            text = "\nFound 2 dependency cycles:\n\n"
+            for index, path in enumerate(paths[:shown], 1):
+                text += f"{index}. Cycle involving:\n" + "".join(f"   - {item}: {item}\n" for item in path) + "\n"
+            if shown == 1:
+                text += "... and 1 more not shown. The count above is the whole report; use --limit 0 to print all of it.\n\n"
+            return text.encode()
+
+        renderings = {"1": rendering(1), "0": rendering(2), **(human or {})}
+
+        def native_boundary(binary, root, commands, args, expected=None, env=None):
+            stderr = b""
+            code = 0
+            if args[:2] == ["dep", "cycles"]:
+                output = json.dumps(next(reports)).encode() if "--json" in args else renderings[args[-1]]
+            elif args[0] == "show":
+                identifier = args[1]
+                parents = {"b06-child": "b06-ancestor", "b06-descendant": "b06-child"}
+                dependencies = [] if identifier not in parents else [
+                    {"id": parents[identifier], "dependency_type": "parent-child"}]
+                output = json.dumps([{"id": identifier, "dependencies": dependencies}]).encode()
+            elif args in (["dep", "add", "b06-source", "b06-source", "--type", "blocks"],
+                          ["dep", "add", "b06-source", "b06-source", "--type", "tracks"]):
+                output, stderr, code = b"", b"unit fixture: cannot depend on itself\n", 1
+            elif args in (["dep", "add", "b06-ancestor", "b06-descendant", "--type", "blocks"],
+                          ["dep", "add", "b06-descendant", "b06-ancestor", "--type", "blocks"]):
+                output, stderr, code = b"", b"unit fixture: blocking ancestor/descendant refused\n", 1
+            elif args == ["dep", "add", "b06-target", "b06-source", "--type", "blocks"]:
+                output, stderr, code = b"", b"unit fixture: dependency cycle refused\n", 1
+            else:
+                output = b"unit fixture; never a reference observation\n"
+            self.assertEqual(code, 0 if expected is None else expected)
+            command = {"argv": list(args), "exitCode": code,
+                       "stdoutBase64": base64.b64encode(output).decode(), "stdoutSha256": sha(output),
+                       "stderrBase64": base64.b64encode(stderr).decode(), "stderrSha256": sha(stderr)}
+            try:
+                command["stdout"] = json.loads(output)
+            except (ValueError, UnicodeDecodeError):
+                pass
+            commands.append(command)
+            return output
+
+        with mock.patch.dict(os.environ, {"PLUG_REFERENCE_SOURCE_DIR": str(self.root), "PLUG_REFERENCE_CLOCK_PROOF": "unit-only"}), \
+                mock.patch.object(recorder, "run", side_effect=native_boundary):
+            return recorder.record("B06", self.root / "not-a-native-executable", self.root, "b" * 64, "c" * 64)
+
+    def test_b06_supported_route_requires_nonempty_tracks_and_preserves_dependencies(self):
+        vector = self.b06_vector()
+        independent.verify_b06(vector)
+        coverage = vector["observations"]["cycleProbeCoverage"]
+        self.assertEqual(coverage["status"], "partial")
+        self.assertEqual(coverage["blocked"], ["blocking-only-cycle-public-fixture", "parallel-rows-public-fixture", "unreadable-cycle-public-fixture"])
+        for command in vector["commands"]:
+            self.assertIn(command["argv"][0], ["init", "version", "create", "dep", "show"])
+            self.assertFalse(set(command["argv"]) & {"import", "sql", "--no-cycle-check", "--force", "--allow-stale"})
+        self.assertEqual(len(vector["ids"]), 13)
+        self.assertEqual(len(vector["observations"]["cycleProbes"]), 9)
+        self.assertEqual([probe["case"] for probe in vector["observations"]["guardRefusals"]],
+                         ["self-blocks", "self-tracks", "ancestor-blocker", "descendant-blocker"])
+
+    def test_b06_rejects_empty_unrotated_duplicate_partial_or_incomplete_reports(self):
+        good = self.b06_vector()
+        outputs = [command["stdout"] for command in good["commands"] if command["argv"][:2] == ["dep", "cycles"] and "--json" in command["argv"]]
+        for variant in ("empty", "rotation", "duplicate", "partial", "missing-member", "pure-tracks", "default-tracks", "json-cap"):
+            with self.subTest(variant=variant):
+                changed = copy.deepcopy(outputs)
+                if variant == "empty":
+                    changed[3] = []
+                elif variant == "rotation":
+                    members = changed[3][0]["members"]
+                    changed[3][0]["members"] = members[1:] + members[:1]
+                elif variant == "duplicate":
+                    changed[3].append(copy.deepcopy(changed[3][0]))
+                elif variant == "partial":
+                    changed[3][0]["partial"] = True
+                    changed[3][0]["members"][1].pop("issue")
+                elif variant == "missing-member":
+                    changed[3][0]["members"].pop()
+                elif variant == "pure-tracks":
+                    changed[1] = changed[3]
+                elif variant == "default-tracks":
+                    changed[2] = changed[3]
+                else:
+                    changed[6] = changed[6][:1]
+                with self.assertRaises(RuntimeError):
+                    self.b06_vector(reports=changed)
+
+    def test_b06_human_limit_keeps_total_and_json_stays_uncapped(self):
+        for output in (b"Found 1 dependency cycles:\n", b"Found 2 dependency cycles:\n", b"not a cycle report"):
+            with self.subTest(output=output), self.assertRaises(RuntimeError):
+                self.b06_vector(human={"1": output})
+
+    def test_independent_b06_rejects_rehashed_missing_or_forged_coverage(self):
+        def stream(command, name, raw):
+            command[name + "Base64"] = base64.b64encode(raw).decode()
+            command[name + "Sha256"] = sha(raw)
+            if name == "stdout" and "stdout" in command:
+                command["stdout"] = json.loads(raw)
+
+        for variant in ("no-probes", "complete-claim", "lost-dependency", "bypass", "lost-create", "wrong-edge", "failed-edge", "wrong-command", "empty-report", "forged-path",
+                        "no-guards", "self-diagnostic", "hierarchy-diagnostic", "refused-mutation", "wrong-parent", "successful-refusal", "guard-index"):
+            with self.subTest(variant=variant):
+                vector = self.b06_vector()
+                observations = vector["observations"]
+                if variant == "no-probes":
+                    observations["cycleProbes"] = []
+                elif variant == "complete-claim":
+                    observations["cycleProbeCoverage"]["status"] = "complete"
+                elif variant == "lost-dependency":
+                    observations["cycleProbeCoverage"]["blocked"] = []
+                elif variant == "bypass":
+                    vector["commands"][observations["cycleProbes"][0]["commandIndex"] - 2]["argv"].append("--no-cycle-check")
+                elif variant == "lost-create":
+                    index = next(i for i, command in enumerate(vector["commands"])
+                                 if command["argv"][:3] == ["create", "--id", "b06-pure-a"])
+                    vector["commands"].pop(index)
+                elif variant == "wrong-edge":
+                    command = next(command for command in vector["commands"]
+                                   if command["argv"] == ["dep", "add", "b06-pure-a", "b06-pure-z", "--type", "tracks"])
+                    command["argv"][-1] = "blocks"
+                elif variant == "failed-edge":
+                    command = next(command for command in vector["commands"]
+                                   if command["argv"] == ["dep", "add", "b06-pure-a", "b06-pure-z", "--type", "tracks"])
+                    command["exitCode"] = 1
+                elif variant == "wrong-command":
+                    index = observations["cycleProbes"][3]["commandIndex"]
+                    vector["commands"][index]["argv"] = ["dep", "cycles", "--json"]
+                elif variant == "empty-report":
+                    probe = observations["cycleProbes"][3]
+                    command = vector["commands"][probe["commandIndex"]]
+                    command.update(stdout=[], stdoutBase64="W10=", stdoutSha256=sha(b"[]"))
+                    probe["paths"] = []
+                elif variant == "forged-path":
+                    observations["cycleProbes"][3]["paths"] = [["forged-member"]]
+                elif variant == "no-guards":
+                    observations["guardRefusals"] = []
+                elif variant in ("self-diagnostic", "hierarchy-diagnostic"):
+                    probe = observations["guardRefusals"][0 if variant == "self-diagnostic" else 2]
+                    stream(vector["commands"][probe["commandIndex"]], "stderr", b"unknown flag: self ancestor\n")
+                elif variant == "refused-mutation":
+                    probe = observations["guardRefusals"][2]
+                    index = probe["afterIndices"][0]
+                    changed = copy.deepcopy(vector["commands"][index]["stdout"])
+                    changed[0]["title"] = "changed by refused edge"
+                    stream(vector["commands"][index], "stdout", json.dumps(changed).encode())
+                elif variant == "wrong-parent":
+                    probe = observations["guardRefusals"][2]
+                    for index in (probe["beforeIndices"][1], probe["afterIndices"][1]):
+                        changed = copy.deepcopy(vector["commands"][index]["stdout"])
+                        changed[0]["dependencies"][0]["dependency_type"] = "relates-to"
+                        stream(vector["commands"][index], "stdout", json.dumps(changed).encode())
+                elif variant == "successful-refusal":
+                    index = observations["guardRefusals"][0]["commandIndex"]
+                    vector["commands"][index]["exitCode"] = 0
+                else:
+                    observations["guardRefusals"][0]["afterIndices"] = observations["guardRefusals"][0]["beforeIndices"]
+                # Valid fresh hashes must not turn missing semantics into a
+                # successful independent projection. These bytes are unit
+                # fixtures and are never written into the reference manifest.
+                vectors = [{"card": card, "ids": ["unit-a"], "configuration": {"prefix": "unit"},
+                            "commands": [], "observations": {"probeResults": [{"stdoutBase64": ""}]}}
+                           for card in ("B05", "B06", "B07", "B08")]
+                vectors[1] = vector
+                value = {"status": "recorded", "recordings": [
+                    {"run": run, "raw": copy.deepcopy(vectors), "rawSha256": sha(recorder.canonical(vectors).encode()),
+                     "projectionSha256": sha(recorder.canonical(recorder.project(vectors)).encode())} for run in ("a", "b")
+                ]}
+                with self.assertRaises(RuntimeError):
+                    independent.verify_recordings(value)
+
     def fixture(self):
         # This deliberately tiny source/binary/profile exists only inside a
         # unit test. None is executed or offered as public reference evidence.
@@ -247,6 +424,7 @@ class ReferenceAdmissionTests(unittest.TestCase):
         vectors = [{"card": card, "ids": ["unit-a"], "configuration": {"prefix": "unit"},
                     "commands": [command], "observations": {"probeResults": [command]}}
                    for card in ("B05", "B06", "B07", "B08")]
+        vectors[1] = self.b06_vector()
         value = {"status": "recorded", "recordings": [
             {"run": run, "raw": copy.deepcopy(vectors),
              "rawSha256": sha(recorder.canonical(vectors).encode()),

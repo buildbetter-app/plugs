@@ -13,6 +13,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/port"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/plugins/authzfixed"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
@@ -205,6 +206,91 @@ func TestBoundAuthorizationKeepsResourceAndMethodBindingsSeparate(t *testing.T) 
 				}
 			}
 		})
+	}
+}
+
+func TestBoundCloseUsesEachCurrentTransitionAndRebindsPolicy(t *testing.T) {
+	checker, _, _, _, snapshot := bindingProjectFixture(t)
+	checker.lifecycle = true
+	checker.ontology = service.NewOntology(nil)
+	principal := model.PrincipalRef{Kind: "user", ID: "closer"}
+	policyRef := model.RefByID("lifecycle-policy", model.Natural64(0))
+	checker.chain.Rules = append(checker.chain.Rules, &lifecycleRuleSet{namespace: checker.chain.Namespace, ref: policyRef})
+	for id, status := range map[string]string{"allowed": "todo", "other": "in_progress"} {
+		row := snapshot.rows[id]
+		row.Body = []byte(fmt.Sprintf(`{"id":%q,"project":"project","type":"issue","fields":{"title":"item","status":%q}}`, id, status))
+		snapshot.rows[id] = row
+	}
+	policy := LifecyclePolicy{Namespace: checker.chain.Namespace, Grants: []LifecycleGrant{{
+		Principal: principal, Project: model.RefByID("project", model.Natural64(0)),
+		Type: "issue", FromStatus: "todo", ToStatus: "done", Actions: []authz.Action{authz.Modify}, Effect: authz.Allow,
+	}}}
+	putPolicy := func() {
+		t.Helper()
+		body, err := json.Marshal(policy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot.rows[policyRef.ID] = driver.Record{Ref: policyRef, Kind: "lifecycle_policy", Body: body}
+	}
+	putPolicy()
+	ctx := context.Background()
+	binding, err := checker.BindAuthorization(ctx, snapshot, principal, authz.Modify, authz.Bead, "bead.close")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := []model.Ref{model.RefByID("allowed", model.Natural64(0)), model.RefByID("other", model.Natural64(0))}
+	if allowed, err := binding.Check(ctx, refs); err != nil || !reflect.DeepEqual(allowed, []bool{true, false}) {
+		t.Fatalf("per-target close transition=%v/%v", allowed, err)
+	}
+	if allowed, err := checker.modifyDecision(ctx, snapshot, principal, "bead.close", refs[0]); err != nil || !allowed {
+		t.Fatalf("ordinary close lost its transition: %v/%v", allowed, err)
+	}
+	policy.Grants = nil
+	putPolicy()
+	binding, err = binding.Rebind(ctx, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allowed, err := binding.Check(ctx, refs); err != nil || !reflect.DeepEqual(allowed, []bool{false, false}) {
+		t.Fatalf("rebind reused revoked close authority=%v/%v", allowed, err)
+	}
+}
+
+func TestBoundOntologyChecksKeepExactResourceAndCurrentGrant(t *testing.T) {
+	checker, source, _, _, _ := bindingChecker(t)
+	management, err := authzfixed.NewOntology(checker.chain.Namespace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checker.chain.Rules = append(checker.chain.Rules, management)
+	principal := model.PrincipalRef{Kind: "user", ID: "admin"}
+	source.facts.Grants = []authz.Grant{{Subject: authz.SubjectRef{Kind: "user", ID: principal.ID}, Scope: authz.Scope{Kind: authz.AuthorityScope, Ref: checker.chain.Namespace.Authority}, Role: "admin"}}
+	ctx := context.Background()
+	binding, err := checker.BindAuthorization(ctx, new(preparationSnapshot), principal, authz.ManageOntology, authz.Ontology, "ontology.apply")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := []model.Ref{model.RefByID("ontology", model.Natural64(0)), model.RefByID("ontology/project", model.Natural64(0)), model.RefByID("ontology-other", model.Natural64(0))}
+	if allowed, err := binding.Check(ctx, refs); err != nil || !reflect.DeepEqual(allowed, []bool{true, true, false}) {
+		t.Fatalf("prepared ontology resource bounds=%v/%v", allowed, err)
+	}
+	filter, err := binding.Filter()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, ref := range refs {
+		if allowed, err := filter.Match(ctx, binding.slice, authz.Resource{Kind: authz.Ontology, Ref: ref}); err != nil || allowed != (i < 2) {
+			t.Fatalf("prepared ontology filter %s=%v/%v", ref.ID, allowed, err)
+		}
+	}
+	source.facts.Grants = nil
+	binding, err = binding.Rebind(ctx, new(preparationSnapshot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allowed, err := binding.Check(ctx, refs); err != nil || !reflect.DeepEqual(allowed, []bool{false, false, false}) {
+		t.Fatalf("rebind reused revoked ontology authority=%v/%v", allowed, err)
 	}
 }
 

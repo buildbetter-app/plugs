@@ -362,8 +362,14 @@ func TestClaimNextDefaultsWithOptionalMutators(t *testing.T) {
 			} else if mode == "configured" {
 				bindings = hostMutators(t, &calls, false)
 			}
-			f := newFixture(t, bindings)
+			f := newFixtureWith(t, memory.New(), bindings, func(ctx context.Context, config authzrpc.Config) (*authzrpc.Composition, error) {
+				// This positive claim test installs its distinct transition
+				// policy; the default fixture continues to grant none.
+				config.ClaimPolicy = &authzrpc.ClaimPolicyConfig{UseImmutableDefault: true}
+				return authzrpc.New(ctx, config)
+			})
 			by := worker("user:operator")
+			by.Caveats["actions"] = []string{"modify", "transition"}
 			claimed := f.call(t, by, "bead.claimNext", map[string]any{}, 10)
 			success(t, claimed)
 			var result map[string]json.RawMessage

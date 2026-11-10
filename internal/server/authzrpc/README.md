@@ -159,3 +159,25 @@ image; it cannot acquire another parent or project assignment. Replay checks
 current authority and returns the stored response without reapplying a slot.
 Ordered ontology guards, rollback, provenance and one-revision publication
 remain in the existing Writer.
+# Native close authority
+
+`Config.LifecyclePolicy` optionally pins a host-owned `lifecycle_policy` record
+in the same store. Its `LifecyclePolicy` body binds the store namespace and
+contains exact `LifecycleGrant` entries for an authenticated User, project Ref,
+bead type, source status and target status. Each entry explicitly allows or
+denies `modify`, `transition`, or `override_guard`. A force close requires all
+three decisions; an ordinary close requires the first two. Denial wins.
+
+The host provisions and maintains this record through its trusted storage
+administration path. Public bead writes cannot create or replace that record
+kind. The rule reads the policy, target bead and project authority on the
+Writer's tracked snapshot; there is no process-local grant cache. Missing,
+unobserved, malformed or mismatched authority fails closed. Same-key receipt
+replay rechecks current authority, including transition permission; grants for
+same-status close settlement must be explicit as well.
+
+This bounded adapter supports User close only. It preserves the fixed Agent
+write adapter and does not grant claim, heartbeat, hierarchy, or workflow
+authority. Omission retains the fixed installation's refusal of transition
+and force permissions. Discovery advertises close and close transactions only
+when this capability is configured; each concrete request still needs grants.

@@ -166,6 +166,32 @@ func sortedKeys(keys map[string]driver.LockKey) []driver.LockKey {
 }
 
 func (r *snapshotReader) locks(writes map[string]*pending, sentinels []driver.Sentinel, extra ...driver.LockKey) (driver.LockSet, error) {
+	return r.locksForSelected(writes, sentinels, "", extra...)
+}
+
+// claimNextLocks changes only the one selected bead's lock mode. Its point
+// read, a subscriber read, and the write may all declare that same key; the
+// selected skip mode must survive their deduplication in the global order.
+func (r *snapshotReader) claimNextLocks(writes map[string]*pending, sentinels []driver.Sentinel, extra ...driver.LockKey) (driver.LockSet, error) {
+	if len(writes) != 1 {
+		return nil, fmt.Errorf("claimNext requires exactly one selected write")
+	}
+	var selected string
+	for _, pending := range writes {
+		if pending.kind != "bead" {
+			return nil, fmt.Errorf("claimNext selected write is not a bead")
+		}
+		ref := pending.ref
+		var err error
+		selected, err = driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &ref})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return r.locksForSelected(writes, sentinels, selected, extra...)
+}
+
+func (r *snapshotReader) locksForSelected(writes map[string]*pending, sentinels []driver.Sentinel, selected string, extra ...driver.LockKey) (driver.LockSet, error) {
 	r.reads.mu.Lock()
 	defer r.reads.mu.Unlock()
 	byKey := map[string]driver.LockRequest{}
@@ -174,7 +200,10 @@ func (r *snapshotReader) locks(writes map[string]*pending, sentinels []driver.Se
 		if err != nil {
 			return err
 		}
-		if prior, ok := byKey[encoded]; ok && prior.Mode == driver.LockUpdate {
+		if selected != "" && encoded == selected {
+			mode = driver.LockSkipLocked
+		}
+		if prior, ok := byKey[encoded]; ok && (prior.Mode == driver.LockUpdate || prior.Mode == driver.LockSkipLocked) {
 			return nil
 		}
 		byKey[encoded] = driver.LockRequest{Key: key, Mode: mode}
@@ -216,6 +245,48 @@ func (r *snapshotReader) locks(writes map[string]*pending, sentinels []driver.Se
 		locks = append(locks, byKey[name])
 	}
 	return locks, driver.ValidateLockSet(locks)
+}
+
+// Only the selected SKIP LOCKED key may be omitted. A driver dropping a
+// required read/fact/sentinel/derived lock is still an error. This runs before
+// Head or staging, so a skipped candidate cannot mint a receipt or revision.
+func checkSelectedLocks(locks driver.LockSet, states []driver.LockState) error {
+	seen := make(map[string]bool, len(states))
+	wanted := make(map[string]driver.LockMode, len(locks))
+	for _, request := range locks {
+		key, err := driver.EncodeLockKey(request.Key)
+		if err != nil {
+			return err
+		}
+		wanted[key] = request.Mode
+	}
+	for _, state := range states {
+		key, err := driver.EncodeLockKey(state.Key)
+		if err != nil {
+			return err
+		}
+		if _, ok := wanted[key]; !ok || seen[key] {
+			return fmt.Errorf("driver returned an unexpected or duplicate lock")
+		}
+		seen[key] = true
+	}
+	missingSelected := 0
+	for key, mode := range wanted {
+		if seen[key] {
+			continue
+		}
+		if mode != driver.LockSkipLocked {
+			return fmt.Errorf("driver failed to acquire the complete required lock set")
+		}
+		missingSelected++
+	}
+	if missingSelected == 1 {
+		return failure("write_conflict", "claimNext candidate is locked")
+	}
+	if missingSelected != 0 {
+		return fmt.Errorf("driver omitted more than one selected lock")
+	}
+	return nil
 }
 
 func (r *snapshotReader) check(states []driver.LockState) error {

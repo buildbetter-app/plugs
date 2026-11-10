@@ -304,12 +304,20 @@ func ValidateCloseSettlement(e Effective, before, after *BeadState, facts GuardF
 func transitionGuards(w Workflow, from, to string, after BeadState, facts GuardFacts) (bool, []Violation) {
 	matched := false
 	var violations []Violation
+	if facts.OverridePolicy {
+		// Force can never close a template, even when its workflow omitted
+		// the optional not_template declaration.
+		violations = evaluateGuard(Guard{Kind: NotTemplate}, after, facts)
+	}
 	for _, rule := range w.Transitions {
 		if rule.To != to || (len(rule.From) != 0 && !contains(rule.From, from)) {
 			continue
 		}
 		matched = true
 		for _, guard := range rule.Guards {
+			if facts.OverridePolicy && guard.Kind == NotTemplate {
+				continue // the mandatory template check already ran above
+			}
 			violations = append(violations, evaluateGuard(guard, after, facts)...)
 		}
 	}
@@ -359,6 +367,12 @@ func IsTemplate(state BeadState) (bool, []Violation) {
 }
 
 func evaluateGuard(guard Guard, after BeadState, facts GuardFacts) []Violation {
+	if facts.OverridePolicy {
+		switch guard.Kind {
+		case FieldsRequired, EvidenceRequired, NoOpenChildren, NoOpenBlockers, GatesResolved:
+			return nil
+		}
+	}
 	failed := false
 	switch guard.Kind {
 	case FieldsRequired:
@@ -390,6 +404,13 @@ func evaluateGuard(guard Guard, after BeadState, facts GuardFacts) []Violation {
 		return nil
 	}
 	return []Violation{{Code: "ontology_guard_failed", Guard: guard.Kind, Message: "transition guard failed or required observation is missing"}}
+}
+
+// ValidateTransitionPermission is the permission-only check used for forced
+// receipt replay. A stored result is never a current transition grant; replay
+// need not rerun policy guards or subscriber callbacks.
+func ValidateTransitionPermission(facts GuardFacts) []Violation {
+	return evaluateGuard(Guard{Kind: Permission}, BeadState{}, facts)
 }
 
 func invalid(field, message string) []Violation {

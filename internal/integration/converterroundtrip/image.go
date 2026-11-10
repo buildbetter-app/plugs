@@ -54,7 +54,7 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 			}
 		}
 		for _, link := range docs[id].Links {
-			if link.TargetKind != model.LinkTargetExternal && (link.Kind == "blocks" || link.Kind == "conditional-blocks") {
+			if link.TargetKind != model.LinkTargetExternal && restoreSchedulingLink(link.Kind) {
 				if err := walk(link.To.ID); err != nil {
 					return err
 				}
@@ -91,7 +91,7 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 	}
 	for id, doc := range docs {
 		for _, link := range doc.Links {
-			if link.TargetKind != model.LinkTargetExternal && (link.Kind == "blocks" || link.Kind == "conditional-blocks") && (ancestors[id][link.To.ID] > 0 || ancestors[link.To.ID][id] > 0) {
+			if link.TargetKind != model.LinkTargetExternal && restoreBlockingLink(link.Kind) && (ancestors[id][link.To.ID] > 0 || ancestors[link.To.ID][id] > 0) {
 				return fmt.Errorf("restore blocking link cannot join an ancestor and descendant")
 			}
 		}
@@ -146,6 +146,10 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 		if len(violations) != 0 {
 			return fmt.Errorf("invalid restore priority for %s", id)
 		}
+		ancestorsReady, err := restoreAncestorsReady(snapshot, docs, doc)
+		if err != nil {
+			return err
+		}
 		links := append([]pipeline.Link{}, doc.Links...)
 		sort.Slice(links, func(i, j int) bool {
 			if links[i].Kind != links[j].Kind {
@@ -160,7 +164,7 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 			table driver.DerivedTable
 			value any
 		}{
-			{driver.DerivedReadyState, map[string]bool{"blocked": blocked, "ready": effective.ReadyEligible(doc.Type, stringValue(doc.Fields["status"])) && !blocked && !unresolvedScheduling}},
+			{driver.DerivedReadyState, map[string]bool{"blocked": blocked, "ready": effective.ReadyEligible(doc.Type, stringValue(doc.Fields["status"])) && !blocked && !unresolvedScheduling && ancestorsReady}},
 			{driver.DerivedCutClosure, []string{}},
 			{driver.DerivedAttribute, map[string]any{}},
 			{driver.DerivedSortKey, map[string]any{"priority": priority, "id": id}},
@@ -233,6 +237,93 @@ func importedWaitsForSatisfied(link pipeline.Link, spawner pipeline.Document, do
 	return !openChild || link.Metadata != nil && link.Metadata.Gate == "any-children" && terminalChild
 }
 
+// Match the canonical pipeline graph topology: waits-for expands readiness
+// through the spawner's children, but does not add an ancestor/cycle edge.
+func restoreSchedulingLink(kind string) bool {
+	return kind == "blocks" || kind == "conditional-blocks" || kind == "parent-child"
+}
+
+func restoreBlockingLink(kind string) bool {
+	return kind == "blocks" || kind == "conditional-blocks" || kind == "waits-for"
+}
+
+// Ancestors suppress scheduling without becoming the child's direct blockers.
+// This is the same distinction used by the live ready/claim guard: backlog or
+// an unsatisfied ancestor dependency suppresses every descendant, while an
+// ordinary open parent does not. Each ancestor uses its own project ontology.
+func restoreAncestorsReady(snapshot ontology.Snapshot, docs map[string]pipeline.Document, doc pipeline.Document) (bool, error) {
+	seen := map[string]bool{doc.ID: true}
+	for {
+		parent, err := pipeline.HierarchyParent(doc)
+		if err != nil {
+			return false, err
+		}
+		if parent == nil {
+			return true, nil
+		}
+		ancestor, exists := docs[parent.ID]
+		if !exists || seen[parent.ID] {
+			return false, nil
+		}
+		category, known := snapshot.Effective(ancestor.Project).Category(stringValue(ancestor.Fields["status"]))
+		if !known || category == ontology.Backlog {
+			return false, nil
+		}
+		for _, link := range ancestor.Links {
+			if restoreBlockingLink(link.Kind) && !restoreLinkSatisfied(snapshot, docs, link) {
+				return false, nil
+			}
+		}
+		seen[parent.ID] = true
+		doc = ancestor
+	}
+}
+
+// The complete admitted local image is the independent source for every child
+// predicate. Use each endpoint's ontology and the same nil/explicit metadata
+// distinction as the ordinary service's canonical waits-for evaluator.
+func restoreLinkSatisfied(snapshot ontology.Snapshot, docs map[string]pipeline.Document, link pipeline.Link) bool {
+	if link.TargetKind == model.LinkTargetExternal {
+		return false
+	}
+	blocker, exists := docs[link.To.ID]
+	if !exists || !link.To.IsID() || !link.To.Branch.IsZero() {
+		return false
+	}
+	terminal := func(doc pipeline.Document) bool {
+		return snapshot.Effective(doc.Project).SatisfiesBlocks(stringValue(doc.Fields["status"]))
+	}
+	switch link.Kind {
+	case "blocks":
+		return terminal(blocker)
+	case "conditional-blocks":
+		return snapshot.Effective(blocker.Project).SatisfiesConditionalBlocks(stringValue(blocker.Fields["status"]))
+	case "waits-for":
+		if link.Metadata == nil && terminal(blocker) {
+			return true
+		}
+		if link.Metadata != nil && link.Metadata.AlsoBlocks && !terminal(blocker) {
+			return false
+		}
+		openChild, terminalChild := false, false
+		for _, child := range docs {
+			member := child.Parent != nil && child.Parent.ID == blocker.ID
+			for _, edge := range child.Links {
+				member = member || edge.TargetKind != model.LinkTargetExternal && edge.Kind == "parent-child" && edge.To.ID == blocker.ID
+			}
+			if member {
+				if terminal(child) {
+					terminalChild = true
+				} else {
+					openChild = true
+				}
+			}
+		}
+		return !openChild || link.Metadata != nil && link.Metadata.Gate == "any-children" && terminalChild
+	}
+	return true
+}
+
 // The strict profile binds the admitted document in the same canonical image
 // encoding. Existing built-in digests and native restore profiles are unchanged.
 // The reverse adapter's existing profile guard remains closed to this profile.
@@ -244,6 +335,52 @@ func derivedProfile(plan *restorePlan) string {
 		return "beads-compat-union-head/1"
 	}
 	return "builtin-head/1"
+}
+
+// ImportedOntologySourceRef identifies the protected source produced only by
+// an admitted strict-union configuration migration with actual declarations.
+// It is a locator, not a promise that a legacy/default-only import has a source.
+func ImportedOntologySourceRef() model.Ref {
+	return model.RefByID("ontology/imported", model.Natural64(0))
+}
+
+// retainImportedOntology publishes the already validated native configuration
+// document in the SAME import transaction as its original archive and receipt.
+// A derived builtin or absent custom configuration is not source authority.
+// The driver assigns the source's actual committed revision; original source
+// declarations and member hashes remain independently available as lineage.
+func retainImportedOntology(plan *restorePlan, archive *dumpformat.Archive, add func(model.Ref, string, any) error) error {
+	if plan.migration == nil || len(plan.migration.Declarations()) == 0 {
+		return nil
+	}
+	source := struct {
+		Base ontology.Document `json:"base"`
+	}{Base: plan.migration.Document()}
+	compiled, problems := ontology.Compile(source.Base, nil, nil)
+	if len(problems) != 0 {
+		return fmt.Errorf("admitted imported ontology no longer compiles: %v", problems)
+	}
+	raw, err := json.Marshal(source)
+	if err != nil {
+		return err
+	}
+	ref := ImportedOntologySourceRef()
+	if err := add(ref, "ontology", source); err != nil {
+		return err
+	}
+	manifest := archive.Manifest()
+	evidence := struct {
+		Source         model.Ref                      `json:"source"`
+		BodySHA256     string                         `json:"body_sha256"`
+		CompiledDigest string                         `json:"compiled_digest"`
+		SourceStore    string                         `json:"source_store"`
+		ArchiveSHA256  string                         `json:"archive_sha256"`
+		DerivedSHA256  string                         `json:"derived_sha256"`
+		Profile        string                         `json:"profile"`
+		Declarations   []dumpformat.ConfigDeclaration `json:"declarations"`
+		Members        map[string]dumpformat.File     `json:"members"`
+	}{ref, hashBytes(raw), compiled.Digest(), manifest.StoreID, archive.SHA256(), plan.derivedDigest, derivedProfile(plan), plan.migration.Declarations(), manifest.Files}
+	return add(model.RefByID("restore/ontology-source", model.Natural64(0)), "instance_config", evidence)
 }
 
 type archiveEvidence struct {

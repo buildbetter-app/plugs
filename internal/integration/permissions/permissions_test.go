@@ -28,15 +28,16 @@ import (
 )
 
 type fixture struct {
-	store  *memory.Store
-	lease  driver.ActiveLease
-	seed   *service.Service
-	guard  *authzrpc.GuardedService
-	keys   *authnapikey.Provider
-	facts  *authzrpc.MutableFacts
-	url    string
-	client *http.Client
-	nextID atomic.Uint64
+	store   *memory.Store
+	lease   driver.ActiveLease
+	seed    *service.Service
+	guard   *authzrpc.GuardedService
+	checker *authzrpc.Checker
+	keys    *authnapikey.Provider
+	facts   *authzrpc.MutableFacts
+	url     string
+	client  *http.Client
+	nextID  atomic.Uint64
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -45,6 +46,11 @@ func newFixture(t *testing.T) *fixture {
 }
 
 func newFixtureWithStore(t *testing.T, wrap func(*memory.Store) driver.Store) *fixture {
+	t.Helper()
+	return newFixtureWithClaimPolicy(t, wrap, nil)
+}
+
+func newFixtureWithClaimPolicy(t *testing.T, wrap func(*memory.Store) driver.Store, claimPolicy *authzrpc.ClaimPolicyConfig) *fixture {
 	t.Helper()
 	ctx := context.Background()
 	f := &fixture{store: memory.New()}
@@ -100,11 +106,12 @@ func newFixtureWithStore(t *testing.T, wrap func(*memory.Store) driver.Store) *f
 	if wrap != nil {
 		store = wrap(f.store)
 	}
-	composition, err := permissions.New(ctx, permissions.Config{Store: store, Lease: lease, Keys: f.keys, Facts: facts, Namespace: ns, DefaultProject: "project"})
+	composition, err := permissions.New(ctx, permissions.Config{Store: store, Lease: lease, Keys: f.keys, Facts: facts, Namespace: ns, DefaultProject: "project", ClaimPolicy: claimPolicy})
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.guard = composition.Service
+	f.checker = composition.Checker
 	server, err := composition.Handler.Listen(ctx, "127.0.0.1:0", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -286,8 +293,8 @@ func TestRealHTTPFixedPermissionsFilterListsAndAuthorizeWrites(t *testing.T) {
 }
 
 func TestRealHTTPClaimNextAndPinnedFactsInvalidation(t *testing.T) {
-	f := newFixture(t)
-	agent := f.issue(t, model.PrincipalRef{Kind: "agent", ID: "agent:worker", Sponsor: &model.PrincipalRef{Kind: "user", ID: "user:operator"}, Caveats: map[string]any{"actions": []string{"modify"}, "projects": []model.Ref{model.RefByID("project", model.Natural64(0))}}})
+	f := newFixtureWithClaimPolicy(t, nil, &authzrpc.ClaimPolicyConfig{UseImmutableDefault: true})
+	agent := f.issue(t, claimPermissionWorker("agent:worker"))
 	claimed := result(t, f.call(t, agent.Token, "bead.claimNext", map[string]any{"_meta": writeMeta(200)}))
 	if claimed["leaseTtlMs"] == nil || claimed["leaseExpiresAt"] == nil || claimed["revision"] == nil {
 		t.Fatalf("claimNext did not return the cataloged claim result: %s", f.call(t, agent.Token, "bead.claimNext", nil).body)
@@ -472,19 +479,185 @@ func permissionWorker(id string) model.PrincipalRef {
 	}
 }
 
+func claimPermissionWorker(id string) model.PrincipalRef {
+	by := permissionWorker(id)
+	by.Caveats["actions"] = []string{"modify", "transition"}
+	return by
+}
+
+type claimSourceRefReader struct {
+	driver.Reader
+	ref model.Ref
+}
+
+func (r claimSourceRefReader) Get(ctx context.Context, refs []model.Ref) ([]driver.Record, error) {
+	rows, err := r.Reader.Get(ctx, refs)
+	if err != nil {
+		return nil, err
+	}
+	rows = append([]driver.Record(nil), rows...)
+	for i := range rows {
+		rows[i].Ref = r.ref
+	}
+	return rows, nil
+}
+
+func TestClaimPolicyBindsCanonicalBranchZeroSourceReferences(t *testing.T) {
+	f := newFixtureWithClaimPolicy(t, nil, &authzrpc.ClaimPolicyConfig{UseImmutableDefault: true})
+	ctx := context.Background()
+	ready, err := f.seed.Ready(ctx, model.PrincipalRef{Kind: "user", ID: "user:seed"}, service.ReadyRequest{Project: "project"})
+	if err != nil || len(ready.Items) != 3 {
+		t.Fatalf("real seeded candidates: %+v %v", ready, err)
+	}
+	id := ready.Items[0].ID
+	meta, err := f.store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := f.store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	for _, tc := range []struct {
+		name    string
+		stored  model.Ref
+		request model.Ref
+		allowed bool
+	}{
+		{"literal-source-wire-request", model.Ref{ID: id}, model.RefByID(id, model.Natural64(0)), true},
+		{"wire-source-literal-request", model.RefByID(id, model.Natural64(0)), model.Ref{ID: id}, true},
+		{"different-source-id", model.RefByID("different", model.Natural64(0)), model.RefByID(id, model.Natural64(0)), false},
+		{"source-key-arm", model.RefByKey(id), model.RefByID(id, model.Natural64(0)), false},
+		{"source-nonzero-branch", model.RefByID(id, model.Natural64(1)), model.RefByID(id, model.Natural64(0)), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			observation, err := f.checker.ObserveTransitionPermission(ctx, service.TransitionPermissionRequest{
+				Principal: claimPermissionWorker("agent:reference-bounds"), Resource: model.ResourceRef{Kind: "bead", Ref: tc.request},
+				Project: "project", Type: "issue", FromStatus: "todo", ToStatus: "in_progress", Method: "bead.claimNext", Action: "transition",
+			}, claimSourceRefReader{Reader: r, ref: tc.stored})
+			if err != nil || !observation.AuthzInstalled || observation.Permission == nil || *observation.Permission != tc.allowed {
+				t.Fatalf("source reference permission allowed=%t: observation=%+v err=%v", tc.allowed, observation, err)
+			}
+		})
+	}
+}
+
+func TestRealHTTPClaimTransitionInstallationAndCaveatBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		policy     *authzrpc.ClaimPolicyConfig
+		transition bool
+		allowed    bool
+	}{
+		{name: "omitted-policy", transition: true},
+		{name: "installed-policy-without-transition-caveat", policy: &authzrpc.ClaimPolicyConfig{UseImmutableDefault: true}},
+		{name: "installed-policy-with-transition-caveat", policy: &authzrpc.ClaimPolicyConfig{UseImmutableDefault: true}, transition: true, allowed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixtureWithClaimPolicy(t, nil, tc.policy)
+			ctx := context.Background()
+			by := permissionWorker("agent:installation-bounds")
+			if tc.transition {
+				by = claimPermissionWorker(by.ID)
+			}
+			key := f.issue(t, by)
+			ready, err := f.seed.Ready(ctx, model.PrincipalRef{Kind: "user", ID: "user:seed"}, service.ReadyRequest{Project: "project"})
+			if err != nil || len(ready.Items) != 3 {
+				t.Fatalf("real seeded candidates: %+v %v", ready, err)
+			}
+			refs := make([]model.Ref, len(ready.Items))
+			for i, bead := range ready.Items {
+				refs[i] = model.RefByID(bead.ID, model.Natural64(0))
+			}
+			read := func() (driver.Meta, []driver.Record) {
+				t.Helper()
+				meta, err := f.store.Meta(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				r, err := f.store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer r.Close()
+				rows, err := r.Get(ctx, refs)
+				if err != nil || len(rows) != len(refs) {
+					t.Fatalf("complete candidate image: rows=%d err=%v", len(rows), err)
+				}
+				return meta, rows
+			}
+			before, rows := read()
+			params := map[string]any{"_meta": writeMeta(1100)}
+			got := f.call(t, key.Token, "bead.claimNext", params)
+			if got.status != http.StatusOK || got.value["error"] != nil {
+				t.Fatalf("claim admission: %s", got.body)
+			}
+			if tc.allowed {
+				value, ok := got.value["result"].(map[string]any)
+				if !ok || value["leaseTtlMs"] == nil {
+					t.Fatalf("installed claim did not produce a lease: response=%s first_candidate=%s", got.body, rows[0].Body)
+				}
+			} else if value, ok := got.value["result"]; !ok || value != nil {
+				t.Fatalf("missing transition authority claimed a candidate: %s", got.body)
+			}
+			after, afterRows := read()
+			beforeHead, _ := before.Head.Uint64()
+			afterHead, _ := after.Head.Uint64()
+			if afterHead != beforeHead+1 || (!tc.allowed && !reflect.DeepEqual(rows, afterRows)) {
+				t.Fatal("claim failed to publish exactly one receipt or changed a denied candidate")
+			}
+			replay := f.call(t, key.Token, "bead.claimNext", params)
+			metadata, ok := replay.value["_meta"].(map[string]any)
+			if replay.value["error"] != nil || !reflect.DeepEqual(got.value["result"], replay.value["result"]) || !ok || metadata["replayed"] != true {
+				t.Fatalf("receipt replay changed: %s", replay.body)
+			}
+			replayed, replayRows := read()
+			if replayed.Head.String() != after.Head.String() || !reflect.DeepEqual(afterRows, replayRows) {
+				t.Fatal("receipt replay published candidate state")
+			}
+			r, err := f.store.Read(ctx, driver.View{Incarnation: after.Incarnation})
+			if err != nil {
+				t.Fatal(err)
+			}
+			facts, err := f.facts.Load(ctx, r)
+			_ = r.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			facts.Grants = nil
+			if err := f.facts.Replace(facts); err != nil {
+				t.Fatal(err)
+			}
+			// Replacing installed facts is itself a real ACL publication. Keep
+			// that commit distinct from the denied replay's state boundary.
+			revoked, revokedRows := read()
+			revokedHead, _ := revoked.Head.Uint64()
+			if revokedHead != afterHead+1 || !reflect.DeepEqual(afterRows, revokedRows) {
+				t.Fatal("grant revocation did not publish exactly one ACL-only revision")
+			}
+			wantCode(t, f.call(t, key.Token, "bead.claimNext", params), "forbidden")
+			final, finalRows := read()
+			if final.Head.String() != revoked.Head.String() || !reflect.DeepEqual(revokedRows, finalRows) {
+				t.Fatal("revoked replay published candidate state")
+			}
+		})
+	}
+}
+
 func TestRealHTTPGuardedClaimNextSkipsCompetingClaim(t *testing.T) {
 	var raced *guardedClaimRaceStore
-	f := newFixtureWithStore(t, func(store *memory.Store) driver.Store {
+	f := newFixtureWithClaimPolicy(t, func(store *memory.Store) driver.Store {
 		raced = &guardedClaimRaceStore{Store: store}
 		return raced
-	})
+	}, &authzrpc.ClaimPolicyConfig{UseImmutableDefault: true})
 	ctx := context.Background()
 	page, err := f.seed.Ready(ctx, model.PrincipalRef{Kind: "user", ID: "user:seed"}, service.ReadyRequest{Project: "project"})
 	if err != nil || len(page.Items) != 3 {
 		t.Fatalf("real ready candidates: %+v %v", page, err)
 	}
 	first := model.RefByID(page.Items[0].ID, model.Natural64(0))
-	competitor := permissionWorker("agent:competitor")
+	competitor := claimPermissionWorker("agent:competitor")
 	var claims atomic.Int32
 	hook := func(ctx context.Context) error {
 		_, err := f.guard.ClaimWithOutcome(ctx, competitor, service.ClaimRequest{ID: first}, model.WriteMeta{
@@ -496,7 +669,7 @@ func TestRealHTTPGuardedClaimNextSkipsCompetingClaim(t *testing.T) {
 		return err
 	}
 	raced.beforeWrite.Store(&hook)
-	worker := f.issue(t, permissionWorker("agent:queue-worker"))
+	worker := f.issue(t, claimPermissionWorker("agent:queue-worker"))
 	params := map[string]any{"_meta": writeMeta(900)}
 	response := f.call(t, worker.Token, "bead.claimNext", params)
 	got := result(t, response)
@@ -521,7 +694,7 @@ func TestRealHTTPGuardedClaimNextSkipsCompetingClaim(t *testing.T) {
 func TestRealHTTPGuardedClaimNextBoundsPersistentCandidateWriteConflict(t *testing.T) {
 	var raced *guardedClaimRaceStore
 	conflict := &model.Error{Message: "snapshot changed during all four write attempts", Data: model.ErrorData{Code: "write_conflict", Retryable: true}}
-	f := newFixtureWithStore(t, func(store *memory.Store) driver.Store {
+	f := newFixtureWithClaimPolicy(t, func(store *memory.Store) driver.Store {
 		raced = &guardedClaimRaceStore{Store: store, writePlan: func(n int32) error {
 			// Two complete walks visit three authorized candidates each. Only the
 			// seventh write is the first terminal probe; the fourteenth is the
@@ -532,8 +705,8 @@ func TestRealHTTPGuardedClaimNextBoundsPersistentCandidateWriteConflict(t *testi
 			return nil
 		}}
 		return raced
-	})
-	worker := f.issue(t, permissionWorker("agent:persistent-conflict"))
+	}, &authzrpc.ClaimPolicyConfig{UseImmutableDefault: true})
+	worker := f.issue(t, claimPermissionWorker("agent:persistent-conflict"))
 	ctx := context.Background()
 	before, err := f.store.Meta(ctx)
 	if err != nil {
@@ -554,7 +727,7 @@ func TestRealHTTPGuardedClaimNextBoundsPersistentCandidateWriteConflict(t *testi
 		t.Fatal(err)
 	}
 	defer reader.Close()
-	principal := permissionWorker("agent:persistent-conflict")
+	principal := claimPermissionWorker("agent:persistent-conflict")
 	principalKey, err := driver.PrincipalKey(principal)
 	if err != nil {
 		t.Fatal(err)

@@ -371,6 +371,7 @@ type CloseRequest struct {
 	ID     model.Ref
 	Reason string
 	Expect []model.Precondition
+	Force  bool
 }
 
 // LinkRequest is the named dependency write lowered to the canonical LinkOp

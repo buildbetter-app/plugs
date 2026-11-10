@@ -3,6 +3,7 @@
   "sourceSHA256": "a1526ff907601720282714ddefef0f2550f9ff79ae6b8360ea6dec48d7e9c457",
   "schemaSourceSHA256": {
     "ErrorCode": "5322921149cd542890ae721448fc185f33cb543f0891f64d2b95a3b67bc7d8ba",
+    "CloseOp": "6ab50ceeea1aca62eff9cf638a0333243505dff7e7d7a251cd7648b272216b66",
     "LinkOp": "d96d7dd03cd091f18d0436e45cf77a4783e0a9d29fa0cbd12611ef13e23ef1dc",
     "LinkTargetKind": "d96d7dd03cd091f18d0436e45cf77a4783e0a9d29fa0cbd12611ef13e23ef1dc",
     "LinkMetadata": "d96d7dd03cd091f18d0436e45cf77a4783e0a9d29fa0cbd12611ef13e23ef1dc",
@@ -1932,7 +1933,7 @@
     },
     "CloseOp": {
       "type": "object",
-      "description": "Enter the canonical close slot at this operation position in tx.apply; reuse bead.close guards, permission, reason and provenance. Any refusal rolls back the whole ChangeSet. No force or status shortcut.",
+      "description": "Enter the canonical close slot at this operation position in tx.apply. Optional force requests the separately authorized policy override only for this operation. Templates, schema, CAS, leases and transition permission remain mandatory; any refusal rolls back the whole ChangeSet.",
       "properties": {
         "kind": {
           "const": "close"
@@ -1949,6 +1950,10 @@
           "items": {
             "$ref": "#/components/schemas/Expect"
           }
+        },
+        "force": {
+          "type": "boolean",
+          "description": "Request close policy override through the separate override_guard action. Templates, schema, CAS, leases, ordinary write authorization and transition permission still apply; authenticated callers must be users."
         }
       },
       "required": [

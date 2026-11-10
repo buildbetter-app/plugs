@@ -110,6 +110,13 @@ type Config struct {
 	// guarded service exposes x.workflow.invoke and standard-tool routing while
 	// preserving the checker for core beads.
 	Workflow *workflowplugin.Provider
+	// ClaimPolicy is explicit trusted claim-slot installation state. Nil grants
+	// no Transition permission.
+	ClaimPolicy *ClaimPolicyConfig
+	// LifecyclePolicy opts into the native close authority. Ref names a
+	// host-owned lifecycle_policy record in this store; public bead writes
+	// cannot create or replace that record. Missing policy grants deny.
+	LifecyclePolicy *LifecyclePolicyConfig
 }
 
 // Composition owns the installed chain and is useful to hosts that need the
@@ -133,45 +140,22 @@ func newWithClock(ctx context.Context, config Config, now func() time.Time) (*Co
 	if nilValue(config.Store) || nilValue(config.Lease) || config.Provider == nil || config.Facts == nil || now == nil {
 		return nil, fmt.Errorf("authzrpc: store, lease, provider and facts are required")
 	}
+	var checker *Checker
+	ontology := service.NewOntology(nil, service.WithTransitionPermissionObserver(func(ctx context.Context, q service.TransitionPermissionRequest, reader port.SnapshotReader) (service.TransitionPermissionObservation, error) {
+		return checker.ObserveTransitionPermission(ctx, q, reader)
+	}))
+	checker, err := newCheckerWithClock(ctx, config.Store, config.Lease, ontology, AuthorityConfig{
+		Facts: config.Facts, Namespace: config.Namespace, Caller: config.Caller,
+		Hierarchy: config.Hierarchy, LifecyclePolicy: config.LifecyclePolicy, ClaimPolicy: config.ClaimPolicy,
+	}, now)
+	if err != nil {
+		return nil, err
+	}
 	meta, err := config.Store.Meta(ctx)
 	if err != nil {
 		return nil, err
 	}
-	ns := config.Namespace
-	if ns.StoreID == "" {
-		ns.StoreID = string(meta.StoreID)
-	}
-	if ns.Incarnation == "" {
-		ns.Incarnation = meta.Incarnation
-	}
-	if ns.InstallationID == "" {
-		ns.InstallationID = "fixed"
-	}
-	if ns.Authority.ID == "" {
-		ns.Authority = model.RefByID("authority", model.Natural64(0))
-	}
-	if err := ns.Validate(); err != nil {
-		return nil, fmt.Errorf("authzrpc: invalid namespace: %w", err)
-	}
-	if ns.StoreID != string(meta.StoreID) || ns.Incarnation != meta.Incarnation {
-		return nil, fmt.Errorf("authzrpc: namespace does not match store")
-	}
-	caller := config.Caller
-	if caller == nil {
-		caller = DefaultCallerSource(model.Natural64(1))
-	}
-	rules, err := authzfixed.New(ns)
-	if err != nil {
-		return nil, err
-	}
-	chain := authz.Chain{Namespace: ns, Rules: []authz.RuleSet{rules}}
-	checker := &Checker{chain: chain, source: config.Facts, caller: caller, store: config.Store, lease: config.Lease, hierarchy: config.Hierarchy, now: now}
-	if mutable, ok := config.Facts.(*MutableFacts); ok {
-		if err := mutable.bind(ctx, config.Store, config.Lease, ns); err != nil {
-			return nil, err
-		}
-	}
-	ontology := service.NewOntology(nil)
+	ns, chain := checker.chain.Namespace, checker.chain
 	options := []pipeline.Option{pipeline.WithOntology(ontology), pipeline.WithAuthorizer(checker), pipeline.WithEventContext(checker), pipeline.WithClock(now)}
 	if config.Audit != nil {
 		options = append(options, pipeline.WithOntologyAudit(config.Audit))
@@ -189,14 +173,7 @@ func newWithClock(ctx context.Context, config Config, now func() time.Time) (*Co
 		serviceOptions = append(serviceOptions, service.WithWorkflow(config.Workflow))
 	}
 	domain := service.New(config.Store, config.Lease, writer, serviceOptions...)
-	guarded := &GuardedService{
-		delegate:        domain,
-		checker:         checker,
-		lease:           config.Lease,
-		commitEmpty:     domain.CommitClaimNextEmpty,
-		claimNextPage:   domain.ClaimNextReadyPage,
-		readyCandidates: domain.ReadyCandidates,
-	}
+	guarded := checker.GuardService(domain)
 	registry, err := rpc.NewRegistry()
 	if err != nil {
 		return nil, err

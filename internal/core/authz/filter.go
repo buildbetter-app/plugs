@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 )
@@ -241,13 +242,16 @@ func prepare(ctx context.Context, s Slice, n Namespace, r CheckRequest) (bool, e
 	if p.Sponsor != nil && (p.Kind != "agent" || p.Sponsor.Sponsor != nil || !ValidID(p.Sponsor.ID) || (p.Sponsor.Kind != "user" && p.Sponsor.Kind != "service")) {
 		return false, nil
 	}
-	if r.Resource.Kind != Bead && r.Resource.Kind != Project && r.Resource.Kind != History {
+	if r.Resource.Kind != Bead && r.Resource.Kind != Project && r.Resource.Kind != History && r.Resource.Kind != Ontology {
 		return false, nil
 	}
 	if CanonicalRef(r.Resource.Ref) != nil {
 		return false, nil
 	}
 	if r.Resource.Kind == Bead && !validBeadReference(s, r.Resource.Ref) {
+		return false, nil
+	}
+	if r.Resource.Kind == Ontology && r.Resource.Ref.ID != "ontology" && !strings.HasPrefix(r.Resource.Ref.ID, "ontology/") {
 		return false, nil
 	}
 	for _, d := range []Dependency{ContextDependency(n), ACLDependency(n), {Kind: "sentinel", Key: "plugins"}, {Kind: "sentinel", Key: "ontology"}} {

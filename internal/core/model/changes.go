@@ -69,6 +69,7 @@ type CloseOp struct {
 	Target Ref            `json:"target"`
 	Reason string         `json:"reason,omitempty"`
 	Expect []Precondition `json:"expect,omitempty"`
+	Force  bool           `json:"force,omitempty"`
 }
 type ReparentOp struct {
 	Kind    OpKind `json:"kind"`
