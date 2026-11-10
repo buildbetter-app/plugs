@@ -49,7 +49,14 @@ func (w *Writer) prepareAudit(ctx context.Context, p *prepared) error {
 	// that final comment as the whole transition. Same-status comments retain
 	// the legacy path, and conditional notices still require the audit source.
 	ordinaryClose := p.proposal.Meta.Method == "bead.close" && len(p.proposal.Changes) == 2 && statusChanged(p.writes[p.proposal.Changes[0].Resource.Ref.ID])
-	if len(p.changed) == 0 || (!w.cfg.auditSet && p.release == nil && !gate && !ordinaryClose && len(p.closes) == 0) {
+	overlay := false
+	if memoryMethod(p.proposal.Meta.Method) {
+		for id := range p.changed {
+			value := p.writes[id]
+			overlay = overlay || value.memory != nil && value.memory.Overlay != nil
+		}
+	}
+	if len(p.changed) == 0 || (!w.cfg.auditSet && p.release == nil && !gate && !ordinaryClose && !overlay && len(p.closes) == 0) {
 		return nil
 	}
 	coreRecovery := p.release != nil && p.release.reclaim
@@ -312,7 +319,7 @@ func (p *prepared) ordinaryEvent(pending *pending, op model.OpKind) (model.Durab
 		}
 	}
 	if pending != nil && pending.kind == "memory" {
-		if op == model.OpDelete {
+		if op == model.OpDelete || pending.memory != nil && pending.memory.Overlay != nil && pending.memory.Overlay.Deleted {
 			return model.EventMemoryDeleted, nil
 		}
 		if op == model.OpCreate || op == model.OpPatch || op == model.OpSetMeta {

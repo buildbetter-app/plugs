@@ -565,7 +565,7 @@ func validateDumpShape(dump Dump, report *Report, converter *Converter) error {
 	}
 	for kind, records := range dump.Records {
 		for i, record := range records {
-			if record.Kind != kind || strings.TrimSpace(record.ID) != record.ID || (strings.ContainsRune(record.ID, '\x00') && !(kind == "edge" && m.SourcePlaneAddressContract == dumpformat.SourcePlaneAddressContract)) || record.ID == "" || record.Body == nil || record.Source.Table == "" || record.Source.Fields == nil {
+			if record.Kind != kind || strings.TrimSpace(record.ID) == "" || kind != "memory" && strings.TrimSpace(record.ID) != record.ID || (strings.ContainsRune(record.ID, '\x00') && !(kind == "edge" && m.SourcePlaneAddressContract == dumpformat.SourcePlaneAddressContract)) || record.Body == nil || record.Source.Table == "" || record.Source.Fields == nil {
 				return refusal("kind %q record %d has incomplete identity or provenance", kind, i)
 			}
 		}

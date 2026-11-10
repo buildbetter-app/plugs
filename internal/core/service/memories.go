@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"regexp"
 	"sort"
 	"strings"
@@ -153,7 +154,7 @@ func decodeMemoryRecord(record driver.Record) (Memory, error) {
 	if err != nil {
 		return Memory{}, failure("internal_error", "invalid persisted memory")
 	}
-	if source != nil && !source.Visible {
+	if source != nil && !source.Visible || document.Overlay != nil && document.Overlay.Deleted {
 		return Memory{}, historyMemoryNotFound()
 	}
 	return memoryValue(record, document)
@@ -162,45 +163,42 @@ func decodeMemoryRecord(record driver.Record) (Memory, error) {
 // readPublicMemory projects a validated retained source envelope without
 // changing its persisted schema. Writes use the same strict classifier.
 func readPublicMemory(ctx context.Context, r driver.Reader, record driver.Record) (Memory, bool, error) {
-	document, source, err := pipeline.DecodeMemoryRecord(record)
+	effective, document, source, err := pipeline.ResolveMemoryRecord(ctx, r, record)
 	if err != nil {
-		return Memory{}, false, failure("internal_error", "invalid persisted memory")
+		converted := mapped(err)
+		var typed *model.Error
+		if !errors.As(converted, &typed) {
+			converted = failure("internal_error", "invalid persisted memory")
+		}
+		return Memory{}, false, converted
 	}
-	if source == nil {
-		memory, err := memoryValue(record, document)
-		return memory, true, err
-	}
-	if !source.Visible {
+	if source != nil && !source.Visible || document.Overlay != nil && document.Overlay.Deleted {
 		return Memory{}, false, nil
 	}
-	invalid := func() (Memory, bool, error) {
-		return Memory{}, false, failure("internal_error", "invalid joint source memory")
-	}
-	// The archive digest belongs to the admitted profile, not the mutable raw
-	// mirror. Bind it on the same core snapshot rather than adding stored fields.
-	bindingRef := model.RefByID("instance_config/restore-import/binding", model.Natural64(0))
-	rows, err := r.Get(ctx, []model.Ref{bindingRef})
+	memory, err := memoryValue(effective, document)
 	if err != nil {
-		return Memory{}, false, mapped(err)
+		return Memory{}, false, err
 	}
-	if len(rows) != 1 || rows[0].Kind != "instance_config" {
-		return invalid()
+	if source == nil {
+		return memory, true, nil
 	}
-	var binding struct {
-		Profile     driver.RestoreImportProfile `json:"profile"`
-		RequestHash string                      `json:"request_hash"`
+	if !source.Legacy && document.Overlay == nil {
+		// Classification/encoding belong to the retained envelope. Public
+		// metadata remains the established provenance projection until a user
+		// writes actual overlay metadata.
+		memory.Metadata = nil
 	}
-	if json.Unmarshal(rows[0].Body, &binding) != nil || binding.Profile.SourcePlanes == nil {
-		return invalid()
+	if memory.Metadata == nil {
+		memory.Metadata = map[string]any{}
 	}
-	request, err := binding.Profile.RequestHash()
-	if err != nil || request != binding.RequestHash {
-		return invalid()
+	// Request metadata cannot replace the authoritative original provenance.
+	memory.Metadata["plug.restore.source_id"] = strings.TrimPrefix(source.Fields["key"].(string), "kv.memory.")
+	memory.Metadata["plug.restore.source_table"] = "config"
+	memory.Metadata["plug.restore.source"] = source.Fields
+	if !source.Legacy {
+		memory.Metadata["plug.restore.source_project"] = source.Project
 	}
-	memory := Memory{ID: document.ID, Key: document.Key, Content: document.Content, Revision: record.Revision, Metadata: map[string]any{
-		"plug.restore.source_id": document.Key, "plug.restore.source_table": "config", "plug.restore.source": source.Fields,
-		"plug.restore.source_project": source.Project, "plug.restore.archive_sha256": binding.Profile.ArchiveDigest,
-	}}
+	memory.Metadata["plug.restore.archive_sha256"] = source.Archive
 	return memory, true, nil
 }
 
@@ -210,6 +208,14 @@ func (s *Service) MemoryGet(ctx context.Context, by model.PrincipalRef, req Memo
 	}
 	if _, err := s.memoryAuthorizationState(by); err != nil {
 		return Memory{}, err
+	}
+	var access historyMemoryAccess
+	if req.AsOf != nil {
+		var err error
+		access, err = s.beginHistoryMemoryAccess(ctx, by, req.ID)
+		if err != nil {
+			return Memory{}, err
+		}
 	}
 	r, err := s.reader(ctx, by, req.AsOf)
 	if err != nil {
@@ -236,6 +242,14 @@ func (s *Service) MemoryGet(ctx context.Context, by model.PrincipalRef, req Memo
 	}
 	if !allowed {
 		return Memory{}, failure("not_found", "memory was not found")
+	}
+	if req.AsOf != nil {
+		if err := access.observeRecord(&rows[0], r.Snapshot()); err != nil {
+			return Memory{}, err
+		}
+		if err := s.finishHistoryMemoryAccess(ctx, by, req.ID, access); err != nil {
+			return Memory{}, err
+		}
 	}
 	return memory, nil
 }
@@ -287,6 +301,7 @@ func (s *Service) MemoryList(ctx context.Context, by model.PrincipalRef, req Mem
 	defer r.Close()
 	needle := strings.ToLower(req.Query)
 	items := make([]Memory, 0)
+	seen := map[string]bool{}
 	var cursor *driver.Cursor
 	for {
 		page, err := r.Query(ctx, driver.Query{Filter: map[string]any{"kind": "memory"}, Limit: 1000, Cursor: cursor})
@@ -298,9 +313,10 @@ func (s *Service) MemoryList(ctx context.Context, by model.PrincipalRef, req Mem
 			if err != nil {
 				return MemoryPage{}, err
 			}
-			if !eligible {
+			if !eligible || seen[memory.ID] {
 				continue
 			}
+			seen[memory.ID] = true
 			if needle != "" && !strings.Contains(strings.ToLower(memory.Key), needle) && !strings.Contains(strings.ToLower(memory.Content), needle) {
 				continue
 			}

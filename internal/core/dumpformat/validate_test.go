@@ -10,6 +10,64 @@ import (
 	"testing"
 )
 
+func TestMemoryArchivePreservesVerbatimKeyAndTrimmedNeighbor(t *testing.T) {
+	fixture := newMergeFixture(t, "pl")
+	const key = "  Source Key/Ω e\u0301  "
+	const value = " \tVerbatim\n東京 e\u0301  "
+	neighbor := strings.TrimSpace(key)
+	fixture.addConfig("config", "kv.memory."+key, value, "public")
+	fixture.addConfig("config", "kv.memory."+neighbor, "distinct trimmed neighbor", "public")
+	archive, err := Read(bytes.NewReader(fixture.bytes(t, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{key: value, neighbor: "distinct trimmed neighbor"}
+	seen := map[string]bool{}
+	for _, row := range archive.Records("memory") {
+		value, ok := want[row.ID]
+		if !ok {
+			continue // The existing fixture memory remains separate.
+		}
+		if seen[row.ID] || row.Body["key"] != row.ID || row.Body["value"] != value || row.Source.Fields["key"] != "kv.memory."+row.ID || row.Source.Fields["value"] != value {
+			t.Fatalf("memory identity or source value changed: %+v", row)
+		}
+		seen[row.ID] = true
+	}
+	if len(seen) != len(want) {
+		t.Fatalf("verbatim key aliased its trimmed neighbor: %+v", seen)
+	}
+}
+
+func TestMemoryArchiveIdentityExceptionsStayNarrow(t *testing.T) {
+	for _, test := range []struct{ name, key string }{
+		{"empty", ""}, {"ascii-blank", " \t "}, {"unicode-blank", "\u2003\u00a0"}, {"nul", "key\x00tail"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newMergeFixture(t, "pl")
+			fixture.addConfig("config", "kv.memory."+test.key, "public value", "public")
+			if _, err := Read(bytes.NewReader(fixture.bytes(t, nil))); err == nil {
+				t.Fatal("invalid memory key admitted")
+			}
+		})
+	}
+	t.Run("source-key-mismatch", func(t *testing.T) {
+		fixture := newMergeFixture(t, "pl")
+		fixture.addConfig("config", "kv.memory. spaced Ω ", "public value", "public")
+		row := &fixture.records["memory"][len(fixture.records["memory"])-1]
+		row.ID, row.Body["key"] = "spaced Ω", "spaced Ω"
+		if _, err := Read(bytes.NewReader(fixture.bytes(t, nil))); err == nil {
+			t.Fatal("trimmed alias admitted over exact source key")
+		}
+	})
+	t.Run("ordinary-config-remains-strict", func(t *testing.T) {
+		fixture := newMergeFixture(t, "pl")
+		fixture.addConfig("config", "setting \t", "public value", "public")
+		if _, err := Read(bytes.NewReader(fixture.bytes(t, nil))); err == nil {
+			t.Fatal("padded non-memory identity admitted")
+		}
+	})
+}
+
 func TestExternalDependencyArchiveKeepsTypedVocabulary(t *testing.T) {
 	for _, test := range []struct {
 		name, targetKind, kind string
