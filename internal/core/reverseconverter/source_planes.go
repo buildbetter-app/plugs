@@ -14,6 +14,10 @@ import (
 type Options struct {
 	All        bool
 	Directives []ontologymigration.Directive
+	// NativeImport selects the bounded physical importer, which cannot carry
+	// every SQL source cell. Opaque JSONL serialization alone retains those
+	// cells in metadata and does not claim physical restoration.
+	NativeImport bool
 }
 
 func sourceFlag(fields map[string]any, name string) (bool, bool) {
