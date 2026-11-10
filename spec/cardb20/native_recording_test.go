@@ -222,9 +222,19 @@ func (r *nativeRecorder) recordTwin(binary, name string) nativeTwin {
 	if err := os.WriteFile(filepath.Join(r.root, "abort.txt"), batchBytes, 0600); err != nil {
 		t.Fatal(err)
 	}
-	failure := r.command(w, "abort-batch", binary, []string{"batch", "--file", batch, "--json"}, true)
-	if !bytes.Contains(failure, []byte("line 2")) {
-		t.Fatalf("batch did not reach the second operation: %s", failure)
+	r.command(w, "abort-batch", binary, []string{"batch", "--file", batch, "--json"}, true)
+	failure, err := os.ReadFile(filepath.Join(r.root, "abort-batch.stderr"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var batchError struct {
+		Code  string
+		Error string
+	}
+	// This native command writes its typed error first on stderr, followed by
+	// human diagnostics. Retain the complete original stream separately.
+	if err := json.NewDecoder(bytes.NewReader(failure)).Decode(&batchError); err != nil || batchError.Code != "batch_error" || !strings.Contains(batchError.Error, "line 2 (update b20-missing title=missing)") {
+		t.Fatalf("batch did not reach second operation: %s (%v)", failure, err)
 	}
 	twin.Images["abort"] = r.image(w, binary, "abort")
 	if !reflect.DeepEqual(twin.Images["no-op"].Rows, twin.Images["abort"].Rows) {

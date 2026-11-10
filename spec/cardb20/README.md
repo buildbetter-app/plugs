@@ -25,10 +25,12 @@ memory, SQLite, and PostgreSQL:
    facts, production Writer authorizer/event context, and a narrow event-read
    adapter calling the production checker on fresh real-store snapshots.
    A no-plugin public create seeds the same store before installation. The
-   supported sponsored-Agent update carries the actual chain marker, User
+   supported sponsored-Agent update traverses the production authorizer, User
    update refuses, and User reads traverse the checker; a sequential restrictive
    project caveat filters them. Trusted RPC principal injection does not
-   qualify public authentication or an operator policy-management API.
+   qualify public authentication or an operator policy-management API. Ordinary
+   legacy writes omit event chain markers; those markers are not substituted
+   for actual installed-policy behavior.
 
 The explicit `record_native_test` reuses the existing admitted-main exact
 source build recipe in `spec/s1-b09-native/pinned_source_test.go`, its immutable
@@ -65,8 +67,8 @@ source attribution is retained before that explicit comparison projection.
 The audit and journal projections remain distinct.
 
 The native CLI accepts a zero limit as unbounded; Plug requires bounded pages.
-The binding ruling `9da1e01a-618f-4c7b-a3f6-a7cb75417c2e` corrects the B20
-card and requires caller-level unbounded/export/prune parity as well. Each
+The amended ruling `76a49d01-d6de-47ef-b34c-c8d3cf3d6710` corrects the B20
+card and requires caller-level unbounded/export parity. Each
 native twin explicitly records literal limit zero and its complete ordered
 set, then a real native prune preserving audit, issue rows and sequence head.
 Native/pruned raw vectors and the P6/P20 wire deviation stay together.

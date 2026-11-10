@@ -150,9 +150,14 @@ positive bounded limits and typed refusals for nonpositive limits;
 into paged `event.list` or `admin.dump`, with no unbounded one-shot wire
 response. `plug events --limit 0` / `--limit all`, `events all`, and
 `events export` use the real Plug client to page to completion in bounded
-batches. B20 requires their complete ordered, gapless, since-exclusive result
-to equal actual native unbounded output on memory, SQLite and PostgreSQL.
-Wire refusal alone or positive-limit observations do not establish parity.
+batches.
+
+**Completion Contract.** Done = the actual CLI list/export callers return the
+same complete ordered, gapless, since-exclusive set as pinned native unbounded
+reads on memory, SQLite and PostgreSQL, proven by two fresh public native
+recordings, actual client/wire/store observations, independent exact-source
+review, and original focused plus canonical whole evidence; source-only or
+positive-limit-only observations do not count.
 
 **Prune design difference.** Native prefix pruning is recorded literally,
 including its unchanged sequence head, audit and issues, and typed truncation

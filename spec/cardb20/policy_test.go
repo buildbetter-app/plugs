@@ -128,7 +128,7 @@ func TestB20InstalledFixedPolicyDeliversRealAuthorizedEvents(t *testing.T) {
 			update(t, r, "b20-1", "journal edited")
 			r.principal = reader
 			page := list(t, r, "", 100)
-			if len(page.Events) != 2 || page.Events[1].Durable == nil || !reflect.DeepEqual(page.Events[1].Durable.Chain, []string{"authz/fixed"}) {
+			if len(page.Events) != 2 || page.Events[1].Durable == nil || page.Events[1].Durable.Principal.Kind != "agent" || page.Events[1].Durable.Principal.ID != "b20-writer" {
 				t.Fatalf("installed-policy events=%+v", page)
 			}
 			before, sets = journal(t, r.store)
@@ -141,7 +141,7 @@ func TestB20InstalledFixedPolicyDeliversRealAuthorizedEvents(t *testing.T) {
 			if !reflect.DeepEqual(before, after) || !reflect.DeepEqual(sets, again) {
 				t.Fatal("policy read changed journal")
 			}
-			retain(t, "plug-"+engine+"-installed-policy.json", map[string]any{"allowed_events": page.Events, "restricted_events": denied.Events, "policy": "authz/fixed", "installation": "b20-fixed", "seed": "actual public no-plugin create before installation", "write": "supported sponsored-Agent update; User update refused", "authentication": "trusted RPC principal injection; no public authentication qualification"})
+			retain(t, "plug-"+engine+"-installed-policy.json", map[string]any{"allowed_events": page.Events, "restricted_events": denied.Events, "policy": "authz/fixed", "installation": "b20-fixed", "event_provenance": "ordinary legacy event plan; chain marker is not installed-policy evidence", "seed": "actual public no-plugin create before installation", "write": "supported sponsored-Agent update; User update refused", "authentication": "trusted RPC principal injection; no public authentication qualification"})
 		})
 	}
 }
