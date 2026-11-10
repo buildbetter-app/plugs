@@ -214,6 +214,24 @@ func verifyNativeSQLRecordingFile(path string, rawRoots map[string]string) (nati
 				if checkpoint == "" || !entry.Type().IsRegular() {
 					return report, fmt.Errorf("invalid original SQL file %q", entry.Name())
 				}
+				// A native CLI export also ends in -journal.stdout. Bind
+				// discovery to the original SQL argv, never a name alone.
+				request, err := os.ReadFile(filepath.Join(rawRoot, checkpoint+"-"+family+".request.json"))
+				if err != nil {
+					return report, err
+				}
+				value, err := decodeNativeSQLDocument(request)
+				if err != nil {
+					return report, err
+				}
+				command, ok := value.(map[string]any)
+				if !ok {
+					return report, fmt.Errorf("original command is not an object")
+				}
+				argv, ok := command["argv"].([]any)
+				if !ok || len(argv) != 5 || argv[1] != "--readonly" || argv[2] != "sql" || argv[4] != "--json" {
+					continue
+				}
 				if originals[checkpoint] == nil {
 					originals[checkpoint] = map[string]string{}
 				}
@@ -432,7 +450,7 @@ func b20SQLConservationControl(t *testing.T, aggregate bool) (string, map[string
 				if err := os.WriteFile(prefix+".stdout", raw, 0600); err != nil {
 					t.Fatal(err)
 				}
-				b20SQLWriteControlJSON(t, prefix+".request.json", map[string]any{"stdout_sha256": nativeSQLDigest(raw), "exit": 0})
+				b20SQLWriteControlJSON(t, prefix+".request.json", map[string]any{"argv": []string{"/public/native", "--readonly", "sql", "SELECT * FROM " + family, "--json"}, "stdout_sha256": nativeSQLDigest(raw), "exit": 0})
 			}
 			images[checkpoint] = map[string]any{"rows": rows, "raw_sha256": hashes}
 		}
@@ -520,7 +538,7 @@ func TestB20SavedSQLRecordingsRefuseCorruption(t *testing.T) {
 					} else {
 						exit = 3
 					}
-					b20SQLWriteControlJSON(t, filepath.Join(roots["a"], "final-issues.request.json"), map[string]any{"stdout_sha256": digest, "exit": exit})
+					b20SQLWriteControlJSON(t, filepath.Join(roots["a"], "final-issues.request.json"), map[string]any{"argv": []string{"/public/native", "--readonly", "sql", "SELECT * FROM issues", "--json"}, "stdout_sha256": digest, "exit": exit})
 				case "missing_twin":
 					if aggregate {
 						document = document.([]any)[1:]
@@ -567,5 +585,21 @@ func TestB20MatchingRoundedSQLDerivativesAreRefused(t *testing.T) {
 	}
 	if _, err := verifyNativeSQLRecordingFile(individual, map[string]string{"a": roots["a"]}); err == nil {
 		t.Fatal("equally rounded individual copy accepted against original SQL")
+	}
+}
+
+func TestB20SQLRecordingSeparatesCLIExportFromPhysicalRows(t *testing.T) {
+	path, roots, _ := b20SQLConservationControl(t, true)
+	for _, dir := range roots {
+		data := []byte("{\"seq\":1}\n{\"seq\":2}\n")
+		prefix := filepath.Join(dir, "export-current-journal")
+		if err := os.WriteFile(prefix+".stdout", data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		b20SQLWriteControlJSON(t, prefix+".request.json", map[string]any{"argv": []string{"/public/native", "events", "export", "--json"}, "stdout_sha256": nativeSQLDigest(data), "exit": 0})
+	}
+	report, err := verifyNativeSQLRecordingFile(path, roots)
+	if err != nil || len(report.Images) != 16 {
+		t.Fatalf("CLI export changed physical SQL inventory: images=%d err=%v", len(report.Images), err)
 	}
 }
