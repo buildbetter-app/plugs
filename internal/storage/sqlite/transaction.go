@@ -29,6 +29,7 @@ type transaction struct {
 	nativeRestore      *driver.NativeRestoreProfile
 	nativeAllocators   bool
 	importRestore      *driver.RestoreImportProfile
+	sourcePlaneImport  *driver.SourcePlaneImportPublication
 	acquired           driver.LockSet
 	files              []*os.File
 	guards             []guardHandle

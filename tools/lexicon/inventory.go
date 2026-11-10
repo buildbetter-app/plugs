@@ -102,7 +102,6 @@ func CheckSourceInventory(manifestPath string) ([]Finding, error) {
 	}
 	files := make(map[string][]byte, len(inventory.Files))
 	artifacts := make(map[string]bool, len(inventory.Files))
-	configPath := ""
 	for _, entry := range inventory.Files {
 		if !validSourcePath(entry.Path) || !validSourcePath(entry.File) || !strings.HasPrefix(entry.File, "files/") || strings.Count(entry.File, "/") != 1 {
 			return nil, fmt.Errorf("invalid source inventory mapping %q -> %q", entry.Path, entry.File)
@@ -117,17 +116,11 @@ func CheckSourceInventory(manifestPath string) ([]Finding, error) {
 		}
 		files[entry.Path] = content
 		artifacts[entry.File] = true
-		if entry.Path == "engdocs/style/lexicon.toml" {
-			configPath = filename
-		}
 	}
 	if err := CheckSourceManifest(files); err != nil {
 		return nil, err
 	}
-	if configPath == "" {
-		return nil, errors.New("source inventory does not contain the lexicon config")
-	}
-	cfg, err := LoadConfig(configPath)
+	cfg, err := configFromFiles(files)
 	if err != nil {
 		return nil, err
 	}

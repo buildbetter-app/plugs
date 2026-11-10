@@ -24,6 +24,12 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/postgres"
 )
 
+// These full-archive preservation controls explicitly request the pinned --all
+// form. Default filtering and omission reports have separate joint controls.
+func reverseAllRestored(ctx context.Context, store driver.Store) (LiveReverse, error) {
+	return ReverseRestoredWithOptions(ctx, store, reverseconverter.Options{All: true})
+}
+
 func TestLiveReverseReadsPostRestoreEditsAndOpaqueValues(t *testing.T) {
 	ctx := context.Background()
 	opaque := map[string]any{
@@ -50,7 +56,7 @@ func TestLiveReverseReadsPostRestoreEditsAndOpaqueValues(t *testing.T) {
 			if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile); err != nil {
 				t.Fatal(err)
 			}
-			before, err := ReverseRestored(ctx, store)
+			before, err := reverseAllRestored(ctx, store)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -67,7 +73,7 @@ func TestLiveReverseReadsPostRestoreEditsAndOpaqueValues(t *testing.T) {
 			}
 			apply("live edit", "f")
 			state := reverseState(t, store)
-			after, err := ReverseRestored(ctx, store)
+			after, err := reverseAllRestored(ctx, store)
 			if err != nil || after.Snapshot.At == nil || after.Snapshot.At.String() != state.Meta.Head.String() || after.Result.Digest == before.Result.Digest {
 				t.Fatalf("live reverse revision/digest failed: %v", err)
 			}
@@ -104,7 +110,7 @@ func TestLiveReverseReadsPostRestoreEditsAndOpaqueValues(t *testing.T) {
 			// The wrapper writes after opening the reader. Export must remain
 			// entirely on its captured snapshot, including all source blobs.
 			bound := reverseReadHook{Store: store, afterRead: func() { apply("concurrent edit", "a") }}
-			captured, err := ReverseRestored(ctx, bound)
+			captured, err := reverseAllRestored(ctx, bound)
 			if err != nil || captured.Result.Digest != after.Result.Digest {
 				t.Fatalf("reverse mixed snapshots: %v", err)
 			}
@@ -141,7 +147,7 @@ func TestLiveReverseRefusesUnrepresentableDeltasWithoutPartialOutput(t *testing.
 			profile, _ := admittedImportProfile(t, data)
 			store, lease, cleanup := openReverseTarget(t, kind)
 			defer cleanup()
-			if _, err := ReverseRestored(ctx, store); err == nil {
+			if _, err := reverseAllRestored(ctx, store); err == nil {
 				t.Fatal("empty store was treated as a restored source")
 			}
 			if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile); err != nil {
@@ -150,7 +156,7 @@ func TestLiveReverseRefusesUnrepresentableDeltasWithoutPartialOutput(t *testing.
 			state := reverseState(t, store)
 			for _, mode := range []string{"extra", "missing", "comment", "opaque", "provenance", "claim"} {
 				t.Run(mode, func(t *testing.T) {
-					got, err := ReverseRestored(ctx, reverseReadHook{Store: store, mode: mode})
+					got, err := reverseAllRestored(ctx, reverseReadHook{Store: store, mode: mode})
 					var refused ReverseRefusal
 					if !errors.As(err, &refused) || len(got.Result.JSONL) != 0 || got.Result.Digest != "" {
 						t.Fatalf("unrepresentable image produced partial output: %v", err)
@@ -193,7 +199,7 @@ func TestLiveReverseFromCheckedSourceHistory(t *testing.T) {
 				if _, err = RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, p); err != nil {
 					t.Fatal(err)
 				}
-				before, err := ReverseRestored(ctx, store)
+				before, err := reverseAllRestored(ctx, store)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -209,7 +215,7 @@ func TestLiveReverseFromCheckedSourceHistory(t *testing.T) {
 					t.Fatal(err)
 				}
 				state := reverseState(t, store)
-				after, err := ReverseRestored(ctx, store)
+				after, err := reverseAllRestored(ctx, store)
 				if err != nil || after.Result.Digest == before.Result.Digest {
 					t.Fatalf("live history reverse failed: %v", err)
 				}
@@ -220,7 +226,7 @@ func TestLiveReverseFromCheckedSourceHistory(t *testing.T) {
 				}
 				if test.mode != driver.RestoreHistoryModeSnapshot {
 					for _, mode := range []string{"history-changed", "history-missing"} {
-						got, err := ReverseRestored(ctx, reverseReadHook{Store: store, mode: mode})
+						got, err := reverseAllRestored(ctx, reverseReadHook{Store: store, mode: mode})
 						var refused ReverseRefusal
 						if !errors.As(err, &refused) || len(got.Result.JSONL) != 0 {
 							t.Fatalf("changed history binding did not refuse: %v", err)
@@ -354,6 +360,30 @@ type reverseReadHook struct {
 	mode      string
 }
 
+func (s reverseReadHook) ReadCheckpointInventory(ctx context.Context, view driver.View) (driver.CheckpointInventory, error) {
+	capability, ok := s.Store.(driver.CheckpointInventoryStore)
+	if !ok {
+		return nil, driver.ErrUnsupported
+	}
+	r, err := capability.ReadCheckpointInventory(ctx, view)
+	if err != nil {
+		return nil, err
+	}
+	if s.afterRead != nil {
+		s.afterRead()
+	}
+	return reverseInventoryQueryHook{CheckpointInventory: r, mode: s.mode}, nil
+}
+
+type reverseInventoryQueryHook struct {
+	driver.CheckpointInventory
+	mode string
+}
+
+func (r reverseInventoryQueryHook) Query(ctx context.Context, q driver.Query) (driver.Page[driver.Record], error) {
+	return (reverseQueryHook{Reader: r.CheckpointInventory, mode: r.mode}).Query(ctx, q)
+}
+
 func (s reverseReadHook) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
 	r, err := s.Store.Read(ctx, view)
 	if err != nil {
@@ -446,7 +476,7 @@ func TestLiveReverseRetainsExactValidatedEnvelope(t *testing.T) {
 	if _, err := RestoreImportWithLease(context.Background(), bytes.NewReader(data), store, lease, profile); err != nil {
 		t.Fatal(err)
 	}
-	got, err := ReverseRestored(context.Background(), store)
+	got, err := reverseAllRestored(context.Background(), store)
 	if err != nil || len(got.Result.JSONL) == 0 {
 		t.Fatalf("exact padded source reverse: %v", err)
 	}
@@ -508,5 +538,162 @@ func TestProjectLiveBeadPreservesUnchangedFailureOutcome(t *testing.T) {
 	got, err := projectLiveBead(source, rows[0], dump)
 	if err != nil || got.Body["result"] != "failure" {
 		t.Fatalf("unchanged imported failure was rewritten: result=%v err=%v", got.Body["result"], err)
+	}
+}
+
+func TestLiveReverseComparesVersionedDependencyPredicatesExactly(t *testing.T) {
+	// Detached relationship controls exercise the live-source comparison, not
+	// a native capture or an accepted successor producer.
+	for _, test := range []struct {
+		name string
+		raw  any
+		want *model.LinkMetadata
+	}{
+		{"legacy NULL", nil, nil},
+		{"ID only", `{"_plug_edge_id":"edge-1"}`, nil},
+		{"explicit default", `{}`, &model.LinkMetadata{Gate: "all-children"}},
+		{"SQL predicate", ` {"gate":"any-children","also_blocks":true,"spawner_id":"not-the-target","opaque":9007199254740993} `, &model.LinkMetadata{Gate: "any-children", AlsoBlocks: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dump := reverseconverter.Dump{
+				Manifest: reverseconverter.Manifest{Kinds: []reverseconverter.Kind{{Name: "edge", Version: dumpformat.EdgeVersionTypedDependencies}}},
+				Records: map[string][]reverseconverter.Record{"edge": {{
+					Kind: "edge", ID: "edge-1", Body: map[string]any{"from": "demo-2", "to": "demo-1", "target_kind": "depends_on_issue_id", "type": "waits-for", "metadata": test.raw},
+				}}},
+			}
+			doc := pipeline.Document{Links: []pipeline.Link{{To: model.RefByID("demo-1", model.Natural64(0)), Kind: "waits-for", Metadata: test.want}}}
+			if err := checkLiveRelationsAndComments("demo-2", doc, dump); err != nil {
+				t.Fatalf("unchanged versioned source relationship refused: %v", err)
+			}
+			changed := model.LinkMetadata{Gate: "all-children"}
+			if test.want != nil {
+				changed = *test.want
+				changed.AlsoBlocks = !changed.AlsoBlocks
+			}
+			doc.Links[0].Metadata = &changed
+			if err := checkLiveRelationsAndComments("demo-2", doc, dump); err == nil {
+				t.Fatal("changed predicate or absent-versus-explicit metadata was accepted")
+			}
+		})
+	}
+}
+
+func TestLiveReverseRetainsV3LocalOpaqueRelationshipAndRefusesEdits(t *testing.T) {
+	dump := reverseconverter.Dump{
+		Manifest: reverseconverter.Manifest{Kinds: []reverseconverter.Kind{{Name: "edge", Version: dumpformat.EdgeVersionLocalOpaque}}},
+		Records: map[string][]reverseconverter.Record{"edge": {{
+			Kind: "edge", ID: "edge-opaque", Body: map[string]any{
+				"from": "demo-2", "to": "demo-1", "target_kind": "depends_on_issue_id", "type": "local-opaque", "metadata": map[string]any{"large": json.Number("9007199254740993")}, "thread_id": "thread-opaque",
+			},
+		}}},
+	}
+	doc := pipeline.Document{Links: []pipeline.Link{{To: model.RefByID("demo-1", model.Natural64(0)), Kind: "local-opaque"}}}
+	if err := checkLiveRelationsAndComments("demo-2", doc, dump); err != nil {
+		t.Fatalf("unchanged v3 local opaque relationship refused: %v", err)
+	}
+	doc.Links[0].To = model.RefByID("demo-missing", model.Natural64(0))
+	if err := checkLiveRelationsAndComments("demo-2", doc, dump); err == nil {
+		t.Fatal("changed v3 local opaque endpoint was accepted")
+	}
+}
+
+func TestProjectLiveBeadRetainsRawMetadataUntilAKeyChanges(t *testing.T) {
+	ctx := context.Background()
+	data := admittedFixtureBytes(t)
+	profile, _ := admittedImportProfile(t, data)
+	store, lease, cleanup := openTarget(t, "memory")
+	defer cleanup()
+	if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile); err != nil {
+		t.Fatal(err)
+	}
+	dump, err := reverseconverter.ReadBytes(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := dump.Records["bead"][0]
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	rows, err := r.Get(ctx, []model.Ref{model.RefByID(baseline.ID, model.Natural64(0))})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("restored fixture bead: %v", err)
+	}
+	const sqlText = " {\"large\":9007199254740993,\"literal\":1.0,\"null\":null} \n"
+	for _, test := range []struct {
+		name string
+		raw  any
+		edit bool
+	}{
+		{"SQL text", sqlText, false},
+		{"SQL NULL", nil, false},
+		{"empty SQL object", " {} \n", false},
+		{"object", map[string]any{"large": json.Number("9007199254740993"), "literal": json.Number("1.0")}, false},
+		{"changed SQL text", sqlText, true},
+		{"changed SQL NULL", nil, true},
+		{"changed object", map[string]any{"literal": json.Number("1.0")}, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// A source-representation unit variant of the admitted fixture,
+			// not an input or readback attributed to a native executable.
+			source := baseline
+			source.Body, source.Source.Fields = cloneRow(source.Body), cloneRow(source.Source.Fields)
+			source.Body["metadata"], source.Source.Fields["metadata"] = test.raw, test.raw
+			doc, err := pipeline.DecodeDocument(rows[0].Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for key := range doc.Metadata {
+				if !strings.HasPrefix(key, "beads.") && !strings.HasPrefix(key, "plug.restore.") {
+					delete(doc.Metadata, key)
+				}
+			}
+			metadata, err := dumpformat.SourceMetadataObject(test.raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for key, value := range metadata {
+				doc.Metadata[key], err = json.Marshal(value)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.edit {
+				// 1 and 1.0 remain distinct even when their numeric values agree.
+				doc.Metadata["literal"] = json.RawMessage("1")
+				if metadata == nil {
+					metadata = map[string]any{}
+				}
+				metadata["literal"] = json.Number("1")
+			}
+			doc.Metadata["beads.source_fields"], err = json.Marshal(source.Source.Fields)
+			if err != nil {
+				t.Fatal(err)
+			}
+			row := rows[0]
+			row.Body, err = json.Marshal(doc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := projectLiveBead(source, row, dump)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := test.raw
+			if test.edit {
+				want = metadata
+			}
+			if !reflect.DeepEqual(got.Body["metadata"], want) || !reflect.DeepEqual(got.Source.Fields["metadata"], want) {
+				t.Fatalf("projected metadata representation changed: body=%#v source=%#v want=%#v", got.Body["metadata"], got.Source.Fields["metadata"], want)
+			}
+			if !reflect.DeepEqual(source.Body["metadata"], test.raw) || !reflect.DeepEqual(source.Source.Fields["metadata"], test.raw) {
+				t.Fatal("live projection mutated the retained source")
+			}
+		})
 	}
 }

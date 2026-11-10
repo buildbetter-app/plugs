@@ -123,7 +123,7 @@ func BuildOfflineHistory(current Meta, profile RestoreImportProfile, input Offli
 	if !current.Head.IsZero() || !current.HistoryFloor.IsZero() {
 		return OfflineHistoryPlan{}, ErrRestoreTargetNotEmpty
 	}
-	p, err := profile.Detached()
+	p, err := profile.DetachedCoreOnly()
 	if err != nil {
 		return OfflineHistoryPlan{}, err
 	}
@@ -406,7 +406,7 @@ func OfflineHistoryDigest(h OfflineHistory) (string, error) {
 }
 
 func PrepareOfflineHistoryBinding(current Meta, p RestoreImportProfile, h OfflineHistory, when time.Time) (*PreparedOfflineHistory, error) {
-	bound, err := p.Detached()
+	bound, err := p.DetachedCoreOnly()
 	if err != nil {
 		return nil, err
 	}
