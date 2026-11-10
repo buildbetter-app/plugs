@@ -734,8 +734,16 @@ func (p *prepared) changeRecords() []model.ChangeRecord {
 				}
 			}
 		}
-		if pending.deleted || pending.memory != nil && pending.memory.Overlay != nil && pending.memory.Overlay.Deleted {
+		if pending.deleted {
 			kind = model.OpDelete
+		} else if pending.memory != nil && pending.memory.Overlay != nil {
+			// An overlay tombstone is a retained physical row. Driver change
+			// operations describe that actual create/patch; memory.deleted is
+			// emitted separately from the effective public operation.
+			kind = model.OpPatch
+			if len(pending.before) == 0 {
+				kind = model.OpCreate
+			}
 		} else if kind != model.OpCreate && pending.kind != "memory" && len(pending.before) != 0 {
 			before, err := DecodeDocument(pending.before)
 			if err == nil && parentID(before.Parent) != parentID(pending.doc.Parent) {

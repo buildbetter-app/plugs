@@ -6,12 +6,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -344,6 +346,21 @@ func TestB13JointSourceCoreProjectionAndConservation(t *testing.T) {
 						if !reflect.DeepEqual(brief.Memories, all) {
 							t.Fatal("normal agent.brief differs from joint memory listing")
 						}
+						for _, query := range []string{"source key/ω", "core ω", "unmatched-settings-value"} {
+							var search struct {
+								Items []service.Memory `json:"items"`
+							}
+							decode(t, call("memory.list", map[string]any{"query": query, "limit": 100}, 0, "").Result, &search)
+							expected := []service.Memory{}
+							for _, item := range all {
+								if strings.Contains(strings.ToLower(item.Key), query) || strings.Contains(strings.ToLower(item.Content), query) {
+									expected = append(expected, item)
+								}
+							}
+							if !reflect.DeepEqual(search.Items, expected) {
+								t.Fatal("effective source/core search leaked or lost a value")
+							}
+						}
 						if !reflect.DeepEqual(before, snapshot()) {
 							t.Fatal("public projection changed durable state")
 						}
@@ -375,6 +392,14 @@ func TestB13JointSourceCoreProjectionAndConservation(t *testing.T) {
 						for i, key := range []string{"fixture", b13SourceKey} {
 							refuse("memory.save", map[string]any{"key": key, "content": " \t\n"}, 621+i, "invalid_params")
 						}
+						scopes = append(scopes, importedMemoryWriteScope{"memory.save", 629})
+						before := snapshot()
+						writer := pipeline.New(store, lease, pipeline.WithOntology(service.NewOntology(nil)))
+						_, e := writer.Apply(ctx, model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}, model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Type: "memory", Fields: map[string]any{"key": b13SourceKey, "content": " \t\n"}}}}}, model.WriteMeta{Method: "memory.save", Project: "demo", IdempotencyKey: fmt.Sprintf("%032d", 629)})
+						var typed *model.Error
+						if !errors.As(e, &typed) || typed.Data.Code != "invalid_params" || !reflect.DeepEqual(before, snapshot()) {
+							t.Fatal("direct Writer blank bypass changed source/history/receipt", e)
+						}
 						conserve("refusals")
 					})
 					refresh := func(label string) {
@@ -398,6 +423,7 @@ func TestB13JointSourceCoreProjectionAndConservation(t *testing.T) {
 					}
 					// Reverse is checked after the existing empty source is forgotten;
 					// the unchanged converter still honestly refuses an empty import value.
+					coreValue := ""
 					reverse := func(label string) {
 						before := snapshot()
 						result, e := ReverseRestoredWithOptions(ctx, store, reverseconverter.Options{All: true})
@@ -448,6 +474,9 @@ func TestB13JointSourceCoreProjectionAndConservation(t *testing.T) {
 						}
 						if !emptyPresent {
 							delete(want, "fixture")
+						}
+						if coreValue != "" {
+							want["Core Ω"] = coreValue
 						}
 						for _, row := range report.Archive.Records("config") {
 							value := row.Source.Fields["value"]
@@ -541,12 +570,22 @@ func TestB13JointSourceCoreProjectionAndConservation(t *testing.T) {
 						refresh("overlay-replaced")
 						views("")
 						conserve("replaced-reopened")
+						before = snapshot()
+						replayedQuiet := call("memory.save", params, 673, "")
+						if !replayedQuiet.Meta.Replayed || !reflect.DeepEqual(before, snapshot()) {
+							t.Fatal("quiet overlay receipt changed after SQL reopen")
+						}
 						call("history.get", map[string]any{"ref": overlayRef, "asOf": map[string]any{"revision": replacedRevision}}, 0, "")
 					})
 					t.Run("empty-source-forget-enables-exact-effective-reverse", func(t *testing.T) {
 						ref := model.RefByID(idFor("fixture"), model.Natural64(0))
 						scopes = append(scopes, importedMemoryWriteScope{"memory.delete", 674})
 						call("memory.delete", map[string]any{"id": ref.ID}, 674, "")
+						changes := snapshot().Changes
+						last := changes[len(changes)-1]
+						if len(last.Changes) != 1 || last.Changes[0].Op != model.OpCreate || len(last.Events) != 1 || last.Events[0].Type != model.EventMemoryDeleted || last.Events[0].Provenance.Method != "memory.delete" {
+							t.Fatal("new tombstone must physically create its row and emit memory.deleted")
+						}
 						emptyPresent = false
 						views("")
 						reverse("replaced")
@@ -555,6 +594,11 @@ func TestB13JointSourceCoreProjectionAndConservation(t *testing.T) {
 					t.Run("imported-forget-tombstone-hides-current-and-history-through-reopen", func(t *testing.T) {
 						scopes = append(scopes, importedMemoryWriteScope{"memory.delete", 675})
 						first := call("memory.delete", map[string]any{"id": overlayRef.ID}, 675, "")
+						changes := snapshot().Changes
+						last := changes[len(changes)-1]
+						if len(last.Changes) != 1 || last.Changes[0].Op != model.OpPatch || len(last.Events) != 1 || last.Events[0].Type != model.EventMemoryDeleted || last.Events[0].Provenance.Method != "memory.delete" {
+							t.Fatal("existing overlay forget must physically patch its row and emit memory.deleted")
+						}
 						sourcePresent = false
 						for _, id := range []string{sourceRef.ID, overlayRef.ID} {
 							call("memory.get", map[string]any{"id": id}, 0, "not_found")
@@ -585,6 +629,11 @@ func TestB13JointSourceCoreProjectionAndConservation(t *testing.T) {
 						refresh("overlay-remembered")
 						views("")
 						reverse("remembered-reopened")
+						before := snapshot()
+						replay := call("memory.save", map[string]any{"key": b13SourceKey, "content": "Re-remembered Ω\n"}, 677, "")
+						if !replay.Meta.Replayed || !bytes.Equal(reply.Result, replay.Result) || !reflect.DeepEqual(before, snapshot()) {
+							t.Fatal("re-remember replay changed the new lifetime")
+						}
 						call("history.get", map[string]any{"ref": overlayRef, "asOf": map[string]any{"revision": replacedRevision}}, 0, "not_found")
 						call("history.get", map[string]any{"ref": overlayRef, "asOf": map[string]any{"revision": commit.Revision}}, 0, "")
 					})
@@ -603,6 +652,8 @@ func TestB13JointSourceCoreProjectionAndConservation(t *testing.T) {
 								t.Fatal("core change failed to publish once")
 							}
 							views(content)
+							coreValue = content
+							reverse(fmt.Sprintf("core-%d", i))
 							conserve(fmt.Sprintf("core-%d", i))
 						}
 						scopes = append(scopes, importedMemoryWriteScope{"memory.save", 653})
@@ -619,13 +670,20 @@ func TestB13JointSourceCoreProjectionAndConservation(t *testing.T) {
 						}
 					})
 
-					t.Run("sql-reopen-before-forget", func(t *testing.T) { refresh("before-forget"); views("\tCore replaced Ω\n"); conserve("reopened") })
+					t.Run("sql-reopen-before-forget", func(t *testing.T) {
+						refresh("before-forget")
+						views("\tCore replaced Ω\n")
+						reverse("core-reopened")
+						conserve("reopened")
+					})
 					t.Run("core-forget-keeps-all-source-and-settings", func(t *testing.T) {
 						scopes = append(scopes, importedMemoryWriteScope{"memory.delete", 661})
 						call("memory.delete", map[string]any{"id": "b13-joint-core"}, 661, "")
+						coreValue = ""
 						refuse("memory.delete", map[string]any{"id": "b13-joint-core"}, 662, "not_found")
 						refresh("after-forget")
 						views("")
+						reverse("core-forgotten")
 						conserve("forgotten")
 					})
 					t.Run("invalid-overlay-bindings-refuse-atomically", func(t *testing.T) {

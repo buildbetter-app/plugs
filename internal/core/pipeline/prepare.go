@@ -685,6 +685,9 @@ func (w *Writer) prepareMemory(ctx context.Context, reader driver.Reader, by mod
 		if !ok {
 			return nil, failure("invalid_params", "memory content must be a string")
 		}
+		if strings.TrimSpace(content) == "" {
+			return nil, failure("invalid_params", "memory content must be nonempty")
+		}
 		metadata := map[string]any{}
 		if raw, exists := op.Create.Fields["metadata"]; exists && raw != nil {
 			var valid bool
