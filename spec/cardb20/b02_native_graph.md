@@ -63,6 +63,19 @@ with exact blocker/dependent revisions and the installed ontology binding.
 The native `also_blocks` vector is explicitly a SQL mutation of one existing
 waits-for metadata row. It proves stored-state evaluation, not a native public
 writer. Its Plug counterpart uses normal typed public unlink/link metadata.
+Native ready and blocked lists select the stored `is_blocked` flag; raw SQL
+metadata updates do not refresh it. The fixture installs `also_blocks` while
+children are open, then uses ordinary native child-close writes to recompute
+it. A separate plain-all waiter must become ready after the second child;
+the also-blocking waiter must retain its spawner reason until that spawner
+closes. This exercises the stored evaluator without asserting immediate raw
+SQL projection maintenance. The original `cf77b1a2` focus RED is retained.
+
+Native `reopen` changes done-category statuses only. Returning the pinned
+blocker to open uses native `update --status open`, compared with Plug's
+ordinary `bead.reopen`; the original pinned reopen no-op remains in that RED
+receipt. No native status, ready answer or reason is normalized.
+
 Public link adjacency, ready results and literal `blocked` projections are
 retained; no returned Plug reason list is manufactured from ready membership.
 Independent phase tables assert each live public `blocked` boolean too.
