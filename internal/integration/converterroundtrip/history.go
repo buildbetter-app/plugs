@@ -46,8 +46,11 @@ func bindHistoryArchive(ctx context.Context, archive *dumpformat.Archive, p driv
 	}
 	p.HistoryTime = when.UTC().Format(time.RFC3339Nano)
 	plan, err := buildPlanWithProfile(archive, &p, when)
-	if err != nil || plan.derivedDigest != p.DerivedDigest {
-		return p, fmt.Errorf("%w: history current image/derived verification failed: %v", ErrRestoreUnavailable, err)
+	if err != nil {
+		return p, fmt.Errorf("%w: history current image/derived verification failed: %w", ErrRestoreUnavailable, err)
+	}
+	if plan.derivedDigest != p.DerivedDigest {
+		return p, fmt.Errorf("%w: history current image/derived verification failed", ErrRestoreUnavailable)
 	}
 	h, err := lowerSourceHistory(archive, p, when)
 	if err != nil {
@@ -364,7 +367,10 @@ func validateHistoryRecovery(ctx context.Context, r driver.Reader, p driver.Rest
 		return driver.ErrConflict
 	}
 	archive, err := readRetainedImportArchive(ctx, r, raw, evidence)
-	if err != nil || archive.SHA256() != p.ArchiveDigest {
+	if err != nil {
+		return nativeDeltaRecoveryError(err)
+	}
+	if archive.SHA256() != p.ArchiveDigest {
 		return driver.ErrConflict
 	}
 	when, err := time.Parse(time.RFC3339Nano, p.HistoryTime)
@@ -373,7 +379,7 @@ func validateHistoryRecovery(ctx context.Context, r driver.Reader, p driver.Rest
 	}
 	history, err := lowerSourceHistory(archive, p, when)
 	if err != nil {
-		return driver.ErrConflict
+		return nativeDeltaRecoveryError(err)
 	}
 	digest, err := driver.OfflineHistoryDigest(history)
 	if err != nil || digest != p.HistoryDigest {

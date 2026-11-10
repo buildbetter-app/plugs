@@ -187,6 +187,10 @@ func validateSourceFamilyMarker(fields map[string]json.RawMessage, m Manifest) e
 }
 
 func validateNativeTable(name string, table NativeTable) error {
+	return validateNativeTablePolicy(name, table, false)
+}
+
+func validateNativeTablePolicy(name string, table NativeTable, nativeDelta bool) error {
 	if !nativeSQLName.MatchString(name) || len(table.Columns) == 0 || len(table.Columns) > 1024 || table.Rows == nil || len(table.Rows) > 100000 {
 		return fmt.Errorf("invalid native table census for %s", name)
 	}
@@ -217,8 +221,14 @@ func validateNativeTable(name string, table NativeTable) error {
 				}
 			}
 		}
-		if err := validateSecretReferences(values); err != nil {
-			return err
+		var secretErr error
+		if nativeDelta {
+			secretErr = validateNativeDeltaSecretReferences(name, values)
+		} else {
+			secretErr = validateSecretReferences(values)
+		}
+		if secretErr != nil {
+			return secretErr
 		}
 		data, err := json.Marshal(row)
 		if err != nil || previous != nil && bytes.Compare(previous, data) > 0 {
@@ -230,11 +240,15 @@ func validateNativeTable(name string, table NativeTable) error {
 }
 
 func validateNativeTables(tables map[string]NativeTable) error {
+	return validateNativeTablesPolicy(tables, false)
+}
+
+func validateNativeTablesPolicy(tables map[string]NativeTable, nativeDelta bool) error {
 	if tables == nil {
 		return fmt.Errorf("missing native table census")
 	}
 	for name, table := range tables {
-		if err := validateNativeTable(name, table); err != nil {
+		if err := validateNativeTablePolicy(name, table, nativeDelta); err != nil {
 			return err
 		}
 	}
@@ -414,7 +428,7 @@ func validateNativeHistory(h NativeHistory) error {
 			return fmt.Errorf("invalid native ignore value")
 		}
 	}
-	if err := validateNativeTables(h.Current); err != nil {
+	if err := validateNativeTablesPolicy(h.Current, h.deltaVerified); err != nil {
 		return err
 	}
 	if len(h.Current) != len(columns) {
@@ -434,7 +448,7 @@ func validateNativeHistory(h NativeHistory) error {
 			return fmt.Errorf("invalid native image sequence")
 		}
 		last, covered[image.Sequence] = image.Sequence, true
-		if err := validateNativeTables(image.Tables); err != nil {
+		if err := validateNativeTablesPolicy(image.Tables, h.deltaVerified); err != nil {
 			return err
 		}
 		if image.CommitID == h.Head {

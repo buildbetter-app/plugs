@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -13,6 +14,16 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+// Keep legacy conflict classification while allowing callers to emit the exact
+// measured v2 refusal when same-operation recovery exhausts its shared budget.
+func nativeDeltaRecoveryError(cause error) error {
+	var limit *dumpformat.NativeDeltaDecodedLimitError
+	if errors.As(cause, &limit) {
+		return errors.Join(driver.ErrConflict, cause)
+	}
+	return driver.ErrConflict
+}
 
 // nativeDeltaBatchSize counts the exact SourceHistoryBatch JSON+newline before
 // nativeTableRecord marshals full table bodies. Record.Body is a base64 JSON

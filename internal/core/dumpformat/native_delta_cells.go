@@ -272,7 +272,7 @@ func validateNativeDeltaRow(table NativeDeltaTableSchema, row NativeDeltaRow, po
 			}
 		}
 	} else {
-		if err := validateSecretReferences(map[string]any(fields)); err != nil {
+		if err := validateNativeDeltaSecretReferences(table.Name, map[string]any(fields)); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -284,4 +284,35 @@ func validateNativeDeltaRow(table NativeDeltaTableSchema, row NativeDeltaRow, po
 		return nil, nil, fmt.Errorf("native delta primary key differs")
 	}
 	return fields, key, nil
+}
+
+// Only a verified v2 SQL row may preserve the producer's declared absence of
+// this optional peer credential. Nested objects, config and all other fields
+// retain the existing reference rules; no credential value is admitted here.
+func validateNativeDeltaSecretReferences(family string, values map[string]any) error {
+	if family != "federation_peers" {
+		return validateSecretReferences(values)
+	}
+	for key, value := range values {
+		if key == "password_encrypted" && nativeDeltaEmptyPeerCredential(value) {
+			continue
+		}
+		if err := validateSecretReferences(map[string]any{key: value}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func nativeDeltaEmptyPeerCredential(value any) bool {
+	switch value := value.(type) {
+	case nil:
+		return true
+	case string:
+		return value == ""
+	case map[string]any:
+		data, ok := value["$bytes"].(string)
+		return ok && len(value) == 1 && data == ""
+	}
+	return false
 }

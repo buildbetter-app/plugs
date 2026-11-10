@@ -143,11 +143,11 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 	}
 	archive, err := readRetainedImportArchive(ctx, r, data, archiveEvidence{})
 	if err != nil {
-		return Report{}, nil, driver.ErrConflict
+		return Report{}, nil, nativeDeltaRecoveryError(err)
 	}
 	prepared, err := prepareSourceArchive(ctx, archive, bound, true)
 	if err != nil {
-		return Report{}, nil, driver.ErrConflict
+		return Report{}, nil, nativeDeltaRecoveryError(err)
 	}
 	initialImage, err := workflowplugin.InspectSourceReverseImage(prepared.LogicalImage())
 	if err != nil {

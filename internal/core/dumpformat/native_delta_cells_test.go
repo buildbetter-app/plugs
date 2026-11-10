@@ -65,3 +65,49 @@ func TestNativeDeltaNullableAndInheritedOmissionsStayExact(t *testing.T) {
 		}
 	}
 }
+
+func TestNativeDeltaAbsentPeerPasswordKeepsExactAbsenceAndLegacyRules(t *testing.T) {
+	table := NativeDeltaTableSchema{Name: "federation_peers", Columns: []NativeDeltaColumn{{Name: "id", SQLType: "text", PrimaryKeyOrdinal: deltaTestUint(0)}, {Name: "password_encrypted", SQLType: "VARBINARY(8)"}}}
+	for _, absent := range []struct {
+		cell  NativeDeltaCell
+		value any
+	}{{NativeDeltaCell{Kind: "sql-null"}, nil}, {NativeDeltaCell{Kind: "string"}, ""}, {NativeDeltaCell{Kind: "bytes"}, map[string]any{"$bytes": ""}}} {
+		fields := Row{"id": "public-peer", "password_encrypted": absent.value}
+		raw, err := json.Marshal(fields)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cells := []NativeDeltaCell{{Kind: "string", Value: "public-peer"}, absent.cell}
+		key, err := NativeDeltaPrimaryKey(table, cells)
+		if err != nil {
+			t.Fatal(err)
+		}
+		row := NativeDeltaRow{Type: "row", Op: "insert", Key: base64.StdEncoding.EncodeToString(key), Cells: cells, NormalizedJSON: base64.StdEncoding.EncodeToString(append(raw, '\n'))}
+		if _, _, err := validateNativeDeltaRow(table, row, nil); err != nil {
+			t.Fatal("exact typed absence refused", err)
+		}
+		native := NativeTable{Columns: []string{"id", "password_encrypted"}, Rows: []Row{fields}}
+		if err := validateNativeTablesPolicy(map[string]NativeTable{table.Name: native}, true); err != nil {
+			t.Fatal("verified v2 normalized absence refused", err)
+		}
+		if err := validateNativeTables(map[string]NativeTable{table.Name: native}); err == nil {
+			t.Fatal("legacy secret admission changed")
+		}
+	}
+	// This exact SQL family/column exception does not authorize credentials,
+	// additional envelope fields, nested secrets or an absent config password.
+	for _, fields := range []map[string]any{
+		{"password_encrypted": "public-placeholder"},
+		{"password_encrypted": map[string]any{"$bytes": "AA=="}},
+		{"password_encrypted": map[string]any{"$bytes": "", "extra": ""}},
+		{"password_encrypted": nil, "details": map[string]any{"password_encrypted": nil}},
+		{"password_encrypted": nil, "access_token": nil},
+	} {
+		if err := validateNativeDeltaSecretReferences("federation_peers", fields); err == nil {
+			t.Fatal("peer absence exception escaped its exact field/value domain")
+		}
+	}
+	if err := validateNativeDeltaSecretReferences("config", map[string]any{"password_encrypted": nil}); err == nil {
+		t.Fatal("config secret rule changed")
+	}
+}

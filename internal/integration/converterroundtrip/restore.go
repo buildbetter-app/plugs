@@ -626,16 +626,16 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 		}
 	}
 	if err = compareImportBinding(ctx, r, evidence, binding); err != nil {
-		return Report{}, driver.ErrConflict
+		return Report{}, nativeDeltaRecoveryError(err)
 	}
 	if bound.HistoryDigest != "" {
 		if err = validateHistoryRecovery(ctx, r, bound, evidence, receipt); err != nil {
-			return Report{}, driver.ErrConflict
+			return Report{}, nativeDeltaRecoveryError(err)
 		}
 	}
 	families, schemas, histories, err := recoverNativeFamilies(ctx, r, bound, evidence, receipt)
 	if err != nil {
-		return Report{}, driver.ErrConflict
+		return Report{}, nativeDeltaRecoveryError(err)
 	}
 	return Report{Restored: meta, IdempotencyKey: bound.IdempotencyKey, RequestHash: request, Recovered: true, Receipt: receipt, NativeFamilies: families, NativeSchemas: schemas, NativeHistories: histories}, nil
 }

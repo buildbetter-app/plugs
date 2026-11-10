@@ -309,7 +309,7 @@ func recoverNativeFamilies(ctx context.Context, reader driver.Reader, profile dr
 	}
 	archive, err := readRetainedImportArchive(ctx, reader, raw, evidence)
 	if err != nil {
-		return nil, nil, nil, driver.ErrConflict
+		return nil, nil, nil, nativeDeltaRecoveryError(err)
 	}
 	if !archive.HasNativeSourceHistories() {
 		return nil, nil, nil, nil
@@ -320,13 +320,13 @@ func recoverNativeFamilies(ctx context.Context, reader driver.Reader, profile dr
 	}
 	_, reports, err := nativeCurrentRecords(archive, when)
 	if err != nil {
-		return nil, nil, nil, driver.ErrConflict
+		return nil, nil, nil, nativeDeltaRecoveryError(err)
 	}
 	var schemas []NativeSchemaReport
 	if archive.Manifest().MainVersion != 72 {
 		plan, planErr := buildPlanWithProfile(archive, &profile, when)
 		if planErr != nil {
-			return nil, nil, nil, driver.ErrConflict
+			return nil, nil, nil, nativeDeltaRecoveryError(planErr)
 		}
 		schemas = plan.nativeSchemas
 	}
