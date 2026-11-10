@@ -135,8 +135,20 @@ func Read(reader io.Reader) (*Archive, error) {
 	if _, present := manifestFields["source_fields_contract"]; present && manifest.SourceFieldsContract != IssueSourceFieldsContract {
 		return nil, fmt.Errorf("unsupported source fields contract")
 	}
+	if _, present := manifestFields["source_plane_address_contract"]; present && manifest.SourcePlaneAddressContract != SourcePlaneAddressContract {
+		return nil, fmt.Errorf("unsupported source plane address contract")
+	}
+	if err := validateStatusCategoryMarker(manifestFields, manifest); err != nil {
+		return nil, err
+	}
+	if err := validateSourceFamilyMarker(manifestFields, manifest); err != nil {
+		return nil, err
+	}
+	if err := validateSourceIdentityMarker(manifestFields, manifest); err != nil {
+		return nil, err
+	}
 	if manifest.Scope == "plug-native-store" {
-		if manifest.SourceFieldsContract != "" {
+		if manifest.SourceFieldsContract != "" || manifest.SourcePlaneAddressContract != "" || manifest.StatusCategoryContract != "" {
 			return nil, fmt.Errorf("Beads source fields contract requires offline source scope")
 		}
 		if err := validateNativeArchive(manifest, members, paths); err != nil {
@@ -155,6 +167,9 @@ func Read(reader io.Reader) (*Archive, error) {
 		return nil, err
 	}
 	archive := &Archive{sha256: digest(data), tarBytes: append([]byte(nil), data...), manifest: manifest, members: members, byKind: byKind, migration: migration}
+	if err := validateNativeSourceHistories(archive); err != nil {
+		return nil, err
+	}
 	if err := validateSourceHistory(archive); err != nil {
 		return nil, err
 	}
@@ -170,7 +185,10 @@ func Validate(reader io.Reader) (Manifest, error) {
 }
 
 func allowedMember(name string) bool {
-	if name == "manifest.json" || name == "config/sources.json" || name == SourceHistoryMember {
+	if name == "manifest.json" || name == "config/sources.json" || name == SourceHistoryMember || name == NativeHistoryMember {
+		return true
+	}
+	if _, ok := scopedNativeMember(name); ok {
 		return true
 	}
 	if name == "records/native.ndjson" || name == "versions.ndjson" || name == "changesets.ndjson" || name == NativeAllocatorMember {
@@ -347,6 +365,12 @@ func validateNativeLines(data []byte, want int, label string) error {
 }
 
 func validateManifest(manifest Manifest, members map[string][]byte) error {
+	if err := validateStatusCategoryContract(manifest); err != nil {
+		return err
+	}
+	if manifest.SourcePlaneAddressContract != "" && manifest.SourcePlaneAddressContract != SourcePlaneAddressContract {
+		return fmt.Errorf("unsupported source plane address contract")
+	}
 	if manifest.SourceFieldsContract != "" && manifest.SourceFieldsContract != IssueSourceFieldsContract {
 		return fmt.Errorf("unsupported source fields contract")
 	}
@@ -365,7 +389,9 @@ func validateManifest(manifest Manifest, members map[string][]byte) error {
 	for key, value := range verificationLimits {
 		expectedVerification[key] = value
 	}
-	if declaration := manifest.Verification["ontology"]; declaration == explicitOntologyVerification || declaration == StrictUnionOntologyVerification {
+	if manifest.StatusCategoryContract == StatusCategoryContract {
+		expectedVerification["ontology"] = NativeStatusOntologyVerification
+	} else if declaration := manifest.Verification["ontology"]; declaration == explicitOntologyVerification || declaration == StrictUnionOntologyVerification {
 		expectedVerification["ontology"] = declaration
 	} else if len(manifest.Ontology) != 0 {
 		return fmt.Errorf("explicit ontology directives require their verification disclosure")
@@ -378,7 +404,19 @@ func validateManifest(manifest Manifest, members map[string][]byte) error {
 	if err := validateProjects(manifest.Projects); err != nil {
 		return err
 	}
-	if manifest.Verification["ontology"] == StrictUnionOntologyVerification {
+	if manifest.SourceIdentityContract == SourceIdentityContract {
+		for _, project := range manifest.Projects {
+			scoped := scopedHistoryManifest(manifest, project.Prefix)
+			if err := validateOntology(scoped.Ontology, scoped.Projects); err != nil {
+				return err
+			}
+		}
+		for _, directive := range manifest.Ontology {
+			if !projectInManifest(directive.Target.Project, manifest.Projects) {
+				return fmt.Errorf("undeclared ontology source project")
+			}
+		}
+	} else if manifest.Verification["ontology"] == StrictUnionOntologyVerification {
 		if err := validateMigrationDirectives(manifest.Ontology, manifest.Projects); err != nil {
 			return err
 		}
@@ -423,6 +461,11 @@ func validateProjects(input []Project) error {
 			}
 			_ = counter
 		}
+		for j, namespace := range project.HashNamespaces {
+			if project.IDMode != "hash" || !validHashNamespace(namespace) || j > 0 && namespace <= project.HashNamespaces[j-1] {
+				return fmt.Errorf("hash_namespaces requires sorted unique native namespaces in hash mode")
+			}
+		}
 	}
 	return nil
 }
@@ -433,7 +476,7 @@ func validateRecords(manifest Manifest, members map[string][]byte) (map[string][
 	counts := map[string]int{}
 	lastKind := ""
 	for _, kind := range manifest.Kinds {
-		versionOK := kind.Version == 1 || kind.Name == "edge" && kind.Version == EdgeVersionTypedDependencies
+		versionOK := kind.Version == 1 || kind.Name == "edge" && IsTypedEdgeVersion(kind.Version)
 		if !knownKinds[kind.Name] || !versionOK || kind.Name <= lastKind || kind.File != "records/"+kind.Name+".ndjson" || kind.Count < 1 {
 			return nil, nil, fmt.Errorf("unknown, duplicate or unordered kind registry entry")
 		}
@@ -447,7 +490,6 @@ func validateRecords(manifest Manifest, members map[string][]byte) (map[string][
 		if len(lines) != kind.Count {
 			return nil, nil, fmt.Errorf("record count mismatch for %s", kind.Name)
 		}
-		last := ""
 		rows := make([]Record, 0, len(lines))
 		for _, line := range lines {
 			var record Record
@@ -457,10 +499,9 @@ func validateRecords(manifest Manifest, members map[string][]byte) (map[string][
 			if record.Kind != kind.Name || record.ID == "" || record.Source.Table == "" || record.Source.Fields == nil || record.Body == nil {
 				return nil, nil, fmt.Errorf("invalid typed record in %s", kind.Name)
 			}
-			if key := recordKey(record); key <= last {
+			if len(rows) > 0 && compareSourceRecords(rows[len(rows)-1], record, manifest.SourcePlaneAddressContract) >= 0 {
 				return nil, nil, fmt.Errorf("duplicate or unordered typed record in %s", kind.Name)
 			}
-			last = recordKey(record)
 			rows = append(rows, record)
 		}
 		byKind[kind.Name] = rows
@@ -471,18 +512,70 @@ func validateRecords(manifest Manifest, members map[string][]byte) (map[string][
 		}
 	}
 	_, hasHistory := members[SourceHistoryMember]
-	migration, err := compileImportMigration(manifest, byKind, members["config/sources.json"], hasHistory)
+	if manifest.SourceIdentityContract == SourceIdentityContract {
+		if !hasHistory && manifest.SourceFamilyContract != SourceFamilyContract {
+			return nil, nil, ErrSourceHistory{Reason: "missing source project history"}
+		}
+		if err := validateScopedSourceRecords(manifest, byKind, members["config/sources.json"]); err != nil {
+			return nil, nil, err
+		}
+		return byKind, nil, nil
+	}
+	for _, rows := range byKind {
+		for _, r := range rows {
+			if r.Source.Identity != nil {
+				return nil, nil, fmt.Errorf("record source identity requires explicit contract")
+			}
+		}
+	}
+	var sourceEntries []externalEntry
+	if err := decodeJSON(members["config/sources.json"], &sourceEntries); err != nil {
+		return nil, nil, err
+	}
+	for _, e := range sourceEntries {
+		if e.Identity != nil {
+			return nil, nil, fmt.Errorf("configuration source identity requires explicit contract")
+		}
+	}
+	planes := manifest.SourcePlaneAddressContract == SourcePlaneAddressContract
+	var migration *ImportMigration
+	var err error
+	var statuses map[string]bool
+	if planes {
+		if manifest.StatusCategoryContract == StatusCategoryContract {
+			var categories map[string]string
+			categories, err = sourcePlaneCatalogCategoriesFor(byKind, members["config/sources.json"], true)
+			statuses = make(map[string]bool, len(categories))
+			for name := range categories {
+				statuses[name] = true
+			}
+		} else {
+			statuses, err = validateSourcePlaneCatalog(byKind, members["config/sources.json"])
+		}
+	}
+	if err == nil && manifest.StatusCategoryContract == StatusCategoryContract {
+		err = validateNativeStatusCatalogConservation(manifest, byKind, members["config/sources.json"])
+	}
+	if err == nil && (!planes || manifest.Verification["ontology"] == StrictUnionOntologyVerification) {
+		migration, err = compileImportMigration(manifest, byKind, members["config/sources.json"], hasHistory)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
 	for _, kind := range manifest.Kinds {
 		for _, record := range byKind[kind.Name] {
+			if planes && (record.Kind == "edge" || sourcePlaneArchiveTable(record.Source.Table) || nativeOperationalTable(record.Source.Table, manifest.SourceFamilyContract)) {
+				if err := validateSourcePlaneRecord(record, manifest, counts, statuses); err != nil {
+					return nil, nil, err
+				}
+				continue
+			}
 			if err := validateVersionedRecord(record, manifest.Projects, counts, migration, manifest.EdgeVersion()); err != nil {
 				return nil, nil, err
 			}
 		}
 	}
-	if err := validateMigratedDispositions(manifest.Sources, counts, members["config/sources.json"], migration); err != nil {
+	if err := validateBoundDispositions(manifest.Sources, counts, members["config/sources.json"], migration, planes, manifest.SourceFamilyContract); err != nil {
 		return nil, nil, err
 	}
 	if migration == nil {
@@ -494,13 +587,18 @@ func validateRecords(manifest Manifest, members map[string][]byte) (map[string][
 	if _, captured := members[SourceHistoryMember]; !captured && (historyRows != 0) != (manifest.History == "available-unverified") {
 		return nil, nil, fmt.Errorf("history declaration does not match archived source rows")
 	}
-	if err := validateRelations(manifest.Projects, byKind); err != nil {
+	if err := validateSourcePlaneRelations(manifest, byKind); err != nil {
 		return nil, nil, err
 	}
 	return byKind, migration, nil
 }
 
-func recordKey(record Record) string { return record.Project + "\x00" + record.ID }
+func recordKey(record Record) string {
+	if record.Source.Identity != nil {
+		return identityRecordKey(record)
+	}
+	return record.Project + "\x00" + record.ID
+}
 
 func stringValue(value any) string { result, _ := value.(string); return result }
 

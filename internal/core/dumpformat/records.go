@@ -34,6 +34,10 @@ func (e *UnresolvedDependencyError) Error() string {
 
 var hashPattern = regexp.MustCompile(`^[a-zA-Z0-9]+$`)
 
+// EphemeralDependencyTargetField names the physical exporter column used by
+// SQL conservation checks and the archive reader's explicit target refusal.
+const EphemeralDependencyTargetField = "depends_on_wisp_id"
+
 // SourceMetadataObject reads a source JSON object or its SQL JSON-text cell
 // without changing that source value. SQL NULL (nil) is absent metadata;
 // explicit {} is a non-nil empty object. Text must encode exactly one object:
@@ -170,6 +174,14 @@ func validateVersionedRecord(record Record, projects []Project, counts map[strin
 				return migrationRefusal("undeclared-entry", record.ID, record.Project)
 			}
 			category, result, targetType = string(status.Category), string(status.Outcome), target.Type
+		} else if len(p.Statuses) != 0 {
+			category = projectStatusCategory(p, stringValue(fields["status"]))
+			if category == "" {
+				return migrationRefusal("unknown-native-status", stringValue(fields["status"]), record.Project)
+			}
+			if category == "done" {
+				result = "success"
+			}
 		} else {
 			switch stringValue(fields["status"]) {
 			case "open":
@@ -226,8 +238,8 @@ func validateVersionedRecord(record Record, projects []Project, counts map[strin
 		}
 	case "edge":
 		target, targetKind := "", ""
-		for _, key := range []string{"depends_on_issue_id", "depends_on_wisp_id", "depends_on_external"} {
-			if edgeVersion == EdgeVersionTypedDependencies && fields[key] != nil {
+		for _, key := range []string{"depends_on_issue_id", EphemeralDependencyTargetField, "depends_on_external"} {
+			if IsTypedEdgeVersion(edgeVersion) && fields[key] != nil {
 				if _, ok := fields[key].(string); !ok {
 					return fmt.Errorf("typed edge target %s must be text or null", key)
 				}
@@ -239,8 +251,8 @@ func validateVersionedRecord(record Record, projects []Project, counts map[strin
 				target, targetKind = value, key
 			}
 		}
-		if target == "" || targetKind == "depends_on_wisp_id" {
-			if target != "" && targetKind == "depends_on_wisp_id" {
+		if target == "" || targetKind == EphemeralDependencyTargetField {
+			if target != "" && targetKind == EphemeralDependencyTargetField {
 				return fmt.Errorf("unsupported or missing edge target: %w", &UnresolvedDependencyError{
 					EdgeID: record.ID, Project: record.Project, Source: stringValue(fields["issue_id"]), Target: target, TargetKind: targetKind,
 				})
@@ -251,12 +263,13 @@ func validateVersionedRecord(record Record, projects []Project, counts map[strin
 		case "blocks", "parent-child", "related", "discovered-from":
 		default:
 			kind := stringValue(fields["type"])
-			localSuccessor := edgeVersion == EdgeVersionTypedDependencies && (kind == "waits-for" || kind == "conditional-blocks")
-			if !localSuccessor && (targetKind != "depends_on_external" || kind == "" || len(kind) > 32 || !utf8.ValidString(kind)) {
+			localSuccessor := IsVersionedLocalKnownEdgeType(edgeVersion, targetKind, kind)
+			localOpaque := IsLocalOpaqueEdgeType(edgeVersion, targetKind, kind)
+			if !localSuccessor && !localOpaque && (targetKind != "depends_on_external" || kind == "" || len(kind) > 32 || !utf8.ValidString(kind)) {
 				return fmt.Errorf("unsupported dependency type")
 			}
 		}
-		if edgeVersion == EdgeVersionTypedDependencies {
+		if IsTypedEdgeVersion(edgeVersion) {
 			if _, err := SourceEdgeMetadata(edgeVersion, record.ID, stringValue(fields["type"]), fields["metadata"]); err != nil {
 				return fmt.Errorf("edge %s metadata: %w", record.ID, err)
 			}
@@ -349,8 +362,18 @@ func checkID(id string, p Project) error {
 		if err != nil || n == 0 || n > p.LastID {
 			return fmt.Errorf("source ID exceeds sequential allocator")
 		}
-	} else if !hashPattern.MatchString(parts[0]) || len(parts[0]) < p.HashLength {
-		return fmt.Errorf("invalid source hash ID")
+	} else {
+		namespace, hash, ok := splitHashRoot(parts[0])
+		declared := namespace == ""
+		for _, candidate := range p.HashNamespaces {
+			if namespace == candidate {
+				declared = true
+				break
+			}
+		}
+		if !ok || !declared || len(hash) < p.HashLength {
+			return fmt.Errorf("invalid source hash ID")
+		}
 	}
 	for i := 1; i < len(parts); i++ {
 		n, err := natural(parts[i])

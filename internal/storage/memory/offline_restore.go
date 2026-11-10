@@ -27,7 +27,7 @@ func (t *transaction) prepareRestore(ctx context.Context, source driver.StoreID)
 	if err := t.check(ctx); err != nil {
 		return driver.Meta{}, err
 	}
-	if !t.hasHead || s.head != t || t.restore != nil || len(t.records)+len(t.derived)+len(t.bumps)+len(t.blobs)+len(t.allocators)+len(t.parentCounters) != 0 {
+	if !t.hasHead || s.head != t || t.restore != nil || len(t.records)+len(t.derived)+len(t.bumps)+len(t.blobs)+len(t.allocators)+len(t.parentCounters)+len(t.checkpointWrites)+len(t.checkpointGuards) != 0 {
 		return driver.Meta{}, fmt.Errorf("offline restore requires Head before staging")
 	}
 	if err := s.restoreEmpty(); err != nil {
@@ -63,7 +63,7 @@ var _ driver.OfflineRestoreTx = (*transaction)(nil)
 var _ driver.NativeRestoreTx = (*transaction)(nil)
 
 func (t *transaction) PrepareRestoreImport(ctx context.Context, profile driver.RestoreImportProfile) (driver.Meta, error) {
-	bound, err := profile.Detached()
+	bound, err := profile.DetachedCoreOnly()
 	if err != nil {
 		return driver.Meta{}, err
 	}

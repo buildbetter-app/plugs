@@ -35,6 +35,7 @@ type RestoreImportRequest struct {
 	AgentLabel     string
 	HistoryMode    driver.RestoreHistoryMode
 	Presence       restore.Presence
+	SourcePlanes   *driver.SourcePlanePlanV1
 }
 
 // Import is the existing restore.Manager finish hook. The manager has already
@@ -54,11 +55,14 @@ func (a *restoreImportAdapter) Import(ctx context.Context, restoreID string, pri
 }
 
 type restoreImportAdapter struct {
-	store    driver.Store
-	lease    driver.ActiveLease
-	authMode string
-	presence restore.PresenceVerifier
-	planner  RestoreImportPlanner
+	store          driver.Store
+	lease          driver.ActiveLease
+	authMode       string
+	presence       restore.PresenceVerifier
+	planner        RestoreImportPlanner
+	sourcePlanner  RestoreSourcePlanner
+	installSource  func(context.Context, driver.RestoreImportProfile, converterroundtrip.Report) error
+	nativeOntology bool
 }
 
 func newRestoreImportAdapter(store driver.Store, lease driver.ActiveLease, authMode string, presence restore.PresenceVerifier, planner RestoreImportPlanner) *restoreImportAdapter {
@@ -110,6 +114,9 @@ func (a *restoreImportAdapter) importArchive(ctx context.Context, principal mode
 		return converterroundtrip.Report{}, err
 	}
 	archiveDigest := archive.SHA256()
+	if archive.Manifest().SourcePlaneAddressContract != "" {
+		return a.importSourceArchive(ctx, principal, data, request, archive)
+	}
 	if _, _, _, _, err := a.binding(ctx, principal, request.AgentLabel); err != nil {
 		return converterroundtrip.Report{}, err
 	}

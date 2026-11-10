@@ -184,17 +184,20 @@ func compileEffective(doc Document, plugins PluginCatalog, prefix string, add fu
 		path := prefix + ".statuses." + key
 		checkKey(key, path, add)
 		switch s.Category {
-		case Triage, Backlog, Unstarted, Started, Completed, Canceled:
+		case Triage, Backlog, Unstarted, Started, Completed, Canceled, Active, WIP, Done, Frozen:
 		default:
 			add(path+".category", "unknown category")
 		}
-		if s.Category == Completed {
+		if s.Category.Completed() {
 			if s.Outcome == "" {
 				s.Outcome = Success
 				doc.Statuses[key] = s
 			}
 			if s.Outcome != Success && s.Outcome != Failure {
 				add(path+".outcome", "completed requires success or failure")
+			}
+			if s.Category == Done && s.Outcome != Success {
+				add(path+".outcome", "native done category requires success")
 			}
 		} else if s.Outcome != "" {
 			add(path+".outcome", "only completed statuses have outcomes")
@@ -240,17 +243,17 @@ func compileEffective(doc Document, plugins PluginCatalog, prefix string, add fu
 			valid := false
 			switch slot {
 			case Claim:
-				valid = s.Category == Started
+				valid = s.Category.Started()
 			case Close:
-				valid = s.Category == Completed && s.Outcome == Success
+				valid = s.Category.Completed() && s.Outcome == Success
 			case Fail:
 				valid = s.Category == Completed && s.Outcome == Failure
 			case Reopen:
-				valid = s.Category == Unstarted
+				valid = s.Category.ReadyEligible()
 			case Cancel:
 				valid = s.Category == Canceled
 			case Defer:
-				valid = s.Category == Backlog
+				valid = s.Category.Backlog()
 			}
 			if !valid {
 				add(path+".slots."+string(slot), "unknown slot or incompatible category/outcome")

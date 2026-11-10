@@ -1,0 +1,9 @@
+[
+  {"name": "blocked", "category": "wip"},
+  {"name": "closed", "category": "done"},
+  {"name": "deferred", "category": "frozen"},
+  {"name": "hooked", "category": "wip"},
+  {"name": "in_progress", "category": "wip"},
+  {"name": "open", "category": "active"},
+  {"name": "pinned", "category": "frozen"}
+]

@@ -74,7 +74,7 @@ var _ driver.OfflineRestoreTx = (*transaction)(nil)
 var _ driver.NativeRestoreTx = (*transaction)(nil)
 
 func (t *transaction) PrepareRestoreImport(ctx context.Context, profile driver.RestoreImportProfile) (driver.Meta, error) {
-	bound, err := profile.Detached()
+	bound, err := profile.DetachedCoreOnly()
 	if err != nil {
 		return driver.Meta{}, err
 	}

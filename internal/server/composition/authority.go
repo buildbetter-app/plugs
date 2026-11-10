@@ -18,7 +18,7 @@ import (
 // acquiring the no-authorization AZ9 fallback.
 func bindRuntimeAuthority(ctx context.Context, config Config, auth authn.Config, store driver.Store, lease driver.ActiveLease, snapshot ontology.Snapshot) (*service.Ontology, *authzrpc.Checker, error) {
 	var resolve func(string) ontology.Effective
-	if config.Ontology != nil {
+	if config.Ontology != nil && !(config.NativeImportOntology && snapshot.Digest() == "") {
 		resolve = snapshot.Effective
 	}
 	var checker *authzrpc.Checker

@@ -270,7 +270,7 @@ func Validate(e Effective, before, after *BeadState, method string, facts GuardF
 	if !contains(w.Statuses, before.Status) {
 		return append(violations, invalid("status", "source is outside workflow")...)
 	}
-	if category, found := e.Category(before.Status); !found || (slot == Claim && category != Unstarted) {
+	if category, found := e.Category(before.Status); !found || (slot == Claim && !category.ReadyEligible()) {
 		return append(violations, invalid("status", "claim requires an unstarted source")...)
 	}
 	matched, guardViolations := transitionGuards(w, before.Status, target, *after, facts)

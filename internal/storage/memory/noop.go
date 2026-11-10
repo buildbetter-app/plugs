@@ -9,8 +9,8 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
-// CommitNoop publishes only an idempotency receipt. The caller still acquires
-// its complete guard locks and Head; no graph mutation can accompany a receipt.
+// CommitNoop publishes an optional receipt and staged unversioned checkpoints.
+// The complete guard locks and Head still apply; graph mutation is forbidden.
 func (t *transaction) CommitNoop(ctx context.Context, header driver.ChangesetHeader) (model.Commit, error) {
 	s := t.store
 	s.mu.Lock()
@@ -63,6 +63,9 @@ func (t *transaction) CommitNoop(ctx context.Context, header driver.ChangesetHea
 			return response, nil
 		}
 	}
+	if err := t.checkCheckpointGuards(); err != nil {
+		return model.Commit{}, err
+	}
 	response := header.Response
 	response.Revision = s.state.meta.Head
 	if response.Results == nil {
@@ -85,10 +88,12 @@ func (t *transaction) CommitNoop(ctx context.Context, header driver.ChangesetHea
 		next = s.state.fork()
 		next.replays[id] = replay{value: driver.IdempotencyRecord{RequestHash: header.RequestHash, Commit: durable}, at: s.now()}
 	}
+	checkpoints := t.prepareCheckpointPublication()
 	if err := t.check(ctx); err != nil {
 		return model.Commit{}, err
 	}
 	s.state = next
+	s.checkpoints = checkpoints
 	t.finish()
 	return response, nil
 }

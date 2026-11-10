@@ -14,7 +14,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
-	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -217,7 +216,7 @@ func (s *Service) nextCompaction(ctx context.Context, by model.PrincipalRef, req
 			continue
 		}
 		category, ok := s.ontology.effective(project).Category(state(row.doc).Status)
-		if !ok || category != ontology.Completed {
+		if !ok || !category.Completed() {
 			continue
 		}
 		level, err := compactionLevel(row.doc)
@@ -357,7 +356,7 @@ func (s *Service) compactionClosedAt(ctx context.Context, by model.PrincipalRef,
 			return time.Time{}, err
 		}
 		category, ok := s.ontology.effective(prior.doc.Project).Category(state(prior.doc).Status)
-		closed := ok && category == ontology.Completed
+		closed := ok && category.Completed()
 		if !closed {
 			closedAt = time.Time{}
 		} else if known && !wasClosed {

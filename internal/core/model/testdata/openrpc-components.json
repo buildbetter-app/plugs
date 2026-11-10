@@ -6,7 +6,9 @@
     "CloseOp": "6ab50ceeea1aca62eff9cf638a0333243505dff7e7d7a251cd7648b272216b66",
     "LinkOp": "d96d7dd03cd091f18d0436e45cf77a4783e0a9d29fa0cbd12611ef13e23ef1dc",
     "LinkTargetKind": "d96d7dd03cd091f18d0436e45cf77a4783e0a9d29fa0cbd12611ef13e23ef1dc",
-    "LinkMetadata": "d96d7dd03cd091f18d0436e45cf77a4783e0a9d29fa0cbd12611ef13e23ef1dc"
+    "LinkMetadata": "d96d7dd03cd091f18d0436e45cf77a4783e0a9d29fa0cbd12611ef13e23ef1dc",
+    "ConditionDecision": "e0aab6d59361f63e74c3c87c191f27e0e644bd45e3cc9d2d427f022c664e4011",
+    "ConditionUnmetDecision": "e0aab6d59361f63e74c3c87c191f27e0e644bd45e3cc9d2d427f022c664e4011"
   },
   "sourceNote": "sourceSHA256 pins the historical baseline. schemaSourceSHA256 records full source-document hashes for individually refreshed schemas; all other schemas retain the historical baseline.",
   "schemas": {
@@ -1295,7 +1297,10 @@
                 "triage",
                 "backlog",
                 "unstarted",
-                "started"
+                "started",
+                "active",
+                "wip",
+                "frozen"
               ]
             },
             "outcome": {
@@ -1331,7 +1336,8 @@
             "category": {
               "type": "string",
               "enum": [
-                "completed"
+                "completed",
+                "done"
               ]
             },
             "outcome": {
@@ -1443,7 +1449,8 @@
             "category": {
               "type": "string",
               "enum": [
-                "completed"
+                "completed",
+                "done"
               ]
             },
             "outcome": {

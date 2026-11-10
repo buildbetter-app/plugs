@@ -82,6 +82,41 @@ go_test(
     args = ["-test.v"],
 )
 
+# One private B07 recorder. No legacy all-card or B05 recorder is compiled.
+# The committed main preparer supplies the accepted c8eb bundle's four values.
+go_test(
+    name = "native_b07",
+    srcs = [
+        "engines_test.go",
+        "native_import_b07_test.go",
+        "native_io_b07_test.go",
+        "native_recording_b07_test.go",
+    ],
+    embedsrcs = [
+        "native_inputs_b07.json",
+        "native_protocol_b07.json",
+    ],
+    data = ["//internal/publicnative:dolt_runtime"],
+    env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
+    tags = ["manual", "local", "requires-network"],
+    timeout = "long",
+    args = ["-test.v"],
+    deps = [
+        "//internal/core/dumpformat",
+        "//internal/core/events",
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/restore",
+        "//internal/integration/converterroundtrip",
+        "//internal/publicnative",
+        "//internal/server/composition",
+        "//internal/server/transport/httpjson",
+        "//internal/server/watch",
+        "//internal/storage/driver",
+        "//internal/storage/postgres",
+    ],
+)
+
 # The trusted workflow prepares the pinned public reference only when this
 # explicit target is invoked with its fixed PLUG_PUBLIC_REFERENCE descriptor.
 # Keep it out of wildcard/whole-tree runs: the prepared paths exist only on

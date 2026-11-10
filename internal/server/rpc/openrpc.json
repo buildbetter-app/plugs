@@ -2698,7 +2698,10 @@
                   "triage",
                   "backlog",
                   "unstarted",
-                  "started"
+                  "started",
+                  "active",
+                  "wip",
+                  "frozen"
                 ]
               },
               "outcome": {
@@ -2734,7 +2737,8 @@
               "category": {
                 "type": "string",
                 "enum": [
-                  "completed"
+                  "completed",
+                  "done"
                 ]
               },
               "outcome": {
@@ -2846,7 +2850,8 @@
               "category": {
                 "type": "string",
                 "enum": [
-                  "completed"
+                  "completed",
+                  "done"
                 ]
               },
               "outcome": {
@@ -3664,6 +3669,17 @@
                   "type": "integer",
                   "minimum": 0
                 }
+              },
+              "hash_namespaces": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "maxLength": 32,
+                  "pattern": "^[a-zA-Z][a-zA-Z0-9_]*(?:-[a-zA-Z0-9_]+)*$"
+                },
+                "description": "Sorted exact source namespace inventory; each namespace is separate from the root hash token."
               }
             },
             "required": [
@@ -3723,7 +3739,7 @@
             "$ref": "#/components/schemas/SourceAllocatorProvenance"
           },
           "targetAllocator": {
-            "$ref": "#/components/schemas/TargetRandomAllocator"
+            "$ref": "#/components/schemas/TargetHashAllocator"
           }
         },
         "required": [
@@ -4462,6 +4478,58 @@
           "external"
         ],
         "description": "Omission is local. Explicit external targets retain an exact nonempty branch-zero ID and are never resolved against local beads."
+      },
+      "TargetHashAllocator": {
+        "type": "object",
+        "properties": {
+          "prefix": {
+            "type": "string",
+            "minLength": 1
+          },
+          "id_mode": {
+            "type": "string",
+            "const": "hash"
+          },
+          "hash_length": {
+            "type": "integer",
+            "minimum": 3
+          },
+          "min_hash_length": {
+            "type": "integer",
+            "minimum": 3
+          },
+          "max_hash_length": {
+            "type": "integer",
+            "minimum": 3
+          },
+          "max_collision_prob": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "last_id": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "child_counters": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "required": [
+          "prefix",
+          "id_mode",
+          "hash_length",
+          "min_hash_length",
+          "max_hash_length",
+          "max_collision_prob",
+          "last_id"
+        ],
+        "additionalProperties": false,
+        "description": "Live Beads adaptive base36 hash policy, with ten nonce attempts per length through the configured maximum and monotonic parent.N child counters. Source IDs remain unchanged."
       }
     },
     "errors": {

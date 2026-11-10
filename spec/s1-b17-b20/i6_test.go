@@ -227,8 +227,8 @@ func i6NativeAllocatorBinding(t *testing.T, archive *dumpformat.Archive, capture
 		t.Fatal("native archive omitted the complete allocator snapshot")
 	}
 	// Independently spell the admitted fixture's complete live inventory. Its
-	// source sequential counters remain provenance; import seeds the fixed
-	// random profile. Do not use the production allocator codec or digest.
+	// source sequential counters remain provenance; import seeds the adaptive
+	// hash policy and direct-child counters. Do not use the production codec or digest.
 	want, err := json.Marshal(struct {
 		Version       string            `json:"version"`
 		StoreID       string            `json:"store_id"`
@@ -240,7 +240,7 @@ func i6NativeAllocatorBinding(t *testing.T, archive *dumpformat.Archive, capture
 	}{
 		Version: "plug-native-allocator/1", StoreID: string(captured.StoreID), Incarnation: captured.Incarnation,
 		At: json.Number(captured.Head.String()), CoverageFloor: json.Number("1"),
-		Projects: []json.RawMessage{json.RawMessage(`{"prefix":"demo","id_mode":"random","random_bytes":16,"suffix_encoding":"lower-hex","top_level_shape":"prefix-random","child_shape":"parent-random"}`)},
+		Projects: []json.RawMessage{json.RawMessage(`{"prefix":"demo","id_mode":"hash","hash_length":8,"min_hash_length":3,"max_hash_length":8,"last_id":8,"child_counters":{"demo-7":4},"max_collision_prob":0.25}`)},
 		Parents:  []json.RawMessage{},
 	})
 	if err != nil {

@@ -21,6 +21,7 @@ type OrdinaryDeleteImage struct {
 }
 
 type OrdinaryDeletePreparation struct {
+	Head      *driver.CoreSnapshotExpectation
 	Namespace driver.CheckpointExpectation
 	State     *PreparedState
 	Results   map[int]model.OpResult
@@ -30,9 +31,56 @@ type OrdinaryDeletePreparation struct {
 // refuses deletion while any workflow reference still names that ordinary ID.
 // It only reads the namespace and prepares bytes; it never publishes or GC's.
 func (p *Provider) PrepareOrdinaryDelete(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta, apply func(func(model.Op) (*OrdinaryDeleteImage, error)) error) (OrdinaryDeletePreparation, error) {
+	if apply == nil {
+		return OrdinaryDeletePreparation{}, driver.ErrUnsupported
+	}
+	return p.prepareOrdinaryDelete(ctx, by, cs, meta, false, func(handle SourceOrdinaryDeleteHandler) error {
+		return apply(func(op model.Op) (*OrdinaryDeleteImage, error) {
+			_, image, err := handle(op)
+			return image, err
+		})
+	})
+}
+
+// SourceOrdinaryDeleteHandler returns the operation resolved against the same
+// detached source image used for ordered reference checks and mixed unlinks.
+type SourceOrdinaryDeleteHandler func(model.Op) (model.Op, *OrdinaryDeleteImage, error)
+
+// PrepareSourceOrdinaryDelete binds the actual source Head and namespace before
+// applying the existing delete rules. Process lifetime remains truthful; this
+// route requires an installed source runtime and never publishes plugin state.
+func (p *Provider) PrepareSourceOrdinaryDelete(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta, apply func(SourceOrdinaryDeleteHandler) error) (OrdinaryDeletePreparation, error) {
+	var result OrdinaryDeletePreparation
+	prepared, err := p.PrepareSourceOperations(ctx, func(staged *Provider) error {
+		var err error
+		result, err = staged.prepareOrdinaryDelete(ctx, by, cs, meta, true, apply)
+		if err != nil {
+			return err
+		}
+		if result.State != nil {
+			_, err = staged.state.Put(ctx, stateKey, result.State.value, result.State.expect)
+		}
+		return err
+	})
+	if err != nil {
+		return OrdinaryDeletePreparation{}, err
+	}
+	head, ok := prepared.CoreSnapshot()
+	if !ok {
+		return OrdinaryDeletePreparation{}, driver.ErrUnsupported
+	}
+	result.Head = &head
+	result.State = nil
+	if !prepared.Empty() {
+		result.State = &prepared
+	}
+	return result, nil
+}
+
+func (p *Provider) prepareOrdinaryDelete(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta, sourceAware bool, apply func(SourceOrdinaryDeleteHandler) error) (OrdinaryDeletePreparation, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !p.persistent {
+	if !p.persistent && p.source == nil {
 		return OrdinaryDeletePreparation{}, fail("plugin_durable_state_unavailable", "ephemeral workflows require persistent checkpoint storage")
 	}
 	value, revision, err := p.readState(ctx)
@@ -49,12 +97,49 @@ func (p *Provider) PrepareOrdinaryDelete(ctx context.Context, by model.Principal
 	if err != nil {
 		return OrdinaryDeletePreparation{}, err
 	}
+	resolve := func(ref model.Ref) (model.Ref, error) {
+		if !sourceAware || !ref.IsID() || workflowTarget(ref) {
+			return ref, nil
+		}
+		if value.Source == nil {
+			return model.Ref{}, driver.ErrUnsupported
+		}
+		for _, entity := range value.Source.Entities {
+			if entity.Source.Project != meta.Project || entity.Source.ID != ref.ID {
+				continue
+			}
+			if err := validateRef(ref); err != nil {
+				return model.Ref{}, err
+			}
+			mapped, found, err := p.resolveSourceRefIn(value, by, meta.Project, ref.ID, meta)
+			if err != nil {
+				return model.Ref{}, err
+			}
+			if !found {
+				return model.Ref{}, fail("not_found", "source address has no current target")
+			}
+			return mapped, nil
+		}
+		return ref, nil
+	}
+	for _, expect := range cs.Expect {
+		ref, err := resolve(expect.Ref)
+		if err != nil {
+			return OrdinaryDeletePreparation{}, err
+		}
+		if ref != expect.Ref {
+			return OrdinaryDeletePreparation{}, fail("unsupported", "source address expectations require an explicit ordinary target")
+		}
+	}
 	targets := map[string]bool{}
 	for _, op := range cs.Ops {
 		if op.Kind != model.OpDelete {
 			continue
 		}
-		ref := op.Delete.Target
+		ref, err := resolve(op.Delete.Target)
+		if err != nil {
+			return OrdinaryDeletePreparation{}, err
+		}
 		if err := validateRef(ref); err != nil || workflowTarget(ref) {
 			return OrdinaryDeletePreparation{}, fail("invalid_params", "delete requires an ordinary branch-zero ID")
 		}
@@ -67,7 +152,7 @@ func (p *Provider) PrepareOrdinaryDelete(ctx context.Context, by model.Principal
 		return OrdinaryDeletePreparation{}, err
 	}
 	position := -1
-	err = apply(func(op model.Op) (*OrdinaryDeleteImage, error) {
+	handle := func(op model.Op) (*OrdinaryDeleteImage, error) {
 		position++
 		if op.Kind == model.OpDelete && op.Delete.Target.IsID() {
 			id := op.Delete.Target.ID
@@ -144,6 +229,14 @@ func (p *Provider) PrepareOrdinaryDelete(ctx context.Context, by model.Principal
 		}
 		results[position] = model.OpResult{Ref: active}
 		return &OrdinaryDeleteImage{Ref: active, Before: before, After: after, Generation: model.Natural64(item.Generation)}, nil
+	}
+	err = apply(func(original model.Op) (model.Op, *OrdinaryDeleteImage, error) {
+		op, err := resolveDeleteOperation(original, resolve)
+		if err != nil {
+			return model.Op{}, nil, err
+		}
+		image, err := handle(op)
+		return op, image, err
 	})
 	if err != nil {
 		return OrdinaryDeletePreparation{}, err
@@ -287,4 +380,53 @@ func (p *Provider) ProjectOrdinaryDeleteResults(ctx context.Context, by model.Pr
 		commit.Results[position] = stored
 	}
 	return commit, nil
+}
+
+func resolveDeleteOperation(op model.Op, resolve func(model.Ref) (model.Ref, error)) (model.Op, error) {
+	var target *model.Ref
+	switch op.Kind {
+	case model.OpPatch:
+		v := *op.Patch
+		op.Patch = &v
+		target = &v.Target
+	case model.OpClose:
+		v := *op.Close
+		op.Close = &v
+		target = &v.Target
+	case model.OpComment:
+		v := *op.Comment
+		op.Comment = &v
+		target = &v.Target
+	case model.OpDelete:
+		v := *op.Delete
+		op.Delete = &v
+		target = &v.Target
+	case model.OpSetMeta:
+		v := *op.SetMeta
+		op.SetMeta = &v
+		target = &v.Target
+	case model.OpReparent:
+		v := *op.Reparent
+		op.Reparent = &v
+		target = &v.Target
+	case model.OpLink, model.OpUnlink:
+		v := *op.Link
+		op.Link = &v
+		target = &v.From
+		if v.TargetKind != model.LinkTargetExternal {
+			to, err := resolve(v.To)
+			if err != nil {
+				return model.Op{}, err
+			}
+			v.To = to
+		}
+	}
+	if target != nil {
+		ref, err := resolve(*target)
+		if err != nil {
+			return model.Op{}, err
+		}
+		*target = ref
+	}
+	return op, nil
 }
