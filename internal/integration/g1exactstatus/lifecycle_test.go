@@ -78,7 +78,7 @@ func TestG1ExactNativePublicCreateCloseReopenAndDurability(t *testing.T) {
 		if !bytes.Equal(first.Result, replay.Result) {
 			t.Fatal("close receipt changed on replay")
 		}
-		f.refuse(f.actor, project, "bead.close", closeParams(id, "native-done", "exact reason"), "exact-close", "idempotency_conflict")
+		f.refuse(f.actor, project, "bead.close", closeParams(id, "native-done", "exact reason"), "exact-close", "idempotency_key_reused")
 		// Exact same-target settlement remains guarded and can append a reason.
 		f.write("bead.close", closeParams(id, "native-done-alt", "settled reason"), "exact-settle")
 		if got := f.document(id); len(got.Comments) != 2 || got.Comments[1].Body != "settled reason" {
@@ -88,7 +88,7 @@ func TestG1ExactNativePublicCreateCloseReopenAndDurability(t *testing.T) {
 		reopened := f.call(f.actor, project, "bead.reopen", reopenRequest, "exact-reopen")
 		accepted(t, reopened, false)
 		f.status(id, "native-ready-alt")
-		f.refuse(f.actor, project, "bead.reopen", closeParams(id, "native-open", "exact reopen"), "exact-reopen", "idempotency_conflict")
+		f.refuse(f.actor, project, "bead.reopen", closeParams(id, "native-open", "exact reopen"), "exact-reopen", "idempotency_key_reused")
 		if got := f.document(id); got.ClosedAt != nil || got.Lease != nil || len(got.Comments) != 3 || got.Comments[2].Principal.ID != f.actor.ID {
 			t.Fatalf("reopen settlement/provenance: %+v", got)
 		}
@@ -110,7 +110,7 @@ func TestG1ExactNativePublicCreateCloseReopenAndDurability(t *testing.T) {
 			created := f.create(project, target, "create-"+target)
 			f.status(created, target)
 		}
-		t.Log("G1 actual authenticated HTTP create/close/reopen: exact native names and hyphenated type, omitted legacy defaults, reasons/principals, guarded settlement, selector receipt identity, and persistent SQLite/PostgreSQL reopen replay")
+		t.Log("G1 actual no-plugin HTTP create/close/reopen: exact native names and hyphenated type, omitted legacy defaults, reasons/principals, guarded settlement, selector receipt identity, and persistent SQLite/PostgreSQL reopen replay")
 	})
 }
 

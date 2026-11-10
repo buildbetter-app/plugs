@@ -11,6 +11,7 @@ go_test(
         "//internal/core/model",
         "//internal/core/ontology",
         "//internal/core/pipeline",
+        "//internal/core/port",
         "//internal/core/service",
         "//internal/plugins/authnapikey",
         "//internal/plugins/authzfixed",

@@ -17,21 +17,67 @@ import (
 // Permission is inert without an authorization provider; gate decisions use
 // the canonical pure evaluator and remain within the single Writer proposal.
 type Ontology struct {
-	mu      sync.RWMutex
-	resolve func(string) ontology.Effective
-	// defaultOnly is true only for the built-in, project-independent resolver
-	// installed by NewOntology(nil). Configured resolvers are never advertised
-	// as an immutable no-plugin source.
+	mu                   sync.RWMutex
+	resolve              func(string) ontology.Effective
+	permissionObserver   TransitionPermissionObserver
+	permissionConfigured bool
+	// Configured resolvers are never advertised as immutable no-plugin sources.
 	defaultOnly bool
 }
 
-func NewOntology(resolve func(string) ontology.Effective) *Ontology {
+// TransitionPermissionRequest carries the existing A3 permission guard's
+// action and actual target status to a trusted host source. It is never RPC
+// input and does not map transition onto an ordinary write permission.
+type TransitionPermissionRequest struct {
+	Principal            model.PrincipalRef
+	Resource             model.ResourceRef
+	Project, Type        string
+	Method, Action       string
+	FromStatus, ToStatus string
+}
+
+// TransitionPermissionObservation is one installation/decision observation
+// from the same tracked snapshot. An installed chain with no permission
+// observation denies; absence of an authorization plugin allows (AZ9).
+type TransitionPermissionObservation struct {
+	AuthzInstalled bool
+	Permission     *bool
+}
+
+// TransitionPermissionSource is the distinct capability of an installed
+// write authority. Generic modify authorization cannot supply this decision.
+type TransitionPermissionSource interface {
+	ObserveTransitionPermission(context.Context, TransitionPermissionRequest, port.SnapshotReader) (TransitionPermissionObservation, error)
+}
+
+type TransitionPermissionObserver func(context.Context, TransitionPermissionRequest, port.SnapshotReader) (TransitionPermissionObservation, error)
+
+type OntologyOption func(*Ontology)
+
+// WithTransitionPermissionObserver binds only trusted composition state. The
+// source must record installation and authority reads on the supplied reader.
+// Explicit nil means authorization is installed but its transition adapter is
+// unavailable, so permission guards fail closed. Omitting the option retains
+// the explicit no-authorization composition.
+func WithTransitionPermissionObserver(observer TransitionPermissionObserver) OntologyOption {
+	return func(o *Ontology) {
+		o.permissionObserver, o.permissionConfigured = observer, true
+	}
+}
+
+func NewOntology(resolve func(string) ontology.Effective, options ...OntologyOption) *Ontology {
 	defaultOnly := resolve == nil
 	if resolve == nil {
 		base := ontology.Default()
 		resolve = func(string) ontology.Effective { return base }
 	}
-	return &Ontology{resolve: resolve, defaultOnly: defaultOnly}
+	o := &Ontology{resolve: resolve, defaultOnly: defaultOnly}
+	for _, option := range options {
+		if option != nil {
+			option(o)
+		}
+	}
+	return o
 }
 
 // Refresh atomically replaces the compiled ontology used by all subsequent
@@ -181,6 +227,9 @@ func (o *Ontology) Normalize(ctx context.Context, proposal port.ProposedChange, 
 		after := before
 		e := o.effective(doc.Project)
 		if !hasDocument(change.Before) {
+			if err := o.observeTransitionGuards(ctx, proposal, change, before, after, effectiveMethod, closeSettlement, reader, &facts); err != nil {
+				return err
+			}
 			var violations []ontology.Violation
 			after, violations = ontology.Defaults(e, before)
 			if err := violationsError(violations); err != nil {
@@ -489,6 +538,9 @@ func (o *Ontology) validate(ctx context.Context, proposal port.ProposedChange, r
 			single.Changes = []port.Change{change}
 			closeSettlement = o.closeSettlement(single)
 		}
+		if err := o.observeTransitionGuards(ctx, proposal, change, before, after, effectiveMethod, closeSettlement, reader, &facts); err != nil {
+			return err
+		}
 		var violations []ontology.Violation
 		if closeSettlement {
 			violations = ontology.ValidateCloseSettlement(o.effective(doc.Project), before, &after, facts)
@@ -500,6 +552,77 @@ func (o *Ontology) validate(ctx context.Context, proposal port.ProposedChange, r
 		}
 	}
 	return o.validateHierarchyParents(proposal, graph)
+}
+
+func (o *Ontology) observeTransitionGuards(ctx context.Context, proposal port.ProposedChange, change port.Change, before *ontology.BeadState, after ontology.BeadState, method string, settlement bool, reader port.SnapshotReader, facts *ontology.GuardFacts) error {
+	if before == nil {
+		return nil
+	}
+	guardMethod := method
+	if isGateMethod(guardMethod) {
+		guardMethod = gateLifecycleMethod(pipeline.Document{Fields: after.Fields})
+	}
+	if _, lifecycle := ontology.SlotForMethod(guardMethod); !lifecycle {
+		return nil
+	}
+	effective := o.effective(after.Project)
+	guards, _ := effective.Guards(after.Type, before.Status, after.Status)
+	if settlement {
+		// Ordinary Guards deliberately rejects same-status transitions. Close
+		// settlement instead evaluates every applicable broad/source rule, as
+		// ValidateCloseSettlement does, without inventing a transition.
+		document := effective.Document()
+		workflow := document.Workflows[document.Types[after.Type].Workflow]
+		for _, rule := range workflow.Transitions {
+			if rule.To != after.Status {
+				continue
+			}
+			matches := len(rule.From) == 0
+			for _, source := range rule.From {
+				matches = matches || source == before.Status
+			}
+			if matches {
+				guards = append(guards, rule.Guards...)
+			}
+		}
+	}
+	permission := false
+	for _, guard := range guards {
+		switch guard.Kind {
+		case ontology.Permission:
+			permission = true
+		}
+	}
+	if !permission {
+		return nil
+	}
+	o.mu.RLock()
+	observer, configured := o.permissionObserver, o.permissionConfigured
+	o.mu.RUnlock()
+	if !configured {
+		return nil
+	}
+	facts.AuthzInstalled = true
+	if observer == nil {
+		return nil
+	}
+	if reader == nil {
+		return failure("authz_unavailable", "transition permission snapshot is unavailable")
+	}
+	observation, err := observer(ctx, TransitionPermissionRequest{
+		Principal: proposal.Principal, Resource: change.Resource,
+		Project: after.Project, Type: after.Type, Method: guardMethod, Action: "transition",
+		FromStatus: before.Status, ToStatus: after.Status,
+	}, reader)
+	if err != nil {
+		return err
+	}
+	facts.AuthzInstalled = observation.AuthzInstalled
+	if observation.Permission != nil {
+		permission := *observation.Permission
+		facts.Permission = &permission
+	}
+	return nil
 }
 
 // Recognize only the named empty slot patch and optional same-target reason.

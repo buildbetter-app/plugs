@@ -19,6 +19,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/plugins/authnapikey"
 	"github.com/buildbetter-app/plugs/internal/plugins/authzfixed"
@@ -35,7 +36,8 @@ const otherProject = "g1-other"
 const nativeType = "native-work-item"
 
 var source = model.RefByID("ontology/g1-exact-status", model.Natural64(0))
-var actor = model.PrincipalRef{Kind: "agent", ID: "agent:g1-worker", Sponsor: &model.PrincipalRef{Kind: "user", ID: "user:g1-owner"}}
+var user = model.PrincipalRef{Kind: "user", ID: "user:g1-owner"}
+var sponsoredAgent = model.PrincipalRef{Kind: "agent", ID: "agent:g1-worker", Sponsor: &user}
 var outsider = model.PrincipalRef{Kind: "agent", ID: "agent:g1-outsider", Sponsor: &model.PrincipalRef{Kind: "user", ID: "user:g1-outsider"}}
 
 func ref(id string) model.Ref { return model.RefByID(id, model.Natural64(0)) }
@@ -43,7 +45,8 @@ func key(label string) string { sum := sha256.Sum256([]byte(label)); return hex.
 
 // Only protected ontology/authority configuration is seeded. Every bead,
 // status transition, edge, reason and receipt is written through actual HTTP
-// RPC, the production typed service, Writer, ontology and fixed authorizer.
+// RPC, the production typed service, Writer and ontology. The installed-policy
+// controls additionally use the production fixed authorizer.
 func nativeDocument() ontology.Document {
 	d := ontology.DefaultDocument()
 	statuses := map[string]ontology.Status{
@@ -114,48 +117,49 @@ type fixture struct {
 	keys        *authnapikey.Provider
 	snapshot    ontology.Snapshot
 	facts       authzfixed.Facts
+	policy      *model.Ref
 	seq, nextID int
 }
 
 func eachFixture(t *testing.T, run func(*testing.T, *fixture)) {
 	t.Helper()
-	// Keep the installed fixed-policy workload mandatory, including its
-	// unsupported-route failures. The additional local mode is Plug's actual
-	// anonymous public composition, not a replacement policy or a gate waiver.
-	for _, mode := range []string{"local", "installed"} {
-		t.Run(mode, func(t *testing.T) {
-			engines(t, func(t *testing.T, e engine) {
-				ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-				t.Cleanup(cancel)
-				snap, src := compiled(t)
-				f := &fixture{t: t, ctx: ctx, engine: e, snapshot: snap, actor: actor}
-				if mode == "local" {
-					f.actor = model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
-				}
-				f.open()
-				t.Cleanup(f.close)
-				body, err := service.MarshalOntologySource(src)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err = conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{Principal: model.PrincipalRef{Kind: "system", ID: "g1-ontology-fixture"}}, []conformance.FixtureChange{{Ref: source, Kind: "ontology", Op: model.OpCreate, Body: body}}); err != nil {
-					t.Fatal(err)
-				}
-				m, err := f.store.Meta(ctx)
-				if err != nil {
-					t.Fatal(err)
-				}
-				ns := authz.Namespace{StoreID: string(m.StoreID), Incarnation: m.Incarnation, InstallationID: "fixed", Authority: ref("authority")}
-				f.facts = authzfixed.Facts{Namespace: ns}
-				for _, p := range []string{project, otherProject} {
-					f.facts.Projects = append(f.facts.Projects, authzfixed.Project{Ref: ref(p), Name: p, InstallationID: "fixed", Active: true})
-					f.facts.Grants = append(f.facts.Grants, authz.Grant{Subject: authz.SubjectRef{Kind: "user", ID: "user:g1-owner"}, Scope: authz.Scope{Kind: authz.ProjectScope, Ref: ref(p)}, Role: "involved"})
-				}
-				f.bind()
-				run(t, f)
-			})
+	eachConfiguredFixture(t, "local", run)
+}
+
+func eachConfiguredFixture(t *testing.T, mode string, run func(*testing.T, *fixture)) {
+	t.Helper()
+	// The default product configuration has no permission plugin. Every exact
+	// status workload runs there; installed-policy controls use a separate User
+	// configuration and assert the policy's actual supported/refused actions.
+	t.Run(mode, func(t *testing.T) {
+		engines(t, func(t *testing.T, e engine) {
+			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+			t.Cleanup(cancel)
+			snap, src := compiled(t)
+			f := &fixture{t: t, ctx: ctx, engine: e, snapshot: snap, actor: model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}}
+			f.open()
+			t.Cleanup(f.close)
+			body, err := service.MarshalOntologySource(src)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{Principal: model.PrincipalRef{Kind: "system", ID: "g1-ontology-fixture"}}, []conformance.FixtureChange{{Ref: source, Kind: "ontology", Op: model.OpCreate, Body: body}}); err != nil {
+				t.Fatal(err)
+			}
+			m, err := f.store.Meta(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ns := authz.Namespace{StoreID: string(m.StoreID), Incarnation: m.Incarnation, InstallationID: "fixed", Authority: ref("authority")}
+			f.facts = authzfixed.Facts{Namespace: ns}
+			for _, p := range []string{project, otherProject} {
+				f.facts.Projects = append(f.facts.Projects, authzfixed.Project{Ref: ref(p), Name: p, InstallationID: "fixed", Active: true})
+				f.facts.Grants = append(f.facts.Grants, authz.Grant{Subject: authz.SubjectRef{Kind: "user", ID: "user:g1-owner"}, Scope: authz.Scope{Kind: authz.ProjectScope, Ref: ref(p)}, Role: "involved"})
+			}
+			f.bind()
+			run(t, f)
 		})
-	}
+	})
 }
 
 func (f *fixture) open() {
@@ -178,16 +182,25 @@ func (f *fixture) bind() {
 		f.t.Fatal(err)
 	}
 	audit := service.NewTrackedOntologyAudit(service.StaticOntologySource(source))
-	app, err := authzrpc.New(f.ctx, authzrpc.Config{Store: f.store, Lease: f.lease, Provider: f.keys, Facts: facts, Namespace: f.facts.Namespace, DefaultProject: project, Hierarchy: true, Audit: audit})
+	var checker *authzrpc.Checker
+	options := []service.OntologyOption{}
+	config := authzrpc.AuthorityConfig{Facts: facts, Namespace: f.facts.Namespace, Hierarchy: true}
+	if f.policy != nil {
+		config.LifecyclePolicy = &authzrpc.LifecyclePolicyConfig{Ref: *f.policy}
+		options = append(options, service.WithTransitionPermissionObserver(func(ctx context.Context, q service.TransitionPermissionRequest, reader port.SnapshotReader) (service.TransitionPermissionObservation, error) {
+			return checker.ObserveTransitionPermission(ctx, q, reader)
+		}))
+	}
+	o := service.NewOntology(f.snapshot.Effective, options...)
+	checker, err = authzrpc.NewChecker(f.ctx, f.store, f.lease, o, config)
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	// Compose the production fixed Checker with the installed custom ontology.
-	// No test authorizer/ruleset or simulated lifecycle implementation exists.
-	o := service.NewOntology(f.snapshot.Effective)
-	w := pipeline.New(f.store, f.lease, pipeline.WithOntology(o), pipeline.WithOntologyAudit(audit), pipeline.WithAuthorizer(app.Checker), pipeline.WithEventContext(app.Checker), pipeline.WithIDGenerator(func() (string, error) { f.nextID++; return fmt.Sprintf("g1-%06d", f.nextID), nil }))
+	// The real Writer and guarded read service share the same Checker and
+	// installed custom ontology. No replacement authorizer or fixture rule runs.
+	w := pipeline.New(f.store, f.lease, pipeline.WithOntology(o), pipeline.WithOntologyAudit(audit), pipeline.WithAuthorizer(checker), pipeline.WithEventContext(checker), pipeline.WithIDGenerator(func() (string, error) { f.nextID++; return fmt.Sprintf("g1-%06d", f.nextID), nil }))
 	domain := service.New(f.store, f.lease, w, service.WithOntology(o), service.WithAuthorizationInstalled(func() bool { return true }))
-	f.authAPI = f.bindHTTP(domain, true)
+	f.authAPI = f.bindHTTP(checker.GuardService(domain), true)
 	f.api = f.authAPI
 	if f.actor.Kind == "anonymous" {
 		// No installed policy is the supported local production mode. Keep the
@@ -198,7 +211,7 @@ func (f *fixture) bind() {
 	}
 }
 
-func (f *fixture) bindHTTP(domain *service.Service, authenticated bool) *httptest.Server {
+func (f *fixture) bindHTTP(domain rpc.Service, authenticated bool) *httptest.Server {
 	f.t.Helper()
 	registry, err := rpc.NewRegistry()
 	if err != nil {
@@ -232,13 +245,7 @@ func (f *fixture) bindHTTP(domain *service.Service, authenticated bool) *httptes
 	return httptest.NewServer(handler)
 }
 func (f *fixture) close() {
-	if f.api != nil && f.api != f.authAPI {
-		f.api.Close()
-	}
-	if f.authAPI != nil {
-		f.authAPI.Close()
-	}
-	f.api, f.authAPI = nil, nil
+	f.closeHTTP()
 	if f.lease != nil {
 		if err := f.lease.Release(f.ctx); err != nil {
 			f.t.Error(err)
@@ -251,6 +258,31 @@ func (f *fixture) close() {
 		}
 		f.store = nil
 	}
+}
+
+func (f *fixture) closeHTTP() {
+	if f.api != nil && f.api != f.authAPI {
+		f.api.Close()
+	}
+	if f.authAPI != nil {
+		f.authAPI.Close()
+	}
+	f.api, f.authAPI = nil, nil
+}
+
+func (f *fixture) installUserPolicy(grants []authzrpc.LifecycleGrant) {
+	f.t.Helper()
+	f.closeHTTP()
+	policy := ref("lifecycle-policy/g1-user-close")
+	body, err := json.Marshal(authzrpc.LifecyclePolicy{Namespace: f.facts.Namespace, Grants: grants})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if _, err := conformance.Seed(f.ctx, f.store, f.lease, driver.ChangesetHeader{Principal: model.PrincipalRef{Kind: "system", ID: "g1-authority-fixture"}}, []conformance.FixtureChange{{Ref: policy, Kind: "lifecycle_policy", Op: model.OpCreate, Body: body}}); err != nil {
+		f.t.Fatal(err)
+	}
+	f.policy, f.actor = &policy, user
+	f.bind()
 }
 func (f *fixture) reopen() {
 	f.t.Helper()
