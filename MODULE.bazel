@@ -41,3 +41,57 @@ http_archive(
     strip_prefix = "dolt-linux-amd64/bin",
     build_file_content = 'exports_files(["dolt"], visibility = ["//visibility:public"])',
 )
+
+# Capture-only private driver extension, pinned upstream v2.2.0 source.
+local_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:local.bzl", "local_repository")
+local_repository(name = "private_dolt_driver", path = "third_party/dolt-driver")
+override_repo(go_deps, com_github_dolthub_driver_v2 = "private_dolt_driver")
+use_repo(go_deps, "com_github_dolthub_eventsapi_schema")
+
+# The embedded driver builds go-mysql-server with its stdlib-regex backend (ICU policy):
+# gazelle must see gms_pure_go as satisfied so it selects regex_pure.go and
+# drops the go-icu-regex (libicu, cgo) edge entirely.
+go_deps.gazelle_override(
+    directives = [
+        "gazelle:build_tags gms_pure_go",
+        "gazelle:exclude internal/regex/regex_cgo.go",
+    ],
+    path = "github.com/dolthub/go-mysql-server",
+)
+
+# protoc-gen-validate ships validate/validate.pb.go, so its Go library can
+# compile from the checked-in code. Its own validate/BUILD instead makes the
+# Go library a go_proto_library, so every lane built protoc from source just
+# to regenerate that file: about 4.5k C++ compile, link and archive actions,
+# each carrying the LLVM toolchain as inputs. The module reaches the graph
+# only through grpc xds and the cloud SDKs. Gazelle regenerates its BUILD
+# files with proto rules off; build_file_name makes it write BUILD.bazel (which
+# Bazel prefers) rather than merge into the upstream BUILD files.
+go_deps.gazelle_override(
+    build_file_generation = "on",
+    directives = [
+        "gazelle:build_file_name BUILD.bazel",
+        "gazelle:proto disable",
+    ],
+    path = "github.com/envoyproxy/protoc-gen-validate",
+)
+go_deps.module_override(
+    patch_strip = 1,
+    patches = ["//third_party/patches:eventsapi_schema_build.patch"],
+    path = "github.com/dolthub/eventsapi_schema",
+)
+go_deps.module_override(
+    patch_strip = 1,
+    patches = ["//third_party/patches:flatbuffers_v23_importpath.patch"],
+    path = "github.com/dolthub/flatbuffers/v23",
+)
+go_deps.module_override(
+    patch_strip = 1,
+    patches = ["//third_party/patches:dolt_go_serial.patch"],
+    path = "github.com/dolthub/dolt/go",
+)
+
+# Pure-Go stubs so --config=pure can compile dolt's store/nbs (see the patch).
+
+
+use_repo(go_deps, "com_github_cenkalti_backoff_v4", "com_github_dolthub_dolt_go", "com_github_dolthub_driver_v2", "com_github_dolthub_go_mysql_server", "com_github_dolthub_vitess", "com_github_go_sql_driver_mysql")

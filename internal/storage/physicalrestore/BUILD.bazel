@@ -1,0 +1,32 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+# manual: GMS compiles through gms_pure_go test/binary transitions, including nogo.
+go_library(
+    name = "physicalrestore",
+    tags = ["manual"],
+    srcs = ["binding.go", "copy.go", "manifest.go", "undo.go"],
+    importpath = "github.com/buildbetter-app/plugs/internal/storage/physicalrestore",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/storage/physicalcapture",
+        "@com_github_dolthub_driver_v2//:driver",
+    ],
+)
+go_test(
+    name = "physicalrestore_test",
+    gotags = ["gms_pure_go"],
+    srcs = ["restore_test.go", "undo_test.go"],
+    embed = [":physicalrestore"],
+    data = ["//tools/native-physical-restore", "@dolt_native_linux_amd64//:dolt"],
+    env = {
+        "BEADS_PHYSICAL_RESTORE_BINARY": "$(rlocationpath //tools/native-physical-restore)",
+        "BEADS_TEST_DOLT_BINARY": "$(rlocationpath @dolt_native_linux_amd64//:dolt)",
+    },
+    deps = [
+        "//internal/storage/physicalcapture",
+        "//internal/testutil/nativeoracle",
+        "//internal/testutil/nativeschema",
+        "//internal/testutil/bazeltest",
+        "@com_github_dolthub_driver_v2//:driver",
+    ],
+)
+

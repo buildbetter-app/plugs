@@ -1,0 +1,9 @@
+load("@rules_go//go:def.bzl", "go_library")
+go_library(
+    name = "nativeschema",
+    testonly = True,
+    srcs = ["fixture.go", "cli_migrations.go"],
+    embedsrcs = glob(["migrations/**/*.up.sql"]),
+    importpath = "github.com/buildbetter-app/plugs/internal/testutil/nativeschema",
+    visibility = ["//visibility:public"],
+)
