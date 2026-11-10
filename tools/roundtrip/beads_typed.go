@@ -236,8 +236,16 @@ func adaptTypedManifest(data []byte, binding typedBinding, archiveSHA, head stri
 			return nil, fmt.Errorf("missing or duplicate typed immutable image")
 		}
 		seen[image.CommitID] = true
-		if err := validateTypedTables(image.Tables); err != nil {
-			return nil, err
+		if image.Tables == nil {
+			return nil, fmt.Errorf("typed immutable table census missing")
+		}
+		// A real genesis may have an explicitly empty physical census.
+		// bindTypedArchive also requires the exact companion image to be
+		// present with an explicit empty table map before this is usable.
+		if len(image.Tables) != 0 {
+			if err := validateTypedTables(image.Tables); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if !seen[head] {
@@ -334,7 +342,7 @@ func bindTypedArchive(archive []byte, manifest *typedManifest) error {
 		return fmt.Errorf("typed companion source mismatch")
 	}
 	coverage := func(tables []typedTable, census map[string]typedArchiveTable) error {
-		if len(tables) != len(census) {
+		if census == nil || len(tables) != len(census) {
 			return fmt.Errorf("typed family coverage mismatch")
 		}
 		for _, table := range tables {

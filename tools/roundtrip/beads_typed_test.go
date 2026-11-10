@@ -261,3 +261,57 @@ func TestTypedWorkingStoredSystemCensusRetainsEveryObservedFamily(t *testing.T) 
 		})
 	}
 }
+
+func TestTypedImmutableEmptyCensusRequiresExplicitMatchingCompanionImage(t *testing.T) {
+	data, binding := typedAdapterControl(t)
+	var evidence typedEvidence
+	if strictTypedJSON(data, &evidence) != nil {
+		t.Fatal("control invalid")
+	}
+	evidence.Images = append(evidence.Images, typedImage{CommitID: "genesis", ReadOnlyScope: true, Tables: []typedTable{}})
+	data, _ = json.Marshal(evidence)
+	manifest := adaptControl(t, data, binding)
+	missing := evidence
+	missing.Images = append([]typedImage{}, evidence.Images...)
+	missing.Images[1].Tables = nil
+	absent, _ := json.Marshal(missing)
+	if _, err := adaptTypedManifest(absent, binding, strings.Repeat("a", 64), "head", []string{"demo"}); err == nil {
+		t.Fatal("missing immutable tables accepted as explicit empty census")
+	}
+	for _, test := range []string{"exact", "missing-image", "missing-table-map", "omitted-nonempty-table"} {
+		t.Run(test, func(t *testing.T) {
+			table := typedArchiveTable{Columns: []string{"id", "wide", "document", "optional", "binary"}, Rows: []map[string]json.RawMessage{{"id": json.RawMessage(`"demo-42v"`), "wide": json.RawMessage(`9007199254740993`), "document": json.RawMessage(`null`), "optional": json.RawMessage(`null`), "binary": json.RawMessage(`""`)}}}
+			h := typedArchiveHistory{Format: "beads-native-tables/1", StoreID: binding.StoreID, Projects: []string{"demo"}, Head: "head", Current: map[string]typedArchiveTable{"issues": table}}
+			h.Images = append(h.Images, struct {
+				CommitID string                       `json:"commit_id"`
+				Tables   map[string]typedArchiveTable `json:"tables"`
+			}{"head", map[string]typedArchiveTable{"issues": table}})
+			h.Images = append(h.Images, struct {
+				CommitID string                       `json:"commit_id"`
+				Tables   map[string]typedArchiveTable `json:"tables"`
+			}{"genesis", map[string]typedArchiveTable{}})
+			if test == "missing-image" {
+				h.Images = h.Images[:1]
+			}
+			if test == "missing-table-map" {
+				h.Images[1].Tables = nil
+			}
+			if test == "omitted-nonempty-table" {
+				h.Images[1].Tables["issues"] = table
+			}
+			raw, _ := json.Marshal(h)
+			var buffer bytes.Buffer
+			writer := tar.NewWriter(&buffer)
+			if err := writer.WriteHeader(&tar.Header{Name: "history/native-tables.json", Mode: 0600, Size: int64(len(raw)), Typeflag: tar.TypeReg}); err != nil {
+				t.Fatal(err)
+			}
+			writer.Write(raw)
+			writer.Close()
+			manifest.Evidence.ArchiveSHA256 = hash(buffer.Bytes())
+			err := bindTypedArchive(buffer.Bytes(), manifest)
+			if (err == nil) != (test == "exact") {
+				t.Fatalf("immutable empty census %s: %v", test, err)
+			}
+		})
+	}
+}
