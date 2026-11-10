@@ -1,5 +1,9 @@
 package ontology
 
+// GateType identifies a gate installed by the host's ontology catalog.
+// Await fields do not select or install a type.
+const GateType = "gate"
+
 // DefaultDocument is usable without a plugin host or authorization provider.
 // Only this package knows the local slice's concrete workflow keys.
 func DefaultDocument() Document {

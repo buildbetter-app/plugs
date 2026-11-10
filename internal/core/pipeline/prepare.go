@@ -302,6 +302,21 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			if err = applyFields(current, c.Fields, "request"); err != nil {
 				return nil, err
 			}
+			if c.TargetStatus != nil {
+				if _, present := c.Fields["status"]; present {
+					return nil, failure("invalid_params", "targetStatus cannot be combined with fields.status")
+				}
+				selector, supported := w.cfg.ontology.(createStatuses)
+				if !supported {
+					return nil, failure("invalid_params", "ontology does not support targetStatus")
+				}
+				target, ok := selector.CreateStatus(project, c.Type, c.TargetStatus)
+				if !ok {
+					return nil, failure("invalid_params", "create target must name a declared nonterminal workflow status")
+				}
+				current.doc.Fields["status"] = target
+				current.setBy["fields.status"] = "request"
+			}
 			if err = p.inheritLabels(ctx, current); err != nil {
 				return nil, err
 			}

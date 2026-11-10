@@ -1,0 +1,5 @@
+filegroup(
+    name = "fixture_sources",
+    srcs = glob(["*.py", "*.json", "fixtures/*.py"]),
+    visibility = ["//visibility:public"],
+)
