@@ -49,6 +49,7 @@ type fixture struct {
 	sequence  uint64
 	stopRenew context.CancelFunc
 	renewDone chan error
+	traceRPC  func(request, response []byte)
 }
 
 func newFixture(t *testing.T, e engine) *fixture {
@@ -221,6 +222,9 @@ func (f *fixture) call(t *testing.T, method string, params any) response {
 	data, err := f.transport.RoundTrip(f.ctx, raw)
 	if err != nil {
 		t.Fatalf("%s transport: %v", method, err)
+	}
+	if f.traceRPC != nil {
+		f.traceRPC(raw, data)
 	}
 	var out response
 	if err := json.Unmarshal(data, &out); err != nil {
@@ -525,7 +529,7 @@ func (f *fixture) snapshot(t *testing.T) durableState {
 			t.Fatal(err)
 		}
 		addKey(lock)
-		for _, typ := range []string{"issue", "delivery", "handoff-item"} {
+		for _, typ := range []string{"issue", "delivery", "handoff-item", "delivery-native"} {
 			ready, err := driver.NewReadySentinel(project, typ)
 			if err != nil {
 				t.Fatal(err)
