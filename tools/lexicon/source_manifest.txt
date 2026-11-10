@@ -1346,6 +1346,12 @@ spec/assertions_test.go
 spec/cardb01/BUILD.bazel
 spec/cardb01/README.md
 spec/cardb01/b01_test.go
+spec/cardb01/canonicalfront/BUILD.bazel
+spec/cardb01/canonicalfront/README.md
+spec/cardb01/canonicalfront/controls_test.go
+spec/cardb01/canonicalfront/native_test.go
+spec/cardb01/canonicalfront/public_fixture_test.go
+spec/cardb01/canonicalfront/public_test.go
 spec/cardb01/fixture_test.go
 spec/cardb01/record_reference.py
 spec/cardb01/reference-run-1.json
