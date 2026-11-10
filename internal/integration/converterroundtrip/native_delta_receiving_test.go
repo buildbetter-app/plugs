@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
-	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 // This adapter fixture deliberately synthesizes JSON SQL types and keyless
