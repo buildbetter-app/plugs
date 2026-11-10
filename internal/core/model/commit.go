@@ -65,6 +65,9 @@ type Writer interface {
 type WriteMeta struct {
 	// Method is the named operation that produced this write.
 	Method string
+	// TargetStatus is trusted named close/reopen lowering context, never a
+	// generic patch capability. Typed tx operations carry their own selector.
+	TargetStatus *string
 	// GateAction and GateState/Details are trusted lowering context for the
 	// canonical gate service. They are carried through the existing Writer
 	// pipeline so idempotency lookup happens before the gate is evaluated.

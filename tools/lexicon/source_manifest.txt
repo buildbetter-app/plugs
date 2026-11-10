@@ -251,6 +251,7 @@ internal/core/model/ref.go
 internal/core/model/response.go
 internal/core/model/runtime.go
 internal/core/model/schema_test.go
+internal/core/model/target_status_test.go
 internal/core/model/testdata/openrpc-components.json
 internal/core/model/unsupported_error_test.go
 internal/core/ontology/BUILD.bazel
@@ -344,6 +345,7 @@ internal/core/pipeline/snapshot_hierarchy.go
 internal/core/pipeline/source_indexes.go
 internal/core/pipeline/source_indexes_test.go
 internal/core/pipeline/source_operations.go
+internal/core/pipeline/target_status_test.go
 internal/core/pipeline/telemetry.go
 internal/core/pipeline/telemetry_test.go
 internal/core/pipeline/workflow_close_ref.go
@@ -648,6 +650,12 @@ internal/integration/epicprogress/fixture_test.go
 internal/integration/epicprogress/restore_test.go
 internal/integration/eventsqlpaging/BUILD.bazel
 internal/integration/eventsqlpaging/integration_test.go
+internal/integration/g1exactstatus/BUILD.bazel
+internal/integration/g1exactstatus/engine_test.go
+internal/integration/g1exactstatus/fixture_test.go
+internal/integration/g1exactstatus/installed_user_test.go
+internal/integration/g1exactstatus/joint_gate_test.go
+internal/integration/g1exactstatus/lifecycle_test.go
 internal/integration/gatecontract/BUILD.bazel
 internal/integration/gatecontract/README.md
 internal/integration/gatecontract/authorization_test.go
@@ -864,6 +872,7 @@ internal/server/authn/session_test.go
 internal/server/authzrpc/BUILD.bazel
 internal/server/authzrpc/README.md
 internal/server/authzrpc/atomic_close_test.go
+internal/server/authzrpc/authority.go
 internal/server/authzrpc/authzrpc.go
 internal/server/authzrpc/authzrpc_test.go
 internal/server/authzrpc/b04_error_bounds_test.go
@@ -883,6 +892,7 @@ internal/server/authzrpc/hierarchy_lifecycle_times_test.go
 internal/server/authzrpc/hierarchy_read.go
 internal/server/authzrpc/hierarchy_test.go
 internal/server/authzrpc/history_authority_test.go
+internal/server/authzrpc/lifecycle.go
 internal/server/authzrpc/predicate_count_test.go
 internal/server/authzrpc/prepared_test.go
 internal/server/authzrpc/ready_compiled.go
@@ -921,6 +931,7 @@ internal/server/composition/configfile.go
 internal/server/composition/configfile_test.go
 internal/server/composition/configured_artifact_test.go
 internal/server/composition/epic_progress_test.go
+internal/server/composition/i8_actual_adapter_boundary_test.go
 internal/server/composition/mcp.go
 internal/server/composition/mcp_lifecycle_test.go
 internal/server/composition/native.go
@@ -1421,6 +1432,7 @@ spec/cardb20/native_recording_test.go
 spec/cardb20/policy_test.go
 spec/cardb20/postgres_test.go
 spec/cardb20/runtime_test.go
+spec/cardb20/sql_rows_test.go
 spec/cardb28/BUILD.bazel
 spec/cardb28/README.md
 spec/cardb28/cardb28_test.go
@@ -1719,6 +1731,16 @@ spikes/runtime/concurrency.go
 spikes/runtime/concurrency_test.go
 spikes/runtime/sandbox.go
 spikes/runtime/sandbox_test.go
+tools/agentcallers/README.md
+tools/agentcallers/application_check.py
+tools/agentcallers/binding.py
+tools/agentcallers/catch_me_up_adapter.py
+tools/agentcallers/fixture_test.py
+tools/agentcallers/hook_adapter.py
+tools/agentcallers/prepare.py
+tools/agentcallers/render.py
+tools/agentcallers/render_fixture.py
+tools/agentcallers/runtime_boundary.py
 tools/census/BUILD.bazel
 tools/census/README.md
 tools/census/behavior.go

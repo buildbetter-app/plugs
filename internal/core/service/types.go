@@ -281,9 +281,10 @@ type ReadyRequest struct {
 type ReadyAuthorizer func(context.Context, driver.Reader, Bead) (bool, error)
 
 type CreateRequest struct {
-	Type   string
-	Fields map[string]any
-	Parent *model.Ref
+	TargetStatus *string
+	Type         string
+	Fields       map[string]any
+	Parent       *model.Ref
 }
 
 type UpdateRequest struct {
@@ -374,9 +375,10 @@ type CommentRequest struct {
 }
 
 type CloseRequest struct {
-	ID     model.Ref
-	Reason string
-	Expect []model.Precondition
+	TargetStatus *string
+	ID           model.Ref
+	Reason       string
+	Expect       []model.Precondition
 }
 
 // LinkRequest is the named dependency write lowered to the canonical LinkOp
@@ -391,13 +393,13 @@ type LinkRequest struct {
 	Expect     []model.Precondition
 }
 
-// The named lifecycle requests intentionally share the close shape. Their
-// method name selects the ontology slot; callers cannot choose a target status
-// through request fields.
+// ReopenRequest selects the reopen slot by default. TargetStatus may name an
+// exact declared ready-eligible status; the shared pipeline retains all guards.
 type ReopenRequest struct {
-	ID     model.Ref
-	Reason string
-	Expect []model.Precondition
+	TargetStatus *string
+	ID           model.Ref
+	Reason       string
+	Expect       []model.Precondition
 }
 
 type DeferRequest struct {

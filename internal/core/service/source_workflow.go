@@ -320,6 +320,9 @@ func (s *Service) sourcePreparation(source *sourceWorkflow, by model.PrincipalRe
 					}
 					return op, nil, nil
 				}
+				if meta.TargetStatus != nil || original.Kind == model.OpClose && original.Close.TargetStatus != nil {
+					return model.Op{}, nil, failure("unsupported", "active source provider does not support targetStatus")
+				}
 				if meta.DryRun || len(cs.Expect) != 0 || original.Kind == model.OpClose && len(original.Close.Expect) != 0 {
 					return model.Op{}, nil, failure("unsupported", "active source operations do not support dryRun or expect")
 				}

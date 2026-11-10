@@ -491,6 +491,14 @@
           }
         },
         {
+          "name": "targetStatus",
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Exact declared nonterminal status for this project/type; omission selects the workflow initial status. Noninitial targets require an allowed transition from initial and all its guards. Terminal loading uses create followed by guarded close."
+        },
+        {
           "name": "_meta",
           "schema": {
             "$ref": "#/components/schemas/Meta"
@@ -1015,6 +1023,14 @@
           }
         },
         {
+          "name": "targetStatus",
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Exact declared successful terminal status for this project/type; omission selects the close slot. All transition, permission, graph and child guards remain in force. Active workflow providers that cannot honor the selector refuse it."
+        },
+        {
           "name": "_meta",
           "schema": {
             "$ref": "#/components/schemas/Meta"
@@ -1307,6 +1323,14 @@
               "$ref": "#/components/schemas/Expect"
             }
           }
+        },
+        {
+          "name": "targetStatus",
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Exact declared ready-eligible status for this project/type; omission selects the reopen slot. All transition and permission guards remain in force."
         },
         {
           "name": "_meta",
@@ -7510,6 +7534,11 @@
           },
           "project": {
             "type": "string"
+          },
+          "targetStatus": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Exact declared nonterminal status for this project/type; omission selects the workflow initial status. Noninitial targets require an allowed transition from initial and all its guards. Terminal loading uses create followed by guarded close."
           }
         },
         "required": [
@@ -10822,7 +10851,7 @@
       },
       "CloseOp": {
         "type": "object",
-        "description": "Enter the canonical close slot at this operation position in tx.apply; reuse bead.close guards, permission, reason and provenance. Any refusal rolls back the whole ChangeSet. No force or status shortcut.",
+        "description": "Enter the close slot or an explicit declared successful terminal status at this operation position in tx.apply; reuse bead.close guards, permission, reason and provenance. Any refusal rolls back the whole ChangeSet. No force or generic status shortcut.",
         "properties": {
           "kind": {
             "const": "close"
@@ -10839,6 +10868,11 @@
             "items": {
               "$ref": "#/components/schemas/Expect"
             }
+          },
+          "targetStatus": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Exact declared successful terminal status for this project/type; omission selects the close slot. All transition, permission, graph and child guards remain in force. Active workflow providers that cannot honor the selector refuse it."
           }
         },
         "required": [
@@ -14161,7 +14195,7 @@
     "methodCount": 86,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
     "nameSha256": "bedf3c904d90b0d30d8f2f3292dc48d2124bcddc0f984aa3ed5f829d62420c06",
-    "descriptorSha256": "6413e6033a487bc1a298751ef782b47b05340fa5f7cf0333206fc6abb3e094bc",
+    "descriptorSha256": "56d9787a9119cee6a034b849a9c79510bd6a9d9b026d6081fb13f50d124fba4e",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -14531,6 +14565,13 @@
             }
           },
           {
+            "name": "targetStatus",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
             "name": "_meta",
             "schema": {
               "$ref": "#/components/schemas/Meta"
@@ -14837,6 +14878,13 @@
             }
           },
           {
+            "name": "targetStatus",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
             "name": "_meta",
             "schema": {
               "$ref": "#/components/schemas/Meta"
@@ -15008,6 +15056,13 @@
               "items": {
                 "$ref": "#/components/schemas/Expect"
               }
+            }
+          },
+          {
+            "name": "targetStatus",
+            "schema": {
+              "type": "string",
+              "minLength": 1
             }
           },
           {
