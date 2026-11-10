@@ -888,6 +888,7 @@ internal/server/composition/configfile.go
 internal/server/composition/configfile_test.go
 internal/server/composition/configured_artifact_test.go
 internal/server/composition/epic_progress_test.go
+internal/server/composition/i8_actual_adapter_boundary_test.go
 internal/server/composition/mcp.go
 internal/server/composition/mcp_lifecycle_test.go
 internal/server/composition/native.go
@@ -1664,6 +1665,16 @@ spikes/runtime/concurrency.go
 spikes/runtime/concurrency_test.go
 spikes/runtime/sandbox.go
 spikes/runtime/sandbox_test.go
+tools/agentcallers/README.md
+tools/agentcallers/application_check.py
+tools/agentcallers/binding.py
+tools/agentcallers/catch_me_up_adapter.py
+tools/agentcallers/fixture_test.py
+tools/agentcallers/hook_adapter.py
+tools/agentcallers/prepare.py
+tools/agentcallers/render.py
+tools/agentcallers/render_fixture.py
+tools/agentcallers/runtime_boundary.py
 tools/census/BUILD.bazel
 tools/census/README.md
 tools/census/behavior.go
