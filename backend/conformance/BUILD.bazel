@@ -2,6 +2,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "conformance",
+    tags = ["manual"],
     srcs = [
         "audit.go",
         "audit_config_metadata_slots_repomtime.go",

@@ -2,6 +2,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "memoryops",
+    tags = ["manual"],
     srcs = ["memories.go"],
     importpath = "github.com/steveyegge/beads/internal/storage/memoryops",
     visibility = ["//:__subpackages__"],

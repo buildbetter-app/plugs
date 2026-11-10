@@ -1,6 +1,7 @@
 load("@rules_go//go:def.bzl", "go_library", "go_binary")
 go_library(
     name = "native-physical-restore_lib",
+    tags = ["manual"],
     srcs = ["main.go", "undo.go"],
     importpath = "github.com/steveyegge/beads/tools/native-physical-restore",
     visibility = ["//visibility:private"],

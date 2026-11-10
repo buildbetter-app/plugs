@@ -2,6 +2,7 @@ load("@rules_go//go:def.bzl", "go_binary", "go_library")
 
 go_library(
     name = "cmd_lib",
+    tags = ["manual"],
     srcs = ["main.go"],
     importpath = "github.com/steveyegge/beads/internal/storage/embeddeddolt/cmd",
     visibility = ["//visibility:private"],

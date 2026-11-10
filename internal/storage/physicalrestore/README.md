@@ -1,5 +1,9 @@
 # Restore-only physical snapshot seam
 
+Targets linking the native driver compile with `gms_pure_go`. Their library
+closure uses `manual` so wildcard builds compile those libraries through the
+tagged tests and binaries; all tests, binaries and nogo checks remain enabled.
+
 `physicalrestore.Restore(ctx, dedicatedIdleConn, manifest)` inserts a complete
 physical row set into existing empty tables through normal native Dolt SQL.
 It does not call `types.Issue`, create/update/import commands, migrations or

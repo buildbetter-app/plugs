@@ -53,6 +53,9 @@ exports_files(
     visibility = ["//visibility:public"],
 )
 
+# Reuse the unchanged environment wrapper for target-owned native fixtures.
+exports_files(["test_env.sh"], visibility = ["//internal/plugdump:__pkg__"])
+
 # Wraps every test process (`test --run_under` in .bazelrc) with the isolated
 # HOME/XDG/Dolt/git environment that scripts/ci/lib/test-env.sh gives `go test`.
 # Bazel merges the run_under target's runfiles into every test's runfiles, so

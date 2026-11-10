@@ -1,6 +1,7 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "physicalrestore",
+    tags = ["manual"],
     srcs = ["binding.go", "copy.go", "manifest.go", "undo.go"],
     importpath = "github.com/steveyegge/beads/internal/storage/physicalrestore",
     visibility = ["//:__subpackages__"],

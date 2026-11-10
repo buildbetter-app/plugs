@@ -2,6 +2,7 @@ load("@rules_go//go:def.bzl", "go_library")
 
 go_library(
     name = "capturesqlserver",
+    tags = ["manual"],
     srcs = ["server.go"],
     importpath = "github.com/steveyegge/beads/internal/storage/capturesqlserver",
     visibility = ["//:__subpackages__"],

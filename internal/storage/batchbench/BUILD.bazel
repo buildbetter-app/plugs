@@ -2,6 +2,7 @@ load("@rules_go//go:def.bzl", "go_library")
 
 go_library(
     name = "batchbench",
+    tags = ["manual"],
     srcs = ["batchbench.go"],
     importpath = "github.com/steveyegge/beads/internal/storage/batchbench",
     visibility = ["//:__subpackages__"],

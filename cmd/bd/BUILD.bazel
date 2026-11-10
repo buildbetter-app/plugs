@@ -31,6 +31,7 @@ go_binary(
 
 go_library(
     name = "bd_lib",
+    tags = ["manual"],
     srcs = [
         "admin.go",
         "ado.go",

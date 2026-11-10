@@ -2,6 +2,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "contextinfo",
+    tags = ["manual"],
     srcs = ["provider.go"],
     importpath = "github.com/steveyegge/beads/internal/storage/contextinfo",
     visibility = ["//:__subpackages__"],

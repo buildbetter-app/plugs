@@ -2,6 +2,7 @@ load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 
 go_library(
     name = "gendigest_lib",
+    tags = ["manual"],
     srcs = ["main.go"],
     importpath = "github.com/steveyegge/beads/internal/httpapi/wireshape/cmd/gendigest",
     visibility = ["//visibility:private"],

@@ -291,7 +291,7 @@ func TestPhysicalUndoAtomicRefusals(t *testing.T) {
 		}},
 		{"report_bytes_disagree", "reverse-report", func(r *UndoRequest) { r.ReverseReportBytes = []byte("{}") }},
 		{"strict_history_replay", "history-replay-refused", func(r *UndoRequest) { r.HistoryMode = "full" }},
-		{"tampered_source", "source-binding", func(r *UndoRequest) { r.Source.Image.Tables[0].Columns[0].SQLType = "text" }},
+		{"tampered_source", "source-binding", func(r *UndoRequest) { r.Source.Image.Tables[0].Columns[0].SQLType += " tampered" }},
 		{"wrong_source_head", "source-binding", func(r *UndoRequest) {
 			r.Source.CommitID = strings.Repeat("0", 32)
 			r.Source.SHA256, _ = bindingDigest(r.Source)
@@ -504,7 +504,7 @@ func TestPhysicalUndoCopyAndEnvelopeRefusals(t *testing.T) {
 
 func TestPhysicalUndoActualNativeSchemaWorkingFamilies(t *testing.T) {
 	_, conn, _, _ := restoreDB(t, true)
-	execSQL(t, conn, `INSERT INTO issues (id,title,agent_state,hook_bead,role_bead,role_type,timeout_ns,metadata,payload,waiters) VALUES ('undo-1','preserved issue','waiting','undo-2','undo-1','agent',9007199254740993,JSON_OBJECT('native',9007199254740993),'{"opaque":null}','["undo-2",null]')`)
+	execSQL(t, conn, `INSERT INTO issues (id,title,description,design,acceptance_criteria,notes,agent_state,hook_bead,role_bead,role_type,timeout_ns,metadata,payload,waiters) VALUES ('undo-1','preserved issue','','','','','waiting','undo-2','undo-1','agent',9007199254740993,JSON_OBJECT('native',9007199254740993),'{"opaque":null}','["undo-2",null]')`)
 	execSQL(t, conn, `INSERT INTO wisps (id,title,agent_state,timeout_ns,payload) VALUES ('undo-wisp','preserved ignored wisp','working',9007199254740993,'{"null":null}')`)
 	execSQL(t, conn, "CALL DOLT_ADD('.')")
 	execSQL(t, conn, "CALL DOLT_COMMIT('-Am','public preserved native schema before undo')")

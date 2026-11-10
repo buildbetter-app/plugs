@@ -2,6 +2,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "doltserver",
+    tags = ["manual"],
     srcs = [
         "doltserver.go",
         "doltserver_unix.go",

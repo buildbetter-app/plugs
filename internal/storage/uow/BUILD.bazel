@@ -3,6 +3,7 @@ load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 go_library(
     name = "uow",
+    tags = ["manual"],
     srcs = [
         "batch_applier.go",
         "batch_closer.go",

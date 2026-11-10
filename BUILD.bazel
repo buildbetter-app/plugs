@@ -189,6 +189,7 @@ filegroup(
 
 go_library(
     name = "beads",
+    tags = ["manual"],
     srcs = [
         "beads.go",
         "beads_cgo.go",

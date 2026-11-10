@@ -96,6 +96,11 @@ func RestorePhysicalUndo(ctx context.Context, conn *sql.Conn, plan PhysicalUndoP
 		if graph.Head != plan.BaseCommit {
 			return restoreError("source-head", "", "", -1, errors.New("preserved HEAD differs from original typed source"))
 		}
+		originalBytes, err := json.Marshal(graph)
+		if err != nil {
+			return restoreError("undo-graph", "", "*", -1, err)
+		}
+		originalSum := sha256.Sum256(originalBytes)
 		source := map[string]PhysicalTable{}
 		for _, table := range originals {
 			if _, ok := source[table.Name]; ok {
@@ -230,9 +235,23 @@ func RestorePhysicalUndo(ctx context.Context, conn *sql.Conn, plan PhysicalUndoP
 		// exactly one new Dolt commit. No force, reset, migration or initialization.
 		commit, err := d.undoQuery(ctx, "CALL DOLT_COMMIT('--allow-empty','-Am','CP5 undo switch-back; post-switch history not replayed')")
 		if err != nil {
-			return restoreError("commit-indeterminate", "", "*", -1, errors.New("native switch-back commit failed; inspect disposable copy before retry"))
+			return restoreError("commit-indeterminate", "", "*", -1, errors.Join(err, errors.New("native switch-back commit failed; inspect disposable copy before retry")))
 		}
 		committed = true
+		// DOLT_COMMIT ends the write transaction. The following graph SELECTs
+		// can start a new observation transaction on this explicitly begun SQL
+		// session. End that owned read scope before returning the connection to
+		// the facade's authenticated read-only verification. This ROLLBACK cannot
+		// undo the already accepted native commit and creates no second commit.
+		defer func() {
+			readCloseErr := tx.Rollback()
+			if readCloseErr == nil && d.gmsCtx.GetTransaction() != nil {
+				readCloseErr = errors.New("post-commit observation transaction remains active")
+			}
+			if readCloseErr != nil {
+				scopeErr = restoreError("post-commit-indeterminate", "", "*", -1, errors.Join(scopeErr, readCloseErr))
+			}
+		}()
 		if len(commit.Rows) != 1 || len(commit.Rows[0]) != 1 {
 			return restoreError("commit-indeterminate", "", "*", -1, errors.New("native commit receipt unavailable"))
 		}
@@ -251,16 +270,11 @@ func RestorePhysicalUndo(ctx context.Context, conn *sql.Conn, plan PhysicalUndoP
 		if len(parent.Rows) != 1 || len(parent.Rows[0]) != 1 || parent.Rows[0][0] != graph.Head || next.Head != id || !undoGraphExtends(graph, next, id) {
 			return restoreError("post-commit-indeterminate", "", "*", -1, errors.New("expected exactly one child commit and unchanged original history/other refs"))
 		}
-		originalBytes, err := json.Marshal(graph)
-		if err != nil {
-			return err
-		}
-		sum := sha256.Sum256(originalBytes)
 		receipt.BaseCommit = graph.Head
 		receipt.CommitID = id
 		receipt.PriorCommits = len(graph.Log.Rows)
 		receipt.CurrentCommits = len(next.Log.Rows)
-		receipt.OriginalGraphSHA256 = hex.EncodeToString(sum[:])
+		receipt.OriginalGraphSHA256 = hex.EncodeToString(originalSum[:])
 		return nil
 	})
 	if resultErr != nil {

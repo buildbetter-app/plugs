@@ -2,6 +2,7 @@ load("@rules_go//go:def.bzl", "go_library")
 
 go_library(
     name = "fs",
+    tags = ["manual"],
     srcs = ["provider.go"],
     importpath = "github.com/steveyegge/beads/internal/storage/fs",
     visibility = ["//:__subpackages__"],

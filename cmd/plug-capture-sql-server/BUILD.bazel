@@ -2,6 +2,7 @@ load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 
 go_library(
     name = "plug-capture-sql-server_lib",
+    tags = ["manual"],
     srcs = ["main.go"],
     importpath = "github.com/steveyegge/beads/cmd/plug-capture-sql-server",
     visibility = ["//visibility:private"],
@@ -20,14 +21,16 @@ go_test(
     name = "native_capture_test",
     gotags = ["gms_pure_go"],
     size = "large",
-    srcs = ["native_capture_test.go"],
+    srcs = ["native_capture_test.go", "physical_capture_test.go"],
     data = [
         ":plug-capture-sql-server",
         "//cmd/bd:bd",
+        "//tools/native-physical-capture",
     ],
     env = {
         "BEADS_CAPTURE_BD_BINARY": "$(rootpath //cmd/bd:bd)",
         "BEADS_CAPTURE_SQL_BINARY": "$(rootpath :plug-capture-sql-server)",
+        "BEADS_PHYSICAL_CAPTURE_BINARY": "$(rootpath //tools/native-physical-capture)",
     },
     deps = [
         "//internal/captureclock",
