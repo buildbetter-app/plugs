@@ -1,14 +1,15 @@
 # `bd serve` operator runbook
 
-Last reviewed: 2026-08-10
+Last reviewed: 2026-11-10
 
 Freshness source: `internal/httpapi/server.go`,
 `internal/httpapi/events_watch.go`, `cmd/bd/serve.go` and
 `internal/httpapi/auth.go` — the operating-envelope constants, the fields their
 `event` emitters write, and the flag, posture and token-file rules.
 
-Every flag, error string, event name and reason value quoted below was checked
-against a build of those files, not read off the source.
+The source paths above define the constants and event fields below. Compare
+the running build's `event=limits` line with this operating envelope when
+deploying it.
 
 Running the v0 HTTP surface. For the contract it serves — the operations, the
 error vocabulary, the cursor, the loopback posture — see
@@ -251,7 +252,7 @@ The shape behind those numbers:
 
 So `max_connections` on a shared server must cover roughly `22 × (number of bd
 serve processes)` plus every other `bd` process pointed at the same server,
-each of which claims its own. Idle connections are reclaimed after 5 minutes and
+each of which claims its own. Idle connections are reclaimed after 20 seconds and
 recycled after an hour, so a bursty deployment settles below the worst case —
 but size for the worst case.
 

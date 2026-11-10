@@ -1,15 +1,18 @@
 # OpenTelemetry Data Model
 
-Last reviewed: 2026-08-07
+Last reviewed: 2026-11-10
 
 Freshness source: `internal/telemetry/`, `internal/storage/dolt/store.go`,
 `internal/compact/haiku.go`, `cmd/bd/find_duplicates.go`, and hook execution
 code under `internal/hooks/`.
 
-Complete schema of all telemetry events emitted by Beads. Each event consists of:
+Beads emits spans and metric instruments. An operation can emit either or both:
 
 1. **Span** (→ stdout/console only, when `OTEL_TRACES_EXPORTER=console`; the legacy `BD_OTEL_STDOUT=true` translates to that — no remote/OTLP trace backend is wired) with full structured attributes
-2. **Metric counter/histogram** (→ any OTLP v1.x+ backend, defaults to VictoriaMetrics) for aggregation
+2. **Metric counter, histogram, or gauge** for aggregation. OTLP metrics require
+   an explicit endpoint (`OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` or
+   `OTEL_EXPORTER_OTLP_ENDPOINT`) and an exporter selection that includes
+   `otlp`; no remote destination is installed by default.
 
 Telemetry is hard opt-in: nothing is emitted unless `BD_OTEL_ENABLED=true` is set (a legacy `BD_OTEL_*` variable also activates it); standard `OTEL_*` variables on their own do not.
 
@@ -70,7 +73,7 @@ Each `bd` command execution generates a span with full context.
 |---|---|---|
 | `bd.command` | string | Subcommand name (`create`, `list`, `show`, etc.) |
 | `bd.version` | string | Current bd version string |
-| `bd.args` | string | Full argument list |
+| `bd.args` | string | Argument list with secret flag values and connection-string credentials scrubbed |
 | `bd.actor` | string | Actor identity — set after actor resolution (may lag span start) |
 
 ---
@@ -392,9 +395,11 @@ One span per Anthropic API call. The `bd.ai.operation` attribute distinguishes t
 | `bd.db.circuit_rejected` | Counter | — | ✅ Implemented |
 | `bd.db.serialization_errors` | Counter | — | ✅ Implemented |
 | `bd.write_retries_total` | Counter | `type` (`serialization` \| `connection`) | ✅ Implemented |
+| `bd.db.post_tx_commit_dropped` | Counter | — | ✅ Implemented; SQL data landed but the post-transaction Dolt commit was abandoned after retries |
 | `bd.db.conn_acquire_ms` | Histogram | — | ✅ Implemented |
 | `bd.db.pool_wait_count` | Counter | — | ✅ Implemented |
 | `bd.db.pool_wait_ms` | Histogram | — | ✅ Implemented |
+| `bd.db.ignored_tx_fresh_pool` | Counter | — | ✅ Implemented; ignored-table transaction required a dedicated pool |
 | `bd.claim_verify_lost_total` | Counter | `op` (`claim` \| `unclaim` \| `guarded-update` \| `ready-claim`) | ✅ Implemented |
 | `bd.claim_verify_recovered_total` | Counter | `op`, `outcome` | 🔲 Registered, not recorded |
 | `bd.ai.input_tokens` | Counter | `bd.ai.model` | ✅ Implemented (compact only) |
@@ -422,7 +427,12 @@ Key variables: `BD_OTEL_ENABLED=true` (master switch) plus the standard SDK vars
 
 ## Appendix: Source Reference Audit
 
-Audited against **`main` @ `5eb7c25dd`**. All line numbers below refer to that commit.
+The historical line-number audit below refers to **`main` @ `5eb7c25dd`**.
+The current source review also checks exporter selection in
+`internal/telemetry/telemetry.go`, argument scrubbing in
+`cmd/bd/command_telemetry.go`, and instrument registration in
+`internal/telemetry/storage.go` and `internal/storage/dolt/store.go`.
+Use the instrument and function names when source lines have moved.
 
 Every metric name, span name, and attribute listed in this document is backed by a specific source location. This table exists to prevent documentation drift and to make re-verification straightforward after code changes.
 
