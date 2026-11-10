@@ -122,8 +122,10 @@ func journal(t *testing.T, store driver.Store) (driver.Meta, []model.Changeset) 
 	return meta, sets
 }
 
-// This is one ordinary transactional refusal; it does not exercise claim
-// interleavings, authorization overlap, or compare-and-set preconditions.
+// This is an ordinary atomic admission refusal. The real Writer resolves the
+// absent target during preparation, before opening the write transaction; it
+// does not certify rollback after physical storage writes. Claim interleaving,
+// authorization overlap and compare-and-set preconditions remain out of scope.
 func refuseBatch(t *testing.T, r *runtime, id string) {
 	t.Helper()
 	response := r.call(t, "", "tx.apply", map[string]any{"changeSet": map[string]any{"ops": []any{
@@ -158,7 +160,7 @@ func replayCurrent(t *testing.T, engine string) []stableEvent {
 		t.Fatal("no-op/refusal changed committed journal or counter")
 	}
 	if got := closeBead(t, r, "b20-1"); got.Revision.String() != "3" {
-		t.Fatalf("post-abort write burned a revision: %+v", got)
+		t.Fatalf("post-refusal write burned a revision: %+v", got)
 	}
 	page := list(t, r, "", 100)
 	projection := projectEvents(t, page.Events)
@@ -166,12 +168,17 @@ func replayCurrent(t *testing.T, engine string) []stableEvent {
 	if !reflect.DeepEqual(projection, want) {
 		t.Fatalf("actual current journal = %+v", projection)
 	}
-	_, sets = journal(t, r.store)
+	finalMeta, sets := journal(t, r.store)
 	if len(sets) != 3 {
 		t.Fatalf("journal rows=%d", len(sets))
 	}
+	// Ordinary writes retain the supported legacy Changes plan; Events may be nil.
+	// The real event reader above materializes and checks the complete payload.
 	for i, set := range sets {
-		if set.Revision.String() != fmt.Sprint(i+1) || len(set.Changes) != 1 || len(set.Events) != 1 {
+		if err := set.ValidateEvents(); err != nil {
+			t.Fatal(err)
+		}
+		if set.Revision.String() != fmt.Sprint(i+1) || len(set.Changes) != 1 {
 			t.Fatalf("journal row%d=%+v", i, set)
 		}
 	}
@@ -192,7 +199,8 @@ func replayCurrent(t *testing.T, engine string) []stableEvent {
 	if len(caught.Events) != 0 || caught.Cursor != afterCursor {
 		t.Fatalf("caught-up page=%+v", caught)
 	}
-	retain(t, "plug-"+engine+"-current.json", map[string]any{"engine": engine, "projection": projection, "meta": after, "changesets": sets, "no_op_and_abort": "UNCHANGED", "post_abort_revision": "3", "policy": "NO_POLICY_PLUGIN"})
+	retain(t, "plug-"+engine+"-current.json", map[string]any{"engine": engine, "projection": projection, "meta": finalMeta, "changesets": sets, "no_op_and_atomic_admission_refusal": "UNCHANGED", "post_refusal_revision": "3", "physical_storage_rollback": "UNRUN", "unbounded_compat_caller": "EXERCISED_SEPARATELY_THROUGH_REAL_CLI", "native_prune": "FOLDED_OPERATOR_RETENTION_DESIGN_DIFFERENCE", "policy": "NO_POLICY_PLUGIN"})
+	observeCurrentCallers(t, r, engine, projection)
 	return projection
 }
 

@@ -21,8 +21,9 @@ import (
 )
 
 type nativeWorkspace struct {
-	dir string
-	env []string
+	dir      string
+	env      []string
+	families map[string]string
 }
 type nativeImage struct {
 	Rows      map[string][]map[string]any `json:"rows"`
@@ -177,11 +178,14 @@ func (r *nativeRecorder) recordTwin(binary, name string) nativeTwin {
 	server := publicnative.StartDolt(t, r.root)
 	base := []string{"PATH=/usr/bin:/bin", "HOME=" + home, "USER=b20-native", "TZ=UTC", "LC_ALL=C", "NO_COLOR=1", "CI=true", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=B20 Public", "GIT_AUTHOR_EMAIL=b20@example.invalid", "GIT_COMMITTER_NAME=B20 Public", "GIT_COMMITTER_EMAIL=b20@example.invalid", "TMPDIR=" + filepath.Join(workspace, "tmp"), "BEADS_ACTOR=b20-recorder", "BEADS_NO_DAEMON=1"}
 	w := nativeWorkspace{dir: dir, env: server.ChildEnv(base)}
-	// ChildEnv intentionally drops these activation variables. Add the real
-	// supported flags afterwards; also persist and read back actual CLI config.
-	w.env = append(w.env, "BD_EVENTS_JOURNAL=1", "BD_EVENTS_JOURNAL_AUTO_PRUNE=0")
+	// Use supported workspace config without an environment override, so the
+	// retained config readback names the actual activation for each process.
 	r.command(w, "git-init", "/usr/bin/git", []string{"-c", "core.hooksPath=/dev/null", "init", "--quiet", "--template="}, false)
-	r.command(w, "version", binary, []string{"version", "--json"}, false)
+	version := r.command(w, "version", binary, []string{"version", "--json"}, false)
+	var identity struct{ Commit, Build string }
+	if json.Unmarshal(version, &identity) != nil || identity.Commit != pinnedSource.Commit || identity.Build != "b20-public-fixture-"+pinnedSource.Commit {
+		t.Fatalf("executed native version does not match exact source build: %s", version)
+	}
 	r.command(w, "init", binary, []string{"init", "--server", "--external", "--server-host", "127.0.0.1", "--server-port", strconv.Itoa(server.Port), "--database", "b20_current", "--prefix", "b20", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet"}, false)
 	server.RequireDatabaseDir(t, "b20_current")
 	for _, kv := range [][2]string{{"events-journal", "true"}, {"events-journal-auto-prune", "false"}} {
@@ -192,9 +196,10 @@ func (r *nativeRecorder) recordTwin(binary, name string) nativeTwin {
 			t.Fatalf("effective journal config differs: %s", data)
 		}
 	}
+	w.families = r.discoverFamilies(w, binary)
 	twin := nativeTwin{Name: name, Images: map[string]nativeImage{}}
 	twin.Images["empty"] = r.image(w, binary, "empty")
-	if len(twin.Images["empty"].Rows["events"]) != 0 || len(twin.Images["empty"].Rows["bd_events_journal"]) != 0 {
+	if len(twin.Images["empty"].Rows["events"]) != 0 || len(twin.Images["empty"].Rows["journal"]) != 0 {
 		t.Fatal("fresh public workspace was not empty")
 	}
 	follow := r.startFollow(w, binary)
@@ -228,9 +233,20 @@ func (r *nativeRecorder) recordTwin(binary, name string) nativeTwin {
 	r.command(w, "close-after-abort", binary, []string{"close", "b20-1", "--reason", "complete", "--json"}, false)
 	twin.Delivery = append(twin.Delivery, follow.next(t))
 	follow.stop(t)
+	completeFollow, err := os.ReadFile(filepath.Join(r.root, "follow.stdout"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Include buffered extras after the three synchronization reads so an
+	// unexpected duplicate cannot hide in the follower's bounded queue.
+	twin.Delivery = decodeLines(t, completeFollow)
 	twin.Images["final"] = r.image(w, binary, "final")
 	journalRaw := r.command(w, "export-current-journal", binary, []string{"events", "export", "--json"}, false)
 	journal := decodeLines(t, journalRaw)
+	unbounded := decodeLines(t, r.command(w, "literal-limit-zero-unbounded", binary, []string{"events", "tail", "--since", "0", "--limit", "0", "--json"}, false))
+	if !reflect.DeepEqual(unbounded, journal) {
+		t.Fatal("native literal limit0 did not return the complete ordered journal")
+	}
 	if !reflect.DeepEqual(journal, twin.Delivery) {
 		t.Fatal("original follow delivery differs from committed journal export order or rows")
 	}
@@ -249,20 +265,25 @@ func (r *nativeRecorder) recordTwin(binary, name string) nativeTwin {
 	}
 	for _, row := range twin.Images["final"].Rows["events"] {
 		selected := map[string]any{}
-		for _, key := range []string{"issue_id", "event_type", "actor", "old_value", "new_value", "comment"} {
+		for _, key := range []string{"issue_id", "event_type", "actor", "comment"} {
 			selected[key] = row[key]
+		}
+		for _, key := range []string{"old_value", "new_value"} {
+			selected[key] = projectAuditValue(t, row[key])
 		}
 		twin.Audit = append(twin.Audit, selected)
 	}
 	if len(twin.Audit) == 0 {
 		t.Fatal("actual current audit rows absent")
 	}
-	seq := twin.Images["final"].Rows["bd_events_seq"]
+	seq := twin.Images["final"].Rows["sequence"]
 	if len(seq) != 1 || fmt.Sprint(seq[0]["id"]) != "0" || fmt.Sprint(seq[0]["next_seq"]) != "3" {
 		t.Fatalf("actual native sequence singleton=%+v", seq)
 	}
-	if len(twin.Images["final"].Rows["bd_events_journal"]) != len(journal) {
-		t.Fatal("SQL journal and CLI journal counts differ")
+	compareSQLJournal(t, twin.Images["final"].Rows["journal"], journal)
+	since := decodeLines(t, r.command(w, "since-exclusive-unbounded", binary, []string{"events", "tail", "--since", "1", "--limit", "0", "--json"}, false))
+	if !reflect.DeepEqual(since, journal[1:]) {
+		t.Fatal("native unbounded since1 differs")
 	}
 	page := decodeLines(t, r.command(w, "since-exclusive-page", binary, []string{"events", "tail", "--since", "1", "--limit", "1", "--json"}, false))
 	if len(page) != 1 || !reflect.DeepEqual(page[0], journal[1]) {
@@ -271,6 +292,46 @@ func (r *nativeRecorder) recordTwin(binary, name string) nativeTwin {
 	if raw := r.command(w, "caught-up", binary, []string{"events", "tail", "--since", "3", "--limit", "1", "--json"}, false); len(bytes.TrimSpace(raw)) != 0 {
 		t.Fatalf("caught-up native page=%s", raw)
 	}
+	// Native prefix deletion is a folded design difference (commands.md:228).
+	// Plug retains audit forever and exposes no client prune.
+	for _, key := range []string{"events-journal-retain-days", "events-journal-retain-rows"} {
+		r.command(w, "prune-config-"+key, binary, []string{"config", "set", key, "0", "--json"}, false)
+	}
+	r.command(w, "prune-before-three", binary, []string{"events", "prune", "--before", "3", "--json"}, false)
+	twin.Images["pruned"] = r.image(w, binary, "pruned")
+	pruned := twin.Images["pruned"]
+	if !reflect.DeepEqual(pruned.Rows["events"], twin.Images["final"].Rows["events"]) || !reflect.DeepEqual(pruned.Rows["issues"], twin.Images["final"].Rows["issues"]) || !reflect.DeepEqual(pruned.Rows["sequence"], seq) {
+		t.Fatal("native journal prune changed audit, issue, or sequence-head state")
+	}
+	if rows := pruned.Rows["journal"]; len(rows) != 1 || !reflect.DeepEqual(rows[0], twin.Images["final"].Rows["journal"][2]) {
+		t.Fatal("native prune did not preserve precisely the since-exclusive suffix")
+	}
+	for _, vector := range []struct {
+		label string
+		args  []string
+	}{
+		{"pruned-since-zero", []string{"events", "tail", "--since", "0", "--limit", "0", "--json"}},
+		{"pruned-export", []string{"events", "export", "--json"}},
+	} {
+		raw := r.command(w, vector.label, binary, vector.args, true)
+		var truncated struct {
+			Code               string
+			Since, Floor, Head int64
+		}
+		if err := json.Unmarshal(raw, &truncated); err != nil || truncated.Code != "events_journal_truncated" || truncated.Since != 0 || truncated.Floor != 3 || truncated.Head != 3 {
+			t.Fatalf("native typed truncation=%s err=%v", raw, err)
+		}
+	}
+	suffix := decodeLines(t, r.command(w, "pruned-known-gap-suffix", binary, []string{"events", "tail", "--since", "2", "--limit", "0", "--json"}, false))
+	if !reflect.DeepEqual(suffix, journal[2:]) {
+		t.Fatal("native accepted-gap resume changed surviving row")
+	}
+	r.writeJSON(filepath.Join(r.root, "limit-zero-deviation.json"), map[string]any{
+		"native_limit_zero": "OBSERVED_UNBOUNDED", "native_unbounded_rows": len(unbounded),
+		"native_pruned_rows": len(pruned.Rows["journal"]), "native_head": seq,
+		"adopted_wire_deviation":    "P6/P20 spec/commands.md:227-232; bounded pages and typed nonpositive-limit refusals",
+		"real_compat_client_export": "PAIRED_SEPARATELY_THROUGH_REAL_CLI", "plug_prune": "FOLDED_OPERATOR_RETENTION_DESIGN_DIFFERENCE_NO_CLIENT_PRUNE", "operator_retention_floor": "UNIMPLEMENTED_NONBLOCKING_OPERATOR_FEATURE",
+	})
 	if err := server.Stop(); err != nil {
 		t.Fatal(err)
 	}
@@ -278,10 +339,114 @@ func (r *nativeRecorder) recordTwin(binary, name string) nativeTwin {
 	return twin
 }
 
+func projectAuditValue(t *testing.T, value any) any {
+	t.Helper()
+	text, ok := value.(string)
+	if !ok || !strings.HasPrefix(strings.TrimSpace(text), "{") {
+		return value
+	}
+	var source map[string]any
+	if err := json.Unmarshal([]byte(text), &source); err != nil {
+		t.Fatal(err)
+	}
+	selected := map[string]any{}
+	for _, key := range []string{"id", "title", "status", "close_reason"} {
+		if value, present := source[key]; present {
+			selected[key] = value
+		}
+	}
+	return selected
+}
+
+func compareSQLJournal(t *testing.T, rows, cli []map[string]any) {
+	t.Helper()
+	if len(rows) != len(cli) {
+		t.Fatal("SQL journal and CLI journal counts differ")
+	}
+	for i, row := range rows {
+		for _, key := range []string{"seq", "op", "issue_id", "actor"} {
+			if !reflect.DeepEqual(row[key], cli[i][key]) {
+				t.Fatalf("SQL/CLI journal row%d field%s differs", i, key)
+			}
+		}
+		for _, pair := range [][2]string{{"issue_json", "issue"}, {"dep_json", "dep"}, {"comment_json", "comment"}} {
+			var payload any
+			if raw := row[pair[0]]; raw != nil {
+				text, ok := raw.(string)
+				if !ok {
+					t.Fatalf("SQL journal JSON is not text: %T", raw)
+				}
+				if err := json.Unmarshal([]byte(text), &payload); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !reflect.DeepEqual(payload, cli[i][pair[1]]) {
+				t.Fatalf("SQL/CLI journal row%d complete%s payload differs", i, pair[0])
+			}
+		}
+	}
+}
+
+// Discover the actual current families by their unique source schema shapes.
+// The complete physical-name/column result and binding are retained verbatim.
+func (r *nativeRecorder) discoverFamilies(w nativeWorkspace, binary string) map[string]string {
+	data := r.command(w, "current-family-catalog", binary, []string{"--readonly", "sql", "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'b20_current' ORDER BY table_name, ordinal_position", "--json"}, false)
+	var rows []map[string]string
+	if err := json.Unmarshal(data, &rows); err != nil {
+		r.t.Fatal(err)
+	}
+	columns := map[string]map[string]bool{}
+	for _, row := range rows {
+		table, column := row["table_name"], row["column_name"]
+		// Dolt's metadata preserves driver-selected column-label casing.
+		if table == "" {
+			table = row["TABLE_NAME"]
+		}
+		if column == "" {
+			column = row["COLUMN_NAME"]
+		}
+		if table == "" || column == "" {
+			r.t.Fatalf("catalog omitted physical identity: %+v", row)
+		}
+		if columns[table] == nil {
+			columns[table] = map[string]bool{}
+		}
+		columns[table][column] = true
+	}
+	bindings := map[string]string{"events": "events", "issues": "issues"}
+	for logical, required := range map[string][]string{"journal": {"seq", "op", "issue_id", "actor", "issue_json"}, "sequence": {"id", "next_seq"}} {
+		for table, cols := range columns {
+			matches := true
+			for _, name := range required {
+				matches = matches && cols[name]
+			}
+			if matches {
+				if bindings[logical] != "" {
+					r.t.Fatalf("ambiguous %s family", logical)
+				}
+				bindings[logical] = table
+			}
+		}
+		if bindings[logical] == "" {
+			r.t.Fatalf("missing actual %s family", logical)
+		}
+	}
+	for _, name := range bindings {
+		for _, c := range name {
+			if c != '_' && (c < 'a' || c > 'z') {
+				r.t.Fatalf("unsafe catalog identifier %q", name)
+			}
+		}
+	}
+	r.writeJSON(filepath.Join(r.root, "current-family-bindings.json"), bindings)
+	return bindings
+}
+
 func (r *nativeRecorder) image(w nativeWorkspace, binary, label string) nativeImage {
 	result := nativeImage{Rows: map[string][]map[string]any{}, RawSHA256: map[string]string{}}
-	for _, q := range []struct{ name, order string }{{"events", "created_at,id"}, {"bd_events_journal", "seq"}, {"bd_events_seq", "id"}, {"issues", "id"}} {
-		data := r.command(w, label+"-"+q.name, binary, []string{"--readonly", "sql", "SELECT * FROM " + q.name + " ORDER BY " + q.order, "--json"}, false)
+	for _, q := range []struct{ name, order string }{{"events", "created_at,id"}, {"journal", "seq"}, {"sequence", "id"}, {"issues", "id"}} {
+		table := w.families[q.name]
+		data := r.command(w, label+"-"+q.name, binary, []string{"--readonly", "sql", "SELECT * FROM " + table + " ORDER BY " + q.order, "--json"}, false)
 		var rows []map[string]any
 		if err := json.Unmarshal(data, &rows); err != nil {
 			r.t.Fatalf("actual current SQL%s: %v: %s", q.name, err, data)

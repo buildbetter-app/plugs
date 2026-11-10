@@ -10,9 +10,13 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	coreevents "github.com/buildbetter-app/plugs/internal/core/events"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/plugins/authnapikey"
 	"github.com/buildbetter-app/plugs/internal/plugins/authzfixed"
 	"github.com/buildbetter-app/plugs/internal/server/authzrpc"
+	serverevents "github.com/buildbetter-app/plugs/internal/server/events"
+	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -72,35 +76,72 @@ func installEventPolicy(t *testing.T, ctx context.Context, store driver.Store, l
 	return fixedEventPolicy{store, app.Checker}, "b20-fixed-installed", app.Checker
 }
 
+// Install on the same leased real store after public no-plugin seeding. The
+// finite production policy supports sponsored-Agent update and User read;
+// fixture setup grants no additional actions.
+func installPolicyForExistingRuntime(t *testing.T, r *runtime) {
+	t.Helper()
+	authorization, _, checker := installEventPolicy(t, r.ctx, r.store, r.lease, true)
+	ontology := service.NewOntology(nil)
+	writer := pipeline.New(r.store, r.lease, pipeline.WithOntology(ontology), pipeline.WithAuthorizer(checker), pipeline.WithEventContext(checker))
+	codec, err := serverevents.NewCursorCodec([]byte(b20CursorKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := &serverevents.Service{Reader: &coreevents.Reader{Log: serverevents.Log{Store: r.store}, Materializer: serverevents.HistoryMaterializer{Store: r.store}, Authorization: authorization}, Cursors: codec}
+	domain := service.New(r.store, r.lease, writer, service.WithOntology(ontology), service.WithAuthorizationInstalled(func() bool { return true }), service.WithEventProvider(eventProvider{events: events}))
+	registry, err := rpc.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rpc.BindService(registry, domain); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := r.store.Meta(r.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.server, err = rpc.New(registry, rpc.Config{DefaultProject: "cardb20", Incarnation: meta.Incarnation, OntologyRevision: model.Natural64(1), CursorKey: []byte(b20CursorKey)})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestB20InstalledFixedPolicyDeliversRealAuthorizedEvents(t *testing.T) {
 	for _, engine := range engines {
 		t.Run(engine, func(t *testing.T) {
 			f := openStore(t, engine)
-			r := newRuntimePolicy(t, f.store, false, "b20-1", true)
+			r := newRuntime(t, f.store, false, "b20-1")
 			create(t, r, "journal anchor")
-			update(t, r, "b20-1", "journal edited")
-			page := list(t, r, "", 100)
-			if len(page.Events) != 2 {
-				t.Fatalf("installed-policy events=%+v", page)
-			}
-			for _, event := range page.Events {
-				if event.Durable == nil || !reflect.DeepEqual(event.Durable.Chain, []string{"authz/fixed"}) {
-					t.Fatalf("event did not traverse installed production policy: %+v", event)
-				}
-			}
+			installPolicyForExistingRuntime(t, r)
 			before, sets := journal(t, r.store)
-			// A sequential read under a restrictive project caveat exercises the
-			// real policy. There is no competing request or permission overlap.
-			r.principal.Caveats = map[string]any{"projects": []model.Ref{model.RefByID("other-project", model.Natural64(0))}}
-			denied := list(t, r, "", 100)
-			if len(denied.Events) != 0 {
-				t.Fatal("installed fixed checker disclosed an event outside project caveat")
+			refused := r.call(t, "", "bead.update", map[string]any{"id": map[string]any{"id": "b20-1"}, "fields": map[string]any{"title": "user cannot write"}}, true)
+			if refused.Error == nil || refused.Error.Data.Code != "forbidden" {
+				t.Fatalf("fixed User update refusal=%+v", refused)
 			}
 			after, again := journal(t, r.store)
 			if !reflect.DeepEqual(before, after) || !reflect.DeepEqual(sets, again) {
-				t.Fatal("policy read changed durable journal")
+				t.Fatal("policy refusal changed journal")
 			}
-			retain(t, "plug-"+engine+"-installed-policy.json", map[string]any{"allowed_events": page.Events, "restricted_events": denied.Events, "policy": "authz/fixed", "installation": "b20-fixed", "authentication": "trusted RPC principal injection; no public authentication qualification"})
+			reader := r.principal
+			r.principal = model.PrincipalRef{Kind: "agent", ID: "b20-writer", Sponsor: &reader}
+			update(t, r, "b20-1", "journal edited")
+			r.principal = reader
+			page := list(t, r, "", 100)
+			if len(page.Events) != 2 || page.Events[1].Durable == nil || !reflect.DeepEqual(page.Events[1].Durable.Chain, []string{"authz/fixed"}) {
+				t.Fatalf("installed-policy events=%+v", page)
+			}
+			before, sets = journal(t, r.store)
+			r.principal.Caveats = map[string]any{"projects": []model.Ref{model.RefByID("other-project", model.Natural64(0))}}
+			denied := list(t, r, "", 100)
+			if len(denied.Events) != 0 {
+				t.Fatal("installed fixed checker disclosed event outside project caveat")
+			}
+			after, again = journal(t, r.store)
+			if !reflect.DeepEqual(before, after) || !reflect.DeepEqual(sets, again) {
+				t.Fatal("policy read changed journal")
+			}
+			retain(t, "plug-"+engine+"-installed-policy.json", map[string]any{"allowed_events": page.Events, "restricted_events": denied.Events, "policy": "authz/fixed", "installation": "b20-fixed", "seed": "actual public no-plugin create before installation", "write": "supported sponsored-Agent update; User update refused", "authentication": "trusted RPC principal injection; no public authentication qualification"})
 		})
 	}
 }

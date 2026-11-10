@@ -132,15 +132,36 @@ TestEventOpVocabularyIsFrozen`, `TestEveryDeclaredEventOpIsClassified`;
 `cmd/bd/events_journal_construction_test.go:TestEveryStoreConstructionActivatesTheEventsJournal`.
 
 **Edge cases.** Rollback burns no sequence; concurrent writers serialize the
-counter; full prune makes the next sequence `head+1`; interior holes and
-nonpositive limits refuse. Beads activation is opt-in/configurable and local
-ignored state does not replicate.
+counter; full prune makes the next sequence `head+1`; interior holes refuse.
+At the pinned native implementation, `events tail`/`export` limit `0` means
+unbounded: the query adds a limit only when it is positive. Beads activation
+is opt-in/configurable and local ignored state does not replicate.
 
 **Plug disposition.** **Deviate** preserve atomic, ordered cursor/truncation
 semantics, but A4/P6 makes the changeset log always on in every driver and
 combines journal/outbox/audit. Script hooks and their autoprune path are
 removed (P29b); projections consume total-order changesets and listeners stall
 at their lag limits (P29a).
+
+**Limit vector and caller parity (adopted P6/P20 deviation).** Native limit
+`0` returns the complete since-exclusive sequence. Plug `event.list` requires
+positive bounded limits and typed refusals for nonpositive limits;
+[commands](../commands.md#history-events-audit-and-provenance) folds export
+into paged `event.list` or `admin.dump`, with no unbounded one-shot wire
+response. `plug events --limit 0` / `--limit all`, `events all`, and
+`events export` use the real Plug client to page to completion in bounded
+batches. B20 requires their complete ordered, gapless, since-exclusive result
+to equal actual native unbounded output on memory, SQLite and PostgreSQL.
+Wire refusal alone or positive-limit observations do not establish parity.
+
+**Prune design difference.** Native prefix pruning is recorded literally,
+including its unchanged sequence head, audit and issues, and typed truncation
+below the retained window. Plug folds prune into operator retention/driver
+policy (commands.md:228) and retains audit forever (events.md:299-305); there
+is no client prune RPC or row deletion. An operator retention-floor mechanism
+is not implemented. Below-floor `cursor_expired` must be exercised when that
+operator feature exists; its absence is not a B20 failure. No compaction
+operation substitutes for retention.
 
 ## B21 — batch apply and batch close
 

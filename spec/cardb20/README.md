@@ -13,7 +13,7 @@ original focused and canonical whole-run receipts separately.
 The four observation groups use actual service/Writer/byte-RPC behavior on
 memory, SQLite, and PostgreSQL:
 
-1. Committed create/update/close rows, a same-value no-op, a transactional
+1. Committed create/update/close rows, a same-value no-op, an atomic admission
    missing-target refusal, a successful next write that proves no revision was
    burned, ascending one-row pages, and a stable caught-up cursor.
 2. Live subscription delivery and reconnect in the same runtime/signing-key
@@ -24,7 +24,9 @@ memory, SQLite, and PostgreSQL:
 4. A real host installation of `authz/fixed` with its validated project/grant
    facts, production Writer authorizer/event context, and a narrow event-read
    adapter calling the production checker on fresh real-store snapshots.
-   Allowed events carry the actual chain marker; a sequential restrictive
+   A no-plugin public create seeds the same store before installation. The
+   supported sponsored-Agent update carries the actual chain marker, User
+   update refuses, and User reads traverse the checker; a sequential restrictive
    project caveat filters them. Trusted RPC principal injection does not
    qualify public authentication or an operator policy-management API.
 
@@ -40,9 +42,11 @@ label identifies this public B20 fixture. No exporter or importer runs.
 Each independent source store records actual current `events` audit rows in
 `(created_at,id)` order, `bd_events_journal` rows in sequence order, and the
 `bd_events_seq` singleton, with read-only single-statement SQL. It also retains
-the current issue rows. The source's supported CLI writes run with journal
-activation applied after `ChildEnv`, and actual persisted configuration is
-read back. A real batch updates the issue and then refuses on its second,
+the current issue rows. The source's supported CLI writes use persisted workspace journal configuration
+with actual effective readback, without environment overrides. A read-only
+`information_schema.columns` query binds the unique journal/sequence schema
+shapes to their actual physical names; raw metadata, bindings and SQL bytes
+are retained. No vocabulary guard exception or encoded literal is used. A real batch updates the issue and then refuses on its second,
 missing-target operation; a successful close follows. Original follow-process
 delivery must equal the final journal export. Positive-limit since-exclusive
 and caught-up reads are independently observed. Raw rows, timestamps, and
@@ -61,9 +65,35 @@ source attribution is retained before that explicit comparison projection.
 The audit and journal projections remain distinct.
 
 The native CLI accepts a zero limit as unbounded; Plug requires bounded pages.
-Although the old B20 card says nonpositive limits refuse, this slice preserves
-that exact-pin difference and compares positive limits only. It covers no
-comment/engine-only vocabulary, pruning, concurrent writer, claim overlap,
+The binding ruling `9da1e01a-618f-4c7b-a3f6-a7cb75417c2e` corrects the B20
+card and requires caller-level unbounded/export/prune parity as well. Each
+native twin explicitly records literal limit zero and its complete ordered
+set, then a real native prune preserving audit, issue rows and sequence head.
+Native/pruned raw vectors and the P6/P20 wire deviation stay together.
+
+**Caller parity and adopted difference:** `internal/cli` implements actual
+`events --limit 0` / `--limit all`, `events all`, and `events export` through
+`internal/client.Client.WalkEvents` and repeated real `Client.Call` requests.
+Every wire request has a positive bounded limit; only an empty page with the
+same cursor completes the traversal. Original requests/responses and CLI
+stdout are retained for all engines, including since-exclusive continuation
+and a matching event after more than 64 filtered changesets. The native twin
+comparison uses these callers on the same observed create/update/close set.
+Wire nonpositive limits retain typed refusals.
+
+Native prune is recorded literally as a folded design difference under
+commands.md:228 and events.md:299-305. Plug retains audit forever and has no
+client prune RPC or deletion. An operator retention-floor mechanism is an
+unimplemented operator feature, not a B20 failure; its future implementation
+must exercise below-floor `cursor_expired`. The superseding amendment
+withdraws same-final-pruned-state parity. No compaction behavior is assumed.
+
+The Plug missing-target batch resolves during Writer preparation, so it
+proves atomic admission refusal rather than an opened storage-transaction
+rollback. The native batch reaches its second operation inside a real UOW
+transaction. These observations are separately named in the runtime receipts.
+This slice covers no
+comment/engine-only vocabulary, Plug operator retention, concurrent writer, claim overlap,
 compare-and-set, cross-process cursor, full-card, hosted-delivery, official
 producer admission, private store, live switch, or trial qualification.
 

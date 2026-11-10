@@ -133,6 +133,8 @@ internal/cli/agent_test.go
 internal/cli/archive_test.go
 internal/cli/config.go
 internal/cli/config_test.go
+internal/cli/events.go
+internal/cli/events_test.go
 internal/cli/gate.go
 internal/cli/gate_test.go
 internal/cli/local.go
@@ -147,6 +149,8 @@ internal/cli/session.go
 internal/client/BUILD.bazel
 internal/client/client.go
 internal/client/client_test.go
+internal/client/events.go
+internal/client/events_test.go
 internal/client/http.go
 internal/client/http_test.go
 internal/core/authz/BUILD.bazel
@@ -1344,6 +1348,7 @@ spec/cardb19/testdata/recording-2/export.jsonl
 spec/cardb19/testdata/recording-2/imported.json
 spec/cardb20/BUILD.bazel
 spec/cardb20/README.md
+spec/cardb20/caller_test.go
 spec/cardb20/current_test.go
 spec/cardb20/native_build_test.go
 spec/cardb20/native_recording_test.go
