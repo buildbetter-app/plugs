@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"sort"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/core/viewops"
+	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -426,4 +428,168 @@ func TestAggregateWorkIncludesNonEmittedSummaryProjections(t *testing.T) {
 			t.Logf("CP7_AGGREGATE_WORK ordinary=%+v fields_empty_summary=%+v emitted_summary_payload_rows=0", ordinary, summary)
 		})
 	}
+}
+
+// Main batches historical misses without repeating the current-row query.
+// Count actual materializations, including the discarded current body, on
+// every real call; duplicate output rows do not create another Scan.
+func TestPostgresHistoricalReadCountsDiscardedCurrentBodies(t *testing.T) {
+	f := newFixture(t, "postgres", 2)
+	originalOne, originalTwo := body(t, 1), body(t, 2)
+	currentOne := append(append([]byte(nil), originalOne...), ' ')
+	at := f.seededAt.Revision
+	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{
+		{Ref: beadRef(1), Kind: "bead", Op: model.OpPatch, Body: currentOne, ChangedPaths: []string{"/fields/title"}},
+		{Ref: beadRef(2), Kind: "bead", Op: model.OpDelete},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range []string{"Get", "Query", "Observe"} {
+		t.Run(method, func(t *testing.T) {
+			r := f.reader(t, &at)
+			defer r.Close()
+			read := func(ctx context.Context) ([]driver.Record, error) {
+				switch method {
+				case "Get":
+					return r.Get(ctx, []model.Ref{beadRef(1), beadRef(2), beadRef(99), beadRef(1)})
+				case "Query":
+					page, err := r.Query(ctx, driver.Query{Filter: map[string]any{"id": beadRef(1).ID}, Limit: 1})
+					if err == nil && (page.AsOf != at || page.NextCursor != nil) {
+						t.Fatal("historical query changed snapshot or invented a tail")
+					}
+					return page.Items, err
+				default:
+					keys := []driver.LockKey{{Kind: driver.LockRecord, Ref: refPointer(beadRef(1))}, {Kind: driver.LockRecord, Ref: refPointer(beadRef(2))}, {Kind: driver.LockRecord, Ref: refPointer(beadRef(99))}}
+					states, err := r.Observe(ctx, keys)
+					if err != nil {
+						return nil, err
+					}
+					if len(states) != 3 || !states[0].Present || !states[1].Present || states[2].Present || states[2].Record != nil || !states[2].Revision.IsZero() {
+						t.Fatalf("historical observations changed hit/deleted/absence semantics: %+v", states)
+					}
+					return []driver.Record{*states[0].Record, *states[1].Record}, nil
+				}
+			}
+			plain, err := read(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := [][]byte{originalOne, originalTwo}
+			if method == "Get" {
+				want = append(want, originalOne)
+			}
+			if method == "Query" {
+				want = want[:1]
+			}
+			if len(plain) != len(want) {
+				t.Fatalf("historical output rows=%d want=%d", len(plain), len(want))
+			}
+			for i, row := range plain {
+				if !reflect.DeepEqual(row.Body, want[i]) || row.Revision != at {
+					t.Fatalf("historical body/snapshot changed: %+v", row)
+				}
+			}
+			nilObserved, err := read(driver.WithReadWorkObserver(context.Background(), nil))
+			if err != nil || !reflect.DeepEqual(plain, nilObserved) {
+				t.Fatalf("nil observer changed historical result: %v", err)
+			}
+			var counts counters
+			for repeat := int64(1); repeat <= 2; repeat++ {
+				got, err := read(driver.WithReadWorkObserver(context.Background(), &counts))
+				if err != nil || !reflect.DeepEqual(plain, got) {
+					t.Fatalf("observer changed historical result: %v", err)
+				}
+				work := counts.work()
+				// Every method scans one current body and reconstructs two
+				// historical bodies. Get clones each requested hit; Query clones
+				// both candidates before filtering. Observe retains those decoded
+				// records directly and performs no additional body clone.
+				copies, copyBytes := int64(0), int64(0)
+				switch method {
+				case "Get":
+					copies, copyBytes = 3, int64(2*len(originalOne)+len(originalTwo))
+				case "Query":
+					copies, copyBytes = 2, int64(len(originalOne)+len(originalTwo))
+				}
+				wantPayloads := repeat * (3 + copies)
+				wantBytes := repeat * (int64(len(currentOne)+len(originalOne)+len(originalTwo)) + copyBytes)
+				if work.Payloads != wantPayloads || work.PayloadBytes != wantBytes {
+					t.Fatalf("discarded/repeated historical work=%+v want_payloads=%d want_bytes=%d", work, wantPayloads, wantBytes)
+				}
+				t.Logf("CP7_HISTORICAL_BODY_WORK method=%s repeat=%d output_rows=%d current_body_scans_per_call=1 historical_bodies_per_call=2 absent=1 deleted_current_body=0 payload_records=%d payload_bytes=%d", method, repeat, len(got), work.Payloads, work.PayloadBytes)
+			}
+		})
+	}
+}
+
+func refPointer(ref model.Ref) *model.Ref { return &ref }
+
+func TestPostgresReadWorkPreservesStagedAndErrorPrecedence(t *testing.T) {
+	f := newFixture(t, "postgres", 2)
+	tx, err := f.store.Write(context.Background(), f.lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Close()
+	ref := beadRef(1)
+	bead, err := driver.NewBeadSentinel(ref.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := []driver.LockKey{{Kind: driver.LockRecord, Ref: &ref}, {Kind: driver.LockSentinel, Sentinel: bead}, driver.GraphBlockingSentinelLock}
+	sort.Slice(keys, func(i, j int) bool {
+		a, _ := driver.EncodeLockKey(keys[i])
+		b, _ := driver.EncodeLockKey(keys[j])
+		return a < b
+	})
+	locks := make([]driver.LockRequest, len(keys))
+	for i, key := range keys {
+		locks[i] = driver.LockRequest{Key: key, Mode: driver.LockUpdate}
+	}
+	if _, err := tx.Lock(context.Background(), locks); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Head(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	staged := append(append([]byte(nil), body(t, 1)...), ' ')
+	if err := pipeline.PutSourceRecord(context.Background(), tx, driver.Record{Ref: ref, Kind: "bead", Body: staged}); err != nil {
+		t.Fatal(err)
+	}
+	refs := []model.Ref{ref, beadRef(99), ref}
+	plain, err := tx.Get(context.Background(), refs)
+	if err != nil || len(plain) != 2 || !reflect.DeepEqual(plain[0].Body, staged) {
+		t.Fatalf("staged control: %+v %v", plain, err)
+	}
+	var counts counters
+	got, err := tx.Get(driver.WithReadWorkObserver(context.Background(), &counts), refs)
+	if err != nil || !reflect.DeepEqual(plain, got) || counts.work().Payloads != 2 || counts.work().PayloadBytes != 2*int64(len(staged)) {
+		t.Fatalf("staged duplicate accounting/parity: %+v %v", counts.work(), err)
+	}
+	if err := tx.Close(); err != nil {
+		t.Fatal(err)
+	}
+	counts.reset()
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, plainErr := tx.Get(cancelled, refs)
+	_, observedErr := tx.Get(driver.WithReadWorkObserver(cancelled, &counts), refs)
+	if !errors.Is(plainErr, context.Canceled) || !errors.Is(observedErr, context.Canceled) || counts.work().Payloads != 0 {
+		t.Fatalf("cancellation must precede closed transaction: %v %v %+v", plainErr, observedErr, counts.work())
+	}
+	_, plainErr = tx.Get(context.Background(), refs)
+	_, observedErr = tx.Get(driver.WithReadWorkObserver(context.Background(), &counts), refs)
+	if !errors.Is(plainErr, driver.ErrTxClosed) || !errors.Is(observedErr, driver.ErrTxClosed) || counts.work().Payloads != 0 {
+		t.Fatalf("closed transaction parity: %v %v", plainErr, observedErr)
+	}
+	if err := f.lease.Release(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, plainErr = tx.Get(context.Background(), refs)
+	_, observedErr = tx.Get(driver.WithReadWorkObserver(context.Background(), &counts), refs)
+	var plainFenced, observedFenced driver.ErrFenced
+	if !errors.As(plainErr, &plainFenced) || !errors.As(observedErr, &observedFenced) || !reflect.DeepEqual(plainFenced, observedFenced) || counts.work().Payloads != 0 {
+		t.Fatalf("lease loss must precede closed transaction: %v %v", plainErr, observedErr)
+	}
+	t.Log("CP7_BODY_WORK_PARITY staged_duplicates=true cancellation_before_closed=true closed_before_read=true lease_loss_before_closed=true payload_work_on_refusal=0")
 }

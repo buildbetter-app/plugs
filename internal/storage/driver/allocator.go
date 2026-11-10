@@ -62,8 +62,8 @@ func canonicalAllocatorPart(name, value string) error {
 }
 
 // Validate checks the portable state before a driver is allowed to stage it.
-// Hash state is valid evidence and is persisted, but this port deliberately
-// refuses to mint from it until the hash collision/nonce contract is admitted.
+// Historical hash declarations remain provenance only; live profiles include
+// explicit adaptive settings and use the content-bound minting contract.
 func (a OfflineAllocator) Validate() error {
 	if err := canonicalAllocatorPart("prefix", a.Prefix); err != nil {
 		return err
@@ -88,7 +88,7 @@ func (a OfflineAllocator) Validate() error {
 		if a.MinHashLength != 0 && (a.MinHashLength < 3 || a.MinHashLength > max) {
 			return fmt.Errorf("hash allocator minimum length is outside the configured range")
 		}
-		if a.MaxCollisionProb < 0 || a.MaxCollisionProb > 1 {
+		if math.IsNaN(a.MaxCollisionProb) || math.IsInf(a.MaxCollisionProb, 0) || a.MaxCollisionProb < 0 || a.MaxCollisionProb > 1 {
 			return fmt.Errorf("hash allocator collision probability must be between 0 and 1")
 		}
 	default:
@@ -181,8 +181,8 @@ func (a OfflineAllocator) NextChildID(parent string) (string, error) {
 
 // ChildNumber validates and decodes the canonical direct-child suffix. The
 // allocator drivers use it when reconciling a stale restored counter against
-// an observed child ID. Grandchildren and noncanonical zero-padded numbers are
-// deliberately outside this helper's contract.
+// an observed child ID. Source decimal suffixes may contain leading zeroes,
+// as Beads' ParseHierarchicalID accepts them; newly minted suffixes do not.
 func ChildNumber(parent, expected string) (uint64, error) {
 	if err := canonicalAllocatorPart("parent", parent); err != nil {
 		return 0, err
@@ -203,7 +203,7 @@ func ChildNumber(parent, expected string) (uint64, error) {
 		}
 		return 0, fmt.Errorf("invalid direct child candidate")
 	}
-	if n == 0 || strconv.FormatUint(n, 10) != suffix {
+	if n == 0 {
 		return 0, fmt.Errorf("invalid direct child candidate")
 	}
 	return n, nil
@@ -226,7 +226,14 @@ func (a OfflineAllocator) ValidateChildCandidate(parent, expected string) (uint6
 	if !strings.HasPrefix(parent, a.Prefix+"-") {
 		return 0, fmt.Errorf("parent is outside allocator prefix")
 	}
-	return ChildNumber(parent, expected)
+	n, err := ChildNumber(parent, expected)
+	if err != nil {
+		return 0, err
+	}
+	if expected != fmt.Sprintf("%s.%d", parent, n) {
+		return 0, fmt.Errorf("invalid direct child candidate")
+	}
+	return n, nil
 }
 
 // HashCandidate implements the pinned Beads content hash. Prefix is kept out
@@ -278,7 +285,7 @@ func (a OfflineAllocator) hashRange() (min, max uint32, probability float64, con
 		min = 3
 	}
 	probability = a.MaxCollisionProb
-	if probability == 0 {
+	if probability == 0 && a.MinHashLength == 0 && a.MaxHashLength == 0 {
 		probability = 0.25
 	}
 	// A plain hash_length declaration is source provenance, not enough
@@ -480,10 +487,17 @@ type HashAllocatorContinuation interface {
 	AllocateHashTopLevel(context.Context, string, HashInput, string) error
 }
 
-// MarshalJSON keeps historical source/sequential encodings intact while live
-// random state uses exactly the target profile, without source counters.
+// MarshalJSON keeps historical encodings intact. Configured hash profiles
+// always emit their probability, including an explicit zero; random profiles
+// omit source counters.
 func (a OfflineAllocator) MarshalJSON() ([]byte, error) {
 	type plain OfflineAllocator
+	if a.Mode == AllocatorHash && (a.MinHashLength != 0 || a.MaxHashLength != 0) {
+		return json.Marshal(struct {
+			plain
+			Probability float64 `json:"max_collision_prob"`
+		}{plain(a), a.MaxCollisionProb})
+	}
 	if a.Mode != AllocatorRandom {
 		return json.Marshal(plain(a))
 	}
