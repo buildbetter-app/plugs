@@ -582,6 +582,8 @@ internal/integration/converterroundtrip/native_boundary_receiving_test.go
 internal/integration/converterroundtrip/native_commit_fixture_test.go
 internal/integration/converterroundtrip/native_commit_receiving_test.go
 internal/integration/converterroundtrip/native_delta.go
+internal/integration/converterroundtrip/native_delta_pair_inspector_test.go
+internal/integration/converterroundtrip/native_delta_pair_test.go
 internal/integration/converterroundtrip/native_delta_receiving_test.go
 internal/integration/converterroundtrip/native_delta_test.go
 internal/integration/converterroundtrip/native_history_test.go
@@ -618,6 +620,9 @@ internal/integration/converterroundtrip/source_poststage_test.go
 internal/integration/converterroundtrip/source_public_test.go
 internal/integration/converterroundtrip/source_storage_test.go
 internal/integration/converterroundtrip/testdata/native-built-in-statuses.json
+internal/integration/converterroundtrip/testdata/native-delta-retained-pair/README.md
+internal/integration/converterroundtrip/testdata/native-delta-retained-pair/base.tar.gz
+internal/integration/converterroundtrip/testdata/native-delta-retained-pair/caller-overlay.tar.gz
 internal/integration/converterroundtrip/testdata/public-complete-root-990eb800.tar
 internal/integration/converterroundtrip/testdata/public-history-boundary-e25cf419.tar
 internal/integration/converterroundtrip/testdata/public-multiversion-072a1a8f.tar
