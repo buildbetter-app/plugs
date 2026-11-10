@@ -1,0 +1,2 @@
+[zones]
+provenance = ["internal/integration/offlinehistory/testdata/generate.py", "internal/integration/offlinehistory/testdata/dolt-source-partial.md"]
