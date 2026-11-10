@@ -27,6 +27,7 @@ func TestPublicBeadsArtifactReimportThreeEngines(t *testing.T) {
 	}
 	options := deliveredPublicBeads(t)
 	options = withPublicCaptureFixture(t, options)
+	typedReader := buildPublicTypedReader(t)
 	root, err := os.MkdirTemp("/tmp", "plug-public-beads-runtime-")
 	if err != nil {
 		t.Fatal(err)
@@ -79,6 +80,10 @@ func TestPublicBeadsArtifactReimportThreeEngines(t *testing.T) {
 				}
 				if got.BeadsReadbackSHA256 != "" {
 					assertPublicNativeCaptureReadback(t, options, output, got)
+				}
+				typed := collectPublicTypedReadback(t, typedReader, output, engine+"/"+test.name, got)
+				if typed.Status != "PASS" || typed.EqualityCredit != 1 || len(typed.Gaps) != 0 || len(typed.Differences) != 0 {
+					t.Errorf("actual typed native equality remains unproved: case=%s status=%s gaps=%v differences=%v", typed.Case, typed.Status, typed.Gaps, typed.Differences)
 				}
 				if got.Status != "PASS" || got.Stage != "public_snapshot_roundtrip_complete" || got.Reason != "" || got.BeadsReimport != "PASS" || got.BeadsReadback != "PASS" || got.BeadsReadbackSHA256 == "" || len(got.SourceFieldLosses) != 0 {
 					t.Fatalf("actual import and native readback: %+v", got)
@@ -228,6 +233,10 @@ func retainPublicBeadsRuntimeEvidence(t *testing.T, output, name string) {
 	for _, entry := range entries {
 		name := entry.Name()
 		if name == "beads-pinned" || name == "beads-capture-pinned" || name == "beads-target" || name != "outcome.json" && !strings.HasPrefix(name, "beads-") && !strings.HasPrefix(name, "reverse-") {
+			continue
+		}
+		if name == "beads-typed" {
+			retainPublicTypedEvidence(t, filepath.Join(output, name), filepath.Join(destination, name))
 			continue
 		}
 		if name == "beads-generated-inventory.json.sources" {

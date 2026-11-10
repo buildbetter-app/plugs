@@ -1703,6 +1703,9 @@ tools/roundtrip/beads_refusal.go
 tools/roundtrip/beads_refusal_test.go
 tools/roundtrip/beads_runtime_test.go
 tools/roundtrip/beads_test.go
+tools/roundtrip/beads_typed.go
+tools/roundtrip/beads_typed_runtime_test.go
+tools/roundtrip/beads_typed_test.go
 tools/roundtrip/main.go
 tools/roundtrip/main_test.go
 tools/roundtrip/testdata/public-companion-profile.json
@@ -1713,3 +1716,5 @@ tools/roundtrip/testdata/readback-8f19/memory-partial-beads-raw-readback.tar
 tools/roundtrip/testdata/readback-8f19/memory-partial-outcome.json
 tools/roundtrip/testdata/readback-8f19/memory-partial-reverse-live.jsonl
 tools/roundtrip/testdata/readback-8f19/provenance.json
+tools/roundtrip/testdata/typed-reader/beads-e25cf4.git-tree
+tools/roundtrip/testdata/typed-reader/beads-e25cf4.tar.gz
