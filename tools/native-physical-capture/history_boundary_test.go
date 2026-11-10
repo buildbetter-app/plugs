@@ -205,6 +205,30 @@ func TestPublicGenuineShallowHistoryBoundaryRetainsVerifiedCellsAndEvents(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The clone procedure registers origin. Keep the capture's existing
+	// no-remotes guard and prove it before preparing this disposable source.
+	var remoteName, remoteAddress string
+	if err := conn.QueryRowContext(ctx, "SELECT name, url FROM dolt_remotes").Scan(&remoteName, &remoteAddress); err != nil || remoteName != "origin" || remoteAddress != remoteURL {
+		t.Fatal("actual shallow clone remote differs")
+	}
+	refusalCapture := plugdump.NativeCapture{SourcePlaneAddressContract: plugdump.SourcePlaneAddressContract, Public: true, StoreDir: filepath.Join(cloneDir, "public_commit_history"), BeadsDir: diagnosticDir(t), SidecarDir: filepath.Join(diagnosticDir(t), "unpublished"), Machine: "public"}
+	refusedInventory, refusedSidecars, refusalErr := (plugdump.OwnVersionCommitSource{PhysicalCommitSource: plugdump.PhysicalCommitSource{SQLSource: plugdump.SQLSource{DB: conn}, PhysicalDB: db}}).NativeInventory(ctx, refusalCapture)
+	if refusalErr == nil || refusalErr.Error() != "native dolt-remotes must be empty" || refusedInventory.Version != "" || len(refusedSidecars) != 0 {
+		t.Fatalf("actual configured-remote inventory guard changed: %T", refusalErr)
+	}
+	ownVersionExec(t, ctx, conn, "CALL DOLT_REMOTE('remove','origin')")
+	var remoteCount int
+	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM dolt_remotes").Scan(&remoteCount); err != nil || remoteCount != 0 {
+		t.Fatal("disposable shallow source still has a remote")
+	}
+	detachedHistory, err := physicalcapture.ReadHistory(ctx, conn, fullLog.Head)
+	if err != nil || !reflect.DeepEqual(observed, detachedHistory) {
+		t.Fatal("removing disposable origin changed shallow graph or frontier")
+	}
+	detachedWorking, err := physicalcapture.ReadWorkingRoot(ctx, conn, fullLog.Head)
+	if err != nil || !reflect.DeepEqual(beforeWorking, detachedWorking) || !ownVersionEqual(t, beforeCurrent, commitHistoryCurrent(t, ctx, conn)) {
+		t.Fatal("removing disposable origin changed source rows or physical root")
+	}
 	if err := conn.Close(); err != nil {
 		t.Fatal(err)
 	}
