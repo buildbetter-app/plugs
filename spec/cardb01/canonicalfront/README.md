@@ -79,3 +79,18 @@ set before the existing service orders/pages complete candidates; it does not
 create a second SQL selection executor or change index publication. All errors
 and bounds return no partial set. Standalone total-count RPC is unavailable;
 complete concatenated page cardinalities and every prefix are asserted instead.
+
+The binding B01 parent interpretation accepts this certified indexed mechanism;
+compiled SQL pushdown, a standalone exact-count executor and 100k-scale cost
+proof remain a separate selection-lane gap. `parent_bounds_test` seeds actual
+certified memory/SQLite/PostgreSQL source snapshots through the existing typed
+driver conformance helper. These large bound fixtures are storage controls,
+separate from the ordinary Writer and native semantic counterparts above.
+A direct 1025-parent request refuses with ErrUnsupported and no rows/More,
+while a complete 2001-parent frontier succeeds through 1024/977 batching.
+A real 10001-child lookup exposes More and the descendant filter refuses with
+filter_too_broad(limit=10000). A distinct 20010-descendant tree keeps every
+lookup below 10000 and refuses with limit=20000, returning no partial set.
+Both overflow paths also reach normal ready/history.query byte-RPC errors
+with no result/page/count, and SQL reopen retains the actual total refusal.
+Exact source/journal/rank digests before and after reads remain equal.

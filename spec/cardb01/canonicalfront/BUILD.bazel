@@ -25,6 +25,17 @@ go_test(
     timeout = "long",
 )
 
+# Actual backend snapshots exercise the accepted indexed-parent bounds.
+go_test(
+    name = "parent_bounds_test",
+    srcs = COMMON + ["bounds_test.go"],
+    args = ["-test.v"],
+    deps = DEPS + ["//internal/storage/conformance"],
+    tags = ["local", "requires-network"],
+    size = "large",
+    timeout = "long",
+)
+
 # Explicit operational reference, using the owner's unchanged source support.
 go_test(
     name = "record_native_test",

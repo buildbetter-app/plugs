@@ -185,9 +185,18 @@ func (n *nativeFront) image(label string, c frontCase, phase string, anchor time
 			if actual["b01-"+edge[0]] == "wisps" {
 				table = "wisp_dependencies"
 			}
+			target, other := "depends_on_issue_id", "depends_on_wisp_id"
+			if actual["b01-"+edge[1]] == "wisps" {
+				target, other = other, target
+			}
 			found := false
 			for _, row := range result[table] {
-				if row["issue_id"] == "b01-"+edge[0] && row["depends_on_id"] == "b01-"+edge[1] && row["type"] == "parent-child" {
+				// The pinned schema has separate durable and ephemeral target
+				// columns, not the CLI response's depends_on_id projection.
+				if row["issue_id"] == "b01-"+edge[0] && row[target] == "b01-"+edge[1] && row["type"] == "parent-child" {
+					if row[other] != nil || row["depends_on_external"] != nil {
+						n.r.t.Fatal("parent edge has conflicting physical target arms", row)
+					}
 					found = true
 				}
 			}
@@ -238,6 +247,10 @@ func recordNativeFront(t *testing.T, r *nativeRecorder, server *publicnative.Ser
 	server.RequireDatabaseDir(t, database)
 	n.command("custom-active-config", "config", "set", "status.custom", "b01active:active", "--json")
 	n.command("custom-active-readback", "config", "get", "status.custom", "--json")
+	// The pinned importer validates custom infrastructure names before ready
+	// applies its default hidden-type policy. Retain the real config readback.
+	n.command("infrastructure-type-config", "config", "set", "types.custom", "agent", "--json")
+	n.command("infrastructure-type-readback", "config", "get", "types.custom", "--json")
 	var lines bytes.Buffer
 	for _, node := range c.Nodes {
 		status := node.Status

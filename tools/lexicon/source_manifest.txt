@@ -1351,6 +1351,7 @@ spec/cardb01/README.md
 spec/cardb01/b01_test.go
 spec/cardb01/canonicalfront/BUILD.bazel
 spec/cardb01/canonicalfront/README.md
+spec/cardb01/canonicalfront/bounds_test.go
 spec/cardb01/canonicalfront/controls_test.go
 spec/cardb01/canonicalfront/native_test.go
 spec/cardb01/canonicalfront/parent_test.go
