@@ -1,5 +1,25 @@
 # B13 public memory and P85 brief connection
 
+The additional `TestImportedMemoryWritesPreserveSourceEnvelopesAllDrivers` in
+`converterroundtrip` covers writes after importing an explicitly authored mixed
+string/secret/JSON-value archive. Legacy hidden mirrors must not poison an
+unrelated public save. Joint source envelopes retain their classification and
+provenance: same-key saves refuse with `invalid_params`; deletion of a hidden
+row returns `not_found`, and deletion of a visible source envelope refuses with
+`invalid_params`. Ordinary canonical memory save/replace/delete remains writable.
+Reads and writes share the exact source-envelope classifier; malformed mirrors
+remain `internal_error`, including during an unrelated save.
+
+The new fixture uses actual memory, SQLite and PostgreSQL stores. It checks
+the complete imported records and version chains, source archive/binding rows,
+all nine derived tables, joint provider checkpoints, changeset prefix and
+tracked receipt scopes. Canonical writes also exercise public list/brief,
+historical literal bodies, replay and deletion tombstones before and after
+SQL close/reopen or a memory lease refresh. Four malformed-envelope controls
+must fail atomically on every engine. These are synthetic public integration
+fixtures, with no native recording, producer/preparation adoption or FullB13
+qualification; each new head still needs its own remote gates and review.
+
 Done = the scoped missing public memory-to-brief assertions are implemented in
 a frozen clean candidate, proven by complete source bindings and a concrete
 exact-head gate plan; source-only checks and inherited/base PASS do not count
