@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -140,8 +141,13 @@ func (r *b06NativeRecorder) edge(w b06NativeWorkspace, binary string, e b06Edge,
 func (r *b06NativeRecorder) rows(w b06NativeWorkspace, binary, label, query string) []map[string]any {
 	data := r.command(w, label, binary, []string{"sql", query, "--json"}, false)
 	var rows []map[string]any
-	if err := json.Unmarshal(data, &rows); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&rows); err != nil {
 		r.t.Fatalf("SQL rows %s: %v %s", label, err, data)
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		r.t.Fatalf("SQL rows %s have trailing data: %v", label, err)
 	}
 	return rows
 }
