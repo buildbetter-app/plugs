@@ -11,9 +11,14 @@ import (
 	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/storage/dolt"
+	"github.com/steveyegge/beads/internal/testutil"
 )
 
 func TestCheckRepoFingerprint_UsesTargetRepoOutsideCWD(t *testing.T) {
+	// This fixture requires the suite's disposable server, including its
+	// explicit skip policy and the required-server lane's fail-closed policy.
+	testutil.RequireDoltContainer(t)
+
 	outerRepo := t.TempDir()
 	targetRepo := t.TempDir()
 
