@@ -1428,6 +1428,7 @@ spec/s1-b17-b20/README.md
 spec/s1-b17-b20/b17_test.go
 spec/s1-b17-b20/b18_guarded_test.go
 spec/s1-b17-b20/b18_instant_test.go
+spec/s1-b17-b20/b18_metadata_history_test.go
 spec/s1-b17-b20/b18_test.go
 spec/s1-b17-b20/b19_archive_test.go
 spec/s1-b17-b20/b19_fixture_test.go

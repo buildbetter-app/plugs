@@ -61,3 +61,12 @@ faults. The remote `source_compile` target runs actual Go build/vet and gives
 no test-case credit. This slice does not establish B18 JCS/numeric or complete
 mutator qualification, a genuine public native producer, full history replay,
 or B20 vocabulary/prune/concurrent-writer completeness.
+
+The public B18 metadata-history slice reads both sides of a committed metadata
+change through `history.get` and checks literal `history.diff` operations in
+memory, SQLite and PostgreSQL, repeating after persistent-store reopen. It
+preserves large integer tokens, decimal/exponent and signed-zero spellings,
+literal JSON Pointer keys, nested null data, the unchanged sibling, and B17's
+accepted null-as-deletion rule. Read-only calls leave the durable row, head,
+versions and journal unchanged. This is Plug literal-history acceptance; it
+does not establish Beads JCS/numeric admission or native roundtrip fidelity.
