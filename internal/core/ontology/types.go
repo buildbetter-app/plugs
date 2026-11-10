@@ -162,6 +162,9 @@ type BeadState struct {
 // Gates map kind -> observed satisfied; a missing kind is unobserved/unsatisfied.
 // The permission result must be for action transition and the target status.
 type GuardFacts struct {
+	// TargetStatus comes only from a typed create/close operation or trusted
+	// named lifecycle lowering, never from a generic fields.status patch.
+	TargetStatus   *string
 	NoOpenChildren *bool
 	NoOpenBlockers *bool
 	Evidence       map[string]bool

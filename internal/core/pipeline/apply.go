@@ -310,7 +310,8 @@ func requestHash(cs model.ChangeSet, meta model.WriteMeta) (string, error) {
 			Method, Project, Return string
 			ClaimNextIdentity       string `json:",omitempty"`
 			DryRun                  bool
-		}{cs, meta.Method, meta.Project, meta.Return, meta.ClaimNextIdentity, meta.DryRun})
+			TargetStatus            *string `json:",omitempty"`
+		}{cs, meta.Method, meta.Project, meta.Return, meta.ClaimNextIdentity, meta.DryRun, meta.TargetStatus})
 	} else {
 		data, err = json.Marshal(struct {
 			ChangeSet                                      model.ChangeSet

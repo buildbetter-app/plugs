@@ -84,10 +84,33 @@ func violationsError(violations []ontology.Violation) error {
 // The Writer tracks the ontology sentinel and validates ordered guards only
 // after mutators, against prefix and final images.
 func (o *Ontology) CloseSlots(project, beadType string) (string, string, bool) {
+	return o.CloseStatuses(project, beadType, nil)
+}
+
+// CloseStatuses extends selection without breaking existing omitted-slot hooks.
+func (o *Ontology) CloseStatuses(project, beadType string, requested *string) (string, string, bool) {
 	e := o.effective(project)
 	initial, hasInitial := e.InitialStatus(beadType)
-	target, hasTarget := e.SlotStatus(beadType, ontology.Close)
+	target, hasTarget := e.LifecycleStatus(beadType, ontology.Close, requested)
 	return initial, target, hasInitial && hasTarget
+}
+
+// CreateStatus is selection only. Ordered/final validation owns all guards.
+func (o *Ontology) CreateStatus(project, beadType string, requested *string) (string, bool) {
+	return o.effective(project).CreateStatus(beadType, requested)
+}
+
+func requestedStatus(proposal port.ProposedChange, change port.Change) *string {
+	if change.Op.Create != nil {
+		return change.Op.Create.TargetStatus
+	}
+	if change.Op.Close != nil {
+		return change.Op.Close.TargetStatus
+	}
+	if proposal.Meta.Method == "bead.close" || proposal.Meta.Method == "bead.reopen" {
+		return proposal.Meta.TargetStatus
+	}
+	return nil
 }
 
 func operationMethod(proposal port.ProposedChange, change port.Change) string {
@@ -148,7 +171,7 @@ func (o *Ontology) Normalize(ctx context.Context, proposal port.ProposedChange, 
 				return nil, err
 			}
 		} else if slot, lifecycle := ontology.SlotForMethod(operationMethod(proposal, change)); lifecycle && !proposal.SameClaim && (change.Op.Kind == model.OpPatch || change.Op.Kind == model.OpClose) {
-			target, ok := e.SlotStatus(doc.Type, slot)
+			target, ok := e.LifecycleStatus(doc.Type, slot, requestedStatus(proposal, change))
 			if !ok {
 				return nil, failure("invalid_params", "lifecycle slot is unavailable for this type")
 			}
@@ -315,7 +338,7 @@ func (o *Ontology) validate(ctx context.Context, proposal port.ProposedChange, r
 	settlement := o.closeSettlement(proposal)
 	_, lifecycle := ontology.SlotForMethod(proposal.Meta.Method)
 	for _, change := range proposal.Changes {
-		if change.Op.Kind == model.OpClose {
+		if change.Op.Kind == model.OpClose || change.Op.Create != nil && change.Op.Create.TargetStatus != nil {
 			lifecycle = true
 		}
 	}
@@ -396,7 +419,7 @@ func (o *Ontology) validate(ctx context.Context, proposal port.ProposedChange, r
 			v := state(old)
 			before = &v
 		}
-		facts := ontology.GuardFacts{SetBy: change.SetBy}
+		facts := ontology.GuardFacts{SetBy: change.SetBy, TargetStatus: requestedStatus(proposal, change)}
 		for path := range change.SetBy {
 			facts.Touched = append(facts.Touched, path)
 		}
@@ -463,7 +486,7 @@ func (o *Ontology) closeSettlement(p port.ProposedChange) bool {
 		if err != nil {
 			return false
 		}
-		target, ok := o.effective(before.Project).SlotStatus(before.Type, ontology.Close)
+		target, ok := o.effective(before.Project).LifecycleStatus(before.Type, ontology.Close, requestedStatus(p, c))
 		return ok && state(before).Status == target
 	}
 	if p.Meta.Method != "bead.close" || len(p.Changes) < 1 || len(p.Changes) > 2 {
@@ -477,7 +500,7 @@ func (o *Ontology) closeSettlement(p port.ProposedChange) bool {
 	if err != nil {
 		return false
 	}
-	target, ok := o.effective(before.Project).SlotStatus(before.Type, ontology.Close)
+	target, ok := o.effective(before.Project).LifecycleStatus(before.Type, ontology.Close, requestedStatus(p, first))
 	if !ok || state(before).Status != target {
 		return false
 	}

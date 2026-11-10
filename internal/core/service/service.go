@@ -139,6 +139,9 @@ func (s *Service) apply(ctx context.Context, by model.PrincipalRef, method strin
 		return port.WriteOutcome{}, failure("project_required", "supply a project")
 	}
 	meta.Method = method
+	if method != "bead.close" && method != "bead.reopen" {
+		meta.TargetStatus = nil
+	}
 	source := s.source.Load()
 	if source != nil {
 		ctx = pipeline.WithAllocatorReservations(ctx, source.allocatorIDs)
@@ -346,7 +349,7 @@ func (s *Service) create(ctx context.Context, by model.PrincipalRef, req CreateR
 			return port.WriteOutcome{}, err
 		}
 	}
-	cs := model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Type: req.Type, Fields: req.Fields, Parent: req.Parent, Project: meta.Project}}}}
+	cs := model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Type: req.Type, Fields: req.Fields, Parent: req.Parent, Project: meta.Project, TargetStatus: req.TargetStatus}}}}
 	return s.apply(ctx, by, "bead.create", cs, meta, outcomeRequired)
 }
 
@@ -830,6 +833,9 @@ func (s *Service) Close(ctx context.Context, by model.PrincipalRef, req CloseReq
 }
 
 func (s *Service) CloseWithOutcome(ctx context.Context, by model.PrincipalRef, req CloseRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	if workflowRef(req.ID) && req.TargetStatus != nil {
+		return port.WriteOutcome{}, failure("unsupported", "workflow provider does not support targetStatus")
+	}
 	if s.SourceRuntimeInstalled() {
 		return s.close(ctx, by, req, meta, true)
 	}
@@ -858,8 +864,9 @@ func workflowClaimCommit(item workflowplugin.ItemView) model.Commit {
 
 func (s *Service) close(ctx context.Context, by model.PrincipalRef, req CloseRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
 	if s.SourceRuntimeInstalled() {
-		return s.apply(ctx, by, "bead.close", model.ChangeSet{Ops: []model.Op{{Kind: model.OpClose, Close: &model.CloseOp{Target: req.ID, Reason: req.Reason}}}, Expect: req.Expect}, meta, outcomeRequired)
+		return s.apply(ctx, by, "bead.close", model.ChangeSet{Ops: []model.Op{{Kind: model.OpClose, Close: &model.CloseOp{Target: req.ID, Reason: req.Reason, TargetStatus: req.TargetStatus}}}, Expect: req.Expect}, meta, outcomeRequired)
 	}
+	meta.TargetStatus = req.TargetStatus
 	return s.lifecycle(ctx, by, "bead.close", req.ID, req.Reason, req.Expect, meta, outcomeRequired)
 }
 
@@ -876,6 +883,7 @@ func (s *Service) ReopenWithOutcome(ctx context.Context, by model.PrincipalRef, 
 }
 
 func (s *Service) reopen(ctx context.Context, by model.PrincipalRef, req ReopenRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
+	meta.TargetStatus = req.TargetStatus
 	return s.lifecycle(ctx, by, "bead.reopen", req.ID, req.Reason, req.Expect, meta, outcomeRequired)
 }
 
