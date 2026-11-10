@@ -110,8 +110,10 @@ output handling as the archive.
 Historical images produced by the physical reader additionally carry optional
 `images[].schema_profile` with format `beads-commit-schema/1` and scope
 `immutable-commit-root`. The numeric main and ignored versions come from that
-exact immutable root. A null main version requires a successful empty-root
-census; a null ignored version means the cursor table is physically absent.
+exact immutable root. A null main version requires a complete authenticated
+empty root or an initial root containing only `dolt_ignore` with columns
+`ignored` and `pattern`, no Beads tables and no ignored cursor. No version zero
+is inferred. A null ignored version means the cursor table is physically absent.
 Every present cursor authenticates its entire pinned migration-hash prefix.
 Supported historical cursors are the pinned main prefixes 0–72 and ignored
 prefixes 0–28, independently when physically present. No main/ignored pairing

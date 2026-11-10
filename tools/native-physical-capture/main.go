@@ -149,6 +149,17 @@ func run() (resultErr error) {
 	if err := os.Mkdir(capture.SidecarDir, 0700); err != nil {
 		return err
 	}
+	// This directory was absent on entry and created exclusively by this
+	// invocation. Refusal must remove its unpublished sidecars, while retaining
+	// the real underlying error (including any cleanup error) for safe taxonomy.
+	ownedOutputs := []string{capture.SidecarDir}
+	defer func() {
+		if resultErr != nil {
+			for _, path := range ownedOutputs {
+				resultErr = errors.Join(resultErr, os.RemoveAll(path))
+			}
+		}
+	}()
 	for name, data := range sidecars {
 		if filepath.Base(name) != name {
 			return fmt.Errorf("invalid sidecar name")
@@ -158,7 +169,7 @@ func run() (resultErr error) {
 		}
 	}
 	stage = stageHistory
-	archive, err := plugdump.Build(ctx, observedNativeSource{PhysicalCommitSource: plugdump.PhysicalCommitSource{SQLSource: current, PhysicalDB: db}, schema: observation}, inventory)
+	archive, err := plugdump.Build(ctx, observedNativeSource{OwnVersionCommitSource: plugdump.OwnVersionCommitSource{PhysicalCommitSource: plugdump.PhysicalCommitSource{SQLSource: current, PhysicalDB: db}}, schema: observation}, inventory)
 	if err != nil {
 		return fmt.Errorf("native build: %w", err)
 	}
@@ -204,12 +215,15 @@ func run() (resultErr error) {
 	if err := writeExclusive(filepath.Join(*output, "inventory.json"), inventoryBytes); err != nil {
 		return err
 	}
+	ownedOutputs = append(ownedOutputs, filepath.Join(*output, "inventory.json"))
 	if err := writeExclusive(filepath.Join(*output, "capture.tar"), archive); err != nil {
 		return err
 	}
+	ownedOutputs = append(ownedOutputs, filepath.Join(*output, "capture.tar"))
 	if err := writeExclusive(filepath.Join(*output, "physical-evidence.json"), physicalEvidence); err != nil {
 		return err
 	}
+	ownedOutputs = append(ownedOutputs, filepath.Join(*output, "physical-evidence.json"))
 	counts := map[string]int{}
 	for _, source := range manifest.Sources {
 		counts[source.Family] = source.Rows

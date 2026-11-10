@@ -166,7 +166,7 @@ func preflightCurrent(ctx context.Context, source plugdump.SQLSource, observatio
 }
 
 type observedNativeSource struct {
-	plugdump.PhysicalCommitSource
+	plugdump.OwnVersionCommitSource
 	schema schemaObservation
 }
 
@@ -191,7 +191,7 @@ func (s observedNativeSource) ReadSourceIgnore(ctx context.Context) (plugdump.Ta
 }
 
 func (s observedNativeSource) ReadNativeSourceImage(ctx context.Context, id string) (map[string]plugdump.Table, error) {
-	image, err := s.PhysicalCommitSource.ReadNativeSourceImage(ctx, id)
+	image, err := s.OwnVersionCommitSource.ReadNativeSourceImage(ctx, id)
 	return image, s.failure(stageHistory, "", err)
 }
 

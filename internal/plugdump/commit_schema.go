@@ -12,7 +12,8 @@ const NativeCommitSchemaFormat = "beads-commit-schema/1"
 // absences refer only to that root's physical schema, not the working set,
 // HEAD, portable business history or a promise of historical defaults.
 // A null ignored cursor is an observed physical absence, never HEAD's version.
-// A null main cursor is permitted only for a successfully read empty root.
+// A null main cursor requires an authenticated empty or dolt_ignore-only
+// initial root, with no Beads tables or ignored cursor; it never means version0.
 type NativeCommitSchemaProfile struct {
 	Format         string                      `json:"format"`
 	Scope          string                      `json:"scope"`
@@ -131,7 +132,10 @@ func nativeCommitCursors(tables map[string]Table, rootTables int) (NativeCommitS
 		return p, ErrUnsupportedNativeCommitSchema{MainVersion: p.MainVersion, IgnoredVersion: p.IgnoredVersion}
 	}
 	if p.MainVersion == nil {
-		if rootTables != 0 {
+		// A one-table cursor-absent root is only provisional here. The full
+		// observed census must prove it is precisely the dolt_ignore initial
+		// root, including its columns, before any profile is returned.
+		if p.IgnoredVersion != nil || rootTables > 1 {
 			return unsupported()
 		}
 		return p, nil
@@ -154,6 +158,25 @@ func nativeCommitCursors(tables map[string]Table, rootTables int) (NativeCommitS
 	return p, nil
 }
 
+// nativeInitialCommitRoot recognizes the actual pre-migration roots produced
+// by the pinned reference: an empty root, or only dolt_ignore with its exact
+// two-column physical schema. No numeric migration version or user-table
+// schema is invented for these observed cursor-absent roots.
+func nativeInitialCommitRoot(tables map[string]Table) bool {
+	if len(tables) == 0 {
+		return true
+	}
+	ignore, ok := tables["dolt_ignore"]
+	if !ok || len(tables) != 1 || len(ignore.Columns) != 2 {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, column := range ignore.Columns {
+		seen[column] = true
+	}
+	return seen["pattern"] && seen["ignored"]
+}
+
 // ProfileNativeCommit binds observed physical absence, never a guessed
 // migration delta. It does not drop old columns or fabricate absent cells.
 func ProfileNativeCommit(tables map[string]Table) (NativeCommitSchemaProfile, error) {
@@ -163,6 +186,9 @@ func ProfileNativeCommit(tables map[string]Table) (NativeCommitSchemaProfile, er
 	p, err := nativeCommitCursors(tables, len(tables))
 	if err != nil {
 		return p, err
+	}
+	if p.MainVersion == nil && !nativeInitialCommitRoot(tables) {
+		return p, ErrUnsupportedNativeCommitSchema{MainVersion: p.MainVersion, IgnoredVersion: p.IgnoredVersion}
 	}
 	surfaces := NativeCommitSchemaSurfaces()
 	names := make([]string, 0, len(surfaces))

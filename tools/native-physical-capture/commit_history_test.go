@@ -88,8 +88,17 @@ func commitHistoryCursor(t *testing.T, image physicalcapture.Image) *uint64 {
 		}
 		return &version
 	}
+	if len(image.Tables) == 1 && image.Tables[0].Name == "dolt_ignore" {
+		columns := map[string]bool{}
+		for _, column := range image.Tables[0].Columns {
+			columns[column.Name] = true
+		}
+		if len(image.Tables[0].Columns) == 2 && columns["pattern"] && columns["ignored"] {
+			return nil
+		}
+	}
 	if len(image.Tables) != 0 {
-		t.Fatal("nonempty public root has no cursor")
+		t.Fatal("noninitial public root has no cursor")
 	}
 	return nil
 }
@@ -120,6 +129,10 @@ func TestPublicPerCommitOwnVersionAcrossPinnedMigrationHistory(t *testing.T) {
 	defer conn.Close()
 	ownVersionExec(t, ctx, conn, "CREATE DATABASE `public_commit_history`")
 	ownVersionExec(t, ctx, conn, "USE `public_commit_history`")
+	// Preserve the real initial Dolt ignore root as a cursor-absent image,
+	// alongside the empty genesis. Neither has numeric Beads version0.
+	ownVersionExec(t, ctx, conn, "INSERT INTO dolt_ignore(pattern,ignored) VALUES ('__temp__%',true)")
+	ownVersionCommit(t, ctx, conn)
 	if _, err := schema.MigrateUpTo(ctx, conn, 39); err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +142,7 @@ func TestPublicPerCommitOwnVersionAcrossPinnedMigrationHistory(t *testing.T) {
 	}
 	ownVersionExec(t, ctx, conn, "UPDATE issues SET metadata=CAST('null' AS JSON) WHERE id='public-c2d'")
 	ownVersionExec(t, ctx, conn, "INSERT INTO compaction_snapshots(id,issue_id,compaction_level,snapshot_json) VALUES ('public-binary','public-a1b',1,?),('public-empty-binary','public-c2d',1,?)", []byte{0, 255, 128, 42}, []byte{})
-	ownVersionExec(t, ctx, conn, "INSERT INTO dependencies(issue_id,depends_on_id,type) VALUES ('public-a1b','public-c2d','blocks')")
+	ownVersionExec(t, ctx, conn, "INSERT INTO dependencies(issue_id,depends_on_id,type,created_by) VALUES ('public-a1b','public-c2d','blocks','public')")
 	ownVersionExec(t, ctx, conn, "INSERT INTO events(id,issue_id,event_type,actor,old_value,new_value,comment) VALUES ('public-before-62','public-a1b','updated','public',NULL,'','pre-0062 retained event')")
 	checkpoints := map[int]string{39: ownVersionCommit(t, ctx, conn)}
 	for _, version := range []int{40, 41, 43, 54, 55, 61, 62, 63, 64, 66} {
@@ -229,6 +242,7 @@ func TestPublicPerCommitOwnVersionAcrossPinnedMigrationHistory(t *testing.T) {
 		t.Fatal("typed sidecar/archive binding differs")
 	}
 	sawVersions := map[uint64]int{}
+	cursorAbsentInitialImages := 0
 	for i, image := range native.Images {
 		original, present := originals[image.CommitID]
 		if !present || image.SchemaProfile == nil {
@@ -240,6 +254,8 @@ func TestPublicPerCommitOwnVersionAcrossPinnedMigrationHistory(t *testing.T) {
 		}
 		if observedVersion != nil {
 			sawVersions[*observedVersion]++
+		} else {
+			cursorAbsentInitialImages++
 		}
 		typed, err := physicalcapture.EvidenceTables(original.Tables)
 		if err != nil || evidence.Images[i].CommitID != image.CommitID || !evidence.Images[i].ReadOnlyScope || !reflect.DeepEqual(evidence.Images[i].Tables, typed) || !reflect.DeepEqual(evidence.Images[i].SchemaProfile, image.SchemaProfile) {
@@ -316,6 +332,9 @@ func TestPublicPerCommitOwnVersionAcrossPinnedMigrationHistory(t *testing.T) {
 			}
 		}
 	}
+	if cursorAbsentInitialImages < 2 {
+		t.Fatal("empty and dolt_ignore initial roots were not captured with null cursors")
+	}
 	for _, version := range []int{39, 40, 41, 43, 54, 55, 61, 62, 63, 64, 66} {
 		if sawVersions[uint64(version)] == 0 {
 			t.Fatalf("actual migration checkpoint %d not captured", version)
@@ -383,7 +402,7 @@ func TestPublicPerCommitOwnVersionAcrossPinnedMigrationHistory(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	facts, err := json.MarshalIndent(map[string]any{"checkpoints": checkpoints, "schema_versions": sawVersions, "commits": len(native.Commits), "images": len(native.Images), "gaps": len(native.Gaps), "archive_sha256": fmt.Sprintf("%x", sha256.Sum256(archive)), "before_working": beforeWorking, "input_unchanged_after_reopen": true}, "", "  ")
+	facts, err := json.MarshalIndent(map[string]any{"checkpoints": checkpoints, "schema_versions": sawVersions, "cursor_absent_initial_images": cursorAbsentInitialImages, "commits": len(native.Commits), "images": len(native.Images), "gaps": len(native.Gaps), "archive_sha256": fmt.Sprintf("%x", sha256.Sum256(archive)), "before_working": beforeWorking, "input_unchanged_after_reopen": true}, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -81,6 +81,34 @@ func TestCommitSchemaUnknownAndUnauthenticatedPrefixesRefuse(t *testing.T) {
 	}
 }
 
+func TestCommitSchemaCursorAbsentInitialRootsRemainNullAndExact(t *testing.T) {
+	ignore := Table{Columns: []string{"ignored", "pattern"}, Rows: []Row{{"ignored": 1, "pattern": "__temp__%"}}}
+	tables := map[string]Table{"dolt_ignore": ignore}
+	before := mustJSON(t, tables)
+	profile, err := ProfileNativeCommit(tables)
+	if err != nil || profile.MainVersion != nil || profile.IgnoredVersion != nil || len(profile.Absences) != len(tableColumns) || !bytes.Equal(before, mustJSON(t, tables)) {
+		t.Fatal("authenticated cursor-absent initial root changed or acquired a version")
+	}
+	for _, test := range []struct {
+		name   string
+		tables map[string]Table
+	}{
+		{"beads-table", map[string]Table{"issues": {Columns: []string{"id"}, Rows: []Row{}}}},
+		{"extra-table", map[string]Table{"dolt_ignore": ignore, "public_extra": {Columns: []string{"id"}, Rows: []Row{}}}},
+		{"ignored-cursor", map[string]Table{"dolt_ignore": ignore, "ignored_schema_migrations": commitPrefixTable("ignored", 0)}},
+		{"reshaped-ignore", map[string]Table{"dolt_ignore": {Columns: []string{"pattern", "public_extra"}, Rows: []Row{}}}},
+		{"duplicate-ignore-column", map[string]Table{"dolt_ignore": {Columns: []string{"pattern", "pattern"}, Rows: []Row{}}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := ProfileNativeCommit(test.tables)
+			var unsupported ErrUnsupportedNativeCommitSchema
+			if !errors.As(err, &unsupported) || unsupported.MainVersion != nil {
+				t.Fatal("noninitial cursor-absent root accepted or assigned a version")
+			}
+		})
+	}
+}
+
 type schemaHistoryFixture struct{ nativeHistoryFixture }
 
 func (schemaHistoryFixture) ProfileNativeSourceImage(image map[string]Table) (NativeCommitSchemaProfile, error) {
