@@ -26,7 +26,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
-const b13SourceKey = "Source Key/Ω e\u0301"
+const b13SourceKey = "  Source Key/Ω e\u0301  "
 const b13SourceBody = " \tVerbatim source\n東京 e\u0301  "
 
 type b13MemoryPolicy struct {

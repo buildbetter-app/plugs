@@ -100,6 +100,12 @@ func DecodeMemoryRecord(record driver.Record) (MemoryDocument, *MemorySource, er
 			return MemoryDocument{}, nil, err
 		}
 		if source, imported, err := legacyMemorySource(record, document); imported || err != nil {
+			if err == nil {
+				// Old canonical mirrors stored a trimmed key. Their validated
+				// provenance retains the exact source identity; expose that key
+				// without rewriting immutable imported bytes or versions.
+				document.Key = strings.TrimPrefix(record.Ref.ID, "source/memory/")
+			}
 			return document, source, err
 		}
 		return document, nil, nil
