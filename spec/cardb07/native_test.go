@@ -71,10 +71,10 @@ func (n *b07Native) batch(label, script string, fail bool) {
 func (n *b07Native) create(id string) {
 	n.command("create-"+id, false, "create", "--id", id, "--type", "task", "--title", id, "--json")
 }
-func (n *b07Native) graph(label string, nodes, edges []map[string]any, fail bool) {
+func (n *b07Native) graph(label string, nodes, edges []map[string]any, fail bool) []byte {
 	path := filepath.Join(n.root, label+".plan.json")
 	b07JSON(n.t, path, map[string]any{"nodes": nodes, "edges": edges})
-	n.command(label, fail, "create", "--graph", path, "--json")
+	return n.command(label, fail, "create", "--graph", path, "--json")
 }
 func (n *b07Native) image(label string) b07NativeImage {
 	n.t.Helper()
@@ -315,8 +315,33 @@ func (n *b07Native) threadAndMixed() map[string]string {
 		n.t.Fatal("native explicit thread replacement not observed")
 	}
 	nodes := []map[string]any{{"key": "durable", "id": "b07-920", "title": "mixed durable"}, {"key": "volatile", "id": "b07-921", "title": "mixed volatile", "storage_class": "ephemeral"}}
-	n.graph("mixed-create", nodes, []map[string]any{{"from_key": "durable", "to_key": "volatile", "type": "related"}}, false)
+	beforeMixed := n.image("mixed-create-refusal-before")
+	// Canonical Beads refuses cross-bucket dependencies in CreateIssues. Keep
+	// that actual refusal and use its supported existing-endpoint batch route.
+	refusal := n.graph("mixed-create-refusal", nodes, []map[string]any{{"from_key": "durable", "to_key": "volatile", "type": "related"}}, true)
+	var reason struct{ Error string }
+	if json.Unmarshal(refusal, &reason) != nil || !strings.Contains(reason.Error, "cannot include cross-bucket dependency b07-920 -> b07-921") {
+		n.t.Fatal("mixed create refusal differs from the observed canonical route", string(refusal))
+	}
+	n.equal(beforeMixed, "mixed-create-refusal-after")
+	n.graph("mixed-create", nodes, []map[string]any{}, false)
+	n.graph("mixed-second-active", []map[string]any{{"key": "second", "id": "b07-922", "title": "mixed second", "storage_class": "ephemeral"}}, []map[string]any{}, false)
+	mixedReady := n.ready("mixed-identity-before-ready")
+	n.batch("mixed-first-edge", "dep add b07-920 b07-921 related\n", false)
 	n.batch("mixed-reverse-edge", "dep add b07-921 b07-920 tracks\n", false)
+	n.batch("mixed-active-edge", "dep add b07-921 b07-922 custom-kind\n", false)
+	n.requireReady("mixed-identity-after-ready", mixedReady)
+	identity := n.image("mixed-identity-before")
+	for _, edge := range []struct{ from, to, kind string }{{"b07-920", "b07-921", "related"}, {"b07-921", "b07-920", "tracks"}, {"b07-921", "b07-922", "custom-kind"}} {
+		if b07Text(n.t, n.edge(identity, edge.from, edge.to)["type"]) != edge.kind {
+			n.t.Fatal("native mixed edge kind or endpoints differ")
+		}
+		n.batch("mixed-same-kind-"+edge.from+"-"+edge.to, "dep add "+edge.from+" "+edge.to+" "+edge.kind+"\n", false)
+		n.equal(identity, "mixed-repeat-after-"+edge.from+"-"+edge.to)
+		n.batch("mixed-retype-"+edge.from+"-"+edge.to, "dep add "+edge.from+" "+edge.to+" blocks\n", true)
+		n.equal(identity, "mixed-retype-after-"+edge.from+"-"+edge.to)
+		n.requireReady("mixed-identity-ready-"+edge.from+"-"+edge.to, mixedReady)
+	}
 	ready := n.ready("mixed-success-before-ready")
 	n.batch("mixed-success", "update b07-920 title=mixed-committed-durable\nupdate b07-921 title=mixed-committed-active\n", false)
 	image := n.image("mixed-before-refusal")

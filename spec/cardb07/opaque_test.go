@@ -377,7 +377,7 @@ func b07RestoreArchive(t *testing.T, h *b07Host, raw []byte) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	profile := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "b07-public-admin"}, Authority: "b07-public-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: inspected.SourceStoreID, Method: "offline.restore.import", IdempotencyKey: strings.Repeat("b", 32), ArchiveDigest: inspected.ArchiveSHA256, DerivedDigest: inspected.DerivedSHA256, HistoryMode: driver.RestoreHistoryModeSnapshot}
+	profile := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "b07-public-admin"}, Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: inspected.SourceStoreID, Method: "offline.restore.import", IdempotencyKey: strings.Repeat("b", 32), ArchiveDigest: inspected.ArchiveSHA256, DerivedDigest: inspected.DerivedSHA256, HistoryMode: driver.RestoreHistoryModeSnapshot}
 	if _, e := converterroundtrip.RestoreImportWithLease(h.ctx, bytes.NewReader(raw), h.runtime.Store, h.runtime.Lease, profile); e != nil {
 		t.Fatal(e)
 	}

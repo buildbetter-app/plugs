@@ -22,8 +22,10 @@ native Dolt runtime. Two independent public workspaces retain exact native
 source/binary/request identity, raw stdout/stderr/exits, readonly SQL images,
 ready membership and actual command outcomes. The supported batch route tests
 opaque kinds; the narrower standalone refusal is a separate observation. Graph
-creation exercises actual thread preservation/replacement and mixed-plane
-rollback. Public JSONL import exercises native metadata equality. Reference
+creation exercises actual thread preservation/replacement and retains the
+canonical cross-plane creation refusal. Existing-endpoint batch calls exercise
+mixed-plane links, same-kind conservation, retype refusal and rollback.
+Public JSONL import exercises native metadata equality. Reference
 production code and its semantics are unchanged.
 
 Opaque edge fields use `LinkMetadata.nativeExtensions`: keys are exact
