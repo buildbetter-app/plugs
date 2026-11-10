@@ -96,6 +96,9 @@ type Config struct {
 	Caller         CallerSource
 	DefaultProject string
 	HTTP           httpjson.Config
+	// Ontology selects a trusted installed catalog for both the Writer and
+	// guarded reads. Nil uses the built-in catalog.
+	Ontology *service.Ontology
 	// Audit is optional because the protected ontology source is a separate
 	// host seam. When supplied, the trusted event context is installed with it.
 	Audit port.OntologyAudit
@@ -171,7 +174,10 @@ func newWithClock(ctx context.Context, config Config, now func() time.Time) (*Co
 			return nil, err
 		}
 	}
-	ontology := service.NewOntology(nil)
+	ontology := config.Ontology
+	if ontology == nil {
+		ontology = service.NewOntology(nil)
+	}
 	options := []pipeline.Option{pipeline.WithOntology(ontology), pipeline.WithAuthorizer(checker), pipeline.WithEventContext(checker), pipeline.WithClock(now)}
 	if config.Audit != nil {
 		options = append(options, pipeline.WithOntologyAudit(config.Audit))
