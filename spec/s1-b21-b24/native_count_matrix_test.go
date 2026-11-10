@@ -762,6 +762,9 @@ func nativeB23HistoricalCap(t *testing.T, f *fixture, label string, historical v
 func TestB23HistoricalCapCurrentAuthorizationAcrossStores(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
+			// Each engine owns its store, handler and receipts. Overlap the
+			// full public workloads under the unchanged parent deadline.
+			t.Parallel()
 			var denied atomic.Bool
 			f := newFixtureWithConfig(t, engine, nil, func(_ context.Context, _ model.PrincipalRef, resource model.ResourceRef, _ string) error {
 				if denied.Load() && resource.Ref.ID == "b23-public-00000" {
