@@ -162,9 +162,8 @@ func prepareSourceRelations(ctx context.Context, value *persisted, plan driver.S
 			return err
 		}
 		fields := wire.Source.Fields
-		if len(fields) != 10 {
-			return sourceRefusal("incomplete physical dependency row")
-		}
+		// Future native columns are opaque. The exact census above and required
+		// columns below still bind the physical dependency and its predicate.
 		for _, name := range []string{"id", "issue_id", "depends_on_issue_id", dumpformat.EphemeralDependencyTargetField, "depends_on_external", "type", "created_at", "created_by", "metadata", "thread_id"} {
 			if _, ok := fields[name]; !ok {
 				return sourceRefusal("missing dependency column")

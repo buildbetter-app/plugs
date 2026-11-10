@@ -9,6 +9,26 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 )
 
+// UnmarshalJSON captures edge tokens at every source-record decoding boundary,
+// including records nested in history frames. The alias keeps the same strict
+// record grammar without recursively invoking this method.
+func (r *Record) UnmarshalJSON(data []byte) error {
+	type plainRecord Record
+	var value plainRecord
+	if err := decodeJSON(data, &value); err != nil {
+		return err
+	}
+	if value.Kind == "edge" {
+		tokens, err := CaptureNativeEdgeTokens(data)
+		if err != nil {
+			return fmt.Errorf("invalid edge tokens: %w", err)
+		}
+		value.NativeEdgeTokens = tokens
+	}
+	*r = Record(value)
+	return nil
+}
+
 // NativeEdgeField reports source fields with no ordinary Plug edge slot.
 // The classification is open to future fields, not an allowlist of thread IDs.
 func NativeEdgeField(field string) bool {

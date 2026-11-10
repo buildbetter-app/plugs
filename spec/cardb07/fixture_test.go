@@ -306,6 +306,9 @@ func (h *b07Host) snapshot() b07State {
 		}
 	}
 	cursor = nil
+	if !m.HistoryFloor.IsZero() {
+		cursor = &driver.Cursor{Incarnation: m.Incarnation, Revision: m.HistoryFloor}
+	}
 	for {
 		sets, e := r.Changesets(h.ctx, cursor, 128)
 		if e != nil {

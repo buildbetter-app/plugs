@@ -115,36 +115,32 @@ func b07OpaquePublic(t *testing.T, engine string, native map[string]string) {
 			h.t = t
 			defer func() { h.t = old }()
 			before := h.snapshot()
+			direct := h.call("bead.link", "malformed-direct-"+test.name, map[string]any{"from": from, "to": to, "kind": "custom kind", "metadata": map[string]any{"nativeExtensions": map[string]any{"beads.future_invalid": test.value}}})
+			if direct.Error == nil || direct.Error.Data.Code != "invalid_params" || !strings.Contains(direct.Error.Message+direct.Error.Data.Hint, "nativeExtensions") {
+				t.Fatalf("field-naming direct malformed refusal missing: %+v", direct.Error)
+			}
+			h.same(before)
 			ops := []any{map[string]any{"kind": "patch", "target": from, "fields": map[string]any{"title": "must-not-publish"}}, map[string]any{"kind": "link", "from": from, "to": to, "linkKind": "custom kind", "metadata": map[string]any{"nativeExtensions": map[string]any{"beads.future_invalid": test.value}}}}
 			r := h.call("tx.apply", "malformed-"+test.name, map[string]any{"changeSet": map[string]any{"ops": ops}})
-			if r.Error == nil || r.Error.Data.Code != "invalid_params" || !strings.Contains(r.Error.Message+r.Error.Data.Hint, "nativeExtensions") {
+			path := "nativeExtensions"
+			if test.name == "wrong_wire_type" {
+				// The outer change-set union rejects this arm before model decoding.
+				// The direct route above separately proves the exact field error.
+				path = "params.changeSet.ops[1]"
+			}
+			if r.Error == nil || r.Error.Data.Code != "invalid_params" || !strings.Contains(r.Error.Message+r.Error.Data.Hint, path) {
 				t.Fatalf("field-naming malformed refusal missing: %+v", r.Error)
 			}
 			h.same(before)
 			h.requireReady(ready)
 		})
 	}
-	// Opaque metadata cannot change the legacy waits formula after the spawner
-	// closes while a child remains open. Explicit typed metadata is distinct.
-	waiter, spawner := h.create("opaque-waiter", nil), h.create("opaque-spawner", nil)
-	h.create("opaque-child", &spawner)
-	b07Success(t, h.call("bead.link", "legacy-waits", map[string]any{"from": waiter, "to": spawner, "kind": "waits-for"}))
-	b07Success(t, h.call("bead.close", "legacy-spawner-close", map[string]any{"id": spawner}))
-	baseline := h.ready()
-	if !b07Has(baseline, waiter.ID) {
-		t.Fatal("legacy closed-spawner positive control not ready")
-	}
-	b07Success(t, h.call("bead.link", "legacy-add-opaque", map[string]any{"from": waiter, "to": spawner, "kind": "waits-for", "metadata": map[string]any{"nativeExtensions": tokens}}))
-	h.requireReady(baseline)
-	h.reopen()
-	h.requireReady(baseline)
-	b07Success(t, h.call("bead.close", "opaque-inert-close", map[string]any{"id": waiter}))
 	b07JSON(t, filepath.Join(h.root, "opaque-token-outcomes.json"), map[string]any{"source": "explicit authored controls plus supplied captured native tokens", "tokens": tokens, "round_trip": "RPC Writer store reopen replay", "native_history_credit": false})
 }
 
 // The archive is a declared authored shape control. Captured native tokens may
 // be supplied to this real import/reverse route, but it invents no native history.
-func b07OpaqueArchive(t *testing.T, tokens map[string]string) []byte {
+func b07OpaqueArchive(t *testing.T, tokens map[string]string, configure ...func(map[string][]byte, map[string]any)) []byte {
 	t.Helper()
 	root := os.Getenv("PLUG_SOURCE_MODULE_ROOT")
 	raw, e := os.ReadFile(filepath.Join(root, "internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar"))
@@ -225,6 +221,9 @@ func b07OpaqueArchive(t *testing.T, tokens map[string]string) []byte {
 	source["fields"] = b07RawObject(t, fields)
 	record["source"] = b07RawObject(t, source)
 	members["records/edge.ndjson"] = append(b07RawObject(t, record), '\n')
+	for _, apply := range configure {
+		apply(members, manifest)
+	}
 	files := manifest["files"].(map[string]any)
 	for path, data := range members {
 		if path != "manifest.json" {
@@ -283,19 +282,8 @@ func b07RawObject(t *testing.T, fields map[string]json.RawMessage) []byte {
 }
 func b07OpaqueImport(t *testing.T, engine string, tokens map[string]string) {
 	h := b07NewHost(t, engine)
-	h.config.Project = "demo"
 	raw := b07OpaqueArchive(t, tokens)
-	if e := os.WriteFile(filepath.Join(h.root, "authored-import.tar"), raw, 0600); e != nil {
-		t.Fatal(e)
-	}
-	inspected, e := converterroundtrip.InspectImport(h.ctx, bytes.NewReader(raw))
-	if e != nil {
-		t.Fatal(e)
-	}
-	profile := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "b07-public-admin"}, Authority: "b07-public-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: inspected.SourceStoreID, Method: "offline.restore.import", IdempotencyKey: strings.Repeat("b", 32), ArchiveDigest: inspected.ArchiveSHA256, DerivedDigest: inspected.DerivedSHA256, HistoryMode: driver.RestoreHistoryModeSnapshot}
-	if _, e := converterroundtrip.RestoreImportWithLease(h.ctx, bytes.NewReader(raw), h.runtime.Store, h.runtime.Lease, profile); e != nil {
-		t.Fatal(e)
-	}
+	b07RestoreArchive(t, h, raw)
 	archive, e := dumpformat.Read(bytes.NewReader(raw))
 	if e != nil {
 		t.Fatal(e)
@@ -369,4 +357,20 @@ func b07OpaqueImport(t *testing.T, engine string, tokens map[string]string) {
 		t.Fatal("reverse edge missing")
 	}
 	b07JSON(t, filepath.Join(h.root, "import-reverse-outcomes.json"), map[string]any{"archive_sha256": archive.SHA256(), "reverse_sha256": reversed.Result.Digest, "tokens": want, "source": "authored archive with supplied raw tokens; no source history"})
+}
+
+func b07RestoreArchive(t *testing.T, h *b07Host, raw []byte) {
+	t.Helper()
+	h.config.Project = "demo"
+	if e := os.WriteFile(filepath.Join(h.root, "authored-import.tar"), raw, 0600); e != nil {
+		t.Fatal(e)
+	}
+	inspected, e := converterroundtrip.InspectImport(h.ctx, bytes.NewReader(raw))
+	if e != nil {
+		t.Fatal(e)
+	}
+	profile := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "b07-public-admin"}, Authority: "b07-public-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: inspected.SourceStoreID, Method: "offline.restore.import", IdempotencyKey: strings.Repeat("b", 32), ArchiveDigest: inspected.ArchiveSHA256, DerivedDigest: inspected.DerivedSHA256, HistoryMode: driver.RestoreHistoryModeSnapshot}
+	if _, e := converterroundtrip.RestoreImportWithLease(h.ctx, bytes.NewReader(raw), h.runtime.Store, h.runtime.Lease, profile); e != nil {
+		t.Fatal(e)
+	}
 }

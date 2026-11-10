@@ -98,9 +98,10 @@ func (h *b07Host) quietWorkflow(want b07State) {
 		if after.Generation != before.Generation+1 {
 			h.t.Fatal("mixed no-op namespace generation differs")
 		}
-		var old, now map[string]json.RawMessage
-		if json.Unmarshal(before.Payload, &old) != nil || json.Unmarshal(after.Payload, &now) != nil {
-			h.t.Fatal("checkpoint payload invalid")
+		old, oldRest := h.workflowPayload(before.Payload, before.Generation)
+		now, newRest := h.workflowPayload(after.Payload, after.Generation)
+		if !reflect.DeepEqual(oldRest, newRest) {
+			h.t.Fatal("mixed no-op changed another namespace value or envelope field")
 		}
 		var oldReceipts, newReceipts map[string]json.RawMessage
 		if json.Unmarshal(old["receipts"], &oldReceipts) != nil || json.Unmarshal(now["receipts"], &newReceipts) != nil || len(newReceipts) != len(oldReceipts)+1 {
@@ -125,4 +126,21 @@ func (h *b07Host) quietWorkflow(want b07State) {
 	if !reflect.DeepEqual(want, got) {
 		h.t.Fatal("mixed no-op changed core records/history/derived/receipts")
 	}
+}
+
+func (h *b07Host) workflowPayload(raw []byte, generation uint64) (map[string]json.RawMessage, []map[string]json.RawMessage) {
+	h.t.Helper()
+	var envelope, values, state, value map[string]json.RawMessage
+	if json.Unmarshal(raw, &envelope) != nil || json.Unmarshal(envelope["values"], &values) != nil || json.Unmarshal(values["workflow/state"], &state) != nil || json.Unmarshal(state["value"], &value) != nil || value == nil {
+		h.t.Fatal("checkpoint workflow value missing")
+	}
+	var revision uint64
+	if json.Unmarshal(state["revision"], &revision) != nil || revision != generation {
+		h.t.Fatal("workflow value revision differs from namespace generation")
+	}
+	delete(envelope, "values")
+	delete(values, "workflow/state")
+	delete(state, "revision")
+	delete(state, "value")
+	return value, []map[string]json.RawMessage{envelope, values, state}
 }

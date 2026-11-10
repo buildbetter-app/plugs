@@ -378,7 +378,9 @@ func TestJointSourceReverseReportsNamespaceLossesAcrossThreeStores(t *testing.T)
 							fields += row.FieldInstances
 						}
 					}
-					want := 5321
+					// Preserve the predecessor census, adding exactly the two
+					// opaque token strings on each of the two imported relations.
+					want := 5321 + 2*2
 					if ns.Namespace == "plugin/workflow/rollback-native/durable" {
 						want = 359
 					}

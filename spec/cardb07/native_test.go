@@ -377,6 +377,7 @@ func TestB07CanonicalNativeEdgeCounterparts(t *testing.T) {
 			b07Compare(t, twins[0], b07Public(t, engine))
 			b07OpaquePublic(t, engine, nativeTokens)
 			b07OpaqueImport(t, engine, nativeTokens)
+			b07ImportedWaits(t, engine, nativeTokens)
 			b07MixedPublic(t, engine)
 		})
 	}

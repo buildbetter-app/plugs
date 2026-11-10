@@ -1,6 +1,6 @@
 load("@rules_go//go:def.bzl", "go_test")
 
-COMMON = ["cases_test.go", "fixture_test.go", "public_test.go", "opaque_test.go", "mixed_test.go"]
+COMMON = ["cases_test.go", "fixture_test.go", "public_test.go", "opaque_test.go", "mixed_test.go", "imported_waits_test.go"]
 DEPS = [
     "//internal/core/dumpformat",
     "//internal/core/model",

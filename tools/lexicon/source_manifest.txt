@@ -174,6 +174,7 @@ internal/core/dumpformat/README.md
 internal/core/dumpformat/catalog.go
 internal/core/dumpformat/edge_extensions.go
 internal/core/dumpformat/edge_metadata.go
+internal/core/dumpformat/edge_tokens_test.go
 internal/core/dumpformat/edge_version_test.go
 internal/core/dumpformat/history.go
 internal/core/dumpformat/history_test.go
@@ -537,6 +538,7 @@ internal/integration/collabwatch/integration_test.go
 internal/integration/collabwatch/reconnect_acceptance_test.go
 internal/integration/converterroundtrip/BUILD.bazel
 internal/integration/converterroundtrip/allocator.go
+internal/integration/converterroundtrip/b07_opaque_source_test.go
 internal/integration/converterroundtrip/external_target_test.go
 internal/integration/converterroundtrip/hierarchy_import_test.go
 internal/integration/converterroundtrip/history.go
@@ -1358,6 +1360,7 @@ spec/cardb07/BUILD.bazel
 spec/cardb07/README.md
 spec/cardb07/cases_test.go
 spec/cardb07/fixture_test.go
+spec/cardb07/imported_waits_test.go
 spec/cardb07/mixed_test.go
 spec/cardb07/native_test.go
 spec/cardb07/opaque_test.go

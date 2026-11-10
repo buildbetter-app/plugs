@@ -32,7 +32,8 @@ JSON encoding. Absence is an absent key, null is `"null"`, and an empty string i
 supply a predicate, thread mapping, identity allocation or scheduling meaning.
 Omitted keys preserve previous values. Typed gate metadata remains independent.
 
-The archive reader captures raw source tokens before map decoding. Unknown
+The archive reader captures raw source tokens at every record decode, including
+records nested in source history, before map decoding. Unknown
 future edge columns are retained without relaxing required existing columns.
 Imported hierarchy metadata stays on the single parent representation rather
 than introducing another generic relationship. Reverse validates token/source
@@ -53,6 +54,12 @@ Named controls:
 - `TestB07PublicMixedPlaneIdentity`: actual normal-composition capability,
   SQL mixed endpoint identity, namespace-receipt-only no-op, replay, retype,
   malformed batch refusal and both-plane conservation.
+- `TestB07ImportedOpaqueWaitsReadiness`: an explicitly authored closed spawner
+  with an open child retains legacy waits readiness after import, opaque-only
+  edits and SQL reopen; an explicit waits predicate is the negative control.
+- `TestB07SourcePlaneOpaqueEdgeRoundTrip` in converterroundtrip: future escaped,
+  numeric and object tokens traverse the existing admitted source runtime on
+  all three stores, including mixed-plane reverse and malformed batch refusal.
 - `TestB07CanonicalNativeEdgeCounterparts`: same-run canonical source-built
   twins plus the three actual public counterparts above.
 
@@ -61,3 +68,10 @@ Both author gates use the seven canonical controls plus
 selected in focus. The whole-selected public target remains unfiltered in
 literal `test //...`. Raw native values are retained before any declared
 comparison; B02 adopted outcome differences never imply raw equality.
+
+The native focus forwards the trusted runner variables `BAZEL_BIN`, `BAZEL_RC`,
+`BAZELISK_HOME`, `BAZELISK_VERIFY_SHA256`, `GITHUB_RUN_ID`, `GITHUB_RUN_ATTEMPT`,
+`GITHUB_SHA` and `GITHUB_WORKFLOW_REF` with `--test_env=<name>`, and supplies
+`--test_env=PLUG_B07_REQUEST_SHA=<exact candidate>`. These are the unchanged
+shared builder's existing runner contract; no caller checkout-root override is
+used.

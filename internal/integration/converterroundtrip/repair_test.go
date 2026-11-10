@@ -30,7 +30,10 @@ const (
 	// TestB26BuiltinDerivedGoldenRetainsLegacyAndAddsOnlyBlocked independently
 	// reconstructs both complete images without the restore/ontology builders.
 	legacySupportedDerived = "f170bf742699fb0bbc577c57b19e7907872e2ea99a34a94fda5e0659197f20ed"
-	supportedDerived       = "6f1b59b29636cf665d447b1a4d49c1b5670af05f9d0170cf2c548ff1e51d62ab"
+	b26SupportedDerived    = "6f1b59b29636cf665d447b1a4d49c1b5670af05f9d0170cf2c548ff1e51d62ab"
+	// B07 adds the unchanged archive's two opaque source tokens to precisely
+	// one reference-index row. Both earlier complete image hashes stay checked.
+	supportedDerived = "3737172d3d2686aab62b5509315c1fefd5880aa64913e78e58af1f81bf0ee1b6"
 )
 
 // This is a separately constructed head-only input, NOT the pinned exporter
@@ -802,6 +805,15 @@ func TestOfflineRestoreDriverCapabilityRequiresHeadAndRecoveryHeader(t *testing.
 const legacySupportedOntologyJSON = `{"statuses":{"backlog":{"name":"Backlog","category":"backlog"},"canceled":{"name":"Canceled","category":"canceled"},"done":{"name":"Done","category":"completed","outcome":"success"},"failed":{"name":"Failed","category":"completed","outcome":"failure"},"in_progress":{"name":"In progress","category":"started"},"todo":{"name":"Todo","category":"unstarted"}},"workflows":{"issue":{"statuses":["todo","in_progress","done","failed","canceled","backlog"],"initial":"todo","slots":{"cancel":"canceled","claim":"in_progress","close":"done","defer":"backlog","fail":"failed","reopen":"todo"},"transitions":[{"from":["todo"],"to":"in_progress","guards":[{"kind":"not_template"},{"kind":"no_open_blockers"},{"kind":"permission"}]},{"to":"done","guards":[{"kind":"not_template"},{"kind":"no_open_children"},{"kind":"no_open_blockers"},{"kind":"permission"}]},{"to":"failed","guards":[{"kind":"no_open_children"},{"kind":"permission"}]},{"to":"canceled","guards":[{"kind":"permission"}]},{"to":"todo","guards":[{"kind":"permission"}]},{"to":"backlog","guards":[{"kind":"permission"}]}]}},"types":{"issue":{"name":"Issue","workflow":"issue","fields":{"description":{"type":"string"},"labels":{"type":"strings"},"title":{"type":"string"}}}}}`
 
 func TestB26BuiltinDerivedGoldenRetainsLegacyAndAddsOnlyBlocked(t *testing.T) {
+	assertSupportedDerivedImages(t, false)
+}
+
+func TestB07BuiltinDerivedGoldenAddsOnlyOpaqueEdgeTokens(t *testing.T) {
+	assertSupportedDerivedImages(t, true)
+}
+
+func assertSupportedDerivedImages(t *testing.T, includeOpaque bool) {
+	t.Helper()
 	row := func(table driver.DerivedTable, key, value string) derivedImage {
 		return derivedImage{Table: table, Key: key, Value: json.RawMessage(value)}
 	}
@@ -836,7 +848,7 @@ func TestB26BuiltinDerivedGoldenRetainsLegacyAndAddsOnlyBlocked(t *testing.T) {
 	for _, current := range []bool{false, true} {
 		wantDigest := legacySupportedDerived
 		if current {
-			wantDigest = supportedDerived
+			wantDigest = b26SupportedDerived
 			for i := range rows {
 				if rows[i].Table == driver.DerivedOntology {
 					rows[i].Value = json.RawMessage(strings.Replace(legacySupportedOntologyJSON, `"fields":{"description"`, `"fields":{"blocked":{"type":"boolean"},"description"`, 1))
@@ -855,18 +867,37 @@ func TestB26BuiltinDerivedGoldenRetainsLegacyAndAddsOnlyBlocked(t *testing.T) {
 		if got := digestBytes(data); got != wantDigest {
 			t.Fatalf("independent complete image current=%v: got %s want %s; bytes=%s", current, got, wantDigest, data)
 		}
-		if current {
-			archive, err := dumpformat.Read(bytes.NewReader(supportedBytes(t, nil)))
-			if err != nil {
-				t.Fatal(err)
-			}
-			plan, err := buildPlan(archive)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(plan.derived) != 20 || plan.derivedDigest != wantDigest || !reflect.DeepEqual(plan.derived, rows) {
-				t.Fatal("restore differs from the independently fixed 20-row current image")
-			}
+	}
+	if !includeOpaque {
+		return
+	}
+	changed := 0
+	for i := range rows {
+		if rows[i].Table == driver.DerivedReferenceIndex && rows[i].Key == idB {
+			// Literal source values from the unchanged authored archive. Do not
+			// obtain this expected image from the importer or metadata helpers.
+			rows[i].Value = json.RawMessage(fmt.Sprintf(`[{"to":{"id":%q,"branch":0},"kind":"blocks","metadata":{"nativeExtensions":{"beads.metadata":"{\"extra\":\"kept\"}","beads.thread_id":"\"thread-fixture\""}}}]`, idA))
+			changed++
 		}
+	}
+	image := struct {
+		Profile string                `json:"profile"`
+		Tables  []driver.DerivedTable `json:"tables"`
+		Rows    []derivedImage        `json:"rows"`
+	}{"builtin-head/1", []driver.DerivedTable{"ancestor_closure", "cut_closure", "derived_attribute", "grant", "ontology", "plugins", "ready_state", "reference_index", "sort_key"}, rows}
+	data, err := json.Marshal(image)
+	if err != nil || changed != 1 || digestBytes(data) != supportedDerived {
+		t.Fatalf("independent B07 image: changes=%d digest=%s error=%v bytes=%s", changed, digestBytes(data), err, data)
+	}
+	archive, err := dumpformat.Read(bytes.NewReader(supportedBytes(t, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := buildPlan(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.derived) != 20 || plan.derivedDigest != supportedDerived || !reflect.DeepEqual(plan.derived, rows) {
+		t.Fatal("restore differs from the independently fixed 20-row current image")
 	}
 }
