@@ -52,7 +52,7 @@ jobs:
               "run_id": os.environ["GITHUB_RUN_ID"],
               "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
               "event": os.environ["GITHUB_EVENT_NAME"],
-              "fixture_scope": "checked-in public synthetic snapshot and history fixtures only",
+              "fixture_scope": "checked-in synthetic fixtures and original genuine public boundary/multiversion outputs only",
               "night_streak": "not evaluated by a single run",
           }
           Path(os.environ["RUNNER_TEMP"], "n1-restore-evidence", "run.json").write_text(json.dumps(report, indent=2) + "\n")
@@ -121,10 +121,11 @@ jobs:
               --bazelrc="$RUNNER_TEMP/n1.bazelrc" shutdown
           fi
           {
-            echo 'Fresh public/synthetic fixture comparisons only.'
+            echo 'Fresh synthetic fixtures and unchanged genuine public boundary/multiversion originals only.'
             echo 'Full, partial and snapshot comparisons use real memory, SQLite and PostgreSQL stores.'
             echo 'Partial history retains exact gaps and typed floor truncation; snapshot versions are restore bases.'
-            echo 'This is not real-ledger/source-exporter history qualification or a three-night streak.'
+            echo 'Native verified images retain typed unavailable boundaries and current events without fabricated history.'
+            echo 'Generic public originals do not qualify joined/private stores, scheduled-main execution or a three-night streak.'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload public comparison evidence

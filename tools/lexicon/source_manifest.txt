@@ -667,6 +667,8 @@ internal/integration/nightlyrestore/README.md
 internal/integration/nightlyrestore/engine_test.go
 internal/integration/nightlyrestore/fixture_test.go
 internal/integration/nightlyrestore/history_diff_test.go
+internal/integration/nightlyrestore/native_diff_test.go
+internal/integration/nightlyrestore/native_fixture_test.go
 internal/integration/nightlyrestore/restore_diff_test.go
 internal/integration/nightlyrestore/snapshot_archive_content_test.go
 internal/integration/nightlyrestore/snapshot_archive_metadata_test.go
