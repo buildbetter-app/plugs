@@ -66,6 +66,12 @@ func TestPublicBeadsArtifactReimportThreeEngines(t *testing.T) {
 				}
 				defer retainPublicBeadsRuntimeEvidence(t, output, engine+"-"+test.name)
 				got := run(args)
+				// Retain this independent read-only observation even when a
+				// later original native/metadata assertion fatally refuses.
+				typed := collectPublicTypedReadback(t, typedReader, output, engine+"/"+test.name, got)
+				if typed.Status != "PASS" || typed.EqualityCredit != 1 || len(typed.Gaps) != 0 || len(typed.Differences) != 0 {
+					t.Errorf("actual typed native equality remains unproved: case=%s status=%s gaps=%v differences=%v", typed.Case, typed.Status, typed.Gaps, typed.Differences)
+				}
 				encoded, err := json.Marshal(got)
 				if err != nil {
 					t.Fatal(err)
@@ -80,10 +86,6 @@ func TestPublicBeadsArtifactReimportThreeEngines(t *testing.T) {
 				}
 				if got.BeadsReadbackSHA256 != "" {
 					assertPublicNativeCaptureReadback(t, options, output, got)
-				}
-				typed := collectPublicTypedReadback(t, typedReader, output, engine+"/"+test.name, got)
-				if typed.Status != "PASS" || typed.EqualityCredit != 1 || len(typed.Gaps) != 0 || len(typed.Differences) != 0 {
-					t.Errorf("actual typed native equality remains unproved: case=%s status=%s gaps=%v differences=%v", typed.Case, typed.Status, typed.Gaps, typed.Differences)
 				}
 				if got.Status != "PASS" || got.Stage != "public_snapshot_roundtrip_complete" || got.Reason != "" || got.BeadsReimport != "PASS" || got.BeadsReadback != "PASS" || got.BeadsReadbackSHA256 == "" || len(got.SourceFieldLosses) != 0 {
 					t.Fatalf("actual import and native readback: %+v", got)
