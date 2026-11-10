@@ -39,7 +39,7 @@ const (
 // The protected lists are intentionally exact: adding a retained file requires
 // its owner to update this policy before the blocking gate can pass.
 func DefaultTreePolicy() TreePolicy {
-	return TreePolicy{
+	policy := TreePolicy{
 		ReferencePrefixes: []string{
 			"spec/s1-b09-native/testdata/beads-9d6fff.git-tree",
 			"spec/s1-b09-native/testdata/beads-446dbb.git-tree",
@@ -156,6 +156,14 @@ func DefaultTreePolicy() TreePolicy {
 			"engdocs/design/plug/spec/ux-screens/people-50.png":                                  "f620d28fba6d16c9e104b351d61915f5ecd913f42e8ca3f8d14a8e8c066cc4cd",
 		},
 	}
+	// The numbered native schema corpus is immutable fixture input. Every
+	// file, including siblings without vocabulary matches, has an exact hash;
+	// a new sibling or changed byte continues to fail closed.
+	policy.ReferencePrefixes = append(policy.ReferencePrefixes, "internal/testutil/nativeschema/migrations/")
+	for name, digest := range undoSQLReferences() {
+		policy.ReferenceSHA256[name] = digest
+	}
+	return policy
 }
 
 func (p TreePolicy) disposition(name string, content []byte) (pathDisposition, error) {

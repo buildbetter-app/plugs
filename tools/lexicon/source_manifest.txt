@@ -1844,6 +1844,10 @@ tools/lexicon/gate_test.go
 tools/lexicon/inventory.bzl
 tools/lexicon/inventory.go
 tools/lexicon/inventory_test.go
+tools/lexicon/native_undo.go
+tools/lexicon/native_undo_bindings.go
+tools/lexicon/native_undo_references.go
+tools/lexicon/native_undo_test.go
 tools/lexicon/output_links/BUILD.bazel
 tools/lexicon/policy.go
 tools/lexicon/rules.d/00-vocabulary.toml

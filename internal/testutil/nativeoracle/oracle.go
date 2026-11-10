@@ -320,7 +320,13 @@ type ErrSourceHistoryUnavailable struct{ Reason string }
 
 func (e ErrSourceHistoryUnavailable) Error() string { return "source history unavailable: " + e.Reason }
 func historyText(v any) string                      { s, _ := v.(string); return s }
-func marshal(v any) ([]byte, error)                 { return json.Marshal(v) }
+func marshal(value any) ([]byte, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	return append(data, '\n'), nil
+}
 
 type PhysicalCommitSource struct {
 	SQLSource
