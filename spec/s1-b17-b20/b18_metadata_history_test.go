@@ -70,7 +70,9 @@ func TestB18PublicHistoryPreservesMetadataLiteralsAndPointerPaths(t *testing.T) 
 					}](t, "history.get", r.call(t, "", "history.get", map[string]any{
 						"ref": ref, "asOf": map[string]any{"revision": snapshot.revision},
 					}, false))
-					if !reflect.DeepEqual(version.Ref, ref) || version.Revision.String() != snapshot.revision.String() || !reflect.DeepEqual(version.Body.Metadata, snapshot.metadata) {
+					// The typed address treats an omitted branch and branch:0 as
+					// the same zero; compare public identity, not Go representation.
+					if version.Ref.Validate() != nil || version.Ref.IsID() != ref.IsID() || version.Ref.ID != ref.ID || version.Ref.Key != ref.Key || version.Ref.Branch.String() != ref.Branch.String() || version.Revision.String() != snapshot.revision.String() || !reflect.DeepEqual(version.Body.Metadata, snapshot.metadata) {
 						t.Fatalf("history.get revision %s: ref=%+v revision=%s metadata=%v, want %+v", snapshot.revision, version.Ref, version.Revision, version.Body.Metadata, snapshot.metadata)
 					}
 				}
