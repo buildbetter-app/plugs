@@ -254,15 +254,6 @@ func b02ID(plan b02Plan, role string) string {
 	return "b02-" + strings.ReplaceAll(plan.Name, "-", "") + role
 }
 
-func b02Bytes(t *testing.T, value any) []byte {
-	t.Helper()
-	data, err := json.Marshal(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return data
-}
-
 func TestB02NativeBlockingAndCategoryPairs(t *testing.T) {
 	var inputs nativeInputs
 	nativeDecode(t, nativeB02InputsBytes, &inputs)

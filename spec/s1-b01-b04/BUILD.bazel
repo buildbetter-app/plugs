@@ -167,6 +167,7 @@ go_test(
 go_test(
     name = "native_b02_recording",
     srcs = [
+        "b02_public_support_test.go",
         "fixture_test.go",
         "manifest_test.go",
         "native_b02_contract_test.go",
@@ -219,4 +220,38 @@ go_test(
         "run-1.json",
     ],
     args = ["-test.v"],
+)
+
+# Execute the recorder's public outcome/replay verifiers without constructing
+# native captures or invoking physical native setup.
+go_test(
+    name = "b02_public_outcomes_test",
+    srcs = [
+        "b02_public_outcomes_test.go",
+        "b02_public_support_test.go",
+        "fixture_test.go",
+        "manifest_test.go",
+        "native_io_test.go",
+    ],
+    embedsrcs = [
+        "manifest.json",
+        "native_inputs.json",
+        "run-1.json",
+    ],
+    args = ["-test.v"],
+    deps = [
+        "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/server/rpc",
+        "//internal/server/transport/inprocess",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/postgres",
+        "//internal/storage/sqlite",
+        "//internal/testclock",
+    ],
+    tags = ["local", "requires-network"],
+    timeout = "long",
 )

@@ -1,5 +1,13 @@
 # Private B02 native recorder
 
+The ordinary `b02_public_outcomes_test` target now executes the public
+outcome/event, exact same-key replay and physical SQL reopen verifiers shared
+with this recorder on memory, SQLite and PostgreSQL. It creates its own Plug
+records through public RPC and never constructs a native capture. Its results
+are public acceptance only; all seven real native plans, 78 primary
+observations plus two stale rereads, and 30-store/198-phase paired replay
+requirements below remain separate and unchanged.
+
 Done = the private recorder follows the canonical B02 native flow and preserves
 complete real before/after, refusal, replay and producer evidence, proven by
 its exact committed source and independent source review; B01 checker passes
