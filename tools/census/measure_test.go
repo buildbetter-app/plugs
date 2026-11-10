@@ -274,6 +274,8 @@ func mustEncode(t *testing.T, value any) []byte {
 	return append(data, '\n')
 }
 
+// B07 preserves the same archive; opaque edge tokens extend one reference-index row.
+// Historical pre-B07 derived digest: 6f1b59b29636cf665d447b1a4d49c1b5670af05f9d0170cf2c548ff1e51d62ab
 func TestPairedCensusReadsActualMemoryAndReopenedSQLite(t *testing.T) {
 	data := boundedHead(t)
 	capture, e := MeasureArchive(bytes.NewReader(data))
@@ -281,7 +283,7 @@ func TestPairedCensusReadsActualMemoryAndReopenedSQLite(t *testing.T) {
 		t.Fatal(e)
 	}
 	// Historical pre-B26 ontology image: f170bf742699fb0bbc577c57b19e7907872e2ea99a34a94fda5e0659197f20ed
-	const derived = "6f1b59b29636cf665d447b1a4d49c1b5670af05f9d0170cf2c548ff1e51d62ab"
+	const derived = "3737172d3d2686aab62b5509315c1fefd5880aa64913e78e58af1f81bf0ee1b6"
 	check := converterroundtrip.Verification{ArchiveSHA256: bytesDigest(data), DerivedSHA256: derived}
 	var first []Metric
 	for _, engine := range []string{"memory", "sqlite"} {
@@ -621,7 +623,7 @@ func TestCensusBlobRefusalIsReadOnlyAndClosesReader(t *testing.T) {
 	}
 	store := memory.New()
 	defer store.Close()
-	if _, e = converterroundtrip.Restore(context.Background(), bytes.NewReader(data), store, converterroundtrip.Verification{ArchiveSHA256: bytesDigest(data), DerivedSHA256: "6f1b59b29636cf665d447b1a4d49c1b5670af05f9d0170cf2c548ff1e51d62ab"}); e != nil {
+	if _, e = converterroundtrip.Restore(context.Background(), bytes.NewReader(data), store, converterroundtrip.Verification{ArchiveSHA256: bytesDigest(data), DerivedSHA256: "3737172d3d2686aab62b5509315c1fefd5880aa64913e78e58af1f81bf0ee1b6"}); e != nil {
 		t.Fatal(e)
 	}
 	wrapped := &observedCensusStore{Store: store, failBlob: true}
