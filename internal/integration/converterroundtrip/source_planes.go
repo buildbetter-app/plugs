@@ -150,9 +150,11 @@ func prepareSourceArchive(ctx context.Context, archive *dumpformat.Archive, prof
 }
 
 type sourceCoreProjection struct {
-	entities  map[driver.SourceEntityKey]driver.SourcePlaneEntityV1
-	relations map[driver.SourceEdgeKey]driver.SourcePlaneRelationV1
-	fields    map[driver.SourceEntityKey]map[string]bool
+	entities       map[driver.SourceEntityKey]driver.SourcePlaneEntityV1
+	relations      map[driver.SourceEdgeKey]driver.SourcePlaneRelationV1
+	fields         map[driver.SourceEntityKey]map[string]bool
+	opaque         map[driver.SourceEntityKey][]string
+	inertRelations map[driver.SourceEdgeKey]bool
 }
 
 func newSourceCoreProjection(profile *driver.RestoreImportProfile) (sourceCoreProjection, error) {
@@ -174,13 +176,29 @@ func newSourceCoreProjection(profile *driver.RestoreImportProfile) (sourceCorePr
 	}
 	projection.entities = make(map[driver.SourceEntityKey]driver.SourcePlaneEntityV1, len(plan.Entities))
 	projection.fields = make(map[driver.SourceEntityKey]map[string]bool, len(plan.Entities))
+	projection.opaque = make(map[driver.SourceEntityKey][]string, len(plan.Entities))
 	for _, e := range plan.Entities {
 		projection.entities[e.Source] = e
 		projection.fields[e.Source] = dispositions[e.DispositionKey]
+		for _, d := range plan.Dispositions {
+			if d.Key == e.DispositionKey {
+				for _, rule := range d.Fields {
+					if rule.Disposition == "opaque-metadata" {
+						projection.opaque[e.Source] = append(projection.opaque[e.Source], rule.Source)
+					}
+				}
+			}
+		}
 	}
 	projection.relations = make(map[driver.SourceEdgeKey]driver.SourcePlaneRelationV1, len(plan.Relations))
 	for _, relation := range plan.Relations {
 		projection.relations[relation.Source] = relation
+	}
+	projection.inertRelations = map[driver.SourceEdgeKey]bool{}
+	for _, origin := range plan.Origins {
+		if origin.Path == "" && origin.Action == "inert-origin" && (origin.Table == dumpformat.DurableDependencyTable || origin.Table == dumpformat.EphemeralDependencyTable) {
+			projection.inertRelations[driver.SourceEdgeKey{Project: origin.Project, Table: origin.Table, ID: origin.ID}] = true
+		}
 	}
 	return projection, nil
 }
@@ -200,6 +218,11 @@ func (p sourceCoreProjection) coreEdge(source dumpformat.Record) (bool, error) {
 	// using those complete endpoint tuples, including each endpoint's project.
 	relation, ok := p.relations[driver.SourceEdgeKey{Project: source.Project, Table: source.Source.Table, ID: source.ID}]
 	if !ok {
+		// Provider preparation has already matched this explicit inert origin
+		// to every original raw field. It is retained data, not a core link.
+		if p.inertRelations[driver.SourceEdgeKey{Project: source.Project, Table: source.Source.Table, ID: source.ID}] {
+			return false, nil
+		}
 		return false, fmt.Errorf("%w: core edge lacks its checked source relation", driver.ErrUnsupported)
 	}
 	from := p.entities[relation.From]
@@ -327,6 +350,10 @@ func validateSourceCoreMappings(archive *dumpformat.Archive, plan driver.SourceP
 				return fmt.Errorf("%w: core field explicitly refused: %s", driver.ErrUnsupported, rule.Source)
 			}
 			if rule.Disposition == "origin-only" && rule.Target == "" {
+				continue
+			}
+			if rule.Disposition == "opaque-metadata" && rule.Target == "beads."+rule.Source && !mapped[rule.Target] {
+				mapped[rule.Target] = true
 				continue
 			}
 			if rule.Disposition != "exact-map" || mapped[rule.Target] {

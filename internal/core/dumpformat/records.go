@@ -103,9 +103,13 @@ func validateMigratedRecord(record Record, projects []Project, counts map[string
 	return validateVersionedRecord(record, projects, counts, migration, 1)
 }
 
-func validateVersionedRecord(record Record, projects []Project, counts map[string]int, migration *ImportMigration, edgeVersion int) error {
+func validateVersionedRecord(record Record, projects []Project, counts map[string]int, migration *ImportMigration, edgeVersion int, mainVersions ...int) error {
 	table, fields := record.Source.Table, record.Source.Fields
-	columns, ok := tableColumns[table]
+	main := 72
+	if len(mainVersions) != 0 {
+		main = mainVersions[0]
+	}
+	columns, ok := sourceTableColumns(main)[table]
 	if !ok {
 		return fmt.Errorf("unknown record source table")
 	}
@@ -391,6 +395,10 @@ func checkID(id string, p Project) error {
 }
 
 func validateRelations(projects []Project, records map[string][]Record) error {
+	return validateRelationsForVersion(projects, records, 72, 28)
+}
+
+func validateRelationsForVersion(projects []Project, records map[string][]Record, main, ignored int) error {
 	beads := map[string]string{}
 	for _, record := range records["bead"] {
 		if beads[record.ID] != "" {
@@ -443,18 +451,22 @@ func validateRelations(projects []Project, records map[string][]Record) error {
 		}
 	}
 	for lane, table := range map[string]string{"main": "schema_migrations", "ignored": "ignored_schema_migrations"} {
+		cursor := main
+		if lane == "ignored" {
+			cursor = ignored
+		}
 		seen := map[uint64]bool{}
 		for _, record := range records["beads-archive"] {
 			if record.Source.Table != table {
 				continue
 			}
 			version, err := natural(record.Source.Fields["version"])
-			if err != nil || version == 0 || version > uint64(len(migrationHashes[lane])) || seen[version] || record.Source.Fields["content_hash"] != migrationHashes[lane][int(version)] {
+			if err != nil || version == 0 || version > uint64(cursor) || seen[version] || record.Source.Fields["content_hash"] != migrationHashes[lane][int(version)] {
 				return fmt.Errorf("unknown or altered migration series")
 			}
 			seen[version] = true
 		}
-		if len(seen) != len(migrationHashes[lane]) {
+		if len(seen) != cursor {
 			return fmt.Errorf("incomplete migration series")
 		}
 	}
