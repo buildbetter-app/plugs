@@ -2,6 +2,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//tools/bazel:race.bzl", "go_test_race_off")
 
+# manual: GMS compiles through gms_pure_go test/binary transitions, including nogo.
 go_library(
     name = "dolt",
     tags = ["manual"],

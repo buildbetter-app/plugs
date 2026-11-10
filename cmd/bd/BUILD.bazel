@@ -29,6 +29,7 @@ go_binary(
     race = "off",
 )
 
+# manual: GMS compiles through gms_pure_go test/binary transitions, including nogo.
 go_library(
     name = "bd_lib",
     tags = ["manual"],

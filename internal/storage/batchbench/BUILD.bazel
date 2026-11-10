@@ -1,5 +1,6 @@
 load("@rules_go//go:def.bzl", "go_library")
 
+# manual: GMS compiles through gms_pure_go test/binary transitions, including nogo.
 go_library(
     name = "batchbench",
     tags = ["manual"],

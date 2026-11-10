@@ -274,6 +274,8 @@ release_cross_build(
         "//internal/storage/journalscan:journalscan",
         "//internal/storage/kvkeys:kvkeys",
         "//internal/storage/memoryops:memoryops",
+        "//internal/storage/physicalcapture:physicalcapture",
+        "//internal/storage/physicalrestore:physicalrestore",
         "//internal/storage/rowid:rowid",
         "//internal/storage/schema:schema",
         "//internal/storage/sqlbuild:sqlbuild",
@@ -328,6 +330,8 @@ release_cross_build(
         "//scripts/workflowtags:workflowtags",
         "//test/conformance:conformance",
         "//tools/docsmint:docsmint",
+        "//tools/native-physical-capture:native-physical-capture",
+        "//tools/native-physical-restore:native-physical-restore",
     ],
 )
 

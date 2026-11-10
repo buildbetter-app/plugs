@@ -1,5 +1,6 @@
 load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 
+# manual: GMS compiles through gms_pure_go test/binary transitions, including nogo.
 go_library(
     name = "plug-capture-sql-server_lib",
     tags = ["manual"],
@@ -22,6 +23,32 @@ go_test(
     gotags = ["gms_pure_go"],
     size = "large",
     srcs = ["native_capture_test.go", "native_capture_route_test.go", "physical_capture_test.go"],
+    data = [
+        ":plug-capture-sql-server",
+        "//cmd/bd:bd",
+        "//tools/native-physical-capture",
+    ],
+    env = {
+        "BEADS_CAPTURE_BD_BINARY": "$(rootpath //cmd/bd:bd)",
+        "BEADS_CAPTURE_SQL_BINARY": "$(rootpath :plug-capture-sql-server)",
+        "BEADS_PHYSICAL_CAPTURE_BINARY": "$(rootpath //tools/native-physical-capture)",
+    },
+    deps = [
+        "//internal/captureclock",
+        "//internal/plugdump",
+        "//internal/storage/physicalcapture",
+        "//internal/testutil/bazeltest",
+        "@com_github_go_sql_driver_mysql//:mysql",
+    ],
+)
+# Private capture-spike binary/public fixtures; original native lane unchanged.
+# manual: explicit physical-capture controls supplement the unchanged native whole target.
+go_test(
+    name = "native_physical_capture_test",
+    gotags = ["gms_pure_go"],
+    size = "large",
+    srcs = ["native_capture_test.go", "native_capture_route_test.go", "physical_capture_test.go"],
+    tags = ["manual"],
     data = [
         ":plug-capture-sql-server",
         "//cmd/bd:bd",
@@ -101,29 +128,3 @@ filegroup(
 )
 
 # --- end repo_files ---
-
-# Private capture-spike binary/public fixtures; original native lane unchanged.
-go_test(
-    name = "native_physical_capture_test",
-    gotags = ["gms_pure_go"],
-    size = "large",
-    srcs = ["native_capture_test.go", "native_capture_route_test.go", "physical_capture_test.go"],
-    tags = ["manual"],
-    data = [
-        ":plug-capture-sql-server",
-        "//cmd/bd:bd",
-        "//tools/native-physical-capture",
-    ],
-    env = {
-        "BEADS_CAPTURE_BD_BINARY": "$(rootpath //cmd/bd:bd)",
-        "BEADS_CAPTURE_SQL_BINARY": "$(rootpath :plug-capture-sql-server)",
-        "BEADS_PHYSICAL_CAPTURE_BINARY": "$(rootpath //tools/native-physical-capture)",
-    },
-    deps = [
-        "//internal/captureclock",
-        "//internal/plugdump",
-        "//internal/storage/physicalcapture",
-        "//internal/testutil/bazeltest",
-        "@com_github_go_sql_driver_mysql//:mysql",
-    ],
-)
