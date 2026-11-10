@@ -80,9 +80,20 @@ type CheckResult struct {
 }
 
 type PlanRequest struct {
-	Project  string
-	Document json.RawMessage
-	Expect   []model.Precondition
+	Project      string
+	Document     json.RawMessage
+	Expect       []model.Precondition
+	TypeMappings []TypeMapping
+}
+
+// TypeMapping is the narrow public map_type input. Other migration directives
+// remain internal; the planner owns all selector and destination validation.
+type TypeMapping struct {
+	ID     string                   `json:"id"`
+	Kind   string                   `json:"kind"`
+	Target ontologymigration.Target `json:"target"`
+	From   string                   `json:"from"`
+	To     string                   `json:"to"`
 }
 
 type ApplyRequest struct {

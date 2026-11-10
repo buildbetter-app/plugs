@@ -227,3 +227,96 @@ func TestNativeTableHistoryKeepsCurrentBusinessCreatesOutsideSourceCommits(t *te
 		})
 	}
 }
+
+func TestNativeTableHistoryBoundaryDoesNotFabricatePrefixOrCompleteness(t *testing.T) {
+	when := time.Date(2026, 11, 10, 7, 0, 0, 0, time.UTC)
+	profile := sourcePlaneTestProfile()
+	profile.HistoryMode = RestoreHistoryModeFull
+	binding, err := NewSourcePlaneImportBindingV1(sourcePlaneTestPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile.SourcePlanes = &binding
+	before := Record{Ref: model.RefByID(NativeTableHistoryRecordPrefix+"boundary-table", model.Natural64(0)), Kind: "beads-archive", Body: []byte(`{"columns":["id"],"rows":[{"id":1}]}`)}
+	after := before
+	after.Body = []byte(`{"columns":["id"],"rows":[{"id":2}]}`)
+	history := OfflineHistory{Source: NativeTableHistorySource, Verified: true, Complete: false, First: 1, Head: 2,
+		NativeBoundaries: []NativeHistoryBoundary{{SourceStoreID: "original", Project: "pl", VerifiedCommitCount: 2, BoundarySHA256: strings.Repeat("d", 64)}},
+		Batches: []SourceHistoryBatch{
+			{SourceStoreID: "original", Project: "pl", SourceSequence: 1, Sequence: 1, CommitIDs: []string{"oldest-verified"}, EventIDs: []string{}, Changes: []SourceHistoryChange{{After: &before}}},
+			{SourceStoreID: "original", Project: "pl", SourceSequence: 2, Sequence: 2, CommitIDs: []string{"verified-head"}, EventIDs: []string{}, Changes: []SourceHistoryChange{{Before: &before, After: &after}}},
+		},
+	}
+	plan, err := BuildSourcePlaneHistory(Meta{}, profile, history, when, []Record{after})
+	if err != nil {
+		t.Fatal("verified native images ending at a typed source boundary refused", err)
+	}
+	if plan.Evidence.Complete || len(plan.Evidence.Gaps) != 0 || plan.Evidence.First != 1 || plan.Evidence.Head != 2 || !plan.Evidence.Floor.IsZero() || len(plan.Evidence.Mapping) != 2 || len(plan.Entries) != 3 || plan.Evidence.NativeBoundaries[0] != history.NativeBoundaries[0] {
+		t.Fatal("source boundary was lost, relabeled complete or padded with fabricated prefix revisions")
+	}
+	for i, mapping := range plan.Evidence.Mapping {
+		if mapping.SourceSequence != uint64(i+1) || mapping.Revision != model.Natural64(uint64(i+1)) || len(mapping.EventIDs) != 0 || len(mapping.CommitIDs) != 1 {
+			t.Fatal("unknown prefix or current events were invented as source history")
+		}
+	}
+	// Two source namespaces retain independent boundary commitments and exact
+	// verified-image counts. Neither source's unknown prefix becomes a global
+	// gap or a baseline for the other source.
+	joined := history
+	joined.Head = 4
+	joined.Batches = append([]SourceHistoryBatch(nil), history.Batches...)
+	other := before
+	other.Ref.ID += "-other-source"
+	joined.Batches = append(joined.Batches,
+		SourceHistoryBatch{SourceStoreID: "second", Project: "sv2", SourceSequence: 1, Sequence: 3, CommitIDs: []string{"second-oldest"}, EventIDs: []string{}, Changes: []SourceHistoryChange{{After: &other}}},
+		SourceHistoryBatch{SourceStoreID: "second", Project: "sv2", SourceSequence: 2, Sequence: 4, CommitIDs: []string{"second-head"}, EventIDs: []string{}, Changes: []SourceHistoryChange{}},
+	)
+	joined.NativeBoundaries = append(append([]NativeHistoryBoundary(nil), history.NativeBoundaries...), NativeHistoryBoundary{SourceStoreID: "second", Project: "sv2", VerifiedCommitCount: 2, BoundarySHA256: strings.Repeat("e", 64)})
+	joinedPlan, err := BuildSourcePlaneHistory(Meta{}, profile, joined, when, []Record{after, other})
+	if err != nil || joinedPlan.Evidence.Complete || len(joinedPlan.Evidence.NativeBoundaries) != 2 || len(joinedPlan.Evidence.Mapping) != 4 || len(joinedPlan.Entries) != 5 {
+		t.Fatal("independent verified-to-boundary source histories were combined or padded", err)
+	}
+	for i, boundary := range joined.NativeBoundaries {
+		if joinedPlan.Evidence.NativeBoundaries[i] != boundary {
+			t.Fatal("a source boundary changed namespace or descriptor commitment")
+		}
+	}
+	for _, fault := range []string{"no-boundary", "falsely-complete", "known-gap", "fabricated-baseline", "baseline-claim", "wrong-count", "wrong-source", "duplicate-boundary", "bad-digest", "uppercase-digest", "missing-present-image", "contradictory-present-image", "portable-source"} {
+		t.Run(fault, func(t *testing.T) {
+			bad := history
+			bad.NativeBoundaries = append([]NativeHistoryBoundary(nil), history.NativeBoundaries...)
+			bad.Batches = append([]SourceHistoryBatch(nil), history.Batches...)
+			switch fault {
+			case "no-boundary":
+				bad.NativeBoundaries = nil
+			case "falsely-complete":
+				bad.Complete = true
+			case "known-gap":
+				bad.Gaps = []SourceHistoryGap{{First: 1, Last: 1, Reason: "present image missing"}}
+			case "fabricated-baseline":
+				bad.Baseline = []Record{before}
+			case "baseline-claim":
+				bad.BaselineVerified = true
+			case "wrong-count":
+				bad.NativeBoundaries[0].VerifiedCommitCount++
+			case "wrong-source":
+				bad.NativeBoundaries[0].Project = "other"
+			case "duplicate-boundary":
+				bad.NativeBoundaries = append(bad.NativeBoundaries, bad.NativeBoundaries[0])
+			case "bad-digest":
+				bad.NativeBoundaries[0].BoundarySHA256 = strings.Repeat("z", 64)
+			case "uppercase-digest":
+				bad.NativeBoundaries[0].BoundarySHA256 = strings.Repeat("D", 64)
+			case "missing-present-image":
+				bad.Batches[1].SourceSequence++
+			case "contradictory-present-image":
+				bad.Batches[1].Changes = []SourceHistoryChange{{Before: &after, After: &before}}
+			case "portable-source":
+				bad.Source = "beads-dolt-images/1"
+			}
+			if _, err := BuildSourcePlaneHistory(Meta{}, profile, bad, when, []Record{after}); err == nil {
+				t.Fatal("source boundary bypassed a present-history integrity check")
+			}
+		})
+	}
+}

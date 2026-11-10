@@ -4526,6 +4526,56 @@
         ],
         "additionalProperties": false,
         "description": "Live Beads adaptive base36 hash policy, with ten nonce attempts per length through the configured maximum and monotonic parent.N child counters. Source IDs remain unchanged."
+      },
+      "MapTypeDirective": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "const": "map_type"
+          },
+          "target": {
+            "type": "object",
+            "properties": {
+              "project": {
+                "type": "string",
+                "minLength": 1
+              },
+              "type": {
+                "type": "string",
+                "minLength": 1
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "project",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          "from": {
+            "type": "string",
+            "minLength": 1
+          },
+          "to": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "target",
+          "from",
+          "to"
+        ],
+        "additionalProperties": false
       }
     },
     "errors": {

@@ -63,20 +63,32 @@ type SourceHistoryBatch struct {
 	Changes        []SourceHistoryChange `json:"changes"`
 }
 
+// NativeHistoryBoundary binds a source's genuinely unavailable prefix to the
+// authenticated archive descriptor. It does not invent a count of missing
+// source commits or a baseline before the earliest verified image. Imported
+// sequence numbers still describe only the verified images actually supplied.
+type NativeHistoryBoundary struct {
+	SourceStoreID       string `json:"sourceStoreId"`
+	Project             string `json:"project"`
+	VerifiedCommitCount uint64 `json:"verifiedCommitCount"`
+	BoundarySHA256      string `json:"boundarySha256"`
+}
+
 // OfflineHistory is trusted source verification output, never an RPC authority
 // object. Verified must be established by the source adapter's range/image
 // verifier, not an operator flag. Baseline is a complete converted state just
 // before First; it is required for a partial suffix and is never synthesized.
 type OfflineHistory struct {
-	Source           string               `json:"source"`
-	Verified         bool                 `json:"verified"`
-	Complete         bool                 `json:"complete"`
-	First            uint64               `json:"first"`
-	Head             uint64               `json:"head"`
-	BaselineVerified bool                 `json:"baselineVerified"`
-	Baseline         []Record             `json:"baseline,omitempty"`
-	Gaps             []SourceHistoryGap   `json:"gaps"`
-	Batches          []SourceHistoryBatch `json:"batches"`
+	Source           string                  `json:"source"`
+	Verified         bool                    `json:"verified"`
+	Complete         bool                    `json:"complete"`
+	First            uint64                  `json:"first"`
+	Head             uint64                  `json:"head"`
+	BaselineVerified bool                    `json:"baselineVerified"`
+	Baseline         []Record                `json:"baseline,omitempty"`
+	Gaps             []SourceHistoryGap      `json:"gaps"`
+	Batches          []SourceHistoryBatch    `json:"batches"`
+	NativeBoundaries []NativeHistoryBoundary `json:"nativeBoundaries,omitempty"`
 }
 
 type SourceImportRevision struct {
@@ -89,14 +101,15 @@ type SourceImportRevision struct {
 	CommitIDs      []string       `json:"commitIds,omitempty"`
 }
 type HistoryImportEvidence struct {
-	Source   string                 `json:"source"`
-	Mode     RestoreHistoryMode     `json:"mode"`
-	Complete bool                   `json:"complete"`
-	First    uint64                 `json:"first"`
-	Head     uint64                 `json:"head"`
-	Floor    model.Revision         `json:"floor"`
-	Gaps     []SourceHistoryGap     `json:"gaps"`
-	Mapping  []SourceImportRevision `json:"mapping"`
+	Source           string                  `json:"source"`
+	Mode             RestoreHistoryMode      `json:"mode"`
+	Complete         bool                    `json:"complete"`
+	First            uint64                  `json:"first"`
+	Head             uint64                  `json:"head"`
+	Floor            model.Revision          `json:"floor"`
+	Gaps             []SourceHistoryGap      `json:"gaps"`
+	Mapping          []SourceImportRevision  `json:"mapping"`
+	NativeBoundaries []NativeHistoryBoundary `json:"nativeBoundaries,omitempty"`
 }
 
 // OfflineHistoryPlan is detached validation output. Drivers build it again
@@ -113,6 +126,32 @@ type OfflineHistoryPlan struct {
 	Versions []Version
 	Entries  []model.Changeset
 	Evidence HistoryImportEvidence
+}
+
+func validNativeHistoryBoundaries(h OfflineHistory) bool {
+	type source struct{ store, project string }
+	counts := map[source]uint64{}
+	for _, batch := range h.Batches {
+		counts[source{batch.SourceStoreID, batch.Project}]++
+	}
+	var previous source
+	for i, boundary := range h.NativeBoundaries {
+		key := source{boundary.SourceStoreID, boundary.Project}
+		if key.store == "" || key.project == "" || boundary.VerifiedCommitCount == 0 || counts[key] != boundary.VerifiedCommitCount {
+			return false
+		}
+		if i > 0 && (key.store < previous.store || key.store == previous.store && key.project <= previous.project) {
+			return false
+		}
+		if len(boundary.BoundarySHA256) != sha256.Size*2 || strings.ToLower(boundary.BoundarySHA256) != boundary.BoundarySHA256 {
+			return false
+		}
+		if _, err := hex.DecodeString(boundary.BoundarySHA256); err != nil {
+			return false
+		}
+		previous = key
+	}
+	return true
 }
 
 func historyRecordKey(r Record) (string, error) {
@@ -189,10 +228,19 @@ func buildOfflineHistory(current Meta, profile RestoreImportProfile, input Offli
 		return refuse(RestoreHistoryReasonNonContiguous)
 	}
 	partial := h.First > 1
-	if p.HistoryMode == RestoreHistoryModeFull && (!h.Complete || partial || len(h.Gaps) != 0 || len(h.Baseline) != 0) {
+	boundedNative := len(h.NativeBoundaries) != 0
+	if boundedNative {
+		if !nativeTables || !joint || p.HistoryMode != RestoreHistoryModeFull || h.Complete || partial || h.BaselineVerified || len(h.Gaps) != 0 || len(h.Baseline) != 0 {
+			return refuse(RestoreHistoryReasonNonContiguous)
+		}
+		if !validNativeHistoryBoundaries(h) {
+			return refuse(RestoreHistoryReasonNonContiguous)
+		}
+	}
+	if p.HistoryMode == RestoreHistoryModeFull && ((!h.Complete && !boundedNative) || partial || len(h.Gaps) != 0 || len(h.Baseline) != 0) {
 		return refuse(RestoreHistoryReasonNonContiguous)
 	}
-	if !partial && (!h.Complete || len(h.Gaps) != 0 || len(h.Baseline) != 0) {
+	if !partial && ((!h.Complete && !boundedNative) || len(h.Gaps) != 0 || len(h.Baseline) != 0) {
 		return refuse(RestoreHistoryReasonNonContiguous)
 	}
 	if partial {
@@ -216,6 +264,7 @@ func buildOfflineHistory(current Meta, profile RestoreImportProfile, input Offli
 	}
 	meta.HistoryFloor = model.Natural64(0)
 	plan := OfflineHistoryPlan{Meta: meta, Evidence: HistoryImportEvidence{Source: h.Source, Mode: p.HistoryMode, Complete: h.Complete, First: h.First, Head: h.Head, Gaps: append([]SourceHistoryGap{}, h.Gaps...), Mapping: []SourceImportRevision{}}}
+	plan.Evidence.NativeBoundaries = append([]NativeHistoryBoundary(nil), h.NativeBoundaries...)
 	state := map[string]Record{}
 	counts := map[string]int{}
 	last := map[string]model.Revision{}
