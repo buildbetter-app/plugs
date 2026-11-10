@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/integration/converterroundtrip"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
@@ -17,15 +16,17 @@ import (
 // finished. A slow decoder must not masquerade as evidence of lease contention.
 type b27ContendedImportStore struct {
 	configUnionObservedStore
-	leaseCalls int
-	leaseError error
-	contextErr error
+	leaseCalls      int
+	leaseError      error
+	entryContextErr error
+	contextErr      error
 }
 
 func (s *b27ContendedImportStore) Lease(ctx context.Context, holder string, ttl time.Duration) (driver.ActiveLease, error) {
 	s.leaseCalls++
 	bounded, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
+	s.entryContextErr = bounded.Err()
 	lease, err := s.Store.Lease(bounded, holder, ttl)
 	s.leaseError, s.contextErr = err, bounded.Err()
 	return lease, err
@@ -50,27 +51,10 @@ func assertB27IncumbentLease(t *testing.T, s *stack, epoch uint64) {
 func TestB27ImportConservesLiveLocalLeaseAcrossDrivers(t *testing.T) {
 	// Authored synthetic snapshot only. Native capture, full source history and
 	// complete B27 qualification require their own fresh evidence.
-	data := configUnionArchive(t, func(in *configUnionInput) {
-		addUnionArchive(t, in, "leases", dumpformat.Row{
-			"issue_id": "demo-7", "holder": "authored-source-holder",
-			"granted_at": "2026-11-01T00:00:00Z", "lease_expires_at": "2099-01-01T00:00:00Z",
-			"heartbeat_at": nil, "granted_node": "public synthetic fixture",
-		})
-	})
+	// The legacy strict snapshot format refuses operational source lease rows.
+	// Exercise its valid import path without claiming native issue-lease input.
+	data := configUnionArchive(t, nil)
 	profile := configUnionProfile(t, data)
-	archive, err := dumpformat.Read(bytes.NewReader(data))
-	if err != nil {
-		t.Fatal(err)
-	}
-	sourceLeases := 0
-	for _, record := range archive.Records("beads-archive") {
-		if record.Source.Table == "leases" {
-			sourceLeases++
-		}
-	}
-	if sourceLeases != 1 {
-		t.Fatalf("lease conservation control has %d source lease snapshots, want one", sourceLeases)
-	}
 	for _, kind := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(kind, func(t *testing.T) {
 			s := openStack(t, kind, nil)
@@ -78,8 +62,8 @@ func TestB27ImportConservesLiveLocalLeaseAcrossDrivers(t *testing.T) {
 			before := relationState(t, s)
 			target := &b27ContendedImportStore{configUnionObservedStore: configUnionObservedStore{Store: s.store}}
 			report, err := converterroundtrip.RestoreImport(s.ctx, bytes.NewReader(data), target, profile)
-			if target.leaseCalls != 1 || !errors.Is(target.leaseError, context.DeadlineExceeded) || !errors.Is(target.contextErr, context.DeadlineExceeded) || !errors.Is(err, context.DeadlineExceeded) {
-				t.Fatalf("valid import did not contend on the real live lease: calls=%d acquisition=%v context=%v import=%v", target.leaseCalls, target.leaseError, target.contextErr, err)
+			if target.leaseCalls != 1 || target.entryContextErr != nil || !errors.Is(target.leaseError, context.DeadlineExceeded) || !errors.Is(target.contextErr, context.DeadlineExceeded) || !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("valid import did not contend on the real live lease: calls=%d entry_context=%v acquisition=%v context=%v import=%v", target.leaseCalls, target.entryContextErr, target.leaseError, target.contextErr, err)
 			}
 			if target.writes != 0 || report.Archive == nil || !report.Restored.Head.IsZero() || report.Recovered {
 				t.Fatalf("contended import crossed the before-write boundary: writes=%d report=%+v", target.writes, report)
@@ -106,7 +90,7 @@ func TestB27ImportConservesLiveLocalLeaseAcrossDrivers(t *testing.T) {
 					t.Fatal("same-lease import changed its durable snapshot or receipt after SQL reopen")
 				}
 			}
-			t.Logf("B27 authored snapshot: source_leases=%d contender=deadline writes_before=0 incumbent_epoch=%d same_lease_import=committed SQL_reopen=%t", sourceLeases, epoch, kind != "memory")
+			t.Logf("B27 authored snapshot: archive_sha256=%s contender=deadline writes_before=0 incumbent_epoch=%d same_lease_import=committed SQL_reopen=%t", profile.ArchiveDigest, epoch, kind != "memory")
 		})
 	}
 }

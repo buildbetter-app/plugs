@@ -6,7 +6,7 @@ promotion, B27 import/export/configuration, and B28 write pipeline/subscribers.
 
 `TestB27ImportConservesLiveLocalLeaseAcrossDrivers` adds a bounded B27 control
 on memory, SQLite and PostgreSQL. Its explicitly authored synthetic snapshot
-contains a source issue-lease row as archive evidence. A competing restore must
+contains no native issue-lease rows. A competing restore must
 reach the real core writer-lease acquisition and time out before `Write`, leave
 records, versions, changesets, metadata and derived rows unchanged, and publish
 no receipt or archive blob. The incumbent keeps its epoch and can renew. The
