@@ -86,6 +86,7 @@ hermetic_bin(
     name = "hermetic_bin",
     target_compatible_with = _DOLT_PLATFORMS_ONLY,
     tools = {":dolt": "dolt"},
+    visibility = ["//internal/plugdump:__pkg__"],
 )
 
 # The pinned Dolt CLI (tools/bazel/dolt.bzl) for the platform tests run on.
