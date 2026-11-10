@@ -17,7 +17,7 @@ import (
 // These public inputs and both product ELFs are original retained outputs.
 // The test does not recapture or synthesize them. Production remains the
 // reviewed 26e executable; the pinned overlay supplies the independent caller.
-const retainedPairManifestSHA256 = "76dfd0409bf7cbd9debb0cfa7ebfc3394f8e775ad14620cdce7795f5096e3ada"
+const retainedPairManifestSHA256 = "ba8a8de60b2180c0d999a45fc10a69881dbccb7368f25cccc3813b8b749160c0"
 
 func retainedPairFileBinding(t *testing.T, path string) retainedPairFile {
 	t.Helper()
@@ -142,12 +142,12 @@ func TestNativeDeltaRetainedPhysicalProducerReceiverPair(t *testing.T) {
 		SHA256: "d879a0b2fb8b251ee095becfeac6f2b3dbefcc9490d2b044703bb7ae3ea14bd3", Bytes: 47309369,
 	})
 	retainedPairExtract(t, filepath.Join(data, "caller-overlay.tar.gz"), bundle, retainedPairFile{
-		SHA256: "917c08bd0ebafda5489678a955a5bd25a040f9fcae22070e23c7960b62918b33", Bytes: 84947,
+		SHA256: "be7ceb20085be9b23e9732e2e442074edf61ef10ede1e54e7f25ba75ad37f185", Bytes: 87205,
 	})
 	var manifest struct{ Files map[string]retainedPairFile }
-	manifestBinding := retainedPairFile{SHA256: retainedPairManifestSHA256, Bytes: 9887}
+	manifestBinding := retainedPairFile{SHA256: retainedPairManifestSHA256, Bytes: 10468}
 	raw := retainedPairBoundBytes(t, filepath.Join(bundle, "manifest.json"), manifestBinding)
-	if err := json.Unmarshal(raw, &manifest); err != nil || len(manifest.Files) != 55 {
+	if err := json.Unmarshal(raw, &manifest); err != nil || len(manifest.Files) != 57 {
 		t.Fatal("retained pair combined manifest differs")
 	}
 	seen := 0
@@ -170,7 +170,7 @@ func TestNativeDeltaRetainedPhysicalProducerReceiverPair(t *testing.T) {
 		}
 		seen++
 		return nil
-	}); err != nil || seen != 56 {
+	}); err != nil || seen != 58 {
 		t.Fatal("retained pair combined member census incomplete")
 	}
 	python, err := exec.LookPath("python3")
@@ -178,9 +178,9 @@ func TestNativeDeltaRetainedPhysicalProducerReceiverPair(t *testing.T) {
 		t.Fatal("ordinary pair route requires Python 3")
 	}
 	run := filepath.Join(root, "run")
-	args := []string{filepath.Join(bundle, "caller", "native_delta_pair_harness_v2.py"),
+	args := []string{filepath.Join(bundle, "caller", "native_delta_pair_harness_bound_body_v2.py"),
 		"--bundle", bundle, "--manifest-sha256", retainedPairManifestSHA256,
-		"--manifest-bytes", "9887", "--output", run}
+		"--manifest-bytes", "10468", "--output", run}
 	retainedPairSaveJSON(t, filepath.Join(root, "harness.argv.json"), append([]string{python}, args...))
 	command := exec.Command(python, args...)
 	logs := make([]*os.File, 0, 2)

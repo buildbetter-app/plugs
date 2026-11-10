@@ -8,10 +8,19 @@ executable, packaged for the ordinary converterroundtrip test route.
 - Set root: f35639353f2e314e7f72b03190bb513ca7811417549f4b6716805862e6adb947.
 - Base transport: d879a0b2fb8b251ee095becfeac6f2b3dbefcc9490d2b044703bb7ae3ea14bd3,
   47,309,369 bytes; 41 regular members.
-- Caller overlay: 917c08bd0ebafda5489678a955a5bd25a040f9fcae22070e23c7960b62918b33,
-  84,947 bytes; 15 regular members.
-- Combined manifest: 76dfd0409bf7cbd9debb0cfa7ebfc3394f8e775ad14620cdce7795f5096e3ada,
-  9,887 bytes; 56 regular files including that manifest.
+- Caller overlay: be7ceb20085be9b23e9732e2e442074edf61ef10ede1e54e7f25ba75ad37f185,
+  87,205 bytes; 17 regular members.
+- Combined manifest: ba8a8de60b2180c0d999a45fc10a69881dbccb7368f25cccc3813b8b749160c0,
+  10,468 bytes; 58 regular files including that manifest.
+
+The supplied ba95b1dc harness emits source identity fields in receiver struct
+order and sorts table rows by canonical normalized JSON bytes, preserving
+duplicates and lease filtering. It selects the de5f7593 reconstruction counter,
+which accepts the wire decoder's JSONInteger through the existing uint checks.
+The supplied Go inspector remains byte-exact at 3641a787, including complete
+body comparisons. This replaces the blocked d934/960 composition from e099;
+that commit and its source-blocked freeze remain historical evidence. The base
+and overlay have disjoint member paths, with manifest.json only in the overlay.
 
 The base binds 32 genuine retained producer files, both executables and six
 receipts. Its three-entry capture set has 32 commits, six schemas, a genuine
