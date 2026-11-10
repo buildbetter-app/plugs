@@ -1177,6 +1177,7 @@ internal/storage/postgres/offline_restore.go
 internal/storage/postgres/parent_counter.go
 internal/storage/postgres/pending_test.go
 internal/storage/postgres/persistence_test.go
+internal/storage/postgres/predicate_bumps_test.go
 internal/storage/postgres/query.go
 internal/storage/postgres/queue_projection.go
 internal/storage/postgres/queue_projection_test.go

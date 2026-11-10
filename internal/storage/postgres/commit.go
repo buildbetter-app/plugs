@@ -151,6 +151,10 @@ func (t *transaction) validatePredicates(ctx context.Context) error {
 			return fmt.Errorf("postgres: bead write requires exact bead sentinel bump")
 		}
 	}
+	// A successful family proof is shared by every row in this validation
+	// attempt. Keep failures at the original row and never retain a proof
+	// across calls, where the staged bumps may have changed.
+	verifiedFamilies := make(map[string]bool, 5)
 	for _, value := range t.derived {
 		family := ""
 		switch value.Key.Derived.Table {
@@ -168,6 +172,9 @@ func (t *transaction) validatePredicates(ctx context.Context) error {
 		if family == "" {
 			continue
 		}
+		if verifiedFamilies[family] {
+			continue
+		}
 		found := false
 		for _, key := range t.bumps {
 			if key.Kind == driver.LockSentinel && (string(key.Sentinel) == family || strings.HasSuffix(family, "/") && strings.HasPrefix(string(key.Sentinel), family)) {
@@ -178,6 +185,7 @@ func (t *transaction) validatePredicates(ctx context.Context) error {
 		if !found {
 			return fmt.Errorf("postgres: derived table %s requires %s predicate bump", value.Key.Derived.Table, family)
 		}
+		verifiedFamilies[family] = true
 	}
 	return nil
 }
