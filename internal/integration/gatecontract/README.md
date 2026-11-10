@@ -25,3 +25,49 @@ Done = public-created external waits-for identity and metadata survive an actual
 `TestB14PublicPlugDumpRestoreExternalWaitsForAcrossEngines` uses the unchanged mandatory engine harness for all nine source/target pairs. The default local runtime, JSON-RPC client and registry produce named and transactional external links and a genuine local positive with the same target spelling. It captures unmodified `admin.dump` bytes, validates their native Plug scope, and receives them through `admin.restore.begin/chunk/finish` with an explicit host-owned presence verifier. Public get/history.get/ready and inverse-source-link reads check exact opaque UTF-8 IDs, both metadata variants, fail-closed external readiness and preservation of the genuine local index member before and after physical SQL reopen.
 
 This is head-only public Plug producer/receiver acceptance. Native Beads producer/importer admission, full-history parity, gate creation/listing/resolvers, fixed-policy link permission, full B14/FullS1 and hosted delivery remain separate qualifications.
+
+## Public await members
+
+The optional kernel fields `await_type`, `await_id`, `timeout`, and `waiters`
+use the existing `bead.create` fields envelope on any admitted bead type.
+`await_type` is free-form text bounded to 32 Unicode scalars; `await_id` is
+bounded to 255. `timeout` is an exact, nonnegative int64 nanosecond count.
+`await_id` and `waiters` are patchable; `await_type` and `timeout` are create-only.
+Waiters replace the entire ordered string list, including blank and duplicate
+entries. An explicit null list clears to a nonnil empty list; omission preserves
+the current value. JSON encoding of the entire list must fit 65,535 bytes,
+including escapes. The effective schema exposes these rules, and custom type
+definitions cannot replace them. Await members do not configure a resolver or
+make an ordinary subject into a gate.
+
+`TestB14PublicAwaitMemberBoundsAndWholeListReplacement`,
+`TestB14PublicAwaitMemberTypedRefusalsWriteNothing`, and
+`TestB14PublicAwaitMemberInvalidBatchRollsBack`, and
+`TestB14PublicAwaitWholeListOrderAndInvalidSuffix`, and
+`TestB14PublicAwaitCreateOnlySelectionsRefuseForNewAliases` require memory, file SQLite,
+and disposable PostgreSQL through the existing public RPC/Writer fixture.
+They cover boundary creates, ordered replacement and clearing, omitted members,
+physical SQL reopen, multibyte/escaped JSON sizes, exact maximum-timeout storage,
+typed refusal without a receipt, unchanged content/history after refusal, and
+rollback of valid preceding operations when one batch member is invalid.
+Ordered null/list replacements and invalid final lists are checked both on
+existing IDs and on subjects created through an in-request key. A null prefix
+cannot hide an invalid later list or replace a later valid whole list.
+Each selected create/patch input is checked even when another operation later
+replaces it. Create-only members refuse same-value, null, and changed patches
+on existing subjects and newly created keys. Maximum-timeout readback also
+uses number-preserving public `bead.get`/`history.get` before and after SQL reopen.
+`TestAwaitMemberSchemaAndKernelReservation` checks schema bounds and rejects
+custom redefinition. The original tests and their attribution remain unchanged.
+
+These public cases correspond to the canonical `9d6fff760b7a314b476539198504d77ce0959656`
+source controls `TestValidateGateFieldsBoundsEachMemberAtItsColumn`,
+`TestValidateGatePatchChecksOnlySetMembers`, and
+`TestUpdateFieldsMapsWaitersAsAWholeValue`, retained in the existing
+`spec/s1-b09-native/testdata/beads-9d6fff.tar.gz` public fixture. This is source
+correspondence; the new unit has **AUTHORED_NOT_RUN** status until its own remote
+receipts arrive. No executed native case is claimed. The native `map_type`
+interface, true gate creation/listing and its template/closed query policy,
+producer/importer mappings, resolver behavior, and full-card correspondence
+remain separate dependencies. Source `timeout_ns` is not silently mapped to
+the public `timeout` member.

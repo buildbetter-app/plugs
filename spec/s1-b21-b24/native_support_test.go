@@ -623,22 +623,28 @@ func nativeProjectPublicReverseExpectation(ordinary []byte, records []dumpformat
 		archived := map[string]any{}
 		for _, field := range archivedFields {
 			value, present := record.Source.Fields[field]
-			if !present || value == nil {
-				return nil, fmt.Errorf("issue %q missing declared nonnull archive field %q", record.ID, field)
+			if !present {
+				return nil, fmt.Errorf("issue %q missing declared archive field %q", record.ID, field)
 			}
-			archived[field] = value
+			// Complete source provenance retains explicit nulls. The fixed
+			// reverse contract archives only nonnull values in metadata.
+			if value != nil {
+				archived[field] = value
+			}
 		}
 		// The accepted reverse contract also preserves a textual pinned value
 		// inside the source archive while mapping its public boolean value.
 		if value, textual := record.Source.Fields["pinned"].(string); textual {
 			archived["pinned"] = value
 		}
-		encoded, err := json.Marshal(archived)
-		if err != nil {
-			return nil, err
-		}
-		if err := add("_plug_source_fields", string(encoded)); err != nil {
-			return nil, err
+		if len(archived) > 0 {
+			encoded, err := json.Marshal(archived)
+			if err != nil {
+				return nil, err
+			}
+			if err := add("_plug_source_fields", string(encoded)); err != nil {
+				return nil, err
+			}
 		}
 		if status, _ := record.Source.Fields["status"].(string); status == "" {
 			category, ok := record.Body["status_category"].(string)

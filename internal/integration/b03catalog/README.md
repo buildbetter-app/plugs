@@ -11,6 +11,12 @@ covered separately across memory, SQLite and PostgreSQL; compiler tests,
 fixture presence and inherited/base PASS do not count as runtime or full-card
 qualification.
 
+Full B03 additionally requires this author's main-based accepted-artifact
+preparation, four matching physical canonical exports with complete command
+and SQL evidence, actual memory/SQLite/PostgreSQL replay, and independent
+different-ID review. The native producer dependency recorded below keeps that
+qualification blocked.
+
 Scope = B03's installed catalog boundary, configured startup/source selection,
 catalog RPC wiring and the routed key-continuity guard in
 `internal/core/ontologyops/plan.go`, plus the direct lifecycle timestamp
@@ -52,6 +58,9 @@ Active definition replacement and free-text display-name edits remain valid.
 | `TestMalformedCatalogAndMixedBatchRefuseAtomically` | Unknown categories/members, duplicate definitions, null configuration and unsupported directives refuse. A valid update/create/comment batch prefix cannot survive an invalid status suffix. A malformed protected source refuses reads, plan, retained apply and connected reload without replacing durable bytes or the prior runtime. |
 | `TestCatalogApplySQLPublicationRollbackAndRetry` | Database-side publication faults exercise actual SQLite/PostgreSQL transactions. Failed public apply preserves source, rows, versions, log/head, derived rows, observations, allocators and every receipt. The same key succeeds after fault removal and remains durable after close/open. |
 | `TestPublicCatalogApplyDryRunEventLimitParity` | Real public batches create 999 rows; dry-run and real apply accept exactly 1,000 source-plus-row descriptors. A no-op dry-run publishes nothing. With 1,000 rows plus changed source, both dry-run and real apply refuse `scope_too_large` and conserve complete paginated records, histories, events, derived state, receipts and views on all three engines. |
+| `TestPublicNativeCategoryCatalogLifecycleAndSQLReopen` | Public plan/apply retains exact `awaiting_review` / `qa_testing` / `archived` / `on_hold` keys, native `active` / `wip` / `done` / `frozen` categories and a custom type. Ordinary public lifecycle, readiness, first-close and reopen timestamps correspond on all three engines; actual SQL reopen preserves the complete durable snapshot and create receipt. |
+| `TestPublicNativeCategoryOverlaysUseProjectCategoryAndKeepExactKeys` | The same exact native status key is ready in base and non-ready with project-local `wip` or `frozen` categories. Public claim refusal and reopen follow each project's installed category and slots; exact definitions and rows survive SQL reopen. |
+| `TestPublicMalformedNativeCategoryCatalogRefusesWithoutMutation` | Unknown/case-changed native categories, incompatible native outcomes, a claim slot pointing at `active` and an absent close-slot status refuse through public planning. A valid batch prefix followed by a status patch refuses atomically, conserving all existing durable snapshot planes. |
 | `TestConfiguredRuntimeLoadsCatalogAndAuditsOnEveryEngine` | Real `LoadConfigFile` -> `composition.Open` and public byte RPC on memory, SQLite and PostgreSQL load the installed source (SQL uses production `openStore`; preseeded memory uses StoreFactory), bind catalog methods, refresh the shared ontology after `ontology.apply`, apply the new workflow to an ordinary create, and pin the refreshed revision and digest in the durable audit/event stream. |
 
 The bootstrap inserts only the built-in ontology. Custom catalogs, project
@@ -81,6 +90,13 @@ views. Missing inventory or engine capabilities fail the test. PostgreSQL is an
 owned disposable pinned image; unavailable Docker/PostgreSQL fails the target.
 The target's `exclusive` tag isolates this engine-owning proof only.
 
+The native-category public tests retain reversible, exact request/response byte
+strings and lifecycle checkpoint documents in `*.public-catalog.json` test
+outputs, plus a named memory/SQLite/PostgreSQL correspondence vector. These
+inputs are public catalog fixtures. They do not replace the native recorder's
+accepted executable, physical stores, canonical exports or importer evidence;
+native producer and full-card qualification remain separate.
+
 ## Exact-source verification
 
 After committing and sealing build/vet evidence, start one focused gate and one
@@ -99,3 +115,74 @@ source/dispatch/artifact identities must be recorded separately from target
 summaries. A focused PASS does not qualify whole-tree, hosted, native or full
 B03/S1 behavior. Native/public producer evidence and full-card qualification
 remain unclaimed until their required real receipts exist.
+
+## Native catalog recording boundary
+
+The separate manual `b03catalog_native_test` consumes the committed
+`native_catalog_inputs.json` and accepted R418 executable through the committed
+main preparer. Ordinary `b03catalog_test` and literal `//...` exclude this
+recorder. The input preserves the accepted producer/control/readiness tuple;
+the historical B01 input is unchanged. Each recording owns four Dolt databases
+with different prefixes and root IDs, and retains every physical command,
+stdout/stderr hash, inventory sidecar, complete 33-table SQL census, concurrent
+catalog read, canonical export refusal and validated archive metadata.
+
+The canonical gate requires exact custom status/type values and provenance
+rows, the production strict-union import migration, and a nonempty validated
+archive from each physical store. Empty exports, synthetic archives and
+input-derived custom ontology seeds cannot qualify. The recorder bootstraps
+only a built-in protected source, then publicly plans/applies the migration
+document derived by the validator from that store's actual native archive.
+Custom lifecycle slot edits are a subsequent public action, distinct from the
+producer's original catalog. Replay acts on the imported root/project/type on
+memory, SQLite and PostgreSQL. It checks active readiness, claim, terminal and
+frozen refusals, close/repeated-close/reopen timestamps, full refusal
+conservation, and exact durable state across SQL close/open plus public checks
+after reopen. Memory has no durable reopen claim. Raw RPC streams, imported
+metadata and timestamp bytes remain available; correspondence compares actual
+semantic images across all four different IDs and three engines, normalizing
+only physical root/project identity and wall instants. Source and compilation
+alone do not establish any of these runtime outcomes.
+
+At `a813392398e2ed7be9453a8ef7c193c437c6fdb4` (tree
+`b6fdb8fd649c99413a7aa5212c7ce869e18da9b2`), native RunsOn
+`41948679662` completed with evidence status `ok`, exit 3, raw
+**1 RUN / 0 PASS / 1 FAIL / 0 SKIP**, and XML **1 test / 1 failure / 0 errors /
+0 skipped**. Its immutable receipt is
+`/tmp/plug-swarm/ci-local/remote/b03-main7a43-native-0005-a813392398e2-20261105T012739Z-99174fa1f331`;
+the archived testlogs SHA256 is
+`e1b6ba2c61a74eda174ad2467c60e23ffab7a7e1d67fccffb19454080726d7d5`.
+The independent reviewer confirmed all four real roots retained
+`awaiting_review` / `delivery`, all before/after SQL bytes and rows matched,
+and all 316 commands / 632 stdout+stderr streams were hash-bound. The recorder's compact-JSON
+substring check was a false negative; typed decoding replaces it without
+changing this RED receipt.
+
+The actual producer dependency remains literal: native-a/b/d refused canonical
+export with `Error: plug-dump/1 refused: unsupported nonempty family
+custom_statuses (live claims must be resolved)`; native-c refused the same way
+for `custom_types`. There are **no canonical archives and no paired replay**.
+The existing producer-owned capability route is controller bundle `2f2/564`.
+No further native run is authorized against the unchanged c8eb producer.
+Qualification remains **BLOCKED; paired replay AUTHORED_NOT_RUN/NOT_RUN**.
+
+The native0005 workflow preparation files were retained under its existing
+`.artifact/` directory; the wrapper copied only selected evidence files to the
+receipt root. `public-bundle-helper-binding.txt` has SHA256
+`edf10d53aca4e853c11132172543733574c7c3d91f61f0b6fb870a3e8a018b5f`
+(251 bytes), and `public-bundle.json` has SHA256
+`0c6d19f3eec0bb1044a8f4765ed77edbfd18ef891ff652edbfab6e29f914f3b1`
+(1,431 bytes). They bind the trusted helper, accepted R418 tuple, ZIP,
+manifest, canonical bundle and executable to this same native attempt. This
+local discovery required no API, collector change, new preparation or native
+execution, and does not alter the canonical-export RED. Future authorized runs
+also retain these exact files inside the test's own evidence directory and
+verify the helper and actual manifest/executable/ZIP tuple.
+
+Preserve native0004 `41946520562` (faff72ad prefix/setup and census-path defects
+plus producer refusal), historical ordinary whole RED `41901144448`
+(154/163), and historical native **17 RUN / 14 PASS / 3 FAIL** with downstream
+capability/replay NOT_RUN. Pinned-main focus `41937629687` and whole
+`41937629903` are bounded ordinary PASS only; the latter's three unrelated
+optional E5 skips remain literal. No source, ordinary gate or compile result
+promotes native, hosted, full B03 or FullS1 qualification.

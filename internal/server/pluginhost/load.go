@@ -39,6 +39,9 @@ type Config struct {
 	CheckpointStore     driver.CheckpointStore
 	CheckpointLease     driver.ActiveLease
 	RequireDurableState bool
+	// SourcePlanes selects only committed source-restored workflow namespaces.
+	// The selected driver and stored origin are verified during admission.
+	SourcePlanes []driver.SourcePlaneProviderCommitV1
 	// AuthenticationConfigured is trusted host configuration, never a plugin
 	// grant or caller-supplied principal. Leave it false in anonymous mode:
 	// even declared egress is disabled without an authentication provider.
@@ -77,6 +80,7 @@ type Host struct {
 	durableStore             driver.CheckpointStore
 	durableLease             driver.ActiveLease
 	durablePersistent        bool
+	sourceStates             map[string]*durableAccess
 	closed                   bool
 }
 
@@ -796,6 +800,29 @@ func NewWithContext(ctx context.Context, config Config) (result *Host, err error
 		return nil, failure(ErrDurableState, "persistent checkpoint capability is required")
 	}
 	h := &Host{instances: map[string]*instance{}, natives: map[string]sdk.Native{}, methods: map[string]registeredMethod{}, dispatcher: config.Dispatcher, authorize: config.Authorize, authenticationConfigured: config.AuthenticationConfigured, durableStore: checkpointStore, durableLease: checkpointLease, durablePersistent: persistentCheckpoint}
+	h.sourceStates = map[string]*durableAccess{}
+	for _, binding := range config.SourcePlanes {
+		store, ok := checkpointStore.(driver.WorkflowCheckpointStore)
+		if !ok {
+			underlying, available := checkpointStore.(driver.Store)
+			if !available {
+				return nil, driver.ErrUnsupported
+			}
+			store, err = driver.RequireWorkflowCheckpointStore(underlying, checkpointLease)
+			if err != nil {
+				return nil, err
+			}
+		}
+		state, sourceErr := NewSourceRuntimeState(ctx, store, checkpointLease, binding)
+		if sourceErr != nil {
+			return nil, sourceErr
+		}
+		key := binding.Provider.Alias + "/" + binding.Provider.Instance
+		if h.sourceStates[key] != nil {
+			return nil, failure(ErrDurableState, "duplicate source runtime namespace")
+		}
+		h.sourceStates[key] = state.(*durableAccess)
+	}
 	defer func() {
 		if err != nil {
 			_ = h.Close()
@@ -821,7 +848,7 @@ func NewWithContext(ctx context.Context, config Config) (result *Host, err error
 		if h.instances[key] != nil {
 			return nil, failure(ErrManifest, "duplicate instance %s", key)
 		}
-		if p.Requires.State == pluginapi.StateDurable && !persistentCheckpoint {
+		if p.Requires.State == pluginapi.StateDurable && !persistentCheckpoint && h.sourceStates[key] == nil {
 			return nil, failure(ErrDurableState, "plugin %s requires restart-durable state", p.Alias)
 		}
 		i, err := newInstanceWithContext(ctx, native, p, h, newStateStore(), h.durableFor(p.Alias, native.Instance))
@@ -951,6 +978,9 @@ func newInstanceWithContext(ctx context.Context, native sdk.Native, manifest plu
 }
 
 func (h *Host) durableFor(alias, instance string) *durableAccess {
+	if source := h.sourceStates[alias+"/"+instance]; source != nil {
+		return source
+	}
 	if h.durableStore == nil || h.durableLease == nil {
 		return newDurableAccessWithPersistence(nil, nil, alias, instance, false)
 	}

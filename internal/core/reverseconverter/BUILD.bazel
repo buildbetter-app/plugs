@@ -5,19 +5,24 @@ go_library(
     srcs = [
         "archive.go",
         "convert.go",
+        "loss.go",
+        "registry.go",
+        "representability.go",
+        "source_planes.go",
         "types.go",
     ],
     importpath = "github.com/buildbetter-app/plugs/internal/core/reverseconverter",
     visibility = ["//visibility:public"],
     deps = [
         "//internal/core/dumpformat",
+        "//internal/core/model",
         "//internal/core/ontologymigration",
     ],
 )
 
 go_test(
     name = "reverseconverter_test",
-    srcs = ["reverseconverter_test.go", "public_archive_test.go"],
+    srcs = ["reverseconverter_test.go", "public_archive_test.go", "representability_test.go", "source_planes_test.go", "registry_options_test.go"],
     data = [
         "//internal/integration/converterroundtrip:testdata/synthetic-plug-dump-1.tar",
         "//internal/integration/converterroundtrip:public_source_fixtures",
@@ -25,6 +30,7 @@ go_test(
     ],
     deps = [
         "//internal/core/dumpformat",
+        "//internal/core/model",
         "//internal/core/ontologymigration",
     ],
     embed = [":reverseconverter"],

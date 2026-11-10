@@ -123,3 +123,107 @@ func TestOfflineHistoryRetainsExplicitCommitWithoutInventingAnEventOrChange(t *t
 		t.Fatal("provenance-free empty source unit admitted")
 	}
 }
+
+func TestOfflineHistoryScopesOriginalSequencesEventsAndCommitsBySource(t *testing.T) {
+	fixture := func() OfflineHistory {
+		h := OfflineHistory{Source: "explicit-project-history", Verified: true, Complete: true, First: 1, Head: 2}
+		for i, project := range []string{"pl", "qa"} {
+			r := Record{Ref: model.RefByID("source/"+project, model.Natural64(0)), Kind: "config", Body: []byte(`{"value":"same"}`)}
+			h.Batches = append(h.Batches, SourceHistoryBatch{SourceStoreID: "store-" + project, Project: project, SourceSequence: 1, Sequence: uint64(i + 1), EventIDs: []string{"1"}, CommitIDs: []string{"same-raw-commit"}, Changes: []SourceHistoryChange{{After: &r}}})
+		}
+		return h
+	}
+	p := replayProfile(RestoreHistoryModeFull)
+	plan, err := BuildOfflineHistory(Meta{}, p, fixture(), time.Now(), nil)
+	if err != nil || len(plan.Evidence.Mapping) != 2 || len(plan.Records) != 3 {
+		t.Fatal("independent source IDs were deduplicated or refused", err)
+	}
+	for i, project := range []string{"pl", "qa"} {
+		mapping := plan.Evidence.Mapping[i]
+		if mapping.SourceStoreID != "store-"+project || mapping.Project != project || mapping.SourceSequence != 1 || mapping.Sequence != uint64(i+1) || mapping.EventIDs[0] != "1" || mapping.CommitIDs[0] != "same-raw-commit" {
+			t.Fatal("original source identity/sequence was rewritten", mapping)
+		}
+	}
+	for _, fault := range []string{"duplicate-event-within-source", "source-gap", "missing-store"} {
+		t.Run(fault, func(t *testing.T) {
+			h := fixture()
+			switch fault {
+			case "duplicate-event-within-source":
+				h.Batches[1].SourceStoreID, h.Batches[1].Project, h.Batches[1].SourceSequence = "store-pl", "pl", 2
+			case "source-gap":
+				h.Batches[1].SourceSequence = 2
+			case "missing-store":
+				h.Batches[1].SourceStoreID = ""
+			}
+			if _, err := BuildOfflineHistory(Meta{}, p, h, time.Now(), nil); err == nil {
+				t.Fatal("ambiguous or incomplete original source history admitted")
+			}
+		})
+	}
+}
+
+func TestNativeTableHistoryKeepsCurrentBusinessCreatesOutsideSourceCommits(t *testing.T) {
+	when := time.Date(2026, 11, 9, 20, 0, 0, 0, time.UTC)
+	profile := sourcePlaneTestProfile()
+	profile.HistoryMode = RestoreHistoryModeFull
+	binding, err := NewSourcePlaneImportBindingV1(sourcePlaneTestPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile.SourcePlanes = &binding
+	before := Record{Ref: model.RefByID(NativeTableHistoryRecordPrefix+"scoped-table", model.Natural64(0)), Kind: "beads-archive", Body: []byte(`{"columns":["id"],"rows":[{"id":1}]}`)}
+	after := before
+	after.Body = []byte(`{"columns":["id","status"],"rows":[{"id":1,"status":"open"}]}`)
+	history := OfflineHistory{Source: NativeTableHistorySource, Verified: true, Complete: true, First: 1, Head: 2, Batches: []SourceHistoryBatch{
+		{SourceStoreID: "original", Project: "pl", SourceSequence: 1, Sequence: 1, CommitIDs: []string{"old-schema"}, EventIDs: []string{}, Changes: []SourceHistoryChange{{After: &before}}},
+		{SourceStoreID: "original", Project: "pl", SourceSequence: 2, Sequence: 2, CommitIDs: []string{"new-schema"}, EventIDs: []string{}, Changes: []SourceHistoryChange{{Before: &before, After: &after}}},
+	}}
+	current := *replayRecord(`{"title":"current model only"}`)
+	tail := []Record{after, current}
+	plan, err := BuildSourcePlaneHistory(Meta{}, profile, history, when, tail)
+	if err != nil || len(plan.Entries) != 3 || len(plan.Evidence.Mapping) != 2 {
+		t.Fatal("separate native history and current image refused", err)
+	}
+	for _, entry := range plan.Entries[:2] {
+		for _, change := range entry.Changes {
+			if change.Ref == current.Ref {
+				t.Fatal("current portable bead assigned to a source commit")
+			}
+		}
+	}
+	if len(plan.Entries[2].Changes) != 2 || plan.Entries[2].Changes[0].Ref != current.Ref || plan.Evidence.Source != NativeTableHistorySource {
+		t.Fatal("current creation or distinct raw history evidence lost")
+	}
+	for _, fault := range []string{"core-only", "portable-source", "portable-past-image", "unscoped", "fabricated-event", "changed-raw-head"} {
+		t.Run(fault, func(t *testing.T) {
+			bad := history
+			bad.Batches = append([]SourceHistoryBatch(nil), history.Batches...)
+			badTail := append([]Record(nil), tail...)
+			joint := true
+			p := profile
+			switch fault {
+			case "core-only":
+				joint, p.SourcePlanes = false, nil
+			case "portable-source":
+				bad.Source = "beads-dolt-images/1"
+			case "portable-past-image":
+				bad.Batches[0].Changes = []SourceHistoryChange{{After: &current}}
+			case "unscoped":
+				bad.Batches[0].SourceStoreID = ""
+			case "fabricated-event":
+				bad.Batches[0].EventIDs = []string{"inferred-from-current-audit"}
+			case "changed-raw-head":
+				badTail[0] = before
+			}
+			var err error
+			if joint {
+				_, err = BuildSourcePlaneHistory(Meta{}, p, bad, when, badTail)
+			} else {
+				_, err = BuildOfflineHistory(Meta{}, p, bad, when, badTail)
+			}
+			if err == nil {
+				t.Fatal("native evidence boundary was bypassed")
+			}
+		})
+	}
+}

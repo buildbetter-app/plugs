@@ -22,6 +22,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
+	"github.com/buildbetter-app/plugs/internal/storage/postgres"
 	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
 	"github.com/buildbetter-app/plugs/internal/testclock"
 )
@@ -46,6 +47,7 @@ type fixture struct {
 	onto   *service.Ontology
 	serial int
 	posts  atomic.Uint64
+	sqlDSN string
 }
 
 type publicationProbe struct{ calls *atomic.Uint64 }
@@ -57,21 +59,42 @@ func (p publicationProbe) After(context.Context, port.CommittedChange, port.Snap
 
 func eachStore(t *testing.T, run func(*testing.T, *fixture)) {
 	t.Helper()
-	for _, engine := range []string{"memory", "sqlite_wal"} {
+	for _, engine := range []string{"memory", "sqlite_wal", "postgres"} {
 		t.Run(engine, func(t *testing.T) { run(t, newFixture(t, engine)) })
 	}
 }
 
 func newFixture(t *testing.T, engine string) *fixture {
 	t.Helper()
+	return newFixtureWithClocks(t, engine, testclock.New(t, time.Date(2026, 11, 3, 12, 0, 0, 123456000, time.UTC)), nil)
+}
+
+// A nil storage clock preserves the original fixture's clocks. An explicit
+// storage clock is independent of the Writer/service clock, including the
+// real SQL function reached by PostgreSQL's unchanged driver.
+func newFixtureWithClocks(t *testing.T, engine string, application, storage *testclock.Clock) *fixture {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	t.Cleanup(cancel)
-	f := &fixture{ctx: ctx, clock: testclock.New(t, time.Date(2026, 11, 3, 12, 0, 0, 123456000, time.UTC))}
+	f := &fixture{ctx: ctx, clock: application}
+	driverClock := application
+	if storage != nil {
+		driverClock = storage
+	}
 	var err error
-	if engine == "memory" {
-		f.store, err = memory.NewWithOptions(memory.Options{Clock: f.clock.Now})
-	} else {
-		f.store, err = (sqlite.Driver{Clock: f.clock.Now}).Open(ctx, driver.Config{DSN: filepath.Join(t.TempDir(), "ready.db")})
+	switch engine {
+	case "memory":
+		f.store, err = memory.NewWithOptions(memory.Options{Clock: driverClock.Now})
+	case "sqlite_wal":
+		f.store, err = (sqlite.Driver{Clock: driverClock.Now}).Open(ctx, driver.Config{DSN: filepath.Join(t.TempDir(), "ready.db")})
+	case "postgres":
+		f.sqlDSN = testclock.PostgresDSN(t)
+		if storage != nil {
+			f.sqlDSN = storage.BindPostgres(t, f.sqlDSN)
+		}
+		f.store, err = (postgres.Driver{}).Open(ctx, driver.Config{DSN: f.sqlDSN})
+	default:
+		t.Fatalf("unknown B01 storage engine %q", engine)
 	}
 	if err != nil {
 		t.Fatal(err)

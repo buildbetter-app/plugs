@@ -30,6 +30,7 @@ type transaction struct {
 	nativeRestore           *driver.NativeRestoreProfile
 	nativeAllocators        bool
 	importRestore           *driver.RestoreImportProfile
+	sourcePlaneImport       *driver.SourcePlaneImportPublication
 	closed, locked, hasHead bool
 	acquired                driver.LockSet
 	records                 map[string]*driver.Record
@@ -41,6 +42,7 @@ type transaction struct {
 	parentCounters          map[string]driver.ParentCounter
 	allocated               map[string]bool
 	checkpointGuards        map[string]uint64
+	checkpointWrites        map[string]driver.Checkpoint
 	sourceDeclarations      map[string]sourceDeclaration
 	stagedParents           map[string][]string
 	stagedIncoming          map[sourceLinkBucket][]string
@@ -441,6 +443,11 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 				}
 			}
 		}
+		if t.sourcePlaneImport != nil {
+			if err := t.sourcePlaneImport.Validate(header, t.checkpointWrites, t.records); err != nil {
+				return model.Changeset{}, err
+			}
+		}
 		expected = t.restore.Incarnation
 	}
 	if header.Incarnation != expected {
@@ -612,10 +619,12 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 	if err := next.publishAllocatorImage(s.state, t.restore != nil); err != nil {
 		return model.Changeset{}, err
 	}
+	checkpoints := t.prepareCheckpointPublication()
 	if err := t.check(ctx); err != nil {
 		return model.Changeset{}, err
 	}
 	s.state = next
+	s.checkpoints = checkpoints
 	t.finish()
 	return cloneJSON(entry)
 }

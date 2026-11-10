@@ -93,6 +93,111 @@ func (s *testDurableState) List(_ context.Context, prefix string, limit int) ([]
 
 var _ pluginapi.DurableState = (*testDurableState)(nil)
 
+func TestUserContentGuardRunsAtNativeCreationBoundary(t *testing.T) {
+	ctx := context.Background()
+	state := &testDurableState{}
+	provider, err := New(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	refusal := errors.New("rollback window refusal")
+	provider.WithUserContentGuard(func(kinds []string) error {
+		got = append([]string(nil), kinds...)
+		return refusal
+	})
+	_, err = provider.Invoke(ctx, model.PrincipalRef{Kind: "user", ID: "guard"}, InvokeRequest{
+		Template: "guard", Project: "guard", Mode: "ephemeral",
+		Checklist: []ChecklistItem{{Label: "one", Title: "one"}},
+	}, model.WriteMeta{Method: "x.workflow.invoke", Project: "guard", IdempotencyKey: strings.Repeat("a", 64)})
+	if !errors.Is(err, refusal) {
+		t.Fatalf("native creation guard error=%v, want %v", err, refusal)
+	}
+	if !reflect.DeepEqual(got, []string{RunKind, ItemKind}) {
+		t.Fatalf("native creation kinds=%v, want [%q %q]", got, RunKind, ItemKind)
+	}
+	if state.rev != 0 || len(state.value) != 0 {
+		t.Fatalf("guarded native write published checkpoint revision=%d payload=%q", state.rev, state.value)
+	}
+}
+
+func TestUserContentGuardSurvivesStagedDemote(t *testing.T) {
+	ctx := context.Background()
+	state := &testDurableState{}
+	provider, err := New(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	refusal := errors.New("rollback window refusal")
+	provider.WithUserContentGuard(func(kinds []string) error {
+		got = append([]string(nil), kinds...)
+		return refusal
+	})
+	request := DemoteRequest{
+		Source: model.RefByID("pl-source", model.Natural64(0)), Template: "demote",
+		Project: "project", Label: "source", Title: "source", Type: "task",
+	}
+	_, err = provider.DemoteAtomic(ctx, model.PrincipalRef{Kind: "user", ID: "guard"}, request,
+		model.WriteMeta{Method: "x.workflow.run.demote", Project: "project", IdempotencyKey: strings.Repeat("d", 64)},
+		func() (DemoteRequest, error) { return request, nil },
+		func(DemoteResult, PreparedState) error { return errors.New("publish must not run") })
+	if !errors.Is(err, refusal) {
+		t.Fatalf("staged demote guard error=%v, want %v", err, refusal)
+	}
+	if !reflect.DeepEqual(got, []string{RunKind, ItemKind}) {
+		t.Fatalf("staged demote creation kinds=%v, want [%q %q]", got, RunKind, ItemKind)
+	}
+	if state.rev != 0 || len(state.value) != 0 {
+		t.Fatalf("guarded staged demote published checkpoint revision=%d payload=%q", state.rev, state.value)
+	}
+}
+
+func TestM03CreationProvenanceSurvivesReceiptReplay(t *testing.T) {
+	ctx := context.Background()
+	created := time.Date(2026, 11, 5, 1, 0, 0, 0, time.UTC)
+	clock := created
+	state := &testDurableState{}
+	newProvider := func() *Provider {
+		provider, err := New(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return provider.WithClock(func() time.Time { return clock }).WithIdentity(Alias, "default", "m03-incarnation")
+	}
+	provider := newProvider()
+	by := model.PrincipalRef{Kind: "user", ID: "m03-owner"}
+	meta := model.WriteMeta{Method: "x.workflow.invoke", Project: "m03", IdempotencyKey: strings.Repeat("1", 64)}
+	request := InvokeRequest{Template: "m03", Project: "m03", Mode: "ephemeral", Checklist: []ChecklistItem{{Label: "one", Title: "one", Type: "task"}}}
+	first, err := provider.Invoke(ctx, by, request, meta)
+	if err != nil || len(first.Items) != 1 || !first.Items[0].CreatedAt.Equal(created) {
+		t.Fatalf("initial item lost authoritative run creation: result=%+v err=%v", first, err)
+	}
+	wire, err := json.Marshal(first.Items[0])
+	if err != nil || bytes.Contains(wire, []byte(`"createdAt"`)) {
+		t.Fatalf("internal order metadata changed item wire projection: %s err=%v", wire, err)
+	}
+	before, revision := append([]byte(nil), state.value...), state.rev
+	clock = clock.Add(time.Hour)
+	provider = newProvider()
+	replay, err := provider.Invoke(ctx, by, request, meta)
+	if err != nil || !reflect.DeepEqual(first, replay) || !bytes.Equal(before, state.value) || revision != state.rev {
+		t.Fatalf("reopened provider replay changed creation provenance or checkpoint: result=%+v err=%v", replay, err)
+	}
+	claimMeta := meta
+	claimMeta.Method, claimMeta.IdempotencyKey = "bead.claimNext", strings.Repeat("2", 64)
+	claimed, found, replayed, err := provider.ClaimNextSelected(ctx, by, model.RefByID(first.Items[0].ID, model.Natural64(0)), "m03", nil, claimMeta)
+	if err != nil || !found || replayed || !claimed.CreatedAt.Equal(created) {
+		t.Fatalf("selected claim lost run creation: item=%+v found=%v replayed=%v err=%v", claimed, found, replayed, err)
+	}
+	before, revision = append([]byte(nil), state.value...), state.rev
+	provider = newProvider()
+	retry, found, replayed, err := provider.ReplayClaimNext(ctx, by, "m03", nil, claimMeta)
+	if err != nil || !found || !replayed || !reflect.DeepEqual(claimed, retry) || !bytes.Equal(before, state.value) || revision != state.rev {
+		t.Fatalf("reopened selected replay changed creation provenance or checkpoint: item=%+v found=%v replayed=%v err=%v", retry, found, replayed, err)
+	}
+}
+
 func TestNativeRequiresTrustedCallerAdapter(t *testing.T) {
 	_, err := Native(nil).New(nil)
 	var failure *model.Error

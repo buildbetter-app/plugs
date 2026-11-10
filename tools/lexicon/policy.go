@@ -41,11 +41,15 @@ const (
 func DefaultTreePolicy() TreePolicy {
 	return TreePolicy{
 		ReferencePrefixes: []string{
+			"spec/s1-b09-native/testdata/beads-9d6fff.git-tree",
+			"spec/s1-b09-native/testdata/beads-446dbb.git-tree",
 			"spec/recorded/goldens.json",
 			"spec/s1-b09-b12/reference-v2/cb40-41563023339.packet.json",
 			"spec/s1-b17-b20/reference/b18/record.py",
 		},
 		ReferenceSHA256: map[string]string{
+			"spec/s1-b09-native/testdata/beads-446dbb.git-tree":         "a2456b25849b281d86ac57a461e21e0cc244cd80602c20269d88e7b9e28bc246",
+			"spec/s1-b09-native/testdata/beads-9d6fff.git-tree":         "23d84a56302ad19c50d9d25af733b2da50f9137aaf9308b273cab039b6023ae3",
 			"spec/recorded/goldens.json":                                "26a086334357d55ea847daa301f45c9435a71bba75fb6c324456aebf459fbf32",
 			"spec/s1-b09-b12/reference-v2/cb40-41563023339.packet.json": "33cd8fdcb66b5b93f4a36329fc0598cb9c5d012fc350804809da5eb5a38d4067",
 			"spec/s1-b17-b20/reference/b18/record.py":                   "375c516727d1dac47c395a7b117171e638f25a1e1f7b95a1c78f61d0552f973f",
@@ -70,6 +74,7 @@ func DefaultTreePolicy() TreePolicy {
 			".github/workflows/BUILD.bazel":                        {},
 			".github/workflows/plug-beads-bazel.yml":               {},
 			".github/workflows/plug-bazel.yml":                     {},
+			".github/workflows/plug-cp7-latency.yml":               {},
 			".github/workflows/plug-nightly-restore-diffs.yml":     {},
 			".github/workflows/plug-public-bundle.yml":             {},
 			".github/workflows/plug-runs-on-smoke.yml":             {},
@@ -115,6 +120,12 @@ func DefaultTreePolicy() TreePolicy {
 			"engdocs/design/plug/spike-ux-decision.md":             {},
 		},
 		BinarySHA256: map[string]string{
+			"spec/s1-b09-native/testdata/beads-446dbb.tar.gz":                                    "32034b6d242f252144f6353f0d9d2f8b7d50739faf7973d62de93cafe25f3959",
+			"spec/s1-b09-native/testdata/beads-9d6fff.tar.gz":                                    "8aa8d07655ec6903703a4c94a4b1aa12d4fb509ab647cd1958f73f8342d3fe6e",
+			"internal/core/dumpformat/testdata/native-tables-synthetic.tar":                      "5afe9a2225a573000d1d5cd6245ee58ac07e4ff4b928f2b174df2ff99ef9a68e",
+			"internal/core/dumpformat/testdata/producer-0f44-reprocody.tar":                      "fe136810685c5d7c438ea7ebc3b868caf130ace167be24f671816ef69f9889c8",
+			"internal/core/dumpformat/testdata/producer-0f44-reprosignals.tar":                   "09fa02c4f96ede9b2c4207064c9cfeed0c732958696d7c3841636a88f888d309",
+			"internal/core/dumpformat/testdata/producer-e615-reprocody-gap.tar":                  "9f82b8405d44acab48649f7815a69027238dccea0ae4c9ddb2a871b8a1a8c8ff",
 			"internal/integration/converterroundtrip/testdata/public-complete-root-990eb800.tar": "a2d933a7a54b53303d33a20d5b96eaac0a85c079c5b08cae553aa2a654d820b5",
 			"internal/integration/converterroundtrip/testdata/public-partial-990eb800.tar":       "2dd0bc5cb41ee5ae410659fdff91c4ee6b865098b371a2e1be9b819187271e53",
 			"internal/integration/offlinehistory/testdata/dolt-source-partial.tar":               "b56f1de4a36c22cca379647d5fe1b2962e4358d9976923e76007ea84b7712582",

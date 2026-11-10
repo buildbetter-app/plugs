@@ -202,6 +202,7 @@ func Validate(e Effective, before, after *BeadState, method string, facts GuardF
 	violations = append(violations, priorityViolations...)
 	_, templateViolations := IsTemplate(*after)
 	violations = append(violations, templateViolations...)
+	violations = append(violations, validateAwaitMembers(before, after, facts)...)
 	t, ok := e.document.Types[after.Type]
 	if !ok || t.Archived {
 		return append(violations, invalid("type", "unknown or archived type")...)
@@ -215,7 +216,7 @@ func Validate(e Effective, before, after *BeadState, method string, facts GuardF
 		violations = append(violations, invalid("status", "status is outside the active type workflow")...)
 	}
 	for _, name := range keys(after.Fields) {
-		if name == "priority" || name == "template" {
+		if name == "priority" || name == "template" || isAwaitMember(name) {
 			continue
 		} // fixed kernel field, checked above
 		if isGateField(name) {
@@ -270,7 +271,7 @@ func Validate(e Effective, before, after *BeadState, method string, facts GuardF
 	if !contains(w.Statuses, before.Status) {
 		return append(violations, invalid("status", "source is outside workflow")...)
 	}
-	if category, found := e.Category(before.Status); !found || (slot == Claim && category != Unstarted) {
+	if category, found := e.Category(before.Status); !found || (slot == Claim && !category.ReadyEligible()) {
 		return append(violations, invalid("status", "claim requires an unstarted source")...)
 	}
 	matched, guardViolations := transitionGuards(w, before.Status, target, *after, facts)

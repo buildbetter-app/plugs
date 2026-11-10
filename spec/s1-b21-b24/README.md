@@ -161,3 +161,21 @@ RunsOn `remote-bazel` wrapper; no local Bazel result is a certificate.
 The runtime clock controls and their limits are documented in
 [the clock boundary scope](../sqlclock-coverage.md). The retained Beads reference
 bytes are unchanged and are not upgraded to controlled-SQL twin evidence.
+
+The B24 independent-clock matrix binds separate application and durable clocks
+to the production RPC service, Writer, view service and real drivers. Stale
+list/count uses the application cutoff and actual persisted version timestamps:
+before and exactly at one day it excludes the row; the next representable tick
+includes it. A durable-only advance cannot alter that membership, and a saved
+continuation retains its cutoff after an application-only advance. Deferral
+receipts follow durable time even when application time has already passed
+their expiry. Independently advancing both inputs together checks before,
+exactly at and after expiry, including actual PostgreSQL SQL/Go equality at
+each phase. Memory/SQLite have no production SQL time expression.
+
+Every read/refusal/replay checks the complete logical state and all physical
+application tables on SQL stores. SQLite/PostgreSQL actually close/open before
+readback; memory remains a same-store readback. Untimed deferral still requires
+explicit reopen. These public Plug controls do not qualify native Dolt clock
+inputs, native timed wake, protected-source import, native caps or a full card;
+those require their own accepted producer material and recording evidence.

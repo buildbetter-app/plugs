@@ -4,11 +4,13 @@ package lexicon
 import (
 	"bufio"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,71 +22,171 @@ import (
 	"unicode/utf8"
 )
 
-// Term is one lexicon rule.
-type Term struct {
-	Matches []string
-	Pattern string
-	Class   string
-	Allow   map[rune]bool
-}
-
-// GoStringAllowance admits exact decoded external-protocol strings at one path.
-type GoStringAllowance struct {
-	Path           string
-	Value          string
-	PhysicalValues []string
-}
-
-// NativeControlAllowance binds a complete finite set of decoded Go string
-// literals to one exact native source path. No family or prefix matching is
-// supported, and imports are never admitted by this allowance.
-type NativeControlAllowance struct {
-	Path   string
-	Values []string
-}
-
-// Config is the small TOML subset used by the repository lexicon.
-type Config struct {
-	Terms                   []Term
-	Provenance              []string
-	ExternalProtocolString  GoStringAllowance
-	NativeRecordingLiterals NativeControlAllowance
-	NativeViewStrings       NativeControlAllowance
-}
-
-const externalProtocolSource = "spec/s1-b25-b28/public_recording_test.go"
-const nativeRecordingLiteralSource = "spec/s1-b21-b24/native_recording_test.go"
-const nativeViewProtocolSource = "spec/s1-b21-b24/native_views_test.go"
-
-const externalEnvironmentDigest = "1b48d14732a1b4689f7af2d622235e53ddf1703e7043985592e66b0d1ecf4eff"
-
-// These decoded-string digests bind the accepted physical catalog, its two
-// journal/cursor names and one dependency column. Config cannot add a family
-// of names or substitute another literal, even at the authorized source path.
-var physicalProtocolDigests = map[string]bool{
-	"39d6e7ef1121f5ac563d8c278431a6a19f9d420534e9cbe38d2f9f41d9912502": true,
-	"93602e05a1bff1bd127187c713caaeab338848eb4a6cba051123440a912cdf26": true,
-	"91f880d51578af7df6289315f0b8e9e7e5c44e86b33f48900c26f031a0cc6f75": true,
-	"7853d42458d77d5bd188bd1a1bba51e87257cbe5ec12826168bc639f95bb0a72": true,
-}
-
-var nativeRecordingLiteralDigests = map[string]bool{
-	"d56ebf9119cfd53f6690d8ec4111275a19c16b5c1c89123d3ff99499b81586cd": true,
-	"91f880d51578af7df6289315f0b8e9e7e5c44e86b33f48900c26f031a0cc6f75": true,
-	"93602e05a1bff1bd127187c713caaeab338848eb4a6cba051123440a912cdf26": true,
-	"a250fe4bfeccf35cd1f34c8eb7625ef05127294cdeb6884a04adea45796adebc": true,
-	"bb4a56c556282d591f27cc54e1f06ac5a3de17e1aed41e0ac387b2b71fe30f91": true,
-	"c7e69eb7c0bdafa652aa9539c60152fb468d0ac0ddc4f71bb90469ec8747caf8": true,
-	"d29f73f45d1bb46a0ca4f641e919fcb6964b2aedeb3db5205118b50627c725fc": true,
-}
-
-var nativeViewProtocolDigests = map[string]bool{
-	"91f880d51578af7df6289315f0b8e9e7e5c44e86b33f48900c26f031a0cc6f75": true,
-	"93602e05a1bff1bd127187c713caaeab338848eb4a6cba051123440a912cdf26": true,
-}
+const nativeHTTPDomainSource = "spec/s1-b09-native/domain_recording_test.go"
+const sourcePlaneProtocolSource = "internal/storage/driver/source_planes_validate.go"
+const sourcePlaneFixtureSource = "internal/storage/driver/source_planes_test.go"
 
 func protocolLiteralDigest(value string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(value)))
+}
+
+// Admit the native listener announcement only at its unique parsing call.
+// The path, receiver, method, call and entire decoded literal are fixed; a
+// copied diagnostic, adjacent file, import or duplicate call gains nothing.
+func nativeHTTPListenerOffset(path string, content []byte) (int, bool) {
+	if path != nativeHTTPDomainSource {
+		return 0, false
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, content, 0)
+	if err != nil {
+		return 0, false
+	}
+	var function *ast.FuncDecl
+	for _, declaration := range file.Decls {
+		if candidate, ok := declaration.(*ast.FuncDecl); ok && candidate.Name.Name == "styleADomainCreate" {
+			if function != nil {
+				return 0, false
+			}
+			function = candidate
+		}
+	}
+	if function == nil || function.Body == nil || function.Recv == nil || len(function.Recv.List) != 1 {
+		return 0, false
+	}
+	pointer, ok := function.Recv.List[0].Type.(*ast.StarExpr)
+	if !ok {
+		return 0, false
+	}
+	receiver, ok := pointer.X.(*ast.Ident)
+	if !ok || receiver.Name != "recorder" {
+		return 0, false
+	}
+	matches, offset := 0, 0
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if _, closure := node.(*ast.FuncLit); closure {
+			return false
+		}
+		call, ok := node.(*ast.CallExpr)
+		if !ok || call.Ellipsis.IsValid() || len(call.Args) != 2 {
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || selector.Sel.Name != "CutPrefix" {
+			return true
+		}
+		name, ok := selector.X.(*ast.Ident)
+		if !ok || name.Name != "strings" {
+			return true
+		}
+		literal, ok := call.Args[1].(*ast.BasicLit)
+		if !ok || literal.Kind != token.STRING {
+			return true
+		}
+		value, err := strconv.Unquote(literal.Value)
+		if err == nil && protocolLiteralDigest(value) == "d56ebf9119cfd53f6690d8ec4111275a19c16b5c1c89123d3ff99499b81586cd" {
+			matches++
+			offset = fset.Position(literal.Pos()).Offset
+		}
+		return true
+	})
+	return offset, matches == 1
+}
+
+func protocolFieldLiteralOffsets(path string, content []byte, sites []NativeLiteralSite) map[int]bool {
+	offsets := nativeFieldLiteralOffsets(path, content, sites)
+	if offset, ok := nativeHTTPListenerOffset(path, content); ok {
+		if offsets == nil {
+			offsets = make(map[int]bool)
+		}
+		offsets[offset] = true
+	}
+	return offsets
+}
+
+func validSourcePlaneConstants(allowances []GoConstantAllowance) bool {
+	want := map[string]bool{
+		"fe552dc8dc9e69d88a9f9eb00b1ad65eb317b9d53f956115eaae5efc56376876": true,
+		"2a882a552d7e1e6461ee57b1d1b2dfc7b6d05b50f26ef2ce5811e78440f35216": true,
+	}
+	if len(allowances) != len(want) {
+		return false
+	}
+	for _, allowance := range allowances {
+		fields := []string{allowance.Path, allowance.Name, allowance.Value}
+		for _, field := range fields {
+			if strings.ContainsRune(field, '\x00') {
+				return false
+			}
+		}
+		digest := protocolLiteralDigest(strings.Join(fields, "\x00"))
+		if !want[digest] {
+			return false
+		}
+		delete(want, digest)
+	}
+	return true
+}
+
+// Only the unique top-level untyped constant's direct string initializer gains
+// an offset. Copies, local declarations and other source contexts grant none.
+// An invalid declaration of the bound name is refused even if its initializer
+// splits the physical spelling across multiple expressions.
+func sourcePlaneConstantLiteralOffset(path string, content []byte, allowances []GoConstantAllowance) (offset int, admitted, invalid bool) {
+	if path != sourcePlaneProtocolSource && path != sourcePlaneFixtureSource || !validSourcePlaneConstants(allowances) {
+		return 0, false, false
+	}
+	var allowance GoConstantAllowance
+	for _, candidate := range allowances {
+		if candidate.Path == path {
+			allowance = candidate
+		}
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, content, 0)
+	if err != nil {
+		return 0, false, false
+	}
+	count := 0
+	var selected *ast.BasicLit
+	for _, declaration := range file.Decls {
+		switch node := declaration.(type) {
+		case *ast.FuncDecl:
+			if node.Name.Name == allowance.Name {
+				count++
+			}
+		case *ast.GenDecl:
+			for _, spec := range node.Specs {
+				switch spec := spec.(type) {
+				case *ast.TypeSpec:
+					if spec.Name.Name == allowance.Name {
+						count++
+					}
+				case *ast.ValueSpec:
+					for _, name := range spec.Names {
+						if name.Name != allowance.Name {
+							continue
+						}
+						count++
+						if node.Tok != token.CONST || spec.Type != nil || len(spec.Names) != 1 || len(spec.Values) != 1 {
+							continue
+						}
+						literal, ok := spec.Values[0].(*ast.BasicLit)
+						if !ok || literal.Kind != token.STRING {
+							continue
+						}
+						if value, err := strconv.Unquote(literal.Value); err == nil && value == allowance.Value {
+							selected = literal
+						}
+					}
+				}
+			}
+		}
+	}
+	if count != 1 || selected == nil {
+		return 0, false, count != 0
+	}
+	return fset.Position(selected.Pos()).Offset, true, false
 }
 
 func allowsPhysicalProtocolString(path, value string, allowance GoStringAllowance) bool {
@@ -92,6 +194,18 @@ func allowsPhysicalProtocolString(path, value string, allowance GoStringAllowanc
 		return false
 	}
 	for _, allowed := range allowance.PhysicalValues {
+		if value == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+func allowsNativeManifestString(path, value string, allowance GoStringSetAllowance) bool {
+	if path != nativeManifestProtocolSource || allowance.Path != path || !nativeManifestProtocolDigests[protocolLiteralDigest(value)] {
+		return false
+	}
+	for _, allowed := range allowance.Values {
 		if value == allowed {
 			return true
 		}
@@ -144,189 +258,368 @@ func (f Finding) String() string {
 	return fmt.Sprintf("%s:%d: %s term %q", f.Path, f.Line, f.Class, f.Term)
 }
 
-// LoadConfig reads the checked-in lexicon without adding a parser dependency.
-func LoadConfig(path string) (Config, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return Config{}, fmt.Errorf("read lexicon: %w", err)
+func validB03NativeGoLiterals(sites []NativeLiteralSite) bool {
+	want := siteDigests(canonicalRules.B03NativeGoLiterals)
+	if len(sites) != len(want) {
+		return false
 	}
-	if !utf8.Valid(b) {
-		return Config{}, errors.New("lexicon is not valid UTF-8")
-	}
-	var cfg Config
-	section := ""
-	var current *Term
-	var externalSection, externalPath, externalValue, externalPhysical bool
-	var recordingSection, recordingPath, recordingValues bool
-	var viewSection, viewPath, viewValues bool
-	for _, line := range strings.Split(string(b), "\n") {
-		line = strings.TrimSpace(strings.SplitN(line, "#", 2)[0])
-		if line == "" {
-			continue
-		}
-		switch line {
-		case "[[term]]":
-			cfg.Terms = append(cfg.Terms, Term{})
-			current = &cfg.Terms[len(cfg.Terms)-1]
-			section = "term"
-			continue
-		case "[zones]":
-			section = "zones"
-			current = nil
-			continue
-		case "[external_protocol_string]":
-			if externalSection {
-				return Config{}, errors.New("duplicate external protocol string section")
-			}
-			externalSection = true
-			section = "external_protocol_string"
-			current = nil
-			continue
-		case "[native_recording_literals]":
-			if recordingSection {
-				return Config{}, errors.New("duplicate native recording literal section")
-			}
-			recordingSection = true
-			section = "native_recording_literals"
-			current = nil
-			continue
-		case "[native_view_strings]":
-			if viewSection {
-				return Config{}, errors.New("duplicate native view string section")
-			}
-			viewSection = true
-			section = "native_view_strings"
-			current = nil
-			continue
-		}
-		key, value, ok := strings.Cut(line, "=")
+	for _, site := range sites {
+		digest, ok := want[site.ID]
 		if !ok {
-			return Config{}, fmt.Errorf("invalid lexicon line %q", line)
+			return false
 		}
-		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
-		values, err := quotedValues(value)
-		if err != nil {
-			return Config{}, fmt.Errorf("lexicon %s: %w", key, err)
-		}
-		if section == "zones" && key == "provenance" {
-			cfg.Provenance = values
-			continue
-		}
-		if section == "external_protocol_string" {
-			if key != "physical_values" && len(values) != 1 {
-				return Config{}, errors.New("external protocol string fields require one value")
+		fields := append([]string{site.Path, site.Field}, site.Values...)
+		for _, field := range fields {
+			if strings.ContainsRune(field, '\x00') {
+				return false
 			}
-			switch key {
-			case "path":
-				if externalPath {
-					return Config{}, errors.New("duplicate external protocol string path")
-				}
-				externalPath = true
-				cfg.ExternalProtocolString.Path = values[0]
-			case "value":
-				if externalValue {
-					return Config{}, errors.New("duplicate external protocol string value")
-				}
-				externalValue = true
-				cfg.ExternalProtocolString.Value = values[0]
-			case "physical_values":
-				if externalPhysical || len(values) != len(physicalProtocolDigests) {
-					return Config{}, errors.New("physical protocol strings require one complete exact literal set")
-				}
-				externalPhysical = true
-				seen := make(map[string]bool)
-				for _, value := range values {
-					digest := protocolLiteralDigest(value)
-					if !physicalProtocolDigests[digest] || seen[digest] {
-						return Config{}, errors.New("physical protocol string is unlisted or duplicated")
+		}
+		if protocolLiteralDigest(strings.Join(fields, "\x00")) != digest {
+			return false
+		}
+		delete(want, site.ID)
+	}
+	return true
+}
+
+func nativeSelectorIs(expression ast.Expr, receiver, member string) bool {
+	selector, ok := expression.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != member {
+		return false
+	}
+	name, ok := selector.X.(*ast.Ident)
+	return ok && name.Name == receiver
+}
+
+// Only the actual top-level census initializer and the direct manifest lookup
+// in its named verification function can admit these two complete values.
+func b03NativeGoLiteralOffsets(path string, content []byte, sites []NativeLiteralSite) map[int]bool {
+	if path != b03CatalogGoSource || !validB03NativeGoLiterals(sites) {
+		return nil
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, content, 0)
+	if err != nil {
+		return nil
+	}
+	names := make(map[string]int)
+	var table *ast.ValueSpec
+	var tableKind token.Token
+	var verifier *ast.FuncDecl
+	for _, declaration := range file.Decls {
+		switch node := declaration.(type) {
+		case *ast.FuncDecl:
+			names[node.Name.Name]++
+			if node.Name.Name == "verifyB03PreparedArtifact" {
+				verifier = node
+			}
+		case *ast.GenDecl:
+			for _, spec := range node.Specs {
+				switch spec := spec.(type) {
+				case *ast.ValueSpec:
+					for _, name := range spec.Names {
+						names[name.Name]++
+						if name.Name == "b03NativeTables" {
+							table, tableKind = spec, node.Tok
+						}
 					}
-					seen[digest] = true
+				case *ast.TypeSpec:
+					names[spec.Name.Name]++
 				}
-				cfg.ExternalProtocolString.PhysicalValues = values
-			default:
-				return Config{}, fmt.Errorf("unknown external protocol string key: %s", key)
 			}
+		}
+	}
+	offsets := make(map[int]bool)
+	for _, site := range sites {
+		var literals []*ast.BasicLit
+		switch site.ID {
+		case "catalog-go-tables":
+			if names["b03NativeTables"] != 1 || tableKind != token.VAR || table == nil || table.Type != nil || len(table.Names) != 1 || len(table.Values) != 1 {
+				continue
+			}
+			call, ok := table.Values[0].(*ast.CallExpr)
+			if !ok || call.Ellipsis.IsValid() || !nativeSelectorIs(call.Fun, "strings", "Fields") {
+				continue
+			}
+			literals = nativeStringExpressions(call.Args, site.Values)
+		case "catalog-go-artifact":
+			if names["verifyB03PreparedArtifact"] != 1 || verifier == nil || verifier.Recv != nil || verifier.Body == nil {
+				continue
+			}
+			matches := 0
+			for _, statement := range verifier.Body.List {
+				assignment, ok := statement.(*ast.AssignStmt)
+				if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 {
+					continue
+				}
+				name, ok := assignment.Lhs[0].(*ast.Ident)
+				if !ok || name.Name != "artifact" {
+					continue
+				}
+				index, ok := assignment.Rhs[0].(*ast.IndexExpr)
+				if !ok || !nativeSelectorIs(index.X, "manifest", "Artifacts") {
+					continue
+				}
+				if candidate := nativeStringExpressions([]ast.Expr{index.Index}, site.Values); candidate != nil {
+					matches++
+					literals = candidate
+				}
+			}
+			if matches != 1 {
+				continue
+			}
+		}
+		for _, literal := range literals {
+			offsets[fset.Position(literal.Pos()).Offset] = true
+		}
+	}
+	return offsets
+}
+
+// The fixed digests bind every field and the complete ordered decoded vector.
+// Delimiters cannot be injected to repartition a tuple; config alone cannot
+// introduce another source field or value. An absent/invalid set grants nothing.
+func validNativeFieldLiterals(sites []NativeLiteralSite) bool {
+	want := siteDigests(canonicalRules.NativeFieldLiterals)
+	if len(sites) != len(want) {
+		return false
+	}
+	seen := make(map[string]bool, len(sites))
+	for _, site := range sites {
+		if seen[site.ID] {
+			return false
+		}
+		fields := append([]string{site.Path, site.Field}, site.Values...)
+		for _, field := range fields {
+			if strings.ContainsRune(field, '\x00') {
+				return false
+			}
+		}
+		if protocolLiteralDigest(strings.Join(fields, "\x00")) != want[site.ID] {
+			return false
+		}
+		seen[site.ID] = true
+	}
+	return true
+}
+
+func nativeStringExpressions(expressions []ast.Expr, values []string) []*ast.BasicLit {
+	if len(expressions) != len(values) {
+		return nil
+	}
+	var literals []*ast.BasicLit
+	for i, expression := range expressions {
+		literal, ok := expression.(*ast.BasicLit)
+		if !ok || literal.Kind != token.STRING {
+			return nil
+		}
+		decoded, err := strconv.Unquote(literal.Value)
+		if err != nil || decoded != values[i] {
+			return nil
+		}
+		literals = append(literals, literal)
+	}
+	return literals
+}
+
+func nativeFieldLiteralOffsets(path string, content []byte, sites []NativeLiteralSite) map[int]bool {
+	if path != b01NativeGoSource && path != b01NativeJSONSource && path != b03CatalogJSONSource {
+		return nil
+	}
+	if !validNativeFieldLiterals(sites) {
+		return nil
+	}
+	if path == b01NativeJSONSource || path == b03CatalogJSONSource {
+		return nativeJSONFieldOffsets(path, content, sites)
+	}
+	if path != b01NativeGoSource {
+		return nil
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, content, 0)
+	if err != nil {
+		return nil
+	}
+	functions := make(map[string][]*ast.FuncDecl)
+	for _, declaration := range file.Decls {
+		if function, ok := declaration.(*ast.FuncDecl); ok {
+			functions[function.Name.Name] = append(functions[function.Name.Name], function)
+		}
+	}
+	offsets := make(map[int]bool)
+	for _, site := range sites {
+		if site.Path != path {
 			continue
 		}
-		if section == "native_recording_literals" || section == "native_view_strings" {
-			allowance := &cfg.NativeRecordingLiterals
-			source := nativeRecordingLiteralSource
-			digests := nativeRecordingLiteralDigests
-			pathSeen, valuesSeen := &recordingPath, &recordingValues
-			if section == "native_view_strings" {
-				allowance = &cfg.NativeViewStrings
-				source = nativeViewProtocolSource
-				digests = nativeViewProtocolDigests
-				pathSeen, valuesSeen = &viewPath, &viewValues
-			}
-			switch key {
-			case "path":
-				if *pathSeen || !strings.HasPrefix(value, "\"") || len(values) != 1 || values[0] != source {
-					return Config{}, errors.New("native control literals require their exact source path")
-				}
-				*pathSeen = true
-				allowance.Path = values[0]
-			case "values":
-				if *valuesSeen || !strings.HasPrefix(value, "[") || len(values) != len(digests) {
-					return Config{}, errors.New("native control literals require one complete exact set")
-				}
-				*valuesSeen = true
-				seen := make(map[string]bool)
-				for _, literal := range values {
-					digest := protocolLiteralDigest(literal)
-					if !digests[digest] || seen[digest] {
-						return Config{}, errors.New("native control literal is unlisted or duplicated")
-					}
-					seen[digest] = true
-				}
-				allowance.Values = values
-			default:
-				return Config{}, fmt.Errorf("unknown native control literal key: %s", key)
-			}
+		name, _, _ := strings.Cut(site.Field, ".")
+		if len(functions[name]) != 1 {
 			continue
 		}
-		if current == nil {
-			return Config{}, fmt.Errorf("lexicon key outside a section: %s", key)
+		function := functions[name][0]
+		if function.Recv != nil || function.Body == nil {
+			continue
 		}
-		switch key {
-		case "match":
-			current.Matches = values
-		case "regex":
-			if len(values) != 1 {
-				return Config{}, errors.New("regex must have one value")
+		var literals []*ast.BasicLit
+		switch site.ID {
+		case "ready-types":
+			if function.Type.Params.NumFields() != 0 || len(function.Body.List) != 1 {
+				continue
 			}
-			current.Pattern = values[0]
-		case "class":
-			if len(values) != 1 {
-				return Config{}, errors.New("class must have one value")
+			statement, ok := function.Body.List[0].(*ast.ReturnStmt)
+			if !ok || len(statement.Results) != 1 {
+				continue
 			}
-			current.Class = values[0]
-		case "allow":
-			current.Allow = make(map[rune]bool)
-			for _, value := range values {
-				for _, r := range value {
-					current.Allow[r] = true
+			vector, ok := statement.Results[0].(*ast.CompositeLit)
+			if !ok {
+				continue
+			}
+			array, ok := vector.Type.(*ast.ArrayType)
+			if !ok || array.Len != nil {
+				continue
+			}
+			element, ok := array.Elt.(*ast.Ident)
+			if !ok || element.Name != "string" {
+				continue
+			}
+			literals = nativeStringExpressions(vector.Elts, site.Values)
+		case "custom-types":
+			// Only the direct command statement in this function can bind argv.
+			// A nested closure, quoted source or duplicate command grants nothing.
+			matches := 0
+			for _, statement := range function.Body.List {
+				expression, ok := statement.(*ast.ExprStmt)
+				if !ok {
+					continue
+				}
+				call, ok := expression.X.(*ast.CallExpr)
+				if !ok || call.Ellipsis.IsValid() {
+					continue
+				}
+				selector, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok || selector.Sel.Name != "run" {
+					continue
+				}
+				receiver, ok := selector.X.(*ast.Ident)
+				if !ok || receiver.Name != "c" {
+					continue
+				}
+				if candidate := nativeStringExpressions(call.Args, site.Values); candidate != nil {
+					matches++
+					literals = candidate
 				}
 			}
-		default:
-			return Config{}, fmt.Errorf("unknown lexicon key: %s", key)
+			if matches != 1 {
+				continue
+			}
+		}
+		for _, literal := range literals {
+			offsets[fset.Position(literal.Pos()).Offset] = true
 		}
 	}
-	if len(cfg.Terms) == 0 || len(cfg.Provenance) == 0 {
-		return Config{}, errors.New("lexicon has no terms or provenance zones")
+	return offsets
+}
+
+// Decode keys before checking uniqueness. A source-shaped copy under another
+// field, or any duplicate decoded object key, cannot select the admitted value.
+func uniqueJSONField(text, key string) (json.RawMessage, int, bool) {
+	decoder := json.NewDecoder(strings.NewReader(text))
+	if opening, err := decoder.Token(); err != nil || opening != json.Delim('{') {
+		return nil, 0, false
 	}
-	for i := range cfg.Terms {
-		if cfg.Terms[i].Class == "" || (len(cfg.Terms[i].Matches) == 0 && cfg.Terms[i].Pattern == "") {
-			return Config{}, fmt.Errorf("lexicon term %d is incomplete", i)
+	seen := make(map[string]bool)
+	var selected json.RawMessage
+	start := 0
+	for decoder.More() {
+		token, err := decoder.Token()
+		name, ok := token.(string)
+		if err != nil || !ok || seen[name] {
+			return nil, 0, false
+		}
+		seen[name] = true
+		var value json.RawMessage
+		if decoder.Decode(&value) != nil {
+			return nil, 0, false
+		}
+		if name == key {
+			selected, start = value, int(decoder.InputOffset())-len(value)
 		}
 	}
-	if externalSection && (!externalPath || !externalValue || cfg.ExternalProtocolString.Path != externalProtocolSource || protocolLiteralDigest(cfg.ExternalProtocolString.Value) != externalEnvironmentDigest) {
-		return Config{}, errors.New("external protocol string must bind the exact source path and environment literal")
+	if closing, err := decoder.Token(); err != nil || closing != json.Delim('}') {
+		return nil, 0, false
 	}
-	if recordingSection && (!recordingPath || !recordingValues) || viewSection && (!viewPath || !viewValues) {
-		return Config{}, errors.New("native control literals lack their exact path or complete set")
+	if _, err := decoder.Token(); err != io.EOF {
+		return nil, 0, false
 	}
-	return cfg, nil
+	return selected, start, selected != nil
+}
+
+func nativeJSONFieldOffsets(path string, content []byte, sites []NativeLiteralSite) map[int]bool {
+	for _, site := range sites {
+		if site.Path != path {
+			continue
+		}
+		selected, start := json.RawMessage(content), 0
+		for _, key := range strings.Split(site.Field, ".") {
+			value, offset, ok := uniqueJSONField(string(selected), key)
+			if !ok {
+				return nil
+			}
+			selected, start = value, start+offset
+		}
+		var values []string
+		if site.ID == "catalog-sql-tables" {
+			var scalar string
+			if json.Unmarshal(selected, &scalar) != nil {
+				return nil
+			}
+			values = []string{scalar}
+		} else if json.Unmarshal(selected, &values) != nil {
+			return nil
+		}
+		if len(values) != len(site.Values) {
+			return nil
+		}
+		for i := range values {
+			if values[i] != site.Values[i] {
+				return nil
+			}
+		}
+		offsets := make(map[int]bool)
+		for _, literal := range jsonStringLiterals(content) {
+			if literal.start >= start && literal.end <= start+len(selected) {
+				offsets[literal.start] = true
+			}
+		}
+		return offsets
+	}
+	return nil
+}
+
+// Used only at the exact JSON protocol paths. The JSON decoder, rather than Go
+// unquoting, handles JSON escapes; every non-admitted string still scans.
+func jsonStringLiterals(content []byte) []goStringLiteral {
+	if !json.Valid(content) {
+		return nil
+	}
+	var literals []goStringLiteral
+	for i := 0; i < len(content); i++ {
+		if content[i] != '"' {
+			continue
+		}
+		start := i
+		for i++; i < len(content); i++ {
+			if content[i] == '\\' {
+				i++
+			} else if content[i] == '"' {
+				break
+			}
+		}
+		var value string
+		if json.Unmarshal(content[start:i+1], &value) == nil {
+			literals = append(literals, goStringLiteral{start: start, end: i + 1, line: lineAt(string(content), start), value: value})
+		}
+	}
+	return literals
 }
 
 func quotedValues(value string) ([]string, error) {
@@ -402,7 +695,10 @@ func checkFiles(files map[string][]byte, cfg Config, policy *TreePolicy) ([]Find
 		if !utf8.Valid(content) {
 			return nil, fmt.Errorf("%s: content is not valid UTF-8", path)
 		}
-		if path == "engdocs/style/lexicon.toml" {
+		if digest, consumed := cfg.ruleSources[path]; consumed {
+			if sha256.Sum256(content) != digest {
+				return nil, fmt.Errorf("lexicon rule %s changed after loading", path)
+			}
 			continue
 		}
 		provenance := isProvenance(path, cfg.Provenance)
@@ -430,7 +726,7 @@ func CheckTree(root string) ([]Finding, error) {
 	if info, err := os.Stat(root); err != nil || !info.IsDir() {
 		return nil, fmt.Errorf("repository root is not a directory: %s", root)
 	}
-	cfg, err := LoadConfig(filepath.Join(root, "engdocs/style/lexicon.toml"))
+	cfg, err := LoadConfig(filepath.Join(root, rulesDirectory))
 	if err != nil {
 		return nil, err
 	}
@@ -471,10 +767,20 @@ func isProvenance(path string, zones []string) bool {
 func scanFile(path string, content []byte, cfg Config, provenance bool) []Finding {
 	text := string(content)
 	var literals []goStringLiteral
-	if path == externalProtocolSource && len(cfg.ExternalProtocolString.PhysicalValues) != 0 || hasNativeControlAllowance(path, cfg) {
+	sourcePlaneOffset, sourcePlaneAllowed, sourcePlaneInvalid := sourcePlaneConstantLiteralOffset(path, content, cfg.SourcePlaneConstants)
+	if (path == b01NativeJSONSource || path == b03CatalogJSONSource) && !json.Valid(content) {
+		return []Finding{{Path: path, Line: 1, Class: "invalid-json", Term: "parse"}}
+	}
+	fieldOffsets := protocolFieldLiteralOffsets(path, content, cfg.NativeFieldLiterals)
+	b03Offsets := b03NativeGoLiteralOffsets(path, content, cfg.B03NativeGoLiterals)
+	if path == externalProtocolSource && len(cfg.ExternalProtocolString.PhysicalValues) != 0 || path == nativeManifestProtocolSource && len(cfg.NativeManifestStrings.Values) != 0 || path == b01NativeGoSource || path == b01NativeJSONSource || path == b03CatalogJSONSource || path == b03CatalogGoSource || path == nativeHTTPDomainSource || hasNativeControlAllowance(path, cfg) || path == sourcePlaneProtocolSource || path == sourcePlaneFixtureSource {
 		masked := append([]byte(nil), content...)
-		for _, literal := range goStringLiterals(path, content) {
-			if !literal.imported && allowsConfiguredLiteral(path, literal.value, cfg) {
+		sourceLiterals := goStringLiterals(path, content)
+		if path == b01NativeJSONSource || path == b03CatalogJSONSource {
+			sourceLiterals = jsonStringLiterals(content)
+		}
+		for _, literal := range sourceLiterals {
+			if !literal.imported && (sourcePlaneAllowed && literal.start == sourcePlaneOffset || fieldOffsets[literal.start] || b03Offsets[literal.start] || allowsConfiguredLiteral(path, literal.value, cfg) || allowsNativeManifestString(path, literal.value, cfg.NativeManifestStrings)) {
 				for i := literal.start; i < literal.end; i++ {
 					if masked[i] != '\n' && masked[i] != '\r' {
 						masked[i] = ' '
@@ -487,6 +793,9 @@ func scanFile(path string, content []byte, cfg Config, provenance bool) []Findin
 		text = string(masked)
 	}
 	var findings []Finding
+	if sourcePlaneInvalid {
+		findings = append(findings, Finding{Path: path, Line: 1, Class: "invalid-protocol-literal", Term: "source-plane-constant"})
+	}
 	appendDecoded := func(literal goStringLiteral, term Term, match string) {
 		finding := Finding{Path: path, Line: literal.line, Class: term.Class, Term: match}
 		for _, previous := range findings {
@@ -540,7 +849,7 @@ func scanFile(path string, content []byte, cfg Config, provenance bool) []Findin
 			if at := phraseIndex(text, match); at >= 0 {
 				findings = append(findings, Finding{Path: path, Line: lineAt(text, at), Class: term.Class, Term: match})
 			}
-			// Decode non-admitted strings at this exact recorder path too;
+			// Decode non-admitted strings at these exact protocol paths too;
 			// retain the established scan at every other source path.
 			for _, literal := range literals {
 				if phraseIndex(literal.value, match) >= 0 {
@@ -588,6 +897,9 @@ func goStringLiterals(path string, content []byte) []goStringLiteral {
 }
 
 func scanGoIdentifiers(path string, content []byte, term Term, cfg Config) []Finding {
+	allowance := cfg.ExternalProtocolString
+	fieldOffsets := protocolFieldLiteralOffsets(path, content, cfg.NativeFieldLiterals)
+	b03Offsets := b03NativeGoLiteralOffsets(path, content, cfg.B03NativeGoLiterals)
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, content, parser.ParseComments)
 	if err != nil {
@@ -611,13 +923,8 @@ func scanGoIdentifiers(path string, content []byte, term Term, cfg Config) []Fin
 					findings = append(findings, Finding{Path: path, Line: fset.Position(node.Pos()).Line, Class: "invalid-go", Term: "string"})
 					return true
 				}
-				if path == externalProtocolSource {
-					if !imports[n.Pos()] && path == externalProtocolSource && cfg.ExternalProtocolString.Path == path && (decoded == cfg.ExternalProtocolString.Value && protocolLiteralDigest(decoded) == externalEnvironmentDigest || allowsPhysicalProtocolString(path, decoded, cfg.ExternalProtocolString)) {
-						return true
-					}
-					text = decoded
-				} else if hasNativeControlAllowance(path, cfg) {
-					if !imports[n.Pos()] && allowsNativeControlLiteral(path, decoded, cfg) {
+				if path == externalProtocolSource || path == nativeManifestProtocolSource || path == b01NativeGoSource || path == b03CatalogGoSource || path == nativeHTTPDomainSource || hasNativeControlAllowance(path, cfg) {
+					if !imports[n.Pos()] && (fieldOffsets[fset.Position(n.Pos()).Offset] || b03Offsets[fset.Position(n.Pos()).Offset] || path == externalProtocolSource && allowance.Path == path && decoded == allowance.Value && protocolLiteralDigest(decoded) == externalEnvironmentDigest || allowsPhysicalProtocolString(path, decoded, allowance) || allowsNativeManifestString(path, decoded, cfg.NativeManifestStrings) || allowsNativeControlLiteral(path, decoded, cfg)) {
 						return true
 					}
 					text = decoded

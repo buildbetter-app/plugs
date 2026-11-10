@@ -44,6 +44,15 @@ const listPostfilterCap = 20000
 const claimNextConflictRestartBudget = 1
 
 func (s *GuardedService) Get(ctx context.Context, by model.PrincipalRef, req service.GetRequest) (service.GetResult, error) {
+	if source, ok := s.delegate.(interface {
+		ResolveSourceAddress(context.Context, model.PrincipalRef, string, model.Ref) (model.Ref, bool, error)
+	}); ok {
+		resolved, _, err := source.ResolveSourceAddress(ctx, by, req.Project, req.ID)
+		if err != nil {
+			return service.GetResult{}, err
+		}
+		req.ID = resolved
+	}
 	if workflowItemRef(req.ID) {
 		return s.getWorkflow(ctx, by, req)
 	}
@@ -194,10 +203,21 @@ func (s *GuardedService) Ready(ctx context.Context, by model.PrincipalRef, req s
 	if s == nil || s.delegate == nil || s.checker == nil {
 		return service.BeadPage{}, &model.Error{Message: "authorization service is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
 	}
-	readyFilter, compiled, err := s.compiledReadyFilter(ctx, by)
+	if page, err := s.compiledReady(ctx, by, req); !errors.Is(err, driver.ErrUnsupported) {
+		return page, err
+	}
+	return s.readyFallback(ctx, by, req)
+}
+
+func (s *GuardedService) readyFallback(ctx context.Context, by model.PrincipalRef, req service.ReadyRequest) (service.BeadPage, error) {
+	readyFilter, compiled, err := s.compiledReadyFilter(ctx, by, req.Project)
 	if err != nil {
 		return service.BeadPage{}, err
 	}
+	return s.collectReady(ctx, by, req, readyFilter, compiled)
+}
+
+func (s *GuardedService) collectReady(ctx context.Context, by model.PrincipalRef, req service.ReadyRequest, readyFilter service.ReadyAuthorizer, compiled bool) (service.BeadPage, error) {
 	// Compiled finite permissions are pushed through the domain service's
 	// snapshot-aware filter before pageResult. The 20,000 candidate cap remains
 	// only for genuinely check-only predicates that require post-filtering.
@@ -225,7 +245,7 @@ func (s *GuardedService) Ready(ctx context.Context, by model.PrincipalRef, req s
 		}
 		return candidate, err
 	}
-	page, err = readPage()
+	page, err := readPage()
 	if err != nil {
 		return service.BeadPage{}, err
 	}
@@ -264,16 +284,17 @@ func (s *GuardedService) Ready(ctx context.Context, by model.PrincipalRef, req s
 	return s.filterPage(ctx, by, "bead.ready", req.Project, req.Limit, req.Position, page, false)
 }
 
-func (s *GuardedService) compiledReadyFilter(ctx context.Context, by model.PrincipalRef) (service.ReadyAuthorizer, bool, error) {
-	caller, err := s.checker.callerFor(ctx, by)
+func (s *GuardedService) compiledReadyFilter(ctx context.Context, by model.PrincipalRef, project string) (service.ReadyAuthorizer, bool, error) {
+	_, snapshot, closeReader, err := s.current(ctx, nil)
 	if err != nil {
-		return nil, false, authzError(err)
+		return nil, false, err
 	}
-	template, err := s.checker.chain.Compile(authz.ListRequest{Caller: caller, Action: authz.Read, ResourceKind: authz.Bead, Method: "bead.ready"})
+	caller, _, template, err := s.readyProjectFilter(ctx, by, snapshot, project, "bead.ready", authz.Read)
+	closeReader()
+	if errors.Is(err, authz.ErrCheckOnly) || errors.Is(err, driver.ErrUnsupported) {
+		return nil, false, nil
+	}
 	if err != nil {
-		if errors.Is(err, authz.ErrCheckOnly) {
-			return nil, false, nil
-		}
 		return nil, false, authzError(err)
 	}
 	var authorizationRevision model.Revision
@@ -357,7 +378,7 @@ func (s *GuardedService) CreateWithOutcome(ctx context.Context, by model.Princip
 	return s.delegate.CreateWithOutcome(ctx, by, req, meta)
 }
 func (s *GuardedService) UpdateWithOutcome(ctx context.Context, by model.PrincipalRef, req service.UpdateRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
-	if workflowItemRef(req.ID) {
+	if workflowItemRef(req.ID) && !s.sourceRuntimeInstalled() {
 		return s.workflowWrite(ctx, by, meta.Project, func() (port.WriteOutcome, error) {
 			return s.delegate.UpdateWithOutcome(ctx, by, req, meta)
 		})
@@ -434,7 +455,7 @@ func (s *GuardedService) UnlinkWithOutcome(ctx context.Context, by model.Princip
 	return s.delegate.UnlinkWithOutcome(ctx, by, req, meta)
 }
 func (s *GuardedService) ClaimWithOutcome(ctx context.Context, by model.PrincipalRef, req service.ClaimRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
-	if workflowItemRef(req.ID) {
+	if workflowItemRef(req.ID) && !s.sourceRuntimeInstalled() {
 		return s.workflowWrite(ctx, by, meta.Project, func() (port.WriteOutcome, error) {
 			return s.delegate.ClaimWithOutcome(ctx, by, req, meta)
 		})
@@ -697,7 +718,7 @@ func claimNextCandidateConflict(err error) bool {
 	return value.Message == "snapshot changed during all four write attempts" || value.Data.Hint == "snapshot changed during all four write attempts"
 }
 func (s *GuardedService) CommentWithOutcome(ctx context.Context, by model.PrincipalRef, req service.CommentRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
-	if workflowItemRef(req.ID) {
+	if workflowItemRef(req.ID) && !s.sourceRuntimeInstalled() {
 		return s.workflowWrite(ctx, by, meta.Project, func() (port.WriteOutcome, error) {
 			return s.delegate.CommentWithOutcome(ctx, by, req, meta)
 		})
@@ -705,7 +726,7 @@ func (s *GuardedService) CommentWithOutcome(ctx context.Context, by model.Princi
 	return s.delegate.CommentWithOutcome(ctx, by, req, meta)
 }
 func (s *GuardedService) CloseWithOutcome(ctx context.Context, by model.PrincipalRef, req service.CloseRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
-	if workflowItemRef(req.ID) {
+	if workflowItemRef(req.ID) && !s.sourceRuntimeInstalled() {
 		return s.workflowWrite(ctx, by, meta.Project, func() (port.WriteOutcome, error) {
 			return s.delegate.CloseWithOutcome(ctx, by, req, meta)
 		})
@@ -814,14 +835,23 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 			if method != "bead.ready" || bead.Project != project {
 				continue
 			}
-			if !workflowChecked {
-				workflowAllowed, err = s.checker.workflowRead(ctx, caller, authorization, method, project)
-				if err != nil {
-					return service.BeadPage{}, err
+			allowed := false
+			if s.sourceRuntimeInstalled() {
+				// Imported items use their verified per-item source binding and the
+				// original Bead method policy, as on the source Get path. Native
+				// workflow project authority cannot authorize this separate plane.
+				allowed, err = s.sourceRead(ctx, caller, authorization, model.RefByID(bead.ID, model.Natural64(0)), project, method)
+			} else {
+				if !workflowChecked {
+					workflowAllowed, err = s.checker.workflowRead(ctx, caller, authorization, method, project)
+					workflowChecked = true
 				}
-				workflowChecked = true
+				allowed = workflowAllowed
 			}
-			if workflowAllowed {
+			if err != nil {
+				return service.BeadPage{}, err
+			}
+			if allowed {
 				filtered = append(filtered, bead)
 			}
 			continue
@@ -850,7 +880,18 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 	}
 	membership := ""
 	if method == "bead.ready" {
-		membership = readyMembershipDigest(filtered)
+		// New finite compiled Ready pages use the versioned semantic
+		// commitment. Check-only pages and continuations carrying an older
+		// unprefixed digest stay on the legacy verifier for compatibility.
+		useV2 := !checkOnly && (position == nil || strings.HasPrefix(position.ReadyMembership, "v2:"))
+		if useV2 {
+			membership, err = readyMembershipV2(filtered)
+			if err != nil {
+				return service.BeadPage{}, &model.Error{Message: "ready membership commitment failed", Data: model.ErrorData{Code: "internal_error"}}
+			}
+		} else {
+			membership = readyMembershipDigest(filtered)
+		}
 	}
 	if method == "bead.ready" && position != nil && position.ReadyMembership != membership {
 		return service.BeadPage{}, &model.Error{Message: "ready membership changed since cursor issuance; restart paging", Data: model.ErrorData{Code: "cursor_invalid"}}

@@ -19,6 +19,7 @@ go_test(
         "//internal/plugins/authnapikey",
         "//internal/plugins/authzfixed",
         "//internal/server/authzrpc",
+        "//internal/server/pluginhost",
         "//internal/server/authn",
         "//internal/server/rpc",
         "//internal/server/transport/httpjson",
@@ -28,6 +29,7 @@ go_test(
         "//internal/storage/memory",
         "//internal/storage/postgres",
         "//internal/storage/sqlite",
+        "//plugins/workflow",
     ],
 )
 
