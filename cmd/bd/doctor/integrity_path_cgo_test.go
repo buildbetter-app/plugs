@@ -41,11 +41,14 @@ func TestCheckRepoFingerprint_UsesTargetRepoOutsideCWD(t *testing.T) {
 	}
 
 	ctx := context.Background()
+	// This is the fixture's initialization; the fingerprint read below must
+	// still refuse its separately named absent database without creating it.
 	store, err := dolt.New(ctx, &dolt.Config{
-		Path:       filepath.Join(beadsDir, "dolt"),
-		Database:   database,
-		ServerHost: "127.0.0.1",
-		ServerPort: port,
+		Path:            filepath.Join(beadsDir, "dolt"),
+		Database:        database,
+		ServerHost:      "127.0.0.1",
+		ServerPort:      port,
+		CreateIfMissing: true,
 	})
 	if err != nil {
 		t.Fatalf("open disposable fingerprint database: %v", err)
