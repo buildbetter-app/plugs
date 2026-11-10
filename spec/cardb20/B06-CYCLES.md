@@ -34,7 +34,7 @@ same-kind idempotence. Actual duplicate parallel rows require an explicitly
 damaged disposable SQL graph: only its endpoint uniqueness index is removed,
 and four original adjacency rows are retained and counted. Missing hydration is
 a different diagnostic: dependency foreign keys are explicitly removed before
-physically deleting a durable issue and a wisp while preserving both edge
+physically deleting durable and ephemeral source rows while preserving both edge
 families. The unchanged canonical detector must retain all three raw IDs and
 positions, with one then two absent member images. Raw DDL and source readbacks
 make both diagnostic setup routes reviewable. Neither setup demonstrates that

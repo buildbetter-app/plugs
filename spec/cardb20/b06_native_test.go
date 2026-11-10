@@ -103,9 +103,9 @@ func (r *b06NativeRecorder) workspace(binary string, server *publicnative.Server
 	return w
 }
 
-func (r *b06NativeRecorder) create(w b06NativeWorkspace, binary, id string, wisp bool) {
+func (r *b06NativeRecorder) create(w b06NativeWorkspace, binary, id string, ephemeral bool) {
 	args := []string{"create", "--id", id, "--title", id, "--json"}
-	if wisp {
+	if ephemeral {
 		args = append(args, "--ephemeral")
 	}
 	r.command(w, "create-"+id, binary, args, false)

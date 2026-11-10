@@ -141,6 +141,16 @@ type b06Envelope struct {
 	} `json:"error"`
 }
 
+// A real no-op receipt has no changeset. Its zero Changeset is not a valid
+// changeset document, so retain that absence explicitly while preserving every
+// remaining response/digest field and every ordinary changeset in full.
+type b06ReceiptImage struct {
+	RequestHash     string
+	Commit          model.Commit
+	Changeset       *model.Changeset
+	ResponsePending bool
+}
+
 func (f *b06PlugFixture) call(method string, params map[string]any, write bool) b06Envelope {
 	f.t.Helper()
 	f.requests++
@@ -219,7 +229,7 @@ func (f *b06PlugFixture) image(label string) []byte {
 	for _, method := range []string{"bead.create", "bead.link"} {
 		keys[method+"/"+fmt.Sprint(f.requests+1)] = method
 	}
-	receipts := map[string]*driver.IdempotencyRecord{}
+	receipts := map[string]b06ReceiptImage{}
 	for scoped, method := range keys {
 		var index int
 		if _, err := fmt.Sscanf(scoped[len(method)+1:], "%d", &index); err != nil {
@@ -233,7 +243,14 @@ func (f *b06PlugFixture) image(label string) []byte {
 			if value.ResponsePending {
 				f.t.Fatal("unfinished response receipt")
 			}
-			receipts[scoped] = value
+			var changeset *model.Changeset
+			if value.Changeset.Kind != "" {
+				copy := value.Changeset
+				changeset = &copy
+			} else if !reflect.DeepEqual(value.Changeset, model.Changeset{}) {
+				f.t.Fatal("no-op receipt has an unexpected nonzero changeset image")
+			}
+			receipts[scoped] = b06ReceiptImage{value.RequestHash, value.Commit, changeset, value.ResponsePending}
 		}
 	}
 	if len(f.writes) > 0 && len(receipts) == 0 {
