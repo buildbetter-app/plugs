@@ -21,6 +21,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/viewops"
 	"github.com/buildbetter-app/plugs/internal/integration/converterroundtrip"
 	"github.com/buildbetter-app/plugs/internal/publicnative"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -635,7 +636,10 @@ func nativeB23ImportedMatrix(t *testing.T, root string, f *fixture, o *nativePos
 	def = nativeViewDefinition("", []string{}, 1, "id")
 	nativeB23Count(t, f, "b23-cap-current-denial", def, 20000)
 	denied.Store(false)
+	historical := viewops.AsOf{Revision: before.Meta.Head, Incarnation: before.Meta.Incarnation}
+	nativeB23HistoricalCap(t, f, "b23-live", historical, ref, denied)
 	nativeReopenImported(t, f, o, denied)
+	nativeB23HistoricalCap(t, f, "b23-reopened", historical, ref, denied)
 	def = nativeViewDefinition("NOT label=done", []string{}, 1, "id")
 	nativeB23Count(t, f, "b23-reopened-count", def, 20000)
 	after := nativeImportedState(t, f)
@@ -669,7 +673,22 @@ func nativeB23Allocator(t *testing.T, f *fixture, meta driver.Meta) driver.Offli
 
 func nativeB23Count(t *testing.T, f *fixture, label string, definition map[string]any, want int) {
 	t.Helper()
-	r := f.call("view.run", label, map[string]any{"countOnly": true, "definition": definition})
+	nativeB23CountAt(t, f, label, definition, want, nil)
+}
+
+func nativeB23CountAt(t *testing.T, f *fixture, label string, definition map[string]any, want int, historical *viewops.AsOf) {
+	t.Helper()
+	meta, err := f.store.Meta(f.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSnapshot := viewops.AsOf{Revision: meta.Head, Incarnation: meta.Incarnation}
+	params := map[string]any{"countOnly": true, "definition": definition}
+	if historical != nil {
+		wantSnapshot = *historical
+		params["asOf"] = *historical
+	}
+	r := f.call("view.run", label, params)
 	if r.Error != nil {
 		t.Fatal("B23 exact count refused", label, r.Error)
 	}
@@ -690,7 +709,105 @@ func nativeB23Count(t *testing.T, f *fixture, label string, definition map[strin
 			t.Fatal("B23 count emitted page/group output", key)
 		}
 	}
-	if len(body["asOf"]) == 0 {
-		t.Fatal("B23 count omitted actual snapshot")
+	var snapshot viewops.AsOf
+	if err := json.Unmarshal(body["asOf"], &snapshot); err != nil || snapshot != wantSnapshot {
+		t.Fatal("B23 count changed its selected content snapshot", label, snapshot, wantSnapshot, err)
+	}
+}
+
+// Content stays pinned while every request re-evaluates the current read
+// policy. In particular, a later 20001st row cannot contaminate a 20000-row
+// historical count, and a current denial must change both snapshots' counts.
+// Run this same oracle on genuine native imports and independently created
+// public Plug state; the latter supplies no native-source qualification.
+func nativeB23HistoricalCap(t *testing.T, f *fixture, label string, historical viewops.AsOf, created model.Ref, denied *atomic.Bool) {
+	t.Helper()
+	meta, err := f.store.Meta(f.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, headErr := meta.Head.Uint64()
+	old, oldErr := historical.Revision.Uint64()
+	if headErr != nil || oldErr != nil || meta.Incarnation != historical.Incarnation || head <= old {
+		t.Fatal("historical cap needs an earlier snapshot in this incarnation", meta, historical, err)
+	}
+	for _, empty := range []bool{false, true} {
+		def := nativeViewDefinition("", []string{}, 1, "id")
+		if empty {
+			def["fields"] = []string{}
+		}
+		prefix := fmt.Sprintf("%s-fields-empty-%t", label, empty)
+		denied.Store(false)
+		nativeB23CountAt(t, f, prefix+"-historical-allowed", def, 20000, &historical)
+		denied.Store(true)
+		nativeB23CountAt(t, f, prefix+"-historical-current-denial", def, 19999, &historical)
+		nativeB23Count(t, f, prefix+"-head-current-denial", def, 20000)
+		denied.Store(false)
+		nativeB23CountAt(t, f, prefix+"-historical-regrant", def, 20000, &historical)
+		for _, countOnly := range []bool{false, true} {
+			r := f.call("view.run", fmt.Sprintf("%s-head-regrant-%t", prefix, countOnly), map[string]any{"countOnly": countOnly, "definition": def})
+			if r.Error == nil || r.Error.Data.Code != "scope_too_large" || len(r.Result) != 0 {
+				t.Fatal("current regrant must restore the full cap refusal, without a partial answer", r.Error, string(r.Result))
+			}
+		}
+	}
+	def := nativeViewDefinition("", []string{created.ID}, 1, "id")
+	nativeB23CountAt(t, f, label+"-new-member-historically-absent", def, 0, &historical)
+	nativeB23Count(t, f, label+"-new-member-currently-present", def, 1)
+}
+
+// This ordinary control creates every member through the real public wire.
+// It does not dispatch Beads, synthesize an import archive, or stand in for the
+// separately pinned native 20001 + fresh 20000 recording and replay workload.
+func TestB23HistoricalCapCurrentAuthorizationAcrossStores(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			var denied atomic.Bool
+			f := newFixtureWithConfig(t, engine, nil, func(_ context.Context, _ model.PrincipalRef, resource model.ResourceRef, _ string) error {
+				if denied.Load() && resource.Ref.ID == "b23-public-00000" {
+					return &model.Error{Data: model.ErrorData{Code: "forbidden"}}
+				}
+				return nil
+			})
+			f.ids = make([]string, 20001)
+			for i := range f.ids {
+				f.ids[i] = fmt.Sprintf("b23-public-%05d", i)
+			}
+			const batchSize = 100
+			for start := 0; start < 20000; start += batchSize {
+				ops := make([]any, batchSize)
+				for i := range ops {
+					ops[i] = map[string]any{"kind": "create", "type": "issue", "fields": map[string]any{"title": f.ids[start+i]}}
+				}
+				c := commit(t, f.call("tx.apply", fmt.Sprintf("b23-public-setup-%05d", start), map[string]any{"changeSet": map[string]any{"ops": ops}}))
+				if c.Revision != model.Natural64(uint64(start/batchSize+1)) || len(c.Results) != batchSize {
+					t.Fatal("public cap setup lost a batch revision/member", start, c)
+				}
+				for i, result := range c.Results {
+					if !result.Ref.IsID() || !result.Ref.Branch.IsZero() || result.Ref.ID != f.ids[start+i] || result.Revision != c.Revision {
+						t.Fatal("public cap setup lost an exact returned identity/revision", start+i, result)
+					}
+				}
+			}
+			before := nativeImportedState(t, f)
+			if len(before.Records) != 20000 || len(before.Changesets) != 200 || len(before.Receipts) != 200 {
+				t.Fatal("ordinary public cap setup did not create the full 20000-row history", len(before.Records), len(before.Changesets), len(before.Receipts))
+			}
+			historical := viewops.AsOf{Revision: before.Meta.Head, Incarnation: before.Meta.Incarnation}
+			ref, created := f.create(t, "b23-public-cross-cap", "actual public cap member")
+			if created.Revision != model.Natural64(201) || ref.ID != f.ids[20000] {
+				t.Fatal("public create did not cross the historical cap boundary", ref, created)
+			}
+			capBefore := nativeImportedState(t, f)
+			if len(capBefore.Records) != 20001 || len(capBefore.Changesets) != 201 || len(capBefore.Receipts) != 201 {
+				t.Fatal("public cap crossing did not add exactly one row/commit/receipt")
+			}
+			nativeB23HistoricalCap(t, f, "b23-public-live", historical, ref, &denied)
+			sameState(t, capBefore, nativeImportedState(t, f))
+			f.reopen(t)
+			nativeB23HistoricalCap(t, f, "b23-public-reopened", historical, ref, &denied)
+			sameState(t, capBefore, nativeImportedState(t, f))
+			t.Logf("B23 public historical cap PASS: engine=%s current=20001 historical=20000 current-denial=20000/19999; regrant refusal and full reader state conserved", engine)
+		})
 	}
 }

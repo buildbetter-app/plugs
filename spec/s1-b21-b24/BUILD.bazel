@@ -163,3 +163,16 @@ go_test(
     timeout = "long",
     deps = _NATIVE_ACCEPTANCE_DEPS,
 )
+
+# Ordinary public Plug boundary control; the exact selector never enters the
+# native recorder. The native B23 matrix also runs these historical oracles on
+# its own real imported archive, without transferring this control's credit.
+go_test(
+    name = "b23_historical_cap_test",
+    size = "large",
+    srcs = _NATIVE_ACCEPTANCE_SRCS + ["native_count_matrix_test.go"],
+    args = ["-test.v", "-test.run=^TestB23HistoricalCapCurrentAuthorizationAcrossStores$$"],
+    tags = ["local", "requires-network"],
+    timeout = "long",
+    deps = _NATIVE_ACCEPTANCE_DEPS,
+)
