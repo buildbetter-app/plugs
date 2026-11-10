@@ -50,12 +50,13 @@ const (
 )
 
 type CreateOp struct {
-	Kind    OpKind         `json:"kind"`
-	Key     string         `json:"key,omitempty"`
-	Type    string         `json:"type"`
-	Fields  map[string]any `json:"fields"`
-	Parent  *Ref           `json:"parent,omitempty"`
-	Project string         `json:"project,omitempty"`
+	Kind         OpKind         `json:"kind"`
+	Key          string         `json:"key,omitempty"`
+	Type         string         `json:"type"`
+	Fields       map[string]any `json:"fields"`
+	Parent       *Ref           `json:"parent,omitempty"`
+	Project      string         `json:"project,omitempty"`
+	TargetStatus *string        `json:"targetStatus,omitempty"`
 }
 type PatchOp struct {
 	Kind   OpKind         `json:"kind"`
@@ -63,14 +64,16 @@ type PatchOp struct {
 	Fields map[string]any `json:"fields"`
 }
 
-// CloseOp enters the canonical close slot at this position in tx.apply.
+// CloseOp enters the close slot or an explicit declared successful terminal
+// status at this position in tx.apply.
 // Expect observes the ordered in-request image, unlike ChangeSet.Expect,
 // which observes the pinned committed snapshot.
 type CloseOp struct {
-	Kind   OpKind         `json:"kind"`
-	Target Ref            `json:"target"`
-	Reason string         `json:"reason,omitempty"`
-	Expect []Precondition `json:"expect,omitempty"`
+	Kind         OpKind         `json:"kind"`
+	Target       Ref            `json:"target"`
+	Reason       string         `json:"reason,omitempty"`
+	Expect       []Precondition `json:"expect,omitempty"`
+	TargetStatus *string        `json:"targetStatus,omitempty"`
 }
 type ReparentOp struct {
 	Kind    OpKind `json:"kind"`
@@ -313,6 +316,14 @@ func validateCreate(value CreateOp) error {
 	if value.Kind != OpCreate {
 		return fmt.Errorf("create operation has kind %q", value.Kind)
 	}
+	if value.TargetStatus != nil {
+		if *value.TargetStatus == "" {
+			return fmt.Errorf("targetStatus must not be empty")
+		}
+		if _, present := value.Fields["status"]; present {
+			return fmt.Errorf("targetStatus cannot be combined with fields.status")
+		}
+	}
 	return requireNonNilMap("fields", value.Fields)
 }
 
@@ -326,6 +337,9 @@ func validatePatch(value PatchOp) error {
 func validateClose(value CloseOp) error {
 	if value.Kind != OpClose {
 		return fmt.Errorf("close operation has kind %q", value.Kind)
+	}
+	if value.TargetStatus != nil && *value.TargetStatus == "" {
+		return fmt.Errorf("targetStatus must not be empty")
 	}
 	return nil
 }

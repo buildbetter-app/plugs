@@ -255,6 +255,18 @@ func convertCanonical(dump Dump, options Options, report Report) (Result, error)
 	commentIDs := make(map[[2]string]bool)
 	entities, edges, comments, physicalReasons := physicalExportRecords(dump)
 	reasons = append(reasons, physicalReasons...)
+	for _, records := range dump.Records {
+		for _, row := range records {
+			if !exactNumbers(row.Body) || !exactNumbers(row.Source.Fields) {
+				return Result{Report: report}, withReport(refusal("reverse metadata requires exact JSON numbers; floating point source values are refused"), report)
+			}
+		}
+	}
+	if options.NativeImport {
+		if err := physicalImportRefusal(entities, options.All); err != nil {
+			return Result{Report: report}, err
+		}
+	}
 	planes := make(map[string]string)
 	for _, record := range entities {
 		if prior, exists := planes[record.ID]; exists && prior != record.Source.Table {

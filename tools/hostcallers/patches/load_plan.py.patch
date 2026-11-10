@@ -1,0 +1,48 @@
+--- a/scripts/load_plan.py
++++ b/scripts/load_plan.py
+@@ -1,4 +1 @@
+-"""Create beads from plan.json: epics and tasks with parents, then blocking deps, then closures."""
+-import json
+-import os
+-import subprocess
++# Prepared Plug caller; explicit --binding is mandatory.
+@@ -6,35 +3,4 @@
+-
+-plan_path = sys.argv[1]
+-plan = json.load(open(plan_path))
+-ids = {}
+-
+-
+-def bd(*args):
+-    result = subprocess.run(["bd", *args], capture_output=True, text=True)
+-    if result.returncode != 0:
+-        raise SystemExit(f"bd {' '.join(args[:3])} ... failed: {result.stderr.strip()[:500]}")
+-    return result.stdout.strip()
+-
+-
+-for item in plan["items"]:
+-    labels = item.get("labels", [])
+-    issue_type = "decision" if "decision" in labels else item["type"]
+-    description = f"{item['description']}\n\nPlan key: {item['key']}. Design doc: {plan['doc']}"
+-    args = ["create", item["title"], "-t", issue_type, "-p", str(item["priority"]), "-d", description, "--silent"]
+-    if item.get("parent"):
+-        args += ["--parent", ids[item["parent"]]]
+-    args += ["-l", ",".join([label for label in labels if label != "decision"] + ["signals-v2"])]
+-    ids[item["key"]] = bd(*args).splitlines()[-1].strip()
+-    print(item["key"], ids[item["key"]], flush=True)
+-
+-for item in plan["items"]:
+-    for dep in item.get("deps", []):
+-        bd("dep", "add", ids[item["key"]], "--blocked-by", ids[dep])
+-
+-for item in plan["items"]:
+-    if item.get("status") == "closed":
+-        bd("close", ids[item["key"]], "--reason", item["description"])
+-
+-with open(os.path.join(os.path.dirname(plan_path), "ids.json"), "w") as out:
+-    json.dump(ids, out, indent=2)
+-print("created", len(ids))
++from pathlib import Path
++sys.path.insert(0, str(Path(__file__).resolve().parent))
++from host_drivers import main
++main('load')

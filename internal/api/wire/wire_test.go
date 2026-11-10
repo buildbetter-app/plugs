@@ -20,7 +20,7 @@ func TestBoundedCatalogParity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := len(c.Descriptors()); got != 85 {
+	if got := len(c.Descriptors()); got != 86 {
 		t.Fatalf("method inventory = %d", got)
 	}
 	if _, ok := c.Descriptor("bead.comments"); ok {
@@ -29,14 +29,14 @@ func TestBoundedCatalogParity(t *testing.T) {
 	if got := len(c.ErrorCatalog()); got != 63 {
 		t.Fatalf("error inventory = %d", got)
 	}
-	if digest(catalogJSON) != "a70d648992ad14f3ad23ac64dee7a5f543883a6a5654f099a8b5d7504c822f0c" {
+	if digest(catalogJSON) != "398e90ef9763aaf52429802470f3991036cf212fef67d92ad080a9c73c3e4b2b" {
 		t.Fatal("bounded source snapshot changed; reconcile approved contract")
 	}
 	// These changes affect one of two independent descriptor representations.
 	for _, change := range []struct{ before, after string }{
 		{`"x-agent-core": true`, `"x-agent-core": false`},
-		{`"methodCount": 85`, `"methodCount": 84`},
-		{`"nameSha256": "e4cc1165`, `"nameSha256": "f4cc1165`},
+		{`"methodCount": 86`, `"methodCount": 85`},
+		{`"nameSha256": "bedf3c90`, `"nameSha256": "f4cc1165`},
 		{`"stability": "v1"`, `"stability": ""`},
 		{`"#/components/errors/RateLimited"`, `"#/components/errors/NotARealError"`},
 	} {
@@ -65,7 +65,7 @@ func TestBoundedCatalogParity(t *testing.T) {
 	if err = json.Unmarshal(generated, &document); err != nil {
 		t.Fatal(err)
 	}
-	if len(document.Methods) != 85 {
+	if len(document.Methods) != 86 {
 		t.Fatal("generator dropped inventory methods")
 	}
 	for _, method := range document.Methods {
