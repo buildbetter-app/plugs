@@ -23,6 +23,30 @@ func isAwaitMember(name string) bool {
 	}
 }
 
+// ValidateAwaitMemberInput checks each selected public create/patch member
+// before final images are evaluated. A later replacement cannot make an
+// invalid input admissible, or expose create-only fields through a patch.
+func ValidateAwaitMemberInput(fields map[string]any, patch bool) []Violation {
+	var violations []Violation
+	for _, name := range []string{"await_type", "await_id", "timeout", "waiters"} {
+		value, selected := fields[name]
+		if !selected {
+			continue
+		}
+		if patch && (name == "await_type" || name == "timeout") {
+			violations = append(violations, invalid("fields."+name, "await member is create-only")...)
+			continue
+		}
+		if name == "waiters" && value == nil {
+			continue // explicit native null-list input is normalized to []
+		}
+		if !validAwaitMember(name, value) {
+			violations = append(violations, invalid("fields."+name, "invalid await member type or bound")...)
+		}
+	}
+	return violations
+}
+
 func validateAwaitMembers(before, after *BeadState, facts GuardFacts) []Violation {
 	var violations []Violation
 	for _, name := range []string{"await_type", "await_id", "timeout", "waiters"} {
@@ -39,34 +63,37 @@ func validateAwaitMembers(before, after *BeadState, facts GuardFacts) []Violatio
 		if !present {
 			continue
 		}
-		valid := false
-		switch name {
-		case "await_type", "await_id":
-			limit := maxAwaitTypeCharacters
-			if name == "await_id" {
-				limit = maxAwaitIDCharacters
-			}
-			text, ok := value.(string)
-			valid = ok && utf8.ValidString(text) && utf8.RuneCountInString(text) <= limit
-		case "timeout":
-			// time.Duration's public representation is an int64 nanosecond
-			// count. Never round through float64 or expand an exponent.
-			data, err := json.Marshal(value)
-			if err == nil {
-				n, err := strconv.ParseInt(string(data), 10, 64)
-				valid = err == nil && n >= 0
-			}
-		case "waiters":
-			if validValue(Field{Type: "strings"}, value) {
-				data, err := json.Marshal(value)
-				valid = err == nil && len(data) <= maxWaitersJSONBytes
-			}
-		}
-		if !valid {
+		if !validAwaitMember(name, value) {
 			violations = append(violations, invalid("fields."+name, "invalid await member type or bound")...)
 		}
 	}
 	return violations
+}
+
+func validAwaitMember(name string, value any) bool {
+	switch name {
+	case "await_type", "await_id":
+		limit := maxAwaitTypeCharacters
+		if name == "await_id" {
+			limit = maxAwaitIDCharacters
+		}
+		text, ok := value.(string)
+		return ok && utf8.ValidString(text) && utf8.RuneCountInString(text) <= limit
+	case "timeout":
+		// time.Duration's public representation is an int64 nanosecond
+		// count. Never round through float64 or expand an exponent.
+		data, err := json.Marshal(value)
+		if err == nil {
+			n, err := strconv.ParseInt(string(data), 10, 64)
+			return err == nil && n >= 0
+		}
+	case "waiters":
+		if validValue(Field{Type: "strings"}, value) {
+			data, err := json.Marshal(value)
+			return err == nil && len(data) <= maxWaitersJSONBytes
+		}
+	}
+	return false
 }
 
 func awaitMemberSchemas() map[string]any {

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/server/transport/inprocess"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -107,16 +108,22 @@ func TestB14PublicAwaitMemberTypedRefusalsWriteNothing(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer reader.Close()
 		rows, err := reader.Get(context.Background(), []model.Ref{model.RefByID(maximum, model.Natural64(0))})
-		if err != nil || len(rows) != 1 {
-			t.Fatalf("exact timeout readback: rows=%d err=%v", len(rows), err)
+		closeErr := reader.Close()
+		if err != nil || closeErr != nil || len(rows) != 1 {
+			t.Fatalf("exact timeout readback: rows=%d err=%v close=%v", len(rows), err, closeErr)
 		}
 		var document struct{ Fields map[string]any }
 		decoder := json.NewDecoder(bytes.NewReader(rows[0].Body))
 		decoder.UseNumber()
 		if err := decoder.Decode(&document); err != nil || document.Fields["timeout"] != json.Number("9223372036854775807") {
 			t.Fatalf("timeout lost integer precision: %v %v", document.Fields["timeout"], err)
+		}
+		assertPublicAwaitTimeout(t, f, maximum)
+		if f.engine != "memory" {
+			f.close()
+			f.open()
+			assertPublicAwaitTimeout(t, f, maximum)
 		}
 	})
 }
@@ -185,6 +192,9 @@ func TestB14PublicAwaitWholeListOrderAndInvalidSuffix(t *testing.T) {
 		if !reflect.DeepEqual(f.currentBody(id), before) || f.historyCount() != history {
 			t.Fatal("null prefix masked an invalid final list or published a prefix")
 		}
+		f.refuse("tx.apply", map[string]any{"changeSet": map[string]any{"ops": []any{
+			patch(ref(id), []any{"invalid prefix", false}), patch(ref(id), []string{"valid suffix"}),
+		}}}, "invalid_params")
 		alias := map[string]any{"key": "await-subject"}
 		create := func(value any) map[string]any {
 			return map[string]any{"kind": "create", "key": "await-subject", "type": "issue", "fields": map[string]any{"title": "ordered alias", "waiters": value}}
@@ -200,5 +210,59 @@ func TestB14PublicAwaitWholeListOrderAndInvalidSuffix(t *testing.T) {
 		if f.historyCount() != history {
 			t.Fatal("invalid alias suffix published its create")
 		}
+		f.refuse("tx.apply", map[string]any{"changeSet": map[string]any{"ops": []any{
+			create([]any{"invalid prefix", false}), patch(alias, []string{"valid suffix"}),
+		}}}, "invalid_params")
 	})
+}
+
+func TestB14PublicAwaitCreateOnlySelectionsRefuseForNewAliases(t *testing.T) {
+	eachStore(t, func(t *testing.T, f *fixture) {
+		fields := map[string]any{"title": "create only control", "await_type": "mail", "timeout": 1}
+		id, _ := f.create(fields, "")
+		before, history := f.currentBody(id), f.historyCount()
+		for _, member := range []string{"await_type", "timeout"} {
+			for _, value := range []any{fields[member], nil, "changed"} {
+				f.refuse("bead.update", map[string]any{"id": id, "fields": map[string]any{member: value}}, "invalid_params")
+				f.refuse("tx.apply", map[string]any{"changeSet": map[string]any{"ops": []any{
+					map[string]any{"kind": "create", "key": "new-subject", "type": "issue", "fields": fields},
+					map[string]any{"kind": "patch", "target": map[string]any{"key": "new-subject"}, "fields": map[string]any{member: value}},
+				}}}, "invalid_params")
+				if !reflect.DeepEqual(f.currentBody(id), before) || f.historyCount() != history {
+					t.Fatal("create-only selection wrote content or history")
+				}
+			}
+		}
+	})
+}
+
+func assertPublicAwaitTimeout(t *testing.T, f *fixture, id string) {
+	t.Helper()
+	for _, method := range []string{"bead.get", "history.get"} {
+		params, image := map[string]any{"id": ref(id)}, "bead"
+		if method == "history.get" {
+			params, image = map[string]any{"ref": ref(id), "asOf": map[string]any{"revision": f.bead(id)["revision"]}}, "body"
+		}
+		request, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": "exact-timeout", "method": method, "params": params})
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := inprocess.New(f.server).RoundTrip(context.Background(), request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var response struct {
+			Result map[string]any
+			Error  any
+		}
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.UseNumber()
+		if err := decoder.Decode(&response); err != nil || response.Error != nil {
+			t.Fatalf("%s exact timeout reply: %s (%v)", method, raw, err)
+		}
+		bead := response.Result[image].(map[string]any)
+		if got := bead["fields"].(map[string]any)["timeout"]; got != json.Number("9223372036854775807") {
+			t.Fatalf("%s rounded public timeout to %v", method, got)
+		}
+	}
 }

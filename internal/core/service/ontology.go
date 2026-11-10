@@ -106,7 +106,19 @@ func (o *Ontology) Normalize(ctx context.Context, proposal port.ProposedChange, 
 	}
 	patches := []port.Patch{}
 	for _, change := range proposal.Changes {
-		if change.Resource.Kind != "bead" || !hasDocument(change.After) {
+		if change.Resource.Kind != "bead" {
+			continue
+		}
+		var memberInput map[string]any
+		if change.Op.Create != nil {
+			memberInput = change.Op.Create.Fields
+		} else if change.Op.Patch != nil {
+			memberInput = change.Op.Patch.Fields
+		}
+		if err := violationsError(ontology.ValidateAwaitMemberInput(memberInput, change.Op.Patch != nil)); err != nil {
+			return nil, err
+		}
+		if !hasDocument(change.After) {
 			continue
 		}
 		doc, err := decodeDocument(change.After)
