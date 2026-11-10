@@ -349,6 +349,7 @@ func TestPairedCensusReadsActualMemoryAndReopenedSQLite(t *testing.T) {
 			writeSanitized(t, "synthetic-"+engine+"-census.json", s)
 			checkCensusLabelProjections(t, capture, store, s)
 			checkCensusMemoryProjections(t, capture, store, s)
+			checkCensusEdgeProjections(t, capture, store, s)
 			// An actual ordinary Writer update leaves source provenance intact.
 			// A provenance-only census would miss this changed live description.
 			lease, e = store.Lease(ctx, "census-edit", 10*time.Second)
@@ -388,6 +389,107 @@ func TestPairedCensusReadsActualMemoryAndReopenedSQLite(t *testing.T) {
 			if observed.reads != observed.closes {
 				t.Fatal("history measurement leaked a reader")
 			}
+		})
+	}
+}
+
+func checkCensusEdgeProjections(t *testing.T, capture *Capture, store driver.Store, want Snapshot) {
+	t.Helper()
+	edges := capture.archive.Records("edge")
+	if len(edges) != 1 {
+		t.Fatal("public fixture must have one edge for exact metadata projection controls")
+	}
+	id, to := textValue(edges[0].Body["from"]), textValue(edges[0].Body["to"])
+	ctx := context.Background()
+	before, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceBefore := capture.Summary()
+	tokens := func(link map[string]any) map[string]any {
+		return link["metadata"].(map[string]any)["nativeExtensions"].(map[string]any)
+	}
+	for _, test := range []struct {
+		name   string
+		change func(map[string]any)
+	}{
+		{name: "canonical"},
+		{name: "missing-metadata", change: func(link map[string]any) { delete(link, "metadata") }},
+		{name: "null-metadata", change: func(link map[string]any) { link["metadata"] = nil }},
+		{name: "missing-extensions", change: func(link map[string]any) { delete(link["metadata"].(map[string]any), "nativeExtensions") }},
+		{name: "empty-extensions", change: func(link map[string]any) { link["metadata"].(map[string]any)["nativeExtensions"] = map[string]any{} }},
+		{name: "missing-thread", change: func(link map[string]any) { delete(tokens(link), "beads.thread_id") }},
+		{name: "null-thread", change: func(link map[string]any) { tokens(link)["beads.thread_id"] = "null" }},
+		{name: "empty-thread", change: func(link map[string]any) { tokens(link)["beads.thread_id"] = `""` }},
+		{name: "different-thread", change: func(link map[string]any) { tokens(link)["beads.thread_id"] = `"different-thread"` }},
+		{name: "equivalent-thread-token", change: func(link map[string]any) {
+			original := tokens(link)["beads.thread_id"].(string)
+			replaced := " " + original + " "
+			var left, right any
+			mustDecode(t, []byte(original), &left)
+			mustDecode(t, []byte(replaced), &right)
+			if original == replaced || !reflect.DeepEqual(left, right) {
+				t.Fatal("projection must differ in token bytes while preserving its JSON value")
+			}
+			tokens(link)["beads.thread_id"] = replaced
+		}},
+		{name: "missing-native-metadata", change: func(link map[string]any) { delete(tokens(link), "beads.metadata") }},
+		{name: "different-native-metadata", change: func(link map[string]any) { tokens(link)["beads.metadata"] = `{"extra":"changed"}` }},
+		{name: "extra-native-field", change: func(link map[string]any) { tokens(link)["beads.future_field"] = "1e0" }},
+		{name: "malformed-thread-token", change: func(link map[string]any) { tokens(link)["beads.thread_id"] = "[" }},
+		{name: "wrong-token-type", change: func(link map[string]any) { tokens(link)["beads.thread_id"] = map[string]any{"token": "thread-fixture"} }},
+	} {
+		t.Run("edge-metadata-projection/"+test.name, func(t *testing.T) {
+			changedRows, changedLinks := 0, 0
+			observed := &observedCensusStore{Store: store, changeRecord: func(row driver.Record) driver.Record {
+				if row.Kind != "bead" || row.Ref.ID != id {
+					return row
+				}
+				changedRows++
+				var body map[string]any
+				mustDecode(t, row.Body, &body)
+				for _, raw := range body["links"].([]any) {
+					link := raw.(map[string]any)
+					if link["kind"] != "blocks" || link["to"].(map[string]any)["id"] != to {
+						continue
+					}
+					changedLinks++
+					if got := tokens(link); len(got) != 2 || got["beads.thread_id"] != `"thread-fixture"` || got["beads.metadata"] != `{"extra":"kept"}` {
+						t.Fatal("canonical stored edge lost its exact public source tokens")
+					}
+					if test.change != nil {
+						test.change(link)
+					}
+				}
+				if test.change != nil {
+					row.Body = mustEncode(t, body)
+				}
+				return row
+			}}
+			got, err := capture.MeasureStore(ctx, observed, 7)
+			if changedRows != 1 || changedLinks != 1 || observed.reads != 1 || observed.closes != 1 || observed.writes != 0 || observed.leases != 0 {
+				t.Fatal("edge projection did not use exactly one edge and one complete read-only snapshot")
+			}
+			if test.change == nil {
+				if err != nil || !reflect.DeepEqual(got, want) {
+					t.Fatalf("canonical edge metadata changed the measurement: %v", err)
+				}
+			} else {
+				var refusal CensusError
+				if !errors.As(err, &refusal) || refusal.Code != TargetDiffers || !reflect.DeepEqual(got, Snapshot{}) {
+					t.Fatalf("damaged edge metadata returned a measurement or another refusal: %+v %v", got, err)
+				}
+			}
+			after, err := store.Meta(ctx)
+			if err != nil || !reflect.DeepEqual(before, after) || !reflect.DeepEqual(sourceBefore, capture.Summary()) {
+				t.Fatal("edge projection control changed original store or source state")
+			}
+			unmodified := &observedCensusStore{Store: store}
+			unchanged, err := capture.MeasureStore(ctx, unmodified, 7)
+			if err != nil || !reflect.DeepEqual(unchanged, want) || unmodified.reads != 1 || unmodified.closes != 1 || unmodified.writes != 0 || unmodified.leases != 0 {
+				t.Fatal("edge projection changed underlying rows or leaked its reader")
+			}
+			t.Logf("B07_CENSUS_EDGE_PROJECTION refusal=%t source_unchanged=true store_unchanged=true reads=%d closes=%d writes=%d leases=%d", test.change != nil, observed.reads, observed.closes, observed.writes, observed.leases)
 		})
 	}
 }
