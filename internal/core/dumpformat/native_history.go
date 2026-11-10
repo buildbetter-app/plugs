@@ -431,7 +431,22 @@ func validateNativeHistory(h NativeHistory) error {
 	if err := validateNativeTablesPolicy(h.Current, h.deltaVerified); err != nil {
 		return err
 	}
-	if len(h.Current) != len(columns) {
+	expectedCurrent := len(columns)
+	if h.deltaVerified {
+		for name := range h.Current {
+			if _, portable := columns[name]; portable {
+				continue
+			}
+			if !h.OpaqueNativeCurrentFamily(name) {
+				return fmt.Errorf("unmapped native physical current family: %s", name)
+			}
+			expectedCurrent++
+		}
+		if h.OpaqueNativeCurrentFamily("dolt_ignore") && !equalJSON(h.Current["dolt_ignore"], h.Ignore) {
+			return fmt.Errorf("native physical current ignore observation differs")
+		}
+	}
+	if len(h.Current) != expectedCurrent {
 		return fmt.Errorf("incomplete native current family census")
 	}
 	for name, cols := range columns {
@@ -473,6 +488,13 @@ func validateNativeHistory(h NativeHistory) error {
 			return nativeGap(h, "native-boundary-head-image-missing")
 		}
 		return requireCompleteNativeHistory(h)
+	}
+	if h.deltaVerified {
+		stored, atHead := head["dolt_schemas"]
+		current, atCurrent := h.Current["dolt_schemas"]
+		if atHead != atCurrent || atHead && !equalJSON(stored, current) {
+			return nativeGap(h, "head-image-differs-versioned-family:dolt_schemas")
+		}
 	}
 	if h.SchemaProfile != nil {
 		for _, absence := range h.SchemaProfile.Absences {
@@ -529,6 +551,9 @@ func bindNativeCurrent(h NativeHistory, rows map[string][]Record, scoped bool) e
 		}
 	}
 	for name, table := range h.Current {
+		if h.OpaqueNativeCurrentFamily(name) {
+			continue
+		}
 		expected, actual := []Row{}, append([]Row{}, archived[name]...)
 		for _, row := range table.Rows {
 			copy := Row{}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -136,6 +137,23 @@ func syntheticNativeDeltaCaptureSet(t *testing.T) (string, *dumpformat.Archive, 
 	t.Helper()
 	original, input := actualE25MultiVersionArchive(t)
 	history := original.NativeSourceHistories()[0]
+	// These are deliberately synthetic inert physical observations. The
+	// portable archive has no corresponding business records or dispositions.
+	view := func(sequence uint64) dumpformat.NativeTable {
+		return dumpformat.NativeTable{Columns: []string{"fragment", "name", "type"}, Rows: []dumpformat.Row{{"fragment": fmt.Sprintf("SELECT %d AS public_value", sequence), "name": "synthetic_public_view", "type": "view"}}}
+	}
+	for i := range history.Images {
+		image := &history.Images[i]
+		image.Tables["dolt_ignore"] = history.Ignore
+		if image.SchemaProfile != nil && image.SchemaProfile.MainVersion != nil {
+			image.Tables["dolt_schemas"] = view(image.Sequence)
+		}
+		if image.CommitID == history.Head {
+			history.Current["dolt_schemas"] = view(image.Sequence)
+		}
+	}
+	history.Current["dolt_ignore"] = history.Ignore
+	history.Current["dolt_nonlocal_tables"] = dumpformat.NativeTable{Columns: []string{"name"}, Rows: []dumpformat.Row{{"name": "synthetic_nonlocal"}}}
 	members := tarMembers(t, input)
 	manifest := original.Manifest()
 	delete(members, dumpformat.NativeHistoryMember)
@@ -279,6 +297,15 @@ func syntheticNativeDeltaCaptureSet(t *testing.T) (string, *dumpformat.Archive, 
 		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
 			t.Fatal(err)
 		}
+		if out := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR"); out != "" {
+			path := filepath.Join(out, "synthetic-delta-capture-set", name)
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	archive, err := dumpformat.ReadNativeCaptureSetDirectory(context.Background(), dir, dumpformat.NativeCaptureSetOptions{})
 	if err != nil {
@@ -301,6 +328,11 @@ func TestNativeDeltaCaptureSetConstructorImportAndPersistentReopen(t *testing.T)
 			policyPath, requestPath := filepath.Join(work, "policy.json"), filepath.Join(work, "request.json")
 			if err := os.WriteFile(policyPath, encode(t, policy), 0o600); err != nil {
 				t.Fatal(err)
+			}
+			if out := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR"); out != "" {
+				if err := os.WriteFile(filepath.Join(out, "synthetic-delta-"+engine+"-policy.json"), encode(t, policy), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			base := []string{"--capture-set", dir, "--policy", policyPath, "--driver", engine, "--expected-binary-sha256", binaryHash}
 			invoke := func(args []string, name string) ([]byte, []byte) {
@@ -342,6 +374,9 @@ func TestNativeDeltaCaptureSetConstructorImportAndPersistentReopen(t *testing.T)
 					Reopen        string `json:"reopen"`
 					HistoryImages int    `json:"history_images"`
 				} `json:"verification"`
+				Report struct {
+					NativeFamilies []NativeFamilyReport `json:"NativeFamilies"`
+				} `json:"committed_report"`
 			}
 			if err := json.Unmarshal(stdout, &receipt); err != nil {
 				t.Fatal(err)
@@ -356,6 +391,20 @@ func TestNativeDeltaCaptureSetConstructorImportAndPersistentReopen(t *testing.T)
 			}
 			if receipt.Verification.Reopen != wantReopen || receipt.Verification.HistoryImages != len(want.Commits) {
 				t.Fatal("full-history receive/reopen verification missing")
+			}
+			current := archive.NativeSourceHistories()[0]
+			opaque := map[string]bool{}
+			for _, family := range receipt.Report.NativeFamilies {
+				if family.History != dumpformat.FamilyOpaqueNative {
+					continue
+				}
+				if opaque[family.Family] || !current.OpaqueNativeCurrentFamily(family.Family) || family.SourceRows != len(current.Current[family.Family].Rows) || family.ImportedRows != family.SourceRows || family.ExpiredRows != 0 {
+					t.Fatal("opaque native current report differs from exact source rows")
+				}
+				opaque[family.Family] = true
+			}
+			if len(opaque) != 3 || !opaque["dolt_schemas"] || !opaque["dolt_ignore"] || !opaque["dolt_nonlocal_tables"] {
+				t.Fatal("opaque physical system family counts missing")
 			}
 			usage := receipt.NativeDelta.Verification.Usage
 			var total uint64

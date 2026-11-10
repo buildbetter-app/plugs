@@ -15,6 +15,60 @@ import (
 func deltaTestUint(n uint64) *uint64 { return &n }
 func deltaTestText(s string) *string { return &s }
 
+func TestNativeDeltaOpaqueCurrentKeepsPortableAndLegacyCensusExact(t *testing.T) {
+	// This is a declared synthetic v1 input adapted only to exercise the v2
+	// post-verification policy. It supplies no physical producer proof.
+	a, err := Read(bytes.NewReader(nativeSyntheticFixture(t, "pl")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := a.NativeSourceHistories()[0]
+	h.deltaVerified = true
+	h.Current["dolt_ignore"] = h.Ignore
+	h.Current["dolt_nonlocal_tables"] = NativeTable{Columns: []string{"name"}, Rows: []Row{{"name": "synthetic_nonlocal"}}}
+	h.Current["dolt_schemas"] = NativeTable{Columns: []string{"fragment", "name", "type"}, Rows: []Row{{"fragment": "SELECT 1 AS public_value", "name": "synthetic_public_view", "type": "view"}}}
+	for i := range h.Images {
+		if h.Images[i].CommitID == h.Head {
+			h.Images[i].Tables["dolt_schemas"] = h.Current["dolt_schemas"]
+		}
+	}
+	if err := validateNativeHistory(h); err != nil {
+		t.Fatal("verified opaque current tables refused", err)
+	}
+	if err := bindNativeCurrent(h, a.byKind, false); err != nil {
+		t.Fatal("opaque physical rows were treated as portable records", err)
+	}
+	copy := cloneNativeDeltaHistory(h)
+	if !reflect.DeepEqual(copy.Current, h.Current) || !copy.OpaqueNativeCurrentFamily("dolt_schemas") {
+		t.Fatal("opaque rows lost in detached source history")
+	}
+	legacy := cloneNativeDeltaHistory(h)
+	legacy.deltaVerified = false
+	if legacy.OpaqueNativeCurrentFamily("dolt_schemas") || validateNativeHistory(legacy) == nil {
+		t.Fatal("opaque exception widened legacy portable census")
+	}
+	missing := cloneNativeDeltaHistory(h)
+	delete(missing.Current, "config")
+	if validateNativeHistory(missing) == nil {
+		t.Fatal("opaque tables masked a missing required portable family")
+	}
+	unknown := cloneNativeDeltaHistory(h)
+	unknown.Current["unknown_physical_table"] = NativeTable{Columns: []string{"value"}, Rows: []Row{}}
+	if validateNativeHistory(unknown) == nil {
+		t.Fatal("unknown physical current family accepted")
+	}
+	changed := cloneNativeDeltaHistory(h)
+	changed.Current["dolt_ignore"] = NativeTable{Columns: []string{"ignored", "pattern"}, Rows: []Row{{"ignored": true, "pattern": "invented"}}}
+	if validateNativeHistory(changed) == nil {
+		t.Fatal("physical ignore rows diverged from authenticated header")
+	}
+	changed = cloneNativeDeltaHistory(h)
+	delete(changed.Current, "dolt_schemas")
+	if validateNativeHistory(changed) == nil {
+		t.Fatal("versioned opaque family disappeared from current census")
+	}
+}
+
 func deltaTestRow(t *testing.T, table NativeDeltaTableSchema, id, value string, occurrence uint64) NativeDeltaRow {
 	t.Helper()
 	cells := []NativeDeltaCell{{Kind: "string", Value: value}}

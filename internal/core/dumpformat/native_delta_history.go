@@ -5,6 +5,27 @@ import (
 	"sort"
 )
 
+// FamilyOpaqueNative preserves physical system-table evidence without making
+// its SQL definitions or rows active in Plug.
+const FamilyOpaqueNative = "opaque-native-physical"
+
+// OpaqueNativeCurrentFamily identifies the exact physical system families of
+// an authenticated v2 history. They are outside the portable BASE TABLE census;
+// their original typed rows remain authenticated by the native stream.
+func (h NativeHistory) OpaqueNativeCurrentFamily(name string) bool {
+	if !h.deltaVerified {
+		return false
+	}
+	if _, present := h.Current[name]; !present {
+		return false
+	}
+	switch name {
+	case "dolt_ignore", "dolt_nonlocal_tables", "dolt_schemas":
+		return true
+	}
+	return false
+}
+
 func checkedNativeCommitCensus(h NativeHistory) error {
 	if !h.deltaVerified {
 		return nativeCommitCensus(h)

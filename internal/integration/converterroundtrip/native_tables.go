@@ -279,6 +279,26 @@ func nativeCurrentRecords(archive *dumpformat.Archive, when time.Time) ([]driver
 			}
 			rows, reports = append(rows, row), append(reports, report)
 		}
+		physical := []string{}
+		for name := range scope.Current {
+			if scope.OpaqueNativeCurrentFamily(name) {
+				physical = append(physical, name)
+			}
+		}
+		sort.Strings(physical)
+		for _, name := range physical {
+			if seen[name] {
+				return nil, nil, fmt.Errorf("%w: opaque native family has portable disposition", driver.ErrUnsupported)
+			}
+			seen[name] = true
+			value := scope.Current[name]
+			row, err := nativeTableRecord(identity, name, dumpformat.FamilyOpaqueNative, value)
+			if err != nil {
+				return nil, nil, err
+			}
+			rows = append(rows, row)
+			reports = append(reports, NativeFamilyReport{Source: identity, Family: name, History: dumpformat.FamilyOpaqueNative, SourceRows: len(value.Rows), ImportedRows: len(value.Rows)})
+		}
 		if len(seen) != len(scope.Current) {
 			return nil, nil, fmt.Errorf("%w: incomplete current native family dispositions", driver.ErrUnsupported)
 		}

@@ -27,6 +27,19 @@ No driver or importer API changes. Every part and reconstructed state is verifie
 before lowering. Existing admission, lease, transaction and publication rules apply.
 Reopened persistent readback checks every imported commit/table and source events.
 
+The full physical current census may also contain exactly `dolt_ignore`,
+`dolt_nonlocal_tables`, and `dolt_schemas`, outside the portable BASE TABLE
+census. The verified v2 path retains these as inert `beads-archive` records with
+`history=opaque-native-physical`, exact rows and per-family source/imported
+counts. Original typed cells/schema/hash commitments remain in the authenticated
+native stream and retained blobs for reverse/undo. SQL view or trigger definitions
+are stored as evidence only; import does not create or execute them. Current
+readback checks these opaque records too. Required portable families still have
+exact columns, rows and dispositions; every other extra current name refuses.
+The versioned `dolt_schemas` HEAD/current normalized census agrees exactly.
+Nonlocal declarations remain raw evidence; import does not resolve aliases.
+Legacy portable/native-table admission keeps its exact closed census.
+
 ## Temporary decoded accounting
 
 `--native-decoded-limit-bytes` accepts a positive uint64; default 2147483648.

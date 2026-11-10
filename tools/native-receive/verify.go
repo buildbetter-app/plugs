@@ -236,6 +236,20 @@ func verifyParsedNative(ctx context.Context, store driver.Store, profile driver.
 			proof.CurrentFamilies++
 			proof.CurrentRows += len(value.Rows)
 		}
+		for name, value := range scope.Current {
+			if !scope.OpaqueNativeCurrentFamily(name) {
+				continue
+			}
+			if seen[name] {
+				return proof, fmt.Errorf("opaque native family %s has portable disposition", name)
+			}
+			seen[name] = true
+			if err := checkTable(ctx, reader, source, name, dumpformat.FamilyOpaqueNative, value); err != nil {
+				return proof, err
+			}
+			proof.CurrentFamilies++
+			proof.CurrentRows += len(value.Rows)
+		}
 		if len(seen) != len(scope.Current) {
 			return proof, fmt.Errorf("native current family census incomplete")
 		}
