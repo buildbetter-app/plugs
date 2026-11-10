@@ -81,7 +81,9 @@ history; `reverse-report.json` retains the exact loss reasons.
 Standard output uses bounded field names, counters, digests and fixed codes.
 Output directories are 0700 and evidence files are 0600. Subprocess command
 arguments, exit codes, stdout/stderr and hashes are retained in the new output
-directory. The raw readback tar contains actual stored fields; a converter
+directory. A rejected raw archive also retains the actual decoder refusal in
+`beads-readback-validation-error.txt`; it receives no validated readback digest
+or native comparison credit. The raw readback tar contains actual stored fields; a converter
 projection, original archive or command construction never substitutes for it.
 Only public disposable data is authorized for this lane. No executable artifact
 is bundled here, and tests never substitute a successful Beads factory. Without

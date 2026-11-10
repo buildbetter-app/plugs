@@ -299,6 +299,11 @@ func runBeads(ctx context.Context, options beadsOptions, output string, source *
 	actual, err := dumpformat.ReadFile(readback)
 	if err != nil {
 		result.Status, result.Reason, result.BeadsReadback = "BLOCK", "beads_raw_readback_invalid", "FAIL"
+		// Preserve the actual decoder refusal without granting an invalid
+		// archive a validated readback digest or any native comparison credit.
+		if writePrivate(output, "beads-readback-validation-error.txt", []byte(err.Error()+"\n")) != nil {
+			result.Reason = "beads_readback_evidence_refused"
+		}
 		return
 	}
 	result.BeadsReadbackSHA256 = actual.SHA256()

@@ -134,7 +134,7 @@ func withPublicCaptureFixture(t *testing.T, options beadsOptions) beadsOptions {
 	if err != nil {
 		t.Fatal(err)
 	}
-	builder := publicnative.SourceBuilder{T: t, Root: root, SourceDirectory: "../../spec/s1-b09-native/testdata", Target: "//cmd/bd:bd"}
+	builder := publicnative.SourceBuilder{T: t, Root: root, SourceDirectory: "../../spec/s1-b09-native/testdata", Target: publicNativeProtocolExporterLabel(t)}
 	checkout := os.Getenv("PLUG_SOURCE_MODULE_ROOT")
 	if !filepath.IsAbs(checkout) {
 		t.Fatal("actual candidate checkout required")

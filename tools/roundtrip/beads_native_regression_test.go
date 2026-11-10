@@ -264,6 +264,21 @@ func assertPublicNativeCaptureReadback(t *testing.T, options beadsOptions, outpu
 
 // These expected wire values come from existing independent protocol data.
 // Bind complete source bytes; never discover expectations from runtime output.
+func publicNativeProtocolExporterLabel(t *testing.T) string {
+	t.Helper()
+	data := publicNativeProtocolInput(t,
+		"tools/roundtrip/testdata/public-companion-profile.json",
+		"9389b60ccf64dd755a16b00367318b78866455cb0c1493a0b0c0532e1a6aae40")
+	var profile struct {
+		Schema   string                 `json:"schema"`
+		Exporter struct{ Label string } `json:"exporter"`
+	}
+	if err := json.Unmarshal(data, &profile); err != nil || profile.Schema != "plug-public-companion/1" || strings.TrimSpace(profile.Exporter.Label) == "" {
+		t.Fatal("pinned public companion exporter label is invalid")
+	}
+	return profile.Exporter.Label
+}
+
 func publicNativeProtocolVersionKey(t *testing.T) string {
 	t.Helper()
 	data := publicNativeProtocolInput(t,
