@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
-	"strings"
 	"sync"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -314,7 +313,7 @@ func (p *PreparedRequest) prepare(ctx context.Context, s Slice, n Namespace, res
 	if resource.Kind != Bead && resource.Kind != Project && resource.Kind != History {
 		return false, nil
 	}
-	if CanonicalRef(resource.Ref) != nil || (resource.Kind == Bead && strings.Contains(resource.Ref.ID, "/")) {
+	if CanonicalRef(resource.Ref) != nil || (resource.Kind == Bead && !validBeadReference(s, resource.Ref)) {
 		return false, nil
 	}
 	if state != nil {

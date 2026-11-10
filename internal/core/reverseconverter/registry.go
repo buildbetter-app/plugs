@@ -57,10 +57,16 @@ func (c *Converter) supports(kind string) bool {
 // actual mappings. Archive callers must still use the canonical Read boundary;
 // registering a mapping does not loosen the archive grammar or restore load.
 func (c *Converter) Convert(dump Dump) (Result, error) {
-	return c.ConvertWithDirectives(dump, nil)
+	return c.ConvertWithOptions(dump, Options{})
 }
 
 func (c *Converter) ConvertWithDirectives(dump Dump, directives []ontologymigration.Directive) (Result, error) {
+	return c.ConvertWithOptions(dump, Options{Directives: directives})
+}
+
+// ConvertWithOptions applies the same physical source selection and ontology
+// directives as the canonical exporter, after executing registered mappings.
+func (c *Converter) ConvertWithOptions(dump Dump, options Options) (Result, error) {
 	report := Report{InputDigest: digestDump(dump), Warnings: append([]string(nil), dump.Manifest.Warnings...)}
 	if err := validateDumpShape(dump, &report, c); err != nil {
 		normalizeReport(&report)
@@ -71,7 +77,7 @@ func (c *Converter) ConvertWithDirectives(dump Dump, directives []ontologymigrat
 		normalizeReport(&report)
 		return Result{Report: report}, withReport(err, report)
 	}
-	return convertCanonical(projected, directives, report)
+	return convertCanonical(projected, options, report)
 }
 
 func (c *Converter) project(dump Dump) (Dump, error) {
@@ -98,9 +104,19 @@ func (c *Converter) project(dump Dump) (Dump, error) {
 	}
 	// The source manifest was validated before projection. Recount the derived
 	// canonical inventory, which receives the same full conversion validation.
+	versions := make(map[string]int, len(dump.Manifest.Kinds))
+	for _, kind := range dump.Manifest.Kinds {
+		if supportedKinds[kind.Name] {
+			versions[kind.Name] = kind.Version
+		}
+	}
 	projected.Manifest.Kinds = nil
 	for kind, records := range projected.Records {
-		projected.Manifest.Kinds = append(projected.Manifest.Kinds, Kind{Name: kind, Version: 1, File: "records/" + kind + ".ndjson", Count: len(records)})
+		version := versions[kind]
+		if version == 0 {
+			version = 1
+		}
+		projected.Manifest.Kinds = append(projected.Manifest.Kinds, Kind{Name: kind, Version: version, File: "records/" + kind + ".ndjson", Count: len(records)})
 	}
 	sort.Slice(projected.Manifest.Kinds, func(i, j int) bool { return projected.Manifest.Kinds[i].Name < projected.Manifest.Kinds[j].Name })
 	return projected, nil

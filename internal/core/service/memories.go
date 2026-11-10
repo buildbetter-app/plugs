@@ -161,6 +161,52 @@ func decodeMemoryRecord(record driver.Record) (Memory, error) {
 	return memoryValue(record, document)
 }
 
+// importedIneligibleMemory identifies preserved Beads rows before canonical
+// MemoryDocument decoding. Such rows remain kind=memory for storage/reverse
+// fidelity but are intentionally absent from the public memory view.
+func importedIneligibleMemory(record driver.Record) bool {
+	var raw map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(record.Body))
+	decoder.UseNumber()
+	if decoder.Decode(&raw) != nil || !errors.Is(decoder.Decode(new(any)), io.EOF) || record.Kind != "memory" {
+		return false
+	}
+	id, ok := raw["source_id"].(string)
+	if !ok || id == "" || raw["key"] != id || raw["source_table"] != "config" || !record.Ref.Branch.IsZero() {
+		return false
+	}
+	wantID := "source/memory/" + id
+	if project, present := raw["source_project"]; present {
+		name, ok := project.(string)
+		if !ok || len(raw) != 7 {
+			return false
+		}
+		wantID = driver.SourcePlaneMirrorIDV1("memory", name, "config", id)
+	} else if len(raw) != 6 {
+		return false
+	}
+	if record.Ref.ID != wantID {
+		return false
+	}
+	source, ok := raw["source"].(map[string]any)
+	if !ok || len(source) != 2 || source["key"] != "kv.memory."+id {
+		return false
+	}
+	value, present := raw["value"]
+	sourceValue, sourcePresent := source["value"]
+	a, errA := json.Marshal(value)
+	b, errB := json.Marshal(sourceValue)
+	if !present || !sourcePresent || errA != nil || errB != nil || !bytes.Equal(a, b) {
+		return false
+	}
+	if raw["classification"] == "secret" {
+		ref, ok := value.(map[string]any)
+		return ok && len(ref) == 1 && ref["$secret"] == "config/kv.memory."+id
+	}
+	_, text := value.(string)
+	return raw["classification"] == "public" && !text
+}
+
 func (s *Service) MemoryGet(ctx context.Context, by model.PrincipalRef, req MemoryGetRequest) (Memory, error) {
 	if err := memoryRef(req.ID); err != nil {
 		return Memory{}, err
@@ -178,6 +224,9 @@ func (s *Service) MemoryGet(ctx context.Context, by model.PrincipalRef, req Memo
 		return Memory{}, mapped(err)
 	}
 	if len(rows) != 1 || rows[0].Kind != "memory" {
+		return Memory{}, failure("not_found", "memory was not found")
+	}
+	if importedIneligibleMemory(rows[0]) {
 		return Memory{}, failure("not_found", "memory was not found")
 	}
 	memory, err := decodeMemoryRecord(rows[0])
@@ -248,6 +297,9 @@ func (s *Service) MemoryList(ctx context.Context, by model.PrincipalRef, req Mem
 			return MemoryPage{}, mapped(err)
 		}
 		for _, record := range page.Items {
+			if importedIneligibleMemory(record) {
+				continue
+			}
 			memory, err := decodeMemoryRecord(record)
 			if err != nil {
 				return MemoryPage{}, err

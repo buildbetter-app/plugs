@@ -1,0 +1,3 @@
+[native_manifest_strings]
+path = "spec/s1-b13-native/recording_test.go"
+values = ["bd_export_version", "bin/bd-export", "//cmd/bd:bd", "/cmd/bd"]

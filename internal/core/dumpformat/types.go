@@ -3,6 +3,8 @@
 // opens a store or creates a revision.
 package dumpformat
 
+import "unicode/utf8"
+
 const (
 	Format          = "plug-dump/1"
 	BeadsReference  = "9d6fff760b7a314b476539198504d77ce0959656"
@@ -15,7 +17,58 @@ const (
 	// continuation state.
 	NativeAllocatorMember  = "allocator/snapshot.json"
 	NativeAllocatorVersion = "plug-native-allocator/1"
+	// EdgeVersionTypedDependencies is the explicit successor producer contract.
+	// Format/schema/reference alone never enable local waits or conditional edges.
+	EdgeVersionTypedDependencies = 2
+	// EdgeVersionLocalOpaque admits durable local dependency rows whose kind is
+	// outside the canonical dependency vocabulary. It is additive to v2: the
+	// v1 and v2 contracts keep their existing refusals and projections.
+	EdgeVersionLocalOpaque = 3
+	// IssueSourceFieldsContract binds the producer's complete physical issue
+	// row image. Recognition is separate from native SQL import capability.
+	IssueSourceFieldsContract  = "beads-issues-source-fields/1"
+	SourcePlaneAddressContract = "beads-source-planes/1"
 )
+
+var canonicalEdgeTypes = map[string]struct{}{
+	"blocks": {}, "parent-child": {}, "conditional-blocks": {}, "waits-for": {},
+	"related": {}, "discovered-from": {}, "replies-to": {}, "relates-to": {},
+	"duplicates": {}, "supersedes": {}, "authored-by": {}, "assigned-to": {},
+	"approved-by": {}, "attests": {}, "tracks": {}, "until": {},
+	"caused-by": {}, "validates": {}, "delegated-from": {},
+}
+
+// IsTypedEdgeVersion identifies the versioned edge contracts. Registry
+// versions for every other record kind remain exactly v1.
+func IsTypedEdgeVersion(version int) bool {
+	return version == EdgeVersionTypedDependencies || version == EdgeVersionLocalOpaque
+}
+
+// IsVersionedLocalKnownEdgeType admits the fixed dependency vocabulary only
+// through a typed local issue-target contract. These kinds keep their existing
+// graph effects; admission never makes a nonblocking kind a scheduling edge.
+// The v3 local-opaque predicate remains disjoint from all fixed kinds.
+func IsVersionedLocalKnownEdgeType(version int, targetKind, kind string) bool {
+	if !IsTypedEdgeVersion(version) || targetKind != "depends_on_issue_id" {
+		return false
+	}
+	return IsCanonicalEdgeType(kind)
+}
+
+// IsCanonicalEdgeType reports whether kind belongs to the closed well-known
+// dependency vocabulary. A v3 local opaque row must stay outside this set.
+func IsCanonicalEdgeType(kind string) bool {
+	_, ok := canonicalEdgeTypes[kind]
+	return ok
+}
+
+// IsLocalOpaqueEdgeType is the strict v3 admission predicate. It deliberately
+// does not admit external arms or ephemeral targets, and it never relabels a
+// canonical well-known kind as opaque.
+func IsLocalOpaqueEdgeType(version int, targetKind, kind string) bool {
+	return version == EdgeVersionLocalOpaque && targetKind == "depends_on_issue_id" &&
+		kind != "" && len(kind) <= 32 && utf8.ValidString(kind) && !IsCanonicalEdgeType(kind)
+}
 
 // Row retains source JSON values, including explicit nulls and lossless
 // numbers. The exporter uses this shape for both a typed record body and its
@@ -23,11 +76,12 @@ const (
 type Row map[string]any
 
 type Project struct {
-	Prefix        string            `json:"prefix"`
-	IDMode        string            `json:"id_mode"`
-	HashLength    int               `json:"hash_length"`
-	LastID        uint64            `json:"last_id"`
-	ChildCounters map[string]uint64 `json:"child_counters"`
+	Prefix         string            `json:"prefix"`
+	IDMode         string            `json:"id_mode"`
+	HashLength     int               `json:"hash_length"`
+	HashNamespaces []string          `json:"hash_namespaces,omitempty"`
+	LastID         uint64            `json:"last_id"`
+	ChildCounters  map[string]uint64 `json:"child_counters"`
 }
 
 type Kind struct {
@@ -50,22 +104,24 @@ type Disposition struct {
 }
 
 type Manifest struct {
-	Format         string              `json:"format"`
-	Schema         int                 `json:"schema"`
-	Reference      string              `json:"beads_reference"`
-	StoreID        string              `json:"store_id"`
-	Machine        string              `json:"machine"`
-	MainVersion    int                 `json:"main_version"`
-	IgnoredVersion int                 `json:"ignored_version"`
-	Scope          string              `json:"scope"`
-	History        string              `json:"history"`
-	Projects       []Project           `json:"projects"`
-	Ontology       []OntologyDirective `json:"ontology,omitempty"`
-	Kinds          []Kind              `json:"kind_registry"`
-	Files          map[string]File     `json:"files"`
-	Sources        []Disposition       `json:"sources"`
-	Warnings       []string            `json:"warnings"`
-	Verification   map[string]string   `json:"verification"`
+	Format                     string              `json:"format"`
+	Schema                     int                 `json:"schema"`
+	Reference                  string              `json:"beads_reference"`
+	StoreID                    string              `json:"store_id"`
+	Machine                    string              `json:"machine"`
+	MainVersion                int                 `json:"main_version"`
+	IgnoredVersion             int                 `json:"ignored_version"`
+	Scope                      string              `json:"scope"`
+	History                    string              `json:"history"`
+	Projects                   []Project           `json:"projects"`
+	Ontology                   []OntologyDirective `json:"ontology,omitempty"`
+	Kinds                      []Kind              `json:"kind_registry"`
+	Files                      map[string]File     `json:"files"`
+	Sources                    []Disposition       `json:"sources"`
+	Warnings                   []string            `json:"warnings"`
+	Verification               map[string]string   `json:"verification"`
+	SourceFieldsContract       string              `json:"source_fields_contract,omitempty"`
+	SourcePlaneAddressContract string              `json:"source_plane_address_contract,omitempty"`
 	// Native store fields are present only for archives produced by Plug's
 	// engine-neutral admin.dump path. The offline Beads exporter leaves these
 	// fields absent and continues to use the source census above.
@@ -78,6 +134,17 @@ type Manifest struct {
 	RecordCount            int    `json:"record_count,omitempty"`
 	VersionCount           int    `json:"version_count,omitempty"`
 	ChangesetCount         int    `json:"changeset_count,omitempty"`
+}
+
+// EdgeVersion returns the declared edge contract. An absent registry entry
+// cannot opt historical images into successor semantics; it stays legacy v1.
+func (m Manifest) EdgeVersion() int {
+	for _, kind := range m.Kinds {
+		if kind.Name == "edge" {
+			return kind.Version
+		}
+	}
+	return 1
 }
 
 type Provenance struct {
@@ -151,6 +218,7 @@ func (a *Archive) Manifest() Manifest {
 	// readback hash differ from the admitted manifest.
 	m.Projects = append([]Project{}, m.Projects...)
 	for i := range m.Projects {
+		m.Projects[i].HashNamespaces = append([]string(nil), m.Projects[i].HashNamespaces...)
 		c := make(map[string]uint64, len(m.Projects[i].ChildCounters))
 		for key, value := range m.Projects[i].ChildCounters {
 			c[key] = value

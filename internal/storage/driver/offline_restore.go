@@ -170,6 +170,9 @@ type RestoreImportProfile struct {
 	// HistoryTime binds the actual restore time before historical imported
 	// comment images are lowered and hashed. It is never a source timestamp.
 	HistoryTime string `json:"historyTime,omitempty"`
+	// SourcePlanes is the single checked joint logical plan binding. Nil keeps
+	// the historical profile bytes and core-derived digest contract unchanged.
+	SourcePlanes *SourcePlaneImportBindingV1 `json:"sourcePlanes,omitempty"`
 }
 
 type RestoreImportTx interface {
@@ -198,6 +201,17 @@ func (p RestoreImportProfile) Detached() (RestoreImportProfile, error) {
 		return RestoreImportProfile{}, err
 	}
 	p.HistoryMode = historyMode
+	if p.SourcePlanes != nil {
+		binding, err := p.SourcePlanes.Detached()
+		if err != nil {
+			return RestoreImportProfile{}, err
+		}
+		plan, err := binding.Plan()
+		if err != nil || plan.SourceStoreID != string(p.SourceStoreID) || plan.ArchiveSHA256 != p.ArchiveDigest {
+			return RestoreImportProfile{}, sourcePlaneError("joint plan differs from import source/archive")
+		}
+		p.SourcePlanes = &binding
+	}
 	a := p.Admission
 	if (a.Mode == "authenticated" && a.Scope != "") || (a.Mode == "anonymous-local" && a.Scope != "" && ValidateCheckpointKey(a.Scope) != nil) {
 		return RestoreImportProfile{}, fmt.Errorf("import admission scope is not the normalized G4 agent label")
@@ -229,6 +243,20 @@ func (p RestoreImportProfile) RequestHash() (string, error) {
 	}
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+// DetachedCoreOnly is the execution boundary for the historical importer.
+// A checked joint plan is valid preparation input, but cannot be executed by
+// a core-only writer that has no provider/origin/receipt correspondence.
+func (p RestoreImportProfile) DetachedCoreOnly() (RestoreImportProfile, error) {
+	bound, err := p.Detached()
+	if err != nil {
+		return RestoreImportProfile{}, err
+	}
+	if bound.SourcePlanes != nil {
+		return RestoreImportProfile{}, sourcePlaneError("joint import requires atomic source-plane execution capability")
+	}
+	return bound, nil
 }
 
 // AgentLabel retains existing G4 normalization; full admission scope remains

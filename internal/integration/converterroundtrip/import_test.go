@@ -373,7 +373,7 @@ func TestAdmittedImportRestoresCommentAndServesWorkload(t *testing.T) {
 			}
 			if _, err := reverseconverter.ReadBytes(data); err != nil {
 				t.Fatalf("reverse read: %v", err)
-			} else if converted, err := reverseconverter.ConvertArchive(data); err != nil {
+			} else if converted, err := reverseconverter.ConvertArchiveWithOptions(data, reverseconverter.Options{All: true}); err != nil {
 				t.Fatalf("reverse convert: %v", err)
 			} else {
 				decoder := json.NewDecoder(bytes.NewReader(converted.JSONL))
@@ -518,6 +518,148 @@ func TestAdmittedImportRejectsUntrustedProfileBeforeWrite(t *testing.T) {
 // compiler inlines the common decode helper differently across Bazel modes.
 var _ = json.Valid
 
+func TestSourcePlaneFoundationRefusesUnadaptedExecutionBeforeWrite(t *testing.T) {
+	data := admittedFixtureBytes(t)
+	base, _ := admittedImportProfile(t, data)
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			store, lease, _ := openIdentityTarget(t, engine)
+			meta, err := store.Meta(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lifetime := driver.CheckpointLifetimeRestart
+			if engine == "memory" {
+				lifetime = driver.CheckpointLifetimeProcess
+			}
+			p := base
+			binding, err := driver.NewSourcePlaneImportBindingV1(driver.SourcePlanePlanV1{Version: driver.SourcePlanePlanVersionV1, AddressContract: driver.SourcePlaneAddressContractV1, SourceStoreID: string(p.SourceStoreID), ArchiveSHA256: p.ArchiveDigest, Target: driver.SourcePlaneTargetV1{StoreID: string(meta.StoreID), Incarnation: meta.Incarnation, RequireEmpty: true, Lifetime: lifetime, RuntimeContract: driver.SourcePlaneRuntimeContractV1}, Providers: []driver.SourcePlaneProviderV1{{Alias: "workflow", Instance: "default", Namespace: "plugin/workflow/default/durable", Schema: "workflow/source-state/1", Codec: "workflow/json/1", RuntimeContract: driver.SourcePlaneRuntimeContractV1, Lifetime: lifetime, LogicalImageSize: 2, LogicalImageSHA256: digestBytes([]byte("{}")), OriginAdapter: "beads-workflow-origins/1"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.SourcePlanes = &binding
+			if _, err := p.Detached(); err != nil {
+				t.Fatal("valid detached preparation blocked", err)
+			}
+			before := reverseState(t, store)
+			counted := &labelWriteCounter{Store: store}
+			for _, call := range []func() error{
+				func() error {
+					_, err := RestoreImportWithLease(ctx, bytes.NewReader(data), counted, lease, p)
+					return err
+				},
+				func() error { _, err := RestoreImport(ctx, bytes.NewReader(data), counted, p); return err },
+				func() error {
+					_, err := RecoverImport(ctx, counted, p, Verification{ArchiveSHA256: p.ArchiveDigest, DerivedSHA256: p.DerivedDigest})
+					return err
+				},
+			} {
+				if err := call(); !errors.Is(err, driver.ErrUnsupported) {
+					t.Fatalf("unadapted joint execution=%v", err)
+				}
+			}
+			if counted.writes != 0 || !reflect.DeepEqual(before, reverseState(t, store)) {
+				t.Fatal("refused joint execution mutated target")
+			}
+			cp := store.(driver.CheckpointStore)
+			namespace := "plugin/workflow/default/durable"
+			beforeCheckpoint, err := cp.LoadCheckpoint(ctx, namespace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The direct driver boundary must refuse before even staging restore
+			// metadata. Reusing the SAME transaction for the legacy preparation is
+			// a positive control: no joint-restore mode was left behind.
+			tx, err := store.Write(ctx, lease)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Close()
+			if _, err := tx.Lock(ctx, nil); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.Head(ctx); err != nil {
+				t.Fatal(err)
+			}
+			port := tx.(driver.RestoreImportTx)
+			if _, err := port.PrepareRestoreImport(ctx, p); !errors.Is(err, driver.ErrUnsupported) {
+				t.Fatalf("direct unadapted driver accepted plan: %v", err)
+			}
+			if _, err := port.PrepareRestoreImport(ctx, base); err != nil {
+				t.Fatal("refusal staged metadata or broke legacy nil", err)
+			}
+			if err := tx.Close(); err != nil {
+				t.Fatal(err)
+			}
+			afterCheckpoint, err := cp.LoadCheckpoint(ctx, namespace)
+			if err != nil || !reflect.DeepEqual(beforeCheckpoint, afterCheckpoint) || !reflect.DeepEqual(before, reverseState(t, store)) {
+				t.Fatal("direct refusal/rollback changed graph/checkpoint/receipt")
+			}
+			for _, mode := range []driver.RestoreHistoryMode{driver.RestoreHistoryModeFull, driver.RestoreHistoryModePartial} {
+				t.Run(string(mode), func(t *testing.T) {
+					when := time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC)
+					a := driver.Record{Ref: model.RefByID("history-item", model.Natural64(0)), Kind: "bead", Body: []byte(`{"title":"before"}`)}
+					b := a
+					b.Body = []byte(`{"title":"after"}`)
+					history := driver.OfflineHistory{Source: "explicit-history-control", Verified: true, Complete: true, First: 1, Head: 1, Batches: []driver.SourceHistoryBatch{{Sequence: 1, EventIDs: []string{"event:1"}, Changes: []driver.SourceHistoryChange{{After: &b}}}}}
+					if mode == driver.RestoreHistoryModePartial {
+						history.Complete, history.BaselineVerified = false, true
+						history.First, history.Head = 2, 2
+						history.Baseline = []driver.Record{a}
+						history.Gaps = []driver.SourceHistoryGap{{First: 1, Last: 1, Reason: "unavailable prefix"}}
+						history.Batches = []driver.SourceHistoryBatch{{Sequence: 2, EventIDs: []string{"event:2"}, Changes: []driver.SourceHistoryChange{{Before: &a, After: &b}}}}
+					}
+					legacy := base
+					legacy.HistoryMode, legacy.HistoryTime = mode, when.Format(time.RFC3339Nano)
+					legacy.HistoryDigest, err = driver.OfflineHistoryDigest(history)
+					if err != nil {
+						t.Fatal(err)
+					}
+					// A valid full/partial history reaches the execution seam; the
+					// refusal cannot be explained by an invalid history precondition.
+					if _, err := driver.BuildOfflineHistory(meta, legacy, history, when, nil); err != nil {
+						t.Fatal("valid legacy history control", err)
+					}
+					joint := legacy
+					joint.SourcePlanes = &binding
+					if _, err := driver.BuildOfflineHistory(meta, joint, history, when, nil); !errors.Is(err, driver.ErrUnsupported) {
+						t.Fatalf("core-only history builder accepted joint plan: %v", err)
+					}
+					if _, err := driver.PrepareOfflineHistoryBinding(meta, joint, history, when); !errors.Is(err, driver.ErrUnsupported) {
+						t.Fatalf("core-only history binding accepted joint plan: %v", err)
+					}
+					htx, err := store.Write(ctx, lease)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer htx.Close()
+					if _, err := htx.Lock(ctx, nil); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := htx.Head(ctx); err != nil {
+						t.Fatal(err)
+					}
+					hport := htx.(driver.OfflineHistoryTx)
+					if _, err := hport.PrepareOfflineHistory(ctx, joint, history, when); !errors.Is(err, driver.ErrUnsupported) {
+						t.Fatalf("direct history execution accepted joint plan: %v", err)
+					}
+					if _, err := hport.PrepareOfflineHistory(ctx, legacy, history, when); err != nil {
+						t.Fatal("joint refusal staged state before SAME-tx legacy history preparation", err)
+					}
+					if err := htx.Close(); err != nil {
+						t.Fatal(err)
+					}
+					afterCheckpoint, err := cp.LoadCheckpoint(ctx, namespace)
+					if err != nil || !reflect.DeepEqual(beforeCheckpoint, afterCheckpoint) || !reflect.DeepEqual(before, reverseState(t, store)) {
+						t.Fatal("history refusal/rollback changed graph/checkpoint/receipt")
+					}
+				})
+			}
+		})
+	}
+}
+
 // Only the immutable source row supplies creation time. The public memory and
 // SQLite regression above independently checks the stored canonical instant,
 // exact source provenance and successful post-restore claim.
@@ -571,6 +713,68 @@ func TestRestoreCreationTimeRequiresTheActualSourceInstant(t *testing.T) {
 				}
 			} else if at == nil || at.Format(time.RFC3339Nano) != test.want {
 				t.Fatalf("creation instant=%v want=%s", at, test.want)
+			}
+		})
+	}
+}
+
+// Capability-aware parsing does not authorize the legacy core-only writer.
+func TestSourcePlaneArchiveCannotUseLegacyRestoreRoutes(t *testing.T) {
+	legacy := admittedFixtureBytes(t)
+	profile, _ := admittedImportProfile(t, legacy)
+	data := rewriteData(t, func(members map[string][]byte) {
+		var manifest map[string]any
+		if err := json.Unmarshal(members["manifest.json"], &manifest); err != nil {
+			t.Fatal(err)
+		}
+		manifest["source_plane_address_contract"] = dumpformat.SourcePlaneAddressContract
+		for _, raw := range manifest["kind_registry"].([]any) {
+			kind := raw.(map[string]any)
+			if kind["name"] == "edge" {
+				kind["version"] = dumpformat.EdgeVersionLocalOpaque
+			}
+		}
+		for _, raw := range manifest["sources"].([]any) {
+			disposition := raw.(map[string]any)
+			switch disposition["family"] {
+			case dumpformat.EphemeralEntityTable, dumpformat.EphemeralDependencyTable, dumpformat.EphemeralLabelTable, dumpformat.EphemeralCommentTable, dumpformat.EphemeralEventTable, dumpformat.EphemeralChildCounterTable, "custom_statuses", "custom_types":
+				disposition["action"] = "archive"
+			}
+		}
+		members["manifest.json"] = encode(t, manifest)
+	})
+	if _, err := dumpformat.Read(bytes.NewReader(data)); err != nil {
+		t.Fatal("invalid supported capability archive precondition", err)
+	}
+	profile.ArchiveDigest = digestBytes(data)
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			store, lease, _ := openIdentityTarget(t, engine)
+			before := reverseState(t, store)
+			counted := &labelWriteCounter{Store: store}
+			cp := store.(driver.CheckpointStore)
+			namespace := "plugin/workflow/default/durable"
+			beforeCheckpoint, err := cp.LoadCheckpoint(ctx, namespace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, call := range []func() error{
+				func() error { _, err := Restore(ctx, bytes.NewReader(data), counted); return err },
+				func() error { _, err := RestoreWithLease(ctx, bytes.NewReader(data), counted, lease); return err },
+				func() error { _, err := RestoreImport(ctx, bytes.NewReader(data), counted, profile); return err },
+				func() error {
+					_, err := RestoreImportWithLease(ctx, bytes.NewReader(data), counted, lease, profile)
+					return err
+				},
+			} {
+				if err := call(); !errors.Is(err, driver.ErrUnsupported) || !strings.Contains(err.Error(), "joint restore adapter") {
+					t.Fatalf("cap archive did not reach core-only boundary refusal: %v", err)
+				}
+			}
+			afterCheckpoint, err := cp.LoadCheckpoint(ctx, namespace)
+			if err != nil || counted.writes != 0 || !reflect.DeepEqual(before, reverseState(t, store)) || !reflect.DeepEqual(beforeCheckpoint, afterCheckpoint) {
+				t.Fatal("legacy route published or staged a partial plane")
 			}
 		})
 	}
