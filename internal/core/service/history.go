@@ -13,6 +13,7 @@ import (
 
 	coreevents "github.com/buildbetter-app/plugs/internal/core/events"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -57,6 +58,7 @@ func futureHistoryNotFound(future driver.ErrFutureRevision) error {
 // identity; neither historical JSON fields nor a periodic base identify a lifetime.
 type historyMemoryAccess struct {
 	kind        string
+	generation  uint64
 	installed   bool
 	incarnation string
 	revisions   []model.Revision
@@ -141,9 +143,19 @@ func (s *Service) beginHistoryMemoryAccess(ctx context.Context, by model.Princip
 	if access.kind != "memory" {
 		return access, nil
 	}
-	memory, err := decodeMemoryRecord(*record)
+	memory, eligible, err := readPublicMemory(ctx, r, *record)
 	if err != nil {
 		return historyMemoryAccess{}, err
+	}
+	if !eligible || memory.ID != ref.ID {
+		return historyMemoryAccess{}, historyMemoryNotFound()
+	}
+	document, _, err := pipeline.DecodeMemoryRecord(*record)
+	if err != nil {
+		return historyMemoryAccess{}, failure("internal_error", "invalid persisted memory")
+	}
+	if document.Overlay != nil {
+		access.generation = document.Overlay.Generation
 	}
 	installed, err := s.memoryAuthorizationState(by)
 	if err != nil {
@@ -196,9 +208,19 @@ func (s *Service) finishHistoryMemoryAccess(ctx context.Context, by model.Princi
 	if !sameMemoryLifetime(versions, record.Revision, access.revisions) {
 		return historyMemoryNotFound()
 	}
-	memory, err := decodeMemoryRecord(*record)
+	memory, eligible, err := readPublicMemory(ctx, r, *record)
 	if err != nil {
 		return err
+	}
+	if !eligible || memory.ID != ref.ID {
+		return historyMemoryNotFound()
+	}
+	document, _, err := pipeline.DecodeMemoryRecord(*record)
+	if err != nil {
+		return failure("internal_error", "invalid persisted memory")
+	}
+	if memoryGeneration(document) != access.generation {
+		return historyMemoryNotFound()
 	}
 	allowed, err := s.authorizeMemory(ctx, by, memory)
 	if err != nil {
@@ -297,6 +319,13 @@ func (access *historyMemoryAccess) observeRecord(record *driver.Record, snapshot
 	}
 	if access.kind == "memory" {
 		if record == nil {
+			return historyMemoryNotFound()
+		}
+		document, source, err := pipeline.DecodeMemoryRecord(*record)
+		if err != nil {
+			return failure("internal_error", "invalid persisted memory")
+		}
+		if source != nil && !source.Visible || document.Overlay != nil && document.Overlay.Deleted || memoryGeneration(document) != access.generation {
 			return historyMemoryNotFound()
 		}
 		access.revisions = append(access.revisions, record.Revision)
@@ -595,4 +624,11 @@ func addDiffOperation(result *HistoryDiff, operation JSONPatchOperation) error {
 
 func escapeJSONPointer(value string) string {
 	return strings.NewReplacer("~", "~0", "/", "~1").Replace(value)
+}
+
+func memoryGeneration(document pipeline.MemoryDocument) uint64 {
+	if document.Overlay != nil {
+		return document.Overlay.Generation
+	}
+	return 0
 }

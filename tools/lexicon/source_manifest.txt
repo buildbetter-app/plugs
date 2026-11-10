@@ -313,6 +313,7 @@ internal/core/pipeline/labels.go
 internal/core/pipeline/lease_overlay.go
 internal/core/pipeline/lifecycle.go
 internal/core/pipeline/lifecycle_test.go
+internal/core/pipeline/memory_overlay.go
 internal/core/pipeline/namespace_operations.go
 internal/core/pipeline/noop_test.go
 internal/core/pipeline/operations_test.go
@@ -489,6 +490,7 @@ internal/integration/b13memory/oracle_test.go
 internal/integration/b13memory/postgres_test.go
 internal/integration/b13memory/public_readback_test.go
 internal/integration/b13memory/readback_oracle_test.go
+internal/integration/b13memory/source_core_control_test.go
 internal/integration/b14fixedpolicy/BUILD.bazel
 internal/integration/b14fixedpolicy/README.md
 internal/integration/b14fixedpolicy/public_members_test.go
@@ -534,6 +536,7 @@ internal/integration/collabwatch/integration_test.go
 internal/integration/collabwatch/reconnect_acceptance_test.go
 internal/integration/converterroundtrip/BUILD.bazel
 internal/integration/converterroundtrip/allocator.go
+internal/integration/converterroundtrip/b13_joint_memory_control_test.go
 internal/integration/converterroundtrip/external_target_test.go
 internal/integration/converterroundtrip/hierarchy_import_test.go
 internal/integration/converterroundtrip/history.go
@@ -548,6 +551,7 @@ internal/integration/converterroundtrip/joint_exports_test.go
 internal/integration/converterroundtrip/label_projection_test.go
 internal/integration/converterroundtrip/labels.go
 internal/integration/converterroundtrip/memory_import_test.go
+internal/integration/converterroundtrip/memory_reverse.go
 internal/integration/converterroundtrip/native_history_test.go
 internal/integration/converterroundtrip/native_restore_test.go
 internal/integration/converterroundtrip/native_tables.go
@@ -1364,6 +1368,7 @@ spec/cardb19/testdata/recording-2/export.jsonl
 spec/cardb19/testdata/recording-2/imported.json
 spec/cardb20/BUILD.bazel
 spec/cardb20/README.md
+spec/cardb20/b13_memory_native_test.go
 spec/cardb20/caller_test.go
 spec/cardb20/current_test.go
 spec/cardb20/native_build_test.go
