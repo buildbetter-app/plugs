@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -142,7 +141,7 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 	if err != nil || hashBytes(data) != bound.ArchiveDigest {
 		return Report{}, nil, driver.ErrConflict
 	}
-	archive, err := dumpformat.Read(bytes.NewReader(data))
+	archive, err := readRetainedImportArchive(ctx, r, data, archiveEvidence{})
 	if err != nil {
 		return Report{}, nil, driver.ErrConflict
 	}

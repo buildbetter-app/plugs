@@ -58,6 +58,7 @@ type NativeHistory struct {
 	SchemaProfile   *NativeSchemaProfile   `json:"schema_profile,omitempty"`
 	HistoryCoverage *NativeHistoryCoverage `json:"history_coverage,omitempty"`
 	Sources         []Disposition          `json:"-"`
+	deltaVerified   bool
 }
 
 func nativeObject(data []byte, required string, optional string) (map[string]any, error) {
@@ -387,7 +388,7 @@ func validateNativeHistory(h NativeHistory) error {
 	if schemaErr != nil {
 		return schemaErr
 	}
-	if h.Format != NativeHistoryFormat || h.StoreID == "" || len(h.Projects) == 0 || h.Current == nil || h.Images == nil || h.Gaps == nil || len(h.Images) > 10000 || len(h.Gaps) > 10000 {
+	if h.Format != NativeHistoryFormat || h.StoreID == "" || len(h.Projects) == 0 || h.Current == nil || h.Images == nil || h.Gaps == nil || !h.deltaVerified && (len(h.Images) > 10000 || len(h.Gaps) > 10000) {
 		return fmt.Errorf("invalid native history identity or shape")
 	}
 	for i, p := range h.Projects {
@@ -398,7 +399,7 @@ func validateNativeHistory(h NativeHistory) error {
 	if err := validateNativeCoverageShape(h); err != nil {
 		return err
 	}
-	if err := nativeCommitCensus(h); err != nil {
+	if err := checkedNativeCommitCensus(h); err != nil {
 		return err
 	}
 	if err := validateNativeTable("dolt_ignore", h.Ignore); err != nil {
@@ -702,6 +703,10 @@ func (a *Archive) NativeSourceHistories() []NativeHistory {
 		return result
 	}
 	for _, h := range a.nativeHistories {
+		if h.deltaVerified {
+			result = append(result, cloneNativeDeltaHistory(h))
+			continue
+		}
 		data, _ := json.Marshal(h)
 		var value NativeHistory
 		_ = decodeJSON(data, &value)

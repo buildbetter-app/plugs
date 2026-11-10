@@ -46,6 +46,9 @@ type constructionPolicy struct {
 }
 
 func prepareRequest(ctx context.Context, args []string) (request, error) {
+	if nativeDeltaSelected(args) {
+		return prepareNativeDeltaRequest(ctx, args)
+	}
 	var zero request
 	flags := flag.NewFlagSet("native-receive prepare-request", flag.ContinueOnError)
 	var paths archivePaths
@@ -100,6 +103,14 @@ func prepareRequest(ctx context.Context, args []string) (request, error) {
 }
 
 func constructRequest(ctx context.Context, archiveBytes, policyBytes []byte, lifetime driver.CheckpointLifetime) (request, error) {
+	archive, err := dumpformat.Read(bytes.NewReader(archiveBytes))
+	if err != nil {
+		return request{}, err
+	}
+	return constructArchiveRequest(ctx, archive, policyBytes, lifetime)
+}
+
+func constructArchiveRequest(ctx context.Context, archive *dumpformat.Archive, policyBytes []byte, lifetime driver.CheckpointLifetime) (request, error) {
 	var zero request
 	var policy constructionPolicy
 	if err := decode(policyBytes, &policy); err != nil {
@@ -111,10 +122,6 @@ func constructRequest(ctx context.Context, archiveBytes, policyBytes []byte, lif
 	if policy.Principal.Key == "" || policy.Principal.UnverifiedOriginOnly || policy.Provider.LogicalImageSHA256 != "" || policy.Provider.LogicalImageSize != 0 || policy.Provider.Lifetime != lifetime || lifetime.Validate() != nil {
 		return zero, fmt.Errorf("%w: explicit principal/provider/lifetime required", driver.ErrUnsupported)
 	}
-	archive, err := dumpformat.Read(bytes.NewReader(archiveBytes))
-	if err != nil {
-		return zero, err
-	}
 	if err := strictNativeHistory(archive); err != nil {
 		return zero, err
 	}
@@ -122,10 +129,14 @@ func constructRequest(ctx context.Context, archiveBytes, policyBytes []byte, lif
 	for _, project := range archive.Manifest().Projects {
 		projects = append(projects, project.Prefix)
 	}
-	for _, scope := range archive.NativeSourceHistories() {
+	metadata, err := archive.NativeSourceHistoryMetadata()
+	if err != nil {
+		return zero, err
+	}
+	for _, scope := range metadata {
 		sources = append(sources, dumpformat.SourceIdentity{StoreID: scope.StoreID, Project: scope.Projects[0]})
 	}
-	if len(sources) == 0 || policy.ArchiveSHA256 != digest(archiveBytes) || policy.SourceStoreID != archive.Manifest().StoreID || !reflect.DeepEqual(policy.Projects, projects) || !reflect.DeepEqual(policy.Sources, sources) {
+	if len(sources) == 0 || policy.ArchiveSHA256 != archive.SHA256() || policy.SourceStoreID != archive.Manifest().StoreID || !reflect.DeepEqual(policy.Projects, projects) || !reflect.DeepEqual(policy.Sources, sources) {
 		return zero, errors.New("policy external archive/source/project binding differs")
 	}
 	plan := driver.SourcePlanePlanV1{Version: driver.SourcePlanePlanVersionV1, AddressContract: driver.SourcePlaneAddressContractV1, SourceStoreID: policy.SourceStoreID, ArchiveSHA256: policy.ArchiveSHA256, Target: driver.SourcePlaneTargetV1{StoreID: "pending-new-target", Incarnation: "pending-new-target", RequireEmpty: true, Lifetime: lifetime, RuntimeContract: driver.SourcePlaneRuntimeContractV1}, Principals: []driver.SourcePlanePrincipalV1{policy.Principal}, Providers: []driver.SourcePlaneProviderV1{policy.Provider}}
@@ -272,7 +283,12 @@ func constructRequest(ctx context.Context, archiveBytes, policyBytes []byte, lif
 	// a destination. The receiving invocation recalculates byte commitments
 	// against its actual new target identity and bound restore clock.
 	profile := driver.RestoreImportProfile{Admission: policy.Admission, SourceStoreID: driver.StoreID(policy.SourceStoreID), Method: "offline.restore.import", IdempotencyKey: policy.IdempotencyKey, ArchiveDigest: policy.ArchiveSHA256, HistoryMode: driver.RestoreHistoryModeFull, HistoryTime: time.Now().UTC().Format(time.RFC3339Nano)}
-	if _, err := converterroundtrip.BindSourceImport(ctx, bytes.NewReader(archiveBytes), profile, plan); err != nil {
+	if _, delta := archive.NativeDeltaRoot(); delta {
+		_, err = converterroundtrip.BindNativeCaptureSetImport(ctx, archive, profile, plan)
+	} else {
+		_, err = converterroundtrip.BindSourceImport(ctx, bytes.NewReader(archive.TarBytes()), profile, plan)
+	}
+	if err != nil {
 		return zero, err
 	}
 	plan.Target.StoreID, plan.Target.Incarnation = "", ""

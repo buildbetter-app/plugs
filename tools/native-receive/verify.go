@@ -19,6 +19,10 @@ import (
 // genuine boundary is explicit; arbitrary gaps and present-history integrity
 // failures remain refusals. BindSourceImport repeats this at publication.
 func strictNativeHistory(archive *dumpformat.Archive) error {
+	// An attached delta has already passed the complete graph/schema/census verifier.
+	if _, ok := archive.NativeDeltaRoot(); ok {
+		return nil
+	}
 	for _, scope := range archive.NativeSourceHistories() {
 		if len(scope.Projects) != 1 || scope.Projects[0] == "" || scope.StoreID == "" {
 			return fmt.Errorf("%w: ambiguous native source/project", driver.ErrUnsupported)
@@ -90,6 +94,15 @@ func verifyNative(ctx context.Context, store driver.Store, profile driver.Restor
 	if err != nil {
 		return proof, err
 	}
+	return verifyParsedNative(ctx, store, profile, report, archive, input)
+}
+
+func verifyParsedNative(ctx context.Context, store driver.Store, profile driver.RestoreImportProfile, report converterroundtrip.Report, archive *dumpformat.Archive, input []byte) (verification, error) {
+	var proof verification
+	scopes, err := archive.NativeSourceHistoriesChecked()
+	if err != nil {
+		return proof, err
+	}
 	when, err := time.Parse(time.RFC3339Nano, profile.HistoryTime)
 	if err != nil {
 		return proof, err
@@ -106,7 +119,14 @@ func verifyNative(ctx context.Context, store driver.Store, profile driver.Restor
 	if !bytes.Equal(retained, input) {
 		return proof, fmt.Errorf("committed original archive differs")
 	}
-	if report.Archive == nil || !reflect.DeepEqual(report.Archive.NativeSourceHistories(), archive.NativeSourceHistories()) {
+	if report.Archive == nil {
+		return proof, fmt.Errorf("recovered archive unavailable")
+	}
+	recoveredScopes, err := report.Archive.NativeSourceHistoriesChecked()
+	if err != nil {
+		return proof, err
+	}
+	if !reflect.DeepEqual(recoveredScopes, scopes) {
 		return proof, fmt.Errorf("recovered per-source native images or schema annotations differ")
 	}
 	proof.ArchiveBlob = true
@@ -162,7 +182,7 @@ func verifyNative(ctx context.Context, store driver.Store, profile driver.Restor
 	wantComplete, images := true, uint64(0)
 	var boundaries []driver.NativeHistoryBoundary
 	var histories []converterroundtrip.NativeHistoryReport
-	for _, scope := range archive.NativeSourceHistories() {
+	for _, scope := range scopes {
 		images += uint64(len(scope.Images))
 		if scope.HistoryCoverage != nil {
 			wantComplete = false
@@ -176,7 +196,7 @@ func verifyNative(ctx context.Context, store driver.Store, profile driver.Restor
 	if evidence.Source != driver.NativeTableHistorySource || evidence.Mode != driver.RestoreHistoryModeFull || evidence.Complete != wantComplete || len(evidence.Gaps) != 0 || evidence.First != 1 || evidence.Head != images || len(evidence.Mapping) != int(images) || !evidence.Floor.IsZero() || !reflect.DeepEqual(evidence.NativeBoundaries, boundaries) || !reflect.DeepEqual(report.NativeHistories, histories) {
 		return proof, fmt.Errorf("committed native history coverage differs from the authenticated source")
 	}
-	for _, scope := range archive.NativeSourceHistories() {
+	for _, scope := range scopes {
 		source := dumpformat.SourceIdentity{StoreID: scope.StoreID, Project: scope.Projects[0]}
 		seen := map[string]bool{}
 		for _, family := range scope.Sources {

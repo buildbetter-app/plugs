@@ -64,6 +64,7 @@ type receipt struct {
 	OriginalInputs           *joinedBinding            `json:"original_inputs,omitempty"`
 	SessionCeilingSeconds    int64                     `json:"session_ceiling_seconds,omitempty"`
 	CrossProjectIDCollisions int                       `json:"cross_project_id_collisions"`
+	NativeDelta              *nativeDeltaReceipt       `json:"native_delta,omitempty"`
 }
 
 func digest(raw []byte) string { sum := sha256.Sum256(raw); return hex.EncodeToString(sum[:]) }
@@ -92,6 +93,7 @@ func main() {
 		result, err = run(ctx, os.Args[1:])
 	}
 	if err != nil {
+		emitNativeDeltaRefusal(err)
 		fmt.Fprintln(os.Stderr, "native receiving refused:", err)
 		os.Exit(1)
 	}
@@ -102,6 +104,9 @@ func main() {
 }
 
 func run(ctx context.Context, args []string) (out receipt, runErr error) {
+	if nativeDeltaSelected(args) {
+		return runNativeDelta(ctx, args)
+	}
 	var zero receipt
 	ctx, sessionCancel := context.WithTimeout(ctx, rehearsalSessionLimit)
 	defer sessionCancel()

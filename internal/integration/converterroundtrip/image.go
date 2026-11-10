@@ -247,14 +247,19 @@ func derivedProfile(plan *restorePlan) string {
 }
 
 type archiveEvidence struct {
-	ArchiveSHA256 string                     `json:"archive_sha256"`
-	DerivedSHA256 string                     `json:"derived_sha256"`
-	Profile       string                     `json:"profile"`
-	SourceStore   string                     `json:"source_store"`
-	Members       map[string]dumpformat.File `json:"members"`
+	ArchiveSHA256           string                     `json:"archive_sha256"`
+	DerivedSHA256           string                     `json:"derived_sha256"`
+	Profile                 string                     `json:"profile"`
+	SourceStore             string                     `json:"source_store"`
+	Members                 map[string]dumpformat.File `json:"members"`
+	NativeCaptureFiles      map[string]dumpformat.File `json:"native_capture_files,omitempty"`
+	NativeDecodedLimitBytes uint64                     `json:"native_decoded_limit_bytes,omitempty"`
 }
 
 func retainArchive(plan *restorePlan, archive *dumpformat.Archive, add func(model.Ref, string, any) error) error {
+	if _, ok := archive.NativeDeltaRoot(); ok {
+		return retainNativeDeltaArchive(plan, archive, add)
+	}
 	manifest := archive.Manifest()
 	evidence := archiveEvidence{ArchiveSHA256: archive.SHA256(), DerivedSHA256: plan.derivedDigest, Profile: derivedProfile(plan), SourceStore: manifest.StoreID, Members: manifest.Files}
 	raw, ok := archive.Member("manifest.json")

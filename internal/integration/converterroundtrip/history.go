@@ -30,6 +30,14 @@ func BindHistoryImport(ctx context.Context, input io.Reader, profile driver.Rest
 	if err != nil {
 		return p, historyReadError(p.HistoryMode, err)
 	}
+	return bindHistoryArchive(ctx, archive, p, when)
+}
+
+func bindHistoryArchive(ctx context.Context, archive *dumpformat.Archive, p driver.RestoreImportProfile, when time.Time) (driver.RestoreImportProfile, error) {
+	if err := ctx.Err(); err != nil {
+		return p, err
+	}
+	var err error
 	if p.HistoryMode == driver.RestoreHistoryModeSnapshot || when.IsZero() || p.SourceStoreID != driver.StoreID(archive.Manifest().StoreID) || p.ArchiveDigest != archive.SHA256() {
 		return p, fmt.Errorf("history binding requires admitted source, non-snapshot mode and actual restore time")
 	}
@@ -64,7 +72,19 @@ func historyReadError(mode driver.RestoreHistoryMode, err error) error {
 }
 
 func validateArchiveHistoryPolicy(mode driver.RestoreHistoryMode, a *dumpformat.Archive) error {
-	if native := a.NativeSourceHistories(); len(native) != 0 {
+	// A v2 attachment is exposed only after every graph/schema/table and both
+	// checkpoints have passed. Avoid copying all rows just to repeat this gate.
+	if _, ok := a.NativeDeltaRoot(); ok {
+		if mode != driver.RestoreHistoryModeFull {
+			return driver.ErrRestoreHistoryRefused{Mode: mode, History: a.Manifest().History, Reason: driver.RestoreHistoryReasonNotYetSupported}
+		}
+		return nil
+	}
+	native, err := a.NativeSourceHistoriesChecked()
+	if err != nil {
+		return err
+	}
+	if len(native) != 0 {
 		if mode != driver.RestoreHistoryModeFull {
 			return driver.ErrRestoreHistoryRefused{Mode: mode, History: a.Manifest().History, Reason: driver.RestoreHistoryReasonNotYetSupported}
 		}
@@ -122,7 +142,7 @@ func portableHistoryRecords(plan restorePlan) []driver.Record {
 }
 
 func lowerSourceHistory(a *dumpformat.Archive, p driver.RestoreImportProfile, when time.Time) (driver.OfflineHistory, error) {
-	if len(a.NativeSourceHistories()) != 0 {
+	if a.HasNativeSourceHistories() {
 		return lowerNativeTableHistory(a, p)
 	}
 	refuse := func() (driver.OfflineHistory, error) {
@@ -343,7 +363,7 @@ func validateHistoryRecovery(ctx context.Context, r driver.Reader, p driver.Rest
 	if err != nil || hashBytes(raw) != evidence.ArchiveSHA256 {
 		return driver.ErrConflict
 	}
-	archive, err := dumpformat.Read(bytes.NewReader(raw))
+	archive, err := readRetainedImportArchive(ctx, r, raw, evidence)
 	if err != nil || archive.SHA256() != p.ArchiveDigest {
 		return driver.ErrConflict
 	}

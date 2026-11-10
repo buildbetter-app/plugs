@@ -406,6 +406,20 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 			return report, fmt.Errorf("restore blob digest mismatch")
 		}
 	}
+	if plan.nativeCapture != nil {
+		if err := plan.nativeCapture.VisitNativeCaptureFiles(ctx, func(_ string, data []byte) error {
+			actual, err := tx.PutBlob(ctx, data)
+			if err != nil {
+				return err
+			}
+			if string(actual) != hashBytes(data) {
+				return fmt.Errorf("native capture blob digest differs")
+			}
+			return nil
+		}); err != nil {
+			return report, err
+		}
+	}
 	if err = tx.BumpSentinels(ctx, lockPlan.sentinels); err != nil {
 		return report, err
 	}
@@ -643,6 +657,7 @@ type restorePlan struct {
 	derived         []derivedImage
 	derivedDigest   string
 	blobs           map[string][]byte
+	nativeCapture   *dumpformat.Archive
 	allocators      []driver.OfflineAllocator
 }
 
@@ -752,7 +767,7 @@ func buildPlanForInspection(archive *dumpformat.Archive) (restorePlan, error) {
 
 func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportProfile, restoreTime time.Time, mode planMode) (restorePlan, error) {
 	manifest := archive.Manifest()
-	nativeTables := len(archive.NativeSourceHistories()) != 0
+	nativeTables := archive.HasNativeSourceHistories()
 	migration, _ := archive.ImportMigration()
 	if mode == planLegacy && migration != nil {
 		// A missing import profile cannot opt a newly strict migration into
@@ -1149,7 +1164,10 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		if err != nil {
 			return restorePlan{}, err
 		}
-		plan.nativeHistories = nativeHistoryAccounting(archive)
+		plan.nativeHistories, err = nativeHistoryAccounting(archive)
+		if err != nil {
+			return restorePlan{}, err
+		}
 		accounting := nativeFamilyEvidence{Contract: manifest.SourceFamilyContract, RestoreTime: restoreTime.UTC().Format(time.RFC3339Nano), Families: families, Schemas: plan.nativeSchemas, Histories: plan.nativeHistories}
 		if err := add(model.RefByID(NativeFamilyReportID, model.Natural64(0)), "instance_config", accounting); err != nil {
 			return restorePlan{}, err
@@ -1190,7 +1208,11 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 			// Single-source native archives retain the original store/project
 			// in their validated history scope, without rewriting each record
 			// into the merged-source identity encoding.
-			for _, scope := range archive.NativeSourceHistories() {
+			metadata, err := archive.NativeSourceHistoryMetadata()
+			if err != nil {
+				return restorePlan{}, err
+			}
+			for _, scope := range metadata {
 				for _, prefix := range scope.Projects {
 					if prefix != project.Prefix {
 						continue

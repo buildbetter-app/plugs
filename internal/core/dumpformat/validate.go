@@ -71,6 +71,10 @@ func ReadFile(path string) (*Archive, error) {
 }
 
 func Read(reader io.Reader) (*Archive, error) {
+	return readArchive(reader, false)
+}
+
+func readArchive(reader io.Reader, nativeDeltaAttachment bool) (*Archive, error) {
 	data, err := io.ReadAll(io.LimitReader(reader, MaxArchiveBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read archive: %w", err)
@@ -147,6 +151,13 @@ func Read(reader io.Reader) (*Archive, error) {
 	if err := validateSourceIdentityMarker(manifestFields, manifest); err != nil {
 		return nil, err
 	}
+	if marker, present := manifestFields["native_history_contract"]; present {
+		if !nativeDeltaAttachment || manifest.NativeHistoryContract != NativeDeltaFormat || string(marker) == "null" || manifest.SourceFamilyContract != SourceFamilyContract || manifest.Scope != Scope {
+			return nil, fmt.Errorf("native delta history requires complete capture-set attachment")
+		}
+	} else if nativeDeltaAttachment {
+		return nil, fmt.Errorf("capture-set head lacks native delta marker")
+	}
 	if manifest.Scope == "plug-native-store" {
 		if manifest.SourceFieldsContract != "" || manifest.SourcePlaneAddressContract != "" || manifest.StatusCategoryContract != "" {
 			return nil, fmt.Errorf("Beads source fields contract requires offline source scope")
@@ -167,8 +178,19 @@ func Read(reader io.Reader) (*Archive, error) {
 		return nil, err
 	}
 	archive := &Archive{sha256: digest(data), tarBytes: append([]byte(nil), data...), manifest: manifest, members: members, byKind: byKind, migration: migration}
-	if err := validateNativeSourceHistories(archive); err != nil {
-		return nil, err
+	if !nativeDeltaAttachment {
+		if err := validateNativeSourceHistories(archive); err != nil {
+			return nil, err
+		}
+	} else {
+		for name := range members {
+			if name == NativeHistoryMember {
+				return nil, fmt.Errorf("delta head contains aggregate native history")
+			}
+			if _, ok := scopedNativeMember(name); ok {
+				return nil, fmt.Errorf("delta head contains aggregate native history")
+			}
+		}
 	}
 	if err := validateSourceHistory(archive); err != nil {
 		return nil, err

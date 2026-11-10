@@ -134,6 +134,7 @@ type Manifest struct {
 	StatusCategoryContract     string              `json:"status_category_contract,omitempty"`
 	SourceIdentityContract     string              `json:"source_identity_contract,omitempty"`
 	SourceFamilyContract       string              `json:"source_family_contract,omitempty"`
+	NativeHistoryContract      string              `json:"native_history_contract,omitempty"`
 	// Native store fields are present only for archives produced by Plug's
 	// engine-neutral admin.dump path. The offline Beads exporter leaves these
 	// fields absent and continues to use the source census above.
@@ -185,6 +186,7 @@ type Archive struct {
 	history         *SourceHistory
 	nativeHistories []NativeHistory
 	migration       *ImportMigration
+	delta           *nativeDeltaAttachment
 }
 
 // ImportMigration returns the admitted non-native head migration, when its

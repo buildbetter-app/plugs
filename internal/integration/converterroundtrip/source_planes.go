@@ -1,7 +1,6 @@
 package converterroundtrip
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -31,6 +30,14 @@ func BindSourceImport(ctx context.Context, input io.Reader, profile driver.Resto
 	if err != nil {
 		return driver.RestoreImportProfile{}, err
 	}
+	return bindSourceArchive(ctx, archive, profile, plan)
+}
+
+func bindSourceArchive(ctx context.Context, archive *dumpformat.Archive, profile driver.RestoreImportProfile, plan driver.SourcePlanePlanV1) (driver.RestoreImportProfile, error) {
+	if profile.SourcePlanes != nil {
+		return driver.RestoreImportProfile{}, driver.ErrConflict
+	}
+	var err error
 	// Bind one trusted restore clock before lowering current state. In
 	// particular, source lease eligibility must agree with history/recovery.
 	when := time.Now().UTC()
@@ -87,7 +94,7 @@ func BindSourceImport(ctx context.Context, input io.Reader, profile driver.Resto
 	}
 	profile.DerivedDigest = core.derivedDigest
 	if profile.HistoryMode != driver.RestoreHistoryModeSnapshot {
-		return BindHistoryImport(ctx, bytes.NewReader(archive.TarBytes()), profile, when)
+		return bindHistoryArchive(ctx, archive, profile, when)
 	}
 	return profile.Detached()
 }
@@ -106,7 +113,7 @@ func prepareSourceArchive(ctx context.Context, archive *dumpformat.Archive, prof
 	}
 	switch profile.HistoryMode {
 	case driver.RestoreHistoryModeSnapshot:
-		if profile.HistoryDigest != "" || profile.HistoryTime != "" || len(archive.NativeSourceHistories()) != 0 {
+		if profile.HistoryDigest != "" || profile.HistoryTime != "" || archive.HasNativeSourceHistories() {
 			return empty, driver.ErrUnsupported
 		}
 	case driver.RestoreHistoryModeFull:
