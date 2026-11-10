@@ -75,6 +75,10 @@ func migrationAction(table string, migration *ImportMigration) string {
 }
 
 func validateMigratedDispositions(sources []Disposition, counts map[string]int, config []byte, migration *ImportMigration) error {
+	return validateBoundDispositions(sources, counts, config, migration, false)
+}
+
+func validateBoundDispositions(sources []Disposition, counts map[string]int, config []byte, migration *ImportMigration, planes bool) error {
 	var entries []externalEntry
 	if err := decodeJSON(config, &entries); err != nil {
 		return err
@@ -99,7 +103,15 @@ func validateMigratedDispositions(sources []Disposition, counts map[string]int, 
 		}
 		lastFamily, lastReason = source.Family, source.Reason
 		if _, table := tableColumns[source.Family]; table {
-			if seen[source.Family] || source.Action != migrationAction(source.Family, migration) || source.Family != "repo_mtimes" && source.Rows != counts[source.Family] || (source.Action == "refuse-if-nonempty" || source.Family == "leases") && source.Rows != 0 {
+			action := migrationAction(source.Family, migration)
+			if planes {
+				if source.Family == EphemeralDependencyTable {
+					action = "archive"
+				} else if sourcePlaneArchiveTable(source.Family) {
+					action = "archive"
+				}
+			}
+			if seen[source.Family] || source.Action != action || source.Family != "repo_mtimes" && source.Rows != counts[source.Family] || (source.Action == "refuse-if-nonempty" || source.Family == "leases") && source.Rows != 0 {
 				return fmt.Errorf("source disposition/action/count mismatch")
 			}
 			seen[source.Family] = true

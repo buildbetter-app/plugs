@@ -130,6 +130,7 @@ type Config struct {
 	// RestoreImportPlanner is converter-owned inspection of the exact archive;
 	// composition never derives or accepts a caller-supplied derived digest.
 	RestoreImportPlanner RestoreImportPlanner
+	RestoreSourcePlanner RestoreSourcePlanner
 	// NativePlugins and NativeBindings configure trusted compiled-in callbacks
 	// at the same composition root as the store, lease and Writer. They are
 	// host configuration, never client-supplied code or grants.
@@ -601,6 +602,9 @@ func (r *Runtime) bind(config Config) error {
 		serviceOptions = append(serviceOptions, service.WithCompaction(*config.Compaction))
 	}
 	r.Service = service.New(r.Store, r.Lease, writer, serviceOptions...)
+	if err := r.recoverSourceWorkflow(r.ctx); err != nil {
+		return fmt.Errorf("composition: recover source workflow: %w", err)
+	}
 	var ontologyService *ontologyops.Service
 	if config.Ontology != nil {
 		pre := config.Ontology.ValidatingPre
@@ -643,6 +647,8 @@ func (r *Runtime) bind(config Config) error {
 		}
 	}
 	r.restoreImport = newRestoreImportAdapter(r.Store, r.Lease, config.AuthMode, config.RestorePresence, planner)
+	r.restoreImport.sourcePlanner = config.RestoreSourcePlanner
+	r.restoreImport.installSource = r.installSourceWorkflow
 	manager := restore.NewManager(r.Store, r.Lease, config.RestorePresence)
 	manager.SetImportHook(r.restoreImport.Import)
 	if err := rpc.BindAdmin(registry, manager); err != nil {

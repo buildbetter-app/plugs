@@ -45,21 +45,23 @@ type File struct {
 }
 
 type Manifest struct {
-	Format         string            `json:"format"`
-	Schema         int               `json:"schema"`
-	Reference      string            `json:"beads_reference"`
-	StoreID        string            `json:"store_id"`
-	Machine        string            `json:"machine"`
-	MainVersion    int               `json:"main_version"`
-	IgnoredVersion int               `json:"ignored_version"`
-	Scope          string            `json:"scope"`
-	History        string            `json:"history"`
-	Projects       []Project         `json:"projects"`
-	Kinds          []Kind            `json:"kind_registry"`
-	Files          map[string]File   `json:"files"`
-	Sources        []json.RawMessage `json:"sources"`
-	Warnings       []string          `json:"warnings"`
-	Verification   map[string]string `json:"verification"`
+	Format                     string            `json:"format"`
+	Schema                     int               `json:"schema"`
+	Reference                  string            `json:"beads_reference"`
+	StoreID                    string            `json:"store_id"`
+	Machine                    string            `json:"machine"`
+	MainVersion                int               `json:"main_version"`
+	IgnoredVersion             int               `json:"ignored_version"`
+	Scope                      string            `json:"scope"`
+	History                    string            `json:"history"`
+	Projects                   []Project         `json:"projects"`
+	Kinds                      []Kind            `json:"kind_registry"`
+	Files                      map[string]File   `json:"files"`
+	Sources                    []json.RawMessage `json:"sources"`
+	Warnings                   []string          `json:"warnings"`
+	Verification               map[string]string `json:"verification"`
+	SourceFieldsContract       string            `json:"source_fields_contract,omitempty"`
+	SourcePlaneAddressContract string            `json:"source_plane_address_contract,omitempty"`
 }
 
 type Provenance struct {
@@ -140,19 +142,22 @@ type TypeMapping struct {
 // as *Refusal and includes this same report, so callers never receive a silent
 // partial import.
 type Report struct {
-	InputDigest           string        `json:"input_digest"`
-	OutputDigest          string        `json:"output_digest,omitempty"`
-	LostPostSwitchHistory []string      `json:"lost_post_switch_history,omitempty"`
-	PlugOnlyKinds         []string      `json:"plug_only_kinds,omitempty"`
-	TypeMappings          []TypeMapping `json:"type_mappings,omitempty"`
-	Blobs                 []string      `json:"blobs,omitempty"`
-	Principals            []string      `json:"principals,omitempty"`
-	Warnings              []string      `json:"warnings,omitempty"`
-	UnsupportedFields     []string      `json:"unsupported_fields,omitempty"`
-	ArchivedSourceFields  []string      `json:"archived_source_fields,omitempty"`
-	ConfigReferences      []string      `json:"config_references,omitempty"`
-	ArchiveRows           int           `json:"archive_rows,omitempty"`
-	ConfigAsMemories      int           `json:"config_as_memories,omitempty"`
+	CoreKindLosses        []StateLoss     `json:"core_kind_losses,omitempty"`
+	NamespaceLosses       []NamespaceLoss `json:"namespace_losses,omitempty"`
+	OmittedEphemeralRows  []string        `json:"omitted_ephemeral_rows,omitempty"`
+	InputDigest           string          `json:"input_digest"`
+	OutputDigest          string          `json:"output_digest,omitempty"`
+	LostPostSwitchHistory []string        `json:"lost_post_switch_history,omitempty"`
+	PlugOnlyKinds         []string        `json:"plug_only_kinds,omitempty"`
+	TypeMappings          []TypeMapping   `json:"type_mappings,omitempty"`
+	Blobs                 []string        `json:"blobs,omitempty"`
+	Principals            []string        `json:"principals,omitempty"`
+	Warnings              []string        `json:"warnings,omitempty"`
+	UnsupportedFields     []string        `json:"unsupported_fields,omitempty"`
+	ArchivedSourceFields  []string        `json:"archived_source_fields,omitempty"`
+	ConfigReferences      []string        `json:"config_references,omitempty"`
+	ArchiveRows           int             `json:"archive_rows,omitempty"`
+	ConfigAsMemories      int             `json:"config_as_memories,omitempty"`
 }
 
 // Result is a complete conversion. JSONL always ends in a newline when there
@@ -195,6 +200,7 @@ func addUnique(values *[]string, value string) {
 }
 
 func normalizeReport(report *Report) {
+	sort.Strings(report.OmittedEphemeralRows)
 	sort.Strings(report.LostPostSwitchHistory)
 	sort.Strings(report.PlugOnlyKinds)
 	sort.Slice(report.TypeMappings, func(i, j int) bool {

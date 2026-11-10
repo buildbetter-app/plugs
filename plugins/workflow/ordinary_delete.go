@@ -32,7 +32,7 @@ type OrdinaryDeletePreparation struct {
 func (p *Provider) PrepareOrdinaryDelete(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta, apply func(func(model.Op) (*OrdinaryDeleteImage, error)) error) (OrdinaryDeletePreparation, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !p.persistent {
+	if !p.persistent && p.source == nil {
 		return OrdinaryDeletePreparation{}, fail("plugin_durable_state_unavailable", "ephemeral workflows require persistent checkpoint storage")
 	}
 	value, revision, err := p.readState(ctx)

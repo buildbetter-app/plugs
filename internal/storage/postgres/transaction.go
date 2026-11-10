@@ -24,23 +24,24 @@ type transaction struct {
 	// writer's SQL transaction begins. Staging reuses that observation while
 	// local context, lease-loss and transaction-closed checks remain live;
 	// publication performs a fresh row-locking fence.
-	leasePrepared    bool
-	locked, hasHead  bool
-	restore          *driver.Meta
-	nativeRestore    *driver.NativeRestoreProfile
-	nativeAllocators bool
-	importRestore    *driver.RestoreImportProfile
-	offlineHistory   *driver.PreparedOfflineHistory
-	acquired         driver.LockSet
-	records          map[string]*driver.Record
-	identities       map[string]driver.Record
-	derived          map[string]driver.LockState
-	blobs            map[driver.Hash][]byte
-	allocators       map[string]driver.OfflineAllocator
-	parentCounters   map[string]driver.ParentCounter
-	bumps            map[string]driver.LockKey
-	allocated        map[string]bool
-	done             chan struct{}
+	leasePrepared     bool
+	locked, hasHead   bool
+	restore           *driver.Meta
+	nativeRestore     *driver.NativeRestoreProfile
+	nativeAllocators  bool
+	importRestore     *driver.RestoreImportProfile
+	sourcePlaneImport *driver.SourcePlaneImportPublication
+	offlineHistory    *driver.PreparedOfflineHistory
+	acquired          driver.LockSet
+	records           map[string]*driver.Record
+	identities        map[string]driver.Record
+	derived           map[string]driver.LockState
+	blobs             map[driver.Hash][]byte
+	allocators        map[string]driver.OfflineAllocator
+	parentCounters    map[string]driver.ParentCounter
+	bumps             map[string]driver.LockKey
+	allocated         map[string]bool
+	done              chan struct{}
 
 	checkpointGuards          map[string]uint64
 	checkpointWrites          map[string]driver.Checkpoint

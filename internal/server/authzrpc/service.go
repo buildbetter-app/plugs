@@ -48,6 +48,15 @@ const listPostfilterCap = 20000
 const claimNextConflictRestartBudget = 1
 
 func (s *GuardedService) Get(ctx context.Context, by model.PrincipalRef, req service.GetRequest) (service.GetResult, error) {
+	if source, ok := s.delegate.(interface {
+		ResolveSourceAddress(context.Context, model.PrincipalRef, string, model.Ref) (model.Ref, bool, error)
+	}); ok {
+		resolved, _, err := source.ResolveSourceAddress(ctx, by, req.Project, req.ID)
+		if err != nil {
+			return service.GetResult{}, err
+		}
+		req.ID = resolved
+	}
 	if workflowItemRef(req.ID) {
 		return s.getWorkflow(ctx, by, req)
 	}
@@ -373,7 +382,7 @@ func (s *GuardedService) CreateWithOutcome(ctx context.Context, by model.Princip
 	return s.delegate.CreateWithOutcome(ctx, by, req, meta)
 }
 func (s *GuardedService) UpdateWithOutcome(ctx context.Context, by model.PrincipalRef, req service.UpdateRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
-	if workflowItemRef(req.ID) {
+	if workflowItemRef(req.ID) && !s.sourceRuntimeInstalled() {
 		return s.workflowWrite(ctx, by, meta.Project, func() (port.WriteOutcome, error) {
 			return s.delegate.UpdateWithOutcome(ctx, by, req, meta)
 		})
@@ -450,7 +459,7 @@ func (s *GuardedService) UnlinkWithOutcome(ctx context.Context, by model.Princip
 	return s.delegate.UnlinkWithOutcome(ctx, by, req, meta)
 }
 func (s *GuardedService) ClaimWithOutcome(ctx context.Context, by model.PrincipalRef, req service.ClaimRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
-	if workflowItemRef(req.ID) {
+	if workflowItemRef(req.ID) && !s.sourceRuntimeInstalled() {
 		return s.workflowWrite(ctx, by, meta.Project, func() (port.WriteOutcome, error) {
 			return s.delegate.ClaimWithOutcome(ctx, by, req, meta)
 		})
@@ -713,7 +722,7 @@ func claimNextCandidateConflict(err error) bool {
 	return value.Message == "snapshot changed during all four write attempts" || value.Data.Hint == "snapshot changed during all four write attempts"
 }
 func (s *GuardedService) CommentWithOutcome(ctx context.Context, by model.PrincipalRef, req service.CommentRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
-	if workflowItemRef(req.ID) {
+	if workflowItemRef(req.ID) && !s.sourceRuntimeInstalled() {
 		return s.workflowWrite(ctx, by, meta.Project, func() (port.WriteOutcome, error) {
 			return s.delegate.CommentWithOutcome(ctx, by, req, meta)
 		})
@@ -721,7 +730,7 @@ func (s *GuardedService) CommentWithOutcome(ctx context.Context, by model.Princi
 	return s.delegate.CommentWithOutcome(ctx, by, req, meta)
 }
 func (s *GuardedService) CloseWithOutcome(ctx context.Context, by model.PrincipalRef, req service.CloseRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
-	if workflowItemRef(req.ID) {
+	if workflowItemRef(req.ID) && !s.sourceRuntimeInstalled() {
 		return s.workflowWrite(ctx, by, meta.Project, func() (port.WriteOutcome, error) {
 			return s.delegate.CloseWithOutcome(ctx, by, req, meta)
 		})
@@ -830,14 +839,23 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 			if method != "bead.ready" || bead.Project != project {
 				continue
 			}
-			if !workflowChecked {
-				workflowAllowed, err = s.checker.workflowRead(ctx, caller, authorization, method, project)
-				if err != nil {
-					return service.BeadPage{}, err
+			allowed := false
+			if s.sourceRuntimeInstalled() {
+				// Imported items use their verified per-item source binding and the
+				// original Bead method policy, as on the source Get path. Native
+				// workflow project authority cannot authorize this separate plane.
+				allowed, err = s.sourceRead(ctx, caller, authorization, model.RefByID(bead.ID, model.Natural64(0)), project, method)
+			} else {
+				if !workflowChecked {
+					workflowAllowed, err = s.checker.workflowRead(ctx, caller, authorization, method, project)
+					workflowChecked = true
 				}
-				workflowChecked = true
+				allowed = workflowAllowed
 			}
-			if workflowAllowed {
+			if err != nil {
+				return service.BeadPage{}, err
+			}
+			if allowed {
 				filtered = append(filtered, bead)
 			}
 			continue

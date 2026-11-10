@@ -22,8 +22,96 @@ import (
 	"unicode/utf8"
 )
 
+const sourcePlaneProtocolSource = "internal/storage/driver/source_planes_validate.go"
+const sourcePlaneFixtureSource = "internal/storage/driver/source_planes_test.go"
+
 func protocolLiteralDigest(value string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(value)))
+}
+
+func validSourcePlaneConstants(allowances []GoConstantAllowance) bool {
+	want := map[string]bool{
+		"fe552dc8dc9e69d88a9f9eb00b1ad65eb317b9d53f956115eaae5efc56376876": true,
+		"2a882a552d7e1e6461ee57b1d1b2dfc7b6d05b50f26ef2ce5811e78440f35216": true,
+	}
+	if len(allowances) != len(want) {
+		return false
+	}
+	for _, allowance := range allowances {
+		fields := []string{allowance.Path, allowance.Name, allowance.Value}
+		for _, field := range fields {
+			if strings.ContainsRune(field, '\x00') {
+				return false
+			}
+		}
+		digest := protocolLiteralDigest(strings.Join(fields, "\x00"))
+		if !want[digest] {
+			return false
+		}
+		delete(want, digest)
+	}
+	return true
+}
+
+// Only the unique top-level untyped constant's direct string initializer gains
+// an offset. Copies, local declarations and other source contexts grant none.
+// An invalid declaration of the bound name is refused even if its initializer
+// splits the physical spelling across multiple expressions.
+func sourcePlaneConstantLiteralOffset(path string, content []byte, allowances []GoConstantAllowance) (offset int, admitted, invalid bool) {
+	if path != sourcePlaneProtocolSource && path != sourcePlaneFixtureSource || !validSourcePlaneConstants(allowances) {
+		return 0, false, false
+	}
+	var allowance GoConstantAllowance
+	for _, candidate := range allowances {
+		if candidate.Path == path {
+			allowance = candidate
+		}
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, content, 0)
+	if err != nil {
+		return 0, false, false
+	}
+	count := 0
+	var selected *ast.BasicLit
+	for _, declaration := range file.Decls {
+		switch node := declaration.(type) {
+		case *ast.FuncDecl:
+			if node.Name.Name == allowance.Name {
+				count++
+			}
+		case *ast.GenDecl:
+			for _, spec := range node.Specs {
+				switch spec := spec.(type) {
+				case *ast.TypeSpec:
+					if spec.Name.Name == allowance.Name {
+						count++
+					}
+				case *ast.ValueSpec:
+					for _, name := range spec.Names {
+						if name.Name != allowance.Name {
+							continue
+						}
+						count++
+						if node.Tok != token.CONST || spec.Type != nil || len(spec.Names) != 1 || len(spec.Values) != 1 {
+							continue
+						}
+						literal, ok := spec.Values[0].(*ast.BasicLit)
+						if !ok || literal.Kind != token.STRING {
+							continue
+						}
+						if value, err := strconv.Unquote(literal.Value); err == nil && value == allowance.Value {
+							selected = literal
+						}
+					}
+				}
+			}
+		}
+	}
+	if count != 1 || selected == nil {
+		return 0, false, count != 0
+	}
+	return fset.Position(selected.Pos()).Offset, true, false
 }
 
 func allowsPhysicalProtocolString(path, value string, allowance GoStringAllowance) bool {
@@ -604,19 +692,20 @@ func isProvenance(path string, zones []string) bool {
 func scanFile(path string, content []byte, cfg Config, provenance bool) []Finding {
 	text := string(content)
 	var literals []goStringLiteral
+	sourcePlaneOffset, sourcePlaneAllowed, sourcePlaneInvalid := sourcePlaneConstantLiteralOffset(path, content, cfg.SourcePlaneConstants)
 	if (path == b01NativeJSONSource || path == b03CatalogJSONSource) && !json.Valid(content) {
 		return []Finding{{Path: path, Line: 1, Class: "invalid-json", Term: "parse"}}
 	}
 	fieldOffsets := nativeFieldLiteralOffsets(path, content, cfg.NativeFieldLiterals)
 	b03Offsets := b03NativeGoLiteralOffsets(path, content, cfg.B03NativeGoLiterals)
-	if path == externalProtocolSource && len(cfg.ExternalProtocolString.PhysicalValues) != 0 || path == nativeManifestProtocolSource && len(cfg.NativeManifestStrings.Values) != 0 || path == b01NativeGoSource || path == b01NativeJSONSource || path == b03CatalogJSONSource || path == b03CatalogGoSource || hasNativeControlAllowance(path, cfg) {
+	if path == externalProtocolSource && len(cfg.ExternalProtocolString.PhysicalValues) != 0 || path == nativeManifestProtocolSource && len(cfg.NativeManifestStrings.Values) != 0 || path == b01NativeGoSource || path == b01NativeJSONSource || path == b03CatalogJSONSource || path == b03CatalogGoSource || hasNativeControlAllowance(path, cfg) || path == sourcePlaneProtocolSource || path == sourcePlaneFixtureSource {
 		masked := append([]byte(nil), content...)
 		sourceLiterals := goStringLiterals(path, content)
 		if path == b01NativeJSONSource || path == b03CatalogJSONSource {
 			sourceLiterals = jsonStringLiterals(content)
 		}
 		for _, literal := range sourceLiterals {
-			if !literal.imported && (fieldOffsets[literal.start] || b03Offsets[literal.start] || allowsConfiguredLiteral(path, literal.value, cfg) || allowsNativeManifestString(path, literal.value, cfg.NativeManifestStrings)) {
+			if !literal.imported && (sourcePlaneAllowed && literal.start == sourcePlaneOffset || fieldOffsets[literal.start] || b03Offsets[literal.start] || allowsConfiguredLiteral(path, literal.value, cfg) || allowsNativeManifestString(path, literal.value, cfg.NativeManifestStrings)) {
 				for i := literal.start; i < literal.end; i++ {
 					if masked[i] != '\n' && masked[i] != '\r' {
 						masked[i] = ' '
@@ -629,6 +718,9 @@ func scanFile(path string, content []byte, cfg Config, provenance bool) []Findin
 		text = string(masked)
 	}
 	var findings []Finding
+	if sourcePlaneInvalid {
+		findings = append(findings, Finding{Path: path, Line: 1, Class: "invalid-protocol-literal", Term: "source-plane-constant"})
+	}
 	appendDecoded := func(literal goStringLiteral, term Term, match string) {
 		finding := Finding{Path: path, Line: literal.line, Class: term.Class, Term: match}
 		for _, previous := range findings {

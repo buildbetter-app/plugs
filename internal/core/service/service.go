@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -27,6 +28,7 @@ type Service struct {
 	authorizationInstalled func() bool
 	events                 EventProvider
 	workflow               *workflowplugin.Provider
+	source                 atomic.Pointer[sourceWorkflow]
 	compaction             CompactionConfig
 }
 
@@ -137,9 +139,18 @@ func (s *Service) apply(ctx context.Context, by model.PrincipalRef, method strin
 		return port.WriteOutcome{}, failure("project_required", "supply a project")
 	}
 	meta.Method = method
+	source := s.source.Load()
+	if source != nil {
+		ctx = pipeline.WithSourceOperations(ctx, s.sourcePreparation(source, by, cs, meta), func(ref model.Ref) string {
+			if source.active[ref.ID] == meta.Project && ref.IsID() && ref.Branch.IsZero() {
+				return "workflow_item"
+			}
+			return ""
+		})
+	}
 	deletes := ordinaryDeletes(cs)
-	jointDelete := method == "tx.apply" && s.workflow != nil && len(deletes) != 0
-	if s.workflow != nil && (method == "bead.claim" || method == "bead.claimNext" || method == "bead.close" || method == "tx.apply") {
+	jointDelete := method == "tx.apply" && source == nil && s.workflow != nil && len(deletes) != 0
+	if s.workflowProvider() != nil && (method == "bead.claim" || method == "bead.claimNext" || method == "bead.close" || method == "tx.apply") {
 		ctx = pipeline.WithWorkflowGuard(ctx, s.workflowWriteGuard)
 	}
 	if jointDelete {
@@ -231,7 +242,7 @@ func (s *Service) WorkflowInvoke(ctx context.Context, by model.PrincipalRef, req
 		if meta.DryRun {
 			return workflowplugin.InvokeResult{}, failure("invalid_params", "ephemeral workflow invocation does not support dryRun")
 		}
-		if s.workflow == nil {
+		if s.workflowProvider() == nil {
 			return workflowplugin.InvokeResult{}, failure("plugin_durable_state_unavailable", "ephemeral workflows require persistent checkpoint storage")
 		}
 		meta.Method = "x.workflow.invoke"
@@ -241,7 +252,7 @@ func (s *Service) WorkflowInvoke(ctx context.Context, by model.PrincipalRef, req
 				return workflowplugin.InvokeResult{}, err
 			}
 		}
-		return s.workflow.Invoke(ctx, by, req, meta)
+		return s.workflowProvider().Invoke(ctx, by, req, meta)
 	}
 	if req.Mode != "permanent" {
 		return workflowplugin.InvokeResult{}, failure("invalid_params", "workflow invocation mode is required")
@@ -343,11 +354,17 @@ func (s *Service) UpdateWithOutcome(ctx context.Context, by model.PrincipalRef, 
 }
 
 func (s *Service) update(ctx context.Context, by model.PrincipalRef, req UpdateRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
+	if s.SourceRuntimeInstalled() {
+		if len(req.Fields) == 0 {
+			return port.WriteOutcome{}, failure("invalid_params", "update requires fields")
+		}
+		return s.apply(ctx, by, "bead.update", model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: req.ID, Fields: req.Fields}}}, Expect: req.Expect}, meta, outcomeRequired)
+	}
 	if workflowRef(req.ID) {
 		if err := validateWorkflowWrite(req.ID, req.Expect, meta); err != nil {
 			return port.WriteOutcome{}, err
 		}
-		if s.workflow == nil {
+		if s.workflowProvider() == nil {
 			return port.WriteOutcome{}, failure("not_found", "workflow item was not found")
 		}
 		refs, err := workflowUpdateRefs(req.Fields)
@@ -357,7 +374,7 @@ func (s *Service) update(ctx context.Context, by model.PrincipalRef, req UpdateR
 		if err := s.validateWorkflowEndpoints(ctx, by, meta.Project, refs...); err != nil {
 			return port.WriteOutcome{}, err
 		}
-		commit, err := s.workflow.Update(ctx, by, req.ID, req.Fields, meta)
+		commit, err := s.workflowProvider().Update(ctx, by, req.ID, req.Fields, meta)
 		return port.WriteOutcome{Commit: commit}, err
 	}
 	if err := namedRef(req.ID); err != nil {
@@ -379,18 +396,21 @@ func (s *Service) Claim(ctx context.Context, by model.PrincipalRef, req ClaimReq
 }
 
 func (s *Service) ClaimWithOutcome(ctx context.Context, by model.PrincipalRef, req ClaimRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	if s.SourceRuntimeInstalled() {
+		return s.claimWithMethod(ctx, by, req, meta, true, meta.Method)
+	}
 	if workflowRef(req.ID) {
 		if err := validateWorkflowWrite(req.ID, req.Expect, meta); err != nil {
 			return port.WriteOutcome{}, err
 		}
-		if s.workflow == nil {
+		if s.workflowProvider() == nil {
 			return port.WriteOutcome{}, failure("not_found", "workflow item was not found")
 		}
 		if meta.Method == "bead.claimNext" {
 			// claimNext candidates are selected and authorized by the queue walk.
 			// Preserve that selector when committing the provider receipt; the
 			// provider intentionally refuses the legacy bare bead.claim shape.
-			item, found, replayed, err := s.workflow.ClaimNextSelectedWithResolver(ctx, by, req.ID, meta.Project, nil, meta, s.workflowBlockerResolver(ctx, by, meta))
+			item, found, replayed, err := s.workflowProvider().ClaimNextSelectedWithResolver(ctx, by, req.ID, meta.Project, nil, meta, s.workflowBlockerResolver(ctx, by, meta))
 			if err != nil {
 				return port.WriteOutcome{}, err
 			}
@@ -399,7 +419,7 @@ func (s *Service) ClaimWithOutcome(ctx context.Context, by model.PrincipalRef, r
 			}
 			return port.WriteOutcome{Commit: workflowClaimCommit(item), Replayed: replayed}, nil
 		}
-		item, err := s.workflow.ClaimWithResolver(ctx, by, req.ID, meta, s.workflowBlockerResolver(ctx, by, meta))
+		item, err := s.workflowProvider().ClaimWithResolver(ctx, by, req.ID, meta, s.workflowBlockerResolver(ctx, by, meta))
 		if err != nil {
 			return port.WriteOutcome{}, err
 		}
@@ -422,7 +442,10 @@ func (s *Service) ClaimWithOutcome(ctx context.Context, by model.PrincipalRef, r
 // service before it walks the live ready set; a miss must never consume a new
 // candidate. The bool reports whether the provider had a retained receipt.
 func (s *Service) ReplayWorkflowClaimNext(ctx context.Context, by model.PrincipalRef, req ClaimNextRequest, meta model.WriteMeta) (*port.WriteOutcome, bool, error) {
-	if s.workflow == nil {
+	if s.SourceRuntimeInstalled() {
+		return nil, false, nil
+	}
+	if s.workflowProvider() == nil {
 		return nil, false, nil
 	}
 	if req.Filter != nil && req.Filter.IncludeEphemeral != nil && !*req.Filter.IncludeEphemeral {
@@ -446,7 +469,7 @@ func (s *Service) ReplayWorkflowClaimNext(ctx context.Context, by model.Principa
 	} else if meta.AgentLabel == "" {
 		meta.AgentLabel = meta.Agent
 	}
-	item, found, replayed, err := s.workflow.ReplayClaimNext(ctx, by, req.Project, nil, meta)
+	item, found, replayed, err := s.workflowProvider().ReplayClaimNext(ctx, by, req.Project, nil, meta)
 	if err != nil {
 		return nil, false, err
 	}
@@ -475,7 +498,7 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 	if err := s.admit(ctx, by); err != nil {
 		return nil, err
 	}
-	if s.workflow != nil && meta.DryRun {
+	if s.workflowProvider() != nil && meta.DryRun {
 		return nil, failure("invalid_params", "workflow claimNext does not support dryRun")
 	}
 	if strings.TrimSpace(req.Project) == "" {
@@ -627,6 +650,9 @@ func (s *Service) claimNextReadyProbe(by model.PrincipalRef, req ClaimNextReques
 // supplied transaction-level probe observes no ready candidate. A nil probe
 // is reserved for replay of an already durable empty receipt.
 func (s *Service) CommitClaimNextEmpty(ctx context.Context, by model.PrincipalRef, req ClaimNextRequest, meta model.WriteMeta, probe port.ClaimNextReadyProbe) (port.WriteOutcome, error) {
+	if s.SourceRuntimeInstalled() {
+		return port.WriteOutcome{}, failure("unsupported", "source claimNext requires a joint terminal readiness proof")
+	}
 	if err := s.admit(ctx, by); err != nil {
 		return port.WriteOutcome{}, err
 	}
@@ -644,7 +670,7 @@ func (s *Service) CommitClaimNextEmpty(ctx context.Context, by model.PrincipalRe
 	if req.Filter != nil && req.Filter.IncludeEphemeral != nil {
 		includeEphemeral = *req.Filter.IncludeEphemeral
 	}
-	if s.workflow != nil {
+	if s.workflowProvider() != nil {
 		if meta.DryRun {
 			return port.WriteOutcome{}, failure("invalid_params", "workflow claimNext does not support dryRun")
 		}
@@ -659,7 +685,7 @@ func (s *Service) CommitClaimNextEmpty(ctx context.Context, by model.PrincipalRe
 		if !includeEphemeral {
 			return s.commitCoreClaimNextEmpty(ctx, by, meta, probe)
 		}
-		item, found, replayed, err := s.workflow.ClaimNextWithResourcesWithResolver(ctx, by, req.Project, types, resources, meta, s.workflowBlockerResolver(ctx, by, meta))
+		item, found, replayed, err := s.workflowProvider().ClaimNextWithResourcesWithResolver(ctx, by, req.Project, types, resources, meta, s.workflowBlockerResolver(ctx, by, meta))
 		if err != nil {
 			return port.WriteOutcome{}, err
 		}
@@ -728,7 +754,7 @@ func claimNextCandidateConflict(err error) bool {
 }
 
 func (s *Service) claimWithMethod(ctx context.Context, by model.PrincipalRef, req ClaimRequest, meta model.WriteMeta, outcomeRequired bool, method string) (port.WriteOutcome, error) {
-	if err := namedRef(req.ID); err != nil {
+	if err := namedRef(req.ID); err != nil && !s.SourceRuntimeInstalled() {
 		return port.WriteOutcome{}, err
 	}
 	// Slot normalization belongs after the pipeline's idempotency lookup. This
@@ -765,21 +791,24 @@ func (s *Service) Comment(ctx context.Context, by model.PrincipalRef, req Commen
 }
 
 func (s *Service) CommentWithOutcome(ctx context.Context, by model.PrincipalRef, req CommentRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	if s.SourceRuntimeInstalled() {
+		return s.comment(ctx, by, req, meta, true)
+	}
 	if workflowRef(req.ID) {
 		if err := validateWorkflowWrite(req.ID, req.Expect, meta); err != nil {
 			return port.WriteOutcome{}, err
 		}
-		if s.workflow == nil {
+		if s.workflowProvider() == nil {
 			return port.WriteOutcome{}, failure("not_found", "workflow item was not found")
 		}
-		commit, err := s.workflow.Comment(ctx, by, req.ID, req.Body, meta)
+		commit, err := s.workflowProvider().Comment(ctx, by, req.ID, req.Body, meta)
 		return port.WriteOutcome{Commit: commit}, err
 	}
 	return s.comment(ctx, by, req, meta, true)
 }
 
 func (s *Service) comment(ctx context.Context, by model.PrincipalRef, req CommentRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
-	if err := namedRef(req.ID); err != nil {
+	if err := namedRef(req.ID); err != nil && !s.SourceRuntimeInstalled() {
 		return port.WriteOutcome{}, err
 	}
 	if strings.TrimSpace(req.Body) == "" {
@@ -795,14 +824,17 @@ func (s *Service) Close(ctx context.Context, by model.PrincipalRef, req CloseReq
 }
 
 func (s *Service) CloseWithOutcome(ctx context.Context, by model.PrincipalRef, req CloseRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	if s.SourceRuntimeInstalled() {
+		return s.close(ctx, by, req, meta, true)
+	}
 	if workflowRef(req.ID) {
 		if err := validateWorkflowWrite(req.ID, req.Expect, meta); err != nil {
 			return port.WriteOutcome{}, err
 		}
-		if s.workflow == nil {
+		if s.workflowProvider() == nil {
 			return port.WriteOutcome{}, failure("not_found", "workflow item was not found")
 		}
-		commit, err := s.workflow.CloseWithResolver(ctx, by, req.ID, req.Reason, meta, s.workflowBlockerResolver(ctx, by, meta))
+		commit, err := s.workflowProvider().CloseWithResolver(ctx, by, req.ID, req.Reason, meta, s.workflowBlockerResolver(ctx, by, meta))
 		return port.WriteOutcome{Commit: commit}, err
 	}
 	return s.close(ctx, by, req, meta, true)
@@ -819,6 +851,9 @@ func workflowClaimCommit(item workflowplugin.ItemView) model.Commit {
 }
 
 func (s *Service) close(ctx context.Context, by model.PrincipalRef, req CloseRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
+	if s.SourceRuntimeInstalled() {
+		return s.apply(ctx, by, "bead.close", model.ChangeSet{Ops: []model.Op{{Kind: model.OpClose, Close: &model.CloseOp{Target: req.ID, Reason: req.Reason}}}, Expect: req.Expect}, meta, outcomeRequired)
+	}
 	return s.lifecycle(ctx, by, "bead.close", req.ID, req.Reason, req.Expect, meta, outcomeRequired)
 }
 
@@ -967,7 +1002,10 @@ func (s *Service) LinkWithOutcome(ctx context.Context, by model.PrincipalRef, re
 		return port.WriteOutcome{}, err
 	}
 	if mixed {
-		if s.workflow == nil {
+		if s.SourceRuntimeInstalled() {
+			return port.WriteOutcome{}, failure("unsupported", "source relation edits require canonical batch preparation")
+		}
+		if s.workflowProvider() == nil {
 			return port.WriteOutcome{}, failure("invalid_params", "workflow references require a supported workflow item operation")
 		}
 		if err := validateWorkflowWrite(req.From, req.Expect, meta); err != nil && workflowRef(req.From) {
@@ -979,7 +1017,7 @@ func (s *Service) LinkWithOutcome(ctx context.Context, by model.PrincipalRef, re
 		if err := s.validateWorkflowEndpoints(ctx, by, meta.Project, req.From, req.To); err != nil {
 			return port.WriteOutcome{}, err
 		}
-		commit, err := s.workflow.Link(ctx, by, workflowReq, meta)
+		commit, err := s.workflowProvider().Link(ctx, by, workflowReq, meta)
 		return port.WriteOutcome{Commit: commit}, err
 	}
 	cs, err := linkChangeSet(req, model.OpLink)
@@ -1012,7 +1050,10 @@ func (s *Service) UnlinkWithOutcome(ctx context.Context, by model.PrincipalRef, 
 		return port.WriteOutcome{}, err
 	}
 	if mixed {
-		if s.workflow == nil {
+		if s.SourceRuntimeInstalled() {
+			return port.WriteOutcome{}, failure("unsupported", "source relation edits require canonical batch preparation")
+		}
+		if s.workflowProvider() == nil {
 			return port.WriteOutcome{}, failure("invalid_params", "workflow references require a supported workflow item operation")
 		}
 		if err := validateWorkflowWrite(req.From, req.Expect, meta); err != nil && workflowRef(req.From) {
@@ -1024,7 +1065,7 @@ func (s *Service) UnlinkWithOutcome(ctx context.Context, by model.PrincipalRef, 
 		if err := s.validateWorkflowEndpoints(ctx, by, meta.Project, req.From, req.To); err != nil {
 			return port.WriteOutcome{}, err
 		}
-		commit, err := s.workflow.Unlink(ctx, by, workflowReq, meta)
+		commit, err := s.workflowProvider().Unlink(ctx, by, workflowReq, meta)
 		return port.WriteOutcome{Commit: commit}, err
 	}
 	cs, err := linkChangeSet(req, model.OpUnlink)

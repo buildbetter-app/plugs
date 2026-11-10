@@ -2,10 +2,20 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "workflow",
-    srcs = ["atomic.go", "native.go", "ordinary_delete.go", "scheduling.go", "workflow.go"],
+    srcs = [
+        "atomic.go",
+        "native.go",
+        "ordinary_delete.go",
+        "scheduling.go",
+        "source_comments.go",
+        "source_graph.go",
+        "source_projection.go",
+        "source_restore.go",
+        "workflow.go",
+    ],
     importpath = "github.com/buildbetter-app/plugs/plugins/workflow",
     visibility = ["//:__subpackages__"],
-    deps = ["//internal/core/model", "//internal/storage/driver", "//pluginapi", "//sdk/go:sdk_go"],
+    deps = ["//internal/core/dumpformat", "//internal/core/model", "//internal/storage/driver", "//pluginapi", "//sdk/go:sdk_go"],
 )
 
 go_test(
