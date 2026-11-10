@@ -281,6 +281,7 @@ type typedArchiveHistory struct {
 	StoreID  string                       `json:"store_id"`
 	Projects []string                     `json:"projects"`
 	Head     string                       `json:"head"`
+	Ignore   typedArchiveTable            `json:"ignore"`
 	Current  map[string]typedArchiveTable `json:"current"`
 	Images   []struct {
 		CommitID string                       `json:"commit_id"`
@@ -341,9 +342,19 @@ func bindTypedArchive(archive []byte, manifest *typedManifest) error {
 			if !ok || len(raw.Rows) != len(table.Rows) || len(raw.Columns) != len(table.Columns) || raw.Rows == nil {
 				return fmt.Errorf("typed row or column census mismatch")
 			}
-			for i, column := range table.Columns {
-				if raw.Columns[i] != column.Name {
-					return fmt.Errorf("typed column order mismatch")
+			// The normalized archive sorts names; the physical reader keeps
+			// schema order. Check exact name coverage without reordering or
+			// changing any observed SQL type or cell position.
+			names := map[string]bool{}
+			for _, name := range raw.Columns {
+				if names[name] {
+					return fmt.Errorf("typed companion duplicate column")
+				}
+				names[name] = true
+			}
+			for _, column := range table.Columns {
+				if !names[column.Name] {
+					return fmt.Errorf("typed column coverage mismatch")
 				}
 			}
 			for _, row := range raw.Rows {
@@ -359,7 +370,41 @@ func bindTypedArchive(archive []byte, manifest *typedManifest) error {
 		}
 		return nil
 	}
-	if err := coverage(manifest.Evidence.Working.Tables, history.Current); err != nil {
+	current := map[string]typedArchiveTable{}
+	for name, table := range history.Current {
+		current[name] = table
+	}
+	if len(history.Ignore.Columns) != 0 {
+		if _, exists := current["dolt_ignore"]; exists {
+			return fmt.Errorf("duplicate current ignore family")
+		}
+		current["dolt_ignore"] = history.Ignore
+	}
+	// The physical working root also includes stored system tables omitted
+	// by information_schema. They remain in the manifest, and are bound to
+	// their same-source immutable HEAD rows, never silently discarded.
+	for _, table := range manifest.Evidence.Working.Tables {
+		if _, exists := current[table.Name]; exists {
+			continue
+		}
+		if table.Name != "dolt_nonlocal_tables" && table.Name != "dolt_schemas" {
+			return fmt.Errorf("typed working family absent from companion")
+		}
+		found := false
+		for _, image := range history.Images {
+			if image.CommitID != history.Head {
+				continue
+			}
+			if raw, ok := image.Tables[table.Name]; ok {
+				current[table.Name] = raw
+				found = true
+			}
+		}
+		if !found {
+			return fmt.Errorf("typed stored system family missing at head")
+		}
+	}
+	if err := coverage(manifest.Evidence.Working.Tables, current); err != nil {
 		return err
 	}
 	if len(history.Images) != len(manifest.Evidence.Images) {

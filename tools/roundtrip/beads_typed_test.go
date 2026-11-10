@@ -178,7 +178,9 @@ func TestTypedCompanionCensusRefusesOmittedFamiliesRowsColumnsAndWrongImage(t *t
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			m := adaptControl(t, data, binding)
-			table := typedArchiveTable{Columns: []string{"id", "wide", "document", "optional", "binary"}, Rows: []map[string]json.RawMessage{{"id": json.RawMessage(`"demo-42v"`), "wide": json.RawMessage(`9007199254740993`), "document": json.RawMessage(`null`), "optional": json.RawMessage(`null`), "binary": json.RawMessage(`""`)}}}
+			// NativeTable sorts column names; physical column/cell order
+			// remains exact in the independently parsed typed manifest.
+			table := typedArchiveTable{Columns: []string{"binary", "document", "id", "optional", "wide"}, Rows: []map[string]json.RawMessage{{"id": json.RawMessage(`"demo-42v"`), "wide": json.RawMessage(`9007199254740993`), "document": json.RawMessage(`null`), "optional": json.RawMessage(`null`), "binary": json.RawMessage(`""`)}}}
 			h := typedArchiveHistory{Format: "beads-native-tables/1", StoreID: binding.StoreID, Projects: []string{"demo"}, Head: "head", Current: map[string]typedArchiveTable{"issues": table}}
 			h.Images = append(h.Images, struct {
 				CommitID string                       `json:"commit_id"`
@@ -197,6 +199,64 @@ func TestTypedCompanionCensusRefusesOmittedFamiliesRowsColumnsAndWrongImage(t *t
 			err := bindTypedArchive(buffer.Bytes(), m)
 			if (err == nil) != (test.name == "exact") {
 				t.Fatalf("coverage refusal %s: %v", test.name, err)
+			}
+		})
+	}
+}
+
+func TestTypedWorkingStoredSystemCensusRetainsEveryObservedFamily(t *testing.T) {
+	data, binding := typedAdapterControl(t)
+	for _, test := range []string{"exact", "missing-ignore", "missing-stored-head", "unrecognized-extra"} {
+		t.Run(test, func(t *testing.T) {
+			m := adaptControl(t, data, binding)
+			ordinary := m.Evidence.Working.Tables[0]
+			ignore := typedTable{Name: "dolt_ignore", Columns: []typedColumn{{"pattern", "TEXT"}, {"ignored", "BOOLEAN"}}, Rows: [][]typedCell{}}
+			stored := typedTable{Name: "dolt_schemas", Columns: []typedColumn{{"type", "TEXT"}, {"name", "TEXT"}}, Rows: [][]typedCell{}}
+			m.Evidence.Working.Tables = append(m.Evidence.Working.Tables, ignore, stored)
+			m.Evidence.Images[0].Tables = append(m.Evidence.Images[0].Tables, ignore, stored)
+			nativeTable := func(table typedTable) typedArchiveTable {
+				raw := typedArchiveTable{Columns: []string{}, Rows: []map[string]json.RawMessage{}}
+				for _, column := range table.Columns {
+					raw.Columns = append(raw.Columns, column.Name)
+				}
+				for _, row := range table.Rows {
+					object := map[string]json.RawMessage{}
+					for i := range row {
+						object[table.Columns[i].Name] = json.RawMessage(`null`)
+					}
+					raw.Rows = append(raw.Rows, object)
+				}
+				return raw
+			}
+			h := typedArchiveHistory{Format: "beads-native-tables/1", StoreID: binding.StoreID, Projects: []string{"demo"}, Head: "head", Ignore: nativeTable(ignore), Current: map[string]typedArchiveTable{"issues": nativeTable(ordinary)}}
+			h.Images = append(h.Images, struct {
+				CommitID string                       `json:"commit_id"`
+				Tables   map[string]typedArchiveTable `json:"tables"`
+			}{"head", map[string]typedArchiveTable{"issues": nativeTable(ordinary), "dolt_ignore": nativeTable(ignore), "dolt_schemas": nativeTable(stored)}})
+			if test == "missing-ignore" {
+				h.Ignore = typedArchiveTable{}
+			}
+			if test == "missing-stored-head" {
+				delete(h.Images[0].Tables, "dolt_schemas")
+			}
+			if test == "unrecognized-extra" {
+				m.Evidence.Working.Tables = append(m.Evidence.Working.Tables, typedTable{Name: "unaccounted", Columns: stored.Columns, Rows: [][]typedCell{}})
+			}
+			raw, _ := json.Marshal(h)
+			var buffer bytes.Buffer
+			writer := tar.NewWriter(&buffer)
+			if err := writer.WriteHeader(&tar.Header{Name: "history/native-tables.json", Mode: 0600, Size: int64(len(raw)), Typeflag: tar.TypeReg}); err != nil {
+				t.Fatal(err)
+			}
+			writer.Write(raw)
+			writer.Close()
+			m.Evidence.ArchiveSHA256 = hash(buffer.Bytes())
+			err := bindTypedArchive(buffer.Bytes(), m)
+			if (err == nil) != (test == "exact") {
+				t.Fatalf("stored system census %s: %v", test, err)
+			}
+			if m.Evidence.Working.Tables[0].Columns[0].Name != "id" || m.Evidence.Working.Tables[0].Rows[0][1].Value != "9007199254740993" {
+				t.Fatal("coverage check changed physical order or cells")
 			}
 		})
 	}
