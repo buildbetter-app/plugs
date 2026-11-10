@@ -22,6 +22,34 @@ type queueProjectionReaderStub struct {
 	projection driver.QueueProjection
 }
 
+// Keep the real typed queue projection while refusing a full-source fallback.
+type sourceProviderQueueReader struct {
+	driver.Reader
+	queue               driver.QueueProjectionReader
+	projections, images int
+	queries, gets       int
+}
+
+func (r *sourceProviderQueueReader) QueueProjection(ctx context.Context) (driver.QueueProjection, error) {
+	r.projections++
+	return r.queue.QueueProjection(ctx)
+}
+
+func (r *sourceProviderQueueReader) QueueProjectionImages(ctx context.Context, view driver.View, refs []model.Ref) ([]driver.Record, error) {
+	r.images++
+	return r.queue.QueueProjectionImages(ctx, view, refs)
+}
+
+func (r *sourceProviderQueueReader) Query(context.Context, driver.Query) (driver.Page[driver.Record], error) {
+	r.queries++
+	return driver.Page[driver.Record]{}, errors.New("typed source queue scanned records")
+}
+
+func (r *sourceProviderQueueReader) Get(context.Context, []model.Ref) ([]driver.Record, error) {
+	r.gets++
+	return nil, errors.New("typed source queue fetched records")
+}
+
 func (r queueProjectionReaderStub) QueueProjection(context.Context) (driver.QueueProjection, error) {
 	return r.projection, nil
 }
@@ -246,4 +274,111 @@ func TestQueueReadyCandidatesUsesWorkflowBlocking(t *testing.T) {
 		t.Fatal(err)
 	}
 	read([]string{"blocked", "free"})
+}
+
+func TestQueueReadyUsesSelectedSourceProviderForTypedMembership(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	store, err := (sqlite.Driver{}).Open(ctx, driver.Config{DSN: filepath.Join(t.TempDir(), "queue-source.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	lease, err := store.Lease(ctx, "queue-source", driver.LeaseTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lease.Release(ctx) })
+	checkpoint := store.(driver.CheckpointStore)
+	newProvider := func(instance string) *workflowplugin.Provider {
+		t.Helper()
+		provider, err := workflowplugin.New(pluginhost.NewDurableState(checkpoint, lease, workflowplugin.Alias, instance))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return provider.WithClock(func() time.Time { return now })
+	}
+	native, source := newProvider("default"), newProvider("source-selection-test")
+	ontology := NewOntology(nil)
+	writer := pipeline.New(store, lease, pipeline.WithOntology(ontology), pipeline.WithClock(func() time.Time { return now }))
+	s := New(store, lease, writer, WithOntology(ontology), WithClock(func() time.Time { return now }), WithWorkflow(native))
+	by := model.PrincipalRef{Kind: "user", ID: "queue-owner"}
+	create := func(title string) model.Ref {
+		t.Helper()
+		commit, err := s.Create(ctx, by, CreateRequest{Type: "issue", Fields: map[string]any{"title": title}}, meta(t))
+		if err != nil || len(commit.Results) != 1 {
+			t.Fatalf("create %s: commit=%+v err=%v", title, commit, err)
+		}
+		return commit.Results[0].Ref
+	}
+	sourceChild, nativeChild := create("source child"), create("native child")
+	for _, test := range []struct {
+		name     string
+		provider *workflowplugin.Provider
+		child    model.Ref
+	}{
+		{name: "source", provider: source, child: sourceChild},
+		{name: "native", provider: native, child: nativeChild},
+	} {
+		invokeMeta := meta(t)
+		invokeMeta.Method = "x.workflow.invoke"
+		result, err := test.provider.Invoke(ctx, by, workflowplugin.InvokeRequest{
+			Template: test.name + "-blocker", Project: "local", Mode: "ephemeral",
+			Checklist: []workflowplugin.ChecklistItem{{Label: "blocking", Title: test.name + " blocker", Blocked: true}},
+		}, invokeMeta)
+		if err != nil || len(result.Items) != 1 {
+			t.Fatalf("%s invoke: result=%+v err=%v", test.name, result, err)
+		}
+		linkMeta := meta(t)
+		linkMeta.Method = "bead.link"
+		if _, err := test.provider.Link(ctx, by, workflowplugin.LinkRequest{
+			From: test.child, To: model.RefByID(result.Items[0].ID, model.Natural64(0)), Kind: "blocks",
+		}, linkMeta); err != nil {
+			t.Fatalf("%s link: %v", test.name, err)
+		}
+	}
+	// The native and selected source checkpoints deliberately disagree: ordinary
+	// Ready sees only nativeChild. The typed queue must use that same source view.
+	s.source.Store(&sourceWorkflow{provider: source})
+	includeEphemeral := false
+	req := ReadyRequest{Project: "local", Agent: "test-agent", Limit: 10, Filter: &Filter{
+		Resources: []string{sourceChild.ID, nativeChild.ID}, IncludeEphemeral: &includeEphemeral,
+	}}
+	ids := func(items []Bead) []string {
+		result := make([]string, len(items))
+		for i, item := range items {
+			result[i] = item.ID
+		}
+		return result
+	}
+	ordinary, err := s.Ready(ctx, by, req)
+	if err != nil || ordinary.Next != nil || !reflect.DeepEqual(ids(ordinary.Items), []string{nativeChild.ID}) {
+		t.Fatalf("source-aware ordinary membership: page=%+v err=%v", ordinary, err)
+	}
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	queue, ok := reader.(driver.QueueProjectionReader)
+	if !ok {
+		t.Fatal("real SQL reader lost its typed queue projection")
+	}
+	bound := &sourceProviderQueueReader{Reader: reader, queue: queue}
+	candidates, err := s.ReadyCandidates(ctx, by, req, bound)
+	if err != nil || !reflect.DeepEqual(ids(candidates), ids(ordinary.Items)) {
+		t.Fatalf("typed source queue differs from ordinary Ready: got=%v want=%v err=%v", ids(candidates), ids(ordinary.Items), err)
+	}
+	if bound.projections != 1 || bound.images != 0 || bound.queries != 0 || bound.gets != 0 {
+		t.Fatalf("typed queue work projections=%d images=%d query=%d get=%d", bound.projections, bound.images, bound.queries, bound.gets)
+	}
+	includeEphemeral = true
+	page, err := s.queueReadyPage(ctx, by, req, false)
+	if err != nil || page.Next != nil || !reflect.DeepEqual(ids(page.Items), ids(ordinary.Items)) {
+		t.Fatalf("queue page differs from selected source Ready: page=%+v err=%v", page, err)
+	}
 }

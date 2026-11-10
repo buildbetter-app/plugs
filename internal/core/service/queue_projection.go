@@ -275,8 +275,8 @@ func (s *Service) queueReadyPage(ctx context.Context, by model.PrincipalRef, req
 	if req.Filter != nil && req.Filter.IncludeEphemeral != nil {
 		includeEphemeral = *req.Filter.IncludeEphemeral
 	}
-	if s.workflow != nil && includeEphemeral {
-		active, err := s.workflow.ActiveIDsFor(ctx, by, workflowMeta(by, "bead.ready", req.Project, req.Agent))
+	if provider := s.workflowProvider(); provider != nil && includeEphemeral {
+		active, err := provider.ActiveIDsFor(ctx, by, workflowMeta(by, "bead.ready", req.Project, req.Agent))
 		if err != nil {
 			return BeadPage{}, err
 		}
