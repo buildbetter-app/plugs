@@ -65,13 +65,16 @@ func probeSchema(ctx context.Context, conn *sql.Conn) (schemaObservation, error)
 }
 
 type safeCaptureReport struct {
-	Format       string            `json:"format"`
-	Stage        captureStage      `json:"stage"`
-	GoErrorTypes []string          `json:"go_error_types,omitempty"`
-	SQLCodes     []uint16          `json:"sql_dolt_codes,omitempty"`
-	Schema       schemaObservation `json:"schema_migrations"`
-	Table        string            `json:"table,omitempty"`
-	Column       string            `json:"column,omitempty"`
+	InnermostGoErrorType  string            `json:"innermost_go_error_type,omitempty"`
+	CommitSchemaVersion   *uint64           `json:"commit_schema_version,omitempty"`
+	CommitOrdinalFromHead *uint64           `json:"commit_ordinal_from_head,omitempty"`
+	Format                string            `json:"format"`
+	Stage                 captureStage      `json:"stage"`
+	GoErrorTypes          []string          `json:"go_error_types,omitempty"`
+	SQLCodes              []uint16          `json:"sql_dolt_codes,omitempty"`
+	Schema                schemaObservation `json:"schema_migrations"`
+	Table                 string            `json:"table,omitempty"`
+	Column                string            `json:"column,omitempty"`
 }
 
 // Never call Error, format a value, parse a message or serialize an error.
@@ -88,6 +91,15 @@ func safeReport(err error) safeCaptureReport {
 		report.Stage = captureStage(stage)
 		report.Table, report.Column = plugdump.PublicCaptureIdentifiers(table, "")
 	}
+	var commitFailure *plugdump.NativeCommitFailure
+	if errors.As(err, &commitFailure) {
+		report.CommitSchemaVersion = commitFailure.SchemaVersion
+		if commitFailure.OrdinalFromHead != 0 {
+			ordinal := commitFailure.OrdinalFromHead
+			report.CommitOrdinalFromHead = &ordinal
+		}
+	}
+	deepestLeaf := -1
 	seenTypes, seenCodes := map[string]bool{}, map[uint16]bool{}
 	var walk func(error, int)
 	walk = func(cause error, depth int) {
@@ -103,13 +115,24 @@ func safeReport(err error) safeCaptureReport {
 			report.SQLCodes = append(report.SQLCodes, sqlError.Number)
 			seenCodes[sqlError.Number] = true
 		}
+		hasChild := false
 		switch wrapped := cause.(type) {
 		case interface{ Unwrap() []error }:
 			for _, child := range wrapped.Unwrap() {
-				walk(child, depth+1)
+				if child != nil {
+					hasChild = true
+					walk(child, depth+1)
+				}
 			}
 		case interface{ Unwrap() error }:
-			walk(wrapped.Unwrap(), depth+1)
+			if child := wrapped.Unwrap(); child != nil {
+				hasChild = true
+				walk(child, depth+1)
+			}
+		}
+		if !hasChild && depth > deepestLeaf {
+			deepestLeaf = depth
+			report.InnermostGoErrorType = name
 		}
 	}
 	walk(err, 0)

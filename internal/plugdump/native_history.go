@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -28,9 +29,10 @@ type NativeTable struct {
 }
 
 type NativeHistoryImage struct {
-	Sequence uint64                 `json:"sequence"`
-	CommitID string                 `json:"commit_id"`
-	Tables   map[string]NativeTable `json:"tables"`
+	SchemaProfile *NativeCommitSchemaProfile `json:"schema_profile,omitempty"`
+	Sequence      uint64                     `json:"sequence"`
+	CommitID      string                     `json:"commit_id"`
+	Tables        map[string]NativeTable     `json:"tables"`
 }
 
 type NativeHistoryGap struct {
@@ -312,6 +314,10 @@ func captureNativeHistory(ctx context.Context, src Source, inventory Inventory, 
 	// the actual capability/refusal cause instead of probing every commit and
 	// later replacing it with the generic missing-head classification error.
 	if _, err := port.ReadNativeSourceImage(ctx, log.Head); err != nil {
+		var failure *NativeCommitFailure
+		if errors.As(err, &failure) {
+			return nil, &NativeCommitFailure{SchemaVersion: failure.SchemaVersion, OrdinalFromHead: 1, Cause: err}
+		}
 		return nil, fmt.Errorf("native immutable HEAD: %w", err)
 	}
 	ignore, err := port.ReadSourceIgnore(ctx)
@@ -348,6 +354,10 @@ func captureNativeHistory(ctx context.Context, src Source, inventory Inventory, 
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
+			var failure *NativeCommitFailure
+			if errors.As(err, &failure) {
+				return nil, &NativeCommitFailure{SchemaVersion: failure.SchemaVersion, OrdinalFromHead: uint64(len(commits) - i), Cause: err}
+			}
 			reason := "historical-image-unavailable"
 			if typed, ok := err.(ErrSourceHistoryUnavailable); ok {
 				reason = typed.Reason
@@ -360,11 +370,22 @@ func captureNativeHistory(ctx context.Context, src Source, inventory Inventory, 
 			h.Gaps = append(h.Gaps, NativeHistoryGap{Sequence: uint64(i + 1), CommitID: c.ID, Family: family, Reason: reason})
 			continue
 		}
+		var commitProfile *NativeCommitSchemaProfile
+		if profiler, ok := src.(NativeCommitSchemaReader); ok {
+			observed, err := profiler.ProfileNativeSourceImage(image)
+			if err != nil {
+				return nil, &NativeCommitFailure{SchemaVersion: observed.MainVersion, OrdinalFromHead: uint64(len(commits) - i), Cause: err}
+			}
+			commitProfile = &observed
+		}
 		value, err := nativeTables(image, inventory.ConfigPolicy)
 		if err != nil {
+			if commitProfile != nil {
+				return nil, &NativeCommitFailure{SchemaVersion: commitProfile.MainVersion, OrdinalFromHead: uint64(len(commits) - i), Cause: err}
+			}
 			return nil, err
 		}
-		frame := NativeHistoryImage{Sequence: uint64(i + 1), CommitID: c.ID, Tables: value}
+		frame := NativeHistoryImage{SchemaProfile: commitProfile, Sequence: uint64(i + 1), CommitID: c.ID, Tables: value}
 		data, err := marshal(frame)
 		if err != nil {
 			return nil, err
@@ -519,6 +540,15 @@ func validateNativeHistory(manifest Manifest, members map[string][]byte) error {
 	if err != nil || !equalJSON(observed, profile) {
 		return fmt.Errorf("native current schema cursors disagree with profile")
 	}
+	annotated := 0
+	for _, image := range h.Images {
+		if image.SchemaProfile != nil {
+			annotated++
+		}
+	}
+	if annotated != 0 && annotated != len(h.Images) {
+		return fmt.Errorf("mixed annotated and legacy native images")
+	}
 	covered := map[uint64]bool{}
 	last := uint64(0)
 	for _, image := range h.Images {
@@ -528,6 +558,9 @@ func validateNativeHistory(manifest Manifest, members map[string][]byte) error {
 		last = image.Sequence
 		covered[last] = true
 		if err := validateTables(image.Tables); err != nil {
+			return err
+		}
+		if err := validateNativeCommitProfile(image); err != nil {
 			return err
 		}
 	}

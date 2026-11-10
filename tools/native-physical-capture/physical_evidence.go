@@ -37,6 +37,15 @@ func archiveNativeHistory(archive []byte) (plugdump.NativeHistory, error) {
 // The evidence uses the original physical reader and typed current-root port.
 // It retains SQL types and exact native string occurrences outside NativeTable;
 // no names-only reconstruction or current-to-immutable graft is involved.
+type commitEvidenceImage struct {
+	physicalcapture.EvidenceImage
+	SchemaProfile *plugdump.NativeCommitSchemaProfile `json:"schema_profile,omitempty"`
+}
+type commitPhysicalEvidence struct {
+	physicalcapture.Evidence
+	Images []commitEvidenceImage `json:"images"`
+}
+
 func readPhysicalEvidence(ctx context.Context, db *sql.DB, native plugdump.NativeHistory, original physicalcapture.WorkingImage, archive []byte) (result []byte, resultErr error) {
 	conn, err := db.Conn(ctx)
 	if err != nil {
@@ -52,16 +61,36 @@ func readPhysicalEvidence(ctx context.Context, db *sql.DB, native plugdump.Nativ
 	if !native.Complete || len(native.Gaps) != 0 {
 		return nil, fmt.Errorf("typed physical evidence requires complete native history")
 	}
-	for _, commit := range native.Commits {
+	versioned := commitPhysicalEvidence{Evidence: evidence, Images: []commitEvidenceImage{}}
+	profiles := map[string]*plugdump.NativeCommitSchemaProfile{}
+	for _, image := range native.Images {
+		profiles[image.CommitID] = image.SchemaProfile
+	}
+	for i, commit := range native.Commits {
 		image, err := physicalcapture.ReadCommit(ctx, conn, commit.ID)
 		if err != nil {
-			return nil, err
+			var version *uint64
+			if p := profiles[commit.ID]; p != nil {
+				version = p.MainVersion
+			}
+			return nil, &plugdump.NativeCommitFailure{SchemaVersion: version, OrdinalFromHead: uint64(len(native.Commits) - i), Cause: err}
+		}
+		profile, err := plugdump.PhysicalCommitSchemaProfile(image)
+		if err != nil {
+			return nil, &plugdump.NativeCommitFailure{SchemaVersion: profile.MainVersion, OrdinalFromHead: uint64(len(native.Commits) - i), Cause: err}
+		}
+		if expected := profiles[commit.ID]; expected != nil {
+			a, aErr := json.Marshal(profile)
+			b, bErr := json.Marshal(expected)
+			if aErr != nil || bErr != nil || !bytes.Equal(a, b) {
+				return nil, fmt.Errorf("typed evidence commit schema differs from native archive")
+			}
 		}
 		tables, err := physicalcapture.EvidenceTables(image.Tables)
 		if err != nil {
 			return nil, err
 		}
-		evidence.Images = append(evidence.Images, physicalcapture.EvidenceImage{CommitID: image.CommitID, ReadOnlyScope: image.ReadOnlyScope, Tables: tables})
+		versioned.Images = append(versioned.Images, commitEvidenceImage{EvidenceImage: physicalcapture.EvidenceImage{CommitID: image.CommitID, ReadOnlyScope: image.ReadOnlyScope, Tables: tables}, SchemaProfile: profiles[commit.ID]})
 	}
 	final, err := physicalcapture.ReadWorkingRoot(ctx, conn, native.Head)
 	if err != nil {
@@ -70,7 +99,7 @@ func readPhysicalEvidence(ctx context.Context, db *sql.DB, native plugdump.Nativ
 	if final.Database != original.Database || final.WorkingRootHash != original.WorkingRootHash || final.HeadCommitID != original.HeadCommitID || !final.ReadOnlyScope || !final.Complete {
 		return nil, fmt.Errorf("physical evidence source root changed")
 	}
-	data, err := physicalcapture.MarshalEvidence(evidence)
+	data, err := json.Marshal(versioned)
 	if err != nil {
 		return nil, err
 	}

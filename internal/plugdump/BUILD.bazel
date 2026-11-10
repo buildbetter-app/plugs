@@ -4,6 +4,7 @@ go_library(
     name = "plugdump",
     srcs = [
         "native_clock.go",
+        "commit_schema.go",
         "physical_capture_spike.go",
         "native_history.go",
         "archive.go",
@@ -39,6 +40,7 @@ go_test(
     name = "plugdump_test",
     srcs = [
         "native_clock_test.go",
+        "commit_schema_test.go",
         "native_history_test.go",
         "native_history_capability_test.go",
         "native_history_alias_mock_test.go",

@@ -23,7 +23,7 @@ go_binary(
 go_test(
     name = "safe_diagnostics_test",
     size = "large",
-    srcs = ["diagnostics_test.go", "schema_probe_test.go", "own_version_test.go"],
+    srcs = ["diagnostics_test.go", "schema_probe_test.go", "own_version_test.go", "commit_diagnostics_test.go", "commit_history_test.go"],
     data = [":native-physical-capture"],
     embed = [":native-physical-capture_lib"],
     env = {"BEADS_PHYSICAL_CAPTURE_BINARY": "$(rootpath :native-physical-capture)"},

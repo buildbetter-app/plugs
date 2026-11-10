@@ -92,6 +92,9 @@
           },
           "tables": {
             "$ref": "#/$defs/tables"
+          },
+          "schema_profile": {
+            "$ref": "#/$defs/commitSchemaProfile"
           }
         }
       }
@@ -231,6 +234,61 @@
       },
       "additionalProperties": {
         "$ref": "#/$defs/table"
+      }
+    },
+    "commitSchemaProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "scope",
+        "main_version",
+        "ignored_version",
+        "absences"
+      ],
+      "properties": {
+        "format": {
+          "const": "beads-commit-schema/1"
+        },
+        "scope": {
+          "const": "immutable-commit-root"
+        },
+        "main_version": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "ignored_version": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "absences": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "family",
+              "reason"
+            ],
+            "properties": {
+              "family": {
+                "type": "string"
+              },
+              "column": {
+                "type": "string"
+              },
+              "reason": {
+                "const": "absent-by-source-schema"
+              }
+            }
+          }
+        }
       }
     }
   }

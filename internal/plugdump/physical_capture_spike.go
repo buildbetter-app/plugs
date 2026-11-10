@@ -3,6 +3,7 @@ package plugdump
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/steveyegge/beads/internal/storage/physicalcapture"
@@ -19,7 +20,7 @@ type PhysicalCommitSource struct {
 
 var _ NativeSourceHistoryReader = PhysicalCommitSource{}
 
-func (s PhysicalCommitSource) ReadNativeSourceImage(ctx context.Context, id string) (map[string]Table, error) {
+func (s PhysicalCommitSource) ReadNativeSourceImage(ctx context.Context, id string) (result map[string]Table, resultErr error) {
 	if s.PhysicalDB == nil {
 		return nil, fmt.Errorf("physical capture database required")
 	}
@@ -27,16 +28,52 @@ func (s PhysicalCommitSource) ReadNativeSourceImage(ctx context.Context, id stri
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
+	defer func() {
+		resultErr = errors.Join(resultErr, conn.Close())
+		if resultErr != nil {
+			result = nil
+		}
+	}()
+	cursorImage, err := physicalcapture.ReadCommitSchema(ctx, conn, id)
+	if err != nil {
+		return nil, &NativeCommitFailure{Cause: err}
+	}
+	if cursorImage.CommitID != id || !cursorImage.ReadOnlyScope {
+		return nil, &NativeCommitFailure{Cause: fmt.Errorf("immutable cursor identity differs")}
+	}
+	cursorTables, err := physicalCaptureTables(cursorImage.Tables)
+	if err != nil {
+		return nil, &NativeCommitFailure{Cause: err}
+	}
+	cursor, err := nativeCommitCursors(cursorTables, cursorImage.RootTableCount)
+	if err != nil {
+		return nil, &NativeCommitFailure{SchemaVersion: cursor.MainVersion, Cause: err}
+	}
 	physical, err := physicalcapture.ReadCommit(ctx, conn, id)
 	if err != nil {
-		return nil, err
+		return nil, &NativeCommitFailure{SchemaVersion: cursor.MainVersion, Cause: err}
 	}
-	if physical.CommitID != id || !physical.ReadOnlyScope {
+	if physical.CommitID != id || !physical.ReadOnlyScope || len(physical.Tables) != cursorImage.RootTableCount {
 		return nil, fmt.Errorf("physical commit identity differs")
 	}
+	image, err := physicalCaptureTables(physical.Tables)
+	if err != nil {
+		return nil, &NativeCommitFailure{SchemaVersion: cursor.MainVersion, Cause: err}
+	}
+	observed, err := nativeCommitCursors(image, len(image))
+	if err != nil || !equalJSON(cursor, observed) {
+		return nil, &NativeCommitFailure{SchemaVersion: cursor.MainVersion, Cause: errors.Join(fmt.Errorf("immutable cursor differs from full image"), err)}
+	}
+	return image, nil
+}
+
+func (PhysicalCommitSource) ProfileNativeSourceImage(image map[string]Table) (NativeCommitSchemaProfile, error) {
+	return ProfileNativeCommit(image)
+}
+
+func physicalCaptureTables(tables []physicalcapture.Table) (map[string]Table, error) {
 	image := map[string]Table{}
-	for _, source := range physical.Tables {
+	for _, source := range tables {
 		table := Table{Columns: []string{}, Rows: []Row{}}
 		for _, column := range source.Columns {
 			table.Columns = append(table.Columns, column.Name)
@@ -61,4 +98,17 @@ func (s PhysicalCommitSource) ReadNativeSourceImage(ctx context.Context, id stri
 		image[source.Name] = table
 	}
 	return image, nil
+}
+
+// PhysicalCommitSchemaProfile authenticates the full detached image's cursor
+// prefixes and public physical absences for the separate typed evidence file.
+func PhysicalCommitSchemaProfile(image physicalcapture.Image) (NativeCommitSchemaProfile, error) {
+	if !image.ReadOnlyScope || !validCommitID(image.CommitID) {
+		return NativeCommitSchemaProfile{}, fmt.Errorf("unauthenticated physical image")
+	}
+	tables, err := physicalCaptureTables(image.Tables)
+	if err != nil {
+		return NativeCommitSchemaProfile{}, err
+	}
+	return ProfileNativeCommit(tables)
 }

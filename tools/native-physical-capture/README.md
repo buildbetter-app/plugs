@@ -106,3 +106,42 @@ source evidence, not a names-only type inference or a restore certificate.
 `sql_defaults: "not-captured"` explicitly leaves SQL default/index/constraint
 measurements unproved. It contains source values and obeys the same private
 output handling as the archive.
+
+Historical images produced by the physical reader additionally carry optional
+`images[].schema_profile` with format `beads-commit-schema/1` and scope
+`immutable-commit-root`. The numeric main and ignored versions come from that
+exact immutable root. A null main version requires a successful empty-root
+census; a null ignored version means the cursor table is physically absent.
+Every present cursor authenticates its entire pinned migration-hash prefix.
+Supported historical cursors are the pinned main prefixes 0–72 and ignored
+prefixes 0–28, independently when physically present. No main/ignored pairing
+or historical working-set schema is inferred from HEAD.
+
+The profile's ordered `absences` name missing public tables or columns in that
+root's complete physical census, with reason `absent-by-source-schema`. The
+comparison census includes pinned current surfaces and explicitly named removed
+columns. It does not impose today's schema on old images: every observed old,
+dropped or reshaped table/column/cell remains present exactly as read. Ignored
+families absent from immutable history are not promoted into versioned history.
+All images use the annotation together, or all retain the legacy wire. The
+physical-evidence/1 sidecar binds the identical profile beside each image's
+original SQL types and tagged cells. SQL defaults, indexes and constraints
+remain not captured.
+
+Failures additionally report `innermost_go_error_type` (including unfamiliar
+code-defined type names), observed `commit_schema_version` and one-based
+`commit_ordinal_from_head` when known. The ordinal is the reverse of the
+canonical parent-before-child native commit order, with HEAD at 1; merge
+ancestry uses that same deterministic order. The innermost type is the deepest
+error-tree leaf, with first unwrap child breaking equal-depth ties. Existing
+numeric `sql_dolt_codes` and safe fields remain unchanged. Missing context is
+omitted, never filled from the current schema observation. Unknown prefixes
+produce a typed historical-schema refusal before any archive publication.
+
+`TestPublicPerCommitOwnVersionAcrossPinnedMigrationHistory` constructs a real
+pinned-reference history at main 39/40/41/43/54/55/61/62/63/64/66, including
+migration-internal commits, dependency reshaping, removed lease columns and
+the versioned-to-ignored events transition. It compares every original typed
+image and current root after real reopen, and proves an actual historical73
+refusal with HEAD still66. Existing same-version66/26 and72/28 assertions
+remain separate and unchanged.
