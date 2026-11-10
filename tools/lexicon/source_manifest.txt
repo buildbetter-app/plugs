@@ -1600,6 +1600,7 @@ spec/s1-b21-b24/count-reference-first.json
 spec/s1-b21-b24/count-reference-repeat.json
 spec/s1-b21-b24/extract_ordinary_count_packet.py
 spec/s1-b21-b24/fixture_test.go
+spec/s1-b21-b24/native_count_matrix_test.go
 spec/s1-b21-b24/native_history_probe_test.go
 spec/s1-b21-b24/native_recording_test.go
 spec/s1-b21-b24/native_replay_test.go
