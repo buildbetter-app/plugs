@@ -34,6 +34,16 @@ func (o *Ontology) validateCloseReplay(ctx context.Context, proposal port.Propos
 			(forcedOnly && !proposal.ForcesClose(change)) || seen[change.Resource.Ref.ID] {
 			continue
 		}
+		switch change.Resource.Kind {
+		case "workflow_item":
+			// The Writer admitted this provider-owned source identity and
+			// rechecked its current project/method policy before this hook.
+			// Its completed receipt is not an ordinary stored bead transition.
+			continue
+		case "bead":
+		default:
+			return failure("forbidden", "unsupported close replay resource")
+		}
 		seen[change.Resource.Ref.ID] = true
 		rows, err := reader.Get(ctx, []model.Ref{change.Resource.Ref})
 		if err != nil {
