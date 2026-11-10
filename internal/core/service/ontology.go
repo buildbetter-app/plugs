@@ -227,9 +227,6 @@ func (o *Ontology) Normalize(ctx context.Context, proposal port.ProposedChange, 
 		after := before
 		e := o.effective(doc.Project)
 		if !hasDocument(change.Before) {
-			if err := o.observeTransitionGuards(ctx, proposal, change, before, after, effectiveMethod, closeSettlement, reader, &facts); err != nil {
-				return err
-			}
 			var violations []ontology.Violation
 			after, violations = ontology.Defaults(e, before)
 			if err := violationsError(violations); err != nil {
