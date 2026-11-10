@@ -219,7 +219,7 @@ func (f *b03Public) bind(t *testing.T) {
 		t.Fatal(problems)
 	}
 	workflow := service.NewOntology(compiled.Effective)
-	writer := pipeline.New(f.store, f.lease, pipeline.WithOntology(workflow), pipeline.WithProtection(service.NewCatalogProtection(service.StaticOntologySource(f.source))))
+	writer := pipeline.New(f.store, f.lease, pipeline.WithOntology(workflow), pipeline.WithOntologyAudit(service.NewOntologyAudit(service.StaticOntologySource(f.source))))
 	domain := service.New(f.store, f.lease, writer, service.WithOntology(workflow))
 	core, err := ontologyops.New(f.store, f.lease, ontologyops.Config{Source: service.StaticOntologySource(f.source), ValidatingPre: ontologyops.NoValidatingPre(), ProtectedApplier: writer, OntologyRefresher: workflow})
 	if err != nil {
