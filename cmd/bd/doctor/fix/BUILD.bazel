@@ -52,6 +52,7 @@ go_library(
 
 go_test(
     name = "fix_test",
+    gotags = ["gms_pure_go"],
     srcs = [
         "artifacts_test.go",
         "clone_local_fks_cgo_test.go",

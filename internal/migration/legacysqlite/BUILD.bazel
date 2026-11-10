@@ -17,6 +17,7 @@ go_library(
 
 go_test(
     name = "legacysqlite_test",
+    gotags = ["gms_pure_go"],
     srcs = ["reader_test.go"],
     embed = [":legacysqlite"],
     deps = [

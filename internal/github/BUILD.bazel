@@ -22,6 +22,7 @@ go_library(
 
 go_test(
     name = "github_test",
+    gotags = ["gms_pure_go"],
     srcs = [
         "client_ratelimit_test.go",
         "links_test.go",

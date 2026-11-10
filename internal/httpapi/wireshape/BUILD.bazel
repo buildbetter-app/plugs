@@ -16,6 +16,7 @@ go_library(
 
 go_test(
     name = "wireshape_test",
+    gotags = ["gms_pure_go"],
     srcs = [
         "wireshape_internal_test.go",
         "wireshape_test.go",

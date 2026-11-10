@@ -13,6 +13,7 @@ go_library(
 # //tools/bazel:release_cross (tools/bazel/go_srcs.py).
 go_binary(
     name = "cmd",
+    gotags = ["gms_pure_go"],
     embed = [":cmd_lib"],
     tags = ["cgo-only"],
     target_compatible_with = select({
@@ -28,6 +29,7 @@ go_binary(
 # --config=embedded's race. cgo-only, as :cmd.
 go_binary(
     name = "cmd_norace",
+    gotags = ["gms_pure_go"],
     testonly = True,
     out = "cmd_norace/schema",
     embed = [":cmd_lib"],

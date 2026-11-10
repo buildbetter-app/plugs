@@ -18,6 +18,7 @@ go_library(
 
 go_test(
     name = "backend_test",
+    gotags = ["gms_pure_go"],
     srcs = [
         "completeness_test.go",
         "errors_test.go",

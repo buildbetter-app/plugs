@@ -22,6 +22,7 @@ go_library(
 
 go_test(
     name = "fs_test",
+    gotags = ["gms_pure_go"],
     srcs = [
         "beads_test.go",
         "context_test.go",

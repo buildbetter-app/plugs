@@ -21,6 +21,7 @@ go_library(
 
 go_test(
     name = "jira_test",
+    gotags = ["gms_pure_go"],
     srcs = [
         "client_test.go",
         "refs_test.go",

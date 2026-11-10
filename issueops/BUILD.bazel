@@ -58,6 +58,7 @@ go_library(
 
 go_test(
     name = "issueops_test",
+    gotags = ["gms_pure_go"],
     srcs = [
         "claimer_external_test.go",
         "current_test.go",

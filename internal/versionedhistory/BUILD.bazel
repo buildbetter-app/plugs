@@ -16,6 +16,7 @@ go_library(
 
 go_test(
     name = "versionedhistory_test",
+    gotags = ["gms_pure_go"],
     srcs = ["activation_test.go"],
     embed = [":versionedhistory"],
     deps = [

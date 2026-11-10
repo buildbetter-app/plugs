@@ -85,6 +85,7 @@ go_library(
 
 go_test(
     name = "conformance_test",
+    gotags = ["gms_pure_go"],
     srcs = [
         "role_bundle_test.go",
         "role_coverage_gate_test.go",

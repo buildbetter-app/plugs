@@ -29,6 +29,7 @@ go_library(
 
 go_test(
     name = "utils_test",
+    gotags = ["gms_pure_go"],
     srcs = [
         "id_parser_exact_only_test.go",
         "id_parser_exact_test.go",

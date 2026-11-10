@@ -35,6 +35,7 @@ go_library(
 
 go_test(
     name = "plugdump_test",
+    gotags = ["gms_pure_go"],
     srcs = [
         "native_clock_test.go",
         "native_history_test.go",
@@ -63,6 +64,7 @@ go_test(
 # Manual keeps the diagnostic reference separate from canonical product gates.
 go_test(
     name = "physical_root_control_test",
+    gotags = ["gms_pure_go"],
     srcs = ["physical_root_control_test.go"],
     embed = [":plugdump"],
     tags = ["manual"],

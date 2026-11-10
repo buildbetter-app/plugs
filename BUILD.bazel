@@ -214,6 +214,7 @@ go_library(
 
 go_test(
     name = "beads_test",
+    gotags = ["gms_pure_go"],
     srcs = [
         "beads_gated_test.go",
         "beads_test.go",

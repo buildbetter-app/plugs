@@ -27,6 +27,7 @@ go_library(
 
 go_test(
     name = "wire_test",
+    gotags = ["gms_pure_go"],
     srcs = [
         "client_test.go",
         "credential_source_test.go",

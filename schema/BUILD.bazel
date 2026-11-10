@@ -10,6 +10,7 @@ go_library(
 
 go_test(
     name = "schema_test",
+    gotags = ["gms_pure_go"],
     srcs = ["schema_test.go"],
     deps = [":schema"],
 )

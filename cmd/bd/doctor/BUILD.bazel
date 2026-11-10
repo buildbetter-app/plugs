@@ -92,6 +92,7 @@ go_library(
 
 go_test(
     name = "doctor_test",
+    gotags = ["gms_pure_go"],
     srcs = [
         "agent_test.go",
         "artifacts_test.go",

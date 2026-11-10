@@ -28,6 +28,7 @@ go_library(
 
 go_test(
     name = "server_test",
+    gotags = ["gms_pure_go"],
     srcs = [
         "doltserver_exit_unix_test.go",
         "doltserver_internal_test.go",

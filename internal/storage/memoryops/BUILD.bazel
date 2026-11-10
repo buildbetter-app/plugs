@@ -13,6 +13,7 @@ go_library(
 
 go_test(
     name = "memoryops_test",
+    gotags = ["gms_pure_go"],
     srcs = ["memories_test.go"],
     embed = [":memoryops"],
 )

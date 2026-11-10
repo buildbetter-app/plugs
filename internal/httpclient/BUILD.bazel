@@ -91,6 +91,7 @@ go_library(
 
 go_test(
     name = "httpclient_test",
+    gotags = ["gms_pure_go"],
     # Unsharded, this package took 137-228s on rbe-west under --config=ci
     # (BEADS_TEST_SKIP=dolt, no BEADS_TEST_EMBEDDED_DOLT; 2026-10-09), the test lane's
     # longest single action. Two shards (rules_go deals tests out round-robin) put

@@ -14,6 +14,7 @@ go_library(
 
 go_test(
     name = "molecules_test",
+    gotags = ["gms_pure_go"],
     srcs = [
         "molecules_test.go",
         "testmain_test.go",

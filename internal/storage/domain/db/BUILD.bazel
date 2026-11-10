@@ -41,6 +41,7 @@ go_library(
 
 go_test(
     name = "db_test",
+    gotags = ["gms_pure_go"],
     srcs = [
         "batching_test.go",
         "child_counter_test.go",

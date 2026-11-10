@@ -16,6 +16,7 @@ go_library(
 # --config=prcore/ci (hand-written, gazelle keeps it).
 go_test(
     name = "fixtures_test",
+    gotags = ["gms_pure_go"],
     srcs = ["fixtures_test.go"],
     embed = [":fixtures"],
     tags = ["integration-only"],

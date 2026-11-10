@@ -24,6 +24,7 @@ go_library(
 
 go_test(
     name = "encode_test",
+    gotags = ["gms_pure_go"],
     srcs = [
         "bijection_test.go",
         "ledger_render_test.go",

@@ -99,6 +99,7 @@ go_library(
 
 go_test(
     name = "embeddeddolt_test",
+    gotags = ["gms_pure_go"],
     # -race -short runs ~6 min unsharded (pr-core gives go test -timeout=30m).
     # Bazel shards by test count, not duration: rules_go deals tests out
     # round-robin. At 8 shards one shard drew TestWithPeerAuth,

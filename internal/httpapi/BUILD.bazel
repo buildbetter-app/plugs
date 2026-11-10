@@ -65,6 +65,7 @@ go_library(
 
 go_test(
     name = "httpapi_test",
+    gotags = ["gms_pure_go"],
     srcs = [
         "advance_molecule_test.go",
         "auth_test.go",

@@ -136,6 +136,7 @@ go_library(
 # (BEADS_TEST_SUBPROCESS_BINARY) instead.
 go_test(
     name = "dolt_test",
+    gotags = ["gms_pure_go"],
     # rules_go partitions the complete top-level test list by index modulo
     # shard_count; subtests and their workloads stay with their parent.
     # Keep the existing per-action timeout and all suite controls unchanged.

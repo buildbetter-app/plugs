@@ -62,6 +62,7 @@ go_library(
 
 go_test(
     name = "proxy_test",
+    gotags = ["gms_pure_go"],
     srcs = [
         "backend_dial_timeout_test.go",
         "control_test.go",

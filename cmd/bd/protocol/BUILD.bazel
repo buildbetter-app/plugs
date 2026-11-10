@@ -11,6 +11,7 @@ go_library(
 
 go_test(
     name = "protocol_test",
+    gotags = ["gms_pure_go"],
     srcs = [
         "assignee_test.go",
         "blocked_status_test.go",

@@ -72,7 +72,8 @@ sh_binary(
 sh_test(
     name = "dolt_version_test",
     srcs = ["dolt_version_test.sh"],
-    data = ["dolt.bzl"],
+    data = ["dolt.bzl", ":dolt"],
+    env = {"BEADS_TEST_DOLT_BINARY": "$(rlocationpath :dolt)"},
     target_compatible_with = _DOLT_PLATFORMS_ONLY,
 )
 

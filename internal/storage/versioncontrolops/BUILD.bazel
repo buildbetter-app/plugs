@@ -34,6 +34,7 @@ go_library(
 
 go_test(
     name = "versioncontrolops_test",
+    gotags = ["gms_pure_go"],
     srcs = [
         "automerge_test.go",
         "backup_test.go",

@@ -1,7 +1,7 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "physicalrestore",
-    srcs = ["manifest.go"],
+    srcs = ["binding.go", "copy.go", "manifest.go", "undo.go"],
     importpath = "github.com/steveyegge/beads/internal/storage/physicalrestore",
     visibility = ["//:__subpackages__"],
     deps = [
@@ -11,10 +11,14 @@ go_library(
 )
 go_test(
     name = "physicalrestore_test",
-    srcs = ["restore_test.go"],
+    gotags = ["gms_pure_go"],
+    srcs = ["restore_test.go", "undo_test.go"],
     embed = [":physicalrestore"],
-    data = ["//tools/native-physical-restore"],
-    env = {"BEADS_PHYSICAL_RESTORE_BINARY": "$(rlocationpath //tools/native-physical-restore)"},
+    data = ["//tools/native-physical-restore", "//tools/bazel:dolt"],
+    env = {
+        "BEADS_PHYSICAL_RESTORE_BINARY": "$(rlocationpath //tools/native-physical-restore)",
+        "BEADS_TEST_DOLT_BINARY": "$(rlocationpath //tools/bazel:dolt)",
+    },
     deps = [
         "//internal/storage/physicalcapture",
         "//internal/plugdump",

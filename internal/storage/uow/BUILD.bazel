@@ -94,6 +94,7 @@ go_library(
 # workload uow_dolt_test (8 shards) runs.
 go_test(
     name = "uow_test",
+    gotags = ["gms_pure_go"],
     size = "large",
     srcs = [
         "batch_applier_retry_budget_test.go",

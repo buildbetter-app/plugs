@@ -34,6 +34,7 @@ go_library(
 # Private boundary supplement; not a replacement for physical fixture execution.
 go_test(
     name = "physical_commit_test",
+    gotags = ["gms_pure_go"],
     srcs = ["physical_commit_test.go"],
     embed = [":driver"],
     tags = ["manual"],

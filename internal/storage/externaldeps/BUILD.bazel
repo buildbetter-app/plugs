@@ -29,6 +29,7 @@ go_library(
 
 go_test(
     name = "externaldeps_test",
+    gotags = ["gms_pure_go"],
     srcs = [
         "advertise_test.go",
         "blocked_lister_test.go",

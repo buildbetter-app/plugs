@@ -1,14 +1,14 @@
 # `bd serve` operator runbook
 
-Last reviewed: 2026-08-10
+Last reviewed: 2026-11-10
 
 Freshness source: `internal/httpapi/server.go`,
 `internal/httpapi/events_watch.go`, `cmd/bd/serve.go` and
 `internal/httpapi/auth.go` — the operating-envelope constants, the fields their
 `event` emitters write, and the flag, posture and token-file rules.
 
-Every flag, error string, event name and reason value quoted below was checked
-against a build of those files, not read off the source.
+The freshness sources above bind the flags, error strings, event names and
+reason values quoted below to their implementation.
 
 Running the v0 HTTP surface. For the contract it serves — the operations, the
 error vocabulary, the cursor, the loopback posture — see

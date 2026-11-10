@@ -30,6 +30,7 @@ go_library(
 
 go_test(
     name = "ado_test",
+    gotags = ["gms_pure_go"],
     srcs = [
         "bootstrap_test.go",
         "client_test.go",

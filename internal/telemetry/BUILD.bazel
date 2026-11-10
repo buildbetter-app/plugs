@@ -65,6 +65,7 @@ go_library(
 
 go_test(
     name = "telemetry_test",
+    gotags = ["gms_pure_go"],
     srcs = [
         "batch_close_policy_test.go",
         "issue_claimer_test.go",

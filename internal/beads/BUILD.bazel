@@ -22,6 +22,7 @@ go_library(
 
 go_test(
     name = "beads_test",
+    gotags = ["gms_pure_go"],
     srcs = [
         "beads_coverage_test.go",
         "beads_hash_multiclone_test.go",

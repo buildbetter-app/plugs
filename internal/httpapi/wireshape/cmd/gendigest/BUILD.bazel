@@ -13,12 +13,14 @@ go_library(
 
 go_binary(
     name = "gendigest",
+    gotags = ["gms_pure_go"],
     embed = [":gendigest_lib"],
     visibility = ["//:__subpackages__"],
 )
 
 go_test(
     name = "gendigest_test",
+    gotags = ["gms_pure_go"],
     srcs = ["main_test.go"],
     embed = [":gendigest_lib"],
     deps = ["//internal/httpapi/wireshape"],

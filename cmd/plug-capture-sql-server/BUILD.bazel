@@ -11,12 +11,14 @@ go_library(
 # A distinct capture companion. The normal pinned Dolt executable is unchanged.
 go_binary(
     name = "plug-capture-sql-server",
+    gotags = ["gms_pure_go"],
     embed = [":plug-capture-sql-server_lib"],
     visibility = ["//visibility:public"],
 )
 
 go_test(
     name = "native_capture_test",
+    gotags = ["gms_pure_go"],
     size = "large",
     srcs = ["native_capture_test.go"],
     data = [
@@ -99,6 +101,7 @@ filegroup(
 # Private capture-spike binary/public fixtures; original native lane unchanged.
 go_test(
     name = "native_physical_capture_test",
+    gotags = ["gms_pure_go"],
     size = "large",
     srcs = ["native_capture_test.go", "physical_capture_test.go"],
     tags = ["manual"],

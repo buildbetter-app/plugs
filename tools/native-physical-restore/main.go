@@ -30,7 +30,18 @@ func run() (resultErr error) {
 	output := flag.String("readback-output", "", "exclusive actual physical-root readback output")
 	disposable := flag.Bool("disposable-target", false, "declare the target quiescent and disposable")
 	timeout := flag.Duration("timeout", 5*time.Minute, "restore deadline")
+	undo := flag.Bool("undo-preserved-copy", false, "copy preserved disposable store and add one atomic switch-back commit")
+	preserved := flag.String("preserved-data-dir", "", "closed owner-only public/disposable preserved source directory")
+	undoInput := flag.String("undo-request", "", "versioned same-source typed undo envelope")
+	lossOutput := flag.String("loss-report-output", "", "exclusive unchanged original reverse converter Report bytes")
+	undoReceipt := flag.String("undo-receipt-output", "", "exclusive graph/copy/readback receipt; loss report remains original converter bytes")
 	flag.Parse()
+	if *undo {
+		return runUndo(*preserved, *dataDir, *database, *undoInput, *output, *lossOutput, *undoReceipt, *disposable, *timeout)
+	}
+	if *preserved != "" || *undoInput != "" || *lossOutput != "" || *undoReceipt != "" {
+		return errors.New("undo flags require explicit undo-preserved-copy mode")
+	}
 	if flag.NArg() != 0 || !*disposable || !regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`).MatchString(*database) {
 		return errors.New("explicit disposable target and database required")
 	}

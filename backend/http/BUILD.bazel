@@ -25,6 +25,7 @@ go_library(
 
 go_test(
     name = "http_test",
+    gotags = ["gms_pure_go"],
     # The served e2e cases run ~4-5 min on the farm under
     # BEADS_TEST_EMBEDDED_DOLT=1, past the medium 300s action limit.
     size = "large",

@@ -73,7 +73,11 @@ func restoreDB(t *testing.T, native bool) (*sql.DB, *sql.Conn, string, func() er
 		}
 		run := func(args ...string) {
 			t.Helper()
-			cmd := exec.Command("dolt", args...)
+			binary, err := bazeltest.RunfileEnv("BEADS_TEST_DOLT_BINARY")
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(binary, args...)
 			cmd.Dir = nativeDir
 			if output, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("native fixture dolt %v: %v: %s", args, err, output)

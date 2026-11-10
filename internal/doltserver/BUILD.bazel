@@ -54,6 +54,7 @@ go_library(
 
 go_test(
     name = "doltserver_test",
+    gotags = ["gms_pure_go"],
     srcs = [
         "configport_test.go",
         "dirty_state_test.go",

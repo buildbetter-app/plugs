@@ -2,6 +2,7 @@ load("@rules_go//go:def.bzl", "go_test")
 
 go_test(
     name = "embedder_test",
+    gotags = ["gms_pure_go"],
     srcs = ["embedder_test.go"],
     deps = [
         "//:beads",

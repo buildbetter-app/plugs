@@ -38,6 +38,7 @@ go_library(
 
 go_test(
     name = "linear_test",
+    gotags = ["gms_pure_go"],
     srcs = [
         "client_test.go",
         "idempotency_test.go",

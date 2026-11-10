@@ -3,6 +3,7 @@ load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 go_test(
     name = "corpus_test",
+    gotags = ["gms_pure_go"],
     # The corpus runs every shape through the real bd (bazeltest.PrebuiltBD),
     # served and embedded, under BEADS_TEST_EMBEDDED_DOLT=1 (corpus_served_test
     # below); it skips otherwise.

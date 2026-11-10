@@ -13,6 +13,7 @@ go_library(
 
 go_test(
     name = "contextinfo_test",
+    gotags = ["gms_pure_go"],
     srcs = ["provider_test.go"],
     embed = [":contextinfo"],
 )

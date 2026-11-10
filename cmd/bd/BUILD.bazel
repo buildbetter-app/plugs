@@ -514,6 +514,7 @@ go_library(
 
 go_binary(
     name = "bd",
+    gotags = ["gms_pure_go"],
     embed = [":bd_lib"],
     visibility = ["//visibility:public"],
 )
@@ -524,6 +525,7 @@ go_binary(
 # gms_pure_go binary pr-core's tests build today. Named bd, like that binary.
 go_binary(
     name = "bd_for_tests",
+    gotags = ["gms_pure_go"],
     out = "bd_for_tests/bd",
     embed = [":bd_lib"],
     race = "off",
@@ -542,6 +544,7 @@ go_binary(
 
 go_test(
     name = "bd_test",
+    gotags = ["gms_pure_go"],
     # -race -short runs ~4-10 min unsharded (pr-core gives go test
     # -timeout=30m). Bazel shards by test count, not duration; test re-execs
     # strip the shard variables (bazeltest.ShardFreeEnv).

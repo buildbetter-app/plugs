@@ -19,6 +19,7 @@ go_library(
 
 go_test(
     name = "conformance_test",
+    gotags = ["gms_pure_go"],
     srcs = ["conformance_test.go"],
     embed = [":conformance"],
     deps = [
