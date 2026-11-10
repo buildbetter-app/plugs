@@ -13,6 +13,17 @@ _DEPS = [
     "//internal/storage/sqlite",
 ]
 
+filegroup(
+    name = "readback_reference_fixtures",
+    srcs = [
+        "testdata/readback-8f19/memory-complete-beads-raw-readback.tar",
+        "testdata/readback-8f19/memory-complete-reverse-live.jsonl",
+        "testdata/readback-8f19/memory-partial-beads-raw-readback.tar",
+        "testdata/readback-8f19/memory-partial-reverse-live.jsonl",
+    ],
+    visibility = ["//tools/lexicon:__pkg__"],
+)
+
 go_binary(
     name = "roundtrip",
     srcs = ["main.go", "beads.go", "beads_refusal.go"],

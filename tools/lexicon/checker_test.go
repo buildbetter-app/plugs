@@ -1741,3 +1741,55 @@ func TestPolicyRejectsInvalidUTF8OutsideDeclaredBinary(t *testing.T) {
 		t.Fatal("invalid UTF-8 outside a declared binary was accepted")
 	}
 }
+
+func TestDefaultPolicyBindsOriginalPublicReadbackReferences(t *testing.T) {
+	for _, name := range []string{
+		"tools/roundtrip/testdata/readback-8f19/memory-complete-beads-raw-readback.tar",
+		"tools/roundtrip/testdata/readback-8f19/memory-partial-beads-raw-readback.tar",
+		"tools/roundtrip/testdata/readback-8f19/memory-complete-reverse-live.jsonl",
+		"tools/roundtrip/testdata/readback-8f19/memory-partial-reverse-live.jsonl",
+	} {
+		t.Run(filepath.Base(name), func(t *testing.T) {
+			file := filepath.Join("..", "..", filepath.FromSlash(name))
+			if root := os.Getenv("TEST_SRCDIR"); root != "" {
+				file = filepath.Join(root, os.Getenv("TEST_WORKSPACE"), filepath.FromSlash(name))
+			}
+			content, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := testConfig()
+			findings, err := CheckFilesWithPolicy(map[string][]byte{name: content}, cfg, DefaultTreePolicy())
+			if err != nil || len(findings) != 0 {
+				t.Fatalf("original declared bytes refused: %#v, %v", findings, err)
+			}
+			t.Run("changed-bytes", func(t *testing.T) {
+				changed := append(append([]byte(nil), content...), '\n')
+				if _, err := CheckFilesWithPolicy(map[string][]byte{name: changed}, cfg, DefaultTreePolicy()); err == nil || !strings.Contains(err.Error(), "SHA-256") {
+					t.Fatalf("changed reference did not fail its hash binding: %v", err)
+				}
+			})
+			t.Run("missing-binding", func(t *testing.T) {
+				policy := DefaultTreePolicy()
+				delete(policy.ReferenceSHA256, name)
+				delete(policy.BinarySHA256, name)
+				findings, err := CheckFilesWithPolicy(map[string][]byte{name: content}, cfg, policy)
+				if err == nil && len(findings) == 0 {
+					t.Fatal("reference without an exact hash binding was admitted")
+				}
+			})
+			for _, adjacent := range []string{
+				name + ".copy",
+				filepath.ToSlash(filepath.Join(filepath.Dir(name), "adjacent"+filepath.Ext(name))),
+				"tools/roundtrip/copied_reference.go",
+			} {
+				t.Run(adjacent, func(t *testing.T) {
+					findings, err := CheckFilesWithPolicy(map[string][]byte{adjacent: content}, cfg, DefaultTreePolicy())
+					if err == nil && len(findings) == 0 {
+						t.Fatal("reference bytes gained admission at another path")
+					}
+				})
+			}
+		})
+	}
+}

@@ -30,7 +30,10 @@ go_test(
         "config_test.go",
         "inventory_test.go",
     ],
-    data = [":rule_files"],
+    data = [
+        ":rule_files",
+        "//tools/roundtrip:readback_reference_fixtures",
+    ],
     embed = [":checker"],
 )
 

@@ -190,7 +190,7 @@ func TestOriginalPartialReadbackRetainsTypedIdentityRefusalWithoutAcceptance(t *
 		t.Fatalf("invalid archive was projected or lost its refusal: %+v", refusal)
 	}
 	id := refusal.Identity
-	if id.Code != "edge_metadata_identity_mismatch" || id.Table != "wisp_dependencies" || id.Field != "metadata._plug_edge_id" || id.RawID != "f589ea2e-9ce6-5427-abb0-e7ff1c64eb6b" || id.Envelope.Type != "string" || !id.Envelope.Present || id.Envelope.Value != "edge-fixture" {
+	if id.Code != "edge_metadata_identity_mismatch" || id.Table != dumpformat.EphemeralDependencyTable || id.Field != "metadata._plug_edge_id" || id.RawID != "f589ea2e-9ce6-5427-abb0-e7ff1c64eb6b" || id.Envelope.Type != "string" || !id.Envelope.Present || id.Envelope.Value != "edge-fixture" {
 		t.Fatalf("actual rejected identities changed: %+v", id)
 	}
 }

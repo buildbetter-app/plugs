@@ -38,7 +38,7 @@ func assertPublicReadbackRefusalEvidence(t *testing.T, output string, got outcom
 		t.Fatal("actual refusal lost its original produced bytes")
 	}
 	if got.BeadsReadbackSHA256 == "" {
-		if refusal.Validation != "FAIL" || refusal.NativeComparison != "NOT_MEASURED" || refusal.AcceptedSHA256 != "" || len(refusal.CellRefusals) != 0 || len(refusal.FieldRows) != 0 || refusal.Identity == nil || refusal.Identity.Code != "edge_metadata_identity_mismatch" || refusal.Identity.Table != "wisp_dependencies" || refusal.Identity.RawID != "f589ea2e-9ce6-5427-abb0-e7ff1c64eb6b" || refusal.Identity.Envelope.Value != "edge-fixture" || refusal.ValidationError != "source plane dependency metadata: edge metadata envelope identity mismatch" {
+		if refusal.Validation != "FAIL" || refusal.NativeComparison != "NOT_MEASURED" || refusal.AcceptedSHA256 != "" || len(refusal.CellRefusals) != 0 || len(refusal.FieldRows) != 0 || refusal.Identity == nil || refusal.Identity.Code != "edge_metadata_identity_mismatch" || refusal.Identity.Table != dumpformat.EphemeralDependencyTable || refusal.Identity.RawID != "f589ea2e-9ce6-5427-abb0-e7ff1c64eb6b" || refusal.Identity.Envelope.Value != "edge-fixture" || refusal.ValidationError != "source plane dependency metadata: edge metadata envelope identity mismatch" {
 			t.Fatal("rejected native archive acquired equality or lost its exact identity refusal")
 		}
 	} else {

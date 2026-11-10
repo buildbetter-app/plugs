@@ -41,6 +41,9 @@ const (
 func DefaultTreePolicy() TreePolicy {
 	return TreePolicy{
 		ReferencePrefixes: []string{
+			"tools/roundtrip/testdata/readback-8f19/memory-complete-reverse-live.jsonl",
+			"tools/roundtrip/testdata/readback-8f19/memory-partial-reverse-live.jsonl",
+
 			"spec/s1-b09-native/testdata/beads-9d6fff.git-tree",
 			"spec/s1-b09-native/testdata/beads-446dbb.git-tree",
 			"spec/recorded/goldens.json",
@@ -48,6 +51,9 @@ func DefaultTreePolicy() TreePolicy {
 			"spec/s1-b17-b20/reference/b18/record.py",
 		},
 		ReferenceSHA256: map[string]string{
+			"tools/roundtrip/testdata/readback-8f19/memory-complete-reverse-live.jsonl": "3ddad50712c0f10cf59a5ea60c573c75e2ee2a3957d5a01bfa9d22e5410d8182",
+			"tools/roundtrip/testdata/readback-8f19/memory-partial-reverse-live.jsonl":  "2b455dd7d71f77443adee5ea422daecd0ca8ef17594b2af7f1e398860eedfbc1",
+
 			"spec/s1-b09-native/testdata/beads-446dbb.git-tree":         "a2456b25849b281d86ac57a461e21e0cc244cd80602c20269d88e7b9e28bc246",
 			"spec/s1-b09-native/testdata/beads-9d6fff.git-tree":         "23d84a56302ad19c50d9d25af733b2da50f9137aaf9308b273cab039b6023ae3",
 			"spec/recorded/goldens.json":                                "26a086334357d55ea847daa301f45c9435a71bba75fb6c324456aebf459fbf32",
@@ -120,6 +126,9 @@ func DefaultTreePolicy() TreePolicy {
 			"engdocs/design/plug/spike-ux-decision.md":             {},
 		},
 		BinarySHA256: map[string]string{
+			"tools/roundtrip/testdata/readback-8f19/memory-complete-beads-raw-readback.tar": "dc58689a485ec1c37a85afef956c05d07f328e51062bd4112e14db20e669abae",
+			"tools/roundtrip/testdata/readback-8f19/memory-partial-beads-raw-readback.tar":  "cb51c880fe8cbc69a562799a4eabf1993f18ce6eb4ecda9dea035fdd6299b91c",
+
 			"spec/s1-b09-native/testdata/beads-446dbb.tar.gz":                                    "32034b6d242f252144f6353f0d9d2f8b7d50739faf7973d62de93cafe25f3959",
 			"spec/s1-b09-native/testdata/beads-9d6fff.tar.gz":                                    "8aa8d07655ec6903703a4c94a4b1aa12d4fb509ab647cd1958f73f8342d3fe6e",
 			"internal/core/dumpformat/testdata/native-tables-synthetic.tar":                      "5afe9a2225a573000d1d5cd6245ee58ac07e4ff4b928f2b174df2ff99ef9a68e",
