@@ -388,7 +388,11 @@ func b02ReplayPublic(t *testing.T, engine string, plan b02GraphPlan, dir string)
 				r.edges = next
 			} else if step.Action == "also" {
 				edge := b02GraphEdge{step.Role, step.Target, "waits-for"}
-				r.call(step.Name+"-unlink", "bead.unlink", r.edgeParams(plan, edge, false), true, "")
+				unlink := r.edgeParams(plan, edge, false)
+				// Unlink identifies an existing edge; its public schema has no
+				// metadata parameter. Keep metadata on the following typed link.
+				delete(unlink, "metadata")
+				r.call(step.Name+"-unlink", "bead.unlink", unlink, true, "")
 				r.call(step.Name+"-link", "bead.link", r.edgeParams(plan, edge, true), true, "")
 				r.also = true
 			} else if step.PlugMethod != "" {

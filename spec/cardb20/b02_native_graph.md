@@ -16,6 +16,9 @@ does not execute this manual native target.
 
 The native recorder binds the finite `PLUG_B02_REQUEST_SHA` to the real runner
 checkout, raw commit, tree/parents, source manifest and original workflow run.
+The commit object hash, tree and ordered parents are verified from retained raw
+commit bytes; shallow `%P` display is preserved separately and never fills a
+missing parent observation.
 The unchanged build helper validates the 5087-entry canonical source manifest,
 source archive, executable/toolchain identity and trusted RunsOn recipe. Every
 new CLI request retains exact argv, stdout, stderr, exit and stream hashes.
@@ -73,7 +76,13 @@ they do not claim a returned native-equivalent blocked subject/reason list.
 
 Run both named targets through `remote-bazel` with all seven required controls
 and `--lockfile_mode=error`; pass the frozen candidate SHA in
-`--test_env=PLUG_B02_REQUEST_SHA=<sha>`. Run a separate literal `test //...` whole
+`--test_env=PLUG_B02_REQUEST_SHA=<sha>`. Forward the unchanged B20 recipe's
+trusted runner variables on the manual focus: `--test_env=BAZEL_BIN`,
+`--test_env=BAZEL_RC`, `--test_env=BAZELISK_HOME`,
+`--test_env=BAZELISK_VERIFY_SHA256`, `--test_env=GITHUB_RUN_ID`,
+`--test_env=GITHUB_RUN_ATTEMPT`, `--test_env=GITHUB_SHA` and
+`--test_env=GITHUB_WORKFLOW_REF`. These preserve actual runner identity;
+source or guessed values cannot replace them. Run a separate literal `test //...` whole
 on that same candidate. Source, ordinary focus, native focus, whole and hosted
 outcomes must be reviewed independently. Public fixtures are never official
 producer admission, real-store capture, historical parity or FullS1 credit.

@@ -2,6 +2,8 @@ package cardb20
 
 import (
 	"bytes"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -32,6 +34,36 @@ func TestB02CanonicalNativeBlocking(t *testing.T) {
 	}
 	tuple := r.buildCommand(checkout, "b02-candidate-tuple", "/usr/bin/git", []string{"show", "-s", "--format=%H%n%T%n%P", "HEAD"})
 	rawCommit := r.buildCommand(checkout, "b02-candidate-commit", "/usr/bin/git", []string{"cat-file", "commit", "HEAD"})
+	// A shallow checkout may display an empty %P despite a real parent header.
+	// Bind the tree and ordered parents to the retained immutable commit bytes.
+	rawIdentity := sha1.Sum(append([]byte(fmt.Sprintf("commit %d\x00", len(rawCommit))), rawCommit...))
+	if hex.EncodeToString(rawIdentity[:]) != request {
+		t.Fatal("retained raw commit does not hash to the requested Git object")
+	}
+	tree := ""
+	parents := []string{}
+	for _, header := range strings.Split(strings.SplitN(string(rawCommit), "\n\n", 2)[0], "\n") {
+		key, value, _ := strings.Cut(header, " ")
+		if key != "tree" && key != "parent" {
+			continue
+		}
+		decoded, err := hex.DecodeString(value)
+		if err != nil || len(decoded) != 20 || strings.ToLower(value) != value {
+			t.Fatal("invalid raw Git tree or parent identity")
+		}
+		if key == "tree" {
+			if tree != "" {
+				t.Fatal("duplicate raw Git tree header")
+			}
+			tree = value
+		} else {
+			parents = append(parents, value)
+		}
+	}
+	displayed := strings.Split(string(tuple), "\n")
+	if tree == "" || len(parents) == 0 || len(displayed) < 2 || displayed[0] != request || displayed[1] != tree {
+		t.Fatal("candidate display, retained commit tree and ordered parents are not bound")
+	}
 	input, err := os.ReadFile(filepath.Join(checkout, "spec/s1-b09-native/native_inputs.json"))
 	if err != nil || hashBytes(input) != "a7ddd9047eb94e54cdaa138b1adf756c5088a50bc01605ee2c6eafbfb9d0d9c2" {
 		t.Fatal("immutable canonical source protocol changed")
@@ -55,7 +87,7 @@ func TestB02CanonicalNativeBlocking(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "b02-candidate-source-manifest.txt"), manifest, 0600); err != nil {
 		t.Fatal(err)
 	}
-	r.writeJSON(filepath.Join(root, "b02-request-run-binding.json"), map[string]any{"candidate": actual, "tuple": string(tuple), "raw_commit_sha256": hashBytes(rawCommit), "source_manifest_sha256": hashBytes(manifest), "request_sha": request, "run": os.Getenv("GITHUB_RUN_ID"), "attempt": os.Getenv("GITHUB_RUN_ATTEMPT"), "workflow_sha": os.Getenv("GITHUB_SHA"), "workflow_ref": os.Getenv("GITHUB_WORKFLOW_REF"), "target": os.Getenv("TEST_TARGET"), "native_source": pinnedSource, "immutable_protocol_sha256": hashBytes(input), "qualification": "PUBLIC_OPERATIONAL_RECORDING_ONLY", "official_or_trusted_producer_admission": "NOT_DELIVERED", "positive_memory_mixed_plane": "CAPABILITY_ABSENT"})
+	r.writeJSON(filepath.Join(root, "b02-request-run-binding.json"), map[string]any{"candidate": actual, "tree": tree, "ordered_parents": parents, "displayed_tuple": string(tuple), "raw_commit_sha256": hashBytes(rawCommit), "source_manifest_sha256": hashBytes(manifest), "request_sha": request, "run": os.Getenv("GITHUB_RUN_ID"), "attempt": os.Getenv("GITHUB_RUN_ATTEMPT"), "workflow_sha": os.Getenv("GITHUB_SHA"), "workflow_ref": os.Getenv("GITHUB_WORKFLOW_REF"), "target": os.Getenv("TEST_TARGET"), "native_source": pinnedSource, "immutable_protocol_sha256": hashBytes(input), "qualification": "PUBLIC_OPERATIONAL_RECORDING_ONLY", "official_or_trusted_producer_admission": "NOT_DELIVERED", "positive_memory_mixed_plane": "CAPABILITY_ABSENT"})
 	binary := r.buildCanonicalSource(pinnedSource) // Unchanged B20/B09 recipe, no competing builder.
 	for _, plan := range b02GraphPlans() {
 		t.Run(plan.Name, func(t *testing.T) {
