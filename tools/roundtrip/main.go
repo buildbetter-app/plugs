@@ -18,6 +18,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/reverseconverter"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/integration/converterroundtrip"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -81,6 +82,7 @@ func run(args []string) outcome {
 	flags.StringVar(&beads.BuildRun, "beads-build-run", "", "Independently verified RunsOn build receipt ID")
 	flags.StringVar(&beads.Inventory, "beads-inventory", "", "Actual disposable Beads target inventory for supported raw export")
 	exercise := flags.Bool("exercise", true, "Exercise claim/release and an idempotent live edit")
+	all := flags.Bool("all", false, "Include Ephemeral=true source rows for the explicit all-planes export")
 	if flags.Parse(args) != nil || flags.NArg() != 0 || *input == "" || *output == "" {
 		result.Reason = "invalid_arguments"
 		return result
@@ -175,7 +177,8 @@ func run(args []string) outcome {
 	result.RestoredHead, result.HistoryFloor = report.Restored.Head.String(), report.Restored.HistoryFloor.String()
 	result.RestoredIncarnation = string(report.Restored.Incarnation)
 	result.Stage = "baseline_reverse"
-	baseline, err := converterroundtrip.ReverseRestored(ctx, store)
+	reverseOptions := reverseconverter.Options{All: *all}
+	baseline, err := converterroundtrip.ReverseRestoredWithOptions(ctx, store, reverseOptions)
 	if err != nil {
 		result.Reason = reverseReason(err)
 		return result
@@ -187,23 +190,33 @@ func run(args []string) outcome {
 	}
 	if *exercise {
 		result.Stage = "workload"
-		beads := archive.Records("bead")
-		if len(beads) == 0 {
-			result.Reason = "workload_requires_bead"
+		included := make(map[string]bool, len(baseline.Result.Projection.Issues))
+		for _, issue := range baseline.Result.Projection.Issues {
+			included[issue.ID] = true
+		}
+		var target dumpformat.Record
+		for _, row := range archive.Records("bead") {
+			if included[row.ID] {
+				target = row
+				break
+			}
+		}
+		if target.ID == "" {
+			result.Reason = "workload_requires_exported_bead"
 			return result
 		}
 		ontology := service.NewOntology(nil)
 		writer := pipeline.New(store, lease, pipeline.WithOntology(ontology))
 		svc := service.New(store, lease, writer, service.WithOntology(ontology))
-		meta := model.WriteMeta{Project: beads[0].Project, Agent: "roundtrip", IdempotencyKey: strings.Repeat("b", 32)}
-		claim, err := svc.ClaimNextWithOutcome(ctx, profile.Admission.Actor, service.ClaimNextRequest{Project: beads[0].Project}, meta)
+		meta := model.WriteMeta{Project: target.Project, Agent: "roundtrip", IdempotencyKey: strings.Repeat("b", 32)}
+		claim, err := svc.ClaimNextWithOutcome(ctx, profile.Admission.Actor, service.ClaimNextRequest{Project: target.Project}, meta)
 		if err != nil {
 			result.Reason = "claim_workload_refused"
 			return result
 		}
 		if claim != nil && len(claim.Commit.Results) != 0 {
 			result.Claims = 1
-			if active, err := converterroundtrip.ReverseRestored(ctx, store); err == nil || len(active.Result.JSONL) != 0 {
+			if active, err := converterroundtrip.ReverseRestoredWithOptions(ctx, store, reverseOptions); err == nil || len(active.Result.JSONL) != 0 {
 				result.Reason = "active_claim_reverse_not_refused"
 				return result
 			}
@@ -214,7 +227,7 @@ func run(args []string) outcome {
 			}
 		}
 		meta.Method, meta.IdempotencyKey = "tx.apply", strings.Repeat("d", 32)
-		change := model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: model.RefByID(beads[0].ID, model.Natural64(0)), Fields: map[string]any{"description": "Disposable round-trip live edit"}}}}}
+		change := model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: model.RefByID(target.ID, model.Natural64(0)), Fields: map[string]any{"description": "Disposable round-trip live edit"}}}}}
 		commit, err := writer.Apply(ctx, profile.Admission.Actor, change, meta)
 		if err != nil {
 			result.Reason = "transaction_workload_refused"
@@ -228,7 +241,7 @@ func run(args []string) outcome {
 		result.Writes = 1
 	}
 	result.Stage = "live_reverse"
-	live, err := converterroundtrip.ReverseRestored(ctx, store)
+	live, err := converterroundtrip.ReverseRestoredWithOptions(ctx, store, reverseOptions)
 	if err != nil {
 		result.Reason = reverseReason(err)
 		return result

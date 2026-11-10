@@ -849,6 +849,197 @@ func escapedProtocolString(value string) string {
 	return escaped.String()
 }
 
+func checkedInSourcePlaneConstants(t *testing.T) (Config, string) {
+	t.Helper()
+	cfg, path := checkedInExternalProtocolConfig(t)
+	want := map[string]struct{ name, valueDigest string }{
+		sourcePlaneProtocolSource: {"sourcePlaneEphemeralDependencyTable", "a250fe4bfeccf35cd1f34c8eb7625ef05127294cdeb6884a04adea45796adebc"},
+		sourcePlaneFixtureSource:  {"sourcePlaneFixtureActiveEventTable", "5f3c5fb3612b7ea7e7df0cf4f21c4ad123f1603b84d03ad8605fe4b8f67c5025"},
+	}
+	if len(cfg.SourcePlaneConstants) != len(want) {
+		t.Fatal("source plane constant set is incomplete")
+	}
+	for _, a := range cfg.SourcePlaneConstants {
+		binding, ok := want[a.Path]
+		if !ok || a.Name != binding.name || protocolLiteralDigest(a.Value) != binding.valueDigest {
+			t.Fatalf("source plane constant binding differs: %+v", a)
+		}
+		delete(want, a.Path)
+	}
+	return cfg, path
+}
+
+func sourcePlaneConstantFixture(a GoConstantAllowance, literal string) string {
+	return "package driver\nconst " + a.Name + " = " + literal + "\n"
+}
+
+func TestSourcePlaneConstantsAdmitOnlyNamedDeclarations(t *testing.T) {
+	cfg, _ := checkedInSourcePlaneConstants(t)
+	for _, a := range cfg.SourcePlaneConstants {
+		for name, quote := range map[string]func(string) string{
+			"quoted": strconv.Quote, "raw": func(s string) string { return "`" + s + "`" }, "escaped": escapedProtocolString,
+		} {
+			t.Run(a.Name+"/"+name, func(t *testing.T) {
+				source := sourcePlaneConstantFixture(a, quote(a.Value))
+				for _, content := range []string{source, strings.Replace(source, "const "+a.Name+" = "+quote(a.Value), "const (\n"+a.Name+" = "+quote(a.Value)+"\n)", 1), strings.Replace(source, "const ", "// é世界\nconst ", 1) + "var reference = " + a.Name} {
+					findings, err := CheckFiles(map[string][]byte{a.Path: []byte(content)}, cfg)
+					if err != nil || len(findings) != 0 {
+						t.Fatalf("named driver constant refused: %#v, %v", findings, err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestSourcePlaneConstantsKeepContextAndContentRefusals(t *testing.T) {
+	cfg, _ := checkedInSourcePlaneConstants(t)
+	for i, a := range cfg.SourcePlaneConstants {
+		literal := strconv.Quote(a.Value)
+		declaration := "const " + a.Name + " = " + literal
+		source := sourcePlaneConstantFixture(a, literal)
+		for _, test := range []struct{ name, path, source string }{
+			{"neighbor", a.Path + ".other.go", source},
+			{"wildcard", "internal/storage/driver/*.go", source},
+			{"other_path", "internal/storage/driver/other.go", source},
+			{"other_slot", cfg.SourcePlaneConstants[1-i].Path, source},
+			{"prose", "docs/source-plane.md", a.Value},
+			{"wrong_name", a.Path, strings.Replace(source, a.Name, "otherTable", 1)},
+			{"variable", a.Path, strings.Replace(source, "const ", "var ", 1)},
+			{"typed", a.Path, strings.Replace(source, a.Name+" =", a.Name+" string =", 1)},
+			{"local", a.Path, "package driver\nfunc example() { " + declaration + " }"},
+			{"closure", a.Path, "package driver\nvar example = func() { " + declaration + " }"},
+			{"multiple_names", a.Path, strings.Replace(source, a.Name+" = "+literal, a.Name+", other = "+literal+`, "other"`, 1)},
+			{"concatenation", a.Path, sourcePlaneConstantFixture(a, literal+` + ""`)},
+			{"parenthesized", a.Path, sourcePlaneConstantFixture(a, "("+literal+")")},
+			{"near_value", a.Path, sourcePlaneConstantFixture(a, strconv.Quote(a.Value+"-other"))},
+			{"extra_product", a.Path, sourcePlaneConstantFixture(a, strconv.Quote(a.Value+" "+cfg.Terms[2].Matches[0]))},
+			{"case_change", a.Path, sourcePlaneConstantFixture(a, strconv.Quote(strings.ToUpper(a.Value)))},
+			{"duplicate_const", a.Path, source + declaration},
+			{"duplicate_inherited", a.Path, "package driver\nconst (\n" + a.Name + " = " + literal + "\n" + a.Name + "\n)"},
+			{"type_collision", a.Path, source + "type " + a.Name + " int"},
+			{"function_collision", a.Path, source + "func " + a.Name + "() {}"},
+			{"copy", a.Path, source + "var copy = " + literal},
+			{"escaped_copy", a.Path, source + "var copy = " + escapedProtocolString(a.Value)},
+			{"quoted_source", a.Path, "package driver\nvar copy = " + escapedProtocolString(source)},
+			{"comment", a.Path, source + "// " + a.Value},
+			{"block_comment", a.Path, source + "/* " + a.Value + " */"},
+			{"other_product", a.Path, source + "var other = " + strconv.Quote(cfg.Terms[2].Matches[0])},
+			{"identifier", a.Path, source + "var " + cfg.Terms[3].Matches[len(cfg.Terms[3].Matches)-1] + " = 1"},
+			{"plain_import", a.Path, "package driver\nimport " + literal + "\n" + declaration},
+			{"escaped_import", a.Path, "package driver\nimport " + escapedProtocolString(a.Value) + "\n" + declaration},
+			{"malformed", a.Path, source + "func broken("},
+		} {
+			t.Run(a.Name+"/"+test.name, func(t *testing.T) {
+				findings, err := CheckFiles(map[string][]byte{test.path: []byte(test.source)}, cfg)
+				if err != nil || len(findings) == 0 {
+					t.Fatalf("driver constant lost refusal: %#v, %v", findings, err)
+				}
+			})
+		}
+		t.Run(a.Name+"/split_initializer", func(t *testing.T) {
+			split := strconv.Quote(a.Value[:2]) + " + " + strconv.Quote(a.Value[2:])
+			findings, err := CheckFiles(map[string][]byte{a.Path: []byte(sourcePlaneConstantFixture(a, split))}, cfg)
+			if err != nil || !hasFindingClass(findings, "invalid-protocol-literal") {
+				t.Fatalf("split named initializer escaped the declaration contract: %#v/%v", findings, err)
+			}
+		})
+	}
+}
+
+func sourcePlaneConfigSection(a GoConstantAllowance) string {
+	return "[[source_plane_constant]]\npath = " + strconv.Quote(a.Path) + "\nname = " + strconv.Quote(a.Name) + "\nvalue = " + strconv.Quote(a.Value)
+}
+
+func TestSourcePlaneConstantConfigurationRejectsOverrides(t *testing.T) {
+	cfg, path := checkedInSourcePlaneConstants(t)
+	original, err := readConfigDocument(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	without := string(original)
+	for _, a := range cfg.SourcePlaneConstants {
+		section := sourcePlaneConfigSection(a)
+		if !strings.Contains(string(original), section) {
+			t.Fatal("source plane config section not bound")
+		}
+		without = strings.Replace(without, section, "", 1)
+		mutations := map[string]string{
+			"empty_section": "[[source_plane_constant]]", "missing_site": "",
+			"duplicate_section": section + "\n" + section, "unknown_key": section + "\nprefix = \"other\"",
+		}
+		for _, field := range []struct{ name, value string }{{"path", a.Path}, {"name", a.Name}, {"value", a.Value}} {
+			line := field.name + " = " + strconv.Quote(field.value)
+			for name, replacement := range map[string]string{
+				"changed": field.name + " = " + strconv.Quote(field.value+".other"), "empty": field.name + ` = ""`, "missing": "",
+				"duplicate": line + "\n" + line, "array": field.name + " = [" + strconv.Quote(field.value) + "]",
+				"separator": field.name + " = " + strconv.Quote(field.value+"\x00other"),
+			} {
+				mutations[field.name+"/"+name] = strings.Replace(section, line, replacement, 1)
+			}
+		}
+		for name, replacement := range mutations {
+			t.Run(a.Name+"/"+name, func(t *testing.T) {
+				file := filepath.Join(t.TempDir(), "lexicon.toml")
+				if err := os.WriteFile(file, []byte(strings.Replace(string(original), section, replacement, 1)), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := LoadConfig(file); err == nil {
+					t.Fatal("broadened or malformed driver constant binding accepted")
+				}
+			})
+		}
+	}
+	file := filepath.Join(t.TempDir(), "lexicon.toml")
+	if err := os.WriteFile(file, []byte(without), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := LoadConfig(file)
+	if err != nil || len(parsed.SourcePlaneConstants) != 0 {
+		t.Fatalf("absent optional set should grant nothing: %+v/%v", parsed, err)
+	}
+	for i, a := range cfg.SourcePlaneConstants {
+		for name, edit := range map[string]func([]GoConstantAllowance) []GoConstantAllowance{
+			"absent":     func(s []GoConstantAllowance) []GoConstantAllowance { return nil },
+			"incomplete": func(s []GoConstantAllowance) []GoConstantAllowance { return s[:1] },
+			"duplicate":  func(s []GoConstantAllowance) []GoConstantAllowance { return []GoConstantAllowance{a, a} },
+			"path":       func(s []GoConstantAllowance) []GoConstantAllowance { s[i].Path += ".other"; return s },
+			"name":       func(s []GoConstantAllowance) []GoConstantAllowance { s[i].Name += "Other"; return s },
+			"value":      func(s []GoConstantAllowance) []GoConstantAllowance { s[i].Value += " other"; return s },
+			"separator":  func(s []GoConstantAllowance) []GoConstantAllowance { s[i].Name += "\x00"; return s },
+		} {
+			t.Run(a.Name+"/in_memory/"+name, func(t *testing.T) {
+				changed := cfg
+				changed.SourcePlaneConstants = edit(append([]GoConstantAllowance{}, cfg.SourcePlaneConstants...))
+				findings, err := CheckFiles(map[string][]byte{a.Path: []byte(sourcePlaneConstantFixture(a, strconv.Quote(a.Value)))}, changed)
+				if err != nil || !hasFindingClass(findings, "product-term") {
+					t.Fatalf("invalid in-memory binding admitted constant: %#v/%v", findings, err)
+				}
+			})
+		}
+	}
+}
+
+func TestSourcePlaneConstantsPreserveOtherPathBehavior(t *testing.T) {
+	cfg, _ := checkedInSourcePlaneConstants(t)
+	baseline := cfg
+	baseline.SourcePlaneConstants = nil
+	for _, a := range cfg.SourcePlaneConstants {
+		for _, path := range []string{externalProtocolSource, "existing/other.go", "existing/notes.md"} {
+			for name, quote := range map[string]func(string) string{"quoted": strconv.Quote, "escaped": escapedProtocolString} {
+				t.Run(a.Name+"/"+path+"/"+name, func(t *testing.T) {
+					files := map[string][]byte{path: []byte(sourcePlaneConstantFixture(a, quote(a.Value)))}
+					before, beforeErr := CheckFiles(files, baseline)
+					after, afterErr := CheckFiles(files, cfg)
+					if beforeErr != nil || afterErr != nil || !reflect.DeepEqual(before, after) {
+						t.Fatalf("unrelated path behavior changed: before=%#v/%v after=%#v/%v", before, beforeErr, after, afterErr)
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestPhysicalProtocolStringsAllowOnlyExactDecodedLiterals(t *testing.T) {
 	cfg, _ := checkedInPhysicalProtocolConfig(t)
 	for i, value := range cfg.ExternalProtocolString.PhysicalValues {

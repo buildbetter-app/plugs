@@ -32,18 +32,20 @@ func ReadBytes(data []byte) (Dump, error) { return Read(bytes.NewReader(data)) }
 func adaptArchive(archive *dumpformat.Archive) (Dump, error) {
 	source := archive.Manifest()
 	manifest := Manifest{
-		Format:         source.Format,
-		Schema:         source.Schema,
-		Reference:      source.Reference,
-		StoreID:        source.StoreID,
-		Machine:        source.Machine,
-		MainVersion:    source.MainVersion,
-		IgnoredVersion: source.IgnoredVersion,
-		Scope:          source.Scope,
-		History:        source.History,
-		Warnings:       append([]string(nil), source.Warnings...),
-		Verification:   cloneStringMap(source.Verification),
-		Files:          make(map[string]File, len(source.Files)),
+		Format:                     source.Format,
+		Schema:                     source.Schema,
+		Reference:                  source.Reference,
+		StoreID:                    source.StoreID,
+		Machine:                    source.Machine,
+		MainVersion:                source.MainVersion,
+		IgnoredVersion:             source.IgnoredVersion,
+		Scope:                      source.Scope,
+		History:                    source.History,
+		SourceFieldsContract:       source.SourceFieldsContract,
+		SourcePlaneAddressContract: source.SourcePlaneAddressContract,
+		Warnings:                   append([]string(nil), source.Warnings...),
+		Verification:               cloneStringMap(source.Verification),
+		Files:                      make(map[string]File, len(source.Files)),
 	}
 	for _, project := range source.Projects {
 		manifest.Projects = append(manifest.Projects, Project{

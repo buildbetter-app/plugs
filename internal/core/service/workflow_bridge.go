@@ -203,7 +203,7 @@ func (s *Service) workflowWriteGuard(ctx context.Context, proposal port.Proposed
 			return driver.CheckpointExpectation{}, err
 		}
 		resolver := &workflowCoreResolver{service: s, principal: proposal.Principal, graph: graph}
-		facts, expectation, err := s.workflow.OrdinaryParentSnapshot(ctx, proposal.Principal, sortedIDs(graph), proposal.Meta, resolver)
+		facts, expectation, err := s.workflowProvider().OrdinaryParentSnapshot(ctx, proposal.Principal, sortedIDs(graph), proposal.Meta, resolver)
 		if err != nil {
 			return driver.CheckpointExpectation{}, err
 		}
@@ -219,7 +219,7 @@ func (s *Service) workflowWriteGuard(ctx context.Context, proposal port.Proposed
 		}
 		return expectation, nil
 	}
-	blocked, expectation, err := s.workflow.OrdinaryBlockerSnapshot(ctx, proposal.Principal, ids, proposal.Meta)
+	blocked, expectation, err := s.workflowProvider().OrdinaryBlockerSnapshot(ctx, proposal.Principal, ids, proposal.Meta)
 	if err != nil {
 		return driver.CheckpointExpectation{}, err
 	}
@@ -236,7 +236,12 @@ func (r *workflowCoreResolver) IsParentBlocked(ctx context.Context, by model.Pri
 	if err != nil || blocked {
 		return blocked, err
 	}
-	return r.mixedParentBlocked(ctx, parent, mixed)
+	return r.mixedParentBlocked(ctx, parent, func(id string) (workflowplugin.OrdinaryParentFact, error) {
+		if row, exists := r.graph[id]; !exists || row.doc.Project != meta.Project {
+			return workflowplugin.OrdinaryParentFact{Blocked: true}, nil
+		}
+		return mixed(id)
+	})
 }
 
 func (r *workflowCoreResolver) mixedParentBlocked(ctx context.Context, parent model.Ref, mixed func(string) (workflowplugin.OrdinaryParentFact, error)) (bool, error) {

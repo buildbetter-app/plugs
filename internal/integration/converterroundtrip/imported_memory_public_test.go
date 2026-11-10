@@ -20,7 +20,11 @@ import (
 )
 
 func authoredMixedMemoryFixture(t *testing.T) []byte {
-	admitted := admittedFixtureBytes(t)
+	return authoredMixedMemoryFixtureFrom(t, admittedFixtureBytes(t))
+}
+
+func authoredMixedMemoryFixtureFrom(t *testing.T, admitted []byte) []byte {
+	t.Helper()
 	return rewriteData(t, func(m map[string][]byte) {
 		reader := tar.NewReader(bytes.NewReader(admitted))
 		for {
@@ -310,6 +314,185 @@ func TestImportedBeadsMemoriesPublicReadsAllDrivers(t *testing.T) {
 				if _, err := ReverseRestored(ctx, store); err != nil {
 					t.Fatal(err)
 				}
+			}
+		})
+	}
+}
+
+func TestJointImportedMemoriesPublicReadReverseAndConservationAllDrivers(t *testing.T) {
+	data := authoredMixedMemoryFixtureFrom(t, sourceReverseFixture(t, false))
+	archive, err := dumpformat.Read(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Derive the expected reference from the documented physical tuple,
+	// independently of restore's mirror-ID helper.
+	expectedID := func(source dumpformat.Record) string {
+		key, err := json.Marshal([]string{"memory", source.Project, "config", source.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return "source/memory/" + digestBytes(key)
+	}
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			store, lease, reopen := openIdentityTarget(t, engine)
+			profile := sourceReverseProfile(t, data, store, lease, false)
+			report, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			anonymous := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+			serviceForStore := func() *service.Service {
+				ontology := service.NewOntology(nil)
+				return service.New(store, lease, pipeline.New(store, lease, pipeline.WithOntology(ontology)), service.WithOntology(ontology))
+			}
+			check := func() {
+				t.Helper()
+				before, history := reverseState(t, store), importedMemoryHistory(t, store)
+				capability, err := driver.RequireWorkflowCheckpointStore(store, lease)
+				if err != nil {
+					t.Fatal(err)
+				}
+				namespace := report.SourcePlanes.Providers[0].Provider.Namespace
+				checkpoint, err := capability.LoadCheckpoint(ctx, namespace)
+				if err != nil {
+					t.Fatal(err)
+				}
+				svc := serviceForStore()
+				var eligible []service.Memory
+				for _, source := range archive.Records("memory") {
+					id := model.RefByID(expectedID(source), model.Natural64(0))
+					got, err := svc.MemoryGet(ctx, anonymous, service.MemoryGetRequest{ID: id})
+					content, text := source.Body["value"].(string)
+					if source.Body["classification"] != "public" || !text {
+						var typed *model.Error
+						if !errors.As(err, &typed) || typed.Data.Code != "not_found" {
+							t.Fatalf("ineligible joint memory %s: %v", source.ID, err)
+						}
+						continue
+					}
+					wantMetadata := map[string]any{"plug.restore.source_id": source.ID, "plug.restore.source_table": "config", "plug.restore.source": source.Source.Fields, "plug.restore.source_project": source.Project, "plug.restore.archive_sha256": archive.SHA256()}
+					if err != nil || got.ID != id.ID || got.Key != source.Body["key"] || got.Content != content || !sameReverseJSON(got.Metadata, wantMetadata) {
+						t.Fatalf("joint public memory identity/value/provenance %s: %+v %v", source.ID, got, err)
+					}
+					eligible = append(eligible, got)
+				}
+				if len(eligible) != 2 {
+					t.Fatalf("fixture eligibility changed: %d", len(eligible))
+				}
+				page, err := svc.MemoryList(ctx, anonymous, service.MemoryListRequest{Limit: 100})
+				if err != nil || !reflect.DeepEqual(page.Items, eligible) || page.Next != nil {
+					t.Fatalf("joint public list differs from exact Get values: %+v %v", page, err)
+				}
+				for _, all := range []bool{false, true} {
+					reversed, err := ReverseRestoredWithOptions(ctx, store, reverseconverter.Options{All: all})
+					if err != nil {
+						t.Fatalf("joint public-memory reverse all=%v: %v", all, err)
+					}
+					// Compare the real JSONL values to source rows; do not use Projection.
+					values := map[string]any{}
+					decoder := json.NewDecoder(bytes.NewReader(reversed.Result.JSONL))
+					decoder.UseNumber()
+					for {
+						var row map[string]any
+						if err := decoder.Decode(&row); err == io.EOF {
+							break
+						} else if err != nil {
+							t.Fatal(err)
+						}
+						if row["_type"] == "memory" {
+							key := row["key"].(string)
+							if _, duplicate := values[key]; duplicate {
+								t.Fatal("duplicate reversed memory", key)
+							}
+							values[key] = row["value"]
+						}
+					}
+					// Config rows have a separate, documented Beads memory namespace.
+					// Assert their exact keys/values as well as every source memory.
+					configValues := map[string]any{
+						"plug.config/github.token": `{"$secret":"config/github.token"}`,
+						"plug.config/project_id":   "synthetic-project",
+					}
+					if len(values) != len(archive.Records("memory"))+len(configValues) {
+						t.Fatalf("reverse memory census: %d", len(values))
+					}
+					for key, want := range configValues {
+						if got, present := values[key]; !present || !sameReverseJSON(got, want) {
+							t.Fatal("reverse changed config reference", key)
+						}
+					}
+					for _, source := range archive.Records("memory") {
+						if got, present := values[source.ID]; !present || !sameReverseJSON(got, source.Body["value"]) {
+							t.Fatal("reverse changed exact memory JSON type/value", source.ID)
+						}
+					}
+				}
+				later, err := capability.LoadCheckpoint(ctx, namespace)
+				if err != nil || !reflect.DeepEqual(checkpoint, later) || !reflect.DeepEqual(before, reverseState(t, store)) || !reflect.DeepEqual(history, importedMemoryHistory(t, store)) {
+					t.Fatalf("joint memory reads/reverse mutated core/history/checkpoint: %v", err)
+				}
+			}
+			check()
+			beforeReopen, historyBefore := reverseState(t, store), importedMemoryHistory(t, store)
+			store, lease = reopen()
+			if !reflect.DeepEqual(beforeReopen, reverseState(t, store)) || !reflect.DeepEqual(historyBefore, importedMemoryHistory(t, store)) {
+				t.Fatal("reopen changed joint memory state/history")
+			}
+			check()
+			original := map[string]driver.Record{}
+			for _, row := range reverseState(t, store).Records {
+				for _, source := range archive.Records("memory") {
+					if row.Ref.ID == expectedID(source) {
+						original[source.ID] = row
+					}
+				}
+			}
+			for _, control := range []string{"public-project", "public-source", "public-extra", "raw-project", "raw-missing-project", "raw-extra"} {
+				t.Run(control, func(t *testing.T) {
+					id := "fixture"
+					if control[:3] == "raw" {
+						id = "number"
+					}
+					row := original[id]
+					var body map[string]any
+					decode(t, row.Body, &body)
+					switch control {
+					case "public-project":
+						body["metadata"].(map[string]any)["plug.restore.source_project"] = "wrong"
+					case "public-source":
+						body["metadata"].(map[string]any)["plug.restore.source"].(map[string]any)["value"] = "wrong"
+					case "public-extra", "raw-extra":
+						body["extra"] = true
+					case "raw-project":
+						body["source_project"] = "wrong"
+					case "raw-missing-project":
+						delete(body, "source_project")
+					}
+					mutated := row
+					mutated.Body = encode(t, body)
+					putImportedMemoryControl(t, store, lease, mutated)
+					before, history := reverseState(t, store), importedMemoryHistory(t, store)
+					if id == "number" {
+						svc := serviceForStore()
+						_, getErr := svc.MemoryGet(ctx, anonymous, service.MemoryGetRequest{ID: row.Ref})
+						_, listErr := svc.MemoryList(ctx, anonymous, service.MemoryListRequest{})
+						for _, err := range []error{getErr, listErr} {
+							var typed *model.Error
+							if !errors.As(err, &typed) || typed.Data.Code != "internal_error" {
+								t.Fatalf("malformed joint row hidden: %v", err)
+							}
+						}
+					}
+					result, err := ReverseRestored(ctx, store)
+					var refusal ReverseRefusal
+					if !errors.As(err, &refusal) || len(result.Result.JSONL) != 0 || !reflect.DeepEqual(before, reverseState(t, store)) || !reflect.DeepEqual(history, importedMemoryHistory(t, store)) {
+						t.Fatalf("tampered joint memory accepted or mutated state: %v", err)
+					}
+					putImportedMemoryControl(t, store, lease, row)
+				})
 			}
 		})
 	}

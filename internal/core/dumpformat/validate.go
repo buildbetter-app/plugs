@@ -125,7 +125,23 @@ func Read(reader io.Reader) (*Archive, error) {
 	if err := decodeJSON(members["manifest.json"], &manifest); err != nil {
 		return nil, fmt.Errorf("invalid manifest: %w", err)
 	}
+	// Presence is significant: an explicitly empty contract is not omission.
+	// The complete manifest was strictly decoded above; inspect only presence
+	// here without changing its retained bytes or numeric representation.
+	var manifestFields map[string]json.RawMessage
+	if err := json.Unmarshal(members["manifest.json"], &manifestFields); err != nil {
+		return nil, err
+	}
+	if _, present := manifestFields["source_fields_contract"]; present && manifest.SourceFieldsContract != IssueSourceFieldsContract {
+		return nil, fmt.Errorf("unsupported source fields contract")
+	}
+	if _, present := manifestFields["source_plane_address_contract"]; present && manifest.SourcePlaneAddressContract != SourcePlaneAddressContract {
+		return nil, fmt.Errorf("unsupported source plane address contract")
+	}
 	if manifest.Scope == "plug-native-store" {
+		if manifest.SourceFieldsContract != "" || manifest.SourcePlaneAddressContract != "" {
+			return nil, fmt.Errorf("Beads source fields contract requires offline source scope")
+		}
 		if err := validateNativeArchive(manifest, members, paths); err != nil {
 			return nil, err
 		}
@@ -334,6 +350,12 @@ func validateNativeLines(data []byte, want int, label string) error {
 }
 
 func validateManifest(manifest Manifest, members map[string][]byte) error {
+	if manifest.SourcePlaneAddressContract != "" && manifest.SourcePlaneAddressContract != SourcePlaneAddressContract {
+		return fmt.Errorf("unsupported source plane address contract")
+	}
+	if manifest.SourceFieldsContract != "" && manifest.SourceFieldsContract != IssueSourceFieldsContract {
+		return fmt.Errorf("unsupported source fields contract")
+	}
 	if manifest.Format != Format || manifest.Schema != 1 || manifest.Reference != BeadsReference ||
 		manifest.MainVersion != 72 || manifest.IgnoredVersion != 28 || manifest.StoreID == "" ||
 		manifest.Machine == "" || manifest.Scope != Scope {
@@ -422,7 +444,8 @@ func validateRecords(manifest Manifest, members map[string][]byte) (map[string][
 	counts := map[string]int{}
 	lastKind := ""
 	for _, kind := range manifest.Kinds {
-		if !knownKinds[kind.Name] || kind.Version != 1 || kind.Name <= lastKind || kind.File != "records/"+kind.Name+".ndjson" || kind.Count < 1 {
+		versionOK := kind.Version == 1 || kind.Name == "edge" && IsTypedEdgeVersion(kind.Version)
+		if !knownKinds[kind.Name] || !versionOK || kind.Name <= lastKind || kind.File != "records/"+kind.Name+".ndjson" || kind.Count < 1 {
 			return nil, nil, fmt.Errorf("unknown, duplicate or unordered kind registry entry")
 		}
 		lastKind = kind.Name
@@ -435,7 +458,6 @@ func validateRecords(manifest Manifest, members map[string][]byte) (map[string][
 		if len(lines) != kind.Count {
 			return nil, nil, fmt.Errorf("record count mismatch for %s", kind.Name)
 		}
-		last := ""
 		rows := make([]Record, 0, len(lines))
 		for _, line := range lines {
 			var record Record
@@ -445,10 +467,9 @@ func validateRecords(manifest Manifest, members map[string][]byte) (map[string][
 			if record.Kind != kind.Name || record.ID == "" || record.Source.Table == "" || record.Source.Fields == nil || record.Body == nil {
 				return nil, nil, fmt.Errorf("invalid typed record in %s", kind.Name)
 			}
-			if key := recordKey(record); key <= last {
+			if len(rows) > 0 && compareSourceRecords(rows[len(rows)-1], record, manifest.SourcePlaneAddressContract) >= 0 {
 				return nil, nil, fmt.Errorf("duplicate or unordered typed record in %s", kind.Name)
 			}
-			last = recordKey(record)
 			rows = append(rows, record)
 		}
 		byKind[kind.Name] = rows
@@ -459,18 +480,33 @@ func validateRecords(manifest Manifest, members map[string][]byte) (map[string][
 		}
 	}
 	_, hasHistory := members[SourceHistoryMember]
-	migration, err := compileImportMigration(manifest, byKind, members["config/sources.json"], hasHistory)
+	planes := manifest.SourcePlaneAddressContract == SourcePlaneAddressContract
+	var migration *ImportMigration
+	var err error
+	var statuses map[string]bool
+	if planes {
+		statuses, err = validateSourcePlaneCatalog(byKind, members["config/sources.json"])
+	}
+	if err == nil && (!planes || manifest.Verification["ontology"] == StrictUnionOntologyVerification) {
+		migration, err = compileImportMigration(manifest, byKind, members["config/sources.json"], hasHistory)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
 	for _, kind := range manifest.Kinds {
 		for _, record := range byKind[kind.Name] {
-			if err := validateMigratedRecord(record, manifest.Projects, counts, migration); err != nil {
+			if planes && (record.Kind == "edge" || sourcePlaneArchiveTable(record.Source.Table)) {
+				if err := validateSourcePlaneRecord(record, manifest, counts, statuses); err != nil {
+					return nil, nil, err
+				}
+				continue
+			}
+			if err := validateVersionedRecord(record, manifest.Projects, counts, migration, manifest.EdgeVersion()); err != nil {
 				return nil, nil, err
 			}
 		}
 	}
-	if err := validateMigratedDispositions(manifest.Sources, counts, members["config/sources.json"], migration); err != nil {
+	if err := validateBoundDispositions(manifest.Sources, counts, members["config/sources.json"], migration, planes); err != nil {
 		return nil, nil, err
 	}
 	if migration == nil {
@@ -482,7 +518,7 @@ func validateRecords(manifest Manifest, members map[string][]byte) (map[string][
 	if _, captured := members[SourceHistoryMember]; !captured && (historyRows != 0) != (manifest.History == "available-unverified") {
 		return nil, nil, fmt.Errorf("history declaration does not match archived source rows")
 	}
-	if err := validateRelations(manifest.Projects, byKind); err != nil {
+	if err := validateSourcePlaneRelations(manifest, byKind); err != nil {
 		return nil, nil, err
 	}
 	return byKind, migration, nil

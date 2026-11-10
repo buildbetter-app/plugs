@@ -258,21 +258,27 @@ func exerciseImportedIdentityWrites(t *testing.T, engine string, data []byte, so
 
 // Persistent engines really close and reopen their file/database. Memory has
 // no durable reopen contract, so it retains the store and refreshes the lease.
-func openIdentityTarget(t *testing.T, engine string) (driver.Store, driver.ActiveLease, func() (driver.Store, driver.ActiveLease)) {
+func openIdentityTarget(t *testing.T, engine string, capture ...func(string)) (driver.Store, driver.ActiveLease, func() (driver.Store, driver.ActiveLease)) {
 	t.Helper()
 	ctx := context.Background()
 	var open func() (driver.Store, error)
+	var capturedDSN string
 	switch engine {
 	case "memory":
 		open = func() (driver.Store, error) { return memory.New(), nil }
 	case "sqlite":
 		path := filepath.Join(t.TempDir(), "identity.db")
+		capturedDSN = path
 		open = func() (driver.Store, error) { return (sqlite.Driver{}).Open(ctx, driver.Config{DSN: path}) }
 	case "postgres":
 		dsn := identityPostgresDSN(t)
+		capturedDSN = dsn
 		open = func() (driver.Store, error) { return postgres.Open(ctx, driver.Config{DSN: dsn}) }
 	default:
 		t.Fatalf("unknown identity driver %q", engine)
+	}
+	for _, observe := range capture {
+		observe(capturedDSN)
 	}
 	store, err := open()
 	if err != nil {
