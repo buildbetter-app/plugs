@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	embedded "github.com/dolthub/driver/v2"
 	"github.com/steveyegge/beads/internal/plugdump"
 	"github.com/steveyegge/beads/internal/storage/physicalcapture"
 	"github.com/steveyegge/beads/internal/storage/schema"
@@ -77,6 +80,22 @@ func decodeSafeReports(t *testing.T, data []byte) []safeCaptureReport {
 	}
 }
 
+// The actual migration files contain multiple SQL statements. Enable the
+// driver's existing multistatements setup mode only for constructing this public
+// fixture. The reader and post-fixture physical port retain their original DSN.
+func openPublicMigrationFixture(dataDir string) (*sql.DB, func() error, error) {
+	params := url.Values{"commitname": {"Public fixture"}, "commitemail": {"fixture@example.test"}, "disable_singleton_cache": {"true"}, "multistatements": {"true"}}
+	cfg, err := embedded.ParseDSN("file://" + dataDir + "?" + params.Encode())
+	if err != nil {
+		return nil, nil, err
+	}
+	connector, err := embedded.NewConnector(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	return sql.OpenDB(connector), connector.Close, nil
+}
+
 func TestPublicCaptureSchemaProbeOwnVersionBeforeReader(t *testing.T) {
 	binary := diagnosticBinary(t)
 	for _, fixture := range []struct {
@@ -93,7 +112,7 @@ func TestPublicCaptureSchemaProbeOwnVersionBeforeReader(t *testing.T) {
 			t.Setenv("DOLT_ROOT_PATH", home)
 			t.Setenv("DOLT_METRICS_DISABLED", "1")
 			dataDir := diagnosticDir(t)
-			db, closeDriver, err := physicalcapture.Open(dataDir, "")
+			db, closeDriver, err := openPublicMigrationFixture(dataDir)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -187,7 +206,7 @@ func TestPublicCaptureSchemaProbeOwnVersionBeforeReader(t *testing.T) {
 				stdout, stderr, readerErr := invoke(false)
 				t.Logf("PUBLIC_OWN_VERSION_REFUSAL stdout=%s stderr=%s exit_error_type=%T", stdout, stderr, readerErr)
 				reports := decodeSafeReports(t, stderr)
-				if readerErr == nil || len(stdout) != 0 || len(reports) != 2 || reports[1].Stage != stageSchema || *reports[1].Schema.FoundVersion != 66 || !reflect.DeepEqual(reports[1].GoErrorTypes, []string{"*main.captureFailure", "*main.unsupportedCaptureSchema"}) {
+				if readerErr == nil || len(stdout) != 0 || len(reports) != 2 || reports[1].Stage != stageSchema || *reports[1].Schema.FoundVersion != 66 || !reflect.DeepEqual(reports[1].GoErrorTypes, []string{"*main.captureFailure", "*errors.joinError", "*main.unsupportedCaptureSchema"}) {
 					t.Fatal("strict current projection did not retain typed old-schema refusal")
 				}
 			}
