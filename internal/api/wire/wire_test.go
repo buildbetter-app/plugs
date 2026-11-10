@@ -29,7 +29,7 @@ func TestBoundedCatalogParity(t *testing.T) {
 	if got := len(c.ErrorCatalog()); got != 63 {
 		t.Fatalf("error inventory = %d", got)
 	}
-	if digest(catalogJSON) != "e2336634dbd90eb31ca81cbfedb1617429b96589337cae0924b5bd5a4f3cfef6" {
+	if digest(catalogJSON) != "547f805171975b99a9991e4372e5eee392e6c7cc31d3559c30d8f7913add333b" {
 		t.Fatal("bounded source snapshot changed; reconcile approved contract")
 	}
 	// These changes affect one of two independent descriptor representations.
@@ -648,7 +648,11 @@ func TestRestoreImportAllocatorAndProfileContract(t *testing.T) {
 	validate("#/components/schemas/SourceAllocatorProvenance", `{"prefix":"pl","id_mode":"hash","last_id":0}`, false)
 	validate("#/components/schemas/TargetRandomAllocator", target, true)
 	validate("#/components/schemas/TargetRandomAllocator", `{"prefix":"pl","id_mode":"hash","random_bytes":16,"suffix_encoding":"lower-hex","top_level_shape":"prefix-random","child_shape":"parent-random"}`, false)
-	validate("#/components/schemas/RestoreAllocatorProfile", `{"sourceAllocator":`+source+`,"targetAllocator":`+target+`}`, true)
+	validate("#/components/schemas/RestoreAllocatorProfile", `{"sourceAllocator":`+source+`,"targetAllocator":`+target+`}`, false)
+	hashTarget := `{"prefix":"pl","id_mode":"hash","hash_length":8,"min_hash_length":3,"max_hash_length":8,"max_collision_prob":0.25,"last_id":0,"child_counters":{"pl-a":2}}`
+	validate("#/components/schemas/TargetHashAllocator", hashTarget, true)
+	validate("#/components/schemas/RestoreAllocatorProfile", `{"sourceAllocator":`+source+`,"targetAllocator":`+hashTarget+`}`, true)
+	validate("#/components/schemas/TargetHashAllocator", strings.Replace(hashTarget, `"min_hash_length":3`, `"min_hash_length":2`, 1), false)
 
 	admission := `{"mode":"authenticated","actor":{"kind":"user","id":"admin"},"scope":"","authority":"restore-admin","admissionDigest":"` + strings.Repeat("a", 64) + `"}`
 	profile := `{"admission":` + admission + `,"sourceStoreId":"store-1","method":"offline.restore.import","idempotencyKey":"0123456789abcdef","archiveDigest":"` + strings.Repeat("b", 64) + `","derivedDigest":"` + strings.Repeat("c", 64) + `"}`

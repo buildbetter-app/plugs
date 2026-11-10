@@ -182,9 +182,10 @@ type ClaimView struct {
 }
 
 type CommentView struct {
-	Body      string             `json:"body"`
-	Principal model.PrincipalRef `json:"principal"`
-	Time      time.Time          `json:"time"`
+	Body      string               `json:"body"`
+	Principal model.PrincipalRef   `json:"principal"`
+	Time      time.Time            `json:"time"`
+	Source    *SourceCommentOrigin `json:"source,omitempty"`
 }
 
 type InvokeResult struct {
@@ -200,6 +201,7 @@ type Provider struct {
 	plugin      string
 	instance    string
 	incarnation string
+	source      *driver.SourcePlaneProviderCommitV1
 	mu          sync.Mutex
 }
 
@@ -511,6 +513,7 @@ type persisted struct {
 	Items    map[string]itemState    `json:"items"`
 	Receipts map[string]receiptState `json:"receipts"`
 	Audit    []auditState            `json:"audit,omitempty"`
+	Source   *sourceState            `json:"source,omitempty"`
 }
 type ownerState struct {
 	Principal string `json:"principal"`
@@ -561,9 +564,10 @@ type claimState struct {
 	Generation uint64             `json:"generation"`
 }
 type commentState struct {
-	Body      string             `json:"body"`
-	Principal model.PrincipalRef `json:"principal"`
-	Time      time.Time          `json:"time"`
+	Body      string               `json:"body"`
+	Principal model.PrincipalRef   `json:"principal"`
+	Time      time.Time            `json:"time"`
+	Source    *SourceCommentOrigin `json:"source,omitempty"`
 }
 type receiptState struct {
 	Principal     string          `json:"principal"`
@@ -606,6 +610,15 @@ type auditState struct {
 func New(state pluginapi.DurableState) (*Provider, error) {
 	if state == nil {
 		return nil, errors.New("workflow: durable state is required")
+	}
+	if selected, ok := state.(interface {
+		SourceRuntimeBinding() (driver.SourcePlaneProviderCommitV1, error)
+	}); ok {
+		if binding, err := selected.SourceRuntimeBinding(); err == nil {
+			return NewSourceRuntime(state, binding)
+		} else if !errors.Is(err, driver.ErrUnsupported) {
+			return nil, err
+		}
 	}
 	persistent := false
 	if marker, ok := state.(persistentState); ok {
@@ -652,6 +665,9 @@ func (p *Provider) readState(ctx context.Context) (persisted, pluginapi.Revision
 	}
 	if value.Receipts == nil {
 		value.Receipts = map[string]receiptState{}
+	}
+	if p.source != nil && (value.Source == nil || value.Source.Schema != SourceStateSchema) {
+		return persisted{}, "", sourceRefusal("missing source-restored image")
 	}
 	return value, revision, nil
 }
@@ -864,7 +880,7 @@ func (p *Provider) Invoke(ctx context.Context, by model.PrincipalRef, req Invoke
 	if err := ValidateInvokeRequest(req); err != nil {
 		return InvokeResult{}, err
 	}
-	if !p.persistent {
+	if !p.persistent || p.source != nil {
 		return InvokeResult{}, fail("plugin_durable_state_unavailable", "ephemeral workflows require persistent checkpoint storage")
 	}
 	value, revision, err := p.load(ctx)
@@ -998,7 +1014,7 @@ func itemViewAt(item itemState, now time.Time) ItemView {
 		view.Claim = &ClaimView{Principal: item.Claim.Principal, Agent: item.Claim.Agent, ExpiresAt: item.Claim.ExpiresAt, Generation: model.Natural64(item.Claim.Generation)}
 	}
 	for _, comment := range item.Comments {
-		view.Comments = append(view.Comments, CommentView{Body: comment.Body, Principal: comment.Principal, Time: comment.Time})
+		view.Comments = append(view.Comments, CommentView{Body: comment.Body, Principal: comment.Principal, Time: comment.Time, Source: cloneCommentOrigin(comment.Source)})
 	}
 	return view
 }
@@ -1254,7 +1270,7 @@ func (p *Provider) OrdinaryBlockerSnapshot(ctx context.Context, by model.Princip
 	defer p.mu.Unlock()
 	// No persistent capability means no active workflow facts can exist. This
 	// is not a memory checkpoint substitute; ephemeral invocation still refuses.
-	if !p.persistent {
+	if !p.persistent && p.source == nil {
 		return map[string]bool{}, driver.CheckpointExpectation{}, nil
 	}
 	// An ordinary pre-publication guard must never garbage collect or publish
@@ -1284,7 +1300,7 @@ func (p *Provider) OrdinaryParentSnapshot(ctx context.Context, by model.Principa
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	facts := make(map[string]OrdinaryParentFact, len(ids))
-	if !p.persistent {
+	if !p.persistent && p.source == nil {
 		return facts, driver.CheckpointExpectation{}, nil
 	}
 	value, revision, err := p.readState(ctx)
@@ -1951,7 +1967,7 @@ func (p *Provider) Demote(ctx context.Context, by model.PrincipalRef, req Demote
 			return DemoteResult{}, err
 		}
 	}
-	if !p.persistent {
+	if !p.persistent || p.source != nil {
 		return DemoteResult{}, fail("plugin_durable_state_unavailable", "ephemeral workflows require persistent checkpoint storage")
 	}
 	if meta.Method == "" {
@@ -2014,6 +2030,7 @@ func (p *Provider) Demote(ctx context.Context, by model.PrincipalRef, req Demote
 		if target.Parent != nil && target.Parent.ID == req.Source.ID {
 			ref := model.RefByID(itemID, model.Natural64(0))
 			target.Parent = &ref
+			item.ChildCounter++
 		}
 		filtered := target.Inbound[:0]
 		for _, relation := range target.Inbound {
@@ -2495,6 +2512,14 @@ func (p *Provider) sanitizeTerminalReceipts(value persisted, runID string) {
 			if json.Unmarshal(receipt.Result, &item) == nil {
 				item = ItemView{ID: receipt.ItemID, RunID: runID, Status: "closed", Plane: "ephemeral", Kind: "workflow.item", Plugin: Alias, Revision: item.Revision}
 				receipt.Result, _ = json.Marshal(item)
+			}
+		} else if receipt.Method == "tx.apply" {
+			var result model.OpResult
+			if json.Unmarshal(receipt.Result, &result) == nil {
+				result.Record = nil
+				receipt.Result, _ = json.Marshal(result)
+			} else {
+				receipt.Result = nil
 			}
 		} else if receipt.Method == "x.workflow.run.demote" {
 			var result DemoteResult

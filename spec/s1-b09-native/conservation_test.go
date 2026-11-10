@@ -116,7 +116,16 @@ func assertB09Source(t *testing.T, archive *dumpformat.Archive, profile driver.R
 			if kind == "beads-archive" {
 				want["read_only"], want["redactable"] = true, true
 			}
-			add("source/"+kind+"/"+source.ID, kind, want)
+			id := "source/" + kind + "/" + source.ID
+			if profile.SourcePlanes != nil {
+				identity, err := json.Marshal([]string{source.Kind, source.Project, source.Source.Table, source.ID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				id = "source/" + kind + "/" + hashBytes(identity)
+				want["source_project"] = source.Project
+			}
+			add(id, kind, want)
 		}
 	}
 	manifest := archive.Manifest()
@@ -139,7 +148,7 @@ func assertB09Source(t *testing.T, archive *dumpformat.Archive, profile driver.R
 	})
 	projects := []any{}
 	for _, project := range manifest.Projects {
-		allocator := driver.NewRandomAllocator(project.Prefix)
+		allocator := driver.NewHashAllocator(project.Prefix, 3, 8, 0.25)
 		projects = append(projects, map[string]any{"sourceAllocator": project, "targetAllocator": allocator})
 		add("instance_config/restore-import/project/"+project.Prefix, "instance_config", map[string]any{
 			"project": project.Prefix, "importProfile": profile,
@@ -151,6 +160,9 @@ func assertB09Source(t *testing.T, archive *dumpformat.Archive, profile driver.R
 		t.Fatal(err)
 	}
 	add("instance_config/restore-import/binding", "instance_config", map[string]any{"profile": profile, "request_hash": requestHash, "projects": projects})
+	if profile.SourcePlanes != nil {
+		add(driver.SourcePlaneCommitRecordID, "instance_config", b09ExpectedSourceCommit(t, profile, stage))
+	}
 	wantKeys, recordKeys, versionKeys := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for key := range wantRecords {
 		wantKeys[key] = true
@@ -219,6 +231,7 @@ func assertB09Reopen(t *testing.T, before, after b09ReplayStage) {
 	b09Equal(t, "reopen full changesets", before.Changesets, after.Changesets)
 	b09Equal(t, "reopen allocator inventory and history binding", before.Allocator, after.Allocator)
 	b09Equal(t, "reopen all known receipts", before.Receipts, after.Receipts)
+	b09Equal(t, "reopen complete source checkpoints", before.Checkpoints, after.Checkpoints)
 	if after.LeaseEpoch != before.LeaseEpoch+1 {
 		t.Fatalf("reopen lease epoch %d -> %d", before.LeaseEpoch, after.LeaseEpoch)
 	}
@@ -243,6 +256,7 @@ func (r *b09ReplayTarget) assertMutation(before, after b09ReplayStage, id, opera
 	wantMeta := before.Meta
 	wantMeta.Head = model.Natural64(head + 1)
 	b09Equal(t, operation+" exact metadata delta", wantMeta, after.Meta)
+	b09Equal(t, operation+" preserves complete source checkpoints", before.Checkpoints, after.Checkpoints)
 	wantAllocator := before.Allocator
 	wantAllocator.At = wantMeta.Head
 	b09Equal(t, operation+" exact allocator delta", wantAllocator, after.Allocator)
