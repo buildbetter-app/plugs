@@ -112,7 +112,13 @@ func TestPublicGenuineShallowHistoryBoundaryRetainsVerifiedCellsAndEvents(t *tes
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	ownVersionExec(t, ctx, conn, "CALL DOLT_CLONE('--depth','3',?, 'public_commit_history')", "file://"+filepath.Join(sourceDir, "public_commit_history"))
+	// The pinned file-remote factory opens the URL path directly as the NBS
+	// store; it does not append the working repository's .dolt/noms path.
+	sourceStore := filepath.Join(sourceDir, "public_commit_history", ".dolt", "noms")
+	if info, err := os.Stat(filepath.Join(sourceStore, "manifest")); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("public source chunk-store manifest missing: %v", err)
+	}
+	ownVersionExec(t, ctx, conn, "CALL DOLT_CLONE('--depth','3',?, 'public_commit_history')", "file://"+filepath.ToSlash(sourceStore))
 	ownVersionExec(t, ctx, conn, "USE `public_commit_history`")
 	observed, err := physicalcapture.ReadHistory(ctx, conn, fullLog.Head)
 	if err != nil || !observed.ReadOnlyScope || len(observed.Commits) != 3 || len(observed.Boundaries) != 1 || observed.Boundaries[0].Reason != "ghost_parent" {
