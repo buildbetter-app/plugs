@@ -189,7 +189,7 @@ func state(doc pipeline.Document) ontology.BeadState {
 	return ontology.BeadState{ID: doc.ID, Project: doc.Project, Type: doc.Type, Status: status, Template: template, Fields: fields}
 }
 
-func (o *Ontology) noOpenBlockers(doc pipeline.Document, graph map[string]storedBead) (bool, error) {
+func (o *Ontology) noOpenBlockers(doc pipeline.Document, graph map[string]storedBead, work ...context.Context) (bool, error) {
 	if blocked, _ := doc.Fields["blocked"].(bool); blocked {
 		return false, nil
 	}
@@ -198,6 +198,7 @@ func (o *Ontology) noOpenBlockers(doc pipeline.Document, graph map[string]stored
 		return effective.SatisfiesBlocks(state(target.doc).Status)
 	}
 	for _, link := range doc.Links {
+		readinessVisit(work)
 		switch link.Kind {
 		case "relates-to", "related", "discovered-from", "replies-to", "duplicates", "supersedes", "authored-by", "assigned-to", "approved-by", "attests", "tracks", "until", "caused-by", "validates", "delegated-from":
 			continue
@@ -221,7 +222,7 @@ func (o *Ontology) noOpenBlockers(doc pipeline.Document, graph map[string]stored
 				satisfied = effective.SatisfiesConditionalBlocks(s.Status)
 			}
 			if link.Kind == "waits-for" {
-				satisfied = o.waitsForSatisfied(link, blocker, graph)
+				satisfied = o.waitsForSatisfied(link, blocker, graph, work...)
 			}
 			if !satisfied {
 				return false, nil
@@ -239,22 +240,24 @@ func (o *Ontology) noOpenBlockers(doc pipeline.Document, graph map[string]stored
 // the ontology guard. Explicit metadata follows the pinned waits-for formula:
 // an open child blocks unless any-children has a terminal child; also_blocks
 // additionally requires the spawner itself to be terminal.
-func (o *Ontology) waitsForSatisfied(link pipeline.Link, spawner storedBead, graph map[string]storedBead) bool {
+func (o *Ontology) waitsForSatisfied(link pipeline.Link, spawner storedBead, graph map[string]storedBead, work ...context.Context) bool {
 	terminal := func(row storedBead) bool {
 		return o.effective(row.doc.Project).SatisfiesBlocks(state(row.doc).Status)
 	}
 	if link.Metadata == nil {
 		// Preserve the legacy terminal-spawner/all-children fallback.
-		return terminal(spawner) || o.noOpenChildren(spawner.doc, graph)
+		return terminal(spawner) || o.noOpenChildren(spawner.doc, graph, work...)
 	}
 	if link.Metadata.AlsoBlocks && !terminal(spawner) {
 		return false
 	}
 	openChild, terminalChild := false, false
 	for _, child := range graph {
+		readinessVisit(work)
 		member := child.doc.Parent != nil && child.doc.Parent.ID == spawner.doc.ID
 		if !member {
 			for _, edge := range child.doc.Links {
+				readinessVisit(work)
 				if edge.TargetKind != model.LinkTargetExternal && edge.Kind == "parent-child" && edge.To.ID == spawner.doc.ID {
 					member = true
 					break
@@ -275,22 +278,23 @@ func (o *Ontology) waitsForSatisfied(link pipeline.Link, spawner storedBead, gra
 // readyDependencies extends the close-guard blocker predicate with the
 // scheduling-only hierarchy edges. Parent-child and an explicit parent affect
 // ready membership, but they are not blockers for closing the child itself.
-func (o *Ontology) readyDependencies(doc pipeline.Document, graph map[string]storedBead) (bool, error) {
-	ready, err := o.noOpenBlockers(doc, graph)
+func (o *Ontology) readyDependencies(doc pipeline.Document, graph map[string]storedBead, work ...context.Context) (bool, error) {
+	ready, err := o.noOpenBlockers(doc, graph, work...)
 	if err != nil || !ready {
 		return ready, err
 	}
 	for _, link := range doc.Links {
+		readinessVisit(work)
 		if link.Kind == "parent-child" && link.TargetKind == model.LinkTargetExternal {
 			return false, nil
 		}
 	}
-	return o.readyAncestors(doc, graph)
+	return o.readyAncestors(doc, graph, work...)
 }
 
 // readyAncestors applies canonical parent scheduling to ready and fresh claims.
 // It deliberately leaves close and settlement's direct blocker guard unchanged.
-func (o *Ontology) readyAncestors(doc pipeline.Document, graph map[string]storedBead) (bool, error) {
+func (o *Ontology) readyAncestors(doc pipeline.Document, graph map[string]storedBead, work ...context.Context) (bool, error) {
 	seen := map[string]bool{doc.ID: true}
 	for {
 		parent, err := pipeline.HierarchyParent(doc)
@@ -300,6 +304,7 @@ func (o *Ontology) readyAncestors(doc pipeline.Document, graph map[string]stored
 		if parent == nil {
 			return true, nil
 		}
+		readinessVisit(work)
 		row, exists := graph[parent.ID]
 		if !exists || !parent.IsID() || !parent.Branch.IsZero() || seen[parent.ID] {
 			return false, nil
@@ -311,7 +316,7 @@ func (o *Ontology) readyAncestors(doc pipeline.Document, graph map[string]stored
 		if !known || category == ontology.Backlog {
 			return false, nil
 		}
-		unblocked, err := o.noOpenBlockers(row.doc, graph)
+		unblocked, err := o.noOpenBlockers(row.doc, graph, work...)
 		if err != nil || !unblocked {
 			return unblocked, err
 		}

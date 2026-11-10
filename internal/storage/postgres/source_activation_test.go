@@ -21,6 +21,12 @@ func TestSourceCoverageLegacyStartupUpgrade(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+	// The real legacy graph has no provable selection closure. Graph activation
+	// must commit without certifying any of its optional selection families.
+	r := pgStartupRead(t, s)
+	for _, family := range selectionFamilies() {
+		requirePGFamily(t, r, family, r.at, false)
+	}
 }
 
 func TestSourceCoverageNativeOntologyFirst(t *testing.T) {
@@ -32,6 +38,10 @@ func TestSourceCoverageIndependentStartupUpgrade(t *testing.T) {
 	s := openTest(t, freshDSN(t))
 	lease := testLease(t, s)
 	sourceactivation.ParentOnlyUpgrade(t, s, lease)
+	r := pgStartupRead(t, s)
+	for _, family := range selectionFamilies() {
+		requirePGFamily(t, r, family, r.at, false)
+	}
 }
 
 func TestSourceCoverageStartupGapRefuses(t *testing.T) {

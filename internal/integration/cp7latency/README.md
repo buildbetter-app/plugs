@@ -93,6 +93,14 @@ benchmark latency or deadline-success claim. The original timed Q6 and
 cold/3/20 matrix are unchanged. Accounting explicitly exposes existing
 summary item construction even though its output contains no payload rows.
 
+The inherited compiled-authority and zero ordinary payload/aggregation controls
+apply at both selected corpus sizes. The full 100k manual targets also retain
+`CertifiedIndexedGuardClaimWork`, with the original root-with-child winner,
+fresh indexed membership observations, physical accounting lower bounds,
+claim receipt/reset and complete coverage/corpus checks. The 20,001-row ordinary
+control supplies no full-size indexed-claim qualification. The small authority
+recomposition and queue semantic controls remain in ordinary `//...`.
+
 Run the complete manual latency qualification explicitly through the approved
 remote wrapper:
 
@@ -147,5 +155,7 @@ The accounting regressions exercise real PostgreSQL current/historical/staged
 reads, absent/deleted keys, duplicate output, repeated fetches and observer
 parity, including refusal precedence. The stored-row scan and reconstructed
 historical-body boundaries are measured separately from emitted output clones
-and from SQL executor physical work. W3's returned-clone observations are a
-separate composition; this child does not adopt them.
+and from SQL executor physical work. This cumulative composition retains W3's
+returned-clone observations: Get charges each returned-position clone; Query
+charges candidate clones before filtering; Observe retains decoded records
+without an additional clone.

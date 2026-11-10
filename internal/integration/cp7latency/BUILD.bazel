@@ -25,6 +25,14 @@ go_test(
     deps = _DEPS,
 )
 
+go_test(
+    name = "cp7_queue_semantics_test",
+    srcs = _COMMON + ["queue_semantics_test.go"],
+    data = ["workload.json"],
+    embedsrcs = ["workload.json"],
+    deps = _DEPS,
+)
+
 # Independent public fallback controls; this does not certify compiled W3 paths.
 go_test(
     name = "cp7_qualification_test",

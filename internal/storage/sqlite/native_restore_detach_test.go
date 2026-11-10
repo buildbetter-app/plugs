@@ -35,7 +35,9 @@ func TestNativeRestoreReopenDetachUsesCertifiedHierarchyCoverage(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "native-detach.db")
 	s, lease, closeTarget := openRenewingTarget(t, ctx, path)
 
+	started := time.Now()
 	records, closure, direct := nativeDetachCorpus(t, 20000)
+	nativeDetachPhase(t, "corpus", started, nil, lease, nil)
 	profile := driver.NativeRestoreProfile{
 		StoreID:        "native-detach",
 		Principal:      model.PrincipalRef{Kind: "user", ID: "operator"},
@@ -219,11 +221,14 @@ func publishNativeDetachCorpus(ctx context.Context, t *testing.T, s *Store, leas
 	for i, record := range records {
 		changes[i] = conformance.FixtureChange{Ref: record.Ref, Kind: record.Kind, Op: model.OpCreate, Body: record.Body}
 	}
-	if _, err := conformance.Seed(ctx, source, sourceLease, driver.ChangesetHeader{}, changes); err != nil {
+	started := time.Now()
+	_, err = conformance.Seed(ctx, source, sourceLease, driver.ChangesetHeader{}, changes)
+	if err = nativeDetachPhase(t, "source_seed", started, err, lease, sourceLease); err != nil {
 		return err
 	}
+	started = time.Now()
 	data, _, err := restore.Dump(ctx, source, "head")
-	if err != nil {
+	if err = nativeDetachPhase(t, "source_dump", started, err, lease, sourceLease); err != nil {
 		return err
 	}
 	archive, err := dumpformat.Read(bytes.NewReader(data))
@@ -245,20 +250,24 @@ func publishNativeDetachCorpus(ctx context.Context, t *testing.T, s *Store, leas
 	}
 	presence := restore.Presence{"mode": "presence_check", "challenge": "native-detach", "proof": "native-detach"}
 	manager := restore.NewManager(s, lease, restore.PresenceVerifierFunc(func(context.Context, string, string, restore.Presence) error { return nil }))
+	started = time.Now()
 	status, err := manager.Begin(ctx, manifest, "head", presence)
-	if err != nil {
+	if err = nativeDetachPhase(t, "target_begin", started, err, lease, sourceLease); err != nil {
 		return err
 	}
 	for page, offset := uint64(0), 0; offset < len(data); page++ {
 		end := min(offset+(4<<20), len(data))
 		chunk := data[offset:end]
-		if _, err := manager.Chunk(ctx, status.RestoreID, page, chunk, digest(chunk), presence); err != nil {
+		started = time.Now()
+		_, err := manager.Chunk(ctx, status.RestoreID, page, chunk, digest(chunk), presence)
+		if err = nativeDetachPhase(t, fmt.Sprintf("target_chunk_%d", page), started, err, lease, sourceLease); err != nil {
 			return err
 		}
 		offset = end
 	}
+	started = time.Now()
 	status, err = manager.Finish(ctx, status.RestoreID, digest(canonical), profile.Principal, model.WriteMeta{Method: profile.Method, IdempotencyKey: profile.IdempotencyKey}, presence)
-	if err != nil {
+	if err = nativeDetachPhase(t, "target_finish", started, err, lease, sourceLease); err != nil {
 		return err
 	}
 	if status.State != "complete" {
@@ -284,6 +293,69 @@ func publishNativeDetachCorpus(ctx context.Context, t *testing.T, s *Store, leas
 		if row.Key != closure[i].Key || !bytes.Equal(row.Value, closure[i].Value) {
 			return fmt.Errorf("restored closure row %d differs from canonical corpus", i)
 		}
+	}
+	return nil
+}
+
+// This correctness fixture holds the production lease across archive setup
+// and restore. Supervise normal heartbeats and join them before closing the
+// physical store; neither a missed renewal nor its error is ignored.
+func renewNativeDetachLease(t *testing.T, ctx context.Context, lease driver.ActiveLease) func() {
+	t.Helper()
+	renewCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() {
+		ticker := time.NewTicker(driver.LeaseRenewEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-renewCtx.Done():
+				done <- nil
+				return
+			case <-ticker.C:
+				if err := lease.Renew(renewCtx); err != nil {
+					if errors.Is(err, context.Canceled) && renewCtx.Err() != nil {
+						done <- nil
+					} else {
+						done <- err
+					}
+					return
+				}
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("native detach lease renewal: %v", err)
+		}
+	}
+}
+
+// Passive observations distinguish archive preparation from target publication.
+// They do not renew either lease or change the fixture's deadline or workload.
+func nativeDetachPhase(t *testing.T, phase string, started time.Time, err error, target, source driver.ActiveLease) error {
+	t.Helper()
+	state := func(lease driver.ActiveLease) string {
+		if lease == nil {
+			return "not_acquired"
+		}
+		lost := false
+		select {
+		case <-lease.Lost():
+			lost = true
+		default:
+		}
+		if lease, ok := lease.(*activeLease); ok {
+			lease.mu.Lock()
+			defer lease.mu.Unlock()
+			return fmt.Sprintf("epoch=%d,lost=%t,remaining_ns=%d,renewals=%d", lease.epoch, lost, time.Until(lease.deadline).Nanoseconds(), lease.renewal)
+		}
+		return fmt.Sprintf("epoch=%d,lost=%t", lease.Epoch(), lost)
+	}
+	t.Logf("native_detach phase=%s elapsed_ns=%d err=%v target_lease={%s} source_lease={%s}", phase, time.Since(started).Nanoseconds(), err, state(target), state(source))
+	if err != nil {
+		return fmt.Errorf("native detach %s: %w", phase, err)
 	}
 	return nil
 }

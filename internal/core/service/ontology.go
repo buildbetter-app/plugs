@@ -11,6 +11,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/port"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 // Ontology adapts pure workflow rules to the pipeline's tracked snapshot port.
@@ -295,7 +296,7 @@ func (o *Ontology) normalizeGate(proposal port.ProposedChange, resource model.Re
 }
 
 func (o *Ontology) Validate(ctx context.Context, proposal port.ProposedChange, reader port.SnapshotReader) error {
-	return o.validate(ctx, proposal, reader, nil)
+	return o.validate(driver.WithReadWorkScope(ctx, driver.ReadWorkOntologyValidation), proposal, reader, nil)
 }
 
 func (o *Ontology) validate(ctx context.Context, proposal port.ProposedChange, reader port.SnapshotReader, prefix map[string]storedBead) error {

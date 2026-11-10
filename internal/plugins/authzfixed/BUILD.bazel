@@ -5,14 +5,14 @@ go_library(
     srcs = glob(["*.go"], exclude = ["*_test.go"]),
     importpath = "github.com/buildbetter-app/plugs/internal/plugins/authzfixed",
     visibility = ["//:__subpackages__"],
-    deps = ["//internal/core/authz", "//internal/core/model"],
+    deps = ["//internal/core/authz", "//internal/core/model", "//internal/storage/driver"],
 )
 
 go_test(
     name = "authzfixed_test",
     srcs = glob(["*_test.go"]),
     embed = [":authzfixed"],
-    deps = ["//internal/core/authz", "//internal/core/model"],
+    deps = ["//internal/core/authz", "//internal/core/model", "//internal/storage/driver"],
 )
 
 filegroup(

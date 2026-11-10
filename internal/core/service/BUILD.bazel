@@ -11,6 +11,7 @@ go_library(
         "//internal/core/ontology",
         "//internal/core/pipeline",
         "//internal/core/port",
+        "//internal/core/readyorder",
         "//internal/storage/driver",
 		"//plugins/workflow",
     ],
@@ -32,6 +33,7 @@ go_test(
         "//internal/storage/memory",
         "//internal/storage/sqlite",
         "//internal/server/events",
+        "//internal/server/pluginhost",
         "//plugins/workflow",
     ],
 )

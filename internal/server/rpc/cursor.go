@@ -115,12 +115,26 @@ func validReadyMembership(value string) bool {
 	if value == "" {
 		return true
 	}
-	value = strings.TrimPrefix(value, "v2:")
+	switch {
+	case strings.HasPrefix(value, "v2:"), strings.HasPrefix(value, "v3:"):
+		value = value[3:]
+	}
 	if len(value) != sha256.Size*2 {
 		return false
 	}
 	_, err := hex.DecodeString(value)
 	return err == nil
+}
+
+func readyMembershipTransportVersion(value string) int {
+	switch {
+	case strings.HasPrefix(value, "v2:"):
+		return 2
+	case strings.HasPrefix(value, "v3:"):
+		return 3
+	default:
+		return 1
+	}
 }
 
 func (c *pageCodec) decode(call Call, p serviceParams) (*service.PagePosition, error) {
@@ -149,13 +163,13 @@ func (c *pageCodec) decode(call Call, p serviceParams) (*service.PagePosition, e
 		return nil, cursorInvalid()
 	}
 	var payload cursorPayload
-	if err = wire.DecodeInto(body, &payload); err != nil || (payload.Version != 1 && payload.Version != 2) || payload.Offset < 0 {
+	if err = wire.DecodeInto(body, &payload); err != nil || (payload.Version != 1 && payload.Version != 2 && payload.Version != 3) || payload.Offset < 0 {
 		return nil, cursorInvalid()
 	}
-	// Version two is reserved for the domain-separated compiled Ready
-	// commitment. Version-one tokens retain the original digest verifier so
-	// existing signed cursors continue to work until normal expiry.
-	if (payload.Version == 2) != strings.HasPrefix(payload.ReadyMembership, "v2:") {
+	// Each authenticated transport version has exactly one membership format.
+	// Version one keeps the unprefixed digest; version two keeps the released
+	// plane-separated digest; version three binds the combined public order.
+	if payload.Version != readyMembershipTransportVersion(payload.ReadyMembership) {
 		return nil, cursorInvalid()
 	}
 	// Check scope under the authenticated token's own generation before
@@ -237,9 +251,7 @@ func (c *pageCodec) encode(call Call, p serviceParams, position service.PagePosi
 		WorkflowSnapshot:      position.WorkflowSnapshot,
 		ReadyMembership:       position.ReadyMembership,
 	}
-	if strings.HasPrefix(position.ReadyMembership, "v2:") {
-		payload.Version = 2
-	}
+	payload.Version = readyMembershipTransportVersion(position.ReadyMembership)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", err

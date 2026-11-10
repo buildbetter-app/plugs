@@ -7,13 +7,13 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/readyorder"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 const (
-	readyRecentWindow = 48 * time.Hour
-	readyOrderMaxLag  = time.Minute
-	readyOrderPrefix  = "ready/"
+	readyOrderMaxLag = time.Minute
+	readyOrderPrefix = "ready/"
 )
 
 // The consumer uses the pipeline-owned persisted shape and codec. Semantic
@@ -48,14 +48,12 @@ func (o *Ontology) ReadySortKey(doc pipeline.Document, at time.Time) (bucket int
 }
 
 func liveReadyOrderKey(createdAt, at time.Time, priority int, revision model.Revision) readyOrderKey {
-	key := readyOrderKey{CreatedAt: createdAt, RankedAt: at, Revision: revision}
-	// The reference CASE uses >=: a bead exactly 48 hours old is recent.
-	if createdAt.Before(at.Add(-readyRecentWindow)) {
-		key.Bucket, key.Rank = 1, 999
-	} else {
-		key.Rank = priority
-	}
-	return key
+	key := readyorder.Classify(priority, createdAt, at)
+	return readyOrderKey{Bucket: key.Bucket, Rank: key.Rank, CreatedAt: key.CreatedAt, RankedAt: at, Revision: revision}
+}
+
+func readyOrderValue(key readyOrderKey) readyorder.Key {
+	return readyorder.Key{Bucket: key.Bucket, Rank: key.Rank, CreatedAt: key.CreatedAt}
 }
 
 // readyOrderKeys reads the same pinned snapshot as the complete graph. Missing
@@ -106,15 +104,6 @@ func readyOrderKeys(ctx context.Context, r driver.Reader, graph map[string]store
 func sortReadyIDs(ids []string, keys map[string]readyOrderKey) {
 	sort.Slice(ids, func(i, j int) bool {
 		a, b := keys[ids[i]], keys[ids[j]]
-		if a.Bucket != b.Bucket {
-			return a.Bucket < b.Bucket
-		}
-		if a.Rank != b.Rank {
-			return a.Rank < b.Rank
-		}
-		if !a.CreatedAt.Equal(b.CreatedAt) {
-			return a.CreatedAt.Before(b.CreatedAt)
-		}
-		return ids[i] < ids[j]
+		return readyorder.Compare(readyOrderValue(a), ids[i], readyOrderValue(b), ids[j]) < 0
 	})
 }

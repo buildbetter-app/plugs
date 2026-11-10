@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
@@ -317,6 +318,16 @@ func TestB26PublicMixedParentReadinessPostgreSQL(t *testing.T) {
 // public hierarchy promotion path. Parent readiness applies to ready/claim;
 // it does not add a parent predicate to the separate close contract.
 func b26PublicMixedParentReadiness(t *testing.T, h *b26HTTP, db *sql.DB, engine string) {
+	// Keep renewal in case setup: the full SQL before/after images include
+	// the lease row, so a background heartbeat would change their contract.
+	renewFixtureLease := func(t *testing.T) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := h.lease.Renew(ctx); err != nil {
+			t.Fatalf("renew mixed-parent fixture lease: %v", err)
+		}
+	}
 	unchanged := func(t *testing.T, before map[string][]string) {
 		t.Helper()
 		if after := b26CompleteSQL(t, db, engine); !reflect.DeepEqual(before, after) {
@@ -342,6 +353,7 @@ func b26PublicMixedParentReadiness(t *testing.T, h *b26HTTP, db *sql.DB, engine 
 				continue // Workflow items are not ordinary ChangeSet operations.
 			}
 			t.Run(shape+"/"+action, func(t *testing.T) {
+				renewFixtureLease(t)
 				prefix := "mixed-parent-" + shape + "-" + action
 				parent := b26Invoke(t, h, prefix, 1)[0].ID
 				child := h.create(t, prefix+"-child")
@@ -437,6 +449,7 @@ func b26PublicMixedParentReadiness(t *testing.T, h *b26HTTP, db *sql.DB, engine 
 	}
 	for _, condition := range []string{"blocked", "deferred"} {
 		t.Run("ordinary-upstream-"+condition, func(t *testing.T) {
+			renewFixtureLease(t)
 			prefix := "mixed-parent-upstream-" + condition
 			upstream := h.create(t, prefix+"-ordinary")
 			parent := workflowChild(t, prefix+"-workflow", upstream)
@@ -474,6 +487,7 @@ func b26PublicMixedParentReadiness(t *testing.T, h *b26HTTP, db *sql.DB, engine 
 	}
 	for _, race := range []string{"checkpoint-parent", "ordinary-blocker"} {
 		t.Run("claim-fence/"+race, func(t *testing.T) {
+			renewFixtureLease(t)
 			prefix := "mixed-parent-race-" + race
 			parent := b26Invoke(t, h, prefix, 1)[0].ID
 			child := h.create(t, prefix+"-child")

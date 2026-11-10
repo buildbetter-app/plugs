@@ -99,7 +99,9 @@ func (e *endpoint) close(t *testing.T) {
 type reply struct {
 	Result json.RawMessage `json:"result"`
 	Error  *struct {
-		Data model.ErrorData `json:"data"`
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    model.ErrorData `json:"data"`
 	} `json:"error"`
 	Meta struct {
 		Replayed bool `json:"replayed"`
@@ -108,22 +110,63 @@ type reply struct {
 	raw    []byte
 }
 
+// logRefusal keeps the complete canonical transport error beside the caller
+// phase. The diagnostic is test-only; it does not change the request,
+// retry, authorization, or assertion path.
+func logRefusal(t *testing.T, r reply) {
+	t.Helper()
+	if r.Error == nil {
+		return
+	}
+	data, err := json.Marshal(r.Error.Data)
+	if err != nil {
+		t.Logf("EP6 RPC refusal: code=%d message=%q data=<marshal error: %v>", r.Error.Code, r.Error.Message, err)
+		return
+	}
+	t.Logf("EP6 RPC refusal: code=%d message=%q data=%s", r.Error.Code, r.Error.Message, data)
+}
+
 // Observe only the real service's error before RPC canonicalizes its message.
 // The same request, outcome and error pass through unchanged; there is no
 // second write, retry, policy hook or substitute authorization decision.
 type observedService struct {
 	*authzrpc.GuardedService
-	t *testing.T
+	t        *testing.T
+	observer *pipeline.Collector
 }
 
 var _ rpc.Service = (*observedService)(nil)
 
 func (s *observedService) ApplyWithOutcome(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) (port.WriteOutcome, error) {
+	before := s.observer.Snapshot()
 	started := time.Now()
 	out, err := s.GuardedService.ApplyWithOutcome(ctx, by, cs, meta)
+	elapsed := time.Since(started)
 	var domain *model.Error
 	if errors.As(err, &domain) && domain.Data.Code == "authz_unavailable" {
 		s.t.Logf("EP6 real service refusal: code=%s message=%q operations=%d elapsed_ms=%.3f", domain.Data.Code, domain.Message, len(cs.Ops), float64(time.Since(started))/float64(time.Millisecond))
+	}
+	if len(cs.Ops) >= 100 || err != nil {
+		after := s.observer.Snapshot()
+		lanes := map[pipeline.Phase]float64{}
+		for phase, samples := range after.LaneMillis {
+			for result, millis := range samples {
+				lanes[phase] += millis - before.LaneMillis[phase][result]
+			}
+		}
+		preMS := 0.0
+		for _, phase := range []pipeline.Phase{pipeline.PhaseAdmission, pipeline.PhaseReplay, pipeline.PhasePrepare, pipeline.PhasePre, pipeline.PhaseGraph, pipeline.PhaseClaims, pipeline.PhaseChanges, pipeline.PhaseAudit} {
+			preMS += lanes[phase]
+		}
+		code := model.ErrorCode("")
+		if domain != nil {
+			code = domain.Data.Code
+		}
+		// The fixed 20k workload makes these service calls sequential. Commit
+		// includes projection preparation, lock/staging and the driver's Commit
+		// under the unchanged 2s preCtx; the lane sum is not elapsed deadline.
+		encoded, _ := json.Marshal(lanes)
+		s.t.Logf("write_timing label=ep6-real-service operations=%d pre_phase_lanes_ms=%.3f commit_ms=%.3f wall_ms=%.3f error_code=%q lanes_ms=%s", len(cs.Ops), preMS, lanes[pipeline.PhaseCommit], float64(elapsed)/float64(time.Millisecond), code, encoded)
 	}
 	return out, err
 }
@@ -165,6 +208,7 @@ func (e *endpoint) call(t *testing.T, token, method string, params map[string]an
 func result(t *testing.T, r reply) map[string]any {
 	t.Helper()
 	if r.status != http.StatusOK || r.Error != nil || len(r.Result) == 0 {
+		logRefusal(t, r)
 		t.Fatalf("RPC did not succeed: HTTP %d %s", r.status, r.raw)
 	}
 	var out map[string]any
@@ -178,6 +222,7 @@ func result(t *testing.T, r reply) map[string]any {
 
 func requireCode(t *testing.T, r reply, code model.ErrorCode) {
 	t.Helper()
+	logRefusal(t, r)
 	if r.Error == nil || r.Error.Data.Code != code || len(r.Result) != 0 || r.Meta.Replayed {
 		t.Fatalf("expected pure %s refusal: HTTP %d %s", code, r.status, r.raw)
 	}
@@ -508,7 +553,8 @@ func newFixtureMode(t *testing.T, backend, path string, progress, seedOntology b
 		t.Fatal(err)
 	}
 	f.keys = authnapikey.New(authnapikey.Config{AuthorizationInstalled: func() bool { return true }})
-	f.app, err = authzrpc.New(ctx, authzrpc.Config{Store: store, Lease: lease, Provider: f.keys, Facts: f.facts, Namespace: ns, DefaultProject: epics, Hierarchy: true})
+	observer := pipeline.NewCollector()
+	f.app, err = authzrpc.New(ctx, authzrpc.Config{Store: store, Lease: lease, Provider: f.keys, Facts: f.facts, Namespace: ns, DefaultProject: epics, Hierarchy: true, WriterObserver: observer})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -531,7 +577,7 @@ func newFixtureMode(t *testing.T, backend, path string, progress, seedOntology b
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := rpc.BindService(registry, &observedService{GuardedService: f.app.Service, t: t}); err != nil {
+	if err := rpc.BindService(registry, &observedService{GuardedService: f.app.Service, t: t, observer: observer}); err != nil {
 		t.Fatal(err)
 	}
 	if err := viewrpc.BindWithConfig(registry, f.views, viewrpc.Config{CursorKey: []byte("ep6-disposable-cursor-key-0123456789")}); err != nil {
