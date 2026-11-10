@@ -59,6 +59,40 @@ func TestReadySortClassifierCannotEditThePendingBody(t *testing.T) {
 	}
 }
 
+func TestReadySortSourceOnlyRestampKeepsUnselectedCacheRow(t *testing.T) {
+	h := setup(t)
+	w := h.writer(WithOntology(sortTestOntology{}))
+	created := apply(t, w, model.ChangeSet{Ops: []model.Op{create("")}}, meta(853))
+	ref := created.Results[0].Ref
+	readRows := func() []driver.DerivedRow {
+		t.Helper()
+		rows, err := h.read(t).DerivedRows(context.Background(), driver.DerivedSortKey, "ready/")
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("ready sort rows=%+v err=%v", rows, err)
+		}
+		return rows
+	}
+	before := readRows()
+	changed := apply(t, w, model.ChangeSet{Ops: []model.Op{{Kind: model.OpSetMeta, SetMeta: &model.SetMetaOp{Target: ref, Key: "note", Value: json.RawMessage(`"source-only change"`)}}}}, meta(854))
+	if changed.Revision.String() == created.Revision.String() {
+		t.Fatal("source-only write did not publish a new source revision")
+	}
+	after := readRows()
+	if !bytes.Equal(before[0].Value, after[0].Value) || before[0].Key != after[0].Key || before[0].Index != nil || after[0].Index != nil {
+		t.Fatalf("same semantic sort rewrote the unselected cache: before=%+v after=%+v", before[0], after[0])
+	}
+	_, key, err := DecodeReadySortKey(after[0])
+	if err != nil || key.Revision.String() != created.Revision.String() {
+		t.Fatalf("source-only sort cache must retain its old revision: %+v %v", key, err)
+	}
+	h.now = h.now.Add(time.Second)
+	updated := apply(t, w, model.ChangeSet{Ops: []model.Op{patch(ref, map[string]any{"title": "ordinary update"})}}, meta(855))
+	_, refreshed, err := DecodeReadySortKey(readRows()[0])
+	if err != nil || refreshed.Revision.String() != updated.Revision.String() || !refreshed.RankedAt.Equal(h.now) {
+		t.Fatalf("ordinary title update did not publish a fresh rank: %+v %v", refreshed, err)
+	}
+}
+
 func TestReadySortCannotInventLegacyCreationEvenForDryRun(t *testing.T) {
 	h := setup(t)
 	ref := model.RefByID("pl-sort-legacy", model.Natural64(0))
