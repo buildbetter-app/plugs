@@ -28,6 +28,8 @@ import (
 // original nativeRecorder.command/workspace support without copying a builder.
 // Neither existing B20 test nor helper behavior is modified or re-executed.
 const b13PublicKey = "  Public Key/Ω e\u0301  "
+const b13TrimmedPublicKey = "Public Key/Ω e\u0301"
+const b13TrimmedPublicBody = "Exact trimmed native neighbor"
 const b13PublicBody = " \tVerbatim native\n東京 e\u0301  "
 const b13PublicReplacement = "\nReplaced Ω\t東京 "
 const b13DerivedBody = "Keep these exact\nwords."
@@ -198,6 +200,11 @@ func TestB13CanonicalPublicMemoryCounterparts(t *testing.T) {
 		n.call("init", []string{"init", "--server", "--external", "--server-host", "127.0.0.1", "--server-port", strconv.Itoa(server.Port), "--database", "b13_memory", "--prefix", "b13", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet"}, 0)
 		server.RequireDatabaseDir(t, "b13_memory")
 		n.call("seed-empty-and-settings", []string{"--json", "sql", "INSERT INTO config (`key`,value) VALUES ('kv.memory.empty',''),('kv.b13-generic','generic survivor'),('b13.setting','settings survivor')"}, 0)
+		// Publish the explicit present-empty/settings setup before operational
+		// memory writes. Their normal CLI commit guard refuses unrelated dirty
+		// internal settings; this baseline is setup, not native remember.
+		n.call("publish-seeded-settings", []string{"dolt", "commit", "--message", "B13 public memory fixture baseline"}, 0)
+		n.image("published-source-baseline")
 		t.Run("empty-versus-absent", func(t *testing.T) {
 			for _, v := range []struct {
 				label, key, value string
@@ -206,7 +213,7 @@ func TestB13CanonicalPublicMemoryCounterparts(t *testing.T) {
 			}{{"empty", "empty", "", true, 0}, {"absent", "absent", "", false, 1}} {
 				var got map[string]any
 				b13Decode(t, n.call("recall-"+v.label, []string{"--json", "recall", v.key}, v.exit), &got)
-				b13Same(t, got, map[string]any{"key": v.key, "value": v.value, "found": v.found})
+				b13Same(t, got, map[string]any{"schema_version": json.Number("1"), "key": v.key, "value": v.value, "found": v.found})
 			}
 			n.view("initial", map[string]string{"empty": ""})
 		})
@@ -221,17 +228,18 @@ func TestB13CanonicalPublicMemoryCounterparts(t *testing.T) {
 			if wantKey == "" {
 				wantKey = b13ExpectedDerived(content)
 			}
-			b13Same(t, got, map[string]any{"key": wantKey, "value": content, "action": action})
+			b13Same(t, got, map[string]any{"schema_version": json.Number("1"), "key": wantKey, "value": content, "action": action})
 		}
 		t.Run("explicit-and-derived-unicode-keys", func(t *testing.T) {
 			remember("explicit", b13PublicKey, b13PublicBody, "remembered")
 			remember("neighbor", b13PublicKey+"neighbor", "exact neighbor", "remembered")
+			remember("trimmed-neighbor", b13TrimmedPublicKey, b13TrimmedPublicBody, "remembered")
 			remember("derived", "", b13DerivedBody, "remembered")
-			n.view("created", map[string]string{"empty": "", b13PublicKey: b13PublicBody, b13PublicKey + "neighbor": "exact neighbor", "keep-these-exact-words": b13DerivedBody})
+			n.view("created", map[string]string{"empty": "", b13PublicKey: b13PublicBody, b13TrimmedPublicKey: b13TrimmedPublicBody, b13PublicKey + "neighbor": "exact neighbor", "keep-these-exact-words": b13DerivedBody})
 		})
 		t.Run("replacement-and-noop-conservation", func(t *testing.T) {
 			remember("replace", b13PublicKey, b13PublicReplacement, "updated")
-			n.view("replaced", map[string]string{"empty": "", b13PublicKey: b13PublicReplacement, b13PublicKey + "neighbor": "exact neighbor", "keep-these-exact-words": b13DerivedBody})
+			n.view("replaced", map[string]string{"empty": "", b13PublicKey: b13PublicReplacement, b13TrimmedPublicKey: b13TrimmedPublicBody, b13PublicKey + "neighbor": "exact neighbor", "keep-these-exact-words": b13DerivedBody})
 			before := n.image("before-noop")
 			remember("same-value", b13PublicKey, b13PublicReplacement, "updated")
 			after := n.image("after-noop")
@@ -251,21 +259,21 @@ func TestB13CanonicalPublicMemoryCounterparts(t *testing.T) {
 			for i, key := range []string{b13PublicKey, "empty"} {
 				var got map[string]any
 				b13Decode(t, n.call(fmt.Sprintf("forget-%d", i), []string{"--json", "forget", key}, 0), &got)
-				b13Same(t, got, map[string]any{"key": key, "deleted": "true"})
+				b13Same(t, got, map[string]any{"schema_version": json.Number("1"), "key": key, "deleted": "true"})
 			}
-			n.view("forgotten", map[string]string{b13PublicKey + "neighbor": "exact neighbor", "keep-these-exact-words": b13DerivedBody})
+			n.view("forgotten", map[string]string{b13TrimmedPublicKey: b13TrimmedPublicBody, b13PublicKey + "neighbor": "exact neighbor", "keep-these-exact-words": b13DerivedBody})
 			before := n.image("before-forget-miss")
 			n.call("forget-miss", []string{"--json", "forget", "empty"}, 1)
 			b13Same(t, n.image("after-forget-miss"), before)
 			var found map[string]any
 			b13Decode(t, n.call("empty-now-absent", []string{"--json", "recall", "empty"}, 1), &found)
-			b13Same(t, found, map[string]any{"key": "empty", "value": "", "found": false})
+			b13Same(t, found, map[string]any{"schema_version": json.Number("1"), "key": "empty", "value": "", "found": false})
 			settings := n.sql("settings-survive", "SELECT `key`,value FROM config WHERE `key` IN ('kv.b13-generic','b13.setting') ORDER BY `key`")
 			b13Same(t, settings, []map[string]any{{"key": "b13.setting", "value": "settings survivor"}, {"key": "kv.b13-generic", "value": "generic survivor"}})
 		})
 		t.Run("forget-then-re-remember", func(t *testing.T) {
 			remember("re-remember", b13PublicKey, b13PublicBody, "remembered")
-			n.view("remembered", map[string]string{b13PublicKey: b13PublicBody, b13PublicKey + "neighbor": "exact neighbor", "keep-these-exact-words": b13DerivedBody})
+			n.view("remembered", map[string]string{b13PublicKey: b13PublicBody, b13TrimmedPublicKey: b13TrimmedPublicBody, b13PublicKey + "neighbor": "exact neighbor", "keep-these-exact-words": b13DerivedBody})
 		})
 		t.Run("unicode-identity-and-derived-key-limits", func(t *testing.T) {
 			want := map[string]string{}
@@ -276,7 +284,7 @@ func TestB13CanonicalPublicMemoryCounterparts(t *testing.T) {
 				remember("key-vector-"+vector.name, vector.explicit, vector.content, "remembered")
 				var got map[string]any
 				b13Decode(t, n.call("key-recall-"+vector.name, []string{"--json", "recall", vector.effective}, 0), &got)
-				b13Same(t, got, map[string]any{"key": vector.effective, "value": vector.content, "found": true})
+				b13Same(t, got, map[string]any{"schema_version": json.Number("1"), "key": vector.effective, "value": vector.content, "found": true})
 				want[vector.effective] = vector.content
 			}
 			n.view("fidelity", want)
@@ -592,6 +600,7 @@ func b13ComparePlug(t *testing.T, root, engine string, native map[string]map[str
 	t.Run("explicit-and-derived-unicode-keys", func(t *testing.T) {
 		save("explicit", b13PublicKey, b13PublicBody, 701)
 		save("neighbor", b13PublicKey+"neighbor", "exact neighbor", 702)
+		save("trimmed-neighbor", b13TrimmedPublicKey, b13TrimmedPublicBody, 706)
 		save("derived", "", b13DerivedBody, 703)
 		view("created")
 	})

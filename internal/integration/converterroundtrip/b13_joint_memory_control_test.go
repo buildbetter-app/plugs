@@ -28,6 +28,8 @@ import (
 
 const b13SourceKey = "  Source Key/Ω e\u0301  "
 const b13SourceBody = " \tVerbatim source\n東京 e\u0301  "
+const b13TrimmedNeighborKey = "Source Key/Ω e\u0301"
+const b13TrimmedNeighborBody = "Exact trimmed neighbor survives"
 
 type b13MemoryPolicy struct {
 	deny  string
@@ -90,11 +92,26 @@ func b13ImportedMemoryFixture(t *testing.T, mode string) []byte {
 			}
 			rows = append(rows, row)
 		}
+		rows = append(rows, map[string]any{"kind": "memory", "id": b13TrimmedNeighborKey, "project": "", "body": map[string]any{"key": b13TrimmedNeighborKey, "value": b13TrimmedNeighborBody, "classification": "public"}, "source": map[string]any{"table": "config", "fields": map[string]any{"key": "kv.memory." + b13TrimmedNeighborKey, "value": b13TrimmedNeighborBody}}})
 		sort.Slice(rows, func(i, j int) bool { return rows[i]["id"].(string) < rows[j]["id"].(string) })
 		members["records/memory.ndjson"] = nil
 		for _, row := range rows {
 			members["records/memory.ndjson"] = append(members["records/memory.ndjson"], encode(t, row)...)
 		}
+		changeManifest(t, members, func(manifest map[string]any) {
+			for _, entry := range manifest["kind_registry"].([]any) {
+				kind := entry.(map[string]any)
+				if kind["name"] == "memory" {
+					kind["count"] = len(rows)
+				}
+			}
+			for _, entry := range manifest["sources"].([]any) {
+				source := entry.(map[string]any)
+				if source["family"] == "config" {
+					source["rows"] = len(rows) + bytes.Count(members["records/config.ndjson"], []byte{'\n'})
+				}
+			}
+		})
 	})
 }
 
@@ -340,7 +357,7 @@ func TestB13JointSourceCoreProjectionAndConservation(t *testing.T) {
 					views := func(core string) {
 						t.Helper()
 						before := snapshot()
-						want := map[string]string{}
+						want := map[string]string{b13TrimmedNeighborKey: b13TrimmedNeighborBody}
 						if emptyPresent {
 							want["fixture"] = ""
 						}
@@ -350,7 +367,7 @@ func TestB13JointSourceCoreProjectionAndConservation(t *testing.T) {
 						if core != "" {
 							want["Core Ω"] = core
 						}
-						var all []service.Memory
+						all := []service.Memory{}
 						cursor := ""
 						for pages := 0; ; pages++ {
 							if pages > len(want) {
