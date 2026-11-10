@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -75,9 +76,26 @@ func DecodeReadySortKey(row driver.DerivedRow) (string, ReadySortKey, error) {
 type readySortMutation struct {
 	key   driver.DerivedRowKey
 	value *ReadySortKey
+	write bool
 }
 
 type readySortPlan []readySortMutation
+
+// Only a metadata-only source restamp may leave the optional unselected cache
+// at its old revision. Ordinary body, claim, lifecycle and graph mutations
+// publish a fresh rank even when the classifier returns the same tuple.
+func onlyMetadataRestamp(before, after Document, setBy map[string]string) bool {
+	if len(setBy) == 0 {
+		return false
+	}
+	for field := range setBy {
+		if !strings.HasPrefix(field, "metadata.") {
+			return false
+		}
+	}
+	before.Metadata, after.Metadata = nil, nil
+	return reflect.DeepEqual(before, after)
+}
 
 func (w *Writer) prepareReadySortKeys(p *prepared) error {
 	source, supported := w.cfg.ontology.(readySortSource)
@@ -96,7 +114,7 @@ func (w *Writer) prepareReadySortKeys(p *prepared) error {
 		if err != nil {
 			return err
 		}
-		mutation := readySortMutation{key: driver.DerivedRowKey{Table: driver.DerivedSortKey, Key: key}}
+		mutation := readySortMutation{key: driver.DerivedRowKey{Table: driver.DerivedSortKey, Key: key}, write: true}
 		if !value.deleted {
 			// A by-value Document still contains maps and pointers. Detach it
 			// before calling the classifier so it cannot edit the pending body.
@@ -114,6 +132,23 @@ func (w *Writer) prepareReadySortKeys(p *prepared) error {
 					return failure("invalid_params", "ready sort projection requires a genuine creation instant and valid rank")
 				}
 				mutation.value = &ReadySortKey{Bucket: bucket, Rank: rank, CreatedAt: createdAt, RankedAt: stamp}
+				if len(value.before) != 0 {
+					before, err := DecodeDocument(value.before)
+					if err == nil {
+						oldCreatedAt, oldKnown := before.CreationTime()
+						if oldKnown && oldCreatedAt.Equal(createdAt) && onlyMetadataRestamp(before, value.doc, value.setBy) {
+							oldBucket, oldRank, classified, oldErr := source.ReadySortKey(before, stamp)
+							// A metadata-only restamp with the same classified position
+							// leaves the optional old-revision cache untouched. The
+							// public Ready plan still consumes the fresh sort below;
+							// readers bind cached revisions to their source or
+							// recompute from that source when stale.
+							if oldErr == nil && classified && oldBucket == bucket && oldRank == rank {
+								mutation.write = false
+							}
+						}
+					}
+				}
 			}
 		}
 		p.readySort = append(p.readySort, mutation)
@@ -124,6 +159,9 @@ func (w *Writer) prepareReadySortKeys(p *prepared) error {
 func (p readySortPlan) locks() []driver.LockKey {
 	keys := make([]driver.LockKey, 0, len(p))
 	for _, mutation := range p {
+		if !mutation.write {
+			continue
+		}
 		key := mutation.key
 		keys = append(keys, driver.LockKey{Kind: driver.LockDerived, Derived: &key})
 	}
@@ -138,6 +176,9 @@ func (p readySortPlan) publish(ctx context.Context, tx driver.WriteTx, revision 
 	}
 	remove, add := []driver.DerivedRow{}, []driver.DerivedRow{}
 	for _, mutation := range p {
+		if !mutation.write {
+			continue
+		}
 		row := driver.DerivedRow{Key: mutation.key.Key}
 		if mutation.value == nil {
 			remove = append(remove, row)
@@ -151,6 +192,9 @@ func (p readySortPlan) publish(ctx context.Context, tx driver.WriteTx, revision 
 			return err
 		}
 		add = append(add, row)
+	}
+	if len(remove) == 0 && len(add) == 0 {
+		return nil
 	}
 	return tx.PutDerived(ctx, driver.DerivedSortKey, remove, add)
 }
