@@ -16,9 +16,8 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
-// Plan replaces the requested base or project overlay document. The frozen
-// wire method has no directives parameter, so directive-bearing documents are
-// explicitly refused by the real ontology decoder, never silently ignored.
+// Plan replaces the requested base or project overlay document. Type mappings
+// use the existing planner; directives embedded in documents remain invalid.
 func (s *Service) Plan(ctx context.Context, by model.PrincipalRef, req PlanRequest) (PlanResult, error) {
 	meta, r, err := s.reader(ctx, by, nil)
 	if err != nil {
@@ -74,9 +73,17 @@ func (s *Service) Plan(ctx context.Context, by model.PrincipalRef, req PlanReque
 	if err != nil || revision == math.MaxUint64 {
 		return PlanResult{}, failure("invalid_params", "ontology source revision has no supported successor")
 	}
+	directives := make([]ontologymigration.Directive, 0, len(req.TypeMappings))
+	for _, mapping := range req.TypeMappings {
+		if mapping.Kind != string(ontologymigration.MapType) {
+			return PlanResult{}, failure("invalid_params", "typeMappings accepts only map_type")
+		}
+		directives = append(directives, ontologymigration.Directive{ID: mapping.ID, Kind: ontologymigration.MapType, Target: mapping.Target, From: mapping.From, To: mapping.To})
+	}
 	plan, err := ontologymigration.Build(ctx, ontologymigration.Request{
-		Current:   ontologymigration.Version{Revision: current.guard.Revision, Snapshot: current.compiled},
-		Candidate: ontologymigration.Version{Revision: model.Natural64(revision + 1), Snapshot: compiled},
+		Current:    ontologymigration.Version{Revision: current.guard.Revision, Snapshot: current.compiled},
+		Candidate:  ontologymigration.Version{Revision: model.Natural64(revision + 1), Snapshot: compiled},
+		Directives: directives,
 	}, rowSource{s: s, by: by, r: r, current: current, candidate: compiled, graph: &storedGraph{}}, s.cfg.ValidatingPre)
 	if err != nil {
 		return PlanResult{}, mapped(err)

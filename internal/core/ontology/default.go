@@ -1,5 +1,8 @@
 package ontology
 
+// GateType is the exact installed gate identity, independent of await fields.
+const GateType = "gate"
+
 // DefaultDocument is usable without a plugin host or authorization provider.
 // Only this package knows the local slice's concrete workflow keys.
 func DefaultDocument() Document {
@@ -28,6 +31,11 @@ func DefaultDocument() Document {
 			},
 		},
 		Types: map[string]Type{
+			GateType: {Name: "Gate", Workflow: "issue", Fields: map[string]Field{
+				"title": {Type: "string"}, "description": {Type: "string"},
+				"labels": {Type: "strings"}, "blocked": {Type: "boolean"},
+				"pinned": {Type: "boolean"},
+			}},
 			"issue": {Name: "Issue", Workflow: "issue", Fields: map[string]Field{
 				"title": {Type: "string"}, "description": {Type: "string"},
 				"labels": {Type: "strings"}, "blocked": {Type: "boolean"},

@@ -71,3 +71,46 @@ interface, true gate creation/listing and its template/closed query policy,
 producer/importer mappings, resolver behavior, and full-card correspondence
 remain separate dependencies. Source `timeout_ns` is not silently mapped to
 the public `timeout` member.
+
+## Installed gate types and public listing
+
+The default catalog installs the literal `gate` type on the existing issue
+workflow. Await members on another type do not change its identity. Gate
+`pinned` is an optional typed boolean; listing includes it without adding a
+readiness or lifecycle rule. A stored host catalog can install the type through
+`ontology.plan`/`ontology.apply`. The optional `typeMappings` plan input accepts
+only closed `map_type` objects with an ID, original project/type selector, and
+different `from`/`to` keys. The existing migration planner retains these inputs
+in its digested report, requires a known original type and active destination,
+and preserves every other row member. Legacy importer directives are unchanged.
+
+`gate.list` returns exact gate types in source query order. It includes templates,
+pinned gates and ephemeral workflow items by default. `all` admits closed gates
+alongside open ones; failed, canceled and backlog are not the installed close
+slot. `excludeTemplates` removes templates before the selected gate limit.
+Limit zero drains all ordinary driver pages; a positive int64 limit bounds the
+selected gates. Await filtering follows that bound: empty/`all` accepts every
+await type, `gh` matches `gh:` prefixes, and other strings match exactly.
+The workflow provider reads a checkpoint without receipt cleanup. Composed
+authorization uses the existing bead read boundary before counting a gate,
+projects hidden parents as existence only, and rechecks current authority.
+Missing issue rows are dropped; query and policy failures return errors without
+partial successful results or writes.
+
+The new `TestB14PublicGateTypeInstallMapTypePreservesLiteralMembers`,
+`TestB14PublicGateTypeMappingsRefuseWithoutWrites`,
+`TestB14PublicGateListingCanonicalFiltersAndLimit`,
+`TestB14PublicGateListingCheckAwaitTypeAfterLimit`,
+`TestB14PublicGateListingDrainsPagesAndPropagatesQueryFailures`,
+`TestB14PublicGateListingBothPlanesAndDurableReopen`, and
+`TestB14PublicGateListingComposedReadVisibilityBeforeLimit` each require memory,
+SQLite and PostgreSQL. Only the initial catalog in the installation fixture is
+seeded; its installation/mapping and all bead/checkpoint changes use public
+RPC. The read visibility fixture installs an explicit test rule through the
+existing composition chain; it does not expand the production finite policy.
+`TestB14PublicGateListingNoQuerierUnsupported` pins the unsupported source case.
+These cases are authored acceptance controls, not native recordings. Their
+source correspondence is canonical9d6 `issueops/gates.go`/`gates_test.go` and
+the retained CLI check-filter controls. Native execution, producer/importer
+admission, resolver execution, hosted delivery and full B14 remain separately
+qualified; historical `0/82` native cases receive no new credit.
