@@ -11,8 +11,10 @@ all three drivers. It retains complete records, versions, changesets, derived
 rows, checkpoints and caller receipts. SQL tests physically close and reopen the
 store. Owned PostgreSQL startup/version/port and checked cleanup are retained.
 The memory mixed-plane capability refusal is a literal open parity gap; it is
-not a positive mixed-plane outcome. A successful mixed-plane `tx.apply` remains
-unestablished. Neither gap may become a full-card PASS.
+not a positive mixed-plane outcome. Successful mixed-plane `tx.apply` controls
+use normal SQL composition and the existing admitted source runtime on all
+three engines. Their actual outcomes must be delivered separately; the source
+runtime does not establish normal memory-provider parity.
 
 `public_native_edges_test` explicitly selects the card's canonical operational
 recording. It reuses the unchanged B20 build source export and pinned public
@@ -53,13 +55,15 @@ Named controls:
   source import and independent reverse output, with SQL reopen.
 - `TestB07PublicMixedPlaneIdentity`: actual normal-composition capability,
   SQL mixed endpoint identity, namespace-receipt-only no-op, replay, retype,
-  malformed batch refusal and both-plane conservation.
+  successful mixed batch, reopen/replay, late retype refusal, malformed batch
+  refusal and both-plane conservation.
 - `TestB07ImportedOpaqueWaitsReadiness`: an explicitly authored closed spawner
   with an open child retains legacy waits readiness after import, opaque-only
   edits and SQL reopen; an explicit waits predicate is the negative control.
 - `TestB07SourcePlaneOpaqueEdgeRoundTrip` in converterroundtrip: future escaped,
   numeric and object tokens traverse the existing admitted source runtime on
-  all three stores, including mixed-plane reverse and malformed batch refusal.
+  all three stores, including successful mixed writes, reopen/replay, opaque
+  reverse and later retype/malformed mixed-batch refusal.
 - `TestB07CanonicalNativeEdgeCounterparts`: same-run canonical source-built
   twins plus the three actual public counterparts above.
 

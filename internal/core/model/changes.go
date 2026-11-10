@@ -107,7 +107,7 @@ func ValidateNativeExtensions(values map[string]string) error {
 			return fmt.Errorf("nativeExtensions[%q] requires a nonempty beads.<field> key", key)
 		}
 		switch strings.TrimPrefix(key, "beads.") {
-		case "id", "issue_id", "depends_on_id", "depends_on_issue_id", "depends_on_external", "type", "created_at", "created_by":
+		case "id", "issue_id", "depends_on_id", "depends_on_issue_id", "depends_on_wisp_id", "depends_on_external", "type", "created_at", "created_by":
 			return fmt.Errorf("nativeExtensions[%q] cannot override a represented edge field", key)
 		}
 		if !utf8.ValidString(token) || !json.Valid([]byte(token)) {

@@ -317,7 +317,26 @@ func (n *b07Native) threadAndMixed() map[string]string {
 	nodes := []map[string]any{{"key": "durable", "id": "b07-920", "title": "mixed durable"}, {"key": "volatile", "id": "b07-921", "title": "mixed volatile", "storage_class": "ephemeral"}}
 	n.graph("mixed-create", nodes, []map[string]any{{"from_key": "durable", "to_key": "volatile", "type": "related"}}, false)
 	n.batch("mixed-reverse-edge", "dep add b07-921 b07-920 tracks\n", false)
+	ready := n.ready("mixed-success-before-ready")
+	n.batch("mixed-success", "update b07-920 title=mixed-committed-durable\nupdate b07-921 title=mixed-committed-active\n", false)
 	image := n.image("mixed-before-refusal")
+	for id, want := range map[string]string{"b07-920": "mixed-committed-durable", "b07-921": "mixed-committed-active"} {
+		found := 0
+		for _, table := range []string{"issues", "wisps"} {
+			for _, row := range image[table] {
+				if b07Text(n.t, row["id"]) == id {
+					if b07Text(n.t, row["title"]) != want {
+						n.t.Fatal("successful native mixed batch lost title", id)
+					}
+					found++
+				}
+			}
+		}
+		if found != 1 {
+			n.t.Fatal("successful native mixed batch lacks unique physical row", id)
+		}
+	}
+	n.requireReady("mixed-success-after-ready", ready)
 	n.batch("mixed-atomic-refusal", "update b07-920 title=must-rollback\nupdate b07-921 title=must-rollback\ndep add b07-920 b07-921 blocks\n", true)
 	n.equal(image, "mixed-after-refusal")
 	// This map is the actual readonly SQL response token, never a request echo.

@@ -106,6 +106,14 @@ func b07OpaquePublic(t *testing.T, engine string, native map[string]string) {
 	h.requireReady(ready)
 	h.reopen()
 	assert()
+	for _, field := range []string{"id", "issue_id", "depends_on_id", "depends_on_issue_id", "depends_on_wisp_id", "depends_on_external", "type", "created_at", "created_by"} {
+		before := h.snapshot()
+		refusal := h.call("bead.link", "opaque-represented-"+field, map[string]any{"from": from, "to": to, "kind": "custom kind", "metadata": map[string]any{"nativeExtensions": map[string]string{"beads." + field: `"cannot-override"`}}})
+		if refusal.Error == nil || refusal.Error.Data.Code != "invalid_params" || !strings.Contains(refusal.Error.Message+refusal.Error.Data.Hint, "nativeExtensions") {
+			t.Fatal("represented edge field was not refused", field, refusal.Error)
+		}
+		h.same(before)
+	}
 	for _, test := range []struct {
 		name  string
 		value any

@@ -127,7 +127,7 @@ func TestB07SourcePlaneOpaqueEdgeRoundTrip(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				core := savedLabelImport(t, store, report.Archive, profile, "")
+				core := savedLabelImport(t, store, report.Archive, profile, strings.Repeat("6", 32))
 				liveEdges := 0
 				metadata := func(value *model.LinkMetadata) {
 					t.Helper()
@@ -188,6 +188,7 @@ func TestB07SourcePlaneOpaqueEdgeRoundTrip(t *testing.T) {
 			}
 			before := snapshot()
 			write("state-before.json", before)
+			wantTitles := map[string]string{}
 			check := func(label string) {
 				t.Helper()
 				reversed, err := ReverseRestoredWithOptions(ctx, store, reverseconverter.Options{All: true})
@@ -195,6 +196,12 @@ func TestB07SourcePlaneOpaqueEdgeRoundTrip(t *testing.T) {
 					t.Fatal(err)
 				}
 				write(label+"-reverse.jsonl", reversed.Result.JSONL)
+				current := sourceReverseRows(t, reversed.Result.JSONL)
+				for id, title := range wantTitles {
+					if current[id]["title"] != title {
+						t.Fatalf("mixed public write missing from reverse: %s", id)
+					}
+				}
 				count := 0
 				decoder := json.NewDecoder(bytes.NewReader(reversed.Result.JSONL))
 				for {
@@ -233,8 +240,68 @@ func TestB07SourcePlaneOpaqueEdgeRoundTrip(t *testing.T) {
 			t.Logf("B07_SOURCE_REOPEN engine=%s old=%p new=%p epoch=%v->%v", engine, oldStore, store, oldEpoch, lease.Epoch())
 			check("reopened")
 			_, server := sourcePublicService(t, store, lease, profile, report, &sourcePublicPolicy{})
+			call := func(label, method string, params map[string]any) sourcePublicReply {
+				t.Helper()
+				request := encode(t, map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+				raw := server.Dispatch(rpc.WithPrincipal(ctx, profile.Admission.Actor), request)
+				write(label+"-request.json", request)
+				write(label+"-response.json", raw)
+				var reply sourcePublicReply
+				if err := json.Unmarshal(raw, &reply); err != nil {
+					t.Fatal(err)
+				}
+				return reply
+			}
+			// Existing admitted source support exposes a real mixed Writer on
+			// all three stores. This does not claim a normal memory provider.
+			mixed := map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{
+				{Kind: model.OpPatch, Patch: &model.PatchOp{Target: model.RefByID("demo-9", model.Natural64(0)), Fields: map[string]any{"title": "B07 committed active"}}},
+				{Kind: model.OpPatch, Patch: &model.PatchOp{Target: model.RefByID("demo-8", model.Natural64(0)), Fields: map[string]any{"title": "B07 committed durable"}}},
+			}}, "_meta": map[string]any{"project": "demo", "idempotencyKey": strings.Repeat("6", 32)}}
+			var prior, later struct {
+				Core      labelImportState
+				Namespace driver.Checkpoint
+			}
+			decode(t, before, &prior)
+			first := call("mixed-success", "tx.apply", mixed)
+			if first.Error != nil {
+				t.Fatal("source mixed public write refused", first.Error)
+			}
+			var commit model.Commit
+			decode(t, first.Result, &commit)
+			before = snapshot()
+			write("mixed-state.json", before)
+			decode(t, before, &later)
+			head, err := prior.Core.Meta.Head.Uint64()
+			if err != nil || later.Core.Meta.Head != model.Natural64(head+1) || commit.Revision != later.Core.Meta.Head || later.Namespace.Generation != prior.Namespace.Generation+1 || len(later.Core.Log) != len(prior.Core.Log)+1 || len(commit.Results) != 2 || commit.Results[0].Ref.ID != "workflow:item/restored" || commit.Results[1].Ref.ID != "demo-8" || prior.Core.WriteReceipt != nil || later.Core.WriteReceipt == nil || later.Core.WriteReceipt.ResponsePending {
+				t.Fatal("mixed write did not commit once in both planes with original operation order")
+			}
+			wantTitles = map[string]string{"demo-9": "B07 committed active", "demo-8": "B07 committed durable"}
+			check("mixed-success")
+			oldStore, oldEpoch = store, lease.Epoch()
+			store, lease = reopen()
+			if engine != "memory" && (oldStore == store || lease.Epoch() <= oldEpoch) {
+				t.Fatal("mixed write physical reopen missing")
+			}
+			t.Logf("B07_MIXED_REOPEN engine=%s old=%p new=%p epoch=%v->%v", engine, oldStore, store, oldEpoch, lease.Epoch())
+			_, server = sourcePublicService(t, store, lease, profile, report, &sourcePublicPolicy{})
+			replay := call("mixed-replay", "tx.apply", mixed)
+			if replay.Error != nil || !replay.Meta.Replayed || !bytes.Equal(first.Result, replay.Result) {
+				t.Fatal("reopened mixed public receipt was not replayed")
+			}
+			check("mixed-replayed")
+			late := call("mixed-late-retype", "tx.apply", map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{
+				{Kind: model.OpPatch, Patch: &model.PatchOp{Target: model.RefByID("demo-9", model.Natural64(0)), Fields: map[string]any{"title": "discard active draft"}}},
+				{Kind: model.OpPatch, Patch: &model.PatchOp{Target: model.RefByID("demo-8", model.Natural64(0)), Fields: map[string]any{"title": "discard durable draft"}}},
+				{Kind: model.OpLink, Link: &model.LinkOp{From: model.RefByID("demo-9", model.Natural64(0)), To: model.RefByID("demo-8", model.Natural64(0)), LinkKind: "blocks"}},
+			}}, "_meta": map[string]any{"project": "demo", "idempotencyKey": strings.Repeat("8", 32)}})
+			if late.Error == nil || late.Error.Data.Code != "ontology_guard_failed" {
+				t.Fatal("late mixed retype was not refused", late.Error)
+			}
+			check("mixed-late-refused")
 			params := map[string]any{"changeSet": map[string]any{"ops": []any{
 				map[string]any{"kind": "patch", "target": model.RefByID("demo-8", model.Natural64(0)), "fields": map[string]any{"title": "must not publish"}},
+				map[string]any{"kind": "patch", "target": model.RefByID("demo-9", model.Natural64(0)), "fields": map[string]any{"title": "active must not publish"}},
 				map[string]any{"kind": "link", "from": model.RefByID("demo-9", model.Natural64(0)), "to": model.RefByID("demo-8", model.Natural64(0)), "linkKind": "related", "metadata": map[string]any{"nativeExtensions": map[string]string{"beads.future_invalid": "null true"}}},
 			}}, "_meta": map[string]any{"project": "demo", "idempotencyKey": strings.Repeat("7", 32)}}
 			request := encode(t, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tx.apply", "params": params})
