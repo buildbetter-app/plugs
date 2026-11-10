@@ -81,10 +81,15 @@ func run(args []string) outcome {
 	flags.StringVar(&beads.SHA256, "beads-sha256", "", "Independently verified Beads executable SHA256")
 	flags.StringVar(&beads.BuildRun, "beads-build-run", "", "Independently verified RunsOn build receipt ID")
 	flags.StringVar(&beads.Inventory, "beads-inventory", "", "Actual disposable Beads target inventory for supported raw export")
+	flags.BoolVar(&beads.CapturePublicInventory, "beads-capture-public", false, "Capture the fresh public target inventory with the verified executable")
 	exercise := flags.Bool("exercise", true, "Exercise claim/release and an idempotent live edit")
 	all := flags.Bool("all", false, "Include Ephemeral=true source rows for the explicit all-planes export")
 	if flags.Parse(args) != nil || flags.NArg() != 0 || *input == "" || *output == "" {
 		result.Reason = "invalid_arguments"
+		return result
+	}
+	if beads.CapturePublicInventory && beads.Inventory != "" {
+		result.Reason = "conflicting_beads_inventory_options"
 		return result
 	}
 	historyMode, err := driver.ParseRestoreHistoryMode(*mode)

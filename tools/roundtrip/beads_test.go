@@ -24,6 +24,17 @@ func TestMissingPinnedBeadsCannotPassOrUsePATH(t *testing.T) {
 	}
 }
 
+func TestPublicCaptureCannotUseACallerInventory(t *testing.T) {
+	output := filepath.Join(t.TempDir(), "not-created")
+	got := run([]string{"--input", "not-opened", "--output-dir", output, "--beads-inventory", "not-opened", "--beads-capture-public"})
+	if got.Status != "BLOCK" || got.Stage != "arguments" || got.Reason != "conflicting_beads_inventory_options" || got.BeadsReimport != "WAIT" || got.BeadsReadback != "WAIT" {
+		t.Fatalf("ambiguous inventory accepted: %+v", got)
+	}
+	if _, err := os.Stat(output); !os.IsNotExist(err) {
+		t.Fatal("ambiguous inventory opened a source or created a target")
+	}
+}
+
 func TestBeadsDigestMismatchStopsBeforeAnyProcessOrTarget(t *testing.T) {
 	root := t.TempDir()
 	binary := filepath.Join(root, "untrusted-artifact")

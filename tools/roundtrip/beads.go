@@ -33,6 +33,7 @@ const beadsTree = "9d026de307ee915953b247cf42758d0c53303574"
 
 type beadsOptions struct {
 	Binary, SHA256, BuildRun, Inventory string
+	CapturePublicInventory              bool
 }
 
 type commandEvidence struct {
@@ -165,10 +166,20 @@ func runBeads(ctx context.Context, options beadsOptions, output string, source *
 	// Its absence must not hide artifact failures or discard a real import.
 	result.Stage = "beads_inventory"
 	result.Reason = "beads_inventory_required"
-	if options.Inventory == "" {
+	inventoryInput := options.Inventory
+	if options.CapturePublicInventory {
+		// Capture only the fresh target through the same verified executable.
+		// A source inventory cannot attest to this newly imported workspace.
+		inventoryInput = filepath.Join(output, "beads-generated-inventory.json")
+		if _, err = run("--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "--output", inventoryInput); err != nil {
+			result.Status, result.Reason, result.BeadsReadback = "BLOCK", "beads_inventory_capture_refused", "FAIL"
+			return
+		}
+	}
+	if inventoryInput == "" {
 		return
 	}
-	inventory, err := filepath.Abs(options.Inventory)
+	inventory, err := filepath.Abs(inventoryInput)
 	if err != nil {
 		result.Status = "BLOCK"
 		return

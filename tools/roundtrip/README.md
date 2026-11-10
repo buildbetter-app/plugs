@@ -54,6 +54,13 @@ new target's actual config/external census; missing schema, source families or
 policies refuse through the exporter. No native-head export adapter is added.
 Embedded `bd sql` is unsupported at this pin and is not used as a fallback.
 
+For disposable public targets, `--beads-capture-public` runs the same verified
+executable's `--readonly export --format beads-inventory/1
+--plug-capture-public --output beads-generated-inventory.json` after import.
+That actual fresh-target inventory and its external sidecars feed the raw
+readback exporter. It cannot be combined with a supplied `--beads-inventory`.
+The default without either option keeps the inventory-required WAIT boundary.
+
 Independent readback compares raw stored issue fields, metadata, labels,
 timestamps, dependency envelopes, comments and memories against the submitted
 JSONL. It also checks every original opaque source column separately. Keeping
@@ -94,9 +101,13 @@ fixtures in full/partial/snapshot modes across memory, SQLite and disposable
 PostgreSQL, with the normal claim/release and live-edit workload. It uses
 explicit `--all` export for the partial fixture's three ephemeral beads; the
 complete fixture uses default export. The default-omission controls stay separate.
-It requires
-three actual successful Beads subprocesses for each admitted case and retains
-their raw output in the test log. Its current assertion ends at real reimport
-with inventory-required WAIT. It does not certify independent native readback
-or full roundtrip fidelity; those require a truthful census of the actual new
-Beads target and the supported exporter's raw archive.
+It requires five actual successful Beads subprocesses for each admitted case:
+version, init, import, fresh-target public inventory capture and raw readback
+export. Each case invokes the independent raw capture verifier and requires the
+existing native field comparison to pass. Original live-workload, provenance,
+history and import-count assertions remain. Raw streams, both inventory files,
+all captured sidecars, the raw archive and submitted live JSONL are retained in
+the test outputs, including on failure. An additional real missing-inventory
+control retains the three-command reimport-PASS/readback-WAIT boundary. These
+public fixtures provide no strict two-source history, private-store or official
+native-admission qualification.
