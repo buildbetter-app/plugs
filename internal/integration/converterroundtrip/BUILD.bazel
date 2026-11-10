@@ -28,6 +28,7 @@ go_test(
         "//internal/core/dumpformat:testdata/native-tables-synthetic.tar",
         "testdata/synthetic-plug-dump-1.tar",
         ":public_source_fixtures",
+        ":fullcard_entrypoint_fixtures",
         "//internal/integration/offlinehistory:lexicon_files",
         "//tools/native-receive",
     ],
@@ -68,6 +69,11 @@ filegroup(
 )
 
 exports_files(["testdata/synthetic-plug-dump-1.tar"], visibility = ["//visibility:public"])
+
+filegroup(
+    name = "fullcard_entrypoint_fixtures",
+    srcs = glob(["testdata/native-delta-fullcard-entrypoints/*.tar"]),
+)
 
 filegroup(
     name = "public_source_fixtures",

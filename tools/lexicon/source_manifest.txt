@@ -582,6 +582,7 @@ internal/integration/converterroundtrip/native_boundary_receiving_test.go
 internal/integration/converterroundtrip/native_commit_fixture_test.go
 internal/integration/converterroundtrip/native_commit_receiving_test.go
 internal/integration/converterroundtrip/native_delta.go
+internal/integration/converterroundtrip/native_delta_fullcard_entrypoints_test.go
 internal/integration/converterroundtrip/native_delta_pair_inspector_test.go
 internal/integration/converterroundtrip/native_delta_pair_test.go
 internal/integration/converterroundtrip/native_delta_receiving_test.go
@@ -620,6 +621,10 @@ internal/integration/converterroundtrip/source_poststage_test.go
 internal/integration/converterroundtrip/source_public_test.go
 internal/integration/converterroundtrip/source_storage_test.go
 internal/integration/converterroundtrip/testdata/native-built-in-statuses.json
+internal/integration/converterroundtrip/testdata/native-delta-fullcard-entrypoints/README.md
+internal/integration/converterroundtrip/testdata/native-delta-fullcard-entrypoints/public-cp11-darc-complete.tar
+internal/integration/converterroundtrip/testdata/native-delta-fullcard-entrypoints/public-cp11-darc-missing-root.tar
+internal/integration/converterroundtrip/testdata/native-delta-fullcard-entrypoints/public-cp11-loose-missing-root.tar
 internal/integration/converterroundtrip/testdata/native-delta-retained-pair/README.md
 internal/integration/converterroundtrip/testdata/native-delta-retained-pair/base.tar.gz
 internal/integration/converterroundtrip/testdata/native-delta-retained-pair/caller-overlay.tar.gz

@@ -124,6 +124,9 @@ func DefaultTreePolicy() TreePolicy {
 			"engdocs/design/plug/spike-ux-decision.md":             {},
 		},
 		BinarySHA256: map[string]string{
+			"internal/integration/converterroundtrip/testdata/native-delta-fullcard-entrypoints/public-cp11-loose-missing-root.tar": "d381b6b254947f9d466e0d1354e9c7b05263308aca6c0ad30f217638cbfd8ec0",
+			"internal/integration/converterroundtrip/testdata/native-delta-fullcard-entrypoints/public-cp11-darc-missing-root.tar": "b1f7f3f5d5d7f3132a0eff8a22d414957e43eaf699e45515b356686ea6be9ba7",
+			"internal/integration/converterroundtrip/testdata/native-delta-fullcard-entrypoints/public-cp11-darc-complete.tar": "9d2012775a493a5281ae72380e0376aa8bb16818ab28fa9b346252153ea67fa5",
 			"internal/integration/converterroundtrip/testdata/public-history-boundary-e25cf419.tar": "46677d8d6021ee35611e81238fd037d33739e4e44eb5308430b90d5f0ba5f93a",
 			"internal/integration/converterroundtrip/testdata/public-multiversion-072a1a8f.tar":     "72df289c1e94535815764be53bc9f01530e683d6c7480ee06fc743e7a69a230b",
 			"internal/integration/converterroundtrip/testdata/public-own-version-d7f83c6f.tar":      "de2a032098a8b17aa3e06ac7fa445ab18bb13427a59606e4a4d66959650e62c5",
