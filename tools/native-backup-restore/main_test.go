@@ -60,7 +60,7 @@ func TestPublicNativeBackupRestoreAndPhysicalCapture(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 	for _, query := range []string{
-		"CREATE DATABASE source", "USE source",
+		"CREATE DATABASE `source`", "USE `source`",
 		"CREATE TABLE archived_rows (id INT, old_column TEXT, opaque LONGBLOB)",
 		"INSERT INTO archived_rows VALUES (1,'old',X'00FF'),(1,'old',X'00FF'),(2,NULL,NULL)",
 		"CALL DOLT_ADD('-A')",
