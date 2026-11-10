@@ -2,7 +2,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "ontology",
-    srcs = ["check.go", "compile.go", "decode.go", "default.go", "gate.go", "plan.go", "runtime.go", "schema.go", "types.go"],
+    srcs = ["await_members.go", "check.go", "compile.go", "decode.go", "default.go", "gate.go", "plan.go", "runtime.go", "schema.go", "types.go"],
     importpath = "github.com/buildbetter-app/plugs/internal/core/ontology",
     deps = ["//internal/core/model"],
     visibility = ["//internal:__subpackages__", "//examples/plugins/native-guard:__pkg__", "//spec/extended:__pkg__", "//spec/s1-b01-b04:__pkg__", "//spec/s1-b09-b12/compaction:__pkg__", "//spec/s1-b13-b16:__pkg__", "//spec/s1-b25-b28:__pkg__", "//spec/s1-b21-b24:__pkg__", "//spec:__pkg__"],
@@ -10,7 +10,7 @@ go_library(
 
 go_test(
     name = "ontology_test",
-    srcs = ["compile_test.go", "gate_test.go", "native_categories_test.go", "ontology_test.go", "runtime_test.go", "schema_test.go"],
+    srcs = ["await_members_test.go", "compile_test.go", "gate_test.go", "native_categories_test.go", "ontology_test.go", "runtime_test.go", "schema_test.go"],
     embed = [":ontology"],
 )
 

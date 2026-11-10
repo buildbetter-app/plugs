@@ -240,6 +240,8 @@ internal/core/model/schema_test.go
 internal/core/model/testdata/openrpc-components.json
 internal/core/model/unsupported_error_test.go
 internal/core/ontology/BUILD.bazel
+internal/core/ontology/await_members.go
+internal/core/ontology/await_members_test.go
 internal/core/ontology/check.go
 internal/core/ontology/compile.go
 internal/core/ontology/compile_test.go
@@ -357,6 +359,7 @@ internal/core/reverseconverter/types.go
 internal/core/service/BUILD.bazel
 internal/core/service/audit.go
 internal/core/service/audit_test.go
+internal/core/service/await_members.go
 internal/core/service/canonical_claim_slot_audit_test.go
 internal/core/service/claim_recovery.go
 internal/core/service/claim_recovery_integration_test.go
@@ -603,6 +606,7 @@ internal/integration/eventsqlpaging/integration_test.go
 internal/integration/gatecontract/BUILD.bazel
 internal/integration/gatecontract/README.md
 internal/integration/gatecontract/authorization_test.go
+internal/integration/gatecontract/await_members_test.go
 internal/integration/gatecontract/consumer_host_test.go
 internal/integration/gatecontract/consumer_test.go
 internal/integration/gatecontract/engine_test.go
