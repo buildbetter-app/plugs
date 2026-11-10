@@ -3,7 +3,7 @@ title: JSON Output Schema Contract
 description: The stable JSON output contract for bd --json commands, covering the schema_version envelope, per-command fields, and consumer guidelines.
 ---
 
-Last reviewed: 2026-08-07
+Last reviewed: 2026-11-10
 
 Freshness source: `cmd/bd/output.go`, `cmd/bd/errors.go`, and
 `cmd/bd/protocol/json_contract_test.go`.
@@ -22,10 +22,10 @@ export BD_JSON_ENVELOPE=1
 
 ### Envelope format (BD_JSON_ENVELOPE=1, default in v2.0)
 
-Every `--json` command wraps output as:
+JSON command responses in envelope mode wrap their payload as:
 
 ```json
-{"schema_version": 1, "data": <original-payload>}
+{"schema_version": 1, "data": {"id": "beads-abc", "title": "Example issue"}}
 ```
 
 The original payload is untouched inside `.data` — no type corruption,
@@ -35,7 +35,7 @@ When a `--limit`-truncated listing runs in envelope mode (currently wired
 for `bd ready`), the envelope also carries a `pagination` key:
 
 ```json
-{"schema_version": 1, "data": [...], "pagination": {"returned": 10, "total": 42, "truncated": true}}
+{"schema_version": 1, "data": [{"id": "beads-abc", "title": "Example issue"}], "pagination": {"returned": 1, "total": 42, "truncated": true}}
 ```
 
 `total` is omitted when unknown; the whole `pagination` key is absent when
@@ -70,7 +70,7 @@ bd create "Example" --json | jq '.schema_version'
 Current version: **1**
 
 The `schema_version` field is an integer that increments when:
-- Fields are added, renamed, or removed
+- Existing fields are renamed or removed
 - Output structure changes (e.g., nesting depth)
 - Field types change (e.g., string to integer)
 
@@ -288,7 +288,9 @@ as a read-side legacy alias.
    higher than expected, log a warning but attempt to parse anyway
    (additive changes are backward-compatible).
 
-2. **For list commands**, parse the output as a JSON array directly.
+2. **For list commands**, parse the legacy output as a JSON array. With
+   `BD_JSON_ENVELOPE=1`, read that array from `.data`. JSONL export keeps its
+   separate interchange format in either mode.
 
 3. **Ignore unknown fields**. New fields may be added without bumping
    the schema version.

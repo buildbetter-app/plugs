@@ -3,7 +3,7 @@ title: Azure DevOps (ADO) Integration Configuration
 description: Configuration reference for bd ado sync, which bidirectionally syncs beads issues with Azure DevOps work items
 ---
 
-Last reviewed: 2026-08-07
+Last reviewed: 2026-11-10
 
 Freshness source: `cmd/bd/ado*.go` and `internal/ado/`.
 
@@ -238,6 +238,9 @@ If a direct transition fails (ADO returns 400), beads automatically walks the kn
 | `--pull-only` | Import from ADO only |
 | `--push-only` | Export to ADO only |
 
+Choose one direction flag per run; `--pull-only` and `--push-only` cannot be
+combined. Omit both for bidirectional sync.
+
 ### Conflict Resolution
 
 When the same issue has been modified both locally and in ADO:
@@ -319,6 +322,10 @@ beads stores ADO-specific metadata for round-trip fidelity:
 | Request timeout | 30 seconds |
 | Max retries | 3 (GET and WIQL only) |
 | Retry backoff | Exponential with jitter, respects `Retry-After` header |
+
+The retry limit allows the initial request plus up to three retries. Requests
+that create or update work items are sent once, because retrying a write after
+a lost response could apply it twice.
 
 ## Troubleshooting
 
