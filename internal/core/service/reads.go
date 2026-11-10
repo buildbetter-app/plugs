@@ -964,13 +964,13 @@ func (s *Service) ReadyCandidates(ctx context.Context, by model.PrincipalRef, re
 // projections use the existing full-graph interpreter.
 func (s *Service) queueReadyCandidates(ctx context.Context, by model.PrincipalRef, req ReadyRequest, reader driver.Reader) ([]Bead, map[string]readyOrderKey, *driver.QueueProjection, error) {
 	var blocked func(context.Context, model.PrincipalRef, []string, map[string]storedBead) (map[string]bool, error)
-	if s.workflow != nil {
+	if provider := s.workflowProvider(); provider != nil {
 		blocked = func(ctx context.Context, by model.PrincipalRef, ids []string, graph map[string]storedBead) (map[string]bool, error) {
 			// Ordinary Ready follows mixed ancestry from one provider checkpoint
 			// and the same pinned core graph. The queue must use that contract
 			// too, including durable descendants of workflow-parented children.
 			resolver := &workflowCoreResolver{service: s, principal: by, graph: graph}
-			facts, _, err := s.workflow.OrdinaryParentSnapshot(ctx, by, ids, workflowMeta(by, "bead.ready", req.Project, req.Agent), resolver)
+			facts, _, err := provider.OrdinaryParentSnapshot(ctx, by, ids, workflowMeta(by, "bead.ready", req.Project, req.Agent), resolver)
 			if err != nil {
 				return nil, err
 			}
