@@ -1187,6 +1187,8 @@ internal/storage/postgres/selection_index.go
 internal/storage/postgres/selection_partial_certificate_test.go
 internal/storage/postgres/selection_publication.go
 internal/storage/postgres/selection_publication_cost_test.go
+internal/storage/postgres/selection_row_transport.go
+internal/storage/postgres/selection_row_transport_test.go
 internal/storage/postgres/selection_sources.go
 internal/storage/postgres/selection_sql_test.go
 internal/storage/postgres/selection_test.go
