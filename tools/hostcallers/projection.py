@@ -1,0 +1,96 @@
+"""Scoped legacy JSONL projection for the prepared milestone view."""
+import json
+import os
+from pathlib import Path
+import tempfile
+import time
+from plug_host import AdapterError, Client, OntologyError, TransportError
+
+
+class Projection:
+    def __init__(self, client):
+        self.c = client
+        self.path = client.workspace / (".plug-view-" + client.identity + ".jsonl")
+        self.stale = False
+
+    def fresh(self):
+        try:
+            # Authority is checked before reuse, including the 15-second window.
+            self.c.verify_identity()
+            ontology = self.c.ontology()
+            beads = self.c.snapshot()
+            # Detect observed source changes around the bead page chain.
+            # Head-only ontology.get supplies no historical/same-snapshot
+            # ontology binding; this check must not be advertised as one.
+            if ontology.signature != self.c.ontology().signature:
+                raise OntologyError("ontology_changed_during_projection")
+            rows = [self.row(b, ontology) for b in beads]
+            content = ''.join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows)
+            try:
+                if time.time() - self.path.stat().st_mtime < 15 and self.path.read_text() == content:
+                    self.stale = False
+                    return str(self.path)
+            except FileNotFoundError:
+                pass
+            fd, tmp = tempfile.mkstemp(prefix=".plug-view-", dir=self.path.parent)
+            try:
+                with os.fdopen(fd, "w") as out:
+                    out.write(content)
+                    out.flush()
+                    os.fsync(out.fileno())
+                os.replace(tmp, self.path)
+            finally:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
+            self.stale = False
+            return str(self.path)
+        except TransportError:
+            if self.path.exists():
+                self.stale = True
+                return str(self.path)
+            raise AdapterError("no validated projection available for this instance/project") from None
+        except AdapterError:
+            # A known refusal invalidates the previous grant for future offline calls.
+            self.stale = False
+            self.path.unlink(missing_ok=True)
+            raise
+
+    def row(self, bead, ontology=None):
+        if bead.get("project") != self.c.project:
+            raise AdapterError("foreign project in projection")
+        fields = bead.get("fields", {})
+        status = bead["status"]
+        ontology = ontology or self.c.ontology()
+        category = ontology.category(status, bead["type"])
+        row = {**fields, "id": self.c.original(bead["id"]), "issue_type": bead["type"],
+               "status": status, "status_category": category,
+               "status_terminal": ontology.terminal(status, bead["type"])}
+        row["labels"] = bead.get("labels", fields.get("labels", []))
+        reason = bead.get("metadata", {}).get("i8.host.close_reason")
+        if not row["status_terminal"]:
+            row["close_reason"] = None
+        elif reason is not None:
+            if reason.get("schema") != "plug-host-close-reason/1" or not isinstance(reason.get("reason"), str):
+                raise AdapterError("close reason metadata is malformed")
+            row["close_reason"] = reason["reason"]
+        else:
+            row["close_reason"] = fields.get("close_reason", fields.get("result"))
+        dependencies = []
+        for link in bead.get("links", []):
+            if link.get("from") != bead["id"]:
+                continue
+            target = link["to"]
+            if link.get("targetKind") == "external":
+                raise AdapterError("external graph targets need an explicit UI projection")
+            if not Client.valid_ref(target):
+                raise AdapterError("unsupported link target")
+            dependencies.append({"depends_on_id": self.c.original(target["id"]), "type": link["kind"]})
+        parent = bead.get("parent")
+        if parent:
+            if not isinstance(parent, str):
+                raise AdapterError("hidden parent cannot be projected as legacy graph")
+            rel = {"depends_on_id": self.c.original(parent), "type": "parent-child"}
+            if rel not in dependencies:
+                dependencies.append(rel)
+        row["dependencies"] = dependencies
+        return row
