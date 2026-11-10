@@ -711,6 +711,8 @@ internal/integration/nightlyrestore/README.md
 internal/integration/nightlyrestore/engine_test.go
 internal/integration/nightlyrestore/fixture_test.go
 internal/integration/nightlyrestore/history_diff_test.go
+internal/integration/nightlyrestore/native_diff_test.go
+internal/integration/nightlyrestore/native_fixture_test.go
 internal/integration/nightlyrestore/restore_diff_test.go
 internal/integration/nightlyrestore/snapshot_archive_content_test.go
 internal/integration/nightlyrestore/snapshot_archive_metadata_test.go
@@ -1430,6 +1432,13 @@ spec/cardb20/policy_test.go
 spec/cardb20/postgres_test.go
 spec/cardb20/runtime_test.go
 spec/cardb20/sql_rows_test.go
+spec/cardb24/BUILD.bazel
+spec/cardb24/README.md
+spec/cardb24/native_recording_test.go
+spec/cardb24/public_clock_test.go
+spec/cardb24/public_counterpart_test.go
+spec/cardb24/public_fixture_test.go
+spec/cardb24/public_view_test.go
 spec/cardb28/BUILD.bazel
 spec/cardb28/README.md
 spec/cardb28/cardb28_test.go
