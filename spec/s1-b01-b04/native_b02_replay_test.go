@@ -120,6 +120,7 @@ func b02ReplayCapture(t *testing.T, capture b02Capture, engine, dsn string) {
 	}
 	f := newFixture(t, engine, dsn, compileOntology(t, customDocument(), nil), ids)
 	r := &b02Replay{f: f, output: output, refs: map[string]model.Ref{}, statuses: map[string]string{}}
+	r.initializeOntology()
 	nativeJSON(t, filepath.Join(output, "authored-plug-ontology.json"), customDocument())
 	bindings := map[string]any{}
 	for index, node := range capture.Plan.Nodes {

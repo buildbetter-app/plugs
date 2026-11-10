@@ -15,6 +15,14 @@ status-name change beside the conserved Plug refusal. A separate same-title
 `bead.update` exercises a true zero-Changeset receipt and requires the head to
 remain unchanged. Neither operation fabricates a native outcome.
 
+The public replay stores its authored Plug ontology as a real protected
+catalog record and binds the production tracked ontology audit adapter to it.
+Reopening a SQL store reloads that same record and checks its revision and
+compiled digest; conditional notices must pin that exact source and project.
+The event verifier uses the driver's complete record identity so omitted and
+explicit branch zero compare correctly without dropping branch or ID-arm
+checks. The catalog is an explicit Plug fixture, not a native import.
+
 Done = the private recorder follows the canonical B02 native flow and preserves
 complete real before/after, refusal, replay and producer evidence, proven by
 its exact committed source and independent source review; B01 checker passes

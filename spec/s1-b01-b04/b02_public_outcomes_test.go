@@ -34,6 +34,7 @@ func TestB02PublicConditionalOutcomeReplayAndReopenAcrossStores(t *testing.T) {
 				t.Fatal(err)
 			}
 			r := &b02Replay{f: f, output: output, refs: map[string]model.Ref{}, statuses: map[string]string{}}
+			r.initializeOntology()
 			nativeJSON(t, filepath.Join(output, "public-scope.json"), map[string]any{
 				"engine": engine, "ontology": customDocument(),
 				"qualification": "public Plug outcome/event/replay/reopen acceptance; native recording NOT_RUN",

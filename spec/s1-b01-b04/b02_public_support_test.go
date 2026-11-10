@@ -12,7 +12,12 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/service"
+	"github.com/buildbetter-app/plugs/internal/server/rpc"
+	"github.com/buildbetter-app/plugs/internal/server/transport/inprocess"
+	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -55,11 +60,81 @@ type b02PlugState struct {
 }
 
 type b02Replay struct {
-	f        *fixture
-	output   string
-	refs     map[string]model.Ref
-	statuses map[string]string
-	calls    []b02RPCScope
+	f               *fixture
+	output          string
+	refs            map[string]model.Ref
+	statuses        map[string]string
+	calls           []b02RPCScope
+	catalogRevision model.Revision
+	catalogDigest   string
+}
+
+var b02OntologyRef = model.RefByID("ontology/b02-public-replay", model.Natural64(0))
+
+// Only the authored protected catalog is a fixture. Beads, links and lifecycle
+// operations still enter through the public RPC path. The tracked audit port
+// reads this real retained record when deciding conditional outcome notices.
+func (r *b02Replay) initializeOntology() {
+	t := r.f.t
+	if !r.f.metaSnapshot().Head.IsZero() {
+		t.Fatal("B02 catalog installation requires its own fresh store")
+	}
+	body, err := service.MarshalOntologySource(service.OntologySource{Base: customDocument()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conformance.Seed(r.f.ctx, r.f.store, r.f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{
+		Ref: b02OntologyRef, Kind: "ontology", Op: model.OpCreate, Body: body,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	r.bindOntology("initial")
+}
+
+func (r *b02Replay) bindOntology(label string) {
+	t, f := r.f.t, r.f
+	meta := f.metaSnapshot()
+	reader, err := f.store.Read(f.ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, readErr := reader.Get(f.ctx, []model.Ref{b02OntologyRef})
+	closeErr := reader.Close()
+	if readErr != nil || closeErr != nil || len(rows) != 1 || rows[0].Kind != "ontology" || !driver.SelectionSameRef(rows[0].Ref, b02OntologyRef) {
+		t.Fatalf("B02 retained ontology source: rows=%d read=%v close=%v", len(rows), readErr, closeErr)
+	}
+	source, err := service.DecodeOntologySource(rows[0].Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, problems := ontology.Compile(source.Base, source.Overlays, source.Plugins)
+	if len(problems) != 0 {
+		t.Fatalf("B02 retained ontology does not compile: %v", problems)
+	}
+	if r.catalogDigest != "" && (r.catalogDigest != compiled.Digest() || r.catalogRevision != rows[0].Revision) {
+		t.Fatal("B02 reopen changed the retained ontology revision or digest")
+	}
+	r.catalogRevision, r.catalogDigest = rows[0].Revision, compiled.Digest()
+	f.ontology = service.NewOntology(compiled.Effective)
+	f.writer = pipeline.New(f.store, f.lease, pipeline.WithClock(f.clock.Now), pipeline.WithIDGenerator(f.nextID),
+		pipeline.WithOntology(f.ontology), pipeline.WithOntologyAudit(service.NewTrackedOntologyAudit(service.StaticOntologySource(b02OntologyRef))))
+	f.svc = service.New(f.store, f.lease, f.writer, service.WithClock(f.clock.Now), service.WithOntology(f.ontology))
+	registry, err := rpc.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rpc.BindService(registry, f.svc); err != nil {
+		t.Fatal(err)
+	}
+	server, err := rpc.New(registry, rpc.Config{DefaultProject: project, Incarnation: meta.Incarnation, CursorKey: []byte("s1-b01-b04-fixed-cursor-key-32-bytes-min")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.transport = inprocess.New(server)
+	nativeJSON(t, filepath.Join(r.output, label+"-ontology-binding.json"), map[string]any{
+		"source": rows[0], "digest": r.catalogDigest, "project": project,
+		"scope": "authored Plug protected catalog; not a native import or status observation",
+	})
 }
 
 func (r *b02Replay) rpc(label, method string, params map[string]any, write bool, code string) []byte {
@@ -337,7 +412,7 @@ func (r *b02Replay) reopen(label string) {
 		t.Fatal(err)
 	}
 	r.f.lease = lease
-	r.f.install()
+	r.bindOntology(label + "-reopen")
 	after := r.snapshot()
 	nativeJSON(t, filepath.Join(r.output, label+"-sql-reopen.json"), map[string]any{
 		"engine": r.f.backend, "oldHandle": fmt.Sprintf("%p", oldStore), "newHandle": fmt.Sprintf("%p", r.f.store),
@@ -364,11 +439,25 @@ func (r *b02Replay) assertTerminalEvents(label, method string, commit model.Comm
 		t.Fatalf("%s lacks an explicit terminal event expectation for %s", label, method)
 	}
 	blocker, dependent := r.refs["blocker"], r.refs["conditional"]
-	current := map[model.Ref]model.Revision{}
-	for _, record := range state.Records {
-		current[record.Ref] = record.Revision
+	key := func(ref model.Ref) string {
+		value, err := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &ref})
+		if err != nil {
+			t.Fatalf("invalid event identity: %v", err)
+		}
+		return value
 	}
-	if current[blocker] != commit.Revision || state.Meta.Head != commit.Revision {
+	// Storage and public JSON may spell branch zero differently and select the
+	// ID arm differently in Go. Use the driver's validated full record identity,
+	// preserving both the arm and branch instead of comparing private Go fields.
+	current := map[string]model.Revision{}
+	for _, record := range state.Records {
+		identity := key(record.Ref)
+		if _, exists := current[identity]; exists {
+			t.Fatal("duplicate retained record identity")
+		}
+		current[identity] = record.Revision
+	}
+	if current[key(blocker)] != commit.Revision || state.Meta.Head != commit.Revision {
 		t.Fatalf("%s terminal commit is not the actual changed blocker revision", label)
 	}
 	var changeset *model.Changeset
@@ -380,7 +469,7 @@ func (r *b02Replay) assertTerminalEvents(label, method string, commit model.Comm
 			changeset = &state.History[index]
 		}
 	}
-	if changeset == nil || changeset.Incarnation != state.Meta.Incarnation || changeset.Kind != model.ChangesetWrite || len(changeset.Changes) != 1 || changeset.Changes[0].Ref != blocker || changeset.Changes[0].Op != model.OpPatch || changeset.Changes[0].FromRevision == commit.Revision {
+	if changeset == nil || changeset.Incarnation != state.Meta.Incarnation || changeset.Kind != model.ChangesetWrite || len(changeset.Changes) != 1 || key(changeset.Changes[0].Ref) != key(blocker) || changeset.Changes[0].Op != model.OpPatch || changeset.Changes[0].FromRevision == commit.Revision {
 		t.Fatalf("%s lacks the single actual blocker change at its terminal revision", label)
 	}
 	// ValidateEvents accepts a nil legacy plan, so require the complete explicit
@@ -392,7 +481,7 @@ func (r *b02Replay) assertTerminalEvents(label, method string, commit model.Comm
 		t.Fatalf("complete durable event plan: %v", err)
 	}
 	ordinary := changeset.Events[0]
-	if ordinary.Type != want.Event || ordinary.Resource.Kind != "bead" || ordinary.Resource.Ref != blocker || ordinary.ChangeIndex.String() != "0" || ordinary.Provenance.Method != method || ordinary.Provenance.Slot != want.Slot {
+	if ordinary.Type != want.Event || ordinary.Resource.Kind != "bead" || key(ordinary.Resource.Ref) != key(blocker) || ordinary.ChangeIndex.String() != "0" || ordinary.Provenance.Method != method || ordinary.Provenance.Slot != want.Slot {
 		t.Fatalf("%s lacks the exact ordinary lifecycle event on the actual blocker change", label)
 	}
 	count := 0
@@ -401,8 +490,12 @@ func (r *b02Replay) assertTerminalEvents(label, method string, commit model.Comm
 			continue
 		}
 		count++
-		if event.Resource.Ref != dependent || event.Details == nil || event.Details.Dependent.Ref != dependent || event.Details.Dependent.Revision != current[dependent] || event.Details.BlockerBefore.Ref != blocker || event.Details.BlockerBefore.Revision != changeset.Changes[0].FromRevision || event.Details.BlockerAfter.Ref != blocker || event.Details.BlockerAfter.Revision != commit.Revision {
+		if key(event.Resource.Ref) != key(dependent) || event.Details == nil || key(event.Details.Dependent.Ref) != key(dependent) || event.Details.Dependent.Revision != current[key(dependent)] || key(event.Details.BlockerBefore.Ref) != key(blocker) || event.Details.BlockerBefore.Revision != changeset.Changes[0].FromRevision || key(event.Details.BlockerAfter.Ref) != key(blocker) || event.Details.BlockerAfter.Revision != commit.Revision {
 			t.Fatalf("%s notice is not anchored to the actual dependent/blocker revisions", label)
+		}
+		pin := event.Details.Ontology
+		if key(pin.Ref) != key(b02OntologyRef) || pin.Revision != r.catalogRevision || pin.Digest != r.catalogDigest || pin.Project == nil || pin.Project.ID != project || !pin.Project.Branch.IsZero() {
+			t.Fatalf("%s notice is not bound to the actual retained ontology and project", label)
 		}
 	}
 	if count != want.Notices {
