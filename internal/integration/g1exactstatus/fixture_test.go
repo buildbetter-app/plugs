@@ -190,7 +190,7 @@ func (f *fixture) bind() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	authenticator, err := authn.New(authn.Config{Provider: f.keys})
+	authenticator, err := authn.New(authn.Config{Provider: f.keys, AuthorizationInstalled: func() bool { return true }})
 	if err != nil {
 		f.t.Fatal(err)
 	}
