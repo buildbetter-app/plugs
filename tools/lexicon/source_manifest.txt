@@ -1173,6 +1173,8 @@ internal/storage/postgres/selection_backfill.go
 internal/storage/postgres/selection_backfill_test.go
 internal/storage/postgres/selection_coverage.go
 internal/storage/postgres/selection_fact_sql_test.go
+internal/storage/postgres/selection_fact_transport.go
+internal/storage/postgres/selection_fact_transport_test.go
 internal/storage/postgres/selection_fresh.go
 internal/storage/postgres/selection_header_probe_test.go
 internal/storage/postgres/selection_index.go

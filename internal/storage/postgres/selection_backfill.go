@@ -112,7 +112,12 @@ func writeSelectionRows(ctx context.Context, q sourceindex.SQL, incarnation stri
 	}
 	for start := 0; start < len(facts); start += publicationBatchRows {
 		end := min(start+publicationBatchRows, len(facts))
-		if _, err := q.ExecContext(ctx, `INSERT INTO plug_postgres.selection_facts(incarnation,start_revision,`+selectionFactColumns+`) SELECT $1,$2,`+selectionFactJSONColumns+` FROM jsonb_to_recordset($3::jsonb) AS f(`+selectionFactJSONLayout+`)`, incarnation, at.String(), selectionJSON(facts[start:end])); err != nil {
+		columns, err := selectionFactArrayArgs(facts[start:end])
+		if err != nil {
+			return err
+		}
+		args := append([]any{incarnation, at.String()}, columns...)
+		if _, err := q.ExecContext(ctx, `INSERT INTO plug_postgres.selection_facts(incarnation,start_revision,`+selectionFactColumns+`) SELECT $1,$2,* FROM `+selectionFactArrayRelation, args...); err != nil {
 			return err
 		}
 	}
