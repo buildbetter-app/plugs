@@ -43,6 +43,55 @@ func commitHistoryCommand(t *testing.T, ctx context.Context, binary, dataDir str
 	return command, output
 }
 
+// commitHistoryCommit freezes the complete already-versioned fixture root.
+// Pinned migrations can mark a tracked table ignored before changing its
+// schema. Plain DOLT_ADD then silently skips that tracked change (0062 records
+// this boundary). Force only tables authenticated in the prior immutable root;
+// never stage new ignored working families or the ignored migration cursor.
+func commitHistoryCommit(t *testing.T, ctx context.Context, conn *sql.Conn) string {
+	t.Helper()
+	var previous string
+	if err := conn.QueryRowContext(ctx, "SELECT DOLT_HASHOF('HEAD')").Scan(&previous); err != nil {
+		t.Fatal(err)
+	}
+	tracked, err := physicalcapture.ReadCommit(ctx, conn, previous)
+	if err != nil || !tracked.ReadOnlyScope || tracked.CommitID != previous {
+		t.Fatal("fixture prior tracked census unavailable")
+	}
+	ownVersionExec(t, ctx, conn, "CALL DOLT_ADD('-A')")
+	for _, table := range tracked.Tables {
+		ownVersionExec(t, ctx, conn, "CALL DOLT_ADD('-f', ?)", table.Name)
+	}
+	ownVersionExec(t, ctx, conn, "CALL DOLT_COMMIT('-m','public per-commit fixture','--author','Public fixture <fixture@example.test>')")
+	var head string
+	if err := conn.QueryRowContext(ctx, "SELECT DOLT_HASHOF('HEAD')").Scan(&head); err != nil {
+		t.Fatal(err)
+	}
+	return head
+}
+
+func commitHistoryStatus(t *testing.T, ctx context.Context, conn *sql.Conn) []string {
+	t.Helper()
+	rows, err := conn.QueryContext(ctx, "SELECT table_name, staged, status FROM dolt_status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var status []string
+	for rows.Next() {
+		var table, state string
+		var staged bool
+		if err := rows.Scan(&table, &staged, &state); err != nil {
+			t.Fatal(err)
+		}
+		status = append(status, fmt.Sprintf("%s/staged=%t/%s", table, staged, state))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return status
+}
+
 func commitHistoryCurrent(t *testing.T, ctx context.Context, conn *sql.Conn) map[string]plugdump.NativeTable {
 	t.Helper()
 	port := plugdump.SQLSource{DB: conn}
@@ -132,7 +181,7 @@ func TestPublicPerCommitOwnVersionAcrossPinnedMigrationHistory(t *testing.T) {
 	// Preserve the real initial Dolt ignore root as a cursor-absent image,
 	// alongside the empty genesis. Neither has numeric Beads version0.
 	ownVersionExec(t, ctx, conn, "INSERT INTO dolt_ignore(pattern,ignored) VALUES ('__temp__%',true)")
-	ownVersionCommit(t, ctx, conn)
+	commitHistoryCommit(t, ctx, conn)
 	if _, err := schema.MigrateUpTo(ctx, conn, 39); err != nil {
 		t.Fatal(err)
 	}
@@ -144,13 +193,13 @@ func TestPublicPerCommitOwnVersionAcrossPinnedMigrationHistory(t *testing.T) {
 	ownVersionExec(t, ctx, conn, "INSERT INTO compaction_snapshots(id,issue_id,compaction_level,snapshot_json) VALUES ('public-binary','public-a1b',1,?),('public-empty-binary','public-c2d',1,?)", []byte{0, 255, 128, 42}, []byte{})
 	ownVersionExec(t, ctx, conn, "INSERT INTO dependencies(issue_id,depends_on_id,type,created_by) VALUES ('public-a1b','public-c2d','blocks','public')")
 	ownVersionExec(t, ctx, conn, "INSERT INTO events(id,issue_id,event_type,actor,old_value,new_value,comment) VALUES ('public-before-62','public-a1b','updated','public',NULL,'','pre-0062 retained event')")
-	checkpoints := map[int]string{39: ownVersionCommit(t, ctx, conn)}
+	checkpoints := map[int]string{39: commitHistoryCommit(t, ctx, conn)}
 	for _, version := range []int{40, 41, 43, 54, 55, 61, 62, 63, 64, 66} {
 		if _, err := schema.MigrateUpTo(ctx, conn, version); err != nil {
 			t.Fatalf("pinned migration checkpoint %d: %v", version, err)
 		}
 		ownVersionExec(t, ctx, conn, "UPDATE issues SET title=? WHERE id='public-a1b'", fmt.Sprintf("public main %d", version))
-		checkpoints[version] = ownVersionCommit(t, ctx, conn)
+		checkpoints[version] = commitHistoryCommit(t, ctx, conn)
 	}
 	// The real ignored prefix is applied only in this disposable fixture's
 	// current root. No ignored cursor/version is assigned to an old commit.
@@ -166,7 +215,7 @@ func TestPublicPerCommitOwnVersionAcrossPinnedMigrationHistory(t *testing.T) {
 		ownVersionExec(t, ctx, conn, query)
 		ownVersionExec(t, ctx, conn, "INSERT INTO ignored_schema_migrations(version,content_hash) VALUES (?,?)", i+1, fmt.Sprintf("%x", sha256.Sum256([]byte(query))))
 	}
-	head := ownVersionCommit(t, ctx, conn)
+	head := commitHistoryCommit(t, ctx, conn)
 	beforeWorking, err := physicalcapture.ReadWorkingRoot(ctx, conn, head)
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +223,7 @@ func TestPublicPerCommitOwnVersionAcrossPinnedMigrationHistory(t *testing.T) {
 	beforeCurrent := commitHistoryCurrent(t, ctx, conn)
 	beforeLog, err := (plugdump.SQLSource{DB: conn}).ReadSourceCommits(ctx)
 	if err != nil || !beforeLog.Clean {
-		t.Fatalf("public fixture must be clean: %v", err)
+		t.Fatalf("public fixture must be clean: error=%T status=%v", err, commitHistoryStatus(t, ctx, conn))
 	}
 	originals := map[string]physicalcapture.Image{}
 	for _, commit := range beforeLog.Commits {
@@ -413,9 +462,9 @@ func TestPublicPerCommitOwnVersionAcrossPinnedMigrationHistory(t *testing.T) {
 	// Introduce an actually committed unknown prefix, then restore HEAD to66.
 	// Refusal must name the historical73 and ordinal2, not current HEAD66.
 	ownVersionExec(t, ctx, conn, "INSERT INTO schema_migrations(version,content_hash) VALUES (73,?)", strings.Repeat("0", 64))
-	ownVersionCommit(t, ctx, conn)
+	commitHistoryCommit(t, ctx, conn)
 	ownVersionExec(t, ctx, conn, "DELETE FROM schema_migrations WHERE version=73")
-	refusedHead := ownVersionCommit(t, ctx, conn)
+	refusedHead := commitHistoryCommit(t, ctx, conn)
 	refusalBefore, err := physicalcapture.ReadWorkingRoot(ctx, conn, refusedHead)
 	if err != nil {
 		t.Fatal(err)
