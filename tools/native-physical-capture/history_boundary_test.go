@@ -71,22 +71,57 @@ func TestPublicGenuineShallowHistoryBoundaryRetainsVerifiedCellsAndEvents(t *tes
 	defer conn.Close()
 	ownVersionExec(t, ctx, conn, "CREATE DATABASE `public_commit_history`")
 	ownVersionExec(t, ctx, conn, "USE `public_commit_history`")
-	if _, err := schema.MigrateUpTo(ctx, conn, 66); err != nil {
+	if _, err := schema.MigrateUpTo(ctx, conn, 39); err != nil {
 		t.Fatal(err)
 	}
-	boundaryIgnoredPrefix(t, ctx, conn)
 	ownVersionExec(t, ctx, conn, "INSERT INTO config (`key`,`value`) VALUES ('issue_prefix','public') ON DUPLICATE KEY UPDATE `value`='public'")
-	ownVersionExec(t, ctx, conn, "INSERT INTO issues (id,title,description,design,acceptance_criteria,notes,metadata,timeout_ns,hook_bead,role_bead,payload) VALUES ('public-a1b','public shallow initial','','','','',JSON_OBJECT('n',9007199254740993),9007199254740993,NULL,'','null')")
-	ownVersionExec(t, ctx, conn, "INSERT INTO compaction_snapshots(id,issue_id,compaction_level,snapshot_json) VALUES ('public-shallow-binary','public-a1b',1,?)", []byte{0, 255, 128, 42})
-	commitHistoryCommit(t, ctx, conn)
-	for i := 1; i <= 4; i++ {
-		ownVersionExec(t, ctx, conn, "UPDATE issues SET title=? WHERE id='public-a1b'", fmt.Sprintf("public shallow title %d", i))
-		commitHistoryCommit(t, ctx, conn)
+	for _, id := range []string{"public-a1b", "public-c2d"} {
+		ownVersionExec(t, ctx, conn, "INSERT INTO issues (id,title,description,design,acceptance_criteria,notes,metadata,timeout_ns,hook_bead,role_bead,payload) VALUES (?,'public shallow initial','','','','',JSON_OBJECT('n',9007199254740993),9007199254740993,NULL,'','null')", id)
 	}
+	ownVersionExec(t, ctx, conn, "INSERT INTO compaction_snapshots(id,issue_id,compaction_level,snapshot_json) VALUES ('public-shallow-binary','public-a1b',1,?)", []byte{0, 255, 128, 42})
+	ownVersionExec(t, ctx, conn, "INSERT INTO dependencies(issue_id,depends_on_id,type,created_by) VALUES ('public-a1b','public-c2d','blocks','public')")
+	ownVersionExec(t, ctx, conn, "INSERT INTO events(id,issue_id,event_type,actor,old_value,new_value,comment) VALUES ('public-shallow-before-62','public-a1b','updated','public',NULL,'','retained before ignored-plane flip')")
+	checkpoints := map[int]string{39: commitHistoryCommit(t, ctx, conn)}
+	for _, version := range []int{40, 41, 61, 62, 66} {
+		if _, err := schema.MigrateUpTo(ctx, conn, version); err != nil {
+			t.Fatalf("pinned shallow migration checkpoint %d: %v", version, err)
+		}
+		ownVersionExec(t, ctx, conn, "UPDATE issues SET title=? WHERE id='public-a1b'", fmt.Sprintf("public shallow main %d", version))
+		checkpoints[version] = commitHistoryCommit(t, ctx, conn)
+	}
+	// Recreate ignored current tables only after the real versioned migrations.
+	boundaryIgnoredPrefix(t, ctx, conn)
+	commitHistoryCommit(t, ctx, conn)
+	// A file remote uses a non-journaling chunk store. Publish through the
+	// pinned remote/push procedures instead of opening the donor's journal.
+	remoteStore := diagnosticDir(t)
+	remoteURL := "file://" + filepath.ToSlash(remoteStore)
+	var sourceBranch string
+	if err := conn.QueryRowContext(ctx, "SELECT active_branch()").Scan(&sourceBranch); err != nil || sourceBranch == "" {
+		t.Fatalf("public source branch unavailable: %v", err)
+	}
+	ownVersionExec(t, ctx, conn, "CALL DOLT_REMOTE('add','public-boundary',?)", remoteURL)
+	ownVersionExec(t, ctx, conn, "CALL DOLT_PUSH('public-boundary',?)", sourceBranch)
 	fullLog, err := (plugdump.SQLSource{DB: conn}).ReadSourceCommits(ctx)
 	if err != nil || !fullLog.Clean || len(fullLog.Commits) <= 3 {
 		t.Fatal("full public source census unavailable")
 	}
+	// The public fixture is linear. Omit only its actual genesis so the
+	// retained shallow range includes every populated migration checkpoint.
+	roots := 0
+	for _, commit := range fullLog.Commits {
+		if len(commit.Parents) > 1 {
+			t.Fatal("public shallow donor unexpectedly branches")
+		}
+		if len(commit.Parents) == 0 {
+			roots++
+		}
+	}
+	if roots != 1 {
+		t.Fatal("public shallow donor genesis differs")
+	}
+	verifiedCount := len(fullLog.Commits) - 1
+	boundaryOrdinal := uint64(verifiedCount + 1)
 	fullWorking, err := physicalcapture.ReadWorkingRoot(ctx, conn, fullLog.Head)
 	if err != nil {
 		t.Fatal(err)
@@ -112,16 +147,14 @@ func TestPublicGenuineShallowHistoryBoundaryRetainsVerifiedCellsAndEvents(t *tes
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	// The pinned file-remote factory opens the URL path directly as the NBS
-	// store; it does not append the working repository's .dolt/noms path.
-	sourceStore := filepath.Join(sourceDir, "public_commit_history", ".dolt", "noms")
-	if info, err := os.Stat(filepath.Join(sourceStore, "manifest")); err != nil || !info.Mode().IsRegular() {
-		t.Fatalf("public source chunk-store manifest missing: %v", err)
+	// The pinned file-remote factory opens the published chunk store directly.
+	if info, err := os.Stat(filepath.Join(remoteStore, "manifest")); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("public remote chunk-store manifest missing: %v", err)
 	}
-	ownVersionExec(t, ctx, conn, "CALL DOLT_CLONE('--depth','3',?, 'public_commit_history')", "file://"+filepath.ToSlash(sourceStore))
+	ownVersionExec(t, ctx, conn, "CALL DOLT_CLONE('--depth',?,'--branch',?,?, 'public_commit_history')", fmt.Sprint(verifiedCount), sourceBranch, remoteURL)
 	ownVersionExec(t, ctx, conn, "USE `public_commit_history`")
 	observed, err := physicalcapture.ReadHistory(ctx, conn, fullLog.Head)
-	if err != nil || !observed.ReadOnlyScope || len(observed.Commits) != 3 || len(observed.Boundaries) != 1 || observed.Boundaries[0].Reason != "ghost_parent" {
+	if err != nil || !observed.ReadOnlyScope || len(observed.Commits) != verifiedCount || len(observed.Boundaries) != 1 || observed.Boundaries[0].Reason != "ghost_parent" {
 		t.Fatalf("genuine shallow frontier missing: err=%T commits=%d boundaries=%v", err, len(observed.Commits), observed.Boundaries)
 	}
 	frontier := observed.Boundaries[0].CommitID
@@ -133,8 +166,8 @@ func TestPublicGenuineShallowHistoryBoundaryRetainsVerifiedCellsAndEvents(t *tes
 	for _, c := range fullLog.Commits {
 		fullByID[c.ID] = c
 	}
-	if _, present := fullByID[frontier]; !present {
-		t.Fatal("ghost is not an original full-source commit")
+	if original, present := fullByID[frontier]; !present || len(original.Parents) != 0 {
+		t.Fatal("ghost is not the original full-source genesis")
 	}
 	originals := map[string]physicalcapture.Image{}
 	for _, c := range observed.Commits {
@@ -146,6 +179,11 @@ func TestPublicGenuineShallowHistoryBoundaryRetainsVerifiedCellsAndEvents(t *tes
 			t.Fatal(err)
 		}
 		originals[c.ID] = image
+	}
+	for _, id := range checkpoints {
+		if _, present := originals[id]; !present {
+			t.Fatal("shallow range lost a populated migration checkpoint")
+		}
 	}
 	// Ignored current tables are recreated by their pinned public migrations;
 	// they are not grafted onto any immutable shallow image.
@@ -181,11 +219,11 @@ func TestPublicGenuineShallowHistoryBoundaryRetainsVerifiedCellsAndEvents(t *tes
 	}
 	manifest, native := ownVersionArchive(t, archive)
 	coverage := native.HistoryCoverage
-	if manifest.MainVersion != 66 || manifest.IgnoredVersion != 26 || manifest.History != "available-unverified" || native.Head != fullLog.Head || native.Complete || len(native.Gaps) != 0 || coverage == nil || coverage.Format != plugdump.NativeHistoryCoverageFormat || coverage.Status != "verified-to-boundary" || coverage.VerifiedCommitCount != 3 || len(native.Commits) != 3 || len(native.Images) != 3 || len(coverage.Boundaries) != 1 {
+	if manifest.MainVersion != 66 || manifest.IgnoredVersion != 26 || manifest.History != "available-unverified" || native.Head != fullLog.Head || native.Complete || len(native.Gaps) != 0 || coverage == nil || coverage.Format != plugdump.NativeHistoryCoverageFormat || coverage.Status != "verified-to-boundary" || coverage.VerifiedCommitCount != uint64(verifiedCount) || len(native.Commits) != verifiedCount || len(native.Images) != verifiedCount || len(coverage.Boundaries) != 1 {
 		t.Fatal("shallow archive coverage/census differs")
 	}
 	boundary := coverage.Boundaries[0]
-	if boundary.CommitID != frontier || boundary.Reason != "ghost_parent" || boundary.CommitOrdinalFromHead != 4 || boundary.CommitSchemaVersion != nil || len(boundary.SQLDoltCodes) != 0 {
+	if boundary.CommitID != frontier || boundary.Reason != "ghost_parent" || boundary.CommitOrdinalFromHead != boundaryOrdinal || boundary.CommitSchemaVersion != nil || len(boundary.SQLDoltCodes) != 0 {
 		t.Fatal("boundary coordinate/type/schema/code inferred or changed")
 	}
 	children := []string{}
@@ -226,12 +264,16 @@ func TestPublicGenuineShallowHistoryBoundaryRetainsVerifiedCellsAndEvents(t *tes
 	if err := decoder.Decode(&evidence); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(evidence.HistoryCoverage, coverage) || evidence.ArchiveSHA256 != fmt.Sprintf("%x", sha256.Sum256(archive)) || len(evidence.Images) != 3 || evidence.SQLDefaults != "not-captured" {
+	if !reflect.DeepEqual(evidence.HistoryCoverage, coverage) || evidence.ArchiveSHA256 != fmt.Sprintf("%x", sha256.Sum256(archive)) || len(evidence.Images) != verifiedCount || evidence.SQLDefaults != "not-captured" {
 		t.Fatal("native/typed sidecar coverage equality failed")
 	}
 	for i, image := range native.Images {
 		original, present := originals[image.CommitID]
-		if !present || image.Sequence != uint64(i+1) || image.SchemaProfile == nil || image.SchemaProfile.MainVersion == nil || *image.SchemaProfile.MainVersion != 66 || image.SchemaProfile.IgnoredVersion != nil {
+		if !present {
+			t.Fatal("retained shallow image has no original physical root")
+		}
+		version := commitHistoryCursor(t, original)
+		if image.Sequence != uint64(i+1) || image.SchemaProfile == nil || image.SchemaProfile.MainVersion == nil || version == nil || *image.SchemaProfile.MainVersion != *version || image.SchemaProfile.IgnoredVersion != nil {
 			t.Fatal("retained shallow image identity/schema differs")
 		}
 		want := map[string]plugdump.NativeTable{}
@@ -245,8 +287,21 @@ func TestPublicGenuineShallowHistoryBoundaryRetainsVerifiedCellsAndEvents(t *tes
 		if err != nil || !reflect.DeepEqual(typed, evidence.Images[i].Tables) || evidence.Images[i].CommitID != image.CommitID || !evidence.Images[i].ReadOnlyScope || !reflect.DeepEqual(image.SchemaProfile, evidence.Images[i].SchemaProfile) {
 			t.Fatal("shallow sidecar physical type/cell/profile differs")
 		}
-		if _, invented := image.Tables["events"]; invented {
-			t.Fatal("current events assigned to immutable shallow commit")
+		_, hasEvents := image.Tables["events"]
+		if *version >= 62 && hasEvents {
+			t.Fatal("current events assigned to post-flip immutable shallow commit")
+		}
+		if image.CommitID == checkpoints[61] && (!hasEvents || len(image.Tables["events"].Rows) != 1 || image.Tables["events"].Rows[0]["id"] != "public-shallow-before-62") {
+			t.Fatal("pre-0062 historical event lost")
+		}
+		if image.CommitID == checkpoints[40] || image.CommitID == checkpoints[41] {
+			hasSplit := false
+			for _, column := range image.Tables["dependencies"].Columns {
+				hasSplit = hasSplit || column == "depends_on_issue_id"
+			}
+			if hasSplit != (image.CommitID == checkpoints[41]) || len(image.Tables["dependencies"].Rows) != 1 {
+				t.Fatal("populated 0040/0041 dependency reshape lost")
+			}
 		}
 	}
 	typedWorking, err := physicalcapture.EvidenceTables(beforeWorking.Tables)
@@ -258,7 +313,7 @@ func TestPublicGenuineShallowHistoryBoundaryRetainsVerifiedCellsAndEvents(t *tes
 	if err := stream.Decode(&schemaReport); err != nil || schemaReport.Stage != stageSchema || schemaReport.InnermostGoErrorType != "" {
 		t.Fatal("original schema success record lost")
 	}
-	if err := stream.Decode(&boundaryReport); err != nil || boundaryReport.Stage != stageHistory || boundaryReport.HistoryBoundaryReason != "ghost_parent" || boundaryReport.InnermostGoErrorType != "plugdump.ErrSourceHistoryUnavailable" || boundaryReport.CommitOrdinalFromHead == nil || *boundaryReport.CommitOrdinalFromHead != 4 || boundaryReport.VerifiedCommitCount == nil || *boundaryReport.VerifiedCommitCount != 3 || boundaryReport.CommitSchemaVersion != nil || len(boundaryReport.SQLCodes) != 0 {
+	if err := stream.Decode(&boundaryReport); err != nil || boundaryReport.Stage != stageHistory || boundaryReport.HistoryBoundaryReason != "ghost_parent" || boundaryReport.InnermostGoErrorType != "plugdump.ErrSourceHistoryUnavailable" || boundaryReport.CommitOrdinalFromHead == nil || *boundaryReport.CommitOrdinalFromHead != boundaryOrdinal || boundaryReport.VerifiedCommitCount == nil || *boundaryReport.VerifiedCommitCount != uint64(verifiedCount) || boundaryReport.CommitSchemaVersion != nil || len(boundaryReport.SQLCodes) != 0 {
 		t.Fatal("actual safe boundary diagnostic differs")
 	}
 	if err := stream.Decode(new(any)); err != io.EOF {
@@ -272,7 +327,7 @@ func TestPublicGenuineShallowHistoryBoundaryRetainsVerifiedCellsAndEvents(t *tes
 		Verified   uint64           `json:"verified_commit_count"`
 		Boundaries []map[string]any `json:"history_boundaries"`
 	}
-	if err := json.Unmarshal(stdout.Bytes(), &summary); err != nil || summary.Capture != "published-validated" || summary.Verified != 3 || len(summary.Boundaries) != 1 {
+	if err := json.Unmarshal(stdout.Bytes(), &summary); err != nil || summary.Capture != "published-validated" || summary.Verified != uint64(verifiedCount) || len(summary.Boundaries) != 1 {
 		t.Fatal("published boundary summary differs")
 	}
 
@@ -329,7 +384,7 @@ func TestPublicGenuineShallowHistoryBoundaryRetainsVerifiedCellsAndEvents(t *tes
 	if artifacts == "" {
 		artifacts = t.TempDir()
 	}
-	facts, err := json.MarshalIndent(map[string]any{"fixture": "pinned-dolt-file-shallow-clone-depth-3", "full_source": fullLog, "observed_shallow": observed, "coverage": coverage, "verified_images": len(native.Images), "source_unchanged_after_reopen": true, "clone_unchanged_after_reopen": true, "before_working": beforeWorking}, "", "  ")
+	facts, err := json.MarshalIndent(map[string]any{"fixture": "pinned-dolt-file-push-shallow-clone", "clone_depth": verifiedCount, "migration_checkpoints": checkpoints, "full_source": fullLog, "observed_shallow": observed, "coverage": coverage, "verified_images": len(native.Images), "source_unchanged_after_reopen": true, "clone_unchanged_after_reopen": true, "before_working": beforeWorking}, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,7 +393,7 @@ func TestPublicGenuineShallowHistoryBoundaryRetainsVerifiedCellsAndEvents(t *tes
 			t.Fatal(err)
 		}
 	}
-	t.Log("PUBLIC_GENUINE_SHALLOW_BOUNDARY verified_commits=3 boundaries=1 ordinal=4 events=2 all_physical_cells=true inputs_reopened_unchanged=true")
+	t.Logf("PUBLIC_GENUINE_SHALLOW_BOUNDARY verified_commits=%d boundaries=1 ordinal=%d events=2 populated_0040_0041_0062=true all_physical_cells=true inputs_reopened_unchanged=true", verifiedCount, boundaryOrdinal)
 }
 
 func TestSafeBoundaryTaxonomyKeepsOnlyObservedCoordinatesAndCodes(t *testing.T) {
