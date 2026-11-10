@@ -2,6 +2,7 @@ package cardb20
 
 import (
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -53,6 +54,20 @@ func b06ExpectedPaths(parallel bool) [][]string {
 		paths = append(paths, []string{"b06-parallel-a", "b06-parallel-b"})
 	}
 	return append(paths, []string{"b06-rotate-a", "b06-rotate-z", "b06-rotate-m"})
+}
+
+func b06RequireEdges(t *testing.T, actual, expected []b06Edge) {
+	t.Helper()
+	counts := func(edges []b06Edge) map[b06Edge]int {
+		out := map[b06Edge]int{}
+		for _, edge := range edges {
+			out[edge]++
+		}
+		return out
+	}
+	if !maps.Equal(counts(actual), counts(expected)) {
+		t.Fatalf("stored raw edge multiplicity/kinds differ: actual=%+v expected=%+v", actual, expected)
+	}
 }
 
 func b06Retain(t *testing.T, name string, value any) {

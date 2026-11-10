@@ -390,6 +390,72 @@ func (f *b06PlugFixture) seedParallel() {
 	}
 }
 
+func (f *b06PlugFixture) requireEdges(label string, expected []b06Edge) {
+	f.t.Helper()
+	meta, err := f.store.Meta(context.Background())
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	r, err := f.store.Read(context.Background(), driver.View{Incarnation: meta.Incarnation, At: &meta.Head})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	defer func() {
+		if err := r.Close(); err != nil {
+			f.t.Error(err)
+		}
+	}()
+	page, err := r.Query(context.Background(), driver.Query{Limit: 1000})
+	if err != nil || page.NextCursor != nil {
+		f.t.Fatalf("complete fixture graph read failed: %v", err)
+	}
+	actual := []b06Edge{}
+	for _, row := range page.Items {
+		if row.Kind != "bead" {
+			continue
+		}
+		var doc pipeline.Document
+		if err := json.Unmarshal(row.Body, &doc); err != nil || doc.ID != row.Ref.ID {
+			f.t.Fatal("raw fixture source envelope mismatch", err)
+		}
+		for _, edge := range doc.Links {
+			actual = append(actual, b06Edge{doc.ID, edge.To.ID, edge.Kind})
+		}
+	}
+	b06Retain(f.t, label+"-raw-edges.json", map[string]any{"raw_records": page.Items, "raw_edges": actual, "expected_edges": expected, "actual_edge_count": len(actual), "snapshot": r.Snapshot()})
+	b06RequireEdges(f.t, actual, expected)
+}
+
+func (f *b06PlugFixture) duplicate(edge b06Edge) {
+	f.t.Helper()
+	type image struct {
+		Archive  []byte                     `json:"archive"`
+		Receipts map[string]b06ReceiptImage `json:"attempted_receipts"`
+	}
+	var before, after image
+	if err := json.Unmarshal(f.image("before-ordinary-duplicate"), &before); err != nil {
+		f.t.Fatal(err)
+	}
+	commit := b06RequireSuccess[model.Commit](f.t, f.link(edge))
+	key := "bead.link/" + fmt.Sprint(f.requests)
+	if err := json.Unmarshal(f.image("after-ordinary-duplicate"), &after); err != nil {
+		f.t.Fatal(err)
+	}
+	if !bytes.Equal(before.Archive, after.Archive) || len(after.Receipts) != len(before.Receipts)+1 {
+		f.t.Fatal("ordinary duplicate changed graph/history or unexpected receipts")
+	}
+	for key, value := range before.Receipts {
+		if !reflect.DeepEqual(value, after.Receipts[key]) {
+			f.t.Fatal("ordinary duplicate changed earlier receipt")
+		}
+	}
+	receipt, ok := after.Receipts[key]
+	if !ok || receipt.Changeset != nil || receipt.RequestHash == "" || receipt.ResponsePending || !reflect.DeepEqual(receipt.Commit, commit) {
+		f.t.Fatalf("duplicate did not save its exact final no-op receipt %+v", receipt)
+	}
+	b06Retain(f.t, "ordinary-duplicate-conservation.json", map[string]any{"before": before, "after": after, "new_receipt_key": key, "actual_response": commit, "graph_and_history": "exactly unchanged", "new_noop_receipts": 1})
+}
+
 func (f *b06PlugFixture) deniedMember() {
 	f.t.Helper()
 	meta, err := f.store.Meta(context.Background())
@@ -437,6 +503,7 @@ func (f *b06PlugFixture) deniedMember() {
 
 func b06RunPlug(t *testing.T, engine string) [][]string {
 	f := b06OpenPlug(t, engine)
+	expectedEdges := []b06Edge{}
 	for _, c := range b06CycleCases() {
 		for _, id := range c.IDs {
 			f.create(id)
@@ -444,6 +511,8 @@ func b06RunPlug(t *testing.T, engine string) [][]string {
 		for _, edge := range c.Edges {
 			b06RequireSuccess[model.Commit](t, f.link(edge))
 		}
+		expectedEdges = append(expectedEdges, c.Edges...)
+		f.requireEdges(c.Name, expectedEdges)
 		f.refuse(b06Edge{c.IDs[0], c.IDs[0], "tracks"})
 		b06Retain(t, "corpus-"+c.Name+".json", c)
 		if c.Name == "pure-tracks-loop" {
@@ -453,16 +522,20 @@ func b06RunPlug(t *testing.T, engine string) [][]string {
 	}
 	// A repeated ordinary edge is an idempotency control, not parallel proof.
 	edge := b06CycleCases()[0].Edges[0]
-	b06RequireSuccess[model.Commit](t, f.link(edge))
+	f.duplicate(edge)
 	f.refuse(b06Edge{edge.From, edge.To, "blocks"})
 	f.create("b06-schedule-a")
 	f.create("b06-schedule-b")
 	b06RequireSuccess[model.Commit](t, f.link(b06Edge{"b06-schedule-a", "b06-schedule-b", "blocks"}))
+	expectedEdges = append(expectedEdges, b06Edge{"b06-schedule-a", "b06-schedule-b", "blocks"})
 	f.refuse(b06Edge{"b06-schedule-b", "b06-schedule-a", "blocks"})
+	f.requireEdges("ordinary", expectedEdges)
 	b06AssertReport(t, f.report(false), [][]string{})
 	b06AssertReport(t, f.report(true), b06ExpectedPaths(false))
 	f.capability()
 	f.seedParallel()
+	expectedEdges = append(expectedEdges, b06ParallelEdges()...)
+	f.requireEdges("parallel", expectedEdges)
 	b06AssertReport(t, f.report(false), [][]string{{"b06-parallel-a", "b06-parallel-b"}})
 	b06AssertReport(t, f.report(true), b06ExpectedPaths(true))
 	f.deniedMember()
@@ -471,6 +544,7 @@ func b06RunPlug(t *testing.T, engine string) [][]string {
 	if !bytes.Equal(before, f.image("after-reopen")) {
 		t.Fatal("physical reopen changed full state")
 	}
+	f.requireEdges("reopened", expectedEdges)
 	b06AssertReport(t, f.report(false), [][]string{{"b06-parallel-a", "b06-parallel-b"}})
 	got := f.report(true)
 	b06AssertReport(t, got, b06ExpectedPaths(true))

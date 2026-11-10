@@ -220,6 +220,7 @@ func (r *b06NativeRecorder) parallel(w b06NativeWorkspace, binary string) {
 
 func (r *b06NativeRecorder) core(binary string, server *publicnative.Server) [][]string {
 	w := r.workspace(binary, server, "b06_core")
+	expectedEdges := []b06Edge{}
 	for _, c := range b06CycleCases() {
 		for _, id := range c.IDs {
 			r.create(w, binary, id, false)
@@ -227,6 +228,8 @@ func (r *b06NativeRecorder) core(binary string, server *publicnative.Server) [][
 		for _, e := range c.Edges {
 			r.edge(w, binary, e, false)
 		}
+		expectedEdges = append(expectedEdges, c.Edges...)
+		r.requireEdges(w, binary, c.Name, expectedEdges)
 		r.refuse(w, binary, b06Edge{c.IDs[0], c.IDs[0], "tracks"}, "itself")
 		if c.Name == "pure-tracks-loop" {
 			r.requirePaths(r.cycles(w, binary, "pure-default", false), [][]string{})
@@ -234,16 +237,28 @@ func (r *b06NativeRecorder) core(binary string, server *publicnative.Server) [][
 		}
 	}
 	edge := b06CycleCases()[0].Edges[0]
+	beforeDuplicate := r.image(w, binary, "before-ordinary-duplicate")
+	beforeHistory := r.rows(w, binary, "before-duplicate-history", "SELECT commit_hash FROM dolt_log ORDER BY commit_hash")
 	r.edge(w, binary, edge, false)
+	afterDuplicate := r.image(w, binary, "after-ordinary-duplicate")
+	afterHistory := r.rows(w, binary, "after-duplicate-history", "SELECT commit_hash FROM dolt_log ORDER BY commit_hash")
+	if !reflect.DeepEqual(beforeDuplicate, afterDuplicate) || !reflect.DeepEqual(beforeHistory, afterHistory) {
+		r.t.Fatal("ordinary duplicate changed native graph/audit/history")
+	}
+	r.writeJSON(filepath.Join(r.root, "ordinary-duplicate-conservation.json"), map[string]any{"before": beforeDuplicate, "after": afterDuplicate, "before_commits": beforeHistory, "after_commits": afterHistory, "graph_audit_history": "exactly unchanged"})
 	r.refuse(w, binary, b06Edge{edge.From, edge.To, "blocks"}, "type")
 	for _, id := range []string{"b06-schedule-a", "b06-schedule-b"} {
 		r.create(w, binary, id, false)
 	}
 	r.edge(w, binary, b06Edge{"b06-schedule-a", "b06-schedule-b", "blocks"}, false)
+	expectedEdges = append(expectedEdges, b06Edge{"b06-schedule-a", "b06-schedule-b", "blocks"})
 	r.refuse(w, binary, b06Edge{"b06-schedule-b", "b06-schedule-a", "blocks"}, "cycle")
+	r.requireEdges(w, binary, "ordinary", expectedEdges)
 	r.requirePaths(r.cycles(w, binary, "ordinary-default", false), [][]string{})
 	r.requirePaths(r.cycles(w, binary, "ordinary-tracks", true), b06ExpectedPaths(false))
 	r.parallel(w, binary)
+	expectedEdges = append(expectedEdges, b06ParallelEdges()...)
+	r.requireEdges(w, binary, "parallel", expectedEdges)
 	r.requirePaths(r.cycles(w, binary, "parallel-default", false), [][]string{{"b06-parallel-a", "b06-parallel-b"}})
 	final := r.cycles(w, binary, "parallel-tracks", true)
 	r.requirePaths(final, b06ExpectedPaths(true))
@@ -253,6 +268,31 @@ func (r *b06NativeRecorder) core(binary string, server *publicnative.Server) [][
 	}
 	r.t.Log("B06_NATIVE durable pure_tracks=excluded mixed=reported self=refused scheduling=refused duplicate_edges=4 parallel_cycles=1 report_order=raw_exact")
 	return b06NativePaths(final)
+}
+
+func (r *b06NativeRecorder) requireEdges(w b06NativeWorkspace, binary, label string, expected []b06Edge) {
+	r.t.Helper()
+	image := r.image(w, binary, label+"-edge-census")
+	actual := []b06Edge{}
+	for _, table := range []string{"dependencies", "wisp_dependencies"} {
+		for _, row := range image[table] {
+			var target string
+			for _, key := range []string{"depends_on_issue_id", "depends_on_wisp_id", "depends_on_external"} {
+				if row[key] != nil {
+					if target != "" {
+						r.t.Fatal("native raw edge has multiple target arms")
+					}
+					target = fmt.Sprint(row[key])
+				}
+			}
+			if target == "" {
+				r.t.Fatal("native raw edge has no typed target")
+			}
+			actual = append(actual, b06Edge{fmt.Sprint(row["issue_id"]), target, fmt.Sprint(row["type"])})
+		}
+	}
+	r.writeJSON(filepath.Join(r.root, label+"-edge-census.json"), map[string]any{"raw_edges": actual, "expected_edges": expected, "actual_edge_count": len(actual), "raw_source_image": image})
+	b06RequireEdges(r.t, actual, expected)
 }
 
 func (r *b06NativeRecorder) missing(binary string, server *publicnative.Server) {
