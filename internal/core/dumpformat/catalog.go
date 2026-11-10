@@ -6,6 +6,7 @@ package dumpformat
 const (
 	DurableEntityTable         = "issues"
 	EphemeralPlaneWireField    = "wisp_plane"
+	EphemeralTypeField         = "wisp_type"
 	EphemeralEntityTable       = "wisps"
 	DurableDependencyTable     = "dependencies"
 	SourceEventJournalTable    = "bd_events_journal"

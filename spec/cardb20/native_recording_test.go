@@ -95,7 +95,17 @@ func TestB20FreshNativeCurrentWorkingSetTwins(t *testing.T) {
 	if len(twins) != 2 || !reflect.DeepEqual(twins[0].Projection, twins[1].Projection) || !reflect.DeepEqual(twins[0].Audit, twins[1].Audit) {
 		t.Fatal("independent non-temporal reference projections diverged")
 	}
-	r.writeJSON(filepath.Join(root, "native-twins.json"), twins)
+	twinsPath := filepath.Join(root, "native-twins.json")
+	r.writeJSON(twinsPath, twins)
+	if !t.Run("saved_rows_conserve_raw", func(t *testing.T) {
+		conservation, err := verifyNativeSQLRecordingFile(twinsPath, map[string]string{"a": filepath.Join(root, "native-a"), "b": filepath.Join(root, "native-b")})
+		if err != nil {
+			t.Fatalf("saved aggregate SQL row conservation: %v", err)
+		}
+		r.writeJSON(filepath.Join(root, "native-twins-row-conservation.json"), conservation)
+	}) {
+		t.Fatal("saved native derivatives incomplete; no row conservation credit")
+	}
 	for _, engine := range engines {
 		t.Run("paired_"+engine, func(t *testing.T) {
 			plug := replayCurrent(t, engine)
@@ -345,7 +355,13 @@ func (r *nativeRecorder) recordTwin(binary, name string) nativeTwin {
 	if err := server.Stop(); err != nil {
 		t.Fatal(err)
 	}
-	r.writeJSON(filepath.Join(r.root, "recording.json"), twin)
+	recordingPath := filepath.Join(r.root, "recording.json")
+	r.writeJSON(recordingPath, twin)
+	conservation, err := verifyNativeSQLRecordingFile(recordingPath, map[string]string{name: r.root})
+	if err != nil {
+		t.Fatalf("saved individual SQL row conservation: %v", err)
+	}
+	r.writeJSON(filepath.Join(r.root, "recording-row-conservation.json"), conservation)
 	return twin
 }
 
@@ -375,7 +391,9 @@ func compareSQLJournal(t *testing.T, rows, cli []map[string]any) {
 	}
 	for i, row := range rows {
 		for _, key := range []string{"seq", "op", "issue_id", "actor"} {
-			if !reflect.DeepEqual(row[key], cli[i][key]) {
+			sqlValue, sqlPresent := row[key]
+			cliValue, cliPresent := cli[i][key]
+			if !sqlPresent || !cliPresent || !nativeSQLJournalCellEqual(sqlValue, cliValue) {
 				t.Fatalf("SQL/CLI journal row%d field%s differs", i, key)
 			}
 		}
@@ -457,9 +475,12 @@ func (r *nativeRecorder) image(w nativeWorkspace, binary, label string) nativeIm
 	for _, q := range []struct{ name, order string }{{"events", "created_at,id"}, {"journal", "seq"}, {"sequence", "id"}, {"issues", "id"}} {
 		table := w.families[q.name]
 		data := r.command(w, label+"-"+q.name, binary, []string{"--readonly", "sql", "SELECT * FROM " + table + " ORDER BY " + q.order, "--json"}, false)
-		var rows []map[string]any
-		if err := json.Unmarshal(data, &rows); err != nil {
+		rows, err := decodeNativeSQLRows(data)
+		if err != nil {
 			r.t.Fatalf("actual current SQL%s: %v: %s", q.name, err, data)
+		}
+		if err := verifyNativeSQLRows(data, rows); err != nil {
+			r.t.Fatalf("actual current SQL%s row conservation: %v", q.name, err)
 		}
 		result.Rows[q.name] = rows
 		result.RawSHA256[q.name] = hashBytes(data)

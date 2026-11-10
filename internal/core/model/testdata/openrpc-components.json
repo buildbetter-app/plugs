@@ -7,7 +7,9 @@
     "LinkTargetKind": "d96d7dd03cd091f18d0436e45cf77a4783e0a9d29fa0cbd12611ef13e23ef1dc",
     "LinkMetadata": "d96d7dd03cd091f18d0436e45cf77a4783e0a9d29fa0cbd12611ef13e23ef1dc",
     "ConditionDecision": "e0aab6d59361f63e74c3c87c191f27e0e644bd45e3cc9d2d427f022c664e4011",
-    "ConditionUnmetDecision": "e0aab6d59361f63e74c3c87c191f27e0e644bd45e3cc9d2d427f022c664e4011"
+    "ConditionUnmetDecision": "e0aab6d59361f63e74c3c87c191f27e0e644bd45e3cc9d2d427f022c664e4011",
+    "CreateOp": "4c2bca70e2aa8834f2f26e9a13b365b14639d3e7237424c8b25b4fae16cc2a95",
+    "CloseOp": "4c2bca70e2aa8834f2f26e9a13b365b14639d3e7237424c8b25b4fae16cc2a95"
   },
   "sourceNote": "sourceSHA256 pins the historical baseline. schemaSourceSHA256 records full source-document hashes for individually refreshed schemas; all other schemas retain the historical baseline.",
   "schemas": {
@@ -82,6 +84,11 @@
         },
         "project": {
           "type": "string"
+        },
+        "targetStatus": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Exact declared nonterminal status for this project/type; omission selects the workflow initial status. Noninitial targets require an allowed transition from initial and all its guards. Terminal loading uses create followed by guarded close."
         }
       },
       "required": [
@@ -1932,7 +1939,7 @@
     },
     "CloseOp": {
       "type": "object",
-      "description": "Enter the canonical close slot at this operation position in tx.apply; reuse bead.close guards, permission, reason and provenance. Any refusal rolls back the whole ChangeSet. No force or status shortcut.",
+      "description": "Enter the close slot or an explicit declared successful terminal status at this operation position in tx.apply; reuse bead.close guards, permission, reason and provenance. Any refusal rolls back the whole ChangeSet. No force or generic status shortcut.",
       "properties": {
         "kind": {
           "const": "close"
@@ -1949,6 +1956,11 @@
           "items": {
             "$ref": "#/components/schemas/Expect"
           }
+        },
+        "targetStatus": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Exact declared successful terminal status for this project/type; omission selects the close slot. All transition, permission, graph and child guards remain in force. Active workflow providers that cannot honor the selector refuse it."
         }
       },
       "required": [

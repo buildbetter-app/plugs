@@ -67,18 +67,19 @@ func Bind(registry *rpc.Registry, service Service) error {
 }
 
 type params struct {
-	Project       *string              `json:"project,omitempty"`
-	Type          string               `json:"type,omitempty"`
-	Status        string               `json:"status,omitempty"`
-	Document      json.RawMessage      `json:"document,omitempty"`
-	Expect        []model.Precondition `json:"expect,omitempty"`
-	After         model.Revision       `json:"after,omitempty"`
-	Limit         model.Natural        `json:"limit,omitempty"`
-	FromRevision  model.Revision       `json:"fromRevision,omitempty"`
-	ToRevision    model.Revision       `json:"toRevision,omitempty"`
-	PlanDigest    string               `json:"planDigest,omitempty"`
-	HumanPresence humanPresence        `json:"humanPresence,omitempty"`
-	Meta          wire.Meta            `json:"_meta,omitempty"`
+	Project       *string                   `json:"project,omitempty"`
+	Type          string                    `json:"type,omitempty"`
+	Status        string                    `json:"status,omitempty"`
+	Document      json.RawMessage           `json:"document,omitempty"`
+	TypeMappings  []ontologyops.TypeMapping `json:"typeMappings,omitempty"`
+	Expect        []model.Precondition      `json:"expect,omitempty"`
+	After         model.Revision            `json:"after,omitempty"`
+	Limit         model.Natural             `json:"limit,omitempty"`
+	FromRevision  model.Revision            `json:"fromRevision,omitempty"`
+	ToRevision    model.Revision            `json:"toRevision,omitempty"`
+	PlanDigest    string                    `json:"planDigest,omitempty"`
+	HumanPresence humanPresence             `json:"humanPresence,omitempty"`
+	Meta          wire.Meta                 `json:"_meta,omitempty"`
 }
 
 type humanPresence struct {
@@ -107,7 +108,7 @@ func dispatch(ctx context.Context, service Service, call rpc.Call) (any, error) 
 	case "ontology.check":
 		return service.Check(ctx, call.Principal, project)
 	case "ontology.plan":
-		return service.Plan(ctx, call.Principal, ontologyops.PlanRequest{Project: project, Document: p.Document, Expect: p.Expect})
+		return service.Plan(ctx, call.Principal, ontologyops.PlanRequest{Project: project, Document: p.Document, Expect: p.Expect, TypeMappings: p.TypeMappings})
 	case "ontology.apply":
 		if err := admitHumanApply(ctx, call.Principal, p.PlanDigest, p.HumanPresence); err != nil {
 			return nil, err

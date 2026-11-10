@@ -279,7 +279,7 @@ func validateScopedSourceRecords(m Manifest, rows map[string][]Record, config []
 				if planes && (r.Kind == "edge" || sourcePlaneArchiveTable(r.Source.Table) || nativeOperationalTable(r.Source.Table, m.SourceFamilyContract)) {
 					err = validateSourcePlaneRecord(r, scoped, localCounts, statuses)
 				} else {
-					err = validateVersionedRecord(r, scoped.Projects, localCounts, nil, m.EdgeVersion())
+					err = validateVersionedRecord(r, scoped.Projects, localCounts, nil, m.EdgeVersion(), m.MainVersion)
 				}
 				if err != nil {
 					return err
@@ -300,7 +300,7 @@ func validateScopedSourceRecords(m Manifest, rows map[string][]Record, config []
 					localSources = append(localSources, s)
 				}
 			}
-			if err := validateBoundDispositions(localSources, localCounts, localConfig, nil, planes, m.SourceFamilyContract); err != nil {
+			if err := validateBoundDispositionsForVersion(localSources, localCounts, localConfig, nil, planes, m.MainVersion, m.SourceFamilyContract); err != nil {
 				return err
 			}
 		}
