@@ -1587,6 +1587,7 @@ spec/s1-b25-b28/compare_r418_pair.py
 spec/s1-b25-b28/compare_r418_pair_test.py
 spec/s1-b25-b28/config_union_test.go
 spec/s1-b25-b28/converter_test.go
+spec/s1-b25-b28/lease_import_test.go
 spec/s1-b25-b28/provenance.py
 spec/s1-b25-b28/public_recording_test.go
 spec/s1-b25-b28/record_reference.py

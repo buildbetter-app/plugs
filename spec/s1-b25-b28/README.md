@@ -3,6 +3,17 @@
 This package is the dedicated four-card recorder, projection, and acceptance
 slice for B25 relational preservation/delete cascades, B26 ephemeral-plane
 promotion, B27 import/export/configuration, and B28 write pipeline/subscribers.
+
+`TestB27ImportConservesLiveLocalLeaseAcrossDrivers` adds a bounded B27 control
+on memory, SQLite and PostgreSQL. Its explicitly authored synthetic snapshot
+contains a source issue-lease row as archive evidence. A competing restore must
+reach the real core writer-lease acquisition and time out before `Write`, leave
+records, versions, changesets, metadata and derived rows unchanged, and publish
+no receipt or archive blob. The incumbent keeps its epoch and can renew. The
+identical archive/profile then imports under that original lease, with exact
+snapshot/receipt parity after both SQL stores reopen. This control does not
+exercise native issue-lease activation or collision semantics, supply source
+history, or qualify the native/full B27 card.
 It also exercises the already-admitted I4 transaction boundaries: auxiliary
 invariants are atomic, a late event-log failure rolls back the write/version/
 receipt, committed post failures become sanitized durable warnings and dead
