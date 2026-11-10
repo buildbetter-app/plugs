@@ -384,6 +384,7 @@ internal/core/service/direct_blockers.go
 internal/core/service/direct_blockers_test.go
 internal/core/service/external_target_test.go
 internal/core/service/gate.go
+internal/core/service/gate_listing.go
 internal/core/service/graph.go
 internal/core/service/heartbeat.go
 internal/core/service/hierarchy-index-consumer-design.md
@@ -628,6 +629,10 @@ internal/integration/gatecontract/engine_test.go
 internal/integration/gatecontract/external_target_test.go
 internal/integration/gatecontract/fanout_test.go
 internal/integration/gatecontract/fixture_test.go
+internal/integration/gatecontract/gate_listing_authority_test.go
+internal/integration/gatecontract/gate_listing_host_test.go
+internal/integration/gatecontract/gate_listing_test.go
+internal/integration/gatecontract/gate_type_mapping_test.go
 internal/integration/gatecontract/metadata_test.go
 internal/integration/gatecontract/public_dump_restore_test.go
 internal/integration/graphacceptance/BUILD.bazel
@@ -838,6 +843,7 @@ internal/server/authzrpc/claim_test.go
 internal/server/authzrpc/cycles.go
 internal/server/authzrpc/drivers_test.go
 internal/server/authzrpc/export_test.go
+internal/server/authzrpc/gate_listing.go
 internal/server/authzrpc/hierarchy.go
 internal/server/authzrpc/hierarchy_lifecycle_guards_test.go
 internal/server/authzrpc/hierarchy_lifecycle_test.go
@@ -988,6 +994,7 @@ internal/server/rpc/cursor.go
 internal/server/rpc/cursor_test.go
 internal/server/rpc/cycles.go
 internal/server/rpc/gate_integration_test.go
+internal/server/rpc/gate_listing.go
 internal/server/rpc/integration_test.go
 internal/server/rpc/label_rename.go
 internal/server/rpc/openrpc.json
@@ -1301,6 +1308,7 @@ pluginapi/types_test.go
 plugins/plug/SKILL.md
 plugins/workflow/BUILD.bazel
 plugins/workflow/atomic.go
+plugins/workflow/listing.go
 plugins/workflow/manifest.json
 plugins/workflow/native.go
 plugins/workflow/ordinary_delete.go

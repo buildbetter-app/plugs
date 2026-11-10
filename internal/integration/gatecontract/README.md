@@ -71,3 +71,66 @@ interface, true gate creation/listing and its template/closed query policy,
 producer/importer mappings, resolver behavior, and full-card correspondence
 remain separate dependencies. Source `timeout_ns` is not silently mapped to
 the public `timeout` member.
+
+## Installed gate types and public listing
+
+The literal `gate` type is installed on the existing issue workflow through a
+stored host catalog. Await members on another type do not change its identity.
+The public fixtures install the type and literal statuses through
+`ontology.plan`/`ontology.apply`. The optional `typeMappings` plan input accepts
+only closed `map_type` objects with an ID, original project/type selector, and
+different `from`/`to` keys. The existing migration planner retains these inputs
+in its digested report, requires a known original type and active destination,
+and preserves every other row member. Invalid mappings return the planner's
+actual typed `invalid_params` refusal, including its pre-inventory no-op check,
+without retaining an applicable plan. Legacy importer directives are unchanged.
+
+`gate.list` returns exact gate types in the native default query order: priority
+ascending, creation time descending, then ID ascending. It merges both complete
+planes before the selected limit; durable prefixes cannot hide higher-ranked
+ephemeral gates. It includes templates,
+pinned-status gates and ephemeral workflow items by default. `all` admits closed gates
+alongside open ones; failed, canceled and backlog are not the installed close
+slot. `excludeTemplates` removes templates before the selected gate limit.
+The filter control publicly installs literal `pinned`/frozen and `closed`/done
+statuses, selects them with the existing defer/close slots, and retains a
+different completed status to prove that only the close slot is excluded.
+Limit zero drains all ordinary driver pages; a positive int64 limit bounds the
+selected gates. Await filtering follows that bound: empty/`all` accepts every
+await type, `gh` matches `gh:` prefixes, and other strings match exactly.
+The workflow provider reads a checkpoint without receipt cleanup. Composed
+authorization uses the existing bead read boundary before counting a gate,
+projects hidden parents as existence only, and rechecks current authority.
+Missing issue rows are dropped; query and policy failures return errors without
+partial successful results or writes.
+
+The new `TestB14PublicGateTypeInstallMapTypePreservesLiteralMembers`,
+`TestB14PublicGateTypeMappingsRefuseWithoutWrites`,
+`TestB14PublicGateListingCanonicalFiltersAndLimit`,
+`TestB14PublicGateListingCheckAwaitTypeAfterLimit`,
+`TestB14PublicGateListingDrainsPagesAndPropagatesQueryFailures`,
+`TestB14PublicGateListingBothPlanesAndDurableReopen`,
+`TestB14PublicGateListingGlobalPriorityCreationAndIDOrder`, and
+`TestB14PublicGateListingComposedReadVisibilityBeforeLimit` each require memory,
+SQLite and PostgreSQL. Ordinary gate filters, ordering, mapping and refusals
+are positive controls on all three engines. Both-plane positives and durable
+reopen run on SQLite and PostgreSQL. Memory truthfully lacks durable workflow
+storage: both workflow cases require typed invocation refusal with no receipt,
+then prove ordinary listing/order still works. Those memory cells receive no
+ephemeral or both-plane positive credit, and no persistence marker is faked.
+Only the initial catalog in the installation fixture is
+seeded; its installation/mapping and all bead/checkpoint changes use public
+RPC. Listing fixtures also install the gate type through the public catalog
+API. The composed host receives that same installed ontology through its
+optional trusted `Config.Ontology` slot, shared by its Writer and reads.
+The read visibility fixture installs an explicit test rule through the
+existing composition chain; it does not expand the production finite policy.
+`TestB14PublicGateListingNoQuerierUnsupported` pins the unsupported source case.
+These cases are authored acceptance controls, not native recordings. Their
+source correspondence is canonical9d6 `issueops/gates.go`/`gates_test.go` and
+the retained CLI check-filter controls. Native execution, producer/importer
+admission, resolver execution, hosted delivery and full B14 remain separately
+qualified; historical `0/82` native cases receive no new credit.
+Native Beads registers gate as a built-in type; Plug's explicit catalog
+installation is a distinct activation boundary. The global built-in issue
+catalog, importer catalogs and retained restore goldens are unchanged.
