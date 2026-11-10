@@ -382,7 +382,11 @@ func (f *b06PlugFixture) seedParallel() {
 		if err != nil {
 			f.t.Fatal(err)
 		}
-		changes = append(changes, conformance.FixtureChange{Ref: model.RefByID(id, model.Natural64(0)), Kind: "bead", Op: model.OpCreate, Body: body})
+		graph := &conformance.FixtureGraphSource{Parent: doc.Parent}
+		for _, link := range doc.Links {
+			graph.Links = append(graph.Links, driver.SourceLink{Kind: link.Kind, To: link.To})
+		}
+		changes = append(changes, conformance.FixtureChange{Ref: model.RefByID(id, model.Natural64(0)), Kind: "bead", Op: model.OpCreate, Body: body, Graph: graph})
 	}
 	b06Retain(f.t, "parallel-diagnostic-setup.json", map[string]any{"route": "conformance.Seed real driver records; not product admission", "raw_edges": b06ParallelEdges(), "changes": changes})
 	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, changes); err != nil {

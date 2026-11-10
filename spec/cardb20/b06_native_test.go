@@ -20,8 +20,9 @@ import (
 )
 
 type b06NativeWorkspace struct {
-	dir string
-	env []string
+	dir            string
+	env            []string
+	ephemeralTable string
 }
 type b06NativeRecorder struct {
 	*nativeRecorder
@@ -91,7 +92,7 @@ func (r *b06NativeRecorder) workspace(binary string, server *publicnative.Server
 		}
 	}
 	base := []string{"PATH=/tmp/plug-swarm/bin/worker-safe:/usr/bin:/bin", "HOME=" + filepath.Join(root, "home"), "USER=b06-native", "TZ=UTC", "LC_ALL=C", "NO_COLOR=1", "CI=true", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=B06 Public", "GIT_AUTHOR_EMAIL=b06@example.invalid", "GIT_COMMITTER_NAME=B06 Public", "GIT_COMMITTER_EMAIL=b06@example.invalid", "TMPDIR=" + filepath.Join(root, "tmp"), "BEADS_ACTOR=b06-recorder", "BEADS_NO_DAEMON=1"}
-	w := b06NativeWorkspace{filepath.Join(root, "project"), server.ChildEnv(base)}
+	w := b06NativeWorkspace{dir: filepath.Join(root, "project"), env: server.ChildEnv(base)}
 	r.command(w, "git-init", "/usr/bin/git", []string{"-c", "core.hooksPath=/dev/null", "init", "--quiet", "--template="}, false)
 	version := r.command(w, "version", binary, []string{"version", "--json"}, false)
 	var identity struct{ Commit, Build string }
@@ -100,6 +101,27 @@ func (r *b06NativeRecorder) workspace(binary string, server *publicnative.Server
 	}
 	r.command(w, "init", binary, []string{"init", "--server", "--external", "--server-host", "127.0.0.1", "--server-port", strconv.Itoa(server.Port), "--database", database, "--prefix", "b06", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet"}, false)
 	server.RequireDatabaseDir(r.t, database)
+	// Bind the native source family through its actual dependency foreign key.
+	// Keep that raw catalog identity for images and later damaged-row controls.
+	query := "SELECT referenced_table_name AS source_table FROM information_schema.key_column_usage WHERE table_schema = DATABASE() AND table_name = 'wisp_dependencies' AND column_name = 'issue_id' AND referenced_table_name IS NOT NULL"
+	rows := r.rows(w, binary, database+"-source-table", query)
+	if len(rows) != 1 {
+		r.t.Fatalf("native dependency source binding is not unique: %+v", rows)
+	}
+	for key, value := range rows[0] {
+		if strings.EqualFold(key, "source_table") {
+			w.ephemeralTable, _ = value.(string)
+		}
+	}
+	if w.ephemeralTable == "" {
+		r.t.Fatal("native dependency source table is absent")
+	}
+	for _, c := range w.ephemeralTable {
+		if c != '_' && (c < 'a' || c > 'z') {
+			r.t.Fatal("unsafe native catalog source identifier")
+		}
+	}
+	r.writeJSON(filepath.Join(r.root, database+"-source-table-binding.json"), map[string]any{"lookup": query, "raw_catalog_rows": rows, "source_table": w.ephemeralTable})
 	return w
 }
 
@@ -126,7 +148,7 @@ func (r *b06NativeRecorder) rows(w b06NativeWorkspace, binary, label, query stri
 
 func (r *b06NativeRecorder) image(w b06NativeWorkspace, binary, label string) map[string][]map[string]any {
 	image := map[string][]map[string]any{}
-	for _, table := range []string{"issues", "wisps", "dependencies", "wisp_dependencies", "events", "wisp_events"} {
+	for _, table := range []string{"issues", w.ephemeralTable, "dependencies", "wisp_dependencies", "events", "wisp_events"} {
 		image[table] = r.rows(w, binary, label+"-"+table, "SELECT * FROM "+table+" ORDER BY id")
 	}
 	r.writeJSON(filepath.Join(r.root, label+"-image.json"), image)
@@ -331,7 +353,7 @@ func (r *b06NativeRecorder) missing(binary string, server *publicnative.Server) 
 			r.command(w, "diagnostic-drop-"+m[1], binary, []string{"sql", "ALTER TABLE " + table + " DROP FOREIGN KEY `" + m[1] + "`", "--json"}, false)
 		}
 	}
-	for _, victim := range []struct{ table, id string }{{"issues", "b06-missing-a"}, {"wisps", "b06-missing-b"}} {
+	for _, victim := range []struct{ table, id string }{{"issues", "b06-missing-a"}, {w.ephemeralTable, "b06-missing-b"}} {
 		r.command(w, "diagnostic-delete-"+victim.id, binary, []string{"sql", "DELETE FROM " + victim.table + " WHERE id='" + victim.id + "'", "--json"}, false)
 		after := r.image(w, binary, "missing-"+victim.id)
 		for _, table := range []string{"dependencies", "wisp_dependencies"} {
@@ -353,7 +375,7 @@ func (r *b06NativeRecorder) missing(binary string, server *publicnative.Server) 
 			}
 		}
 		wantMissing := 1
-		if victim.table == "wisps" {
+		if victim.table == w.ephemeralTable {
 			wantMissing = 2
 		}
 		if missing != wantMissing {
@@ -369,7 +391,7 @@ func (r *b06NativeRecorder) missing(binary string, server *publicnative.Server) 
 			r.t.Fatal("native text concealed missing member")
 		}
 	}
-	r.writeJSON(filepath.Join(r.root, "missing-counterpart-boundary.json"), map[string]any{"native": "actual durable and wisp rows physically removed; both dependency families preserved and reported with original IDs/positions", "plug": "physical-missing topology OPEN: durable cycle input only includes extant bead documents; denied-member placeholders are separately tested", "positive_mixed_plane": "OPEN: combined-Ready owner must supply same-image complete graph snapshot", "setup": "public disposable SQL damaged-database diagnostic; not ordinary deletion admission"})
+	r.writeJSON(filepath.Join(r.root, "missing-counterpart-boundary.json"), map[string]any{"native": "actual durable and ephemeral rows physically removed; both dependency families preserved and reported with original IDs/positions", "plug": "physical-missing topology OPEN: durable cycle input only includes extant bead documents; denied-member placeholders are separately tested", "positive_mixed_plane": "OPEN: combined-Ready owner must supply same-image complete graph snapshot", "setup": "public disposable SQL damaged-database diagnostic; not ordinary deletion admission"})
 	r.t.Log("B06_NATIVE mixed_plane=observed durable_missing=1 wisp_missing=1 full_members=3 partial=true plug_physical_missing=OPEN plug_mixed_plane=OPEN")
 }
 
