@@ -91,12 +91,12 @@ func TestB06LivePersistentWorkflowKeepsCurrentReportAndRefusalContract(t *testin
 				}
 			}
 			got := f.request(t, "bead.cycles", map[string]any{"includeEphemeral": true}, "")
-			if got.Error == nil || got.Error.Data.Code != "invalid_params" {
+			if got.Error == nil || got.Error.Data.Code != "plugin_durable_state_unavailable" {
 				t.Fatalf("persistent workflow graph refusal=%+v", got.Error)
 			}
 			direct, err := f.domain.Cycles(context.Background(), f.by, service.CyclesRequest{Project: "visible", IncludeEphemeral: true})
 			var refused *model.Error
-			if !errors.As(err, &refused) || refused.Data.Code != "invalid_params" || !reflect.DeepEqual(direct, service.CyclesResult{}) {
+			if !errors.As(err, &refused) || refused.Data.Code != "plugin_durable_state_unavailable" || !reflect.DeepEqual(direct, service.CyclesResult{}) {
 				t.Fatalf("direct service fabricated a workflow graph: result=%+v error=%v", direct, err)
 			}
 			if after := f.state(t); !reflect.DeepEqual(before, after) {

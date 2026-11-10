@@ -1362,8 +1362,12 @@ spec/cardb19/testdata/recording-1/export.jsonl
 spec/cardb19/testdata/recording-1/imported.json
 spec/cardb19/testdata/recording-2/export.jsonl
 spec/cardb19/testdata/recording-2/imported.json
+spec/cardb20/B06-CYCLES.md
 spec/cardb20/BUILD.bazel
 spec/cardb20/README.md
+spec/cardb20/b06_cases_test.go
+spec/cardb20/b06_native_test.go
+spec/cardb20/b06_plug_test.go
 spec/cardb20/caller_test.go
 spec/cardb20/current_test.go
 spec/cardb20/native_build_test.go
