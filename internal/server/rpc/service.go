@@ -163,6 +163,9 @@ func BindService(registry *Registry, svc Service) error {
 		return fmt.Errorf("nil service or registry")
 	}
 	names := []string{"bead.get", "bead.ready", "bead.create", "bead.update", "bead.claim", "bead.claimNext", "bead.comment", "bead.close", "bead.reopen", "bead.defer", "bead.cancel", "bead.fail", "bead.link", "bead.unlink", "tx.apply", "history.query"}
+	if _, ok := svc.(GateListingService); ok {
+		names = append(names, "gate.list")
+	}
 	if _, ok := svc.(CyclesService); ok {
 		names = append(names, "bead.cycles")
 	}
@@ -210,6 +213,9 @@ func BindService(registry *Registry, svc Service) error {
 }
 
 func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
+	if c.Method == "gate.list" {
+		return dispatchGateList(ctx, svc.(GateListingService), c)
+	}
 	if c.Method == "bead.cycles" {
 		return dispatchCycles(ctx, svc.(CyclesService), c)
 	}

@@ -47,7 +47,7 @@ func validateSourcePlaneRecord(r Record, m Manifest, counts map[string]int, stat
 	if (table == "leases" || table == "repo_mtimes") && m.SourceFamilyContract != SourceFamilyContract {
 		return fmt.Errorf("operational source rows require source family contract")
 	}
-	columns, ok := tableColumns[table]
+	columns, ok := sourceTableColumns(m.MainVersion)[table]
 	if !ok || len(fields) != len(strings.Fields(columns)) {
 		return fmt.Errorf("source plane record schema drift")
 	}
@@ -124,7 +124,7 @@ func validateSourcePlaneRecord(r Record, m Manifest, counts map[string]int, stat
 
 func validateSourcePlaneRelations(m Manifest, rows map[string][]Record) error {
 	if m.SourcePlaneAddressContract != SourcePlaneAddressContract {
-		return validateRelations(m.Projects, rows)
+		return validateRelationsForVersion(m.Projects, rows, m.MainVersion, m.IgnoredVersion)
 	}
 	entities := map[driver.SourceEntityKey]bool{}
 	for _, r := range rows["bead"] {
@@ -212,7 +212,7 @@ func validateSourcePlaneRelations(m Manifest, rows map[string][]Record) error {
 			legacy[kind] = records
 		}
 	}
-	return validateRelations(m.Projects, legacy)
+	return validateRelationsForVersion(m.Projects, legacy, m.MainVersion, m.IgnoredVersion)
 }
 
 func sourcePhysicalProject(id string, projects []Project) (string, error) {

@@ -3755,6 +3755,16 @@
           }
         },
         {
+          "name": "typeMappings",
+          "schema": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MapTypeDirective"
+            }
+          },
+          "description": "Existing changed-key map_type directives against original project/type selectors; preserves all fields."
+        },
+        {
           "name": "_meta",
           "schema": {
             "$ref": "#/components/schemas/Meta"
@@ -5913,7 +5923,7 @@
     {
       "name": "view.run",
       "summary": "Run a saved or inline budgeted view.",
-      "description": "With countOnly=true, return the exact ordinary authorized predicate total, including zero, as {items:[],asOf,count}, plus existing projection metadata. No page, groups, elisions or nextCursor is returned; cursor/groupBy combinations refuse invalid_params. Valid fields/sort/budget cannot change or truncate membership. Historical content uses current authorization; more than 20,000 authorized candidates refuses scope_too_large. Absent/false keeps existing behavior and saved definitions unchanged. Run a saved or inline budgeted view. A trusted host may enable count-only parent-aware epic progress using definition={filter:{query:\"parent=\u003cbare bead ID\u003e\"},fields:[],groupBy:[\"epic-progress\"]} and _meta.project equal to the authorized parent project. One pinned content/ontology snapshot and fenced current authority select direct children only; each child keeps its own project permissions. The complete result has items=[], asOf, total and status:\u003ccanonical status ID\u003e groups with empty items. total.count is visible children; only total.elided may report hidden children, as count plus reason=\"authorization\" and continueWith=view.run with the same request minus cursor/asOf. That is fresh reauthorization/refresh, never hidden-row pagination. There is no nextCursor; a supplied cursor refuses cursor_invalid. Hidden identities/statuses are absent. Disabled capability refuses invalid_params with details.capability=\"epic-progress\", details.available=false. Epic progress adds no separate RPC, filter, cursor or result member. Read-only age/status selection for view.run. days is a positive UTC day count; the latest persisted version time must be strictly before one cutoff bound to the signed cursor for all pages. Omitted status selects the current ontology Unstarted/Started categories; an explicit exact status replaces that default and intersects with ordinary query predicates. No saved definition, ready, claimNext, watch or explain semantics change.",
+      "description": "With countOnly=true, return the exact ordinary authorized predicate total, including zero, as {items:[],asOf,count}, plus existing projection metadata. No page, groups, elisions or nextCursor is returned; cursor/groupBy combinations refuse invalid_params. Valid fields/sort/budget cannot change or truncate membership. Historical content uses current authorization; more than 20,000 authorized candidates refuses scope_too_large. Absent/false keeps existing behavior and saved definitions unchanged. Run a saved or inline budgeted view. A trusted host may enable count-only parent-aware epic progress using definition={filter:{query:\"parent=<bare bead ID>\"},fields:[],groupBy:[\"epic-progress\"]} and _meta.project equal to the authorized parent project. One pinned content/ontology snapshot and fenced current authority select direct children only; each child keeps its own project permissions. The complete result has items=[], asOf, total and status:<canonical status ID> groups with empty items. total.count is visible children; only total.elided may report hidden children, as count plus reason=\"authorization\" and continueWith=view.run with the same request minus cursor/asOf. That is fresh reauthorization/refresh, never hidden-row pagination. There is no nextCursor; a supplied cursor refuses cursor_invalid. Hidden identities/statuses are absent. Disabled capability refuses invalid_params with details.capability=\"epic-progress\", details.available=false. Epic progress adds no separate RPC, filter, cursor or result member. Read-only age/status selection for view.run. days is a positive UTC day count; the latest persisted version time must be strictly before one cutoff bound to the signed cursor for all pages. Omitted status selects the current ontology Unstarted/Started categories; an explicit exact status replaces that default and intersects with ordinary query predicates. No saved definition, ready, claimNext, watch or explain semantics change.",
       "tags": [
         {
           "name": "view"
@@ -6832,6 +6842,91 @@
         },
         {
           "$ref": "#/components/errors/PluginDurableStateUnavailable"
+        }
+      ],
+      "x-effect": "read",
+      "x-idempotency": "none",
+      "x-permission": "read",
+      "x-agent-core": true,
+      "x-stability": "v1"
+    },
+    {
+      "name": "gate.list",
+      "summary": "List exact installed gates in canonical default query order.",
+      "description": "Includes templates, pinned-status and ephemeral gates by default. All includes closed gates alongside open gates. Exclude templates before the selected gate limit; limit zero is unlimited. Merge both planes and order by priority ascending, creation time descending, then ID ascending before the limit. Await type filtering follows that limit: empty or all matches every type, gh matches gh: prefixes, other values match exactly. Query failures propagate; missing issue rows are dropped.",
+      "tags": [
+        {
+          "name": "core"
+        }
+      ],
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "all",
+          "schema": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        {
+          "name": "excludeTemplates",
+          "schema": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        {
+          "name": "limit",
+          "schema": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775807,
+            "default": 0
+          }
+        },
+        {
+          "name": "awaitType",
+          "schema": {
+            "type": "string",
+            "default": ""
+          }
+        },
+        {
+          "name": "_meta",
+          "schema": {
+            "$ref": "#/components/schemas/Meta"
+          },
+          "description": "Transport metadata; not an application actor field."
+        }
+      ],
+      "result": {
+        "name": "result",
+        "description": "Result",
+        "schema": {
+          "$ref": "#/components/schemas/BeadPage"
+        }
+      },
+      "errors": [
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/Unsupported"
+        },
+        {
+          "$ref": "#/components/errors/Forbidden"
+        },
+        {
+          "$ref": "#/components/errors/Busy"
+        },
+        {
+          "$ref": "#/components/errors/ProjectRequired"
+        },
+        {
+          "$ref": "#/components/errors/CursorInvalid"
+        },
+        {
+          "$ref": "#/components/errors/IncarnationChanged"
         }
       ],
       "x-effect": "read",
@@ -7975,7 +8070,7 @@
           "filter"
         ],
         "additionalProperties": false,
-        "description": "The trusted epic-progress capability admits groupBy=[\"epic-progress\"], explicitly present fields=[], and exactly filter.query=\"parent=\u003cbare bead ID\u003e\". No sort or additional filters are admitted. budgetTokens must be absent or zero: this complete count is not token-budgeted or paged. The ordinary authorized input cap is 20,000, never the 100,000 type-summary exception; at most 100 groups including total are returned. Refusals return no partial counts."
+        "description": "The trusted epic-progress capability admits groupBy=[\"epic-progress\"], explicitly present fields=[], and exactly filter.query=\"parent=<bare bead ID>\". No sort or additional filters are admitted. budgetTokens must be absent or zero: this complete count is not token-budgeted or paged. The ordinary authorized input cap is 20,000, never the 100,000 type-summary exception; at most 100 groups including total are returned. Refusals return no partial counts."
       },
       "View": {
         "type": "object",
@@ -8081,7 +8176,7 @@
             "items": {
               "$ref": "#/components/schemas/ViewGroup"
             },
-            "description": "Existing grouped output. Epic progress returns key=total with the visible direct-child count and status:\u003ccanonical status ID\u003e groups counting visible children only; every items array is empty. Keys identify statuses in the ontology read from the same asOf content snapshot; they do not infer labels, readiness or completion policy. Only total may carry authorization elision. MaxGroups=100 includes total; incomplete or over-limit results refuse without truncation."
+            "description": "Existing grouped output. Epic progress returns key=total with the visible direct-child count and status:<canonical status ID> groups counting visible children only; every items array is empty. Keys identify statuses in the ontology read from the same asOf content snapshot; they do not infer labels, readiness or completion policy. Only total may carry authorization elision. MaxGroups=100 includes total; incomplete or over-limit results refuse without truncation."
           },
           "projection": {
             "$ref": "#/components/schemas/ProjectionStatus"
@@ -10074,7 +10169,7 @@
           "details"
         ],
         "additionalProperties": false,
-        "x-validation": "resource is bead/\u003cdependent ID\u003e; revision equals blockerAfter.revision. No mutation of the dependent is implied. Current read authorization and redaction cover dependent, blocker, ontology and optional blocker project; suppress the entire notice on any denial."
+        "x-validation": "resource is bead/<dependent ID>; revision equals blockerAfter.revision. No mutation of the dependent is implied. Current read authorization and redaction cover dependent, blocker, ontology and optional blocker project; suppress the entire notice on any denial."
       },
       "OrdinaryEventDescriptor": {
         "type": "object",
@@ -11379,6 +11474,56 @@
         ],
         "additionalProperties": false,
         "description": "Live Beads adaptive base36 hash policy, with ten nonce attempts per length through the configured maximum and monotonic parent.N child counters. Source IDs remain unchanged."
+      },
+      "MapTypeDirective": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "const": "map_type"
+          },
+          "target": {
+            "type": "object",
+            "properties": {
+              "project": {
+                "type": "string",
+                "minLength": 1
+              },
+              "type": {
+                "type": "string",
+                "minLength": 1
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "project",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          "from": {
+            "type": "string",
+            "minLength": 1
+          },
+          "to": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "target",
+          "from",
+          "to"
+        ],
+        "additionalProperties": false
       }
     },
     "errors": {
@@ -14002,7 +14147,7 @@
   ],
   "x-plugin-method-pattern": {
     "pattern": "^x\\.[a-z][a-z0-9-]*\\.[a-z][a-z0-9-]*(?:\\.[a-z][a-z0-9-]*)*$",
-    "rule": "Plugin methods are declared by the manifest under x.\u003calias\u003e.*; each declares a permission and resource parameter. The dynamic set is not enumerated here."
+    "rule": "Plugin methods are declared by the manifest under x.<alias>.*; each declares a permission and resource parameter. The dynamic set is not enumerated here."
   },
   "x-contract-gaps": [
     "The design names authn.authenticate and authz.* as plugin-host calls; authn.authenticate and authz.verify are represented, while other hot-path calls remain host-internal.",
@@ -14013,10 +14158,10 @@
     "format": "plug-method-registry/1",
     "status": "bounded-contract-artifact",
     "purpose": "Human-maintained bounded contract artifact, read independently of methods at validation time; validates the closed method inventory, descriptor fields and wire inventories before an implementation generator exists.",
-    "methodCount": 85,
+    "methodCount": 86,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
-    "nameSha256": "e4cc1165f352268dd7412a50f2ec6ded5daa8a22c6f2ad3f4205ef382c423907",
-    "descriptorSha256": "2c3df724c4935e0d6f6934f46e3fbed779ef33eadad93954eab51a8d11bea32f",
+    "nameSha256": "bedf3c904d90b0d30d8f2f3292dc48d2124bcddc0f984aa3ed5f829d62420c06",
+    "descriptorSha256": "6413e6033a487bc1a298751ef782b47b05340fa5f7cf0333206fc6abb3e094bc",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -16418,6 +16563,16 @@
             }
           },
           {
+            "name": "typeMappings",
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/MapTypeDirective"
+              }
+            },
+            "description": "Existing changed-key map_type directives against original project/type selectors; preserves all fields."
+          },
+          {
             "name": "_meta",
             "schema": {
               "$ref": "#/components/schemas/Meta"
@@ -18420,6 +18575,65 @@
           "#/components/errors/IncarnationChanged",
           "#/components/errors/InternalError",
           "#/components/errors/PluginDurableStateUnavailable"
+        ]
+      },
+      {
+        "name": "gate.list",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": true,
+        "params": [
+          {
+            "name": "all",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "excludeTemplates",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "limit",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807,
+              "default": 0
+            }
+          },
+          {
+            "name": "awaitType",
+            "schema": {
+              "type": "string",
+              "default": ""
+            }
+          },
+          {
+            "name": "_meta",
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            },
+            "description": "Transport metadata; not an application actor field."
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/BeadPage"
+        },
+        "errors": [
+          "#/components/errors/InvalidParams",
+          "#/components/errors/Unsupported",
+          "#/components/errors/Forbidden",
+          "#/components/errors/Busy",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/CursorInvalid",
+          "#/components/errors/IncarnationChanged"
         ]
       }
     ],

@@ -1,0 +1,53 @@
+--- a/scripts/cody-ops-seed.py
++++ b/scripts/cody-ops-seed.py
+@@ -1,15 +1,5 @@
+-#!/usr/bin/env python3
+-"""Seed the cody-ops Beads project from Cody's tracker state (2026-10-22 ~21:50Z). Idempotent by key via ids.json."""
+-import json, os, subprocess, sys
+-
+-BEADS = "/home/dev/beads/cody-ops"
+-ENV = {**os.environ, "BEADS_DIR": f"{BEADS}/.beads", "BD_NON_INTERACTIVE": "1", "BEADS_ACTOR": "cody"}
+-IDS_PATH = f"{BEADS}/ids.json"
+-ids = json.load(open(IDS_PATH)) if os.path.exists(IDS_PATH) else {}
+-
+-def bd(*args):
+-    out = subprocess.run(["bd", *args], env=ENV, capture_output=True, text=True, timeout=120)
+-    if out.returncode != 0:
+-        raise SystemExit(f"bd {' '.join(args[:3])} failed: {out.stderr.strip()[:400]}")
+-    return out.stdout.strip()
+-
++import sys
++from pathlib import Path
++sys.path.insert(0, str(Path(__file__).resolve().parent))
++from host_drivers import main
++
+@@ -107,27 +97,2 @@
+-# Pass 1: create in an order where parents exist first.
+-order = [x for x in items if x["type"] == "epic"] + [x for x in items if x["type"] != "epic"]
+-for it in order:
+-    if it["key"] in ids:
+-        continue
+-    args = ["create", it["title"], "-t", it["type"], "-p", it["prio"], "--silent", "-a", it["owner"]]
+-    if it.get("desc"): args += ["-d", it["desc"]]
+-    if it.get("parent"): args += ["--parent", ids[it["parent"]]]
+-    if it.get("labels"): args += ["-l", ",".join(it["labels"])]
+-    if it.get("due"): args += ["--due", it["due"]]
+-    if it.get("ext"): args += ["--external-ref", it["ext"]]
+-    ids[it["key"]] = bd(*args).splitlines()[-1].strip()
+-    json.dump(ids, open(IDS_PATH, "w"), indent=1)
+-    print(it["key"], ids[it["key"]], flush=True)
+-
+-# Pass 2: blockers and closures (optionally resume from a key: argv[1]).
+-start = next((i for i, x in enumerate(items) if len(sys.argv) > 1 and x["key"] == sys.argv[1]), 0)
+-for it in items[start:]:
+-    for b in it.get("blocked_by", []):
+-        try:
+-            bd("dep", "add", ids[it["key"]], ids[b])
+-        except SystemExit as e:
+-            if not any(w in str(e).lower() for w in ("already", "exists", "duplicate")):
+-                raise
+-    if it.get("closed"):
+-        bd("close", ids[it["key"]], "--reason", it["closed"])
+-print("done", len(ids))
++
++main("seed", items)

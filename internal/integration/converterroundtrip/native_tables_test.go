@@ -232,9 +232,10 @@ func assertNativeTablesReadback(t *testing.T, store driver.Store, profile driver
 			decode(t, row.Body, &ontology)
 		}
 	}
-	if evidence.Source != driver.NativeTableHistorySource || !evidence.Complete || ontology.Overlays["pl"].Statuses["shared"].Category != "active" || ontology.Overlays["qa"].Statuses["shared"].Category != "done" {
+	if evidence.Source != driver.NativeTableHistorySource || ontology.Overlays["pl"].Statuses["shared"].Category != "active" || ontology.Overlays["qa"].Statuses["shared"].Category != "done" {
 		t.Fatal("native source proof or per-project installed catalog lost")
 	}
+	assertNativeHistoryCoverageReadback(t, store, report.Archive, report, evidence)
 	for _, family := range report.NativeFamilies {
 		if family.History == "unversioned-in-beads-by-design" && family.Family == "events" && (family.SourceRows != 4 || family.ImportedRows != 4 || family.ExpiredRows != 0) {
 			t.Fatal("current audit rows were dropped or assigned to history", family)
@@ -262,6 +263,7 @@ func assertNativeTablesReadback(t *testing.T, store driver.Store, profile driver
 			if err != nil {
 				t.Fatal(err)
 			}
+			assertNativeMissingImageTables(t, pinned, identity, scope, image)
 			for table, value := range image.Tables {
 				want, err := nativeTableRecord(identity, table, "retained-native-commit", value)
 				if err != nil {
@@ -315,6 +317,43 @@ func assertNativeTablesReadback(t *testing.T, store driver.Store, profile driver
 	}
 }
 
+func assertNativeMissingImageTables(t *testing.T, reader driver.Reader, identity dumpformat.SourceIdentity, scope dumpformat.NativeHistory, image dumpformat.NativeHistoryImage) {
+	t.Helper()
+	absent := []model.Ref{}
+	names := map[string]dumpformat.NativeTable{}
+	for _, other := range scope.Images {
+		for name, value := range other.Tables {
+			names[name] = value
+		}
+		if other.SchemaProfile != nil {
+			for _, absence := range other.SchemaProfile.Absences {
+				if absence.Column == "" {
+					// This value is used only to derive the checked source/table
+					// reference. No absent table body is written or returned.
+					names[absence.Family] = dumpformat.NativeTable{}
+				}
+			}
+		}
+	}
+	for name, value := range names {
+		if _, present := image.Tables[name]; present {
+			continue
+		}
+		row, err := nativeTableRecord(identity, name, "retained-native-commit", value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		absent = append(absent, row.Ref)
+	}
+	if len(absent) == 0 {
+		return
+	}
+	rows, err := reader.Get(context.Background(), absent)
+	if err != nil || len(rows) != 0 {
+		t.Fatal("native table absent at this commit leaked from another source image", image.Sequence, err)
+	}
+}
+
 func assertNativeTableValue(t *testing.T, record driver.Record, identity dumpformat.SourceIdentity, table, history string, expected dumpformat.NativeTable) {
 	t.Helper()
 	var value nativeTableBody
@@ -348,6 +387,9 @@ func TestNativeTablesIncompleteJoinedPublicationConservesCoreAndNamespace(t *tes
 			}
 			for _, fault := range []string{"missing-binding", "missing-checkpoint", "changed-envelope", "missing-receipt"} {
 				t.Run(fault, func(t *testing.T) {
+					if err := lease.Renew(ctx); err != nil {
+						t.Fatal("renew native refusal test lease", err)
+					}
 					broken := &incompleteSourceStore{Store: store, WorkflowCheckpointStore: capability, fault: fault}
 					if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), broken, lease, p); !errors.Is(err, driver.ErrUnsupported) {
 						t.Fatal("native publication accepted incomplete joined state", err)
@@ -357,6 +399,9 @@ func TestNativeTablesIncompleteJoinedPublicationConservesCoreAndNamespace(t *tes
 						t.Fatal("native publication refusal changed core/history/blobs/receipt/namespace", err)
 					}
 				})
+			}
+			if err := lease.Renew(ctx); err != nil {
+				t.Fatal("renew native publication test lease", err)
 			}
 			if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, p); err != nil {
 				t.Fatal("valid native publication failed after atomic refusals", err)
