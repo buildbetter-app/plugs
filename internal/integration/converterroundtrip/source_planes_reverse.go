@@ -196,21 +196,9 @@ func projectJointReverseDump(ctx context.Context, bound driver.RestoreImportProf
 				return ReverseRefusal{"missing_source_mirror"}
 			}
 			delete(live, mirrorID)
-			want := cloneRow(source.Body)
-			want["source_id"], want["source_table"], want["source"], want["source_project"] = source.ID, source.Source.Table, source.Source.Fields, source.Project
-			if kind == "beads-archive" {
-				want["read_only"], want["redactable"] = true, true
-			}
-			// Public strings use the canonical memory view, with the same framed
-			// joint identity and complete provenance as their retained source row.
-			if kind == "memory" && source.Body["classification"] == "public" {
-				if content, ok := source.Body["value"].(string); ok {
-					want = map[string]any{"id": mirrorID, "key": strings.TrimSpace(stringValue(source.Body["key"])), "content": content, "metadata": map[string]any{
-						"plug.restore.source_id": source.ID, "plug.restore.source_table": source.Source.Table,
-						"plug.restore.source": source.Source.Fields, "plug.restore.source_project": source.Project,
-						"plug.restore.archive_sha256": bound.ArchiveDigest,
-					}}
-				}
+			want, err := sourceMirrorBody(reverseSourceRecord(source), true)
+			if err != nil {
+				return ReverseRefusal{"changed_source_mirror"}
 			}
 			var got map[string]any
 			if decodeReverseJSON(row.Body, &got) != nil || !sameReverseJSON(want, got) {

@@ -970,6 +970,9 @@ func (p *prepared) allocatorObservations(ctx context.Context, prefix, parent str
 // Observe also puts a miss in the read set, so a concurrent insert invalidates
 // preparation before the allocator or any records can commit.
 func (p *prepared) allocatorOccupied(ctx context.Context, id string) (bool, error) {
+	if allocatorReserved(ctx, id) {
+		return true, nil
+	}
 	if _, staged := p.writes[id]; staged {
 		return true, nil
 	}
@@ -1004,7 +1007,20 @@ func (p *prepared) fallbackChildID(ctx context.Context, parent string) (string, 
 	if err != nil {
 		return "", err
 	}
-	return state.Next(observed)
+	for {
+		id, err := state.Next(observed)
+		if err != nil {
+			return "", err
+		}
+		used, err := p.allocatorOccupied(ctx, id)
+		if err != nil || !used {
+			return id, err
+		}
+		state, err = state.Consume(id)
+		if err != nil {
+			return "", err
+		}
+	}
 }
 
 // nextAllocatorID previews a restored allocator on the immutable preparation

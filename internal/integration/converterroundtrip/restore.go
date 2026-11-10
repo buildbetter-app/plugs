@@ -43,6 +43,7 @@ type Report struct {
 	Recovered      bool
 	SourcePlanes   *driver.SourcePlaneCommitBindingV1
 	Receipt        *driver.IdempotencyRecord
+	NativeFamilies []NativeFamilyReport
 }
 
 // Verification is a trusted offline comparison, bound to the exact tar bytes.
@@ -211,6 +212,7 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 	if err != nil {
 		return report, err
 	}
+	report.NativeFamilies = append([]NativeFamilyReport(nil), plan.nativeFamilies...)
 	if profile != nil && len(checks) == 0 {
 		checks = []Verification{{ArchiveSHA256: profile.ArchiveDigest, DerivedSHA256: profile.DerivedDigest}}
 	}
@@ -233,7 +235,11 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		for _, r := range plan.records {
 			tail = append(tail, driver.Record{Ref: r.ref, Kind: r.kind, Body: r.body})
 		}
-		replay, err = driver.BuildOfflineHistory(meta, *profile, lowered, restoreTime, tail)
+		buildHistory := driver.BuildOfflineHistory
+		if sourceLogical != nil {
+			buildHistory = driver.BuildSourcePlaneHistory
+		}
+		replay, err = buildHistory(meta, *profile, lowered, restoreTime, tail)
 		if err != nil {
 			return report, err
 		}
@@ -264,7 +270,11 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		if err != nil {
 			return report, err
 		}
-		if _, err = driver.PrepareSourcePlaneImportProfile(*profile, meta, sourceCapability.WorkflowCheckpointLifetime()); err != nil {
+		prepareProfile := driver.PrepareSourcePlaneImportProfile
+		if history != nil {
+			prepareProfile = driver.PrepareSourcePlaneHistoryProfile
+		}
+		if _, err = prepareProfile(*profile, meta, sourceCapability.WorkflowCheckpointLifetime()); err != nil {
 			return report, err
 		}
 		// The final evidence has a new-incarnation-dependent body, but its complete
@@ -292,7 +302,15 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		if !historyOK {
 			return report, driver.ErrRestoreHistoryRefused{Mode: profile.HistoryMode, History: archive.Manifest().History, Reason: driver.RestoreHistoryReasonNotYetSupported}
 		}
-		restored, err = historyCapability.PrepareOfflineHistory(ctx, *profile, *history, restoreTime)
+		if sourceLogical != nil {
+			joint, ok := tx.(driver.SourcePlaneHistoryRestoreTx)
+			if !ok {
+				return report, driver.ErrUnsupported
+			}
+			restored, err = joint.PrepareSourcePlaneHistory(ctx, *profile, *history, restoreTime)
+		} else {
+			restored, err = historyCapability.PrepareOfflineHistory(ctx, *profile, *history, restoreTime)
+		}
 		if err == nil {
 			continuation, continuationOK := tx.(driver.AllocatorContinuation)
 			if !continuationOK {
@@ -358,6 +376,7 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		changes = append(changes, model.ChangeRecord{Ref: record.ref, Op: model.OpCreate, FromRevision: model.Natural64(0), ChangedPaths: []string{"/"}})
 		revision := model.Natural64(1)
 		if history != nil {
+			revision = restored.Head
 			for _, final := range replay.Records {
 				if final.Ref == record.ref {
 					revision = final.Revision
@@ -425,6 +444,7 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		}
 		report.Restored, report.Recovered = recovered.Restored, true
 		report.SourcePlanes, report.Receipt = recovered.SourcePlanes, recovered.Receipt
+		report.NativeFamilies = recovered.NativeFamilies
 		return report, nil
 	}
 	if commit.Kind != model.ChangesetRestore || commit.Incarnation != restored.Incarnation || commit.Revision != restored.Head || history == nil && len(commit.Changes) != len(plan.records) {
@@ -558,7 +578,7 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 		if sourceOK {
 			sourceOK = json.Unmarshal(rawSource, &source) == nil
 		}
-		if !ok || metadata.Project != project.SourceAllocator.Prefix || !reflect.DeepEqual(metadata.ImportProfile, bound) || !sourceOK || !reflect.DeepEqual(source, project.SourceAllocator) || !reflect.DeepEqual(metadata.TargetAllocator, project.TargetAllocator) {
+		if !ok || !reflect.DeepEqual(metadata.SourceIdentity, project.SourceIdentity) || metadata.Project != project.SourceAllocator.Prefix || !reflect.DeepEqual(metadata.ImportProfile, bound) || !sourceOK || !reflect.DeepEqual(source, project.SourceAllocator) || !reflect.DeepEqual(metadata.TargetAllocator, project.TargetAllocator) {
 			return Report{}, driver.ErrConflict
 		}
 	}
@@ -591,7 +611,11 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 			return Report{}, driver.ErrConflict
 		}
 	}
-	return Report{Restored: meta, IdempotencyKey: bound.IdempotencyKey, RequestHash: request, Recovered: true, Receipt: receipt}, nil
+	families, err := recoverNativeFamilies(ctx, r, bound, evidence, receipt)
+	if err != nil {
+		return Report{}, driver.ErrConflict
+	}
+	return Report{Restored: meta, IdempotencyKey: bound.IdempotencyKey, RequestHash: request, Recovered: true, Receipt: receipt, NativeFamilies: families}, nil
 }
 
 type restoreRecord struct {
@@ -601,13 +625,15 @@ type restoreRecord struct {
 }
 
 type restorePlan struct {
-	migration     *dumpformat.ImportMigration
-	records       []restoreRecord
-	sentinels     []driver.Sentinel
-	derived       []derivedImage
-	derivedDigest string
-	blobs         map[string][]byte
-	allocators    []driver.OfflineAllocator
+	migration      *dumpformat.ImportMigration
+	nativeOntology *dumpformat.NativeStatusOntology
+	nativeFamilies []NativeFamilyReport
+	records        []restoreRecord
+	sentinels      []driver.Sentinel
+	derived        []derivedImage
+	derivedDigest  string
+	blobs          map[string][]byte
+	allocators     []driver.OfflineAllocator
 }
 
 // importBindingEvidence is an immutable, transaction-local copy of the full
@@ -622,11 +648,13 @@ type importBindingEvidence struct {
 }
 
 type importProjectBinding struct {
-	SourceAllocator dumpformat.Project      `json:"sourceAllocator"`
-	TargetAllocator driver.OfflineAllocator `json:"targetAllocator"`
+	SourceIdentity  *dumpformat.SourceIdentity `json:"sourceIdentity,omitempty"`
+	SourceAllocator dumpformat.Project         `json:"sourceAllocator"`
+	TargetAllocator driver.OfflineAllocator    `json:"targetAllocator"`
 }
 
 type importProjectMetadata struct {
+	SourceIdentity  *dumpformat.SourceIdentity  `json:"sourceIdentity,omitempty"`
 	Project         string                      `json:"project"`
 	ImportProfile   driver.RestoreImportProfile `json:"importProfile"`
 	Metadata        map[string]json.RawMessage  `json:"metadata"`
@@ -654,7 +682,7 @@ func compareImportBinding(ctx context.Context, r driver.Reader, evidence archive
 		if err = driver.ValidateRestoreHistoryPolicy(binding.Profile.HistoryMode, manifest.History); err != nil {
 			return err
 		}
-	} else if binding.Profile.HistoryTime == "" || binding.Profile.HistoryMode == driver.RestoreHistoryModeFull && manifest.History != "verified" || binding.Profile.HistoryMode == driver.RestoreHistoryModePartial && manifest.History != "verified" && manifest.History != "available-unverified" {
+	} else if binding.Profile.HistoryTime == "" || binding.Profile.HistoryMode == driver.RestoreHistoryModeFull && manifest.History != "verified" && manifest.SourceFamilyContract != "beads-source-families/1" || binding.Profile.HistoryMode == driver.RestoreHistoryModePartial && manifest.History != "verified" && manifest.History != "available-unverified" {
 		return driver.ErrConflict
 	}
 	if len(binding.Projects) != len(manifest.Projects) {
@@ -714,6 +742,7 @@ func buildPlanForInspection(archive *dumpformat.Archive) (restorePlan, error) {
 
 func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportProfile, restoreTime time.Time, mode planMode) (restorePlan, error) {
 	manifest := archive.Manifest()
+	nativeTables := len(archive.NativeSourceHistories()) != 0
 	migration, _ := archive.ImportMigration()
 	if mode == planLegacy && migration != nil {
 		// A missing import profile cannot opt a newly strict migration into
@@ -753,7 +782,11 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 	if entities != nil {
 		var durable []dumpformat.Record
 		for _, source := range beads {
-			if entities[driver.SourceEntityKey{Project: source.Project, Plane: source.Source.Table, ID: source.ID}].TargetKind == "bead" {
+			entity, present := entities[driver.SourceEntityKey{Project: source.Project, Plane: source.Source.Table, ID: source.ID}]
+			if !present {
+				return restorePlan{}, fmt.Errorf("%w: historical source entity lacks an explicit disposition: %s/%s/%s", ErrRestoreUnavailable, source.Project, source.Source.Table, source.ID)
+			}
+			if entity.TargetKind == "bead" {
 				durable = append(durable, source)
 			}
 		}
@@ -769,6 +802,13 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 			return restorePlan{}, fmt.Errorf("%w: source ID does not match the declared allocator", ErrRestoreUnavailable)
 		}
 		status, ok := targetStatus(stringValue(source.Source.Fields["status"]))
+		if manifest.StatusCategoryContract == dumpformat.StatusCategoryContract {
+			status = stringValue(source.Source.Fields["status"])
+			ok = false
+			for _, declared := range project.Statuses {
+				ok = ok || declared.Name == status
+			}
+		}
 		targetType := stringValue(source.Body["type"])
 		if migration != nil {
 			target, present := migration.Target(source.Project, source.ID)
@@ -841,6 +881,16 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 			return restorePlan{}, fmt.Errorf("bead %s source fields: %w", source.ID, err)
 		}
 		metadata["beads.source_fields"] = sourceFields
+		if key, scoped := source.SourceKey(); scoped {
+			metadata["beads.source_identity"], err = json.Marshal(source.Source.Identity)
+			if err != nil {
+				return restorePlan{}, err
+			}
+			metadata["beads.source_key"], err = json.Marshal(key)
+			if err != nil {
+				return restorePlan{}, err
+			}
+		}
 		if project, ok := projects[source.Project]; ok {
 			encoded, err := json.Marshal(project)
 			if err != nil {
@@ -1011,22 +1061,27 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 	}
 	for _, kind := range []string{"edge", "comment", "memory", "config", "beads-archive"} {
 		for _, source := range archive.Records(kind) {
-			// Imported Beads memories retain their source row in the archive, but
-			// only public string values are eligible for the live Plug memory view.
-			// The projection uses the exact target Ref.ID and preserves the value
-			// byte-for-byte; secret and non-string rows keep their raw storage body.
-			if profile != nil && kind == "memory" && source.Body["classification"] == "public" {
-				if value, ok := source.Body["value"].(string); ok {
+			if source.Source.Table == "leases" && nativeTables && mode == planImport {
+				keep, err := nativeLeaseUnexpired(source.Source.Fields, restoreTime)
+				if err != nil {
+					return restorePlan{}, err
+				}
+				if !keep {
+					continue
+				}
+			}
+			if profile != nil && entities == nil && kind == "memory" {
+				// Preserve main's legacy public-memory contract. Source-plane plans
+				// retain their separately bound mirror identity and raw envelope.
+				if value, ok := source.Body["value"].(string); source.Body["classification"] == "public" && ok {
 					key := strings.TrimSpace(stringValue(source.Body["key"]))
 					if key == "" {
 						return restorePlan{}, fmt.Errorf("imported memory %s has an empty public key", source.ID)
 					}
 					ref := model.RefByID(sourcePlaneMirrorID(source, entities != nil), model.Natural64(0))
 					body := pipeline.MemoryDocument{ID: ref.ID, Key: key, Content: value, Metadata: map[string]any{
-						"plug.restore.source_id":      source.ID,
-						"plug.restore.source_table":   source.Source.Table,
-						"plug.restore.source":         cloneRow(source.Source.Fields),
-						"plug.restore.archive_sha256": archive.SHA256(),
+						"plug.restore.source_id": source.ID, "plug.restore.source_table": source.Source.Table,
+						"plug.restore.source": cloneRow(source.Source.Fields), "plug.restore.archive_sha256": archive.SHA256(),
 					}}
 					if entities != nil {
 						body.Metadata["plug.restore.source_project"] = source.Project
@@ -1034,26 +1089,50 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 					if err := add(ref, kind, body); err != nil {
 						return restorePlan{}, err
 					}
-					continue
+				} else {
+					body := cloneRow(source.Body)
+					body["source_id"], body["source_table"], body["source"] = source.ID, source.Source.Table, cloneRow(source.Source.Fields)
+					if err := add(model.RefByID("source/memory/"+source.ID, model.Natural64(0)), kind, body); err != nil {
+						return restorePlan{}, err
+					}
 				}
+				continue
 			}
-			body := cloneRow(source.Body)
-			body["source_id"] = source.ID
-			body["source_table"] = source.Source.Table
-			body["source"] = cloneRow(source.Source.Fields)
-			if kind == "beads-archive" {
-				body["read_only"] = true
-				body["redactable"] = true
-			}
-			if entities != nil {
-				body["source_project"] = source.Project
+			body, err := sourceMirrorBody(source, entities != nil)
+			if err != nil {
+				return restorePlan{}, err
 			}
 			if err := add(model.RefByID(sourcePlaneMirrorID(source, entities != nil), model.Natural64(0)), kind, body); err != nil {
 				return restorePlan{}, err
 			}
 		}
 	}
+	if nativeTables && mode == planImport {
+		if profile.SourcePlanes == nil || profile.HistoryMode != driver.RestoreHistoryModeFull {
+			return restorePlan{}, fmt.Errorf("%w: native table publication requires bound full source-plane restore", driver.ErrUnsupported)
+		}
+		current, families, err := nativeCurrentRecords(archive, restoreTime)
+		if err != nil {
+			return restorePlan{}, err
+		}
+		for _, row := range current {
+			if err := add(row.Ref, row.Kind, json.RawMessage(row.Body)); err != nil {
+				return restorePlan{}, err
+			}
+		}
+		plan.nativeFamilies = families
+		accounting := nativeFamilyEvidence{Contract: manifest.SourceFamilyContract, RestoreTime: restoreTime.UTC().Format(time.RFC3339Nano), Families: families}
+		if err := add(model.RefByID(NativeFamilyReportID, model.Natural64(0)), "instance_config", accounting); err != nil {
+			return restorePlan{}, err
+		}
+	}
 
+	if source, native := archive.NativeStatusOntology(); native {
+		plan.nativeOntology = &source
+		if err := add(model.RefByID(ImportedOntologySourceID, model.Natural64(0)), "ontology", source); err != nil {
+			return restorePlan{}, err
+		}
+	}
 	if err := rebuildDerived(&plan, docs); err != nil {
 		return restorePlan{}, err
 	}
@@ -1072,13 +1151,22 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 				return restorePlan{}, err
 			}
 			targetAllocator := plan.allocators[i].Clone()
+			var identity *dumpformat.SourceIdentity
+			for _, origin := range archive.SourceIdentities() {
+				if origin.Project == project.Prefix {
+					copy := origin
+					identity = &copy
+				}
+			}
 			binding.Projects = append(binding.Projects, importProjectBinding{
+				SourceIdentity:  identity,
 				SourceAllocator: project,
 				TargetAllocator: targetAllocator,
 			})
 			metadata := importProjectMetadata{
-				Project:       project.Prefix,
-				ImportProfile: *profile,
+				SourceIdentity: identity,
+				Project:        project.Prefix,
+				ImportProfile:  *profile,
 				Metadata: map[string]json.RawMessage{
 					"plug.restore.sourceAllocator": sourceRaw,
 				},

@@ -1,6 +1,7 @@
 package converterroundtrip
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -29,6 +30,15 @@ func BindSourceImport(ctx context.Context, input io.Reader, profile driver.Resto
 	archive, err := dumpformat.Read(input)
 	if err != nil {
 		return driver.RestoreImportProfile{}, err
+	}
+	// Bind one trusted restore clock before lowering current state. In
+	// particular, source lease eligibility must agree with history/recovery.
+	when := time.Now().UTC()
+	if profile.HistoryTime != "" {
+		when, err = time.Parse(time.RFC3339Nano, profile.HistoryTime)
+		if err != nil || when.IsZero() {
+			return driver.RestoreImportProfile{}, fmt.Errorf("%w: invalid bound restore time", driver.ErrUnsupported)
+		}
 	}
 	if len(plan.Providers) != 1 {
 		return driver.RestoreImportProfile{}, driver.ErrUnsupported
@@ -68,7 +78,7 @@ func BindSourceImport(ctx context.Context, input io.Reader, profile driver.Resto
 		return driver.RestoreImportProfile{}, err
 	}
 	profile.SourcePlanes = &binding
-	core, err := buildPlanWithProfile(archive, &profile, time.Now().UTC())
+	core, err := buildPlanWithProfile(archive, &profile, when)
 	if err != nil {
 		return driver.RestoreImportProfile{}, err
 	}
@@ -76,6 +86,9 @@ func BindSourceImport(ctx context.Context, input io.Reader, profile driver.Resto
 		return driver.RestoreImportProfile{}, driver.ErrConflict
 	}
 	profile.DerivedDigest = core.derivedDigest
+	if profile.HistoryMode != driver.RestoreHistoryModeSnapshot {
+		return BindHistoryImport(ctx, bytes.NewReader(archive.TarBytes()), profile, when)
+	}
 	return profile.Detached()
 }
 
@@ -88,8 +101,23 @@ func prepareSourceArchive(ctx context.Context, archive *dumpformat.Archive, prof
 	if err != nil {
 		return empty, err
 	}
-	if profile.HistoryMode != driver.RestoreHistoryModeSnapshot || profile.HistoryDigest != "" || profile.HistoryTime != "" || plan.ArchiveSHA256 != archive.SHA256() || plan.SourceStoreID != archive.Manifest().StoreID {
-		return empty, fmt.Errorf("%w: joint snapshot/archive correspondence", driver.ErrUnsupported)
+	if plan.ArchiveSHA256 != archive.SHA256() || plan.SourceStoreID != archive.Manifest().StoreID {
+		return empty, fmt.Errorf("%w: joint plan/archive correspondence", driver.ErrUnsupported)
+	}
+	switch profile.HistoryMode {
+	case driver.RestoreHistoryModeSnapshot:
+		if profile.HistoryDigest != "" || profile.HistoryTime != "" || len(archive.NativeSourceHistories()) != 0 {
+			return empty, driver.ErrUnsupported
+		}
+	case driver.RestoreHistoryModeFull:
+		if err := validateArchiveHistoryPolicy(profile.HistoryMode, archive); err != nil {
+			return empty, err
+		}
+		if final && (profile.HistoryDigest == "" || profile.HistoryTime == "") {
+			return empty, driver.ErrRestoreHistoryRefused{Mode: profile.HistoryMode, History: archive.Manifest().History, Reason: driver.RestoreHistoryReasonUnmappable}
+		}
+	default:
+		return empty, driver.ErrRestoreHistoryRefused{Mode: profile.HistoryMode, History: archive.Manifest().History, Reason: driver.RestoreHistoryReasonNotYetSupported}
 	}
 	if err := validateSourceCoreMappings(archive, plan); err != nil {
 		return empty, err
@@ -190,10 +218,49 @@ func (p sourceCoreProjection) coreEdge(source dumpformat.Record) (bool, error) {
 // Internal evidence keys frame all physical components. This never changes
 // the source entity ID, raw record ID, tuple, origin bytes or target reference.
 func sourcePlaneMirrorID(source dumpformat.Record, joint bool) string {
+	if key, scoped := source.SourceKey(); scoped {
+		encoded, _ := json.Marshal(key)
+		return "source/" + source.Kind + "/" + hashBytes(encoded)
+	}
 	if !joint {
 		return "source/" + source.Kind + "/" + source.ID
 	}
 	return driver.SourcePlaneMirrorIDV1(source.Kind, source.Project, source.Source.Table, source.ID)
+}
+
+// sourceMirrorBody keeps the exact source mirror. Only an explicitly bound
+// source-plane import adds its live memory envelope; ordinary restore retains
+// the legacy raw schema. Admitted legacy imports use their separate public
+// string projection in buildPlan. Source-plane JSON values also remain raw.
+func sourceMirrorBody(source dumpformat.Record, joint bool) (map[string]any, error) {
+	body := cloneRow(source.Body)
+	body["source_id"], body["source_table"], body["source"] = source.ID, source.Source.Table, cloneRow(source.Source.Fields)
+	if key, scoped := source.SourceKey(); scoped {
+		body["source_identity"], body["source_key"] = *source.Source.Identity, key
+		body["source_project"] = key.Project
+	}
+	if joint {
+		if source.Source.Identity == nil {
+			body["source_project"] = source.Project
+		}
+	}
+	if source.Kind == "beads-archive" {
+		body["read_only"], body["redactable"] = true, true
+	}
+	if source.Kind == "memory" && joint {
+		content, text := source.Body["value"].(string)
+		encoding := "text"
+		if !text {
+			raw, err := json.Marshal(source.Body["value"])
+			if err != nil {
+				return nil, fmt.Errorf("source memory %s: %w", source.ID, err)
+			}
+			content, encoding = string(raw), "json"
+		}
+		body["id"], body["content"] = sourcePlaneMirrorID(source, joint), content
+		body["metadata"] = map[string]any{"beads.memory.value_encoding": encoding, "beads.classification": source.Body["classification"]}
+	}
+	return body, nil
 }
 
 func validateSourceCoreMappings(archive *dumpformat.Archive, plan driver.SourcePlanePlanV1) error {
@@ -218,13 +285,28 @@ func validateSourceCoreMappings(archive *dumpformat.Archive, plan driver.SourceP
 			continue
 		}
 		d := dispositions[e.DispositionKey]
-		storage, storageOK := source.Source.Fields["storage_class"].(string)
+		storage, storagePresent := source.Source.Fields["storage_class"]
 		ephemeral, ephemeralOK := sourceSourceFlag(source.Source.Fields["ephemeral"])
 		noHistory, noHistoryOK := sourceSourceFlag(source.Source.Fields["no_history"])
-		if !storageOK || !ephemeralOK || !noHistoryOK || d.SourceType != stringValue(source.Source.Fields["issue_type"]) || d.StorageClass != storage || d.Ephemeral != ephemeral || d.NoHistory != noHistory || d.SinkKind != "bead" || d.Schema != "bead/1" || d.Lifetime != "core" || d.RefusalPolicy != "exact-only" {
+		if !d.MatchesStorageClass(storage, storagePresent) || !ephemeralOK || !noHistoryOK || d.SourceType != stringValue(source.Source.Fields["issue_type"]) || d.Ephemeral != ephemeral || d.NoHistory != noHistory || d.SinkKind != "bead" || d.Schema != "bead/1" || d.Lifetime != "core" || d.RefusalPolicy != "exact-only" {
 			return fmt.Errorf("%w: core type/storage/flags lack exact disposition", driver.ErrUnsupported)
 		}
 		status, known := targetStatus(stringValue(source.Source.Fields["status"]))
+		if archive.Manifest().StatusCategoryContract == dumpformat.StatusCategoryContract {
+			status, known = stringValue(source.Source.Fields["status"]), false
+			for _, project := range archive.Manifest().Projects {
+				if project.Prefix == source.Project {
+					for _, declaration := range project.Statuses {
+						known = known || declaration.Name == status
+					}
+				}
+			}
+			for _, pair := range d.Statuses {
+				if pair.From != pair.To {
+					return fmt.Errorf("%w: native status disposition must preserve its exact name", driver.ErrUnsupported)
+				}
+			}
+		}
 		if migration != nil {
 			target, ok := migration.Target(source.Project, source.ID)
 			status, known = target.Status, ok

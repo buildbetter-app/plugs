@@ -311,7 +311,7 @@ func (d *durableAccess) PrepareRestoreCheckpoint(ctx context.Context, newMeta dr
 	if string(current.StoreID) != plan.Target.StoreID || current.Incarnation != plan.Target.Incarnation || current.Head.String() != fmt.Sprint(plan.Target.Head) || !plan.Target.RequireEmpty {
 		return empty, driver.ErrCheckpointConflict
 	}
-	if newMeta.StoreID != detached.SourceStoreID || string(newMeta.StoreID) != plan.SourceStoreID || driver.ValidateCheckpointKey(newMeta.Incarnation) != nil || newMeta.Incarnation == current.Incarnation || newMeta.Head.String() != "1" || newMeta.HistoryFloor.String() != "1" {
+	if newMeta.StoreID != detached.SourceStoreID || string(newMeta.StoreID) != plan.SourceStoreID || driver.ValidateCheckpointKey(newMeta.Incarnation) != nil || newMeta.Incarnation == current.Incarnation || driver.ValidateSourcePlaneRestoreMeta(detached, newMeta) != nil {
 		return empty, driver.ErrIncarnationChanged{From: current.Incarnation, To: newMeta.Incarnation}
 	}
 	checkpoint, err := store.LoadCheckpoint(ctx, d.key)

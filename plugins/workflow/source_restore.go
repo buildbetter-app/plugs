@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/pluginapi"
@@ -117,7 +118,7 @@ func InspectSourceReverseImage(logical []byte) (SourceReverseImage, error) {
 			return empty, sourceRefusal("invalid reverse entity origin: " + err.Error())
 		}
 		id, err := sourceText(wire.Source.Fields["id"])
-		if err != nil || id != entity.Source.ID || wire.Source.Table != entity.Source.Plane || wire.Project != "" && wire.Project != entity.Source.Project {
+		if err != nil || id != entity.Source.ID || wire.Source.Table != entity.Source.Plane || !wire.matchesProject(entity.Source.Project) {
 			return empty, sourceRefusal("reverse entity origin address differs")
 		}
 		if err := sourceFieldCensus(wire.Source.Fields, entity.Fields); err != nil {
@@ -306,9 +307,17 @@ type sourceWireRecord struct {
 	Project string                     `json:"project"`
 	Body    map[string]json.RawMessage `json:"body"`
 	Source  struct {
-		Table  string                     `json:"table"`
-		Fields map[string]json.RawMessage `json:"fields"`
+		Table    string                     `json:"table"`
+		Fields   map[string]json.RawMessage `json:"fields"`
+		Identity *dumpformat.SourceIdentity `json:"identity,omitempty"`
 	} `json:"source"`
+}
+
+func (wire sourceWireRecord) matchesProject(project string) bool {
+	if wire.Source.Identity != nil {
+		return wire.Source.Identity.Project == project && (wire.Project == "" || wire.Project == project)
+	}
+	return wire.Project == "" || wire.Project == project
 }
 
 func sourceText(raw json.RawMessage) (string, error) {
@@ -402,6 +411,7 @@ func sourceWireRecords(input []driver.SourcePlaneRecordV1) (map[string]sourceWir
 		return nil, nil, sourceRefusal("source record count limit")
 	}
 	byHash := make(map[string]sourceWireRecord, len(input))
+	stores := map[string]string{}
 	records := make([]driver.SourcePlaneRecordV1, len(input))
 	total := 0
 	for i, record := range input {
@@ -415,6 +425,15 @@ func sourceWireRecords(input []driver.SourcePlaneRecordV1) (map[string]sourceWir
 		}
 		if wire.Kind != record.Kind || wire.ID != record.ID || wire.Project != record.Project || wire.Source.Table != record.Table || wire.Source.Fields == nil || wire.Body == nil {
 			return nil, nil, sourceRefusal("source DTO/wire mirror differs")
+		}
+		if identity := wire.Source.Identity; identity != nil {
+			if wire.Project != "" && wire.Project != identity.Project {
+				return nil, nil, sourceRefusal("source identity project differs from record")
+			}
+			if store, exists := stores[identity.Project]; exists && store != identity.StoreID {
+				return nil, nil, sourceRefusal("ambiguous source stores for one project")
+			}
+			stores[identity.Project] = identity.StoreID
 		}
 		hash := sourceImageHash(record.Raw)
 		if _, duplicate := byHash[hash]; duplicate {
@@ -514,7 +533,7 @@ func (p *Provider) PrepareSourceRestore(ctx context.Context, plan driver.SourceP
 			return PreparedSourceRestore{}, err
 		}
 		physicalID, err := sourceText(wire.Source.Fields["id"])
-		if err != nil || physicalID != entity.Source.ID || wire.Source.Table != entity.Source.Plane || (wire.Project != "" && wire.Project != entity.Source.Project) {
+		if err != nil || physicalID != entity.Source.ID || wire.Source.Table != entity.Source.Plane || !wire.matchesProject(entity.Source.Project) {
 			return PreparedSourceRestore{}, sourceRefusal("source entity address differs")
 		}
 		if err := sourceFieldCensus(wire.Source.Fields, entity.Fields); err != nil {

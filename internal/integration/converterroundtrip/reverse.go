@@ -243,12 +243,16 @@ func projectLiveDump(ctx context.Context, reader driver.Reader, dump *reversecon
 				dump.Records[kind][i] = current
 				continue
 			}
-			want := cloneRow(source.Body)
-			want["source_id"], want["source_table"], want["source"] = source.ID, source.Source.Table, source.Source.Fields
-			// The public imported-memory view is canonical, while the retained
-			// source row remains authoritative for lossless reverse conversion.
-			if imported && kind == "memory" && source.Body["classification"] == "public" {
-				if content, ok := source.Body["value"].(string); ok {
+			want, err := sourceMirrorBody(reverseSourceRecord(source), false)
+			if err != nil {
+				return ReverseRefusal{"changed_source_mirror"}
+			}
+			if imported && kind == "memory" {
+				want = cloneRow(source.Body)
+				want["source_id"], want["source_table"], want["source"] = source.ID, source.Source.Table, source.Source.Fields
+				// Public string memories use main's exact live document while the
+				// retained source remains authoritative for lossless reverse.
+				if content, ok := source.Body["value"].(string); source.Body["classification"] == "public" && ok {
 					want = map[string]any{"id": id, "key": strings.TrimSpace(stringValue(source.Body["key"])), "content": content, "metadata": map[string]any{
 						"plug.restore.source_id": source.ID, "plug.restore.source_table": source.Source.Table, "plug.restore.source": source.Source.Fields,
 						"plug.restore.archive_sha256": archiveBinding.ArchiveSHA256,

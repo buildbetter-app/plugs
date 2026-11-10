@@ -203,6 +203,16 @@ func jointProfile(t *testing.T, data []byte, store driver.Store, lease driver.Ac
 
 func jointProfileWithPlan(t *testing.T, data []byte, store driver.Store, lease driver.ActiveLease, adjust func(*driver.SourcePlanePlanV1)) driver.RestoreImportProfile {
 	t.Helper()
+	p, plan := jointUnboundProfileWithPlan(t, data, store, lease, adjust)
+	p, err := BindSourceImport(context.Background(), bytes.NewReader(data), p, plan)
+	if err != nil {
+		t.Fatal("complete explicit preparation", err)
+	}
+	return p
+}
+
+func jointUnboundProfileWithPlan(t *testing.T, data []byte, store driver.Store, lease driver.ActiveLease, adjust func(*driver.SourcePlanePlanV1)) (driver.RestoreImportProfile, driver.SourcePlanePlanV1) {
+	t.Helper()
 	ctx := context.Background()
 	archive, err := dumpformat.Read(bytes.NewReader(data))
 	if err != nil {
@@ -319,11 +329,7 @@ func jointProfileWithPlan(t *testing.T, data []byte, store driver.Store, lease d
 		adjust(&plan)
 	}
 	p := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: actor, Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: driver.StoreID(archive.Manifest().StoreID), Method: "offline.restore.import", IdempotencyKey: strings.Repeat("b", 32), ArchiveDigest: archive.SHA256(), HistoryMode: driver.RestoreHistoryModeSnapshot}
-	p, err = BindSourceImport(ctx, bytes.NewReader(data), p, plan)
-	if err != nil {
-		t.Fatal("complete explicit preparation", err)
-	}
-	return p
+	return p, plan
 }
 
 func TestJointSourceImportPublishesAndRecoversAcrossThreeStores(t *testing.T) {
@@ -485,6 +491,12 @@ type incompleteSourceTx struct {
 func (t *incompleteSourceTx) PrepareSourcePlaneImport(ctx context.Context, p driver.RestoreImportProfile) (driver.Meta, error) {
 	return t.WriteTx.(driver.SourcePlaneRestoreTx).PrepareSourcePlaneImport(ctx, p)
 }
+func (t *incompleteSourceTx) PrepareSourcePlaneHistory(ctx context.Context, p driver.RestoreImportProfile, h driver.OfflineHistory, when time.Time) (driver.Meta, error) {
+	return t.WriteTx.(driver.SourcePlaneHistoryRestoreTx).PrepareSourcePlaneHistory(ctx, p, h, when)
+}
+func (t *incompleteSourceTx) PrepareOfflineHistory(ctx context.Context, p driver.RestoreImportProfile, h driver.OfflineHistory, when time.Time) (driver.Meta, error) {
+	return t.WriteTx.(driver.OfflineHistoryTx).PrepareOfflineHistory(ctx, p, h, when)
+}
 func (t *incompleteSourceTx) BindSourcePlaneImport(ctx context.Context, b driver.SourcePlaneCommitBindingV1) error {
 	if t.fault == "missing-binding" {
 		return nil
@@ -504,6 +516,14 @@ func (t *incompleteSourceTx) StageCheckpoint(ctx context.Context, key string, ex
 	return t.WriteTx.(driver.CheckpointWriteTx).StageCheckpoint(ctx, key, expected, payload)
 }
 func (t *incompleteSourceTx) Commit(ctx context.Context, h driver.ChangesetHeader) (model.Changeset, error) {
+	h = t.publicationHeader(h)
+	return t.WriteTx.Commit(ctx, h)
+}
+func (t *incompleteSourceTx) CommitOfflineHistory(ctx context.Context, h driver.ChangesetHeader) (model.Changeset, error) {
+	h = t.publicationHeader(h)
+	return t.WriteTx.(driver.OfflineHistoryTx).CommitOfflineHistory(ctx, h)
+}
+func (t *incompleteSourceTx) publicationHeader(h driver.ChangesetHeader) driver.ChangesetHeader {
 	if t.fault == "missing-receipt" {
 		var results []model.OpResult
 		for _, result := range h.Response.Results {
@@ -513,7 +533,7 @@ func (t *incompleteSourceTx) Commit(ctx context.Context, h driver.ChangesetHeade
 		}
 		h.Response.Results = results
 	}
-	return t.WriteTx.Commit(ctx, h)
+	return h
 }
 
 // Includes every application table, locks, leases, blobs, versions, caches,

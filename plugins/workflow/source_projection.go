@@ -20,8 +20,12 @@ func sourceItem(entity driver.SourcePlaneEntityV1, disposition driver.SourcePlan
 	if err != nil {
 		return empty, time.Time{}, err
 	}
-	storage, err := sourceText(fields["storage_class"])
-	if err != nil {
+	storageRaw, storagePresent := fields["storage_class"]
+	var storage any
+	if !storagePresent {
+		return empty, time.Time{}, sourceRefusal("source storage_class column absent")
+	}
+	if err := decodeWorkflowJSON(storageRaw, &storage); err != nil {
 		return empty, time.Time{}, err
 	}
 	ephemeral, err := sourceBool(fields["ephemeral"])
@@ -32,7 +36,7 @@ func sourceItem(entity driver.SourcePlaneEntityV1, disposition driver.SourcePlan
 	if err != nil {
 		return empty, time.Time{}, err
 	}
-	if disposition.SourceType != typ || disposition.StorageClass != storage || disposition.Ephemeral != ephemeral || disposition.NoHistory != noHistory || disposition.SinkKind != "workflow:item" || disposition.Schema != SourceStateSchema || disposition.RefusalPolicy != "exact-only" {
+	if disposition.SourceType != typ || !disposition.MatchesStorageClass(storage, storagePresent) || disposition.Ephemeral != ephemeral || disposition.NoHistory != noHistory || disposition.SinkKind != "workflow:item" || disposition.Schema != SourceStateSchema || disposition.RefusalPolicy != "exact-only" {
 		return empty, time.Time{}, sourceRefusal("source type/storage/flags have no exact disposition")
 	}
 	if disposition.Lifetime != "process" && disposition.Lifetime != "restart" {
@@ -281,7 +285,7 @@ func prepareSourceOrigins(ctx context.Context, value *persisted, plan driver.Sou
 		if err != nil {
 			return err
 		}
-		if wire.Source.Table != origin.Table || wire.ID != origin.ID || wire.Project != "" && wire.Project != origin.Project {
+		if wire.Source.Table != origin.Table || wire.ID != origin.ID || !wire.matchesProject(origin.Project) {
 			return sourceRefusal("origin record address differs")
 		}
 		if err := sourceFieldCensus(wire.Source.Fields, origin.Fields); err != nil {
@@ -397,6 +401,10 @@ func (p *Provider) ResolveSourceRef(ctx context.Context, by model.PrincipalRef, 
 	if err != nil {
 		return model.Ref{}, false, err
 	}
+	return p.resolveSourceRefIn(value, by, project, sourceID, meta)
+}
+
+func (p *Provider) resolveSourceRefIn(value persisted, by model.PrincipalRef, project, sourceID string, meta model.WriteMeta) (model.Ref, bool, error) {
 	if value.Source == nil || value.Source.Schema != SourceStateSchema {
 		return model.Ref{}, false, sourceRefusal("missing restored source image")
 	}

@@ -174,6 +174,14 @@ func validateVersionedRecord(record Record, projects []Project, counts map[strin
 				return migrationRefusal("undeclared-entry", record.ID, record.Project)
 			}
 			category, result, targetType = string(status.Category), string(status.Outcome), target.Type
+		} else if len(p.Statuses) != 0 {
+			category = projectStatusCategory(p, stringValue(fields["status"]))
+			if category == "" {
+				return migrationRefusal("unknown-native-status", stringValue(fields["status"]), record.Project)
+			}
+			if category == "done" {
+				result = "success"
+			}
 		} else {
 			switch stringValue(fields["status"]) {
 			case "open":

@@ -12,6 +12,52 @@ import (
 	"testing"
 )
 
+func TestNativeHTTPListenerAdmitsOnlyExactParsingSite(t *testing.T) {
+	cfg, _ := checkedInExternalProtocolConfig(t)
+	identifier := string([]byte{98, 100})
+	productTerm := string([]byte{119, 105, 115, 112})
+	value := identifier + " serve: listening on http://"
+	source := func(literal string) string {
+		return "package recorder\nimport \"strings\"\nfunc (r *recorder) styleADomainCreate() { _, _ = strings.CutPrefix(line, " + literal + ") }\n"
+	}
+	for name, quote := range map[string]func(string) string{"quoted": strconv.Quote, "raw": func(s string) string { return "`" + s + "`" }, "escaped": escapedProtocolString} {
+		t.Run(name, func(t *testing.T) {
+			findings, err := CheckFiles(map[string][]byte{nativeHTTPDomainSource: []byte(source(quote(value)))}, cfg)
+			if err != nil || len(findings) != 0 {
+				t.Fatalf("exact listener parsing literal refused: %#v %v", findings, err)
+			}
+		})
+	}
+	good := source(strconv.Quote(value))
+	for name, body := range map[string]string{
+		"changed-value":    source(strconv.Quote(value + "other")),
+		"other-method":     strings.Replace(good, "styleADomainCreate", "other", 1),
+		"other-receiver":   strings.Replace(good, "*recorder", "*other", 1),
+		"other-call":       strings.Replace(good, "strings.CutPrefix", "strings.TrimPrefix", 1),
+		"copy":             good + "var diagnostic = " + strconv.Quote(value),
+		"quoted-source":    "package recorder\nvar diagnostic = " + strconv.Quote(good),
+		"import":           "package recorder\nimport " + strconv.Quote(value),
+		"duplicate-method": good + strings.TrimPrefix(good, "package recorder\nimport \"strings\"\n"),
+		"duplicate-call":   strings.Replace(good, " }", "; _, _ = strings.CutPrefix(line, "+strconv.Quote(value)+") }", 1),
+		"closure":          strings.Replace(good, "_, _ = strings.CutPrefix", "f := func() { _, _ = strings.CutPrefix", 1) + "}\n",
+		"other-identifier": good + "var " + identifier + " = 1",
+		"other-term":       good + "var diagnostic = " + strconv.Quote(productTerm),
+	} {
+		t.Run(name, func(t *testing.T) {
+			findings, err := CheckFiles(map[string][]byte{nativeHTTPDomainSource: []byte(body)}, cfg)
+			if err != nil || len(findings) == 0 {
+				t.Fatalf("broadened listener site accepted: %#v %v", findings, err)
+			}
+		})
+	}
+	for _, path := range []string{"spec/s1-b09-native/other_test.go", "internal/core/other.go"} {
+		findings, err := CheckFiles(map[string][]byte{path: []byte(good)}, cfg)
+		if err != nil || len(findings) == 0 {
+			t.Fatalf("listener literal admitted at another path %s: %#v %v", path, findings, err)
+		}
+	}
+}
+
 func TestSplitWordsWithOffsetsPreservesBoundaries(t *testing.T) {
 	for _, test := range []struct {
 		text   string

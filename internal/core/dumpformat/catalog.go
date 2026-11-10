@@ -8,6 +8,8 @@ const (
 	EphemeralPlaneWireField    = "wisp_plane"
 	EphemeralEntityTable       = "wisps"
 	DurableDependencyTable     = "dependencies"
+	SourceEventJournalTable    = "bd_events_journal"
+	SourceEventSequenceTable   = "bd_events_seq"
 	EphemeralDependencyTable   = "wisp_dependencies"
 	EphemeralLabelTable        = "wisp_labels"
 	EphemeralCommentTable      = "wisp_comments"

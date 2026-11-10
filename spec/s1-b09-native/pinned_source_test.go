@@ -113,11 +113,11 @@ func TestRecordNativeIDStyleA9d6(t *testing.T) {
 	r.requireIDs(initial, ids...)
 	r.replayNative(initial)
 	// Actual public config changes select configured and count-driven lengths.
-	r.setConfig(w, "min_hash_length", "5")
+	r.setStyleAConfig(w, "min_hash_length", "5")
 	configured := r.create(w, "pinned-configured-five", "Configured width five")
 	r.requireIDLength(configured, 5)
-	r.setConfig(w, "min_hash_length", "3")
-	r.setConfig(w, "max_collision_prob", "0.000001")
+	r.setStyleAConfig(w, "min_hash_length", "3")
+	r.setStyleAConfig(w, "max_collision_prob", "0.000001")
 	adaptive := r.create(w, "pinned-adaptive-count-five", "Adaptive count width five")
 	r.requireIDLength(adaptive, 5) // Four roots cross the configured probability threshold.
 	// Explicit source children seed/repair counters, nested descendants count
@@ -146,6 +146,20 @@ func TestRecordNativeIDStyleA9d6(t *testing.T) {
 	wantAdaptive, _ := driver.HashCandidate("b09", input, 5, 0)
 	r.importStyleARows(w, "pinned-paired-adaptive", []map[string]any{styleAIssue(input, "")}, 0, wantAdaptive)
 	r.replayStyleA(final, input, wantAdaptive, parentID, pairedChild, false)
+	// Delete the highest allocated child before capture. The surviving direct
+	// children stop at .10, but the restored native counter must continue .12.
+	r.run(w, "pinned-delete-highest-child", r.binary, []string{"delete", pairedChild, "--force", "--json"}, 0)
+	deleted := r.capture(w, "pinned-deleted-child-high-water", 10)
+	r.requireIDs(deleted, append([]string{wantAdaptive}, final.BeadIDs...)...)
+	afterDeleteChild := r.createArgs(w, "pinned-next-twelve-after-delete", []string{"create", "--parent", parentID, "--title", "Child after deleted high-water", "--type", "task", "--json"})
+	if afterDeleteChild != parentID+".12" {
+		t.Fatalf("native reused deleted highest child: %s", afterDeleteChild)
+	}
+	deletedInput := input
+	deletedInput.Title = "Paired root after deleted highest child"
+	wantAfterDelete, _ := driver.HashCandidate("b09", deletedInput, 5, 0)
+	r.importStyleARows(w, "pinned-paired-after-delete", []map[string]any{styleAIssue(deletedInput, "")}, 0, wantAfterDelete)
+	r.replayStyleA(deleted, deletedInput, wantAfterDelete, parentID, afterDeleteChild, false)
 	r.recordStyleACollisions(input)
 	r.recordStyleADomainWidths()
 	r.recordStyleANamespaces(input)
@@ -158,8 +172,33 @@ func TestRecordNativeIDStyleA9d6(t *testing.T) {
 		"configured_id": configured, "adaptive_id": adaptive,
 		"explicit_child": explicit, "next_child": child, "grandchild": grandchild, "next_after_close": next,
 		"paired_next_child": pairedChild, "paired_adaptive_root": wantAdaptive,
+		"deleted_highest_child": pairedChild, "deleted_child_capture": deleted, "next_after_delete": afterDeleteChild,
 		"limits": []string{"public fixture evidence only; no real-store, official bundle admission or switch credit", "import collision route uses pinned legacy issueops at lengths 3 through 8; no beyond-eight oracle"},
 	})
+}
+
+// The pinned CLI warns for these documented allocator keys but still writes
+// them. Keep its raw warning and require both successful typed set and a new
+// public get invocation to return the exact persisted key/value.
+func (r *recorder) setStyleAConfig(w workspace, key, value string) {
+	r.t.Helper()
+	switch key {
+	case "min_hash_length", "max_hash_length", "max_collision_prob":
+	default:
+		r.t.Fatal("unsupported ID style A fixture configuration key")
+	}
+	for _, action := range []string{"set", "get"} {
+		args := []string{"config", action, key}
+		if action == "set" {
+			args = append(args, value)
+		}
+		args = append(args, "--json")
+		data := r.run(w, w.Name+"-"+action+"-"+key+"-"+value, r.binary, args, 0)
+		var response struct{ Key, Value string }
+		if json.Unmarshal(data, &response) != nil || response.Key != key || response.Value != value {
+			r.t.Fatalf("native config %s did not return exact persisted %s=%s: %s", action, key, value, data)
+		}
+	}
 }
 
 func (r *recorder) buildCanonicalSource(spec styleASource) string {
@@ -220,7 +259,42 @@ func (r *recorder) buildCanonicalSource(spec styleASource) string {
 	if !filepath.IsAbs(bazel) {
 		r.t.Fatal("trusted RunsOn Bazel binary path required")
 	}
-	outputBase := "--output_base=" + filepath.Join(r.t.TempDir(), "bazel")
+	outputPath := filepath.Join(r.t.TempDir(), "bazel")
+	outputBase := "--output_base=" + outputPath
+	// Bazel materializes read-only output directories. After the dedicated
+	// server has shut down, restore owner access only on directories inside
+	// this private output base so testing.TempDir can remove them. WalkDir
+	// never follows symlinks into the shared repository cache; retained source
+	// archives, executable bytes and build evidence are not modified.
+	r.t.Cleanup(func() {
+		changed := 0
+		err := filepath.WalkDir(outputPath, func(path string, entry os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if !entry.IsDir() {
+				return nil
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			if info.Mode().Perm()&0700 != 0700 {
+				if err := os.Chmod(path, info.Mode().Perm()|0700); err != nil {
+					return err
+				}
+				changed++
+			}
+			return nil
+		})
+		if errors.Is(err, os.ErrNotExist) {
+			err = nil
+		}
+		r.writeJSON(filepath.Join(r.root, spec.Name+"-outputbase-cleanup.json"), map[string]any{"output_base": outputPath, "directories_made_owner_writable": changed, "error": fmt.Sprint(err), "follows_symlinks": false})
+		if err != nil {
+			r.t.Errorf("private Bazel output-base cleanup: %v", err)
+		}
+	})
 	if got := strings.TrimSpace(string(r.buildCommand(source, spec.Name+"-bazel-version", bazel, []string{outputBase, "version", "--gnu_format"}))); got != "Bazelisk v1.29.0\nbazel 9.3.0" {
 		r.t.Fatalf("Bazel version=%q", got)
 	}
@@ -417,7 +491,7 @@ func (r *recorder) recordStyleACollisions(input driver.HashInput) {
 		if exhausted {
 			r.requireConserved(before, after, "pinned native nonce exhaustion")
 		} else {
-			r.requireIDs(after, want)
+			r.requireIDs(after, append([]string{want}, before.BeadIDs...)...)
 		}
 		r.replayStyleA(before, input, want, "", "", exhausted)
 	}
@@ -431,27 +505,29 @@ type styleANativeIssue struct {
 	Timestamp   time.Time `json:"created_at"`
 }
 
-// The modern public create route permits lengths beyond the legacy import
-// ceiling. Derive its hash tuple from its actual returned/stored creation
-// timestamp, then use that tuple on the same pre-create archive in Plug.
+// The public HTTP domain route permits lengths beyond the embedded CLI's
+// eight-character ceiling. Derive its tuple from the actual returned creation
+// timestamp, then use it on the same pre-create archive in Plug. The native
+// DATETIME column rounds that timestamp to seconds; retain and check the
+// independently captured persisted tuple without substituting it for input.
 func (r *recorder) recordStyleADomainWidths() {
-	w := r.styleAWorkspace("pinned-domain-widths")
+	w := r.styleADomainWorkspace("pinned-domain-widths")
 	for i := 0; i < 3; i++ {
 		r.create(w, fmt.Sprintf("pinned-domain-seed-%d", i), "Domain adaptive seed")
 	}
 	for _, width := range []int{9, 10} {
 		if width == 9 {
-			r.setConfig(w, "max_hash_length", "9")
-			r.setConfig(w, "min_hash_length", "9")
+			r.setStyleAConfig(w, "max_hash_length", "9")
+			r.setStyleAConfig(w, "min_hash_length", "9")
 		} else {
-			r.setConfig(w, "min_hash_length", "3")
-			r.setConfig(w, "max_hash_length", "10")
-			r.setConfig(w, "max_collision_prob", "0")
+			r.setStyleAConfig(w, "min_hash_length", "3")
+			r.setStyleAConfig(w, "max_hash_length", "10")
+			r.setStyleAConfig(w, "max_collision_prob", "0")
 		}
 		label := fmt.Sprintf("pinned-domain-width-%d", width)
 		before := r.capture(w, label+"-before", width-6)
 		title := fmt.Sprintf("Native domain width %d", width)
-		data := r.run(w, label+"-create", r.binary, []string{"create", "--title", title, "--description", "Actual native domain tuple", "--type", "task", "--json"}, 0)
+		data := r.styleADomainCreate(w, label+"-create", title)
 		var issue styleANativeIssue
 		if err := json.Unmarshal(data, &issue); err != nil || issue.Title != title || issue.Creator != styleAActor || issue.Timestamp.IsZero() {
 			r.t.Fatalf("native domain tuple incomplete: %s err=%v", data, err)
@@ -460,15 +536,16 @@ func (r *recorder) recordStyleADomainWidths() {
 		input := driver.HashInput{Title: issue.Title, Description: issue.Description, Creator: issue.Creator, Timestamp: issue.Timestamp}
 		want, err := driver.HashCandidate("b09", input, uint32(width), 0)
 		if err != nil || want != issue.ID {
-			r.t.Fatalf("native domain persisted tuple does not rederive ID: %s want=%s err=%v", issue.ID, want, err)
+			r.t.Fatalf("native domain returned tuple does not rederive ID: %s want=%s err=%v", issue.ID, want, err)
 		}
 		after := r.capture(w, label+"-after", width-5)
-		r.requireIDs(after, issue.ID)
+		r.requireIDs(after, append([]string{issue.ID}, before.BeadIDs...)...)
 		archive, err := dumpformat.ReadFile(after.ArchivePath)
 		if err != nil {
 			r.t.Fatal(err)
 		}
 		found := false
+		var persisted styleANativeIssue
 		for _, row := range archive.Records("bead") {
 			if row.ID != issue.ID {
 				continue
@@ -477,16 +554,22 @@ func (r *recorder) recordStyleADomainWidths() {
 			if err != nil {
 				r.t.Fatal(err)
 			}
-			var persisted styleANativeIssue
-			if err := json.Unmarshal(fields, &persisted); err != nil || !reflect.DeepEqual(issue, persisted) {
-				r.t.Fatalf("returned native creation tuple differs from actual source row: %+v -> %+v err=%v", issue, persisted, err)
+			expectedStored := issue
+			expectedStored.Timestamp = issue.Timestamp.Round(time.Second)
+			if err := json.Unmarshal(fields, &persisted); err != nil || !reflect.DeepEqual(expectedStored, persisted) {
+				r.t.Fatalf("actual native source tuple differs beyond DATETIME second rounding: returned=%+v expected=%+v actual=%+v err=%v", issue, expectedStored, persisted, err)
 			}
 			found = true
 		}
 		if !found {
 			r.t.Fatal("actual native source row missing for domain create")
 		}
-		r.writeJSON(filepath.Join(r.root, label+"-tuple.json"), map[string]any{"native_id": issue.ID, "input": input, "width": width, "nonce": 0, "before_archive": before.ArchiveSHA256, "after_archive": after.ArchiveSHA256})
+		persistedInput := driver.HashInput{Title: persisted.Title, Description: persisted.Description, Creator: persisted.Creator, Timestamp: persisted.Timestamp}
+		persistedCandidate, err := driver.HashCandidate("b09", persistedInput, uint32(width), 0)
+		if err != nil {
+			r.t.Fatal(err)
+		}
+		r.writeJSON(filepath.Join(r.root, label+"-tuple.json"), map[string]any{"native_id": issue.ID, "input": input, "returned_tuple": issue, "persisted_tuple": persisted, "persisted_candidate": persistedCandidate, "storage_clock": "DATETIME/seconds-rounded", "width": width, "nonce": 0, "before_archive": before.ArchiveSHA256, "after_archive": after.ArchiveSHA256})
 		r.replayStyleA(before, input, issue.ID, "", "", false)
 	}
 }
@@ -536,6 +619,7 @@ func (r *recorder) replayStyleA(source captureReceipt, input driver.HashInput, w
 				SourceStoreID: inspection.SourceStoreID, Method: "offline.restore.import", IdempotencyKey: hashBytes([]byte(source.Label + engine)),
 				ArchiveDigest: inspection.ArchiveSHA256, DerivedDigest: inspection.DerivedSHA256, HistoryMode: driver.RestoreHistoryModeSnapshot,
 			}
+			profile = bindB09SourcePlan(t, data, target, profile)
 			if _, err := converterroundtrip.RestoreImportWithLease(ctx, bytes.NewReader(data), target.store, target.lease, profile); err != nil {
 				t.Fatal(err)
 			}
@@ -573,7 +657,7 @@ func (r *recorder) replayStyleA(source captureReceipt, input driver.HashInput, w
 				}
 				r.writeJSON(filepath.Join(target.output, "exhaustion-cause.json"), map[string]any{"error": cause.Error(), "unsupported": true})
 				after := target.stage("exhausted", source.BeadIDs, nil)
-				if before.Meta != after.Meta || !reflect.DeepEqual(before.Records, after.Records) || !reflect.DeepEqual(before.Versions, after.Versions) || !reflect.DeepEqual(before.Allocator, after.Allocator) || !reflect.DeepEqual(before.Changesets, after.Changesets) {
+				if before.Meta != after.Meta || !reflect.DeepEqual(before.Records, after.Records) || !reflect.DeepEqual(before.Versions, after.Versions) || !reflect.DeepEqual(before.Allocator, after.Allocator) || !reflect.DeepEqual(before.Changesets, after.Changesets) || !reflect.DeepEqual(before.Checkpoints, after.Checkpoints) {
 					t.Fatal("exhausted public request published allocator, records or history")
 				}
 				return
@@ -599,7 +683,7 @@ func (r *recorder) replayStyleA(source captureReceipt, input driver.HashInput, w
 			}
 			r.writeJSON(filepath.Join(target.output, "rpc-root-replayed.json"), map[string]any{"request": json.RawMessage(request), "response": json.RawMessage(replay)})
 			replayed := target.stage("root-replayed", source.BeadIDs, []string{wantRoot})
-			if committed.Meta != replayed.Meta || !reflect.DeepEqual(committed.Records, replayed.Records) || !reflect.DeepEqual(committed.Versions, replayed.Versions) || !reflect.DeepEqual(committed.Allocator, replayed.Allocator) || !reflect.DeepEqual(committed.Changesets, replayed.Changesets) {
+			if committed.Meta != replayed.Meta || !reflect.DeepEqual(committed.Records, replayed.Records) || !reflect.DeepEqual(committed.Versions, replayed.Versions) || !reflect.DeepEqual(committed.Allocator, replayed.Allocator) || !reflect.DeepEqual(committed.Changesets, replayed.Changesets) || !reflect.DeepEqual(committed.Checkpoints, replayed.Checkpoints) {
 				t.Fatal("reopen idempotent RPC replay changed allocator, records or history")
 			}
 			newIDs := []string{wantRoot}
@@ -620,6 +704,9 @@ func (r *recorder) replayStyleA(source captureReceipt, input driver.HashInput, w
 				newIDs = append(newIDs, wantChild)
 			}
 			after := target.stage("continued-after-reopen", source.BeadIDs, newIDs)
+			if !reflect.DeepEqual(before.Checkpoints, after.Checkpoints) {
+				t.Fatal("allocator continuation changed source checkpoint")
+			}
 			for id, record := range before.Records {
 				if !reflect.DeepEqual(record, after.Records[id]) {
 					t.Fatalf("new allocation changed restored record %s", id)
