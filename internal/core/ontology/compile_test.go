@@ -158,12 +158,9 @@ func TestCompiledSnapshotDoesNotAliasInputsOrDescriptions(t *testing.T) {
 
 func TestNonReadyTypeDoesNotRequireClaim(t *testing.T) {
 	doc := DefaultDocument()
-	// Both installed types use this workflow. Remove Ready eligibility from
-	// each consumer before exercising an intentionally absent claim slot.
-	for key, typ := range doc.Types {
-		typ.ReadyEligible = boolFact(false)
-		doc.Types[key] = typ
-	}
+	typ := doc.Types["issue"]
+	typ.ReadyEligible = boolFact(false)
+	doc.Types["issue"] = typ
 	delete(doc.Workflows["issue"].Slots, Claim)
 	w := doc.Workflows["issue"]
 	w.Initial = ""

@@ -22,6 +22,21 @@ import (
 
 var gateOntologyRef = model.RefByID("ontology/b14-gates", model.Natural64(0))
 
+func gateCatalogDocument() ontology.Document {
+	doc := ontology.DefaultDocument()
+	doc.Types[ontology.GateType] = ontology.Type{Name: "Gate", Workflow: "issue", Fields: map[string]ontology.Field{
+		"title": {Type: "string"}, "description": {Type: "string"},
+		"labels": {Type: "strings"}, "blocked": {Type: "boolean"},
+	}}
+	return doc
+}
+
+func installGateCatalog(t *testing.T, f *fixture) {
+	t.Helper()
+	seedGateCatalog(t, f, ontology.DefaultDocument())
+	gateApply(f, gatePlan(f, gateCatalogDocument(), []any{}, 1), 1)
+}
+
 // Only the initial, pre-installation catalog is setup. Installation, mapping,
 // data mutations, listing and reopen readback all use the named public RPCs.
 func seedGateCatalog(t *testing.T, f *fixture, doc ontology.Document) {
@@ -37,31 +52,34 @@ func seedGateCatalog(t *testing.T, f *fixture, doc ontology.Document) {
 	bindGateHost(t, f, f.store, true, false)
 }
 
-func bindGateHost(t *testing.T, f *fixture, store driver.Store, storedOntology, workflow bool, clock ...func() time.Time) {
+func storedGateOntology(t *testing.T, f *fixture) *service.Ontology {
 	t.Helper()
 	ctx := context.Background()
-	var runtime *service.Ontology
+	r, err := f.store.Read(ctx, driver.View{Incarnation: f.meta().Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := r.Get(ctx, []model.Ref{gateOntologyRef})
+	_ = r.Close()
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("stored catalog: %v rows=%d", err, len(rows))
+	}
+	source, err := service.DecodeOntologySource(rows[0].Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, problems := ontology.Compile(source.Base, source.Overlays, source.Plugins)
+	if len(problems) != 0 {
+		t.Fatal(problems)
+	}
+	return service.NewOntology(compiled.Effective)
+}
+
+func bindGateHost(t *testing.T, f *fixture, store driver.Store, storedOntology, workflow bool, clock ...func() time.Time) {
+	t.Helper()
+	runtime := service.NewOntology(nil)
 	if storedOntology {
-		r, err := f.store.Read(ctx, driver.View{Incarnation: f.meta().Incarnation})
-		if err != nil {
-			t.Fatal(err)
-		}
-		rows, err := r.Get(ctx, []model.Ref{gateOntologyRef})
-		_ = r.Close()
-		if err != nil || len(rows) != 1 {
-			t.Fatalf("stored catalog: %v rows=%d", err, len(rows))
-		}
-		source, err := service.DecodeOntologySource(rows[0].Body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		compiled, problems := ontology.Compile(source.Base, source.Overlays, source.Plugins)
-		if len(problems) != 0 {
-			t.Fatal(problems)
-		}
-		runtime = service.NewOntology(compiled.Effective)
-	} else {
-		runtime = service.NewOntology(nil)
+		runtime = storedGateOntology(t, f)
 	}
 	writerOptions := []pipeline.Option{pipeline.WithOntology(runtime), pipeline.WithIDGenerator(func() (string, error) {
 		f.nextID++

@@ -10,7 +10,6 @@ import (
 func TestB14PublicGateTypeInstallMapTypePreservesLiteralMembers(t *testing.T) {
 	eachStore(t, func(t *testing.T, f *fixture) {
 		initial := ontology.DefaultDocument()
-		delete(initial.Types, ontology.GateType)
 		initial.Types["legacy_gate"] = initial.Types["issue"]
 		seedGateCatalog(t, f, initial)
 		f.refuse("bead.create", map[string]any{"type": "gate", "fields": map[string]any{"title": "not installed"}}, "invalid_params")
@@ -21,7 +20,7 @@ func TestB14PublicGateTypeInstallMapTypePreservesLiteralMembers(t *testing.T) {
 		if !ok || beforeStatus == "" {
 			t.Fatalf("created history body lacks a literal status: %v", before)
 		}
-		candidate := ontology.DefaultDocument()
+		candidate := gateCatalogDocument()
 		candidate.Types["legacy_gate"] = initial.Types["legacy_gate"]
 		plan := gatePlan(f, candidate, []any{typeMapping("legacy_gate", "gate", id)}, 1)
 		migration := plan["changes"].(map[string]any)["migration"].(map[string]any)
@@ -61,7 +60,7 @@ func TestB14PublicGateTypeInstallMapTypePreservesLiteralMembers(t *testing.T) {
 
 func TestB14PublicGateTypeMappingsRefuseWithoutWrites(t *testing.T) {
 	eachStore(t, func(t *testing.T, f *fixture) {
-		initial := ontology.DefaultDocument()
+		initial := gateCatalogDocument()
 		initial.Types["legacy_gate"] = initial.Types["issue"]
 		seedGateCatalog(t, f, initial)
 		id := gateCreate(f, "legacy_gate", "opaque", map[string]any{"waiters": []string{"preserve"}})
@@ -72,7 +71,7 @@ func TestB14PublicGateTypeMappingsRefuseWithoutWrites(t *testing.T) {
 			mappings  []any
 			candidate ontology.Document
 		}{
-			{"identity", []any{typeMapping("gate", "gate", "")}, ontology.DefaultDocument()},
+			{"identity", []any{typeMapping("gate", "gate", "")}, gateCatalogDocument()},
 			{"unknown-target", []any{typeMapping("legacy_gate", "absent", id)}, initial},
 			{"unknown-source", []any{typeMapping("absent", "gate", "")}, initial},
 			{"unmatched-id", []any{typeMapping("legacy_gate", "gate", "missing")}, initial},
@@ -90,7 +89,7 @@ func TestB14PublicGateTypeMappingsRefuseWithoutWrites(t *testing.T) {
 				}
 			})
 		}
-		archived := ontology.DefaultDocument()
+		archived := gateCatalogDocument()
 		archived.Types["legacy_gate"] = initial.Types["legacy_gate"]
 		gate := archived.Types["gate"]
 		gate.Archived = true

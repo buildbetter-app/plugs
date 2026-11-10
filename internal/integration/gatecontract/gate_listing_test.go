@@ -18,7 +18,7 @@ import (
 
 func TestB14PublicGateListingCanonicalFiltersAndLimit(t *testing.T) {
 	eachStore(t, func(t *testing.T, f *fixture) {
-		seedGateCatalog(t, f, ontology.DefaultDocument())
+		installGateCatalog(t, f)
 		// Non-gates with await fields, closed gates and templates precede
 		// the first checkable gate in the real driver query order.
 		gateCreate(f, "issue", "gh:run", map[string]any{"priority": 0})
@@ -36,7 +36,7 @@ func TestB14PublicGateListingCanonicalFiltersAndLimit(t *testing.T) {
 		// Install literal Beads status names/categories through the public
 		// catalog API. Existing slots select them; no alternate lifecycle
 		// implementation or passive pinned flag stands in for a native status.
-		candidate := ontology.DefaultDocument()
+		candidate := gateCatalogDocument()
 		candidate.Statuses["pinned"] = ontology.Status{Name: "Pinned", Category: ontology.Frozen}
 		candidate.Statuses["closed"] = ontology.Status{Name: "Closed", Category: ontology.Done, Outcome: ontology.Success}
 		workflow := candidate.Workflows["issue"]
@@ -44,7 +44,7 @@ func TestB14PublicGateListingCanonicalFiltersAndLimit(t *testing.T) {
 		workflow.Slots[ontology.Defer], workflow.Slots[ontology.Close] = "pinned", "closed"
 		workflow.Transitions = append(workflow.Transitions, ontology.Rule{To: "pinned"}, ontology.Rule{To: "closed", Guards: []ontology.Guard{{Kind: ontology.NotTemplate}, {Kind: ontology.NoOpenChildren}, {Kind: ontology.NoOpenBlockers}, {Kind: ontology.Permission}}})
 		candidate.Workflows["issue"] = workflow
-		gateApply(f, gatePlan(f, candidate, []any{}, 1), 1)
+		gateApply(f, gatePlan(f, candidate, []any{}, 2), 2)
 		f.call("bead.defer", map[string]any{"id": pinned}, true, "")
 		f.call("bead.close", map[string]any{"id": closed}, true, "")
 		if f.bead(pinned)["status"] != "pinned" || f.bead(closed)["status"] != "closed" || f.bead(otherCompleted)["status"] != "done" {
@@ -80,6 +80,7 @@ func TestB14PublicGateListingCanonicalFiltersAndLimit(t *testing.T) {
 
 func TestB14PublicGateListingCheckAwaitTypeAfterLimit(t *testing.T) {
 	eachStore(t, func(t *testing.T, f *fixture) {
+		installGateCatalog(t, f)
 		timer := gateCreate(f, "gate", "timer", map[string]any{"priority": 0})
 		gh := gateCreate(f, "gate", "gh:run", map[string]any{"priority": 1})
 		exact := gateCreate(f, "gate", "opaque", map[string]any{"priority": 2})
@@ -137,6 +138,7 @@ func (r *gateQueryReader) Query(ctx context.Context, q driver.Query) (driver.Pag
 
 func TestB14PublicGateListingDrainsPagesAndPropagatesQueryFailures(t *testing.T) {
 	eachStore(t, func(t *testing.T, f *fixture) {
+		installGateCatalog(t, f)
 		want := []string{}
 		for start := 0; start < 1003; start += 500 {
 			ops := []any{}
@@ -149,7 +151,7 @@ func TestB14PublicGateListingDrainsPagesAndPropagatesQueryFailures(t *testing.T)
 			}
 		}
 		wrapped := &gateQueryStore{Store: f.store}
-		bindGateHost(t, f, wrapped, false, false)
+		bindGateHost(t, f, wrapped, true, false)
 		before, history := f.meta(), f.historyCount()
 		got := gateIDs(f.call("gate.list", map[string]any{"limit": 0}, false, ""))
 		set := append([]string(nil), got...)
@@ -174,7 +176,8 @@ func TestB14PublicGateListingDrainsPagesAndPropagatesQueryFailures(t *testing.T)
 
 func TestB14PublicGateListingBothPlanesAndDurableReopen(t *testing.T) {
 	eachStore(t, func(t *testing.T, f *fixture) {
-		bindGateHost(t, f, f.store, false, true)
+		installGateCatalog(t, f)
+		bindGateHost(t, f, f.store, true, true)
 		ordinary := gateCreate(f, "gate", "timer", map[string]any{"priority": 4})
 		invocation := map[string]any{"template": "b14-gate-list", "project": "local", "mode": "ephemeral", "checklist": []any{
 			map[string]any{"label": "open", "title": "ephemeral gate", "type": "gate", "fields": map[string]any{"await_type": "gh:run", "priority": 0}},
@@ -211,7 +214,7 @@ func TestB14PublicGateListingBothPlanesAndDurableReopen(t *testing.T) {
 		if f.engine != "memory" {
 			f.close()
 			f.open()
-			bindGateHost(t, f, f.store, false, true)
+			bindGateHost(t, f, f.store, true, true)
 			check()
 		}
 	})
@@ -219,8 +222,9 @@ func TestB14PublicGateListingBothPlanesAndDurableReopen(t *testing.T) {
 
 func TestB14PublicGateListingGlobalPriorityCreationAndIDOrder(t *testing.T) {
 	eachStore(t, func(t *testing.T, f *fixture) {
+		installGateCatalog(t, f)
 		now := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
-		bindGateHost(t, f, f.store, false, true, func() time.Time { return now })
+		bindGateHost(t, f, f.store, true, true, func() time.Time { return now })
 		low := gateCreate(f, "gate", "timer", map[string]any{"priority": 4})
 		invoke := func(label string, priority int) string {
 			t.Helper()

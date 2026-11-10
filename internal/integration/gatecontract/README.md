@@ -74,9 +74,9 @@ the public `timeout` member.
 
 ## Installed gate types and public listing
 
-The default catalog installs the literal `gate` type on the existing issue
-workflow. Await members on another type do not change its identity. A stored
-host catalog can install the type and literal statuses through
+The literal `gate` type is installed on the existing issue workflow through a
+stored host catalog. Await members on another type do not change its identity.
+The public fixtures install the type and literal statuses through
 `ontology.plan`/`ontology.apply`. The optional `typeMappings` plan input accepts
 only closed `map_type` objects with an ID, original project/type selector, and
 different `from`/`to` keys. The existing migration planner retains these inputs
@@ -120,7 +120,10 @@ then prove ordinary listing/order still works. Those memory cells receive no
 ephemeral or both-plane positive credit, and no persistence marker is faked.
 Only the initial catalog in the installation fixture is
 seeded; its installation/mapping and all bead/checkpoint changes use public
-RPC. The read visibility fixture installs an explicit test rule through the
+RPC. Listing fixtures also install the gate type through the public catalog
+API. The composed host receives that same installed ontology through its
+optional trusted `Config.Ontology` slot, shared by its Writer and reads.
+The read visibility fixture installs an explicit test rule through the
 existing composition chain; it does not expand the production finite policy.
 `TestB14PublicGateListingNoQuerierUnsupported` pins the unsupported source case.
 These cases are authored acceptance controls, not native recordings. Their
@@ -128,3 +131,6 @@ source correspondence is canonical9d6 `issueops/gates.go`/`gates_test.go` and
 the retained CLI check-filter controls. Native execution, producer/importer
 admission, resolver execution, hosted delivery and full B14 remain separately
 qualified; historical `0/82` native cases receive no new credit.
+Native Beads registers gate as a built-in type; Plug's explicit catalog
+installation is a distinct activation boundary. The global built-in issue
+catalog, importer catalogs and retained restore goldens are unchanged.

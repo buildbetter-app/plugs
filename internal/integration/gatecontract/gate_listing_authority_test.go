@@ -43,6 +43,9 @@ func (r *gateListingReadRule) Eval(ctx context.Context, facts authz.Slice, req [
 
 func TestB14PublicGateListingComposedReadVisibilityBeforeLimit(t *testing.T) {
 	eachStore(t, func(t *testing.T, f *fixture) {
+		installGateCatalog(t, f)
+		closed := gateCreate(f, "gate", "timer", map[string]any{"priority": 0})
+		f.call("bead.close", map[string]any{"id": closed}, true, "")
 		hidden := gateCreate(f, "gate", "timer", map[string]any{"priority": 0})
 		created := f.call("bead.create", map[string]any{"type": "gate", "parent": ref(hidden), "fields": map[string]any{"title": "visible child gate", "await_type": "gh:run", "priority": 1}}, true, "")
 		child := resultID(created, 0)
@@ -54,7 +57,7 @@ func TestB14PublicGateListingComposedReadVisibilityBeforeLimit(t *testing.T) {
 			t.Fatal(err)
 		}
 		keys := authnapikey.New(authnapikey.Config{AuthorizationInstalled: func() bool { return true }})
-		app, err := authzrpc.New(context.Background(), authzrpc.Config{Store: f.store, Lease: f.lease, Provider: keys, Facts: facts, Namespace: ns, DefaultProject: "local"})
+		app, err := authzrpc.New(context.Background(), authzrpc.Config{Store: f.store, Lease: f.lease, Provider: keys, Facts: facts, Namespace: ns, DefaultProject: "local", Ontology: storedGateOntology(t, f)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -93,7 +96,7 @@ func TestB14PublicGateListingComposedReadVisibilityBeforeLimit(t *testing.T) {
 		before, history := f.meta(), f.historyCount()
 		page := call("")
 		if !reflect.DeepEqual(gateIDs(page), []string{child}) {
-			t.Fatalf("hidden prefix consumed selected gate limit: %v", page)
+			t.Fatalf("hidden or installed-close-slot prefix consumed selected gate limit: %v", page)
 		}
 		bead := page["items"].([]any)[0].(map[string]any)
 		if !reflect.DeepEqual(bead["parent"], map[string]any{"exists": true}) {

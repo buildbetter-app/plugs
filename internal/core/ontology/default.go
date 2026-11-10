@@ -1,6 +1,7 @@
 package ontology
 
-// GateType is the exact installed gate identity, independent of await fields.
+// GateType identifies a gate installed by the host's ontology catalog.
+// Await fields do not select or install a type.
 const GateType = "gate"
 
 // DefaultDocument is usable without a plugin host or authorization provider.
@@ -31,10 +32,6 @@ func DefaultDocument() Document {
 			},
 		},
 		Types: map[string]Type{
-			GateType: {Name: "Gate", Workflow: "issue", Fields: map[string]Field{
-				"title": {Type: "string"}, "description": {Type: "string"},
-				"labels": {Type: "strings"}, "blocked": {Type: "boolean"},
-			}},
 			"issue": {Name: "Issue", Workflow: "issue", Fields: map[string]Field{
 				"title": {Type: "string"}, "description": {Type: "string"},
 				"labels": {Type: "strings"}, "blocked": {Type: "boolean"},
