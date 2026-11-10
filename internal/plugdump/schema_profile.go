@@ -87,7 +87,11 @@ func sourceSchemaProfile(tables map[string]Table) (NativeSchemaProfile, error) {
 		if lane == "ignored" {
 			name = "ignored_schema_migrations"
 		}
-		for _, row := range tables[name].Rows {
+		table, present := tables[name]
+		if !present {
+			return NativeSchemaProfile{}, fmt.Errorf("unaccounted table family %s", name)
+		}
+		for _, row := range table.Rows {
 			version, err := natural(row["version"])
 			if err != nil {
 				return NativeSchemaProfile{}, fmt.Errorf("invalid %s schema cursor", lane)

@@ -64,12 +64,18 @@ func readPhysicalEvidence(ctx context.Context, db *sql.DB, native plugdump.Nativ
 		evidence.Images = append(evidence.Images, physicalcapture.EvidenceImage{CommitID: image.CommitID, ReadOnlyScope: image.ReadOnlyScope, Tables: tables})
 	}
 	final, err := physicalcapture.ReadWorkingRoot(ctx, conn, native.Head)
-	if err != nil || final.Database != original.Database || final.WorkingRootHash != original.WorkingRootHash || final.HeadCommitID != original.HeadCommitID || !final.ReadOnlyScope || !final.Complete {
+	if err != nil {
+		return nil, err
+	}
+	if final.Database != original.Database || final.WorkingRootHash != original.WorkingRootHash || final.HeadCommitID != original.HeadCommitID || !final.ReadOnlyScope || !final.Complete {
 		return nil, fmt.Errorf("physical evidence source root changed")
 	}
 	data, err := physicalcapture.MarshalEvidence(evidence)
-	if err != nil || len(data) > plugdump.MaxArchiveBytes {
-		return nil, fmt.Errorf("physical evidence serialization or size limit")
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > plugdump.MaxArchiveBytes {
+		return nil, fmt.Errorf("physical evidence size limit")
 	}
 	return data, nil
 }

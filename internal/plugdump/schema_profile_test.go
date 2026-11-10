@@ -57,6 +57,9 @@ func schema66Fixture(t *testing.T) (nativeHistoryFixture, Inventory) {
 			image[name] = table
 		}
 	}
+	// Removing the post-v66 issue_versions family also removes its rows.
+	// This fixture has no remaining version/snapshot source rows to declare.
+	inventory.History = "unavailable"
 	return source, inventory
 }
 
