@@ -257,7 +257,7 @@ func assertNative66Receiving(t *testing.T, store driver.Store, report Report) {
 		project := schema.Source.Project
 		var allocator driver.OfflineAllocator
 		decode(t, schema.PlugDefaults[0].Value, &allocator)
-		if schema.PlugDefaults[0].Count != 1 || schema.PlugDefaults[0].Field != "target_allocator" || !reflect.DeepEqual(allocator, nativeReceivingExpectedHashAllocator(t, archive, project)) {
+		if schema.PlugDefaults[0].Count != 1 || schema.PlugDefaults[0].Field != "target_allocator" || !reflect.DeepEqual(allocator, nativeReceivingExpectedHashAllocator(t, report.Archive, project)) {
 			t.Fatal("actual allocator default changed")
 		}
 		for _, omission := range schema.TargetOmissions {
