@@ -200,17 +200,6 @@ func projectJointReverseDump(ctx context.Context, bound driver.RestoreImportProf
 			if err != nil {
 				return ReverseRefusal{"changed_source_mirror"}
 			}
-			// Public strings use the canonical memory view, with the same framed
-			// joint identity and complete provenance as their retained source row.
-			if kind == "memory" && source.Body["classification"] == "public" {
-				if content, ok := source.Body["value"].(string); ok {
-					want = map[string]any{"id": mirrorID, "key": strings.TrimSpace(stringValue(source.Body["key"])), "content": content, "metadata": map[string]any{
-						"plug.restore.source_id": source.ID, "plug.restore.source_table": source.Source.Table,
-						"plug.restore.source": source.Source.Fields, "plug.restore.source_project": source.Project,
-						"plug.restore.archive_sha256": bound.ArchiveDigest,
-					}}
-				}
-			}
 			var got map[string]any
 			if decodeReverseJSON(row.Body, &got) != nil || !sameReverseJSON(want, got) {
 				return ReverseRefusal{"changed_source_mirror"}
