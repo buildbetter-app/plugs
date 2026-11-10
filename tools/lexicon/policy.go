@@ -41,6 +41,8 @@ const (
 func DefaultTreePolicy() TreePolicy {
 	return TreePolicy{
 		ReferencePrefixes: []string{
+			"internal/core/dumpformat/testdata/commit-schema-registry-c8ab0ce7.json",
+			"internal/core/dumpformat/testdata/commit-schema-registry-ff8006bf.json",
 			"spec/s1-b09-native/testdata/beads-9d6fff.git-tree",
 			"spec/s1-b09-native/testdata/beads-446dbb.git-tree",
 			"spec/recorded/goldens.json",
@@ -48,11 +50,13 @@ func DefaultTreePolicy() TreePolicy {
 			"spec/s1-b17-b20/reference/b18/record.py",
 		},
 		ReferenceSHA256: map[string]string{
-			"spec/s1-b09-native/testdata/beads-446dbb.git-tree":         "a2456b25849b281d86ac57a461e21e0cc244cd80602c20269d88e7b9e28bc246",
-			"spec/s1-b09-native/testdata/beads-9d6fff.git-tree":         "23d84a56302ad19c50d9d25af733b2da50f9137aaf9308b273cab039b6023ae3",
-			"spec/recorded/goldens.json":                                "26a086334357d55ea847daa301f45c9435a71bba75fb6c324456aebf459fbf32",
-			"spec/s1-b09-b12/reference-v2/cb40-41563023339.packet.json": "33cd8fdcb66b5b93f4a36329fc0598cb9c5d012fc350804809da5eb5a38d4067",
-			"spec/s1-b17-b20/reference/b18/record.py":                   "375c516727d1dac47c395a7b117171e638f25a1e1f7b95a1c78f61d0552f973f",
+			"internal/core/dumpformat/testdata/commit-schema-registry-c8ab0ce7.json": "900320651fedf60f29686f928c4febba7513f0cb802c8f85399526d058b3aa44",
+			"internal/core/dumpformat/testdata/commit-schema-registry-ff8006bf.json": "cf71387bc62853dd48aa9e7e96dfe67cf1126cdd47c920758d1d4234b80cd253",
+			"spec/s1-b09-native/testdata/beads-446dbb.git-tree":                      "a2456b25849b281d86ac57a461e21e0cc244cd80602c20269d88e7b9e28bc246",
+			"spec/s1-b09-native/testdata/beads-9d6fff.git-tree":                      "23d84a56302ad19c50d9d25af733b2da50f9137aaf9308b273cab039b6023ae3",
+			"spec/recorded/goldens.json":                                             "26a086334357d55ea847daa301f45c9435a71bba75fb6c324456aebf459fbf32",
+			"spec/s1-b09-b12/reference-v2/cb40-41563023339.packet.json":              "33cd8fdcb66b5b93f4a36329fc0598cb9c5d012fc350804809da5eb5a38d4067",
+			"spec/s1-b17-b20/reference/b18/record.py":                                "375c516727d1dac47c395a7b117171e638f25a1e1f7b95a1c78f61d0552f973f",
 		},
 		ProtectedPrefixes:       []string{".github/", "engdocs/design/plug/"},
 		StrictProtectedPrefixes: []string{".github/", "engdocs/design/plug/"},
