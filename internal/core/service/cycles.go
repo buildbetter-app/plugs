@@ -89,22 +89,21 @@ func (s *Service) Cycles(ctx context.Context, by model.PrincipalRef, req CyclesR
 	return result, nil
 }
 
-// CheckCycleReportCapability validates the selector before distinguishing an
-// unavailable persistent workflow capability from an unsupported graph plane.
-// The current workflow contract has no links or parents: persistence alone
-// does not grant a graph snapshot or mixed-plane report capability.
-func CheckCycleReportCapability(store driver.Store, req CyclesRequest) error {
+// CheckCycleReportCapability validates the selector before reporting a missing
+// combined graph snapshot. Workflow links and persistence alone do not provide
+// a complete durable/workflow graph at one read generation.
+func CheckCycleReportCapability(_ driver.Store, req CyclesRequest) error {
 	if _, err := cycleLimit(req); err != nil {
 		return err
 	}
 	if !req.IncludeEphemeral {
 		return nil
 	}
-	capability, ok := store.(driver.PersistentCheckpointStore)
-	if !ok || !capability.Persistent() {
-		return failure("plugin_durable_state_unavailable", "ephemeral cycle reporting requires persistent workflow state")
-	}
-	return failure("invalid_params", "ephemeral cycle reporting requires a supported workflow plane")
+	return ephemeralCycleCapabilityFailure()
+}
+
+func ephemeralCycleCapabilityFailure() error {
+	return failure("plugin_durable_state_unavailable", "ephemeral cycle reporting requires a supported combined graph snapshot")
 }
 
 func cycleLimit(req CyclesRequest) (int, error) {
@@ -136,7 +135,7 @@ func ReadCycles(ctx context.Context, reader driver.Reader, req CyclesRequest, re
 		return CyclesResult{}, failure("invalid_params", "cycle reporting requires a pinned snapshot")
 	}
 	if req.IncludeEphemeral {
-		return CyclesResult{}, failure("invalid_params", "ephemeral cycle reporting requires a supported workflow plane")
+		return CyclesResult{}, ephemeralCycleCapabilityFailure()
 	}
 	rows, err := scanBeads(ctx, reader)
 	if err != nil {
