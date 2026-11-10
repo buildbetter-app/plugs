@@ -283,7 +283,16 @@ func (c *Checker) Authorize(ctx context.Context, stage port.AuthorizationStage, 
 		closeRefs := make(map[model.Ref]bool)
 		for _, change := range proposal.Changes {
 			if proposal.Meta.Method == "bead.close" || change.Op.Kind == model.OpClose {
-				closeRefs[change.Resource.Ref] = true
+				switch change.Resource.Kind {
+				case "bead":
+					closeRefs[change.Resource.Ref] = true
+				case "workflow_item":
+					// The provider admitted this source operation and the source
+					// slice binds its current project/method policy above. Its
+					// lifecycle is not an ordinary stored bead's ontology slot.
+				default:
+					return forbidden("unsupported close resource")
+				}
 			}
 		}
 		for i := range requests {

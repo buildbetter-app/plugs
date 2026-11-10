@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -39,6 +40,217 @@ func jointOwnedProfile(t *testing.T, data []byte, p driver.RestoreImportProfile,
 		t.Fatal(err)
 	}
 	return p
+}
+
+// This trusted test rule supplies only source close and its enclosing method.
+// Each decision still evaluates the installed fixed rule's current project
+// membership; no ordinary bead or ontology transition receives a new permit.
+type sourceCloseMembershipRule struct {
+	authz.RuleSet
+	mu   sync.Mutex
+	deny string
+	seen map[string]int
+}
+
+func (r *sourceCloseMembershipRule) refuse(method string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.deny = method
+}
+
+func (r *sourceCloseMembershipRule) observed(method string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.seen[method] > 0
+}
+
+func (r *sourceCloseMembershipRule) Eval(ctx context.Context, source authz.Slice, requests []authz.CheckRequest) ([]authz.Decision, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	mapped := append([]authz.CheckRequest(nil), requests...)
+	for i, request := range requests {
+		if request.Action != authz.Modify || request.Resource.Kind != authz.Bead || (request.Method != "bead.close" && request.Method != "tx.apply") {
+			continue
+		}
+		binding, err := source.ProjectForBead(ctx, request.Resource.Ref)
+		if err != nil {
+			return nil, err
+		}
+		active, ok := source.(interface{ SourceBeadReference(model.Ref) bool })
+		if !ok || !active.SourceBeadReference(request.Resource.Ref) {
+			continue // the fixture supplies no ordinary bead permit
+		}
+		if !binding.Found || binding.Name != "demo" || request.Transition != (authz.TransitionContext{}) {
+			return nil, fmt.Errorf("source close lost its typed project/method boundary")
+		}
+		r.seen[request.Method]++
+		mapped[i].Resource = authz.Resource{Kind: authz.Project, Ref: binding.Ref}
+		mapped[i].Method = ""
+	}
+	decisions, err := r.RuleSet.Eval(ctx, source, mapped)
+	if err != nil {
+		return nil, err
+	}
+	for i, request := range requests {
+		if request.Method == r.deny {
+			decisions[i] = authz.Decision{Effect: authz.Deny, Reasons: []string{"source close method revoked"}}
+		}
+	}
+	return decisions, nil
+}
+
+func TestJointSourceCloseWithInstalledLifecycleAndCurrentPolicy(t *testing.T) {
+	data := jointSourceFixture(t)
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		for _, method := range []string{"bead.close", "tx.apply"} {
+			t.Run(engine+"/"+method, func(t *testing.T) {
+				ctx := context.Background()
+				store, lease, reopen := openIdentityTarget(t, engine)
+				owner := model.PrincipalRef{Kind: "agent", ID: "agent:source-close", Sponsor: &model.PrincipalRef{Kind: "user", ID: "user:source-close-sponsor"}}
+				profile := jointOwnedProfile(t, data, jointProfile(t, data, store, lease), owner)
+				report, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ns := authz.Namespace{StoreID: string(report.Restored.StoreID), Incarnation: report.Restored.Incarnation, InstallationID: "fixed", Authority: model.RefByID("authority", model.Natural64(0))}
+				project := model.RefByID("source-close-project", model.Natural64(0))
+				base := authzfixed.Facts{Namespace: ns, Projects: []authzfixed.Project{{Ref: project, Name: "demo", InstallationID: "fixed", Active: true}}, Grants: []authz.Grant{{Subject: authz.SubjectRef{Kind: "user", ID: owner.Sponsor.ID}, Scope: authz.Scope{Kind: authz.ProjectScope, Ref: project}, Role: "involved"}}}
+				keys := authnapikey.New(authnapikey.Config{AuthorizationInstalled: func() bool { return true }})
+				var installed *authzrpc.Composition
+				var facts *authzrpc.MutableFacts
+				var rule *sourceCloseMembershipRule
+				var capability driver.WorkflowCheckpointStore
+				binding := report.SourcePlanes.Providers[0]
+				install := func() {
+					t.Helper()
+					facts, err = authzrpc.NewMutableFacts(base)
+					if err != nil {
+						t.Fatal(err)
+					}
+					// A configured but absent ordinary lifecycle policy grants nothing.
+					installed, err = authzrpc.New(ctx, authzrpc.Config{Store: store, Lease: lease, Provider: keys, Facts: facts, Namespace: ns, DefaultProject: "demo", LifecyclePolicy: &authzrpc.LifecyclePolicyConfig{Ref: model.RefByID("source-close-lifecycle", model.Natural64(0))}})
+					if err != nil || len(installed.Chain.Rules) != 2 {
+						t.Fatalf("install lifecycle authority: %v", err)
+					}
+					rule = &sourceCloseMembershipRule{RuleSet: installed.Chain.Rules[0], seen: map[string]int{}}
+					installed.Chain.Rules[0] = rule
+					capability, err = driver.RequireWorkflowCheckpointStore(store, lease)
+					if err != nil {
+						t.Fatal(err)
+					}
+					state, err := pluginhost.NewSourceRuntimeState(ctx, capability, lease, binding)
+					if err != nil {
+						t.Fatal(err)
+					}
+					provider, err := workflowplugin.NewSourceRuntime(state, binding)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := installed.Service.InstallSourceWorkflow(ctx, provider, profile, *report.SourcePlanes, *report.Receipt); err != nil {
+						t.Fatal(err)
+					}
+				}
+				install()
+				checkpoint := func() driver.Checkpoint {
+					t.Helper()
+					value, err := capability.LoadCheckpoint(ctx, binding.Provider.Namespace)
+					if err != nil {
+						t.Fatal(err)
+					}
+					return value
+				}
+				params := func() map[string]any {
+					// This source ID also names a distinct durable bead. Completion
+					// must keep receipt replay on the original active identity.
+					ref := model.RefByID("demo-7", model.Natural64(0))
+					if method == "bead.close" {
+						return map[string]any{"id": ref, "reason": "current source authority"}
+					}
+					return map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{{Kind: model.OpClose, Close: &model.CloseOp{Target: ref, Reason: "current source authority"}}}}}
+				}
+				// A source permit cannot lend authority to an ordinary close in
+				// the same transaction. The configured empty lifecycle policy
+				// denies the ordinary target using its current tracked snapshot.
+				mixed := model.ChangeSet{Ops: []model.Op{
+					{Kind: model.OpClose, Close: &model.CloseOp{Target: model.RefByID("demo-7", model.Natural64(0))}},
+					{Kind: model.OpClose, Close: &model.CloseOp{Target: model.RefByID("demo-8", model.Natural64(0))}},
+				}}
+				beforeMixed, coreMixed := checkpoint(), savedLabelImport(t, store, report.Archive, profile, "")
+				sourceHTTPCall(t, installed.Handler, keys, owner, "tx.apply", 710, map[string]any{"changeSet": mixed}, "forbidden")
+				if !reflect.DeepEqual(beforeMixed, checkpoint()) || !reflect.DeepEqual(coreMixed, savedLabelImport(t, store, report.Archive, profile, "")) {
+					t.Fatal("source permit escaped into ordinary close or published a mixed draft")
+				}
+				for _, denied := range []string{"bead.close", "tx.apply"} {
+					if method != "tx.apply" && denied == "tx.apply" {
+						continue
+					}
+					rule.refuse(denied)
+					before, core := checkpoint(), savedLabelImport(t, store, report.Archive, profile, "")
+					sourceHTTPCall(t, installed.Handler, keys, owner, method, 711, params(), "forbidden")
+					if !reflect.DeepEqual(before, checkpoint()) || !reflect.DeepEqual(core, savedLabelImport(t, store, report.Archive, profile, "")) {
+						t.Fatal("method refusal changed checkpoint, core or receipt")
+					}
+				}
+				rule.refuse("")
+				revoked := base
+				revoked.Grants = nil
+				if err := facts.Replace(revoked); err != nil {
+					t.Fatal(err)
+				}
+				beforeGrant, coreGrant := checkpoint(), savedLabelImport(t, store, report.Archive, profile, "")
+				sourceHTTPCall(t, installed.Handler, keys, owner, method, 711, params(), "forbidden")
+				if !reflect.DeepEqual(beforeGrant, checkpoint()) || !reflect.DeepEqual(coreGrant, savedLabelImport(t, store, report.Archive, profile, "")) {
+					t.Fatal("revoked current grant published a source close")
+				}
+				if err := facts.Replace(base); err != nil {
+					t.Fatal(err)
+				}
+				before, core := checkpoint(), savedLabelImport(t, store, report.Archive, profile, "")
+				first := sourceHTTPCall(t, installed.Handler, keys, owner, method, 711, params(), "")
+				var commit model.Commit
+				decode(t, first.Result, &commit)
+				after := checkpoint()
+				if len(commit.Results) != 1 || commit.Results[0].Ref.ID != "workflow:item/restored" || after.Generation != before.Generation+1 || !reflect.DeepEqual(core, savedLabelImport(t, store, report.Archive, profile, "")) {
+					t.Fatal("source close changed durable identity or missed its single checkpoint publication")
+				}
+				checkReplay := func(want string) {
+					t.Helper()
+					before, core := checkpoint(), savedLabelImport(t, store, report.Archive, profile, "")
+					reply := sourceHTTPCall(t, installed.Handler, keys, owner, method, 711, params(), want)
+					if want == "" && (!reply.Meta.Replayed || !bytes.Equal(first.Result, reply.Result)) {
+						t.Fatal("source close replay lost its exact original identity/receipt")
+					}
+					if !reflect.DeepEqual(before, checkpoint()) || !reflect.DeepEqual(core, savedLabelImport(t, store, report.Archive, profile, "")) {
+						t.Fatal("source close replay/refusal published new state")
+					}
+				}
+				checkReplay("")
+				for _, denied := range []string{"bead.close", "tx.apply"} {
+					if method != "tx.apply" && denied == "tx.apply" {
+						continue
+					}
+					rule.refuse(denied)
+					checkReplay("forbidden")
+				}
+				rule.refuse("")
+				if err := facts.Replace(revoked); err != nil {
+					t.Fatal(err)
+				}
+				checkReplay("forbidden")
+				if err := facts.Replace(base); err != nil {
+					t.Fatal(err)
+				}
+				checkReplay("")
+				if !rule.observed("bead.close") || method == "tx.apply" && !rule.observed("tx.apply") {
+					t.Fatal("source close bypassed an original method check")
+				}
+				store, lease = reopen()
+				install()
+				checkReplay("")
+				t.Log("lifecycle-installed authenticated source close and tx close retain current project/method policy, exact terminal replay, checkpoint/core conservation and physical SQL reopen; synthetic input, no native-history credit")
+			})
+		}
+	}
 }
 
 func sourceHTTPCall(t *testing.T, handler http.Handler, keys *authnapikey.Provider, actor model.PrincipalRef, method string, key int, params map[string]any, want string) sourcePublicReply {

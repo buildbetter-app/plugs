@@ -67,6 +67,12 @@ func (r *lifecycleRuleSet) Eval(ctx context.Context, source authz.Slice, request
 	if !needed {
 		return out, nil
 	}
+	// Mixed source/core proposals retain the same tracked authority snapshot.
+	// Ordinary lifecycle grants still resolve their bead from that snapshot,
+	// rather than from the source wrapper's provider project assignments.
+	if active, ok := source.(*sourceWriteSlice); ok {
+		source = active.Slice
+	}
 	s, ok := source.(*slice)
 	if !ok || s == nil || s.snapshot == nil || s.Namespace() != r.namespace {
 		return nil, fmt.Errorf("lifecycle policy snapshot unavailable")
