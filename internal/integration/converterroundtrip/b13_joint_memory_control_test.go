@@ -708,7 +708,7 @@ func TestB13JointSourceCoreProjectionAndConservation(t *testing.T) {
 						}
 						views("")
 						reverse("forgotten")
-						conserve("forgotten")
+						conserve("imported-forgotten")
 						refresh("overlay-forgotten")
 						views("")
 						reverse("forgotten-reopened")
@@ -786,7 +786,7 @@ func TestB13JointSourceCoreProjectionAndConservation(t *testing.T) {
 						refresh("after-forget")
 						views("")
 						reverse("core-forgotten")
-						conserve("forgotten")
+						conserve("core-forgotten")
 					})
 					t.Run("invalid-overlay-bindings-refuse-atomically", func(t *testing.T) {
 						var original driver.Record
