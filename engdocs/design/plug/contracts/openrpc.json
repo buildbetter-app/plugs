@@ -491,6 +491,14 @@
           }
         },
         {
+          "name": "targetStatus",
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Exact declared nonterminal status for this project/type; omission selects the workflow initial status. Noninitial targets require an allowed transition from initial and all its guards. Terminal loading uses create followed by guarded close."
+        },
+        {
           "name": "_meta",
           "schema": {
             "$ref": "#/components/schemas/Meta"
@@ -1015,6 +1023,14 @@
           }
         },
         {
+          "name": "targetStatus",
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Exact declared successful terminal status for this project/type; omission selects the close slot. All transition, permission, graph and child guards remain in force. Active workflow providers that cannot honor the selector refuse it."
+        },
+        {
           "name": "_meta",
           "schema": {
             "$ref": "#/components/schemas/Meta"
@@ -1307,6 +1323,14 @@
               "$ref": "#/components/schemas/Expect"
             }
           }
+        },
+        {
+          "name": "targetStatus",
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Exact declared ready-eligible status for this project/type; omission selects the reopen slot. All transition and permission guards remain in force."
         },
         {
           "name": "_meta",
@@ -5923,7 +5947,7 @@
     {
       "name": "view.run",
       "summary": "Run a saved or inline budgeted view.",
-      "description": "With countOnly=true, return the exact ordinary authorized predicate total, including zero, as {items:[],asOf,count}, plus existing projection metadata. No page, groups, elisions or nextCursor is returned; cursor/groupBy combinations refuse invalid_params. Valid fields/sort/budget cannot change or truncate membership. Historical content uses current authorization; more than 20,000 authorized candidates refuses scope_too_large. Absent/false keeps existing behavior and saved definitions unchanged. Run a saved or inline budgeted view. A trusted host may enable count-only parent-aware epic progress using definition={filter:{query:\"parent=\u003cbare bead ID\u003e\"},fields:[],groupBy:[\"epic-progress\"]} and _meta.project equal to the authorized parent project. One pinned content/ontology snapshot and fenced current authority select direct children only; each child keeps its own project permissions. The complete result has items=[], asOf, total and status:\u003ccanonical status ID\u003e groups with empty items. total.count is visible children; only total.elided may report hidden children, as count plus reason=\"authorization\" and continueWith=view.run with the same request minus cursor/asOf. That is fresh reauthorization/refresh, never hidden-row pagination. There is no nextCursor; a supplied cursor refuses cursor_invalid. Hidden identities/statuses are absent. Disabled capability refuses invalid_params with details.capability=\"epic-progress\", details.available=false. Epic progress adds no separate RPC, filter, cursor or result member. Read-only age/status selection for view.run. days is a positive UTC day count; the latest persisted version time must be strictly before one cutoff bound to the signed cursor for all pages. Omitted status selects the current ontology Unstarted/Started categories; an explicit exact status replaces that default and intersects with ordinary query predicates. No saved definition, ready, claimNext, watch or explain semantics change.",
+      "description": "With countOnly=true, return the exact ordinary authorized predicate total, including zero, as {items:[],asOf,count}, plus existing projection metadata. No page, groups, elisions or nextCursor is returned; cursor/groupBy combinations refuse invalid_params. Valid fields/sort/budget cannot change or truncate membership. Historical content uses current authorization; more than 20,000 authorized candidates refuses scope_too_large. Absent/false keeps existing behavior and saved definitions unchanged. Run a saved or inline budgeted view. A trusted host may enable count-only parent-aware epic progress using definition={filter:{query:\"parent=<bare bead ID>\"},fields:[],groupBy:[\"epic-progress\"]} and _meta.project equal to the authorized parent project. One pinned content/ontology snapshot and fenced current authority select direct children only; each child keeps its own project permissions. The complete result has items=[], asOf, total and status:<canonical status ID> groups with empty items. total.count is visible children; only total.elided may report hidden children, as count plus reason=\"authorization\" and continueWith=view.run with the same request minus cursor/asOf. That is fresh reauthorization/refresh, never hidden-row pagination. There is no nextCursor; a supplied cursor refuses cursor_invalid. Hidden identities/statuses are absent. Disabled capability refuses invalid_params with details.capability=\"epic-progress\", details.available=false. Epic progress adds no separate RPC, filter, cursor or result member. Read-only age/status selection for view.run. days is a positive UTC day count; the latest persisted version time must be strictly before one cutoff bound to the signed cursor for all pages. Omitted status selects the current ontology Unstarted/Started categories; an explicit exact status replaces that default and intersects with ordinary query predicates. No saved definition, ready, claimNext, watch or explain semantics change.",
       "tags": [
         {
           "name": "view"
@@ -7061,7 +7085,7 @@
       },
       "Filter": {
         "type": "object",
-        "description": "The shared filter envelope is unchanged. The opt-in epic-progress view uses exactly query=parent=\u003cbare branch-zero bead ID\u003e with no additional query clauses, resources, types or events; it selects canonical direct children only, across their own projects.",
+        "description": "The shared filter envelope is unchanged. The opt-in epic-progress view uses exactly query=parent=<bare branch-zero bead ID> with no additional query clauses, resources, types or events; it selects canonical direct children only, across their own projects.",
         "properties": {
           "query": {
             "type": "string",
@@ -7499,6 +7523,11 @@
           },
           "project": {
             "type": "string"
+          },
+          "targetStatus": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Exact declared nonterminal status for this project/type; omission selects the workflow initial status. Noninitial targets require an allowed transition from initial and all its guards. Terminal loading uses create followed by guarded close."
           }
         },
         "required": [
@@ -8015,7 +8044,7 @@
       },
       "ViewDefinition": {
         "type": "object",
-        "description": "The trusted epic-progress capability admits groupBy=[\"epic-progress\"], explicitly present fields=[], and exactly filter.query=\"parent=\u003cbare bead ID\u003e\". No sort or additional filters are admitted. budgetTokens must be absent or zero: this complete count is not token-budgeted or paged. The ordinary authorized input cap is 20,000, never the 100,000 type-summary exception; at most 100 groups including total are returned. Refusals return no partial counts.",
+        "description": "The trusted epic-progress capability admits groupBy=[\"epic-progress\"], explicitly present fields=[], and exactly filter.query=\"parent=<bare bead ID>\". No sort or additional filters are admitted. budgetTokens must be absent or zero: this complete count is not token-budgeted or paged. The ordinary authorized input cap is 20,000, never the 100,000 type-summary exception; at most 100 groups including total are returned. Refusals return no partial counts.",
         "properties": {
           "name": {
             "type": "string"
@@ -8152,7 +8181,7 @@
           },
           "groups": {
             "type": "array",
-            "description": "Existing grouped output. Epic progress returns key=total with the visible direct-child count and status:\u003ccanonical status ID\u003e groups counting visible children only; every items array is empty. Keys identify statuses in the ontology read from the same asOf content snapshot; they do not infer labels, readiness or completion policy. Only total may carry authorization elision. MaxGroups=100 includes total; incomplete or over-limit results refuse without truncation.",
+            "description": "Existing grouped output. Epic progress returns key=total with the visible direct-child count and status:<canonical status ID> groups counting visible children only; every items array is empty. Keys identify statuses in the ontology read from the same asOf content snapshot; they do not infer labels, readiness or completion policy. Only total may carry authorization elision. MaxGroups=100 includes total; incomplete or over-limit results refuse without truncation.",
             "items": {
               "$ref": "#/components/schemas/ViewGroup"
             }
@@ -10142,7 +10171,7 @@
           "details"
         ],
         "additionalProperties": false,
-        "x-validation": "resource is bead/\u003cdependent ID\u003e; revision equals blockerAfter.revision. No mutation of the dependent is implied. Current read authorization and redaction cover dependent, blocker, ontology and optional blocker project; suppress the entire notice on any denial."
+        "x-validation": "resource is bead/<dependent ID>; revision equals blockerAfter.revision. No mutation of the dependent is implied. Current read authorization and redaction cover dependent, blocker, ontology and optional blocker project; suppress the entire notice on any denial."
       },
       "OrdinaryEventDescriptor": {
         "type": "object",
@@ -10669,7 +10698,7 @@
       },
       "CloseOp": {
         "type": "object",
-        "description": "Enter the canonical close slot at this operation position in tx.apply; reuse bead.close guards, permission, reason and provenance. Any refusal rolls back the whole ChangeSet. No force or status shortcut.",
+        "description": "Enter the close slot or an explicit declared successful terminal status at this operation position in tx.apply; reuse bead.close guards, permission, reason and provenance. Any refusal rolls back the whole ChangeSet. No force or generic status shortcut.",
         "properties": {
           "kind": {
             "const": "close"
@@ -10686,6 +10715,11 @@
             "items": {
               "$ref": "#/components/schemas/Expect"
             }
+          },
+          "targetStatus": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Exact declared successful terminal status for this project/type; omission selects the close slot. All transition, permission, graph and child guards remain in force. Active workflow providers that cannot honor the selector refuse it."
           }
         },
         "required": [
@@ -14120,7 +14154,7 @@
   ],
   "x-plugin-method-pattern": {
     "pattern": "^x\\.[a-z][a-z0-9-]*\\.[a-z][a-z0-9-]*(?:\\.[a-z][a-z0-9-]*)*$",
-    "rule": "Plugin methods are declared by the manifest under x.\u003calias\u003e.*; each declares a permission and resource parameter. The dynamic set is not enumerated here."
+    "rule": "Plugin methods are declared by the manifest under x.<alias>.*; each declares a permission and resource parameter. The dynamic set is not enumerated here."
   },
   "x-contract-gaps": [
     "The design names authn.authenticate and authz.* as plugin-host calls; authn.authenticate and authz.verify are represented, while other hot-path calls remain host-internal.",
@@ -14134,7 +14168,7 @@
     "methodCount": 86,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
     "nameSha256": "bedf3c904d90b0d30d8f2f3292dc48d2124bcddc0f984aa3ed5f829d62420c06",
-    "descriptorSha256": "6413e6033a487bc1a298751ef782b47b05340fa5f7cf0333206fc6abb3e094bc",
+    "descriptorSha256": "56d9787a9119cee6a034b849a9c79510bd6a9d9b026d6081fb13f50d124fba4e",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -14504,6 +14538,13 @@
             }
           },
           {
+            "name": "targetStatus",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
             "name": "_meta",
             "schema": {
               "$ref": "#/components/schemas/Meta"
@@ -14810,6 +14851,13 @@
             }
           },
           {
+            "name": "targetStatus",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
             "name": "_meta",
             "schema": {
               "$ref": "#/components/schemas/Meta"
@@ -14981,6 +15029,13 @@
               "items": {
                 "$ref": "#/components/schemas/Expect"
               }
+            }
+          },
+          {
+            "name": "targetStatus",
+            "schema": {
+              "type": "string",
+              "minLength": 1
             }
           },
           {
