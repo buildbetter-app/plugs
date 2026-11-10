@@ -109,6 +109,8 @@ type fixture struct {
 	store       driver.Store
 	lease       driver.ActiveLease
 	api         *httptest.Server
+	authAPI     *httptest.Server
+	actor       model.PrincipalRef
 	keys        *authnapikey.Provider
 	snapshot    ontology.Snapshot
 	facts       authzfixed.Facts
@@ -117,33 +119,43 @@ type fixture struct {
 
 func eachFixture(t *testing.T, run func(*testing.T, *fixture)) {
 	t.Helper()
-	engines(t, func(t *testing.T, e engine) {
-		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-		t.Cleanup(cancel)
-		snap, src := compiled(t)
-		f := &fixture{t: t, ctx: ctx, engine: e, snapshot: snap}
-		f.open()
-		t.Cleanup(f.close)
-		body, err := service.MarshalOntologySource(src)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err = conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{Principal: model.PrincipalRef{Kind: "system", ID: "g1-ontology-fixture"}}, []conformance.FixtureChange{{Ref: source, Kind: "ontology", Op: model.OpCreate, Body: body}}); err != nil {
-			t.Fatal(err)
-		}
-		m, err := f.store.Meta(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ns := authz.Namespace{StoreID: string(m.StoreID), Incarnation: m.Incarnation, InstallationID: "fixed", Authority: ref("authority")}
-		f.facts = authzfixed.Facts{Namespace: ns}
-		for _, p := range []string{project, otherProject} {
-			f.facts.Projects = append(f.facts.Projects, authzfixed.Project{Ref: ref(p), Name: p, InstallationID: "fixed", Active: true})
-			f.facts.Grants = append(f.facts.Grants, authz.Grant{Subject: authz.SubjectRef{Kind: "user", ID: "user:g1-owner"}, Scope: authz.Scope{Kind: authz.ProjectScope, Ref: ref(p)}, Role: "involved"})
-		}
-		f.bind()
-		run(t, f)
-	})
+	// Keep the installed fixed-policy workload mandatory, including its
+	// unsupported-route failures. The additional local mode is Plug's actual
+	// anonymous public composition, not a replacement policy or a gate waiver.
+	for _, mode := range []string{"local", "installed"} {
+		t.Run(mode, func(t *testing.T) {
+			engines(t, func(t *testing.T, e engine) {
+				ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+				t.Cleanup(cancel)
+				snap, src := compiled(t)
+				f := &fixture{t: t, ctx: ctx, engine: e, snapshot: snap, actor: actor}
+				if mode == "local" {
+					f.actor = model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+				}
+				f.open()
+				t.Cleanup(f.close)
+				body, err := service.MarshalOntologySource(src)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err = conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{Principal: model.PrincipalRef{Kind: "system", ID: "g1-ontology-fixture"}}, []conformance.FixtureChange{{Ref: source, Kind: "ontology", Op: model.OpCreate, Body: body}}); err != nil {
+					t.Fatal(err)
+				}
+				m, err := f.store.Meta(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ns := authz.Namespace{StoreID: string(m.StoreID), Incarnation: m.Incarnation, InstallationID: "fixed", Authority: ref("authority")}
+				f.facts = authzfixed.Facts{Namespace: ns}
+				for _, p := range []string{project, otherProject} {
+					f.facts.Projects = append(f.facts.Projects, authzfixed.Project{Ref: ref(p), Name: p, InstallationID: "fixed", Active: true})
+					f.facts.Grants = append(f.facts.Grants, authz.Grant{Subject: authz.SubjectRef{Kind: "user", ID: "user:g1-owner"}, Scope: authz.Scope{Kind: authz.ProjectScope, Ref: ref(p)}, Role: "involved"})
+				}
+				f.bind()
+				run(t, f)
+			})
+		})
+	}
 }
 
 func (f *fixture) open() {
@@ -175,6 +187,19 @@ func (f *fixture) bind() {
 	o := service.NewOntology(f.snapshot.Effective)
 	w := pipeline.New(f.store, f.lease, pipeline.WithOntology(o), pipeline.WithOntologyAudit(audit), pipeline.WithAuthorizer(app.Checker), pipeline.WithEventContext(app.Checker), pipeline.WithIDGenerator(func() (string, error) { f.nextID++; return fmt.Sprintf("g1-%06d", f.nextID), nil }))
 	domain := service.New(f.store, f.lease, w, service.WithOntology(o), service.WithAuthorizationInstalled(func() bool { return true }))
+	f.authAPI = f.bindHTTP(domain, true)
+	f.api = f.authAPI
+	if f.actor.Kind == "anonymous" {
+		// No installed policy is the supported local production mode. Keep the
+		// real signed endpoint above for every permission-refusal control.
+		localWriter := pipeline.New(f.store, f.lease, pipeline.WithOntology(o), pipeline.WithOntologyAudit(audit), pipeline.WithIDGenerator(func() (string, error) { f.nextID++; return fmt.Sprintf("g1-%06d", f.nextID), nil }))
+		local := service.New(f.store, f.lease, localWriter, service.WithOntology(o))
+		f.api = f.bindHTTP(local, false)
+	}
+}
+
+func (f *fixture) bindHTTP(domain *service.Service, authenticated bool) *httptest.Server {
+	f.t.Helper()
 	registry, err := rpc.NewRegistry()
 	if err != nil {
 		f.t.Fatal(err)
@@ -186,11 +211,17 @@ func (f *fixture) bind() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	server, err := rpc.New(registry, rpc.Config{Incarnation: m.Incarnation, DefaultProject: project, AuthMode: "authenticated"})
+	mode := "anonymous"
+	admission := authn.Config{}
+	if authenticated {
+		mode = "authenticated"
+		admission = authn.Config{Provider: f.keys, AuthorizationInstalled: func() bool { return true }}
+	}
+	server, err := rpc.New(registry, rpc.Config{Incarnation: m.Incarnation, DefaultProject: project, AuthMode: mode})
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	authenticator, err := authn.New(authn.Config{Provider: f.keys, AuthorizationInstalled: func() bool { return true }})
+	authenticator, err := authn.New(admission)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -198,13 +229,16 @@ func (f *fixture) bind() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	f.api = httptest.NewServer(handler)
+	return httptest.NewServer(handler)
 }
 func (f *fixture) close() {
-	if f.api != nil {
+	if f.api != nil && f.api != f.authAPI {
 		f.api.Close()
-		f.api = nil
 	}
+	if f.authAPI != nil {
+		f.authAPI.Close()
+	}
+	f.api, f.authAPI = nil, nil
 	if f.lease != nil {
 		if err := f.lease.Release(f.ctx); err != nil {
 			f.t.Error(err)
@@ -229,9 +263,14 @@ func (f *fixture) reopen() {
 }
 func (f *fixture) call(by model.PrincipalRef, p, method string, params map[string]any, label string) response {
 	f.t.Helper()
-	issued, err := f.keys.Issue(by, time.Now().Add(time.Hour))
-	if err != nil {
-		f.t.Fatal(err)
+	api := f.api
+	token := ""
+	if by.Kind != "anonymous" {
+		issued, err := f.keys.Issue(by, time.Now().Add(time.Hour))
+		if err != nil {
+			f.t.Fatal(err)
+		}
+		token, api = issued.Token, f.authAPI
 	}
 	values := map[string]any{}
 	for k, v := range params {
@@ -248,14 +287,16 @@ func (f *fixture) call(by model.PrincipalRef, p, method string, params map[strin
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	req, err := http.NewRequestWithContext(f.ctx, http.MethodPost, f.api.URL+httpjson.Path, bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(f.ctx, http.MethodPost, api.URL+httpjson.Path, bytes.NewReader(raw))
 	if err != nil {
 		f.t.Fatal(err)
 	}
 	req.Header.Set("Plug-RPC", "1")
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+issued.Token)
-	res, err := f.api.Client().Do(req)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	res, err := api.Client().Do(req)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -286,7 +327,7 @@ func accepted(t *testing.T, r response, replay bool) model.Commit {
 }
 func (f *fixture) write(method string, params map[string]any, label string) model.Commit {
 	f.t.Helper()
-	return accepted(f.t, f.call(actor, project, method, params, label), false)
+	return accepted(f.t, f.call(f.actor, project, method, params, label), false)
 }
 func (f *fixture) create(p, target, label string) model.Ref {
 	f.t.Helper()
@@ -294,7 +335,7 @@ func (f *fixture) create(p, target, label string) model.Ref {
 	if target != "" {
 		params["targetStatus"] = target
 	}
-	c := accepted(f.t, f.call(actor, p, "bead.create", params, label), false)
+	c := accepted(f.t, f.call(f.actor, p, "bead.create", params, label), false)
 	if len(c.Results) != 1 {
 		f.t.Fatal(c)
 	}
@@ -302,7 +343,7 @@ func (f *fixture) create(p, target, label string) model.Ref {
 }
 func (f *fixture) get(id model.Ref) service.Bead {
 	f.t.Helper()
-	r := f.call(actor, project, "bead.get", map[string]any{"id": id}, "")
+	r := f.call(f.actor, project, "bead.get", map[string]any{"id": id}, "")
 	if r.Error != nil {
 		f.t.Fatalf("get: %+v", r.Error)
 	}
