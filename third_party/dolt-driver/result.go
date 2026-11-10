@@ -29,7 +29,7 @@ type doltResult struct {
 	last     int64
 }
 
-func newResult(gmsCtx *gms.Context, sch gms.Schema, itr gms.RowIter) (*doltResult, error) {
+func newResult(gmsCtx *gms.Context, itr gms.RowIter) (*doltResult, error) {
 	var affected int64
 	var last int64
 

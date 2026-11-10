@@ -33,22 +33,151 @@ linters:
           files:
             - "$all"
             # Storage adapter packages are the intended home for Dolt access.
-            - "!**/internal/storage/**"
-            - "!**/internal/doltserver/**"
+            - "!/internal/doltserver/*.go"
+            - "!/internal/storage/capturesqlserver/*.go"
+            - "!/internal/storage/dbproxy/server/*.go"
+            - "!/internal/storage/embeddeddolt/*.go"
+            - "!/internal/storage/issueops/*.go"
+            - "!/internal/storage/physicalcapture/*.go"
+            - "!/internal/storage/sqlclass/*.go"
+            # The native capture producer carries its Dolt driver adapter at
+            # this exact package path. Its companion rule below permits only
+            # the concrete engine imports already required by that adapter.
+            - "!/third_party/dolt-driver/*.go"
             # Exception: the proxied-server surface needs Dolt server config
             # (servercfg, filesys) to launch/manage a real `dolt sql-server`
             # process. Candidate for migration behind the storage adapter.
-            - "!**/cmd/bd/proxied_server.go"
+            - "!/cmd/bd/proxied_server.go"
             # Exception: eventkit is DoltHub's analytics/telemetry client,
             # not the Dolt storage engine - dropped here so the narrower
             # dolt-storage-boundary-metrics-exception rule below can allow
             # eventkit specifically while still denying any other dolthub
             # import (e.g. the engine itself) in these two files.
-            - "!**/internal/metrics/flusher.go"
-            - "!**/internal/metrics/metrics.go"
+            - "!/internal/metrics/flusher.go"
+            - "!/internal/metrics/metrics.go"
           deny:
             - pkg: github.com/dolthub
               desc: "Dolt engine access is restricted to the storage adapter packages (internal/storage, internal/doltserver) - see engdocs/PROJECT_CHARTER.md 'Storage Boundary'"
+        # Exact existing Beads adapter tuples at e25cf419; no subtree grant.
+        pinned-native-cmd-bd:
+          list-mode: lax
+          files:
+            - "/cmd/bd/proxied_server.go"
+          allow:
+            - github.com/dolthub/dolt/go/libraries/doltcore/servercfg$
+            - github.com/dolthub/dolt/go/libraries/utils/filesys$
+          deny:
+            - pkg: github.com/dolthub
+              desc: "native Beads adapters retain only their pinned package/import tuples"
+        # Exact existing Beads adapter tuples at e25cf419; no subtree grant.
+        pinned-native-internal-doltserver:
+          list-mode: lax
+          files:
+            - "/internal/doltserver/*.go"
+          allow:
+            - github.com/dolthub/dolt/go/libraries/doltcore/servercfg$
+            - github.com/dolthub/dolt/go/libraries/utils/filesys$
+          deny:
+            - pkg: github.com/dolthub
+              desc: "native Beads adapters retain only their pinned package/import tuples"
+        # Exact existing Beads adapter tuples at e25cf419; no subtree grant.
+        pinned-native-internal-storage-capturesqlserver:
+          list-mode: lax
+          files:
+            - "/internal/storage/capturesqlserver/*.go"
+          allow:
+            - github.com/dolthub/dolt/go/cmd/dolt/cli$
+            - github.com/dolthub/dolt/go/cmd/dolt/commands/sqlserver$
+            - github.com/dolthub/dolt/go/cmd/dolt/doltversion$
+            - github.com/dolthub/dolt/go/libraries/doltcore/doltdb$
+            - github.com/dolthub/dolt/go/libraries/doltcore/env$
+            - github.com/dolthub/dolt/go/libraries/utils/filesys$
+            - github.com/dolthub/dolt/go/libraries/utils/svcs$
+            - github.com/dolthub/go-mysql-server/sql$
+          deny:
+            - pkg: github.com/dolthub
+              desc: "native Beads adapters retain only their pinned package/import tuples"
+        # Exact existing Beads adapter tuples at e25cf419; no subtree grant.
+        pinned-native-internal-storage-dbproxy-server:
+          list-mode: lax
+          files:
+            - "/internal/storage/dbproxy/server/*.go"
+          allow:
+            - github.com/dolthub/dolt/go/libraries/doltcore/servercfg$
+            - github.com/dolthub/dolt/go/libraries/utils/filesys$
+          deny:
+            - pkg: github.com/dolthub
+              desc: "native Beads adapters retain only their pinned package/import tuples"
+        # Exact existing Beads adapter tuples at e25cf419; no subtree grant.
+        pinned-native-internal-storage-embeddeddolt:
+          list-mode: lax
+          files:
+            - "/internal/storage/embeddeddolt/*.go"
+          allow:
+            - github.com/dolthub/driver/v2$
+          deny:
+            - pkg: github.com/dolthub
+              desc: "native Beads adapters retain only their pinned package/import tuples"
+        # Exact existing Beads adapter tuples at e25cf419; no subtree grant.
+        pinned-native-internal-storage-issueops:
+          list-mode: lax
+          files:
+            - "/internal/storage/issueops/*.go"
+          allow:
+            - github.com/dolthub/go-mysql-server/sql$
+          deny:
+            - pkg: github.com/dolthub
+              desc: "native Beads adapters retain only their pinned package/import tuples"
+        # Exact existing Beads adapter tuples at e25cf419; no subtree grant.
+        pinned-native-internal-storage-physicalcapture:
+          list-mode: lax
+          files:
+            - "/internal/storage/physicalcapture/*.go"
+          allow:
+            - github.com/dolthub/driver/v2$
+          deny:
+            - pkg: github.com/dolthub
+              desc: "native Beads adapters retain only their pinned package/import tuples"
+        # Exact existing Beads adapter tuples at e25cf419; no subtree grant.
+        pinned-native-internal-storage-sqlclass:
+          list-mode: lax
+          files:
+            - "/internal/storage/sqlclass/*.go"
+          allow:
+            - github.com/dolthub/vitess/go/vt/sqlparser$
+          deny:
+            - pkg: github.com/dolthub
+              desc: "native Beads adapters retain only their pinned package/import tuples"
+        native-capture-driver-engine-boundary:
+          list-mode: lax
+          files:
+            - "/third_party/dolt-driver/*.go"
+          # A trailing $ requires an exact import, rather than admitting all
+          # subpackages. Neither sibling nor nested packages inherit this rule.
+          allow:
+            - github.com/dolthub/dolt/go/cmd/dolt/commands$
+            - github.com/dolthub/dolt/go/cmd/dolt/commands/engine$
+            - github.com/dolthub/dolt/go/cmd/dolt/doltversion$
+            - github.com/dolthub/dolt/go/cmd/dolt/errhand$
+            - github.com/dolthub/dolt/go/libraries/doltcore/dbfactory$
+            - github.com/dolthub/dolt/go/libraries/doltcore/doltdb$
+            - github.com/dolthub/dolt/go/libraries/doltcore/env$
+            - github.com/dolthub/dolt/go/libraries/doltcore/sqle$
+            - github.com/dolthub/dolt/go/libraries/doltcore/sqle/dsess$
+            - github.com/dolthub/dolt/go/libraries/doltcore/table/editor$
+            - github.com/dolthub/dolt/go/libraries/events$
+            - github.com/dolthub/dolt/go/libraries/utils/config$
+            - github.com/dolthub/dolt/go/libraries/utils/filesys$
+            - github.com/dolthub/dolt/go/store/nbs$
+            - github.com/dolthub/eventsapi_schema/dolt/services/eventsapi/v1alpha1$
+            - github.com/dolthub/go-mysql-server/sql$
+            - github.com/dolthub/go-mysql-server/sql/types$
+            - github.com/dolthub/vitess/go/mysql$
+            - github.com/dolthub/vitess/go/sqltypes$
+            - github.com/dolthub/vitess/go/vt/sqlparser$
+          deny:
+            - pkg: github.com/dolthub
+              desc: "the native capture driver may import only its explicitly enumerated Dolt dependencies"
         # Companion rule for the two files excluded above: allow only
         # DoltHub's eventkit telemetry client, still deny the Dolt engine
         # (or any other dolthub package) so metrics can't become a backdoor
@@ -60,10 +189,10 @@ linters:
           # "**/*.go" even when negated, which would match every file
           # (including these two) and make the rule apply nowhere.
           files:
-            - "**/internal/metrics/flusher.go"
-            - "**/internal/metrics/metrics.go"
+            - "/internal/metrics/flusher.go"
+            - "/internal/metrics/metrics.go"
           allow:
-            - github.com/dolthub/eventkit
+            - github.com/dolthub/eventkit$
           deny:
             - pkg: github.com/dolthub
               desc: "Dolt engine access is restricted to the storage adapter packages (internal/storage, internal/doltserver) - see engdocs/PROJECT_CHARTER.md 'Storage Boundary'"

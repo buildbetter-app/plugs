@@ -156,11 +156,11 @@ func (stmt *doltStmt) ExecContext(ctx context.Context, args []driver.NamedValue)
 	if err != nil {
 		return nil, err
 	}
-	queryCtx, sch, itr, err := stmt.conn.queryWithBindings(ctx, stmt.query, bindings)
+	queryCtx, _, itr, err := stmt.conn.queryWithBindings(ctx, stmt.query, bindings)
 	if err != nil {
 		return nil, err
 	}
-	res, err := newResult(queryCtx, sch, itr)
+	res, err := newResult(queryCtx, itr)
 	if err != nil {
 		return nil, err
 	}

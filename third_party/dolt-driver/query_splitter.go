@@ -82,10 +82,7 @@ func (qs *QuerySplitter) Next() (string, error) {
 		return "", io.EOF
 	}
 
-	n, err := parseNext(qs.queries[qs.pos:])
-	if err != nil {
-		return "", err
-	}
+	n := parseNext(qs.queries[qs.pos:])
 
 	nextQuery := strings.TrimSpace(qs.queries[qs.pos : qs.pos+n])
 	qs.pos += n
@@ -97,7 +94,7 @@ func (qs *QuerySplitter) HasMore() bool {
 	return qs.pos < len(qs.queries)
 }
 
-func parseNext(queries string) (int, error) {
+func parseNext(queries string) int {
 	openStack := NewRuneStack()
 
 	var prevCh rune
@@ -108,7 +105,7 @@ func parseNext(queries string) (int, error) {
 			if openRunes[ch] {
 				openStack.Push(ch)
 			} else if ch == ';' {
-				return pos + 1, nil
+				return pos + 1
 			}
 		case '"', '\'', '`':
 			if ch == lastOpen && prevCh != '\\' {
@@ -125,5 +122,5 @@ func parseNext(queries string) (int, error) {
 		prevCh = ch
 	}
 
-	return len(queries), nil
+	return len(queries)
 }

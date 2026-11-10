@@ -81,7 +81,7 @@ go_test(
     ],
 )
 
-# Rejected AS OF/history-helper reader and original assertions remain runnable.
+# manual: rejected AS OF/history-helper reader retains its original assertions.
 go_test(
     name = "sql_native_reference_test",
     srcs = [
@@ -99,6 +99,7 @@ go_test(
 
 # Rejected option-1 capability reference, preserved with its original assertions.
 # This diagnostic intentionally remains RED on the pinned revision SQL route.
+# manual: preserve the rejected capability reference for explicit diagnostic runs.
 go_test(
     name = "revision_database_reference_test",
     srcs = ["revision_database_reference_test.go"],

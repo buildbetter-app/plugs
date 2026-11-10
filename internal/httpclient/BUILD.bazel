@@ -106,6 +106,8 @@ go_test(
         "blockedlister_test.go",
         "brief_test.go",
         "bulk_roles_test.go",
+        "ca_fixture_other_test.go",
+        "ca_fixture_unix_test.go",
         "ca_permissions_unix_test.go",
         "ca_test.go",
         "ca_wrong_ca_test.go",

@@ -314,50 +314,56 @@ func init() {
 }
 
 // emitUsageEvent emits a usage event to the event server at most once every 24 hours.
-func emitUsageEvent(ctx context.Context, mrEnv *env.MultiRepoEnv) {
+func emitUsageEvent(ctx context.Context, mrEnv *env.MultiRepoEnv) (resultErr error) {
 	defer func() {
-		recover()
+		if recovered := recover(); recovered != nil {
+			resultErr = errors.New("Dolt usage event panicked")
+		}
 	}()
 
 	if metricsDisabled.Load() || !metricsSent.CompareAndSwap(false, true) {
-		return
+		return nil
 	}
 
 	var dEnv *env.DoltEnv
-	mrEnv.Iter(func(name string, d *env.DoltEnv) (stop bool, err error) {
+	if err := mrEnv.Iter(func(name string, d *env.DoltEnv) (stop bool, err error) {
 		dEnv = d
 		return true, nil
-	})
+	}); err != nil {
+		return err
+	}
 
 	// no dolt db created yet, which means we can't create a GRPC dialer
 	if dEnv == nil {
-		return
+		return nil
 	}
 
 	dir, err := dEnv.TempTableFilesDir()
 	if err != nil {
-		return
+		return err
 	}
 
-	mtimeFile, tooSoon := tooSoonToEmitMetrics(dir)
-	if tooSoon {
-		return
+	mtimeFile, tooSoon, err := tooSoonToEmitMetrics(dir)
+	if err != nil || tooSoon {
+		return err
 	}
 
 	emitter, closeFunc, err := commands.GRPCEmitterForConfig(dEnv, events.WithApplication(eventsapi.AppID_APP_DOLT_EMBEDDED))
 	if err != nil {
-		return
+		return err
 	}
-	defer closeFunc()
+	defer func() { resultErr = errors.Join(resultErr, closeFunc()) }()
 
 	evt := events.NewEvent(eventsapi.ClientEventType_SQL_SERVER)
 	evtCollector := events.NewCollector(doltversion.Version, emitter)
 	evtCollector.CloseEventAndAdd(evt)
 	clientEvents := evtCollector.Close()
-	_ = emitter.LogEvents(ctx, doltversion.Version, clientEvents)
+	if err := emitter.LogEvents(ctx, doltversion.Version, clientEvents); err != nil {
+		return err
+	}
 
 	// update the last modified time
-	_ = os.Chtimes(mtimeFile, time.Now(), time.Now())
+	return os.Chtimes(mtimeFile, time.Now(), time.Now())
 }
 
 const metricsInterval = time.Hour * 24
@@ -365,20 +371,26 @@ const metricsInterval = time.Hour * 24
 // tooSoonToEmitMetrics checks if it's been less than 24 hours since the last metrics event was emitted, by checking
 // the mod time of a file in the given directory.
 // Returns the path to the file used for tracking mod time, and whether it's too soon to emit metrics.
-func tooSoonToEmitMetrics(dir string) (string, bool) {
-	mtimeFile := filepath.Join(dir, "dolt_embedded_metrics")
-	f, err := os.OpenFile(mtimeFile, os.O_CREATE, 0644)
+func tooSoonToEmitMetrics(dir string) (mtimeFile string, tooSoon bool, resultErr error) {
+	mtimeFile = filepath.Join(dir, "dolt_embedded_metrics")
+	root, err := os.OpenRoot(dir)
 	if err != nil {
-		return "", true
+		return "", true, err
 	}
+	defer func() { resultErr = errors.Join(resultErr, root.Close()) }()
+	f, err := root.OpenFile("dolt_embedded_metrics", os.O_CREATE|os.O_RDONLY, 0o600)
+	if err != nil {
+		return "", true, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, f.Close()) }()
 
 	info, err := f.Stat()
 	if err != nil {
-		return "", true
+		return "", true, err
 	}
 
 	if time.Now().Sub(info.ModTime()) < metricsInterval {
-		return "", true
+		return "", true, nil
 	}
-	return mtimeFile, false
+	return mtimeFile, false, nil
 }

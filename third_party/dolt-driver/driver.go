@@ -19,6 +19,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"log/slog"
 
 	"github.com/dolthub/dolt/go/cmd/dolt/commands/engine"
 	"github.com/dolthub/dolt/go/cmd/dolt/errhand"
@@ -82,11 +83,14 @@ func openSqlEngine(ctx context.Context, cfg config.ReadWriteConfig, fs filesys.F
 		return nil, err
 	}
 
-	go emitUsageEvent(context.Background(), mrEnv)
+	go func() {
+		if err := emitUsageEvent(context.Background(), mrEnv); err != nil {
+			slog.Debug("Dolt usage event was not emitted", "error", err)
+		}
+	}()
 	se, err := engine.NewSqlEngine(ctx, mrEnv, seCfg)
 	if err != nil {
-		mrEnv.Close(ctx)
-		return nil, err
+		return nil, errors.Join(err, mrEnv.Close(ctx))
 	}
 	return se, nil
 }

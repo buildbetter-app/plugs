@@ -31,13 +31,20 @@ go_library(
     ],
 )
 
-# Private boundary supplement; not a replacement for physical fixture execution.
+# manual: private boundary supplement, explicitly selected alongside physical fixtures.
 go_test(
     name = "physical_commit_test",
     srcs = ["physical_commit_test.go", "physical_history_test.go"],
     deps = ["@com_github_dolthub_dolt_go//libraries/doltcore/doltdb"],
     embed = [":driver"],
     tags = ["manual"],
+)
+
+go_test(
+    name = "driver_lint_test",
+    srcs = ["landing_lint_test.go"],
+    embed = [":driver"],
+    gotags = ["gms_pure_go"],
 )
 
 # --- begin repo_files (managed by tools/bazel/go_srcs.py; run `make bazel-sync`) ---

@@ -19,7 +19,7 @@ import (
 // world-writable directory must be refused — checking only the symlink's own
 // location would miss the swap this check exists to catch.
 func TestCheckCAFilePermissionsRefusesSymlinkIntoWorldWritableDir(t *testing.T) {
-	realDir := t.TempDir()
+	realDir := secureTempDir(t)
 	if err := os.Chmod(realDir, 0o777); err != nil {
 		t.Fatalf("chmod real dir 0777: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestCheckCAFilePermissionsRefusesSymlinkIntoWorldWritableDir(t *testing.T) 
 		t.Fatalf("write real file: %v", err)
 	}
 
-	linkDir := t.TempDir()
+	linkDir := secureTempDir(t)
 	if err := os.Chmod(linkDir, 0o700); err != nil {
 		t.Fatalf("chmod link dir: %v", err)
 	}
@@ -52,12 +52,12 @@ func TestCheckCAFilePermissionsRefusesSymlinkIntoWorldWritableDir(t *testing.T) 
 // point somewhere else entirely. checkCAFilePermissionsHop must check the
 // symlink's OWN containing directory before following it.
 func TestCheckCAFilePermissionsRefusesSymlinkItselfInWorldWritableDir(t *testing.T) {
-	linkDir := t.TempDir()
+	linkDir := secureTempDir(t)
 	if err := os.Chmod(linkDir, 0o777); err != nil {
 		t.Fatalf("chmod link dir 0777: %v", err)
 	}
 
-	realDir := t.TempDir()
+	realDir := secureTempDir(t)
 	if err := os.Chmod(realDir, 0o700); err != nil {
 		t.Fatalf("chmod real dir: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestHasInteriorDotDot(t *testing.T) {
 // refused — an attacker who can write the grandparent can rename the parent
 // out of the way and replace it.
 func TestCheckCAFilePermissionsRefusesWorldWritableGrandparent(t *testing.T) {
-	grandparent := t.TempDir()
+	grandparent := secureTempDir(t)
 	if err := os.Chmod(grandparent, 0o777); err != nil {
 		t.Fatalf("chmod grandparent 0777: %v", err)
 	}
@@ -235,7 +235,7 @@ func TestCheckCAFilePermissionsRefusesWorldWritableGrandparent(t *testing.T) {
 // world-writable, is exempt, because only that entry's own owner may remove
 // or rename it from under a sticky directory.
 func TestCheckCAFilePermissionsAllowsStickyWorldWritableAncestor(t *testing.T) {
-	sticky := t.TempDir()
+	sticky := secureTempDir(t)
 	if err := os.Chmod(sticky, 0o777|os.ModeSticky); err != nil {
 		t.Fatalf("chmod sticky world-writable: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestCheckCAFilePermissionsAllowsStickyWorldWritableAncestor(t *testing.T) {
 // owned by neither root nor the running uid must be refused, even though its
 // mode bits alone (0600) would otherwise look fine.
 func TestCheckCAFilePermissionsRefusesFileOwnedByAnotherUser(t *testing.T) {
-	dir := t.TempDir()
+	dir := secureTempDir(t)
 	path := filepath.Join(dir, "ca.pem")
 	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
 		t.Fatalf("write file: %v", err)
@@ -293,7 +293,7 @@ func TestCheckCAFilePermissionsRefusesFileOwnedByAnotherUser(t *testing.T) {
 // files) must be accepted. Exercised through the injectable statCAPathFn,
 // since this sandbox has no real root-owned tree to point at.
 func TestCheckCAFilePermissionsAcceptsRootOwnedLayout(t *testing.T) {
-	dir := t.TempDir()
+	dir := secureTempDir(t)
 	path := filepath.Join(dir, "ca.pem")
 	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
@@ -328,7 +328,7 @@ func TestCheckCAFilePermissionsAcceptsRootOwnedLayout(t *testing.T) {
 // statCAPathFn, since this sandbox cannot chown a real directory to a second
 // uid without root.
 func TestCheckCAFilePermissionsRefusesStickyAncestorOwnedByAnotherUser(t *testing.T) {
-	sticky := t.TempDir()
+	sticky := secureTempDir(t)
 	if err := os.Chmod(sticky, 0o777|os.ModeSticky); err != nil {
 		t.Fatalf("chmod sticky world-writable: %v", err)
 	}
@@ -534,7 +534,7 @@ func TestCAFileHygieneAcceptsGroupWritableFileUnderUserPrivateGroup(t *testing.T
 	}
 	clearCAEnvironment(t)
 	ca := newTestCA(t)
-	dir := t.TempDir()
+	dir := secureTempDir(t)
 	if err := os.Chmod(dir, 0o775); err != nil {
 		t.Fatalf("chmod dir 0775: %v", err)
 	}

@@ -18,6 +18,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -61,16 +62,16 @@ func (d *DoltConn) Prepare(query string) (driver.Stmt, error) {
 	if multi {
 		return d.prepareMultiStatement(query)
 	} else {
-		return d.prepareSingleStatement(query)
+		return d.prepareSingleStatement(query), nil
 	}
 }
 
 // prepareSingleStatement creates a doltStmt from |query|.
-func (d *DoltConn) prepareSingleStatement(query string) (*doltStmt, error) {
+func (d *DoltConn) prepareSingleStatement(query string) *doltStmt {
 	return &doltStmt{
 		conn:  d,
 		query: query,
-	}, nil
+	}
 }
 
 // prepareMultiStatement creates a doltStmt from each individual statement in |query|.
@@ -89,10 +90,7 @@ func (d *DoltConn) prepareMultiStatement(query string) (*doltMultiStmt, error) {
 			return nil, translateError(err)
 		}
 
-		doltStmt, err := d.prepareSingleStatement(query)
-		if err != nil {
-			return nil, translateError(err)
-		}
+		doltStmt := d.prepareSingleStatement(query)
 		doltMultiStmt.stmts = append(doltMultiStmt.stmts, doltStmt)
 	}
 
@@ -211,24 +209,32 @@ func (d *DoltConn) PrepareContext(ctx context.Context, query string) (driver.Stm
 }
 
 // ExecContext implements driver.ExecerContext.
-func (d *DoltConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+func (d *DoltConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (result driver.Result, resultErr error) {
 	stmt, err := d.Prepare(query)
 	if err != nil {
 		return nil, err
 	}
-	defer stmt.Close()
+	defer func() { resultErr = errors.Join(resultErr, stmt.Close()) }()
 	return stmt.(driver.StmtExecContext).ExecContext(ctx, args)
 }
 
 // QueryContext implements driver.QueryerContext.
-func (d *DoltConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+func (d *DoltConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (rows driver.Rows, resultErr error) {
 	stmt, err := d.Prepare(query)
 	if err != nil {
 		return nil, err
 	}
 	// While the driver.Rows will live beyond this call, the stmt
 	// we just prepared can be closed.
-	defer stmt.Close()
+	defer func() {
+		if err := stmt.Close(); err != nil {
+			resultErr = errors.Join(resultErr, err)
+			if rows != nil {
+				resultErr = errors.Join(resultErr, rows.Close())
+				rows = nil
+			}
+		}
+	}()
 	return stmt.(driver.StmtQueryContext).QueryContext(ctx, args)
 }
 

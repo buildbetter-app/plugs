@@ -127,6 +127,7 @@ func secureTempDir(t *testing.T) string {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatalf("chmod temp dir: %v", err)
 	}
+	trustCAFixtureAncestors(t, dir)
 	return dir
 }
 
@@ -266,7 +267,7 @@ func TestTransportForNoCAConfiguredIsUnchanged(t *testing.T) {
 
 func TestTransportForMissingFileRefusesClearly(t *testing.T) {
 	clearCAEnvironment(t)
-	absent := filepath.Join(t.TempDir(), "does-not-exist.pem")
+	absent := filepath.Join(secureTempDir(t), "does-not-exist.pem")
 	rt, err := TransportFor(Target{CAFile: absent})
 	if err == nil {
 		t.Fatal("TransportFor accepted a missing ca_file")
@@ -320,7 +321,7 @@ func TestTransportForGarbageFileRefusesClearly(t *testing.T) {
 // broken — a refusal has to point at the thing to fix.
 func TestTransportForEnvLabelsErrorsWithTheEnvName(t *testing.T) {
 	clearCAEnvironment(t)
-	absent := filepath.Join(t.TempDir(), "absent.pem")
+	absent := filepath.Join(secureTempDir(t), "absent.pem")
 	u, err := url.Parse("https://example.com:8443")
 	if err != nil {
 		t.Fatalf("parse url: %v", err)
@@ -358,7 +359,7 @@ func TestTransportForEnvMalformedValueRefuses(t *testing.T) {
 // the last: splitting on the last would silently fold the "=" into the host
 // pattern instead of the path, mis-parsing rather than refusing.
 func TestParseCAFileEnvSplitsOnFirstEquals(t *testing.T) {
-	dir := t.TempDir()
+	dir := secureTempDir(t)
 	weird := filepath.Join(dir, "ca=file.pem")
 	host, path, err := parseCAFileEnv("example.com=" + weird)
 	if err != nil {
@@ -392,7 +393,7 @@ func TestParseCAFileEnvRequiresAbsolutePath(t *testing.T) {
 // here (absent entirely: any port; host:port: exactly one) is a reasonable
 // guess for what an empty port after it was meant to say.
 func TestParseCAFileEnvRefusesEmptyPort(t *testing.T) {
-	dir := t.TempDir()
+	dir := secureTempDir(t)
 	path := filepath.Join(dir, "ca.pem")
 
 	for _, raw := range []string{
@@ -473,7 +474,7 @@ func TestCAHostMatchesTable(t *testing.T) {
 // --- finding 5 (round 2 review): sameCAFile ---
 
 func TestSameCAFile(t *testing.T) {
-	dir := t.TempDir()
+	dir := secureTempDir(t)
 	abs := filepath.Join(dir, "ca.pem")
 	if err := os.WriteFile(abs, []byte("x"), 0o600); err != nil {
 		t.Fatalf("write file: %v", err)
@@ -1243,7 +1244,7 @@ func TestCAFileHygieneRefusesGroupWritableFile(t *testing.T) {
 func TestCAFileHygieneRefusesWorldWritableParentDir(t *testing.T) {
 	clearCAEnvironment(t)
 	ca := newTestCA(t)
-	dir := t.TempDir()
+	dir := secureTempDir(t)
 	if err := os.Chmod(dir, 0o777); err != nil {
 		t.Fatalf("chmod dir world-writable: %v", err)
 	}

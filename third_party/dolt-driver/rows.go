@@ -250,4 +250,3 @@ func (rows *doltRows) Next(dest []driver.Value) error {
 
 	return nil
 }
-

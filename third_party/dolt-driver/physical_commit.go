@@ -53,7 +53,7 @@ func physicalReadError(kind, id, name string, err error) error {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return &PhysicalReadError{kind, id, name, err}
 	}
-	cause := error(translateError(err))
+	cause := translateError(err)
 	if reason := missingPhysicalHistory(kind, err); reason != "" {
 		cause = &PhysicalHistoryUnavailable{Reason: reason, Cause: cause, SQLCodes: physicalHistorySQLCodes(err)}
 	}

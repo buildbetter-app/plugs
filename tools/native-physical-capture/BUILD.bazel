@@ -13,6 +13,7 @@ go_library(
     ],
 )
 
+# manual: capture executable is built by its explicitly selected public controls.
 go_binary(
     name = "native-physical-capture",
     embed = [":native-physical-capture_lib"],
