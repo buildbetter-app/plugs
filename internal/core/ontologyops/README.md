@@ -24,7 +24,13 @@ patch when equal. Current authorization applies to historical reads.
 `Plan` accepts one ontology document, replacing the base when `Project` is
 empty or replacing that project's overlay otherwise. Unknown document members,
 including unsupported directive/gate/binding configuration, are refused by the
-real decoder. The existing wire method has no directives parameter. Useful
+real decoder. The optional `typeMappings` input admits only closed `map_type`
+objects with an ID, original project/type selector, and different source and
+destination type keys. It uses the existing planner: the original type must be
+known, the candidate destination active, and every selected row keeps its other
+members. The selected mappings remain in the retained, digested plan report.
+Other directive kinds and the legacy top-level `directives` input still refuse.
+Useful
 additions and defaults are planned against every actual stored bead row;
 violating candidates return real findings rather than write anything.
 
@@ -54,7 +60,7 @@ source/row/predicate transaction to the Writer. A read-only host leaves that
 capability nil and does not advertise `ontology.apply`. Durable replay is
 resolved by the Writer's receipt before stale source/row guards are retried.
 Policy revalidation, configured-authorizer transition decisions, gate resolver
-facts, directive wire admission and multi-source planning remain unsupported.
+facts, other directive wire admission and multi-source planning remain unsupported.
 
 With no authorization plugin, omit `AuthorizeRead`. With one installed, the
 host must supply the current read authorizer. Planning requires access to the
@@ -65,5 +71,5 @@ Compiler diagnostics require access to all overlays they can name. Source
 history authorizes both historical source images under current permissions,
 including overlays removed from the current document.
 
-Run `bazel --ignore_all_rc_files test //internal/core/ontologyops:ontologyops_test
---jobs=2 --test_output=all --test_timeout=900`.
+Run the focused `//internal/core/ontologyops:ontologyops_test` target through
+the remote-bazel RunsOn wrapper from an isolated Plug worktree.

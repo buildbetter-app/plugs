@@ -35,7 +35,7 @@ func (r *gateListingReadRule) Eval(ctx context.Context, facts authz.Slice, req [
 	}
 	for i, q := range req {
 		if q.Action == authz.Read && q.Resource.Ref.ID == r.denied {
-			decisions[i] = authz.Decision{Effect: authz.Forbid}
+			decisions[i] = authz.Decision{Effect: authz.Deny}
 		}
 	}
 	return decisions, nil
@@ -43,8 +43,8 @@ func (r *gateListingReadRule) Eval(ctx context.Context, facts authz.Slice, req [
 
 func TestB14PublicGateListingComposedReadVisibilityBeforeLimit(t *testing.T) {
 	eachStore(t, func(t *testing.T, f *fixture) {
-		hidden := gateCreate(f, "gate", "timer", nil)
-		created := f.call("bead.create", map[string]any{"type": "gate", "parent": ref(hidden), "fields": map[string]any{"title": "visible child gate", "await_type": "gh:run"}}, true, "")
+		hidden := gateCreate(f, "gate", "timer", map[string]any{"priority": 0})
+		created := f.call("bead.create", map[string]any{"type": "gate", "parent": ref(hidden), "fields": map[string]any{"title": "visible child gate", "await_type": "gh:run", "priority": 1}}, true, "")
 		child := resultID(created, 0)
 		gateCreate(f, "gate", "timer", nil)
 		m := f.meta()

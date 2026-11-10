@@ -32,7 +32,7 @@ func TestB14PublicGateTypeInstallMapTypePreservesLiteralMembers(t *testing.T) {
 		check := func() {
 			t.Helper()
 			got := gateIDs(f.call("gate.list", map[string]any{}, false, ""))
-			if !reflect.DeepEqual(got, []string{id, created}) {
+			if !reflect.DeepEqual(got, []string{created, id}) {
 				t.Fatalf("installed gate listing: %v", got)
 			}
 			schema := f.call("ontology.schema", map[string]any{"type": "gate"}, false, "")

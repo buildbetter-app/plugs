@@ -6852,8 +6852,8 @@
     },
     {
       "name": "gate.list",
-      "summary": "List exact installed gate beads in query order.",
-      "description": "Includes templates, pinned and ephemeral gates by default. All includes closed gates alongside open gates. Exclude templates before the selected gate limit; limit zero is unlimited. Await type filtering follows that limit: empty or all matches every type, gh matches gh: prefixes, other values match exactly. Query failures propagate; missing issue rows are dropped.",
+      "summary": "List exact installed gates in canonical default query order.",
+      "description": "Includes templates, pinned-status and ephemeral gates by default. All includes closed gates alongside open gates. Exclude templates before the selected gate limit; limit zero is unlimited. Merge both planes and order by priority ascending, creation time descending, then ID ascending before the limit. Await type filtering follows that limit: empty or all matches every type, gh matches gh: prefixes, other values match exactly. Query failures propagate; missing issue rows are dropped.",
       "tags": [
         {
           "name": "core"

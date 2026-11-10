@@ -34,7 +34,6 @@ func DefaultDocument() Document {
 			GateType: {Name: "Gate", Workflow: "issue", Fields: map[string]Field{
 				"title": {Type: "string"}, "description": {Type: "string"},
 				"labels": {Type: "strings"}, "blocked": {Type: "boolean"},
-				"pinned": {Type: "boolean"},
 			}},
 			"issue": {Name: "Issue", Workflow: "issue", Fields: map[string]Field{
 				"title": {Type: "string"}, "description": {Type: "string"},

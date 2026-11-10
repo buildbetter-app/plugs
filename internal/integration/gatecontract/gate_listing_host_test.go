@@ -37,7 +37,7 @@ func seedGateCatalog(t *testing.T, f *fixture, doc ontology.Document) {
 	bindGateHost(t, f, f.store, true, false)
 }
 
-func bindGateHost(t *testing.T, f *fixture, store driver.Store, storedOntology, workflow bool) {
+func bindGateHost(t *testing.T, f *fixture, store driver.Store, storedOntology, workflow bool, clock ...func() time.Time) {
 	t.Helper()
 	ctx := context.Background()
 	var runtime *service.Ontology
@@ -63,10 +63,14 @@ func bindGateHost(t *testing.T, f *fixture, store driver.Store, storedOntology, 
 	} else {
 		runtime = service.NewOntology(nil)
 	}
-	writer := pipeline.New(store, f.lease, pipeline.WithOntology(runtime), pipeline.WithIDGenerator(func() (string, error) {
+	writerOptions := []pipeline.Option{pipeline.WithOntology(runtime), pipeline.WithIDGenerator(func() (string, error) {
 		f.nextID++
 		return fmt.Sprintf("gc-%06d", f.nextID), nil
-	}))
+	})}
+	if len(clock) > 0 {
+		writerOptions = append(writerOptions, pipeline.WithClock(clock[0]))
+	}
+	writer := pipeline.New(store, f.lease, writerOptions...)
 	options := []service.Option{service.WithOntology(runtime)}
 	if workflow {
 		checkpoints, ok := f.store.(driver.CheckpointStore)
@@ -79,6 +83,9 @@ func bindGateHost(t *testing.T, f *fixture, store driver.Store, storedOntology, 
 			t.Fatal(err)
 		}
 		provider.WithIdentity(workflowplugin.Alias, "default", f.meta().Incarnation)
+		if len(clock) > 0 {
+			provider.WithClock(clock[0])
+		}
 		options = append(options, service.WithWorkflow(provider))
 	}
 	domain := service.New(store, f.lease, writer, options...)

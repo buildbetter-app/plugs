@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -15,30 +18,49 @@ import (
 
 func TestB14PublicGateListingCanonicalFiltersAndLimit(t *testing.T) {
 	eachStore(t, func(t *testing.T, f *fixture) {
+		seedGateCatalog(t, f, ontology.DefaultDocument())
 		// Non-gates with await fields, closed gates and templates precede
 		// the first checkable gate in the real driver query order.
-		gateCreate(f, "issue", "gh:run", nil)
-		closed := gateCreate(f, "gate", "timer", nil)
-		f.call("bead.close", map[string]any{"id": closed}, true, "")
-		template := gateCreate(f, "gate", "timer", map[string]any{"template": true})
-		pinned := gateCreate(f, "gate", "timer", map[string]any{"pinned": true})
-		failed := gateCreate(f, "gate", "gh:run", nil)
+		gateCreate(f, "issue", "gh:run", map[string]any{"priority": 0})
+		closed := gateCreate(f, "gate", "timer", map[string]any{"priority": 0})
+		template := gateCreate(f, "gate", "timer", map[string]any{"template": true, "priority": 0})
+		pinned := gateCreate(f, "gate", "timer", map[string]any{"priority": 1})
+		failed := gateCreate(f, "gate", "gh:run", map[string]any{"priority": 2})
 		f.call("bead.fail", map[string]any{"id": failed}, true, "")
-		canceled := gateCreate(f, "gate", "gh:pr", nil)
+		canceled := gateCreate(f, "gate", "gh:pr", map[string]any{"priority": 3})
 		f.call("bead.cancel", map[string]any{"id": canceled}, true, "")
-		backlog := gateCreate(f, "gate", "opaque", nil)
+		backlog := gateCreate(f, "gate", "opaque", map[string]any{"priority": 4})
 		f.call("bead.defer", map[string]any{"id": backlog}, true, "")
+		otherCompleted := gateCreate(f, "gate", "opaque", map[string]any{"priority": 4})
+		f.call("bead.close", map[string]any{"id": otherCompleted}, true, "")
+		// Install literal Beads status names/categories through the public
+		// catalog API. Existing slots select them; no alternate lifecycle
+		// implementation or passive pinned flag stands in for a native status.
+		candidate := ontology.DefaultDocument()
+		candidate.Statuses["pinned"] = ontology.Status{Name: "Pinned", Category: ontology.Frozen}
+		candidate.Statuses["closed"] = ontology.Status{Name: "Closed", Category: ontology.Done, Outcome: ontology.Success}
+		workflow := candidate.Workflows["issue"]
+		workflow.Statuses = append(workflow.Statuses, "pinned", "closed")
+		workflow.Slots[ontology.Defer], workflow.Slots[ontology.Close] = "pinned", "closed"
+		workflow.Transitions = append(workflow.Transitions, ontology.Rule{To: "pinned"}, ontology.Rule{To: "closed", Guards: []ontology.Guard{{Kind: ontology.NotTemplate}, {Kind: ontology.NoOpenChildren}, {Kind: ontology.NoOpenBlockers}, {Kind: ontology.Permission}}})
+		candidate.Workflows["issue"] = workflow
+		gateApply(f, gatePlan(f, candidate, []any{}, 1), 1)
+		f.call("bead.defer", map[string]any{"id": pinned}, true, "")
+		f.call("bead.close", map[string]any{"id": closed}, true, "")
+		if f.bead(pinned)["status"] != "pinned" || f.bead(closed)["status"] != "closed" || f.bead(otherCompleted)["status"] != "done" {
+			t.Fatal("literal installed status was normalized or not selected")
+		}
 		before, history := f.meta(), f.historyCount()
 		for _, test := range []struct {
 			name   string
 			params map[string]any
 			want   []string
 		}{
-			{"default-includes-template-pinned-failed-canceled-backlog", map[string]any{}, []string{template, pinned, failed, canceled, backlog}},
-			{"all-admits-closed-alongside-open", map[string]any{"all": true}, []string{closed, template, pinned, failed, canceled, backlog}},
+			{"default-includes-template-pinned-failed-canceled-backlog", map[string]any{}, []string{template, pinned, failed, canceled, otherCompleted, backlog}},
+			{"all-admits-closed-alongside-open", map[string]any{"all": true}, []string{template, closed, pinned, failed, canceled, otherCompleted, backlog}},
 			{"default-template-consumes-limit", map[string]any{"limit": 1}, []string{template}},
 			{"check-template-filter-before-limit", map[string]any{"excludeTemplates": true, "limit": 1}, []string{pinned}},
-			{"all-and-exclude-templates", map[string]any{"all": true, "excludeTemplates": true}, []string{closed, pinned, failed, canceled, backlog}},
+			{"all-and-exclude-templates", map[string]any{"all": true, "excludeTemplates": true}, []string{closed, pinned, failed, canceled, otherCompleted, backlog}},
 		} {
 			t.Run(test.name, func(t *testing.T) {
 				if got := gateIDs(f.call("gate.list", test.params, false, "")); !reflect.DeepEqual(got, test.want) {
@@ -58,9 +80,9 @@ func TestB14PublicGateListingCanonicalFiltersAndLimit(t *testing.T) {
 
 func TestB14PublicGateListingCheckAwaitTypeAfterLimit(t *testing.T) {
 	eachStore(t, func(t *testing.T, f *fixture) {
-		timer := gateCreate(f, "gate", "timer", nil)
-		gh := gateCreate(f, "gate", "gh:run", nil)
-		exact := gateCreate(f, "gate", "opaque", nil)
+		timer := gateCreate(f, "gate", "timer", map[string]any{"priority": 0})
+		gh := gateCreate(f, "gate", "gh:run", map[string]any{"priority": 1})
+		exact := gateCreate(f, "gate", "opaque", map[string]any{"priority": 2})
 		for _, test := range []struct {
 			params map[string]any
 			want   []string
@@ -130,12 +152,14 @@ func TestB14PublicGateListingDrainsPagesAndPropagatesQueryFailures(t *testing.T)
 		bindGateHost(t, f, wrapped, false, false)
 		before, history := f.meta(), f.historyCount()
 		got := gateIDs(f.call("gate.list", map[string]any{"limit": 0}, false, ""))
-		if !reflect.DeepEqual(got, want) || wrapped.queries < 2 {
+		set := append([]string(nil), got...)
+		sort.Strings(set)
+		if !reflect.DeepEqual(set, want) || wrapped.queries < 2 {
 			t.Fatalf("unlimited real pages: rows=%d want=%d queries=%d", len(got), len(want), wrapped.queries)
 		}
 		t.Logf("actual %s gate query pages=%d rows=%d", f.engine, wrapped.queries, len(got))
 		wrapped.queries, wrapped.missing = 0, true
-		if got := gateIDs(f.call("gate.list", map[string]any{}, false, "")); !reflect.DeepEqual(got, want) {
+		if retained := gateIDs(f.call("gate.list", map[string]any{}, false, "")); !reflect.DeepEqual(retained, got) {
 			t.Fatal("missing rows changed retained query order")
 		}
 		wrapped.queries, wrapped.failAt = 0, 2
@@ -151,10 +175,10 @@ func TestB14PublicGateListingDrainsPagesAndPropagatesQueryFailures(t *testing.T)
 func TestB14PublicGateListingBothPlanesAndDurableReopen(t *testing.T) {
 	eachStore(t, func(t *testing.T, f *fixture) {
 		bindGateHost(t, f, f.store, false, true)
-		ordinary := gateCreate(f, "gate", "timer", nil)
+		ordinary := gateCreate(f, "gate", "timer", map[string]any{"priority": 4})
 		invoked := f.call("x.workflow.invoke", map[string]any{"template": "b14-gate-list", "project": "local", "mode": "ephemeral", "checklist": []any{
-			map[string]any{"label": "open", "title": "ephemeral gate", "type": "gate", "fields": map[string]any{"await_type": "gh:run"}},
-			map[string]any{"label": "closed", "title": "closed ephemeral gate", "type": "gate"},
+			map[string]any{"label": "open", "title": "ephemeral gate", "type": "gate", "fields": map[string]any{"await_type": "gh:run", "priority": 0}},
+			map[string]any{"label": "closed", "title": "closed ephemeral gate", "type": "gate", "fields": map[string]any{"priority": 1}},
 			map[string]any{"label": "ordinary", "title": "not a gate", "type": "issue", "fields": map[string]any{"await_type": "gh:run"}},
 		}}, true, "")
 		items := invoked["items"].([]any)
@@ -163,11 +187,11 @@ func TestB14PublicGateListingBothPlanesAndDurableReopen(t *testing.T) {
 		check := func() {
 			t.Helper()
 			before, history := f.meta(), f.historyCount()
-			if got := gateIDs(f.call("gate.list", map[string]any{"_meta": map[string]any{"agent": "gate-contract"}}, false, "")); !reflect.DeepEqual(got, []string{ordinary, open}) {
+			if got := gateIDs(f.call("gate.list", map[string]any{"_meta": map[string]any{"agent": "gate-contract"}}, false, "")); !reflect.DeepEqual(got, []string{open, ordinary}) {
 				t.Fatalf("both planes=%v", got)
 			}
 			all := gateIDs(f.call("gate.list", map[string]any{"all": true, "_meta": map[string]any{"agent": "gate-contract"}}, false, ""))
-			if len(all) != 3 || all[0] != ordinary {
+			if !reflect.DeepEqual(all, []string{open, closed, ordinary}) {
 				t.Fatalf("all both planes=%v", all)
 			}
 			if !reflect.DeepEqual(before, f.meta()) || history != f.historyCount() {
@@ -180,6 +204,39 @@ func TestB14PublicGateListingBothPlanesAndDurableReopen(t *testing.T) {
 			f.open()
 			bindGateHost(t, f, f.store, false, true)
 			check()
+		}
+	})
+}
+
+func TestB14PublicGateListingGlobalPriorityCreationAndIDOrder(t *testing.T) {
+	eachStore(t, func(t *testing.T, f *fixture) {
+		now := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
+		bindGateHost(t, f, f.store, false, true, func() time.Time { return now })
+		low := gateCreate(f, "gate", "timer", map[string]any{"priority": 4})
+		invoke := func(label string, priority int) string {
+			t.Helper()
+			result := f.call("x.workflow.invoke", map[string]any{"template": "b14-order-" + label, "project": "local", "mode": "ephemeral", "checklist": []any{map[string]any{"label": label, "title": label, "type": "gate", "fields": map[string]any{"priority": priority}}}}, true, "")
+			return result["items"].([]any)[0].(map[string]any)["id"].(string)
+		}
+		high := invoke("priority-winner", 0)
+		now = now.Add(time.Hour)
+		older := gateCreate(f, "gate", "timer", map[string]any{"priority": 2})
+		now = now.Add(time.Hour)
+		newer := invoke("created-winner", 2)
+		tieA := gateCreate(f, "gate", "timer", map[string]any{"priority": 2})
+		tieB := gateCreate(f, "gate", "timer", map[string]any{"priority": 2})
+		ties := []string{newer, tieA, tieB}
+		sort.Strings(ties)
+		want := append([]string{high}, ties...)
+		want = append(want, older, low)
+		meta := map[string]any{"agent": "gate-contract"}
+		for _, test := range []struct {
+			limit int
+			want  []string
+		}{{0, want}, {1, []string{high}}, {4, want[:4]}} {
+			if got := gateIDs(f.call("gate.list", map[string]any{"limit": test.limit, "_meta": meta}, false, "")); !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("global order limit%d=%v want=%v", test.limit, got, test.want)
+			}
 		}
 	})
 }

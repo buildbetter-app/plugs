@@ -75,19 +75,24 @@ the public `timeout` member.
 ## Installed gate types and public listing
 
 The default catalog installs the literal `gate` type on the existing issue
-workflow. Await members on another type do not change its identity. Gate
-`pinned` is an optional typed boolean; listing includes it without adding a
-readiness or lifecycle rule. A stored host catalog can install the type through
+workflow. Await members on another type do not change its identity. A stored
+host catalog can install the type and literal statuses through
 `ontology.plan`/`ontology.apply`. The optional `typeMappings` plan input accepts
 only closed `map_type` objects with an ID, original project/type selector, and
 different `from`/`to` keys. The existing migration planner retains these inputs
 in its digested report, requires a known original type and active destination,
 and preserves every other row member. Legacy importer directives are unchanged.
 
-`gate.list` returns exact gate types in source query order. It includes templates,
-pinned gates and ephemeral workflow items by default. `all` admits closed gates
+`gate.list` returns exact gate types in the native default query order: priority
+ascending, creation time descending, then ID ascending. It merges both complete
+planes before the selected limit; durable prefixes cannot hide higher-ranked
+ephemeral gates. It includes templates,
+pinned-status gates and ephemeral workflow items by default. `all` admits closed gates
 alongside open ones; failed, canceled and backlog are not the installed close
 slot. `excludeTemplates` removes templates before the selected gate limit.
+The filter control publicly installs literal `pinned`/frozen and `closed`/done
+statuses, selects them with the existing defer/close slots, and retains a
+different completed status to prove that only the close slot is excluded.
 Limit zero drains all ordinary driver pages; a positive int64 limit bounds the
 selected gates. Await filtering follows that bound: empty/`all` accepts every
 await type, `gh` matches `gh:` prefixes, and other strings match exactly.
@@ -102,7 +107,8 @@ The new `TestB14PublicGateTypeInstallMapTypePreservesLiteralMembers`,
 `TestB14PublicGateListingCanonicalFiltersAndLimit`,
 `TestB14PublicGateListingCheckAwaitTypeAfterLimit`,
 `TestB14PublicGateListingDrainsPagesAndPropagatesQueryFailures`,
-`TestB14PublicGateListingBothPlanesAndDurableReopen`, and
+`TestB14PublicGateListingBothPlanesAndDurableReopen`,
+`TestB14PublicGateListingGlobalPriorityCreationAndIDOrder`, and
 `TestB14PublicGateListingComposedReadVisibilityBeforeLimit` each require memory,
 SQLite and PostgreSQL. Only the initial catalog in the installation fixture is
 seeded; its installation/mapping and all bead/checkpoint changes use public

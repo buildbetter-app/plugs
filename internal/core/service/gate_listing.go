@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"sort"
 	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -48,7 +49,11 @@ func (s *Service) GateListWithFilter(ctx context.Context, by model.PrincipalRef,
 		return BeadPage{}, failure("internal_error", "gate reader has no snapshot revision")
 	}
 	page := BeadPage{Items: []Bead{}, AsOf: AsOf{Revision: *view.At, Incarnation: view.Incarnation}}
-	selected := int64(0)
+	type candidate struct {
+		bead     Bead
+		priority int
+	}
+	candidates := map[string]candidate{}
 	accept := func(bead Bead) error {
 		if bead.Project != req.Project || bead.Type != ontology.GateType {
 			return nil
@@ -73,11 +78,11 @@ func (s *Service) GateListWithFilter(ctx context.Context, by model.PrincipalRef,
 				return nil
 			}
 		}
-		selected++
-		awaitType, _ := bead.Fields["await_type"].(string)
-		if req.AwaitType == "" || req.AwaitType == "all" || req.AwaitType == awaitType || req.AwaitType == "gh" && strings.HasPrefix(awaitType, "gh:") {
-			page.Items = append(page.Items, bead)
+		priority, err := beadPriority(bead)
+		if err != nil {
+			return err
 		}
+		candidates[bead.ID] = candidate{bead: bead, priority: priority}
 		return nil
 	}
 	var cursor *driver.Cursor
@@ -102,9 +107,6 @@ func (s *Service) GateListWithFilter(ctx context.Context, by model.PrincipalRef,
 			if err := accept(bead); err != nil {
 				return BeadPage{}, err
 			}
-			if req.Limit > 0 && selected >= req.Limit {
-				return page, s.admit(ctx, by)
-			}
 		}
 		if rows.NextCursor == nil {
 			break
@@ -123,9 +125,6 @@ func (s *Service) GateListWithFilter(ctx context.Context, by model.PrincipalRef,
 			if err := accept(workflowBead(item)); err != nil {
 				return BeadPage{}, err
 			}
-			if req.Limit > 0 && selected >= req.Limit {
-				break
-			}
 		}
 		// As in the combined ready reader, refuse a mixed ordinary head if
 		// it moved while reading the provider's single checkpoint image.
@@ -135,6 +134,33 @@ func (s *Service) GateListWithFilter(ctx context.Context, by model.PrincipalRef,
 		}
 		if current.Incarnation != view.Incarnation || current.Head.String() != view.At.String() {
 			return BeadPage{}, failure("cursor_invalid", "gate source changed while listing; repeat the read")
+		}
+	}
+	// The native Querier's default order is priority ASC, created_at DESC,
+	// id ASC. Merge both complete planes before cutting the selected bound;
+	// a higher-ranked workflow gate must be able to displace a durable gate.
+	ordered := make([]candidate, 0, len(candidates))
+	for _, item := range candidates {
+		ordered = append(ordered, item)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		a, b := ordered[i], ordered[j]
+		if a.priority != b.priority {
+			return a.priority < b.priority
+		}
+		if !a.bead.CreatedAt.Equal(b.bead.CreatedAt) {
+			return a.bead.CreatedAt.After(b.bead.CreatedAt)
+		}
+		return a.bead.ID < b.bead.ID
+	})
+	for i, item := range ordered {
+		if req.Limit > 0 && int64(i) >= req.Limit {
+			break
+		}
+		bead := item.bead
+		awaitType, _ := bead.Fields["await_type"].(string)
+		if req.AwaitType == "" || req.AwaitType == "all" || req.AwaitType == awaitType || req.AwaitType == "gh" && strings.HasPrefix(awaitType, "gh:") {
+			page.Items = append(page.Items, bead)
 		}
 	}
 	return page, s.admit(ctx, by)
