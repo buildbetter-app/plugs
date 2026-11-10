@@ -290,15 +290,18 @@ func TestB07SourcePlaneOpaqueEdgeRoundTrip(t *testing.T) {
 				t.Fatal("reopened mixed public receipt was not replayed")
 			}
 			check("mixed-replayed")
-			late := call("mixed-late-retype", "tx.apply", map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{
+			// Active source link preparation is not supported by this runtime.
+			// Its refusal must roll back both earlier staged patches; direct SQL
+			// edge retype validation is exercised separately by the card target.
+			late := call("mixed-late-relation-route", "tx.apply", map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{
 				{Kind: model.OpPatch, Patch: &model.PatchOp{Target: model.RefByID("demo-9", model.Natural64(0)), Fields: map[string]any{"title": "discard active draft"}}},
 				{Kind: model.OpPatch, Patch: &model.PatchOp{Target: model.RefByID("demo-8", model.Natural64(0)), Fields: map[string]any{"title": "discard durable draft"}}},
 				{Kind: model.OpLink, Link: &model.LinkOp{From: model.RefByID("demo-9", model.Natural64(0)), To: model.RefByID("demo-8", model.Natural64(0)), LinkKind: "blocks"}},
 			}}, "_meta": map[string]any{"project": "demo", "idempotencyKey": strings.Repeat("8", 32)}})
-			if late.Error == nil || late.Error.Data.Code != "ontology_guard_failed" {
-				t.Fatal("late mixed retype was not refused", late.Error)
+			if late.Error == nil || late.Error.Data.Code != "unsupported" {
+				t.Fatal("late mixed relation preparation was not refused", late.Error)
 			}
-			check("mixed-late-refused")
+			check("mixed-late-relation-refused")
 			params := map[string]any{"changeSet": map[string]any{"ops": []any{
 				map[string]any{"kind": "patch", "target": model.RefByID("demo-8", model.Natural64(0)), "fields": map[string]any{"title": "must not publish"}},
 				map[string]any{"kind": "patch", "target": model.RefByID("demo-9", model.Natural64(0)), "fields": map[string]any{"title": "active must not publish"}},

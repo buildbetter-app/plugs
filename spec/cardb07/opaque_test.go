@@ -223,7 +223,9 @@ func b07OpaqueArchive(t *testing.T, tokens map[string]string, configure ...func(
 			body[field] = json.RawMessage(token)
 		}
 	}
-	fields["metadata"] = json.RawMessage(` { "extra": "kept", "number": 1.00e+02 } `)
+	if _, supplied := tokens["beads.metadata"]; !supplied {
+		fields["metadata"] = json.RawMessage(` { "extra": "kept", "number": 1.00e+02 } `)
+	}
 	body["metadata"] = fields["metadata"]
 	record["body"] = b07RawObject(t, body)
 	source["fields"] = b07RawObject(t, fields)

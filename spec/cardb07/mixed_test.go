@@ -20,6 +20,15 @@ func b07MixedPublic(t *testing.T, engine string) {
 	h := b07NewHost(t, engine)
 	a, b := h.create("mixed-durable-a", nil), h.create("mixed-durable-b", nil)
 	before := h.snapshot()
+	missing := model.RefByID("workflow:item/00000000000000000000000000000000", model.Natural64(0))
+	unknown := h.call("tx.apply", "mixed-missing-item", map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{
+		{Kind: model.OpPatch, Patch: &model.PatchOp{Target: a, Fields: map[string]any{"title": "discard durable draft"}}},
+		{Kind: model.OpPatch, Patch: &model.PatchOp{Target: missing, Fields: map[string]any{"title": "absent active item"}}},
+	}}})
+	if unknown.Error == nil || unknown.Error.Data.Code != "not_found" {
+		t.Fatal("unknown workflow item must remain not_found", unknown.Error)
+	}
+	h.same(before)
 	reply := h.call("x.workflow.invoke", "mixed-invoke", map[string]any{"template": "b07", "project": "b07", "mode": "ephemeral", "checklist": []any{map[string]any{"label": "first", "title": "mixed first"}, map[string]any{"label": "second", "title": "mixed second"}}})
 	if engine == "memory" {
 		if reply.Error == nil || reply.Error.Data.Code != "plugin_durable_state_unavailable" {
@@ -77,60 +86,40 @@ func b07MixedPublic(t *testing.T, engine string) {
 		{Kind: model.OpPatch, Patch: &model.PatchOp{Target: a, Fields: map[string]any{"title": "mixed committed durable"}}},
 		{Kind: model.OpPatch, Patch: &model.PatchOp{Target: x, Fields: map[string]any{"title": "mixed committed active"}}},
 	}}}
-	first := h.call("tx.apply", "mixed-success", mixed)
-	commit := b07Success(t, first)
-	after := h.snapshot()
-	head, err := before.Meta.Head.Uint64()
-	if err != nil || after.Meta.Head != model.Natural64(head+1) || commit.Revision != after.Meta.Head || len(after.Changes) != len(before.Changes)+1 {
-		t.Fatal("successful mixed write did not advance core once")
+	visible := h.call("bead.get", "", map[string]any{"id": x})
+	if visible.Error != nil {
+		t.Fatal("existing workflow item is not publicly visible", visible.Error)
 	}
-	changed := 0
-	for key, prior := range before.Checkpoints {
-		next, exists := after.Checkpoints[key]
-		if !exists {
-			t.Fatal("successful mixed write removed a namespace")
-		}
-		if !reflect.DeepEqual(prior, next) {
-			changed++
-			if next.Generation != prior.Generation+1 {
-				t.Fatal("successful mixed write did not advance workflow once")
-			}
-		}
+	project := h.config.Project
+	h.config.Project = "b07-outside-scope"
+	scoped := h.call("tx.apply", "ordinary-mixed-wrong-project", mixed)
+	h.config.Project = project
+	if scoped.Error == nil || scoped.Error.Data.Code != "forbidden" {
+		t.Fatal("unsupported route bypassed workflow project visibility", scoped.Error)
 	}
-	if len(after.Checkpoints) != len(before.Checkpoints) || changed != 1 {
-		t.Fatal("successful mixed write changed the wrong namespace set")
-	}
-	assertTitles := func() {
-		t.Helper()
-		for _, test := range []struct {
-			ref   model.Ref
-			title string
-		}{{a, "mixed committed durable"}, {x, "mixed committed active"}} {
-			reply := h.call("bead.get", "", map[string]any{"id": test.ref})
-			var value struct{ Fields map[string]any }
-			if reply.Error != nil || json.Unmarshal(reply.Result, &value) != nil || value.Fields["title"] != test.title {
-				t.Fatal("mixed public title missing", test.ref, string(reply.Result), reply.Error)
-			}
+	h.same(before)
+	// Ordinary composition does not install admitted-source operation routing.
+	// Preserve the actual unsupported-address outcome and the entire transaction
+	// state; positive mixed patches are exercised by the admitted-source target.
+	for _, label := range []string{"ordinary-mixed-route", "ordinary-mixed-route-after-reopen"} {
+		refused := h.call("tx.apply", label, mixed)
+		if refused.Error == nil || refused.Error.Data.Code != "unsupported" {
+			t.Fatal("ordinary mixed route refusal differs", refused.Error)
 		}
+		h.same(before)
 		h.requireReady(ready)
+		h.reopen()
+		h.same(before)
 	}
-	assertTitles()
-	h.reopen()
-	assertTitles()
-	replay := h.call("tx.apply", "mixed-success", mixed)
-	if replay.Error != nil || !bytes.Equal(first.Result, replay.Result) || replay.Meta["replayed"] != true {
-		t.Fatal("successful mixed write did not replay after physical reopen")
-	}
-	h.same(after)
-	late := h.call("tx.apply", "mixed-late-retype", map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{
+	late := h.call("tx.apply", "mixed-late-route-refusal", map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{
 		{Kind: model.OpPatch, Patch: &model.PatchOp{Target: a, Fields: map[string]any{"title": "discard durable draft"}}},
 		{Kind: model.OpPatch, Patch: &model.PatchOp{Target: x, Fields: map[string]any{"title": "discard active draft"}}},
 		{Kind: model.OpLink, Link: &model.LinkOp{From: x, To: b, LinkKind: "blocks"}},
 	}}})
-	if late.Error == nil || late.Error.Data.Code != "ontology_guard_failed" {
-		t.Fatal("late mixed retype was not refused", late.Error)
+	if late.Error == nil || late.Error.Data.Code != "unsupported" {
+		t.Fatal("ordinary mixed batch routing refusal differs", late.Error)
 	}
-	h.same(after)
+	h.same(before)
 	before = h.snapshot()
 	r := h.call("tx.apply", "mixed-malformed-batch", map[string]any{"changeSet": map[string]any{"ops": []any{map[string]any{"kind": "patch", "target": a, "fields": map[string]any{"title": "must-not-publish"}}, map[string]any{"kind": "patch", "target": x, "fields": map[string]any{"title": "active-must-not-publish"}}, map[string]any{"kind": "link", "from": x, "to": b, "linkKind": "custom kind", "metadata": map[string]any{"nativeExtensions": map[string]any{"beads.future_invalid": "null true"}}}}}})
 	if r.Error == nil || r.Error.Data.Code != "invalid_params" {
@@ -139,7 +128,7 @@ func b07MixedPublic(t *testing.T, engine string) {
 	h.same(before)
 	h.reopen()
 	h.same(before)
-	b07JSON(t, filepath.Join(h.root, "mixed-outcomes.json"), map[string]any{"outcome": "public SQL mixed endpoint identity, no-op, replay, retype, successful mixed batch and malformed preparation conservation", "successful_mixed_tx_apply": "PASS", "native_history_credit": false})
+	b07JSON(t, filepath.Join(h.root, "mixed-outcomes.json"), map[string]any{"outcome": "public SQL mixed endpoint identity, no-op, replay, retype and conserved route/malformed refusals", "ordinary_mixed_tx_apply": "unsupported; OPEN_FOR_FULL_B07", "positive_mixed_tx_apply": "separate admitted-source target", "native_history_credit": false})
 }
 
 func (h *b07Host) quietWorkflow(want b07State) {

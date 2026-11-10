@@ -230,6 +230,20 @@ func (s *Service) apply(ctx context.Context, by model.PrincipalRef, method strin
 		}
 		return v, nil
 	}
+	if source == nil && method == "tx.apply" {
+		for _, op := range cs.Ops {
+			if op.Kind != model.OpPatch || op.Patch == nil || !workflowRef(op.Patch.Target) {
+				continue
+			}
+			// This route has no workflow patch participant. Use the existing
+			// scoped reader to distinguish an absent item from an unsupported
+			// write to an item that exists, before any draft can be published.
+			if _, err := s.Get(ctx, by, GetRequest{ID: op.Patch.Target, Project: meta.Project, Agent: meta.Agent}); err != nil {
+				return port.WriteOutcome{}, mapped(err)
+			}
+			return port.WriteOutcome{}, failure("unsupported", "tx.apply cannot patch workflow items without source operation support")
+		}
+	}
 	if writer, ok := s.writer.(port.OutcomeWriter); ok {
 		v, err := writer.ApplyWithOutcome(ctx, by, cs, meta)
 		return v, mapped(err)

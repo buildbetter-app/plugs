@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -401,16 +403,16 @@ func TestB07CanonicalNativeEdgeCounterparts(t *testing.T) {
 	b07JSON(t, filepath.Join(root, "run-binding.json"), map[string]any{"candidate": actual, "run": os.Getenv("GITHUB_RUN_ID"), "attempt": os.Getenv("GITHUB_RUN_ATTEMPT"), "workflow_sha": os.Getenv("GITHUB_SHA"), "workflow_ref": os.Getenv("GITHUB_WORKFLOW_REF"), "native_source": pinnedSource, "qualification": "PUBLIC_OPERATIONAL_RECORDING_ONLY"})
 	binary := r.buildCanonicalSource(pinnedSource)
 	var twins [][]b07Observation
-	var nativeTokens map[string]string
+	var nativeTokens, nativeMetadataTokens map[string]string
 	for _, name := range []string{"a", "b"} {
 		if !t.Run("native_"+name, func(t *testing.T) {
 			n := b07NewNative(t, binary, name)
 			twins = append(twins, n.vocabulary())
 			tokens := n.threadAndMixed()
-			n.externalAndMetadata()
+			metadataTokens := n.externalAndMetadata()
 			if nativeTokens == nil {
-				nativeTokens = tokens
-			} else if !reflect.DeepEqual(nativeTokens, tokens) {
+				nativeTokens, nativeMetadataTokens = tokens, metadataTokens
+			} else if !reflect.DeepEqual(nativeTokens, tokens) || !reflect.DeepEqual(nativeMetadataTokens, metadataTokens) {
 				t.Fatal("independent native token observations differ")
 			}
 		}) {
@@ -428,11 +430,15 @@ func TestB07CanonicalNativeEdgeCounterparts(t *testing.T) {
 			b07OpaqueImport(t, engine, nativeTokens)
 			b07ImportedWaits(t, engine, nativeTokens)
 			b07MixedPublic(t, engine)
+			t.Run("native_metadata_tokens", func(t *testing.T) {
+				b07OpaquePublic(t, engine, nativeMetadataTokens)
+				b07OpaqueImport(t, engine, nativeMetadataTokens)
+			})
 		})
 	}
 }
 
-func (n *b07Native) externalAndMetadata() {
+func (n *b07Native) externalAndMetadata() map[string]string {
 	n.create("b07-950")
 	before := n.image("narrow-custom-before")
 	n.command("standalone-custom-refusal", true, "dep", "add", "b07-950", "b07-901", "--type", "custom kind", "--json")
@@ -480,8 +486,9 @@ func (n *b07Native) externalAndMetadata() {
 	n.requireReady("omitted-kind-blocks-ready", b07Without(defaultReady, "b07-972"))
 	n.command("omitted-kind-guard", true, "close", "b07-972", "--json")
 	n.equal(defaultImage, "omitted-kind-guard-after")
-	// Public JSONL import is the source's generic metadata-bearing write route.
-	// SQL is used only to observe the stored bytes; no table is seeded directly.
+	// JSONL creates generic metadata, but reimport preserves an existing edge.
+	// Keep that route observation separate from the public HTTP re-add comparator.
+	// SQL only observes stored bytes; no table is seeded directly.
 	importMetadata := func(label, metadata string) {
 		n.t.Helper()
 		path := filepath.Join(n.root, label+".jsonl")
@@ -514,8 +521,259 @@ func (n *b07Native) externalAndMetadata() {
 	importMetadata("metadata-different", `{"b":[true,null],"a":2}`)
 	third := n.image("metadata-different-after")
 	changed := n.edge(third, "b07-960", "b07-961")
-	if bytes.Equal(edge["metadata"], changed["metadata"]) {
-		n.t.Fatal("different native metadata was not applied")
+	if !reflect.DeepEqual(edge, changed) {
+		n.t.Fatal("JSONL reimport changed the existing native edge")
 	}
-	b07JSON(n.t, filepath.Join(n.root, "metadata-comparison.json"), map[string]any{"first": edge, "equal": n.edge(second, "b07-960", "b07-961"), "different": changed, "route": "public JSONL import; full raw SQL images retained separately"})
+	b07JSON(n.t, filepath.Join(n.root, "metadata-import-observation.json"), map[string]any{"first": edge, "equal_input": n.edge(second, "b07-960", "b07-961"), "different_input": changed, "route": "public JSONL import preserves an existing edge; zero metadata-equality credit"})
+
+	applyMetadata := n.metadataAPI()
+	ready := n.ready("metadata-http-ready-before")
+	beforeHTTP := n.image("metadata-http-before")
+	applyMetadata("metadata-http-equivalent", `{"b":[true,null],"a":1e0}`, false)
+	n.equal(beforeHTTP, "metadata-http-equivalent-after")
+	// The native BatchApplier reports whether an audit event was inserted.
+	// A metadata-only replacement writes the edge and journal but returns false.
+	applyMetadata("metadata-http-different", `{"b":[true,null],"a":2}`, false)
+	afterHTTP := n.image("metadata-http-different-after")
+	n.metadataDelta(beforeHTTP, afterHTTP)
+	updated := n.edge(afterHTTP, "b07-960", "b07-961")
+	var value struct {
+		A int   `json:"a"`
+		B []any `json:"b"`
+	}
+	if json.Unmarshal([]byte(b07Text(n.t, updated["metadata"])), &value) != nil || value.A != 2 || !reflect.DeepEqual(value.B, []any{true, nil}) {
+		n.t.Fatal("public HTTP metadata change was not stored")
+	}
+	if len(edge) != len(updated) {
+		n.t.Fatal("metadata update changed edge field census")
+	}
+	for key, prior := range edge {
+		if key != "metadata" && !bytes.Equal(prior, updated[key]) {
+			n.t.Fatal("metadata update changed native edge identity/thread", key)
+		}
+	}
+	applyMetadata("metadata-http-replay", `{ "a": 2.0, "b": [true,null] }`, false)
+	n.equal(afterHTTP, "metadata-http-replay-after")
+	n.requireReady("metadata-http-ready-after", ready)
+	b07JSON(n.t, filepath.Join(n.root, "metadata-comparison.json"), map[string]any{"first": edge, "different": updated, "route": "POST /v0/beads/issues:batchApply", "semantic_equal_and_replay": "changed=false and complete current-table conservation", "different_response_changed": false, "different_storage": "metadata replacement plus exactly one journal row/sequence increment", "native_history_credit": false})
+	return map[string]string{"beads.metadata": string(updated["metadata"]), "beads.thread_id": string(updated["thread_id"])}
+}
+
+// metadataAPI records the canonical binary's existing public edge-write route.
+// The loopback server uses the same disposable database and unchanged binary.
+func (n *b07Native) metadataAPI() func(string, string, bool) {
+	n.t.Helper()
+	stdoutPath, stderrPath := filepath.Join(n.root, "metadata-server.stdout"), filepath.Join(n.root, "metadata-server.stderr")
+	stdout, err := os.Create(stdoutPath)
+	if err != nil {
+		n.t.Fatal(err)
+	}
+	stderr, err := os.Create(stderrPath)
+	if err != nil {
+		_ = stdout.Close()
+		n.t.Fatal(err)
+	}
+	cmd := exec.Command(n.binary, "serve", "--addr", "127.0.0.1:0")
+	cmd.Dir, cmd.Env, cmd.Stdout, cmd.Stderr = n.dir, append([]string(nil), n.env...), stdout, stderr
+	b07JSON(n.t, filepath.Join(n.root, "metadata-server.request.json"), map[string]any{"argv": cmd.Args, "directory": cmd.Dir, "environment": cmd.Env})
+	if err := cmd.Start(); err != nil {
+		_ = stdout.Close()
+		_ = stderr.Close()
+		n.t.Fatal(err)
+	}
+	done := make(chan struct{})
+	var waitErr error
+	go func() { waitErr = cmd.Wait(); close(done) }()
+	n.t.Cleanup(func() {
+		select {
+		case <-done:
+		default:
+			if err := cmd.Process.Signal(os.Interrupt); err != nil {
+				n.t.Error("native HTTP stop", err)
+			}
+		}
+		forced := false
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			forced = true
+			if err := cmd.Process.Kill(); err != nil {
+				n.t.Error("native HTTP forced stop", err)
+			}
+			<-done
+		}
+		if err := stdout.Close(); err != nil {
+			n.t.Error(err)
+		}
+		if err := stderr.Close(); err != nil {
+			n.t.Error(err)
+		}
+		out, outErr := os.ReadFile(stdoutPath)
+		errorsRaw, errorsErr := os.ReadFile(stderrPath)
+		b07JSON(n.t, filepath.Join(n.root, "metadata-server.exit.json"), map[string]any{"exit": cmd.ProcessState.ExitCode(), "error": fmt.Sprint(waitErr), "forced": forced, "stdout_sha256": b07Hash(out), "stderr_sha256": b07Hash(errorsRaw)})
+		if forced || waitErr != nil || outErr != nil || errorsErr != nil {
+			n.t.Errorf("native HTTP cleanup: forced=%v wait=%v stdout=%v stderr=%v", forced, waitErr, outErr, errorsErr)
+		}
+	})
+	deadline := time.Now().Add(time.Minute)
+	base := ""
+	for base == "" && time.Now().Before(deadline) {
+		select {
+		case <-done:
+			n.t.Fatal("native HTTP server exited before listening", waitErr)
+		default:
+		}
+		raw, err := os.ReadFile(stdoutPath)
+		if err != nil {
+			n.t.Fatal(err)
+		}
+		for _, line := range strings.Split(string(raw), "\n") {
+			const prefix = "bd serve: listening on "
+			if strings.HasPrefix(line, prefix) {
+				base = strings.TrimPrefix(line, prefix)
+			}
+		}
+		if base == "" {
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	if !strings.HasPrefix(base, "http://127.0.0.1:") {
+		n.t.Fatal("native HTTP loopback address missing", base)
+	}
+	transport := &http.Transport{Proxy: nil}
+	n.t.Cleanup(transport.CloseIdleConnections)
+	client := &http.Client{Timeout: time.Minute, Transport: transport}
+	health, err := client.Get(base + "/healthz")
+	if err != nil {
+		n.t.Fatal("native HTTP readiness", err)
+	}
+	healthRaw, readErr := io.ReadAll(health.Body)
+	closeErr := health.Body.Close()
+	if err := os.WriteFile(filepath.Join(n.root, "metadata-server.health.json"), healthRaw, 0600); err != nil {
+		n.t.Fatal(err)
+	}
+	b07JSON(n.t, filepath.Join(n.root, "metadata-server.readiness.json"), map[string]any{"method": "GET", "url": base + "/healthz", "status": health.StatusCode, "headers": health.Header, "response_sha256": b07Hash(healthRaw)})
+	if readErr != nil || closeErr != nil || health.StatusCode != http.StatusOK {
+		n.t.Fatal("native HTTP readiness failed", health.StatusCode, readErr, closeErr)
+	}
+	return func(label, metadata string, changed bool) {
+		n.t.Helper()
+		// Build the wire body without re-encoding the supplied metadata token.
+		body := []byte(`{"actor":"b07-native","items":[{"kind":"dep_add","dep_add":{"source":{"id":"b07-960"},"target":{"id":"b07-961"},"type":"related","metadata":` + metadata + `}}]}`)
+		url := base + "/v0/beads/issues:batchApply"
+		stem := filepath.Join(n.root, label)
+		if err := os.WriteFile(stem+".request.json", body, 0600); err != nil {
+			n.t.Fatal(err)
+		}
+		response, err := client.Post(url, "application/json", bytes.NewReader(body))
+		if err != nil {
+			n.t.Fatal(err)
+		}
+		raw, readErr := io.ReadAll(response.Body)
+		closeErr := response.Body.Close()
+		if err := os.WriteFile(stem+".response.json", raw, 0600); err != nil {
+			n.t.Fatal(err)
+		}
+		b07JSON(n.t, stem+".binding.json", map[string]any{"method": "POST", "url": url, "status": response.StatusCode, "headers": response.Header, "request_sha256": b07Hash(body), "response_sha256": b07Hash(raw)})
+		if readErr != nil || closeErr != nil || response.StatusCode != http.StatusOK {
+			n.t.Fatalf("native HTTP metadata status=%d read=%v close=%v response=%s", response.StatusCode, readErr, closeErr, raw)
+		}
+		var result struct {
+			Items []struct {
+				Kind    string
+				Changed bool
+			}
+		}
+		if json.Unmarshal(raw, &result) != nil || len(result.Items) != 1 || result.Items[0].Kind != "dep_add" || result.Items[0].Changed != changed {
+			n.t.Fatalf("native HTTP metadata changed outcome differs: %s", raw)
+		}
+	}
+}
+
+// The metadata-only change has one exact current-state delta. Historical
+// qualification is separate; every other current table/row stays conserved.
+func (n *b07Native) metadataDelta(before, after b07NativeImage) {
+	n.t.Helper()
+	if len(before) != len(after) {
+		n.t.Fatal("metadata changed current table census")
+	}
+	rowKey := func(row map[string]json.RawMessage) string {
+		raw, err := json.Marshal(row)
+		if err != nil {
+			n.t.Fatal(err)
+		}
+		return string(raw)
+	}
+	for table, old := range before {
+		now, ok := after[table]
+		if !ok {
+			n.t.Fatal("metadata removed table", table)
+		}
+		switch table {
+		case "dependencies":
+			prior, next := n.edge(before, "b07-960", "b07-961"), n.edge(after, "b07-960", "b07-961")
+			counts := map[string]int{}
+			for _, row := range old {
+				counts[rowKey(row)]++
+			}
+			for _, row := range now {
+				copy := map[string]json.RawMessage{}
+				for key, value := range row {
+					copy[key] = value
+				}
+				if bytes.Equal(row["id"], next["id"]) {
+					copy["metadata"] = prior["metadata"]
+				}
+				counts[rowKey(copy)]--
+			}
+			for _, count := range counts {
+				if count != 0 {
+					n.t.Fatal("metadata changed another edge field/row")
+				}
+			}
+		case "bd_events_journal":
+			counts := map[string]int{}
+			for _, row := range old {
+				counts[rowKey(row)]++
+			}
+			var added []map[string]json.RawMessage
+			for _, row := range now {
+				key := rowKey(row)
+				if counts[key] > 0 {
+					counts[key]--
+				} else {
+					added = append(added, row)
+				}
+			}
+			for _, count := range counts {
+				if count != 0 {
+					n.t.Fatal("metadata rewrote journal history")
+				}
+			}
+			if len(added) != 1 || b07Text(n.t, added[0]["op"]) != "dep_add" || b07Text(n.t, added[0]["issue_id"]) != "b07-960" || b07Text(n.t, added[0]["actor"]) != "b07-native" {
+				n.t.Fatal("metadata journal delta differs", added)
+			}
+			var dep struct{ Kind, Target, Metadata string }
+			if json.Unmarshal([]byte(b07Text(n.t, added[0]["dep_json"])), &dep) != nil || dep.Kind != "related" || dep.Target != "b07-961" || dep.Metadata != `{"b":[true,null],"a":2}` {
+				n.t.Fatal("metadata journal payload differs", dep)
+			}
+		case "bd_events_seq":
+			if len(old) != 1 || len(now) != 1 || len(old[0]) != len(now[0]) {
+				n.t.Fatal("metadata sequence census differs")
+			}
+			var prior, next uint64
+			if json.Unmarshal(old[0]["next_seq"], &prior) != nil || json.Unmarshal(now[0]["next_seq"], &next) != nil || next != prior+1 {
+				n.t.Fatal("metadata journal sequence did not advance once")
+			}
+			for key, value := range old[0] {
+				if key != "next_seq" && !bytes.Equal(value, now[0][key]) {
+					n.t.Fatal("metadata changed sequence identity")
+				}
+			}
+		default:
+			if !reflect.DeepEqual(old, now) {
+				n.t.Fatal("metadata changed unrelated current table", table)
+			}
+		}
+	}
 }

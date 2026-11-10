@@ -105,12 +105,14 @@ func b07ImportedWaits(t *testing.T, engine string, tokens map[string]string) {
 	assert(ready)
 	h.reopen()
 	assert(ready)
-	// The explicit predicate is a negative control against an always-ready oracle.
+	// Restore-derived rows above describe the imported image. Ordinary writes
+	// evaluate readiness from the live graph; they do not refresh that restore
+	// table. Check the explicit predicate through the public reader and guard.
 	params["metadata"] = map[string]any{"gate": "all-children"}
 	b07Success(t, h.call("bead.link", "imported-waits-explicit", params))
-	assert([]string{"demo-8"})
+	h.requireReady([]string{"demo-8"})
 	h.reopen()
-	assert([]string{"demo-8"})
+	h.requireReady([]string{"demo-8"})
 	before := h.snapshot()
 	refused := h.call("bead.close", "imported-waits-guard", map[string]any{"id": waiter})
 	if refused.Error == nil || refused.Error.Data.Code != "ontology_guard_failed" {
