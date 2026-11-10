@@ -223,6 +223,33 @@ func TestHashAllocatorMintsCollisionFreeBatchAndReplays(t *testing.T) {
 	}
 }
 
+func TestHashAllocatorUsesPersistedCreationTimestamp(t *testing.T) {
+	h := setup(t)
+	seedAllocator(t, h.store, h.lease, driver.NewHashAllocator("demo", 3, 8, 0.25))
+	var ticks uint64
+	w := h.writer(WithClock(func() time.Time {
+		ticks++
+		return h.now.Add(time.Duration(ticks) * time.Nanosecond)
+	}))
+	commit := pipelineCreate(t, w, "advancing-clock", 94)
+	rows, err := h.read(t).Get(context.Background(), []model.Ref{commit.Results[0].Ref})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("created record: %+v %v", rows, err)
+	}
+	doc, err := DecodeDocument(rows[0].Body)
+	if err != nil || doc.CreatedAt == nil {
+		t.Fatalf("created timestamp: %+v %v", doc, err)
+	}
+	creator, err := driver.PrincipalKey(by)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := driver.HashCandidate("demo", driver.HashInput{Title: "initial", Creator: creator, Timestamp: *doc.CreatedAt}, 3, 0)
+	if err != nil || want != doc.ID {
+		t.Fatalf("ID %q does not hash its stored creation tuple: want=%s err=%v", doc.ID, want, err)
+	}
+}
+
 func TestConcurrentRestoredCreatesAdvanceDistinctIDs(t *testing.T) {
 	h := setup(t)
 	seedAllocator(t, h.store, h.lease, driver.OfflineAllocator{Prefix: "demo", Mode: driver.AllocatorSequential, LastID: 8})

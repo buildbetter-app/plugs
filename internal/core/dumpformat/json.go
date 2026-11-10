@@ -28,6 +28,9 @@ func checkShape(value any, typ reflect.Type) error {
 		for i := 0; i < typ.NumField(); i++ {
 			f := typ.Field(i)
 			name := strings.Split(f.Tag.Get("json"), ",")[0]
+			if name == "-" {
+				continue
+			}
 			fields[name] = f
 			if _, present := object[name]; !present && !strings.Contains(f.Tag.Get("json"), ",omitempty") {
 				return fmt.Errorf("missing typed JSON member %q", name)

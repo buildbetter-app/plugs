@@ -22,6 +22,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
+	"github.com/buildbetter-app/plugs/internal/storage/postgres"
 	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
 	"github.com/buildbetter-app/plugs/internal/testclock"
 )
@@ -57,7 +58,7 @@ func (p publicationProbe) After(context.Context, port.CommittedChange, port.Snap
 
 func eachStore(t *testing.T, run func(*testing.T, *fixture)) {
 	t.Helper()
-	for _, engine := range []string{"memory", "sqlite_wal"} {
+	for _, engine := range []string{"memory", "sqlite_wal", "postgres"} {
 		t.Run(engine, func(t *testing.T) { run(t, newFixture(t, engine)) })
 	}
 }
@@ -68,10 +69,15 @@ func newFixture(t *testing.T, engine string) *fixture {
 	t.Cleanup(cancel)
 	f := &fixture{ctx: ctx, clock: testclock.New(t, time.Date(2026, 11, 3, 12, 0, 0, 123456000, time.UTC))}
 	var err error
-	if engine == "memory" {
+	switch engine {
+	case "memory":
 		f.store, err = memory.NewWithOptions(memory.Options{Clock: f.clock.Now})
-	} else {
+	case "sqlite_wal":
 		f.store, err = (sqlite.Driver{Clock: f.clock.Now}).Open(ctx, driver.Config{DSN: filepath.Join(t.TempDir(), "ready.db")})
+	case "postgres":
+		f.store, err = (postgres.Driver{}).Open(ctx, driver.Config{DSN: testclock.PostgresDSN(t)})
+	default:
+		t.Fatalf("unknown B01 storage engine %q", engine)
 	}
 	if err != nil {
 		t.Fatal(err)

@@ -18,6 +18,33 @@ func (s *Service) workflowBlockerResolver(ctx context.Context, by model.Principa
 	return &workflowCoreResolver{service: s, principal: by}
 }
 
+// workflowBlockerResolverForGraph binds workflow durable-target checks to the
+// exact core reader used to build a combined ready page. The provider may call
+// this resolver while holding its checkpoint read lock; it must never open a
+// second core reader for the same page.
+func (s *Service) workflowBlockerResolverForGraph(ctx context.Context, by model.PrincipalRef, r driver.Reader, graph map[string]storedBead) (*workflowCoreResolver, error) {
+	view := r.Snapshot()
+	if view.At == nil || view.Incarnation == "" {
+		return nil, failure("internal_error", "ready reader has no snapshot binding")
+	}
+	meta, err := s.store.Meta(ctx)
+	if err != nil {
+		return nil, mapped(err)
+	}
+	if meta.Incarnation != view.Incarnation {
+		return nil, mapped(driver.ErrIncarnationChanged{From: view.Incarnation, To: meta.Incarnation})
+	}
+	if meta.Head.String() != view.At.String() {
+		return nil, failure("cursor_invalid", "ready source changed while collecting candidates; restart paging")
+	}
+	return &workflowCoreResolver{
+		service:   s,
+		principal: by,
+		graph:     graph,
+		head:      driver.CoreSnapshotExpectation{StoreID: meta.StoreID, Incarnation: view.Incarnation, Head: *view.At},
+	}, nil
+}
+
 type workflowCoreResolver struct {
 	service   *Service
 	principal model.PrincipalRef
@@ -176,7 +203,7 @@ func (s *Service) workflowWriteGuard(ctx context.Context, proposal port.Proposed
 			return driver.CheckpointExpectation{}, err
 		}
 		resolver := &workflowCoreResolver{service: s, principal: proposal.Principal, graph: graph}
-		facts, expectation, err := s.workflow.OrdinaryParentSnapshot(ctx, proposal.Principal, sortedIDs(graph), proposal.Meta, resolver)
+		facts, expectation, err := s.workflowProvider().OrdinaryParentSnapshot(ctx, proposal.Principal, sortedIDs(graph), proposal.Meta, resolver)
 		if err != nil {
 			return driver.CheckpointExpectation{}, err
 		}
@@ -192,7 +219,7 @@ func (s *Service) workflowWriteGuard(ctx context.Context, proposal port.Proposed
 		}
 		return expectation, nil
 	}
-	blocked, expectation, err := s.workflow.OrdinaryBlockerSnapshot(ctx, proposal.Principal, ids, proposal.Meta)
+	blocked, expectation, err := s.workflowProvider().OrdinaryBlockerSnapshot(ctx, proposal.Principal, ids, proposal.Meta)
 	if err != nil {
 		return driver.CheckpointExpectation{}, err
 	}
@@ -209,7 +236,12 @@ func (r *workflowCoreResolver) IsParentBlocked(ctx context.Context, by model.Pri
 	if err != nil || blocked {
 		return blocked, err
 	}
-	return r.mixedParentBlocked(ctx, parent, mixed)
+	return r.mixedParentBlocked(ctx, parent, func(id string) (workflowplugin.OrdinaryParentFact, error) {
+		if row, exists := r.graph[id]; !exists || meta.Project != "" && row.doc.Project != meta.Project {
+			return workflowplugin.OrdinaryParentFact{Blocked: true}, nil
+		}
+		return mixed(id)
+	})
 }
 
 func (r *workflowCoreResolver) mixedParentBlocked(ctx context.Context, parent model.Ref, mixed func(string) (workflowplugin.OrdinaryParentFact, error)) (bool, error) {

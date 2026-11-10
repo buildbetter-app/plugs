@@ -32,7 +32,7 @@ type auditPlan struct {
 }
 
 func statusChanged(p *pending) bool {
-	if p.deleted || len(p.before) == 0 {
+	if p == nil || p.deleted || len(p.before) == 0 {
 		return false
 	}
 	before, err := DecodeDocument(p.before)
@@ -155,7 +155,7 @@ func (w *Writer) prepareAudit(ctx context.Context, p *prepared) error {
 			continue
 		}
 		method := p.lifecycleMethod(pending)
-		if method != "bead.close" && method != "bead.cancel" || method == "bead.close" && (decision.After.Category != "completed" || decision.After.Outcome != "success") || method == "bead.cancel" && decision.After.Category != "canceled" {
+		if method != "bead.close" && method != "bead.cancel" || method == "bead.close" && ((decision.After.Category != "completed" && decision.After.Category != "done") || decision.After.Outcome != "success") || method == "bead.cancel" && decision.After.Category != "canceled" {
 			return failure("invalid_params", "unsatisfied terminal decision requires its trusted close or cancel slot")
 		}
 		dependents := edges[id]

@@ -179,6 +179,9 @@ func (r *reader) recordAt(ctx context.Context, key string) (storedRecord, bool, 
 	var deleted bool
 	err := r.sql.QueryRowContext(ctx, `SELECT ref,kind,revision::text,body,deleted,version_count::text FROM plug_postgres.records WHERE key=$1`, []byte(key)).Scan(&raw, &kind, &rev, &body, &deleted, &count)
 	if err == nil {
+		if !deleted {
+			driver.ReportReadPayload(ctx, body)
+		}
 		n, e := parseCounter(rev)
 		if e != nil {
 			return result, false, e
@@ -191,9 +194,6 @@ func (r *reader) recordAt(ctx context.Context, key string) (storedRecord, bool, 
 			c, e := parseCounter(count)
 			if e != nil {
 				return result, false, e
-			}
-			if !deleted {
-				driver.ReportReadPayload(ctx, body)
 			}
 			return storedRecord{record: driver.Record{Ref: ref, Kind: kind, Revision: model.Natural64(n), Body: body}, deleted: deleted, count: c}, true, nil
 		}
@@ -520,6 +520,9 @@ func (r *reader) recordsAt(ctx context.Context, ids []string) (map[string]stored
 		if err = rows.Scan(&id, &raw, &kind, &revision, &body, &deleted, &count); err != nil {
 			break
 		}
+		if !deleted {
+			driver.ReportReadPayload(ctx, body)
+		}
 		current[string(id)] = currentBatchRecord{raw: bytes.Clone(raw), kind: kind, revision: revision, body: bytes.Clone(body), deleted: deleted, count: count}
 	}
 	if err == nil {
@@ -557,9 +560,6 @@ func (r *reader) recordsAt(ctx context.Context, ids []string) (map[string]stored
 		count, err := parseCounter(row.count)
 		if err != nil {
 			return nil, err
-		}
-		if _, already := result[id]; !already && !row.deleted {
-			driver.ReportReadPayload(ctx, row.body)
 		}
 		result[id] = storedRecord{record: driver.Record{Ref: ref, Kind: row.kind, Revision: model.Natural64(n), Body: row.body}, deleted: row.deleted, count: count}
 	}
