@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"sort"
 	"strings"
 	"time"
@@ -148,7 +149,7 @@ func contains(values []string, want string) bool {
 	return false
 }
 
-func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest) (Result, error) {
+func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest) (out Result, runErr error) {
 	if err := s.admit(ctx, by); err != nil {
 		return Result{}, err
 	}
@@ -209,6 +210,55 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 	if err != nil {
 		return Result{}, err
 	}
+	var authority *SelectionAuthority
+	if s.cfg.Selection != nil {
+		inlineBinding := ""
+		if req.ViewID == "" {
+			inlineBinding = definitionDigest
+		}
+		authority, err = s.cfg.Selection.Bind(ctx, by, inlineBinding)
+		if err != nil {
+			return Result{}, mapped(err)
+		}
+		if authority == nil || authority.Reader == nil || authority.Check == nil || authority.Fence == nil || authority.Binding == "" {
+			if authority != nil && authority.Reader != nil {
+				_ = authority.Reader.Close()
+			}
+			return Result{}, epicUnavailable("view selection authority is incomplete")
+		}
+		defer authority.Reader.Close()
+		view := authority.Reader.Snapshot()
+		if view.At == nil || view.Incarnation != asOf.Incarnation || !view.Branch.IsZero() {
+			return Result{}, epicUnavailable("view selection authority snapshot differs from content")
+		}
+		if req.Cursor != nil && req.Cursor.AuthorityBinding != authority.Binding {
+			return Result{}, failure("cursor_invalid", "current view authority changed; restart paging")
+		}
+		defer func() {
+			if runErr != nil {
+				return
+			}
+			if err := authority.Fence(ctx); err != nil {
+				out, runErr = Result{}, mapped(err)
+				return
+			}
+			if err := s.admit(ctx, by); err != nil {
+				out, runErr = Result{}, err
+				return
+			}
+			if out.NextCursor != nil {
+				out.NextCursor.AuthorityBinding = authority.Binding
+			}
+		}()
+	} else if req.Cursor != nil && req.Cursor.AuthorityBinding != "" {
+		return Result{}, failure("cursor_invalid", "view authority adapter changed; restart paging")
+	}
+	if result, used, err := s.runSelected(ctx, by, req, definition, project, terms, definitionDigest, reader, authority, asOf); used || err != nil {
+		if err == nil {
+			result.Projection = projection
+		}
+		return result, err
+	}
 	rows, err := scan(ctx, reader)
 	if err != nil {
 		return Result{}, err
@@ -230,7 +280,12 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 			}
 		}
 		sortStored(queryOrder, definition.Sort)
-		if useBatchAuthorization {
+		if authority != nil {
+			authorized, err = s.authorizeSelectedRows(ctx, by, queryOrder, authority)
+			if err != nil {
+				return Result{}, err
+			}
+		} else if useBatchAuthorization {
 			refs := make([]model.ResourceRef, 0, len(queryOrder))
 			for _, row := range queryOrder {
 				refs = append(refs, model.ResourceRef{Kind: "bead", Ref: row.record.Ref})
@@ -267,7 +322,18 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 			candidates = append(candidates, stale...)
 		}
 	} else {
-		if useBatchAuthorization {
+		if authority != nil {
+			matching := make([]stored, 0, len(rows))
+			for _, row := range rows {
+				if matches(row, filter, project, terms) {
+					matching = append(matching, row)
+				}
+			}
+			authorized, err = s.authorizeSelectedRows(ctx, by, matching, authority)
+			if err != nil {
+				return Result{}, err
+			}
+		} else if useBatchAuthorization {
 			refs := make([]model.ResourceRef, 0, len(rows))
 			for _, row := range rows {
 				if matches(row, filter, project, terms) {
@@ -304,7 +370,7 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 			}
 		}
 	}
-	if !req.CountOnly {
+	if !req.CountOnly && !typeSummary {
 		// Only unreadable blocker targets contribute a hidden-blocker count. They
 		// are authorized independently so a visible non-candidate never becomes a
 		// false hidden trace.
@@ -332,10 +398,9 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 		}
 		sortStored(candidates, definition.Sort)
 	}
+	// The 100k exception belongs only to a complete compiled storage plan.
+	// Check-only policies and unavailable membership retain the ordinary cap.
 	cap := OrdinaryCandidateCap
-	if typeSummary {
-		cap = TypeSummaryCandidateCap
-	}
 	if len(candidates) > cap {
 		return Result{}, &model.Error{Data: model.ErrorData{Code: "scope_too_large", Hint: "authorized view candidates exceed the bounded cap", Details: map[string]any{"cap": cap}}}
 	}
@@ -352,12 +417,8 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 		count := len(candidates)
 		return Result{Items: []Bead{}, AsOf: asOf, Count: &count, Projection: projection}, nil
 	}
-	pending, err := s.pendingReadiness(ctx, reader, candidates)
-	if err != nil {
-		return Result{}, err
-	}
 	if typeSummary {
-		result, err := s.typeSummaryResult(ctx, candidates, rows, authorized, pending, definition, asOf)
+		result, err := s.typeSummaryResult(ctx, candidates, nil, nil, nil, definition, asOf)
 		if err != nil {
 			return Result{}, err
 		}
@@ -369,6 +430,11 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 		result.Projection = projection
 		return result, nil
 	}
+	pending, err := s.pendingReadiness(ctx, reader, candidates)
+	if err != nil {
+		return Result{}, err
+	}
+
 	budget, err := s.outputBudget(definition)
 	if err != nil {
 		return Result{}, err
@@ -571,19 +637,8 @@ func (s *Service) typeSummaryResult(ctx context.Context, candidates, rows []stor
 	result := Result{Items: []Bead{}, Groups: make([]Group, 0, len(keys)), AsOf: asOf}
 	for _, key := range keys {
 		groupRows := groups[key]
-		items := make([]Bead, 0)
-		for _, row := range groupRows {
-			item, err := s.item(ctx, row, definition.Fields, rows, authorized, pending)
-			if err != nil {
-				return Result{}, err
-			}
-			// fields=[] is a count summary: no payload rows are emitted.
-			if len(definition.Fields) != 0 {
-				items = append(items, item)
-			}
-		}
 		driver.ReportReadWork(ctx, driver.ReadAggregateGroups, 1)
-		result.Groups = append(result.Groups, Group{Key: key, Count: len(groupRows), Items: items})
+		result.Groups = append(result.Groups, Group{Key: key, Count: len(groupRows), Items: []Bead{}})
 	}
 	return result, nil
 }
@@ -651,7 +706,7 @@ func (s *Service) item(ctx context.Context, row stored, fields []string, rows []
 		}
 	}
 	if row.doc.Parent != nil && (fields == nil || hasField(fields, "parent")) {
-		if s.cfg.ParentProjection != nil || s.cfg.AuthorizeRead == nil {
+		if s.cfg.ParentProjection != nil || (s.cfg.AuthorizeRead == nil && s.cfg.Selection == nil) {
 			item.Parent = row.doc.Parent.ID
 		} else {
 			item.ParentHidden = true
@@ -962,4 +1017,340 @@ func (s *Service) hiddenBlockers(ctx context.Context, by model.PrincipalRef, rea
 		}
 	}
 	return hidden, nil
+}
+
+// runSelected executes only complete storage plans. Unavailable coverage may
+// use the exact ordinary path; invalid plans, caps and real errors never do.
+func (s *Service) runSelected(ctx context.Context, by model.PrincipalRef, req RunRequest, def Definition, project string, terms []queryTerm, definitionDigest string, content driver.Reader, authority *SelectionAuthority, asOf AsOf) (Result, bool, error) {
+	if authority == nil || authority.Boundary == nil || s.cfg.AuthorizeRead != nil || req.ViewID != "" || req.Stale != nil {
+		return Result{}, false, nil
+	}
+	selector, ok := authority.Reader.(driver.SelectionReader)
+	if !ok {
+		return Result{}, false, nil
+	}
+	membership, complete := compileMembership(*def.Filter, project, terms)
+	if !complete || len(def.Sort) > 16 {
+		return Result{}, false, nil
+	}
+	description, err := authority.Boundary.Description()
+	if err != nil {
+		return Result{}, true, mapped(err)
+	}
+	if !selectionExpressionBudget(membership, description.Authorization) {
+		return Result{}, false, nil
+	}
+	view := authority.Reader.Snapshot()
+	if description.Incarnation != view.Incarnation || !sameRevision(description.AuthorityRevision, *view.At) || description.InlineViewBinding != definitionDigest || description.ViewSource != nil || description.Host != driver.SelectionHostAbsent {
+		return Result{}, true, epicUnavailable("view selection boundary differs from the used inline definition")
+	}
+	plan := driver.SelectionPlan{Incarnation: asOf.Incarnation, Branch: model.Natural64(0), ContentRevision: asOf.Revision, AuthorityRevision: *view.At, ContentCommitted: true, Membership: membership, Authorization: description.Authorization, Boundary: authority.Boundary, Mode: driver.SelectionPageMode, Cap: OrdinaryCandidateCap}
+	for _, order := range def.Sort {
+		// The existing driver revision order is lexical. Current view semantics
+		// compare natural values exactly, so retain the ordinary path here.
+		if strings.TrimPrefix(order, "-") == "revision" {
+			return Result{}, false, nil
+		}
+		plan.Order = append(plan.Order, driver.SelectionOrder{Column: driver.SelectionColumn(strings.TrimPrefix(order, "-")), Desc: strings.HasPrefix(order, "-")})
+	}
+	if len(def.GroupBy) != 0 {
+		plan.GroupBy = driver.SelectionGroupType
+	}
+	budget, err := s.outputBudget(def)
+	if err != nil {
+		return Result{}, true, err
+	}
+	offset := uint64(0)
+	if req.Cursor != nil {
+		offset = req.Cursor.Index
+	}
+	summary := len(def.GroupBy) == 1 && def.GroupBy[0] == "type" && def.Fields != nil && len(def.Fields) == 0
+	switch {
+	case req.CountOnly:
+		plan.Mode, plan.GroupBy = driver.SelectionCountMode, ""
+	case summary:
+		plan.Mode, plan.Cap = driver.SelectionTypeSummary, TypeSummaryCandidateCap
+	default:
+		limit := budget
+		if limit > 10000 {
+			limit = 10000
+		}
+		plan.Page = &driver.SelectionPage{Offset: offset, Limit: limit}
+	}
+	selected, err := selector.Select(ctx, plan)
+	if err != nil {
+		if errors.Is(err, driver.ErrSelectionUnavailable) || errors.Is(err, driver.ErrSelectionCheckOnly) {
+			return Result{}, false, nil
+		}
+		var cap driver.ErrSelectionCap
+		if errors.As(err, &cap) {
+			if cap.Groups && !summary {
+				// The closed driver has a 100-group output limit. Ordinary
+				// grouped views historically allow more within the 20k cap.
+				return Result{}, false, nil
+			}
+			return Result{}, true, &model.Error{Data: model.ErrorData{Code: "scope_too_large", Hint: "authorized view candidates exceed the bounded cap", Details: map[string]any{"cap": cap.Limit}}}
+		}
+		return Result{}, true, mapped(err)
+	}
+	if selected.Total > uint64(plan.Cap) || offset > selected.Total {
+		return Result{}, true, failure("cursor_invalid", "cursor position is outside the view snapshot")
+	}
+	result := Result{Items: []Bead{}, AsOf: asOf}
+	if req.CountOnly {
+		if len(selected.Keys) != 0 || len(selected.Groups) != 0 || selected.More || selected.Next != nil {
+			return Result{}, true, failure("internal_error", "storage count returned payload or continuation")
+		}
+		count := int(selected.Total)
+		result.Count = &count
+		return result, true, nil
+	}
+	if summary {
+		if len(selected.Keys) != 0 || selected.More || selected.Next != nil {
+			return Result{}, true, failure("internal_error", "storage summary returned payload or continuation")
+		}
+		for _, group := range selected.Groups {
+			if group.Elided != 0 {
+				return Result{}, true, failure("internal_error", "storage summary returned an elision")
+			}
+		}
+		groups, err := selectedGroups(selected, nil)
+		if err != nil {
+			return Result{}, true, err
+		}
+		result.Groups = groups
+		return result, true, nil
+	}
+	keys := append([]driver.SelectionKey(nil), selected.Keys...)
+	// The driver has a physical 10k page bound. Preserve larger existing output
+	// budgets by continuing the same pinned plan, with no source rebind.
+	for selected.More && len(keys) < budget {
+		limit := budget - len(keys)
+		if limit > 10000 {
+			limit = 10000
+		}
+		plan.Page = &driver.SelectionPage{Offset: offset + uint64(len(keys)), Limit: limit}
+		next, err := selector.Select(ctx, plan)
+		if err != nil {
+			return Result{}, true, mapped(err)
+		}
+		if next.Total != selected.Total || len(next.Keys) == 0 {
+			return Result{}, true, failure("internal_error", "storage returned a non-advancing view selection")
+		}
+		selected = next
+		keys = append(keys, next.Keys...)
+	}
+	if len(keys) > budget || offset+uint64(len(keys)) > selected.Total || selected.More != (offset+uint64(len(keys)) < selected.Total) {
+		return Result{}, true, failure("internal_error", "storage returned incomplete view membership")
+	}
+	if plan.GroupBy != "" {
+		elided := uint64(0)
+		for _, group := range selected.Groups {
+			if group.Elided > selected.Total || elided > selected.Total-group.Elided {
+				return Result{}, true, failure("internal_error", "storage returned invalid view suffix totals")
+			}
+			elided += group.Elided
+		}
+		if elided != selected.Total-offset-uint64(len(keys)) {
+			return Result{}, true, failure("internal_error", "storage returned incomplete view suffix totals")
+		}
+	}
+	rows, err := selectedRows(ctx, content, keys)
+	if err != nil {
+		return Result{}, true, err
+	}
+	related, err := selectedBlockers(ctx, content, rows)
+	if err != nil {
+		return Result{}, true, err
+	}
+	authorized, err := s.authorizeSelectedRows(ctx, by, related, authority)
+	if err != nil {
+		return Result{}, true, err
+	}
+	for _, row := range rows {
+		authorized[row.doc.ID] = true
+	}
+	allRows := append(append([]stored(nil), rows...), related...)
+	pending, err := s.pendingReadiness(ctx, content, rows)
+	if err != nil {
+		return Result{}, true, err
+	}
+	for _, row := range rows {
+		item, err := s.item(ctx, row, def.Fields, allRows, authorized, pending)
+		if err != nil {
+			return Result{}, true, err
+		}
+		result.Items = append(result.Items, item)
+	}
+	if selected.More {
+		result.NextCursor = s.nextCursor(by, req.Agent, req.ViewID, definitionDigest, asOf, offset+uint64(len(keys)), nil, "")
+	}
+	if plan.GroupBy != "" {
+		result.Groups, err = selectedGroups(selected, result.Items)
+		if err != nil {
+			return Result{}, true, err
+		}
+		result.Items = []Bead{}
+		if result.NextCursor != nil {
+			for i := range result.Groups {
+				if result.Groups[i].Elided != nil {
+					result.Groups[i].Elided.ContinueIndex = result.NextCursor.Index
+				}
+			}
+		}
+	}
+	if err := s.projectParents(ctx, by, content, allRows, def.Fields, &result); err != nil {
+		return Result{}, true, err
+	}
+	return result, true, nil
+}
+
+func selectedGroups(selected driver.SelectionResult, items []Bead) ([]Group, error) {
+	if len(selected.Groups) > MaxGroups {
+		return nil, failure("scope_too_large", "view exceeds the 100-group bound")
+	}
+	out := make([]Group, 0, len(selected.Groups))
+	seen := map[string]bool{}
+	total := uint64(0)
+	for _, group := range selected.Groups {
+		if seen[group.Type] || group.Count == 0 || group.Count > selected.Total || group.Elided > group.Count {
+			return nil, failure("internal_error", "storage returned invalid view groups")
+		}
+		seen[group.Type] = true
+		total += group.Count
+		g := Group{Key: group.Type, Count: int(group.Count), Items: []Bead{}}
+		for _, item := range items {
+			if item.Type == group.Type {
+				g.Items = append(g.Items, item)
+			}
+		}
+		if uint64(len(g.Items))+group.Elided > group.Count {
+			return nil, failure("internal_error", "storage returned inconsistent view group items")
+		}
+		if group.Elided != 0 {
+			g.Elided = &Elision{Count: int(group.Elided), Reason: "output_budget"}
+		}
+		out = append(out, g)
+	}
+	if total != selected.Total {
+		return nil, failure("internal_error", "storage returned incomplete view groups")
+	}
+	for _, item := range items {
+		if !seen[item.Type] {
+			return nil, failure("internal_error", "storage omitted an emitted view group")
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out, nil
+}
+
+func selectedRows(ctx context.Context, content driver.Reader, keys []driver.SelectionKey) ([]stored, error) {
+	if len(keys) == 0 {
+		return []stored{}, nil
+	}
+	refs := make([]model.Ref, len(keys))
+	wanted := map[string]driver.SelectionKey{}
+	for i, key := range keys {
+		if driver.ValidateHierarchyRef(key.Ref) != nil {
+			return nil, failure("internal_error", "storage returned invalid view identity")
+		}
+		if _, exists := wanted[key.Ref.ID]; exists {
+			return nil, failure("internal_error", "storage returned duplicate view identity")
+		}
+		wanted[key.Ref.ID] = key
+		refs[i] = key.Ref
+	}
+	records, err := content.Get(ctx, refs)
+	if err != nil {
+		return nil, mapped(err)
+	}
+	byID := map[string]stored{}
+	for _, record := range records {
+		key, exists := wanted[record.Ref.ID]
+		if !exists || !driver.SelectionSameRef(record.Ref, key.Ref) || !sameRevision(record.Revision, key.Revision) || record.Kind != "bead" {
+			return nil, failure("stale_snapshot", "view payload differs from selected content")
+		}
+		if _, duplicate := byID[record.Ref.ID]; duplicate {
+			return nil, failure("internal_error", "storage returned duplicate view payload")
+		}
+		doc, err := decodeDocument(record.Body)
+		if err != nil || doc.ID != record.Ref.ID {
+			return nil, failure("internal_error", "invalid persisted bead document")
+		}
+		byID[doc.ID] = stored{record: record, doc: doc}
+	}
+	out := make([]stored, 0, len(keys))
+	for _, key := range keys {
+		row, ok := byID[key.Ref.ID]
+		if !ok {
+			return nil, failure("stale_snapshot", "selected view payload is unavailable")
+		}
+		out = append(out, row)
+	}
+	return out, nil
+}
+
+func selectedBlockers(ctx context.Context, content driver.Reader, rows []stored) ([]stored, error) {
+	seen := map[string]bool{}
+	refs := []model.Ref{}
+	for _, row := range rows {
+		for _, link := range row.doc.Links {
+			if (link.Kind == "blocks" || link.Kind == "conditional-blocks") && link.To.IsID() && link.To.Branch.IsZero() && !seen[link.To.ID] {
+				seen[link.To.ID] = true
+				refs = append(refs, link.To)
+			}
+		}
+	}
+	if len(refs) == 0 {
+		return nil, nil
+	}
+	records, err := content.Get(ctx, refs)
+	if err != nil {
+		return nil, mapped(err)
+	}
+	out := []stored{}
+	for _, record := range records {
+		if record.Kind != "bead" {
+			continue
+		}
+		if !seen[record.Ref.ID] || driver.ValidateHierarchyRef(record.Ref) != nil {
+			return nil, failure("internal_error", "storage returned another blocker")
+		}
+		doc, err := decodeDocument(record.Body)
+		if err != nil || doc.ID != record.Ref.ID {
+			return nil, failure("internal_error", "invalid persisted blocker document")
+		}
+		out = append(out, stored{record: record, doc: doc})
+	}
+	return out, nil
+}
+
+func (s *Service) authorizeSelectedRows(ctx context.Context, by model.PrincipalRef, rows []stored, authority *SelectionAuthority) (map[string]bool, error) {
+	out := map[string]bool{}
+	if len(rows) == 0 {
+		return out, nil
+	}
+	refs := make([]model.Ref, len(rows))
+	for i, row := range rows {
+		refs[i] = row.record.Ref
+	}
+	decisions, err := authority.Check(ctx, refs)
+	if err != nil {
+		return nil, mapped(err)
+	}
+	if len(decisions) != len(refs) {
+		return nil, epicUnavailable("view authorization returned incomplete decisions")
+	}
+	for i, row := range rows {
+		allowed := decisions[i]
+		if allowed && s.cfg.AuthorizeRead != nil {
+			err := s.cfg.AuthorizeRead(ctx, by, model.ResourceRef{Kind: "bead", Ref: row.record.Ref}, row.doc.Project)
+			if err != nil && !isDenied(err) {
+				return nil, mapped(err)
+			}
+			allowed = err == nil
+		}
+		out[row.doc.ID] = allowed
+	}
+	return out, nil
 }

@@ -3,6 +3,7 @@ package batchsql_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -413,6 +414,104 @@ func rawWorkflowExpectedRank(t *testing.T, id string, revision model.Revision, a
 	return driver.DerivedRow{Key: "ready/" + id, Value: value}
 }
 
+// Construct the complete fixed-fixture publication from its independently
+// checked source, without invoking the production projection builder or using
+// any observed derived postimage as an expected value.
+func rawWorkflowExpectedPublication(t *testing.T, record driver.Record, incarnation, title, status string, at time.Time) map[driver.DerivedTable][]driver.DerivedRow {
+	t.Helper()
+	doc := decodeDocument(t, record)
+	if record.Kind != "bead" || doc.ID != record.Ref.ID || doc.Type != "issue" || doc.Project != "batch-local" || doc.Parent != nil || len(doc.Labels) != 0 || len(doc.Links) != 0 || doc.Lease != nil || doc.CreatedAt == nil || !doc.CreatedAt.Equal(at) || doc.Fields["title"] != title || doc.Fields["status"] != status {
+		t.Fatalf("ordinary publication fixture changed: %+v", doc)
+	}
+	priority, ok := doc.Fields["priority"].(json.Number)
+	if !ok || priority.String() != "2" {
+		t.Fatal("ordinary publication fixture lost priority two")
+	}
+	if blocked, present := doc.Fields["blocked"]; present && blocked != false {
+		t.Fatal("ordinary publication fixture became blocked")
+	}
+	canonical, err := json.Marshal(doc)
+	if err != nil || !bytes.Equal(canonical, record.Body) {
+		t.Fatalf("Writer fixture is not canonical: %v", err)
+	}
+	ref := model.RefByID(record.Ref.ID, model.Natural64(0))
+	if err := driver.ValidateHierarchyRef(record.Ref); err != nil || !driver.SelectionSameRef(record.Ref, ref) {
+		t.Fatal("ordinary publication source reference changed its exact ID arm")
+	}
+	project := "batch-local"
+	bead := driver.SelectionBead{Ref: ref, Project: &project, Type: "issue", Status: status, Title: title, Priority: 2}
+	if template, present := doc.Fields["template"]; !present {
+		bead.Absent = []driver.SelectionColumn{driver.SelectionTemplate}
+	} else if template != false {
+		t.Fatal("ordinary publication fixture became a template")
+	}
+	source := driver.SelectionSource{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &ref}, Revision: record.Revision, Present: true, Digest: driver.SelectionDigest(record.Body)}
+	annotate := func(table driver.DerivedTable, key string, value []byte, bead *driver.SelectionBead, facts *driver.SelectionFacts) driver.DerivedRow {
+		index := &driver.SelectionIndex{Version: driver.SelectionIndexVersion, Row: driver.DerivedRowKey{Table: table, Key: key}, Incarnation: incarnation, Branch: model.Natural64(0), ValueDigest: driver.SelectionDigest(value), Source: source, Bead: bead, Facts: facts}
+		if table == driver.DerivedAncestorClosure {
+			// Ancestor owners borrow the source Record.Ref; the ancestor target
+			// uses the explicit ID constructor. Preserve the engine's source
+			// representation as well as every public reference field.
+			owner := record.Ref
+			index.Source.Key.Ref = &owner
+		}
+		if bead != nil {
+			index.Queue = &driver.QueueFacts{Version: driver.QueueFactsVersion, CreatedAt: at.UTC()}
+		}
+		return (driver.DerivedRow{Key: key, Value: value, Index: index}).Clone()
+	}
+	marshal := func(value any) []byte {
+		t.Helper()
+		body, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+	labels := driver.SelectionFacts{Kind: driver.SelectionLabelFact, Rows: []driver.SelectionFact{}}
+	links := driver.SelectionFacts{Kind: driver.SelectionLinkFact, Rows: []driver.SelectionFact{}}
+	owner := record.Ref
+	self := driver.SelectionFacts{Kind: driver.SelectionAncestorFact, Rows: []driver.SelectionFact{{Kind: driver.SelectionAncestorFact, Ref: &owner, Target: &ref, Depth: 0}}}
+	encoded := base64.RawURLEncoding.EncodeToString([]byte(ref.ID))
+	return map[driver.DerivedTable][]driver.DerivedRow{
+		driver.DerivedSortKey:         {annotate(driver.DerivedSortKey, ref.ID, marshal(bead), &bead, nil), rawWorkflowExpectedRank(t, ref.ID, record.Revision, at)},
+		driver.DerivedAttribute:       {annotate(driver.DerivedAttribute, ref.ID, marshal(labels), nil, &labels)},
+		driver.DerivedReferenceIndex:  {annotate(driver.DerivedReferenceIndex, ref.ID, marshal(links), nil, &links)},
+		driver.DerivedAncestorClosure: {annotate(driver.DerivedAncestorClosure, encoded+"."+encoded, []byte("0"), nil, &self)},
+	}
+}
+
+// Replace only the independently named publication keys, retaining every
+// unrelated row and table. Creation must find none; update must find each once.
+func rawWorkflowExpectedDelta(t *testing.T, before, publication map[driver.DerivedTable][]driver.DerivedRow, update bool) map[driver.DerivedTable][]driver.DerivedRow {
+	t.Helper()
+	want := make(map[driver.DerivedTable][]driver.DerivedRow, len(before))
+	for table, rows := range before {
+		want[table] = rows
+	}
+	for table, additions := range publication {
+		rows := append([]driver.DerivedRow(nil), before[table]...)
+		for _, addition := range additions {
+			matches := 0
+			for i, previous := range rows {
+				if previous.Key == addition.Key {
+					rows[i] = addition
+					matches++
+				}
+			}
+			if update && matches != 1 || !update && matches != 0 {
+				t.Fatalf("publication preimage %s/%s: matches=%d update=%t", table, addition.Key, matches, update)
+			}
+			if !update {
+				rows = append(rows, addition)
+			}
+		}
+		sort.Slice(rows, func(i, j int) bool { return rows[i].Key < rows[j].Key })
+		want[table] = rows
+	}
+	return want
+}
+
 func TestRawWorkflowCloseRefusalPreservesBothPlanesAcrossStores(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
@@ -461,8 +560,8 @@ func TestRawWorkflowCloseRefusalPreservesBothPlanesAcrossStores(t *testing.T) {
 			mixed := model.ChangeSet{Ops: []model.Op{rawWorkflowClose(first), rawWorkflowClose(operational)}}
 			refusedKey := f.meta("mixed-workflow-close")
 			control := h.state(t, refusedKey)
-			// Root creates publish actual ancestor self-rows. Ordinary Close
-			// preserves those rows; this Writer does not maintain ready_state.
+			// Root creates publish self-rows and source-bound projections.
+			// Close preserves logical self-rows and refreshes their source binding.
 			if len(control.Derived[driver.DerivedAncestorClosure]) != 2 || len(control.Log) == 0 || len(control.Log[len(control.Log)-1].Events) != 2 {
 				t.Fatal("root-create derived rows and audit event controls must be nonempty")
 			}
@@ -472,10 +571,12 @@ func TestRawWorkflowCloseRefusalPreservesBothPlanesAcrossStores(t *testing.T) {
 					t.Fatalf("root-create derived control: row=%+v err=%v", row, err)
 				}
 			}
-			wantInitialRanks := []driver.DerivedRow{rawWorkflowExpectedRank(t, first.ID, created.Revision, f.now()), rawWorkflowExpectedRank(t, other.ID, created.Revision, f.now())}
-			sort.Slice(wantInitialRanks, func(i, j int) bool { return wantInitialRanks[i].Key < wantInitialRanks[j].Key })
-			if !reflect.DeepEqual(control.Derived[driver.DerivedSortKey], wantInitialRanks) {
-				t.Fatal("root-create must publish exactly both fixed-clock priority-two ranks")
+			initial := rawWorkflowExpectedDelta(t, nil, rawWorkflowExpectedPublication(t, rawWorkflowRow(t, control, first.ID), control.Meta.Incarnation, "durable close prefix", "todo", f.now()), false)
+			initial = rawWorkflowExpectedDelta(t, initial, rawWorkflowExpectedPublication(t, rawWorkflowRow(t, control, other.ID), control.Meta.Incarnation, "unchanged durable control", "todo", f.now()), false)
+			for table, rows := range initial {
+				if !reflect.DeepEqual(control.Derived[table], rows) {
+					t.Fatalf("root-create must publish both exact ranks and source/self projections: %s", table)
+				}
 			}
 			if engine != "memory" {
 				h.requireGCBait(t, h.state(t, refusedKey), operational, secondOperational)
@@ -557,24 +658,19 @@ func TestRawWorkflowCloseRefusalPreservesBothPlanesAcrossStores(t *testing.T) {
 			if reply.Meta.Replayed || newHead != oldHead+1 || commit.Revision.String() != after.Meta.Head.String() || len(commit.Results) != 1 || commit.Results[0].Ref.ID != first.ID || len(after.Log) != len(before.Log)+1 || after.Receipt == nil {
 				t.Fatal("corrected durable prefix did not commit exactly once under the refused key")
 			}
-			wantClosedDerived := make(map[driver.DerivedTable][]driver.DerivedRow, len(before.Derived))
-			for table, rows := range before.Derived {
-				wantClosedDerived[table] = rows
-			}
-			wantClosedDerived[driver.DerivedSortKey] = append([]driver.DerivedRow(nil), before.Derived[driver.DerivedSortKey]...)
 			closedRank := rawWorkflowExpectedRank(t, first.ID, commit.Revision, f.now())
 			replacedRank := 0
-			for i, row := range wantClosedDerived[driver.DerivedSortKey] {
+			for _, row := range before.Derived[driver.DerivedSortKey] {
 				if row.Key == closedRank.Key {
 					if !reflect.DeepEqual(row, rawWorkflowExpectedRank(t, first.ID, created.Revision, f.now())) {
 						t.Fatal("refusals changed the original durable rank")
 					}
-					wantClosedDerived[driver.DerivedSortKey][i] = closedRank
 					replacedRank++
 				}
 			}
+			wantClosedDerived := rawWorkflowExpectedDelta(t, before.Derived, rawWorkflowExpectedPublication(t, rawWorkflowRow(t, after, first.ID), after.Meta.Incarnation, "durable close prefix", "done", f.now()), true)
 			if replacedRank != 1 || len(after.Versions[first.ID]) != len(before.Versions[first.ID])+1 || !reflect.DeepEqual(before.Versions[other.ID], after.Versions[other.ID]) || !reflect.DeepEqual(before.Checkpoint, after.Checkpoint) || len(after.Log[len(after.Log)-1].Events) == 0 || !reflect.DeepEqual(wantClosedDerived, after.Derived) {
-				t.Fatal("positive close must change its version/event state and exact rank revision while conserving every other derived row, the control bead and workflow checkpoint")
+				t.Fatal("positive close must change its version/event state and exact source projections while conserving every unrelated derived row, the control bead and workflow checkpoint")
 			}
 			row := rawWorkflowRow(t, after, first.ID)
 			doc := decodeDocument(t, row)
@@ -613,11 +709,6 @@ func TestRawWorkflowCloseRefusalPreservesBothPlanesAcrossStores(t *testing.T) {
 			if len(aliasAfter.Derived[driver.DerivedAncestorClosure]) != len(aliasBefore.Derived[driver.DerivedAncestorClosure])+1 {
 				t.Fatal("resolved-alias create did not publish its actual derived self-row")
 			}
-			retainedDerived := make(map[driver.DerivedTable][]driver.DerivedRow, len(aliasAfter.Derived))
-			for table, rows := range aliasAfter.Derived {
-				retainedDerived[table] = rows
-			}
-			retainedDerived[driver.DerivedAncestorClosure] = nil
 			foundDerived := 0
 			for _, row := range aliasAfter.Derived[driver.DerivedAncestorClosure] {
 				descendant, ancestor, depth, err := pipeline.DecodeAncestorRow(row)
@@ -628,18 +719,10 @@ func TestRawWorkflowCloseRefusalPreservesBothPlanesAcrossStores(t *testing.T) {
 					foundDerived++
 					continue
 				}
-				retainedDerived[driver.DerivedAncestorClosure] = append(retainedDerived[driver.DerivedAncestorClosure], row)
 			}
-			wantAliasDerived := make(map[driver.DerivedTable][]driver.DerivedRow, len(aliasBefore.Derived))
-			for table, rows := range aliasBefore.Derived {
-				wantAliasDerived[table] = rows
-			}
-			wantAliasDerived[driver.DerivedSortKey] = append(append([]driver.DerivedRow(nil), aliasBefore.Derived[driver.DerivedSortKey]...), rawWorkflowExpectedRank(t, aliasRow.Ref.ID, aliasCommit.Revision, f.now()))
-			sort.Slice(wantAliasDerived[driver.DerivedSortKey], func(i, j int) bool {
-				return wantAliasDerived[driver.DerivedSortKey][i].Key < wantAliasDerived[driver.DerivedSortKey][j].Key
-			})
-			if foundDerived != 1 || !reflect.DeepEqual(wantAliasDerived, retainedDerived) {
-				t.Fatal("resolved-alias create must add exactly its self-row and fixed-clock priority-two rank and preserve every other derived row/table")
+			wantAliasDerived := rawWorkflowExpectedDelta(t, aliasBefore.Derived, rawWorkflowExpectedPublication(t, aliasRow, aliasAfter.Meta.Incarnation, "ordinary canonical-looking alias", "done", f.now()), false)
+			if foundDerived != 1 || !reflect.DeepEqual(wantAliasDerived, aliasAfter.Derived) {
+				t.Fatal("resolved-alias create must add exactly its self-row, source projections and fixed-clock priority-two rank and preserve every other derived row/table")
 			}
 			if aliasDoc.Fields["status"] != "done" || len(aliasDoc.Comments) != 1 || aliasDoc.Comments[0].Body != "completed once" || aliasRow.Revision.String() != aliasCommit.Revision.String() || len(aliasAfter.Versions[aliasRow.Ref.ID]) != 1 {
 				t.Fatalf("resolved ordinary alias close did not commit its terminal image once: %+v", aliasDoc)

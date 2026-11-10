@@ -436,7 +436,17 @@ func (p *prepared) response(revision model.Revision, meta model.WriteMeta) (mode
 	return clone(commit)
 }
 
-func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRef, meta model.WriteMeta, principal, hash string, terminalProbe port.ClaimNextReadyProbe) (model.Commit, error) {
+func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRef, meta model.WriteMeta, principal, hash string, terminalProbe port.ClaimNextReadyProbe) (result model.Commit, retErr error) {
+	timings := deferredPhaseTimings{enabled: w.cfg.observer != nil}
+	defer timings.flush(w)
+	// Covers failures before Write returns a transaction. Once there is a
+	// transaction, the later finish defer stops the clock before cleanup.
+	defer func() { timings.finish(ctx, retErr) }()
+	timings.next(PhaseCommitProjections)
+	if err := p.prepareProjections(ctx); err != nil {
+		return model.Commit{}, err
+	}
+	timings.next(PhaseCommitLockPlan)
 	sentinels := p.sentinels()
 	writes := map[string]*pending{}
 	for id, pending := range p.writes {
@@ -480,6 +490,9 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	if p.hierarchyDelta != nil {
 		allocatorKeys = append(allocatorKeys, p.hierarchyDelta.locks...)
 	}
+	if p.projections != nil {
+		allocatorKeys = append(allocatorKeys, p.projections.locks...)
+	}
 	if (p.graphValidated || p.graphPreserved) && len(writes) != 0 {
 		allocatorKeys = append(allocatorKeys, GraphValidityLockKey())
 	}
@@ -488,12 +501,15 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	if err != nil {
 		return model.Commit{}, err
 	}
+	timings.next(PhaseCommitWrite)
 	tx, err := w.store.Write(ctx, w.lease)
 	if err != nil {
 		return model.Commit{}, err
 	}
 	defer tx.Close()
 	defer tx.Rollback(context.WithoutCancel(ctx))
+	defer func() { timings.finish(ctx, retErr) }()
+	timings.next(PhaseCommitLock)
 	states, err := tx.Lock(ctx, locks)
 	if err != nil {
 		return model.Commit{}, err
@@ -529,10 +545,12 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 			return model.Commit{}, err
 		}
 	}
+	timings.next(PhaseCommitHead)
 	head, err := tx.Head(ctx)
 	if err != nil {
 		return model.Commit{}, err
 	}
+	timings.next(PhaseCommitGuards)
 	if p.source != nil && head.String() != p.source.Head.Head.String() {
 		return model.Commit{}, errStale
 	}
@@ -575,6 +593,7 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 			return model.Commit{}, port.ErrClaimNextReady
 		}
 	}
+	timings.next(PhaseCommitPrepareRows)
 	if len(allocatorPrefixes) > 0 || len(parentCounters) > 0 {
 		allocator, supportsProfiles := tx.(driver.AllocatorContinuation)
 		parentAllocator, supportsParents := tx.(driver.ParentCounterContinuation)
@@ -631,6 +650,7 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 		if err != nil {
 			return model.Commit{}, err
 		}
+		timings.next(PhaseCommitNoop)
 		commit, err := noop.CommitNoop(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: kind, Time: w.cfg.now().UTC(), Principal: by, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: response, LockKeys: keys})
 		if errors.Is(err, driver.ErrCheckpointConflict) {
 			return model.Commit{}, errStale
@@ -646,34 +666,20 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	if err != nil {
 		return model.Commit{}, err
 	}
-	ids := make([]string, 0, len(writes))
-	for id := range writes {
-		ids = append(ids, id)
+	timings.next(PhaseCommitSources)
+	if err := publishSourceProjections(ctx, tx, p.projections.sources); err != nil {
+		return model.Commit{}, err
 	}
-	sort.Strings(ids)
-	for _, id := range ids {
-		pending := p.writes[id]
-		if pending.deleted {
-			err = tx.Delete(ctx, pending.ref)
-		} else {
-			body, e := pending.body()
-			if e != nil {
-				return model.Commit{}, e
-			}
-			err = PutSourceRecord(ctx, tx, driver.Record{Ref: pending.ref, Kind: pending.kind, Body: body})
-		}
-		if err != nil {
-			return model.Commit{}, err
-		}
-	}
-	if p.hierarchyDelta != nil && (len(p.hierarchyDelta.remove) != 0 || len(p.hierarchyDelta.add) != 0) {
-		if err := tx.PutDerived(ctx, driver.DerivedAncestorClosure, p.hierarchyDelta.remove, p.hierarchyDelta.add); err != nil {
+	timings.next(PhaseCommitAncestors)
+	if len(p.projections.remove) != 0 || len(p.projections.add) != 0 {
+		if err := PutAncestorProjections(ctx, tx, p.projections.remove, p.projections.add); err != nil {
 			return model.Commit{}, err
 		}
 	}
 	if err := p.readySort.publish(ctx, tx, revision); err != nil {
 		return model.Commit{}, err
 	}
+	timings.next(PhaseCommitEvents)
 	changes := p.changeRecords()
 	events, chain, err := p.events(revision, changes)
 	if err != nil {
@@ -688,6 +694,7 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 			return model.Commit{}, err
 		}
 	}
+	timings.next(PhaseCommitDriver)
 	entry, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: kind, Time: w.cfg.now().UTC(), Principal: by, Chain: chain, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: commit, ResponsePending: len(p.changed) != 0 && len(w.cfg.posts) > 0, Mutators: p.mutators, Changes: changes, Events: events, LockKeys: keys})
 	if err != nil {
 		if errors.Is(err, driver.ErrCheckpointConflict) {

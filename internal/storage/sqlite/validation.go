@@ -133,35 +133,66 @@ func (t *transaction) validatePredicates(ctx context.Context) error {
 			return fmt.Errorf("sqlite: bead requires its exact sentinel bump")
 		}
 	}
+	_, err := t.validateDerivedPredicates()
+	return err
+}
+
+// One pass over the staged bumps records the five predicate families. The
+// family check for each derived row is then constant work, independent of the
+// number of other bumped keys in the transaction.
+type predicateValidationWork struct {
+	BumpsVisited   int
+	DerivedVisited int
+	FamilyChecks   int
+}
+
+func (t *transaction) validateDerivedPredicates() (predicateValidationWork, error) {
+	work := predicateValidationWork{}
+	var ready, closure, grant, ontology, plugins bool
+	for _, key := range t.bumps {
+		work.BumpsVisited++
+		if key.Kind != driver.LockSentinel {
+			continue
+		}
+		sentinel := string(key.Sentinel)
+		switch {
+		case strings.HasPrefix(sentinel, "ready/"):
+			ready = true
+		case strings.HasPrefix(sentinel, "closure/"):
+			closure = true
+		case strings.HasPrefix(sentinel, "grant/"):
+			grant = true
+		case sentinel == "ontology":
+			ontology = true
+		case sentinel == "plugins":
+			plugins = true
+		}
+	}
 	// Derived row contents are opaque. This checks structural family coverage;
 	// core is responsible for selecting every semantically affected exact scope.
 	for _, v := range t.derived {
+		work.DerivedVisited++
 		var family string
+		var found bool
 		switch v.Key.Derived.Table {
 		case driver.DerivedReadyState:
-			family = "ready/"
+			family, found = "ready/", ready
 		case driver.DerivedAncestorClosure, driver.DerivedCutClosure, driver.DerivedAttribute:
-			family = "closure/"
+			family, found = "closure/", closure
 		case driver.DerivedGrant:
-			family = "grant/"
+			family, found = "grant/", grant
 		case driver.DerivedOntology:
-			family = "ontology"
+			family, found = "ontology", ontology
 		case driver.DerivedPlugins:
-			family = "plugins"
+			family, found = "plugins", plugins
 		}
 		if family == "" {
 			continue
 		}
-		found := false
-		for _, key := range t.bumps {
-			if key.Kind == driver.LockSentinel && (string(key.Sentinel) == family || strings.HasSuffix(family, "/") && strings.HasPrefix(string(key.Sentinel), family)) {
-				found = true
-				break
-			}
-		}
+		work.FamilyChecks++
 		if !found {
-			return fmt.Errorf("sqlite: derived table %s requires %s predicate bump", v.Key.Derived.Table, family)
+			return work, fmt.Errorf("sqlite: derived table %s requires %s predicate bump", v.Key.Derived.Table, family)
 		}
 	}
-	return nil
+	return work, nil
 }

@@ -162,6 +162,17 @@ func (d Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, erro
 		if e != nil {
 			return e
 		}
+		// Initialize the additive virgin-lifetime marker once per incarnation.
+		// Existing stores pay this compatibility census only at open; every
+		// subsequent commit uses the indexed single-row marker.
+		_, e = c.ExecContext(ctx, `INSERT OR IGNORE INTO selection_virgin_state(incarnation,virgin)
+			SELECT incarnation,CASE WHEN EXISTS(SELECT 1 FROM objects WHERE kind='bead') THEN 0 ELSE 1 END
+			FROM meta WHERE singleton=1`)
+		if e != nil {
+			return e
+		}
+		// New stores start unbuilt. Only explicit complete startup or a first
+		// complete typed publication may establish a family interval.
 		_, e = readMeta(ctx, c)
 		return e
 	})
@@ -279,6 +290,7 @@ func (s *Store) fileLockUntil(ctx context.Context, name string, share bool, lost
 
 type queryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
 func readMeta(ctx context.Context, q queryer) (driver.Meta, error) {
@@ -351,11 +363,14 @@ type commitError struct{ error }
 func (e commitError) Unwrap() error { return e.error }
 
 func (s *Store) immediate(ctx context.Context, l *activeLease, fn func(*sql.Conn) error) error {
+	trace := commitTraceFromContext(ctx)
 	var lost <-chan struct{}
 	if l != nil {
 		lost = l.Lost()
 	}
+	started := traceStart(trace)
 	gate, err := s.fileLock(ctx, "publication", false, lost)
+	trace.record(CommitPhasePublicationLock, started, 0, err)
 	if err != nil {
 		return err
 	}
@@ -367,7 +382,10 @@ func (s *Store) immediate(ctx context.Context, l *activeLease, fn func(*sql.Conn
 // Renew persists its own journal before acceptance, so COMMIT is the only native
 // publication and its confirmed success cannot turn into a handoff error.
 func (s *Store) immediateLocked(ctx context.Context, l *activeLease, fn func(*sql.Conn) error) (err error) {
+	trace := commitTraceFromContext(ctx)
+	started := traceStart(trace)
 	c, err := s.db.Conn(ctx)
+	trace.record(CommitPhaseConnection, started, 0, err)
 	if err != nil {
 		return err
 	}
@@ -379,7 +397,9 @@ func (s *Store) immediateLocked(ctx context.Context, l *activeLease, fn func(*sq
 	// a confirmed COMMIT there must be no further native transaction work.
 	defer func() {
 		if !committed {
-			_, _ = c.ExecContext(context.Background(), `ROLLBACK`)
+			started := traceStart(trace)
+			_, rollbackErr := c.ExecContext(context.Background(), `ROLLBACK`)
+			trace.record(CommitPhaseRollback, started, 0, rollbackErr)
 		}
 		if registered {
 			var uncertain commitError
@@ -389,17 +409,25 @@ func (s *Store) immediateLocked(ctx context.Context, l *activeLease, fn func(*sq
 			l.abortPublication(durable)
 		}
 	}()
-	if _, err = c.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+	started = traceStart(trace)
+	_, err = c.ExecContext(ctx, `BEGIN IMMEDIATE`)
+	trace.record(CommitPhaseBegin, started, 0, err)
+	if err != nil {
 		return err
 	}
 	if l != nil {
+		started = traceStart(trace)
 		durable, err = s.beginLeasePublication(ctx, c, l)
+		trace.record(CommitPhaseFenceBefore, started, 0, err)
 		if err != nil {
 			return err
 		}
 		registered = true
 	}
-	if err = fn(c); err != nil {
+	started = traceStart(trace)
+	err = fn(c)
+	trace.record(CommitPhaseBody, started, 0, err)
+	if err != nil {
 		return err
 	}
 	if _, err = s.commitImmediate(ctx, c, l, durable); err != nil {
@@ -414,6 +442,7 @@ func (s *Store) immediateLocked(ctx context.Context, l *activeLease, fn func(*sq
 }
 
 func (s *Store) commitImmediate(ctx context.Context, c *sql.Conn, l *activeLease, durable leaseHeartbeat) (leaseHeartbeat, error) {
+	trace := commitTraceFromContext(ctx)
 	heartbeat := durable
 	if l != nil {
 		l.mu.Lock()
@@ -426,11 +455,17 @@ func (s *Store) commitImmediate(ctx context.Context, c *sql.Conn, l *activeLease
 		}
 		// Check identity AND current effective expiry after the SQL work. BEGIN
 		// alone is not sufficient: a holder that stops renewing must be fenced.
-		if err := s.fence(ctx, c, l); err != nil {
+		started := traceStart(trace)
+		err := s.fence(ctx, c, l)
+		trace.record(CommitPhaseFenceAfter, started, 0, err)
+		if err != nil {
 			return durable, err
 		}
 	}
-	if _, err := c.ExecContext(ctx, `COMMIT`); err != nil {
+	started := traceStart(trace)
+	_, err := c.ExecContext(ctx, `COMMIT`)
+	trace.record(CommitPhaseSQLiteCommit, started, 0, err)
+	if err != nil {
 		return durable, commitError{error: err}
 	}
 	return heartbeat, nil

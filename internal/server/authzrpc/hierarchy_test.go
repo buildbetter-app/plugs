@@ -350,6 +350,14 @@ func TestHierarchyFixedPolicyObservesDependenciesOncePerPass(t *testing.T) {
 			for i := range changes {
 				changes[i] = hCreate(fmt.Sprintf("observed-%03d", i), "", "child-project", nil, "")
 			}
+			encodeKey := func(key driver.LockKey) string {
+				t.Helper()
+				encoded, err := driver.EncodeLockKey(key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return encoded
+			}
 			s := f.snapshot(t)
 			started := time.Now()
 			if err := f.app.Checker.AuthorizeHierarchy(context.Background(), port.AuthorizeAfter, hProposal(hAgent(), "tx.apply", changes...), s); err != nil {
@@ -357,19 +365,73 @@ func TestHierarchyFixedPolicyObservesDependenciesOncePerPass(t *testing.T) {
 			}
 			counts := map[string]int{}
 			for _, key := range s.locks {
-				encoded, err := driver.EncodeLockKey(key)
+				counts[encodeKey(key)]++
+			}
+			t.Logf("100-operation authorization: engine=%s elapsed_ms=%.3f source_reads=%d dependency_observations=%d unique_dependencies=%d", engine, float64(time.Since(started))/float64(time.Millisecond), len(s.gets), len(s.locks), len(counts))
+			// Preserve the original 205 identities: bead/closure for each
+			// resource, context, ACL, plugins, ontology, and project grant.
+			expected := map[string]bool{}
+			expectKey := func(key driver.LockKey) {
+				t.Helper()
+				encoded := encodeKey(key)
+				if expected[encoded] {
+					t.Fatalf("duplicate expected dependency: %s", encoded)
+				}
+				expected[encoded] = true
+			}
+			for _, dependency := range []authz.Dependency{authz.ContextDependency(f.base.Namespace), authz.ACLDependency(f.base.Namespace)} {
+				fact, err := driver.NewReadFact(dependency.Key)
 				if err != nil {
 					t.Fatal(err)
 				}
-				counts[encoded]++
+				expectKey(driver.LockKey{Kind: driver.LockReadFact, Fact: fact})
 			}
-			t.Logf("100-operation authorization: engine=%s elapsed_ms=%.3f source_reads=%d dependency_observations=%d unique_dependencies=%d", engine, float64(time.Since(started))/float64(time.Millisecond), len(s.gets), len(s.locks), len(counts))
-			if got, want := len(counts), 2*len(changes)+5; got != want {
-				t.Fatalf("first-touch dependency set changed: got=%d want=%d", got, want)
+			expectKey(driver.PluginsSentinelLock)
+			expectKey(driver.OntologySentinelLock)
+			grant, err := authz.GrantDependency(f.base.Namespace, authz.Scope{Kind: authz.ProjectScope, Ref: hRef("child-project")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			grantSentinel, err := driver.NewSentinel(grant.Key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			expectKey(driver.LockKey{Kind: driver.LockSentinel, Sentinel: grantSentinel})
+			for _, change := range changes {
+				for _, prefix := range []string{"bead/", "closure/"} {
+					sentinel, err := driver.NewSentinel(prefix + change.Resource.Ref.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					expectKey(driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel})
+				}
+			}
+			if got, want := len(expected), 2*len(changes)+5; got != want {
+				t.Fatalf("original dependency identities changed: got=%d want=%d", got, want)
+			}
+			// Facts.Load adds exactly the canonical durable source witness.
+			rows, err := authzfixed.SelectionRows(f.base.Namespace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sourceKey := encodeKey(driver.LockKey{Kind: driver.LockDerived, Derived: &rows.Source})
+			if expected[sourceKey] {
+				t.Fatal("facts source aliases an original dependency")
+			}
+			if got := counts[sourceKey]; got != 1 {
+				t.Errorf("current-namespace facts source observations = %d, want 1", got)
+			}
+			for key := range expected {
+				if counts[key] == 0 {
+					t.Errorf("original dependency lost: %s", key)
+				}
 			}
 			acl, _ := driver.NewReadFact(authz.ACLDependency(f.base.Namespace).Key)
-			aclKey, _ := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockReadFact, Fact: acl})
+			aclKey := encodeKey(driver.LockKey{Kind: driver.LockReadFact, Fact: acl})
 			for key, count := range counts {
+				if !expected[key] && key != sourceKey {
+					t.Errorf("unexpected dependency: %s", key)
+				}
 				// FactsSource.Load and Checker.load separately fence the ACL.
 				// The finite policy may observe each dependency only once more.
 				limit := 1
@@ -379,6 +441,9 @@ func TestHierarchyFixedPolicyObservesDependenciesOncePerPass(t *testing.T) {
 				if count > limit {
 					t.Errorf("snapshot dependency repeatedly read: key=%s observations=%d limit=%d", key, count, limit)
 				}
+			}
+			if got, want := len(s.gets), len(changes); got != want {
+				t.Errorf("source read identities = %d, want %d", got, want)
 			}
 			for _, change := range changes {
 				if s.gets[change.Resource.Ref.ID] != 1 {
@@ -391,6 +456,29 @@ func TestHierarchyFixedPolicyObservesDependenciesOncePerPass(t *testing.T) {
 					}
 				}
 			}
+			t.Run("source_unavailable_before_resource_reads", func(t *testing.T) {
+				failed := f.snapshot(t)
+				failed.failObserve = sourceKey
+				err := f.app.Checker.AuthorizeHierarchy(context.Background(), port.AuthorizeAfter, hProposal(hAgent(), "tx.apply", changes...), failed)
+				requireHCode(t, err, "authz_unavailable")
+				if len(failed.gets) != 0 {
+					t.Fatalf("resource reads preceded unavailable facts source: %v", failed.gets)
+				}
+				sourceAttempts := 0
+				for _, key := range failed.locks {
+					encoded, err := driver.EncodeLockKey(key)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if encoded == sourceKey {
+						sourceAttempts++
+					}
+				}
+				if sourceAttempts != 1 {
+					t.Fatalf("failed facts source observations = %d, want 1", sourceAttempts)
+				}
+				t.Logf("unavailable facts source: observations=%d resource_reads=%d", sourceAttempts, len(failed.gets))
+			})
 		})
 	}
 }

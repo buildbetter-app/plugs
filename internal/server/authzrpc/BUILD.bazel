@@ -12,6 +12,7 @@ go_library(
         "//internal/core/pipeline",
         "//internal/core/port",
         "//internal/core/service",
+        "//internal/core/viewops",
         "//internal/plugins/authzfixed",
         "//internal/server/authn",
         "//internal/server/claimrpc",
@@ -19,6 +20,43 @@ go_library(
         "//internal/server/transport/httpjson",
         "//internal/storage/driver",
         "//plugins/workflow",
+    ],
+)
+
+go_test(
+    name = "view_selection_test",
+    size = "large",
+    srcs = ["view_selection_test.go", "view_refs_test.go"],
+    embed = [":authzrpc"],
+    tags = ["exclusive"],
+    deps = [
+        "//internal/core/authz",
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/viewops",
+        "//internal/plugins/authnapikey",
+        "//internal/plugins/authzfixed",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/postgres",
+        "//internal/storage/sqlite",
+    ],
+)
+
+go_test(
+    name = "scoped_projection_test",
+    srcs = ["scoped_projection_test.go"],
+    embed = [":authzrpc"],
+    deps = [
+        "//internal/core/authz",
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/plugins/authnapikey",
+        "//internal/plugins/authzfixed",
+        "//internal/storage/conformance",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
     ],
 )
 
@@ -34,7 +72,6 @@ go_test(
         "//internal/storage/driver",
     ],
 )
-
 
 go_test(
     name = "authzrpc_test",

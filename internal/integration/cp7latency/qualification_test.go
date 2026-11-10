@@ -13,7 +13,6 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/core/viewops"
-	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -27,7 +26,29 @@ func TestGroupedEveryPageMatchesIndependentCorpus(t *testing.T) {
 	for _, engine := range []string{"sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			f := newFixture(t, engine, 1000)
-			views := f.views
+			cfg := viewops.Config{
+				OntologyRevision: model.Natural64(1),
+				AuthorizeRead: func(ctx context.Context, p model.PrincipalRef, ref model.ResourceRef, _ string) error {
+					_, err := f.app.Service.Get(ctx, p, service.GetRequest{ID: ref.Ref})
+					return err
+				},
+				AuthorizeReadBatch: f.app.Service.AuthorizeReadBatch,
+				ParentProjection: &viewops.ParentProjectionConfig{
+					Project: func(ctx context.Context, p model.PrincipalRef, r driver.Reader, refs []model.Ref) (viewops.ParentProjectionAuthority, error) {
+						a, err := f.app.Checker.AuthorizeParentProjections(ctx, p, r, refs)
+						out := viewops.ParentProjectionAuthority{PolicyBinding: a.PolicyBinding, Parents: make(map[string]viewops.ParentDisclosure, len(a.Parents))}
+						for id, value := range a.Parents {
+							out.Parents[id] = viewops.ParentDisclosure{Exists: value.Exists, Ref: value.Ref}
+						}
+						return out, err
+					},
+					ValidateAuthority: f.app.Checker.ValidateReadAuthorityBinding,
+				},
+			}
+			views, err := viewops.New(f.store.Store, f.lease, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
 			for _, divisor := range []int{1, 100, 1000} {
 				t.Run(fmt.Sprintf("divisor%d", divisor), func(t *testing.T) {
 					req := groupedRequest()
@@ -174,6 +195,10 @@ func TestPendingProducerKeepsHistoricalBodiesPinnedDuringPublication(t *testing.
 					ValidateAuthority: f.app.Checker.ValidateReadAuthorityBinding,
 				},
 			}
+			freshViews, err := viewops.New(f.store.Store, f.lease, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
 			cfg.Readiness = qualificationReadiness(func(ctx context.Context, r driver.Reader, refs []model.Ref) (map[string]viewops.ReadinessState, error) {
 				called++
 				if r.Snapshot().At.String() != before.Head.String() || len(refs) != f.n {
@@ -186,9 +211,9 @@ func TestPendingProducerKeepsHistoricalBodiesPinnedDuringPublication(t *testing.
 					if err != nil {
 						t.Fatal(err)
 					}
-					if _, err := conformance.Seed(context.Background(), f.store.Store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: beadRef(1), Kind: "bead", Op: model.OpPatch, Body: encoded, ChangedPaths: []string{"/fields/title"}}}); err != nil {
-						t.Fatal(err)
-					}
+					// Preserve the unchanged graph/closure while refreshing the
+					// exact source-bound annotations used by fresh authorization.
+					f.patchSource(t, "pending_producer_publication", beadRef(1), encoded, []string{"/fields/title"})
 				}
 				rows, err := r.Get(ctx, refs)
 				if err != nil || len(rows) != f.n {
@@ -224,7 +249,7 @@ func TestPendingProducerKeepsHistoricalBodiesPinnedDuringPublication(t *testing.
 			if called != 2 {
 				t.Fatalf("pending called=%d", called)
 			}
-			fresh, err := f.views.Run(context.Background(), f.user(1), groupedRequest())
+			fresh, err := freshViews.Run(context.Background(), f.user(1), groupedRequest())
 			if err != nil || fresh.AsOf.Revision == before.Head || len(fresh.Groups) != 1 || fresh.Groups[0].Count != f.n-1 || len(fresh.Groups[0].Items) != f.n-1 || fresh.Groups[0].Items[0].ID != beadRef(2).ID {
 				t.Fatalf("fresh publication membership: %+v %v", fresh, err)
 			}

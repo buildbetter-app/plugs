@@ -107,7 +107,7 @@ func (s *Store) initialize(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO plug_postgres.meta VALUES (true,$1,$2,1,0,0) ON CONFLICT DO NOTHING`, id, incarnation); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO plug_postgres.meta(singleton,store_id,incarnation,schema_version,head,history_floor,selection_virgin) VALUES (true,$1,$2,1,0,0,true) ON CONFLICT DO NOTHING`, id, incarnation); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO plug_postgres.lease VALUES (true,0,'','','epoch') ON CONFLICT DO NOTHING`); err != nil {
