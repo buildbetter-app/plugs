@@ -153,3 +153,36 @@ Runtime, reference SQL clock twins, native producer/capture, PostgreSQL/HA,
 refresh-worker and full-card qualification remain unproven. FullS1 is 0/28;
 E3's inherited 5/5 remains bounded fixture evidence; NativeAdmission is None.
 Publication, admission, merge to main and release remain controller-owned.
+
+## Independent application and driver clock acceptance (2026-11-10)
+
+`TestB01IndependentDriverClockCannotAgePublicReadyRanks` adds a public-write
+acceptance slice on memory, SQLite WAL and real PostgreSQL. It starts the
+application and driver clocks seven hours apart. PostgreSQL's unchanged driver
+reaches a test-only SQL clock, independently read back through a separate SQL
+session; memory and SQLite use their actual driver Go-clock options. SQLite
+has no SQL clock expression to intercept. Existing fixtures keep their original
+clocks, workloads, deadlines and assertions.
+
+Done = application-only time governs the inclusive 48-hour cutoff and P74's
+60-second rank allowance, proven by public creates/update, complete signed
+pagination, unchanged persisted rank/state and an independently crossed actual
+24-hour driver receipt boundary; equal clock inputs or a source-only assertion
+does not count. Application +/-1ns points remain nanosecond precise, including
+on PostgreSQL; its separate SQL clock uses +/-1us points.
+
+This test advances application time nearly 48 hours while the original receipt
+stays live, then expires that receipt by advancing only driver time while a
+one-nanosecond-old public rank still governs order. Application time at60s
+retains that rank; at60s+1ns ready recomputes without a write. The writer lease
+is released before each driver-time advance and reacquired afterward, with the
+public service rebound to the valid lease; no lease-race behavior is tested.
+
+These new assertions are AUTHORED_NOT_RUN until their exact changed-head remote
+terminal. They close only a Plug-side independent-clock acceptance gap. The
+producer lane confirmed that an accepted official capture companion/control
+with genuine independent Go/SQL clock and active transient-record fixtures has
+not been delivered; bb314 source precision facts and other public producer captures are
+separate scopes. Native correspondence and FullB01 remain held on that actual
+executable/input adoption. R418/702/2d, ChildEnv and all old recordings/pins stay
+unchanged; no native or FullS1 qualification follows from this test.
