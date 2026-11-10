@@ -217,7 +217,7 @@ func run(ctx context.Context, args []string) (out receipt, runErr error) {
 		defer func() {
 			if err := session.close(); err != nil {
 				out = zero
-				runErr = fmt.Errorf("rehearsal cleanup failed: %w", err)
+				runErr = errors.Join(runErr, fmt.Errorf("rehearsal cleanup failed: %w", err))
 			}
 		}()
 	}
