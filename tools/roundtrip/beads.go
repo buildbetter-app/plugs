@@ -302,7 +302,7 @@ func runBeads(ctx context.Context, options beadsOptions, output string, source *
 // Assessment is also exercised against immutable, originally executed public
 // outputs. Replaying those bytes is a parser/refusal control, not a native run.
 func assessBeadsReadback(output string, source *dumpformat.Archive, submitted []byte, result *outcome) {
-	readback, err := os.ReadFile(filepath.Join(output, "beads-raw-readback.tar"))
+	readback, err := readProducedBeadsArchive(filepath.Join(output, "beads-raw-readback.tar"))
 	var actual *dumpformat.Archive
 	if err == nil {
 		actual, err = dumpformat.Read(bytes.NewReader(readback))

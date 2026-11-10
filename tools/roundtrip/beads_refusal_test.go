@@ -3,12 +3,64 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 )
+
+type countedArchiveReader struct{ remaining, read int64 }
+
+func (r *countedArchiveReader) Read(buffer []byte) (int, error) {
+	if r.remaining == 0 {
+		return 0, io.EOF
+	}
+	n := int64(len(buffer))
+	if n > r.remaining {
+		n = r.remaining
+	}
+	for i := range buffer[:int(n)] {
+		buffer[i] = 'x'
+	}
+	r.remaining -= n
+	r.read += n
+	return int(n), nil
+}
+
+func TestProducedArchiveReadCapAndGrowthNeverReturnAnOversizePrefix(t *testing.T) {
+	const cap = int64(1024)
+	for _, size := range []int64{cap - 1, cap, cap + 1, 1 << 40} {
+		reader := &countedArchiveReader{remaining: size}
+		data, err := readBoundedBeadsArchive(reader, cap)
+		if size <= cap {
+			if err != nil || int64(len(data)) != size || reader.read != size || !bytes.Equal(data, bytes.Repeat([]byte("x"), int(size))) {
+				t.Fatal("bounded accepted bytes changed")
+			}
+		} else if err == nil || data != nil || reader.read != cap+1 {
+			t.Fatal("oversize read escaped the cap or returned prefix bytes for a whole-file digest")
+		}
+	}
+}
+
+func TestOversizedProducedFileRefusesWithoutAcceptedOrTruncatedDigest(t *testing.T) {
+	output, source, submitted, result := originalReadbackControl(t, false)
+	// An actual sparse file exercises the production 128MiB bound without
+	// materializing its declared size. The streaming cap also has a separate
+	// counted-reader control for growth after the file size observation.
+	if err := os.Truncate(filepath.Join(output, "beads-raw-readback.tar"), dumpformat.MaxArchiveBytes+1); err != nil {
+		t.Fatal(err)
+	}
+	assessBeadsReadback(output, source, submitted, &result)
+	if result.Status != "BLOCK" || result.BeadsReadback != "FAIL" || result.Reason != "beads_raw_readback_invalid" || result.BeadsReadbackSHA256 != "" || len(result.SourceFieldLosses) != 0 {
+		t.Fatalf("oversize archive acquired acceptance: %+v", result)
+	}
+	refusal := readPrivateRefusal(t, output, result)
+	if refusal.Validation != "FAIL" || refusal.NativeComparison != "NOT_MEASURED" || refusal.AcceptedSHA256 != "" || refusal.ProducedSHA256 != "" || refusal.ValidationError != "archive exceeds 134217728 bytes" || len(refusal.CellRefusals) != 0 || len(refusal.FieldRows) != 0 {
+		t.Fatalf("oversize prefix was certified as produced bytes or native evidence: %+v", refusal)
+	}
+}
 
 // The archived bytes were produced by the original public 8f19 run. These
 // tests replay only the consumer boundary; no executable or native result is

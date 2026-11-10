@@ -4,11 +4,42 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"os"
 	"sort"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 )
+
+func readProducedBeadsArchive(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > dumpformat.MaxArchiveBytes {
+		return nil, fmt.Errorf("archive exceeds %d bytes", dumpformat.MaxArchiveBytes)
+	}
+	// The read cap also covers a file that grows after Stat. Oversize bytes
+	// are never returned: a truncated prefix is not a produced-archive digest.
+	return readBoundedBeadsArchive(file, dumpformat.MaxArchiveBytes)
+}
+
+func readBoundedBeadsArchive(reader io.Reader, maximum int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(reader, maximum+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maximum {
+		return nil, fmt.Errorf("archive exceeds %d bytes", maximum)
+	}
+	return data, nil
+}
 
 // These values are private evidence only. Presence is independent of SQL NULL,
 // and the archive's JSON representation remains exact (including json.Number).
