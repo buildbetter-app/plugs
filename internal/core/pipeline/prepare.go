@@ -492,7 +492,9 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 					metadata = &value
 				}
 				if op.Kind == model.OpLink {
-					if found < 0 && localParentChild && parentID(current.doc.Parent) == to.ID {
+					// Plain legacy links retain their existing representation. Only
+					// metadata-bearing canonical parent edges use ParentMetadata.
+					if found < 0 && localParentChild && parentID(current.doc.Parent) == to.ID && (metadata != nil || current.doc.ParentMetadata != nil) {
 						if metadata != nil {
 							value := metadata.Retaining(current.doc.ParentMetadata)
 							current.doc.ParentMetadata = &value
