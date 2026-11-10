@@ -118,6 +118,7 @@ type fixture struct {
 	snapshot    ontology.Snapshot
 	facts       authzfixed.Facts
 	policy      *model.Ref
+	unavailable bool
 	seq, nextID int
 }
 
@@ -187,9 +188,13 @@ func (f *fixture) bind() {
 	config := authzrpc.AuthorityConfig{Facts: facts, Namespace: f.facts.Namespace, Hierarchy: true}
 	if f.policy != nil {
 		config.LifecyclePolicy = &authzrpc.LifecyclePolicyConfig{Ref: *f.policy}
-		options = append(options, service.WithTransitionPermissionObserver(func(ctx context.Context, q service.TransitionPermissionRequest, reader port.SnapshotReader) (service.TransitionPermissionObservation, error) {
-			return checker.ObserveTransitionPermission(ctx, q, reader)
-		}))
+		var observer service.TransitionPermissionObserver
+		if !f.unavailable {
+			observer = func(ctx context.Context, q service.TransitionPermissionRequest, reader port.SnapshotReader) (service.TransitionPermissionObservation, error) {
+				return checker.ObserveTransitionPermission(ctx, q, reader)
+			}
+		}
+		options = append(options, service.WithTransitionPermissionObserver(observer))
 	}
 	o := service.NewOntology(f.snapshot.Effective, options...)
 	checker, err = authzrpc.NewChecker(f.ctx, f.store, f.lease, o, config)

@@ -84,3 +84,37 @@ func TestG1InstalledUserUsesExistingClosePermitsAndRefusesUncoveredWrites(t *tes
 		t.Log("G1 installed fixed User: current exact default-close grants and tx.apply, guarded read/replay/SQL reopen, unchanged child guard, User create/update and Agent/reopen/create-followup refusals with no writes")
 	})
 }
+
+func TestG1InstalledExistingAgentCreateRequiresNoninitialTransitionPermission(t *testing.T) {
+	eachConfiguredFixture(t, "installed-create", func(t *testing.T, f *fixture) {
+		f.installUserPolicy(nil)
+		for _, unavailable := range []bool{false, true} {
+			label := "observed"
+			if unavailable {
+				label = "unavailable"
+				f.closeHTTP()
+				f.unavailable = true
+				f.bind()
+			}
+			for _, explicit := range []bool{false, true} {
+				params := map[string]any{"type": nativeType, "fields": map[string]any{"title": "existing initial create"}}
+				name := label + "-omitted"
+				if explicit {
+					params["targetStatus"] = "native-open"
+					name = label + "-explicit-initial"
+				}
+				c := accepted(t, f.call(sponsoredAgent, project, "bead.create", params, name), false)
+				f.status(c.Results[0].Ref, "native-open")
+				create := map[string]any{"kind": "create", "key": "existing-initial", "type": nativeType, "fields": map[string]any{"title": "existing initial batch create"}}
+				if explicit {
+					create["targetStatus"] = "native-open"
+				}
+				c = accepted(t, f.call(sponsoredAgent, project, "tx.apply", tx(create), name+"-tx"), false)
+				f.status(c.Results[0].Ref, "native-open")
+			}
+			f.refuse(sponsoredAgent, project, "bead.create", map[string]any{"type": nativeType, "targetStatus": "native-ready-alt", "fields": map[string]any{"title": "requires transition permission"}}, label+"-named-noninitial", "ontology_guard_failed")
+			f.refuse(sponsoredAgent, project, "tx.apply", tx(map[string]any{"kind": "create", "key": "guarded-create", "type": nativeType, "targetStatus": "native-ready-alt", "fields": map[string]any{"title": "requires transition permission"}}), label+"-tx-noninitial", "ontology_guard_failed")
+		}
+		t.Log("G1 installed existing Agent initial-create membership remains supported; standalone named/create-only tx noninitial Permission guards refuse without transition authority, including an unavailable installed observer, with unchanged state/receipts")
+	})
+}

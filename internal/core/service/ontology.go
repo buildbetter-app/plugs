@@ -552,18 +552,28 @@ func (o *Ontology) validate(ctx context.Context, proposal port.ProposedChange, r
 }
 
 func (o *Ontology) observeTransitionGuards(ctx context.Context, proposal port.ProposedChange, change port.Change, before *ontology.BeadState, after ontology.BeadState, method string, settlement bool, reader port.SnapshotReader, facts *ontology.GuardFacts) error {
-	if before == nil {
-		return nil
-	}
 	guardMethod := method
-	if isGateMethod(guardMethod) {
-		guardMethod = gateLifecycleMethod(pipeline.Document{Fields: after.Fields})
-	}
-	if _, lifecycle := ontology.SlotForMethod(guardMethod); !lifecycle {
-		return nil
-	}
 	effective := o.effective(after.Project)
-	guards, _ := effective.Guards(after.Type, before.Status, after.Status)
+	fromStatus := ""
+	if before == nil {
+		// A typed noninitial create evaluates a real initial-to-target
+		// transition despite having no stored pre-image. Initial create has
+		// no transition and keeps its existing creation permission semantics.
+		initial, ok := effective.InitialStatus(after.Type)
+		if !ok || facts.TargetStatus == nil || after.Status == initial {
+			return nil
+		}
+		fromStatus = initial
+	} else {
+		fromStatus = before.Status
+		if isGateMethod(guardMethod) {
+			guardMethod = gateLifecycleMethod(pipeline.Document{Fields: after.Fields})
+		}
+		if _, lifecycle := ontology.SlotForMethod(guardMethod); !lifecycle {
+			return nil
+		}
+	}
+	guards, _ := effective.Guards(after.Type, fromStatus, after.Status)
 	if settlement {
 		// Ordinary Guards deliberately rejects same-status transitions. Close
 		// settlement instead evaluates every applicable broad/source rule, as
@@ -576,7 +586,7 @@ func (o *Ontology) observeTransitionGuards(ctx context.Context, proposal port.Pr
 			}
 			matches := len(rule.From) == 0
 			for _, source := range rule.From {
-				matches = matches || source == before.Status
+				matches = matches || source == fromStatus
 			}
 			if matches {
 				guards = append(guards, rule.Guards...)
@@ -609,7 +619,7 @@ func (o *Ontology) observeTransitionGuards(ctx context.Context, proposal port.Pr
 	observation, err := observer(ctx, TransitionPermissionRequest{
 		Principal: proposal.Principal, Resource: change.Resource,
 		Project: after.Project, Type: after.Type, Method: guardMethod, Action: "transition",
-		FromStatus: before.Status, ToStatus: after.Status,
+		FromStatus: fromStatus, ToStatus: after.Status,
 	}, reader)
 	if err != nil {
 		return err
