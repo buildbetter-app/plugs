@@ -1,0 +1,4 @@
+# Exact acceptance reference paths record native literals and their adopted
+# Plug guard/category deviations. Product paths receive no vocabulary bypass.
+[zones]
+provenance = ["spec/cardb08/README.md", "spec/cardb08/native_test.go", "spec/cardb08/public_fixture_test.go", "spec/cardb08/public_test.go"]
