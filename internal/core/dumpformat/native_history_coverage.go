@@ -108,7 +108,7 @@ func validateNativeCoverageShape(h NativeHistory) error {
 	if c == nil {
 		return nil
 	}
-	if c.Format != NativeHistoryCoverageFormat || c.Status != "verified-to-boundary" || h.Complete || len(h.Gaps) != 0 || len(h.Commits) == 0 || len(h.Images) != len(h.Commits) || c.VerifiedCommitCount != uint64(len(h.Commits)) || len(c.Boundaries) == 0 || len(c.Boundaries) > 10000 {
+	if c.Format != NativeHistoryCoverageFormat || c.Status != "verified-to-boundary" || h.Complete || len(h.Gaps) != 0 || len(h.Commits) == 0 || h.VerifiedImageCount() != uint64(len(h.Commits)) || c.VerifiedCommitCount != uint64(len(h.Commits)) || len(c.Boundaries) == 0 || len(c.Boundaries) > 10000 {
 		return nativeGap(h, "invalid-native-history-coverage")
 	}
 	if c.EventsAttachment.Member != SourceHistoryMember || len(c.EventsAttachment.SHA256) != 64 {
@@ -148,7 +148,7 @@ func RequireVerifiedNativeHistory(h NativeHistory) error {
 		return err
 	}
 	if h.HistoryCoverage != nil {
-		return nativeCommitCensus(h)
+		return checkedNativeCommitCensus(h)
 	}
 	return requireCompleteNativeHistory(h)
 }
@@ -181,7 +181,11 @@ func validateNativeEventsAttachment(a *Archive, h NativeHistory, scoped bool) er
 		return err
 	}
 	events, present := h.Current["events"]
-	if original.Format != SourceHistoryFormat || len(original.ProjectHistories) != 0 || original.Range.Status != "unverified" || original.Range.Reason != "native-history-boundary" || original.Range.Complete || original.Range.First != 0 || original.Range.Head != 0 || len(original.Range.Baseline)+len(original.Range.BaselineEvents)+len(original.Range.Frames)+len(original.Range.Gaps) != 0 || !present || h.HistoryCoverage.EventsAttachment.Rows != uint64(len(original.Events)) || len(original.Events) != len(events.Rows) || !sameEventImage(original.Events, events.Rows) || !equalJSON(original.Commits, h.Commits) {
+	sameCommits := equalJSON(original.Commits, h.Commits)
+	if h.deltaVerified {
+		sameCommits = sameNativeDeltaCommitCensus(original.Commits, h.Commits)
+	}
+	if original.Format != SourceHistoryFormat || len(original.ProjectHistories) != 0 || original.Range.Status != "unverified" || original.Range.Reason != "native-history-boundary" || original.Range.Complete || original.Range.First != 0 || original.Range.Head != 0 || len(original.Range.Baseline)+len(original.Range.BaselineEvents)+len(original.Range.Frames)+len(original.Range.Gaps) != 0 || !present || h.HistoryCoverage.EventsAttachment.Rows != uint64(len(original.Events)) || len(original.Events) != len(events.Rows) || !sameEventImage(original.Events, events.Rows) || !sameCommits {
 		return nativeGap(h, "native-events-attachment-census-differs")
 	}
 	portable, err := nativePortableScope(a, h, scoped)

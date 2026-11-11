@@ -330,15 +330,7 @@ func assertNative66Receiving(t *testing.T, store driver.Store, report Report) {
 				}
 				value.Rows = kept
 			}
-			want, err := nativeTableRecord(identity, table, historyClass, value)
-			if err != nil {
-				t.Fatal(err)
-			}
-			got, err := reader.Get(ctx, []model.Ref{want.Ref})
-			if err != nil || len(got) != 1 {
-				t.Fatal("raw own-version current family lost", table, err)
-			}
-			assertNativeTableValue(t, got[0], identity, table, historyClass, value)
+			assertNativeTableReadback(t, reader, identity, table, historyClass, value)
 		}
 		for _, image := range scope.Images {
 			var revision model.Revision
@@ -358,15 +350,7 @@ func assertNative66Receiving(t *testing.T, store driver.Store, report Report) {
 				t.Fatal(err)
 			}
 			for table, value := range image.Tables {
-				want, err := nativeTableRecord(identity, table, "retained-native-commit", value)
-				if err != nil {
-					t.Fatal(err)
-				}
-				got, err := pinned.Get(ctx, []model.Ref{want.Ref})
-				if err != nil || len(got) != 1 {
-					t.Fatal("source history table missing", table, err)
-				}
-				assertNativeTableValue(t, got[0], identity, table, "retained-native-commit", value)
+				assertNativeTableReadback(t, pinned, identity, table, "retained-native-commit", value)
 			}
 			if err := pinned.Close(); err != nil {
 				t.Fatal(err)

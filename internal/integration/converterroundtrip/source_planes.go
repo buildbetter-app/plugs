@@ -1,7 +1,6 @@
 package converterroundtrip
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -27,10 +26,19 @@ func BindSourceImport(ctx context.Context, input io.Reader, profile driver.Resto
 	if profile.SourcePlanes != nil {
 		return driver.RestoreImportProfile{}, driver.ErrConflict
 	}
-	archive, err := dumpformat.Read(input)
+	archive, err := dumpformat.ReadWithNativeDeltaAccounting(ctx, input)
 	if err != nil {
 		return driver.RestoreImportProfile{}, err
 	}
+	defer archive.ReleaseNativeDecoded()
+	return bindSourceArchive(ctx, archive, profile, plan)
+}
+
+func bindSourceArchive(ctx context.Context, archive *dumpformat.Archive, profile driver.RestoreImportProfile, plan driver.SourcePlanePlanV1) (driver.RestoreImportProfile, error) {
+	if profile.SourcePlanes != nil {
+		return driver.RestoreImportProfile{}, driver.ErrConflict
+	}
+	var err error
 	// Bind one trusted restore clock before lowering current state. In
 	// particular, source lease eligibility must agree with history/recovery.
 	when := time.Now().UTC()
@@ -60,7 +68,7 @@ func BindSourceImport(ctx context.Context, input io.Reader, profile driver.Resto
 		profile.DerivedDigest = strings.Repeat("0", 64)
 	}
 	profile.SourcePlanes = &binding
-	profile, err = profile.Detached()
+	profile, err = nativeDetachedProfile(archive, profile)
 	if err != nil {
 		return driver.RestoreImportProfile{}, err
 	}
@@ -78,7 +86,7 @@ func BindSourceImport(ctx context.Context, input io.Reader, profile driver.Resto
 		return driver.RestoreImportProfile{}, err
 	}
 	profile.SourcePlanes = &binding
-	core, err := buildPlanWithProfile(archive, &profile, when)
+	core, err := buildPlanWithProfile(archive, &profile, when, ctx)
 	if err != nil {
 		return driver.RestoreImportProfile{}, err
 	}
@@ -87,17 +95,33 @@ func BindSourceImport(ctx context.Context, input io.Reader, profile driver.Resto
 	}
 	profile.DerivedDigest = core.derivedDigest
 	if profile.HistoryMode != driver.RestoreHistoryModeSnapshot {
-		return BindHistoryImport(ctx, bytes.NewReader(archive.TarBytes()), profile, when)
+		return bindHistoryArchive(ctx, archive, profile, when)
 	}
-	return profile.Detached()
+	return nativeDetachedProfile(archive, profile)
 }
 
-func prepareSourceArchive(ctx context.Context, archive *dumpformat.Archive, profile driver.RestoreImportProfile, final bool) (workflowplugin.PreparedSourceRestore, error) {
-	var empty workflowplugin.PreparedSourceRestore
+// A source preparation makes exactly one admitted LogicalImage clone. Internal
+// consumers borrow it; the conversion scope owns it through publication or
+// recovery. They never call the workflow accessor a second time.
+type preparedSourceImage struct {
+	logical []byte
+	hash    string
+}
+
+func (p preparedSourceImage) LogicalImage() []byte { return p.logical }
+func (p preparedSourceImage) SHA256() string       { return p.hash }
+
+func prepareSourceArchive(ctx context.Context, archive *dumpformat.Archive, profile driver.RestoreImportProfile, final bool) (preparedSourceImage, error) {
+	var empty preparedSourceImage
+	outputOwner, releaseOutput := archive.NativeDeltaAccountingScope()
+	defer releaseOutput()
+	archive, release := archive.NativeDeltaAccountingScope()
+	defer release()
+	ctx = archive.WithNativeDeltaAccounting(ctx)
 	if archive == nil || archive.Manifest().SourcePlaneAddressContract != driver.SourcePlaneAddressContractV1 || profile.SourcePlanes == nil {
 		return empty, fmt.Errorf("%w: joint restore adapter requires the source plane archive and complete plan", driver.ErrUnsupported)
 	}
-	plan, err := profile.SourcePlanes.Plan()
+	plan, err := nativeSourcePlan(archive, *profile.SourcePlanes)
 	if err != nil {
 		return empty, err
 	}
@@ -106,7 +130,7 @@ func prepareSourceArchive(ctx context.Context, archive *dumpformat.Archive, prof
 	}
 	switch profile.HistoryMode {
 	case driver.RestoreHistoryModeSnapshot:
-		if profile.HistoryDigest != "" || profile.HistoryTime != "" || len(archive.NativeSourceHistories()) != 0 {
+		if profile.HistoryDigest != "" || profile.HistoryTime != "" || archive.HasNativeSourceHistories() {
 			return empty, driver.ErrUnsupported
 		}
 	case driver.RestoreHistoryModeFull:
@@ -143,10 +167,25 @@ func prepareSourceArchive(ctx context.Context, archive *dumpformat.Archive, prof
 	if err != nil {
 		return empty, err
 	}
-	if final && (len(plan.Providers) != 1 || plan.Providers[0].LogicalImageSHA256 != prepared.SHA256() || plan.Providers[0].LogicalImageSize != uint64(len(prepared.LogicalImage()))) {
+	// PrepareSourceRestore retained only its exact prepared buffer in this
+	// child owner. Admit the caller's clone before the errorless accessor; the
+	// child drops prepared/wire/plan state when this function returns.
+	if budget := dumpformat.NativeDeltaBudgetFromContext(ctx); budget != nil {
+		if err := outputOwner.ChargeNativeDeltaBytes("workflow_logical_image_clone", budget.ReservedBytes("workflow_prepared_logical")); err != nil {
+			return empty, err
+		}
+	}
+	logical := prepared.LogicalImage()
+	if err := ctx.Err(); err != nil {
+		return empty, err
+	}
+	if final && (len(plan.Providers) != 1 || plan.Providers[0].LogicalImageSHA256 != prepared.SHA256() || plan.Providers[0].LogicalImageSize != uint64(len(logical))) {
 		return empty, driver.ErrConflict
 	}
-	return prepared, nil
+	if budget := dumpformat.NativeDeltaBudgetFromContext(outputOwner.WithNativeDeltaAccounting(context.Background())); budget != nil {
+		budget.Retain()
+	}
+	return preparedSourceImage{logical: logical, hash: prepared.SHA256()}, nil
 }
 
 type sourceCoreProjection struct {
@@ -157,12 +196,16 @@ type sourceCoreProjection struct {
 	inertRelations map[driver.SourceEdgeKey]bool
 }
 
-func newSourceCoreProjection(profile *driver.RestoreImportProfile) (sourceCoreProjection, error) {
+func newSourceCoreProjection(profile *driver.RestoreImportProfile, archives ...*dumpformat.Archive) (sourceCoreProjection, error) {
+	var archive *dumpformat.Archive
+	if len(archives) != 0 {
+		archive = archives[0]
+	}
 	var projection sourceCoreProjection
 	if profile == nil || profile.SourcePlanes == nil {
 		return projection, nil
 	}
-	plan, err := profile.SourcePlanes.Plan()
+	plan, err := nativeSourcePlan(archive, *profile.SourcePlanes)
 	if err != nil {
 		return projection, err
 	}

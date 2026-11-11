@@ -58,6 +58,17 @@ type NativeHistory struct {
 	SchemaProfile   *NativeSchemaProfile   `json:"schema_profile,omitempty"`
 	HistoryCoverage *NativeHistoryCoverage `json:"history_coverage,omitempty"`
 	Sources         []Disposition          `json:"-"`
+	deltaVerified   bool                   `json:"-"`
+	deltaImageCount uint64                 `json:"-"`
+}
+
+// VerifiedImageCount includes every authenticated v2 commit, while Images holds
+// only the HEAD checkpoint. Legacy archives keep their original image view.
+func (h NativeHistory) VerifiedImageCount() uint64 {
+	if h.deltaVerified && h.deltaImageCount != 0 {
+		return h.deltaImageCount
+	}
+	return uint64(len(h.Images))
 }
 
 func nativeObject(data []byte, required string, optional string) (map[string]any, error) {
@@ -186,6 +197,10 @@ func validateSourceFamilyMarker(fields map[string]json.RawMessage, m Manifest) e
 }
 
 func validateNativeTable(name string, table NativeTable) error {
+	return validateNativeTablePolicy(name, table, false)
+}
+
+func validateNativeTablePolicy(name string, table NativeTable, nativeDelta bool) error {
 	if !nativeSQLName.MatchString(name) || len(table.Columns) == 0 || len(table.Columns) > 1024 || table.Rows == nil || len(table.Rows) > 100000 {
 		return fmt.Errorf("invalid native table census for %s", name)
 	}
@@ -216,8 +231,14 @@ func validateNativeTable(name string, table NativeTable) error {
 				}
 			}
 		}
-		if err := validateSecretReferences(values); err != nil {
-			return err
+		var secretErr error
+		if nativeDelta {
+			secretErr = validateNativeDeltaSecretReferences(name, values)
+		} else {
+			secretErr = validateSecretReferences(values)
+		}
+		if secretErr != nil {
+			return secretErr
 		}
 		data, err := json.Marshal(row)
 		if err != nil || previous != nil && bytes.Compare(previous, data) > 0 {
@@ -229,11 +250,15 @@ func validateNativeTable(name string, table NativeTable) error {
 }
 
 func validateNativeTables(tables map[string]NativeTable) error {
+	return validateNativeTablesPolicy(tables, false)
+}
+
+func validateNativeTablesPolicy(tables map[string]NativeTable, nativeDelta bool) error {
 	if tables == nil {
 		return fmt.Errorf("missing native table census")
 	}
 	for name, table := range tables {
-		if err := validateNativeTable(name, table); err != nil {
+		if err := validateNativeTablePolicy(name, table, nativeDelta); err != nil {
 			return err
 		}
 	}
@@ -387,7 +412,7 @@ func validateNativeHistory(h NativeHistory) error {
 	if schemaErr != nil {
 		return schemaErr
 	}
-	if h.Format != NativeHistoryFormat || h.StoreID == "" || len(h.Projects) == 0 || h.Current == nil || h.Images == nil || h.Gaps == nil || len(h.Images) > 10000 || len(h.Gaps) > 10000 {
+	if h.Format != NativeHistoryFormat || h.StoreID == "" || len(h.Projects) == 0 || h.Current == nil || h.Images == nil || h.Gaps == nil || !h.deltaVerified && (len(h.Images) > 10000 || len(h.Gaps) > 10000) {
 		return fmt.Errorf("invalid native history identity or shape")
 	}
 	for i, p := range h.Projects {
@@ -398,7 +423,7 @@ func validateNativeHistory(h NativeHistory) error {
 	if err := validateNativeCoverageShape(h); err != nil {
 		return err
 	}
-	if err := nativeCommitCensus(h); err != nil {
+	if err := checkedNativeCommitCensus(h); err != nil {
 		return err
 	}
 	if err := validateNativeTable("dolt_ignore", h.Ignore); err != nil {
@@ -413,10 +438,25 @@ func validateNativeHistory(h NativeHistory) error {
 			return fmt.Errorf("invalid native ignore value")
 		}
 	}
-	if err := validateNativeTables(h.Current); err != nil {
+	if err := validateNativeTablesPolicy(h.Current, h.deltaVerified); err != nil {
 		return err
 	}
-	if len(h.Current) != len(columns) {
+	expectedCurrent := len(columns)
+	if h.deltaVerified {
+		for name := range h.Current {
+			if _, portable := columns[name]; portable {
+				continue
+			}
+			if !h.OpaqueNativeCurrentFamily(name) {
+				return fmt.Errorf("unmapped native physical current family: %s", name)
+			}
+			expectedCurrent++
+		}
+		if h.OpaqueNativeCurrentFamily("dolt_ignore") && !equalJSON(h.Current["dolt_ignore"], h.Ignore) {
+			return fmt.Errorf("native physical current ignore observation differs")
+		}
+	}
+	if len(h.Current) != expectedCurrent {
 		return fmt.Errorf("incomplete native current family census")
 	}
 	for name, cols := range columns {
@@ -433,7 +473,7 @@ func validateNativeHistory(h NativeHistory) error {
 			return fmt.Errorf("invalid native image sequence")
 		}
 		last, covered[image.Sequence] = image.Sequence, true
-		if err := validateNativeTables(image.Tables); err != nil {
+		if err := validateNativeTablesPolicy(image.Tables, h.deltaVerified); err != nil {
 			return err
 		}
 		if image.CommitID == h.Head {
@@ -442,6 +482,17 @@ func validateNativeHistory(h NativeHistory) error {
 	}
 	if err := validateNativeCommitSchemas(h); err != nil {
 		return err
+	}
+
+	if h.deltaImageCount != 0 {
+		if !h.deltaVerified || h.deltaImageCount != uint64(len(h.Commits)) || len(h.Images) != 1 || head == nil || len(h.Gaps) != 0 {
+			return fmt.Errorf("invalid compact native delta history")
+		}
+		// Every omitted image has already passed the same table/schema checks in
+		// the reconstructor. This private marker cannot be supplied on the wire.
+		for i := range h.Commits {
+			covered[uint64(i+1)] = true
+		}
 	}
 	last = 0
 	for _, gap := range h.Gaps {
@@ -458,6 +509,13 @@ func validateNativeHistory(h NativeHistory) error {
 			return nativeGap(h, "native-boundary-head-image-missing")
 		}
 		return requireCompleteNativeHistory(h)
+	}
+	if h.deltaVerified {
+		stored, atHead := head["dolt_schemas"]
+		current, atCurrent := h.Current["dolt_schemas"]
+		if atHead != atCurrent || atHead && !equalJSON(stored, current) {
+			return nativeGap(h, "head-image-differs-versioned-family:dolt_schemas")
+		}
 	}
 	if h.SchemaProfile != nil {
 		for _, absence := range h.SchemaProfile.Absences {
@@ -514,6 +572,9 @@ func bindNativeCurrent(h NativeHistory, rows map[string][]Record, scoped bool) e
 		}
 	}
 	for name, table := range h.Current {
+		if h.OpaqueNativeCurrentFamily(name) {
+			continue
+		}
 		expected, actual := []Row{}, append([]Row{}, archived[name]...)
 		for _, row := range table.Rows {
 			copy := Row{}
@@ -702,6 +763,10 @@ func (a *Archive) NativeSourceHistories() []NativeHistory {
 		return result
 	}
 	for _, h := range a.nativeHistories {
+		if h.deltaVerified {
+			result = append(result, cloneNativeDeltaHistory(h))
+			continue
+		}
 		data, _ := json.Marshal(h)
 		var value NativeHistory
 		_ = decodeJSON(data, &value)

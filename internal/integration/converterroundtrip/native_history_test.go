@@ -96,11 +96,16 @@ func nativeHistoryFixture(t *testing.T, project, category string) []byte {
 
 func nativeHistoryPlan(t *testing.T, data []byte, store driver.Store, lease driver.ActiveLease) driver.SourcePlanePlanV1 {
 	t.Helper()
-	ctx := context.Background()
 	a, err := dumpformat.Read(bytes.NewReader(data))
 	if err != nil {
 		t.Fatal("declared native history", err)
 	}
+	return nativeHistoryPlanFromArchive(t, a, store, lease)
+}
+
+func nativeHistoryPlanFromArchive(t *testing.T, a *dumpformat.Archive, store driver.Store, lease driver.ActiveLease) driver.SourcePlanePlanV1 {
+	t.Helper()
+	ctx := context.Background()
 	meta, err := store.Meta(ctx)
 	if err != nil {
 		t.Fatal(err)

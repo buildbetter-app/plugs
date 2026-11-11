@@ -264,16 +264,9 @@ func assertNativeTablesReadback(t *testing.T, store driver.Store, profile driver
 				t.Fatal(err)
 			}
 			assertNativeMissingImageTables(t, pinned, identity, scope, image)
+			assertNativeCompleteMappedSnapshot(t, pinned, report.Archive, evidence, at)
 			for table, value := range image.Tables {
-				want, err := nativeTableRecord(identity, table, "retained-native-commit", value)
-				if err != nil {
-					t.Fatal(err)
-				}
-				got, err := pinned.Get(ctx, []model.Ref{want.Ref})
-				if err != nil || len(got) != 1 {
-					t.Fatal("native historical SQL cells/schema/duplicate rows differ", identity, image.Sequence, table, err)
-				}
-				assertNativeTableValue(t, got[0], identity, table, "retained-native-commit", value)
+				assertNativeTableReadback(t, pinned, identity, table, "retained-native-commit", value)
 			}
 			// A source commit never claims the current Plug business image.
 			got, err := pinned.Get(ctx, []model.Ref{model.RefByID(identity.Project+"-42v", model.Natural64(0))})
@@ -300,12 +293,7 @@ func assertNativeTablesReadback(t *testing.T, store driver.Store, profile driver
 				}
 				value.Rows = filtered
 			}
-			want, _ := nativeTableRecord(identity, table, history, value)
-			got, err := reader.Get(ctx, []model.Ref{want.Ref})
-			if err != nil || len(got) != 1 {
-				t.Fatal("current family rows/provenance differ", identity, table, err)
-			}
-			assertNativeTableValue(t, got[0], identity, table, history, value)
+			assertNativeTableReadback(t, reader, identity, table, history, value)
 		}
 	}
 	if err := reader.Close(); err != nil {
@@ -317,49 +305,69 @@ func assertNativeTablesReadback(t *testing.T, store driver.Store, profile driver
 	}
 }
 
+func nativeSnapshotGroups(t *testing.T, reader driver.Reader) map[nativeRowGroup][]driver.Record {
+	t.Helper()
+	view := reader.Snapshot()
+	if view.At == nil {
+		t.Fatal("reader has no pinned revision")
+	}
+	groups, err := queryNativeRowGroups(context.Background(), reader, view.Incarnation, *view.At, nil)
+	if err != nil {
+		t.Fatal("complete native row namespace query", err)
+	}
+	return groups
+}
+
 func assertNativeMissingImageTables(t *testing.T, reader driver.Reader, identity dumpformat.SourceIdentity, scope dumpformat.NativeHistory, image dumpformat.NativeHistoryImage) {
 	t.Helper()
-	absent := []model.Ref{}
-	names := map[string]dumpformat.NativeTable{}
-	for _, other := range scope.Images {
-		for name, value := range other.Tables {
-			names[name] = value
-		}
-		if other.SchemaProfile != nil {
-			for _, absence := range other.SchemaProfile.Absences {
-				if absence.Column == "" {
-					// This value is used only to derive the checked source/table
-					// reference. No absent table body is written or returned.
-					names[absence.Family] = dumpformat.NativeTable{}
-				}
-			}
-		}
-	}
-	for name, value := range names {
-		if _, present := image.Tables[name]; present {
+	// Every selected native Ref is decoded, including wrong-kind orphans. The
+	// active source has exactly this image's table set; previous scopes remain
+	// present and are checked at their own mappings.
+	groups := nativeSnapshotGroups(t, reader)
+	for group := range groups {
+		if group.Source != identity {
 			continue
 		}
-		row, err := nativeTableRecord(identity, name, "retained-native-commit", value)
-		if err != nil {
-			t.Fatal(err)
+		if group.History != "retained-native-commit" {
+			t.Fatal("current family leaked into source commit")
 		}
-		absent = append(absent, row.Ref)
+		if _, present := image.Tables[group.Table]; !present {
+			t.Fatal("absent/extra native table leaked into source commit", image.Sequence, group.Table)
+		}
 	}
-	if len(absent) == 0 {
-		return
-	}
-	rows, err := reader.Get(context.Background(), absent)
-	if err != nil || len(rows) != 0 {
-		t.Fatal("native table absent at this commit leaked from another source image", image.Sequence, err)
+	for table, value := range image.Tables {
+		assertNativeTableGroup(t, groups[nativeRowGroup{identity, table, "retained-native-commit"}], identity, table, "retained-native-commit", value)
 	}
 }
 
-func assertNativeTableValue(t *testing.T, record driver.Record, identity dumpformat.SourceIdentity, table, history string, expected dumpformat.NativeTable) {
+func assertNativeTableReadback(t *testing.T, reader driver.Reader, identity dumpformat.SourceIdentity, table, history string, expected dumpformat.NativeTable) {
 	t.Helper()
-	var value nativeTableBody
-	decode(t, record.Body, &value)
-	if record.Kind != "beads-archive" || value.Source != identity || value.Table != table || value.History != history || !reflect.DeepEqual(value.Columns, expected.Columns) || !bytes.Equal(encode(t, value.Rows), encode(t, expected.Rows)) {
-		t.Fatal("raw table identity, exact cells or duplicate multiplicity changed", identity, table)
+	groups := nativeSnapshotGroups(t, reader)
+	assertNativeTableGroup(t, groups[nativeRowGroup{identity, table, history}], identity, table, history, expected)
+}
+
+func assertNativeTableGroup(t *testing.T, records []driver.Record, identity dumpformat.SourceIdentity, table, history string, expected dumpformat.NativeTable) {
+	t.Helper()
+	wantRecords, err := dumpformat.NativeV1TableRecords(identity, table, history, expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyNativeRowGroup(nativeRowGroup{identity, table, history}, records, wantRecords, expected, nil); err != nil {
+		t.Fatal("source row/meta membership differs", err)
+	}
+	actual, meta, err := dumpformat.ReconstructNativeRowTable(identity, table, history, records, nil)
+	if err != nil || meta.IdentityKind != dumpformat.NativeRowV1ContentBag || meta.PhysicalColumns != nil || meta.PhysicalTableSHA256 != nil {
+		t.Fatal("witness-free v1 identity changed", err)
+	}
+	// The exact predecessor serializer remains independent of row lowering and
+	// reconstruction. Compare bytes, including lexical numbers and duplicates.
+	want, err := nativeTableRecord(identity, table, history, expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := json.Marshal(nativeTableBody{Source: identity, Table: table, History: history, Columns: actual.Columns, Rows: actual.Rows})
+	if err != nil || !bytes.Equal(got, want.Body) {
+		t.Fatal("old native table bytes differ", identity, table, err)
 	}
 }
 
@@ -438,5 +446,61 @@ func TestNativeTablesMissingVersionRefusesNamedGapWithoutPublication(t *testing.
 				t.Fatal("native missing image was backfilled, flattened or lost its source gap", err)
 			}
 		})
+	}
+}
+
+// Expected membership comes from authenticated source images and exact source
+// mappings, including settled previous scopes. Receiver-returned Refs never
+// determine the expected namespace census.
+func assertNativeCompleteMappedSnapshot(t *testing.T, reader driver.Reader, archive *dumpformat.Archive, evidence driver.HistoryImportEvidence, at model.Revision) {
+	t.Helper()
+	expected := map[nativeRowGroup]dumpformat.NativeTable{}
+	found := false
+	for _, mapping := range evidence.Mapping {
+		source := dumpformat.SourceIdentity{StoreID: mapping.SourceStoreID, Project: mapping.Project}
+		for group := range expected {
+			if group.Source == source {
+				delete(expected, group)
+			}
+		}
+		matched := false
+		for _, scope := range archive.NativeSourceHistories() {
+			identity, err := nativeTableIdentity(scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if identity != source {
+				continue
+			}
+			for _, image := range scope.Images {
+				if image.Sequence != mapping.SourceSequence {
+					continue
+				}
+				if len(mapping.CommitIDs) != 1 || mapping.CommitIDs[0] != image.CommitID {
+					t.Fatal("source mapping mismatch")
+				}
+				for name, value := range image.Tables {
+					expected[nativeRowGroup{source, name, "retained-native-commit"}] = value
+				}
+				matched = true
+			}
+		}
+		if !matched {
+			t.Fatal("source mapping has no authenticated image")
+		}
+		if mapping.Revision == at {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("target snapshot is not a source mapping")
+	}
+	groups := nativeSnapshotGroups(t, reader)
+	if len(groups) != len(expected) {
+		t.Fatal("complete multi-source native namespace census differs", len(groups), len(expected))
+	}
+	for group, value := range expected {
+		assertNativeTableGroup(t, groups[group], group.Source, group.Table, group.History, value)
 	}
 }

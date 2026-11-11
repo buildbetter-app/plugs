@@ -23,6 +23,7 @@ go_test(
     data = [
         "testdata/native-built-in-statuses.json",
         "testdata/real-store-import-policy-v2.md",
+        "testdata/public-native-delta-small-0e4d5da4.tar.gz",
         "//internal/core/dumpformat:testdata/native-tables-synthetic.tar",
         "testdata/synthetic-plug-dump-1.tar",
         ":public_source_fixtures",

@@ -45,29 +45,24 @@ type NativeHistoryReport struct {
 	Coverage            *dumpformat.NativeHistoryCoverage `json:"history_coverage,omitempty"`
 }
 
-func nativeHistoryAccounting(archive *dumpformat.Archive) []NativeHistoryReport {
-	scopes := archive.NativeSourceHistories()
+func nativeHistoryAccounting(archive *dumpformat.Archive) ([]NativeHistoryReport, error) {
+	scopes, err := archive.NativeSourceHistoryMetadata()
+	if err != nil {
+		return nil, err
+	}
 	bounded := false
 	for _, scope := range scopes {
 		bounded = bounded || scope.HistoryCoverage != nil
 	}
 	if !bounded {
 		// Preserve original complete-archive report/receipt bytes.
-		return nil
+		return nil, nil
 	}
 	reports := make([]NativeHistoryReport, 0, len(scopes))
 	for _, scope := range scopes {
-		reports = append(reports, NativeHistoryReport{Source: dumpformat.SourceIdentity{StoreID: scope.StoreID, Project: scope.Projects[0]}, Complete: scope.Complete, VerifiedCommitCount: uint64(len(scope.Images)), Coverage: scope.HistoryCoverage})
+		reports = append(reports, NativeHistoryReport{Source: dumpformat.SourceIdentity{StoreID: scope.StoreID, Project: scope.Projects[0]}, Complete: scope.Complete, VerifiedCommitCount: uint64(scope.ImageCount), Coverage: scope.HistoryCoverage})
 	}
-	return reports
-}
-
-type nativeTableBody struct {
-	Source  dumpformat.SourceIdentity `json:"source_identity"`
-	Table   string                    `json:"table"`
-	History string                    `json:"history"`
-	Columns []string                  `json:"columns"`
-	Rows    []dumpformat.Row          `json:"rows"`
+	return reports, nil
 }
 
 func nativeTableIdentity(scope dumpformat.NativeHistory) (dumpformat.SourceIdentity, error) {
@@ -82,7 +77,7 @@ func nativePolicyRefusal(mode driver.RestoreHistoryMode, archive *dumpformat.Arc
 	if err != nil {
 		return err
 	}
-	if scope.Complete && len(scope.Gaps) == 0 && len(scope.Images) != 0 && len(scope.Images) == len(scope.Commits) {
+	if scope.Complete && len(scope.Gaps) == 0 && scope.VerifiedImageCount() != 0 && scope.VerifiedImageCount() == uint64(len(scope.Commits)) {
 		return nil
 	}
 	if scope.HistoryCoverage != nil {
@@ -106,20 +101,7 @@ func nativePolicyRefusal(mode driver.RestoreHistoryMode, archive *dumpformat.Arc
 	return fmt.Errorf("%w: %w", policy, gap)
 }
 
-func nativeTableRecord(identity dumpformat.SourceIdentity, table, history string, value dumpformat.NativeTable) (driver.Record, error) {
-	tuple, err := json.Marshal([]string{identity.StoreID, identity.Project, table})
-	if err != nil {
-		return driver.Record{}, err
-	}
-	prefix := driver.NativeTableHistoryRecordPrefix
-	if history != "retained-native-commit" {
-		prefix = "source/native-current/"
-	}
-	body, err := json.Marshal(nativeTableBody{Source: identity, Table: table, History: history, Columns: value.Columns, Rows: value.Rows})
-	return driver.Record{Ref: model.RefByID(prefix+hashBytes(tuple), model.Natural64(0)), Kind: "beads-archive", Body: body}, err
-}
-
-func nativeImageRecords(identity dumpformat.SourceIdentity, tables map[string]dumpformat.NativeTable) ([]driver.Record, error) {
+func nativeImageRecords(identity dumpformat.SourceIdentity, tables map[string]dumpformat.NativeTable, owners ...*dumpformat.Archive) ([]driver.Record, error) {
 	names := make([]string, 0, len(tables))
 	for name := range tables {
 		names = append(names, name)
@@ -127,54 +109,74 @@ func nativeImageRecords(identity dumpformat.SourceIdentity, tables map[string]du
 	sort.Strings(names)
 	rows := make([]driver.Record, 0, len(names))
 	for _, name := range names {
-		row, err := nativeTableRecord(identity, name, "retained-native-commit", tables[name])
+		var records []driver.Record
+		var err error
+		if len(owners) != 0 {
+			records, err = owners[0].NativeV1TableRecords(identity, name, "retained-native-commit", tables[name])
+		} else {
+			records, err = dumpformat.NativeV1TableRecords(identity, name, "retained-native-commit", tables[name])
+		}
 		if err != nil {
 			return nil, err
 		}
-		rows = append(rows, row)
+		rows = append(rows, records...)
 	}
 	return rows, nil
 }
 
-func lowerNativeTableHistory(archive *dumpformat.Archive, profile driver.RestoreImportProfile) (driver.OfflineHistory, error) {
+func lowerNativeTableHistory(archive *dumpformat.Archive, profile driver.RestoreImportProfile, contexts ...context.Context) (driver.OfflineHistory, error) {
 	if profile.SourcePlanes == nil || profile.HistoryMode != driver.RestoreHistoryModeFull {
 		return driver.OfflineHistory{}, driver.ErrUnsupported
 	}
-	scopes := archive.NativeSourceHistories()
-	if len(scopes) == 0 {
+	if _, delta := archive.NativeDeltaRoot(); delta {
+		return lowerNativeDeltaRowHistory(nativeOperationContext(contexts), archive, profile)
+	}
+	if !archive.HasNativeSourceHistories() {
 		return driver.OfflineHistory{}, driver.ErrUnsupported
 	}
-	for _, scope := range scopes {
-		if err := nativePolicyRefusal(profile.HistoryMode, archive, scope); err != nil {
-			return driver.OfflineHistory{}, err
-		}
-	}
-	sort.Slice(scopes, func(i, j int) bool {
-		if scopes[i].StoreID != scopes[j].StoreID {
-			return scopes[i].StoreID < scopes[j].StoreID
-		}
-		return scopes[i].Projects[0] < scopes[j].Projects[0]
-	})
 	history := driver.OfflineHistory{Source: driver.NativeTableHistorySource, Verified: true, Complete: true, First: 1, Baseline: []driver.Record{}, Gaps: []driver.SourceHistoryGap{}, Batches: []driver.SourceHistoryBatch{}}
-	for _, scope := range scopes {
+	ctx := nativeOperationContext(contexts)
+	err := archive.VisitNativeSourceHistories(ctx, func(scope dumpformat.NativeHistory) error {
+		if err := nativePolicyRefusal(profile.HistoryMode, archive, scope); err != nil {
+			return err
+		}
 		identity, err := nativeTableIdentity(scope)
 		if err != nil {
-			return driver.OfflineHistory{}, err
+			return err
 		}
 		if scope.HistoryCoverage != nil {
 			history.Complete = false
 			history.NativeBoundaries = append(history.NativeBoundaries, driver.NativeHistoryBoundary{SourceStoreID: identity.StoreID, Project: identity.Project, VerifiedCommitCount: uint64(len(scope.Images)), BoundarySHA256: dumpformat.NativeHistoryCoverageSHA256(*scope.HistoryCoverage)})
 		}
 		before := []driver.Record{}
+		_, releaseBefore := archive.NativeDeltaAccountingScope()
+		defer func() { releaseBefore() }()
 		for _, image := range scope.Images {
-			after, err := nativeImageRecords(identity, image.Tables)
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			afterOwner, releaseAfter := archive.NativeDeltaAccountingScope()
+			after, err := nativeImageRecords(identity, image.Tables, afterOwner)
 			if err != nil {
-				return driver.OfflineHistory{}, err
+				releaseAfter()
+				return err
+			}
+			batch := driver.SourceHistoryBatch{SourceStoreID: identity.StoreID, Project: identity.Project, SourceSequence: image.Sequence, Sequence: history.Head + 1, CommitIDs: []string{image.CommitID}, EventIDs: []string{}, Changes: historyDelta(before, after)}
+			// Both rolling images remain admitted until the detached changed
+			// bodies have their retained-batch reservation.
+			if err := archive.ChargeNativeDeltaJSON("offline_batches", batch); err != nil {
+				releaseAfter()
+				return err
 			}
 			history.Head++
-			history.Batches = append(history.Batches, driver.SourceHistoryBatch{SourceStoreID: identity.StoreID, Project: identity.Project, SourceSequence: image.Sequence, Sequence: history.Head, CommitIDs: []string{image.CommitID}, EventIDs: []string{}, Changes: historyDelta(before, after)})
-			before = after
+			history.Batches = append(history.Batches, batch)
+			releaseBefore()
+			before, releaseBefore = after, releaseAfter
 		}
+		return nil
+	})
+	if err != nil {
+		return driver.OfflineHistory{}, err
 	}
 	return history, nil
 }
@@ -191,16 +193,50 @@ func nativeLeaseUnexpired(fields dumpformat.Row, when time.Time) (bool, error) {
 	return expires.After(when), nil
 }
 
-func nativeCurrentRecords(archive *dumpformat.Archive, when time.Time) ([]driver.Record, []NativeFamilyReport, error) {
-	rows := []driver.Record{}
-	reports := []NativeFamilyReport{}
-	for _, scope := range archive.NativeSourceHistories() {
+// nativeCurrentClasses validates the original complete family census without
+// cloning rows. Its returned scalar metadata owns no borrowed table data.
+func nativeCurrentClasses(scope dumpformat.NativeHistory) (map[string]string, map[string]int, error) {
+	classes, counts := map[string]string{}, map[string]int{}
+	for _, source := range scope.Sources {
+		if source.History == "" {
+			continue
+		}
+		if classes[source.Family] != "" || source.History != dumpformat.FamilyVersioned && source.History != dumpformat.FamilyUnversioned {
+			return nil, nil, driver.ErrUnsupported
+		}
+		value, ok := scope.Current[source.Family]
+		if !ok || source.Rows != len(value.Rows) {
+			return nil, nil, driver.ErrUnsupported
+		}
+		classes[source.Family], counts[source.Family] = source.History, source.Rows
+	}
+	for name, value := range scope.Current {
+		if scope.OpaqueNativeCurrentFamily(name) {
+			if classes[name] != "" {
+				return nil, nil, driver.ErrUnsupported
+			}
+			classes[name], counts[name] = dumpformat.FamilyOpaqueNative, len(value.Rows)
+		}
+	}
+	if len(classes) != len(scope.Current) {
+		return nil, nil, driver.ErrUnsupported
+	}
+	return classes, counts, nil
+}
+
+func nativeCurrentRecords(archive *dumpformat.Archive, when time.Time, contexts ...context.Context) ([]driver.Record, []NativeFamilyReport, error) {
+	ctx := nativeOperationContext(contexts)
+	if _, delta := archive.NativeDeltaRoot(); delta {
+		return nativeDeltaCurrentRecords(ctx, archive, when)
+	}
+	rows, reports := []driver.Record{}, []NativeFamilyReport{}
+	err := archive.VisitNativeSourceHistories(ctx, func(scope dumpformat.NativeHistory) error {
 		if err := nativePolicyRefusal(driver.RestoreHistoryModeFull, archive, scope); err != nil {
-			return nil, nil, err
+			return err
 		}
 		identity, err := nativeTableIdentity(scope)
 		if err != nil {
-			return nil, nil, err
+			return err
 		}
 		foundHead := false
 		for _, image := range scope.Images {
@@ -208,52 +244,54 @@ func nativeCurrentRecords(archive *dumpformat.Archive, when time.Time) ([]driver
 				continue
 			}
 			foundHead = true
-			head, err := nativeImageRecords(identity, image.Tables)
+			head, err := nativeImageRecords(identity, image.Tables, archive)
 			if err != nil {
-				return nil, nil, err
+				return err
 			}
 			rows = append(rows, head...)
 		}
 		if !foundHead {
-			return nil, nil, fmt.Errorf("%w: native immutable head image unavailable", driver.ErrUnsupported)
+			return fmt.Errorf("%w: native immutable head image unavailable", driver.ErrUnsupported)
 		}
-		seen := map[string]bool{}
-		for _, source := range scope.Sources {
-			if source.History == "" {
-				continue
+		classes, counts, err := nativeCurrentClasses(scope)
+		if err != nil {
+			return err
+		}
+		names := make([]string, 0, len(classes))
+		for name := range classes {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			if err := ctx.Err(); err != nil {
+				return err
 			}
-			if source.History != "versioned" && source.History != "unversioned-in-beads-by-design" || seen[source.Family] {
-				return nil, nil, fmt.Errorf("%w: ambiguous native family disposition", driver.ErrUnsupported)
-			}
-			seen[source.Family] = true
-			value, ok := scope.Current[source.Family]
-			if !ok || source.Rows != len(value.Rows) {
-				return nil, nil, fmt.Errorf("%w: required current native family unavailable: %s", driver.ErrUnsupported, source.Family)
-			}
-			report := NativeFamilyReport{Source: identity, Family: source.Family, History: source.History, SourceRows: len(value.Rows), ImportedRows: len(value.Rows)}
-			if source.Family == "leases" {
+			value := scope.Current[name]
+			report := NativeFamilyReport{Source: identity, Family: name, History: classes[name], SourceRows: counts[name], ImportedRows: counts[name]}
+			if name == "leases" {
 				retained := []dumpformat.Row{}
 				for _, row := range value.Rows {
 					keep, err := nativeLeaseUnexpired(row, when)
 					if err != nil {
-						return nil, nil, err
+						return err
 					}
 					if keep {
 						retained = append(retained, row)
 					}
 				}
-				value.Rows = retained
+				value.Rows = retained // row maps still borrow authenticated source
 				report.ImportedRows, report.ExpiredRows = len(retained), report.SourceRows-len(retained)
 			}
-			row, err := nativeTableRecord(identity, source.Family, source.History, value)
+			records, err := archive.NativeV1TableRecords(identity, name, classes[name], value)
 			if err != nil {
-				return nil, nil, err
+				return err
 			}
-			rows, reports = append(rows, row), append(reports, report)
+			rows, reports = append(rows, records...), append(reports, report)
 		}
-		if len(seen) != len(scope.Current) {
-			return nil, nil, fmt.Errorf("%w: incomplete current native family dispositions", driver.ErrUnsupported)
-		}
+		return nil
+	})
+	if err != nil {
+		return nil, nil, err
 	}
 	sort.Slice(reports, func(i, j int) bool {
 		a, b := reports[i], reports[j]
@@ -279,30 +317,38 @@ func recoverNativeFamilies(ctx context.Context, reader driver.Reader, profile dr
 	if err != nil || hashBytes(raw) != profile.ArchiveDigest {
 		return nil, nil, nil, driver.ErrConflict
 	}
-	archive, err := dumpformat.Read(bytes.NewReader(raw))
+	archive, err := readRetainedImportArchive(ctx, reader, raw, evidence)
 	if err != nil {
-		return nil, nil, nil, driver.ErrConflict
+		return nil, nil, nil, nativeDeltaRecoveryError(err)
 	}
-	if len(archive.NativeSourceHistories()) == 0 {
+	defer archive.ReleaseNativeDecoded()
+	archive, releaseArchive := archive.NativeDeltaAccountingScope()
+	defer releaseArchive()
+	ctx = archive.WithNativeDeltaAccounting(ctx)
+	if !archive.HasNativeSourceHistories() {
 		return nil, nil, nil, nil
 	}
 	when, err := time.Parse(time.RFC3339Nano, profile.HistoryTime)
 	if err != nil {
 		return nil, nil, nil, driver.ErrConflict
 	}
-	_, reports, err := nativeCurrentRecords(archive, when)
+	_, reports, err := nativeCurrentRecords(archive, when, ctx)
 	if err != nil {
-		return nil, nil, nil, driver.ErrConflict
+		return nil, nil, nil, nativeDeltaRecoveryError(err)
 	}
 	var schemas []NativeSchemaReport
 	if archive.Manifest().MainVersion != 72 {
-		plan, planErr := buildPlanWithProfile(archive, &profile, when)
+		plan, planErr := buildPlanWithProfile(archive, &profile, when, ctx)
 		if planErr != nil {
-			return nil, nil, nil, driver.ErrConflict
+			return nil, nil, nil, nativeDeltaRecoveryError(planErr)
 		}
 		schemas = plan.nativeSchemas
 	}
-	want, err := json.Marshal(nativeFamilyEvidence{Contract: archive.Manifest().SourceFamilyContract, RestoreTime: when.UTC().Format(time.RFC3339Nano), Families: reports, Schemas: schemas, Histories: nativeHistoryAccounting(archive)})
+	histories, err := nativeHistoryAccounting(archive)
+	if err != nil {
+		return nil, nil, nil, nativeDeltaRecoveryError(err)
+	}
+	want, err := json.Marshal(nativeFamilyEvidence{Contract: archive.Manifest().SourceFamilyContract, RestoreTime: when.UTC().Format(time.RFC3339Nano), Families: reports, Schemas: schemas, Histories: histories})
 	if err != nil {
 		return nil, nil, nil, driver.ErrConflict
 	}
@@ -316,5 +362,5 @@ func recoverNativeFamilies(ctx context.Context, reader driver.Reader, profile dr
 	if err != nil || len(rows) != 1 || rows[0].Kind != "instance_config" || !bytes.Equal(rows[0].Body, want) || !bytes.Equal(committed, want) {
 		return nil, nil, nil, driver.ErrConflict
 	}
-	return reports, schemas, nativeHistoryAccounting(archive), nil
+	return reports, schemas, histories, nil
 }

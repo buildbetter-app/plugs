@@ -83,6 +83,10 @@ func validateBoundDispositions(sources []Disposition, counts map[string]int, con
 }
 
 func validateBoundDispositionsForVersion(sources []Disposition, counts map[string]int, config []byte, migration *ImportMigration, planes bool, mainVersion int, familyContracts ...string) error {
+	return validateCaptureDispositionsForVersion(sources, counts, config, migration, planes, mainVersion, false, familyContracts...)
+}
+
+func validateCaptureDispositionsForVersion(sources []Disposition, counts map[string]int, config []byte, migration *ImportMigration, planes bool, mainVersion int, nativeDeltaAttachment bool, familyContracts ...string) error {
 	columns := sourceTableColumns(mainVersion)
 	native := len(familyContracts) != 0 && familyContracts[0] == SourceFamilyContract
 	var entries []externalEntry
@@ -120,7 +124,7 @@ func validateBoundDispositionsForVersion(sources []Disposition, counts map[strin
 					action = "archive"
 				}
 			}
-			if native && (source.Family == "leases" || source.Family == "repo_mtimes") {
+			if native && (source.Family == "leases" || source.Family == "repo_mtimes" || nativeDeltaAttachment && nativeDeltaOpaqueArchiveFamily(source.Family)) {
 				action = "archive"
 			}
 			if native && source.History != FamilyVersioned && source.History != FamilyUnversioned {

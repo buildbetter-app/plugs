@@ -14,13 +14,18 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
-func sourceItem(entity driver.SourcePlaneEntityV1, disposition driver.SourcePlaneDispositionV1, fields map[string]json.RawMessage) (itemState, time.Time, error) {
+func sourceItem(ctx context.Context, entity driver.SourcePlaneEntityV1, disposition driver.SourcePlaneDispositionV1, fields map[string]json.RawMessage) (itemState, time.Time, error) {
 	var empty itemState
-	typ, err := sourceText(fields["issue_type"])
+	transient, release := dumpformat.WithNativeDeltaAccountingScope(ctx)
+	defer release()
+	typ, err := sourceText(fields["issue_type"], transient)
 	if err != nil {
 		return empty, time.Time{}, err
 	}
 	storageRaw, storagePresent := fields["storage_class"]
+	if err := sourceRestoreChargeJSON(transient, "workflow_item_classification", json.RawMessage(storageRaw)); err != nil {
+		return empty, time.Time{}, err
+	}
 	var storage any
 	if !storagePresent {
 		return empty, time.Time{}, sourceRefusal("source storage_class column absent")
@@ -76,17 +81,17 @@ func sourceItem(entity driver.SourcePlaneEntityV1, disposition driver.SourcePlan
 				return empty, time.Time{}, sourceRefusal("unsupported identity mapping")
 			}
 		case "title":
-			item.Title, err = sourceText(raw)
+			item.Title, err = sourceText(raw, ctx)
 		case "type":
 			if name != "issue_type" {
 				return empty, time.Time{}, sourceRefusal("unsupported type mapping")
 			}
-			item.Type, err = sourceText(raw)
+			item.Type, err = sourceText(raw, ctx)
 		case "status":
 			if name != "status" {
 				return empty, time.Time{}, sourceRefusal("unsupported status mapping")
 			}
-			status, statusErr := sourceText(raw)
+			status, statusErr := sourceText(raw, ctx)
 			if statusErr != nil {
 				return empty, time.Time{}, statusErr
 			}
@@ -101,13 +106,19 @@ func sourceItem(entity driver.SourcePlaneEntityV1, disposition driver.SourcePlan
 		case "metadata":
 			data := bytes.TrimSpace(raw)
 			if len(data) != 0 && data[0] == '"' {
-				text, textErr := sourceText(raw)
+				text, textErr := sourceText(raw, transient)
 				if textErr != nil {
 					return empty, time.Time{}, textErr
+				}
+				if err := sourceRestoreChargeBytes(transient, "workflow_metadata_text_bytes", uint64(len(text))); err != nil {
+					return empty, time.Time{}, err
 				}
 				data = []byte(text)
 			}
 			if string(data) != "null" {
+				if err := sourceRestoreChargeJSON(ctx, "workflow_metadata_decoded", json.RawMessage(data)); err != nil {
+					return empty, time.Time{}, err
+				}
 				err = decodeWorkflowJSON(data, &item.Metadata)
 				if item.Metadata == nil && err == nil {
 					err = sourceRefusal("mapped metadata is not an object")
@@ -117,7 +128,7 @@ func sourceItem(entity driver.SourcePlaneEntityV1, disposition driver.SourcePlan
 			if name != "created_at" {
 				return empty, time.Time{}, sourceRefusal("unsupported creation mapping")
 			}
-			stamp, stampErr := sourceText(raw)
+			stamp, stampErr := sourceText(raw, transient)
 			if stampErr != nil {
 				return empty, time.Time{}, stampErr
 			}
@@ -126,6 +137,9 @@ func sourceItem(entity driver.SourcePlaneEntityV1, disposition driver.SourcePlan
 		default:
 			if !strings.HasPrefix(rule.Target, "fields.") || strings.TrimPrefix(rule.Target, "fields.") != name {
 				return empty, time.Time{}, sourceRefusal("unsupported active field slot: " + rule.Target)
+			}
+			if err := sourceRestoreChargeJSON(ctx, "workflow_projected_item_fields", json.RawMessage(raw)); err != nil {
+				return empty, time.Time{}, err
 			}
 			var value any
 			err = decodeWorkflowJSON(raw, &value)
@@ -148,226 +162,281 @@ func sourceItem(entity driver.SourcePlaneEntityV1, disposition driver.SourcePlan
 
 func prepareSourceRelations(ctx context.Context, value *persisted, plan driver.SourcePlanePlanV1, byHash map[string]sourceWireRecord, _ []driver.SourcePlaneRecordV1, entities map[driver.SourceEntityKey]driver.SourcePlaneEntityV1, used map[string]bool) error {
 	for _, relation := range plan.Relations {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		wire, err := sourceMatchedRecord(byHash, relation.Origin)
-		if err != nil {
-			return err
-		}
-		if wire.Kind != "edge" || wire.ID != relation.Source.ID || wire.Project != relation.Source.Project || wire.Source.Table != relation.Source.Table {
-			return sourceRefusal("physical edge address differs")
-		}
-		if err := sourceFieldCensus(wire.Source.Fields, relation.Fields); err != nil {
-			return err
-		}
-		fields := wire.Source.Fields
-		if len(fields) != 10 {
-			return sourceRefusal("incomplete physical dependency row")
-		}
-		for _, name := range []string{"id", "issue_id", "depends_on_issue_id", dumpformat.EphemeralDependencyTargetField, "depends_on_external", "type", "created_at", "created_by", "metadata", "thread_id"} {
-			if _, ok := fields[name]; !ok {
-				return sourceRefusal("missing dependency column")
+		if err := func() error {
+			transient, release := dumpformat.WithNativeDeltaAccountingScope(ctx)
+			defer release()
+
+			if err := ctx.Err(); err != nil {
+				return err
 			}
-		}
-		from, err := sourceText(fields["issue_id"])
-		if err != nil || from != relation.From.ID {
-			return sourceRefusal("physical edge source differs")
-		}
-		id, err := sourceText(fields["id"])
-		if err != nil || id != relation.Source.ID {
-			return sourceRefusal("physical edge identity differs")
-		}
-		kind, err := sourceText(fields["type"])
-		if err != nil || kind != relation.Kind {
-			return sourceRefusal("physical edge kind differs")
-		}
-		arm, target := "", ""
-		for _, name := range []string{"depends_on_issue_id", dumpformat.EphemeralDependencyTargetField, "depends_on_external"} {
-			if string(fields[name]) == "null" {
-				continue
-			}
-			text, err := sourceText(fields[name])
+			wire, err := sourceMatchedRecord(byHash, relation.Origin, transient)
 			if err != nil {
 				return err
 			}
-			if text == "" {
-				continue
+			if wire.Kind != "edge" || wire.ID != relation.Source.ID || wire.Project != relation.Source.Project || wire.Source.Table != relation.Source.Table {
+				return sourceRefusal("physical edge address differs")
 			}
-			if arm != "" {
-				return sourceRefusal("multiple physical edge arms")
+			if err := sourceFieldCensus(wire.Source.Fields, relation.Fields, transient); err != nil {
+				return err
 			}
-			arm, target = name, text
-		}
-		if relation.External != nil {
-			if arm != "depends_on_external" || target != *relation.External {
-				return sourceRefusal("external arm differs")
+			fields := wire.Source.Fields
+			if len(fields) != 10 {
+				return sourceRefusal("incomplete physical dependency row")
 			}
-		} else {
-			plane := dumpformat.DurableEntityTable
-			if arm == dumpformat.EphemeralDependencyTargetField {
-				plane = dumpformat.EphemeralEntityTable
-			} else if arm != "depends_on_issue_id" {
-				return sourceRefusal("local arm differs")
-			}
-			if relation.To == nil || relation.To.ID != target || relation.To.Plane != plane {
-				return sourceRefusal("typed target plane differs")
-			}
-		}
-		if relation.PredicateContract != "beads-typed-metadata/1" {
-			return sourceRefusal("unknown predicate contract")
-		}
-		var metadata any
-		if err := decodeWorkflowJSON(fields["metadata"], &metadata); err != nil {
-			return err
-		}
-		predicate, err := dumpformat.SourceEdgeMetadata(3, id, kind, metadata)
-		if err != nil {
-			return err
-		}
-		canonical, err := json.Marshal(predicate)
-		if err != nil {
-			return err
-		}
-		if string(canonical) != string(relation.PredicateJSON) {
-			return sourceRefusal("detached predicate differs from physical metadata")
-		}
-		used[relation.Origin.SHA256] = true
-		// External endpoints retain complete inert origins. The canonical
-		// workflow relation model contains only local branch-zero references.
-		if relation.External != nil {
-			continue
-		}
-		fromEntity, toEntity := entities[relation.From], entities[*relation.To]
-		if fromEntity.TargetKind != "workflow:item" && toEntity.TargetKind != "workflow:item" {
-			continue
-		}
-		if fromEntity.TargetID == toEntity.TargetID {
-			return sourceRefusal("self relation")
-		}
-		if kind == "related" {
-			kind = "relates-to"
-		}
-		link := relationState{From: fromEntity.TargetID, To: model.RefByID(toEntity.TargetID, model.Natural64(0)), Kind: kind, Metadata: predicate}
-		if fromEntity.TargetKind == "workflow:item" {
-			item := value.Items[fromEntity.TargetID]
-			if kind == "parent-child" {
-				if item.Parent != nil && !sameRef(item.Parent, &link.To) {
-					return sourceRefusal("conflicting imported typed parents")
+			for _, name := range []string{"id", "issue_id", "depends_on_issue_id", dumpformat.EphemeralDependencyTargetField, "depends_on_external", "type", "created_at", "created_by", "metadata", "thread_id"} {
+				if _, ok := fields[name]; !ok {
+					return sourceRefusal("missing dependency column")
 				}
-				item.Parent = cloneRef(&link.To)
 			}
-			item.Links = dedupeRelations(append(item.Links, link))
-			value.Items[item.ID] = item
-		}
-		if toEntity.TargetKind == "workflow:item" {
-			item := value.Items[toEntity.TargetID]
-			if fromEntity.TargetKind == "workflow:item" && item.Owner != value.Items[fromEntity.TargetID].Owner {
-				return sourceRefusal("relation crosses declared owner scope")
+			from, err := sourceText(fields["issue_id"], transient)
+			if err != nil {
+				return err
 			}
-			item.Inbound = dedupeRelations(append(item.Inbound, link))
-			value.Items[item.ID] = item
+			if from != relation.From.ID {
+				return sourceRefusal("physical edge source differs")
+			}
+			id, err := sourceText(fields["id"], transient)
+			if err != nil {
+				return err
+			}
+			if id != relation.Source.ID {
+				return sourceRefusal("physical edge identity differs")
+			}
+			kind, err := sourceText(fields["type"], transient)
+			if err != nil {
+				return err
+			}
+			if kind != relation.Kind {
+				return sourceRefusal("physical edge kind differs")
+			}
+			arm, target := "", ""
+			for _, name := range []string{"depends_on_issue_id", dumpformat.EphemeralDependencyTargetField, "depends_on_external"} {
+				if string(fields[name]) == "null" {
+					continue
+				}
+				text, err := sourceText(fields[name], transient)
+				if err != nil {
+					return err
+				}
+				if text == "" {
+					continue
+				}
+				if arm != "" {
+					return sourceRefusal("multiple physical edge arms")
+				}
+				arm, target = name, text
+			}
+			if relation.External != nil {
+				if arm != "depends_on_external" || target != *relation.External {
+					return sourceRefusal("external arm differs")
+				}
+			} else {
+				plane := dumpformat.DurableEntityTable
+				if arm == dumpformat.EphemeralDependencyTargetField {
+					plane = dumpformat.EphemeralEntityTable
+				} else if arm != "depends_on_issue_id" {
+					return sourceRefusal("local arm differs")
+				}
+				if relation.To == nil || relation.To.ID != target || relation.To.Plane != plane {
+					return sourceRefusal("typed target plane differs")
+				}
+			}
+			if relation.PredicateContract != "beads-typed-metadata/1" {
+				return sourceRefusal("unknown predicate contract")
+			}
+			if err := sourceRestoreChargeJSON(transient, "workflow_relation_metadata", json.RawMessage(fields["metadata"])); err != nil {
+				return err
+			}
+			if err := sourceRestoreChargeJSON(transient, "workflow_relation_predicate", json.RawMessage(relation.PredicateJSON)); err != nil {
+				return err
+			}
+			var metadata any
+			if err := decodeWorkflowJSON(fields["metadata"], &metadata); err != nil {
+				return err
+			}
+			predicate, err := dumpformat.SourceEdgeMetadata(3, id, kind, metadata)
+			if err != nil {
+				return err
+			}
+			if err := sourceRestoreChargeBytes(transient, "workflow_predicate_canonical_check", uint64(len(relation.PredicateJSON))); err != nil {
+				return err
+			}
+			canonical, err := json.Marshal(predicate)
+			if err != nil {
+				return err
+			}
+			if string(canonical) != string(relation.PredicateJSON) {
+				return sourceRefusal("detached predicate differs from physical metadata")
+			}
+			used[relation.Origin.SHA256] = true
+			// External endpoints retain complete inert origins. The canonical
+			// workflow relation model contains only local branch-zero references.
+			if relation.External != nil {
+				return nil
+			}
+			fromEntity, toEntity := entities[relation.From], entities[*relation.To]
+			if fromEntity.TargetKind != "workflow:item" && toEntity.TargetKind != "workflow:item" {
+				return nil
+			}
+			if fromEntity.TargetID == toEntity.TargetID {
+				return sourceRefusal("self relation")
+			}
+			if kind == "related" {
+				kind = "relates-to"
+			}
+			link := relationState{From: fromEntity.TargetID, To: model.RefByID(toEntity.TargetID, model.Natural64(0)), Kind: kind, Metadata: predicate}
+			if fromEntity.TargetKind == "workflow:item" {
+				item := value.Items[fromEntity.TargetID]
+				if kind == "parent-child" {
+					if item.Parent != nil && !sameRef(item.Parent, &link.To) {
+						return sourceRefusal("conflicting imported typed parents")
+					}
+					if err := sourceRestoreChargeJSON(ctx, "workflow_parent_ref", link.To); err != nil {
+						return err
+					}
+					item.Parent = cloneRef(&link.To)
+				}
+				if err := sourceRestoreChargeJSON(ctx, "workflow_outbound_links", link); err != nil {
+					return err
+				}
+				if err := sourceRestoreChargeJSON(transient, "workflow_outbound_link_keys", item.Links); err != nil {
+					return err
+				}
+				item.Links = dedupeRelations(append(item.Links, link))
+				value.Items[item.ID] = item
+			}
+			if toEntity.TargetKind == "workflow:item" {
+				item := value.Items[toEntity.TargetID]
+				if fromEntity.TargetKind == "workflow:item" && item.Owner != value.Items[fromEntity.TargetID].Owner {
+					return sourceRefusal("relation crosses declared owner scope")
+				}
+				if err := sourceRestoreChargeJSON(ctx, "workflow_inbound_links", link); err != nil {
+					return err
+				}
+				if err := sourceRestoreChargeJSON(transient, "workflow_inbound_link_keys", item.Inbound); err != nil {
+					return err
+				}
+				item.Inbound = dedupeRelations(append(item.Inbound, link))
+				value.Items[item.ID] = item
+			}
+			return nil
+		}(); err != nil {
+			return err
 		}
 	}
+
 	return nil
 }
 
 func prepareSourceOrigins(ctx context.Context, value *persisted, plan driver.SourcePlanePlanV1, byHash map[string]sourceWireRecord, _ []driver.SourcePlaneRecordV1, entities map[driver.SourceEntityKey]driver.SourcePlaneEntityV1, used map[string]bool) error {
 	counters := map[string]bool{}
 	for _, origin := range plan.Origins {
-		if err := ctx.Err(); err != nil {
+		if err := func() error {
+			transient, release := dumpformat.WithNativeDeltaAccountingScope(ctx)
+			defer release()
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if origin.Path != "" {
+				return nil
+			} // Sidecar bytes are verified by the archive owner.
+			wire, err := sourceMatchedRecord(byHash, origin.Raw, transient)
+			if err != nil {
+				return err
+			}
+			if wire.Source.Table != origin.Table || wire.ID != origin.ID || !wire.matchesProject(origin.Project) {
+				return sourceRefusal("origin record address differs")
+			}
+			if err := sourceFieldCensus(wire.Source.Fields, origin.Fields, transient); err != nil {
+				return err
+			}
+			used[origin.Raw.SHA256] = true
+			if origin.Action == "inert-origin" || origin.Action == "origin-only" {
+				return nil
+			}
+			if origin.Action != "exact-map" || origin.Owner == nil {
+				return sourceRefusal("unsupported origin disposition")
+			}
+			entity := entities[*origin.Owner]
+			ownerField := "issue_id"
+			if origin.Table == "child_counters" || origin.Table == dumpformat.EphemeralChildCounterTable {
+				ownerField = "parent_id"
+			}
+			owner, err := sourceText(wire.Source.Fields[ownerField], transient)
+			if err != nil {
+				return err
+			}
+			if owner != origin.Owner.ID {
+				return sourceRefusal("auxiliary physical owner differs")
+			}
+			plane := dumpformat.DurableEntityTable
+			if origin.Table == dumpformat.EphemeralLabelTable || origin.Table == dumpformat.EphemeralCommentTable || origin.Table == dumpformat.EphemeralChildCounterTable {
+				plane = dumpformat.EphemeralEntityTable
+			}
+			if origin.Owner.Plane != plane || origin.Owner.Project != origin.Project {
+				return sourceRefusal("auxiliary owner plane/project differs")
+			}
+			if entity.TargetKind != "workflow:item" {
+				return nil
+			}
+			item := value.Items[entity.TargetID]
+			switch origin.Table {
+			case "labels", dumpformat.EphemeralLabelTable:
+				label, err := sourceText(wire.Source.Fields["label"], ctx)
+				if err != nil {
+					return err
+				}
+				if err := validateLabels([]string{label}); err != nil {
+					return err
+				}
+				item.Labels = append(item.Labels, label)
+			case "child_counters", dumpformat.EphemeralChildCounterTable:
+				if counters[item.ID] {
+					return sourceRefusal("duplicate source counter")
+				}
+				counters[item.ID] = true
+				if err := sourceRestoreChargeBytes(transient, "workflow_counter_lexical", uint64(len(wire.Source.Fields["last_child"]))); err != nil {
+					return err
+				}
+				var counter model.Natural
+				if err := json.Unmarshal(wire.Source.Fields["last_child"], &counter); err != nil {
+					return err
+				}
+				n, err := counter.Uint64()
+				if err != nil {
+					return err
+				}
+				item.ChildCounter = n
+			case "comments", dumpformat.EphemeralCommentTable:
+				id, err := sourceText(wire.Source.Fields["id"], ctx)
+				if err != nil {
+					return err
+				}
+				body, err := sourceText(wire.Source.Fields["text"], ctx)
+				if err != nil {
+					return err
+				}
+				author, err := sourceText(wire.Source.Fields["author"], ctx)
+				if err != nil {
+					return err
+				}
+				stamp, err := sourceText(wire.Source.Fields["created_at"], transient)
+				if err != nil {
+					return err
+				}
+				when, err := time.Parse(time.RFC3339Nano, stamp)
+				if err != nil {
+					return err
+				}
+				item.Comments = append(item.Comments, commentState{Body: body, Time: when.UTC(), Source: &SourceCommentOrigin{Project: origin.Project, Table: origin.Table, ID: id, Author: author}})
+			default:
+				return sourceRefusal("unsupported live auxiliary table")
+			}
+			value.Items[item.ID] = item
+			return nil
+		}(); err != nil {
 			return err
 		}
-		if origin.Path != "" {
-			continue
-		} // Sidecar bytes are verified by the archive owner.
-		wire, err := sourceMatchedRecord(byHash, origin.Raw)
-		if err != nil {
-			return err
-		}
-		if wire.Source.Table != origin.Table || wire.ID != origin.ID || !wire.matchesProject(origin.Project) {
-			return sourceRefusal("origin record address differs")
-		}
-		if err := sourceFieldCensus(wire.Source.Fields, origin.Fields); err != nil {
-			return err
-		}
-		used[origin.Raw.SHA256] = true
-		if origin.Action == "inert-origin" || origin.Action == "origin-only" {
-			continue
-		}
-		if origin.Action != "exact-map" || origin.Owner == nil {
-			return sourceRefusal("unsupported origin disposition")
-		}
-		entity := entities[*origin.Owner]
-		ownerField := "issue_id"
-		if origin.Table == "child_counters" || origin.Table == dumpformat.EphemeralChildCounterTable {
-			ownerField = "parent_id"
-		}
-		owner, err := sourceText(wire.Source.Fields[ownerField])
-		if err != nil || owner != origin.Owner.ID {
-			return sourceRefusal("auxiliary physical owner differs")
-		}
-		plane := dumpformat.DurableEntityTable
-		if origin.Table == dumpformat.EphemeralLabelTable || origin.Table == dumpformat.EphemeralCommentTable || origin.Table == dumpformat.EphemeralChildCounterTable {
-			plane = dumpformat.EphemeralEntityTable
-		}
-		if origin.Owner.Plane != plane || origin.Owner.Project != origin.Project {
-			return sourceRefusal("auxiliary owner plane/project differs")
-		}
-		if entity.TargetKind != "workflow:item" {
-			continue
-		}
-		item := value.Items[entity.TargetID]
-		switch origin.Table {
-		case "labels", dumpformat.EphemeralLabelTable:
-			label, err := sourceText(wire.Source.Fields["label"])
-			if err != nil {
-				return err
-			}
-			if err := validateLabels([]string{label}); err != nil {
-				return err
-			}
-			item.Labels = append(item.Labels, label)
-		case "child_counters", dumpformat.EphemeralChildCounterTable:
-			if counters[item.ID] {
-				return sourceRefusal("duplicate source counter")
-			}
-			counters[item.ID] = true
-			var counter model.Natural
-			if err := json.Unmarshal(wire.Source.Fields["last_child"], &counter); err != nil {
-				return err
-			}
-			n, err := counter.Uint64()
-			if err != nil {
-				return err
-			}
-			item.ChildCounter = n
-		case "comments", dumpformat.EphemeralCommentTable:
-			id, err := sourceText(wire.Source.Fields["id"])
-			if err != nil {
-				return err
-			}
-			body, err := sourceText(wire.Source.Fields["text"])
-			if err != nil {
-				return err
-			}
-			author, err := sourceText(wire.Source.Fields["author"])
-			if err != nil {
-				return err
-			}
-			stamp, err := sourceText(wire.Source.Fields["created_at"])
-			if err != nil {
-				return err
-			}
-			when, err := time.Parse(time.RFC3339Nano, stamp)
-			if err != nil {
-				return err
-			}
-			item.Comments = append(item.Comments, commentState{Body: body, Time: when.UTC(), Source: &SourceCommentOrigin{Project: origin.Project, Table: origin.Table, ID: id, Author: author}})
-		default:
-			return sourceRefusal("unsupported live auxiliary table")
-		}
-		value.Items[item.ID] = item
 	}
 	for id, item := range value.Items {
 		sort.Strings(item.Labels)
