@@ -86,7 +86,7 @@ func TestNativeVerifierFinalBindingsRefuseBeforeTargetWriteAllDrivers(t *testing
    meta,err:=store.Meta(ctx);if err!=nil {t.Fatal(err)}
    capability,err:=driver.RequireWorkflowCheckpointStore(store,lease);if err!=nil {t.Fatal(err)}
    before:=snapshot(t,store)
-   for _,mismatch:=range []string{"archive","derived-current","intermediate-transcript","header","clock","full-request","zero-plan","plan-before-final-digest","lifetime"} {
+   for _,mismatch:=range []string{"archive","derived-current","intermediate-transcript","header","clock","full-request","zero-plan","plan-before-final-digest","lifetime","admitted-ceiling"} {
     t.Run(mismatch,func(t *testing.T){
      work,release:=archive.NativeDeltaAccountingScope();defer release()
      stream,err:=historyverify.PrepareNativeArchive(ctx,work,profile,when);if err!=nil {t.Fatal(err)};defer stream.Close()
@@ -102,6 +102,11 @@ func TestNativeVerifierFinalBindingsRefuseBeforeTargetWriteAllDrivers(t *testing
      case "clock":request.When=request.When.Add(time.Nanosecond)
      case "full-request":request.Profile.IdempotencyKey=strings.Repeat("c",32)
      case "zero-plan":plan=nativeprojection.Plan{}
+     case "admitted-ceiling":
+      files:=receivingPublicFiles(t)
+      alternate,e:=dumpformat.ReadNativeCaptureSet(ctx,bytes.NewReader(files["capture-set.json"]),bytes.NewReader(files["head.tar"]),func(_ context.Context,n uint64)(io.ReadCloser,error){return io.NopCloser(bytes.NewReader(files[fmt.Sprintf("parts/%020d.part",n)])),nil},dumpformat.NativeCaptureSetOptions{DecodedLimitBytes:1<<30,DecodedLimitOrigin:"same archive independently admitted at lower ceiling"})
+      if e!=nil {t.Fatal(e)};defer alternate.ReleaseNativeDecoded()
+      plan,e=nativeprojection.BuildWithProfile(alternate,&profile,when,ctx);if e!=nil {t.Fatal(e)}
      case "lifetime":if request.Lifetime==driver.CheckpointLifetimeProcess {request.Lifetime=driver.CheckpointLifetimeRestart}else{request.Lifetime=driver.CheckpointLifetimeProcess}
      }
      _,err=stream.Seal(ctx,request,plan);if err==nil {t.Fatal("mismatched native checkpoint minted",mismatch)}
