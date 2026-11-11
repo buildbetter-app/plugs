@@ -49,6 +49,7 @@ type Source interface {
 // Inventory supplies the offline capture's identity and external-file census.
 // These declarations are operator evidence, never an independent freeze proof.
 type Inventory struct {
+	NativeHistoryContract      string              `json:"native_history_contract,omitempty"`
 	SourceFamilyContract       string              `json:"source_family_contract,omitempty"`
 	StatusCategoryContract     string              `json:"status_category_contract,omitempty"`
 	SourcePlaneAddressContract string              `json:"source_plane_address_contract,omitempty"`
@@ -144,6 +145,7 @@ type Disposition struct {
 }
 
 type Manifest struct {
+	NativeHistoryContract      string              `json:"native_history_contract,omitempty"`
 	SourceFamilyContract       string              `json:"source_family_contract,omitempty"`
 	StatusCategoryContract     string              `json:"status_category_contract,omitempty"`
 	SourcePlaneAddressContract string              `json:"source_plane_address_contract,omitempty"`

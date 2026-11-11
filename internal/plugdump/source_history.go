@@ -17,6 +17,12 @@ type SourceCommitLog struct {
 	Clean      bool
 	Commits    []SourceCommit
 	Boundaries []NativeHistoryBoundary
+	// Actual immutable parent order, separately authenticated by the physical
+	// reader. Legacy sorted parent census behavior stays unchanged.
+	OrderedParents map[string][]string `json:"-"`
+	// Diagnostics are detached driver errors for locally observed boundaries.
+	// They are never part of archive JSON or authenticated history metadata.
+	BoundaryDiagnostics map[string]error `json:"-"`
 }
 
 // SourceHistoryReader is optional. Every image is a complete data-only census
@@ -34,9 +40,11 @@ type ErrSourceHistoryUnavailable struct {
 	OrdinalFromHead     uint64
 	VerifiedCommitCount *uint64
 	SQLCodes            []uint16
+	Cause               error
 }
 
 func (e ErrSourceHistoryUnavailable) Error() string { return "source history unavailable: " + e.Reason }
+func (e ErrSourceHistoryUnavailable) Unwrap() error { return e.Cause }
 
 type frozenHistoryTables map[string]Table
 
@@ -151,7 +159,8 @@ func captureSourceHistory(ctx context.Context, src Source, inventory Inventory, 
 		}
 		total += len(data)
 		if total > MaxArchiveBytes-(4<<20) {
-			return nil, ErrSourceHistoryUnavailable{Reason: "image-census-limit"}
+			version, _ := commitCursor(image, "schema_migrations")
+			return nil, historyFailureCoordinates(ErrSourceHistoryUnavailable{Reason: "image-census-limit"}, historyCommitOrdinal(log, c.ID), version)
 		}
 		frames[i] = frame
 		if i > 0 && frames[i-1].CommitID != "" && !extendsEvents(frames[i-1].Events, events) {

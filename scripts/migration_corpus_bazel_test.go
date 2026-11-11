@@ -2,6 +2,8 @@ package scripts_test
 
 import (
 	"encoding/json"
+	"os"
+	"os/exec"
 	"regexp"
 	"slices"
 	"strings"
@@ -183,5 +185,58 @@ func TestMigrationDoltRuntimeMatchesVersionsSh(t *testing.T) {
 	d := regexp.MustCompile(`(?s)"` + regexp.QuoteMeta(version) + `": \{\s*"linux-amd64": "([0-9a-f]{64})",`).FindStringSubmatch(bzl)
 	if d == nil || d[1] != digest {
 		t.Errorf("tools/bazel/dolt.bzl DOLT_SHA256[%q][linux-amd64] = %v, want %s", version, d, digest)
+	}
+}
+
+// Execute the harness's actual launch function in both modes. Dolt's CLI can
+// detach send-metrics on exit unless this setting survives env -i, racing the
+// harness's later removal of the isolated home.
+func TestHistoricalUpgradeIsolatedEnvDisablesDoltEventFlush(t *testing.T) {
+	root := sourceRepoRoot(t)
+	source := readPolicyFile(t, root, "scripts/migration-test/historical-dolt-upgrade-test.sh")
+	start := strings.Index(source, "isolated_env() {\n")
+	if start < 0 {
+		t.Fatal("historical upgrade harness has no isolated_env function")
+	}
+	end := strings.Index(source[start:], "\n}\n")
+	if end < 0 {
+		t.Fatal("historical upgrade isolated_env function has no closing brace")
+	}
+	function := source[start : start+end+3]
+	for _, mode := range []string{"0", "1"} {
+		for _, inherited := range []string{"unset", "0", "1"} {
+			t.Run("exec_"+mode+"/inherited_"+inherited, func(t *testing.T) {
+				workspace := t.TempDir()
+				script := `set -euo pipefail
+workspace=$1
+ISOLATED_ENV_EXEC=$2
+` + function + `
+isolated_env "$3" --noprofile --norc -c '
+    test "${DOLT_DISABLE_EVENT_FLUSH:-}" = 1
+    test "$BD_DISABLE_EVENT_FLUSH" = 1
+    test "$BD_DISABLE_METRICS" = 1
+    test "$HOME" = "$1/home"
+    test -z "${BEADS_MIGRATION_INHERITED_SENTINEL:-}"
+    printf "isolated-flush-disabled\n"
+' _ "$workspace"
+`
+				bash, err := exec.LookPath("bash")
+				if err != nil {
+					t.Fatal(err)
+				}
+				cmd := exec.Command(bash, "--noprofile", "--norc", "-c", script, "historical-env-check", workspace, mode, bash)
+				cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "BEADS_MIGRATION_INHERITED_SENTINEL=must-not-leak"}
+				if inherited != "unset" {
+					cmd.Env = append(cmd.Env, "DOLT_DISABLE_EVENT_FLUSH="+inherited)
+				}
+				output, err := cmd.CombinedOutput()
+				if err != nil {
+					t.Fatalf("actual isolated_env dropped the event-flush setting: %v\n%s", err, output)
+				}
+				if string(output) != "isolated-flush-disabled\n" {
+					t.Fatalf("isolated_env output = %q", output)
+				}
+			})
+		}
 	}
 }

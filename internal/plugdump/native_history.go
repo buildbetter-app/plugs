@@ -159,7 +159,7 @@ func nativeTable(table Table, family string, policy map[string]string) (NativeTa
 				}
 			}
 		}
-		if err := validateSecretReferences(values); err != nil {
+		if err := validateSQLSecretReferences(family, values); err != nil {
 			return result, err
 		}
 		result.Rows = append(result.Rows, row)
@@ -400,7 +400,11 @@ func captureNativeHistory(ctx context.Context, src Source, inventory Inventory, 
 		}
 		total += len(data)
 		if total > MaxArchiveBytes/2 {
-			return nil, ErrSourceHistoryUnavailable{Reason: "native-image-census-limit"}
+			var version *uint64
+			if commitProfile != nil {
+				version = commitProfile.MainVersion
+			}
+			return nil, historyFailureCoordinates(ErrSourceHistoryUnavailable{Reason: "native-image-census-limit"}, historyCommitOrdinal(log, c.ID), version)
 		}
 		h.Images = append(h.Images, frame)
 	}
@@ -410,7 +414,7 @@ func captureNativeHistory(ctx context.Context, src Source, inventory Inventory, 
 	}
 	ordered, err := historyCommitOrder(final)
 	if err != nil || !final.Clean || final.Head != log.Head || !equalJSON(commits, ordered) || !equalJSON(log.Boundaries, final.Boundaries) {
-		return nil, ErrSourceHistoryUnavailable{Reason: "source-census-changed"}
+		return nil, ErrSourceHistoryUnavailable{Reason: "source-census-changed", Cause: err}
 	}
 	return h, nil
 }
@@ -418,6 +422,9 @@ func captureNativeHistory(ctx context.Context, src Source, inventory Inventory, 
 func familyAction(name, contract string) (string, string) {
 	if contract == SourceFamilyContract && (name == "leases" || name == "repo_mtimes") {
 		return "archive", "current SQL rows retained; lease eligibility is evaluated at the supplied restore time"
+	}
+	if contract == SourceFamilyContract && (name == "federation_peers" || name == "interactions" || name == "routes") {
+		return "archive", "opaque native source rows retained; no federation, interaction execution or route activation"
 	}
 	return actionFor(name)
 }
@@ -455,6 +462,20 @@ func classifyNativeSources(sources []Disposition, h NativeHistory) error {
 
 func validateNativeHistory(manifest Manifest, members map[string][]byte) error {
 	raw, present := members[NativeHistoryMember]
+	if manifest.NativeHistoryContract == NativeDeltaFormat {
+		if present || manifest.SourceFamilyContract != SourceFamilyContract || manifest.SourcePlaneAddressContract != SourcePlaneAddressContract || manifest.History != "available-unverified" {
+			return fmt.Errorf("invalid native delta head attachment")
+		}
+		if _, present := members[SourceHistoryMember]; !present {
+			return fmt.Errorf("native delta head requires graph/events attachment")
+		}
+		for _, source := range manifest.Sources {
+			if _, known := tableColumns[source.Family]; known && source.History != FamilyVersioned && source.History != FamilyUnversioned {
+				return fmt.Errorf("native delta requires family history classification")
+			}
+		}
+		return nil
+	}
 	if manifest.SourceFamilyContract == "" {
 		if present {
 			return fmt.Errorf("native history requires source family contract")

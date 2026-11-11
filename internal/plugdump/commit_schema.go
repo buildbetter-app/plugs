@@ -1,6 +1,7 @@
 package plugdump
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -53,6 +54,30 @@ type NativeCommitFailure struct {
 
 func (*NativeCommitFailure) Error() string   { return "native commit capture failed" }
 func (e *NativeCommitFailure) Unwrap() error { return e.Cause }
+
+// Keep the genuine cause while filling only coordinates actually observed in
+// the current read. Unknown graph/schema coordinates remain explicit null in
+// the closed report; HEAD's version is never borrowed for an older commit.
+func historyFailureCoordinates(err error, ordinal uint64, version *uint64) error {
+	if err == nil {
+		return nil
+	}
+	var previous *NativeCommitFailure
+	if errors.As(err, &previous) {
+		if previous.OrdinalFromHead != 0 {
+			ordinal = previous.OrdinalFromHead
+			// These coordinates are one observation. An unknown schema at a
+			// known older commit must stay unknown, never inherit HEAD's cursor.
+			version = previous.SchemaVersion
+		} else if previous.SchemaVersion != nil {
+			version = previous.SchemaVersion
+		}
+		if previous.OrdinalFromHead == ordinal && equalJSON(previous.SchemaVersion, version) {
+			return err
+		}
+	}
+	return &NativeCommitFailure{SchemaVersion: version, OrdinalFromHead: ordinal, Cause: err}
+}
 
 // NativeCommitSchemaSurfaces is a detached closed PUBLIC comparison census.
 // The current pinned census is supplemented by removed shipped columns. This

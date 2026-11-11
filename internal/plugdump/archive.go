@@ -90,7 +90,11 @@ func encode(manifest Manifest, records map[string][]Record, files map[string][]b
 	if err := writer.Close(); err != nil {
 		return nil, err
 	}
-	if _, err := Validate(bytes.NewReader(output.Bytes())); err != nil {
+	validate := Validate
+	if manifest.NativeHistoryContract == NativeDeltaFormat {
+		validate = ValidateNativeDeltaHead
+	}
+	if _, err := validate(bytes.NewReader(output.Bytes())); err != nil {
 		return nil, fmt.Errorf("validate generated dump: %w", err)
 	}
 	return output.Bytes(), nil
@@ -121,6 +125,16 @@ func edgeRegistryVersion(records []Record) (int, error) {
 // canonical record ordering without extracting files or touching a store.
 // A valid archive still carries explicit unperformed migration checks.
 func Validate(reader io.Reader) (Manifest, error) {
+	return validateArchive(reader, false)
+}
+
+// ValidateNativeDeltaHead validates ONLY the bounded portable attachment. It
+// never grants full-history/capture-set validation or legacy compatibility.
+func ValidateNativeDeltaHead(reader io.Reader) (Manifest, error) {
+	return validateArchive(reader, true)
+}
+
+func validateArchive(reader io.Reader, deltaAttachment bool) (Manifest, error) {
 	data, err := io.ReadAll(io.LimitReader(reader, MaxArchiveBytes+1))
 	if err != nil || len(data) > MaxArchiveBytes {
 		return Manifest{}, fmt.Errorf("unreadable or oversized archive")
@@ -174,6 +188,14 @@ func Validate(reader io.Reader) (Manifest, error) {
 	var manifestFields map[string]json.RawMessage
 	if err := json.Unmarshal(members["manifest.json"], &manifestFields); err != nil {
 		return Manifest{}, fmt.Errorf("invalid manifest: %w", err)
+	}
+	_, deltaPresent := manifestFields["native_history_contract"]
+	if deltaAttachment {
+		if !deltaPresent || manifest.NativeHistoryContract != NativeDeltaFormat || manifest.SourceFamilyContract != SourceFamilyContract {
+			return Manifest{}, fmt.Errorf("native delta attachment marker required")
+		}
+	} else if deltaPresent {
+		return Manifest{}, fmt.Errorf("native delta requires capture-set validation")
 	}
 	if _, present := manifestFields["source_fields_contract"]; present && manifest.SourceFieldsContract != IssueSourceFieldsContract {
 		return Manifest{}, fmt.Errorf("unsupported source fields contract")

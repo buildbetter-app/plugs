@@ -6,10 +6,15 @@ import (
 	"database/sql/driver"
 	"errors"
 	"io/fs"
+	"path/filepath"
+	"reflect"
 	"sort"
 
 	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb"
 	"github.com/dolthub/dolt/go/libraries/doltcore/sqle/dsess"
+	"github.com/dolthub/dolt/go/store/chunks"
+	"github.com/dolthub/dolt/go/store/datas"
+	"github.com/dolthub/dolt/go/store/nbs"
 	"github.com/go-sql-driver/mysql"
 )
 
@@ -26,6 +31,10 @@ func (*PhysicalHistoryUnavailable) Error() string   { return "physical history u
 func (e *PhysicalHistoryUnavailable) Unwrap() error { return e.Cause }
 
 func PhysicalHistoryUnavailableReason(err error) string {
+	var inconsistent *PhysicalStoreInconsistent
+	if errors.As(err, &inconsistent) {
+		return ""
+	}
 	for depth := 0; err != nil && depth < 32; depth++ {
 		if missing, ok := err.(*PhysicalHistoryUnavailable); ok {
 			return missing.Reason
@@ -99,6 +108,11 @@ func missingPhysicalHistory(kind string, err error) string {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return ""
 	}
+	var cleanup *physicalCleanupFailure
+	var inconsistent *PhysicalStoreInconsistent
+	if errors.As(err, &cleanup) || errors.As(err, &inconsistent) {
+		return ""
+	}
 	// A joined integrity/cleanup error cannot become a missing-storage success
 	// merely because one of its other causes is a missing-hash sentinel.
 	for cause, depth := err, 0; cause != nil && depth < 32; depth++ {
@@ -114,9 +128,24 @@ func missingPhysicalHistory(kind string, err error) string {
 	if kind == "resolve" && errors.Is(err, doltdb.ErrGhostCommitEncountered) {
 		return "ghost_parent"
 	}
+	var absent *storedChunkAbsent
+	if errors.As(err, &absent) {
+		if kind == "schema" && absent.reason == "missing_table_chunk" {
+			return "unreadable_schema"
+		}
+		return absent.reason
+	}
+	var archive *fs.PathError
+	if errors.As(err, &archive) && errors.Is(err, fs.ErrNotExist) && filepath.Ext(archive.Path) == nbs.ArchiveFileSuffix {
+		switch kind {
+		case "resolve", "root", "root-lock", "census", "table", "rows", "schema":
+			return "missing_archive_chunk"
+		}
+	}
+	var missingChunk *chunks.MissingChunkError
 	// A concrete missing-hash / missing-file error at a stored-root or stored
 	// table read is distinguishable from corrupt bytes and failed decoding.
-	if !errors.Is(err, doltdb.ErrHashNotFound) && !errors.Is(err, fs.ErrNotExist) {
+	if !errors.Is(err, doltdb.ErrHashNotFound) && !errors.Is(err, fs.ErrNotExist) && !errors.As(err, &missingChunk) {
 		return ""
 	}
 	switch kind {
@@ -126,19 +155,121 @@ func missingPhysicalHistory(kind string, err error) string {
 		return "missing_table_chunk"
 	case "schema":
 		return "unreadable_schema"
+	case "resolve":
+		return "other"
 	}
 	return ""
 }
 
 type PhysicalHistoryCommit struct {
-	ID       string
-	Parents  []string
-	Metadata map[string]driver.Value
+	ID             string
+	Parents        []string
+	OrderedParents []string
+	Metadata       map[string]driver.Value
 }
 
 type PhysicalHistoryBoundary struct {
 	CommitID, Reason string
 	SQLCodes         []uint16
+	Cause            error
+}
+
+// The commit itself authenticates the expected root address. Checking the
+// backing store distinguishes an absent value from a present corrupt value;
+// GetRootValue alone uses an unexported error for the former in the pinned engine.
+type storedChunkAbsent struct{ reason string }
+
+func (*storedChunkAbsent) Error() string { return "authenticated stored chunk absent" }
+
+func readPhysicalRoot(ctx context.Context, ddb *doltdb.DoltDB, commit *doltdb.Commit) (doltdb.RootValue, error) {
+	address, err := datas.GetCommitRootHash(commit.Value())
+	if err != nil {
+		return nil, err
+	}
+	if address.IsEmpty() {
+		return nil, errors.New("commit has no authenticated root address")
+	}
+	store := datas.ChunkStoreFromDatabase(doltdb.ExposeDatabaseFromDoltDB(ddb))
+	present, err := store.Has(ctx, address)
+	if err != nil {
+		return nil, err
+	}
+	if !present {
+		return nil, &storedChunkAbsent{reason: "missing_root_chunk"}
+	}
+	return commit.GetRootValue(ctx)
+}
+
+// Retain only detached type names and original numeric codes for diagnostics.
+// Translation remains available to SQL consumers, but its generic fallback
+// number must never be mistaken for an observed source code.
+type physicalErrorEvidence struct {
+	cause     error
+	types     []string
+	codes     []uint16
+	innermost string
+}
+
+func (*physicalErrorEvidence) Error() string                      { return "physical source error" }
+func (e *physicalErrorEvidence) Unwrap() error                    { return e.cause }
+func (e *physicalErrorEvidence) SafeGoErrorTypes() []string       { return append([]string{}, e.types...) }
+func (e *physicalErrorEvidence) SafeSQLCodes() []uint16           { return append([]uint16{}, e.codes...) }
+func (e *physicalErrorEvidence) SafeInnermostGoErrorType() string { return e.innermost }
+
+func physicalInnermostErrorType(err error) string {
+	leaf, deepest := "", -1
+	var visit func(error, int)
+	visit = func(e error, depth int) {
+		if e == nil || depth > 32 {
+			return
+		}
+		hasChild := false
+		switch wrapped := e.(type) {
+		case interface{ Unwrap() []error }:
+			for _, child := range wrapped.Unwrap() {
+				if child != nil {
+					hasChild = true
+					visit(child, depth+1)
+				}
+			}
+		case interface{ Unwrap() error }:
+			if child := wrapped.Unwrap(); child != nil {
+				hasChild = true
+				visit(child, depth+1)
+			}
+		}
+		if !hasChild && depth > deepest {
+			deepest, leaf = depth, reflect.TypeOf(e).String()
+		}
+	}
+	visit(err, 0)
+	return leaf
+}
+
+func physicalErrorTypes(err error) []string {
+	result := []string{}
+	seen := map[string]bool{}
+	var visit func(error, int)
+	visit = func(e error, depth int) {
+		if e == nil || depth > 32 {
+			return
+		}
+		name := reflect.TypeOf(e).String()
+		if !seen[name] {
+			result = append(result, name)
+			seen[name] = true
+		}
+		switch wrapped := e.(type) {
+		case interface{ Unwrap() []error }:
+			for _, child := range wrapped.Unwrap() {
+				visit(child, depth+1)
+			}
+		case interface{ Unwrap() error }:
+			visit(wrapped.Unwrap(), depth+1)
+		}
+	}
+	visit(err, 0)
+	return result
 }
 
 type PhysicalHistoryLog struct {
@@ -249,14 +380,9 @@ func (d *DoltConn) readPhysicalHistory(ctx context.Context, head string) (Physic
 		if actual.String() != expected {
 			return errors.New("physical ancestry identity differs")
 		}
-		if _, err := commit.GetRootValue(q); err != nil {
-			if reason := missingPhysicalHistory("root", err); reason != "" && expected != head {
-				result.Boundaries = append(result.Boundaries, PhysicalHistoryBoundary{CommitID: expected, Reason: reason, SQLCodes: physicalHistorySQLCodes(err)})
-				state[expected] = 2
-				return nil
-			}
-			return physicalReadError("root", expected, "", err)
-		}
+		// Commit metadata and parent edges do not depend on the commit's root.
+		// Preserve the actual graph even when a historical root is absent; the
+		// own-version image reader authenticates readability and cuts its suffix.
 		meta, err := commit.GetCommitMeta(q)
 		if err != nil {
 			return physicalReadError("metadata", expected, "", err)
@@ -277,12 +403,24 @@ func (d *DoltConn) readPhysicalHistory(ctx context.Context, head string) (Physic
 			record.Parents = append(record.Parents, parent.String())
 			previous, err := commit.GetParent(q, i)
 			if err != nil {
-				return physicalReadError("parents", expected, "", err)
+				if reason := missingPhysicalHistory("resolve", err); reason != "" {
+					id := parent.String()
+					if state[id] == 1 {
+						return errors.New("physical ancestry cycle")
+					}
+					if state[id] != 2 {
+						state[id] = 2
+						result.Boundaries = append(result.Boundaries, PhysicalHistoryBoundary{CommitID: id, Reason: reason, SQLCodes: physicalHistorySQLCodes(err), Cause: physicalReadError("resolve", id, "", err)})
+					}
+					continue
+				}
+				return physicalReadError("parents", parent.String(), "", err)
 			}
 			if err := visit(previous, parent.String()); err != nil {
 				return err
 			}
 		}
+		record.OrderedParents = append([]string{}, record.Parents...)
 		sort.Strings(record.Parents)
 		result.Commits = append(result.Commits, record)
 		state[expected] = 2

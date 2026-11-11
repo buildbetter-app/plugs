@@ -386,6 +386,7 @@
             "ghost_parent",
             "missing_root_chunk",
             "missing_table_chunk",
+            "missing_archive_chunk",
             "unreadable_schema",
             "other"
           ]

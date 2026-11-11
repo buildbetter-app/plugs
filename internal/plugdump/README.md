@@ -218,11 +218,16 @@ verification is explicitly unimplemented; the manifest never certifies it.
 | `leases` | Refuse every nonempty set, including expired rows until resolved by the capture producer |
 | `wisps`, `wisp_labels`, `wisp_dependencies`, `wisp_events`, `wisp_comments`, `wisp_child_counters` | Retain complete nonempty rows as read-only workflow evidence; validate plane, endpoint, target-arm and source-field mirrors |
 | `custom_statuses`, `custom_types` | Retain complete rows and validate their stored/YAML union; no Plug lifecycle semantics are inferred |
-| `routes` | Explicitly refuse nonempty SQL routing until multi-store source resolution is implemented |
-| `interactions`, `federation_peers` | Explicitly refuse nonempty families pending redaction/credential-safe archive policy |
+| `routes` | Portable export refuses nonempty SQL routing; native source-family capture archives exact rows without route activation |
+| `interactions`, `federation_peers` | Portable export refuses nonempty families; native source-family capture archives exact rows without execution or federation activation; actual credentials/digests still refuse |
 | `ready_issues`, `blocked_issues` | Derived views are excluded from base-table reads; rebuilding and runtime membership/cycle comparison remain unverified |
 
-All nonempty refused families remain unsupported inputs; an empty table is
+Native peer `password_encrypted` cells preserve SQL NULL and empty text/BLOB
+exactly as read. This absence exception applies only to that declared column;
+other credential checks, configuration policies and nested references retain
+their existing validation. Present credentials and digests are never copied.
+
+All other nonempty refused families remain unsupported inputs; an empty table is
 still counted. Durable rows with a non-versioned storage class refuse. The
 ephemeral/template flags and active gate/molecule/agent markers on otherwise
 supported issue rows are retained verbatim in `source.fields` only; they do

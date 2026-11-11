@@ -19,53 +19,64 @@ var _ NativeSourceHistoryReader = OwnVersionCommitSource{}
 var _ NativeCommitSchemaReader = OwnVersionCommitSource{}
 
 func (s OwnVersionCommitSource) ReadNativeSourceImage(ctx context.Context, id string) (result map[string]Table, resultErr error) {
+	physical, err := s.ReadNativeDeltaImage(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return physicalCaptureTables(physical.Tables)
+}
+
+// ReadNativeDeltaImage authenticates the same fixed cursors and complete root
+// as the normalized port, retaining detached SQL types/key metadata/cells for
+// the versioned delta stream. No names-only typed evidence is invented.
+func (s OwnVersionCommitSource) ReadNativeDeltaImage(ctx context.Context, id string) (result physicalcapture.Image, resultErr error) {
 	if s.PhysicalDB == nil {
-		return nil, fmt.Errorf("physical capture database required")
+		return result, fmt.Errorf("physical capture database required")
 	}
 	conn, err := s.PhysicalDB.Conn(ctx)
 	if err != nil {
-		return nil, err
+		return result, err
 	}
 	defer func() {
 		resultErr = errors.Join(resultErr, conn.Close())
 		if resultErr != nil {
-			result = nil
+			result = physicalcapture.Image{}
 		}
 	}()
 	cursorImage, err := physicalcapture.ReadCommitSchema(ctx, conn, id)
 	if err != nil {
-		return nil, &NativeCommitFailure{Cause: err}
+		return result, &NativeCommitFailure{Cause: err}
 	}
 	if cursorImage.CommitID != id || !cursorImage.ReadOnlyScope {
-		return nil, &NativeCommitFailure{Cause: fmt.Errorf("immutable cursor identity differs")}
+		return result, &NativeCommitFailure{Cause: fmt.Errorf("immutable cursor identity differs")}
 	}
 	cursorTables, err := physicalCaptureTables(cursorImage.Tables)
 	if err != nil {
-		return nil, &NativeCommitFailure{Cause: err}
+		return result, &NativeCommitFailure{Cause: err}
 	}
 	cursor, err := nativeCommitCursors(cursorTables, cursorImage.RootTableCount)
 	if err != nil {
-		return nil, &NativeCommitFailure{SchemaVersion: cursor.MainVersion, Cause: err}
+		return result, &NativeCommitFailure{SchemaVersion: cursor.MainVersion, Cause: err}
 	}
 	physical, err := physicalcapture.ReadCommit(ctx, conn, id)
 	if err != nil {
-		return nil, &NativeCommitFailure{SchemaVersion: cursor.MainVersion, Cause: err}
+		return result, &NativeCommitFailure{SchemaVersion: cursor.MainVersion, Cause: err}
 	}
 	if physical.CommitID != id || !physical.ReadOnlyScope || len(physical.Tables) != cursorImage.RootTableCount {
-		return nil, fmt.Errorf("physical commit identity differs")
+		return result, &NativeCommitFailure{SchemaVersion: cursor.MainVersion, Cause: fmt.Errorf("physical commit identity differs")}
 	}
 	image, err := physicalCaptureTables(physical.Tables)
 	if err != nil {
-		return nil, &NativeCommitFailure{SchemaVersion: cursor.MainVersion, Cause: err}
+		return result, &NativeCommitFailure{SchemaVersion: cursor.MainVersion, Cause: err}
 	}
 	observed, err := ProfileNativeCommit(image)
 	if err != nil {
-		return nil, &NativeCommitFailure{SchemaVersion: cursor.MainVersion, Cause: err}
+		return result, &NativeCommitFailure{SchemaVersion: cursor.MainVersion, Cause: err}
 	}
 	if !equalJSON(cursor.MainVersion, observed.MainVersion) || !equalJSON(cursor.IgnoredVersion, observed.IgnoredVersion) {
-		return nil, &NativeCommitFailure{SchemaVersion: cursor.MainVersion, Cause: fmt.Errorf("immutable cursor differs from full image")}
+		return result, &NativeCommitFailure{SchemaVersion: cursor.MainVersion, Cause: fmt.Errorf("immutable cursor differs from full image")}
 	}
-	return image, nil
+	return physical, nil
 }
 
 func (OwnVersionCommitSource) ProfileNativeSourceImage(image map[string]Table) (NativeCommitSchemaProfile, error) {

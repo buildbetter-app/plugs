@@ -60,6 +60,7 @@ func decodeSafeReports(t *testing.T, data []byte) []safeCaptureReport {
 	decoder.DisallowUnknownFields()
 	var reports []safeCaptureReport
 	for {
+		start := decoder.InputOffset()
 		var report safeCaptureReport
 		err := decoder.Decode(&report)
 		if err == io.EOF {
@@ -68,11 +69,27 @@ func decodeSafeReports(t *testing.T, data []byte) []safeCaptureReport {
 		if err != nil {
 			t.Fatalf("non-taxonomy output: %s: %v", data, err)
 		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(data[start:decoder.InputOffset()], &fields); err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range []string{"format", "stage", "schema_migrations", "reason_subcode", "table",
+			"commit_ordinal_from_head", "commit_schema_version", "verified_commit_count",
+			"go_error_types", "sql_dolt_codes", "unrecognized_go_error_type_count"} {
+			if _, present := fields[key]; !present {
+				t.Fatalf("actual executable omitted mandatory diagnostic field %s", key)
+			}
+		}
 		if report.Format != "beads-capture-diagnostic/1" {
 			t.Fatalf("unknown report format: %+v", report)
 		}
+		for _, name := range report.GoErrorTypes {
+			if safeGoErrorType(name) == "" {
+				t.Fatal("actual executable emitted an unregistered error class")
+			}
+		}
 		switch report.Stage {
-		case stageOpen, stageSchema, stageCensus, stageHistory, stageCell:
+		case stageOpen, stageSchema, stageCensus, stageHistory, stageCell, stageReport:
 		default:
 			t.Fatalf("unregistered stage: %+v", report)
 		}
@@ -190,7 +207,7 @@ func TestPublicCaptureSchemaProbeOwnVersionBeforeReader(t *testing.T) {
 					t.Fatal("missing migration cursor fabricated a successful measurement")
 				}
 				reports := decodeSafeReports(t, stderr)
-				if len(reports) != 1 || reports[0].Stage != stageSchema || reports[0].Schema.FoundVersion != nil || !reflect.DeepEqual(reports[0].SQLCodes, []uint16{1146}) {
+				if len(reports) != 1 || reports[0].Stage != stageSchema || reports[0].Table == nil || *reports[0].Table != "schema_migrations" || reports[0].Schema.FoundVersion != nil || !reflect.DeepEqual(reports[0].SQLCodes, []uint16{1146}) {
 					t.Fatalf("missing-table failure classification differs: %+v", reports)
 				}
 			} else {
@@ -198,7 +215,7 @@ func TestPublicCaptureSchemaProbeOwnVersionBeforeReader(t *testing.T) {
 					t.Fatalf("actual own-version numeric probe failed: %v: %s", probeErr, stderr)
 				}
 				reports := decodeSafeReports(t, stdout)
-				if len(reports) != 1 || reports[0].Stage != stageSchema || reports[0].Schema.FoundVersion == nil || *reports[0].Schema.FoundVersion != uint64(fixture.version) || reports[0].Schema.ExpectedVersion != plugdump.CaptureSchemaVersion() || reports[0].Schema.RowCountClass != "series" || len(reports[0].GoErrorTypes) != 0 {
+				if len(reports) != 1 || reports[0].Stage != stageSchema || reports[0].Schema.FoundVersion == nil || *reports[0].Schema.FoundVersion != uint64(fixture.version) || reports[0].Schema.ExpectedVersion != plugdump.CaptureSchemaVersion() || reports[0].Schema.RowCountClass != "series" || len(reports[0].GoErrorTypes) != 0 || reports[0].Table != nil || reports[0].UnrecognizedGoErrorTypeCount != 0 {
 					t.Fatalf("actual numeric schema evidence differs: %+v", reports)
 				}
 			}
@@ -246,7 +263,7 @@ func TestPublicCaptureFlagErrorNeverEchoesArgument(t *testing.T) {
 		t.Fatal("flag error accepted or echoed its value")
 	}
 	reports := decodeSafeReports(t, stderr.Bytes())
-	if len(reports) != 1 || reports[0].Stage != stageOpen {
-		t.Fatal("flag error is not an open-stage typed report")
+	if len(reports) != 1 || reports[0].Stage != stageReport {
+		t.Fatal("flag error is not a report-stage typed report")
 	}
 }

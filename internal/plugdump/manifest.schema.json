@@ -7,6 +7,7 @@
   "additionalProperties": false,
   "required": ["format", "schema", "beads_reference", "store_id", "machine", "main_version", "ignored_version", "scope", "history", "projects", "kind_registry", "files", "sources", "warnings", "verification"],
   "properties": {
+	"native_history_contract": {"const":"beads-native-delta/2"},
     "format": {"const": "plug-dump/1"},
     "schema": {"const": 1},
     "beads_reference": {"const": "9d6fff760b7a314b476539198504d77ce0959656"},

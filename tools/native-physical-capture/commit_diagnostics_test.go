@@ -21,7 +21,7 @@ type commitErrorWrapper struct{ cause error }
 func (*commitErrorWrapper) Error() string   { panic("never format a wrapper") }
 func (e *commitErrorWrapper) Unwrap() error { return e.cause }
 
-func TestSafePerCommitTaxonomyKeepsUnfamiliarInnermostTypeAndNumericContext(t *testing.T) {
+func TestSafePerCommitTaxonomyCountsUnfamiliarTypesAndKeepsNumericContext(t *testing.T) {
 	schema := uint64(39)
 	cause := &plugdump.NativeCommitFailure{SchemaVersion: &schema, OrdinalFromHead: 7,
 		Cause: errors.Join(&commitErrorWrapper{cause: &unfamiliarCommitDecodeError{private: "private-cell-id-and-hash"}}, &mysql.MySQLError{Number: 1105, Message: "private SQL message"})}
@@ -36,17 +36,17 @@ func TestSafePerCommitTaxonomyKeepsUnfamiliarInnermostTypeAndNumericContext(t *t
 	if err := json.Unmarshal(output.Bytes(), &report); err != nil {
 		t.Fatal(err)
 	}
-	if report.InnermostGoErrorType != "*main.unfamiliarCommitDecodeError" || report.CommitSchemaVersion == nil || *report.CommitSchemaVersion != 39 || report.CommitOrdinalFromHead == nil || *report.CommitOrdinalFromHead != 7 || !reflect.DeepEqual(report.SQLCodes, []uint16{1105}) {
+	if report.InnermostGoErrorType != "" || report.UnrecognizedGoErrorTypeCount != 2 || report.CommitSchemaVersion == nil || *report.CommitSchemaVersion != 39 || report.CommitOrdinalFromHead == nil || *report.CommitOrdinalFromHead != 7 || !reflect.DeepEqual(report.SQLCodes, []uint16{1105}) {
 		t.Fatalf("safe per-commit coordinates lost: %+v", report)
 	}
-	if !strings.Contains(output.String(), "*main.unfamiliarCommitDecodeError") {
-		t.Fatal("unknown type was replaced by an occurrence count")
+	if strings.Contains(output.String(), "*main.unfamiliarCommitDecodeError") || strings.Contains(output.String(), "*main.commitErrorWrapper") {
+		t.Fatal("unregistered type name escaped the closed vocabulary")
 	}
 }
 
 func TestSafePerCommitTaxonomyDoesNotInferAbsentSchemaOrOrdinal(t *testing.T) {
 	report := safeReport(&captureFailure{stage: stageHistory, cause: &unfamiliarCommitDecodeError{private: "secret"}})
-	if report.CommitSchemaVersion != nil || report.CommitOrdinalFromHead != nil || report.InnermostGoErrorType != "*main.unfamiliarCommitDecodeError" {
+	if report.CommitSchemaVersion != nil || report.CommitOrdinalFromHead != nil || report.InnermostGoErrorType != "" || report.UnrecognizedGoErrorTypeCount != 1 {
 		t.Fatal("unobserved coordinate inferred")
 	}
 	schema := ^uint64(0)

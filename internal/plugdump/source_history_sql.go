@@ -14,7 +14,7 @@ func (s SQLSource) ReadSourceCommits(ctx context.Context) (SourceCommitLog, erro
 	}
 	head, err := s.historyTable(ctx, "SELECT DOLT_HASHOF('HEAD')")
 	if err != nil || len(head.Rows) != 1 || len(head.Columns) != 1 {
-		return SourceCommitLog{}, ErrSourceHistoryUnavailable{Reason: "head-unavailable"}
+		return SourceCommitLog{}, ErrSourceHistoryUnavailable{Reason: "head-unavailable", Cause: err}
 	}
 	headID := historyText(head.Rows[0][head.Columns[0]])
 	if !validCommitID(headID) {
@@ -22,15 +22,15 @@ func (s SQLSource) ReadSourceCommits(ctx context.Context) (SourceCommitLog, erro
 	}
 	status, err := s.historyTable(ctx, "SELECT table_name, staged, status FROM dolt_status")
 	if err != nil {
-		return SourceCommitLog{}, ErrSourceHistoryUnavailable{Reason: "working-set-unavailable"}
+		return SourceCommitLog{}, ErrSourceHistoryUnavailable{Reason: "working-set-unavailable", Cause: err}
 	}
 	log, err := s.historyTable(ctx, "SELECT * FROM dolt_log LIMIT 10001")
 	if err != nil || len(log.Rows) == 0 || len(log.Rows) > 10000 {
-		return SourceCommitLog{}, ErrSourceHistoryUnavailable{Reason: "commit-census-unavailable"}
+		return SourceCommitLog{}, ErrSourceHistoryUnavailable{Reason: "commit-census-unavailable", Cause: err}
 	}
 	ancestors, err := s.historyTable(ctx, "SELECT commit_hash, parent_hash FROM dolt_commit_ancestors LIMIT 20001")
 	if err != nil || len(ancestors.Rows) > 20000 {
-		return SourceCommitLog{}, ErrSourceHistoryUnavailable{Reason: "ancestry-unavailable"}
+		return SourceCommitLog{}, ErrSourceHistoryUnavailable{Reason: "ancestry-unavailable", Cause: err}
 	}
 	parents, err := sourceParentCensus(ancestors.Rows)
 	if err != nil {
@@ -103,7 +103,7 @@ func (s SQLSource) ReadSourceImage(ctx context.Context, id string) (map[string]T
 	// The only interpolated input is an exact 32-character base32 Dolt ID.
 	names, err := s.historyTable(ctx, "SHOW FULL TABLES AS OF '"+id+"'")
 	if err != nil || len(names.Columns) != 2 {
-		return nil, ErrSourceHistoryUnavailable{Reason: "historical-schema-unavailable"}
+		return nil, ErrSourceHistoryUnavailable{Reason: "historical-schema-unavailable", Cause: err}
 	}
 	tables := map[string]Table{}
 	for _, row := range names.Rows {
@@ -127,7 +127,7 @@ func (s SQLSource) ReadSourceImage(ctx context.Context, id string) (map[string]T
 		// Table names come only from the closed source census registry.
 		table, err := s.historyTable(ctx, "SELECT * FROM `"+name+"` AS OF '"+id+"'")
 		if err != nil {
-			return nil, ErrSourceHistoryUnavailable{Reason: "historical-image-unavailable"}
+			return nil, ErrSourceHistoryUnavailable{Reason: "historical-image-unavailable", Cause: err}
 		}
 		tables[name] = table
 	}

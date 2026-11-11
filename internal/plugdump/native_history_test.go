@@ -195,6 +195,68 @@ func TestNativeHistoryConservesLeasesAndMachineLocalRows(t *testing.T) {
 	}
 }
 
+func TestNativePeerAbsentCredentialsStayExact(t *testing.T) {
+	for _, example := range []struct {
+		name  string
+		value any
+	}{
+		{"SQL_NULL", nil},
+		{"empty_text", ""},
+		{"empty_SQL_BLOB", map[string]string{"$bytes": ""}},
+	} {
+		t.Run(example.name, func(t *testing.T) {
+			s, inventory := nativeHistoryFixtureForTest(t)
+			row := Row{}
+			for _, column := range columnsFor("federation_peers") {
+				row[column] = nil
+			}
+			row["name"], row["remote_url"] = "public-peer", "https://example.invalid/public"
+			row["password_encrypted"] = example.value
+			s.fixtureSource["federation_peers"] = Table{Columns: columnsFor("federation_peers"), Rows: []Row{row}}
+			// The peer is versioned: the committed HEAD must contain it too.
+			s.images[s.log.Head]["federation_peers"] = s.fixtureSource["federation_peers"]
+			_, native := nativeCapture(t, buildFixture(t, s, inventory))
+			if !equalJSON(native.Current["federation_peers"].Rows, []Row{row}) {
+				t.Fatal("ordinary peer SQL fields changed in the native archive")
+			}
+			legacy := inventory
+			legacy.SourceFamilyContract = ""
+			if data, err := Build(context.Background(), s, legacy); err == nil || len(data) != 0 || !strings.Contains(err.Error(), "nonempty family federation_peers") {
+				t.Fatalf("legacy portable peer refusal changed: %v", err)
+			}
+		})
+	}
+}
+
+func TestNativePeerStoredCredentialsStillRefuse(t *testing.T) {
+	for _, example := range []struct {
+		name  string
+		value any
+	}{
+		{"password", "public-fixture-password"},
+		{"encrypted_SQL_BLOB", map[string]string{"$bytes": "cHVibGljLWZpeHR1cmUtY2lwaGVydGV4dA=="}},
+		{"digest", digest([]byte("public-fixture-password"))},
+	} {
+		t.Run(example.name, func(t *testing.T) {
+			s, inventory := nativeHistoryFixtureForTest(t)
+			row := Row{}
+			for _, column := range columnsFor("federation_peers") {
+				row[column] = nil
+			}
+			row["name"], row["remote_url"] = "public-peer", "https://example.invalid/public"
+			row["password_encrypted"] = example.value
+			table := Table{Columns: columnsFor("federation_peers"), Rows: []Row{row}}
+			s.fixtureSource["federation_peers"] = table
+			if data, err := Build(context.Background(), s, inventory); err == nil || len(data) != 0 || !strings.Contains(err.Error(), "credential values/digests require secret references") {
+				t.Fatalf("present peer credential was not refused atomically: %v", err)
+			}
+			if _, err := nativeTable(table, "federation_peers", nil); err == nil {
+				t.Fatal("historical native peer credential was accepted")
+			}
+		})
+	}
+}
+
 func TestNativeRawKeyValueCredentialPolicyIsPreserved(t *testing.T) {
 	for _, family := range []string{"config", "metadata", "local_metadata"} {
 		t.Run(family, func(t *testing.T) {
