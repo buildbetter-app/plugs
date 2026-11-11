@@ -155,7 +155,7 @@ func b06MixedOrdered(f *b06PlugFixture) {
 	for i, expected := range []struct {
 		id       string
 		revision model.Revision
-	}{{"b06-tx-a", commit.Revision}, {ids[0], model.Natural64(2)}, {ids[0], model.Natural64(3)}} {
+	}{{"b06-tx-a", commit.Revision}, {ids[0], model.Natural64(1)}, {ids[0], model.Natural64(2)}} {
 		if commit.Results[i].Ref != model.RefByID(expected.id, model.Natural64(0)) || commit.Results[i].Revision != expected.revision {
 			f.t.Fatalf("ordered result[%d] %+v want %+v", i, commit.Results[i], expected)
 		}
@@ -166,7 +166,7 @@ func b06MixedOrdered(f *b06PlugFixture) {
 			f.t.Fatalf("ordered durable readback %+v", ordinary)
 		}
 		active := b06MixedGet(f, ids[0])
-		if active.Revision != model.Natural64(3) || active.Plane != "ephemeral" || active.Kind != workflowplugin.ItemKind || active.Fields["title"] != "tx-first" || len(active.Links) != 2 {
+		if active.Revision != model.Natural64(2) || active.Plane != "ephemeral" || active.Kind != workflowplugin.ItemKind || active.Fields["title"] != "tx-first" || len(active.Links) != 2 {
 			f.t.Fatalf("ordered active readback %+v", active)
 		}
 		b06RequireEdges(f.t, []b06Edge{{active.Links[0].From, active.Links[0].To.ID, active.Links[0].Kind}, {active.Links[1].From, active.Links[1].To.ID, active.Links[1].Kind}}, []b06Edge{{"b06-tx-a", ids[0], "blocks"}, {ids[0], "b06-tx-b", "tracks"}})

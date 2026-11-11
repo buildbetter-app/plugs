@@ -106,7 +106,7 @@ func b06InvokeMixed(f *b06PlugFixture, labels ...string) []string {
 	}
 	ids := []string{}
 	for i, item := range got.Items {
-		if item.Label != labels[i] || item.Title != labels[i] || item.Project != "b06" || item.ID == "" {
+		if item.Label != labels[i] || item.Title != labels[i] || item.Project != "b06" || item.ID == "" || item.Revision != model.Natural64(0) {
 			f.t.Fatal("public workflow label/order/identity changed")
 		}
 		ids = append(ids, item.ID)
