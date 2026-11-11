@@ -2211,23 +2211,41 @@ func runHelper(t *testing.T, root string, source pluginmanifest.Checkout) map[st
 			moduleCache = candidate
 		}
 	}
-	wazeroRoot := offlineModule(t, filepath.Join(moduleCache, "github.com", "tetratelabs", "wazero@v1.12.0"), "com_github_tetratelabs_wazero")
-	sysRoot := offlineModule(t, filepath.Join(moduleCache, "golang.org", "x", "sys@v0.50.0"), "org_golang_x_sys")
-	goMod := fmt.Sprintf("module github.com/buildbetter-app/plugs/runner\n\ngo 1.26.5\n\ntoolchain go1.26.10\n\nrequire (\n\tgithub.com/buildbetter-app/plugs v0.0.0\n\tgithub.com/tetratelabs/wazero v1.12.0\n\tgolang.org/x/sys v0.50.0\n)\n\nreplace github.com/buildbetter-app/plugs => %s\nreplace github.com/tetratelabs/wazero => %s\nreplace golang.org/x/sys => %s\n", root, wazeroRoot, sysRoot)
-	if err := os.WriteFile(filepath.Join(helper, "go.mod"), []byte(goMod), 0o644); err != nil {
+	// The helper imports memory, whose history staging also imports SQLite.
+	// Keep that runtime dependency closure pinned and available from the same
+	// offline module sources as Bazel; the helper must not fetch dependencies.
+	modules := []struct{ path, version, repository string }{
+		{"github.com/dustin/go-humanize", "v1.1.0", "com_github_dustin_go_humanize"},
+		{"github.com/google/uuid", "v1.6.0", "com_github_google_uuid"},
+		{"github.com/mattn/go-isatty", "v0.0.24", "com_github_mattn_go_isatty"},
+		{"github.com/ncruces/go-strftime", "v1.1.0", "com_github_ncruces_go_strftime"},
+		{"github.com/remyoudompheng/bigfft", "v0.0.0-20230129092748-24d4a6f8daec", "com_github_remyoudompheng_bigfft"},
+		{"github.com/tetratelabs/wazero", "v1.12.0", "com_github_tetratelabs_wazero"},
+		{"golang.org/x/sys", "v0.50.0", "org_golang_x_sys"},
+		{"modernc.org/libc", "v1.79.0", "org_modernc_libc"},
+		{"modernc.org/mathutil", "v1.7.1", "org_modernc_mathutil"},
+		{"modernc.org/memory", "v1.12.1", "org_modernc_memory"},
+		{"modernc.org/sqlite", "v1.61.1", "org_modernc_sqlite"},
+	}
+	var goMod strings.Builder
+	goMod.WriteString("module github.com/buildbetter-app/plugs/runner\n\ngo 1.26.5\n\ntoolchain go1.26.10\n\nrequire (\n\tgithub.com/buildbetter-app/plugs v0.0.0\n")
+	for _, module := range modules {
+		fmt.Fprintf(&goMod, "\t%s %s\n", module.path, module.version)
+	}
+	fmt.Fprintf(&goMod, ")\n\nreplace github.com/buildbetter-app/plugs => %q\n", root)
+	for _, module := range modules {
+		cached := filepath.Join(moduleCache, filepath.FromSlash(module.path)+"@"+module.version)
+		sourceRoot := offlineModule(t, cached, module.repository)
+		fmt.Fprintf(&goMod, "replace %s => %q\n", module.path, sourceRoot)
+	}
+	if err := os.WriteFile(filepath.Join(helper, "go.mod"), []byte(goMod.String()), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	rootSums, err := os.ReadFile(filepath.Join(root, "go.sum"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var helperSums []byte
-	for _, line := range strings.Split(string(rootSums), "\n") {
-		if strings.HasPrefix(line, "github.com/tetratelabs/wazero ") || strings.HasPrefix(line, "golang.org/x/sys ") {
-			helperSums = append(helperSums, []byte(line+"\n")...)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(helper, "go.sum"), helperSums, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(helper, "go.sum"), rootSums, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	command := exec.Command(goBinary, "run", "-p=2", "-trimpath", "-buildvcs=false", "-mod=readonly", ".")
