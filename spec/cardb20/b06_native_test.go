@@ -285,6 +285,38 @@ func (r *b06NativeRecorder) refuse(w b06NativeWorkspace, binary string, e b06Edg
 	}
 }
 
+// Hierarchy refusals are structured canonical errors, not diagnostics that
+// promise a generic keyword. Pin both endpoint directions and the exact reason
+// from the unchanged native issueops.DependencyHierarchyConflictError.
+func (r *b06NativeRecorder) refuseHierarchy(w b06NativeWorkspace, binary string, edge b06Edge, expected string) {
+	r.t.Helper()
+	label := "hierarchy-refusal-" + strconv.Itoa(r.serial)
+	before := r.image(w, binary, label+"-before")
+	history := r.rows(w, binary, label+"-history-before", "SELECT commit_hash FROM dolt_log ORDER BY commit_hash")
+	raw := r.edge(w, binary, edge, true)
+	var got struct {
+		Error         string `json:"error"`
+		SchemaVersion int    `json:"schema_version"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&got); err != nil {
+		r.t.Fatalf("invalid structured hierarchy refusal: %v %s", err, raw)
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		r.t.Fatalf("trailing hierarchy refusal output: %v %s", err, raw)
+	}
+	if got.SchemaVersion != 1 || got.Error != expected {
+		r.t.Fatalf("wrong structured hierarchy refusal: %+v want=%q", got, expected)
+	}
+	after := r.image(w, binary, label+"-after")
+	afterHistory := r.rows(w, binary, label+"-history-after", "SELECT commit_hash FROM dolt_log ORDER BY commit_hash")
+	if !reflect.DeepEqual(before, after) || !reflect.DeepEqual(history, afterHistory) {
+		r.t.Fatal("hierarchy refusal changed graph/audit/history")
+	}
+	r.writeJSON(filepath.Join(r.root, label+"-conservation.json"), map[string]any{"edge": edge, "expected_error": expected, "actual_response": json.RawMessage(raw), "before": before, "after": after, "before_history": history, "after_history": afterHistory, "graph_audit_history": "exactly unchanged"})
+}
+
 // Deliberate disposable SQL diagnostics are needed because ordinary writes
 // correctly refuse scheduling cycles and conflicting endpoint kinds. Raw DDL,
 // rows, SQL requests and unmodified canonical detector output are retained.
@@ -479,9 +511,8 @@ func (r *b06NativeRecorder) boundaries(binary string, server *publicnative.Serve
 		r.edge(w, binary, e, false)
 	}
 	r.refuse(w, binary, b06Edge{"b06-parent", "b06-grandchild", "parent-child"}, "cycle")
-	for _, e := range []b06Edge{{"b06-grandchild", "b06-parent", "blocks"}, {"b06-parent", "b06-grandchild", "blocks"}} {
-		r.refuse(w, binary, e, "hierarchy")
-	}
+	r.refuseHierarchy(w, binary, b06Edge{"b06-grandchild", "b06-parent", "blocks"}, "b06-grandchild cannot be blocked by its ancestor b06-parent: b06-parent cannot close until its descendants finish, so the gate would never clear")
+	r.refuseHierarchy(w, binary, b06Edge{"b06-parent", "b06-grandchild", "blocks"}, "b06-parent cannot be blocked by its descendant b06-grandchild: waiting on your own subtree is a close gate, not a blocks edge — use a waits-for gate over the children (bd gate)")
 	// Diagnostic SQL creates a waits-for/blocks loop without asserting that an
 	// ordinary scheduler accepts it. The unmodified detector must exclude it.
 	for i, e := range []b06Edge{{"b06-wait-a", "b06-wait-b", "waits-for"}, {"b06-wait-b", "b06-wait-a", "blocks"}} {
