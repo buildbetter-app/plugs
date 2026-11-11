@@ -16,6 +16,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
@@ -203,6 +204,34 @@ type receivingCountedReader struct {
 	s *receivingCountedStore
 }
 
+func (r *receivingCountedReader) Get(ctx context.Context, refs []model.Ref) ([]driver.Record, error) {
+	rows, err := r.Reader.Get(ctx, refs)
+	if err != nil {
+		return nil, err
+	}
+	for i, row := range rows {
+		if row.Ref.ID != "restore/archive" || r.s.fault != "current-limit" && r.s.fault != "current-ledger" {
+			continue
+		}
+		var evidence archiveEvidence
+		if err := json.Unmarshal(row.Body, &evidence); err != nil {
+			return nil, err
+		}
+		if r.s.fault == "current-limit" {
+			evidence.NativeDecodedLimitBytes = 2147483649
+		} else {
+			file := evidence.NativeCaptureFiles["head.tar"]
+			file.Size++
+			evidence.NativeCaptureFiles["head.tar"] = file
+		}
+		rows = append([]driver.Record(nil), rows...)
+		rows[i].Body, err = json.Marshal(evidence)
+		r.s.l.controls[r.s.fault]++
+		return rows, err
+	}
+	return rows, nil
+}
+
 func (r *receivingCountedReader) LoadAllocator(ctx context.Context, prefix string) (driver.OfflineAllocator, error) {
 	return r.Reader.(driver.AllocatorReader).LoadAllocator(ctx, prefix)
 }
@@ -316,9 +345,23 @@ func TestReceivingActualCleanNoopResumedAndHarnessTraversalCaps(t *testing.T) {
 			baseline, _ := a.NativeDecodedUsage()
 			store, lease, reopen := openIdentityTarget(t, engine)
 			s := wrapReceivingStore(t, store, l)
+			if err := lease.Release(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			op, heldLease, releaseLease, err := HoldRestoreLease(context.Background(), store, "receiving-budget")
+			if err != nil {
+				t.Fatal(err)
+			}
+			releaseLease = sync.OnceValue(releaseLease)
+			defer func() {
+				if err := releaseLease(); err != nil {
+					t.Error(err)
+				}
+			}()
+			lease = heldLease
 			l.phase = "combined current/history/raw"
 			p := receivingPublicProfile(t, a, s, lease)
-			report, err := RestoreNativeCaptureSetImportWithLease(a.WithNativeDeltaAccounting(context.Background()), a, s, lease, p)
+			report, err := RestoreNativeCaptureSetImportWithLease(a.WithNativeDeltaAccounting(op), a, s, lease, p)
 			if err != nil {
 				t.Fatal("actual receive", err)
 			}
@@ -336,6 +379,9 @@ func TestReceivingActualCleanNoopResumedAndHarnessTraversalCaps(t *testing.T) {
 				t.Fatal(err)
 			}
 			l.assertTraversals(0, 3, true)
+			if err := releaseLease(); err != nil {
+				t.Fatal(err)
+			}
 			store, lease = reopen()
 			_ = lease
 			s = wrapReceivingStore(t, store, l)
@@ -349,6 +395,9 @@ func TestReceivingActualCleanNoopResumedAndHarnessTraversalCaps(t *testing.T) {
 			l.assertTraversals(start, 2, false)
 			if s.writes != 0 {
 				t.Fatal("recovery replayed writes")
+			}
+			if recovered.RequestHash != report.RequestHash || !reflect.DeepEqual(recovered.Receipt, report.Receipt) || !reflect.DeepEqual(recovered.NativeFamilies, report.NativeFamilies) || !reflect.DeepEqual(recovered.NativeSchemas, report.NativeSchemas) || !reflect.DeepEqual(recovered.NativeHistories, report.NativeHistories) {
+				t.Fatal("recovery changed original receipt/report bytes")
 			}
 			for i := 0; i < 2; i++ {
 				start = len(l.reads)
@@ -399,15 +448,26 @@ func TestReceivingActualInterruptedRecoveryAndReachedRefusals(t *testing.T) {
 	if s.writes != 0 {
 		t.Fatal("interrupted recovery replayed writes")
 	}
-	for _, fault := range []string{"wrong-receipt", "wrong-origin", "changed-source-part"} {
+	for _, fault := range []string{"wrong-receipt", "wrong-origin", "changed-source-part", "current-limit", "current-ledger"} {
 		t.Run(fault, func(t *testing.T) {
 			s.fault = fault
+			start := len(l.reads)
+			usageBefore, _ := a.NativeDecodedUsage()
 			_, bad, _, err := RecoverBoundSourceImport(context.Background(), s)
 			if bad.Archive != nil {
 				bad.Archive.ReleaseNativeDecoded()
 			}
 			if err == nil || l.controls[fault] == 0 {
 				t.Fatal("actual refusal/control missing", fault, err)
+			}
+			if fault == "current-limit" || fault == "current-ledger" {
+				if len(l.reads) != start {
+					t.Fatal("mutable evidence allocated/read source before receipt equality")
+				}
+				usageAfter, _ := a.NativeDecodedUsage()
+				if usageAfter.CurrentAccountedDecodedBytes != usageBefore.CurrentAccountedDecodedBytes || !reflect.DeepEqual(usageAfter.CurrentCategories, usageBefore.CurrentCategories) || !reflect.DeepEqual(usageAfter.CurrentCharges, usageBefore.CurrentCharges) {
+					t.Fatal("refused recovery leaked live bytes")
+				}
 			}
 			s.fault = ""
 		})
