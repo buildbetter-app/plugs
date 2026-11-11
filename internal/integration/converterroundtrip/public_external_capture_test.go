@@ -135,6 +135,66 @@ func publicProofRunContinuation(t *testing.T, ctx context.Context, store driver.
 	return err
 }
 
+// The optional assertion is read-only and receives the target after the shared
+// owner reopens it a second time. The imported report remains provenance for
+// the original import; current observations use the reopened store's head.
+// Neither callback owns close, release, reopen or the retained archive.
+func publicProofRunContinuationPhases(t *testing.T, ctx context.Context, store driver.Store, lease driver.ActiveLease, profile driver.RestoreImportProfile, report Report, writer, assertion publicProofContinuation, reopen func() (driver.Store, driver.ActiveLease)) (driver.Store, driver.ActiveLease, error) {
+	t.Helper()
+	if assertion != nil {
+		if writer == nil {
+			return store, lease, errors.New("post-reopen assertion requires a writer callback")
+		}
+		if reopen == nil {
+			return store, lease, errors.New("post-reopen assertion requires the shared reopen owner")
+		}
+		if report.Archive == nil {
+			return store, lease, errors.New("post-reopen assertion requires the retained archive")
+		}
+	}
+	if err := publicProofRunContinuation(t, ctx, store, lease, profile, report, writer); err != nil {
+		return store, lease, err
+	}
+	if t.Failed() {
+		return store, lease, errors.New("public continuation failed")
+	}
+	if assertion == nil {
+		return store, lease, nil
+	}
+	// The writer's helper has returned only after draining its operation and
+	// releasing its renewed lease. No callback receives this reopen closure.
+	publicProofGuard(t)
+	if ctx.Err() != nil {
+		return store, lease, context.Cause(ctx)
+	}
+	before, err := store.Meta(ctx)
+	if err != nil {
+		return store, lease, err
+	}
+	store, lease = reopen()
+	after, err := store.Meta(ctx)
+	if err != nil {
+		return store, lease, err
+	}
+	if !reflect.DeepEqual(before, after) {
+		return store, lease, errors.New("post-continuation reopen changed target identity or committed head")
+	}
+	if err := publicProofRunContinuation(t, ctx, store, lease, profile, report, assertion); err != nil {
+		return store, lease, err
+	}
+	if t.Failed() {
+		return store, lease, errors.New("post-reopen assertion failed")
+	}
+	observed, err := store.Meta(ctx)
+	if err != nil {
+		return store, lease, err
+	}
+	if !reflect.DeepEqual(after, observed) {
+		return store, lease, errors.New("post-reopen assertion changed committed target metadata")
+	}
+	return store, lease, nil
+}
+
 type publicProofState struct {
 	Kind               string `json:"kind"`
 	Sequence           uint64 `json:"sequence"`
@@ -460,11 +520,22 @@ func TestPublicNativeExternalCaptureMatrix(t *testing.T) {
 	runPublicNativeExternalCapture(t, nil)
 }
 
-// Shared test-only entry point for a consumer in this package. The nil callback
-// preserves the original standalone import/readback/reopen lifecycle.
-func runPublicNativeExternalCapture(t *testing.T, continuation publicProofContinuation) {
+// Shared test-only entry point for a consumer in this package. No optional
+// assertion preserves the original lifecycle. One assertion runs after the
+// writer drains and the shared owner performs a second reopen, before cleanup.
+func runPublicNativeExternalCapture(t *testing.T, continuation publicProofContinuation, afterReopen ...publicProofContinuation) {
 	t.Helper()
 	publicProofGuard(t)
+	if len(afterReopen) > 1 {
+		t.Fatal("at most one post-reopen assertion is supported")
+	}
+	var assertion publicProofContinuation
+	if len(afterReopen) == 1 {
+		assertion = afterReopen[0]
+	}
+	if assertion != nil && continuation == nil {
+		t.Fatal("post-reopen assertion requires a writer callback")
+	}
 	engine := os.Getenv("PLUG_PUBLIC_PROOF_DRIVER")
 	if engine != "memory" && engine != "sqlite" && engine != "postgres" {
 		t.Fatal("one explicit public driver required")
@@ -559,13 +630,19 @@ func runPublicNativeExternalCapture(t *testing.T, continuation publicProofContin
 	publicProofError(t, "reopened-production-readback", VerifyNativeCaptureSetReadback(ctx, store, archive, recovered))
 	publicProofIndependentReadback(t, ctx, store, recovered, req, ledger, output, "reopened")
 	publicProofJSON(t, filepath.Join(output, "recovered-report.json"), recovered)
-	publicProofError(t, "continuation", publicProofRunContinuation(t, ctx, store, lease, profile, recovered, continuation))
+	store, lease, err = publicProofRunContinuationPhases(t, ctx, store, lease, profile, recovered, continuation, assertion, reopen)
+	publicProofError(t, "continuation", err)
 	if t.Failed() {
 		t.Fatal("public continuation failed")
 	}
 	if continuation != nil {
 		publicProofGuard(t)
 		publicProofJSON(t, filepath.Join(output, "continuation.json"), map[string]any{"restore_mode": mode, "completed": true, "target": recovered.Restored, "phase": "after-reopened-readback-before-cleanup"})
+	}
+	if assertion != nil {
+		current, err := store.Meta(ctx)
+		publicProofError(t, "post-continuation-meta", err)
+		publicProofJSON(t, filepath.Join(output, "post-continuation-reopen.json"), map[string]any{"driver": engine, "restore_mode": mode, "completed": true, "imported_target": recovered.Restored, "current_target": current, "lifecycle": map[bool]string{true: "same-store-memory-lease-refresh", false: "driver-connection-closed-and-reopened"}[engine == "memory"], "phase": "after-writer-scope-release-and-second-reopen-before-cleanup"})
 	}
 	if recovered.Archive != nil {
 		recovered.Archive.ReleaseNativeDecoded()
@@ -578,7 +655,11 @@ func runPublicNativeExternalCapture(t *testing.T, continuation publicProofContin
 	if !ok || proof.Totals.Commits != uint64(req.Commits) {
 		t.Fatal("source commit count differs")
 	}
-	publicProofJSON(t, filepath.Join(output, "SUCCESS.json"), map[string]any{"driver": engine, "capture_sha256": req.CaptureSHA256, "elf_sha256": elfSHA, "commits": req.Commits, "reopen": map[bool]string{true: "same-process-memory-lease-reacquired", false: "driver-connection-closed-and-reopened"}[engine == "memory"], "per_table_exact_bytes": true, "restore_mode": mode, "continuation_completed": continuation != nil, "full_accounting_or_switch_credit": false})
+	success := map[string]any{"driver": engine, "capture_sha256": req.CaptureSHA256, "elf_sha256": elfSHA, "commits": req.Commits, "reopen": map[bool]string{true: "same-process-memory-lease-reacquired", false: "driver-connection-closed-and-reopened"}[engine == "memory"], "per_table_exact_bytes": true, "restore_mode": mode, "continuation_completed": continuation != nil, "full_accounting_or_switch_credit": false}
+	if assertion != nil {
+		success["post_continuation_reopen_asserted"] = true
+	}
+	publicProofJSON(t, filepath.Join(output, "SUCCESS.json"), success)
 }
 
 // These checks qualify only the shared mode/lifecycle seam. They spend no
@@ -716,6 +797,177 @@ func TestPublicNativeExternalContinuationLifecycle(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestPublicNativeExternalPostContinuationReopen(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		for _, outcome := range []string{"success", "writer-error", "assertion-error", "cancelled", "nil-assertion", "nil-writer"} {
+			t.Run(engine+"/"+outcome, func(t *testing.T) {
+				archive := publicNativeDeltaArchive(t)
+				defer archive.ReleaseNativeDecoded()
+				baseline, _ := archive.NativeDecodedUsage()
+				ctx, cancel := context.WithCancel(archive.WithNativeDeltaAccounting(context.Background()))
+				defer cancel()
+				store, _, reopen := openIdentityTarget(t, engine)
+				store, lease := reopen()
+				initial := store
+				meta, err := store.Meta(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				profile := driver.RestoreImportProfile{HistoryMode: driver.RestoreHistoryModeFull}
+				report := Report{Restored: meta, Recovered: true, Archive: archive}
+				ref := model.RefByID("public-continuation-persisted", model.Natural64(0))
+				callbackErr := errors.New("post-continuation control rejected")
+				writers, assertions, reopens := 0, 0, 0
+				var saved []driver.Record
+				var writerCtx, assertionCtx context.Context
+				var writerLease, assertionLease driver.ActiveLease
+				read := func(op context.Context, target driver.Store) []driver.Record {
+					current, err := target.Meta(op)
+					if err != nil {
+						t.Fatal(err)
+					}
+					r, err := target.Read(op, driver.View{Incarnation: current.Incarnation, At: &current.Head})
+					if err != nil {
+						t.Fatal(err)
+					}
+					rows, err := r.Get(op, []model.Ref{ref})
+					closeErr := r.Close()
+					if err != nil || closeErr != nil {
+						t.Fatal(err, closeErr)
+					}
+					return rows
+				}
+				writer := publicProofContinuation(func(t *testing.T, op context.Context, target driver.Store, active driver.ActiveLease, bound driver.RestoreImportProfile, recovered Report) error {
+					writers++
+					writerCtx, writerLease = op, active
+					if target != initial || bound.HistoryMode != profile.HistoryMode || recovered.Archive != archive {
+						t.Fatal("writer lost the shared target or archive")
+					}
+					if outcome == "writer-error" {
+						return callbackErr
+					}
+					current, err := target.Meta(op)
+					if err != nil {
+						t.Fatal(err)
+					}
+					tx, err := target.Write(op, active)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer tx.Close()
+					key := driver.LockKey{Kind: driver.LockRecord, Ref: &ref}
+					if _, err := tx.Lock(op, []driver.LockRequest{{Key: key, Mode: driver.LockUpdate}}); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := tx.Head(op); err != nil {
+						t.Fatal(err)
+					}
+					if err := tx.Put(op, driver.Record{Ref: ref, Kind: "config", Body: []byte(`{"persisted":true}`)}); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := tx.Commit(op, driver.ChangesetHeader{Incarnation: current.Incarnation, Kind: model.ChangesetWrite, Principal: restorePrincipal, LockKeys: []driver.LockKey{key}, Changes: []model.ChangeRecord{{Ref: ref, Op: model.OpCreate, ChangedPaths: []string{"/"}}}}); err != nil {
+						t.Fatal(err)
+					}
+					saved = read(op, target)
+					if len(saved) != 1 {
+						t.Fatal("writer did not commit exactly one observation")
+					}
+					if outcome == "cancelled" {
+						cancel()
+					}
+					return nil
+				})
+				assertion := publicProofContinuation(func(t *testing.T, op context.Context, target driver.Store, active driver.ActiveLease, bound driver.RestoreImportProfile, recovered Report) error {
+					assertions++
+					assertionCtx, assertionLease = op, active
+					if writers != 1 || reopens != 1 || (target == initial) != (engine == "memory") || writerCtx.Err() == nil || op.Err() != nil || recovered.Archive != archive || !reflect.DeepEqual(bound, profile) {
+						t.Fatal("post-reopen assertion lost ordering, identity or live handles")
+					}
+					if err := active.Renew(op); err != nil {
+						t.Fatal("assertion lease is inactive", err)
+					}
+					if !reflect.DeepEqual(read(op, target), saved) {
+						t.Fatal("committed observation changed across actual reopen")
+					}
+					if usage, ok := recovered.Archive.NativeDecodedUsage(); !ok || usage.CurrentAccountedDecodedBytes != baseline.CurrentAccountedDecodedBytes || !reflect.DeepEqual(usage.CurrentCharges, baseline.CurrentCharges) {
+						t.Fatal("accounted archive lifetime ended before assertion")
+					}
+					if outcome == "assertion-error" {
+						return callbackErr
+					}
+					return nil
+				})
+				if outcome == "nil-assertion" || outcome == "nil-writer" {
+					assertion = nil
+				}
+				if outcome == "nil-writer" {
+					writer = nil
+				}
+				ownedReopen := func() (driver.Store, driver.ActiveLease) {
+					reopens++
+					if writers != 1 || writerCtx.Err() == nil {
+						t.Fatal("shared owner reopened before writer scope drained")
+					}
+					select {
+					case <-writerLease.Lost():
+					default:
+						t.Fatal("shared owner reopened before writer lease released")
+					}
+					return reopen()
+				}
+				store, _, err = publicProofRunContinuationPhases(t, ctx, store, lease, profile, report, writer, assertion, ownedReopen)
+				wantAfter := outcome == "success" || outcome == "assertion-error"
+				if writers != map[bool]int{true: 0, false: 1}[outcome == "nil-writer"] || assertions != map[bool]int{true: 1, false: 0}[wantAfter] || reopens != assertions {
+					t.Fatal("writer/assertion/reopen count differs", writers, assertions, reopens)
+				}
+				if (outcome == "writer-error" || outcome == "assertion-error") != errors.Is(err, callbackErr) || outcome == "cancelled" && !errors.Is(err, context.Canceled) || (outcome == "success" || outcome == "nil-assertion" || outcome == "nil-writer") && err != nil {
+					t.Fatal("phase error was lost", err)
+				}
+				for _, ended := range []struct {
+					ctx   context.Context
+					lease driver.ActiveLease
+				}{{writerCtx, writerLease}, {assertionCtx, assertionLease}} {
+					if ended.ctx == nil {
+						continue
+					}
+					if ended.ctx.Err() == nil {
+						t.Fatal("callback context retained after return")
+					}
+					select {
+					case <-ended.lease.Lost():
+					default:
+						t.Fatal("callback lease retained after return")
+					}
+				}
+				if _, err := store.Meta(context.Background()); err != nil {
+					t.Fatal("shared target cleaned up before return", err)
+				}
+			})
+		}
+	}
+	for _, missing := range []string{"writer", "reopen", "archive"} {
+		t.Run("missing-"+missing, func(t *testing.T) {
+			called := false
+			callback := publicProofContinuation(func(*testing.T, context.Context, driver.Store, driver.ActiveLease, driver.RestoreImportProfile, Report) error {
+				called = true
+				return nil
+			})
+			writer := callback
+			reopen := func() (driver.Store, driver.ActiveLease) { called = true; return nil, nil }
+			if missing == "writer" {
+				writer = nil
+			}
+			if missing == "reopen" {
+				reopen = nil
+			}
+			_, _, err := publicProofRunContinuationPhases(t, context.Background(), nil, nil, driver.RestoreImportProfile{}, Report{}, writer, callback, reopen)
+			if err == nil || called {
+				t.Fatal("incomplete assertion configuration reached a handle", err)
+			}
+		})
 	}
 }
 
