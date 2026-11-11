@@ -132,7 +132,16 @@ func seedCycleRPCRows(t *testing.T, store driver.Store, lease driver.ActiveLease
 		if err != nil {
 			t.Fatal(err)
 		}
-		changes = append(changes, conformance.FixtureChange{Ref: ref(row.id), Kind: "bead", Op: model.OpCreate, Body: body})
+		graph := &conformance.FixtureGraphSource{Parent: doc.Parent}
+		for _, link := range doc.Links {
+			if err := model.ValidateLinkTarget(link.TargetKind, link.To); err != nil {
+				t.Fatal(err)
+			}
+			if link.TargetKind != model.LinkTargetExternal {
+				graph.Links = append(graph.Links, driver.SourceLink{Kind: link.Kind, To: link.To})
+			}
+		}
+		changes = append(changes, conformance.FixtureChange{Ref: ref(row.id), Kind: "bead", Op: model.OpCreate, Body: body, Graph: graph})
 	}
 	if _, err := conformance.Seed(context.Background(), store, lease, driver.ChangesetHeader{}, changes); err != nil {
 		t.Fatal(err)
