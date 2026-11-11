@@ -205,6 +205,10 @@ func readPhysicalRootSchema(ctx context.Context, conn *sql.Conn, id string, work
 	})
 	if resultErr != nil {
 		image = PhysicalRootSchema{}
+		var refusal *PhysicalReadError
+		if !errors.As(resultErr, &refusal) {
+			resultErr = &PhysicalReadError{Kind: "connection", CommitID: id, Cause: resultErr}
+		}
 	}
 	return
 }

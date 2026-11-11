@@ -329,4 +329,24 @@ func TestPhysicalRootSchemaRefusals(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+	t.Run("closed_connection", func(t *testing.T) {
+		if err := conn.Close(); err != nil {
+			t.Fatal(err)
+		}
+		for _, tc := range []struct {
+			name string
+			read func(context.Context, *sql.Conn, string) (PhysicalRootSchema, error)
+		}{
+			{"working", ReadPhysicalWorkingRootSchema},
+			{"commit", ReadPhysicalCommitRootSchema},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				image, err := tc.read(ctx, conn, head)
+				var refusal *PhysicalReadError
+				if !errors.As(err, &refusal) || refusal.Kind != "connection" || !errors.Is(err, sql.ErrConnDone) || !reflect.DeepEqual(image, PhysicalRootSchema{}) {
+					t.Fatalf("closed connection did not preserve typed refusal, cause and zero authority: %v", err)
+				}
+			})
+		}
+	})
 }
