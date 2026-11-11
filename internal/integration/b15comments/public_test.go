@@ -104,11 +104,15 @@ func (f *fixture) bind() {
 	}
 	ontology := service.NewOntology(nil)
 	writer := pipeline.New(f.store, f.lease, pipeline.WithClock(f.clock.Now), pipeline.WithOntology(ontology), pipeline.WithOntologyAudit(service.NewOntologyAudit(nil)), pipeline.WithIDGenerator(func() (string, error) { return "b15-anchor", nil }))
-	checkpoints, ok := f.store.(driver.CheckpointStore)
-	if !ok {
-		t.Fatal("checkpoint port is required")
+	checkpoints, err := driver.RequireWorkflowCheckpointStore(f.store, f.lease)
+	if err != nil {
+		t.Fatal(err)
 	}
-	provider, err := workflow.New(pluginhost.NewDurableStateWithPersistence(checkpoints, f.lease, workflow.Alias, "default", f.engine != "memory"))
+	state, err := pluginhost.NewWorkflowRuntimeState(checkpoints, f.lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, err := workflow.New(state)
 	if err != nil {
 		t.Fatal(err)
 	}
