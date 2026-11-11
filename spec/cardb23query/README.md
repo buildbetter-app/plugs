@@ -15,7 +15,11 @@ ordinary pages. No Filter, planner, claim or importer predicate is duplicated.
 
 Native recording uses the exact behavior-catalog Beads pin via the unchanged
 cardb20 native source builder. HTTP created/priority keysets and native CLI
-natural ID order are separate ordered expectations. Native exclusion count
+natural ID order are separate ordered expectations. New public native batches
+extend this same disposable corpus to exactly 20,000 and 20,001 durable rows.
+Exact-boundary list/readbacks, full scalar counts, the literal list-cap refusal
+with empty stdout, and complete state conservation are separate controls.
+Native exclusion count
 refusal and single-scalar status count are recorded directly. Plug keeps its
 existing title matching/sorting under surfaces.md's explicit adopted count
 contract; no natural-sort or case-insensitive Plug parity is invented.

@@ -51,7 +51,7 @@ sh_test(
 
 go_test(
     name = "native_query_test",
-    srcs = COMMON + ["native_query_test.go", "//spec/cardb20:native_build_support"],
+    srcs = COMMON + ["native_query_test.go", "native_cap_test.go", "//spec/cardb20:native_build_support"],
     args = ["-test.v"],
     data = ["//spec/s1-b09-native:lexicon_files", "//internal/publicnative:dolt_runtime"],
     env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
