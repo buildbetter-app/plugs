@@ -38,9 +38,11 @@ type OfflineHistoryStreamLimits struct {
 
 // OfflineHistorySourceCommit and OfflineHistorySourceTable retain PHYSICAL
 // source commitments. Their hash preimages belong to the source format, not this
-// port. The verifier/staging adapter must reconcile them independently, including
+// port. The source verifier must reconcile them independently, including
 // typed schema/cells, lexical numbers, binary/text, absence and row multiplicity.
 // Root and ordered parent IDs are provenance, never new Plug revision authority.
+// Tables and TablesSHA256 describe the physical source census, including
+// unchanged tables. Tables is independent of the converted record count.
 type OfflineHistorySourceCommit struct {
 	Root         string `json:"root"`
 	Tables       uint64 `json:"tables"`
@@ -54,6 +56,8 @@ type OfflineHistorySourceTable struct {
 	TableSHA256  string `json:"tableSha256"`
 }
 
+// OfflineHistoryStreamCommit.Tables counts converted records, including row
+// and table-meta records. Several records may belong to one physical table.
 type OfflineHistoryStreamCommit struct {
 	Baseline       bool                        `json:"baseline"`
 	SourceStoreID  string                      `json:"sourceStoreId"`
@@ -82,6 +86,12 @@ type OfflineHistoryStreamImage struct {
 	SHA256 string `json:"sha256"`
 }
 
+// OfflineHistoryStreamTable.Name identifies the containing physical table.
+// Records sharing a Name within a commit must carry identical physical
+// before/after commitments, even when a converted row is deleted. A dropped
+// table carries a not-present PhysicalAfter, never a row-level substitute.
+// Distinct physical table names cannot exceed the commit's Physical.Tables;
+// full census/hash reconciliation belongs to the source verifier.
 type OfflineHistoryStreamTable struct {
 	Name           string                     `json:"name"`
 	Ref            model.Ref                  `json:"ref"`
