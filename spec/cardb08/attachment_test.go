@@ -19,6 +19,10 @@ func b08AttachParams(id model.Ref, attachment any) map[string]any {
 	return map[string]any{"changeSet": map[string]any{"ops": []map[string]any{{"kind": "attach", "target": id, "attachment": attachment}}}}
 }
 
+func b08AttachmentRefEqual(left, right model.Ref) bool {
+	return left.IsID() && right.IsID() && left.ID == right.ID && left.Branch.IsZero() && right.Branch.IsZero()
+}
+
 func (f *b08Fixture) attachmentRead(label string, id model.Ref, at *model.Revision, want []model.Attachment) model.Revision {
 	f.t.Helper()
 	before := f.state()
@@ -53,7 +57,7 @@ func (f *b08Fixture) attachmentWrite(label string, id model.Ref, attachment mode
 	}
 	after := f.state()
 	oldHead, err := before.Meta.Head.Uint64()
-	if err != nil || commit.Revision.String() != fmt.Sprint(oldHead+1) || after.Meta.Head != commit.Revision || out.Meta.Replayed || len(commit.Results) != 1 || commit.Results[0].Ref != id || commit.Results[0].Revision != commit.Revision || commit.Results[0].SetBy["attachments"] != "request" || len(after.History) != len(before.History)+1 || len(after.Versions[id.ID]) != len(before.Versions[id.ID])+1 {
+	if err != nil || commit.Revision.String() != fmt.Sprint(oldHead+1) || after.Meta.Head != commit.Revision || out.Meta.Replayed || len(commit.Results) != 1 || !b08AttachmentRefEqual(commit.Results[0].Ref, id) || commit.Results[0].Revision != commit.Revision || commit.Results[0].SetBy["attachments"] != "request" || len(after.History) != len(before.History)+1 || len(after.Versions[id.ID]) != len(before.Versions[id.ID])+1 {
 		f.t.Fatalf("attachment did not commit exactly one ordinary revision: %s err=%v", out.Result, err)
 	}
 	var returned pipeline.Document
@@ -64,12 +68,12 @@ func (f *b08Fixture) attachmentWrite(label string, id model.Ref, attachment mode
 		f.t.Fatal("ordinary attachment changed record membership or workflow checkpoint")
 	}
 	for _, row := range before.Records {
-		if row.Ref == id {
+		if b08AttachmentRefEqual(row.Ref, id) {
 			continue
 		}
 		found := false
 		for _, current := range after.Records {
-			if current.Ref == row.Ref {
+			if b08AttachmentRefEqual(current.Ref, row.Ref) {
 				found = reflect.DeepEqual(current, row) && reflect.DeepEqual(before.Versions[row.Ref.ID], after.Versions[row.Ref.ID])
 			}
 		}
@@ -83,7 +87,7 @@ func (f *b08Fixture) attachmentWrite(label string, id model.Ref, attachment mode
 			continue
 		}
 		found = true
-		if len(entry.Changes) != 1 || entry.Changes[0].Ref != id || entry.Changes[0].Op != model.OpAttach || !reflect.DeepEqual(entry.Changes[0].ChangedPaths, []string{"/attachments"}) || len(entry.Events) != 1 || entry.Events[0].Type != model.EventBeadAttached || entry.Events[0].Resource.Ref != id || entry.Events[0].Provenance.Method != "tx.apply" || entry.Events[0].Provenance.SetBy["attachments"] != "request" {
+		if len(entry.Changes) != 1 || !b08AttachmentRefEqual(entry.Changes[0].Ref, id) || entry.Changes[0].Op != model.OpAttach || !reflect.DeepEqual(entry.Changes[0].ChangedPaths, []string{"/attachments"}) || len(entry.Events) != 1 || entry.Events[0].Type != model.EventBeadAttached || !b08AttachmentRefEqual(entry.Events[0].Resource.Ref, id) || entry.Events[0].Provenance.Method != "tx.apply" || entry.Events[0].Provenance.SetBy["attachments"] != "request" {
 			f.t.Fatalf("attachment history/event mismatch: %+v", entry)
 		}
 	}
@@ -205,7 +209,7 @@ func (a *b08AttachmentAuthorizer) Authorize(ctx context.Context, stage port.Auth
 		a.calls = append(a.calls, b08AttachmentAuthorization{stage, change.Resource.Ref, change.Op.Kind})
 		if change.Op.Kind != model.OpCreate {
 			rows, err := reader.Get(ctx, []model.Ref{change.Resource.Ref})
-			if err != nil || len(rows) != 1 || rows[0].Ref != change.Resource.Ref {
+			if err != nil || len(rows) != 1 || !b08AttachmentRefEqual(rows[0].Ref, change.Resource.Ref) {
 				return fmt.Errorf("attachment authorization lost actual target: %v", err)
 			}
 		}
