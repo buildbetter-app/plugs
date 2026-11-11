@@ -863,6 +863,7 @@ internal/integration/rpctx/BUILD.bazel
 internal/integration/rpctx/rpc_tx_test.go
 internal/integration/s1relations/BUILD.bazel
 internal/integration/s1relations/README.md
+internal/integration/s1relations/b28_alert_notice_test.go
 internal/integration/s1relations/converter_test.go
 internal/integration/s1relations/engine_test.go
 internal/integration/s1relations/fixture_test.go
