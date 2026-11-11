@@ -631,6 +631,7 @@ internal/integration/converterroundtrip/native_table_oracle_test.go
 internal/integration/converterroundtrip/native_tables.go
 internal/integration/converterroundtrip/native_tables_test.go
 internal/integration/converterroundtrip/native_workflow_accounting_test.go
+internal/integration/converterroundtrip/public_external_capture_test.go
 internal/integration/converterroundtrip/public_source_test.go
 internal/integration/converterroundtrip/repair_test.go
 internal/integration/converterroundtrip/restore.go

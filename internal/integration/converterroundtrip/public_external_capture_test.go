@@ -64,9 +64,193 @@ type publicProofRequest struct {
 	ProducerHead  string                    `json:"producer_head"`
 	Oracle        string                    `json:"oracle"`
 	LedgerSHA256  string                    `json:"ledger_sha256"`
+	StatesSHA256  string                    `json:"states_sha256"`
 	RestoreTime   string                    `json:"restore_time"`
 	JournalTable  string                    `json:"journal_table"`
 	Commits       int                       `json:"commits"`
+}
+
+type publicProofState struct {
+	Kind               string `json:"kind"`
+	Sequence           uint64 `json:"sequence"`
+	CommitID           string `json:"commit_id"`
+	TableCount         int    `json:"table_count"`
+	PhysicalRootSHA256 string `json:"physical_root_sha256"`
+}
+
+func publicProofStates(t *testing.T, req publicProofRequest, ledger []publicProofTable) map[uint64]publicProofState {
+	t.Helper()
+	path := filepath.Join(req.Oracle, "states.ndjson")
+	if len(req.StatesSHA256) != 64 || publicProofHashFile(t, path) != req.StatesSHA256 {
+		t.Fatal("complete state ledger binding differs")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	s := bufio.NewScanner(f)
+	states := map[string]publicProofState{}
+	mapping := map[uint64]publicProofState{}
+	for s.Scan() {
+		var state publicProofState
+		d := json.NewDecoder(bytes.NewReader(s.Bytes()))
+		d.DisallowUnknownFields()
+		if err := d.Decode(&state); err != nil {
+			t.Fatal(err)
+		}
+		if state.Kind != "commit" && state.Kind != "head-checkpoint" && state.Kind != "current" || state.TableCount < 0 || state.CommitID == "" {
+			t.Fatal("invalid complete state")
+		}
+		if state.Kind == "commit" && (state.Sequence < 1 || state.Sequence > uint64(req.Commits)) || state.Kind != "commit" && state.Sequence != 0 {
+			t.Fatal("invalid state sequence")
+		}
+		key := fmt.Sprintf("%s/%d", state.Kind, state.Sequence)
+		if _, ok := states[key]; ok {
+			t.Fatal("duplicate independent state")
+		}
+		states[key] = state
+		if state.Kind == "commit" {
+			mapping[state.Sequence] = state
+		}
+	}
+	if err := s.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(states) != req.Commits+2 || len(mapping) != req.Commits {
+		t.Fatal("complete independent frame census differs")
+	}
+	for key, state := range states {
+		digests := map[string]dumpformat.NativeDeltaTableDigest{}
+		for _, entry := range ledger {
+			if fmt.Sprintf("%s/%d", entry.Kind, entry.Sequence) != key {
+				continue
+			}
+			if entry.CommitID != state.CommitID || entry.SourceRows < 0 {
+				t.Fatal("table frame identity differs")
+			}
+			if _, ok := digests[entry.Family]; ok {
+				t.Fatal("duplicate independent table")
+			}
+			digests[entry.Family] = dumpformat.NativeDeltaTableDigest{SHA256: entry.PhysicalSHA256, Rows: uint64(entry.SourceRows)}
+		}
+		root, err := dumpformat.NativeDeltaRootSHA256(digests)
+		if err != nil || root != state.PhysicalRootSHA256 || len(digests) != state.TableCount {
+			t.Fatal("independent complete frame root or table count differs", key)
+		}
+	}
+	for _, entry := range ledger {
+		if _, ok := states[fmt.Sprintf("%s/%d", entry.Kind, entry.Sequence)]; !ok {
+			t.Fatal("table outside complete state census")
+		}
+	}
+	if states["head-checkpoint/0"].CommitID != mapping[uint64(req.Commits)].CommitID || states["current/0"].CommitID != mapping[uint64(req.Commits)].CommitID {
+		t.Fatal("HEAD/current source identity differs")
+	}
+	return mapping
+}
+
+// Host intent is explicit per observed tuple. It preserves the existing
+// exact field/status mapping and refuses missing or ambiguous tuple fields.
+func publicProofHostIntent(t *testing.T, archive *dumpformat.Archive, plan driver.SourcePlanePlanV1) driver.SourcePlanePlanV1 {
+	t.Helper()
+	template := plan.Dispositions[0]
+	statuses := map[string]bool{}
+	for _, p := range archive.Manifest().Projects {
+		for _, status := range p.Statuses {
+			statuses[status.Name] = true
+		}
+	}
+	template.Statuses = nil
+	for name := range statuses {
+		template.Statuses = append(template.Statuses, driver.SourcePlaneStringPairV1{From: name, To: name})
+	}
+	sort.Slice(template.Statuses, func(i, j int) bool { return template.Statuses[i].From < template.Statuses[j].From })
+	flag := func(fields dumpformat.Row, name string) bool {
+		v, present := fields[name]
+		if !present {
+			t.Fatal("missing source tuple flag", name)
+		}
+		switch v := v.(type) {
+		case bool:
+			return v
+		case json.Number:
+			if v == "0" {
+				return false
+			}
+			if v == "1" {
+				return true
+			}
+		}
+		t.Fatal("invalid source tuple flag", name)
+		return false
+	}
+	byTuple := map[string]driver.SourcePlaneDispositionV1{}
+	byEntity := map[driver.SourceEntityKey]string{}
+	for _, row := range archive.Records("bead") {
+		fields := row.Source.Fields
+		sourceType, ok := fields["issue_type"].(string)
+		if !ok || sourceType == "" {
+			t.Fatal("missing source tuple type")
+		}
+		storage, present := fields["storage_class"]
+		if !present {
+			t.Fatal("missing source tuple storage")
+		}
+		storageText := ""
+		if storage != nil {
+			var ok bool
+			storageText, ok = storage.(string)
+			if !ok || storageText == "" {
+				t.Fatal("invalid source tuple storage")
+			}
+		}
+		ephemeral, noHistory := flag(fields, "ephemeral"), flag(fields, "no_history")
+		tuple, err := json.Marshal(struct {
+			Type                 string
+			Storage              any
+			Ephemeral, NoHistory bool
+		}{sourceType, storage, ephemeral, noHistory})
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := "tuple-" + hashBytes(tuple)
+		disposition := template
+		disposition.Key = key
+		disposition.SourceType = sourceType
+		disposition.StorageClass = storageText
+		disposition.Ephemeral = ephemeral
+		disposition.NoHistory = noHistory
+		if !disposition.MatchesStorageClass(storage, true) {
+			t.Fatal("exact source storage intent differs")
+		}
+		byTuple[key] = disposition
+		entity := driver.SourceEntityKey{Project: row.Project, Plane: row.Source.Table, ID: row.ID}
+		if _, exists := byEntity[entity]; exists {
+			t.Fatal("repeated source entity")
+		}
+		byEntity[entity] = key
+	}
+	if len(byEntity) != len(plan.Entities) {
+		t.Fatal("complete host entity census differs")
+	}
+	for i := range plan.Entities {
+		key, ok := byEntity[plan.Entities[i].Source]
+		if !ok {
+			t.Fatal("host entity tuple missing")
+		}
+		plan.Entities[i].DispositionKey = key
+		delete(byEntity, plan.Entities[i].Source)
+	}
+	if len(byEntity) != 0 {
+		t.Fatal("unbound source entities")
+	}
+	plan.Dispositions = nil
+	for _, disposition := range byTuple {
+		plan.Dispositions = append(plan.Dispositions, disposition)
+	}
+	sort.Slice(plan.Dispositions, func(i, j int) bool { return plan.Dispositions[i].Key < plan.Dispositions[j].Key })
+	return plan
 }
 
 type publicProofTable struct {
@@ -255,26 +439,7 @@ func TestPublicNativeExternalCaptureMatrix(t *testing.T) {
 		defer done()
 		return nativeHistoryPlanFromArchive(t, work, store, lease)
 	}()
-	plan.Dispositions[0].StorageClass = ""
-	for _, row := range archive.Records("bead") {
-		storage, present := row.Source.Fields["storage_class"]
-		if !plan.Dispositions[0].MatchesStorageClass(storage, present) {
-			t.Fatal("fixture storage disposition differs")
-		}
-	}
-	statuses := map[string]bool{}
-	for _, p := range archive.Manifest().Projects {
-		for _, status := range p.Statuses {
-			statuses[status.Name] = true
-		}
-	}
-	plan.Dispositions[0].Statuses = nil
-	for name := range statuses {
-		plan.Dispositions[0].Statuses = append(plan.Dispositions[0].Statuses, driver.SourcePlaneStringPairV1{From: name, To: name})
-	}
-	sort.Slice(plan.Dispositions[0].Statuses, func(i, j int) bool {
-		return plan.Dispositions[0].Statuses[i].From < plan.Dispositions[0].Statuses[j].From
-	})
+	plan = publicProofHostIntent(t, archive, plan)
 	profile := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "restore-admin"}, Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: driver.StoreID(req.Source.StoreID), Method: "offline.restore.import", IdempotencyKey: strings.Repeat("b", 32), ArchiveDigest: archive.SHA256(), HistoryMode: driver.RestoreHistoryModeFull, HistoryTime: when.Format(time.RFC3339Nano)}
 	publicProofJSON(t, filepath.Join(output, "host-plan.json"), plan)
 	profile, err = BindNativeCaptureSetImport(op, archive, profile, plan)
@@ -342,9 +507,7 @@ func publicProofIndependentReadback(t *testing.T, ctx context.Context, store dri
 		}
 		byState[n] = append(byState[n], entry)
 	}
-	if len(byState) != req.Commits+1 {
-		t.Fatal("independent state census differs")
-	}
+	stateMapping := publicProofStates(t, req, ledger)
 	dir := filepath.Join(output, phase)
 	if err := os.Mkdir(dir, 0700); err != nil {
 		t.Fatal(err)
@@ -352,13 +515,10 @@ func publicProofIndependentReadback(t *testing.T, ctx context.Context, store dri
 	for seq := uint64(0); seq <= uint64(req.Commits); seq++ {
 		publicProofGuard(t)
 		entries := byState[seq]
-		if len(entries) == 0 {
-			t.Fatal("missing independent state")
-		}
 		at := report.Restored.Head
 		if seq != 0 {
 			m, ok := mapping[seq]
-			if !ok || len(m.EventIDs) != 0 || len(m.CommitIDs) != 1 || m.CommitIDs[0] != entries[0].CommitID {
+			if !ok || len(m.EventIDs) != 0 || len(m.CommitIDs) != 1 || m.CommitIDs[0] != stateMapping[seq].CommitID {
 				t.Fatal("exact original commit mapping differs")
 			}
 			at = m.Revision
@@ -441,5 +601,6 @@ func publicProofIndependentReadback(t *testing.T, ctx context.Context, store dri
 		if len(groups) != 0 {
 			t.Fatal("complete snapshot has extra native row/meta groups", seq, len(groups))
 		}
+		publicProofJSON(t, filepath.Join(dir, fmt.Sprintf("snapshot-%020d.json", seq)), map[string]any{"sequence": seq, "expected_tables": len(entries), "actual_groups_after_complete_check": len(groups), "complete_unfiltered_query": true, "empty_source_commit": seq != 0 && stateMapping[seq].TableCount == 0})
 	}
 }
