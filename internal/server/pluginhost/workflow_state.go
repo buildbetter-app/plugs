@@ -76,6 +76,9 @@ func (d *durableAccess) ReadWorkflowRuntimeCheckpoint(ctx context.Context) (logi
 	if err != nil {
 		return nil, "", head, expectation, err
 	}
+	if cp.Generation == 0 && len(cp.Payload) != 0 {
+		return nil, "", head, expectation, fmt.Errorf("invalid workflow checkpoint payload at generation zero")
+	}
 	namespace := durableNamespace{Values: map[string]durableValue{}}
 	if cp.Generation != 0 {
 		decoder := json.NewDecoder(bytes.NewReader(cp.Payload))

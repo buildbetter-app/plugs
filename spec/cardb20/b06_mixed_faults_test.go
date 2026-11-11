@@ -75,6 +75,7 @@ type b06SnapshotCloseStore struct {
 	driver.WorkflowCheckpointStore
 	meta              func(context.Context) (driver.Meta, error)
 	fail              bool
+	override          *driver.Checkpoint
 	reads             int
 	closes            int
 	readErr, closeErr error
@@ -83,10 +84,12 @@ type b06SnapshotCloseStore struct {
 func (s *b06SnapshotCloseStore) Meta(ctx context.Context) (driver.Meta, error) { return s.meta(ctx) }
 func (s *b06SnapshotCloseStore) ReadSourcePlaneSnapshot(ctx context.Context, view driver.View, keys []string) (driver.SourcePlaneSnapshot, error) {
 	r, err := s.WorkflowCheckpointStore.ReadSourcePlaneSnapshot(ctx, view, keys)
-	if err != nil || !s.fail {
+	if err != nil || (!s.fail && s.override == nil) {
 		return r, err
 	}
-	s.reads++
+	if s.fail {
+		s.reads++
+	}
 	return &b06SnapshotCloseReader{SourcePlaneSnapshot: r, owner: s}, nil
 }
 
@@ -96,6 +99,11 @@ type b06SnapshotCloseReader struct {
 }
 
 func (r *b06SnapshotCloseReader) SourcePlaneCheckpoint(key string) (driver.Checkpoint, error) {
+	if r.owner.override != nil {
+		value := *r.owner.override
+		value.Payload = append([]byte(nil), value.Payload...)
+		return value, nil
+	}
 	if r.owner.readErr != nil {
 		return driver.Checkpoint{}, r.owner.readErr
 	}
@@ -169,6 +177,25 @@ func b06MixedReadFaults(f *b06PlugFixture) {
 	if !bytes.Equal(beforeMarker, b06MixedImage(f, "after-missing-lifetime-marker")) {
 		f.t.Fatal("marker refusal published state or receipt")
 	}
+	malformedCheckpoint := &b06SnapshotCloseStore{
+		WorkflowCheckpointStore: store,
+		meta:                    f.store.Meta,
+		override:                &driver.Checkpoint{Generation: 0, Payload: []byte(`{}`)},
+	}
+	malformedState, err := pluginhost.NewWorkflowRuntimeState(malformedCheckpoint, f.lease)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	b06BindCycleState(f, malformedState)
+	beforeMalformed := b06MixedImage(f, "before-generation-zero-payload")
+	malformed := f.call("bead.cycles", map[string]any{"includeEphemeral": true, "includeTracks": true}, false)
+	if malformed.Error == nil || malformed.Error.Data.Code != "internal_error" || len(malformed.Result) != 0 || malformedCheckpoint.closes != 1 {
+		f.t.Fatalf("generation-zero checkpoint payload was accepted or mutated: %+v closes%d", malformed, malformedCheckpoint.closes)
+	}
+	if !bytes.Equal(beforeMalformed, b06MixedImage(f, "after-generation-zero-payload")) {
+		f.t.Fatal("generation-zero checkpoint refusal changed committed state")
+	}
+	b06BindCycleState(f, state)
 	for _, fault := range []string{"missing-capability", "unsupported", "head", "store", "incarnation", "namespace-store", "namespace-key", "malformed", "incomplete", "trailing"} {
 		f.t.Run("snapshot-"+fault, func(t *testing.T) {
 			previous := f.t
