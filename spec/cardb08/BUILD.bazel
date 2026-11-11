@@ -26,6 +26,16 @@ go_test(
     timeout = "long",
 )
 
+go_test(
+    name = "attachment_test",
+    srcs = ["public_fixture_test.go", "attachment_test.go"],
+    args = ["-test.v"],
+    deps = DEPS + ["//internal/core/port"],
+    size = "large",
+    tags = ["local", "requires-network"],
+    timeout = "long",
+)
+
 # The canonical native recording uses the existing exact-source build support.
 # Its manual target is selected explicitly in the owning focus gate.
 go_test(

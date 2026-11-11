@@ -342,7 +342,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			case model.OpSetMeta:
 				target = op.SetMeta.Target
 			case model.OpAttach:
-				return nil, failure("invalid_params", "attach is unsupported by this pipeline slice")
+				target = op.Attach.Target
 			case model.OpReparent:
 				target = op.Reparent.Target
 			default:
@@ -437,6 +437,12 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				}
 				current.doc.Comments = append(current.doc.Comments, Comment{Body: op.Comment.Body, Principal: by, Time: stamp})
 				current.setBy["comments"] = "request"
+			case model.OpAttach:
+				if err = validateAttachmentPayload(op.Attach.Attachment); err != nil {
+					return nil, err
+				}
+				current.doc.Attachments = append(current.doc.Attachments, op.Attach.Attachment)
+				current.setBy["attachments"] = "request"
 			case model.OpLink, model.OpUnlink:
 				kind := op.Link.LinkKind
 				if !validDependencyKind(kind) {
@@ -663,6 +669,29 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 		return nil, err
 	}
 	return p, nil
+}
+
+// Attachments use the ordinary bead write and receipt boundary. URI evidence
+// needs no content store; content-backed evidence cannot be accepted until a
+// store can verify and retain the referenced bytes.
+func validateAttachmentPayload(attachment model.Attachment) error {
+	if strings.TrimSpace(attachment.MediaType) == "" {
+		return failure("invalid_params", "attachment requires a mediaType")
+	}
+	switch attachment.Kind {
+	case "link", "commit":
+		if strings.TrimSpace(attachment.URI) == "" || attachment.ContentRef != "" {
+			return failure("invalid_params", "link and commit attachments require uri without contentRef")
+		}
+	case "blob", "log":
+		if strings.TrimSpace(attachment.ContentRef) == "" || attachment.URI != "" {
+			return failure("invalid_params", "blob and log attachments require contentRef without uri")
+		}
+		return &model.Error{Message: "attachment content store is not implemented", Data: model.ErrorData{Code: model.CodeUnsupported, Details: map[string]any{"reason": "attachment_content_store_unavailable", "kind": attachment.Kind}}}
+	default:
+		return failure("invalid_params", "unsupported attachment kind")
+	}
+	return nil
 }
 
 // loadLinkTarget reads only local endpoints. An explicitly external target
