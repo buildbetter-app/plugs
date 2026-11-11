@@ -46,6 +46,12 @@ go_library(
 )
 
 go_test(
+    name = "gate_type_port_test",
+    srcs = ["gate_type_port_test.go"],
+    embed = [":plugdump"],
+)
+
+go_test(
     name = "plugdump_test",
     srcs = [
         "native_delta_test.go",

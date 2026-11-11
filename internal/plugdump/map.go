@@ -129,9 +129,9 @@ func copyOntology(input []OntologyDirective, projects []Project) ([]OntologyDire
 	return output, nil
 }
 
-func (m *mapping) ontologyDirective(project, issueType, id string) error {
+func (m *mapping) ontologyDirective(project, issueType, id string) (string, error) {
 	if builtInIssueTypes[issueType] {
-		return nil
+		return "issue", nil
 	}
 	var matches []OntologyDirective
 	for _, directive := range m.ontology {
@@ -139,13 +139,18 @@ func (m *mapping) ontologyDirective(project, issueType, id string) error {
 			matches = append(matches, directive)
 		}
 	}
+	// An existing explicit gate-to-issue directive remains authoritative and
+	// accounted. Only the validated native category route has an implicit gate.
+	if len(matches) == 0 && issueType == "gate" && m.statusCategories {
+		return "gate", nil
+	}
 	if len(matches) != 1 {
 		// Preserve the original closed-world refusal for callers that did not
 		// provide a directive. Details stay out of the stable user-facing error.
-		return fmt.Errorf("unsupported issue type; workflow/ontology mapping required")
+		return "", fmt.Errorf("unsupported issue type; workflow/ontology mapping required")
 	}
 	m.usedOntology[matches[0].ID] = true
-	return nil
+	return matches[0].To, nil
 }
 
 func (m *mapping) add(kind, id, project, table string, body map[string]any, row Row) {
@@ -618,7 +623,8 @@ func (m *mapping) issues(rows []Row) error {
 			}
 		}
 		issueType := text(row, "issue_type")
-		if err := m.ontologyDirective(project.Prefix, issueType, id); err != nil {
+		targetType, err := m.ontologyDirective(project.Prefix, issueType, id)
+		if err != nil {
 			return err
 		}
 		if class := text(row, "storage_class"); class != "" && class != "versioned" {
@@ -628,7 +634,7 @@ func (m *mapping) issues(rows []Row) error {
 		if err != nil {
 			return err
 		}
-		body := map[string]any{"type": "issue", "source_type": row["issue_type"], "title": row["title"], "status_category": category, "labels": []string{}}
+		body := map[string]any{"type": targetType, "source_type": row["issue_type"], "title": row["title"], "status_category": category, "labels": []string{}}
 		if result != "" {
 			body["result"] = result
 		}

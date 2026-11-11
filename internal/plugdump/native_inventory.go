@@ -146,10 +146,6 @@ func (s SQLSource) nativeInventory(ctx context.Context, capture NativeCapture, h
 		}
 	}
 	inventory.Projects = []Project{project}
-	inventory.Ontology, err = nativeTypeDirectives(tables["issues"].Rows, project)
-	if err != nil {
-		return Inventory{}, nil, err
-	}
 	// The existing closed-world mapping remains authoritative for allocator,
 	// ontology, unsupported families and every stored business value.
 	observations := map[string]map[string]any{}
@@ -256,6 +252,10 @@ func (s SQLSource) nativeInventory(ctx context.Context, capture NativeCapture, h
 	}
 	inventory.StatusCategoryContract = StatusCategoryContract
 	inventory.Projects[0].Statuses = statuses
+	inventory.Ontology, err = nativeTypeDirectives(tables["issues"].Rows, inventory.Projects[0])
+	if err != nil {
+		return Inventory{}, nil, err
+	}
 	finalLog, err := history.ReadSourceCommits(ctx)
 	if err != nil {
 		return Inventory{}, nil, err
@@ -272,7 +272,15 @@ func (s SQLSource) nativeInventory(ctx context.Context, capture NativeCapture, h
 // Public native capture explicitly records a map_type directive for every
 // observed non-built-in type. It does not rename the source type, interpret
 // its workflow, or relax the offline exporter's required-directive check.
+// A validated modern native status catalog carries the native gate type
+// directly. Legacy inventories keep their explicit gate-to-issue directive.
 func nativeTypeDirectives(rows []Row, project Project) ([]OntologyDirective, error) {
+	modern := len(project.Statuses) != 0
+	if modern {
+		if err := validateStatusCategoryContract(StatusCategoryContract, []Project{project}); err != nil {
+			return nil, err
+		}
+	}
 	seen := map[string]bool{}
 	directives := []OntologyDirective{}
 	for _, row := range rows {
@@ -280,7 +288,7 @@ func nativeTypeDirectives(rows []Row, project Project) ([]OntologyDirective, err
 		if err != nil || !validCatalogTypeName(issueType) {
 			return nil, fmt.Errorf("unsupported native issue type")
 		}
-		if builtInIssueTypes[issueType] || seen[issueType] {
+		if builtInIssueTypes[issueType] || modern && issueType == "gate" || seen[issueType] {
 			continue
 		}
 		seen[issueType] = true

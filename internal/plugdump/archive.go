@@ -376,10 +376,13 @@ func validateOntologyRecords(directives []OntologyDirective, projects []Project,
 	used := map[string]bool{}
 	for _, record := range records {
 		issueType := text(record.Source.Fields, "issue_type")
-		if text(record.Body, "source_type") != issueType || text(record.Body, "type") != "issue" {
+		if text(record.Body, "source_type") != issueType {
 			return fmt.Errorf("bead source type/body mismatch")
 		}
 		if builtInIssueTypes[issueType] {
+			if text(record.Body, "type") != "issue" {
+				return fmt.Errorf("bead source type/body mismatch")
+			}
 			continue
 		}
 		var matches []OntologyDirective
@@ -388,8 +391,25 @@ func validateOntologyRecords(directives []OntologyDirective, projects []Project,
 				matches = append(matches, directive)
 			}
 		}
+		if len(matches) == 0 && issueType == "gate" && text(record.Body, "type") == "gate" {
+			modern := false
+			for _, project := range projects {
+				if project.Prefix == record.Project && len(project.Statuses) != 0 {
+					if err := validateStatusCategoryContract(StatusCategoryContract, []Project{project}); err != nil {
+						return err
+					}
+					modern = projectStatusCategory(project, text(record.Source.Fields, "status")) != ""
+				}
+			}
+			if modern {
+				continue
+			}
+		}
 		if len(matches) != 1 {
 			return fmt.Errorf("unsupported issue type; workflow/ontology mapping required")
+		}
+		if text(record.Body, "type") != matches[0].To {
+			return fmt.Errorf("bead source type/body mismatch")
 		}
 		used[matches[0].ID] = true
 	}
