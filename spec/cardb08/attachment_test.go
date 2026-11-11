@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -174,7 +173,9 @@ func TestB08AttachmentsInvalidAndMissingStoreRefuseWithoutWrites(t *testing.T) {
 				params := b08AttachParams(id, attachment)
 				f.conserved("missing-store-"+kind, "tx.apply", params, "unsupported", "")
 				out := f.call("missing-store-detail-"+kind, "tx.apply", params, "unsupported")
-				if !strings.Contains(out.Error.Message, "content store") || out.Error.Data.Details["reason"] != "attachment_content_store_unavailable" || out.Error.Data.Details["kind"] != kind {
+				// The transport supplies the catalog message; the typed details
+				// identify the missing attachment store and requested kind.
+				if out.Error.Message != "operation is unsupported" || out.Error.Data.Details["reason"] != "attachment_content_store_unavailable" || out.Error.Data.Details["kind"] != kind {
 					t.Fatal("content-backed attachment refusal did not identify missing store", out.Error)
 				}
 			}
