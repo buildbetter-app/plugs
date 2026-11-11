@@ -72,7 +72,17 @@ func validateIssueOntology(directives []OntologyDirective, records []Record, req
 				(d.Target.ID == "" || d.Target.ID == r.ID) {
 				matches++
 				used[d.ID] = true
+				if sourceType == "gate" && stringValue(r.Body["type"]) != d.To {
+					return fmt.Errorf("gate projection must honor its explicit ontology directive")
+				}
 			}
+		}
+		// Modern native catalogs carry the built-in gate node literally. A
+		// matching historical gate->issue directive still takes precedence and
+		// is accounted above. Legacy record validation cannot produce this
+		// literal projection without a native status catalog.
+		if matches == 0 && sourceType == "gate" && stringValue(r.Body["type"]) == "gate" {
+			continue
 		}
 		if matches != 1 {
 			return fmt.Errorf("unsupported source type; one explicit ontology directive required")

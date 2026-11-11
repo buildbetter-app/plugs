@@ -169,6 +169,7 @@ internal/core/dumpformat/edge_extensions.go
 internal/core/dumpformat/edge_metadata.go
 internal/core/dumpformat/edge_tokens_test.go
 internal/core/dumpformat/edge_version_test.go
+internal/core/dumpformat/gate_default_test.go
 internal/core/dumpformat/history.go
 internal/core/dumpformat/history_test.go
 internal/core/dumpformat/identity.go
@@ -716,6 +717,7 @@ internal/integration/gatecontract/authorization_test.go
 internal/integration/gatecontract/await_members_test.go
 internal/integration/gatecontract/consumer_host_test.go
 internal/integration/gatecontract/consumer_test.go
+internal/integration/gatecontract/default_query_test.go
 internal/integration/gatecontract/engine_test.go
 internal/integration/gatecontract/external_target_test.go
 internal/integration/gatecontract/fanout_test.go
@@ -1645,6 +1647,12 @@ spec/cardb07/public_test.go
 spec/cardb07positive/BUILD.bazel
 spec/cardb07positive/README.md
 spec/cardb07positive/ordinary_test.go
+spec/cardb14/BUILD.bazel
+spec/cardb14/README.md
+spec/cardb14/cases_test.go
+spec/cardb14/native_test.go
+spec/cardb14/ordinary_test.go
+spec/cardb14/public_test.go
 spec/cardb19/BUILD.bazel
 spec/cardb19/README.md
 spec/cardb19/archive_test.go

@@ -41,7 +41,15 @@ func DefaultDocument() Document {
 }
 
 func Default() Effective {
-	snapshot, problems := Compile(DefaultDocument(), nil, nil)
+	// The no-source host carries the built-in gate node. Explicit source
+	// documents remain complete catalogs: compiling one never adds a type
+	// that its author did not install.
+	document := DefaultDocument()
+	document.Types[GateType] = Type{Name: "Gate", Workflow: "issue", Fields: map[string]Field{
+		"title": {Type: "string"}, "description": {Type: "string"},
+		"labels": {Type: "strings"}, "blocked": {Type: "boolean"},
+	}}
+	snapshot, problems := Compile(document, nil, nil)
 	if len(problems) != 0 {
 		panic("invalid built-in ontology")
 	}
