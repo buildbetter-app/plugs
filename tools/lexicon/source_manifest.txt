@@ -193,10 +193,16 @@ internal/core/dumpformat/migration_test.go
 internal/core/dumpformat/native_commit_initial_test.go
 internal/core/dumpformat/native_commit_schema.go
 internal/core/dumpformat/native_commit_schema_test.go
+internal/core/dumpformat/native_delta_cells.go
+internal/core/dumpformat/native_delta_wire.go
 internal/core/dumpformat/native_history.go
 internal/core/dumpformat/native_history_coverage.go
 internal/core/dumpformat/native_history_coverage_test.go
 internal/core/dumpformat/native_history_test.go
+internal/core/dumpformat/native_row_records.go
+internal/core/dumpformat/native_row_records.md
+internal/core/dumpformat/native_row_table.go
+internal/core/dumpformat/native_row_test.go
 internal/core/dumpformat/native_schema.go
 internal/core/dumpformat/native_schema_test.go
 internal/core/dumpformat/ontology.go
