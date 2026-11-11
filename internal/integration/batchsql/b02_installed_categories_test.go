@@ -238,6 +238,44 @@ func (h *b02InstalledHTTP) observe(t *testing.T, phase, status string, root, ord
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s ready=%v want=%v", phase, got, want)
 		}
+		// This authored category matrix is independent of ready membership.
+		blockedExpected := map[string][]string{}
+		switch status {
+		case "b02active", "b02wip", "b02frozen":
+			blockedExpected[ordinary.ID] = []string{root.ID}
+			blockedExpected[conditional.ID] = []string{root.ID}
+		case "b02done", "b02canceled":
+			blockedExpected[conditional.ID] = []string{root.ID}
+		case "b02failed":
+		default:
+			t.Fatal("unauthored installed blocked category", status)
+		}
+		var blocked struct {
+			Items []struct {
+				Bead struct {
+					ID      string
+					Blocked bool
+				}
+				BlockedBy                      []model.Ref
+				BlockedByCount, HiddenBlockers int
+			}
+			NextCursor string
+		}
+		if err := json.Unmarshal(h.call(t, "bead.blocked", b02InstalledDependents, false, map[string]any{"limit": 1000}), &blocked); err != nil || blocked.NextCursor != "" {
+			t.Fatal("complete installed blocked page", err)
+		}
+		blockedGot := map[string][]string{}
+		for _, item := range blocked.Items {
+			if !item.Bead.Blocked || item.HiddenBlockers != 0 || item.BlockedByCount != len(item.BlockedBy) {
+				t.Fatal("incomplete installed blocked reasons")
+			}
+			for _, ref := range item.BlockedBy {
+				blockedGot[item.Bead.ID] = append(blockedGot[item.Bead.ID], ref.ID)
+			}
+		}
+		if !reflect.DeepEqual(blockedGot, blockedExpected) {
+			t.Fatalf("%s installed blocked reasons=%v want=%v", phase, blockedGot, blockedExpected)
+		}
 	}
 	requireSameState(t, before, h.f.state(t))
 	if err := json.NewEncoder(h.frames).Encode(map[string]any{"phase": phase, "engine": h.f.engine, "state": before, "source": h.source, "digest": h.digest, "status": status, "ordinaryReady": wantOrdinary, "conditionalReady": wantConditional}); err != nil {

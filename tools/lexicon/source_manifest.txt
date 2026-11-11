@@ -947,6 +947,7 @@ internal/server/authzrpc/authzrpc_test.go
 internal/server/authzrpc/b04_error_bounds_test.go
 internal/server/authzrpc/b15_comments_page_test.go
 internal/server/authzrpc/binding_test.go
+internal/server/authzrpc/blocked.go
 internal/server/authzrpc/checker.go
 internal/server/authzrpc/claim.go
 internal/server/authzrpc/claim_test.go
@@ -1099,6 +1100,7 @@ internal/server/pluginmanifest/native_test.go
 internal/server/pluginmanifest/source_test.go
 internal/server/rpc/BUILD.bazel
 internal/server/rpc/admin.go
+internal/server/rpc/blocked.go
 internal/server/rpc/cmd/openrpcgen/BUILD.bazel
 internal/server/rpc/cmd/openrpcgen/main.go
 internal/server/rpc/comments.go
@@ -1638,6 +1640,8 @@ spec/cardb01/record_reference.py
 spec/cardb01/reference-run-1.json
 spec/cardb01/reference-run-2.json
 spec/cardb01/reference_test.go
+spec/cardb02/BUILD.bazel
+spec/cardb02/blocked_public_test.go
 spec/cardb07/BUILD.bazel
 spec/cardb07/README.md
 spec/cardb07/cases_test.go

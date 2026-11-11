@@ -164,6 +164,9 @@ func BindService(registry *Registry, svc Service) error {
 		return fmt.Errorf("nil service or registry")
 	}
 	names := []string{"bead.get", "bead.ready", "bead.create", "bead.update", "bead.claim", "bead.claimNext", "bead.comment", "bead.close", "bead.reopen", "bead.defer", "bead.cancel", "bead.fail", "bead.link", "bead.unlink", "tx.apply", "history.query"}
+	if _, ok := svc.(BlockedService); ok {
+		names = append(names, "bead.blocked")
+	}
 	if _, ok := svc.(GateListingService); ok {
 		names = append(names, "gate.list")
 	}
@@ -268,6 +271,12 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 			return nil, err
 		}
 		return beadGetJSON(v, true), nil
+	case "bead.blocked":
+		blocked, ok := svc.(BlockedService)
+		if !ok {
+			return nil, &model.Error{Data: model.ErrorData{Code: "method_not_found"}}
+		}
+		return dispatchBlocked(ctx, blocked, c, p, int(limit))
 	case "bead.ready":
 		position, err := c.paging.decode(c, p)
 		if err != nil {

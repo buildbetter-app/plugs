@@ -2,7 +2,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "rpc",
-    srcs = ["admin.go", "comments.go", "compact.go", "cursor.go", "cycles.go", "gate_listing.go", "label_rename.go", "registry.go", "server.go", "service.go"],
+    srcs = ["blocked.go", "admin.go", "comments.go", "compact.go", "cursor.go", "cycles.go", "gate_listing.go", "label_rename.go", "registry.go", "server.go", "service.go"],
     importpath = "github.com/buildbetter-app/plugs/internal/server/rpc",
     visibility = ["//:__subpackages__"],
     deps = ["//internal/api/wire", "//internal/core/model", "//internal/core/port", "//internal/core/restore", "//internal/core/service", "//internal/server/authn", "//internal/storage/driver", "//plugins/workflow"],

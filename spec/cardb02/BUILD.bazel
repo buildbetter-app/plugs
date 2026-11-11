@@ -1,0 +1,29 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "blocked_public_test",
+    srcs = ["blocked_public_test.go"],
+    size = "large",
+    tags = ["local", "requires-network"],
+    args = ["-test.v"],
+    deps = [
+        "//internal/core/authz",
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/integration/b07positive",
+        "//internal/integration/b07positive/public",
+        "//internal/plugins/authnapikey",
+        "//internal/plugins/authzfixed",
+        "//internal/server/authzrpc",
+        "//internal/server/pluginhost",
+        "//internal/storage/conformance",
+        "//internal/storage/driver",
+        "//plugins/workflow",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

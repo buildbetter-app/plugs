@@ -174,10 +174,10 @@ func (c *pageCodec) decode(call Call, p serviceParams) (*service.PagePosition, e
 		return nil, cursorInvalid()
 	}
 	if !payload.WorkflowSnapshot.Valid() || (payload.Workflow && payload.WorkflowSnapshot == nil) ||
-		(call.Method != "bead.ready" && (payload.Workflow || payload.WorkflowSnapshot != nil)) {
+		(call.Method != "bead.ready" && call.Method != "bead.blocked" && (payload.Workflow || payload.WorkflowSnapshot != nil)) {
 		return nil, cursorInvalid()
 	}
-	if !validReadyMembership(payload.ReadyMembership) || (call.Method != "bead.ready" && payload.ReadyMembership != "") {
+	if !validReadyMembership(payload.ReadyMembership) || (call.Method != "bead.ready" && call.Method != "bead.blocked" && payload.ReadyMembership != "") {
 		return nil, cursorInvalid()
 	}
 	if payload.Incarnation != c.incarnation {
@@ -217,10 +217,10 @@ func (c *pageCodec) encode(call Call, p serviceParams, position service.PagePosi
 		return "", fmt.Errorf("service returned an invalid authorization revision")
 	}
 	if !position.WorkflowSnapshot.Valid() || (position.Workflow && position.WorkflowSnapshot == nil) ||
-		(call.Method != "bead.ready" && (position.Workflow || position.WorkflowSnapshot != nil)) {
+		(call.Method != "bead.ready" && call.Method != "bead.blocked" && (position.Workflow || position.WorkflowSnapshot != nil)) {
 		return "", fmt.Errorf("service returned invalid workflow cursor state")
 	}
-	if !validReadyMembership(position.ReadyMembership) || (call.Method != "bead.ready" && position.ReadyMembership != "") {
+	if !validReadyMembership(position.ReadyMembership) || (call.Method != "bead.ready" && call.Method != "bead.blocked" && position.ReadyMembership != "") {
 		return "", fmt.Errorf("service returned invalid ready membership binding")
 	}
 	principal, scope, err := c.binding(call, p)
