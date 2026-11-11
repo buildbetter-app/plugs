@@ -18,17 +18,25 @@ import (
 
 func effectVersion(t *testing.T, before, after proof.State, previous, current driver.Record, oldVersions, versions []driver.Version, method string, params map[string]any, commit model.Commit, started, finished time.Time) {
 	t.Helper()
+	requested,ok:=params["id"].(model.Ref)
+	if method=="bead.link" || method=="bead.unlink" {requested,ok=params["from"].(model.Ref)}
+	if !ok {t.Fatal("independent requested publication reference unavailable")}
+	effectPublicationRef(t,current.Ref,requested)
 	last := after.Changes[len(after.Changes)-1]
 	if last.Time.Before(started) || last.Time.After(finished) { t.Fatal("changeset time is outside its exact request interval") }
-	want := driver.Version{Ref:current.Ref, Revision:after.Meta.Head, Base:len(oldVersions)%driver.VersionBaseEvery==0, CreatedAt:last.Time, Principal:publicproof.Anonymous}
+	want := driver.Version{Ref:requested, Revision:after.Meta.Head, Base:len(oldVersions)%driver.VersionBaseEvery==0, CreatedAt:last.Time, Principal:publicproof.Anonymous}
 	if want.Base { want.Body=append([]byte(nil),current.Body...) } else {
 		var err error
 		want.Patch,err=json.Marshal([]map[string]any{{"op":"replace","path":"","value":json.RawMessage(current.Body)}})
 		if err!=nil {t.Fatal(err)}
 	}
-	if !reflect.DeepEqual(want,versions[len(oldVersions)]) { t.Fatal("appended version differs from exact requested body/base/patch/revision/principal") }
+	version:=versions[len(oldVersions)]
+	effectPublicationRef(t,version.Ref,requested)
+	version.Ref=requested
+	if !reflect.DeepEqual(want,version) { t.Fatalf("appended version differs from exact requested body/base/patch/revision/principal: got %+v want %+v",version,want) }
 	result := commit.Results[0]
-	if result.Ref!=current.Ref || result.Revision!=current.Revision || !bytes.Equal(result.Record,current.Body) {t.Fatal("public commit does not bind the exact current/version body")}
+	effectPublicationRef(t,result.Ref,requested)
+	if result.Revision!=current.Revision || !bytes.Equal(result.Record,current.Body) {t.Fatal("public commit does not bind the exact current/version body")}
 	operation:=model.OpPatch
 	paths:=[]string{"/fields/status"}
 	keys:=[]string{"fields.status"}
@@ -50,9 +58,6 @@ func effectVersion(t *testing.T, before, after proof.State, previous, current dr
 	default:t.Fatal("undeclared publication operation",method)
 	}
 	sort.Strings(paths)
-	requested,ok:=params["id"].(model.Ref)
-	if method=="bead.link" || method=="bead.unlink" {requested,ok=params["from"].(model.Ref)}
-	if !ok {t.Fatal("independent requested log reference unavailable")}
 	wantChange:=model.ChangeRecord{Ref:requested,Op:operation,FromRevision:previous.Revision,ChangedPaths:paths}
 	if len(last.Changes)!=1 {t.Fatal("history has extra/missing requested operations")}
 	gotChange:=last.Changes[0]
@@ -68,6 +73,14 @@ func effectVersion(t *testing.T, before, after proof.State, previous, current dr
 		if value,ok:=result.SetBy[key];ok && value!="request" {t.Fatal("relation provenance differs from public request",key)}
 	}
 	if value,ok:=result.SetBy["closedAt"];ok && value!="core" {t.Fatal("lifecycle provenance differs from core")}
+}
+
+// Reader rows materialize branch zero while public requests may omit that
+// default. Check the complete public identity before detaching the private Go
+// arm tag for comparisons of the remaining exact version/publication fields.
+func effectPublicationRef(t *testing.T,actual,requested model.Ref) {
+	t.Helper()
+	if actual.Validate()!=nil || requested.Validate()!=nil || actual.IsID()!=requested.IsID() || actual.ID!=requested.ID || actual.Key!=requested.Key || actual.Branch.String()!=requested.Branch.String() {t.Fatalf("publication reference differs from the independently requested arm/ID/branch: got %s want %s",effectToken(t,actual),effectToken(t,requested))}
 }
 
 func effectRows(t *testing.T, rows []driver.DerivedRow) map[string]driver.DerivedRow {

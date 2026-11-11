@@ -146,6 +146,14 @@ func (n *effectNative) image(label string) effectNativeState {
 	n.t.Helper()
 	state := effectNativeState{}
 	for _,table := range n.tables {
+		// The binding 18:51Z ruling excludes unversioned machine-local
+		// bookkeeping from business-state parity/conservation. Record only
+		// counts by key name; do not read or archive its opaque values.
+		if table=="local_metadata" {
+			raw:=n.command(label+"-"+table+"-counts",false,"--readonly","sql","SELECT `key`, COUNT(*) AS `count` FROM `local_metadata` GROUP BY `key` ORDER BY `key`","--json")
+			n.localMetadataCounts(label,raw)
+			continue
+		}
 		raw := n.command(label+"-"+table,false,"--readonly","sql","SELECT * FROM `"+table+"`","--json")
 		var rows []map[string]json.RawMessage
 		if json.Unmarshal(raw,&rows) != nil { n.t.Fatal("invalid exact native SQL rows",table) }

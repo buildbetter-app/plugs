@@ -208,15 +208,22 @@ func (n *effectNative) expectedEdgeMutation(want,got map[string]effectNativeRows
 		if target,local:=n.endpoints[mutation.To];local {column="depends_on_issue_id";if target.Plane==effectNativeActiveTable {column=effectNativeActiveTarget}}
 		row[column]=nativeEffectToken(n.t,mutation.To);want[table][key]=row
 	}
-	if mutation.Kind=="parent-child" && mutation.Verb=="dep_add" {
-		sum:=sha256.Sum256([]byte(mutation.To));shard:=uint16(sum[0])<<4|uint16(sum[1])>>4
-		name:=fmt.Sprintf("dependency-coordination/v1/%s/%03x",table,shard)
-		key:="key:"+string(nativeEffectToken(n.t,name));actual:=got["local_metadata"][key]
-		if actual==nil {n.t.Fatal("native parent edit lost its declared coordination projection")}
-		var old json.RawMessage;if previous:=want["local_metadata"][key];previous!=nil {old=previous["value"]}
-		nativeEffectFreshToken(n.t,old,actual["value"],true)
-		want["local_metadata"][key]=map[string]json.RawMessage{"key":nativeEffectToken(n.t,name),"value":actual["value"]}
+}
+
+func (n *effectNative) localMetadataCounts(label string,raw []byte) {
+	n.t.Helper()
+	var rows []map[string]json.RawMessage
+	if json.Unmarshal(raw,&rows)!=nil {n.t.Fatal("native machine-local key counts unavailable")}
+	counts:=map[string]int64{}
+	for _,row:=range rows {
+		name:=nativeEffectText(n.t,row["key"])
+		count,err:=strconv.ParseInt(string(row["count"]),10,64)
+		if _,duplicate:=counts[name];duplicate || len(row)!=2 || err!=nil || count<1 {n.t.Fatal("native machine-local count has invalid/duplicate key identity")}
+		counts[name]=count
 	}
+	// The digest binds only the key/count response; no metadata value is read.
+	digest:=sha256.Sum256(raw)
+	(&nativeRecorder{t:n.t,root:n.root}).writeJSON(fmt.Sprintf("%s/local-metadata-%05d-%s.json",n.root,n.sequence,label),map[string]any{"counts":counts,"response_sha256":fmt.Sprintf("%x",digest),"qualification":"unversioned machine-local bookkeeping; excluded by 2026-11-11 18:51Z ruling"})
 }
 
 func (n *effectNative) expectedNativeEvents(want,got map[string]effectNativeRows,after effectNativeState,primary map[string]string,flipped map[string]bool) {

@@ -31,7 +31,9 @@ expectations before comparing normalized complete ready/guard sequences with
 each Plug engine. Existing-endpoint dependency batches are the supported mixed
 route. Every native command records argv, environment, exact exit, stdout and
 stderr; full current user-table images retain physical edge identity and
-metadata tokens. Native public external-capability policy and bare cross-prefix
+metadata tokens. Unversioned `local_metadata` is recorded separately as counts
+by key name only and excluded from business-state conservation under the
+binding 2026-11-11 18:51Z ruling; its opaque values are never queried. Native public external-capability policy and bare cross-prefix
 policy are recorded separately. Plug's explicit target discriminator has no
 prefix inference; a same-ID local row cannot satisfy its external arm. A native
 bare-ID command cannot express that explicit arm, so its result is never
