@@ -666,6 +666,7 @@ internal/integration/converterroundtrip/native_workflow_accounting_test.go
 internal/integration/converterroundtrip/planner_extraction_test.go
 internal/integration/converterroundtrip/planner_helpers.go
 internal/integration/converterroundtrip/planner_output_test.go
+internal/integration/converterroundtrip/public_external_capture_test.go
 internal/integration/converterroundtrip/public_source_test.go
 internal/integration/converterroundtrip/receiving_pass_budget_test.go
 internal/integration/converterroundtrip/receiving_stream.go
