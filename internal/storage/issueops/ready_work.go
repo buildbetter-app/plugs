@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dberrors"
 	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/types"
@@ -399,7 +400,7 @@ func filterReadyWispsInTx(ctx context.Context, tx DBTX, filter types.WorkFilter,
 	}
 
 	if !filter.IncludeDeferred {
-		now := time.Now().UTC()
+		now := storage.CaptureNow().UTC()
 		for _, wisp := range wisps {
 			if wisp.DeferUntil != nil && wisp.DeferUntil.After(now) {
 				excluded[wisp.ID] = struct{}{}
@@ -451,7 +452,7 @@ func filterReadyWispsInTx(ctx context.Context, tx DBTX, filter types.WorkFilter,
 }
 
 func sortReadyIssues(issues []*types.Issue, policy types.SortPolicy) {
-	recentCutoff := time.Now().UTC().Add(-48 * time.Hour)
+	recentCutoff := storage.CaptureNow().UTC().Add(-48 * time.Hour)
 	sort.SliceStable(issues, func(i, j int) bool {
 		a, b := issues[i], issues[j]
 		switch policy {

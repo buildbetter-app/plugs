@@ -9,10 +9,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/steveyegge/beads/internal/testutil"
 )
@@ -127,6 +129,11 @@ func TestSQLSourceHistoryReadsPinnedDoltCommitImages(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Derived views occur in real migrated stores. Historical census must use
+	// each object's actual kind, matching the current base-table census.
+	if _, err := db.ExecContext(ctx, "CREATE VIEW public_ready_fixture AS SELECT id FROM issues"); err != nil {
+		t.Fatal(err)
+	}
 	commit("public synthetic schema and baseline")
 	if _, err = db.ExecContext(ctx, "UPDATE issues SET title = ? WHERE id = ?", "Dolt historical update", "demo-7"); err != nil {
 		t.Fatal(err)
@@ -240,5 +247,45 @@ func TestSQLSourceHistoryReadsPinnedDoltCommitImages(t *testing.T) {
 	m, h = sourceCapture(t, build())
 	if m.History != "available-unverified" || h.Range.Status != "unverified" || h.Range.Reason != "working-set-not-clean" || len(h.Range.Frames) != 0 {
 		t.Fatal("dirty SQL working set became verified history")
+	}
+}
+
+func TestSQLSourceHistoricalCensusDistinguishesViewsFromBaseTables(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		rows   [][2]any
+		refuse bool
+	}{
+		{"view", [][2]any{{"ready_issues", "VIEW"}, {"issues", "BASE TABLE"}}, false},
+		{"unknown base", [][2]any{{"ready_issues", "BASE TABLE"}}, true},
+		{"unknown kind", [][2]any{{"issues", "TEMPORARY"}}, true},
+		{"missing kind", [][2]any{{"issues", nil}}, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			id := strings.Repeat("a", 32)
+			rows := sqlmock.NewRows([]string{"Tables_in_fixture", "Table_type"})
+			for _, row := range test.rows {
+				rows.AddRow(row[0], row[1])
+			}
+			mock.ExpectQuery(regexp.QuoteMeta("SHOW FULL TABLES AS OF '" + id + "'")).WillReturnRows(rows)
+			if !test.refuse {
+				mock.ExpectQuery(regexp.QuoteMeta("SELECT * FROM `issues` AS OF '" + id + "'")).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("demo-a7b"))
+			}
+			image, err := (SQLSource{DB: db}).ReadSourceImage(context.Background(), id)
+			if test.refuse != (err != nil) {
+				t.Fatalf("historical object kind refusal=%t, err=%v", test.refuse, err)
+			}
+			if !test.refuse && (len(image) != 1 || len(image["issues"].Rows) != 1) {
+				t.Fatal("base image omitted or view read as business rows")
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/audit"
+	"github.com/steveyegge/beads/internal/captureclock"
 	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
@@ -308,7 +309,7 @@ pointless).`,
 				// Empty string clears the due date
 				updates["due_at"] = nil
 			} else {
-				t, err := timeparsing.ParseRelativeTime(dueStr, time.Now())
+				t, err := timeparsing.ParseRelativeTime(dueStr, captureclock.Now())
 				if err != nil {
 					return HandleErrorRespectJSON("invalid --due format %q. %s", dueStr, deferUntilFormatHint)
 				}
@@ -325,12 +326,12 @@ pointless).`,
 					clearDeferStatus = true
 				}
 			} else {
-				t, err := timeparsing.ParseRelativeTime(deferStr, time.Now())
+				t, err := timeparsing.ParseRelativeTime(deferStr, captureclock.Now())
 				if err != nil {
 					return HandleErrorRespectJSON("invalid --defer format %q. %s", deferStr, deferUntilFormatHint)
 				}
 				// Warn if defer date is in the past (user probably meant future)
-				inPast := t.Before(time.Now())
+				inPast := t.Before(captureclock.Now())
 				if inPast && !jsonOutput {
 					fmt.Fprintf(os.Stderr, "%s Defer date %q is in the past. Issue will appear in bd ready immediately.\n",
 						ui.RenderWarn("!"), t.Local().Format("2006-01-02 15:04"))

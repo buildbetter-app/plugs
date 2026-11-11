@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "storage",
     srcs = [
+        "capture_clock.go",
         "advanced_queries.go",
         "annotation_queries.go",
         "batch.go",
@@ -72,6 +73,7 @@ go_library(
     importpath = "github.com/steveyegge/beads/internal/storage",
     visibility = ["//:__subpackages__"],
     deps = [
+        "//internal/captureclock",
         "//internal/hooks",
         "//internal/storage/kvkeys",
         "//internal/types",
@@ -150,6 +152,7 @@ filegroup(
         "//internal/storage/backends:go_srcs",
         "//internal/storage/batchbench:go_srcs",
         "//internal/storage/batchfixtures:go_srcs",
+        "//internal/storage/capturesqlserver:go_srcs",
         "//internal/storage/contextinfo:go_srcs",
         "//internal/storage/createbatchequiv:go_srcs",
         "//internal/storage/dberrors:go_srcs",
@@ -175,6 +178,7 @@ filegroup(
         "//internal/storage/journalscan:go_srcs",
         "//internal/storage/kvkeys:go_srcs",
         "//internal/storage/memoryops:go_srcs",
+        "//internal/storage/physicalcapture:go_srcs",
         "//internal/storage/rowid:go_srcs",
         "//internal/storage/schema:go_srcs",
         "//internal/storage/sqlbuild:go_srcs",

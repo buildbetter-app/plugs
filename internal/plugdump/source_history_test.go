@@ -91,6 +91,69 @@ func TestExportSourceHistoryFullUsesActualCommitImages(t *testing.T) {
 	}
 }
 
+func TestSourcePlaneHistoryUsesMappedImageAllocatorCounters(t *testing.T) {
+	for _, mode := range []string{"sequential", "hash", "namespaced-hash"} {
+		t.Run(mode, func(t *testing.T) {
+			s, inventory := historyFixture(t)
+			inventory.SourcePlaneAddressContract = SourcePlaneAddressContract
+			inventory.Projects[0].LastID = 0
+			inventory.Projects[0].ChildCounters = map[string]uint64{}
+			parent := "demo-7"
+			if mode != "sequential" {
+				inventory.Projects[0].IDMode = "hash"
+				inventory.Projects[0].HashLength = 1
+			}
+			if mode == "namespaced-hash" {
+				inventory.Projects[0].HashNamespaces = []string{"abc"}
+				parent = "demo-abc-a7b"
+				replace := strings.NewReplacer(`"demo-7"`, `"demo-abc-a7b"`, `"demo-8"`, `"demo-abc-c8d"`, `"demo-7.4"`, `"demo-abc-a7b.4"`)
+				remap := func(image fixtureSource) fixtureSource {
+					var mapped fixtureSource
+					if err := decodeJSON([]byte(replace.Replace(string(mustJSON(t, image)))), &mapped); err != nil {
+						t.Fatal(err)
+					}
+					return mapped
+				}
+				s.fixtureSource = remap(s.fixtureSource)
+				for id, image := range s.images {
+					s.images[id] = remap(image)
+				}
+			}
+			// The older image has its own smaller observed child counter. No
+			// source field or allocator value may be filled from the head.
+			first := s.images[s.log.Commits[0].ID]
+			first["issues"].Rows[2]["id"] = parent + ".2"
+			first["dependencies"].Rows[0]["issue_id"] = parent + ".2"
+			first["child_counters"].Rows[0]["last_child"] = 1
+			original := mustJSON(t, inventory)
+			data := buildFixture(t, s, inventory)
+			manifest, h := sourceCapture(t, data)
+			if manifest.History != "verified" || h.Range.Status != "verified" || !h.Range.Complete || len(h.Range.Frames) != 4 {
+				t.Fatalf("mapped allocator image lost: status=%s reason=%s frames=%d", h.Range.Status, h.Range.Reason, len(h.Range.Frames))
+			}
+			if manifest.Projects[0].ChildCounters[parent] != 4 || !bytes.Equal(original, mustJSON(t, inventory)) {
+				t.Fatal("mapped source counters were lost or input inventory was mutated")
+			}
+			seen := map[string]bool{}
+			for _, record := range h.Range.Frames[0].Records {
+				if record.Kind == "bead" {
+					seen[record.ID] = true
+				}
+			}
+			if !seen[parent+".2"] || seen[parent+".4"] {
+				t.Fatal("older child identity borrowed current source state")
+			}
+			// The reader must still reject a history whose actual child ID
+			// exceeds the final manifest's explicitly bound allocator counter.
+			manifest.Projects[0].ChildCounters[parent] = 3
+			var refusal ErrSourceHistory
+			if err := validateSourceHistory(manifest, archiveMembers(t, data)); !errors.As(err, &refusal) || refusal.Reason != "unmappable" {
+				t.Fatalf("history validation lost the child-counter refusal: %v", err)
+			}
+		})
+	}
+}
+
 func TestExportSourceHistoryProvesEmptyRoot(t *testing.T) {
 	s, inventory := historyFixture(t)
 	root := s.log.Commits[0].ID
@@ -275,6 +338,36 @@ func TestExportSourceHistoryCannotPromoteUnprovenRanges(t *testing.T) {
 			}
 			if len(h.Commits) != 4 || len(h.Events) != len(s.fixtureSource["events"].Rows) {
 				t.Fatal("raw source evidence discarded on replay refusal")
+			}
+		})
+	}
+}
+
+func TestExportSourceHistoryNamesMissingHeadFamiliesWithoutBackfill(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		missing []string
+		reason  string
+	}{
+		{"audit", []string{"events"}, "head-image-missing-families:events"},
+		{"native-planes", []string{"wisps", "ignored_schema_migrations", "events"}, "head-image-missing-families:events,ignored_schema_migrations,wisps"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s, inventory := historyFixture(t)
+			image := s.images[s.log.Head]
+			for _, name := range test.missing {
+				delete(image, name)
+			}
+			beforeImage, beforeHead := mustJSON(t, image), mustJSON(t, s.fixtureSource)
+			m, h := sourceCapture(t, buildFixture(t, s, inventory))
+			if m.History != "available-unverified" || h.Range.Status != "unverified" || h.Range.Reason != test.reason || h.Range.Complete || h.Range.First != 0 || h.Range.Head != 0 || len(h.Range.Frames)+len(h.Range.Baseline)+len(h.Range.BaselineEvents)+len(h.Range.Gaps) != 0 {
+				t.Fatalf("missing historical families were not explicitly refused: %+v", h.Range)
+			}
+			if len(h.Commits) != 4 || !sameEventImage(h.Events, s.fixtureSource["events"].Rows) {
+				t.Fatal("gap reporting discarded actual commit or working-set audit evidence")
+			}
+			if !bytes.Equal(beforeImage, mustJSON(t, image)) || !bytes.Equal(beforeHead, mustJSON(t, s.fixtureSource)) {
+				t.Fatal("missing historical family was backfilled or source head mutated")
 			}
 		})
 	}
@@ -468,5 +561,78 @@ func TestSourceParentCensusRequiresExplicitRootAndValidParents(t *testing.T) {
 				t.Fatalf("invalid ancestry became a root: %v", err)
 			}
 		})
+	}
+}
+
+func TestStatusCategoryHistoryPreservesNamesAndRefusesChangedCatalog(t *testing.T) {
+	for _, mode := range []string{"YAML only", "SQL and YAML agree", "older SQL declaration absent"} {
+		t.Run(mode, func(t *testing.T) {
+			source, inventory := historyFixture(t)
+			inventory.SourcePlaneAddressContract = SourcePlaneAddressContract
+			inventory.StatusCategoryContract = StatusCategoryContract
+			inventory.Projects[0].Statuses = append(nativeBuiltInStatuses(), ProjectStatus{"todo", "active"})
+			setCatalogYAML(t, &inventory, []byte("status:\n  custom: [todo:active]\n"))
+			images := []map[string]Table{source.fixtureSource}
+			for _, image := range source.images {
+				images = append(images, image)
+			}
+			for _, image := range images {
+				image["issues"].Rows[0]["status"] = "todo"
+				rows := []Row{}
+				if mode != "YAML only" {
+					rows = append(rows, Row{"name": "todo", "category": "active"})
+				}
+				image["custom_statuses"] = Table{Columns: columnsFor("custom_statuses"), Rows: rows}
+			}
+			if mode == "older SQL declaration absent" {
+				image := source.images[source.log.Commits[0].ID]
+				image["custom_statuses"] = Table{Columns: columnsFor("custom_statuses")}
+			}
+			_, history := sourceCapture(t, buildFixture(t, source, inventory))
+			switch mode {
+			case "YAML only":
+				if history.Range.Status != "unverified" || history.Range.Reason != "head-image-not-proven" || len(history.Range.Frames) != 0 {
+					t.Fatal("head-only YAML invented historical status declarations")
+				}
+			case "older SQL declaration absent":
+				if history.Range.Status != "verified" || history.Range.Complete || len(history.Range.Gaps) == 0 {
+					t.Fatal("head YAML filled an older missing SQL catalog")
+				}
+			case "SQL and YAML agree":
+				if history.Range.Status != "verified" || !history.Range.Complete {
+					t.Fatalf("actual SQL declaration became unavailable: %+v", history.Range)
+				}
+			}
+		})
+	}
+	s, inventory := historyFixture(t)
+	inventory.SourcePlaneAddressContract = SourcePlaneAddressContract
+	inventory.StatusCategoryContract = StatusCategoryContract
+	inventory.Projects[0].Statuses = append(nativeBuiltInStatuses(), ProjectStatus{"todo", "active"})
+	apply := func(image map[string]Table) {
+		image["custom_statuses"] = Table{Columns: columnsFor("custom_statuses"), Rows: []Row{{"name": "todo", "category": "active"}}}
+		image["issues"].Rows[0]["status"] = "todo"
+	}
+	apply(s.fixtureSource)
+	for _, image := range s.images {
+		apply(image)
+	}
+	_, h := sourceCapture(t, buildFixture(t, s, inventory))
+	if h.Range.Status != "verified" || !h.Range.Complete {
+		t.Fatalf("status history not proven: %+v", h.Range)
+	}
+	for _, frame := range h.Range.Frames {
+		for _, record := range frame.Records {
+			if record.ID == "demo-7" && (record.Source.Fields["status"] != "todo" || record.Body["status_category"] != "active") {
+				t.Fatal("historical status normalized")
+			}
+		}
+	}
+	// The portable wire has no per-frame project catalog. A genuinely different
+	// older declaration must remain an explicit gap, never borrow today's one.
+	s.images[s.log.Commits[0].ID]["custom_statuses"].Rows[0]["category"] = "wip"
+	_, h = sourceCapture(t, buildFixture(t, s, inventory))
+	if h.Range.Status != "verified" || h.Range.Complete || len(h.Range.Gaps) == 0 {
+		t.Fatal("changed older category borrowed current semantics")
 	}
 }

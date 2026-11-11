@@ -101,13 +101,23 @@ func (s SQLSource) ReadSourceImage(ctx context.Context, id string) (map[string]T
 		return nil, ErrSourceHistoryUnavailable{Reason: "invalid-image-request"}
 	}
 	// The only interpolated input is an exact 32-character base32 Dolt ID.
-	names, err := s.historyTable(ctx, "SHOW TABLES AS OF '"+id+"'")
-	if err != nil || len(names.Columns) != 1 {
+	names, err := s.historyTable(ctx, "SHOW FULL TABLES AS OF '"+id+"'")
+	if err != nil || len(names.Columns) != 2 {
 		return nil, ErrSourceHistoryUnavailable{Reason: "historical-schema-unavailable"}
 	}
 	tables := map[string]Table{}
 	for _, row := range names.Rows {
 		name := historyText(row[names.Columns[0]])
+		// Match the current SQLSource census: portable images contain base
+		// tables. SHOW TABLES also lists derived views; the type must be read
+		// at this commit rather than guessed from a familiar view name.
+		kind := historyText(row[names.Columns[1]])
+		if kind == "VIEW" {
+			continue
+		}
+		if kind != "BASE TABLE" {
+			return nil, ErrSourceHistoryUnavailable{Reason: "historical-schema-unmappable"}
+		}
 		if _, ok := tableColumns[name]; !ok {
 			return nil, ErrSourceHistoryUnavailable{Reason: "historical-schema-unmappable"}
 		}

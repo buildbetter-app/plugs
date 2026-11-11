@@ -1,0 +1,50 @@
+package physicalcapture
+
+import (
+	"context"
+	"database/sql"
+	"database/sql/driver"
+
+	embedded "github.com/dolthub/driver/v2"
+)
+
+// History contains only detached observations. Frontier commits have no image,
+// metadata or invented parents. The driver authenticates actual stored edges.
+type HistoryCommit struct {
+	ID       string
+	Parents  []string
+	Metadata map[string]driver.Value
+}
+
+type HistoryBoundary struct {
+	CommitID, Reason string
+	SQLCodes         []uint16
+}
+
+type History struct {
+	Head          string
+	ReadOnlyScope bool
+	Commits       []HistoryCommit
+	Boundaries    []HistoryBoundary
+}
+
+func ReadHistory(ctx context.Context, conn *sql.Conn, head string) (History, error) {
+	observed, err := embedded.ReadPhysicalHistory(ctx, conn, head)
+	if err != nil {
+		return History{}, err
+	}
+	result := History{Head: observed.Head, ReadOnlyScope: observed.ReadOnlyScope, Commits: []HistoryCommit{}, Boundaries: []HistoryBoundary{}}
+	for _, commit := range observed.Commits {
+		result.Commits = append(result.Commits, HistoryCommit{ID: commit.ID, Parents: commit.Parents, Metadata: commit.Metadata})
+	}
+	for _, boundary := range observed.Boundaries {
+		result.Boundaries = append(result.Boundaries, HistoryBoundary{CommitID: boundary.CommitID, Reason: boundary.Reason, SQLCodes: boundary.SQLCodes})
+	}
+	return result, nil
+}
+
+// UnavailableReason returns only positive typed missing-storage evidence, never
+// a classification inferred from SQL error text or a failed arbitrary query.
+func UnavailableReason(err error) string { return embedded.PhysicalHistoryUnavailableReason(err) }
+
+func UnavailableSQLCodes(err error) []uint16 { return embedded.PhysicalHistoryUnavailableCodes(err) }

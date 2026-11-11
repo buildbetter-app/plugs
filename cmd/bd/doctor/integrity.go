@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/steveyegge/beads/internal/beads"
+	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/git"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/types"
@@ -554,11 +555,17 @@ func CheckDeletionsManifest(path string) DoctorCheck {
 func CheckRepoFingerprint(path string) DoctorCheck {
 	_, beadsDir := getBackendAndBeadsDir(path)
 
-	if info, err := os.Stat(getDatabasePath(beadsDir)); err != nil || !info.IsDir() {
-		return DoctorCheck{
-			Name:    "Repo Fingerprint",
-			Status:  StatusOK,
-			Message: "N/A (no database)",
+	// Server-mode data can live entirely outside this checkout. Only an
+	// embedded workspace requires a local database directory before opening.
+	cfg, err := configfile.Load(beadsDir)
+	serverMode := err == nil && cfg != nil && cfg.GetDoltMode() == configfile.DoltModeServer
+	if !serverMode {
+		if info, err := os.Stat(getDatabasePath(beadsDir)); err != nil || !info.IsDir() {
+			return DoctorCheck{
+				Name:    "Repo Fingerprint",
+				Status:  StatusOK,
+				Message: "N/A (no database)",
+			}
 		}
 	}
 

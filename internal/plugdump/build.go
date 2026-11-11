@@ -2,6 +2,7 @@ package plugdump
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -16,6 +17,12 @@ var hashPattern = regexp.MustCompile(`^[a-zA-Z0-9]+$`)
 // Build gathers and validates the whole read set before serializing any output.
 // No partial success is possible after a source read or mapping failure.
 func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error) {
+	if inventory.SourceFamilyContract != "" && (inventory.SourceFamilyContract != SourceFamilyContract || inventory.SourcePlaneAddressContract != SourcePlaneAddressContract) {
+		return nil, fmt.Errorf("unsupported source family contract")
+	}
+	if err := validateSourcePlaneContract(inventory.SourcePlaneAddressContract); err != nil {
+		return nil, err
+	}
 	if inventory.Version != "beads-inventory/1" || inventory.StoreID == "" || inventory.Machine == "" {
 		return nil, fmt.Errorf("unsupported inventory version or missing source identity")
 	}
@@ -24,6 +31,9 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 	}
 	if inventory.History != "unavailable" && inventory.History != "available-unverified" {
 		return nil, fmt.Errorf("history must explicitly report unavailable or available-unverified")
+	}
+	if err := validateStatusCategoryContract(inventory.StatusCategoryContract, inventory.Projects); err != nil {
+		return nil, err
 	}
 	projects, err := copyProjects(inventory.Projects)
 	if err != nil {
@@ -37,15 +47,20 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 	if err != nil {
 		return nil, err
 	}
+	yamlValues, err := nativeYAMLCatalogValues(config)
+	if err != nil {
+		return nil, err
+	}
 	tables, err := readTables(ctx, src)
 	if err != nil {
 		return nil, err
 	}
-	if err := checkMigrations(tables["schema_migrations"], "main"); err != nil {
+	profile, err := sourceSchemaProfile(tables)
+	if err != nil {
 		return nil, err
 	}
-	if err := checkMigrations(tables["ignored_schema_migrations"], "ignored"); err != nil {
-		return nil, err
+	if profile.MainVersion == 66 && inventory.SourceFamilyContract != SourceFamilyContract {
+		return nil, fmt.Errorf("own-version capture requires native source family contract")
 	}
 	hasHistory := len(tables["issue_versions"].Rows)+len(tables["issue_snapshots"].Rows)+len(tables["compaction_snapshots"].Rows) != 0
 	if hasHistory != (inventory.History == "available-unverified") {
@@ -53,21 +68,55 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 	}
 	for name, table := range tables {
 		action, _ := actionFor(name)
-		if len(table.Rows) != 0 && (action == "refuse-if-nonempty" || name == "leases") {
+		if len(table.Rows) != 0 && (action == "refuse-if-nonempty" || name == "leases" && inventory.SourceFamilyContract == "") {
 			return nil, fmt.Errorf("unsupported nonempty family %s (live claims must be resolved)", name)
 		}
 	}
+	storedConfig := map[string]any{}
+	for _, row := range tables["config"].Rows {
+		key := text(row, "key")
+		if key == "status.custom" || key == "types.custom" {
+			storedConfig[key] = row["value"]
+		}
+	}
+	if inventory.StatusCategoryContract == StatusCategoryContract {
+		if err := validateProjectStatusCatalogs(projects, tables["custom_statuses"].Rows, tables["custom_types"].Rows, storedConfig, yamlValues); err != nil {
+			return nil, err
+		}
+	}
 	mapper := mapping{
-		projects:     projects,
-		beads:        map[string]string{},
-		records:      map[string][]Record{},
-		policy:       inventory.ConfigPolicy,
-		usedPolicy:   map[string]bool{},
-		ontology:     ontology,
-		usedOntology: map[string]bool{},
+		statusCategories: inventory.StatusCategoryContract == StatusCategoryContract,
+		sourcePlanes:     inventory.SourcePlaneAddressContract == SourcePlaneAddressContract,
+		customStatuses:   map[string]bool{},
+		projects:         projects,
+		beads:            map[string]string{},
+		wisps:            map[string]string{},
+		records:          map[string][]Record{},
+		policy:           inventory.ConfigPolicy,
+		usedPolicy:       map[string]bool{},
+		ontology:         ontology,
+		usedOntology:     map[string]bool{},
+	}
+	if mapper.sourcePlanes {
+		if err := readCatalogUnion(tables["custom_statuses"].Rows, tables["custom_types"].Rows, storedConfig, yamlValues, mapper.customStatuses); err != nil {
+			return nil, err
+		}
+	}
+	if err := mapper.wispRows(tables["wisps"].Rows); err != nil {
+		return nil, err
 	}
 	if err := mapper.issues(tables["issues"].Rows); err != nil {
 		return nil, err
+	}
+	if !mapper.sourcePlanes {
+		if err := validateCatalogUnion(tables["custom_statuses"].Rows, tables["custom_types"].Rows, storedConfig, yamlValues); err != nil {
+			return nil, err
+		}
+	}
+	for _, family := range []string{"wisp_labels", "wisp_comments", "wisp_events", "wisp_child_counters"} {
+		if err := mapper.wispAuxiliary(family, tables[family].Rows); err != nil {
+			return nil, err
+		}
 	}
 	if len(mapper.usedOntology) != len(ontology) {
 		return nil, fmt.Errorf("unaccounted ontology directive")
@@ -77,9 +126,9 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 	}
 	for _, name := range sortedNames(tables) {
 		table := tables[name]
-		action, reason := actionFor(name)
-		dispositions = append(dispositions, Disposition{name, len(table.Rows), action, reason})
-		if name == "issues" || name == "labels" || name == "repo_mtimes" || name == "leases" {
+		action, reason := familyAction(name, inventory.SourceFamilyContract)
+		dispositions = append(dispositions, Disposition{Family: name, Rows: len(table.Rows), Action: action, Reason: reason})
+		if name == "issues" || name == "labels" || (name == "repo_mtimes" || name == "leases") && inventory.SourceFamilyContract == "" {
 			continue
 		}
 		for _, row := range table.Rows {
@@ -97,14 +146,18 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 		return nil, err
 	}
 	dispositions = append(dispositions,
-		Disposition{"issues.row_lock", len(tables["issues"].Rows), "manifest/rebuild", "transient locks excluded"},
-		Disposition{"issues.is_blocked", len(tables["issues"].Rows), "manifest/rebuild", "derived blocking excluded; Plug must recompute"})
+		Disposition{Family: "issues.row_lock", Rows: len(tables["issues"].Rows), Action: "manifest/rebuild", Reason: "transient locks excluded"},
+		Disposition{Family: "issues.is_blocked", Rows: len(tables["issues"].Rows), Action: "manifest/rebuild", Reason: "derived blocking excluded; Plug must recompute"})
 	manifest := Manifest{
-		Format: Format, Schema: 1, Reference: BeadsReference, StoreID: inventory.StoreID, Machine: inventory.Machine,
-		MainVersion: 72, IgnoredVersion: 28, Scope: "offline-head-and-source-archives", History: inventory.History,
-		Projects: mapper.projects, Ontology: ontology, Sources: dispositions,
+		SourceFamilyContract:       inventory.SourceFamilyContract,
+		StatusCategoryContract:     inventory.StatusCategoryContract,
+		SourcePlaneAddressContract: inventory.SourcePlaneAddressContract,
+		Format:                     Format, Schema: 1, Reference: BeadsReference, StoreID: inventory.StoreID, Machine: inventory.Machine,
+		MainVersion: profile.MainVersion, IgnoredVersion: profile.IgnoredVersion, Scope: "offline-head-and-source-archives", History: inventory.History,
+		SourceFieldsContract: IssueSourceFieldsContract,
+		Projects:             mapper.projects, Ontology: ontology, Sources: dispositions,
 		Warnings:     []string{"not a complete store migration or Plug restore certificate", "source history and attribution are unverified; no Plug versions, changesets or live leases invented"},
-		Verification: verificationLimits(),
+		Verification: verificationLimitsForStatus(inventory.StatusCategoryContract),
 	}
 	files := map[string][]byte{"config/sources.json": config}
 	history, err := captureSourceHistory(ctx, src, inventory, mapper.records, tables)
@@ -117,6 +170,28 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 			manifest.History = "verified"
 		}
 		files[SourceHistoryMember], err = marshal(history)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if inventory.SourceFamilyContract == SourceFamilyContract {
+		native, err := captureNativeHistory(ctx, src, inventory, tables)
+		if err != nil {
+			return nil, err
+		}
+		if err := classifyNativeSources(manifest.Sources, *native); err != nil {
+			return nil, err
+		}
+		if native.HistoryCoverage != nil {
+			if history == nil {
+				return nil, fmt.Errorf("boundary history requires events attachment")
+			}
+			native.HistoryCoverage.EventsAttachment = NativeEventsAttachment{Member: SourceHistoryMember, SHA256: fmt.Sprintf("%x", sha256.Sum256(files[SourceHistoryMember])), Rows: uint64(len(history.Events))}
+			if err := validateHistoryCoverage(*native, files[SourceHistoryMember], *history); err != nil {
+				return nil, err
+			}
+		}
+		files[NativeHistoryMember], err = marshal(native)
 		if err != nil {
 			return nil, err
 		}
@@ -150,22 +225,7 @@ func readTables(ctx context.Context, src Source) (map[string]Table, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read complete family %s: %w", name, err)
 		}
-		expected := columnsFor(name)
-		columns := append([]string(nil), table.Columns...)
-		sort.Strings(expected)
-		sort.Strings(columns)
-		if strings.Join(expected, "\x00") != strings.Join(columns, "\x00") {
-			return nil, fmt.Errorf("schema drift in %s", name)
-		}
 		for _, row := range table.Rows {
-			if len(row) != len(expected) {
-				return nil, fmt.Errorf("missing or unknown source fields in %s", name)
-			}
-			for _, column := range expected {
-				if _, ok := row[column]; !ok {
-					return nil, fmt.Errorf("missing source field in %s", name)
-				}
-			}
 			values := map[string]any(row)
 			if name == "local_metadata" {
 				// "key" is a SQL column name, not the configuration key.
@@ -180,25 +240,31 @@ func readTables(ctx context.Context, src Source) (map[string]Table, error) {
 		}
 		tables[name] = table
 	}
-	for name := range tableColumns {
-		if _, ok := tables[name]; !ok {
-			return nil, fmt.Errorf("unaccounted table family %s", name)
-		}
+	profile, err := sourceSchemaProfile(tables)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateCurrentSchema(tables, profile); err != nil {
+		return nil, err
 	}
 	return tables, nil
 }
 
 func checkMigrations(table Table, lane string) error {
+	return checkMigrationPrefix(table, lane, len(migrationHashes[lane]))
+}
+
+func checkMigrationPrefix(table Table, lane string, limit int) error {
 	known := migrationHashes[lane]
 	seen := map[uint64]bool{}
 	for _, row := range table.Rows {
 		version, err := natural(row["version"])
-		if err != nil || version > uint64(len(known)) || version == 0 || seen[version] || text(row, "content_hash") != known[int(version)] {
+		if err != nil || version > uint64(limit) || version == 0 || seen[version] || text(row, "content_hash") != known[int(version)] {
 			return fmt.Errorf("unknown, duplicate, missing-hash or altered %s schema migration", lane)
 		}
 		seen[version] = true
 	}
-	if len(seen) != len(known) {
+	if len(seen) != limit {
 		return fmt.Errorf("incomplete %s migration series", lane)
 	}
 	return nil
@@ -218,6 +284,13 @@ func copyProjects(input []Project) ([]Project, error) {
 		if i > 0 && (p.Prefix == projects[i-1].Prefix || strings.HasPrefix(p.Prefix, projects[i-1].Prefix+"-")) {
 			return nil, fmt.Errorf("duplicate or ambiguous project prefix")
 		}
+		for j, namespace := range p.HashNamespaces {
+			if p.IDMode != "hash" || !validHashNamespace(namespace) || j > 0 && namespace <= p.HashNamespaces[j-1] {
+				return nil, fmt.Errorf("hash_namespaces requires sorted unique native namespaces in hash mode")
+			}
+		}
+		p.Statuses = append([]ProjectStatus(nil), p.Statuses...)
+		p.HashNamespaces = append([]string(nil), p.HashNamespaces...)
 		counters := map[string]uint64{}
 		for parent, count := range p.ChildCounters {
 			counters[parent] = count

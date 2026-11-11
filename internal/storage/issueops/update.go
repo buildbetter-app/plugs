@@ -76,7 +76,7 @@ func ManageClosedAt(oldIssue *types.Issue, updates map[string]interface{}, setCl
 	}
 
 	if newStatus == string(types.StatusClosed) {
-		appendDefault("closed_at", time.Now().UTC())
+		appendDefault("closed_at", storage.CaptureNow().UTC())
 		appendDefault("close_reason", "")
 		appendDefault("closed_by_session", "")
 	} else if oldIssue.Status == types.StatusClosed {
@@ -178,7 +178,7 @@ func ManageStartedAt(oldIssue *types.Issue, updates map[string]interface{}, setC
 	}
 
 	if newStatus == string(types.StatusInProgress) && oldIssue.StartedAt == nil {
-		now := time.Now().UTC()
+		now := storage.CaptureNow().UTC()
 		setClauses = append(setClauses, "started_at = ?")
 		args = append(args, now)
 	}
@@ -433,7 +433,7 @@ func updateIssueInTx(ctx context.Context, tx DBTX, id string, updates map[string
 
 	// Build SET clauses.
 	setClauses := []string{"updated_at = ?"}
-	args := []interface{}{time.Now().UTC()}
+	args := []interface{}{storage.CaptureNow().UTC()}
 
 	for key, value := range updates {
 		if !IsAllowedUpdateField(key) {

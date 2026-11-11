@@ -1,0 +1,105 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "plug-capture-sql-server_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/steveyegge/beads/cmd/plug-capture-sql-server",
+    visibility = ["//visibility:private"],
+    deps = ["//internal/storage/capturesqlserver"],
+)
+
+# A distinct capture companion. The normal pinned Dolt executable is unchanged.
+go_binary(
+    name = "plug-capture-sql-server",
+    embed = [":plug-capture-sql-server_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "native_capture_test",
+    size = "large",
+    srcs = ["native_capture_test.go", "physical_capture_test.go"],
+    data = [
+        ":plug-capture-sql-server",
+        "//cmd/bd:bd",
+        "//tools/native-physical-capture",
+    ],
+    env = {
+        "BEADS_CAPTURE_BD_BINARY": "$(rootpath //cmd/bd:bd)",
+        "BEADS_CAPTURE_SQL_BINARY": "$(rootpath :plug-capture-sql-server)",
+        "BEADS_PHYSICAL_CAPTURE_BINARY": "$(rootpath //tools/native-physical-capture)",
+    },
+    deps = [
+        "//internal/captureclock",
+        "//internal/plugdump",
+        "//internal/storage/physicalcapture",
+        "//internal/testutil/bazeltest",
+        "@com_github_go_sql_driver_mysql//:mysql",
+    ],
+)
+# Compatibility label for the supported route, now selected by //....
+alias(
+    name = "native_physical_capture_test",
+    actual = ":native_capture_test",
+)
+
+# --- begin repo_files (managed by tools/bazel/go_srcs.py; run `make bazel-sync`) ---
+
+filegroup(
+    name = "repo_doc_files",
+    srcs = glob(
+        [
+            "**/*.md",
+            "**/*.mdx",
+        ],
+        allow_empty = True,
+        exclude = ["**/node_modules/**"],
+    ),
+    visibility = ["//:__subpackages__"],
+)
+
+filegroup(
+    name = "repo_go_srcs",
+    srcs = glob(
+        ["**/*.go"],
+        allow_empty = True,
+        exclude = [
+            "**/*_test.go",
+            "**/node_modules/**",
+        ],
+    ),
+    visibility = ["//:__subpackages__"],
+)
+
+filegroup(
+    name = "repo_go_test_srcs",
+    srcs = glob(
+        ["**/*_test.go"],
+        allow_empty = True,
+        exclude = ["**/node_modules/**"],
+    ),
+    visibility = ["//:__subpackages__"],
+)
+
+filegroup(
+    name = "repo_other_files",
+    srcs = glob(
+        ["**"],
+        exclude = [
+            "**/*.db",
+            "**/*.exe",
+            "**/*.go",
+            "**/*.md",
+            "**/*.mdx",
+            "**/*.out",
+            "**/*.prof",
+            "**/*.pyc",
+            "**/*.test",
+            "**/__pycache__/**",
+            "**/node_modules/**",
+        ],
+    ),
+    visibility = ["//:__subpackages__"],
+)
+
+# --- end repo_files ---

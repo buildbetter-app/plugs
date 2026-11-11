@@ -546,15 +546,15 @@ func (f *plugSQLFixture) historyQuery(query string) (driver.Rows, bool) {
 		return &plugSQLRows{columns: []string{"commit_hash", "message"}, values: [][]driver.Value{{plugFixtureCommitID, "public synthetic protocol root"}}}, true
 	case "SELECT commit_hash, parent_hash FROM dolt_commit_ancestors LIMIT 20001":
 		return &plugSQLRows{columns: []string{"commit_hash", "parent_hash"}, values: [][]driver.Value{{plugFixtureCommitID, nil}}}, true
-	case "SHOW TABLES AS OF '" + plugFixtureCommitID + "'":
+	case "SHOW FULL TABLES AS OF '" + plugFixtureCommitID + "'":
 		names := make([]string, 0, len(f.tables))
 		for name := range f.tables {
 			names = append(names, name)
 		}
 		sort.Strings(names)
-		rows := &plugSQLRows{columns: []string{"table_name"}}
+		rows := &plugSQLRows{columns: []string{"table_name", "table_type"}}
 		for _, name := range names {
-			rows.values = append(rows.values, []driver.Value{name})
+			rows.values = append(rows.values, []driver.Value{name, "BASE TABLE"})
 		}
 		return rows, true
 	default:
@@ -705,7 +705,7 @@ func TestPlugDumpCommandEndToEnd(t *testing.T) {
 	}
 	history := plugExportHistory(t, first)
 	if fixture.censuses != 2 || manifest.History != "verified" || !history.Range.Complete || history.Range.First != 1 || history.Range.Head != 1 || len(history.Range.Frames) != 1 || history.Range.Frames[0].CommitID != plugFixtureCommitID {
-		t.Fatal("command did not preserve its explicit synthetic source proof")
+		t.Fatalf("command did not preserve its explicit synthetic source proof: censuses=%d history=%s range=%+v", fixture.censuses, manifest.History, history.Range)
 	}
 	t.Logf("real export handler: %d archive bytes, sha256=%x, %d registered kinds, top-level counter=%d, child counter=%d; read-only transaction rolled back", len(first), sha256.Sum256(first), len(manifest.Kinds), manifest.Projects[0].LastID, manifest.Projects[0].ChildCounters["demo-7"])
 	if artifacts := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR"); artifacts != "" {

@@ -64,7 +64,9 @@ func actionFor(table string) (string, string) {
 		return "manifest/rebuild", "source identity, cursor or history-floor evidence; never a Plug revision"
 	case "repo_mtimes", "leases":
 		return "manifest/rebuild", "operational state excluded; leases must be empty"
-	case "wisps", "wisp_labels", "wisp_dependencies", "wisp_comments", "wisp_events", "wisp_child_counters", "custom_statuses", "custom_types", "interactions", "federation_peers", "routes":
+	case "wisps", "wisp_labels", "wisp_dependencies", "wisp_comments", "wisp_events", "wisp_child_counters", "custom_statuses", "custom_types":
+		return "archive", "read-only workflow/catalog source evidence; no durable Plug history or live lease is invented"
+	case "interactions", "federation_peers", "routes":
 		return "refuse-if-nonempty", "workflow/overlay/routing/audit/credential mapping is unsupported in this slice"
 	default:
 		return "archive", "read-only source evidence; no verified A6 history or attribution reconstruction"

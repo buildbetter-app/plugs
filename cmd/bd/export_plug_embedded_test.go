@@ -18,6 +18,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/plugdump"
 	"github.com/steveyegge/beads/internal/storage/embeddeddolt"
 	"github.com/steveyegge/beads/internal/testutil/bazeltest"
@@ -218,6 +219,14 @@ func TestEmbeddedPlugNativeInventoryActualCLI(t *testing.T) {
 	}
 	t.Logf("NATIVE_PUBLIC_BD_SHA256=%x", sha256.Sum256(binary))
 	workspace, home := t.TempDir(), t.TempDir()
+	workspace, err = filepath.EvalSymlinks(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, err = filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, path := range []string{workspace, home} {
 		if err := os.Chmod(path, 0700); err != nil {
 			t.Fatal(err)
@@ -298,6 +307,9 @@ func TestEmbeddedPlugNativeInventoryActualCLI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if inventory.SourcePlaneAddressContract != plugdump.SourcePlaneAddressContract {
+		t.Fatalf("native CLI omitted its explicit source-plane contract: %s", raw)
+	}
 	if len(inventory.External) != 26 || len(inventory.ConfigPolicy) == 0 || len(inventory.Projects) != 1 || inventory.Projects[0].Prefix != "native" {
 		t.Fatalf("incomplete actual native inventory: %s", raw)
 	}
@@ -330,10 +342,67 @@ func TestEmbeddedPlugNativeInventoryActualCLI(t *testing.T) {
 		t.Fatal("refused overwrite changed the inventory")
 	}
 	archivePath := filepath.Join(capture, "readback.tar")
-	run("--readonly", "export", "--format", plugdump.Format, "--plug-inventory", inventoryPath, "--output", archivePath)
-	archive, err := os.ReadFile(archivePath)
+	refuse("native-physical-root-capability-unavailable:stock-sql", "--readonly", "export", "--format", plugdump.Format, "--plug-inventory", inventoryPath, "--output", archivePath)
+	if _, err := os.Lstat(archivePath); !os.IsNotExist(err) {
+		t.Fatalf("stock SQL refusal published an archive: %v", err)
+	}
+
+	// Stock bd deliberately refuses immutable SQL images. Retain the positive
+	// archive/readback assertions through the supported standalone physical
+	// executable against the same quiesced, public init/import workspace.
+	physicalBinary, err := bazeltest.RunfileEnv("BEADS_PHYSICAL_CAPTURE_BINARY")
 	if err != nil {
 		t.Fatal(err)
+	}
+	physicalELF, err := os.ReadFile(physicalBinary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("NATIVE_PHYSICAL_CAPTURE_SHA256=%x", sha256.Sum256(physicalELF))
+	beadsDir := filepath.Join(workspace, ".beads")
+	cfg, err := configfile.Load(beadsDir)
+	if err != nil || cfg == nil || cfg.DoltDatabase == "" || cfg.GetDoltMode() != configfile.DoltModeEmbedded {
+		t.Fatalf("actual init did not declare its embedded database: %+v %v", cfg, err)
+	}
+	dataDir := filepath.Join(beadsDir, "embeddeddolt")
+	for _, path := range []string{beadsDir, dataDir} {
+		if err := os.Chmod(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	capturePhysical := func() ([]byte, plugdump.Inventory) {
+		t.Helper()
+		output, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(output, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(physicalBinary, "--disposable", "--data-dir", dataDir, "--database", cfg.DoltDatabase, "--beads-dir", beadsDir, "--output-dir", output)
+		cmd.Dir, cmd.Env = workspace, env
+		out, err := cmd.CombinedOutput()
+		t.Logf("NATIVE_PHYSICAL_CAPTURE exit_error=%v output=%s", err, out)
+		if err != nil {
+			t.Fatalf("actual physical capture: %v: %s", err, out)
+		}
+		data, err := os.ReadFile(filepath.Join(output, "capture.tar"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		inventoryData, err := os.ReadFile(filepath.Join(output, "inventory.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		measured, err := plugdump.ReadInventory(bytes.NewReader(inventoryData))
+		if err != nil || measured.SourcePlaneAddressContract != plugdump.SourcePlaneAddressContract {
+			t.Fatalf("physical inventory marker: %+v %v", measured, err)
+		}
+		return data, measured
+	}
+	archive, physicalInventory := capturePhysical()
+	if !bytes.Equal(mustNativeJSON(t, physicalInventory.ConfigPolicy), mustNativeJSON(t, inventory.ConfigPolicy)) {
+		t.Fatal("physical capture changed the measured native config-policy census")
 	}
 	manifest, err := plugdump.Validate(bytes.NewReader(archive))
 	if err != nil {
@@ -351,7 +420,7 @@ func TestEmbeddedPlugNativeInventoryActualCLI(t *testing.T) {
 
 	// Compare the delivered raw archive and exact policy set to fresh stored SQL
 	// readbacks, independently of the producer's inventory construction.
-	nativeStore, err := embeddeddolt.OpenReadOnly(context.Background(), filepath.Join(workspace, ".beads"), "native", "main")
+	nativeStore, err := embeddeddolt.OpenReadOnly(context.Background(), beadsDir, cfg.DoltDatabase, "main")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -464,7 +533,28 @@ func TestEmbeddedPlugNativeInventoryActualCLI(t *testing.T) {
 	if err != nil || len(shortInventory.Projects) != 1 || shortInventory.Projects[0].HashLength != 1 {
 		t.Fatalf("actual imported short ID floor not measured: %s %v", shortRaw, err)
 	}
-	run("--readonly", "export", "--format", plugdump.Format, "--plug-inventory", shortInventoryPath, "--output", filepath.Join(capture, "short-readback.tar"))
+	shortArchivePath := filepath.Join(capture, "short-readback.tar")
+	refuse("native-physical-root-capability-unavailable:stock-sql", "--readonly", "export", "--format", plugdump.Format, "--plug-inventory", shortInventoryPath, "--output", shortArchivePath)
+	if _, err := os.Lstat(shortArchivePath); !os.IsNotExist(err) {
+		t.Fatalf("short-ID stock SQL refusal published an archive: %v", err)
+	}
+	shortArchive, measuredShort := capturePhysical()
+	if len(measuredShort.Projects) != 1 || measuredShort.Projects[0].HashLength != 1 {
+		t.Fatal("physical capture changed imported short-ID floor")
+	}
+	shortManifest, err := plugdump.Validate(bytes.NewReader(shortArchive))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found = false
+	for _, kind := range shortManifest.Kinds {
+		if kind.Name == "bead" && kind.Count == 2 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("physical archive lost imported short-ID issue")
+	}
 
 }
 

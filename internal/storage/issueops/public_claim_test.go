@@ -54,6 +54,7 @@ func expectClaimableRead(mock sqlmock.Sqlmock, id, assignee string, status types
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT 1 FROM wisps WHERE id = ? LIMIT 1")).
 		WithArgs(id).
 		WillReturnError(sql.ErrNoRows)
+	expectHydrationQuery(mock, "wisps", id, sql.ErrNoRows)
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT " + IssueSelectColumns + " FROM issues " + sqlbuild.LeaseJoin("issues") + " WHERE id = ?")).
 		WithArgs(id).
 		WillReturnRows(claimIssueRow(id, assignee, status))
@@ -180,6 +181,7 @@ func TestExecuteClaimIdempotentReclaimStagesNothing(t *testing.T) {
 	mock.ExpectExec(`(?s)UPDATE issues\s+SET assignee`).WillReturnResult(sqlmock.NewResult(0, 0))
 	expectClaimStateRead(mock, id, claimActor, types.StatusInProgress)
 	// The post-state snapshot the result carries.
+	expectHydrationQuery(mock, "wisps", id, sql.ErrNoRows)
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT " + IssueSelectColumns + " FROM issues " + sqlbuild.LeaseJoin("issues") + " WHERE id = ?")).
 		WithArgs(id).
 		WillReturnRows(claimIssueRow(id, claimActor, types.StatusInProgress))
@@ -220,6 +222,7 @@ func TestExecuteClaimIdempotentReclaimAcrossSpellingStagesNothing(t *testing.T) 
 	expectClaimableRead(mock, id, storedAssignee, types.StatusInProgress)
 	mock.ExpectExec(`(?s)UPDATE issues\s+SET assignee`).WillReturnResult(sqlmock.NewResult(0, 0))
 	expectClaimStateRead(mock, id, storedAssignee, types.StatusInProgress)
+	expectHydrationQuery(mock, "wisps", id, sql.ErrNoRows)
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT " + IssueSelectColumns + " FROM issues " + sqlbuild.LeaseJoin("issues") + " WHERE id = ?")).
 		WithArgs(id).
 		WillReturnRows(claimIssueRow(id, storedAssignee, types.StatusInProgress))
@@ -291,6 +294,7 @@ func TestExecuteClaimStagesTheRowAndEventItWrote(t *testing.T) {
 	mock.ExpectExec(`(?s)INSERT INTO leases`).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(`(?s)SELECT id FROM events`).WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	mock.ExpectExec(`(?s)INSERT INTO events`).WillReturnResult(sqlmock.NewResult(0, 1))
+	expectHydrationQuery(mock, "wisps", id, sql.ErrNoRows)
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT " + IssueSelectColumns + " FROM issues " + sqlbuild.LeaseJoin("issues") + " WHERE id = ?")).
 		WithArgs(id).
 		WillReturnRows(claimIssueRow(id, claimActor, types.StatusInProgress))

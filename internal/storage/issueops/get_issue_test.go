@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -55,11 +56,8 @@ func TestGetIssueInTxMissingLeasesTableIsAnError(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, mock, tx := beginMockTx(t)
 
-			// Both planes are primed: before the fix the issues query is
-			// swallowed and the wisps query runs too, so ExpectationsWereMet
-			// is deliberately not asserted here — the returned error is the
-			// assertion.
-			expectHydrationQuery(mock, "issues", "bd-1", tc.err)
+			// A broken active hydration must not be treated as absence or
+			// hidden by a durable image. No durable query is permitted.
 			expectHydrationQuery(mock, "wisps", "bd-1", tc.err)
 
 			_, err := GetIssueInTx(context.Background(), tx, "bd-1")
@@ -72,6 +70,9 @@ func TestGetIssueInTxMissingLeasesTableIsAnError(t *testing.T) {
 			if !strings.Contains(err.Error(), "leases") {
 				t.Fatalf("error does not name the missing table: %v", err)
 			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("unmet sql expectations: %v", err)
+			}
 		})
 	}
 }
@@ -82,8 +83,8 @@ func TestGetIssueInTxMissingLeasesTableIsAnError(t *testing.T) {
 func TestGetIssueInTxMissingWispsTableIsNotFound(t *testing.T) {
 	_, mock, tx := beginMockTx(t)
 
-	expectHydrationQuery(mock, "issues", "bd-1", sql.ErrNoRows)
 	expectHydrationQuery(mock, "wisps", "bd-1", missingTableError("wisps"))
+	expectHydrationQuery(mock, "issues", "bd-1", sql.ErrNoRows)
 
 	_, err := GetIssueInTx(context.Background(), tx, "bd-1")
 	if !errors.Is(err, storage.ErrNotFound) {
@@ -99,8 +100,8 @@ func TestGetIssueInTxMissingWispsTableIsNotFound(t *testing.T) {
 func TestGetIssueInTxAbsentRowIsNotFound(t *testing.T) {
 	_, mock, tx := beginMockTx(t)
 
-	expectHydrationQuery(mock, "issues", "bd-1", sql.ErrNoRows)
 	expectHydrationQuery(mock, "wisps", "bd-1", sql.ErrNoRows)
+	expectHydrationQuery(mock, "issues", "bd-1", sql.ErrNoRows)
 
 	_, err := GetIssueInTx(context.Background(), tx, "bd-1")
 	if !errors.Is(err, storage.ErrNotFound) {
@@ -120,8 +121,8 @@ func TestUpdateIssueInTxMissingLeasesTableIsAnError(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT 1 FROM wisps WHERE id = ? LIMIT 1")).
 		WithArgs("bd-1").
 		WillReturnError(sql.ErrNoRows)
+	expectHydrationQuery(mock, "wisps", "bd-1", sql.ErrNoRows)
 	expectHydrationQuery(mock, "issues", "bd-1", missingTableError("leases"))
-	expectHydrationQuery(mock, "wisps", "bd-1", missingTableError("leases"))
 
 	_, err := UpdateIssueInTx(context.Background(), tx, "bd-1", map[string]interface{}{"title": "new"}, "tester")
 	if err == nil {
@@ -132,5 +133,92 @@ func TestUpdateIssueInTxMissingLeasesTableIsAnError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "leases") {
 		t.Fatalf("error does not name the missing table: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// These SQL boundary controls forbid the wrong-plane query. Persisted collision
+// and label identity are also checked by TestGetIssueActiveImageWinsStoredCollision
+// in the Dolt package; mock rows are not native runtime qualification.
+func TestGetIssueInTxActiveImageAndDurableFallback(t *testing.T) {
+	for _, test := range []struct {
+		name, table, labels string
+		activeAbsent        error
+	}{
+		{name: "active image", table: "wisps", labels: "wisp_labels"},
+		{name: "durable only", table: "issues", labels: "labels", activeAbsent: sql.ErrNoRows},
+		{name: "pre migration durable", table: "issues", labels: "labels", activeAbsent: missingTableError("wisps")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, mock, tx := beginMockTx(t)
+			if test.activeAbsent != nil {
+				expectHydrationQuery(mock, "wisps", "bd-image", test.activeAbsent)
+			}
+			values := issueRowValues("bd-image", test.table+" title")
+			for i, column := range issueColumns() {
+				switch column {
+				case "ephemeral":
+					values[i] = 0
+					if test.table == "wisps" {
+						values[i] = 1
+					}
+				case "description":
+					values[i] = test.table + " description"
+				case "metadata":
+					values[i] = `{"source":"` + test.table + `"}`
+				}
+			}
+			mock.ExpectQuery(regexp.QuoteMeta("SELECT " + IssueSelectColumns + " FROM " + test.table + " " + sqlbuild.LeaseJoin(test.table) + " WHERE id = ?")).
+				WithArgs("bd-image").WillReturnRows(issueRows().AddRow(values...))
+			mock.ExpectQuery(regexp.QuoteMeta("SELECT label FROM " + test.labels + " WHERE issue_id = ? ORDER BY label")).
+				WithArgs("bd-image").WillReturnRows(sqlmock.NewRows([]string{"label"}).AddRow(test.table + " label"))
+			got, err := GetIssueInTx(context.Background(), tx, "bd-image")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.ID != "bd-image" || got.Title != test.table+" title" || got.Description != test.table+" description" || got.Ephemeral != (test.table == "wisps") || string(got.Metadata) != `{"source":"`+test.table+`"}` || len(got.Labels) != 1 || got.Labels[0] != test.table+" label" {
+				t.Fatalf("wrong source image: %+v", got)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("unmet sql expectations: %v", err)
+			}
+		})
+	}
+}
+
+func TestGetIssueInTxActiveErrorsDoNotFallBack(t *testing.T) {
+	for _, labelsFail := range []bool{false, true} {
+		t.Run(fmt.Sprint("labels=", labelsFail), func(t *testing.T) {
+			_, mock, tx := beginMockTx(t)
+			cause := errors.New("active source read failed")
+			if labelsFail {
+				mock.ExpectQuery(regexp.QuoteMeta("SELECT " + IssueSelectColumns + " FROM wisps " + sqlbuild.LeaseJoin("wisps") + " WHERE id = ?")).
+					WithArgs("bd-image").WillReturnRows(issueRows().AddRow(issueRowValues("bd-image", "active title")...))
+				mock.ExpectQuery(regexp.QuoteMeta("SELECT label FROM wisp_labels WHERE issue_id = ? ORDER BY label")).WithArgs("bd-image").WillReturnError(cause)
+			} else {
+				expectHydrationQuery(mock, "wisps", "bd-image", cause)
+			}
+			if _, err := GetIssueInTx(context.Background(), tx, "bd-image"); !errors.Is(err, cause) || errors.Is(err, storage.ErrNotFound) {
+				t.Fatalf("active failure lost or treated as absence: %v", err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("unmet sql expectations: %v", err)
+			}
+		})
+	}
+}
+
+func TestGetIssueInTxDurableErrorAfterActiveAbsence(t *testing.T) {
+	_, mock, tx := beginMockTx(t)
+	cause := errors.New("durable source read failed")
+	expectHydrationQuery(mock, "wisps", "bd-image", sql.ErrNoRows)
+	expectHydrationQuery(mock, "issues", "bd-image", cause)
+	if _, err := GetIssueInTx(context.Background(), tx, "bd-image"); !errors.Is(err, cause) || errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("durable failure lost or treated as absence: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
 	}
 }

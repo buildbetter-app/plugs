@@ -2,6 +2,7 @@ package issueops
 
 import (
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
@@ -62,6 +63,7 @@ func TestRecordVersionInTxRefusesANumberOutsideTheRangeAndWritesNothing(t *testi
 					values[i] = tc.value
 				}
 			}
+			expectHydrationQuery(mock, "wisps", id, sql.ErrNoRows)
 			mock.ExpectQuery(regexp.QuoteMeta("SELECT " + IssueSelectColumns + " FROM issues " + sqlbuild.LeaseJoin("issues") + " WHERE id = ?")).
 				WithArgs(id).
 				WillReturnRows(issueRows().AddRow(values...))
@@ -128,6 +130,7 @@ func TestRecordVersionInTxSkipsALegacyRowBeforeTheAdmissionGate(t *testing.T) {
 			values[i] = `{"ts":1727000000000000000}`
 		}
 	}
+	expectHydrationQuery(mock, "wisps", id, sql.ErrNoRows)
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT " + IssueSelectColumns + " FROM issues " + sqlbuild.LeaseJoin("issues") + " WHERE id = ?")).
 		WithArgs(id).
 		WillReturnRows(issueRows().AddRow(values...))
@@ -175,7 +178,6 @@ func TestRecordVersionAtInTxKeepsThePlaneRuleButNotTheFence(t *testing.T) {
 
 	t.Run("a row the wisps table holds mints nothing", func(t *testing.T) {
 		_, mock, tx := beginMockTx(t)
-		mock.ExpectQuery(issuesSnapshot).WithArgs(id).WillReturnRows(issueRows())
 		mock.ExpectQuery(regexp.QuoteMeta("SELECT " + IssueSelectColumns + " FROM wisps " + sqlbuild.LeaseJoin("wisps") + " WHERE id = ?")).
 			WithArgs(id).
 			WillReturnRows(issueRows().AddRow(issueRowValues(id, "a squashed wisp root, flags clear")...))
@@ -204,6 +206,7 @@ func TestRecordVersionAtInTxKeepsThePlaneRuleButNotTheFence(t *testing.T) {
 				values[i] = int64(1)
 			}
 		}
+		expectHydrationQuery(mock, "wisps", id, sql.ErrNoRows)
 		mock.ExpectQuery(issuesSnapshot).WithArgs(id).WillReturnRows(issueRows().AddRow(values...))
 		mock.ExpectQuery(regexp.QuoteMeta("SELECT label FROM labels WHERE issue_id = ? ORDER BY label")).
 			WithArgs(id).
@@ -223,6 +226,7 @@ func TestRecordVersionAtInTxKeepsThePlaneRuleButNotTheFence(t *testing.T) {
 
 	t.Run("a legacy row is minted and left unstamped", func(t *testing.T) {
 		_, mock, tx := beginMockTx(t)
+		expectHydrationQuery(mock, "wisps", id, sql.ErrNoRows)
 		mock.ExpectQuery(issuesSnapshot).WithArgs(id).
 			WillReturnRows(issueRows().AddRow(issueRowValues(id, "legacy, history was off when it was made")...))
 		mock.ExpectQuery(regexp.QuoteMeta("SELECT label FROM labels WHERE issue_id = ? ORDER BY label")).

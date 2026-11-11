@@ -314,6 +314,7 @@ go_test(
 #     so --config=integration's lane runs it.
 go_test(
     name = "doc_freshness_required_test",
+    gotags = ["integration"],
     srcs = [
         "check_doc_freshness_test.go",
         "repo_helpers_test.go",

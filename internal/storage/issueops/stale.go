@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
+	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/types"
 )
@@ -22,7 +22,7 @@ import (
 //
 // nolint:gosec // G201: statusClause and labelClause contain only literal SQL or ? placeholders
 func GetStaleIssuesInTx(ctx context.Context, tx DBTX, filter types.StaleFilter) ([]*types.Issue, error) {
-	cutoff := time.Now().UTC().AddDate(0, 0, -filter.Days)
+	cutoff := storage.CaptureNow().UTC().AddDate(0, 0, -filter.Days)
 
 	statusClause := "status IN ('open', 'in_progress')"
 	if filter.Status != "" {

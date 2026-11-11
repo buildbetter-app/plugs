@@ -5,11 +5,13 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // MaxArchiveBytes bounds this initial in-memory exporter/validator slice.
@@ -26,10 +28,18 @@ func encode(manifest Manifest, records map[string][]Record, files map[string][]b
 		if !knownKinds[kind] {
 			return nil, fmt.Errorf("unknown record kind")
 		}
-		sort.Slice(rows, func(i, j int) bool { return recordKey(rows[i]) < recordKey(rows[j]) })
+		version := 1
+		if kind == "edge" {
+			var err error
+			version, err = edgeRegistryVersion(rows)
+			if err != nil {
+				return nil, err
+			}
+		}
+		sort.Slice(rows, func(i, j int) bool { return compareRecords(rows[i], rows[j], manifest.SourcePlaneAddressContract) < 0 })
 		var data []byte
 		for i, record := range rows {
-			if i > 0 && recordKey(rows[i-1]) == recordKey(record) {
+			if i > 0 && compareRecords(rows[i-1], record, manifest.SourcePlaneAddressContract) == 0 {
 				return nil, fmt.Errorf("duplicate %s record identity", kind)
 			}
 			encoded, err := marshal(record)
@@ -40,7 +50,7 @@ func encode(manifest Manifest, records map[string][]Record, files map[string][]b
 		}
 		path := "records/" + kind + ".ndjson"
 		files[path] = data
-		manifest.Kinds = append(manifest.Kinds, Kind{kind, 1, path, len(rows)})
+		manifest.Kinds = append(manifest.Kinds, Kind{kind, version, path, len(rows)})
 	}
 	sort.Slice(manifest.Kinds, func(i, j int) bool { return manifest.Kinds[i].Name < manifest.Kinds[j].Name })
 	sort.Slice(manifest.Sources, func(i, j int) bool {
@@ -88,6 +98,25 @@ func encode(manifest Manifest, records map[string][]Record, files map[string][]b
 
 func recordKey(record Record) string { return record.Project + "\x00" + record.ID }
 
+func edgeRegistryVersion(records []Record) (int, error) {
+	version := EdgeVersionTypedDependencies
+	for _, record := range records {
+		kind, _ := record.Body["type"].(string)
+		if isTypedDependencyKind(kind) {
+			continue
+		}
+		if !isValidLocalOpaqueDependencyKind(kind) {
+			return 0, fmt.Errorf("unsupported dependency type")
+		}
+		targetKind, _ := record.Body["target_kind"].(string)
+		if targetKind != "depends_on_issue_id" {
+			return 0, fmt.Errorf("local opaque dependency requires an issue target")
+		}
+		version = EdgeVersionLocalOpaque
+	}
+	return version, nil
+}
+
 // Validate checks the declared schema, every member/checksum, registry and
 // canonical record ordering without extracting files or touching a store.
 // A valid archive still carries explicit unperformed migration checks.
@@ -114,7 +143,7 @@ func Validate(reader io.Reader) (Manifest, error) {
 		if header.Typeflag != tar.TypeReg || header.Size < 0 || header.Size > MaxArchiveBytes || header.Mode != 0o600 || header.Uid != 0 || header.Gid != 0 || header.Linkname != "" || len(header.PAXRecords) != 0 || header.Format != tar.FormatUSTAR || !header.ModTime.Equal(time.Unix(0, 0)) {
 			return Manifest{}, fmt.Errorf("noncanonical tar member")
 		}
-		if header.Name != "manifest.json" && header.Name != "config/sources.json" && header.Name != SourceHistoryMember && !(strings.HasPrefix(header.Name, "records/") && strings.HasSuffix(header.Name, ".ndjson") && knownKinds[strings.TrimSuffix(strings.TrimPrefix(header.Name, "records/"), ".ndjson")]) {
+		if header.Name != "manifest.json" && header.Name != "config/sources.json" && header.Name != SourceHistoryMember && header.Name != NativeHistoryMember && !(strings.HasPrefix(header.Name, "records/") && strings.HasSuffix(header.Name, ".ndjson") && knownKinds[strings.TrimSuffix(strings.TrimPrefix(header.Name, "records/"), ".ndjson")]) {
 			return Manifest{}, fmt.Errorf("unknown archive member")
 		}
 		if _, ok := members[header.Name]; ok {
@@ -139,8 +168,28 @@ func Validate(reader io.Reader) (Manifest, error) {
 	if err := decodeJSON(members["manifest.json"], &manifest); err != nil {
 		return Manifest{}, fmt.Errorf("invalid manifest: %w", err)
 	}
-	if manifest.Format != Format || manifest.Schema != 1 || manifest.Reference != BeadsReference || manifest.MainVersion != 72 || manifest.IgnoredVersion != 28 || manifest.StoreID == "" || manifest.Machine == "" || manifest.Scope != "offline-head-and-source-archives" {
+	// Presence is significant: an explicitly empty or unknown contract is not
+	// legacy omission. The successor exporter emits this marker alongside the
+	// edge registry version; old archives remain valid when it is absent.
+	var manifestFields map[string]json.RawMessage
+	if err := json.Unmarshal(members["manifest.json"], &manifestFields); err != nil {
+		return Manifest{}, fmt.Errorf("invalid manifest: %w", err)
+	}
+	if _, present := manifestFields["source_fields_contract"]; present && manifest.SourceFieldsContract != IssueSourceFieldsContract {
+		return Manifest{}, fmt.Errorf("unsupported source fields contract")
+	}
+	if err := validateSourceFamilyMarker(members["manifest.json"], manifest.SourceFamilyContract); err != nil {
+		return Manifest{}, err
+	}
+	if err := validateSourcePlaneMarker(members["manifest.json"], manifest.SourcePlaneAddressContract); err != nil {
+		return Manifest{}, err
+	}
+	profile, profileErr := schemaProfile(uint64(manifest.MainVersion), uint64(manifest.IgnoredVersion))
+	if profileErr != nil || manifest.Format != Format || manifest.Schema != 1 || manifest.Reference != BeadsReference || manifest.StoreID == "" || manifest.Machine == "" || manifest.Scope != "offline-head-and-source-archives" {
 		return Manifest{}, fmt.Errorf("unsupported manifest schema, source or scope")
+	}
+	if profile.MainVersion == 66 && manifest.SourceFamilyContract != SourceFamilyContract {
+		return Manifest{}, fmt.Errorf("own-version capture requires native source family contract")
 	}
 	if manifest.History != "unavailable" && manifest.History != "available-unverified" && manifest.History != "verified" {
 		return Manifest{}, fmt.Errorf("unsupported history claim")
@@ -148,7 +197,10 @@ func Validate(reader io.Reader) (Manifest, error) {
 	if len(manifest.Warnings) == 0 || len(manifest.Verification) == 0 {
 		return Manifest{}, fmt.Errorf("missing incomplete-conversion disclosures")
 	}
-	expectedVerification, _ := marshal(verificationLimits())
+	if err := validateStatusCategoryMarker(members["manifest.json"], manifest.StatusCategoryContract, manifest.Projects); err != nil {
+		return Manifest{}, err
+	}
+	expectedVerification, _ := marshal(verificationLimitsForStatus(manifest.StatusCategoryContract))
 	actualVerification, _ := marshal(manifest.Verification)
 	if !bytes.Equal(expectedVerification, actualVerification) {
 		return Manifest{}, fmt.Errorf("unsupported verification claim")
@@ -182,9 +234,16 @@ func Validate(reader io.Reader) (Manifest, error) {
 	registry := map[string]bool{}
 	counts := map[string]int{}
 	var beadRecords []Record
+	var edgeRecords []Record
+	var statusRows, typeRows []Row
+	activeRows := map[string][]Row{}
+	storedCatalogConfig := map[string]any{}
+	beadIDs := map[string]bool{}
+	wispIDs := map[string]bool{}
 	lastKind := ""
 	for _, kind := range manifest.Kinds {
-		if !knownKinds[kind.Name] || kind.Version != 1 || kind.Name <= lastKind || kind.File != "records/"+kind.Name+".ndjson" || kind.Count < 1 {
+		versionOK := kind.Version == 1 || kind.Name == "edge" && (kind.Version == EdgeVersionTypedDependencies || kind.Version == EdgeVersionLocalOpaque)
+		if !knownKinds[kind.Name] || !versionOK || kind.Name <= lastKind || kind.File != "records/"+kind.Name+".ndjson" || kind.Count < 1 {
 			return Manifest{}, fmt.Errorf("unknown, duplicate or unordered kind registry entry")
 		}
 		lastKind = kind.Name
@@ -197,19 +256,49 @@ func Validate(reader io.Reader) (Manifest, error) {
 		if len(lines) != kind.Count {
 			return Manifest{}, fmt.Errorf("record count mismatch")
 		}
-		last := ""
-		for _, line := range lines {
+		var last Record
+		for i, line := range lines {
 			var record Record
-			if err := decodeJSON(line, &record); err != nil || record.Kind != kind.Name || record.ID == "" || record.Source.Table == "" || record.Source.Fields == nil || record.Body == nil || recordKey(record) <= last {
+			if err := decodeJSON(line, &record); err != nil || record.Kind != kind.Name || record.ID == "" || record.Source.Table == "" || record.Source.Fields == nil || record.Body == nil || (i > 0 && compareRecords(last, record, manifest.SourcePlaneAddressContract) >= 0) {
 				return Manifest{}, fmt.Errorf("invalid, duplicate or unordered typed record")
 			}
-			if err := validateRecord(record, manifest.Projects, counts); err != nil {
+			if err := validateRecordAtProfile(record, manifest.Projects, counts, kind.Version, manifest.SourceFamilyContract, profile); err != nil {
 				return Manifest{}, err
+			}
+			switch record.Source.Table {
+			case "custom_statuses":
+				statusRows = append(statusRows, record.Source.Fields)
+			case "custom_types":
+				typeRows = append(typeRows, record.Source.Fields)
+			case "config":
+				key := text(record.Source.Fields, "key")
+				if key == "status.custom" || key == "types.custom" {
+					if _, duplicate := storedCatalogConfig[key]; duplicate {
+						return Manifest{}, fmt.Errorf("duplicate stored catalog configuration %q", key)
+					}
+					storedCatalogConfig[key] = record.Source.Fields["value"]
+				}
 			}
 			if record.Kind == "bead" {
 				beadRecords = append(beadRecords, record)
+				beadIDs[record.ID] = true
 			}
-			last = recordKey(record)
+			if record.Kind == "edge" {
+				edgeRecords = append(edgeRecords, record)
+			}
+			if record.Kind == "beads-archive" && record.Source.Table == "wisps" {
+				if id := text(record.Source.Fields, "id"); id != "" {
+					wispIDs[id] = true
+				}
+			}
+			if manifest.SourcePlaneAddressContract == SourcePlaneAddressContract && record.Kind == "beads-archive" {
+				encoded, err := marshal(record.Source.Fields)
+				if err != nil || record.ID != record.Source.Table+"/"+digest(encoded) {
+					return Manifest{}, fmt.Errorf("source archive identity does not bind its raw row")
+				}
+				activeRows[record.Source.Table] = append(activeRows[record.Source.Table], record.Source.Fields)
+			}
+			last = record
 		}
 	}
 	for path := range members {
@@ -217,7 +306,28 @@ func Validate(reader io.Reader) (Manifest, error) {
 			return Manifest{}, fmt.Errorf("unregistered record kind")
 		}
 	}
-	if err := validateDispositions(manifest.Sources, counts); err != nil {
+	yamlCatalogs, err := nativeYAMLCatalogValues(members["config/sources.json"])
+	if err != nil {
+		return Manifest{}, err
+	}
+	customStatuses := map[string]bool{}
+	if err := readCatalogUnion(statusRows, typeRows, storedCatalogConfig, yamlCatalogs, customStatuses); err != nil {
+		return Manifest{}, err
+	}
+	if manifest.StatusCategoryContract == StatusCategoryContract {
+		if err := validateProjectStatusCatalogs(manifest.Projects, statusRows, typeRows, storedCatalogConfig, yamlCatalogs); err != nil {
+			return Manifest{}, err
+		}
+	}
+	if manifest.SourcePlaneAddressContract == SourcePlaneAddressContract {
+		if err := validateSourcePlanes(manifest.Projects, beadRecords, edgeRecords, activeRows, customStatuses); err != nil {
+			return Manifest{}, err
+		}
+	}
+	if err := validateDispositionsAtProfile(manifest.Sources, counts, manifest.SourceFamilyContract, profile); err != nil {
+		return Manifest{}, err
+	}
+	if err := validateEdgeEndpoints(edgeRecords, beadIDs, wispIDs); err != nil {
 		return Manifest{}, err
 	}
 	if err := validateOntologyRecords(manifest.Ontology, manifest.Projects, beadRecords); err != nil {
@@ -228,6 +338,9 @@ func Validate(reader io.Reader) (Manifest, error) {
 		return Manifest{}, fmt.Errorf("history declaration does not match archived source rows")
 	}
 	if err := validateSourceHistory(manifest, members); err != nil {
+		return Manifest{}, err
+	}
+	if err := validateNativeHistory(manifest, members); err != nil {
 		return Manifest{}, err
 	}
 	return manifest, nil
@@ -265,15 +378,48 @@ func validateOntologyRecords(directives []OntologyDirective, projects []Project,
 }
 
 func validateRecord(record Record, projects []Project, counts map[string]int) error {
+	return validateRecordVersioned(record, projects, counts, 1)
+}
+
+func validateRecordVersioned(record Record, projects []Project, counts map[string]int, edgeVersion int, familyContracts ...string) error {
+	familyContract := ""
+	if len(familyContracts) > 0 {
+		familyContract = familyContracts[0]
+	}
+	profile, _ := schemaProfile(72, 28)
+	return validateRecordAtProfile(record, projects, counts, edgeVersion, familyContract, profile)
+}
+
+func validateRecordAtProfile(record Record, projects []Project, counts map[string]int, edgeVersion int, familyContract string, profile NativeSchemaProfile) error {
+	if record.Kind == "edge" {
+		kind, _ := record.Body["type"].(string)
+		switch kind {
+		case "blocks", "parent-child", "related", "discovered-from":
+			// These kinds are valid in both the legacy and successor edge
+			// contracts.
+		default:
+			if isTypedDependencyKind(kind) {
+				if edgeVersion != EdgeVersionTypedDependencies && edgeVersion != EdgeVersionLocalOpaque {
+					return fmt.Errorf("dependency %s requires edge registry version %d or %d", kind, EdgeVersionTypedDependencies, EdgeVersionLocalOpaque)
+				}
+				if !supportsTypedDependency(kind, record.Source.Table, text(record.Body, "target_kind")) {
+					return fmt.Errorf("unsupported dependency type")
+				}
+			} else if edgeVersion != EdgeVersionLocalOpaque || !isValidLocalOpaqueDependencyKind(kind) || text(record.Body, "target_kind") != "depends_on_issue_id" {
+				return fmt.Errorf("unsupported dependency type")
+			}
+		}
+	}
 	table := record.Source.Table
-	if _, ok := tableColumns[table]; !ok {
+	columns, ok := profile.tables()[table]
+	if !ok {
 		return fmt.Errorf("unknown record source table")
 	}
 	expectedKind := "beads-archive"
 	switch table {
 	case "issues":
 		expectedKind = "bead"
-	case "dependencies":
+	case "dependencies", "wisp_dependencies":
 		expectedKind = "edge"
 	case "comments":
 		expectedKind = "comment"
@@ -282,14 +428,17 @@ func validateRecord(record Record, projects []Project, counts map[string]int) er
 		if table == "config" && strings.HasPrefix(text(record.Source.Fields, "key"), "kv.memory.") {
 			expectedKind = "memory"
 		}
-	case "labels", "repo_mtimes", "leases":
-		return fmt.Errorf("operational or normalized family cannot have source archive records")
+	case "labels":
+		return fmt.Errorf("normalized family cannot have source archive records")
+	case "repo_mtimes", "leases":
+		if familyContract != SourceFamilyContract {
+			return fmt.Errorf("operational family requires source family contract")
+		}
 	}
-	action, _ := actionFor(table)
+	action, _ := familyAction(table, familyContract)
 	if record.Kind != expectedKind || action == "refuse-if-nonempty" {
 		return fmt.Errorf("unsupported kind/source mapping")
 	}
-	columns := columnsFor(table)
 	if table == "issues" {
 		var filtered []string
 		for _, column := range columns {
@@ -329,6 +478,21 @@ func validateRecord(record Record, projects []Project, counts map[string]int) er
 		return fmt.Errorf("source archive/config has an unsupported project binding")
 	}
 	if record.Kind == "bead" {
+		if err := validateStatusRecord(record, projects); err != nil {
+			return err
+		}
+		for _, project := range projects {
+			if project.Prefix != record.Project {
+				continue
+			}
+			top, parent, child, err := issueIDParts(record.ID, project)
+			if err != nil {
+				return err
+			}
+			if top > project.LastID || parent != "" && child > project.ChildCounters[parent] {
+				return fmt.Errorf("issue ID exceeds inventoried allocator counters")
+			}
+		}
 		labels, ok := record.Body["labels"].([]any)
 		if !ok {
 			return fmt.Errorf("missing bead label set")
@@ -368,6 +532,73 @@ func validateRecord(record Record, projects []Project, counts map[string]int) er
 	return nil
 }
 
+func validateEdgeEndpoints(records []Record, beadIDs, wispIDs map[string]bool) error {
+	for _, record := range records {
+		table := record.Source.Table
+		if table != "dependencies" && table != "wisp_dependencies" {
+			return fmt.Errorf("unsupported edge source table")
+		}
+		from := text(record.Source.Fields, "issue_id")
+		if from == "" || text(record.Body, "from") != from {
+			return fmt.Errorf("edge source mirror mismatch")
+		}
+		if text(record.Body, "type") != text(record.Source.Fields, "type") {
+			return fmt.Errorf("edge type/source mirror mismatch")
+		}
+		if table == "dependencies" {
+			if !beadIDs[from] {
+				return fmt.Errorf("durable edge source is not an archived bead")
+			}
+		} else if !wispIDs[from] {
+			return fmt.Errorf("wisp edge source is not an archived wisp")
+		}
+		targetKind := text(record.Body, "target_kind")
+		if targetKind != "depends_on_issue_id" && targetKind != "depends_on_wisp_id" && targetKind != "depends_on_external" {
+			return fmt.Errorf("unsupported edge target arm")
+		}
+		target, ok := record.Body["to"].(string)
+		if !ok || target == "" || !utf8.ValidString(target) {
+			return fmt.Errorf("invalid edge target")
+		}
+		targetArms := 0
+		for _, key := range []string{"depends_on_issue_id", "depends_on_wisp_id", "depends_on_external"} {
+			value, present := record.Source.Fields[key]
+			if !present || value == nil {
+				continue
+			}
+			targetArms++
+			candidate, ok := value.(string)
+			if !ok || candidate == "" || candidate != target {
+				return fmt.Errorf("edge target/source mirror mismatch")
+			}
+			if key != targetKind {
+				return fmt.Errorf("edge has multiple or mismatched target arms")
+			}
+		}
+		if targetArms != 1 {
+			return fmt.Errorf("edge must have exactly one target arm")
+		}
+		if targetKind == "depends_on_issue_id" && !beadIDs[target] {
+			return fmt.Errorf("edge issue target is not an archived bead")
+		}
+		if targetKind == "depends_on_wisp_id" && !wispIDs[target] {
+			return fmt.Errorf("edge wisp target is not an archived wisp")
+		}
+		if targetKind == "depends_on_external" && !validExternalDependencyTarget(target) {
+			return fmt.Errorf("invalid external edge target")
+		}
+		if text(record.Body, "thread_id") != text(record.Source.Fields, "thread_id") {
+			return fmt.Errorf("edge thread mirror mismatch")
+		}
+		bodyMetadata, _ := marshal(record.Body["metadata"])
+		sourceMetadata, _ := marshal(record.Source.Fields["metadata"])
+		if !bytes.Equal(bodyMetadata, sourceMetadata) {
+			return fmt.Errorf("edge metadata/source mirror mismatch")
+		}
+	}
+	return nil
+}
+
 func validateConfigProvenance(data []byte) error {
 	var entries []struct {
 		Input  ExternalInput  `json:"input"`
@@ -389,6 +620,9 @@ func validateConfigProvenance(data []byte) error {
 		if err := validateSecretReferences(entry.Values); err != nil {
 			return err
 		}
+		if err := validateNativeObservations(input.Family, entry.Values); err != nil {
+			return err
+		}
 		seen[input.Family], paths[key] = true, true
 	}
 	if len(seen) != len(allowed) {
@@ -397,10 +631,20 @@ func validateConfigProvenance(data []byte) error {
 	return nil
 }
 
-func validateDispositions(sources []Disposition, counts map[string]int) error {
+func validateDispositions(sources []Disposition, counts map[string]int, familyContracts ...string) error {
+	familyContract := ""
+	if len(familyContracts) > 0 {
+		familyContract = familyContracts[0]
+	}
+	profile, _ := schemaProfile(72, 28)
+	return validateDispositionsAtProfile(sources, counts, familyContract, profile)
+}
+
+func validateDispositionsAtProfile(sources []Disposition, counts map[string]int, familyContract string, profile NativeSchemaProfile) error {
+	tables := profile.tables()
 	seen := map[string]bool{}
 	allowed := map[string]bool{"issues.row_lock": true, "issues.is_blocked": true}
-	for name := range tableColumns {
+	for name := range tables {
 		allowed[name] = true
 	}
 	for _, name := range externalFamilies {
@@ -418,9 +662,9 @@ func validateDispositions(sources []Disposition, counts map[string]int) error {
 		if source.Action == "refuse-if-nonempty" && source.Rows != 0 {
 			return fmt.Errorf("unsupported nonempty source disposition")
 		}
-		if _, isTable := tableColumns[source.Family]; isTable {
-			expectedAction, _ := actionFor(source.Family)
-			if seen[source.Family] || source.Action != expectedAction || (source.Family != "repo_mtimes" && source.Rows != counts[source.Family]) {
+		if _, isTable := tables[source.Family]; isTable {
+			expectedAction, _ := familyAction(source.Family, familyContract)
+			if seen[source.Family] || source.Action != expectedAction || ((source.Family != "repo_mtimes" || familyContract == SourceFamilyContract) && source.Rows != counts[source.Family]) {
 				return fmt.Errorf("source disposition/count does not match archived records")
 			}
 		}

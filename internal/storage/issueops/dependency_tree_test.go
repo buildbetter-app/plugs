@@ -101,6 +101,7 @@ type dependencyRow struct {
 }
 
 func expectIssue(mock sqlmock.Sqlmock, id, title string) {
+	expectHydrationQuery(mock, "wisps", id, sql.ErrNoRows)
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT " + IssueSelectColumns + " FROM issues " + sqlbuild.LeaseJoin("issues") + " WHERE id = ?")).
 		WithArgs(id).
 		WillReturnRows(issueRows().AddRow(issueRowValues(id, title)...))

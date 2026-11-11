@@ -864,6 +864,10 @@ func TestBazelRetiredLanesCannotBeNarrowed(t *testing.T) {
 		// bdInit's schema template and the race runtime's exit sleep:
 		// neither selects or skips a test.
 		"BEADS_TEST_EMBEDDED_SCHEMA_TOOL": "$(rlocationpath //internal/storage/embeddeddolt/cmd:cmd_norace)", "GORACE": "atexit_sleep_ms=0",
+		// Public inventory and the physical companion are executable fixture
+		// inputs; neither selects or skips a test.
+		"BEADS_TEST_PLUG_INVENTORY":     "$(rlocationpath //internal/plugdump:synthetic_inventory)",
+		"BEADS_PHYSICAL_CAPTURE_BINARY": "$(rlocationpath //tools/native-physical-capture:native-physical-capture)",
 	}
 	want := map[string]target{
 		"//cmd/bd:bd_embedded_test": {

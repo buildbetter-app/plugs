@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -128,8 +129,19 @@ func ReadInventory(reader io.Reader) (Inventory, error) {
 		return Inventory{}, fmt.Errorf("inventory exceeds 4 MiB")
 	}
 	var inventory Inventory
-	err = decodeJSON(data, &inventory)
-	return inventory, err
+	if err := decodeJSON(data, &inventory); err != nil {
+		return Inventory{}, err
+	}
+	if err := validateSourceFamilyMarker(data, inventory.SourceFamilyContract); err != nil {
+		return Inventory{}, err
+	}
+	if err := validateSourcePlaneMarker(data, inventory.SourcePlaneAddressContract); err != nil {
+		return Inventory{}, err
+	}
+	if err := validateStatusCategoryMarker(data, inventory.StatusCategoryContract, inventory.Projects); err != nil {
+		return Inventory{}, err
+	}
+	return inventory, nil
 }
 
 func decodeJSON(data []byte, target any) error {
@@ -218,7 +230,7 @@ func readExternal(inputs []ExternalInput) ([]byte, []Disposition, error) {
 				return nil, nil, fmt.Errorf("external family %s is present or unreadable; absent declaration refused", input.Family)
 			}
 			config = append(config, map[string]any{"input": input})
-			dispositions = append(dispositions, Disposition{input.Family, 0, "manifest/rebuild", "requested source absent at declared path"})
+			dispositions = append(dispositions, Disposition{Family: input.Family, Rows: 0, Action: "manifest/rebuild", Reason: "requested source absent at declared path"})
 		case "json-config":
 			if err != nil || !info.Mode().IsRegular() || info.Size() > 4<<20 {
 				return nil, nil, fmt.Errorf("external family %s must be a regular JSON file <=4 MiB", input.Family)
@@ -234,8 +246,11 @@ func readExternal(inputs []ExternalInput) ([]byte, []Disposition, error) {
 			if err := validateSecretReferences(values); err != nil {
 				return nil, nil, fmt.Errorf("external family %s: %w", input.Family, err)
 			}
+			if err := validateNativeObservations(input.Family, values); err != nil {
+				return nil, nil, fmt.Errorf("external family %s: %w", input.Family, err)
+			}
 			config = append(config, map[string]any{"input": input, "values": values})
-			dispositions = append(dispositions, Disposition{input.Family, len(values), "archive", "explicit JSON config; secrets are references; precedence retained, effective config not inferred"})
+			dispositions = append(dispositions, Disposition{Family: input.Family, Rows: len(values), Action: "archive", Reason: "explicit JSON config; secrets are references; precedence retained, effective config not inferred"})
 		default:
 			return nil, nil, fmt.Errorf("external family %s has unsupported input state", input.Family)
 		}
@@ -247,6 +262,185 @@ func readExternal(inputs []ExternalInput) ([]byte, []Disposition, error) {
 	}
 	data, err := marshal(config)
 	return data, dispositions, err
+}
+
+// validateNativeObservations checks the JSON sidecar emitted by NativeInventory
+// without interpreting it as effective configuration. Every file observation
+// remains tied to its exact path, bytes, size and digest. YAML files must carry
+// an object-valued values member; an absent member is the explicit-null/old
+// malformed declaration that the native reader refuses. Empty and
+// comment-only YAML therefore remains an explicit empty object.
+func validateNativeObservations(family string, values map[string]any) error {
+	if !nativeFileFamily(family) {
+		return nil
+	}
+	raw, ok := values["observations"]
+	if !ok {
+		return nil
+	}
+	observations, ok := raw.([]any)
+	if !ok {
+		return fmt.Errorf("observations must be an array")
+	}
+	for _, item := range observations {
+		if err := validateNativeObservation(item); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateNativeObservation(value any) error {
+	observation, ok := value.(map[string]any)
+	if !ok {
+		return fmt.Errorf("observation must be an object")
+	}
+	state, _ := observation["state"].(string)
+	switch state {
+	case "absent":
+		if _, present := observation["values"]; present {
+			return fmt.Errorf("absent observation cannot carry values")
+		}
+		return nil
+	case "directory":
+		entries, ok := observation["entries"].([]any)
+		if !ok {
+			return fmt.Errorf("directory observation must carry entries")
+		}
+		for _, entry := range entries {
+			if err := validateNativeObservation(entry); err != nil {
+				return err
+			}
+		}
+		return nil
+	case "file":
+		path, _ := observation["path"].(string)
+		if !filepath.IsAbs(path) {
+			return fmt.Errorf("file observation requires an absolute path")
+		}
+		bytesValue, ok := observation["bytes"].(map[string]any)
+		if !ok || len(bytesValue) != 1 {
+			return fmt.Errorf("file observation is missing its byte envelope")
+		}
+		encoded, ok := bytesValue["$bytes"].(string)
+		if !ok {
+			return fmt.Errorf("file observation has an invalid byte envelope")
+		}
+		raw, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return fmt.Errorf("file observation has invalid bytes")
+		}
+		size, ok := observation["size"].(json.Number)
+		if !ok {
+			// decodeJSON uses UseNumber, but retain a strict fallback for callers
+			// that construct the sidecar map directly.
+			if integer, ok := observation["size"].(float64); ok && integer >= 0 && integer == float64(len(raw)) {
+				size = json.Number(strconv.Itoa(len(raw)))
+			} else {
+				return fmt.Errorf("file observation has invalid size")
+			}
+		}
+		if parsed, err := strconv.Atoi(string(size)); err != nil || parsed != len(raw) {
+			return fmt.Errorf("file observation size changed")
+		}
+		digestValue, _ := observation["sha256"].(string)
+		if digestValue != digest(raw) {
+			return fmt.Errorf("file observation bytes/hash changed")
+		}
+		ext := strings.ToLower(filepath.Ext(path))
+		if ext == ".yaml" || ext == ".yml" {
+			parsed, present := observation["values"]
+			if !present {
+				return fmt.Errorf("YAML file observation is missing parsed values")
+			}
+			object, ok := parsed.(map[string]any)
+			if !ok || object == nil {
+				return fmt.Errorf("YAML file observation values must be an object")
+			}
+			decoded, err := decodeNativeYAMLValues(raw)
+			if err != nil || decoded == nil {
+				return fmt.Errorf("YAML file observation bytes must contain a valid object")
+			}
+			observedJSON, observedErr := marshal(object)
+			decodedJSON, decodedErr := marshal(decoded)
+			if observedErr != nil || decodedErr != nil || !bytes.Equal(observedJSON, decodedJSON) {
+				return fmt.Errorf("YAML file observation values disagree with its bytes")
+			}
+		}
+		if parsed, present := observation["values"]; present {
+			if object, ok := parsed.(map[string]any); !ok || object == nil {
+				return fmt.Errorf("file observation values must be an object")
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown native observation state")
+	}
+}
+
+// nativeYAMLCatalogValues extracts only parsed YAML object values from the
+// native sidecar observations. The raw observation remains in
+// config/sources.json; this projection exists solely to validate the stored/YAML
+// custom status/type union before the archive is encoded.
+func nativeYAMLCatalogValues(data []byte) ([]map[string]any, error) {
+	var entries []struct {
+		Input  ExternalInput  `json:"input"`
+		Values map[string]any `json:"values,omitempty"`
+	}
+	if err := decodeJSON(data, &entries); err != nil {
+		return nil, fmt.Errorf("invalid configuration provenance: %w", err)
+	}
+	var result []map[string]any
+	for _, entry := range entries {
+		// Engine census directories deliberately retain contents="not-read";
+		// only filesystem-source families contain traversable YAML observations.
+		if entry.Values == nil || !nativeFileFamily(entry.Input.Family) {
+			continue
+		}
+		observations, ok := entry.Values["observations"]
+		if !ok {
+			continue
+		}
+		if err := appendYAMLCatalogValues(observations, &result); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+func appendYAMLCatalogValues(value any, result *[]map[string]any) error {
+	items, ok := value.([]any)
+	if !ok {
+		return fmt.Errorf("observations must be an array")
+	}
+	for _, item := range items {
+		observation, ok := item.(map[string]any)
+		if !ok {
+			return fmt.Errorf("observation must be an object")
+		}
+		switch observation["state"] {
+		case "directory":
+			if err := appendYAMLCatalogValues(observation["entries"], result); err != nil {
+				return err
+			}
+		case "file":
+			path, _ := observation["path"].(string)
+			ext := strings.ToLower(filepath.Ext(path))
+			if ext != ".yaml" && ext != ".yml" {
+				continue
+			}
+			parsed, ok := observation["values"].(map[string]any)
+			if !ok || parsed == nil {
+				return fmt.Errorf("YAML file observation is missing parsed values")
+			}
+			*result = append(*result, parsed)
+		case "absent":
+			continue
+		default:
+			return fmt.Errorf("unknown native observation state")
+		}
+	}
+	return nil
 }
 
 func secretKey(key string) bool {

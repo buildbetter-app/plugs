@@ -190,10 +190,10 @@ func validateHistoryImage(rows []Record, manifest Manifest) error {
 	counts := map[string]int{}
 	issues := []Record{}
 	for _, r := range rows {
-		if r.Kind == "beads-archive" || !knownKinds[r.Kind] || seen[recordKey(r)] {
+		if r.Kind == "beads-archive" || !knownKinds[r.Kind] || seen[historyRecordKey(r)] {
 			return fmt.Errorf("duplicate or nonportable history record")
 		}
-		seen[recordKey(r)] = true
+		seen[historyRecordKey(r)] = true
 		if err := validateRecord(r, manifest.Projects, counts); err != nil {
 			return err
 		}
@@ -215,10 +215,17 @@ func validateHistoryImage(rows []Record, manifest Manifest) error {
 	return validateOntologyRecords(applicableHistoryOntology(manifest.Ontology, issues), manifest.Projects, issues)
 }
 
+// Store identity is supplied by the enclosing manifest/history source tuple.
+// Kind/table/project/raw ID are compared without relabeling physical IDs.
+func historyRecordKey(r Record) string {
+	key, _ := json.Marshal([4]string{r.Project, r.Kind, r.Source.Table, r.ID})
+	return string(key)
+}
+
 func sameRecordImage(a, b []Record) bool {
 	canonical := func(rows []Record) []Record {
 		copy := append([]Record{}, rows...)
-		sort.Slice(copy, func(i, j int) bool { return recordKey(copy[i]) < recordKey(copy[j]) })
+		sort.Slice(copy, func(i, j int) bool { return historyRecordKey(copy[i]) < historyRecordKey(copy[j]) })
 		return copy
 	}
 	return equalJSON(canonical(a), canonical(b))

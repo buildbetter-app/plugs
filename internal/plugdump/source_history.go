@@ -7,14 +7,16 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 )
 
 // SourceCommitLog is a driver read of the actual reachable graph and working
 // set. Clean is measured by the source reader, never copied from Inventory.
 type SourceCommitLog struct {
-	Head    string
-	Clean   bool
-	Commits []SourceCommit
+	Head       string
+	Clean      bool
+	Commits    []SourceCommit
+	Boundaries []NativeHistoryBoundary
 }
 
 // SourceHistoryReader is optional. Every image is a complete data-only census
@@ -25,7 +27,14 @@ type SourceHistoryReader interface {
 	ReadSourceImage(context.Context, string) (map[string]Table, error)
 }
 
-type ErrSourceHistoryUnavailable struct{ Reason string }
+type ErrSourceHistoryUnavailable struct {
+	Reason              string
+	BoundaryReason      string
+	SchemaVersion       *uint64
+	OrdinalFromHead     uint64
+	VerifiedCommitCount *uint64
+	SQLCodes            []uint16
+}
 
 func (e ErrSourceHistoryUnavailable) Error() string { return "source history unavailable: " + e.Reason }
 
@@ -61,6 +70,21 @@ func captureSourceHistory(ctx context.Context, src Source, inventory Inventory, 
 			return nil, err
 		}
 	}
+	if len(log.Boundaries) > 0 {
+		ordered, err := historyCommitOrder(log)
+		if err != nil {
+			return nil, err
+		}
+		final, err := port.ReadSourceCommits(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if !log.Clean || !equalJSON(log, final) {
+			return nil, ErrSourceHistoryUnavailable{Reason: "source-census-changed"}
+		}
+		h.Commits = ordered
+		return unverified("native-history-boundary")
+	}
 	chain, ok := linearSourceCommits(log)
 	if !ok {
 		return unverified("non-contiguous")
@@ -73,6 +97,7 @@ func captureSourceHistory(ctx context.Context, src Source, inventory Inventory, 
 	reasons := make([]string, len(chain))
 	cut := 0
 	total := 0
+	headFailureReason := "head-image-not-proven"
 	for i, c := range chain {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -99,6 +124,24 @@ func captureSourceHistory(ctx context.Context, src Source, inventory Inventory, 
 		}
 		if imageErr != nil {
 			reasons[i], cut = "unmappable", i+1
+			if i == len(chain)-1 && image != nil {
+				// A successful census may prove that the native commit lacks
+				// families required by the portable history contract. Name that
+				// evidence gap; never fill it from the working set or with empty
+				// tables. Read failures and other mismatches remain unlocalized.
+				missing := []string{}
+				for name := range tableColumns {
+					if _, present := image[name]; !present {
+						missing = append(missing, name)
+					}
+				}
+				if inventory.SourceFamilyContract == SourceFamilyContract {
+					headFailureReason = "portable-image-not-supported; native history is separately retained"
+				} else if len(missing) > 0 {
+					sort.Strings(missing)
+					headFailureReason = "head-image-missing-families:" + strings.Join(missing, ",")
+				}
+			}
 			continue
 		}
 		frame := SourceHistoryFrame{Sequence: uint64(i + 1), CommitID: c.ID, Records: records, Events: events}
@@ -134,7 +177,7 @@ func captureSourceHistory(ctx context.Context, src Source, inventory Inventory, 
 		currentImage = append(currentImage, current[kind]...)
 	}
 	if frames[last].CommitID == "" || !sameRecordImage(currentImage, frames[last].Records) || !sameEventImage(h.Events, frames[last].Events) {
-		return unverified("head-image-not-proven")
+		return unverified(headFailureReason)
 	}
 	if cut >= len(chain)-1 && cut != 0 {
 		return unverified("verified-baseline-unavailable")
@@ -197,6 +240,22 @@ func linearSourceCommits(log SourceCommitLog) ([]SourceCommit, bool) {
 // Reuse the current closed-world mapper for each independently read image.
 // It cannot borrow a missing business field or row from the current head.
 func portableSourceImage(ctx context.Context, tables map[string]Table, inventory Inventory) ([]Record, []Row, error) {
+	if inventory.StatusCategoryContract == StatusCategoryContract {
+		// Filesystem YAML is captured only at export head. It cannot witness
+		// the category of an older source image. The actual SQL catalog/config
+		// at this commit must independently establish the entire head catalog;
+		// otherwise the portable format has no per-image catalog to carry it.
+		stored := map[string]any{}
+		for _, row := range tables["config"].Rows {
+			key := text(row, "key")
+			if key == "status.custom" || key == "types.custom" {
+				stored[key] = row["value"]
+			}
+		}
+		if err := validateProjectStatusCatalogs(inventory.Projects, tables["custom_statuses"].Rows, tables["custom_types"].Rows, stored, nil); err != nil {
+			return nil, nil, fmt.Errorf("historical SQL status catalog not proven: %w", err)
+		}
+	}
 	// A head directive may be unused before that type existed. Select only
 	// declarations used by this image; the same mapper still requires exactly
 	// one correctly scoped declaration for every custom historical issue type.
@@ -211,6 +270,10 @@ func portableSourceImage(ctx context.Context, tables map[string]Table, inventory
 		issues = append(issues, Record{ID: id, Project: project.Prefix, Source: Provenance{Table: "issues", Fields: row}})
 	}
 	inventory.Ontology = applicableHistoryOntology(inventory.Ontology, issues)
+	// This is a portable projection of an already pinned image, not a second
+	// native capture. The frozen reader cannot enumerate an independent native
+	// commit census. Keep every portable/schema/status check enabled below.
+	inventory.SourceFamilyContract = ""
 	inventory.History = "unavailable"
 	if len(tables["issue_versions"].Rows)+len(tables["issue_snapshots"].Rows)+len(tables["compaction_snapshots"].Rows) > 0 {
 		inventory.History = "available-unverified"
@@ -221,6 +284,7 @@ func portableSourceImage(ctx context.Context, tables map[string]Table, inventory
 	}
 	reader := tar.NewReader(bytes.NewReader(data))
 	records := []Record{}
+	var manifest Manifest
 	for {
 		header, err := reader.Next()
 		if err == io.EOF {
@@ -228,6 +292,16 @@ func portableSourceImage(ctx context.Context, tables map[string]Table, inventory
 		}
 		if err != nil {
 			return nil, nil, err
+		}
+		if header.Name == "manifest.json" {
+			body, err := io.ReadAll(reader)
+			if err != nil {
+				return nil, nil, err
+			}
+			if err := decodeJSON(body, &manifest); err != nil {
+				return nil, nil, err
+			}
+			continue
 		}
 		portable := false
 		for _, kind := range historyKinds {
@@ -251,7 +325,18 @@ func portableSourceImage(ctx context.Context, tables map[string]Table, inventory
 			records = append(records, record)
 		}
 	}
-	sort.Slice(records, func(i, j int) bool { return recordKey(records[i]) < recordKey(records[j]) })
+	sort.Slice(records, func(i, j int) bool { return historyRecordKey(records[i]) < historyRecordKey(records[j]) })
+	if inventory.SourcePlaneAddressContract == SourcePlaneAddressContract {
+		// Source-plane capture does not extend the separate portable history
+		// contract. Keep every raw head row, but mark an unrepresentable commit
+		// image unmappable rather than publishing a verified partial history.
+		// Build derives allocator counters from this image's actual rows. The
+		// native inventory has not derived them yet; using it here would reject
+		// valid sequential IDs and dotted children before comparing the head.
+		if err := validateHistoryImage(records, manifest); err != nil {
+			return nil, nil, fmt.Errorf("source image is outside the portable history contract: %w", err)
+		}
+	}
 	if _, ok := eventImage(tables["events"].Rows); !ok {
 		return nil, nil, fmt.Errorf("invalid source audit image")
 	}

@@ -136,7 +136,12 @@ go_library(
 # (BEADS_TEST_SUBPROCESS_BINARY) instead.
 go_test(
     name = "dolt_test",
+    # rules_go partitions the complete top-level test list by index modulo
+    # shard_count; subtests and their workloads stay with their parent.
+    # Keep the existing per-action timeout and all suite controls unchanged.
+    shard_count = 16,
     srcs = [
+        "a_native_producer_bundle_test.go",
         "active_database_size_test.go",
         "autostart_test.go",
         "aux_row_id_rekey_test.go",
@@ -411,6 +416,7 @@ go_test(
         "//internal/debug",
         "//internal/doltserver",
         "//internal/githooksenv",
+        "//internal/plugdump",
         "//internal/storage",
         "//internal/storage/batchbench",
         "//internal/storage/batchfixtures",
@@ -419,9 +425,11 @@ go_test(
         "//internal/storage/depid",
         "//internal/storage/doltutil",
         "//internal/storage/domain",
+        "//internal/storage/embeddeddolt",
         "//internal/storage/historyoffequiv",
         "//internal/storage/issueops",
         "//internal/storage/journalscan",
+        "//internal/storage/physicalcapture",
         "//internal/storage/rowid",
         "//internal/storage/schema",
         "//internal/storage/sqlbuild",
