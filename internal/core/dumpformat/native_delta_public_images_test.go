@@ -106,20 +106,20 @@ func TestNativeDeltaRetainedPublicImagesMatchOriginalFileReader(t *testing.T) {
 			kind = nextKind
 			switch kind {
 			case "header":
-				if err := decodeJSON(raw, &original.header); err != nil {
+				if err := decodeNativeDeltaJSON(raw, &original.header); err != nil {
 					t.Fatal(err)
 				}
 				continue
 			case "schema":
 				var schema NativeDeltaSchema
-				if err := decodeJSON(raw, &schema); err != nil {
+				if err := decodeNativeDeltaJSON(raw, &schema); err != nil {
 					t.Fatal(err)
 				}
 				originalSchemas[schema.SchemaID] = schema
 				continue
 			case "commit":
 				var commit NativeDeltaCommit
-				if err := decodeJSON(raw, &commit); err != nil {
+				if err := decodeNativeDeltaJSON(raw, &commit); err != nil {
 					t.Fatal(err)
 				}
 				schemaID, commitID, sequence = commit.SchemaID, commit.CommitID, commit.Sequence
@@ -128,7 +128,7 @@ func TestNativeDeltaRetainedPublicImagesMatchOriginalFileReader(t *testing.T) {
 				}
 			case "head-checkpoint", "current":
 				var checkpoint NativeDeltaCheckpoint
-				if err := decodeJSON(raw, &checkpoint); err != nil {
+				if err := decodeNativeDeltaJSON(raw, &checkpoint); err != nil {
 					t.Fatal(err)
 				}
 				schemaID, commitID = checkpoint.SchemaID, checkpoint.CommitID
@@ -161,7 +161,7 @@ func TestNativeDeltaRetainedPublicImagesMatchOriginalFileReader(t *testing.T) {
 				t.Fatal("original public table expected", recordKind)
 			}
 			var open NativeDeltaTable
-			if err := decodeJSON(raw, &open); err != nil {
+			if err := decodeNativeDeltaJSON(raw, &open); err != nil {
 				t.Fatal(err)
 			}
 			var tableSchema NativeDeltaTableSchema
