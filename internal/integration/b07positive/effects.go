@@ -63,8 +63,19 @@ func WorkflowEffect(t *testing.T, before, after State, itemID, title string, met
 		}
 	}
 	var oldAudit, newAudit []json.RawMessage
-	if json.Unmarshal(oldLogical["audit"], &oldAudit) != nil || json.Unmarshal(newLogical["audit"], &newAudit) != nil || len(newAudit) != len(oldAudit)+len(methods) || !reflect.DeepEqual(oldAudit, newAudit[:len(oldAudit)]) {
+	// An admitted import has no lifecycle audit yet, and persisted.audit is
+	// omitted when empty. Its first public mutation must create the exact
+	// ordered entries below; omission is not malformed JSON input.
+	if raw, present := oldLogical["audit"]; present && json.Unmarshal(raw, &oldAudit) != nil {
+		t.Fatal("invalid retained provider audit")
+	}
+	if json.Unmarshal(newLogical["audit"], &newAudit) != nil || len(newAudit) != len(oldAudit)+len(methods) {
 		t.Fatal("mixed operations lost retained audit or added the wrong audit effects")
+	}
+	for i, raw := range oldAudit {
+		if !bytes.Equal(raw, newAudit[i]) {
+			t.Fatal("mixed operations changed a retained audit entry", i)
+		}
 	}
 	for i, raw := range newAudit[len(oldAudit):] {
 		var audit struct{ Method, Key, Digest, ItemID, RunID, Project, Plugin, Instance string }
