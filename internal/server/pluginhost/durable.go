@@ -124,6 +124,7 @@ type durableAccess struct {
 	lease      driver.ActiveLease
 	key        string
 	persistent bool
+	workflow   driver.WorkflowCheckpointStore
 	source     *driver.SourcePlaneProviderCommitV1
 }
 
@@ -172,7 +173,7 @@ func (d *durableAccess) available(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if d == nil || d.store == nil || d.lease == nil || (!d.persistent && d.source == nil) {
+	if d == nil || d.store == nil || d.lease == nil || (!d.persistent && d.source == nil && d.workflow == nil) {
 		return failure(ErrDurableState, "persistent durable capability is not configured")
 	}
 	select {

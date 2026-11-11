@@ -11,7 +11,16 @@ go_library(
 
 go_test(
     name = "wire_test",
-    srcs = ["wire_test.go"],
+    srcs = [
+        "bead_contract_test.go",
+        "boundary_test.go",
+        "display_name_contract_test.go",
+        "restore_contract_test.go",
+        "session_contract_test.go",
+        "view_contract_test.go",
+        "wire_test.go",
+        "workflow_contract_test.go",
+    ],
     data = ["//:engdocs/design/plug/contracts/openrpc.json"],
     embed = [":wire"],
     deps = ["//internal/core/model"],

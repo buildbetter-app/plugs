@@ -60,3 +60,22 @@ This is public operational evidence only. PR366 `d5c11bdd` source/focus PASS,
 whole/hosted RED, old tracks-export/descriptor/preparation refusal and downstream
 NOT_RUN stay unchanged. No official admission, receiver, full-history,
 full-card, hosted, merge or FullS1 credit follows from this interim unit.
+
+
+## Fresh full-card continuation (fc4183a7)
+
+The additive CycleTopologyReader reads complete local outgoing membership from
+existing pinned independent source facts. Its consumer separates missing
+hydration from topology and policy denial. Coverage errors do not fall back to
+an apparently complete document-only result. Ordinary Delete still removes
+source facts. Explicit disposable hydration corruption is tested separately:
+SQL fixtures remove only physical current records and reopen the actual store;
+memory corrupts only its test-private current hydration map and reads the same
+store. One and then two missing positions must retain three-member topology.
+These are authored controls until original changed-head execution is retained.
+
+Additional public controls pin transitive ancestor/blocker and hierarchy-cycle
+refusals, waits-for exclusion, exact raw order and report limit/count truncation.
+Mixed durable/workflow topology remains OPEN: ReadySnapshot is filtered and
+cannot supply complete adjacency. The original combined-Ready owner must provide
+complete topology and membership from its same checkpoint/core snapshot.

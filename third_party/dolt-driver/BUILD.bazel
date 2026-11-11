@@ -45,3 +45,14 @@ go_test(
 
 )
 
+go_test(
+    name = "physical_root_schema_test",
+    size = "large",
+    gotags = ["gms_pure_go"],
+    srcs = ["physical_root_schema_test.go"],
+    embed = [":driver"],
+    deps = [
+        "@com_github_dolthub_dolt_go//libraries/doltcore/doltdb",
+        "@com_github_dolthub_dolt_go//libraries/doltcore/sqle/dsess",
+    ],
+)

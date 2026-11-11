@@ -58,14 +58,15 @@ type b07Reply struct {
 	Meta map[string]any `json:"_meta"`
 }
 type b07Host struct {
-	t            *testing.T
-	ctx          context.Context
-	runtime      *composition.Runtime
-	config       composition.Config
-	root         string
-	seq          int
-	observations int
-	scopes       map[string][2]string
+	t                             *testing.T
+	ctx                           context.Context
+	runtime                       *composition.Runtime
+	config                        composition.Config
+	root                          string
+	seq                           int
+	observations                  int
+	scopes                        map[string][2]string
+	workflowCapabilityUnavailable bool
 }
 
 func b07NewHost(t *testing.T, engine string) *b07Host {
@@ -97,6 +98,9 @@ func (h *b07Host) open() {
 		h.t.Fatal(e)
 	}
 	h.runtime = r
+	if h.workflowCapabilityUnavailable {
+		h.installUnavailableWorkflowCapability()
+	}
 	meta, e := r.Store.Meta(h.ctx)
 	if e != nil {
 		h.t.Fatal(e)
