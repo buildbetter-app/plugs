@@ -17,7 +17,11 @@ go_test(
     data = glob(["testdata/*.tar", "testdata/*.json"]),
     srcs = glob(["*_test.go"]),
     embed = [":dumpformat"],
-    deps = ["//internal/core/ontology"],
+    deps = [
+        "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/storage/driver",
+    ],
 )
 
 filegroup(
