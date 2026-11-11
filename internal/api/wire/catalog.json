@@ -316,7 +316,7 @@
         {
           "name": "asOf",
           "schema": {
-            "$ref": "#/components/schemas/AsOf"
+            "$ref": "#/components/schemas/AsOfSelector"
           }
         },
         {
@@ -4277,7 +4277,7 @@
         {
           "name": "asOf",
           "schema": {
-            "$ref": "#/components/schemas/AsOf"
+            "$ref": "#/components/schemas/AsOfSelector"
           },
           "required": true
         },
@@ -4330,7 +4330,7 @@
         {
           "name": "asOf",
           "schema": {
-            "$ref": "#/components/schemas/AsOf"
+            "$ref": "#/components/schemas/AsOfSelector"
           },
           "required": true
         },
@@ -7085,7 +7085,7 @@
       },
       "Filter": {
         "type": "object",
-        "description": "Parent selects transitive descendants for ready and direct children for the snapshot list, before pagination. The separate opt-in epic-progress view uses exactly query=parent=\u003cbare branch-zero bead ID\u003e with no additional query clauses, resources, types or events; it selects canonical direct children only, across their own projects.",
+        "description": "Parent selects transitive descendants for ready and direct children for the snapshot list, before pagination. The separate opt-in epic-progress view uses exactly query=parent=<bare branch-zero bead ID> with no additional query clauses, resources, types or events; it selects canonical direct children only, across their own projects.",
         "properties": {
           "parent": {
             "type": "string",
@@ -11568,6 +11568,31 @@
           "to"
         ],
         "additionalProperties": false
+      },
+      "AsOfSelector": {
+        "description": "Input selector: exactly one revision address or RFC3339 instant. An instant resolves to the highest committed revision at or before it in one complete pinned changeset snapshot; returned addresses remain concrete revisions. Incomplete retained history refuses history_gone. Current read permission applies.",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/AsOf"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "instant": {
+                "type": "string",
+                "format": "date-time",
+                "description": "RFC3339 instant, with optional nanosecond precision and offset."
+              },
+              "incarnation": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "instant"
+            ],
+            "additionalProperties": false
+          }
+        ]
       }
     },
     "errors": {
@@ -14457,7 +14482,7 @@
           {
             "name": "asOf",
             "schema": {
-              "$ref": "#/components/schemas/AsOf"
+              "$ref": "#/components/schemas/AsOfSelector"
             }
           },
           {
@@ -16966,7 +16991,7 @@
           {
             "name": "asOf",
             "schema": {
-              "$ref": "#/components/schemas/AsOf"
+              "$ref": "#/components/schemas/AsOfSelector"
             },
             "required": true
           },
@@ -16999,7 +17024,7 @@
           {
             "name": "asOf",
             "schema": {
-              "$ref": "#/components/schemas/AsOf"
+              "$ref": "#/components/schemas/AsOfSelector"
             },
             "required": true
           },

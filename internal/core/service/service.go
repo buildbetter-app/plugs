@@ -1176,31 +1176,92 @@ func (s *Service) reader(ctx context.Context, by model.PrincipalRef, asOf *AsOf)
 	if err := s.admit(ctx, by); err != nil {
 		return nil, err
 	}
-	meta, err := s.store.Meta(ctx)
+	r, err := ReadAsOf(ctx, s.store, asOf)
 	if err != nil {
-		return nil, mapped(err)
-	}
-	view := driver.View{Incarnation: meta.Incarnation}
-	if asOf != nil {
-		if err := asOf.Revision.Validate(); err != nil {
-			return nil, failure("invalid_params", "invalid asOf revision")
-		}
-		view.At = &asOf.Revision
-		if asOf.Incarnation != "" {
-			view.Incarnation = asOf.Incarnation
-		}
-	}
-	r, err := s.store.Read(ctx, view)
-	if err != nil {
-		return nil, mapped(err)
+		return nil, err
 	}
 	if err := s.admit(ctx, by); err != nil {
 		_ = r.Close()
 		return nil, err
 	}
-	if r.Snapshot().At == nil {
+	return r, nil
+}
+
+// ValidateAsOf validates the input union before a trusted continuation replaces
+// it with its resolved concrete address. It does not authorize a read.
+func ValidateAsOf(asOf AsOf) error {
+	if asOf.Instant != nil {
+		if asOf.Revision != "" {
+			return failure("invalid_params", "asOf must select either a revision or an instant")
+		}
+		if _, err := asOf.Instant.MarshalText(); err != nil {
+			return failure("invalid_params", "invalid asOf instant")
+		}
+		return nil
+	}
+	if err := asOf.Revision.Validate(); err != nil {
+		return failure("invalid_params", "invalid asOf revision")
+	}
+	return nil
+}
+
+// ReadAsOf is the shared content-snapshot boundary for domain reads and their
+// authorization adapter. The caller owns principal admission and current read
+// permission; this function resolves content only. An instant is resolved from
+// one complete committed log snapshot, then reopened at its concrete address.
+func ReadAsOf(ctx context.Context, store driver.Store, asOf *AsOf) (driver.Reader, error) {
+	if asOf != nil {
+		if err := ValidateAsOf(*asOf); err != nil {
+			return nil, err
+		}
+	}
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		return nil, mapped(err)
+	}
+	view := driver.View{Incarnation: meta.Incarnation}
+	if asOf != nil {
+		if asOf.Instant == nil {
+			revision := asOf.Revision
+			view.At = &revision
+		}
+		if asOf.Incarnation != "" {
+			view.Incarnation = asOf.Incarnation
+		}
+	}
+	r, err := store.Read(ctx, view)
+	if err != nil {
+		return nil, mapped(err)
+	}
+	snapshot := r.Snapshot()
+	if snapshot.At == nil {
 		_ = r.Close()
 		return nil, fmt.Errorf("driver returned an unpinned read snapshot")
+	}
+	if asOf == nil || asOf.Instant == nil {
+		return r, nil
+	}
+	revision, err := historyInstantRevision(ctx, r, *asOf.Instant)
+	if err != nil {
+		_ = r.Close()
+		return nil, historyGone(err)
+	}
+	if revision.String() == snapshot.At.String() {
+		return r, nil
+	}
+	if err := r.Close(); err != nil {
+		return nil, err
+	}
+	// Preserve the incarnation and exact revision observed by the resolver.
+	// A concurrent append cannot advance this read, and a restore must refuse.
+	view = driver.View{Branch: snapshot.Branch, At: &revision, Incarnation: snapshot.Incarnation}
+	r, err = store.Read(ctx, view)
+	if err != nil {
+		return nil, historyGone(err)
+	}
+	if r.Snapshot().At == nil || r.Snapshot().At.String() != revision.String() || r.Snapshot().Incarnation != snapshot.Incarnation {
+		_ = r.Close()
+		return nil, failure("internal_error", "driver changed the resolved instant snapshot")
 	}
 	return r, nil
 }

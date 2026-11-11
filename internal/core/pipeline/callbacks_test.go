@@ -464,7 +464,7 @@ func TestMetadataCASPreparedWritersHaveOneWinner(t *testing.T) {
 				return port.Verdict{}, ctx.Err()
 			}
 		})}), WithPostSubscribers(PostBinding{ID: "winner", Subscriber: postFunc(func(context.Context, port.CommittedChange, port.SnapshotReader) error { posts.Add(1); return nil })}))
-		cs := model.ChangeSet{Ops: []model.Op{metadataOp(ref, "compare", fmt.Sprint(i+2)), patch(ref, map[string]any{"title": fmt.Sprint(i)})}, Expect: []model.Precondition{model.PreconditionByHash(ref, "metadata.compare", metadataDigest(`1`))}}
+		cs := model.ChangeSet{Ops: []model.Op{metadataOp(ref, "compare", fmt.Sprint(i+2)), patch(ref, map[string]any{"title": fmt.Sprint(i)})}, Expect: []model.Precondition{model.PreconditionByHash(ref, "metadata.compare", metadataDigest(`1.0`))}}
 		go func() { out, err := w.ApplyWithOutcome(ctx, by, cs, meta(10+i)); finished <- outcome{i, out, err} }()
 	}
 	for range 2 {
@@ -519,7 +519,7 @@ func TestMetadataExpectationReadOnlyDependencyRestartsOnFreshSnapshot(t *testing
 				return port.Verdict{Allow: true}, nil
 			})}), WithPostSubscribers(PostBinding{ID: "post", Subscriber: postFunc(func(context.Context, port.CommittedChange, port.SnapshotReader) error { posts.Add(1); return nil })}))
 			result := make(chan error, 1)
-			cs := model.ChangeSet{Ops: []model.Op{patch(target, map[string]any{"title": "dependent"})}, Expect: []model.Precondition{model.PreconditionByHash(guard, "metadata.compare", metadataDigest(`1`))}}
+			cs := model.ChangeSet{Ops: []model.Op{patch(target, map[string]any{"title": "dependent"})}, Expect: []model.Precondition{model.PreconditionByHash(guard, "metadata.compare", metadataDigest(`1.0`))}}
 			go func() { _, err := w.Apply(ctx, by, cs, meta(10)); result <- err }()
 			select {
 			case <-prepared:

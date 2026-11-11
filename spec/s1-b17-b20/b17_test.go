@@ -16,6 +16,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
+	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
 	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
@@ -265,6 +266,136 @@ func TestB17SQLiteCASReopenRetainsHistoryAndNoOpBoundary(t *testing.T) {
 		t.Fatal("reopened equal CAS changed durable history")
 	}
 	t.Logf("B17 SQLite close/reopen retained fixed metadata, version count=%d, changeset count=%d", len(after.Versions), len(after.Log))
+}
+
+func b17PublicSetMeta(ref model.Ref, key string, value json.RawMessage, expect ...model.Precondition) map[string]any {
+	changeSet := map[string]any{
+		"ops": []any{map[string]any{
+			"kind": "setMeta", "target": ref, "key": key, "value": value,
+		}},
+	}
+	if len(expect) != 0 {
+		changeSet["expect"] = expect
+	}
+	return map[string]any{"changeSet": changeSet}
+}
+
+func TestB17PublicTxApplySetMetaLiteralsRefusalAndProtectedBoundary(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			p := newPairedStore(t, engine)
+			r := p.rpc(t)
+			created := success[model.Commit](t, "bead.create", r.call(t, "", "bead.create", map[string]any{
+				"type": "issue", "fields": map[string]any{"title": "public metadata anchor"},
+			}, true))
+			ref := created.Results[0].Ref
+
+			seed := success[model.Commit](t, "tx.apply", r.call(t, "", "tx.apply", b17PublicSetMeta(ref, "number", json.RawMessage(`1.0`)), true))
+			if seed.Revision.String() != "2" {
+				t.Fatalf("public setMeta seed revision=%s, want 2", seed.Revision)
+			}
+			seeded := b17StateOf(t, p.b17Harness, ref)
+			seededDoc := b17Document(t, seeded)
+			if string(seededDoc.Metadata["number"]) != `1.0` {
+				t.Fatalf("public setMeta rewrote numeric spelling: %s", seededDoc.Metadata["number"])
+			}
+
+			// A public setMeta CAS must distinguish 1 from 1.0 and refuse the
+			// entire batch, including an otherwise valid sibling patch.
+			wrong := b17PublicSetMeta(ref, "number", json.RawMessage(`false`), model.PreconditionByHash(ref, "metadata.number", b17Hash(`1`)))
+			wrong["changeSet"].(map[string]any)["ops"] = []any{
+				map[string]any{"kind": "patch", "target": ref, "fields": map[string]any{"title": "must not land"}},
+				wrong["changeSet"].(map[string]any)["ops"].([]any)[0],
+			}
+			refused := r.call(t, "", "tx.apply", wrong, true)
+			if refused.Error == nil || refused.Error.Data.Code != "precondition_failed" {
+				t.Fatalf("numeric literal mismatch response=%+v", refused)
+			}
+			if got := b17StateOf(t, p.b17Harness, ref); !reflect.DeepEqual(got, seeded) {
+				t.Fatalf("numeric mismatch published a partial batch: before=%+v after=%+v", seeded, got)
+			}
+
+			matched := success[model.Commit](t, "tx.apply", r.call(t, "", "tx.apply", b17PublicSetMeta(ref, "number", json.RawMessage(`1`), model.PreconditionByHash(ref, "metadata.number", b17Hash(`1.0`))), true))
+			if matched.Revision.String() != "3" {
+				t.Fatalf("matching literal swap revision=%s, want 3", matched.Revision)
+			}
+			swapped := b17StateOf(t, p.b17Harness, ref)
+			if string(b17Document(t, swapped).Metadata["number"]) != `1` || len(swapped.Log) != len(seeded.Log)+1 || len(swapped.Versions) != len(seeded.Versions)+1 {
+				t.Fatalf("matching literal swap did not create one durable revision: state=%+v", swapped)
+			}
+
+			// Repeating the equal target is a public no-op: the head, versions,
+			// and changeset log stay byte-for-byte stable.
+			noOp := success[model.Commit](t, "tx.apply", r.call(t, "", "tx.apply", b17PublicSetMeta(ref, "number", json.RawMessage(`1`), model.PreconditionByHash(ref, "metadata.number", b17Hash(`1`))), true))
+			if noOp.Revision.String() != matched.Revision.String() || !reflect.DeepEqual(swapped, b17StateOf(t, p.b17Harness, ref)) {
+				t.Fatalf("equal public setMeta was not a durable no-op: commit=%+v", noOp)
+			}
+
+			// Plug's adopted public projection is null-as-deletion. The sibling
+			// key remains and one real removal mints exactly one revision.
+			seedNullable := success[model.Commit](t, "tx.apply", r.call(t, "", "tx.apply", b17PublicSetMeta(ref, "nullable", json.RawMessage(`{"kept":true}`)), true))
+			removed := success[model.Commit](t, "tx.apply", r.call(t, "", "tx.apply", b17PublicSetMeta(ref, "nullable", json.RawMessage(`null`), model.PreconditionByHash(ref, "metadata.nullable", b17Hash(`{"kept":true}`))), true))
+			seedRevision, err := seedNullable.Revision.Uint64()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if removed.Revision.String() != fmt.Sprint(seedRevision+1) {
+				t.Fatalf("public null removal revision=%s after seed=%s", removed.Revision, seedNullable.Revision)
+			}
+			removedState := b17StateOf(t, p.b17Harness, ref)
+			removedDoc := b17Document(t, removedState)
+			if _, present := removedDoc.Metadata["nullable"]; present || string(removedDoc.Metadata["number"]) != `1` {
+				t.Fatalf("public null removal lost sibling/number: %+v", removedDoc.Metadata)
+			}
+
+			// An absent key never matches the digest of JSON null. This refusal
+			// also carries a sibling patch to verify atomicity at the public edge.
+			absent := b17PublicSetMeta(ref, "missing", json.RawMessage(`true`), model.PreconditionByHash(ref, "metadata.missing", b17Hash(`null`)))
+			absent["changeSet"].(map[string]any)["ops"] = []any{
+				map[string]any{"kind": "patch", "target": ref, "fields": map[string]any{"title": "must remain public anchor"}},
+				absent["changeSet"].(map[string]any)["ops"].([]any)[0],
+			}
+			absentResult := r.call(t, "", "tx.apply", absent, true)
+			if absentResult.Error == nil || absentResult.Error.Data.Code != "precondition_failed" || !reflect.DeepEqual(removedState, b17StateOf(t, p.b17Harness, ref)) {
+				t.Fatalf("absent-versus-null public refusal changed state: %+v", absentResult)
+			}
+
+			protected := r.call(t, "", "tx.apply", b17PublicSetMeta(ref, "_plug.protected", json.RawMessage(`true`)), true)
+			if protected.Error == nil || protected.Error.Data.Code != "protected_record" || !reflect.DeepEqual(removedState, b17StateOf(t, p.b17Harness, ref)) {
+				t.Fatalf("protected public setMeta=%+v state=%+v", protected, b17StateOf(t, p.b17Harness, ref))
+			}
+
+			// The public JSON boundary cannot carry malformed RawMessage bytes;
+			// it must still reject a malformed/trailing JSON-RPC message before
+			// any handler or store call. The direct typed path below covers the
+			// same refusal for malformed setMeta values.
+			badRequest := []byte(`{"jsonrpc":"2.0","id":99,"method":"tx.apply","params":{}} {"jsonrpc":"2.0"}`)
+			badResponse := r.server.Dispatch(rpc.WithPrincipal(r.ctx, r.principal), badRequest)
+			var badEnvelope response
+			if err := json.Unmarshal(badResponse, &badEnvelope); err != nil || badEnvelope.Error == nil || badEnvelope.Error.Data.Code != "parse_error" {
+				t.Fatalf("trailing public JSON response=%s err=%v", badResponse, err)
+			}
+		})
+	}
+}
+
+func TestB17TypedSetMetaRefusesMalformedAndTrailingJSONWithoutMutation(t *testing.T) {
+	for _, raw := range []string{`{"broken"`, `{"ok":true}{"trailing":false}`} {
+		t.Run(raw, func(t *testing.T) {
+			h := openB17Harness(t, "memory")
+			created := b17Commit(t, h, model.ChangeSet{Ops: []model.Op{b17Create()}}, 30)
+			ref := created.Results[0].Ref
+			before := b17StateOf(t, h, ref)
+			_, err := h.writer().Apply(h.ctx, b17Actor, model.ChangeSet{Ops: []model.Op{b17Set(ref, "malformed", raw)}}, b17Meta(31))
+			var typed *model.Error
+			if !errors.As(err, &typed) || typed.Data.Code != "invalid_params" {
+				t.Fatalf("raw=%q error=%v, want invalid_params", raw, err)
+			}
+			if got := b17StateOf(t, h, ref); !reflect.DeepEqual(got, before) {
+				t.Fatalf("raw=%q refusal mutated state: before=%+v after=%+v", raw, before, got)
+			}
+		})
+	}
 }
 
 func TestB17RetainedBeadsTwinsBindCanonicalCASDecisions(t *testing.T) {

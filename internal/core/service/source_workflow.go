@@ -355,6 +355,20 @@ func (s *Service) sourcePreparation(source *sourceWorkflow, by model.PrincipalRe
 				operationMeta.IdempotencyKey = hex.EncodeToString(digest[:])
 				var commit model.Commit
 				switch op.Kind {
+				case model.OpSetMeta:
+					metadata, changed, err := workflowMetadata(before.Metadata, *op.SetMeta)
+					if err != nil {
+						return model.Op{}, nil, err
+					}
+					if changed {
+						operationMeta.Method = "bead.update"
+						commit, err = staged.Update(ctx, by, target, map[string]any{"metadata": metadata}, operationMeta)
+					} else {
+						commit = model.Commit{Revision: before.Revision, Results: []model.OpResult{{Ref: target, Revision: before.Revision}}}
+					}
+					if err != nil {
+						return model.Op{}, nil, err
+					}
 				case model.OpPatch:
 					if isSourceClaim(meta.Method) {
 						operationMeta.Method = "bead.claim"

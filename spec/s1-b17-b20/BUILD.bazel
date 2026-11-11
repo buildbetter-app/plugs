@@ -18,8 +18,14 @@ go_test(
     ] + glob(["reference/b18/*.json"]),
     args = ["-test.v"],
     tags = ["local", "requires-network"],
+    timeout = "long",
     deps = [
         "//internal/api/wire",
+        "//internal/testclock",
+        "//internal/server/authzrpc",
+        "//internal/plugins/authzfixed",
+        "//internal/plugins/authnapikey",
+        "//internal/core/authz",
         "//internal/cli",
         "//internal/core/dumpformat",
         "//internal/core/events",
@@ -30,6 +36,8 @@ go_test(
         "//internal/core/service",
         "//internal/integration/converterroundtrip",
         "//internal/server/composition",
+        "//internal/server/pluginhost",
+        "//plugins/workflow",
         "//internal/server/events",
         "//internal/server/rpc",
         "//internal/server/watch",
@@ -51,5 +59,12 @@ filegroup(
 sh_binary(
     name = "b20_source_compile",
     srcs = ["b20_source_compile.sh"],
+    tags = ["manual"],
+)
+
+# Authoring only: owning reconciliation/generation and scoped formatting on RunsOn.
+sh_binary(
+    name = "b17_b18_authoring",
+    srcs = ["b17_b18_authoring.sh"],
     tags = ["manual"],
 )

@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/big"
 	"sort"
 	"strings"
 	"time"
@@ -571,10 +570,24 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				if current.doc.Metadata == nil {
 					current.doc.Metadata = map[string]json.RawMessage{}
 				}
-				if string(op.SetMeta.Value) == "null" {
+				if bytes.Equal(bytes.TrimSpace(op.SetMeta.Value), []byte("null")) {
 					delete(current.doc.Metadata, op.SetMeta.Key)
 				} else {
-					current.doc.Metadata[op.SetMeta.Key] = append(json.RawMessage(nil), op.SetMeta.Value...)
+					// Equal metadata targets keep the committed token spelling. In
+					// particular, object order/whitespace cannot mint a version, and
+					// numeric literal differences must remain real changes.
+					equal := false
+					if previous, present := current.doc.Metadata[op.SetMeta.Key]; present {
+						before, beforeErr := canonicalMetadataJSON(previous)
+						after, afterErr := canonicalMetadataJSON(op.SetMeta.Value)
+						if beforeErr != nil || afterErr != nil {
+							return nil, failure("invalid_params", "metadata comparison requires valid JSON")
+						}
+						equal = bytes.Equal(before, after)
+					}
+					if !equal {
+						current.doc.Metadata[op.SetMeta.Key] = append(json.RawMessage(nil), op.SetMeta.Value...)
+					}
 				}
 				current.setBy["metadata."+op.SetMeta.Key] = "request"
 			}
@@ -1364,9 +1377,10 @@ func expectationHash(doc Document, selector string) (string, error) {
 	return FieldHash(doc.Fields[name])
 }
 
-// canonicalMetadataJSON is local to metadata expectations. JSON objects are
-// key-sorted by json.Marshal; arrays and types are preserved. Decimal numbers
-// retain every coefficient digit and normalize without float64 rounding.
+// canonicalMetadataJSON is local to metadata expectations. Object keys are
+// sorted while arrays, types and numeric literal spellings stay intact, as
+// required by B17. UseNumber avoids both float64 rounding and conflating 1
+// with 1.0. Comparison never rewrites the stored RawMessage.
 func canonicalMetadataJSON(raw []byte) ([]byte, error) {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
@@ -1377,67 +1391,7 @@ func canonicalMetadataJSON(raw []byte) ([]byte, error) {
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		return nil, fmt.Errorf("metadata must contain exactly one JSON value")
 	}
-	return json.Marshal(normalizeMetadataNumbers(value))
-}
-
-func normalizeMetadataNumbers(value any) any {
-	switch value := value.(type) {
-	case json.Number:
-		return json.Number(canonicalMetadataNumber(string(value)))
-	case []any:
-		for i, item := range value {
-			value[i] = normalizeMetadataNumbers(item)
-		}
-	case map[string]any:
-		for key, item := range value {
-			value[key] = normalizeMetadataNumbers(item)
-		}
-	}
-	return value
-}
-
-// Numbers come from a UseNumber JSON decoder. Like model.Natural, small
-// decimal powers are expanded and large exponents stay symbolic, so a short
-// input never demands an enormous allocation. This is an exact decimal format,
-// not a conversion to binary floating point or a claim of RFC 8785 support.
-func canonicalMetadataNumber(text string) string {
-	negative := strings.HasPrefix(text, "-")
-	if negative {
-		text = text[1:]
-	}
-	exponent := new(big.Int)
-	if index := strings.IndexAny(text, "eE"); index >= 0 {
-		exponent.SetString(text[index+1:], 10)
-		text = text[:index]
-	}
-	fractionDigits := 0
-	if index := strings.IndexByte(text, '.'); index >= 0 {
-		fractionDigits = len(text) - index - 1
-	}
-	digits := strings.TrimLeft(strings.ReplaceAll(text, ".", ""), "0")
-	if digits == "" {
-		return "0"
-	}
-	coefficient := strings.TrimRight(digits, "0")
-	exponent.Sub(exponent, big.NewInt(int64(fractionDigits-(len(digits)-len(coefficient)))))
-	canonical := coefficient
-	point := new(big.Int).Add(exponent, big.NewInt(int64(len(coefficient))))
-	switch {
-	case exponent.Sign() == 0:
-	case exponent.Sign() > 0 && exponent.IsInt64() && exponent.Int64() <= int64(20-len(coefficient)):
-		canonical += strings.Repeat("0", int(exponent.Int64()))
-	case exponent.Sign() < 0 && point.Sign() > 0:
-		index := int(point.Int64()) // strictly inside the existing coefficient
-		canonical = coefficient[:index] + "." + coefficient[index:]
-	case exponent.Sign() < 0 && exponent.IsInt64() && exponent.Int64() >= -20:
-		canonical = "0." + strings.Repeat("0", -int(point.Int64())) + coefficient
-	default:
-		canonical += "e" + exponent.String()
-	}
-	if negative {
-		canonical = "-" + canonical
-	}
-	return canonical
+	return json.Marshal(value)
 }
 
 func isSlot(method string) bool {
