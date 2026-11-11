@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
@@ -102,6 +103,23 @@ func TestNativeDeltaRowReceivingEveryMappingAndReopenedStore(t *testing.T) {
 			ctx := archive.WithNativeDeltaAccounting(context.Background())
 			baseline, _ := archive.NativeDecodedUsage()
 			store, lease, reopen := openIdentityTarget(t, engine)
+			// The WithLease entry point leaves renewal with its caller. This
+			// public conversion can span LeaseTTL. Replace the helper's initial
+			// lease with the existing caller-owned renewal mechanism, preserving
+			// its TTL, fencing and cancellation behavior.
+			if err := lease.Release(ctx); err != nil {
+				t.Fatal("release initial public receiving lease", err)
+			}
+			op, lease, release, err := HoldRestoreLease(ctx, store, "native-receive")
+			if err != nil {
+				t.Fatal("hold public receiving lease", err)
+			}
+			release = sync.OnceValue(release)
+			defer func() {
+				if err := release(); err != nil {
+					t.Error("release renewed public receiving lease", err)
+				}
+			}()
 			plan := nativeHistoryPlanFromArchive(t, archive, store, lease)
 			// This genuine fixture declares SQL NULL, rather than the separate
 			// synthetic helper's versioned storage class. Keep that distinction
@@ -127,18 +145,18 @@ func TestNativeDeltaRowReceivingEveryMappingAndReopenedStore(t *testing.T) {
 				return plan.Dispositions[0].Statuses[i].From < plan.Dispositions[0].Statuses[j].From
 			})
 			profile := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "restore-admin"}, Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: driver.StoreID(archive.Manifest().StoreID), Method: "offline.restore.import", IdempotencyKey: strings.Repeat("b", 32), ArchiveDigest: archive.SHA256(), HistoryMode: driver.RestoreHistoryModeFull, HistoryTime: nativeFixtureTime.Format("2006-01-02T15:04:05.999999999Z07:00")}
-			profile, err := BindNativeCaptureSetImport(ctx, archive, profile, plan)
+			profile, err = BindNativeCaptureSetImport(op, archive, profile, plan)
 			if err != nil {
 				t.Fatal("bind row-granular public capture", err)
 			}
-			report, err := RestoreNativeCaptureSetImportWithLease(ctx, archive, store, lease, profile)
+			report, err := RestoreNativeCaptureSetImportWithLease(op, archive, store, lease, profile)
 			if err != nil {
 				t.Fatal("receive row-granular public capture", err)
 			}
 			if held, _ := archive.NativeDecodedUsage(); held.CurrentAccountedDecodedBytes != baseline.CurrentAccountedDecodedBytes {
 				t.Fatal("completed conversion retained temporary allocations", baseline, held)
 			}
-			if err := VerifyNativeCaptureSetReadback(ctx, store, archive, report); err != nil {
+			if err := VerifyNativeCaptureSetReadback(op, store, archive, report); err != nil {
 				t.Fatal("every source-mapped row/meta/old table byte oracle", err)
 			}
 			counts := map[string]int{}
@@ -153,6 +171,11 @@ func TestNativeDeltaRowReceivingEveryMappingAndReopenedStore(t *testing.T) {
 			proof, ok := archive.NativeDeltaVerification()
 			if !ok || proof.Totals.Commits != 32 || proof.Usage.LimitBytes != 2147483648 || proof.Usage.Accounting != dumpformat.NativeDeltaDecodedAccounting {
 				t.Fatal("source/accounting domain changed")
+			}
+			// Drain and release before closing the store. Recovery keeps the
+			// original accounting context because release cancels only op.
+			if err := release(); err != nil {
+				t.Fatal("release public receiving lease before reopen", err)
 			}
 			store, lease = reopen()
 			_ = lease
