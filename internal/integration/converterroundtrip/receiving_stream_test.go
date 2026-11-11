@@ -147,6 +147,11 @@ func nativeStreamObservedStore(t *testing.T,store driver.Store) *nativeStreamCou
  t.Helper();capability,ok:=store.(driver.WorkflowCheckpointStore);if !ok {t.Fatal("actual workflow capability missing")};return &nativeStreamCountingStore{Store:store,WorkflowCheckpointStore:capability}
 }
 func (s *nativeStreamCountingStore) Write(ctx context.Context,lease driver.ActiveLease)(driver.WriteTx,error){s.writes++;return s.Store.Write(ctx,lease)}
+func (s *nativeStreamCountingStore) Persistent() bool {
+ // Preserve the selected engine's real persistence capability. The workflow
+ // lifetime marker alone cannot authorize a restart-persistent wrapper.
+ actual,ok:=s.Store.(driver.PersistentCheckpointStore);return ok && actual.Persistent()
+}
 
 type nativeStreamPart struct {io.Reader;close func()error}
 func (p *nativeStreamPart) Close()error{return p.close()}

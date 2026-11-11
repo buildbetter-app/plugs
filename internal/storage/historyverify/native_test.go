@@ -73,15 +73,24 @@ func TestNativeVerifierAuthenticProducerRejectsChangedIntermediatePreimages(t *t
 			changed := false
 			err := prepared.Visit(context.Background(), dumpformat.NativeDeltaVisitor{
 				Commit: func(c dumpformat.NativeDeltaRowCommit) error {
-					if c.Sequence == 2 && attack != "independent-head" {
+					if attack == "converted-before" && !changed && c.Sequence > 1 && c.Sequence < b.stream.header.Head {
+						// A newly inserted metadata row has no Before. Choose an
+						// actual intermediate preimage rather than remarshal an
+						// unchanged After row and claim a mutation occurred.
+						for _, change := range c.Changes {
+							if change.Before == nil { continue }
+							original := bytes.Clone(change.Before.Body)
+							change.Before.Body = append(change.Before.Body, ' ')
+							changed = !bytes.Equal(original, change.Before.Body)
+							t.Logf("NATIVE_PREIMAGE_MUTATION attack=converted-before sequence=%d original=%s changed=%s", c.Sequence, nativeSHA(original), nativeSHA(change.Before.Body))
+							break
+						}
+					} else if c.Sequence == 2 && attack != "independent-head" && attack != "converted-before" {
 						switch attack {
 						case "commit-id": c.CommitID = "different-intermediate-commit"; changed = true
 						case "sequence": c.Sequence++; changed = true
 						default:
 							for _, change := range c.Changes {
-								if attack == "converted-before" && change.Before != nil {
-									change.Before.Body = append(change.Before.Body, ' '); changed = true; break
-								}
 								if change.After == nil { continue }
 								meta, _, err := a.DecodeNativeRowRecord(*change.After)
 								if err != nil { return err }
