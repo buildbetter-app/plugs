@@ -1,0 +1,6 @@
+{
+  "schema": "plug-public-recipe-profile/1",
+  "source_commit": "ef3f1566ccc2dddafc55d86cff44ce4200237eb8",
+  "complete_target": "//cmd/bd:bd_test",
+  "partial_target": "//internal/plugdump:plugdump_test"
+}

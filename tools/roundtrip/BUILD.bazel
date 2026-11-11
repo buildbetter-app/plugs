@@ -16,6 +16,7 @@ _DEPS = [
 filegroup(
     name = "readback_reference_fixtures",
     srcs = [
+        "testdata/fresh-native/recipe-profile.json",
         "testdata/fresh-native/beads-ef3f15.tar.gz",
         "testdata/fresh-native/beads-ef3f15.git-tree",
         "testdata/typed-reader/beads-e25cf4.tar.gz",
@@ -42,6 +43,7 @@ go_test(
     tags = ["local", "requires-network"],
     srcs = ["main.go", "beads.go", "beads_refusal.go", "beads_typed.go", "beads_fresh.go", "main_test.go", "beads_test.go", "beads_refusal_test.go", "beads_typed_test.go", "beads_fresh_test.go"],
     data = [
+        "testdata/fresh-native/recipe-profile.json",
         "//internal/integration/converterroundtrip:public_source_fixtures",
         "//internal/integration/offlinehistory:lexicon_files",
     ] + glob(["testdata/readback-8f19/*"]),
@@ -58,6 +60,8 @@ go_test(
     srcs = ["main.go", "beads.go", "beads_refusal.go", "beads_typed.go", "beads_fresh.go", "beads_runtime_test.go", "beads_native_regression_test.go", "beads_typed_runtime_test.go", "beads_fresh_runtime_test.go"],
     args = ["-test.run=^TestFreshSameRunIDStyleATwelveFixtures$$"],
     data = [
+        "testdata/public-companion-profile.json",
+        "testdata/fresh-native/recipe-profile.json",
         "testdata/fresh-native/beads-ef3f15.tar.gz",
         "testdata/fresh-native/beads-ef3f15.git-tree",
         "testdata/typed-reader/beads-e25cf4.tar.gz",

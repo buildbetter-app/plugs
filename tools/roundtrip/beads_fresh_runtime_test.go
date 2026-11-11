@@ -16,8 +16,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
+	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/reverseconverter"
 	"github.com/buildbetter-app/plugs/internal/integration/converterroundtrip"
 	"github.com/buildbetter-app/plugs/internal/publicnative"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 var freshNativeSource = publicnative.CanonicalSource{
@@ -43,11 +47,13 @@ type freshResult struct {
 	NativeContinuation    string    `json:"native_continuation"`
 	PlugRestore           string    `json:"plug_restore"`
 	PlugContinuation      string    `json:"plug_continuation"`
+	RecipeRestore         string    `json:"recipe_restore"`
 }
 
 // A separate manual target: old historical recordings and their assertions
 // remain untouched. Each leaf really invokes the existing native recipe once.
 func TestFreshSameRunIDStyleATwelveFixtures(t *testing.T) {
+	t.Setenv("PATH", "/tmp/plug-swarm/bin/worker-safe:"+os.Getenv("PATH"))
 	parent, run := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR"), os.Getenv("GITHUB_RUN_ID")
 	if !filepath.IsAbs(parent) || run == "" || os.Getenv("TEST_TARGET") != "//tools/roundtrip:fresh_same_run_native_test" {
 		t.Fatal("explicit fresh recording target and actual run binding required")
@@ -78,7 +84,7 @@ func TestFreshSameRunIDStyleATwelveFixtures(t *testing.T) {
 	if err := os.Mkdir(build, 0700); err != nil {
 		t.Fatal(err)
 	}
-	builder := publicnative.SourceBuilder{T: t, Root: build, SourceDirectory: "testdata/fresh-native", Target: "//cmd/bd:bd"}
+	builder := publicnative.SourceBuilder{T: t, Root: build, SourceDirectory: "testdata/fresh-native", Target: publicNativeProtocolExporterLabel(t)}
 	var results []freshResult
 	builder.BuildWithSource(freshNativeSource, func(source publicnative.SourceSession) {
 		for _, item := range freshNativeCases() {
@@ -90,7 +96,7 @@ func TestFreshSameRunIDStyleATwelveFixtures(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				result := freshResult{Case: item, Status: "GAP", SourceRoot: filepath.Join(workspace, ".beads", "embeddeddolt"), NativeContinuation: "NOT_RUN", PlugRestore: "NOT_RUN", PlugContinuation: "NOT_RUN"}
+				result := freshResult{Case: item, Status: "GAP", SourceRoot: filepath.Join(workspace, ".beads", "embeddeddolt"), NativeContinuation: "NOT_RUN", PlugRestore: "NOT_RUN", PlugContinuation: "NOT_RUN", RecipeRestore: "NOT_RUN"}
 				defer func() {
 					results = append(results, result)
 					freshJSON(t, filepath.Join(dir, "result.json"), result)
@@ -125,6 +131,7 @@ func TestFreshSameRunIDStyleATwelveFixtures(t *testing.T) {
 				if _, err := freshCommand(t, dir, "intended-reader", workspace, reader.Binary, args, freshChildEnv(workspace), 21*time.Minute); err != nil {
 					result.Gaps = append(result.Gaps, "intended_source_reader_refused: "+err.Error())
 					freshTreeManifest(t, result.SourceRoot, filepath.Join(dir, "retained-after-reader-files.json"))
+					freshProbeRecipeRestore(t, item, dir, &result)
 					return
 				}
 				freshTreeManifest(t, result.SourceRoot, filepath.Join(dir, "retained-after-reader-files.json"))
@@ -133,6 +140,10 @@ func TestFreshSameRunIDStyleATwelveFixtures(t *testing.T) {
 					result.Gaps = append(result.Gaps, "intended_source_adapter_refused: "+err.Error())
 					return
 				}
+				// The original recipe supplies a separately supported portable
+				// representation of this same store. Probe it only after capture;
+				// it cannot replace typed input or grant native equality.
+				freshProbeRecipeRestore(t, item, dir, &result)
 				// Ask the existing restore inspection seam about the actual
 				// produced representation. A refusal is retained, not bypassed
 				// by relabelling normalized tables as a typed native restore.
@@ -155,6 +166,11 @@ func TestFreshSameRunIDStyleATwelveFixtures(t *testing.T) {
 
 func freshRecordRecipe(t *testing.T, source publicnative.SourceSession, item freshCase, dir, destination string, result *freshResult) error {
 	t.Helper()
+	profileData := publicNativeProtocolInput(t, "tools/roundtrip/testdata/fresh-native/recipe-profile.json", freshRecipeProfileSHA)
+	target, err := freshRecipeTarget(profileData, freshNativeSource.Commit, item.Target)
+	if err != nil {
+		return err
+	}
 	dolt := os.Getenv("PLUG_PINNED_DOLT_BINARY")
 	if !filepath.IsAbs(dolt) {
 		dolt = filepath.Join(os.Getenv("TEST_SRCDIR"), dolt)
@@ -163,11 +179,12 @@ func freshRecordRecipe(t *testing.T, source publicnative.SourceSession, item fre
 	if err != nil || freshFileSHA(t, dolt) != "72352f1d882472a7a8d6124e9c4dc12f80e2c2359ea95f1424c032e9250e35e6" {
 		return fmt.Errorf("pinned public Dolt runtime missing")
 	}
-	binary, args := source.TestArguments(item.Target,
-		"--test_sharding_strategy=disabled", "--test_arg=-test.v", "--test_arg=-test.timeout=25m", "--test_timeout=1800", "--test_arg=-test.run=^"+item.Recipe+"$", "--test_arg=-plug-recipe-retain-store="+destination,
+	binary, args := source.TestArguments(target,
+		"--run_under=//tools/bazel:test_env", "--test_env=BEADS_TEST_GIT_IDENTITY=1", "--test_env=BD_DISABLE_METRICS=1", "--test_env=BD_DISABLE_EVENT_FLUSH=1",
+		"--test_sharding_strategy=disabled", "--test_arg=-test.v", "--test_arg=-test.short=false", "--test_arg=-test.timeout=25m", "--test_timeout=1800", "--test_arg=-test.run=^"+item.Recipe+"$", "--test_arg=-plug-recipe-retain-store="+destination,
 		"--test_env=BEADS_TEST_DOLT_SERVER=local", "--test_env=BEADS_TEST_DOLT_BINARY="+dolt, "--test_env=BEADS_TEST_REQUIRE_DOLT_CONTAINER=1", "--test_env=BEADS_TEST_SKIP=", "--test_env=PLUG_TEST_EXPORT_PUBLIC_HISTORY=1", "--test_env=PATH=/tmp/plug-swarm/bin/worker-safe:"+os.Getenv("PATH"))
 	_, runErr := freshCommand(t, dir, "native-recipe", source.Directory, binary, args, nil, 40*time.Minute)
-	targetPath := strings.ReplaceAll(strings.TrimPrefix(item.Target, "//"), ":", "/")
+	targetPath := strings.ReplaceAll(strings.TrimPrefix(target, "//"), ":", "/")
 	for _, name := range []string{"test.log", "test.xml", "test.outputs/outputs.zip"} {
 		data, err := readProducedBeadsArchive(filepath.Join(source.Directory, "bazel-testlogs", targetPath, name))
 		if err != nil {
@@ -183,7 +200,7 @@ func freshRecordRecipe(t *testing.T, source publicnative.SourceSession, item fre
 	if runErr != nil {
 		return runErr
 	}
-	query, queryArgs := source.QueryArguments(item.Target)
+	query, queryArgs := source.QueryArguments(target)
 	files, err := freshCommand(t, dir, "recipe-executable-query", source.Directory, query, queryArgs, nil, 5*time.Minute)
 	if err != nil {
 		return err
@@ -194,7 +211,7 @@ func freshRecordRecipe(t *testing.T, source publicnative.SourceSession, item fre
 	}
 	executable := filepath.Join(source.Directory, paths[0])
 	result.RecipeExecutableSHA = freshFileSHA(t, executable)
-	retained := filepath.Join(filepath.Dir(dir), "native-build", strings.ReplaceAll(strings.TrimPrefix(item.Target, "//"), "/", "-")+"-executable")
+	retained := filepath.Join(filepath.Dir(dir), "native-build", item.Target+"-recipe-executable")
 	retained = strings.ReplaceAll(retained, ":", "-")
 	if _, err := os.Lstat(retained); errors.Is(err, os.ErrNotExist) {
 		input, err := os.Open(executable)
@@ -231,6 +248,104 @@ func freshRecordRecipe(t *testing.T, source publicnative.SourceSession, item fre
 		return fmt.Errorf("actual retained database absent")
 	}
 	return nil
+}
+
+// Exercise existing restore/readback APIs on the ORIGINAL recipe export. This
+// is an independent compatibility observation, never conversion of the newer
+// typed companion or an exemption from its strict schema validation.
+func freshProbeRecipeRestore(t *testing.T, item freshCase, dir string, result *freshResult) {
+	t.Helper()
+	data, err := readProducedBeadsArchive(filepath.Join(dir, "recipe-export.tar"))
+	if err != nil || hash(data) != result.RecipeExportSHA256 {
+		t.Fatal("same-run recipe export changed")
+	}
+	ctx := context.Background()
+	inspection, err := converterroundtrip.InspectImport(ctx, bytes.NewReader(data))
+	freshJSON(t, filepath.Join(dir, "recipe-restore-inspection.json"), map[string]any{"inspection": inspection, "error": fmt.Sprint(err), "input_sha256": hash(data), "representation": "original-unmodified-recipe-export", "equality_credit": 0})
+	if err != nil {
+		result.RecipeRestore = "REFUSED_INSPECTION"
+		result.Gaps = append(result.Gaps, "recipe_restore_inspection: "+err.Error())
+		return
+	}
+	archive, err := dumpformat.Read(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mode, err := driver.ParseRestoreHistoryMode(item.Mode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := driver.RestoreImportProfile{
+		Admission:     driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "fresh-public-fixture-owner"}, Authority: "restore-admin", AdmissionDigest: hash(freshJSONBytes(t, item))},
+		SourceStoreID: inspection.SourceStoreID, Method: "offline.restore.import", IdempotencyKey: hash([]byte(item.Engine + "/" + item.Name + "/" + result.RecipeExportSHA256)), ArchiveDigest: inspection.ArchiveSHA256, DerivedDigest: inspection.DerivedSHA256, HistoryMode: mode,
+	}
+	if mode != driver.RestoreHistoryModeSnapshot {
+		profile, err = converterroundtrip.BindHistoryImport(ctx, bytes.NewReader(data), profile, time.Now().UTC())
+	}
+	freshJSON(t, filepath.Join(dir, "recipe-restore-profile.json"), map[string]any{"profile": profile, "error": fmt.Sprint(err), "input_sha256": hash(data)})
+	if err != nil {
+		result.RecipeRestore = "REFUSED_HISTORY"
+		result.Gaps = append(result.Gaps, "recipe_restore_history: "+err.Error())
+		return
+	}
+	output := filepath.Join(dir, "recipe-plug-target")
+	if err := os.Mkdir(output, 0700); err != nil {
+		t.Fatal(err)
+	}
+	dsn := ""
+	if item.Engine == "postgres" {
+		pg := publicBeadsPostgres(t, output)
+		name := "plug_roundtrip_fresh_" + strings.ReplaceAll(item.Name, "-", "_")
+		if _, err := pg.db.ExecContext(ctx, "CREATE DATABASE "+name); err != nil {
+			t.Fatal(err)
+		}
+		dsn = pg.base + name + "?sslmode=disable"
+	}
+	store, err := openRuntimeStore(ctx, item.Engine, dsn, output)
+	if err != nil {
+		result.Gaps = append(result.Gaps, "recipe_restore_target: "+err.Error())
+		return
+	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	lease, err := store.Lease(ctx, "fresh-recipe-restore", driver.LeaseTTL)
+	if err != nil {
+		result.Gaps = append(result.Gaps, "recipe_restore_lease: "+err.Error())
+		return
+	}
+	defer func() {
+		if err := lease.Release(context.Background()); err != nil {
+			t.Error(err)
+		}
+	}()
+	before, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now().UTC()
+	report, err := converterroundtrip.RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile)
+	ended := time.Now().UTC()
+	after, metaErr := store.Meta(ctx)
+	freshJSON(t, filepath.Join(dir, "recipe-restore.json"), map[string]any{"engine": item.Engine, "mode": item.Mode, "input_sha256": hash(data), "source_store_id": archive.Manifest().StoreID, "before": before, "after": after, "report": report, "error": fmt.Sprint(err), "meta_error": fmt.Sprint(metaErr), "started": started, "ended": ended, "equality_credit": 0})
+	if err != nil {
+		result.RecipeRestore = "REFUSED_RESTORE"
+		result.Gaps = append(result.Gaps, "recipe_restore: "+err.Error())
+		return
+	}
+	result.RecipeRestore = "PASS_RESTORE_ONLY"
+	baseline, err := converterroundtrip.ReverseRestoredWithOptions(ctx, store, reverseconverter.Options{All: true})
+	freshJSON(t, filepath.Join(dir, "recipe-reverse-readback.json"), map[string]any{"error": fmt.Sprint(err), "input_sha256": hash(data), "equality_credit": 0})
+	if err != nil {
+		result.Gaps = append(result.Gaps, "recipe_reverse_readback: "+err.Error())
+		return
+	}
+	if err := writePrivate(dir, "recipe-reverse-baseline.jsonl", baseline.Result.JSONL); err != nil {
+		t.Fatal(err)
+	}
+	result.RecipeRestore = "PASS_RESTORE_BASELINE_ONLY"
 }
 
 func freshAcceptSourceCapture(t *testing.T, dir, dataRoot string, result *freshResult) ([]byte, error) {

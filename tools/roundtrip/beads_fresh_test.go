@@ -2,8 +2,51 @@ package main
 
 import (
 	"encoding/base64"
+	"encoding/json"
+	"os"
 	"testing"
 )
+
+func TestFreshRecipeProfileBindsBothSelectionsToLandedSource(t *testing.T) {
+	data, err := os.ReadFile("testdata/fresh-native/recipe-profile.json")
+	if err != nil || hash(data) != freshRecipeProfileSHA {
+		t.Fatal("exact native recipe profile missing")
+	}
+	var profile map[string]string
+	if err := json.Unmarshal(data, &profile); err != nil {
+		t.Fatal(err)
+	}
+	for _, selection := range []string{"complete", "partial"} {
+		target, err := freshRecipeTarget(data, profile["source_commit"], selection)
+		if err != nil || target != profile[selection+"_target"] {
+			t.Fatalf("landed recipe selection: %s %v", target, err)
+		}
+	}
+	if _, err := freshRecipeTarget(data, profile["source_commit"], "adjacent"); err == nil {
+		t.Fatal("unknown recipe selected")
+	}
+	if _, err := freshRecipeTarget(data, "0000000000000000000000000000000000000000", "complete"); err == nil {
+		t.Fatal("wrong producer head selected")
+	}
+	for _, field := range []string{"schema", "source_commit", "complete_target", "partial_target"} {
+		t.Run("missing-"+field, func(t *testing.T) {
+			copy := map[string]string{}
+			for k, v := range profile {
+				copy[k] = v
+			}
+			delete(copy, field)
+			changed, _ := json.Marshal(copy)
+			if _, err := freshRecipeTarget(changed, profile["source_commit"], "complete"); err == nil {
+				t.Fatal("incomplete immutable profile admitted")
+			}
+		})
+	}
+	profile["extra"] = "unreviewed"
+	changed, _ := json.Marshal(profile)
+	if _, err := freshRecipeTarget(changed, profile["source_commit"], "complete"); err == nil {
+		t.Fatal("undeclared recipe profile field admitted")
+	}
+}
 
 func TestFreshNativeCensusNamesAllTwelveIndependentCases(t *testing.T) {
 	cases := freshNativeCases()

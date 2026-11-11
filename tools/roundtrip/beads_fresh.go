@@ -13,14 +13,36 @@ import (
 
 type freshCase struct{ Engine, Name, Mode, Recipe, Target, Marker string }
 
+const freshRecipeProfileSHA = "90d3a7e6a9783b0f47cb2bd4c472bc9ea4042d1a856036ea570e39fbe9d741e3"
+
+func freshRecipeTarget(data []byte, commit, selection string) (string, error) {
+	var profile struct {
+		Schema         string `json:"schema"`
+		SourceCommit   string `json:"source_commit"`
+		CompleteTarget string `json:"complete_target"`
+		PartialTarget  string `json:"partial_target"`
+	}
+	if strictTypedJSON(data, &profile) != nil || profile.Schema != "plug-public-recipe-profile/1" || profile.SourceCommit != commit || len(commit) != 40 || profile.CompleteTarget == "" || profile.PartialTarget == "" || profile.CompleteTarget == profile.PartialTarget {
+		return "", fmt.Errorf("pinned native recipe source/profile mismatch")
+	}
+	switch selection {
+	case "complete":
+		return profile.CompleteTarget, nil
+	case "partial":
+		return profile.PartialTarget, nil
+	default:
+		return "", fmt.Errorf("unknown native recipe selection")
+	}
+}
+
 func freshNativeCases() []freshCase {
 	var cases []freshCase
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		for _, recipe := range []struct{ name, mode, test, target, marker string }{
-			{"complete", "full", "TestPlugDumpCompleteRootFromPublicDoltActions", "//cmd/bd:bd_test", "PUBLIC_COMPLETE_SOURCE_ARCHIVE_BASE64="},
-			{"complete-snapshot", "snapshot", "TestPlugDumpCompleteRootFromPublicDoltActions", "//cmd/bd:bd_test", "PUBLIC_COMPLETE_SOURCE_ARCHIVE_BASE64="},
-			{"partial", "partial", "TestSQLSourceHistoryReadsPinnedDoltCommitImages", "//internal/plugdump:plugdump_test", "PUBLIC_SOURCE_ARCHIVE_BASE64="},
-			{"partial-snapshot", "snapshot", "TestSQLSourceHistoryReadsPinnedDoltCommitImages", "//internal/plugdump:plugdump_test", "PUBLIC_SOURCE_ARCHIVE_BASE64="},
+			{"complete", "full", "TestPlugDumpCompleteRootFromPublicDoltActions", "complete", "PUBLIC_COMPLETE_SOURCE_ARCHIVE_BASE64="},
+			{"complete-snapshot", "snapshot", "TestPlugDumpCompleteRootFromPublicDoltActions", "complete", "PUBLIC_COMPLETE_SOURCE_ARCHIVE_BASE64="},
+			{"partial", "partial", "TestSQLSourceHistoryReadsPinnedDoltCommitImages", "partial", "PUBLIC_SOURCE_ARCHIVE_BASE64="},
+			{"partial-snapshot", "snapshot", "TestSQLSourceHistoryReadsPinnedDoltCommitImages", "partial", "PUBLIC_SOURCE_ARCHIVE_BASE64="},
 		} {
 			cases = append(cases, freshCase{engine, recipe.name, recipe.mode, recipe.test, recipe.target, recipe.marker})
 		}

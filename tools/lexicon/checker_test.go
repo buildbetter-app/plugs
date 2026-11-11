@@ -1744,6 +1744,7 @@ func TestPolicyRejectsInvalidUTF8OutsideDeclaredBinary(t *testing.T) {
 
 func TestDefaultPolicyBindsOriginalPublicReadbackReferences(t *testing.T) {
 	for _, name := range []string{
+		"tools/roundtrip/testdata/fresh-native/recipe-profile.json",
 		"tools/roundtrip/testdata/fresh-native/beads-ef3f15.tar.gz",
 		"tools/roundtrip/testdata/fresh-native/beads-ef3f15.git-tree",
 		"tools/roundtrip/testdata/typed-reader/beads-e25cf4.tar.gz",

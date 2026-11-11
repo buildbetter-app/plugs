@@ -1713,6 +1713,7 @@ tools/roundtrip/main.go
 tools/roundtrip/main_test.go
 tools/roundtrip/testdata/fresh-native/beads-ef3f15.git-tree
 tools/roundtrip/testdata/fresh-native/beads-ef3f15.tar.gz
+tools/roundtrip/testdata/fresh-native/recipe-profile.json
 tools/roundtrip/testdata/public-companion-profile.json
 tools/roundtrip/testdata/readback-8f19/memory-complete-beads-raw-readback.tar
 tools/roundtrip/testdata/readback-8f19/memory-complete-outcome.json
