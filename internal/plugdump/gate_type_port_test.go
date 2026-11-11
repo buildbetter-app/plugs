@@ -26,10 +26,18 @@ func TestB14NativeGateTypeDirectiveCatalogBoundary(t *testing.T) {
 			if err != nil || len(directives) != len(test.Types) {
 				t.Fatal("wrong native gate directive inventory", directives, err)
 			}
-			for i, directive := range directives {
-				if directive.Target.Type != test.Types[i] || directive.From != test.Types[i] || directive.To != "issue" || directive.Target.Project != "gate" {
+			want := map[string]bool{}
+			for _, typ := range test.Types {
+				want[typ] = true
+			}
+			for _, directive := range directives {
+				if !want[directive.Target.Type] || directive.From != directive.Target.Type || directive.To != "issue" || directive.Target.Project != "gate" {
 					t.Fatal("explicit legacy/custom mapping was changed", directives)
 				}
+				delete(want, directive.Target.Type)
+			}
+			if len(want) != 0 {
+				t.Fatal("native directive set lost a source type", want)
 			}
 		})
 	}
