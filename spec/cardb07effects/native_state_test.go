@@ -244,7 +244,9 @@ func (n *effectNative) expectedNativeEvents(want,got map[string]effectNativeRows
 			if nativeEffectText(n.t,row["event_type"])!=typeName {n.t.Fatal("native audit does not record requested lifecycle operation",verb)}
 			var declared effectNativeMutation;for _,mutation:=range n.pending {if mutation.From==id {declared=mutation}}
 			nativeEffectInstant(n.t,row["created_at"],declared.Started,declared.Finished)
-			if len(row)!=8 || string(row["comment"])!="null" {n.t.Fatal("native human audit has undeclared columns/comment")}
+			comment := "null"
+			if table == effectNativeActiveEvents { comment = `""` }
+			if len(row)!=8 || string(row["comment"])!=comment {n.t.Fatal("native human audit has undeclared columns/comment")}
 			if verb=="close" && (nativeEffectText(n.t,row["old_value"])!="" || nativeEffectText(n.t,row["new_value"])!="Closed") {n.t.Fatal("native close audit differs from the pinned default reason")}
 			if verb=="reopen" && (nativeEffectText(n.t,row["old_value"])!="" || nativeEffectText(n.t,row["new_value"])!="") {n.t.Fatal("native reopen audit changed the exact empty reason")}
 			if verb=="defer" {
