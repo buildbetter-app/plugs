@@ -1,7 +1,7 @@
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("@rules_go//go:def.bzl", "go_test")
 
-COMMON = ["fixture_test.go", "query_test.go"]
+COMMON = ["fixture_test.go", "query_support_test.go"]
 DEPS = [
     "//internal/core/model",
     "//internal/core/pipeline",
@@ -14,11 +14,14 @@ DEPS = [
     "//internal/storage/postgres",
     "//internal/storage/sqlite",
     "//internal/testclock",
+    "//internal/integration/b07positive",
+    "//internal/integration/b07positive/public",
+    "//plugins/workflow",
 ]
 
 go_test(
     name = "public_query_test",
-    srcs = COMMON,
+    srcs = COMMON + ["query_test.go", "ready_planes_test.go"],
     args = ["-test.v"],
     size = "large",
     tags = ["local", "requires-network"],
@@ -39,8 +42,20 @@ sh_test(
     srcs = ["regenerate_contract.sh"],
     data = [
         "//:engdocs/design/plug/contracts/openrpc.json",
-        "//internal/api/wire:reconcile_openrpc_inputs",
+        "//internal/api/wire:lexicon_files",
         "//scripts/ci:reconcile_generator",
     ],
     tags = ["manual"],
+)
+
+go_test(
+    name = "native_query_test",
+    srcs = COMMON + ["native_query_test.go", "//spec/cardb20:native_build_support"],
+    args = ["-test.v"],
+    data = ["//spec/s1-b09-native:lexicon_files", "//internal/publicnative:dolt_runtime"],
+    env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
+    size = "enormous",
+    tags = ["local", "manual"],
+    timeout = "eternal",
+    deps = DEPS + ["//internal/publicnative"],
 )

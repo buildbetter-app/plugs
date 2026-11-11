@@ -990,6 +990,7 @@ internal/server/authzrpc/authzrpc.go
 internal/server/authzrpc/authzrpc_test.go
 internal/server/authzrpc/b04_error_bounds_test.go
 internal/server/authzrpc/b15_comments_page_test.go
+internal/server/authzrpc/b23_ready_count_test.go
 internal/server/authzrpc/binding_test.go
 internal/server/authzrpc/blocked.go
 internal/server/authzrpc/checker.go
@@ -1749,7 +1750,10 @@ spec/cardb23full/BUILD.bazel
 spec/cardb23full/public_history_test.go
 spec/cardb23query/BUILD.bazel
 spec/cardb23query/fixture_test.go
+spec/cardb23query/native_query_test.go
+spec/cardb23query/query_support_test.go
 spec/cardb23query/query_test.go
+spec/cardb23query/ready_planes_test.go
 spec/cardb23query/regenerate_contract.sh
 spec/cardb24/BUILD.bazel
 spec/cardb24/README.md

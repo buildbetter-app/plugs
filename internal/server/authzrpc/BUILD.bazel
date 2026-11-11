@@ -39,7 +39,7 @@ go_test(
 go_test(
     name = "authzrpc_test",
     size = "large",
-    srcs = ["authzrpc_test.go", "b04_error_bounds_test.go", "b15_comments_page_test.go", "claim_test.go", "drivers_test.go", "export_test.go", "history_authority_test.go", "predicate_count_test.go"],
+    srcs = ["authzrpc_test.go", "b23_ready_count_test.go", "b04_error_bounds_test.go", "b15_comments_page_test.go", "claim_test.go", "drivers_test.go", "export_test.go", "history_authority_test.go", "predicate_count_test.go"],
     embed = [":authzrpc"],
     tags = ["exclusive"],
     deps = [
