@@ -10,13 +10,16 @@ import (
 )
 
 func (s *NativeArchiveStream) planRoots(request driver.OfflineHistoryStreamRequest,image nativeprojection.Snapshot) (Root,Root,error) {
+ usage,ok:=s.archive.NativeDecodedUsage();if !ok {return Root{},Root{},ErrCheckpoint{"missing verifier admission ceiling"}}
  if image.DerivedDigest!=request.Profile.DerivedDigest {return Root{},Root{},ErrCheckpoint{"actual rebuilt derived image differs"}}
  // Indexes contain only the actual one current image, not historical bodies.
  n:=len(image.Records)+len(image.Derived)+len(image.Allocators)+len(image.Blobs)+len(image.Sentinels)
  if err:=s.archive.ChargeNativeDeltaBytes("verifier_plan_projection_indexes",uint64(n)*512);err!=nil {return Root{},Root{},err}
  current:=map[string]checkpointRecord{};nativeSeen:=0;ledgerSeen:=false
  for _,record:=range image.Records {
-  if err:=request.Profile.ValidateRecord(record,request.When);err!=nil {return Root{},Root{},err}
+  validation,release:=s.archive.NativeDeltaAccountingScope()
+  if err:=validation.ChargeNativeDeltaBytes("verifier_current_record_validation",uint64(len(record.Body))*8+1024);err!=nil {release();return Root{},Root{},err}
+  err:=request.Profile.ValidateRecord(record,request.When);release();if err!=nil{return Root{},Root{},err}
   if record.Ref.ID==driver.SourcePlaneCommitRecordID {return Root{},Root{},ErrCheckpoint{"receiving plan contains an engine-time publication record"}}
   if err:=addCheckpoint(current,record);err!=nil {return Root{},Root{},err}
   if strings.HasPrefix(record.Ref.ID,driver.NativeTableHistoryRecordPrefix) || strings.HasPrefix(record.Ref.ID,"source/native-current/") {
@@ -25,7 +28,7 @@ func (s *NativeArchiveStream) planRoots(request driver.OfflineHistoryStreamReque
   }
   if record.Ref.ID=="restore/archive" {
    var evidence nativeprojection.ArchiveEvidence
-   if ledgerSeen || json.Unmarshal(record.Body,&evidence)!=nil || evidence.ArchiveSHA256!=request.Profile.ArchiveDigest || evidence.DerivedSHA256!=request.Profile.DerivedDigest || !reflect.DeepEqual(evidence.NativeCaptureFiles,s.files) {return Root{},Root{},ErrCheckpoint{"actual receiving archive ledger differs from reauthenticated originals"}}
+   if ledgerSeen || json.Unmarshal(record.Body,&evidence)!=nil || evidence.ArchiveSHA256!=request.Profile.ArchiveDigest || evidence.DerivedSHA256!=request.Profile.DerivedDigest || evidence.NativeDecodedLimitBytes!=usage.LimitBytes || !reflect.DeepEqual(evidence.NativeCaptureFiles,s.files) {return Root{},Root{},ErrCheckpoint{"actual receiving archive ledger differs from reauthenticated originals"}}
    ledgerSeen=true
   }
  }

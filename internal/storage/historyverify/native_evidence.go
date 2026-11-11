@@ -48,7 +48,7 @@ type nativeStreamEvidence struct {
 // must agree, even when a different transcript has the same final HEAD.
 func (s *NativeArchiveStream) ValidateEvidence(ctx context.Context,profile driver.RestoreImportProfile,raw []byte) error {
  if s==nil || s.closed || profile.HistoryDigest!=s.digest {return ErrCheckpoint{"recovery transcript binding differs"}}
- hash,err:=nativePreparationHash(profile);if err!=nil {return err};if hash!=s.profileHash {return ErrCheckpoint{"recovery request differs"}}
+ hash,err:=nativePreparationHash(s.archive,profile);if err!=nil {return err};if hash!=s.profileHash {return ErrCheckpoint{"recovery request differs"}}
  owner,release:=s.archive.NativeDeltaAccountingScope();defer release()
  if err=owner.ChargeNativeDeltaBytes("verifier_recovery_evidence",uint64(len(raw))*8+1024);err!=nil {return err}
  decoder:=json.NewDecoder(bytes.NewReader(raw));decoder.DisallowUnknownFields()
