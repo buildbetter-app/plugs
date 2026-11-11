@@ -31,11 +31,11 @@ func nativeSchemaError(table, column, reason string) error {
 // database/HEAD/working root, and the typed binding is checked again afterwards.
 // The destination's existing Undo independently authenticates that same root
 // before mutation. Schema changes, missing catalog authority and failed rollback
-// return no witness. The caller owns connection/store exclusion and lifetime.
-func ReadNativeRowSchema(ctx context.Context, conn *sql.Conn, source SourceBinding) (witness NativeRowSchema, resultErr error) {
+// return no authority. The caller owns connection/store exclusion and lifetime.
+func ReadNativeRowSchema(ctx context.Context, conn *sql.Conn, source SourceBinding) (authority NativeRowSchema, resultErr error) {
 	defer func() {
 		if resultErr != nil {
-			witness = NativeRowSchema{}
+			authority = NativeRowSchema{}
 			var typed *Error
 			if !errors.As(resultErr, &typed) {
 				resultErr = &Error{Kind: "native-row-schema", Column: "*", Row: -1, Cause: resultErr}
@@ -43,10 +43,10 @@ func ReadNativeRowSchema(ctx context.Context, conn *sql.Conn, source SourceBindi
 		}
 	}()
 	if err := validateBinding(source); err != nil {
-		return witness, err
+		return authority, err
 	}
 	if conn == nil || source.Working == nil {
-		return witness, nativeSchemaError("", "*", "original connection and complete typed working binding required")
+		return authority, nativeSchemaError("", "*", "original connection and complete typed working binding required")
 	}
 	checkSource := func() error {
 		immutable, err := physicalcapture.ReadCommit(ctx, conn, source.CommitID)
@@ -67,10 +67,10 @@ func ReadNativeRowSchema(ctx context.Context, conn *sql.Conn, source SourceBindi
 		return nil
 	}
 	if err := checkSource(); err != nil {
-		return witness, err
+		return authority, err
 	}
 	if _, err := conn.ExecContext(ctx, "START TRANSACTION READ ONLY"); err != nil {
-		return witness, err
+		return authority, err
 	}
 	active := true
 	defer func() {
@@ -79,7 +79,7 @@ func ReadNativeRowSchema(ctx context.Context, conn *sql.Conn, source SourceBindi
 			resultErr = errors.Join(resultErr, rollbackErr)
 		}
 		if resultErr != nil {
-			witness = NativeRowSchema{}
+			authority = NativeRowSchema{}
 		}
 	}()
 	checkRoot := func() error {
@@ -93,9 +93,9 @@ func ReadNativeRowSchema(ctx context.Context, conn *sql.Conn, source SourceBindi
 		return nil
 	}
 	if err := checkRoot(); err != nil {
-		return witness, err
+		return authority, err
 	}
-	witness = NativeRowSchema{sourceSHA256: source.SHA256, columns: make(map[string][]dumpformat.NativeDeltaColumn, len(source.Working.Image.Tables))}
+	authority = NativeRowSchema{sourceSHA256: source.SHA256, columns: make(map[string][]dumpformat.NativeDeltaColumn, len(source.Working.Image.Tables))}
 	for _, table := range source.Working.Image.Tables {
 		pks, err := readNativePrimaryKey(ctx, conn, table)
 		if err != nil {
@@ -109,7 +109,7 @@ func ReadNativeRowSchema(ctx context.Context, conn *sql.Conn, source SourceBindi
 				columns[i].PrimaryKeyOrdinal = &o
 			}
 		}
-		witness.columns[table.Name] = columns
+		authority.columns[table.Name] = columns
 	}
 	if err := checkRoot(); err != nil {
 		return NativeRowSchema{}, err
@@ -122,7 +122,7 @@ func ReadNativeRowSchema(ctx context.Context, conn *sql.Conn, source SourceBindi
 	if err := checkSource(); err != nil {
 		return NativeRowSchema{}, err
 	}
-	return witness, nil
+	return authority, nil
 }
 
 func readNativePrimaryKey(ctx context.Context, conn *sql.Conn, table Table) (map[string]uint64, error) {
