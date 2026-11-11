@@ -1,7 +1,6 @@
 package s1b01b04
 
 import (
-    "context"
     "encoding/json"
     "fmt"
     "reflect"
@@ -75,8 +74,11 @@ func TestB04OrdinaryPublicWalkBeyondOneThousand(t *testing.T) {
 			ops=append(ops,ordinaryCreateOp("winner",project,map[string]any{"title":"winner after full front","priority":3},""),ordinaryCreateOp("decoy",project,map[string]any{"title":"excluded by resource filter","priority":1},""))
 			for i:=0;i<prefix;i++ {id:=fmt.Sprintf("b04-guard-child-%04d",i);ids=append(ids,id);ops=append(ops,ordinaryCreateOp(id,project,map[string]any{"title":id,"priority":4},ids[i]))}
 			o:=newOrdinaryB04(t,backend,dsn,ids,func(doc *ontology.Document){w:=doc.Workflows["issue"];w.Transitions[0].Guards=append(w.Transitions[0].Guards,ontology.Guard{Kind:ontology.NoOpenChildren});doc.Workflows["issue"]=w})
-			for start:=0;start<len(ops);start+=50 { if err:=o.f.lease.Renew(context.Background());err!=nil {t.Fatal(err)};o.seed(fmt.Sprintf("public-seed-%04d",start),ops[start:min(start+50,len(ops))]...) }
-			if err:=o.f.lease.Renew(context.Background());err!=nil {t.Fatal(err)}
+			func() {
+				seedStarted, completed := time.Now(), 0
+				defer func() { t.Logf("B04_PUBLIC_SEED_TIMING engine=%s planned=%d completed=%d batchSize=50 elapsedMs=%.3f", backend, len(ops), completed, time.Since(seedStarted).Seconds()*1000) }()
+				for start:=0;start<len(ops);start+=50 { end:=min(start+50,len(ops));o.seed(fmt.Sprintf("public-seed-%04d",start),ops[start:end]...);completed=end }
+			}()
 			o.reopen("full-front-before")
 			filter:=map[string]any{"types":[]string{"issue"},"resources":ids[:prefix+1]}
 			if got:=o.readyIDs("full-front-precondition",filter);!reflect.DeepEqual(got,ids[:prefix+1]) {t.Fatalf("actual public ready front differs: got=%v want=%v",got,ids[:prefix+1])}

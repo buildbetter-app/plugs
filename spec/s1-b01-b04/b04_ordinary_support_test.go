@@ -2,6 +2,7 @@ package s1b01b04
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,6 +20,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/integration/converterroundtrip"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/server/transport/httpjson"
@@ -32,6 +34,7 @@ type ordinaryB04 struct {
 	server *httptest.Server
 	output string
 	seq int
+	releaseLease func() error
 	receipts map[string]*driver.IdempotencyRecord
 	methods map[string]string
 	principals map[string]model.PrincipalRef
@@ -102,13 +105,33 @@ func newOrdinaryB04(t *testing.T, backend, dsn string, ids []string, configure .
 	doc.Workflows["issue"] = w
 	doc.Types["bug"] = ontology.Type{Name:"Bug", Workflow:"issue", Fields:doc.Types["issue"].Fields}
 	for _, change := range configure { change(&doc) }
-	f := newFixture(t, backend, dsn, compileOntology(t, doc, nil), ids)
+	rules := compileOntology(t, doc, nil)
+	clock := newClock(t)
+	if backend == "postgres" { dsn = clock.BindPostgres(t, dsn) }
+	path := ""
+	if backend == "sqlite" { path = filepath.Join(t.TempDir(), "s1.db") }
+	store := openStore(t, backend, path, dsn, clock)
+	ctx, lease, releaseLease, err := converterroundtrip.HoldRestoreLease(context.Background(), store, "s1-server")
+	if err != nil { _ = store.Close(); t.Fatal(err) }
+	f := &fixture{t:t, ctx:ctx, backend:backend, path:path, dsn:dsn, store:store, lease:lease, clock:clock, ontology:rules, ids:append([]string(nil), ids...)}
 	output := filepath.Join(os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR"), "ordinary-"+strings.ReplaceAll(t.Name(),"/","_"))
+	o := &ordinaryB04{f: f, output: output, releaseLease:releaseLease, receipts:map[string]*driver.IdempotencyRecord{}, methods:map[string]string{}, principals:map[string]model.PrincipalRef{}}
+	t.Cleanup(func() {
+		if o.server != nil { o.server.Close() }
+		if err := o.releaseStoreLease(); err != nil { t.Errorf("stop ordinary store lease: %v", err) }
+		if err := f.store.Close(); err != nil { t.Errorf("close ordinary store: %v", err) }
+	})
+	f.install()
 	if err := os.MkdirAll(output, 0700); err != nil { t.Fatal(err) }
-	o := &ordinaryB04{f: f, output: output, receipts:map[string]*driver.IdempotencyRecord{}, methods:map[string]string{}, principals:map[string]model.PrincipalRef{}}
 	o.install()
-	t.Cleanup(func() { o.server.Close() })
 	return o
+}
+
+func (o *ordinaryB04) releaseStoreLease() error {
+	if o.releaseLease == nil { return nil }
+	release := o.releaseLease
+	o.releaseLease = nil
+	return release()
 }
 
 func (o *ordinaryB04) install() {
@@ -195,6 +218,7 @@ func (o *ordinaryB04) callSeedWithRetry(label, method, agent string, params map[
 	request, err := json.Marshal(map[string]any{"jsonrpc":"2.0", "id": o.seq, "method": method, "params": requestParams})
 	if err != nil { t.Fatal(err) }
 	const maxAttempts = 5
+	started := time.Now()
 	retries := 0
 	var last json.RawMessage
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -218,11 +242,11 @@ func (o *ordinaryB04) callSeedWithRetry(label, method, agent string, params map[
 		var frame struct { Error *struct { Data model.ErrorData `json:"data"` } `json:"error"` }
 		if err := json.Unmarshal(raw, &frame); err != nil { t.Fatalf("seed %s response is not JSON: %s", label, raw) }
 		if frame.Error == nil || !frame.Error.Data.Retryable {
-			t.Logf("B04_SEED_RETRIES engine=%s label=%s attempts=%d retries=%d", o.f.backend, label, attempt, retries)
+			t.Logf("B04_SEED_RETRIES engine=%s label=%s attempts=%d retries=%d elapsedMs=%.3f", o.f.backend, label, attempt, retries, time.Since(started).Seconds()*1000)
 			return last
 		}
 		if attempt == maxAttempts {
-			t.Logf("B04_SEED_RETRIES engine=%s label=%s attempts=%d retries=%d exhausted=true", o.f.backend, label, attempt, retries)
+			t.Logf("B04_SEED_RETRIES engine=%s label=%s attempts=%d retries=%d exhausted=true elapsedMs=%.3f", o.f.backend, label, attempt, retries, time.Since(started).Seconds()*1000)
 			return last
 		}
 		retries++
@@ -328,13 +352,13 @@ func (o *ordinaryB04) reopen(label string) {
 	before := o.state(label+"-before")
 	o.checkReceipts()
 	if f.backend == "memory" { return }
-	oldStore, oldLease := f.store, f.lease
+	oldStore := f.store
 	o.server.Close()
-	if err := oldLease.Release(f.ctx); err != nil { t.Fatal(err) }
+	if err := o.releaseStoreLease(); err != nil { t.Fatal(err) }
 	if err := oldStore.Close(); err != nil { t.Fatal(err) }
 	f.store = openStore(t, f.backend, f.path, f.dsn, f.clock)
 	var err error
-	f.lease, err = f.store.Lease(f.ctx, "ordinary-b04-reopened", driver.LeaseTTL)
+	f.ctx, f.lease, o.releaseLease, err = converterroundtrip.HoldRestoreLease(context.Background(), f.store, "ordinary-b04-reopened")
 	if err != nil { t.Fatal(err) }
 	f.install()
 	o.install()
