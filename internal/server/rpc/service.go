@@ -70,7 +70,7 @@ type serviceParams struct {
 	TargetKind   model.LinkTargetKind           `json:"targetKind"`
 	ID           json.RawMessage                `json:"id"`
 	Ref          model.Ref                      `json:"ref"`
-	AsOf         *asOfSelector                          `json:"asOf"`
+	AsOf         *asOfSelector                  `json:"asOf"`
 	Project      string                         `json:"project"`
 	ViewID       string                         `json:"viewId"`
 	Filter       *filter                        `json:"filter"`
