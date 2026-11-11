@@ -1197,6 +1197,7 @@ internal/storage/driver/allocator_snapshot.go
 internal/storage/driver/allocator_snapshot_test.go
 internal/storage/driver/audit_contract_test.go
 internal/storage/driver/checkpoint_mutation.go
+internal/storage/driver/cycle_topology.go
 internal/storage/driver/descendant_filter.go
 internal/storage/driver/descendant_filter_test.go
 internal/storage/driver/driver.go
@@ -1235,10 +1236,12 @@ internal/storage/memory/allocator.go
 internal/storage/memory/allocator_snapshot.go
 internal/storage/memory/allocator_snapshot_test.go
 internal/storage/memory/audit_test.go
+internal/storage/memory/b06_cycle_topology_test.go
 internal/storage/memory/boundaries_test.go
 internal/storage/memory/checkpoint_guard.go
 internal/storage/memory/checkpoint_test.go
 internal/storage/memory/clock_test.go
+internal/storage/memory/cycle_topology.go
 internal/storage/memory/derived_prefix_test.go
 internal/storage/memory/derived_reader.go
 internal/storage/memory/hierarchy_index.go
@@ -1294,6 +1297,7 @@ internal/storage/postgres/clock_test.go
 internal/storage/postgres/commit.go
 internal/storage/postgres/commit_batch_test.go
 internal/storage/postgres/conformance_test.go
+internal/storage/postgres/cycle_topology.go
 internal/storage/postgres/derived_reader.go
 internal/storage/postgres/driver.go
 internal/storage/postgres/encoding.go
@@ -1328,6 +1332,7 @@ internal/storage/postgres/store.go
 internal/storage/postgres/transaction.go
 internal/storage/sourceindex/BUILD.bazel
 internal/storage/sourceindex/backfill.go
+internal/storage/sourceindex/cycle_topology.go
 internal/storage/sourceindex/publication.go
 internal/storage/sourceindex/reader.go
 internal/storage/sourceindex/source.go
@@ -1341,6 +1346,7 @@ internal/storage/sqlite/checkpoint_guard.go
 internal/storage/sqlite/checkpoint_mutation.go
 internal/storage/sqlite/clock.go
 internal/storage/sqlite/clock_test.go
+internal/storage/sqlite/cycle_topology.go
 internal/storage/sqlite/derived_prefix_test.go
 internal/storage/sqlite/derived_reader.go
 internal/storage/sqlite/engine_test.go
