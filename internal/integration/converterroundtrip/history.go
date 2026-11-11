@@ -371,6 +371,16 @@ func validateHistoryRecovery(ctx context.Context, r driver.Reader, p driver.Rest
 	archive, releaseArchive := archive.NativeDeltaAccountingScope()
 	defer releaseArchive()
 	ctx = archive.WithNativeDeltaAccounting(ctx)
+	return validateHistoryRecoveryArchive(ctx, r, p, evidence, receipt, archive, nil)
+}
+
+// The same fixed reader's authenticated source is shared by all recovery
+// checks. A clean commit may additionally borrow its already validated history;
+// no target record can construct this operation-local value.
+func validateHistoryRecoveryArchive(ctx context.Context, r driver.Reader, p driver.RestoreImportProfile, evidence archiveEvidence, receipt *driver.IdempotencyRecord, archive *dumpformat.Archive, prepared *driver.OfflineHistory) error {
+	archive, release := archive.NativeDeltaAccountingScope()
+	defer release()
+	ctx = archive.WithNativeDeltaAccounting(ctx)
 	if archive.SHA256() != p.ArchiveDigest {
 		return driver.ErrConflict
 	}
@@ -378,9 +388,14 @@ func validateHistoryRecovery(ctx context.Context, r driver.Reader, p driver.Rest
 	if err != nil {
 		return driver.ErrConflict
 	}
-	history, err := lowerSourceHistory(archive, p, when, ctx)
-	if err != nil {
-		return nativeDeltaRecoveryError(err)
+	var history driver.OfflineHistory
+	if prepared != nil {
+		history = *prepared
+	} else {
+		history, err = lowerSourceHistory(archive, p, when, ctx)
+		if err != nil {
+			return nativeDeltaRecoveryError(err)
+		}
 	}
 	digest, err := nativeHistoryDigest(archive, history)
 	if err != nil || digest != p.HistoryDigest {

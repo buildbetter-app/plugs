@@ -88,7 +88,7 @@ func readRetainedImportArchive(ctx context.Context, reader driver.Reader, raw []
 			return nil, driver.ErrConflict
 		}
 		return io.NopCloser(bytes.NewReader(data)), nil
-	}, dumpformat.NativeCaptureSetOptions{DecodedLimitBytes: evidence.NativeDecodedLimitBytes, DecodedLimitOrigin: "retained recovery option"})
+	}, dumpformat.NativeCaptureSetOptions{DecodedLimitBytes: evidence.NativeDecodedLimitBytes, DecodedLimitOrigin: "retained recovery option", PrepareReceiving: true})
 }
 
 // historyDelta's two indexes retain one driver ordering string per input Ref.
