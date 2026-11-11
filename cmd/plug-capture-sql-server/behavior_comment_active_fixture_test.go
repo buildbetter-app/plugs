@@ -194,9 +194,9 @@ func TestPublicNativeCommentActiveFixture(t *testing.T) {
 				data := commentFixtureCommand(t, f, out, refusal.name, true, refusal.args...)
 				var envelope struct {
 					Error         string `json:"error"`
-					SchemaVersion string `json:"schema_version"`
+					SchemaVersion int    `json:"schema_version"`
 				}
-				if err := json.Unmarshal(data, &envelope); err != nil || envelope.Error != refusal.message || envelope.SchemaVersion == "" {
+				if err := json.Unmarshal(data, &envelope); err != nil || envelope.Error != refusal.message || envelope.SchemaVersion != 1 {
 					t.Fatalf("native CLI refusal envelope differs: %s: %s (%v)", refusal.name, data, err)
 				}
 				after := commentFixtureObserve(t, f)
