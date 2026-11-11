@@ -58,10 +58,10 @@ func TestCurrentQueryCursorRejectsOutOfRangeAndPreservesExactEnd(t *testing.T) {
 			}
 		})
 	}
-	// An ordinal edited to a nonterminal position has no ordered-key state;
-	// refuse it instead of falling back to an OFFSET scan.
+	// A rank edited to a value with no live-row witness is a tampered or old
+	// offset-format cursor; refuse it instead of falling back to OFFSET.
 	tampered := *first.NextCursor
-	tampered.Index = model.Natural64(2)
+	tampered.Index = model.Natural64(4)
 	if page, err := r.Query(ctx, driver.Query{Filter: filter, Cursor: &tampered, Limit: 1}); err == nil || len(page.Items) != 0 {
 		t.Fatalf("unknown ordered key cursor was accepted: %+v, %v", page, err)
 	}
@@ -407,7 +407,7 @@ func TestQueryHeadPagingStatementBoundAcrossCorpusSizes(t *testing.T) {
 						}
 						calls, rows := probe.calls.Load(), probe.rows.Load()
 						t.Logf("QUERY_SQL_STATEMENTS corpus=%d page=%d calls=%d rows=%d returned=%d", size, pageNumber, calls, rows, len(page.Items))
-						if calls < 1 || calls > 2 || rows < int64(len(page.Items)) || rows > int64(limit+2) {
+						if calls < 1 || calls > 3 || rows < int64(len(page.Items)) || rows > int64(limit+3) {
 							t.Fatalf("page work grew with corpus: calls=%d rows=%d limit=%d", calls, rows, limit)
 						}
 						statements := probe.statementSnapshot()
@@ -415,12 +415,12 @@ func TestQueryHeadPagingStatementBoundAcrossCorpusSizes(t *testing.T) {
 							t.Fatalf("probe lost SQL statements: calls=%d statements=%v", calls, statements)
 						}
 						if cursor != nil {
-							if calls != 2 {
+							if calls != 3 {
 								t.Fatalf("canonical continuation SQL count changed: calls=%d statements=%v", calls, statements)
 							}
 							keyset := false
 							for _, statement := range statements {
-								if strings.Contains(statement, "r.key>?") && strings.Contains(statement, "ORDER BY r.key LIMIT ?") {
+								if strings.Contains(statement, "o.query_order>?") && strings.Contains(statement, "ORDER BY o.query_order LIMIT ?") {
 									keyset = true
 								}
 								if strings.Contains(statement, "OFFSET") {

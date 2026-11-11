@@ -180,6 +180,9 @@ func (s *historyStreamStage) Publish(ctx context.Context, proof driver.OfflineHi
 		}); err != nil {
 			return err
 		}
+		if err = rebuildQueryOrder(ctx, c); err != nil {
+			return err
+		}
 		for _, state := range t.derived {
 			state.Revision = s.binding.Meta.Head
 			if err = publishKey(ctx, c, state); err != nil {

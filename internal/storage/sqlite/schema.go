@@ -1,6 +1,6 @@
 package sqlite
 
-const schemaVersion = 2
+const schemaVersion = 3
 
 // All revisions sort as fixed-width unsigned decimal TEXT. SQLite INTEGER is
 // signed; binding a uint64 or casting a revision to INTEGER would lose data.
@@ -23,16 +23,16 @@ CREATE TABLE IF NOT EXISTS query_read_work (
  payloads INTEGER NOT NULL,
  payload_bytes INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS query_cursor_keys (
- incarnation TEXT NOT NULL,
- revision TEXT NOT NULL,
- digest TEXT NOT NULL,
- cursor_index TEXT NOT NULL,
- key TEXT NOT NULL,
- PRIMARY KEY(incarnation, revision, digest, cursor_index)
+CREATE TABLE IF NOT EXISTS objects (
+ key TEXT PRIMARY KEY,
+ kind TEXT NOT NULL,
+ -- Dense lexical rank of live records. Query cursors carry this indexed sort
+ -- value, so the read path remains stateless and native restore keeps its
+ -- existing monotonically advancing numeric cursor contract.
+ query_order INTEGER NOT NULL DEFAULT 0
 );
-CREATE TABLE IF NOT EXISTS objects (key TEXT PRIMARY KEY, kind TEXT NOT NULL);
-CREATE INDEX IF NOT EXISTS objects_kind_key ON objects(kind, key);
+CREATE INDEX IF NOT EXISTS objects_query_order_key ON objects(query_order, key);
+CREATE INDEX IF NOT EXISTS objects_kind_query_order_key ON objects(kind, query_order, key);
 CREATE TABLE IF NOT EXISTS records (key TEXT PRIMARY KEY, data BLOB NOT NULL);
 CREATE TRIGGER IF NOT EXISTS query_read_work_objects_insert
 AFTER INSERT ON objects

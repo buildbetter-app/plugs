@@ -640,6 +640,11 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 				return err
 			}
 		}
+		if len(t.records) != 0 || t.restore != nil {
+			if err = rebuildQueryOrder(ctx, c); err != nil {
+				return err
+			}
+		}
 		if _, err = c.ExecContext(ctx, `INSERT INTO changesets(rev,data) VALUES(?,?)`, revKey(head+1), data); err != nil {
 			return err
 		}
