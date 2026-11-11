@@ -24,6 +24,25 @@ described in the [server guide](engdocs/plug-runtime/server.md). Use
 `plug --help` for the public CLI commands and
 [CLI connections](internal/cli/README.md) for server selection and JSON output.
 
+## Evidence attachments
+
+Use an `attach` operation in `tx.apply` to add evidence to a bead. For example:
+
+```json
+{"changeSet":{"ops":[{"kind":"attach","target":{"id":"pl-example"},"attachment":{"kind":"link","uri":"https://example.invalid/proof","mediaType":"text/plain","summary":"Review evidence"}}]}}
+```
+
+`link` and `commit` require a nonempty `uri` and no `contentRef`. Each accepted
+attachment advances the bead revision and appears in `bead.get`, historical
+reads, and the durable event stream. Retrying the same request with its original
+idempotency key returns the original commit after current write authorization.
+An `evidence_required` transition can use these attachments as evidence.
+
+Content-backed `blob` and `log` attachments remain unavailable because the
+content store is not implemented. Valid `contentRef` requests return typed
+`unsupported` with reason `attachment_content_store_unavailable`. Invalid
+attachments refuse without publishing any operation in the transaction.
+
 ## External dependency targets
 
 `bead.link`, `bead.unlink`, and link/unlink operations in `tx.apply` accept an

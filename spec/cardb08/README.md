@@ -1,5 +1,17 @@
 # B08 public close guards and settlement
 
+The stacked attachment child lowers the existing typed `attach` operation.
+`attachment_test` proves `link` and `commit` tuples through public JSON-RPC on
+memory, SQLite and PostgreSQL: one revision/version/event, immutable historical
+readback, same-key replay and current authorization, invalid-input atomicity,
+and a positive `evidence_required` close. SQL cases physically reopen and repeat
+current/history/replay readback; memory retains only process lifetime. An
+installed authorizer exercises the actual Writer before/after/replay ports for
+the exact target and denies the same bead's ordinary writes as well. This does
+not broaden any installed policy's finite method permits. The content store
+gap is explicit: `blob`/`log` with valid `contentRef` refuse typed `unsupported`
+and name `attachment_content_store_unavailable`, preserving complete state.
+
 This isolated acceptance child starts at cumulative `1f77dd01`. It retains all
 inherited tests and adds public JSON-RPC cases on memory, SQLite and PostgreSQL.
 Only the ontology is seeded; subjects, links, evidence and lifecycle actions

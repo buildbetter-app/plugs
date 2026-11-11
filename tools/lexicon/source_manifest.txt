@@ -325,6 +325,7 @@ internal/core/pipeline/allocator_reservations_test.go
 internal/core/pipeline/allocator_test.go
 internal/core/pipeline/ancestor.go
 internal/core/pipeline/apply.go
+internal/core/pipeline/attachment_test.go
 internal/core/pipeline/audit.go
 internal/core/pipeline/audit_guard_test.go
 internal/core/pipeline/audit_test.go
@@ -1648,6 +1649,7 @@ spec/cardb07positive/README.md
 spec/cardb07positive/ordinary_test.go
 spec/cardb08/BUILD.bazel
 spec/cardb08/README.md
+spec/cardb08/attachment_test.go
 spec/cardb08/native_test.go
 spec/cardb08/public_fixture_test.go
 spec/cardb08/public_test.go
