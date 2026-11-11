@@ -1,5 +1,18 @@
 # B13 public memory and P85 brief connection
 
+`memory.save` returns an explicit per-result `replaced` boolean. It reports
+effective presence inside the Writer transaction, including empty values and
+quiet same-value saves. Forgotten imported tombstones are absent. The stored
+receipt preserves this observation on replay; every other operation omits it.
+`TestB13FullcardLiteralBoundariesAndPublicSearch` adds literal slug boundaries,
+Unicode identity, public key/value search, true/false replay, and real durable
+bead and real ephemeral workflow decoys on all three engines. Memory reports
+process checkpoint lifetime without restart persistence; SQLite and PostgreSQL
+also prove physical reopen. This follows adopted PR467 and the 17:14Z ruling
+that supersedes the stale memory-refusal paragraph in workflow-contract.md. The B13
+native recording consumes the unchanged canonical build support and independently
+checks the same public vectors against actual pinned native CLI/SQL results.
+
 The additional `TestImportedMemoryWritesPreserveSourceEnvelopesAllDrivers` in
 `converterroundtrip` covers writes after importing an explicitly authored mixed
 string/secret/JSON-value archive. Legacy hidden mirrors must not poison an
@@ -99,8 +112,10 @@ They remain AUTHORED_NOT_RUN until S1 routes an exact-head execution.
 | B13-P85-09 | Same-file/DB close/reopen preserves state, public values and final receipt bytes; replay of an old save neither rewinds a replacement nor resurrects a deleted row. | All earlier handles/connections close, the same DSN reopens, complete state comparison, exact public result-byte replay and current-read rechecks. Memory proves fresh binding over its same live store only. |
 | B13-P85-10 | Forget removes only the target identity; prefix neighbor, settings and ordinary bead survive. Recreate allocates a new identity and cannot disclose the old lifetime's history. | Independent raw-plane/version conservation, tombstones, deleted-row misses, rebind/reopen and fresh public list/brief checks. |
 
-Replacement is observed through the admitted Commit identity, changeset op and
-version rather than an invented `replaced` wire field. MemoryPage exposes
+Replacement is reported by the adopted optional `OpResult.replaced` boolean;
+memory.save always includes it, while every other operation omits it. The
+Writer records transaction-observed presence and replays the original result.
+Commit identity, changeset op and version independently bind the write. MemoryPage exposes
 `items`/`nextCursor`; public per-row revisions bind to independently pinned
 driver records. No additional public fields are assumed.
 

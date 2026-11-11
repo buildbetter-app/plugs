@@ -33,6 +33,7 @@ const b13TrimmedPublicBody = "Exact trimmed native neighbor"
 const b13PublicBody = " \tVerbatim native\n東京 e\u0301  "
 const b13PublicReplacement = "\nReplaced Ω\t東京 "
 const b13DerivedBody = "Keep these exact\nwords."
+const b13FilledEmptyBody = "Previously empty, now replaced"
 
 // Independent literal key vectors cover Unicode identity and both derivation
 // limits against the actual pinned public implementation.
@@ -43,6 +44,11 @@ var b13KeyVectors = []struct{ name, explicit, content, effective string }{
 	{"sixty-bytes", "", strings.Repeat("A", 66) + " tail", strings.Repeat("a", 60)},
 	{"non-ascii-collapse", "", "Ä ONE/二 TWO THREE", "one-two-three"},
 	{"explicit-underivable", "東京 key", "東京 !!!", "東京 key"},
+	{"exact-eight", "", "Alpha bravo charlie delta echo foxtrot golf hotel", "alpha-bravo-charlie-delta-echo-foxtrot-golf-hotel"},
+	{"exact-nine", "", "India juliet kilo lima mike november oscar papa QUEBEC", "india-juliet-kilo-lima-mike-november-oscar-papa"},
+	{"midword-cut", "", "123456789012345678901234567890123456789012345678901234567-ABCDE", "123456789012345678901234567890123456789012345678901234567-ab"},
+	{"separator-at-cut", "", "12345678901234567890123456789012345678901234567890123456789 tail", "12345678901234567890123456789012345678901234567890123456789"},
+	{"explicit-punctuation", "!!! key", "!!!", "!!! key"},
 }
 
 func b13ExpectedDerived(body string) string {
@@ -159,6 +165,7 @@ func (n *b13Reference) view(label string, want map[string]string) {
 	b13Same(n.r.t, got, want)
 	n.r.writeJSON(filepath.Join(n.r.root, label+"-memory-wire-and-projection.json"), map[string]any{"literal_native_wire": wire, "actual_memory_values": got, "wire_metadata": map[string]any{"schema_version": json.Number("1")}})
 	n.projections[label] = got
+	b13NativeSearchControls(n, label, want)
 }
 
 func TestB13CanonicalPublicMemoryCounterparts(t *testing.T) {
@@ -216,6 +223,8 @@ func TestB13CanonicalPublicMemoryCounterparts(t *testing.T) {
 		// memory writes. Their normal CLI commit guard refuses unrelated dirty
 		// internal settings; this baseline is setup, not native remember.
 		n.call("publish-seeded-settings", []string{"dolt", "commit", "--message", "B13 public memory fixture baseline"}, 0)
+		n.call("durable-plane-decoy", []string{"--json", "create", "B13 durable plane-only survivor", "--type", "task"}, 0)
+		n.call("ephemeral-plane-decoy", []string{"--json", "create", "B13 ephemeral plane-only survivor", "--type", "task", "--ephemeral"}, 0)
 		n.image("published-source-baseline")
 		t.Run("empty-versus-absent", func(t *testing.T) {
 			for _, v := range []struct {
@@ -242,16 +251,20 @@ func TestB13CanonicalPublicMemoryCounterparts(t *testing.T) {
 			}
 			b13Same(t, got, map[string]any{"schema_version": json.Number("1"), "key": wantKey, "value": content, "action": action})
 		}
+		t.Run("existing-empty-reports-replacement", func(t *testing.T) {
+			remember("replace-existing-empty", "empty", b13FilledEmptyBody, "updated")
+			n.view("empty-replaced", map[string]string{"empty": b13FilledEmptyBody})
+		})
 		t.Run("explicit-and-derived-unicode-keys", func(t *testing.T) {
 			remember("explicit", b13PublicKey, b13PublicBody, "remembered")
 			remember("neighbor", b13PublicKey+"neighbor", "exact neighbor", "remembered")
 			remember("trimmed-neighbor", b13TrimmedPublicKey, b13TrimmedPublicBody, "remembered")
 			remember("derived", "", b13DerivedBody, "remembered")
-			n.view("created", map[string]string{"empty": "", b13PublicKey: b13PublicBody, b13TrimmedPublicKey: b13TrimmedPublicBody, b13PublicKey + "neighbor": "exact neighbor", "keep-these-exact-words": b13DerivedBody})
+			n.view("created", map[string]string{"empty": b13FilledEmptyBody, b13PublicKey: b13PublicBody, b13TrimmedPublicKey: b13TrimmedPublicBody, b13PublicKey + "neighbor": "exact neighbor", "keep-these-exact-words": b13DerivedBody})
 		})
 		t.Run("replacement-and-noop-conservation", func(t *testing.T) {
 			remember("replace", b13PublicKey, b13PublicReplacement, "updated")
-			n.view("replaced", map[string]string{"empty": "", b13PublicKey: b13PublicReplacement, b13TrimmedPublicKey: b13TrimmedPublicBody, b13PublicKey + "neighbor": "exact neighbor", "keep-these-exact-words": b13DerivedBody})
+			n.view("replaced", map[string]string{"empty": b13FilledEmptyBody, b13PublicKey: b13PublicReplacement, b13TrimmedPublicKey: b13TrimmedPublicBody, b13PublicKey + "neighbor": "exact neighbor", "keep-these-exact-words": b13DerivedBody})
 			before := n.image("before-noop")
 			remember("same-value", b13PublicKey, b13PublicReplacement, "updated")
 			after := n.image("after-noop")
@@ -264,6 +277,9 @@ func TestB13CanonicalPublicMemoryCounterparts(t *testing.T) {
 				args  []string
 			}{{"blank", []string{"--json", "remember", " \t\n", "--key", b13PublicKey}}, {"underivable", []string{"--json", "remember", "東京 !!!"}}, {"blank-key", []string{"--json", "remember", "valid", "--key", " \t "}}} {
 				n.call("refuse-"+v.label, v.args, 1)
+			}
+			for _, v := range b13FullcardRefusals {
+				n.call("refuse-"+v.name, v.native, 1)
 			}
 			b13Same(t, n.image("after-refusals"), before)
 		})
@@ -573,6 +589,7 @@ func b13ComparePlug(t *testing.T, root, engine string, native map[string]map[str
 			cursor = page.Next
 		}
 		b13Same(t, got, native[label])
+		b13PlugSearchControls(t, label, native, call)
 		var brief struct {
 			Memories []service.Memory `json:"memories"`
 		}
@@ -588,6 +605,11 @@ func b13ComparePlug(t *testing.T, root, engine string, native map[string]map[str
 		retain(t, "b13-plug-"+mode+"-"+engine+"-"+label+".json", map[string]any{"actual_native": native[label], "actual_Plug": got, "state": before, "adopted_differences": []string{"P85 core memory methods and agent.brief versus config-backed CLI", "typed not_found versus native found:false/exit1", "Plug IDs/revisions versus native keys/Dolt commits", "immutable source and attributed overlays versus overwritten native config rows"}})
 	}
 	save := func(label, key, body string, receipt int) model.Commit {
+		wantKey := key
+		if wantKey == "" {
+			wantKey = b13ExpectedDerived(body)
+		}
+		wantReplaced := ids[wantKey] != "" && !forgotten[wantKey]
 		params := map[string]any{"content": body}
 		if key != "" {
 			params["key"] = key
@@ -597,9 +619,8 @@ func b13ComparePlug(t *testing.T, root, engine string, native map[string]map[str
 		if len(commit.Results) != 1 {
 			t.Fatal("memory save missing identity")
 		}
-		wantKey := key
-		if wantKey == "" {
-			wantKey = b13ExpectedDerived(body)
+		if commit.Results[0].Replaced == nil || *commit.Results[0].Replaced != wantReplaced {
+			t.Fatalf("public %s replaced field missing/wrong; want=%t", label, wantReplaced)
 		}
 		if previous := ids[wantKey]; previous != "" && previous != commit.Results[0].Ref.ID && !forgotten[wantKey] {
 			if !imported || commit.Results[0].Ref.ID != pipeline.MemoryOverlayRef(model.RefByID(previous, model.Natural64(0))).ID {
@@ -624,6 +645,20 @@ func b13ComparePlug(t *testing.T, root, engine string, native map[string]map[str
 		call("absent", "memory.get", map[string]any{"id": "b13-absent"}, 0, "not_found")
 		b13Same(t, b13PlugImage(t, store), before)
 	})
+	t.Run("existing-empty-reports-replacement", func(t *testing.T) {
+		save("replace-existing-empty", "empty", b13FilledEmptyBody, 707)
+		if !imported {
+			view("empty-replaced")
+		} else {
+			// This constructed fixture additionally starts with the explicit
+			// source slot; its initial corpus differs from the native fixture.
+			var point service.Memory
+			b13Decode(t, call("source-empty-replaced", "memory.get", map[string]any{"id": ids["empty"]}, 0, ""), &point)
+			b13Same(t, point.Key, "empty")
+			b13Same(t, point.Content, b13FilledEmptyBody)
+			conserve()
+		}
+	})
 	t.Run("explicit-and-derived-unicode-keys", func(t *testing.T) {
 		save("explicit", b13PublicKey, b13PublicBody, 701)
 		save("neighbor", b13PublicKey+"neighbor", "exact neighbor", 702)
@@ -640,6 +675,11 @@ func b13ComparePlug(t *testing.T, root, engine string, native map[string]map[str
 		for i, v := range []map[string]any{{"key": b13PublicKey, "content": " \t\n"}, {"content": "東京 !!!"}, {"key": " \t ", "content": "valid"}} {
 			before := b13PlugImage(t, store)
 			call(fmt.Sprintf("refusal%d", i), "memory.save", v, 711+i, "invalid_params")
+			b13Same(t, b13PlugImage(t, store), before)
+		}
+		for i, v := range b13FullcardRefusals {
+			before := b13PlugImage(t, store)
+			call("refuse-"+v.name, "memory.save", v.plug, 800+i, "invalid_params")
 			b13Same(t, b13PlugImage(t, store), before)
 		}
 	})

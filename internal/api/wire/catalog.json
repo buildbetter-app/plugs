@@ -7465,6 +7465,9 @@
             "type": "object",
             "additionalProperties": true
           },
+          "replaced": {
+            "type": "boolean"
+          },
           "setBy": {
             "type": "object",
             "additionalProperties": {
