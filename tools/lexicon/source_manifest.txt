@@ -1704,6 +1704,9 @@ spec/s1-b01-b04/b01-hierarchy-deviation.md
 spec/s1-b01-b04/b01-hierarchy-vectors.json
 spec/s1-b01-b04/b02_public_outcomes_test.go
 spec/s1-b01-b04/b02_public_support_test.go
+spec/s1-b01-b04/b04_ordinary_native_test.go
+spec/s1-b01-b04/b04_ordinary_support_test.go
+spec/s1-b01-b04/b04_ordinary_test.go
 spec/s1-b01-b04/claim_acceptance_test.go
 spec/s1-b01-b04/clock_boundary_test.go
 spec/s1-b01-b04/extract_reference_packet.py
