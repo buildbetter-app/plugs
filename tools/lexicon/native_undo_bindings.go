@@ -2,6 +2,13 @@ package lexicon
 
 // Exact compiled AST contexts and decoded literal digests; no file exemptions.
 var undoLiteralBindings = map[string][]undoLiteralBinding{
+	// Canonical native refusal text at one exact B06 assertion site. The
+	// existing AST selector admits this node only, never the method body.
+	"spec/cardb20/b06_native_test.go": {
+		{name: "boundaries", kind: "func", contextSHA256: "bfb1380158269951ba46db01ae6a290f429637821dcecc2b7c9a8938706f57f4", literals: map[int]string{
+			832: "2b78b308b236a49d7c6bea2a94800e02cd3405ca23f917c0d0e503b557f55169",
+		}},
+	},
 	"internal/storage/physicalcapture/working_test.go": {
 		{name: "currentOnlyFamilies", kind: "var", contextSHA256: "808c97eeab1b2bff99cc9a39914b41c01ef803efa8b3f7d70d939f5e781bccfe", literals: map[int]string{
 			37:  "91f880d51578af7df6289315f0b8e9e7e5c44e86b33f48900c26f031a0cc6f75",

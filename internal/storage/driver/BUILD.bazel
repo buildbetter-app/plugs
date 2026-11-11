@@ -9,6 +9,7 @@ go_library(
         "allocator_journal.go",
         "parent_counter.go",
         "driver.go",
+        "cycle_topology.go",
         "descendant_filter.go",
         "errors.go",
         "hierarchy.go",
