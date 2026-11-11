@@ -15,3 +15,9 @@ id = "native-type-binding-json"
 path = "spec/s1-b01-b04/native_source_bindings.json"
 field = "nativeTypeBoundary.defaultHidden"
 values = ["merge-request", "gate", "molecule", "rig", "agent", "role", "message"]
+
+# Exact new operational reference files retain the pinned native protocol and
+# distinguish its ephemeral planes from ordinary Plug durable counterparts.
+# This is provenance vocabulary only; no product/runtime path is admitted.
+[zones]
+provenance = ["spec/cardb01/canonicalfront/README.md", "spec/cardb01/canonicalfront/controls_test.go", "spec/cardb01/canonicalfront/native_test.go", "spec/cardb01/canonicalfront/public_fixture_test.go"]

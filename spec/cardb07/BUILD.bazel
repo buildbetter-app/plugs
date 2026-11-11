@@ -1,0 +1,46 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+COMMON = ["cases_test.go", "fixture_test.go", "public_test.go", "opaque_test.go", "mixed_test.go", "imported_waits_test.go"]
+DEPS = [
+    "//internal/core/dumpformat",
+    "//internal/core/model",
+    "//internal/core/pipeline",
+    "//internal/core/reverseconverter",
+    "//internal/integration/converterroundtrip",
+    "//internal/server/composition",
+    "//internal/server/rpc",
+    "//internal/storage/driver",
+]
+
+go_test(
+    name = "public_edges_test",
+    srcs = COMMON,
+    args = ["-test.v"],
+    deps = DEPS,
+    data = ["//internal/integration/converterroundtrip:testdata/synthetic-plug-dump-1.tar"],
+    size = "large",
+    tags = ["local", "requires-network"],
+    timeout = "long",
+)
+
+go_test(
+    name = "public_native_edges_test",
+    srcs = COMMON + ["native_test.go", "//spec/cardb20:native_build_support"],
+    deps = DEPS + ["//internal/publicnative"],
+    data = [
+        "//internal/integration/converterroundtrip:testdata/synthetic-plug-dump-1.tar",
+        "//spec/s1-b09-native:lexicon_files",
+        "//internal/publicnative:dolt_runtime",
+    ],
+    env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
+    args = ["-test.v", "-test.run=^TestB07CanonicalNativeEdgeCounterparts$$"],
+    size = "enormous",
+    tags = ["local", "manual"],
+    timeout = "eternal",
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

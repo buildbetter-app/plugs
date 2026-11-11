@@ -124,7 +124,8 @@ func (r *parentReadiness) ordinary(id string) (OrdinaryParentFact, error) {
 				if link.Kind != "parent-child" || workflowTarget(model.RefByID(link.From, model.Natural64(0))) {
 					continue
 				}
-				if validateRef(link.To) != nil || link.To.ID != item.ID || !workflowTarget(link.To) || link.Metadata != nil || validateRef(model.RefByID(link.From, model.Natural64(0))) != nil {
+				// Opaque source fields are inert; typed predicates and malformed tokens still refuse.
+				if validateRef(link.To) != nil || link.To.ID != item.ID || !workflowTarget(link.To) || validateRelation(RelationSpec{To: link.To, Kind: link.Kind, Metadata: link.Metadata}) != nil || validateRef(model.RefByID(link.From, model.Natural64(0))) != nil {
 					return OrdinaryParentFact{}, fail("internal_error", "invalid persisted mixed parent index")
 				}
 				if prior, exists := r.parents[link.From]; exists && !sameRef(&prior, &link.To) {

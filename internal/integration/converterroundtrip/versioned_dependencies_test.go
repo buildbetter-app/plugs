@@ -137,10 +137,10 @@ func requireVersionedDependencyState(t *testing.T, store driver.Store, archive *
 		}
 		if doc.ID == "demo-7.4" {
 			edge := archive.Records("edge")[0]
-			predicate, err := dumpformat.SourceEdgeMetadata(archive.Manifest().EdgeVersion(), edge.ID, stringValue(edge.Body["type"]), edge.Body["metadata"])
-			if err != nil || doc.Parent != nil || len(doc.Links) != 1 || doc.Links[0].Kind != edge.Body["type"] || doc.Links[0].To.ID != edge.Body["to"] || doc.Links[0].TargetKind == model.LinkTargetExternal || !reflect.DeepEqual(doc.Links[0].Metadata, predicate) {
+			if doc.Parent != nil || len(doc.Links) != 1 || doc.Links[0].Kind != edge.Body["type"] || doc.Links[0].To.ID != edge.Body["to"] || doc.Links[0].TargetKind == model.LinkTargetExternal {
 				t.Fatalf("typed local source projection changed: %+v %v", doc, err)
 			}
+			requireImportedDependencyMetadata(t, archive, edge, doc.Links[0].Metadata)
 		}
 	}
 	for _, edge := range archive.Records("edge") {
@@ -278,10 +278,11 @@ func requireLocalOpaqueDependencyState(t *testing.T, store driver.Store, archive
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(doc.Links) != 1 || doc.Links[0].Kind != "local-opaque" || doc.Links[0].TargetKind == model.LinkTargetExternal || doc.Links[0].To.ID != "demo-7" || doc.Links[0].Metadata != nil {
+	if len(doc.Links) != 1 || doc.Links[0].Kind != "local-opaque" || doc.Links[0].TargetKind == model.LinkTargetExternal || doc.Links[0].To.ID != "demo-7" || doc.Links[0].Metadata.HasPredicate() {
 		t.Fatalf("local opaque link was projected as workflow state: %+v", doc.Links)
 	}
 	edge := archive.Records("edge")[0]
+	requireImportedDependencyMetadata(t, archive, edge, doc.Links[0].Metadata)
 	sourceRows, err := r.Get(ctx, []model.Ref{model.RefByID("source/edge/"+edge.ID, model.Natural64(0))})
 	if err != nil || len(sourceRows) != 1 {
 		t.Fatalf("source edge missing: %v", err)
@@ -342,6 +343,24 @@ func TestLocalOpaqueDependencyImportIsInertAndReopenSafe(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func requireImportedDependencyMetadata(t *testing.T, archive *dumpformat.Archive, edge dumpformat.Record, got *model.LinkMetadata) {
+	t.Helper()
+	want, err := dumpformat.SourceEdgeMetadata(archive.Manifest().EdgeVersion(), edge.ID, stringValue(edge.Body["type"]), edge.Body["metadata"])
+	if err != nil || got == nil {
+		t.Fatal("imported dependency metadata missing", err)
+	}
+	if want == nil {
+		if got.HasPredicate() {
+			t.Fatal("opaque source fields acquired scheduling semantics")
+		}
+	} else if got.Gate != want.Gate || got.AlsoBlocks != want.AlsoBlocks {
+		t.Fatal("typed source predicate changed")
+	}
+	if !reflect.DeepEqual(got.NativeExtensions, edge.NativeEdgeTokens) {
+		t.Fatal("imported native field tokens differ from the original archive")
 	}
 }
 
@@ -529,14 +548,16 @@ func TestFixed19TypedRestoreReverseReopenAndNonblockingEffects(t *testing.T) {
 								if doc.Parent == nil || doc.Parent.ID != to || len(doc.Links) != 0 {
 									t.Fatal("fixed parent-child lost canonical hierarchy")
 								}
+								requireImportedDependencyMetadata(t, archive, edge, doc.ParentMetadata)
 							} else {
 								wantKind := kind
 								if kind == "related" {
 									wantKind = "relates-to"
 								}
-								if doc.Parent != nil || len(doc.Links) != 1 || doc.Links[0].Kind != wantKind || doc.Links[0].To.ID != to || doc.Links[0].TargetKind == model.LinkTargetExternal || kind != "waits-for" && doc.Links[0].Metadata != nil {
+								if doc.Parent != nil || len(doc.Links) != 1 || doc.Links[0].Kind != wantKind || doc.Links[0].To.ID != to || doc.Links[0].TargetKind == model.LinkTargetExternal || kind != "waits-for" && doc.Links[0].Metadata.HasPredicate() {
 									t.Fatalf("fixed kind acquired hierarchy, routing or scheduling metadata: %+v", doc)
 								}
+								requireImportedDependencyMetadata(t, archive, edge, doc.Links[0].Metadata)
 							}
 							var mirror map[string]any
 							if err := decodeReverseJSON(rows["source/edge/"+edge.ID].Body, &mirror); err != nil || !reflect.DeepEqual(mirror["source"], map[string]any(edge.Source.Fields)) {
