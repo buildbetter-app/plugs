@@ -96,26 +96,20 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 	}
 	owned := source == nil
 	if owned {
-		data, err := r.Blob(ctx, driver.Hash(bound.ArchiveDigest))
-		if err != nil || hashBytes(data) != bound.ArchiveDigest {
-			return Report{}, nil, driver.ErrConflict
-		}
-		archive, err := readRetainedImportArchive(ctx, r, data, archiveEvidence{})
-		if err != nil {
-			return Report{}, nil, nativeDeltaRecoveryError(err)
-		}
-		source = &receivingEvidence{archive: archive, requestHash: request}
+		// recoverImportReader authenticates the receipt and exact current marker
+		// before filling this private slot from its original admitted evidence.
+		source = &receivingEvidence{requestHash: request}
 	}
 	keepArchive := false
 	defer func() {
-		if owned {
+		if owned && source.archive != nil {
 			source.archive.ClearNativeDeltaPreparation()
 			if !keepArchive {
 				source.archive.ReleaseNativeDecoded()
 			}
 		}
 	}()
-	if source == nil || source.archive == nil || source.archive.SHA256() != bound.ArchiveDigest || source.requestHash != request {
+	if source == nil || source.requestHash != request {
 		return Report{}, nil, driver.ErrConflict
 	}
 	report, err := recoverImportReader(ctx, r, meta, bound, check, request, source)
