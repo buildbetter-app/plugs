@@ -2234,6 +2234,12 @@ func runHelper(t *testing.T, root string, source pluginmanifest.Checkout) map[st
 	}
 	fmt.Fprintf(&goMod, ")\n\nreplace github.com/buildbetter-app/plugs => %q\n", root)
 	for _, module := range modules {
+		// libc's Linux musl implementation excludes these dependencies, so
+		// Bazel does not fetch their otherwise unused source repositories.
+		if runtime.GOOS == "linux" && runtime.GOARCH != "mips64le" &&
+			(module.path == "github.com/mattn/go-isatty" || module.path == "github.com/ncruces/go-strftime") {
+			continue
+		}
 		cached := filepath.Join(moduleCache, filepath.FromSlash(module.path)+"@"+module.version)
 		sourceRoot := offlineModule(t, cached, module.repository)
 		fmt.Fprintf(&goMod, "replace %s => %q\n", module.path, sourceRoot)
