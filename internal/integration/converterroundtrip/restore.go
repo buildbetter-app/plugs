@@ -55,6 +55,17 @@ type Verification struct {
 	DerivedSHA256 string
 }
 
+// receivingEvidence is private to a single authenticated receiving operation.
+// A successful commit checks its durable receipt against these same validated
+// inputs. Restart recovery constructs its own source from the fixed reader.
+type receivingEvidence struct {
+	archive     *dumpformat.Archive
+	plan        *restorePlan
+	history     *driver.OfflineHistory
+	logical     []byte
+	requestHash string
+}
+
 // Restore validates the complete archive and restores it into an empty store.
 // The wrapper obtains the store lease itself; callers that already own the
 // lease (including integration tests) can use RestoreWithLease.
@@ -160,6 +171,7 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 	// Conversion plans and their lowered batches live through transaction
 	// cleanup, then cease to be retained. The report keeps the original archive.
 	originalArchive := archive
+	defer originalArchive.ClearNativeDeltaPreparation()
 	archive, releasePlan := archive.NativeDeltaAccountingScope()
 	defer func() {
 		releasePlan()
@@ -418,7 +430,11 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		}
 	}
 	if plan.nativeCapture != nil {
-		if err := plan.nativeCapture.VisitNativeCaptureFiles(ctx, func(_ string, data []byte) error {
+		prepared, err := plan.nativeCapture.PrepareNativeDelta(ctx)
+		if err != nil {
+			return report, err
+		}
+		if err := prepared.Visit(ctx, dumpformat.NativeDeltaVisitor{File: func(_ string, data []byte) error {
 			actual, err := tx.PutBlob(ctx, data)
 			if err != nil {
 				return err
@@ -427,7 +443,7 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 				return fmt.Errorf("native capture blob digest differs")
 			}
 			return nil
-		}); err != nil {
+		}}); err != nil {
 			return report, err
 		}
 	}
@@ -485,7 +501,8 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 	}
 	report.Restored = restored
 	if sourceLogical != nil {
-		recovered, recoverErr := recoverSourceImport(ctx, target, *profile, checks[0])
+		evidence := &receivingEvidence{archive: archive, plan: &plan, history: history, logical: sourceLogical, requestHash: report.RequestHash}
+		recovered, recoverErr := recoverSourceImport(ctx, target, *profile, checks[0], evidence)
 		if recoverErr != nil {
 			return report, recoverErr
 		}
@@ -565,7 +582,7 @@ func RecoverImport(ctx context.Context, target driver.Store, profile driver.Rest
 	return recoverImportReader(ctx, r, meta, bound, check, request)
 }
 
-func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta, bound driver.RestoreImportProfile, check Verification, request string) (Report, error) {
+func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta, bound driver.RestoreImportProfile, check Verification, request string, prepared ...*receivingEvidence) (Report, error) {
 	principal, err := driver.PrincipalKey(bound.Admission.Actor)
 	if err != nil {
 		return Report{}, err
@@ -639,12 +656,35 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 	if err = compareImportBinding(ctx, r, evidence, binding); err != nil {
 		return Report{}, nativeDeltaRecoveryError(err)
 	}
+	var source *receivingEvidence
+	if len(prepared) != 0 {
+		source = prepared[0]
+		if source == nil || source.archive == nil || source.archive.SHA256() != bound.ArchiveDigest || source.requestHash != request {
+			return Report{}, driver.ErrConflict
+		}
+	} else if bound.HistoryDigest != "" || bound.SourcePlanes != nil {
+		raw, readErr := r.Blob(ctx, driver.Hash(evidence.ArchiveSHA256))
+		if readErr != nil || hashBytes(raw) != bound.ArchiveDigest {
+			return Report{}, driver.ErrConflict
+		}
+		archive, readErr := readRetainedImportArchive(ctx, r, raw, evidence)
+		if readErr != nil {
+			return Report{}, nativeDeltaRecoveryError(readErr)
+		}
+		defer archive.ReleaseNativeDecoded()
+		source = &receivingEvidence{archive: archive, requestHash: request}
+	}
 	if bound.HistoryDigest != "" {
-		if err = validateHistoryRecovery(ctx, r, bound, evidence, receipt); err != nil {
+		if err = validateHistoryRecoveryArchive(ctx, r, bound, evidence, receipt, source.archive, source.history); err != nil {
 			return Report{}, nativeDeltaRecoveryError(err)
 		}
 	}
-	families, schemas, histories, err := recoverNativeFamilies(ctx, r, bound, evidence, receipt)
+	var families []NativeFamilyReport
+	var schemas []NativeSchemaReport
+	var histories []NativeHistoryReport
+	if source != nil && bound.SourcePlanes != nil && bound.HistoryMode == driver.RestoreHistoryModeFull {
+		families, schemas, histories, err = recoverNativeFamiliesArchive(ctx, r, bound, receipt, source.archive, source.plan)
+	}
 	if err != nil {
 		return Report{}, nativeDeltaRecoveryError(err)
 	}
@@ -660,23 +700,25 @@ type restoreRecord struct {
 // restorePlan is the receiver's mutable publication view of a detached leaf
 // plan. Publication appends target-incarnation-dependent records only here.
 type restorePlan struct {
-	nativeFamilies []NativeFamilyReport
-	nativeSchemas []NativeSchemaReport
+	nativeFamilies  []NativeFamilyReport
+	nativeSchemas   []NativeSchemaReport
 	nativeHistories []NativeHistoryReport
-	records []restoreRecord
-	sentinels []driver.Sentinel
-	derived []derivedImage
-	derivedDigest string
-	blobs map[string][]byte
-	nativeCapture *dumpformat.Archive
-	allocators []driver.OfflineAllocator
+	records         []restoreRecord
+	sentinels       []driver.Sentinel
+	derived         []derivedImage
+	derivedDigest   string
+	blobs           map[string][]byte
+	nativeCapture   *dumpformat.Archive
+	allocators      []driver.OfflineAllocator
 }
 
 type importBindingEvidence = nativeprojection.ImportBindingEvidence
 type importProjectBinding = nativeprojection.ImportProjectBinding
 type importProjectMetadata = nativeprojection.ImportProjectMetadata
 
-func importProjectRecordID(prefix string) string { return nativeprojection.ImportProjectRecordID(prefix) }
+func importProjectRecordID(prefix string) string {
+	return nativeprojection.ImportProjectRecordID(prefix)
+}
 
 func compareImportBinding(ctx context.Context, r driver.Reader, evidence archiveEvidence, binding importBindingEvidence) error {
 	manifestFile, ok := evidence.Members["manifest.json"]
@@ -740,14 +782,20 @@ func buildPlanForInspection(archive *dumpformat.Archive) (restorePlan, error) {
 }
 
 func receivePlan(archive *dumpformat.Archive, plan nativeprojection.Plan, err error) (restorePlan, error) {
-	if err != nil { return restorePlan{}, err }
+	if err != nil {
+		return restorePlan{}, err
+	}
 	image, err := plan.Snapshot()
-	if err != nil { return restorePlan{}, err }
+	if err != nil {
+		return restorePlan{}, err
+	}
 	view := restorePlan{nativeFamilies: image.NativeFamilies, nativeSchemas: image.NativeSchemas, nativeHistories: image.NativeHistories, sentinels: image.Sentinels, derived: image.Derived, derivedDigest: image.DerivedDigest, blobs: image.Blobs, allocators: image.Allocators}
 	for _, record := range image.Records {
 		view.records = append(view.records, restoreRecord{ref: record.Ref, kind: record.Kind, body: record.Body})
 	}
-	if plan.HasNativeCapture() { view.nativeCapture = archive }
+	if plan.HasNativeCapture() {
+		view.nativeCapture = archive
+	}
 	return view, nil
 }
 

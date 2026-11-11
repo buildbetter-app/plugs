@@ -53,7 +53,7 @@ func RecoverBoundSourceImport(ctx context.Context, target driver.Store) (driver.
 	return profile, report, true, err
 }
 
-func recoverSourceImport(ctx context.Context, target driver.Store, profile driver.RestoreImportProfile, check Verification) (Report, error) {
+func recoverSourceImport(ctx context.Context, target driver.Store, profile driver.RestoreImportProfile, check Verification, prepared ...*receivingEvidence) (Report, error) {
 	capability, ok := target.(driver.SourcePlaneSnapshotStore)
 	if !ok {
 		return Report{}, driver.ErrUnsupported
@@ -79,18 +79,46 @@ func recoverSourceImport(ctx context.Context, target driver.Store, profile drive
 		return Report{}, err
 	}
 	defer r.Close()
-	report, _, err := recoverSourceImportReader(ctx, r, meta, bound, check, plan, request)
+	report, _, err := recoverSourceImportReader(ctx, r, meta, bound, check, plan, request, prepared...)
 	return report, err
 }
 
 // The caller owns one pinned core/namespace reader. All retained evidence and
 // current origin checks use that same observation; this helper never reopens it.
-func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot, meta driver.Meta, bound driver.RestoreImportProfile, check Verification, plan driver.SourcePlanePlanV1, request string) (Report, []byte, error) {
+func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot, meta driver.Meta, bound driver.RestoreImportProfile, check Verification, plan driver.SourcePlanePlanV1, request string, prepared ...*receivingEvidence) (Report, []byte, error) {
 	if r.Snapshot().At == nil || r.Snapshot().Incarnation != meta.Incarnation {
 		return Report{}, nil, driver.ErrConflict
 	}
 	meta.Head = *r.Snapshot().At
-	report, err := recoverImportReader(ctx, r, meta, bound, check, request)
+	var source *receivingEvidence
+	if len(prepared) != 0 {
+		source = prepared[0]
+	}
+	owned := source == nil
+	if owned {
+		data, err := r.Blob(ctx, driver.Hash(bound.ArchiveDigest))
+		if err != nil || hashBytes(data) != bound.ArchiveDigest {
+			return Report{}, nil, driver.ErrConflict
+		}
+		archive, err := readRetainedImportArchive(ctx, r, data, archiveEvidence{})
+		if err != nil {
+			return Report{}, nil, nativeDeltaRecoveryError(err)
+		}
+		source = &receivingEvidence{archive: archive, requestHash: request}
+	}
+	keepArchive := false
+	defer func() {
+		if owned {
+			source.archive.ClearNativeDeltaPreparation()
+			if !keepArchive {
+				source.archive.ReleaseNativeDecoded()
+			}
+		}
+	}()
+	if source == nil || source.archive == nil || source.archive.SHA256() != bound.ArchiveDigest || source.requestHash != request {
+		return Report{}, nil, driver.ErrConflict
+	}
+	report, err := recoverImportReader(ctx, r, meta, bound, check, request, source)
 	if err != nil {
 		return Report{}, nil, err
 	}
@@ -137,30 +165,21 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 	// Re-verify the exact retained source and immutable provider origin map.
 	// Comparing the schema's original source member permits ordinary mutations
 	// while refusing a namespace that retained its origin tag but lost raw data.
-	data, err := r.Blob(ctx, driver.Hash(bound.ArchiveDigest))
-	if err != nil || hashBytes(data) != bound.ArchiveDigest {
-		return Report{}, nil, driver.ErrConflict
-	}
-	archive, err := readRetainedImportArchive(ctx, r, data, archiveEvidence{})
-	if err != nil {
-		return Report{}, nil, nativeDeltaRecoveryError(err)
-	}
-	keepArchive := false
-	defer func() {
-		if !keepArchive {
-			archive.ReleaseNativeDecoded()
-		}
-	}()
+	archive := source.archive
 	// The report retains the source archive, while prepared logical bytes and
 	// reverse inspection candidates end at this comparison boundary.
 	work, release := archive.NativeDeltaAccountingScope()
 	defer release()
 	ctx = work.WithNativeDeltaAccounting(ctx)
-	prepared, err := prepareSourceArchive(ctx, work, bound, true)
-	if err != nil {
-		return Report{}, nil, nativeDeltaRecoveryError(err)
+	logical := source.logical
+	if logical == nil {
+		image, err := prepareSourceArchive(ctx, work, bound, true)
+		if err != nil {
+			return Report{}, nil, nativeDeltaRecoveryError(err)
+		}
+		logical = image.LogicalImage()
 	}
-	initialImage, err := workflowplugin.InspectSourceReverseImage(prepared.LogicalImage())
+	initialImage, err := workflowplugin.InspectSourceReverseImage(logical)
 	if err != nil {
 		return Report{}, nil, driver.ErrConflict
 	}
