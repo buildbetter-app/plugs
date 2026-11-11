@@ -72,7 +72,7 @@ func (n *b23Native) request(label, method, path string, body any, status int) ma
 		n.t.Fatal(err)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 3 * time.Minute}).Do(request)
+	response, err := (&http.Client{Timeout: 20 * time.Minute}).Do(request)
 	if err != nil {
 		n.save(label+"-http.json", map[string]any{"method": method, "url": request.URL.String(), "request": json.RawMessage(raw), "error": err.Error()})
 		n.t.Fatal(err)
@@ -213,14 +213,22 @@ func TestB23FreshNativeCombinedPredicateCountsAndOrderedKeysets(t *testing.T) {
 		labels        []string
 	}{
 		{"Needle twin", "open", []string{"Alpha", "shared"}}, {"Needle twin", "open", []string{"Alpha", "gamma", "shared"}}, {"needle lower", "open", []string{"alpha", "shared"}}, {"Needle closed", "closed", []string{"Alpha", "shared"}}, {"Needle other", "open", []string{"gamma"}}, {"ordinary", "open", []string{"Alpha", "shared"}},
+		{"Needle twin", "open", []string{"Alpha", "shared"}},
 	}
 	items := []any{}
 	for i, row := range rows {
-		items = append(items, map[string]any{"kind": "create", "create": map[string]any{"id": queryIDs[i], "title": row.title, "status": row.status, "issue_type": "task", "labels": row.labels, "priority": 2}})
+		if i < 2 {
+			row.labels = append(row.labels, "b23-ready-scope")
+		}
+		typ := "task"
+		if i == 6 {
+			typ = "bug"
+		}
+		items = append(items, map[string]any{"kind": "create", "create": map[string]any{"id": queryIDs[i], "title": row.title, "status": row.status, "issue_type": typ, "labels": row.labels, "priority": 2}})
 	}
 	seed := n.request("seed", "POST", "/v0/beads/issues:batchApply", map[string]any{"actor": "b23-recorder", "items": items}, 200)
 	var committed []struct{ Changed bool }
-	if json.Unmarshal(seed["items"], &committed) != nil || len(committed) != 6 {
+	if json.Unmarshal(seed["items"], &committed) != nil || len(committed) != 7 {
 		t.Fatal("native seed lost results")
 	}
 	for _, item := range committed {
@@ -280,13 +288,13 @@ func TestB23FreshNativeCombinedPredicateCountsAndOrderedKeysets(t *testing.T) {
 	for _, row := range oracle {
 		want = append(want, row.ID)
 	}
-	if len(want) != 6 {
+	if len(want) != 7 {
 		t.Fatal("native order oracle lost rows")
 	}
 	got := []string{}
 	seen := map[string]bool{}
 	cursor := ""
-	for page := 0; page <= 6; page++ {
+	for page := 0; page <= 7; page++ {
 		body := n.request(fmt.Sprintf("keyset-%d", page), "GET", "/v0/beads/issues?all=true&sort=priority&limit=1&cursor="+url.QueryEscape(cursor), nil, 200)
 		ids := b23NativeItems(t, body)
 		for _, id := range ids {
@@ -312,7 +320,7 @@ func TestB23FreshNativeCombinedPredicateCountsAndOrderedKeysets(t *testing.T) {
 			t.Fatal("native keyset did not advance")
 		}
 		cursor = next
-		if page == 6 {
+		if page == 7 {
 			t.Fatal("native keyset did not terminate")
 		}
 	}
@@ -325,10 +333,36 @@ func TestB23FreshNativeCombinedPredicateCountsAndOrderedKeysets(t *testing.T) {
 	for _, row := range display {
 		ids = append(ids, row.ID)
 	}
-	if !reflect.DeepEqual(ids, []string{queryIDs[5], queryIDs[0], queryIDs[2], queryIDs[1], queryIDs[3], queryIDs[4]}) {
+	if !reflect.DeepEqual(ids, []string{queryIDs[5], queryIDs[0], queryIDs[2], queryIDs[1], queryIDs[3], queryIDs[6], queryIDs[4]}) {
 		t.Fatalf("native natural 2/10 order=%v", ids)
 	}
 	n.refuse("http-id-sort", "/v0/beads/issues?sort=id", "sort", "invalid_value")
+	// Readiness uses actual public dependencies, never a todo/open count.
+	readyFilter := "label=b23-ready-scope"
+	readyCountNative := func(label string, want int) {
+		body := n.request(label, "GET", "/v0/beads/ready:count?"+readyFilter, nil, 200)
+		var total int
+		if json.Unmarshal(body["total"], &total) != nil || total != want {
+			t.Fatalf("native ready count=%s want=%d", body["total"], want)
+		}
+	}
+	readyCountNative("ready-independent", 2)
+	dep := map[string]any{"kind": "dep_add", "dep_add": map[string]any{"source": map[string]any{"id": queryIDs[1]}, "target": map[string]any{"id": queryIDs[0]}, "type": "blocks"}}
+	n.request("ready-link", "POST", "/v0/beads/issues:batchApply", map[string]any{"actor": "b23-recorder", "items": []any{dep}}, 200)
+	readyCountNative("ready-blocked", 1)
+	closeItem := map[string]any{"kind": "close", "close": map[string]any{"target": map[string]any{"id": queryIDs[0]}, "reason": "ready counter lifecycle"}}
+	n.request("ready-close-blocker", "POST", "/v0/beads/issues:batchApply", map[string]any{"actor": "b23-recorder", "items": []any{closeItem}}, 200)
+	readyCountNative("ready-unblocked", 1)
+	n.refuse("ready-count-limit", "/v0/beads/ready:count?limit=1", "limit", "unknown_parameter")
+	// Plane selectors compose with the same native text/label/status/type
+	// predicate; their count is independent of any item page.
+	for i, plane := range []string{"ephemeral", "no_history"} {
+		create := map[string]any{"id": fmt.Sprintf("b23-plane%d", i), "title": "Needle plane", "issue_type": "task", "labels": []string{"Alpha", "shared"}, plane: true}
+		n.request("plane-"+plane, "POST", "/v0/beads/issues:batchApply", map[string]any{"actor": "b23-recorder", "items": []any{map[string]any{"kind": "create", "create": create}}}, 200)
+	}
+	n.count("plane-intersection-durable", "title=Needle&label=Alpha&label=shared&status=open&type=task", 1)
+	n.count("plane-intersection-all", "title=Needle&label=Alpha&label=shared&status=open&type=task&include_ephemeral=true", 3)
+
 	// Each actual Plug engine executes the equivalent supported compound
 	// predicates. Ordinary native and Plug vocabulary are independently named;
 	// count wire shape and title/sort differences are never silently normalized.

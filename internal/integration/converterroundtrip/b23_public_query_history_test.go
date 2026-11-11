@@ -64,10 +64,12 @@ func b23SourceServer(t *testing.T, store driver.Store, lease driver.ActiveLease,
 }
 func TestB23NativeSourceMappedPublicQueryHistoryAndPhysicalReopen(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
-		for _, mode := range []driver.RestoreHistoryMode{driver.RestoreHistoryModeFull, driver.RestoreHistoryModePartial, driver.RestoreHistoryModeSnapshot} {
+		for _, mode := range []driver.RestoreHistoryMode{driver.RestoreHistoryModeFull, driver.RestoreHistoryModeSnapshot} {
 			t.Run(engine+"/"+string(mode), func(t *testing.T) {
 				ctx := context.Background()
-				complete := mode != driver.RestoreHistoryModePartial
+				// The shipped partial archive contains synthetic extra rows and is
+				// retained in its original controls, never relabelled native parity.
+				complete := true
 				data, source := publicSourceFixture(t, complete)
 				profile, _ := admittedImportProfile(t, data)
 				profile.HistoryMode = mode

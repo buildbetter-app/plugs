@@ -12,7 +12,7 @@ import (
 
 // Expectations are literal membership/order vectors, not a second copy of
 // viewops' matcher or a sorted derivative of the actual result.
-var queryIDs = []string{"b23-query.2", "b23-query.10", "b23-query.3", "b23-query.11", "b23-query.20", "b23-query.1"}
+var queryIDs = []string{"b23-query.2", "b23-query.10", "b23-query.3", "b23-query.11", "b23-query.20", "b23-query.1", "b23-query.12"}
 
 type queryCase struct {
 	name, query            string
@@ -32,8 +32,8 @@ func queryCases() []queryCase {
 		{name: "unknown-label", query: "label=not-a-label", want: []string{}},
 		{name: "unknown-resource", resources: []string{"absent"}, want: []string{}},
 		{name: "types-intersect-query", query: "type=issue", types: []string{"absent"}, want: []string{}},
-		{name: "empty", want: []string{queryIDs[5], queryIDs[1], queryIDs[3], queryIDs[0], queryIDs[4], queryIDs[2]}},
-		{name: "blank", query: " \t ", want: []string{queryIDs[5], queryIDs[1], queryIDs[3], queryIDs[0], queryIDs[4], queryIDs[2]}},
+		{name: "empty", want: []string{queryIDs[5], queryIDs[1], queryIDs[3], queryIDs[6], queryIDs[0], queryIDs[4], queryIDs[2]}},
+		{name: "blank", query: " \t ", want: []string{queryIDs[5], queryIDs[1], queryIDs[3], queryIDs[6], queryIDs[0], queryIDs[4], queryIDs[2]}},
 	}
 }
 func queryDefinition(c queryCase, budget int) map[string]any {
@@ -133,10 +133,15 @@ func seedQuery(t *testing.T, f *fixture) []model.Ref {
 		{"Needle closed", []string{"Alpha", "shared"}},
 		{"Needle other", []string{"gamma"}},
 		{"ordinary", []string{"Alpha", "shared"}},
+		{"Needle twin", []string{"Alpha", "shared"}},
 	}
 	refs := []model.Ref{}
 	for i, row := range rows {
-		c := f.mutation("bead.create", fmt.Sprintf("seed-%d", i), map[string]any{"type": "issue", "fields": map[string]any{"title": row.title, "labels": row.labels}})
+		typ := "issue"
+		if i == 6 {
+			typ = "bug"
+		}
+		c := f.mutation("bead.create", fmt.Sprintf("seed-%d", i), map[string]any{"type": typ, "fields": map[string]any{"title": row.title, "labels": row.labels}})
 		if c.Results[0].Ref.ID != queryIDs[i] {
 			t.Fatal("fixture identity drift")
 		}
