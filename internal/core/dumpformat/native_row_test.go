@@ -572,6 +572,45 @@ func TestNativeRowV2CurrentNullCredentialAndPolicy(t *testing.T) {
 	}
 }
 
+func TestNativeRowOpaqueCurrentTableOracle(t *testing.T) {
+	for _, name := range []string{"dolt_ignore", "dolt_nonlocal_tables", "dolt_schemas"} {
+		t.Run(name, func(t *testing.T) {
+			schema := NativeDeltaTableSchema{Name: name, Columns: []NativeDeltaColumn{{Name: "name", SQLType: "TEXT"}, {Name: "value", SQLType: "TEXT"}}}
+			fields := Row{"name": "public-view", "value": "SELECT '<public>' AS value"}
+			row := rowTestPhysical(t, schema, fields, []NativeDeltaCell{{Kind: "string", Value: "public-view"}, {Kind: "string", Value: "SELECT '<public>' AS value"}}, 0)
+			records, err := NativeV2TableRecords(rowTestSource, schema, NativeRowOpaqueCurrentHistory, []NativeDeltaRow{row}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			meta := rowTestOracle(t, rowTestSource, name, NativeRowOpaqueCurrentHistory, records, rowTestTable(t, fields))
+			if meta.History != "opaque-native-physical" || meta.IdentityKind != NativeRowD3Physical {
+				t.Fatal("opaque current classification or typed identity changed")
+			}
+			for _, record := range records {
+				if !strings.HasPrefix(record.Ref.ID, "source/native-current/") {
+					t.Fatal("opaque current evidence crossed into history plane")
+				}
+			}
+			// A normalized-only codec input still claims no physical types. The
+			// importer, rather than this classification string, authenticates
+			// whether that input belongs to the source's current table census.
+			bag, err := NativeV1TableRecords(rowTestSource, name, NativeRowOpaqueCurrentHistory, rowTestTable(t, fields))
+			if err != nil {
+				t.Fatal(err)
+			}
+			bagMeta := rowTestOracle(t, rowTestSource, name, NativeRowOpaqueCurrentHistory, bag, rowTestTable(t, fields))
+			if bagMeta.IdentityKind != NativeRowV1ContentBag || bagMeta.PhysicalColumns != nil || bagMeta.PhysicalTableSHA256 != nil {
+				t.Fatal("opaque label invented typed provenance")
+			}
+			for _, history := range []string{"opaque", "opaque-native-physical-extra", "unknown"} {
+				if _, err := NativeV2RowRecord(rowTestSource, schema, history, row, nil); err == nil {
+					t.Fatal("unknown history class accepted")
+				}
+			}
+		})
+	}
+}
+
 func TestNativeRowConstructorsDetachBodies(t *testing.T) {
 	fields := Row{"id": json.Number("7"), "json_data": map[string]any{"a": "before"}}
 	records := rowTestV1(t, rowTestTable(t, fields))

@@ -23,8 +23,11 @@ const (
 	NativeRowV1ContentBag = "v1-content-bag"
 	NativeRowD3Physical   = "d3-physical"
 	NativeRowOrder        = "normalized-json-bytes/1"
-	nativeRetainedHistory = "retained-native-commit"
-	nativeCurrentPrefix   = "source/native-current/"
+	// NativeRowOpaqueCurrentHistory labels inert authenticated system-table
+	// evidence. It never authorizes schema execution or physical restoration.
+	NativeRowOpaqueCurrentHistory = "opaque-native-physical"
+	nativeRetainedHistory         = "retained-native-commit"
+	nativeCurrentPrefix           = "source/native-current/"
 )
 
 // NativeRowRecordError is a refusal of record shape, identity or reconstruction.
@@ -90,7 +93,7 @@ func nativeRowPrefix(source SourceIdentity, table, history, kind string) (string
 	switch history {
 	case nativeRetainedHistory:
 		return driver.NativeTableHistoryRecordPrefix, nil
-	case FamilyVersioned, FamilyUnversioned:
+	case FamilyVersioned, FamilyUnversioned, NativeRowOpaqueCurrentHistory:
 		return nativeCurrentPrefix, nil
 	default:
 		return "", nativeRowRefusal(table, "unknown history class")

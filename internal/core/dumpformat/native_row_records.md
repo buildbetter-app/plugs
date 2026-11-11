@@ -26,7 +26,10 @@ Each present table has one meta and one row record per represented row. Empty
 tables retain one meta; absent tables have no records. Row bodies contain the
 source tuple, table, exact history classification, identity kind, base64 key,
 normalized fields, and (for v2) exact ordered typed cells. Row bodies omit the
-schema ID, so unchanged rows survive schema-only changes. Meta contains sorted
+schema ID, so unchanged rows survive schema-only changes. Current history
+classes retain `versioned`, `unversioned-in-beads-by-design`, or the existing
+`opaque-native-physical` label for inert system-table evidence. The latter does
+not execute view definitions or authorize physical writes. Meta contains sorted
 normalized columns, the physical schema where applicable, row count, ordering
 rule and both commitments. It contains no row-ID vector.
 
