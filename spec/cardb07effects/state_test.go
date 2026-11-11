@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
@@ -43,7 +44,8 @@ func effectReopen(t *testing.T, h *publicproof.Host) {
 
 // Every mutation has a complete before/after image. The expected body change
 // is constructed from the requested operation, never copied from its output.
-// Nondeterministic close time is bound to the exact committed history time.
+// Generated application and storage times retain their separate clock values
+// and must fall within the actual request interval before exact readback.
 func effectCall(t *testing.T, h *publicproof.Host, method, label string, params map[string]any, touched, active []model.Ref) {
 	t.Helper()
 	if method == "bead.unlink" {
@@ -52,9 +54,12 @@ func effectCall(t *testing.T, h *publicproof.Host, method, label string, params 
 		params = copy
 	}
 	before := h.Capture()
+	started := time.Now().UTC()
 	reply := h.Call(method, label, params, "")
+	finished := time.Now().UTC()
 	var commit model.Commit
 	if json.Unmarshal(reply.Result, &commit) != nil || len(commit.Results) != 1 { t.Fatal("exact one-operation commit missing") }
+	if len(commit.Warnings)!=0 || commit.WouldCommit || len(commit.Violations)!=0 || commit.LeaseExpiresAt!=nil || commit.LeaseTtlMs!=nil {t.Fatal("edge effect returned an unrelated warning/dry-run/lease result")}
 	after := h.Capture()
 	changed := map[string]bool{}
 	for _, ref := range touched {
@@ -85,7 +90,8 @@ func effectCall(t *testing.T, h *publicproof.Host, method, label string, params 
 			if params["kind"] == "parent-child" && params["targetKind"] != "external" { oldDoc.Parent = nil }
 		case "bead.close":
 			oldDoc.Fields["status"] = "done"
-			stamp := after.Changes[len(after.Changes)-1].Time
+			if nextDoc.ClosedAt == nil || nextDoc.ClosedAt.Before(started) || nextDoc.ClosedAt.After(finished) { t.Fatal("close instant is outside the exact request interval") }
+			stamp := *nextDoc.ClosedAt
 			oldDoc.ClosedAt = &stamp
 		case "bead.reopen":
 			oldDoc.Fields["status"] = "open"
@@ -97,9 +103,12 @@ func effectCall(t *testing.T, h *publicproof.Host, method, label string, params 
 			t.Fatal("undeclared body effect", method)
 		}
 		if !reflect.DeepEqual(oldDoc, nextDoc) { t.Fatalf("%s changed fields outside exact expected body: want %+v got %+v", method, oldDoc, nextDoc) }
+		body, err := json.Marshal(oldDoc)
+		if err != nil || !bytes.Equal(body, next.Body) { t.Fatal("current record differs from independently requested exact body", err) }
 		oldRef, _ := json.Marshal(row.Ref)
 		newRef, _ := json.Marshal(next.Ref)
 		if !bytes.Equal(oldRef, newRef) || row.Kind != next.Kind || next.Revision != after.Meta.Head || len(newVersions) != len(oldVersions)+1 || !reflect.DeepEqual(oldVersions, newVersions[:len(oldVersions)]) { t.Fatal("wrong exact record/version publication", row.Ref.ID) }
+		effectVersion(t, before, after, row, next, oldVersions, newVersions, method, params, commit, started, finished)
 	}
 	if len(changed) == 0 {
 		if before.Meta != after.Meta || !reflect.DeepEqual(before.Changes, after.Changes) || !reflect.DeepEqual(before.Derived, after.Derived) || !reflect.DeepEqual(before.Receipts, after.Receipts) { t.Fatal("workflow-only mutation published core effects") }
@@ -110,6 +119,7 @@ func effectCall(t *testing.T, h *publicproof.Host, method, label string, params 
 		wantMeta.Head = model.Natural64(head+1)
 		if after.Meta != wantMeta || commit.Revision != after.Meta.Head || len(after.Changes) != len(before.Changes)+1 || !reflect.DeepEqual(before.Changes, after.Changes[:len(before.Changes)]) { t.Fatal("wrong exact history/meta effect") }
 		last := after.Changes[len(before.Changes)]
+		if last.Revision != after.Meta.Head || last.Branch != model.Natural64(0) || last.Incarnation != before.Meta.Incarnation || last.Kind != model.ChangesetWrite || !reflect.DeepEqual(last.Principal, publicproof.Anonymous) || last.IdempotencyKey != proof.Hash([]byte(label))[:32] { t.Fatal("wrong exact changeset/request identity") }
 		if len(last.Changes) != len(changed) { t.Fatal("history has extra or missing record effects") }
 		for _, change := range last.Changes {
 			if !changed[change.Ref.ID] { t.Fatal("history changed unrelated endpoint") }
@@ -121,13 +131,14 @@ func effectCall(t *testing.T, h *publicproof.Host, method, label string, params 
 		receipt, ok := after.Receipts[label]
 		if !ok || receipt.Pending || !reflect.DeepEqual(receipt.Commit, commit) || !reflect.DeepEqual(receipt.Changeset, last) { t.Fatal("commit/history/receipt binding differs") }
 	}
+	effectDerived(t, before, after, changed, method, params, started, finished)
 	if len(before.Checkpoints) != len(after.Checkpoints) { t.Fatal("checkpoint inventory changed") }
 	for key, checkpoint := range before.Checkpoints {
 		if len(active) == 0 || key != proof.Namespace {
 			if !reflect.DeepEqual(checkpoint, after.Checkpoints[key]) { t.Fatal("unrelated namespace changed", key) }
 		}
 	}
-	if len(active) != 0 { effectProvider(t, before, after, method, params, active) }
+	if len(active) != 0 { effectProvider(t, before, after, method, params, active); effectProviderReceipt(t, before, after, method, label, params, active[0], commit, started, finished) }
 	// Replay must retain the original bytes after closing and reopening the
 	// actual SQL handles. The memory row is explicitly process-local evidence.
 	h.Reopen()

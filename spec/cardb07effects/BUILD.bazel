@@ -11,7 +11,7 @@ DEPS = [
 
 go_test(
     name = "public_effects_test",
-    srcs = ["effects_test.go", "fixture_test.go", "state_test.go", "scheduling_test.go"],
+    srcs = ["effects_test.go", "fixture_test.go", "publication_test.go", "receipt_test.go", "state_test.go", "scheduling_test.go"],
     deps = DEPS,
     args = ["-test.v"],
     size = "large",
@@ -21,8 +21,8 @@ go_test(
 
 go_test(
     name = "native_effects_test",
-    srcs = ["fixture_test.go", "state_test.go", "scheduling_test.go", "native_test.go", "//spec/cardb20:native_build_support"],
-    deps = DEPS + ["//internal/publicnative"],
+    srcs = ["fixture_test.go", "publication_test.go", "receipt_test.go", "state_test.go", "scheduling_test.go", "native_test.go", "native_state_test.go", "//spec/cardb20:native_build_support"],
+    deps = DEPS + ["//internal/publicnative", "//internal/storage/depid"],
     data = ["//spec/s1-b09-native:lexicon_files", "//internal/publicnative:dolt_runtime"],
     env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
     args = ["-test.v"],

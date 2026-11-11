@@ -26,6 +26,9 @@ type effectNative struct {
 	sequence int
 	tables []string
 	roles map[string]string
+	endpoints map[string]effectNativeEndpoint
+	previous effectNativeState
+	pending []effectNativeMutation
 }
 
 type effectNativeState map[string][]map[string]json.RawMessage
@@ -35,11 +38,15 @@ func (n *effectNative) command(label string, fail bool, args ...string) []byte {
 	n.sequence++
 	ctx,cancel := context.WithTimeout(context.Background(),2*time.Minute)
 	defer cancel()
+	requestArgs := append([]string(nil),args...)
+	if n.binary != "/usr/bin/git" { args=append([]string{"--actor","b07-effects"},args...) }
+	started := time.Now().UTC()
 	cmd := exec.CommandContext(ctx,n.binary,args...)
 	cmd.Dir,cmd.Env = n.dir,append([]string(nil),n.env...)
 	var out,stderr bytes.Buffer
 	cmd.Stdout,cmd.Stderr = &out,&stderr
 	err := cmd.Run()
+	finished := time.Now().UTC()
 	code := 0
 	if err != nil {
 		code = -2
@@ -53,6 +60,7 @@ func (n *effectNative) command(label string, fail bool, args ...string) []byte {
 	r := &nativeRecorder{t:n.t,root:n.root}
 	r.writeJSON(stem+".request.json",map[string]any{"argv":cmd.Args,"directory":cmd.Dir,"environment":cmd.Env,"exit":code,"error":fmt.Sprint(err),"stdout_sha256":hashBytes(out.Bytes()),"stderr_sha256":hashBytes(stderr.Bytes())})
 	if ctx.Err() != nil || code < 0 || (!fail && code != 0) || (fail && code != 1) { n.t.Fatalf("native %s exit=%d error=%v stdout=%s stderr=%s",label,code,err,out.Bytes(),stderr.Bytes()) }
+	if !fail && len(requestArgs)>1 && (requestArgs[0]=="close" || requestArgs[0]=="reopen" || requestArgs[0]=="defer") {n.pending=append(n.pending,effectNativeMutation{Verb:requestArgs[0],From:requestArgs[1],Started:started,Finished:finished})}
 	return out.Bytes()
 }
 
@@ -60,14 +68,37 @@ func (n *effectNative) batch(label,script string) {
 	n.t.Helper()
 	file := filepath.Join(n.root,fmt.Sprintf("script-%05d-%s.txt",n.sequence,label))
 	if err := os.WriteFile(file,[]byte(script),0600); err != nil { n.t.Fatal(err) }
+	started:=time.Now().UTC()
 	n.command(label,false,"batch","--file",file,"--json")
+	parts:=strings.SplitN(strings.TrimSpace(script)," ",5)
+	if len(parts)<4 || parts[0]!="dep" {n.t.Fatal("undeclared native public batch")}
+	kind:=""
+	verb:="dep_remove"
+	if parts[1]=="add" {
+		verb="dep_add"
+		if len(parts)!=5 {n.t.Fatal("native add kind absent")}
+		kind=parts[4]
+		if strings.HasPrefix(kind,`"`) {var err error;kind,err=strconv.Unquote(kind);if err!=nil {n.t.Fatal(err)}}
+	} else {
+		edge:=n.edge(n.previous,parts[2],parts[3]);if edge==nil {n.t.Fatal("declared original native edge absent")};kind=nativeEffectText(n.t,edge["type"])
+	}
+	n.pending=append(n.pending,effectNativeMutation{Verb:verb,From:parts[2],To:parts[3],Kind:kind,Started:started,Finished:time.Now().UTC()})
 }
 
 func (n *effectNative) graph(label string,nodes []map[string]any) {
 	n.t.Helper()
 	file := filepath.Join(n.root,label+".plan.json")
 	(&nativeRecorder{t:n.t,root:n.root}).writeJSON(file,map[string]any{"nodes":nodes,"edges":[]any{}})
+	started:=time.Now().UTC()
 	n.command(label,false,"create","--graph",file,"--json")
+	finished:=time.Now().UTC()
+	for _,node:=range nodes {
+		id,title:=node["id"].(string),node["title"].(string)
+		plane:="issues"
+		if node["storage_class"]=="ephemeral" {plane=effectNativeActiveTable}
+		n.endpoints[id]=effectNativeEndpoint{Title:title,Plane:plane}
+		n.pending=append(n.pending,effectNativeMutation{Verb:"create",From:id,Started:started,Finished:finished})
+	}
 }
 
 func newEffectNative(t *testing.T,binary string) *effectNative {
@@ -87,6 +118,7 @@ func newEffectNative(t *testing.T,binary string) *effectNative {
 	server.RequireDatabaseDir(t,"b07_effects")
 	n.command("journal-enable",false,"config","set","events-journal","true","--json")
 	n.command("journal-prune-disable",false,"config","set","events-journal-auto-prune","false","--json")
+	n.endpoints=map[string]effectNativeEndpoint{}
 	raw = n.command("actual-user-tables",false,"--readonly","sql","SELECT table_name FROM information_schema.tables WHERE table_schema = 'b07_effects' AND table_type = 'BASE TABLE' ORDER BY table_name","--json")
 	var tables []map[string]string
 	if json.Unmarshal(raw,&tables) != nil { t.Fatal("actual native table catalog unavailable") }
@@ -99,6 +131,7 @@ func newEffectNative(t *testing.T,binary string) *effectNative {
 	}
 	if len(n.tables) == 0 { t.Fatal("native table catalog empty") }
 	(&nativeRecorder{t:t,root:root}).writeJSON(filepath.Join(root,"actual-tables.json"),n.tables)
+	n.previous=n.image("initialized-baseline")
 	return n
 }
 
@@ -129,12 +162,13 @@ func (n *effectNative) edge(state effectNativeState,from,to string) map[string]j
 	for _,rows := range state {
 		for _,row := range rows {
 			if string(row["type"]) == "" || string(row["issue_id"]) == "" || nativeEffectText(n.t,row["issue_id"]) != from { continue }
+			matched := false
 			for key,value := range row {
 				if strings.HasPrefix(key,"depends_on_") && string(value) != "null" && nativeEffectText(n.t,value) == to {
-					if found != nil { n.t.Fatal("duplicate native directed edge") }
-					found = row
+					matched = true
 				}
 			}
+			if matched {if found!=nil {n.t.Fatal("duplicate native directed edge")};found=row}
 		}
 	}
 	return found
@@ -142,6 +176,7 @@ func (n *effectNative) edge(state effectNativeState,from,to string) map[string]j
 
 func (n *effectNative) requireReady(label string,want []string) []string {
 	n.t.Helper()
+	n.verifySuccess(label,n.image(label+"-complete-state"))
 	raw := n.command(label,false,"ready","--json","--limit","0","--include-ephemeral")
 	var rows []struct{ID string}
 	if json.Unmarshal(raw,&rows) != nil { n.t.Fatal("native public complete ready page invalid") }
@@ -227,7 +262,7 @@ func (n *effectNative) sequences() []effectStep {
 			want=effectWithout(baseline,label+"-target")
 			steps=append(steps,n.step(c,"target-closed",source,want,false))
 			if !reflect.DeepEqual(edge,n.edge(n.image(label+"-target-closed"),source,target)) {t.Fatal("native target close changed exact edge identity/metadata")}
-			// Every bd read is a fresh process/SQL connection; retain the same
+			// Every native read is a fresh process/SQL connection; retain the same
 			// phase as Plug's explicit physical SQL-handle reopen observation.
 			steps=append(steps,n.step(c,"store-readback",source,want,false))
 			if c.Route=="durable" || c.Route=="active-durable" {
@@ -339,7 +374,7 @@ func (n *effectNative) external(targetCase,kind string) effectNativeExternal {
 	edge=n.edge(n.image("external-relinked"),source,target)
 	if edge==nil || nativeEffectText(n.t,edge["depends_on_external"])!=target {n.t.Fatal("native external relink lost its arm")}
 	n.step(c,"external-relinked",source,want,guarded)
-	if guarded {n.batch("external-remove-for-close",remove)}
+	if guarded {n.batch("external-remove-for-close",remove);n.requireReady("external-removed-for-close-ready",baseline)}
 	n.command("external-source-close",false,"close",source,"--json")
 	n.requireReady("external-closed-ready",[]string{"unrelated"})
 	n.image("external-source-closed")
