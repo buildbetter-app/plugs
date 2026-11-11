@@ -117,7 +117,7 @@ func TestPublicIDStyleAActualPerWriteEventRequired(t *testing.T) {
 	store, lease, _ := openIdentityTarget(t, "memory")
 	when := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	actor := model.PrincipalRef{Kind: "user", ID: "event-control"}
-	writer := pipeline.New(store, lease, pipeline.WithClock(func() time.Time { return when }), pipeline.WithIDGenerator(func() (string, error) { return "event-control-root", nil }), pipeline.WithOntologyAudit(service.NewOntologyAudit(nil)))
+	writer := pipeline.New(store, lease, pipeline.WithClock(func() time.Time { return when }), pipeline.WithIDGenerator(func() (string, error) { return "event-control-root", nil }), pipeline.WithOntology(service.NewOntology(nil)), pipeline.WithOntologyAudit(service.NewOntologyAudit(nil)))
 	meta := publicIDMeta("event-control", 0, "local")
 	commit, err := writer.Apply(ctx, actor, model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Type: "issue", Project: "local", Fields: map[string]any{"title": "Event control"}}}}}, meta)
 	if err != nil {
