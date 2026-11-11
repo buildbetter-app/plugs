@@ -146,6 +146,12 @@ func (n *effectNative) verifySuccess(label string,after effectNativeState) {
 		if !reflect.DeepEqual(previous["is_blocked"],next) && !created[id] {flipped[id]=true}
 		previous["is_blocked"]=next
 	}
+	// The pinned direct blocks-add path marks its own source before the
+	// affected-set snapshot and removes that source from the later mark pass.
+	// Its primary dep_add snapshot carries the new flag; only other changed
+	// rows receive separate system projection journal entries. Recomputing an
+	// unlink or lifecycle change still journals every captured flag change.
+	for _,mutation:=range n.pending {if mutation.Verb=="dep_add" && mutation.Kind=="blocks" {delete(flipped,mutation.From)}}
 	n.expectedNativeEvents(want,got,after,primary,flipped)
 	for table,rows:=range want {if !reflect.DeepEqual(rows,got[table]) {n.t.Fatalf("native %s success changed %s outside declared exact operation/projected effect",label,table)}}
 	n.previous=after;n.pending=nil

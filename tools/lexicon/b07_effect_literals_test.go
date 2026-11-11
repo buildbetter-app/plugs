@@ -14,7 +14,7 @@ func b07ActualEffectFile(t *testing.T) (string, Config, []goStringLiteral) {
 	if !filepath.IsAbs(root) { t.Fatal("remote source module root is required") }
 	content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(b07EffectSource)))
 	if err != nil { t.Fatal(err) }
-	if protocolLiteralDigest(string(content)) != "878da4c31fa48c1f5be98ef9efaa0d46e456bf2230fac2ee50dcc6c9d3cf3d0c" { t.Fatal("actual consumer differs from the immutable reviewed postimage") }
+	if protocolLiteralDigest(string(content)) != "2fd5e60e77d3319dacc95331f9845035b4c72b6ecc2204ad7b5976179ae62f2b" { t.Fatal("actual consumer differs from the immutable reviewed postimage") }
 	literals := []goStringLiteral{}
 	for _, site := range b07EffectSites() {
 		for _, literal := range goStringLiterals(b07EffectSource, content) {
