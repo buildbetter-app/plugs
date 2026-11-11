@@ -50,5 +50,7 @@ func (s *NativeArchiveStream) planRoots(request driver.OfflineHistoryStreamReque
  }
  for digest,data:=range image.Blobs {auxiliary.Blobs[driver.Hash(digest)]=data}
  currentRoot,err:=convertedRoot(current);if err!=nil {return Root{},Root{},err}
+ work,release:=s.archive.NativeDeltaAccountingScope();defer release()
+ if err=work.ChargeNativeDeltaJSON("verifier_auxiliary_preimage",auxiliary);err!=nil{return Root{},Root{},err}
  auxiliaryRoot,err:=auxiliaryRoot(auxiliary,s.files);if err!=nil {return Root{},Root{},err};return currentRoot,auxiliaryRoot,nil
 }

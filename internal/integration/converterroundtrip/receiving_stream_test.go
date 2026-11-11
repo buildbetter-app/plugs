@@ -1,9 +1,13 @@
 package converterroundtrip
 
 import (
+ "bytes"
  "context"
  "encoding/json"
  "errors"
+ "fmt"
+ "io"
+ "os"
  "reflect"
  "sort"
  "strings"
@@ -16,6 +20,7 @@ import (
  "github.com/buildbetter-app/plugs/internal/core/nativeprojection"
  "github.com/buildbetter-app/plugs/internal/storage/driver"
  "github.com/buildbetter-app/plugs/internal/storage/historyverify"
+ "github.com/buildbetter-app/plugs/internal/storage/memory"
 )
 
 func nativeStreamingProfile(t *testing.T,archive *dumpformat.Archive,store driver.Store,lease driver.ActiveLease) driver.RestoreImportProfile {
@@ -58,7 +63,12 @@ func TestNativeReceivingVerifierStreamingProductionAllDrivers(t *testing.T) {
    if recovered.Archive!=nil {defer recovered.Archive.ReleaseNativeDecoded()}
    if err!=nil || !found || !reflect.DeepEqual(recovered.Receipt,report.Receipt) {t.Fatal("original keyed stream receipt after actual engine reopen",err)}
    if err=VerifyNativeCaptureSetReadback(recoveryCtx,store,archive,recovered);err!=nil {t.Fatal("reopened independent stream/native readback",err)}
-   t.Logf("NATIVE_STREAM_PRODUCTION engine=%s archive=%s stream=%s commits=32 receipt=original reopen=actual",engine,archive.SHA256(),profile.HistoryDigest)
+   if engine=="memory" {
+    capability,ok:=store.(driver.WorkflowCheckpointStore);if !ok || capability.WorkflowCheckpointLifetime()!=driver.CheckpointLifetimeProcess {t.Fatal("memory checkpoint lifetime is not the real process lifetime")}
+    fresh:=memory.New();defer fresh.Close()
+    _,_,found,err:=RecoverBoundSourceImport(context.Background(),fresh);if err!=nil || found {t.Fatal("fresh memory instance retained another process receipt",err)}
+   }
+   t.Logf("NATIVE_STREAM_PRODUCTION engine=%s archive=%s stream=%s commits=32 receipt=original lifetime=%s",engine,archive.SHA256(),profile.HistoryDigest,map[bool]string{true:"process-preserved",false:"actual-close-reopen"}[engine=="memory"])
   })
  }
 }
@@ -98,6 +108,115 @@ func TestNativeVerifierFinalBindingsRefuseBeforeTargetWriteAllDrivers(t *testing
      var refused historyverify.ErrCheckpoint
      if !errors.As(err,&refused) && !errors.Is(err,driver.ErrConflict) {t.Fatal("missing typed pre-staging refusal",err)}
      if !reflect.DeepEqual(before,snapshot(t,store)) {t.Fatal("refusal mutated target/receipt/checkpoint",mismatch)}
+    })
+   }
+  })
+ }
+}
+
+// This wrapper preserves genuine engine transactions while observing that
+// archive/verifier refusal precedes any writer and publication attempt.
+type nativeStreamCountingStore struct {
+ driver.Store
+ driver.WorkflowCheckpointStore
+ writes int
+}
+func nativeStreamObservedStore(t *testing.T,store driver.Store) *nativeStreamCountingStore {
+ t.Helper();capability,ok:=store.(driver.WorkflowCheckpointStore);if !ok {t.Fatal("actual workflow capability missing")};return &nativeStreamCountingStore{Store:store,WorkflowCheckpointStore:capability}
+}
+func (s *nativeStreamCountingStore) Write(ctx context.Context,lease driver.ActiveLease)(driver.WriteTx,error){s.writes++;return s.Store.Write(ctx,lease)}
+
+type nativeStreamPart struct {io.Reader;close func()error}
+func (p *nativeStreamPart) Close()error{return p.close()}
+
+func TestNativeReceivingVerifierInputDriftTerminalCloseAndCancellationConserveAllDrivers(t *testing.T) {
+ for _,engine:=range []string{"memory","sqlite","postgres"} {
+  t.Run(engine,func(t *testing.T){
+   store,initial,_:=openIdentityTarget(t,engine)
+   ctx:=context.Background();if err:=initial.Release(ctx);err!=nil {t.Fatal(err)}
+   op,lease,release,err:=HoldRestoreLease(ctx,store,"native-stream-source-refusal");if err!=nil {t.Fatal(err)};defer release()
+   observed:=nativeStreamObservedStore(t,store)
+   before:=snapshot(t,store)
+   for _,fault:=range []string{"opener-drift","trailing-part-bytes","source-close","cancel-source-close"} {
+    t.Run(fault,func(t *testing.T){
+     files:=receivingPublicFiles(t);armed:=false;closes:=0
+     call,cancel:=context.WithCancel(op);defer cancel()
+     closeFailure:=errors.New("actual original part Close failed")
+     a,err:=dumpformat.ReadNativeCaptureSet(call,bytes.NewReader(files["capture-set.json"]),bytes.NewReader(files["head.tar"]),func(_ context.Context,n uint64)(io.ReadCloser,error){
+      raw:=bytes.Clone(files[fmt.Sprintf("parts/%020d.part",n)])
+      if armed && fault=="opener-drift" {raw[len(raw)/2]^=1}
+      if armed && fault=="trailing-part-bytes" {raw=append(raw,'x')}
+      return &nativeStreamPart{Reader:bytes.NewReader(raw),close:func()error{closes++;if armed && fault=="source-close" {return closeFailure};if armed && fault=="cancel-source-close" {cancel()};return nil}},nil
+     },dumpformat.NativeCaptureSetOptions{})
+     if err!=nil {t.Fatal("initial genuine archive admission",err)};defer a.ReleaseNativeDecoded()
+     profile:=nativeStreamingProfile(t,a,store,lease)
+     // Binding has an authentic private staging cache. Discard it to require
+     // a new production staging pass against the now changed original opener.
+     a.ClearNativeDeltaPreparation();baseline,_:=a.NativeDecodedUsage();priorCloses:=closes;armed=true
+     _,err=RestoreNativeCaptureSetImportWithLease(a.WithNativeDeltaAccounting(call),a,observed,lease,profile)
+     if err==nil || closes<=priorCloses {t.Fatal("changed source minted or source was not closed",fault,err,closes)}
+     if fault=="source-close" && !errors.Is(err,closeFailure) {t.Fatal("lost actual source close error",err)}
+     if fault=="cancel-source-close" && !errors.Is(err,context.Canceled) {t.Fatal("lost cancellation",err)}
+     if observed.writes!=0 || !reflect.DeepEqual(before,snapshot(t,store)) {t.Fatal("source failure touched writer/target/receipt",observed.writes)}
+     after,_:=a.NativeDecodedUsage();if baseline.CurrentAccountedDecodedBytes!=after.CurrentAccountedDecodedBytes || !reflect.DeepEqual(baseline.CurrentCategories,after.CurrentCategories) || !reflect.DeepEqual(baseline.CurrentCharges,after.CurrentCharges) {t.Fatal("failed candidate retained decoded reservations",baseline,after)}
+    })
+   }
+  })
+ }
+}
+
+type nativeStreamFaultSource struct {
+ driver.OfflineHistoryStreamSource
+ fault string
+ used bool
+ closes int
+ cancel context.CancelFunc
+ closeFailure error
+}
+func (s *nativeStreamFaultSource) Next(ctx context.Context,limits driver.OfflineHistoryStreamLimits)(driver.OfflineHistoryStreamFrame,error){
+ if !s.used && s.fault=="cancel-pull" {s.used=true;s.cancel();return driver.OfflineHistoryStreamFrame{},context.Canceled}
+ frame,err:=s.OfflineHistoryStreamSource.Next(ctx,limits)
+ if err==nil && !s.used && frame.Table!=nil {
+  s.used=true
+  if s.fault=="physical-frame" {v:=*frame.Table.PhysicalAfter;v.Rows++;frame.Table.PhysicalAfter=&v}
+  if s.fault=="truncated" {return driver.OfflineHistoryStreamFrame{},io.EOF}
+ }
+ return frame,err
+}
+func(s *nativeStreamFaultSource) Close()error{s.closes++;return errors.Join(s.OfflineHistoryStreamSource.Close(),s.closeFailure)}
+
+func TestNativeReceivingProductionMintStreamFailuresReleaseRealEngineStagingAllDrivers(t *testing.T) {
+ for _,engine:=range []string{"memory","sqlite","postgres"} {
+  t.Run(engine,func(t *testing.T){
+   a:=publicNativeDeltaArchive(t);defer a.ReleaseNativeDecoded()
+   ctx:=a.WithNativeDeltaAccounting(context.Background());store,initial,_:=openIdentityTarget(t,engine)
+   if err:=initial.Release(ctx);err!=nil {t.Fatal(err)}
+   op,lease,release,err:=HoldRestoreLease(ctx,store,"native-stream-stage-refusal");if err!=nil {t.Fatal(err)};defer release()
+   p:=nativeStreamingProfile(t,a,store,lease);when,_:=time.Parse(time.RFC3339Nano,p.HistoryTime)
+   before:=snapshot(t,store);meta,err:=store.Meta(op);if err!=nil {t.Fatal(err)}
+   capability,err:=driver.RequireWorkflowCheckpointStore(store,lease);if err!=nil {t.Fatal(err)}
+   for _,fault:=range []string{"cancel-pull","close-failure","truncated","physical-frame"} {
+    t.Run(fault,func(t *testing.T){
+     scratch:=t.TempDir();t.Setenv("TMPDIR",scratch)
+     work,drop:=a.NativeDeltaAccountingScope();defer drop()
+     plan,err:=nativeprojection.BuildWithProfile(work,&p,when,op);if err!=nil {t.Fatal(err)}
+     stream,err:=historyverify.PrepareNativeArchive(op,work,p,when);if err!=nil {t.Fatal(err)};defer stream.Close()
+     req:=driver.OfflineHistoryStreamRequest{Current:meta,Profile:p,Header:stream.Header(),When:when,Lifetime:capability.WorkflowCheckpointLifetime(),Limits:historyverify.NativeArchiveLimits()}
+     seal,err:=stream.Seal(op,req,plan);if err!=nil {t.Fatal("actual production verifier mint",err)}
+     locks,err:=stream.LockRequests(op,plan,work);if err!=nil {t.Fatal(err)}
+     tx,err:=store.Write(op,lease);if err!=nil {t.Fatal(err)}
+     if _,err=tx.Lock(op,locks);err!=nil {t.Fatal(err)};if _,err=tx.Head(op);err!=nil {t.Fatal(err)}
+     actual,err:=nativeReceivingStage(tx,seal);if err!=nil {t.Fatal(err)}
+     pull,cancel:=context.WithCancel(op);defer cancel()
+     source:=&nativeStreamFaultSource{OfflineHistoryStreamSource:stream,fault:fault,cancel:cancel}
+     if fault=="close-failure" {source.closeFailure=errors.New("original stream Close failed")}
+     prepared,err:=driver.PrepareOfflineHistoryStream(pull,req,source,actual)
+     if prepared!=nil || err==nil || source.closes!=1 {t.Fatal("failed real minted stream became publishable",fault,err,source.closes)}
+     if fault=="cancel-pull" && !errors.Is(err,context.Canceled) {t.Fatal("lost pull cancellation",err)}
+     if fault=="close-failure" && !errors.Is(err,source.closeFailure) {t.Fatal("lost stream Close error",err)}
+     if err:=tx.Close();err!=nil {t.Fatal(err)}
+     entries,err:=os.ReadDir(scratch);if err!=nil || len(entries)!=0 {t.Fatal("private real-engine spool/scratch survived refusal",entries,err)}
+     if !reflect.DeepEqual(before,snapshot(t,store)) {t.Fatal("failed stream mutated target/receipt/history")}
     })
    }
   })
