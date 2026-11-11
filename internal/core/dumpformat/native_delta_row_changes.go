@@ -117,7 +117,9 @@ func (r *nativeDeltaReconstructor) rowMeta(table deltaStagedTable, normalized Na
 	return NativeMetaRecord(meta)
 }
 
-func nativeDeltaOrderChanges(changes []driver.SourceHistoryChange) error {
+func nativeDeltaOrderChanges(changes []driver.SourceHistoryChange, budget *NativeDeltaBudget) error {
+	scratch := budget.Scope()
+	defer scratch.Release()
 	keys := make(map[string]string, len(changes))
 	for _, change := range changes {
 		record := change.After
@@ -127,7 +129,7 @@ func nativeDeltaOrderChanges(changes []driver.SourceHistoryChange) error {
 		if record == nil {
 			return fmt.Errorf("native delta empty row change")
 		}
-		key, err := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &record.Ref})
+		key, err := nativeDeltaRecordKeyAccounted(record.Ref, scratch)
 		if err != nil {
 			return err
 		}
@@ -256,7 +258,7 @@ func (r *nativeDeltaReconstructor) emitRowChanges(state deltaStagedState, image 
 			return err
 		}
 	}
-	if err := nativeDeltaOrderChanges(changes); err != nil {
+	if err := nativeDeltaOrderChanges(changes, work); err != nil {
 		return err
 	}
 	return r.rowCallbacks.commit(NativeDeltaRowCommit{Sequence: image.Sequence, CommitID: image.CommitID, Changes: changes})

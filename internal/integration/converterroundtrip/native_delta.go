@@ -154,6 +154,34 @@ func marshalNativePayload(archive *dumpformat.Archive, phase string, value any) 
 	return json.Marshal(value)
 }
 
+// historyDelta's two indexes retain one driver ordering string per input Ref.
+// Their union and ordered slice borrow those same strings. Reserve both index
+// domains and the longest sequential preimage before invoking the unchanged
+// diff; the caller's rolling-image owners continue to own the borrowed bodies.
+func nativeHistoryDelta(archive *dumpformat.Archive, before, after []driver.Record) ([]driver.SourceHistoryChange, error) {
+	scratch, release := archive.NativeDeltaAccountingScope()
+	defer release()
+	var maximum uint64
+	for _, records := range [][]driver.Record{before, after} {
+		for _, record := range records {
+			n := uint64(len("0:key:")) + uint64(len(record.Ref.Key))
+			if record.Ref.IsID() {
+				n = uint64(len("0:id::")) + uint64(len(record.Ref.ID)) + uint64(len(record.Ref.Branch.String()))
+			}
+			if err := scratch.ChargeNativeDeltaBytes("history_diff_index_keys", n); err != nil {
+				return nil, err
+			}
+			if n-2 > maximum {
+				maximum = n - 2
+			}
+		}
+	}
+	if err := scratch.ChargeNativeDeltaBytes("history_diff_key_preimage", maximum); err != nil {
+		return nil, err
+	}
+	return historyDelta(before, after), nil
+}
+
 // The unchanged driver digest serializes the complete lowered request. Admit
 // that transient exact JSON buffer before calling it, then drop it after hash.
 func nativeHistoryDigest(archive *dumpformat.Archive, history driver.OfflineHistory) (string, error) {

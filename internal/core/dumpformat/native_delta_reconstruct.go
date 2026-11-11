@@ -177,7 +177,7 @@ func reconstructNativeDeltaCallbacks(ctx context.Context, input io.Reader, root 
 
 func (r *nativeDeltaReconstructor) schema(raw []byte) error {
 	var s NativeDeltaSchema
-	if err := decodeNativeDeltaJSONWithBudget(raw, &s, r.budget); err != nil {
+	if err := decodeNativeDeltaJSONWithBudget(raw, &s, r.budget, "schemas"); err != nil {
 		return err
 	}
 	if s.Type != "schema" || s.SchemaID != NativeDeltaSchemaID(s) || s.Profile.Format != NativeCommitSchemaFormat || s.Profile.Scope != NativeCommitSchemaScope {
@@ -219,9 +219,6 @@ func (r *nativeDeltaReconstructor) schema(raw []byte) error {
 		}
 		previous = k
 	}
-	if err := r.budget.ChargeJSON("schemas", s); err != nil {
-		return err
-	}
 	r.schemas[s.SchemaID] = s
 	return deltaAddCount(&r.totals.Schemas, 1)
 }
@@ -246,25 +243,23 @@ func (r *nativeDeltaReconstructor) readRows(table deltaStagedTable, budget *Nati
 		if err != nil {
 			return nil, err
 		}
-		count := deltaSizeCounter{}
-		if err := count.raw(raw); err != nil {
-			return nil, err
-		}
-		if err := budget.ChargeBytes("decoded_baseline_rows", count.n+1); err != nil {
-			return nil, err
-		}
 		var row NativeDeltaRow
-		if err := decodeNativeDeltaJSONWithBudget(raw, &row, budget); err != nil {
+		if err := decodeNativeDeltaJSONWithBudget(raw, &row, budget, "decoded_baseline_rows"); err != nil {
 			return nil, err
 		}
-		key, err := nativeDeltaBase64(row.Key)
+		keyOwner := budget.Scope()
+		key, err := nativeDeltaKeyAccounted(row.Key, keyOwner)
 		if err != nil {
+			keyOwner.Release()
 			return nil, err
 		}
-		if err := budget.ChargeBytes("decoded_row_map_keys", uint64(len(key))); err != nil {
+		mapKey, err := nativeDeltaMapKeyAccounted(key, budget)
+		if err != nil {
+			keyOwner.Release()
 			return nil, err
 		}
-		rows[string(key)] = row
+		rows[mapKey] = row
+		keyOwner.Release()
 	}
 	return rows, nil
 }
@@ -291,6 +286,7 @@ func (r *nativeDeltaReconstructor) table(open NativeDeltaTable, schema NativeDel
 	}
 	var operations uint64
 	var previous []byte
+	var previousOwner *NativeDeltaBudget
 	for {
 		raw, kind, err := r.next()
 		if err != nil {
@@ -298,7 +294,7 @@ func (r *nativeDeltaReconstructor) table(open NativeDeltaTable, schema NativeDel
 		}
 		if kind == "end_table" {
 			var end NativeDeltaEndTable
-			if err := decodeNativeDeltaJSONWithBudget(raw, &end, r.budget); err != nil {
+			if err := decodeNativeDeltaJSONWithBudget(raw, &end, work); err != nil {
 				return zero, normalized, err
 			}
 			if end.RowOperations != operations || end.Rows != uint64(len(rows)) || end.Rows != open.ExpectedRows || end.SHA256 != open.ExpectedSHA256 {
@@ -318,19 +314,22 @@ func (r *nativeDeltaReconstructor) table(open NativeDeltaTable, schema NativeDel
 		op := fields.Op
 		var row NativeDeltaRow
 		var key []byte
+		candidate := work.Scope()
 		if op == "delete" {
 			var d NativeDeltaDelete
-			if err := decodeNativeDeltaJSONWithBudget(raw, &d, r.budget); err != nil {
+			if err := decodeNativeDeltaJSONWithBudget(raw, &d, work, "decoded_operations"); err != nil {
 				return zero, normalized, err
 			}
-			key, err = nativeDeltaBase64(d.Key)
+			key, err = nativeDeltaKeyAccounted(d.Key, candidate)
 		} else {
-			if err := decodeNativeDeltaJSONWithBudget(raw, &row, r.budget); err != nil {
+			if err := decodeNativeDeltaJSONWithBudget(raw, &row, work, "decoded_operations"); err != nil {
 				return zero, normalized, err
 			}
-			candidate := work.Scope()
 			_, key, err = validateNativeDeltaRowAccounted(schema, row, r.header.ConfigPolicy, candidate)
-			candidate.Release()
+			if err == nil {
+				// This pass retains only the ordering key, not normalized fields.
+				candidate.ReleaseBytes("normalized_fields", candidate.ReservedBytes("normalized_fields"))
+			}
 		}
 		if err != nil || len(key) == 0 {
 			return zero, normalized, fmt.Errorf("native delta invalid row/key: %w", err)
@@ -339,7 +338,16 @@ func (r *nativeDeltaReconstructor) table(open NativeDeltaTable, schema NativeDel
 			return zero, normalized, fmt.Errorf("native delta operation keys unordered")
 		}
 		previous = key
-		old, present := rows[string(key)]
+		if previousOwner != nil {
+			previousOwner.Release()
+		}
+		previousOwner = candidate
+		mapKeyOwner := work.Scope()
+		mapKey, err := nativeDeltaMapKeyAccounted(key, mapKeyOwner)
+		if err != nil {
+			return zero, normalized, err
+		}
+		old, present := rows[mapKey]
 		switch op {
 		case "insert":
 			if present {
@@ -357,20 +365,24 @@ func (r *nativeDeltaReconstructor) table(open NativeDeltaTable, schema NativeDel
 			return zero, normalized, fmt.Errorf("native delta operation unsupported")
 		}
 		if op == "delete" {
-			if err := work.ChargeBytes("decoded_operations", uint64(len(raw))); err != nil {
-				return zero, normalized, err
-			}
-			delete(rows, string(key))
+			delete(rows, mapKey)
+			work.ReleaseBytes("decoded_row_map_keys", uint64(len(key)))
+			mapKeyOwner.Release()
 		} else {
-			// The bounded input row is charged before it becomes retained state.
-			if err := work.ChargeJSON("decoded_operations", row); err != nil {
-				return zero, normalized, err
+			// The typed decoder admitted this row before allocating its target.
+			rows[mapKey] = row
+			if present {
+				work.ReleaseBytes("decoded_row_map_keys", uint64(len(key)))
 			}
-			rows[string(key)] = row
+			mapKeyOwner.Retain()
 		}
 		if err := deltaAddCount(&operations, 1); err != nil {
 			return zero, normalized, err
 		}
+	}
+	previous = nil
+	if previousOwner != nil {
+		previousOwner.Release()
 	}
 	keys := make([]string, 0, len(rows))
 	for key := range rows {
@@ -390,10 +402,14 @@ func (r *nativeDeltaReconstructor) table(open NativeDeltaTable, schema NativeDel
 	}
 	for _, key := range keys {
 		row := rows[key]
-		fields, _, err := validateNativeDeltaRowAccounted(schema, row, r.header.ConfigPolicy, r.budget)
+		candidate := r.budget.Scope()
+		fields, _, err := validateNativeDeltaRowAccounted(schema, row, r.header.ConfigPolicy, candidate)
 		if err != nil {
+			candidate.Release()
 			return zero, normalized, err
 		}
+		candidate.ReleaseBytes("physical_key_decode", candidate.ReservedBytes("physical_key_decode"))
+		candidate.Retain()
 		pk, err := NativeDeltaPrimaryKey(schema, row.Cells)
 		if err != nil {
 			return zero, normalized, err
@@ -606,7 +622,7 @@ func (r *nativeDeltaReconstructor) run() (NativeHistory, error) {
 	if err != nil || kind != "header" {
 		return result, fmt.Errorf("native delta header missing: %w", err)
 	}
-	if err := decodeNativeDeltaJSONWithBudget(raw, &r.header, r.budget); err != nil {
+	if err := decodeNativeDeltaJSONWithBudget(raw, &r.header, r.budget, "header"); err != nil {
 		return result, err
 	}
 	h := r.header
@@ -623,9 +639,6 @@ func (r *nativeDeltaReconstructor) run() (NativeHistory, error) {
 		if len(key) < 8 || (!bytes.HasPrefix([]byte(key), []byte("config/")) && !bytes.HasPrefix([]byte(key), []byte("metadata/"))) {
 			return result, fmt.Errorf("native delta config policy scope differs")
 		}
-	}
-	if err := r.budget.ChargeJSON("header", h); err != nil {
-		return result, err
 	}
 	boundaries := map[string]bool{}
 	if h.HistoryCoverage != nil {
@@ -648,7 +661,7 @@ func (r *nativeDeltaReconstructor) run() (NativeHistory, error) {
 			return result, fmt.Errorf("native delta immutable commit expected")
 		}
 		var c NativeDeltaCommit
-		if err := decodeNativeDeltaJSONWithBudget(raw, &c, r.budget); err != nil {
+		if err := decodeNativeDeltaJSONWithBudget(raw, &c, r.budget, "commit_metadata"); err != nil {
 			return result, err
 		}
 		if c.Sequence != uint64(len(r.commits))+1 || !validCommitID(c.CommitID) || c.Metadata == nil {
@@ -703,10 +716,6 @@ func (r *nativeDeltaReconstructor) run() (NativeHistory, error) {
 		if err := validateSecretReferences(map[string]any(c.Metadata)); err != nil {
 			return result, err
 		}
-		if err := r.budget.ChargeJSON("commit_metadata", c); err != nil {
-			return result, err
-		}
-
 		work := r.budget.Scope()
 		retained := r.budget
 		r.budget = work

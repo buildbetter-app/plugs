@@ -38,6 +38,7 @@ func (a *Archive) NativeDeltaTableRecords(state NativeDeltaTableState, history s
 				candidate.Release()
 				return nil, NativeTable{}, err
 			}
+			candidate.ReleaseBytes("physical_key_decode", candidate.ReservedBytes("physical_key_decode"))
 			retain, err := keep(fields)
 			if err == nil && retain {
 				rows = append(rows, row)
@@ -75,11 +76,9 @@ func (a *Archive) NativeDeltaTableRecords(state NativeDeltaTableState, history s
 		return nil, NativeTable{}, err
 	}
 	records = append(records, meta)
-	sort.Slice(records, func(i, j int) bool {
-		left, _ := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &records[i].Ref})
-		right, _ := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &records[j].Ref})
-		return left < right
-	})
+	if err := sortNativeDeltaRecords(records, scratch); err != nil {
+		return nil, NativeTable{}, err
+	}
 	scratch.Release()
 	owner.Retain()
 	return records, normalized, nil

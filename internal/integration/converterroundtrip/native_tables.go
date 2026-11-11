@@ -161,7 +161,12 @@ func lowerNativeTableHistory(archive *dumpformat.Archive, profile driver.Restore
 				releaseAfter()
 				return err
 			}
-			batch := driver.SourceHistoryBatch{SourceStoreID: identity.StoreID, Project: identity.Project, SourceSequence: image.Sequence, Sequence: history.Head + 1, CommitIDs: []string{image.CommitID}, EventIDs: []string{}, Changes: historyDelta(before, after)}
+			changes, err := nativeHistoryDelta(archive, before, after)
+			if err != nil {
+				releaseAfter()
+				return err
+			}
+			batch := driver.SourceHistoryBatch{SourceStoreID: identity.StoreID, Project: identity.Project, SourceSequence: image.Sequence, Sequence: history.Head + 1, CommitIDs: []string{image.CommitID}, EventIDs: []string{}, Changes: changes}
 			// Both rolling images remain admitted until the detached changed
 			// bodies have their retained-batch reservation.
 			if err := archive.ChargeNativeDeltaJSON("offline_batches", batch); err != nil {

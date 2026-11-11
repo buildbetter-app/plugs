@@ -6,11 +6,42 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
+	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+func TestNativeDeltaRecordOrderingCountsGenericKeysAndRefusesBeforeMutation(t *testing.T) {
+	input := []driver.Record{{Ref: model.RefByID("native/b", model.Natural64(2))}, {Ref: model.RefByID("native/a", model.Natural64(10))}, {Ref: model.RefByID("native/a", model.Natural64(2))}}
+	expected := append([]driver.Record{}, input...)
+	oracle := func(record driver.Record) string {
+		key, err := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &record.Ref})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return key
+	}
+	sort.Slice(expected, func(i, j int) bool { return oracle(expected[i]) < oracle(expected[j]) })
+	for _, ceiling := range []uint64{0, 1} {
+		root := NewNativeDeltaBudget(ceiling)
+		actual := append([]driver.Record{}, input...)
+		err := sortNativeDeltaRecords(actual, root)
+		var refusal *NativeDeltaDecodedLimitError
+		if ceiling == 0 {
+			if err != nil || !reflect.DeepEqual(actual, expected) || root.Usage().CumulativeCharges["record_order_keys"] != uint64(len(input)) {
+				t.Fatal("generic driver ordering changed", actual, err, root.Usage())
+			}
+		} else if !errors.As(err, &refusal) || !reflect.DeepEqual(actual, input) || refusal.MeasuredBytes <= ceiling || refusal.Overflow {
+			t.Fatal("sort allocated/published an unadmitted ordering", actual, err)
+		}
+		if root.Usage().CurrentAccountedDecodedBytes != 0 {
+			t.Fatal("sort key index outlived sorting", root.Usage())
+		}
+	}
+}
 
 func TestNativeDeltaRowsApplyActualPreviousStateAndOldTableBytes(t *testing.T) {
 	f := deltaReconstructionFixture(t)

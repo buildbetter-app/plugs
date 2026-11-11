@@ -19,6 +19,26 @@ import (
 
 var nativeFixtureTime = time.Date(2026, 11, 9, 20, 0, 0, 0, time.UTC)
 
+func TestNativeHistoryDeltaOwnsOnlyTemporaryGenericKeyIndexes(t *testing.T) {
+	root := dumpformat.NewNativeDeltaBudget(0)
+	archive, err := dumpformat.ReadWithNativeDeltaAccounting(dumpformat.WithNativeDeltaBudget(context.Background(), root), bytes.NewReader(nativeTableArchiveFixture(t, "pl", "active")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.ReleaseNativeDecoded()
+	before := []driver.Record{{Ref: model.RefByID("native/a", model.Natural64(0)), Kind: "native", Body: []byte(`{"n":1}`)}, {Ref: model.RefByID("native/b", model.Natural64(0)), Kind: "native", Body: []byte(`{"n":2}`)}}
+	after := []driver.Record{{Ref: before[0].Ref, Kind: "native", Body: []byte(`{"n":3}`)}, {Ref: model.RefByID("native/c", model.Natural64(0)), Kind: "native", Body: []byte(`{"n":4}`)}}
+	held := root.Usage().CurrentAccountedDecodedBytes
+	actual, err := nativeHistoryDelta(archive, before, after)
+	if err != nil || !reflect.DeepEqual(actual, historyDelta(before, after)) {
+		t.Fatal("accounting changed the existing history diff", err)
+	}
+	usage := root.Usage()
+	if usage.CurrentAccountedDecodedBytes != held || usage.CumulativeCharges["history_diff_index_keys"] != uint64(len(before)+len(after)) {
+		t.Fatal("history diff key ownership did not end with its indexes", usage, held)
+	}
+}
+
 // This is declared synthetic evidence, built independently of a native runtime.
 // Old physical schemas, an obsolete catalog, duplicate old table rows and
 // retained pre-migration events deliberately cannot use portable replay.

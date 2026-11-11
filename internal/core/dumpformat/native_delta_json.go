@@ -17,7 +17,7 @@ func decodeNativeDeltaJSON(raw []byte, target any) error {
 	return decodeNativeDeltaJSONWithBudget(raw, target, nil)
 }
 
-func decodeNativeDeltaJSONWithBudget(raw []byte, target any, budget *NativeDeltaBudget) error {
+func decodeNativeDeltaJSONWithBudget(raw []byte, target any, budget *NativeDeltaBudget, phases ...string) error {
 	if !utf8.Valid(raw) {
 		return fmt.Errorf("JSON must be UTF-8")
 	}
@@ -69,7 +69,7 @@ func decodeNativeDeltaJSONWithBudget(raw []byte, target any, budget *NativeDelta
 		release()
 		release = nil
 	}
-	if err := reserve("json_shape_input", "json_shape_candidate", "json_typed_input", "json_typed_candidate"); err != nil {
+	if err := reserve("json_shape_input", "json_shape_candidate", "json_typed_input"); err != nil {
 		return err
 	}
 	if release != nil {
@@ -84,10 +84,34 @@ func decodeNativeDeltaJSONWithBudget(raw []byte, target any, budget *NativeDelta
 	if err := checkNativeDeltaShape(shape, reflect.TypeOf(target).Elem()); err != nil {
 		return err
 	}
+	var output *NativeDeltaBudget
+	if budget != nil {
+		output = budget.Scope()
+		defer output.Release()
+		counter := deltaSizeCounter{}
+		if err := counter.raw(raw); err != nil {
+			return err
+		}
+		phase := "json_typed_candidate"
+		if len(phases) != 0 {
+			phase = phases[0]
+		}
+		if err := output.ChargeBytes(phase, counter.n+1); err != nil {
+			return err
+		}
+	}
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.UseNumber()
 	d.DisallowUnknownFields()
-	return d.Decode(target)
+	if err := d.Decode(target); err != nil {
+		return err
+	}
+	if output != nil {
+		// Scratch ends here, but the detached typed target belongs to the
+		// caller's owner from before Decode until that owner drops it.
+		output.Retain()
+	}
+	return nil
 }
 
 func checkNativeDeltaShape(value any, typ reflect.Type) error {

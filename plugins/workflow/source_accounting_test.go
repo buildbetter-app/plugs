@@ -11,7 +11,46 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+func TestSourceEntityIDAccountingPreservesMalformedDiagnosticAndTypedErrors(t *testing.T) {
+	for _, raw := range []string{"123", `{ "id": "physical" }`, `"unterminated`} {
+		for _, counted := range []bool{false, true} {
+			ctx := context.Background()
+			root := dumpformat.NewNativeDeltaBudget(0)
+			owner := root.Scope()
+			if counted {
+				ctx = dumpformat.WithNativeDeltaBudget(ctx, owner)
+			}
+			_, err := sourceEntityID(json.RawMessage(raw), ctx)
+			if !errors.Is(err, driver.ErrUnsupported) || err.Error() != sourceRefusal("source entity address differs").Error() {
+				t.Fatal("entity-address diagnostic changed", raw, counted, err)
+			}
+			owner.Release()
+			if root.Usage().CurrentAccountedDecodedBytes != 0 {
+				t.Fatal("malformed ID retained accounting work")
+			}
+		}
+	}
+	root := dumpformat.NewNativeDeltaBudget(1)
+	owner := root.Scope()
+	ctx := dumpformat.WithNativeDeltaBudget(context.Background(), owner)
+	_, err := sourceEntityID(json.RawMessage(`"physical-id"`), ctx)
+	var refusal *dumpformat.NativeDeltaDecodedLimitError
+	if !errors.As(err, &refusal) || refusal.MeasuredBytes != uint64(len("physical-id")) || refusal.Overflow {
+		t.Fatal("entity ID lost measured refusal", err)
+	}
+	owner.Release()
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	owner = root.Scope()
+	_, err = sourceEntityID(json.RawMessage(`"physical-id"`), dumpformat.WithNativeDeltaBudget(canceled, owner))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatal("entity ID lost cancellation", err)
+	}
+	owner.Release()
+}
 
 func TestSourceCommentAccountingCountsExistingCustomWire(t *testing.T) {
 	for _, source := range []*SourceCommentOrigin{nil, {Project: "demo", Table: "comments", ID: "1", Author: "source-only"}} {

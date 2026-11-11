@@ -123,6 +123,30 @@ func TestNativeDeltaJSONCandidateRefusalLeavesTargetAndParentUnchanged(t *testin
 	}
 }
 
+func TestNativeDeltaJSONSuccessfulTargetTransfersBeforeScratchEnds(t *testing.T) {
+	root := NewNativeDeltaBudget(0)
+	owner := root.Scope()
+	var target NativeDeltaDelete
+	raw := []byte(`{"type":"row","op":"delete","key":"cGs="}`)
+	admittedBeforeDecode := false
+	root.Observe(func(event NativeDeltaAllocationEvent) {
+		if event.Action == "reserve" && event.Phase == "json_typed_candidate" {
+			admittedBeforeDecode = target.Type == ""
+		}
+	})
+	if err := decodeNativeDeltaJSONWithBudget(raw, &target, owner); err != nil {
+		t.Fatal(err)
+	}
+	n, err := NativeDeltaJSONSize(target)
+	if err != nil || !admittedBeforeDecode || target.Key != "cGs=" || root.Usage().CurrentAccountedDecodedBytes != n || owner.ReservedBytes("json_typed_candidate") != n {
+		t.Fatal("returned typed target lost its reservation", target, root.Usage(), n, err)
+	}
+	owner.Release()
+	if root.Usage().CurrentAccountedDecodedBytes != 0 {
+		t.Fatal("typed target did not end with its caller owner")
+	}
+}
+
 func TestNativeDeltaBudgetTransfersOnlySurvivingOutput(t *testing.T) {
 	root := NewNativeDeltaBudget(100)
 	operation := root.Scope()

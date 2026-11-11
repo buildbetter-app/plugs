@@ -197,10 +197,7 @@ func ReadNativeCaptureSetDirectory(ctx context.Context, path string, options Nat
 		return nil, err
 	}
 	var binding NativeCaptureSet
-	if err := decodeNativeDeltaJSONWithBudget(raw, &binding, directory); err != nil {
-		return nil, err
-	}
-	if err := directory.ChargeJSON("directory_capture_binding", binding); err != nil {
+	if err := decodeNativeDeltaJSONWithBudget(raw, &binding, directory, "directory_capture_binding"); err != nil {
 		return nil, err
 	}
 	head, err := openRegular("head.tar")

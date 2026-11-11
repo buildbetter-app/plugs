@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -354,6 +355,22 @@ func sourceText(raw json.RawMessage, contexts ...context.Context) (string, error
 	return text, nil
 }
 
+func sourceEntityID(raw json.RawMessage, ctx context.Context) (string, error) {
+	id, err := sourceText(raw, ctx)
+	if err != nil {
+		if canceled := ctx.Err(); canceled != nil {
+			return "", canceled
+		}
+		var limit *dumpformat.NativeDeltaDecodedLimitError
+		if errors.As(err, &limit) {
+			return "", err
+		}
+		// Preserve the original entity-address diagnostic for malformed IDs.
+		return "", sourceRefusal("source entity address differs")
+	}
+	return id, nil
+}
+
 func sourceBool(raw json.RawMessage) (bool, error) {
 	switch string(raw) {
 	case "true", "1":
@@ -653,7 +670,7 @@ func (p *Provider) PrepareSourceRestore(ctx context.Context, plan driver.SourceP
 		if err != nil {
 			return PreparedSourceRestore{}, err
 		}
-		physicalID, err := sourceText(wire.Source.Fields["id"], ctx)
+		physicalID, err := sourceEntityID(wire.Source.Fields["id"], ctx)
 		if err != nil {
 			return PreparedSourceRestore{}, err
 		}

@@ -2,10 +2,75 @@ package dumpformat
 
 import (
 	"context"
+	"encoding/base64"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestNativeDeltaPhysicalKeyOwnershipSurvivesValidationScratch(t *testing.T) {
+	table := NativeDeltaTableSchema{Name: "items", Columns: []NativeDeltaColumn{{Name: "id", SQLType: "bigint", PrimaryKeyOrdinal: deltaTestUint(0)}, {Name: "value", SQLType: "text"}}}
+	root := NewNativeDeltaBudget(0)
+	var owners []*NativeDeltaBudget
+	var retained uint64
+	for _, id := range []string{"1", "2"} {
+		row := deltaTestRow(t, table, id, "exact", 0)
+		owner := root.Scope()
+		owners = append(owners, owner)
+		fields, key, err := validateNativeDeltaRowAccounted(table, row, nil, owner)
+		if err != nil || fields["value"] != "exact" || len(key) == 0 {
+			t.Fatal("valid row changed", fields, key, err)
+		}
+		n := uint64(base64.StdEncoding.DecodedLen(len(row.Key)))
+		retained += n
+		if owner.ReservedBytes("physical_key_decode") != n {
+			t.Fatal("returned key lost its owner", owner.Usage())
+		}
+		owner.ReleaseBytes("normalized_fields", owner.ReservedBytes("normalized_fields"))
+		if root.Usage().CurrentAccountedDecodedBytes != retained {
+			t.Fatal("previous/current key overlap is not charged", root.Usage(), retained)
+		}
+	}
+	for _, owner := range owners {
+		owner.Release()
+	}
+	if root.Usage().CurrentAccountedDecodedBytes != 0 {
+		t.Fatal("key owners did not unwind", root.Usage())
+	}
+	// The string copy has a separate admission from the decoded byte buffer.
+	key := []byte("physical-key")
+	limited := NewNativeDeltaBudget(uint64(len(key) - 1))
+	owner := limited.Scope()
+	value, err := nativeDeltaMapKeyAccounted(key, owner)
+	var refusal *NativeDeltaDecodedLimitError
+	if value != "" || !errors.As(err, &refusal) || refusal.Phase != "decoded_row_map_keys" || refusal.MeasuredBytes != uint64(len(key)) || refusal.Overflow {
+		t.Fatal("map key was not refused before conversion", value, err)
+	}
+	owner.Release()
+	if limited.Usage().CurrentAccountedDecodedBytes != 0 {
+		t.Fatal("map key refusal retained a candidate")
+	}
+}
+
+func TestNativeDeltaReconstructionDropsDecodedKeysAndMapReplacements(t *testing.T) {
+	f := deltaReconstructionFixture(t)
+	root := NewNativeDeltaBudget(0)
+	var simultaneousKeys uint64
+	root.Observe(func(event NativeDeltaAllocationEvent) {
+		if n := root.ReservedBytes("physical_key_decode"); n > simultaneousKeys {
+			simultaneousKeys = n
+		}
+	})
+	_, _, err := reconstructNativeDelta(context.Background(), &f.stream, f.root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage := root.Usage()
+	if simultaneousKeys == 0 || usage.CumulativeCharges["decoded_row_map_keys"] == 0 || usage.CurrentCategories["physical_key_decode"] != 0 || usage.CurrentCategories["decoded_row_map_keys"] != 0 {
+		t.Fatal("reconstruction key owners did not end with their tables", simultaneousKeys, usage)
+	}
+}
 
 func TestNativeDeltaGraphFrontierReleasesOnlyLastUsedUnsharedFiles(t *testing.T) {
 	directory := t.TempDir()

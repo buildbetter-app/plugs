@@ -4,15 +4,18 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"sort"
+
+	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
-// reserveNativeDeltaRowValidation inventories the logical copies made by the
+// validateNativeDeltaRowAccounted inventories the logical copies made by the
 // existing typed-cell validator. Each reservation names a live representation;
-// it is not an RSS multiplier. The returned fields reservation belongs to the
-// caller; validation scratch ends when validateNativeDeltaRow returns.
+// it is not an RSS multiplier. The returned fields and decoded key belong to
+// owner; validation scratch ends when validateNativeDeltaRow returns.
 func validateNativeDeltaRowAccounted(table NativeDeltaTableSchema, row NativeDeltaRow, policy map[string]string, owner *NativeDeltaBudget) (Row, []byte, error) {
 	raw := uint64(base64.StdEncoding.DecodedLen(len(row.NormalizedJSON)))
-	key := uint64(base64.StdEncoding.DecodedLen(len(row.Key)))
 	work := owner.Scope()
 	defer work.Release()
 	if err := work.ChargeBytes("normalized_admission_decode", raw); err != nil {
@@ -40,10 +43,11 @@ func validateNativeDeltaRowAccounted(table NativeDeltaTableSchema, row NativeDel
 			return nil, nil, err
 		}
 	}
-	for _, phase := range []string{"physical_key_decode", "physical_key_reencode", "physical_key_preimage"} {
-		if err := work.ChargeBytes(phase, key); err != nil {
-			return nil, nil, err
-		}
+	if err := reserveNativeDeltaKey(row.Key, owner, work); err != nil {
+		return nil, nil, err
+	}
+	if err := work.ChargeBytes("physical_key_preimage", uint64(base64.StdEncoding.DecodedLen(len(row.Key)))); err != nil {
+		return nil, nil, err
 	}
 	// Only one converted cell exists at a time. Canonical normalized-row bytes
 	// bound that cell's JSON representation, including escaped text and binary.
@@ -70,6 +74,87 @@ func validateNativeDeltaRowAccounted(table NativeDeltaTableSchema, row NativeDel
 		return nil, nil, err
 	}
 	return validateNativeDeltaRow(table, row, policy)
+}
+
+// DecodeString allocates DecodedLen bytes even when padding makes the returned
+// slice shorter. Canonical re-encoding separately allocates an encoded buffer
+// and its string copy. Only the decoded buffer survives validation.
+func reserveNativeDeltaKey(encoded string, owner, scratch *NativeDeltaBudget) error {
+	if err := owner.ChargeBytes("physical_key_decode", uint64(base64.StdEncoding.DecodedLen(len(encoded)))); err != nil {
+		return err
+	}
+	for _, phase := range []string{"physical_key_reencode_buffer", "physical_key_reencode_text"} {
+		if err := scratch.ChargeBytes(phase, uint64(len(encoded))); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func nativeDeltaKeyAccounted(encoded string, owner *NativeDeltaBudget) ([]byte, error) {
+	candidate := owner.Scope()
+	defer candidate.Release()
+	scratch := candidate.Scope()
+	defer scratch.Release()
+	if err := reserveNativeDeltaKey(encoded, candidate, scratch); err != nil {
+		return nil, err
+	}
+	key, err := nativeDeltaBase64(encoded)
+	if err != nil {
+		return nil, err
+	}
+	scratch.Release()
+	candidate.Retain()
+	return key, nil
+}
+
+// Map strings have a distinct lifetime and representation from decoded keys.
+// The caller releases a replaced/deleted key or transfers a newly kept key.
+func nativeDeltaMapKeyAccounted(key []byte, owner *NativeDeltaBudget) (string, error) {
+	if err := owner.ChargeBytes("decoded_row_map_keys", uint64(len(key))); err != nil {
+		return "", err
+	}
+	return string(key), nil
+}
+
+// The driver defines generic Ref ordering. Admit the returned encoded key
+// and its temporary preimage separately; never use D3/body order in its place.
+func nativeDeltaRecordKeyAccounted(ref model.Ref, owner *NativeDeltaBudget) (string, error) {
+	n := uint64(len("0:key:")) + uint64(len(ref.Key))
+	if ref.IsID() {
+		n = uint64(len("0:id::")) + uint64(len(ref.ID)) + uint64(len(ref.Branch.String()))
+	}
+	if err := owner.ChargeBytes("record_order_keys", n); err != nil {
+		return "", err
+	}
+	scratch := owner.Scope()
+	defer scratch.Release()
+	if err := scratch.ChargeBytes("record_order_key_preimage", n-2); err != nil {
+		return "", err
+	}
+	return driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &ref})
+}
+
+func sortNativeDeltaRecords(records []driver.Record, budget *NativeDeltaBudget) error {
+	scratch := budget.Scope()
+	defer scratch.Release()
+	type entry struct {
+		record driver.Record
+		key    string
+	}
+	entries := make([]entry, 0, len(records))
+	for _, record := range records {
+		key, err := nativeDeltaRecordKeyAccounted(record.Ref, scratch)
+		if err != nil {
+			return err
+		}
+		entries = append(entries, entry{record, key})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].key < entries[j].key })
+	for i, entry := range entries {
+		records[i] = entry.record
+	}
+	return nil
 }
 
 // nativeDeltaReadBounded reserves each byte-buffer capacity before allocating.
