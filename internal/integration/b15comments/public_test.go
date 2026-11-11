@@ -104,19 +104,24 @@ func (f *fixture) bind() {
 	}
 	ontology := service.NewOntology(nil)
 	writer := pipeline.New(f.store, f.lease, pipeline.WithClock(f.clock.Now), pipeline.WithOntology(ontology), pipeline.WithOntologyAudit(service.NewOntologyAudit(nil)), pipeline.WithIDGenerator(func() (string, error) { return "b15-anchor", nil }))
-	checkpoints, err := driver.RequireWorkflowCheckpointStore(f.store, f.lease)
-	if err != nil {
-		t.Fatal(err)
+	var provider *workflow.Provider
+	// The frozen host contract refuses new ephemeral invocation on memory.
+	// Imported active state has its separate installed receiver qualification.
+	if f.engine != "memory" {
+		checkpoints, err := driver.RequireWorkflowCheckpointStore(f.store, f.lease)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state, err := pluginhost.NewWorkflowRuntimeState(checkpoints, f.lease)
+		if err != nil {
+			t.Fatal(err)
+		}
+		provider, err = workflow.New(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		provider = provider.WithClock(f.clock.Now).WithIdentity(workflow.Alias, "default", meta.Incarnation)
 	}
-	state, err := pluginhost.NewWorkflowRuntimeState(checkpoints, f.lease)
-	if err != nil {
-		t.Fatal(err)
-	}
-	provider, err := workflow.New(state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	provider = provider.WithClock(f.clock.Now).WithIdentity(workflow.Alias, "default", meta.Incarnation)
 	f.domain = service.New(f.store, f.lease, writer, service.WithClock(f.clock.Now), service.WithOntology(ontology), service.WithWorkflow(provider))
 	registry, err := rpc.NewRegistry()
 	if err != nil {
@@ -324,7 +329,7 @@ func TestB15PublicDurableClockHistoryAndRequestIdentity(t *testing.T) {
 			// never a native import or reference result.
 			future := f.document()
 			future.Comments[1].Time = f.clock.Now().Add(time.Hour)
-			_, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: ref(before.ID), Kind: "bead", Op: model.OpPatch, Body: marshal(t, future)}})
+			_, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: ref(before.ID), Kind: "bead", Op: model.OpPatch, Body: marshal(t, future), Graph: &conformance.FixtureGraphSource{}}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -371,6 +376,12 @@ func TestB15PublicDefaultAndMaximumPagesOrderTiesWithoutMutation(t *testing.T) {
 			if empty := f.page("b15-anchor", 0, ""); len(empty.Comments) != 0 || empty.Next != "" {
 				t.Fatal("new thread is not an empty page")
 			}
+			for _, tc := range []struct{ id, code string }{{"", "invalid_params"}, {"b15-unknown", "not_found"}, {"b15-anch", "not_found"}} {
+				r := f.call("bead.get", map[string]any{"id": map[string]any{"id": tc.id}, "commentPage": map[string]any{}}, false)
+				if r.Error == nil || r.Error.Data.Code != tc.code {
+					t.Errorf("empty/unknown/prefix read %+v: %s", tc, marshal(t, r))
+				}
+			}
 			doc := f.document()
 			want := make([]pageItem, 502)
 			for i := range want {
@@ -386,7 +397,7 @@ func TestB15PublicDefaultAndMaximumPagesOrderTiesWithoutMutation(t *testing.T) {
 				}
 				return want[i].Comment.Time.Before(want[j].Comment.Time)
 			})
-			if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: ref(doc.ID), Kind: "bead", Op: model.OpPatch, Body: marshal(t, doc)}}); err != nil {
+			if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: ref(doc.ID), Kind: "bead", Op: model.OpPatch, Body: marshal(t, doc), Graph: &conformance.FixtureGraphSource{}}}); err != nil {
 				t.Fatal(err)
 			}
 			state, history := f.document(), f.changes()
@@ -428,20 +439,50 @@ func TestB15PublicDefaultAndMaximumPagesOrderTiesWithoutMutation(t *testing.T) {
 	}
 }
 
-func TestB15PublicWispCommentClockAndNoDurableHistory(t *testing.T) {
+func TestB15PublicEphemeralCommentClockAndNoDurableHistory(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			f := newFixture(t, engine)
 			f.create()
 			anchor, durable := f.document(), f.changes()
-			raw := f.success("x.workflow.invoke", map[string]any{"template": "b15-public", "project": project, "mode": "ephemeral", "checklist": []map[string]any{{"label": "step", "title": "comment thread", "type": "task"}}}, true)
+			invocation := map[string]any{"template": "b15-public", "project": project, "mode": "ephemeral", "checklist": []map[string]any{{"label": "step", "title": "comment thread", "type": "task"}}}
+			if engine == "memory" {
+				// workflow-contract.md:57-65 forbids new ephemeral invocation
+				// on the process-local memory host, before any state publication.
+				meta, err := f.store.Meta(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				checkpoints := f.store.(driver.CheckpointStore)
+				checkpoint, err := checkpoints.LoadCheckpoint(context.Background(), "plugin/workflow/default/durable")
+				if err != nil {
+					t.Fatal(err)
+				}
+				r := f.call("x.workflow.invoke", invocation, true)
+				if r.Error == nil || r.Error.Data.Code != "plugin_durable_state_unavailable" {
+					t.Fatalf("memory invocation refusal: %s", marshal(t, r))
+				}
+				after, err := f.store.Meta(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				afterCheckpoint, err := checkpoints.LoadCheckpoint(context.Background(), "plugin/workflow/default/durable")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(meta, after) || !reflect.DeepEqual(checkpoint, afterCheckpoint) || !reflect.DeepEqual(anchor, f.document()) || !reflect.DeepEqual(durable, f.changes()) {
+					t.Error("refused memory invocation published state")
+				}
+				return
+			}
+			raw := f.success("x.workflow.invoke", invocation, true)
 			var invoked workflow.InvokeResult
 			if err := json.Unmarshal(raw, &invoked); err != nil || len(invoked.Items) != 1 {
-				t.Fatalf("wisp invocation: %v %s", err, raw)
+				t.Fatalf("ephemeral invocation: %v %s", err, raw)
 			}
 			id := invoked.Items[0].ID
 			want := []pipeline.Comment{}
-			for i, body := range []string{" \twisp text\n東京  ", "same clock"} {
+			for i, body := range []string{" \tcomment text\n東京  ", "same clock", "future newest"} {
 				f.success("bead.comment", map[string]any{"id": ref(id), "body": body}, true)
 				want = append(want, pipeline.Comment{Body: body, Principal: actor, Time: f.clock.Now().Add(time.Duration(i) * time.Second)})
 			}
@@ -457,22 +498,22 @@ func TestB15PublicWispCommentClockAndNoDurableHistory(t *testing.T) {
 			}
 			got := read()
 			if !reflect.DeepEqual(got, want) {
-				t.Errorf("wisp exact tuple/monotonic time: got=%+v want=%+v", got, want)
+				t.Errorf("ephemeral exact tuple/monotonic time: got=%+v want=%+v", got, want)
 			}
 			if !reflect.DeepEqual(anchor, f.document()) || !reflect.DeepEqual(durable, f.changes()) {
-				t.Error("wisp comment changed durable anchor/history")
+				t.Error("ephemeral comment changed durable anchor/history")
 			}
 			f.reopen()
 			if reopened := read(); !reflect.DeepEqual(got, reopened) {
-				t.Error("SQL reopen changed wisp comment tuples")
+				t.Error("SQL reopen changed ephemeral comment tuples")
 			}
 			if !reflect.DeepEqual(anchor, f.document()) || !reflect.DeepEqual(durable, f.changes()) {
-				t.Error("reopened wisp introduced durable history")
+				t.Error("reopened ephemeral comment introduced durable history")
 			}
 			paged := f.page(id, 500, "")
 			for i := range want {
-				if len(paged.Comments) != 2 || paged.Comments[i].ID != uint64(i+1) || !reflect.DeepEqual(paged.Comments[i].Comment, got[i]) {
-					t.Errorf("reopened public wisp page IDs/tuples: %+v", paged)
+				if len(paged.Comments) != len(want) || paged.Comments[i].ID != uint64(i+1) || !reflect.DeepEqual(paged.Comments[i].Comment, got[i]) {
+					t.Errorf("reopened public ephemeral page IDs/tuples: %+v", paged)
 					break
 				}
 			}
