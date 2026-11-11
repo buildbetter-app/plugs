@@ -1010,6 +1010,25 @@ func TestBazelRetiredLanesCannotBeNarrowed(t *testing.T) {
 			"-required-suite=doc-freshness",
 		},
 	}
+	// These additional runs exercise the original default-off recipes and
+	// their retained-store controls. The owning Go targets still run in full.
+	// Pin both args and env so these two wrappers cannot omit a control or
+	// inherit a switch that turns it into a skip.
+	recipeHandoffVariants := map[string]target{
+		"//cmd/bd:public_recipe_handoff_test": {
+			[]string{"$(rootpath //tools/bazel:test_env)", "$(rootpath :bd_test)", "-test.run=^TestPlugDumpCompleteRoot(FromPublicDoltActions|FixtureHandoff)$$", "-test.v", "-test.timeout=5m"},
+			map[string]string{
+				"BEADS_TEST_BD_BINARY": "$(rlocationpath :bd_for_tests)", "BEADS_TEST_PLUG_SOURCE": "$(rlocationpath //internal/plugdump:synthetic_source)",
+				"BEADS_TEST_PLUG_INVENTORY": "$(rlocationpath //internal/plugdump:synthetic_inventory)", "BEADS_TEST_DOLT_SERVER": "local",
+				"BEADS_TEST_REQUIRE_DOLT_CONTAINER": "1", "BEADS_TEST_SKIP": "",
+			},
+		},
+		"//internal/plugdump:public_recipe_handoff_test": {
+			[]string{"$(rootpath //tools/bazel:test_env)", "$(rootpath :plugdump_test)", "-test.run=^TestSQLSourceHistory(ReadsPinnedDoltCommitImages|FixtureHandoff)$$", "-test.v", "-test.timeout=5m"},
+			map[string]string{"BEADS_TEST_DOLT_SERVER": "local", "BEADS_TEST_REQUIRE_DOLT_CONTAINER": "1", "BEADS_TEST_SKIP": ""},
+		},
+	}
+	seenRecipeVariants := map[string]bool{}
 	err = walkBazelFiles(root, true, func(path string, d os.DirEntry) error {
 		isBzl := strings.HasSuffix(d.Name(), ".bzl")
 		data, err := os.ReadFile(path)
@@ -1041,6 +1060,36 @@ func TestBazelRetiredLanesCannotBeNarrowed(t *testing.T) {
 						}
 						continue
 					}
+					if wantVariant, ok := recipeHandoffVariants[label]; ok {
+						seenRecipeVariants[label] = true
+						var gotVariant target
+						args := bazelAttrBlock(unit, "args")
+						for _, q := range quoted.FindAllStringSubmatch(args, -1) {
+							gotVariant.args = append(gotVariant.args, q[1])
+						}
+						gotVariant.env = map[string]string{}
+						env := envRe.FindStringSubmatch(unit)
+						envBlock := ""
+						if env != nil {
+							envBlock = env[0]
+							for _, p := range envPair.FindAllStringSubmatch(env[1], -1) {
+								gotVariant.env[p[1]] = p[2]
+							}
+						}
+						literal := recipeHandoffLiteralAttributes(args, envBlock) && !strings.Contains(unit, "env_inherit")
+						if !literal {
+							t.Errorf("%s sets args/env indirectly; keep the recipe controls literal", label)
+						}
+						if !reflect.DeepEqual(gotVariant, wantVariant) {
+							t.Errorf("%s args/env = %v, want exactly %v", label, gotVariant, wantVariant)
+						}
+						// Only the pinned attributes are exempt. The general guard
+						// below still checks the rest of this rule for narrowing.
+						if literal && reflect.DeepEqual(gotVariant, wantVariant) {
+							unit = strings.Replace(unit, args, "", 1)
+							unit = strings.Replace(unit, envBlock, "", 1)
+						}
+					}
 				}
 			}
 			for _, line := range strings.Split(unit, "\n") {
@@ -1054,6 +1103,54 @@ func TestBazelRetiredLanesCannotBeNarrowed(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	for label := range recipeHandoffVariants {
+		if !seenRecipeVariants[label] {
+			t.Errorf("missing retained-store control target %s", label)
+		}
+	}
+}
+
+// Validate the complete attribute syntax before projecting quoted values.
+// Expressions and identifiers must never disappear in that projection.
+func recipeHandoffLiteralAttributes(args, env string) bool {
+	literalArgs := regexp.MustCompile(`(?s)^\s*args = \[\s*(?:"[^"\\]*",\s*)*\],\s*$`)
+	literalEnv := regexp.MustCompile(`(?s)^\s*env = \{\s*(?:"[^"\\]*":\s*"[^"\\]*",\s*)*\},\s*$`)
+	return literalArgs.MatchString(args) && literalEnv.MatchString(env)
+}
+
+func TestRecipeHandoffVariantsRequireLiteralAttributes(t *testing.T) {
+	root := sourceRepoRoot(t)
+	envRe := regexp.MustCompile(`(?ms)^    env = \{(.*?)\},$`)
+	for _, pkg := range []string{"cmd/bd", "internal/plugdump"} {
+		t.Run(pkg, func(t *testing.T) {
+			rule := bazelRuleBlock(readPolicyFile(t, root, pkg+"/BUILD.bazel"), "public_recipe_handoff_test")
+			args := bazelAttrBlock(rule, "args")
+			env := envRe.FindString(rule)
+			concatEnv := strings.Replace(env, `"BEADS_TEST_SKIP": "",`, `"BEADS_TEST_SKIP": "" + "dolt",`, 1)
+			indirectArgs := strings.Replace(args, "\n    ],", "\n        _EXTRA_RECIPE_ARG,\n    ],", 1)
+			concatArgs := strings.Replace(args, `"$(rootpath //tools/bazel:test_env)",`, `"$(rootpath //tools/bazel:test_env)" + _RECIPE_SUFFIX,`, 1)
+			if concatEnv == env || indirectArgs == args || concatArgs == args {
+				t.Fatal("negative controls did not mutate the actual wrapper attributes")
+			}
+			for _, tc := range []struct {
+				name, args, env string
+				want            bool
+			}{
+				{"current_wrapper", args, env, true},
+				{"skip_expression", args, concatEnv, false},
+				{"indirect_extra_arg", indirectArgs, env, false},
+				{"arg_expression", concatArgs, env, false},
+				{"missing_args", "", env, false},
+				{"missing_env", args, "", false},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					if got := recipeHandoffLiteralAttributes(tc.args, tc.env); got != tc.want {
+						t.Errorf("literal attributes = %v, want %v", got, tc.want)
+					}
+				})
+			}
+		})
 	}
 }
 

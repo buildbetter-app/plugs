@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,11 +18,23 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/steveyegge/beads/internal/testutil"
+	"github.com/steveyegge/beads/internal/testutil/recipehooks"
 )
 
+var publicRecipeHookFlags = recipehooks.RegisterFlags(flag.CommandLine)
+
 func TestSQLSourceHistoryReadsPinnedDoltCommitImages(t *testing.T) {
+	runSQLSourceHistoryRecipe(t, publicRecipeHookFlags.Options())
+}
+
+func runSQLSourceHistoryRecipe(t *testing.T, options recipehooks.Options) []byte {
+	t.Helper()
 	if os.Getenv("BEADS_TEST_SKIP") == "dolt" {
 		t.Skip("requires the explicit pinned Dolt source-history lane")
+	}
+	hooks, err := recipehooks.Open(options)
+	if err != nil {
+		t.Fatal(err)
 	}
 	server := testutil.StartIsolatedDoltContainerHandle(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -241,6 +254,31 @@ func TestSQLSourceHistoryReadsPinnedDoltCommitImages(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if options.RetainStore != "" {
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	retained, err := hooks.Handoff(ctx, server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retained {
+		// Preserve the original dirty-working-set refusal after handing off the
+		// clean exported source. This later mutation must never enter the copy.
+		if err := server.Start(ctx); err != nil {
+			t.Fatal(err)
+		}
+		port, err := server.CurrentPort(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		db, err = sql.Open("mysql", fmt.Sprintf("root@tcp(127.0.0.1:%s)/beads_test?parseTime=true", port))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+	}
 	if _, err = db.ExecContext(ctx, "UPDATE issues SET title = 'uncommitted head' WHERE id = 'demo-7'"); err != nil {
 		t.Fatal(err)
 	}
@@ -248,6 +286,7 @@ func TestSQLSourceHistoryReadsPinnedDoltCommitImages(t *testing.T) {
 	if m.History != "available-unverified" || h.Range.Status != "unverified" || h.Range.Reason != "working-set-not-clean" || len(h.Range.Frames) != 0 {
 		t.Fatal("dirty SQL working set became verified history")
 	}
+	return data
 }
 
 func TestSQLSourceHistoricalCensusDistinguishesViewsFromBaseTables(t *testing.T) {
