@@ -6,6 +6,7 @@ go_library(
     importpath = "github.com/buildbetter-app/plugs/internal/core/viewops",
     visibility = [
         "//internal:__subpackages__",
+        "//spec/cardb16:__pkg__",
         "//spec/cardb23full:__pkg__",
         "//spec/cardb24:__pkg__",
         "//spec/s1-b21-b24:__pkg__",

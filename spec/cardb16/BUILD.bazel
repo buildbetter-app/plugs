@@ -31,7 +31,7 @@ go_test(
     srcs = _FIXTURE + ["native_reference_test.go", "//spec/cardb20:native_build_support"],
     data = ["//spec/s1-b09-native:lexicon_files", "//internal/publicnative:dolt_runtime"],
     env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
-    env_inherit = ["BAZEL_BIN", "BAZEL_RC", "BAZELISK_HOME", "BAZELISK_VERIFY_SHA256"],
+    env_inherit = ["BAZEL_BIN", "BAZEL_RC", "BAZELISK_HOME", "BAZELISK_VERIFY_SHA256", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_SHA", "GITHUB_WORKFLOW_REF"],
     args = ["-test.v"],
     deps = _DEPS + ["//internal/publicnative"],
     size = "enormous",

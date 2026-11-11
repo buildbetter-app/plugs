@@ -143,8 +143,7 @@ func (f *b16Host) query(query string, want []string) {
     "strings":[]string{"id"},"fields":[]string{"title"},"budgetTokens":1000}
     var result struct{Items []struct{ID string `json:"id"`} `json:"items"`;NextCursor any `json:"nextCursor"`};b16Decode(f.t,f.call("view.run",map[string]any{"definition":definition},false,""),&result)
     got:=[]string{};for _,item:=range result.Items{got=append(got,item.ID)};expected:=append([]string{},want...);sort.Strings(expected);b16Equal(f.t,got,expected);if result.NextCursor!=nil{f.t.Fatal("unexpected page continuation")}
-    definition["countOnly"]=true
-    var count struct{Count json.Number `json:"count"`};b16Decode(f.t,f.call("view.run",map[string]any{"definition":definition},false,""),&count)
+    var count struct{Count json.Number `json:"count"`};b16Decode(f.t,f.call("view.run",map[string]any{"definition":definition,"countOnly":true},false,""),&count)
     b16Equal(f.t,string(count.Count),fmt.Sprint(len(want)));b16Equal(f.t,f.meta(),before)
 }
 func (f *b16Host) reopen(check func()) {

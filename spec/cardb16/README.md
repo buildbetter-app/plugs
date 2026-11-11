@@ -10,7 +10,9 @@ The new targets retain every inherited test. They reuse the unchanged B20
 source-pinned native builder and disposable PostgreSQL engine, compiling no
 unrelated B20 tests. `public_labels_test` is included in canonical whole;
 `native_labels_test` is an explicit manual reference target run in focus.
-Neither target filters its own tests. No private or official input is used.
+Neither target filters its own tests. The native focus receives an explicit
+PLUG_B16_REQUEST_SHA; trusted workflow main identity remains distinct from
+the exact candidate checkout. No private or official input is used.
 
 The literal oracle covers sorted exact values including case and internal
 spaces, duplicates and empty entries, the 255 Unicode scalar bound, idempotent

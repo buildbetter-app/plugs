@@ -54,10 +54,10 @@ func (n *b16Native) rename(label,old,new string,renamed,merged int) {
 func TestB16CanonicalNativePublicLabels(t *testing.T) {
     root:=os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR");checkout:=os.Getenv("PLUG_SOURCE_MODULE_ROOT");if !filepath.IsAbs(root)||!filepath.IsAbs(checkout){t.Fatal("retained output and candidate checkout required")}
     r:=&nativeRecorder{t:t,root:root};actual:=strings.TrimSpace(string(r.buildCommand(checkout,"b16-candidate","/usr/bin/git",[]string{"rev-parse","HEAD"})))
-    if actual=="" || actual!=os.Getenv("GITHUB_SHA"){t.Fatal("actual candidate checkout differs from workflow source")}
+    if actual=="" || actual!=os.Getenv("PLUG_B16_REQUEST_SHA"){t.Fatal("actual candidate checkout differs from explicit requested source")}
     protocol,err:=os.ReadFile(filepath.Join(checkout,"spec/s1-b09-native/native_inputs.json"));if err!=nil || hashBytes(protocol)!="a7ddd9047eb94e54cdaa138b1adf756c5088a50bc01605ee2c6eafbfb9d0d9c2"{t.Fatal("canonical native protocol changed",err)}
     var input struct{ExporterLabel string `json:"exporter_label"`};b16Decode(t,protocol,&input);r.target=input.ExporterLabel
-    r.writeJSON(filepath.Join(root,"b16-request-binding.json"),map[string]any{"candidate":actual,"target":os.Getenv("TEST_TARGET"),"run":os.Getenv("GITHUB_RUN_ID"),"attempt":os.Getenv("GITHUB_RUN_ATTEMPT"),"native_source":pinnedSource,"private":"HARD_DISABLED","official":"UNSPENT","scope":"PUBLIC_NATIVE_LABELS_ONLY"})
+    r.writeJSON(filepath.Join(root,"b16-request-binding.json"),map[string]any{"candidate":actual,"target":os.Getenv("TEST_TARGET"),"run":os.Getenv("GITHUB_RUN_ID"),"attempt":os.Getenv("GITHUB_RUN_ATTEMPT"),"workflow_sha":os.Getenv("GITHUB_SHA"),"workflow_ref":os.Getenv("GITHUB_WORKFLOW_REF"),"native_source":pinnedSource,"private":"HARD_DISABLED","official":"UNSPENT","scope":"PUBLIC_NATIVE_LABELS_ONLY"})
     binary:=r.buildCanonicalSource(pinnedSource)
     work:=t.TempDir();home,project,tmp:=filepath.Join(work,"home"),filepath.Join(work,"project"),filepath.Join(work,"tmp");for _,dir:=range []string{home,project,tmp}{if err:=os.Mkdir(dir,0700);err!=nil{t.Fatal(err)}}
     server:=publicnative.StartDolt(t,root)
