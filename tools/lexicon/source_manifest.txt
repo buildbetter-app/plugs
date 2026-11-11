@@ -1749,6 +1749,7 @@ spec/cardb20/caller_closure_test.go
 spec/cardb23full/BUILD.bazel
 spec/cardb23full/public_history_test.go
 spec/cardb23query/BUILD.bazel
+spec/cardb23query/README.md
 spec/cardb23query/fixture_test.go
 spec/cardb23query/native_query_test.go
 spec/cardb23query/query_support_test.go

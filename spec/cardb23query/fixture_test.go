@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/core/viewops"
@@ -75,7 +76,13 @@ func (f *fixture) connect() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	ontology := service.NewOntology(nil)
+	document := ontology.DefaultDocument()
+	document.Types["bug"] = ontology.Type{Name: "Bug", Workflow: "issue", Fields: document.Types["issue"].Fields}
+	compiled, problems := ontology.Compile(document, nil, nil)
+	if len(problems) != 0 {
+		f.t.Fatal(problems)
+	}
+	ontology := service.NewOntology(func(project string) ontology.Effective { return compiled.Effective(project) })
 	writer := pipeline.New(f.store, f.lease, pipeline.WithOntology(ontology), pipeline.WithClock(f.clock.Now), pipeline.WithIDGenerator(func() (string, error) {
 		f.next++
 		if f.next <= len(f.ids) {

@@ -4,6 +4,7 @@ load("@rules_go//go:def.bzl", "go_test")
 COMMON = ["fixture_test.go", "query_support_test.go"]
 DEPS = [
     "//internal/core/model",
+    "//internal/core/ontology",
     "//internal/core/pipeline",
     "//internal/core/service",
     "//internal/core/viewops",

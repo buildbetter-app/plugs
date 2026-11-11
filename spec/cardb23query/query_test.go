@@ -35,7 +35,7 @@ func TestB23CombinedPublicPredicateCountsPagingAndReopen(t *testing.T) {
 				}
 				// The two equal titles cross the page boundary; byte-order ID tie-break
 				// is fixed by the admitted view contract, which keeps sorting unchanged.
-				tie := queryCase{query: "title=Needle AND status=todo"}
+				tie := queryCase{query: "title=Needle AND status=todo AND type=issue"}
 				d := queryDefinition(tie, 1)
 				queryPages(t, f, phase+"-title-tie", d, &at, []string{queryIDs[4], queryIDs[1], queryIDs[0]})
 				for i, c := range []struct{ query, code string }{{"status=todo OR status=done", "invalid_params"}, {"NOT status=todo", "invalid_params"}, {"plane=ephemeral", "unknown_field"}} {
