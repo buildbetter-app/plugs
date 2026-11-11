@@ -2,6 +2,7 @@ load("@rules_go//go:def.bzl", "go_binary")
 
 go_binary(
     name = "openrpcgen",
+    visibility = ["//scripts/ci:__pkg__"],
     srcs = ["main.go"],
     importpath = "github.com/buildbetter-app/plugs/internal/server/rpc/cmd/openrpcgen",
     deps = ["//internal/api/wire", "//internal/core/model", "//internal/server/rpc"],

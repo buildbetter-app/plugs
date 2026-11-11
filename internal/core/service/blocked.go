@@ -9,6 +9,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 type BlockedBead struct {
@@ -101,9 +102,10 @@ func (s *Service) BlockedWithFilter(ctx context.Context, by model.PrincipalRef, 
 	if err != nil {
 		return BlockedPage{}, err
 	}
-	parents, err := s.parentFilter(ctx, r, req.Filter, true)
-	if err != nil {
-		return BlockedPage{}, err
+	if req.Filter != nil && req.Filter.Parent != "" {
+		if err := driver.ValidateHierarchyRef(model.RefByID(req.Filter.Parent, model.Natural64(0))); err != nil {
+			return BlockedPage{}, failure("invalid_params", "filter.parent requires a branch-zero bead ID")
+		}
 	}
 	visible := map[string]bool{}
 	beads := map[string]Bead{}
@@ -132,7 +134,7 @@ func (s *Service) BlockedWithFilter(ctx context.Context, by model.PrincipalRef, 
 	for _, id := range sortedIDs(graph) {
 		row := graph[id]
 		_, isWorkflow := workflow[id]
-		if !visible[id] || len(reasons[id]) == 0 || !matchesFilter(row, req.Project, req.Filter) || parents != nil && !parents[id] || isWorkflow && req.Filter != nil && req.Filter.IncludeEphemeral != nil && !*req.Filter.IncludeEphemeral {
+		if !visible[id] || len(reasons[id]) == 0 || !matchesFilter(row, req.Project, req.Filter) || req.Filter != nil && req.Filter.Parent != "" && (row.doc.Parent == nil || row.doc.Parent.ID != req.Filter.Parent) || isWorkflow && req.Filter != nil && req.Filter.IncludeEphemeral != nil && !*req.Filter.IncludeEphemeral {
 			continue
 		}
 		bead := beads[id]
