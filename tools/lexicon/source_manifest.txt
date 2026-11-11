@@ -501,6 +501,7 @@ internal/integration/b01readyorder/independent_clock_test.go
 internal/integration/b01readyorder/mixed_clock_test.go
 internal/integration/b01readyorder/public_acceptance_test.go
 internal/integration/b01readyorder/ready_order_test.go
+internal/integration/b01readyorder/workflow_ancestor_test.go
 internal/integration/b01readyorder/workflow_query_test.go
 internal/integration/b02publicnotices/BUILD.bazel
 internal/integration/b02publicnotices/README.md
