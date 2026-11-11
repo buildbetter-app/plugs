@@ -314,6 +314,10 @@ func TestB08NativeOriginalGuardsAndLifecycle(t *testing.T) {
 	n.close("force-open-children", "parent", true, "")
 	n.close("preclosed-still-open-children", "parent", false, "open child")
 	n.close("close-pinned-child", "durable-child", true, "")
+	// Isolate the ephemeral contribution: the durable child is now closed,
+	// so only the open wisp can supply this refusal. The close helper checks
+	// the complete physical census and commit log for no writes.
+	n.close("preclosed-active-child-only", "parent", false, "open child")
 	n.close("close-active-child", "active-child", false, "")
 	n.close("preclosed-no-children", "parent", false, "")
 
