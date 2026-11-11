@@ -22,8 +22,9 @@ type nativeDeltaRowCallbacks struct {
 	commit func(NativeDeltaRowCommit) error
 	// Each complete checkpoint table is presented once in name order. Schema,
 	// rows and policy are borrowed until the callback returns. No SQL is run.
-	checkpoint func(string, NativeDeltaTableSchema, []NativeDeltaRow, map[string]string) error
-	tableState func(NativeDeltaTableState) error
+	checkpoint      func(string, NativeDeltaTableSchema, []NativeDeltaRow, map[string]string) error
+	tableState      func(NativeDeltaTableState) error
+	checkpointsOnly bool
 }
 
 // NativeDeltaTableState presents one authenticated table for independent
@@ -266,6 +267,9 @@ func (r *nativeDeltaReconstructor) emitRowChanges(state deltaStagedState, image 
 
 func (r *nativeDeltaReconstructor) emitRowCheckpoint(kind string, state deltaStagedState, image NativeHistoryImage) error {
 	if r.rowCallbacks == nil || r.rowCallbacks.checkpoint == nil && r.rowCallbacks.tableState == nil {
+		return nil
+	}
+	if kind == "commit" && r.rowCallbacks.checkpointsOnly {
 		return nil
 	}
 	names := make([]string, 0, len(state.tables))

@@ -19,12 +19,16 @@ type nativeDeltaAttachment struct {
 	proof     NativeDeltaVerification
 	budget    *NativeDeltaBudget
 	recheck   func(context.Context) error
+	prepared  *nativeDeltaPreparation
 }
 
 type NativeCaptureSetOptions struct {
 	DecodedLimitBytes uint64
 	// Empty means the default or an explicit library option, as appropriate.
 	DecodedLimitOrigin string
+	// PrepareReceiving retains the authenticated row deltas, final checkpoints
+	// and originals from this read for restart recovery. It changes no checks.
+	PrepareReceiving bool
 }
 
 type nativeDeltaAccountingContextKey struct{}
@@ -105,17 +109,40 @@ func ReadNativeCaptureSet(ctx context.Context, rootInput, headInput io.Reader, o
 	if a.manifest.StoreID != root.StoreID || !equalJSON(projects, root.Projects) || len(projects) != 1 || !validCommitID(root.Head) {
 		return nil, fmt.Errorf("native delta root/head identity differs")
 	}
-	parts, err := NewNativeDeltaPartReader(ctx, root.PartCount, root.FinalPartSHA256, root.StreamSHA256, open)
+	preparation := &nativeDeltaPreparation{owner: owner}
+	var staged *NativeDeltaPrepared
+	var callbacks *nativeDeltaRowCallbacks
+	readOpen := open
+	if options.PrepareReceiving {
+		staged = newNativeDeltaPrepared(owner)
+		defer func() {
+			if !success {
+				staged.Close()
+			}
+		}()
+		callbacks = staged.callbacks()
+		readOpen = nativeDeltaFileOpener(open, staged.budget, staged.retainFile)
+		if err := staged.retainFile("capture-set.json", rootBytes); err != nil {
+			return nil, err
+		}
+		if err := staged.retainFile("head.tar", head); err != nil {
+			return nil, err
+		}
+	}
+	parts, err := NewNativeDeltaPartReader(ctx, root.PartCount, root.FinalPartSHA256, root.StreamSHA256, readOpen)
 	if err != nil {
 		return nil, err
 	}
 	defer parts.Close()
-	h, proof, err := reconstructNativeDeltaVisit(ctx, parts, root, owner, nil, true)
+	h, proof, err := reconstructNativeDeltaCallbacks(ctx, parts, root, owner, nil, callbacks, true)
 	if err != nil {
 		return nil, err
 	}
 	if !parts.Verified() || parts.StreamBytes() != root.StreamBytes {
 		return nil, fmt.Errorf("native delta stream commitment incomplete")
+	}
+	if err := parts.Close(); err != nil {
+		return nil, err
 	}
 	p, err := NativeSchemaForVersion(a.manifest.MainVersion, a.manifest.IgnoredVersion)
 	if err != nil {
@@ -144,7 +171,14 @@ func ReadNativeCaptureSet(ctx context.Context, rootInput, headInput io.Reader, o
 	}
 	a.nativeHistories = []NativeHistory{h}
 	a.sha256 = digest(rootBytes)
-	a.delta = &nativeDeltaAttachment{root: root, rootBytes: rootBytes, open: open, proof: proof, budget: owner}
+	a.delta = &nativeDeltaAttachment{root: root, rootBytes: rootBytes, open: open, proof: proof, budget: owner, prepared: preparation}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if staged != nil {
+		staged.ready = true
+		preparation.view = staged
+	}
 	success = true
 	return a, nil
 }
@@ -286,8 +320,13 @@ func ReadNativeCaptureSetDirectory(ctx context.Context, path string, options Nat
 	}
 	// The directory owner retains the root binding used by recheck, as well
 	// as the archive. Flatten the successful child so one release owns both.
-	a.delta.budget.Retain()
+	// A receiving preparation is an independently releasable child. Keep its
+	// owner nested until that view ends rather than flattening a live child.
+	if a.delta.prepared.view == nil {
+		a.delta.budget.Retain()
+	}
 	a.nativeBudget, a.delta.budget = directory, directory
+	a.delta.prepared.owner = directory
 	a.delta.recheck = func(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -398,6 +437,7 @@ func (a *Archive) ChargeNativeDeltaJSON(phase string, value any) error {
 // only after its source views and every conversion child are no longer live;
 // the released archive must not be used for further conversion or readback.
 func (a *Archive) ReleaseNativeDecoded() {
+	a.ClearNativeDeltaPreparation()
 	if budget := a.decodedBudget(); budget != nil {
 		budget.Release()
 	}
@@ -460,12 +500,19 @@ func (a *Archive) visitNativeDelta(ctx context.Context, visit func(NativeHistory
 	if a == nil || a.delta == nil {
 		return fmt.Errorf("native delta stream unavailable")
 	}
+	return a.visitNativeDeltaOpen(ctx, visit, rows, a.delta.open)
+}
+
+func (a *Archive) visitNativeDeltaOpen(ctx context.Context, visit func(NativeHistoryImage, []string) error, rows *nativeDeltaRowCallbacks, open NativeDeltaPartOpener) error {
+	if a == nil || a.delta == nil {
+		return fmt.Errorf("native delta stream unavailable")
+	}
 	if a.delta.recheck != nil {
 		if err := a.delta.recheck(ctx); err != nil {
 			return err
 		}
 	}
-	parts, err := NewNativeDeltaPartReader(ctx, a.delta.root.PartCount, a.delta.root.FinalPartSHA256, a.delta.root.StreamSHA256, a.delta.open)
+	parts, err := NewNativeDeltaPartReader(ctx, a.delta.root.PartCount, a.delta.root.FinalPartSHA256, a.delta.root.StreamSHA256, open)
 	if err != nil {
 		return err
 	}
@@ -488,9 +535,11 @@ func (a *Archive) visitNativeDelta(ctx context.Context, visit func(NativeHistory
 		return err
 	}
 	if a.delta.recheck != nil {
-		return a.delta.recheck(ctx)
+		if err := a.delta.recheck(ctx); err != nil {
+			return err
+		}
 	}
-	return nil
+	return ctx.Err()
 }
 
 // NativeSourceHistoriesChecked reserves a detached source view before copying.
