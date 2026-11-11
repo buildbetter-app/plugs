@@ -275,6 +275,11 @@ type streamValidator struct {
 	imageSide    int
 	lastSource   string
 	lastSequence uint64
+
+	physicalName   string
+	physicalTables uint64
+	physical       [2]OfflineHistorySourceTable
+	physicalSet    [2]bool
 }
 
 func (v *streamValidator) revision() model.Revision {
@@ -428,8 +433,8 @@ func (v *streamValidator) beginCommit(c *OfflineHistoryStreamCommit) error {
 			}
 			v.lastSequence = c.SourceSequence
 		}
-		if c.Physical != nil && (!streamText(c.Physical.Root) || !importDigest(c.Physical.TablesSHA256) || c.Physical.Tables != c.Tables) {
-			return streamError("invalid physical commit commitment/count")
+		if c.Physical != nil && (!streamText(c.Physical.Root) || !importDigest(c.Physical.TablesSHA256)) {
+			return streamError("invalid physical commit commitment")
 		}
 		if v.header.NativeBoundaries != 0 {
 			b := v.boundary
@@ -442,6 +447,8 @@ func (v *streamValidator) beginCommit(c *OfflineHistoryStreamCommit) error {
 	}
 	v.started, v.commit = true, c
 	v.ids, v.idKind, v.tables, v.previousKey = [3]uint64{}, 0, 0, ""
+	v.physicalName, v.physicalTables = "", 0
+	v.physical, v.physicalSet = [2]OfflineHistorySourceTable{}, [2]bool{}
 	return nil
 }
 
@@ -477,6 +484,26 @@ func (v *streamValidator) beginTable(t *OfflineHistoryStreamTable) error {
 	if v.header.Source == NativeTableHistorySource && (t.Kind != "beads-archive" || !strings.HasPrefix(t.Ref.ID, NativeTableHistoryRecordPrefix) || t.PhysicalAfter == nil) {
 		return streamError("native table evidence lost its inert identity/physical commitment")
 	}
+	var physical [2]OfflineHistorySourceTable
+	var physicalSet [2]bool
+	for i, value := range []*OfflineHistorySourceTable{t.PhysicalBefore, t.PhysicalAfter} {
+		if value != nil {
+			physical[i], physicalSet[i] = *value, true
+		}
+	}
+	// Name+record ordering makes all records for a physical table contiguous.
+	// Retain only its value copies, never a map or borrowed producer pointers.
+	if t.Name == v.physicalName {
+		if physical != v.physical || physicalSet != v.physicalSet {
+			return streamError("inconsistent repeated physical table commitments")
+		}
+	} else {
+		if v.physicalTables == math.MaxUint64 || v.commit.Physical != nil && v.physicalTables >= v.commit.Physical.Tables {
+			return streamError("referenced physical tables exceed physical census")
+		}
+		v.physicalTables++
+	}
+	v.physicalName, v.physical, v.physicalSet = t.Name, physical, physicalSet
 	v.table, v.previousKey = t, key
 	v.tables++
 	v.stats.Tables++

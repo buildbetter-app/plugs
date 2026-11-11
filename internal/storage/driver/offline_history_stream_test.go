@@ -465,8 +465,9 @@ func TestOfflineHistoryStreamFailuresAbortWithoutPublishToken(t *testing.T) {
 		{"missing-provenance", func(_ *OfflineHistoryStreamRequest, s *frameSourceFixture, _ *streamingStageFixture) {
 			s.frames[0].Commit.ParentIDs++
 		}, ErrOfflineHistoryStream},
-		{"physical-count", func(_ *OfflineHistoryStreamRequest, s *frameSourceFixture, _ *streamingStageFixture) {
-			s.frames[0].Commit.Physical.Tables++
+		{"physical-count-under-referenced-tables", func(r *OfflineHistoryStreamRequest, s *frameSourceFixture, _ *streamingStageFixture) {
+			s.frames[0].Commit.Physical.Tables--
+			bindFixtureFrames(t, r, s.frames)
 		}, ErrOfflineHistoryStream},
 		{"terminal-count", func(_ *OfflineHistoryStreamRequest, s *frameSourceFixture, _ *streamingStageFixture) {
 			s.frames[len(s.frames)-1].End.Tables++
@@ -650,6 +651,217 @@ func bindFixtureFrames(t *testing.T, r *OfflineHistoryStreamRequest, frames []Of
 		}
 	}
 	r.Profile.HistoryDigest = hex.EncodeToString(transcript.Sum(nil))
+}
+
+// These are driver-port fixtures, not independently verified native archives.
+// Each physical table has a meta record and two row records. The physical
+// commitments are deliberately distinct from converted image commitments.
+func physicalCountFixture(t *testing.T, commits uint64) (OfflineHistoryStreamRequest, []OfflineHistoryStreamFrame) {
+	t.Helper()
+	r := fixtureRequest(t, commits)
+	before, after := []byte(`{"value":"before"}`), []byte(`{"value":"after"}`)
+	var frames []OfflineHistoryStreamFrame
+	for sequence := uint64(1); sequence <= commits; sequence++ {
+		physical := func(seq uint64) *OfflineHistorySourceTable {
+			return &OfflineHistorySourceTable{Present: true, Rows: 2, SchemaSHA256: fixtureSHA([]byte("schema")), TableSHA256: fixtureSHA([]byte(fmt.Sprintf("physical:%d", seq)))}
+		}
+		frames = append(frames,
+			OfflineHistoryStreamFrame{Kind: "commit", Commit: &OfflineHistoryStreamCommit{Sequence: sequence, SourceSequence: sequence, SourceStoreID: "original", Project: "pl", CommitIDs: 1, Tables: 3, Physical: &OfflineHistorySourceCommit{Root: fmt.Sprintf("root-%d", sequence), Tables: 1, TablesSHA256: fixtureSHA([]byte(fmt.Sprintf("census:%d", sequence)))}}},
+			OfflineHistoryStreamFrame{Kind: "id", ID: &OfflineHistoryStreamID{Kind: "commit", Value: fmt.Sprintf("commit-%d", sequence)}},
+		)
+		for _, id := range []string{"meta-00", "rows-00", "rows-01"} {
+			table := &OfflineHistoryStreamTable{Name: "table-00", Ref: model.RefByID(NativeTableHistoryRecordPrefix+id, model.Natural64(0)), Kind: "beads-archive", Before: &OfflineHistoryStreamImage{Bytes: uint64(len(before)), SHA256: fixtureSHA(before)}, After: &OfflineHistoryStreamImage{Bytes: uint64(len(after)), SHA256: fixtureSHA(after)}, PhysicalBefore: physical(sequence - 1), PhysicalAfter: physical(sequence)}
+			frames = append(frames,
+				OfflineHistoryStreamFrame{Kind: "table", Table: table},
+				OfflineHistoryStreamFrame{Kind: "chunk", Chunk: &OfflineHistoryStreamChunk{Image: "before", Data: bytes.Clone(before)}},
+				OfflineHistoryStreamFrame{Kind: "chunk", Chunk: &OfflineHistoryStreamChunk{Image: "after", Data: bytes.Clone(after)}},
+				OfflineHistoryStreamFrame{Kind: "table-end"},
+			)
+		}
+		frames = append(frames, OfflineHistoryStreamFrame{Kind: "commit-end", CommitEnd: &OfflineHistoryStreamCommitEnd{}})
+	}
+	frames = append(frames, OfflineHistoryStreamFrame{Kind: "end", End: &OfflineHistoryStreamEnd{}})
+	return r, frames
+}
+
+func physicalCountDeleteImages(frames []OfflineHistoryStreamFrame, dropped bool) []OfflineHistoryStreamFrame {
+	filtered := frames[:0]
+	deleting := false
+	for _, frame := range frames {
+		if frame.Table != nil {
+			deleting = dropped || strings.HasSuffix(frame.Table.Ref.ID, "rows-00")
+			if deleting {
+				frame.Table.After = nil
+			}
+			if dropped {
+				frame.Table.PhysicalAfter = &OfflineHistorySourceTable{TableSHA256: fixtureSHA([]byte("absent-table"))}
+			}
+		}
+		if deleting && frame.Chunk != nil && frame.Chunk.Image == "after" {
+			continue
+		}
+		filtered = append(filtered, frame)
+	}
+	return filtered
+}
+
+func TestOfflineHistoryStreamPhysicalCensusSeparateFromConvertedRecords(t *testing.T) {
+	for _, sourceKind := range []string{"generic", "native"} {
+		t.Run(sourceKind, func(t *testing.T) {
+			for _, scenario := range []string{"row-meta-records", "two-physical-tables", "unchanged-tables", "empty-changes", "empty-census", "row-deleted-table-present", "table-dropped", "next-commit-new-commitments", "next-commit-new-table"} {
+				t.Run(scenario, func(t *testing.T) {
+					commits := uint64(1)
+					if strings.HasPrefix(scenario, "next-commit") {
+						commits = 2
+					}
+					r, frames := physicalCountFixture(t, commits)
+					if sourceKind == "native" {
+						profile := sourcePlaneTestProfile()
+						plan := sourcePlaneTestPlan()
+						r.Current = Meta{StoreID: StoreID(plan.Target.StoreID), Incarnation: plan.Target.Incarnation}
+						binding, err := NewSourcePlaneImportBindingV1(plan)
+						if err != nil {
+							t.Fatal(err)
+						}
+						profile.SourcePlanes, profile.HistoryMode, profile.HistoryTime = &binding, RestoreHistoryModeFull, r.Profile.HistoryTime
+						r.Profile, r.Header.Source, r.Lifetime = profile, NativeTableHistorySource, CheckpointLifetimeProcess
+					}
+					wantTables := uint64(3) * commits
+					switch scenario {
+					case "two-physical-tables":
+						frames[0].Commit.Physical.Tables = 2
+						frames[10].Table.Name = "table-01"
+					case "unchanged-tables":
+						frames[0].Commit.Physical.Tables = 7
+					case "empty-changes", "empty-census":
+						frames[0].Commit.Tables, wantTables = 0, 0
+						if scenario == "empty-census" {
+							frames[0].Commit.Physical.Tables = 0
+						}
+						filtered := frames[:0]
+						for _, frame := range frames {
+							if frame.Table == nil && frame.Chunk == nil && frame.Kind != "table-end" {
+								filtered = append(filtered, frame)
+							}
+						}
+						frames = filtered
+					case "row-deleted-table-present", "table-dropped":
+						frames = physicalCountDeleteImages(frames, scenario == "table-dropped")
+					case "next-commit-new-table":
+						sequence := uint64(0)
+						for _, frame := range frames {
+							if frame.Commit != nil {
+								sequence = frame.Commit.Sequence
+							}
+							if sequence == 2 && frame.Table != nil {
+								frame.Table.Name = "table-01"
+							}
+						}
+					}
+					bindFixtureFrames(t, &r, frames)
+					source, stage := &frameSourceFixture{frames: frames}, &streamingStageFixture{}
+					p, err := PrepareOfflineHistoryStream(context.Background(), r, source, stage)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer p.Close()
+					completion, err := p.Completion()
+					if err != nil || completion.Stats.Commits != commits || completion.Stats.Tables != wantTables || stage.tables != wantTables || source.closed != 1 || completion.HistorySHA256 != r.Profile.HistoryDigest {
+						t.Fatalf("physical census changed converted totals or binding: %+v, %v", completion, err)
+					}
+					if _, err := p.Commit(context.Background(), streamReceipt(t, p, r)); err != nil || stage.published != 1 || stage.aborted != 0 {
+						t.Fatalf("count-correct stream failed publication: %v", err)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestOfflineHistoryStreamRepeatedPhysicalCommitmentsAndCensusRefuse(t *testing.T) {
+	for _, field := range []string{"nil", "present", "rows", "schema", "hash"} {
+		for _, side := range []string{"before", "after"} {
+			t.Run(side+"-"+field, func(t *testing.T) {
+				r, frames := physicalCountFixture(t, 1)
+				// The second converted record repeats the same physical Name.
+				table := frames[6].Table
+				physical := table.PhysicalBefore
+				if side == "after" {
+					physical = table.PhysicalAfter
+				}
+				switch field {
+				case "nil":
+					if side == "before" {
+						table.PhysicalBefore = nil
+					} else {
+						table.PhysicalAfter = nil
+					}
+				case "present":
+					physical.Present, physical.Rows, physical.SchemaSHA256 = false, 0, ""
+				case "rows":
+					physical.Rows++
+				case "schema":
+					physical.SchemaSHA256 = fixtureSHA([]byte("different-schema"))
+				case "hash":
+					physical.TableSHA256 = fixtureSHA([]byte("different-table"))
+				}
+				bindFixtureFrames(t, &r, frames)
+				source, stage := &frameSourceFixture{frames: frames}, &streamingStageFixture{}
+				p, err := PrepareOfflineHistoryStream(context.Background(), r, source, stage)
+				if !errors.Is(err, ErrOfflineHistoryStream) || !strings.Contains(err.Error(), "inconsistent repeated physical table commitments") || p != nil || source.closed != 1 || stage.aborted != 1 || stage.published != 0 {
+					t.Fatalf("rebound repeated commitment mismatch issued a token or missed its semantic check: %v", err)
+				}
+			})
+		}
+	}
+	for _, scenario := range []string{"distinct-table-overflow", "zero-physical-census", "converted-count-too-small", "converted-count-too-large", "converted-order"} {
+		t.Run(scenario, func(t *testing.T) {
+			r, frames := physicalCountFixture(t, 1)
+			want := "invalid converted table identity/count/presence"
+			switch scenario {
+			case "distinct-table-overflow":
+				frames[10].Table.Name = "table-01"
+				want = "referenced physical tables exceed physical census"
+			case "zero-physical-census":
+				frames[0].Commit.Physical.Tables = 0
+				want = "referenced physical tables exceed physical census"
+			case "converted-count-too-small":
+				frames[0].Commit.Tables--
+			case "converted-count-too-large":
+				frames[0].Commit.Tables++
+				want = "commit count/provenance/hash mismatch"
+			case "converted-order":
+				frames[6].Table.Ref = frames[2].Table.Ref
+				want = "duplicate or unordered table"
+			}
+			bindFixtureFrames(t, &r, frames)
+			source, stage := &frameSourceFixture{frames: frames}, &streamingStageFixture{}
+			p, err := PrepareOfflineHistoryStream(context.Background(), r, source, stage)
+			if !errors.Is(err, ErrOfflineHistoryStream) || !strings.Contains(err.Error(), want) || p != nil || source.closed != 1 || stage.aborted != 1 || stage.published != 0 {
+				t.Fatalf("rebound census/count/order mismatch issued a token or missed its semantic check: %v", err)
+			}
+		})
+	}
+}
+
+func TestOfflineHistoryStreamPhysicalCommitmentsDetachStagePointers(t *testing.T) {
+	r, frames := physicalCountFixture(t, 1)
+	bindFixtureFrames(t, &r, frames)
+	source, stage := &frameSourceFixture{frames: frames}, &streamingStageFixture{}
+	stage.beforeStage = func(frame OfflineHistoryStreamFrame) {
+		if frame.Table != nil {
+			frame.Table.PhysicalBefore.Rows++
+			frame.Table.PhysicalAfter.Rows++
+		}
+	}
+	p, err := PrepareOfflineHistoryStream(context.Background(), r, source, stage)
+	if err != nil {
+		t.Fatal("stage pointer mutation changed retained physical commitment", err)
+	}
+	defer p.Close()
+	if _, err := p.Commit(context.Background(), streamReceipt(t, p, r)); err != nil || stage.published != 1 || stage.aborted != 0 || source.closed != 1 {
+		t.Fatalf("detached commitment publication failed: %v", err)
+	}
 }
 
 func TestOfflineHistoryStreamPartialBaselineGapsAndFloor(t *testing.T) {
