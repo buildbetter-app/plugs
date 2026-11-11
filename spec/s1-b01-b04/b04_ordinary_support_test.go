@@ -194,16 +194,19 @@ func (o *ordinaryB04) empty(label string, params map[string]any) {
 	found:=false
 	for _,cs:=range after.History {if cs.Revision==after.Meta.Head {found=true;if len(cs.Changes)!=0 || cs.IdempotencyKey!=o.f.key(label,"bead.claimNext",owner) {t.Fatal("terminal null recorded a domain mutation or wrong key")}}}
 	if !found {t.Fatal("terminal empty changeset absent")}
+	prior:=[]model.Changeset{};for _,cs:=range after.History {if cs.Revision!=after.Meta.Head {prior=append(prior,cs)}};if !reflect.DeepEqual(prior,before.History) {t.Fatal("empty claim changed previous changesets")}
 	entry:=o.receipt(label,"bead.claimNext",owner)
 	if entry==nil || entry.ResponsePending || entry.Commit.Revision!=after.Meta.Head || len(entry.Commit.Results)!=0 || len(entry.Changeset.Changes)!=0 {t.Fatal("terminal empty result lacks its exact persisted receipt")}
 	o.receipts[label]=entry;o.methods[label]="bead.claimNext"
 	o.retain(label+"-receipt",entry)
+	o.checkReceipts()
 }
 
 func (o *ordinaryB04) reopen(label string) {
 	t, f := o.f.t, o.f
 	t.Helper()
 	before := o.state(label+"-before")
+	o.checkReceipts()
 	if f.backend == "memory" { return }
 	oldStore, oldLease := f.store, f.lease
 	o.server.Close()
@@ -262,6 +265,7 @@ func (o *ordinaryB04) win(label, method, id, sourceStatus string, params map[str
 	if count!=1 || !reflect.DeepEqual(priorVersions,before.Versions[id]) {t.Fatal("claim must preserve previous versions and append exactly one")}
 	entry:=o.receipt(label,method,owner)
 	if entry==nil || entry.ResponsePending || !reflect.DeepEqual(entry.Commit,c) {t.Fatal("winning public response differs from durable receipt")}
+	o.checkReceipts()
 	return c
 }
 

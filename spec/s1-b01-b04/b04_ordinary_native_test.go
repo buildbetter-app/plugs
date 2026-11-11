@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/publicnative"
@@ -37,6 +38,10 @@ type ordinaryB04NativeObservation struct {
 	ActiveVersionDelta int
 	NextVersionDelta int
 	SameHolderVersionDelta int
+	DirectHistoryDelta int
+	ActiveHistoryDelta int
+	NextHistoryDelta int
+	SameHolderHistoryDelta int
 	Filters ordinaryB04NativeFilters
 }
 
@@ -45,6 +50,7 @@ type ordinaryB04NativeFilters struct {
 	LabelContainmentWins []string
 	WalkPrefix int
 	WalkWinner string
+	Additive map[string][]string
 }
 
 func ordinaryNativeIDs(t *testing.T,c *nativeCommand,label string,args ...string) []string {
@@ -71,7 +77,7 @@ func recordOrdinaryNativeFilters(t *testing.T,c *nativeCommand,root string) ordi
 	obs:=ordinaryB04NativeFilters{ParentPriorityTypeWins:[]string{},LabelContainmentWins:[]string{}}
 	for _,id:=range []string{"b04-filter-child","b04-filter-grandchild"} {
 		before:=ordinaryNativeVersions(t,c,"ordinary-filter-versions-before-"+id,id)
-		rows:=ordinaryNativeRows(t,c.run("ordinary-filter-claim-"+id,append([]string{"ready","--claim","--json"},selectors...)...))
+		rows:=ordinaryNativeWin(t,c,"ordinary-filter-claim-"+id,append([]string{"ready","--claim","--json"},selectors...)...)
 		if len(rows)!=1 || rows[0].ID!=id || rows[0].Status!="in_progress" || rows[0].Assignee!=owner || rows[0].Priority!=json.Number("2") {t.Fatalf("native filtered postimage: %+v",rows)}
 		if read:=ordinaryNativeRows(t,c.run("ordinary-filter-readback-"+id,"show",id,"--json"));len(read)!=1 || !reflect.DeepEqual(rows[0],read[0]) {t.Fatal("native filtered winner/readback differs")}
 		if len(ordinaryNativeVersions(t,c,"ordinary-filter-versions-after-"+id,id))-len(before)!=1 {t.Fatal("native filtered win must record one version")}
@@ -83,8 +89,10 @@ func recordOrdinaryNativeFilters(t *testing.T,c *nativeCommand,root string) ordi
 	// is dispositioned. Their presence is never represented by filter.query.
 	for _,row:=range []struct{id,labels,priority string}{{"b04-label-one","ordinary","0"},{"b04-label-winner","ordinary,public","2"},{"b04-label-outside","public","1"}} {c.run("ordinary-label-create-"+row.id,"create","--id",row.id,"--title",row.id,"--type","task","--force","--priority",row.priority,"--labels",row.labels,"--json")}
 	for _,id:=range []string{"b04-label-one","b04-label-outside"} {untouched[id]=c.run("ordinary-label-before-"+id,"show",id,"--json")}
-	labelRows:=ordinaryNativeRows(t,c.run("ordinary-label-claim","ready","--claim","--json","--label","ordinary,public"))
+	labelVersions:=ordinaryNativeVersions(t,c,"ordinary-label-versions-before","b04-label-winner")
+	labelRows:=ordinaryNativeWin(t,c,"ordinary-label-claim","ready","--claim","--json","--label","ordinary,public")
 	if len(labelRows)!=1 || labelRows[0].ID!="b04-label-winner" || labelRows[0].Status!="in_progress" || labelRows[0].Assignee!=owner {t.Fatalf("native label containment winner: %+v",labelRows)}
+	if len(ordinaryNativeVersions(t,c,"ordinary-label-versions-after","b04-label-winner"))-len(labelVersions)!=1 {t.Fatal("native label win must append one version")};if read:=ordinaryNativeRows(t,c.run("ordinary-label-winner-readback","show","b04-label-winner","--json"));len(read)!=1 || !reflect.DeepEqual(read[0],labelRows[0]) {t.Fatal("native label winner differs from stored row")}
 	obs.LabelContainmentWins=append(obs.LabelContainmentWins,labelRows[0].ID)
 	for _,id:=range []string{"b04-label-one","b04-label-outside"} {if !bytes.Equal(untouched[id],c.run("ordinary-label-after-"+id,"show",id,"--json")) {t.Fatal("native label filter changed outsider")}}
 	const prefix=1001
@@ -98,13 +106,43 @@ func recordOrdinaryNativeFilters(t *testing.T,c *nativeCommand,root string) ordi
 	var frontFull []map[string]any;nativeDecode(t,frontRaw,&frontFull)
 	for i,row:=range front {if row.ID!=wantIDs[i] || row.Status!="open" || i<prefix && row.Assignee!="other-agent" || i==prefix && row.Assignee!="" {t.Fatalf("native actual ineligible prefix at%d: %+v",i,row)}}
 	winner:=wantIDs[prefix];beforeWin:=ordinaryNativeVersions(t,c,"ordinary-walk-win-versions-before",winner)
-	walk:=ordinaryNativeRows(t,c.run("ordinary-walk-claim","ready","--claim","--json","--label","walk-case"))
+	walk:=ordinaryNativeWin(t,c,"ordinary-walk-claim","ready","--claim","--json","--label","walk-case")
 	if len(walk)!=1 || walk[0].ID!=winner || walk[0].Status!="in_progress" || walk[0].Assignee!=owner {t.Fatalf("native full front traversal: %+v",walk)}
 	if len(ordinaryNativeVersions(t,c,"ordinary-walk-win-versions-after",winner))-len(beforeWin)!=1 {t.Fatal("native walk win version delta differs")}
 	var afterFull []map[string]any;nativeDecode(t,c.run("ordinary-walk-prefix-after","ready","--json","--limit","0","--label","walk-case"),&afterFull)
 	if !reflect.DeepEqual(afterFull,frontFull[:prefix]) {t.Fatal("native walk changed the complete ineligible prefix")}
 	obs.WalkPrefix=prefix;obs.WalkWinner=winner
+	obs.Additive=recordOrdinaryNativeAdditive(t,c)
 	return obs
+}
+
+func ordinaryNativeWin(t *testing.T,c *nativeCommand,label string,args ...string) []ordinaryB04NativeRow {
+	t.Helper();before:=ordinaryNativeHistoryCount(t,c,label+"-branch-history-before")
+	rows:=ordinaryNativeRows(t,c.run(label,args...))
+	if len(rows)!=1 || ordinaryNativeHistoryCount(t,c,label+"-branch-history-after")-before!=1 {t.Fatalf("native durable win must add exactly one branch history entry: %+v",rows)}
+	return rows
+}
+
+func recordOrdinaryNativeAdditive(t *testing.T,c *nativeCommand) map[string][]string {
+	t.Helper();observed:=map[string][]string{}
+	for _,v:=range ordinaryB04SelectionCases() {
+		root:=ordinarySelectionID(v.Name,"root")
+		c.run(v.Name+"-root","create","--id",root,"--title",root,"--type","task","--force","--priority","4","--json")
+		ids:=[]string{root}
+		for _,row:=range v.Rows {id:=ordinarySelectionID(v.Name,row.Role);ids=append(ids,id);args:=[]string{"create","--id",id,"--title",id,"--type",row.Kind,"--force","--parent",root,"--priority",strconv.Itoa(row.Priority),"--json"};if len(row.Labels)>0 {args=append(args,"--labels",strings.Join(row.Labels,","))};c.run(v.Name+"-create-"+row.Role,args...);if row.Owned {owned:=ordinaryNativeWin(t,c,v.Name+"-own-"+row.Role,"update",id,"--claim","--json");if owned[0].ID!=id || owned[0].Status!="in_progress" || owned[0].Assignee!=owner {t.Fatal("native unassigned control did not retain actual holder")}}}
+		selectors:=append([]string{"--parent",root},v.Native...)
+		want:=[]string{};for _,role:=range v.Ready {want=append(want,ordinarySelectionID(v.Name,role))}
+		if got:=ordinaryNativeIDs(t,c,v.Name+"-front",append([]string{"ready","--json","--limit","0"},selectors...)...);!reflect.DeepEqual(got,want) {t.Fatalf("native selector %s membership=%v want=%v",v.Name,got,want)}
+		if v.Name=="unassigned" {
+			for i,flag:=range []string{"","--unassigned=false","--unassigned=true"} {args:=[]string{"list","--json","--limit","0","--parent",root};if flag!="" {args=append(args,flag)};expected:=ids[1:];if i==2 {expected=want};got:=ordinaryNativeIDs(t,c,fmt.Sprintf("%s-list-%d",v.Name,i),args...);if len(got)!=len(expected) {t.Fatalf("native unassigned case%d list=%v want=%v",i,got,expected)};for _,id:=range expected {found:=false;for _,value:=range got {found=found || value==id};if !found {t.Fatalf("native listing omitted %s",id)}}}
+		}
+		observed[v.Name]=[]string{}
+		for _,id:=range want {domainBefore:=ordinaryNativeDomain(t,c,v.Name+"-win-domain-before-"+id,ids);versions:=ordinaryNativeVersions(t,c,v.Name+"-before-"+id,id);rows:=ordinaryNativeWin(t,c,v.Name+"-claim-"+id,append([]string{"ready","--claim","--json"},selectors...)...);if rows[0].ID!=id || rows[0].Status!="in_progress" || rows[0].Assignee!=owner {t.Fatalf("native selector %s winner=%+v",v.Name,rows)};read:=ordinaryNativeRows(t,c.run(v.Name+"-get-"+id,"show",id,"--json"));if len(read)!=1 || !reflect.DeepEqual(read[0],rows[0]) || len(ordinaryNativeVersions(t,c,v.Name+"-after-"+id,id))-len(versions)!=1 {t.Fatal("native additive winner version/postimage mismatch")};domainAfter:=ordinaryNativeDomain(t,c,v.Name+"-win-domain-after-"+id,ids);for _,other:=range ids {if other!=id && (!bytes.Equal(domainBefore[other+"/row"],domainAfter[other+"/row"]) || !bytes.Equal(domainBefore[other+"/versions"],domainAfter[other+"/versions"])) {t.Fatalf("native selector win changed unrelated row/version %s",other)}};observed[v.Name]=append(observed[v.Name],id)}
+		before:=ordinaryNativeDomain(t,c,v.Name+"-empty-before",ids);history:=ordinaryNativeHistoryCount(t,c,v.Name+"-empty-history-before")
+		if got:=ordinaryNativeIDs(t,c,v.Name+"-empty",append([]string{"ready","--claim","--json"},selectors...)...);len(got)!=0 {t.Fatal("native filtered terminal front is not empty")}
+		if !reflect.DeepEqual(before,ordinaryNativeDomain(t,c,v.Name+"-empty-after",ids)) || ordinaryNativeHistoryCount(t,c,v.Name+"-empty-history-after")!=history {t.Fatal("native filtered empty changed domain or branch history")}
+	}
+	return observed
 }
 
 func ordinaryNativeRows(t *testing.T, raw []byte) []ordinaryB04NativeRow {
@@ -120,6 +158,21 @@ func ordinaryNativeVersions(t *testing.T,c *nativeCommand,label,id string) []jso
 	nativeDecode(t,c.run(label,"versions",id,"--json"),&out)
 	if !out.Recording || out.Versions==nil {t.Fatal("native version recording must be actually enabled")}
 	return out.Versions
+}
+
+func ordinaryNativeHistoryCount(t *testing.T,c *nativeCommand,label string) int {
+	t.Helper()
+	var rows []struct{Count json.Number `json:"n"`}
+	nativeDecode(t,c.run(label,"sql","SELECT COUNT(*) AS n FROM dolt_log","--json"),&rows)
+	if len(rows)!=1 {t.Fatal("native branch-history count must return one actual row")}
+	n,err:=strconv.Atoi(rows[0].Count.String());if err!=nil || n<0 {t.Fatalf("native exact branch-history count: %+v %v",rows,err)}
+	return n
+}
+
+func ordinaryNativeDomain(t *testing.T,c *nativeCommand,label string,ids []string) map[string]json.RawMessage {
+	t.Helper();image:=map[string]json.RawMessage{}
+	for _,id:=range ids {image[id+"/row"]=c.run(label+"-row-"+id,"show",id,"--json");data,err:=json.Marshal(ordinaryNativeVersions(t,c,label+"-versions-"+id,id));if err!=nil {t.Fatal(err)};image[id+"/versions"]=data}
+	return image
 }
 
 func recordOrdinaryB04Native(t *testing.T,root string) ordinaryB04NativeObservation {
@@ -139,41 +192,56 @@ func recordOrdinaryB04Native(t *testing.T,root string) ordinaryB04NativeObservat
 	server.RequireDatabaseDir(t,"b04_ordinary")
 	c.run("ordinary-enable-history","config","set","versioned-history.enabled","true")
 	c.run("ordinary-custom-statuses","config","set","status.custom","awaiting_review:active,qa_testing:wip")
+	neverHistory:=ordinaryNativeHistoryCount(t,c,"ordinary-never-populated-history-before")
 	if rows:=ordinaryNativeRows(t,c.run("ordinary-never-populated","ready","--claim","--json"));len(rows)!=0 {t.Fatal("native never-populated front is not empty")}
+	if ordinaryNativeHistoryCount(t,c,"ordinary-never-populated-history-after")!=neverHistory {t.Fatal("native empty initial front minted branch history")}
 	for _,row:=range []struct{id,title,status,priority string}{{"b04-direct","ordinary hydrated row","open","2"},{"b04-active","native category active","awaiting_review","3"},{"b04-wip","native category wip","qa_testing","1"}} {
 		args:=[]string{"create","--id",row.id,"--title",row.title,"--type","task","--force","--priority",row.priority,"--status",row.status,"--json"}
 		if row.id=="b04-direct" {args=append(args,"--description","preserve description","--labels","ordinary,public")}
 		c.run("ordinary-create-"+row.id,args...)
 	}
 	beforeDirect:=ordinaryNativeVersions(t,c,"ordinary-direct-versions-before","b04-direct")
+	beforeDirectHistory:=ordinaryNativeHistoryCount(t,c,"ordinary-direct-history-before")
 	direct:=ordinaryNativeRows(t,c.run("ordinary-direct-claim","update","b04-direct","--claim","--json"))
 	readDirect:=ordinaryNativeRows(t,c.run("ordinary-direct-readback","show","b04-direct","--json"))
 	wantDirect:=ordinaryB04NativeRow{ID:"b04-direct",Title:"ordinary hydrated row",Description:"preserve description",Status:"in_progress",Assignee:owner,Priority:json.Number("2")}
 	wantReadback:=wantDirect;wantReadback.Labels=[]string{"ordinary","public"}
 	if len(direct)!=1 || len(readDirect)!=1 || !reflect.DeepEqual(direct[0],wantDirect) || !reflect.DeepEqual(readDirect[0],wantReadback) {t.Fatalf("native bare direct row and hydrated readback independent expectations: result=%+v readback=%+v",direct,readDirect)}
 	afterDirect:=ordinaryNativeVersions(t,c,"ordinary-direct-versions-after","b04-direct")
+	afterDirectHistory:=ordinaryNativeHistoryCount(t,c,"ordinary-direct-history-after")
+	earlyDomainIDs:=[]string{"b04-direct","b04-active","b04-wip"}
+	beforeNoopDomain:=ordinaryNativeDomain(t,c,"ordinary-noop-complete-before",earlyDomainIDs)
 	beforeNoop:=c.run("ordinary-noop-before","show","b04-direct","--json")
 	noop:=ordinaryNativeRows(t,c.run("ordinary-same-holder","update","b04-direct","--claim","--json"))
 	if !reflect.DeepEqual(noop,direct) {t.Fatal("native same-holder returned a different bare row")}
 	afterNoop:=c.run("ordinary-noop-after","show","b04-direct","--json")
 	noopVersions:=ordinaryNativeVersions(t,c,"ordinary-noop-versions","b04-direct")
+	noopHistory:=ordinaryNativeHistoryCount(t,c,"ordinary-noop-history-after")
 	if !bytes.Equal(beforeNoop,afterNoop) || !reflect.DeepEqual(afterDirect,noopVersions) {t.Fatal("native same-holder claim changed exact row or history")}
+	if !reflect.DeepEqual(beforeNoopDomain,ordinaryNativeDomain(t,c,"ordinary-noop-complete-after",earlyDomainIDs)) {t.Fatal("native no-op changed an unrelated row/version")}
+	beforeWIPDomain:=ordinaryNativeDomain(t,c,"ordinary-wip-complete-before",earlyDomainIDs)
 	beforeWIP:=c.run("ordinary-wip-before","show","b04-wip","--json")
 	wipVersions:=ordinaryNativeVersions(t,c,"ordinary-wip-versions-before","b04-wip")
+	wipHistory:=ordinaryNativeHistoryCount(t,c,"ordinary-wip-history-before")
 	// The sentinel is defined by the pinned public issueops/errors.go. An
 	// operational/parse error cannot satisfy this ordinary status refusal.
 	c.refuse("ordinary-wip-refusal","issue not claimable","update","b04-wip","--claim","--json")
 	if !bytes.Equal(beforeWIP,c.run("ordinary-wip-after","show","b04-wip","--json")) || !reflect.DeepEqual(wipVersions,ordinaryNativeVersions(t,c,"ordinary-wip-versions-after","b04-wip")) {t.Fatal("native wip refusal mutated row/history")}
+	if wipHistory!=ordinaryNativeHistoryCount(t,c,"ordinary-wip-history-after") {t.Fatal("native WIP refusal minted branch history")}
+	if !reflect.DeepEqual(beforeWIPDomain,ordinaryNativeDomain(t,c,"ordinary-wip-complete-after",earlyDomainIDs)) {t.Fatal("native refusal changed an unrelated row/version")}
 	beforeActive:=ordinaryNativeVersions(t,c,"ordinary-active-versions-before","b04-active")
+	beforeActiveHistory:=ordinaryNativeHistoryCount(t,c,"ordinary-active-history-before")
 	active:=ordinaryNativeRows(t,c.run("ordinary-active-claim","update","b04-active","--claim","--json"))
 	wantActive:=ordinaryB04NativeRow{ID:"b04-active",Title:"native category active",Status:"in_progress",Assignee:owner,Priority:json.Number("3")}
 	if len(active)!=1 || !reflect.DeepEqual(active[0],wantActive) {t.Fatalf("native active independent expectation: %+v",active)}
 	afterActive:=ordinaryNativeVersions(t,c,"ordinary-active-versions-after","b04-active")
+	afterActiveHistory:=ordinaryNativeHistoryCount(t,c,"ordinary-active-history-after")
 	for _,row:=range []struct{id,title,priority string}{{"b04-next","hydrated next winner","2"},{"b04-closed","closed blocker","4"},{"b04-dependent","blocked dependent","4"}} {c.run("ordinary-graph-create-"+row.id,"create","--id",row.id,"--title",row.title,"--type","task","--force","--priority",row.priority,"--json")}
 	c.run("ordinary-close-blocker","close","b04-closed","--json")
 	c.run("ordinary-next-dependency","dep","add","b04-next","b04-closed","--type","blocks","--json")
 	c.run("ordinary-next-dependent","dep","add","b04-dependent","b04-next","--type","blocks","--json")
 	beforeNext:=ordinaryNativeVersions(t,c,"ordinary-next-versions-before","b04-next")
+	beforeNextHistory:=ordinaryNativeHistoryCount(t,c,"ordinary-next-history-before")
 	nextRaw:=c.run("ordinary-next-claim","ready","--claim","--json")
 	next:=ordinaryNativeRows(t,nextRaw)
 	wantNext:=ordinaryB04NativeRow{ID:"b04-next",Title:"hydrated next winner",Status:"in_progress",Assignee:owner,Priority:json.Number("2")}
@@ -184,12 +252,16 @@ func recordOrdinaryB04Native(t *testing.T,root string) ordinaryB04NativeObservat
 	nextRead:=ordinaryNativeRows(t,c.run("ordinary-next-readback","show","b04-next","--json"))
 	if len(nextRead)!=1 || !reflect.DeepEqual(nextRead[0],wantNext) {t.Fatal("native claimNext differs from stored postimage")}
 	afterNext:=ordinaryNativeVersions(t,c,"ordinary-next-versions-after","b04-next")
+	afterNextHistory:=ordinaryNativeHistoryCount(t,c,"ordinary-next-history-after")
+	domainIDs:=[]string{"b04-direct","b04-active","b04-wip","b04-next","b04-closed","b04-dependent"}
+	beforeEmpty:=ordinaryNativeDomain(t,c,"ordinary-empty-before",domainIDs)
 	empty:=ordinaryNativeRows(t,c.run("ordinary-empty-claim","ready","--claim","--json"))
 	if len(empty)!=0 {t.Fatalf("native drained front claimed an ineligible row: %+v",empty)}
-	if !reflect.DeepEqual(afterActive,ordinaryNativeVersions(t,c,"ordinary-empty-active-versions","b04-active")) || !reflect.DeepEqual(noopVersions,ordinaryNativeVersions(t,c,"ordinary-empty-direct-versions","b04-direct")) {t.Fatal("native empty claim minted a domain version")}
-	obs:=ordinaryB04NativeObservation{Direct:direct[0],DirectReadback:readDirect[0],Active:active[0],Next:next[0],Empty:empty,WIPRefused:true,DirectVersionDelta:len(afterDirect)-len(beforeDirect),ActiveVersionDelta:len(afterActive)-len(beforeActive),NextVersionDelta:len(afterNext)-len(beforeNext),SameHolderVersionDelta:len(noopVersions)-len(afterDirect)}
+	if !reflect.DeepEqual(beforeEmpty,ordinaryNativeDomain(t,c,"ordinary-empty-after",domainIDs)) || ordinaryNativeHistoryCount(t,c,"ordinary-empty-history-after")!=afterNextHistory {t.Fatal("native empty claim changed complete rows, domain versions or branch history")}
+	obs:=ordinaryB04NativeObservation{Direct:direct[0],DirectReadback:readDirect[0],Active:active[0],Next:next[0],Empty:empty,WIPRefused:true,DirectVersionDelta:len(afterDirect)-len(beforeDirect),ActiveVersionDelta:len(afterActive)-len(beforeActive),NextVersionDelta:len(afterNext)-len(beforeNext),SameHolderVersionDelta:len(noopVersions)-len(afterDirect),DirectHistoryDelta:afterDirectHistory-beforeDirectHistory,ActiveHistoryDelta:afterActiveHistory-beforeActiveHistory,NextHistoryDelta:afterNextHistory-beforeNextHistory,SameHolderHistoryDelta:noopHistory-afterDirectHistory}
 	obs.Filters=recordOrdinaryNativeFilters(t,c,root)
 	if obs.DirectVersionDelta!=1 || obs.ActiveVersionDelta!=1 || obs.NextVersionDelta!=1 || obs.SameHolderVersionDelta!=0 {t.Fatalf("native per-win version cardinality: %+v",obs)}
+	if obs.DirectHistoryDelta!=1 || obs.ActiveHistoryDelta!=1 || obs.NextHistoryDelta!=1 || obs.SameHolderHistoryDelta!=0 {t.Fatalf("native independent branch-history cardinality: %+v",obs)}
 	nativeJSON(t,filepath.Join(root,"ordinary-native-observation.json"),obs)
 	return obs
 }
@@ -197,7 +269,7 @@ func recordOrdinaryB04Native(t *testing.T,root string) ordinaryB04NativeObservat
 func TestB04OrdinaryActualNativeAndThreeStorePublicReplay(t *testing.T) {
 	root,err:=os.MkdirTemp(nativeEnv(t,"TEST_UNDECLARED_OUTPUTS_DIR"),"b04-ordinary-native-")
 	if err!=nil {t.Fatal(err)}
-	nativeJSON(t,filepath.Join(root,"projection-contract.json"),map[string]any{"fields":[]string{"fixed ID/title/description/status/assignee/priority/labels","ordered parent-priority-type winners","ordered label-containment winners","complete observed ineligible-prefix cardinality and exact winner","per-call durable version deltas"},"declaredNondeterminism":[]string{"native wall-clock timestamps and lease deadline","generated native version commit identities","owned temporary roots, ports and process IDs"},"limits":"raw streams and exact within-run row/history preservation are retained; no cross-system clock, epoch, revision-envelope or ephemeral-plane parity is asserted"})
+	nativeJSON(t,filepath.Join(root,"projection-contract.json"),map[string]any{"fields":[]string{"fixed ID/title/description/status/assignee/priority/labels","ordered parent-priority-type winners","ordered label-containment winners","complete observed ineligible-prefix cardinality and exact winner","per-call durable version and independent branch-history deltas","ordered additive label/exclusion selectors"},"declaredNondeterminism":[]string{"native wall-clock timestamps and lease deadline","generated native version commit identities","owned temporary roots, ports and process IDs"},"limits":"raw streams and exact within-run row/history preservation are retained; no cross-system clock, epoch, revision-envelope or ephemeral-plane parity is asserted"})
 	var obs ordinaryB04NativeObservation
 	var golden []byte
 	for i:=0;i<2;i++ {capture:=filepath.Join(root,fmt.Sprintf("capture-%d",i));if err:=os.Mkdir(capture,0700);err!=nil {t.Fatal(err)};current:=recordOrdinaryB04Native(t,capture);encoded,err:=json.Marshal(current);if err!=nil {t.Fatal(err)};if i==0 {obs=current;golden=encoded}else if !bytes.Equal(golden,encoded) {t.Fatal("two fresh canonical native semantic recordings differ")}}
@@ -233,5 +305,11 @@ func TestB04OrdinaryActualNativeAndThreeStorePublicReplay(t *testing.T) {
 			o.retain("native-comparison",map[string]any{"native":obs,"public":o.state("native-final"),"qualification":"ordinary public claim semantics only; native and Plug envelopes/history accounting remain separate"})
 			t.Logf("B04_ACTUAL_NATIVE_PUBLIC_COMMON backend=%s direct=true custom_active=true wip_refused=true fresh_key_same_holder_noop=true parent_priority_type=true win_versions=1",backend)
 		})
+		for _,v:=range ordinaryB04SelectionCases() {t.Run(backend+"/native-selection/"+v.Name,func(t *testing.T){
+			dsn:="";if backend=="postgres" {dsn=h.dsn(t)};ids:=[]string{ordinarySelectionID(v.Name,"root")};for _,row:=range v.Rows {ids=append(ids,ordinarySelectionID(v.Name,row.Role))}
+			o:=newOrdinaryB04(t,backend,dsn,ids);filter:=o.selectionFixture(v);o.reopen("native-selection-before");if v.Name=="unassigned" {o.selectionListingControl(filter,obs.Filters.Additive[v.Name])}
+			if got:=o.readyIDs("native-selection-front",filter);!reflect.DeepEqual(got,obs.Filters.Additive[v.Name]) {t.Fatalf("actual native/public selector membership differs: %v vs %v",got,obs.Filters.Additive[v.Name])}
+			for i,id:=range obs.Filters.Additive[v.Name] {o.win(fmt.Sprintf("native-selection-win-%d",i),"bead.claimNext",id,"todo",map[string]any{"filter":filter})};o.empty("native-selection-empty",map[string]any{"filter":filter});o.reopen("native-selection-after")
+		})}
 	}
 }
