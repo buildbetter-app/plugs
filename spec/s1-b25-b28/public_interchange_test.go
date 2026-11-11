@@ -257,8 +257,60 @@ func b27Equal(t *testing.T, name string, got, want any) {
 		t.Fatal(err)
 	}
 	w, err := json.Marshal(want)
-	if err != nil || !bytes.Equal(g, w) {
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual, err := wire.DecodeJSON(g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected, err := wire.DecodeJSON(w)
+	// Lossless decoding makes object key order irrelevant while retaining
+	// number token spellings, array order, absent members and explicit null.
+	if err != nil || !reflect.DeepEqual(actual, expected) {
 		t.Fatalf("%s: got %s want %s (%v)", name, g, w, err)
+	}
+}
+
+func (h *b27PublicHost) assertCensus(ids []string) {
+	h.t.Helper()
+	meta, err := h.store.Meta(context.Background())
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	want := map[string]bool{}
+	for _, id := range ids {
+		want[id] = true
+	}
+	seen := map[string]bool{}
+	params := map[string]any{"asOf": map[string]any{"revision": meta.Head}, "limit": 1}
+	for page := 0; ; page++ {
+		if page > len(ids) {
+			h.t.Fatal("public census failed to terminate")
+		}
+		value := h.must("history.query", params)
+		at := value["asOf"].(map[string]any)
+		b27Equal(h.t, "census snapshot revision", at["revision"], meta.Head)
+		b27Equal(h.t, "census snapshot incarnation", at["incarnation"], meta.Incarnation)
+		items := value["items"].([]any)
+		if len(items) > 1 {
+			h.t.Fatal("public census exceeded its page size")
+		}
+		for _, item := range items {
+			id := item.(map[string]any)["id"].(string)
+			if seen[id] {
+				h.t.Fatalf("public census repeated %s", id)
+			}
+			seen[id] = true
+		}
+		cursor, _ := value["nextCursor"].(string)
+		if cursor == "" {
+			break
+		}
+		params["cursor"] = cursor
+	}
+	if !reflect.DeepEqual(seen, want) {
+		h.t.Fatalf("complete public census got %v want %v", seen, want)
 	}
 }
 
@@ -307,7 +359,11 @@ func TestB27PublicPlugRoundtripFieldsRelationsAndReopen(t *testing.T) {
 			b27Equal(t, "independent dependency", child["links"], []pipeline.Link{{To: ref(ids[2]), Kind: "relates-to"}})
 			b27Equal(t, "independent closed status", child["fields"].(map[string]any)["status"], "done")
 			b27Equal(t, "independent labels", child["labels"], []string{"Alpha", "beta", "子"})
-			b27Equal(t, "independent typed metadata", child["metadata"].(map[string]any)["b27"], metadata)
+			wantMetadata, err := wire.DecodeJSON(metadata)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b27Equal(t, "independent typed metadata", child["metadata"].(map[string]any)["b27"], wantMetadata)
 			comments := source.must("bead.get", map[string]any{"id": ref(ids[1])})["comments"].([]any)
 			if len(comments) != 3 {
 				t.Fatalf("comments=%v", comments)
@@ -315,12 +371,17 @@ func TestB27PublicPlugRoundtripFieldsRelationsAndReopen(t *testing.T) {
 			for i, body := range []string{"first comment\n子", "second comment", "finished with exact reason 子"} {
 				b27Equal(t, "independent comment body", comments[i].(map[string]any)["body"], body)
 			}
+			source.assertCensus(ids)
 			data, archive := source.dump()
+			if archive.Manifest().RecordCount != len(ids) {
+				t.Fatal("public archive contains missing or extra record identities")
+			}
 			target := openB27PublicHost(t, engine, "target")
 			if err := target.restore(data, archive); err != nil {
 				t.Fatal(err)
 			}
 			assert := func() {
+				target.assertCensus(ids)
 				for _, id := range ids {
 					b27Equal(t, "complete restored image "+id, target.image(id), before[id])
 				}
@@ -356,6 +417,22 @@ func TestB27PublicPlugRoundtripFieldsRelationsAndReopen(t *testing.T) {
 				t.Fatal("refused restore changed actual complete public dump")
 			}
 			assert()
+			if engine != "memory" {
+				if err := target.local.Close(); err != nil {
+					t.Fatal(err)
+				}
+				target.open()
+				assert()
+				reopenedMeta, err := target.store.Meta(context.Background())
+				if err != nil || !reflect.DeepEqual(meta, reopenedMeta) {
+					t.Fatalf("refusal metadata changed after reopen: %+v %+v %v", meta, reopenedMeta, err)
+				}
+				reopened, _ := target.dump()
+				if !bytes.Equal(retained, reopened) {
+					t.Fatal("refused restore changed persisted complete public dump after reopen")
+				}
+				t.Log("physical SQL close/reopen after nonempty refusal: retained census, complete bodies, dump and metadata exact")
+			}
 		})
 	}
 }
