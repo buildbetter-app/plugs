@@ -1645,6 +1645,12 @@ spec/cardb07/public_test.go
 spec/cardb07positive/BUILD.bazel
 spec/cardb07positive/README.md
 spec/cardb07positive/ordinary_test.go
+spec/cardb16/BUILD.bazel
+spec/cardb16/README.md
+spec/cardb16/native_reference_test.go
+spec/cardb16/public_fixture_test.go
+spec/cardb16/public_test.go
+spec/cardb16/public_vector_test.go
 spec/cardb19/BUILD.bazel
 spec/cardb19/README.md
 spec/cardb19/archive_test.go

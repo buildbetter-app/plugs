@@ -1,0 +1,46 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+_FIXTURE = ["public_fixture_test.go", "public_vector_test.go", "//spec/cardb20:native_postgres_support"]
+_DEPS = [
+    "//internal/core/model",
+    "//internal/core/pipeline",
+    "//internal/core/service",
+    "//internal/core/viewops",
+    "//internal/server/pluginhost",
+    "//internal/server/rpc",
+    "//internal/server/viewrpc",
+    "//internal/storage/driver",
+    "//internal/storage/memory",
+    "//internal/storage/postgres",
+    "//internal/storage/sqlite",
+    "//plugins/workflow",
+]
+
+go_test(
+    name = "public_labels_test",
+    srcs = _FIXTURE + ["public_test.go"],
+    args = ["-test.v"],
+    deps = _DEPS,
+    size = "large",
+    tags = ["local", "requires-network"],
+    timeout = "long",
+)
+
+go_test(
+    name = "native_labels_test",
+    srcs = _FIXTURE + ["native_reference_test.go", "//spec/cardb20:native_build_support"],
+    data = ["//spec/s1-b09-native:lexicon_files", "//internal/publicnative:dolt_runtime"],
+    env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
+    env_inherit = ["BAZEL_BIN", "BAZEL_RC", "BAZELISK_HOME", "BAZELISK_VERIFY_SHA256"],
+    args = ["-test.v"],
+    deps = _DEPS + ["//internal/publicnative"],
+    size = "enormous",
+    tags = ["local", "manual", "requires-network"],
+    timeout = "eternal",
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
