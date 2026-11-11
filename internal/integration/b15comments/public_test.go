@@ -218,7 +218,7 @@ func (f *fixture) success(method string, params map[string]any, write bool) json
 func ref(id string) model.Ref { return model.RefByID(id, model.Natural64(0)) }
 
 func (f *fixture) create() {
-	f.success("bead.create", map[string]any{"type": "issue", "project": project, "fields": map[string]any{"title": "comment anchor", "status": "todo", "priority": 1}}, true)
+	f.success("bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": "comment anchor", "status": "todo", "priority": 1}}, true)
 }
 
 func (f *fixture) document() pipeline.Document {
@@ -434,7 +434,7 @@ func TestB15PublicWispCommentClockAndNoDurableHistory(t *testing.T) {
 			f := newFixture(t, engine)
 			f.create()
 			anchor, durable := f.document(), f.changes()
-			raw := f.success("x.workflow.invoke", map[string]any{"template": "b15-public", "project": project, "mode": "ephemeral", "checklist": []map[string]any{{"label": "step", "title": "comment wisp", "type": "task"}}}, true)
+			raw := f.success("x.workflow.invoke", map[string]any{"template": "b15-public", "project": project, "mode": "ephemeral", "checklist": []map[string]any{{"label": "step", "title": "comment thread", "type": "task"}}}, true)
 			var invoked workflow.InvokeResult
 			if err := json.Unmarshal(raw, &invoked); err != nil || len(invoked.Items) != 1 {
 				t.Fatalf("wisp invocation: %v %s", err, raw)
