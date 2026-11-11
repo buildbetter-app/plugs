@@ -429,8 +429,15 @@ func positiveJoinedEffect(t *testing.T, before, after proof.State, commit model.
 	}
 	proof.WorkflowEffect(t, before, after, commit.Results[0].Ref.ID, title, methods...)
 	head, err := before.Meta.Head.Uint64()
-	if err != nil || after.Meta.Head != model.Natural64(head+1) || commit.Revision != after.Meta.Head || len(after.Changes) != len(before.Changes)+1 || !reflect.DeepEqual(before.Changes, after.Changes[:len(before.Changes)]) || after.Checkpoints[proof.Namespace].Generation != before.Checkpoints[proof.Namespace].Generation+1 {
+	if err != nil || after.Meta.Head != model.Natural64(head+1) || commit.Revision != after.Meta.Head || len(after.Changes) != len(before.Changes)+1 || after.Checkpoints[proof.Namespace].Generation != before.Checkpoints[proof.Namespace].Generation+1 {
 		t.Fatal("expected exactly one joined core/history/namespace effect")
+	}
+	// The imported history floor can leave no visible prior entries. Preserve
+	// every retained entry by index without comparing nil and empty slices.
+	for i, change := range before.Changes {
+		if !reflect.DeepEqual(change, after.Changes[i]) {
+			t.Fatal("joined publication changed a retained history entry", i)
+		}
 	}
 	if len(before.Rows) != len(after.Rows) || len(before.Checkpoints) != len(after.Checkpoints) || len(after.Receipts) != len(before.Receipts)+1 || after.Receipts[label].Pending || !reflect.DeepEqual(after.Receipts[label].Commit, commit) {
 		t.Fatal("joined publication lost rows/namespaces/exact nonpending receipt")
