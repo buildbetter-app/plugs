@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -169,7 +170,7 @@ func (f *fixture) refusal(method, label, code string, params map[string]any) {
 		Result json.RawMessage
 		Error  *struct{ Data model.ErrorData }
 	}
-	if err = json.Unmarshal(response, &envelope); err != nil || envelope.Error == nil || envelope.Error.Data.Code != code || len(envelope.Result) > 0 {
+	if err = json.Unmarshal(response, &envelope); err != nil || envelope.Error == nil || envelope.Error.Data.Code != model.ErrorCode(code) || len(envelope.Result) > 0 {
 		f.t.Fatalf("%s refusal=%s want=%s: %v", label, response, code, err)
 	}
 	after, err := f.store.Meta(f.ctx)

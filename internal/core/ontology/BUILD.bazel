@@ -5,7 +5,7 @@ go_library(
     srcs = ["await_members.go", "check.go", "compile.go", "decode.go", "default.go", "gate.go", "plan.go", "runtime.go", "schema.go", "types.go"],
     importpath = "github.com/buildbetter-app/plugs/internal/core/ontology",
     deps = ["//internal/core/model"],
-    visibility = ["//spec/cardb01/canonicalfront:__pkg__", "//internal:__subpackages__", "//examples/plugins/native-guard:__pkg__", "//spec/extended:__pkg__", "//spec/s1-b01-b04:__pkg__", "//spec/s1-b09-b12/compaction:__pkg__", "//spec/s1-b13-b16:__pkg__", "//spec/s1-b25-b28:__pkg__", "//spec/s1-b21-b24:__pkg__", "//spec/cardb20:__pkg__", "//spec:__pkg__"],
+    visibility = ["//spec/cardb01/canonicalfront:__pkg__", "//internal:__subpackages__", "//examples/plugins/native-guard:__pkg__", "//spec/extended:__pkg__", "//spec/s1-b01-b04:__pkg__", "//spec/s1-b09-b12/compaction:__pkg__", "//spec/s1-b13-b16:__pkg__", "//spec/s1-b25-b28:__pkg__", "//spec/s1-b21-b24:__pkg__", "//spec/cardb20:__pkg__", "//spec/cardb23query:__pkg__", "//spec:__pkg__"],
 )
 
 go_test(

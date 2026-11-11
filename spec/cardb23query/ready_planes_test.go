@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/viewops"
 	proof "github.com/buildbetter-app/plugs/internal/integration/b07positive"
 	publicproof "github.com/buildbetter-app/plugs/internal/integration/b07positive/public"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -42,6 +43,10 @@ func TestB23ReadyCountMixedPlanesCurrentPublicHost(t *testing.T) {
 				t.Helper()
 				for _, limit := range []int{1, 1000} {
 					before := h.Capture()
+					meta, err := h.Runtime.Store.Meta(context.Background())
+					if err != nil {
+						t.Fatal(err)
+					}
 					reply := h.Call("bead.ready", fmt.Sprintf("%s-%d", label, limit), map[string]any{"countOnly": true, "limit": limit, "filter": map[string]any{"resources": []string{durable.ID, item.ID}, "includeEphemeral": include}}, "")
 					var body map[string]json.RawMessage
 					if json.Unmarshal(reply.Result, &body) != nil {
@@ -50,6 +55,10 @@ func TestB23ReadyCountMixedPlanesCurrentPublicHost(t *testing.T) {
 					var total int
 					if json.Unmarshal(body["count"], &total) != nil || total != want || string(body["items"]) != "[]" {
 						t.Fatalf("mixed count=%s want=%d", reply.Result, want)
+					}
+					var at viewops.AsOf
+					if err := json.Unmarshal(body["asOf"], &at); err != nil || at.Revision != meta.Head || at.Incarnation != meta.Incarnation {
+						t.Fatalf("mixed count snapshot=%s want=%+v: %v", reply.Result, meta, err)
 					}
 					if _, ok := body["nextCursor"]; ok {
 						t.Fatal("mixed count emitted cursor")
@@ -64,7 +73,7 @@ func TestB23ReadyCountMixedPlanesCurrentPublicHost(t *testing.T) {
 			h.Call("bead.link", "b23-ready-mixed-link", map[string]any{"from": durable, "to": model.RefByID(item.ID, model.Natural64(0)), "kind": "blocks"}, "")
 			count("workflow-blocker", true, 1)
 			count("hidden-workflow-plane-blocker", false, 0)
-			h.Call("bead.close", "b23-ready-close-workflow", map[string]any{"id": item.ID}, "")
+			h.Call("bead.close", "b23-ready-close-workflow", map[string]any{"id": model.RefByID(item.ID, model.Natural64(0))}, "")
 			count("workflow-blocker-closed", true, 1)
 			original := h.Runtime.Store
 			h.Reopen()

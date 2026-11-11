@@ -35,6 +35,11 @@ func CountReadyPages(ctx context.Context, by model.PrincipalRef, req ReadyReques
 	req.Limit = 1000
 	var first *BeadPage
 	total := 0
+	type positionKey struct {
+		offset   int
+		workflow bool
+	}
+	positions := map[positionKey]bool{}
 	seen := map[string]bool{}
 	for {
 		if err := ctx.Err(); err != nil {
@@ -64,6 +69,11 @@ func CountReadyPages(ctx context.Context, by model.PrincipalRef, req ReadyReques
 			return ReadyCount{}, failure("cursor_invalid", "ready sequence did not advance while counting; restart")
 		}
 		position := *page.Next
+		key := positionKey{position.Offset, position.Workflow}
+		if positions[key] || req.Position != nil && position.Workflow == req.Position.Workflow && position.Offset <= req.Position.Offset {
+			return ReadyCount{}, failure("cursor_invalid", "ready position did not advance while counting; restart")
+		}
+		positions[key] = true
 		req.Position = &position
 	}
 }

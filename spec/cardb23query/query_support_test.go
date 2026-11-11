@@ -37,7 +37,14 @@ func queryCases() []queryCase {
 	}
 }
 func queryDefinition(c queryCase, budget int) map[string]any {
-	return map[string]any{"filter": map[string]any{"query": c.query, "resources": c.resources, "types": c.types}, "fields": []string{"id", "type", "status", "labels", "fields.title"}, "sort": []string{"title"}, "budgetTokens": budget}
+	filter := map[string]any{"query": c.query}
+	if c.resources != nil {
+		filter["resources"] = c.resources
+	}
+	if c.types != nil {
+		filter["types"] = c.types
+	}
+	return map[string]any{"filter": filter, "fields": []string{"id", "type", "status", "labels", "fields.title"}, "sort": []string{"title"}, "budgetTokens": budget}
 }
 func queryCount(t *testing.T, f *fixture, label string, definition map[string]any, at *viewops.AsOf, want int) {
 	t.Helper()

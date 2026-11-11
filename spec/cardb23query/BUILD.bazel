@@ -22,7 +22,7 @@ DEPS = [
 
 go_test(
     name = "public_query_test",
-    srcs = COMMON + ["query_test.go", "ready_planes_test.go"],
+    srcs = COMMON + ["query_test.go", "ready_planes_test.go", "ready_pages_test.go"],
     args = ["-test.v"],
     size = "large",
     tags = ["local", "requires-network"],
