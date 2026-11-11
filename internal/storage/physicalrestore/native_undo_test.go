@@ -366,7 +366,7 @@ func publicProofSource(t *testing.T) (string, SourceBinding, physicalcapture.Ima
 		execSQL(t, conn, ddl)
 	}
 	execSQL(t, conn, `INSERT INTO issues(id,title,description,design,acceptance_criteria,notes,agent_state,hook_bead,role_bead,role_type,timeout_ns,metadata,payload,waiters) VALUES ('public-row-1','original issue','','','','','working','public-row-2','public-row-1','agent',9007199254740993,JSON_OBJECT('native',9007199254740993),'{"opaque":null}','["public-row-2",null]')`)
-	execSQL(t, conn, `INSERT INTO wisps(id,title,agent_state,timeout_ns,payload) VALUES ('public-wisp','original ignored wisp','working',9007199254740993,'{"null":null}')`)
+	execSQL(t, conn, `INSERT INTO wisps(id,title,agent_state,timeout_ns,payload) VALUES ('public-current-row','original current row','working',9007199254740993,'{"null":null}')`)
 	execSQL(t, conn, "INSERT INTO public_cells VALUES(1,NULL,CAST('null' AS JSON),?,18446744073709551615,-12,1.5,2.25)", []byte{0, 255, 7})
 	execSQL(t, conn, "INSERT INTO public_children VALUES(1,1)")
 	execSQL(t, conn, "INSERT INTO public_keyless VALUES('old'),('old'),(NULL)")
@@ -431,7 +431,7 @@ func TestNativeRowUndoIndependentPublicNativeBytes(t *testing.T) {
 			if mode == "edited" {
 				recipe = []string{
 					"UPDATE issues SET title='independent expected issue' WHERE id='public-row-1'",
-					"UPDATE wisps SET title='independent expected ignored wisp' WHERE id='public-wisp'",
+					"UPDATE wisps SET title='independent expected current row' WHERE id='public-current-row'",
 					"DELETE FROM public_children",
 					"DELETE FROM public_cells",
 					"INSERT INTO public_cells VALUES(11,NULL,CAST('null' AS JSON),X'00FF08',18446744073709551615,-13,1.5,2.25)",

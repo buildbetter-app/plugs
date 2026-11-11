@@ -107,6 +107,9 @@ func nativeRecordStore(t *testing.T, engine string, records []driver.Record) dri
 	if _, err = tx.Lock(ctx, locks); err != nil {
 		t.Fatal(err)
 	}
+	if _, err = tx.Head(ctx); err != nil {
+		t.Fatal(err)
+	}
 	for _, e := range entries {
 		if err = tx.Put(ctx, e.record); err != nil {
 			t.Fatal(err)
