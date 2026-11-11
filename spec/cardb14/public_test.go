@@ -80,6 +80,9 @@ func b14Public(t *testing.T, engine string) b14Projection {
 	sorted := func(values []string) []string { sort.Strings(values); return values }
 	p := b14Projection{DefaultType: get(bare)["type"].(string), Readiness: map[string][]bool{}}
 	p.BareAwait, _ = get(bare)["fields"].(map[string]any)["await_type"].(string)
+	if get(timer)["fields"].(map[string]any)["timeout"] != float64(0) {
+		t.Fatal("explicit zero gate timeout was not retained")
+	}
 	p.DefaultList = sorted(list(map[string]any{}))
 	p.AllList = sorted(list(map[string]any{"all": true}))
 	p.CheckLimit = list(map[string]any{"excludeTemplates": true, "limit": 1})

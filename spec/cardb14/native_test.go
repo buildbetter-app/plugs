@@ -305,8 +305,14 @@ func (n *b14Native) defaultAndWaits() b14Projection {
 	if json.Unmarshal(n.command("bare-create", "create", "--id", "b14-bare", "--type", "gate", "--title", "bare", "--priority", "4", "--json"), &bare) != nil || bare.Type != "gate" || bare.AwaitType != "" {
 		n.t.Fatal("native bare gate acquired an await default")
 	}
-	timer := n.create("b14-timer", "gate", map[string]any{"priority": 3, "await_type": "timer", "timeout": 0})
-	closed := n.create("b14-closed", "gate", map[string]any{"await_type": "human"})
+	// Zero is a valid stored gate field. The native timer resolver separately
+	// requires a positive timeout; its check-selection oracle uses that valid
+	// timer, while the explicit zero is read back from the human gate.
+	timer := n.create("b14-timer", "gate", map[string]any{"priority": 3, "await_type": "timer", "timeout": int64(time.Hour)})
+	closed := n.create("b14-closed", "gate", map[string]any{"await_type": "human", "timeout": 0})
+	if timer.Timeout != int64(time.Hour) || closed.Timeout != 0 || n.get(closed.ID).Timeout != 0 {
+		n.t.Fatal("native gate timeout values differ from the committed input")
+	}
 	n.http("close-gate", http.MethodPost, "/v0/beads/issues/"+closed.ID+":close", []byte(`{"actor":"b14-native"}`), http.StatusOK)
 	n.create("b14-ordinary-await", "task", map[string]any{"await_type": "human"})
 	formula := filepath.Join(n.root, "b14-template.formula.toml")
