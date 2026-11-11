@@ -89,6 +89,9 @@ func TestUndoLiteralBindingsAdmitOnlyExactASTSites(t *testing.T) {
 				}
 			}
 			changed := string(content[:first.start]) + strconv.Quote(first.value+" changed") + string(content[first.end:])
+			// This offset belongs to the selected declaration's AST literal.
+			// An earlier comment can mention its name without changing context.
+			changedContext := string(content[:first.start]) + "/* changed context */ " + string(content[first.start:])
 			packageEnd := fset.Position(file.Name.End()).Offset
 			imported := string(content[:packageEnd]) + "\nimport \"example.invalid/beads/adapter\"\n" + string(content[packageEnd:])
 			for name, source := range map[string]string{
@@ -97,7 +100,7 @@ func TestUndoLiteralBindingsAdmitOnlyExactASTSites(t *testing.T) {
 				"duplicate-declaration": string(content) + "\n" + declaration,
 				"identifier":            string(content) + "\nvar " + cfg.Terms[3].Matches[0] + " = 1\n",
 				"import":                imported,
-				"changed-context":       strings.Replace(string(content), bindings[0].name, bindings[0].name+"Changed", 1),
+				"changed-context":       changedContext,
 			} {
 				t.Run(name, func(t *testing.T) {
 					findings, err := CheckFiles(map[string][]byte{path: []byte(source)}, cfg)

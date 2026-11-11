@@ -4,6 +4,7 @@ go_library(
     name = "workflow",
     srcs = [
         "atomic.go",
+        "batch_operations.go",
 		"listing.go",
         "native.go",
         "ordinary_delete.go",

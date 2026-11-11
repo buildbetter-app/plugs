@@ -6,10 +6,14 @@ DEPS = [
     "//internal/core/model",
     "//internal/core/pipeline",
     "//internal/core/reverseconverter",
+    "//internal/core/service",
     "//internal/integration/converterroundtrip",
     "//internal/server/composition",
+    "//internal/server/pluginhost",
     "//internal/server/rpc",
     "//internal/storage/driver",
+    "//pluginapi",
+    "//plugins/workflow",
 ]
 
 go_test(

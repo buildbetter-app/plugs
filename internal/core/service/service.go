@@ -191,6 +191,11 @@ func (s *Service) apply(ctx context.Context, by model.PrincipalRef, method strin
 		meta.TargetStatus = nil
 	}
 	source := s.source.Load()
+	deletes := ordinaryDeletes(cs)
+	ordinaryMixed := source == nil && method == "tx.apply" && len(deletes) == 0 && s.workflow.CanPrepareOrdinaryOperations() && ordinaryBatchUsesWorkflow(cs)
+	if ordinaryMixed {
+		ctx = pipeline.WithSourceOperations(ctx, s.sourcePreparation(nil, by, cs, meta), ordinaryWorkflowKind)
+	}
 	if source != nil {
 		ctx = pipeline.WithAllocatorReservations(ctx, source.allocatorIDs)
 		ctx = pipeline.WithSourceOperations(ctx, s.sourcePreparation(source, by, cs, meta), func(ref model.Ref) string {
@@ -200,7 +205,6 @@ func (s *Service) apply(ctx context.Context, by model.PrincipalRef, method strin
 			return ""
 		})
 	}
-	deletes := ordinaryDeletes(cs)
 	jointDelete := method == "tx.apply" && s.workflowProvider() != nil && len(deletes) != 0 && !sourceDeleteBatchHasSourceEdits(source, cs, meta.Project)
 	if s.workflowProvider() != nil && (method == "bead.claim" || method == "bead.claimNext" || method == "bead.close" || method == "tx.apply") {
 		ctx = pipeline.WithWorkflowGuard(ctx, s.workflowWriteGuard)
@@ -233,7 +237,7 @@ func (s *Service) apply(ctx context.Context, by model.PrincipalRef, method strin
 		}
 		return v, nil
 	}
-	if source == nil && method == "tx.apply" {
+	if source == nil && method == "tx.apply" && !ordinaryMixed {
 		for _, op := range cs.Ops {
 			if op.Kind != model.OpPatch || op.Patch == nil || !workflowRef(op.Patch.Target) {
 				continue

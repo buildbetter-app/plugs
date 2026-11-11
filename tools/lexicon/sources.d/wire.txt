@@ -1,0 +1,16 @@
+internal/api/wire/BUILD.bazel
+internal/api/wire/bead_contract_test.go
+internal/api/wire/boundary_test.go
+internal/api/wire/catalog.go
+internal/api/wire/catalog.json
+internal/api/wire/display_name_contract_test.go
+internal/api/wire/error.go
+internal/api/wire/json.go
+internal/api/wire/meta.go
+internal/api/wire/restore_contract_test.go
+internal/api/wire/schema.go
+internal/api/wire/session_contract_test.go
+internal/api/wire/unsupported_contract_test.go
+internal/api/wire/view_contract_test.go
+internal/api/wire/wire_test.go
+internal/api/wire/workflow_contract_test.go

@@ -644,6 +644,9 @@ func TestTypedTracksReadbackKeepsExpandedReportsAndPureLoopsInert(t *testing.T) 
 						t.Fatal(err)
 					}
 					for pass := 0; pass < 2; pass++ {
+						if err := pipeline.BuildSourceIndexes(ctx, store, lease); err != nil {
+							t.Fatal(err)
+						}
 						requireVersionedDependencyState(t, store, archive, true)
 						requireDependencyReverse(t, store, archive, profile)
 						meta, err := store.Meta(ctx)
@@ -669,7 +672,7 @@ func TestTypedTracksReadbackKeepsExpandedReportsAndPureLoopsInert(t *testing.T) 
 						}
 						r.Close()
 						if pass == 0 {
-							store, _ = reopen()
+							store, lease = reopen()
 						}
 					}
 				})

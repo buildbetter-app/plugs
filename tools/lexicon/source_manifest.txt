@@ -119,15 +119,6 @@ internal/acceptance/harness_test.go
 internal/acceptance/inputs.go
 internal/acceptance/projection.go
 internal/acceptance/trace.go
-internal/api/wire/BUILD.bazel
-internal/api/wire/catalog.go
-internal/api/wire/catalog.json
-internal/api/wire/error.go
-internal/api/wire/json.go
-internal/api/wire/meta.go
-internal/api/wire/schema.go
-internal/api/wire/unsupported_contract_test.go
-internal/api/wire/wire_test.go
 internal/cli/BUILD.bazel
 internal/cli/README.md
 internal/cli/agent.go
@@ -438,6 +429,7 @@ internal/core/service/service_test.go
 internal/core/service/source_workflow.go
 internal/core/service/types.go
 internal/core/service/waits_for_consumer_test.go
+internal/core/service/workflow_batch.go
 internal/core/service/workflow_bridge.go
 internal/core/service/workflow_delete.go
 internal/core/service/workflow_moves.go
@@ -513,6 +505,12 @@ internal/integration/b04claimidentity/native_b04_contract_test.go
 internal/integration/b04claimidentity/native_b04_inputs.json
 internal/integration/b04claimidentity/native_b04_io_test.go
 internal/integration/b04claimidentity/native_b04_recording_test.go
+internal/integration/b07positive/BUILD.bazel
+internal/integration/b07positive/effects.go
+internal/integration/b07positive/public/BUILD.bazel
+internal/integration/b07positive/public/postgres.go
+internal/integration/b07positive/public/public.go
+internal/integration/b07positive/snapshot.go
 internal/integration/b13memory/BUILD.bazel
 internal/integration/b13memory/README.md
 internal/integration/b13memory/fixture_test.go
@@ -569,6 +567,7 @@ internal/integration/collabwatch/reconnect_acceptance_test.go
 internal/integration/converterroundtrip/BUILD.bazel
 internal/integration/converterroundtrip/allocator.go
 internal/integration/converterroundtrip/b07_opaque_source_test.go
+internal/integration/converterroundtrip/b07_positive_source_test.go
 internal/integration/converterroundtrip/b13_joint_memory_control_test.go
 internal/integration/converterroundtrip/external_target_test.go
 internal/integration/converterroundtrip/hierarchy_import_test.go
@@ -615,6 +614,7 @@ internal/integration/converterroundtrip/source_authz_test.go
 internal/integration/converterroundtrip/source_checkpoint_test.go
 internal/integration/converterroundtrip/source_composition_test.go
 internal/integration/converterroundtrip/source_delete_test.go
+internal/integration/converterroundtrip/source_mixed_links_reverse.go
 internal/integration/converterroundtrip/source_planes.go
 internal/integration/converterroundtrip/source_planes_recovery.go
 internal/integration/converterroundtrip/source_planes_reverse.go
@@ -1045,6 +1045,7 @@ internal/server/pluginhost/source_restore.go
 internal/server/pluginhost/state.go
 internal/server/pluginhost/wasm.go
 internal/server/pluginhost/wasm_test.go
+internal/server/pluginhost/workflow_state.go
 internal/server/pluginmanifest/BUILD.bazel
 internal/server/pluginmanifest/README.md
 internal/server/pluginmanifest/bundle.go
@@ -1203,6 +1204,7 @@ internal/storage/driver/allocator_snapshot.go
 internal/storage/driver/allocator_snapshot_test.go
 internal/storage/driver/audit_contract_test.go
 internal/storage/driver/checkpoint_mutation.go
+internal/storage/driver/cycle_topology.go
 internal/storage/driver/descendant_filter.go
 internal/storage/driver/descendant_filter_test.go
 internal/storage/driver/driver.go
@@ -1253,10 +1255,12 @@ internal/storage/memory/allocator.go
 internal/storage/memory/allocator_snapshot.go
 internal/storage/memory/allocator_snapshot_test.go
 internal/storage/memory/audit_test.go
+internal/storage/memory/b06_cycle_topology_test.go
 internal/storage/memory/boundaries_test.go
 internal/storage/memory/checkpoint_guard.go
 internal/storage/memory/checkpoint_test.go
 internal/storage/memory/clock_test.go
+internal/storage/memory/cycle_topology.go
 internal/storage/memory/derived_prefix_test.go
 internal/storage/memory/derived_reader.go
 internal/storage/memory/hierarchy_index.go
@@ -1319,6 +1323,7 @@ internal/storage/postgres/clock_test.go
 internal/storage/postgres/commit.go
 internal/storage/postgres/commit_batch_test.go
 internal/storage/postgres/conformance_test.go
+internal/storage/postgres/cycle_topology.go
 internal/storage/postgres/derived_reader.go
 internal/storage/postgres/driver.go
 internal/storage/postgres/encoding.go
@@ -1354,6 +1359,7 @@ internal/storage/postgres/store.go
 internal/storage/postgres/transaction.go
 internal/storage/sourceindex/BUILD.bazel
 internal/storage/sourceindex/backfill.go
+internal/storage/sourceindex/cycle_topology.go
 internal/storage/sourceindex/publication.go
 internal/storage/sourceindex/reader.go
 internal/storage/sourceindex/source.go
@@ -1367,6 +1373,7 @@ internal/storage/sqlite/checkpoint_guard.go
 internal/storage/sqlite/checkpoint_mutation.go
 internal/storage/sqlite/clock.go
 internal/storage/sqlite/clock_test.go
+internal/storage/sqlite/cycle_topology.go
 internal/storage/sqlite/derived_prefix_test.go
 internal/storage/sqlite/derived_reader.go
 internal/storage/sqlite/engine_test.go
@@ -1532,6 +1539,7 @@ pluginapi/types_test.go
 plugins/plug/SKILL.md
 plugins/workflow/BUILD.bazel
 plugins/workflow/atomic.go
+plugins/workflow/batch_operations.go
 plugins/workflow/listing.go
 plugins/workflow/manifest.json
 plugins/workflow/native.go
@@ -1600,6 +1608,9 @@ spec/cardb07/mixed_test.go
 spec/cardb07/native_test.go
 spec/cardb07/opaque_test.go
 spec/cardb07/public_test.go
+spec/cardb07positive/BUILD.bazel
+spec/cardb07positive/README.md
+spec/cardb07positive/ordinary_test.go
 spec/cardb19/BUILD.bazel
 spec/cardb19/README.md
 spec/cardb19/archive_test.go
@@ -1611,21 +1622,6 @@ spec/cardb19/testdata/recording-1/export.jsonl
 spec/cardb19/testdata/recording-1/imported.json
 spec/cardb19/testdata/recording-2/export.jsonl
 spec/cardb19/testdata/recording-2/imported.json
-spec/cardb20/B06-CYCLES.md
-spec/cardb20/BUILD.bazel
-spec/cardb20/README.md
-spec/cardb20/b06_cases_test.go
-spec/cardb20/b06_native_test.go
-spec/cardb20/b06_plug_test.go
-spec/cardb20/b13_memory_native_test.go
-spec/cardb20/caller_test.go
-spec/cardb20/current_test.go
-spec/cardb20/native_build_test.go
-spec/cardb20/native_recording_test.go
-spec/cardb20/policy_test.go
-spec/cardb20/postgres_test.go
-spec/cardb20/runtime_test.go
-spec/cardb20/sql_rows_test.go
 spec/cardb23full/BUILD.bazel
 spec/cardb23full/public_history_test.go
 spec/cardb24/BUILD.bazel
@@ -2017,6 +2013,8 @@ tools/hostcallers/source-manifest.json
 tools/hostcallers/topology.prepared.json
 tools/lexicon/BUILD.bazel
 tools/lexicon/README.md
+tools/lexicon/b02_recording_literals.go
+tools/lexicon/b02_recording_literals_test.go
 tools/lexicon/b07_native_protocol_literals.go
 tools/lexicon/b07_native_protocol_literals_test.go
 tools/lexicon/b07_represented_literals.go
@@ -2049,6 +2047,8 @@ tools/lexicon/rules.d/provenance.toml
 tools/lexicon/rules.d/source-planes.toml
 tools/lexicon/rules.go
 tools/lexicon/source_manifest.txt
+tools/lexicon/sources.d/cardb20.txt
+tools/lexicon/sources.d/wire.txt
 tools/native-physical-restore/BUILD.bazel
 tools/native-physical-restore/main.go
 tools/native-physical-restore/undo.go

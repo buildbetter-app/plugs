@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 go_library(
     name = "checker",
     srcs = [
+        "b02_recording_literals.go",
         "b07_native_protocol_literals.go",
         "b07_represented_literals.go",
         "checker.go",
@@ -31,6 +32,7 @@ go_binary(
 go_test(
     name = "checker_test",
     srcs = [
+        "b02_recording_literals_test.go",
         "b07_native_protocol_literals_test.go",
         "b07_represented_literals_test.go",
         "checker_test.go",
