@@ -655,6 +655,8 @@ internal/integration/converterroundtrip/planner_helpers.go
 internal/integration/converterroundtrip/planner_output_test.go
 internal/integration/converterroundtrip/public_source_test.go
 internal/integration/converterroundtrip/receiving_pass_budget_test.go
+internal/integration/converterroundtrip/receiving_stream.go
+internal/integration/converterroundtrip/receiving_stream_test.go
 internal/integration/converterroundtrip/repair_test.go
 internal/integration/converterroundtrip/restore.go
 internal/integration/converterroundtrip/restore_lease_test.go
@@ -1308,6 +1310,11 @@ internal/storage/historyverify/auxiliary.go
 internal/storage/historyverify/checkpoint.go
 internal/storage/historyverify/engines_test.go
 internal/storage/historyverify/export_test.go
+internal/storage/historyverify/native.go
+internal/storage/historyverify/native_evidence.go
+internal/storage/historyverify/native_frames.go
+internal/storage/historyverify/native_plan.go
+internal/storage/historyverify/native_spool.go
 internal/storage/historyverify/planner_dependency_test.go
 internal/storage/memory/BUILD.bazel
 internal/storage/memory/allocator.go
