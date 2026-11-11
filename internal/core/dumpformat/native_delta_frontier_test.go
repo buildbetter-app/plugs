@@ -1,11 +1,17 @@
 package dumpformat
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -69,6 +75,134 @@ func TestNativeDeltaReconstructionDropsDecodedKeysAndMapReplacements(t *testing.
 	usage := root.Usage()
 	if simultaneousKeys == 0 || usage.CumulativeCharges["decoded_row_map_keys"] == 0 || usage.CurrentCategories["physical_key_decode"] != 0 || usage.CurrentCategories["decoded_row_map_keys"] != 0 {
 		t.Fatal("reconstruction key owners did not end with their tables", simultaneousKeys, usage)
+	}
+}
+
+func TestNativeDeltaReconstructionReleasesRetiredRowsWithinTable(t *testing.T) {
+	table := NativeDeltaTableSchema{Name: "items", Columns: []NativeDeltaColumn{{Name: "id", SQLType: "bigint", PrimaryKeyOrdinal: deltaTestUint(0)}, {Name: "value", SQLType: "text"}}}
+	encode := func(value any) []byte {
+		t.Helper()
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return append(raw, '\n')
+	}
+	key := func(row NativeDeltaRow) []byte {
+		t.Helper()
+		decoded, err := base64.StdEncoding.DecodeString(row.Key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return decoded
+	}
+	// Ordered deletes retire most of a large baseline before a later update
+	// and insert. Dead bodies must not compete with those live candidates.
+	all := make([]NativeDeltaRow, 17)
+	for i := range all {
+		all[i] = deltaTestRow(t, table, strconv.Itoa(i+1), strings.Repeat("x", 8192), 0)
+	}
+	sort.Slice(all, func(i, j int) bool { return bytes.Compare(key(all[i]), key(all[j])) < 0 })
+	var baseline, input bytes.Buffer
+	type held struct{ baseline, operations, mapKeys uint64 }
+	var live held
+	for _, row := range all[:16] {
+		raw := encode(row)
+		baseline.Write(raw)
+		live.baseline += uint64(len(raw))
+		live.mapKeys += uint64(len(key(row)))
+	}
+	path := filepath.Join(t.TempDir(), "baseline.ndjson")
+	if err := os.WriteFile(path, baseline.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var expected []held
+	for _, row := range all[:14] {
+		d := NativeDeltaDelete{Type: "row", Op: "delete", Key: row.Key}
+		raw := encode(d)
+		input.Write(raw)
+		expected = append(expected, held{live.baseline, live.operations + uint64(len(raw)), live.mapKeys})
+		live.baseline -= uint64(len(encode(row)))
+		live.mapKeys -= uint64(len(key(row)))
+	}
+	updated := deltaTestRow(t, table, all[14].Cells[0].Value, strings.Repeat("y", 8192), 0)
+	updated.Op = "update"
+	inserted := all[16]
+	for i, row := range []NativeDeltaRow{updated, inserted} {
+		raw := encode(row)
+		input.Write(raw)
+		expected = append(expected, held{live.baseline, live.operations + uint64(len(raw)), live.mapKeys})
+		live.operations += uint64(len(raw))
+		if i == 0 {
+			live.baseline -= uint64(len(encode(all[14])))
+		} else {
+			live.mapKeys += uint64(len(key(row)))
+		}
+	}
+	expected = append(expected, live) // At end_table admission, before table cleanup.
+	final := []NativeDeltaRow{updated, all[15], inserted}
+	hash, err := NativeDeltaTableSHA256(table, final)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.Write(encode(NativeDeltaEndTable{Type: "end_table", RowOperations: 16, Rows: 3, SHA256: hash}))
+	open := NativeDeltaTable{Type: "table", Name: table.Name, TableSchemaID: NativeDeltaTableSchemaID(table), Mode: "delta", ExpectedRows: 3, ExpectedSHA256: hash}
+	want := NativeTable{Columns: []string{"id", "value"}, Rows: []Row{}}
+	for _, row := range final {
+		raw, err := base64.StdEncoding.DecodeString(row.NormalizedJSON)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields Row
+		if err := decodeJSON(raw, &fields); err != nil {
+			t.Fatal(err)
+		}
+		want.Rows = append(want.Rows, fields)
+	}
+	sort.Slice(want.Rows, func(i, j int) bool { return bytes.Compare(encode(want.Rows[i]), encode(want.Rows[j])) < 0 })
+	run := func(limit uint64, cancelAt int) (*NativeDeltaBudget, []held, NativeTable, error) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		root := NewNativeDeltaBudget(limit)
+		owner := root.Scope()
+		defer owner.Release()
+		var samples []held
+		root.Observe(func(event NativeDeltaAllocationEvent) {
+			if event.Action == "reserve" && (event.Phase == "decoded_operations" || event.Phase == "json_typed_candidate" && len(samples) == 16) {
+				samples = append(samples, held{root.ReservedBytes("decoded_baseline_rows"), root.ReservedBytes("decoded_operations"), root.ReservedBytes("decoded_row_map_keys")})
+				if cancelAt != 0 && len(samples) == cancelAt {
+					cancel()
+				}
+			}
+		})
+		reader := newNativeDeltaRecordReader(ctx, bytes.NewReader(input.Bytes()), owner)
+		defer reader.Close()
+		r := nativeDeltaReconstructor{ctx: ctx, input: reader, budget: owner, dir: t.TempDir()}
+		_, actual, err := r.table(open, table, deltaStagedTable{schema: table, path: path}, false)
+		return root, samples, actual, err
+	}
+	root, samples, actual, err := run(0, 0)
+	if err != nil || !reflect.DeepEqual(actual, want) || !reflect.DeepEqual(samples, expected) {
+		t.Fatal("in-table live targets or reconstructed bytes differ", err, samples, expected)
+	}
+	peak := root.Usage().PeakAccountedDecodedBytes
+	bounded, samples, actual, err := run(peak, 0)
+	if err != nil || !reflect.DeepEqual(actual, want) || !reflect.DeepEqual(samples, expected) {
+		t.Fatal("live peak refused valid ordered deletes/update/insert", peak, err, samples)
+	}
+	refused, _, _, err := run(peak-1, 0)
+	var refusal *NativeDeltaDecodedLimitError
+	if !errors.As(err, &refusal) || refusal.MeasuredBytes != peak || refusal.Overflow {
+		t.Fatal("simultaneous candidate boundary did not refuse exactly", peak, err)
+	}
+	cancelled, samples, _, err := run(0, 15)
+	if !errors.Is(err, context.Canceled) || !reflect.DeepEqual(samples, expected[:15]) {
+		t.Fatal("mid-table cancellation did not preserve prior releases", err, samples)
+	}
+	for _, root := range []*NativeDeltaBudget{root, bounded, refused, cancelled} {
+		if root.Usage().CurrentAccountedDecodedBytes != 0 {
+			t.Fatal("table exit retained a target after success/refusal/cancellation", root.Usage())
+		}
 	}
 }
 

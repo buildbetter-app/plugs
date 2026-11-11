@@ -36,6 +36,14 @@ type deltaStagedTable struct {
 	path   string
 	digest NativeDeltaTableDigest
 }
+
+// Each retained row owns its decoded target and map key. Replacing or deleting
+// an entry drops both representations at their last use, within the table.
+type nativeDeltaOwnedRow struct {
+	row   NativeDeltaRow
+	owner *NativeDeltaBudget
+}
+
 type deltaStagedState struct {
 	schemaID string
 	tables   map[string]deltaStagedTable
@@ -223,8 +231,8 @@ func (r *nativeDeltaReconstructor) schema(raw []byte) error {
 	return deltaAddCount(&r.totals.Schemas, 1)
 }
 
-func (r *nativeDeltaReconstructor) readRows(table deltaStagedTable, budget *NativeDeltaBudget) (map[string]NativeDeltaRow, error) {
-	rows := map[string]NativeDeltaRow{}
+func (r *nativeDeltaReconstructor) readRows(table deltaStagedTable, budget *NativeDeltaBudget) (map[string]nativeDeltaOwnedRow, error) {
+	rows := map[string]nativeDeltaOwnedRow{}
 	if table.path == "" {
 		return rows, nil
 	}
@@ -244,22 +252,28 @@ func (r *nativeDeltaReconstructor) readRows(table deltaStagedTable, budget *Nati
 			return nil, err
 		}
 		var row NativeDeltaRow
-		if err := decodeNativeDeltaJSONWithBudget(raw, &row, budget, "decoded_baseline_rows"); err != nil {
+		rowOwner := budget.Scope()
+		if err := decodeNativeDeltaJSONWithBudget(raw, &row, rowOwner, "decoded_baseline_rows"); err != nil {
+			rowOwner.Release()
 			return nil, err
 		}
-		keyOwner := budget.Scope()
+		keyOwner := rowOwner.Scope()
 		key, err := nativeDeltaKeyAccounted(row.Key, keyOwner)
 		if err != nil {
-			keyOwner.Release()
+			rowOwner.Release()
 			return nil, err
 		}
-		mapKey, err := nativeDeltaMapKeyAccounted(key, budget)
+		mapKey, err := nativeDeltaMapKeyAccounted(key, rowOwner)
 		if err != nil {
-			keyOwner.Release()
+			rowOwner.Release()
 			return nil, err
 		}
-		rows[mapKey] = row
 		keyOwner.Release()
+		if old, present := rows[mapKey]; present {
+			delete(rows, mapKey)
+			old.owner.Release()
+		}
+		rows[mapKey] = nativeDeltaOwnedRow{row, rowOwner}
 	}
 	return rows, nil
 }
@@ -276,7 +290,7 @@ func (r *nativeDeltaReconstructor) table(open NativeDeltaTable, schema NativeDel
 	if open.Type != "table" || open.Name != schema.Name || open.TableSchemaID != NativeDeltaTableSchemaID(schema) || open.Mode != mode || !validDeltaSHA256(open.ExpectedSHA256) {
 		return zero, normalized, fmt.Errorf("native delta table binding/mode differs")
 	}
-	rows := map[string]NativeDeltaRow{}
+	rows := map[string]nativeDeltaOwnedRow{}
 	if !replace {
 		var err error
 		rows, err = r.readRows(base, work)
@@ -314,15 +328,16 @@ func (r *nativeDeltaReconstructor) table(open NativeDeltaTable, schema NativeDel
 		op := fields.Op
 		var row NativeDeltaRow
 		var key []byte
+		operation := work.Scope()
 		candidate := work.Scope()
 		if op == "delete" {
 			var d NativeDeltaDelete
-			if err := decodeNativeDeltaJSONWithBudget(raw, &d, work, "decoded_operations"); err != nil {
+			if err := decodeNativeDeltaJSONWithBudget(raw, &d, operation, "decoded_operations"); err != nil {
 				return zero, normalized, err
 			}
 			key, err = nativeDeltaKeyAccounted(d.Key, candidate)
 		} else {
-			if err := decodeNativeDeltaJSONWithBudget(raw, &row, work, "decoded_operations"); err != nil {
+			if err := decodeNativeDeltaJSONWithBudget(raw, &row, operation, "decoded_operations"); err != nil {
 				return zero, normalized, err
 			}
 			_, key, err = validateNativeDeltaRowAccounted(schema, row, r.header.ConfigPolicy, candidate)
@@ -342,8 +357,7 @@ func (r *nativeDeltaReconstructor) table(open NativeDeltaTable, schema NativeDel
 			previousOwner.Release()
 		}
 		previousOwner = candidate
-		mapKeyOwner := work.Scope()
-		mapKey, err := nativeDeltaMapKeyAccounted(key, mapKeyOwner)
+		mapKey, err := nativeDeltaMapKeyAccounted(key, operation)
 		if err != nil {
 			return zero, normalized, err
 		}
@@ -354,7 +368,7 @@ func (r *nativeDeltaReconstructor) table(open NativeDeltaTable, schema NativeDel
 				return zero, normalized, fmt.Errorf("native delta insert key exists")
 			}
 		case "update":
-			if replace || !present || nativeDeltaSameRow(old, row) {
+			if replace || !present || nativeDeltaSameRow(old.row, row) {
 				return zero, normalized, fmt.Errorf("native delta update precondition differs")
 			}
 		case "delete":
@@ -366,15 +380,17 @@ func (r *nativeDeltaReconstructor) table(open NativeDeltaTable, schema NativeDel
 		}
 		if op == "delete" {
 			delete(rows, mapKey)
-			work.ReleaseBytes("decoded_row_map_keys", uint64(len(key)))
-			mapKeyOwner.Release()
+			old.owner.Release()
+			// The delete frame and its lookup string have no retained target.
+			operation.Release()
 		} else {
-			// The typed decoder admitted this row before allocating its target.
-			rows[mapKey] = row
 			if present {
-				work.ReleaseBytes("decoded_row_map_keys", uint64(len(key)))
+				// Remove the old entry before dropping its target and key; the
+				// replacement then unambiguously owns the new map-key string.
+				delete(rows, mapKey)
+				old.owner.Release()
 			}
-			mapKeyOwner.Retain()
+			rows[mapKey] = nativeDeltaOwnedRow{row, operation}
 		}
 		if err := deltaAddCount(&operations, 1); err != nil {
 			return zero, normalized, err
@@ -401,7 +417,7 @@ func (r *nativeDeltaReconstructor) table(open NativeDeltaTable, schema NativeDel
 		return zero, normalized, err
 	}
 	for _, key := range keys {
-		row := rows[key]
+		row := rows[key].row
 		candidate := r.budget.Scope()
 		fields, _, err := validateNativeDeltaRowAccounted(schema, row, r.header.ConfigPolicy, candidate)
 		if err != nil {

@@ -184,11 +184,11 @@ func (r *nativeDeltaReconstructor) emitRowChanges(state deltaStagedState, image 
 			for key := range keys {
 				old, hadOld := left[key]
 				next, hasNext := right[key]
-				if hadOld && hasNext && nativeDeltaSameRow(old, next) {
+				if hadOld && hasNext && nativeDeltaSameRow(old.row, next.row) {
 					continue
 				}
 				if hadOld && hasNext {
-					pk, err := NativeDeltaPrimaryKey(after.schema, next.Cells)
+					pk, err := NativeDeltaPrimaryKey(after.schema, next.row.Cells)
 					if err != nil {
 						return err
 					}
@@ -198,14 +198,14 @@ func (r *nativeDeltaReconstructor) emitRowChanges(state deltaStagedState, image 
 				}
 				change := driver.SourceHistoryChange{}
 				if hadOld {
-					record, err := r.rowRecord(before.schema, old, nativeRetainedHistory, work)
+					record, err := r.rowRecord(before.schema, old.row, nativeRetainedHistory, work)
 					if err != nil {
 						return err
 					}
 					change.Before = &record
 				}
 				if hasNext {
-					record, err := r.rowRecord(after.schema, next, nativeRetainedHistory, work)
+					record, err := r.rowRecord(after.schema, next.row, nativeRetainedHistory, work)
 					if err != nil {
 						return err
 					}
@@ -285,7 +285,7 @@ func (r *nativeDeltaReconstructor) emitRowCheckpoint(kind string, state deltaSta
 			sort.Strings(keys)
 			ordered := make([]NativeDeltaRow, 0, len(rows))
 			for _, key := range keys {
-				row := rows[key]
+				row := rows[key].row
 				if err = work.ChargeJSON("callback_typed_rows", row); err != nil {
 					break
 				}
