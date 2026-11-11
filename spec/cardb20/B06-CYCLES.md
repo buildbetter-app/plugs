@@ -79,3 +79,32 @@ refusals, waits-for exclusion, exact raw order and report limit/count truncation
 Mixed durable/workflow topology remains OPEN: ReadySnapshot is filtered and
 cannot supply complete adjacency. The original combined-Ready owner must provide
 complete topology and membership from its same checkpoint/core snapshot.
+
+## Mixed-plane continuation from frozen train 1f77dd01
+
+The new reader uses the already installed host
+ReadWorkflowRuntimeCheckpoint/ReadSourceRuntimeCheckpoint port. The complete
+logical image supplies membership and directed outgoing/inbound facts; Ready
+eligibility never selects graph vertices. Both the core head and namespace
+expectation remain bound to the detached image. The consumer refuses missing
+capability or a different content head, retains hidden vertices in topology,
+and applies current policy only when disclosing each member. Existing durable
+DFS and optional shortest-return selection remain unchanged.
+
+The new mixed targets exercise public workflow invocation and standard bead
+links/cycle RPCs on memory, SQLite and PostgreSQL. They conserve the core archive,
+ordinary receipts and exact checkpoint payload/generation through reads and
+refusals, then physically reopen both SQL engines. Explicit disposable checkpoint
+damage supplies additional parallel endpoint facts. The native target reuses
+the canonical pinned source-build recipe in independent disposable databases.
+Raw native IDs and public workflow allocation IDs remain in their originals;
+role correspondence is explicitly bound to invocation labels and returned IDs.
+The native assertions independently pin raw path order, count, multiplicity and
+refusals before comparison. No official/history/full-card qualification follows
+from authored source; original execution and independent disposition are required.
+
+Direct active links use the installed detached participant and existing
+head-guarded checkpoint save, retaining checkpoint-only history. Ordered batch
+and ordinary links validate against their existing pinned core/staged provider
+image and retain the original Writer publication guards and sentinels. No
+concurrent claim, CAS fixture, receiver or Ready implementation is changed.

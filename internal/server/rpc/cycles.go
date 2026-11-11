@@ -28,7 +28,7 @@ func dispatchCycles(ctx context.Context, svc CyclesService, call Call) (any, err
 		return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params"}}
 	}
 	result, err := svc.Cycles(ctx, call.Principal, service.CyclesRequest{
-		Project: call.Meta.Project, IncludeTracks: params.IncludeTracks,
+		Project: call.Meta.Project, Agent: call.Meta.Agent, IncludeTracks: params.IncludeTracks,
 		IncludeEphemeral: params.IncludeEphemeral, Limit: int(limit),
 	})
 	if err != nil {
