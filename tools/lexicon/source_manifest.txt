@@ -1921,6 +1921,7 @@ spec/s1-b25-b28/config_union_test.go
 spec/s1-b25-b28/converter_test.go
 spec/s1-b25-b28/lease_import_test.go
 spec/s1-b25-b28/provenance.py
+spec/s1-b25-b28/public_interchange_test.go
 spec/s1-b25-b28/public_recording_test.go
 spec/s1-b25-b28/record_reference.py
 spec/s1-b25-b28/reference_test.go

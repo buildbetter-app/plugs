@@ -4,6 +4,20 @@ This package is the dedicated four-card recorder, projection, and acceptance
 slice for B25 relational preservation/delete cascades, B26 ephemeral-plane
 promotion, B27 import/export/configuration, and B28 write pipeline/subscribers.
 
+`public_interchange_test` executes the actual Plug public producer and receiver
+through `Client.Call`, with disposable memory, SQLite and PostgreSQL stores.
+Its authored public writes cover scalar fields, explicit IDs, typed metadata,
+labels, comments, a dependency, parent relationship, spec ID and close-reason
+comment. It compares complete committed record bodies across paged
+`admin.dump`/`admin.restore.*` and both SQL close/reopens. A second restore
+into the initialized receiver must refuse `restore_requires_empty` and conserve
+its complete public dump and store metadata. RPC request/result originals are
+retained as undeclared outputs. These controls qualify the Plug head-state
+boundary only. Native Beads source/readback, stored-plus-YAML vocabulary,
+independent auxiliary census, nondeleting native JSONL import, unresolved
+native targets, and native Full/Partial/Snapshot mode composition need their
+own actual producer/receiver evidence; this authored fixture supplies none.
+
 `TestB27ImportConservesLiveLocalLeaseAcrossDrivers` adds a bounded B27 control
 on memory, SQLite and PostgreSQL. Its explicitly authored synthetic snapshot
 contains no native issue-lease rows. A competing restore must
