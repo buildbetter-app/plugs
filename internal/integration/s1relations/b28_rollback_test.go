@@ -19,6 +19,7 @@ import (
 type b28CommitFault struct {
 	driver.Store
 	driver.CheckpointStore
+	driver.ResponseFinalizer
 	staged atomic.Bool
 }
 
@@ -57,7 +58,7 @@ func TestB28PublicFailureAfterRealDriverStagingRollsBackWithoutPost(t *testing.T
 			t.Fatal("ordinary staging seed failed")
 		}
 		before := f.image()
-		fault := &b28CommitFault{Store: f.store, CheckpointStore: f.store.(driver.CheckpointStore)}
+		fault := &b28CommitFault{Store: f.store, CheckpointStore: f.store.(driver.CheckpointStore), ResponseFinalizer: f.store.(driver.ResponseFinalizer)}
 		f.store = fault
 		f.bind()
 		got := f.call("bead.update", "b28-staging-fault", map[string]any{"id": ref("b28-staging"), "fields": map[string]any{"title": "must roll back after staging"}})
