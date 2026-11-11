@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/testclock"
 )
 
