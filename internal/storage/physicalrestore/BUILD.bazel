@@ -3,10 +3,12 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "physicalrestore",
     tags = ["manual"],
-    srcs = ["binding.go", "copy.go", "manifest.go", "undo.go"],
+    srcs = ["binding.go", "copy.go", "manifest.go", "native_rows.go", "undo.go"],
     importpath = "github.com/buildbetter-app/plugs/internal/storage/physicalrestore",
     visibility = ["//:__subpackages__"],
     deps = [
+        "//internal/core/dumpformat",
+        "//internal/storage/driver",
         "//internal/storage/physicalcapture",
         "@com_github_dolthub_driver_v2//:driver",
     ],
@@ -14,7 +16,7 @@ go_library(
 go_test(
     name = "physicalrestore_test",
     gotags = ["gms_pure_go"],
-    srcs = ["restore_test.go", "undo_test.go"],
+    srcs = ["native_rows_test.go", "native_undo_test.go", "restore_test.go", "undo_test.go"],
     embed = [":physicalrestore"],
     data = ["//tools/native-physical-restore", "@dolt_native_linux_amd64//:dolt"],
     env = {
@@ -22,7 +24,12 @@ go_test(
         "BEADS_TEST_DOLT_BINARY": "$(rlocationpath @dolt_native_linux_amd64//:dolt)",
     },
     deps = [
+        "//internal/core/dumpformat",
+        "//internal/storage/driver",
         "//internal/storage/physicalcapture",
+        "//internal/core/model",
+        "//internal/storage/memory",
+        "//internal/storage/sqlite",
         "//internal/testutil/nativeoracle",
         "//internal/testutil/nativeschema",
         "//internal/testutil/bazeltest",

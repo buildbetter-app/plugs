@@ -128,3 +128,52 @@ the undo receipt binds their SHA256. Native public fixtures test this transport;
 an actual Plug snapshot/project/source-plane binding and measured post-switch
 changeset/checkpoint census must still come from their owners. Explanation
 strings and historical fixture counts cannot supply that missing census.
+
+## Native row/meta readback and undo
+
+`ReadNativeRowTables` consumes a caller-owned fixed `driver.Reader` snapshot.
+It enumerates unfiltered `Query` pages through the terminal cursor, selects both
+native Ref namespaces before validating Kind, and rejects missing, unexpected,
+duplicate or malformed records. `NativeTableBinding` supplies the independently
+bound complete group/Ref census, identity kind and original table-envelope
+SHA256; D3 groups also require the original typed table commitment. The landed
+`dumpformat` codec reconstructs each full table and checks its meta, canonical
+ordering and duplicate occurrences. `TableBodies` returns detached original
+table-envelope bytes. Caller authentication of the archive, mapping and source
+revision remains separate from these structural checks.
+
+Both `v1-content-bag` and `d3-physical` reconstruct. V1 does not require a typed
+witness and never infers primary keys. `PrepareNativeRowUndo` is a separate
+physical-write boundary: it retains the original immutable347 and complete
+workingf791 bindings, requires D3 typed current cells, exact original user-table
+census/SQL types/order/families and unchanged reserved/view-schema evidence.
+Missing typed values, schema/DDL/view intent and unavailable secret references
+refuse before the normal `Undo` call. SQL NULL, JSON `null`, integer widths,
+float bits and binary cells retain explicit tags. No CLI input format changes.
+The consumer passes the resulting request to existing `Undo`, then closes and
+reopens the copied store and calls existing `VerifyUndo`.
+
+`CanonicalPhysicalBytes` implements contract R2's SQL payload domain: original
+manifest struct fields; tables ordered by exact name; columns in SQL ordinal
+order with original type text; rows ordered by exact marshaled tagged-cell bytes,
+including duplicates. It does not parse or normalize `Cell.Data`. New commit
+metadata and nondeterministic raw Dolt container files are separate domains.
+
+`TestNativeRowUndoIndependentPublicNativeBytes` prepares the actual native Beads
+schema, nonempty public issues and ignored wisps, binary/NULL/numeric/empty/keyless
+controls and two retained source commits. For edited and no-edit cases it first
+copies the closed source three times, authors the expected copy with ordinary
+native DML, and freezes independently tagged expected user-request, complete
+immutable/working and reserved/view bytes before either adapter or writer runs.
+The old typed path and the new row/meta path each invoke normal Undo on their own
+preserved copy. Both are independently compared to those expected files after a
+real close/reopen; original rooted tables, source file inventories, one-commit
+receipts and original loss-report bytes remain separate assertions. Expected
+serialization does not invoke the writer or reconstruction helpers.
+
+This is a small disposable public-fixture qualification. The shared pure codec
+currently supplies no complete reservation API for reconstruction transients and
+outputs. Its normalized/D3/envelope allocations have no complete simultaneous
+ledger in this adapter; recorded process RSS/HWM is an observation, not proof of
+the unchanged 2 GiB decoded-held ceiling. This layer grants no large-fixture,
+private-store, full-history, production or admission credit.

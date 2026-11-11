@@ -1296,6 +1296,9 @@ internal/storage/physicalrestore/README.md
 internal/storage/physicalrestore/binding.go
 internal/storage/physicalrestore/copy.go
 internal/storage/physicalrestore/manifest.go
+internal/storage/physicalrestore/native_rows.go
+internal/storage/physicalrestore/native_rows_test.go
+internal/storage/physicalrestore/native_undo_test.go
 internal/storage/physicalrestore/restore_test.go
 internal/storage/physicalrestore/undo.go
 internal/storage/physicalrestore/undo_test.go
