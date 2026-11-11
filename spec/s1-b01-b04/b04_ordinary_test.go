@@ -2,6 +2,7 @@ package s1b01b04
 
 import (
     "context"
+    "encoding/json"
     "fmt"
     "reflect"
     "testing"
@@ -21,7 +22,13 @@ func TestB04OrdinaryPublicHTTPAcrossStores(t *testing.T) {
 			o.seed("create-public",ordinaryCreateOp("decoy",project,map[string]any{"title":"unselected decoy","priority":0},""),ordinaryCreateOp("direct",project,map[string]any{"title":"ordinary hydrated row","description":"preserve description","labels":[]string{"ordinary","public"},"priority":2},""),ordinaryCreateOp("active",project,map[string]any{"title":"native category active","status":"awaiting_review","priority":3},""),ordinaryCreateOp("wip",project,map[string]any{"title":"native category wip","status":"qa_testing","priority":1},""))
 			o.commit("public-comment","bead.comment",map[string]any{"id":ref("b04-direct"),"body":"hydration retains this comment"})
 			o.reopen("before-claim")
-			o.win("direct","bead.claim","b04-direct","todo",map[string]any{"id":ref("b04-direct")})
+			direct:=o.win("direct","bead.claim","b04-direct","todo",map[string]any{"id":ref("b04-direct")})
+			// Retain the complete public projection of the independently checked
+			// winning row before closing either SQL store, including its comment.
+			doc:=o.f.document("b04-direct")
+			getWant:=map[string]any{"bead":map[string]any{"id":doc.ID,"type":doc.Type,"project":doc.Project,"revision":direct.Results[0].Revision,"status":doc.Fields["status"],"fields":doc.Fields,"metadata":map[string]any{},"labels":doc.Labels,"createdAt":doc.CreatedAt.UTC().Format(time.RFC3339Nano)},"attachments":[]model.Attachment{},"comments":doc.Comments,"lease":map[string]any{"holder":doc.Lease.Principal.ID,"expiresAt":doc.Lease.ExpiresAt.UTC().Format(time.RFC3339Nano),"ttlMs":doc.Lease.TtlMs,"epoch":doc.Lease.Epoch}}
+			getWantJSON,err:=json.Marshal(getWant);if err!=nil {t.Fatal(err)}
+			o.retain("reopened-get-expected",json.RawMessage(getWantJSON))
 			o.f.clock.Advance(time.Second)
 			o.sameHolder("same-holder","b04-direct")
 			o.refusal("wip-refused","bead.claim",owner,"invalid_params",false,map[string]any{"id":ref("b04-wip")})
@@ -32,7 +39,8 @@ func TestB04OrdinaryPublicHTTPAcrossStores(t *testing.T) {
 			if o.f.document("b04-decoy").Lease!=nil { t.Fatal("selected empty front claimed decoy") }
 			o.reopen("after-claim-noop-refusal-empty")
 			// Exercise public reads through the reconstructed HTTP service too.
-			o.publicReadback("reopened-get","b04-direct")
+			get:=o.call("reopened-get","bead.get",owner,map[string]any{"id":ref("b04-direct")})
+			if got:=result(t,get);!reflect.DeepEqual(got,decodeObject(t,getWantJSON)) {t.Fatalf("public get differs from retained complete expected row: got=%s want=%s",get,getWantJSON)}
 		})
 	}
 }
@@ -104,7 +112,19 @@ func TestB04OrdinarySelectionUnderStaticAuthority(t *testing.T) {
 		o:=newOrdinaryB04(t,backend,dsn,ids)
 		o.seed("static-seed",ordinaryCreateOp("hidden",project,map[string]any{"title":"hidden matching high rank","priority":0,"labels":[]string{"public-selection"}},""),ordinaryCreateOp("winner",project,map[string]any{"title":"visible matching winner","priority":2,"labels":[]string{"public-selection"}},""),ordinaryCreateOp("mismatch",project,map[string]any{"title":"visible filter mismatch","priority":1,"labels":[]string{"outside"}},""))
 		o.server.Close()
-		o.authority=ordinaryAuthority(t,[]model.Ref{ref(ids[1]),ref(ids[2])},o.f.clock.Now)
+		visibleRefs:=[]model.Ref{ref(ids[1]),ref(ids[2])}
+		permitted:=ordinaryAuthority(t,append(append([]model.Ref{},visibleRefs...),ref("b04-project")),o.f.clock.Now)
+		// Both callers and their API keys are fixed before any selection call.
+		// Choosing a key below does not change the installed policy or grants.
+		restrictedWriter:=permitted.writer
+		restrictedWriter.ID="agent:b04-beads-only"
+		restrictedWriter.Caveats=map[string]any{"refs":visibleRefs}
+		restrictedJSON,err:=json.Marshal(restrictedWriter);if err!=nil {t.Fatal(err)}
+		if err:=json.Unmarshal(restrictedJSON,&restrictedWriter);err!=nil {t.Fatal(err)}
+		restrictedKey,err:=permitted.provider.Issue(restrictedWriter,o.f.clock.Now().Add(time.Hour));if err!=nil {t.Fatal(err)}
+		restricted:=&ordinaryB04Authority{reader:permitted.reader,writer:restrictedWriter,provider:permitted.provider,readKey:permitted.readKey,writeKey:restrictedKey.Token}
+		o.retain("static-fixed-callers",map[string]any{"permitted":permitted.writer,"restricted":restricted.writer})
+		o.authority=permitted
 		o.install()
 		o.reopen("static-before")
 		filter:=map[string]any{"labelsAny":[]string{"public-selection"},"includeEphemeral":false}
@@ -114,7 +134,10 @@ func TestB04OrdinarySelectionUnderStaticAuthority(t *testing.T) {
 		row,ok:=items[0].(map[string]any);if !ok || row["id"]!=ids[1] || page["nextCursor"]!=nil {t.Fatalf("authorization/filter membership must precede pagination: %+v",page)}
 		o.equalState("static-ready-after",before);o.checkReceipts()
 		o.win("static-win","bead.claimNext",ids[1],"todo",map[string]any{"filter":filter})
+		o.authority=restricted
 		o.refusal("static-workflow-project-refused","bead.claimNext",owner,"forbidden",false,map[string]any{"filter":map[string]any{"labelsAny":[]string{"public-selection"}}})
+		o.refusal("static-durable-project-refused","bead.claimNext",owner,"forbidden",false,map[string]any{"filter":filter})
+		o.authority=permitted
 		o.empty("static-empty",map[string]any{"filter":filter})
 		o.reopen("static-after")
 		if got:=o.readyIDs("static-drained",filter);len(got)!=0 {t.Fatalf("hidden/mismatch row escaped selection: %v",got)}
