@@ -192,7 +192,7 @@ func TestSourceManifestFragmentsRejectMalformedEntries(t *testing.T) {
 func TestSourceInventoryScansFragmentMembers(t *testing.T) {
 	files := fragmentedSourceManifest()
 	identifier := string([]byte{98, 100})
-	files[rulesDirectory+"/rules.toml"] = []byte("[[term]]\nmatch = [" + strconv.Quote(identifier) + "]\nclass = \"identifier\"\n")
+	files[rulesDirectory+"/rules.toml"] = []byte("[[term]]\nmatch = [" + strconv.Quote(identifier) + "]\nclass = \"identifier\"\n[zones]\nprovenance = [\"NOTICE.md\"]\n")
 	files[sourceManifestPath] = append(files[sourceManifestPath], []byte(rulesDirectory+"/rules.toml\n")...)
 	for _, name := range []string{"internal/api/wire/contract.go", "spec/cardb20/cases.go"} {
 		files[name] = []byte("package source\nconst " + identifier + " = 1\n")
