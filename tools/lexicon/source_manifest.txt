@@ -262,6 +262,8 @@ internal/core/model/checkpoint_test.go
 internal/core/model/codes.go
 internal/core/model/commit.go
 internal/core/model/condition.go
+internal/core/model/dependency_metadata.go
+internal/core/model/dependency_metadata_test.go
 internal/core/model/doc.go
 internal/core/model/edge_extensions_test.go
 internal/core/model/encodings_test.go
@@ -1645,6 +1647,8 @@ spec/cardb07/public_test.go
 spec/cardb07positive/BUILD.bazel
 spec/cardb07positive/README.md
 spec/cardb07positive/ordinary_test.go
+spec/cardb11/BUILD.bazel
+spec/cardb11/public_test.go
 spec/cardb19/BUILD.bazel
 spec/cardb19/README.md
 spec/cardb19/archive_test.go
