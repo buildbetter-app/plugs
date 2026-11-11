@@ -60,7 +60,9 @@ func b03InstallProject(t *testing.T, f *b03Public, project string, d ontology.Do
 		t.Fatalf("public project catalog plan not ready: %+v", p)
 	}
 	var commit model.Commit
-	f.call(t, "ontology.apply", map[string]any{"project": project, "planDigest": p.PlanDigest, "expect": p.Changes.Expect,
+	meta := b03ProjectMeta(project)
+	meta["idempotencyKey"] = b03TargetKey(f.sequence + 1)
+	f.call(t, "ontology.apply", map[string]any{"_meta": meta, "planDigest": p.PlanDigest, "expect": p.Changes.Expect,
 		"humanPresence": map[string]any{"mode": "presence_check", "challenge": p.PlanDigest, "proof": p.PlanDigest}}, true, "", &commit)
 	return commit.Revision
 }
