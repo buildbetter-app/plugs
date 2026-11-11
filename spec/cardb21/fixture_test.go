@@ -218,9 +218,11 @@ func (f *b21Fixture) reopen() {
 func (f *b21Fixture) key() string { f.keys++; return fmt.Sprintf("%032x", f.keys) }
 func (f *b21Fixture) call(method, key string, params map[string]any) b21Reply {
 	f.t.Helper()
+	meta := map[string]any{"project": b21Project, "agent": b21Agent}
 	if key != "" {
-		params["_meta"] = map[string]any{"project": b21Project, "agent": b21Agent, "idempotencyKey": key}
+		meta["idempotencyKey"] = key
 	}
+	params["_meta"] = meta
 	body, e := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": "b21", "method": method, "params": params})
 	if e != nil {
 		f.t.Fatal(e)

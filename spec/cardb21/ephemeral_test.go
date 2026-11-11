@@ -50,7 +50,7 @@ func TestB21PublicEphemeralOnlyBatchHasNoDurableHistory(t *testing.T) {
 					t.Fatal("actual ephemeral value lost on SQL reopen")
 				}
 			}
-			// Keep this durable+wisp batch separate from the wisp-only no-history
+			// Keep this durable+ephemeral batch separate from the ephemeral-only no-history
 			// observation above. One core row delta yields one revision while
 			// the same public batch changes the actual ephemeral item.
 			mixed := model.ChangeSet{Ops: []model.Op{b21Create("durable", "mixed durable"), b21Patch(ref, map[string]any{"title": "mixed ephemeral"})}}

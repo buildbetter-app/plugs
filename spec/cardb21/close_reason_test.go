@@ -158,6 +158,22 @@ func TestB21PublicExactTerminalCloseKeepsFirstIdentityAndLegacyAbsence(t *testin
 			flow.Transitions = append(flow.Transitions, ontology.Rule{To: "done-alt", Guards: []ontology.Guard{{Kind: ontology.NotTemplate}, {Kind: ontology.NoOpenChildren}, {Kind: ontology.NoOpenBlockers}, {Kind: ontology.Permission}}})
 			document.Workflows["issue"] = flow
 			f := newB21Ontology(t, engine, document)
+			// Admit all legacy fixtures before ordinary public writes enable the
+			// driver's certified-publication metadata boundary.
+			for _, prior := range []struct{ id, status string }{
+				{"b21-legacy-failed", "failed"}, {"b21-legacy-canceled", "canceled"},
+				{"b21-legacy-no-time-typed", "done"}, {"b21-legacy-no-time-named", "done"},
+			} {
+				legacy := model.RefByID(prior.id, model.Natural64(0))
+				d := pipeline.Document{ID: prior.id, Type: "issue", Project: b21Project, Fields: map[string]any{"title": "legacy " + prior.status, "status": prior.status}}
+				body, err := json.Marshal(d)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err = conformance.Seed(f.ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: legacy, Kind: "bead", Op: model.OpCreate, Body: body}}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			ref := b21Commit(t, f.apply(f.key(), model.ChangeSet{Ops: []model.Op{b21Create("known", "known first reason")}})).Results[0].Ref
 			firstAt := f.now
 			b21Commit(t, f.call("bead.close", f.key(), map[string]any{"id": ref, "reason": "first reason"}))
@@ -179,19 +195,26 @@ func TestB21PublicExactTerminalCloseKeepsFirstIdentityAndLegacyAbsence(t *testin
 			for _, previous := range []string{"failed", "canceled"} {
 				id := "b21-legacy-" + previous
 				legacy := model.RefByID(id, model.Natural64(0))
-				d := pipeline.Document{ID: id, Type: "issue", Project: b21Project, Fields: map[string]any{"title": previous, "status": previous}}
-				body, err := json.Marshal(d)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err = conformance.Seed(f.ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: legacy, Kind: "bead", Op: model.OpCreate, Body: body}}); err != nil {
-					t.Fatal(err)
-				}
 				f.now = f.now.Add(time.Hour)
 				close := b21Close(legacy)
 				close.Close.Reason = "actual successful close"
 				b21Commit(t, f.apply(f.key(), model.ChangeSet{Ops: []model.Op{close}}))
 				b21Reason(t, f.doc(legacy), "actual successful close", f.now, []string{"actual successful close"})
+			}
+
+			// Exercise real failed/canceled public lifecycle rows, which carry
+			// populated terminal times, before their first successful close.
+			for _, method := range []string{"bead.fail", "bead.cancel"} {
+				row := b21Commit(t, f.apply(f.key(), model.ChangeSet{Ops: []model.Op{b21Create("subject", method)}})).Results[0].Ref
+				f.now = f.now.Add(time.Hour)
+				terminalAt := f.now
+				b21Commit(t, f.call(method, f.key(), map[string]any{"id": row, "reason": "earlier terminal reason"}))
+				if got := f.doc(row); got.ClosedAt == nil || !got.ClosedAt.Equal(terminalAt) || got.CloseReason != nil {
+					t.Fatalf("public failure/cancellation fixture %+v", got)
+				}
+				f.now = f.now.Add(time.Hour)
+				b21Commit(t, f.call("bead.close", f.key(), map[string]any{"id": row, "reason": "first successful reason"}))
+				b21Reason(t, f.doc(row), "first successful reason", f.now, []string{"earlier terminal reason", "first successful reason"})
 			}
 
 			for _, named := range []bool{false, true} {
@@ -200,14 +223,6 @@ func TestB21PublicExactTerminalCloseKeepsFirstIdentityAndLegacyAbsence(t *testin
 					id = "b21-legacy-no-time-named"
 				}
 				legacy := model.RefByID(id, model.Natural64(0))
-				d := pipeline.Document{ID: id, Type: "issue", Project: b21Project, Fields: map[string]any{"title": "legacy unknown instant", "status": "done"}}
-				body, err := json.Marshal(d)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err = conformance.Seed(f.ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: legacy, Kind: "bead", Op: model.OpCreate, Body: body}}); err != nil {
-					t.Fatal(err)
-				}
 				f.now = f.now.Add(time.Hour)
 				before = f.state()
 				if named {
@@ -224,7 +239,7 @@ func TestB21PublicExactTerminalCloseKeepsFirstIdentityAndLegacyAbsence(t *testin
 					if got.CloseReason != nil || got.ClosedAt != nil || got.Fields["status"] != status || len(got.Comments) != comments || comments > 0 && got.Comments[0].Body != "legacy settlement" {
 						t.Fatalf("legacy terminal selection fabricated identity/time: %+v", got)
 					}
-					f.publicFields(legacy, map[string]any{"status": status, "title": "legacy unknown instant"})
+					f.publicFields(legacy, map[string]any{"status": status, "title": "legacy done"})
 				}
 				assertLegacy(alternate, 1)
 				f.now = f.now.Add(time.Hour)

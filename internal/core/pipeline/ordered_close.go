@@ -28,15 +28,12 @@ type createStatuses interface {
 }
 
 func (w *Writer) closedDocument(doc Document) bool {
-	if doc.CloseReason != nil || doc.ClosedAt != nil {
-		return true
-	}
 	// Ask the same trusted selector whether the current project/type status
-	// is a successful close target. Failed/canceled rows with no close time
-	// retain their existing first-close behavior. No guard is evaluated here.
+	// is a successful close target. A prior failure/cancellation timestamp
+	// does not establish a first successful close. No guard is evaluated here.
 	statuses, ok := w.cfg.ontology.(exactCloseStatuses)
 	if !ok {
-		return false
+		return doc.CloseReason != nil || doc.ClosedAt != nil
 	}
 	status, _ := doc.Fields["status"].(string)
 	_, selected, closed := statuses.CloseStatuses(doc.Project, doc.Type, &status)

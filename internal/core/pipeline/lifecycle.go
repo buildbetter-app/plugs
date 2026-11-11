@@ -87,11 +87,11 @@ func (w *Writer) lifecycleTimes(p *prepared, stamp time.Time) error {
 				value.setBy["closedAt"] = "core"
 			}
 		case "bead.close":
-			if !beforeClosed && value.doc.ClosedAt == nil {
+			if !beforeClosed {
 				// The legacy named close still hashes and returns its original
 				// patch plus optional comment. Record the first reason only on
 				// its real transition; legacy settled rows remain identity-less.
-				if value.doc.CloseReason == nil {
+				if value.doc.CloseReason == nil || !p.closes[value.ref.ID] {
 					reason := ""
 					for _, change := range p.proposal.Changes {
 						if change.Resource.Ref == value.ref && change.Op.Kind == model.OpComment {
