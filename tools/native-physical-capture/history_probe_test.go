@@ -15,10 +15,23 @@ import (
 )
 
 func TestSafeUnavailableHistoryRetainsCauseAndExplicitUnknownCoordinates(t *testing.T) {
-	for _, reason := range []string{"", "ghost_parent", "missing_root_chunk", "missing_table_chunk", "missing_archive_chunk", "unreadable_schema", "other", "private-error-text"} {
-		t.Run(reason, func(t *testing.T) {
+	for _, test := range []struct {
+		name, reason, boundaryReason, want string
+	}{
+		{"", "commit-census-unavailable", "", "commit_census_unavailable"},
+		{"ghost_parent", "commit-census-unavailable", "ghost_parent", "ghost_parent"},
+		{"missing_root_chunk", "commit-census-unavailable", "missing_root_chunk", "missing_root_chunk"},
+		{"missing_table_chunk", "commit-census-unavailable", "missing_table_chunk", "missing_table_chunk"},
+		{"missing_archive_chunk", "commit-census-unavailable", "missing_archive_chunk", "missing_archive_chunk"},
+		{"unreadable_schema", "commit-census-unavailable", "unreadable_schema", "unreadable_schema"},
+		{"other", "commit-census-unavailable", "other", "other"},
+		{"private-error-text", "commit-census-unavailable", "private-error-text", "commit_census_unavailable"},
+		{"empty-source-and-boundary", "", "", "other"},
+		{"unknown-source-and-boundary", "private-source-reason", "private-boundary-reason", "other"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			cause := errors.Join(&messageTrap{}, &mysql.MySQLError{Number: 1146, Message: "private-value"})
-			err := plugdump.ErrSourceHistoryUnavailable{Reason: "commit-census-unavailable", BoundaryReason: reason, Cause: cause}
+			err := plugdump.ErrSourceHistoryUnavailable{Reason: test.reason, BoundaryReason: test.boundaryReason, Cause: cause}
 			if !errors.Is(err, cause) {
 				t.Fatal("source-history wrapper discarded its cause")
 			}
@@ -40,19 +53,15 @@ func TestSafeUnavailableHistoryRetainsCauseAndExplicitUnknownCoordinates(t *test
 					t.Fatal("history type/code array omitted or null")
 				}
 			}
-			want := safeHistoryReason(reason)
-			if want == "" {
-				want = "other"
-			}
 			var got string
-			if err := json.Unmarshal(fields["reason_subcode"], &got); err != nil || got != want {
+			if err := json.Unmarshal(fields["reason_subcode"], &got); err != nil || got != test.want {
 				t.Fatal("history reason is not a closed safe subcode")
 			}
 			if bytes.Contains(data, []byte("private-")) {
 				t.Fatal("private cause/reason content escaped safe diagnostics")
 			}
 			report := safeReport(&err)
-			if report.ReasonSubcode == nil || *report.ReasonSubcode != want || !reflect.DeepEqual(report.SQLCodes, []uint16{1146}) {
+			if report.ReasonSubcode == nil || *report.ReasonSubcode != test.want || !reflect.DeepEqual(report.SQLCodes, []uint16{1146}) {
 				t.Fatal("pointer unavailable wrapper lost original cause/code")
 			}
 		})
