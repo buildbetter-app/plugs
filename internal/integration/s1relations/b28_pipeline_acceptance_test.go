@@ -123,7 +123,7 @@ func TestB28PublicStructuredSnapshotsOrderingAndSuppression(t *testing.T) {
 			f.write("bead.update", "b28-patch", map[string]any{"id": first, "fields": map[string]any{"title": "edited"}}),
 			f.batch("b28-comment", model.Op{Kind: model.OpComment, Comment: &model.CommentOp{Kind: model.OpComment, Target: first, Body: "exact comment α\nsecond line"}}),
 			f.batch("b28-link", link(first, second, "relates-to")),
-			f.batch("b28-unlink", model.Op{Kind: model.OpUnlink, Unlink: &model.UnlinkOp{Kind: model.OpUnlink, From: first, To: second, LinkKind: "relates-to"}}),
+			f.batch("b28-unlink", model.Op{Kind: model.OpUnlink, Link: &model.LinkOp{Kind: model.OpUnlink, From: first, To: second, LinkKind: "relates-to"}}),
 			f.batch("b28-delete", model.Op{Kind: model.OpDelete, Delete: &model.DeleteOp{Kind: model.OpDelete, Target: second}}),
 		}
 		mu.Lock()
@@ -167,7 +167,7 @@ func TestB28PublicStructuredSnapshotsOrderingAndSuppression(t *testing.T) {
 		imageTitle(observed[1].Changes[0].After, "edited")
 		beforeComment := imageTitle(observed[2].Changes[0].Before, "edited")
 		afterComment := imageTitle(observed[2].Changes[0].After, "edited")
-		if observed[2].Changes[0].Op.Kind != model.OpComment || len(beforeComment.Comments) != 0 || len(afterComment.Comments) != 1 || afterComment.Comments[0].Body != "exact comment α\nsecond line" || afterComment.Comments[0].Principal != actor || afterComment.Comments[0].Time != fixedTime {
+		if observed[2].Changes[0].Op.Kind != model.OpComment || len(beforeComment.Comments) != 0 || len(afterComment.Comments) != 1 || afterComment.Comments[0].Body != "exact comment α\nsecond line" || !reflect.DeepEqual(afterComment.Comments[0].Principal, actor) || afterComment.Comments[0].Time != fixedTime {
 			t.Fatalf("structured comment before=%+v after=%+v", beforeComment, afterComment)
 		}
 		linked := imageTitle(observed[3].Changes[0].After, "edited")
@@ -188,16 +188,17 @@ func TestB28PublicStructuredSnapshotsOrderingAndSuppression(t *testing.T) {
 			}
 			var current struct {
 				Bead struct {
-					Fields map[string]any `json:"fields"`
+					Fields   map[string]any `json:"fields"`
+					Revision model.Revision `json:"revision"`
 				} `json:"bead"`
 				Comments []struct {
 					Body string `json:"body"`
 				} `json:"comments"`
 			}
-			if json.Unmarshal(got.Result, &current) != nil || current.Bead.Fields["title"] != "edited" || len(current.Comments) != 1 || current.Comments[0].Body != "exact comment α\nsecond line" {
+			if json.Unmarshal(got.Result, &current) != nil || current.Bead.Fields["title"] != "edited" || current.Bead.Revision.String() != "5" || len(current.Comments) != 1 || current.Comments[0].Body != "exact comment α\nsecond line" {
 				t.Fatalf("public current readback=%s", got.Result)
 			}
-			if doc := f.document(first.ID); len(doc.Links) != 0 || doc.Comments[0].Principal != actor || doc.Comments[0].Time != fixedTime {
+			if doc := f.document(first.ID); len(doc.Links) != 0 || !reflect.DeepEqual(doc.Comments[0].Principal, actor) || doc.Comments[0].Time != fixedTime {
 				t.Fatalf("stored structured current tuple=%+v", doc)
 			}
 			deleted := f.call("bead.get", "b28-deleted", map[string]any{"id": second})
@@ -213,8 +214,16 @@ func TestB28PublicStructuredSnapshotsOrderingAndSuppression(t *testing.T) {
 			t.Fatalf("pre refusal published state/result: %+v", refused)
 		}
 		refuse.Store(false)
+		// An ordinary malformed edge after a valid proposed patch must refuse
+		// the whole public request without publishing the earlier proposal.
+		rollback := f.call("tx.apply", "b28-rollback", map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{
+			patch(first, map[string]any{"title": "must roll back"}), link(first, first, "blocks"),
+		}}})
+		if rollback.Error == nil || rollback.Error.Data.Code != "ontology_guard_failed" || len(rollback.Result) != 0 || f.receipt("tx.apply", "b28-rollback") != nil || !bytes.Equal(before, f.image()) {
+			t.Fatalf("ordinary multi-operation refusal published effects: %+v", rollback)
+		}
 		noop := f.write("bead.update", "b28-noop", map[string]any{"id": first, "fields": map[string]any{"title": "edited"}})
-		if noop.Revision.String() != "6" || len(noop.Warnings) != 0 || !bytes.Equal(before, f.image()) {
+		if noop.Revision.String() != "6" || len(noop.Results) != 1 || noop.Results[0].Ref.ID != first.ID || noop.Results[0].Revision.String() != "5" || len(noop.Warnings) != 0 || !bytes.Equal(before, f.image()) {
 			t.Fatalf("no-op changed committed graph: %+v", noop)
 		}
 		f.reopen()
