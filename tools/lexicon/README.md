@@ -20,8 +20,14 @@ forms an unexamined package boundary. The test reads only those declared
 runfiles and a generated path mapping. It does not read the checkout, invoke
 Git, or use the network inside its sandbox.
 
-`source_manifest.txt` is the reviewed list of all source paths. The gate fails
-with sorted `missing` and `extra` paths when it differs from the checkout.
+`source_manifest.txt` and the area lists in `sources.d/*.txt` together form the
+reviewed list of all source paths. The base manifest explicitly lists each
+area file; an area file cannot register itself or another area file. Area
+files use the same one-path-per-line format and load in lexical filename
+order. Duplicate paths fail across the entire inventory, including the base
+and area lists. Invalid paths, invalid UTF-8 and empty lists also fail.
+The gate reports sorted `missing` and `extra` paths when the combined list
+differs from the checkout. Membership never exempts a file from content checks.
 All ordinary files are source, even ignored or untracked files. Only the root
 `.git` metadata entry and actual Bazel convenience symlinks are omitted.
 
@@ -50,8 +56,13 @@ outputs should be kept outside the checkout or in Bazel's output directories.
 For an intentional addition, removal, or new package:
 
 1. Add/remove the source and review the diagnostic paths. Add/remove exactly
-   those repository-relative paths in `source_manifest.txt`, keeping it sorted
-   with one path per line. Include package metadata, docs, and hidden files.
+   those repository-relative paths in the area's `sources.d/*.txt` file, or
+   `source_manifest.txt` for other areas, keeping each list sorted with one
+   path per line. `wire.txt` owns `internal/api/wire/` and `cardb20.txt` owns
+   `spec/cardb20/`. Include package metadata, docs, and hidden files. Register
+   any new area list in the base manifest and keep each source in exactly one
+   list. Update a source's existing list rather than copying another branch's
+   whole manifest; independent additions to other areas must survive.
 2. Run the required gate again. Listing a file only admits it to vocabulary
    checking; it never exempts its contents. New packages require no manual
    connection to `//:lexicon_tree`.

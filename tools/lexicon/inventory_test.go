@@ -58,16 +58,26 @@ func TestSourceManifestRejectsMissingAndMalformedEntries(t *testing.T) {
 
 func writeSourceInventory(t *testing.T, files map[string][]byte) string {
 	t.Helper()
-	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, "files"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	paths := []string{"tools/lexicon/source_manifest.txt"}
 	for name := range files {
 		paths = append(paths, name)
 	}
 	sort.Strings(paths)
 	files["tools/lexicon/source_manifest.txt"] = []byte(strings.Join(paths, "\n") + "\n")
+	return writeSourceInventoryFiles(t, files)
+}
+
+func writeSourceInventoryFiles(t *testing.T, files map[string][]byte) string {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "files"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	paths := make([]string, 0, len(files))
+	for name := range files {
+		paths = append(paths, name)
+	}
+	sort.Strings(paths)
 	entries := make([]map[string]string, 0, len(paths))
 	for i, name := range paths {
 		file := "files/" + strconv.Itoa(i)
@@ -85,6 +95,120 @@ func writeSourceInventory(t *testing.T, files map[string][]byte) string {
 		t.Fatal(err)
 	}
 	return manifestPath
+}
+
+func fragmentedSourceManifest() map[string][]byte {
+	return map[string][]byte{
+		sourceManifestPath:                       []byte(sourceManifestDirectory + "/cardb20.txt\n" + sourceManifestDirectory + "/wire.txt\n" + sourceManifestPath + "\n"),
+		sourceManifestDirectory + "/cardb20.txt": []byte("spec/cardb20/cases.go\n"),
+		sourceManifestDirectory + "/wire.txt":    []byte("internal/api/wire/contract.go\n"),
+		"spec/cardb20/cases.go":                  []byte("package cardb20\n"),
+		"internal/api/wire/contract.go":          []byte("package wire\n"),
+	}
+}
+
+func TestSourceManifestFragmentsRequireCompleteTree(t *testing.T) {
+	for name, test := range map[string]struct {
+		mutate func(map[string][]byte)
+		want   string
+	}{
+		"complete": {func(map[string][]byte) {}, ""},
+		"extra_source": {func(files map[string][]byte) {
+			files["internal/api/wire/new/BUILD.bazel"] = []byte("# new package\n")
+		}, "extra=[internal/api/wire/new/BUILD.bazel]"},
+		"missing_source": {func(files map[string][]byte) {
+			delete(files, "spec/cardb20/cases.go")
+		}, "missing=[spec/cardb20/cases.go]"},
+		"missing_fragment": {func(files map[string][]byte) {
+			delete(files, sourceManifestDirectory+"/wire.txt")
+		}, "missing=[" + sourceManifestDirectory + "/wire.txt]"},
+		"unlisted_fragment": {func(files map[string][]byte) {
+			files[sourceManifestDirectory+"/new.txt"] = []byte(sourceManifestDirectory + "/new.txt\n")
+		}, "unlisted source inventory fragment"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			files := fragmentedSourceManifest()
+			test.mutate(files)
+			err := CheckSourceManifest(files)
+			if test.want == "" {
+				if err != nil {
+					t.Fatalf("complete fragmented inventory rejected: %v", err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("got %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestSourceManifestFragmentsRejectGlobalDuplicates(t *testing.T) {
+	for _, name := range []string{"base_fragment", "two_fragments", "same_fragment"} {
+		t.Run(name, func(t *testing.T) {
+			files := fragmentedSourceManifest()
+			var target string
+			switch name {
+			case "base_fragment":
+				target = sourceManifestPath
+			case "two_fragments":
+				target = sourceManifestDirectory + "/cardb20.txt"
+			case "same_fragment":
+				target = sourceManifestDirectory + "/wire.txt"
+			}
+			files[target] = append(files[target], []byte("internal/api/wire/contract.go\n")...)
+			if err := CheckSourceManifest(files); err == nil || !strings.Contains(err.Error(), "more than once") {
+				t.Fatalf("duplicate membership accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestSourceManifestFragmentsRejectMalformedEntries(t *testing.T) {
+	for name, content := range map[string]string{
+		"empty": "", "utf8": "\xff\n", "parent": "../escape\n",
+		"absolute": "/escape\n", "unclean": "dir/../escape\n", "windows": "dir\\escape\n",
+		"metadata": ".git/config\n", "whitespace": " source.go\n", "control": "source\t.go\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			files := fragmentedSourceManifest()
+			files[sourceManifestDirectory+"/wire.txt"] = []byte(content)
+			if err := CheckSourceManifest(files); err == nil || !strings.Contains(err.Error(), sourceManifestDirectory+"/wire.txt") {
+				t.Fatalf("malformed fragment accepted: %v", err)
+			}
+		})
+	}
+	for _, name := range []string{"nested/area.txt", "area.json"} {
+		t.Run(name, func(t *testing.T) {
+			files := fragmentedSourceManifest()
+			filename := sourceManifestDirectory + "/" + name
+			files[filename] = []byte("source.go\n")
+			files[sourceManifestPath] = append(files[sourceManifestPath], []byte(filename+"\n")...)
+			if err := CheckSourceManifest(files); err == nil || !strings.Contains(err.Error(), "invalid source inventory fragment path") {
+				t.Fatalf("invalid fragment path accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestSourceInventoryScansFragmentMembers(t *testing.T) {
+	files := fragmentedSourceManifest()
+	identifier := string([]byte{98, 100})
+	files[rulesDirectory+"/rules.toml"] = []byte("[[term]]\nmatch = [" + strconv.Quote(identifier) + "]\nclass = \"identifier\"\n")
+	files[sourceManifestPath] = append(files[sourceManifestPath], []byte(rulesDirectory+"/rules.toml\n")...)
+	for _, name := range []string{"internal/api/wire/contract.go", "spec/cardb20/cases.go"} {
+		files[name] = []byte("package source\nconst " + identifier + " = 1\n")
+	}
+	findings, err := CheckSourceInventory(writeSourceInventoryFiles(t, files))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, finding := range findings {
+		paths = append(paths, finding.Path)
+	}
+	want := "internal/api/wire/contract.go,spec/cardb20/cases.go"
+	if strings.Join(paths, ",") != want {
+		t.Fatalf("fragment membership suppressed content checks: got %v, want %s", paths, want)
+	}
 }
 
 func TestSourceInventoryScansListedPackagesDocsAndHiddenPaths(t *testing.T) {
