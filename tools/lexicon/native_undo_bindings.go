@@ -2,6 +2,11 @@ package lexicon
 
 // Exact compiled AST contexts and decoded literal digests; no file exemptions.
 var undoLiteralBindings = map[string][]undoLiteralBinding{
+	"internal/integration/nightlyrestore/native_diff_test.go": {
+		{name: "logNightlyNativeJournal", kind: "func", contextSHA256: "4b73dc1c71285d7dfa32e744a2d8d9e0b752dcb24becded2e11b26c722386960", literals: map[int]string{
+			237: "91f880d51578af7df6289315f0b8e9e7e5c44e86b33f48900c26f031a0cc6f75",
+		}},
+	},
 	"internal/storage/physicalcapture/working_test.go": {
 		{name: "currentOnlyFamilies", kind: "var", contextSHA256: "808c97eeab1b2bff99cc9a39914b41c01ef803efa8b3f7d70d939f5e781bccfe", literals: map[int]string{
 			37:  "91f880d51578af7df6289315f0b8e9e7e5c44e86b33f48900c26f031a0cc6f75",
