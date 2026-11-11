@@ -43,3 +43,29 @@ Plug preserves one ordered comment; native time wakes work while Plug requires
 explicit reopen; native past targets write and warn while Plug rejects `until`.
 Plug uses always-on ChangeSets. Native history-off version-row conservation
 proves no version writes and does not imply no internal version reads.
+
+The successor `timer_import_test` checks the actual public source's SQL NULL
+timer fields. The separate manual `canonical_timer_import_test` creates a
+canonical bead with due `2099-01-15` and defer `2099-06-15`, changes its title,
+and captures that actual database with the existing unchanged B09 `446dbb`
+capture-only executable. Both executables use B20's unchanged recipe and exact
+source archives. The exporter supplies evidence, not behavior expectations.
+The new native commands also check exact reason append, blank refusal, future
+exclusion and a deliberate past write followed by an actual history-off wake.
+
+Each new import uses the public converter API under explicit disposable
+test-host admission and then actual byte RPC. Exact timer values and the full
+source row remain metadata (`beads.source.due_at`, `beads.source.defer_until`,
+`beads.source_fields`) through unrelated and lifecycle writes. The application
+clock crosses the native timestamp before/at/after while the durable clock
+stays independent. Imported timers never create a Plug scheduler. Real SQL
+close/open and receipt recovery bind persistence; memory remains same-store.
+Complete logical and physical read conservation includes the snapshot floor,
+all retained versions/log entries, and every SQL application table.
+
+The unchanged public canonical CLI exposes neither the private Go stale cutoff
+nor the SQL wake predicate's evaluation instant. It also exposes no
+operation-bound `issue_versions` query trace. Exact native equality and no-load
+therefore remain `NOT_MEASURED`; actual no-mint and observed timestamps do not
+fill those missing cells. No clock shim, allocator/GMS edit or protected
+fixture is introduced.

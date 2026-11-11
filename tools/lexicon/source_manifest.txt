@@ -1661,9 +1661,11 @@ spec/cardb23full/public_history_test.go
 spec/cardb24/BUILD.bazel
 spec/cardb24/README.md
 spec/cardb24/native_recording_test.go
+spec/cardb24/native_timer_import_test.go
 spec/cardb24/public_clock_test.go
 spec/cardb24/public_counterpart_test.go
 spec/cardb24/public_fixture_test.go
+spec/cardb24/public_timer_import_test.go
 spec/cardb24/public_view_test.go
 spec/cardb28/BUILD.bazel
 spec/cardb28/README.md

@@ -385,7 +385,13 @@ func (f *fixture) state(t *testing.T) storedState {
 		}
 		state.Derived[table] = append([]driver.DerivedRow(nil), rows...)
 	}
-	state.Changesets, err = r.Changesets(f.ctx, nil, 10000)
+	// Snapshot imports retain a real floor. Census the entire available log
+	// without asking the reader for a revision that the import did not retain.
+	var after *driver.Cursor
+	if !meta.HistoryFloor.IsZero() {
+		after = &driver.Cursor{Incarnation: meta.Incarnation, Revision: meta.HistoryFloor}
+	}
+	state.Changesets, err = r.Changesets(f.ctx, after, 10000)
 	if err != nil {
 		t.Fatal(err)
 	}
