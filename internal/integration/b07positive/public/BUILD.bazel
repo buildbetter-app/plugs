@@ -10,6 +10,7 @@ go_library(
         "//internal/core/model",
         "//internal/integration/b07positive",
         "//internal/server/composition",
+        "//internal/server/pluginhost",
         "//internal/storage/driver",
         "//internal/storage/postgres",
     ],

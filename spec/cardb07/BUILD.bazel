@@ -12,6 +12,7 @@ DEPS = [
     "//internal/server/pluginhost",
     "//internal/server/rpc",
     "//internal/storage/driver",
+    "//pluginapi",
     "//plugins/workflow",
 ]
 

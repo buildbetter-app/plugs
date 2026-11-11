@@ -45,17 +45,18 @@ func ordinaryPositive(t *testing.T, engine string) {
 	proof.Save(t, h.Root, "actual-provider-identity.json", invoked)
 	active := model.RefByID(item.ID, model.Natural64(0))
 	before := h.Capture()
-	if !reflect.DeepEqual(initial.Rows, before.Rows) || !reflect.DeepEqual(initial.Versions, before.Versions) || !reflect.DeepEqual(initial.Changes, before.Changes) || !reflect.DeepEqual(initial.Derived, before.Derived) || !reflect.DeepEqual(initial.Receipts, before.Receipts) || initial.Meta != before.Meta || before.Checkpoints[proof.Namespace].Generation != 1 {
+	if !reflect.DeepEqual(initial.Rows, before.Rows) || !reflect.DeepEqual(initial.Versions, before.Versions) || !reflect.DeepEqual(initial.Changes, before.Changes) || !reflect.DeepEqual(initial.Derived, before.Derived) || !reflect.DeepEqual(initial.Receipts, before.Receipts) || initial.Meta != before.Meta || before.Checkpoints[proof.Namespace].Generation != initial.Checkpoints[proof.Namespace].Generation+1 {
 		t.Fatal("ordinary invocation changed core or missed exactly one checkpoint publication")
 	}
-	if len(before.Checkpoints) != len(initial.Checkpoints)+1 {
+	if len(before.Checkpoints) != len(initial.Checkpoints) {
 		t.Fatal("invocation changed the checkpoint inventory")
 	}
 	for key, checkpoint := range initial.Checkpoints {
-		if !reflect.DeepEqual(checkpoint, before.Checkpoints[key]) {
+		if key != proof.Namespace && !reflect.DeepEqual(checkpoint, before.Checkpoints[key]) {
 			t.Fatal("invocation changed unrelated namespace", key)
 		}
 	}
+	proof.WorkflowNamespaceEffect(t, initial, before)
 	if engine == "memory" {
 		if persistent, ok := h.Runtime.Store.(driver.PersistentCheckpointStore); ok && persistent.Persistent() {
 			t.Fatal("memory incorrectly advertises restart persistence")
@@ -233,6 +234,7 @@ func assertOrdinaryCoreEffect(t *testing.T, before, after proof.State, changed, 
 
 func assertNamespaceReceiptOnly(t *testing.T, before, after proof.State) {
 	t.Helper()
+	proof.WorkflowNamespaceEffect(t, before, after)
 	if after.Checkpoints[proof.Namespace].Generation != before.Checkpoints[proof.Namespace].Generation+1 {
 		t.Fatal("fresh duplicate did not publish one namespace generation")
 	}

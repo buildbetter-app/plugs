@@ -10,6 +10,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	proof "github.com/buildbetter-app/plugs/internal/integration/b07positive"
 	"github.com/buildbetter-app/plugs/internal/server/composition"
+	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -56,6 +57,13 @@ func NewHost(t *testing.T, engine string) *Host {
 		t.Fatal(err)
 	}
 	if _, err := capability.SaveCheckpoint(context.Background(), h.Runtime.Lease, "b07positive/unrelated", 0, []byte(`{"exact":"unrelated namespace"}`)); err != nil {
+		t.Fatal(err)
+	}
+	state, err := pluginhost.NewWorkflowRuntimeState(capability, h.Runtime.Lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.Put(context.Background(), "b07positive/sibling", map[string]any{"exact": "unrelated value inside workflow namespace", "number": 17}, "0"); err != nil {
 		t.Fatal(err)
 	}
 	proof.Save(t, h.Root, "ordinary-binding.json", map[string]any{"engine": engine, "sourceRuntimeInstalled": false, "provider": "workflow/default", "lifetime": capability.WorkflowCheckpointLifetime()})

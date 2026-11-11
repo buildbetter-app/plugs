@@ -10,8 +10,10 @@ separate. No previous B07 receipt is reused.
 all three drivers. It retains complete records, versions, changesets, derived
 rows, checkpoints and caller receipts. SQL tests physically close and reopen the
 store. Owned PostgreSQL startup/version/port and checked cleanup are retained.
-The mixed identity control deliberately installs the legacy durable-only
-provider, including after SQL reopen. On memory this provider has an unavailable
+The mixed identity control deliberately installs the restricted durable-only
+provider, including after SQL reopen. The facade forwards actual durable reads
+and truthful restart persistence while hiding optional workflow lifetime and
+snapshot capabilities. On memory this provider has an unavailable
 restart-durable capability; on SQL its direct mixed identity paths work while
 its generic atomic batch participant is unavailable. These separately labeled
 refusals retain complete conservation and earn zero positive credit.
@@ -107,10 +109,10 @@ Operation routes in the next exact-head evidence (source expectations only):
 | Named operation | Route and engines | Required outcome |
 | --- | --- | --- |
 | Fixed/custom add, repeat, retype, ready/close | Native CLI/batch twins and public RPC on memory/SQLite/PostgreSQL | Actual named positive or conserved refusal per kind |
-| Ephemeral invoke negative | Explicit legacy durable-only memory provider | Capability refusal plus complete state conservation; zero positive credit |
+| Ephemeral invoke negative | Explicit restricted durable-only memory provider | Capability refusal plus complete state conservation; zero positive credit |
 | Ordinary mixed positive | Default ordinary memory/SQLite/PostgreSQL composition | Named `cardb07positive` success, exact state, rollback, replay and reopen |
 | Mixed direct edge add/no-op/replay/retype | Ordinary SQLite/PostgreSQL RPC | Positive identity/no-op/replay and conserved retype refusal |
-| Mixed generic patch negative | Explicit legacy durable-only SQLite/PostgreSQL provider | Existing item: unsupported; absent item: not_found; complete conservation |
+| Mixed generic patch negative | Explicit restricted durable-only SQLite/PostgreSQL provider | Existing item: unsupported; absent item: not_found; complete conservation |
 | Unknown workflow item | Ordinary memory/SQLite/PostgreSQL tx.apply | not_found and complete conservation |
 | Mixed patch/reverse/reopen/replay | Admitted-source memory/SQLite/PostgreSQL RPC | Positive, separately labeled authored source fixture |
 | Mixed link after staged patches | Separate admitted-source memory/SQLite/PostgreSQL tx.apply fixture | Named mixed-link success with source/live/reverse tokens, receipts, replay and exact unlink/relink |

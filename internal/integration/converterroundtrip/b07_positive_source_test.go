@@ -110,6 +110,16 @@ type positiveSourceEdge struct {
 	Tokens map[string]string
 }
 
+// Both established import projections lower raw related to live relates-to.
+// The raw kind stays in the source/reverse tuple; this mapping applies only
+// when comparing that tuple with the committed public link representation.
+func positiveSourceLiveKind(raw string) string {
+	if raw == "related" {
+		return "relates-to"
+	}
+	return raw
+}
+
 func positiveEdgeList(edges map[positiveSourceTuple]map[string]string) []positiveSourceEdge {
 	rows := make([]positiveSourceEdge, 0, len(edges))
 	for key, tokens := range edges {
@@ -207,6 +217,17 @@ func TestB07AdmittedSourceMixedLinkSuccess(t *testing.T) {
 			if len(expected) != 4 {
 				t.Fatal("independent source fixture edge census differs", len(expected))
 			}
+			kindBindings := []struct {
+				Source   positiveSourceTuple
+				LiveKind string
+			}{}
+			for _, edge := range positiveEdgeList(expected) {
+				kindBindings = append(kindBindings, struct {
+					Source   positiveSourceTuple
+					LiveKind string
+				}{edge.Tuple, positiveSourceLiveKind(edge.Tuple.Kind)})
+			}
+			proof.Save(t, root, "source-live-kind-bindings.json", kindBindings)
 			check := func(t *testing.T, label string, state proof.State, titles map[string]string) []byte {
 				t.Helper()
 				positiveLiveSourceEdges(t, state, expected, byTarget)
@@ -355,6 +376,40 @@ func TestB07AdmittedSourceMixedLinkSuccess(t *testing.T) {
 				}
 				proof.Same(t, relinked, capture(t))
 			})
+			t.Run("ExistingOriginMetadataChangeReplayAndReverse", func(t *testing.T) {
+				before := capture(t)
+				key := positiveSourceTuple{"demo", dumpformat.EphemeralDependencyTable, "equal\x00edge", "demo-9", "demo-8", "related"}
+				original, present := expected[key]
+				if !present || original["beads.thread_id"] != `""` {
+					t.Fatal("existing raw origin/thread fixture missing")
+				}
+				changedTokens := map[string]string{
+					"beads.metadata":      `" {\"changed\":9007199254740993,\"n\":7.00e+03} "`,
+					"beads.future_object": `{ "wide":9007199254740993, "changed":7.00e+03 }`,
+				}
+				change := model.ChangeSet{Ops: []model.Op{{Kind: model.OpLink, Link: &model.LinkOp{From: ref("demo-9"), To: ref("demo-8"), LinkKind: "relates-to", Metadata: &model.LinkMetadata{NativeExtensions: changedTokens}}}}}
+				updated := call(t, "tx.apply", "existing-origin-metadata", map[string]any{"changeSet": change}, "")
+				var commit model.Commit
+				decode(t, updated.Result, &commit)
+				after := capture(t)
+				positiveJoinedEffect(t, before, after, commit, "existing-origin-metadata", "", "bead.link")
+				wantTokens := map[string]string{}
+				for field, token := range original {
+					wantTokens[field] = token
+				}
+				for field, token := range changedTokens {
+					wantTokens[field] = token
+				}
+				expected[key] = wantTokens
+				reverse := check(t, "existing-origin-metadata", after, titles)
+				replayed := call(t, "tx.apply", "existing-origin-metadata", map[string]any{"changeSet": change}, "")
+				if !replayed.Meta.Replayed || !bytes.Equal(updated.Result, replayed.Result) {
+					t.Fatal("existing-origin metadata replay changed exact result/flag")
+				}
+				if !bytes.Equal(reverse, check(t, "existing-origin-metadata-replayed", after, titles)) {
+					t.Fatal("existing-origin replay changed raw identity/type/thread/token bytes")
+				}
+			})
 		})
 	}
 }
@@ -461,7 +516,7 @@ func positiveLiveSourceEdges(t *testing.T, state proof.State, expected map[posit
 		var key positiveSourceTuple
 		count := 0
 		for candidate := range expected {
-			if candidate.Project == from.Source.Project && candidate.From == from.Source.ID && candidate.To == to.Source.ID && candidate.Kind == kind {
+			if candidate.Project == from.Source.Project && candidate.From == from.Source.ID && candidate.To == to.Source.ID && positiveSourceLiveKind(candidate.Kind) == kind {
 				key = candidate
 				count++
 			}

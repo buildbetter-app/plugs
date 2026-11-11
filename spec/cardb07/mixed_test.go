@@ -11,6 +11,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/buildbetter-app/plugs/pluginapi"
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
@@ -42,7 +43,7 @@ func b07MixedPublic(t *testing.T, engine string) {
 			t.Fatalf("memory capability differs: %+v", reply)
 		}
 		h.same(before)
-		b07JSON(t, filepath.Join(h.root, "mixed-capability.json"), map[string]any{"outcome": "EXPLICIT_UNAVAILABLE_CAPABILITY_REFUSAL", "positive_credit": false, "capability": "legacy restart-durable adapter on process-lifetime memory"})
+		b07JSON(t, filepath.Join(h.root, "mixed-capability.json"), map[string]any{"outcome": "EXPLICIT_UNAVAILABLE_CAPABILITY_REFUSAL", "positive_credit": false, "capability": "restricted restart-durable facade on process-lifetime memory"})
 		return
 	}
 	if reply.Error != nil {
@@ -134,13 +135,20 @@ func b07MixedPublic(t *testing.T, engine string) {
 	h.same(before)
 	h.reopen()
 	h.same(before)
-	b07JSON(t, filepath.Join(h.root, "mixed-outcomes.json"), map[string]any{"outcome": "public SQL mixed endpoint identity, no-op, replay, retype and conserved route/malformed refusals", "capability": "explicit legacy durable-only provider without atomic batch participant", "generic_mixed_tx_apply": "unsupported; zero positive credit", "positive_mixed_tx_apply": "separate cardb07positive default-composition target", "native_history_credit": false})
+	b07JSON(t, filepath.Join(h.root, "mixed-outcomes.json"), map[string]any{"outcome": "public SQL mixed endpoint identity, no-op, replay, retype and conserved route/malformed refusals", "capability": "explicit durable-only facade without optional workflow checkpoint capability", "generic_mixed_tx_apply": "unsupported; zero positive credit", "positive_mixed_tx_apply": "separate cardb07positive default-composition target", "native_history_credit": false})
 }
 
 func (h *b07Host) installUnavailableWorkflowCapability() {
 	h.t.Helper()
-	state := pluginhost.NewDurableState(h.runtime.Store.(driver.CheckpointStore), h.runtime.Lease, workflowplugin.Alias, "default")
-	provider, err := workflowplugin.New(state)
+	capability, err := driver.RequireWorkflowCheckpointStore(h.runtime.Store, h.runtime.Lease)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	state, err := pluginhost.NewWorkflowRuntimeState(capability, h.runtime.Lease)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	provider, err := workflowplugin.New(b07RestrictedWorkflowState{state})
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -149,6 +157,16 @@ func (h *b07Host) installUnavailableWorkflowCapability() {
 		h.t.Fatal(err)
 	}
 	service.WithWorkflow(provider.WithIdentity(workflowplugin.Alias, "default", meta.Incarnation))(h.runtime.Service)
+}
+
+// Keep actual reads and truthful restart persistence while deliberately
+// withholding the optional workflow lifetime and atomic snapshot capabilities.
+// Missing-item reads and permanent tools must retain their usual contracts.
+type b07RestrictedWorkflowState struct{ pluginapi.DurableState }
+
+func (s b07RestrictedWorkflowState) Persistent() bool {
+	marker, ok := s.DurableState.(interface{ Persistent() bool })
+	return ok && marker.Persistent()
 }
 
 func (h *b07Host) quietWorkflow(want b07State) {

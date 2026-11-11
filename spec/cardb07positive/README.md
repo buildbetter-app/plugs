@@ -15,7 +15,9 @@ one joined history/namespace publication, prior receipts and unrelated-state
 conservation. Their named children cover same-key replay, SQL reopen, a late true
 retype after both drafts, genuine missing IDs, unsupported external active
 targets, wrong project, malformed metadata, and a fresh-key duplicate with one
-namespace receipt effect and no item/edge/audit/core effect.
+namespace receipt effect and no item/edge/audit/core effect. Complete namespace
+envelope, sibling values and logical wrapper conservation are checked separately;
+an unrelated value is seeded inside the actual workflow namespace.
 
 `converterroundtrip.TestB07AdmittedSourceMixedLinkSuccess/{memory,sqlite,postgres}`
 uses a separate admitted public archive and its real profile/commit/provider
@@ -25,7 +27,11 @@ raw ID, endpoints and kind; the archive deliberately reuses raw edge IDs.
 Metadata, thread and future-field JSON token text retains whitespace, escaping,
 large integers, exponent spelling and explicit empty/null values. The test
 requires exact unlink/relink/reverse, physical SQL reopen, byte-equal replay and
-full conservation on late retype, malformed and unsupported requests.
+full conservation on late retype, malformed and unsupported requests. The
+existing-origin metadata-change control preserves its raw edge ID, raw kind and
+thread while changing exact metadata/future tokens, then replays and reverses
+without further effects. Raw related-to-live relates-to bindings are archived
+without changing the raw source/reverse tuple.
 
 These implement the mixed writes, rollback, same-type re-add, retype and mixed
 identity oracles in `engdocs/design/plug/spec/behaviors/work.md`. The inherited

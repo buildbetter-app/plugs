@@ -21,6 +21,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/server/authn"
 	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/buildbetter-app/plugs/pluginapi"
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
@@ -110,10 +111,17 @@ func TestMemoryRuntimeKeepsOrdinaryWorkflowToolsAndRefusesUnavailableCheckpoint(
 	f := startRuntime(t, Config{Driver: "memory", Project: "workflow-memory", Address: DefaultAddress,
 		AuthMode: "authenticated", Auth: authn.Config{Provider: keys}})
 	// This separately named public refusal control deliberately selects the
-	// legacy restart-durable capability, which truthful process memory lacks.
+	// restricted restart-durable capability, which truthful process memory lacks.
 	// Default ordinary composition is exercised by the positive B07 fixture.
-	unavailable := pluginhost.NewDurableState(f.r.Store.(driver.CheckpointStore), f.r.Lease, workflowplugin.Alias, "default")
-	provider, err := workflowplugin.New(unavailable)
+	capability, err := driver.RequireWorkflowCheckpointStore(f.r.Store, f.r.Lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := pluginhost.NewWorkflowRuntimeState(capability, f.r.Lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, err := workflowplugin.New(workflowCheckpointUnavailable{state})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,6 +277,16 @@ func TestMemoryRuntimeKeepsOrdinaryWorkflowToolsAndRefusesUnavailableCheckpoint(
 	if err != nil || final.Head.String() != "2" {
 		t.Fatalf("permanent invocation stopped after memory refusal: meta=%+v err=%v", final, err)
 	}
+}
+
+// This test facade exposes only the public durable interface plus the actual
+// driver's restart promise. Ordinary reads work; optional workflow checkpoint
+// lifetime and atomic-snapshot capabilities are intentionally unavailable.
+type workflowCheckpointUnavailable struct{ pluginapi.DurableState }
+
+func (s workflowCheckpointUnavailable) Persistent() bool {
+	marker, ok := s.DurableState.(interface{ Persistent() bool })
+	return ok && marker.Persistent()
 }
 
 func TestAuthenticatedWorkflowHTTPRestartCompletionAndHistory(t *testing.T) {

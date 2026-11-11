@@ -162,6 +162,12 @@ func projectMixedSourceEdge(edge reverseconverter.Record, relation workflowplugi
 		return reverseconverter.Record{}, ReverseRefusal{"unmapped_mixed_source_relation"}
 	}
 	hadOrigin := edge.Source.Table != ""
+	rawKind := relation.Kind
+	if hadOrigin && stringValue(edge.Body["type"]) == "related" && relation.Kind == "relates-to" {
+		// Import lowers this raw spelling to the live vocabulary. A metadata
+		// edit does not retype its retained physical source edge.
+		rawKind = "related"
+	}
 	edge.Body, edge.Source.Fields = cloneRow(edge.Body), cloneRow(edge.Source.Fields)
 	if edge.Body == nil {
 		edge.Body = map[string]any{}
@@ -188,8 +194,8 @@ func projectMixedSourceEdge(edge reverseconverter.Record, relation workflowplugi
 	if to.Source.Plane == dumpformat.EphemeralEntityTable {
 		arm = dumpformat.EphemeralDependencyTargetField
 	}
-	edge.Body["from"], edge.Body["to"], edge.Body["target_kind"], edge.Body["type"] = from.Source.ID, to.Source.ID, arm, relation.Kind
-	edge.Source.Fields["id"], edge.Source.Fields["issue_id"], edge.Source.Fields["type"] = edge.ID, from.Source.ID, relation.Kind
+	edge.Body["from"], edge.Body["to"], edge.Body["target_kind"], edge.Body["type"] = from.Source.ID, to.Source.ID, arm, rawKind
+	edge.Source.Fields["id"], edge.Source.Fields["issue_id"], edge.Source.Fields["type"] = edge.ID, from.Source.ID, rawKind
 	for _, name := range []string{"depends_on_issue_id", dumpformat.EphemeralDependencyTargetField, "depends_on_external"} {
 		edge.Source.Fields[name] = nil
 	}

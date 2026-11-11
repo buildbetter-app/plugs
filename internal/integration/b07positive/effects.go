@@ -101,11 +101,35 @@ func WorkflowEffect(t *testing.T, before, after State, itemID, title string, met
 	if !reflect.DeepEqual(oldLogical, newLogical) {
 		t.Fatal("mixed operations changed unrelated logical provider state")
 	}
+	WorkflowNamespaceEffect(t, before, after)
+}
+
+// WorkflowNamespaceEffect accounts for the complete envelope and every
+// sibling value. Callers compare workflow/state's exact logical change.
+func WorkflowNamespaceEffect(t *testing.T, before, after State) {
+	t.Helper()
+	object := func(raw json.RawMessage) map[string]json.RawMessage {
+		t.Helper()
+		if len(raw) == 0 {
+			return map[string]json.RawMessage{}
+		}
+		var value map[string]json.RawMessage
+		if json.Unmarshal(raw, &value) != nil || value == nil {
+			t.Fatal("invalid namespace object")
+		}
+		return value
+	}
+	if after.Checkpoints[Namespace].Generation != before.Checkpoints[Namespace].Generation+1 {
+		t.Fatal("expected one complete namespace publication")
+	}
 	oldNamespace, newNamespace := object(before.Checkpoints[Namespace].Payload), object(after.Checkpoints[Namespace].Payload)
 	oldValues, newValues := object(oldNamespace["values"]), object(newNamespace["values"])
 	oldValue, newValue := object(oldValues["workflow/state"]), object(newValues["workflow/state"])
 	var oldRevision, newRevision uint64
-	if json.Unmarshal(oldValue["revision"], &oldRevision) != nil || json.Unmarshal(newValue["revision"], &newRevision) != nil || newRevision != oldRevision+1 {
+	if len(oldValue) != 0 && json.Unmarshal(oldValue["revision"], &oldRevision) != nil {
+		t.Fatal("invalid prior workflow value revision")
+	}
+	if json.Unmarshal(newValue["revision"], &newRevision) != nil || newRevision != oldRevision+1 || len(newValue["value"]) == 0 {
 		t.Fatal("joined batch did not publish one logical namespace revision")
 	}
 	delete(oldValues, "workflow/state")
