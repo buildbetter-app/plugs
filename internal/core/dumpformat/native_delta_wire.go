@@ -13,6 +13,8 @@ import (
 	"sort"
 )
 
+const nativeDeltaTableHashPrefix = "beads-native-table/2\x00"
+
 const (
 	NativeDeltaFormat         = "beads-native-delta/2"
 	NativeCaptureSetFormat    = "beads-native-capture-set/2"
@@ -306,7 +308,7 @@ func NativeDeltaBagKey(payload []byte, occurrence uint64) []byte {
 // keys. The caller also validates PK/bag identity and typed/normalized coherence.
 func NativeDeltaTableSHA256(table NativeDeltaTableSchema, rows []NativeDeltaRow) (string, error) {
 	h := sha256.New()
-	_, _ = h.Write([]byte("beads-native-table/2\x00"))
+	_, _ = h.Write([]byte(nativeDeltaTableHashPrefix))
 	id, _ := hex.DecodeString(NativeDeltaTableSchemaID(table))
 	_, _ = h.Write(id)
 	var encoded bytes.Buffer

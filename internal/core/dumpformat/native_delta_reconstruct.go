@@ -32,9 +32,10 @@ type NativeDeltaVerification struct {
 }
 
 type deltaStagedTable struct {
-	schema NativeDeltaTableSchema
-	path   string
-	digest NativeDeltaTableDigest
+	schema  NativeDeltaTableSchema
+	path    string
+	digest  NativeDeltaTableDigest
+	decoded *deltaDecodedTable
 }
 
 // Each retained row owns its decoded target and map key. Replacing or deleting
@@ -73,6 +74,7 @@ type nativeDeltaReconstructor struct {
 	lastUse        map[string]uint64
 	stagedBytes    map[string]uint64
 	seenCommits    map[string]bool
+	decoded        *deltaDecodedCache
 }
 
 func deltaAddCount(target *uint64, n uint64) error {
@@ -124,9 +126,15 @@ func reconstructNativeDeltaCallbacks(ctx context.Context, input io.Reader, root 
 	}
 	defer os.RemoveAll(dir)
 	r := nativeDeltaReconstructor{ctx: ctx, input: newNativeDeltaRecordReader(ctx, input, work), root: root, budget: work, retainedBudget: work, visit: visit, rowCallbacks: rows, rowMetadata: map[string]driver.Record{}, validateImages: validateImages, previousTables: map[string]deltaStagedTable{}, dir: dir, schemas: map[string]NativeDeltaSchema{}, usedSchemas: map[string]bool{}, states: map[string]deltaStagedState{}, proof: NativeDeltaVerification{Contract: NativeDeltaFormat, Commits: []NativeDeltaCommitProof{}}}
+	cacheBudget := work.Scope()
+	if err := cacheBudget.ChargeBytes("decoded_cache_ownership", deltaDecodedCacheBytes); err != nil {
+		return NativeHistory{}, r.proof, err
+	}
+	r.decoded = &deltaDecodedCache{ctx: ctx, budget: cacheBudget}
 	// Replays already have an authenticated complete ordered graph. Initial
 	// authentication has no future-use oracle, so every possible parent stays
-	// staged until EOF. Neither path retains decoded per-commit images.
+	// staged until EOF. Decoded rows and indexes are immutable and shared;
+	// all retained versions remain charged until their actual last use.
 	r.seenCommits = map[string]bool{}
 	r.stagedBytes = map[string]uint64{}
 	if len(known) != 0 && len(known[0]) != 0 {
@@ -232,6 +240,9 @@ func (r *nativeDeltaReconstructor) schema(raw []byte) error {
 }
 
 func (r *nativeDeltaReconstructor) readRows(table deltaStagedTable, budget *NativeDeltaBudget) (map[string]nativeDeltaOwnedRow, error) {
+	if table.decoded != nil {
+		return r.decoded.readRows(table.decoded, budget)
+	}
 	rows := map[string]nativeDeltaOwnedRow{}
 	if table.path == "" {
 		return rows, nil
@@ -279,6 +290,15 @@ func (r *nativeDeltaReconstructor) readRows(table deltaStagedTable, budget *Nati
 }
 
 func (r *nativeDeltaReconstructor) table(open NativeDeltaTable, schema NativeDeltaTableSchema, base deltaStagedTable, replace bool) (deltaStagedTable, NativeTable, error) {
+	if r.decoded != nil {
+		return r.decodedTable(open, schema, base, replace)
+	}
+	return r.tableFromFile(open, schema, base, replace)
+}
+
+// The file-only seam also serves callers that stage an independently supplied
+// baseline. Normal capture reconstruction retains its own verified decoded state.
+func (r *nativeDeltaReconstructor) tableFromFile(open NativeDeltaTable, schema NativeDeltaTableSchema, base deltaStagedTable, replace bool) (deltaStagedTable, NativeTable, error) {
 	work := r.budget.Scope()
 	defer work.Release()
 	var zero deltaStagedTable
@@ -515,7 +535,7 @@ func (r *nativeDeltaReconstructor) table(open NativeDeltaTable, schema NativeDel
 	if err := deltaAddCount(&r.totals.ReconstructedCells, uint64(len(rows))*uint64(len(schema.Columns))); err != nil {
 		return zero, normalized, err
 	}
-	return deltaStagedTable{schema, path, NativeDeltaTableDigest{uint64(len(rows)), hash}}, normalized, nil
+	return deltaStagedTable{schema: schema, path: path, digest: NativeDeltaTableDigest{uint64(len(rows)), hash}}, normalized, nil
 }
 
 func (r *nativeDeltaReconstructor) transaction(schemaID string, base deltaStagedState, snapshot bool, sequence uint64, commitID, expectedRoot, endKind string) (deltaStagedState, NativeHistoryImage, error) {
@@ -525,6 +545,9 @@ func (r *nativeDeltaReconstructor) transaction(schemaID string, base deltaStaged
 		return zero, NativeHistoryImage{}, fmt.Errorf("native delta schema unavailable")
 	}
 	r.usedSchemas[schemaID] = true
+	if err := r.budget.ChargeBytes("transaction_indexes", deltaDecodedTransactionIndexBytes(len(schema.Tables)+len(base.tables))); err != nil {
+		return zero, NativeHistoryImage{}, err
+	}
 	image := NativeHistoryImage{Sequence: sequence, CommitID: commitID, Tables: map[string]NativeTable{}, SchemaProfile: &schema.Profile}
 	if err := r.budget.ChargeJSON("image_metadata", image); err != nil {
 		return zero, image, err
@@ -542,6 +565,12 @@ func (r *nativeDeltaReconstructor) transaction(schemaID string, base deltaStaged
 	}
 	sort.Strings(names)
 	state := deltaStagedState{schemaID: schemaID, tables: map[string]deltaStagedTable{}}
+	complete := false
+	defer func() {
+		if !complete && r.decoded != nil {
+			r.decoded.releaseState(state)
+		}
+	}()
 	digests := map[string]NativeDeltaTableDigest{}
 	for _, name := range names {
 		raw, kind, err := r.next()
@@ -606,7 +635,7 @@ func (r *nativeDeltaReconstructor) transaction(schemaID string, base deltaStaged
 	}
 	state.root = root
 	if endKind == "end_commit" {
-		size, err := NativeDeltaJSONSize(image)
+		size, err := r.decodedImageSize(image, state)
 		if err != nil {
 			return zero, image, err
 		}
@@ -620,15 +649,16 @@ func (r *nativeDeltaReconstructor) transaction(schemaID string, base deltaStaged
 		r.proof.Commits = append(r.proof.Commits, proof)
 	}
 	if r.validateImages {
-		if err := validateNativeTablesPolicy(image.Tables, true); err != nil {
-			return zero, image, err
-		}
+		// Each immutable decoded row passed the table row policy on creation;
+		// each table passed census/columns/order checks before entering state.
+		// Revalidate schema facts against every actual reconstructed image.
 		if endKind == "end_commit" {
 			if err := validateNativeCommitSchema(image, uint64(r.root.Totals.Commits)); err != nil {
 				return zero, image, err
 			}
 		}
 	}
+	complete = true
 	return state, image, nil
 }
 
@@ -770,10 +800,11 @@ func (r *nativeDeltaReconstructor) run() (NativeHistory, error) {
 				return result, err
 			}
 		}
+		r.decoded.retainState(state)
+		r.decoded.releaseState(deltaStagedState{tables: r.previousTables})
 		r.previousTables = state.tables
-		work.Release()
-		// Only first-parent table-file metadata survives a commit. No decoded
-		// per-commit image or serialized image file is retained.
+		// Retained states share immutable decoded rows and AVL subtrees. Count
+		// each state's own table index separately from those shared payloads.
 		metadata := map[string]any{}
 		for name, table := range state.tables {
 			metadata[name] = struct {
@@ -785,9 +816,13 @@ func (r *nativeDeltaReconstructor) run() (NativeHistory, error) {
 		if err != nil {
 			return result, err
 		}
+		if err := deltaAddCount(&metadataBytes, deltaDecodedStateIndexBytes(state)); err != nil {
+			return result, err
+		}
 		if err := r.budget.ChargeBytes("staged_state_metadata", metadataBytes); err != nil {
 			return result, err
 		}
+		work.Release()
 		r.stagedBytes[c.CommitID] = metadataBytes
 		r.states[c.CommitID] = state
 		r.seenCommits[c.CommitID] = true
@@ -919,6 +954,9 @@ func (r *nativeDeltaReconstructor) releaseGraphFrontier(sequence uint64) error {
 	}
 	for id := range r.states {
 		if r.lastUse[id] <= sequence {
+			if r.decoded != nil {
+				r.decoded.releaseState(r.states[id])
+			}
 			delete(r.states, id)
 			r.budget.ReleaseBytes("staged_state_metadata", r.stagedBytes[id])
 			delete(r.stagedBytes, id)

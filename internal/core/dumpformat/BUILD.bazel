@@ -15,7 +15,10 @@ go_library(
 
 go_test(
     name = "dumpformat_test",
-    data = glob(["testdata/*.tar", "testdata/*.json"]),
+    data = glob(["testdata/*.tar", "testdata/*.json"]) + [
+        # Reuse the public capture through its existing public source group.
+        "//internal/integration/converterroundtrip:lexicon_files",
+    ],
     srcs = glob(["*_test.go"]),
     embed = [":dumpformat"],
     deps = [

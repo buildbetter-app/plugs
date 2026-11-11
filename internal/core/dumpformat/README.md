@@ -207,3 +207,12 @@ profile file, idempotency encoding and receiving receipt formats are unchanged.
 The receiving verifier also checks zero rows for declared absent families at
 each original image's pinned revision. Public constructed controls of these
 rules do not qualify a genuine multi-version archive or a new executable.
+
+Native delta reconstruction retains immutable typed rows and normalized fields
+under the existing decoded budget. Unchanged tables carry their verified digest
+and state forward. Changed operations create shared persistent indexes; changed
+tables still authenticate the complete original SHA-256 preimage. Every commit
+checks the table census, schema facts, root, terminal counts and exact full-image
+byte count. Rows, index nodes, table views and ownership records remain admitted
+while any first-parent branch or previous emitted state can use them. The default
+limit remains 2 GiB, with typed refusal and complete candidate cleanup.
