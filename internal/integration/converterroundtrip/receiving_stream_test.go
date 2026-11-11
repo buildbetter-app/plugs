@@ -118,14 +118,17 @@ func TestNativeVerifierFinalBindingsRefuseBeforeTargetWriteAllDrivers(t *testing
      case "zero-plan":plan=nativeprojection.Plan{}
      case "admitted-ceiling":
       files:=receivingPublicFiles(t)
-      alternate,e:=dumpformat.ReadNativeCaptureSet(ctx,bytes.NewReader(files["capture-set.json"]),bytes.NewReader(files["head.tar"]),func(_ context.Context,n uint64)(io.ReadCloser,error){return io.NopCloser(bytes.NewReader(files[fmt.Sprintf("parts/%020d.part",n)])),nil},dumpformat.NativeCaptureSetOptions{DecodedLimitBytes:1<<30,DecodedLimitOrigin:"same archive independently admitted at lower ceiling"})
+      alternate,e:=dumpformat.ReadNativeCaptureSet(context.Background(),bytes.NewReader(files["capture-set.json"]),bytes.NewReader(files["head.tar"]),func(_ context.Context,n uint64)(io.ReadCloser,error){return io.NopCloser(bytes.NewReader(files[fmt.Sprintf("parts/%020d.part",n)])),nil},dumpformat.NativeCaptureSetOptions{DecodedLimitBytes:1<<30,DecodedLimitOrigin:"same archive independently admitted at lower ceiling"})
       if e!=nil {t.Fatal(e)};defer alternate.ReleaseNativeDecoded()
-      plan,e=nativeprojection.BuildWithProfile(alternate,&profile,when,ctx);if e!=nil {t.Fatal(e)}
+      admitted,ok:=archive.NativeDecodedUsage();other,otherOK:=alternate.NativeDecodedUsage()
+      if !ok || !otherOK || archive.SHA256()!=alternate.SHA256() || admitted.LimitBytes!=2<<30 || other.LimitBytes!=1<<30 || admitted.LimitBytes==other.LimitBytes {t.Fatal("foreign Plan test requires identical source under genuinely independent different admission ceilings",admitted,other)}
+      plan,e=nativeprojection.BuildWithProfile(alternate,&profile,when,alternate.WithNativeDeltaAccounting(context.Background()));if e!=nil {t.Fatal(e)}
      case "lifetime":if request.Lifetime==driver.CheckpointLifetimeProcess {request.Lifetime=driver.CheckpointLifetimeRestart}else{request.Lifetime=driver.CheckpointLifetimeProcess}
      }
      _,err=stream.Seal(ctx,request,plan);if err==nil {t.Fatal("mismatched native checkpoint minted",mismatch)}
      var refused historyverify.ErrCheckpoint
      if !errors.As(err,&refused) && !errors.Is(err,driver.ErrConflict) {t.Fatal("missing typed pre-staging refusal",err)}
+     if mismatch=="admitted-ceiling" && (!errors.As(err,&refused) || refused.Reason!="actual receiving archive ledger differs from reauthenticated originals") {t.Fatal("genuine foreign Plan did not reach the verifier's actual admitted-ceiling comparison",err)}
      if !reflect.DeepEqual(before,snapshot(t,store)) {t.Fatal("refusal mutated target/receipt/checkpoint",mismatch)}
     })
    }
