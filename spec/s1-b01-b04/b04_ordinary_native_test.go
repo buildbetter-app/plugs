@@ -65,19 +65,19 @@ func recordOrdinaryNativeFilters(t *testing.T,c *nativeCommand,root string) ordi
 	t.Helper()
 	for _,row:=range []struct{id,title,parent,kind,priority string}{
 		{"b04-filter-root","ordinary root","","task","0"},
-		{"b04-filter-child","ordinary selected child","b04-filter-root","task","2"},
-		{"b04-filter-grandchild","ordinary selected grandchild","b04-filter-child","task","2"},
+		{"b04-filter-root.1","ordinary selected child","b04-filter-root","task","2"},
+		{"b04-filter-root.1.1","ordinary selected grandchild","b04-filter-root.1","task","2"},
 		{"b04-filter-outside","ordinary outside","","task","2"},
-		{"b04-filter-priority","ordinary wrong priority","b04-filter-root","task","1"},
-		{"b04-filter-type","ordinary wrong type","b04-filter-root","bug","2"},
-	} {args:=[]string{"create","--id",row.id,"--title",row.title,"--type",row.kind,"--force","--priority",row.priority,"--labels","parent-case","--json"};if row.parent!="" {args=append(args,"--parent",row.parent)};c.run("ordinary-filter-create-"+row.id,args...)}
+		{"b04-filter-root.2","ordinary wrong priority","b04-filter-root","task","1"},
+		{"b04-filter-root.3","ordinary wrong type","b04-filter-root","bug","2"},
+	} {args:=[]string{"create","--title",row.title,"--type",row.kind,"--priority",row.priority,"--labels","parent-case","--json"};if row.parent!="" {args=append(args,"--parent",row.parent)}else {args=append(args,"--id",row.id,"--force")};var made ordinaryB04NativeRow;nativeDecode(t,c.run("ordinary-filter-create-"+row.id,args...),&made);if made.ID!=row.id {t.Fatalf("native public child allocator ID=%s want=%s",made.ID,row.id)}}
 	selectors:=[]string{"--parent","b04-filter-root","--priority","2","--type","task"}
 	args:=append([]string{"ready","--json","--limit","0"},selectors...)
-	if got:=ordinaryNativeIDs(t,c,"ordinary-filter-front",args...);!reflect.DeepEqual(got,[]string{"b04-filter-child","b04-filter-grandchild"}) {t.Fatalf("native exact transitive parent/priority/type front: %v",got)}
+	if got:=ordinaryNativeIDs(t,c,"ordinary-filter-front",args...);!reflect.DeepEqual(got,[]string{"b04-filter-root.1","b04-filter-root.1.1"}) {t.Fatalf("native exact transitive parent/priority/type front: %v",got)}
 	untouched:=map[string][]byte{}
-	for _,id:=range []string{"b04-filter-root","b04-filter-outside","b04-filter-priority","b04-filter-type"} {untouched[id]=c.run("ordinary-filter-before-"+id,"show",id,"--json")}
+	for _,id:=range []string{"b04-filter-root","b04-filter-outside","b04-filter-root.2","b04-filter-root.3"} {untouched[id]=c.run("ordinary-filter-before-"+id,"show",id,"--json")}
 	obs:=ordinaryB04NativeFilters{ParentPriorityTypeWins:[]string{},LabelContainmentWins:[]string{}}
-	for _,id:=range []string{"b04-filter-child","b04-filter-grandchild"} {
+	for _,id:=range []string{"b04-filter-root.1","b04-filter-root.1.1"} {
 		before:=ordinaryNativeVersions(t,c,"ordinary-filter-versions-before-"+id,id)
 		rows:=ordinaryNativeWin(t,c,"ordinary-filter-claim-"+id,append([]string{"ready","--claim","--json"},selectors...)...)
 		if len(rows)!=1 || rows[0].ID!=id || rows[0].Status!="in_progress" || rows[0].Assignee!=owner || rows[0].Priority!=json.Number("2") {t.Fatalf("native filtered postimage: %+v",rows)}
@@ -131,7 +131,7 @@ func recordOrdinaryNativeAdditive(t *testing.T,c *nativeCommand) (map[string][]s
 		root:=ordinarySelectionID(v.Name,"root")
 		c.run(v.Name+"-root","create","--id",root,"--title",root,"--type","task","--force","--priority","4","--json")
 		ids:=[]string{root}
-		for _,row:=range v.Rows {id:=ordinarySelectionID(v.Name,row.Role);ids=append(ids,id);args:=[]string{"create","--id",id,"--title",id,"--type",row.Kind,"--force","--parent",root,"--priority",strconv.Itoa(row.Priority),"--json"};if len(row.Labels)>0 {args=append(args,"--labels",strings.Join(row.Labels,","))};c.run(v.Name+"-create-"+row.Role,args...);if row.Owned {owned:=ordinaryNativeWin(t,c,v.Name+"-own-"+row.Role,"update",id,"--claim","--json");if owned[0].ID!=id || owned[0].Status!="in_progress" || owned[0].Assignee!=owner {t.Fatal("native unassigned control did not retain actual holder")}}}
+		for _,row:=range v.Rows {id:=ordinarySelectionID(v.Name,row.Role);ids=append(ids,id);args:=[]string{"create","--title",id,"--type",row.Kind,"--parent",root,"--priority",strconv.Itoa(row.Priority),"--json"};if len(row.Labels)>0 {args=append(args,"--labels",strings.Join(row.Labels,","))};var made ordinaryB04NativeRow;nativeDecode(t,c.run(v.Name+"-create-"+row.Role,args...),&made);if made.ID!=id {t.Fatalf("native actual child ID=%s want=%s",made.ID,id)};if row.Owned {owned:=ordinaryNativeWin(t,c,v.Name+"-own-"+row.Role,"update",id,"--claim","--json");if owned[0].ID!=id || owned[0].Status!="in_progress" || owned[0].Assignee!=owner {t.Fatal("native unassigned control did not retain actual holder")}}}
 		selectors:=append([]string{"--parent",root},v.Native...)
 		want:=[]string{};for _,role:=range v.Ready {want=append(want,ordinarySelectionID(v.Name,role))}
 		if got:=ordinaryNativeIDs(t,c,v.Name+"-front",append([]string{"ready","--json","--limit","0"},selectors...)...);!reflect.DeepEqual(got,want) {t.Fatalf("native selector %s membership=%v want=%v",v.Name,got,want)}
@@ -284,9 +284,9 @@ func TestB04OrdinaryActualNativeAndThreeStorePublicReplay(t *testing.T) {
 	for _,backend:=range []string{"memory","sqlite","postgres"} {
 		t.Run(backend,func(t *testing.T) {
 			dsn:="";if backend=="postgres" {dsn=h.dsn(t)}
-			o:=newOrdinaryB04(t,backend,dsn,[]string{"b04-direct","b04-active","b04-wip","b04-next","b04-closed","b04-dependent","b04-filter-root","b04-filter-child","b04-filter-grandchild","b04-filter-outside","b04-filter-priority","b04-filter-type"})
+			o:=newOrdinaryB04(t,backend,dsn,[]string{"b04-direct","b04-active","b04-wip","b04-next","b04-closed","b04-dependent","b04-filter-root","b04-filter-outside"})
 			o.empty("native-never-populated",nil)
-			o.seed("native-public-create",createOp("direct",project,map[string]any{"title":"ordinary hydrated row","description":"preserve description","labels":[]string{"ordinary","public"},"priority":2},""),createOp("active",project,map[string]any{"title":"native category active","status":"awaiting_review","priority":3},""),createOp("wip",project,map[string]any{"title":"native category wip","status":"qa_testing","priority":1},""))
+			o.seed("native-public-create",ordinaryCreateOp("direct",project,map[string]any{"title":"ordinary hydrated row","description":"preserve description","labels":[]string{"ordinary","public"},"priority":2},""),ordinaryCreateOp("active",project,map[string]any{"title":"native category active","status":"awaiting_review","priority":3},""),ordinaryCreateOp("wip",project,map[string]any{"title":"native category wip","status":"qa_testing","priority":1},""))
 			o.reopen("native-before")
 			o.win("native-direct","bead.claim","b04-direct","todo",map[string]any{"id":ref("b04-direct")})
 			doc:=o.f.document("b04-direct")
@@ -296,7 +296,7 @@ func TestB04OrdinaryActualNativeAndThreeStorePublicReplay(t *testing.T) {
 			o.win("native-active","bead.claim","b04-active","awaiting_review",map[string]any{"id":ref("b04-active")})
 			doc=o.f.document("b04-active")
 			if doc.Fields["title"]!=obs.Active.Title || doc.Fields["status"]!=obs.Active.Status || doc.Lease.Agent!=obs.Active.Assignee || fmt.Sprint(doc.Fields["priority"])!=obs.Active.Priority.String() {t.Fatal("actual native/public active semantic comparison failed")}
-			o.seed("native-public-graph",createOp("next",project,map[string]any{"title":"hydrated next winner","priority":2},""),createOp("closed",project,map[string]any{"title":"closed blocker","priority":4},""),createOp("dependent",project,map[string]any{"title":"blocked dependent","priority":4},""))
+			o.seed("native-public-graph",ordinaryCreateOp("next",project,map[string]any{"title":"hydrated next winner","priority":2},""),ordinaryCreateOp("closed",project,map[string]any{"title":"closed blocker","priority":4},""),ordinaryCreateOp("dependent",project,map[string]any{"title":"blocked dependent","priority":4},""))
 			o.commit("native-public-close","bead.close",map[string]any{"id":ref("b04-closed")})
 			o.commit("native-public-dependency","bead.link",map[string]any{"from":ref("b04-next"),"to":ref("b04-closed"),"kind":"blocks"})
 			o.commit("native-public-dependent","bead.link",map[string]any{"from":ref("b04-dependent"),"to":ref("b04-next"),"kind":"blocks"})
@@ -304,8 +304,8 @@ func TestB04OrdinaryActualNativeAndThreeStorePublicReplay(t *testing.T) {
 			doc=o.f.document("b04-next")
 			if doc.Fields["title"]!=obs.Next.Title || doc.Fields["status"]!=obs.Next.Status || doc.Lease.Agent!=obs.Next.Assignee || fmt.Sprint(doc.Fields["priority"])!=obs.Next.Priority.String() || len(doc.Links)!=1 {t.Fatal("actual native/public next semantic comparison failed")}
 			o.empty("native-drained",nil)
-			bug:=createOp("type",project,map[string]any{"title":"ordinary wrong type","priority":2},"b04-filter-root");bug.Create.Type="bug"
-			o.seed("native-public-parent-fixture",createOp("root",project,map[string]any{"title":"ordinary root","priority":0},""),createOp("child",project,map[string]any{"title":"ordinary selected child","priority":2},"b04-filter-root"),createOp("grandchild",project,map[string]any{"title":"ordinary selected grandchild","priority":2},"b04-filter-child"),createOp("outside",project,map[string]any{"title":"ordinary outside","priority":2},""),createOp("priority",project,map[string]any{"title":"ordinary wrong priority","priority":1},"b04-filter-root"),bug)
+			bug:=ordinaryCreateOp("type",project,map[string]any{"title":"ordinary wrong type","priority":2},"b04-filter-root");bug.Create.Type="bug"
+			o.seed("native-public-parent-fixture",ordinaryCreateOp("root",project,map[string]any{"title":"ordinary root","priority":0},""),ordinaryCreateOp("child",project,map[string]any{"title":"ordinary selected child","priority":2},"b04-filter-root"),ordinaryCreateOp("grandchild",project,map[string]any{"title":"ordinary selected grandchild","priority":2},"b04-filter-root.1"),ordinaryCreateOp("outside",project,map[string]any{"title":"ordinary outside","priority":2},""),ordinaryCreateOp("priority",project,map[string]any{"title":"ordinary wrong priority","priority":1},"b04-filter-root"),bug)
 			for i,id:=range obs.Filters.ParentPriorityTypeWins {o.win(fmt.Sprintf("native-common-filter-%d",i),"bead.claimNext",id,"todo",map[string]any{"filter":map[string]any{"parent":"b04-filter-root","priority":2,"types":[]string{"issue"}}})}
 			o.empty("native-common-filter-drained",map[string]any{"filter":map[string]any{"parent":"b04-filter-root","priority":2,"types":[]string{"issue"}}})
 			o.reopen("native-after")
@@ -313,7 +313,7 @@ func TestB04OrdinaryActualNativeAndThreeStorePublicReplay(t *testing.T) {
 			t.Logf("B04_ACTUAL_NATIVE_PUBLIC_COMMON backend=%s direct=true custom_active=true wip_refused=true fresh_key_same_holder_noop=true parent_priority_type=true win_versions=1",backend)
 		})
 		for _,v:=range ordinaryB04SelectionCases() {t.Run(backend+"/native-selection/"+v.Name,func(t *testing.T){
-			dsn:="";if backend=="postgres" {dsn=h.dsn(t)};ids:=[]string{ordinarySelectionID(v.Name,"root")};for _,row:=range v.Rows {ids=append(ids,ordinarySelectionID(v.Name,row.Role))}
+			dsn:="";if backend=="postgres" {dsn=h.dsn(t)};ids:=[]string{ordinarySelectionID(v.Name,"root")}
 			o:=newOrdinaryB04(t,backend,dsn,ids);filter:=o.selectionFixture(v);o.reopen("native-selection-before");o.selectionListingControl(filter,obs.Filters.Listing[v.Name]);if got:=o.listingIDs("native-listing-comparison",filter);!reflect.DeepEqual(got,obs.Filters.Listing[v.Name]) {t.Fatalf("actual native/public snapshot listing membership differs: %v vs %v",got,obs.Filters.Listing[v.Name])}
 			if got:=o.readyIDs("native-selection-front",filter);!reflect.DeepEqual(got,obs.Filters.Additive[v.Name]) {t.Fatalf("actual native/public selector membership differs: %v vs %v",got,obs.Filters.Additive[v.Name])}
 			for i,id:=range obs.Filters.Additive[v.Name] {o.win(fmt.Sprintf("native-selection-win-%d",i),"bead.claimNext",id,"todo",map[string]any{"filter":filter})};o.empty("native-selection-empty",map[string]any{"filter":filter});o.reopen("native-selection-after")
