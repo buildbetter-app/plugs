@@ -35,17 +35,18 @@ var (
 // observed before the restore transaction. Target is intentionally the
 // pre-restore snapshot so refusal reports cannot be mistaken for a commit.
 type Report struct {
-	Archive         *dumpformat.Archive
-	Target          driver.Meta
-	Restored        driver.Meta
-	IdempotencyKey  string
-	RequestHash     string
-	Recovered       bool
-	SourcePlanes    *driver.SourcePlaneCommitBindingV1
-	Receipt         *driver.IdempotencyRecord
-	NativeFamilies  []NativeFamilyReport
-	NativeSchemas   []NativeSchemaReport  `json:",omitempty"`
-	NativeHistories []NativeHistoryReport `json:",omitempty"`
+	Archive            *dumpformat.Archive
+	Target             driver.Meta
+	Restored           driver.Meta
+	IdempotencyKey     string
+	RequestHash        string
+	Recovered          bool
+	SourcePlanes       *driver.SourcePlaneCommitBindingV1
+	Receipt            *driver.IdempotencyRecord
+	NativeFamilies     []NativeFamilyReport
+	NativeSchemas      []NativeSchemaReport               `json:",omitempty"`
+	NativeHistories    []NativeHistoryReport              `json:",omitempty"`
+	NativeDeltaHistory *driver.NativeDeltaHistoryEvidence `json:",omitempty"`
 }
 
 // Verification is a trusted offline comparison, bound to the exact tar bytes.
@@ -212,8 +213,8 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 			return report, fmt.Errorf("%w: import source store does not match archive", ErrRestoreUnavailable)
 		}
 		restoreTime = time.Now().UTC()
-		if profile.HistoryMode != driver.RestoreHistoryModeSnapshot {
-			if profile.HistoryTime == "" || profile.HistoryDigest == "" {
+		if profile.HistoryMode != driver.RestoreHistoryModeSnapshot || profile.NativeDeltaHistory != nil {
+			if profile.HistoryTime == "" || profile.HistoryMode != driver.RestoreHistoryModeSnapshot && profile.HistoryDigest == "" {
 				return report, driver.ErrRestoreHistoryRefused{Mode: profile.HistoryMode, History: archive.Manifest().History, Reason: driver.RestoreHistoryReasonUnmappable}
 			}
 			restoreTime, err = time.Parse(time.RFC3339Nano, profile.HistoryTime)
@@ -229,6 +230,7 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 	report.NativeFamilies = append([]NativeFamilyReport(nil), plan.nativeFamilies...)
 	report.NativeSchemas = plan.nativeSchemas
 	report.NativeHistories = plan.nativeHistories
+	report.NativeDeltaHistory = plan.nativeDeltaHistory
 	if profile != nil && len(checks) == 0 {
 		checks = []Verification{{ArchiveSHA256: profile.ArchiveDigest, DerivedSHA256: profile.DerivedDigest}}
 	}
@@ -646,11 +648,11 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 			return Report{}, nativeDeltaRecoveryError(err)
 		}
 	}
-	families, schemas, histories, err := recoverNativeFamilies(ctx, r, bound, evidence, receipt)
+	families, schemas, histories, policy, err := recoverNativeFamilies(ctx, r, bound, evidence, receipt)
 	if err != nil {
 		return Report{}, nativeDeltaRecoveryError(err)
 	}
-	return Report{Restored: meta, IdempotencyKey: bound.IdempotencyKey, RequestHash: request, Recovered: true, Receipt: receipt, NativeFamilies: families, NativeSchemas: schemas, NativeHistories: histories}, nil
+	return Report{Restored: meta, IdempotencyKey: bound.IdempotencyKey, RequestHash: request, Recovered: true, Receipt: receipt, NativeFamilies: families, NativeSchemas: schemas, NativeHistories: histories, NativeDeltaHistory: policy}, nil
 }
 
 type restoreRecord struct {
@@ -660,18 +662,19 @@ type restoreRecord struct {
 }
 
 type restorePlan struct {
-	migration       *dumpformat.ImportMigration
-	nativeOntology  *dumpformat.NativeStatusOntology
-	nativeFamilies  []NativeFamilyReport
-	nativeSchemas   []NativeSchemaReport
-	nativeHistories []NativeHistoryReport
-	records         []restoreRecord
-	sentinels       []driver.Sentinel
-	derived         []derivedImage
-	derivedDigest   string
-	blobs           map[string][]byte
-	nativeCapture   *dumpformat.Archive
-	allocators      []driver.OfflineAllocator
+	migration          *dumpformat.ImportMigration
+	nativeOntology     *dumpformat.NativeStatusOntology
+	nativeFamilies     []NativeFamilyReport
+	nativeSchemas      []NativeSchemaReport
+	nativeHistories    []NativeHistoryReport
+	nativeDeltaHistory *driver.NativeDeltaHistoryEvidence
+	records            []restoreRecord
+	sentinels          []driver.Sentinel
+	derived            []derivedImage
+	derivedDigest      string
+	blobs              map[string][]byte
+	nativeCapture      *dumpformat.Archive
+	allocators         []driver.OfflineAllocator
 }
 
 // importBindingEvidence is an immutable, transaction-local copy of the full
@@ -1188,7 +1191,7 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		}
 	}
 	if nativeTables && mode == planImport {
-		if profile.SourcePlanes == nil || profile.HistoryMode != driver.RestoreHistoryModeFull {
+		if profile.SourcePlanes == nil || profile.HistoryMode != driver.RestoreHistoryModeFull && !(archive.HasNativeDelta() && profile.NativeDeltaHistory != nil) {
 			return restorePlan{}, fmt.Errorf("%w: native table publication requires bound full source-plane restore", driver.ErrUnsupported)
 		}
 		current, families, err := nativeCurrentRecords(archive, restoreTime, nativeOperationContext(contexts))
@@ -1209,7 +1212,18 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		if err != nil {
 			return restorePlan{}, err
 		}
-		accounting := nativeFamilyEvidence{Contract: manifest.SourceFamilyContract, RestoreTime: restoreTime.UTC().Format(time.RFC3339Nano), Families: families, Schemas: plan.nativeSchemas, Histories: plan.nativeHistories}
+		if profile.NativeDeltaHistory != nil {
+			plan.nativeDeltaHistory, err = nativeDeltaHistoryEvidence(archive, *profile)
+			if err != nil {
+				return restorePlan{}, err
+			}
+			if profile.HistoryMode == driver.RestoreHistoryModeSnapshot {
+				if err := add(model.RefByID(driver.OfflineHistoryEvidenceID, model.Natural64(0)), "beads-archive", nativeSnapshotHistoryEvidence(plan.nativeDeltaHistory)); err != nil {
+					return restorePlan{}, err
+				}
+			}
+		}
+		accounting := nativeFamilyEvidence{Contract: manifest.SourceFamilyContract, RestoreTime: restoreTime.UTC().Format(time.RFC3339Nano), Families: families, Schemas: plan.nativeSchemas, Histories: plan.nativeHistories, NativeDeltaHistory: plan.nativeDeltaHistory}
 		if err := add(model.RefByID(NativeFamilyReportID, model.Natural64(0)), "instance_config", accounting); err != nil {
 			return restorePlan{}, err
 		}

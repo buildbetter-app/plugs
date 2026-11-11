@@ -52,10 +52,10 @@ func prepareSourcePlaneProfile(profile RestoreImportProfile, current Meta, lifet
 		return RestoreImportProfile{}, sourcePlaneError("joint import requires the complete source plan")
 	}
 	if history {
-		if p.HistoryMode != RestoreHistoryModeFull || p.HistoryDigest == "" || p.HistoryTime == "" {
+		if p.HistoryMode != RestoreHistoryModeFull && !(p.HistoryMode == RestoreHistoryModePartial && p.NativeDeltaHistory != nil) || p.HistoryDigest == "" || p.HistoryTime == "" {
 			return RestoreImportProfile{}, sourcePlaneError("joint history requires full verified replay binding")
 		}
-	} else if p.HistoryMode != RestoreHistoryModeSnapshot || p.HistoryDigest != "" || p.HistoryTime != "" {
+	} else if p.HistoryMode != RestoreHistoryModeSnapshot || p.HistoryDigest != "" || p.HistoryTime != "" && p.NativeDeltaHistory == nil || p.NativeDeltaHistory != nil && p.HistoryTime == "" {
 		return RestoreImportProfile{}, sourcePlaneError("joint snapshot requires explicit snapshot policy")
 	}
 	plan, err := p.SourcePlanes.Plan()
@@ -181,18 +181,33 @@ func (p *SourcePlaneImportPublication) Validate(header ChangesetHeader, checkpoi
 	return nil
 }
 
-// ValidateSourcePlaneRestoreMeta keeps snapshot revision/floor semantics exact
-// while admitting only a bound full-history final head with a zero floor.
+// ValidateSourcePlaneRestoreMeta keeps the committed revision and floor bound
+// to the selected history mode and its explicit native delta policy.
 func ValidateSourcePlaneRestoreMeta(profile RestoreImportProfile, meta Meta) error {
 	switch profile.HistoryMode {
 	case RestoreHistoryModeSnapshot:
-		if profile.HistoryDigest == "" && profile.HistoryTime == "" && meta.Head == model.Natural64(1) && meta.HistoryFloor == model.Natural64(1) {
+		clockBound := profile.HistoryTime == "" && profile.NativeDeltaHistory == nil
+		if profile.NativeDeltaHistory != nil {
+			clockBound = profile.HistoryTime != "" && profile.NativeDeltaHistory.Validate(profile.HistoryMode) == nil
+		}
+		if profile.HistoryDigest == "" && clockBound && meta.Head == model.Natural64(1) && meta.HistoryFloor == model.Natural64(1) {
 			return nil
 		}
 	case RestoreHistoryModeFull:
 		head, err := meta.Head.Uint64()
-		if err == nil && head >= 2 && meta.HistoryFloor.IsZero() && profile.HistoryDigest != "" && profile.HistoryTime != "" {
+		if err == nil && head >= 2 && meta.HistoryFloor.IsZero() && profile.HistoryDigest != "" && profile.HistoryTime != "" && profile.NativeDeltaHistory == nil {
 			return nil
+		}
+	case RestoreHistoryModePartial:
+		if profile.NativeDeltaHistory != nil && profile.NativeDeltaHistory.Validate(profile.HistoryMode) == nil && profile.HistoryDigest != "" && profile.HistoryTime != "" {
+			head, err := meta.Head.Uint64()
+			floor := model.Natural64(0)
+			if profile.NativeDeltaHistory.FirstSequence > 1 {
+				floor = model.Natural64(1)
+			}
+			if err == nil && head >= 2 && meta.HistoryFloor == floor {
+				return nil
+			}
 		}
 	}
 	return sourcePlaneError("joint restore revision/floor differs from explicit history policy")

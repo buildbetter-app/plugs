@@ -311,8 +311,33 @@ func VerifyNativeCaptureSetReadback(ctx context.Context, store driver.Store, arc
 			}
 		}
 	}
-	if evidence.Source != driver.NativeTableHistorySource || len(evidence.Mapping) != metadata[0].ImageCount || binding.Profile.ArchiveDigest != archive.SHA256() {
+	if evidence.Source != driver.NativeTableHistorySource || binding.Profile.ArchiveDigest != archive.SHA256() {
 		return fmt.Errorf("native row source mapping/binding differs")
+	}
+	mode, err := driver.ParseRestoreHistoryMode(string(binding.Profile.HistoryMode))
+	if err != nil {
+		return err
+	}
+	first, expectedMappings := uint64(1), metadata[0].ImageCount
+	if mode != driver.RestoreHistoryModeFull {
+		policy, err := nativeDeltaHistoryEvidence(archive, binding.Profile)
+		if err != nil || !sameNativeHistoryEvidence(policy, evidence.NativeDeltaHistory) || !sameNativeHistoryEvidence(policy, report.NativeDeltaHistory) {
+			return fmt.Errorf("native row selected mode provenance differs: %w", err)
+		}
+		first = policy.FirstSequence
+		if mode == driver.RestoreHistoryModeSnapshot {
+			want, err := json.Marshal(nativeSnapshotHistoryEvidence(policy))
+			got, gotErr := json.Marshal(evidence)
+			if err != nil || gotErr != nil || !bytes.Equal(want, got) {
+				return fmt.Errorf("native snapshot cannot claim imported source history")
+			}
+			expectedMappings = 0
+		} else {
+			expectedMappings = int(policy.HeadSequence - first + 1)
+		}
+	}
+	if len(evidence.Mapping) != expectedMappings || evidence.Mode != mode {
+		return fmt.Errorf("native row selected mapping census differs")
 	}
 	when, err := time.Parse(time.RFC3339Nano, binding.Profile.HistoryTime)
 	if err != nil {
@@ -369,12 +394,19 @@ func VerifyNativeCaptureSetReadback(ctx context.Context, store driver.Store, arc
 	}
 	finalStarted := false
 	err = archive.VisitNativeDeltaTableStates(ctx, func(state dumpformat.NativeDeltaTableState) error {
+		if state.Kind == "commit" && (mode == driver.RestoreHistoryModeSnapshot || state.Sequence < first && (first == 1 || state.Sequence != first-1)) {
+			return nil
+		}
 		if state.Kind == "commit" && groups == nil {
-			entry, exists := mapping[state.Sequence]
-			if !exists || len(entry.EventIDs) != 0 || len(entry.CommitIDs) != 1 || entry.CommitIDs[0] != state.CommitID {
-				return fmt.Errorf("native row exact commit mapping differs")
+			at := model.Natural64(1)
+			if first == 1 || state.Sequence != first-1 {
+				entry, exists := mapping[state.Sequence]
+				if !exists || len(entry.EventIDs) != 0 || len(entry.CommitIDs) != 1 || entry.CommitIDs[0] != state.CommitID {
+					return fmt.Errorf("native row exact commit mapping differs")
+				}
+				at = entry.Revision
 			}
-			if err := start(entry.Revision); err != nil {
+			if err := start(at); err != nil {
 				return err
 			}
 		} else if state.Kind != "commit" && !finalStarted {

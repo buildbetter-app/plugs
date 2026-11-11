@@ -40,12 +40,13 @@ type captureSetVerification struct {
 }
 
 type captureSetRefusal struct {
-	Format       string                                   `json:"format"`
-	Phase        string                                   `json:"phase"`
-	Reason       string                                   `json:"reason"`
-	DecodedLimit *dumpformat.NativeDeltaDecodedLimitError `json:"decoded_limit,omitempty"`
-	Measurements captureSetMeasurements                   `json:"measurements"`
-	cause        error
+	Format         string                                   `json:"format"`
+	Phase          string                                   `json:"phase"`
+	Reason         string                                   `json:"reason"`
+	DecodedLimit   *dumpformat.NativeDeltaDecodedLimitError `json:"decoded_limit,omitempty"`
+	HistoryRefusal *driver.ErrRestoreHistoryRefused         `json:"history_refusal,omitempty"`
+	Measurements   captureSetMeasurements                   `json:"measurements"`
+	cause          error
 }
 
 func (e *captureSetRefusal) Error() string { return e.Reason }
@@ -105,7 +106,12 @@ func runCaptureSet(ctx context.Context, path, requestPath, engine, target, binar
 			if errors.As(runErr, &limit) && measurements.Decoded == nil {
 				measurements.Decoded = &limit.Usage
 			}
-			runErr = &captureSetRefusal{Format: "plug-native-receiving-refusal/1", Phase: phase, Reason: runErr.Error(), DecodedLimit: limit, Measurements: measurements, cause: runErr}
+			var history driver.ErrRestoreHistoryRefused
+			var historyRefusal *driver.ErrRestoreHistoryRefused
+			if errors.As(runErr, &history) {
+				historyRefusal = &history
+			}
+			runErr = &captureSetRefusal{Format: "plug-native-receiving-refusal/1", Phase: phase, Reason: runErr.Error(), DecodedLimit: limit, HistoryRefusal: historyRefusal, Measurements: measurements, cause: runErr}
 		}
 		out.CaptureSetMeasurements = &measurements
 	}()
@@ -132,6 +138,19 @@ func runCaptureSet(ctx context.Context, path, requestPath, engine, target, binar
 	var input request
 	if err := decode(raw, &input); err != nil {
 		return out, err
+	}
+	mode, selection, err := captureSetHistorySelection(input)
+	if err != nil {
+		return out, err
+	}
+	if selection != nil {
+		metadata, err := work.NativeSourceHistoryMetadata()
+		if err != nil {
+			return out, err
+		}
+		if mode == driver.RestoreHistoryModePartial && (len(metadata) != 1 || selection.FirstSequence > uint64(metadata[0].ImageCount)) {
+			return out, driver.ErrRestoreHistoryRefused{Mode: mode, History: archive.Manifest().History, Reason: driver.RestoreHistoryReasonNonContiguous}
+		}
 	}
 	manifest, err := work.ManifestChecked()
 	if err != nil {
@@ -196,7 +215,7 @@ func runCaptureSet(ctx context.Context, path, requestPath, engine, target, binar
 		return out, errors.New("declared target lifetime differs from actual driver")
 	}
 	plan.Target.StoreID, plan.Target.Incarnation = string(meta.StoreID), meta.Incarnation
-	profile := driver.RestoreImportProfile{Admission: input.Admission, SourceStoreID: driver.StoreID(input.SourceStoreID), Method: "offline.restore.import", IdempotencyKey: input.IdempotencyKey, ArchiveDigest: input.ArchiveSHA256, HistoryMode: driver.RestoreHistoryModeFull, HistoryTime: time.Now().UTC().Format(time.RFC3339Nano)}
+	profile := driver.RestoreImportProfile{Admission: input.Admission, SourceStoreID: driver.StoreID(input.SourceStoreID), Method: "offline.restore.import", IdempotencyKey: input.IdempotencyKey, ArchiveDigest: input.ArchiveSHA256, HistoryMode: mode, HistoryTime: time.Now().UTC().Format(time.RFC3339Nano), NativeDeltaHistory: selection}
 	phase = "bind"
 	profile, err = converterroundtrip.BindNativeCaptureSetImport(op, work, profile, plan)
 	if err != nil {
@@ -263,6 +282,12 @@ func runCaptureSet(ctx context.Context, path, requestPath, engine, target, binar
 		return out, errors.New("capture history metadata differs")
 	}
 	proof := captureSetVerification{MappedCommits: metadata[0].ImageCount, ImportedReadback: true, ReopenedReadback: true, CompleteSnapshots: true, Reopen: reopen}
+	if selection != nil {
+		proof.MappedCommits = 0
+		if mode == driver.RestoreHistoryModePartial {
+			proof.MappedCommits = metadata[0].ImageCount - int(selection.FirstSequence) + 1
+		}
+	}
 	phase = "finish"
 	if err := release(); err != nil {
 		release = nil
@@ -276,7 +301,32 @@ func runCaptureSet(ctx context.Context, path, requestPath, engine, target, binar
 	if err := session.finish(ctx); err != nil {
 		return out, err
 	}
-	return receipt{Format: "plug-native-receiving-receipt/1", BinarySHA256: binaryHash, RequestSHA256: digest(raw), ArchiveSHA256: archive.SHA256(), Driver: engine, HistoryMode: "full", RestoreTime: recoveredProfile.HistoryTime, CaptureSetVerification: &proof, Report: recovered, SessionCeilingSeconds: int64(rehearsalSessionLimit / time.Second)}, nil
+	return receipt{Format: "plug-native-receiving-receipt/1", BinarySHA256: binaryHash, RequestSHA256: digest(raw), ArchiveSHA256: archive.SHA256(), Driver: engine, HistoryMode: string(mode), RestoreTime: recoveredProfile.HistoryTime, CaptureSetVerification: &proof, Report: recovered, SessionCeilingSeconds: int64(rehearsalSessionLimit / time.Second)}, nil
+}
+
+func captureSetHistorySelection(input request) (driver.RestoreHistoryMode, *driver.NativeDeltaHistoryPolicy, error) {
+	if input.RestoreMode != "" && input.RestoreMode != "full" && input.RestoreMode != "partial" && input.RestoreMode != "snapshot" {
+		return "", nil, driver.ErrRestoreHistoryMode{Value: input.RestoreMode}
+	}
+	mode, err := driver.ParseRestoreHistoryMode(input.RestoreMode)
+	if err != nil {
+		return "", nil, err
+	}
+	if mode != driver.RestoreHistoryModePartial && len(input.RestoreFirstSequence) != 0 {
+		return mode, nil, driver.ErrRestoreHistoryRefused{Mode: mode, Reason: driver.RestoreHistoryReasonUnmappable}
+	}
+	if mode == driver.RestoreHistoryModeFull {
+		return mode, nil, nil
+	}
+	var first uint64
+	if mode == driver.RestoreHistoryModePartial && (len(input.RestoreFirstSequence) == 0 || json.Unmarshal(input.RestoreFirstSequence, &first) != nil || first == 0) {
+		return mode, nil, driver.ErrRestoreHistoryRefused{Mode: mode, Reason: driver.RestoreHistoryReasonUnmappable}
+	}
+	policy := &driver.NativeDeltaHistoryPolicy{Format: driver.NativeDeltaHistoryPolicyFormat, FirstSequence: first}
+	if err := policy.Validate(mode); err != nil {
+		return mode, nil, err
+	}
+	return mode, policy, nil
 }
 
 // Admit the exact bounded request buffer before allocating or decoding it.

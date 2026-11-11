@@ -311,7 +311,7 @@ func sourcePlaneJSONObject(data []byte, fields map[string]bool, requireAll bool)
 		if err := d.Decode(&raw); err != nil {
 			return err
 		}
-		if key == "sourcePlanes" && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		if (key == "sourcePlanes" || key == "nativeDeltaHistory") && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 			return sourcePlaneError("explicit null sourcePlanes")
 		}
 	}

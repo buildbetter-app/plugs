@@ -82,7 +82,7 @@ func validateArchiveHistoryPolicy(mode driver.RestoreHistoryMode, a *dumpformat.
 	// A v2 attachment is exposed only after every graph/schema/table and both
 	// checkpoints have passed. Avoid copying all rows just to repeat this gate.
 	if a.HasNativeDelta() {
-		if mode != driver.RestoreHistoryModeFull {
+		if mode != driver.RestoreHistoryModeFull && mode != driver.RestoreHistoryModePartial && mode != driver.RestoreHistoryModeSnapshot {
 			return driver.ErrRestoreHistoryRefused{Mode: mode, History: a.Manifest().History, Reason: driver.RestoreHistoryReasonNotYetSupported}
 		}
 		return nil
@@ -396,6 +396,7 @@ func validateHistoryRecovery(ctx context.Context, r driver.Reader, p driver.Rest
 	}
 	want := driver.HistoryImportEvidence{Source: history.Source, Mode: p.HistoryMode, Complete: history.Complete, First: history.First, Head: history.Head, Floor: model.Natural64(0), Gaps: append([]driver.SourceHistoryGap{}, history.Gaps...), Mapping: []driver.SourceImportRevision{}}
 	want.NativeBoundaries = append([]driver.NativeHistoryBoundary(nil), history.NativeBoundaries...)
+	want.NativeDeltaHistory = history.NativeDeltaHistory
 	var revision uint64
 	if history.First > 1 {
 		revision = 1
