@@ -106,8 +106,23 @@ func TestNativeVerifierAuthenticProducerRejectsChangedIntermediatePreimages(t *t
 				for key, value := range b.head { value.hash = strings.Repeat("3", 64); b.head[key] = value; changed = true; break }
 			}
 			if err == nil { err = b.finish() }
-			var refusal ErrCheckpoint
-			if !changed || !errors.As(err, &refusal) { t.Fatal("changed intermediate preimage reached completed transcript", attack, changed, err) }
+			if !changed { t.Fatal("intermediate preimage attack did not change its authentic input", attack) }
+			switch attack {
+			case "physical-schema", "converted-before":
+				// These attacks fail in the genuine canonical native decoder before
+				// transcript reconciliation. Require its exact typed cause so a
+				// budget, I/O or unrelated refusal cannot satisfy the mutation test.
+				want := "physical metadata/schema differs"
+				if attack == "converted-before" { want = "noncanonical body" }
+				var refusal *dumpformat.NativeRowRecordError
+				if !errors.As(err, &refusal) || refusal.Reason != want { t.Fatal("missing exact native preimage refusal", attack, err) }
+			default:
+				want := "physical commit census differs from independently authenticated preimages"
+				if attack == "commit-id" || attack == "sequence" { want = "native ordered graph differs" }
+				if attack == "independent-head" { want = "exact transcript HEAD differs from independent checkpoint" }
+				var refusal ErrCheckpoint
+				if !errors.As(err, &refusal) || refusal.Reason != want { t.Fatal("missing exact transcript preimage refusal", attack, err) }
+			}
 		})
 	}
 }
