@@ -519,6 +519,8 @@ internal/integration/b03catalog/native_catalog_recording_test.go
 internal/integration/b03catalog/native_categories_test.go
 internal/integration/b03publiccatalog/BUILD.bazel
 internal/integration/b03publiccatalog/README.md
+internal/integration/b03publiccatalog/catalog_fixture_test.go
+internal/integration/b03publiccatalog/catalog_targets_test.go
 internal/integration/b03publiccatalog/catalog_test.go
 internal/integration/b03publiccatalog/native_recording_test.go
 internal/integration/b04claimidentity/BUILD.bazel

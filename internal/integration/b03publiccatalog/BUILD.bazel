@@ -19,7 +19,7 @@ B03_DEPS = [
 
 go_test(
     name = "b03_catalog_controls_test",
-    srcs = ["catalog_test.go", "//spec/cardb20:native_postgres_support"],
+    srcs = ["catalog_fixture_test.go", "catalog_test.go", "//spec/cardb20:native_postgres_support"],
     args = ["-test.v"],
     deps = B03_DEPS,
     size = "large",
@@ -32,6 +32,7 @@ go_test(
 go_test(
     name = "record_b03_catalog_test",
     srcs = [
+        "catalog_fixture_test.go",
         "catalog_test.go",
         "native_recording_test.go",
         "//spec/cardb20:native_build_support",
@@ -60,4 +61,16 @@ filegroup(
     name = "lexicon_files",
     srcs = glob(["**"]),
     visibility = ["//visibility:public"],
+)
+
+# New exact-target/project source-history controls; the retained tests keep
+# their own target. Only their byte-identical fixture helpers are shared.
+go_test(
+    name = "b03_catalog_targets_test",
+    srcs = ["catalog_fixture_test.go", "catalog_targets_test.go", "//spec/cardb20:native_postgres_support"],
+    args = ["-test.v"],
+    deps = B03_DEPS,
+    size = "large",
+    tags = ["local", "requires-network"],
+    timeout = "long",
 )
