@@ -136,6 +136,18 @@ func TestNativeVerifierProducerCloseReleasesPrivateDiskAndAccounting(t *testing.
 	if err := prepared.Visit(context.Background(), dumpformat.NativeDeltaVisitor{Commit: b.commit, TableState: b.checkpoint, File: b.captureFile}); err != nil { t.Fatal(err) }
 	if err := b.finish(); err != nil { t.Fatal(err) }
 	path := s.path
+	if _, err := s.file.Seek(0, io.SeekStart); err != nil { t.Fatal(err) }
+	// Retain a real decoded body frame as Next does. No test checkpoint is
+	// issued: this checks the actual private transfer allocation and its owner.
+	for {
+		frame, releaseFrame, err := s.readFrame(context.Background(), s.file, NativeArchiveLimits())
+		if err != nil { t.Fatal("actual spooled body frame missing", err) }
+		if frame.Chunk != nil && len(frame.Chunk.Data) > 0 { s.pullRelease = releaseFrame; break }
+		releaseFrame()
+	}
+	live, _ := a.NativeDecodedUsage()
+	batch := live.CurrentCategories["offline_batches"] - before.CurrentCategories["offline_batches"]
+	if live.CurrentCategories["offline_batches"] <= before.CurrentCategories["offline_batches"] || batch > uint64(nativeFrameBytes*8+1024) || live.PeakRetainedBatchBytes < batch { t.Fatal("real retained stream frame missing from bounded batch accounting", live) }
 	ctx, cancel := context.WithCancel(context.Background()); cancel()
 	if _, _, err := s.readFrame(ctx, s.file, NativeArchiveLimits()); !errors.Is(err, context.Canceled) { t.Fatal("cancelled source pull", err) }
 	if err := s.Close(); err != nil { t.Fatal(err) }
