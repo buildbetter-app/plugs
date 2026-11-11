@@ -212,7 +212,25 @@ func (p *publicAcceptance) bind(t *testing.T) {
 
 func (p *publicAcceptance) write(t *testing.T, method, key string, params map[string]any) model.Commit {
 	t.Helper()
-	commit := publicWrite(t, p.fixture, method, key, params)
+	params["_meta"] = map[string]any{"project": project, "idempotencyKey": fixtureKey(key)}
+	response := p.call(t, method, params)
+	wantResults := 1
+	if method == "bead.defer" {
+		if reason, ok := params["reason"].(string); ok && reason != "" {
+			// Defer with a reason commits its status patch and comment as two
+			// operations on the same target in the same changeset.
+			wantResults = 2
+		}
+	}
+	var commit model.Commit
+	if response.Error != nil || json.Unmarshal(response.Result, &commit) != nil || len(commit.Results) != wantResults || commit.Revision.IsZero() {
+		t.Fatalf("public %s lost its %d committed operations: error=%+v result=%s", method, wantResults, response.Error, response.Result)
+	}
+	for _, result := range commit.Results {
+		if result.Ref.ID == "" || result.Ref != commit.Results[0].Ref || result.Revision != commit.Revision {
+			t.Fatalf("public %s split target or revision within one committed write: %s", method, response.Result)
+		}
+	}
 	p.writes = append(p.writes, publicAcceptanceWrite{method, key, commit})
 	return commit
 }
@@ -477,7 +495,8 @@ func TestB01PositiveDurableAndEphemeralMembershipPrecedesEveryPage(t *testing.T)
 			// blocked endpoints must join before limit one is applied.
 			p.point(t, "cross-plane-blocker-close-releases-both", nil, blocked.ID, workflowBlocked.ID, workflowFree.ID, free.ID)
 			p.write(t, "bead.reopen", "mixed-reopen-blocker", map[string]any{"id": blocker})
-			p.point(t, "cross-plane-blocker-reopen-excludes-both", nil, workflowFree.ID, free.ID)
+			p.document(t, blocker, "issue", "todo", "mixed-blocker", 0, nil)
+			p.point(t, "cross-plane-blocker-reopen-excludes-both", nil, blocker.ID, workflowFree.ID, free.ID)
 		})
 	}
 }
