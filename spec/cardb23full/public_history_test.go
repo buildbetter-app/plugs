@@ -220,10 +220,10 @@ func TestPublicHistoricalSearchListCountReplayReopen(t *testing.T) {
 			a := first.Results[0].Ref.ID
 			second := f.mutation("bead.create", "create-second", map[string]any{"type": "issue", "fields": map[string]any{"title": "Needle second"}})
 			b := second.Results[0].Ref.ID
-			updated := f.mutation("bead.update", "update-first", map[string]any{"id": a, "fields": map[string]any{"title": "ordinary first"}})
+			updated := f.mutation("bead.update", "update-first", map[string]any{"id": first.Results[0].Ref, "fields": map[string]any{"title": "ordinary first"}})
 			// Replaying the same public request must retain the winning commit, without
 			// inserting another version or advancing the store head.
-			replay := f.mutation("bead.update", "update-first", map[string]any{"id": a, "fields": map[string]any{"title": "ordinary first"}})
+			replay := f.mutation("bead.update", "update-first", map[string]any{"id": first.Results[0].Ref, "fields": map[string]any{"title": "ordinary first"}})
 			if !reflect.DeepEqual(updated, replay) {
 				t.Fatal("replay changed winning commit")
 			}
