@@ -162,6 +162,11 @@ func (o *ordinaryB04) call(label, method, agent string, params map[string]any) j
 func (o *ordinaryB04) commit(label, method string, params map[string]any) model.Commit {
 	o.f.t.Helper()
 	raw := o.call(label, method, owner, params)
+	return o.commitResponse(label, method, raw)
+}
+
+func (o *ordinaryB04) commitResponse(label, method string, raw json.RawMessage) model.Commit {
+	o.f.t.Helper()
 	var e struct { Result model.Commit `json:"result"`; Error *model.Error `json:"error"` }
 	if err := json.Unmarshal(raw, &e); err != nil || e.Error != nil || len(e.Result.Results) == 0 { o.f.t.Fatalf("commit %s: %s (%v)", label, raw, err) }
 	entry:=o.receipt(label,method,owner)
@@ -171,7 +176,61 @@ func (o *ordinaryB04) commit(label, method string, params map[string]any) model.
 }
 
 func (o *ordinaryB04) seed(label string, ops ...model.Op) {
-	o.commit(label, "tx.apply", map[string]any{"changeSet":model.ChangeSet{Ops: ops}})
+	o.f.t.Helper()
+	params := map[string]any{"changeSet": model.ChangeSet{Ops: ops}}
+	raw := o.callSeedWithRetry(label, "tx.apply", owner, params)
+	o.commitResponse(label, "tx.apply", raw)
+}
+
+// callSeedWithRetry retries only typed retryable errors from disposable setup
+// writes. The request bytes, JSON-RPC id, and idempotency key remain identical
+// across attempts. Calls under test use call and are never retried here.
+func (o *ordinaryB04) callSeedWithRetry(label, method, agent string, params map[string]any) json.RawMessage {
+	t := o.f.t
+	t.Helper()
+	o.seq++
+	requestParams := map[string]any{}
+	for k, v := range params { requestParams[k] = v }
+	requestParams["_meta"] = map[string]any{"project": project, "agent": agent, "idempotencyKey": o.f.key(label, method, agent)}
+	request, err := json.Marshal(map[string]any{"jsonrpc":"2.0", "id": o.seq, "method": method, "params": requestParams})
+	if err != nil { t.Fatal(err) }
+	const maxAttempts = 5
+	retries := 0
+	var last json.RawMessage
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		httpRequest, err := http.NewRequest(http.MethodPost, o.server.URL+httpjson.Path, bytes.NewReader(request))
+		if err != nil { t.Fatal(err) }
+		httpRequest.Header.Set("Content-Type", "application/json")
+		httpRequest.Header.Set("Plug-RPC", "1")
+		if o.authority != nil {
+			token := o.authority.writeKey
+			if method == "bead.ready" || method == "bead.get" { token = o.authority.readKey }
+			httpRequest.Header.Set("Authorization", "Bearer "+token)
+		}
+		response, err := o.server.Client().Do(httpRequest)
+		if err != nil { t.Fatal(err) }
+		raw, readErr := io.ReadAll(response.Body)
+		closeErr := response.Body.Close()
+		if readErr != nil || closeErr != nil { t.Fatalf("HTTP read=%v close=%v", readErr, closeErr) }
+		last = append(json.RawMessage(nil), raw...)
+		o.retain(fmt.Sprintf("%03d-%s-attempt-%d", o.seq, label, attempt), map[string]any{"request": json.RawMessage(request), "response": json.RawMessage(raw), "httpStatus": response.StatusCode})
+		var frame struct { Error *struct { Data model.ErrorData `json:"data"` } `json:"error"` }
+		if err := json.Unmarshal(raw, &frame); err != nil { t.Fatalf("seed %s response is not JSON: %s", label, raw) }
+		if frame.Error == nil || !frame.Error.Data.Retryable {
+			t.Logf("B04_SEED_RETRIES engine=%s label=%s attempts=%d retries=%d", o.f.backend, label, attempt, retries)
+			return last
+		}
+		if attempt == maxAttempts {
+			t.Logf("B04_SEED_RETRIES engine=%s label=%s attempts=%d retries=%d exhausted=true", o.f.backend, label, attempt, retries)
+			return last
+		}
+		retries++
+		t.Logf("B04_SEED_RETRY engine=%s label=%s attempt=%d retry=%d code=%s traceId=%s", o.f.backend, label, attempt, retries, frame.Error.Data.Code, frame.Error.Data.TraceID)
+		backoff := 50 * time.Millisecond * time.Duration(1<<(retries-1))
+		if backoff > time.Second { backoff = time.Second }
+		time.Sleep(backoff)
+	}
+	return last
 }
 
 func (o *ordinaryB04) state(label string) ordinaryB04State {
