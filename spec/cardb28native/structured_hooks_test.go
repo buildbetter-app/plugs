@@ -131,6 +131,18 @@ func (n *b28Native) hook(phase, event, title, description, status, priority stri
 	if len(rows) != 1 || rows[0]["id"] != "b28-first" || rows[0]["title"] != title || rows[0]["description"] != description || rows[0]["status"] != status || fmt.Sprint(rows[0]["priority"]) != priority {
 		n.t.Fatalf("hook did not read actual committed public values: %s", readback)
 	}
+	// Public show hydrates each dependency as the target issue plus relation
+	// metadata; script stdin carries the detached dependency record instead.
+	publicDependencies, _ := rows[0]["dependencies"].([]any)
+	if len(publicDependencies) != len(dependencies) {
+		n.t.Fatalf("native public dependency count=%d want=%d: %s", len(publicDependencies), len(dependencies), readback)
+	}
+	for i, dependency := range dependencies {
+		current, ok := publicDependencies[i].(map[string]any)
+		if !ok || current["id"] != dependency.DependsOnID || current["dependency_type"] != dependency.Type {
+			n.t.Fatalf("native public dependency differs: got=%+v want=%+v", publicDependencies[i], dependency)
+		}
+	}
 	var complete map[string]any
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.UseNumber()
@@ -207,11 +219,10 @@ if test "$B28_HOOK_PHASE" = failing-hook; then exit 73; fi
 	observations = append(observations, n.hook("rich-create", "create", "first", description, "open", "0", nil))
 	n.command("rich-update", false, "update", "b28-first", "--title", "edited", "--json")
 	observations = append(observations, n.hook("rich-update", "update", "edited", description, "open", "0", nil))
-	before := n.callbacks()
 	n.command("noop", false, "update", "b28-first", "--title", "edited", "--json")
-	if n.callbacks() != before {
-		t.Fatal("native no-op emitted a hook")
-	}
+	// This guarded native Update completes on every successful result, even
+	// Changed=false. Plug's adopted write pipeline suppresses its no-op posts.
+	observations = append(observations, n.hook("noop", "update", "edited", description, "open", "0", nil))
 	n.command("comment", false, "comments", "add", "b28-first", "exact comment α\nsecond line", "--json")
 	// This public comment path rereads GetIssue; it does not invent a comment
 	// event or hydrate comment rows into the script issue snapshot.
@@ -223,21 +234,21 @@ if test "$B28_HOOK_PHASE" = failing-hook; then exit 73; fi
 	n.command("dependency", false, "dep", "add", "b28-first", "b28-target", "--type", "relates-to", "--json")
 	dep := []b28NativeDependency{{IssueID: "b28-first", DependsOnID: "b28-target", Type: "relates-to", CreatedBy: "b28-native"}}
 	observations = append(observations, n.hook("dependency", "update", "edited", description, "open", "0", dep))
-	before = n.callbacks()
+	before := n.callbacks()
 	n.command("invalid-priority", true, "update", "b28-first", "--priority", "9", "--json")
 	if n.callbacks() != before {
 		t.Fatal("native invalid ordinary write emitted a hook")
 	}
 	n.command("close", false, "close", "b28-first", "--reason", "native complete", "--json")
-	observations = append(observations, n.hook("close", "close", "edited", description, "closed", "0", nil))
+	observations = append(observations, n.hook("close", "close", "edited", description, "closed", "0", dep))
 	n.command("failing-hook", false, "update", "b28-first", "--title", "committed despite hook failure", "--json")
-	observations = append(observations, n.hook("failing-hook", "update", "committed despite hook failure", description, "closed", "0", nil))
+	observations = append(observations, n.hook("failing-hook", "update", "committed despite hook failure", description, "closed", "0", dep))
 	before = n.callbacks()
 	n.command("delete", false, "delete", "b28-delete", "--force", "--json")
 	if n.callbacks() != before {
 		t.Fatal("native delete unexpectedly emitted a script hook")
 	}
-	want := "rich-create|create|b28-first\nrich-update|update|b28-first\ncomment|update|b28-first\ndependency|update|b28-first\nclose|close|b28-first\nfailing-hook|update|b28-first\n"
+	want := "rich-create|create|b28-first\nrich-update|update|b28-first\nnoop|update|b28-first\ncomment|update|b28-first\ndependency|update|b28-first\nclose|close|b28-first\nfailing-hook|update|b28-first\n"
 	if n.callbacks() != want {
 		t.Fatalf("native operation order/multiplicity=%q want=%q", n.callbacks(), want)
 	}
@@ -246,7 +257,7 @@ if test "$B28_HOOK_PHASE" = failing-hook; then exit 73; fi
 		t.Fatal("failing native script vetoed committed data")
 	}
 	n.r.writeJSON(filepath.Join(root, "semantic-projection.json"), observations)
-	n.r.writeJSON(filepath.Join(root, "dispositions.json"), map[string]any{"native_public_path": "canonical CLI guarded issue operations and HookFiringStore", "native_delete": "no script hook", "comment": "update issue snapshot plus independently read comment row", "native_hook_error": "cannot veto committed mutation; script exit73", "plug_pre_mutation": "explicit adopted configured mutator changes title before validation/commit", "plug_comment_dependency": "typed operations and structured before/after document relations", "plug_post_error": "committed result.warnings plus deadletter and actual owner-supplied alert port", "idempotent_response_replay": "Plug-only stored response contract; no invented native idempotency equivalence", "official": "UNSPENT", "private": "HARD_DISABLED"})
+	n.r.writeJSON(filepath.Join(root, "dispositions.json"), map[string]any{"native_public_path": "canonical CLI guarded issue operations and HookFiringStore", "native_delete": "no script hook", "native_successful_noop_update": "successful guarded Update emits update hook even when Changed=false", "plug_noop": "adopted write pipeline suppresses post delivery and graph revisions for unchanged writes", "comment": "update issue snapshot plus independently read comment row", "native_hook_error": "cannot veto committed mutation; script exit73", "plug_pre_mutation": "explicit adopted configured mutator changes title before validation/commit", "plug_comment_dependency": "typed operations and structured before/after document relations", "plug_post_error": "committed result.warnings plus deadletter and actual owner-supplied alert port; requires separate alert acceptance evidence", "idempotent_response_replay": "Plug-only stored response contract; no invented native idempotency equivalence", "official": "UNSPENT", "private": "HARD_DISABLED"})
 	return observations
 }
 
@@ -256,11 +267,18 @@ func TestB28CanonicalNativeStructuredHookSnapshots(t *testing.T) {
 	if !filepath.IsAbs(root) || !filepath.IsAbs(checkout) {
 		t.Fatal("RunsOn declared evidence and source root required")
 	}
-	r := &nativeRecorder{t: t, root: root, target: "//cmd/bd:bd"}
+	r := &nativeRecorder{t: t, root: root}
 	input, err := os.ReadFile(filepath.Join(checkout, "spec/s1-b09-native/native_inputs.json"))
 	if err != nil || hashBytes(input) != "a7ddd9047eb94e54cdaa138b1adf756c5088a50bc01605ee2c6eafbfb9d0d9c2" {
 		t.Fatal("existing canonical source protocol changed")
 	}
+	var protocol struct {
+		ExporterLabel string `json:"exporter_label"`
+	}
+	if json.Unmarshal(input, &protocol) != nil || protocol.ExporterLabel == "" {
+		t.Fatal("canonical source target absent")
+	}
+	r.target = protocol.ExporterLabel
 	actual := strings.TrimSpace(string(r.buildCommand(checkout, "candidate-head", "/usr/bin/git", []string{"rev-parse", "HEAD"})))
 	commit := r.buildCommand(checkout, "candidate-commit", "/usr/bin/git", []string{"cat-file", "commit", actual})
 	for _, key := range []string{"GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_SHA", "GITHUB_WORKFLOW_REF"} {
