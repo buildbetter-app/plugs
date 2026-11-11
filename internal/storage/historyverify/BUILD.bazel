@@ -2,10 +2,10 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "historyverify",
-    srcs = ["auxiliary.go", "checkpoint.go"],
+    srcs = ["auxiliary.go", "checkpoint.go", "native.go", "native_frames.go", "native_evidence.go", "native_plan.go", "native_spool.go"],
     importpath = "github.com/buildbetter-app/plugs/internal/storage/historyverify",
     visibility = ["//:__subpackages__"],
-    deps = ["//internal/core/model", "//internal/storage/driver"],
+    deps = ["//internal/core/dumpformat", "//internal/core/model", "//internal/core/nativeprojection", "//internal/storage/driver"],
 )
 
 go_test(

@@ -1,5 +1,5 @@
 // Package historyverify owns the opaque result passed from archive verification
-// to streaming storage. Receiving-side issuance is deliberately a later layer.
+// to streaming storage. Receiving-side issuance authenticates the archive and actual planner result.
 package historyverify
 
 import (
@@ -40,9 +40,9 @@ type result struct {
 
 // Checkpoint is immutable and unconstructible outside this verifier package.
 // Copies refer to the same immutable result. The zero value never authorizes a
-// stream. No production issuance path exists in layer 2; layer 3 must verify the
-// actual archive, HEAD/current checkpoints, exact derived-image preimage and
-// physical reconciliation before calling the private constructor.
+// stream. NativeArchiveStream seals only after complete real archive replay,
+// independent HEAD/current verification, physical reconciliation and binding
+// the final admitted request to the actual receiving planner result.
 type Checkpoint struct{ verified *result }
 
 func mint(request driver.OfflineHistoryStreamRequest, head, current, auxiliary Root, physical bool) (Checkpoint, error) {
