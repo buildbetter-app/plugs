@@ -109,7 +109,11 @@ func (n *effectNative) verifySuccess(label string,after effectNativeState) {
 			table,row:=n.endpoint(after,mutation.From)
 			definition:=n.endpoints[mutation.From]
 			if table!=definition.Plane || nativeEffectText(n.t,row["title"])!=definition.Title || nativeEffectText(n.t,row["status"])!="open" || nativeEffectText(n.t,row["issue_type"])!="task" || string(row["priority"])!="2" {n.t.Fatal("native created endpoint differs from declared body/plane",mutation.From)}
-			if table==effectNativeActiveTable {if nativeEffectText(n.t,row["storage_class"])!="ephemeral" {n.t.Fatal("native active class differs from requested plane")}} else if string(row["storage_class"])!="null" {n.t.Fatal("native default versioned class must retain its unset SQL token")}
+			// The pinned graph writer maps explicit ephemeral to its plane and
+			// flag, then clears the storage-class marker before SQL insertion.
+			if string(row["storage_class"])!="null" {n.t.Fatal("native graph create must retain its unset SQL storage-class marker")}
+			flag:="0";if table==effectNativeActiveTable {flag="1"}
+			if string(row["ephemeral"])!=flag || string(row["no_history"])!="0" {n.t.Fatal("native graph create differs from the requested exact plane flags")}
 			nativeEffectInstant(n.t,row["created_at"],mutation.Started,mutation.Finished)
 			nativeEffectInstant(n.t,row["updated_at"],mutation.Started,mutation.Finished)
 			key:="id:"+string(row["id"]);if _,exists:=want[table][key];exists {n.t.Fatal("native create overwrote original endpoint")};want[table][key]=nativeEffectIndex(n.t,[]map[string]json.RawMessage{row})[key]

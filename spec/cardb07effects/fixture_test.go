@@ -200,7 +200,7 @@ func effectPublic(t *testing.T, engine string) []effectStep {
 				want = baseline
 				if blocked { want = effectWithout(want, label+"-source") }
 				steps = append(steps, effectAssertStep(t, h, roles, c, "target-reopened", source, want, blocked))
-				if effectRead(t, h, target).Bead.Status != "open" { t.Fatal("reopen did not retain exact open slot") }
+				if effectRead(t, h, target).Bead.Status != "todo" { t.Fatal("reopen did not select the exact installed todo slot") }
 				effectLink(t, h, source, target, c.Kind, metadata)
 				effectCall(t, h, "bead.close", label+"-reclose-target", map[string]any{"id": target}, []model.Ref{target}, nil)
 				want = effectWithout(baseline, label+"-target")

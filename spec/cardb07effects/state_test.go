@@ -94,10 +94,12 @@ func effectCall(t *testing.T, h *publicproof.Host, method, label string, params 
 			stamp := *nextDoc.ClosedAt
 			oldDoc.ClosedAt = &stamp
 		case "bead.reopen":
-			oldDoc.Fields["status"] = "open"
+			// The ordinary host keeps the installed issue workflow slots:
+			// reopen selects todo, independently of the create request's status.
+			oldDoc.Fields["status"] = "todo"
 			oldDoc.ClosedAt = nil
 		case "bead.defer":
-			oldDoc.Fields["status"] = "deferred"
+			oldDoc.Fields["status"] = "backlog"
 			oldDoc.ClosedAt = nil
 		default:
 			t.Fatal("undeclared body effect", method)
