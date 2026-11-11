@@ -81,7 +81,7 @@ type NativeDecodedRow struct {
 }
 
 func nativeRowPrefix(source SourceIdentity, table, history, kind string) (string, error) {
-	if !validSourceIdentity(source) || !nativeSQLName.MatchString(table) {
+	if !validSourceIdentity(source) || !utf8.ValidString(source.StoreID) || !utf8.ValidString(source.Project) || !nativeSQLName.MatchString(table) {
 		return "", nativeRowRefusal(table, "invalid source/table identity")
 	}
 	if kind != NativeRowV1ContentBag && kind != NativeRowD3Physical {

@@ -417,6 +417,11 @@ func TestNativeRowCanonicalIdentityVectorAndPlanes(t *testing.T) {
 	if _, _, err := ReconstructNativeRowTable(rowTestSource, "issues", nativeRetainedHistory, duplicate, nil); err == nil {
 		t.Fatal("same driver identity accepted twice")
 	}
+	// These two individually invalid strings form valid UTF-8 only when
+	// concatenated. JSON would otherwise replace each, breaking the bound Ref.
+	if _, err := NativeV1RowRecord(SourceIdentity{StoreID: "\xc3", Project: "\xa9"}, "issues", nativeRetainedHistory, fields, 0); err == nil {
+		t.Fatal("invalid individual source strings accepted")
+	}
 }
 
 func TestNativeRowStrictCanonicalDecoder(t *testing.T) {
