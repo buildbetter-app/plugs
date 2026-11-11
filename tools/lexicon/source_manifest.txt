@@ -1620,6 +1620,8 @@ spec/cardb20/policy_test.go
 spec/cardb20/postgres_test.go
 spec/cardb20/runtime_test.go
 spec/cardb20/sql_rows_test.go
+spec/cardb23full/BUILD.bazel
+spec/cardb23full/public_history_test.go
 spec/cardb24/BUILD.bazel
 spec/cardb24/README.md
 spec/cardb24/native_recording_test.go
