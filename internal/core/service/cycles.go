@@ -39,11 +39,12 @@ type CyclesResult struct {
 	AsOf       AsOf          `json:"asOf"`
 }
 
-// cycleRow separates report topology from durable record envelopes. Only the
-// adopted durable graph supplies these rows; no provider state is substituted.
+// cycleRow separates report topology from durable hydration. A topology-only
+// source is absent, not readable, even though its outgoing facts are retained.
 type cycleRow struct {
 	project string
 	links   []pipeline.Link
+	missing bool
 }
 
 func (s *Service) Cycles(ctx context.Context, by model.PrincipalRef, req CyclesRequest) (CyclesResult, error) {
@@ -145,6 +146,47 @@ func ReadCycles(ctx context.Context, reader driver.Reader, req CyclesRequest, re
 	for id, row := range rows {
 		graph[id] = cycleRow{project: row.doc.Project, links: row.doc.Links}
 	}
+	// Indexed stores supply complete topology independently of hydration. A
+	// capability/coverage failure cannot silently turn into a shorter report.
+	if topology, ok := reader.(driver.CycleTopologyReader); ok {
+		for id, row := range graph {
+			row.links = nil
+			graph[id] = row
+		}
+		var cursor *driver.Cursor
+		for {
+			page, err := topology.CycleTopology(ctx, cursor, 1000)
+			if err != nil {
+				return CyclesResult{}, mapped(err)
+			}
+			if page.AsOf.String() != reader.Snapshot().At.String() {
+				return CyclesResult{}, failure("internal_error", "cycle topology snapshot mismatch")
+			}
+			for _, edge := range page.Items {
+				if driver.ValidateHierarchyRef(edge.From) != nil || driver.ValidateHierarchyRef(edge.To) != nil || edge.Kind == "" {
+					return CyclesResult{}, failure("internal_error", "invalid cycle topology edge")
+				}
+				row, exists := graph[edge.From.ID]
+				if !exists {
+					row.missing = true
+				}
+				row.links = append(row.links, pipeline.Link{To: edge.To, Kind: edge.Kind})
+				graph[edge.From.ID] = row
+			}
+			if page.NextCursor == nil {
+				break
+			}
+			nextOffset, nextErr := page.NextCursor.Index.Uint64()
+			previousOffset := uint64(0)
+			if cursor != nil {
+				previousOffset, _ = cursor.Index.Uint64()
+			}
+			if nextErr != nil || len(page.Items) == 0 || nextOffset <= previousOffset {
+				return CyclesResult{}, failure("internal_error", "non-advancing cycle topology page")
+			}
+			cursor = page.NextCursor
+		}
+	}
 	view := reader.Snapshot()
 	return readCycleGraph(ctx, graph, req, limit, AsOf{Revision: *view.At, Incarnation: view.Incarnation}, readable)
 }
@@ -190,7 +232,8 @@ func readCycleGraph(ctx context.Context, rows map[string]cycleRow, req CyclesReq
 		for _, id := range path {
 			ref := model.RefByID(id, model.Natural64(0))
 			if !known[id] {
-				_, visible[id] = rows[id]
+				row, exists := rows[id]
+				visible[id] = exists && !row.missing
 				if visible[id] && readable != nil {
 					visible[id], err = readable(ctx, ref)
 					if err != nil {
