@@ -51,7 +51,9 @@ func b16DurableVector(t *testing.T, engine string) b16Outcome {
     f.call("bead.close",map[string]any{"id":b16Ref(id)},true,"");f.call("bead.reopen",map[string]any{"id":b16Ref(id)},true,"");f.labels(id,b16FinalPatch)
     a:=f.create("rename",[]string{"Old","old","side"});b:=f.create("merge",[]string{"old","new"});c:=f.create("destination",[]string{"new"});empty:=f.create("empty",[]string{})
     f.query("label=old",[]string{a,b});f.query("label=Old",[]string{a});f.query("label=old AND label=new",[]string{b});f.query("label=old OR label=new",[]string{a,b,c});f.query("NOT label=old AND NOT label=added AND NOT label="+max,[]string{c,empty})
-    inputs:=[]json.RawMessage{};for _,target:=range []string{a,b,c,empty}{raw,_:=f.get(target);inputs=append(inputs,raw)}
+    renameBefore:=map[string][]string{}
+    inputs:=[]json.RawMessage{};for _,target:=range []string{a,b,c,empty}{raw,value:=f.get(target);inputs=append(inputs,raw);if target==a || target==b {renameBefore[target]=b16Strings(t,value["labels"])}}
+    b16Equal(t,renameBefore[a],[]string{"Old","old","side"});b16Equal(t,renameBefore[b],[]string{"new","old"})
     for _,pair:=range [][2]string{{"old"," old "},{"old",strings.Repeat("界",256)}}{
         before=f.meta();plan,err:=rpc.PlanLabelRenameFromResults(b16Project,pair[0],pair[1],inputs);if err==nil || len(plan.ChangeSet.Ops)!=0 || plan.Renamed!=0 || plan.Merged!=0 {t.Fatal("invalid rename produced a usable plan")};b16Equal(t,f.meta(),before)
     }
@@ -66,7 +68,7 @@ func b16DurableVector(t *testing.T, engine string) b16Outcome {
     absent,err:=rpc.PlanLabelRenameFromResults(b16Project,"absent","new",current);if err!=nil{t.Fatal(err)};b16Equal(t,absent.Renamed,0);b16Equal(t,absent.Merged,0);b16Equal(t,len(absent.ChangeSet.Ops),0)
     actualFinal:=map[string][]string{};for name,target:=range map[string]string{"rename":a,"merge":b,"destination":c,"empty":empty}{_,value:=f.get(target);actualFinal[name]=b16Strings(t,value["labels"])}
     _,patched:=f.get(id)
-    observed:=b16ObservedRename(t,commit,map[string][]string{a:{"Old","old","side"},b:{"new","old"}},map[string][]string{a:actualFinal["rename"],b:actualFinal["merge"]})
+    observed:=b16ObservedRename(t,commit,renameBefore,map[string][]string{a:actualFinal["rename"],b:actualFinal["merge"]})
     b16Equal(t,observed,b16Counts{Renamed:2,Merged:1})
     outcome:=b16Outcome{Initial:actualInitial,Patched:b16Strings(t,patched["labels"]),Renamed:observed.Renamed,Merged:observed.Merged,Final:actualFinal}
     if root:=os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR");root!=""{b16Write(t,filepath.Join(root,"b16-"+engine+"-durable-outcome.json"),outcome)}
@@ -151,7 +153,11 @@ func b16ActiveVector(t *testing.T, engine string) b16MixedOutcome {
 		_,bounded:=f.get(a); meta:=f.meta()
 		f.call("bead.update",map[string]any{"id":b16Ref(a),"fields":map[string]any{"title":"must not publish","labels":[]string{"lost",strings.Repeat("界",256)}}},true,"invalid_params")
 		_,refused:=f.get(a); b16Equal(t,refused,bounded); b16Equal(t,f.meta(),meta)
-		f.update(a,[]string{"old","side"}); f.labels(a,[]string{"old","side"})
+		f.update(a,[]string{"Red","red"}); f.labels(a,[]string{"Red","red"})
+		var caseCommit model.Commit
+		b16Decode(t,f.call("tx.apply",map[string]any{"changeSet":map[string]any{"ops":[]any{map[string]any{"kind":"patch","target":b16Ref(a),"fields":map[string]any{"labels":[]string{"Red","blue"}}}}}},true,""),&caseCommit)
+		b16Equal(t,len(caseCommit.Results),1);b16Equal(t,caseCommit.Results[0].Ref.ID,a);f.labels(a,[]string{"Red","blue"})
+		f.update(a,[]string{"Old","old","side"}); f.labels(a,[]string{"Old","old","side"})
 		_,value:=f.get(a); b16Equal(t,value["fields"],preservedFields)
 	})
 
@@ -187,7 +193,7 @@ func b16ActiveVector(t *testing.T, engine string) b16MixedOutcome {
 	for _,id:=range selected { _,value:=f.get(id); after[id]=b16Strings(t,value["labels"]) }
 	observed:=b16ObservedRename(t,commit,before,after)
 	b16Equal(t,observed,b16Counts{Renamed:4,Merged:3})
-	want:=map[string][]string{"active rename":{"new","side"},"active merge":{"new"},"rename":{"Old","new","side"},"merge":{"new"}}
+	want:=map[string][]string{"active rename":{"Old","new","side"},"active merge":{"new"},"rename":{"Old","new","side"},"merge":{"new"}}
 	names:=map[string]string{"active rename":a,"active merge":b,"rename":d1,"merge":d2}
 	check:=func() {
 		for name,id:=range names { f.labels(id,want[name]) }

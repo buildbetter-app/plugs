@@ -98,17 +98,23 @@ func TestB16CanonicalNativePublicLabels(t *testing.T) {
     n.command("active-empty",false,"--json","update","b16-w1","--set-labels","");n.labels("active-empty-state","b16-w1",[]string{})
     n.command("active-bound255",false,"--json","label","add","b16-w1",max);n.labels("active-bound255-state","b16-w1",[]string{max})
     n.command("active-bound256-refusal",true,"--json","label","add","b16-w1",strings.Repeat("界",256));n.labels("active-bound-refused-state","b16-w1",[]string{max})
-    n.command("active-reset",false,"--json","update","b16-w1","--set-labels","old,side")
+    n.command("active-red-case",false,"--json","update","b16-w1","--set-labels","Red,red");n.labels("active-red-case-before","b16-w1",[]string{"Red","red"})
+    n.query("active-red-case-filter",[]string{"active rename"},"--include-ephemeral","--label","red")
+    n.rename("active-red-case-rename","red","blue",1,0);n.labels("active-red-case-after","b16-w1",[]string{"Red","blue"})
+    n.command("active-reset",false,"--json","update","b16-w1","--set-labels","Old,old,side")
     n.create("b16-w2","active merge",[]string{"old","new"},true)
-    n.labels("wisp-initial-one","b16-w1",[]string{"old","side"});n.labels("wisp-initial-two","b16-w2",[]string{"new","old"})
+    n.labels("wisp-initial-one","b16-w1",[]string{"Old","old","side"});n.labels("wisp-initial-two","b16-w2",[]string{"new","old"})
     n.query("both-planes",[]string{"rename","merge","active rename","active merge"},"--include-ephemeral","--label","old")
     mixedCounts:=n.rename("two-plane-rename","old","new",4,3)
     mixed:=b16MixedOutcome{Counts:mixedCounts,Final:map[string][]string{
-        "active rename":n.labels("wisp-renamed","b16-w1",[]string{"new","side"}),
+        "active rename":n.labels("wisp-renamed","b16-w1",[]string{"Old","new","side"}),
         "active merge":n.labels("wisp-merged","b16-w2",[]string{"new"}),
         "rename":n.labels("durable-two-plane-one","b16-d1",[]string{"Old","new","side"}),
         "merge":n.labels("durable-two-plane-two","b16-d2",[]string{"new"}),
     }}
     r.writeJSON(filepath.Join(root,"b16-native-mixed-outcome.json"),mixed)
-    for _,engine:=range []string{"memory","sqlite","postgres"}{t.Run("paired-"+engine,func(t *testing.T){got:=b16DurableVector(t,engine);b16Equal(t,got,outcome);gotMixed:=b16ActiveVector(t,engine);b16Equal(t,gotMixed,mixed)})}
+    for _,engine:=range []string{"memory","sqlite","postgres"}{t.Run("paired-"+engine,func(t *testing.T){
+        t.Run("durable",func(t *testing.T){got:=b16DurableVector(t,engine);b16Equal(t,got,outcome)})
+        t.Run("active",func(t *testing.T){got:=b16ActiveVector(t,engine);b16Equal(t,got,mixed)})
+    })}
 }
