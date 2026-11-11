@@ -1,6 +1,7 @@
 package b13memory_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -87,7 +88,6 @@ func TestB13FullcardLiteralBoundariesAndPublicSearch(t *testing.T) {
 				t.Fatal("real ephemeral decoy was not created")
 			}
 			ephemeralID = invoked.Items[0].ID
-			result(t, f.call("bead.close", map[string]any{"id": ref(ephemeralID), "reason": "B13 closed public decoy"}, key("fullcard-close-decoy")))
 			capability, err := driver.RequireWorkflowCheckpointStore(f.store, f.lease)
 			if err != nil {
 				t.Fatal(err)
@@ -111,9 +111,58 @@ func TestB13FullcardLiteralBoundariesAndPublicSearch(t *testing.T) {
 			if err != nil || checkpoint.Generation == 0 || len(checkpoint.Payload) == 0 {
 				t.Fatal("actual workflow checkpoint missing", err)
 			}
-			seedRevision := f.seedExistingRows()
+			f.seedExistingRows()
 			planes := f.state()
-			want := map[string]memoryValue{"b13-empty": {ID: "b13-empty", Key: "empty legacy ✓", Content: "", Revision: seedRevision}}
+			filled, _ := f.accept("memory.save", map[string]any{"key": "empty legacy ✓", "content": "Previously empty, now replaced"}, key("fullcard-fill-empty"), model.OpPatch)
+			if filled.Results[0].Ref.ID != "b13-empty" {
+				t.Fatal("existing empty replacement changed identity")
+			}
+			want := map[string]memoryValue{"b13-empty": {ID: "b13-empty", Key: "empty legacy ✓", Content: "Previously empty, now replaced", Revision: filled.Revision}}
+			liveProof := func(phase string) {
+				t.Helper()
+				before := f.state()
+				read := decode[struct {
+					Bead struct {
+						ID, Project, Status, Plane, Kind, Plugin string
+						Fields                                   map[string]any `json:"fields"`
+					} `json:"bead"`
+				}](t, result(t, f.call("bead.get", map[string]any{"id": ref(ephemeralID)}, "")))
+				active := read.Bead
+				if active.ID != ephemeralID || active.Project != project || active.Plane != "ephemeral" || active.Plugin != workflowplugin.Alias || active.Kind != workflowplugin.ItemKind || active.Fields["title"] != "  Search KEY/Ω é  " || active.Status != "open" {
+					t.Fatalf("actual populated live workflow decoy lost: %+v", active)
+				}
+				point := memoryRow(t, result(t, f.call("memory.get", map[string]any{"id": "b13-empty"}, "")))
+				if !reflect.DeepEqual(point, want["b13-empty"]) {
+					t.Fatal("live-plane memory point differs from literal")
+				}
+				for _, query := range []string{"", "pReViOuSlY eMpTy"} {
+					f.search(query, "b13-empty")
+				}
+				f.search("sEaRcH kEy/ω É") // Both ordinary and active titles match; neither is memory.
+				brief := decode[struct {
+					Memories []json.RawMessage `json:"memories"`
+				}](t, result(t, f.call("agent.brief", map[string]any{"budgetTokens": 2000}, "")))
+				if got := memoryRows(t, brief.Memories); !reflect.DeepEqual(got, []memoryValue{want["b13-empty"]}) {
+					t.Fatalf("live decoy leaked into normal memory brief: %+v", got)
+				}
+				f.refuse("memory.get", map[string]any{"id": ephemeralID}, "", "not_found")
+				f.preserveOtherPlanes(planes, beadID)
+				gotCheckpoint, e := f.store.(driver.CheckpointStore).LoadCheckpoint(f.ctx, "plugin/workflow/default/durable")
+				if e != nil || !reflect.DeepEqual(gotCheckpoint, checkpoint) {
+					t.Fatal("memory work changed live workflow state", e)
+				}
+				requireSame(t, before, f.state())
+				f.retainFullcard(phase)
+			}
+			liveProof("live-decoy-with-nonempty-memory")
+			f.reopen() // SQL closes all handles and reopens the identical DSN; memory rebinds.
+			liveProof("live-decoy-with-nonempty-memory-reopened")
+			result(t, f.call("bead.close", map[string]any{"id": ref(ephemeralID), "reason": "B13 closed public decoy"}, key("fullcard-close-decoy")))
+			checkpoint, err = f.store.(driver.CheckpointStore).LoadCheckpoint(f.ctx, "plugin/workflow/default/durable")
+			if err != nil {
+				t.Fatal(err)
+			}
+			planes = f.state()
 			verify := func() {
 				f.verifyConnected(want, beadID)
 				f.preserveOtherPlanes(planes, beadID)
@@ -128,12 +177,6 @@ func TestB13FullcardLiteralBoundariesAndPublicSearch(t *testing.T) {
 					f.refuse("memory.get", map[string]any{"id": id}, "", "not_found")
 				}
 			}
-			verify()
-			filled, _ := f.accept("memory.save", map[string]any{"key": "empty legacy ✓", "content": "Previously empty, now replaced"}, key("fullcard-fill-empty"), model.OpPatch)
-			if filled.Results[0].Ref.ID != "b13-empty" {
-				t.Fatal("existing empty replacement changed identity")
-			}
-			want["b13-empty"] = memoryValue{ID: "b13-empty", Key: "empty legacy ✓", Content: "Previously empty, now replaced", Revision: filled.Revision}
 			verify()
 			for i, vector := range []struct{ name, content, key string }{
 				{"exact-eight", "Alpha bravo charlie delta echo foxtrot golf hotel", "alpha-bravo-charlie-delta-echo-foxtrot-golf-hotel"},

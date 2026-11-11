@@ -218,7 +218,7 @@ func TestB13CanonicalPublicMemoryCounterparts(t *testing.T) {
 		}
 		n.call("init", []string{"init", "--server", "--external", "--server-host", "127.0.0.1", "--server-port", strconv.Itoa(server.Port), "--database", "b13_memory", "--prefix", "b13", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet"}, 0)
 		server.RequireDatabaseDir(t, "b13_memory")
-		n.call("seed-empty-and-settings", []string{"--json", "sql", "INSERT INTO config (`key`,value) VALUES ('kv.memory.empty',''),('kv.b13-generic','generic survivor'),('b13.setting','settings survivor')"}, 0)
+		n.call("seed-empty-and-settings", []string{"--json", "sql", "INSERT INTO config (`key`,value) VALUES ('kv.memory.empty',''),('kv.memory.replace-empty',''),('kv.b13-generic','generic survivor'),('b13.setting','settings survivor')"}, 0)
 		// Publish the explicit present-empty/settings setup before operational
 		// memory writes. Their normal CLI commit guard refuses unrelated dirty
 		// internal settings; this baseline is setup, not native remember.
@@ -236,7 +236,7 @@ func TestB13CanonicalPublicMemoryCounterparts(t *testing.T) {
 				b13Decode(t, n.call("recall-"+v.label, []string{"--json", "recall", v.key}, v.exit), &got)
 				b13Same(t, got, map[string]any{"schema_version": json.Number("1"), "key": v.key, "value": v.value, "found": v.found})
 			}
-			n.view("initial", map[string]string{"empty": ""})
+			n.view("initial", map[string]string{"empty": "", "replace-empty": ""})
 		})
 		remember := func(label, key, content, action string) {
 			args := []string{"--json", "remember", content}
@@ -252,19 +252,23 @@ func TestB13CanonicalPublicMemoryCounterparts(t *testing.T) {
 			b13Same(t, got, map[string]any{"schema_version": json.Number("1"), "key": wantKey, "value": content, "action": action})
 		}
 		t.Run("existing-empty-reports-replacement", func(t *testing.T) {
-			remember("replace-existing-empty", "empty", b13FilledEmptyBody, "updated")
-			n.view("empty-replaced", map[string]string{"empty": b13FilledEmptyBody})
+			remember("replace-existing-empty", "replace-empty", b13FilledEmptyBody, "updated")
+			n.view("empty-replaced-present", map[string]string{"empty": "", "replace-empty": b13FilledEmptyBody})
+			var forgotten map[string]any
+			b13Decode(t, n.call("forget-replaced-empty-fixture", []string{"--json", "forget", "replace-empty"}, 0), &forgotten)
+			b13Same(t, forgotten, map[string]any{"schema_version": json.Number("1"), "key": "replace-empty", "deleted": "true"})
+			n.view("empty-replaced", map[string]string{"empty": ""})
 		})
 		t.Run("explicit-and-derived-unicode-keys", func(t *testing.T) {
 			remember("explicit", b13PublicKey, b13PublicBody, "remembered")
 			remember("neighbor", b13PublicKey+"neighbor", "exact neighbor", "remembered")
 			remember("trimmed-neighbor", b13TrimmedPublicKey, b13TrimmedPublicBody, "remembered")
 			remember("derived", "", b13DerivedBody, "remembered")
-			n.view("created", map[string]string{"empty": b13FilledEmptyBody, b13PublicKey: b13PublicBody, b13TrimmedPublicKey: b13TrimmedPublicBody, b13PublicKey + "neighbor": "exact neighbor", "keep-these-exact-words": b13DerivedBody})
+			n.view("created", map[string]string{"empty": "", b13PublicKey: b13PublicBody, b13TrimmedPublicKey: b13TrimmedPublicBody, b13PublicKey + "neighbor": "exact neighbor", "keep-these-exact-words": b13DerivedBody})
 		})
 		t.Run("replacement-and-noop-conservation", func(t *testing.T) {
 			remember("replace", b13PublicKey, b13PublicReplacement, "updated")
-			n.view("replaced", map[string]string{"empty": b13FilledEmptyBody, b13PublicKey: b13PublicReplacement, b13TrimmedPublicKey: b13TrimmedPublicBody, b13PublicKey + "neighbor": "exact neighbor", "keep-these-exact-words": b13DerivedBody})
+			n.view("replaced", map[string]string{"empty": "", b13PublicKey: b13PublicReplacement, b13TrimmedPublicKey: b13TrimmedPublicBody, b13PublicKey + "neighbor": "exact neighbor", "keep-these-exact-words": b13DerivedBody})
 			before := n.image("before-noop")
 			remember("same-value", b13PublicKey, b13PublicReplacement, "updated")
 			after := n.image("after-noop")
@@ -520,6 +524,7 @@ func b13ComparePlug(t *testing.T, root, engine string, native map[string]map[str
 	rows := []conformance.FixtureChange{
 		{Ref: model.RefByID("b13-empty", model.Natural64(0)), Kind: "memory", Op: model.OpCreate, Body: []byte(`{"id":"b13-empty","key":"empty","content":""}`)},
 		{Ref: model.RefByID("b13-setting", model.Natural64(0)), Kind: "config", Op: model.OpCreate, Body: []byte(`{"id":"b13-setting","key":"kv.memory.decoy","value":"generic survivor","content":"settings survivor"}`)},
+		{Ref: model.RefByID("b13-replace-empty", model.Natural64(0)), Kind: "memory", Op: model.OpCreate, Body: []byte(`{"id":"b13-replace-empty","key":"replace-empty","content":""}`)},
 	}
 	if imported {
 		rows = append(rows[1:], b13ConstructedSourceRows(t, store, engine)...)
@@ -529,7 +534,7 @@ func b13ComparePlug(t *testing.T, root, engine string, native map[string]map[str
 		t.Fatal(err)
 	}
 	initial := b13PlugImage(t, store)
-	ids := map[string]string{"empty": "b13-empty"}
+	ids := map[string]string{"empty": "b13-empty", "replace-empty": "b13-replace-empty"}
 	if imported {
 		for _, key := range []string{"empty", b13PublicKey} {
 			ids[key] = driver.SourcePlaneMirrorIDV1("memory", "", "config", key)
@@ -546,6 +551,11 @@ func b13ComparePlug(t *testing.T, root, engine string, native map[string]map[str
 			found[row.Ref.ID] = row
 		}
 		for _, original := range initial.Rows {
+			// This separately seeded mutable core row is the new replacement
+			// control, not an immutable imported source witness.
+			if original.Ref.ID == "b13-replace-empty" {
+				continue
+			}
 			b13Same(t, found[original.Ref.ID], original)
 			b13Same(t, after.Versions[original.Ref.ID], initial.Versions[original.Ref.ID])
 		}
@@ -646,16 +656,23 @@ func b13ComparePlug(t *testing.T, root, engine string, native map[string]map[str
 		b13Same(t, b13PlugImage(t, store), before)
 	})
 	t.Run("existing-empty-reports-replacement", func(t *testing.T) {
-		save("replace-existing-empty", "empty", b13FilledEmptyBody, 707)
+		save("replace-existing-empty", "replace-empty", b13FilledEmptyBody, 707)
 		if !imported {
-			view("empty-replaced")
+			view("empty-replaced-present")
 		} else {
 			// This constructed fixture additionally starts with the explicit
 			// source slot; its initial corpus differs from the native fixture.
 			var point service.Memory
-			b13Decode(t, call("source-empty-replaced", "memory.get", map[string]any{"id": ids["empty"]}, 0, ""), &point)
-			b13Same(t, point.Key, "empty")
+			b13Decode(t, call("source-empty-replaced", "memory.get", map[string]any{"id": ids["replace-empty"]}, 0, ""), &point)
+			b13Same(t, point.Key, "replace-empty")
 			b13Same(t, point.Content, b13FilledEmptyBody)
+			conserve()
+		}
+		call("forget-replaced-empty-fixture", "memory.delete", map[string]any{"id": ids["replace-empty"]}, 708, "")
+		forgotten["replace-empty"] = true
+		if !imported {
+			view("empty-replaced")
+		} else {
 			conserve()
 		}
 	})
@@ -715,6 +732,7 @@ func b13ComparePlug(t *testing.T, root, engine string, native map[string]map[str
 		}
 		view("forgotten")
 		before := b13PlugImage(t, store)
+		call("empty-now-absent", "memory.get", map[string]any{"id": ids["empty"]}, 0, "not_found")
 		call("forget-miss", "memory.delete", map[string]any{"id": ids["empty"]}, 723, "not_found")
 		b13Same(t, b13PlugImage(t, store), before)
 		reopen("after-forget")

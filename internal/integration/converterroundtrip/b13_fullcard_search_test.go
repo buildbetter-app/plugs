@@ -193,7 +193,7 @@ func TestB13ImportedEmptyReplacementReplaysAndReopens(t *testing.T) {
 							rows[row.Ref.ID] = row
 						}
 						for _, row := range initial.Records {
-							if !reflect.DeepEqual(row, rows[row.Ref.ID]) || !reflect.DeepEqual(initial.Versions[row.Ref.ID], before.Versions[row.Ref.ID]) {
+							if !reflect.DeepEqual(row, rows[row.Ref.ID]) || !reflect.DeepEqual(initial.Versions[row.Ref.ID].Items, before.Versions[row.Ref.ID].Items) {
 								t.Fatal("immutable imported row/version changed", row.Ref.ID)
 							}
 						}

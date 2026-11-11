@@ -8,7 +8,8 @@ receipt preserves this observation on replay; every other operation omits it.
 Unicode identity, public key/value search, true/false replay, and real durable
 bead and real ephemeral workflow decoys on all three engines. Memory reports
 process checkpoint lifetime without restart persistence; SQLite and PostgreSQL
-also prove physical reopen. This follows adopted PR467 and the 17:14Z ruling
+also prove physical reopen with the populated workflow item still live and
+publicly readable alongside a nonempty durable memory. This follows adopted PR467 and the 17:14Z ruling
 that supersedes the stale memory-refusal paragraph in workflow-contract.md. The B13
 native recording consumes the unchanged canonical build support and independently
 checks the same public vectors against actual pinned native CLI/SQL results.
