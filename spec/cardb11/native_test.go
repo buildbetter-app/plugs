@@ -3,6 +3,8 @@ package cardb20
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,6 +38,27 @@ type b11Native struct {
 	tables            []string
 }
 type b11Image map[string][]map[string]json.RawMessage
+
+const nativeDependencyNamespace = "bdd74eb9a20a554a985b54b8f3e64d8b"
+
+// nativeDependencyID independently projects the pinned native UUIDv5 rule.
+// The dependency type is deliberately absent from the name; only the source,
+// 0x1f separator and target endpoint identify the physical row.
+func nativeDependencyID(issueID, target string) string {
+	namespace, err := hex.DecodeString(nativeDependencyNamespace)
+	if err != nil {
+		panic(err)
+	}
+	h := sha1.New()
+	_, _ = h.Write(namespace)
+	_, _ = h.Write([]byte(issueID))
+	_, _ = h.Write([]byte{0x1f})
+	_, _ = h.Write([]byte(target))
+	digest := h.Sum(nil)
+	digest[6] = (digest[6] & 0x0f) | 0x50
+	digest[8] = (digest[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%s", digest[0:4], digest[4:6], digest[6:8], digest[8:10], hex.EncodeToString(digest[10:]))
+}
 
 func b11JSON(t *testing.T, path string, value any) {
 	t.Helper()
@@ -585,9 +608,16 @@ func TestB11NativePublicMetadataComparisonDomains(t *testing.T) {
 			for i, test := range cases {
 				from, to := fmt.Sprintf("b11-%d", i*2+1), fmt.Sprintf("b11-%d", i*2+2)
 				initialBefore := n.image(test.Name + "-initial-before")
+				wantID := nativeDependencyID(from, to)
+				if got := b11Text(t, n.edge(initialBefore, from, to)["id"]); got != wantID {
+					t.Fatalf("native initial endpoint UUID differs: %q want %q", got, wantID)
+				}
 				apply(test.Name+"-initial", from, to, test.Initial)
 				before := n.image(test.Name + "-before")
 				n.metadataDelta(initialBefore, before, from, to, test.Initial)
+				if got := b11Text(t, n.edge(before, from, to)["id"]); got != wantID {
+					t.Fatalf("native public re-add changed endpoint UUID: %q want %q", got, wantID)
+				}
 				if got := b11Text(t, n.edge(before, from, to)["metadata"]); got != test.InitialStored {
 					t.Fatalf("native initial SQL metadata differs: %q want=%q", got, test.InitialStored)
 				}
@@ -599,6 +629,9 @@ func TestB11NativePublicMetadataComparisonDomains(t *testing.T) {
 					}
 				} else {
 					n.metadataDelta(before, after, from, to, test.Incoming)
+				}
+				if got := b11Text(t, n.edge(after, from, to)["id"]); got != wantID {
+					t.Fatalf("native metadata re-add changed endpoint UUID: %q want %q", got, wantID)
 				}
 				if got := b11Text(t, n.edge(after, from, to)["metadata"]); got != test.Stored {
 					t.Fatalf("native SQL metadata readback differs: %q want=%q", got, test.Stored)
