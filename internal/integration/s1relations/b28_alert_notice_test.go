@@ -232,6 +232,8 @@ type b28AlertCommitRefusal struct {
 
 type b28AlertCommitRefusalTx struct {
 	driver.WriteTx
+	driver.GraphSourceWriter
+	driver.CheckpointGuardTx
 	owner *b28AlertCommitRefusal
 }
 
@@ -240,7 +242,9 @@ func (s *b28AlertCommitRefusal) Write(ctx context.Context, lease driver.ActiveLe
 	if err != nil {
 		return nil, err
 	}
-	return &b28AlertCommitRefusalTx{WriteTx: tx, owner: s}, nil
+	// Retain the real ordinary graph/checkpoint capabilities. Only Commit is
+	// replaced, after the driver's actual staging has completed.
+	return &b28AlertCommitRefusalTx{WriteTx: tx, GraphSourceWriter: tx.(driver.GraphSourceWriter), CheckpointGuardTx: tx.(driver.CheckpointGuardTx), owner: s}, nil
 }
 
 func (tx *b28AlertCommitRefusalTx) Commit(ctx context.Context, _ driver.ChangesetHeader) (model.Changeset, error) {
