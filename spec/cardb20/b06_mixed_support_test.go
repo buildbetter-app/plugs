@@ -35,6 +35,15 @@ func b06InstallMixed(f *b06PlugFixture) *workflowplugin.Provider {
 	if err != nil {
 		f.t.Fatal(err)
 	}
+	marker, ok := state.(interface{ Persistent() bool })
+	wantLifetime := driver.CheckpointLifetimeRestart
+	if f.engine == "memory" {
+		wantLifetime = driver.CheckpointLifetimeProcess
+	}
+	if !ok || marker.Persistent() != (f.engine != "memory") || store.WorkflowCheckpointLifetime() != wantLifetime {
+		f.t.Fatalf("host workflow lifetime/persistence misreported: engine%s lifetime%s persistent%t", f.engine, store.WorkflowCheckpointLifetime(), ok && marker.Persistent())
+	}
+	f.t.Logf("B06_LIFETIME engine=%s lifetime=%s Persistent=%t", f.engine, store.WorkflowCheckpointLifetime(), marker.Persistent())
 	provider, err := workflowplugin.New(state)
 	if err != nil {
 		f.t.Fatal(err)
@@ -215,7 +224,7 @@ func b06RunMixedPlug(t *testing.T, engine string) [][]string {
 		{"b06-child", ids[6], "parent-child"}, {"b06-grandchild", "b06-child", "parent-child"},
 	}
 	for _, edge := range edges {
-		b06RequireSuccess[model.Commit](t, f.link(edge))
+		b06MixedCheckedLink(f, edge)
 	}
 	b06MixedRefuse(f, b06Edge{ids[0], ids[0], "tracks"}, "invalid_params")
 	b06MixedRefuse(f, b06Edge{ids[5], "b06-schedule", "blocks"}, "ontology_guard_failed")
@@ -244,6 +253,8 @@ func b06RunMixedPlug(t *testing.T, engine string) [][]string {
 	}
 	check()
 	b06MixedPolicy(f, provider, [][]string{{"b06-x-a", "", "b06-x-b"}, {"b06-x-c", ""}})
+	b06MixedReadFaults(f)
+	b06MixedOrdered(f)
 	b06Retain(t, "mixed-public-summary.json", map[string]any{"actual_ids_in_declaration_order": ids, "accepted_edges": edges, "raw_ordered_paths": want, "engines": engine, "sql_reopen": engine != "memory", "memory_lifetime": "same_store", "private": "HARD_DISABLED", "official": "UNSPENT"})
 	t.Logf("B06_MIXED engine=%s both_endpoint_directions=true blocked_members=retained lowest_id=true parallel=collapsed unreadable=honest pure_tracks=excluded waits_for=excluded self_cycle_ancestor=refused no_loss=true", engine)
 	return want

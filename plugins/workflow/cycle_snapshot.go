@@ -36,17 +36,18 @@ func (p *Provider) ReadCycleSnapshot(ctx context.Context, by model.PrincipalRef,
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	var logical json.RawMessage
+	var revision pluginapi.Revision
 	var head driver.CoreSnapshotExpectation
 	var namespace driver.CheckpointExpectation
 	var err error
 	if snapshot, ok := p.state.(interface {
 		ReadWorkflowRuntimeCheckpoint(context.Context) (json.RawMessage, pluginapi.Revision, driver.CoreSnapshotExpectation, driver.CheckpointExpectation, error)
 	}); ok {
-		logical, _, head, namespace, err = snapshot.ReadWorkflowRuntimeCheckpoint(ctx)
+		logical, revision, head, namespace, err = snapshot.ReadWorkflowRuntimeCheckpoint(ctx)
 	} else if snapshot, ok := p.state.(interface {
 		ReadSourceRuntimeCheckpoint(context.Context) (json.RawMessage, pluginapi.Revision, driver.CoreSnapshotExpectation, driver.CheckpointExpectation, error)
 	}); ok && p.source != nil {
-		logical, _, head, namespace, err = snapshot.ReadSourceRuntimeCheckpoint(ctx)
+		logical, revision, head, namespace, err = snapshot.ReadSourceRuntimeCheckpoint(ctx)
 	} else {
 		return CycleSnapshot{}, driver.ErrUnsupported
 	}
@@ -54,6 +55,9 @@ func (p *Provider) ReadCycleSnapshot(ctx context.Context, by model.PrincipalRef,
 		return CycleSnapshot{}, err
 	}
 	if head.StoreID == "" || head.Incarnation == "" || namespace.StoreID != head.StoreID || namespace.Incarnation != head.Incarnation || driver.ValidateCheckpointKey(namespace.Key) != nil {
+		return CycleSnapshot{}, driver.ErrCheckpointConflict
+	}
+	if p.source == nil && namespace.Key != "plugin/"+p.plugin+"/"+p.instance+"/durable" {
 		return CycleSnapshot{}, driver.ErrCheckpointConflict
 	}
 	var value persisted
@@ -78,7 +82,7 @@ func (p *Provider) ReadCycleSnapshot(ctx context.Context, by model.PrincipalRef,
 	if err != nil {
 		return CycleSnapshot{}, err
 	}
-	result.Head, result.Namespace = head, namespace
+	result.Head, result.Namespace, result.Revision = head, namespace, revision
 	return result, nil
 }
 

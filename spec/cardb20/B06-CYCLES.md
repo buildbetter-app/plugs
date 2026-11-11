@@ -108,3 +108,19 @@ head-guarded checkpoint save, retaining checkpoint-only history. Ordered batch
 and ordinary links validate against their existing pinned core/staged provider
 image and retain the original Writer publication guards and sentinels. No
 concurrent claim, CAS fixture, receiver or Ready implementation is changed.
+
+The correction child retains the first candidate's original build failure and
+repairs the relocated helper import and exact AST literal bindings. Dynamic
+binding negatives still reject copied, changed or widened sites. Additional
+public controls refuse unsupported, mismatched and malformed joint snapshots
+without a report or state change; separate core and checkpoint reader-close
+failures publish no result. The coordinated host method joins read and close
+errors and clears every failed snapshot output.
+
+Ordered mixed transactions prove cycle, ancestor and self refusal after a
+preceding durable patch, exact successful operation revisions and endpoint
+readback, receipt replay without extra history, and SQL reopen. Direct active
+links retain their exact checkpoint-only commit and public readback. In line
+with the binding 17:14 ruling, memory proves the positive process-lifetime
+behavior with Persistent()==false; only SQLite and PostgreSQL promise restart
+survival. A provider missing both lifetime and persistence markers still refuses.
