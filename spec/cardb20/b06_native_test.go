@@ -501,7 +501,7 @@ func (r *b06NativeRecorder) boundaries(binary string, server *publicnative.Serve
 	r.requirePaths(r.cycles(w, binary, "count-json-limit-one", false), [][]string{{"b06-count-a", "b06-count-z"}, {"b06-parallel-a", "b06-parallel-b"}})
 	before := r.image(w, binary, "count-text-before")
 	text := r.command(w, "count-text-limit-one", binary, []string{"dep", "cycles", "--limit", "1"}, false)
-	if !bytes.Contains(text, []byte("2")) || !bytes.Contains(text, []byte("b06-count-a")) || bytes.Contains(text, []byte("b06-parallel-a")) {
+	if !bytes.Contains(text, []byte("Found 2 dependency cycles:")) || !bytes.Contains(text, []byte("... and 1 more not shown. The count above is the whole report; use --limit 0 to print all of it.")) || !bytes.Contains(text, []byte("b06-count-a")) || bytes.Contains(text, []byte("b06-parallel-a")) {
 		r.t.Fatalf("native count/truncation text: %s", text)
 	}
 	if !reflect.DeepEqual(before, r.image(w, binary, "count-text-after")) {
