@@ -777,7 +777,7 @@ func scanFile(path string, content []byte, cfg Config, provenance bool) []Findin
 	b02Offsets := b02RecordingLiteralOffsets(path, content)
 	b07Offsets := b07RepresentedLiteralOffsets(path, content)
 	b07ProtocolOffsets := b07NativeProtocolLiteralOffsets(path, content)
-	if path == externalProtocolSource && len(cfg.ExternalProtocolString.PhysicalValues) != 0 || path == nativeManifestProtocolSource && len(cfg.NativeManifestStrings.Values) != 0 || path == b01NativeGoSource || path == b01NativeJSONSource || path == b03CatalogJSONSource || path == b03CatalogGoSource || path == nativeHTTPDomainSource || hasNativeControlAllowance(path, cfg) || path == sourcePlaneProtocolSource || path == sourcePlaneFixtureSource || len(undoLiteralBindings[path]) != 0 || len(b07Offsets) != 0 || len(b07ProtocolOffsets) != 0 || path == b02NativeRecordingSource {
+	if path == externalProtocolSource && len(cfg.ExternalProtocolString.PhysicalValues) != 0 || path == nativeManifestProtocolSource && len(cfg.NativeManifestStrings.Values) != 0 || path == b01NativeGoSource || path == b01NativeJSONSource || path == b03CatalogJSONSource || path == b03CatalogGoSource || path == nativeHTTPDomainSource || hasNativeControlAllowance(path, cfg) || path == sourcePlaneProtocolSource || path == sourcePlaneFixtureSource || len(undoLiteralBindings[path]) != 0 || len(b07Offsets) != 0 || len(b07ProtocolOffsets) != 0 || path == b02NativeRecordingSource || len(b02Offsets) != 0 {
 		masked := append([]byte(nil), content...)
 		sourceLiterals := goStringLiterals(path, content)
 		if path == b01NativeJSONSource || path == b03CatalogJSONSource {

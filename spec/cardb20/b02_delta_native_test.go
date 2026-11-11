@@ -168,8 +168,13 @@ func TestB02NativeNewPublicWriterWIPAndReasonProvenance(t *testing.T) {
 	})
 	t.Run("new-reason-provenance", func(t *testing.T) {
 		w := newB02DeltaCLI(t, cli, filepath.Join(root, "new-reason-provenance"))
-		for _, role := range []string{"root", "spawner", "open-child", "done-child", "parent"} {
-			w.create(role)
+		for _, role := range []string{"root", "spawner", "open-child", "done-child", "parent", "open-parent", "open-fallback"} {
+			if role == "open-fallback" {
+				w.ids[role] = "b02-" + role
+				w.run("create-"+role, "create", "--id", w.ids[role], "--title", "B02 "+role, "--type", "task", "--force", "--status", "open", "--waits-for", w.ids["spawner"], "--waits-for-gate", "all-children", "--json")
+			} else {
+				w.create(role)
+			}
 		}
 		for _, role := range []string{"open-child", "done-child"} {
 			w.run("parent-"+role, "update", w.ids[role], "--parent", w.ids["spawner"], "--json")
@@ -181,16 +186,17 @@ func TestB02NativeNewPublicWriterWIPAndReasonProvenance(t *testing.T) {
 		}
 		w.run("multi-ordinary", "dep", "add", w.ids["multi"], w.ids["root"], "--type", "blocks", "--json")
 		w.run("fallback-parent", "update", w.ids["fallback"], "--parent", w.ids["parent"], "--json")
+		w.run("open-fallback-parent", "update", w.ids["open-fallback"], "--parent", w.ids["open-parent"], "--json")
 		statuses := map[string]string{}
 		for role := range w.ids {
 			statuses[role] = "open"
 		}
 		statuses["done-child"] = "closed"
-		initial := map[string][]string{"multi": {"root", "spawner"}, "undisplayed": {"spawner"}, "fallback": {"spawner"}}
+		initial := map[string][]string{"multi": {"root", "spawner"}, "undisplayed": {"spawner"}, "fallback": {"spawner"}, "open-fallback": {"spawner"}}
 		w.observe("satisfied-any-shown-beside-ordinary", initial, statuses)
 		w.run("closed-spawner-open-child", "close", w.ids["spawner"], "--force", "--reason", "B02 exact native display provenance", "--json")
 		statuses["spawner"] = "closed"
-		w.observe("closed-spawner-omission-and-parent-fallback", map[string][]string{"multi": {"root"}, "fallback": {"parent"}}, statuses)
+		w.observe("closed-spawner-omission-and-parent-fallback", map[string][]string{"multi": {"root"}, "fallback": {"parent"}, "open-fallback": {"open-parent"}}, statuses)
 		w.run("reopen-spawner", "reopen", w.ids["spawner"], "--reason", "B02 exact native live reopen", "--json")
 		statuses["spawner"] = "open"
 		w.observe("reason-spawner-reopened", initial, statuses)

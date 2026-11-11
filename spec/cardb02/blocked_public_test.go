@@ -256,7 +256,7 @@ func TestB02PublicBlockedNativeGateReasonsAndStaleFlags(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			f := newBlockedFixture(t, engine)
-			for _, role := range []string{"root", "spawner", "open-child", "done-child", "all", "any-plus-root", "childless", "childless-any", "also", "stale-true", "closed-subject", "parent", "fallback"} {
+			for _, role := range []string{"root", "spawner", "open-child", "done-child", "all", "any-plus-root", "childless", "childless-any", "also", "stale-true", "closed-subject", "parent", "fallback", "open-parent", "open-fallback"} {
 				f.create(role)
 			}
 			f.link("open-child", "spawner", "parent-child", nil)
@@ -269,6 +269,8 @@ func TestB02PublicBlockedNativeGateReasonsAndStaleFlags(t *testing.T) {
 			f.link("also", "childless", "waits-for", &model.LinkMetadata{Gate: "all-children", AlsoBlocks: true})
 			f.link("parent", "root", "blocks", nil)
 			f.link("fallback", "parent", "parent-child", nil)
+			f.link("open-fallback", "open-parent", "parent-child", nil)
+			f.link("open-fallback", "spawner", "waits-for", &model.LinkMetadata{Gate: "all-children"})
 			f.write("bead.close", map[string]any{"id": f.refs["closed-subject"]})
 			f.link("closed-subject", "root", "blocks", nil)
 			state := f.h.Capture()
@@ -291,7 +293,7 @@ func TestB02PublicBlockedNativeGateReasonsAndStaleFlags(t *testing.T) {
 			if _, err := conformance.Seed(context.Background(), f.h.Runtime.Store, f.h.Runtime.Lease, driver.ChangesetHeader{Time: time.Date(2026, 11, 11, 17, 0, 0, 0, time.UTC)}, changes); err != nil {
 				t.Fatal(err)
 			}
-			initial := map[string][]string{"all": {"spawner"}, "any-plus-root": {"root", "spawner"}, "also": {"childless"}, "parent": {"root"}, "fallback": {"parent"}}
+			initial := map[string][]string{"all": {"spawner"}, "any-plus-root": {"root", "spawner"}, "also": {"childless"}, "parent": {"root"}, "fallback": {"parent"}, "open-fallback": {"spawner"}}
 			f.observe("gates-initial-stale", initial)
 			// Membership retains the live all-children condition. Native display omits
 			// a closed spawner, even when it is the reason the stored set is blocked.
@@ -302,7 +304,7 @@ func TestB02PublicBlockedNativeGateReasonsAndStaleFlags(t *testing.T) {
 			for _, role := range []string{"open-child", "done-child"} {
 				f.link(role, "spawner", "parent-child", nil)
 			}
-			f.observe("closed-spawner-open-child", map[string][]string{"any-plus-root": {"root"}, "also": {"childless"}, "parent": {"root"}, "fallback": {"parent"}})
+			f.observe("closed-spawner-open-child", map[string][]string{"any-plus-root": {"root"}, "also": {"childless"}, "parent": {"root"}, "fallback": {"parent"}, "open-fallback": {"open-parent"}})
 			f.write("bead.reopen", map[string]any{"id": f.refs["spawner"]})
 			f.observe("spawner-reopened", initial)
 			f.write("bead.close", map[string]any{"id": f.refs["open-child"]})
