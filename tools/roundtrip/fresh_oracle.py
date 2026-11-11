@@ -49,7 +49,14 @@ def main():
     parser.add_argument("--helpers-sha256", required=True)
     parser.add_argument("--restore-time", required=True)
     parser.add_argument("--producer-head", required=True)
+    parser.add_argument("--restore-mode", choices=("full", "partial", "snapshot"), default="full")
+    parser.add_argument("--restore-first-sequence", type=int)
     args = parser.parse_args()
+    if args.restore_mode == "partial":
+        if args.restore_first_sequence is None or not 1 <= args.restore_first_sequence <= (1 << 64) - 1:
+            raise ValueError("Partial requires a positive source ordinal")
+    elif args.restore_first_sequence is not None:
+        raise ValueError("Full and Snapshot cannot supply a source ordinal")
     guard()
     for path in (args.capture, args.helpers):
         if not path.is_absolute() or path.resolve(strict=True) != path:
@@ -154,6 +161,8 @@ def main():
             commits = replay.header["commit_count"]
             if len(states) != commits + 2 or sorted(s["sequence"] for s in states if s["kind"] == "commit") != list(range(1, commits + 1)):
                 raise ValueError("complete state census differs, including empty source commits")
+            if args.restore_mode == "partial" and args.restore_first_sequence > commits:
+                raise ValueError("Partial source ordinal is outside the authenticated capture")
             write(oracle / "independent-replay.json", [json_bytes(replay_result)])
     ledger_binding = write(oracle / "tables.ndjson", (json_bytes(item) for item in ledger))
     states_binding = write(oracle / "states.ndjson", (json_bytes(item) for item in states))
@@ -162,8 +171,10 @@ def main():
                    source_identity=dict(store_id=root["store_id"], project=root["projects"][0]),
                    producer_head=args.producer_head, oracle=str(oracle),
                    ledger_sha256=ledger_binding["sha256"], states_sha256=states_binding["sha256"],
-                   restore_time=args.restore_time, restore_mode="full",
+                   restore_time=args.restore_time, restore_mode=args.restore_mode,
                    journal_table="bd_events_journal", commits=commits)
+    if args.restore_mode == "partial":
+        request["restore_first_sequence"] = args.restore_first_sequence
     binding = write(args.output / "request.json", [json_bytes(request)])
     write(args.output / "INPUT-BINDING.json", [json_bytes(dict(
         format="public-id-style-a-independent-oracle/1", request=binding,

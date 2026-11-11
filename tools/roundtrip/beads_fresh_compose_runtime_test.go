@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,6 +12,10 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/publicnative"
 )
+
+// The shared file is adopted byte for byte from this owner-supplied source.
+// This identity grants no runtime or landing qualification to this caller.
+const freshSharedCaptureSource = "3b041a43f4639ffb755c8d893d42e926b23ff1fb"
 
 func freshBuildProducer(t *testing.T, root string) string {
 	return (publicnative.SourceBuilder{T: t, Root: root, SourceDirectory: "testdata/fresh-native", Target: "//tools/native-physical-capture:native-physical-capture"}).Build(publicnative.CanonicalSource{
@@ -63,11 +68,11 @@ func freshRetainConsumer(t *testing.T, root string) string {
 	if freshFileSHA(t, path) != freshFileSHA(t, source) {
 		t.Fatal("composed consumer ELF changed on export")
 	}
-	freshJSON(t, filepath.Join(root, "consumer-elf.json"), map[string]any{"source_runfile": source, "export": path, "sha256": freshFileSHA(t, path), "source_head": os.Getenv("GITHUB_SHA"), "run_id": os.Getenv("GITHUB_RUN_ID"), "entry": "TestPublicIDStyleASameRunContinuation", "shared_dependency": "c0765fdab0f622980fbc72f82388aca86e52e44a"})
+	freshJSON(t, filepath.Join(root, "consumer-elf.json"), map[string]any{"source_runfile": source, "export": path, "sha256": freshFileSHA(t, path), "source_head": os.Getenv("GITHUB_SHA"), "run_id": os.Getenv("GITHUB_RUN_ID"), "entry": "TestPublicIDStyleASameRunContinuation", "shared_dependency": freshSharedCaptureSource})
 	return path
 }
 
-func freshFullCase(t *testing.T, root string, source publicnative.SourceSession, item freshCase, producer, consumer string, result *freshResult) {
+func freshNativeCase(t *testing.T, root string, source publicnative.SourceSession, item freshCase, producer, consumer string, result *freshResult) {
 	t.Helper()
 	freshGuard(t)
 	caseRoot := filepath.Join(root, item.Engine+"-"+item.Name)
@@ -119,17 +124,29 @@ func freshFullCase(t *testing.T, root string, source publicnative.SourceSession,
 	restoreTime := time.Now().UTC().Format(time.RFC3339Nano)
 	helper := freshRunfile(t, filepath.Join(os.Getenv("TEST_WORKSPACE"), "tools/roundtrip/testdata/fresh-native/independent-row-replay.tar.gz"))
 	adapter := freshRunfile(t, filepath.Join(os.Getenv("TEST_WORKSPACE"), "tools/roundtrip/fresh_oracle.py"))
-	_, err = freshCommand(t, caseRoot, "independent-oracle", workspace, "/usr/bin/python3", []string{adapter, "--capture", capture, "--output", oracle, "--helpers", helper, "--helpers-sha256", "b826c9e069e000007cc1f3a7c5c137a2d5113cb51276b84ceec433636076ff02", "--restore-time", restoreTime, "--producer-head", "1a75f75feae282890c4b9b8769c54e8b6a23c2f4"}, freshChildEnv(workspace), 10*time.Minute)
+	oracleArgs := []string{adapter, "--capture", capture, "--output", oracle, "--helpers", helper, "--helpers-sha256", "b826c9e069e000007cc1f3a7c5c137a2d5113cb51276b84ceec433636076ff02", "--restore-time", restoreTime, "--producer-head", "1a75f75feae282890c4b9b8769c54e8b6a23c2f4", "--restore-mode", item.Mode}
+	var firstSequence json.RawMessage
+	if item.Mode == "partial" {
+		// A source ordinal, fixed before target creation. The independent
+		// oracle must authenticate both this image and its predecessor.
+		firstSequence = json.RawMessage("2")
+		oracleArgs = append(oracleArgs, "--restore-first-sequence", "2")
+	}
+	_, err = freshCommand(t, caseRoot, "independent-oracle", workspace, "/usr/bin/python3", oracleArgs, freshChildEnv(workspace), 10*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
 	result.NativeContinuation = "STARTED"
-	request := freshNativeContinuation(t, item, filepath.Join(caseRoot, "native-evidence"), workspace, mutable, source.Binary, result.CaptureSHA256, freshFileSHA(t, producer), *result)
+	request := freshNativeContinuation(t, item, filepath.Join(caseRoot, "native-evidence"), workspace, mutable, source.Binary, result.CaptureSHA256, freshFileSHA(t, producer), firstSequence, *result)
 	result.NativeContinuation = "COMPLETED"
 	requestPath := filepath.Join(caseRoot, "native-evidence", "native-continuation-request.json")
 	result.RequestSHA256 = freshFileSHA(t, requestPath)
 	result.ConsumerELFSHA256 = freshFileSHA(t, consumer)
-	requestBinding := map[string]any{"format": "public-id-style-a-case-input-binding/1", "case": request.Case, "run_id": os.Getenv("GITHUB_RUN_ID"), "capture_sha256": result.CaptureSHA256, "native_request_sha256": result.RequestSHA256, "consumer_elf_sha256": result.ConsumerELFSHA256, "restore_time": restoreTime, "shared_dependency": "c0765fdab0f622980fbc72f82388aca86e52e44a", "plug_execution": "NOT_RUN", "equality_credit": 0}
+	requestBinding := map[string]any{"format": "public-id-style-a-case-input-binding/1", "case": request.Case, "run_id": os.Getenv("GITHUB_RUN_ID"), "capture_sha256": result.CaptureSHA256, "native_request_sha256": result.RequestSHA256, "consumer_elf_sha256": result.ConsumerELFSHA256, "restore_time": restoreTime, "shared_dependency": freshSharedCaptureSource, "plug_execution": "NOT_RUN", "equality_credit": 0}
+	requestBinding["restore_mode"] = item.Mode
+	if firstSequence != nil {
+		requestBinding["restore_first_sequence"] = firstSequence
+	}
 	freshJSON(t, filepath.Join(caseRoot, "FROZEN-CASE-INPUTS.json"), requestBinding)
 	for _, file := range []string{requestPath, filepath.Join(caseRoot, "FROZEN-CASE-INPUTS.json")} {
 		if err := os.Chmod(file, 0444); err != nil {
@@ -165,11 +182,43 @@ func freshFullCase(t *testing.T, root string, source publicnative.SourceSession,
 		if strictTypedJSON(data, &observed) != nil {
 			t.Fatal("invalid original consumer success record")
 		}
-		if name == "SUCCESS.json" && (observed["capture_sha256"] != result.CaptureSHA256 || observed["elf_sha256"] != result.ConsumerELFSHA256 || observed["post_continuation_reopen_asserted"] != true || observed["restore_mode"] != "full") {
+		if name == "SUCCESS.json" && (observed["capture_sha256"] != result.CaptureSHA256 || observed["elf_sha256"] != result.ConsumerELFSHA256 || observed["post_continuation_reopen_asserted"] != true || observed["restore_mode"] != item.Mode) {
 			t.Fatal("shared original success binding differs")
 		}
-		if name == "id-result.json" && (observed["case"] != request.Case || observed["equality"] != true || observed["post_write_reopen_asserted"] != true) {
+		if name == "SUCCESS.json" {
+			evidence, supplied := observed["native_delta_history"]
+			if item.Mode == "full" {
+				if supplied {
+					t.Fatal("Full acquired a selected-mode evidence declaration")
+				}
+			} else {
+				selected, ok := evidence.(map[string]any)
+				if !ok || selected["mode"] != item.Mode || selected["archiveSha256"] != result.CaptureSHA256 {
+					t.Fatal("actual selected-mode evidence/source differs")
+				}
+				wantFirst := json.Number("0")
+				if item.Mode == "partial" {
+					wantFirst = json.Number("2")
+				}
+				if selected["firstSequence"] != wantFirst {
+					t.Fatal("actual selected-mode evidence changed the source ordinal")
+				}
+			}
+		}
+		if name == "id-result.json" && (observed["case"] != request.Case || observed["restore_mode"] != item.Mode || observed["equality"] != true || observed["post_write_reopen_asserted"] != true) {
 			t.Fatal("actual native equality incomplete")
+		}
+		if name == "id-result.json" {
+			var wantFirst any
+			if item.Mode == "partial" {
+				wantFirst = json.Number("2")
+			}
+			if observed["restore_first_sequence"] != wantFirst {
+				t.Fatal("actual consumer compared a different source ordinal")
+			}
+		}
+		if name == "post-continuation-reopen.json" && (observed["driver"] != item.Engine || observed["restore_mode"] != item.Mode || observed["completed"] != true) {
+			t.Fatal("actual post-write reopen mode/driver differs")
 		}
 	}
 	result.PlugRestore, result.PlugContinuation = "COMPLETED", "COMPLETED"

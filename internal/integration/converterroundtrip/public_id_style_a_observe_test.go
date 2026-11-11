@@ -278,7 +278,7 @@ func (c *publicIDConsumer) observe(t *testing.T, ctx context.Context, store driv
 // The existing shared lifecycle owner invokes this on its second reopened
 // target. It observes only; it never repeats writes or owns target handles.
 func (c *publicIDConsumer) assertReopened(t *testing.T, ctx context.Context, store driver.Store, lease driver.ActiveLease, profile driver.RestoreImportProfile, report Report) error {
-	if !c.wrote || c.asserted || report.Archive == nil || report.Archive.SHA256() != c.request.CaptureSHA256 || profile.HistoryMode != driver.RestoreHistoryModeFull {
+	if !c.wrote || c.asserted || report.Archive == nil || report.Archive.SHA256() != c.request.CaptureSHA256 || publicIDProfile(c.request, profile) != nil {
 		return fmt.Errorf("post-write assertion phase/source differs")
 	}
 	after, err := c.observe(t, ctx, store)

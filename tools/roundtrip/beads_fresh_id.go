@@ -60,6 +60,7 @@ type freshNativeRequest struct {
 	Case               string                 `json:"case"`
 	Engine             string                 `json:"engine"`
 	Mode               string                 `json:"mode"`
+	FirstSequence      json.RawMessage        `json:"restore_first_sequence,omitempty"`
 	CaptureSHA256      string                 `json:"capture_sha256"`
 	RecipeExportSHA256 string                 `json:"recipe_export_sha256"`
 	NativeCLISHA256    string                 `json:"native_cli_sha256"`

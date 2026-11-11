@@ -52,6 +52,7 @@ type publicIDRequest struct {
 	Case               string              `json:"case"`
 	Engine             string              `json:"engine"`
 	Mode               string              `json:"mode"`
+	FirstSequence      json.RawMessage     `json:"restore_first_sequence,omitempty"`
 	CaptureSHA256      string              `json:"capture_sha256"`
 	RecipeExportSHA256 string              `json:"recipe_export_sha256"`
 	NativeCLISHA256    string              `json:"native_cli_sha256"`
@@ -101,8 +102,8 @@ func publicIDInput(t *testing.T) publicIDRequest {
 	if err := publicIDDecode(raw, &request); err != nil {
 		t.Fatal(err)
 	}
-	if request.Format != "public-id-style-a-same-run/1" || request.RunID == "" || request.RunID != os.Getenv("GITHUB_RUN_ID") || request.Case != request.Engine+"/complete" || request.Engine != os.Getenv("PLUG_PUBLIC_PROOF_DRIVER") || request.Mode != "full" || len(request.CaptureSHA256) != 64 || len(request.RecipeExportSHA256) != 64 || len(request.NativeCLISHA256) != 64 || len(request.ProducerSHA256) != 64 || len(request.Operations) != 5 || len(request.Items) != 3 || len(request.Comments) != 2 {
-		t.Fatal("native Full case/source/operation census differs")
+	if request.Format != "public-id-style-a-same-run/1" || request.RunID == "" || request.RunID != os.Getenv("GITHUB_RUN_ID") || request.Engine != os.Getenv("PLUG_PUBLIC_PROOF_DRIVER") || len(request.CaptureSHA256) != 64 || len(request.RecipeExportSHA256) != 64 || len(request.NativeCLISHA256) != 64 || len(request.ProducerSHA256) != 64 || len(request.Operations) != 5 || len(request.Items) != 3 || len(request.Comments) != 2 {
+		t.Fatal("native case/source/operation census differs")
 	}
 	if err := publicIDValidateRequest(request); err != nil {
 		t.Fatal(err)
@@ -143,6 +144,7 @@ func TestPublicIDStyleASameRunContinuation(t *testing.T) {
 	}
 	publicProofJSON(t, filepath.Join(os.Getenv("PLUG_PUBLIC_PROOF_OUTPUT"), "id-result.json"), map[string]any{
 		"case": consumer.request.Case, "equality": true, "native_capture_sha256": consumer.request.CaptureSHA256,
+		"restore_mode": consumer.request.Mode, "restore_first_sequence": consumer.request.FirstSequence,
 		"exact_initial_rows": len(consumer.initial), "continued_items": len(consumer.request.Items),
 		"new_comment_tuple_multiset": len(consumer.request.Comments), "per_write_events": len(consumer.request.Operations),
 		"post_write_reopen_asserted": consumer.asserted, "independent_review": "PENDING",
@@ -188,7 +190,7 @@ type publicIDConsumer struct {
 }
 
 func (c *publicIDConsumer) write(t *testing.T, ctx context.Context, store driver.Store, lease driver.ActiveLease, profile driver.RestoreImportProfile, report Report) error {
-	if c.wrote || profile.HistoryMode != driver.RestoreHistoryModeFull || report.Archive == nil || report.Archive.SHA256() != c.request.CaptureSHA256 {
+	if c.wrote || publicIDProfile(c.request, profile) != nil || report.Archive == nil || report.Archive.SHA256() != c.request.CaptureSHA256 {
 		return fmt.Errorf("write phase repeated or source/profile differs")
 	}
 	var err error

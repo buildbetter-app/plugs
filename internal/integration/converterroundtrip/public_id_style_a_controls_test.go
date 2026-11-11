@@ -15,6 +15,70 @@ import (
 )
 
 // These finite rejection controls are synthetic and earn no fresh-case credit.
+func TestPublicIDStyleAModeInputsRemainBoundToActualProfile(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		for _, test := range []struct {
+			name, mode string
+			first      json.RawMessage
+		}{
+			{"complete", "full", nil},
+			{"complete-snapshot", "snapshot", nil},
+			{"partial", "partial", json.RawMessage("2")},
+			{"partial-snapshot", "snapshot", nil},
+		} {
+			t.Run(engine+"/"+test.name, func(t *testing.T) {
+				request := publicIDRequest{Engine: engine, Case: engine + "/" + test.name, Mode: test.mode, FirstSequence: test.first}
+				mode, policy, err := publicIDSelection(request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				profile := driver.RestoreImportProfile{HistoryMode: mode, NativeDeltaHistory: policy}
+				if publicIDProfile(request, profile) != nil {
+					t.Fatal("declared native case lost its actual import profile")
+				}
+				wrong := profile
+				wrong.HistoryMode = driver.RestoreHistoryModeFull
+				if mode == driver.RestoreHistoryModeFull {
+					wrong.HistoryMode = driver.RestoreHistoryModeSnapshot
+				}
+				if publicIDProfile(request, wrong) == nil {
+					t.Fatal("actual import mode substituted for the native case")
+				}
+				if mode == driver.RestoreHistoryModePartial {
+					wrong = profile
+					changed := *policy
+					changed.FirstSequence++
+					wrong.NativeDeltaHistory = &changed
+					if publicIDProfile(request, wrong) == nil {
+						t.Fatal("actual import source ordinal substituted")
+					}
+				}
+				for _, floor := range []json.RawMessage{nil, json.RawMessage("0"), json.RawMessage("null"), json.RawMessage("-1"), json.RawMessage(`"2"`)} {
+					bad := request
+					bad.FirstSequence = floor
+					if mode != driver.RestoreHistoryModePartial && floor == nil {
+						continue
+					}
+					if _, _, err := publicIDSelection(bad); err == nil {
+						t.Fatalf("invalid/missing source ordinal admitted: %s", floor)
+					}
+				}
+			})
+		}
+	}
+	for _, request := range []publicIDRequest{
+		{Engine: "memory", Case: "memory/partial", Mode: "full"},
+		{Engine: "memory", Case: "memory/complete", Mode: "snapshot"},
+		{Engine: "memory", Case: "sqlite/complete", Mode: "full"},
+		{Engine: "memory", Case: "memory/unknown", Mode: "full"},
+		{Engine: "unknown", Case: "unknown/complete", Mode: "full"},
+	} {
+		if _, _, err := publicIDSelection(request); err == nil {
+			t.Fatal("native case identity/mode substituted", request)
+		}
+	}
+}
+
 func TestPublicIDStyleAImportedRowsRemainExact(t *testing.T) {
 	initial := []driver.Record{{Ref: model.RefByID("native/current/opaque", model.Natural64(0)), Kind: "beads-archive", Revision: model.Natural64(4), Body: []byte(`{"n":9007199254740993,"null":null}`)}}
 	if err := publicIDPreserved(initial, initial); err != nil {

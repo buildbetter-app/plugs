@@ -193,6 +193,9 @@ func publicIDExpectedDocument(operation publicIDOperation) pipeline.Document {
 }
 
 func publicIDValidateRequest(request publicIDRequest) error {
+	if _, _, err := publicIDSelection(request); err != nil {
+		return err
+	}
 	if len(request.Operations) != 5 || len(request.Items) != 3 || len(request.Comments) != 2 {
 		return fmt.Errorf("native request operation/item/comment census differs")
 	}
@@ -247,6 +250,31 @@ func publicIDValidateRequest(request publicIDRequest) error {
 	}
 	if request.Operations[1].Parent != request.Operations[4].Parent || request.Operations[2].Target != request.Operations[0].ExpectedID || request.Operations[3].Target != request.Operations[0].ExpectedID {
 		return fmt.Errorf("native case parent/comment routing differs")
+	}
+	return nil
+}
+
+// Mode and source ordinal are operator inputs bound to the same case as the
+// native recording. The shared runner alone implements selection and import.
+func publicIDSelection(request publicIDRequest) (driver.RestoreHistoryMode, *driver.NativeDeltaHistoryPolicy, error) {
+	if request.Engine != "memory" && request.Engine != "sqlite" && request.Engine != "postgres" {
+		return "", nil, fmt.Errorf("native case engine differs")
+	}
+	want := map[string]string{
+		"complete": "full", "complete-snapshot": "snapshot",
+		"partial": "partial", "partial-snapshot": "snapshot",
+	}
+	name := strings.TrimPrefix(request.Case, request.Engine+"/")
+	if request.Case == name || want[name] == "" || request.Mode != want[name] {
+		return "", nil, fmt.Errorf("native case mode was changed or substituted")
+	}
+	return (publicProofRequest{RestoreMode: request.Mode, RestoreFirstSequence: request.FirstSequence}).historySelection()
+}
+
+func publicIDProfile(request publicIDRequest, profile driver.RestoreImportProfile) error {
+	mode, policy, err := publicIDSelection(request)
+	if err != nil || profile.HistoryMode != mode || !reflect.DeepEqual(profile.NativeDeltaHistory, policy) {
+		return fmt.Errorf("actual import mode/source ordinal differs from native case inputs")
 	}
 	return nil
 }

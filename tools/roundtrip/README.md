@@ -130,3 +130,22 @@ literal filesystem atomicity limitation remains unchanged. An additional real mi
 control retains the three-command reimport-PASS/readback-WAIT boundary. These
 public fixtures provide no strict two-source history, private-store or official
 native-admission qualification.
+
+The separate manual `fresh_same_run_native_test` runs fresh native recipes,
+captures each export point before continuation, builds independent expected
+rows, and invokes the composed same-process ID consumer. Set
+`PLUG_ID_STYLE_A_FRESH_RUN=1` for the three Full cases. The other three Partial
+and six Snapshot cases retain named WAIT/SKIP by default. After receiver mode
+landing and qualification of the actual consumer composition, the additional
+`PLUG_ID_STYLE_A_FRESH_MODES=1` selects all twelve in their original modes.
+This flag is a test selection input and supplies no landing or equality proof.
+
+Each Partial case explicitly selects source ordinal 2. The independent oracle
+authenticates that image and its predecessor while retaining the complete
+1..N plus HEAD/current ledger. Full and Snapshot supply no floor. The consumer
+binds its native case, mode and ordinal to the actual imported profile, then
+uses the shared writer-once and post-write reopen assertion phases. Expected
+IDs remain assertions; they never become allocator inputs. Every case needs
+its own recipe, retained physical source/archive, capture, native tuple/clock
+inputs, actual consumer ELF and readback. Previous case outputs and synthetic
+controls supply no fresh equality credit.

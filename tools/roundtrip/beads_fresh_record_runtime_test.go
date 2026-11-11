@@ -210,7 +210,7 @@ func freshReadNativeFacts(t *testing.T, server *freshNativeServer, evidence, lab
 	return facts
 }
 
-func freshNativeContinuation(t *testing.T, item freshCase, evidence, workspace, mutableRoot, nativeCLI, captureSHA, producerSHA string, result freshResult) freshNativeRequest {
+func freshNativeContinuation(t *testing.T, item freshCase, evidence, workspace, mutableRoot, nativeCLI, captureSHA, producerSHA string, firstSequence json.RawMessage, result freshResult) freshNativeRequest {
 	t.Helper()
 	server := freshStartNativeServer(t, mutableRoot, evidence, workspace)
 	before := freshReadNativeFacts(t, server, evidence, "initial")
@@ -225,6 +225,7 @@ func freshNativeContinuation(t *testing.T, item freshCase, evidence, workspace, 
 		t.Fatal("restored native parent absent")
 	}
 	request := freshNativeRequest{Format: "public-id-style-a-same-run/1", RunID: os.Getenv("GITHUB_RUN_ID"), Case: item.Engine + "/" + item.Name, Engine: item.Engine, Mode: item.Mode, CaptureSHA256: captureSHA, RecipeExportSHA256: result.RecipeExportSHA256, NativeCLISHA256: freshFileSHA(t, nativeCLI), ProducerSHA256: producerSHA, Items: []freshNativeItem{}, Comments: []freshNativeComment{}, Operations: []freshNativeOperation{}}
+	request.FirstSequence = firstSequence
 	actor := model.PrincipalRef{Kind: "user", ID: "fresh-native"}
 	env := append(freshChildEnv(workspace), "BEADS_DOLT_SERVER_MODE=1", "BEADS_DOLT_SERVER_HOST=127.0.0.1", "BEADS_DOLT_SERVER_PORT="+strconv.Itoa(server.port), "BEADS_DOLT_SERVER_DATABASE=beads_test", "TZ=UTC", "LC_ALL=C", "NO_COLOR=1")
 	env = append(env, freshContinuationEnvironment(t)...)

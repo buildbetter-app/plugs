@@ -50,8 +50,8 @@ func freshGuard(t *testing.T) {
 	}
 }
 
-// This entry remains explicitly selected. Only Full cases use the composed
-// row route; the other nine retain their original mode and dependency WAIT.
+// This entry remains explicitly selected. Without the additional mode opt-in,
+// only Full runs. The other nine retain their original mode and dependency WAIT.
 func TestFreshSameRunIDStyleATwelveFixtures(t *testing.T) {
 	freshGuard(t)
 	selected := os.Getenv("PLUG_ID_STYLE_A_FRESH_RUN")
@@ -60,6 +60,10 @@ func TestFreshSameRunIDStyleATwelveFixtures(t *testing.T) {
 	}
 	if selected != "1" {
 		t.Fatal("invalid fresh recording opt-in")
+	}
+	modeOptIn := os.Getenv("PLUG_ID_STYLE_A_FRESH_MODES")
+	if modeOptIn != "" && modeOptIn != "1" {
+		t.Fatal("invalid selected-mode recording opt-in")
 	}
 	t.Setenv("PATH", "/tmp/plug-swarm/bin/worker-safe:"+os.Getenv("PATH"))
 	parent, run := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR"), os.Getenv("GITHUB_RUN_ID")
@@ -90,12 +94,12 @@ func TestFreshSameRunIDStyleATwelveFixtures(t *testing.T) {
 					freshJSON(t, filepath.Join(root, item.Engine+"-"+item.Name+".json"), result)
 					t.Logf("FRESH_SAME_RUN_CASE %s", freshJSONBytes(t, result))
 				}()
-				if item.Mode != "full" {
+				if item.Mode != "full" && modeOptIn != "1" {
 					result.Status = "WAIT"
 					result.Gaps = []string{"LANDED_MODE_LAYER_AND_MATCHING_GLUE_REQUIRED"}
 					t.Skip("retained original mode awaits landed receiver mode and matching shared glue")
 				}
-				freshFullCase(t, root, source, item, producer, consumer, &result)
+				freshNativeCase(t, root, source, item, producer, consumer, &result)
 			})
 		}
 	})
@@ -104,7 +108,11 @@ func TestFreshSameRunIDStyleATwelveFixtures(t *testing.T) {
 	for _, result := range results {
 		credit += result.EqualityCredit
 	}
-	freshJSON(t, filepath.Join(root, "equality-census.json"), map[string]any{"total": 12, "equal": credit, "mode_wait": 9, "run_id": run, "scope": "three Full only; Partial and Snapshot retain modes"})
+	modeWait := 0
+	if modeOptIn != "1" {
+		modeWait = 9
+	}
+	freshJSON(t, filepath.Join(root, "equality-census.json"), map[string]any{"total": 12, "equal": credit, "mode_wait": modeWait, "run_id": run, "selected_mode_opt_in": modeOptIn == "1"})
 	if len(results) != 12 {
 		t.Fatalf("fresh native census incomplete: %d/12", len(results))
 	}
