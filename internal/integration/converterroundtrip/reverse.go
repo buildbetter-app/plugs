@@ -265,6 +265,11 @@ func projectLiveDump(ctx context.Context, reader driver.Reader, dump *reversecon
 			}
 		}
 	}
+	if imported {
+		if err := projectEffectiveMemories(ctx, reader, dump, live, false); err != nil {
+			return err
+		}
+	}
 	if len(live) != 0 {
 		return ReverseRefusal{"unmapped_live_record"}
 	}

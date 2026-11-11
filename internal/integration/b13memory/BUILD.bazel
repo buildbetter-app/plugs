@@ -9,6 +9,7 @@ go_test(
         "postgres_test.go",
         "public_readback_test.go",
         "readback_oracle_test.go",
+        "source_core_control_test.go",
     ],
     size = "large",
     tags = ["exclusive", "local", "requires-network"],

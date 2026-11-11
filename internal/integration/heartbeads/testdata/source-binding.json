@@ -1,0 +1,279 @@
+{
+  "schema": "heartbeads-fixture-source/1",
+  "candidate": "1823eb8762fb842e8da7b0622a06d08858c93f0a",
+  "tree": "a0f839e29c039a19324643684b399a5f78480dc2",
+  "parent": "e85668a875fc6fd6b374eaea9460ec72a40dab23",
+  "source_manifest": {
+    "schema": "heartbeads-prepared-patch/1",
+    "installed_preimage_root": "/home/dev/beads/heartbeads-app/node_modules/heartbeads",
+    "plug_base": "bbd821827b90ecac63d1c70ec05fc5688af96792",
+    "plug_base_tree": "e195380ab7b3b420476f293625673b49aa97e0d4",
+    "files": [
+      {
+        "path": "app/api/beads/route.ts",
+        "preimage_sha256": "8e78f3086f501281ebd3aa67cefe04ba5c775ebe867004875db9abb7e3894f78",
+        "postimage_sha256": "95e5de95a33d33ef78bd65202add2e4805363d365df6f348895ec7b04b55b0a7",
+        "bytes": 826
+      },
+      {
+        "path": "app/api/beads/stream/route.ts",
+        "preimage_sha256": "93188e993a1c5fdada9e4900ecdbbc32001aa1d88f0bd50ac78d36b45902a2e6",
+        "postimage_sha256": "59aaca0cb2c27a3b1138bb0608ba0537b3d9e91350c925d986b00894e3000005",
+        "bytes": 2852
+      },
+      {
+        "path": "app/api/config/route.ts",
+        "preimage_sha256": "1d2c821410a0607ed65edd4ef452a28c212e80de1b049dba1b90eb92b773a4d8",
+        "postimage_sha256": "a0a4fe72f098dbd7ff2b6e48306b1387f38dc5283abfa7926db7948890e8ce5a",
+        "bytes": 478
+      },
+      {
+        "path": "app/api/docs/page.tsx",
+        "preimage_sha256": "577f0a094f9daa456f90740608844506c6b0e11af63fb60fed5a38a00263168f",
+        "postimage_sha256": "f3c92729970f901aee6268cfe24065ed9ae861dbf8350460f9639f05a4fc8a45",
+        "bytes": 25680
+      },
+      {
+        "path": "app/api/records/route.ts",
+        "preimage_sha256": "b7562fe53a15c3c08cff644c4c24614e794777d51c139cc35215d654fc55f2ae",
+        "postimage_sha256": "1c71acf3ef27ed91d68ae78471b272f70e24a713f29e14fc8bdf88507e06ca0c",
+        "bytes": 12298
+      },
+      {
+        "path": "app/api/v1/graph/route.ts",
+        "preimage_sha256": "e8576fa4a04b385f0c4446210b3d56ac6fc1d6e3c90ae1effb49865c24e74ab0",
+        "postimage_sha256": "4d10d05ab31e4fea228348180cb1d0ad01e467c0e7ed89c7a454f2eb20578303",
+        "bytes": 10031
+      },
+      {
+        "path": "app/api/v1/issues/[id]/route.ts",
+        "preimage_sha256": "94cafb479e599db8cd896ab6b42366466d921920d6f98910decc5c68a01588f9",
+        "postimage_sha256": "595cf54d558a4f8e8dcb762da4af7356d93b28c194dd3c6ec1fa182b8cb14d3f",
+        "bytes": 6258
+      },
+      {
+        "path": "app/api/v1/ready/route.ts",
+        "preimage_sha256": "66b0ad0bd824a0a28dc7f494bf64a6aa32a17830152cdeec1f56ba49ff3b3703",
+        "postimage_sha256": "2a3a283e6c283638c7a2a35266c81e4cb58c74c415c48ad4d06fbc63c4b30801",
+        "bytes": 7089
+      },
+      {
+        "path": "app/page.tsx",
+        "preimage_sha256": "5771d50d2593881f1f022ed077d932f2f04f78cf959bf03ece5d14c26c0bceb1",
+        "postimage_sha256": "1138062040e395fcaff08cbaed805ddd599ff7184fceb507256405c217bd69a7",
+        "bytes": 141935
+      },
+      {
+        "path": "components/ActivityItem.tsx",
+        "preimage_sha256": "8769e8f3083f2e3fae5f7447e84131af8173402f468b624929b9f5fdb47b1867",
+        "postimage_sha256": "e1ee380af3e359b44c1d44c5f881886ff0d06338467ce64421dddfea840e0a68",
+        "bytes": 12804
+      },
+      {
+        "path": "components/ActivityPanel.tsx",
+        "preimage_sha256": "dc448ff458b543074b099bdceccdb63321631063a7dfa5986289c67a8c09fe74",
+        "postimage_sha256": "5ad44003662f5a3403d22dea87baaf0c1bd64c3b9c49625eef46e40efeeff9af",
+        "bytes": 16080
+      },
+      {
+        "path": "components/AllCommentsPanel.tsx",
+        "preimage_sha256": "b78502dfdb2e4305f9629b9c44d549c8c1b7e8de2370312825a5964923927e23",
+        "postimage_sha256": "6d35bc0a5c3f24821494200861767f806fef40c09a9bb5efcf975ab9fe4fb817",
+        "bytes": 25116
+      },
+      {
+        "path": "components/BeadTooltip.tsx",
+        "preimage_sha256": "6059e304e528769df8fe33bcb4aff89e666ecf92081bbac8869970f22be80e31",
+        "postimage_sha256": "2758eedd729d0a0f0edb2a18e217ea9757de1574f9d5c9adeef2870b5da77117",
+        "bytes": 8401
+      },
+      {
+        "path": "components/BeadsGraph.tsx",
+        "preimage_sha256": "8acda50a973adeb4012f49ea49f16d567ab053991dfe14ee1c3d70efee13547d",
+        "postimage_sha256": "52b9f90b78068e9afbfb2fd330f01cd15bff4d94e5b8c1fe14a2054517c080a0",
+        "bytes": 131676
+      },
+      {
+        "path": "components/CommentTooltip.tsx",
+        "preimage_sha256": "1c9edcd340a29b8fa496e8f5bd683baef4ebede5c0caf49f1cfdd82cbed910f7",
+        "postimage_sha256": "2e7aea15f9d77252baf3d80ef12b492b9cbf1aa843d6c86990a68fb6adc478e8",
+        "bytes": 11744
+      },
+      {
+        "path": "components/DescriptionModal.tsx",
+        "preimage_sha256": "c0babf0bb74d2c2eab13db9b5566d2f6f5e0bc6271553b905ae06048d4e7f819",
+        "postimage_sha256": "0ac138707d1e2f4e10f3861edc9c2f2773a85679a1a0691264f3b1121dc1c167",
+        "bytes": 43033
+      },
+      {
+        "path": "components/MobileActionSheet.tsx",
+        "preimage_sha256": "afefac64533ddca28e2acaa1cd3938e63f9052b1edfa42cc9222d4cd16d6f148",
+        "postimage_sha256": "8b1095dfc988c777e1ff5fd61be719ef53b601336925b9f9d847a4a104198598",
+        "bytes": 9610
+      },
+      {
+        "path": "components/NodeDetail.tsx",
+        "preimage_sha256": "922d9d2be7c8d4ce511ead2e6e5ea189ae321b3d219be566cc1e464c837f57e8",
+        "postimage_sha256": "364141d4be7bc25b1cea83498edff35a0cce686be27d8ea08632d62cce9f8057",
+        "bytes": 30758
+      },
+      {
+        "path": "components/ProfilePanel.tsx",
+        "preimage_sha256": "4042d3708217b34e547d4f9025f8a85bc87084cb54bc385ffa25b4521330414c",
+        "postimage_sha256": "e084847fd7499da56b578cd08bfd17236998248d03a312384528db48a4705048",
+        "bytes": 12146
+      },
+      {
+        "path": "components/StatusLegend.tsx",
+        "preimage_sha256": "d138d03797c05ef7191ede969af2884c1bfa658e6eb34f40e25374e98ee08a3a",
+        "postimage_sha256": "81d1add7479bbae82c598ef4f73102363f638374a88787c301ad07abdfd35aaa",
+        "bytes": 3467
+      },
+      {
+        "path": "components/TasksPanel.tsx",
+        "preimage_sha256": "d93f4cafb7785c085aa77b79c3e1b362da9e9a938d1d79d2f780ae40608c957b",
+        "postimage_sha256": "6027874c6d38e85e4b29b590638ba389478f3f15c9692cd115719dff7d7da66c",
+        "bytes": 13122
+      },
+      {
+        "path": "hooks/useBeadsComments.ts",
+        "preimage_sha256": "beb9dcaccbdc3395e703af9803a742e6ad2683f3a5de4f775005e7a371f48446",
+        "postimage_sha256": "3dc895c5b65003777e5601c2e6d5cd91dc03ff5c0f8e969fabe703802cdb4535",
+        "bytes": 1835
+      },
+      {
+        "path": "lib/activity.ts",
+        "preimage_sha256": "18e9accfb1173deb49ad46cc2fceabfae11cda4b85d39c36143847461bcd78ed",
+        "postimage_sha256": "900b28fc27c9096eaa1968d9daf475809f18332406ebaa3694e3d67edc4f53cf",
+        "bytes": 13749
+      },
+      {
+        "path": "lib/comments.ts",
+        "preimage_sha256": "42dcce1534b3e742748aacf5892d45f64aa1929248a07493efe00f78222426d7",
+        "postimage_sha256": "1a6df836f6ba9434307a6b36798d29401cfd023359d2078b32909b71e89d06f0",
+        "bytes": 14242
+      },
+      {
+        "path": "lib/diff-beads.ts",
+        "preimage_sha256": "f7d030f7d32aeb226c6b8a9c2144596d37b1decf253aa6db45274c8e15fd769e",
+        "postimage_sha256": "76fe41143da4307370496e099c23dec78065ebc6f647efa3b39f432e9f6345d0",
+        "bytes": 5189
+      },
+      {
+        "path": "lib/discover.ts",
+        "preimage_sha256": "61e0af31fa4e0e662e8badc2e43d1d79f957783ce9e7b78b57c503ea74ce87b7",
+        "postimage_sha256": "0f7f3abceee4ca4bd6ea50ef97127e2c6b257643984534add99b84e2e6a657da",
+        "bytes": 1295
+      },
+      {
+        "path": "lib/parse-beads.ts",
+        "preimage_sha256": "927f502eaa301d4dcd3149377e3e27ff6a7db5ff263736e8dcb81293dc83d70b",
+        "postimage_sha256": "00b0142ebc415fd6c2efedecbd9da7d80c12748573efa5e6eac9b13d58ce686c",
+        "bytes": 864
+      },
+      {
+        "path": "lib/plug-adapter.mjs",
+        "preimage_sha256": "ABSENT",
+        "postimage_sha256": "7bee4abdf839421ea2d43dfcfe8ece8e4ab227377dfa925d9588663d25d081bf",
+        "bytes": 30003
+      },
+      {
+        "path": "lib/timeline.ts",
+        "preimage_sha256": "1359207d5be58cde4ca8b993f65a4214f46683c6c823fd243a59e36097226b3e",
+        "postimage_sha256": "e62c13aafed711b4794b3d2bd1507dfca699a40288adedca04fc69ebfbf029fa",
+        "bytes": 4018
+      },
+      {
+        "path": "lib/types.ts",
+        "preimage_sha256": "ee7727fe019dbda8759bf3429c66bd4070ad8e1077a97fca90a1fa67a254eef5",
+        "postimage_sha256": "eba871f852bdf0881181447ef8ab206caf36e308f55f20f5fbf5879aa4b8d1f6",
+        "bytes": 12857
+      },
+      {
+        "path": "lib/ui-projection.ts",
+        "preimage_sha256": "ABSENT",
+        "postimage_sha256": "4b66ccc31dca524f30082c1c4a8b17508e0e332e1aa4ac3fb7dbb9cf5b69d0d2",
+        "bytes": 1689
+      },
+      {
+        "path": "lib/utils.ts",
+        "preimage_sha256": "5a49880bf26c67459c7a3e887a190a351c8ba2d3d1f015137e961df244abf309",
+        "postimage_sha256": "eea44f43fee2506dbc8725d02e2f8286abba2349d15a65a798e0fef9cc1d7195",
+        "bytes": 1526
+      },
+      {
+        "path": "lib/watch-beads.ts",
+        "preimage_sha256": "e6f4302df03dc6cba61734d5b3bc7ee859b1b5740776daca00a72c9383fc9d01",
+        "postimage_sha256": "cf035230980cdfd5e94057697039c7b358bb1fafb052ebdbab82f20767347f6f",
+        "bytes": 607
+      },
+      {
+        "path": "bin/heartbeads.mjs",
+        "preimage_sha256": "9a6a163456423ebdf25001c4d36e7a05052b05c9b88862d124ad76f9e559a932",
+        "postimage_sha256": "d33f4d46d4a599de556221e92e75241d1f200577569b049c7c099211d2d16fd4",
+        "bytes": 4147
+      }
+    ],
+    "patch_sha256": "8e3edc43a20fe1510107d98b7f80df4cdc08f953818df33be8b2d66ca2a89b4d",
+    "adapter_sha256": "7bee4abdf839421ea2d43dfcfe8ece8e4ab227377dfa925d9588663d25d081bf"
+  },
+  "tar_sha256": "81c30981b245f5516d94486ba8a5d7bc6f008f749b00ea5e1ae3dff548967690",
+  "ontology_source_sha256": "186163d6d618e2196b4e1fea9883b8cb2b3863ac171343d334ba18e076e05f6e",
+  "auxiliary_source_files": [
+    "app/api/auth/route.ts",
+    "app/api/login/route.ts",
+    "app/api/logout/route.ts",
+    "app/api/oauth/callback/route.ts",
+    "app/api/oauth/client-metadata.json/route.ts",
+    "app/api/oauth/jwks.json/route.ts",
+    "app/api/status/route.ts",
+    "app/globals.css",
+    "app/layout.tsx",
+    "app/login/page.tsx",
+    "app/not-found.tsx",
+    "app/opengraph-image.png",
+    "app/twitter-image.png",
+    "components/ActivityOverlay.tsx",
+    "components/AuthButton.tsx",
+    "components/BeadsLogo.tsx",
+    "components/ContextMenu.tsx",
+    "components/GraphStats.tsx",
+    "components/HeartIcon.tsx",
+    "components/HelpPanel.tsx",
+    "components/LeaderboardOverlay.tsx",
+    "components/LeaderboardPanel.tsx",
+    "components/SettingsModal.tsx",
+    "components/TimelineBar.tsx",
+    "components/TutorialOverlay.tsx",
+    "hooks/useIsMobile.ts",
+    "hooks/useTheme.ts",
+    "hooks/useUrlState.ts",
+    "lib/agent.ts",
+    "lib/api-helpers.ts",
+    "lib/auth.tsx",
+    "lib/auth/client.ts",
+    "lib/env.ts",
+    "lib/gate.ts",
+    "lib/session.ts",
+    "lib/settings.ts",
+    "lib/tts.ts",
+    "next-env.d.ts",
+    "next.config.mjs",
+    "package-lock.json",
+    "package.json",
+    "postcss.config.mjs",
+    "public/image.png",
+    "scripts/generate-jwk.js",
+    "tailwind.config.ts",
+    "tsconfig.json"
+  ],
+  "watch_regression": {
+    "schema": "heartbeads-watch-lifecycle-regression/1",
+    "parent_candidate": "e85668a875fc6fd6b374eaea9460ec72a40dab23",
+    "parent_adapter_file": "watch-parent.mjs",
+    "parent_adapter_sha256": "309a55e90cadad798917931540b6ffa898f1de67e171a5bd3e11d0aca9c6aba9",
+    "driver_file": "watch-lifecycle.mjs",
+    "driver_sha256": "123098d32fe326e66a38fc54bc327cf232c7f9ae6df084e960f61b4a8da1f5af",
+    "driver_boundary": "holds actual HTTP handshakes; exact parent/child adapters; no refresh/watch/timer/callback replacement"
+  }
+}

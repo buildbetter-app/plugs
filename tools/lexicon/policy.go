@@ -39,7 +39,7 @@ const (
 // The protected lists are intentionally exact: adding a retained file requires
 // its owner to update this policy before the blocking gate can pass.
 func DefaultTreePolicy() TreePolicy {
-	return TreePolicy{
+	policy := TreePolicy{
 		ReferencePrefixes: []string{
 			"internal/core/dumpformat/testdata/commit-schema-registry-c8ab0ce7.json",
 			"internal/core/dumpformat/testdata/commit-schema-registry-ff8006bf.json",
@@ -135,6 +135,7 @@ func DefaultTreePolicy() TreePolicy {
 			"internal/core/dumpformat/testdata/producer-e615-reprocody-gap.tar":                     "9f82b8405d44acab48649f7815a69027238dccea0ae4c9ddb2a871b8a1a8c8ff",
 			"internal/integration/converterroundtrip/testdata/public-complete-root-990eb800.tar":    "a2d933a7a54b53303d33a20d5b96eaac0a85c079c5b08cae553aa2a654d820b5",
 			"internal/integration/converterroundtrip/testdata/public-partial-990eb800.tar":          "2dd0bc5cb41ee5ae410659fdff91c4ee6b865098b371a2e1be9b819187271e53",
+			"internal/integration/heartbeads/testdata/heartbeads-source.tar":                        "81c30981b245f5516d94486ba8a5d7bc6f008f749b00ea5e1ae3dff548967690",
 			"internal/integration/offlinehistory/testdata/dolt-source-partial.tar":                  "b56f1de4a36c22cca379647d5fe1b2962e4358d9976923e76007ea84b7712582",
 			"internal/integration/offlinehistory/testdata/full.tar":                                 "a96f0134097751e981ec6c46b7d412fb0dd92938a04df0838564b71c1064a212",
 			"internal/integration/offlinehistory/testdata/partial.tar":                              "ab25df11463f68dbfa1ee1ce781a252cfc1b802abac8bb2f1cbc7bed5932cf9c",
@@ -163,6 +164,14 @@ func DefaultTreePolicy() TreePolicy {
 			"engdocs/design/plug/spec/ux-screens/people-50.png":                                     "f620d28fba6d16c9e104b351d61915f5ecd913f42e8ca3f8d14a8e8c066cc4cd",
 		},
 	}
+	// The numbered native schema corpus is immutable fixture input. Every
+	// file, including siblings without vocabulary matches, has an exact hash;
+	// a new sibling or changed byte continues to fail closed.
+	policy.ReferencePrefixes = append(policy.ReferencePrefixes, "internal/testutil/nativeschema/migrations/")
+	for name, digest := range undoSQLReferences() {
+		policy.ReferenceSHA256[name] = digest
+	}
+	return policy
 }
 
 func (p TreePolicy) disposition(name string, content []byte) (pathDisposition, error) {

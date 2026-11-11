@@ -151,6 +151,10 @@ func (s *WorkflowPageSnapshot) Equal(other *WorkflowPageSnapshot) bool {
 }
 
 type Filter struct {
+	// Parent selects transitive descendants in ready and direct children in
+	// history's snapshot list, excluding the root itself in both methods.
+	Parent           string
+	Priority         *int
 	Query            string
 	Resources        []string
 	Types            []string
@@ -320,6 +324,8 @@ type ClaimNextRequest struct {
 // filter are equivalent.
 func ClaimNextRequestIdentity(req ClaimNextRequest) (string, error) {
 	type normalizedFilter struct {
+		Parent           string   `json:"parent,omitempty"`
+		Priority         *int     `json:"priority,omitempty"`
 		Query            string   `json:"query"`
 		Resources        []string `json:"resources"`
 		Types            []string `json:"types"`
@@ -350,7 +356,7 @@ func ClaimNextRequestIdentity(req ClaimNextRequest) (string, error) {
 			includeEphemeral = *req.Filter.IncludeEphemeral
 		}
 		value = normalizedFilter{
-			Query: req.Filter.Query, Resources: normalize(req.Filter.Resources),
+			Parent: req.Filter.Parent, Priority: req.Filter.Priority, Query: req.Filter.Query, Resources: normalize(req.Filter.Resources),
 			Types: normalize(req.Filter.Types), Events: normalize(req.Filter.Events),
 			ViewID: req.Filter.ViewID, IncludeEphemeral: includeEphemeral,
 		}

@@ -45,6 +45,7 @@ type MemoryDocument struct {
 	Key      string         `json:"key"`
 	Content  string         `json:"content"`
 	Metadata map[string]any `json:"metadata,omitempty"`
+	Overlay  *MemoryOverlay `json:"sourceOverlay,omitempty"`
 }
 
 func DecodeMemoryDocument(body []byte) (MemoryDocument, error) {
@@ -61,9 +62,12 @@ func DecodeMemoryDocument(body []byte) (MemoryDocument, error) {
 // MemorySource describes a validated retained source envelope. It is read-only:
 // serializing it as a MemoryDocument would discard its source and classification.
 type MemorySource struct {
+	Legacy  bool
 	Visible bool
 	Project string
 	Fields  map[string]any
+	Record  driver.Record
+	Archive string
 }
 
 // DecodeMemoryRecord shares the exact imported-memory boundary between public
@@ -93,6 +97,18 @@ func DecodeMemoryRecord(record driver.Record) (MemoryDocument, *MemorySource, er
 		}
 		if record.Kind != "memory" || document.ID != record.Ref.ID {
 			return MemoryDocument{}, nil, fmt.Errorf("invalid persisted memory")
+		}
+		if err := validateMemoryOverlay(record, raw, document); err != nil {
+			return MemoryDocument{}, nil, err
+		}
+		if source, imported, err := legacyMemorySource(record, document); imported || err != nil {
+			if err == nil {
+				// Old canonical mirrors stored a trimmed key. Their validated
+				// provenance retains the exact source identity; expose that key
+				// without rewriting immutable imported bytes or versions.
+				document.Key = strings.TrimPrefix(record.Ref.ID, "source/memory/")
+			}
+			return document, source, err
 		}
 		return document, nil, nil
 	}

@@ -17,7 +17,7 @@ func (s *Service) EventList(ctx context.Context, by model.PrincipalRef, req Even
 	if req.Filter == nil {
 		return EventPage{}, failure("invalid_params", "event.list requires a filter")
 	}
-	if req.Filter.Query != "" || len(req.Filter.Types) != 0 || req.Filter.ViewID != "" {
+	if req.Filter.Parent != "" || req.Filter.Priority != nil || req.Filter.Query != "" || len(req.Filter.Types) != 0 || req.Filter.ViewID != "" {
 		return EventPage{}, failure("invalid_params", "event.list supports only filter.events and filter.resources")
 	}
 	if req.Limit < 1 || req.Limit > 1000 {

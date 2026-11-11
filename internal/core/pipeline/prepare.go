@@ -20,14 +20,15 @@ import (
 )
 
 type pending struct {
-	ref      model.Ref
-	kind     string
-	doc      Document
-	memory   *MemoryDocument
-	before   json.RawMessage
-	revision model.Revision
-	deleted  bool
-	setBy    map[string]string
+	ref       model.Ref
+	kind      string
+	doc       Document
+	memory    *MemoryDocument
+	rawMemory json.RawMessage
+	before    json.RawMessage
+	revision  model.Revision
+	deleted   bool
+	setBy     map[string]string
 	// allocatorPrefix/Expected are set only for IDs previewed from a
 	// transaction-capable allocator. A parent with no prefix uses its internal
 	// parent-only counter. The expected value is checked
@@ -40,6 +41,9 @@ type pending struct {
 
 func (p *pending) body() (json.RawMessage, error) {
 	if p.kind == "memory" {
+		if p.rawMemory != nil {
+			return append(json.RawMessage(nil), p.rawMemory...), nil
+		}
 		if p.memory == nil {
 			return nil, failure("internal_error", "memory write has no body")
 		}
@@ -708,6 +712,9 @@ func (w *Writer) prepareMemory(ctx context.Context, reader driver.Reader, by mod
 		if !ok {
 			return nil, failure("invalid_params", "memory content must be a string")
 		}
+		if strings.TrimSpace(content) == "" {
+			return nil, failure("invalid_params", "memory content must be nonempty")
+		}
 		metadata := map[string]any{}
 		if raw, exists := op.Create.Fields["metadata"]; exists && raw != nil {
 			var valid bool
@@ -726,23 +733,27 @@ func (w *Writer) prepareMemory(ctx context.Context, reader driver.Reader, by mod
 		var pendingRecord *pending
 		changeOp := op
 		if len(page) == 1 {
-			record := page[0]
-			doc, err := DecodeMemoryDocument(record.Body)
-			if err != nil || doc.ID != record.Ref.ID || record.Kind != "memory" {
+			record, doc, source, err := ResolveMemoryRecord(ctx, snapshot, page[0])
+			if err != nil {
 				return nil, failure("internal_error", "invalid persisted memory")
 			}
-			doc.Content, doc.Metadata = content, cloneAnyMap(metadata)
-			// The query guards the key predicate; the point read also guards the
-			// exact record image before an update lock is acquired.
-			rows, err := snapshot.Get(ctx, []model.Ref{record.Ref})
-			if err != nil || len(rows) != 1 {
+			if source != nil {
+				pendingRecord, changeOp, err = w.prepareMemoryOverlay(ctx, p, by, source, record, doc, content, metadata, false)
 				if err != nil {
 					return nil, err
 				}
-				return nil, failure("internal_error", "memory record disappeared during snapshot")
+			} else {
+				doc.Content, doc.Metadata = content, cloneAnyMap(metadata)
+				rows, err := snapshot.Get(ctx, []model.Ref{record.Ref})
+				if err != nil {
+					return nil, err
+				}
+				if len(rows) != 1 {
+					return nil, failure("internal_error", "memory disappeared during snapshot")
+				}
+				pendingRecord = &pending{ref: record.Ref, kind: "memory", memory: &doc, before: append(json.RawMessage(nil), record.Body...), revision: record.Revision, setBy: map[string]string{"content": "request", "metadata": "request"}}
+				changeOp = model.Op{Kind: model.OpPatch, Patch: &model.PatchOp{Kind: model.OpPatch, Target: record.Ref, Fields: map[string]any{"content": content, "metadata": metadata}}}
 			}
-			pendingRecord = &pending{ref: record.Ref, kind: "memory", memory: &doc, before: append(json.RawMessage(nil), record.Body...), revision: record.Revision, setBy: map[string]string{"content": "request", "metadata": "request"}}
-			changeOp = model.Op{Kind: model.OpPatch, Patch: &model.PatchOp{Kind: model.OpPatch, Target: record.Ref, Fields: map[string]any{"content": content, "metadata": metadata}}}
 		} else {
 			id, err := w.cfg.newID()
 			if err != nil {
@@ -775,19 +786,25 @@ func (w *Writer) prepareMemory(ctx context.Context, reader driver.Reader, by mod
 		if len(rows) != 1 || rows[0].Kind != "memory" {
 			return nil, failure("not_found", "memory was not found")
 		}
-		doc, source, err := DecodeMemoryRecord(rows[0])
-		if err != nil || doc.ID != rows[0].Ref.ID {
+		effective, doc, source, err := ResolveMemoryRecord(ctx, snapshot, rows[0])
+		if err != nil {
 			return nil, failure("internal_error", "invalid persisted memory")
 		}
-		if source != nil {
-			if !source.Visible {
-				return nil, failure("not_found", "memory was not found")
-			}
-			return nil, failure("invalid_params", "imported source memory is read-only")
+		if source != nil && !source.Visible || doc.Overlay != nil && doc.Overlay.Deleted {
+			return nil, failure("not_found", "memory was not found")
 		}
-		pendingRecord := &pending{ref: ref, kind: "memory", memory: &doc, before: append(json.RawMessage(nil), rows[0].Body...), revision: rows[0].Revision, deleted: true, setBy: map[string]string{}}
-		p.writes[ref.ID], p.refs = pendingRecord, append(p.refs, ref)
-		p.proposal.Changes = append(p.proposal.Changes, port.Change{Resource: model.ResourceRef{Kind: "memory", Ref: ref}, Op: op, Before: pendingRecord.before})
+		var pendingRecord *pending
+		changeOp := op
+		if source != nil {
+			pendingRecord, changeOp, err = w.prepareMemoryOverlay(ctx, p, by, source, effective, doc, "", nil, true)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			pendingRecord = &pending{ref: ref, kind: "memory", memory: &doc, before: append(json.RawMessage(nil), rows[0].Body...), revision: rows[0].Revision, deleted: true, setBy: map[string]string{}}
+		}
+		p.writes[pendingRecord.ref.ID], p.refs = pendingRecord, append(p.refs, pendingRecord.ref)
+		p.proposal.Changes = append(p.proposal.Changes, port.Change{Resource: model.ResourceRef{Kind: "memory", Ref: pendingRecord.ref}, Op: changeOp, Before: pendingRecord.before})
 	} else {
 		return nil, failure("invalid_params", "unsupported memory method")
 	}
@@ -802,6 +819,17 @@ func (w *Writer) prepareMemory(ctx context.Context, reader driver.Reader, by mod
 		rows, err := snapshot.Get(ctx, []model.Ref{ref})
 		if err != nil {
 			return nil, err
+		}
+		if len(rows) == 1 {
+			effective, document, _, resolveErr := ResolveMemoryRecord(ctx, snapshot, rows[0])
+			if resolveErr != nil {
+				return nil, failure("internal_error", "invalid persisted memory")
+			}
+			if document.Overlay != nil && document.Overlay.Deleted {
+				rows = nil
+			} else {
+				rows = []driver.Record{effective}
+			}
 		}
 		if len(rows) != 1 {
 			if p.refusal == nil {
@@ -827,7 +855,7 @@ func (w *Writer) prepareMemory(ctx context.Context, reader driver.Reader, by mod
 		if expect.Field == "" || expect.Hash == "" {
 			return nil, failure("invalid_params", "precondition requires revision or field hash")
 		}
-		doc, err := DecodeMemoryDocument(rows[0].Body)
+		doc, _, err := DecodeMemoryRecord(rows[0])
 		if err != nil {
 			return nil, failure("internal_error", "invalid persisted memory")
 		}
@@ -862,6 +890,7 @@ func recordLockKey(ref model.Ref) string {
 
 func findMemoryByKey(ctx context.Context, snapshot *snapshotReader, key string) ([]driver.Record, error) {
 	found := make([]driver.Record, 0, 1)
+	seen := map[string]bool{}
 	var cursor *driver.Cursor
 	scanned := 0
 	for {
@@ -874,15 +903,19 @@ func findMemoryByKey(ctx context.Context, snapshot *snapshotReader, key string) 
 			return nil, failure("scope_too_large", "memory key scan exceeds 20000 records")
 		}
 		for _, record := range page.Items {
-			document, source, err := DecodeMemoryRecord(record)
+			effective, document, source, err := ResolveMemoryRecord(ctx, snapshot, record)
 			if err != nil {
 				return nil, failure("internal_error", "invalid persisted memory")
 			}
-			if record.Kind == "memory" && document.Key == key {
-				if source != nil {
-					return nil, failure("invalid_params", "imported source memory is read-only")
-				}
-				found = append(found, record)
+			if document.Key != key {
+				continue
+			}
+			if source != nil && !source.Visible {
+				return nil, failure("invalid_params", "hidden source memory cannot be replaced")
+			}
+			if !seen[effective.Ref.ID] {
+				found = append(found, effective)
+				seen[effective.Ref.ID] = true
 			}
 		}
 		if page.NextCursor == nil {
@@ -1517,6 +1550,12 @@ func (p *prepared) detectChanges() error {
 		}
 		if pending.deleted {
 			p.changed[id] = true
+			continue
+		}
+		if pending.rawMemory != nil {
+			if !bytes.Equal(pending.before, pending.rawMemory) {
+				return failure("internal_error", "immutable memory guard changed")
+			}
 			continue
 		}
 		var oldBody json.RawMessage
