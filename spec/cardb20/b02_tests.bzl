@@ -34,3 +34,20 @@ def b02_tests():
         tags = ["local", "manual"],
         timeout = "eternal",
     )
+
+    go_test(
+        name = "b02_native_delta_test",
+        srcs = [":native_build_support", "b02_delta_native_test.go"],
+        data = ["//spec/s1-b09-native:lexicon_files", "//internal/publicnative:dolt_runtime"],
+        env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
+        args = ["-test.v"],
+        deps = [
+            "//internal/core/model",
+            "//internal/integration/b07positive",
+            "//internal/integration/b07positive/public",
+            "//internal/publicnative",
+        ],
+        size = "enormous",
+        tags = ["local", "manual"],
+        timeout = "eternal",
+    )

@@ -1,6 +1,7 @@
 spec/cardb20/B06-CYCLES.md
 spec/cardb20/BUILD.bazel
 spec/cardb20/README.md
+spec/cardb20/b02_delta_native_test.go
 spec/cardb20/b02_native_graph.md
 spec/cardb20/b02_native_graph_test.go
 spec/cardb20/b02_native_recording_test.go
