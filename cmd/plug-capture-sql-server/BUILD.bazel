@@ -53,7 +53,7 @@ go_test(
         "native_capture_test.go",
         "physical_capture_test.go",
     ],
-    args = ["-test.run=^TestPublicNativeCommentActiveFixture$"],
+    args = ["-test.run=^TestPublicNativeCommentActiveFixture$$"],
     data = [
         ":plug-capture-sql-server",
         "//cmd/bd:bd",
@@ -71,6 +71,7 @@ go_test(
         "//internal/storage/dolt",
         "//internal/storage/physicalcapture",
         "//internal/testutil/bazeltest",
+        "//issueops",
         "@com_github_go_sql_driver_mysql//:mysql",
     ],
 )

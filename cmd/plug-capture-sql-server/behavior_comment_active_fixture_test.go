@@ -11,6 +11,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -31,6 +32,7 @@ import (
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/storage/physicalcapture"
 	"github.com/steveyegge/beads/internal/testutil/bazeltest"
+	"github.com/steveyegge/beads/issueops"
 )
 
 // This is a new public, disposable SOURCE fixture. The independent inputs and
@@ -71,6 +73,14 @@ func TestPublicNativeCommentActiveFixture(t *testing.T) {
 				count := 503
 				if plane >= 2 {
 					count = 3
+					// A preserved past seed proves newest<now before the three
+					// omitted-time comments reach now, equality, and future.
+					id := fmt.Sprintf("7%d000000-0000-4000-8000-%012d", plane, 0)
+					stamp := goTime.Truncate(time.Second).Add(-time.Minute)
+					text := "preserved past source seed"
+					author := "Imported Past Source"
+					comments = append(comments, map[string]any{"id": id, "issue_id": anchor, "author": author, "text": text, "created_at": stamp.Format(time.RFC3339Nano)})
+					expected = append(expected, commentFixtureTuple{Project: prefix, Table: family, ID: id, IssueID: anchor, Author: author, Text: text, CreatedAt: stamp})
 				}
 				for i := 0; i < count; i++ {
 					ordinal := count - i
@@ -170,22 +180,30 @@ func TestPublicNativeCommentActiveFixture(t *testing.T) {
 				}
 			}
 			for _, refusal := range []struct {
-				name string
-				args []string
+				name    string
+				args    []string
+				message string
 			}{
-				{"empty-body", []string{"comments", "add", durable, "", "--json"}},
-				{"whitespace-body", []string{"comments", "add", active, " \t\n ", "--json"}},
-				{"empty-id", []string{"comments", "add", "", "refused", "--json"}},
-				{"unknown-id", []string{"comments", "add", prefix + "-deadbeef", "refused", "--json"}},
-				{"abbreviated-id", []string{"comments", "add", prefix + "-a1", "refused", "--json"}},
+				{"empty-body", []string{"comments", "add", durable, "", "--json"}, "comment text cannot be empty"},
+				{"whitespace-body", []string{"comments", "add", active, " \t\n ", "--json"}, "comment text cannot be empty"},
+				{"empty-id", []string{"comments", "add", "", "refused", "--json"}, "resolving : refusing an empty string as an issue ID"},
+				{"unknown-id", []string{"comments", "add", prefix + "-deadbeef", "refused", "--json"}, fmt.Sprintf("resolving %s-deadbeef: no issue found matching %q", prefix, prefix+"-deadbeef")},
+				{"abbreviated-id", []string{"comments", "add", prefix + "-a1", "refused", "--json"}, "id abbreviations are not accepted on comment writes; use the full id from `bd show " + prefix + "-a1`"},
 			} {
 				before := commentFixtureObserve(t, f)
-				commentFixtureCommand(t, f, out, refusal.name, true, refusal.args...)
+				data := commentFixtureCommand(t, f, out, refusal.name, true, refusal.args...)
+				var envelope struct {
+					Error         string `json:"error"`
+					SchemaVersion string `json:"schema_version"`
+				}
+				if err := json.Unmarshal(data, &envelope); err != nil || envelope.Error != refusal.message || envelope.SchemaVersion == "" {
+					t.Fatalf("native CLI refusal envelope differs: %s: %s (%v)", refusal.name, data, err)
+				}
 				after := commentFixtureObserve(t, f)
 				if !equalPhysicalCaptureJSON(before, after) {
 					t.Fatalf("native refusal %s changed source state", refusal.name)
 				}
-				commentFixtureWrite(t, filepath.Join(out, refusal.name+"-conservation.json"), map[string]any{"before": before, "after": after})
+				commentFixtureWrite(t, filepath.Join(out, refusal.name+"-conservation.json"), map[string]any{"before": before, "after": after, "expected_cli_error": refusal.message, "contract": "cmd/bd/comments.go exact write resolution; cmd/bd/flags.go requireTextFromSources; internal/utils/id_parser.go"})
 			}
 			for _, anchor := range []string{durable, active, equalDurable, equalActive} {
 				data := commentFixtureCommand(t, f, out, "list-"+anchor, false, "comments", anchor, "--json")
@@ -197,7 +215,7 @@ func TestPublicNativeCommentActiveFixture(t *testing.T) {
 					t.Fatalf("native CLI exact thread differs for %s: got=%d want=%d", anchor, len(actual), len(want))
 				}
 			}
-			commentFixturePages(t, f, out, expected, durable, active)
+			commentFixturePages(t, f, out, expected, durable, active, child, prefix+"-notfound")
 			observed := commentFixtureObserve(t, f)
 			commentFixtureActive(t, observed, prefix, durable, active, equalDurable, equalActive, child, out)
 			for _, family := range []string{"wisps", "wisp_dependencies", "wisp_labels", "wisp_comments", "wisp_events", "wisp_child_counters"} {
@@ -378,7 +396,7 @@ func commentFixtureCommand(t *testing.T, f *nativeFixture, out, name string, ref
 	}
 	commentFixtureWrite(t, filepath.Join(out, "command-"+name+".json"), map[string]any{"executable": f.bd, "argv": args, "cwd": f.work, "started": start, "finished": time.Now().UTC(), "exit_code": code, "stdout": stdout.String(), "stderr": stderr.String()})
 	t.Logf("PUBLIC_COMMENT_NATIVE_COMMAND name=%s argv=%q exit=%d stdout=%s stderr=%s", name, args, code, stdout.Bytes(), stderr.Bytes())
-	if (err != nil) != refuse || ctx.Err() != nil || code == -1 {
+	if (err != nil) != refuse || ctx.Err() != nil || code == -1 || (refuse && code != 1) {
 		t.Fatalf("native command %s expected_refusal=%t error=%v", name, refuse, err)
 	}
 	return stdout.Bytes()
@@ -1108,9 +1126,8 @@ func commentFixturePages(t *testing.T, f *nativeFixture, out string, expected []
 			dataDir = value
 		}
 	}
-	before := commentFixtureObserve(t, f)
 	ctx := context.Background()
-	store, err := dolt.New(ctx, &dolt.Config{Path: dataDir, BeadsDir: filepath.Join(f.work, ".beads"), Database: "capture", ServerMode: true, ServerHost: "127.0.0.1", ServerPort: port, ServerUser: "root", ReadOnly: true, DisableAutoStart: true, MaxOpenConns: 1})
+	store, err := dolt.New(ctx, &dolt.Config{Path: dataDir, BeadsDir: filepath.Join(f.work, ".beads"), Database: "capture", ServerMode: true, ServerHost: "127.0.0.1", ServerPort: port, ServerUser: "root", DisableAutoStart: true, MaxOpenConns: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1119,6 +1136,32 @@ func commentFixturePages(t *testing.T, f *nativeFixture, out string, expected []
 			t.Error(err)
 		}
 	}()
+	before := commentFixtureObserve(t, f)
+	role, err := store.Commenter()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, refusal := range []struct {
+		name    string
+		request issueops.AddCommentRequest
+		want    error
+	}{
+		{"empty-author", issueops.AddCommentRequest{IssueID: anchors[0], Text: "refused"}, storage.ErrValidation},
+		{"empty-id", issueops.AddCommentRequest{Author: "Native Role Author", Text: "refused"}, storage.ErrValidation},
+		{"empty-body", issueops.AddCommentRequest{Author: "Native Role Author", IssueID: anchors[0]}, storage.ErrValidation},
+		{"whitespace-body", issueops.AddCommentRequest{Author: "Native Role Author", IssueID: anchors[1], Text: " \t\n "}, storage.ErrValidation},
+		{"missing-id", issueops.AddCommentRequest{Author: "Native Role Author", IssueID: anchors[3], Text: "refused"}, storage.ErrNotFound},
+		{"exact-prefix", issueops.AddCommentRequest{Author: "Native Role Author", IssueID: strings.TrimSuffix(anchors[0], "b"), Text: "refused"}, storage.ErrNotFound},
+	} {
+		beforeRole := commentFixtureObserve(t, f)
+		requestBefore := refusal.request
+		result, actualError := role.AddComment(ctx, refusal.request)
+		afterRole := commentFixtureObserve(t, f)
+		if !errors.Is(actualError, refusal.want) || result.Comment != nil || !reflect.DeepEqual(refusal.request, requestBefore) || !equalPhysicalCaptureJSON(beforeRole, afterRole) {
+			t.Fatalf("native Commenter typed refusal/conservation differs: %s: %v", refusal.name, actualError)
+		}
+		commentFixtureWrite(t, filepath.Join(out, "role-refusal-"+refusal.name+".json"), map[string]any{"interface": "DoltStore.Commenter().AddComment", "contract": "issueops/commenter.go: Commenter.AddComment; internal/storage/issueops/commenter.go validation and exact plane lookup", "request": refusal.request, "expected_sentinel": refusal.want.Error(), "actual_error": actualError.Error(), "errors_is": true, "before": beforeRole, "after": afterRole})
+	}
 	for _, anchor := range anchors {
 		want := commentFixtureThread(expected, anchor)
 		for _, limit := range []int{0, 100, 500, 501} {
