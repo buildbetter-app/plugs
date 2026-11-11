@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 
@@ -60,7 +61,7 @@ with tempfile.TemporaryDirectory(prefix="b02-contract-") as temporary:
     helper.reconcile(root, True)
     bootstrap = root / "internal/server/rpc/openrpc.json"
     bootstrap.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run([str(source / "internal/server/rpc/cmd/openrpcgen/openrpcgen_/openrpcgen"), "-catalog", str(root / paths[1]), "-out", str(bootstrap)], check=True)
+    subprocess.run([str(Path(os.environ["TEST_SRCDIR"]) / sys.argv[1]), "-catalog", str(root / paths[1]), "-out", str(bootstrap)], check=True)
     for relative in (*paths, "internal/server/rpc/openrpc.json"):
         destination = output / relative
         destination.parent.mkdir(parents=True, exist_ok=True)

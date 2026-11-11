@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -26,6 +27,9 @@ func main() {
 		fail(err)
 	}
 	document, err := server.OpenRPC(context.Background(), model.PrincipalRef{Kind: "anonymous", ID: "anonymous"})
+	if err != nil {
+		fail(err)
+	}
 	if *catalogPath != "" {
 		raw, readErr := os.ReadFile(*catalogPath)
 		if readErr != nil {
@@ -35,7 +39,23 @@ func main() {
 		if parseErr != nil {
 			fail(parseErr)
 		}
-		document, err = catalog.GenerateOpenRPC(registry.Descriptors())
+		var bootstrap struct {
+			Methods []struct {
+				Name string `json:"name"`
+			} `json:"methods"`
+		}
+		if decodeErr := json.Unmarshal(document, &bootstrap); decodeErr != nil {
+			fail(decodeErr)
+		}
+		descriptors := make([]wire.MethodDesc, 0, len(bootstrap.Methods))
+		for _, method := range bootstrap.Methods {
+			descriptor, ok := catalog.Descriptor(method.Name)
+			if !ok {
+				fail(fmt.Errorf("bound bootstrap method missing from supplied catalog: %s", method.Name))
+			}
+			descriptors = append(descriptors, descriptor)
+		}
+		document, err = catalog.GenerateOpenRPC(descriptors)
 	}
 	if err != nil {
 		fail(err)
