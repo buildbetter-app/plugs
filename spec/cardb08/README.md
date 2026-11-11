@@ -44,6 +44,12 @@ staged child image before each ordinary close and retain final-image ontology
 validation. Three-engine controls require a parent-first batch to refuse with
 no write, a child-first batch to settle once, an unrelated parent patch to
 succeed, and a transition without the child guard to accept a live child.
+Both scope controls also enter actual staged preparation: a parent patch plus
+an active workflow comment succeeds with the child still open; a guard-free
+parent close followed by an active child comment succeeds while the child
+remains open. Public readback confirms each child's actual plane and status,
+and each mixed write advances the checkpoint once. The ordinary-only patch
+and named guard-free close remain separate controls.
 Claim, readiness and stored-blocked close guards keep their existing rules.
 
 Receipt snapshots retain all four driver receipt fields. The driver contract

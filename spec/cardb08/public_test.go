@@ -131,6 +131,21 @@ func (f *b08Fixture) invoke(label string) model.Ref {
 	return model.RefByID(result.Items[0].ID, model.Natural64(0))
 }
 
+func (f *b08Fixture) requireOpenWorkflow(label string, id model.Ref) {
+	f.t.Helper()
+	before := f.state()
+	out := f.call(label, "bead.get", map[string]any{"id": id}, "")
+	var result struct {
+		Bead struct{ ID, Status, Plane, Project string }
+	}
+	if err := json.Unmarshal(out.Result, &result); err != nil || result.Bead.ID != id.ID || result.Bead.Status != "open" || result.Bead.Plane != "ephemeral" || result.Bead.Project != b08Project {
+		f.t.Fatalf("workflow child did not remain open in its actual plane: %s %v", out.Result, err)
+	}
+	if !bytes.Equal(b08JSON(f.t, before), b08JSON(f.t, f.state())) {
+		f.t.Fatal("workflow readback changed complete declared state")
+	}
+}
+
 func TestB08PublicOpenChildrenAcrossPlanes(t *testing.T) {
 	root := b08Root(t, "b08-mixed-children")
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
@@ -158,6 +173,9 @@ func TestB08PublicTypedMixedCloseHonorsChildOrderAndTransition(t *testing.T) {
 			closeOp := func(id model.Ref) map[string]any {
 				return map[string]any{"kind": "close", "target": id}
 			}
+			commentOp := func(id model.Ref, body string) map[string]any {
+				return map[string]any{"kind": "comment", "target": id, "body": body}
+			}
 			batch := func(ops ...map[string]any) map[string]any {
 				return map[string]any{"changeSet": map[string]any{"ops": ops}}
 			}
@@ -166,6 +184,15 @@ func TestB08PublicTypedMixedCloseHonorsChildOrderAndTransition(t *testing.T) {
 			// An unrelated ordinary operation is not a close merely because it
 			// shares tx.apply with lifecycle operations elsewhere.
 			f.oneWrite("patch-parent-with-open-child", "tx.apply", batch(map[string]any{"kind": "patch", "target": parent, "fields": map[string]any{"title": "still open with child"}}), parent)
+			// The active comment forces this request through sourcePreparation.
+			// A patch in that path must not be treated as a close, and the
+			// child remains open throughout the successful mixed publication.
+			beforePatch := f.state()
+			f.oneWrite("mixed-patch-parent-with-open-child", "tx.apply", batch(map[string]any{"kind": "patch", "target": parent, "fields": map[string]any{"title": "mixed patch with live child"}}, commentOp(child, "child remains open after mixed patch")), parent)
+			if after := f.state(); after.Checkpoint.Generation != beforePatch.Checkpoint.Generation+1 || f.document(parent).Fields["status"] != "b08-queued" {
+				t.Fatal("mixed patch did not preserve the active parent and publish exactly one checkpoint")
+			}
+			f.requireOpenWorkflow("mixed-patch-child-still-open", child)
 			before := f.state()
 			f.oneWrite("child-before-parent", "tx.apply", batch(closeOp(child), closeOp(parent)), parent)
 			if after := f.state(); after.Checkpoint.Generation != before.Checkpoint.Generation+1 || f.document(parent).Fields["status"] != "b08-finished" {
@@ -178,6 +205,17 @@ func TestB08PublicTypedMixedCloseHonorsChildOrderAndTransition(t *testing.T) {
 			f.link("permitted-child-parent", live, permitted, "parent-child")
 			f.closeOnce("transition-without-child-guard", permitted, "declared ontology permits close")
 			f.reopen("guard-free-transition")
+
+			stagedParent := f.create("staged-permitted-parent", "b08-child-permitted", nil, nil)
+			stagedChild := f.invoke("staged-permitted-live-child")
+			f.link("staged-permitted-child-parent", stagedChild, stagedParent, "parent-child")
+			beforePermitted := f.state()
+			f.oneWrite("mixed-transition-without-child-guard", "tx.apply", batch(closeOp(stagedParent), commentOp(stagedChild, "child remains open after permitted mixed close")), stagedParent)
+			if after := f.state(); after.Checkpoint.Generation != beforePermitted.Checkpoint.Generation+1 || f.document(stagedParent).Fields["status"] != "b08-finished" {
+				t.Fatal("guard-free mixed close did not publish one checkpoint and the exact terminal parent")
+			}
+			f.requireOpenWorkflow("guard-free-mixed-child-still-open", stagedChild)
+			f.reopen("guard-free-staged-transition")
 		})
 	}
 }
