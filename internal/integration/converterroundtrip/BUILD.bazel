@@ -59,6 +59,7 @@ go_test(
         "//internal/server/transport/httpjson",
         "//internal/server/rpc",
         "//internal/core/viewops",
+        "//internal/server/viewrpc",
         "//internal/integration/b07positive",
         "//internal/storage/depid",
         "//internal/storage/driver",
