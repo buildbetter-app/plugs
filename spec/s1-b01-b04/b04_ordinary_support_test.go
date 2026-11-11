@@ -64,12 +64,23 @@ func ordinaryB04SelectionCases() []ordinaryB04SelectionCase {
 	}
 }
 
-func ordinarySelectionID(name,role string) string { return "b04-select-"+name+"-"+role }
+func ordinarySelectionID(name,role string) string {
+	root:="b04-select-"+name+"-root"
+	if role=="root" {return root}
+	return fmt.Sprintf("%s.%d",root,int(role[0]-'a')+1)
+}
+
+func ordinaryCreateOp(key,inProject string,fields map[string]any,parent string) model.Op {
+	copy:=map[string]any{};for k,v:=range fields {if k!="status" {copy[k]=v}}
+	op:=createOp(key,inProject,copy,parent)
+	if status,ok:=fields["status"].(string);ok {op.Create.TargetStatus=&status}
+	return op
+}
 
 func (o *ordinaryB04) selectionFixture(v ordinaryB04SelectionCase) map[string]any {
 	root:=ordinarySelectionID(v.Name,"root")
-	ops:=[]model.Op{createOp("root",project,map[string]any{"title":root,"priority":4},"")}
-	for _,row:=range v.Rows {fields:=map[string]any{"title":ordinarySelectionID(v.Name,row.Role),"priority":row.Priority};if row.Labels!=nil {fields["labels"]=row.Labels};op:=createOp(row.Role,project,fields,root);if row.Kind=="bug" {op.Create.Type="bug"};ops=append(ops,op)}
+	ops:=[]model.Op{ordinaryCreateOp("root",project,map[string]any{"title":root,"priority":4},"")}
+	for _,row:=range v.Rows {fields:=map[string]any{"title":ordinarySelectionID(v.Name,row.Role),"priority":row.Priority};if row.Labels!=nil {fields["labels"]=row.Labels};op:=ordinaryCreateOp(row.Role,project,fields,root);if row.Kind=="bug" {op.Create.Type="bug"};ops=append(ops,op)}
 	o.seed("selection-create",ops...)
 	for _,row:=range v.Rows {if row.Owned {id:=ordinarySelectionID(v.Name,row.Role);o.win("selection-owned-"+row.Role,"bead.claim",id,"todo",map[string]any{"id":ref(id)})}}
 	filter:=map[string]any{"parent":root};for k,value:=range v.Public {filter[k]=value}
@@ -84,6 +95,10 @@ func newOrdinaryB04(t *testing.T, backend, dsn string, ids []string, configure .
 	w := doc.Workflows["issue"]
 	w.Statuses = append(w.Statuses, "awaiting_review", "qa_testing")
 	w.Transitions[0].From = append(w.Transitions[0].From, "awaiting_review")
+	w.Transitions = append(w.Transitions,
+		ontology.Rule{From: []string{w.Initial}, To: "awaiting_review", Guards: []ontology.Guard{{Kind: ontology.Permission}}},
+		ontology.Rule{From: []string{w.Initial}, To: "qa_testing", Guards: []ontology.Guard{{Kind: ontology.Permission}}},
+	)
 	doc.Workflows["issue"] = w
 	doc.Types["bug"] = ontology.Type{Name:"Bug", Workflow:"issue", Fields:doc.Types["issue"].Fields}
 	for _, change := range configure { change(&doc) }
@@ -188,7 +203,8 @@ func (o *ordinaryB04) receipt(label,method,agent string) *driver.IdempotencyReco
 	t,f:=o.f.t,o.f;t.Helper()
 	r,err:=f.store.Read(f.ctx,driver.View{Incarnation:f.metaSnapshot().Incarnation});if err!=nil {t.Fatal(err)};defer r.Close()
 	principal,err:=driver.PrincipalKey(o.receiptPrincipal(label));if err!=nil {t.Fatal(err)}
-	entry,err:=r.IdempotencyByKey(f.ctx,principal,agent,method,f.key(label,method,agent));if err!=nil {t.Fatal(err)}
+	scope:=agent;if o.receiptPrincipal(label).Kind!="anonymous" {scope=""}
+	entry,err:=r.IdempotencyByKey(f.ctx,principal,scope,method,f.key(label,method,agent));if err!=nil {t.Fatal(err)}
 	return entry
 }
 
@@ -289,7 +305,7 @@ func (o *ordinaryB04) win(label, method, id, sourceStatus string, params map[str
 	doc, err := pipeline.DecodeDocument(actual.Body)
 	if err != nil { t.Fatal(err) }
 	expires := f.clock.Now().Add(300*time.Second)
-	if doc.Fields["status"] != "in_progress" || doc.StartedAt == nil || !doc.StartedAt.Equal(f.clock.Now()) || doc.Lease == nil || doc.Lease.Agent != owner || !reflect.DeepEqual(doc.Lease.Principal,o.principal()) || !doc.Lease.ExpiresAt.Equal(expires) || doc.Lease.TtlMs != model.Natural64(300000) || c.LeaseExpiresAt == nil || !c.LeaseExpiresAt.Equal(expires) || c.LeaseTtlMs == nil || *c.LeaseTtlMs != model.Natural64(300000) { t.Fatalf("exact winning status/start/ownership/default lease: %+v", doc) }
+	if doc.Fields["status"] != "in_progress" || doc.StartedAt == nil || !doc.StartedAt.Equal(f.clock.Now()) || doc.Lease == nil || doc.Lease.Agent != o.leaseAgent() || !reflect.DeepEqual(doc.Lease.Principal,o.principal()) || !doc.Lease.ExpiresAt.Equal(expires) || doc.Lease.TtlMs != model.Natural64(300000) || c.LeaseExpiresAt == nil || !c.LeaseExpiresAt.Equal(expires) || c.LeaseTtlMs == nil || *c.LeaseTtlMs != model.Natural64(300000) { t.Fatalf("exact winning status/start/ownership/default lease: %+v", doc) }
 	// Independent expected postimage: preserve every original field, link,
 	// label, comment and timestamp, changing only the named claim fields.
 	want := old
@@ -297,7 +313,7 @@ func (o *ordinaryB04) win(label, method, id, sourceStatus string, params map[str
 	for k,v := range old.Fields { want.Fields[k]=v }
 	want.Fields["status"] = "in_progress"
 	started := f.clock.Now(); want.StartedAt = &started
-	want.Lease = &pipeline.ClaimLease{Principal:o.principal(), Agent:owner, Epoch:model.Natural64(f.lease.Epoch()), ExpiresAt:expires, TtlMs:model.Natural64(300000)}
+	want.Lease = &pipeline.ClaimLease{Principal:o.principal(), Agent:o.leaseAgent(), Epoch:model.Natural64(f.lease.Epoch()), ExpiresAt:expires, TtlMs:model.Natural64(300000)}
 	if !reflect.DeepEqual(doc, want) { t.Fatalf("hydrated row differs from independent expected postimage: got=%+v want=%+v", doc,want) }
 	found:=false
 	for _,cs:=range after.History {if cs.Revision==c.Revision {found=true;if len(cs.Changes)!=1 || cs.Changes[0].Ref!=ref(id) || cs.Changes[0].Op!=model.OpPatch || cs.Changes[0].FromRevision!=oldRecord.Revision || cs.IdempotencyKey!=f.key(label,method,owner) || !cs.Time.Equal(f.clock.Now()) || !reflect.DeepEqual(cs.Principal,o.principal()) {t.Fatalf("winning history attribution: %+v",cs)}}}
@@ -374,4 +390,9 @@ func (o *ordinaryB04) selectionListingControl(filter map[string]any, want []stri
 	base:=map[string]any{};for k,v:=range filter {if k!="unassigned" {base[k]=v}}
 	all:=[]string{ordinarySelectionID("unassigned","a"),ordinarySelectionID("unassigned","b")};sort.Strings(all)
 	for i:=0;i<2;i++ {q:=map[string]any{};for k,v:=range base {q[k]=v};if i==1 {q["unassigned"]=false};if got:=o.listingIDs(fmt.Sprintf("unassigned-list-%d",i),q);!reflect.DeepEqual(got,all) {t.Fatalf("unassigned omitted/false case%d membership=%v want=%v",i,got,all)}}
+}
+
+func (o *ordinaryB04) leaseAgent() string {
+	if o.principal().Kind=="anonymous" {return owner}
+	return ""
 }

@@ -18,7 +18,7 @@ func TestB04OrdinaryPublicHTTPAcrossStores(t *testing.T) {
 			dsn:=""; if backend=="postgres" { dsn=h.dsn(t) }
 			o:=newOrdinaryB04(t,backend,dsn,[]string{"b04-decoy","b04-direct","b04-active","b04-wip"})
 			o.empty("never-populated",nil)
-			o.seed("create-public",createOp("decoy",project,map[string]any{"title":"unselected decoy","priority":0},""),createOp("direct",project,map[string]any{"title":"ordinary hydrated row","description":"preserve description","labels":[]string{"ordinary","public"},"priority":2},""),createOp("active",project,map[string]any{"title":"native category active","status":"awaiting_review","priority":3},""),createOp("wip",project,map[string]any{"title":"native category wip","status":"qa_testing","priority":1},""))
+			o.seed("create-public",ordinaryCreateOp("decoy",project,map[string]any{"title":"unselected decoy","priority":0},""),ordinaryCreateOp("direct",project,map[string]any{"title":"ordinary hydrated row","description":"preserve description","labels":[]string{"ordinary","public"},"priority":2},""),ordinaryCreateOp("active",project,map[string]any{"title":"native category active","status":"awaiting_review","priority":3},""),ordinaryCreateOp("wip",project,map[string]any{"title":"native category wip","status":"qa_testing","priority":1},""))
 			o.commit("public-comment","bead.comment",map[string]any{"id":ref("b04-direct"),"body":"hydration retains this comment"})
 			o.reopen("before-claim")
 			o.win("direct","bead.claim","b04-direct","todo",map[string]any{"id":ref("b04-direct")})
@@ -42,13 +42,13 @@ func TestB04OrdinaryPublicParentPriorityAndQueryFilters(t *testing.T) {
 	for _,backend:=range []string{"memory","sqlite","postgres"} {
 		t.Run(backend,func(t *testing.T) {
 			dsn:="";if backend=="postgres" {dsn=h.dsn(t)}
-			o:=newOrdinaryB04(t,backend,dsn,[]string{"b04-root","b04-child","b04-grandchild","b04-outside","b04-priority-decoy","b04-type-decoy"})
-			bug:=createOp("type-decoy",project,map[string]any{"title":"ordinary wrong type","priority":2},"b04-root");bug.Create.Type="bug"
-			o.seed("filter-create",createOp("root",project,map[string]any{"title":"ordinary root","priority":0},""),createOp("child",project,map[string]any{"title":"ordinary selected child","priority":2},"b04-root"),createOp("grandchild",project,map[string]any{"title":"ordinary selected grandchild","priority":2},"b04-child"),createOp("outside",project,map[string]any{"title":"ordinary outside","priority":2},""),createOp("priority-decoy",project,map[string]any{"title":"ordinary wrong priority","priority":1},"b04-root"),bug)
+			o:=newOrdinaryB04(t,backend,dsn,[]string{"b04-root","b04-outside"})
+			bug:=ordinaryCreateOp("type-decoy",project,map[string]any{"title":"ordinary wrong type","priority":2},"b04-root");bug.Create.Type="bug"
+			o.seed("filter-create",ordinaryCreateOp("root",project,map[string]any{"title":"ordinary root","priority":0},""),ordinaryCreateOp("child",project,map[string]any{"title":"ordinary selected child","priority":2},"b04-root"),ordinaryCreateOp("grandchild",project,map[string]any{"title":"ordinary selected grandchild","priority":2},"b04-root.1"),ordinaryCreateOp("outside",project,map[string]any{"title":"ordinary outside","priority":2},""),ordinaryCreateOp("priority-decoy",project,map[string]any{"title":"ordinary wrong priority","priority":1},"b04-root"),bug)
 			o.reopen("filters-before")
-			for i,id:=range []string{"b04-child","b04-grandchild"} {o.win(fmt.Sprintf("descendant-%d",i),"bead.claimNext",id,"todo",map[string]any{"filter":map[string]any{"parent":"b04-root","priority":2,"types":[]string{"issue"},"resources":[]string{"b04-root","b04-child","b04-grandchild","b04-outside","b04-priority-decoy","b04-type-decoy"}}})}
+			for i,id:=range []string{"b04-root.1","b04-root.1.1"} {o.win(fmt.Sprintf("descendant-%d",i),"bead.claimNext",id,"todo",map[string]any{"filter":map[string]any{"parent":"b04-root","priority":2,"types":[]string{"issue"},"resources":[]string{"b04-root","b04-root.1","b04-root.1.1","b04-outside","b04-root.2","b04-root.3"}}})}
 			o.empty("descendants-drained",map[string]any{"filter":map[string]any{"parent":"b04-root","priority":2,"types":[]string{"issue"}}})
-			if o.f.document("b04-root").Lease!=nil || o.f.document("b04-outside").Lease!=nil || o.f.document("b04-priority-decoy").Lease!=nil || o.f.document("b04-type-decoy").Lease!=nil {t.Fatal("parent/priority/type intersection leaked")}
+			if o.f.document("b04-root").Lease!=nil || o.f.document("b04-outside").Lease!=nil || o.f.document("b04-root.2").Lease!=nil || o.f.document("b04-root.3").Lease!=nil {t.Fatal("parent/priority/type intersection leaked")}
 			for i,p:=range []map[string]any{{"filter":map[string]any{"query":"type=issue"}},{"filter":map[string]any{"events":[]string{"bead.updated"}}},{"viewId":"uninstalled-view"},{"filter":map[string]any{"viewId":"uninstalled-view"}}} {o.refusal(fmt.Sprintf("unsupported-selection-%d",i),"bead.claimNext",owner,"invalid_params",false,p)}
 			o.reopen("filters-after")
 		})
@@ -62,10 +62,10 @@ func TestB04OrdinaryPublicWalkBeyondOneThousand(t *testing.T) {
 			dsn:=""; if backend=="postgres" { dsn=h.dsn(t) }
 			const prefix=1001
 			ids:=make([]string,0,2*prefix+2);ops:=make([]model.Op,0,2*prefix+2)
-			for i:=0;i<prefix;i++ { id:=fmt.Sprintf("b04-skip-%04d",i);ids=append(ids,id);ops=append(ops,createOp(id,project,map[string]any{"title":id,"priority":0},"")) }
+			for i:=0;i<prefix;i++ { id:=fmt.Sprintf("b04-skip-%04d",i);ids=append(ids,id);ops=append(ops,ordinaryCreateOp(id,project,map[string]any{"title":id,"priority":0},"")) }
 			ids=append(ids,"b04-walkwinner","b04-walkdecoy")
-			ops=append(ops,createOp("winner",project,map[string]any{"title":"winner after full front","priority":3},""),createOp("decoy",project,map[string]any{"title":"excluded by resource filter","priority":1},""))
-			for i:=0;i<prefix;i++ {id:=fmt.Sprintf("b04-guard-child-%04d",i);ids=append(ids,id);ops=append(ops,createOp(id,project,map[string]any{"title":id,"priority":4},ids[i]))}
+			ops=append(ops,ordinaryCreateOp("winner",project,map[string]any{"title":"winner after full front","priority":3},""),ordinaryCreateOp("decoy",project,map[string]any{"title":"excluded by resource filter","priority":1},""))
+			for i:=0;i<prefix;i++ {id:=fmt.Sprintf("b04-guard-child-%04d",i);ids=append(ids,id);ops=append(ops,ordinaryCreateOp(id,project,map[string]any{"title":id,"priority":4},ids[i]))}
 			o:=newOrdinaryB04(t,backend,dsn,ids,func(doc *ontology.Document){w:=doc.Workflows["issue"];w.Transitions[0].Guards=append(w.Transitions[0].Guards,ontology.Guard{Kind:ontology.NoOpenChildren});doc.Workflows["issue"]=w})
 			for start:=0;start<len(ops);start+=50 { if err:=o.f.lease.Renew(context.Background());err!=nil {t.Fatal(err)};o.seed(fmt.Sprintf("public-seed-%04d",start),ops[start:min(start+50,len(ops))]...) }
 			if err:=o.f.lease.Renew(context.Background());err!=nil {t.Fatal(err)}
@@ -85,7 +85,7 @@ func TestB04OrdinaryAdditiveSelectionAcrossStores(t *testing.T) {
 	for _,backend:=range []string{"memory","sqlite","postgres"} {t.Run(backend,func(t *testing.T){
 		for _,v:=range ordinaryB04SelectionCases() {t.Run(v.Name,func(t *testing.T){
 			dsn:="";if backend=="postgres" {dsn=h.dsn(t)}
-			ids:=[]string{ordinarySelectionID(v.Name,"root")};for _,row:=range v.Rows {ids=append(ids,ordinarySelectionID(v.Name,row.Role))}
+			ids:=[]string{ordinarySelectionID(v.Name,"root")}
 			o:=newOrdinaryB04(t,backend,dsn,ids);filter:=o.selectionFixture(v);o.reopen("selection-before")
 			want:=[]string{};for _,role:=range v.Ready {want=append(want,ordinarySelectionID(v.Name,role))}
 			if got:=o.readyIDs("selection-front",filter);!reflect.DeepEqual(got,want) {t.Fatalf("public selector membership=%v want=%v",got,want)}
@@ -102,7 +102,7 @@ func TestB04OrdinarySelectionUnderStaticAuthority(t *testing.T) {
 		dsn:="";if backend=="postgres" {dsn=h.dsn(t)}
 		ids:=[]string{"b04-hidden-match","b04-visible-winner","b04-visible-mismatch"}
 		o:=newOrdinaryB04(t,backend,dsn,ids)
-		o.seed("static-seed",createOp("hidden",project,map[string]any{"title":"hidden matching high rank","priority":0,"labels":[]string{"public-selection"}},""),createOp("winner",project,map[string]any{"title":"visible matching winner","priority":2,"labels":[]string{"public-selection"}},""),createOp("mismatch",project,map[string]any{"title":"visible filter mismatch","priority":1,"labels":[]string{"outside"}},""))
+		o.seed("static-seed",ordinaryCreateOp("hidden",project,map[string]any{"title":"hidden matching high rank","priority":0,"labels":[]string{"public-selection"}},""),ordinaryCreateOp("winner",project,map[string]any{"title":"visible matching winner","priority":2,"labels":[]string{"public-selection"}},""),ordinaryCreateOp("mismatch",project,map[string]any{"title":"visible filter mismatch","priority":1,"labels":[]string{"outside"}},""))
 		o.server.Close()
 		o.authority=ordinaryAuthority(t,[]model.Ref{ref(ids[1]),ref(ids[2])},o.f.clock.Now)
 		o.install()
