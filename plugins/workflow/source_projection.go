@@ -181,9 +181,8 @@ func prepareSourceRelations(ctx context.Context, value *persisted, plan driver.S
 				return err
 			}
 			fields := wire.Source.Fields
-			if len(fields) != 10 {
-				return sourceRefusal("incomplete physical dependency row")
-			}
+			// Future native columns are opaque. The exact census above and required
+			// columns below still bind the physical dependency and its predicate.
 			for _, name := range []string{"id", "issue_id", "depends_on_issue_id", dumpformat.EphemeralDependencyTargetField, "depends_on_external", "type", "created_at", "created_by", "metadata", "thread_id"} {
 				if _, ok := fields[name]; !ok {
 					return sourceRefusal("missing dependency column")
@@ -268,6 +267,32 @@ func prepareSourceRelations(ctx context.Context, value *persisted, plan driver.S
 			}
 			if string(canonical) != string(relation.PredicateJSON) {
 				return sourceRefusal("detached predicate differs from physical metadata")
+			}
+			// Token copies and validation input live until this relation is cloned.
+			// sourceRestoreAppendRelation owns each detached output reservation.
+			opaque := map[string]string{}
+			for field, raw := range fields {
+				if dumpformat.NativeEdgeField(field) {
+					if err := sourceRestoreChargeBytes(transient, "workflow_relation_extension_names", uint64(len("beads.") + len(field))); err != nil {
+						return err
+					}
+					if err := sourceRestoreChargeBytes(transient, "workflow_relation_extension_values", uint64(len(raw))); err != nil {
+						return err
+					}
+					if err := sourceRestoreChargeBytes(transient, "workflow_relation_extension_validation", uint64(len(raw))); err != nil {
+						return err
+					}
+					opaque["beads."+field] = string(raw)
+				}
+			}
+			if err := model.ValidateNativeExtensions(opaque); err != nil {
+				return err
+			}
+			if len(opaque) != 0 {
+				if predicate == nil {
+					predicate = &model.LinkMetadata{}
+				}
+				predicate.NativeExtensions = opaque
 			}
 			used[relation.Origin.SHA256] = true
 			// External endpoints retain complete inert origins. The canonical

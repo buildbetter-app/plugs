@@ -243,7 +243,7 @@ func (o *Ontology) waitsForSatisfied(link pipeline.Link, spawner storedBead, gra
 	terminal := func(row storedBead) bool {
 		return o.effective(row.doc.Project).SatisfiesBlocks(state(row.doc).Status)
 	}
-	if link.Metadata == nil {
+	if !link.Metadata.HasPredicate() {
 		// Preserve the legacy terminal-spawner/all-children fallback.
 		return terminal(spawner) || o.noOpenChildren(spawner.doc, graph)
 	}

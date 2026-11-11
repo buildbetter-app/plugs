@@ -73,6 +73,7 @@ func TestSourceRelationAccountingMatchesOriginalBytesAndReleasesReplacement(t *t
 	defer owner.Release()
 	ctx := dumpformat.WithNativeDeltaBudget(context.Background(), owner)
 	first := relationState{From: "workflow:item/a", To: model.RefByID("workflow:item/b", model.Natural64(0)), Kind: "waits-for", Metadata: &model.LinkMetadata{Gate: "all-children"}}
+	first.Metadata.NativeExtensions = map[string]string{"beads.future": `{ "n":1e+03, "text":"<large>\\n世界" }`, "beads.thread_id": "null"}
 	second := relationState{From: first.From, To: model.RefByID("workflow:item/c", model.Natural64(0)), Kind: "blocks"}
 	var plain, counted []relationState
 	for _, added := range []relationState{first, second, first} {
@@ -110,8 +111,12 @@ func TestSourceRelationAccountingMatchesOriginalBytesAndReleasesReplacement(t *t
 	}
 	// Both original and counted paths detach the metadata in each kept link.
 	first.Metadata.Gate = "any-children"
+	first.Metadata.NativeExtensions["beads.future"] = "null"
 	if counted[0].Metadata.Gate != "all-children" || plain[0].Metadata.Gate != "all-children" {
 		t.Fatal("relation clone aliases caller metadata")
+	}
+	if counted[0].Metadata.NativeExtensions["beads.future"] != `{ "n":1e+03, "text":"<large>\\n世界" }` || plain[0].Metadata.NativeExtensions["beads.future"] != counted[0].Metadata.NativeExtensions["beads.future"] {
+		t.Fatal("relation clone aliases or normalizes opaque native tokens")
 	}
 	owner.Release()
 	if root.Usage().CurrentAccountedDecodedBytes != 0 {

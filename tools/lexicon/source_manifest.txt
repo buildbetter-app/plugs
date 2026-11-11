@@ -174,7 +174,9 @@ internal/core/authz/types.go
 internal/core/dumpformat/BUILD.bazel
 internal/core/dumpformat/README.md
 internal/core/dumpformat/catalog.go
+internal/core/dumpformat/edge_extensions.go
 internal/core/dumpformat/edge_metadata.go
+internal/core/dumpformat/edge_tokens_test.go
 internal/core/dumpformat/edge_version_test.go
 internal/core/dumpformat/history.go
 internal/core/dumpformat/history_test.go
@@ -270,6 +272,7 @@ internal/core/model/codes.go
 internal/core/model/commit.go
 internal/core/model/condition.go
 internal/core/model/doc.go
+internal/core/model/edge_extensions_test.go
 internal/core/model/encodings_test.go
 internal/core/model/events.go
 internal/core/model/history.go
@@ -401,6 +404,7 @@ internal/core/reverseconverter/BUILD.bazel
 internal/core/reverseconverter/README.md
 internal/core/reverseconverter/archive.go
 internal/core/reverseconverter/convert.go
+internal/core/reverseconverter/edge_extensions.go
 internal/core/reverseconverter/loss.go
 internal/core/reverseconverter/physical.go
 internal/core/reverseconverter/physical_test.go
@@ -589,6 +593,7 @@ internal/integration/collabwatch/integration_test.go
 internal/integration/collabwatch/reconnect_acceptance_test.go
 internal/integration/converterroundtrip/BUILD.bazel
 internal/integration/converterroundtrip/allocator.go
+internal/integration/converterroundtrip/b07_opaque_source_test.go
 internal/integration/converterroundtrip/b13_joint_memory_control_test.go
 internal/integration/converterroundtrip/external_target_test.go
 internal/integration/converterroundtrip/hierarchy_import_test.go
@@ -1241,6 +1246,9 @@ internal/storage/driver/hierarchy_contract_test.go
 internal/storage/driver/keys.go
 internal/storage/driver/keys_test.go
 internal/storage/driver/offline_history.go
+internal/storage/driver/offline_history_stream.go
+internal/storage/driver/offline_history_stream_consume.go
+internal/storage/driver/offline_history_stream_test.go
 internal/storage/driver/offline_history_test.go
 internal/storage/driver/offline_restore.go
 internal/storage/driver/parent_counter.go
@@ -1261,6 +1269,18 @@ internal/storage/driver/source_planes_snapshot.go
 internal/storage/driver/source_planes_test.go
 internal/storage/driver/source_planes_validate.go
 internal/storage/hierarchy-index-design.md
+internal/storage/historystream/BUILD.bazel
+internal/storage/historystream/context.go
+internal/storage/historystream/encode.go
+internal/storage/historystream/finalize.go
+internal/storage/historystream/json.go
+internal/storage/historystream/semantic.go
+internal/storage/historystream/stage.go
+internal/storage/historyverify/BUILD.bazel
+internal/storage/historyverify/auxiliary.go
+internal/storage/historyverify/checkpoint.go
+internal/storage/historyverify/engines_test.go
+internal/storage/historyverify/export_test.go
 internal/storage/memory/BUILD.bazel
 internal/storage/memory/allocator.go
 internal/storage/memory/allocator_snapshot.go
@@ -1281,6 +1301,7 @@ internal/storage/memory/metadata_test.go
 internal/storage/memory/noop.go
 internal/storage/memory/noop_test.go
 internal/storage/memory/offline_history.go
+internal/storage/memory/offline_history_stream.go
 internal/storage/memory/offline_restore.go
 internal/storage/memory/parent_counter.go
 internal/storage/memory/reader.go
@@ -1336,6 +1357,7 @@ internal/storage/postgres/lease_prepare_test.go
 internal/storage/postgres/lock_batch_test.go
 internal/storage/postgres/metadata.go
 internal/storage/postgres/offline_history.go
+internal/storage/postgres/offline_history_stream.go
 internal/storage/postgres/offline_restore.go
 internal/storage/postgres/parent_counter.go
 internal/storage/postgres/pending_test.go
@@ -1389,6 +1411,7 @@ internal/storage/sqlite/metadata.go
 internal/storage/sqlite/metadata_outcome_test.go
 internal/storage/sqlite/native_restore_detach_test.go
 internal/storage/sqlite/offline_history.go
+internal/storage/sqlite/offline_history_stream.go
 internal/storage/sqlite/offline_restore.go
 internal/storage/sqlite/parent_counter.go
 internal/storage/sqlite/pending_test.go
@@ -1596,6 +1619,15 @@ spec/cardb01/record_reference.py
 spec/cardb01/reference-run-1.json
 spec/cardb01/reference-run-2.json
 spec/cardb01/reference_test.go
+spec/cardb07/BUILD.bazel
+spec/cardb07/README.md
+spec/cardb07/cases_test.go
+spec/cardb07/fixture_test.go
+spec/cardb07/imported_waits_test.go
+spec/cardb07/mixed_test.go
+spec/cardb07/native_test.go
+spec/cardb07/opaque_test.go
+spec/cardb07/public_test.go
 spec/cardb19/BUILD.bazel
 spec/cardb19/README.md
 spec/cardb19/archive_test.go
@@ -1610,6 +1642,10 @@ spec/cardb19/testdata/recording-2/imported.json
 spec/cardb20/B06-CYCLES.md
 spec/cardb20/BUILD.bazel
 spec/cardb20/README.md
+spec/cardb20/b02_native_graph.md
+spec/cardb20/b02_native_graph_test.go
+spec/cardb20/b02_native_recording_test.go
+spec/cardb20/b02_public_graph_test.go
 spec/cardb20/b06_cases_test.go
 spec/cardb20/b06_native_test.go
 spec/cardb20/b06_plug_test.go
@@ -1622,6 +1658,8 @@ spec/cardb20/policy_test.go
 spec/cardb20/postgres_test.go
 spec/cardb20/runtime_test.go
 spec/cardb20/sql_rows_test.go
+spec/cardb23full/BUILD.bazel
+spec/cardb23full/public_history_test.go
 spec/cardb24/BUILD.bazel
 spec/cardb24/README.md
 spec/cardb24/native_recording_test.go
@@ -2009,6 +2047,12 @@ tools/hostcallers/source-manifest.json
 tools/hostcallers/topology.prepared.json
 tools/lexicon/BUILD.bazel
 tools/lexicon/README.md
+tools/lexicon/b02_recording_literals.go
+tools/lexicon/b02_recording_literals_test.go
+tools/lexicon/b07_native_protocol_literals.go
+tools/lexicon/b07_native_protocol_literals_test.go
+tools/lexicon/b07_represented_literals.go
+tools/lexicon/b07_represented_literals_test.go
 tools/lexicon/checker.go
 tools/lexicon/checker_test.go
 tools/lexicon/cmd/lexicon_check/main.go

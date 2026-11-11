@@ -409,6 +409,9 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 					return nil, e
 				}
 				op.Reparent.Target, op.Reparent.Parent = target, parent
+				if parentID(current.doc.Parent) != parentID(parent) {
+					current.doc.ParentMetadata = nil
+				}
 				current.doc.Parent = parent
 				current.setBy["parent"] = "request"
 				p.hierarchyEdits = append(p.hierarchyEdits, hierarchyEdit{id: target.ID, parent: parentID(parent)})
@@ -498,23 +501,31 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				}
 				var metadata *model.LinkMetadata
 				if op.Link.Metadata != nil {
-					if op.Kind != model.OpLink || kind != "waits-for" {
-						return nil, failure("invalid_params", "metadata is only valid on a waits-for link")
+					if op.Kind != model.OpLink {
+						return nil, failure("invalid_params", "metadata is only valid on a link")
 					}
-					value, err := op.Link.Metadata.Normalized()
+					value, err := op.Link.Metadata.ForKind(kind)
 					if err != nil {
 						return nil, failure("invalid_params", err.Error())
 					}
 					metadata = &value
 				}
 				if op.Kind == model.OpLink {
-					if found < 0 {
+					// Plain legacy links retain their existing representation. Only
+					// metadata-bearing canonical parent edges use ParentMetadata.
+					if found < 0 && localParentChild && parentID(current.doc.Parent) == to.ID && (metadata != nil || current.doc.ParentMetadata != nil) {
+						if metadata != nil {
+							value := metadata.Retaining(current.doc.ParentMetadata)
+							current.doc.ParentMetadata = &value
+						}
+					} else if found < 0 {
 						current.doc.Links = append(current.doc.Links, Link{To: to, Kind: kind, Metadata: metadata, TargetKind: targetKind})
 					} else if metadata != nil {
 						// Omission preserves the stored predicate. An explicit
 						// replacement participates in ordinary final-image CAS,
 						// no-op detection and the single history/version commit.
-						current.doc.Links[found].Metadata = metadata
+						value := metadata.Retaining(current.doc.Links[found].Metadata)
+						current.doc.Links[found].Metadata = &value
 					}
 				}
 				if op.Kind == model.OpUnlink && found >= 0 {
@@ -544,6 +555,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 						current.doc.Parent = parent
 					} else if parentID(current.doc.Parent) == to.ID {
 						current.doc.Parent = nil
+						current.doc.ParentMetadata = nil
 					}
 					current.setBy["parent"] = "request"
 					p.hierarchyEdits = append(p.hierarchyEdits, hierarchyEdit{id: target.ID, parent: parentID(current.doc.Parent)})

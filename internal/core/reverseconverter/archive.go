@@ -83,11 +83,12 @@ func adaptArchive(archive *dumpformat.Archive) (Dump, error) {
 	for _, kind := range source.Kinds {
 		for _, record := range archive.Records(kind.Name) {
 			dump.Records[kind.Name] = append(dump.Records[kind.Name], Record{
-				Kind:    record.Kind,
-				ID:      record.ID,
-				Project: record.Project,
-				Body:    cloneMap(map[string]any(record.Body)),
-				Source:  Provenance{Table: record.Source.Table, Fields: cloneMap(map[string]any(record.Source.Fields))},
+				NativeEdgeTokens: cloneStringMap(record.NativeEdgeTokens),
+				Kind:             record.Kind,
+				ID:               record.ID,
+				Project:          record.Project,
+				Body:             cloneMap(map[string]any(record.Body)),
+				Source:           Provenance{Table: record.Source.Table, Fields: cloneMap(map[string]any(record.Source.Fields))},
 			})
 		}
 	}

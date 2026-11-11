@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "public_history_test",
+    size = "large",
+    srcs = ["public_history_test.go"],
+    args = ["-test.v"],
+    tags = ["local", "requires-network"],
+    timeout = "long",
+    deps = [
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/core/viewops",
+        "//internal/server/rpc",
+        "//internal/server/viewrpc",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/postgres",
+        "//internal/storage/sqlite",
+        "//internal/testclock",
+    ],
+)

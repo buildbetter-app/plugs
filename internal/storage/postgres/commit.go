@@ -229,7 +229,7 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 	if err := t.check(ctx); err != nil {
 		return zero, t.abortFenced(err)
 	}
-	if t.offlineHistory != nil {
+	if t.offlineHistory != nil || t.stream != nil {
 		return zero, fmt.Errorf("prepared history requires CommitOfflineHistory")
 	}
 	scope, err := t.header(h)

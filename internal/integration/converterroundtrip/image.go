@@ -255,7 +255,7 @@ func importedWaitsForSatisfied(link pipeline.Link, spawner pipeline.Document, do
 	terminal := func(doc pipeline.Document) bool {
 		return snapshot.Effective(doc.Project).SatisfiesBlocks(stringValue(doc.Fields["status"]))
 	}
-	if link.Metadata == nil && terminal(spawner) {
+	if !link.Metadata.HasPredicate() && terminal(spawner) {
 		return true
 	}
 	if link.Metadata != nil && link.Metadata.AlsoBlocks && !terminal(spawner) {

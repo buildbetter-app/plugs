@@ -401,7 +401,8 @@ func assertImportedIdentityEvidence(t *testing.T, store driver.Store, source *du
 				if edge.Body["type"] != "blocks" {
 					t.Fatal("identity fixture requires a supported block dependency")
 				}
-				wantLinks = append(wantLinks, pipeline.Link{Kind: "blocks", To: model.RefByID(edge.Body["to"].(string), model.Natural64(0))})
+				metadata := &model.LinkMetadata{NativeExtensions: edge.NativeEdgeTokens}
+				wantLinks = append(wantLinks, pipeline.Link{Kind: "blocks", To: model.RefByID(edge.Body["to"].(string), model.Natural64(0)), Metadata: metadata})
 			}
 		}
 		if !reflect.DeepEqual(append([]pipeline.Link{}, doc.Links...), wantLinks) {

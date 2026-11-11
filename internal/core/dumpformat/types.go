@@ -167,11 +167,13 @@ type Provenance struct {
 }
 
 type Record struct {
-	Kind    string     `json:"kind"`
-	ID      string     `json:"id"`
-	Project string     `json:"project"`
-	Body    Row        `json:"body"`
-	Source  Provenance `json:"source"`
+	// NativeEdgeTokens binds the original source-field tokens; never a wire input.
+	NativeEdgeTokens map[string]string `json:"-"`
+	Kind             string            `json:"kind"`
+	ID               string            `json:"id"`
+	Project          string            `json:"project"`
+	Body             Row               `json:"body"`
+	Source           Provenance        `json:"source"`
 }
 
 // Archive owns validated data. Accessors return detached copies; a caller
@@ -275,6 +277,13 @@ func (a *Archive) Records(kind string) []Record {
 		if rows[i].Source.Identity != nil {
 			identity := *rows[i].Source.Identity
 			rows[i].Source.Identity = &identity
+		}
+		if rows[i].NativeEdgeTokens != nil {
+			copy := map[string]string{}
+			for key, token := range rows[i].NativeEdgeTokens {
+				copy[key] = token
+			}
+			rows[i].NativeEdgeTokens = copy
 		}
 		rows[i].Body = cloneRow(rows[i].Body)
 		rows[i].Source.Fields = cloneRow(rows[i].Source.Fields)
