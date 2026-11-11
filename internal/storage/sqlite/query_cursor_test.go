@@ -243,9 +243,13 @@ CREATE TABLE meta(singleton INTEGER PRIMARY KEY CHECK(singleton=1), store_id TEX
 INSERT INTO meta VALUES(1,'store','incarnation',2,'00000000000000000002','00000000000000000000');
 CREATE TABLE replays(scope TEXT PRIMARY KEY, created INTEGER NOT NULL, rev TEXT NOT NULL, request_hash TEXT NOT NULL, response BLOB NOT NULL, changeset BLOB, finalized INTEGER NOT NULL DEFAULT 0, post BLOB);
 CREATE TABLE objects(key TEXT PRIMARY KEY, kind TEXT NOT NULL);
-CREATE TABLE records(key TEXT PRIMARY KEY, data BLOB NOT NULL);
-INSERT INTO objects(key,kind) VALUES(?,?),(?,?);
-INSERT INTO records(key,data) VALUES(?,?),(?,?);`, keyA, "test", keyB, "test", keyA, dataA, keyB, dataB)
+CREATE TABLE records(key TEXT PRIMARY KEY, data BLOB NOT NULL);`)
+	if err == nil {
+		_, err = raw.ExecContext(ctx, `INSERT INTO objects(key,kind) VALUES(?,?),(?,?)`, keyA, "test", keyB, "test")
+	}
+	if err == nil {
+		_, err = raw.ExecContext(ctx, `INSERT INTO records(key,data) VALUES(?,?),(?,?)`, keyA, dataA, keyB, dataB)
+	}
 	if err != nil {
 		raw.Close()
 		t.Fatal(err)
