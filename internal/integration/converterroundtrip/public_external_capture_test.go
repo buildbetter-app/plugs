@@ -66,8 +66,61 @@ type publicProofRequest struct {
 	LedgerSHA256  string                    `json:"ledger_sha256"`
 	StatesSHA256  string                    `json:"states_sha256"`
 	RestoreTime   string                    `json:"restore_time"`
+	RestoreMode   string                    `json:"restore_mode,omitempty"`
 	JournalTable  string                    `json:"journal_table"`
 	Commits       int                       `json:"commits"`
+}
+
+// The request wire keeps /1 compatibility: absence is the original Full
+// behavior. Only the three explicit policy names are accepted; no case is
+// relabeled to bypass an unavailable receiver mode.
+func (r publicProofRequest) historyMode() (driver.RestoreHistoryMode, error) {
+	switch r.RestoreMode {
+	case "", "full", "partial", "snapshot":
+		return driver.ParseRestoreHistoryMode(r.RestoreMode)
+	default:
+		return "", driver.ErrRestoreHistoryMode{Value: r.RestoreMode}
+	}
+}
+
+// The callback runs synchronously after import, reopen/recovery and both
+// readback oracles. The store is the actually reopened target (the same store
+// for memory), never a new target or a DSN. The context retains decoded
+// accounting and a renewed lease for this callback's lifetime. The callback
+// owns its operation clock and assertions; it must not close the store,
+// release the lease, retain either after return, or register asynchronous use.
+// Report.Archive is live until the callback returns. Returning an error or
+// failing t prevents the outer success receipt.
+type publicProofContinuation func(t *testing.T, ctx context.Context, store driver.Store, lease driver.ActiveLease, profile driver.RestoreImportProfile, report Report) error
+
+func publicProofRunContinuation(t *testing.T, ctx context.Context, store driver.Store, lease driver.ActiveLease, profile driver.RestoreImportProfile, report Report, continuation publicProofContinuation) (err error) {
+	t.Helper()
+	if continuation == nil {
+		return nil
+	}
+	publicProofGuard(t)
+	if err := lease.Release(ctx); err != nil {
+		return err
+	}
+	op, active, release, err := HoldRestoreLease(ctx, store, "native-receive-continuation")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		cleanupErr := release()
+		if cleanupErr != nil {
+			t.Error("release continuation lease", cleanupErr)
+		}
+		err = errors.Join(err, cleanupErr)
+	}()
+	if err := op.Err(); err != nil {
+		return context.Cause(op)
+	}
+	err = continuation(t, op, store, active, profile, report)
+	if err == nil && op.Err() != nil {
+		err = context.Cause(op)
+	}
+	return err
 }
 
 type publicProofState struct {
@@ -331,6 +384,13 @@ func publicProofError(t *testing.T, stage string, err error) {
 		}
 		t.Logf("public_external_typed_refusal stage=%s error=%s", stage, raw)
 	}
+	if code, details, ok := driver.ErrorMapping(err); ok {
+		raw, marshalErr := json.Marshal(map[string]any{"code": code, "details": details})
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		t.Logf("public_external_typed_refusal stage=%s error=%s", stage, raw)
+	}
 	t.Fatalf("public external %s: %v", stage, err)
 }
 
@@ -370,6 +430,13 @@ func publicProofLedger(t *testing.T, req publicProofRequest) []publicProofTable 
 }
 
 func TestPublicNativeExternalCaptureMatrix(t *testing.T) {
+	runPublicNativeExternalCapture(t, nil)
+}
+
+// Shared test-only entry point for a consumer in this package. The nil callback
+// preserves the original standalone import/readback/reopen lifecycle.
+func runPublicNativeExternalCapture(t *testing.T, continuation publicProofContinuation) {
+	t.Helper()
 	publicProofGuard(t)
 	engine := os.Getenv("PLUG_PUBLIC_PROOF_DRIVER")
 	if engine != "memory" && engine != "sqlite" && engine != "postgres" {
@@ -400,6 +467,8 @@ func TestPublicNativeExternalCaptureMatrix(t *testing.T) {
 	if req.Format != "public-native-capture-proof/1" || len(req.CaptureSHA256) != 64 || req.Commits < 1 || req.Source.StoreID == "" || req.Source.Project == "" || req.JournalTable == "" {
 		t.Fatal("public request identity missing")
 	}
+	mode, err := req.historyMode()
+	publicProofError(t, "restore-mode", err)
 	when, err := time.Parse(time.RFC3339Nano, req.RestoreTime)
 	if err != nil {
 		t.Fatal(err)
@@ -440,7 +509,7 @@ func TestPublicNativeExternalCaptureMatrix(t *testing.T) {
 		return nativeHistoryPlanFromArchive(t, work, store, lease)
 	}()
 	plan = publicProofHostIntent(t, archive, plan)
-	profile := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "restore-admin"}, Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: driver.StoreID(req.Source.StoreID), Method: "offline.restore.import", IdempotencyKey: strings.Repeat("b", 32), ArchiveDigest: archive.SHA256(), HistoryMode: driver.RestoreHistoryModeFull, HistoryTime: when.Format(time.RFC3339Nano)}
+	profile := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "restore-admin"}, Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: driver.StoreID(req.Source.StoreID), Method: "offline.restore.import", IdempotencyKey: strings.Repeat("b", 32), ArchiveDigest: archive.SHA256(), HistoryMode: mode, HistoryTime: when.Format(time.RFC3339Nano)}
 	publicProofJSON(t, filepath.Join(output, "host-plan.json"), plan)
 	profile, err = BindNativeCaptureSetImport(op, archive, profile, plan)
 	publicProofError(t, "bind", err)
@@ -451,7 +520,7 @@ func TestPublicNativeExternalCaptureMatrix(t *testing.T) {
 	publicProofIndependentReadback(t, ctx, store, report, req, ledger, output, "imported")
 	publicProofJSON(t, filepath.Join(output, "committed-report.json"), report)
 	publicProofError(t, "release-before-reopen", release())
-	store, _ = reopen()
+	store, lease = reopen()
 	_, recovered, found, err := RecoverBoundSourceImport(ctx, store)
 	if recovered.Archive != nil {
 		defer recovered.Archive.ReleaseNativeDecoded()
@@ -463,6 +532,14 @@ func TestPublicNativeExternalCaptureMatrix(t *testing.T) {
 	publicProofError(t, "reopened-production-readback", VerifyNativeCaptureSetReadback(ctx, store, archive, recovered))
 	publicProofIndependentReadback(t, ctx, store, recovered, req, ledger, output, "reopened")
 	publicProofJSON(t, filepath.Join(output, "recovered-report.json"), recovered)
+	publicProofError(t, "continuation", publicProofRunContinuation(t, ctx, store, lease, profile, recovered, continuation))
+	if t.Failed() {
+		t.Fatal("public continuation failed")
+	}
+	if continuation != nil {
+		publicProofGuard(t)
+		publicProofJSON(t, filepath.Join(output, "continuation.json"), map[string]any{"restore_mode": mode, "completed": true, "target": recovered.Restored, "phase": "after-reopened-readback-before-cleanup"})
+	}
 	if recovered.Archive != nil {
 		recovered.Archive.ReleaseNativeDecoded()
 	}
@@ -474,7 +551,145 @@ func TestPublicNativeExternalCaptureMatrix(t *testing.T) {
 	if !ok || proof.Totals.Commits != uint64(req.Commits) {
 		t.Fatal("source commit count differs")
 	}
-	publicProofJSON(t, filepath.Join(output, "SUCCESS.json"), map[string]any{"driver": engine, "capture_sha256": req.CaptureSHA256, "elf_sha256": elfSHA, "commits": req.Commits, "reopen": map[bool]string{true: "same-process-memory-lease-reacquired", false: "driver-connection-closed-and-reopened"}[engine == "memory"], "per_table_exact_bytes": true, "full_accounting_or_switch_credit": false})
+	publicProofJSON(t, filepath.Join(output, "SUCCESS.json"), map[string]any{"driver": engine, "capture_sha256": req.CaptureSHA256, "elf_sha256": elfSHA, "commits": req.Commits, "reopen": map[bool]string{true: "same-process-memory-lease-reacquired", false: "driver-connection-closed-and-reopened"}[engine == "memory"], "per_table_exact_bytes": true, "restore_mode": mode, "continuation_completed": continuation != nil, "full_accounting_or_switch_credit": false})
+}
+
+// These checks qualify only the shared mode/lifecycle seam. They spend no
+// fresh fixture or external large/1200 proof case.
+func TestPublicNativeExternalRestoreModes(t *testing.T) {
+	for _, test := range []struct {
+		name, raw string
+		want      driver.RestoreHistoryMode
+	}{
+		{"absent", `{}`, driver.RestoreHistoryModeFull},
+		{"empty", `{"restore_mode":""}`, driver.RestoreHistoryModeFull},
+		{"full", `{"restore_mode":"full"}`, driver.RestoreHistoryModeFull},
+		{"partial", `{"restore_mode":"partial"}`, driver.RestoreHistoryModePartial},
+		{"snapshot", `{"restore_mode":"snapshot"}`, driver.RestoreHistoryModeSnapshot},
+		{"unknown", `{"restore_mode":"unknown"}`, ""},
+		{"alias", `{"restore_mode":"head"}`, ""},
+		{"case", `{"restore_mode":"Full"}`, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var req publicProofRequest
+			if err := json.Unmarshal([]byte(test.raw), &req); err != nil {
+				t.Fatal(err)
+			}
+			mode, err := req.historyMode()
+			if test.want != "" {
+				if err != nil || mode != test.want {
+					t.Fatal("mode lost or substituted", mode, err)
+				}
+			} else {
+				var invalid driver.ErrRestoreHistoryMode
+				if !errors.As(err, &invalid) || invalid.Value != req.RestoreMode {
+					t.Fatal("invalid mode lost typed identity", err)
+				}
+			}
+		})
+	}
+	archive := publicNativeDeltaArchive(t)
+	defer archive.ReleaseNativeDecoded()
+	ctx := archive.WithNativeDeltaAccounting(context.Background())
+	store, lease, _ := openIdentityTarget(t, "memory")
+	plan := publicProofHostIntent(t, archive, nativeHistoryPlanFromArchive(t, archive, store, lease))
+	before := reverseState(t, store)
+	for _, selected := range []string{"", "full", "partial", "snapshot"} {
+		name := selected
+		if name == "" {
+			name = "default"
+		}
+		t.Run("bound-"+name, func(t *testing.T) {
+			mode, err := (publicProofRequest{RestoreMode: selected}).historyMode()
+			if err != nil {
+				t.Fatal(err)
+			}
+			profile := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "restore-admin"}, Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: driver.StoreID(archive.Manifest().StoreID), Method: "offline.restore.import", IdempotencyKey: strings.Repeat("b", 32), ArchiveDigest: archive.SHA256(), HistoryMode: mode, HistoryTime: nativeFixtureTime.Format(time.RFC3339Nano)}
+			bound, err := BindNativeCaptureSetImport(ctx, archive, profile, plan)
+			if mode == driver.RestoreHistoryModeFull {
+				if err != nil || bound.HistoryMode != mode {
+					t.Fatal("original full binding changed", err)
+				}
+			} else {
+				var refused driver.ErrRestoreHistoryRefused
+				code, details, ok := driver.ErrorMapping(err)
+				if !errors.As(err, &refused) || refused.Mode != mode || refused.Reason != driver.RestoreHistoryReasonNotYetSupported || !errors.Is(err, driver.ErrUnsupported) || !ok || code != "restore_violation" || details["mode"] != string(mode) || details["reason"] != "not-yet-supported" {
+					t.Fatal("native mode refusal lost exact type/code/details", err, code, details)
+				}
+			}
+			if !reflect.DeepEqual(before, reverseState(t, store)) {
+				t.Fatal("mode binding mutated the target")
+			}
+		})
+	}
+}
+
+func TestPublicNativeExternalContinuationLifecycle(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		for _, outcome := range []string{"success", "error", "nil"} {
+			t.Run(engine+"/"+outcome, func(t *testing.T) {
+				ctx := context.Background()
+				store, _, reopen := openIdentityTarget(t, engine)
+				before, err := store.Meta(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				store, lease := reopen()
+				profile := driver.RestoreImportProfile{HistoryMode: driver.RestoreHistoryModeFull}
+				report := Report{Restored: before, Recovered: true}
+				callbackErr := errors.New("continuation rejected")
+				calls := 0
+				var callbackCtx context.Context
+				var callbackLease driver.ActiveLease
+				var continuation publicProofContinuation
+				if outcome != "nil" {
+					continuation = func(t *testing.T, op context.Context, target driver.Store, active driver.ActiveLease, bound driver.RestoreImportProfile, recovered Report) error {
+						calls++
+						callbackCtx, callbackLease = op, active
+						if target != store || !reflect.DeepEqual(bound, profile) || !reflect.DeepEqual(recovered, report) || op.Err() != nil {
+							t.Fatal("callback lost reopened target, context or bound evidence")
+						}
+						meta, err := target.Meta(op)
+						if err != nil || !reflect.DeepEqual(meta, before) {
+							t.Fatal("callback target changed before continuation", err)
+						}
+						tx, err := target.Write(op, active)
+						if err != nil {
+							t.Fatal("callback lease cannot open target transaction", err)
+						}
+						if err := tx.Rollback(op); err != nil {
+							t.Fatal(err)
+						}
+						if err := tx.Close(); err != nil {
+							t.Fatal(err)
+						}
+						if outcome == "error" {
+							return callbackErr
+						}
+						return nil
+					}
+				}
+				err = publicProofRunContinuation(t, ctx, store, lease, profile, report, continuation)
+				if outcome == "nil" {
+					if calls != 0 || err != nil || lease.Renew(ctx) != nil {
+						t.Fatal("nil continuation changed the original lease", calls, err)
+					}
+				} else {
+					if calls != 1 || (outcome == "error") != errors.Is(err, callbackErr) || outcome == "success" && err != nil || callbackCtx.Err() == nil {
+						t.Fatal("callback count, error or drained context differs", calls, err)
+					}
+					select {
+					case <-callbackLease.Lost():
+					default:
+						t.Fatal("callback lease retained after return")
+					}
+				}
+				if _, err := store.Meta(ctx); err != nil {
+					t.Fatal("target cleaned up before caller returned", err)
+				}
+			})
+		}
+	}
 }
 
 // This extra oracle never lowers expected records through the receiver codec.
