@@ -3,6 +3,9 @@ package nightlyrestore_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -45,20 +48,412 @@ type nativeRestoreCensus struct {
 	Histories      []converterroundtrip.NativeHistoryReport `json:"source_histories"`
 }
 
-func nativeTableID(t *testing.T, scope dumpformat.NativeHistory, name, prefix string) string {
-	t.Helper()
-	return prefix + digest(jsonBytes(t, []string{scope.StoreID, scope.Projects[0], name}))
+type nightlyNativeGroup struct {
+	Source         dumpformat.SourceIdentity
+	Table, History string
 }
 
-func checkNativeTable(t *testing.T, row driver.Record, scope dumpformat.NativeHistory, name, history string, value dumpformat.NativeTable) {
-	t.Helper()
-	if row.Kind != "beads-archive" {
-		t.Fatal("native table evidence missing", name)
+type nightlyNativeSnapshot struct {
+	Rows   map[string]driver.Record
+	Groups map[nightlyNativeGroup][]driver.Record
+}
+
+// Read exactly one pinned, unfiltered census to its terminal page. Native
+// namespace selection precedes mandatory Kind/body validation, so a wrong-Kind
+// extra cannot disappear behind a query filter or a known-Ref lookup.
+func readNightlyNativeSnapshot(ctx context.Context, reader driver.Reader, incarnation string, at model.Revision) (nightlyNativeSnapshot, error) {
+	got := nightlyNativeSnapshot{Rows: map[string]driver.Record{}, Groups: map[nightlyNativeGroup][]driver.Record{}}
+	var cursor *driver.Cursor
+	cursors := map[string]bool{}
+	for {
+		if err := ctx.Err(); err != nil {
+			return got, err
+		}
+		page, err := reader.Query(ctx, driver.Query{Limit: 7, Cursor: cursor, AsOf: &at})
+		if err != nil {
+			return got, err
+		}
+		if page.AsOf.String() != at.String() {
+			return got, fmt.Errorf("native census snapshot differs")
+		}
+		for _, record := range page.Items {
+			if record.Ref.Validate() != nil || !record.Ref.IsID() || record.Ref.Key != "" || !record.Ref.Branch.IsZero() {
+				return got, fmt.Errorf("invalid imported native census Ref")
+			}
+			if _, duplicate := got.Rows[record.Ref.ID]; duplicate {
+				return got, fmt.Errorf("duplicate identity during complete native census")
+			}
+			got.Rows[record.Ref.ID] = record
+			if !strings.HasPrefix(record.Ref.ID, driver.NativeTableHistoryRecordPrefix) && !strings.HasPrefix(record.Ref.ID, "source/native-current/") {
+				continue
+			}
+			meta, row, err := dumpformat.DecodeNativeRowRecord(record)
+			if err != nil {
+				return got, err
+			}
+			var group nightlyNativeGroup
+			if meta != nil {
+				group = nightlyNativeGroup{meta.Source, meta.Table, meta.History}
+			} else {
+				group = nightlyNativeGroup{row.Source, row.Table, row.History}
+			}
+			got.Groups[group] = append(got.Groups[group], record)
+		}
+		// Retain the original finite-fixture census guard; this is not a
+		// product memory ceiling or a larger-fixture qualification route.
+		if len(got.Rows) > 1000 {
+			return got, fmt.Errorf("native census exceeds the original fixture guard")
+		}
+		if page.NextCursor == nil {
+			return got, nil
+		}
+		if len(page.Items) == 0 || page.NextCursor.Incarnation != incarnation || page.NextCursor.Revision.String() != at.String() || page.NextCursor.Method != "query" {
+			return got, fmt.Errorf("native census pagination binding differs")
+		}
+		encoded, err := json.Marshal(page.NextCursor)
+		if err != nil {
+			return got, err
+		}
+		if cursors[string(encoded)] {
+			return got, fmt.Errorf("native census pagination did not advance")
+		}
+		cursors[string(encoded)] = true
+		cursor = page.NextCursor
 	}
-	sameJSON(t, "exact native schema/cells/multiplicity "+name, json.RawMessage(row.Body), map[string]any{
-		"source_identity": dumpformat.SourceIdentity{StoreID: scope.StoreID, Project: scope.Projects[0]},
-		"table":           name, "history": history, "columns": value.Columns, "rows": value.Rows,
-	})
+}
+
+// These originals are v1. Derive content-bag identities and closed row/meta
+// bytes independently from their authenticated tables, without the receiving
+// lowering or NativeV1TableRecords. No PK, typed witness or v2 provenance is
+// inferred. The ordered old-table envelope remains the independent byte oracle.
+func nightlyNativeV1Oracle(group nightlyNativeGroup, value dumpformat.NativeTable) ([]driver.Record, []byte, error) {
+	old, err := json.Marshal(struct {
+		Source  dumpformat.SourceIdentity `json:"source_identity"`
+		Table   string                    `json:"table"`
+		History string                    `json:"history"`
+		Columns []string                  `json:"columns"`
+		Rows    []dumpformat.Row          `json:"rows"`
+	}{group.Source, group.Table, group.History, value.Columns, value.Rows})
+	if err != nil {
+		return nil, nil, err
+	}
+	text := func(out []byte, value string) []byte {
+		out = binary.BigEndian.AppendUint64(out, uint64(len(value)))
+		return append(out, value...)
+	}
+	prefix := "source/native-current/"
+	if group.History == "retained-native-commit" {
+		prefix = driver.NativeTableHistoryRecordPrefix
+	}
+	var records []driver.Record
+	add := func(domain, part string, key []byte, body any) error {
+		var tuple []byte
+		for _, field := range []string{domain, group.Source.StoreID, group.Source.Project, group.Table, "v1-content-bag"} {
+			tuple = text(tuple, field)
+		}
+		if part == "row/" {
+			tuple = binary.BigEndian.AppendUint64(tuple, uint64(len(key)))
+			tuple = append(tuple, key...)
+		}
+		data, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		records = append(records, driver.Record{Ref: model.RefByID(prefix+part+digest(tuple), model.Natural64(0)), Kind: "beads-archive", Body: data})
+		return nil
+	}
+	occurrences := map[string]uint64{}
+	preimages := map[[sha256.Size]byte]string{}
+	var previous []byte
+	for i, fields := range value.Rows {
+		normalized, err := json.Marshal(fields)
+		if err != nil {
+			return nil, nil, err
+		}
+		if i > 0 && bytes.Compare(previous, normalized) > 0 {
+			return nil, nil, fmt.Errorf("source native normalized row order differs")
+		}
+		hash := sha256.Sum256(normalized)
+		if prior, exists := preimages[hash]; exists && prior != string(normalized) {
+			return nil, nil, fmt.Errorf("source native content digest collision")
+		}
+		preimages[hash] = string(normalized)
+		key := append([]byte("v1-bag\x00"), hash[:]...)
+		key = binary.BigEndian.AppendUint64(key, occurrences[string(normalized)])
+		occurrences[string(normalized)]++
+		body := struct {
+			Format       string                    `json:"format"`
+			Source       dumpformat.SourceIdentity `json:"source_identity"`
+			Table        string                    `json:"table"`
+			History      string                    `json:"history"`
+			IdentityKind string                    `json:"identity_kind"`
+			Key          string                    `json:"key"`
+			Fields       dumpformat.Row            `json:"fields"`
+		}{"plug-native-row/1", group.Source, group.Table, group.History, "v1-content-bag", base64.StdEncoding.EncodeToString(key), fields}
+		if err := add("plug-native-row/1", "row/", key, body); err != nil {
+			return nil, nil, err
+		}
+		previous = normalized
+	}
+	columns := text(nil, "plug-native-v1-columns/1")
+	columns = text(columns, group.Table)
+	columns = binary.BigEndian.AppendUint64(columns, uint64(len(value.Columns)))
+	for _, column := range value.Columns {
+		columns = text(columns, column)
+	}
+	meta := struct {
+		Format              string                    `json:"format"`
+		Source              dumpformat.SourceIdentity `json:"source_identity"`
+		Table               string                    `json:"table"`
+		History             string                    `json:"history"`
+		IdentityKind        string                    `json:"identity_kind"`
+		Columns             []string                  `json:"columns"`
+		SchemaID            string                    `json:"schema_id"`
+		PhysicalColumns     any                       `json:"physical_columns"`
+		RowOrder            string                    `json:"row_order"`
+		RowCount            uint64                    `json:"row_count"`
+		TableBodySHA256     string                    `json:"table_body_sha256"`
+		PhysicalTableSHA256 *string                   `json:"physical_table_sha256"`
+	}{"plug-native-meta/1", group.Source, group.Table, group.History, "v1-content-bag", value.Columns, digest(columns), nil, "normalized-json-bytes/1", uint64(len(value.Rows)), digest(old), nil}
+	if err := add("plug-native-meta/1", "meta/", nil, meta); err != nil {
+		return nil, nil, err
+	}
+	sort.Slice(records, func(i, j int) bool { return records[i].Ref.ID < records[j].Ref.ID })
+	return records, old, nil
+}
+
+func verifyNightlyNativeTables(groups map[nightlyNativeGroup][]driver.Record, expected map[nightlyNativeGroup]dumpformat.NativeTable) (map[nightlyNativeGroup]string, error) {
+	if len(groups) != len(expected) {
+		return nil, fmt.Errorf("native table membership has missing or leftover groups")
+	}
+	hashes := map[nightlyNativeGroup]string{}
+	for group, table := range expected {
+		want, old, err := nightlyNativeV1Oracle(group, table)
+		if err != nil {
+			return nil, err
+		}
+		actual, present := groups[group]
+		if !present || len(actual) != len(want) {
+			return nil, fmt.Errorf("native row/meta census differs for %s", group.Table)
+		}
+		byID := map[string]driver.Record{}
+		for _, record := range want {
+			if _, duplicate := byID[record.Ref.ID]; duplicate {
+				return nil, fmt.Errorf("source native oracle repeats Ref")
+			}
+			byID[record.Ref.ID] = record
+		}
+		for _, record := range actual {
+			w, found := byID[record.Ref.ID]
+			if !found || record.Kind != w.Kind || !bytes.Equal(record.Body, w.Body) {
+				return nil, fmt.Errorf("exact native source-derived Ref/body differs for %s", group.Table)
+			}
+			delete(byID, record.Ref.ID)
+		}
+		if len(byID) != 0 {
+			return nil, fmt.Errorf("native source-derived record membership incomplete")
+		}
+		value, meta, err := dumpformat.ReconstructNativeRowTable(group.Source, group.Table, group.History, actual, nil)
+		if err != nil {
+			return nil, err
+		}
+		body, err := dumpformat.NativeTableBodyBytes(group.Source, group.Table, group.History, value)
+		if err != nil {
+			return nil, err
+		}
+		if !bytes.Equal(body, old) || meta.TableBodySHA256 != digest(old) {
+			return nil, fmt.Errorf("exact native schema/cells/order/multiplicity differs for %s", group.Table)
+		}
+		hashes[group] = digest(old)
+	}
+	return hashes, nil
+}
+
+// Emit observations before the assertions below. An executed original can then
+// distinguish an obsolete whole-table lookup from missing journal data. These
+// authored diagnostics confer no post-import evidence until that run exists.
+func logNightlyNativeJournal(t *testing.T, at model.Revision, groups map[nightlyNativeGroup][]driver.Record, expected map[nightlyNativeGroup]dumpformat.NativeTable) {
+	t.Helper()
+	for group, table := range expected {
+		if group.Table != "bd_events_journal" {
+			continue
+		}
+		observation := struct {
+			At           model.Revision            `json:"at"`
+			Source       dumpformat.SourceIdentity `json:"source_identity"`
+			History      string                    `json:"history"`
+			MetaRecords  int                       `json:"actual_meta_records"`
+			RowRecords   int                       `json:"actual_row_records"`
+			SourceRows   int                       `json:"independent_source_rows"`
+			Actual       json.RawMessage           `json:"actual_reconstructed_table"`
+			SourceBody   json.RawMessage           `json:"independent_old_table"`
+			ActualSHA256 string                    `json:"actual_table_sha256"`
+			SourceSHA256 string                    `json:"independent_table_sha256"`
+			ByteEqual    bool                      `json:"byte_equal"`
+			Error        string                    `json:"reconstruction_error,omitempty"`
+		}{At: at, Source: group.Source, History: group.History, SourceRows: len(table.Rows)}
+		_, old, err := nightlyNativeV1Oracle(group, table)
+		if err == nil {
+			observation.SourceBody, observation.SourceSHA256 = old, digest(old)
+			for _, record := range groups[group] {
+				meta, row, decodeErr := dumpformat.DecodeNativeRowRecord(record)
+				if decodeErr != nil {
+					err = decodeErr
+					break
+				}
+				if meta != nil {
+					observation.MetaRecords++
+				} else if row != nil {
+					observation.RowRecords++
+				}
+			}
+		}
+		if err == nil {
+			var reconstructed dumpformat.NativeTable
+			reconstructed, _, err = dumpformat.ReconstructNativeRowTable(group.Source, group.Table, group.History, groups[group], nil)
+			if err == nil {
+				observation.Actual, err = dumpformat.NativeTableBodyBytes(group.Source, group.Table, group.History, reconstructed)
+				if err == nil {
+					observation.ActualSHA256 = digest(observation.Actual)
+					observation.ByteEqual = bytes.Equal(observation.Actual, old)
+				}
+			}
+		}
+		if err != nil {
+			observation.Error = err.Error()
+		}
+		t.Logf("native-row-meta-journal %s", jsonBytes(t, observation))
+	}
+}
+
+type nightlyNativeQueryFixture struct {
+	driver.Reader
+	at    model.Revision
+	pages []driver.Page[driver.Record]
+	calls int
+}
+
+func (r *nightlyNativeQueryFixture) Query(_ context.Context, q driver.Query) (driver.Page[driver.Record], error) {
+	if q.Filter != nil || q.AsOf == nil || q.AsOf.String() != r.at.String() || q.Limit != 7 {
+		return driver.Page[driver.Record]{}, fmt.Errorf("native test query filtered or unpinned")
+	}
+	if r.calls >= len(r.pages) {
+		return driver.Page[driver.Record]{}, fmt.Errorf("native test query passed terminal page")
+	}
+	var wantCursor *driver.Cursor
+	if r.calls > 0 {
+		wantCursor = r.pages[r.calls-1].NextCursor
+	}
+	actual, err := json.Marshal(q.Cursor)
+	if err != nil {
+		return driver.Page[driver.Record]{}, err
+	}
+	want, err := json.Marshal(wantCursor)
+	if err != nil || !bytes.Equal(actual, want) {
+		return driver.Page[driver.Record]{}, fmt.Errorf("native test query restarted or changed continuation")
+	}
+	page := r.pages[r.calls]
+	r.calls++
+	return page, nil
+}
+
+func TestNightlyNativeRowMetaReadbackCompleteness(t *testing.T) {
+	ctx := context.Background()
+	at := model.Natural64(17)
+	const incarnation = "nightly-row-meta-incarnation"
+	source := dumpformat.SourceIdentity{StoreID: "nightly-native-source", Project: "public"}
+	table := dumpformat.NativeTable{Columns: []string{"id", "value"}, Rows: []dumpformat.Row{
+		{"id": "a", "value": json.Number("9007199254740993")},
+		{"id": "a", "value": json.Number("9007199254740993")},
+		{"id": "b", "value": nil},
+	}}
+	for _, history := range []string{"retained-native-commit", "versioned"} {
+		t.Run(history, func(t *testing.T) {
+			group := nightlyNativeGroup{source, "items", history}
+			records, old, err := nightlyNativeV1Oracle(group, table)
+			if err != nil {
+				t.Fatal(err)
+			}
+			foreign := group
+			foreign.Source.StoreID = "foreign-native-source"
+			foreignRecords, _, err := nightlyNativeV1Oracle(foreign, table)
+			if err != nil {
+				t.Fatal(err)
+			}
+			extraGroup := nightlyNativeGroup{source, "extra_table", history}
+			emptyTable := dumpformat.NativeTable{Columns: []string{"id", "value"}, Rows: []dumpformat.Row{}}
+			emptyRecords, _, err := nightlyNativeV1Oracle(extraGroup, emptyTable)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, fault := range []string{"none", "missing-meta", "missing-row", "duplicate-ref", "wrong-kind-extra", "malformed-native-extra", "foreign-source", "extra-empty-table", "noncanonical-body", "changed-field", "changed-count", "wrong-snapshot", "wrong-incarnation", "wrong-revision", "wrong-method", "empty-nonterminal", "repeated-cursor"} {
+				t.Run(fault, func(t *testing.T) {
+					items := append([]driver.Record{}, records...)
+					switch fault {
+					case "missing-meta":
+						items = items[1:]
+					case "missing-row":
+						items = items[:len(items)-1]
+					case "duplicate-ref":
+						items = append(items, records[1])
+					case "wrong-kind-extra", "malformed-native-extra":
+						extra := records[1]
+						extra.Ref = model.RefByID(extra.Ref.ID+"-extra", model.Natural64(0))
+						if fault == "wrong-kind-extra" {
+							extra.Kind = "bead"
+						}
+						items = append(items, extra)
+					case "foreign-source":
+						items = append([]driver.Record{}, foreignRecords...)
+					case "extra-empty-table":
+						items = append(items, emptyRecords...)
+					case "noncanonical-body":
+						items[0].Body = append(append([]byte{}, items[0].Body...), '\n')
+					case "changed-field":
+						for i := range items {
+							items[i].Body = bytes.Replace(items[i].Body, []byte(`"id":"a"`), []byte(`"id":"changed"`), 1)
+						}
+					case "changed-count":
+						items[0].Body = bytes.Replace(items[0].Body, []byte(`"row_count":3`), []byte(`"row_count":4`), 1)
+					}
+					cursor := &driver.Cursor{Incarnation: incarnation, Revision: at, Index: model.Natural64(1), Method: "query"}
+					pages := []driver.Page[driver.Record]{{Items: items[:1], AsOf: at, NextCursor: cursor}, {Items: items[1:], AsOf: at}}
+					switch fault {
+					case "wrong-snapshot":
+						pages[1].AsOf = model.Natural64(18)
+					case "wrong-incarnation":
+						cursor.Incarnation = "foreign-incarnation"
+					case "wrong-revision":
+						cursor.Revision = model.Natural64(18)
+					case "wrong-method":
+						cursor.Method = "versions"
+					case "empty-nonterminal":
+						pages[0].Items = nil
+					case "repeated-cursor":
+						pages[1].NextCursor = cursor
+					}
+					reader := &nightlyNativeQueryFixture{at: at, pages: pages}
+					snapshot, err := readNightlyNativeSnapshot(ctx, reader, incarnation, at)
+					var hashes map[nightlyNativeGroup]string
+					if err == nil {
+						hashes, err = verifyNightlyNativeTables(snapshot.Groups, map[nightlyNativeGroup]dumpformat.NativeTable{group: table})
+					}
+					if fault != "none" {
+						if err == nil {
+							t.Fatal("incomplete, foreign or unpinned native evidence accepted")
+						}
+						return
+					}
+					if err != nil || reader.calls != 2 || len(snapshot.Rows) != len(records) || hashes[group] != digest(old) {
+						t.Fatal("complete native row/meta bytes or terminal query differ", err)
+					}
+				})
+			}
+			if _, err := verifyNightlyNativeTables(map[nightlyNativeGroup][]driver.Record{extraGroup: emptyRecords}, map[nightlyNativeGroup]dumpformat.NativeTable{extraGroup: emptyTable}); err != nil {
+				t.Fatal("present empty native table lost its metadata", err)
+			}
+		})
+	}
 }
 
 func nativeSourceCensus(t *testing.T, store driver.Store, a *dumpformat.Archive, p driver.RestoreImportProfile, published converterroundtrip.Report) nativeRestoreCensus {
@@ -83,12 +478,16 @@ func nativeSourceCensus(t *testing.T, store driver.Store, a *dumpformat.Archive,
 	if err != nil || meta.StoreID != p.SourceStoreID || meta.Head != model.Natural64(uint64(len(scope.Images)+1)) || !meta.HistoryFloor.IsZero() {
 		t.Fatal("native import invented revisions, a baseline or a floor", err)
 	}
-	r, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	r, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation, At: &meta.Head})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer r.Close()
-	rows := indexRows(t, allRows(t, r))
+	snapshot, err := readNightlyNativeSnapshot(ctx, r, meta.Incarnation, meta.Head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := snapshot.Rows
 	got := nativeRestoreCensus{Head: meta.Head, Floor: meta.HistoryFloor, Counts: map[string]int{}, Records: map[string]string{}, Dependencies: []string{}, SourceCounters: a.Manifest().Projects, Members: map[string]string{}, Archive: a.SHA256(), Families: recovered.NativeFamilies, Schemas: recovered.NativeSchemas, Histories: recovered.NativeHistories}
 	for id, row := range rows {
 		got.IDs = append(got.IDs, id)
@@ -142,7 +541,10 @@ func nativeSourceCensus(t *testing.T, store driver.Store, a *dumpformat.Archive,
 	if scope.HistoryCoverage != nil && (got.Events != scope.HistoryCoverage.EventsAttachment.SHA256 || uint64(len(portable.Events)) != scope.HistoryCoverage.EventsAttachment.Rows || portable.Range.Reason != "native-history-boundary") {
 		t.Fatal("unavailable-history events attachment changed")
 	}
+	identity := dumpformat.SourceIdentity{StoreID: scope.StoreID, Project: scope.Projects[0]}
 	familyHistory := map[string]string{}
+	currentTables := map[nightlyNativeGroup]dumpformat.NativeTable{}
+	currentNativeRecords := 0
 	for _, family := range scope.Sources {
 		value, present := scope.Current[family.Family]
 		if !present {
@@ -155,12 +557,34 @@ func nativeSourceCensus(t *testing.T, store driver.Store, a *dumpformat.Archive,
 		if family.Family == "leases" && len(value.Rows) != 0 {
 			t.Fatal("these originals do not qualify positive lease filtering")
 		}
-		id := nativeTableID(t, scope, family.Family, "source/native-current/")
-		checkNativeTable(t, rows[id], scope, family.Family, family.History, value)
-		got.Records[id] = digest(rows[id].Body)
+		currentTables[nightlyNativeGroup{identity, family.Family, family.History}] = value
+		currentNativeRecords += len(value.Rows) + 1 // one meta, including empty tables
 	}
-	if len(got.Records) != len(scope.Current) || len(got.Families) != len(scope.Current) {
+	if len(currentTables) != len(scope.Current) || len(got.Families) != len(scope.Current) {
 		t.Fatal("current native family census is incomplete")
+	}
+	// Current contains the immutable source HEAD plane as well as the current
+	// native plane. Verify both, leaving no foreign or unexplained native group.
+	if len(scope.Images) == 0 {
+		t.Fatal("native current has no verified immutable HEAD")
+	}
+	for name, value := range scope.Images[len(scope.Images)-1].Tables {
+		currentTables[nightlyNativeGroup{identity, name, "retained-native-commit"}] = value
+	}
+	logNightlyNativeJournal(t, meta.Head, snapshot.Groups, currentTables)
+	if _, err := verifyNightlyNativeTables(snapshot.Groups, currentTables); err != nil {
+		t.Fatal(err)
+	}
+	for group, records := range snapshot.Groups {
+		if group.History == "retained-native-commit" {
+			continue
+		}
+		for _, record := range records {
+			got.Records[record.Ref.ID] = digest(record.Body)
+		}
+	}
+	if len(got.Records) != currentNativeRecords {
+		t.Fatal("current native row/meta census is incomplete")
 	}
 	for _, family := range got.Families {
 		value, present := scope.Current[family.Family]
@@ -181,30 +605,64 @@ func nativeSourceCensus(t *testing.T, store driver.Store, a *dumpformat.Archive,
 		if err != nil {
 			t.Fatal(err)
 		}
-		state := indexRows(t, allRows(t, pinned))
+		imageSnapshot, err := readNightlyNativeSnapshot(ctx, pinned, meta.Incarnation, revision)
+		if err != nil {
+			pinned.Close()
+			t.Fatal(err)
+		}
+		state := imageSnapshot.Rows
 		if err := pinned.Close(); err != nil {
 			t.Fatal(err)
 		}
-		if len(state) != len(image.Tables) {
+		expected := map[nightlyNativeGroup]dumpformat.NativeTable{}
+		expectedRecords := 0
+		for name, value := range image.Tables {
+			expected[nightlyNativeGroup{identity, name, "retained-native-commit"}] = value
+			expectedRecords += len(value.Rows) + 1
+		}
+		logNightlyNativeJournal(t, revision, imageSnapshot.Groups, expected)
+		if len(state) != expectedRecords {
 			t.Fatal("native source revision gained missing families or current business records", image.Sequence)
 		}
+		hashes, err := verifyNightlyNativeTables(imageSnapshot.Groups, expected)
+		if err != nil {
+			t.Fatal(err)
+		}
 		entry := nativeImageCensus{Sequence: image.Sequence, Schema: image.SchemaProfile, Tables: map[string]string{}}
-		for name, value := range image.Tables {
-			id := nativeTableID(t, scope, name, driver.NativeTableHistoryRecordPrefix)
-			checkNativeTable(t, state[id], scope, name, "retained-native-commit", value)
-			entry.Tables[name] = digest(state[id].Body)
+		for group, hash := range hashes {
+			entry.Tables[group.Table] = hash
 		}
 		// Exact cardinality and identity checks above also prove zero stored
 		// rows for absent-by-source-schema families, including removed events.
 		states = append(states, state)
 		got.Images = append(got.Images, entry)
 	}
+	retainedHead := states[len(states)-1]
+	retainedCount := 0
+	for id, row := range rows {
+		if !strings.HasPrefix(id, driver.NativeTableHistoryRecordPrefix) {
+			continue
+		}
+		want, present := retainedHead[id]
+		if !present || row.Kind != want.Kind || row.Revision != want.Revision || !bytes.Equal(row.Body, want.Body) {
+			t.Fatal("current changed the immutable source HEAD record or revision", id)
+		}
+		retainedCount++
+	}
+	if retainedCount != len(retainedHead) {
+		t.Fatal("current omitted immutable source HEAD records")
+	}
 	zero := model.Natural64(0)
 	empty, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation, At: &zero})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(allRows(t, empty)) != 0 {
+	emptySnapshot, err := readNightlyNativeSnapshot(ctx, empty, meta.Incarnation, zero)
+	if err != nil {
+		empty.Close()
+		t.Fatal(err)
+	}
+	if len(emptySnapshot.Rows) != 0 {
 		t.Fatal("Plug revision zero gained fabricated pre-boundary source history")
 	}
 	if err := empty.Close(); err != nil {
