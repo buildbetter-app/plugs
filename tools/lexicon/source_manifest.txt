@@ -1315,6 +1315,7 @@ internal/storage/historyverify/native_evidence.go
 internal/storage/historyverify/native_frames.go
 internal/storage/historyverify/native_plan.go
 internal/storage/historyverify/native_spool.go
+internal/storage/historyverify/native_test.go
 internal/storage/historyverify/planner_dependency_test.go
 internal/storage/memory/BUILD.bazel
 internal/storage/memory/allocator.go
