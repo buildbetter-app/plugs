@@ -123,7 +123,8 @@ func (n *effectNative) verifySuccess(label string,after effectNativeState) {
 		status:=map[string]string{"close":"closed","reopen":"open","defer":"deferred"}[mutation.Verb]
 		if status=="" {n.t.Fatal("undeclared native lifecycle mutation")}
 		previous["status"]=nativeEffectToken(n.t,status)
-		if mutation.Verb=="close" {nativeEffectInstant(n.t,row["closed_at"],mutation.Started,mutation.Finished);previous["closed_at"]=row["closed_at"];previous["close_reason"]=nativeEffectToken(n.t,"");previous["closed_by_session"]=nativeEffectToken(n.t,"")} else {previous["closed_at"]=json.RawMessage("null")}
+		if mutation.Verb=="close" {nativeEffectInstant(n.t,row["closed_at"],mutation.Started,mutation.Finished);previous["closed_at"]=row["closed_at"];previous["close_reason"]=nativeEffectToken(n.t,"Closed");previous["closed_by_session"]=nativeEffectToken(n.t,"")} else {previous["closed_at"]=json.RawMessage("null")}
+		if mutation.Verb=="reopen" {previous["close_reason"]=nativeEffectToken(n.t,"");previous["closed_by_session"]=nativeEffectToken(n.t,"");previous["defer_until"]=json.RawMessage("null")}
 		if mutation.Until!=nil {
 			at,err:=time.Parse(time.RFC3339Nano,nativeEffectText(n.t,row["defer_until"]))
 			if err!=nil || !at.Equal(*mutation.Until) {n.t.Fatal("native future defer differs from independently requested exact instant")}
@@ -240,7 +241,8 @@ func (n *effectNative) expectedNativeEvents(want,got map[string]effectNativeRows
 			var declared effectNativeMutation;for _,mutation:=range n.pending {if mutation.From==id {declared=mutation}}
 			nativeEffectInstant(n.t,row["created_at"],declared.Started,declared.Finished)
 			if len(row)!=8 || string(row["comment"])!="null" {n.t.Fatal("native human audit has undeclared columns/comment")}
-			if verb=="close" || verb=="reopen" {if nativeEffectText(n.t,row["old_value"])!="" || nativeEffectText(n.t,row["new_value"])!="" {n.t.Fatal("native lifecycle audit changed the exact empty reason")}}
+			if verb=="close" && (nativeEffectText(n.t,row["old_value"])!="" || nativeEffectText(n.t,row["new_value"])!="Closed") {n.t.Fatal("native close audit differs from the pinned default reason")}
+			if verb=="reopen" && (nativeEffectText(n.t,row["old_value"])!="" || nativeEffectText(n.t,row["new_value"])!="") {n.t.Fatal("native reopen audit changed the exact empty reason")}
 			if verb=="defer" {
 				_,oldRow:=n.endpoint(n.previous,id)
 				var old map[string]json.RawMessage

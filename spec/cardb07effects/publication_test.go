@@ -50,8 +50,9 @@ func effectVersion(t *testing.T, before, after proof.State, previous, current dr
 		// This ordinary host lowers its named lifecycle slot to one patch;
 		// source-installed typed-close history remains a separate retained unit.
 		operation=model.OpPatch
-		paths=append(paths,"/closedAt");keys=append(keys,"closedAt")
+		paths=append(paths,"/closedAt","/lease");keys=append(keys,"closedAt","lease")
 	case "bead.reopen", "bead.defer":
+		paths=append(paths,"/lease");keys=append(keys,"lease")
 		doc,err:=pipeline.DecodeDocument(previous.Body)
 		if err!=nil {t.Fatal(err)}
 		if doc.ClosedAt!=nil {paths=append(paths,"/closedAt");keys=append(keys,"closedAt")}
@@ -69,8 +70,8 @@ func effectVersion(t *testing.T, before, after proof.State, previous, current dr
 	if len(result.SetBy)!=len(keys) {t.Fatal("result setBy has extra/missing field provenance")}
 	for _,key:=range keys { if result.SetBy[key]=="" {t.Fatal("result missing exact field provenance",key)} }
 	if value,ok:=result.SetBy["fields.status"];ok && value!="request" {t.Fatal("status provenance differs from the requested lifecycle slot")}
-	for _,key:=range []string{"links","parent"} {
-		if value,ok:=result.SetBy[key];ok && value!="request" {t.Fatal("relation provenance differs from public request",key)}
+	for _,key:=range []string{"links","parent","lease"} {
+		if value,ok:=result.SetBy[key];ok && value!="request" {t.Fatal("relation/lifecycle provenance differs from public request",key)}
 	}
 	if value,ok:=result.SetBy["closedAt"];ok && value!="core" {t.Fatal("lifecycle provenance differs from core")}
 }
