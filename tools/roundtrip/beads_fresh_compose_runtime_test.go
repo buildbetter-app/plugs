@@ -88,6 +88,9 @@ func freshNativeCase(t *testing.T, root string, source publicnative.SourceSessio
 	// The unchanged native recipe accepts only a fresh child of a private,
 	// canonical /tmp/plug-swarm directory. Keep evidence in declared outputs;
 	// the complete quiescent source is archived there before capture/mutation.
+	if err := os.MkdirAll("/tmp/plug-swarm", 0700); err != nil {
+		t.Fatal(err)
+	}
 	retainedParent, err := os.MkdirTemp("/tmp/plug-swarm", "id-style-a-native-")
 	if err != nil {
 		t.Fatal(err)
