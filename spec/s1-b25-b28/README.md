@@ -13,7 +13,11 @@ comment. It compares complete committed record bodies across paged
 into the initialized receiver must refuse `restore_requires_empty` and conserve
 its complete public dump and store metadata. RPC request/result originals are
 retained as undeclared outputs. These controls qualify the Plug head-state
-boundary only. Native Beads source/readback, stored-plus-YAML vocabulary,
+boundary only. The source host's authored ontology is stored through the
+existing conformance fixture seam before public writes, included in the real
+dump, and compared byte for byte after restore/reopen. The receiver begins
+empty; an injected runtime resolver alone is not a portable stored source.
+Native Beads source/readback, stored-plus-YAML vocabulary,
 independent auxiliary census, nondeleting native JSONL import, unresolved
 native targets, and native Full/Partial/Snapshot mode composition need their
 own actual producer/receiver evidence; this authored fixture supplies none.

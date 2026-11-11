@@ -24,6 +24,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/restore"
 	"github.com/buildbetter-app/plugs/internal/core/service"
+	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
 	"github.com/buildbetter-app/plugs/internal/storage/postgres"
@@ -52,14 +53,18 @@ type b27PublicExchange struct {
 	Failure string          `json:"failure,omitempty"`
 }
 
-func b27PublicOntology(t *testing.T) *service.Ontology {
-	t.Helper()
+func b27PublicDocument() ontology.Document {
 	doc := ontology.DefaultDocument()
 	for _, name := range []string{"design", "acceptance_criteria", "notes", "spec_id", "external_ref"} {
 		doc.Types["issue"].Fields[name] = ontology.Field{Type: "string"}
 	}
 	doc.Types["issue"].Fields["estimated_minutes"] = ontology.Field{Type: "integer"}
-	snapshot, problems := ontology.Compile(doc, nil, nil)
+	return doc
+}
+
+func b27PublicOntology(t *testing.T) *service.Ontology {
+	t.Helper()
+	snapshot, problems := ontology.Compile(b27PublicDocument(), nil, nil)
 	if len(problems) != 0 {
 		t.Fatal(problems)
 	}
@@ -111,6 +116,32 @@ func (h *b27PublicHost) open() {
 		h.t.Fatal(err)
 	}
 	h.store = store
+	// Host configuration is a stored source as well as a runtime resolver.
+	// The ordinary public writes below cannot manufacture protected ontology
+	// records. Use the existing conformance fixture seam before starting the
+	// source host; the receiving host must remain genuinely empty.
+	if h.label == "source" {
+		meta, err := store.Meta(ctx)
+		if err != nil {
+			h.t.Fatal(err)
+		}
+		if meta.Head.IsZero() {
+			lease, err := store.Lease(ctx, "b27-source-configuration", driver.LeaseTTL)
+			if err != nil {
+				h.t.Fatal(err)
+			}
+			raw := b27PublicSource(h.t)
+			_, seedErr := conformance.Seed(ctx, store, lease, driver.ChangesetHeader{
+				Principal: model.PrincipalRef{Kind: "anonymous", ID: "anonymous"},
+				Time:      time.Date(2026, 11, 11, 11, 0, 0, 0, time.UTC),
+			}, []conformance.FixtureChange{{Ref: model.RefByID("ontology/b27-public", model.Natural64(0)), Kind: "ontology", Op: model.OpCreate, Body: raw}})
+			releaseErr := lease.Release(ctx)
+			if seedErr != nil || releaseErr != nil {
+				_ = store.Close()
+				h.t.Fatalf("store authored host configuration: %v %v", seedErr, releaseErr)
+			}
+		}
+	}
 	h.local, err = cli.OpenLocal(ctx, cli.LocalConfig{
 		Project: "alpha", Agent: "b27-public", Storage: cli.StorageConfig{Driver: "provided"},
 		Factory: func(context.Context, cli.StorageConfig) (driver.Store, func() error, error) {
@@ -137,6 +168,33 @@ func (h *b27PublicHost) open() {
 	if err != nil {
 		_ = store.Close()
 		h.t.Fatal(err)
+	}
+}
+
+func b27PublicSource(t *testing.T) []byte {
+	t.Helper()
+	raw, err := service.MarshalOntologySource(service.OntologySource{Base: b27PublicDocument()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func (h *b27PublicHost) assertConfiguration() {
+	h.t.Helper()
+	ctx := context.Background()
+	meta, err := h.store.Meta(ctx)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	r, err := h.store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	defer r.Close()
+	rows, err := r.Get(ctx, []model.Ref{model.RefByID("ontology/b27-public", model.Natural64(0))})
+	if err != nil || len(rows) != 1 || rows[0].Kind != "ontology" || !bytes.Equal(rows[0].Body, b27PublicSource(h.t)) {
+		h.t.Fatalf("stored authored host configuration changed: %v %v", rows, err)
 	}
 }
 
@@ -283,10 +341,14 @@ func (h *b27PublicHost) assertCensus(ids []string) {
 		want[id] = true
 	}
 	seen := map[string]bool{}
-	params := map[string]any{"asOf": map[string]any{"revision": meta.Head}, "limit": 1}
+	cursor := ""
 	for page := 0; ; page++ {
 		if page > len(ids) {
 			h.t.Fatal("public census failed to terminate")
+		}
+		params := map[string]any{"asOf": map[string]any{"revision": meta.Head}, "limit": 1}
+		if cursor != "" {
+			params["cursor"] = cursor
 		}
 		value := h.must("history.query", params)
 		at := value["asOf"].(map[string]any)
@@ -303,11 +365,10 @@ func (h *b27PublicHost) assertCensus(ids []string) {
 			}
 			seen[id] = true
 		}
-		cursor, _ := value["nextCursor"].(string)
+		cursor, _ = value["nextCursor"].(string)
 		if cursor == "" {
 			break
 		}
-		params["cursor"] = cursor
 	}
 	if !reflect.DeepEqual(seen, want) {
 		h.t.Fatalf("complete public census got %v want %v", seen, want)
@@ -372,8 +433,9 @@ func TestB27PublicPlugRoundtripFieldsRelationsAndReopen(t *testing.T) {
 				b27Equal(t, "independent comment body", comments[i].(map[string]any)["body"], body)
 			}
 			source.assertCensus(ids)
+			source.assertConfiguration()
 			data, archive := source.dump()
-			if archive.Manifest().RecordCount != len(ids) {
+			if archive.Manifest().RecordCount != len(ids)+1 { // Three beads plus the actual stored ontology source.
 				t.Fatal("public archive contains missing or extra record identities")
 			}
 			target := openB27PublicHost(t, engine, "target")
@@ -382,6 +444,7 @@ func TestB27PublicPlugRoundtripFieldsRelationsAndReopen(t *testing.T) {
 			}
 			assert := func() {
 				target.assertCensus(ids)
+				target.assertConfiguration()
 				for _, id := range ids {
 					b27Equal(t, "complete restored image "+id, target.image(id), before[id])
 				}
