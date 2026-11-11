@@ -279,7 +279,8 @@ func (s *Service) sourcePreparation(source *sourceWorkflow, by model.PrincipalRe
 					return failure("unsupported", "source address expectations require an explicit ordinary target")
 				}
 			}
-			return prepare(func(ctx context.Context, original model.Op, image pipeline.SourceCoreImage) (model.Op, *pipeline.SourceOperation, error) {
+			closeTargets := []string{}
+			err = prepare(func(ctx context.Context, original model.Op, image pipeline.SourceCoreImage) (model.Op, *pipeline.SourceOperation, error) {
 				opIndex := index
 				index++
 				target, err := resolve(sourceOpTarget(original))
@@ -333,10 +334,15 @@ func (s *Service) sourcePreparation(source *sourceWorkflow, by model.PrincipalRe
 							op.Link.To = to
 						}
 					}
-					if original.Kind == model.OpClose || isSourceClaim(meta.Method) || meta.Method == "bead.close" {
+					if isSourceClaim(meta.Method) {
 						if err := s.sourceOrdinaryGuard(ctx, staged, by, target, meta, resolver); err != nil {
 							return model.Op{}, nil, err
 						}
+					} else if original.Kind == model.OpClose || meta.Method == "bead.close" {
+						if err := s.sourceOrdinaryCloseGuard(ctx, staged, by, graph[target.ID].doc, op, meta); err != nil {
+							return model.Op{}, nil, err
+						}
+						closeTargets = append(closeTargets, target.ID)
 					}
 					return op, nil, nil
 				}
@@ -412,6 +418,16 @@ func (s *Service) sourcePreparation(source *sourceWorkflow, by model.PrincipalRe
 				}
 				return op, active, err
 			})
+			if err != nil || len(closeTargets) == 0 {
+				return err
+			}
+			// Final ontology validation consumes the final staged child image;
+			// each original close prefix was checked above before advancing it.
+			_, children, _, err := staged.OrdinaryCloseSnapshot(ctx, by, closeTargets, meta)
+			if err == nil {
+				setWorkflowCloseFacts(ctx, children)
+			}
+			return err
 		})
 		if errors.Is(err, driver.ErrCheckpointConflict) {
 			return pipeline.SourcePublication{}, driver.ErrConflict
