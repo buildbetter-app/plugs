@@ -429,8 +429,14 @@ func positiveJoinedEffect(t *testing.T, before, after proof.State, commit model.
 	}
 	proof.WorkflowEffect(t, before, after, commit.Results[0].Ref.ID, title, methods...)
 	head, err := before.Meta.Head.Uint64()
-	if err != nil || after.Meta.Head != model.Natural64(head+1) || commit.Revision != after.Meta.Head || len(after.Changes) != len(before.Changes)+1 || after.Checkpoints[proof.Namespace].Generation != before.Checkpoints[proof.Namespace].Generation+1 {
-		t.Fatal("expected exactly one joined core/history/namespace effect")
+	historyDelta := 0
+	expectedHead := before.Meta.Head
+	if changedCore != "" {
+		historyDelta = 1
+		expectedHead = model.Natural64(head + 1)
+	}
+	if err != nil || after.Meta.Head != expectedHead || commit.Revision != after.Meta.Head || len(after.Changes) != len(before.Changes)+historyDelta || after.Checkpoints[proof.Namespace].Generation != before.Checkpoints[proof.Namespace].Generation+1 {
+		t.Fatal("joined publication changed the declared core/history/namespace effects")
 	}
 	// The imported history floor can leave no visible prior entries. Preserve
 	// every retained entry by index without comparing nil and empty slices.
@@ -444,8 +450,15 @@ func positiveJoinedEffect(t *testing.T, before, after proof.State, commit model.
 	}
 	expectedMeta := before.Meta
 	expectedMeta.Head = after.Meta.Head
-	if after.Meta != expectedMeta || !reflect.DeepEqual(after.Receipts[label].Changeset, after.Changes[len(before.Changes)]) {
-		t.Fatal("joined publication changed store identity or receipt/log equality")
+	if after.Meta != expectedMeta {
+		t.Fatal("joined publication changed store identity")
+	}
+	if changedCore != "" {
+		if !reflect.DeepEqual(after.Receipts[label].Changeset, after.Changes[len(before.Changes)]) {
+			t.Fatal("joined publication lost exact receipt/log equality")
+		}
+	} else if !reflect.DeepEqual(after.Receipts[label].Changeset, model.Changeset{}) || !reflect.DeepEqual(before.Rows, after.Rows) || !reflect.DeepEqual(before.Versions, after.Versions) || !reflect.DeepEqual(before.Changes, after.Changes) || !reflect.DeepEqual(before.Derived, after.Derived) {
+		t.Fatal("workflow-only publication manufactured core state/history or a changeset")
 	}
 	proof.DerivedTitleEffect(t, before, after, changedCore)
 	for key, receipt := range before.Receipts {

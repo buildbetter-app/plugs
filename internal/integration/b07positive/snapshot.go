@@ -62,6 +62,22 @@ type Receipt struct {
 	Pending     bool
 }
 
+// A CommitNoop receipt has an exactly zero Changeset because it publishes no
+// core log entry. Archive that absence as null; retain the complete typed value
+// for Same and reject partially populated or otherwise invalid changesets.
+func (r Receipt) MarshalJSON() ([]byte, error) {
+	var changeset *model.Changeset
+	if !reflect.DeepEqual(r.Changeset, model.Changeset{}) {
+		changeset = &r.Changeset
+	}
+	return json.Marshal(struct {
+		RequestHash string
+		Commit      model.Commit
+		Changeset   *model.Changeset
+		Pending     bool
+	}{r.RequestHash, r.Commit, changeset, r.Pending})
+}
+
 type State struct {
 	Meta        driver.Meta
 	Rows        []driver.Record
