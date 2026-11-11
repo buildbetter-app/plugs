@@ -372,36 +372,44 @@ func (r *reader) cursor(c *driver.Cursor, method, digest string) (uint64, error)
 // last-key witness. Index is retained as a result witness for native restore;
 // it never positions a query. A nonzero legacy offset with no After witness is
 // refused rather than translated through OFFSET.
-func (r *reader) queryCursor(ctx context.Context, c *driver.Cursor, digest string, kind any, hasKind, currentHead bool) (string, error) {
+func (r *reader) queryCursor(ctx context.Context, c *driver.Cursor, digest string, filter map[string]any, kind any, hasKind, currentHead, rankByKind bool) (string, uint64, error) {
 	if c == nil {
-		return "", nil
+		return "", 0, nil
 	}
 	if c.Incarnation != r.meta.Incarnation {
-		return "", driver.ErrIncarnationChanged{From: c.Incarnation, To: r.meta.Incarnation}
+		return "", 0, driver.ErrIncarnationChanged{From: c.Incarnation, To: r.meta.Incarnation}
 	}
 	if c.Method != "query" || c.PrincipalDigest != "" || c.OntologyRevision.Validate() != nil || !c.OntologyRevision.IsZero() {
-		return "", fmt.Errorf("sqlite: cursor binding mismatch")
+		return "", 0, fmt.Errorf("sqlite: cursor binding mismatch")
 	}
 	revision, err := c.Revision.Uint64()
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	if revision != r.at {
-		return "", fmt.Errorf("sqlite: cursor snapshot mismatch")
+		return "", 0, fmt.Errorf("sqlite: cursor snapshot mismatch")
 	}
 	if c.FilterDigest != digest {
-		return "", fmt.Errorf("sqlite: cursor binding mismatch")
+		return "", 0, fmt.Errorf("sqlite: cursor binding mismatch")
 	}
 	if err := c.Index.Validate(); err != nil {
-		return "", err
+		return "", 0, err
+	}
+	// Below-head and staged readers intentionally retain the predecessor's
+	// ordinal cursor and full materialization semantics. The opaque After
+	// witness is a current-head optimization only.
+	if !currentHead {
+		index, err := r.cursor(c, "query", digest)
+		return "", index, err
 	}
 	if c.After == "" {
 		if !c.Index.IsZero() {
-			return "", fmt.Errorf("sqlite: cursor binding mismatch")
+			return "", 0, fmt.Errorf("sqlite: cursor binding mismatch")
 		}
-		return "", nil
+		return "", 0, nil
 	}
 	var rank, kindRank int64
+	var data []byte
 	existsArgs := []any{c.After}
 	existsWhere := "o.key=?"
 	from := "objects AS o"
@@ -412,28 +420,66 @@ func (r *reader) queryCursor(ctx context.Context, c *driver.Cursor, digest strin
 		existsWhere += " AND o.kind=?"
 		existsArgs = append(existsArgs, kind)
 	}
-	if err := r.tx.QueryRowContext(ctx, `SELECT o.query_order,o.query_kind_order FROM `+from+` WHERE `+existsWhere, existsArgs...).Scan(&rank, &kindRank); err != nil {
-		if errors.Is(err, sql.ErrNoRows) && r.owner != nil {
+	selectColumns := "o.query_order,o.query_kind_order"
+	if currentHead {
+		selectColumns += ",r.data"
+	}
+	row := r.tx.QueryRowContext(ctx, `SELECT `+selectColumns+` FROM `+from+` WHERE `+existsWhere, existsArgs...)
+	var scanErr error
+	if currentHead {
+		scanErr = row.Scan(&rank, &kindRank, &data)
+	} else {
+		scanErr = row.Scan(&rank, &kindRank)
+	}
+	if scanErr != nil {
+		if errors.Is(scanErr, sql.ErrNoRows) && r.owner != nil {
 			if staged, ok := r.owner.records[c.After]; ok && staged != nil && (!hasKind || staged.Kind == kind) {
-				return c.After, nil
+				if ok, matchErr := matches(*staged, filter); matchErr != nil || !ok {
+					if matchErr != nil {
+						return "", 0, matchErr
+					}
+					return "", 0, fmt.Errorf("sqlite: cursor binding mismatch")
+				}
+				index, indexErr := c.Index.Uint64()
+				if indexErr != nil || index == 0 {
+					return "", 0, fmt.Errorf("sqlite: cursor binding mismatch")
+				}
+				return c.After, index, nil
 			}
 		}
-		if errors.Is(err, sql.ErrNoRows) {
-			return "", fmt.Errorf("sqlite: cursor binding mismatch")
+		if errors.Is(scanErr, sql.ErrNoRows) {
+			return "", 0, fmt.Errorf("sqlite: cursor binding mismatch")
 		}
-		return "", err
+		return "", 0, scanErr
+	}
+	if currentHead {
+		var record driver.Record
+		if err := json.Unmarshal(data, &record); err != nil {
+			return "", 0, err
+		}
+		if ok, err := matches(record, filter); err != nil || !ok {
+			if err != nil {
+				return "", 0, err
+			}
+			return "", 0, fmt.Errorf("sqlite: cursor binding mismatch")
+		}
 	}
 	if currentHead {
 		wantRank := uint64(rank)
-		if hasKind {
+		if rankByKind {
 			wantRank = uint64(kindRank)
 		}
 		index, err := c.Index.Uint64()
-		if err != nil || index == 0 || rank <= 0 || hasKind && kindRank <= 0 || index != wantRank {
-			return "", fmt.Errorf("sqlite: cursor binding mismatch")
+		if err != nil || index == 0 || rank <= 0 || rankByKind && kindRank <= 0 || index != wantRank {
+			return "", 0, fmt.Errorf("sqlite: cursor binding mismatch")
 		}
+		return c.After, index, nil
 	}
-	return c.After, nil
+	index, err := c.Index.Uint64()
+	if err != nil || index == 0 {
+		return "", 0, fmt.Errorf("sqlite: cursor binding mismatch")
+	}
+	return c.After, index, nil
 }
 func (r *reader) nextCursor(method, digest string, index uint64) *driver.Cursor {
 	return &driver.Cursor{Method: method, FilterDigest: digest, Incarnation: r.meta.Incarnation, Revision: model.Natural64(r.at), Index: model.Natural64(index)}
@@ -479,26 +525,29 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 	if err != nil {
 		return driver.Page[driver.Record]{}, err
 	}
-	// Current records already contain complete post-images. Empty and kind-only
-	// queries can therefore select and decode one bounded SQL page directly.
-	// Staged overlays, body predicates, and historical snapshots retain the
-	// reference reconstruction below so their existing replay semantics remain
+	// Current records already contain complete post-images. Nil and kind-only
+	// current-head queries can therefore select and decode a bounded keyset page
+	// directly. Staged overlays, historical snapshots and other filters retain
+	// the reference reconstruction below so their existing semantics remain
 	// unchanged.
 	kind, hasKind := q.Filter["kind"]
+	// The bounded keyset path is intentionally limited to the nil and kind
+	// filters. Other current-head filters retain the predecessor's exact
+	// materialization semantics until their own indexed projections land.
 	currentHead := r.owner == nil && r.at == mustUint(r.meta.Head) && (len(q.Filter) == 0 || len(q.Filter) == 1 && hasKind)
+	kindRank := currentHead && len(q.Filter) == 1 && hasKind
 	if currentHead {
-		after, err := r.queryCursor(ctx, q.Cursor, digest, kind, hasKind, true)
+		after, _, err := r.queryCursor(ctx, q.Cursor, digest, q.Filter, kind, hasKind, true, kindRank)
 		if err != nil {
 			return driver.Page[driver.Record]{}, err
 		}
-		return r.queryHead(ctx, kind, hasKind, digest, after, limit)
+		return r.queryHead(ctx, q.Filter, kind, hasKind, kindRank, digest, after, limit)
 	}
-	after, err := r.queryCursor(ctx, q.Cursor, digest, kind, hasKind, false)
+	_, start, err := r.queryCursor(ctx, q.Cursor, digest, q.Filter, kind, hasKind, false, false)
 	if err != nil {
 		return driver.Page[driver.Record]{}, err
 	}
 	items := make([]driver.Record, 0, limit+1)
-	keys := make([]string, 0, limit+1)
 	appendCandidate := func(id string) error {
 		record, found, err := r.recordAt(ctx, id)
 		if err != nil || !found {
@@ -510,13 +559,12 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 		}
 		if match {
 			items = append(items, record)
-			keys = append(keys, id)
 		}
 		return nil
 	}
 	if r.owner != nil {
 		ids := make(map[string]bool)
-		rows, queryErr := r.tx.QueryContext(ctx, `SELECT key FROM objects WHERE key>? ORDER BY key`, after)
+		rows, queryErr := r.tx.QueryContext(ctx, `SELECT key FROM objects ORDER BY key`)
 		if queryErr != nil {
 			return driver.Page[driver.Record]{}, queryErr
 		}
@@ -536,9 +584,7 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 			return driver.Page[driver.Record]{}, queryErr
 		}
 		for id := range r.owner.records {
-			if id > after {
-				ids[id] = true
-			}
+			ids[id] = true
 		}
 		ordered := make([]string, 0, len(ids))
 		for id := range ids {
@@ -549,12 +595,9 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 			if err := appendCandidate(id); err != nil {
 				return driver.Page[driver.Record]{}, err
 			}
-			if len(items) > limit {
-				break
-			}
 		}
 	} else {
-		rows, queryErr := r.tx.QueryContext(ctx, `SELECT key FROM objects WHERE key>? ORDER BY key`, after)
+		rows, queryErr := r.tx.QueryContext(ctx, `SELECT key FROM objects ORDER BY key`)
 		if queryErr != nil {
 			return driver.Page[driver.Record]{}, queryErr
 		}
@@ -567,9 +610,6 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 			if queryErr = appendCandidate(id); queryErr != nil {
 				break
 			}
-			if len(items) > limit {
-				break
-			}
 		}
 		if queryErr == nil {
 			queryErr = rows.Err()
@@ -579,20 +619,23 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 			return driver.Page[driver.Record]{}, queryErr
 		}
 	}
-	page := driver.Page[driver.Record]{Items: items, AsOf: model.Natural64(r.at)}
-	if len(items) > limit {
-		page.Items = items[:limit]
-		page.NextCursor = r.nextQueryCursor(digest, 0, keys[limit-1])
+	if start > uint64(len(items)) {
+		return driver.Page[driver.Record]{}, fmt.Errorf("sqlite: cursor index exceeds page")
+	}
+	end := min(start+uint64(limit), uint64(len(items)))
+	page := driver.Page[driver.Record]{Items: items[start:end], AsOf: model.Natural64(r.at)}
+	if end < uint64(len(items)) {
+		page.NextCursor = r.nextCursor("query", digest, end)
 	}
 	driver.ReportReadWork(ctx, driver.ReadQueryReturned, int64(len(page.Items)))
 	return page, nil
 }
 
-// queryHead reads one current page plus a lookahead row. After is the opaque
-// last returned key, and the SQL predicate/order uses the corresponding
-// primary or covering kind index. Index is emitted only as the native restore
-// progress witness; it never drives the query.
-func (r *reader) queryHead(ctx context.Context, kind any, hasKind bool, digest, after string, limit int) (driver.Page[driver.Record], error) {
+// queryHead reads one current nil/kind page plus a lookahead row. After is the
+// opaque last returned key, and the SQL predicate/order uses the primary key
+// or the covering (kind,key) index. Index is emitted only as a witness for
+// cursor validation and native restore; it never positions a query.
+func (r *reader) queryHead(ctx context.Context, filter map[string]any, kind any, hasKind, rankByKind bool, digest, after string, limit int) (driver.Page[driver.Record], error) {
 	empty := driver.Page[driver.Record]{}
 
 	// The row is maintained transactionally by SQLite triggers. It preserves
@@ -609,53 +652,89 @@ func (r *reader) queryHead(ctx context.Context, kind any, hasKind bool, digest, 
 
 	from := ` FROM objects AS o JOIN records AS r ON o.key=r.key`
 	rankColumn := "o.query_order"
-	pageArgs := make([]any, 0, 3)
-	if hasKind {
-		// The covering (kind,key) index supplies the requested key order without a
-		// temporary sort for kind-filtered pages.
+	if rankByKind {
 		rankColumn = "o.query_kind_order"
-		from += ` WHERE o.kind=? AND o.key>?`
-		pageArgs = append(pageArgs, kind)
-	} else {
-		from += ` WHERE o.key>?`
 	}
-	pageArgs = append(pageArgs, after)
-	pageArgs = append(pageArgs, limit+1)
-	rows, err := r.tx.QueryContext(ctx, `SELECT `+rankColumn+`,o.key,r.data`+from+` ORDER BY o.key LIMIT ?`, pageArgs...)
-	if err != nil {
-		return empty, err
+	where := []string{"o.key>?"}
+	baseArgs := make([]any, 0, 4)
+	baseArgs = append(baseArgs, after)
+	if hasKind {
+		where = append(where, "o.kind=?")
+		baseArgs = append(baseArgs, kind)
+	}
+	// Ref identity is stored in the current JSON image. These two predicates
+	// keep exact id/key filters indexed by the keyset scan while body fields
+	// remain checked by the existing Go matcher below (Body is opaque bytes).
+	if want, ok := filter["id"]; ok {
+		where = append(where, `json_extract(r.data,'$.Ref.ID')=?`)
+		baseArgs = append(baseArgs, want)
+	}
+	if want, ok := filter["key"]; ok {
+		where = append(where, `json_extract(r.data,'$.Ref.Key')=?`)
+		baseArgs = append(baseArgs, want)
 	}
 	items := make([]driver.Record, 0, limit+1)
 	ranks := make([]uint64, 0, limit+1)
 	keys := make([]string, 0, limit+1)
-	for rows.Next() {
-		var rank int64
-		var key string
-		var data []byte
-		var record driver.Record
-		if err = rows.Scan(&rank, &key, &data); err != nil {
+	scanAfter := after
+	for len(items) <= limit {
+		args := make([]any, 0, len(baseArgs)+1)
+		args = append(args, scanAfter)
+		if len(baseArgs) > 1 {
+			args = append(args, baseArgs[1:]...)
+		}
+		args = append(args, limit+1)
+		rows, err := r.tx.QueryContext(ctx, `SELECT `+rankColumn+`,o.key,r.data`+from+` WHERE `+strings.Join(where, " AND ")+` ORDER BY o.key LIMIT ?`, args...)
+		if err != nil {
+			return empty, err
+		}
+		scanned := 0
+		for rows.Next() {
+			var rank int64
+			var key string
+			var data []byte
+			var record driver.Record
+			if err = rows.Scan(&rank, &key, &data); err != nil {
+				_ = rows.Close()
+				return empty, err
+			}
+			scanned++
+			scanAfter = key
+			if rank <= 0 {
+				_ = rows.Close()
+				return empty, fmt.Errorf("sqlite: invalid query order rank")
+			}
+			if err = json.Unmarshal(data, &record); err != nil {
+				_ = rows.Close()
+				return empty, err
+			}
+			match, matchErr := matches(record, filter)
+			if matchErr != nil {
+				_ = rows.Close()
+				return empty, matchErr
+			}
+			if match {
+				items = append(items, record)
+				ranks = append(ranks, uint64(rank))
+				keys = append(keys, key)
+			}
+			if len(items) > limit {
+				break
+			}
+		}
+		if err == nil {
+			err = rows.Err()
+		}
+		closeErr := rows.Close()
+		if err != nil {
+			return empty, err
+		}
+		if closeErr != nil {
+			return empty, closeErr
+		}
+		if len(items) > limit || scanned < limit+1 {
 			break
 		}
-		if rank <= 0 {
-			err = fmt.Errorf("sqlite: invalid query order rank")
-			break
-		}
-		if err = json.Unmarshal(data, &record); err != nil {
-			break
-		}
-		items = append(items, record)
-		ranks = append(ranks, uint64(rank))
-		keys = append(keys, key)
-	}
-	if err == nil {
-		err = rows.Err()
-	}
-	closeErr := rows.Close()
-	if err != nil {
-		return empty, err
-	}
-	if closeErr != nil {
-		return empty, closeErr
 	}
 	page := driver.Page[driver.Record]{Items: items, AsOf: model.Natural64(r.at)}
 	if len(items) > limit {

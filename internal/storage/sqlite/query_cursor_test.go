@@ -210,6 +210,74 @@ CREATE TABLE records(key TEXT PRIMARY KEY, data BLOB NOT NULL);`)
 	}
 }
 
+func TestSchemaTwoMigrationPreservesRowsRanksAndReadWork(t *testing.T) {
+	ctx := testContext(t)
+	path := filepath.Join(t.TempDir(), "schema-two.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refA, refB := testRef("schema-two-a"), testRef("schema-two-b")
+	keyA, err := recordKey(refA)
+	if err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	keyB, err := recordKey(refB)
+	if err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	dataA, err := json.Marshal(driver.Record{Ref: refA, Kind: "test", Body: []byte(`{"value":"a"}`)})
+	if err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	dataB, err := json.Marshal(driver.Record{Ref: refB, Kind: "test", Body: []byte(`{"value":"b"}`)})
+	if err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	_, err = raw.ExecContext(ctx, `
+CREATE TABLE meta(singleton INTEGER PRIMARY KEY CHECK(singleton=1), store_id TEXT NOT NULL, incarnation TEXT NOT NULL, schema_version INTEGER NOT NULL, head TEXT NOT NULL, history_floor TEXT NOT NULL);
+INSERT INTO meta VALUES(1,'store','incarnation',2,'00000000000000000002','00000000000000000000');
+CREATE TABLE replays(scope TEXT PRIMARY KEY, created INTEGER NOT NULL, rev TEXT NOT NULL, request_hash TEXT NOT NULL, response BLOB NOT NULL, changeset BLOB, finalized INTEGER NOT NULL DEFAULT 0, post BLOB);
+CREATE TABLE objects(key TEXT PRIMARY KEY, kind TEXT NOT NULL);
+CREATE TABLE records(key TEXT PRIMARY KEY, data BLOB NOT NULL);
+INSERT INTO objects(key,kind) VALUES(?,?),(?,?);
+INSERT INTO records(key,data) VALUES(?,?),(?,?);`, keyA, "test", keyB, "test", keyA, dataA, keyB, dataB)
+	if err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	value, err := (Driver{}).Open(ctx, driver.Config{DSN: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := value.(*Store)
+	defer s.Close()
+	meta := getMeta(t, ctx, s)
+	if meta.SchemaVersion != schemaVersion || meta.Head.String() != "2" {
+		t.Fatalf("schema-two migration changed metadata: %+v", meta)
+	}
+	r := getReader(t, ctx, s, meta, nil)
+	var work queryReadWork
+	first, err := r.Query(driver.WithReadWorkObserver(ctx, &work), driver.Query{Limit: 1})
+	if err != nil || len(first.Items) != 1 || first.NextCursor == nil || first.Items[0].Ref.ID != "schema-two-a" {
+		t.Fatalf("schema-two first page: %+v %v", first, err)
+	}
+	if work.selectors.Load() != 2 || work.payloads.Load() != 2 || work.payloadBytes.Load() != int64(len(`{"value":"a"}`)+len(`{"value":"b"}`)) {
+		t.Fatalf("schema-two read work changed: selectors=%d payloads=%d bytes=%d", work.selectors.Load(), work.payloads.Load(), work.payloadBytes.Load())
+	}
+	second, err := r.Query(ctx, driver.Query{Limit: 1, Cursor: first.NextCursor})
+	if err != nil || len(second.Items) != 1 || second.Items[0].Ref.ID != "schema-two-b" || second.NextCursor != nil {
+		t.Fatalf("schema-two continuation: %+v %v", second, err)
+	}
+}
+
 func TestCurrentQueryReadWorkIncludesFilteredCandidates(t *testing.T) {
 	ctx := testContext(t)
 	s := openStore(t, ctx, filepath.Join(t.TempDir(), "query-accounting.db"))
