@@ -43,6 +43,38 @@ alias(
     actual = ":native_capture_test",
 )
 
+# B15/B26's new disposable source layer. Helper files remain unchanged; the
+# explicit selection reaches only the new fixture, not their historical tests.
+go_test(
+    name = "behavior_comment_active_fixture_test",
+    size = "large",
+    srcs = [
+        "behavior_comment_active_fixture_test.go",
+        "native_capture_test.go",
+        "physical_capture_test.go",
+    ],
+    args = ["-test.run=^TestPublicNativeCommentActiveFixture$"],
+    data = [
+        ":plug-capture-sql-server",
+        "//cmd/bd:bd",
+        "//tools/native-physical-capture",
+    ],
+    env = {
+        "BEADS_CAPTURE_BD_BINARY": "$(rootpath //cmd/bd:bd)",
+        "BEADS_CAPTURE_SQL_BINARY": "$(rootpath :plug-capture-sql-server)",
+        "BEADS_PHYSICAL_CAPTURE_BINARY": "$(rootpath //tools/native-physical-capture)",
+    },
+    deps = [
+        "//internal/captureclock",
+        "//internal/plugdump",
+        "//internal/storage",
+        "//internal/storage/dolt",
+        "//internal/storage/physicalcapture",
+        "//internal/testutil/bazeltest",
+        "@com_github_go_sql_driver_mysql//:mysql",
+    ],
+)
+
 # --- begin repo_files (managed by tools/bazel/go_srcs.py; run `make bazel-sync`) ---
 
 filegroup(
