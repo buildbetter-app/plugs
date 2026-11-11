@@ -136,10 +136,10 @@ func recordOrdinaryNativeAdditive(t *testing.T,c *nativeCommand) (map[string][]s
 		want:=[]string{};for _,role:=range v.Ready {want=append(want,ordinarySelectionID(v.Name,role))}
 		if got:=ordinaryNativeIDs(t,c,v.Name+"-front",append([]string{"ready","--json","--limit","0"},selectors...)...);!reflect.DeepEqual(got,want) {t.Fatalf("native selector %s membership=%v want=%v",v.Name,got,want)}
 		if v.Name=="unassigned" {
-			for i,flag:=range []string{"","--unassigned=false","--unassigned=true"} {args:=[]string{"list","--json","--limit","0","--parent",root};if flag!="" {args=append(args,flag)};expected:=ids[1:];if i==2 {expected=want};got:=ordinaryNativeIDs(t,c,fmt.Sprintf("%s-list-%d",v.Name,i),args...);if len(got)!=len(expected) {t.Fatalf("native unassigned case%d list=%v want=%v",i,got,expected)};for _,id:=range expected {found:=false;for _,value:=range got {found=found || value==id};if !found {t.Fatalf("native listing omitted %s",id)}}}
+			for i,flag:=range []string{"","--no-assignee=false","--no-assignee=true"} {args:=[]string{"list","--json","--limit","0","--parent",root};if flag!="" {args=append(args,flag)};expected:=ids[1:];if i==2 {expected=want};got:=ordinaryNativeIDs(t,c,fmt.Sprintf("%s-list-%d",v.Name,i),args...);if len(got)!=len(expected) {t.Fatalf("native unassigned case%d list=%v want=%v",i,got,expected)};for _,id:=range expected {found:=false;for _,value:=range got {found=found || value==id};if !found {t.Fatalf("native listing omitted %s",id)}}}
 		}
 		listingBefore:=ordinaryNativeDomain(t,c,v.Name+"-listing-before",ids);listingHistory:=ordinaryNativeHistoryCount(t,c,v.Name+"-listing-history-before")
-		listIDs:=ordinaryNativeIDs(t,c,v.Name+"-selector-list",append([]string{"list","--json","--limit","0"},selectors...)...);sort.Strings(listIDs);listWant:=append([]string{},want...);sort.Strings(listWant)
+		listIDs:=ordinaryNativeIDs(t,c,v.Name+"-selector-list",append([]string{"list","--json","--limit","0","--parent",root},v.ListNative...)...);sort.Strings(listIDs);listWant:=[]string{};for _,role:=range v.Listed {listWant=append(listWant,ordinarySelectionID(v.Name,role))};sort.Strings(listWant)
 		if !reflect.DeepEqual(listIDs,listWant) {t.Fatalf("native listing selector %s=%v want=%v",v.Name,listIDs,listWant)}
 		if !reflect.DeepEqual(listingBefore,ordinaryNativeDomain(t,c,v.Name+"-listing-after",ids)) || ordinaryNativeHistoryCount(t,c,v.Name+"-listing-history-after")!=listingHistory {t.Fatal("native listing changed rows/versions/history")}
 		listed[v.Name]=listIDs
