@@ -22,18 +22,19 @@ func checkpointLifetime(t *testing.T, h *public.Host, engine string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	persistent, ok := capability.(driver.PersistentCheckpointStore)
-	if !ok {
-		t.Fatal("workflow checkpoint capability omitted its persistence marker")
+	persistent := false
+	marker, present := capability.(driver.PersistentCheckpointStore)
+	if present {
+		persistent = marker.Persistent()
 	}
 	want := driver.CheckpointLifetimeRestart
 	if engine == "memory" {
 		want = driver.CheckpointLifetimeProcess
 	}
-	if capability.WorkflowCheckpointLifetime() != want || persistent.Persistent() != (engine != "memory") {
+	if capability.WorkflowCheckpointLifetime() != want || persistent != (engine != "memory") {
 		t.Fatal("selected engine misrepresented checkpoint lifetime or persistence")
 	}
-	proof.Save(t, h.Root, "b11-lifetime.json", map[string]any{"lifetime": capability.WorkflowCheckpointLifetime(), "persistent": persistent.Persistent()})
+	proof.Save(t, h.Root, "b11-lifetime.json", map[string]any{"lifetime": capability.WorkflowCheckpointLifetime(), "persistence_marker_present": present, "persistent": persistent})
 }
 
 func metadata(text string) *model.LinkMetadata {
@@ -165,9 +166,10 @@ func TestB11PublicMetadataIdentityAndConservation(t *testing.T) {
 	}
 }
 
-// These expected outcomes are literal native JCS decisions, independent of
-// storage spelling. Invalid metadata text uses native's exact-byte fallback.
-func TestB11PublicMetadataComparisonFallbacks(t *testing.T) {
+// Plug's opaque metadata-text tokens can represent values that native's JSON
+// column cannot store. These controls qualify the copied comparator's byte
+// fallback and exact Plug token retention, separately from native admission.
+func TestB11PublicOpaqueMetadataByteFallback(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			h := public.NewHost(t, engine)

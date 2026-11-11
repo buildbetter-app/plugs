@@ -332,6 +332,57 @@ func (n *b11Native) metadataAPI(name string) (func(string, string, string, strin
 	return apply, stop
 }
 
+// The existing server binding supplies the actual loopback endpoint. Native's
+// related-edge admission accepts syntactically valid overflow numbers, but its
+// SQL JSON conversion fails. The public fallback is 500/internal, without the
+// typed item fields used by validation refusals. Preserve its literal response.
+func (n *b11Native) metadataOverflow(label, from, to, metadata string) {
+	n.t.Helper()
+	readiness, err := os.ReadFile(filepath.Join(n.root, "first-open-metadata-server.readiness.json"))
+	if err != nil {
+		n.t.Fatal(err)
+	}
+	var binding struct{ URL string }
+	if json.Unmarshal(readiness, &binding) != nil || !strings.HasPrefix(binding.URL, "http://127.0.0.1:") || !strings.HasSuffix(binding.URL, "/healthz") {
+		n.t.Fatal("actual native HTTP endpoint binding missing")
+	}
+	url := strings.TrimSuffix(binding.URL, "/healthz") + "/v0/beads/issues:batchApply"
+	body := []byte(`{"actor":"b11-native","items":[{"kind":"dep_add","dep_add":{"source":{"id":"` + from + `"},"target":{"id":"` + to + `"},"type":"related","metadata":` + metadata + `}}]}`)
+	stem := filepath.Join(n.root, label)
+	if err := os.WriteFile(stem+".request.json", body, 0600); err != nil {
+		n.t.Fatal(err)
+	}
+	transport := &http.Transport{Proxy: nil}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Timeout: time.Minute, Transport: transport}
+	response, err := client.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		n.t.Fatal(err)
+	}
+	raw, readErr := io.ReadAll(response.Body)
+	closeErr := response.Body.Close()
+	if err := os.WriteFile(stem+".response.json", raw, 0600); err != nil {
+		n.t.Fatal(err)
+	}
+	b11JSON(n.t, stem+".binding.json", map[string]any{"method": "POST", "url": url, "status": response.StatusCode, "headers": response.Header, "request_sha256": hashBytes(body), "response_sha256": hashBytes(raw)})
+	var problem struct {
+		Status              int
+		Code, Title, Detail string
+	}
+	if readErr != nil || closeErr != nil || response.StatusCode != http.StatusInternalServerError || json.Unmarshal(raw, &problem) != nil || problem.Status != http.StatusInternalServerError || problem.Code != "internal" || problem.Title != "Internal Server Error" || problem.Detail != "internal server error" {
+		n.t.Fatalf("native overflow outcome differs: status=%d read=%v close=%v response=%s", response.StatusCode, readErr, closeErr, raw)
+	}
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &members); err != nil {
+		n.t.Fatal(err)
+	}
+	for _, member := range []string{"param", "reason", "item_index", "item_kind", "item_key", "item_issue_id"} {
+		if _, present := members[member]; present {
+			n.t.Fatal("native generic failure unexpectedly carried typed item validation", member)
+		}
+	}
+}
+
 func (n *b11Native) metadataDelta(before, after b11Image, from, to, want string) {
 	n.t.Helper()
 	if len(before) != len(after) {
@@ -472,19 +523,18 @@ func b11ProtocolBinding(t *testing.T, root string) {
 }
 
 func TestB11NativePublicMetadataComparisonDomains(t *testing.T) {
-	// These outcomes follow native's pinned JCS source, independently of the
-	// Plug helper. The public route and exact physical images must confirm them.
+	// Expectations derive independently from native JCS, SQL JSON conversion,
+	// and the journal's string-valued EventDep.Metadata. Request spelling and
+	// stored SQL spelling are deliberately distinct observations.
 	cases := []struct {
-		Name, Initial, Incoming string
-		Equal                   bool
+		Name, Initial, InitialStored, Incoming, Stored string
+		Equal, RepeatDuplicate                         bool
 	}{
-		{"wide-rounding", `{"n":9007199254740993}`, `{"n":9007199254740992}`, true},
-		{"wide-distinct", `{"n":9007199254740993}`, `{"n":9007199254740994}`, false},
-		{"overflow-different", `{"n":1e999999999}`, `{"n":10e999999998}`, false},
-		{"overflow-identical", `{"n":1e999999999}`, `{"n":1e999999999}`, true},
-		{"duplicate-different", `{"x":1,"x":2}`, `{"x":2}`, false},
-		{"duplicate-identical", `{"x":1,"x":2}`, `{"x":1,"x":2}`, true},
+		{"wide-rounding", `{"n":9007199254740993}`, `{"n":9007199254740992}`, `{"n":9007199254740992}`, `{"n":9007199254740992}`, true, false},
+		{"wide-distinct", `{"n":9007199254740993}`, `{"n":9007199254740992}`, `{"n":9007199254740994}`, `{"n":9007199254740994}`, false, false},
+		{"duplicate-fallback", `{"x":2}`, `{"x":2}`, `{"x":1,"x":2}`, `{"x":2}`, false, true},
 	}
+	overflows := []string{`{"n":1e999999999}`, `{"n":10e999999998}`}
 	// Every process, including the unchanged nested source builder, inherits
 	// the worker-safe prefix. Native child environments carry it explicitly too.
 	t.Setenv("PATH", "/tmp/plug-swarm/bin/worker-safe:"+os.Getenv("PATH"))
@@ -517,6 +567,7 @@ func TestB11NativePublicMetadataComparisonDomains(t *testing.T) {
 		"candidate": actual, "run": os.Getenv("GITHUB_RUN_ID"), "attempt": os.Getenv("GITHUB_RUN_ATTEMPT"),
 		"workflow_sha": os.Getenv("GITHUB_SHA"), "workflow_ref": os.Getenv("GITHUB_WORKFLOW_REF"),
 		"native_source": pinnedSource, "expectations": cases, "qualification": "PUBLIC_OPERATIONAL_RECORDING_ONLY",
+		"overflow_requests": overflows, "overflow_status": http.StatusInternalServerError, "overflow_code": "internal",
 		"native_history_credit": false,
 	})
 	binary := r.buildCanonicalSource(pinnedSource)
@@ -533,37 +584,55 @@ func TestB11NativePublicMetadataComparisonDomains(t *testing.T) {
 			apply, stop := n.metadataAPI("first-open")
 			for i, test := range cases {
 				from, to := fmt.Sprintf("b11-%d", i*2+1), fmt.Sprintf("b11-%d", i*2+2)
+				initialBefore := n.image(test.Name + "-initial-before")
 				apply(test.Name+"-initial", from, to, test.Initial)
 				before := n.image(test.Name + "-before")
-				if got := b11Text(t, n.edge(before, from, to)["metadata"]); got != test.Initial {
-					t.Fatalf("native initial metadata text changed: %q want=%q", got, test.Initial)
+				n.metadataDelta(initialBefore, before, from, to, test.Initial)
+				if got := b11Text(t, n.edge(before, from, to)["metadata"]); got != test.InitialStored {
+					t.Fatalf("native initial SQL metadata differs: %q want=%q", got, test.InitialStored)
 				}
 				apply(test.Name+"-readd", from, to, test.Incoming)
 				after := n.image(test.Name + "-after")
-				want := test.Incoming
 				if test.Equal {
-					want = test.Initial
 					if !reflect.DeepEqual(before, after) {
 						t.Fatal("native semantic re-add changed complete current table image", test.Name)
 					}
 				} else {
-					n.metadataDelta(before, after, from, to, want)
+					n.metadataDelta(before, after, from, to, test.Incoming)
 				}
-				if got := b11Text(t, n.edge(after, from, to)["metadata"]); got != want {
-					t.Fatalf("native metadata lexical readback differs: %q want=%q", got, want)
+				if got := b11Text(t, n.edge(after, from, to)["metadata"]); got != test.Stored {
+					t.Fatalf("native SQL metadata readback differs: %q want=%q", got, test.Stored)
+				}
+				if test.RepeatDuplicate {
+					// Stored x2 still differs by the JCS byte fallback from the
+					// repeated duplicate request: it writes/journals again.
+					apply(test.Name+"-repeat-duplicate", from, to, test.Incoming)
+					repeated := n.image(test.Name + "-repeat-after")
+					n.metadataDelta(after, repeated, from, to, test.Incoming)
+					if got := b11Text(t, n.edge(repeated, from, to)["metadata"]); got != test.Stored {
+						t.Fatalf("native repeated duplicate SQL metadata differs: %q", got)
+					}
 				}
 				b11JSON(t, filepath.Join(n.root, test.Name+"-outcome.json"), map[string]any{
-					"initial": test.Initial, "incoming": test.Incoming, "equal": test.Equal,
-					"stored": want, "before_edge": n.edge(before, from, to), "after_edge": n.edge(after, from, to),
+					"initial_request": test.Initial, "initial_stored": test.InitialStored, "incoming_request": test.Incoming, "equal": test.Equal,
+					"stored": test.Stored, "before_edge": n.edge(before, from, to), "after_edge": n.edge(after, from, to),
 					"native_response_changed": false, "native_history_credit": false,
 				})
+			}
+			for i, value := range overflows {
+				label := fmt.Sprintf("overflow-%d", i)
+				before := n.image(label + "-before")
+				n.metadataOverflow(label, "b11-1", "b11-2", value)
+				n.equal(before, label+"-after")
 			}
 			before := n.image("before-close")
 			stop()
 			reopened, closeReopened := n.metadataAPI("sql-reopen")
 			for i, test := range cases {
 				from, to := fmt.Sprintf("b11-%d", i*2+1), fmt.Sprintf("b11-%d", i*2+2)
-				reopened(test.Name+"-reopen-replay", from, to, test.Incoming)
+				// Native has no request receipt here: re-add the canonical
+				// committed SQL value, not an invalid-JCS request spelling.
+				reopened(test.Name+"-reopen-canonical-readd", from, to, test.Stored)
 			}
 			n.equal(before, "after-reopen-replays")
 			closeReopened()
