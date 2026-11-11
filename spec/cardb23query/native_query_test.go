@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -165,6 +166,7 @@ func (n *b23Native) count(label, query string, want int) {
 }
 func (n *b23Native) refuse(label, path, param, reason string) {
 	n.t.Helper()
+	before := n.state(label + "-before")
 	body := n.request(label, "GET", path, nil, 400)
 	for key, want := range map[string]string{"code": "invalid_argument", "param": param, "reason": reason} {
 		var got string
@@ -177,6 +179,52 @@ func (n *b23Native) refuse(label, path, param, reason string) {
 			n.t.Fatalf("native refusal emitted %s", key)
 		}
 	}
+	after := n.state(label + "-after")
+	if !reflect.DeepEqual(before, after) {
+		n.t.Fatalf("native %s refusal changed tables, working set or commit history", label)
+	}
+	n.save(label+"-conservation.json", map[string]any{"before": before, "after": after, "unchanged": true})
+}
+
+// state records every native public table, including empty tables, plus the
+// physical commit log and working-set status. Row sorting only canonicalizes
+// this conservation witness; ordered query expectations are never sorted.
+func (n *b23Native) state(label string) map[string][]string {
+	n.t.Helper()
+	tablesRaw := n.command(label+"-tables", "--readonly", "sql", "SHOW TABLES", "--json")
+	var tables []map[string]string
+	if err := json.Unmarshal(tablesRaw, &tables); err != nil {
+		n.t.Fatal(err)
+	}
+	names := []string{"dolt_log", "dolt_status"}
+	for _, row := range tables {
+		for _, name := range row {
+			names = append(names, name)
+		}
+	}
+	state := map[string][]string{}
+	for i, name := range names {
+		query := "SELECT * FROM `" + strings.ReplaceAll(name, "`", "``") + "`"
+		raw := n.command(fmt.Sprintf("%s-table-%d", label, i), "--readonly", "sql", query, "--json")
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.UseNumber()
+		var rows []map[string]any
+		if err := decoder.Decode(&rows); err != nil {
+			n.t.Fatal(err)
+		}
+		cells := []string{}
+		for _, row := range rows {
+			b, err := json.Marshal(row)
+			if err != nil {
+				n.t.Fatal(err)
+			}
+			cells = append(cells, string(b))
+		}
+		sort.Strings(cells)
+		state[name] = cells
+	}
+	n.save(label+"-state.json", state)
+	return state
 }
 
 // The native pin is exactly the behavior catalog's beads-base source. The

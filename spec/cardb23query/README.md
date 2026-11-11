@@ -20,13 +20,15 @@ refusal and single-scalar status count are recorded directly. Plug keeps its
 existing title matching/sorting under surfaces.md's explicit adopted count
 contract; no natural-sort or case-insensitive Plug parity is invented.
 
-The separate converter acceptance uses the pinned genuine seven-commit
-complete-root source fixture, literal native commit/title/label expectations,
+The separate converter acceptance uses seven actual Dolt commits over the
+pinned public synthetic SQL schema, literal source commit/title/label expectations,
 actual SourceImportRevision mappings and public view.run/history.query/bead.get
 before and after physical SQL reopen. It keeps full versus snapshot/floor
 semantics separate. The installed partial fixture includes synthetic extra rows
 and remains an inherited control, never native history evidence. Table-plane
-history from another capture is not promoted to portable history.
+history from another capture is not promoted to portable history. This bounded
+synthetic SQL control does not qualify public-native source-history parity;
+that qualification requires a genuine native capture and independent source oracle.
 
 Source, focus, canonical whole, hosted, native, history and full-card remain
 separate qualifications. These public disposable fixtures consume no private or

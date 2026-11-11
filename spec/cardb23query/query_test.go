@@ -62,6 +62,10 @@ func TestB23CombinedPublicPredicateCountsPagingAndReopen(t *testing.T) {
 func readyCount(t *testing.T, f *fixture, label string, filter map[string]any, want int) {
 	t.Helper()
 	for _, limit := range []int{1, 1000} {
+		meta, err := f.store.Meta(f.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
 		raw := f.call("bead.ready", fmt.Sprintf("%s-count-%d", label, limit), map[string]any{"filter": filter, "limit": limit, "countOnly": true})
 		var body map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &body); err != nil {
@@ -70,6 +74,10 @@ func readyCount(t *testing.T, f *fixture, label string, filter map[string]any, w
 		var count int
 		if err := json.Unmarshal(body["count"], &count); err != nil || count != want || string(body["items"]) != "[]" {
 			t.Fatalf("ready count=%s want=%d %v", raw, want, err)
+		}
+		var at viewops.AsOf
+		if err := json.Unmarshal(body["asOf"], &at); err != nil || at.Revision != meta.Head || at.Incarnation != meta.Incarnation {
+			t.Fatalf("ready snapshot=%s want=%+v: %v", raw, meta, err)
 		}
 		if _, ok := body["nextCursor"]; ok {
 			t.Fatalf("ready count emitted cursor: %s", raw)

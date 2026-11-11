@@ -1754,6 +1754,7 @@ spec/cardb23query/fixture_test.go
 spec/cardb23query/native_query_test.go
 spec/cardb23query/query_support_test.go
 spec/cardb23query/query_test.go
+spec/cardb23query/ready_pages_test.go
 spec/cardb23query/ready_planes_test.go
 spec/cardb23query/regenerate_contract.sh
 spec/cardb24/BUILD.bazel

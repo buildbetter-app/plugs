@@ -20,7 +20,8 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
-// These independent literals bind the original public native source commits,
+// These literals bind actual Dolt commits over the public synthetic SQL schema.
+// They are bounded synthetic source-history controls, not public-native parity,
 // not an expectation computed by the importer or filled from the current head.
 var b23SourceCommits = []string{
 	"9cdifuj7ktk76mb9jbf3l83bkj0eir7b", "hscqilkral1c73v5bm7gt76jpoi59om0", "5hdbvff4nurkabp68v4f9rbbpp8e84g9", "jfekudg6ujbjrpk1krcr6u7queej98e5", "69cv8h7t4m9igo8jij6cvk6692pobfrd", "rn0lahlbu4hr6qg6qbtt8k3jl1tg62sk", "7lb380frsk0ibk50quniufi07b5p6m3o",
@@ -62,7 +63,7 @@ func b23SourceServer(t *testing.T, store driver.Store, lease driver.ActiveLease,
 	}
 	return server
 }
-func TestB23NativeSourceMappedPublicQueryHistoryAndPhysicalReopen(t *testing.T) {
+func TestB23SyntheticSQLSourceMappedPublicQueryHistoryAndPhysicalReopen(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		for _, mode := range []driver.RestoreHistoryMode{driver.RestoreHistoryModeFull, driver.RestoreHistoryModeSnapshot} {
 			t.Run(engine+"/"+string(mode), func(t *testing.T) {
@@ -92,7 +93,7 @@ func TestB23NativeSourceMappedPublicQueryHistoryAndPhysicalReopen(t *testing.T) 
 					if root == "" {
 						root = t.TempDir()
 					}
-					raw, e := json.MarshalIndent(map[string]any{"engine": engine, "mode": mode, "archive_sha256": source.SHA256(), "native_source_commits": b23SourceCommits, "restored": report.Restored, "frames": frames}, "", "  ")
+					raw, e := json.MarshalIndent(map[string]any{"engine": engine, "mode": mode, "archive_sha256": source.SHA256(), "synthetic_sql_source_commits": b23SourceCommits, "qualification": "bounded_synthetic_SQL_source_history_not_native_parity", "restored": report.Restored, "frames": frames}, "", "  ")
 					if e != nil {
 						t.Error(e)
 						return
@@ -156,7 +157,7 @@ func TestB23NativeSourceMappedPublicQueryHistoryAndPhysicalReopen(t *testing.T) 
 						}
 						for _, m := range evidence.Mapping {
 							if m.Sequence < 1 || m.Sequence > 7 || !reflect.DeepEqual(m.CommitIDs, []string{b23SourceCommits[m.Sequence-1]}) {
-								t.Fatalf("native commit identity/order changed: %+v", m)
+								t.Fatalf("synthetic SQL commit identity/order changed: %+v", m)
 							}
 							windows = append(windows, window{m.Sequence, m.Revision})
 						}
@@ -207,11 +208,11 @@ func TestB23NativeSourceMappedPublicQueryHistoryAndPhysicalReopen(t *testing.T) 
 							if wantCount == 1 {
 								row := result.Items[0]
 								if row.ID != "demo-42v" || row.Type != "issue" || row.Fields["title"] != wantTitle || !reflect.DeepEqual(append([]string{}, row.Labels...), wantLabels) {
-									t.Fatalf("native imported public value changed: %s", raw)
+									t.Fatalf("synthetic SQL imported public value changed: %s", raw)
 								}
 							}
 						}
-						raw, refusal := call("bead.get", fmt.Sprintf("%s-get-%d", phase, w.sequence), map[string]any{"id": "demo-42v", "asOf": at})
+						raw, refusal := call("bead.get", fmt.Sprintf("%s-get-%d", phase, w.sequence), map[string]any{"id": model.RefByID("demo-42v", model.Natural64(0)), "asOf": at})
 						if wantTitle == "" {
 							if refusal == nil || refusal.Code != "not_found" {
 								t.Fatalf("unknown historical row substituted head: %s %+v", raw, refusal)

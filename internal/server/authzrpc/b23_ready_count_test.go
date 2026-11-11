@@ -1,11 +1,13 @@
 package authzrpc_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/viewops"
 )
 
 // Reuse the existing fixed-permission public HTTP admission fixture. The
@@ -17,6 +19,10 @@ func TestB23PublicReadyCountUsesCurrentFixedAuthority(t *testing.T) {
 		filter := map[string]any{"resources": []string{fixtureRef(3).ID, fixtureRef(4).ID, fixtureRef(5).ID, fixtureRef(7).ID}}
 		for i, limit := range []int{1, 1000} {
 			for j, by := range []model.PrincipalRef{countReader(), {Kind: "user", ID: "user:empty-count", Caveats: map[string]any{"refs": []model.Ref{}}}} {
+				meta, err := f.store.Meta(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
 				got := f.call(t, by, "bead.ready", map[string]any{"countOnly": true, "limit": limit, "filter": filter}, 23000+i*10+j)
 				if got.Error != nil {
 					t.Fatalf("guarded ready count refused: %+v", got.Error)
@@ -32,6 +38,10 @@ func TestB23PublicReadyCountUsesCurrentFixedAuthority(t *testing.T) {
 				}
 				if err := json.Unmarshal(body["count"], &count); err != nil || count != want || string(body["items"]) != "[]" {
 					t.Fatalf("guarded count=%s want=%d %v", got.Result, want, err)
+				}
+				var at viewops.AsOf
+				if err := json.Unmarshal(body["asOf"], &at); err != nil || at.Revision != meta.Head || at.Incarnation != meta.Incarnation {
+					t.Fatalf("guarded ready snapshot=%s want=%+v: %v", got.Result, meta, err)
 				}
 				for _, field := range []string{"nextCursor", "groups", "elisions"} {
 					if _, ok := body[field]; ok {
