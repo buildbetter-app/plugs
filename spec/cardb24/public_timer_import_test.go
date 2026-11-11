@@ -102,6 +102,39 @@ func b24RunTimerImport(t *testing.T, engine string, data []byte, want b24TimerOr
 	}
 	f.bind(t)
 	ref := model.RefByID(want.ID, model.Natural64(0))
+	importReceipt := func() []byte {
+		t.Helper()
+		meta, err := f.store.Meta(f.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := f.store.Read(f.ctx, driver.View{Incarnation: meta.Incarnation})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		principal, err := driver.PrincipalKey(profile.Admission.Actor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		receipt, err := r.IdempotencyByKey(f.ctx, principal, profile.AgentLabel(), profile.Method, profile.IdempotencyKey)
+		if err != nil || receipt == nil {
+			t.Fatalf("actual import receipt disappeared: %v", err)
+		}
+		encoded, err := json.Marshal(receipt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return encoded
+	}
+	conserve := func(phase string, operation func()) {
+		t.Helper()
+		before := importReceipt()
+		b24ConservedRead(t, f, phase, operation)
+		if !bytes.Equal(before, importReceipt()) {
+			t.Fatalf("%s changed the original import receipt", phase)
+		}
+	}
 	params := func(extra map[string]any) map[string]any {
 		out := map[string]any{"id": ref, "_meta": map[string]any{"project": want.Project}}
 		for k, v := range extra {
@@ -111,7 +144,7 @@ func b24RunTimerImport(t *testing.T, engine string, data []byte, want b24TimerOr
 	}
 	read := func(phase, title, status string, comments int) {
 		t.Helper()
-		b24ConservedRead(t, f, phase, func() {
+		conserve(phase, func() {
 			got := f.call("bead.get", phase, params(nil))
 			if got.Error != nil {
 				t.Fatalf("public imported get: %+v", got.Error)
@@ -190,10 +223,16 @@ func b24RunTimerImport(t *testing.T, engine string, data []byte, want b24TimerOr
 		t.Fatalf("reopened import receipt: %v", err)
 	}
 	read("imported-reopened", want.Title, want.Status, 0)
+	conserve("imported-timed-request-refused", func() {
+		got := f.call("bead.defer", "imported-timed-request-refused", params(map[string]any{"reason": "waiting for timer input", "until": target.Format(time.RFC3339Nano)}))
+		if got.Error == nil || got.Error.Data.Code != "invalid_params" {
+			t.Fatalf("imported timestamp enabled an unsupported timed Plug request: %+v", got)
+		}
+	})
 	updated := "timer fields survive unrelated Plug update"
 	commit(t, f.call("bead.update", "imported-title-update", params(map[string]any{"fields": map[string]any{"title": updated}})))
 	read("imported-title-updated", updated, want.Status, 0)
-	b24ConservedRead(t, f, "imported-empty-reason", func() {
+	conserve("imported-empty-reason", func() {
 		got := f.call("bead.defer", "imported-empty-reason", params(map[string]any{"reason": " "}))
 		if got.Error == nil || got.Error.Data.Code != "invalid_params" {
 			t.Fatalf("blank defer reason accepted: %+v", got)
@@ -219,9 +258,9 @@ func b24RunTimerImport(t *testing.T, engine string, data []byte, want b24TimerOr
 		b24StepClocks(t, f, application, boundary.at.Sub(application.Now()), 0)
 		b24ObserveClocks(t, f, application, "imported-target-"+boundary.name)
 		read("imported-target-"+boundary.name, updated, "backlog", 1)
-		b24ConservedRead(t, f, "imported-stale-"+boundary.name, func() {
+		conserve("imported-stale-"+boundary.name, func() {
 			query := map[string]any{
-				"definition": staleDefinition("status=backlog"), "stale": map[string]any{"days": 1},
+				"definition": staleDefinition("status=backlog"), "stale": map[string]any{"days": 1, "status": "backlog"},
 				"_meta": map[string]any{"project": want.Project},
 			}
 			ids, next := staleIDs(t, f.call("view.run", "imported-stale-"+boundary.name, query))
@@ -234,7 +273,7 @@ func b24RunTimerImport(t *testing.T, engine string, data []byte, want b24TimerOr
 				t.Fatalf("imported strict stale boundary %s ids=%v count=%d next=%q want=%v", boundary.name, ids, count, next, wanted)
 			}
 		})
-		b24ConservedRead(t, f, "imported-ready-"+boundary.name, func() {
+		conserve("imported-ready-"+boundary.name, func() {
 			got := f.call("bead.ready", "imported-ready-"+boundary.name, map[string]any{"limit": 100, "_meta": map[string]any{"project": want.Project}})
 			if got.Error != nil {
 				t.Fatalf("imported ready: %+v", got.Error)
@@ -266,7 +305,7 @@ func b24RunTimerImport(t *testing.T, engine string, data []byte, want b24TimerOr
 		t.Fatal("final SQL reopen changed timer provenance")
 	}
 	read("imported-final-durable", updated, "todo", 1)
-	b24ConservedRead(t, f, "imported-final-ready", func() {
+	conserve("imported-final-ready", func() {
 		got := f.call("bead.ready", "imported-final-ready", map[string]any{"limit": 100, "_meta": map[string]any{"project": want.Project}})
 		if got.Error != nil {
 			t.Fatalf("reopened ready: %+v", got.Error)

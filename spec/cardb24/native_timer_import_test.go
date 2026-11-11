@@ -105,7 +105,8 @@ func b24RecordTimerSource(t *testing.T, r *nativeRecorder, binary, exporter stri
 	n.conserved("timer-blank-reason", func() {
 		n.command("timer-blank-defer", true, "defer", "b24-timer", "--reason", " ", "--json")
 		stderr, err := os.ReadFile(filepath.Join(r.root, "timer-blank-defer.stderr"))
-		if err != nil || !bytes.Contains(stderr, []byte("reason cannot be empty")) {
+		stdout, outErr := os.ReadFile(filepath.Join(r.root, "timer-blank-defer.stdout"))
+		if err != nil || outErr != nil || !bytes.Contains(append(stdout, stderr...), []byte("reason cannot be empty")) {
 			t.Fatal("native blank reason did not reach validation")
 		}
 	})
