@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
 // A workflow parent can be excluded from the returned ephemeral plane while
@@ -38,6 +39,9 @@ func TestB01WorkflowAncestorSurvivesDurableOnlyParentSelection(t *testing.T) {
 			if link.Error != nil || json.Unmarshal(link.Result, &commit) != nil || !commit.Revision.IsZero() || len(commit.Results) != 1 || commit.Results[0].Ref != parent || commit.Results[0].Revision.String() != "1" {
 				t.Fatalf("public workflow-parent relation lost its provider commit: error=%+v result=%s", link.Error, link.Result)
 			}
+			parentValue := p.workflowRows[parent.ID]
+			parentValue.Links = append(parentValue.Links, workflowplugin.RelationView{From: durable.ID, To: parent, Kind: "parent-child"})
+			p.workflowRows[parent.ID] = parentValue
 
 			// Included reads select the workflow child through its workflow edge.
 			p.point(t, "workflow-edge-included", map[string]any{
