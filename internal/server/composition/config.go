@@ -620,8 +620,11 @@ func (r *Runtime) bind(config Config) error {
 	if config.EventAuthorization != nil || !eventAuthorization.required() {
 		serviceOptions = append(serviceOptions, service.WithEventProvider(eventProvider))
 	}
-	if checkpoints, ok := r.Store.(driver.PersistentCheckpointStore); ok && checkpoints.Persistent() {
-		state := pluginhost.NewDurableStateWithPersistence(checkpoints, r.Lease, workflowplugin.Alias, "default", config.Driver != "memory")
+	if checkpoints, checkpointErr := driver.RequireWorkflowCheckpointStore(r.Store, r.Lease); checkpointErr == nil {
+		state, stateErr := pluginhost.NewWorkflowRuntimeState(checkpoints, r.Lease)
+		if stateErr != nil {
+			return fmt.Errorf("composition: initialize workflow checkpoint state: %w", stateErr)
+		}
 		workflow, workflowErr := workflowplugin.New(state)
 		if workflowErr != nil {
 			return fmt.Errorf("composition: initialize workflow plugin: %w", workflowErr)

@@ -229,7 +229,15 @@ func (s *Service) sourcePreparation(source *sourceWorkflow, by model.PrincipalRe
 	return func(ctx context.Context, reader driver.Reader, prepare func(pipeline.SourceOperationHandler) error) (pipeline.SourcePublication, error) {
 		var namespace driver.CheckpointExpectation
 		index := 0
-		prepared, err := source.provider.PrepareSourceOperations(ctx, func(staged *workflowplugin.Provider) error {
+		provider := s.workflow
+		if source != nil {
+			provider = source.provider
+		}
+		prepareOperations := provider.PrepareOperations
+		if source != nil {
+			prepareOperations = provider.PrepareSourceOperations
+		}
+		prepared, err := prepareOperations(ctx, func(staged *workflowplugin.Provider) error {
 			var err error
 			_, namespace, err = staged.OrdinaryBlockerSnapshot(ctx, by, nil, meta)
 			if err != nil {
@@ -242,7 +250,7 @@ func (s *Service) sourcePreparation(source *sourceWorkflow, by model.PrincipalRe
 				if !ref.Branch.IsZero() {
 					return model.Ref{}, failure("invalid_params", "source operations require branch zero")
 				}
-				if source.addresses[sourceAddress{meta.Project, ref.ID}] {
+				if source != nil && source.addresses[sourceAddress{meta.Project, ref.ID}] {
 					mapped, found, err := staged.ResolveSourceRef(ctx, by, meta.Project, ref.ID, meta)
 					if err != nil {
 						return model.Ref{}, err
@@ -252,8 +260,13 @@ func (s *Service) sourcePreparation(source *sourceWorkflow, by model.PrincipalRe
 					}
 					return mapped, nil
 				}
-				if workflowRef(ref) && source.active[ref.ID] != meta.Project {
+				if source != nil && workflowRef(ref) && source.active[ref.ID] != meta.Project {
 					return model.Ref{}, failure("not_found", "workflow item was not imported into this project")
+				}
+				if source == nil && workflowRef(ref) {
+					if err := validateWorkflowRef(ref); err != nil {
+						return model.Ref{}, err
+					}
 				}
 				return ref, nil
 			}
@@ -283,6 +296,13 @@ func (s *Service) sourcePreparation(source *sourceWorkflow, by model.PrincipalRe
 					graph[id] = storedBead{doc: doc}
 				}
 				resolver := &workflowCoreResolver{service: s, principal: by, graph: graph, head: driver.CoreSnapshotExpectation{StoreID: namespace.StoreID, Incarnation: reader.Snapshot().Incarnation, Head: *reader.Snapshot().At}}
+				if op.Kind == model.OpLink || op.Kind == model.OpUnlink {
+					linked, active, err := s.prepareWorkflowRelation(ctx, staged, by, op, opIndex, cs, meta, graph, resolver, resolve)
+					if err != nil || active != nil {
+						return linked, active, err
+					}
+					op = linked
+				}
 				if !workflowRef(target) {
 					if op.Kind == model.OpDelete {
 						// Preserve ordinary deletes on the installed source path, but

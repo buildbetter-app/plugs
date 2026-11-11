@@ -145,19 +145,9 @@ func projectJointReverseDump(ctx context.Context, reader driver.Reader, bound dr
 		}
 		return result
 	}
-	if !sameReverseJSON(selectedRelations(initial.Relations), selectedRelations(current.Relations)) {
-		return ReverseRefusal{"changed_source_relationships"}
-	}
-	// Whole-run cleanup removes auxiliary relations along with terminal items.
-	// Do not export their immutable edge mirrors as if they were still live.
-	var currentEdges []reverseconverter.Record
-	for _, edge := range dump.Records["edge"] {
-		relation := projection.relations[driver.SourceEdgeKey{Project: edge.Project, Table: edge.Source.Table, ID: edge.ID}]
-		from := projection.entities[relation.From]
-		toTerminal := relation.To != nil && terminalTargets[projection.entities[*relation.To].TargetID]
-		if !terminalTargets[from.TargetID] && !toTerminal {
-			currentEdges = append(currentEdges, edge)
-		}
+	currentEdges, err := projectMixedSourceLinks(ctx, dump.Records["edge"], projection, plan, selectedRelations(initial.Relations), selectedRelations(current.Relations), included, terminalTargets)
+	if err != nil {
+		return err
 	}
 	dispositions := map[string]driver.SourcePlaneDispositionV1{}
 	for _, disposition := range plan.Dispositions {
