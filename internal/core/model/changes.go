@@ -164,6 +164,11 @@ func (m LinkMetadata) Retaining(previous *LinkMetadata) LinkMetadata {
 	if len(previous.NativeExtensions) != 0 {
 		next.NativeExtensions = maps.Clone(previous.NativeExtensions)
 		maps.Copy(next.NativeExtensions, m.NativeExtensions)
+		if incoming, present := m.NativeExtensions["beads.metadata"]; present {
+			if stored, exists := previous.NativeExtensions["beads.metadata"]; exists && dependencyMetadataTokenEqual(stored, incoming) {
+				next.NativeExtensions["beads.metadata"] = stored
+			}
+		}
 	}
 	return next
 }
