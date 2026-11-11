@@ -3,10 +3,13 @@ package dumpformat
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -14,7 +17,66 @@ import (
 // reader and reconstructor. It grants no physical producer qualification.
 func preparedDeltaFixture(t *testing.T) (*Archive, *int) {
 	t.Helper()
-	f := deltaReconstructionFixture(t)
+	// Use the inherited branch/merge states, but supply the physical pinned
+	// migration prefix required by the real archive visitor. The lower-level
+	// reconstruction fixture intentionally omits that admission evidence.
+	states := deltaReconstructionFixture(t)
+	bag := NativeDeltaTableSchema{Name: "bag", Columns: []NativeDeltaColumn{{Name: "value", SQLType: "text"}}}
+	items := NativeDeltaTableSchema{Name: "items", Columns: []NativeDeltaColumn{{Name: "id", SQLType: "bigint", PrimaryKeyOrdinal: deltaTestUint(0)}, {Name: "value", SQLType: "text"}}}
+	migrations := NativeDeltaTableSchema{Name: "schema_migrations", Columns: []NativeDeltaColumn{{Name: "version", SQLType: "bigint", PrimaryKeyOrdinal: deltaTestUint(0)}, {Name: "content_hash", SQLType: "text"}}}
+	migrationRows := []NativeDeltaRow{}
+	migrationTable := NativeTable{Columns: []string{"content_hash", "version"}, Rows: []Row{}}
+	for version := 1; version <= 66; version++ {
+		text := fmt.Sprint(version)
+		fields := Row{"version": json.Number(text), "content_hash": migrationHashes["main"][version]}
+		raw, err := json.Marshal(fields)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cells := []NativeDeltaCell{{Kind: "int64", Value: text}, {Kind: "string", Value: migrationHashes["main"][version]}}
+		key, err := NativeDeltaPrimaryKey(migrations, cells)
+		if err != nil {
+			t.Fatal(err)
+		}
+		migrationRows = append(migrationRows, NativeDeltaRow{Type: "row", Op: "insert", Key: base64.StdEncoding.EncodeToString(key), Cells: cells, NormalizedJSON: base64.StdEncoding.EncodeToString(append(raw, '\n'))})
+		migrationTable.Rows = append(migrationTable.Rows, fields)
+	}
+	tables := map[string]NativeTable{"bag": states.expected[0].Tables["bag"], "items": states.expected[0].Tables["items"], "schema_migrations": migrationTable}
+	schema := NativeDeltaSchema{Type: "schema", Profile: NativeCommitSchemaProfile{Format: NativeCommitSchemaFormat, Scope: NativeCommitSchemaScope, MainVersion: deltaTestUint(66), Absences: nativeCommitAbsences(tables, nativeCommitSchemaSurfaces())}, Tables: []NativeDeltaTableSchema{bag, items, migrations}}
+	schema.SchemaID = NativeDeltaSchemaID(schema)
+	f := &deltaTestFixture{t: t, root: states.root}
+	f.write(NativeDeltaHeader{Type: "header", Format: NativeDeltaFormat, StoreID: f.root.StoreID, Projects: f.root.Projects, Head: f.root.Head, CommitCount: 4, Ignore: NativeTable{Columns: []string{"ignored", "pattern"}, Rows: []Row{}}, ConfigPolicy: map[string]string{}})
+	f.schema(schema)
+	parents := [][]string{{}, {strings.Repeat("a", 32)}, {strings.Repeat("a", 32)}, {strings.Repeat("c", 32), strings.Repeat("b", 32)}}
+	var head []deltaTestTransaction
+	for i, image := range states.expected {
+		transactions := []deltaTestTransaction{}
+		for _, table := range []NativeDeltaTableSchema{bag, items, migrations} {
+			rows := migrationRows
+			if table.Name != "schema_migrations" {
+				rows = []NativeDeltaRow{}
+				for occurrence, row := range image.Tables[table.Name].Rows {
+					id := ""
+					if table.Name == "items" {
+						id = string(row["id"].(json.Number))
+					}
+					rows = append(rows, deltaTestRow(t, table, id, row["value"].(string), uint64(occurrence)))
+				}
+			}
+			operations := make([]any, len(rows))
+			for i, row := range rows {
+				operations[i] = row
+			}
+			transactions = append(transactions, deltaTestTransaction{table, "replace", rows, operations})
+		}
+		f.transaction("commit", uint64(i+1), image.CommitID, schema, parents[i], "snapshot", transactions)
+		head = transactions
+	}
+	for _, kind := range []string{"head-checkpoint", "current"} {
+		f.transaction(kind, 0, f.root.Head, schema, nil, "", head)
+	}
+	f.write(NativeDeltaEnd{Type: "end", Totals: f.totals, HeadRootSHA256: f.lastRoot, CurrentRootSHA256: f.lastRoot})
+	f.root.Totals = f.totals
 	parts, last := deltaTestParts(t, f.stream.Bytes(), NativeDeltaPartPayloadLimit)
 	f.root.PartCount = uint64(len(parts))
 	f.root.FinalPartSHA256 = last
@@ -92,7 +154,7 @@ func TestNativeDeltaPreparedActualReplayIsolationOwnershipAndFreshReadback(t *te
 			return nil
 		},
 	})
-	if err != nil || changes != 4 || checkpoints != 6 || files != 3 {
+	if err != nil || changes != 4 || checkpoints != 8 || files != 3 {
 		t.Fatal("actual staged census differs", changes, checkpoints, files, err)
 	}
 	var first NativeDeltaRowCommit
