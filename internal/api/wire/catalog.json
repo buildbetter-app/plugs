@@ -316,7 +316,7 @@
         {
           "name": "asOf",
           "schema": {
-            "$ref": "#/components/schemas/AsOf"
+            "$ref": "#/components/schemas/AsOfSelector"
           }
         },
         {
@@ -4277,7 +4277,7 @@
         {
           "name": "asOf",
           "schema": {
-            "$ref": "#/components/schemas/AsOf"
+            "$ref": "#/components/schemas/AsOfSelector"
           },
           "required": true
         },
@@ -4330,7 +4330,7 @@
         {
           "name": "asOf",
           "schema": {
-            "$ref": "#/components/schemas/AsOf"
+            "$ref": "#/components/schemas/AsOfSelector"
           },
           "required": true
         },
@@ -7199,17 +7199,23 @@
           "labels": {
             "type": "array",
             "description": "All nonempty trimmed labels are required, case-sensitive. Empty sets add no constraint.",
-            "items": {"type": "string"}
+            "items": {
+              "type": "string"
+            }
           },
           "labelsAny": {
             "type": "array",
             "description": "At least one nonempty trimmed label is required; an empty set adds no constraint. Clients pass directory defaults here.",
-            "items": {"type": "string"}
+            "items": {
+              "type": "string"
+            }
           },
           "excludeLabels": {
             "type": "array",
             "description": "None of these nonempty trimmed labels may be present, composed with labels and labelsAny.",
-            "items": {"type": "string"}
+            "items": {
+              "type": "string"
+            }
           },
           "unassigned": {
             "type": "boolean",
@@ -7218,7 +7224,9 @@
           "excludeTypes": {
             "type": "array",
             "description": "Exclude these canonical types. Ready/claimNext give explicit types precedence; ordinary listing intersects types and exclusions, matching the respective native surfaces.",
-            "items": {"type": "string"}
+            "items": {
+              "type": "string"
+            }
           },
           "events": {
             "type": "array",
@@ -11728,6 +11736,31 @@
           "asOf"
         ],
         "additionalProperties": false
+      },
+      "AsOfSelector": {
+        "description": "Input selector: exactly one revision address or RFC3339 instant. An instant resolves to the highest committed revision at or before it in one complete pinned changeset snapshot; returned addresses remain concrete revisions. Incomplete retained history refuses history_gone. Current read permission applies.",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/AsOf"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "instant": {
+                "type": "string",
+                "format": "date-time",
+                "description": "RFC3339 instant, with optional nanosecond precision and offset."
+              },
+              "incarnation": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "instant"
+            ],
+            "additionalProperties": false
+          }
+        ]
       }
     },
     "errors": {
@@ -15611,7 +15644,7 @@
           {
             "name": "asOf",
             "schema": {
-              "$ref": "#/components/schemas/AsOf"
+              "$ref": "#/components/schemas/AsOfSelector"
             }
           },
           {
@@ -16721,7 +16754,7 @@
           {
             "name": "asOf",
             "schema": {
-              "$ref": "#/components/schemas/AsOf"
+              "$ref": "#/components/schemas/AsOfSelector"
             },
             "required": true
           },
@@ -16754,7 +16787,7 @@
           {
             "name": "asOf",
             "schema": {
-              "$ref": "#/components/schemas/AsOf"
+              "$ref": "#/components/schemas/AsOfSelector"
             },
             "required": true
           },

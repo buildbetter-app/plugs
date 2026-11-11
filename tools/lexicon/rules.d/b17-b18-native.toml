@@ -1,0 +1,4 @@
+# Exact operational reference only. This file invokes the admitted native CLI;
+# it is not a product or storage implementation vocabulary exemption.
+[zones]
+provenance = ["spec/cardb17b18/native_test.go"]

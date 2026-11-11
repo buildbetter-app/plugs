@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	coreevents "github.com/buildbetter-app/plugs/internal/core/events"
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -49,6 +50,46 @@ func futureHistoryNotFound(future driver.ErrFutureRevision) error {
 		"requestedRevision": future.Requested,
 		"headRevision":      future.Head,
 	}}}
+}
+
+// historyInstantRevision scans every committed page through this reader's head.
+// Commit timestamps need not increase; revision order breaks timestamp ties and
+// a later page can contain the latest eligible commit. A missing prefix or an
+// interior hole never permits selecting a nearby retained state.
+func historyInstantRevision(ctx context.Context, r driver.Reader, instant time.Time) (model.Revision, error) {
+	snapshot := r.Snapshot()
+	if snapshot.At == nil || snapshot.Incarnation == "" {
+		return "", failure("internal_error", "history snapshot is not pinned")
+	}
+	head, err := snapshot.At.Uint64()
+	if err != nil {
+		return "", failure("internal_error", "invalid history snapshot revision")
+	}
+	selected := model.Natural64(0)
+	var previous uint64
+	cursor := &driver.Cursor{Incarnation: snapshot.Incarnation, Revision: model.Natural64(0)}
+	for previous < head {
+		entries, err := r.Changesets(ctx, cursor, 1000)
+		if err != nil {
+			return "", err
+		}
+		if len(entries) == 0 {
+			return "", failure("internal_error", "history log is incomplete at its pinned head")
+		}
+		for _, entry := range entries {
+			revision, err := entry.Revision.Uint64()
+			if err != nil || previous == head || revision != previous+1 || revision > head ||
+				entry.Incarnation != snapshot.Incarnation || entry.Branch.String() != snapshot.Branch.String() || entry.Time.IsZero() {
+				return "", failure("internal_error", "history log is not a complete committed sequence")
+			}
+			if !entry.Time.After(instant) {
+				selected = entry.Revision
+			}
+			previous = revision
+		}
+		cursor.Revision = entries[len(entries)-1].Revision
+	}
+	return selected, nil
 }
 
 // historyMemoryAccess records the current-memory boundary observed before a
@@ -337,8 +378,8 @@ func (s *Service) HistoryGet(ctx context.Context, by model.PrincipalRef, req His
 	if err := req.Ref.Validate(); err != nil {
 		return HistoryVersion{}, failure("invalid_params", "invalid history reference")
 	}
-	if err := req.AsOf.Revision.Validate(); err != nil {
-		return HistoryVersion{}, failure("invalid_params", "invalid history revision")
+	if err := ValidateAsOf(req.AsOf); err != nil {
+		return HistoryVersion{}, err
 	}
 	memoryAccess, err := s.beginHistoryMemoryAccess(ctx, by, req.Ref)
 	if err != nil {

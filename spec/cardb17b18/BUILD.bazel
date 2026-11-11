@@ -1,0 +1,20 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+# Explicit original public reference, with the unchanged admitted build helper.
+go_test(
+    name = "record_native_test",
+    srcs = ["native_test.go", "//spec/cardb20:native_build_support"],
+    data = ["//spec/s1-b09-native:lexicon_files", "//internal/publicnative:dolt_runtime"],
+    env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
+    args = ["-test.v"],
+    deps = ["//internal/publicnative"],
+    size = "enormous",
+    tags = ["local", "manual"],
+    timeout = "eternal",
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
