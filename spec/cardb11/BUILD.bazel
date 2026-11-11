@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "public_identity_test",
+    srcs = ["public_test.go"],
+    args = ["-test.v"],
+    size = "large",
+    tags = ["local", "requires-network"],
+    deps = [
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/integration/b07positive",
+        "//internal/integration/b07positive/public",
+        "//plugins/workflow",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
