@@ -186,6 +186,34 @@ func (d Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, erro
 				}
 				version = 3
 			}
+			// A schema-3 database can have been created by the first stateless
+			// migration before the per-kind rank column was added. Repair that
+			// shape in place without inventing another public schema version.
+			if version == 3 {
+				var hasObjects bool
+				if e := c.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='objects')`).Scan(&hasObjects); e != nil {
+					return e
+				}
+				if hasObjects {
+					var hasOrderColumn, hasKindOrderColumn bool
+					if e := c.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pragma_table_info('objects') WHERE name='query_order')`).Scan(&hasOrderColumn); e != nil {
+						return e
+					}
+					if !hasOrderColumn {
+						if _, e := c.ExecContext(ctx, `ALTER TABLE objects ADD COLUMN query_order INTEGER NOT NULL DEFAULT 0`); e != nil {
+							return e
+						}
+					}
+					if e := c.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pragma_table_info('objects') WHERE name='query_kind_order')`).Scan(&hasKindOrderColumn); e != nil {
+						return e
+					}
+					if !hasKindOrderColumn {
+						if _, e := c.ExecContext(ctx, `ALTER TABLE objects ADD COLUMN query_kind_order INTEGER NOT NULL DEFAULT 0`); e != nil {
+							return e
+						}
+					}
+				}
+			}
 			if version != schemaVersion {
 				return fmt.Errorf("%w: sqlite schema version %d", driver.ErrUnsupported, version)
 			}

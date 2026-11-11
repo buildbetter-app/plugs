@@ -58,14 +58,28 @@ func TestCurrentQueryCursorRejectsOutOfRangeAndPreservesExactEnd(t *testing.T) {
 			}
 		})
 	}
-	// A rank edited to a value with no live-row witness is a tampered or old
-	// offset-format cursor; refuse it instead of falling back to OFFSET.
+	// A nonzero offset cursor without the new opaque key witness is an old
+	// token. Refuse it rather than preserving the removed OFFSET compatibility
+	// path, including its old exact-end behavior.
+	legacyOffset := *first.NextCursor
+	legacyOffset.After = ""
+	legacyOffset.Index = model.Natural64(3)
+	if page, err := r.Query(ctx, driver.Query{Filter: filter, Cursor: &legacyOffset, Limit: 1}); err == nil || len(page.Items) != 0 {
+		t.Fatalf("legacy offset cursor was accepted: %+v, %v", page, err)
+	}
+	// Changing the key while retaining the original rank is a tampered cursor;
+	// the indexed rank witness must agree with the opaque key.
+	cursorCKey, err := recordKey(testRef("cursor-c"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	tampered := *first.NextCursor
-	tampered.Index = model.Natural64(4)
+	tampered.After = cursorCKey
 	if page, err := r.Query(ctx, driver.Query{Filter: filter, Cursor: &tampered, Limit: 1}); err == nil || len(page.Items) != 0 {
-		t.Fatalf("unknown ordered key cursor was accepted: %+v, %v", page, err)
+		t.Fatalf("tampered key cursor was accepted: %+v, %v", page, err)
 	}
 	exactEnd := *first.NextCursor
+	exactEnd.After = cursorCKey
 	exactEnd.Index = model.Natural64(3)
 	page, err := r.Query(ctx, driver.Query{Filter: filter, Cursor: &exactEnd, Limit: 1})
 	if err != nil || len(page.Items) != 0 || page.NextCursor != nil || page.AsOf.String() != first.AsOf.String() {
@@ -142,6 +156,57 @@ func TestCurrentQueryCursorSurvivesStoreReopen(t *testing.T) {
 	second, err := continued.Query(ctx, driver.Query{Limit: 1, Cursor: first.NextCursor})
 	if err != nil || len(second.Items) != 1 || second.Items[0].Ref.ID != "reopen-b" {
 		t.Fatalf("reopened continuation: %+v %v", second, err)
+	}
+}
+
+func TestSchemaThreeRepairsQueryKeysetColumnsAndIndex(t *testing.T) {
+	ctx := testContext(t)
+	path := filepath.Join(t.TempDir(), "schema-three.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = raw.ExecContext(ctx, `
+CREATE TABLE meta(singleton INTEGER PRIMARY KEY, store_id TEXT NOT NULL, incarnation TEXT NOT NULL, schema_version INTEGER NOT NULL, head TEXT NOT NULL, history_floor TEXT NOT NULL);
+INSERT INTO meta VALUES(1,'store','incarnation',3,'00000000000000000000','00000000000000000000');
+CREATE TABLE objects(key TEXT PRIMARY KEY, kind TEXT NOT NULL);
+CREATE TABLE records(key TEXT PRIMARY KEY, data BLOB NOT NULL);`)
+	if err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	value, err := (Driver{}).Open(ctx, driver.Config{DSN: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := value.(*Store)
+	defer s.Close()
+	var columns map[string]bool
+	columns = map[string]bool{}
+	rows, err := s.db.QueryContext(ctx, `SELECT name FROM pragma_table_info('objects')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		columns[name] = true
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !columns["query_order"] || !columns["query_kind_order"] {
+		t.Fatalf("schema-three columns were not repaired: %v", columns)
+	}
+	var index int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='objects_kind_key'`).Scan(&index); err != nil || index != 1 {
+		t.Fatalf("kind keyset index missing: count=%d err=%v", index, err)
 	}
 }
 
@@ -420,7 +485,7 @@ func TestQueryHeadPagingStatementBoundAcrossCorpusSizes(t *testing.T) {
 							}
 							keyset := false
 							for _, statement := range statements {
-								if strings.Contains(statement, "o.query_order>?") && strings.Contains(statement, "ORDER BY o.query_order LIMIT ?") || strings.Contains(statement, "o.query_kind_order>?") && strings.Contains(statement, "ORDER BY o.query_kind_order LIMIT ?") {
+								if strings.Contains(statement, "o.key>?") && strings.Contains(statement, "ORDER BY o.key LIMIT ?") {
 									keyset = true
 								}
 								if strings.Contains(statement, "OFFSET") {

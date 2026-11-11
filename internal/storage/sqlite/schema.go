@@ -34,6 +34,9 @@ CREATE TABLE IF NOT EXISTS objects (
 );
 CREATE INDEX IF NOT EXISTS objects_query_order_key ON objects(query_order, key);
 CREATE INDEX IF NOT EXISTS objects_kind_query_order_key ON objects(kind, query_kind_order, key);
+-- Kind-filtered keyset pages order by the opaque record key. Keep this index
+-- separate from the dense rank witness used by native restore.
+CREATE INDEX IF NOT EXISTS objects_kind_key ON objects(kind, key);
 CREATE TABLE IF NOT EXISTS records (key TEXT PRIMARY KEY, data BLOB NOT NULL);
 CREATE TRIGGER IF NOT EXISTS query_read_work_objects_insert
 AFTER INSERT ON objects
