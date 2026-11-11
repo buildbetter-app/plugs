@@ -87,8 +87,9 @@ func TestB11PublicMetadataIdentityAndConservation(t *testing.T) {
 			for i, equivalent := range []string{
 				`{"wide":9007199254740993.0,"b":[true,null,"x"],"a":1e0}`,
 				`{"a":1,"wide":9007199254740993,"b":[true,null,"\u0078"]}`,
+				`{"a":1,"wide":9007199254740992,"b":[true,null,"x"]}`,
 			} {
-				label := []string{"equal-number-form", "equal-order-and-escape"}[i]
+				label := []string{"equal-number-form", "equal-order-and-escape", "native-wide-rounding"}[i]
 				before := h.Capture()
 				reply := h.Call("bead.link", label, params(metadata(equivalent)), "")
 				onlyNoopReceipt(t, h, before, label, reply)
@@ -115,8 +116,8 @@ func TestB11PublicMetadataIdentityAndConservation(t *testing.T) {
 				{Kind: model.OpLink, Link: &model.LinkOp{From: from, To: to, LinkKind: "blocks"}},
 			}}}, "ontology_guard_failed")
 			proof.Same(t, before, h.Capture())
-			// A genuinely different wide number must write exactly one source version.
-			changed := metadata(`{"a":1,"b":[true,null,"x"],"wide":9007199254740992}`)
+			// A distinct native JCS value writes exactly one source version.
+			changed := metadata(`{"a":1,"b":[true,null,"x"],"wide":9007199254740994}`)
 			h.Call("bead.link", "wide-value-changed", params(changed), "")
 			after := h.Capture()
 			if len(after.Changes) != len(before.Changes)+1 || len(after.Versions[from.ID]) != len(before.Versions[from.ID])+1 || !reflect.DeepEqual(before.Row(t, to.ID), after.Row(t, to.ID)) || !reflect.DeepEqual(before.Row(t, sibling.ID), after.Row(t, sibling.ID)) {
@@ -138,6 +139,56 @@ func TestB11PublicMetadataIdentityAndConservation(t *testing.T) {
 			h.Reopen()
 			proof.Same(t, before, h.Capture())
 			publicEdge(t, h, from, sibling, "relates-to", changed)
+		})
+	}
+}
+
+// These expected outcomes are literal native JCS decisions, independent of
+// storage spelling. Invalid metadata text uses native's exact-byte fallback.
+func TestB11PublicMetadataComparisonFallbacks(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			h := public.NewHost(t, engine)
+			for _, test := range []struct {
+				name, initial, incoming string
+				equal                   bool
+			}{
+				{"overflow-different", `{"n":1e999999999}`, `{"n":10e999999998}`, false},
+				{"overflow-identical", `{"n":1e999999999}`, `{"n":1e999999999}`, true},
+				{"duplicate-different", `{"x":1,"x":2}`, `{"x":2}`, false},
+				{"duplicate-identical", `{"x":1,"x":2}`, `{"x":1,"x":2}`, true},
+			} {
+				h.Run(test.name, func(t *testing.T) {
+					from, to := h.Create(test.name+" source"), h.Create(test.name+" target")
+					original, incoming := metadata(test.initial), metadata(test.incoming)
+					params := map[string]any{"from": from, "to": to, "kind": "related", "metadata": original}
+					h.Call("bead.link", test.name+"-initial", params, "")
+					before := h.Capture()
+					params["metadata"] = incoming
+					label := test.name + "-readd"
+					reply := h.Call("bead.link", label, params, "")
+					want := incoming
+					if test.equal {
+						onlyNoopReceipt(t, h, before, label, reply)
+						want = original
+					} else {
+						after := h.Capture()
+						if len(after.Changes) != len(before.Changes)+1 || len(after.Versions[from.ID]) != len(before.Versions[from.ID])+1 || !reflect.DeepEqual(before.Row(t, to.ID), after.Row(t, to.ID)) {
+							t.Fatal("native byte-fallback difference did not make one conserved source write")
+						}
+					}
+					publicEdge(t, h, from, to, "related", want)
+					before = h.Capture()
+					h.Reopen()
+					proof.Same(t, before, h.Capture())
+					publicEdge(t, h, from, to, "related", want)
+					replay := h.Call("bead.link", label, params, "")
+					if !replay.Meta.Replayed || !bytes.Equal(replay.Result, reply.Result) {
+						t.Fatal("native comparison fallback did not replay the exact committed reply")
+					}
+					proof.Same(t, before, h.Capture())
+				})
+			}
 		})
 	}
 }
@@ -183,10 +234,18 @@ func TestB11PublicCrossPlaneEndpointIdentity(t *testing.T) {
 		t.Run(engine, func(t *testing.T) {
 			h := public.NewHost(t, engine)
 			durable, sibling := h.Create("durable endpoint"), h.Create("untouched endpoint")
-			reply := h.Call("x.workflow.invoke", "active-endpoints", map[string]any{"template": "b11-endpoints", "project": "b07positive", "mode": "ephemeral", "checklist": []any{
+			invoke := map[string]any{"template": "b11-endpoints", "project": "b07positive", "mode": "ephemeral", "checklist": []any{
 				map[string]any{"label": "source", "title": "active source"},
 				map[string]any{"label": "target", "title": "active target"},
-			}}, "")
+			}}
+			// Frozen workflow-contract.md57-65 requires this refusal on memory.
+			if engine == "memory" {
+				before := h.Capture()
+				h.Call("x.workflow.invoke", "active-endpoints", invoke, "plugin_durable_state_unavailable")
+				proof.Same(t, before, h.Capture())
+				return
+			}
+			reply := h.Call("x.workflow.invoke", "active-endpoints", invoke, "")
 			var invoked workflow.InvokeResult
 			if err := json.Unmarshal(reply.Result, &invoked); err != nil || len(invoked.Items) != 2 {
 				t.Fatal("public invocation did not produce two actual endpoints", err)

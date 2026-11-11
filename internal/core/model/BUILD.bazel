@@ -5,6 +5,7 @@ go_library(
     srcs = glob(["*.go"], exclude = ["*_test.go"]),
     importpath = "github.com/buildbetter-app/plugs/internal/core/model",
     visibility = ["//:__subpackages__"],
+    deps = ["@com_github_gowebpki_jcs//:jcs"],
 )
 
 go_test(

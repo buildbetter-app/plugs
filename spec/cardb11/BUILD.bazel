@@ -2,7 +2,7 @@ load("@rules_go//go:def.bzl", "go_test")
 
 go_test(
     name = "public_identity_test",
-    srcs = ["public_test.go"],
+    srcs = ["public_test.go", "move_test.go"],
     args = ["-test.v"],
     size = "large",
     tags = ["local", "requires-network"],
@@ -13,6 +13,21 @@ go_test(
         "//internal/integration/b07positive/public",
         "//plugins/workflow",
     ],
+)
+
+go_test(
+    name = "native_metadata_test",
+    srcs = ["native_test.go", "//spec/cardb20:native_build_support"],
+    deps = ["//internal/publicnative"],
+    data = [
+        "//spec/s1-b09-native:lexicon_files",
+        "//internal/publicnative:dolt_runtime",
+    ],
+    env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
+    args = ["-test.v"],
+    size = "enormous",
+    tags = ["local", "manual"],
+    timeout = "eternal",
 )
 
 filegroup(
