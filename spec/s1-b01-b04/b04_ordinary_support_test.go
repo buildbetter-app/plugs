@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -86,7 +88,7 @@ func newOrdinaryB04(t *testing.T, backend, dsn string, ids []string, configure .
 	doc.Types["bug"] = ontology.Type{Name:"Bug", Workflow:"issue", Fields:doc.Types["issue"].Fields}
 	for _, change := range configure { change(&doc) }
 	f := newFixture(t, backend, dsn, compileOntology(t, doc, nil), ids)
-	output := filepath.Join(os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR"), "ordinary-"+filepath.Base(t.Name()))
+	output := filepath.Join(os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR"), "ordinary-"+strings.ReplaceAll(t.Name(),"/","_"))
 	if err := os.MkdirAll(output, 0700); err != nil { t.Fatal(err) }
 	o := &ordinaryB04{f: f, output: output, receipts:map[string]*driver.IdempotencyRecord{}, methods:map[string]string{}, principals:map[string]model.PrincipalRef{}}
 	o.install()
@@ -130,6 +132,7 @@ func (o *ordinaryB04) call(label, method, agent string, params map[string]any) j
 	httpRequest, err := http.NewRequest(http.MethodPost, o.server.URL+httpjson.Path, bytes.NewReader(request))
 	if err != nil { t.Fatal(err) }
 	httpRequest.Header.Set("Content-Type", "application/json")
+	httpRequest.Header.Set("Plug-RPC", "1")
 	if o.authority != nil { token:=o.authority.writeKey; if method=="bead.ready" || method=="bead.get" { token=o.authority.readKey }; httpRequest.Header.Set("Authorization", "Bearer "+token) }
 	response, err := o.server.Client().Do(httpRequest)
 	if err != nil { t.Fatal(err) }
@@ -350,17 +353,25 @@ func (o *ordinaryB04) checkReceipts() {
 	for label,want:=range o.receipts {if got:=o.receipt(label,o.methods[label],owner);!reflect.DeepEqual(got,want) {o.f.t.Fatalf("unrelated retained receipt changed: %s",label)}}
 }
 
+func (o *ordinaryB04) listingIDs(label string, filter map[string]any) []string {
+	t:=o.f.t;t.Helper()
+	before:=o.state(label+"-before")
+	value:=result(t,o.call(label,"history.query",owner,map[string]any{"asOf":map[string]any{"revision":o.f.metaSnapshot().Head},"filter":filter,"limit":1000}))
+	items,ok:=value["items"].([]any);if !ok {t.Fatalf("snapshot listing has no items: %+v",value)}
+	ids:=[]string{};seen:=map[string]bool{}
+	for _,item:=range items {row,ok:=item.(map[string]any);if !ok {t.Fatal("snapshot item is not an object")};id,ok:=row["id"].(string);if !ok || id=="" || seen[id] {t.Fatal("invalid/duplicate snapshot ID")};seen[id]=true;ids=append(ids,id)}
+	if value["nextCursor"]!=nil {t.Fatal("ordinary small snapshot listing was truncated")}
+	o.equalState(label+"-after",before);o.checkReceipts()
+	sort.Strings(ids)
+	return ids
+}
+
 func (o *ordinaryB04) selectionListingControl(filter map[string]any, want []string) {
 	t:=o.f.t;t.Helper()
+	expected:=append([]string{},want...);sort.Strings(expected)
+	if got:=o.listingIDs("selection-snapshot-list",filter);!reflect.DeepEqual(got,expected) {t.Fatalf("snapshot selector membership=%v want=%v",got,expected)}
+	if filter["unassigned"]!=true {return}
 	base:=map[string]any{};for k,v:=range filter {if k!="unassigned" {base[k]=v}}
-	all:=[]string{ordinarySelectionID("unassigned","a"),ordinarySelectionID("unassigned","b")}
-	for i,expected:=range [][]string{all,all,want} {
-		q:=map[string]any{};for k,v:=range base {q[k]=v};if i>0 {q["unassigned"]=i==2}
-		before:=o.state(fmt.Sprintf("unassigned-list-%d-before",i))
-		value:=result(t,o.call(fmt.Sprintf("unassigned-snapshot-list-%d",i),"history.query",owner,map[string]any{"asOf":map[string]any{"revision":o.f.metaSnapshot().Head},"filter":q,"limit":1000}))
-		items,ok:=value["items"].([]any);if !ok {t.Fatalf("snapshot listing has no items: %+v",value)}
-		got:=map[string]bool{};for _,item:=range items {row,ok:=item.(map[string]any);if !ok {t.Fatal("snapshot item is not an object")};id,ok:=row["id"].(string);if !ok || got[id] {t.Fatal("invalid/duplicate snapshot ID")};got[id]=true}
-		if len(got)!=len(expected) {t.Fatalf("unassigned omitted/false/true case%d membership=%v expected=%v",i,got,expected)};for _,id:=range expected {if !got[id] {t.Fatalf("listing omitted %s",id)}}
-		o.equalState(fmt.Sprintf("unassigned-list-%d-after",i),before);o.checkReceipts()
-	}
+	all:=[]string{ordinarySelectionID("unassigned","a"),ordinarySelectionID("unassigned","b")};sort.Strings(all)
+	for i:=0;i<2;i++ {q:=map[string]any{};for k,v:=range base {q[k]=v};if i==1 {q["unassigned"]=false};if got:=o.listingIDs(fmt.Sprintf("unassigned-list-%d",i),q);!reflect.DeepEqual(got,all) {t.Fatalf("unassigned omitted/false case%d membership=%v want=%v",i,got,all)}}
 }

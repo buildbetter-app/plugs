@@ -50,28 +50,3 @@ func (a *ordinaryB04Authority) bind(o *ordinaryB04) (rpc.Service, authn.Config) 
 	o.retain("static-authority",map[string]any{"namespace":ns,"facts":facts,"reader":a.reader,"writer":a.writer,"policy":"existing fixed chain; immutable grants and caveats"})
 	return checker.GuardService(f.svc),authn.Config{Provider:a.provider,AuthorizationInstalled:func()bool{return true}}
 }
-
-func TestB04OrdinarySelectionUnderStaticAuthority(t *testing.T) {
-	h:=newPostgresHarness(t)
-	for _,backend:=range []string{"memory","sqlite","postgres"} {t.Run(backend,func(t *testing.T){
-		dsn:="";if backend=="postgres" {dsn=h.dsn(t)}
-		ids:=[]string{"b04-hidden-match","b04-visible-winner","b04-visible-mismatch"}
-		o:=newOrdinaryB04(t,backend,dsn,ids)
-		o.seed("static-seed",createOp("hidden",project,map[string]any{"title":"hidden matching high rank","priority":0,"labels":[]string{"public-selection"}},""),createOp("winner",project,map[string]any{"title":"visible matching winner","priority":2,"labels":[]string{"public-selection"}},""),createOp("mismatch",project,map[string]any{"title":"visible filter mismatch","priority":1,"labels":[]string{"outside"}},""))
-		o.server.Close()
-		o.authority=ordinaryAuthority(t,[]model.Ref{ref(ids[1]),ref(ids[2])},o.f.clock.Now)
-		o.install()
-		o.reopen("static-before")
-		filter:=map[string]any{"labelsAny":[]string{"public-selection"}}
-		before:=o.state("static-ready-before")
-		page:=result(t,o.call("static-limit-one","bead.ready",owner,map[string]any{"filter":filter,"limit":1}))
-		items,ok:=page["items"].([]any);if !ok || len(items)!=1 {t.Fatalf("authorized matching limit-one page: %+v",page)}
-		row,ok:=items[0].(map[string]any);if !ok || row["id"]!=ids[1] || page["nextCursor"]!=nil {t.Fatalf("authorization/filter membership must precede pagination: %+v",page)}
-		o.equalState("static-ready-after",before);o.checkReceipts()
-		o.win("static-win","bead.claimNext",ids[1],"todo",map[string]any{"filter":filter})
-		o.empty("static-empty",map[string]any{"filter":filter})
-		o.reopen("static-after")
-		if got:=o.readyIDs("static-drained",filter);len(got)!=0 {t.Fatalf("hidden/mismatch row escaped selection: %v",got)}
-		o.checkReceipts()
-	})}
-}

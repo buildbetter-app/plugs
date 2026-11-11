@@ -71,7 +71,7 @@ func TestB04OrdinaryPublicWalkBeyondOneThousand(t *testing.T) {
 			if err:=o.f.lease.Renew(context.Background());err!=nil {t.Fatal(err)}
 			o.reopen("full-front-before")
 			filter:=map[string]any{"types":[]string{"issue"},"resources":ids[:prefix+1]}
-			if got:=o.readyIDs("full-front-witness",filter);!reflect.DeepEqual(got,ids[:prefix+1]) {t.Fatalf("actual public ready front differs: got=%v want=%v",got,ids[:prefix+1])}
+			if got:=o.readyIDs("full-front-precondition",filter);!reflect.DeepEqual(got,ids[:prefix+1]) {t.Fatalf("actual public ready front differs: got=%v want=%v",got,ids[:prefix+1])}
 			o.refusal("prefix-guard","bead.claim",owner,"ontology_guard_failed",false,map[string]any{"id":ref(ids[0])})
 			o.win("walk","bead.claimNext","b04-walkwinner","todo",map[string]any{"filter":map[string]any{"types":[]string{"issue"},"resources":ids[:prefix+1]}})
 			o.reopen("full-front-after")
@@ -89,9 +89,34 @@ func TestB04OrdinaryAdditiveSelectionAcrossStores(t *testing.T) {
 			o:=newOrdinaryB04(t,backend,dsn,ids);filter:=o.selectionFixture(v);o.reopen("selection-before")
 			want:=[]string{};for _,role:=range v.Ready {want=append(want,ordinarySelectionID(v.Name,role))}
 			if got:=o.readyIDs("selection-front",filter);!reflect.DeepEqual(got,want) {t.Fatalf("public selector membership=%v want=%v",got,want)}
-			if v.Name=="unassigned" {o.selectionListingControl(filter,want)}
+			o.selectionListingControl(filter,want)
 			for i,id:=range want {o.win(fmt.Sprintf("selection-win-%d",i),"bead.claimNext",id,"todo",map[string]any{"filter":filter})}
 			o.empty("selection-drained",map[string]any{"filter":filter});o.reopen("selection-after")
 		})}
+	})}
+}
+
+func TestB04OrdinarySelectionUnderStaticAuthority(t *testing.T) {
+	h:=newPostgresHarness(t)
+	for _,backend:=range []string{"memory","sqlite","postgres"} {t.Run(backend,func(t *testing.T){
+		dsn:="";if backend=="postgres" {dsn=h.dsn(t)}
+		ids:=[]string{"b04-hidden-match","b04-visible-winner","b04-visible-mismatch"}
+		o:=newOrdinaryB04(t,backend,dsn,ids)
+		o.seed("static-seed",createOp("hidden",project,map[string]any{"title":"hidden matching high rank","priority":0,"labels":[]string{"public-selection"}},""),createOp("winner",project,map[string]any{"title":"visible matching winner","priority":2,"labels":[]string{"public-selection"}},""),createOp("mismatch",project,map[string]any{"title":"visible filter mismatch","priority":1,"labels":[]string{"outside"}},""))
+		o.server.Close()
+		o.authority=ordinaryAuthority(t,[]model.Ref{ref(ids[1]),ref(ids[2])},o.f.clock.Now)
+		o.install()
+		o.reopen("static-before")
+		filter:=map[string]any{"labelsAny":[]string{"public-selection"}}
+		before:=o.state("static-ready-before")
+		page:=result(t,o.call("static-limit-one","bead.ready",owner,map[string]any{"filter":filter,"limit":1}))
+		items,ok:=page["items"].([]any);if !ok || len(items)!=1 {t.Fatalf("authorized matching limit-one page: %+v",page)}
+		row,ok:=items[0].(map[string]any);if !ok || row["id"]!=ids[1] || page["nextCursor"]!=nil {t.Fatalf("authorization/filter membership must precede pagination: %+v",page)}
+		o.equalState("static-ready-after",before);o.checkReceipts()
+		o.win("static-win","bead.claimNext",ids[1],"todo",map[string]any{"filter":filter})
+		o.empty("static-empty",map[string]any{"filter":filter})
+		o.reopen("static-after")
+		if got:=o.readyIDs("static-drained",filter);len(got)!=0 {t.Fatalf("hidden/mismatch row escaped selection: %v",got)}
+		o.checkReceipts()
 	})}
 }
