@@ -1656,6 +1656,7 @@ spec/cardb19/testdata/recording-1/export.jsonl
 spec/cardb19/testdata/recording-1/imported.json
 spec/cardb19/testdata/recording-2/export.jsonl
 spec/cardb19/testdata/recording-2/imported.json
+spec/cardb20/caller_closure_test.go
 spec/cardb23full/BUILD.bazel
 spec/cardb23full/public_history_test.go
 spec/cardb24/BUILD.bazel

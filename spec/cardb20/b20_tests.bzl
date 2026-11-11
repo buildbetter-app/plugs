@@ -45,3 +45,16 @@ def b20_tests():
         srcs = ["postgres_test.go"],
         visibility = ["//visibility:public"],
     )
+
+    # New exact caller/reconnect/reopen assertions paired with two fresh references.
+    go_test(
+        name = "record_caller_closure_test",
+        srcs = COMMON + ["native_build_test.go", "native_recording_test.go"],
+        data = ["//spec/s1-b09-native:lexicon_files", "//internal/publicnative:dolt_runtime"],
+        env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
+        args = ["-test.v", "-test.run=^TestB20NativeCallerCommitOrderAndReopen$$"],
+        deps = DEPS + ["//internal/publicnative"],
+        size = "enormous",
+        tags = ["local", "manual"],
+        timeout = "eternal",
+    )

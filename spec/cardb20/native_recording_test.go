@@ -35,9 +35,14 @@ type nativeTwin struct {
 	Audit      []map[string]any       `json:"audit_projection"`
 	Images     map[string]nativeImage `json:"current_images"`
 	Delivery   []map[string]any       `json:"follow_delivery"`
+	CallerReads []b20NativeCallerRead `json:"caller_reads,omitempty"`
 }
 
 func TestB20FreshNativeCurrentWorkingSetTwins(t *testing.T) {
+	runB20NativeTwins(t, false)
+}
+
+func runB20NativeTwins(t *testing.T, closure bool) {
 	root := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")
 	if !filepath.IsAbs(root) {
 		t.Fatal("absolute declared output directory required")
@@ -86,7 +91,7 @@ func TestB20FreshNativeCurrentWorkingSetTwins(t *testing.T) {
 			if err := os.Mkdir(dir, 0700); err != nil {
 				t.Fatal(err)
 			}
-			twin := (&nativeRecorder{t: t, root: dir, target: r.target}).recordTwin(binary, name)
+			twin := (&nativeRecorder{t: t, root: dir, target: r.target}).recordTwinObserved(binary, name, closure)
 			twins = append(twins, twin)
 		}) {
 			t.Fatal("fresh native twin incomplete; no parity credit")
@@ -108,6 +113,10 @@ func TestB20FreshNativeCurrentWorkingSetTwins(t *testing.T) {
 	}
 	for _, engine := range engines {
 		t.Run("paired_"+engine, func(t *testing.T) {
+			if closure {
+				b20CompareCallerClosure(t, engine, twins)
+				return
+			}
 			plug := replayCurrent(t, engine)
 			native := append([]stableEvent(nil), twins[0].Projection...)
 			// A4/P6 adopts total-order Plug changesets and ontology statuses.
@@ -164,6 +173,10 @@ func (r *nativeRecorder) command(w nativeWorkspace, label, binary string, args [
 }
 
 func (r *nativeRecorder) recordTwin(binary, name string) nativeTwin {
+	return r.recordTwinObserved(binary, name, false)
+}
+
+func (r *nativeRecorder) recordTwinObserved(binary, name string, closure bool) nativeTwin {
 	t := r.t
 	workRoot := "/tmp/plug-swarm/work"
 	if err := os.MkdirAll(workRoot, 0700); err != nil {
@@ -208,19 +221,25 @@ func (r *nativeRecorder) recordTwin(binary, name string) nativeTwin {
 	}
 	w.families = r.discoverFamilies(w, binary)
 	twin := nativeTwin{Name: name, Images: map[string]nativeImage{}}
-	twin.Images["empty"] = r.image(w, binary, "empty")
+	capture := func(label string) {
+		twin.Images[label] = r.image(w, binary, label)
+		if closure {
+			twin.CallerReads = append(twin.CallerReads, r.b20NativeCallerReads(w, binary, label, twin.Images[label])...)
+		}
+	}
+	capture("empty")
 	if len(twin.Images["empty"].Rows["events"]) != 0 || len(twin.Images["empty"].Rows["journal"]) != 0 {
 		t.Fatal("fresh public workspace was not empty")
 	}
 	follow := r.startFollow(w, binary)
 	r.command(w, "create", binary, []string{"create", "--id", "b20-1", "--title", "journal anchor", "--json"}, false)
 	twin.Delivery = append(twin.Delivery, follow.next(t))
-	twin.Images["create"] = r.image(w, binary, "create")
+	capture("create")
 	r.command(w, "update", binary, []string{"update", "b20-1", "--title", "journal edited", "--json"}, false)
 	twin.Delivery = append(twin.Delivery, follow.next(t))
-	twin.Images["update"] = r.image(w, binary, "update")
+	capture("update")
 	r.command(w, "same-value-update", binary, []string{"update", "b20-1", "--title", "journal edited", "--json"}, false)
-	twin.Images["no-op"] = r.image(w, binary, "no-op")
+	capture("no-op")
 	if !reflect.DeepEqual(twin.Images["update"].Rows, twin.Images["no-op"].Rows) {
 		t.Fatal("same-value native update changed current event families")
 	}
@@ -246,7 +265,7 @@ func (r *nativeRecorder) recordTwin(binary, name string) nativeTwin {
 	if err := json.NewDecoder(bytes.NewReader(failure)).Decode(&batchError); err != nil || batchError.Code != "batch_error" || !strings.Contains(batchError.Error, "line 2 (update b20-missing title=missing)") {
 		t.Fatalf("batch did not reach second operation: %s (%v)", failure, err)
 	}
-	twin.Images["abort"] = r.image(w, binary, "abort")
+	capture("abort")
 	if !reflect.DeepEqual(twin.Images["no-op"].Rows, twin.Images["abort"].Rows) {
 		t.Fatal("aborted native batch changed current event families or sequence")
 	}
@@ -260,7 +279,7 @@ func (r *nativeRecorder) recordTwin(binary, name string) nativeTwin {
 	// Include buffered extras after the three synchronization reads so an
 	// unexpected duplicate cannot hide in the follower's bounded queue.
 	twin.Delivery = decodeLines(t, completeFollow)
-	twin.Images["final"] = r.image(w, binary, "final")
+	capture("final")
 	journalRaw := r.command(w, "export-current-journal", binary, []string{"events", "export", "--json"}, false)
 	journal := decodeLines(t, journalRaw)
 	unbounded := decodeLines(t, r.command(w, "literal-limit-zero-unbounded", binary, []string{"events", "tail", "--since", "0", "--limit", "0", "--json"}, false))
@@ -614,4 +633,104 @@ func (f *follower) stop(t *testing.T) {
 			t.Errorf("native follow shutdown: %v", errors.Join(waitErr, closeErr, streamErr))
 		}
 	})
+}
+
+// Each native expectation is obtained independently from the pinned executable
+// after its actual committed operation, before the next mutation or pruning.
+type b20NativeCallerRead struct {
+	Checkpoint string           `json:"checkpoint"`
+	Since      int              `json:"since"`
+	Command    string           `json:"command"`
+	RawSHA256  string           `json:"raw_sha256"`
+	Projection []stableEvent    `json:"projection"`
+	Rows       []map[string]any `json:"rows"`
+}
+
+func TestB20NativeCallerCommitOrderAndReopen(t *testing.T) {
+	runB20NativeTwins(t, true)
+}
+
+func (r *nativeRecorder) b20NativeCallerReads(w nativeWorkspace, binary, checkpoint string, image nativeImage) []b20NativeCallerRead {
+	t := r.t
+	rows := image.Rows["journal"]
+	head := len(rows)
+	var result []b20NativeCallerRead
+	for since := 0; since <= head; since++ {
+		label := fmt.Sprintf("caller-%s-since-%d", checkpoint, since)
+		raw := r.command(w, label, binary, []string{"events", "tail", "--since", fmt.Sprint(since), "--limit", "0", "--json"}, false)
+		actual := decodeLines(t, raw)
+		compareSQLJournal(t, rows[since:], actual)
+		projection := make([]stableEvent, 0, len(actual))
+		for i, row := range actual {
+			issue, ok := row["issue"].(map[string]any)
+			if !ok || fmt.Sprint(row["seq"]) != fmt.Sprint(since+i+1) {
+				t.Fatalf("native %s has missing payload or non-gapless commit order", label)
+			}
+			projection = append(projection, stableEvent{fmt.Sprint(row["seq"]), fmt.Sprint(row["op"]), fmt.Sprint(row["issue_id"]), fmt.Sprint(row["actor"]), fmt.Sprint(issue["title"]), fmt.Sprint(issue["status"])})
+		}
+		result = append(result, b20NativeCallerRead{checkpoint, since, label, hashBytes(raw), projection, actual})
+	}
+	label := "caller-"+checkpoint+"-export"
+	raw := r.command(w, label, binary, []string{"events", "export", "--json"}, false)
+	exported := decodeLines(t, raw)
+	compareSQLJournal(t, rows, exported)
+	if !reflect.DeepEqual(exported, result[0].Rows) {
+		t.Fatalf("native %s export differs from actual limit0 original", checkpoint)
+	}
+	result = append(result, b20NativeCallerRead{checkpoint, 0, label, hashBytes(raw), result[0].Projection, exported})
+	return result
+}
+
+func b20CompareCallerClosure(t *testing.T, engine string, twins []nativeTwin) {
+	t.Helper()
+	if len(twins) != 2 {
+		t.Fatal("two independent native originals required")
+	}
+	plug := b20ReplayCallerClosure(t, engine)
+	comparisons := 0
+	for _, twin := range twins {
+		if len(twin.CallerReads) == 0 {
+			t.Fatal("fresh native caller observations absent")
+		}
+		for _, observation := range plug.Observations {
+			checkpoint := observation.Checkpoint
+			if checkpoint == "reconnected" {
+				// No native mutation occurred here: compare the unchanged
+				// original post-abort source prefix, without rewriting it.
+				checkpoint = "abort"
+			}
+			found := false
+			for _, source := range twin.CallerReads {
+				if source.Checkpoint != checkpoint || source.Since != observation.Since {
+					continue
+				}
+				// All forms use native limit0/since. Native export is also
+				// compared independently for full-prefix caller exports.
+				if strings.HasSuffix(source.Command, "-export") && (observation.Form != 3 || observation.Since != 0) {
+					continue
+				}
+				adopted := append([]stableEvent{}, source.Projection...)
+				for i := range adopted {
+					adopted[i].Actor = "cardb20-reader"
+					switch adopted[i].Status {
+					case "open":
+						adopted[i].Status = "todo"
+					case "closed":
+						adopted[i].Status = "done"
+					default:
+						t.Fatalf("unadopted native status %q", adopted[i].Status)
+					}
+				}
+				if !reflect.DeepEqual(adopted, observation.Projection) {
+					t.Fatalf("%s/%s since%d form%d differs from independent native%s: source=%+v plug=%+v", engine, observation.Checkpoint, observation.Since, observation.Form, twin.Name, adopted, observation.Projection)
+				}
+				found = true
+				comparisons++
+			}
+			if !found {
+				t.Fatalf("no original native%s expectation for %s since%d", twin.Name, checkpoint, observation.Since)
+			}
+		}
+	}
+	retain(t, "b20-native-caller-closure-"+engine+".json", map[string]any{"plug": plug, "native_originals": twins, "independent_comparisons": comparisons, "native_counter_restore": "NEVER", "adopted_projection": "A4/P6 sequence/order plus open/closed to todo/done and named fixture actor only", "full_card": "UNQUALIFIED_MUTATION_VOCABULARY_REMAINS_SEPARATE", "complete": !t.Failed()})
 }

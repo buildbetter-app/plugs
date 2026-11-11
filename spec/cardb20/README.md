@@ -140,3 +140,35 @@ Runtime recordings and comparisons are retained in original test output
 artifacts and the author packet under
 `/tmp/plug-swarm/reports/S1-B20-events-current-20261110`. Before their actual
 execution their literal status remains `AUTHORED_NOT_RUN`/`UNRUN`.
+
+## Added caller commit/reconnect closure on frozen cumulative 1f77dd01
+
+Done = all four real CLI forms expose each completed prefix and every
+since-exclusive suffix from both fresh pinned native stores on memory, SQLite
+and PostgreSQL, with exact committed readback, same-process/key cursor reuse
+across SQL close/reopen and next-write sequence conservation, proven by
+independent exact-source/focused/canonical-whole originals; predecessor passes
+and parser-only observations do not count.
+
+`TestB20CallerExactCommitPrefixesReconnectAndSQLReopen` is ordinary coverage.
+It records actual Client.Call writes and typed admission refusals, original
+CLI/wire bytes, positive one-row request chains and actual empty stable-cursor
+completion. It checks every committed prefix and complete event value against
+the store and earlier public reads; CLI serialization may reorder object keys,
+so raw streams are retained and exact JSON types/numeric tokens are compared.
+The original opaque zero/one/two cursors cross SQLite/PostgreSQL close/reopen
+in the same Go process with unchanged explicit fixture signing key, principal,
+project, filter and incarnation. Memory stays on its original store. No-op and
+admission refusal preserve full journal/head both before and after reconnect;
+the next successful close is revision3. No cross-process guarantee is claimed.
+
+`:record_caller_closure_test` selects
+`TestB20NativeCallerCommitOrderAndReopen`, reusing the unchanged canonical
+builder and existing native corpus. Extra actual native export/limit0/since
+reads occur after each committed prefix and before the next mutation or prune.
+Every Plug CLI observation compares separately to BOTH original native twins,
+with only the already adopted status and fixture-actor projection. Individual
+and aggregate completed SQL recording conservation remains mandatory. The
+existing manual recorder and its original assertions remain available.
+Native UOW abort and Plug admission refusal stay distinct. This unit does not
+close mutation-vocabulary, history, native admission or full-card obligations.
