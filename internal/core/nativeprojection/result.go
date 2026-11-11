@@ -203,10 +203,3 @@ func (p SourceCoreProjection) InertRelations() (map[driver.SourceEdgeKey]bool, e
 func chargeLookup(archive *dumpformat.Archive, key, value any) error {
 	return archive.ChargeNativeDeltaJSON("planner_source_lookup_detach", struct { Key, Value any }{key, value})
 }
-
-// VisitNativeCaptureFiles retains the existing independent raw-blob staging
-// route without exposing a mutable archive handle from the immutable result.
-func (p Plan) VisitNativeCaptureFiles(ctx context.Context, visit func(string, []byte) error) error {
-	if !p.HasNativeCapture() { return fmt.Errorf("receiving plan has no native capture") }
-	return p.image.nativeCapture.VisitNativeCaptureFiles(ctx, visit)
-}
