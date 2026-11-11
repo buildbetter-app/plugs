@@ -108,6 +108,84 @@ filegroup(
 
 # Source-contract tests never execute the physical native recorder.
 go_test(
+    name = "b04_ordinary_public",
+    srcs = [
+        "b04_ordinary_support_test.go",
+        "b04_ordinary_authority_test.go",
+        "b04_ordinary_test.go",
+        "fixture_test.go",
+        "manifest_test.go",
+    ],
+    embedsrcs = ["manifest.json", "run-1.json"],
+    args = ["-test.v"],
+    deps = [
+        "//internal/api/wire",
+        "//internal/core/authz",
+        "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/integration/converterroundtrip",
+        "//internal/plugins/authnapikey",
+        "//internal/plugins/authzfixed",
+        "//internal/server/authn",
+        "//internal/server/authzrpc",
+        "//internal/server/rpc",
+        "//internal/server/transport/httpjson",
+        "//internal/server/transport/inprocess",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/postgres",
+        "//internal/storage/sqlite",
+        "//internal/testclock",
+    ],
+    tags = ["local", "requires-network"],
+    timeout = "long",
+)
+
+# Actual public native preparation is supplied by the admitted four-value
+# RunsOn preparer. The canonical whole keeps this physical target manual.
+go_test(
+    name = "b04_ordinary_native",
+    srcs = [
+        "b04_ordinary_native_test.go",
+        "b04_ordinary_support_test.go",
+        "b04_ordinary_authority_test.go",
+        "fixture_test.go",
+        "manifest_test.go",
+        "native_io_test.go",
+    ],
+    embedsrcs = ["manifest.json", "native_inputs.json", "run-1.json"],
+    args = ["-test.v"],
+    data = ["//internal/publicnative:dolt_runtime"],
+    env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
+    deps = [
+        "//internal/api/wire",
+        "//internal/core/authz",
+        "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/integration/converterroundtrip",
+        "//internal/publicnative",
+        "//internal/plugins/authnapikey",
+        "//internal/plugins/authzfixed",
+        "//internal/server/authn",
+        "//internal/server/authzrpc",
+        "//internal/server/rpc",
+        "//internal/server/transport/httpjson",
+        "//internal/server/transport/inprocess",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/postgres",
+        "//internal/storage/sqlite",
+        "//internal/testclock",
+    ],
+    tags = ["manual", "local", "requires-network"],
+    timeout = "long",
+)
+
+go_test(
     name = "native_contract_test",
     srcs = [
         "manifest_test.go",

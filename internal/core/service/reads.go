@@ -171,11 +171,22 @@ func pageOptions(project, viewID, cursor string, filter *Filter, limit int) (int
 }
 
 func matchesFilter(row storedBead, project string, filter *Filter) bool {
+	return matchesFilterSurface(row, project, filter, false)
+}
+
+func matchesReadyFilter(row storedBead, project string, filter *Filter) bool {
+	return matchesFilterSurface(row, project, filter, true)
+}
+
+func matchesFilterSurface(row storedBead, project string, filter *Filter, ready bool) bool {
 	if row.doc.Project != project {
 		return false
 	}
 	if filter == nil {
 		return true
+	}
+	if !matchesSelectionFields(row.doc.Type, row.doc.Labels, row.doc.Lease != nil, filter, ready) {
+		return false
 	}
 	if filter.Priority != nil {
 		p, err := priority(row.doc)
@@ -298,7 +309,7 @@ func (s *Service) readyItemsFromGraph(ctx context.Context, by model.PrincipalRef
 	for _, id := range graphIDs {
 		row := graph[id]
 		st := state(row.doc)
-		if (parents != nil && !parents[id]) || !matchesFilter(row, req.Project, req.Filter) || st.Template || !s.ontology.effective(st.Project).ReadyEligible(st.Type, st.Status) {
+		if (parents != nil && !parents[id]) || !matchesReadyFilter(row, req.Project, req.Filter) || st.Template || !s.ontology.effective(st.Project).ReadyEligible(st.Type, st.Status) {
 			continue
 		}
 		if workflowBlocked[row.doc.ID] || row.doc.Fields["blocked"] == true {
@@ -743,6 +754,7 @@ func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req 
 		return BeadPage{}, failure("internal_error", "invalid workflow ready snapshot")
 	}
 	items := snapshot.Items
+	items = filterSelectionWorkflowItems(items, req.Filter)
 	if req.Filter != nil && len(req.Filter.Resources) != 0 {
 		filtered := make([]workflowplugin.ItemView, 0, len(items))
 		for _, item := range items {
@@ -820,6 +832,7 @@ func (s *Service) readyCombinedPage(ctx context.Context, by model.PrincipalRef, 
 		}
 	}
 	workflowItems := snapshot.Items
+	workflowItems = filterSelectionWorkflowItems(workflowItems, req.Filter)
 	if req.Filter != nil && len(req.Filter.Resources) != 0 {
 		filtered := make([]workflowplugin.ItemView, 0, len(workflowItems))
 		for _, item := range workflowItems {

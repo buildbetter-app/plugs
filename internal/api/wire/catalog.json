@@ -7114,6 +7114,30 @@
               "type": "string"
             }
           },
+          "labels": {
+            "type": "array",
+            "description": "All nonempty trimmed labels are required, case-sensitive. Empty sets add no constraint.",
+            "items": {"type": "string"}
+          },
+          "labelsAny": {
+            "type": "array",
+            "description": "At least one nonempty trimmed label is required; an empty set adds no constraint. Clients pass directory defaults here.",
+            "items": {"type": "string"}
+          },
+          "excludeLabels": {
+            "type": "array",
+            "description": "None of these nonempty trimmed labels may be present, composed with labels and labelsAny.",
+            "items": {"type": "string"}
+          },
+          "unassigned": {
+            "type": "boolean",
+            "description": "Select records without an existing claim holder. False adds no ownership constraint."
+          },
+          "excludeTypes": {
+            "type": "array",
+            "description": "Exclude these canonical types. Ready/claimNext give explicit types precedence; ordinary listing intersects types and exclusions, matching the respective native surfaces.",
+            "items": {"type": "string"}
+          },
           "events": {
             "type": "array",
             "items": {

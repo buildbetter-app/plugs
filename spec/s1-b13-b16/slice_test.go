@@ -653,7 +653,8 @@ type labelBoundaryProjection struct {
 	Engine          string   `json:"engine"`
 	CreatedLabels   []string `json:"createdLabels"`
 	MutationRefusal string   `json:"mutationRefusal"`
-	FilterRefusal   string   `json:"filterRefusal"`
+	FilterMatchIDs  []string `json:"filterMatchIds"`
+	FilterAbsentIDs []string `json:"filterAbsentIds"`
 	HeadUnchanged   bool     `json:"headUnchanged"`
 	Disposition     string   `json:"disposition"`
 }
@@ -666,7 +667,7 @@ func TestB16PublicLabelsAndTypedFilterBoundaryTwice(t *testing.T) {
 			if !bytes.Equal(first, second) {
 				t.Fatalf("independent Plug label-boundary projections differ:\nfirst=%s\nsecond=%s", first, second)
 			}
-			t.Logf("B16 %s boundary projection sha256=%s (UNQUALIFIED)", engine, sha(first))
+			t.Logf("B16 %s typed label/filter projection sha256=%s (bounded controls)", engine, sha(first))
 		})
 	}
 }
@@ -686,15 +687,43 @@ func runB16(t *testing.T, engine string) []byte {
 	if head(t, f) != before {
 		t.Fatal("invalid typed labels advanced head")
 	}
-	filter := f.call(t, context.Background(), "labels-filter", "bead.ready", map[string]any{"filter": map[string]any{"labels": []any{"alpha"}}}, false)
-	filterCode := code(filter)
-	if filterCode == "" {
-		t.Fatalf("label filter unexpectedly succeeded: %v", filter)
+	filterIDs := make(map[string][]string, 2)
+	for _, check := range []struct {
+		label string
+		want  []string
+	}{
+		{label: "alpha", want: []string{"b16-normal"}},
+		{label: "absent", want: []string{}},
+	} {
+		filter := f.call(t, context.Background(), "labels-filter-"+check.label, "bead.ready", map[string]any{"filter": map[string]any{"labels": []any{check.label}}}, false)
+		items, ok := result(t, filter)["items"].([]any)
+		if !ok {
+			t.Fatalf("label filter %q items are not an array: %v", check.label, filter)
+		}
+		ids := make([]string, 0, len(items))
+		for _, value := range items {
+			item, ok := value.(map[string]any)
+			if !ok {
+				t.Fatalf("label filter %q item is not an object: %v", check.label, value)
+			}
+			id, ok := item["id"].(string)
+			if !ok {
+				t.Fatalf("label filter %q item has no string ID: %v", check.label, item)
+			}
+			if !reflect.DeepEqual(item["labels"], []any{"alpha"}) {
+				t.Fatalf("label filter %q changed projected labels: %v", check.label, item)
+			}
+			ids = append(ids, id)
+		}
+		if !reflect.DeepEqual(ids, check.want) {
+			t.Fatalf("label filter %q IDs=%v want=%v", check.label, ids, check.want)
+		}
+		if head(t, f) != before {
+			t.Fatalf("label filter %q advanced head", check.label)
+		}
+		filterIDs[check.label] = ids
 	}
-	if head(t, f) != before {
-		t.Fatal("unsupported label filter advanced head")
-	}
-	return canonical(labelBoundaryProjection{Engine: engine, CreatedLabels: stored.Labels, MutationRefusal: code(invalid), FilterRefusal: filterCode, HeadUnchanged: head(t, f) == before, Disposition: "UNQUALIFIED: full filter and ephemeral-plane contract not yet proven"})
+	return canonical(labelBoundaryProjection{Engine: engine, CreatedLabels: stored.Labels, MutationRefusal: code(invalid), FilterMatchIDs: filterIDs["alpha"], FilterAbsentIDs: filterIDs["absent"], HeadUnchanged: head(t, f) == before, Disposition: "Typed durable label state/filter controls only; full label and ephemeral-plane evidence is separate"})
 }
 
 func TestIndependentProjectionHasNoMapOrderDependence(t *testing.T) {
