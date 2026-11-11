@@ -25,16 +25,27 @@ import (
 
 // This fixture creates every work item and relationship through public RPC.
 // Only the host ontology, clock and deterministic root-ID source are configured
-// directly. The workflow provider uses the driver's real lifetime capability;
-// memory never acquires a claim of persistence across a process restart.
+// directly. SQL workflow providers use the driver's real restart capability.
+// The frozen workflow contract requires memory hosts to omit that provider.
 type publicAcceptance struct {
 	*fixture
-	engine   string
-	dsn      string
-	storage  *testclock.Clock
-	workflow bool
-	rootID   string
-	writes   []publicAcceptanceWrite
+	engine       string
+	dsn          string
+	storage      *testclock.Clock
+	workflow     bool
+	rootID       string
+	writes       []publicAcceptanceWrite
+	workflowRows map[string]publicWorkflowValue
+	childCounts  map[string]int
+}
+
+type publicWorkflowValue struct {
+	ID, Type, Project, Status, Plane, Kind string
+	WorkflowRunID                          string `json:"workflowRunId"`
+	CreatedAt                              time.Time
+	Fields                                 map[string]any
+	Links                                  []workflowplugin.RelationView
+	Parent                                 string
 }
 
 type publicAcceptanceWrite struct {
@@ -94,10 +105,13 @@ func publicAcceptanceOntology(t *testing.T) *service.Ontology {
 
 func newPublicAcceptance(t *testing.T, engine string, withWorkflow bool) *publicAcceptance {
 	t.Helper()
+	if engine == "memory" && withWorkflow {
+		t.Fatal("workflow-contract.md requires memory's public ephemeral refusal")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	t.Cleanup(cancel)
 	at := time.Date(2026, 11, 3, 12, 0, 0, 123456000, time.UTC)
-	p := &publicAcceptance{fixture: &fixture{ctx: ctx, clock: testclock.New(t, at), onto: publicAcceptanceOntology(t)}, engine: engine, storage: testclock.New(t, at.Add(7*time.Hour)), workflow: withWorkflow}
+	p := &publicAcceptance{fixture: &fixture{ctx: ctx, clock: testclock.New(t, at), onto: publicAcceptanceOntology(t)}, engine: engine, storage: testclock.New(t, at.Add(7*time.Hour)), workflow: withWorkflow, workflowRows: map[string]publicWorkflowValue{}, childCounts: map[string]int{}}
 	switch engine {
 	case "sqlite_wal":
 		p.dsn = filepath.Join(t.TempDir(), "public-ready.db")
@@ -202,7 +216,12 @@ func (p *publicAcceptance) create(t *testing.T, label, typ, target string, prior
 	}
 	commit := p.write(t, "bead.create", "create-"+label, params)
 	ref := commit.Results[0].Ref
-	if parent == nil && ref.ID != "pl-"+label || parent != nil && ref.ID != parent.ID+".1" {
+	wantID := "pl-" + label
+	if parent != nil {
+		p.childCounts[parent.ID]++
+		wantID = fmt.Sprintf("%s.%d", parent.ID, p.childCounts[parent.ID])
+	}
+	if ref.ID != wantID {
 		t.Fatalf("public creation returned undeclared identity: %+v parent=%+v", ref, parent)
 	}
 	connectedFact(t, p.fixture, ref, commit.Revision, p.clock.Now(), p.clock.Now(), 0, priority)
@@ -226,7 +245,7 @@ func (p *publicAcceptance) document(t *testing.T, ref model.Ref, typ, status, ti
 		t.Fatalf("actual committed readback %s: %+v %v", ref.ID, rows, err)
 	}
 	doc, err := pipeline.DecodeDocument(rows[0].Body)
-	wantFields := map[string]any{"title": title, "priority": priority, "status": status}
+	wantFields := map[string]any{"title": title, "priority": priority, "status": status, "template": false}
 	if err != nil || doc.ID != ref.ID || doc.Type != typ || doc.Project != project || !reflect.DeepEqual(doc.Parent, parent) || !reflect.DeepEqual(jsonBytes(t, doc.Fields), jsonBytes(t, wantFields)) {
 		t.Fatalf("actual committed values %s: %+v err=%v wantFields=%s parent=%+v", ref.ID, doc, err, jsonBytes(t, wantFields), parent)
 	}
@@ -276,6 +295,7 @@ func (p *publicAcceptance) point(t *testing.T, label string, filter map[string]a
 	t.Run(label, func(t *testing.T) {
 		before, checkpoint, receipts := p.state(t), p.checkpoint(t), p.receipts(t)
 		p.pages(t, filter, want...)
+		p.workflowReadback(t)
 		if !reflect.DeepEqual(before, p.state(t)) || !reflect.DeepEqual(checkpoint, p.checkpoint(t)) || !reflect.DeepEqual(receipts, p.receipts(t)) {
 			t.Fatal("public ready changed committed records, ranks, history, receipt or workflow bytes")
 		}
@@ -292,6 +312,10 @@ func (p *publicAcceptance) point(t *testing.T, label string, filter map[string]a
 				t.Fatal("actual SQL close/open changed committed records, ranks, history, receipts or workflow bytes")
 			}
 			p.pages(t, filter, want...)
+			p.workflowReadback(t)
+			if !reflect.DeepEqual(before, p.state(t)) || !reflect.DeepEqual(checkpoint, p.checkpoint(t)) || !reflect.DeepEqual(receipts, p.receipts(t)) {
+				t.Fatal("reopened public reads changed committed records, ranks, history, receipts or workflow bytes")
+			}
 		}
 		if p.engine == "postgres" && !testclock.PostgresNow(t, p.dsn).Equal(p.storage.Now()) {
 			t.Fatal("SQL reopen lost the independently controlled driver clock")
@@ -380,15 +404,47 @@ func (p *publicAcceptance) invoke(t *testing.T, label string, checklist []map[st
 		t.Fatalf("actual public workflow invocation failed: %+v %s", response.Error, response.Result)
 	}
 	for i, item := range result.Items {
-		if item.ID == "" || item.Plane != "ephemeral" || item.Kind != "workflow.item" || item.Title != checklist[i]["title"] || item.Project != project {
+		if item.ID == "" || item.Label != checklist[i]["label"] || item.Plane != "ephemeral" || item.Kind != "workflow.item" || item.Title != checklist[i]["title"] || item.Project != project || item.RunID != result.Run.ID || !result.Run.CreatedAt.Equal(p.clock.Now()) {
 			t.Fatalf("public workflow returned different committed values: %+v", item)
 		}
+		wantFields := map[string]any{"title": checklist[i]["title"]}
+		if fields, ok := checklist[i]["fields"].(map[string]any); ok {
+			for key, value := range fields {
+				wantFields[key] = value
+			}
+		}
+		var wantLinks []workflowplugin.RelationView
+		if links, ok := checklist[i]["links"].([]map[string]any); ok {
+			for _, link := range links {
+				wantLinks = append(wantLinks, workflowplugin.RelationView{From: item.ID, To: link["to"].(model.Ref), Kind: link["kind"].(string)})
+			}
+		}
+		wantParent := ""
+		if parent, ok := checklist[i]["parent"].(model.Ref); ok {
+			wantParent = parent.ID
+		}
+		// Expectations are the literal public inputs plus the returned opaque
+		// item/run identities. Derived Blocked can legitimately change after a
+		// core blocker closes; it is checked independently by the ready vectors.
+		p.workflowRows[item.ID] = publicWorkflowValue{ID: item.ID, Type: checklist[i]["type"].(string), Project: project, Status: "open", Plane: "ephemeral", Kind: "workflow.item", WorkflowRunID: result.Run.ID, CreatedAt: p.clock.Now(), Fields: wantFields, Links: wantLinks, Parent: wantParent}
 	}
+	p.workflowReadback(t)
 	return result.Items
 }
 
+func (p *publicAcceptance) workflowReadback(t *testing.T) {
+	t.Helper()
+	for id, want := range p.workflowRows {
+		response := p.call(t, "bead.get", map[string]any{"id": model.RefByID(id, model.Natural64(0)), "_meta": map[string]any{"project": project}})
+		var get struct{ Bead publicWorkflowValue }
+		if response.Error != nil || json.Unmarshal(response.Result, &get) != nil || !reflect.DeepEqual(jsonBytes(t, get.Bead), jsonBytes(t, want)) {
+			t.Fatalf("public workflow exact input/readback differs for %s: got=%s want=%s", id, response.Result, jsonBytes(t, want))
+		}
+	}
+}
+
 func TestB01PositiveDurableAndEphemeralMembershipPrecedesEveryPage(t *testing.T) {
-	for _, engine := range []string{"memory", "sqlite_wal", "postgres"} {
+	for _, engine := range []string{"sqlite_wal", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			p := newPublicAcceptance(t, engine, true)
 			blocker := p.create(t, "mixed-blocker", "issue", "in_progress", 0, nil)
@@ -411,4 +467,72 @@ func TestB01PositiveDurableAndEphemeralMembershipPrecedesEveryPage(t *testing.T)
 			p.point(t, "cross-plane-blocker-reopen-excludes-both", nil, workflowFree.ID, free.ID)
 		})
 	}
+}
+
+func TestB01MixedParentAndPriorityFiltersUseCompleteAncestryBeforePage(t *testing.T) {
+	for _, engine := range []string{"sqlite_wal", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			p := newPublicAcceptance(t, engine, true)
+			root := p.create(t, "mixed-root", "issue", "", 4, nil)
+			middle := p.create(t, "nonready-middle", "issue", "in_progress", 0, &root)
+			leaf := p.create(t, "durable-leaf", "issue", "", 2, &middle)
+			outsideBlocker := p.create(t, "outside-blocker", "issue", "in_progress", 0, nil)
+			blocked := p.create(t, "subtree-blocked", "issue", "", 0, &root)
+			p.write(t, "bead.link", "outside-subtree-blocker", map[string]any{"from": blocked, "to": outsideBlocker, "kind": "blocks"})
+			p.create(t, "outside-ready", "issue", "", 1, nil)
+			first := p.invoke(t, "mixed-parent", []map[string]any{{"label": "parent", "title": "workflow parent", "type": "issue", "parent": middle, "fields": map[string]any{"priority": 1}}})
+			workflowParent := model.RefByID(first[0].ID, model.Natural64(0))
+			second := p.invoke(t, "mixed-grandchild", []map[string]any{{"label": "grandchild", "title": "workflow grandchild", "type": "issue", "parent": workflowParent, "fields": map[string]any{"priority": 0}}})
+			workflowGrandchild := model.RefByID(second[0].ID, model.Natural64(0))
+			underWorkflow := p.create(t, "under-workflow", "issue", "", 2, nil)
+			linkParams := map[string]any{"from": underWorkflow, "to": workflowParent, "kind": "parent-child", "_meta": map[string]any{"project": project, "idempotencyKey": fixtureKey("ordinary-under-workflow-parent")}}
+			link := p.call(t, "bead.link", linkParams)
+			var linked model.Commit
+			if link.Error != nil || json.Unmarshal(link.Result, &linked) != nil || !linked.Revision.IsZero() || len(linked.Results) != 1 || linked.Results[0].Ref != workflowParent || linked.Results[0].Revision.String() != "2" {
+				t.Fatalf("public mixed link lost its actual plugin commit: error=%+v result=%s", link.Error, link.Result)
+			}
+			// This public link writes an inbound provider relation, independently
+			// expected here; it never fabricates an ordinary stored parent field.
+			parentValue := p.workflowRows[workflowParent.ID]
+			parentValue.Links = append(parentValue.Links, workflowplugin.RelationView{From: underWorkflow.ID, To: workflowParent, Kind: "parent-child"})
+			p.workflowRows[workflowParent.ID] = parentValue
+			p.workflowRows[underWorkflow.ID] = publicWorkflowValue{ID: underWorkflow.ID, Type: "issue", Project: project, Status: "todo", CreatedAt: p.clock.Now(), Fields: map[string]any{"title": "under-workflow", "priority": 2, "status": "todo", "template": false}, Parent: workflowParent.ID, Links: []workflowplugin.RelationView{{From: underWorkflow.ID, To: workflowParent, Kind: "parent-child"}}}
+			p.point(t, "mixed-transitive-through-nonready-middle", map[string]any{"parent": root.ID}, workflowGrandchild.ID, workflowParent.ID, leaf.ID, underWorkflow.ID)
+			p.point(t, "mixed-priority-selects-ephemeral-before-page", map[string]any{"parent": root.ID, "priority": 1}, workflowParent.ID)
+			p.point(t, "mixed-priority-excludes-blocked-and-started-front", map[string]any{"parent": root.ID, "priority": 0}, workflowGrandchild.ID)
+			p.point(t, "workflow-root-selects-both-child-planes", map[string]any{"parent": workflowParent.ID}, workflowGrandchild.ID, underWorkflow.ID)
+			p.point(t, "excluded-ephemeral-remains-an-ancestor", map[string]any{"parent": root.ID, "includeEphemeral": false}, leaf.ID, underWorkflow.ID)
+			p.point(t, "mixed-resources-intersect-complete-subtree", map[string]any{"parent": root.ID, "resources": []string{blocked.ID, workflowGrandchild.ID, underWorkflow.ID}}, workflowGrandchild.ID, underWorkflow.ID)
+			p.point(t, "unknown-parent-is-empty", map[string]any{"parent": "pl-unknown-root"})
+			p.write(t, "bead.defer", "defer-mixed-middle", map[string]any{"id": middle})
+			p.point(t, "defer-suppresses-descendants-across-both-planes", map[string]any{"parent": root.ID})
+			p.write(t, "bead.reopen", "reopen-mixed-middle", map[string]any{"id": middle})
+			p.point(t, "reopen-restores-two-plane-descendants", map[string]any{"parent": root.ID}, middle.ID, workflowGrandchild.ID, workflowParent.ID, leaf.ID, underWorkflow.ID)
+			p.write(t, "bead.close", "close-outside-subtree-blocker", map[string]any{"id": outsideBlocker})
+			p.point(t, "outside-blocker-close-releases-selected-member", map[string]any{"parent": root.ID, "priority": 0}, middle.ID, blocked.ID, workflowGrandchild.ID)
+			beforeReplay, replayCheckpoint, replayReceipts := p.state(t), p.checkpoint(t), p.receipts(t)
+			replay := p.call(t, "bead.link", linkParams)
+			if replay.Error != nil || !reflect.DeepEqual(replay.Result, link.Result) || !reflect.DeepEqual(beforeReplay, p.state(t)) || !reflect.DeepEqual(replayCheckpoint, p.checkpoint(t)) || !reflect.DeepEqual(replayReceipts, p.receipts(t)) {
+				t.Fatal("SQL-reopened mixed relation lost its exact plugin receipt or republished state")
+			}
+		})
+	}
+}
+
+func TestB01MemoryEphemeralRefusalConservesOrdinaryReady(t *testing.T) {
+	// Frozen engdocs/plug-runtime/workflow-contract.md:59-65 requires a
+	// memory host to keep invocation registered but omit the ephemeral provider.
+	p := newPublicAcceptance(t, "memory", false)
+	parent := p.create(t, "memory-parent", "issue", "in_progress", 0, nil)
+	child := p.create(t, "memory-child", "issue", "", 2, &parent)
+	before, checkpoint, receipts := p.state(t), p.checkpoint(t), p.receipts(t)
+	key := "memory-refused-invoke"
+	response := p.call(t, "x.workflow.invoke", map[string]any{"template": "memory-refusal", "project": project, "mode": "ephemeral", "checklist": []map[string]any{{"label": "unpublished", "title": "must remain absent", "type": "issue", "parent": parent, "fields": map[string]any{"priority": 0}}}, "_meta": map[string]any{"project": project, "idempotencyKey": fixtureKey(key)}})
+	if response.Error == nil || response.Error.Data.Code != "plugin_durable_state_unavailable" || len(response.Result) != 0 {
+		t.Fatalf("memory lost the exact public contract refusal: %+v", response)
+	}
+	if !reflect.DeepEqual(before, p.state(t)) || !reflect.DeepEqual(checkpoint, p.checkpoint(t)) || !reflect.DeepEqual(receipts, p.receipts(t)) || connectedReceipt(t, p.fixture, "x.workflow.invoke", "", key) != nil {
+		t.Fatal("refused memory invocation published source, rank, history, head, checkpoint, receipt or notification")
+	}
+	p.point(t, "memory-refusal-keeps-ordinary-parent-priority-pages", map[string]any{"parent": parent.ID, "priority": 2}, child.ID)
 }

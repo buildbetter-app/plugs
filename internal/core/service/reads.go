@@ -504,7 +504,32 @@ func (s *Service) readyCombinedSnapshot(ctx context.Context, by model.PrincipalR
 		}
 		workflowBlocked[id] = blocked
 	}
-	durable, keys, err := s.readyItemsFromGraph(ctx, by, req, r, graph, workflowBlocked, now)
+	parents, err := mixedReadyParentFilter(ctx, r, req.Filter, provider)
+	if err != nil {
+		return readyCombinedSnapshot{}, err
+	}
+	coreReq := req
+	if req.Filter != nil && req.Filter.Parent != "" {
+		// Parent selection has already consumed the complete ordinary index and
+		// this provider checkpoint. Keep every source row in the blocker graph.
+		filter := *req.Filter
+		filter.Parent = ""
+		coreReq.Filter = &filter
+	}
+	durable, keys, err := s.readyItemsFromGraph(ctx, by, coreReq, r, graph, workflowBlocked, now)
+	if err != nil {
+		return readyCombinedSnapshot{}, err
+	}
+	if parents != nil {
+		filtered := durable[:0]
+		for _, item := range durable {
+			if parents[item.ID] {
+				filtered = append(filtered, item)
+			}
+		}
+		durable = filtered
+	}
+	provider.Items, err = filterReadyWorkflowItems(provider.Items, req.Filter, parents)
 	if err != nil {
 		return readyCombinedSnapshot{}, err
 	}
@@ -522,6 +547,29 @@ func (s *Service) readyCombinedSnapshot(ctx context.Context, by model.PrincipalR
 		return readyCombinedSnapshot{}, err
 	}
 	return readyCombinedSnapshot{durable: durable, durableKeys: keys, workflow: provider, asOf: AsOf{Revision: *view.At, Incarnation: view.Incarnation}, now: now}, nil
+}
+
+func filterReadyWorkflowItems(items []workflowplugin.ItemView, filter *Filter, parents map[string]bool) ([]workflowplugin.ItemView, error) {
+	if filter == nil {
+		return items, nil
+	}
+	filtered := make([]workflowplugin.ItemView, 0, len(items))
+	for _, item := range items {
+		if parents != nil && !parents[item.ID] {
+			continue
+		}
+		if filter.Priority != nil {
+			priority, err := beadPriority(workflowBead(item))
+			if err != nil {
+				return nil, err
+			}
+			if priority != *filter.Priority {
+				continue
+			}
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered, nil
 }
 
 // combinedReadyEntry is the service-owned merge key for the two ready
@@ -742,7 +790,10 @@ func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req 
 	if !binding.Valid() {
 		return BeadPage{}, failure("internal_error", "invalid workflow ready snapshot")
 	}
-	items := snapshot.Items
+	items, err := filterReadyWorkflowItems(snapshot.Items, req.Filter, nil)
+	if err != nil {
+		return BeadPage{}, err
+	}
 	if req.Filter != nil && len(req.Filter.Resources) != 0 {
 		filtered := make([]workflowplugin.ItemView, 0, len(items))
 		for _, item := range items {

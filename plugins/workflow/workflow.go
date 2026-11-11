@@ -177,6 +177,9 @@ type ReadySnapshot struct {
 	BlockedOrdinary map[string]bool               `json:"-"`
 	ActiveIDs       map[string]struct{}           `json:"-"`
 	OrdinaryParents map[string]OrdinaryParentFact `json:"-"`
+	// WorkflowParents includes every caller-visible item, including non-ready
+	// intermediate parents. Selection must not infer ancestry from Items alone.
+	WorkflowParents map[string]*model.Ref `json:"-"`
 }
 
 type ClaimView struct {
@@ -1269,6 +1272,14 @@ func (p *Provider) readySnapshotWithResolverAndCoreAt(ctx context.Context, by mo
 	snapshot.OrderAt = now.UTC()
 	snapshot.BlockedOrdinary = ordinaryBlocked(value, ordinaryIDs, meta)
 	snapshot.ActiveIDs = activeIDs(value, by, meta)
+	snapshot.WorkflowParents = make(map[string]*model.Ref, len(snapshot.ActiveIDs))
+	for id := range snapshot.ActiveIDs {
+		parent, err := itemParent(value.Items[id])
+		if err != nil {
+			return ReadySnapshot{}, err
+		}
+		snapshot.WorkflowParents[id] = parent
+	}
 	// Use the accepted typed-parent evaluator on the same checkpoint as Items.
 	// Calling OrdinaryParentSnapshot here would reload state under this mutex.
 	snapshot.OrdinaryParents = make(map[string]OrdinaryParentFact, len(ordinaryIDs))
