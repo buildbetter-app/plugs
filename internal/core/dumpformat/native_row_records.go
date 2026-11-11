@@ -352,7 +352,14 @@ func validateNativeRowMeta(meta NativeRowMeta) error {
 // Canonical re-encoding rejects missing, duplicate, case-folded and unknown
 // fields, whitespace, noncanonical numbers and trailing data. UseNumber retains
 // normalized source number spelling without visiting float64.
-func nativeRowDecode(data []byte, target any) error {
+func nativeRowDecode(data []byte, target any, budgets ...*NativeDeltaBudget) error {
+	if len(budgets) != 0 && budgets[0] != nil {
+		for _, phase := range []string{"native_record_decoder_input", "native_record_canonical_bytes"} {
+			if err := budgets[0].ChargeBytes(phase, uint64(len(data))); err != nil {
+				return err
+			}
+		}
+	}
 	if !utf8.Valid(data) {
 		return nativeRowRefusal("", "non-UTF8 body")
 	}
@@ -376,19 +383,41 @@ func nativeRowDecode(data []byte, target any) error {
 // before body parsing. Complete namespace enumeration belongs to the caller;
 // filtering the query by Kind would hide wrong-kind native-prefix extras.
 func DecodeNativeRowRecord(record driver.Record) (*NativeRowMeta, *NativeDecodedRow, error) {
+	return decodeNativeRowRecord(record, nil)
+}
+
+// DecodeNativeRowRecord admits the decoded body and exact validation candidates
+// in this archive's owner. The existing pure codec remains budget-free.
+func (a *Archive) DecodeNativeRowRecord(record driver.Record) (*NativeRowMeta, *NativeDecodedRow, error) {
+	return decodeNativeRowRecord(record, a.decodedBudget())
+}
+
+func decodeNativeRowRecord(record driver.Record, owner *NativeDeltaBudget) (*NativeRowMeta, *NativeDecodedRow, error) {
+	var work *NativeDeltaBudget
+	if owner != nil {
+		work = owner.Scope()
+		defer work.Release()
+		if err := owner.ChargeBytes("native_record_decoded_body", uint64(len(record.Body))); err != nil {
+			return nil, nil, err
+		}
+	}
 	if record.Kind != "beads-archive" {
 		return nil, nil, nativeRowRefusal("", "wrong record kind")
 	}
-	var marker struct {
-		Format string `json:"format"`
-	}
-	if err := json.Unmarshal(record.Body, &marker); err != nil {
-		return nil, nil, nativeRowRefusal("", "invalid record body")
-	}
-	if marker.Format == NativeRowMetaFormat {
+	// Canonical bodies put the closed format field first. Selecting its exact
+	// prefix avoids allocating an unbounded marker string before admission.
+	if bytes.HasPrefix(record.Body, []byte(`{"format":"plug-native-meta/1",`)) {
 		var meta NativeRowMeta
-		if err := nativeRowDecode(record.Body, &meta); err != nil {
+		if err := nativeRowDecode(record.Body, &meta, work); err != nil {
 			return nil, nil, err
+		}
+		if work != nil {
+			if err := reserveNativeMetaValidation(meta, work); err != nil {
+				return nil, nil, err
+			}
+			if err := reserveNativeRowRef(work, work, meta.Source, meta.Table, meta.History, meta.IdentityKind, 0, true); err != nil {
+				return nil, nil, err
+			}
 		}
 		if err := validateNativeRowMeta(meta); err != nil {
 			return nil, nil, err
@@ -399,12 +428,26 @@ func DecodeNativeRowRecord(record driver.Record) (*NativeRowMeta, *NativeDecoded
 		}
 		return &meta, nil, nil
 	}
-	if marker.Format != NativeRowFormat {
+	if !bytes.HasPrefix(record.Body, []byte(`{"format":"plug-native-row/1",`)) {
 		return nil, nil, nativeRowRefusal("", "unknown record format")
 	}
 	var body nativeRowBody
-	if err := nativeRowDecode(record.Body, &body); err != nil {
+	if err := nativeRowDecode(record.Body, &body, work); err != nil {
 		return nil, nil, err
+	}
+	if work != nil {
+		for _, candidate := range []struct {
+			phase string
+			size  uint64
+		}{
+			{"native_record_key_decode", uint64(base64.StdEncoding.DecodedLen(len(body.Key)))},
+			{"native_record_key_encode_buffer", uint64(len(body.Key))},
+			{"native_record_key_encode_text", uint64(len(body.Key))},
+		} {
+			if err := work.ChargeBytes(candidate.phase, candidate.size); err != nil {
+				return nil, nil, err
+			}
+		}
 	}
 	key, err := nativeDeltaBase64(body.Key)
 	if err != nil || len(key) == 0 || body.Fields == nil || len(body.Fields) == 0 {
@@ -413,9 +456,57 @@ func DecodeNativeRowRecord(record driver.Record) (*NativeRowMeta, *NativeDecoded
 	if body.IdentityKind == NativeRowV1ContentBag && body.Cells != nil || body.IdentityKind == NativeRowD3Physical && len(body.Cells) == 0 {
 		return nil, nil, nativeRowRefusal(body.Table, "identity/cell shape differs")
 	}
+	if work != nil {
+		if err := reserveNativeRowRef(work, work, body.Source, body.Table, body.History, body.IdentityKind, len(key), false); err != nil {
+			return nil, nil, err
+		}
+		if err := owner.ChargeBytes("native_record_detached_key", uint64(len(key))); err != nil {
+			return nil, nil, err
+		}
+	}
 	ref, err := nativeRowRecordRef(body.Source, body.Table, body.History, body.IdentityKind, key, false)
 	if err != nil || !nativeRowSameRef(record.Ref, ref) {
 		return nil, nil, nativeRowRefusal(body.Table, "row Ref differs")
 	}
 	return nil, &NativeDecodedRow{Source: body.Source, Table: body.Table, History: body.History, IdentityKind: body.IdentityKind, Key: append([]byte{}, key...), Fields: body.Fields, Cells: body.Cells}, nil
+}
+
+func reserveNativeMetaValidation(meta NativeRowMeta, work *NativeDeltaBudget) error {
+	counter := deltaSizeCounter{}
+	if meta.IdentityKind == NativeRowV1ContentBag {
+		if err := counter.add(uint64(3*8 + len("plug-native-v1-columns/1") + len(meta.Table))); err != nil {
+			return err
+		}
+		for _, name := range meta.Columns {
+			if err := counter.add(uint64(8 + len(name))); err != nil {
+				return err
+			}
+		}
+	} else {
+		if err := counter.add(uint64(16 + len(meta.Table))); err != nil {
+			return err
+		}
+		for _, column := range meta.PhysicalColumns {
+			if err := counter.add(uint64(17 + len(column.Name) + len(column.SQLType))); err != nil {
+				return err
+			}
+			if column.PrimaryKeyOrdinal != nil {
+				if err := counter.add(8); err != nil {
+					return err
+				}
+			}
+		}
+		for _, phase := range []string{"native_meta_normalized_columns", "native_meta_physical_columns"} {
+			if err := work.ChargeJSON(phase, meta.Columns); err != nil {
+				return err
+			}
+		}
+	}
+	if err := work.ChargeBytes("native_meta_schema_preimage", counter.n); err != nil {
+		return err
+	}
+	if err := work.ChargeBytes("native_meta_schema_digest", sha256.Size*2); err != nil {
+		return err
+	}
+	return work.ChargeBytes("native_meta_digest_validation", sha256.Size)
 }

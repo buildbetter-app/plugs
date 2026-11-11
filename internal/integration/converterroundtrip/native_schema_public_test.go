@@ -283,15 +283,7 @@ func assertActualOwnVersionReceiving(t *testing.T, store driver.Store, profile d
 				historyClass = family.History
 			}
 		}
-		want, err := nativeTableRecord(identity, table, historyClass, value)
-		if err != nil {
-			t.Fatal(err)
-		}
-		got, err := r.Get(ctx, []model.Ref{want.Ref})
-		if err != nil || len(got) != 1 {
-			t.Fatal("actual current table lost", table, err)
-		}
-		assertNativeTableValue(t, got[0], identity, table, historyClass, value)
+		assertNativeTableReadback(t, r, identity, table, historyClass, value)
 		matches := 0
 		for _, family := range report.NativeFamilies {
 			if family.Source == identity && family.Family == table {
@@ -326,15 +318,7 @@ func assertActualOwnVersionReceiving(t *testing.T, store driver.Store, profile d
 		}
 		assertNativeMissingImageTables(t, pinned, identity, scope, image)
 		for table, value := range image.Tables {
-			want, err := nativeTableRecord(identity, table, "retained-native-commit", value)
-			if err != nil {
-				t.Fatal(err)
-			}
-			got, err := pinned.Get(ctx, []model.Ref{want.Ref})
-			if err != nil || len(got) != 1 {
-				t.Fatal("actual original table/image lost", table, err)
-			}
-			assertNativeTableValue(t, got[0], identity, table, "retained-native-commit", value)
+			assertNativeTableReadback(t, pinned, identity, table, "retained-native-commit", value)
 		}
 		if err := pinned.Close(); err != nil {
 			t.Fatal(err)

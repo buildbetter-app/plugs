@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -37,6 +38,17 @@ type PreparedSourceRestore struct{ logical []byte }
 
 func (s PreparedSourceRestore) LogicalImage() []byte { return bytes.Clone(s.logical) }
 func (s PreparedSourceRestore) SHA256() string       { return sourceImageHash(s.logical) }
+
+// Count the exact existing marshalComment selection before a prepared logical
+// image is allocated. The wire borrows fields; it does not clone comment bodies
+// or call the aggregate marshaler to discover their size.
+func (c commentState) NativeDeltaJSONSize() (uint64, error) {
+	wire := sourceCommentWire{Body: c.Body, Time: c.Time, Source: c.Source}
+	if c.Source == nil {
+		wire.Principal = &c.Principal
+	}
+	return dumpformat.NativeDeltaJSONSize(wire)
+}
 
 // SourceReverseEntry identifies one imported workflow item in its physical
 // source address domain. An absent item is terminal and has no retained body.
@@ -320,12 +332,43 @@ func (wire sourceWireRecord) matchesProject(project string) bool {
 	return wire.Project == "" || wire.Project == project
 }
 
-func sourceText(raw json.RawMessage) (string, error) {
+func sourceText(raw json.RawMessage, contexts ...context.Context) (string, error) {
+	if len(contexts) != 0 {
+		ctx := contexts[0]
+		if budget := dumpformat.NativeDeltaBudgetFromContext(ctx); budget != nil {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			n, err := dumpformat.NativeJSONStringBytes(raw)
+			if err != nil {
+				return "", err
+			}
+			if err := budget.ChargeBytes("workflow_source_text", n); err != nil {
+				return "", err
+			}
+		}
+	}
 	var text string
 	if err := json.Unmarshal(raw, &text); err != nil {
 		return "", sourceRefusal("source field is not text")
 	}
 	return text, nil
+}
+
+func sourceEntityID(raw json.RawMessage, ctx context.Context) (string, error) {
+	id, err := sourceText(raw, ctx)
+	if err != nil {
+		if canceled := ctx.Err(); canceled != nil {
+			return "", canceled
+		}
+		var limit *dumpformat.NativeDeltaDecodedLimitError
+		if errors.As(err, &limit) {
+			return "", err
+		}
+		// Preserve the original entity-address diagnostic for malformed IDs.
+		return "", sourceRefusal("source entity address differs")
+	}
+	return id, nil
 }
 
 func sourceBool(raw json.RawMessage) (bool, error) {
@@ -338,7 +381,14 @@ func sourceBool(raw json.RawMessage) (bool, error) {
 	return false, sourceRefusal("source flag is not a boolean or 0/1")
 }
 
-func sourceCommitment(raw []byte, commitment driver.SourcePlaneBytesV1, field bool) error {
+func sourceCommitment(raw []byte, commitment driver.SourcePlaneBytesV1, field bool, contexts ...context.Context) error {
+	ctx := context.Background()
+	if len(contexts) != 0 {
+		ctx = contexts[0]
+	}
+	ctx, release := dumpformat.WithNativeDeltaAccountingScope(ctx)
+	defer release()
+
 	if err := commitment.Validate(); err != nil {
 		return err
 	}
@@ -361,8 +411,11 @@ func sourceCommitment(raw []byte, commitment driver.SourcePlaneBytesV1, field bo
 		switch trimmed[0] {
 		case '"':
 			kind = "text"
-			value, err := sourceText(raw)
+			value, err := sourceText(raw, ctx)
 			if err != nil {
+				return err
+			}
+			if err := sourceRestoreChargeBytes(ctx, "workflow_commitment_text_bytes", uint64(len(value))); err != nil {
 				return err
 			}
 			data = []byte(value)
@@ -381,20 +434,23 @@ func sourceCommitment(raw []byte, commitment driver.SourcePlaneBytesV1, field bo
 	} else if commitment.Presence != "object" && commitment.Presence != "bytes" {
 		return sourceRefusal("raw record requires exact object/bytes commitment")
 	}
+	if err := sourceRestoreChargeBytes(ctx, "workflow_commitment_digest", sha256.Size*2); err != nil {
+		return err
+	}
 	if uint64(len(data)) != commitment.Size || sourceImageHash(data) != commitment.SHA256 {
 		return sourceRefusal("source byte commitment differs")
 	}
 	return nil
 }
 
-func sourceFieldCensus(fields map[string]json.RawMessage, commitments []driver.SourcePlaneFieldV1) error {
+func sourceFieldCensus(fields map[string]json.RawMessage, commitments []driver.SourcePlaneFieldV1, contexts ...context.Context) error {
 	seen := make(map[string]bool, len(commitments))
 	for _, field := range commitments {
 		if seen[field.Name] {
 			return sourceRefusal("duplicate field commitment")
 		}
 		seen[field.Name] = true
-		if err := sourceCommitment(fields[field.Name], field.Value, true); err != nil {
+		if err := sourceCommitment(fields[field.Name], field.Value, true, contexts...); err != nil {
 			return err
 		}
 	}
@@ -406,7 +462,36 @@ func sourceFieldCensus(fields map[string]json.RawMessage, commitments []driver.S
 	return nil
 }
 
-func sourceWireRecords(input []driver.SourcePlaneRecordV1) (map[string]sourceWireRecord, []driver.SourcePlaneRecordV1, error) {
+// Optional accounting uses the receiving operation's existing child scope.
+// These helpers do nothing without that budget; original APIs/wire bytes and
+// validation remain unchanged. JSON domains are compact encoding/json plus LF;
+// raw clones and binary source-plan buffers count their exact byte lengths.
+func sourceRestoreChargeJSON(ctx context.Context, phase string, value any) error {
+	if budget := dumpformat.NativeDeltaBudgetFromContext(ctx); budget != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return budget.ChargeJSON(phase, value)
+	}
+	return nil
+}
+
+func sourceRestoreChargeBytes(ctx context.Context, phase string, size uint64) error {
+	if budget := dumpformat.NativeDeltaBudgetFromContext(ctx); budget != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return budget.ChargeBytes(phase, size)
+	}
+	return nil
+}
+
+func sourceWireRecords(input []driver.SourcePlaneRecordV1, contexts ...context.Context) (map[string]sourceWireRecord, []driver.SourcePlaneRecordV1, error) {
+	ctx := context.Background()
+	if len(contexts) != 0 {
+		ctx = contexts[0]
+	}
+
 	if len(input) > driver.SourcePlaneMaxListEntries {
 		return nil, nil, sourceRefusal("source record count limit")
 	}
@@ -418,6 +503,9 @@ func sourceWireRecords(input []driver.SourcePlaneRecordV1) (map[string]sourceWir
 		total += len(record.Raw)
 		if total > driver.SourcePlaneMaxPlanBytes {
 			return nil, nil, sourceRefusal("source record byte limit")
+		}
+		if err := sourceRestoreChargeJSON(ctx, "workflow_wire_decoded", json.RawMessage(record.Raw)); err != nil {
+			return nil, nil, err
 		}
 		var wire sourceWireRecord
 		if err := decodeWorkflowJSON(record.Raw, &wire); err != nil {
@@ -435,12 +523,21 @@ func sourceWireRecords(input []driver.SourcePlaneRecordV1) (map[string]sourceWir
 			}
 			stores[identity.Project] = identity.StoreID
 		}
+		if err := sourceRestoreChargeBytes(ctx, "workflow_wire_hash_keys", sha256.Size*2); err != nil {
+			return nil, nil, err
+		}
 		hash := sourceImageHash(record.Raw)
 		if _, duplicate := byHash[hash]; duplicate {
 			return nil, nil, sourceRefusal("duplicate source record")
 		}
+		if err := sourceRestoreChargeBytes(ctx, "workflow_wire_raw_clone", uint64(len(record.Raw))); err != nil {
+			return nil, nil, err
+		}
 		wire.raw = bytes.Clone(record.Raw)
 		byHash[hash] = wire
+		if err := sourceRestoreChargeBytes(ctx, "workflow_origin_raw_clone", uint64(len(record.Raw))); err != nil {
+			return nil, nil, err
+		}
 		record.Raw = bytes.Clone(record.Raw)
 		records[i] = record
 	}
@@ -459,12 +556,12 @@ func sourceWireRecords(input []driver.SourcePlaneRecordV1) (map[string]sourceWir
 	return byHash, records, nil
 }
 
-func sourceMatchedRecord(byHash map[string]sourceWireRecord, commitment driver.SourcePlaneBytesV1) (sourceWireRecord, error) {
+func sourceMatchedRecord(byHash map[string]sourceWireRecord, commitment driver.SourcePlaneBytesV1, contexts ...context.Context) (sourceWireRecord, error) {
 	wire, ok := byHash[commitment.SHA256]
 	if !ok {
 		return wire, sourceRefusal("missing original record")
 	}
-	return wire, sourceCommitment(wire.raw, commitment, false)
+	return wire, sourceCommitment(wire.raw, commitment, false, contexts...)
 }
 
 // PrepareSourceRestore consumes explicit identities and declarations. It never
@@ -474,6 +571,26 @@ func (p *Provider) PrepareSourceRestore(ctx context.Context, plan driver.SourceP
 	if err := ctx.Err(); err != nil {
 		return PreparedSourceRestore{}, err
 	}
+	// Work owns the detached plan, decoded wires, indexes and projected state.
+	// Only the complete prepared logical byte buffer transfers to the caller.
+	var work, output *dumpformat.NativeDeltaBudget
+	var planBytes uint64
+	if parent := dumpformat.NativeDeltaBudgetFromContext(ctx); parent != nil {
+		work, output = parent.Scope(), parent.Scope()
+		defer work.Release()
+		defer output.Release()
+		ctx = dumpformat.WithNativeDeltaBudget(ctx, work)
+		n, err := dumpformat.NativeSourcePlanePlanSize(plan)
+		if err != nil {
+			return PreparedSourceRestore{}, err
+		}
+		planBytes = n
+		for _, phase := range []string{"workflow_plan_encoded", "workflow_plan_decoded", "workflow_plan_canonical_check"} {
+			if err := work.ChargeBytes(phase, n); err != nil {
+				return PreparedSourceRestore{}, err
+			}
+		}
+	}
 	encoded, err := driver.EncodeSourcePlanePlanV1(plan)
 	if err != nil {
 		return PreparedSourceRestore{}, err
@@ -482,10 +599,15 @@ func (p *Provider) PrepareSourceRestore(ctx context.Context, plan driver.SourceP
 	if err != nil {
 		return PreparedSourceRestore{}, err
 	}
+	if work != nil {
+		encoded = nil
+		work.ReleaseBytes("workflow_plan_encoded", planBytes)
+		work.ReleaseBytes("workflow_plan_canonical_check", planBytes)
+	}
 	if len(plan.Providers) != 1 || plan.Providers[0].Alias != Alias || plan.Providers[0].Instance != "default" || plan.Providers[0].Schema != SourceStateSchema || plan.Providers[0].Namespace != "plugin/workflow/default/durable" || plan.Providers[0].Codec != "workflow/json/1" || plan.Providers[0].OriginAdapter != "beads-workflow-origins/1" {
 		return PreparedSourceRestore{}, sourceRefusal("unsupported provider schema")
 	}
-	byHash, raw, err := sourceWireRecords(records)
+	byHash, raw, err := sourceWireRecords(records, ctx)
 	if err != nil {
 		return PreparedSourceRestore{}, err
 	}
@@ -498,6 +620,9 @@ func (p *Provider) PrepareSourceRestore(ctx context.Context, plan driver.SourceP
 	for _, declaration := range plan.Principals {
 		if declaration.UnverifiedOriginOnly {
 			continue
+		}
+		if err := sourceRestoreChargeJSON(ctx, "workflow_principal_decoded", json.RawMessage(declaration.PrincipalJSON)); err != nil {
+			return PreparedSourceRestore{}, err
 		}
 		var principal model.PrincipalRef
 		if err := decodeWorkflowJSON(declaration.PrincipalJSON, &principal); err != nil {
@@ -515,9 +640,22 @@ func (p *Provider) PrepareSourceRestore(ctx context.Context, plan driver.SourceP
 		if !ok {
 			return PreparedSourceRestore{}, sourceRefusal("run has no trusted principal")
 		}
+		if err := sourceRestoreChargeJSON(ctx, "workflow_principal_key_validation", principal); err != nil {
+			return PreparedSourceRestore{}, err
+		}
+		if err := sourceRestoreChargeBytes(ctx, "workflow_principal_keys", uint64(len(principal.Kind))+1+uint64(len(principal.ID))); err != nil {
+			return PreparedSourceRestore{}, err
+		}
 		key, err := driver.PrincipalKey(principal)
 		if err != nil {
 			return PreparedSourceRestore{}, err
+		}
+		if work != nil {
+			n, err := dumpformat.NativeDeltaJSONSize(principal)
+			if err != nil {
+				return PreparedSourceRestore{}, err
+			}
+			work.ReleaseBytes("workflow_principal_key_validation", n)
 		}
 		runs[runKey{run.Project, run.Key}] = run
 		value.Runs[run.TargetID] = runState{ID: run.TargetID, Template: run.Template, Project: run.Project, State: run.State, Owner: ownerState{Principal: key, Agent: effectiveAgent(principal, model.WriteMeta{}), Project: run.Project}}
@@ -528,15 +666,18 @@ func (p *Provider) PrepareSourceRestore(ctx context.Context, plan driver.SourceP
 		if err := ctx.Err(); err != nil {
 			return PreparedSourceRestore{}, err
 		}
-		wire, err := sourceMatchedRecord(byHash, entity.Origin)
+		wire, err := sourceMatchedRecord(byHash, entity.Origin, ctx)
 		if err != nil {
 			return PreparedSourceRestore{}, err
 		}
-		physicalID, err := sourceText(wire.Source.Fields["id"])
-		if err != nil || physicalID != entity.Source.ID || wire.Source.Table != entity.Source.Plane || !wire.matchesProject(entity.Source.Project) {
+		physicalID, err := sourceEntityID(wire.Source.Fields["id"], ctx)
+		if err != nil {
+			return PreparedSourceRestore{}, err
+		}
+		if physicalID != entity.Source.ID || wire.Source.Table != entity.Source.Plane || !wire.matchesProject(entity.Source.Project) {
 			return PreparedSourceRestore{}, sourceRefusal("source entity address differs")
 		}
-		if err := sourceFieldCensus(wire.Source.Fields, entity.Fields); err != nil {
+		if err := sourceFieldCensus(wire.Source.Fields, entity.Fields, ctx); err != nil {
 			return PreparedSourceRestore{}, err
 		}
 		used[entity.Origin.SHA256] = true
@@ -548,7 +689,7 @@ func (p *Provider) PrepareSourceRestore(ctx context.Context, plan driver.SourceP
 		if d.Lifetime != string(plan.Providers[0].Lifetime) {
 			return PreparedSourceRestore{}, sourceRefusal("active disposition lifetime differs from selected provider")
 		}
-		item, created, err := sourceItem(entity, d, wire.Source.Fields)
+		item, created, err := sourceItem(ctx, entity, d, wire.Source.Fields)
 		if err != nil {
 			return PreparedSourceRestore{}, err
 		}
@@ -585,12 +726,24 @@ func (p *Provider) PrepareSourceRestore(ctx context.Context, plan driver.SourceP
 			return PreparedSourceRestore{}, sourceRefusal("source record lacks an explicit disposition")
 		}
 	}
+	if output != nil {
+		n, err := dumpformat.NativeDeltaJSONSize(value)
+		if err != nil {
+			return PreparedSourceRestore{}, err
+		}
+		if err := output.ChargeBytes("workflow_prepared_logical", n-1); err != nil {
+			return PreparedSourceRestore{}, err
+		}
+	}
 	logical, err := json.Marshal(value)
 	if err != nil {
 		return PreparedSourceRestore{}, err
 	}
 	if err := ctx.Err(); err != nil {
 		return PreparedSourceRestore{}, err
+	}
+	if output != nil {
+		output.Retain()
 	}
 	return PreparedSourceRestore{logical: logical}, nil
 }

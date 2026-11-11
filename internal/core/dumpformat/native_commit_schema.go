@@ -212,34 +212,42 @@ func validateNativeCommitSchemas(h NativeHistory) error {
 		// Legacy synthetic and fixed-version archives retain their exact wire.
 		return nil
 	}
-	census := nativeCommitSchemaSurfaces()
 	for _, image := range h.Images {
-		p := image.SchemaProfile
-		refuse := func(reason string) error {
-			err := NativeCommitSchemaError{OrdinalFromHead: uint64(len(h.Commits)) - image.Sequence + 1, Reason: reason}
-			if p != nil {
-				err.MainVersion, err.IgnoredVersion = p.MainVersion, p.IgnoredVersion
-			}
+		if annotated != len(h.Images) {
+			return NativeCommitSchemaError{OrdinalFromHead: uint64(len(h.Commits)) - image.Sequence + 1, Reason: "mixed annotated and legacy images"}
+		}
+		if err := validateNativeCommitSchema(image, uint64(len(h.Commits))); err != nil {
 			return err
 		}
-		if annotated != len(h.Images) {
-			return refuse("mixed annotated and legacy images")
-		}
-		if p.Format != NativeCommitSchemaFormat || p.Scope != NativeCommitSchemaScope || p.Absences == nil {
-			return refuse("unsupported per-commit profile shape")
-		}
-		if p.MainVersion == nil && (!nativeCommitInitialRoot(image.Tables) || p.IgnoredVersion != nil) {
-			return refuse("null main cursor requires an initial physical root")
-		}
-		if err := nativeCommitCursor(image.Tables, "schema_migrations", p.MainVersion, migrationHashes["main"]); err != nil {
-			return refuse("main cursor or pinned prefix differs")
-		}
-		if err := nativeCommitCursor(image.Tables, "ignored_schema_migrations", p.IgnoredVersion, migrationHashes["ignored"]); err != nil {
-			return refuse("ignored cursor or pinned prefix differs")
-		}
-		if !equalJSON(p.Absences, nativeCommitAbsences(image.Tables, census)) {
-			return refuse("absence facts differ from observed physical schema")
-		}
 	}
+	return nil
+}
+
+func validateNativeCommitSchema(image NativeHistoryImage, count uint64) error {
+	census := nativeCommitSchemaSurfaces()
+	p := image.SchemaProfile
+	refuse := func(reason string) error {
+		err := NativeCommitSchemaError{OrdinalFromHead: count - image.Sequence + 1, Reason: reason}
+		if p != nil {
+			err.MainVersion, err.IgnoredVersion = p.MainVersion, p.IgnoredVersion
+		}
+		return err
+	}
+	if p == nil || p.Format != NativeCommitSchemaFormat || p.Scope != NativeCommitSchemaScope || p.Absences == nil {
+		return refuse("unsupported per-commit profile shape")
+	}
+	if p.MainVersion == nil && (!nativeCommitInitialRoot(image.Tables) || p.IgnoredVersion != nil) {
+		return refuse("null main cursor requires an initial physical root")
+	}
+	if err := nativeCommitCursor(image.Tables, "schema_migrations", p.MainVersion, migrationHashes["main"]); err != nil {
+		return refuse("main cursor or pinned prefix differs")
+	}
+	if err := nativeCommitCursor(image.Tables, "ignored_schema_migrations", p.IgnoredVersion, migrationHashes["ignored"]); err != nil {
+		return refuse("ignored cursor or pinned prefix differs")
+	}
+	if !equalJSON(p.Absences, nativeCommitAbsences(image.Tables, census)) {
+		return refuse("absence facts differ from observed physical schema")
+	}
+
 	return nil
 }

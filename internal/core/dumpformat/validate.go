@@ -3,6 +3,7 @@ package dumpformat
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -71,12 +72,53 @@ func ReadFile(path string) (*Archive, error) {
 }
 
 func Read(reader io.Reader) (*Archive, error) {
-	data, err := io.ReadAll(io.LimitReader(reader, MaxArchiveBytes+1))
+	return readArchive(reader, false)
+}
+
+func readArchive(reader io.Reader, nativeDeltaAttachment bool) (*Archive, error) {
+	return readArchiveWithBudget(reader, nativeDeltaAttachment, NewNativeDeltaBudget(0))
+}
+
+// ReadWithNativeDeltaAccounting preserves Read's validation and byte domains,
+// sharing an optional receiving budget when recovery reopens retained evidence.
+// The returned archive owns its reservations until ReleaseNativeDecoded.
+func ReadWithNativeDeltaAccounting(ctx context.Context, reader io.Reader) (*Archive, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	budget := NativeDeltaBudgetFromContext(ctx)
+	if budget == nil {
+		budget = NewNativeDeltaBudget(0)
+	}
+	return readArchiveWithBudget(reader, false, budget)
+}
+
+func readArchiveWithBudget(reader io.Reader, nativeDeltaAttachment bool, budget *NativeDeltaBudget) (*Archive, error) {
+	owner := budget.Scope()
+	data, err := nativeDeltaReadBounded(reader, MaxArchiveBytes, owner, "source_tar")
 	if err != nil {
+		owner.Release()
 		return nil, fmt.Errorf("read archive: %w", err)
 	}
-	if len(data) > MaxArchiveBytes {
-		return nil, fmt.Errorf("archive exceeds %d bytes", MaxArchiveBytes)
+	archive, err := readArchiveData(data, nativeDeltaAttachment, owner)
+	if err != nil {
+		owner.Release()
+		return nil, err
+	}
+	if len(archive.tarBytes) == 0 {
+		// Native-store validation keeps members, not the source envelope.
+		owner.ReleaseBytes("source_tar", uint64(cap(data)))
+	}
+	return archive, nil
+}
+
+// The v2 attachment already owns an admitted head buffer; parse it directly
+// rather than creating another complete io.ReadAll/tar copy.
+func readArchiveData(data []byte, nativeDeltaAttachment bool, budget *NativeDeltaBudget) (*Archive, error) {
+	var decodeWork *NativeDeltaBudget
+	if budget != nil {
+		decodeWork = budget.Scope()
+		defer decodeWork.Release()
 	}
 	if len(data) < 1024 || len(data)%512 != 0 || !bytes.Equal(data[len(data)-1024:], make([]byte, 1024)) {
 		return nil, fmt.Errorf("invalid tar length or end blocks")
@@ -105,9 +147,54 @@ func Read(reader io.Reader) (*Archive, error) {
 		if _, exists := members[header.Name]; exists {
 			return nil, fmt.Errorf("duplicate archive member %q", header.Name)
 		}
-		member, readErr := io.ReadAll(tr)
+		var member []byte
+		var readErr error
+		if budget == nil {
+			member, readErr = io.ReadAll(tr)
+		} else {
+			if err := budget.ChargeBytes("head_member_payloads", uint64(header.Size)); err != nil {
+				return nil, err
+			}
+			member = make([]byte, int(header.Size))
+			_, readErr = io.ReadFull(tr, member)
+		}
 		if readErr != nil {
 			return nil, fmt.Errorf("read archive member %q: %w", header.Name, readErr)
+		}
+		if decodeWork != nil && !strings.HasPrefix(header.Name, "blobs/") {
+			// Head members are JSON or NDJSON. Every retained decoded value is
+			// admitted from its compact escaped source preimage before any
+			// legacy validator parses or transforms it.
+			var count uint64
+			lines := [][]byte{member}
+			if strings.HasSuffix(header.Name, ".ndjson") {
+				lines = bytes.Split(member, []byte{'\n'})
+			}
+			for _, line := range lines {
+				if len(bytes.TrimSpace(line)) == 0 {
+					continue
+				}
+				c := deltaSizeCounter{}
+				if err := c.raw(line); err != nil {
+					return nil, err
+				}
+				if err := deltaAddCount(&count, c.n+1); err != nil {
+					return nil, err
+				}
+			}
+			if err := budget.ChargeBytes("head_decoded_payloads", count); err != nil {
+				return nil, err
+			}
+			for _, phase := range []string{"head_validation_input", "head_shape_input", "head_typed_input"} {
+				if err := decodeWork.ChargeBytes(phase, uint64(len(member))); err != nil {
+					return nil, err
+				}
+			}
+			for _, phase := range []string{"head_validation_tokens", "head_shape_values"} {
+				if err := decodeWork.ChargeBytes(phase, count); err != nil {
+					return nil, err
+				}
+			}
 		}
 		members[header.Name] = member
 		paths = append(paths, header.Name)
@@ -147,6 +234,13 @@ func Read(reader io.Reader) (*Archive, error) {
 	if err := validateSourceIdentityMarker(manifestFields, manifest); err != nil {
 		return nil, err
 	}
+	if marker, present := manifestFields["native_history_contract"]; present {
+		if !nativeDeltaAttachment || manifest.NativeHistoryContract != NativeDeltaFormat || string(marker) == "null" || manifest.SourceFamilyContract != SourceFamilyContract || manifest.Scope != Scope {
+			return nil, fmt.Errorf("native delta history requires complete capture-set attachment")
+		}
+	} else if nativeDeltaAttachment {
+		return nil, fmt.Errorf("capture-set head lacks native delta marker")
+	}
 	if manifest.Scope == "plug-native-store" {
 		if manifest.SourceFieldsContract != "" || manifest.SourcePlaneAddressContract != "" || manifest.StatusCategoryContract != "" {
 			return nil, fmt.Errorf("Beads source fields contract requires offline source scope")
@@ -154,7 +248,7 @@ func Read(reader io.Reader) (*Archive, error) {
 		if err := validateNativeArchive(manifest, members, paths); err != nil {
 			return nil, err
 		}
-		return &Archive{sha256: digest(data), manifest: manifest, members: members, native: true}, nil
+		return &Archive{sha256: digest(data), manifest: manifest, members: members, native: true, nativeBudget: budget}, nil
 	}
 	if _, present := members[NativeAllocatorMember]; present || manifest.NativeAllocatorProfile != "" || manifest.NativeAllocatorDigest != "" {
 		return nil, fmt.Errorf("native allocator snapshot requires plug-native-store scope")
@@ -162,13 +256,28 @@ func Read(reader io.Reader) (*Archive, error) {
 	if err := validateManifest(manifest, members); err != nil {
 		return nil, err
 	}
-	byKind, migration, err := validateRecords(manifest, members)
+	byKind, migration, err := validateRecords(manifest, members, nativeDeltaAttachment)
 	if err != nil {
 		return nil, err
 	}
-	archive := &Archive{sha256: digest(data), tarBytes: append([]byte(nil), data...), manifest: manifest, members: members, byKind: byKind, migration: migration}
-	if err := validateNativeSourceHistories(archive); err != nil {
-		return nil, err
+	retainedTar := data
+	if budget == nil {
+		retainedTar = append([]byte(nil), data...)
+	}
+	archive := &Archive{sha256: digest(data), tarBytes: retainedTar, manifest: manifest, members: members, byKind: byKind, migration: migration, nativeBudget: budget}
+	if !nativeDeltaAttachment {
+		if err := validateNativeSourceHistories(archive); err != nil {
+			return nil, err
+		}
+	} else {
+		for name := range members {
+			if name == NativeHistoryMember {
+				return nil, fmt.Errorf("delta head contains aggregate native history")
+			}
+			if _, ok := scopedNativeMember(name); ok {
+				return nil, fmt.Errorf("delta head contains aggregate native history")
+			}
+		}
 	}
 	if err := validateSourceHistory(archive); err != nil {
 		return nil, err
@@ -479,7 +588,7 @@ func validateProjects(input []Project) error {
 	return nil
 }
 
-func validateRecords(manifest Manifest, members map[string][]byte) (map[string][]Record, *ImportMigration, error) {
+func validateRecords(manifest Manifest, members map[string][]byte, nativeDeltaAttachment bool) (map[string][]Record, *ImportMigration, error) {
 	registry := map[string]bool{}
 	byKind := map[string][]Record{}
 	counts := map[string]int{}
@@ -573,7 +682,10 @@ func validateRecords(manifest Manifest, members map[string][]byte) (map[string][
 	}
 	for _, kind := range manifest.Kinds {
 		for _, record := range byKind[kind.Name] {
-			if planes && (record.Kind == "edge" || sourcePlaneArchiveTable(record.Source.Table) || nativeOperationalTable(record.Source.Table, manifest.SourceFamilyContract)) {
+			// The private v2 attachment selects known opaque native records before
+			// the portable refuse-if-nonempty guard. Shape/body/count validation
+			// still runs; complete stream/current reconciliation follows below.
+			if nativeDeltaAttachment && manifest.SourceFamilyContract == SourceFamilyContract && nativeDeltaOpaqueArchiveFamily(record.Source.Table) || planes && (record.Kind == "edge" || sourcePlaneArchiveTable(record.Source.Table) || nativeOperationalTable(record.Source.Table, manifest.SourceFamilyContract)) {
 				if err := validateSourcePlaneRecord(record, manifest, counts, statuses); err != nil {
 					return nil, nil, err
 				}
@@ -584,7 +696,7 @@ func validateRecords(manifest Manifest, members map[string][]byte) (map[string][
 			}
 		}
 	}
-	if err := validateBoundDispositionsForVersion(manifest.Sources, counts, members["config/sources.json"], migration, planes, manifest.MainVersion, manifest.SourceFamilyContract); err != nil {
+	if err := validateCaptureDispositionsForVersion(manifest.Sources, counts, members["config/sources.json"], migration, planes, manifest.MainVersion, nativeDeltaAttachment, manifest.SourceFamilyContract); err != nil {
 		return nil, nil, err
 	}
 	if migration == nil {

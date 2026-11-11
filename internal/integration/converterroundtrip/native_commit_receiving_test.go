@@ -270,15 +270,7 @@ func assertNativeHistoryReceiving(t *testing.T, store driver.Store, profile driv
 			}
 			assertNativeMissingImageTables(t, pinned, identity, scope, image)
 			for name, value := range image.Tables {
-				want, err := nativeTableRecord(identity, name, "retained-native-commit", value)
-				if err != nil {
-					t.Fatal(err)
-				}
-				rows, err := pinned.Get(ctx, []model.Ref{want.Ref})
-				if err != nil || len(rows) != 1 {
-					t.Fatal("original image table missing", image.Sequence, name, err)
-				}
-				assertNativeTableValue(t, rows[0], identity, name, "retained-native-commit", value)
+				assertNativeTableReadback(t, pinned, identity, name, "retained-native-commit", value)
 			}
 			for _, record := range archive.Records("bead") {
 				rows, err := pinned.Get(ctx, []model.Ref{model.RefByID(record.ID, model.Natural64(0))})
@@ -308,15 +300,7 @@ func assertNativeHistoryReceiving(t *testing.T, store driver.Store, profile driv
 				}
 				value.Rows = kept
 			}
-			want, err := nativeTableRecord(identity, family.Family, family.History, value)
-			if err != nil {
-				t.Fatal(err)
-			}
-			rows, err := reader.Get(ctx, []model.Ref{want.Ref})
-			if err != nil || len(rows) != 1 {
-				t.Fatal("original current table missing", family.Family, err)
-			}
-			assertNativeTableValue(t, rows[0], identity, family.Family, family.History, value)
+			assertNativeTableReadback(t, reader, identity, family.Family, family.History, value)
 		}
 	}
 	if len(history.Mapping) != imageCount || len(report.NativeFamilies) != familyCount || len(report.NativeSchemas) != len(archive.NativeSourceHistories()) {

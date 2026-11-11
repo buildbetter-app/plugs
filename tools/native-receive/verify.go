@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
@@ -49,39 +50,163 @@ type nativeBody struct {
 	Rows    []dumpformat.Row          `json:"rows"`
 }
 
-func tableRef(source dumpformat.SourceIdentity, table, history string) (model.Ref, error) {
-	tuple, err := json.Marshal([]string{source.StoreID, source.Project, table})
-	if err != nil {
-		return model.Ref{}, err
-	}
-	prefix := "source/native-current/"
-	if history == "retained-native-commit" {
-		prefix = driver.NativeTableHistoryRecordPrefix
-	}
-	return model.RefByID(prefix+digest(tuple), model.Natural64(0)), nil
+type nativeGroup struct {
+	Source  dumpformat.SourceIdentity
+	Table   string
+	History string
 }
 
-func checkTable(ctx context.Context, reader driver.Reader, source dumpformat.SourceIdentity, table, history string, value dumpformat.NativeTable) error {
-	ref, err := tableRef(source, table, history)
+// Exhaust the fixed snapshot without a Kind filter. Every native-namespace
+// record must decode canonically, including wrong-Kind or malformed extras.
+func nativeGroups(ctx context.Context, reader driver.Reader, sources map[dumpformat.SourceIdentity]bool) (map[nativeGroup][]driver.Record, error) {
+	view := reader.Snapshot()
+	if view.At == nil {
+		return nil, fmt.Errorf("native query requires fixed snapshot")
+	}
+	groups := map[nativeGroup][]driver.Record{}
+	seen, cursors := map[string]bool{}, map[string]bool{}
+	var cursor *driver.Cursor
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		page, err := reader.Query(ctx, driver.Query{AsOf: view.At, Cursor: cursor, Limit: 256})
+		if err != nil {
+			return nil, err
+		}
+		if page.AsOf != *view.At {
+			return nil, fmt.Errorf("native query snapshot differs")
+		}
+		for _, record := range page.Items {
+			key, err := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &record.Ref})
+			if err != nil || seen[key] {
+				return nil, fmt.Errorf("native query repeats/invalidates Ref")
+			}
+			seen[key] = true
+			if !strings.HasPrefix(record.Ref.ID, driver.NativeTableHistoryRecordPrefix) && !strings.HasPrefix(record.Ref.ID, "source/native-current/") {
+				continue
+			}
+			meta, row, err := dumpformat.DecodeNativeRowRecord(record)
+			if err != nil {
+				return nil, err
+			}
+			var group nativeGroup
+			if meta != nil {
+				group = nativeGroup{meta.Source, meta.Table, meta.History}
+			} else {
+				group = nativeGroup{row.Source, row.Table, row.History}
+			}
+			if !sources[group.Source] {
+				return nil, fmt.Errorf("native query has foreign source ownership")
+			}
+			groups[group] = append(groups[group], record)
+		}
+		if page.NextCursor == nil {
+			return groups, nil
+		}
+		if len(page.Items) == 0 || page.NextCursor.Incarnation != view.Incarnation || page.NextCursor.Revision != *view.At || page.NextCursor.Method != "query" {
+			return nil, fmt.Errorf("native query cursor differs")
+		}
+		encoded, err := json.Marshal(page.NextCursor)
+		if err != nil || cursors[string(encoded)] {
+			return nil, fmt.Errorf("native query cursor repeats")
+		}
+		cursors[string(encoded)] = true
+		cursor = page.NextCursor
+	}
+}
+
+func checkTable(groups map[nativeGroup][]driver.Record, source dumpformat.SourceIdentity, table, history string, value dumpformat.NativeTable) error {
+	group := nativeGroup{source, table, history}
+	records := groups[group]
+	actual, meta, err := dumpformat.ReconstructNativeRowTable(source, table, history, records, nil)
+	if err != nil {
+		return fmt.Errorf("native table %s: %w", table, err)
+	}
+	if meta.IdentityKind != dumpformat.NativeRowV1ContentBag || meta.PhysicalColumns != nil || meta.PhysicalTableSHA256 != nil || len(records) != len(value.Rows)+1 {
+		return fmt.Errorf("native table %s: row/meta identity or census differs", table)
+	}
+	// Keep the original ordered table envelope as the independent byte oracle;
+	// the actual row group must reconstruct those exact lexical JSON bytes.
+	want, err := json.Marshal(nativeBody{source, table, history, value.Columns, value.Rows})
 	if err != nil {
 		return err
 	}
-	rows, err := reader.Get(ctx, []model.Ref{ref})
-	if err != nil {
-		return err
+	got, err := dumpformat.NativeTableBodyBytes(source, table, history, actual)
+	if err != nil || !bytes.Equal(got, want) {
+		return fmt.Errorf("native table %s: reconstructed old table bytes differ", table)
 	}
-	if len(rows) != 1 || rows[0].Kind != "beads-archive" {
-		return fmt.Errorf("native table %s: committed record missing", table)
-	}
-	var actual nativeBody
-	if err := decode(rows[0].Body, &actual); err != nil {
-		return err
-	}
-	want := nativeBody{source, table, history, value.Columns, value.Rows}
-	if !reflect.DeepEqual(actual, want) {
-		return fmt.Errorf("native table %s: columns/cells/multiplicity differ", table)
-	}
+	delete(groups, group)
 	return nil
+}
+
+// Sources lists ordinary families. Captured opaque native families have a
+// separate authenticated disposition and still belong to the complete current
+// census, including empty tables.
+func nativeCurrentClasses(scope dumpformat.NativeHistory) (map[string]string, error) {
+	classes := map[string]string{}
+	for _, family := range scope.Sources {
+		if family.History == "" {
+			continue
+		}
+		value, present := scope.Current[family.Family]
+		if !present || classes[family.Family] != "" || family.Rows != len(value.Rows) || family.History != dumpformat.FamilyVersioned && family.History != dumpformat.FamilyUnversioned {
+			return nil, fmt.Errorf("native current family disposition differs")
+		}
+		classes[family.Family] = family.History
+	}
+	for name := range scope.Current {
+		if scope.OpaqueNativeCurrentFamily(name) {
+			if classes[name] != "" {
+				return nil, fmt.Errorf("native current opaque family duplicated")
+			}
+			classes[name] = dumpformat.FamilyOpaqueNative
+		}
+	}
+	if len(classes) != len(scope.Current) {
+		return nil, fmt.Errorf("native current family census incomplete")
+	}
+	return classes, nil
+}
+
+// A mapped snapshot also contains the last image of every preceding source.
+// Derive its complete membership from authenticated images and the original
+// ordered mapping; no receiver-returned Ref supplies an expectation.
+func nativeMappedTables(histories []dumpformat.NativeHistory, evidence driver.HistoryImportEvidence, at model.Revision) (map[nativeGroup]dumpformat.NativeTable, error) {
+	expected := map[nativeGroup]dumpformat.NativeTable{}
+	for _, mapping := range evidence.Mapping {
+		source := dumpformat.SourceIdentity{StoreID: mapping.SourceStoreID, Project: mapping.Project}
+		for group := range expected {
+			if group.Source == source {
+				delete(expected, group)
+			}
+		}
+		matched := false
+		for _, scope := range histories {
+			if len(scope.Projects) != 1 || scope.StoreID != source.StoreID || scope.Projects[0] != source.Project {
+				continue
+			}
+			for _, image := range scope.Images {
+				if image.Sequence != mapping.SourceSequence {
+					continue
+				}
+				if matched || !reflect.DeepEqual(mapping.CommitIDs, []string{image.CommitID}) {
+					return nil, fmt.Errorf("native snapshot source mapping differs")
+				}
+				for name, value := range image.Tables {
+					expected[nativeGroup{source, name, "retained-native-commit"}] = value
+				}
+				matched = true
+			}
+		}
+		if !matched {
+			return nil, fmt.Errorf("native snapshot mapping lacks authenticated image")
+		}
+		if mapping.Revision == at {
+			return expected, nil
+		}
+	}
+	return nil, fmt.Errorf("native snapshot is not a source mapping")
 }
 
 func verifyNative(ctx context.Context, store driver.Store, profile driver.RestoreImportProfile, report converterroundtrip.Report, input []byte) (verification, error) {
@@ -90,6 +215,7 @@ func verifyNative(ctx context.Context, store driver.Store, profile driver.Restor
 	if err != nil {
 		return proof, err
 	}
+	histories := archive.NativeSourceHistories()
 	when, err := time.Parse(time.RFC3339Nano, profile.HistoryTime)
 	if err != nil {
 		return proof, err
@@ -106,7 +232,7 @@ func verifyNative(ctx context.Context, store driver.Store, profile driver.Restor
 	if !bytes.Equal(retained, input) {
 		return proof, fmt.Errorf("committed original archive differs")
 	}
-	if report.Archive == nil || !reflect.DeepEqual(report.Archive.NativeSourceHistories(), archive.NativeSourceHistories()) {
+	if report.Archive == nil || !reflect.DeepEqual(report.Archive.NativeSourceHistories(), histories) {
 		return proof, fmt.Errorf("recovered per-source native images or schema annotations differ")
 	}
 	proof.ArchiveBlob = true
@@ -161,39 +287,38 @@ func verifyNative(ctx context.Context, store driver.Store, profile driver.Restor
 	}
 	wantComplete, images := true, uint64(0)
 	var boundaries []driver.NativeHistoryBoundary
-	var histories []converterroundtrip.NativeHistoryReport
-	for _, scope := range archive.NativeSourceHistories() {
+	var historyReports []converterroundtrip.NativeHistoryReport
+	for _, scope := range histories {
 		images += uint64(len(scope.Images))
 		if scope.HistoryCoverage != nil {
 			wantComplete = false
 			boundaries = append(boundaries, driver.NativeHistoryBoundary{SourceStoreID: scope.StoreID, Project: scope.Projects[0], VerifiedCommitCount: uint64(len(scope.Images)), BoundarySHA256: dumpformat.NativeHistoryCoverageSHA256(*scope.HistoryCoverage)})
 		}
-		histories = append(histories, converterroundtrip.NativeHistoryReport{Source: dumpformat.SourceIdentity{StoreID: scope.StoreID, Project: scope.Projects[0]}, Complete: scope.Complete, VerifiedCommitCount: uint64(len(scope.Images)), Coverage: scope.HistoryCoverage})
+		historyReports = append(historyReports, converterroundtrip.NativeHistoryReport{Source: dumpformat.SourceIdentity{StoreID: scope.StoreID, Project: scope.Projects[0]}, Complete: scope.Complete, VerifiedCommitCount: uint64(len(scope.Images)), Coverage: scope.HistoryCoverage})
 	}
 	if wantComplete {
-		histories = nil
+		historyReports = nil
 	}
-	if evidence.Source != driver.NativeTableHistorySource || evidence.Mode != driver.RestoreHistoryModeFull || evidence.Complete != wantComplete || len(evidence.Gaps) != 0 || evidence.First != 1 || evidence.Head != images || len(evidence.Mapping) != int(images) || !evidence.Floor.IsZero() || !reflect.DeepEqual(evidence.NativeBoundaries, boundaries) || !reflect.DeepEqual(report.NativeHistories, histories) {
+	if evidence.Source != driver.NativeTableHistorySource || evidence.Mode != driver.RestoreHistoryModeFull || evidence.Complete != wantComplete || len(evidence.Gaps) != 0 || evidence.First != 1 || evidence.Head != images || len(evidence.Mapping) != int(images) || !evidence.Floor.IsZero() || !reflect.DeepEqual(evidence.NativeBoundaries, boundaries) || !reflect.DeepEqual(report.NativeHistories, historyReports) {
 		return proof, fmt.Errorf("committed native history coverage differs from the authenticated source")
 	}
-	for _, scope := range archive.NativeSourceHistories() {
+	sources := map[dumpformat.SourceIdentity]bool{}
+	for _, scope := range histories {
+		sources[dumpformat.SourceIdentity{StoreID: scope.StoreID, Project: scope.Projects[0]}] = true
+	}
+	currentGroups, err := nativeGroups(ctx, reader, sources)
+	if err != nil {
+		return proof, err
+	}
+	for _, scope := range histories {
 		source := dumpformat.SourceIdentity{StoreID: scope.StoreID, Project: scope.Projects[0]}
-		seen := map[string]bool{}
-		for _, family := range scope.Sources {
-			// The original manifest also contains non-native files/dispositions.
-			// Only classified native families have current SQL table images.
-			if family.History == "" {
-				continue
-			}
-			if seen[family.Family] {
-				return proof, fmt.Errorf("native current family %s duplicated", family.Family)
-			}
-			seen[family.Family] = true
-			value, present := scope.Current[family.Family]
-			if !present {
-				return proof, fmt.Errorf("current family %s absent", family.Family)
-			}
-			if family.Family == "leases" {
+		classes, err := nativeCurrentClasses(scope)
+		if err != nil {
+			return proof, err
+		}
+		for name, history := range classes {
+			value := scope.Current[name]
+			if name == "leases" {
 				kept := []dumpformat.Row{}
 				for _, row := range value.Rows {
 					text, ok := row["lease_expires_at"].(string)
@@ -210,39 +335,11 @@ func verifyNative(ctx context.Context, store driver.Store, profile driver.Restor
 				}
 				value.Rows = kept
 			}
-			if err := checkTable(ctx, reader, source, family.Family, family.History, value); err != nil {
+			if err := checkTable(currentGroups, source, name, history, value); err != nil {
 				return proof, err
 			}
 			proof.CurrentFamilies++
 			proof.CurrentRows += len(value.Rows)
-		}
-		if len(seen) != len(scope.Current) {
-			return proof, fmt.Errorf("native current family census incomplete")
-		}
-		// The source family set can change across migrations. Check both the
-		// tables present in this image and the absence of tables found only in
-		// other images, so a dropped table cannot leak into later revisions.
-		historical := map[string]model.Ref{}
-		for _, image := range scope.Images {
-			for name := range image.Tables {
-				ref, err := tableRef(source, name, "retained-native-commit")
-				if err != nil {
-					return proof, err
-				}
-				historical[name] = ref
-			}
-			if image.SchemaProfile != nil {
-				for _, absence := range image.SchemaProfile.Absences {
-					if absence.Column != "" {
-						continue
-					}
-					ref, err := tableRef(source, absence.Family, "retained-native-commit")
-					if err != nil {
-						return proof, err
-					}
-					historical[absence.Family] = ref
-				}
-			}
 		}
 		for _, image := range scope.Images {
 			var revision model.Revision
@@ -263,27 +360,32 @@ func verifyNative(ctx context.Context, store driver.Store, profile driver.Restor
 			if err != nil {
 				return proof, err
 			}
-			absent := []model.Ref{}
-			for name, ref := range historical {
-				if _, present := image.Tables[name]; !present {
-					absent = append(absent, ref)
-				}
+			groups, err := nativeGroups(ctx, pinned, sources)
+			if err != nil {
+				_ = pinned.Close()
+				return proof, err
 			}
-			if len(absent) != 0 {
-				rows, err := pinned.Get(ctx, absent)
-				if err != nil {
+			expected, err := nativeMappedTables(histories, evidence, revision)
+			if err != nil {
+				_ = pinned.Close()
+				return proof, err
+			}
+			for group, value := range expected {
+				if err := checkTable(groups, group.Source, group.Table, group.History, value); err != nil {
 					_ = pinned.Close()
 					return proof, err
 				}
-				if len(rows) != 0 {
-					_ = pinned.Close()
-					return proof, fmt.Errorf("native image contains a table absent from the source image: %w", driver.ErrConflict)
-				}
+			}
+			if len(groups) != 0 {
+				_ = pinned.Close()
+				return proof, fmt.Errorf("native image has extra/orphan/absent-source table records: %w", driver.ErrConflict)
 			}
 			for name, value := range image.Tables {
-				if err := checkTable(ctx, pinned, source, name, "retained-native-commit", value); err != nil {
-					_ = pinned.Close()
-					return proof, err
+				if image.CommitID == scope.Head {
+					if err := checkTable(currentGroups, source, name, "retained-native-commit", value); err != nil {
+						_ = pinned.Close()
+						return proof, err
+					}
 				}
 				proof.HistoryTables++
 				proof.HistoryRows += len(value.Rows)
@@ -293,6 +395,9 @@ func verifyNative(ctx context.Context, store driver.Store, profile driver.Restor
 			}
 			proof.HistoryImages++
 		}
+	}
+	if len(currentGroups) != 0 {
+		return proof, fmt.Errorf("native current snapshot has extra/orphan table records: %w", driver.ErrConflict)
 	}
 	return proof, nil
 }

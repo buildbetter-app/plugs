@@ -164,6 +164,8 @@ func DefaultTreePolicy() TreePolicy {
 			"engdocs/design/plug/spec/ux-screens/people-50.png":                                     "f620d28fba6d16c9e104b351d61915f5ecd913f42e8ca3f8d14a8e8c066cc4cd",
 		},
 	}
+	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/public-native-delta-small-0e4d5da4.tar.gz"] = "66e2a1410cb6de0532e8bd453f06353d3fde8159ed9d6ffe4b0ed17f20bf6ef8"
+
 	// The numbered native schema corpus is immutable fixture input. Every
 	// file, including siblings without vocabulary matches, has an exact hash;
 	// a new sibling or changed byte continues to fail closed.

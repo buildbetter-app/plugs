@@ -59,11 +59,15 @@ func nativeSchemaAccounting(archive *dumpformat.Archive, profile driver.RestoreI
 		targetAllocators[allocator.Prefix] = allocator
 	}
 	reports := []NativeSchemaReport{}
-	for _, scope := range archive.NativeSourceHistories() {
-		identity, err := nativeTableIdentity(scope)
-		if err != nil || scope.SchemaProfile == nil {
+	metadata, err := archive.NativeSourceHistoryMetadata()
+	if err != nil {
+		return nil, err
+	}
+	for _, scope := range metadata {
+		if scope.StoreID == "" || len(scope.Projects) != 1 || scope.Projects[0] == "" || scope.SchemaProfile == nil {
 			return nil, fmt.Errorf("%w: source schema accounting lacks bound profile", driver.ErrUnsupported)
 		}
+		identity := dumpformat.SourceIdentity{StoreID: scope.StoreID, Project: scope.Projects[0]}
 		p := *scope.SchemaProfile
 		p.Absences = append([]dumpformat.NativeSchemaAbsence(nil), p.Absences...)
 		report := NativeSchemaReport{Source: identity, Profile: p, PlugDefaults: []NativePlugDefault{}, TargetOmissions: []NativeTargetOmission{}}

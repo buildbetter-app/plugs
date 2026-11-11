@@ -22,9 +22,9 @@ go_library(
 
 go_test(
     name = "workflow_test",
-    srcs = ["workflow_test.go"],
+    srcs = ["source_accounting_test.go", "workflow_test.go"],
     embed = [":workflow"],
-    deps = ["//internal/core/model", "//internal/storage/driver", "//pluginapi"],
+    deps = ["//internal/core/dumpformat", "//internal/core/model", "//internal/storage/driver", "//pluginapi"],
 )
 
 filegroup(
