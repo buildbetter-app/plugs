@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -48,9 +49,11 @@ func preparedDeltaFixture(t *testing.T) (*Archive, *int) {
 	f.write(NativeDeltaHeader{Type: "header", Format: NativeDeltaFormat, StoreID: f.root.StoreID, Projects: f.root.Projects, Head: f.root.Head, CommitCount: 4, Ignore: NativeTable{Columns: []string{"ignored", "pattern"}, Rows: []Row{}}, ConfigPolicy: map[string]string{}})
 	f.schema(schema)
 	parents := [][]string{{}, {strings.Repeat("a", 32)}, {strings.Repeat("a", 32)}, {strings.Repeat("c", 32), strings.Repeat("b", 32)}}
+	retained := map[string]map[string][]NativeDeltaRow{}
 	var head []deltaTestTransaction
 	for i, image := range states.expected {
 		transactions := []deltaTestTransaction{}
+		current := map[string][]NativeDeltaRow{}
 		for _, table := range []NativeDeltaTableSchema{bag, items, migrations} {
 			rows := migrationRows
 			if table.Name != "schema_migrations" {
@@ -63,14 +66,26 @@ func preparedDeltaFixture(t *testing.T) (*Archive, *int) {
 					rows = append(rows, deltaTestRow(t, table, id, row["value"].(string), uint64(occurrence)))
 				}
 			}
-			operations := make([]any, len(rows))
-			for i, row := range rows {
-				operations[i] = row
+			var before []NativeDeltaRow
+			tableMode := "replace"
+			if len(parents[i]) > 0 {
+				tableMode = "delta"
+				before = retained[parents[i][0]][table.Name]
 			}
-			transactions = append(transactions, deltaTestTransaction{table, "replace", rows, operations})
+			transactions = append(transactions, deltaTestTransaction{table, tableMode, rows, preparedDeltaOperations(t, before, rows)})
+			current[table.Name] = rows
 		}
-		f.transaction("commit", uint64(i+1), image.CommitID, schema, parents[i], "snapshot", transactions)
+		mode := "snapshot"
+		if len(parents[i]) > 0 {
+			mode = "delta"
+		}
+		f.transaction("commit", uint64(i+1), image.CommitID, schema, parents[i], mode, transactions)
+		retained[image.CommitID] = current
 		head = transactions
+	}
+	for i := range head {
+		head[i].mode = "replace"
+		head[i].ops = preparedDeltaOperations(t, nil, head[i].rows)
 	}
 	for _, kind := range []string{"head-checkpoint", "current"} {
 		f.transaction(kind, 0, f.root.Head, schema, nil, "", head)
@@ -95,6 +110,50 @@ func preparedDeltaFixture(t *testing.T) (*Archive, *int) {
 	}}
 	t.Cleanup(a.ReleaseNativeDecoded)
 	return a, opens
+}
+
+// The fixture's operations are relative to its actual first parent, including
+// the divergent branch. Checkpoints independently contain full replacements.
+func preparedDeltaOperations(t *testing.T, before, after []NativeDeltaRow) []any {
+	t.Helper()
+	index := func(rows []NativeDeltaRow) map[string]NativeDeltaRow {
+		result := map[string]NativeDeltaRow{}
+		for _, row := range rows {
+			key, err := base64.StdEncoding.DecodeString(row.Key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result[string(key)] = row
+		}
+		return result
+	}
+	previous, current := index(before), index(after)
+	operations := map[string]any{}
+	for key, row := range previous {
+		if _, exists := current[key]; !exists {
+			operations[key] = NativeDeltaDelete{Type: "row", Op: "delete", Key: row.Key}
+		}
+	}
+	for key, row := range current {
+		old, exists := previous[key]
+		if exists && reflect.DeepEqual(old.Cells, row.Cells) && old.NormalizedJSON == row.NormalizedJSON {
+			continue
+		}
+		if exists {
+			row.Op = "update"
+		}
+		operations[key] = row
+	}
+	keys := make([]string, 0, len(operations))
+	for key := range operations {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	result := make([]any, 0, len(keys))
+	for _, key := range keys {
+		result = append(result, operations[key])
+	}
+	return result
 }
 
 func TestNativeDeltaPreparedActualReplayIsolationOwnershipAndFreshReadback(t *testing.T) {
