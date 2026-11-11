@@ -23,8 +23,10 @@ func (s *NativeArchiveStream) readFrame(ctx context.Context,input io.Reader,limi
  if size==0 || limits.MaxFrameBytes<=0 || limits.MaxChunkBytes<=0 || size>uint64(limits.MaxFrameBytes) || size>nativeFrameBytes {return zero,nil,ErrCheckpoint{"native spool frame exceeds pull limit"}}
  owner,release:=s.archive.NativeDeltaAccountingScope()
  // Reserve encoding plus a conservative decoded representation before either
- // allocation. The reservation survives until the next borrowed pull/Close.
- if err=owner.ChargeNativeDeltaBytes("verifier_frame_pull",size*8+1024);err!=nil {release();return zero,nil,err}
+ // allocation. This is the real retained transfer batch, so the existing
+ // offline batch high-water gauge includes streamed receiving too. It survives
+ // until the next borrowed pull/Close, separately from raw capture staging.
+ if err=owner.ChargeNativeDeltaBytes("offline_batches",size*8+1024);err!=nil {release();return zero,nil,err}
  raw:=make([]byte,int(size));if _,err=io.ReadFull(input,raw);err!=nil {release();return zero,nil,err}
  var frame driver.OfflineHistoryStreamFrame
  if err=json.Unmarshal(raw,&frame);err!=nil {release();return zero,nil,err}
