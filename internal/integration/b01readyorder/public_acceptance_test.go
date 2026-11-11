@@ -107,10 +107,15 @@ func publicAcceptanceOntology(t *testing.T) *service.Ontology {
 
 func newPublicAcceptance(t *testing.T, engine string, withWorkflow bool) *publicAcceptance {
 	t.Helper()
+	at := time.Date(2026, 11, 3, 12, 0, 0, 123456000, time.UTC)
+	return newPublicAcceptanceWithClocks(t, engine, withWorkflow, at, at.Add(7*time.Hour))
+}
+
+func newPublicAcceptanceWithClocks(t *testing.T, engine string, withWorkflow bool, application, storage time.Time) *publicAcceptance {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	t.Cleanup(cancel)
-	at := time.Date(2026, 11, 3, 12, 0, 0, 123456000, time.UTC)
-	p := &publicAcceptance{fixture: &fixture{ctx: ctx, clock: testclock.New(t, at), onto: publicAcceptanceOntology(t)}, engine: engine, storage: testclock.New(t, at.Add(7*time.Hour)), workflow: withWorkflow, workflowRows: map[string]publicWorkflowValue{}, childCounts: map[string]int{}}
+	p := &publicAcceptance{fixture: &fixture{ctx: ctx, clock: testclock.New(t, application), onto: publicAcceptanceOntology(t)}, engine: engine, storage: testclock.New(t, storage), workflow: withWorkflow, workflowRows: map[string]publicWorkflowValue{}, childCounts: map[string]int{}}
 	switch engine {
 	case "sqlite_wal":
 		p.dsn = filepath.Join(t.TempDir(), "public-ready.db")
