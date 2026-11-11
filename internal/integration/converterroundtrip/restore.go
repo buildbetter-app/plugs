@@ -245,6 +245,9 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 	if len(checks) != 1 || checks[0].ArchiveSHA256 != archive.SHA256() || checks[0].DerivedSHA256 != plan.derivedDigest || profile != nil && (checks[0].ArchiveSHA256 != profile.ArchiveDigest || checks[0].DerivedSHA256 != profile.DerivedDigest) {
 		return report, fmt.Errorf("%w: exact archive and rebuilt derived digest verification required", ErrRestoreUnavailable)
 	}
+	if archive.HasNativeDelta() && profile != nil && profile.HistoryMode == driver.RestoreHistoryModeFull {
+		return restoreNativeReceivingStream(ctx, archive, target, supplied, *profile, plan.leaf, sourceLogical)
+	}
 	var history *driver.OfflineHistory
 	var replay driver.OfflineHistoryPlan
 	lockPlan := plan
@@ -719,6 +722,7 @@ type restoreRecord struct {
 // restorePlan is the receiver's mutable publication view of a detached leaf
 // plan. Publication appends target-incarnation-dependent records only here.
 type restorePlan struct {
+	leaf            nativeprojection.Plan
 	nativeFamilies  []NativeFamilyReport
 	nativeSchemas   []NativeSchemaReport
 	nativeHistories []NativeHistoryReport
@@ -808,7 +812,7 @@ func receivePlan(archive *dumpformat.Archive, plan nativeprojection.Plan, err er
 	if err != nil {
 		return restorePlan{}, err
 	}
-	view := restorePlan{nativeFamilies: image.NativeFamilies, nativeSchemas: image.NativeSchemas, nativeHistories: image.NativeHistories, sentinels: image.Sentinels, derived: image.Derived, derivedDigest: image.DerivedDigest, blobs: image.Blobs, allocators: image.Allocators}
+	view := restorePlan{leaf: plan, nativeFamilies: image.NativeFamilies, nativeSchemas: image.NativeSchemas, nativeHistories: image.NativeHistories, sentinels: image.Sentinels, derived: image.Derived, derivedDigest: image.DerivedDigest, blobs: image.Blobs, allocators: image.Allocators}
 	for _, record := range image.Records {
 		view.records = append(view.records, restoreRecord{ref: record.Ref, kind: record.Kind, body: record.Body})
 	}
