@@ -147,6 +147,27 @@ func publicProofBindCapture(ctx context.Context, archive *dumpformat.Archive, pr
 // failing t prevents the outer success receipt.
 type publicProofContinuation func(t *testing.T, ctx context.Context, store driver.Store, lease driver.ActiveLease, profile driver.RestoreImportProfile, report Report) error
 
+// The adapter supplies explicit host intent for actual source entities before
+// binding. It borrows the admitted archive synchronously and cannot replace
+// the authenticated source or the selected empty target. It owns no lifecycle.
+type publicProofHostPlanAdapter func(*testing.T, context.Context, *dumpformat.Archive, driver.SourcePlanePlanV1) (driver.SourcePlanePlanV1, error)
+
+func publicProofAdaptHostPlan(t *testing.T, ctx context.Context, archive *dumpformat.Archive, plan driver.SourcePlanePlanV1, adapter publicProofHostPlanAdapter) (driver.SourcePlanePlanV1, error) {
+	t.Helper()
+	if adapter == nil {
+		return plan, nil
+	}
+	source, digest, target := plan.SourceStoreID, plan.ArchiveSHA256, plan.Target
+	adapted, err := adapter(t, ctx, archive, plan)
+	if err != nil {
+		return driver.SourcePlanePlanV1{}, err
+	}
+	if adapted.SourceStoreID != source || adapted.ArchiveSHA256 != digest || adapted.Target != target {
+		return driver.SourcePlanePlanV1{}, driver.ErrConflict
+	}
+	return adapted, nil
+}
+
 func publicProofRunContinuation(t *testing.T, ctx context.Context, store driver.Store, lease driver.ActiveLease, profile driver.RestoreImportProfile, report Report, continuation publicProofContinuation) (err error) {
 	t.Helper()
 	if continuation == nil {
@@ -572,6 +593,14 @@ func TestPublicNativeExternalCaptureMatrix(t *testing.T) {
 // writer drains and the shared owner performs a second reopen, before cleanup.
 func runPublicNativeExternalCapture(t *testing.T, continuation publicProofContinuation, afterReopen ...publicProofContinuation) {
 	t.Helper()
+	runPublicNativeExternalCaptureWithHostPlan(t, nil, continuation, afterReopen...)
+}
+
+// Consumers may supply their exact source disposition through this same
+// import/readback/reopen lifecycle. The original entry point keeps its default
+// durable mapping and inert origins. Binding still checks the complete plan.
+func runPublicNativeExternalCaptureWithHostPlan(t *testing.T, adapter publicProofHostPlanAdapter, continuation publicProofContinuation, afterReopen ...publicProofContinuation) {
+	t.Helper()
 	publicProofGuard(t)
 	if len(afterReopen) > 1 {
 		t.Fatal("at most one post-reopen assertion is supported")
@@ -655,6 +684,8 @@ func runPublicNativeExternalCapture(t *testing.T, continuation publicProofContin
 		return nativeHistoryPlanFromArchive(t, work, store, lease)
 	}()
 	plan = publicProofHostIntent(t, archive, plan)
+	plan, err = publicProofAdaptHostPlan(t, op, archive, plan, adapter)
+	publicProofError(t, "host-plan", err)
 	profile := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "restore-admin"}, Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: driver.StoreID(req.Source.StoreID), Method: "offline.restore.import", IdempotencyKey: strings.Repeat("b", 32), ArchiveDigest: archive.SHA256(), HistoryMode: mode, HistoryTime: when.UTC().Format(time.RFC3339Nano), NativeDeltaHistory: selection}
 	publicProofJSON(t, filepath.Join(output, "host-plan.json"), plan)
 	profile, err = publicProofBindCapture(op, archive, profile, plan)
@@ -718,6 +749,64 @@ func runPublicNativeExternalCapture(t *testing.T, continuation publicProofContin
 
 // These checks qualify only the shared mode/lifecycle seam. They spend no
 // fresh fixture or external large/1200 proof case.
+func TestPublicNativeExternalExplicitHostPlan(t *testing.T) {
+	archive := publicNativeDeltaArchive(t)
+	defer archive.ReleaseNativeDecoded()
+	ctx := archive.WithNativeDeltaAccounting(context.Background())
+	store, lease, _ := openIdentityTarget(t, "memory")
+	plan := publicProofHostIntent(t, archive, nativeHistoryPlanFromArchive(t, archive, store, lease))
+	before := reverseState(t, store)
+	profile := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "restore-admin"}, Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: driver.StoreID(archive.Manifest().StoreID), Method: "offline.restore.import", IdempotencyKey: strings.Repeat("b", 32), ArchiveDigest: archive.SHA256(), HistoryMode: driver.RestoreHistoryModeFull, HistoryTime: nativeFixtureTime.Format(time.RFC3339Nano)}
+	original, err := publicProofBindCapture(ctx, archive, profile, plan)
+	publicProofError(t, "original-host-binding", err)
+	adapted, err := publicProofAdaptHostPlan(t, ctx, archive, plan, func(t *testing.T, ctx context.Context, source *dumpformat.Archive, value driver.SourcePlanePlanV1) (driver.SourcePlanePlanV1, error) {
+		if source != archive || ctx.Err() != nil {
+			t.Fatal("host adapter lost admitted source or live context")
+		}
+		value.Principals = append([]driver.SourcePlanePrincipalV1(nil), value.Principals...)
+		value.Principals[0].PrincipalJSON = []byte(`{"kind":"user","id":"explicit-source-owner"}`)
+		return value, nil
+	})
+	publicProofError(t, "explicit-host-plan", err)
+	bound, err := publicProofBindCapture(ctx, archive, profile, adapted)
+	publicProofError(t, "explicit-host-binding", err)
+	originalHash, err := original.RequestHash()
+	publicProofError(t, "original-request-hash", err)
+	adaptedHash, err := bound.RequestHash()
+	publicProofError(t, "adapted-request-hash", err)
+	if originalHash == adaptedHash || !reflect.DeepEqual(plan.Origins, adapted.Origins) || !reflect.DeepEqual(plan.Entities, adapted.Entities) {
+		t.Fatal("explicit principal intent was unbound or changed unselected source dispositions")
+	}
+	want := errors.New("host intent unavailable")
+	_, err = publicProofAdaptHostPlan(t, ctx, archive, plan, func(*testing.T, context.Context, *dumpformat.Archive, driver.SourcePlanePlanV1) (driver.SourcePlanePlanV1, error) {
+		return driver.SourcePlanePlanV1{}, want
+	})
+	if !errors.Is(err, want) {
+		t.Fatal("host intent error was swallowed", err)
+	}
+	for _, field := range []string{"source", "archive", "target"} {
+		t.Run("reject-"+field, func(t *testing.T) {
+			_, err := publicProofAdaptHostPlan(t, ctx, archive, plan, func(_ *testing.T, _ context.Context, _ *dumpformat.Archive, value driver.SourcePlanePlanV1) (driver.SourcePlanePlanV1, error) {
+				switch field {
+				case "source":
+					value.SourceStoreID += "-foreign"
+				case "archive":
+					value.ArchiveSHA256 = strings.Repeat("0", 64)
+				case "target":
+					value.Target.Incarnation += "-foreign"
+				}
+				return value, nil
+			})
+			if !errors.Is(err, driver.ErrConflict) {
+				t.Fatal("host adapter replaced an authenticated envelope", err)
+			}
+		})
+	}
+	if !reflect.DeepEqual(before, reverseState(t, store)) {
+		t.Fatal("host plan binding or refusal changed target state")
+	}
+}
+
 func TestPublicNativeExternalRestoreModes(t *testing.T) {
 	for _, test := range []struct {
 		name, raw string
