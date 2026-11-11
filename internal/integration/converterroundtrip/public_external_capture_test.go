@@ -83,6 +83,17 @@ func (r publicProofRequest) historyMode() (driver.RestoreHistoryMode, error) {
 	}
 }
 
+// Check the existing source-history policy before binding can take a
+// lower-level unsupported branch (notably native Snapshot on production9a).
+// This preserves the requested mode's typed refusal without changing receiver
+// policy. A later receiver layer must supply its own genuine mode support.
+func publicProofBindCapture(ctx context.Context, archive *dumpformat.Archive, profile driver.RestoreImportProfile, plan driver.SourcePlanePlanV1) (driver.RestoreImportProfile, error) {
+	if err := validateArchiveHistoryPolicy(profile.HistoryMode, archive); err != nil {
+		return driver.RestoreImportProfile{}, err
+	}
+	return BindNativeCaptureSetImport(ctx, archive, profile, plan)
+}
+
 // The callback runs synchronously after import, reopen/recovery and both
 // readback oracles. The store is the actually reopened target (the same store
 // for memory), never a new target or a DSN. The context retains decoded
@@ -511,7 +522,7 @@ func runPublicNativeExternalCapture(t *testing.T, continuation publicProofContin
 	plan = publicProofHostIntent(t, archive, plan)
 	profile := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "restore-admin"}, Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: driver.StoreID(req.Source.StoreID), Method: "offline.restore.import", IdempotencyKey: strings.Repeat("b", 32), ArchiveDigest: archive.SHA256(), HistoryMode: mode, HistoryTime: when.Format(time.RFC3339Nano)}
 	publicProofJSON(t, filepath.Join(output, "host-plan.json"), plan)
-	profile, err = BindNativeCaptureSetImport(op, archive, profile, plan)
+	profile, err = publicProofBindCapture(op, archive, profile, plan)
 	publicProofError(t, "bind", err)
 	publicProofJSON(t, filepath.Join(output, "bound-profile.json"), profile)
 	report, err := RestoreNativeCaptureSetImportWithLease(op, archive, store, lease, profile)
@@ -605,7 +616,7 @@ func TestPublicNativeExternalRestoreModes(t *testing.T) {
 				t.Fatal(err)
 			}
 			profile := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "restore-admin"}, Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: driver.StoreID(archive.Manifest().StoreID), Method: "offline.restore.import", IdempotencyKey: strings.Repeat("b", 32), ArchiveDigest: archive.SHA256(), HistoryMode: mode, HistoryTime: nativeFixtureTime.Format(time.RFC3339Nano)}
-			bound, err := BindNativeCaptureSetImport(ctx, archive, profile, plan)
+			bound, err := publicProofBindCapture(ctx, archive, profile, plan)
 			if mode == driver.RestoreHistoryModeFull {
 				if err != nil || bound.HistoryMode != mode {
 					t.Fatal("original full binding changed", err)
