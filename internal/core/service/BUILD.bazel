@@ -19,7 +19,7 @@ go_library(
 
 go_test(
     name = "service_test",
-    srcs = glob(["*_test.go"], exclude = ["history_sqlite_rpc_test.go"]),
+    srcs = glob(["*_test.go"], exclude = ["history_sqlite_rpc_test.go", "blocked_read_test.go"]),
     embed = [":service"],
     tags = ["block-network", "exclusive"],
     deps = [
@@ -58,4 +58,18 @@ filegroup(
     name = "lexicon_files",
     srcs = glob(["**"]),
     visibility = ["//visibility:public"],
+)
+
+
+go_test(
+    name = "blocked_read_test",
+    srcs = ["blocked_read_test.go"],
+    embed = [":service"],
+    deps = [
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/storage/conformance",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+    ],
 )

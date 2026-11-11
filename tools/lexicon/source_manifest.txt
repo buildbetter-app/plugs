@@ -414,6 +414,8 @@ internal/core/service/BUILD.bazel
 internal/core/service/audit.go
 internal/core/service/audit_test.go
 internal/core/service/await_members.go
+internal/core/service/blocked.go
+internal/core/service/blocked_read_test.go
 internal/core/service/canonical_claim_slot_audit_test.go
 internal/core/service/claim_recovery.go
 internal/core/service/claim_recovery_integration_test.go
@@ -562,6 +564,7 @@ internal/integration/batchsql/b01_close_ancestry_test.go
 internal/integration/batchsql/b01_legacy_hierarchy_test.go
 internal/integration/batchsql/b01_persisted_hierarchy_test.go
 internal/integration/batchsql/b01_public_hierarchy_test.go
+internal/integration/batchsql/b02_installed_categories_test.go
 internal/integration/batchsql/b02_public_dependency_helpers_test.go
 internal/integration/batchsql/b02_public_dependency_refusal_test.go
 internal/integration/batchsql/b02_public_graph_test.go
@@ -1573,6 +1576,7 @@ plugins/plug/SKILL.md
 plugins/workflow/BUILD.bazel
 plugins/workflow/atomic.go
 plugins/workflow/batch_operations.go
+plugins/workflow/blocked_graph.go
 plugins/workflow/listing.go
 plugins/workflow/manifest.json
 plugins/workflow/native.go
