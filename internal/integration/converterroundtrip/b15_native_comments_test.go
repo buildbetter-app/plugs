@@ -72,11 +72,12 @@ var b15NativeSourceBindings = map[string]b15NativeSourceBinding{
 }
 
 const (
-	b15NativePacketEnv     = "PLUG_B15_NATIVE_PACKET"
-	b15NativeProjectsEnv   = "PLUG_B15_NATIVE_PROJECTS"
-	b15NativeDriversEnv    = "PLUG_B15_NATIVE_DRIVERS"
-	b15NativePacketRunfile = "internal/integration/converterroundtrip/testdata/b15-native-r11-d74f91f9.packet.tar.gz"
-	b15NativePacketRoot    = "/tmp/plug-swarm/reports/S1-native-comment-active-ba011c7f-20261111/native-r11-d74f91f9/extracted/cmd/plug-capture-sql-server/behavior_comment_active_fixture_test/test.outputs"
+	b15NativePacketEnv      = "PLUG_B15_NATIVE_PACKET"
+	b15NativeProjectsEnv    = "PLUG_B15_NATIVE_PROJECTS"
+	b15NativeDriversEnv     = "PLUG_B15_NATIVE_DRIVERS"
+	b15NativeRootEnv        = "PLUG_B15_NATIVE_ROOT"
+	b15NativeOriginalReqEnv = "PLUG_B15_NATIVE_ORIGINAL_REQUEST_SHA256"
+	b15NativePacketRunfile  = "internal/integration/converterroundtrip/testdata/b15-native-r11-d74f91f9.packet.tar.gz"
 )
 
 func b15NativeRunfile(t *testing.T, rel string) string {
@@ -99,22 +100,15 @@ func b15NativeRunfile(t *testing.T, rel string) string {
 // remote Bazel sees the exact request, native capture and independent oracle.
 // It is unpacked at the paths retained in each request; request/capture/oracle
 // digests below still bind every byte before the receiver opens it.
-func b15MaterializeNativePacket(t *testing.T) {
+func b15MaterializeNativePacket(t *testing.T) string {
 	t.Helper()
 	if os.Getenv(b15NativePacketEnv) != "1" {
-		return
+		t.Fatal("B15 packet materialization requires packet mode")
 	}
-	if _, err := os.Stat(filepath.Join(b15NativePacketRoot, "commentcody", "request.full.json")); err == nil {
-		return
-	}
-	if err := os.MkdirAll(filepath.Dir(b15NativePacketRoot), 0700); err != nil {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0700); err != nil {
 		t.Fatal(err)
 	}
-	stage, err := os.MkdirTemp(filepath.Dir(b15NativePacketRoot), ".b15-native-r11-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = os.RemoveAll(stage) }()
 	input, err := os.Open(b15NativeRunfile(t, b15NativePacketRunfile))
 	if err != nil {
 		t.Fatal(err)
@@ -138,8 +132,8 @@ func b15MaterializeNativePacket(t *testing.T) {
 		if name == "." || filepath.IsAbs(name) || strings.HasPrefix(name, ".."+string(filepath.Separator)) || name == ".." || header.Size < 0 || header.Size > 64<<20 {
 			t.Fatalf("invalid B15 packet member %q", header.Name)
 		}
-		destination := filepath.Join(stage, name)
-		if destination != stage && !strings.HasPrefix(destination, stage+string(filepath.Separator)) {
+		destination := filepath.Join(root, name)
+		if destination != root && !strings.HasPrefix(destination, root+string(filepath.Separator)) {
 			t.Fatalf("B15 packet member escapes staging root: %q", header.Name)
 		}
 		switch header.Typeflag {
@@ -167,11 +161,49 @@ func b15MaterializeNativePacket(t *testing.T) {
 			t.Fatalf("unsupported B15 packet member type %q", header.Name)
 		}
 	}
-	if err := os.Rename(stage, b15NativePacketRoot); err != nil {
-		if _, statErr := os.Stat(filepath.Join(b15NativePacketRoot, "commentcody", "request.full.json")); statErr != nil {
-			t.Fatal(err)
-		}
+	return root
+}
+
+func b15PrepareNativeRequest(t *testing.T, root, project string) (string, b15NativeSourceBinding) {
+	t.Helper()
+	binding, ok := b15NativeSourceBindings[project]
+	if !ok {
+		t.Fatalf("B15 packet project is not admitted: %s", project)
 	}
+	originalPath := filepath.Join(root, project, "request.full.json")
+	original, err := os.ReadFile(originalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hashBytes(original) != binding.RequestSHA256 {
+		t.Fatalf("B15 original request digest differs for %s", project)
+	}
+	var req publicProofRequest
+	decoder := json.NewDecoder(bytes.NewReader(original))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		t.Fatal(err)
+	}
+	if req.Source.Project != project {
+		t.Fatalf("B15 original request project differs: %s", req.Source.Project)
+	}
+	req.Capture = filepath.Join(root, project, "capture", "capture-set")
+	req.Oracle = filepath.Join(root, project, "oracle")
+	resolved, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedPath := filepath.Join(root, project, "request.resolved.json")
+	if err := os.WriteFile(resolvedPath, append(resolved, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Setenv(b15NativeRootEnv, root); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Setenv(b15NativeOriginalReqEnv, binding.RequestSHA256); err != nil {
+		t.Fatal(err)
+	}
+	return resolvedPath, binding
 }
 
 func b15NativeList(t *testing.T, env, fallback string) []string {
@@ -193,6 +225,21 @@ func b15NativeList(t *testing.T, env, fallback string) []string {
 	return values
 }
 
+func b15BindNativeExecutable(t *testing.T) {
+	t.Helper()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual := publicProofHashFile(t, self)
+	if configured := os.Getenv("PLUG_PUBLIC_PROOF_ELF_SHA256"); configured != "" && configured != actual {
+		t.Fatalf("B15 compiled ELF binding differs: configured=%s actual=%s", configured, actual)
+	}
+	if err := os.Setenv("PLUG_PUBLIC_PROOF_ELF_SHA256", actual); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func b15NativeRequest(t *testing.T) publicProofRequest {
 	t.Helper()
 	path := os.Getenv("PLUG_PUBLIC_PROOF_REQUEST")
@@ -210,13 +257,18 @@ func b15NativeRequest(t *testing.T) publicProofRequest {
 		t.Fatal(err)
 	}
 	want, ok := b15NativeSourceBindings[req.Source.Project]
-	if !ok || os.Getenv("PLUG_PUBLIC_PROOF_REQUEST_SHA256") != want.RequestSHA256 || req.Format != "public-native-capture-proof/1" || req.ProducerHead != "d74f91f9f0fdcd9c95c7f30bd42a2d257fc219b3" || req.Source.StoreID != want.StoreID || req.CaptureSHA256 != want.CaptureSHA256 || req.LedgerSHA256 != want.LedgerSHA256 || req.StatesSHA256 != want.StatesSHA256 || req.RestoreTime != "2040-01-02T03:05:00Z" || req.RestoreMode != "full" || req.Commits != 85 || req.JournalTable != "bd_events_journal" {
+	resolvedHash := os.Getenv("PLUG_PUBLIC_PROOF_REQUEST_SHA256")
+	if !ok || (os.Getenv(b15NativePacketEnv) != "1" && resolvedHash != want.RequestSHA256) || (os.Getenv(b15NativePacketEnv) == "1" && os.Getenv(b15NativeOriginalReqEnv) != want.RequestSHA256) || req.Format != "public-native-capture-proof/1" || req.ProducerHead != "d74f91f9f0fdcd9c95c7f30bd42a2d257fc219b3" || req.Source.StoreID != want.StoreID || req.CaptureSHA256 != want.CaptureSHA256 || req.LedgerSHA256 != want.LedgerSHA256 || req.StatesSHA256 != want.StatesSHA256 || req.RestoreTime != "2040-01-02T03:05:00Z" || req.RestoreMode != "full" || req.Commits != 85 || req.JournalTable != "bd_events_journal" {
 		t.Fatal("B15 request is not the final r11 source packet")
 	}
 	if os.Getenv(b15NativePacketEnv) == "1" {
+		root := os.Getenv(b15NativeRootEnv)
+		if root == "" || !filepath.IsAbs(root) {
+			t.Fatal("B15 resolved packet root is missing")
+		}
 		for _, path := range []string{req.Capture, req.Oracle} {
 			clean := filepath.Clean(path)
-			if !filepath.IsAbs(clean) || !strings.HasPrefix(clean, b15NativePacketRoot+string(filepath.Separator)) {
+			if !filepath.IsAbs(clean) || !strings.HasPrefix(clean, root+string(filepath.Separator)) {
 				t.Fatalf("B15 request points outside committed native packet: %s", path)
 			}
 		}
@@ -1027,8 +1079,13 @@ func b15NativeHostPlan(t *testing.T, ctx context.Context, archive *dumpformat.Ar
 func TestB15NativeCommentImportedReopen(t *testing.T) {
 	publicProofExternalRoot(t, "PLUG_PUBLIC_PROOF_RUN")
 	packet := os.Getenv(b15NativePacketEnv) == "1"
+	var packetRoot string
 	if packet {
-		b15MaterializeNativePacket(t)
+		packetRoot = b15MaterializeNativePacket(t)
+		// The packet is a committed runfile, so the remote test process binds
+		// its actual compiled ELF before entering the shared callback. A caller
+		// supplied digest is still checked above rather than replaced silently.
+		b15BindNativeExecutable(t)
 	}
 	if packet {
 		if os.Getenv(b15NativeProjectsEnv) == "" || os.Getenv(b15NativeDriversEnv) == "" {
@@ -1043,8 +1100,8 @@ func TestB15NativeCommentImportedReopen(t *testing.T) {
 			}
 			for _, engine := range b15NativeList(t, b15NativeDriversEnv, "") {
 				t.Run(project+"/"+engine, func(t *testing.T) {
-					binding := b15NativeSourceBindings[project]
-					request := filepath.Join(b15NativePacketRoot, project, "request.full.json")
+					request, _ := b15PrepareNativeRequest(t, packetRoot, project)
+					resolvedHash := publicProofHashFile(t, request)
 					outputRoot := os.Getenv("PLUG_PUBLIC_PROOF_OUTPUT")
 					output := filepath.Join(outputRoot, project, engine)
 					if err := os.MkdirAll(filepath.Dir(output), 0700); err != nil {
@@ -1053,7 +1110,7 @@ func TestB15NativeCommentImportedReopen(t *testing.T) {
 					for key, value := range map[string]string{
 						"PLUG_PUBLIC_PROOF_DRIVER":         engine,
 						"PLUG_PUBLIC_PROOF_REQUEST":        request,
-						"PLUG_PUBLIC_PROOF_REQUEST_SHA256": binding.RequestSHA256,
+						"PLUG_PUBLIC_PROOF_REQUEST_SHA256": resolvedHash,
 						"PLUG_PUBLIC_PROOF_OUTPUT":         output,
 					} {
 						if err := os.Setenv(key, value); err != nil {
