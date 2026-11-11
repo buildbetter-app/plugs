@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -142,13 +141,24 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 	if err != nil || hashBytes(data) != bound.ArchiveDigest {
 		return Report{}, nil, driver.ErrConflict
 	}
-	archive, err := dumpformat.Read(bytes.NewReader(data))
+	archive, err := readRetainedImportArchive(ctx, r, data, archiveEvidence{})
 	if err != nil {
-		return Report{}, nil, driver.ErrConflict
+		return Report{}, nil, nativeDeltaRecoveryError(err)
 	}
-	prepared, err := prepareSourceArchive(ctx, archive, bound, true)
+	keepArchive := false
+	defer func() {
+		if !keepArchive {
+			archive.ReleaseNativeDecoded()
+		}
+	}()
+	// The report retains the source archive, while prepared logical bytes and
+	// reverse inspection candidates end at this comparison boundary.
+	work, release := archive.NativeDeltaAccountingScope()
+	defer release()
+	ctx = work.WithNativeDeltaAccounting(ctx)
+	prepared, err := prepareSourceArchive(ctx, work, bound, true)
 	if err != nil {
-		return Report{}, nil, driver.ErrConflict
+		return Report{}, nil, nativeDeltaRecoveryError(err)
 	}
 	initialImage, err := workflowplugin.InspectSourceReverseImage(prepared.LogicalImage())
 	if err != nil {
@@ -159,5 +169,6 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 		return Report{}, nil, driver.ErrConflict
 	}
 	report.Archive, report.SourcePlanes = archive, &binding
+	keepArchive = true
 	return report, current, nil
 }

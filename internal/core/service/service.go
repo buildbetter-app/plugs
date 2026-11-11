@@ -14,6 +14,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/port"
+	"github.com/buildbetter-app/plugs/internal/core/reverseconverter"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
@@ -28,6 +29,8 @@ type Service struct {
 	authorizationInstalled func() bool
 	events                 EventProvider
 	workflow               *workflowplugin.Provider
+	rollbackWindow         bool
+	reverseConverter       *reverseconverter.Converter
 	source                 atomic.Pointer[sourceWorkflow]
 	compaction             CompactionConfig
 }
@@ -67,7 +70,41 @@ func WithEventProvider(provider EventProvider) Option {
 // The service keeps the standard bead tools as the public adapter while the
 // provider owns only its unversioned active-run state.
 func WithWorkflow(provider *workflowplugin.Provider) Option {
-	return func(s *Service) { s.workflow = provider }
+	return func(s *Service) {
+		s.workflow = provider
+		if provider != nil {
+			// The provider owns the native checkpoint mutation. Install the same
+			// classifier used by the common Writer at that boundary so every
+			// provider-created user-content kind is checked immediately before
+			// publication. The closure reads the service's live switch/mapping so
+			// host-owned tests and reload seams retain ordinary toggle semantics.
+			provider.WithUserContentGuard(func(kinds []string) error {
+				if !s.rollbackWindow {
+					return nil
+				}
+				for _, kind := range kinds {
+					if err := s.rollbackWindowKind(kind); err != nil {
+						return err
+					}
+				}
+				return nil
+			})
+		}
+	}
+}
+
+// WithRollbackWindow enables the server-wide admission guard for newly
+// created user-content kinds that the canonical reverse path cannot represent.
+// It is disabled by default and is intended for the prepared switch-day
+// rollback window only.
+func WithRollbackWindow(enabled bool) Option {
+	return func(s *Service) { s.rollbackWindow = enabled }
+}
+
+// WithReverseConverter shares the actual reverse converter with the native
+// creation guard. A kind is admitted only through an executable conversion.
+func WithReverseConverter(converter *reverseconverter.Converter) Option {
+	return func(s *Service) { s.reverseConverter = converter }
 }
 
 // New never opens a transaction or storage driver. The composition root owns
@@ -121,6 +158,17 @@ func (s *Service) admit(ctx context.Context, by model.PrincipalRef) error {
 	}
 }
 
+func (s *Service) rollbackWindowKind(kind string) error {
+	if !s.rollbackWindow {
+		return nil
+	}
+	classification := s.reverseConverter.ClassifyKind(kind)
+	if classification.Disposition == reverseconverter.KindUnrepresentable {
+		return reverseconverter.RollbackWindowRefusal(kind)
+	}
+	return nil
+}
+
 func namedRef(ref model.Ref) error {
 	if err := ref.Validate(); err != nil || !ref.IsID() || ref.ID == "" || !ref.Branch.IsZero() {
 		return failure("invalid_params", "named verbs require a nonempty bead ID on the main branch")
@@ -139,6 +187,9 @@ func (s *Service) apply(ctx context.Context, by model.PrincipalRef, method strin
 		return port.WriteOutcome{}, failure("project_required", "supply a project")
 	}
 	meta.Method = method
+	if method != "bead.close" && method != "bead.reopen" {
+		meta.TargetStatus = nil
+	}
 	source := s.source.Load()
 	if source != nil {
 		ctx = pipeline.WithAllocatorReservations(ctx, source.allocatorIDs)
@@ -181,6 +232,20 @@ func (s *Service) apply(ctx context.Context, by model.PrincipalRef, method strin
 			return port.WriteOutcome{}, mapped(err)
 		}
 		return v, nil
+	}
+	if source == nil && method == "tx.apply" {
+		for _, op := range cs.Ops {
+			if op.Kind != model.OpPatch || op.Patch == nil || !workflowRef(op.Patch.Target) {
+				continue
+			}
+			// This route has no workflow patch participant. Use the existing
+			// scoped reader to distinguish an absent item from an unsupported
+			// write to an item that exists, before any draft can be published.
+			if _, err := s.Get(ctx, by, GetRequest{ID: op.Patch.Target, Project: meta.Project, Agent: meta.Agent}); err != nil {
+				return port.WriteOutcome{}, mapped(err)
+			}
+			return port.WriteOutcome{}, failure("unsupported", "tx.apply cannot patch workflow items without source operation support")
+		}
 	}
 	if writer, ok := s.writer.(port.OutcomeWriter); ok {
 		v, err := writer.ApplyWithOutcome(ctx, by, cs, meta)
@@ -346,7 +411,7 @@ func (s *Service) create(ctx context.Context, by model.PrincipalRef, req CreateR
 			return port.WriteOutcome{}, err
 		}
 	}
-	cs := model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Type: req.Type, Fields: req.Fields, Parent: req.Parent, Project: meta.Project}}}}
+	cs := model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Type: req.Type, Fields: req.Fields, Parent: req.Parent, Project: meta.Project, TargetStatus: req.TargetStatus}}}}
 	return s.apply(ctx, by, "bead.create", cs, meta, outcomeRequired)
 }
 
@@ -830,6 +895,9 @@ func (s *Service) Close(ctx context.Context, by model.PrincipalRef, req CloseReq
 }
 
 func (s *Service) CloseWithOutcome(ctx context.Context, by model.PrincipalRef, req CloseRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	if workflowRef(req.ID) && req.TargetStatus != nil {
+		return port.WriteOutcome{}, failure("unsupported", "workflow provider does not support targetStatus")
+	}
 	if s.SourceRuntimeInstalled() {
 		return s.close(ctx, by, req, meta, true)
 	}
@@ -858,8 +926,9 @@ func workflowClaimCommit(item workflowplugin.ItemView) model.Commit {
 
 func (s *Service) close(ctx context.Context, by model.PrincipalRef, req CloseRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
 	if s.SourceRuntimeInstalled() {
-		return s.apply(ctx, by, "bead.close", model.ChangeSet{Ops: []model.Op{{Kind: model.OpClose, Close: &model.CloseOp{Target: req.ID, Reason: req.Reason}}}, Expect: req.Expect}, meta, outcomeRequired)
+		return s.apply(ctx, by, "bead.close", model.ChangeSet{Ops: []model.Op{{Kind: model.OpClose, Close: &model.CloseOp{Target: req.ID, Reason: req.Reason, TargetStatus: req.TargetStatus}}}, Expect: req.Expect}, meta, outcomeRequired)
 	}
+	meta.TargetStatus = req.TargetStatus
 	return s.lifecycle(ctx, by, "bead.close", req.ID, req.Reason, req.Expect, meta, outcomeRequired)
 }
 
@@ -876,6 +945,7 @@ func (s *Service) ReopenWithOutcome(ctx context.Context, by model.PrincipalRef, 
 }
 
 func (s *Service) reopen(ctx context.Context, by model.PrincipalRef, req ReopenRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
+	meta.TargetStatus = req.TargetStatus
 	return s.lifecycle(ctx, by, "bead.reopen", req.ID, req.Reason, req.Expect, meta, outcomeRequired)
 }
 

@@ -1,5 +1,55 @@
 # B13 public memory and P85 brief connection
 
+The additional `TestImportedMemoryWritesPreserveSourceEnvelopesAllDrivers` in
+`converterroundtrip` covers writes after importing an explicitly authored mixed
+string/secret/JSON-value archive. Legacy hidden mirrors must not poison an
+unrelated public save. Joint source envelopes retain their classification and
+provenance. Hidden same-key saves refuse with `invalid_params`; deletion of a
+hidden row returns `not_found`. Visible source slots now accept the decided
+replacement/forget overlay behavior described below. Ordinary canonical memory
+save/replace/delete remains writable.
+Reads and writes share the exact source-envelope classifier; malformed mirrors
+remain `internal_error`, including during an unrelated save.
+
+`TestB13JointSourceCoreProjectionAndConservation` imports both legacy and joint
+public source fixtures on all three engines. Replacement writes a separate
+`sourceOverlay` memory row; forget writes an attributed tombstone in that row.
+The overlay pins the original Ref, revision and body digest. Reads, list and
+normal brief prefer its effective value or absence. Re-remember advances its
+logical generation so the previous lifetime cannot return through history.
+Source bytes, original versions, import binding, retained archive and provider
+namespaces remain unchanged. Writer authorization covers both source and
+overlay for writes and replay. The controls retain byte RPC frames, raw state,
+physical SQL snapshots and actual reverse output. SQL engines close and reopen
+the same database; memory proves a fresh binding over the same live store.
+
+The actual existing reverse path emits the effective replacement, absence or
+re-remembered value, with overlay attribution reported as conversion loss. Its
+existing refusal for a retained empty source value stays unchanged; the suite
+forgets that existing empty slot before positive reverse comparisons.
+
+The explicitly selected manual target
+`//spec/cardb20:b13_memory_record_native_test` consumes unchanged canonical B20
+build/recorder support and the existing B09 source archive and Dolt runtime.
+It records real public canonical remember/recall/forget calls and raw physical
+history, then compares named ordinary and constructed imported counterparts on
+all three engines. Unicode identity, verbatim values, derived key limits,
+empty versus absent, replacement, exact-key forget and re-remember remain
+literal. Constructed source rows prove view behavior; the separate integration
+suite proves actual import/reverse behavior. Neither is official producer
+admission or private-store history qualification. Source, focused, whole and
+public native outcomes must be reported separately after their actual runs.
+
+The new fixture uses actual memory, SQLite and PostgreSQL stores. It checks
+the complete imported records and version chains, source archive/binding rows,
+all nine derived tables, joint provider checkpoints, changeset prefix and
+tracked receipt scopes. Canonical writes also exercise public list/brief,
+historical literal bodies, replay and deletion tombstones before and after
+SQL close/reopen or a memory lease refresh. Four malformed-envelope controls
+must fail atomically on every engine. These are synthetic public integration
+fixtures, with no native recording, producer/preparation adoption or FullB13
+qualification; each new head still needs its own remote gates and review.
+
 Done = the scoped missing public memory-to-brief assertions are implemented in
 a frozen clean candidate, proven by complete source bindings and a concrete
 exact-head gate plan; source-only checks and inherited/base PASS do not count

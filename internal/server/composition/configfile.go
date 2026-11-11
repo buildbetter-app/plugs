@@ -42,11 +42,12 @@ func ParseConfig(data []byte) (Config, error) {
 		return Config{}, err
 	}
 	config := Config{
-		Driver:   "memory",
-		Project:  DefaultProject,
-		Address:  DefaultAddress,
-		UI:       true,
-		AuthMode: "anonymous",
+		Driver:         "memory",
+		Project:        DefaultProject,
+		Address:        DefaultAddress,
+		UI:             true,
+		RollbackWindow: false,
+		AuthMode:       "anonymous",
 	}
 	// The local administrator may select an existing protected source identity.
 	// The file supplies no executable binding, source body or authorization;
@@ -63,6 +64,8 @@ func ParseConfig(data []byte) (Config, error) {
 			config.Project, err = configString(raw, key)
 		case "ui":
 			config.UI, err = configBool(raw, key)
+		case "rollback_window":
+			config.RollbackWindow, err = configBool(raw, key)
 		case "auth.mode":
 			config.AuthMode, err = configString(raw, key)
 		case "ontology.source":
@@ -216,6 +219,8 @@ func canonicalConfigKey(key string) (string, bool) {
 		return "project", true
 	case "ui", "server.ui":
 		return "ui", true
+	case "rollback_window", "server.rollback_window":
+		return "rollback_window", true
 	case "auth.mode":
 		return "auth.mode", true
 	case "ontology.source":

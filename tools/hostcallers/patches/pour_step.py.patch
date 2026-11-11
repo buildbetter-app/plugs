@@ -1,0 +1,43 @@
+--- a/scripts/pour_step.py
++++ b/scripts/pour_step.py
+@@ -1,34 +1,6 @@
+-"""Pour the mol-execplan-step molecule (implement, verify, self-review, review, land) for one chunk of plan tasks.
+-
+-Usage: python3 -I pour_step.py <workspace> <chunk name> <task key>...
+-Every task bead in the chunk is blocked by the molecule root, so none can close before the chunk's
+-self-review and independent review do. Mappings are kept in <workspace>/molecules.json.
+-"""
+-import json, os, subprocess, sys
+-
+-workspace, chunk, keys = sys.argv[1], sys.argv[2], sys.argv[3:]
+-ids = json.load(open(os.path.join(workspace, "ids.json")))
+-mol_path = os.path.join(workspace, "molecules.json")
+-mols = json.load(open(mol_path)) if os.path.exists(mol_path) else {}
+-if chunk in mols:
+-    raise SystemExit(f"chunk {chunk} already poured: {mols[chunk]['root']}")
+-
+-
+-def bd(*args):
+-    r = subprocess.run(["bd", *args], capture_output=True, text=True)
+-    if r.returncode != 0:
+-        raise SystemExit(f"bd {' '.join(args[:3])} failed: {r.stderr.strip()[:400]}")
+-    return r.stdout
+-
+-
+-beads = [ids[k] for k in keys]
+-out = json.loads(bd("mol", "pour", "mol-execplan-step", "--var", f"chunk={chunk}", "--var", f"beads={' '.join(beads)}",
+-                    "--var", f"keys={' '.join(keys)}", "--json"))
+-m = out["id_mapping"]
+-root = m["mol-execplan-step"]
+-steps = {k.split(".", 1)[1]: v for k, v in m.items() if "." in k}
+-for bead in beads:
+-    bd("dep", "add", bead, "--blocked-by", root)
+-mols[chunk] = {"root": root, "steps": steps, "keys": keys}
+-json.dump(mols, open(mol_path, "w"), indent=2)
+-print(chunk, "->", root, steps)
++# Prepared Plug caller; explicit --binding is mandatory.
++import sys
++from pathlib import Path
++sys.path.insert(0, str(Path(__file__).resolve().parent))
++from host_drivers import main
++main('pour')

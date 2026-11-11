@@ -276,10 +276,10 @@ func validateScopedSourceRecords(m Manifest, rows map[string][]Record, config []
 		for _, kind := range sortedRecordKinds(scopedRows) {
 			for _, r := range scopedRows[kind] {
 				var err error
-				if planes && (r.Kind == "edge" || sourcePlaneArchiveTable(r.Source.Table) || nativeOperationalTable(r.Source.Table, m.SourceFamilyContract)) {
+				if native && m.NativeHistoryContract == NativeDeltaFormat && nativeDeltaOpaqueArchiveFamily(r.Source.Table) || planes && (r.Kind == "edge" || sourcePlaneArchiveTable(r.Source.Table) || nativeOperationalTable(r.Source.Table, m.SourceFamilyContract)) {
 					err = validateSourcePlaneRecord(r, scoped, localCounts, statuses)
 				} else {
-					err = validateVersionedRecord(r, scoped.Projects, localCounts, nil, m.EdgeVersion())
+					err = validateVersionedRecord(r, scoped.Projects, localCounts, nil, m.EdgeVersion(), m.MainVersion)
 				}
 				if err != nil {
 					return err
@@ -300,7 +300,7 @@ func validateScopedSourceRecords(m Manifest, rows map[string][]Record, config []
 					localSources = append(localSources, s)
 				}
 			}
-			if err := validateBoundDispositions(localSources, localCounts, localConfig, nil, planes, m.SourceFamilyContract); err != nil {
+			if err := validateCaptureDispositionsForVersion(localSources, localCounts, localConfig, nil, planes, m.MainVersion, m.NativeHistoryContract == NativeDeltaFormat, m.SourceFamilyContract); err != nil {
 				return err
 			}
 		}

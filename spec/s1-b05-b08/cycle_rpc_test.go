@@ -266,10 +266,7 @@ func TestB06AuthenticatedCycleReportAcrossDisposableStores(t *testing.T) {
 				t.Fatalf("wholly hidden graph disclosed existence: result=%+v error=%+v", none, rpcErr)
 			}
 			_, rpcErr = f.call(t, user, "bead.cycles", map[string]any{"includeEphemeral": true})
-			wantCode := model.ErrorCode("invalid_params")
-			if engine == "memory" {
-				wantCode = "plugin_durable_state_unavailable"
-			}
+			wantCode := model.ErrorCode("plugin_durable_state_unavailable")
 			if rpcErr == nil || rpcErr.Data.Code != wantCode {
 				t.Fatalf("unsupported ephemeral plane error = %+v; want %s", rpcErr, wantCode)
 			}

@@ -27,6 +27,9 @@ func (e Effective) Schema(typ, status string) (map[string]any, []Violation) {
 	properties := map[string]any{}
 	properties["priority"] = map[string]any{"type": "integer", "minimum": 0, "maximum": 4, "default": DefaultPriority}
 	properties["template"] = map[string]any{"type": "boolean", "default": false}
+	for name, property := range awaitMemberSchemas() {
+		properties[name] = property
+	}
 	requiredSet := map[string]bool{}
 	for _, name := range keys(t.Fields) {
 		field := t.Fields[name]

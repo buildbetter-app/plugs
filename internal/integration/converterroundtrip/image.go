@@ -2,6 +2,7 @@ package converterroundtrip
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -29,7 +30,13 @@ const ImportedOntologySourceID = "ontology/beads-import"
 // import document, with no authorization/plugin provider, cuts, templates or leases.
 // Every table participates in the digest, including empty tables. Its rows
 // are rebuilt from live documents, never copied from a source's cached flags.
-func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error {
+func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document, archives ...*dumpformat.Archive) error {
+	var archive *dumpformat.Archive
+	if len(archives) != 0 {
+		archive = archives[0]
+	}
+	scratch, release := archive.NativeDeltaAccountingScope()
+	defer release()
 	ids := make([]string, 0, len(docs))
 	for id := range docs {
 		ids = append(ids, id)
@@ -76,11 +83,46 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 		depths := map[string]uint64{}
 		for current, depth := id, uint64(0); current != ""; depth++ {
 			depths[current] = depth
+			// Inventory the live codec's input, encoded buffer/string, prefix
+			// and decimal candidates separately from its returned key/value.
+			descendantBytes := uint64(base64.RawURLEncoding.EncodedLen(len(id)))
+			ancestorBytes := uint64(base64.RawURLEncoding.EncodedLen(len(current)))
+			depthBytes := uint64(1)
+			for n := depth; n >= 10; n /= 10 {
+				depthBytes++
+			}
+			components := []struct {
+				phase string
+				size  uint64
+			}{
+				{"ancestor_descendant_input", uint64(len(id))},
+				{"ancestor_descendant_base64_buffer", descendantBytes},
+				{"ancestor_descendant_base64_text", descendantBytes},
+				{"ancestor_prefix", descendantBytes + 1},
+				{"ancestor_ancestor_input", uint64(len(current))},
+				{"ancestor_ancestor_base64_buffer", ancestorBytes},
+				{"ancestor_ancestor_base64_text", ancestorBytes},
+				{"ancestor_depth_text", depthBytes},
+			}
+			for _, component := range components {
+				if err := scratch.ChargeNativeDeltaBytes(component.phase, component.size); err != nil {
+					return err
+				}
+			}
+			if err := archive.ChargeNativeDeltaBytes("derived_ancestor_keys", descendantBytes+1+ancestorBytes); err != nil {
+				return err
+			}
+			if err := archive.ChargeNativeDeltaBytes("derived_ancestor_values", depthBytes); err != nil {
+				return err
+			}
 			row, err := pipeline.AncestorRow(id, current, depth)
 			if err != nil {
 				return err
 			}
 			plan.derived = append(plan.derived, derivedImage{driver.DerivedAncestorClosure, row.Key, row.Value})
+			for _, component := range components {
+				scratch.ReleaseNativeDeltaBytes(component.phase, component.size)
+			}
 			parent := docs[current].Parent
 			if parent == nil {
 				break
@@ -97,7 +139,7 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 		}
 	}
 	add := func(table driver.DerivedTable, key string, value any) error {
-		data, err := json.Marshal(value)
+		data, err := marshalNativePayload(archive, "derived_row_bodies", value)
 		if err != nil {
 			return err
 		}
@@ -194,7 +236,7 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 		}
 		return a.Key < b.Key
 	})
-	data, err := json.Marshal(struct {
+	data, err := marshalNativePayload(scratch, "derived_digest_preimage", struct {
 		Profile string                `json:"profile"`
 		Tables  []driver.DerivedTable `json:"tables"`
 		Rows    []derivedImage        `json:"rows"`
@@ -213,7 +255,7 @@ func importedWaitsForSatisfied(link pipeline.Link, spawner pipeline.Document, do
 	terminal := func(doc pipeline.Document) bool {
 		return snapshot.Effective(doc.Project).SatisfiesBlocks(stringValue(doc.Fields["status"]))
 	}
-	if link.Metadata == nil && terminal(spawner) {
+	if !link.Metadata.HasPredicate() && terminal(spawner) {
 		return true
 	}
 	if link.Metadata != nil && link.Metadata.AlsoBlocks && !terminal(spawner) {
@@ -247,30 +289,45 @@ func derivedProfile(plan *restorePlan) string {
 }
 
 type archiveEvidence struct {
-	ArchiveSHA256 string                     `json:"archive_sha256"`
-	DerivedSHA256 string                     `json:"derived_sha256"`
-	Profile       string                     `json:"profile"`
-	SourceStore   string                     `json:"source_store"`
-	Members       map[string]dumpformat.File `json:"members"`
+	ArchiveSHA256           string                     `json:"archive_sha256"`
+	DerivedSHA256           string                     `json:"derived_sha256"`
+	Profile                 string                     `json:"profile"`
+	SourceStore             string                     `json:"source_store"`
+	Members                 map[string]dumpformat.File `json:"members"`
+	NativeCaptureFiles      map[string]dumpformat.File `json:"native_capture_files,omitempty"`
+	NativeDecodedLimitBytes uint64                     `json:"native_decoded_limit_bytes,omitempty"`
 }
 
 func retainArchive(plan *restorePlan, archive *dumpformat.Archive, add func(model.Ref, string, any) error) error {
+	if archive.HasNativeDelta() {
+		return retainNativeDeltaArchive(plan, archive, add)
+	}
 	manifest := archive.Manifest()
 	evidence := archiveEvidence{ArchiveSHA256: archive.SHA256(), DerivedSHA256: plan.derivedDigest, Profile: derivedProfile(plan), SourceStore: manifest.StoreID, Members: manifest.Files}
-	raw, ok := archive.Member("manifest.json")
+	raw, ok, err := archive.MemberChecked("manifest.json")
+	if err != nil {
+		return err
+	}
 	if !ok || !validDigest(archive.SHA256()) {
 		return fmt.Errorf("archive was not validated")
 	}
 	evidence.Members["manifest.json"] = dumpformat.File{SHA256: hashBytes(raw), Size: int64(len(raw))}
 	plan.blobs = map[string][]byte{}
-	if envelope := archive.TarBytes(); len(envelope) != 0 {
+	envelope, err := archive.TarBytesChecked()
+	if err != nil {
+		return err
+	}
+	if len(envelope) != 0 {
 		if hashBytes(envelope) != archive.SHA256() {
 			return fmt.Errorf("archive envelope changed")
 		}
 		plan.blobs[archive.SHA256()] = envelope
 	}
 	for name, expected := range evidence.Members {
-		data, ok := archive.Member(name)
+		data, ok, err := archive.MemberChecked(name)
+		if err != nil {
+			return err
+		}
 		if !ok || hashBytes(data) != expected.SHA256 || int64(len(data)) != expected.Size {
 			return fmt.Errorf("archive member changed: %s", name)
 		}

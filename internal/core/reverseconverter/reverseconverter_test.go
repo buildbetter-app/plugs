@@ -386,6 +386,56 @@ func TestConvertRefusesSourceArchiveMetadataCollision(t *testing.T) {
 	}
 }
 
+func TestConvertMemoryIdentityPreservesVerbatimAndRefusesBlank(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  string
+		want bool
+	}{
+		{"spaced-unicode", " \t É cafe\u0301.🧭 \t ", true},
+		{"empty", "", false},
+		{"ascii-whitespace", " \t ", false},
+		{"unicode-whitespace", "\u2003\u00a0\t", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dump := cloneDump(fixtureDump())
+			record := &dump.Records["memory"][0]
+			record.ID, record.Body["key"], record.Source.Fields["key"] = tc.key, tc.key, "kv.memory."+tc.key
+			before := cloneDump(dump)
+			result, err := Convert(dump)
+			if !reflect.DeepEqual(dump, before) {
+				t.Fatal("conversion mutated the source memory")
+			}
+			if !tc.want {
+				var refusal *Refusal
+				if !errors.As(err, &refusal) || !strings.Contains(err.Error(), "incomplete identity or provenance") || len(result.JSONL) != 0 || result.Digest != "" {
+					t.Fatalf("blank memory identity produced output: result=%+v err=%v", result, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("verbatim spaced key was refused: %v", err)
+			}
+			found := false
+			for _, line := range bytes.Split(bytes.TrimSpace(result.JSONL), []byte{'\n'}) {
+				var row map[string]any
+				if err := json.Unmarshal(line, &row); err != nil {
+					t.Fatal(err)
+				}
+				if row["_type"] == "memory" && row["key"] == tc.key {
+					if row["value"] != "memory value" || found {
+						t.Fatalf("verbatim memory value or uniqueness changed: %v", row)
+					}
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("reverse output lost the exact spaced key: %s", result.JSONL)
+			}
+		})
+	}
+}
+
 func TestConvertRefusesEmptyMemoryAndConfigValues(t *testing.T) {
 	for _, kind := range []string{"memory", "config"} {
 		t.Run(kind, func(t *testing.T) {

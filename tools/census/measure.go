@@ -430,7 +430,11 @@ func (c *Capture) checkBead(source dumpformat.Record, doc pipeline.Document) boo
 		if kind == "related" {
 			kind = "relates-to"
 		}
-		links = append(links, pipeline.Link{Kind: kind, To: model.RefByID(textValue(edge.Body["to"]), model.Natural64(0))})
+		edgeMetadata, err := dumpformat.SourceLinkMetadata(c.archive.Manifest().EdgeVersion(), edge, kind)
+		if err != nil {
+			return false
+		}
+		links = append(links, pipeline.Link{Kind: kind, To: model.RefByID(textValue(edge.Body["to"]), model.Natural64(0)), Metadata: edgeMetadata})
 	}
 	key := func(link pipeline.Link) string { return link.Kind + "/" + link.To.ID }
 	sort.Slice(links, func(i, j int) bool { return key(links[i]) < key(links[j]) })

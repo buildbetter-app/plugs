@@ -9,15 +9,20 @@ go_library(
         "//internal/core/model",
         "//internal/core/ontology",
         "//internal/storage/driver",
+        "@org_golang_x_sys//unix",
     ],
 )
 
 go_test(
     name = "dumpformat_test",
-    data = glob(["testdata/*.tar"]),
+    data = glob(["testdata/*.tar", "testdata/*.json"]),
     srcs = glob(["*_test.go"]),
     embed = [":dumpformat"],
-    deps = ["//internal/core/ontology"],
+    deps = [
+        "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/storage/driver",
+    ],
 )
 
 filegroup(

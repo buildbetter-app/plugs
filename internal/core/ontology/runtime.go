@@ -88,6 +88,52 @@ func (e Effective) SlotStatus(typ string, slot Slot) (string, bool) {
 	return target, true
 }
 
+// CreateStatus selects an exact declared nonterminal status, or the existing
+// initial status when omitted. Noninitial creation still evaluates the workflow
+// transition from initial in Validate. Terminal loading uses a guarded close.
+func (e Effective) CreateStatus(typ string, requested *string) (string, bool) {
+	if requested == nil {
+		return e.InitialStatus(typ)
+	}
+	s, ok := e.declaredStatus(typ, *requested)
+	return *requested, ok && !s.Category.Terminal()
+}
+
+// LifecycleStatus retains slot defaults and permits exact targets only for the
+// public close/reopen extension. Category and outcome restrict the verb; the
+// ordinary transition rules, authorization and tracked guards still decide it.
+func (e Effective) LifecycleStatus(typ string, slot Slot, requested *string) (string, bool) {
+	target, available := e.SlotStatus(typ, slot)
+	if requested == nil {
+		return target, available
+	}
+	if !available {
+		return "", false
+	}
+	s, ok := e.declaredStatus(typ, *requested)
+	if !ok {
+		return "", false
+	}
+	switch slot {
+	case Close:
+		return *requested, s.Category.Completed() && s.Outcome == Success
+	case Reopen:
+		return *requested, s.Category.ReadyEligible()
+	default:
+		return "", false
+	}
+}
+
+func (e Effective) declaredStatus(typ, target string) (Status, bool) {
+	t, ok := e.document.Types[typ]
+	if !ok || t.Archived || target == "" {
+		return Status{}, false
+	}
+	w, ok := e.document.Workflows[t.Workflow]
+	s, declared := e.document.Statuses[target]
+	return s, ok && !w.Archived && declared && !s.Archived && contains(w.Statuses, target)
+}
+
 // Defaults copies a proposal and supplies only absent defaults. Plugin-owned
 // fields must be set by their owning mutator, not by a generic default.
 func Defaults(e Effective, state BeadState) (BeadState, []Violation) {
@@ -202,6 +248,7 @@ func Validate(e Effective, before, after *BeadState, method string, facts GuardF
 	violations = append(violations, priorityViolations...)
 	_, templateViolations := IsTemplate(*after)
 	violations = append(violations, templateViolations...)
+	violations = append(violations, validateAwaitMembers(before, after, facts)...)
 	t, ok := e.document.Types[after.Type]
 	if !ok || t.Archived {
 		return append(violations, invalid("type", "unknown or archived type")...)
@@ -215,7 +262,7 @@ func Validate(e Effective, before, after *BeadState, method string, facts GuardF
 		violations = append(violations, invalid("status", "status is outside the active type workflow")...)
 	}
 	for _, name := range keys(after.Fields) {
-		if name == "priority" || name == "template" {
+		if name == "priority" || name == "template" || isAwaitMember(name) {
 			continue
 		} // fixed kernel field, checked above
 		if isGateField(name) {
@@ -249,15 +296,26 @@ func Validate(e Effective, before, after *BeadState, method string, facts GuardF
 		if lifecycle {
 			violations = append(violations, invalid("status", "lifecycle operation requires an existing bead")...)
 		}
-		if after.Status != w.Initial {
-			violations = append(violations, Violation{Code: "ontology_use_slot_verb", Field: "status", Message: "new beads must start at the workflow initial status"})
+		target, ok := e.CreateStatus(after.Type, facts.TargetStatus)
+		if !ok {
+			return append(violations, invalid("targetStatus", "create target must name a declared nonterminal workflow status")...)
+		}
+		if after.Status != target {
+			violations = append(violations, Violation{Code: "ontology_use_slot_verb", Field: "status", Message: "new beads must enter the selected create status"})
+		}
+		if facts.TargetStatus != nil && target != w.Initial {
+			matched, guards := transitionGuards(w, w.Initial, target, *after, facts)
+			violations = append(violations, guards...)
+			if !matched {
+				violations = append(violations, invalid("status", "transition from initial is not allowed")...)
+			}
 		}
 		return violations
 	}
 	if !lifecycle {
 		return violations
 	}
-	target, ok := e.SlotStatus(after.Type, slot)
+	target, ok := e.LifecycleStatus(after.Type, slot, facts.TargetStatus)
 	if !ok {
 		return append(violations, invalid("status", "lifecycle slot is unavailable")...)
 	}
@@ -291,7 +349,7 @@ func ValidateCloseSettlement(e Effective, before, after *BeadState, facts GuardF
 	if before == nil || after == nil {
 		return invalid("status", "close settlement requires an existing bead")
 	}
-	target, ok := e.SlotStatus(before.Type, Close)
+	target, ok := e.LifecycleStatus(before.Type, Close, facts.TargetStatus)
 	if !ok || before.Status != target || after.Status != target || before.Type != after.Type || before.Project != after.Project {
 		return invalid("status", "close settlement must retain the selected close slot and workflow")
 	}

@@ -28,8 +28,13 @@ import (
 const (
 	Alias      = "workflow"
 	ItemPrefix = "workflow:item/"
-	stateKey   = "workflow/state"
-	claimTTL   = 30 * time.Minute
+	// RunKind and ItemKind are the provider's durable user-content kinds. The
+	// native creation guard receives these from the actual create paths; it does
+	// not classify method names or a service-side example allowlist.
+	RunKind  = "workflow.run"
+	ItemKind = "workflow.item"
+	stateKey = "workflow/state"
+	claimTTL = 30 * time.Minute
 	// ClaimTTL is the original duration recorded in workflow claim responses.
 	// Replays retain that duration instead of recomputing a remaining lease.
 	ClaimTTL = claimTTL
@@ -202,8 +207,19 @@ type Provider struct {
 	instance    string
 	incarnation string
 	source      *driver.SourcePlaneProviderCommitV1
-	mu          sync.Mutex
+	// userContentGuard is installed by the trusted service composition. The
+	// provider calls it with the complete set of user-content kinds it is about
+	// to create, immediately before mutating its checkpoint image. Receipts,
+	// audit entries and other operational state are deliberately not included.
+	userContentGuard func([]string) error
+	mu               sync.Mutex
 }
+
+// UserContentGuard is the common rollback-window admission seam for native
+// provider writes. The callback receives actual provider-created kinds rather
+// than a service-side allowlist, so a future provider creation path must name
+// every user-content record it publishes before its checkpoint CAS.
+type UserContentGuard func([]string) error
 
 // BlockerResolver bridges a workflow dependency to the canonical core
 // ontology. The workflow provider owns the active endpoint and invokes this
@@ -264,11 +280,11 @@ func validateLabels(labels []string) error {
 }
 
 func validateRelation(link RelationSpec) error {
-	if strings.TrimSpace(link.Kind) == "" || !link.To.IsID() || link.To.Branch.String() != "0" || link.To.ID == "" {
+	if (link.Kind == "" || len(link.Kind) > 32 || !utf8.ValidString(link.Kind)) || !link.To.IsID() || link.To.Branch.String() != "0" || link.To.ID == "" {
 		return fail("invalid_params", "workflow relations require a kind and branch-zero target")
 	}
 	if link.Metadata != nil {
-		if _, err := link.Metadata.Normalized(); err != nil {
+		if _, err := link.Metadata.ForKind(link.Kind); err != nil {
 			return fail("invalid_params", err.Error())
 		}
 	}
@@ -362,10 +378,10 @@ func relationKey(link relationState) string {
 func relationSpecState(from string, relation RelationSpec) relationState {
 	var metadata *model.LinkMetadata
 	if relation.Metadata != nil {
-		copy := *relation.Metadata
+		copy := relation.Metadata.Clone()
 		metadata = &copy
 	}
-	return relationState{From: from, To: relation.To, Kind: strings.TrimSpace(relation.Kind), Metadata: metadata}
+	return relationState{From: from, To: relation.To, Kind: relation.Kind, Metadata: metadata}
 }
 
 func dedupeRelations(values []relationState) []relationState {
@@ -490,7 +506,7 @@ func cloneRelation(link relationState) relationState {
 	clone := link
 	clone.To = model.RefByID(link.To.ID, link.To.Branch)
 	if link.Metadata != nil {
-		metadata := *link.Metadata
+		metadata := link.Metadata.Clone()
 		clone.Metadata = &metadata
 	}
 	return clone
@@ -632,6 +648,20 @@ func (p *Provider) WithClock(now func() time.Time) *Provider {
 		p.now = now
 	}
 	return p
+}
+
+// WithUserContentGuard installs the trusted host guard for native user-content
+// creation. A nil guard restores the default (window disabled) behavior.
+func (p *Provider) WithUserContentGuard(guard UserContentGuard) *Provider {
+	p.userContentGuard = guard
+	return p
+}
+
+func (p *Provider) guardUserContent(kinds ...string) error {
+	if p.userContentGuard == nil || len(kinds) == 0 {
+		return nil
+	}
+	return p.userContentGuard(append([]string(nil), kinds...))
 }
 
 // WithIdentity binds receipts to the plugin instance and store incarnation.
@@ -901,6 +931,9 @@ func (p *Provider) Invoke(ctx context.Context, by model.PrincipalRef, req Invoke
 	if err != nil {
 		return InvokeResult{}, err
 	}
+	if err := p.guardUserContent(RunKind, ItemKind); err != nil {
+		return InvokeResult{}, err
+	}
 	run := runState{ID: runID, Template: req.Template, Project: req.Project, Owner: ownerState{Principal: principal, Agent: agent, Project: req.Project}, State: "active", CreatedAt: p.now().UTC()}
 	result := InvokeResult{Plane: "ephemeral", Run: &RunView{ID: runID, Template: req.Template, Project: req.Project, Mode: req.Mode, State: run.State, Owner: principal, CreatedAt: run.CreatedAt}, Items: []ItemView{}}
 	// Keep the authoritative run timestamp available while constructing item
@@ -930,10 +963,10 @@ func (p *Provider) Invoke(ctx context.Context, by model.PrincipalRef, req Invoke
 		for _, link := range input.Links {
 			metadata := link.Metadata
 			if metadata != nil {
-				copy := *metadata
+				copy := metadata.Clone()
 				metadata = &copy
 			}
-			links = append(links, relationState{From: itemID, To: link.To, Kind: strings.TrimSpace(link.Kind), Metadata: metadata})
+			links = append(links, relationState{From: itemID, To: link.To, Kind: link.Kind, Metadata: metadata})
 		}
 		item := itemState{
 			ID: itemID, RunID: runID, Label: input.Label, Title: input.Title, Type: itemType,
@@ -1003,7 +1036,7 @@ func (p *Provider) itemViewIn(value persisted, item itemState) ItemView {
 func itemViewAt(item itemState, now time.Time) ItemView {
 	view := ItemView{
 		ID: item.ID, RunID: item.RunID, Label: item.Label, Title: item.Title, Type: item.Type,
-		Project: item.Project, Status: item.Status, Plane: "ephemeral", Kind: "workflow.item",
+		Project: item.Project, Status: item.Status, Plane: "ephemeral", Kind: ItemKind,
 		Plugin: Alias, Revision: model.Natural64(item.Generation), Fields: cloneMetadata(item.Fields), Labels: append([]string(nil), item.Labels...),
 		Metadata: cloneMetadata(item.Metadata), Parent: cloneRef(item.Parent), Blocked: item.Blocked, ChildCounter: item.ChildCounter,
 	}
@@ -1337,7 +1370,7 @@ func workflowRelationSatisfied(value persisted, target itemState, kind string, m
 		return false
 	case "waits-for":
 		terminal := target.Status == "closed"
-		if metadata == nil && terminal {
+		if !metadata.HasPredicate() && terminal {
 			return true
 		}
 		if metadata != nil && metadata.AlsoBlocks && !terminal {
@@ -1678,23 +1711,65 @@ func (p *Provider) Update(ctx context.Context, by model.PrincipalRef, id model.R
 	return commit, nil
 }
 
+// mutateCanonicalRelation gives every ordinary relation one typed endpoint
+// identity. Metadata replaces values on that edge; it never creates siblings.
+func mutateCanonicalRelation(links []relationState, incoming relationState, unlink bool) ([]relationState, bool, error) {
+	found := -1
+	for i, stored := range links {
+		if stored.From != incoming.From || !sameRef(&stored.To, &incoming.To) {
+			continue
+		}
+		if stored.Kind != incoming.Kind {
+			if !unlink {
+				return nil, false, fail("ontology_guard_failed", fmt.Sprintf("dependency endpoints already have link kind %s", stored.Kind))
+			}
+			continue
+		}
+		if found >= 0 {
+			return nil, false, fail("invalid_params", "ambiguous stored dependency identity")
+		}
+		found = i
+	}
+	if found < 0 {
+		if unlink {
+			return nil, false, fail("not_found", "workflow relation was not found")
+		}
+		return append(links, cloneRelation(incoming)), true, nil
+	}
+	if unlink {
+		return append(links[:found:found], links[found+1:]...), true, nil
+	}
+	previous := links[found]
+	if incoming.Metadata == nil {
+		incoming.Metadata = previous.Metadata
+	} else {
+		value := incoming.Metadata.Retaining(previous.Metadata)
+		incoming.Metadata = &value
+	}
+	if relationKey(previous) == relationKey(incoming) {
+		return links, false, nil
+	}
+	result := append([]relationState(nil), links...)
+	result[found] = cloneRelation(incoming)
+	return result, true, nil
+}
+
 func (p *Provider) relationMutation(ctx context.Context, by model.PrincipalRef, req LinkRequest, meta model.WriteMeta, unlink bool) (model.Commit, error) {
 	if err := validateRef(req.From); err != nil {
 		return model.Commit{}, err
 	}
-	if err := validateRef(req.To); err != nil || strings.TrimSpace(req.Kind) == "" {
+	if err := validateRef(req.To); err != nil || req.Kind == "" || len(req.Kind) > 32 || !utf8.ValidString(req.Kind) {
 		return model.Commit{}, fail("invalid_params", "workflow relations require branch-zero IDs and a kind")
 	}
 	if req.From.ID == req.To.ID {
 		return model.Commit{}, fail("invalid_params", "workflow item cannot relate to itself")
 	}
 	if req.Metadata != nil {
-		if req.Kind != "waits-for" {
-			return model.Commit{}, fail("invalid_params", "relation metadata is only valid on waits-for")
-		}
-		if _, err := req.Metadata.Normalized(); err != nil {
+		normalized, err := req.Metadata.ForKind(req.Kind)
+		if err != nil {
 			return model.Commit{}, fail("invalid_params", err.Error())
 		}
+		req.Metadata = &normalized
 	}
 	fromWorkflow, toWorkflow := workflowTarget(req.From), workflowTarget(req.To)
 	if !fromWorkflow && !toWorkflow {
@@ -1744,18 +1819,13 @@ func (p *Provider) relationMutation(ctx context.Context, by model.PrincipalRef, 
 			return model.Commit{}, err
 		}
 	}
-	relation := relationState{From: req.From.ID, To: req.To, Kind: strings.TrimSpace(req.Kind), Metadata: req.Metadata}
+	relation := relationState{From: req.From.ID, To: req.To, Kind: req.Kind, Metadata: req.Metadata}
 	changed := false
 	if fromWorkflow {
-		if unlink {
-			if !hasRelation(endpoint.Links, relation) {
-				return model.Commit{}, fail("not_found", "workflow relation was not found")
-			}
-			endpoint.Links = removeRelation(endpoint.Links, relation)
-			changed = true
-		} else if !hasRelation(endpoint.Links, relation) {
-			endpoint.Links = append(endpoint.Links, cloneRelation(relation))
-			changed = true
+		var err error
+		endpoint.Links, changed, err = mutateCanonicalRelation(endpoint.Links, relation, unlink)
+		if err != nil {
+			return model.Commit{}, err
 		}
 		if toWorkflow {
 			target, ok := value.Items[req.To.ID]
@@ -1765,44 +1835,32 @@ func (p *Provider) relationMutation(ctx context.Context, by model.PrincipalRef, 
 			if err := p.authorized(target, by, meta); err != nil {
 				return model.Commit{}, err
 			}
-			if unlink {
-				target.Inbound = removeRelation(target.Inbound, relation)
-			} else {
-				target.Inbound = append(target.Inbound, cloneRelation(relation))
-				target.Inbound = dedupeRelations(target.Inbound)
+			target.Inbound, _, err = mutateCanonicalRelation(target.Inbound, relation, unlink)
+			if err != nil {
+				return model.Commit{}, err
 			}
 			value.Items[target.ID] = target
 		}
-		if changed {
-			endpoint.Generation++
-			value.Items[endpoint.ID] = endpoint
-		}
 	} else {
-		// A durable source has no plugin body to mutate. Its mixed-plane edge is
-		// indexed on the workflow target, so reads and promotion can preserve it
-		// without manufacturing a core version or lease row.
-		if unlink {
-			if !hasRelation(endpoint.Inbound, relation) {
-				return model.Commit{}, fail("not_found", "workflow relation was not found")
-			}
-			endpoint.Inbound = removeRelation(endpoint.Inbound, relation)
-			changed = true
-		} else if !hasRelation(endpoint.Inbound, relation) {
-			endpoint.Inbound = append(endpoint.Inbound, cloneRelation(relation))
-			endpoint.Inbound = dedupeRelations(endpoint.Inbound)
-			changed = true
-		}
-		if changed {
-			endpoint.Generation++
-			value.Items[endpoint.ID] = endpoint
+		var err error
+		endpoint.Inbound, changed, err = mutateCanonicalRelation(endpoint.Inbound, relation, unlink)
+		if err != nil {
+			return model.Commit{}, err
 		}
 	}
+	if changed {
+		endpoint.Generation++
+		value.Items[endpoint.ID] = endpoint
+	}
+
 	commit := workflowCommit(endpoint.ID, endpoint.Generation)
 	receipt, err := p.storeReceipt(value, by, meta, request, commit, endpoint.RunID, endpoint.ID)
 	if err != nil {
 		return model.Commit{}, err
 	}
-	p.appendAudit(&value, "workflow.relation", receipt)
+	if changed {
+		p.appendAudit(&value, "workflow.relation", receipt)
+	}
 	if err := p.mapSaveError(p.save(ctx, value, revision)); err != nil {
 		return model.Commit{}, err
 	}
@@ -2004,6 +2062,9 @@ func (p *Provider) Demote(ctx context.Context, by model.PrincipalRef, req Demote
 	item := itemState{ID: itemID, RunID: runID, Label: req.Label, Title: req.Title, Type: req.Type, Project: req.Project, Owner: run.Owner, Status: "open", Fields: cloneMetadata(req.Fields), Labels: normalizeLabels(req.Labels), Metadata: cloneMetadata(req.Metadata), Parent: cloneRef(req.Parent), Links: links}
 	if req.Status != "" {
 		item.Status = req.Status
+	}
+	if err := p.guardUserContent(RunKind, ItemKind); err != nil {
+		return DemoteResult{}, err
 	}
 	item.Blocked, item.ChildCounter = req.Blocked, req.ChildCounter
 	for _, comment := range req.Comments {
@@ -2505,12 +2566,12 @@ func (p *Provider) sanitizeTerminalReceipts(value persisted, runID string) {
 				}
 			}
 			result.Found = receipt.ItemID != ""
-			result.Item = ItemView{ID: receipt.ItemID, RunID: runID, Status: "closed", Plane: "ephemeral", Kind: "workflow.item", Plugin: Alias, Revision: result.Item.Revision}
+			result.Item = ItemView{ID: receipt.ItemID, RunID: runID, Status: "closed", Plane: "ephemeral", Kind: ItemKind, Plugin: Alias, Revision: result.Item.Revision}
 			receipt.Result, _ = json.Marshal(result)
 		} else if receipt.Method == "bead.claim" {
 			var item ItemView
 			if json.Unmarshal(receipt.Result, &item) == nil {
-				item = ItemView{ID: receipt.ItemID, RunID: runID, Status: "closed", Plane: "ephemeral", Kind: "workflow.item", Plugin: Alias, Revision: item.Revision}
+				item = ItemView{ID: receipt.ItemID, RunID: runID, Status: "closed", Plane: "ephemeral", Kind: ItemKind, Plugin: Alias, Revision: item.Revision}
 				receipt.Result, _ = json.Marshal(item)
 			}
 		} else if receipt.Method == "tx.apply" {
@@ -2526,7 +2587,7 @@ func (p *Provider) sanitizeTerminalReceipts(value persisted, runID string) {
 			_ = json.Unmarshal(receipt.Result, &result)
 			result = DemoteResult{
 				Run:  RunView{ID: runID, Mode: "ephemeral", State: "completed"},
-				Item: ItemView{ID: receipt.ItemID, RunID: runID, Status: "closed", Plane: "ephemeral", Kind: "workflow.item", Plugin: Alias, Revision: result.Item.Revision},
+				Item: ItemView{ID: receipt.ItemID, RunID: runID, Status: "closed", Plane: "ephemeral", Kind: ItemKind, Plugin: Alias, Revision: result.Item.Revision},
 			}
 			receipt.Result, _ = json.Marshal(result)
 		} else if receipt.Method == "x.workflow.run.promote" {

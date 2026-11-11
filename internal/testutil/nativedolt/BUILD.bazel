@@ -1,0 +1,9 @@
+load("@rules_go//go:def.bzl", "go_library")
+go_library(
+    name = "nativedolt",
+    srcs = ["server.go"],
+    testonly = True,
+    importpath = "github.com/buildbetter-app/plugs/internal/testutil/nativedolt",
+    visibility = ["//visibility:public"],
+    deps = ["//internal/testutil/bazeltest", "@com_github_go_sql_driver_mysql//:mysql"],
+)

@@ -42,18 +42,36 @@ func nativeOperationalTable(table string, familyContract string) bool {
 	return familyContract == SourceFamilyContract && (table == "leases" || table == "repo_mtimes")
 }
 
+// Native delta heads archive these known families as inert evidence. The
+// caller must first establish the private complete-capture-set attachment;
+// portable archives keep actionFor and sourcePlaneArchiveTable unchanged.
+// dolt_schemas is physical-only and is reconciled from the authenticated stream,
+// never added to the required portable source-table schema or disposition census.
+func nativeDeltaOpaqueArchiveFamily(table string) bool {
+	switch table {
+	case "federation_peers", "interactions", "routes", "dolt_schemas":
+		return true
+	}
+	return false
+}
+
 func validateSourcePlaneRecord(r Record, m Manifest, counts map[string]int, statuses map[string]bool) error {
 	table, fields := r.Source.Table, r.Source.Fields
 	if (table == "leases" || table == "repo_mtimes") && m.SourceFamilyContract != SourceFamilyContract {
 		return fmt.Errorf("operational source rows require source family contract")
 	}
-	columns, ok := tableColumns[table]
-	if !ok || len(fields) != len(strings.Fields(columns)) {
+	columns, ok := sourceTableColumns(m.MainVersion)[table]
+	if !ok || (table != DurableDependencyTable && table != EphemeralDependencyTable && len(fields) != len(strings.Fields(columns))) {
 		return fmt.Errorf("source plane record schema drift")
 	}
 	for _, column := range strings.Fields(columns) {
 		if _, present := fields[column]; !present {
 			return fmt.Errorf("missing source plane column %s", column)
+		}
+	}
+	if m.NativeHistoryContract == NativeDeltaFormat && nativeDeltaOpaqueArchiveFamily(table) {
+		if err := validateNativeDeltaSecretReferences(table, map[string]any(fields)); err != nil {
+			return err
 		}
 	}
 	if table == "dependencies" || table == EphemeralDependencyTable {
@@ -127,7 +145,7 @@ func validateSourcePlaneRecord(r Record, m Manifest, counts map[string]int, stat
 
 func validateSourcePlaneRelations(m Manifest, rows map[string][]Record) error {
 	if m.SourcePlaneAddressContract != SourcePlaneAddressContract {
-		return validateRelations(m.Projects, rows)
+		return validateRelationsForVersion(m.Projects, rows, m.MainVersion, m.IgnoredVersion)
 	}
 	entities := map[driver.SourceEntityKey]bool{}
 	for _, r := range rows["bead"] {
@@ -215,7 +233,7 @@ func validateSourcePlaneRelations(m Manifest, rows map[string][]Record) error {
 			legacy[kind] = records
 		}
 	}
-	return validateRelations(m.Projects, legacy)
+	return validateRelationsForVersion(m.Projects, legacy, m.MainVersion, m.IgnoredVersion)
 }
 
 func sourcePhysicalProject(id string, projects []Project) (string, error) {
@@ -234,23 +252,59 @@ func (a *Archive) SourcePlaneRecords() ([]driver.SourcePlaneRecordV1, error) {
 	if a == nil || a.native || a.manifest.SourcePlaneAddressContract != SourcePlaneAddressContract {
 		return nil, driver.ErrUnsupported
 	}
+	var output *NativeDeltaBudget
+	if budget := a.decodedBudget(); budget != nil {
+		output = budget.Scope()
+		defer output.Release()
+	}
 	var result []driver.SourcePlaneRecordV1
 	for _, kind := range a.manifest.Kinds {
 		data := a.members[kind.File]
 		if len(data) == 0 || data[len(data)-1] != '\n' {
 			return nil, fmt.Errorf("source plane raw member is missing framing")
 		}
-		lines := bytes.Split(data[:len(data)-1], []byte{'\n'})
-		if len(lines) != kind.Count || len(lines) != len(a.byKind[kind.Name]) {
-			return nil, fmt.Errorf("source plane raw member differs from selected image")
-		}
-		for i, r := range a.byKind[kind.Name] {
+		remaining := data
+		count := 0
+		for len(remaining) != 0 {
+			raw, rest, found := bytes.Cut(remaining, []byte{'\n'})
+			if !found || count >= len(a.byKind[kind.Name]) {
+				return nil, fmt.Errorf("source plane raw member differs from selected image")
+			}
+			remaining = rest
+			r := a.byKind[kind.Name][count]
+			count++
+			var work *NativeDeltaBudget
+			if output != nil {
+				work = output.Scope()
+				for _, phase := range []string{"source_record_decode", "source_record_canonical_actual", "source_record_canonical_expected"} {
+					if err := work.ChargeJSON(phase, json.RawMessage(raw)); err != nil {
+						work.Release()
+						return nil, err
+					}
+				}
+			}
 			var original Record
-			if err := decodeJSON(lines[i], &original); err != nil || !equalJSON(original, r) {
+			err := decodeJSON(raw, &original)
+			equal := err == nil && equalJSON(original, r)
+			if work != nil {
+				work.Release()
+			}
+			if !equal {
 				return nil, fmt.Errorf("source plane raw member differs from selected record")
 			}
-			result = append(result, driver.SourcePlaneRecordV1{Kind: r.Kind, Project: r.Project, Table: r.Source.Table, ID: r.ID, Raw: bytes.Clone(lines[i])})
+			if output != nil {
+				if err := output.ChargeBytes("source_plane_raw_records", uint64(len(raw))); err != nil {
+					return nil, err
+				}
+			}
+			result = append(result, driver.SourcePlaneRecordV1{Kind: r.Kind, Project: r.Project, Table: r.Source.Table, ID: r.ID, Raw: bytes.Clone(raw)})
 		}
+		if count != kind.Count || count != len(a.byKind[kind.Name]) {
+			return nil, fmt.Errorf("source plane raw member differs from selected image")
+		}
+	}
+	if output != nil {
+		output.Retain()
 	}
 	return result, nil
 }

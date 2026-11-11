@@ -41,6 +41,24 @@ func TestEdgeMetadataIdentityRefusalIsTypedAndRetainsExactRejectedValue(t *testi
 // These are detached contract controls, not accepted native producer output.
 func edgeVersionFixture(t *testing.T, f *mergeFixture, version int) []byte {
 	t.Helper()
+	// This fixture's encoder is its original capture boundary. Build the
+	// expected cache independently from the two explicitly authored columns.
+	for i := range f.records["edge"] {
+		edge := &f.records["edge"][i]
+		edge.NativeEdgeTokens = map[string]string{}
+		for _, key := range []string{"metadata", "thread_id"} {
+			if value, present := edge.Source.Fields[key]; present {
+				raw, err := json.Marshal(value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				edge.NativeEdgeTokens["beads."+key] = string(raw)
+			}
+		}
+		if len(edge.NativeEdgeTokens) == 0 {
+			edge.NativeEdgeTokens = nil
+		}
+	}
 	return f.bytes(t, func(m *Manifest, _ map[string][]byte) {
 		for i := range m.Kinds {
 			if m.Kinds[i].Name == "edge" {

@@ -158,6 +158,9 @@ func pageOptions(project, viewID, cursor string, filter *Filter, limit int) (int
 	if viewID != "" || (filter != nil && (filter.Query != "" || filter.ViewID != "" || len(filter.Events) != 0)) {
 		return 0, failure("invalid_params", "views, query strings and event filters are not supported by this slice")
 	}
+	if filter != nil && filter.Priority != nil && (*filter.Priority < 0 || *filter.Priority > 4) {
+		return 0, failure("invalid_params", "filter.priority must be between 0 and 4")
+	}
 	if limit == 0 {
 		limit = 100
 	}
@@ -173,6 +176,12 @@ func matchesFilter(row storedBead, project string, filter *Filter) bool {
 	}
 	if filter == nil {
 		return true
+	}
+	if filter.Priority != nil {
+		p, err := priority(row.doc)
+		if err != nil || p != *filter.Priority {
+			return false
+		}
 	}
 	return (len(filter.Types) == 0 || slices.Contains(filter.Types, row.doc.Type)) &&
 		(len(filter.Resources) == 0 || slices.Contains(filter.Resources, row.doc.ID))
@@ -278,6 +287,10 @@ func (s *Service) readyItems(ctx context.Context, by model.PrincipalRef, req Rea
 // path after collecting both facts from one provider checkpoint, so no later
 // eligibility call can silently observe a different plane.
 func (s *Service) readyItemsFromGraph(ctx context.Context, by model.PrincipalRef, req ReadyRequest, r driver.Reader, graph map[string]storedBead, workflowBlocked map[string]bool, now time.Time) ([]Bead, map[string]readyOrderKey, error) {
+	parents, err := s.parentFilter(ctx, r, req.Filter, true)
+	if err != nil {
+		return nil, nil, err
+	}
 	graphIDs := sortedIDs(graph)
 	// Membership is always evaluated against the complete current graph. P74
 	// applies only to the order of this exact set, before any page is cut.
@@ -285,7 +298,7 @@ func (s *Service) readyItemsFromGraph(ctx context.Context, by model.PrincipalRef
 	for _, id := range graphIDs {
 		row := graph[id]
 		st := state(row.doc)
-		if !matchesFilter(row, req.Project, req.Filter) || st.Template || !s.ontology.effective(st.Project).ReadyEligible(st.Type, st.Status) {
+		if (parents != nil && !parents[id]) || !matchesFilter(row, req.Project, req.Filter) || st.Template || !s.ontology.effective(st.Project).ReadyEligible(st.Type, st.Status) {
 			continue
 		}
 		if workflowBlocked[row.doc.ID] || row.doc.Fields["blocked"] == true {
@@ -971,10 +984,14 @@ func (s *Service) History(ctx context.Context, by model.PrincipalRef, req Histor
 	if err != nil {
 		return BeadPage{}, err
 	}
+	parents, err := s.parentFilter(ctx, r, req.Filter, false)
+	if err != nil {
+		return BeadPage{}, err
+	}
 	items := []Bead{}
 	for _, id := range sortedIDs(graph) {
 		row := graph[id]
-		if !matchesFilter(row, req.Project, req.Filter) {
+		if (parents != nil && !parents[id]) || !matchesFilter(row, req.Project, req.Filter) {
 			continue
 		}
 		bead, err := beadValue(row)

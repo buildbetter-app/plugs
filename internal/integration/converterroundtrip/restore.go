@@ -35,15 +35,17 @@ var (
 // observed before the restore transaction. Target is intentionally the
 // pre-restore snapshot so refusal reports cannot be mistaken for a commit.
 type Report struct {
-	Archive        *dumpformat.Archive
-	Target         driver.Meta
-	Restored       driver.Meta
-	IdempotencyKey string
-	RequestHash    string
-	Recovered      bool
-	SourcePlanes   *driver.SourcePlaneCommitBindingV1
-	Receipt        *driver.IdempotencyRecord
-	NativeFamilies []NativeFamilyReport
+	Archive         *dumpformat.Archive
+	Target          driver.Meta
+	Restored        driver.Meta
+	IdempotencyKey  string
+	RequestHash     string
+	Recovered       bool
+	SourcePlanes    *driver.SourcePlaneCommitBindingV1
+	Receipt         *driver.IdempotencyRecord
+	NativeFamilies  []NativeFamilyReport
+	NativeSchemas   []NativeSchemaReport  `json:",omitempty"`
+	NativeHistories []NativeHistoryReport `json:",omitempty"`
 }
 
 // Verification is a trusted offline comparison, bound to the exact tar bytes.
@@ -62,7 +64,7 @@ func Restore(ctx context.Context, input io.Reader, target driver.Store, verifica
 	if err := ctx.Err(); err != nil {
 		return Report{}, err
 	}
-	archive, err := dumpformat.Read(input)
+	archive, err := dumpformat.ReadWithNativeDeltaAccounting(ctx, input)
 	if err != nil {
 		return Report{}, err
 	}
@@ -76,7 +78,7 @@ func RestoreWithLease(ctx context.Context, input io.Reader, target driver.Store,
 	if err := ctx.Err(); err != nil {
 		return Report{}, err
 	}
-	archive, err := dumpformat.Read(input)
+	archive, err := dumpformat.ReadWithNativeDeltaAccounting(ctx, input)
 	if err != nil {
 		return Report{}, err
 	}
@@ -96,7 +98,7 @@ func RestoreImport(ctx context.Context, input io.Reader, target driver.Store, pr
 	if err != nil {
 		return Report{}, err
 	}
-	archive, err := dumpformat.Read(input)
+	archive, err := dumpformat.ReadWithNativeDeltaAccounting(ctx, input)
 	if err != nil {
 		return Report{}, historyReadError(bound.HistoryMode, err)
 	}
@@ -105,6 +107,7 @@ func RestoreImport(ctx context.Context, input io.Reader, target driver.Store, pr
 
 // RestoreImportWithLease is RestoreImport for a caller that already owns the
 // target lease. It shares the same preparation, allocator and commit path.
+// The caller remains responsible for renewal through the entire operation.
 func RestoreImportWithLease(ctx context.Context, input io.Reader, target driver.Store, lease driver.ActiveLease, profile driver.RestoreImportProfile, verification ...Verification) (Report, error) {
 	if err := ctx.Err(); err != nil {
 		return Report{}, err
@@ -113,7 +116,7 @@ func RestoreImportWithLease(ctx context.Context, input io.Reader, target driver.
 	if err != nil {
 		return Report{}, err
 	}
-	archive, err := dumpformat.Read(input)
+	archive, err := dumpformat.ReadWithNativeDeltaAccounting(ctx, input)
 	if err != nil {
 		return Report{}, historyReadError(bound.HistoryMode, err)
 	}
@@ -137,7 +140,7 @@ func InspectImport(ctx context.Context, input io.Reader) (ImportInspection, erro
 	if err := ctx.Err(); err != nil {
 		return ImportInspection{}, err
 	}
-	archive, err := dumpformat.Read(input)
+	archive, err := dumpformat.ReadWithNativeDeltaAccounting(ctx, input)
 	if err != nil {
 		return ImportInspection{}, err
 	}
@@ -152,10 +155,21 @@ func restoreArchive(ctx context.Context, archive *dumpformat.Archive, target dri
 	return restoreArchiveWithProfile(ctx, archive, target, supplied, nil, checks)
 }
 
-func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive, target driver.Store, supplied driver.ActiveLease, profile *driver.RestoreImportProfile, checks []Verification) (Report, error) {
+func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive, target driver.Store, supplied driver.ActiveLease, profile *driver.RestoreImportProfile, checks []Verification) (result Report, restoreErr error) {
 	if archive == nil || target == nil {
 		return Report{Archive: archive}, fmt.Errorf("restore requires an archive and target store")
 	}
+	// Conversion plans and their lowered batches live through transaction
+	// cleanup, then cease to be retained. The report keeps the original archive.
+	originalArchive := archive
+	archive, releasePlan := archive.NativeDeltaAccountingScope()
+	defer func() {
+		releasePlan()
+		if result.Archive != nil && result.Archive.SHA256() == originalArchive.SHA256() {
+			result.Archive = originalArchive
+		}
+	}()
+	ctx = archive.WithNativeDeltaAccounting(ctx)
 	if archive.Manifest().SourcePlaneAddressContract != "" && (profile == nil || profile.SourcePlanes == nil) {
 		return Report{Archive: archive}, fmt.Errorf("%w: source plane archive requires the joint restore adapter", driver.ErrUnsupported)
 	}
@@ -208,11 +222,13 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 			}
 		}
 	}
-	plan, err := buildPlanWithProfile(archive, profile, restoreTime)
+	plan, err := buildPlanWithProfile(archive, profile, restoreTime, ctx)
 	if err != nil {
 		return report, err
 	}
 	report.NativeFamilies = append([]NativeFamilyReport(nil), plan.nativeFamilies...)
+	report.NativeSchemas = plan.nativeSchemas
+	report.NativeHistories = plan.nativeHistories
 	if profile != nil && len(checks) == 0 {
 		checks = []Verification{{ArchiveSHA256: profile.ArchiveDigest, DerivedSHA256: profile.DerivedDigest}}
 	}
@@ -223,11 +239,13 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 	var replay driver.OfflineHistoryPlan
 	lockPlan := plan
 	if profile != nil && profile.HistoryMode != driver.RestoreHistoryModeSnapshot {
-		lowered, lowerErr := lowerSourceHistory(archive, *profile, restoreTime)
+		historyArchive, releaseHistory := archive.NativeDeltaAccountingScope()
+		defer releaseHistory()
+		lowered, lowerErr := lowerSourceHistory(historyArchive, *profile, restoreTime, ctx)
 		if lowerErr != nil {
 			return report, lowerErr
 		}
-		digest, digestErr := driver.OfflineHistoryDigest(lowered)
+		digest, digestErr := nativeHistoryDigest(historyArchive, lowered)
 		if digestErr != nil || digest != profile.HistoryDigest {
 			return report, driver.ErrRestoreHistoryRefused{Mode: profile.HistoryMode, History: archive.Manifest().History, Reason: driver.RestoreHistoryReasonUnmappable}
 		}
@@ -258,11 +276,12 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 
 	lease := supplied
 	if lease == nil {
-		lease, err = target.Lease(ctx, "plug-converter-restore", driver.LeaseTTL)
+		var release func() error
+		ctx, lease, release, err = HoldRestoreLease(ctx, target, "plug-converter-restore")
 		if err != nil {
 			return report, err
 		}
-		defer func() { _ = lease.Release(context.WithoutCancel(ctx)) }()
+		defer func() { restoreErr = errors.Join(restoreErr, release()) }()
 	}
 	var sourceCapability driver.WorkflowCheckpointStore
 	if sourceLogical != nil {
@@ -400,6 +419,20 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 			return report, fmt.Errorf("restore blob digest mismatch")
 		}
 	}
+	if plan.nativeCapture != nil {
+		if err := plan.nativeCapture.VisitNativeCaptureFiles(ctx, func(_ string, data []byte) error {
+			actual, err := tx.PutBlob(ctx, data)
+			if err != nil {
+				return err
+			}
+			if string(actual) != hashBytes(data) {
+				return fmt.Errorf("native capture blob digest differs")
+			}
+			return nil
+		}); err != nil {
+			return report, err
+		}
+	}
 	if err = tx.BumpSentinels(ctx, lockPlan.sentinels); err != nil {
 		return report, err
 	}
@@ -445,6 +478,8 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		report.Restored, report.Recovered = recovered.Restored, true
 		report.SourcePlanes, report.Receipt = recovered.SourcePlanes, recovered.Receipt
 		report.NativeFamilies = recovered.NativeFamilies
+		report.NativeSchemas = recovered.NativeSchemas
+		report.NativeHistories = recovered.NativeHistories
 		return report, nil
 	}
 	if commit.Kind != model.ChangesetRestore || commit.Incarnation != restored.Incarnation || commit.Revision != restored.Head || history == nil && len(commit.Changes) != len(plan.records) {
@@ -604,18 +639,18 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 		}
 	}
 	if err = compareImportBinding(ctx, r, evidence, binding); err != nil {
-		return Report{}, driver.ErrConflict
+		return Report{}, nativeDeltaRecoveryError(err)
 	}
 	if bound.HistoryDigest != "" {
 		if err = validateHistoryRecovery(ctx, r, bound, evidence, receipt); err != nil {
-			return Report{}, driver.ErrConflict
+			return Report{}, nativeDeltaRecoveryError(err)
 		}
 	}
-	families, err := recoverNativeFamilies(ctx, r, bound, evidence, receipt)
+	families, schemas, histories, err := recoverNativeFamilies(ctx, r, bound, evidence, receipt)
 	if err != nil {
-		return Report{}, driver.ErrConflict
+		return Report{}, nativeDeltaRecoveryError(err)
 	}
-	return Report{Restored: meta, IdempotencyKey: bound.IdempotencyKey, RequestHash: request, Recovered: true, Receipt: receipt, NativeFamilies: families}, nil
+	return Report{Restored: meta, IdempotencyKey: bound.IdempotencyKey, RequestHash: request, Recovered: true, Receipt: receipt, NativeFamilies: families, NativeSchemas: schemas, NativeHistories: histories}, nil
 }
 
 type restoreRecord struct {
@@ -625,15 +660,18 @@ type restoreRecord struct {
 }
 
 type restorePlan struct {
-	migration      *dumpformat.ImportMigration
-	nativeOntology *dumpformat.NativeStatusOntology
-	nativeFamilies []NativeFamilyReport
-	records        []restoreRecord
-	sentinels      []driver.Sentinel
-	derived        []derivedImage
-	derivedDigest  string
-	blobs          map[string][]byte
-	allocators     []driver.OfflineAllocator
+	migration       *dumpformat.ImportMigration
+	nativeOntology  *dumpformat.NativeStatusOntology
+	nativeFamilies  []NativeFamilyReport
+	nativeSchemas   []NativeSchemaReport
+	nativeHistories []NativeHistoryReport
+	records         []restoreRecord
+	sentinels       []driver.Sentinel
+	derived         []derivedImage
+	derivedDigest   string
+	blobs           map[string][]byte
+	nativeCapture   *dumpformat.Archive
+	allocators      []driver.OfflineAllocator
 }
 
 // importBindingEvidence is an immutable, transaction-local copy of the full
@@ -728,21 +766,26 @@ func buildPlan(archive *dumpformat.Archive) (restorePlan, error) {
 	return buildPlanMode(archive, nil, time.Time{}, planLegacy)
 }
 
-func buildPlanWithProfile(archive *dumpformat.Archive, profile *driver.RestoreImportProfile, restoreTime time.Time) (restorePlan, error) {
+func buildPlanWithProfile(archive *dumpformat.Archive, profile *driver.RestoreImportProfile, restoreTime time.Time, contexts ...context.Context) (restorePlan, error) {
 	mode := planLegacy
 	if profile != nil {
 		mode = planImport
 	}
-	return buildPlanMode(archive, profile, restoreTime, mode)
+	return buildPlanMode(archive, profile, restoreTime, mode, nativeOperationContext(contexts))
 }
 
 func buildPlanForInspection(archive *dumpformat.Archive) (restorePlan, error) {
 	return buildPlanMode(archive, nil, time.Time{}, planInspection)
 }
 
-func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportProfile, restoreTime time.Time, mode planMode) (restorePlan, error) {
-	manifest := archive.Manifest()
-	nativeTables := len(archive.NativeSourceHistories()) != 0
+func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportProfile, restoreTime time.Time, mode planMode, contexts ...context.Context) (restorePlan, error) {
+	scratch, releaseScratch := archive.NativeDeltaAccountingScope()
+	defer releaseScratch()
+	manifest, err := scratch.ManifestChecked()
+	if err != nil {
+		return restorePlan{}, err
+	}
+	nativeTables := archive.HasNativeSourceHistories()
 	migration, _ := archive.ImportMigration()
 	if mode == planLegacy && migration != nil {
 		// A missing import profile cannot opt a newly strict migration into
@@ -752,7 +795,11 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 	if mode == planLegacy && manifest.History != "unavailable" {
 		return restorePlan{}, fmt.Errorf("%w: unverified source history cannot be restored", ErrRestoreUnavailable)
 	}
-	if mode == planLegacy && len(archive.Records("comment")) != 0 {
+	comments, err := scratch.RecordsChecked("comment")
+	if err != nil {
+		return restorePlan{}, err
+	}
+	if mode == planLegacy && len(comments) != 0 {
 		return restorePlan{}, fmt.Errorf("%w: unverified comment attribution", ErrRestoreUnavailable)
 	}
 	projects := map[string]dumpformat.Project{}
@@ -773,12 +820,15 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		return restorePlan{}, fmt.Errorf("%w: import restore time is required", ErrRestoreUnavailable)
 	}
 
-	projection, err := newSourceCoreProjection(profile)
+	projection, err := newSourceCoreProjection(profile, scratch)
 	if err != nil {
 		return restorePlan{}, err
 	}
 	entities := projection.entities
-	beads := archive.Records("bead")
+	beads, err := scratch.RecordsChecked("bead")
+	if err != nil {
+		return restorePlan{}, err
+	}
 	if entities != nil {
 		var durable []dumpformat.Record
 		for _, source := range beads {
@@ -830,6 +880,9 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		}
 		var rawMetadata map[string]any
 		if projection.mapsField(source, "metadata") {
+			if err := scratch.ChargeNativeDeltaJSON("portable_metadata_object", source.Body["metadata"]); err != nil {
+				return restorePlan{}, err
+			}
 			rawMetadata, err = dumpformat.SourceMetadataObject(source.Body["metadata"])
 			if err != nil {
 				return restorePlan{}, fmt.Errorf("bead %s metadata: %w", source.ID, err)
@@ -840,7 +893,7 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 				if strings.HasPrefix(key, "beads.") || strings.HasPrefix(key, "plug.restore.") {
 					return restorePlan{}, fmt.Errorf("reserved restore metadata key %q", key)
 				}
-				encoded, err := json.Marshal(value)
+				encoded, err := marshalNativePayload(scratch, "portable_document_metadata", value)
 				if err != nil {
 					return restorePlan{}, fmt.Errorf("bead %s metadata: %w", source.ID, err)
 				}
@@ -852,7 +905,7 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 			if !present {
 				continue
 			}
-			encoded, err := json.Marshal(value)
+			encoded, err := marshalNativePayload(scratch, "portable_document_metadata", value)
 			if err != nil {
 				return restorePlan{}, fmt.Errorf("bead %s opaque field %s: %w", source.ID, field, err)
 			}
@@ -860,39 +913,53 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 			// interprets these values; the importer owns their meaning.
 			metadata["beads."+field] = encoded
 		}
+		// An explicit rehearsal plan can retain every otherwise unmodeled
+		// native column under the reserved opaque namespace. This does not
+		// interpret actor names or grant source identities any authority.
+		for _, field := range projection.opaque[driver.SourceEntityKey{Project: source.Project, Plane: source.Source.Table, ID: source.ID}] {
+			value, present := source.Source.Fields[field]
+			if !present {
+				return restorePlan{}, fmt.Errorf("%w: family=%s field=%s row_count=1", driver.ErrUnsupported, source.Source.Table, field)
+			}
+			encoded, err := marshalNativePayload(scratch, "portable_document_metadata", value)
+			if err != nil {
+				return restorePlan{}, err
+			}
+			metadata["beads."+field] = encoded
+		}
 		for key, value := range source.Body {
 			switch key {
 			case "title", "description", "priority", "metadata", "labels":
 				continue
 			}
-			encoded, err := json.Marshal(value)
+			encoded, err := marshalNativePayload(scratch, "portable_document_metadata", value)
 			if err != nil {
 				return restorePlan{}, fmt.Errorf("bead %s source field %s: %w", source.ID, key, err)
 			}
 			metadata["beads.source."+key] = encoded
 		}
-		sourceStatus, err := json.Marshal(stringValue(source.Source.Fields["status"]))
+		sourceStatus, err := marshalNativePayload(scratch, "portable_document_metadata", stringValue(source.Source.Fields["status"]))
 		if err != nil {
 			return restorePlan{}, fmt.Errorf("bead %s source status: %w", source.ID, err)
 		}
 		metadata["beads.source.status"] = sourceStatus
-		sourceFields, err := json.Marshal(source.Source.Fields)
+		sourceFields, err := marshalNativePayload(scratch, "portable_document_metadata", source.Source.Fields)
 		if err != nil {
 			return restorePlan{}, fmt.Errorf("bead %s source fields: %w", source.ID, err)
 		}
 		metadata["beads.source_fields"] = sourceFields
 		if key, scoped := source.SourceKey(); scoped {
-			metadata["beads.source_identity"], err = json.Marshal(source.Source.Identity)
+			metadata["beads.source_identity"], err = marshalNativePayload(scratch, "portable_document_metadata", source.Source.Identity)
 			if err != nil {
 				return restorePlan{}, err
 			}
-			metadata["beads.source_key"], err = json.Marshal(key)
+			metadata["beads.source_key"], err = marshalNativePayload(scratch, "portable_document_metadata", key)
 			if err != nil {
 				return restorePlan{}, err
 			}
 		}
 		if project, ok := projects[source.Project]; ok {
-			encoded, err := json.Marshal(project)
+			encoded, err := marshalNativePayload(scratch, "portable_document_metadata", project)
 			if err != nil {
 				return restorePlan{}, err
 			}
@@ -925,7 +992,7 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 	}
 
 	if profile != nil {
-		for _, source := range archive.Records("comment") {
+		for _, source := range comments {
 			issueID := stringValue(source.Body["issue_id"])
 			doc, ok := docs[issueID]
 			if !ok && entities != nil && entities[driver.SourceEntityKey{Project: source.Project, Plane: dumpformat.DurableEntityTable, ID: issueID}].TargetKind == "workflow:item" {
@@ -952,7 +1019,11 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		}
 	}
 
-	for _, source := range archive.Records("edge") {
+	edges, err := scratch.RecordsChecked("edge")
+	if err != nil {
+		return restorePlan{}, err
+	}
+	for _, source := range edges {
 		coreEdge, err := projection.coreEdge(source)
 		if err != nil {
 			return restorePlan{}, err
@@ -1002,6 +1073,11 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 			}
 			parent := model.RefByID(to, model.Natural64(0))
 			doc.Parent = &parent
+			metadata, err := dumpformat.SourceLinkMetadata(manifest.EdgeVersion(), source, kind)
+			if err != nil {
+				return restorePlan{}, fmt.Errorf("%w: parent metadata: %v", ErrRestoreUnavailable, err)
+			}
+			doc.ParentMetadata = metadata
 			docs[from] = doc
 			continue
 		default:
@@ -1044,7 +1120,7 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		if seen[key] {
 			return fmt.Errorf("duplicate restore record identity %q", ref.ID)
 		}
-		encoded, err := json.Marshal(body)
+		encoded, err := marshalNativePayload(archive, "restore_record_bodies", body)
 		if err != nil {
 			return err
 		}
@@ -1060,7 +1136,11 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		}
 	}
 	for _, kind := range []string{"edge", "comment", "memory", "config", "beads-archive"} {
-		for _, source := range archive.Records(kind) {
+		sources, err := scratch.RecordsChecked(kind)
+		if err != nil {
+			return restorePlan{}, err
+		}
+		for _, source := range sources {
 			if source.Source.Table == "leases" && nativeTables && mode == planImport {
 				keep, err := nativeLeaseUnexpired(source.Source.Fields, restoreTime)
 				if err != nil {
@@ -1111,7 +1191,7 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		if profile.SourcePlanes == nil || profile.HistoryMode != driver.RestoreHistoryModeFull {
 			return restorePlan{}, fmt.Errorf("%w: native table publication requires bound full source-plane restore", driver.ErrUnsupported)
 		}
-		current, families, err := nativeCurrentRecords(archive, restoreTime)
+		current, families, err := nativeCurrentRecords(archive, restoreTime, nativeOperationContext(contexts))
 		if err != nil {
 			return restorePlan{}, err
 		}
@@ -1121,7 +1201,15 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 			}
 		}
 		plan.nativeFamilies = families
-		accounting := nativeFamilyEvidence{Contract: manifest.SourceFamilyContract, RestoreTime: restoreTime.UTC().Format(time.RFC3339Nano), Families: families}
+		plan.nativeSchemas, err = nativeSchemaAccounting(archive, *profile, docs, plan.allocators)
+		if err != nil {
+			return restorePlan{}, err
+		}
+		plan.nativeHistories, err = nativeHistoryAccounting(archive)
+		if err != nil {
+			return restorePlan{}, err
+		}
+		accounting := nativeFamilyEvidence{Contract: manifest.SourceFamilyContract, RestoreTime: restoreTime.UTC().Format(time.RFC3339Nano), Families: families, Schemas: plan.nativeSchemas, Histories: plan.nativeHistories}
 		if err := add(model.RefByID(NativeFamilyReportID, model.Natural64(0)), "instance_config", accounting); err != nil {
 			return restorePlan{}, err
 		}
@@ -1133,7 +1221,7 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 			return restorePlan{}, err
 		}
 	}
-	if err := rebuildDerived(&plan, docs); err != nil {
+	if err := rebuildDerived(&plan, docs, archive); err != nil {
 		return restorePlan{}, err
 	}
 	if err := retainArchive(&plan, archive, add); err != nil {
@@ -1146,7 +1234,7 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		}
 		binding := importBindingEvidence{Profile: *profile, RequestHash: requestHash}
 		for i, project := range manifest.Projects {
-			sourceRaw, err := json.Marshal(project)
+			sourceRaw, err := marshalNativePayload(scratch, "portable_document_metadata", project)
 			if err != nil {
 				return restorePlan{}, err
 			}
@@ -1156,6 +1244,25 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 				if origin.Project == project.Prefix {
 					copy := origin
 					identity = &copy
+				}
+			}
+			// Single-source native archives retain the original store/project
+			// in their validated history scope, without rewriting each record
+			// into the merged-source identity encoding.
+			nativeMetadata, err := archive.NativeSourceHistoryMetadata()
+			if err != nil {
+				return restorePlan{}, err
+			}
+			for _, scope := range nativeMetadata {
+				for _, prefix := range scope.Projects {
+					if prefix != project.Prefix {
+						continue
+					}
+					origin := dumpformat.SourceIdentity{StoreID: scope.StoreID, Project: prefix}
+					if identity != nil && *identity != origin {
+						return restorePlan{}, fmt.Errorf("%w: conflicting native source/project identity", driver.ErrUnsupported)
+					}
+					identity = &origin
 				}
 			}
 			binding.Projects = append(binding.Projects, importProjectBinding{
@@ -1333,7 +1440,7 @@ func importedVersionedSourceLink(source dumpformat.Record, kind string, targetKi
 	if err := model.ValidateLinkTarget(targetKind, link.To); err != nil {
 		return pipeline.Link{}, err
 	}
-	metadata, err := dumpformat.SourceEdgeMetadata(edgeVersion, source.ID, kind, source.Body["metadata"])
+	metadata, err := dumpformat.SourceLinkMetadata(edgeVersion, source, kind)
 	if err != nil {
 		return pipeline.Link{}, err
 	}

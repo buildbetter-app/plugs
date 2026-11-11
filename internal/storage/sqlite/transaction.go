@@ -26,6 +26,7 @@ type transaction struct {
 	locked, hasHead   bool
 	restore           *driver.Meta
 	offlineHistory    *driver.PreparedOfflineHistory
+	stream            *historyStreamStage
 	nativeRestore     *driver.NativeRestoreProfile
 	nativeAllocators  bool
 	importRestore     *driver.RestoreImportProfile
@@ -84,6 +85,9 @@ func (s *Store) Write(ctx context.Context, l driver.ActiveLease) (driver.WriteTx
 func (t *transaction) finish() {
 	if t.closed {
 		return
+	}
+	if t.stream != nil {
+		_ = t.stream.close()
 	}
 	t.closed = true
 	_ = t.tx.Rollback()
@@ -465,7 +469,7 @@ func (t *transaction) recordRef(id string) driver.Ref {
 func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (model.Changeset, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.offlineHistory != nil {
+	if t.offlineHistory != nil || t.stream != nil {
 		return model.Changeset{}, fmt.Errorf("prepared history requires CommitOfflineHistory")
 	}
 	if t.nativeRestore != nil && !t.nativeAllocators {

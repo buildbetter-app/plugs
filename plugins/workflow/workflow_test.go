@@ -93,6 +93,66 @@ func (s *testDurableState) List(_ context.Context, prefix string, limit int) ([]
 
 var _ pluginapi.DurableState = (*testDurableState)(nil)
 
+func TestUserContentGuardRunsAtNativeCreationBoundary(t *testing.T) {
+	ctx := context.Background()
+	state := &testDurableState{}
+	provider, err := New(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	refusal := errors.New("rollback window refusal")
+	provider.WithUserContentGuard(func(kinds []string) error {
+		got = append([]string(nil), kinds...)
+		return refusal
+	})
+	_, err = provider.Invoke(ctx, model.PrincipalRef{Kind: "user", ID: "guard"}, InvokeRequest{
+		Template: "guard", Project: "guard", Mode: "ephemeral",
+		Checklist: []ChecklistItem{{Label: "one", Title: "one"}},
+	}, model.WriteMeta{Method: "x.workflow.invoke", Project: "guard", IdempotencyKey: strings.Repeat("a", 64)})
+	if !errors.Is(err, refusal) {
+		t.Fatalf("native creation guard error=%v, want %v", err, refusal)
+	}
+	if !reflect.DeepEqual(got, []string{RunKind, ItemKind}) {
+		t.Fatalf("native creation kinds=%v, want [%q %q]", got, RunKind, ItemKind)
+	}
+	if state.rev != 0 || len(state.value) != 0 {
+		t.Fatalf("guarded native write published checkpoint revision=%d payload=%q", state.rev, state.value)
+	}
+}
+
+func TestUserContentGuardSurvivesStagedDemote(t *testing.T) {
+	ctx := context.Background()
+	state := &testDurableState{}
+	provider, err := New(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	refusal := errors.New("rollback window refusal")
+	provider.WithUserContentGuard(func(kinds []string) error {
+		got = append([]string(nil), kinds...)
+		return refusal
+	})
+	request := DemoteRequest{
+		Source: model.RefByID("pl-source", model.Natural64(0)), Template: "demote",
+		Project: "project", Label: "source", Title: "source", Type: "task",
+	}
+	_, err = provider.DemoteAtomic(ctx, model.PrincipalRef{Kind: "user", ID: "guard"}, request,
+		model.WriteMeta{Method: "x.workflow.run.demote", Project: "project", IdempotencyKey: strings.Repeat("d", 64)},
+		func() (DemoteRequest, error) { return request, nil },
+		func(DemoteResult, PreparedState) error { return errors.New("publish must not run") })
+	if !errors.Is(err, refusal) {
+		t.Fatalf("staged demote guard error=%v, want %v", err, refusal)
+	}
+	if !reflect.DeepEqual(got, []string{RunKind, ItemKind}) {
+		t.Fatalf("staged demote creation kinds=%v, want [%q %q]", got, RunKind, ItemKind)
+	}
+	if state.rev != 0 || len(state.value) != 0 {
+		t.Fatalf("guarded staged demote published checkpoint revision=%d payload=%q", state.rev, state.value)
+	}
+}
+
 func TestM03CreationProvenanceSurvivesReceiptReplay(t *testing.T) {
 	ctx := context.Background()
 	created := time.Date(2026, 11, 5, 1, 0, 0, 0, time.UTC)
@@ -1231,14 +1291,14 @@ func TestB26RelationsRetainDistinctMetadata(t *testing.T) {
 		}
 	}
 	got, err := p.Get(ctx, by, from, meta("bead.get", "read"))
-	if err != nil || len(got.Links) != 2 {
-		t.Fatalf("metadata collapsed: %+v %v", got, err)
+	if err != nil || len(got.Links) != 1 || got.Links[0].Metadata.Gate != "any-children" {
+		t.Fatalf("metadata replacement did not preserve one edge: %+v %v", got, err)
 	}
 	if _, err := p.Unlink(ctx, by, LinkRequest{From: from, To: to, Kind: "waits-for", Metadata: &model.LinkMetadata{Gate: "all-children", AlsoBlocks: true}}, meta("bead.unlink", "remove-one")); err != nil {
 		t.Fatal(err)
 	}
 	got, err = p.Get(ctx, by, from, meta("bead.get", "read-again"))
-	if err != nil || len(got.Links) != 1 || got.Links[0].Metadata.Gate != "any-children" {
-		t.Fatalf("metadata unlink removed sibling: %+v %v", got, err)
+	if err != nil || len(got.Links) != 0 {
+		t.Fatalf("typed endpoint unlink retained a metadata sibling: %+v %v", got, err)
 	}
 }

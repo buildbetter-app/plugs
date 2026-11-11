@@ -28,6 +28,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/restore"
+	"github.com/buildbetter-app/plugs/internal/core/reverseconverter"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/core/viewops"
 	"github.com/buildbetter-app/plugs/internal/integration/converterroundtrip"
@@ -104,13 +105,21 @@ type EventAuthorization interface {
 // separate so an invalid combination can be refused before any listener is
 // opened. UI is enabled for shared servers and disabled by in-process callers.
 type Config struct {
-	Driver   string
-	DSN      string
-	Project  string
-	Address  string
-	UI       bool
-	AuthMode string
-	Auth     authn.Config
+	Driver  string
+	DSN     string
+	Project string
+	Address string
+	UI      bool
+	// RollbackWindow refuses newly created user-content kinds without an
+	// actual canonical reverse Beads mapping. It defaults to false and is a
+	// prepared switch-day control; it is never enabled by a live action here.
+	RollbackWindow bool
+	// ReverseConverter owns executable reverse mappings. The same instance is
+	// used by Runtime.ConvertReverse and both write guards.
+	// Nil selects canonical built-ins; YAML/RPC cannot register a mapping.
+	ReverseConverter *reverseconverter.Converter
+	AuthMode         string
+	Auth             authn.Config
 	// OIDC enables the existing OIDC provider. Its SessionStore is owned by
 	// composition and is replaced with the selected SQLite/PostgreSQL store;
 	// the typed config is not parsed from .plug/config.yaml yet.
@@ -204,6 +213,7 @@ type Runtime struct {
 	Projections          *coreevents.ProjectionRegistry
 	Dispatcher           *coreevents.Dispatcher
 	ProjectionStatus     coreevents.ProjectionStatusReader
+	reverseConverter     *reverseconverter.Converter
 	restoreImport        *restoreImportAdapter
 	restoredWASI         *restoredWASI
 	ontologyRuntime      *service.Ontology
@@ -219,6 +229,12 @@ type Runtime struct {
 	closed    bool
 	once      sync.Once
 	closeErr  error
+}
+
+// ConvertReverse uses the same immutable converter that controls this runtime's
+// write admission. The default converter refuses native workflow content.
+func (r *Runtime) ConvertReverse(dump reverseconverter.Dump) (reverseconverter.Result, error) {
+	return r.reverseConverter.Convert(dump)
 }
 
 // Open builds one core, registry, collaboration manager and watch manager.
@@ -553,7 +569,12 @@ func (r *Runtime) bind(config Config) error {
 	r.ontologyRuntime = ontologyRuntime
 	eventProvider := &runtimeEventProvider{}
 	nativeValidatorCount := 0
-	writerOptions := []pipeline.Option{pipeline.WithOntology(ontology)}
+	r.reverseConverter = config.ReverseConverter
+	writerOptions := []pipeline.Option{
+		pipeline.WithOntology(ontology),
+		pipeline.WithRollbackWindow(config.RollbackWindow),
+		pipeline.WithReverseConverter(r.reverseConverter),
+	}
 	if config.Ontology != nil {
 		writerOptions = append(writerOptions, pipeline.WithOntologyAudit(service.NewOntologyAudit(ontologyLocator)))
 		if config.Ontology.Authorizer != nil {
@@ -591,7 +612,11 @@ func (r *Runtime) bind(config Config) error {
 		trusted:  config.EventAuthorization,
 		required: func() bool { return eventAuthorizationRequired(config, authConfig) },
 	}
-	serviceOptions := []service.Option{service.WithOntology(ontology)}
+	serviceOptions := []service.Option{
+		service.WithOntology(ontology),
+		service.WithRollbackWindow(config.RollbackWindow),
+		service.WithReverseConverter(r.reverseConverter),
+	}
 	if config.EventAuthorization != nil || !eventAuthorization.required() {
 		serviceOptions = append(serviceOptions, service.WithEventProvider(eventProvider))
 	}

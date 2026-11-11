@@ -26,10 +26,22 @@ func BindHistoryImport(ctx context.Context, input io.Reader, profile driver.Rest
 	if err != nil {
 		return p, err
 	}
-	archive, err := dumpformat.Read(input)
+	archive, err := dumpformat.ReadWithNativeDeltaAccounting(ctx, input)
 	if err != nil {
 		return p, historyReadError(p.HistoryMode, err)
 	}
+	defer archive.ReleaseNativeDecoded()
+	return bindHistoryArchive(ctx, archive, p, when)
+}
+
+func bindHistoryArchive(ctx context.Context, archive *dumpformat.Archive, p driver.RestoreImportProfile, when time.Time) (driver.RestoreImportProfile, error) {
+	archive, release := archive.NativeDeltaAccountingScope()
+	defer release()
+	ctx = archive.WithNativeDeltaAccounting(ctx)
+	if err := ctx.Err(); err != nil {
+		return p, err
+	}
+	var err error
 	if p.HistoryMode == driver.RestoreHistoryModeSnapshot || when.IsZero() || p.SourceStoreID != driver.StoreID(archive.Manifest().StoreID) || p.ArchiveDigest != archive.SHA256() {
 		return p, fmt.Errorf("history binding requires admitted source, non-snapshot mode and actual restore time")
 	}
@@ -37,15 +49,18 @@ func BindHistoryImport(ctx context.Context, input io.Reader, profile driver.Rest
 		return p, err
 	}
 	p.HistoryTime = when.UTC().Format(time.RFC3339Nano)
-	plan, err := buildPlanWithProfile(archive, &p, when)
-	if err != nil || plan.derivedDigest != p.DerivedDigest {
-		return p, fmt.Errorf("%w: history current image/derived verification failed: %v", ErrRestoreUnavailable, err)
+	plan, err := buildPlanWithProfile(archive, &p, when, ctx)
+	if err != nil {
+		return p, fmt.Errorf("%w: history current image/derived verification failed: %w", ErrRestoreUnavailable, err)
 	}
-	h, err := lowerSourceHistory(archive, p, when)
+	if plan.derivedDigest != p.DerivedDigest {
+		return p, fmt.Errorf("%w: history current image/derived verification failed", ErrRestoreUnavailable)
+	}
+	h, err := lowerSourceHistory(archive, p, when, ctx)
 	if err != nil {
 		return p, err
 	}
-	digest, err := driver.OfflineHistoryDigest(h)
+	digest, err := nativeHistoryDigest(archive, h)
 	if err != nil {
 		return p, err
 	}
@@ -53,7 +68,7 @@ func BindHistoryImport(ctx context.Context, input io.Reader, profile driver.Rest
 		return p, driver.ErrRestoreHistoryRefused{Mode: p.HistoryMode, History: archive.Manifest().History, Reason: driver.RestoreHistoryReasonUnmappable}
 	}
 	p.HistoryDigest = digest
-	return p.Detached()
+	return nativeDetachedProfile(archive, p)
 }
 
 func historyReadError(mode driver.RestoreHistoryMode, err error) error {
@@ -64,16 +79,19 @@ func historyReadError(mode driver.RestoreHistoryMode, err error) error {
 }
 
 func validateArchiveHistoryPolicy(mode driver.RestoreHistoryMode, a *dumpformat.Archive) error {
-	if native := a.NativeSourceHistories(); len(native) != 0 {
+	// A v2 attachment is exposed only after every graph/schema/table and both
+	// checkpoints have passed. Avoid copying all rows just to repeat this gate.
+	if a.HasNativeDelta() {
 		if mode != driver.RestoreHistoryModeFull {
 			return driver.ErrRestoreHistoryRefused{Mode: mode, History: a.Manifest().History, Reason: driver.RestoreHistoryReasonNotYetSupported}
 		}
-		for _, scope := range native {
-			if err := nativePolicyRefusal(mode, a, scope); err != nil {
-				return err
-			}
-		}
 		return nil
+	}
+	if a.HasNativeSourceHistories() {
+		if mode != driver.RestoreHistoryModeFull {
+			return driver.ErrRestoreHistoryRefused{Mode: mode, History: a.Manifest().History, Reason: driver.RestoreHistoryReasonNotYetSupported}
+		}
+		return a.VisitNativeSourceHistories(context.Background(), func(scope dumpformat.NativeHistory) error { return nativePolicyRefusal(mode, a, scope) })
 	}
 	if mode == driver.RestoreHistoryModeSnapshot {
 		return nil
@@ -121,9 +139,9 @@ func portableHistoryRecords(plan restorePlan) []driver.Record {
 	return rows
 }
 
-func lowerSourceHistory(a *dumpformat.Archive, p driver.RestoreImportProfile, when time.Time) (driver.OfflineHistory, error) {
-	if len(a.NativeSourceHistories()) != 0 {
-		return lowerNativeTableHistory(a, p)
+func lowerSourceHistory(a *dumpformat.Archive, p driver.RestoreImportProfile, when time.Time, contexts ...context.Context) (driver.OfflineHistory, error) {
+	if a.HasNativeSourceHistories() {
+		return lowerNativeTableHistory(a, p, nativeOperationContext(contexts))
 	}
 	refuse := func() (driver.OfflineHistory, error) {
 		return driver.OfflineHistory{}, driver.ErrRestoreHistoryRefused{Mode: p.HistoryMode, History: a.Manifest().History, Reason: driver.RestoreHistoryReasonUnmappable}
@@ -334,6 +352,8 @@ func historyLockPlan(plan restorePlan, h driver.OfflineHistory) restorePlan {
 }
 
 func validateHistoryRecovery(ctx context.Context, r driver.Reader, p driver.RestoreImportProfile, evidence archiveEvidence, receipt *driver.IdempotencyRecord) error {
+	ctx, release := dumpformat.WithNativeDeltaAccountingScope(ctx)
+	defer release()
 	if p.HistoryTime == "" || evidence.ArchiveSHA256 != p.ArchiveDigest {
 		return driver.ErrConflict
 	}
@@ -343,19 +363,26 @@ func validateHistoryRecovery(ctx context.Context, r driver.Reader, p driver.Rest
 	if err != nil || hashBytes(raw) != evidence.ArchiveSHA256 {
 		return driver.ErrConflict
 	}
-	archive, err := dumpformat.Read(bytes.NewReader(raw))
-	if err != nil || archive.SHA256() != p.ArchiveDigest {
+	archive, err := readRetainedImportArchive(ctx, r, raw, evidence)
+	if err != nil {
+		return nativeDeltaRecoveryError(err)
+	}
+	defer archive.ReleaseNativeDecoded()
+	archive, releaseArchive := archive.NativeDeltaAccountingScope()
+	defer releaseArchive()
+	ctx = archive.WithNativeDeltaAccounting(ctx)
+	if archive.SHA256() != p.ArchiveDigest {
 		return driver.ErrConflict
 	}
 	when, err := time.Parse(time.RFC3339Nano, p.HistoryTime)
 	if err != nil {
 		return driver.ErrConflict
 	}
-	history, err := lowerSourceHistory(archive, p, when)
+	history, err := lowerSourceHistory(archive, p, when, ctx)
 	if err != nil {
-		return driver.ErrConflict
+		return nativeDeltaRecoveryError(err)
 	}
-	digest, err := driver.OfflineHistoryDigest(history)
+	digest, err := nativeHistoryDigest(archive, history)
 	if err != nil || digest != p.HistoryDigest {
 		return driver.ErrConflict
 	}
@@ -368,6 +395,7 @@ func validateHistoryRecovery(ctx context.Context, r driver.Reader, p driver.Rest
 		return driver.ErrConflict
 	}
 	want := driver.HistoryImportEvidence{Source: history.Source, Mode: p.HistoryMode, Complete: history.Complete, First: history.First, Head: history.Head, Floor: model.Natural64(0), Gaps: append([]driver.SourceHistoryGap{}, history.Gaps...), Mapping: []driver.SourceImportRevision{}}
+	want.NativeBoundaries = append([]driver.NativeHistoryBoundary(nil), history.NativeBoundaries...)
 	var revision uint64
 	if history.First > 1 {
 		revision = 1

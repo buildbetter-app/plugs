@@ -33,6 +33,7 @@ type transaction struct {
 	importRestore     *driver.RestoreImportProfile
 	sourcePlaneImport *driver.SourcePlaneImportPublication
 	offlineHistory    *driver.PreparedOfflineHistory
+	stream            *historyStreamStage
 	acquired          driver.LockSet
 	records           map[string]*driver.Record
 	identities        map[string]driver.Record

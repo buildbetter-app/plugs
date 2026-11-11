@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"regexp"
 	"sort"
 	"strings"
@@ -148,159 +147,58 @@ func (s *Service) authorizeMemory(ctx context.Context, by model.PrincipalRef, me
 	return allowed, nil
 }
 
+// History authorization uses the same persisted-envelope checks and visibility
+// boundary as public memory reads before it can return any historical body.
 func decodeMemoryRecord(record driver.Record) (Memory, error) {
-	decoder := json.NewDecoder(bytes.NewReader(record.Body))
-	decoder.UseNumber()
-	var document pipeline.MemoryDocument
-	if err := decoder.Decode(&document); err != nil {
+	document, source, err := pipeline.DecodeMemoryRecord(record)
+	if err != nil {
 		return Memory{}, failure("internal_error", "invalid persisted memory")
 	}
-	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
-		return Memory{}, failure("internal_error", "invalid persisted memory")
+	if source != nil && !source.Visible || document.Overlay != nil && document.Overlay.Deleted {
+		return Memory{}, historyMemoryNotFound()
 	}
 	return memoryValue(record, document)
 }
 
-// importedIneligibleMemory identifies preserved Beads rows before canonical
-// MemoryDocument decoding. Such rows remain kind=memory for storage/reverse
-// fidelity but are intentionally absent from the public memory view.
-func importedIneligibleMemory(record driver.Record) bool {
-	var raw map[string]any
-	decoder := json.NewDecoder(bytes.NewReader(record.Body))
-	decoder.UseNumber()
-	if decoder.Decode(&raw) != nil || !errors.Is(decoder.Decode(new(any)), io.EOF) || record.Kind != "memory" {
-		return false
-	}
-	id, ok := raw["source_id"].(string)
-	if !ok || id == "" || raw["key"] != id || raw["source_table"] != "config" || !record.Ref.Branch.IsZero() {
-		return false
-	}
-	wantID := "source/memory/" + id
-	if project, present := raw["source_project"]; present {
-		name, ok := project.(string)
-		if !ok || len(raw) != 7 {
-			return false
-		}
-		wantID = driver.SourcePlaneMirrorIDV1("memory", name, "config", id)
-	} else if len(raw) != 6 {
-		return false
-	}
-	if record.Ref.ID != wantID {
-		return false
-	}
-	source, ok := raw["source"].(map[string]any)
-	if !ok || len(source) != 2 || source["key"] != "kv.memory."+id {
-		return false
-	}
-	value, present := raw["value"]
-	sourceValue, sourcePresent := source["value"]
-	a, errA := json.Marshal(value)
-	b, errB := json.Marshal(sourceValue)
-	if !present || !sourcePresent || errA != nil || errB != nil || !bytes.Equal(a, b) {
-		return false
-	}
-	if raw["classification"] == "secret" {
-		ref, ok := value.(map[string]any)
-		return ok && len(ref) == 1 && ref["$secret"] == "config/kv.memory."+id
-	}
-	_, text := value.(string)
-	return raw["classification"] == "public" && !text
-}
-
-// readPublicMemory projects the retained joint source envelope without changing
-// its persisted schema. Legacy canonical documents and raw ineligible mirrors
-// keep their existing paths. All reads, including provenance, use this reader.
+// readPublicMemory projects a validated retained source envelope without
+// changing its persisted schema. Writes use the same strict classifier.
 func readPublicMemory(ctx context.Context, r driver.Reader, record driver.Record) (Memory, bool, error) {
-	var raw map[string]any
-	decoder := json.NewDecoder(bytes.NewReader(record.Body))
-	decoder.UseNumber()
-	if decoder.Decode(&raw) != nil || !errors.Is(decoder.Decode(new(any)), io.EOF) {
-		return Memory{}, false, failure("internal_error", "invalid persisted memory")
-	}
-	metadata, envelope := raw["metadata"].(map[string]any)
-	_, hasID := raw["id"]
-	_, hasContent := raw["content"]
-	_, hasMetadata := raw["metadata"]
-	_, hasSource := raw["source_id"]
-	_, hasTable := raw["source_table"]
-	_, hasProject := raw["source_project"]
-	_, hasValue := raw["value"]
-	_, hasClass := raw["classification"]
-	if !(hasSource || hasTable || hasProject || hasValue || hasClass) || !(hasID || hasContent || hasMetadata) {
-		if importedIneligibleMemory(record) {
-			return Memory{}, false, nil
-		}
-		memory, err := decodeMemoryRecord(record)
-		return memory, true, err
-	}
-	invalid := func() (Memory, bool, error) {
-		return Memory{}, false, failure("internal_error", "invalid joint source memory")
-	}
-	id, idOK := raw["source_id"].(string)
-	project, projectOK := raw["source_project"].(string)
-	source, sourceOK := raw["source"].(map[string]any)
-	classification, classOK := raw["classification"].(string)
-	metadataClass, metadataClassOK := metadata["beads.classification"].(string)
-	if record.Kind != "memory" || !record.Ref.Branch.IsZero() || !idOK || id == "" || !projectOK || !sourceOK || !envelope || !classOK || !metadataClassOK || classification != metadataClass || raw["source_table"] != "config" || len(source) != 2 || len(raw) != 10 || len(metadata) != 2 || raw["key"] != id || source["key"] != "kv.memory."+id {
-		return invalid()
-	}
-	wantID := driver.SourcePlaneMirrorIDV1("memory", project, "config", id)
-	if record.Ref.ID != wantID || raw["id"] != wantID {
-		return invalid()
-	}
-	value, present := raw["value"]
-	sourceValue, sourcePresent := source["value"]
-	a, errA := json.Marshal(value)
-	b, errB := json.Marshal(sourceValue)
-	if !present || !sourcePresent || errA != nil || errB != nil || !bytes.Equal(a, b) {
-		return invalid()
-	}
-	content, text := value.(string)
-	encoding := "text"
-	if !text {
-		content, encoding = string(a), "json"
-	}
-	if raw["content"] != content || metadata["beads.memory.value_encoding"] != encoding {
-		return invalid()
-	}
-	if classification == "secret" {
-		secret, ok := value.(map[string]any)
-		if !ok || len(secret) != 1 || secret["$secret"] != "config/kv.memory."+id {
-			return invalid()
-		}
-		return Memory{}, false, nil
-	}
-	if classification != "public" {
-		return invalid()
-	}
-	if !text {
-		return Memory{}, false, nil
-	}
-	// The archive digest belongs to the admitted profile, not the mutable raw
-	// mirror. Bind it on the same core snapshot rather than adding stored fields.
-	bindingRef := model.RefByID("instance_config/restore-import/binding", model.Natural64(0))
-	rows, err := r.Get(ctx, []model.Ref{bindingRef})
+	effective, document, source, err := pipeline.ResolveMemoryRecord(ctx, r, record)
 	if err != nil {
-		return Memory{}, false, mapped(err)
+		converted := mapped(err)
+		var typed *model.Error
+		if !errors.As(converted, &typed) {
+			converted = failure("internal_error", "invalid persisted memory")
+		}
+		return Memory{}, false, converted
 	}
-	if len(rows) != 1 || rows[0].Kind != "instance_config" {
-		return invalid()
+	if source != nil && !source.Visible || document.Overlay != nil && document.Overlay.Deleted {
+		return Memory{}, false, nil
 	}
-	var binding struct {
-		Profile     driver.RestoreImportProfile `json:"profile"`
-		RequestHash string                      `json:"request_hash"`
+	memory, err := memoryValue(effective, document)
+	if err != nil {
+		return Memory{}, false, err
 	}
-	if json.Unmarshal(rows[0].Body, &binding) != nil || binding.Profile.SourcePlanes == nil {
-		return invalid()
+	if source == nil {
+		return memory, true, nil
 	}
-	request, err := binding.Profile.RequestHash()
-	if err != nil || request != binding.RequestHash {
-		return invalid()
+	if !source.Legacy && document.Overlay == nil {
+		// Classification/encoding belong to the retained envelope. Public
+		// metadata remains the established provenance projection until a user
+		// writes actual overlay metadata.
+		memory.Metadata = nil
 	}
-	memory := Memory{ID: wantID, Key: id, Content: content, Revision: record.Revision, Metadata: map[string]any{
-		"plug.restore.source_id": id, "plug.restore.source_table": "config", "plug.restore.source": source,
-		"plug.restore.source_project": project, "plug.restore.archive_sha256": binding.Profile.ArchiveDigest,
-	}}
+	if memory.Metadata == nil {
+		memory.Metadata = map[string]any{}
+	}
+	// Request metadata cannot replace the authoritative original provenance.
+	memory.Metadata["plug.restore.source_id"] = strings.TrimPrefix(source.Fields["key"].(string), "kv.memory.")
+	memory.Metadata["plug.restore.source_table"] = "config"
+	memory.Metadata["plug.restore.source"] = source.Fields
+	if !source.Legacy {
+		memory.Metadata["plug.restore.source_project"] = source.Project
+	}
+	memory.Metadata["plug.restore.archive_sha256"] = source.Archive
 	return memory, true, nil
 }
 
@@ -310,6 +208,14 @@ func (s *Service) MemoryGet(ctx context.Context, by model.PrincipalRef, req Memo
 	}
 	if _, err := s.memoryAuthorizationState(by); err != nil {
 		return Memory{}, err
+	}
+	var access historyMemoryAccess
+	if req.AsOf != nil {
+		var err error
+		access, err = s.beginHistoryMemoryAccess(ctx, by, req.ID)
+		if err != nil {
+			return Memory{}, err
+		}
 	}
 	r, err := s.reader(ctx, by, req.AsOf)
 	if err != nil {
@@ -336,6 +242,14 @@ func (s *Service) MemoryGet(ctx context.Context, by model.PrincipalRef, req Memo
 	}
 	if !allowed {
 		return Memory{}, failure("not_found", "memory was not found")
+	}
+	if req.AsOf != nil {
+		if err := access.observeRecord(&rows[0], r.Snapshot()); err != nil {
+			return Memory{}, err
+		}
+		if err := s.finishHistoryMemoryAccess(ctx, by, req.ID, access); err != nil {
+			return Memory{}, err
+		}
 	}
 	return memory, nil
 }
@@ -387,6 +301,7 @@ func (s *Service) MemoryList(ctx context.Context, by model.PrincipalRef, req Mem
 	defer r.Close()
 	needle := strings.ToLower(req.Query)
 	items := make([]Memory, 0)
+	seen := map[string]bool{}
 	var cursor *driver.Cursor
 	for {
 		page, err := r.Query(ctx, driver.Query{Filter: map[string]any{"kind": "memory"}, Limit: 1000, Cursor: cursor})
@@ -398,9 +313,10 @@ func (s *Service) MemoryList(ctx context.Context, by model.PrincipalRef, req Mem
 			if err != nil {
 				return MemoryPage{}, err
 			}
-			if !eligible {
+			if !eligible || seen[memory.ID] {
 				continue
 			}
+			seen[memory.ID] = true
 			if needle != "" && !strings.Contains(strings.ToLower(memory.Key), needle) && !strings.Contains(strings.ToLower(memory.Content), needle) {
 				continue
 			}

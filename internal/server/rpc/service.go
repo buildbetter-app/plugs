@@ -80,6 +80,7 @@ type serviceParams struct {
 	FromRevision model.Revision                 `json:"fromRevision"`
 	ToRevision   model.Revision                 `json:"toRevision"`
 	Type         string                         `json:"type"`
+	TargetStatus *string                        `json:"targetStatus"`
 	Label        string                         `json:"label"`
 	Title        string                         `json:"title"`
 	Fields       map[string]any                 `json:"fields"`
@@ -114,6 +115,8 @@ type asOf struct {
 	Incarnation string         `json:"incarnation,omitempty"`
 }
 type filter struct {
+	Parent           string   `json:"parent,omitempty"`
+	Priority         *int     `json:"priority,omitempty"`
 	Query            string   `json:"query,omitempty"`
 	Resources        []string `json:"resources,omitempty"`
 	Types            []string `json:"types,omitempty"`
@@ -132,7 +135,7 @@ func (p *filter) domain() *service.Filter {
 	if p == nil {
 		return nil
 	}
-	return &service.Filter{Query: p.Query, Resources: p.Resources, Types: p.Types, Events: p.Events, ViewID: p.ViewID, IncludeEphemeral: p.IncludeEphemeral}
+	return &service.Filter{Parent: p.Parent, Priority: p.Priority, Query: p.Query, Resources: p.Resources, Types: p.Types, Events: p.Events, ViewID: p.ViewID, IncludeEphemeral: p.IncludeEphemeral}
 }
 
 func (p serviceParams) refID() (model.Ref, error) {
@@ -161,6 +164,9 @@ func BindService(registry *Registry, svc Service) error {
 		return fmt.Errorf("nil service or registry")
 	}
 	names := []string{"bead.get", "bead.ready", "bead.create", "bead.update", "bead.claim", "bead.claimNext", "bead.comment", "bead.close", "bead.reopen", "bead.defer", "bead.cancel", "bead.fail", "bead.link", "bead.unlink", "tx.apply", "history.query"}
+	if _, ok := svc.(GateListingService); ok {
+		names = append(names, "gate.list")
+	}
 	if _, ok := svc.(CyclesService); ok {
 		names = append(names, "bead.cycles")
 	}
@@ -208,6 +214,9 @@ func BindService(registry *Registry, svc Service) error {
 }
 
 func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
+	if c.Method == "gate.list" {
+		return dispatchGateList(ctx, svc.(GateListingService), c)
+	}
 	if c.Method == "bead.cycles" {
 		return dispatchCycles(ctx, svc.(CyclesService), c)
 	}
@@ -388,7 +397,7 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 		v, err := memory.MemoryDeleteWithOutcome(ctx, c.Principal, service.MemoryDeleteRequest{ID: id, Expect: p.Expect}, meta)
 		return writeOutcome(v), err
 	case "bead.create":
-		v, err := svc.CreateWithOutcome(ctx, c.Principal, service.CreateRequest{Type: p.Type, Fields: p.Fields, Parent: p.Parent}, meta)
+		v, err := svc.CreateWithOutcome(ctx, c.Principal, service.CreateRequest{Type: p.Type, Fields: p.Fields, Parent: p.Parent, TargetStatus: p.TargetStatus}, meta)
 		return writeOutcome(v), err
 	case "bead.update":
 		id, err := p.refID()
@@ -409,14 +418,14 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 		if err != nil {
 			return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
 		}
-		v, err := svc.CloseWithOutcome(ctx, c.Principal, service.CloseRequest{ID: id, Reason: p.Reason, Expect: p.Expect}, meta)
+		v, err := svc.CloseWithOutcome(ctx, c.Principal, service.CloseRequest{ID: id, Reason: p.Reason, Expect: p.Expect, TargetStatus: p.TargetStatus}, meta)
 		return writeOutcome(v), err
 	case "bead.reopen":
 		id, err := p.refID()
 		if err != nil {
 			return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
 		}
-		v, err := svc.ReopenWithOutcome(ctx, c.Principal, service.ReopenRequest{ID: id, Reason: p.Reason, Expect: p.Expect}, meta)
+		v, err := svc.ReopenWithOutcome(ctx, c.Principal, service.ReopenRequest{ID: id, Reason: p.Reason, Expect: p.Expect, TargetStatus: p.TargetStatus}, meta)
 		return writeOutcome(v), err
 	case "bead.defer":
 		id, err := p.refID()

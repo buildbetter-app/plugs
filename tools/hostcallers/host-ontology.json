@@ -1,0 +1,452 @@
+{
+  "statuses": {
+    "open": {
+      "name": "Open",
+      "category": "unstarted"
+    },
+    "in_progress": {
+      "name": "In progress",
+      "category": "started"
+    },
+    "closed": {
+      "name": "Closed",
+      "category": "completed",
+      "outcome": "success"
+    },
+    "deferred": {
+      "name": "Deferred",
+      "category": "backlog"
+    },
+    "blocked": {
+      "name": "Blocked",
+      "category": "unstarted"
+    },
+    "pinned": {
+      "name": "Pinned",
+      "category": "backlog"
+    },
+    "frozen": {
+      "name": "Frozen",
+      "category": "backlog"
+    }
+  },
+  "workflows": {
+    "host": {
+      "statuses": [
+        "open",
+        "in_progress",
+        "closed",
+        "deferred",
+        "blocked",
+        "pinned",
+        "frozen"
+      ],
+      "initial": "open",
+      "slots": {
+        "claim": "in_progress",
+        "close": "closed",
+        "reopen": "open",
+        "defer": "deferred"
+      },
+      "transitions": [
+        {
+          "to": "closed",
+          "guards": [
+            {
+              "kind": "not_template"
+            },
+            {
+              "kind": "no_open_children"
+            },
+            {
+              "kind": "no_open_blockers"
+            },
+            {
+              "kind": "permission"
+            }
+          ]
+        },
+        {
+          "to": "in_progress",
+          "guards": [
+            {
+              "kind": "no_open_blockers"
+            },
+            {
+              "kind": "permission"
+            }
+          ]
+        },
+        {
+          "to": "open",
+          "guards": [
+            {
+              "kind": "permission"
+            }
+          ]
+        },
+        {
+          "to": "deferred",
+          "guards": [
+            {
+              "kind": "permission"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "types": {
+    "issue": {
+      "name": "Issue",
+      "workflow": "host",
+      "fields": {
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "design": {
+          "type": "string"
+        },
+        "acceptance_criteria": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "assignee": {
+          "type": "string"
+        },
+        "due_at": {
+          "type": "string"
+        },
+        "external_ref": {
+          "type": "string"
+        },
+        "close_reason": {
+          "type": "string"
+        },
+        "result": {
+          "type": "string"
+        },
+        "labels": {
+          "type": "strings"
+        }
+      }
+    },
+    "task": {
+      "name": "Task",
+      "workflow": "host",
+      "fields": {
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "design": {
+          "type": "string"
+        },
+        "acceptance_criteria": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "assignee": {
+          "type": "string"
+        },
+        "due_at": {
+          "type": "string"
+        },
+        "external_ref": {
+          "type": "string"
+        },
+        "close_reason": {
+          "type": "string"
+        },
+        "result": {
+          "type": "string"
+        },
+        "labels": {
+          "type": "strings"
+        }
+      }
+    },
+    "bug": {
+      "name": "Bug",
+      "workflow": "host",
+      "fields": {
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "design": {
+          "type": "string"
+        },
+        "acceptance_criteria": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "assignee": {
+          "type": "string"
+        },
+        "due_at": {
+          "type": "string"
+        },
+        "external_ref": {
+          "type": "string"
+        },
+        "close_reason": {
+          "type": "string"
+        },
+        "result": {
+          "type": "string"
+        },
+        "labels": {
+          "type": "strings"
+        }
+      }
+    },
+    "feature": {
+      "name": "Feature",
+      "workflow": "host",
+      "fields": {
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "design": {
+          "type": "string"
+        },
+        "acceptance_criteria": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "assignee": {
+          "type": "string"
+        },
+        "due_at": {
+          "type": "string"
+        },
+        "external_ref": {
+          "type": "string"
+        },
+        "close_reason": {
+          "type": "string"
+        },
+        "result": {
+          "type": "string"
+        },
+        "labels": {
+          "type": "strings"
+        }
+      }
+    },
+    "epic": {
+      "name": "Epic",
+      "workflow": "host",
+      "fields": {
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "design": {
+          "type": "string"
+        },
+        "acceptance_criteria": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "assignee": {
+          "type": "string"
+        },
+        "due_at": {
+          "type": "string"
+        },
+        "external_ref": {
+          "type": "string"
+        },
+        "close_reason": {
+          "type": "string"
+        },
+        "result": {
+          "type": "string"
+        },
+        "labels": {
+          "type": "strings"
+        }
+      }
+    },
+    "chore": {
+      "name": "Chore",
+      "workflow": "host",
+      "fields": {
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "design": {
+          "type": "string"
+        },
+        "acceptance_criteria": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "assignee": {
+          "type": "string"
+        },
+        "due_at": {
+          "type": "string"
+        },
+        "external_ref": {
+          "type": "string"
+        },
+        "close_reason": {
+          "type": "string"
+        },
+        "result": {
+          "type": "string"
+        },
+        "labels": {
+          "type": "strings"
+        }
+      }
+    },
+    "milestone": {
+      "name": "Milestone",
+      "workflow": "host",
+      "fields": {
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "design": {
+          "type": "string"
+        },
+        "acceptance_criteria": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "assignee": {
+          "type": "string"
+        },
+        "due_at": {
+          "type": "string"
+        },
+        "external_ref": {
+          "type": "string"
+        },
+        "close_reason": {
+          "type": "string"
+        },
+        "result": {
+          "type": "string"
+        },
+        "labels": {
+          "type": "strings"
+        }
+      }
+    },
+    "decision": {
+      "name": "Decision",
+      "workflow": "host",
+      "fields": {
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "design": {
+          "type": "string"
+        },
+        "acceptance_criteria": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "assignee": {
+          "type": "string"
+        },
+        "due_at": {
+          "type": "string"
+        },
+        "external_ref": {
+          "type": "string"
+        },
+        "close_reason": {
+          "type": "string"
+        },
+        "result": {
+          "type": "string"
+        },
+        "labels": {
+          "type": "strings"
+        }
+      }
+    },
+    "molecule": {
+      "name": "Molecule",
+      "workflow": "host",
+      "fields": {
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "design": {
+          "type": "string"
+        },
+        "acceptance_criteria": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "assignee": {
+          "type": "string"
+        },
+        "due_at": {
+          "type": "string"
+        },
+        "external_ref": {
+          "type": "string"
+        },
+        "close_reason": {
+          "type": "string"
+        },
+        "result": {
+          "type": "string"
+        },
+        "labels": {
+          "type": "strings"
+        }
+      }
+    }
+  }
+}

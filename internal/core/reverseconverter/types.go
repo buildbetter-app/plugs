@@ -70,11 +70,12 @@ type Provenance struct {
 }
 
 type Record struct {
-	Kind    string         `json:"kind"`
-	ID      string         `json:"id"`
-	Project string         `json:"project"`
-	Body    map[string]any `json:"body"`
-	Source  Provenance     `json:"source"`
+	NativeEdgeTokens map[string]string `json:"-"`
+	Kind             string            `json:"kind"`
+	ID               string            `json:"id"`
+	Project          string            `json:"project"`
+	Body             map[string]any    `json:"body"`
+	Source           Provenance        `json:"source"`
 }
 
 // ConfigMemoryPrefix namespaces configuration references in the Beads memory

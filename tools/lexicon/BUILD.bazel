@@ -3,9 +3,15 @@ load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 go_library(
     name = "checker",
     srcs = [
+        "b02_recording_literals.go",
+        "b07_native_protocol_literals.go",
+        "b07_represented_literals.go",
         "checker.go",
         "config.go",
         "inventory.go",
+        "native_undo.go",
+        "native_undo_bindings.go",
+        "native_undo_references.go",
         "policy.go",
         "rules.go",
     ],
@@ -26,12 +32,19 @@ go_binary(
 go_test(
     name = "checker_test",
     srcs = [
+        "b02_recording_literals_test.go",
+        "b07_native_protocol_literals_test.go",
+        "b07_represented_literals_test.go",
         "checker_test.go",
         "config_test.go",
         "inventory_test.go",
+        "native_undo_test.go",
     ],
+    args = ["-undo-source-inventory=$(rlocationpath @lexicon_sources//:source_inventory.json)"],
     data = [
         ":rule_files",
+        "//:lexicon_tree",
+        "@lexicon_sources//:source_inventory.json",
         "//tools/roundtrip:readback_reference_fixtures",
     ],
     embed = [":checker"],

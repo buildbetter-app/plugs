@@ -48,15 +48,16 @@ const (
 )
 
 type dependencyLine struct {
-	ID                string `json:"id,omitempty"`
-	IssueID           string `json:"issue_id"`
-	DependsOnID       string `json:"depends_on_id,omitempty"`
-	DependsOnExternal string `json:"depends_on_external,omitempty"`
-	Type              string `json:"type"`
-	CreatedAt         string `json:"created_at,omitempty"`
-	CreatedBy         string `json:"created_by,omitempty"`
-	Metadata          string `json:"metadata,omitempty"`
-	ThreadID          string `json:"thread_id,omitempty"`
+	NativeExtensions  map[string]string `json:"-"`
+	ID                string            `json:"id,omitempty"`
+	IssueID           string            `json:"issue_id"`
+	DependsOnID       string            `json:"depends_on_id,omitempty"`
+	DependsOnExternal string            `json:"depends_on_external,omitempty"`
+	Type              string            `json:"type"`
+	CreatedAt         string            `json:"created_at,omitempty"`
+	CreatedBy         string            `json:"created_by,omitempty"`
+	Metadata          string            `json:"metadata,omitempty"`
+	ThreadID          string            `json:"thread_id,omitempty"`
 }
 
 type commentLine struct {
@@ -227,9 +228,12 @@ func ConvertWithDirectives(dump Dump, directives []ontologymigration.Directive) 
 // ConvertWithOptions mirrors the pinned export's default Ephemeral filter.
 // All explicitly retains every physical entity plane, matching bd export --all.
 func ConvertWithOptions(dump Dump, options Options) (Result, error) {
+	return (*Converter)(nil).ConvertWithOptions(dump, options)
+}
+
+func convertCanonical(dump Dump, options Options, report Report) (Result, error) {
 	directives := options.Directives
-	report := Report{InputDigest: digestDump(dump), Warnings: append([]string(nil), dump.Manifest.Warnings...)}
-	if err := validateDumpShape(dump, &report); err != nil {
+	if err := validateDumpShape(dump, &report, nil); err != nil {
 		normalizeReport(&report)
 		return Result{Report: report}, withReport(err, report)
 	}
@@ -251,6 +255,18 @@ func ConvertWithOptions(dump Dump, options Options) (Result, error) {
 	commentIDs := make(map[[2]string]bool)
 	entities, edges, comments, physicalReasons := physicalExportRecords(dump)
 	reasons = append(reasons, physicalReasons...)
+	for _, records := range dump.Records {
+		for _, row := range records {
+			if !exactNumbers(row.Body) || !exactNumbers(row.Source.Fields) {
+				return Result{Report: report}, withReport(refusal("reverse metadata requires exact JSON numbers; floating point source values are refused"), report)
+			}
+		}
+	}
+	if options.NativeImport {
+		if err := physicalImportRefusal(entities, options.All); err != nil {
+			return Result{Report: report}, err
+		}
+	}
 	planes := make(map[string]string)
 	for _, record := range entities {
 		if prior, exists := planes[record.ID]; exists && prior != record.Source.Table {
@@ -418,7 +434,10 @@ func ConvertWithOptions(dump Dump, options Options) (Result, error) {
 			return a.ID < b.ID
 		})
 		sort.Slice(issue.Line.Comments, func(i, j int) bool { return issue.Line.Comments[i].ID < issue.Line.Comments[j].ID })
-		line, _ := json.Marshal(issue.Line)
+		line, err := marshalNativeIssue(issue.Line)
+		if err != nil {
+			return Result{Report: report}, refusal("native edge serialization: %v", err)
+		}
 		out.Write(line)
 		out.WriteByte('\n')
 		projection.Issues = append(projection.Issues, IssueProjection{ID: id, Kind: issue.Line.IssueType, Status: issue.Line.Status, Category: issue.Category, Outcome: issue.Outcome})
@@ -507,7 +526,7 @@ func manifestEdgeVersion(manifest Manifest) int {
 	return 1
 }
 
-func validateDumpShape(dump Dump, report *Report) error {
+func validateDumpShape(dump Dump, report *Report, converter *Converter) error {
 	m := dump.Manifest
 	if m.SourcePlaneAddressContract != "" && m.SourcePlaneAddressContract != dumpformat.SourcePlaneAddressContract {
 		return refusal("unsupported physical source address contract")
@@ -526,8 +545,8 @@ func validateDumpShape(dump Dump, report *Report) error {
 	}
 	registered := map[string]bool{}
 	for i, kind := range m.Kinds {
-		if !supportedKinds[kind.Name] || (kind.Version != 1 && (kind.Name != "edge" || !dumpformat.IsTypedEdgeVersion(kind.Version))) || kind.File != "records/"+kind.Name+".ndjson" || kind.Count < 1 || registered[kind.Name] || i > 0 && m.Kinds[i-1].Name >= kind.Name {
-			if !supportedKinds[kind.Name] && kind.Name != "" {
+		if !converter.supports(kind.Name) || (kind.Version != 1 && (kind.Name != "edge" || !dumpformat.IsTypedEdgeVersion(kind.Version))) || kind.File != "records/"+kind.Name+".ndjson" || kind.Count < 1 || registered[kind.Name] || i > 0 && m.Kinds[i-1].Name >= kind.Name {
+			if !converter.supports(kind.Name) && kind.Name != "" {
 				addUnique(&report.PlugOnlyKinds, kind.Name)
 				addUnique(&report.UnsupportedFields, "kind/"+kind.Name)
 			}
@@ -539,7 +558,7 @@ func validateDumpShape(dump Dump, report *Report) error {
 		}
 	}
 	for kind := range dump.Records {
-		if !supportedKinds[kind] {
+		if !converter.supports(kind) {
 			addUnique(&report.PlugOnlyKinds, kind)
 			addUnique(&report.UnsupportedFields, "kind/"+kind)
 			return refusal("unregistered or unsupported record kind %q", kind)
@@ -550,7 +569,7 @@ func validateDumpShape(dump Dump, report *Report) error {
 	}
 	for kind, records := range dump.Records {
 		for i, record := range records {
-			if record.Kind != kind || strings.TrimSpace(record.ID) != record.ID || (strings.ContainsRune(record.ID, '\x00') && !(kind == "edge" && m.SourcePlaneAddressContract == dumpformat.SourcePlaneAddressContract)) || record.ID == "" || record.Body == nil || record.Source.Table == "" || record.Source.Fields == nil {
+			if record.Kind != kind || strings.TrimSpace(record.ID) == "" || kind != "memory" && strings.TrimSpace(record.ID) != record.ID || (strings.ContainsRune(record.ID, '\x00') && !(kind == "edge" && m.SourcePlaneAddressContract == dumpformat.SourcePlaneAddressContract)) || record.Body == nil || record.Source.Table == "" || record.Source.Fields == nil {
 				return refusal("kind %q record %d has incomplete identity or provenance", kind, i)
 			}
 		}
@@ -783,7 +802,10 @@ const (
 func convertEdge(record Record, issues map[string]*workingIssue, edgeVersion int, report *Report) []string {
 	body := record.Body
 	var reasons []string
-	reasons = append(reasons, unsupportedSourceFields(record, report)...)
+	extensions, extensionErr := dumpformat.NativeEdgeExtensions(dumpformat.Record{Kind: record.Kind, ID: record.ID, Body: record.Body, Source: dumpformat.Provenance{Table: record.Source.Table, Fields: record.Source.Fields}, NativeEdgeTokens: record.NativeEdgeTokens})
+	if extensionErr != nil {
+		reasons = append(reasons, fmt.Sprintf("edge %q: %v", record.ID, extensionErr))
+	}
 	if record.Source.Table != dumpformat.DurableDependencyTable && record.Source.Table != dumpformat.EphemeralDependencyTable {
 		reasons = append(reasons, fmt.Sprintf("edge %q has source table %q, want dependencies", record.ID, record.Source.Table))
 	}
@@ -941,12 +963,17 @@ func convertEdge(record Record, issues map[string]*workingIssue, edgeVersion int
 			metadata, err = canonicalJSON(body["metadata"])
 		}
 	} else {
-		metadata, err = canonicalJSON(envelope)
+		if token, present := extensions["beads.metadata"]; present && body["metadata"] != nil {
+			id, _ := json.Marshal(record.ID)
+			metadata = "{\"_plug_edge_id\":" + string(id) + ",\"_plug_metadata\":" + token + "}"
+		} else {
+			metadata, err = canonicalJSON(envelope)
+		}
 	}
 	if err != nil {
 		return []string{fmt.Sprintf("edge %q metadata: %v", record.ID, err)}
 	}
-	dependency := dependencyLine{ID: record.ID, IssueID: from, DependsOnID: to, Type: edgeType, Metadata: metadata, ThreadID: text(body["thread_id"]), CreatedAt: timestamp(record.Source.Fields["created_at"]), CreatedBy: text(record.Source.Fields["created_by"])}
+	dependency := dependencyLine{NativeExtensions: extensions, ID: record.ID, IssueID: from, DependsOnID: to, Type: edgeType, Metadata: metadata, ThreadID: text(body["thread_id"]), CreatedAt: timestamp(record.Source.Fields["created_at"]), CreatedBy: text(record.Source.Fields["created_by"])}
 	if targetKind == "depends_on_external" {
 		dependency.DependsOnID, dependency.DependsOnExternal = "", to
 	}
