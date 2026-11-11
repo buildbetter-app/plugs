@@ -1789,7 +1789,26 @@ func TestDefaultPolicyBindsOriginalPublicReadbackReferences(t *testing.T) {
 				"tools/roundtrip/copied_reference.go",
 			} {
 				t.Run(adjacent, func(t *testing.T) {
-					findings, err := CheckFilesWithPolicy(map[string][]byte{adjacent: content}, cfg, DefaultTreePolicy())
+					policy := DefaultTreePolicy()
+					disposition, err := policy.disposition(adjacent, content)
+					if err == nil && disposition != dispositionScan {
+						t.Fatal("copied reference gained an immutable path exemption")
+					}
+					// Identifier terms apply to Go. A copied JSON profile must
+					// scan normally, and still refuse a product term, rather
+					// than inventing an identifier ban for JSON documents.
+					if filepath.Base(name) == "recipe-profile.json" && filepath.Ext(adjacent) == ".json" {
+						probe, err := json.Marshal(map[string]any{"reference": json.RawMessage(content), "scan_control": cfg.Terms[1].Matches[0]})
+						if err != nil {
+							t.Fatal(err)
+						}
+						findings, err := CheckFilesWithPolicy(map[string][]byte{adjacent: probe}, cfg, policy)
+						if err != nil || len(findings) == 0 {
+							t.Fatalf("copied JSON reference bypassed normal scanning: %#v %v", findings, err)
+						}
+						return
+					}
+					findings, err := CheckFilesWithPolicy(map[string][]byte{adjacent: content}, cfg, policy)
 					if err == nil && len(findings) == 0 {
 						t.Fatal("reference bytes gained admission at another path")
 					}
