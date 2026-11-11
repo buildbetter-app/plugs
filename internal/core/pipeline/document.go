@@ -34,6 +34,9 @@ type Document struct {
 	CreatedAt *time.Time `json:"createdAt,omitempty"`
 	StartedAt *time.Time `json:"startedAt,omitempty"`
 	ClosedAt  *time.Time `json:"closedAt,omitempty"`
+	// CloseReason records the first typed close, including an explicit empty
+	// reason. Comments can carry later settlement text without replacing it.
+	CloseReason *string `json:"closeReason,omitempty"`
 }
 
 // MemoryDocument is the canonical body for a core memory record. Memories

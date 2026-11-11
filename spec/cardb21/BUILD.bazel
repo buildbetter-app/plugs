@@ -1,0 +1,50 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+DEPS = [
+    "//internal/core/model",
+    "//internal/core/ontology",
+    "//internal/core/pipeline",
+    "//internal/core/port",
+    "//internal/core/service",
+    "//internal/server/authn",
+    "//internal/server/pluginhost",
+    "//internal/server/rpc",
+    "//internal/server/transport/httpjson",
+    "//internal/storage/conformance",
+    "//internal/storage/driver",
+    "//internal/storage/memory",
+    "//internal/storage/postgres",
+    "//internal/storage/sqlite",
+    "//plugins/workflow",
+]
+
+go_test(
+    name = "public_batch_test",
+    srcs = ["fixture_test.go", "acceptance_test.go", "ephemeral_test.go", "close_reason_test.go", "//spec/cardb20:native_postgres_support"],
+    deps = DEPS,
+    args = ["-test.v"],
+    size = "large",
+    tags = ["local", "requires-network"],
+    timeout = "long",
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
+
+# New public HTTP reference observations. Explicit selection only; whole keeps
+# its unmodified canonical argv and gains no native runtime credit.
+go_test(
+    name = "native_batch_test",
+    srcs = ["fixture_test.go", "native_test.go", "//spec/cardb20:native_postgres_support", "//spec/cardb20:native_build_support"],
+    deps = DEPS + ["//internal/publicnative"],
+    data = ["//spec/s1-b09-native:lexicon_files", "//internal/publicnative:dolt_runtime"],
+    env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
+    env_inherit = ["BAZEL_BIN", "BAZEL_RC", "BAZELISK_HOME", "BAZELISK_VERIFY_SHA256"],
+    args = ["-test.v"],
+    size = "enormous",
+    tags = ["local", "manual", "requires-network"],
+    timeout = "eternal",
+)
