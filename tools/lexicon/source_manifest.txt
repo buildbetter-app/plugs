@@ -269,6 +269,7 @@ internal/core/model/events.go
 internal/core/model/history.go
 internal/core/model/json.go
 internal/core/model/link_target_test.go
+internal/core/model/memory_result_test.go
 internal/core/model/native_category_test.go
 internal/core/model/natural.go
 internal/core/model/natural_test.go
@@ -539,6 +540,7 @@ internal/integration/b07positive/snapshot.go
 internal/integration/b13memory/BUILD.bazel
 internal/integration/b13memory/README.md
 internal/integration/b13memory/fixture_test.go
+internal/integration/b13memory/fullcard_controls_test.go
 internal/integration/b13memory/lifecycle_test.go
 internal/integration/b13memory/manifest-proposal.patch
 internal/integration/b13memory/oracle_test.go
@@ -593,6 +595,7 @@ internal/integration/converterroundtrip/BUILD.bazel
 internal/integration/converterroundtrip/allocator.go
 internal/integration/converterroundtrip/b07_opaque_source_test.go
 internal/integration/converterroundtrip/b07_positive_source_test.go
+internal/integration/converterroundtrip/b13_fullcard_search_test.go
 internal/integration/converterroundtrip/b13_joint_memory_control_test.go
 internal/integration/converterroundtrip/external_target_test.go
 internal/integration/converterroundtrip/hierarchy_import_test.go
@@ -1656,6 +1659,7 @@ spec/cardb19/testdata/recording-1/export.jsonl
 spec/cardb19/testdata/recording-1/imported.json
 spec/cardb19/testdata/recording-2/export.jsonl
 spec/cardb19/testdata/recording-2/imported.json
+spec/cardb20/b13_fullcard_controls_test.go
 spec/cardb23full/BUILD.bazel
 spec/cardb23full/public_history_test.go
 spec/cardb24/BUILD.bazel

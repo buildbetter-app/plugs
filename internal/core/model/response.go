@@ -70,6 +70,13 @@ func (r *OpResult) UnmarshalJSON(data []byte) error {
 	if err := decodeStrict(data, &value, "ref", "revision"); err != nil {
 		return err
 	}
+	var fields map[string]json.RawMessage
+	if err := decodeJSON(data, &fields); err != nil {
+		return err
+	}
+	if raw, exists := fields["replaced"]; exists && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return fmt.Errorf("operation result replaced must be a boolean when present")
+	}
 	decoded := OpResult(value)
 	if err := decoded.Validate(); err != nil {
 		return err
