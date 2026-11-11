@@ -2,6 +2,10 @@ package service
 
 import (
 	"context"
+	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/buildbetter-app/plugs/internal/storage/memory"
 	"reflect"
 	"testing"
 )
@@ -59,6 +63,77 @@ func TestCyclePathsUsesThePinnedSelectionSet(t *testing.T) {
 				if err != nil || !reflect.DeepEqual(got, want) {
 					t.Fatalf("includeTracks=%v selected=%v want=%v error=%v", includeTracks, got, want, err)
 				}
+			}
+		})
+	}
+}
+
+// Topology and hydration are independent inputs. These controls bind the
+// consumer's failure boundary without claiming a combined-plane provider.
+type b06TopologyReader struct {
+	driver.Reader
+	pages  []driver.Page[driver.CycleTopologyEdge]
+	calls  int
+	failAt int
+}
+
+func (r *b06TopologyReader) CycleTopology(ctx context.Context, cursor *driver.Cursor, limit int) (driver.Page[driver.CycleTopologyEdge], error) {
+	r.calls++
+	if r.calls == r.failAt {
+		return driver.Page[driver.CycleTopologyEdge]{}, driver.ErrUnsupported
+	}
+	return r.pages[r.calls-1], nil
+}
+func TestB06TopologyPaginationFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	defer store.Close()
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation, At: &meta.Head})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	ref := func(id string) model.Ref { return model.RefByID(id, model.Natural64(0)) }
+	page := driver.Page[driver.CycleTopologyEdge]{AsOf: meta.Head, Items: []driver.CycleTopologyEdge{{From: ref("a"), To: ref("b"), Kind: "blocks"}}, NextCursor: driver.CycleTopologyCursor(meta.Incarnation, meta.Head, 1)}
+	for _, test := range []struct {
+		name  string
+		pages []driver.Page[driver.CycleTopologyEdge]
+		fail  int
+	}{
+		{"later coverage error", []driver.Page[driver.CycleTopologyEdge]{page}, 2},
+		{"non advancing", []driver.Page[driver.CycleTopologyEdge]{page, page}, 0},
+		{"wrong snapshot", []driver.Page[driver.CycleTopologyEdge]{{AsOf: model.Natural64(1)}}, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			reader := &b06TopologyReader{Reader: r, pages: test.pages, failAt: test.fail}
+			got, err := ReadCycles(ctx, reader, CyclesRequest{Project: "p", Limit: 1}, nil)
+			if err == nil || !reflect.DeepEqual(got, CyclesResult{}) {
+				t.Fatalf("partial success after topology error: %+v %v", got, err)
+			}
+		})
+	}
+}
+func TestB06TopologyPresenceDoesNotGrantDisclosure(t *testing.T) {
+	ref := func(id string) model.Ref { return model.RefByID(id, model.Natural64(0)) }
+	rows := map[string]cycleRow{
+		"a": {project: "p", links: []pipeline.Link{{To: ref("b"), Kind: "blocks"}}},
+		"b": {missing: true, links: []pipeline.Link{{To: ref("a"), Kind: "blocks"}}},
+	}
+	for _, test := range []struct {
+		name, project string
+		readable      func(context.Context, model.Ref) (bool, error)
+	}{
+		{"denied anchor", "p", func(context.Context, model.Ref) (bool, error) { return false, nil }},
+		{"foreign project", "other", nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := readCycleGraph(context.Background(), rows, CyclesRequest{Project: test.project}, 1, AsOf{}, test.readable)
+			if err != nil || len(got.Items) != 0 || !got.CycleCount.IsZero() || got.Truncated {
+				t.Fatalf("hidden cycle disclosed %+v %v", got, err)
 			}
 		})
 	}

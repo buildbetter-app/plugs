@@ -16,10 +16,12 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/restore"
 	"github.com/buildbetter-app/plugs/internal/core/reverseconverter/reversetest"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/plugins/authnapikey"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
 	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/buildbetter-app/plugs/pluginapi"
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
@@ -98,7 +100,7 @@ func TestRollbackWindowCompositionUsesConfiguredReverseRegistry(t *testing.T) {
 
 }
 
-func TestMemoryRuntimeKeepsOrdinaryWorkflowToolsAndRefusesEphemeral(t *testing.T) {
+func TestMemoryRuntimeKeepsOrdinaryWorkflowToolsAndRefusesUnavailableCheckpoint(t *testing.T) {
 	ctx := context.Background()
 	keys := authnapikey.New(authnapikey.Config{})
 	owner := model.PrincipalRef{Kind: "user", ID: "user:workflow-memory-owner"}
@@ -108,6 +110,22 @@ func TestMemoryRuntimeKeepsOrdinaryWorkflowToolsAndRefusesEphemeral(t *testing.T
 	}
 	f := startRuntime(t, Config{Driver: "memory", Project: "workflow-memory", Address: DefaultAddress,
 		AuthMode: "authenticated", Auth: authn.Config{Provider: keys}})
+	// This separately named public refusal control deliberately selects the
+	// restricted restart-durable capability, which truthful process memory lacks.
+	// Default ordinary composition is exercised by the positive B07 fixture.
+	capability, err := driver.RequireWorkflowCheckpointStore(f.r.Store, f.r.Lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := pluginhost.NewWorkflowRuntimeState(capability, f.r.Lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, err := workflowplugin.New(workflowCheckpointUnavailable{state})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.WithWorkflow(provider)(f.r.Service)
 	transport, err := client.NewHTTP(client.HTTPConfig{Server: "http://" + f.server.Addr().String(), Token: issued.Token})
 	if err != nil {
 		t.Fatal(err)
@@ -259,6 +277,16 @@ func TestMemoryRuntimeKeepsOrdinaryWorkflowToolsAndRefusesEphemeral(t *testing.T
 	if err != nil || final.Head.String() != "2" {
 		t.Fatalf("permanent invocation stopped after memory refusal: meta=%+v err=%v", final, err)
 	}
+}
+
+// This test facade exposes only the public durable interface plus the actual
+// driver's restart promise. Ordinary reads work; optional workflow checkpoint
+// lifetime and atomic-snapshot capabilities are intentionally unavailable.
+type workflowCheckpointUnavailable struct{ pluginapi.DurableState }
+
+func (s workflowCheckpointUnavailable) Persistent() bool {
+	marker, ok := s.DurableState.(interface{ Persistent() bool })
+	return ok && marker.Persistent()
 }
 
 func TestAuthenticatedWorkflowHTTPRestartCompletionAndHistory(t *testing.T) {

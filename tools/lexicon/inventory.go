@@ -15,6 +15,7 @@ import (
 )
 
 const sourceManifestPath = "tools/lexicon/source_manifest.txt"
+const sourceManifestDirectory = "tools/lexicon/sources.d"
 
 func validSourcePath(name string) bool {
 	return name != "" && name != "." && name != ".." &&
@@ -24,32 +25,64 @@ func validSourcePath(name string) bool {
 		strings.IndexFunc(name, unicode.IsControl) < 0 && strings.TrimSpace(name) == name
 }
 
-// CheckSourceManifest requires an exact reviewed inventory of repository files.
-// The supplied map must come from the complete checkout inventory, not a Bazel
-// package glob, since globs cannot see through new package boundaries.
-func CheckSourceManifest(files map[string][]byte) error {
-	manifest, ok := files[sourceManifestPath]
-	if !ok {
-		return fmt.Errorf("missing source inventory manifest %s", sourceManifestPath)
-	}
+func addSourceManifest(expected map[string]struct{}, filename string, manifest []byte) error {
 	if !utf8.Valid(manifest) {
-		return errors.New("source inventory manifest is not valid UTF-8")
+		return fmt.Errorf("source inventory manifest %s is not valid UTF-8", filename)
 	}
-	expected := make(map[string]struct{})
+	entries := 0
 	for i, name := range strings.Split(string(manifest), "\n") {
 		if name == "" {
 			continue
 		}
 		if !validSourcePath(name) {
-			return fmt.Errorf("source inventory line %d is not a canonical source path: %q", i+1, name)
+			return fmt.Errorf("source inventory %s line %d is not a canonical source path: %q", filename, i+1, name)
 		}
 		if _, duplicate := expected[name]; duplicate {
 			return fmt.Errorf("source inventory lists %q more than once", name)
 		}
 		expected[name] = struct{}{}
+		entries++
 	}
-	if len(expected) == 0 {
-		return errors.New("source inventory manifest is empty")
+	if entries == 0 {
+		return fmt.Errorf("source inventory manifest %s is empty", filename)
+	}
+	return nil
+}
+
+// CheckSourceManifest requires an exact reviewed inventory of repository files.
+// The supplied map must come from the complete checkout inventory, not a Bazel
+// package glob, since globs cannot see through new package boundaries. Area
+// manifests extend membership only; all listed contents are still scanned.
+func CheckSourceManifest(files map[string][]byte) error {
+	manifest, ok := files[sourceManifestPath]
+	if !ok {
+		return fmt.Errorf("missing source inventory manifest %s", sourceManifestPath)
+	}
+	expected := make(map[string]struct{})
+	if err := addSourceManifest(expected, sourceManifestPath, manifest); err != nil {
+		return err
+	}
+	var fragments []string
+	for name := range files {
+		if !strings.HasPrefix(name, sourceManifestDirectory+"/") {
+			continue
+		}
+		base := strings.TrimPrefix(name, sourceManifestDirectory+"/")
+		if strings.Contains(base, "/") || !strings.HasSuffix(base, ".txt") || !validSourcePath(name) {
+			return fmt.Errorf("invalid source inventory fragment path %q", name)
+		}
+		// The base manifest must explicitly register each fragment. A fragment
+		// cannot admit itself or silently introduce another manifest.
+		if _, ok := expected[name]; !ok {
+			return fmt.Errorf("unlisted source inventory fragment %q in %s", name, sourceManifestPath)
+		}
+		fragments = append(fragments, name)
+	}
+	sort.Strings(fragments)
+	for _, name := range fragments {
+		if err := addSourceManifest(expected, name, files[name]); err != nil {
+			return err
+		}
 	}
 	var missing, extra []string
 	for name := range expected {
