@@ -137,6 +137,11 @@ func seedCycleRPCRows(t *testing.T, store driver.Store, lease driver.ActiveLease
 	if _, err := conformance.Seed(context.Background(), store, lease, driver.ChangesetHeader{}, changes); err != nil {
 		t.Fatal(err)
 	}
+	// The raw conformance seed bypasses product writes. Activate the current
+	// source image before these B06 fixtures admit readers or RPC requests.
+	if err := pipeline.BuildSourceIndexes(context.Background(), store, lease); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (f *cycleRPCFixture) call(t *testing.T, principal model.PrincipalRef, method string, params map[string]any) (service.CyclesResult, *model.Error) {
