@@ -139,8 +139,7 @@ func (f *b16Host) update(id string, labels []string) model.Commit {
     f.t.Helper();var commit model.Commit;b16Decode(f.t,f.call("bead.update",map[string]any{"id":b16Ref(id),"fields":map[string]any{"labels":labels}},true,""),&commit);return commit
 }
 func (f *b16Host) query(query string, want []string) {
-    f.t.Helper();before:=f.meta();definition:=map[string]any{"filter":map[string]any{"query":query},"sort"
-    "strings":[]string{"id"},"fields":[]string{"title"},"budgetTokens":1000}
+    f.t.Helper();before:=f.meta();definition:=map[string]any{"filter":map[string]any{"query":query},"sort":[]string{"id"},"fields":[]string{"title"},"budgetTokens":1000}
     var result struct{Items []struct{ID string `json:"id"`} `json:"items"`;NextCursor any `json:"nextCursor"`};b16Decode(f.t,f.call("view.run",map[string]any{"definition":definition},false,""),&result)
     got:=[]string{};for _,item:=range result.Items{got=append(got,item.ID)};expected:=append([]string{},want...);sort.Strings(expected);b16Equal(f.t,got,expected);if result.NextCursor!=nil{f.t.Fatal("unexpected page continuation")}
     var count struct{Count json.Number `json:"count"`};b16Decode(f.t,f.call("view.run",map[string]any{"definition":definition,"countOnly":true},false,""),&count)
