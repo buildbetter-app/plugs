@@ -162,9 +162,8 @@ func prepareSourceRelations(ctx context.Context, value *persisted, plan driver.S
 			return err
 		}
 		fields := wire.Source.Fields
-		if len(fields) != 10 {
-			return sourceRefusal("incomplete physical dependency row")
-		}
+		// Future native columns are opaque. The exact census above and required
+		// columns below still bind the physical dependency and its predicate.
 		for _, name := range []string{"id", "issue_id", "depends_on_issue_id", dumpformat.EphemeralDependencyTargetField, "depends_on_external", "type", "created_at", "created_by", "metadata", "thread_id"} {
 			if _, ok := fields[name]; !ok {
 				return sourceRefusal("missing dependency column")
@@ -231,6 +230,21 @@ func prepareSourceRelations(ctx context.Context, value *persisted, plan driver.S
 		}
 		if string(canonical) != string(relation.PredicateJSON) {
 			return sourceRefusal("detached predicate differs from physical metadata")
+		}
+		opaque := map[string]string{}
+		for field, raw := range fields {
+			if dumpformat.NativeEdgeField(field) {
+				opaque["beads."+field] = string(raw)
+			}
+		}
+		if err := model.ValidateNativeExtensions(opaque); err != nil {
+			return err
+		}
+		if len(opaque) != 0 {
+			if predicate == nil {
+				predicate = &model.LinkMetadata{}
+			}
+			predicate.NativeExtensions = opaque
 		}
 		used[relation.Origin.SHA256] = true
 		// External endpoints retain complete inert origins. The canonical

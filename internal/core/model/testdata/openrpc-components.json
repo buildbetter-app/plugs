@@ -3,9 +3,9 @@
   "sourceSHA256": "a1526ff907601720282714ddefef0f2550f9ff79ae6b8360ea6dec48d7e9c457",
   "schemaSourceSHA256": {
     "ErrorCode": "5322921149cd542890ae721448fc185f33cb543f0891f64d2b95a3b67bc7d8ba",
-    "LinkOp": "d96d7dd03cd091f18d0436e45cf77a4783e0a9d29fa0cbd12611ef13e23ef1dc",
+    "LinkOp": "25ff44f615ab21d4b3fbead1dc84571be1e615cb6ef2784314888ac2f90e9731",
     "LinkTargetKind": "d96d7dd03cd091f18d0436e45cf77a4783e0a9d29fa0cbd12611ef13e23ef1dc",
-    "LinkMetadata": "d96d7dd03cd091f18d0436e45cf77a4783e0a9d29fa0cbd12611ef13e23ef1dc",
+    "LinkMetadata": "25ff44f615ab21d4b3fbead1dc84571be1e615cb6ef2784314888ac2f90e9731",
     "ConditionDecision": "e0aab6d59361f63e74c3c87c191f27e0e644bd45e3cc9d2d427f022c664e4011",
     "ConditionUnmetDecision": "e0aab6d59361f63e74c3c87c191f27e0e644bd45e3cc9d2d427f022c664e4011",
     "CreateOp": "4c2bca70e2aa8834f2f26e9a13b365b14639d3e7237424c8b25b4fae16cc2a95",
@@ -194,7 +194,7 @@
         },
         "metadata": {
           "$ref": "#/components/schemas/LinkMetadata",
-          "description": "Only valid for a waits-for link. Omission preserves existing metadata on re-add; explicit {} selects all-children without also_blocks."
+          "description": "Typed predicates apply only to waits-for; opaque nativeExtensions apply to every kind. Omission preserves existing metadata on re-add; explicit {} selects all-children without also_blocks."
         },
         "targetKind": {
           "$ref": "#/components/schemas/LinkTargetKind"
@@ -1989,6 +1989,16 @@
         },
         "also_blocks": {
           "type": "boolean"
+        },
+        "nativeExtensions": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^beads\\..+$"
+          },
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Opaque native field JSON token text, preserved byte-exact. Absent keys retain prior values; null is the token string null. These values have no scheduling or thread semantics."
         }
       },
       "additionalProperties": false

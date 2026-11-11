@@ -65,7 +65,7 @@ func reverseSourceRestored(ctx context.Context, r driver.CheckpointInventory, me
 }
 
 func reverseSourceRecord(row reverseconverter.Record) dumpformat.Record {
-	return dumpformat.Record{Kind: row.Kind, ID: row.ID, Project: row.Project, Body: dumpformat.Row(row.Body), Source: dumpformat.Provenance{Table: row.Source.Table, Fields: dumpformat.Row(row.Source.Fields)}}
+	return dumpformat.Record{NativeEdgeTokens: row.NativeEdgeTokens, Kind: row.Kind, ID: row.ID, Project: row.Project, Body: dumpformat.Row(row.Body), Source: dumpformat.Provenance{Table: row.Source.Table, Fields: dumpformat.Row(row.Source.Fields)}}
 }
 
 // Immutable mirrors remain evidence, never a source of mutable active bodies.

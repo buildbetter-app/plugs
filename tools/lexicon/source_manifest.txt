@@ -174,7 +174,9 @@ internal/core/authz/types.go
 internal/core/dumpformat/BUILD.bazel
 internal/core/dumpformat/README.md
 internal/core/dumpformat/catalog.go
+internal/core/dumpformat/edge_extensions.go
 internal/core/dumpformat/edge_metadata.go
+internal/core/dumpformat/edge_tokens_test.go
 internal/core/dumpformat/edge_version_test.go
 internal/core/dumpformat/history.go
 internal/core/dumpformat/history_test.go
@@ -239,6 +241,7 @@ internal/core/model/codes.go
 internal/core/model/commit.go
 internal/core/model/condition.go
 internal/core/model/doc.go
+internal/core/model/edge_extensions_test.go
 internal/core/model/encodings_test.go
 internal/core/model/events.go
 internal/core/model/history.go
@@ -370,6 +373,7 @@ internal/core/reverseconverter/BUILD.bazel
 internal/core/reverseconverter/README.md
 internal/core/reverseconverter/archive.go
 internal/core/reverseconverter/convert.go
+internal/core/reverseconverter/edge_extensions.go
 internal/core/reverseconverter/loss.go
 internal/core/reverseconverter/physical.go
 internal/core/reverseconverter/physical_test.go
@@ -558,6 +562,7 @@ internal/integration/collabwatch/integration_test.go
 internal/integration/collabwatch/reconnect_acceptance_test.go
 internal/integration/converterroundtrip/BUILD.bazel
 internal/integration/converterroundtrip/allocator.go
+internal/integration/converterroundtrip/b07_opaque_source_test.go
 internal/integration/converterroundtrip/b13_joint_memory_control_test.go
 internal/integration/converterroundtrip/external_target_test.go
 internal/integration/converterroundtrip/hierarchy_import_test.go
@@ -1559,6 +1564,15 @@ spec/cardb01/record_reference.py
 spec/cardb01/reference-run-1.json
 spec/cardb01/reference-run-2.json
 spec/cardb01/reference_test.go
+spec/cardb07/BUILD.bazel
+spec/cardb07/README.md
+spec/cardb07/cases_test.go
+spec/cardb07/fixture_test.go
+spec/cardb07/imported_waits_test.go
+spec/cardb07/mixed_test.go
+spec/cardb07/native_test.go
+spec/cardb07/opaque_test.go
+spec/cardb07/public_test.go
 spec/cardb19/BUILD.bazel
 spec/cardb19/README.md
 spec/cardb19/archive_test.go
@@ -1972,6 +1986,10 @@ tools/hostcallers/source-manifest.json
 tools/hostcallers/topology.prepared.json
 tools/lexicon/BUILD.bazel
 tools/lexicon/README.md
+tools/lexicon/b07_native_protocol_literals.go
+tools/lexicon/b07_native_protocol_literals_test.go
+tools/lexicon/b07_represented_literals.go
+tools/lexicon/b07_represented_literals_test.go
 tools/lexicon/checker.go
 tools/lexicon/checker_test.go
 tools/lexicon/cmd/lexicon_check/main.go

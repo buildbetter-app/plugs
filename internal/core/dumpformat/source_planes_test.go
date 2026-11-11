@@ -109,7 +109,18 @@ func TestSourcePlaneReaderConservesBothPhysicalPlanesAndRawRecords(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(data, a.TarBytes()) || !reflect.DeepEqual(a.Records("edge"), f.records["edge"]) {
+	wantEdges := append([]Record(nil), f.records["edge"]...)
+	for i := range wantEdges {
+		wantEdges[i].NativeEdgeTokens = map[string]string{}
+		for _, field := range []string{"metadata", "thread_id"} {
+			raw, err := json.Marshal(wantEdges[i].Source.Fields[field])
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantEdges[i].NativeEdgeTokens["beads."+field] = string(raw)
+		}
+	}
+	if !bytes.Equal(data, a.TarBytes()) || !reflect.DeepEqual(a.Records("edge"), wantEdges) {
 		t.Fatal("physical edges, TEN fields, raw cells or archive bytes changed")
 	}
 	edges := a.Records("edge")
@@ -162,7 +173,7 @@ func TestSourcePlaneReaderRefusalsReachExactWireAndRelations(t *testing.T) {
 		{"unordered-plane", "duplicate or unordered", func(f *mergeFixture) {
 			f.records["edge"][0], f.records["edge"][1] = f.records["edge"][1], f.records["edge"][0]
 		}},
-		{"TEN-field-missing", "schema drift", func(f *mergeFixture) { delete(f.records["edge"][0].Source.Fields, "thread_id") }},
+		{"TEN-field-missing", "missing source plane column thread_id", func(f *mergeFixture) { delete(f.records["edge"][0].Source.Fields, "thread_id") }},
 		{"body-mirror", "body/source mismatch", func(f *mergeFixture) { f.records["edge"][0].Body["thread_id"] = "changed" }},
 		{"missing-active-target", "unresolved dependency", func(f *mergeFixture) {
 			f.records["edge"][0].Body["to"] = "pl-9"

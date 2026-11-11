@@ -774,15 +774,21 @@ func scanFile(path string, content []byte, cfg Config, provenance bool) []Findin
 	fieldOffsets := protocolFieldLiteralOffsets(path, content, cfg.NativeFieldLiterals)
 	b03Offsets := b03NativeGoLiteralOffsets(path, content, cfg.B03NativeGoLiterals)
 	undoOffsets := undoLiteralOffsets(path, content)
-	if path == externalProtocolSource && len(cfg.ExternalProtocolString.PhysicalValues) != 0 || path == nativeManifestProtocolSource && len(cfg.NativeManifestStrings.Values) != 0 || path == b01NativeGoSource || path == b01NativeJSONSource || path == b03CatalogJSONSource || path == b03CatalogGoSource || path == nativeHTTPDomainSource || hasNativeControlAllowance(path, cfg) || path == sourcePlaneProtocolSource || path == sourcePlaneFixtureSource || len(undoLiteralBindings[path]) != 0 {
+	b07Offsets := b07RepresentedLiteralOffsets(path, content)
+	b07ProtocolOffsets := b07NativeProtocolLiteralOffsets(path, content)
+	if path == externalProtocolSource && len(cfg.ExternalProtocolString.PhysicalValues) != 0 || path == nativeManifestProtocolSource && len(cfg.NativeManifestStrings.Values) != 0 || path == b01NativeGoSource || path == b01NativeJSONSource || path == b03CatalogJSONSource || path == b03CatalogGoSource || path == nativeHTTPDomainSource || hasNativeControlAllowance(path, cfg) || path == sourcePlaneProtocolSource || path == sourcePlaneFixtureSource || len(undoLiteralBindings[path]) != 0 || len(b07Offsets) != 0 || len(b07ProtocolOffsets) != 0 {
 		masked := append([]byte(nil), content...)
 		sourceLiterals := goStringLiterals(path, content)
 		if path == b01NativeJSONSource || path == b03CatalogJSONSource {
 			sourceLiterals = jsonStringLiterals(content)
 		}
 		for _, literal := range sourceLiterals {
-			if !literal.imported && (sourcePlaneAllowed && literal.start == sourcePlaneOffset || fieldOffsets[literal.start] || b03Offsets[literal.start] || undoOffsets[literal.start] || allowsConfiguredLiteral(path, literal.value, cfg) || allowsNativeManifestString(path, literal.value, cfg.NativeManifestStrings)) {
-				for i := literal.start; i < literal.end; i++ {
+			if !literal.imported && (sourcePlaneAllowed && literal.start == sourcePlaneOffset || fieldOffsets[literal.start] || b03Offsets[literal.start] || undoOffsets[literal.start] || b07Offsets[literal.start] || b07ProtocolOffsets[literal.start] || allowsConfiguredLiteral(path, literal.value, cfg) || allowsNativeManifestString(path, literal.value, cfg.NativeManifestStrings)) {
+				start, end := literal.start, literal.end
+				if b07ProtocolOffsets[literal.start] {
+					start, end = start+1, end-1 // Keep both string delimiters; mask only this node's payload.
+				}
+				for i := start; i < end; i++ {
 					if masked[i] != '\n' && masked[i] != '\r' {
 						masked[i] = ' '
 					}
@@ -902,6 +908,8 @@ func scanGoIdentifiers(path string, content []byte, term Term, cfg Config) []Fin
 	fieldOffsets := protocolFieldLiteralOffsets(path, content, cfg.NativeFieldLiterals)
 	b03Offsets := b03NativeGoLiteralOffsets(path, content, cfg.B03NativeGoLiterals)
 	undoOffsets := undoLiteralOffsets(path, content)
+	b07Offsets := b07RepresentedLiteralOffsets(path, content)
+	b07ProtocolOffsets := b07NativeProtocolLiteralOffsets(path, content)
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, content, parser.ParseComments)
 	if err != nil {
@@ -928,8 +936,8 @@ func scanGoIdentifiers(path string, content []byte, term Term, cfg Config) []Fin
 				if !imports[n.Pos()] && undoOffsets[fset.Position(n.Pos()).Offset] {
 					return true
 				}
-				if path == externalProtocolSource || path == nativeManifestProtocolSource || path == b01NativeGoSource || path == b03CatalogGoSource || path == nativeHTTPDomainSource || hasNativeControlAllowance(path, cfg) {
-					if !imports[n.Pos()] && (fieldOffsets[fset.Position(n.Pos()).Offset] || b03Offsets[fset.Position(n.Pos()).Offset] || path == externalProtocolSource && allowance.Path == path && decoded == allowance.Value && protocolLiteralDigest(decoded) == externalEnvironmentDigest || allowsPhysicalProtocolString(path, decoded, allowance) || allowsNativeManifestString(path, decoded, cfg.NativeManifestStrings) || allowsNativeControlLiteral(path, decoded, cfg)) {
+				if path == externalProtocolSource || path == nativeManifestProtocolSource || path == b01NativeGoSource || path == b03CatalogGoSource || path == nativeHTTPDomainSource || hasNativeControlAllowance(path, cfg) || len(b07Offsets) != 0 || len(b07ProtocolOffsets) != 0 {
+					if !imports[n.Pos()] && (fieldOffsets[fset.Position(n.Pos()).Offset] || b03Offsets[fset.Position(n.Pos()).Offset] || b07Offsets[fset.Position(n.Pos()).Offset] || b07ProtocolOffsets[fset.Position(n.Pos()).Offset] || path == externalProtocolSource && allowance.Path == path && decoded == allowance.Value && protocolLiteralDigest(decoded) == externalEnvironmentDigest || allowsPhysicalProtocolString(path, decoded, allowance) || allowsNativeManifestString(path, decoded, cfg.NativeManifestStrings) || allowsNativeControlLiteral(path, decoded, cfg)) {
 						return true
 					}
 					text = decoded

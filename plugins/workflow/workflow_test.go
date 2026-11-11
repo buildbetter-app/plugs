@@ -1291,14 +1291,14 @@ func TestB26RelationsRetainDistinctMetadata(t *testing.T) {
 		}
 	}
 	got, err := p.Get(ctx, by, from, meta("bead.get", "read"))
-	if err != nil || len(got.Links) != 2 {
-		t.Fatalf("metadata collapsed: %+v %v", got, err)
+	if err != nil || len(got.Links) != 1 || got.Links[0].Metadata.Gate != "any-children" {
+		t.Fatalf("metadata replacement did not preserve one edge: %+v %v", got, err)
 	}
 	if _, err := p.Unlink(ctx, by, LinkRequest{From: from, To: to, Kind: "waits-for", Metadata: &model.LinkMetadata{Gate: "all-children", AlsoBlocks: true}}, meta("bead.unlink", "remove-one")); err != nil {
 		t.Fatal(err)
 	}
 	got, err = p.Get(ctx, by, from, meta("bead.get", "read-again"))
-	if err != nil || len(got.Links) != 1 || got.Links[0].Metadata.Gate != "any-children" {
-		t.Fatalf("metadata unlink removed sibling: %+v %v", got, err)
+	if err != nil || len(got.Links) != 0 {
+		t.Fatalf("typed endpoint unlink retained a metadata sibling: %+v %v", got, err)
 	}
 }
