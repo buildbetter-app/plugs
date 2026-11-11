@@ -413,7 +413,7 @@ func (p SourcePlanePlanV1) Validate() error {
 // UnmarshalJSON preserves absence of the optional binding and rejects a
 // present null. Legacy profiles retain the same marshaled bytes and hashes.
 func (p *RestoreImportProfile) UnmarshalJSON(data []byte) error {
-	fields := map[string]bool{"admission": true, "sourceStoreId": true, "method": true, "idempotencyKey": true, "archiveDigest": true, "derivedDigest": true, "historyMode": true, "historyDigest": true, "historyTime": true, "sourcePlanes": true}
+	fields := map[string]bool{"admission": true, "sourceStoreId": true, "method": true, "idempotencyKey": true, "archiveDigest": true, "derivedDigest": true, "historyMode": true, "historyDigest": true, "historyTime": true, "nativeDeltaHistory": true, "sourcePlanes": true}
 	if err := sourcePlaneJSONObject(data, fields, false); err != nil {
 		return err
 	}

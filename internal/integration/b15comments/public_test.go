@@ -104,24 +104,27 @@ func (f *fixture) bind() {
 	}
 	ontology := service.NewOntology(nil)
 	writer := pipeline.New(f.store, f.lease, pipeline.WithClock(f.clock.Now), pipeline.WithOntology(ontology), pipeline.WithOntologyAudit(service.NewOntologyAudit(nil)), pipeline.WithIDGenerator(func() (string, error) { return "b15-anchor", nil }))
-	var provider *workflow.Provider
-	// The frozen host contract refuses new ephemeral invocation on memory.
-	// Imported active state has its separate installed receiver qualification.
-	if f.engine != "memory" {
-		checkpoints, err := driver.RequireWorkflowCheckpointStore(f.store, f.lease)
-		if err != nil {
-			t.Fatal(err)
-		}
-		state, err := pluginhost.NewWorkflowRuntimeState(checkpoints, f.lease)
-		if err != nil {
-			t.Fatal(err)
-		}
-		provider, err = workflow.New(state)
-		if err != nil {
-			t.Fatal(err)
-		}
-		provider = provider.WithClock(f.clock.Now).WithIdentity(workflow.Alias, "default", meta.Incarnation)
+	checkpoints, err := driver.RequireWorkflowCheckpointStore(f.store, f.lease)
+	if err != nil {
+		t.Fatal(err)
 	}
+	state, err := pluginhost.NewWorkflowRuntimeState(checkpoints, f.lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker, ok := state.(interface{ Persistent() bool })
+	wantLifetime := driver.CheckpointLifetimeRestart
+	if f.engine == "memory" {
+		wantLifetime = driver.CheckpointLifetimeProcess
+	}
+	if !ok || marker.Persistent() != (f.engine != "memory") || checkpoints.WorkflowCheckpointLifetime() != wantLifetime {
+		t.Fatal("actual checkpoint lifetime/persistence differs from the selected engine")
+	}
+	provider, err := workflow.New(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider = provider.WithClock(f.clock.Now).WithIdentity(workflow.Alias, "default", meta.Incarnation)
 	f.domain = service.New(f.store, f.lease, writer, service.WithClock(f.clock.Now), service.WithOntology(ontology), service.WithWorkflow(provider))
 	registry, err := rpc.NewRegistry()
 	if err != nil {
@@ -446,35 +449,6 @@ func TestB15PublicEphemeralCommentClockAndNoDurableHistory(t *testing.T) {
 			f.create()
 			anchor, durable := f.document(), f.changes()
 			invocation := map[string]any{"template": "b15-public", "project": project, "mode": "ephemeral", "checklist": []map[string]any{{"label": "step", "title": "comment thread", "type": "task"}}}
-			if engine == "memory" {
-				// workflow-contract.md:57-65 forbids new ephemeral invocation
-				// on the process-local memory host, before any state publication.
-				meta, err := f.store.Meta(context.Background())
-				if err != nil {
-					t.Fatal(err)
-				}
-				checkpoints := f.store.(driver.CheckpointStore)
-				checkpoint, err := checkpoints.LoadCheckpoint(context.Background(), "plugin/workflow/default/durable")
-				if err != nil {
-					t.Fatal(err)
-				}
-				r := f.call("x.workflow.invoke", invocation, true)
-				if r.Error == nil || r.Error.Data.Code != "plugin_durable_state_unavailable" {
-					t.Fatalf("memory invocation refusal: %s", marshal(t, r))
-				}
-				after, err := f.store.Meta(context.Background())
-				if err != nil {
-					t.Fatal(err)
-				}
-				afterCheckpoint, err := checkpoints.LoadCheckpoint(context.Background(), "plugin/workflow/default/durable")
-				if err != nil {
-					t.Fatal(err)
-				}
-				if !reflect.DeepEqual(meta, after) || !reflect.DeepEqual(checkpoint, afterCheckpoint) || !reflect.DeepEqual(anchor, f.document()) || !reflect.DeepEqual(durable, f.changes()) {
-					t.Error("refused memory invocation published state")
-				}
-				return
-			}
 			raw := f.success("x.workflow.invoke", invocation, true)
 			var invoked workflow.InvokeResult
 			if err := json.Unmarshal(raw, &invoked); err != nil || len(invoked.Items) != 1 {
