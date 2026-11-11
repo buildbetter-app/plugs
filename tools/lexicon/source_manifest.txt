@@ -456,6 +456,7 @@ internal/core/service/types.go
 internal/core/service/waits_for_consumer_test.go
 internal/core/service/workflow_batch.go
 internal/core/service/workflow_bridge.go
+internal/core/service/workflow_close.go
 internal/core/service/workflow_delete.go
 internal/core/service/workflow_moves.go
 internal/core/service/workflow_permanent_test.go

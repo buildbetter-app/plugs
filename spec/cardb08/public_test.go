@@ -125,7 +125,7 @@ func (f *b08Fixture) invoke(label string) model.Ref {
 	f.t.Helper()
 	out := f.call("invoke-"+label, "x.workflow.invoke", map[string]any{"template": "b08", "project": b08Project, "mode": "ephemeral", "checklist": []map[string]any{{"label": label, "title": "B08 " + label, "type": "issue"}}}, "")
 	var result workflowplugin.InvokeResult
-	if err := json.Unmarshal(out.Result, &result); err != nil || result.Plane != "ephemeral" || len(result.Items) != 1 || result.Items[0].Project != b08Project || !strings.HasPrefix(result.Items[0].ID, workflowplugin.ItemPrefix) {
+	if err := json.Unmarshal(out.Result, &result); err != nil || result.Plane != "ephemeral" || len(result.Items) != 1 || result.Items[0].Project != b08Project || result.Items[0].Status != "open" || !strings.HasPrefix(result.Items[0].ID, workflowplugin.ItemPrefix) {
 		f.t.Fatalf("actual workflow invocation failed: %s %v", out.Result, err)
 	}
 	return model.RefByID(result.Items[0].ID, model.Natural64(0))
@@ -139,10 +139,45 @@ func TestB08PublicOpenChildrenAcrossPlanes(t *testing.T) {
 			parent := f.create("mixed-parent", "b08-item", nil, nil)
 			child := f.invoke("mixed-child")
 			f.link("mixed-child-parent", child, parent, "parent-child")
-			f.conserved("mixed-open-child", "bead.close", map[string]any{"id": parent}, "ontology_guard_failed", "")
+			f.conserved("mixed-open-child", "bead.close", map[string]any{"id": parent}, "ontology_guard_failed", "no_open_children")
 			f.call("close-mixed-child", "bead.close", map[string]any{"id": child}, "")
 			f.closeOnce("close-settled-mixed-parent", parent, "all children settled")
 			f.reopen("mixed-child-settlement")
+		})
+	}
+}
+
+func TestB08PublicTypedMixedCloseHonorsChildOrderAndTransition(t *testing.T) {
+	root := b08Root(t, "b08-mixed-close-order")
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			f := newB08Fixture(t, engine, filepath.Join(root, engine), false)
+			parent := f.create("typed-mixed-parent", "b08-item", nil, nil)
+			child := f.invoke("typed-mixed-child")
+			f.link("typed-child-parent", child, parent, "parent-child")
+			closeOp := func(id model.Ref) map[string]any {
+				return map[string]any{"kind": "close", "target": id}
+			}
+			batch := func(ops ...map[string]any) map[string]any {
+				return map[string]any{"changeSet": map[string]any{"ops": ops}}
+			}
+			f.conserved("typed-open-child", "tx.apply", batch(closeOp(parent)), "ontology_guard_failed", "no_open_children")
+			f.conserved("parent-before-child", "tx.apply", batch(closeOp(parent), closeOp(child)), "ontology_guard_failed", "no_open_children")
+			// An unrelated ordinary operation is not a close merely because it
+			// shares tx.apply with lifecycle operations elsewhere.
+			f.oneWrite("patch-parent-with-open-child", "tx.apply", batch(map[string]any{"kind": "patch", "target": parent, "fields": map[string]any{"title": "still open with child"}}), parent)
+			before := f.state()
+			f.oneWrite("child-before-parent", "tx.apply", batch(closeOp(child), closeOp(parent)), parent)
+			if after := f.state(); after.Checkpoint.Generation != before.Checkpoint.Generation+1 || f.document(parent).Fields["status"] != "b08-finished" {
+				t.Fatal("ordered mixed settlement did not publish one checkpoint and exact terminal parent")
+			}
+			f.reopen("typed-mixed-settlement")
+
+			permitted := f.create("permitted-parent", "b08-child-permitted", nil, nil)
+			live := f.invoke("permitted-live-child")
+			f.link("permitted-child-parent", live, permitted, "parent-child")
+			f.closeOnce("transition-without-child-guard", permitted, "declared ontology permits close")
+			f.reopen("guard-free-transition")
 		})
 	}
 }
@@ -180,7 +215,14 @@ func TestB08PublicFirstCloseIdempotenceAndReopen(t *testing.T) {
 			after := f.state()
 			// A new no-op request may persist its response receipt. Its graph,
 			// history, versions, derived state and first close remain unchanged.
-			before.Receipts, after.Receipts = nil, nil
+			call := f.calls[len(f.calls)-1]
+			receiptKey := call.Method + "/" + call.Key
+			receipt, ok := after.Receipts[receiptKey]
+			if !ok || receipt.ResponsePending || !reflect.DeepEqual(receipt.Changeset, model.Changeset{}) || receipt.Commit.Revision != before.Meta.Head {
+				t.Fatal("new-key no-op did not retain its exact final no-history receipt")
+			}
+			b08Save(t, f.root, "new-key-idempotent-close-state.json", map[string]any{"before": before, "after": after})
+			delete(after.Receipts, receiptKey)
 			if !bytes.Equal(b08JSON(t, before), b08JSON(t, after)) || !reflect.DeepEqual(d, f.document(id)) {
 				t.Fatal("new-key idempotent close changed first close or durable graph")
 			}

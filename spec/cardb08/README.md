@@ -37,6 +37,20 @@ may add only its response receipt. The B21 owner retains identical-reason
 suppression and any required first-reason kernel representation; this child
 does not change that shared implementation or claim its unmeasured proof.
 
+The close-only correction supplies open ephemeral children from the same
+checkpoint observation as active blockers. The existing ontology transition
+decides whether `no_open_children` applies. Ordered mixed batches check the
+staged child image before each ordinary close and retain final-image ontology
+validation. Three-engine controls require a parent-first batch to refuse with
+no write, a child-first batch to settle once, an unrelated parent patch to
+succeed, and a transition without the child guard to accept a live child.
+Claim, readiness and stored-blocked close guards keep their existing rules.
+
+Receipt snapshots retain all four driver receipt fields. The driver contract
+defines a no-op receipt's changeset as exactly zero; the evidence writes that
+absence as JSON null. It does not manufacture a changeset kind. Each new-key
+no-op may add only its own final receipt and preserves all earlier receipts.
+
 `native_test` builds canonical source `9d6fff760` using unchanged B20 support
 and runs against the pinned disposable Dolt server. It preserves command argv,
 environment, exit, timing, stdout and stderr; SQL expectations are authored
@@ -56,3 +70,8 @@ runs concurrently. Source, focus, whole, hosted, native and full-card outcomes
 remain distinct; this source alone grants no runtime credit. Official capture
 is unspent, private capture is disabled, and no source-history mode, physical
 writer, real-store, full-accounting, switch or landing qualification transfers.
+
+The focused native target also forwards the trusted RunsOn `BAZEL_BIN`,
+`BAZEL_RC`, `BAZELISK_HOME`, `BAZELISK_VERIFY_SHA256`, `GITHUB_RUN_ID`,
+`GITHUB_RUN_ATTEMPT`, `GITHUB_SHA` and `GITHUB_WORKFLOW_REF` variables, as
+required by the unchanged B20 source builder. RunsOn supplies the source root.

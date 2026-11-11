@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"testing"
 	"time"
@@ -85,6 +86,19 @@ func b08Catalog() ontology.Document {
 	base.Workflow = "b08-flow"
 	base.Fields["proof"] = ontology.Field{Type: "string"}
 	d.Types["b08-item"] = base
+	permitted := w
+	permitted.Transitions = append([]ontology.Rule(nil), w.Transitions...)
+	last := len(permitted.Transitions) - 1
+	permitted.Transitions[last].Guards = nil
+	for _, guard := range w.Transitions[last].Guards {
+		if guard.Kind != ontology.NoOpenChildren {
+			permitted.Transitions[last].Guards = append(permitted.Transitions[last].Guards, guard)
+		}
+	}
+	d.Workflows["b08-child-permitted"] = permitted
+	permittedType := base
+	permittedType.Workflow = "b08-child-permitted"
+	d.Types["b08-child-permitted"] = permittedType
 	for _, extra := range []struct {
 		Name  string
 		Guard ontology.Guard
@@ -315,10 +329,35 @@ func (f *b08Fixture) create(id, kind string, fields map[string]any, parent *mode
 	if err := json.Unmarshal(out.Result, &commit); err != nil || len(commit.Results) != 1 {
 		f.t.Fatalf("public create: %s %v", out.Result, err)
 	}
-	if commit.Results[0].Ref.ID != "b08-"+id {
-		f.t.Fatal("public create changed declared ID")
+	expected := "b08-" + id
+	if parent != nil {
+		// Parented creates use the parent's actual persisted child counter,
+		// independently of the host's top-level ID generator.
+		expected = parent.ID + ".1"
+	}
+	if commit.Results[0].Ref.ID != expected {
+		f.t.Fatalf("public create ID=%q want=%q", commit.Results[0].Ref.ID, expected)
 	}
 	return commit.Results[0].Ref
+}
+
+type b08Receipt driver.IdempotencyRecord
+
+// A CommitNoop receipt has no history entry. Preserve every receipt field,
+// representing the exactly zero Changeset as null rather than inventing its
+// kind. A partially populated changeset still passes through typed marshaling
+// and must fail if invalid.
+func (r b08Receipt) MarshalJSON() ([]byte, error) {
+	var changeset *model.Changeset
+	if !reflect.DeepEqual(r.Changeset, model.Changeset{}) {
+		changeset = &r.Changeset
+	}
+	return json.Marshal(struct {
+		RequestHash     string
+		Commit          model.Commit
+		Changeset       *model.Changeset
+		ResponsePending bool
+	}{r.RequestHash, r.Commit, changeset, r.ResponsePending})
 }
 
 type b08State struct {
@@ -328,7 +367,7 @@ type b08State struct {
 	History    []model.Changeset
 	Derived    map[driver.DerivedTable][]driver.DerivedRow
 	Checkpoint driver.Checkpoint
-	Receipts   map[string]*driver.IdempotencyRecord
+	Receipts   map[string]b08Receipt
 }
 
 func (f *b08Fixture) state() b08State {
@@ -342,7 +381,7 @@ func (f *b08Fixture) state() b08State {
 		f.t.Fatal(err)
 	}
 	defer r.Close()
-	s := b08State{Meta: meta, Versions: map[string][]driver.Version{}, Derived: map[driver.DerivedTable][]driver.DerivedRow{}, Receipts: map[string]*driver.IdempotencyRecord{}}
+	s := b08State{Meta: meta, Versions: map[string][]driver.Version{}, Derived: map[driver.DerivedTable][]driver.DerivedRow{}, Receipts: map[string]b08Receipt{}}
 	page, err := r.Query(f.ctx, driver.Query{Limit: 1000})
 	if err != nil || page.NextCursor != nil {
 		f.t.Fatalf("complete finite record census: %v", err)
@@ -376,7 +415,7 @@ func (f *b08Fixture) state() b08State {
 			f.t.Fatal(err)
 		}
 		if receipt != nil {
-			s.Receipts[call.Method+"/"+call.Key] = receipt
+			s.Receipts[call.Method+"/"+call.Key] = b08Receipt(*receipt)
 		}
 	}
 	if cp, ok := f.store.(driver.CheckpointStore); ok {
