@@ -151,6 +151,31 @@ as a cancellation or fencing rejection.
 Core statistics report actual converted image bytes and peak observed
 frame/chunk sizes. They do not report allocations or process RSS; receiving
 integration must measure its own logical categories and actual RSS separately.
-This first port has remote core-contract behavior tests, but no engine or
-receiver implements it yet. Receiving integration, measured real-history proof
-and the required-before-switch follow-up remain separate work.
+Memory, SQLite and PostgreSQL expose `NewOfflineHistoryStreamStage` for an
+already locked real engine writer. An engine-private disk index and image spool
+retain replay state, source frames, provenance and mappings. Image scans and
+encoders check cancellation at each 32KiB page. SQL publication copies bounded
+pages into one fenced engine transaction; memory constructs only its permanent
+in-process output state. Each historical bead After is syntax checked and its
+comment authority is validated one comment at a time through the existing
+restore profile validator. Body strings and unknown fields are scanned without
+materializing them. Duplicate authority fields refuse. A single comment
+metadata field beyond 64KiB (or 16 times the admitted actor encoding, if larger)
+returns typed `ErrUnsupported`; there is no aggregate history size/count cap in
+this path. The ordinary transaction still holds its one rebuilt current image.
+
+The new `historyverify.Checkpoint` is an opaque immutable verifier result,
+required by every engine stage. It binds the exact admitted request (including
+archive, derived and history digests), actual old target/lifetime/time,
+converted HEAD/current roots, current auxiliary projection and physical
+reconciliation. Engines refuse missing, mismatched or unreconciled values before
+publication. Root computation is public but cannot mint a value. Physical
+preimages and the original derived-image encoding remain verifier obligations.
+The private constructor has no production issuer in this layer; the only test
+minter is in `_test.go`. Tests use synthetic verifier results solely for actual
+memory/file SQLite/pinned PostgreSQL publication mechanics, including SQL reopen
+and original receipt replay. They grant no native receiving authentication.
+
+Real receiver issuance/wiring, measured real-history and RSS proof, and the
+required-before-switch follow-up remain separate work. Existing aggregate
+callers and their 128MiB serialized ceiling remain unchanged.

@@ -5,7 +5,7 @@ go_library(
     srcs = glob(["*.go"], exclude = ["*_test.go"]),
     importpath = "github.com/buildbetter-app/plugs/internal/storage/memory",
     visibility = ["//:__subpackages__"],
-    deps = ["//internal/core/model", "//internal/storage/driver"],
+    deps = ["//internal/core/model", "//internal/storage/driver", "//internal/storage/historystream", "//internal/storage/historyverify"],
 )
 
 go_test(

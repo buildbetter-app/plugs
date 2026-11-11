@@ -1236,6 +1236,18 @@ internal/storage/driver/source_planes_snapshot.go
 internal/storage/driver/source_planes_test.go
 internal/storage/driver/source_planes_validate.go
 internal/storage/hierarchy-index-design.md
+internal/storage/historystream/BUILD.bazel
+internal/storage/historystream/context.go
+internal/storage/historystream/encode.go
+internal/storage/historystream/finalize.go
+internal/storage/historystream/json.go
+internal/storage/historystream/semantic.go
+internal/storage/historystream/stage.go
+internal/storage/historyverify/BUILD.bazel
+internal/storage/historyverify/auxiliary.go
+internal/storage/historyverify/checkpoint.go
+internal/storage/historyverify/engines_test.go
+internal/storage/historyverify/export_test.go
 internal/storage/memory/BUILD.bazel
 internal/storage/memory/allocator.go
 internal/storage/memory/allocator_snapshot.go
@@ -1256,6 +1268,7 @@ internal/storage/memory/metadata_test.go
 internal/storage/memory/noop.go
 internal/storage/memory/noop_test.go
 internal/storage/memory/offline_history.go
+internal/storage/memory/offline_history_stream.go
 internal/storage/memory/offline_restore.go
 internal/storage/memory/parent_counter.go
 internal/storage/memory/reader.go
@@ -1311,6 +1324,7 @@ internal/storage/postgres/lease_prepare_test.go
 internal/storage/postgres/lock_batch_test.go
 internal/storage/postgres/metadata.go
 internal/storage/postgres/offline_history.go
+internal/storage/postgres/offline_history_stream.go
 internal/storage/postgres/offline_restore.go
 internal/storage/postgres/parent_counter.go
 internal/storage/postgres/pending_test.go
@@ -1364,6 +1378,7 @@ internal/storage/sqlite/metadata.go
 internal/storage/sqlite/metadata_outcome_test.go
 internal/storage/sqlite/native_restore_detach_test.go
 internal/storage/sqlite/offline_history.go
+internal/storage/sqlite/offline_history_stream.go
 internal/storage/sqlite/offline_restore.go
 internal/storage/sqlite/parent_counter.go
 internal/storage/sqlite/pending_test.go

@@ -1,0 +1,25 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "historyverify",
+    srcs = ["auxiliary.go", "checkpoint.go"],
+    importpath = "github.com/buildbetter-app/plugs/internal/storage/historyverify",
+    visibility = ["//:__subpackages__"],
+    deps = ["//internal/core/model", "//internal/storage/driver"],
+)
+
+go_test(
+    name = "historyverify_test",
+    srcs = ["export_test.go", "engines_test.go"],
+    embed = [":historyverify"],
+    size = "large",
+    tags = ["exclusive", "local", "requires-network"],
+    deps = [
+        "//internal/core/model",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/sqlite",
+        "//internal/storage/postgres",
+        "@com_github_jackc_pgx_v5//stdlib:stdlib",
+    ],
+)
