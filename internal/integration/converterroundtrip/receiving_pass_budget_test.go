@@ -175,6 +175,10 @@ func (s *receivingCountedStore) Write(ctx context.Context, lease driver.ActiveLe
 	s.writes++
 	return s.Store.Write(ctx, lease)
 }
+func (s *receivingCountedStore) Persistent() bool {
+	capability, ok := s.Store.(driver.PersistentCheckpointStore)
+	return ok && capability.Persistent()
+}
 func (s *receivingCountedStore) Read(ctx context.Context, v driver.View) (driver.Reader, error) {
 	r, err := s.Store.Read(ctx, v)
 	if err != nil {
@@ -387,7 +391,8 @@ func TestReceivingActualCleanNoopResumedAndHarnessTraversalCaps(t *testing.T) {
 			s = wrapReceivingStore(t, store, l)
 			start := len(l.reads)
 			l.phase = "resumed recovery after real reopen"
-			_, recovered, found, err := RecoverBoundSourceImport(context.Background(), s)
+			recoveryCtx := a.WithNativeDeltaAccounting(context.Background())
+			_, recovered, found, err := RecoverBoundSourceImport(recoveryCtx, s)
 			if err != nil || !found || recovered.Archive == nil || !recovered.Recovered {
 				t.Fatal("actual resumed recovery", found, err)
 			}
@@ -402,7 +407,7 @@ func TestReceivingActualCleanNoopResumedAndHarnessTraversalCaps(t *testing.T) {
 			for i := 0; i < 2; i++ {
 				start = len(l.reads)
 				l.phase = fmt.Sprintf("harness reopen check %d", i)
-				_, again, found, err := RecoverBoundSourceImport(context.Background(), s)
+				_, again, found, err := RecoverBoundSourceImport(recoveryCtx, s)
 				if err != nil || !found || again.Archive == nil {
 					t.Fatal("harness check", err)
 				}
@@ -411,7 +416,7 @@ func TestReceivingActualCleanNoopResumedAndHarnessTraversalCaps(t *testing.T) {
 			}
 			start = len(l.reads)
 			l.phase = "reopened independent readback"
-			if err := VerifyNativeCaptureSetReadback(context.Background(), s, recovered.Archive, recovered); err != nil {
+			if err := VerifyNativeCaptureSetReadback(context.Background(), s, a, recovered); err != nil {
 				t.Fatal(err)
 			}
 			l.assertTraversals(start, 1, true)
@@ -424,22 +429,39 @@ func TestReceivingActualInterruptedRecoveryAndReachedRefusals(t *testing.T) {
 	a := l.archive()
 	defer a.ReleaseNativeDecoded()
 	store, lease, reopen := openIdentityTarget(t, "sqlite")
+	ctx := a.WithNativeDeltaAccounting(context.Background())
+	if err := lease.Release(ctx); err != nil {
+		t.Fatal(err)
+	}
+	op, lease, releaseLease, err := HoldRestoreLease(ctx, store, "receiving-interruption")
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseLease = sync.OnceValue(releaseLease)
+	defer func() {
+		if err := releaseLease(); err != nil {
+			t.Error(err)
+		}
+	}()
 	s := wrapReceivingStore(t, store, l)
 	p := receivingPublicProfile(t, a, s, lease)
 	s.interrupt = true
-	if _, err := RestoreNativeCaptureSetImportWithLease(context.Background(), a, s, lease, p); err == nil || l.controls["interrupted after durable commit"] != 1 {
+	if _, err := RestoreNativeCaptureSetImportWithLease(op, a, s, lease, p); err == nil || l.controls["interrupted after durable commit"] != 1 {
 		t.Fatal("durable interruption control not reached", err)
 	}
 	meta, err := store.Meta(context.Background())
 	if err != nil || meta.Head.IsZero() {
 		t.Fatal("interruption was not after genuine publication", err)
 	}
+	if err := releaseLease(); err != nil {
+		t.Fatal(err)
+	}
 	store, lease = reopen()
 	_ = lease
 	s = wrapReceivingStore(t, store, l)
 	start := len(l.reads)
 	l.phase = "interrupted resumed recovery"
-	_, report, found, err := RecoverBoundSourceImport(context.Background(), s)
+	_, report, found, err := RecoverBoundSourceImport(ctx, s)
 	if err != nil || !found {
 		t.Fatal("resumed durable import", err)
 	}
@@ -450,10 +472,11 @@ func TestReceivingActualInterruptedRecoveryAndReachedRefusals(t *testing.T) {
 	}
 	for _, fault := range []string{"wrong-receipt", "wrong-origin", "changed-source-part", "current-limit", "current-ledger"} {
 		t.Run(fault, func(t *testing.T) {
+			before := receivingConservation(t, store, p)
 			s.fault = fault
 			start := len(l.reads)
 			usageBefore, _ := a.NativeDecodedUsage()
-			_, bad, _, err := RecoverBoundSourceImport(context.Background(), s)
+			_, bad, _, err := RecoverBoundSourceImport(ctx, s)
 			if bad.Archive != nil {
 				bad.Archive.ReleaseNativeDecoded()
 			}
@@ -464,17 +487,21 @@ func TestReceivingActualInterruptedRecoveryAndReachedRefusals(t *testing.T) {
 				if len(l.reads) != start {
 					t.Fatal("mutable evidence allocated/read source before receipt equality")
 				}
-				usageAfter, _ := a.NativeDecodedUsage()
-				if usageAfter.CurrentAccountedDecodedBytes != usageBefore.CurrentAccountedDecodedBytes || !reflect.DeepEqual(usageAfter.CurrentCategories, usageBefore.CurrentCategories) || !reflect.DeepEqual(usageAfter.CurrentCharges, usageBefore.CurrentCharges) {
-					t.Fatal("refused recovery leaked live bytes")
-				}
 			}
 			s.fault = ""
+			usageAfter, _ := a.NativeDecodedUsage()
+			if usageAfter.CurrentAccountedDecodedBytes != usageBefore.CurrentAccountedDecodedBytes || !reflect.DeepEqual(usageAfter.CurrentCategories, usageBefore.CurrentCategories) || !reflect.DeepEqual(usageAfter.CurrentCharges, usageBefore.CurrentCharges) {
+				t.Fatal("refused recovery leaked live bytes from actual shared budget")
+			}
+			if !reflect.DeepEqual(before, receivingConservation(t, store, p)) || s.writes != 0 {
+				t.Fatal("refused recovery changed target/receipt/checkpoint/allocator/blob")
+			}
+			t.Logf("reached_receiving_refusal control=%s writes=0 shared_budget=conserved target_receipt_checkpoint_allocator_blob=conserved", fault)
 		})
 	}
 	wrong, _ := p.Detached()
 	wrong.HistoryTime = nativeFixtureTime.Add(1).Format("2006-01-02T15:04:05.999999999Z07:00")
-	if _, err := RecoverImport(context.Background(), s, wrong, Verification{ArchiveSHA256: p.ArchiveDigest, DerivedSHA256: p.DerivedDigest}); !errors.Is(err, driver.ErrConflict) {
+	if _, err := RecoverImport(ctx, s, wrong, Verification{ArchiveSHA256: p.ArchiveDigest, DerivedSHA256: p.DerivedDigest}); !errors.Is(err, driver.ErrConflict) {
 		t.Fatal("wrong full profile accepted", err)
 	}
 	for _, fault := range []string{"missing-current", "extra-current", "foreign-current", "missing-history", "extra-history", "foreign-history"} {
@@ -486,4 +513,90 @@ func TestReceivingActualInterruptedRecoveryAndReachedRefusals(t *testing.T) {
 			s.fault = ""
 		})
 	}
+}
+
+type receivingConservationState struct {
+	Meta        driver.Meta
+	View        driver.View
+	Records     []driver.Record
+	Receipt     *driver.IdempotencyRecord
+	Checkpoints []driver.Checkpoint
+	Allocators  driver.AllocatorSnapshot
+	Blobs       map[string][]byte
+}
+
+func receivingConservation(t *testing.T, store driver.Store, profile driver.RestoreImportProfile) receivingConservationState {
+	t.Helper()
+	ctx := context.Background()
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := store.(driver.CheckpointInventoryStore).ReadCheckpointInventory(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	state := receivingConservationState{Meta: meta, View: r.Snapshot(), Blobs: map[string][]byte{}}
+	var cursor *driver.Cursor
+	for {
+		page, err := r.Query(ctx, driver.Query{Cursor: cursor, Limit: 1000})
+		if err != nil {
+			t.Fatal(err)
+		}
+		state.Records = append(state.Records, page.Items...)
+		if page.NextCursor == nil {
+			break
+		}
+		if len(page.Items) == 0 || reflect.DeepEqual(cursor, page.NextCursor) {
+			t.Fatal("incomplete conservation census")
+		}
+		cursor = page.NextCursor
+	}
+	keys, err := r.CheckpointKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range keys {
+		cp, err := r.SourcePlaneCheckpoint(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state.Checkpoints = append(state.Checkpoints, cp)
+	}
+	state.Allocators, err = r.(driver.AllocatorSnapshotReader).AllocatorSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal, err := driver.PrincipalKey(profile.Admission.Actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Receipt, err = r.IdempotencyByKey(ctx, principal, profile.AgentLabel(), profile.Method, profile.IdempotencyKey)
+	if err != nil || state.Receipt == nil {
+		t.Fatal("conservation original receipt missing", err)
+	}
+	var evidence archiveEvidence
+	for _, row := range state.Records {
+		if row.Ref.ID == "restore/archive" {
+			if err := json.Unmarshal(row.Body, &evidence); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	hashes := map[string]bool{evidence.ArchiveSHA256: true}
+	for _, file := range evidence.Members {
+		hashes[file.SHA256] = true
+	}
+	for _, file := range evidence.NativeCaptureFiles {
+		hashes[file.SHA256] = true
+	}
+	for hash := range hashes {
+		raw, err := r.Blob(ctx, driver.Hash(hash))
+		if err != nil || hashBytes(raw) != hash {
+			t.Fatal("conservation blob census differs", err)
+		}
+		state.Blobs[hash] = raw
+	}
+	return state
 }
