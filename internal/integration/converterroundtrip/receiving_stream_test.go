@@ -56,6 +56,7 @@ func TestNativeReceivingVerifierStreamingProductionAllDrivers(t *testing.T) {
    var marker struct{Version string `json:"streamVersion"`;History string `json:"historySha256"`;Mapping []struct{Parents []string `json:"parentIds"`} `json:"mapping"`}
    if json.Unmarshal(rows[0].Body,&marker)!=nil || marker.Version!=driver.OfflineHistoryStreamVersion || marker.History!=profile.HistoryDigest || len(marker.Mapping)!=32 {t.Fatal("production fell back from verified stream route")}
    if err=VerifyNativeCaptureSetReadback(ctx,store,archive,report);err!=nil {t.Fatal("independent real physical/current/history readback",err)}
+   nativeStreamRecoveryMarkerControls(t,ctx,archive,store,profile,rows[0].Body)
    if err=release();err!=nil {t.Fatal(err)}
    store,_=reopen()
    recoveryCtx:=archive.WithNativeDeltaAccounting(context.Background())
@@ -224,6 +225,41 @@ func TestNativeReceivingProductionMintStreamFailuresReleaseRealEngineStagingAllD
      if !reflect.DeepEqual(before,snapshot(t,store)) {t.Fatal("failed stream mutated target/receipt/history")}
     })
    }
+  })
+ }
+}
+
+func nativeStreamRecoveryMarkerControls(t *testing.T,ctx context.Context,a *dumpformat.Archive,store driver.Store,p driver.RestoreImportProfile,original []byte) {
+ t.Helper();when,_:=time.Parse(time.RFC3339Nano,p.HistoryTime)
+ stream,err:=historyverify.PrepareNativeArchive(ctx,a,p,when);if err!=nil {t.Fatal(err)};defer stream.Close()
+ if err:=stream.ValidateEvidence(ctx,p,original);err!=nil {t.Fatal("actual persisted engine evidence",err)}
+ before:=snapshot(t,store)
+ for _,attack:=range []string{"ordered-parents","mapping-commit","physical-census","intermediate-image","missing-source-frame"} {
+  t.Run("recovery-"+attack,func(t *testing.T){
+   var marker map[string]json.RawMessage;if err:=json.Unmarshal(original,&marker);err!=nil {t.Fatal(err)}
+   var mapping []map[string]json.RawMessage;if err:=json.Unmarshal(marker["mapping"],&mapping);err!=nil || len(mapping)<2 {t.Fatal(err)}
+   switch attack {
+   case "ordered-parents":mapping[1]["parentIds"]=json.RawMessage(`["another-ordered-parent"]`)
+   case "mapping-commit":mapping[1]["commitIds"]=json.RawMessage(`["another-intermediate-commit"]`)
+   }
+   marker["mapping"],err=json.Marshal(mapping);if err!=nil {t.Fatal(err)}
+   var frames []map[string]json.RawMessage;if err:=json.Unmarshal(marker["sourceFrames"],&frames);err!=nil || len(frames)==0 {t.Fatal(err)}
+   if attack=="missing-source-frame" {frames=frames[:len(frames)-1]}
+   if attack=="physical-census" || attack=="intermediate-image" {
+    changed:=false
+    for _,entry:=range frames {
+     var frame driver.OfflineHistoryStreamFrame;if err:=json.Unmarshal(entry["frame"],&frame);err!=nil {t.Fatal(err)}
+     if attack=="physical-census" && frame.Commit!=nil && frame.Commit.Sequence==2 {frame.Commit.Physical.Tables++;changed=true}
+     if attack=="intermediate-image" && frame.Table!=nil && frame.Table.After!=nil {frame.Table.After.SHA256=strings.Repeat("4",64);changed=true}
+     if changed {entry["frame"],err=json.Marshal(frame);if err!=nil {t.Fatal(err)};break}
+    }
+    if !changed {t.Fatal("actual source-frame attack did not alter a preimage")}
+   }
+   marker["sourceFrames"],err=json.Marshal(frames);if err!=nil {t.Fatal(err)}
+   raw,err:=json.Marshal(marker);if err!=nil {t.Fatal(err)}
+   err=stream.ValidateEvidence(ctx,p,raw);var refusal historyverify.ErrCheckpoint
+   if !errors.As(err,&refusal) {t.Fatal("altered original marker accepted",attack,err)}
+   if !reflect.DeepEqual(before,snapshot(t,store)) {t.Fatal("recovery refusal mutated actual target/receipt")}
   })
  }
 }
