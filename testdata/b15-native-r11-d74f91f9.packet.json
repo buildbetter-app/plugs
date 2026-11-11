@@ -1,0 +1,22 @@
+{
+  "format": "b15-native-r11-testdata/1",
+  "producer_head": "d74f91f9f0fdcd9c95c7f30bd42a2d257fc219b3",
+  "producer_source_packet": "/tmp/plug-swarm/reports/S1-native-comment-active-ba011c7f-20261111/native-r11-d74f91f9",
+  "archive": "b15-native-r11-d74f91f9.packet.tar.gz",
+  "archive_sha256": "12ebe1d5a091f0878cfd7825ac84d33c07a233b4571d090cb79b1a3b47d04aa9",
+  "projects": {
+    "commentcody": {
+      "request_sha256": "e43074c719e8242c577e3ee914841357e530b85cab68868b2a702968f87a8202",
+      "capture_sha256": "982e40d7e2fc175b8892cc9b00d00b633d9a6d7df4ce807a239b4da9e4373ed4",
+      "ledger_sha256": "6c3354509db532cf7dd62fa7e34d667b5acb8ead30dceb7d92829acb9f993b1a",
+      "states_sha256": "a932df103024d943f1caa241092589cf93a2fc7fb391d767a8bfb81b03d0b781"
+    },
+    "commentsignals": {
+      "request_sha256": "2152a90f804b895295221922e844fdb20ae486a9fc9d439588bd93f2c9adbb9e",
+      "capture_sha256": "c29754b3857d6d842e70ae67004930630e21fad70214c903f9cad1ea5fa8e058",
+      "ledger_sha256": "499d7bd57f22efc118825ec6f901be689e2f53ae44812e2a9caa9d3dec67c9a3",
+      "states_sha256": "e6b878c9e417cb4b1c7a204c9eddec13e270ce4bb9abce0bc04ea46c7a5312c4"
+    }
+  },
+  "content": "Exact producer request, authenticated native capture-set directory and independent table/state oracle; no synthetic rows or receiver-derived expectations."
+}
