@@ -16,12 +16,16 @@ import (
 	"github.com/dolthub/dolt/go/libraries/doltcore/sqle"
 	"github.com/dolthub/dolt/go/libraries/doltcore/sqle/dsess"
 	"github.com/dolthub/dolt/go/libraries/doltcore/table/editor"
+	"github.com/dolthub/dolt/go/store/datas"
 	gms "github.com/dolthub/go-mysql-server/sql"
 )
 
 // PhysicalColumn and PhysicalTable contain detached driver values only. Rows
 // preserve order, multiplicity, NULLs, and independently owned binary cells.
-type PhysicalColumn struct{ Name, DatabaseTypeName string }
+type PhysicalColumn struct {
+	Name, DatabaseTypeName string
+	PrimaryKeyOrdinal      *uint64
+}
 type PhysicalTable struct {
 	Name    string
 	Columns []PhysicalColumn
@@ -35,8 +39,8 @@ type PhysicalImage struct {
 
 // PhysicalReadError distinguishes resolution, permission, schema, decoding and
 // iteration failures from a successful census in which a table is absent.
-// Cause contains only a standard or translated SQL-driver error, never an
-// engine object. No SQL failure is converted into physical absence.
+// Cause contains detached original type/code evidence and the translated
+// SQL-driver error, never an engine object. No SQL failure alone proves absence.
 type PhysicalReadError struct {
 	Kind, CommitID, Table string
 	Cause                 error
@@ -47,14 +51,29 @@ func (e *PhysicalReadError) Error() string {
 }
 func (e *PhysicalReadError) Unwrap() error { return e.Cause }
 
+// PhysicalStoreInconsistent refuses a read that failed after its stored chunk
+// closure was authenticated as present. It can never establish a history
+// boundary, even if a later engine error happens to wrap a missing sentinel.
+// PanicType retains only the Go type; panic values may contain user data.
+type PhysicalStoreInconsistent struct {
+	Cause     error
+	PanicType string
+}
+
+func (*PhysicalStoreInconsistent) Error() string   { return "probe-complete physical store read failed" }
+func (e *PhysicalStoreInconsistent) Unwrap() error { return e.Cause }
+
 var physicalCommitID = regexp.MustCompile(`^[0-9a-v]{32}$`)
 
 func physicalReadError(kind, id, name string, err error) error {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return &PhysicalReadError{kind, id, name, err}
 	}
-	cause := translateError(err)
-	if reason := missingPhysicalHistory(kind, err); reason != "" {
+	var cause error = &physicalErrorEvidence{cause: translateError(err), types: physicalErrorTypes(err), codes: physicalHistorySQLCodes(err), innermost: physicalInnermostErrorType(err)}
+	var inconsistent *PhysicalStoreInconsistent
+	if errors.As(err, &inconsistent) {
+		cause = &PhysicalStoreInconsistent{Cause: cause, PanicType: inconsistent.PanicType}
+	} else if reason := missingPhysicalHistory(kind, err); reason != "" {
 		cause = &PhysicalHistoryUnavailable{Reason: reason, Cause: cause, SQLCodes: physicalHistorySQLCodes(err)}
 	}
 	return &PhysicalReadError{kind, id, name, cause}
@@ -91,7 +110,7 @@ func ReadPhysicalCommit(ctx context.Context, conn *sql.Conn, id string) (image P
 			}
 			if rollbackErr != nil {
 				image = PhysicalImage{}
-				scopeErr = physicalReadError("rollback", id, "", rollbackErr)
+				scopeErr = errors.Join(scopeErr, physicalReadError("rollback", id, "", rollbackErr))
 			}
 		}()
 		if err := rows.Close(query); err != nil {
@@ -113,7 +132,7 @@ func ReadPhysicalCommit(ctx context.Context, conn *sql.Conn, id string) (image P
 	return
 }
 
-func (d *DoltConn) readPhysicalCommit(ctx context.Context, id string) (PhysicalImage, error) {
+func (d *DoltConn) readPhysicalCommit(ctx context.Context, id string) (image PhysicalImage, resultErr error) {
 	q, err := d.beginQuery(ctx, "private immutable physical commit image")
 	if err != nil {
 		return PhysicalImage{}, physicalReadError("query", id, "", err)
@@ -157,10 +176,50 @@ func (d *DoltConn) readPhysicalCommit(ctx context.Context, id string) (PhysicalI
 	if actual.String() != id {
 		return PhysicalImage{}, &PhysicalReadError{Kind: "identity", CommitID: id, Cause: errors.New("resolved hash differs")}
 	}
-	root, err := commit.GetRootValue(q)
+	root, err := readPhysicalRoot(q, ddb, commit)
 	if err != nil {
 		return PhysicalImage{}, physicalReadError("root", id, "", err)
 	}
+	address, err := datas.GetCommitRootHash(commit.Value())
+	if err != nil {
+		return PhysicalImage{}, physicalReadError("root", id, "", err)
+	}
+	store := datas.ChunkStoreFromDatabase(doltdb.ExposeDatabaseFromDoltDB(ddb))
+	if err := probePhysicalRootChunks(q, store, address); err != nil {
+		if missingPhysicalHistory("rows", err) != "" {
+			if validationErr := checkPhysicalIncompleteRoot(q, ddb, root); validationErr != nil {
+				if reason := missingPhysicalHistory("rows", validationErr); reason == "" {
+					err = errors.Join(err, validationErr)
+				} else if reason == "unreadable_schema" {
+					err = validationErr
+				}
+			}
+		}
+		return PhysicalImage{}, physicalReadError("rows", id, "", err)
+	}
+	// Only this reader boundary recovers engine panics, and only after the
+	// immutable root's entire reference closure passed the backing probe.
+	defer func() {
+		if value := recover(); value != nil {
+			cause, _ := value.(error)
+			resultErr = physicalReadError("inconsistent-store", id, "", &PhysicalStoreInconsistent{Cause: cause, PanicType: fmt.Sprintf("%T", value)})
+		} else if resultErr != nil {
+			var inconsistent *PhysicalStoreInconsistent
+			if !errors.As(resultErr, &inconsistent) {
+				// Keep the original evidence snapshot intact. Re-translating
+				// its fallback MySQL error would invent an observed SQL code.
+				var failure *PhysicalReadError
+				var table string
+				if errors.As(resultErr, &failure) {
+					table = failure.Table
+				}
+				resultErr = &PhysicalReadError{Kind: "inconsistent-store", CommitID: id, Table: table, Cause: &PhysicalStoreInconsistent{Cause: resultErr}}
+			}
+		}
+		if resultErr != nil {
+			image = PhysicalImage{}
+		}
+	}()
 	schemas, err := root.GetDatabaseSchemas(q)
 	if err != nil {
 		return PhysicalImage{}, physicalReadError("census", id, "", err)
@@ -175,21 +234,27 @@ func (d *DoltConn) readPhysicalCommit(ctx context.Context, id string) (PhysicalI
 		return PhysicalImage{}, physicalReadError("census", id, "", err)
 	}
 	sort.Strings(names)
-	image := PhysicalImage{CommitID: id}
+	image = PhysicalImage{CommitID: id}
 	for _, name := range names {
 		if err := ctx.Err(); err != nil {
 			return PhysicalImage{}, physicalReadError("canceled", id, name, err)
 		}
-		stored, present, err := root.GetTable(q, doltdb.TableName{Name: name})
+		stored, present, err := readPhysicalStoredTable(q, ddb, root, doltdb.TableName{Name: name})
 		if err != nil {
 			return PhysicalImage{}, physicalReadError("table", id, name, err)
 		}
 		if !present {
 			return PhysicalImage{}, &PhysicalReadError{Kind: "census-inconsistent", CommitID: id, Table: name, Cause: errors.New("enumerated physical table missing from immutable root")}
 		}
+		if err := checkPhysicalSchemaChunk(q, ddb, stored); err != nil {
+			return PhysicalImage{}, physicalReadError("schema", id, name, err)
+		}
 		schema, err := stored.GetSchema(q)
 		if err != nil {
 			return PhysicalImage{}, physicalReadError("schema", id, name, err)
+		}
+		if err := checkPhysicalTableRowChunks(q, ddb, stored); err != nil {
+			return PhysicalImage{}, physicalReadError("rows", id, name, err)
 		}
 		table, err := sqle.NewDoltTable(q, name, schema, stored, physicalDB, editor.Options{})
 		if err != nil {
@@ -199,9 +264,12 @@ func (d *DoltConn) readPhysicalCommit(ctx context.Context, id string) (PhysicalI
 		if err != nil {
 			return PhysicalImage{}, physicalReadError("root-lock", id, name, err)
 		}
-		converted, err := readPhysicalTable(q, locked, name)
+		converted, err := readPhysicalProbedTable(q, locked, name)
 		if err != nil {
 			return PhysicalImage{}, physicalReadError("rows", id, name, err)
+		}
+		if err := physicalPrimaryKeyOrdinals(&converted, schema.GetPkOrdinals()); err != nil {
+			return PhysicalImage{}, physicalReadError("schema", id, name, err)
 		}
 		image.Tables = append(image.Tables, converted)
 	}
@@ -209,19 +277,43 @@ func (d *DoltConn) readPhysicalCommit(ctx context.Context, id string) (PhysicalI
 }
 
 func readPhysicalTable(ctx *gms.Context, table gms.Table, name string) (out PhysicalTable, resultErr error) {
+	return readPhysicalTableRows(ctx, table, name, false)
+}
+
+func readPhysicalProbedTable(ctx *gms.Context, table gms.Table, name string) (PhysicalTable, error) {
+	return readPhysicalTableRows(ctx, table, name, true)
+}
+
+func readPhysicalTableRows(ctx *gms.Context, table gms.Table, name string, probed bool) (out PhysicalTable, resultErr error) {
+	if probed {
+		defer func() {
+			if value := recover(); value != nil {
+				cause, _ := value.(error)
+				// Iterator cleanup defers have already run. Keep their errors
+				// alongside the original panic type and stop the read.
+				resultErr = &PhysicalStoreInconsistent{Cause: errors.Join(cause, resultErr), PanicType: fmt.Sprintf("%T", value)}
+			} else if resultErr != nil {
+				var inconsistent *PhysicalStoreInconsistent
+				if !errors.As(resultErr, &inconsistent) {
+					resultErr = &PhysicalStoreInconsistent{Cause: resultErr}
+				}
+			}
+			if resultErr != nil {
+				out = PhysicalTable{}
+			}
+		}()
+	}
 	out.Name = name
 	schema := table.Schema(ctx)
 	for _, column := range schema {
-		out.Columns = append(out.Columns, PhysicalColumn{column.Name, column.Type.String()})
+		out.Columns = append(out.Columns, PhysicalColumn{Name: column.Name, DatabaseTypeName: column.Type.String()})
 	}
 	partitions, err := table.Partitions(ctx)
 	if err != nil {
 		return out, err
 	}
 	defer func() {
-		if err := partitions.Close(ctx); resultErr == nil {
-			resultErr = err
-		}
+		resultErr = physicalReadCleanupError(resultErr, partitions.Close(ctx))
 	}()
 	for {
 		if err := ctx.Err(); err != nil {
@@ -238,32 +330,114 @@ func readPhysicalTable(ctx *gms.Context, table gms.Table, name string) (out Phys
 		if err != nil {
 			return out, err
 		}
-		// Reuse the driver's existing value/enum/set/binary conversion, with the
-		// physical schema rather than any current/history helper schema.
-		converted := doltRows{sch: schema, rowIter: rows, gmsCtx: ctx}
-		for {
-			values := make([]driver.Value, len(schema))
-			err := converted.Next(values)
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				_ = converted.Close()
-				return out, err
-			}
-			for i, value := range values {
-				detached, err := physicalCell(value)
-				if err != nil {
-					_ = converted.Close()
-					return out, err
-				}
-				values[i] = detached
-			}
-			out.Rows = append(out.Rows, values)
-		}
-		if err := converted.Close(); err != nil {
+		values, err := readPhysicalRowsWithProbe(ctx, schema, rows, probed)
+		if err != nil {
 			return out, err
 		}
+		out.Rows = append(out.Rows, values...)
+	}
+}
+
+// The immutable stored schema supplies key order, not display-column order or
+// a family-name convention. This only detaches metadata; no schema is changed.
+func physicalPrimaryKeyOrdinals(table *PhysicalTable, ordinals []int) error {
+	seen := map[int]bool{}
+	for order, column := range ordinals {
+		if column < 0 || column >= len(table.Columns) || seen[column] {
+			return errors.New("invalid stored primary key ordinals")
+		}
+		seen[column] = true
+		value := uint64(order)
+		table.Columns[column].PrimaryKeyOrdinal = &value
+	}
+	return nil
+}
+
+// Observe iterator failures before doltRows translates them for ordinary SQL
+// compatibility. This adapter lives only in the immutable physical read path;
+// the existing driver value/enum/set/geometry conversion stays unchanged.
+type physicalRowIterator struct {
+	gms.RowIter
+	nextErr, closeErr error
+}
+
+func (rows *physicalRowIterator) Next(ctx *gms.Context) (gms.Row, error) {
+	row, err := rows.RowIter.Next(ctx)
+	if err != nil && err != io.EOF {
+		rows.nextErr = err
+	}
+	return row, err
+}
+
+func (rows *physicalRowIterator) Close(ctx *gms.Context) error {
+	rows.closeErr = rows.RowIter.Close(ctx)
+	return rows.closeErr
+}
+
+func physicalReadCleanupError(readErr, closeErr error) error {
+	if closeErr == nil {
+		return readErr
+	}
+	closeErr = &physicalCleanupFailure{cause: closeErr}
+	if readErr == nil {
+		return closeErr
+	}
+	// A genuine read absence accompanied by failed cleanup must still refuse.
+	return errors.Join(readErr, closeErr)
+}
+
+type physicalCleanupFailure struct{ cause error }
+
+func (*physicalCleanupFailure) Error() string     { return "physical read cleanup failed" }
+func (err *physicalCleanupFailure) Unwrap() error { return err.cause }
+
+func readPhysicalRows(ctx *gms.Context, schema gms.Schema, iter gms.RowIter) (result [][]driver.Value, resultErr error) {
+	return readPhysicalRowsWithProbe(ctx, schema, iter, false)
+}
+
+func readPhysicalRowsWithProbe(ctx *gms.Context, schema gms.Schema, iter gms.RowIter, probed bool) (result [][]driver.Value, resultErr error) {
+	if probed {
+		defer func() {
+			if value := recover(); value != nil {
+				cause, _ := value.(error)
+				resultErr = &PhysicalStoreInconsistent{Cause: errors.Join(cause, resultErr), PanicType: fmt.Sprintf("%T", value)}
+				result = nil
+			}
+		}()
+	}
+	observed := &physicalRowIterator{RowIter: iter}
+	converted := doltRows{sch: schema, rowIter: observed, gmsCtx: ctx}
+	defer func() {
+		closeErr := converted.Close()
+		if observed.closeErr != nil {
+			closeErr = observed.closeErr
+		}
+		resultErr = physicalReadCleanupError(resultErr, closeErr)
+		if resultErr != nil {
+			result = nil
+		}
+	}()
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		values := make([]driver.Value, len(schema))
+		if err := converted.Next(values); err == io.EOF {
+			return result, nil
+		} else if err != nil {
+			if observed.nextErr != nil {
+				return nil, observed.nextErr
+			}
+			return nil, err
+		}
+		for i, value := range values {
+			detached, err := physicalCell(value)
+			if err != nil {
+				return nil, err
+			}
+			values[i] = detached
+		}
+		result = append(result, values)
 	}
 }
 

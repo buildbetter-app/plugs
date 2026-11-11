@@ -157,6 +157,9 @@ func (d *DoltConn) readPhysicalWorkingRoot(ctx context.Context, expectedHead str
 		if err != nil {
 			return fail("rows", name, err)
 		}
+		if err := physicalPrimaryKeyOrdinals(&converted, schema.GetPkOrdinals()); err != nil {
+			return fail("schema", name, err)
+		}
 		image.Tables = append(image.Tables, converted)
 	}
 	if err := ctx.Err(); err != nil {

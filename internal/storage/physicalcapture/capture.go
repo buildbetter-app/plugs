@@ -18,7 +18,10 @@ type Image struct {
 	Tables        []Table
 }
 
-type Column struct{ Name, DatabaseTypeName string }
+type Column struct {
+	Name, DatabaseTypeName string
+	PrimaryKeyOrdinal      *uint64
+}
 type Table struct {
 	Name    string
 	Columns []Column
@@ -52,7 +55,7 @@ func ReadCommit(ctx context.Context, conn *sql.Conn, id string) (Image, error) {
 	for _, source := range physical.Tables {
 		table := Table{Name: source.Name, Rows: source.Rows, Columns: make([]Column, 0, len(source.Columns))}
 		for _, column := range source.Columns {
-			table.Columns = append(table.Columns, Column{Name: column.Name, DatabaseTypeName: column.DatabaseTypeName})
+			table.Columns = append(table.Columns, Column{Name: column.Name, DatabaseTypeName: column.DatabaseTypeName, PrimaryKeyOrdinal: column.PrimaryKeyOrdinal})
 		}
 		image.Tables = append(image.Tables, table)
 	}

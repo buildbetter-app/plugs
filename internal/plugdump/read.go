@@ -452,6 +452,39 @@ func secretKey(key string) bool {
 	return config.IsSecretKey(key) || strings.Contains(lower, "dsn") || strings.Contains(lower, "access_key")
 }
 
+// validateSQLSecretReferences preserves the declared absence of a peer's
+// optional credential. It does not relax config, nested values or other columns.
+func validateSQLSecretReferences(family string, values map[string]any) error {
+	if family != "federation_peers" {
+		return validateSecretReferences(values)
+	}
+	for key, value := range values {
+		if key == "password_encrypted" && emptyPeerCredential(value) {
+			continue
+		}
+		if err := validateSecretReferences(map[string]any{key: value}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func emptyPeerCredential(value any) bool {
+	switch value := value.(type) {
+	case nil:
+		return true
+	case string:
+		return value == ""
+	case map[string]string:
+		data, ok := value["$bytes"]
+		return ok && len(value) == 1 && data == ""
+	case map[string]any:
+		data, ok := value["$bytes"].(string)
+		return ok && len(value) == 1 && data == ""
+	}
+	return false
+}
+
 func validateSecretReferences(value any) error {
 	switch value := value.(type) {
 	case map[string]any:

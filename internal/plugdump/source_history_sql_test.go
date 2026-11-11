@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,6 +19,47 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/steveyegge/beads/internal/testutil"
 )
+
+func TestSQLHistoryUnavailableRetainsOriginalCause(t *testing.T) {
+	id := strings.Repeat("a", 32)
+	queries := []string{"SELECT DOLT_HASHOF('HEAD')", "SELECT table_name, staged, status FROM dolt_status", "SELECT * FROM dolt_log LIMIT 10001", "SELECT commit_hash, parent_hash FROM dolt_commit_ancestors LIMIT 20001"}
+	for failed := range queries {
+		t.Run(fmt.Sprint(failed), func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			original := errors.New("original source query failure")
+			for step := 0; step <= failed; step++ {
+				expectation := mock.ExpectQuery(regexp.QuoteMeta(queries[step]))
+				if step == failed {
+					expectation.WillReturnError(original)
+					break
+				}
+				switch step {
+				case 0:
+					expectation.WillReturnRows(sqlmock.NewRows([]string{"head"}).AddRow(id))
+				case 1:
+					expectation.WillReturnRows(sqlmock.NewRows([]string{"table_name", "staged", "status"}))
+				case 2:
+					expectation.WillReturnRows(sqlmock.NewRows([]string{"commit_hash"}).AddRow(id))
+				}
+			}
+			_, err = (SQLSource{DB: db}).ReadSourceCommits(context.Background())
+			var unavailable ErrSourceHistoryUnavailable
+			if !errors.As(err, &unavailable) || !errors.Is(err, original) {
+				t.Fatal("SQL history refusal erased original driver cause")
+			}
+			if unavailable.SchemaVersion != nil || unavailable.OrdinalFromHead != 0 {
+				t.Fatal("unlocalized SQL failure invented commit coordinates")
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
 
 func TestSQLSourceHistoryReadsPinnedDoltCommitImages(t *testing.T) {
 	if os.Getenv("BEADS_TEST_SKIP") == "dolt" {

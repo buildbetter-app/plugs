@@ -16,15 +16,22 @@ func FailureLocation(err error) (stage, table string) {
 	}
 	switch physical.Kind {
 	case "database", "permission", "transaction", "rollback", "occupied-transaction", "unsupported-driver":
-		stage = "open"
+		stage = "archive-read"
 	case "schema", "unsupported-schema":
-		stage = "schema-probe"
+		stage = "schema"
 	case "table", "census", "census-inconsistent":
-		stage = "census"
-	case "rows":
-		stage = "cell-read"
+		stage = "table-scan"
+	case "rows", "inconsistent-store":
+		stage = "row-decode"
 	default:
 		stage = "history-walk"
 	}
 	return stage, physical.Table
+}
+
+// FailureAtCommit compares a locally observed immutable identity without
+// exposing that identity through the count-only diagnostic output.
+func FailureAtCommit(err error, id string) bool {
+	var physical *embedded.PhysicalReadError
+	return errors.As(err, &physical) && physical.CommitID == id
 }

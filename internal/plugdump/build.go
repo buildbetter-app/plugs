@@ -17,6 +17,22 @@ var hashPattern = regexp.MustCompile(`^[a-zA-Z0-9]+$`)
 // Build gathers and validates the whole read set before serializing any output.
 // No partial success is possible after a source read or mapping failure.
 func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error) {
+	if inventory.NativeHistoryContract != "" {
+		return nil, fmt.Errorf("native delta requires explicit capture-set builder")
+	}
+	return build(ctx, src, inventory, nil)
+}
+
+type nativeDeltaHead struct {
+	Log           SourceCommitLog
+	Current, Head map[string]NativeTable
+	Ignore        NativeTable
+}
+
+func build(ctx context.Context, src Source, inventory Inventory, delta *nativeDeltaHead) ([]byte, error) {
+	if (delta != nil) != (inventory.NativeHistoryContract == NativeDeltaFormat) || inventory.NativeHistoryContract != "" && inventory.NativeHistoryContract != NativeDeltaFormat {
+		return nil, fmt.Errorf("unsupported native delta attachment")
+	}
 	if inventory.SourceFamilyContract != "" && (inventory.SourceFamilyContract != SourceFamilyContract || inventory.SourcePlaneAddressContract != SourcePlaneAddressContract) {
 		return nil, fmt.Errorf("unsupported source family contract")
 	}
@@ -67,7 +83,7 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 		return nil, fmt.Errorf("history declaration disagrees with available version/snapshot rows")
 	}
 	for name, table := range tables {
-		action, _ := actionFor(name)
+		action, _ := familyAction(name, inventory.SourceFamilyContract)
 		if len(table.Rows) != 0 && (action == "refuse-if-nonempty" || name == "leases" && inventory.SourceFamilyContract == "") {
 			return nil, fmt.Errorf("unsupported nonempty family %s (live claims must be resolved)", name)
 		}
@@ -149,6 +165,7 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 		Disposition{Family: "issues.row_lock", Rows: len(tables["issues"].Rows), Action: "manifest/rebuild", Reason: "transient locks excluded"},
 		Disposition{Family: "issues.is_blocked", Rows: len(tables["issues"].Rows), Action: "manifest/rebuild", Reason: "derived blocking excluded; Plug must recompute"})
 	manifest := Manifest{
+		NativeHistoryContract:      inventory.NativeHistoryContract,
 		SourceFamilyContract:       inventory.SourceFamilyContract,
 		StatusCategoryContract:     inventory.StatusCategoryContract,
 		SourcePlaneAddressContract: inventory.SourcePlaneAddressContract,
@@ -160,9 +177,39 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 		Verification: verificationLimitsForStatus(inventory.StatusCategoryContract),
 	}
 	files := map[string][]byte{"config/sources.json": config}
-	history, err := captureSourceHistory(ctx, src, inventory, mapper.records, tables)
-	if err != nil {
-		return nil, err
+	var history *SourceHistory
+	if delta != nil {
+		observed, err := nativeTables(tables, inventory.ConfigPolicy)
+		if err != nil {
+			return nil, err
+		}
+		for name, table := range observed {
+			if !equalJSON(table, delta.Current[name]) {
+				return nil, ErrSourceHistoryUnavailable{Reason: "source-census-changed"}
+			}
+		}
+		for name := range delta.Current {
+			if _, known := tableColumns[name]; known {
+				if _, present := observed[name]; !present {
+					return nil, ErrSourceHistoryUnavailable{Reason: "source-census-changed"}
+				}
+			} else if name != "dolt_ignore" && name != "dolt_nonlocal_tables" && name != "dolt_schemas" {
+				return nil, fmt.Errorf("unmapped physical current family %q", name)
+			}
+		}
+		// Dolt's stored schema fragments are absent from the portable SQL
+		// BASE TABLE census. Their complete physical state stays in the delta
+		// stream, alongside the other named Dolt backing tables above.
+		commits, err := historyCommitOrder(delta.Log)
+		if err != nil {
+			return nil, err
+		}
+		history = &SourceHistory{Format: SourceHistoryFormat, Commits: commits, Events: canonicalSourceEvents(tables["events"].Rows), Range: SourceHistoryRange{Status: "unverified", Reason: "native-delta", Baseline: []Record{}, BaselineEvents: []Row{}, Gaps: []HistoryGap{}, Frames: []SourceHistoryFrame{}}}
+	} else {
+		history, err = captureSourceHistory(ctx, src, inventory, mapper.records, tables)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if history != nil {
 		manifest.History = "available-unverified"
@@ -175,6 +222,13 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 		}
 	}
 	if inventory.SourceFamilyContract == SourceFamilyContract {
+		if delta != nil {
+			native := NativeHistory{Head: delta.Log.Head, Ignore: delta.Ignore, Images: []NativeHistoryImage{{CommitID: delta.Log.Head, Tables: delta.Head}}}
+			if err := classifyNativeSources(manifest.Sources, native); err != nil {
+				return nil, err
+			}
+			return encode(manifest, mapper.records, files)
+		}
 		native, err := captureNativeHistory(ctx, src, inventory, tables)
 		if err != nil {
 			return nil, err
@@ -231,7 +285,7 @@ func readTables(ctx context.Context, src Source) (map[string]Table, error) {
 				// "key" is a SQL column name, not the configuration key.
 				values = map[string]any{text(row, "key"): row["value"]}
 			}
-			if err := validateSecretReferences(values); err != nil {
+			if err := validateSQLSecretReferences(name, values); err != nil {
 				// Config/metadata credentials are replaced using explicit policy.
 				if name != "config" && name != "metadata" {
 					return nil, fmt.Errorf("family %s: %w", name, err)

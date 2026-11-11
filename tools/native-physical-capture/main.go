@@ -30,7 +30,7 @@ func main() {
 }
 
 func run() (resultErr error) {
-	stage := stageOpen
+	stage := stageReport
 	observation := schemaObservation{ExpectedVersion: plugdump.CaptureSchemaVersion(), RowCountClass: "unmeasured"}
 	defer func() {
 		if resultErr == nil {
@@ -50,10 +50,12 @@ func run() (resultErr error) {
 	disposable := flags.Bool("disposable", false, "declare this source quiesced and disposable")
 	timeout := flags.Duration("timeout", 20*time.Minute, "capture deadline")
 	schemaOnly := flags.Bool("schema-only", false, "measure schema cursor without inventory, history or output files")
+	historyProbeOnly := flags.Bool("history-probe-only", false, "count reachable commits, readable roots and indexed storage without user rows or output files")
+	nativeDelta := flags.Bool("native-delta", false, "capture authenticated bounded native delta parts instead of the legacy history archive")
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || !*disposable || !regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]{0,127}$`).MatchString(*database) {
+	if flags.NArg() != 0 || !*disposable || (*schemaOnly && *historyProbeOnly) || !regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]{0,127}$`).MatchString(*database) {
 		return fmt.Errorf("explicit disposable source and database required")
 	}
 	for _, path := range []string{*dataDir, *beadsDir, *output} {
@@ -76,13 +78,14 @@ func run() (resultErr error) {
 	if err != nil || cwd != filepath.Dir(*beadsDir) {
 		return fmt.Errorf("capture must run in copied source workspace")
 	}
-	for _, name := range []string{"inventory.json", "inventory.json.sources", "capture.tar", "physical-evidence.json"} {
+	for _, name := range []string{"inventory.json", "inventory.json.sources", "capture.tar", "physical-evidence.json", "head.tar", "capture-set.json", "parts", "capture-set"} {
 		if _, err := os.Lstat(filepath.Join(*output, name)); !os.IsNotExist(err) {
 			return fmt.Errorf("capture refuses existing output")
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
+	stage = stageOpen
 	db, closeDriver, err := physicalcapture.Open(*dataDir, *database)
 	if err != nil {
 		return err
@@ -96,20 +99,43 @@ func run() (resultErr error) {
 		return err
 	}
 	defer conn.Close()
+	if *historyProbeOnly {
+		stage = stageProbe
+		report, err := probeHistory(ctx, conn)
+		if err != nil {
+			return err
+		}
+		// A failed close/rollback is a probe failure, never a successful absence
+		// report followed by a failing exit. Publish only after all resources close.
+		if err := conn.Close(); err != nil {
+			return err
+		}
+		if err := db.Close(); err != nil {
+			return err
+		}
+		if err := closeDriver(); err != nil {
+			return err
+		}
+		stage = stageReport
+		return json.NewEncoder(os.Stdout).Encode(report)
+	}
 	stage = stageSchema
 	observation, err = probeSchema(ctx, conn)
 	if err != nil {
-		return err
+		return &captureFailure{stage: stageSchema, table: "schema_migrations", schema: observation, cause: err}
 	}
 	// Record the actual restored version before entering the own-version
 	// inventory/history reader. This never runs a migration or alters a cursor.
-	report := safeCaptureReport{Format: "beads-capture-diagnostic/1", Stage: stageSchema, Schema: observation}
+	report := safeCaptureReport{Format: "beads-capture-diagnostic/1", Stage: stageSchema, Schema: observation, GoErrorTypes: []string{}, SQLCodes: []uint16{}}
 	if *schemaOnly {
+		stage = stageReport
 		return json.NewEncoder(os.Stdout).Encode(report)
 	}
+	stage = stageReport
 	if err := json.NewEncoder(os.Stderr).Encode(report); err != nil {
 		return err
 	}
+	stage = stageSchema
 	if !plugdump.CaptureSchemaSupported(*observation.FoundVersion) {
 		return &unsupportedCaptureSchema{}
 	}
@@ -147,6 +173,7 @@ func run() (resultErr error) {
 	if err != nil {
 		return fmt.Errorf("native inventory: %w", err)
 	}
+	stage = stageReport
 	if err := os.Mkdir(capture.SidecarDir, 0700); err != nil {
 		return err
 	}
@@ -170,6 +197,9 @@ func run() (resultErr error) {
 		}
 	}
 	stage = stageHistory
+	if *nativeDelta {
+		return runNativeDelta(ctx, db, conn, tx, closeDriver, source, inventory, working, originalLog, *output, &ownedOutputs)
+	}
 	archive, err := plugdump.Build(ctx, source, inventory)
 	if err != nil {
 		return fmt.Errorf("native build: %w", err)
@@ -181,7 +211,7 @@ func run() (resultErr error) {
 	if !reflect.DeepEqual(originalLog, finalLog) {
 		return fmt.Errorf("original commit graph/parents/metadata changed")
 	}
-	stage = stageCensus
+	stage = stageOpen
 	manifest, err := plugdump.Validate(bytes.NewReader(archive))
 	if err != nil {
 		return fmt.Errorf("archive validation: %w", err)
@@ -195,6 +225,7 @@ func run() (resultErr error) {
 	if err != nil {
 		return err
 	}
+	stage = stageReport
 	inventoryBytes, err := plugdump.MarshalNativeInventory(inventory)
 	if err != nil {
 		return err
@@ -213,6 +244,7 @@ func run() (resultErr error) {
 	if err := closeDriver(); err != nil {
 		return err
 	}
+	stage = stageReport
 	if err := writeExclusive(filepath.Join(*output, "inventory.json"), inventoryBytes); err != nil {
 		return err
 	}
@@ -234,7 +266,7 @@ func run() (resultErr error) {
 		summary["verified_commit_count"] = coverage.VerifiedCommitCount
 		boundaries := []map[string]any{}
 		for _, b := range coverage.Boundaries {
-			report := safeReport(&captureFailure{stage: stageHistory, schema: observation, cause: plugdump.ErrSourceHistoryUnavailable{Reason: "native-history-boundary", BoundaryReason: b.Reason, SchemaVersion: b.CommitSchemaVersion, OrdinalFromHead: b.CommitOrdinalFromHead, VerifiedCommitCount: &coverage.VerifiedCommitCount, SQLCodes: b.SQLDoltCodes}})
+			report := safeReport(&captureFailure{stage: stageHistory, schema: observation, cause: plugdump.ErrSourceHistoryUnavailable{Reason: "native-history-boundary", BoundaryReason: b.Reason, SchemaVersion: b.CommitSchemaVersion, OrdinalFromHead: b.CommitOrdinalFromHead, VerifiedCommitCount: &coverage.VerifiedCommitCount, SQLCodes: b.SQLDoltCodes, Cause: originalLog.BoundaryDiagnostics[b.CommitID]}})
 			if err := json.NewEncoder(os.Stderr).Encode(report); err != nil {
 				return err
 			}

@@ -8,9 +8,10 @@ import (
 	"sort"
 
 	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb"
-	"github.com/dolthub/dolt/go/libraries/doltcore/sqle"
+	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb/durable"
 	"github.com/dolthub/dolt/go/libraries/doltcore/sqle/dsess"
-	"github.com/dolthub/dolt/go/libraries/doltcore/table/editor"
+	"github.com/dolthub/dolt/go/libraries/doltcore/sqle/index"
+	gms "github.com/dolthub/go-mysql-server/sql"
 )
 
 // PhysicalCommitSchema reads ONLY the two fixed migration cursor tables from
@@ -91,7 +92,7 @@ func (d *DoltConn) readPhysicalCommitSchema(ctx context.Context, id string) (Phy
 	if err != nil {
 		return PhysicalCommitSchema{}, physicalReadError("database", id, "", err)
 	}
-	physicalDB, ok := db.(dsess.SqlDatabase)
+	_, ok := db.(dsess.SqlDatabase)
 	if !ok {
 		return PhysicalCommitSchema{}, &PhysicalReadError{Kind: "database", CommitID: id, Cause: errors.New("Dolt database required")}
 	}
@@ -119,7 +120,7 @@ func (d *DoltConn) readPhysicalCommitSchema(ctx context.Context, id string) (Phy
 	if actual.String() != id {
 		return PhysicalCommitSchema{}, &PhysicalReadError{Kind: "identity", CommitID: id, Cause: errors.New("resolved hash differs")}
 	}
-	root, err := commit.GetRootValue(q)
+	root, err := readPhysicalRoot(q, ddb, commit)
 	if err != nil {
 		return PhysicalCommitSchema{}, physicalReadError("root", id, "", err)
 	}
@@ -145,26 +146,48 @@ func (d *DoltConn) readPhysicalCommitSchema(ctx context.Context, id string) (Phy
 		if err := ctx.Err(); err != nil {
 			return PhysicalCommitSchema{}, physicalReadError("canceled", id, name, err)
 		}
-		stored, present, err := root.GetTable(q, doltdb.TableName{Name: name})
+		stored, present, err := readPhysicalStoredTable(q, ddb, root, doltdb.TableName{Name: name})
 		if err != nil {
 			return PhysicalCommitSchema{}, physicalReadError("table", id, name, err)
 		}
 		if !present {
 			return PhysicalCommitSchema{}, &PhysicalReadError{Kind: "census-inconsistent", CommitID: id, Table: name, Cause: errors.New("enumerated physical table missing from immutable root")}
 		}
+		if err := checkPhysicalSchemaChunk(q, ddb, stored); err != nil {
+			return PhysicalCommitSchema{}, physicalReadError("schema", id, name, err)
+		}
 		schema, err := stored.GetSchema(q)
 		if err != nil {
 			return PhysicalCommitSchema{}, physicalReadError("schema", id, name, err)
 		}
-		table, err := sqle.NewDoltTable(q, name, schema, stored, physicalDB, editor.Options{})
+		if err := checkPhysicalTableRowChunks(q, ddb, stored); err != nil {
+			return PhysicalCommitSchema{}, physicalReadError("schema", id, name, err)
+		}
+		data, err := stored.GetRowData(q)
 		if err != nil {
 			return PhysicalCommitSchema{}, physicalReadError("schema", id, name, err)
 		}
-		locked, err := table.LockedToRoot(q, root)
+		rows, err := durable.ProllyMapFromIndex(data)
 		if err != nil {
-			return PhysicalCommitSchema{}, physicalReadError("root-lock", id, name, err)
+			return PhysicalCommitSchema{}, physicalReadError("schema", id, name, err)
 		}
-		converted, err := readPhysicalTable(q, locked, name)
+		iter, err := rows.IterAll(q)
+		if err != nil {
+			return PhysicalCommitSchema{}, physicalReadError("schema", id, name, err)
+		}
+		// Read fixed migration cursors directly: no PartitionRows call is made
+		// on a commit at the missing-chunk boundary.
+		converted := PhysicalTable{Name: name}
+		var sqlSchema gms.Schema
+		for _, column := range schema.GetAllCols().GetColumns() {
+			typ := column.TypeInfo.ToSqlType()
+			sqlSchema = append(sqlSchema, &gms.Column{Name: column.Name, Type: typ, Nullable: column.IsNullable()})
+			converted.Columns = append(converted.Columns, PhysicalColumn{Name: column.Name, DatabaseTypeName: typ.String()})
+		}
+		if err := physicalPrimaryKeyOrdinals(&converted, schema.GetPkOrdinals()); err != nil {
+			return PhysicalCommitSchema{}, physicalReadError("schema", id, name, err)
+		}
+		converted.Rows, err = readPhysicalRows(q, sqlSchema, index.NewProllyRowIterForMap(schema, rows, iter, nil))
 		if err != nil {
 			return PhysicalCommitSchema{}, physicalReadError("rows", id, name, err)
 		}

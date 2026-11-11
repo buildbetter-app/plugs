@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/steveyegge/beads/internal/storage/physicalcapture"
@@ -13,6 +14,13 @@ import (
 // SQL metadata stays exact on complete histories. SQL census failure alone is
 // never sufficient to admit an archive with a boundary.
 func (s OwnVersionCommitSource) ReadSourceCommits(ctx context.Context) (result SourceCommitLog, resultErr error) {
+	var atOrdinal uint64
+	var atSchema *uint64
+	defer func() {
+		if resultErr != nil {
+			resultErr = historyFailureCoordinates(resultErr, atOrdinal, atSchema)
+		}
+	}()
 	if s.PhysicalDB == nil || s.SQLSource.DB == nil {
 		return result, ErrSourceHistoryUnavailable{Reason: "missing-scoped-reader"}
 	}
@@ -27,6 +35,7 @@ func (s OwnVersionCommitSource) ReadSourceCommits(ctx context.Context) (result S
 	if !validCommitID(result.Head) {
 		return SourceCommitLog{}, ErrSourceHistoryUnavailable{Reason: "invalid-head"}
 	}
+	atOrdinal = 1
 	status, err := s.historyTable(ctx, "SELECT table_name, staged, status FROM dolt_status")
 	if err != nil {
 		return SourceCommitLog{}, err
@@ -38,14 +47,24 @@ func (s OwnVersionCommitSource) ReadSourceCommits(ctx context.Context) (result S
 		return SourceCommitLog{}, err
 	}
 	physical, readErr := physicalcapture.ReadHistory(ctx, conn, result.Head)
+	var probe physicalcapture.HistoryProbe
+	if readErr == nil {
+		probe, readErr = physicalcapture.ProbeHistory(ctx, conn, result.Head)
+	}
 	if err := errors.Join(readErr, conn.Close()); err != nil {
-		return SourceCommitLog{}, locatedCommitFailure(err, 1)
+		var ordinal uint64
+		if physicalcapture.FailureAtCommit(readErr, result.Head) {
+			ordinal = 1
+		}
+		return SourceCommitLog{}, locatedCommitFailure(err, ordinal)
 	}
 	if !physical.ReadOnlyScope || physical.Head != result.Head {
 		return SourceCommitLog{}, ErrSourceHistoryUnavailable{Reason: "unauthenticated-history"}
 	}
 	all := map[string]SourceCommit{}
+	result.OrderedParents = map[string][]string{}
 	for _, c := range physical.Commits {
+		result.OrderedParents[c.ID] = append([]string{}, c.OrderedParents...)
 		metadata := Row{}
 		for key, value := range c.Metadata {
 			v, err := sqlValue(value, "")
@@ -88,10 +107,14 @@ func (s OwnVersionCommitSource) ReadSourceCommits(ctx context.Context) (result S
 		initial.Commits = append(initial.Commits, c)
 	}
 	frontier := map[string]NativeHistoryBoundary{}
+	diagnostics := map[string]error{}
 	for _, b := range physical.Boundaries {
 		boundary := NativeHistoryBoundary{CommitID: b.CommitID, Reason: b.Reason, SQLDoltCodes: b.SQLCodes}
 		frontier[b.CommitID] = boundary
 		initial.Boundaries = append(initial.Boundaries, boundary)
+		if b.Cause != nil {
+			diagnostics[b.CommitID] = b.Cause
+		}
 	}
 	if len(initial.Boundaries) > 0 {
 		if err := locateHistoryBoundaries(&initial); err != nil {
@@ -113,6 +136,55 @@ func (s OwnVersionCommitSource) ReadSourceCommits(ctx context.Context) (result S
 	if err != nil {
 		return SourceCommitLog{}, err
 	}
+	// The backing presence probe establishes the stop boundary before any
+	// immutable image is read. Root-only readability is not row completeness.
+	var cutoff uint64
+	if probe.FirstUnreadableOrdinal != nil {
+		cutoff = *probe.FirstUnreadableOrdinal
+		id := probe.FirstUnreadableCommitID
+		if cutoff == 0 || ordinals[id] != cutoff || probe.ReasonSubcode == nil || probe.FirstUnreadableCause == nil {
+			return SourceCommitLog{}, ErrSourceHistoryUnavailable{Reason: "contradictory-presence-probe"}
+		}
+		if id == result.Head {
+			return SourceCommitLog{}, locatedCommitFailure(&NativeCommitFailure{SchemaVersion: probe.FirstUnreadableSchemaVersion, Cause: probe.FirstUnreadableCause}, cutoff)
+		}
+		if probe.FirstUnreadableSchemaVersion != nil {
+			// Keep exact migration-prefix admission at a row-loss boundary.
+			// This fixed-cursor port reads prolly maps without PartitionRows.
+			cursorConn, err := s.PhysicalDB.Conn(ctx)
+			if err != nil {
+				return SourceCommitLog{}, err
+			}
+			cursorImage, cursorErr := physicalcapture.ReadCommitSchema(ctx, cursorConn, id)
+			if err := errors.Join(cursorErr, cursorConn.Close()); err != nil {
+				return SourceCommitLog{}, locatedCommitFailure(err, cutoff)
+			}
+			cursorTables, err := physicalCaptureTables(cursorImage.Tables)
+			if err != nil {
+				return SourceCommitLog{}, err
+			}
+			cursor, err := nativeCommitCursors(cursorTables, cursorImage.RootTableCount)
+			if err != nil || !cursorImage.ReadOnlyScope || cursorImage.CommitID != id || !equalJSON(cursor.MainVersion, probe.FirstUnreadableSchemaVersion) {
+				if err == nil {
+					err = ErrSourceHistoryUnavailable{Reason: "contradictory-boundary-cursor"}
+				}
+				return SourceCommitLog{}, locatedCommitFailure(&NativeCommitFailure{SchemaVersion: cursor.MainVersion, Cause: err}, cutoff)
+			}
+		}
+		boundary := NativeHistoryBoundary{CommitID: id, Reason: *probe.ReasonSubcode, CommitSchemaVersion: probe.FirstUnreadableSchemaVersion, SQLDoltCodes: append([]uint16{}, probe.SQLDoltCodes...)}
+		if observed, present := frontier[id]; present {
+			if observed.Reason != boundary.Reason || !equalJSON(observed.CommitSchemaVersion, boundary.CommitSchemaVersion) || !slices.Equal(observed.SQLDoltCodes, boundary.SQLDoltCodes) {
+				return SourceCommitLog{}, ErrSourceHistoryUnavailable{Reason: "contradictory-presence-probe"}
+			}
+			// The probe confirms an existing frontier; preserve its original
+			// diagnostic, including a ghost parent with no deeper read error.
+		} else {
+			frontier[id] = boundary
+			diagnostics[id] = probe.FirstUnreadableCause
+		}
+	} else if probe.ChunkCompleteCommitCount != probe.ReachableCommitCount || len(frontier) != 0 {
+		return SourceCommitLog{}, ErrSourceHistoryUnavailable{Reason: "contradictory-presence-probe"}
+	}
 	verified := map[string]bool{}
 	var visit func(string) error
 	visit = func(id string) error {
@@ -122,25 +194,27 @@ func (s OwnVersionCommitSource) ReadSourceCommits(ctx context.Context) (result S
 		if _, missing := frontier[id]; missing {
 			return nil
 		}
+		if cutoff != 0 && ordinals[id] >= cutoff {
+			// A different present branch cannot be labeled absent merely to
+			// fit a linear suffix. Refuse without iterating past the boundary.
+			return ErrSourceHistoryUnavailable{Reason: "presence-boundary-crosses-present-branch"}
+		}
 		c, present := all[id]
 		if !present {
 			return ErrSourceHistoryUnavailable{Reason: "unobserved-parent"}
 		}
-		_, err := s.ReadNativeSourceImage(ctx, id)
+		atOrdinal, atSchema = ordinals[id], nil
+		image, err := s.ReadNativeSourceImage(ctx, id)
 		if err != nil {
-			reason := physicalcapture.UnavailableReason(err)
-			if reason == "" || id == result.Head {
-				return locatedCommitFailure(err, ordinals[id])
-			}
 			var failure *NativeCommitFailure
 			errors.As(err, &failure)
-			boundary := NativeHistoryBoundary{CommitID: id, Reason: reason, SQLDoltCodes: physicalcapture.UnavailableSQLCodes(err)}
+			var version *uint64
 			if failure != nil {
-				boundary.CommitSchemaVersion = failure.SchemaVersion
+				version = failure.SchemaVersion
 			}
-			frontier[id] = boundary
-			return nil
+			return locatedCommitFailure(&NativeCommitFailure{SchemaVersion: version, Cause: physicalcapture.ProbeCompleteReadFailure(err)}, ordinals[id])
 		}
+		atSchema, _ = commitCursor(image, "schema_migrations")
 		verified[id] = true
 		for _, p := range c.Parents {
 			if err := visit(p); err != nil {
@@ -152,6 +226,7 @@ func (s OwnVersionCommitSource) ReadSourceCommits(ctx context.Context) (result S
 	if err := visit(result.Head); err != nil {
 		return SourceCommitLog{}, err
 	}
+	atOrdinal, atSchema = 0, nil
 	result.Commits = []SourceCommit{}
 	usedFrontier := map[string]bool{}
 	for id := range verified {
@@ -165,6 +240,12 @@ func (s OwnVersionCommitSource) ReadSourceCommits(ctx context.Context) (result S
 	}
 	for id := range usedFrontier {
 		result.Boundaries = append(result.Boundaries, frontier[id])
+		if cause := diagnostics[id]; cause != nil {
+			if result.BoundaryDiagnostics == nil {
+				result.BoundaryDiagnostics = map[string]error{}
+			}
+			result.BoundaryDiagnostics[id] = cause
+		}
 	}
 	sort.Slice(result.Commits, func(i, j int) bool { return result.Commits[i].ID < result.Commits[j].ID })
 	if len(result.Boundaries) > 0 {
@@ -188,13 +269,18 @@ func locatedCommitFailure(err error, ordinal uint64) error {
 	errors.As(err, &failure)
 	if reason := physicalcapture.UnavailableReason(err); reason != "" {
 		var version *uint64
+		var verified *uint64
 		if failure != nil {
 			version = failure.SchemaVersion
 		}
-		return errors.Join(ErrSourceHistoryUnavailable{Reason: "native-history-head-unavailable", BoundaryReason: reason, SchemaVersion: version, OrdinalFromHead: ordinal, SQLCodes: physicalcapture.UnavailableSQLCodes(err)}, err)
+		if ordinal == 1 {
+			zero := uint64(0)
+			verified = &zero
+		}
+		return ErrSourceHistoryUnavailable{Reason: "native-history-head-unavailable", BoundaryReason: reason, SchemaVersion: version, OrdinalFromHead: ordinal, VerifiedCommitCount: verified, SQLCodes: physicalcapture.UnavailableSQLCodes(err), Cause: err}
 	}
 	if failure != nil {
 		return &NativeCommitFailure{SchemaVersion: failure.SchemaVersion, OrdinalFromHead: ordinal, Cause: err}
 	}
-	return fmt.Errorf("native physical history: %w", err)
+	return &NativeCommitFailure{OrdinalFromHead: ordinal, Cause: fmt.Errorf("native physical history: %w", err)}
 }

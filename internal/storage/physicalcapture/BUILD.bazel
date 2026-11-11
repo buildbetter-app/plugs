@@ -2,7 +2,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "physicalcapture",
-    srcs = ["capture.go", "diagnostics.go", "evidence.go", "working.go", "schema.go", "history.go"],
+    srcs = ["capture.go", "diagnostics.go", "evidence.go", "working.go", "schema.go", "history.go", "probe.go"],
     importpath = "github.com/steveyegge/beads/internal/storage/physicalcapture",
     visibility = ["//:__subpackages__"],
     deps = ["@com_github_dolthub_driver_v2//:driver"],
@@ -11,7 +11,7 @@ go_library(
 go_test(
     name = "working_root_test",
     size = "large",
-    srcs = ["evidence_test.go", "working_test.go"],
+    srcs = ["evidence_test.go", "native_delta_metadata_test.go", "working_test.go"],
     gotags = ["gms_pure_go"],
     deps = [
         ":physicalcapture",

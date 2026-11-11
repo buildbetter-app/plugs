@@ -131,6 +131,23 @@ func ownVersionEqual(t *testing.T, a, b any) bool {
 }
 
 func TestPublicOwnVersionFullCaptureActualMigrationPrefixes(t *testing.T) {
+	checkPublicOwnVersionFullCapture(t, "public-actual", nil)
+}
+
+// This is the ordinary peer definition from the genuine bd1.3.1 public backup:
+// no credential is supplied, so password_encrypted remains SQL NULL. Related
+// native-only families must survive as opaque source rows, without activation.
+func TestPublicOwnVersionCaptureKeepsOrdinaryPeerRoutesAndInteractions(t *testing.T) {
+	checkPublicOwnVersionFullCapture(t, "public-ordinary-families", func(ctx context.Context, conn *sql.Conn) {
+		ownVersionExec(t, ctx, conn, "INSERT INTO federation_peers (name,remote_url) VALUES ('public-example-peer','https://example.invalid/public-synthetic')")
+		ownVersionExec(t, ctx, conn, "INSERT INTO federation_peers (name,remote_url,password_encrypted) VALUES ('public-empty-peer','https://example.invalid/public-empty',X'')")
+		ownVersionExec(t, ctx, conn, "INSERT INTO routes (prefix,path) VALUES ('public-other','/public/example')")
+		ownVersionExec(t, ctx, conn, "INSERT INTO interactions (id,kind,created_at,actor,issue_id,tool_name,exit_code,extra) VALUES ('public-interaction','tool_call',NOW(),'public-fixture','public-a1b','public-example',0,'{\"synthetic\":true}')")
+	})
+}
+
+func checkPublicOwnVersionFullCapture(t *testing.T, artifactPrefix string, populate func(context.Context, *sql.Conn)) {
+	t.Helper()
 	binary := diagnosticBinary(t)
 	for _, version := range []int{66, 72} {
 		t.Run(fmt.Sprintf("actual_main_%d", version), func(t *testing.T) {
@@ -174,6 +191,9 @@ func TestPublicOwnVersionFullCaptureActualMigrationPrefixes(t *testing.T) {
 			ownVersionExec(t, ctx, conn, "INSERT INTO config (`key`,`value`) VALUES ('issue_prefix','public') ON DUPLICATE KEY UPDATE `value`='public'")
 			for _, table := range []string{"issues", "wisps"} {
 				ownVersionExec(t, ctx, conn, "INSERT INTO `"+table+"` (id,title,description,design,acceptance_criteria,notes,created_by,metadata,timeout_ns,hook_bead,role_bead,payload,waiters,agent_state) VALUES (?,?,?,?,?,?,?,JSON_OBJECT('n',9007199254740993),9007199254740993,NULL,'public-role','{\"n\":9007199254740993}','[null,\"public\"]','working')", "public-a1b", "public native row", "", "", "", "", "public")
+			}
+			if populate != nil {
+				populate(ctx, conn)
 			}
 			ownVersionCommit(t, ctx, conn)
 			ownVersionExec(t, ctx, conn, "UPDATE issues SET title='public second committed title' WHERE id='public-a1b'")
@@ -253,6 +273,38 @@ func TestPublicOwnVersionFullCaptureActualMigrationPrefixes(t *testing.T) {
 				t.Fatal("typed evidence lost exact archive/root/SQL types/cells binding")
 			}
 			manifest, native := ownVersionArchive(t, data)
+			if populate != nil {
+				for _, name := range []string{"federation_peers", "routes", "interactions"} {
+					expected := 1
+					if name == "federation_peers" {
+						expected = 2
+					}
+					if len(native.Current[name].Rows) != expected {
+						t.Fatalf("ordinary native family %s was omitted", name)
+					}
+					found := false
+					for _, source := range manifest.Sources {
+						if source.Family == name {
+							found = source.Action == "archive" && source.Rows == expected
+						}
+					}
+					if !found {
+						t.Fatalf("ordinary native family %s has no archive disposition", name)
+					}
+				}
+				for _, peer := range native.Current["federation_peers"].Rows {
+					password, present := peer["password_encrypted"]
+					if !present {
+						t.Fatal("absent peer credential column was omitted")
+					}
+					if peer["name"] == "public-example-peer" && password != nil {
+						t.Fatal("absent peer credential changed from SQL NULL")
+					}
+					if peer["name"] == "public-empty-peer" && !ownVersionEqual(t, password, map[string]string{"$bytes": ""}) {
+						t.Fatal("empty peer credential changed from an empty SQL BLOB")
+					}
+				}
+			}
 			if manifest.MainVersion != version || manifest.IgnoredVersion != ignored || !native.Complete || len(native.Gaps) != 0 || len(native.Images) != len(beforeLog.Commits) || !ownVersionEqual(t, native.Current, beforeCurrent) {
 				t.Fatal("own-version profile, rows or native history was not conserved")
 			}
@@ -305,17 +357,17 @@ func TestPublicOwnVersionFullCaptureActualMigrationPrefixes(t *testing.T) {
 			if artifacts == "" {
 				t.Fatal("actual public archive artifacts required")
 			}
-			if err := os.WriteFile(filepath.Join(artifacts, fmt.Sprintf("public-actual-v%d.tar", version)), data, 0600); err != nil {
+			if err := os.WriteFile(filepath.Join(artifacts, fmt.Sprintf("%s-v%d.tar", artifactPrefix, version)), data, 0600); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(artifacts, fmt.Sprintf("public-actual-v%d-physical-evidence.json", version)), evidenceData, 0600); err != nil {
+			if err := os.WriteFile(filepath.Join(artifacts, fmt.Sprintf("%s-v%d-physical-evidence.json", artifactPrefix, version)), evidenceData, 0600); err != nil {
 				t.Fatal(err)
 			}
 			facts, err := json.MarshalIndent(map[string]any{"main_version": version, "ignored_version": ignored, "native_schema_profile": native.SchemaProfile, "complete": native.Complete, "commits": len(native.Commits), "images": len(native.Images), "current": beforeWorking}, "", "  ")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(artifacts, fmt.Sprintf("public-actual-v%d-physical.json", version)), facts, 0600); err != nil {
+			if err := os.WriteFile(filepath.Join(artifacts, fmt.Sprintf("%s-v%d-physical.json", artifactPrefix, version)), facts, 0600); err != nil {
 				t.Fatal(err)
 			}
 			t.Logf("PUBLIC_OWN_VERSION_EXACT main=%d ignored=%d usertables=%d physicaltables=%d commits=%d images=%d gaps=0 unchanged=true", version, ignored, len(native.Current), len(beforeWorking.Tables), len(native.Commits), len(native.Images))
