@@ -348,7 +348,7 @@ func TestB15PublicDurableClockHistoryAndRequestIdentity(t *testing.T) {
 			}
 			stable := f.document()
 			history := f.changes()
-			for _, tc := range []struct{ id, body, code string }{{before.ID, "", "invalid_params"}, {before.ID, " \t\n", "invalid_params"}, {"", "body", "invalid_params"}, {"b15-unknown", "body", "not_found"}, {"b15-anch", "body", "not_found"}} {
+			for _, tc := range []struct{ id, body, code string }{{before.ID, "", "invalid_params"}, {before.ID, " \t\n", "invalid_params"}, {"", "body", "invalid_params"}, {" \t", "body", "not_found"}, {"b15-unknown", "body", "not_found"}, {"b15-anch", "body", "not_found"}} {
 				r := f.call("bead.comment", map[string]any{"id": map[string]any{"id": tc.id}, "body": tc.body}, true)
 				if r.Error == nil || r.Error.Data.Code != tc.code {
 					t.Errorf("refusal %+v: %s", tc, marshal(t, r))
@@ -376,7 +376,7 @@ func TestB15PublicDefaultAndMaximumPagesOrderTiesWithoutMutation(t *testing.T) {
 			if empty := f.page("b15-anchor", 0, ""); len(empty.Comments) != 0 || empty.Next != "" {
 				t.Fatal("new thread is not an empty page")
 			}
-			for _, tc := range []struct{ id, code string }{{"", "invalid_params"}, {"b15-unknown", "not_found"}, {"b15-anch", "not_found"}} {
+			for _, tc := range []struct{ id, code string }{{"", "invalid_params"}, {" \t", "not_found"}, {"b15-unknown", "not_found"}, {"b15-anch", "not_found"}} {
 				r := f.call("bead.get", map[string]any{"id": map[string]any{"id": tc.id}, "commentPage": map[string]any{}}, false)
 				if r.Error == nil || r.Error.Data.Code != tc.code {
 					t.Errorf("empty/unknown/prefix read %+v: %s", tc, marshal(t, r))
@@ -593,6 +593,51 @@ func TestB15PublicEphemeralFractionalNewestAfterLegacyCheckpoint(t *testing.T) {
 			assert()
 			f.reopen()
 			assert()
+		})
+	}
+}
+
+func TestB15PublicDurableFractionalNewestAfterLegacyCheckpoint(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			f := newFixture(t, engine)
+			f.create()
+			legacy := f.document()
+			legacy.Comments = []pipeline.Comment{
+				{Body: "legacy fractional earlier", Principal: actor, Time: f.clock.Now().Add(100 * time.Millisecond)},
+				{Body: "legacy fractional newest", Principal: actor, Time: f.clock.Now().Add(500 * time.Millisecond)},
+			}
+			if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: ref(legacy.ID), Kind: "bead", Op: model.OpPatch, Body: marshal(t, legacy), Graph: &conformance.FixtureGraphSource{}}}); err != nil {
+				t.Fatal(err)
+			}
+			before := f.document()
+			history := f.changes()
+			request := map[string]any{"id": ref(legacy.ID), "body": "public durable after fractional"}
+			f.success("bead.comment", request, true)
+			want := append([]pipeline.Comment(nil), before.Comments...)
+			want = append(want, pipeline.Comment{Body: "public durable after fractional", Principal: actor, Time: f.clock.Now().Add(1500 * time.Millisecond)})
+			if got := f.document(); !reflect.DeepEqual(got.Comments, want) {
+				t.Fatalf("durable fractional maximum plus one second: got=%+v want=%+v", got.Comments, want)
+			}
+			after := f.changes()
+			if len(after) != len(history)+1 || !reflect.DeepEqual(after[:len(history)], history) {
+				t.Fatal("durable fractional comment history changed before the one accepted append")
+			}
+			entry := after[len(history)]
+			if len(entry.Changes) != 1 || entry.Changes[0].Op != model.OpComment || entry.Changes[0].Ref.ID != legacy.ID || !reflect.DeepEqual(entry.Changes[0].ChangedPaths, []string{"/comments"}) || len(entry.Events) != 1 || entry.Events[0].Type != model.EventBeadCommented {
+				t.Fatal("durable fractional comment did not record exactly one history/event")
+			}
+			stable := f.document()
+			stable.Comments = nil
+			anchor := before
+			anchor.Comments = nil
+			if !reflect.DeepEqual(stable, anchor) {
+				t.Fatal("durable fractional comment mutated a non-comment anchor member")
+			}
+			f.reopen()
+			if got := f.document(); !reflect.DeepEqual(got.Comments, want) {
+				t.Fatalf("reopened durable fractional maximum plus one second: got=%+v want=%+v", got.Comments, want)
+			}
 		})
 	}
 }
