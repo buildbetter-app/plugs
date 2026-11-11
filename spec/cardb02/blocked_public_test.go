@@ -139,7 +139,8 @@ func (f *blockedFixture) invoke(roles ...string) {
 		if err != nil {
 			f.h.T.Fatal(err)
 		}
-		if state.Persistent() {
+		marker, ok := state.(interface{ Persistent() bool })
+		if !ok || marker.Persistent() {
 			f.h.T.Fatal("memory must truthfully report Persistent false")
 		}
 	}
