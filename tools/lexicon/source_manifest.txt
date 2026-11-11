@@ -193,6 +193,7 @@ internal/core/dumpformat/native_delta_cells_test.go
 internal/core/dumpformat/native_delta_dispositions_test.go
 internal/core/dumpformat/native_delta_frontier_test.go
 internal/core/dumpformat/native_delta_history.go
+internal/core/dumpformat/native_delta_history_point.go
 internal/core/dumpformat/native_delta_json.go
 internal/core/dumpformat/native_delta_parts.go
 internal/core/dumpformat/native_delta_parts_test.go
@@ -549,6 +550,8 @@ internal/integration/b13memory/source_core_control_test.go
 internal/integration/b14fixedpolicy/BUILD.bazel
 internal/integration/b14fixedpolicy/README.md
 internal/integration/b14fixedpolicy/public_members_test.go
+internal/integration/b15comments/BUILD.bazel
+internal/integration/b15comments/public_test.go
 internal/integration/b16sourcehistory/BUILD.bazel
 internal/integration/b16sourcehistory/README.md
 internal/integration/b16sourcehistory/engine_test.go
@@ -612,9 +615,12 @@ internal/integration/converterroundtrip/memory_import_test.go
 internal/integration/converterroundtrip/memory_reverse.go
 internal/integration/converterroundtrip/native_boundary_fixture_test.go
 internal/integration/converterroundtrip/native_boundary_receiving_test.go
+internal/integration/converterroundtrip/native_capture_set_cli_test.go
 internal/integration/converterroundtrip/native_commit_fixture_test.go
 internal/integration/converterroundtrip/native_commit_receiving_test.go
 internal/integration/converterroundtrip/native_delta.go
+internal/integration/converterroundtrip/native_delta_history_modes.go
+internal/integration/converterroundtrip/native_delta_history_modes_test.go
 internal/integration/converterroundtrip/native_delta_receiving_test.go
 internal/integration/converterroundtrip/native_delta_rows.go
 internal/integration/converterroundtrip/native_history_test.go
@@ -630,6 +636,7 @@ internal/integration/converterroundtrip/native_table_oracle_test.go
 internal/integration/converterroundtrip/native_tables.go
 internal/integration/converterroundtrip/native_tables_test.go
 internal/integration/converterroundtrip/native_workflow_accounting_test.go
+internal/integration/converterroundtrip/public_external_capture_test.go
 internal/integration/converterroundtrip/public_source_test.go
 internal/integration/converterroundtrip/repair_test.go
 internal/integration/converterroundtrip/restore.go
@@ -1247,6 +1254,8 @@ internal/storage/driver/hierarchy.go
 internal/storage/driver/hierarchy_contract_test.go
 internal/storage/driver/keys.go
 internal/storage/driver/keys_test.go
+internal/storage/driver/native_delta_history.go
+internal/storage/driver/native_delta_history_test.go
 internal/storage/driver/offline_history.go
 internal/storage/driver/offline_history_stream.go
 internal/storage/driver/offline_history_stream_consume.go
@@ -2088,6 +2097,7 @@ tools/native-physical-restore/main.go
 tools/native-physical-restore/undo.go
 tools/native-receive/BUILD.bazel
 tools/native-receive/README.md
+tools/native-receive/capture_set.go
 tools/native-receive/joined.go
 tools/native-receive/main.go
 tools/native-receive/policy.go

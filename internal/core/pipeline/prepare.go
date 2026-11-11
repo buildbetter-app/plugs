@@ -430,10 +430,14 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 					return nil, failure("invalid_params", "comment body must not be empty")
 				}
 				stamp := w.cfg.now().UTC()
+				var newest time.Time
 				for _, comment := range current.doc.Comments {
-					if !stamp.After(comment.Time) {
-						stamp = comment.Time.Add(time.Second)
+					if comment.Time.After(newest) {
+						newest = comment.Time
 					}
+				}
+				if !newest.Before(stamp) {
+					stamp = newest.UTC().Add(time.Second)
 				}
 				current.doc.Comments = append(current.doc.Comments, Comment{Body: op.Comment.Body, Principal: by, Time: stamp})
 				current.setBy["comments"] = "request"

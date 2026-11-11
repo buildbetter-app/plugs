@@ -8,10 +8,57 @@ library APIs or declared counts alone do not count.
 This is a trusted local disposable receiving command. The caller supplies the
 authenticated external source-store/project binding and the complete explicit
 source-plane mapping. Admission is a trusted host input, not a network login.
-The command accepts only the existing native full-history import contract.
+The command defaults to the native full-history import contract.
 It never migrates a source or changes the input archive.
 
 Build target: `//tools/native-receive:native-receive`.
+
+A native capture set uses its complete directory as input:
+
+```sh
+native-receive --driver sqlite --target /absolute/disposable/receiving.db \
+  --capture-set /absolute/capture-set --request /absolute/receiving-request.json \
+  --expected-binary-sha256 EXACT_REVIEWED_EXECUTABLE_SHA256
+```
+
+The directory contains `capture-set.json`, `head.tar` and the declared `parts`.
+Select exactly one input form. For capture sets, the existing trusted request's
+`archive_sha256` and source plan bind the exact `capture-set.json` bytes. Supply
+all source dispositions, admission and target lifetime explicitly. This route
+accepts an external request; its policy, bindings and profile options must be
+absent. The archive-only `prepare-request` constructor remains available for
+portable archives.
+
+The capture-set route calls the production directory reader and accounted
+Bind/Restore functions, verifies every mapped snapshot and complete final
+HEAD/current census, then closes and reopens persistent drivers, recovers the
+committed receipt and repeats byte readback. Memory reacquires the same store's
+lease. A fresh disposable destination is required; SQLite publishes its staged
+file only after all checks succeed.
+
+Capture requests may explicitly set `restore_mode` to `snapshot` or `partial`.
+Snapshot publishes authenticated HEAD/current only, with snapshot provenance
+and no source commit mappings. Partial also requires `restore_first_sequence`
+in the authenticated capture's source ordinal range, starting at one. It
+imports that verified suffix, uses the verified predecessor as a local floor
+when present, and records the omitted known prefix with reason
+`operator-selected-floor`. The original unavailable-prefix commitment remains
+separate; its unknown extent is never converted into invented commit counts.
+The chosen mode, floor, source commitments and bound restore time survive
+receipt recovery. Full remains the default when the mode is absent or empty.
+An ordinal is invalid for Full or Snapshot. These opt-ins apply only to native
+capture sets; portable archive receiving retains its full-history contract.
+
+Successful capture receipts include `capture_set_verification` and
+`capture_set_measurements`. Measurements contain decoded accounting, peak
+retained-batch bytes, ownership after release, and process RSS/HWM in bytes.
+The decoded ceiling remains 2,147,483,648 bytes with no CLI override. On refusal,
+stderr includes a `plug-native-receiving-refusal/1` JSON object with the phase,
+available decoded usage, the complete typed decoded-limit refusal when present,
+and process memory. Missing process measurements carry an explicit error.
+Process RSS includes the CLI and storage engine and has a separate domain from
+controlled decoded accounting; these metrics do not establish full allocation
+coverage or permission to switch a live store.
 
 ```sh
 native-receive --driver sqlite --target /absolute/disposable/receiving.db \
