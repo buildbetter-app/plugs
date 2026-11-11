@@ -120,7 +120,14 @@ func TestNativeDeltaRowReceivingEveryMappingAndReopenedStore(t *testing.T) {
 					t.Error("release renewed public receiving lease", err)
 				}
 			}()
-			plan := nativeHistoryPlanFromArchive(t, archive, store, lease)
+			// The host-plan helper consumes detached raw source records. Its
+			// temporary copies end when the plan is built, independently of the
+			// original archive and the converter's own operation scopes.
+			plan := func() driver.SourcePlanePlanV1 {
+				work, release := archive.NativeDeltaAccountingScope()
+				defer release()
+				return nativeHistoryPlanFromArchive(t, work, store, lease)
+			}()
 			// This genuine fixture declares SQL NULL, rather than the separate
 			// synthetic helper's versioned storage class. Keep that distinction
 			// explicit in host intent and verify every source row against it.
@@ -153,7 +160,7 @@ func TestNativeDeltaRowReceivingEveryMappingAndReopenedStore(t *testing.T) {
 			if err != nil {
 				t.Fatal("receive row-granular public capture", err)
 			}
-			if held, _ := archive.NativeDecodedUsage(); held.CurrentAccountedDecodedBytes != baseline.CurrentAccountedDecodedBytes {
+			if held, _ := archive.NativeDecodedUsage(); held.CurrentAccountedDecodedBytes != baseline.CurrentAccountedDecodedBytes || !reflect.DeepEqual(held.CurrentCategories, baseline.CurrentCategories) || !reflect.DeepEqual(held.CurrentCharges, baseline.CurrentCharges) {
 				t.Fatal("completed conversion retained temporary allocations", baseline, held)
 			}
 			if err := VerifyNativeCaptureSetReadback(op, store, archive, report); err != nil {
@@ -180,6 +187,9 @@ func TestNativeDeltaRowReceivingEveryMappingAndReopenedStore(t *testing.T) {
 			store, lease = reopen()
 			_ = lease
 			_, recovered, found, err := RecoverBoundSourceImport(ctx, store)
+			if recovered.Archive != nil {
+				defer recovered.Archive.ReleaseNativeDecoded()
+			}
 			if err != nil || !found || !reflect.DeepEqual(recovered.Receipt, report.Receipt) || !reflect.DeepEqual(recovered.NativeFamilies, report.NativeFamilies) {
 				t.Fatal("retained source/census/receipt lost on reopen", err)
 			}
@@ -190,7 +200,7 @@ func TestNativeDeltaRowReceivingEveryMappingAndReopenedStore(t *testing.T) {
 				recovered.Archive.ReleaseNativeDecoded()
 			}
 			usage, _ := archive.NativeDecodedUsage()
-			if usage.CurrentAccountedDecodedBytes != baseline.CurrentAccountedDecodedBytes {
+			if usage.CurrentAccountedDecodedBytes != baseline.CurrentAccountedDecodedBytes || !reflect.DeepEqual(usage.CurrentCategories, baseline.CurrentCategories) || !reflect.DeepEqual(usage.CurrentCharges, baseline.CurrentCharges) {
 				t.Fatal("recovery/readback ownership leaked", baseline, usage)
 			}
 			t.Logf("native_receiving_decoded_usage=%+v test_process_memory=%v", usage, nativeTestProcessMemory())
