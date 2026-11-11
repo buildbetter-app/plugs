@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "public",
+    testonly = True,
+    srcs = glob(["*.go"]),
+    importpath = "github.com/buildbetter-app/plugs/internal/integration/b07positive/public",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/core/model",
+        "//internal/integration/b07positive",
+        "//internal/server/composition",
+        "//internal/storage/driver",
+        "//internal/storage/postgres",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

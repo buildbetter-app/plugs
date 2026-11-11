@@ -432,6 +432,7 @@ internal/core/service/service_test.go
 internal/core/service/source_workflow.go
 internal/core/service/types.go
 internal/core/service/waits_for_consumer_test.go
+internal/core/service/workflow_batch.go
 internal/core/service/workflow_bridge.go
 internal/core/service/workflow_delete.go
 internal/core/service/workflow_moves.go
@@ -507,6 +508,12 @@ internal/integration/b04claimidentity/native_b04_contract_test.go
 internal/integration/b04claimidentity/native_b04_inputs.json
 internal/integration/b04claimidentity/native_b04_io_test.go
 internal/integration/b04claimidentity/native_b04_recording_test.go
+internal/integration/b07positive/BUILD.bazel
+internal/integration/b07positive/effects.go
+internal/integration/b07positive/public/BUILD.bazel
+internal/integration/b07positive/public/postgres.go
+internal/integration/b07positive/public/public.go
+internal/integration/b07positive/snapshot.go
 internal/integration/b13memory/BUILD.bazel
 internal/integration/b13memory/README.md
 internal/integration/b13memory/fixture_test.go
@@ -563,6 +570,7 @@ internal/integration/collabwatch/reconnect_acceptance_test.go
 internal/integration/converterroundtrip/BUILD.bazel
 internal/integration/converterroundtrip/allocator.go
 internal/integration/converterroundtrip/b07_opaque_source_test.go
+internal/integration/converterroundtrip/b07_positive_source_test.go
 internal/integration/converterroundtrip/b13_joint_memory_control_test.go
 internal/integration/converterroundtrip/external_target_test.go
 internal/integration/converterroundtrip/hierarchy_import_test.go
@@ -609,6 +617,7 @@ internal/integration/converterroundtrip/source_authz_test.go
 internal/integration/converterroundtrip/source_checkpoint_test.go
 internal/integration/converterroundtrip/source_composition_test.go
 internal/integration/converterroundtrip/source_delete_test.go
+internal/integration/converterroundtrip/source_mixed_links_reverse.go
 internal/integration/converterroundtrip/source_planes.go
 internal/integration/converterroundtrip/source_planes_recovery.go
 internal/integration/converterroundtrip/source_planes_reverse.go
@@ -1039,6 +1048,7 @@ internal/server/pluginhost/source_restore.go
 internal/server/pluginhost/state.go
 internal/server/pluginhost/wasm.go
 internal/server/pluginhost/wasm_test.go
+internal/server/pluginhost/workflow_state.go
 internal/server/pluginmanifest/BUILD.bazel
 internal/server/pluginmanifest/README.md
 internal/server/pluginmanifest/bundle.go
@@ -1505,6 +1515,7 @@ pluginapi/types_test.go
 plugins/plug/SKILL.md
 plugins/workflow/BUILD.bazel
 plugins/workflow/atomic.go
+plugins/workflow/batch_operations.go
 plugins/workflow/listing.go
 plugins/workflow/manifest.json
 plugins/workflow/native.go
@@ -1573,6 +1584,9 @@ spec/cardb07/mixed_test.go
 spec/cardb07/native_test.go
 spec/cardb07/opaque_test.go
 spec/cardb07/public_test.go
+spec/cardb07positive/BUILD.bazel
+spec/cardb07positive/README.md
+spec/cardb07positive/ordinary_test.go
 spec/cardb19/BUILD.bazel
 spec/cardb19/README.md
 spec/cardb19/archive_test.go

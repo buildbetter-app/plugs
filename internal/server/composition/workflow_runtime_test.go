@@ -16,6 +16,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/restore"
 	"github.com/buildbetter-app/plugs/internal/core/reverseconverter/reversetest"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/plugins/authnapikey"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
 	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
@@ -98,7 +99,7 @@ func TestRollbackWindowCompositionUsesConfiguredReverseRegistry(t *testing.T) {
 
 }
 
-func TestMemoryRuntimeKeepsOrdinaryWorkflowToolsAndRefusesEphemeral(t *testing.T) {
+func TestMemoryRuntimeKeepsOrdinaryWorkflowToolsAndRefusesUnavailableCheckpoint(t *testing.T) {
 	ctx := context.Background()
 	keys := authnapikey.New(authnapikey.Config{})
 	owner := model.PrincipalRef{Kind: "user", ID: "user:workflow-memory-owner"}
@@ -108,6 +109,15 @@ func TestMemoryRuntimeKeepsOrdinaryWorkflowToolsAndRefusesEphemeral(t *testing.T
 	}
 	f := startRuntime(t, Config{Driver: "memory", Project: "workflow-memory", Address: DefaultAddress,
 		AuthMode: "authenticated", Auth: authn.Config{Provider: keys}})
+	// This separately named public refusal control deliberately selects the
+	// legacy restart-durable capability, which truthful process memory lacks.
+	// Default ordinary composition is exercised by the positive B07 fixture.
+	unavailable := pluginhost.NewDurableState(f.r.Store.(driver.CheckpointStore), f.r.Lease, workflowplugin.Alias, "default")
+	provider, err := workflowplugin.New(unavailable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.WithWorkflow(provider)(f.r.Service)
 	transport, err := client.NewHTTP(client.HTTPConfig{Server: "http://" + f.server.Addr().String(), Token: issued.Token})
 	if err != nil {
 		t.Fatal(err)

@@ -517,9 +517,9 @@ func relationView(link relationState) RelationView {
 	return RelationView{From: clone.From, To: clone.To, Kind: clone.Kind, Metadata: clone.Metadata}
 }
 
-// persistentState is a required marker for ephemeral invocation. A CheckpointStore is durable
-// only when the selected driver can reopen it after a process restart; the
-// in-memory driver deliberately reports false so ephemeral mode fails closed.
+// persistentState reports the stronger process-restart guarantee. Ordinary
+// invocation may also use an explicit process-lifetime workflow checkpoint;
+// neither that capability nor a source binding changes this persistence marker.
 type persistentState interface {
 	Persistent() bool
 }
@@ -910,7 +910,7 @@ func (p *Provider) Invoke(ctx context.Context, by model.PrincipalRef, req Invoke
 	if err := ValidateInvokeRequest(req); err != nil {
 		return InvokeResult{}, err
 	}
-	if !p.persistent || p.source != nil {
+	if !p.checkpointAvailable() || p.source != nil {
 		return InvokeResult{}, fail("plugin_durable_state_unavailable", "ephemeral workflows require persistent checkpoint storage")
 	}
 	value, revision, err := p.load(ctx)
@@ -1301,9 +1301,9 @@ func (p *Provider) OrdinaryBlocked(ctx context.Context, by model.PrincipalRef, i
 func (p *Provider) OrdinaryBlockerSnapshot(ctx context.Context, by model.PrincipalRef, ids []string, meta model.WriteMeta) (map[string]bool, driver.CheckpointExpectation, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	// No persistent capability means no active workflow facts can exist. This
-	// is not a memory checkpoint substitute; ephemeral invocation still refuses.
-	if !p.persistent && p.source == nil {
+	// Without a declared workflow checkpoint capability or admitted binding,
+	// no active workflow facts can exist for this provider.
+	if !p.checkpointAvailable() && p.source == nil {
 		return map[string]bool{}, driver.CheckpointExpectation{}, nil
 	}
 	// An ordinary pre-publication guard must never garbage collect or publish
@@ -1333,7 +1333,7 @@ func (p *Provider) OrdinaryParentSnapshot(ctx context.Context, by model.Principa
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	facts := make(map[string]OrdinaryParentFact, len(ids))
-	if !p.persistent && p.source == nil {
+	if !p.checkpointAvailable() && p.source == nil {
 		return facts, driver.CheckpointExpectation{}, nil
 	}
 	value, revision, err := p.readState(ctx)

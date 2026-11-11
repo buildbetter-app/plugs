@@ -10,14 +10,20 @@ separate. No previous B07 receipt is reused.
 all three drivers. It retains complete records, versions, changesets, derived
 rows, checkpoints and caller receipts. SQL tests physically close and reopen the
 store. Owned PostgreSQL startup/version/port and checked cleanup are retained.
-The memory mixed-plane capability refusal is a literal open parity gap; it is
-not a positive mixed-plane outcome. Ordinary SQL supports direct mixed edge
-identity controls; generic mixed `tx.apply` patches receive `unsupported` for
-existing workflow items and `not_found` for genuinely absent items, with full
-state conservation. Positive mixed patches use the existing admitted source
-runtime on all three engines. That runtime refuses mixed links as `unsupported`
-and conserves both planes. Both missing positive routes remain open for full
-B07, alongside ordinary-memory provider parity; none is an adopted deviation.
+The mixed identity control deliberately installs the legacy durable-only
+provider, including after SQL reopen. On memory this provider has an unavailable
+restart-durable capability; on SQL its direct mixed identity paths work while
+its generic atomic batch participant is unavailable. These separately labeled
+refusals retain complete conservation and earn zero positive credit.
+
+The independent [`cardb07positive`](../cardb07positive/) fixtures exercise default
+ordinary memory and SQL composition through successful generic mixed `tx.apply`.
+The separate converter `TestB07AdmittedSourceMixedLinkSuccess` fixture exercises
+successful admitted-source mixed links with exact source/live/reverse tokens.
+Those positives require their own named execution and exact-head qualification;
+the inherited vocabulary/native evidence does not establish them. The opaque
+source control retains its mixed patches and now uses a true existing-pair
+retype as its late refusal after both drafts.
 
 `public_native_edges_test` explicitly selects the card's canonical operational
 recording. It reuses the unchanged B20 build source export and pinned public
@@ -67,7 +73,7 @@ Named controls:
 - `TestB07OpaqueEdgeTokensAcrossStores`: byte fidelity, unknown fields,
   null/empty distinction, malformed atomic refusal, predicate inertness,
   source import and independent reverse output, with SQL reopen.
-- `TestB07PublicMixedPlaneIdentity`: actual normal-composition capability,
+- `TestB07PublicMixedPlaneIdentity`: explicit unavailable-capability control,
   SQL mixed endpoint identity, namespace-receipt-only no-op, replay, retype,
   typed unsupported generic batch routing, absent-item diagnostics, malformed
   batch refusal and both-plane conservation. Refusals earn no positive credit.
@@ -79,14 +85,14 @@ Named controls:
 - `TestB07SourcePlaneOpaqueEdgeRoundTrip` in converterroundtrip: future escaped,
   numeric and object tokens traverse the existing admitted source runtime on
   all three stores, including successful mixed writes, reopen/replay, opaque
-  reverse and later unsupported-link/malformed mixed-batch conservation.
+  reverse and later true-retype/malformed mixed-batch conservation.
 - `TestB07CanonicalNativeEdgeCounterparts`: same-run canonical source-built
   twins plus the three actual public counterparts above.
 
-Both author gates use the seven canonical controls plus
-`--lockfile_mode=error`. The native target is manual and must be explicitly
-selected in focus. The whole-selected public target remains unfiltered in
-literal `test //...`. Raw native values are retained before any declared
+Focus uses the seven controls plus `--lockfile_mode=error`. The native target
+is manual and must be explicitly selected in focus. Canonical whole launches
+use only the remote wrapper's `canonical-whole` preset, with no extra arguments;
+the public targets remain unfiltered in its literal `test //...`. Raw native values are retained before any declared
 comparison; B02 adopted outcome differences never imply raw equality.
 
 The native focus forwards the trusted runner variables `BAZEL_BIN`, `BAZEL_RC`,
@@ -101,12 +107,14 @@ Operation routes in the next exact-head evidence (source expectations only):
 | Named operation | Route and engines | Required outcome |
 | --- | --- | --- |
 | Fixed/custom add, repeat, retype, ready/close | Native CLI/batch twins and public RPC on memory/SQLite/PostgreSQL | Actual named positive or conserved refusal per kind |
-| Ephemeral invoke | Ordinary memory composition | Capability refusal plus complete state conservation; full-card gap |
+| Ephemeral invoke negative | Explicit legacy durable-only memory provider | Capability refusal plus complete state conservation; zero positive credit |
+| Ordinary mixed positive | Default ordinary memory/SQLite/PostgreSQL composition | Named `cardb07positive` success, exact state, rollback, replay and reopen |
 | Mixed direct edge add/no-op/replay/retype | Ordinary SQLite/PostgreSQL RPC | Positive identity/no-op/replay and conserved retype refusal |
-| Mixed generic patch | Ordinary SQLite/PostgreSQL tx.apply | Existing item: unsupported; absent item: not_found; complete conservation; full-card gap |
+| Mixed generic patch negative | Explicit legacy durable-only SQLite/PostgreSQL provider | Existing item: unsupported; absent item: not_found; complete conservation |
 | Unknown workflow item | Ordinary memory/SQLite/PostgreSQL tx.apply | not_found and complete conservation |
 | Mixed patch/reverse/reopen/replay | Admitted-source memory/SQLite/PostgreSQL RPC | Positive, separately labeled authored source fixture |
-| Mixed link after staged patches | Admitted-source memory/SQLite/PostgreSQL tx.apply | unsupported with both-plane conservation; full-card gap |
+| Mixed link after staged patches | Separate admitted-source memory/SQLite/PostgreSQL tx.apply fixture | Named mixed-link success with source/live/reverse tokens, receipts, replay and exact unlink/relink |
+| True retype after staged patches | Admitted-source memory/SQLite/PostgreSQL tx.apply | ontology_guard_failed with both-plane conservation |
 | Malformed opaque mixed batch | Ordinary SQL and admitted-source all three engines | invalid_params with complete conservation |
 | Generic metadata equal/change/replay | Canonical public HTTP twins | native changed=false retained for all re-adds, actual metadata replacement/journal delta, full quiet-state conservation |
 | Captured native metadata/thread tokens | Public RPC and admitted restore/reverse on memory/SQLite/PostgreSQL | Byte-exact preservation; SQL physical reopen; no history credit |
