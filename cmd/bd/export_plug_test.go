@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -26,8 +27,11 @@ import (
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/testutil"
 	"github.com/steveyegge/beads/internal/testutil/bazeltest"
+	"github.com/steveyegge/beads/internal/testutil/recipehooks"
 	"github.com/steveyegge/beads/internal/types"
 )
+
+var publicRecipeHookFlags = recipehooks.RegisterFlags(flag.CommandLine)
 
 // This public fixture has a deliberately complete paired SQL census, with
 // history tracking opted in before its first source action. It is not a
@@ -35,8 +39,17 @@ import (
 // record, event identity, event time and later Dolt commit comes from the
 // supported Beads storage operations; none is filled in by the exporter.
 func TestPlugDumpCompleteRootFromPublicDoltActions(t *testing.T) {
+	runPlugDumpCompleteRootRecipe(t, publicRecipeHookFlags.Options())
+}
+
+func runPlugDumpCompleteRootRecipe(t *testing.T, options recipehooks.Options) []byte {
+	t.Helper()
 	if os.Getenv("BEADS_TEST_SKIP") == "dolt" {
 		t.Skip("requires the explicit public source-history Dolt lane")
+	}
+	hooks, err := recipehooks.Open(options)
+	if err != nil {
+		t.Fatal(err)
 	}
 	cmd := plugExportTestCommand(t)
 	t.Setenv("BEADS_TEST_SERVER", "1")
@@ -231,6 +244,15 @@ func TestPlugDumpCompleteRootFromPublicDoltActions(t *testing.T) {
 	if os.Getenv("PLUG_TEST_EXPORT_PUBLIC_HISTORY") == "1" {
 		t.Logf("PUBLIC_COMPLETE_SOURCE_ARCHIVE_BASE64=%s", base64.StdEncoding.EncodeToString(first))
 	}
+	if options.RetainStore != "" {
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := hooks.Handoff(ctx, server); err != nil {
+		t.Fatal(err)
+	}
+	return first
 }
 
 func seedPublicHistoryCensus(t *testing.T, ctx context.Context, db *sql.DB, template map[string]plugdump.Table) {

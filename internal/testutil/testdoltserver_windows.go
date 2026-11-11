@@ -81,6 +81,23 @@ type IsolatedDoltContainer struct {
 	Port string
 }
 
+// Stop, Start and SourceRoot refuse the unsupported fixture backend.
+func (c *IsolatedDoltContainer) Stop(context.Context) error {
+	return fmt.Errorf("no Dolt container running")
+}
+
+func (c *IsolatedDoltContainer) Start(context.Context) error {
+	return fmt.Errorf("no Dolt container running")
+}
+
+func (c *IsolatedDoltContainer) CurrentPort(context.Context) (string, error) {
+	return "", fmt.Errorf("no Dolt container running")
+}
+
+func (c *IsolatedDoltContainer) SourceRoot() (string, error) {
+	return "", fmt.Errorf("source-root handoff requires the isolated local test backend")
+}
+
 // Exec is not supported on Windows (no container to exec into).
 func (c *IsolatedDoltContainer) Exec(_ context.Context, _ []string) (int, string, error) {
 	return 0, "", fmt.Errorf("no Dolt container running")

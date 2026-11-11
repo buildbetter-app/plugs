@@ -1,4 +1,5 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 go_library(
     name = "plugdump",
@@ -53,6 +54,7 @@ go_test(
         "identity_test.go",
         "plugdump_test.go",
         "source_history_sql_test.go",
+        "source_history_recipe_hooks_test.go",
         "source_history_test.go",
         "source_planes_test.go",
     ],
@@ -64,10 +66,35 @@ go_test(
     deps = [
         "//internal/captureclock",
         "//internal/testutil",
+        "//internal/testutil/recipehooks",
         "@com_github_data_dog_go_sqlmock//:go-sqlmock",
         "@com_github_go_sql_driver_mysql//:mysql",
         "@com_github_santhosh_tekuri_jsonschema_v6//:jsonschema",
     ],
+)
+
+# Always executes both the default recipe and the clean export-point handoff.
+# The enabled recipe resumes its original dirty-working-set refusal afterward.
+sh_test(
+    name = "public_recipe_handoff_test",
+    size = "large",
+    srcs = ["//tools/bazel:go_test_variant.sh"],
+    args = [
+        "$(rootpath //tools/bazel:test_env)",
+        "$(rootpath :plugdump_test)",
+        "-test.run=^TestSQLSourceHistory(ReadsPinnedDoltCommitImages|FixtureHandoff)$$",
+        "-test.v",
+        "-test.timeout=5m",
+    ],
+    data = [
+        ":plugdump_test",
+        "//tools/bazel:test_env",
+    ],
+    env = {
+        "BEADS_TEST_DOLT_SERVER": "local",
+        "BEADS_TEST_REQUIRE_DOLT_CONTAINER": "1",
+        "BEADS_TEST_SKIP": "",
+    },
 )
 
 # Supported physical route, with the original public assertion body unchanged.

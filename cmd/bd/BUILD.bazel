@@ -801,6 +801,7 @@ go_test(
         "export_exclude_owner_test.go",
         "export_max_rows_gate_test.go",
         "export_plug_embedded_test.go",
+        "export_plug_recipe_hooks_test.go",
         "export_plug_test.go",
         "export_proxied_integration_test.go",
         "export_source_role_test.go",
@@ -1435,6 +1436,7 @@ go_test(
         "//internal/testutil",
         "//internal/testutil/bazeltest",
         "//internal/testutil/credentialcmd",
+        "//internal/testutil/recipehooks",
         "//internal/timeparsing",
         "//internal/tracker",
         "//internal/types",
@@ -1809,6 +1811,36 @@ sh_test(
     },
     shard_count = 32,
     tags = ["dolt-server-cmd"],
+)
+
+# Always executes the original default-off recipe and its retained-store
+# control, including when the caller uses no workspace bazelrc.
+sh_test(
+    name = "public_recipe_handoff_test",
+    size = "large",
+    srcs = ["//tools/bazel:go_test_variant.sh"],
+    args = [
+        "$(rootpath //tools/bazel:test_env)",
+        "$(rootpath :bd_test)",
+        "-test.run=^TestPlugDumpCompleteRoot(FromPublicDoltActions|FixtureHandoff)$$",
+        "-test.v",
+        "-test.timeout=5m",
+    ],
+    data = [
+        ":bd_for_tests",
+        ":bd_test",
+        "//internal/plugdump:synthetic_source",
+        "//internal/plugdump:synthetic_inventory",
+        "//tools/bazel:test_env",
+    ],
+    env = {
+        "BEADS_TEST_BD_BINARY": "$(rlocationpath :bd_for_tests)",
+        "BEADS_TEST_PLUG_SOURCE": "$(rlocationpath //internal/plugdump:synthetic_source)",
+        "BEADS_TEST_PLUG_INVENTORY": "$(rlocationpath //internal/plugdump:synthetic_inventory)",
+        "BEADS_TEST_DOLT_SERVER": "local",
+        "BEADS_TEST_REQUIRE_DOLT_CONTAINER": "1",
+        "BEADS_TEST_SKIP": "",
+    },
 )
 
 # Source files the docs and agent instructions link to by path, which
