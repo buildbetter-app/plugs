@@ -1648,6 +1648,8 @@ spec/cardb07positive/BUILD.bazel
 spec/cardb07positive/README.md
 spec/cardb07positive/ordinary_test.go
 spec/cardb11/BUILD.bazel
+spec/cardb11/move_test.go
+spec/cardb11/native_test.go
 spec/cardb11/public_test.go
 spec/cardb19/BUILD.bazel
 spec/cardb19/README.md
