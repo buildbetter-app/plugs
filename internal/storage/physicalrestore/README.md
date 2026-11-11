@@ -142,18 +142,20 @@ ordering and duplicate occurrences. `TableBodies` returns detached original
 table-envelope bytes. Caller authentication of the archive, mapping and source
 revision remains separate from these structural checks.
 
-Both `v1-content-bag` and `d3-physical` reconstruct. V1 does not require a typed
-witness and never infers primary keys. `PrepareNativeRowUndo` is a separate
-physical-write boundary: it retains the original immutable347 and complete
-workingf791 bindings and a privately minted `ReadNativeRowSchema` witness. That
+Both `v1-content-bag` and `d3-physical` reconstruct. V1 does not require typed
+schema authority and never infers primary keys. `PrepareNativeRowUndo` is a
+separate physical-write boundary: it retains the original immutable347 and complete
+workingf791 bindings and a privately minted `ReadNativeRowSchema` authority. That
 reader authenticates the original database/HEAD/working root and complete typed
-binding before and after collecting native PRIMARY index metadata in an explicit
-read-only transaction. It includes ignored and reserved tables. Preparation
+binding before and after reading the owning driver's stored-root schema
+descriptors in an authenticated read-only scope. It includes ignored and reserved
+tables; empty SQL index listings do not establish physical keylessness. Preparation
 compares the full D3 SQL-column/type/PRIMARY-order descriptor before projecting
-to writer columns; absent or differently bound witnesses refuse. It requires D3
+to writer columns; absent or differently bound authority refuses. It requires D3
 typed current cells, the original table census/families and unchanged reserved
 view-schema evidence. Valid re-encoded PRIMARY addition/removal/reorder controls
-exercise this boundary separately from codec corruption controls.
+exercise this boundary, including reserved schemas whose SQL wrappers hide their
+indexes, separately from codec corruption controls.
 Missing typed values, schema/DDL/view intent and unavailable secret references
 refuse before the normal `Undo` call. SQL NULL, JSON `null`, integer widths,
 float bits and binary cells retain explicit tags. No CLI input format changes.
