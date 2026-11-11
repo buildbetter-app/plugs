@@ -199,7 +199,8 @@ func (f *fixture) save() {
 		f.t.Error(err)
 		return
 	}
-	if err = os.WriteFile(filepath.Join(root, "b23-public-query-"+f.engine+".json"), raw, 0600); err != nil {
+	name := strings.NewReplacer("/", "_", " ", "_").Replace(f.t.Name())
+	if err = os.WriteFile(filepath.Join(root, "b23-public-query-"+name+"-"+f.engine+".json"), raw, 0600); err != nil {
 		f.t.Error(err)
 	}
 }
