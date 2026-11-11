@@ -42,6 +42,15 @@ func freshRunfile(t *testing.T, name string) string {
 
 func freshRetainConsumer(t *testing.T, root string) string {
 	t.Helper()
+	checkout := os.Getenv("PLUG_SOURCE_MODULE_ROOT")
+	if !filepath.IsAbs(checkout) {
+		t.Fatal("actual consumer source checkout required")
+	}
+	identity, err := freshCommand(t, root, "consumer-source-identity", checkout, "/usr/bin/git", []string{"rev-parse", "HEAD", "HEAD^{tree}"}, nil, 30*time.Second)
+	parts := strings.Fields(string(identity))
+	if err != nil || len(parts) != 2 || len(parts[0]) != 40 || len(parts[1]) != 40 {
+		t.Fatal("actual consumer source head/tree unavailable")
+	}
 	source := freshRunfile(t, os.Getenv("PLUG_ID_STYLE_A_CONSUMER"))
 	in, err := os.Open(source)
 	if err != nil {
@@ -68,7 +77,7 @@ func freshRetainConsumer(t *testing.T, root string) string {
 	if freshFileSHA(t, path) != freshFileSHA(t, source) {
 		t.Fatal("composed consumer ELF changed on export")
 	}
-	freshJSON(t, filepath.Join(root, "consumer-elf.json"), map[string]any{"source_runfile": source, "export": path, "sha256": freshFileSHA(t, path), "source_head": os.Getenv("GITHUB_SHA"), "run_id": os.Getenv("GITHUB_RUN_ID"), "entry": "TestPublicIDStyleASameRunContinuation", "shared_dependency": freshSharedCaptureSource})
+	freshJSON(t, filepath.Join(root, "consumer-elf.json"), map[string]any{"source_runfile": source, "export": path, "sha256": freshFileSHA(t, path), "source_head": parts[0], "source_tree": parts[1], "workflow_head": os.Getenv("GITHUB_SHA"), "run_id": os.Getenv("GITHUB_RUN_ID"), "entry": "TestPublicIDStyleASameRunContinuation", "shared_dependency": freshSharedCaptureSource})
 	return path
 }
 
