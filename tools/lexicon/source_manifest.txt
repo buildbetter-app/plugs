@@ -284,6 +284,17 @@ internal/core/model/schema_test.go
 internal/core/model/target_status_test.go
 internal/core/model/testdata/openrpc-components.json
 internal/core/model/unsupported_error_test.go
+internal/core/nativeprojection/BUILD.bazel
+internal/core/nativeprojection/allocator.go
+internal/core/nativeprojection/image.go
+internal/core/nativeprojection/labels.go
+internal/core/nativeprojection/native_current.go
+internal/core/nativeprojection/native_delta.go
+internal/core/nativeprojection/native_delta_current.go
+internal/core/nativeprojection/native_schema.go
+internal/core/nativeprojection/planner.go
+internal/core/nativeprojection/result.go
+internal/core/nativeprojection/source_projection.go
 internal/core/ontology/BUILD.bazel
 internal/core/ontology/await_members.go
 internal/core/ontology/await_members_test.go
@@ -634,6 +645,9 @@ internal/integration/converterroundtrip/native_table_oracle_test.go
 internal/integration/converterroundtrip/native_tables.go
 internal/integration/converterroundtrip/native_tables_test.go
 internal/integration/converterroundtrip/native_workflow_accounting_test.go
+internal/integration/converterroundtrip/planner_extraction_test.go
+internal/integration/converterroundtrip/planner_helpers.go
+internal/integration/converterroundtrip/planner_output_test.go
 internal/integration/converterroundtrip/public_source_test.go
 internal/integration/converterroundtrip/repair_test.go
 internal/integration/converterroundtrip/restore.go
@@ -660,6 +674,7 @@ internal/integration/converterroundtrip/source_poststage_test.go
 internal/integration/converterroundtrip/source_public_test.go
 internal/integration/converterroundtrip/source_storage_test.go
 internal/integration/converterroundtrip/testdata/native-built-in-statuses.json
+internal/integration/converterroundtrip/testdata/planner-predecessor-53742cc.tar.gz
 internal/integration/converterroundtrip/testdata/public-complete-root-990eb800.tar
 internal/integration/converterroundtrip/testdata/public-history-boundary-e25cf419.tar
 internal/integration/converterroundtrip/testdata/public-multiversion-072a1a8f.tar
@@ -1287,6 +1302,7 @@ internal/storage/historyverify/auxiliary.go
 internal/storage/historyverify/checkpoint.go
 internal/storage/historyverify/engines_test.go
 internal/storage/historyverify/export_test.go
+internal/storage/historyverify/planner_dependency_test.go
 internal/storage/memory/BUILD.bazel
 internal/storage/memory/allocator.go
 internal/storage/memory/allocator_snapshot.go

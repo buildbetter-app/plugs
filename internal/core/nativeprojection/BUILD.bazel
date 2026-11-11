@@ -1,0 +1,24 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "nativeprojection",
+    srcs = glob(["*.go"], exclude = ["*_test.go"]),
+    importpath = "github.com/buildbetter-app/plugs/internal/core/nativeprojection",
+    visibility = [
+        "//internal/integration/converterroundtrip:__pkg__",
+        "//internal/storage/historyverify:__pkg__",
+    ],
+    deps = [
+        "//internal/core/dumpformat",
+        "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/core/pipeline",
+        "//internal/storage/driver",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

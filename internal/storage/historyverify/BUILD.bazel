@@ -10,12 +10,13 @@ go_library(
 
 go_test(
     name = "historyverify_test",
-    srcs = ["export_test.go", "engines_test.go"],
+    srcs = ["export_test.go", "engines_test.go", "planner_dependency_test.go"],
     embed = [":historyverify"],
     size = "large",
     tags = ["exclusive", "local", "requires-network"],
     deps = [
         "//internal/core/model",
+        "//internal/core/nativeprojection",
         "//internal/storage/driver",
         "//internal/storage/memory",
         "//internal/storage/sqlite",
