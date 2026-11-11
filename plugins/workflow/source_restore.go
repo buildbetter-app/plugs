@@ -38,6 +38,17 @@ type PreparedSourceRestore struct{ logical []byte }
 func (s PreparedSourceRestore) LogicalImage() []byte { return bytes.Clone(s.logical) }
 func (s PreparedSourceRestore) SHA256() string       { return sourceImageHash(s.logical) }
 
+// Count the exact existing marshalComment selection before a prepared logical
+// image is allocated. The wire borrows fields; it does not clone comment bodies
+// or call the aggregate marshaler to discover their size.
+func (c commentState) NativeDeltaJSONSize() (uint64, error) {
+	wire := sourceCommentWire{Body: c.Body, Time: c.Time, Source: c.Source}
+	if c.Source == nil {
+		wire.Principal = &c.Principal
+	}
+	return dumpformat.NativeDeltaJSONSize(wire)
+}
+
 // SourceReverseEntry identifies one imported workflow item in its physical
 // source address domain. An absent item is terminal and has no retained body.
 // Present closed items remain present until their whole run completes.

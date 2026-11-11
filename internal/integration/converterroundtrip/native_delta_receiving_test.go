@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -79,10 +80,39 @@ func TestNativeDeltaRowReceivingEveryMappingAndReopenedStore(t *testing.T) {
 		t.Run(engine, func(t *testing.T) {
 			archive := publicNativeDeltaArchive(t)
 			defer archive.ReleaseNativeDecoded()
+			defer func() {
+				usage, _ := archive.NativeDecodedUsage()
+				receipt := map[string]any{
+					"format":                 "native-row-receiver-rehearsal-memory/1",
+					"driver":                 engine,
+					"decoded_scope":          "receiver/converter-controlled payloads including optional workflow hooks",
+					"decoded":                usage,
+					"process_memory":         nativeTestProcessMemory(),
+					"uncharged_sites":        nativeRehearsalRSSSites(),
+					"authority":              "orchestrator62/a64ec1ed-1b97-47df-b8d7-4ca840564277",
+					"required_before_switch": "lowest-layer streaming OfflineHistory with in-driver accounting; no rehearsal switch credit",
+				}
+				raw, err := json.Marshal(receipt)
+				if err != nil {
+					t.Error("memory receipt", err)
+					return
+				}
+				t.Logf("native_receiving_memory_receipt=%s", raw)
+			}()
 			ctx := archive.WithNativeDeltaAccounting(context.Background())
 			baseline, _ := archive.NativeDecodedUsage()
 			store, lease, reopen := openIdentityTarget(t, engine)
 			plan := nativeHistoryPlanFromArchive(t, archive, store, lease)
+			// This genuine fixture declares SQL NULL, rather than the separate
+			// synthetic helper's versioned storage class. Keep that distinction
+			// explicit in host intent and verify every source row against it.
+			plan.Dispositions[0].StorageClass = ""
+			for _, row := range archive.Records("bead") {
+				storage, present := row.Source.Fields["storage_class"]
+				if !plan.Dispositions[0].MatchesStorageClass(storage, present) {
+					t.Fatal("public fixture host storage intent differs from original")
+				}
+			}
 			statuses := map[string]bool{}
 			for _, project := range archive.Manifest().Projects {
 				for _, status := range project.Statuses {
@@ -164,4 +194,22 @@ func nativeTestProcessMemory() map[string]any {
 		}
 	}
 	return out
+}
+
+// This inventory is part of the versioned rehearsal receipt, not an assertion
+// of in-driver accounting. The source-bound delivery records the exact blobs
+// and allocation sites. Receiver/converter/workflow-owned candidates still
+// reserve against the unchanged 2 GiB budget.
+func nativeRehearsalRSSSites() []map[string]string {
+	return []map[string]string{
+		{"site": "driver.RestoreImportProfile.Detached/RequestHash", "state": "uncharged, driver-internal, RSS-covered", "domain": "source-plan detach/decode and profile JSON/decoded copies"},
+		{"site": "driver.SourcePlaneImportBindingV1.Detached/Plan", "state": "uncharged, driver-internal, RSS-covered", "domain": "canonical-plan clone and repeated decode/canonical validation"},
+		{"site": "driver.buildOfflineHistory", "state": "uncharged, driver-internal, RSS-covered", "domain": "detached history JSON/decoded request, state map, row body, version body/patch and final plan copies"},
+		{"site": "driver.prepareOfflineHistoryBinding/PreparedOfflineHistory.Finalize", "state": "uncharged, driver-internal, RSS-covered", "domain": "profile/history detach, retained prepared history, repeated complete plan build"},
+		{"site": "driver.prepareSourcePlaneProfile/SourcePlaneImportPublication.Validate", "state": "uncharged, driver-internal, RSS-covered", "domain": "detached profile/plan, binding JSON and publication validation candidates"},
+		{"site": "memory.transaction.CommitOfflineHistory", "state": "uncharged, driver-internal, RSS-covered", "domain": "state fork, record/blob copies, version/index/receipt publication"},
+		{"site": "sqlite.transaction.CommitOfflineHistory", "state": "uncharged, driver-internal, RSS-covered", "domain": "record/version/allocator/changeset/receipt JSON buffers and SQLite state"},
+		{"site": "postgres.transaction.CommitOfflineHistory", "state": "uncharged, driver-internal, RSS-covered", "domain": "plan and row/version/receipt publication buffers"},
+		{"site": "dumpformat.SourceEdgeMetadata/InspectSourceEdgeMetadata/sourceJSONValue", "state": "uncharged, core-internal, RSS-covered under the named rehearsal ruling", "domain": "cloned value/envelope projection, JSON buffers, validation/shape/decoded trees and typed predicate"},
+	}
 }

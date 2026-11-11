@@ -11,7 +11,15 @@ import (
 	"unicode/utf8"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+// Internal custom encodings may supply a nonallocating size of their exact
+// existing wire form. The size includes the structured-value terminal LF;
+// arbitrary MarshalJSON implementations are still never invoked to count.
+type nativeDeltaJSONSized interface {
+	NativeDeltaJSONSize() (uint64, error)
+}
 
 // NativeDeltaJSONSize computes encoding/json's compact, HTML-escaped size,
 // including one final newline, without encoding an aggregate value into a
@@ -136,6 +144,16 @@ func (c *deltaSizeCounter) value(v reflect.Value) error {
 		return c.value(v.Elem())
 	}
 	if v.CanInterface() {
+		if sized, ok := v.Interface().(nativeDeltaJSONSized); ok {
+			n, err := sized.NativeDeltaJSONSize()
+			if err != nil {
+				return err
+			}
+			if n == 0 {
+				return fmt.Errorf("empty custom JSON accounting domain %s", v.Type())
+			}
+			return c.add(n - 1)
+		}
 		switch x := v.Interface().(type) {
 		case json.RawMessage:
 			if x == nil {
@@ -181,6 +199,41 @@ func (c *deltaSizeCounter) value(v reflect.Value) error {
 			return c.value(reflect.ValueOf(struct {
 				Key string `json:"key"`
 			}{x.Key}))
+		case driver.OfflineAllocator:
+			// Mirror only the existing allocator wire selection. No driver
+			// hook, detached tree or aggregate serialization is introduced.
+			type allocatorWire driver.OfflineAllocator
+			if x.Mode == driver.AllocatorRandom {
+				if err := x.Validate(); err != nil {
+					return err
+				}
+				return c.value(reflect.ValueOf(struct {
+					Prefix         string `json:"prefix"`
+					Mode           string `json:"id_mode"`
+					RandomBytes    uint32 `json:"random_bytes"`
+					SuffixEncoding string `json:"suffix_encoding"`
+					TopLevelShape  string `json:"top_level_shape"`
+					ChildShape     string `json:"child_shape"`
+				}{x.Prefix, x.Mode, x.RandomBytes, x.SuffixEncoding, x.TopLevelShape, x.ChildShape}))
+			}
+			if x.Mode != driver.AllocatorHash || x.MinHashLength == 0 && x.MaxHashLength == 0 {
+				return c.value(reflect.ValueOf(allocatorWire(x)))
+			}
+			probability := x.MaxCollisionProb
+			x.MaxCollisionProb = 0 // the explicit outer field shadows omitempty.
+			if err := c.value(reflect.ValueOf(allocatorWire(x))); err != nil {
+				return err
+			}
+			if err := c.add(1); err != nil { // comma after the nonempty base object
+				return err
+			}
+			if err := c.text("max_collision_prob"); err != nil {
+				return err
+			}
+			if err := c.add(1); err != nil {
+				return err
+			}
+			return c.value(reflect.ValueOf(probability))
 		}
 		if _, ok := v.Interface().(json.Marshaler); ok {
 			return fmt.Errorf("unallocated custom JSON accounting type %s", v.Type())

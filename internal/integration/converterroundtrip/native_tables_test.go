@@ -357,7 +357,7 @@ func assertNativeTableGroup(t *testing.T, records []driver.Record, identity dump
 	}
 	actual, meta, err := dumpformat.ReconstructNativeRowTable(identity, table, history, records, nil)
 	if err != nil || meta.IdentityKind != dumpformat.NativeRowV1ContentBag || meta.PhysicalColumns != nil || meta.PhysicalTableSHA256 != nil {
-		t.Fatal("witness-free v1 identity changed", err)
+		t.Fatal("normalized-only v1 identity changed", err)
 	}
 	// The exact predecessor serializer remains independent of row lowering and
 	// reconstruction. Compare bytes, including lexical numbers and duplicates.

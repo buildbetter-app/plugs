@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -296,13 +297,10 @@ func prepareSourceRelations(ctx context.Context, value *persisted, plan driver.S
 					}
 					item.Parent = cloneRef(&link.To)
 				}
-				if err := sourceRestoreChargeJSON(ctx, "workflow_outbound_links", link); err != nil {
+				item.Links, err = sourceRestoreAppendRelation(ctx, "workflow_outbound_links", item.Links, link)
+				if err != nil {
 					return err
 				}
-				if err := sourceRestoreChargeJSON(transient, "workflow_outbound_link_keys", item.Links); err != nil {
-					return err
-				}
-				item.Links = dedupeRelations(append(item.Links, link))
 				value.Items[item.ID] = item
 			}
 			if toEntity.TargetKind == "workflow:item" {
@@ -310,13 +308,10 @@ func prepareSourceRelations(ctx context.Context, value *persisted, plan driver.S
 				if fromEntity.TargetKind == "workflow:item" && item.Owner != value.Items[fromEntity.TargetID].Owner {
 					return sourceRefusal("relation crosses declared owner scope")
 				}
-				if err := sourceRestoreChargeJSON(ctx, "workflow_inbound_links", link); err != nil {
+				item.Inbound, err = sourceRestoreAppendRelation(ctx, "workflow_inbound_links", item.Inbound, link)
+				if err != nil {
 					return err
 				}
-				if err := sourceRestoreChargeJSON(transient, "workflow_inbound_link_keys", item.Inbound); err != nil {
-					return err
-				}
-				item.Inbound = dedupeRelations(append(item.Inbound, link))
 				value.Items[item.ID] = item
 			}
 			return nil
@@ -326,6 +321,89 @@ func prepareSourceRelations(ctx context.Context, value *persisted, plan driver.S
 	}
 
 	return nil
+}
+
+// The optional path retains the existing relationKey/cloneRelation algorithm,
+// with reservations at its allocation boundaries. With no budget the original
+// helper remains the byte oracle. Only a complete replacement transfers; the
+// caller's old list stays owned if a candidate refuses or is cancelled.
+func sourceRestoreAppendRelation(ctx context.Context, phase string, previous []relationState, added relationState) ([]relationState, error) {
+	parent := dumpformat.NativeDeltaBudgetFromContext(ctx)
+	if parent == nil {
+		return dedupeRelations(append(previous, added)), nil
+	}
+	work, output := parent.Scope(), parent.Scope()
+	defer work.Release()
+	defer output.Release()
+	workContext := dumpformat.WithNativeDeltaBudget(ctx, work)
+	outputContext := dumpformat.WithNativeDeltaBudget(ctx, output)
+
+	// This list is a shallow candidate; its serialized descriptor domain is
+	// distinct from the detached output relations and their cloned predicates.
+	listBytes := uint64(3) // [] and the structured-value terminal LF.
+	for i := 0; i <= len(previous); i++ {
+		relation := added
+		if i < len(previous) {
+			relation = previous[i]
+		}
+		n, err := dumpformat.NativeDeltaJSONSize(relation)
+		if err != nil {
+			return nil, err
+		}
+		addition := n - 1
+		if i != 0 {
+			addition++
+		}
+		if addition > math.MaxUint64-listBytes {
+			return nil, fmt.Errorf("workflow relation candidate size overflow")
+		}
+		listBytes += addition
+	}
+	if err := sourceRestoreChargeBytes(workContext, phase+"_append", listBytes); err != nil {
+		return nil, err
+	}
+	values := append(previous, added)
+	out := make([]relationState, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, relation := range values {
+		n, err := dumpformat.NativeDeltaJSONSize(relation)
+		if err != nil {
+			return nil, err
+		}
+		n-- // relationKey is json.Marshal without LF.
+		keyOwner := work.Scope()
+		keyContext := dumpformat.WithNativeDeltaBudget(ctx, keyOwner)
+		if err := sourceRestoreChargeBytes(workContext, phase+"_key_buffer", n); err != nil {
+			return nil, err
+		}
+		if err := sourceRestoreChargeBytes(keyContext, phase+"_keys", n); err != nil {
+			return nil, err
+		}
+		key := relationKey(relation)
+		work.ReleaseBytes(phase+"_key_buffer", n)
+		if _, duplicate := seen[key]; duplicate {
+			keyOwner.Release()
+			continue
+		}
+		seen[key] = struct{}{}
+		keyOwner.Retain() // seen owns each unique string until this call returns.
+		if err := sourceRestoreChargeJSON(outputContext, phase, relation); err != nil {
+			return nil, err
+		}
+		out = append(out, cloneRelation(relation))
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	for _, relation := range previous {
+		n, err := dumpformat.NativeDeltaJSONSize(relation)
+		if err != nil {
+			return nil, err
+		}
+		parent.ReleaseBytes(phase, n)
+	}
+	output.Retain()
+	return out, nil
 }
 
 func prepareSourceOrigins(ctx context.Context, value *persisted, plan driver.SourcePlanePlanV1, byHash map[string]sourceWireRecord, _ []driver.SourcePlaneRecordV1, entities map[driver.SourceEntityKey]driver.SourcePlaneEntityV1, used map[string]bool) error {

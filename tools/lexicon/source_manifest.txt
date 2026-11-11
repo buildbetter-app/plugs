@@ -1541,6 +1541,7 @@ plugins/workflow/manifest.json
 plugins/workflow/native.go
 plugins/workflow/ordinary_delete.go
 plugins/workflow/scheduling.go
+plugins/workflow/source_accounting_test.go
 plugins/workflow/source_comments.go
 plugins/workflow/source_graph.go
 plugins/workflow/source_projection.go
