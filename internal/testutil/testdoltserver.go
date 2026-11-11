@@ -357,6 +357,18 @@ func (c *IsolatedDoltContainer) Stop(ctx context.Context) error {
 	return c.ctr.Stop(ctx, nil)
 }
 
+// SourceRoot exposes only this isolated local server's stopped data directory
+// for an explicit public-fixture handoff. It never changes ordinary cleanup.
+func (c *IsolatedDoltContainer) SourceRoot() (string, error) {
+	if c == nil || c.local == nil {
+		return "", fmt.Errorf("source-root handoff requires the isolated local test backend")
+	}
+	if stopped, _ := c.local.exited(); !stopped {
+		return "", fmt.Errorf("source-root handoff requires a stopped server")
+	}
+	return c.local.dataDir, nil
+}
+
 // Start resumes a container previously stopped with Stop.
 func (c *IsolatedDoltContainer) Start(ctx context.Context) error {
 	if c != nil && c.local != nil {
