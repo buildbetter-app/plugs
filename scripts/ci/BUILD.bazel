@@ -79,3 +79,9 @@ sh_test(
     ],
     size = "small",
 )
+
+filegroup(
+    name = "reconcile_generator",
+    srcs = ["reconcile-openrpc.py"],
+    visibility = ["//spec/cardb23query:__pkg__"],
+)

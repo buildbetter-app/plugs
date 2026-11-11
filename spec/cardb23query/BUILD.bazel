@@ -1,0 +1,46 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("@rules_go//go:def.bzl", "go_test")
+
+COMMON = ["fixture_test.go", "query_test.go"]
+DEPS = [
+    "//internal/core/model",
+    "//internal/core/pipeline",
+    "//internal/core/service",
+    "//internal/core/viewops",
+    "//internal/server/rpc",
+    "//internal/server/viewrpc",
+    "//internal/storage/driver",
+    "//internal/storage/memory",
+    "//internal/storage/postgres",
+    "//internal/storage/sqlite",
+    "//internal/testclock",
+]
+
+go_test(
+    name = "public_query_test",
+    srcs = COMMON,
+    args = ["-test.v"],
+    size = "large",
+    tags = ["local", "requires-network"],
+    timeout = "long",
+    deps = DEPS,
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
+
+# Generation runs only on RunsOn. Its output is applied before product gates;
+# this target is generation evidence, not a behavior test or whole substitute.
+sh_test(
+    name = "regenerate_contract",
+    srcs = ["regenerate_contract.sh"],
+    data = [
+        "//:engdocs/design/plug/contracts/openrpc.json",
+        "//internal/api/wire:reconcile_openrpc_inputs",
+        "//scripts/ci:reconcile_generator",
+    ],
+    tags = ["manual"],
+)
