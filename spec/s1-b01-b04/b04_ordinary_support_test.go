@@ -214,6 +214,7 @@ func (o *ordinaryB04) callSeedWithRetry(label, method, agent string, params map[
 		if readErr != nil || closeErr != nil { t.Fatalf("HTTP read=%v close=%v", readErr, closeErr) }
 		last = append(json.RawMessage(nil), raw...)
 		o.retain(fmt.Sprintf("%03d-%s-attempt-%d", o.seq, label, attempt), map[string]any{"request": json.RawMessage(request), "response": json.RawMessage(raw), "httpStatus": response.StatusCode})
+		if response.StatusCode != http.StatusOK { t.Fatalf("HTTP status=%d frame=%s", response.StatusCode, raw) }
 		var frame struct { Error *struct { Data model.ErrorData `json:"data"` } `json:"error"` }
 		if err := json.Unmarshal(raw, &frame); err != nil { t.Fatalf("seed %s response is not JSON: %s", label, raw) }
 		if frame.Error == nil || !frame.Error.Data.Retryable {
