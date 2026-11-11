@@ -54,6 +54,10 @@ type blockedPage struct {
 	}
 }
 
+func sameRef(a, b model.Ref) bool {
+	return a.ID == b.ID && a.Branch == b.Branch && a.Key == b.Key
+}
+
 func (f *blockedFixture) call(method string, params map[string]any) public.Reply {
 	f.seq++
 	return f.h.Call(method, fmt.Sprintf("b02-%04d-%s", f.seq, method), params, "")
@@ -72,7 +76,7 @@ func (f *blockedFixture) write(method string, params map[string]any) model.Commi
 	for _, result := range commit.Results {
 		found := false
 		for _, row := range state.Rows {
-			if row.Ref == result.Ref {
+			if sameRef(row.Ref, result.Ref) {
 				found = true
 				if row.Revision != commit.Revision || !bytes.Equal(row.Body, result.Record) {
 					f.h.T.Fatal("public result differs from actual committed body/revision")
