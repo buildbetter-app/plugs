@@ -80,7 +80,19 @@ func freshFullCase(t *testing.T, root string, source publicnative.SourceSession,
 			t.Fatal(err)
 		}
 	}
-	retained := filepath.Join(caseRoot, "clean-export-root")
+	// The unchanged native recipe accepts only a fresh child of a private,
+	// canonical /tmp/plug-swarm directory. Keep evidence in declared outputs;
+	// the complete quiescent source is archived there before capture/mutation.
+	retainedParent, err := os.MkdirTemp("/tmp/plug-swarm", "id-style-a-native-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(retainedParent); err != nil {
+			t.Errorf("owned native recipe source cleanup: %v", err)
+		}
+	})
+	retained := filepath.Join(retainedParent, "clean-export-root")
 	if err := freshRecordRecipe(t, source, item, caseRoot, retained, result); err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +106,7 @@ func freshFullCase(t *testing.T, root string, source publicnative.SourceSession,
 	mutable := filepath.Join(caseRoot, "native-continuation-root")
 	freshCopyTree(t, retained, mutable)
 	freshGuard(t)
-	_, err := freshCommand(t, caseRoot, "native-delta-capture", workspace, producer, []string{"--data-dir", retained, "--database", "beads_test", "--beads-dir", filepath.Join(workspace, ".beads"), "--output-dir", filepath.Join(caseRoot, "capture-output"), "--disposable", "--native-delta"}, freshChildEnv(workspace), 25*time.Minute)
+	_, err = freshCommand(t, caseRoot, "native-delta-capture", workspace, producer, []string{"--data-dir", retained, "--database", "beads_test", "--beads-dir", filepath.Join(workspace, ".beads"), "--output-dir", filepath.Join(caseRoot, "capture-output"), "--disposable", "--native-delta"}, freshChildEnv(workspace), 25*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
