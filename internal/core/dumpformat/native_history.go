@@ -219,32 +219,39 @@ func validateNativeTablePolicy(name string, table NativeTable, nativeDelta bool)
 				return fmt.Errorf("native row lacks %s.%s", name, column)
 			}
 		}
-		values := map[string]any(row)
-		if name == "config" || name == "metadata" || name == "local_metadata" {
-			if err := validateSecretReferences(map[string]any{stringValue(row["key"]): row["value"]}); err != nil {
-				return err
-			}
-			values = map[string]any{}
-			for column, value := range row {
-				if column != "key" && column != "value" {
-					values[column] = value
-				}
-			}
-		}
-		var secretErr error
-		if nativeDelta {
-			secretErr = validateNativeDeltaSecretReferences(name, values)
-		} else {
-			secretErr = validateSecretReferences(values)
-		}
-		if secretErr != nil {
-			return secretErr
+		if err := validateNativeTableRowPolicy(name, row, nativeDelta); err != nil {
+			return err
 		}
 		data, err := json.Marshal(row)
 		if err != nil || previous != nil && bytes.Compare(previous, data) > 0 {
 			return fmt.Errorf("unordered native rows in %s", name)
 		}
 		previous = data
+	}
+	return nil
+}
+
+func validateNativeTableRowPolicy(name string, row Row, nativeDelta bool) error {
+	values := map[string]any(row)
+	if name == "config" || name == "metadata" || name == "local_metadata" {
+		if err := validateSecretReferences(map[string]any{stringValue(row["key"]): row["value"]}); err != nil {
+			return err
+		}
+		values = map[string]any{}
+		for column, value := range row {
+			if column != "key" && column != "value" {
+				values[column] = value
+			}
+		}
+	}
+	var secretErr error
+	if nativeDelta {
+		secretErr = validateNativeDeltaSecretReferences(name, values)
+	} else {
+		secretErr = validateSecretReferences(values)
+	}
+	if secretErr != nil {
+		return secretErr
 	}
 	return nil
 }

@@ -317,7 +317,10 @@ func (r *nativeDeltaReconstructor) emitRowCheckpoint(kind string, state deltaSta
 				err = r.rowCallbacks.checkpoint(kind, schema, ordered, policy)
 			}
 			if err == nil && r.rowCallbacks.tableState != nil {
-				err = r.rowCallbacks.tableState(NativeDeltaTableState{Kind: kind, Sequence: image.Sequence, CommitID: image.CommitID, Schema: schema, Rows: ordered, Normalized: image.Tables[name], ConfigPolicy: policy})
+				if err = work.ChargeJSON("callback_normalized_table", image.Tables[name]); err == nil {
+					detached := cloneNativeDeltaTable(image.Tables[name])
+					err = r.rowCallbacks.tableState(NativeDeltaTableState{Kind: kind, Sequence: image.Sequence, CommitID: image.CommitID, Schema: schema, Rows: ordered, Normalized: detached, ConfigPolicy: policy})
+				}
 			}
 		}
 		work.Release()
