@@ -1590,6 +1590,7 @@ plugins/workflow/source_restore.go
 plugins/workflow/workflow.go
 plugins/workflow/workflow_test.go
 scripts/ci/BUILD.bazel
+scripts/ci/b02-contract-generate.py
 scripts/ci/bazel-testlogs/BUILD.bazel
 scripts/ci/bazel-testlogs/archive.py
 scripts/ci/bazel-testlogs/archive_test.py

@@ -47,6 +47,12 @@ func TestBlockedReadDerivesReasonsAndIgnoresStaleFlags(t *testing.T) {
 		{ID: "left", Links: link("root"), Fields: map[string]any{"status": "todo"}},
 		{ID: "right", Links: link("root"), Fields: map[string]any{"status": "todo"}},
 		{ID: "join", Links: append(link("left"), link("right")...), Fields: map[string]any{"status": "todo"}},
+		{ID: "spawner", Fields: map[string]any{"status": "todo"}},
+		{ID: "done-child", Parent: ptrBlockedRef(ref("spawner")), Fields: map[string]any{"status": "done"}},
+		{ID: "multi", Links: append(link("root"), pipeline.Link{To: ref("spawner"), Kind: "waits-for", Metadata: &model.LinkMetadata{Gate: "any-children"}}), Fields: map[string]any{"status": "todo"}},
+		{ID: "closed-spawner", Fields: map[string]any{"status": "done"}},
+		{ID: "open-child", Parent: ptrBlockedRef(ref("closed-spawner")), Fields: map[string]any{"status": "todo"}},
+		{ID: "undisplayed", Links: []pipeline.Link{{To: ref("closed-spawner"), Kind: "waits-for", Metadata: &model.LinkMetadata{Gate: "all-children"}}}, Fields: map[string]any{"status": "todo"}},
 	}
 	changes := make([]conformance.FixtureChange, 0, len(documents))
 	stamp := time.Date(2026, 11, 11, 17, 0, 0, 0, time.UTC)
@@ -68,7 +74,7 @@ func TestBlockedReadDerivesReasonsAndIgnoresStaleFlags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string][]string{"parent": {"root"}, "child": {"parent"}, "direct": {"other"}, "frozen": {"root"}, "left": {"root"}, "right": {"root"}, "join": {"left", "right"}}
+	want := map[string][]string{"parent": {"root"}, "child": {"parent"}, "direct": {"other"}, "frozen": {"root"}, "left": {"root"}, "right": {"root"}, "join": {"left", "right"}, "multi": {"root", "spawner"}}
 	for attempt := 0; attempt < 2; attempt++ {
 		page, err := s.Blocked(ctx, by, ReadyRequest{Project: "p", Limit: 1000})
 		if err != nil {
@@ -111,7 +117,7 @@ func TestBlockedReadDerivesReasonsAndIgnoresStaleFlags(t *testing.T) {
 		}
 		request.Position = page.Next
 	}
-	if !reflect.DeepEqual(ids, []string{"child", "frozen", "join", "left", "right"}) {
+	if !reflect.DeepEqual(ids, []string{"child", "frozen", "join", "left", "multi", "right"}) {
 		t.Fatalf("visibility before deterministic paging: %v", ids)
 	}
 	after, err := store.Meta(ctx)

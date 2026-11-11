@@ -4,7 +4,7 @@ go_binary(
     name = "openrpcgen",
     srcs = ["main.go"],
     importpath = "github.com/buildbetter-app/plugs/internal/server/rpc/cmd/openrpcgen",
-    deps = ["//internal/core/model", "//internal/server/rpc"],
+    deps = ["//internal/api/wire", "//internal/core/model", "//internal/server/rpc"],
 )
 
 filegroup(

@@ -14,8 +14,16 @@ import (
 // an unreadable reason. This method performs no expiry cleanup or publication.
 type BlockedGraph struct {
 	Items     []ItemView
+	Hidden    []BlockedGraphNode
 	Relations []RelationView
 	Revision  pluginapi.Revision
+}
+
+// BlockedGraphNode is an internal evaluation fact. The host never projects a
+// hidden node, but must retain its topology and terminal state for child gates.
+type BlockedGraphNode struct {
+	ID, Project, Status string
+	Parent              *model.Ref
 }
 
 func (p *Provider) BlockedGraph(ctx context.Context, by model.PrincipalRef, meta model.WriteMeta) (BlockedGraph, error) {
@@ -42,9 +50,11 @@ func (p *Provider) BlockedGraph(ctx context.Context, by model.PrincipalRef, meta
 		visible := p.authorized(item, by, meta) == nil
 		if visible {
 			result.Items = append(result.Items, p.itemViewIn(value, item))
-			for _, link := range item.Links {
-				result.Relations = append(result.Relations, relationView(link))
-			}
+		} else {
+			result.Hidden = append(result.Hidden, BlockedGraphNode{ID: item.ID, Project: item.Project, Status: item.Status, Parent: cloneRef(item.Parent)})
+		}
+		for _, link := range item.Links {
+			result.Relations = append(result.Relations, relationView(link))
 		}
 		// An inbound edge's subject is an ordinary bead. Its own read policy
 		// is evaluated by the host on the same pinned core reader.

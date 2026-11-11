@@ -52,6 +52,7 @@ func (s *Service) BlockedWithFilter(ctx context.Context, by model.PrincipalRef, 
 		return BlockedPage{}, err
 	}
 	workflow := map[string]Bead{}
+	hiddenWorkflow := map[string]bool{}
 	var binding *WorkflowPageSnapshot
 	if provider := s.workflowProvider(); provider != nil {
 		observed, err := provider.BlockedGraph(ctx, by, workflowMeta(by, "bead.blocked", req.Project, req.Agent))
@@ -59,6 +60,11 @@ func (s *Service) BlockedWithFilter(ctx context.Context, by model.PrincipalRef, 
 			return BlockedPage{}, err
 		}
 		binding = &WorkflowPageSnapshot{Revision: model.Revision(observed.Revision)}
+		for _, node := range observed.Hidden {
+			hiddenWorkflow[node.ID] = true
+			workflow[node.ID] = Bead{ID: node.ID, Project: node.Project, Status: node.Status, Kind: "workflow.item"}
+			graph[node.ID] = storedBead{doc: pipeline.Document{ID: node.ID, Type: "issue", Project: node.Project, Parent: node.Parent, Fields: map[string]any{"status": node.Status}}}
+		}
 		for _, item := range observed.Items {
 			bead := workflowBead(item)
 			workflow[item.ID] = bead
@@ -67,7 +73,12 @@ func (s *Service) BlockedWithFilter(ctx context.Context, by model.PrincipalRef, 
 				ref := model.RefByID(bead.Parent, model.Natural64(0))
 				parent = &ref
 			}
-			graph[item.ID] = storedBead{doc: pipeline.Document{ID: item.ID, Type: item.Type, Project: item.Project, Parent: parent, Fields: map[string]any{"status": item.Status, "title": item.Title}}}
+			fields := cloneMap(bead.Fields)
+			if fields == nil {
+				fields = map[string]any{}
+			}
+			fields["status"], fields["title"] = item.Status, item.Title
+			graph[item.ID] = storedBead{doc: pipeline.Document{ID: item.ID, Type: item.Type, Project: item.Project, Parent: parent, Fields: fields}}
 		}
 		for _, relation := range observed.Relations {
 			row, exists := graph[relation.From]
@@ -105,6 +116,10 @@ func (s *Service) BlockedWithFilter(ctx context.Context, by model.PrincipalRef, 
 			}
 		}
 		beads[id] = bead
+		if hiddenWorkflow[id] {
+			visible[id] = false
+			continue
+		}
 		visible[id] = true
 		if allowed != nil {
 			visible[id], err = allowed(ctx, r, bead)
@@ -210,26 +225,26 @@ func (s *Service) blockedReasons(ctx context.Context, graph map[string]storedBea
 		}
 		return s.ontology.effective(row.doc.Project).SatisfiesBlocks(state(row.doc).Status)
 	}
-	closedSubject := func(row storedBead) bool { return state(row.doc).Status == "pinned" || terminal(row) }
-	reasons := map[string][]blockedReason{}
 	children := map[string][]string{}
 	allChildren := map[string][]storedBead{}
-	for _, row := range graph {
+	for id, row := range graph {
 		if row.doc.Parent != nil {
 			allChildren[row.doc.Parent.ID] = append(allChildren[row.doc.Parent.ID], row)
+			if state(row.doc).Status != "pinned" && !terminal(row) {
+				children[row.doc.Parent.ID] = append(children[row.doc.Parent.ID], id)
+			}
 		}
 	}
+	blocked := map[string]bool{}
+	direct := map[string][]blockedReason{}
 	queue := []string{}
 	for _, id := range sortedIDs(graph) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		row := graph[id]
-		if closedSubject(row) {
+		if state(row.doc).Status == "pinned" || terminal(row) {
 			continue
-		}
-		if row.doc.Parent != nil {
-			children[row.doc.Parent.ID] = append(children[row.doc.Parent.ID], id)
 		}
 		unique := map[string]blockedReason{}
 		for _, link := range row.doc.Links {
@@ -238,16 +253,21 @@ func (s *Service) blockedReasons(ctx context.Context, graph map[string]storedBea
 			}
 			blocker, exists := graph[link.To.ID]
 			unresolved := !exists || link.TargetKind == model.LinkTargetExternal || !link.To.IsID() || !link.To.Branch.IsZero()
-			satisfied := false
+			satisfied, display := false, true
 			if !unresolved {
 				satisfied = terminal(blocker)
+				display = !satisfied
 				if link.Kind == "conditional-blocks" {
 					_, ephemeral := workflow[blocker.doc.ID]
 					satisfied = !ephemeral && s.ontology.effective(blocker.doc.Project).SatisfiesConditionalBlocks(state(blocker.doc).Status)
+					// The adopted failure-only condition differs from native's closed
+					// target rule: an unmet terminal outcome remains an explicit reason.
+					display = !satisfied
 				}
 				if link.Kind == "waits-for" {
-					// The public blocked listing follows native's default
-					// all-children gate, including a closed spawner.
+					// Native membership and displayed reasons are separate. A satisfied
+					// gate to an open spawner still appears beside another blocker; a
+					// closed spawner is omitted even when its live children block the gate.
 					if link.Metadata != nil && link.Metadata.AlsoBlocks && !terminal(blocker) {
 						satisfied = false
 					} else {
@@ -264,26 +284,37 @@ func (s *Service) blockedReasons(ctx context.Context, graph map[string]storedBea
 				}
 			}
 			if !satisfied {
+				blocked[id] = true
+			}
+			if display {
 				key, _ := json.Marshal(link.To)
 				previous := unique[string(key)]
 				unique[string(key)] = blockedReason{Ref: link.To, Unresolved: unresolved || previous.Unresolved}
 			}
 		}
-		if len(unique) == 0 && row.doc.Parent != nil {
+		if row.doc.Parent != nil {
 			if _, exists := graph[row.doc.Parent.ID]; !exists {
-				key, _ := json.Marshal(row.doc.Parent)
-				unique[string(key)] = blockedReason{Ref: *row.doc.Parent, Unresolved: true}
+				blocked[id] = true
+				if len(unique) == 0 {
+					key, _ := json.Marshal(row.doc.Parent)
+					unique[string(key)] = blockedReason{Ref: *row.doc.Parent, Unresolved: true}
+				}
 			}
 		}
-		keys := make([]string, 0, len(unique))
-		for key := range unique {
-			keys = append(keys, key)
+		for _, reason := range unique {
+			direct[id] = append(direct[id], reason)
 		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			reasons[id] = append(reasons[id], unique[key])
-		}
-		if len(reasons[id]) != 0 {
+		sort.Slice(direct[id], func(i, j int) bool {
+			a, b := direct[id][i].Ref, direct[id][j].Ref
+			if a.ID != b.ID {
+				return a.ID < b.ID
+			}
+			if a.Key != b.Key {
+				return a.Key < b.Key
+			}
+			return a.Branch < b.Branch
+		})
+		if blocked[id] {
 			queue = append(queue, id)
 		}
 	}
@@ -291,12 +322,20 @@ func (s *Service) blockedReasons(ctx context.Context, graph map[string]storedBea
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		parent := queue[index]
-		for _, id := range children[parent] {
-			if len(reasons[id]) == 0 {
-				reasons[id] = []blockedReason{{Ref: model.RefByID(parent, model.Natural64(0))}}
+		for _, id := range children[queue[index]] {
+			if !blocked[id] {
+				blocked[id] = true
 				queue = append(queue, id)
 			}
+		}
+	}
+	reasons := map[string][]blockedReason{}
+	for id := range blocked {
+		if len(direct[id]) > 0 {
+			reasons[id] = direct[id]
+		} else if parent := graph[id].doc.Parent; parent != nil {
+			_, exists := graph[parent.ID]
+			reasons[id] = []blockedReason{{Ref: *parent, Unresolved: !exists}}
 		}
 	}
 	return reasons, nil
