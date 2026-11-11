@@ -595,6 +595,7 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 		return Report{}, driver.ErrConflict
 	}
 	var evidence archiveEvidence
+	var evidenceRecord []byte
 	var binding importBindingEvidence
 	projectRecords := map[string]importProjectMetadata{}
 	for _, result := range receipt.Commit.Results {
@@ -603,6 +604,10 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 		}
 		switch {
 		case result.Ref.ID == "restore/archive":
+			if evidenceRecord != nil {
+				return Report{}, driver.ErrConflict
+			}
+			evidenceRecord = result.Record
 			if err = json.Unmarshal(result.Record, &evidence); err != nil {
 				return Report{}, driver.ErrConflict
 			}
@@ -620,6 +625,15 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 	}
 	if evidence.ArchiveSHA256 != check.ArchiveSHA256 || evidence.DerivedSHA256 != check.DerivedSHA256 || !reflect.DeepEqual(binding.Profile, bound) || binding.RequestHash != request || len(projectRecords) != len(binding.Projects) {
 		return Report{}, driver.ErrConflict
+	}
+	if evidence.NativeCaptureFiles != nil {
+		// The immutable receipt is the authority for the admitted ceiling and
+		// complete raw-file ledger. Compare the pinned current marker before
+		// allocating or reading any capture part, including on clean recovery.
+		rows, err := r.Get(ctx, []model.Ref{model.RefByID("restore/archive", model.Natural64(0))})
+		if err != nil || len(rows) != 1 || rows[0].Kind != "restore-archive" || !bytes.Equal(rows[0].Body, evidenceRecord) {
+			return Report{}, driver.ErrConflict
+		}
 	}
 	for _, project := range binding.Projects {
 		metadata, ok := projectRecords[importProjectRecordID(project.SourceAllocator.Prefix)]
@@ -659,10 +673,11 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 	var source *receivingEvidence
 	if len(prepared) != 0 {
 		source = prepared[0]
-		if source == nil || source.archive == nil || source.archive.SHA256() != bound.ArchiveDigest || source.requestHash != request {
+		if source == nil || source.requestHash != request || source.archive != nil && source.archive.SHA256() != bound.ArchiveDigest {
 			return Report{}, driver.ErrConflict
 		}
-	} else if bound.HistoryDigest != "" || bound.SourcePlanes != nil {
+	}
+	if (source == nil || source.archive == nil) && (bound.HistoryDigest != "" || bound.SourcePlanes != nil) {
 		raw, readErr := r.Blob(ctx, driver.Hash(evidence.ArchiveSHA256))
 		if readErr != nil || hashBytes(raw) != bound.ArchiveDigest {
 			return Report{}, driver.ErrConflict
@@ -671,8 +686,12 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 		if readErr != nil {
 			return Report{}, nativeDeltaRecoveryError(readErr)
 		}
-		defer archive.ReleaseNativeDecoded()
-		source = &receivingEvidence{archive: archive, requestHash: request}
+		if source == nil {
+			defer archive.ReleaseNativeDecoded()
+			source = &receivingEvidence{archive: archive, requestHash: request}
+		} else {
+			source.archive = archive
+		}
 	}
 	if bound.HistoryDigest != "" {
 		if err = validateHistoryRecoveryArchive(ctx, r, bound, evidence, receipt, source.archive, source.history); err != nil {
