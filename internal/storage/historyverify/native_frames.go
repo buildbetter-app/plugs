@@ -66,7 +66,11 @@ func newNativeFrames(ctx context.Context,s *NativeArchiveStream) (*nativeFrames,
  // The independently authenticated physical census is retained by admission
  // and rechecked by the complete preparation. Reserve its detached copy first.
  usage,ok:=s.archive.NativeDecodedUsage();if !ok {return nil,ErrCheckpoint{"missing native verification owner"}}
- if err:=s.archive.ChargeNativeDeltaBytes("verifier_physical_proof_copy",usage.CurrentCategories["commit_proofs"]*2+1024);err!=nil {return nil,err}
+ proofBytes:=usage.CurrentCategories["retained_commit_proofs"]
+ if proofBytes==0 || proofBytes>(^uint64(0)-2048)/8 {return nil,ErrCheckpoint{"missing or oversized retained physical census"}}
+ // JSON retained bytes bound every map key/value and commit slot. The
+ // conservative factor also reserves detached map/slice representation.
+ if err:=s.archive.ChargeNativeDeltaBytes("verifier_physical_proof_copy",proofBytes*8+2048);err!=nil {return nil,err}
  proof,ok:=s.archive.NativeDeltaVerification();if !ok || len(proof.Commits)!=len(b.graph) {return nil,ErrCheckpoint{"missing authenticated physical census"}}
  b.proofs=proof.Commits
  metadata,err:=s.archive.NativeSourceHistoryMetadata();if err!=nil {return nil,err}
