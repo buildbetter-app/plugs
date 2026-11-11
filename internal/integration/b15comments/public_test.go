@@ -593,6 +593,10 @@ func TestB15PublicDurableFractionalNewestAfterLegacyCheckpoint(t *testing.T) {
 			if got := f.document(); !reflect.DeepEqual(got.Comments, want) {
 				t.Fatalf("durable fractional maximum plus one second: got=%+v want=%+v", got.Comments, want)
 			}
+			wantPage := []pageItem{{ID: 1, Comment: want[0]}, {ID: 2, Comment: want[1]}, {ID: 3, Comment: want[2]}}
+			if got := f.page(legacy.ID, 500, ""); got.Next != "" || !reflect.DeepEqual(got.Comments, wantPage) {
+				t.Fatalf("public durable fractional committed tuples: got=%+v want=%+v", got, wantPage)
+			}
 			after := f.changes()
 			if len(after) != len(history)+1 || !reflect.DeepEqual(after[:len(history)], history) {
 				t.Fatal("durable fractional comment history changed before the one accepted append")
@@ -601,7 +605,8 @@ func TestB15PublicDurableFractionalNewestAfterLegacyCheckpoint(t *testing.T) {
 			if len(entry.Changes) != 1 || entry.Changes[0].Op != model.OpComment || entry.Changes[0].Ref.ID != legacy.ID || !reflect.DeepEqual(entry.Changes[0].ChangedPaths, []string{"/comments"}) || len(entry.Events) != 1 || entry.Events[0].Type != model.EventBeadCommented {
 				t.Fatal("durable fractional comment did not record exactly one history/event")
 			}
-			stable := f.document()
+			committed := f.document()
+			stable := committed
 			stable.Comments = nil
 			anchor := before
 			anchor.Comments = nil
@@ -611,6 +616,12 @@ func TestB15PublicDurableFractionalNewestAfterLegacyCheckpoint(t *testing.T) {
 			f.reopen()
 			if got := f.document(); !reflect.DeepEqual(got.Comments, want) {
 				t.Fatalf("reopened durable fractional maximum plus one second: got=%+v want=%+v", got.Comments, want)
+			}
+			if !reflect.DeepEqual(f.document(), committed) || !reflect.DeepEqual(f.changes(), after) {
+				t.Fatal("reopened durable fractional full anchor/history differs from the exact committed state")
+			}
+			if got := f.page(legacy.ID, 500, ""); got.Next != "" || !reflect.DeepEqual(got.Comments, wantPage) {
+				t.Fatalf("public durable fractional reopened tuples: got=%+v want=%+v", got, wantPage)
 			}
 		})
 	}
