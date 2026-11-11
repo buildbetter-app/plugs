@@ -2,7 +2,7 @@ load("@rules_go//go:def.bzl", "go_binary")
 
 go_binary(
     name = "native-receive",
-    srcs = ["joined.go", "main.go", "policy.go", "session.go", "verify.go"],
+    srcs = ["capture_set.go", "joined.go", "main.go", "policy.go", "session.go", "verify.go"],
     importpath = "github.com/buildbetter-app/plugs/tools/native-receive",
     visibility = ["//visibility:public"],
     deps = [

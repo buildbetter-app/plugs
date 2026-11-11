@@ -59,11 +59,13 @@ type receipt struct {
 	Driver                   string                    `json:"driver"`
 	HistoryMode              string                    `json:"history_mode"`
 	RestoreTime              string                    `json:"restore_time"`
-	Verification             verification              `json:"verification"`
+	Verification             *verification             `json:"verification,omitempty"`
 	Report                   converterroundtrip.Report `json:"committed_report"`
 	OriginalInputs           *joinedBinding            `json:"original_inputs,omitempty"`
 	SessionCeilingSeconds    int64                     `json:"session_ceiling_seconds,omitempty"`
 	CrossProjectIDCollisions int                       `json:"cross_project_id_collisions"`
+	CaptureSetMeasurements   *captureSetMeasurements   `json:"capture_set_measurements,omitempty"`
+	CaptureSetVerification   *captureSetVerification   `json:"capture_set_verification,omitempty"`
 }
 
 func digest(raw []byte) string { sum := sha256.Sum256(raw); return hex.EncodeToString(sum[:]) }
@@ -92,6 +94,10 @@ func main() {
 		result, err = run(ctx, os.Args[1:])
 	}
 	if err != nil {
+		var refusal *captureSetRefusal
+		if errors.As(err, &refusal) {
+			_ = json.NewEncoder(os.Stderr).Encode(refusal)
+		}
 		fmt.Fprintln(os.Stderr, "native receiving refused:", err)
 		os.Exit(1)
 	}
@@ -110,6 +116,7 @@ func run(ctx context.Context, args []string) (out receipt, runErr error) {
 	target := flags.String("target", "", "disposable SQLite path or PostgreSQL DSN; empty for memory")
 	var paths archivePaths
 	flags.Var(&paths, "archive", "original native archive; repeat in declared order for joined rehearsal")
+	captureSet := flags.String("capture-set", "", "native capture-set directory containing head and parts")
 	requestPath := flags.String("request", "", "explicit trusted receiving request")
 	policyPath := flags.String("policy", "", "optional exact policy used to construct the request")
 	bindingPath := flags.String("bindings", "", "external ordered original source/project/database/hash bindings")
@@ -119,8 +126,8 @@ func run(ctx context.Context, args []string) (out receipt, runErr error) {
 	if err := flags.Parse(args); err != nil {
 		return zero, err
 	}
-	if flags.NArg() != 0 || len(paths) == 0 || *requestPath == "" || len(*expectedBinary) != 64 {
-		return zero, errors.New("archive, request and exact executable binding are required")
+	if flags.NArg() != 0 || (len(paths) == 0) == (*captureSet == "") || *requestPath == "" || len(*expectedBinary) != 64 {
+		return zero, errors.New("exactly one archive input or capture-set directory, request and exact executable binding are required")
 	}
 	if *sessionLimit <= 0 || *sessionLimit > rehearsalSessionLimit {
 		return zero, errors.New("restore session exceeds two-hour ceiling")
@@ -141,6 +148,9 @@ func run(ctx context.Context, args []string) (out receipt, runErr error) {
 	actualBinary := hex.EncodeToString(h.Sum(nil))
 	if hashErr != nil || closeErr != nil || actualBinary != *expectedBinary {
 		return zero, errors.New("receiving executable binding differs")
+	}
+	if *captureSet != "" {
+		return runCaptureSet(ctx, *captureSet, *requestPath, *engine, *target, actualBinary, *policyPath, *bindingPath, *profilePath)
 	}
 	originals, err := loadOriginals(paths)
 	if err != nil {
@@ -331,7 +341,7 @@ func run(ctx context.Context, args []string) (out receipt, runErr error) {
 			return zero, err
 		}
 	}
-	result := receipt{Format: "plug-native-receiving-receipt/1", PolicySHA256: input.PolicySHA256, OriginalInputs: input.OriginalInputs, BinarySHA256: actualBinary, RequestSHA256: digest(requestBytes), ArchiveSHA256: input.ArchiveSHA256, Driver: *engine, HistoryMode: "full", RestoreTime: recoveredProfile.HistoryTime, Verification: proof, Report: recovered}
+	result := receipt{Format: "plug-native-receiving-receipt/1", PolicySHA256: input.PolicySHA256, OriginalInputs: input.OriginalInputs, BinarySHA256: actualBinary, RequestSHA256: digest(requestBytes), ArchiveSHA256: input.ArchiveSHA256, Driver: *engine, HistoryMode: "full", RestoreTime: recoveredProfile.HistoryTime, Verification: &proof, Report: recovered}
 	if input.PolicySHA256 == rehearsalPolicySHA256 {
 		result.SessionCeilingSeconds = int64(rehearsalSessionLimit / time.Second)
 	}

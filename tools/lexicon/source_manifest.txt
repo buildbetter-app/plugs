@@ -615,6 +615,7 @@ internal/integration/converterroundtrip/memory_import_test.go
 internal/integration/converterroundtrip/memory_reverse.go
 internal/integration/converterroundtrip/native_boundary_fixture_test.go
 internal/integration/converterroundtrip/native_boundary_receiving_test.go
+internal/integration/converterroundtrip/native_capture_set_cli_test.go
 internal/integration/converterroundtrip/native_commit_fixture_test.go
 internal/integration/converterroundtrip/native_commit_receiving_test.go
 internal/integration/converterroundtrip/native_delta.go
@@ -1338,6 +1339,10 @@ internal/storage/physicalrestore/README.md
 internal/storage/physicalrestore/binding.go
 internal/storage/physicalrestore/copy.go
 internal/storage/physicalrestore/manifest.go
+internal/storage/physicalrestore/native_rows.go
+internal/storage/physicalrestore/native_rows_test.go
+internal/storage/physicalrestore/native_schema.go
+internal/storage/physicalrestore/native_undo_test.go
 internal/storage/physicalrestore/restore_test.go
 internal/storage/physicalrestore/undo.go
 internal/storage/physicalrestore/undo_test.go
@@ -2087,6 +2092,7 @@ tools/native-physical-restore/main.go
 tools/native-physical-restore/undo.go
 tools/native-receive/BUILD.bazel
 tools/native-receive/README.md
+tools/native-receive/capture_set.go
 tools/native-receive/joined.go
 tools/native-receive/main.go
 tools/native-receive/policy.go
